@@ -1172,6 +1172,8 @@ pub const Bundler = struct {
         graph.code_splitting = self.options.code_splitting;
         graph.preserve_modules = self.options.preserve_modules;
         graph.minify_identifiers = self.options.minify_identifiers;
+        // PR-3a: dev lazy compilation — discovery 가 동적 import 경계 정지(seed 등록).
+        graph.lazy_compilation = self.options.lazy_compilation;
         graph.transform_options_base = self.buildTransformOptionsBase();
         // RFC #3933 Sub-PR-B.2: external_graph 면 deinit skip (caller 보존).
         defer if (!has_external_graph) graph.deinit();

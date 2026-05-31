@@ -134,6 +134,10 @@ pub fn build(self: *ModuleGraph, io: std.Io, entry_points: []const []const u8) !
         // (정상 종료 시 group reap 은 상단 `defer group.await` 가 처리)
     }
 
+    // PR-3a: BFS 가 동적 import 경계에서 정지하며 모은 seed 를 일괄 materialize.
+    // static 도달 여부가 확정된 시점(워커 reap 후, 단일스레드)이라 안전.
+    try materializeLazySeeds(self, io);
+
     var runtime_indices: std.ArrayList(types.ModuleIndex) = .empty;
     defer runtime_indices.deinit(self.allocator);
     try applyRuntimePolyfills(self, io, &runtime_indices);
@@ -180,6 +184,38 @@ fn dispatchPendingChunked(
             s = e;
         }
         spawned_up_to.* = hi;
+    }
+}
+
+/// PR-3a (lazy compilation): discovery 가 동적 import 경계에서 모은 미파싱 seed 를
+/// BFS 종료 후 일괄 처리한다. `addModuleWithResolveDir` 로 dedup:
+///   - static 으로도 도달해 이미 parse(.ready + ast) 된 모듈이면 미파싱 마크 없이 link
+///     만 (entry/shared 단방향 참조, RFC §2.1).
+///   - 우리가 방금 추가한 신규 경로(.reserved, ast==null)면 미파싱 seed 로 등록
+///     (is_lazy_seed, state=.ready 로 dispatch/parse 회피). 첫 GET 시 parse 는 PR-3b.
+/// 워커 reap 후 단일스레드 실행이라 race 없음. lazy_compilation=false 면 seed 가 비어
+/// no-op → eager 경로 회귀 0.
+fn materializeLazySeeds(self: *ModuleGraph, io: std.Io) !void {
+    if (self.lazy_seeds.items.len == 0) return;
+    for (self.lazy_seeds.items) |seed| {
+        const dep_idx = try self.addModuleWithResolveDir(io, seed.path, seed.resolve_dir);
+        if (self.moduleAtMut(dep_idx)) |to_mod| {
+            // BFS 종료 후이므로 static 도달 모듈은 .ready(파싱 완료), external/disabled 도
+            // .ready. 아직 .reserved + ast 없음 + 비-external 이면 이 seed 가 처음 추가한
+            // 미파싱 모듈이다(!is_external 은 방어적 — .reserved external 은 없지만 명시).
+            if (to_mod.state == .reserved and to_mod.ast == null and !to_mod.is_external) {
+                to_mod.is_lazy_seed = true;
+                to_mod.state = .ready;
+            }
+        }
+        try self.linkDynamicImport(seed.from, dep_idx);
+        // entry 의 `import()` lowering 이 resolved 타겟(→ 동적 청크)을 참조하도록 갱신.
+        if (self.moduleAtMut(seed.from)) |from_mod| {
+            if (seed.rec_i < from_mod.import_records.len) {
+                from_mod.import_records[seed.rec_i].resolved = dep_idx;
+                from_mod.import_records[seed.rec_i].is_lazy_resolved = false;
+            }
+        }
     }
 }
 
