@@ -100,7 +100,7 @@ pub const InputHasher = struct {
 ///   emit_module_pass 의 per-module 결과 (dev_codes / compiled_cache entry) 는 동일하므로
 ///   module-level cache key 에 영향 없음. dev_mode incremental rebuild 가 first=false 만
 ///   set 해도 first build 의 entry 와 동일 input_hash → cache hit.
-const expected_emit_options_field_count: usize = 58;
+const expected_emit_options_field_count: usize = 59;
 const intentionally_unhashed_fields = [_][]const u8{
     "skip_bundle_output",
     // PR-3b-i: 어느 청크를 outputs 로 쓸지(chunk 선택)만 거르고 per-module 컴파일 결과는
@@ -136,6 +136,8 @@ pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
     h.addBool(options.dev_mode);
     // code_splitting 은 dev init lowering(__zntc_modules vs init_X)을 가른다 → 출력 영향, hash 필수.
     h.addBool(options.code_splitting);
+    // lazy_compilation 은 useDevModuleRegistry()/isDevSplit() 분기를 가른다 → emit 출력 영향, hash 필수.
+    h.addBool(options.lazy_compilation);
     h.addOptStr(options.root_dir);
     h.addBool(options.react_refresh);
     h.addBool(options.worklet_transform);

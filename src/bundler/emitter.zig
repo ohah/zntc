@@ -249,6 +249,11 @@ pub const EmitOptions = struct {
     /// codegen 의 `worker_map` 으로 분배되어 emitNew 가 매칭되면 직접 emit.
     /// null/empty 면 fast-exit — worker 가 없는 빌드에서 추가 비용 0.
     worker_map_per_module: ?*const std.StringHashMapUnmanaged(std.StringHashMapUnmanaged([]const u8)) = null,
+    /// lazy compilation(dev_split) 여부. dev_split(dev_mode+code_splitting+lazy)은 PR-2(#4088)
+    /// 글로벌 `__zntc_modules` 레지스트리 substrate 가 있어 splitting 이어도 dev lowering 으로
+    /// 크로스청크 해석이 가능하다([[useDevModuleRegistry]]). bundler 가 dev_split 경로에서 채움.
+    /// (구조체 *끝*에 둬 기존 필드 offset 불변 → 일부 emit 경로의 layout 민감성 회피.)
+    lazy_compilation: bool = false,
 
     pub const PolyfillEntry = struct {
         name: []const u8,
@@ -258,6 +263,22 @@ pub const EmitOptions = struct {
     };
 
     pub const Format = types.Format;
+
+    /// dev 모듈 레지스트리(`__zntc_modules[dev_id].fn()`)로 모듈 *init* 참조를 lowering 할지.
+    /// `Linker.useDevModuleRegistry()` 와 동치 — 단일번들 dev + dev_split 에서 true. esm_wrap 의
+    /// init-call lowering(.esm init / RN lazy re-export init)이 사용 — 이들은 *기존*에 단일번들
+    /// dev 에서도 registry 였으므로(HMR re-init), useDevModuleRegistry 로 단일번들 dev 보존.
+    pub fn useDevModuleRegistry(self: *const EmitOptions) bool {
+        return self.dev_mode and (!self.code_splitting or self.lazy_compilation);
+    }
+
+    /// dev_split(dev+splitting+lazy) 전용 — 크로스청크 substrate 가 있는 경로. esm_wrap 의 getter
+    /// value(`exports_X.name`/`require_X().name`)·copyProps·.cjs init 처럼 *기존*에 단일번들 dev 에서
+    /// **lexical** 이던 사이트는 이 게이트로 좁혀, 단일번들 dev·RN 을 byte-identical 로 보존하고
+    /// dev_split 에서만 registry 로 크로스청크 해석한다(#3975/RN getter 테스트 보존).
+    pub fn isDevSplit(self: *const EmitOptions) bool {
+        return self.dev_mode and self.code_splitting and self.lazy_compilation;
+    }
 };
 
 pub const OutputFile = struct {

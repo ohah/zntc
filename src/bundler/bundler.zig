@@ -1625,6 +1625,9 @@ pub const Bundler = struct {
             var dev_emit_opts = self.makeEmitOptions();
             dev_emit_opts.sourcemap.enable = true;
             dev_emit_opts.dev_mode = true;
+            // 단일번들 dev 는 code_splitting=false 라 useDevModuleRegistry 가 lazy 와 무관히 true 지만,
+            // 일관성 위해 전파(단일번들 경로에서도 dev lowering 유지).
+            dev_emit_opts.lazy_compilation = self.options.lazy_compilation;
             dev_emit_opts.react_refresh = self.options.react_refresh;
             dev_emit_opts.collect_module_codes = self.options.collect_module_codes;
             dev_emit_opts.skip_bundle_output = self.options.skip_bundle_output;
@@ -1690,6 +1693,9 @@ pub const Bundler = struct {
             // cross-chunk hot-replace 의 *레지스트리 substrate* 완성. sourcemap 은 dev on.
             if (dev_split) {
                 emit_opts.dev_mode = true;
+                // dev_split = dev+splitting+lazy → useDevModuleRegistry()=true 라 esm_wrap 의
+                // re-export/init/getter lowering 이 글로벌 레지스트리로 크로스청크 해석(#4038 잔재 해소).
+                emit_opts.lazy_compilation = true;
                 emit_opts.sourcemap.enable = true;
                 // RFC_LAZY_DEV_MODULE_HMR PR-5: react_refresh 전파(단일번들 경로 1628 과 동일).
                 // dev_split 도 wrap-all(.esm)이라 emitModule/esm_wrap 의 Fast Refresh 경로
