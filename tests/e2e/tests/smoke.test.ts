@@ -99,6 +99,11 @@ test.describe('Dev Server E2E', () => {
     // /@react-refresh 가상 엔드포인트
     const refreshRes = await page.goto(`http://localhost:${TEST_PORT}/@react-refresh`);
     expect(refreshRes!.status()).toBe(200);
+    // preamble 은 번들러 __zntc_resolveRefresh 가 *먼저 읽는* `__ReactRefresh` 글로벌을
+    // 세팅해야 한다(__REACT_REFRESH_RUNTIME__ 만으론 resolveRefresh 가 못 찾아 FR 비활성).
+    // react-refresh 미설치(본 fixture)면 noop 도 `window.__ReactRefresh = undefined` 로 둔다.
+    const refreshBody = await refreshRes!.text();
+    expect(refreshBody).toContain('__ReactRefresh');
   });
 
   test('소스맵이 서빙된다', async ({ page }) => {
