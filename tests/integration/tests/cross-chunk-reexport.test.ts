@@ -448,4 +448,45 @@ describe('cross-chunk re-export (#3321 follow-up bugfix)', () => {
       }
     });
   }
+
+  // #4101 production 범위 (todo): 서로 다른 모듈의 *같은* export 이름(두 `v`)이 한 shared
+  // 청크에 묶이고 여러 entry 가 둘 다 import 하면, production 브리지가 public=export 명이라
+  // 충돌 → `export { v$1 as v }` 하나만 노출 + 소비자 `import { v, v as v$2 }` 둘 다 같은
+  // public "v" 에 바인딩 → collapse(둘 다 한 값). dev_split 은 #4105 에서 전역 네이밍으로
+  // 해결됐으나 production 은 ① exports_to 가 export 명으로만 dedup(자료구조) ② 브리지
+  // public=전역명 ③ 소비자 import key=전역명 ④ override 를 lazy 로 게이트 ⑤ mangle 정합 이
+  // 필요한 별도 increment. 전역 네이밍 pass 를 production 으로 확장하면 green.
+  for (const format of ['esm', 'iife'] as const) {
+    test.todo(`${format}: 다른 모듈의 같은 export 둘을 여러 entry 가 import (전역 네이밍 production #4101)`, async () => {
+      const fixture = await createFixture({
+        'a.ts': "export const v = 'AV';",
+        'b.ts': "export const v = 'BV';",
+        'e1.ts':
+          "import { v as a } from './a';\nimport { v as b } from './b';\nconsole.log('e1', a, b);",
+        'e2.ts':
+          "import { v as a } from './a';\nimport { v as b } from './b';\nconsole.log('e2', a, b);",
+      });
+      cleanup = fixture.cleanup;
+      const result = await build({
+        entryPoints: [join(fixture.dir, 'e1.ts'), join(fixture.dir, 'e2.ts')],
+        rootDir: fixture.dir,
+        platform: 'node',
+        splitting: true,
+        format,
+      });
+      const outs = result.outputFiles!;
+      writeOutputs(fixture.dir, outs);
+      const e1 = outs.find((o) => o.path.includes('e1') && o.path.endsWith('.js'))!;
+      const driver =
+        format === 'esm'
+          ? join(fixture.dir, e1.path)
+          : browserDriver(
+              fixture.dir,
+              e1.path,
+              outs.map((o) => o.path),
+            );
+      const { stdout } = await runNode(driver);
+      expect(stdout.trim()).toBe('e1 AV BV'); // 현재 'e1 BV BV' (collapse)
+    });
+  }
 });
