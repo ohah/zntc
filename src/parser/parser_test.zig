@@ -4765,3 +4765,23 @@ test "TS: for header allows `using` and `await using` declarations" {
     defer r.deinit();
     try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
 }
+
+// 회귀(#4107): 바인딩 타겟 없이 default(`= expr`)만 오는 destructuring 패턴은
+// 파서를 크래시(tryWrapDefaultValue 의 getNode(.none) OOB 역참조)시키면 안 되고
+// 진단을 내고 정상 복구해야 한다. parser 테스트는 #4111 로 zig build test 에 포함됨.
+fn parseExpectErrorNoCrash(src: []const u8) !void {
+    var scanner = try Scanner.init(std.testing.allocator, src);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    // 크래시 없이 여기 도달 + 진단이 1건 이상 기록되어야 한다.
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser regression #4107: destructuring default with missing binding target does not crash" {
+    try parseExpectErrorNoCrash("const [= 1] = x;");
+    try parseExpectErrorNoCrash("const [, = 1] = x;");
+    try parseExpectErrorNoCrash("const [a, = 1] = x;");
+    try parseExpectErrorNoCrash("const { a: = 1 } = x;");
+}

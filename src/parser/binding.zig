@@ -222,6 +222,11 @@ pub fn tryWrapDefaultValue(self: *Parser, node: NodeIndex) ParseError2!NodeIndex
         const def_saved = self.enterAllowInContext(true);
         const default_val = try self.parseAssignmentExpression();
         self.restoreContext(def_saved);
+        // 바인딩 타겟이 없으면(parseBindingName/parseBindingPattern 이 에러 복구로
+        // .none 을 반환) assignment_pattern 으로 감싸지 않는다. getNode(.none) OOB
+        // 역참조(nodes.items[4294967295])를 방지하고, 호출자의 "none = no-op" 계약과
+        // 일치시킨다. default 표현식은 위에서 이미 소비되어 파서 전진은 보장된다.
+        if (node.isNone()) return node;
         return try self.ast.addNode(.{
             .tag = .assignment_pattern,
             .span = .{ .start = self.ast.getNode(node).span.start, .end = self.currentSpan().start },
