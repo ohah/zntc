@@ -14,6 +14,8 @@ node_modules/
 # Playwright
 test-results/
 tests/e2e/test-results/
+# react-fast-refresh-e2e fixture (afterAll 가 정리하나 SIGKILL 시 누수 방지)
+tests/e2e/rfr-fixture-*/
 
 # compat-table report (CI에서 생성)
 tests/integration/compat-table-report.json

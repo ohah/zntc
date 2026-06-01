@@ -1687,12 +1687,18 @@ pub const Bundler = struct {
             // 게이트 emit_opts.code_splitting=true 로 production init 유지, issue #4038 회피).
             // RFC_LAZY_DEV_MODULE_HMR PR-2: setDevId 로 dev_id 를 채워 finalize wrap-all + 청크
             // 등록 prelude(chunks.zig)가 모듈을 글로벌 __zntc_modules 에 per-module 등록 →
-            // cross-chunk hot-replace 의 *레지스트리 substrate* 완성. react_refresh/`__zntc_make_hot`
-            // accept 주입(=hot-replace 의 accept 콜백)과 dev 서버 모듈 transport 는 후속 PR 범위라
-            // 여기선 react_refresh 미전파(현 동작=apply_update 가 accept 없으면 full-reload). sourcemap 은 dev on.
+            // cross-chunk hot-replace 의 *레지스트리 substrate* 완성. sourcemap 은 dev on.
             if (dev_split) {
                 emit_opts.dev_mode = true;
                 emit_opts.sourcemap.enable = true;
+                // RFC_LAZY_DEV_MODULE_HMR PR-5: react_refresh 전파(단일번들 경로 1628 과 동일).
+                // dev_split 도 wrap-all(.esm)이라 emitModule/esm_wrap 의 Fast Refresh 경로
+                // (esm_wrap:960 has_refresh save/restore = 실제 $RefreshReg$ 바인딩 + emitter:1996
+                // `__zntc_make_hot(id).accept()` 주입)가 게이트(`dev_mode and react_refresh`,
+                // !code_splitting 아님)를 그대로 만족 → split 청크 컴포넌트가 Fast Refresh accept 를
+                // 받아 hot-replace 시 리로드 대신 state 보존. $RefreshReg$/__zntc_make_hot/
+                // __zntc_resolveRefresh 는 entry HMR_RUNTIME 가 글로벌 노출 → cross-chunk 동작.
+                emit_opts.react_refresh = self.options.react_refresh;
                 // RFC_LAZY_DEV_MODULE_HMR PR-1: emitChunks 가 per-module HMR code 를
                 // 수집하도록 collect_module_codes 전파(단일번들 경로와 동일 게이트).
                 emit_opts.collect_module_codes = self.options.collect_module_codes;

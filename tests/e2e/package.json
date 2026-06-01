@@ -13,6 +13,8 @@
     "@rspack/cli": "2.0.1",
     "@rspack/core": "2.0.1",
     "@zntc/test-helpers": "workspace:*",
-    "react": "19.2.4"
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-refresh": "0.18.0"
   }
 }
