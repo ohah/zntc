@@ -19,12 +19,13 @@ import { PORTS } from './ports';
 const ZNTC_JS_CLI = resolve(__dirname, '../../../packages/core/bin/zntc.mjs');
 const PORT = PORTS.REACT_FAST_REFRESH;
 
-// classic JSX(React.createElement) + 명시 `import * as React` — automatic JSX runtime
-// import 의 dev-mode 바인딩 이슈와 무관하게 Fast Refresh 자체를 가드한다.
+// automatic JSX(`--jsx=automatic-dev`, React import 불요) — `zntc dev` 의 실 사용 형태.
+// 다중모듈 jsx-runtime helper(_jsxDEV) 바인딩까지 end-to-end 로 가드(dev wrap-all 의 helper
+// hoist canonical-name 회귀 = napi-dev-jsx-binding.test.ts 의 브라우저 버전).
 const APP_V1 =
-  "import * as React from 'react';\n" +
+  "import { useState } from 'react';\n" +
   'export function App() {\n' +
-  '  const [n, setN] = React.useState(0);\n' +
+  '  const [n, setN] = useState(0);\n' +
   '  return (\n' +
   '    <div>\n' +
   '      <span data-testid="ver">COUNTER_V1</span>\n' +
@@ -40,7 +41,6 @@ const FILES: Record<string, string> = {
     '<body><div id="root">loading</div>' +
     '<script type="module" src="/src/main.tsx"></script></body></html>',
   'src/main.tsx':
-    "import * as React from 'react';\n" +
     "import { createRoot } from 'react-dom/client';\n" +
     "import { App } from './App';\n" +
     "createRoot(document.getElementById('root')).render(<App />);\n",
@@ -59,9 +59,13 @@ test.describe.serial('React Fast Refresh (web native zntc dev)', () => {
       await mkdir(join(fp, '..'), { recursive: true });
       await writeFile(fp, content);
     }
-    server = spawn('bun', [ZNTC_JS_CLI, 'dev', dir, '--port', String(PORT)], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    server = spawn(
+      'bun',
+      [ZNTC_JS_CLI, 'dev', dir, '--port', String(PORT), '--jsx=automatic-dev'],
+      {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
     await waitForServer(PORT);
   });
 

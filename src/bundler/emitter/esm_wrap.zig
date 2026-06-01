@@ -371,7 +371,11 @@ pub fn emitEsmWrappedModule(
     // 선언하고 init 안에서 `_jsxDEV = ...` (할당만) 으로 처리.
     for (module.import_bindings) |ib| {
         if (ib.is_helper) {
-            try hoisted_var_names.append(allocator, try arena_alloc.dupe(u8, module.importBindingLocalName(ib)));
+            const hoist_name = if (linker) |l|
+                l.getCanonicalByRef(ib.local_symbol) orelse module.importBindingLocalName(ib)
+            else
+                module.importBindingLocalName(ib);
+            try hoisted_var_names.append(allocator, try arena_alloc.dupe(u8, hoist_name));
         }
     }
 
