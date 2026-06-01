@@ -1681,6 +1681,12 @@ pub const Bundler = struct {
 
             try chunk_mod.computeCrossChunkLinks(&chunk_graph, graph, self.allocator, if (linker) |*l| l else null);
 
+            // RFC #3940 / #4101 — cross-chunk 전역 일관 네이밍 채우기(Inc-1: read 비활성, 동작 변경 0).
+            // imports_from 확정 직후. linker 있고 splitting 일 때만(전역 이름은 cross-chunk 에서만 의미).
+            if (linker) |*l| {
+                if (self.options.code_splitting) try chunk_mod.computeCrossChunkGlobalNames(self.allocator, &chunk_graph, l);
+            }
+
             var emit_opts = self.makeEmitOptions();
             emit_opts.preserve_modules = self.options.preserve_modules;
             emit_opts.preserve_modules_root = self.options.preserve_modules_root;

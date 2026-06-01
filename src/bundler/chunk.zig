@@ -1471,6 +1471,87 @@ fn linkNamespaceCrossChunk(
     try fanOutModuleExports(allocator, chunk_graph, chunk, seen_static, lnk, target, module_count);
 }
 
+/// RFC #3940 / 이슈 #4101 — cross-chunk 심볼에 **전역 일관 이름**을 배정한다.
+/// 모든 청크의 imports_from(`CrossChunkSym`=canonical_module+export_name)을 enumerate 해
+/// `(canonical_module, export_name)` 집합을 만들고, **occupied(per-chunk rename 입력)와 무관
+/// 하게** 전역 deconflict 한다 — 이 self-contained 성질이 occupied↔이름 순환을 끊는 핵심.
+/// 결과는 `linker.cross_chunk_global_names` 에 owned 로 저장(provider/consumer 단일 출처).
+///
+/// **Inc-1(본 변경): 채우기만 — read 비활성**. metadata/emit/per-chunk-rename 은 아직 이 맵을
+/// 안 본다 → 동작 변경 0. 후속 increment 가 ① per-chunk rename 이 전역 이름 reserve+사용,
+/// ② metadata import 바인딩 read 로 wire 한다(그때 #B test.todo flip).
+/// `computeCrossChunkLinks` 직후(imports_from 확정 후)에 호출.
+pub fn computeCrossChunkGlobalNames(
+    allocator: std.mem.Allocator,
+    chunk_graph: *const ChunkGraph,
+    lnk: *Linker,
+) !void {
+    lnk.clearCrossChunkGlobalNames();
+
+    // 1. cross-chunk 심볼 enumerate + (mod, name) dedup.
+    const Sym = struct { mod: u32, name: []const u8 };
+    var syms: std.ArrayListUnmanaged(Sym) = .empty;
+    defer syms.deinit(allocator);
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    defer {
+        var kit = seen.keyIterator();
+        while (kit.next()) |k| allocator.free(k.*);
+        seen.deinit(allocator);
+    }
+    for (chunk_graph.chunks.items) |*chunk| {
+        var it = chunk.imports_from.iterator();
+        while (it.next()) |entry| {
+            for (entry.value_ptr.items) |sym| {
+                const key = try std.fmt.allocPrint(allocator, "{d}\x00{s}", .{ sym.canonical_module, sym.name });
+                const gop = try seen.getOrPut(allocator, key);
+                if (gop.found_existing) {
+                    allocator.free(key);
+                    continue;
+                }
+                try syms.append(allocator, .{ .mod = sym.canonical_module, .name = sym.name });
+            }
+        }
+    }
+
+    // 2. 결정론적 정렬 (mod, name) — 같은 입력 → 같은 전역 이름.
+    const SymSort = struct {
+        fn lt(_: void, a: Sym, b: Sym) bool {
+            if (a.mod != b.mod) return a.mod < b.mod;
+            return std.mem.lessThan(u8, a.name, b.name);
+        }
+    };
+    std.mem.sort(Sym, syms.items, {}, SymSort.lt);
+
+    // 3. 전역 deconflict — preferred(원본 local 명)로 시도, 충돌/예약이면 `$N`.
+    var used: std.StringHashMapUnmanaged(void) = .empty;
+    defer used.deinit(allocator);
+    for (syms.items) |s| {
+        const preferred = lnk.getExportLocalName(s.mod, s.name) orelse s.name;
+        const candidate = try deconflictGlobalName(allocator, &used, preferred);
+        // candidate 소유권을 맵으로 이전. used 는 맵의 저장본을 borrow(used.deinit 가 키 미해제).
+        try lnk.putCrossChunkGlobalName(s.mod, s.name, candidate);
+        try used.put(allocator, lnk.getCrossChunkGlobalName(s.mod, s.name).?, {});
+    }
+}
+
+/// `preferred` 이름을 `used`(이미 배정된 전역 이름) + JS 예약어를 회피해 유니크화.
+/// 충돌 없으면 preferred dupe, 있으면 `preferred$1`, `preferred$2`... 반환값은 **owned**
+/// (caller 소유). `computeCrossChunkGlobalNames` 의 deconflict 코어 — 단위 테스트 대상.
+pub fn deconflictGlobalName(
+    allocator: std.mem.Allocator,
+    used: *const std.StringHashMapUnmanaged(void),
+    preferred: []const u8,
+) ![]const u8 {
+    var candidate = try allocator.dupe(u8, preferred);
+    var suffix: u32 = 0;
+    while (used.contains(candidate) or Linker.isReservedName(candidate)) {
+        allocator.free(candidate);
+        suffix += 1;
+        candidate = try std.fmt.allocPrint(allocator, "{s}${d}", .{ preferred, suffix });
+    }
+    return candidate;
+}
+
 pub fn computeCrossChunkLinks(
     chunk_graph: *ChunkGraph,
     graph: *const ModuleGraph,

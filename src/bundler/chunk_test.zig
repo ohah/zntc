@@ -790,6 +790,40 @@ test "computeCrossChunkLinks: no cross-chunk deps — 모든 모듈이 같은 �
     try std.testing.expectEqual(@as(usize, 0), cg.getChunk(ci).cross_chunk_dynamic_imports.items.len);
 }
 
+test "deconflictGlobalName: 동명 → \\$N 유니크화 + 예약어 회피 (#4101 전역 네이밍 코어)" {
+    const alloc = std.testing.allocator;
+    var used: std.StringHashMapUnmanaged(void) = .empty;
+    defer used.deinit(alloc);
+
+    // 첫 'v' → 'v'.
+    const n1 = try chunk_mod.deconflictGlobalName(alloc, &used, "v");
+    defer alloc.free(n1);
+    try std.testing.expectEqualStrings("v", n1);
+    try used.put(alloc, n1, {});
+
+    // 둘째 'v' → 'v$1' (충돌 회피).
+    const n2 = try chunk_mod.deconflictGlobalName(alloc, &used, "v");
+    defer alloc.free(n2);
+    try std.testing.expectEqualStrings("v$1", n2);
+    try used.put(alloc, n2, {});
+
+    // 셋째 'v' → 'v$2'.
+    const n3 = try chunk_mod.deconflictGlobalName(alloc, &used, "v");
+    defer alloc.free(n3);
+    try std.testing.expectEqualStrings("v$2", n3);
+
+    // 예약어는 그대로 못 씀 → suffix.
+    const nd = try chunk_mod.deconflictGlobalName(alloc, &used, "default");
+    defer alloc.free(nd);
+    try std.testing.expect(!std.mem.eql(u8, nd, "default"));
+    try std.testing.expectEqualStrings("default$1", nd);
+
+    // 충돌 없는 이름은 그대로.
+    const nf = try chunk_mod.deconflictGlobalName(alloc, &used, "foo");
+    defer alloc.free(nf);
+    try std.testing.expectEqualStrings("foo", nf);
+}
+
 test "computeCrossChunkLinks: static cross-chunk import" {
     // 구조: 청크 A(모듈 0), 청크 B(모듈 1). 모듈 0 → 모듈 1 정적 의존.
     // 기대: A.cross_chunk_imports에 B가 포함.
