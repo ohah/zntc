@@ -415,4 +415,102 @@ process.stdout.write(JSON.stringify({
     expect((required.r as () => string)()).toBe('R');
     expect(g.__SIDE).toBe(1); // side-effect import 실행(레지스트리 init), 1회
   });
+
+  // dev_split lazy 청크에서 `export { default } from './cjs'`(예약어 export 이름).
+  // 예전엔 chunk 수준 cross-chunk import 가 `const { default, named } = __zntc_require(...)`
+  // 로 emit 돼 **예약어 축약 destructuring → SyntaxError**(청크 전체 parse 실패)였다.
+  // dev_split 은 per-module 레지스트리가 심볼을 참조 지점에서 직접 해석(getter)하므로
+  // 이 chunk 수준 destructuring 은 죽은 코드 → side-effect `__zntc_require(...)` 만 남겨
+  // SyntaxError 제거. default 값 자체는 `_default = __toESM(__zntc_modules[...].fn()).default`
+  // 로 레지스트리에서 채워진다. parse + 실값을 런타임으로 가드.
+  test('dev_split lazy 청크가 re-export default(export {default} from CJS) 를 SyntaxError 없이 노출', async () => {
+    const fixture = await createFixture({
+      'cjslib.js':
+        "module.exports = function(){ return 'CJSDEFAULT'; };\nmodule.exports.named = 9;",
+      'Route.ts':
+        "export { default, named } from './cjslib.js';\nexport function r(){ return 'R'; }",
+      'entry.ts':
+        "import lib from './cjslib.js';\nglobalThis.E = lib;\nglobalThis.load = () => import('./Route');",
+    });
+    cleanup = fixture.cleanup;
+    const dir = realpathSync(fixture.dir);
+    const opts = {
+      entryPoints: [join(dir, 'entry.ts')],
+      platform: 'browser' as const,
+      devMode: true,
+      splitting: true,
+      format: 'iife' as const,
+      lazyCompilation: true,
+      rootDir: dir,
+    };
+    const base = await build(opts);
+    const seed = (base.lazySeeds ?? []).find((s) => s.path.endsWith('Route.ts'));
+    expect(seed).toBeDefined();
+    const r = await build({ ...opts, lazyForceParse: [seed!.path] });
+    expect(r.errors ?? []).toHaveLength(0);
+    const entryChunk = (r.outputFiles ?? []).find((o) => o.path.endsWith('entry.js'));
+    const routeChunk = (r.outputFiles ?? []).find((o) => o.path.includes('Route-'));
+    expect(entryChunk && routeChunk).toBeTruthy();
+    // emit 가드: 예약어 축약 destructuring(`const { default ...`) 이 없어야 한다(SyntaxError 원인).
+    expect(/const\s*\{[^}]*\bdefault\b[^}:]*\}\s*=/.test(routeChunk!.text)).toBe(false);
+
+    // 런타임 가드: Route 청크가 parse 되고(runInContext 가 안 던짐) default/named 실값이 맞아야 한다.
+    const g: Record<string, unknown> = { console };
+    g.globalThis = g;
+    const ctx = vm.createContext(g);
+    vm.runInContext(entryChunk!.text, ctx);
+    vm.runInContext(routeChunk!.text, ctx); // 예약어 SyntaxError 면 여기서 throw
+    const mods = g.__zntc_mods as Record<string, unknown>;
+    const id = Object.keys(mods).find((k) => /Route/.test(k))!;
+    const required = (g.__zntc_require as (k: string) => Record<string, unknown>)(id);
+    expect((required.default as () => string)()).toBe('CJSDEFAULT'); // 예약어 default re-export, cross-chunk
+    expect(required.named).toBe(9);
+    expect((required.r as () => string)()).toBe('R');
+  });
+
+  // dev_split lazy 청크에서 `import def from './shared'`(예약어 default *import*).
+  // dep 청크(emitLazyEntryExportAll)는 hoisted 로컬을 *local 명*(`_default`)으로 노출하므로
+  // 소비자는 export 키 `default` 가 아니라 local 키로 destructure 해야 한다(`const { _default }`).
+  // 예전엔 `const { default }` 축약 → SyntaxError. 이제 chunk.zig 가 canonical 모듈을 들고
+  // emitter 가 resolveToLocalName 으로 `_default` 키를 emit → parse + 실값.
+  test('dev_split lazy 청크가 default import(import def from)를 SyntaxError 없이 해석', async () => {
+    const fixture = await createFixture({
+      // 익명 default 함수(→ 합성 `_default`) 를 lazy 청크가 import 해 호출.
+      'esmdep.ts': "export default function(){ return 'DEF'; }",
+      'Card.ts': "import def from './esmdep';\nexport function card(){ return def(); }",
+      'entry.ts':
+        "import def from './esmdep';\nglobalThis.E = def();\nglobalThis.load = () => import('./Card');",
+    });
+    cleanup = fixture.cleanup;
+    const dir = realpathSync(fixture.dir);
+    const opts = {
+      entryPoints: [join(dir, 'entry.ts')],
+      platform: 'browser' as const,
+      devMode: true,
+      splitting: true,
+      format: 'iife' as const,
+      lazyCompilation: true,
+      rootDir: dir,
+    };
+    const base = await build(opts);
+    const seed = (base.lazySeeds ?? []).find((s) => s.path.endsWith('Card.ts'));
+    expect(seed).toBeDefined();
+    const r = await build({ ...opts, lazyForceParse: [seed!.path] });
+    expect(r.errors ?? []).toHaveLength(0);
+    const entryChunk = (r.outputFiles ?? []).find((o) => o.path.endsWith('entry.js'));
+    const cardChunk = (r.outputFiles ?? []).find((o) => o.path.includes('Card-'));
+    expect(entryChunk && cardChunk).toBeTruthy();
+    // 예약어 축약 destructuring(`const { default ...`) 이 없어야 한다(SyntaxError 원인).
+    expect(/const\s*\{[^}]*\bdefault\b[^}:]*\}\s*=/.test(cardChunk!.text)).toBe(false);
+
+    const g: Record<string, unknown> = { console };
+    g.globalThis = g;
+    const ctx = vm.createContext(g);
+    vm.runInContext(entryChunk!.text, ctx);
+    vm.runInContext(cardChunk!.text, ctx); // 예약어 SyntaxError 면 throw
+    const mods = g.__zntc_mods as Record<string, unknown>;
+    const id = Object.keys(mods).find((k) => /Card/.test(k))!;
+    const required = (g.__zntc_require as (k: string) => Record<string, unknown>)(id);
+    expect((required.card as () => string)()).toBe('DEF'); // cross-chunk default import 실값
+  });
 });
