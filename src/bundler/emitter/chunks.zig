@@ -831,6 +831,13 @@ pub fn emitChunks(
                 // 그 외(eager)는 기존대로 break(emitCjsEntryExports 에 일임).
                 if (graph.lazy_compilation) {
                     try emitLazyEntryExportAll(allocator, &chunk_output, graph, linker, sorted_mods, entry_mod_idx.?, module_count, options.minify_whitespace);
+                    // dev_split(wrap-all) 동적 청크: entry 모듈이 __esm 래핑이라 emitCjsEntryExports
+                    // 를 안 타 entry export 가 청크 exports 에 없다 → `import('./route')` 가 받는
+                    // `__zntc_require` 결과에 entry export(render) 누락(#4079 e2e 회귀). entry 만
+                    // exported_name 키로 추가. user-entry 는 bootstrap(__zntc_require 결과 미소비)라 제외.
+                    if (dev_split_chunk and !chunk_is_user_entry) {
+                        try emitWrappedDynamicEntryExports(allocator, &chunk_output, graph, linker, entry_mod_idx.?, options.minify_whitespace);
+                    }
                 }
                 break :xchunk_exports;
             }
@@ -2055,6 +2062,49 @@ fn emitLazyEntryExportAll(
     for (locals.items) |local| {
         try out.appendSlice(allocator, "exports.");
         try out.appendSlice(allocator, local);
+        try out.appendSlice(allocator, if (minify_whitespace) "=" else " = ");
+        try out.appendSlice(allocator, local);
+        try out.appendSlice(allocator, if (minify_whitespace) ";" else ";\n");
+    }
+}
+
+/// dev_split(wrap-all) 동적 청크의 entry 모듈(=`import()` 타겟) export 를 청크 `exports` 에
+/// **exported_name 키**로 노출한다. RFC_LAZY_DEV_MODULE_HMR PR-2 wrap-all 이후, 동적 청크의
+/// entry 모듈이 `__esm` 래핑되어 emitModule 의 emitCjsEntryExports 경로(emitter.zig:2136, CJS/
+/// iife_split factory 한정)를 안 탄다 → `__zntc_require("<chunk>")`(= `import('./route')` 결과)
+/// 에 entry export(예: `render`)가 없어 `m.render is not a function` (#4079 e2e 회귀). emitLazy-
+/// EntryExportAll 은 entry 를 *제외*(소비자가 local-name 으로 참조하는 hoisted dep 용)하므로 여기서
+/// entry 만 별도로, 소비자 `import().x` 가 쓰는 exported_name 키로 깐다.
+///
+/// ⚠️ **`.local` export 만** 처리한다(`export function`/`export const`/`export default <local>` —
+/// 동적 route 의 대다수). re-export 류는 제외:
+///   - `export * as ns`(re_export_namespace): 청크에 `ns` 바인딩이 없어(`exports_<dep>` 네임스페이스
+///     뿐) `exports.ns = ns` 면 ReferenceError(crash). 제외해 crash 회피.
+///   - `export { x } from './dep'`(re_export): getCanonicalName 이 entry-local 아님→null →
+///     `local_name` fallback 이 *소스* 로컬명이라 deconflict 후 다른 모듈에 묶일 수 있음(오바인딩).
+///   - `export * from`(re_export_star): 단일 이름 `*` 없음.
+/// re-export 정확 해석(export-chain → 청크-로컬명)은 후속(현재 미노출 = crash/오바인딩보다 안전).
+fn emitWrappedDynamicEntryExports(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    graph: *const ModuleGraph,
+    linker: ?*Linker,
+    entry_mod_idx: usize,
+    minify_whitespace: bool,
+) !void {
+    const l = linker orelse return;
+    const m = graph.getModule(ModuleIndex.fromUsize(entry_mod_idx)) orelse return;
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    defer seen.deinit(allocator);
+    for (m.export_bindings) |eb| {
+        // 직접 로컬 export 만(re-export 는 정확 해석 복잡 + fallback 오바인딩/crash 위험 → 제외).
+        if (eb.kind != .local or eb.exported_name.len == 0) continue;
+        const local = l.getCanonicalName(@intCast(entry_mod_idx), eb.exported_name) orelse m.exportBindingLocalName(eb);
+        if (local.len == 0) continue;
+        const gop = try seen.getOrPut(allocator, eb.exported_name);
+        if (gop.found_existing) continue;
+        try out.appendSlice(allocator, "exports.");
+        try out.appendSlice(allocator, eb.exported_name);
         try out.appendSlice(allocator, if (minify_whitespace) "=" else " = ");
         try out.appendSlice(allocator, local);
         try out.appendSlice(allocator, if (minify_whitespace) ";" else ";\n");

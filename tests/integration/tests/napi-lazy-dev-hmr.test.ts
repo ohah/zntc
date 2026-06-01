@@ -186,4 +186,76 @@ process.stdout.write(JSON.stringify({
       expect(/__zntc_make_hot\(["'][^"']*Counter[^"']*["']\)\.accept\(/.test(e.text)).toBe(false);
     }
   });
+
+  // #4079 회귀: dev_split wrap-all 이후 동적 청크의 entry 모듈이 __esm 래핑되어
+  // emitCjsEntryExports 경로를 안 타 → `__zntc_require("<chunk>")`(= `import('./route')`
+  // 결과)에 entry export(render)가 없어 `m.render is not a function` → lazy 라우트가 렌더 안 됨.
+  // 동적 청크가 entry 모듈 export 를 exported_name 키로 노출하는지 가드.
+  test('dev_split 동적 청크가 entry 모듈 export 를 노출 (import() 가 render 받음, #4079 회귀)', async () => {
+    const fixture = await createFixture({
+      'util.ts': "export function fmt(s: string){ return 'UTIL[' + s + ']'; }",
+      'Chart.ts': "import { fmt } from './util';\nexport function chart(){ return fmt('chart'); }",
+      'route.ts': "import { chart } from './Chart';\nexport function render(){ return chart(); }",
+      'entry.ts':
+        "async function go(){ const m = await import('./route'); globalThis.__OUT = m.render(); }\ngo();",
+    });
+    cleanup = fixture.cleanup;
+    const dir = realpathSync(fixture.dir);
+    const opts = {
+      entryPoints: [join(dir, 'entry.ts')],
+      platform: 'browser' as const,
+      devMode: true,
+      splitting: true,
+      format: 'iife' as const,
+      lazyCompilation: true,
+      rootDir: dir,
+    };
+    // 1) base 빌드 → route 가 동적 import 타겟이라 lazy seed.
+    const base = await build(opts);
+    expect(base.errors ?? []).toHaveLength(0);
+    const seed = (base.lazySeeds ?? []).find((s) => s.path.endsWith('route.ts'));
+    expect(seed).toBeDefined();
+    // 2) force-parse(= dev 서버 materialize 동치) → route 가 정식 청크로 emit.
+    const r = await build({ ...opts, lazyForceParse: [seed!.path] });
+    expect(r.errors ?? []).toHaveLength(0);
+    const routeChunk = (r.outputFiles ?? []).find(
+      (o) => o.path.includes('route-') && o.text.includes('function render'),
+    );
+    expect(routeChunk).toBeDefined();
+    // 핵심 가드: 동적 청크가 entry 모듈 export 를 exported_name 키로 노출 → import().render 동작.
+    expect(routeChunk!.text.includes('exports.render')).toBe(true);
+  });
+
+  // /code-review max: entry 모듈이 `export * as ns`(re_export_namespace)를 섞어도 `exports.ns = ns`
+  // (청크에 없는 바인딩) 를 emit 해 ReferenceError(crash) 나면 안 된다. re-export 류는 제외하고
+  // .local export(render)만 노출하는지 가드(crash 회피 + 유효 JS).
+  test('동적 청크 entry 가 re_export_namespace 섞어도 crash 패턴 없이 .local export 만 노출', async () => {
+    const fixture = await createFixture({
+      'dep.ts': 'export const a = 1;\nexport const b = 2;',
+      'route.ts': "export * as ns from './dep';\nexport function render(){ return 'R'; }",
+      'entry.ts':
+        "async function go(){ const m = await import('./route'); globalThis.__OUT = m.render(); }\ngo();",
+    });
+    cleanup = fixture.cleanup;
+    const dir = realpathSync(fixture.dir);
+    const opts = {
+      entryPoints: [join(dir, 'entry.ts')],
+      platform: 'browser' as const,
+      devMode: true,
+      splitting: true,
+      format: 'iife' as const,
+      lazyCompilation: true,
+      rootDir: dir,
+    };
+    const base = await build(opts);
+    const seed = (base.lazySeeds ?? []).find((s) => s.path.endsWith('route.ts'));
+    expect(seed).toBeDefined();
+    const r = await build({ ...opts, lazyForceParse: [seed!.path] });
+    expect(r.errors ?? []).toHaveLength(0);
+    const routeChunk = (r.outputFiles ?? []).find((o) => o.path.includes('route-'));
+    expect(routeChunk).toBeDefined();
+    expect(routeChunk!.text.includes('exports.render')).toBe(true); // .local 은 노출
+    // crash 패턴(`exports.ns = ns;` — ns 바인딩 없음) 부재.
+    expect(/exports\.ns\s*=\s*ns;/.test(routeChunk!.text)).toBe(false);
+  });
 });
