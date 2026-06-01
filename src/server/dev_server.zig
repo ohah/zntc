@@ -1905,39 +1905,62 @@ pub const DevServer = struct {
     /// node_modules에서 react-refresh/runtime.js를 찾아 글로벌 바인딩 코드로 감싸서 반환.
     /// 설치되어 있지 않으면 noop 폴백을 반환한다.
     fn serveReactRefresh(self: *DevServer, request: *http.Server.Request) !void {
-        // node_modules/react-refresh/runtime.js 탐색 (root_dir 기준)
+        // ⚠️ react-refresh/runtime.js 는 보통 `if(process.env.NODE_ENV) require('./cjs/...')`
+        // 디스패처라 브라우저에서 그대로 못 돈다(require/process.env). dev cjs 본문을 *직접*
+        // 읽어 서빙한다(packages/web buildReactRefreshPreamble 와 동일). 없으면 runtime.js
+        // (옛 self-contained 버전) fallback, 그것도 없으면 noop.
         // 0.16: readFileAlloc(io, sub_path, gpa, limit) 인자 순서/형태 변경.
+        const lim = std.Io.Limit.limited(max_file_size);
         const runtime_code = self.root_dir.readFileAlloc(
             self.io,
-            "node_modules/react-refresh/runtime.js",
+            "node_modules/react-refresh/cjs/react-refresh-runtime.development.js",
             self.allocator,
-            std.Io.Limit.limited(max_file_size),
+            lim,
         ) catch |err| switch (err) {
-            error.FileNotFound => {
-                // react-refresh 미설치 → noop 폴백
-                const noop =
-                    \\// react-refresh not installed — run: npm install react-refresh
-                    \\window.__REACT_REFRESH_RUNTIME__ = undefined;
-                ;
-                try request.respond(noop, .{ .extra_headers = &js_headers });
-                self.routineLog("  200 /@react-refresh (noop — not installed)\n", .{});
-                return;
+            error.FileNotFound => self.root_dir.readFileAlloc(
+                self.io,
+                "node_modules/react-refresh/runtime.js",
+                self.allocator,
+                lim,
+            ) catch |e2| switch (e2) {
+                error.FileNotFound => {
+                    // react-refresh 미설치 → noop 폴백. __ReactRefresh=undefined 로 두면
+                    // 번들러의 __zntc_resolveRefresh 가 short-circuit(null) → Fast Refresh 비활성.
+                    const noop =
+                        \\// react-refresh not installed — run: npm install react-refresh
+                        \\window.__ReactRefresh = undefined;
+                    ;
+                    try request.respond(noop, .{ .extra_headers = &js_headers });
+                    self.routineLog("  200 /@react-refresh (noop — not installed)\n", .{});
+                    return;
+                },
+                else => return e2,
             },
             else => return err,
         };
         defer self.allocator.free(runtime_code);
 
-        // react-refresh/runtime을 글로벌에 바인딩하는 래퍼 코드
+        // react-refresh 런타임을 글로벌에 바인딩하는 래퍼. process 셰도우(dev cjs 의 NODE_ENV
+        // 가드 통과) + module/exports shim.
         const preamble =
             \\(function() {
+            \\var process = { env: { NODE_ENV: "development" } };
             \\var exports = {};
             \\var module = { exports: exports };
             \\
         ;
+        // ⚠️ `window.__ReactRefresh` 를 세팅해야 한다 — 번들러의 __zntc_resolveRefresh
+        // (runtime_helpers.zig)가 이 글로벌을 *먼저* 읽고 short-circuit 한다. (__REACT_REFRESH_RUNTIME__
+        // 만 세팅하면 resolveRefresh 가 브라우저에 없는 require("react-refresh/runtime") 로 빠져 null.)
         const epilogue =
             \\
-            \\window.__REACT_REFRESH_RUNTIME__ = module.exports;
-            \\window.__REACT_REFRESH_RUNTIME__.injectIntoGlobalHook(window);
+            \\var rt = module.exports;
+            \\window.__ReactRefresh = rt;
+            \\window.__REACT_REFRESH_RUNTIME__ = rt;
+            \\if (rt && typeof rt.injectIntoGlobalHook === "function") rt.injectIntoGlobalHook(window);
+            \\window.$RefreshReg$ = function() {};
+            \\window.$RefreshSig$ = function() { return function(t) { return t; }; };
+            \\window.__zntc_react_refresh_preamble__ = true;
             \\})();
             \\
         ;
