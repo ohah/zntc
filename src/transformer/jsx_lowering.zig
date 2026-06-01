@@ -269,7 +269,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             }
 
             const effective_children = countEffective(self, children_start, children_len);
-            const is_static = effective_children > 1;
+            const is_static = childrenAreStaticArray(self, children_start, children_len);
 
             // callee 선택
             const callee = if (is_dev) blk: {
@@ -346,7 +346,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
         ) Transformer.Error!NodeIndex {
             self.jsx_import_info.used_fragment = true;
             const effective_children = countEffective(self, children_start, children_len);
-            const is_static = effective_children > 1;
+            const is_static = childrenAreStaticArray(self, children_start, children_len);
 
             const callee = if (is_dev) blk: {
                 self.jsx_import_info.used_jsxDEV = true;
@@ -595,7 +595,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
 
             // children
             if (effective_children > 0) {
-                const children_prop = try buildChildrenProp(self, children_start, children_len, effective_children, span);
+                const children_prop = try buildChildrenProp(self, children_start, children_len, span);
                 if (!children_prop.isNone()) {
                     try self.scratch.append(self.allocator, children_prop);
                 }
@@ -610,7 +610,6 @@ pub fn JsxLowering(comptime Transformer: type) type {
             self: *Transformer,
             children_start: u32,
             children_len: u32,
-            effective_children: u32,
             span: Span,
         ) Transformer.Error!NodeIndex {
             const key_span = try self.ast.addString("children");
@@ -620,8 +619,9 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 .data = .{ .string_ref = key_span },
             });
 
-            if (effective_children > 1) {
-                // 배열로 감싸기
+            if (childrenAreStaticArray(self, children_start, children_len)) {
+                // 배열로 감싸기 (다중 child 또는 단일 spread). 단일 spread 는
+                // collectChildren 이 [spread_element] 로 모아 `[...arr]` 가 된다.
                 const children = try collectChildren(self, children_start, children_len);
                 const list = try self.ast.addNodeList(children);
                 const arr_node = try self.ast.addNode(.{
@@ -830,6 +830,30 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 count += 1;
             }
             return count;
+        }
+
+        /// children 을 정적 배열 리터럴(`[...]`)로 렌더해야 하는지 (esbuild 동형).
+        /// effective child 가 2개 이상이거나, 유일 effective child 가 spread 인 경우 true.
+        /// 단일 spread(`<Foo>{...arr}</Foo>`)는 object property value 위치에 직접 올 수
+        /// 없어 `[...arr]` 로 감싸야 하고, esbuild 처럼 isStaticChildren=true(_jsxs)로
+        /// 승격한다. is_static 판정과 buildChildrenProp 의 배열 분기가 이 술어를 공유한다.
+        fn childrenAreStaticArray(self: *Transformer, start: u32, len: u32) bool {
+            if (len == 0) return false;
+            var count: u32 = 0;
+            var single_spread = false;
+            const indices = self.ast.extra_data.items[start .. start + len];
+            for (indices) |raw_idx| {
+                const child = self.ast.getNode(@enumFromInt(raw_idx));
+                if (child.tag == .jsx_text) {
+                    const trimmed = std.mem.trim(u8, self.ast.getText(child.span), " \t\n\r");
+                    if (trimmed.len == 0) continue;
+                } else if (child.tag == .jsx_expression_container and child.data.unary.operand.isNone()) {
+                    continue;
+                }
+                count += 1;
+                single_spread = (child.tag == .jsx_spread_child);
+            }
+            return count > 1 or (count == 1 and single_spread);
         }
 
         // ================================================================
