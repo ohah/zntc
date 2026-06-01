@@ -2149,20 +2149,21 @@ fn emitLazyEntryExportAll(
 /// entry 만 별도로, 소비자 `import().x` 가 쓰는 exported_name 키로 깐다.
 ///
 /// 값은 entry 모듈의 **네임스페이스 객체(`exports_<entry>`) getter** 로 가져온다 — `__export`
-/// getter 가 local·`export { x } from`(re_export)·`export * as ns`(re_export_namespace)를 모두
-/// chunk-로컬로 정확 해석하므로, exported_name 키로 `exports.<name> = <ns>.<name>` 만 깔면 된다.
-/// (예전엔 `.local` 만 + local-name 으로 깔아 re-export forwarding 동적 route 의 export 가
-/// 누락됐다.)
+/// getter 가 local·`export { x } from`(re_export)·`export * as ns`(re_export_namespace)·
+/// `export * from`(re_export_star)을 모두 chunk-로컬로 정확 해석하므로, exported_name 키로
+/// `exports.<name> = <ns>.<name>` 만 깔면 된다. (예전엔 `.local` 만 + local-name 으로 깔아
+/// re-export forwarding 동적 route 의 export 가 누락됐다.)
+///
+/// 이름 집합은 `collectExportsRecursive`(entry 의 effective export = local·re_export·
+/// re_export_namespace + `export * from` 의 재귀 전개)로 열거 — `__export` 가 깐 getter 와
+/// 동일 집합이라 모두 닿는다. 예전엔 export_bindings 만 돌며 re_export_star 를 skip 해
+/// `export * from` 의 star 이름이 동적 청크 exports 에서 누락됐다(#2).
 ///
 /// 전제: entry 가 **ESM 래핑**(`wrap_kind == .esm`, `var exports_<entry>` 선언)이라는 것.
 /// dev_split 은 `exports_kind.isEsm()` 모듈을 전부 .esm 으로 강제(graph/finalize.zig:124)하므로
 /// **정적 export 를 가진 web dev_split entry 는 항상 .esm** = `exports_<entry>` 보장. 정적
 /// export 가 없는 순수 CJS 는 아래 early-return(`export_bindings.len == 0`)로 빠진다. (RN 의
 /// mixed-module .cjs 동적 entry 만 이 전제 밖 — pre-existing 한계로 별도 추적, 본 함수 범위 외.)
-///
-/// `export * from`(re_export_star)는 단일 이름이 없어 제외 — 이 이름들은 hoisted dep 으로서
-/// emitLazyEntryExportAll 이 dep 의 **local 명**으로 노출한다(re-export 시 rename 된 star export
-/// `export { x as y }` + `export *` 는 `.x` 만 닿고 `.y` 는 못 닿는 §6.3 한계, pre-existing).
 fn emitWrappedDynamicEntryExports(
     allocator: std.mem.Allocator,
     out: *std.ArrayList(u8),
@@ -2179,23 +2180,32 @@ fn emitWrappedDynamicEntryExports(
     // 포함 모든 모듈 init 을 돌려 네임스페이스를 채운 뒤라 스냅샷 값 정확.
     const ns = try m.allocExportsName(allocator, &l.rename_table);
     defer allocator.free(ns);
-    var seen: std.StringHashMapUnmanaged(void) = .empty;
-    defer seen.deinit(allocator);
-    for (m.export_bindings) |eb| {
-        // `export * from`(re_export_star)는 단일 이름(`*`)뿐 → 스킵. 스프레드 이름은
-        // emitLazyEntryExportAll 이 dep 의 local 명으로 별도 노출(doc-comment §re_export_star 참조).
-        if (eb.kind == .re_export_star or eb.exported_name.len == 0) continue;
-        const gop = try seen.getOrPut(allocator, eb.exported_name);
-        if (gop.found_existing) continue;
-        // exports.<name> = <ns>.<name> — 네임스페이스 getter 가 local/re-export 정확 해석.
-        // (스냅샷: re-export 된 가변 바인딩이 init 후 재할당돼도 갱신 안 됨 — 라우트엔 사실상
-        //  함수/const 라 무관. 예전 `.local` 도 동일 스냅샷이었고 re-export 는 아예 누락했었다.)
+    // entry 의 effective export 를 collectExportsRecursive 로 전부 열거 — local·
+    // `export {x} from`(re_export)·`export * as ns`(re_export_namespace) + `export * from`
+    // (re_export_star) 의 재귀 전개 이름까지 포함. `__export(exports_<entry>, {...})` 가 깐
+    // getter 와 동일 집합이라 `exports.<name> = <ns>.<name>` 가 항상 닿는다. 예전엔
+    // export_bindings 만 돌며 re_export_star 를 skip 해 `export * from` 의 star 이름이
+    // 동적 청크 exports 에서 누락됐다(#2: `import('./route').<star_name>`=undefined).
+    var exps: std.ArrayList(Linker.NsExportPair) = .empty;
+    var seen_e: std.StringHashMapUnmanaged(void) = .empty;
+    var visited_e: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer {
+        for (exps.items) |e| if (e.owned) l.allocator.free(e.local);
+        exps.deinit(l.allocator);
+        seen_e.deinit(l.allocator);
+        visited_e.deinit(l.allocator);
+    }
+    try l.collectExportsRecursive(&exps, &seen_e, &visited_e, ModuleIndex.fromUsize(entry_mod_idx), 0);
+    for (exps.items) |pair| {
+        if (pair.exported.len == 0) continue;
+        // exports.<name> = <ns>.<name> — 네임스페이스 getter 가 local/re-export/star 정확 해석.
+        // (스냅샷: 가변 바인딩이 init 후 재할당돼도 갱신 안 됨 — 라우트엔 사실상 함수/const 라 무관.)
         try out.appendSlice(allocator, "exports.");
-        try out.appendSlice(allocator, eb.exported_name);
+        try out.appendSlice(allocator, pair.exported);
         try out.appendSlice(allocator, if (minify_whitespace) "=" else " = ");
         try out.appendSlice(allocator, ns);
         try out.appendSlice(allocator, ".");
-        try out.appendSlice(allocator, eb.exported_name);
+        try out.appendSlice(allocator, pair.exported);
         try out.appendSlice(allocator, if (minify_whitespace) ";" else ";\n");
     }
 }
