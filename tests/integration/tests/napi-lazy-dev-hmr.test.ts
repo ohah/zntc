@@ -126,4 +126,64 @@ process.stdout.write(JSON.stringify({
     expect(res.hotNew).toBe('HOT_OK');
     expect(res.statePreserved).toBe(true);
   });
+
+  // RFC_LAZY_DEV_MODULE_HMR PR-5: dev_split 에 react_refresh 전파 → split 청크의 React
+  // 컴포넌트가 Fast Refresh 와이어링(실제 $RefreshReg$ 바인딩 + `__zntc_make_hot(id).accept()`)
+  // 을 받는다. 이게 "리로드 없이 state 보존"의 emit-side 조각. 컴포넌트를 *별도 청크*
+  // (2 entry 가 정적 공유)에 두어 cross-chunk(비-entry 청크) Fast Refresh 를 가드한다.
+  // (브라우저에서의 실제 state 보존 e2e = 에픽 capstone, 별도.)
+  test('split 청크 React 컴포넌트가 Fast Refresh accept + 실제 $RefreshReg$ 바인딩을 받는다', async () => {
+    const fixture = await createFixture({
+      // classic JSX → React.createElement (jsx-runtime 불요, react stub 의 createElement 사용).
+      'node_modules/react/package.json': '{"name":"react","main":"index.js"}',
+      'node_modules/react/index.js':
+        'exports.useState=function(i){return [i,function(){}]};exports.createElement=function(){return {}};module.exports.default=exports;',
+      'Counter.tsx':
+        "import * as React from 'react';\n" +
+        'export function Counter(){ const [n]=React.useState(0); return React.createElement("div",null,String(n)); }',
+      'a.tsx': "import { Counter } from './Counter';\nglobalThis.__A = typeof Counter;",
+      'b.tsx': "import { Counter } from './Counter';\nglobalThis.__B = typeof Counter;",
+    });
+    cleanup = fixture.cleanup;
+    const dir = realpathSync(fixture.dir);
+
+    const r = await build({
+      entryPoints: [join(dir, 'a.tsx'), join(dir, 'b.tsx')],
+      platform: 'browser',
+      devMode: true,
+      splitting: true,
+      format: 'iife',
+      lazyCompilation: true,
+      rootDir: dir,
+      reactRefresh: true,
+      jsx: 'classic',
+    });
+    expect(r.errors ?? []).toHaveLength(0);
+    const outs = (r.outputFiles ?? []).map((o) => ({ path: basename(o.path), text: o.text }));
+
+    // Counter 는 2 entry 가 정적 공유 → 별도 chunk-*.js (비-entry).
+    const shared = outs.find(
+      (o) => o.path.startsWith('chunk-') && o.text.includes('function Counter'),
+    );
+    expect(shared).toBeDefined();
+    const entries = outs.filter((o) => o.path === 'a.js' || o.path === 'b.js');
+    expect(entries.length).toBe(2);
+
+    const t = shared!.text;
+    // 컴포넌트 등록 (transform-level — react_refresh 없이도 나오나 함께 가드).
+    expect(t.includes('$RefreshReg$(')).toBe(true);
+    // PR-5 핵심 1 — Fast Refresh accept 주입 (이게 있어야 apply_update 가 리로드 대신 hot-replace).
+    expect(/__zntc_make_hot\([^)]*\)\.accept\(/.test(t)).toBe(true);
+    // PR-5 핵심 2 — 실제 $RefreshReg$ 바인딩 save/restore (no-op 글로벌이 아닌 react-refresh register).
+    expect(t.includes('__prevRefreshReg')).toBe(true);
+    // cross-chunk: 비-entry 청크라 $RefreshReg$/resolveRefresh 를 글로벌(__zntc_g/entry 노출)로 해석.
+    expect(t.includes('__zntc_g.$RefreshReg$')).toBe(true);
+    expect(t.includes('__zntc_resolveRefresh()')).toBe(true);
+
+    // entry 청크엔 컴포넌트가 없으므로 그 reg/accept 가 새지 않는다.
+    for (const e of entries) {
+      expect(e.text.includes('function Counter')).toBe(false);
+      expect(/__zntc_make_hot\(["'][^"']*Counter[^"']*["']\)\.accept\(/.test(e.text)).toBe(false);
+    }
+  });
 });

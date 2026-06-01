@@ -7,6 +7,7 @@
 export {
   APP_DEV_HMR_CLIENT_PATH,
   APP_DEV_HMR_WS_PATH,
+  APP_DEV_REACT_REFRESH_PATH,
   broadcastRebuildEvent,
   type BunHmrClient,
   createHmrChannel,
@@ -39,8 +40,10 @@ export {
   injectAppDevBundleCssLinksFromOutdir,
   injectAppDevHmrClient,
   injectAppDevPipelineCssLinks,
+  injectAppDevReactRefreshPreamble,
   injectIntoDevHtml,
 } from './inject.ts';
+export { buildReactRefreshPreamble } from './react-refresh-preamble.ts';
 export {
   DEFAULT_HTML_ENV_PREFIX,
   type TransformHtmlEnvResult,

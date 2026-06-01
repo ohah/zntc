@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join, sep } from 'node:path';
 
-import { APP_DEV_HMR_CLIENT_PATH } from '@zntc/server';
+import { APP_DEV_HMR_CLIENT_PATH, APP_DEV_REACT_REFRESH_PATH } from '@zntc/server';
 
 import { isCssFile } from './style/postcss.ts';
 import { joinUrl } from './url.ts';
@@ -42,6 +42,41 @@ export function injectAppDevHmrClient(outdir: string): void {
     if (html.includes(APP_DEV_HMR_CLIENT_PATH)) return null;
     return `<script type="module" src="${APP_DEV_HMR_CLIENT_PATH}"></script>`;
   });
+}
+
+/**
+ * React Fast Refresh preamble `<script src="/__zntc_react_refresh__"></script>` 를 1회 삽입.
+ * ⚠️ **첫 `<script` 앞**에 넣는다 — classic(non-module) 스크립트라 파싱 중 동기 실행되어
+ * `injectIntoGlobalHook(window)` 가 React 를 import 하는 (deferred) module 스크립트보다 *먼저*
+ * 끝나야 reconciler 패치가 유효하다. injectIntoDevHtml(=`</head>` 앞 삽입)을 안 쓰는 이유.
+ */
+export function injectAppDevReactRefreshPreamble(outdir: string): void {
+  const htmlPath = join(outdir, 'index.html');
+  let html: string;
+  try {
+    html = readFileSync(htmlPath, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return;
+    throw err;
+  }
+  if (html.includes(APP_DEV_REACT_REFRESH_PATH)) return; // 멱등
+  const tag = `<script src="${APP_DEV_REACT_REFRESH_PATH}"></script>`;
+  // <head> 여는 태그 *바로 뒤*(head 의 첫 자식)에 넣어 head 안 어떤 script 보다도 먼저
+  // 동기 실행되게 한다. 주석/텍스트 안의 `<script` 문자열에 잘못 매칭하지 않도록
+  // 단순 replace('<script') 대신 <head> 위치를 명시적으로 찾는다.
+  const headOpen = html.match(/<head\b[^>]*>/i);
+  let next: string;
+  if (headOpen && headOpen.index !== undefined) {
+    const at = headOpen.index + headOpen[0].length;
+    next = `${html.slice(0, at)}\n${tag}${html.slice(at)}`;
+  } else if (html.includes('</head>')) {
+    next = html.replace('</head>', `${tag}\n</head>`);
+  } else if (html.includes('<script')) {
+    next = html.replace('<script', `${tag}\n<script`);
+  } else {
+    next = `${tag}\n${html}`;
+  }
+  writeFileSync(htmlPath, next);
 }
 
 export function injectAppDevBundleCssLinks(

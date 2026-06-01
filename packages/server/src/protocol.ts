@@ -92,6 +92,10 @@ export type HmrMessage =
 
 export const APP_DEV_HMR_CLIENT_PATH = '/__zntc_app_dev_hmr__';
 export const APP_DEV_HMR_WS_PATH = '/__hmr';
+// React Fast Refresh preamble — react-refresh/runtime 을 글로벌(__ReactRefresh)로 노출 +
+// injectIntoGlobalHook(window) 를 *앱 번들보다 먼저* 실행시키는 가상 엔드포인트. dev 서버가
+// reactRefresh 활성 시 HTML <head> 의 첫 <script> 앞에 classic <script> 로 주입한다.
+export const APP_DEV_REACT_REFRESH_PATH = '/__zntc_react_refresh__';
 
 // RFC 6455 §1.3 — handshake 에 쓰이는 fixed GUID. 변경 불가.
 export const HMR_WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';

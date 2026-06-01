@@ -410,6 +410,11 @@ function parseArgs(argv) {
     // 런타임 누락 → broadcast 된 Update 가 client 에서 fallback reload. user 가
     // 명시적으로 `--dev=false` 줘서 override 하기 전엔 dev 모드 default 보장.
     opts.devMode = true;
+    // RFC_LAZY_DEV_MODULE_HMR PR-5 / web React Fast Refresh: dev 는 reactRefresh 기본 on.
+    // 번들러는 React 컴포넌트가 있는 모듈에만 $RefreshReg$/accept 를 emit(비-React 무해).
+    // 브라우저 런타임 preamble 주입은 runServe 가 react 존재 시에만 한다(비-React 노이즈 0).
+    // 명시 flag(`--react-refresh=false`)는 아래 flag 파싱이 덮어쓴다.
+    if (opts.reactRefresh === undefined) opts.reactRefresh = true;
   } else if (appCommand === 'build') {
     opts.bundle = true;
   } else if (appCommand === 'preview') {
@@ -1613,6 +1618,9 @@ async function buildBundleOptions(opts, config, { filterCallerPreWarmCss = false
     jsxImportSource: opts.jsxImportSource,
     inject: opts.inject.map((p) => resolve(p)),
     devMode: opts.devMode,
+    // web React Fast Refresh: native 빌드(options.zig:reactRefresh)에 전파 → 컴포넌트에
+    // $RefreshReg$/accept emit. dev 블록이 기본 on(비-React 무해).
+    reactRefresh: opts.reactRefresh,
     globalIdentifiers: opts.globalIdentifiers,
     // --polyfill / --run-before-main / --watch-folder 는 경로 → abs 변환 (--inject 와 동일).
     // --watch-include / --watch-exclude 는 루트 기준 glob 이므로 변환 안 함.
@@ -1936,6 +1944,18 @@ async function runServe(opts, config, { appDev = null } = {}) {
   const APP_DEV_HMR_CLIENT = web?.APP_DEV_HMR_CLIENT;
   const APP_DEV_HMR_CLIENT_PATH = web?.APP_DEV_HMR_CLIENT_PATH;
   const APP_DEV_HMR_WS_PATH = web?.APP_DEV_HMR_WS_PATH;
+  const APP_DEV_REACT_REFRESH_PATH = web?.APP_DEV_REACT_REFRESH_PATH;
+  // React Fast Refresh preamble (react-refresh 런타임 글로벌 노출 + injectIntoGlobalHook).
+  // reactRefresh on + react 설치 시에만 non-null(=비-React 앱은 주입/서빙/경고 0). lazy 1회 캐시.
+  const reactRefreshAppRoot = opts.appRoot ? resolve(opts.appRoot) : process.cwd();
+  let reactRefreshPreamble; // undefined=미계산, null=스킵, string=서빙
+  const getReactRefreshPreamble = () => {
+    if (reactRefreshPreamble === undefined) {
+      reactRefreshPreamble =
+        web && opts.reactRefresh ? web.buildReactRefreshPreamble(reactRefreshAppRoot) : null;
+    }
+    return reactRefreshPreamble;
+  };
   let serverHandle = null;
   // #3779 follow-up — restart 시 stop 호출용. opts.bundle+watch+appDev+hmr 분기 안에서만 할당.
   let nativeWatchHandle = null;
@@ -2023,6 +2043,11 @@ async function runServe(opts, config, { appDev = null } = {}) {
         body: APP_DEV_HMR_CLIENT,
         type: 'application/javascript',
       };
+    }
+    // React Fast Refresh preamble — 앱 번들보다 먼저 실행되는 classic <script> 본문.
+    if (appDev && opts.reactRefresh && pathname === APP_DEV_REACT_REFRESH_PATH) {
+      const body = getReactRefreshPreamble();
+      if (body != null) return { status: 200, body, type: 'application/javascript' };
     }
     // #3799 — HMR module 별 sourcemap. nativeWatchHandle 이 lazy cache 한 V3 JSON 을
     // moduleId 로 조회. handle 가 stop 됐거나 module 미수집 시 null → 404. 사용자

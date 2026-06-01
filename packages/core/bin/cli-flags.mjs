@@ -84,6 +84,7 @@ export const FLAG_REGISTRY = [
   { kind: 'bool', flag: '--no-tree-shaking', target: 'treeShaking', value: false },
   { kind: 'bool', flag: '--no-scope-hoist', target: 'scopeHoist', value: false },
   { kind: 'bool', flag: '--no-emit-disk-sourcemap', target: 'emitDiskSourcemap', value: false },
+  { kind: 'bool', flag: '--no-react-refresh', target: 'reactRefresh', value: false },
   { kind: 'bool', flag: '--analyze', target: 'analyze', extra: { metafile: 'meta.json' } },
   { kind: 'bool', flag: '--flow', target: 'flow' },
   { kind: 'bool', flag: '--experimental-decorators', target: 'experimentalDecorators' },
@@ -270,6 +271,9 @@ export const FLAG_REGISTRY = [
   { kind: 'string-bool', flag: '--emit-disk-sourcemap', target: 'emitDiskSourcemap' },
   { kind: 'string-bool', flag: '--use-define-for-class-fields', target: 'useDefineForClassFields' },
   { kind: 'string-bool', flag: '--tokenize', target: 'tokenize' },
+  // React Fast Refresh. `zntc dev` 는 기본 on(아래 dev 블록) — `--react-refresh=false`
+  // / `--no-react-refresh` 로 opt-out. NAPI BuildOptions.reactRefresh 와 동일 target.
+  { kind: 'string-bool', flag: '--react-refresh', target: 'reactRefresh' },
 
   // ─── `zntc verify` 전용. 다른 모드와 silent 충돌 방지를 위해 prefix 강제 ───
   { kind: 'int', flag: '--verify-timeout', target: 'verifyTimeout' },

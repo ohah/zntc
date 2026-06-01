@@ -21,7 +21,9 @@ import {
   injectAppDevBundleCssLinksFromOutdir,
   injectAppDevHmrClient,
   injectAppDevPipelineCssLinks,
+  injectAppDevReactRefreshPreamble,
 } from './inject.ts';
+import { buildReactRefreshPreamble } from './react-refresh-preamble.ts';
 import {
   cssModuleGeneratedCssPath,
   cssModuleProxyPath,
@@ -63,6 +65,9 @@ export interface AppDevControllerOptions {
   base?: string | undefined;
   publicPath?: string | undefined;
   appRoot?: string | undefined;
+  /** React Fast Refresh preamble(`/__zntc_react_refresh__`) 을 HTML 에 주입할지.
+   *  react 미설치(=비-React 앱)면 주입 자체를 스킵(404 노이즈 방지). */
+  reactRefresh?: boolean | undefined;
   entryHtml?: string | undefined;
   publicDir?: string | false | undefined;
   envDir?: string | undefined;
@@ -539,6 +544,12 @@ export function createAppDevController(
   const { fallbackRequire } = deps;
   const outdir = resolve(opts.outdir || join(root, '.zntc-dev'));
   const base = normalizeBase(opts.base ?? opts.publicPath ?? '/');
+  // React Fast Refresh preamble 주입 여부 — reactRefresh on + react 설치(=React 앱)일 때만.
+  // buildReactRefreshPreamble 가 react 미설치면 null → 주입 스킵(비-React 앱 404 노이즈 0).
+  // 1회 계산(파일 resolve/read)해 afterBundle 마다 재계산 않음. runServe 의 서빙 게이트와
+  // 동일 함수·동일 appRoot 라 결정 일관.
+  const reactRefreshInject =
+    opts.reactRefresh === true && buildReactRefreshPreamble(opts.appRoot ?? root) != null;
   let cssDeps = new Set<string>();
   let cssDirDeps = new Set<string>();
   // issue #3847 — prepare 가 PostCSS 처리 (auto-discover 또는 override) 한 경우
@@ -663,6 +674,9 @@ export function createAppDevController(
         }
       }
       injectAppDevHmrClient(outdir);
+      // React Fast Refresh preamble — 앱 번들보다 먼저 실행되도록 첫 <script> 앞에 주입.
+      // prepareAppDevSync 가 HTML 을 매 cycle 덮어쓰므로 HMR client 와 똑같이 매번 재주입.
+      if (reactRefreshInject) injectAppDevReactRefreshPreamble(outdir);
       // dev mode 한정 — bundler 가 dev splitting=false 라 CSS chunk 를 emit 하지
       // 않으므로 Sass / CSS Modules 결과를 outdir 로 mirror + `<link>` 주입.
       // mirror (cpSync) 는 sass/module 입력이 dirty 일 때만 — 그 외엔 outdir 의 직전 mirror

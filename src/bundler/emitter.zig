@@ -1188,6 +1188,11 @@ pub fn wrapDevModuleCode(
     }
     return std.mem.concat(allocator, u8, &.{
         "(function(){\n",
+        // HMR update 는 (0,eval) 로 *글로벌 스코프* 에서 평가된다. 번들이 ESM(`type="module"`)
+        // 이면 번들의 `var __zntc_g` 가 모듈-로컬이라 eval 스코프에서 안 보인다 → 아래 alias 와
+        // 컴포넌트 FR save/restore 의 `__zntc_g.X` 가 ReferenceError → reload fallback. self-contained
+        // 하게 __zntc_g 를 여기서 globalThis 로 재결정한다(IIFE 번들이면 동일 globalThis 라 무해).
+        "var __zntc_g=typeof globalThis!==\"undefined\"?globalThis:typeof global!==\"undefined\"?global:typeof window!==\"undefined\"?window:this;\n",
         "var __esm=__zntc_g.__esm,__export=__zntc_g.__export,__commonJS=__zntc_g.__commonJS,",
         "__defProp=__zntc_g.__defProp,__toESM=__zntc_g.__toESM,__toCommonJS=__zntc_g.__toCommonJS,",
         "__zntc_modules=__zntc_g.__zntc_modules,__zntc_make_hot=__zntc_g.__zntc_make_hot,",
