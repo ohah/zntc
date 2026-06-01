@@ -889,7 +889,21 @@ pub fn JsxLowering(comptime Transformer: type) type {
         fn getKeyValue(self: *Transformer, attrs_start: u32, key_idx: u32) Transformer.Error!NodeIndex {
             const attr_node_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[attrs_start + key_idx]);
             const attr = self.ast.getNode(attr_node_idx);
-            return self.visitNode(attr.data.binary.right);
+            const value_idx = attr.data.binary.right;
+            // 값 없는 key 속성(`<div key>`)은 다른 모든 속성과 동일하게 boolean true 로
+            // 정규화한다(lowerJSXAttribute 의 값없음→true 경로와 일치). 그렇지 않으면
+            // visitNode(.none) 이 .none 을 반환하고, codegen 의 emitNodeListImpl 이 .none
+            // 인자를 separator 없이 통째로 skip 해 _jsx/_jsxDEV 의 positional 인자
+            // (key/isStaticChildren/source/this)가 한 칸씩 시프트된다.
+            if (value_idx.isNone()) {
+                const true_span = try self.ast.addString("true");
+                return self.ast.addNode(.{
+                    .tag = .boolean_literal,
+                    .span = true_span,
+                    .data = .{ .none = 0 },
+                });
+            }
+            return self.visitNode(value_idx);
         }
 
         // ================================================================
