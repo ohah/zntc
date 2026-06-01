@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
 import { join, basename } from 'node:path';
 import { writeFileSync, realpathSync } from 'node:fs';
+import vm from 'node:vm';
 import { createFixture, writeOutputs, runNode } from './helpers';
 import { init, close, build } from '../../../packages/core/index';
 
@@ -226,10 +227,10 @@ process.stdout.write(JSON.stringify({
     expect(routeChunk!.text.includes('exports.render')).toBe(true);
   });
 
-  // /code-review max: entry 모듈이 `export * as ns`(re_export_namespace)를 섞어도 `exports.ns = ns`
-  // (청크에 없는 바인딩) 를 emit 해 ReferenceError(crash) 나면 안 된다. re-export 류는 제외하고
-  // .local export(render)만 노출하는지 가드(crash 회피 + 유효 JS).
-  test('동적 청크 entry 가 re_export_namespace 섞어도 crash 패턴 없이 .local export 만 노출', async () => {
+  // entry 모듈이 `export * as ns`(re_export_namespace)를 섞으면, 청크에 없는 바인딩으로
+  // `exports.ns = ns`(ReferenceError crash) 를 emit 하면 안 되고, entry 네임스페이스 getter 로
+  // `exports.ns = exports_route.ns`(유효·정확) 를 emit 해야 한다. .local(render) + ns 둘 다 노출.
+  test('동적 청크 entry 의 re_export_namespace 는 네임스페이스 getter 로 노출 (crash 패턴 없음)', async () => {
     const fixture = await createFixture({
       'dep.ts': 'export const a = 1;\nexport const b = 2;',
       'route.ts': "export * as ns from './dep';\nexport function render(){ return 'R'; }",
@@ -254,8 +255,61 @@ process.stdout.write(JSON.stringify({
     expect(r.errors ?? []).toHaveLength(0);
     const routeChunk = (r.outputFiles ?? []).find((o) => o.path.includes('route-'));
     expect(routeChunk).toBeDefined();
-    expect(routeChunk!.text.includes('exports.render')).toBe(true); // .local 은 노출
-    // crash 패턴(`exports.ns = ns;` — ns 바인딩 없음) 부재.
+    expect(routeChunk!.text.includes('exports.render')).toBe(true); // .local 노출
+    // re_export_namespace 도 네임스페이스 getter 로 노출(`exports.ns = exports_route.ns`).
+    expect(/exports\.ns\s*=\s*exports_\w+\.ns;/.test(routeChunk!.text)).toBe(true);
+    // crash 패턴(`exports.ns = ns;` — 청크에 ns 바인딩 없음) 부재.
     expect(/exports\.ns\s*=\s*ns;/.test(routeChunk!.text)).toBe(false);
+  });
+
+  // #4079 후속: `export { default, meta } from './Page'`(re-export forwarding) 동적 route.
+  // 예전 `.local` 만 노출하던 코드는 re-export 를 스킵해 `import('./route').default` 가 undefined →
+  // 라우트 렌더 실패. 이제 entry 네임스페이스 getter(`exports.default = exports_route.default`)로
+  // re-export 체인을 정확히 해석하는지 **런타임**으로 가드(emit 문자열이 아니라 실제 값 검증).
+  test('동적 청크가 re-export forwarding(export {default,meta} from) 을 런타임에 정확히 노출', async () => {
+    const fixture = await createFixture({
+      'Page.ts': "export default function Page(){ return 'PAGE'; }\nexport const meta = 'M';",
+      'route.ts': "export { default, meta } from './Page';",
+      // import() 를 *정의만* 하고 top-level 에서 실행하지 않는다 — route 는 그래도 동적 import
+      // 타겟(seed)이지만, vm 안에서 native import() 폴백으로 비동기 reject 하는 일은 없다.
+      'entry.ts': "globalThis.loadRoute = () => import('./route');",
+    });
+    cleanup = fixture.cleanup;
+    const dir = realpathSync(fixture.dir);
+    const opts = {
+      entryPoints: [join(dir, 'entry.ts')],
+      platform: 'browser' as const,
+      devMode: true,
+      splitting: true,
+      format: 'iife' as const,
+      lazyCompilation: true,
+      rootDir: dir,
+    };
+    const base = await build(opts);
+    const seed = (base.lazySeeds ?? []).find((s) => s.path.endsWith('route.ts'));
+    expect(seed).toBeDefined();
+    const r = await build({ ...opts, lazyForceParse: [seed!.path] });
+    expect(r.errors ?? []).toHaveLength(0);
+    const entryChunk = (r.outputFiles ?? []).find((o) => o.path.endsWith('entry.js'));
+    const routeChunk = (r.outputFiles ?? []).find((o) => o.path.includes('route-'));
+    expect(entryChunk && routeChunk).toBeTruthy();
+    // emit 가드: default·meta 가 entry 네임스페이스 getter 로 노출(re-export 해석).
+    expect(/exports\.default\s*=\s*exports_\w+\.default;/.test(routeChunk!.text)).toBe(true);
+    expect(/exports\.meta\s*=\s*exports_\w+\.meta;/.test(routeChunk!.text)).toBe(true);
+
+    // 런타임 가드: entry 청크(=__zntc_require 코어) + route 청크 로드 후 require → 실제 값.
+    // entry 의 go() 가 vm 안에서 import('./route') 를 시도하면 비동기 reject(무시) 하므로 sync
+    // 검사(require)는 그 전에 완료된다.
+    const g: Record<string, unknown> = { console };
+    g.globalThis = g;
+    const ctx = vm.createContext(g);
+    vm.runInContext(entryChunk!.text, ctx); // __zntc_require 코어 + entry register
+    vm.runInContext(routeChunk!.text, ctx); // route.js register
+    const mods = g.__zntc_mods as Record<string, unknown>;
+    const id = Object.keys(mods).find((k) => /route/.test(k))!;
+    const required = (g.__zntc_require as (k: string) => Record<string, unknown>)(id);
+    expect(typeof required.default).toBe('function');
+    expect((required.default as () => string)()).toBe('PAGE');
+    expect(required.meta).toBe('M');
   });
 });
