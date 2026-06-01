@@ -1072,6 +1072,11 @@ fn parseImportAttributes(self: *Parser) ParseError2!NodeList {
 
     // 중복 키 검사용 (최대 16개, 초과 시 검사 생략)
     var keys: [16][]const u8 = undefined;
+    // 각 키의 디코드 결과 백킹 스토리지. keys 와 동일 수명(루프 전체)을 갖도록 루프
+    // 밖에 둔다. 루프-지역 버퍼에 디코드하면 그 슬라이스가 keys 에 저장된 뒤 다음
+    // 반복에서 같은 스택 슬롯이 덮어써져, 디코드 길이가 같은 escape 키 2개가 서로
+    // 다른데도 false-positive 중복으로 오거부되는 use-after-scope 가 된다 (#4108).
+    var decoded_bufs: [16][256]u8 = undefined;
     var key_count: usize = 0;
 
     while (self.current() != .r_curly and self.current() != .eof) {
@@ -1087,9 +1092,8 @@ fn parseImportAttributes(self: *Parser) ParseError2!NodeList {
 
         // 중복 키 검사
         if (key_count < 16) {
-            var decoded_buf: [256]u8 = undefined;
             const effective_key = if (key_text.len >= 2 and (key_text[0] == '\'' or key_text[0] == '"'))
-                decodeStringKey(key_text[1 .. key_text.len - 1], &decoded_buf)
+                decodeStringKey(key_text[1 .. key_text.len - 1], &decoded_bufs[key_count])
             else
                 key_text;
 

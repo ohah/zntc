@@ -4785,3 +4785,44 @@ test "Parser regression #4107: destructuring default with missing binding target
     try parseExpectErrorNoCrash("const [a, = 1] = x;");
     try parseExpectErrorNoCrash("const { a: = 1 } = x;");
 }
+
+// 회귀(#4108): import attribute 중복키 검사의 디코드 버퍼가 루프-지역이면, 디코드
+// 길이가 같은 서로 다른 escape 키 2개가 같은 스택 슬롯을 공유(use-after-scope)해
+// false-positive 중복(ZNTC0304)으로 오거부됐다. decoded_bufs 를 루프 밖으로 hoist.
+// 결함은 escape 키(decodeStringKey 경로)에서만 발생하므로(plain 키는 소스 슬라이스
+// fast-path) 회귀 테스트의 소스 키는 반드시 unicode escape 형태로 둔다.
+fn parseModuleErrCount(src: []const u8) !usize {
+    var scanner = try Scanner.init(std.testing.allocator, src);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_module = true;
+    defer parser.deinit();
+    _ = try parser.parse();
+    return parser.errors.items.len;
+}
+
+test "Parser regression #4108: distinct escaped import-attribute keys are not false duplicates" {
+    // 디코드 ab / cd: 서로 다른 키(디코드 길이 2 동일) → 중복 아님
+    try std.testing.expectEqual(@as(usize, 0), try parseModuleErrCount(
+        \\import data from "m" with { "\u0061b": "1", "\u0063d": "2" };
+    ));
+    // 디코드 길이가 다른 escape 키도 정상 (type=4 vs other=5)
+    try std.testing.expectEqual(@as(usize, 0), try parseModuleErrCount(
+        \\import data from "m" with { "\u0074ype": "json", "\u006fther": "x" };
+    ));
+    // escape 없는 plain 키 대조군
+    try std.testing.expectEqual(@as(usize, 0), try parseModuleErrCount(
+        \\import data from "m" with { "type": "json", "other": "x" };
+    ));
+}
+
+test "Parser regression #4108: genuine duplicate import-attribute keys still detected" {
+    // 둘 다 escape, 같은 디코드 값(ab) → 진짜 중복 → 검출
+    try std.testing.expect((try parseModuleErrCount(
+        \\import data from "m" with { "\u0061b": "1", "a\u0062": "2" };
+    )) > 0);
+    // plain 중복도 검출
+    try std.testing.expect((try parseModuleErrCount(
+        \\import data from "m" with { "type": "1", "type": "2" };
+    )) > 0);
+}
