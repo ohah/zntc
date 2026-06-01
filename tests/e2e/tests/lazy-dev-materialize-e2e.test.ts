@@ -88,11 +88,15 @@ test.describe.serial('lazy dev materialize (브라우저 e2e #4079)', () => {
     await expect(page.getByTestId('out')).toHaveText('UTIL_V2[chart]', { timeout: 15000 });
   });
 
-  // 에픽 수용 기준(RFC_LAZY_DEV_MODULE_HMR §5) — 이상적 fix: 깊은 파일 편집이 *리로드 없이*
-  // 모듈만 hot-replace 되고 앱 state 가 보존돼야 한다(main 번들 HMR 동급). 현재는 full-reload
-  // 폴백이라 window state 가 소실돼 fail → test.fixme 로 목표만 명시. 에픽(split dev 모듈별 HMR,
-  // #4038 재해결) 완료 시 일반 test 로 전환한다.
-  test.fixme('이상적: 깊은 파일 편집이 리로드 없이 hot-replace + 앱 state 보존', async ({
+  // 에픽 수용 기준(RFC_LAZY_DEV_MODULE_HMR §5)의 *달성 가능한* 형태(lazy split 청크의 **React
+  // 컴포넌트** 편집 → 리로드 없이 Fast Refresh hot-replace + state 보존)는 별도 e2e
+  // `lazy-react-fast-refresh-e2e.test.ts` 에서 **green** 이다(에픽 완결 신호).
+  //
+  // 이 케이스는 plain `util.ts`(React 경계 아님) 라 여전히 fixme 로 둔다 — 표준 HMR 모델상
+  // accept 경계가 없는 순수 모듈은 update 가 bubble 되지 않아 full-reload 가 정상이다(단일 번들
+  // dev 도 동일). 즉 "plain 깊은 파일 편집을 *리로드 없이*"는 update bubbling(별도 기능)이 있어야
+  // 하며 본 에픽 범위 밖. 목표만 명시로 유지.
+  test.fixme('이상적: plain 깊은 파일 편집이 리로드 없이 hot-replace (bubbling 필요, 범위 밖)', async ({
     page,
   }) => {
     await page.goto(`http://localhost:${PORT}/`);

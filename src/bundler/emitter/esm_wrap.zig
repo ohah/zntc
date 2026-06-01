@@ -839,6 +839,9 @@ pub fn emitEsmWrappedModule(
                         } else {
                             try reexport_buf.appendSlice(allocator, "(");
                         }
+                        // ⚠️ dev_split 미이전 게이트(linker.zig [[useDevModuleRegistry]] follow-up) —
+                        // 크로스청크 default/named re-export 시 lexical init_X/exports_X 가 다른 청크
+                        // 스코프라 ReferenceError(+ `export {default} from './cjs'` 는 별도 SyntaxError).
                         if (options.dev_mode and !options.code_splitting) {
                             try reexport_buf.appendSlice(allocator, "__zntc_modules[\"");
                             try reexport_buf.appendSlice(allocator, source_mod.dev_id);
@@ -1200,6 +1203,8 @@ fn appendWrappedInitCall(
         .esm => {
             if (is_tla) try buf.appendSlice(allocator, "await ");
             if (guard) try buf.appendSlice(allocator, if (options.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
+            // ⚠️ dev_split 미이전 게이트(linker.zig [[useDevModuleRegistry]] follow-up) — 크로스청크
+            // re-export-all/side-effect init 시 lexical init_X 가 다른 청크 스코프라 ReferenceError.
             if (options.dev_mode and !options.code_splitting) {
                 try buf.appendSlice(allocator, "__zntc_modules[\"");
                 try buf.appendSlice(allocator, src_mod.dev_id);
@@ -1306,6 +1311,10 @@ fn makeLazyEsmGetterValue(
         return try allocator.dupe(u8, target);
     }
 
+    // ⚠️ dev_split 미이전 게이트(linker.zig [[useDevModuleRegistry]] follow-up): splitting 이면
+    // lexical init_X 로 빠지는데, 크로스청크 re-export 시 init_X 가 다른 청크 팩토리 스코프라
+    // ReferenceError. EmitOptions 에 lazy_compilation 추가 후 useDevModuleRegistry 동치로 통일할 것
+    // (raw `dev_mode and !code_splitting` 복사 금지).
     const init_call = if (options.dev_mode and !options.code_splitting) blk: {
         break :blk try std.fmt.allocPrint(allocator, "__zntc_modules[\"{s}\"].fn()", .{src_mod.dev_id});
     } else blk: {
