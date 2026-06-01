@@ -184,6 +184,16 @@ pub const Linker = struct {
     /// 모듈 변수로 사용하지 않도록 리네이밍.
     global_identifiers: []const []const u8 = &.{},
 
+    /// RFC #3940 / 이슈 #4101 — cross-chunk 심볼 **전역 일관 네이밍**.
+    /// `module_index → (export_name → 전역 이름)`. cross-chunk 로 노출/소비되는 심볼은
+    /// provider/consumer 가 *같은* 이름을 써야 하는데, per-chunk `rename_table` 은 청크별로
+    /// clear 되어 소비자가 provider 의 deconflict 이름을 못 본다(소비자 본문 collapse, #B).
+    /// 이 맵은 cross-chunk 심볼만 **occupied 와 무관하게** 전역 deconflict 해(순환 끊기),
+    /// per-chunk pass 가 reserved 로 받고 metadata/emit 이 참조할 단일 출처다.
+    /// 값(전역 이름)은 이 맵이 소유(owned dupe) — borrowed-ptr UAF(#3933) 회피.
+    /// **Inc-1: 채우기만(비활성 read)** — 동작 변경 0, 후속 increment 가 wire.
+    cross_chunk_global_names: std.AutoHashMapUnmanaged(u32, std.StringHashMapUnmanaged([]const u8)) = .empty,
+
     /// dev mode: HMR용 모듈 참조를 __zntc_modules["id"].fn()으로 생성.
     /// init_xxx() 대신 동적 lookup을 사용하여 new Function()에서도 접근 가능.
     dev_mode: bool = false,
@@ -413,6 +423,9 @@ pub const Linker = struct {
         self.canonical_names_used.deinit(self.allocator);
         self.rename_table.deinit(self.allocator);
         self.reserved_globals.deinit(self.allocator);
+        // cross-chunk 전역 이름(#4101): owned value 해제 + inner/outer 맵 deinit.
+        self.clearCrossChunkGlobalNames();
+        self.cross_chunk_global_names.deinit(self.allocator);
         // chain_cache: 키는 allocator로 dupe됨
         var cc_it = self.chain_cache.keyIterator();
         while (cc_it.next()) |key| self.allocator.free(key.*);
@@ -1324,6 +1337,37 @@ pub const Linker = struct {
     /// 다른 모듈의 리네임 대상으로 이미 할당된 이름인지 O(1) 확인.
     fn isCanonicalNameTaken(self: *const Linker, name: []const u8) bool {
         return self.canonical_names_used.contains(name);
+    }
+
+    // ── cross-chunk 전역 일관 네이밍(RFC #3940 / #4101) ─────────────────────────
+
+    /// `(canonical_module, export_name)` 의 cross-chunk 전역 이름을 등록. `global_name` 은
+    /// owned(caller 가 dupe 해 넘김) — 맵이 소유하고 `clearCrossChunkGlobalNames`/`deinit` 에서
+    /// 해제. `export_name` 키는 borrow(export binding 소유, bundle 수명 안정).
+    pub fn putCrossChunkGlobalName(self: *Linker, module_index: u32, export_name: []const u8, global_name: []const u8) !void {
+        const gop = try self.cross_chunk_global_names.getOrPut(self.allocator, module_index);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        // 같은 (mod, name) 재등록 시 이전 owned value 해제(leak 방지).
+        if (try gop.value_ptr.fetchPut(self.allocator, export_name, global_name)) |old| {
+            self.allocator.free(old.value);
+        }
+    }
+
+    /// cross-chunk 전역 이름 조회. 없으면 null(호출처는 기존 per-chunk fallback).
+    pub fn getCrossChunkGlobalName(self: *const Linker, module_index: u32, export_name: []const u8) ?[]const u8 {
+        const inner = self.cross_chunk_global_names.get(module_index) orelse return null;
+        return inner.get(export_name);
+    }
+
+    /// 전역 이름 맵 비우기 — owned value 해제 + inner 맵 deinit.
+    pub fn clearCrossChunkGlobalNames(self: *Linker) void {
+        var it = self.cross_chunk_global_names.valueIterator();
+        while (it.next()) |inner| {
+            var vit = inner.valueIterator();
+            while (vit.next()) |v| self.allocator.free(v.*);
+            inner.deinit(self.allocator);
+        }
+        self.cross_chunk_global_names.clearRetainingCapacity();
     }
 
     /// (module_index, local_name)의 최종 이름(`rename_table`)을 설정. value 소유권은
