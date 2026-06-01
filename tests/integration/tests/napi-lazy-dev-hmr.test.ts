@@ -29,6 +29,49 @@ describe('NAPI lazy dev split HMR runtime (RFC_LAZY_DEV_MODULE_HMR PR-2)', () =>
     }
   });
 
+  // dev_split lazy 빌드 → entry+lazy 청크를 vm 으로 로드 → 지정 lazy 모듈 require.
+  // #4096 의 cross-chunk 예약어 default 바인딩 해석을 다양한 형태로 잠그는 lock 테스트 공용.
+  async function loadDevSplitLazy(
+    files: Record<string, string>,
+    lazyFile: string,
+  ): Promise<{ lazyText: string; exports: Record<string, unknown> }> {
+    const fixture = await createFixture(files);
+    cleanup = fixture.cleanup;
+    const dir = realpathSync(fixture.dir);
+    const opts = {
+      entryPoints: [join(dir, 'entry.ts')],
+      platform: 'browser' as const,
+      devMode: true,
+      splitting: true,
+      format: 'iife' as const,
+      lazyCompilation: true,
+      rootDir: dir,
+    };
+    const base = await build(opts);
+    const seed = (base.lazySeeds ?? []).find((s) => s.path.endsWith(lazyFile));
+    expect(seed).toBeDefined();
+    const r = await build({ ...opts, lazyForceParse: [seed!.path] });
+    expect(r.errors ?? []).toHaveLength(0);
+    const entryChunk = (r.outputFiles ?? []).find((o) => o.path.endsWith('entry.js'));
+    const lazyPrefix = lazyFile.replace(/\.tsx?$/, '') + '-';
+    const lazyChunk = (r.outputFiles ?? []).find((o) => o.path.includes(lazyPrefix));
+    expect(entryChunk && lazyChunk).toBeTruthy();
+    // 예약어 축약 destructuring(`const { default }`) 이 없어야 한다(SyntaxError 원인).
+    expect(/const\s*\{[^}]*\bdefault\b[^}:]*\}\s*=/.test(lazyChunk!.text)).toBe(false);
+    const g: Record<string, unknown> = { console };
+    g.globalThis = g;
+    const ctx = vm.createContext(g);
+    vm.runInContext(entryChunk!.text, ctx); // 예약어 SyntaxError 면 throw
+    vm.runInContext(lazyChunk!.text, ctx);
+    const mods = g.__zntc_mods as Record<string, unknown>;
+    const re = new RegExp(lazyFile.replace(/\.tsx?$/, ''));
+    const id = Object.keys(mods).find((k) => re.test(k))!;
+    return {
+      lazyText: lazyChunk!.text,
+      exports: (g.__zntc_require as (k: string) => Record<string, unknown>)(id),
+    };
+  }
+
   test('cross-chunk init 이 글로벌 per-module 레지스트리로 동작 + apply_update hot-replace+state 보존', async () => {
     // 2개 entry(a,b)가 같은 shared 를 import → shared 는 *별도* 청크로 분리되어
     // cross-chunk static dep 가 된다 (#4038 의 정확한 형상).
@@ -512,5 +555,69 @@ process.stdout.write(JSON.stringify({
     const id = Object.keys(mods).find((k) => /Card/.test(k))!;
     const required = (g.__zntc_require as (k: string) => Record<string, unknown>)(id);
     expect((required.card as () => string)()).toBe('DEF'); // cross-chunk default import 실값
+  });
+
+  // ── #4096 lock: cross-chunk 예약어 default 바인딩 해석을 다양한 형태로 회귀 가드 ──
+  // resolveToLocalName 의 named-default 경로(`export default function foo` → canonical `foo`,
+  // `_default` 합성 아님)를 re-export 로 가드.
+  test('lock: named default(export default function foo) re-export cross-chunk 해석', async () => {
+    const { exports } = await loadDevSplitLazy(
+      {
+        'dep.ts': "export default function foo(){ return 'NAMEDDEF'; }\nexport const x = 1;",
+        'Route.ts': "export { default } from './dep';",
+        'entry.ts':
+          "import f from './dep';\nglobalThis.E = f();\nglobalThis.r = () => import('./Route');",
+      },
+      'Route.ts',
+    );
+    expect((exports.default as () => string)()).toBe('NAMEDDEF');
+  });
+
+  // named-default 의 *import*(lexical 바인딩) 경로 — re-export(getter)와 다른 emission.
+  test('lock: named default(export default function foo) import cross-chunk 해석', async () => {
+    const { exports } = await loadDevSplitLazy(
+      {
+        'dep.ts': "export default function foo(){ return 'NDI'; }",
+        'Route.ts': "import f from './dep';\nexport function r(){ return f(); }",
+        'entry.ts':
+          "import f from './dep';\nglobalThis.E = f();\nglobalThis.r = () => import('./Route');",
+      },
+      'Route.ts',
+    );
+    expect((exports.r as () => string)()).toBe('NDI');
+  });
+
+  // `export { local as default }` — local 심볼을 default export 키로 alias. resolveToLocalName
+  // 이 default→local 체인을 정확히 따라가야 cross-chunk 값이 맞는다.
+  test('lock: export { x as default } aliased default re-export cross-chunk 해석', async () => {
+    const { exports } = await loadDevSplitLazy(
+      {
+        'dep.ts': "const val = 'ALIASED';\nexport { val as default };",
+        'Route.ts': "export { default } from './dep';",
+        'entry.ts':
+          "import v from './dep';\nglobalThis.E = v;\nglobalThis.r = () => import('./Route');",
+      },
+      'Route.ts',
+    );
+    expect(exports.default).toBe('ALIASED');
+  });
+
+  // 혼합: 같은 lazy 청크에서 cross-chunk re-export(default+named) + 자체 local export 공존.
+  // 예약어 default 바인딩과 일반 심볼이 한 destructuring/네임스페이스에 섞여도 정확.
+  test('lock: 혼합 lazy 청크 — re-export {default,named} from cjs + 자체 local export 공존', async () => {
+    const { exports } = await loadDevSplitLazy(
+      {
+        'cjslib.js': "module.exports = function(){ return 'MD'; };\nmodule.exports.named = 9;",
+        'Route.ts':
+          "export { default, named } from './cjslib.js';\nexport const own = 'OWN';\nexport function r(){ return 'R'; }",
+        'entry.ts':
+          "import l from './cjslib.js';\nglobalThis.E = l;\nglobalThis.r = () => import('./Route');",
+      },
+      'Route.ts',
+    );
+    expect((exports.default as () => string)()).toBe('MD');
+    expect(exports.named).toBe(9);
+    expect(exports.own).toBe('OWN');
+    expect((exports.r as () => string)()).toBe('R');
   });
 });
