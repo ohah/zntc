@@ -2318,6 +2318,25 @@ pub const Linker = struct {
         return self.use_shared_ns_preamble and
             (!self.ns_preamble_chunked or self.ns_cross_chunk_targets.contains(target_mod_idx));
     }
+
+    /// dev 모듈 레지스트리(`__zntc_modules[dev_id].fn()`)로 모듈 참조를 lowering 할지.
+    /// 레지스트리는 청크 경계를 넘어 모듈을 주소화하므로 크로스청크 해석이 가능하다.
+    /// - 단일번들 dev(`dev and !splitting`): 레지스트리(기존 동작).
+    /// - dev_split(`dev and splitting and lazy`): PR-2(#4088)가 글로벌 `__zntc_modules` 를
+    ///   깔아 ESM(shared_namespace.zig:977)이 이미 쓰는 그 레지스트리로 CJS/require 도 통일 →
+    ///   크로스청크 공유 CJS 의존(react/jsx-runtime 등) ReferenceError 해소.
+    /// - 비-lazy splitting / production: lexical(`require_X`/`init_X`) 유지(레지스트리 substrate
+    ///   부재 / dev_mode=false → byte-identical).
+    ///
+    /// 적용 범위: linker metadata 의 참조 lowering(`import` 바인딩 CJS 참조 + `require()` 호출
+    /// rewrite). ⚠️ emitter 의 **re-export/`export *`/side-effect init** lowering
+    /// (esm_wrap.zig:842/1203/1309 — `options.dev_mode and !options.code_splitting` 게이트, EmitOptions
+    /// 에 lazy_compilation 부재라 미이전)은 아직 lexical 이라 dev_split 의 `export { x } from
+    /// './cjsdep'` 같은 크로스청크 re-export-from-CJS 는 별도 follow-up. 새 dev-registry 게이트를
+    /// 추가할 땐 이 predicate 를 쓸 것(raw `dev_mode and !code_splitting` 복사 금지).
+    pub fn useDevModuleRegistry(self: *const Linker) bool {
+        return self.dev_mode and (!self.code_splitting or self.graph.lazy_compilation);
+    }
     pub const appendSharedNamespacePreamble = shared_namespace.appendSharedNamespacePreamble;
     pub const appendSharedNamespacePreambleFiltered = shared_namespace.appendSharedNamespacePreambleFiltered;
     pub const restoreSharedNamespaceDecls = shared_namespace.restoreSharedNamespaceDecls;

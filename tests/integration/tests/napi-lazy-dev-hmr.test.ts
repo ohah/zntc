@@ -312,4 +312,54 @@ process.stdout.write(JSON.stringify({
     expect((required.default as () => string)()).toBe('PAGE');
     expect(required.meta).toBe('M');
   });
+
+  // dev_split 크로스청크 공유 의존 해석: lazy 청크가 다른 청크의 **공유 CJS(`require()`)** 와
+  // **ESM(`import`)** 의존을 참조할 때, 예전엔 lexical `require_X`/`init_X`(정의자 청크 팩토리
+  // 스코프에 갇힘)로 emit 돼 `ReferenceError`(react/jsx-runtime 등 → lazy React 렌더 실패)였다.
+  // 이제 글로벌 `__zntc_modules` 레지스트리로 해석(ESM 과 동일, useDevModuleRegistry). 런타임으로
+  // CJS+ESM 둘 다 크로스청크 해석되는지 가드.
+  test('dev_split lazy 청크가 크로스청크 공유 CJS(require) + ESM(import) 을 레지스트리로 해석', async () => {
+    const fixture = await createFixture({
+      'lib.js': "module.exports = { greet: function(){ return 'HELLO'; }, n: 42 };",
+      'esmdep.ts': "export const tag = 'ESM';\nexport function mk(){ return tag; }",
+      'Card.ts':
+        "const lib = require('./lib.js');\nimport { mk } from './esmdep';\nexport function card(){ return lib.greet() + lib.n + mk(); }",
+      // entry 가 lib·esmdep 를 정적으로 써서 그 청크(entry)에 두고, Card 는 동적 import(lazy 청크).
+      'entry.ts':
+        "const lib = require('./lib.js');\nimport { mk } from './esmdep';\nglobalThis.E = lib.n + mk();\nglobalThis.loadCard = () => import('./Card');",
+    });
+    cleanup = fixture.cleanup;
+    const dir = realpathSync(fixture.dir);
+    const opts = {
+      entryPoints: [join(dir, 'entry.ts')],
+      platform: 'browser' as const,
+      devMode: true,
+      splitting: true,
+      format: 'iife' as const,
+      lazyCompilation: true,
+      rootDir: dir,
+    };
+    const base = await build(opts);
+    const seed = (base.lazySeeds ?? []).find((s) => s.path.endsWith('Card.ts'));
+    expect(seed).toBeDefined();
+    const r = await build({ ...opts, lazyForceParse: [seed!.path] });
+    expect(r.errors ?? []).toHaveLength(0);
+    const entryChunk = (r.outputFiles ?? []).find((o) => o.path.endsWith('entry.js'));
+    const cardChunk = (r.outputFiles ?? []).find((o) => o.path.includes('Card-'));
+    expect(entryChunk && cardChunk).toBeTruthy();
+    // emit 가드: Card 청크가 lexical `require_lib`(정의자 청크 갇힘) 대신 레지스트리를 쓴다.
+    expect(/\brequire_lib\w*\b/.test(cardChunk!.text)).toBe(false);
+    expect(/__zntc_modules\[/.test(cardChunk!.text)).toBe(true);
+
+    // 런타임 가드: entry 청크(lib·esmdep 등록) + Card 청크 로드 후 require → 크로스청크 실값.
+    const g: Record<string, unknown> = { console };
+    g.globalThis = g;
+    const ctx = vm.createContext(g);
+    vm.runInContext(entryChunk!.text, ctx); // 공유 lib/esmdep 를 __zntc_modules 에 등록
+    vm.runInContext(cardChunk!.text, ctx);
+    const mods = g.__zntc_mods as Record<string, unknown>;
+    const id = Object.keys(mods).find((k) => /Card/.test(k))!;
+    const required = (g.__zntc_require as (k: string) => Record<string, unknown>)(id);
+    expect((required.card as () => string)()).toBe('HELLO42ESM');
+  });
 });

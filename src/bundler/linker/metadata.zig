@@ -67,8 +67,10 @@ fn getOrCreateCjsRequireRef(
     cache: *std.AutoHashMapUnmanaged(u32, []const u8),
     mod_idx: u32,
 ) ![]const u8 {
-    // splitting 시엔 dev lowering(__zntc_modules[dev_id]) 비활성 — 청크 경계 미지원(#4038).
-    if (!self.dev_mode or self.code_splitting) return getOrCreateRequireVar(self, cache, mod_idx);
+    // 크로스청크 CJS 참조는 글로벌 레지스트리 lowering 으로 해석한다([[useDevModuleRegistry]]).
+    // (예전엔 splitting 전체를 미지원으로 막아(#4038) lazy split 의 크로스청크 공유 CJS 의존이
+    // ReferenceError 였다 — PR-2(#4088) 레지스트리로 해소.)
+    if (!self.useDevModuleRegistry()) return getOrCreateRequireVar(self, cache, mod_idx);
     if (cache.get(mod_idx)) |cached| return cached;
 
     const target_mod = self.getModule(mod_idx).?;
@@ -1377,7 +1379,7 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module, format: types
             if (require_rewrites.get(rec.specifier)) |old| {
                 self.allocator.free(old);
             }
-            const req_ref = if (self.dev_mode and !self.code_splitting)
+            const req_ref = if (self.useDevModuleRegistry())
                 try types.fmtDevRequireCallExpr(self.allocator, target_mod.dev_id)
             else
                 try target_mod.allocRequireName(self.allocator, &self.rename_table);
@@ -1387,7 +1389,7 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module, format: types
             if (require_rewrites.get(rec.specifier)) |old| {
                 self.allocator.free(old);
             }
-            if (self.dev_mode and !self.code_splitting) {
+            if (self.useDevModuleRegistry()) {
                 const call_expr = try types.fmtDevRequireExpr(self.allocator, target_mod.dev_id);
                 try require_rewrites.put(self.allocator, rec.specifier, call_expr);
             } else {
