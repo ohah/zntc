@@ -640,7 +640,7 @@ process.stdout.write(JSON.stringify({
     expect((exports.r as () => string)()).toBe('TVAL:MK');
   });
 
-  // follow-up B (todo: cross-chunk 네이밍 일관성 = 더 깊은 아키텍처 과제):
+  // follow-up B (todo: cross-chunk 네이밍 일관성 = 더 깊은 아키텍처 과제 — 이슈 #4101):
   // 서로 다른 모듈이 *같은* export 이름(`v`)을 내고 한 lazy 청크가 둘 다 import 하면,
   // va·vb 가 같은 값으로 collapse 된다(r()='AA', 'AB' 아님). dep 청크는 renamer deconflict 로
   // 양쪽(`exports.v`/`exports.v$1`)을 노출하고, imports_from dedup 을 (이름,canonical모듈)로
