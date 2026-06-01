@@ -35,6 +35,7 @@ pub const bench = @import("bench.zig");
 
 test {
     _ = lexer;
+    _ = parser;
     _ = regexp;
     _ = semantic;
     _ = transformer;
