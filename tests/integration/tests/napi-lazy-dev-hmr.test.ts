@@ -665,4 +665,24 @@ process.stdout.write(JSON.stringify({
     );
     expect((exports.r as () => string)()).toBe('AB');
   });
+
+  // follow-up (#2): lazy 청크가 `export * from './inner'`(star) 로 다른 청크의 export 를
+  // 재노출하면, Route 의 네임스페이스(`exports_Route`)는 getter 로 ia/ib 를 갖지만 청크
+  // 수준 노출(`exports.x = exports_Route.x`)이 re_export_star 를 skip 해 동적 청크 exports
+  // 에서 ia/ib 가 누락됐다(`import('./Route').ia`=undefined). collectExportsRecursive 로
+  // star 전개 이름까지 노출.
+  test('lock: lazy 청크의 cross-chunk export *(star) 재노출 (#2)', async () => {
+    const { exports } = await loadDevSplitLazy(
+      {
+        'inner.ts': "export const ia = 'IA';\nexport const ib = 'IB';",
+        'Route.ts': "export * from './inner';\nexport const pv = 'PV';",
+        'entry.ts':
+          "import { ia } from './inner';\nglobalThis.E = ia;\nglobalThis.r = () => import('./Route');",
+      },
+      'Route.ts',
+    );
+    expect(exports.ia).toBe('IA'); // star 재노출
+    expect(exports.ib).toBe('IB'); // star 재노출
+    expect(exports.pv).toBe('PV'); // 자체 export
+  });
 });
