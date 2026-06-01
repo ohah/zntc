@@ -376,4 +376,43 @@ describe('cross-chunk re-export (#3321 follow-up bugfix)', () => {
       { format: 'esm' },
       'APVA',
     ));
+
+  // #4096 lock: cross-chunk 으로 예약어 export 이름(`default`)을 가져오면 축약 바인딩
+  // (`const { default }` / `import { default }`)이 예약어라 청크 전체 parse 실패였다.
+  // iife/cjs/esm splitting 모두 반드시 alias(`default: _default` / `default as _default`)
+  // 로 나와야 한다. dev_split 런타임 가드는 napi-lazy-dev-hmr 에 있고, 여기선 production
+  // splitting 의 emit 형태(예약어 미축약)를 3포맷에서 잠근다.
+  for (const format of ['iife', 'cjs', 'esm'] as const) {
+    test(`${format}: export { default } from cjs — 예약어가 축약 아닌 alias 로 emit (#4096)`, async () => {
+      const fixture = await createFixture({
+        'cjslib.js': "module.exports = function(){ return 'D'; };\nmodule.exports.named = 9;",
+        'Route.ts': "export { default, named } from './cjslib.js';",
+        'entry.ts':
+          "import l from './cjslib.js';\nglobalThis.E = l;\nglobalThis.r = () => import('./Route');",
+      });
+      cleanup = fixture.cleanup;
+      const result = await build({
+        entryPoints: [join(fixture.dir, 'entry.ts')],
+        rootDir: fixture.dir,
+        platform: 'browser',
+        splitting: true,
+        format,
+      });
+      expect(result.errors ?? []).toHaveLength(0);
+      const route = (result.outputFiles ?? []).find(
+        (o) => /Route-/.test(o.path) && o.path.endsWith('.js'),
+      );
+      expect(route).toBeDefined();
+      // cross-chunk import 라인(`… = __zntc_require(…)` / `… = require(…)` / `… from "…"`)을
+      // 찾아 예약어 default 가 alias 됐는지 확인.
+      const crossImport = route!.text
+        .split('\n')
+        .find((l) => /\bdefault\b/.test(l) && /(__zntc_require|require|from)\s*[("]/.test(l));
+      expect(crossImport).toBeDefined();
+      // alias 형태: `default: <local>` 또는 `default as <local>`.
+      expect(/\bdefault\s*(:|\bas\b)/.test(crossImport!)).toBe(true);
+      // 축약 바인딩(`{ default }` / `{ default, … }` / `{ …, default }`) 부재 = SyntaxError 없음.
+      expect(/\bdefault\s*[},]/.test(crossImport!)).toBe(false);
+    });
+  }
 });
