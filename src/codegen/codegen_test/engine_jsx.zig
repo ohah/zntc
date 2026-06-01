@@ -536,3 +536,27 @@ test "JSX automatic: single non-spread child stays as scalar jsx (#4109)" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "children: a") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "children: [") == null);
 }
+
+// 회귀(#4110): 값 없는 key 속성(`<div key>`)은 다른 속성처럼 boolean true 로
+// 정규화되어 positional key 슬롯을 유지해야 한다. 정규화 없이 .none 이면 codegen 이
+// .none 인자를 통째로 skip 해 _jsxDEV 의 positional 인자(key/isStaticChildren/
+// source/this)가 한 칸씩 시프트됐다.
+test "JSX dev: valueless key normalizes to true without arg shift (#4110)" {
+    var r = try e2eJSXDev(std.testing.allocator, "const x = <div key>{y}</div>;");
+    defer r.deinit();
+    // key=true 가 3번째 positional 인자, isStaticChildren(false)가 4번째 (시프트 없음)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "{ children: y }, true, false,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ", this)") != null);
+}
+
+test "JSX automatic: valueless key normalizes to true (#4110)" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <div key>{y}</div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "{ children: y }, true)") != null);
+}
+
+test "JSX dev: keyed value still works (#4110 regression guard)" {
+    var r = try e2eJSXDev(std.testing.allocator, "const x = <div key=\"k\">{y}</div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "{ children: y }, \"k\", false,") != null);
+}
