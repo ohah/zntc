@@ -498,3 +498,41 @@ test "Flow: component param with complex type annotation" {
 }
 
 // ============================================================
+
+// 회귀(#4109): 자식이 spread child 하나뿐이면 object property value 위치에 bare
+// spread 가 와서 SyntaxError(`children: ...arr`)였다. esbuild 처럼 [...arr] 로 감싸고
+// spread children 은 static 이므로 _jsxs 로 승격한다.
+test "JSX automatic: spread-only child wraps in array and uses jsxs (#4109)" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <Foo>{...arr}</Foo>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children: [...arr]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsxs(Foo") != null);
+    // invalid 한 bare spread(`children: ...arr`)가 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children: ...arr") == null);
+}
+
+test "JSX automatic: fragment spread-only child wraps in array (#4109)" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <>{...arr}</>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children: [...arr]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsxs(_Fragment") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children: ...arr") == null);
+}
+
+test "JSX dev: spread-only child wraps in array, isStaticChildren true (#4109)" {
+    var r = try e2eJSXDev(std.testing.allocator, "const x = <Foo>{...arr}</Foo>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children: [...arr]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children: ...arr") == null);
+    // key 자리 undefined 다음 isStaticChildren=true
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "undefined, true,") != null);
+}
+
+// 회귀(#4109): 단일 일반 child 는 그대로 단일 값 _jsx 유지 (배열 미사용)
+test "JSX automatic: single non-spread child stays as scalar jsx (#4109)" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <Foo>{a}</Foo>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(Foo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children: a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children: [") == null);
+}
