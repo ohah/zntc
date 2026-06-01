@@ -260,6 +260,10 @@ pub fn emitChunks(
             .entry_point => |info| !info.is_dynamic,
             .common, .manual => false,
         };
+        // RFC_LAZY_DEV_MODULE_HMR PR-2: dev_split(=dev+code_splitting+lazy)의 reg(IIFE/UMD/AMD)
+        // 청크는 글로벌 __zntc_modules 등록 prelude + wrapped 모듈 init 트리거를 받는다.
+        // bundler.zig:1622 / finalize.zig 의 dev_split 게이트와 같은 의미(여기선 reg_split 한정).
+        const dev_split_chunk = reg_split and options.dev_mode and graph.lazy_compilation;
 
         // banner 삽입 (각 청크 출력 앞)
         if (options.banner_js) |banner| {
@@ -332,6 +336,20 @@ pub fn emitChunks(
 
         // 청크별 런타임 헬퍼 주입
         try emitChunkRuntimeHelpers(&chunk_output, allocator, chunk, graph, linker, options, null);
+
+        // dev_split (RFC_LAZY_DEV_MODULE_HMR PR-2): 글로벌 __zntc_modules 등록 prelude.
+        // emitChunkRuntimeHelpers 가 청크-로컬 __esm/__commonJS 를 정의한 *직후* 에 주입돼야
+        // wrap 이 그 orig 를 캡처. entry 청크 = HMR_RUNTIME(register+core 전부, apply_update
+        // 등 머신러리 1회), 비-entry(shared/dynamic) = HMR_CHUNK_REGISTER(글로벌 등록만).
+        // 글로벌(__zntc_g.__zntc_modules ||)이라 청크 평가 순서 무관 → cross-chunk hot-replace.
+        // reg_split(IIFE/UMD/AMD) 만: ESM 출력은 청크가 native import 라 등록 모델 비대상.
+        if (dev_split_chunk) {
+            const hmr_src = if (chunk_is_user_entry)
+                (if (options.minify_whitespace) rt.HMR_RUNTIME_MIN else rt.HMR_RUNTIME)
+            else
+                rt.HMR_CHUNK_REGISTER;
+            try chunk_output.appendSlice(allocator, hmr_src);
+        }
 
         // ESM external imports (#1962): chunk 모듈들의 external import 를 dedup
         // 후 chunk top 에 단일 `import` 로 prepend. emitChunkExternalImports
@@ -748,6 +766,25 @@ pub fn emitChunks(
                 options.run_before_main,
                 if (linker) |l| &l.rename_table else null,
             );
+        }
+
+        // dev_split (RFC_LAZY_DEV_MODULE_HMR PR-2): 비-entry 청크(shared/common)의 wrapped
+        // 모듈 init 트리거. production 은 모듈이 wrap 안 돼 청크 factory 실행 = 즉시 init
+        // 이지만, dev wrap-all 은 모듈을 `init_X = __esm({...})` 로 lazy wrap. 청크 factory
+        // 가 init 을 안 부르면 아래 cross-chunk `exports.x = local` 이 init 전 값(undefined)을
+        // 스냅샷 → cross-chunk 소비자가 `const {x} = __zntc_require(...)` 로 undefined 캡처
+        // (s=undefined 버그). entry 청크는 935 블록이 처리하므로 여기선 비-entry 만. 반드시
+        // cross-chunk exports emit *앞* 에서 호출해 local 값을 채운다. __esm memoize=중복 무해.
+        if (dev_split_chunk and !chunk_is_user_entry) {
+            for (sorted_mods) |mod_idx| {
+                const mi = @intFromEnum(mod_idx);
+                if (mi >= module_count) continue;
+                const m = graph.getModule(mod_idx) orelse continue;
+                const tla = m.wrap_kind == .esm and m.uses_top_level_await;
+                if (m.wrap_kind.isWrapped() and !tla) {
+                    try parent.appendModuleCall(&chunk_output, allocator, m, if (linker) |l| &l.rename_table else null);
+                }
+            }
         }
 
         // 크로스 청크 export: exports_to에 심볼이 있으면 export 문 생성.
@@ -2001,6 +2038,12 @@ fn emitLazyEntryExportAll(
         if (mi >= module_count or mi == entry_mod_idx) continue;
         const m = graph.getModule(mod_idx) orelse continue;
         for (m.export_bindings) |eb| {
+            // `export * from './m'`(re_export_star)는 노출 이름이 `*` 하나뿐인데 로컬
+            // 심볼이 없어 `exports.* = *;`(invalid JS) 를 만든다. star 가 합치는 실제
+            // 이름들은 소스 모듈의 자기 바인딩으로 이미 순회되므로(같은 청크 hoist 시)
+            // 여기선 스킵한다. (`export * as ns`=re_export_namespace 는 실제 로컬 ns
+            // 심볼이 있으므로 스킵 대상 아님.)
+            if (eb.kind == .re_export_star) continue;
             const local = l.getCanonicalName(@intCast(mi), eb.exported_name) orelse m.exportBindingLocalName(eb);
             if (local.len == 0) continue;
             const gop = try seen.getOrPut(allocator, local);

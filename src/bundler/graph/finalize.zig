@@ -105,7 +105,12 @@ pub fn promoteExportsKinds(self: *ModuleGraph) void {
     // - dev + code_splitting: 단일번들 HMR wrap-all 을 끄고 프로덕션 wrapping 을 쓴다.
     //   dev 의 cross-module init(__zntc_modules[dev_id])이 청크 경계를 못 넘기 때문(issue #4038).
     //   → entry 가 scope-hoist(.none)로 인라인 실행되어 BUG2(entry 미실행)도 함께 해소.
-    if (self.resolve_cache.platform == .react_native or (self.dev_mode and !self.code_splitting)) {
+    // dev_split (RFC_LAZY_DEV_MODULE_HMR PR-2): dev+code_splitting+lazy_compilation 도
+    // wrap-all 을 켠다 — 모듈이 개별 __esm/__commonJS factory 가 되어 글로벌
+    // __zntc_modules 에 per-module 등록 가능(cross-chunk hot-replace). cross-chunk
+    // static 해석은 production __zntc_require 가 담당(metadata 불변, #4038 회피).
+    const dev_split = self.dev_mode and self.code_splitting and self.lazy_compilation;
+    if (self.resolve_cache.platform == .react_native or (self.dev_mode and !self.code_splitting) or dev_split) {
         var it = self.modules.iterator(0);
         while (it.next()) |m| {
             if (m.wrap_kind != .none) continue;

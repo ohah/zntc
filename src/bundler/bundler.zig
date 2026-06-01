@@ -1683,15 +1683,28 @@ pub const Bundler = struct {
             emit_opts.preserve_modules_root = self.options.preserve_modules_root;
             emit_opts.worker_map_per_module = &worker_map_per_module;
             // Lazy dev-splitting: emitModule 이 dev wrapping(minify skip 등)을 적용하도록
-            // dev_mode 전파. dev init lowering(__zntc_modules)은 emit_opts.code_splitting=true
-            // (makeEmitOptions 가 self.options 에서 set)로 비활성화됨(issue #4038). 모듈별 HMR
-            // (__zntc_make_hot)은 dev_id 미설정이라 아직 미주입(PR-4 에서 추가). sourcemap 은 dev on.
+            // dev_mode 전파. cross-chunk static 해석은 production __zntc_require 가 담당(metadata
+            // 게이트 emit_opts.code_splitting=true 로 production init 유지, issue #4038 회피).
+            // RFC_LAZY_DEV_MODULE_HMR PR-2: setDevId 로 dev_id 를 채워 finalize wrap-all + 청크
+            // 등록 prelude(chunks.zig)가 모듈을 글로벌 __zntc_modules 에 per-module 등록 →
+            // cross-chunk hot-replace 의 *레지스트리 substrate* 완성. react_refresh/`__zntc_make_hot`
+            // accept 주입(=hot-replace 의 accept 콜백)과 dev 서버 모듈 transport 는 후속 PR 범위라
+            // 여기선 react_refresh 미전파(현 동작=apply_update 가 accept 없으면 full-reload). sourcemap 은 dev on.
             if (dev_split) {
                 emit_opts.dev_mode = true;
                 emit_opts.sourcemap.enable = true;
                 // RFC_LAZY_DEV_MODULE_HMR PR-1: emitChunks 가 per-module HMR code 를
                 // 수집하도록 collect_module_codes 전파(단일번들 경로와 동일 게이트).
                 emit_opts.collect_module_codes = self.options.collect_module_codes;
+                // PR-2: dev_id 설정(단일번들 경로 1635~1640 과 동일). wrap-all 이 켜진
+                // dev_split 에서 dev lowering 이 __zntc_modules[dev_id] 를 emit 하는데
+                // dev_id 가 비면 __zntc_modules[""] 누출 → setDevId 로 모듈 ID 채움.
+                const la = graph.linkAccessor();
+                for (0..graph.moduleCount()) |i| {
+                    const idx = ModuleIndex.fromUsize(i);
+                    const m = graph.getModule(idx) orelse continue;
+                    la.setDevId(idx, emitter.makeModuleId(m.path, self.options.root_dir));
+                }
             }
 
             // CSS 코드스플리팅 계획을 emitChunks *전* 에 세워, 동적 청크가
