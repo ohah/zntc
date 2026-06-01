@@ -818,17 +818,26 @@ pub fn emitChunks(
             );
         }
 
-        // dev_split (RFC_LAZY_DEV_MODULE_HMR PR-2): 비-entry 청크(shared/common)의 wrapped
-        // 모듈 init 트리거. production 은 모듈이 wrap 안 돼 청크 factory 실행 = 즉시 init
-        // 이지만, dev wrap-all 은 모듈을 `init_X = __esm({...})` 로 lazy wrap. 청크 factory
-        // 가 init 을 안 부르면 아래 cross-chunk `exports.x = local` 이 init 전 값(undefined)을
-        // 스냅샷 → cross-chunk 소비자가 `const {x} = __zntc_require(...)` 로 undefined 캡처
-        // (s=undefined 버그). entry 청크는 935 블록이 처리하므로 여기선 비-entry 만. 반드시
-        // cross-chunk exports emit *앞* 에서 호출해 local 값을 채운다. __esm memoize=중복 무해.
-        if (dev_split_chunk and !chunk_is_user_entry) {
+        // dev_split (RFC_LAZY_DEV_MODULE_HMR PR-2): 청크의 hoisted wrapped 모듈 init 트리거.
+        // production 은 모듈이 wrap 안 돼 청크 factory 실행 = 즉시 init 이지만, dev wrap-all 은
+        // 모듈을 `init_X = __esm({...})` 로 lazy wrap. 청크 factory 가 init 을 안 부르면 아래
+        // cross-chunk `exports.x = local` 이 init 전 값(undefined)을 스냅샷 → cross-chunk 소비자가
+        // `const {x} = __zntc_require(...)` 로 undefined 캡처(const export = s/tag undefined 버그;
+        // 함수는 hoisting 으로 정상이라 const 만 노출됐다, follow-up #A).
+        // ⚠️ user-entry 청크의 *entry 모듈 자체* 는 제외 — 1015 블록 + bootstrap 이 init 하며
+        // 그게 앱 실행 시점이라 여기서 당겨 실행하면 안 된다. hoisted **dep** 모듈만 선-init 해
+        // const export 스냅샷을 채운다(entry 도 dep 를 import 해 hoist 시킨 경우 포함).
+        // __esm memoize=중복 무해.
+        if (dev_split_chunk) {
             for (sorted_mods) |mod_idx| {
                 const mi = @intFromEnum(mod_idx);
                 if (mi >= module_count) continue;
+                // user-entry 청크: entry 모듈 자체는 skip(1015 블록/bootstrap 이 init).
+                if (chunk_is_user_entry) {
+                    if (entry_mod_idx) |ei| {
+                        if (mi == ei) continue;
+                    }
+                }
                 const m = graph.getModule(mod_idx) orelse continue;
                 const tla = m.wrap_kind == .esm and m.uses_top_level_await;
                 if (m.wrap_kind.isWrapped() and !tla) {
