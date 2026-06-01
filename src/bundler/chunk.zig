@@ -1297,8 +1297,11 @@ fn addCrossChunkSymbol(
 
     const ifgop = try chunk.imports_from.getOrPut(allocator, src_ci);
     if (!ifgop.found_existing) ifgop.value_ptr.* = .empty;
+    // dedup 은 (export 이름, canonical 모듈) 둘 다로 — 서로 다른 모듈이 *같은* export
+    // 이름(두 `v`)을 내고 한 소비자가 둘 다 가져오면 이름만으론 하나로 붕괴(#B). canonical
+    // 모듈이 다르면 별개 심볼이라 둘 다 유지(전역 네이밍이 `v`/`v$1` 로 구분, #4101).
     for (ifgop.value_ptr.items) |existing| {
-        if (std.mem.eql(u8, existing.name, export_name)) break;
+        if (std.mem.eql(u8, existing.name, export_name) and existing.canonical_module == canonical_module) break;
     } else {
         try ifgop.value_ptr.append(allocator, .{ .name = export_name, .canonical_module = canonical_module });
     }

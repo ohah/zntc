@@ -67,6 +67,9 @@ fn appendCssLinkPrologue(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), 
 /// cross-chunk 가 발생하지 않으므로 export 명 그대로.
 fn crossChunkBindingName(linker: ?*Linker, sym: chunk_mod.CrossChunkSym) []const u8 {
     if (linker) |l| {
+        // #4101 전역 일관 네이밍: cross-chunk 심볼은 provider/consumer 가 같은 전역 이름을
+        // 써야 한다. 전역 맵에 있으면 그걸 우선(같은 이름 다른 모듈 `v`/`v$1` 구분).
+        if (l.getCrossChunkGlobalName(sym.canonical_module, sym.name)) |g| return g;
         if (Linker.isReservedName(sym.name)) {
             return l.resolveToLocalName(.{
                 .module_index = @enumFromInt(sym.canonical_module),
@@ -555,13 +558,15 @@ pub fn emitChunks(
                     } else {
                         // key == binding → 축약. 단 같은 export 명이 여러 dep 에서 오면
                         // 중복 로컬 선언 충돌 → 2번째부터 `key: key$N` deconfliction.
+                        // lazy(전역 네이밍)는 binding 이 이미 전역 deconflict(`v`/`v$1`)라
+                        // `$N` 불필요(이중 deconflict 로 소비자 참조와 어긋남). non-lazy 만.
                         const total = name_total_count.get(name) orelse 1;
                         const seen_gop = try name_seen_count.getOrPut(allocator, name);
                         if (!seen_gop.found_existing) seen_gop.value_ptr.* = 0;
                         seen_gop.value_ptr.* += 1;
                         const seen = seen_gop.value_ptr.*;
 
-                        if (total > 1 and seen > 1) {
+                        if (total > 1 and seen > 1 and !lazy_local_keys) {
                             const alias = try std.fmt.allocPrint(allocator, "{s}${d}", .{ key, seen });
                             try alias_strs.append(allocator, alias);
                             try chunk_output.appendSlice(allocator, key);
@@ -2123,7 +2128,14 @@ fn emitLazyEntryExportAll(
             // 여기선 스킵한다. (`export * as ns`=re_export_namespace 는 실제 로컬 ns
             // 심볼이 있으므로 스킵 대상 아님.)
             if (eb.kind == .re_export_star) continue;
-            const local = l.getCanonicalName(@intCast(mi), eb.exported_name) orelse m.exportBindingLocalName(eb);
+            // 노출 키 = deconflict 된 local 명. export 명이 canonical 이면 그걸(`export const v`),
+            // 아니면(예: `default` 의 합성 local `_default`) export 의 *local* 명의 canonical 로
+            // fallback — 안 하면 default 가 un-deconflict 된 `_default` 로 떨어져 동명 default 둘이
+            // dedup(소비자 본문 `_default$1` 미노출). #4101 전역 override 가 local canonical 을
+            // `_default$1` 로 고정하므로 그 경로로 정확히 노출된다.
+            const export_local = m.exportBindingLocalName(eb);
+            const local = l.getCanonicalName(@intCast(mi), eb.exported_name) orelse
+                (l.getCanonicalName(@intCast(mi), export_local) orelse export_local);
             if (local.len == 0) continue;
             const gop = try seen.getOrPut(allocator, local);
             if (gop.found_existing) continue;
