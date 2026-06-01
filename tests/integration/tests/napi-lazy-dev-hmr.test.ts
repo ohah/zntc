@@ -620,4 +620,23 @@ process.stdout.write(JSON.stringify({
     expect(exports.own).toBe('OWN');
     expect((exports.r as () => string)()).toBe('R');
   });
+
+  // follow-up A: cross-chunk ESM *const* named export 가 lazy 청크에서 실값이어야 한다.
+  // entry 청크가 dep 를 hoist 하지만, dep 의 const 초기화(`tag="TVAL"`)가 cross-chunk export
+  // 스냅샷(`exports.tag = tag`)보다 늦게 돌면 undefined 를 캡처했다(함수는 hoisting 으로 정상,
+  // const 만 실패). dev_split user-entry 청크가 hoisted dep wrapped 모듈을 cross-chunk export
+  // *앞* 에서 선-init 하도록 수정.
+  test('lock: cross-chunk ESM const named export 가 lazy 청크에서 실값 (snapshot 순서 #A)', async () => {
+    const { exports } = await loadDevSplitLazy(
+      {
+        'dep.ts': "export const tag = 'TVAL';\nexport function mk(){ return 'MK'; }",
+        'Route.ts':
+          "import { tag, mk } from './dep';\nexport function r(){ return tag + ':' + mk(); }",
+        'entry.ts':
+          "import { mk } from './dep';\nglobalThis.E = mk();\nglobalThis.r = () => import('./Route');",
+      },
+      'Route.ts',
+    );
+    expect((exports.r as () => string)()).toBe('TVAL:MK');
+  });
 });
