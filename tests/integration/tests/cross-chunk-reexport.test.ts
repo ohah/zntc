@@ -415,4 +415,37 @@ describe('cross-chunk re-export (#3321 follow-up bugfix)', () => {
       expect(/\bdefault\s*[},]/.test(crossImport!)).toBe(false);
     });
   }
+
+  // #C lock: production splitting 에서 default *import* 의 정의 모듈이 별도(shared) 청크면,
+  // 그 청크가 `exports.default = <local>` 로 노출한다. local 을 export 명 `default`(예약어
+  // 식별자)로 떨어뜨리면 `exports.default = default;` (RHS 예약어 = SyntaxError, 청크 parse
+  // 실패)였다. canonical synthetic local(`_default`)로 해석돼 모든 청크가 parse 되는지 가드.
+  for (const format of ['iife', 'cjs'] as const) {
+    test(`${format}: default import 의 shared 청크가 SyntaxError 없이 노출 (#C)`, async () => {
+      const fixture = await createFixture({
+        'esmdep.ts': "export default function(){ return 'DEF'; }\nexport const tag = 'T';",
+        'Card.ts': "import def from './esmdep';\nexport function card(){ return def(); }",
+        'entry.ts':
+          "import def from './esmdep';\nglobalThis.E = def();\nglobalThis.load = () => import('./Card');",
+      });
+      cleanup = fixture.cleanup;
+      const result = await build({
+        entryPoints: [join(fixture.dir, 'entry.ts')],
+        rootDir: fixture.dir,
+        platform: 'browser',
+        splitting: true,
+        format,
+      });
+      expect(result.errors ?? []).toHaveLength(0);
+      const jsChunks = (result.outputFiles ?? []).filter((o) => o.path.endsWith('.js'));
+      expect(jsChunks.length).toBeGreaterThan(1); // entry + Card + shared(esmdep)
+      for (const chunk of jsChunks) {
+        // 예약어 RHS(`exports.default = default;` / `= default,`) 부재. `_default` 는 word
+        // boundary 로 제외(= 정상). 있으면 = canonical 미해석 = SyntaxError 원인.
+        expect(/=\s*\bdefault\b\s*[;,)]/.test(chunk.text)).toBe(false);
+        // 함수 본문으로 감싸 parse 검증(실행 아님) — 예약어 RHS 면 throw.
+        expect(() => new Function('exports', 'module', 'require', chunk.text)).not.toThrow();
+      }
+    });
+  }
 });

@@ -639,4 +639,30 @@ process.stdout.write(JSON.stringify({
     );
     expect((exports.r as () => string)()).toBe('TVAL:MK');
   });
+
+  // follow-up B (todo: cross-chunk 네이밍 일관성 = 더 깊은 아키텍처 과제):
+  // 서로 다른 모듈이 *같은* export 이름(`v`)을 내고 한 lazy 청크가 둘 다 import 하면,
+  // va·vb 가 같은 값으로 collapse 된다(r()='AA', 'AB' 아님). dep 청크는 renamer deconflict 로
+  // 양쪽(`exports.v`/`exports.v$1`)을 노출하고, imports_from dedup 을 (이름,canonical모듈)로
+  // 고치면 destructuring(`const {v, v$1}`)·바인딩까지는 맞출 수 있다. 그러나 소비자 **본문**
+  // 참조(`return va + vb`)는 codegen 이 cross-chunk 심볼을 *export 명*(`v`)으로 렌더한다 —
+  // provider 청크의 deconflict 된 `v$1` 을 모른다(rename_table 이 청크별로 clear 됨). 본문
+  // 참조와 destructuring 바인딩을 일치시키려면 cross-chunk 심볼명을 전역 일관되게 유지해야
+  // 하고(provider 의 deconflict 된 이름 persistence), 그건 RFC_GRAPH_PERSISTENCE(CLOSED) /
+  // lifecycle scope redesign 급 변경이다. 부분 수정은 본문이 여전히 붕괴해 순효과가 없어
+  // 보류 — 전역 네이밍 일관성 확보 후 `test.todo`→`test` 로 전환.
+  test.todo('다른 모듈의 같은 이름 export 둘을 한 lazy 청크가 import (dedup 붕괴 #B)', async () => {
+    const { exports } = await loadDevSplitLazy(
+      {
+        'a.ts': "export const v = 'A';",
+        'b.ts': "export const v = 'B';",
+        'Route.ts':
+          "import { v as va } from './a';\nimport { v as vb } from './b';\nexport function r(){ return va + vb; }",
+        'entry.ts':
+          "import { v as va } from './a';\nimport { v as vb } from './b';\nglobalThis.E = va + vb;\nglobalThis.r = () => import('./Route');",
+      },
+      'Route.ts',
+    );
+    expect((exports.r as () => string)()).toBe('AB');
+  });
 });

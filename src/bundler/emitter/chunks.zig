@@ -977,6 +977,19 @@ pub fn emitChunks(
                                 found_local = renamed;
                                 break;
                             }
+                            // 예약어 export 명(`default`)의 합성 local(`_default`)은 canonical 미등록
+                            // 일 수 있다 — 위 getCanonicalName 실패로 break 안 하면 아래 fallback 이
+                            // `name`(=`default`)으로 떨어져 `exports.default = default`(RHS 가 예약어
+                            // 식별자 = SyntaxError, #C)를 만든다. 예약어 export 명에 한해 owner 의
+                            // local(`_default`)로 break(비예약어 same-name 해석은 OLD 그대로 보존).
+                            // ⚠️ `local` 자체가 예약어면(예: `export {default} from './x'` 의 re-export
+                            // source 명이 `default`) 그걸 RHS 로 쓰면 다시 SyntaxError — 비예약어 local
+                            // 일 때만 채택하고, 아니면 계속 순회해 실제 owner(`_default`)를 찾는다.
+                            // (둘 다 없는 re-export 체인은 별도 follow-up — fallback 유지.)
+                            if (Linker.isReservedName(name) and !Linker.isReservedName(local)) {
+                                found_local = local;
+                                break;
+                            }
                         }
                     }
                     break :blk found_local orelse name;
