@@ -958,7 +958,8 @@ pub const HMR_RUNTIME =
     \\// /code-review max #2/#6: noop fallback 을 .css key 만 한정 — JS module
     \\// 의 missing entry 는 undefined 유지하여 기존 fallthrough 동작 (HMR update
     \\// 의 silent loss / dev 의 noisy TypeError 진단 가시성) 보존.
-    \\var __zntc_modules = typeof Proxy !== "undefined"
+    \\var __zntc_g = typeof globalThis !== "undefined" ? globalThis : typeof global !== "undefined" ? global : typeof window !== "undefined" ? window : this;
+    \\var __zntc_modules = __zntc_g.__zntc_modules || (__zntc_g.__zntc_modules = typeof Proxy !== "undefined"
     \\  ? new Proxy({}, { get: function(t, k) {
     \\      if (Object.prototype.hasOwnProperty.call(t, k)) return t[k];
     \\      if (typeof k === "string" && k.length >= 4 && k.slice(-4) === ".css") {
@@ -966,10 +967,9 @@ pub const HMR_RUNTIME =
     \\      }
     \\      return undefined;
     \\    } })
-    \\  : {};
+    \\  : {});
     \\var __zntc_hot_cbs = {};
     \\var __zntc_hot_data = {};
-    \\var __zntc_g = typeof globalThis !== "undefined" ? globalThis : typeof global !== "undefined" ? global : typeof window !== "undefined" ? window : this;
     \\function __zntc_schedule(fn) {
     \\  if (typeof setTimeout === "function") setTimeout(fn, 0);
     \\  else fn();
@@ -1124,8 +1124,55 @@ pub const HMR_RUNTIME =
     \\
 ;
 
+/// HMR_CHUNK_REGISTER (RFC_LAZY_DEV_MODULE_HMR PR-2): dev_split 의 **비-entry 청크**
+/// (shared/dynamic)가 자기 모듈을 글로벌 `__zntc_modules` 에 등록하게 하는 최소 prelude.
+/// = 글로벌 `__zntc_modules`(멱등 `||`) + `__commonJS`/`__esm` wrap(청크-로컬 factory 를
+/// 재할당해 등록). entry 청크/단일번들은 `HMR_RUNTIME`(register+core 전부)을 쓰므로 이건
+/// 비-entry 전용. ⚠️ 글로벌 `__zntc_modules`(`__zntc_g.__zntc_modules || (...)`) + wrap
+/// 로직은 **3곳에 미러**다: `HMR_RUNTIME`, `HMR_RUNTIME_MIN`, 그리고 여기. 한 곳을
+/// 바꾸면 셋 다 동반 수정(특히 글로벌-백킹 `||` 패턴이 한 곳이라도 빠지면 minify
+/// 경로에서 entry/비-entry 레지스트리가 갈려 cross-chunk lookup 이 깨진다).
+/// 후속 cleanup = 공통 wrap 상수(HMR_REGISTRY_CORE) 추출 후 세 곳이 compose.
+/// ⚠️ minify(`$c`/`$e`) 경로: 세 상수 모두 wrap 이 `__commonJS`/`__esm`(non-min) 이름을
+/// 참조하므로 minify 빌드에선 모듈 등록이 inert(=dev 는 minify 안 함 전제, 사전 한계).
+/// 청크 factory 안에서 `var __esm`(emitChunkRuntimeHelpers 가 정의) **뒤**에 주입돼야
+/// orig 를 캡처해 재래핑. 글로벌이라 청크 평가 순서 무관.
+pub const HMR_CHUNK_REGISTER =
+    \\var __zntc_g = typeof globalThis !== "undefined" ? globalThis : typeof global !== "undefined" ? global : typeof window !== "undefined" ? window : this;
+    \\var __zntc_modules = __zntc_g.__zntc_modules || (__zntc_g.__zntc_modules = typeof Proxy !== "undefined"
+    \\  ? new Proxy({}, { get: function(t, k) {
+    \\      if (Object.prototype.hasOwnProperty.call(t, k)) return t[k];
+    \\      if (typeof k === "string" && k.length >= 4 && k.slice(-4) === ".css") {
+    \\        return { fn: function() {}, exports: {} };
+    \\      }
+    \\      return undefined;
+    \\    } })
+    \\  : {});
+    \\var __zntc_orig_commonJS = typeof __commonJS !== "undefined" ? __commonJS : null;
+    \\var __zntc_orig_esm = typeof __esm !== "undefined" ? __esm : null;
+    \\if (__zntc_orig_commonJS) __commonJS = function(cb, mod) {
+    \\  var id = Object.keys(cb)[0];
+    \\  var fn = __zntc_orig_commonJS(cb, mod);
+    \\  __zntc_modules[id] = { type: "cjs", fn: fn, reset: function() {
+    \\    fn = __zntc_orig_commonJS(cb);
+    \\    __zntc_modules[id].fn = fn;
+    \\  }};
+    \\  return fn;
+    \\};
+    \\if (__zntc_orig_esm) __esm = function(fn, res, exportsObj) {
+    \\  var id = Object.keys(fn)[0];
+    \\  var init = __zntc_orig_esm(fn, res);
+    \\  __zntc_modules[id] = { type: "esm", fn: init, exports: exportsObj, reset: function() {
+    \\    init = __zntc_orig_esm(fn);
+    \\    __zntc_modules[id].fn = init;
+    \\  }};
+    \\  return init;
+    \\};
+    \\
+;
+
 pub const HMR_RUNTIME_MIN =
-    \\var __zntc_modules=typeof Proxy!=="undefined"?new Proxy({},{get:function(t,k){if(Object.prototype.hasOwnProperty.call(t,k))return t[k];if(typeof k==="string"&&k.length>=4&&k.slice(-4)===".css")return{fn:function(){},exports:{}};return undefined}}):{},__zntc_hot_cbs={},__zntc_hot_data={},__zntc_g=typeof globalThis!=="undefined"?globalThis:typeof global!=="undefined"?global:typeof window!=="undefined"?window:this;function __zntc_schedule(f){typeof setTimeout=="function"?setTimeout(f,0):f()}var __zntc_reload=function(reason){__zntc_schedule(function(){var why=reason||"ZNTC HMR fallback";if(typeof require=="function")try{var rn=require("react-native");if(rn&&rn.DevSettings&&typeof rn.DevSettings.reload=="function"){rn.DevSettings.reload(why);return}}catch(_e){}if(typeof location!="undefined"&&location&&typeof location.reload=="function"){location.reload();return}if(__zntc_g.nativeModuleProxy&&__zntc_g.nativeModuleProxy.DevSettings){var ds=__zntc_g.nativeModuleProxy.DevSettings;if(typeof ds.reloadWithReason=="function")ds.reloadWithReason(why);else if(typeof ds.reload=="function")ds.reload()}})};function __zntc_resolveRefresh(){if(__zntc_g.__ReactRefresh)return __zntc_g.__ReactRefresh;try{var r=require("react-refresh/runtime");__zntc_g.__ReactRefresh=r;__zntc_g.__REACT_REFRESH_RUNTIME__=r;return r}catch(e){}return null}function __zntc_isReactRefreshBoundary(m){var rt=__zntc_g.__ReactRefresh||__zntc_resolveRefresh();if(!rt)return false;if(rt.isLikelyComponentType(m))return true;if(m==null||typeof m!="object")return false;var h=false;for(var k in m){if(k==="__esModule")continue;h=true;if(!rt.isLikelyComponentType(m[k]))return false}return h}var __zntc_refreshTimer;function __zntc_enqueueUpdate(){if(__zntc_refreshTimer!=null)return;__zntc_refreshTimer=setTimeout(function(){__zntc_refreshTimer=null;var rt=__zntc_g.__ReactRefresh||__zntc_resolveRefresh();if(rt)rt.performReactRefresh()},50)}function __zntc_make_hot(id){if(!__zntc_hot_cbs[id])__zntc_hot_cbs[id]={};return{get data(){return __zntc_hot_data[id]},accept:function(d,c){if(typeof d==="function"){c=d;d=void 0}__zntc_hot_cbs[id].accept=c||true;if(Array.isArray(d))__zntc_hot_cbs[id].acceptDeps=d},dispose:function(c){__zntc_hot_cbs[id].dispose=c},prune:function(c){__zntc_hot_cbs[id].prune=c},invalidate:function(){__zntc_reload()},get refresh(){return __zntc_g.__ReactRefresh||__zntc_resolveRefresh()},refreshUtils:{isReactRefreshBoundary:__zntc_isReactRefreshBoundary,enqueueUpdate:__zntc_enqueueUpdate}}}var __zntc_oc=typeof __commonJS!="undefined"?__commonJS:null,__zntc_oe=typeof __esm!="undefined"?__esm:null;if(__zntc_oc)__commonJS=function(cb,mod){var id=Object.keys(cb)[0];var fn=__zntc_oc(cb,mod);__zntc_modules[id]={type:"cjs",fn:fn,reset:function(){fn=__zntc_oc(cb);__zntc_modules[id].fn=fn}};return fn};if(__zntc_oe)__esm=function(fn,res,eo){var id=Object.keys(fn)[0];var init=__zntc_oe(fn,res);__zntc_modules[id]={type:"esm",fn:init,exports:eo,reset:function(){init=__zntc_oe(fn);__zntc_modules[id].fn=init}};return init};function __zntc_apply_update(u){for(var i=0;i<u.length;i++){var id=u[i].id;var c=__zntc_hot_cbs[id];if(!c||!c.accept){__zntc_reload();return}try{if(c.dispose){__zntc_hot_data[id]={};c.dispose(__zntc_hot_data[id])}var ev=__zntc_g.globalEvalWithSourceUrl;if(ev){ev(u[i].code,"hmr-update:"+id)}else{(0,eval)(u[i].code)}var ent=__zntc_modules[id];if(ent&&ent.fn)ent.fn();if(typeof c.accept==="function"){c.accept(ent&&ent.exports?ent.exports:{})}}catch(e){console.error("[zntc] HMR update failed:",e);__zntc_reload()}}}(function(g){"use strict";g.$RefreshReg$=function(){};g.$RefreshSig$=function(){return function(t){return t}};g.__zntc_apply_update=__zntc_apply_update;g.__zntc_reload=__zntc_reload;g.__zntc_make_hot=__zntc_make_hot;g.__zntc_modules=__zntc_modules;g.__zntc_resolveRefresh=__zntc_resolveRefresh;g.__zntc_isReactRefreshBoundary=__zntc_isReactRefreshBoundary;g.__zntc_enqueueUpdate=__zntc_enqueueUpdate;if(typeof __esm!="undefined")g.__esm=__esm;if(typeof __export!="undefined")g.__export=__export;if(typeof __commonJS!="undefined")g.__commonJS=__commonJS;if(typeof __defProp!="undefined")g.__defProp=__defProp;if(typeof __toESM!="undefined")g.__toESM=__toESM;if(typeof __toCommonJS!="undefined")g.__toCommonJS=__toCommonJS})(__zntc_g)
+    \\var __zntc_g=typeof globalThis!=="undefined"?globalThis:typeof global!=="undefined"?global:typeof window!=="undefined"?window:this,__zntc_modules=__zntc_g.__zntc_modules||(__zntc_g.__zntc_modules=typeof Proxy!=="undefined"?new Proxy({},{get:function(t,k){if(Object.prototype.hasOwnProperty.call(t,k))return t[k];if(typeof k==="string"&&k.length>=4&&k.slice(-4)===".css")return{fn:function(){},exports:{}};return undefined}}):{}),__zntc_hot_cbs={},__zntc_hot_data={};function __zntc_schedule(f){typeof setTimeout=="function"?setTimeout(f,0):f()}var __zntc_reload=function(reason){__zntc_schedule(function(){var why=reason||"ZNTC HMR fallback";if(typeof require=="function")try{var rn=require("react-native");if(rn&&rn.DevSettings&&typeof rn.DevSettings.reload=="function"){rn.DevSettings.reload(why);return}}catch(_e){}if(typeof location!="undefined"&&location&&typeof location.reload=="function"){location.reload();return}if(__zntc_g.nativeModuleProxy&&__zntc_g.nativeModuleProxy.DevSettings){var ds=__zntc_g.nativeModuleProxy.DevSettings;if(typeof ds.reloadWithReason=="function")ds.reloadWithReason(why);else if(typeof ds.reload=="function")ds.reload()}})};function __zntc_resolveRefresh(){if(__zntc_g.__ReactRefresh)return __zntc_g.__ReactRefresh;try{var r=require("react-refresh/runtime");__zntc_g.__ReactRefresh=r;__zntc_g.__REACT_REFRESH_RUNTIME__=r;return r}catch(e){}return null}function __zntc_isReactRefreshBoundary(m){var rt=__zntc_g.__ReactRefresh||__zntc_resolveRefresh();if(!rt)return false;if(rt.isLikelyComponentType(m))return true;if(m==null||typeof m!="object")return false;var h=false;for(var k in m){if(k==="__esModule")continue;h=true;if(!rt.isLikelyComponentType(m[k]))return false}return h}var __zntc_refreshTimer;function __zntc_enqueueUpdate(){if(__zntc_refreshTimer!=null)return;__zntc_refreshTimer=setTimeout(function(){__zntc_refreshTimer=null;var rt=__zntc_g.__ReactRefresh||__zntc_resolveRefresh();if(rt)rt.performReactRefresh()},50)}function __zntc_make_hot(id){if(!__zntc_hot_cbs[id])__zntc_hot_cbs[id]={};return{get data(){return __zntc_hot_data[id]},accept:function(d,c){if(typeof d==="function"){c=d;d=void 0}__zntc_hot_cbs[id].accept=c||true;if(Array.isArray(d))__zntc_hot_cbs[id].acceptDeps=d},dispose:function(c){__zntc_hot_cbs[id].dispose=c},prune:function(c){__zntc_hot_cbs[id].prune=c},invalidate:function(){__zntc_reload()},get refresh(){return __zntc_g.__ReactRefresh||__zntc_resolveRefresh()},refreshUtils:{isReactRefreshBoundary:__zntc_isReactRefreshBoundary,enqueueUpdate:__zntc_enqueueUpdate}}}var __zntc_oc=typeof __commonJS!="undefined"?__commonJS:null,__zntc_oe=typeof __esm!="undefined"?__esm:null;if(__zntc_oc)__commonJS=function(cb,mod){var id=Object.keys(cb)[0];var fn=__zntc_oc(cb,mod);__zntc_modules[id]={type:"cjs",fn:fn,reset:function(){fn=__zntc_oc(cb);__zntc_modules[id].fn=fn}};return fn};if(__zntc_oe)__esm=function(fn,res,eo){var id=Object.keys(fn)[0];var init=__zntc_oe(fn,res);__zntc_modules[id]={type:"esm",fn:init,exports:eo,reset:function(){init=__zntc_oe(fn);__zntc_modules[id].fn=init}};return init};function __zntc_apply_update(u){for(var i=0;i<u.length;i++){var id=u[i].id;var c=__zntc_hot_cbs[id];if(!c||!c.accept){__zntc_reload();return}try{if(c.dispose){__zntc_hot_data[id]={};c.dispose(__zntc_hot_data[id])}var ev=__zntc_g.globalEvalWithSourceUrl;if(ev){ev(u[i].code,"hmr-update:"+id)}else{(0,eval)(u[i].code)}var ent=__zntc_modules[id];if(ent&&ent.fn)ent.fn();if(typeof c.accept==="function"){c.accept(ent&&ent.exports?ent.exports:{})}}catch(e){console.error("[zntc] HMR update failed:",e);__zntc_reload()}}}(function(g){"use strict";g.$RefreshReg$=function(){};g.$RefreshSig$=function(){return function(t){return t}};g.__zntc_apply_update=__zntc_apply_update;g.__zntc_reload=__zntc_reload;g.__zntc_make_hot=__zntc_make_hot;g.__zntc_modules=__zntc_modules;g.__zntc_resolveRefresh=__zntc_resolveRefresh;g.__zntc_isReactRefreshBoundary=__zntc_isReactRefreshBoundary;g.__zntc_enqueueUpdate=__zntc_enqueueUpdate;if(typeof __esm!="undefined")g.__esm=__esm;if(typeof __export!="undefined")g.__export=__export;if(typeof __commonJS!="undefined")g.__commonJS=__commonJS;if(typeof __defProp!="undefined")g.__defProp=__defProp;if(typeof __toESM!="undefined")g.__toESM=__toESM;if(typeof __toCommonJS!="undefined")g.__toCommonJS=__toCommonJS})(__zntc_g)
 ;
 
 /// HMR 런타임의 줄 수 (소스맵 오프셋 계산용, comptime)
