@@ -181,6 +181,17 @@ pub const ChunkKind = union(enum) {
 // Chunk — 단일 청크
 // ============================================================
 
+/// 심볼 수준 cross-chunk import 한 건. `imports_from` 값 목록의 원소.
+/// `name` 은 dep 청크가 노출하는 **export 키**(destructuring 좌변; `default`
+/// 같은 예약어일 수 있다). `canonical_module` 은 그 export 의 canonical 정의
+/// 모듈 — emitter 가 예약어 키일 때 `resolveToLocalName(SymbolRef)` 로 소비자
+/// 가 실제 참조하는 local 바인딩명(예: `_default`)을 해석하는 데 쓴다. 비예약어
+/// 키는 export 명 == 바인딩명이라 canonical_module 을 보지 않는다(기존 동작).
+pub const CrossChunkSym = struct {
+    name: []const u8,
+    canonical_module: u32,
+};
+
 /// 번들 출력의 단위. 하나의 JS 파일로 출력된다.
 /// 동일한 BitSet(진입점 집합)을 가진 모듈들이 하나의 Chunk에 묶인다.
 pub const Chunk = struct {
@@ -237,9 +248,10 @@ pub const Chunk = struct {
     /// 이 청크가 동적 import하는 다른 청크 목록
     cross_chunk_dynamic_imports: std.ArrayListUnmanaged(ChunkIndex),
 
-    /// 심볼 수준 크로스 청크 import: source_chunk_index → 가져올 심볼 이름 목록.
-    /// computeCrossChunkLinks에서 linker가 있을 때만 채워진다.
-    imports_from: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged([]const u8)),
+    /// 심볼 수준 크로스 청크 import: source_chunk_index → 가져올 심볼 목록.
+    /// computeCrossChunkLinks에서 linker가 있을 때만 채워진다. 각 원소는 export
+    /// 키 + canonical 모듈(예약어 키의 바인딩명 해석용) — `CrossChunkSym` 참조.
+    imports_from: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(CrossChunkSym)),
     /// 이 청크에서 다른 청크로 내보내는 심볼 이름 집합.
     /// 공통 청크에서 export 문을 생성할 때 사용.
     exports_to: std.StringHashMapUnmanaged(void),
@@ -1269,6 +1281,9 @@ fn addCrossChunkSymbol(
     seen_static: *std.AutoHashMapUnmanaged(u32, void),
     src_chunk_idx: ChunkIndex,
     export_name: []const u8,
+    /// `export_name` 의 canonical 정의 모듈 인덱스. 예약어 export 키(`default`)일
+    /// 때 emitter 가 소비자 바인딩명을 `resolveToLocalName` 으로 해석하는 데 쓴다.
+    canonical_module: u32,
 ) !void {
     const src_ci = @intFromEnum(src_chunk_idx);
 
@@ -1283,9 +1298,9 @@ fn addCrossChunkSymbol(
     const ifgop = try chunk.imports_from.getOrPut(allocator, src_ci);
     if (!ifgop.found_existing) ifgop.value_ptr.* = .empty;
     for (ifgop.value_ptr.items) |existing| {
-        if (std.mem.eql(u8, existing, export_name)) break;
+        if (std.mem.eql(u8, existing.name, export_name)) break;
     } else {
-        try ifgop.value_ptr.append(allocator, export_name);
+        try ifgop.value_ptr.append(allocator, .{ .name = export_name, .canonical_module = canonical_module });
     }
 
     try chunk_graph.chunks.items[src_ci].exports_to.put(allocator, export_name, {});
@@ -1310,7 +1325,7 @@ fn linkReExportName(
     const src_chunk_idx = chunk_graph.getModuleChunk(canon.module_index);
     if (src_chunk_idx.isNone()) return;
     if (src_chunk_idx == chunk.index) return; // 같은 청크 → 스킵
-    try addCrossChunkSymbol(allocator, chunk_graph, chunk, seen_static, src_chunk_idx, canon.export_name);
+    try addCrossChunkSymbol(allocator, chunk_graph, chunk, seen_static, src_chunk_idx, canon.export_name, @intFromEnum(canon.module_index));
 }
 
 /// `mod_idx` 의 `export_name` 이 namespace re-export 인지 판정하고, 맞으면
@@ -1451,7 +1466,8 @@ fn linkNamespaceCrossChunk(
     // computeCrossChunkLinks 가 namespace 메타데이터보다 먼저 도는 timing
     // seam — ensureSharedNsVar 가 선제 materialize. 상세는 그 doc 참조.
     const ns_var = try lnk.ensureSharedNsVar(target);
-    try addCrossChunkSymbol(allocator, chunk_graph, chunk, seen_static, tgt_chunk, ns_var);
+    // ns_var 는 합성 namespace 변수명(예약어 아님) → canonical_module 미사용.
+    try addCrossChunkSymbol(allocator, chunk_graph, chunk, seen_static, tgt_chunk, ns_var, @intFromEnum(target));
     try fanOutModuleExports(allocator, chunk_graph, chunk, seen_static, lnk, target, module_count);
 }
 
@@ -1521,7 +1537,7 @@ pub fn computeCrossChunkLinks(
                     if (src_chunk_idx.isNone()) continue;
                     if (src_chunk_idx == chunk.index) continue; // 같은 청크 → 스킵
 
-                    try addCrossChunkSymbol(allocator, chunk_graph, chunk, &seen_static, src_chunk_idx, rb.canonical.export_name);
+                    try addCrossChunkSymbol(allocator, chunk_graph, chunk, &seen_static, src_chunk_idx, rb.canonical.export_name, @intFromEnum(rb.canonical.module_index));
 
                     // canonical 이 namespace re-export 면 그 이름만 가져와선
                     // 안 된다 — 정적 멤버는 정의자 export 로 elision, 값/동적은

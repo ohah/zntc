@@ -58,6 +58,25 @@ fn appendCssLinkPrologue(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), 
     try buf.appendSlice(allocator, "\",import.meta.url).href;document.head.appendChild(__zntc_css);}\n");
 }
 
+/// 심볼 수준 cross-chunk import 의 **바인딩명**(destructuring 우변/로컬 식별자).
+/// dep 청크는 export 를 그 *키*(`default` 같은 예약어 가능)로 노출하지만, 소비자
+/// 코드는 그 키를 식별자로 못 쓴다 — 대신 canonical local 명(`_default`, 또는
+/// `export default function foo` → `foo`)을 참조한다. `resolveToLocalName` 이
+/// default→_default→named-default 체인을 해석해 그 이름을 돌려준다. 비예약어 키는
+/// export 명 == 바인딩명(기존 동작 유지). linker 없으면(단위 테스트) 예약어
+/// cross-chunk 가 발생하지 않으므로 export 명 그대로.
+fn crossChunkBindingName(linker: ?*Linker, sym: chunk_mod.CrossChunkSym) []const u8 {
+    if (linker) |l| {
+        if (Linker.isReservedName(sym.name)) {
+            return l.resolveToLocalName(.{
+                .module_index = @enumFromInt(sym.canonical_module),
+                .export_name = sym.name,
+            });
+        }
+    }
+    return sym.name;
+}
+
 pub fn emitChunks(
     allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
@@ -420,8 +439,8 @@ pub fn emitChunks(
         for (chunk.cross_chunk_imports.items) |dep_chunk_idx| {
             const dep_ci = @intFromEnum(dep_chunk_idx);
             if (chunk.imports_from.get(dep_ci)) |syms| {
-                for (syms.items) |name| {
-                    const gop = try name_total_count.getOrPut(allocator, name);
+                for (syms.items) |sym| {
+                    const gop = try name_total_count.getOrPut(allocator, sym.name);
                     if (!gop.found_existing) gop.value_ptr.* = 0;
                     gop.value_ptr.* += 1;
                 }
@@ -506,23 +525,51 @@ pub fn emitChunks(
                 } else {
                     try chunk_output.appendSlice(allocator, if (reg_like) "const{" else "import{");
                 }
-                // 결정론적 출력을 위해 심볼명 정렬
-                std.mem.sort([]const u8, symbols.?.items, {}, types.stringLessThan);
-                for (symbols.?.items, 0..) |name, si| {
-                    const total = name_total_count.get(name) orelse 1;
-                    const seen_gop = try name_seen_count.getOrPut(allocator, name);
-                    if (!seen_gop.found_existing) seen_gop.value_ptr.* = 0;
-                    seen_gop.value_ptr.* += 1;
-                    const seen = seen_gop.value_ptr.*;
+                // 결정론적 출력을 위해 심볼명(export 키) 정렬
+                const SymSort = struct {
+                    fn lessThan(_: void, a: chunk_mod.CrossChunkSym, b: chunk_mod.CrossChunkSym) bool {
+                        return std.mem.lessThan(u8, a.name, b.name);
+                    }
+                };
+                std.mem.sort(chunk_mod.CrossChunkSym, symbols.?.items, {}, SymSort.lessThan);
+                // dep 청크가 심볼을 노출하는 **프로퍼티 키**: lazy(emitLazyEntryExportAll)
+                // 는 hoisted 로컬을 *local 명*으로 export-all 하므로 키=바인딩명(예: `_default`)
+                // → 축약 `{ _default }`. 비-lazy(production)은 *export 명*(`default`)으로 노출
+                // → `{ default: _default }` alias. 키가 dep 노출과 어긋나면 값이 undefined.
+                // 조건은 emitLazyEntryExportAll 발동 조건(`reg_fmt and !preserve_modules and
+                // lazy`)과 정확히 일치해야 한다 — reg_split(iife/umd/amd) 뿐 아니라 cjs_split
+                // 도 emitLazyEntryExportAll 로 local 명 키를 노출하므로 둘 다 포함.
+                const lazy_local_keys = graph.lazy_compilation and (reg_split or cjs_split);
+                for (symbols.?.items, 0..) |sym, si| {
+                    const name = sym.name;
+                    const binding = crossChunkBindingName(linker, sym);
+                    const key = if (lazy_local_keys) binding else name;
 
-                    if (total > 1 and seen > 1) {
-                        const alias = try std.fmt.allocPrint(allocator, "{s}${d}", .{ name, seen });
-                        try alias_strs.append(allocator, alias);
-                        try chunk_output.appendSlice(allocator, name);
+                    if (!std.mem.eql(u8, key, binding)) {
+                        // key != binding(예약어 export 키 `default` → 소비자 local `_default`).
+                        // 좌변=dep 노출 키(문자열이라 예약어 OK), 우변=소비자 참조 식별자.
+                        // 축약 `{ default }` 면 예약어를 바인딩으로 써 SyntaxError → alias 가 방지.
+                        try chunk_output.appendSlice(allocator, key);
                         try chunk_output.appendSlice(allocator, if (reg_like) ": " else " as ");
-                        try chunk_output.appendSlice(allocator, alias);
+                        try chunk_output.appendSlice(allocator, binding);
                     } else {
-                        try chunk_output.appendSlice(allocator, name);
+                        // key == binding → 축약. 단 같은 export 명이 여러 dep 에서 오면
+                        // 중복 로컬 선언 충돌 → 2번째부터 `key: key$N` deconfliction.
+                        const total = name_total_count.get(name) orelse 1;
+                        const seen_gop = try name_seen_count.getOrPut(allocator, name);
+                        if (!seen_gop.found_existing) seen_gop.value_ptr.* = 0;
+                        seen_gop.value_ptr.* += 1;
+                        const seen = seen_gop.value_ptr.*;
+
+                        if (total > 1 and seen > 1) {
+                            const alias = try std.fmt.allocPrint(allocator, "{s}${d}", .{ key, seen });
+                            try alias_strs.append(allocator, alias);
+                            try chunk_output.appendSlice(allocator, key);
+                            try chunk_output.appendSlice(allocator, if (reg_like) ": " else " as ");
+                            try chunk_output.appendSlice(allocator, alias);
+                        } else {
+                            try chunk_output.appendSlice(allocator, key);
+                        }
                     }
                     if (si + 1 < symbols.?.items.len) {
                         if (!options.minify_whitespace) {
@@ -585,8 +632,11 @@ pub fn emitChunks(
         {
             var ifit = chunk.imports_from.iterator();
             while (ifit.next()) |if_entry| {
-                for (if_entry.value_ptr.items) |name| {
-                    try occupied.append(allocator, name);
+                for (if_entry.value_ptr.items) |sym| {
+                    // 점유 이름 = 실제 **바인딩명**(예약어 키면 `_default`). export 키
+                    // (`default`)가 아니라 로컬과 충돌할 수 있는 바인딩명을 예약해야
+                    // 다른 로컬이 cross-chunk 바인딩과 겹치지 않는다.
+                    try occupied.append(allocator, crossChunkBindingName(linker, sym));
                 }
             }
             // deconfliction alias 이름도 점유 목록에 추가
