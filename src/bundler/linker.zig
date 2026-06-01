@@ -2699,6 +2699,24 @@ pub const Linker = struct {
         // 2. 충돌하는 이름에 대해 리네임 계산 (cross-chunk 점유 마커는 skip)
         try self.calculateRenames(&name_to_owners, true);
 
+        // 2.5 #4101 cross-chunk 전역 네이밍 override — 이 청크가 export 하는 cross-chunk 심볼을
+        // 전역 이름으로 고정. calculateRenames 의 per-chunk deconflict 순서(exec_index)가 전역
+        // 순서(mod,name)와 어긋나면 어느 심볼이 `v`/`v$1` 을 갖는지 달라진다 → override 로 전역
+        // 맵과 일치시켜 provider/consumer 가 같은 이름을 본다. dupe → putCanonicalName 이
+        // canonical_strings 로 소유권 이전. (전역명==per-chunk 결과면 no-op. reserve 마커는 안 둔다
+        // — non-cross-chunk 동명 심볼(dup.v)까지 밀어내 `v$2` 가 되는 부작용 때문. calculateRenames
+        // 자연 순서가 cross-chunk owner 에게 preferred 를 주므로 override 는 divergence 만 교정.)
+        // minify 는 아래 mangle 이 다시 덮으므로 production 전역 네이밍은 별도 increment.
+        for (module_indices) |mod_idx| {
+            const inner = self.cross_chunk_global_names.get(mod_idx.toU32()) orelse continue;
+            var git = inner.iterator();
+            while (git.next()) |e| {
+                const local = self.getExportLocalName(mod_idx.toU32(), e.key_ptr.*) orelse e.key_ptr.*;
+                const dup = try self.allocator.dupe(u8, e.value_ptr.*);
+                try self.putCanonicalName(mod_idx.toU32(), local, dup);
+            }
+        }
+
         // 3. #4045: production code splitting + minify 시 deconflict 이후 청크 *내부*
         // 로컬 식별자를 축약(mangle)한다. deconflict(calculateRenames)를 먼저 돌려
         // 단일 번들의 computeRenames→computeMangling 순서를 그대로 재현 — 1-char

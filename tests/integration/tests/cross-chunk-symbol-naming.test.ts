@@ -172,7 +172,7 @@ describe('cross-chunk 심볼 네이밍 (이슈 #4101 방어 스위트)', () => {
   // lifecycle 재설계로 cross-chunk 심볼명이 전역 일관되면 `test.todo`→`test` flip.
 
   // 서로 다른 모듈의 같은 named export 둘을 한 소비자가 import → 본문 참조 collapse.
-  test.todo('전역일관성: 다른 모듈의 같은 named export 둘 (va·vb → AB)', async () => {
+  test('전역일관성: 다른 모듈의 같은 named export 둘 (va·vb → AB)', async () => {
     const { require } = await loadDevSplit(
       {
         'a.ts': "export const v = 'A';",
@@ -188,7 +188,7 @@ describe('cross-chunk 심볼 네이밍 (이슈 #4101 방어 스위트)', () => {
   });
 
   // 서로 다른 모듈의 default 둘.
-  test.todo('전역일관성: 다른 모듈의 default 둘 (da()·db() → DADB)', async () => {
+  test('전역일관성: 다른 모듈의 default 둘 (da()·db() → DADB)', async () => {
     const { require } = await loadDevSplit(
       {
         'a.ts': "export default function(){ return 'DA'; }",
@@ -204,7 +204,7 @@ describe('cross-chunk 심볼 네이밍 (이슈 #4101 방어 스위트)', () => {
   });
 
   // 세 모듈의 같은 이름.
-  test.todo('전역일관성: 세 모듈의 같은 named export (a+b+c → ABC)', async () => {
+  test('전역일관성: 세 모듈의 같은 named export (a+b+c → ABC)', async () => {
     const { require } = await loadDevSplit(
       {
         'a.ts': "export const v = 'A';",

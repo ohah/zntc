@@ -1681,10 +1681,14 @@ pub const Bundler = struct {
 
             try chunk_mod.computeCrossChunkLinks(&chunk_graph, graph, self.allocator, if (linker) |*l| l else null);
 
-            // RFC #3940 / #4101 — cross-chunk 전역 일관 네이밍 채우기(Inc-1: read 비활성, 동작 변경 0).
-            // imports_from 확정 직후. linker 있고 splitting 일 때만(전역 이름은 cross-chunk 에서만 의미).
+            // RFC #3940 / #4101 — cross-chunk 전역 일관 네이밍 채우기. imports_from 확정 직후.
+            // **lazy(dev_split)로 scope** — production splitting 은 `export { local as public }`
+            // 브리지가 cross-chunk 이름을 따로 보존하므로 전역 네이밍을 적용하면 충돌. 맵이 비면
+            // 모든 wiring(crossChunkBindingName/metadata/override)이 fallback = production 불변.
+            // production cross-chunk 전역 네이밍(+ mangle 정합)은 별도 increment.
             if (linker) |*l| {
-                if (self.options.code_splitting) try chunk_mod.computeCrossChunkGlobalNames(self.allocator, &chunk_graph, l);
+                if (self.options.code_splitting and self.options.lazy_compilation)
+                    try chunk_mod.computeCrossChunkGlobalNames(self.allocator, &chunk_graph, l);
             }
 
             var emit_opts = self.makeEmitOptions();

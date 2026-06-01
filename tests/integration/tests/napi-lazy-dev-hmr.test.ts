@@ -57,7 +57,7 @@ describe('NAPI lazy dev split HMR runtime (RFC_LAZY_DEV_MODULE_HMR PR-2)', () =>
     const lazyChunk = (r.outputFiles ?? []).find((o) => o.path.includes(lazyPrefix));
     expect(entryChunk && lazyChunk).toBeTruthy();
     // 예약어 축약 destructuring(`const { default }`) 이 없어야 한다(SyntaxError 원인).
-    expect(/const\s*\{[^}]*\bdefault\b[^}:]*\}\s*=/.test(lazyChunk!.text)).toBe(false);
+    expect(/const\s*\{[^}]*\bdefault\b(?!\$)[^}:]*\}\s*=/.test(lazyChunk!.text)).toBe(false);
     const g: Record<string, unknown> = { console };
     g.globalThis = g;
     const ctx = vm.createContext(g);
@@ -495,7 +495,7 @@ process.stdout.write(JSON.stringify({
     const routeChunk = (r.outputFiles ?? []).find((o) => o.path.includes('Route-'));
     expect(entryChunk && routeChunk).toBeTruthy();
     // emit 가드: 예약어 축약 destructuring(`const { default ...`) 이 없어야 한다(SyntaxError 원인).
-    expect(/const\s*\{[^}]*\bdefault\b[^}:]*\}\s*=/.test(routeChunk!.text)).toBe(false);
+    expect(/const\s*\{[^}]*\bdefault\b(?!\$)[^}:]*\}\s*=/.test(routeChunk!.text)).toBe(false);
 
     // 런타임 가드: Route 청크가 parse 되고(runInContext 가 안 던짐) default/named 실값이 맞아야 한다.
     const g: Record<string, unknown> = { console };
@@ -544,7 +544,7 @@ process.stdout.write(JSON.stringify({
     const cardChunk = (r.outputFiles ?? []).find((o) => o.path.includes('Card-'));
     expect(entryChunk && cardChunk).toBeTruthy();
     // 예약어 축약 destructuring(`const { default ...`) 이 없어야 한다(SyntaxError 원인).
-    expect(/const\s*\{[^}]*\bdefault\b[^}:]*\}\s*=/.test(cardChunk!.text)).toBe(false);
+    expect(/const\s*\{[^}]*\bdefault\b(?!\$)[^}:]*\}\s*=/.test(cardChunk!.text)).toBe(false);
 
     const g: Record<string, unknown> = { console };
     g.globalThis = g;
@@ -651,7 +651,7 @@ process.stdout.write(JSON.stringify({
   // 하고(provider 의 deconflict 된 이름 persistence), 그건 RFC_GRAPH_PERSISTENCE(CLOSED) /
   // lifecycle scope redesign 급 변경이다. 부분 수정은 본문이 여전히 붕괴해 순효과가 없어
   // 보류 — 전역 네이밍 일관성 확보 후 `test.todo`→`test` 로 전환.
-  test.todo('다른 모듈의 같은 이름 export 둘을 한 lazy 청크가 import (dedup 붕괴 #B)', async () => {
+  test('다른 모듈의 같은 이름 export 둘을 한 lazy 청크가 import (dedup 붕괴 #B)', async () => {
     const { exports } = await loadDevSplitLazy(
       {
         'a.ts': "export const v = 'A';",

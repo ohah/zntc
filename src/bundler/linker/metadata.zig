@@ -319,6 +319,18 @@ fn putOwnedRename(
     try renames.put(self.allocator, sid, v);
 }
 
+/// import 바인딩의 최종 이름 — cross-chunk **전역 일관 네이밍**(#4101) 우선.
+/// 바인딩이 cross-chunk 심볼로 해석되고 전역 이름이 있으면 그걸(provider/consumer 가
+/// 합의한 deconflict 이름, 같은 이름 다른 모듈 `v`/`v$1` 구분), 아니면 per-chunk
+/// `getCanonicalByRef`(같은 청크/비충돌), 그것도 없으면 `fallback`.
+/// 같은 청크 import 는 전역 맵에 없어 fallback 경로 = 기존 동작 불변.
+fn importBindingName(self: *const Linker, module_index: u32, ib: anytype, fallback: []const u8) []const u8 {
+    if (self.getResolvedBinding(module_index, ib.local_span)) |rb| {
+        if (self.getCrossChunkGlobalName(@intFromEnum(rb.canonical.module_index), rb.canonical.export_name)) |g| return g;
+    }
+    return self.getCanonicalByRef(ib.local_symbol) orelse fallback;
+}
+
 /// identifier 의 첫 byte 가 정상 ASCII (0x21-0x7F) 인지. UAF 시 채워지는 0xAA / 0 등
 /// invalid byte 를 reject — `target_name` 이 freed memory 면 rename 등록 skip.
 fn isValidIdentStartByte(b: u8) bool {
@@ -577,7 +589,7 @@ pub fn buildMetadataForAst(
                 if (rec.is_lazy_resolved) continue;
                 if (rec.kind.isEagerEvalDependency()) {
                     if (!ib.is_helper and !ib.local_symbol.isValid()) continue;
-                    const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
+                    const preamble_name = importBindingName(self, module_index, ib, m.importBindingLocalName(ib));
                     // helper binding (JSX runtime 등) + ESM-wrapped 모듈 조합에서는 top-level
                     // 에 이미 `var _jsxDEV, _Fragment;` 선언이 호이스팅됨 (esm_wrap). init 함수
                     // 본문에서 `var` 로 재선언하면 outer scope 를 shadow → #1209.
@@ -738,7 +750,7 @@ pub fn buildMetadataForAst(
                         }
                     } else {
                         const interop_mode = cjsInteropMode(self, &m);
-                        const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
+                        const preamble_name = importBindingName(self, module_index, ib, m.importBindingLocalName(ib));
                         const hoisted_name = try self.allocator.dupe(u8, preamble_name);
                         errdefer self.allocator.free(hoisted_name);
                         try ns_var_list.append(self.allocator, hoisted_name);
@@ -765,7 +777,7 @@ pub fn buildMetadataForAst(
                 // 도 같이 drop 한다. `tree_shaker_active` 가 false (linker 단독 unit test)
                 // 면 `is_included` 비트가 신뢰할 수 없으므로 가드를 적용하지 않는다.
                 if (self.tree_shaker_active and !canonical_m_opt.?.is_included) continue;
-                const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
+                const preamble_name = importBindingName(self, module_index, ib, m.importBindingLocalName(ib));
                 const req_var = try getOrCreateCjsRequireRef(self, &cjs_var_cache, @intCast(canonical_mod));
                 const interop_mode = cjsInteropMode(self, &m);
                 // ESM-wrapped + helper binding: top-level 에 이미 var 선언됨 (esm_wrap) → 할당만
@@ -886,7 +898,7 @@ pub fn buildMetadataForAst(
                 if (!self.dev_mode and namespaceHasCjsStar(self, canonical_mod) and
                     !(self.tree_shaker_active and !target_included))
                 {
-                    const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse local_name;
+                    const preamble_name = importBindingName(self, module_index, ib, local_name);
                     // ESM-local getter 객체 (CJS plain-star 멤버는 부재, inner-CJS 는 __toESM).
                     const obj = try self.buildNamespaceInlineObject(@intCast(canonical_mod), 0);
                     defer self.allocator.free(obj);
@@ -942,7 +954,7 @@ pub fn buildMetadataForAst(
             // 롤다운 shimMissingExports 호환: 소스 모듈에 해당 export가 없으면
             // strict mode ReferenceError 대신 undefined를 반환하도록 shim 생성.
             if (resolved == null and self.shim_missing_exports) {
-                const shim_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
+                const shim_name = importBindingName(self, module_index, ib, m.importBindingLocalName(ib));
                 try preamble.write("var ");
                 try preamble.write(shim_name);
                 try preamble.write(" = void 0;\n");
@@ -958,7 +970,7 @@ pub fn buildMetadataForAst(
                 const cjs_mod: u32 = @intCast(@intFromEnum(rb.canonical.module_index));
                 const cjs_mod_opt = self.graph.getModule(rb.canonical.module_index);
                 if (cjs_mod_opt != null and cjs_mod_opt.?.wrap_kind == .cjs) {
-                    const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
+                    const preamble_name = importBindingName(self, module_index, ib, m.importBindingLocalName(ib));
                     const req_var = try getOrCreateCjsRequireRef(self, &cjs_var_cache, cjs_mod);
                     const interop_mode2 = cjsInteropMode(self, &m);
                     const effective_name = rb.canonical.export_name;
@@ -1048,7 +1060,14 @@ pub fn buildMetadataForAst(
             // 중첩 스코프 충돌은 resolveNestedShadowConflicts에서 이미 처리됨.
             // 방어 — target_name 이 use-after-free 로 0xAA / 0 등 invalid byte 로
             // 채워졌으면 rename 스킵 (#2429).
-            if (!isReservedName(target_name) and target_name.len > 0 and isValidIdentStartByte(target_name[0])) {
+            // #4101 cross-chunk 전역 일관 네이밍 — 이 바인딩이 cross-chunk 심볼로 해석되고
+            // 전역 이름이 있으면(같은 이름 다른 모듈 `v`/`v$1` 구분) per-chunk target_name 대신
+            // 전역명을 본문 참조로 쓴다. synth_member/lazy_esm(특수 표현)은 target_name 유지.
+            const effective_target = if (resolved) |rb|
+                (self.getCrossChunkGlobalName(@intFromEnum(rb.canonical.module_index), rb.canonical.export_name) orelse target_name)
+            else
+                target_name;
+            if (!isReservedName(effective_target) and effective_target.len > 0 and isValidIdentStartByte(effective_target[0])) {
                 if (ib.local_symbol.semanticIndex()) |sym_idx| {
                     // #3664 P2: synthetic_named_exports → canonical(default/target) export 의 member
                     // access 로 rename(`{target_name}.{member}`). 정적으로 export 안 된 named import 를
@@ -1060,7 +1079,7 @@ pub fn buildMetadataForAst(
                     else if (lazy_esm_import)
                         try allocLazyEsmImportExpr(self, canonical_m_opt.?, lazy_esm_import_mod orelse canonical_m_opt.?, target_name)
                     else
-                        target_name;
+                        effective_target;
                     if (synth_member != null or lazy_esm_import) {
                         var rename_owned_by_list = false;
                         errdefer if (!rename_owned_by_list) self.allocator.free(rename_value);
