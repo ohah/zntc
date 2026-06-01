@@ -538,11 +538,7 @@ pub fn emitEsmWrappedModule(
                     // getter는 소스 모듈의 exports 객체 자체를 참조
                     const getter_val = switch (src_mod.wrap_kind) {
                         .esm, .none => try makeNamespaceGetterValue(allocator, src_mod, options, rename_tbl),
-                        .cjs => blk: {
-                            const rv = try src_mod.allocRequireName(allocator, rename_tbl);
-                            defer allocator.free(rv);
-                            break :blk try std.fmt.allocPrint(allocator, "{s}()", .{rv});
-                        },
+                        .cjs => try allocCjsRequireCall(allocator, src_mod, options, rename_tbl),
                     };
                     try star_owned.append(allocator, getter_val);
                     if (!direct_exports.contains(eb.exported_name)) {
@@ -703,15 +699,22 @@ pub fn emitEsmWrappedModule(
                 if (src_idx.isNone()) continue;
                 const src_mod = l.graph.getModule(src_idx) orelse continue;
                 if (src_mod.wrap_kind != .cjs) continue;
-                const rv = try src_mod.allocRequireName(allocator, rename_tbl);
-                defer allocator.free(rv);
                 const copy_props: []const u8 = if (options.minify_whitespace) rt.NAMES.COPY_PROPS_MIN else "__copyProps";
                 try wrapped.appendSlice(allocator, copy_props);
                 try wrapped.appendSlice(allocator, "(");
                 try wrapped.appendSlice(allocator, exports_name);
                 try wrapped.appendSlice(allocator, ", ");
-                try wrapped.appendSlice(allocator, rv);
-                try wrapped.appendSlice(allocator, "());\n");
+                // direct-buf: dev_split 만 registry, 그 외는 원래 lexical append 경계 유지(byte-identical).
+                if (options.isDevSplit()) {
+                    try wrapped.appendSlice(allocator, "__zntc_modules[\"");
+                    try wrapped.appendSlice(allocator, src_mod.dev_id);
+                    try wrapped.appendSlice(allocator, "\"].fn());\n");
+                } else {
+                    const rv = try src_mod.allocRequireName(allocator, rename_tbl);
+                    defer allocator.free(rv);
+                    try wrapped.appendSlice(allocator, rv);
+                    try wrapped.appendSlice(allocator, "());\n");
+                }
             }
         }
     }
@@ -839,10 +842,10 @@ pub fn emitEsmWrappedModule(
                         } else {
                             try reexport_buf.appendSlice(allocator, "(");
                         }
-                        // ⚠️ dev_split 미이전 게이트(linker.zig [[useDevModuleRegistry]] follow-up) —
-                        // 크로스청크 default/named re-export 시 lexical init_X/exports_X 가 다른 청크
-                        // 스코프라 ReferenceError(+ `export {default} from './cjs'` 는 별도 SyntaxError).
-                        if (options.dev_mode and !options.code_splitting) {
+                        // dev 레지스트리 lowering([[useDevModuleRegistry]]) — dev_split 도 글로벌
+                        // 레지스트리로 크로스청크 default re-export 해석(lexical init_X/exports_X 는
+                        // 정의자 청크 스코프라 크로스청크 ReferenceError).
+                        if (options.useDevModuleRegistry()) {
                             try reexport_buf.appendSlice(allocator, "__zntc_modules[\"");
                             try reexport_buf.appendSlice(allocator, source_mod.dev_id);
                             try reexport_buf.appendSlice(allocator, "\"].fn(), __toCommonJS(__zntc_modules[\"");
@@ -877,18 +880,26 @@ pub fn emitEsmWrappedModule(
                         if (found_preamble_var) |pv| {
                             try reexport_buf.appendSlice(allocator, pv);
                         } else {
-                            const rv = try source_mod.allocRequireName(allocator, rename_tbl);
-                            defer allocator.free(rv);
                             const interop_mode = cjsInteropMode(options, module);
                             // #1621: minify 시 __toESM → $tE 축약.
                             const to_esm_name: []const u8 = if (options.minify_whitespace) rt.NAMES.TOESM_MIN else "__toESM";
                             try reexport_buf.appendSlice(allocator, to_esm_name);
                             try reexport_buf.appendSlice(allocator, "(");
-                            try reexport_buf.appendSlice(allocator, rv);
-                            if (interop_mode == .node) {
-                                try reexport_buf.appendSlice(allocator, "(), 1).default");
+                            // direct-buf: dev_split 만 registry, 그 외는 원래 lexical append 경계 유지.
+                            if (options.isDevSplit()) {
+                                try reexport_buf.appendSlice(allocator, "__zntc_modules[\"");
+                                try reexport_buf.appendSlice(allocator, source_mod.dev_id);
+                                try reexport_buf.appendSlice(allocator, "\"].fn()");
                             } else {
-                                try reexport_buf.appendSlice(allocator, "()).default");
+                                const rv = try source_mod.allocRequireName(allocator, rename_tbl);
+                                defer allocator.free(rv);
+                                try reexport_buf.appendSlice(allocator, rv);
+                                try reexport_buf.appendSlice(allocator, "()");
+                            }
+                            if (interop_mode == .node) {
+                                try reexport_buf.appendSlice(allocator, ", 1).default");
+                            } else {
+                                try reexport_buf.appendSlice(allocator, ").default");
                             }
                         }
                     },
@@ -1203,9 +1214,11 @@ fn appendWrappedInitCall(
         .esm => {
             if (is_tla) try buf.appendSlice(allocator, "await ");
             if (guard) try buf.appendSlice(allocator, if (options.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
-            // ⚠️ dev_split 미이전 게이트(linker.zig [[useDevModuleRegistry]] follow-up) — 크로스청크
-            // re-export-all/side-effect init 시 lexical init_X 가 다른 청크 스코프라 ReferenceError.
-            if (options.dev_mode and !options.code_splitting) {
+            // 비-dev_split(RN/단일번들 dev) 분기는 원래 코드 구조를 그대로 유지 → byte-identical
+            // 출력(append 횟수는 결과 바이트와 무관·소스맵에도 영향 없음 — 버퍼는 raw 바이트, 소스맵
+            // 매핑은 codegen body 와 줄 수만 반영). .esm init 은 기존에 단일번들 dev 도 registry 였으므로
+            // useDevModuleRegistry(dev and (!split or lazy)).
+            if (options.useDevModuleRegistry()) {
                 try buf.appendSlice(allocator, "__zntc_modules[\"");
                 try buf.appendSlice(allocator, src_mod.dev_id);
                 try buf.appendSlice(allocator, "\"].fn()");
@@ -1218,11 +1231,18 @@ fn appendWrappedInitCall(
             try buf.appendSlice(allocator, if (guard) rt.GUARD_LAMBDA_CLOSE else rt.INIT_CALL_END);
         },
         .cjs => {
-            const rv = try src_mod.allocRequireName(allocator, rename_tbl);
-            defer allocator.free(rv);
             if (guard) try buf.appendSlice(allocator, if (options.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
-            try buf.appendSlice(allocator, rv);
-            try buf.appendSlice(allocator, "()");
+            // .cjs init 은 기존에 단일번들 dev 도 lexical → dev_split 만 registry(isDevSplit).
+            if (options.isDevSplit()) {
+                try buf.appendSlice(allocator, "__zntc_modules[\"");
+                try buf.appendSlice(allocator, src_mod.dev_id);
+                try buf.appendSlice(allocator, "\"].fn()");
+            } else {
+                const rv = try src_mod.allocRequireName(allocator, rename_tbl);
+                defer allocator.free(rv);
+                try buf.appendSlice(allocator, rv);
+                try buf.appendSlice(allocator, "()");
+            }
             try buf.appendSlice(allocator, if (guard) rt.GUARD_LAMBDA_CLOSE else rt.INIT_CALL_END);
         },
         .none => {},
@@ -1300,6 +1320,36 @@ fn shouldLazyReExportInit(options: *const EmitOptions, src_mod: *const Module) b
         !(src_mod.wrap_kind == .esm and src_mod.uses_top_level_await);
 }
 
+// dev_split 에서 모듈 참조를 글로벌 레지스트리로 lowering 한다([[useDevModuleRegistry]]). lexical
+// (`require_X`/`init_X`/`exports_X`)은 정의자 청크 팩토리 스코프에 갇혀 크로스청크 불가지만,
+// 글로벌 `__zntc_modules` 는 청크 경계를 넘어 주소화 가능(ESM init 이 이미 쓰는 방식). 정의자
+// 청크에서도 안전(레지스트리에 등록돼 있음) → dev_split 이면 same/cross 무관 레지스트리 통일.
+// 비-registry(production/비-lazy splitting)는 lexical 유지 → byte-identical.
+
+// getter value(`require_X().name`/`exports_X.name`)는 *기존*에 단일번들 dev·RN 에서 lexical 이었다
+// (getter 는 같은 번들 스코프라 lexical 로 충분). dev_split 만 크로스청크라 registry 가 필요 →
+// 이 두 헬퍼는 `isDevSplit()` 게이트로 좁혀 단일번들 dev·RN byte-identical 보존, dev_split 만
+// registry. (init-call 류는 호출처에서 원래 코드 구조를 그대로 유지 — append 횟수는 결과 바이트와
+// 무관하나, 리뷰 diff 를 최소화하고 비-dev_split 경로를 한눈에 byte-identical 로 보이게 하기 위함.)
+
+/// CJS require 호출식. dev_split: `__zntc_modules["id"].fn()`, else: `require_X()`. =module.exports.
+fn allocCjsRequireCall(allocator: std.mem.Allocator, mod: *const Module, options: *const EmitOptions, rename_tbl: ?*const RenameTable) ![]const u8 {
+    if (options.isDevSplit()) {
+        return std.fmt.allocPrint(allocator, "__zntc_modules[\"{s}\"].fn()", .{mod.dev_id});
+    }
+    const rv = try mod.allocRequireName(allocator, rename_tbl);
+    defer allocator.free(rv);
+    return std.fmt.allocPrint(allocator, "{s}()", .{rv});
+}
+
+/// ESM 네임스페이스 객체 ref. dev_split: `__zntc_modules["id"].exports`, else: `exports_X`.
+fn allocEsmExportsRef(allocator: std.mem.Allocator, mod: *const Module, options: *const EmitOptions, rename_tbl: ?*const RenameTable) ![]const u8 {
+    if (options.isDevSplit()) {
+        return std.fmt.allocPrint(allocator, "__zntc_modules[\"{s}\"].exports", .{mod.dev_id});
+    }
+    return mod.allocExportsName(allocator, rename_tbl);
+}
+
 fn makeLazyEsmGetterValue(
     allocator: std.mem.Allocator,
     src_mod: *const Module,
@@ -1311,10 +1361,8 @@ fn makeLazyEsmGetterValue(
         return try allocator.dupe(u8, target);
     }
 
-    // ⚠️ dev_split 미이전 게이트(linker.zig [[useDevModuleRegistry]] follow-up): splitting 이면
-    // lexical init_X 로 빠지는데, 크로스청크 re-export 시 init_X 가 다른 청크 팩토리 스코프라
-    // ReferenceError. EmitOptions 에 lazy_compilation 추가 후 useDevModuleRegistry 동치로 통일할 것
-    // (raw `dev_mode and !code_splitting` 복사 금지).
+    // RN 전용(shouldLazyReExportInit=react_native) — dev_split(web) 미경유(web 은 위 early-return).
+    // 원래 게이트(`dev_mode and !code_splitting`)·구조 그대로 유지 → RN/단일번들 dev byte-identical.
     const init_call = if (options.dev_mode and !options.code_splitting) blk: {
         break :blk try std.fmt.allocPrint(allocator, "__zntc_modules[\"{s}\"].fn()", .{src_mod.dev_id});
     } else blk: {
@@ -1340,7 +1388,7 @@ fn makeEsmExportGetterValue(
     options: *const EmitOptions,
     rename_tbl: ?*const RenameTable,
 ) ![]const u8 {
-    const ev = try src_mod.allocExportsName(allocator, rename_tbl);
+    const ev = try allocEsmExportsRef(allocator, src_mod, options, rename_tbl);
     defer allocator.free(ev);
     const target = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ev, name });
     defer allocator.free(target);
@@ -1353,7 +1401,7 @@ fn makeNamespaceGetterValue(
     options: *const EmitOptions,
     rename_tbl: ?*const RenameTable,
 ) ![]const u8 {
-    const ev = try src_mod.allocExportsName(allocator, rename_tbl);
+    const ev = try allocEsmExportsRef(allocator, src_mod, options, rename_tbl);
     defer allocator.free(ev);
     return makeLazyEsmGetterValue(allocator, src_mod, ev, options, rename_tbl);
 }
@@ -1394,14 +1442,14 @@ fn makeStarGetterValue(
                 if (l.tree_shaker_active and !canonical_mod.is_included) return null;
                 // canonical 모듈이 래핑되어 있으면 exports_xxx.name 형태
                 if (canonical_mod.wrap_kind == .esm) {
-                    const ev = try canonical_mod.allocExportsName(allocator, rename_tbl);
+                    const ev = try allocEsmExportsRef(allocator, canonical_mod, options, rename_tbl);
                     defer allocator.free(ev);
                     return try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ev, resolved.export_name });
                 }
                 if (canonical_mod.wrap_kind == .cjs) {
-                    const rv = try canonical_mod.allocRequireName(allocator, rename_tbl);
+                    const rv = try allocCjsRequireCall(allocator, canonical_mod, options, rename_tbl);
                     defer allocator.free(rv);
-                    return try std.fmt.allocPrint(allocator, "{s}().{s}", .{ rv, resolved.export_name });
+                    return try std.fmt.allocPrint(allocator, "{s}.{s}", .{ rv, resolved.export_name });
                 }
                 // .none: canonical 로컬 변수
                 for (canonical_mod.export_bindings) |ceb| {
@@ -1418,9 +1466,9 @@ fn makeStarGetterValue(
             return try makeEsmExportGetterValue(allocator, src_mod, name, options, rename_tbl);
         },
         .cjs => {
-            const rv = try src_mod.allocRequireName(allocator, rename_tbl);
+            const rv = try allocCjsRequireCall(allocator, src_mod, options, rename_tbl);
             defer allocator.free(rv);
-            return try std.fmt.allocPrint(allocator, "{s}().{s}", .{ rv, name });
+            return try std.fmt.allocPrint(allocator, "{s}.{s}", .{ rv, name });
         },
     }
 }

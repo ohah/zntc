@@ -362,4 +362,57 @@ process.stdout.write(JSON.stringify({
     const required = (g.__zntc_require as (k: string) => Record<string, unknown>)(id);
     expect((required.card as () => string)()).toBe('HELLO42ESM');
   });
+
+  // dev_split lazy 청크의 **re-export-from-CJS / side-effect** 크로스청크 해석. 예전엔 esm_wrap 의
+  // re-export/init lowering 이 `dev_mode and !code_splitting` 게이트(#4038 잔재)라 splitting 시
+  // lexical `require_X`/`init_X` 로 빠져 정의자 청크 스코프에 갇힘 → 크로스청크 ReferenceError.
+  // 이제 useDevModuleRegistry/isDevSplit 로 글로벌 레지스트리 해석 → `export { x } from './cjs'` +
+  // side-effect `import` 가 lazy 청크에서 동작. 런타임으로 가드.
+  test('dev_split lazy 청크가 re-export-from-CJS(export {x} from) + side-effect 를 레지스트리로 해석', async () => {
+    const fixture = await createFixture({
+      'cjslib.js': "module.exports = { val: 7, greet: function(){ return 'CJS'; } };",
+      'side.ts': 'globalThis.__SIDE = (globalThis.__SIDE || 0) + 1;',
+      // 라우트가 CJS 에서 named re-export + side-effect import.
+      'Route.ts':
+        "import './side';\nexport { val, greet } from './cjslib.js';\nexport function r(){ return 'R'; }",
+      // entry 가 cjslib·side 를 정적으로 써서 entry 청크에 두고, Route 는 동적 import(lazy 청크).
+      'entry.ts':
+        "import './side';\nimport { val } from './cjslib.js';\nglobalThis.E = val;\nglobalThis.load = () => import('./Route');",
+    });
+    cleanup = fixture.cleanup;
+    const dir = realpathSync(fixture.dir);
+    const opts = {
+      entryPoints: [join(dir, 'entry.ts')],
+      platform: 'browser' as const,
+      devMode: true,
+      splitting: true,
+      format: 'iife' as const,
+      lazyCompilation: true,
+      rootDir: dir,
+    };
+    const base = await build(opts);
+    const seed = (base.lazySeeds ?? []).find((s) => s.path.endsWith('Route.ts'));
+    expect(seed).toBeDefined();
+    const r = await build({ ...opts, lazyForceParse: [seed!.path] });
+    expect(r.errors ?? []).toHaveLength(0);
+    const entryChunk = (r.outputFiles ?? []).find((o) => o.path.endsWith('entry.js'));
+    const routeChunk = (r.outputFiles ?? []).find((o) => o.path.includes('Route-'));
+    expect(entryChunk && routeChunk).toBeTruthy();
+    // emit 가드: re-export getter 가 lexical `require_cjslib`(정의자 청크 갇힘) 대신 레지스트리.
+    expect(/\brequire_cjslib\w*\b/.test(routeChunk!.text)).toBe(false);
+
+    // 런타임 가드: entry(cjslib·side 등록) + Route 로드 후 require → 크로스청크 실값 + side-effect.
+    const g: Record<string, unknown> = { console };
+    g.globalThis = g;
+    const ctx = vm.createContext(g);
+    vm.runInContext(entryChunk!.text, ctx);
+    vm.runInContext(routeChunk!.text, ctx);
+    const mods = g.__zntc_mods as Record<string, unknown>;
+    const id = Object.keys(mods).find((k) => /Route/.test(k))!;
+    const required = (g.__zntc_require as (k: string) => Record<string, unknown>)(id);
+    expect(required.val).toBe(7); // named re-export from CJS, cross-chunk
+    expect((required.greet as () => string)()).toBe('CJS');
+    expect((required.r as () => string)()).toBe('R');
+    expect(g.__SIDE).toBe(1); // side-effect import 실행(레지스트리 init), 1회
+  });
 });
