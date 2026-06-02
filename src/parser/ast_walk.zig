@@ -333,3 +333,55 @@ pub fn collectReachableNodeIndices(allocator: std.mem.Allocator, ast: *const Ast
 
     return result.toOwnedSlice(allocator);
 }
+
+/// `walkPreorderIterative` 의 노드별 콜백 반환값.
+pub const WalkAction = enum {
+    /// 이 노드의 자식들을 마저 방문(일반 pre-order 하강).
+    descend,
+    /// 이 노드의 서브트리를 건너뜀(prune — 자식 push 안 함). 재귀판의 early `return` 대응.
+    skip_children,
+    /// 순회 전체를 즉시 종료. predicate short-circuit(첫 매치에서 멈춤) 대응.
+    stop,
+};
+
+/// `root` 서브트리를 pre-order(자식 좌→우)로 **반복** 순회한다. 재귀 대신 명시 스택을 써서
+/// 깊은 좌결합 체인(`a+b+c+…` 수천 항, #4123)에서도 스택 오버플로우가 없다.
+/// `visit(ctx, idx, node)` 가 각 노드에서 호출돼 `WalkAction` 을 반환:
+///   - `.descend` → 자식 방문, `.skip_children` → 서브트리 prune, `.stop` → 전체 종료.
+/// 방문 순서와 prune 의미는 `var it = children(...); while(it.next())|c| recurse(c)` 재귀판과
+/// 동일하다(스택에 자식을 역순 push → 좌→우 pop). `allocator` 는 스택 전용(보통
+/// `ast.allocator`=parse_arena; 함수 종료 시 deinit). OOM 시 `error.OutOfMemory` 전파 —
+/// 무한루프/부분상태 없음(호출자가 catch 로 보수적 처리 가능).
+pub fn walkPreorderIterative(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    ctx: anytype,
+    comptime visit: fn (@TypeOf(ctx), NodeIndex, Node) WalkAction,
+) std.mem.Allocator.Error!void {
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(allocator);
+    try stack.append(allocator, root);
+
+    var child_buf: std.ArrayList(NodeIndex) = .empty;
+    defer child_buf.deinit(allocator);
+
+    while (stack.pop()) |idx| {
+        if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) continue;
+        const node = ast.nodes.items[@intFromEnum(idx)];
+        switch (visit(ctx, idx, node)) {
+            .stop => return,
+            .skip_children => continue,
+            .descend => {},
+        }
+        // 자식을 좌→우 pop 하도록 역순으로 push.
+        child_buf.clearRetainingCapacity();
+        var it = children(ast, node);
+        while (it.next()) |c| try child_buf.append(allocator, c);
+        var i = child_buf.items.len;
+        while (i > 0) {
+            i -= 1;
+            try stack.append(allocator, child_buf.items[i]);
+        }
+    }
+}

@@ -141,33 +141,37 @@ fn applyRenames(ast: *Ast, idx: NodeIndex, renames: *const std.StringHashMapUnma
 /// Direct `eval("...")` 호출이 class body 안에 있는지 보수적 탐지. 있으면 private mangle
 /// 전체 skip (eval 이 private name 을 동적으로 재작성할 가능성에 대비 — 실제 runtime 에선
 /// eval 안에서 private 접근이 language level 로 금지되어 있지만 안전 측면 보수 유지).
-fn containsDirectEval(ast: *const Ast, idx: NodeIndex) bool {
-    const ni = @intFromEnum(idx);
-    if (ni >= ast.nodes.items.len) return false;
-    const node = ast.nodes.items[ni];
+const DirectEvalCtx = struct { ast: *const Ast, found: bool };
 
+fn directEvalVisit(ctx: *DirectEvalCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
+    _ = idx;
     if (node.tag == .call_expression) {
         // callee 가 identifier_reference "eval" 인지
         const e = node.data.extra;
-        if (ast.hasExtra(e, 0)) {
-            const callee_ni = ast.readExtra(e, 0);
-            if (callee_ni < ast.nodes.items.len) {
-                const callee = ast.nodes.items[callee_ni];
+        if (ctx.ast.hasExtra(e, 0)) {
+            const callee_ni = ctx.ast.readExtra(e, 0);
+            if (callee_ni < ctx.ast.nodes.items.len) {
+                const callee = ctx.ast.nodes.items[callee_ni];
                 if (callee.tag == .identifier_reference and
-                    std.mem.eql(u8, ast.getText(callee.span), "eval")) return true;
+                    std.mem.eql(u8, ctx.ast.getText(callee.span), "eval"))
+                {
+                    ctx.found = true;
+                    return .stop;
+                }
             }
         }
     }
+    // Nested class 는 자체 eval 이 있어도 그 class 의 처리 문제 — outer 에 영향 없음. prune.
+    if (node.tag == .class_declaration or node.tag == .class_expression) return .skip_children;
+    return .descend;
+}
 
-    // Nested class 는 자체 eval 이 있어도 그 class 의 처리 문제 — outer 에 영향 없음.
-    if (node.tag == .class_declaration or node.tag == .class_expression) return false;
-
-    var it = ast_walk.children(ast, node);
-    while (it.next()) |child| {
-        if (child.isNone()) continue;
-        if (containsDirectEval(ast, child)) return true;
-    }
-    return false;
+fn containsDirectEval(ast: *const Ast, idx: NodeIndex) bool {
+    // 반복 순회(#4123): 클래스 body 안 깊은 좌결합 체인에서 재귀 시 스택 오버플로우.
+    // OOM 시 보수적으로 true(=eval 있다고 가정 → private mangling 생략) → 안전.
+    var c = DirectEvalCtx{ .ast = ast, .found = false };
+    ast_walk.walkPreorderIterative(ast.allocator, ast, idx, &c, directEvalVisit) catch return true;
+    return c.found;
 }
 
 /// counter -> `#a`, `#b`, ..., `#z`, `#A`, ..., `#Z`, `#a0`, `#a1`, ...

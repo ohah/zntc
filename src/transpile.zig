@@ -1671,6 +1671,31 @@ test "deep left-assoc binary chain does not overflow the stack (#4123)" {
     try std.testing.expectEqual(n - 1, std.mem.count(u8, result.code, "+"));
 }
 
+test "deep binary chain with minify does not overflow (#4123 flag-gated walkers)" {
+    // `const x = a + a + … (N항)` (a=immutable const, x single-use) 를 minify_syntax 로 처리하면
+    // single-use inline 판정이 `allInnerReferencesImmutable` 로 깊은 체인을 순회한다(주 커버 대상).
+    // 재귀판이면 여기서 스택 오버플로우(#4123). 반복(walkPreorderIterative) 변환 후 정상.
+    // (decrementRefs/containsDirectEval/hasTopLevelAwait 의 깊은-체인 비크래시는 CLI e2e 로 확인.)
+    const n: usize = 20000;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(std.testing.allocator);
+    try src.appendSlice(std.testing.allocator, "const a = 1;\nconst x = a");
+    var i: usize = 1;
+    while (i < n) : (i += 1) try src.appendSlice(std.testing.allocator, " + a");
+    try src.appendSlice(std.testing.allocator, ";\nconsole.log(x);\n");
+
+    var result = try transpileWithCallbackInternal(
+        std.testing.allocator,
+        src.items,
+        "input.js",
+        .{ .minify_syntax = true },
+        null,
+        true,
+    );
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
 test "TransformPlan: simple TypeScript strip skips semantic" {
     const plan = try testTransformPlan(
         "export const x: number = 1;\nexport function f(v: string): string { return v; }\ninterface Foo { x: number }\ntype Bar = string;\n",
