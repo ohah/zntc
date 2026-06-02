@@ -342,12 +342,55 @@ function printResults(results: BenchResult[]) {
 }
 
 // ============================================================
+// Machine-readable JSON (regression gate 가 읽는 구조화 산출물)
+// ============================================================
+
+// `--json <path>` 가 주어지면 median(ms) 만 담은 평탄한 JSON 을 쓴다.
+// 마크다운 테이블 파싱은 깨지기 쉬워, gate 는 이 JSON 만 읽는다 (bundle-perf.ts
+// 의 --output JSON 과 동일한 컨벤션). stdout 마크다운 출력은 그대로 유지.
+function writeJson(path: string, results: BenchResult[]) {
+  const rows = results
+    .filter((r) => r.stats !== null)
+    .map((r) => ({
+      tool: r.tool,
+      task: r.task,
+      scale: r.scale,
+      median_ms: r.stats!.median,
+    }));
+  writeFileSync(
+    path,
+    JSON.stringify(
+      {
+        version: 1,
+        platform: `${process.platform}-${process.arch}`,
+        iterations: ITERATIONS,
+        results: rows,
+      },
+      null,
+      2,
+    ),
+  );
+  console.log(`\n[bench] JSON written: ${path} (${rows.length} rows)`);
+}
+
+// ============================================================
 // Main
 // ============================================================
 
 const args = process.argv.slice(2);
-const doTranspile = args.includes('--transpile') || args.includes('--all') || args.length === 0;
-const doBundle = args.includes('--bundle') || args.includes('--all') || args.length === 0;
+// 선택 플래그(--transpile/--bundle/--all)가 하나도 없으면 둘 다 실행한다.
+// `--json <path>` 같은 비-선택 플래그가 와도 기본 "전체 실행" 이 유지되도록
+// args.length 가 아니라 선택 플래그 유무로 판단 (이전엔 --json 만 줘도 둘 다 꺼졌음).
+const selectTranspile = args.includes('--transpile');
+const selectBundle = args.includes('--bundle');
+const selectAll = args.includes('--all');
+const noSelection = !selectTranspile && !selectBundle && !selectAll;
+const doTranspile = selectTranspile || selectAll || noSelection;
+const doBundle = selectBundle || selectAll || noSelection;
+
+// `--json <path>` (다음 인자가 경로). 미지정 시 JSON 미출력.
+const jsonFlagIdx = args.indexOf('--json');
+const jsonPath = jsonFlagIdx >= 0 ? args[jsonFlagIdx + 1] : null;
 
 console.log('ZNTC Benchmark Suite');
 console.log(`  Iterations: ${ITERATIONS} (median, trimmed mean)`);
@@ -361,3 +404,5 @@ if (doBundle) allResults.push(...benchBundle());
 
 console.log('\n===== Results =====');
 printResults(allResults);
+
+if (jsonPath) writeJson(jsonPath, allResults);
