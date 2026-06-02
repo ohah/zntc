@@ -35,6 +35,7 @@ const srcRoot = join(root, "src");
 const ALLOWLIST = {
   // --- sanctioned 헬퍼 / 명시 스택·큐·collector (깊이 무관 안전) ---
   "src/parser/ast_walk.zig::walkPreorderIterative": { class: "iterative_safe", note: "the sanctioned iterative helper" },
+  "src/parser/ast_walk.zig::collectChildrenInto": { class: "iterative_safe", note: "sanctioned child-collection entry point for iterative worklists (#4123 PR-2c)" },
   "src/parser/ast_walk.zig::collectReachableNodeIndices": { class: "iterative_safe", note: "explicit stack worklist" },
   "src/transformer/minify.zig::markReachableNodes": { class: "iterative_safe", note: "BFS queue" },
   "src/transformer/es2015_block_scoping.zig::collectChildIndices": { class: "iterative_safe", note: "one-level collector feeding caller stack" },
@@ -47,13 +48,12 @@ const ALLOWLIST = {
   "src/bundler/runtime_polyfills.zig::markSkippedIdentifiers": { class: "one_level", note: "import/export specifiers only, flat outer loop" },
   "src/bundler/constant_facts.zig::markMinifySensitiveIdentifierRefs": { class: "one_level", note: "one level, flat outer for" },
 
-  // --- 아직 재귀 (#4123 PR-2c 에서 walkPreorderIterative 로 전환 예정) ---
-  "src/transpile.zig::walkFunctionVarBindingPatterns": { class: "recursive_tracked", note: "#4123 PR-2c — binding-shadow scan" },
-  "src/transpile.zig::scanChildrenForUnsupportedBindingLiteShadow": { class: "recursive_tracked", note: "#4123 PR-2c — binding-lite shadow scan (scope-threaded)" },
-  "src/transpile.zig::markBindingLiteValueUses": { class: "recursive_tracked", note: "#4123 PR-2c — binding-lite value-use mark" },
-  "src/transformer/es2017.zig::rewriteAwaitToYieldAwait": { class: "recursive_tracked", note: "#4123 PR-2c — post-order + mutation" },
-  "src/semantic/analyzer.zig::visitTypeContextNode": { class: "recursive_tracked", note: "#4123 PR-2c — type-context generic descent (low-risk)" },
-  "src/parser/ast_walk.zig::hasRawPrivateSyntax": { class: "recursive_tracked", note: "#4123 PR-2c — Debug/ReleaseSafe-only assert (ReleaseFast 에선 compiled out)" },
+  // --- recursive_tracked: 없음 ---
+  // #4123 PR-2c 에서 마지막 6개 재귀 walker(walkFunctionVarBindingPatterns / scanChildrenForUnsupportedBindingLiteShadow /
+  // markBindingLiteValueUses / rewriteAwaitToYieldAwait / visitTypeContextNode / hasRawPrivateSyntax)를 전부 반복화했다.
+  // 이들은 이제 children() 을 직접 호출하지 않고 `ast_walk.collectChildrenInto`(또는 walkPreorderIterative)를 경유하므로
+  // 이 audit 의 children() 호출처 목록에서 사라진다 → recursive_tracked=0. 새 재귀 walker 가 children() 을 직접 돌면
+  // 미분류 violation 으로 다시 잡힌다.
 };
 
 function listZigFiles(dir) {

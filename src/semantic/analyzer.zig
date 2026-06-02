@@ -1844,18 +1844,107 @@ pub const SemanticAnalyzer = struct {
         }
     }
 
+    /// visitNode switch 의 TS type-node group(`ts_qualified_name` … `ts_class_implements`,
+    /// 모두 `visitTypeContextNode` 로 위임해 자식만 descend)과 **동기 유지 필수**.
+    /// visitTypeContextNode 의 worklist 가 이 group 을 만나면 visitNode 재귀(=visitTypeContextNode
+    /// 재진입) 대신 자식을 직접 평탄화해 깊은 타입 중첩(#4123)에서 스택오버플로우를 막는다.
+    /// 신규 ts_* type node 를 그 switch group 에 추가하면 여기에도 반드시 추가할 것: 빠지면 그
+    /// 노드는 visitNode 위임 → visitNode 가 다시 visitTypeContextNode 호출(dispatch 재귀)이라
+    /// 깊은 중첩에서 *깊이 안전*만 잃고(스택 재귀 재유입), **출력 의미는 동일**하다
+    /// (type_context_depth 는 boolean). 이 dispatch 재귀는 새 children() 호출처가 아니라
+    /// durability audit 이 못 잡고, 출력 불변이라 byte-identical 도 못 잡으므로 — 이 목록은
+    /// visitNode group 과 **수동으로** 동기 유지해야 한다(자동 가드 없음).
+    fn isTypeContextGenericNode(tag: Node.Tag) bool {
+        return switch (tag) {
+            .ts_qualified_name,
+            .ts_array_type,
+            .ts_tuple_type,
+            .ts_named_tuple_member,
+            .ts_union_type,
+            .ts_intersection_type,
+            .ts_conditional_type,
+            .ts_type_operator,
+            .ts_optional_type,
+            .ts_rest_type,
+            .ts_indexed_access_type,
+            .ts_type_literal,
+            .ts_function_type,
+            .ts_constructor_type,
+            .ts_mapped_type,
+            .ts_template_literal_type,
+            .ts_infer_type,
+            .ts_parenthesized_type,
+            .ts_import_type,
+            .ts_literal_type,
+            .ts_type_predicate,
+            .ts_type_alias_declaration,
+            .ts_interface_declaration,
+            .ts_interface_body,
+            .ts_property_signature,
+            .ts_method_signature,
+            .ts_call_signature,
+            .ts_construct_signature,
+            .ts_index_signature,
+            .ts_getter_signature,
+            .ts_setter_signature,
+            .ts_type_parameter,
+            .ts_type_parameter_declaration,
+            .ts_type_parameter_instantiation,
+            .ts_class_implements,
+            => true,
+            else => false,
+        };
+    }
+
     /// TS type node 의 children 을 `type_context_depth` 를 올린 채 순회.
-    /// `ast_walk.children` iterator 로 각 child NodeIndex 를 얻어 재귀 visit —
     /// 내부에 도달한 `identifier_reference` 는 `resolveIdentifier` 가 type_context
     /// flag 와 함께 Reference 에 기록.
+    ///
+    /// 반복 worklist(#4123): 원본은 children 을 그냥 `visitNode` 로 재귀했는데, 깊게 중첩된
+    /// 타입(`number[][]…[]`, `keyof keyof …`, 긴 `A|B|C…`)에서 visitNode ↔ visitTypeContextNode
+    /// 상호재귀가 스택오버플로우. type_context_depth 는 line 889 에서 boolean(`>0`)으로만 쓰여
+    /// 중첩 depth 값 자체가 무의미하므로, generic type-node group(isTypeContextGenericNode)은
+    /// 자식을 worklist 로 평탄화하고 그 외(ts_type_reference, ts_type_query=value_as_type, 또는
+    /// 타입 안의 value 식·identifier)는 visitNode 로 위임한다. 그 위임은 얕다 — value 식의 깊은
+    /// 체인은 visitNode 의 binary/logical arm 이 자체 평탄화(#4123 PR-1).
     fn visitTypeContextNode(self: *SemanticAnalyzer, idx: NodeIndex, node: Node) AllocError!void {
         _ = idx;
         self.type_context_depth += 1;
         defer self.type_context_depth -= 1;
-        var it = ast_walk.children(self.ast, node);
-        while (it.next()) |child| {
-            if (child.isNone()) continue;
-            try self.visitNode(child);
+
+        const Push = struct {
+            fn go(
+                a: *Ast,
+                n: Node,
+                st: *std.ArrayListUnmanaged(NodeIndex),
+                cb: *std.ArrayListUnmanaged(NodeIndex),
+                alloc: std.mem.Allocator,
+            ) AllocError!void {
+                try ast_walk.collectChildrenInto(a, n, cb, alloc);
+                var i = cb.items.len; // 소스 순서 보존: 역순 push → LIFO pop 이 forward
+                while (i > 0) {
+                    i -= 1;
+                    try st.append(alloc, cb.items[i]);
+                }
+            }
+        };
+
+        var stack: std.ArrayListUnmanaged(NodeIndex) = .empty;
+        defer stack.deinit(self.allocator);
+        var child_buf: std.ArrayListUnmanaged(NodeIndex) = .empty;
+        defer child_buf.deinit(self.allocator);
+
+        try Push.go(self.ast, node, &stack, &child_buf, self.allocator);
+        while (stack.pop()) |cur| {
+            // children() 는 extra_data 값을 그대로 yield 하므로(범위 검증 안 함) none 외에
+            // out-of-range 도 가능 → getNode 전 bounds 가드(walkPreorderIterative/scanChildren 동일).
+            if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) continue;
+            const cnode = self.ast.getNode(cur);
+            if (isTypeContextGenericNode(cnode.tag)) {
+                try Push.go(self.ast, cnode, &stack, &child_buf, self.allocator);
+            } else {
+                try self.visitNode(cur);
+            }
         }
     }
 
