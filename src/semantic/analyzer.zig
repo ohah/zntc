@@ -1333,6 +1333,13 @@ pub const SemanticAnalyzer = struct {
     // AST Visitor — switch 기반 (D042)
     // ================================================================
 
+    /// idx 가 유효하고 binary_expression/logical_expression 인지 (좌결합 스파인 평탄화용, #4123).
+    fn isBinaryOrLogical(self: *SemanticAnalyzer, idx: NodeIndex) bool {
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+        const tag = self.ast.getNode(idx).tag;
+        return tag == .binary_expression or tag == .logical_expression;
+    }
+
     fn visitNode(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
         if (idx.isNone()) return;
         // 바운드 체크: 잘못된 인덱스 방어
@@ -1555,8 +1562,34 @@ pub const SemanticAnalyzer = struct {
             .binary_expression,
             .logical_expression,
             => {
-                try self.visitNode(node.data.binary.left);
-                try self.visitNode(node.data.binary.right);
+                const left0 = node.data.binary.left;
+                if (!self.isBinaryOrLogical(left0)) {
+                    // 빠른 경로(depth 1, 대부분의 `a OP b`): 좌→우 그대로, 할당 없음.
+                    try self.visitNode(left0);
+                    try self.visitNode(node.data.binary.right);
+                } else {
+                    // 깊은 좌결합 체인(a+b+c+…)은 좌 스파인을 재귀로 내려가면 스택 오버플로우
+                    // (#4123). 스파인을 명시적 스택으로 평탄화해 반복 순회한다. 방문 순서는
+                    // 재귀판과 동일(최좌단 leaf → 각 노드의 right 를 bottom-up = 소스순 a,b,c,d)
+                    // 이라 ref 수집 결과 불변.
+                    var spine: std.ArrayListUnmanaged(NodeIndex) = .empty;
+                    defer spine.deinit(self.allocator);
+                    var cur_idx = idx;
+                    while (true) {
+                        try spine.append(self.allocator, cur_idx);
+                        const left = self.ast.getNode(cur_idx).data.binary.left;
+                        if (self.isBinaryOrLogical(left)) {
+                            cur_idx = left;
+                        } else break;
+                    }
+                    // 최좌단 leaf(최하단 스파인 노드의 left) 먼저.
+                    try self.visitNode(self.ast.getNode(spine.items[spine.items.len - 1]).data.binary.left);
+                    // 그다음 각 스파인 노드의 right 를 bottom→top(소스순) 으로.
+                    var i = spine.items.len;
+                    while (i > 0) : (i -= 1) {
+                        try self.visitNode(self.ast.getNode(spine.items[i - 1]).data.binary.right);
+                    }
+                }
             },
             .conditional_expression => {
                 // ternary: { a = condition, b = consequent, c = alternate }

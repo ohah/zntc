@@ -172,23 +172,75 @@ pub fn visitUnaryNode(self: anytype, idx: NodeIndex) Error!NodeIndex {
     });
 }
 
-/// 이항 노드: left, right를 재귀 방문 후 복사.
+/// left 노드가 lowering 없이 visitBinaryNode 로 직행하는 "일반" 좌결합 스파인 노드인지.
+/// node_dispatch.zig:276-305 의 per-node 다운레벨링 트리거(`**`→Math.pow, `??`→삼항,
+/// `#x in`)를 제외 — 그 노드들은 평탄화로 건너뛰면 안 되고 visitNode 로 재-dispatch 되어
+/// lowering 돼야 하므로 스파인 경계가 된다. (#4123 좌 스파인 평탄화용.)
+fn binarySpineContinues(self: anytype, idx: NodeIndex) bool {
+    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+    const n = self.ast.getNode(idx);
+    if (n.tag != .binary_expression and n.tag != .logical_expression) return false;
+    const op: token_mod.Kind = @enumFromInt(n.data.binary.flags);
+    if (n.tag == .binary_expression and op == .star2 and self.options.unsupported.exponentiation) return false;
+    if (n.tag == .logical_expression and op == .question2 and self.options.unsupported.nullish_coalescing) return false;
+    if (n.tag == .binary_expression and op == .kw_in and
+        (self.current_private_fields.len > 0 or self.current_private_methods.len > 0)) return false;
+    return true;
+}
+
+/// 이항 노드: left, right를 방문 후 복사. 좌결합 체인(a+b+c+…)은 좌 스파인이 N-deep 라
+/// 순수 재귀면 스택 오버플로우(#4123) → 좌 스파인을 명시 스택으로 평탄화해 반복 처리한다.
+/// 방문 순서(최좌단 leaf → 각 right bottom-up = 소스순)와 "자식 불변 시 idx 재사용" 동작은
+/// 재귀판과 동일 → 출력 byte-identical.
 pub fn visitBinaryNode(self: anytype, idx: NodeIndex) Error!NodeIndex {
     const node = self.ast.getNode(idx);
-    const old_left = node.data.binary.left;
-    const old_right = node.data.binary.right;
-    const new_left = try self.visitNode(old_left);
-    const new_right = try self.visitNode(old_right);
-    if (new_left == old_left and new_right == old_right) return idx;
-    return self.ast.addNode(.{
-        .tag = node.tag,
-        .span = node.span,
-        .data = .{ .binary = .{
+    const root_left = node.data.binary.left;
+
+    // 빠른 경로(depth 1, 대부분의 `a OP b`): 좌 자식이 스파인 노드가 아니면 기존 재귀형(할당 0).
+    if (!binarySpineContinues(self, root_left)) {
+        const old_right = node.data.binary.right;
+        const new_left = try self.visitNode(root_left);
+        const new_right = try self.visitNode(old_right);
+        if (new_left == root_left and new_right == old_right) return idx;
+        return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .binary = .{
             .left = new_left,
             .right = new_right,
             .flags = node.data.binary.flags,
-        } },
-    });
+        } } });
+    }
+
+    // 느린 경로: 좌 스파인 평탄화. 체인당 1회만 할당(노드당 아님).
+    var spine: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer spine.deinit(self.allocator);
+    var cur = idx;
+    while (true) {
+        try spine.append(self.allocator, cur);
+        const left = self.ast.getNode(cur).data.binary.left;
+        if (binarySpineContinues(self, left)) cur = left else break;
+    }
+    // 최좌단 leaf(최하단 스파인 노드의 left)는 정식 dispatch 로 방문(여기서 lowering 가능).
+    var acc = try self.visitNode(self.ast.getNode(spine.items[spine.items.len - 1]).data.binary.left);
+    // bottom→top: 각 스파인 노드의 right 방문 후 재조립(자식 불변이면 원본 idx 재사용).
+    // (재조립된 중간 스파인 노드는 visitNode 를 거치지 않아 propagateSymbolId 가 호출되지
+    //  않지만, binary/logical 연산자 노드는 symbol_id 를 갖지 않으므로 무해. leaf/right 는
+    //  여전히 visitNode 로 방문돼 정상 전파된다.)
+    var i = spine.items.len;
+    while (i > 0) : (i -= 1) {
+        const sidx = spine.items[i - 1];
+        const n = self.ast.getNode(sidx);
+        const old_right = n.data.binary.right;
+        const new_right = try self.visitNode(old_right);
+        if (acc == n.data.binary.left and new_right == old_right) {
+            acc = sidx;
+        } else {
+            acc = try self.ast.addNode(.{ .tag = n.tag, .span = n.span, .data = .{ .binary = .{
+                .left = acc,
+                .right = new_right,
+                .flags = n.data.binary.flags,
+            } } });
+        }
+    }
+    return acc;
 }
 
 /// unary/update expression: extra = [operand, operator_and_flags]

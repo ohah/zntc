@@ -64,22 +64,9 @@ pub fn emitUpdate(self: anytype, node: Node) !void {
     if (is_postfix) try self.write(op.symbol());
 }
 
-pub fn emitBinary(self: anytype, node: Node) !void {
-    try self.addSourceMapping(node.span);
+/// 이항 연산자 심볼 + 양옆 spacing 을 좌/우 피연산자 사이에 emit. 재귀·반복 경로 공용.
+fn emitBinaryOperator(self: anytype, node: Node) !void {
     const op: Kind = @enumFromInt(node.data.binary.flags);
-    if (self.options.linking_metadata != null and node.tag == .logical_expression) {
-        if (self.evalBooleanCondition(node.data.binary.left)) |left_val| {
-            if ((op == .amp2 and !left_val) or
-                (op == .pipe2 and left_val))
-            {
-                try self.write(if (left_val) "true" else "false");
-                return;
-            }
-            try self.emitNode(node.data.binary.right);
-            return;
-        }
-    }
-    try self.emitNode(node.data.binary.left);
     if (op == .kw_in or op == .kw_instanceof) {
         // 영문 키워드 연산자는 양옆 공백 필수 (`a in b` ≠ `ainb`) — minify 와 무관.
         try self.writeByte(' ');
@@ -101,6 +88,68 @@ pub fn emitBinary(self: anytype, node: Node) !void {
             try self.writeSpace();
         }
     }
+}
+
+/// idx 가 좌결합 평탄화 대상 스파인 노드인지. binary 는 항상, logical 은 상수 단락(fold)이
+/// 없을 때(linking_metadata == null)만 — fold 는 좌/우 일부만 emit 해 평탄화를 깨므로 그땐
+/// 재귀 경로로 둔다(깊은 `&&`/`||` 체인 + 번들 상수폴드 조합은 드묾). (#4123)
+fn emitSpineContinues(self: anytype, idx: NodeIndex) bool {
+    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+    const t = self.ast.getNode(idx).tag;
+    if (t == .binary_expression) return true;
+    if (t == .logical_expression and self.options.linking_metadata == null) return true;
+    return false;
+}
+
+/// 이항 노드 emit. 좌결합 체인(a+b+c+…)은 좌 스파인이 N-deep 라 순수 재귀면 스택 오버플로우
+/// (#4123) → 좌 스파인을 명시 스택으로 평탄화해 반복 emit 한다. 출력 텍스트와 addSourceMapping
+/// 순서(root → 스파인 top-down → 최좌단 leaf → operator+right bottom-up)는 재귀판과 동일.
+pub fn emitBinary(self: anytype, node: Node) !void {
+    try self.addSourceMapping(node.span);
+    const op: Kind = @enumFromInt(node.data.binary.flags);
+    if (self.options.linking_metadata != null and node.tag == .logical_expression) {
+        if (self.evalBooleanCondition(node.data.binary.left)) |left_val| {
+            if ((op == .amp2 and !left_val) or
+                (op == .pipe2 and left_val))
+            {
+                try self.write(if (left_val) "true" else "false");
+                return;
+            }
+            try self.emitNode(node.data.binary.right);
+            return;
+        }
+    }
+
+    const left = node.data.binary.left;
+    // 빠른 경로(depth 1, 대부분의 `a OP b`): 좌 자식이 스파인 노드가 아니면 기존 형태(할당 0).
+    if (!emitSpineContinues(self, left)) {
+        try self.emitNode(left);
+        try emitBinaryOperator(self, node);
+        try self.emitNode(node.data.binary.right);
+        return;
+    }
+
+    // 느린 경로: 좌 스파인 평탄화 (체인당 1회 할당). root 는 위에서 이미 addSourceMapping/fold 처리.
+    var spine: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer spine.deinit(self.allocator);
+    var cur = left;
+    while (true) {
+        try spine.append(self.allocator, cur);
+        const nl = self.ast.getNode(cur).data.binary.left;
+        if (emitSpineContinues(self, nl)) cur = nl else break;
+    }
+    // 스파인 노드(left..bottom) addSourceMapping 을 top-down 으로 (재귀판 순서 보존).
+    for (spine.items) |s| try self.addSourceMapping(self.ast.getNode(s).span);
+    // 최좌단 leaf(최하단 스파인 노드의 left).
+    try self.emitNode(self.ast.getNode(spine.items[spine.items.len - 1]).data.binary.left);
+    // bottom-up: 각 스파인 노드 operator+right (소스순), 마지막에 root.
+    var i = spine.items.len;
+    while (i > 0) : (i -= 1) {
+        const sn = self.ast.getNode(spine.items[i - 1]);
+        try emitBinaryOperator(self, sn);
+        try self.emitNode(sn.data.binary.right);
+    }
+    try emitBinaryOperator(self, node);
     try self.emitNode(node.data.binary.right);
 }
 
