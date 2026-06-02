@@ -704,4 +704,165 @@ describe('cross-chunk re-export (#3321 follow-up bugfix)', () => {
     const { stdout } = await runNode(join(fixture.dir, e1.path));
     expect(stdout.trim()).toBe('e1 AV BV ONLY');
   });
+
+  // collision 블록 일반화(이 PR)는 namespace re-export collision 의 **export emit** 을 고친다:
+  // 예전 단순 해석은 미존재 `export { ns }` SyntaxError 였고, 일반화는 single-owner 와 같은
+  // full resolution(nsReExportTarget→ensureSharedNsVar)으로 `export { x_ns as ns, y_ns as ns$1 }`
+  // (실존 ns 변수)를 낸다. 다만 ns 자체 materialization(`y_ns = {get k(){return k}}` 가 자기
+  // const `k$1` 이 아니라 다른 ns 의 `k` 참조) + 번들 consumer 의 멤버접근 collapse 는 export
+  // emit 이 아니라 shared-namespace finalize 의 **별도 선재 버그**라 범위 밖 → todo 로 고정.
+  test.todo('esm: namespace re-export collision 전체 동작 (ns materialize finalize 선재 버그)', async () => {
+    const fixture = await createFixture({
+      'x.ts': "export const k = 'XK';",
+      'y.ts': "export const k = 'YK';",
+      'a.ts': "export * as ns from './x';",
+      'b.ts': "export * as ns from './y';",
+      'e1.ts':
+        "import { ns as na } from './a';\nimport { ns as nb } from './b';\nconsole.log('e1', na.k, nb.k);",
+      'e2.ts':
+        "import { ns as na } from './a';\nimport { ns as nb } from './b';\nconsole.log('e2', na.k, nb.k);",
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'e1.ts'), join(fixture.dir, 'e2.ts')],
+      rootDir: fixture.dir,
+      platform: 'node',
+      splitting: true,
+      format: 'esm',
+    });
+    const outs = result.outputFiles!;
+    writeOutputs(fixture.dir, outs);
+    const e1 = outs.find((o) => o.path.includes('e1') && o.path.endsWith('.js'))!;
+    const { stdout } = await runNode(join(fixture.dir, e1.path));
+    expect(stdout.trim()).toBe('e1 XK YK');
+  });
+
+  // === 추가 커버리지: 포맷(cjs/iife) · shape(3-way, default+named) 확장 ===
+
+  // 공유 export default 가 cjs 에서도 provider/consumer 전역명 일치.
+  test('cjs: 공유 export default 가 consumer/provider 전역명 일치', async () => {
+    const fixture = await createFixture({
+      'shared.ts': "export default function thing(){ return 'D'; }",
+      'e1.ts': "import f from './shared';\nconsole.log('e1', f());",
+      'e2.ts': "import f from './shared';\nconsole.log('e2', f());",
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'e1.ts'), join(fixture.dir, 'e2.ts')],
+      rootDir: fixture.dir,
+      platform: 'node',
+      splitting: true,
+      format: 'cjs',
+    });
+    const outs = result.outputFiles!;
+    writeOutputs(fixture.dir, outs);
+    const e1 = outs.find((o) => o.path.includes('e1') && o.path.endsWith('.js'))!;
+    const { stdout } = await runNode(join(fixture.dir, e1.path));
+    expect(stdout.trim()).toBe('e1 D');
+  });
+
+  // 분산 청크 동명 export 가 cjs(native require + 동적 import)에서도 일치.
+  test('cjs: 분산 청크 동명 export 가 consumer/provider 일치', async () => {
+    const fixture = await createFixture({
+      'a.ts': "export const v = 'AV';",
+      'b.ts': "export const v = 'BV';",
+      'route1.ts': "import { v } from './a';\nexport const r1 = v;",
+      'route2.ts': "import { v } from './b';\nexport const r2 = v;",
+      'main.ts':
+        "import { v as av } from './a';\nimport { v as bv } from './b';\n" +
+        "async function run(){ const m1=await import('./route1'); const m2=await import('./route2'); console.log('main', av, bv, m1.r1, m2.r2); }\nrun();",
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'main.ts')],
+      rootDir: fixture.dir,
+      platform: 'node',
+      splitting: true,
+      format: 'cjs',
+    });
+    const outs = result.outputFiles!;
+    writeOutputs(fixture.dir, outs);
+    const main = outs.find((o) => o.path.includes('main') && o.path.endsWith('.js'))!;
+    const { stdout } = await runNode(join(fixture.dir, main.path));
+    expect(stdout.trim()).toBe('main AV BV AV BV');
+  });
+
+  // 3개 모듈 동명 collision → v/v$1/v$2 모두 distinct(owner-iterating 루프가 N owner 처리).
+  test('esm: 3-way 동명 collision 이 모두 distinct', async () => {
+    const fixture = await createFixture({
+      'a.ts': "export const v = 'A';",
+      'b.ts': "export const v = 'B';",
+      'c.ts': "export const v = 'C';",
+      'e1.ts':
+        "import { v as a } from './a';\nimport { v as b } from './b';\nimport { v as c } from './c';\nconsole.log('e1', a, b, c);",
+      'e2.ts':
+        "import { v as a } from './a';\nimport { v as b } from './b';\nimport { v as c } from './c';\nconsole.log('e2', a, b, c);",
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'e1.ts'), join(fixture.dir, 'e2.ts')],
+      rootDir: fixture.dir,
+      platform: 'node',
+      splitting: true,
+      format: 'esm',
+    });
+    const outs = result.outputFiles!;
+    writeOutputs(fixture.dir, outs);
+    const e1 = outs.find((o) => o.path.includes('e1') && o.path.endsWith('.js'))!;
+    const { stdout } = await runNode(join(fixture.dir, e1.path));
+    expect(stdout.trim()).toBe('e1 A B C');
+  });
+
+  // 한 청크에 default collision(reserved export명) + named 동명 collision 동시 — full
+  // resolution(예약어 default→local) 과 owner-iterating 이 함께 정상.
+  test('esm: default + named 동명 collision 공존', async () => {
+    const fixture = await createFixture({
+      'a.ts': "export default 'AD';\nexport const s = 'AS';",
+      'b.ts': "export default 'BD';\nexport const s = 'BS';",
+      'e1.ts':
+        "import da, { s as sa } from './a';\nimport db, { s as sb } from './b';\nconsole.log('e1', da, db, sa, sb);",
+      'e2.ts':
+        "import da, { s as sa } from './a';\nimport db, { s as sb } from './b';\nconsole.log('e2', da, db, sa, sb);",
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'e1.ts'), join(fixture.dir, 'e2.ts')],
+      rootDir: fixture.dir,
+      platform: 'node',
+      splitting: true,
+      format: 'esm',
+    });
+    const outs = result.outputFiles!;
+    writeOutputs(fixture.dir, outs);
+    const e1 = outs.find((o) => o.path.includes('e1') && o.path.endsWith('.js'))!;
+    const { stdout } = await runNode(join(fixture.dir, e1.path));
+    expect(stdout.trim()).toBe('e1 AD BD AS BS');
+  });
+
+  // 분산 청크 동명을 iife 에서도(브라우저 시뮬 + 동적 import).
+  test('iife: 분산 청크 동명 export 가 consumer/provider 일치', async () => {
+    const fixture = await createFixture({
+      'a.ts': "export const v = 'AV';",
+      'b.ts': "export const v = 'BV';",
+      'route1.ts': "import { v } from './a';\nexport const r1 = v;",
+      'route2.ts': "import { v } from './b';\nexport const r2 = v;",
+      'main.ts':
+        "import { v as av } from './a';\nimport { v as bv } from './b';\n" +
+        "async function run(){ const m1=await import('./route1'); const m2=await import('./route2'); console.log('main', av, bv, m1.r1, m2.r2); }\nrun();",
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'main.ts')],
+      rootDir: fixture.dir,
+      platform: 'browser',
+      splitting: true,
+      format: 'iife',
+    });
+    const outs = result.outputFiles!;
+    writeOutputs(fixture.dir, outs);
+    const main = outs.find((o) => o.path.includes('main') && o.path.endsWith('.js'))!;
+    const drv = browserDriver(fixture.dir, main.path, jsPaths(outs));
+    const { stdout } = await runNode(drv);
+    expect(stdout.trim()).toBe('main AV BV AV BV');
+  });
 });
