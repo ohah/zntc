@@ -255,9 +255,13 @@ pub fn registerNamespaceRewrites(
             try inner_map.put(self.allocator, exp.exported, rewrite_value);
             continue;
         }
-        // exp.local 은 owned=true 면 ns_export_cache 가, 아니면 target module 이 소유한다.
-        // metadata map 은 값 포인터만 빌린다.
-        try inner_map.put(self.allocator, exp.exported, exp.local);
+        // #4101 ns collision: target 의 inner const 가 다른 ns 의 동명 const 와 deconflict
+        // 되면(`k`/`k$1`), 이 멤버 재작성(`ns.k`→local)이 잘못된 const 를 가리킨다. inner
+        // const 의 chunk-local rename 은 이 시점(buildMetadataForAst)에 rename_table 에 아직
+        // 없으나, cross-chunk 전역명(emit 前 글로벌 패스)은 이미 확정 — 게다가 그 전역명이 곧
+        // provider 청크의 local 명이자 consumer import 명이라 양쪽 일치. cross-chunk 미해당
+        // (intra-chunk/non-shared)이면 fallback=exp.local(기존).
+        try inner_map.put(self.allocator, exp.exported, self.getCrossChunkGlobalName(target_mod_idx, exp.exported) orelse exp.local);
     }
     try ns_rewrite_list.append(self.allocator, .{
         .symbol_id = symbol_id,
@@ -422,8 +426,22 @@ pub fn appendSharedNamespacePreambleFiltered(
             if (!f.contains(target_mod_idx)) continue;
         }
         const entry = self.ns_shared_inline_cache.get(target_mod_idx) orelse continue;
+        // #4101 ns collision: entry.object_literal 은 cross-chunk 전역명 확정 전(computeCrossChunk
+        // Links)에 frozen 됐다 — getter 가 미-deconflict inner const 참조(`{get k(){return k}}`).
+        // *실제 동명 충돌이 있을 때만*(ns_collision_present) 전역명 확정된 이 시점에 ns_inline_cache
+        // 무효화 후 재빌드 → getter(buildInlineObjectStr)가 getCrossChunkGlobalName 으로 올바른
+        // const(=provider 청크 local)를 가리킨다. 비충돌(대부분)은 frozen 유지(재빌드 비용 0 —
+        // RN/large 번들 finalize 회귀 방지). OOM 시 frozen fallback(.ptr 비교로 free 분기).
+        const obj_literal = if (self.ns_collision_present) blk: {
+            const ms = @constCast(self);
+            // 옛 캐시 값은 fetchRemove 로 소유권 회수 후 free — 단순 remove 는 orphan 누수
+            // (deinit 은 맵에 남은 값만 해제). 재빌드가 새 값을 다시 캐시한다.
+            if (ms.ns_inline_cache.fetchRemove(target_mod_idx)) |kv| self.allocator.free(kv.value);
+            break :blk buildInlineObjectStr(self, target_mod_idx, 0) catch entry.object_literal;
+        } else entry.object_literal;
+        defer if (obj_literal.ptr != entry.object_literal.ptr) self.allocator.free(obj_literal);
         if (self.minify_whitespace) {
-            if (try tryRewriteGetterObjToArrowExport(self.allocator, entry.object_literal)) |arrow_map| {
+            if (try tryRewriteGetterObjToArrowExport(self.allocator, obj_literal)) |arrow_map| {
                 defer self.allocator.free(arrow_map);
                 if (!helper_emitted) {
                     try out.appendSlice(self.allocator, "var " ++ rt.NAMES.DEF_PROP_MIN ++ "=Object.defineProperty;");
@@ -449,7 +467,7 @@ pub fn appendSharedNamespacePreambleFiltered(
         try out.appendSlice(self.allocator, "var ");
         try out.appendSlice(self.allocator, entry.var_name);
         try out.appendSlice(self.allocator, " = ");
-        try out.appendSlice(self.allocator, entry.object_literal);
+        try out.appendSlice(self.allocator, obj_literal);
         try out.appendSlice(self.allocator, ";\n");
         // 큰 namespace inline 의 size 영향 측정. `get NAME(){return VAL}` 패턴은
         // esbuild/rolldown 의 `NAME:()=>VAL` arrow `__export` 보다 per-export ~9 byte 큼
@@ -878,7 +896,10 @@ pub fn buildInlineObjectStr(
                 defer self.allocator.free(value);
                 try buf.appendSlice(self.allocator, value);
             } else {
-                try buf.appendSlice(self.allocator, exp.local);
+                // #4101 ns collision: materialize 된 ns 객체의 getter 가 참조하는 inner const 도
+                // 동명 deconflict 시 cross-chunk 전역명을 써야 한다(그게 곧 provider 청크 local
+                // 명). chunk-local rename 은 이 시점 미확정이라 getCrossChunkGlobalName 사용.
+                try buf.appendSlice(self.allocator, self.getCrossChunkGlobalName(decl_mod_idx, exp.exported) orelse exp.local);
             }
             try buf.appendSlice(self.allocator, get_close);
         }

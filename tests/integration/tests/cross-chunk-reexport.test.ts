@@ -705,22 +705,22 @@ describe('cross-chunk re-export (#3321 follow-up bugfix)', () => {
     expect(stdout.trim()).toBe('e1 AV BV ONLY');
   });
 
-  // collision 블록 일반화(이 PR)는 namespace re-export collision 의 **export emit** 을 고친다:
-  // 예전 단순 해석은 미존재 `export { ns }` SyntaxError 였고, 일반화는 single-owner 와 같은
-  // full resolution(nsReExportTarget→ensureSharedNsVar)으로 `export { x_ns as ns, y_ns as ns$1 }`
-  // (실존 ns 변수)를 낸다. 다만 ns 자체 materialization(`y_ns = {get k(){return k}}` 가 자기
-  // const `k$1` 이 아니라 다른 ns 의 `k` 참조) + 번들 consumer 의 멤버접근 collapse 는 export
-  // emit 이 아니라 shared-namespace finalize 의 **별도 선재 버그**라 범위 밖 → todo 로 고정.
-  test.todo('esm: namespace re-export collision 전체 동작 (ns materialize finalize 선재 버그)', async () => {
+  // namespace re-export collision: x.k/y.k 가 한 shared 청크에서 deconflict(k/k$1) 되고 두 ns
+  // (a.ns=x, b.ns=y)를 여러 entry 가 import. inner const 가 deconflict 됐으니 ns 멤버는 cross-chunk
+  // 전역명(provider 청크 local 명 = consumer import 명)으로 올바른 const 를 가리켜야 한다.
+  //  - 정적 멤버접근(`na.k`): ns_member_rewrites 경로 → 전역명.
+  //  - 동적 접근(`na[key]`): materialize 된 ns 객체 getter 경로 → 전역명.
+  // 예전엔 둘 다 미-deconflict `k` 로 collapse(`e1 XK XK ...`) 였다(#4101 ns materialize).
+  test('esm: namespace re-export collision — 멤버·객체 접근 모두 cross-chunk 전역명 (#4101)', async () => {
+    const body =
+      "import { ns as na } from './a';\nimport { ns as nb } from './b';\nconst kk = 'k';\n";
     const fixture = await createFixture({
       'x.ts': "export const k = 'XK';",
       'y.ts': "export const k = 'YK';",
       'a.ts': "export * as ns from './x';",
       'b.ts': "export * as ns from './y';",
-      'e1.ts':
-        "import { ns as na } from './a';\nimport { ns as nb } from './b';\nconsole.log('e1', na.k, nb.k);",
-      'e2.ts':
-        "import { ns as na } from './a';\nimport { ns as nb } from './b';\nconsole.log('e2', na.k, nb.k);",
+      'e1.ts': body + "console.log('e1', na.k, nb.k, na[kk], nb[kk]);",
+      'e2.ts': body + "console.log('e2', na.k, nb.k, na[kk], nb[kk]);",
     });
     cleanup = fixture.cleanup;
     const result = await build({
@@ -734,7 +734,8 @@ describe('cross-chunk re-export (#3321 follow-up bugfix)', () => {
     writeOutputs(fixture.dir, outs);
     const e1 = outs.find((o) => o.path.includes('e1') && o.path.endsWith('.js'))!;
     const { stdout } = await runNode(join(fixture.dir, e1.path));
-    expect(stdout.trim()).toBe('e1 XK YK');
+    // na.k=XK nb.k=YK (멤버 재작성) · na[kk]=XK nb[kk]=YK (객체 getter)
+    expect(stdout.trim()).toBe('e1 XK YK XK YK');
   });
 
   // === 추가 커버리지: 포맷(cjs/iife) · shape(3-way, default+named) 확장 ===

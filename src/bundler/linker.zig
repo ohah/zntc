@@ -193,6 +193,11 @@ pub const Linker = struct {
     /// 값(전역 이름)은 이 맵이 소유(owned dupe) — borrowed-ptr UAF(#3933) 회피.
     /// **Inc-1: 채우기만(비활성 read)** — 동작 변경 0, 후속 increment 가 wire.
     cross_chunk_global_names: std.AutoHashMapUnmanaged(u32, std.StringHashMapUnmanaged([]const u8)) = .empty,
+    /// #4101 ns collision: cross-chunk 전역명 deconflict 에서 *실제 동명 충돌*(예약어 회피
+    /// 아님)이 1건이라도 발생했는지. true 일 때만 ns 객체 literal 을 finalize 에서 canonical
+    /// 재빌드(getter 가 deconflict 된 inner const 참조) — 비충돌(대부분)은 frozen 유지해
+    /// 재빌드 비용 0(#perf: RN/large 번들 finalize 회귀 방지).
+    ns_collision_present: bool = false,
 
     /// dev mode: HMR용 모듈 참조를 __zntc_modules["id"].fn()으로 생성.
     /// init_xxx() 대신 동적 lookup을 사용하여 new Function()에서도 접근 가능.
