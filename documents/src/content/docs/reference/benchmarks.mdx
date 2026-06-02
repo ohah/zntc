@@ -14,6 +14,7 @@ ZNTC의 트랜스파일/번들 성능과 최종 번들 크기(tree-shaking + min
 - **CLI**: `bench.ts` median 50회, 직접 CLI 바이너리 실행 (npx 오버헤드 제거)
 - **NAPI / WASM / CLI**: `napi-bench.ts` warmup 10회 + median 100회
 - **Bundle perf**: `bundle-perf.ts` warmup 5회 + median 50회, CI와 같은 ZNTC/Rolldown/Rspack same-run 비교
+- **Cold build / 증분 rebuild**: `cold-build.ts` / `inprocess-rebuild.ts` — 같은 fixture(tiny/medium/lodash-es)를 esbuild/rolldown 과 **in-process programmatic API** 로 비교. cold = 캐시 없는 초기 full build, 증분 = 캐시 재사용 순수 rebuild(디바운스/watch latency 제외).
 - **Pipeline**: `pipeline.ts` median 15회, profile total 기준
 - **번들 크기**: `smoke.ts --minify-all`, 2026-05-30, 실제 npm 라이브러리 9종을 번들 + minify 한 raw 출력 바이트
 
@@ -32,6 +33,8 @@ bun run tests/benchmark/bench.ts
 bun run tests/benchmark/napi-bench.ts
 bun run tests/benchmark/bundle-perf.ts --no-fail --output bundle-perf.json
 bun run tests/benchmark/pipeline.ts
+bun run tests/benchmark/cold-build.ts
+bun run tests/benchmark/inprocess-rebuild.ts
 
 bun run tests/benchmark/smoke.ts --minify-all \
   --filter=zod,effect,lodash-es,preact,immer,date-fns,rxjs,mobx,three \

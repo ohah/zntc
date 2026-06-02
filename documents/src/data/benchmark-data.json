@@ -46,6 +46,32 @@
       { "tool": "rolldown", "scale": "large (5000 modules)", "medianMs": 119, "minMs": 115, "maxMs": 126, "p95Ms": 121 },
       { "tool": "rspack", "scale": "large (5000 modules)", "medianMs": 173, "minMs": 167, "maxMs": 187, "p95Ms": 180 }
     ],
+    "coldBuild": [
+      { "tool": "ZNTC", "scale": "tiny (1 file)", "medianMs": 0.11, "minMs": 0.1, "maxMs": 0.16, "p95Ms": 0.16 },
+      { "tool": "rolldown", "scale": "tiny (1 file)", "medianMs": 0.66, "minMs": 0.58, "maxMs": 0.81, "p95Ms": 0.81 },
+      { "tool": "esbuild", "scale": "tiny (1 file)", "medianMs": 4.34, "minMs": 4.13, "maxMs": 5.02, "p95Ms": 5.02 },
+
+      { "tool": "ZNTC", "scale": "medium (10 modules)", "medianMs": 0.28, "minMs": 0.25, "maxMs": 0.32, "p95Ms": 0.32 },
+      { "tool": "rolldown", "scale": "medium (10 modules)", "medianMs": 1.09, "minMs": 0.99, "maxMs": 1.43, "p95Ms": 1.43 },
+      { "tool": "esbuild", "scale": "medium (10 modules)", "medianMs": 4.68, "minMs": 4.37, "maxMs": 4.92, "p95Ms": 4.92 },
+
+      { "tool": "ZNTC", "scale": "lodash-es (real dep)", "medianMs": 11.0, "minMs": 10.4, "maxMs": 11.5, "p95Ms": 11.5 },
+      { "tool": "rolldown", "scale": "lodash-es (real dep)", "medianMs": 12.9, "minMs": 12.5, "maxMs": 14.2, "p95Ms": 14.2 },
+      { "tool": "esbuild", "scale": "lodash-es (real dep)", "medianMs": 22.9, "minMs": 20.7, "maxMs": 24.1, "p95Ms": 24.1 }
+    ],
+    "incrementalRebuild": [
+      { "tool": "ZNTC", "scale": "tiny (1 file)", "medianMs": 1.93, "minMs": 0.47, "maxMs": 2.56, "p95Ms": 2.56 },
+      { "tool": "rolldown", "scale": "tiny (1 file)", "medianMs": 4.55, "minMs": 2.98, "maxMs": 5.39, "p95Ms": 5.39 },
+      { "tool": "esbuild", "scale": "tiny (1 file)", "medianMs": 20.0, "minMs": 9.57, "maxMs": 21.2, "p95Ms": 21.2 },
+
+      { "tool": "ZNTC", "scale": "medium (10 modules)", "medianMs": 2.77, "minMs": 0.66, "maxMs": 3.23, "p95Ms": 3.23 },
+      { "tool": "rolldown", "scale": "medium (10 modules)", "medianMs": 5.84, "minMs": 4.89, "maxMs": 14.3, "p95Ms": 14.3 },
+      { "tool": "esbuild", "scale": "medium (10 modules)", "medianMs": 21.6, "minMs": 11.0, "maxMs": 25.1, "p95Ms": 25.1 },
+
+      { "tool": "ZNTC", "scale": "lodash-es (real dep)", "medianMs": 13.1, "minMs": 5.22, "maxMs": 22.0, "p95Ms": 22.0 },
+      { "tool": "rolldown", "scale": "lodash-es (real dep)", "medianMs": 42.2, "minMs": 18.2, "maxMs": 47.8, "p95Ms": 47.8 },
+      { "tool": "esbuild", "scale": "lodash-es (real dep)", "medianMs": 46.3, "minMs": 24.3, "maxMs": 57.8, "p95Ms": 57.8 }
+    ],
     "napiWasmCli": [
       { "tool": "NAPI (.node)", "scale": "small (100 lines)", "medianMs": 0.049, "minMs": 0.048, "maxMs": 0.061, "p95Ms": 0.054 },
       { "tool": "WASM (.wasm)", "scale": "small (100 lines)", "medianMs": 0.13, "minMs": 0.108, "maxMs": 0.942, "p95Ms": 0.343 },
