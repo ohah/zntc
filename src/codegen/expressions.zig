@@ -7,6 +7,9 @@ const NodeIndex = ast_mod.NodeIndex;
 const Kind = @import("../lexer/token.zig").Kind;
 const unicode = @import("../lexer/unicode.zig");
 const calls = @import("calls.zig");
+const precedence = @import("precedence.zig");
+const Level = precedence.Level;
+const ExprFlags = precedence.ExprFlags;
 
 /// minify_syntax 시 string_literal 객체 키를 따옴표 없이 emit 가능한지.
 /// `raw` 는 따옴표 포함 리터럴 텍스트. escape 없는 단순 리터럴이고 valid ES
@@ -28,7 +31,9 @@ fn objectKeyUnquotable(raw: []const u8) bool {
     return true;
 }
 
-pub fn emitUnary(self: anytype, node: Node) !void {
+pub fn emitUnary(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
+    _ = level; // PR6: wrap = level.gte(.prefix)
+    _ = flags;
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const extras = self.ast.extra_data.items;
@@ -43,23 +48,28 @@ pub fn emitUnary(self: anytype, node: Node) !void {
     }
     try self.write(op.symbol());
     if (op == .kw_typeof or op == .kw_void or op == .kw_delete) try self.writeByte(' ');
-    try self.emitNode(operand);
+    // operand level = .prefix.lower() (esbuild EUnary value = LPrefix-1)
+    try self.emitExpr(operand, Level.prefix.lower(), .{});
 }
 
-pub fn emitUpdate(self: anytype, node: Node) !void {
+pub fn emitUpdate(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
+    _ = level; // PR6: prefix→wrap=level.gte(.prefix), postfix→level.gte(.postfix)
+    _ = flags;
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const extras = self.ast.extra_data.items;
     if (e + 1 >= extras.len) return;
     const operand: NodeIndex = @enumFromInt(extras[e]);
-    const flags = extras[e + 1];
-    const is_postfix = (flags & ast_mod.UnaryFlags.postfix) != 0;
-    const op: Kind = @enumFromInt(@as(u8, @truncate(flags)));
+    const extra_flags = extras[e + 1];
+    const is_postfix = (extra_flags & ast_mod.UnaryFlags.postfix) != 0;
+    const op: Kind = @enumFromInt(@as(u8, @truncate(extra_flags)));
     if (!is_postfix) try self.write(op.symbol());
     // operand 는 update 의 lvalue 타겟 — 미존재 ns 멤버를 `(void 0)` 으로 바꾸면
     // `(void 0)++` SyntaxError 가 되므로 emitStaticMember 가 재작성을 건너뛰게 한다.
     self.member_assign_target = true;
-    try self.emitNode(operand);
+    // operand level: postfix→.postfix.lower()(=.prefix), prefix→.prefix.lower()(=.exponentiation)
+    const operand_level = if (is_postfix) Level.postfix.lower() else Level.prefix.lower();
+    try self.emitExpr(operand, operand_level, .{});
     self.member_assign_target = false;
     if (is_postfix) try self.write(op.symbol());
 }
@@ -101,12 +111,59 @@ fn emitSpineContinues(self: anytype, idx: NodeIndex) bool {
     return false;
 }
 
+const BinaryChildLevels = struct { left: Level, right: Level };
+
+/// binary/logical 노드가 좌/우 자식에 내려보내는 precedence level (esbuild
+/// binaryExprVisitor.checkAndPrepare). 좌결합 → right=entry, left=entry.lower();
+/// 우결합(`**`) → left=entry, right=entry.lower(). `??`↔`||`/`&&` 혼용 금지와 `**`
+/// 좌단항 강제괄호 특수처리 포함. (PR5: 계산만, wrap 발동은 PR6.)
+fn binaryChildLevels(self: anytype, node: Node) BinaryChildLevels {
+    const op: Kind = @enumFromInt(node.data.binary.flags);
+    const entry = precedence.binaryOpLevel(op) orelse return .{ .left = .lowest, .right = .lowest };
+    var left_level = if (precedence.isRightAssociative(op)) entry else entry.lower();
+    var right_level = if (precedence.isLeftAssociative(op)) entry else entry.lower();
+    if (op == .question2) {
+        // `??` 와 `||`/`&&` 는 괄호 없이 혼용 불가 → 자식이 `||`/`&&` 면 강제 괄호.
+        if (binaryChildIsLogical(self, node.data.binary.left)) left_level = .prefix;
+        if (binaryChildIsLogical(self, node.data.binary.right)) right_level = .prefix;
+    } else if (op == .star2) {
+        // `**` 좌측은 단항을 직접 가질 수 없음(`-a**b` 는 SyntaxError) → 강제 괄호.
+        if (powLeftNeedsParen(self, node.data.binary.left)) left_level = .call;
+    }
+    return .{ .left = left_level, .right = right_level };
+}
+
+/// 노드가 `||`(.pipe2) 또는 `&&`(.amp2) logical_expression 인지.
+fn binaryChildIsLogical(self: anytype, idx: NodeIndex) bool {
+    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+    const n = self.ast.getNode(idx);
+    if (n.tag != .logical_expression) return false;
+    const cop: Kind = @enumFromInt(n.data.binary.flags);
+    return cop == .pipe2 or cop == .amp2;
+}
+
+/// `**` 좌측이 출력 시 prefix 단항으로 시작해 직접 올 수 없는 형태인지.
+/// esbuild BinOpPow: unary(비-update)/await/undefined(`void 0`)/number(음수)/(minify)boolean.
+fn powLeftNeedsParen(self: anytype, idx: NodeIndex) bool {
+    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+    const n = self.ast.getNode(idx);
+    return switch (n.tag) {
+        .unary_expression, .await_expression, .numeric_literal => true,
+        .boolean_literal => self.options.minify_syntax, // !0/!1 peephole
+        else => calls.isUndefinedPeephole(self, idx), // undefined → void 0
+    };
+}
+
 /// 이항 노드 emit. 좌결합 체인(a+b+c+…)은 좌 스파인이 N-deep 라 순수 재귀면 스택 오버플로우
 /// (#4123) → 좌 스파인을 명시 스택으로 평탄화해 반복 emit 한다. 출력 텍스트와 addSourceMapping
 /// 순서(root → 스파인 top-down → 최좌단 leaf → operator+right bottom-up)는 재귀판과 동일.
-pub fn emitBinary(self: anytype, node: Node) !void {
+pub fn emitBinary(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
+    _ = level; // PR6: wrap = level.gte(entry) || (op==.kw_in && flags.forbid_in)
     try self.addSourceMapping(node.span);
     const op: Kind = @enumFromInt(node.data.binary.flags);
+    // 괄호 안이 아니면 자식에 forbid_in 전파(`for ((a in b);;)` 헤더 오파싱 방지).
+    // PR6 에서 wrap 시 false 로 조정(괄호 안에선 in 이 안전). PR5 는 wrap 미발동.
+    const child_flags = ExprFlags{ .forbid_in = flags.forbid_in };
     if (self.options.linking_metadata != null and node.tag == .logical_expression) {
         if (self.evalBooleanCondition(node.data.binary.left)) |left_val| {
             if ((op == .amp2 and !left_val) or
@@ -115,7 +172,8 @@ pub fn emitBinary(self: anytype, node: Node) !void {
                 try self.write(if (left_val) "true" else "false");
                 return;
             }
-            try self.emitNode(node.data.binary.right);
+            // 단락 폴드: logical 이 사라지고 right 가 그 자리 → 부모 flags 투과.
+            try self.emitExpr(node.data.binary.right, .lowest, flags);
             return;
         }
     }
@@ -123,9 +181,10 @@ pub fn emitBinary(self: anytype, node: Node) !void {
     const left = node.data.binary.left;
     // 빠른 경로(depth 1, 대부분의 `a OP b`): 좌 자식이 스파인 노드가 아니면 기존 형태(할당 0).
     if (!emitSpineContinues(self, left)) {
-        try self.emitNode(left);
+        const lv = binaryChildLevels(self, node);
+        try self.emitExpr(left, lv.left, child_flags);
         try emitBinaryOperator(self, node);
-        try self.emitNode(node.data.binary.right);
+        try self.emitExpr(node.data.binary.right, lv.right, child_flags);
         return;
     }
 
@@ -140,17 +199,19 @@ pub fn emitBinary(self: anytype, node: Node) !void {
     }
     // 스파인 노드(left..bottom) addSourceMapping 을 top-down 으로 (재귀판 순서 보존).
     for (spine.items) |s| try self.addSourceMapping(self.ast.getNode(s).span);
-    // 최좌단 leaf(최하단 스파인 노드의 left).
-    try self.emitNode(self.ast.getNode(spine.items[spine.items.len - 1]).data.binary.left);
-    // bottom-up: 각 스파인 노드 operator+right (소스순), 마지막에 root.
+    // 최좌단 leaf = 최하단 스파인 노드의 left (그 노드의 leftLevel). esbuild binaryExprStack
+    // 이 각 노드의 leftLevel/rightLevel 을 따로 들고 leaf 는 bottom 노드 leftLevel 로 emit.
+    const bottom = self.ast.getNode(spine.items[spine.items.len - 1]);
+    try self.emitExpr(bottom.data.binary.left, binaryChildLevels(self, bottom).left, child_flags);
+    // bottom-up: 각 스파인 노드 operator+right (소스순, 각자 rightLevel), 마지막에 root.
     var i = spine.items.len;
     while (i > 0) : (i -= 1) {
         const sn = self.ast.getNode(spine.items[i - 1]);
         try emitBinaryOperator(self, sn);
-        try self.emitNode(sn.data.binary.right);
+        try self.emitExpr(sn.data.binary.right, binaryChildLevels(self, sn).right, child_flags);
     }
     try emitBinaryOperator(self, node);
-    try self.emitNode(node.data.binary.right);
+    try self.emitExpr(node.data.binary.right, binaryChildLevels(self, node).right, child_flags);
 }
 
 /// unary_expression / update_expression 의 extra = [operand, flags]. flags 의 low byte 가
@@ -206,13 +267,16 @@ fn rhsLeadingSignChar(self: anytype, idx: NodeIndex) ?u8 {
     return null;
 }
 
-pub fn emitAssignment(self: anytype, node: Node) !void {
+pub fn emitAssignment(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
+    _ = level; // PR6: wrap = level.gte(.assign)
     try self.addSourceMapping(node.span);
+    const child_flags = ExprFlags{ .forbid_in = flags.forbid_in };
     // left 는 assignment 의 lvalue 타겟 — 미존재 ns 멤버를 `(void 0)` 으로 바꾸면
     // `(void 0) = x` SyntaxError 가 되므로 emitStaticMember 가 재작성을 건너뛰게 한다.
     // emitStaticMember 가 진입 즉시 리셋하므로 중첩 object 위치(rvalue)는 영향 없음.
     self.member_assign_target = true;
-    try self.emitNode(node.data.binary.left);
+    // 우결합: left = .assign, right = .assign.lower()(= .conditional)
+    try self.emitExpr(node.data.binary.left, .assign, child_flags);
     self.member_assign_target = false;
     try self.writeSpace();
     if (node.data.binary.flags != 0) {
@@ -223,6 +287,7 @@ pub fn emitAssignment(self: anytype, node: Node) !void {
     }
     try self.writeSpace();
     const right = node.data.binary.right;
+    const right_level = Level.assign.lower();
     const is_simple_assign = node.data.binary.flags == 0 or
         @as(Kind, @enumFromInt(node.data.binary.flags)) == .eq;
     if (self.fn_map_builder != null and is_simple_assign and self.isFunctionLike(right)) {
@@ -232,30 +297,34 @@ pub fn emitAssignment(self: anytype, node: Node) !void {
             if (self.pending_fn_name) |s| self.allocator.free(s);
             self.pending_fn_name = saved;
         }
-        try self.emitNode(right);
+        try self.emitExpr(right, right_level, child_flags);
     } else {
-        try self.emitNode(right);
+        try self.emitExpr(right, right_level, child_flags);
     }
 }
 
-pub fn emitConditional(self: anytype, node: Node) !void {
+pub fn emitConditional(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
+    _ = level; // PR6: wrap = level.gte(.conditional)
     try self.addSourceMapping(node.span);
     const t = node.data.ternary;
     if (self.options.linking_metadata != null) {
         if (self.evalBooleanCondition(t.a)) |cond| {
-            try self.emitNode(if (cond) t.b else t.c);
+            // 폴드된 분기는 conditional 이 사라지므로 부모 flags 그대로 투과(level 은 wrap 발동 후 정의).
+            try self.emitExpr(if (cond) t.b else t.c, .lowest, flags);
             return;
         }
     }
-    try self.emitNode(t.a);
+    // esbuild EIf: test=.conditional(forbid_in 보존), yes=.yield(clean), no=.yield(forbid_in 보존).
+    const branch_flags = ExprFlags{ .forbid_in = flags.forbid_in };
+    try self.emitExpr(t.a, .conditional, branch_flags);
     try self.writeSpace();
     try self.writeByte('?');
     try self.writeSpace();
-    try self.emitNode(t.b);
+    try self.emitExpr(t.b, .yield, .{});
     try self.writeSpace();
     try self.writeByte(':');
     try self.writeSpace();
-    try self.emitNode(t.c);
+    try self.emitExpr(t.c, .yield, branch_flags);
 }
 
 pub fn emitSequence(self: anytype, node: Node) !void {
@@ -270,25 +339,34 @@ pub fn emitParen(self: anytype, node: Node) !void {
     try self.writeByte(')');
 }
 
-pub fn emitSpread(self: anytype, node: Node) !void {
+pub fn emitSpread(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
+    _ = level;
+    _ = flags;
     try self.addSourceMapping(node.span);
     try self.write("...");
-    try self.emitNode(node.data.unary.operand);
+    // spread value level = .comma (esbuild ESpread value = LComma)
+    try self.emitExpr(node.data.unary.operand, .comma, .{});
 }
 
-pub fn emitAwait(self: anytype, node: Node) !void {
+pub fn emitAwait(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
+    _ = level; // PR6: wrap = level.gte(.prefix)
+    _ = flags;
     try self.addSourceMapping(node.span);
     try self.write("await ");
-    try self.emitNode(node.data.unary.operand);
+    // value level = .prefix.lower() (esbuild EAwait value = LPrefix-1)
+    try self.emitExpr(node.data.unary.operand, Level.prefix.lower(), .{});
 }
 
-pub fn emitYield(self: anytype, node: Node) !void {
+pub fn emitYield(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
+    _ = level; // PR6: wrap = level.gte(.assign)
+    _ = flags;
     try self.addSourceMapping(node.span);
     try self.write("yield");
     if (node.data.unary.flags & 1 != 0) try self.writeByte('*');
     if (!node.data.unary.operand.isNone()) {
         try self.writeByte(' ');
-        try self.emitNode(node.data.unary.operand);
+        // value level = .yield (esbuild EYield value = LYield)
+        try self.emitExpr(node.data.unary.operand, .yield, .{});
     }
 }
 
