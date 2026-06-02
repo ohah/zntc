@@ -278,7 +278,7 @@ export default function BenchmarkCharts() {
     {
       title: "Incremental Rebuild (in-process)",
       description:
-        "Pure incremental rebuild compute (cache reuse, debounce/watch latency excluded): ZNTC watch({watchDelay:0}), esbuild ctx.rebuild(), rolldown bundle.generate(). Median of repeated runs — single-rebuild timings have notable run-to-run variance (GC).",
+        "Pure incremental rebuild compute (cache reuse, debounce/watch latency excluded): ZNTC watch({watchDelay:0}), esbuild ctx.rebuild(), rolldown bundle.generate(). Median of 5 runs (each 10 iterations) — single-rebuild timings have notable run-to-run variance (GC).",
       entries: benchmarkData.results.incrementalRebuild,
     },
     {
