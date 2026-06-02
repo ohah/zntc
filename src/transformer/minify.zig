@@ -669,24 +669,21 @@ pub fn decrementRefsShallow(ast: *const Ast, ctx: MinifyCtx, idx: NodeIndex) voi
     decrementRefsImpl(ast, ctx, idx, true);
 }
 
-fn decrementRefsImpl(ast: *const Ast, ctx: MinifyCtx, idx: NodeIndex, comptime skip_fn_body: bool) void {
-    if (idx.isNone()) return;
-    const ni = @intFromEnum(idx);
-    if (ni >= ast.nodes.items.len) return;
-    const node = ast.nodes.items[ni];
+const DecrementRefsCtx = struct { mc: MinifyCtx, skip_fn_body: bool };
 
+fn decrementRefsVisit(ctx: *DecrementRefsCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
     if (node.tag == .identifier_reference) {
-        if (ni < ctx.symbol_ids.len) {
-            if (ctx.symbol_ids[ni]) |sid| {
-                if (sid < ctx.ref_deltas.len and ctx.effectiveRefCount(sid) > 0) {
-                    ctx.ref_deltas[sid] += 1;
+        const ni = @intFromEnum(idx);
+        if (ni < ctx.mc.symbol_ids.len) {
+            if (ctx.mc.symbol_ids[ni]) |sid| {
+                if (sid < ctx.mc.ref_deltas.len and ctx.mc.effectiveRefCount(sid) > 0) {
+                    ctx.mc.ref_deltas[sid] += 1;
                 }
             }
         }
-        return;
+        return .skip_children; // identifier_reference 는 자식 없음
     }
-
-    if (skip_fn_body) switch (node.tag) {
+    if (ctx.skip_fn_body) switch (node.tag) {
         // 함수/클래스 body 는 호출/인스턴스화 시점에 평가. dead branch 안에 함수
         // declaration 이 있어도 그 함수가 외부 ref 면 body 안 read 는 살아 있음.
         .function_declaration,
@@ -694,14 +691,17 @@ fn decrementRefsImpl(ast: *const Ast, ctx: MinifyCtx, idx: NodeIndex, comptime s
         .arrow_function_expression,
         .class_declaration,
         .class_expression,
-        => return,
+        => return .skip_children,
         else => {},
     };
+    return .descend;
+}
 
-    var it = ast_walk.children(ast, node);
-    while (it.next()) |child| {
-        decrementRefsImpl(ast, ctx, child, skip_fn_body);
-    }
+fn decrementRefsImpl(ast: *const Ast, ctx: MinifyCtx, idx: NodeIndex, comptime skip_fn_body: bool) void {
+    // 반복 순회(#4123): 깊은 좌결합 체인(`if(false) a+b+c+…`)의 dead branch 를 감산할 때
+    // 재귀면 스택 오버플로우. OOM 시 일부 감산 누락 → 해당 심볼이 보수적으로 live 유지 → 출력 정상.
+    var c = DecrementRefsCtx{ .mc = ctx, .skip_fn_body = skip_fn_body };
+    ast_walk.walkPreorderIterative(ast.allocator, ast, idx, &c, decrementRefsVisit) catch {};
 }
 
 // ================================================================
@@ -1047,27 +1047,37 @@ inline fn isImmutableSymbol(ctx: MinifyCtx, sid: u32) bool {
 /// pure compound expression inline 안전성 — `const a = x+1; b = a*2;` 에서
 /// `x` 가 mutable 이면 inline 후 `b = (x+1)*2;` 의 `x` 평가 시점이 declaration
 /// 위치에서 read 위치로 옮겨가 ordering 의미 변경 위험.
+const ImmutableRefsCtx = struct { mc: MinifyCtx, decl_sym_id: u32, all_immutable: bool };
+
+fn immutableRefsVisit(ctx: *ImmutableRefsCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
+    if (node.tag == .identifier_reference) {
+        const ni = @intFromEnum(idx);
+        // 원본과 동일: ni 범위 밖 / symbol_id 없음 / decl 자기참조 / mutable 심볼 → 즉시 false.
+        const immutable = ni < ctx.mc.symbol_ids.len and blk: {
+            const sid = ctx.mc.symbol_ids[ni] orelse break :blk false;
+            if (sid == ctx.decl_sym_id) break :blk false;
+            break :blk isImmutableSymbol(ctx.mc, sid);
+        };
+        if (!immutable) {
+            ctx.all_immutable = false;
+            return .stop;
+        }
+        return .skip_children; // identifier_reference 는 자식 없음
+    }
+    return .descend;
+}
+
 fn allInnerReferencesImmutable(
     ast: *const Ast,
     ctx: MinifyCtx,
     idx: NodeIndex,
     decl_sym_id: u32,
 ) bool {
-    if (idx.isNone()) return true;
-    const ni = @intFromEnum(idx);
-    if (ni >= ast.nodes.items.len) return true;
-    const node = ast.nodes.items[ni];
-    if (node.tag == .identifier_reference) {
-        if (ni >= ctx.symbol_ids.len) return false;
-        const sid = ctx.symbol_ids[ni] orelse return false;
-        if (sid == decl_sym_id) return false;
-        if (!isImmutableSymbol(ctx, sid)) return false;
-    }
-    var it = ast_walk.children(ast, node);
-    while (it.next()) |child| {
-        if (!allInnerReferencesImmutable(ast, ctx, child, decl_sym_id)) return false;
-    }
-    return true;
+    // 반복 순회(#4123): 단일-use inline 대상 init(`const x = a+b+c+…`)이 깊은 체인이면
+    // 재귀 시 스택 오버플로우. OOM 시 보수적으로 false(=inline 안 함) 반환 → 출력 정상.
+    var c = ImmutableRefsCtx{ .mc = ctx, .decl_sym_id = decl_sym_id, .all_immutable = true };
+    ast_walk.walkPreorderIterative(ast.allocator, ast, idx, &c, immutableRefsVisit) catch return false;
+    return c.all_immutable;
 }
 
 /// init 이 식별자 의존성 없는 constant expression 인지 판정.

@@ -54,12 +54,12 @@ fn isModuleDeclaration(tag: Tag) bool {
 }
 
 /// 서브트리(statement)에 top-level await (함수 경계를 넘지 않는 await) 가 있는지 검사.
-fn hasTopLevelAwait(ast: *const ast_mod.Ast, idx: NodeIndex) bool {
-    if (idx.isNone()) return false;
-    const node = ast.getNode(idx);
+const TopLevelAwaitCtx = struct { found: bool };
 
-    // 함수/메서드 경계를 만나면 await 는 해당 함수 소속 — 더 내려가지 않음.
+fn topLevelAwaitVisit(ctx: *TopLevelAwaitCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
+    _ = idx;
     switch (node.tag) {
+        // 함수/메서드/클래스 경계 → 그 안의 await 는 top-level 아님. prune.
         .function_declaration,
         .function_expression,
         .function,
@@ -67,17 +67,22 @@ fn hasTopLevelAwait(ast: *const ast_mod.Ast, idx: NodeIndex) bool {
         .method_definition,
         .class_declaration,
         .class_expression,
-        => return false,
-        .await_expression => return true,
-        else => {},
+        => return .skip_children,
+        .await_expression => {
+            ctx.found = true;
+            return .stop;
+        },
+        else => return .descend,
     }
+}
 
-    // 자식 재귀 — 공통 ChildIterator (ast_walk) 로 predicate 탐색.
-    var it = ast_walk.children(ast, node);
-    while (it.next()) |child| {
-        if (hasTopLevelAwait(ast, child)) return true;
-    }
-    return false;
+fn hasTopLevelAwait(ast: *const ast_mod.Ast, idx: NodeIndex) std.mem.Allocator.Error!bool {
+    // 반복 순회(#4123): top-level 깊은 좌결합 체인에서 재귀 시 스택 오버플로우. OOM 은
+    // 호출자(lowerProgram=Error!)로 전파한다 — true/false 어느 기본값도 안전하지 않으므로
+    // (false=미지원 타깃에 unwrapped await / true=불필요 IIFE wrap) 추측 대신 에러 전파.
+    var c = TopLevelAwaitCtx{ .found = false };
+    try ast_walk.walkPreorderIterative(ast.allocator, ast, idx, &c, topLevelAwaitVisit);
+    return c.found;
 }
 
 /// program 의 top-level 에 TLA 가 있으면 async IIFE 로 wrap.
@@ -96,7 +101,7 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
         const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
         const child_node = self.ast.getNode(child);
         if (isModuleDeclaration(child_node.tag)) continue;
-        if (hasTopLevelAwait(self.ast, child)) {
+        if (try hasTopLevelAwait(self.ast, child)) {
             has_tla = true;
             break;
         }
