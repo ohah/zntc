@@ -23,6 +23,7 @@ pub const function_map = @import("function_map.zig");
 pub const FunctionMapBuilder = function_map.FunctionMapBuilder;
 pub const mangler = @import("mangler.zig");
 pub const unified_mangler = @import("unified_mangler.zig");
+pub const precedence = @import("precedence.zig");
 
 test {
     _ = codegen;
@@ -31,9 +32,11 @@ test {
     _ = function_map;
     _ = mangler;
     _ = unified_mangler;
+    _ = precedence;
 
     // test files
     _ = @import("codegen_test.zig");
     _ = @import("sourcemap_test.zig");
     _ = @import("mangler_test.zig");
+    _ = @import("precedence_test.zig");
 }
