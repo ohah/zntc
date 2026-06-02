@@ -1074,6 +1074,33 @@ test "Parser: TS typeof and keyof" {
     try std.testing.expect(parser.errors.items.len == 0);
 }
 
+test "Parser: deep keyof chain does not overflow the stack (#4142)" {
+    // `keyof keyof … T` (수만 중첩) 는 parseTypeOperatorOrHigher 가 operand 를 **재귀** 파싱해
+    // 파서 스택 오버플로우(SIGSEGV)였다(#4142). 접두 연산자 반복 수집 → operand 1회 → 안쪽부터
+    // wrap 으로 전환해 해소(임의 깊이 파싱). 재귀로 되돌리면 이 테스트가 스택 오버플로우로 fail.
+    const n: usize = 50000; // 재귀판 크래시 임계(~수만)를 넉넉히 초과.
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(std.testing.allocator);
+    try src.appendSlice(std.testing.allocator, "type X = ");
+    var i: usize = 0;
+    while (i < n) : (i += 1) try src.appendSlice(std.testing.allocator, "keyof ");
+    try src.appendSlice(std.testing.allocator, "T;\n");
+
+    var scanner = try Scanner.init(std.testing.allocator, src.items);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    // 크래시 없이 파싱 완료 + 진단 0 + 정확히 N 개의 ts_type_operator wrapper 생성(AST 정확성).
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var ops: usize = 0;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag == .ts_type_operator) ops += 1;
+    }
+    try std.testing.expectEqual(n, ops);
+}
+
 // ============================================================
 // TypeScript declaration tests
 // ============================================================
