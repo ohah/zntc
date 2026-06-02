@@ -91,12 +91,19 @@ const WatchAsyncData = struct {
     ready_tsfn: c.napi_threadsafe_function,
     rebuild_tsfn: c.napi_threadsafe_function,
     stop_flag: std.atomic.Value(bool),
-    /// #3794 — worker thread 가 stop_flag 감지 + 자원 정리 (TSFN release / deinit 직전)
-    /// 까지 완료하면 set. `napiWatchStop` 가 wait 해 caller (closeServerForRestart) 가
-    /// child process spawn 전에 부모 worker 가 outdir 쓰기를 완전히 멈췄음을 보장.
-    /// fire-and-forget 였던 stop() 의 race window 봉인.
-    // 0.16: std.Thread.ResetEvent 제거 → std.Io.Event (one-shot set/wait).
+    /// worker 종료 신호. worker 가 종료 직전 `set`, `napiWatchStop` 가 ≤5s wait.
     stop_complete: std.Io.Event = .unset,
+    /// async_data 수명 refcount. 보유자: (1) `napiWatch`→`napiWatchStop`(stop 측), (2) worker.
+    /// 마지막 `unref` 가 실제 free(`deinit`)한다.
+    ///
+    /// #3794 회귀 fix(UAF). 예전엔 worker 가 `stop_complete.set()` 직후 `destroy(self)` 로
+    /// async_data(=stop_complete Event 포함)를 해제했는데, main 의 `Event.waitTimeout` 은
+    /// futex wake 후 `@atomicLoad(*event)` 로 **재read**(spurious-wakeup 판별)하므로 freed
+    /// Event 재read = UAF. 다세션·동시부하(esbuild/rolldown)에서 freed slot 재사용 시
+    /// `enum(u32)` 가 0/1/2 아닌 값으로 읽혀 segfault(ReleaseSafe: `reached unreachable`).
+    /// refcount 로 "worker self-free + stop 의 free" 중 마지막에만 실제 free → 재read 안전.
+    /// worker 가 먼저 종료(init 에러 등)해도 stop 의 ref 가 살아있어 stop 의 unwrap·wait 안전.
+    refs: std.atomic.Value(usize) = .init(1),
     /// Metro watchFolders 호환. 그래프 밖 감시 루트(절대/상대 경로).
     watch_roots: []const []const u8 = &.{},
     /// watch_roots 스캔 시 포함할 파일 glob (루트 기준 상대).
@@ -131,12 +138,18 @@ const WatchAsyncData = struct {
     /// poll tick(≤200ms)에서 swap-검사. 별도 wakeup fd 불필요(timeout poll 재사용).
     lazy_force_dirty: std.atomic.Value(bool) = .init(false),
 
+    fn ref(self: *WatchAsyncData) void {
+        _ = self.refs.fetchAdd(1, .acq_rel);
+    }
+    /// 마지막 ref 해제 시에만 실제 free(`deinit`). worker 와 stop 이 각각 보유한 ref 를
+    /// 내려, 둘 중 나중 호출자가 free → stop 의 waitTimeout 재read 가 항상 살아있는
+    /// stop_complete 를 본다(UAF 제거).
+    fn unref(self: *WatchAsyncData) void {
+        if (self.refs.fetchSub(1, .acq_rel) == 1) self.deinit();
+    }
+
+    /// 실제 자원 + 구조체 free. 직접 호출 금지 — `unref` 의 마지막 감소에서만 호출된다.
     fn deinit(self: *WatchAsyncData) void {
-        // #3794 — worker 종료 신호 우선 set (모든 early-return / 정상 종료 path 가 deinit 을
-        // 거치므로 한 곳에서 가드). `napiWatchStop` 의 stop_complete.wait() 가 깨어나 caller
-        // (closeServerForRestart) 에게 안전 신호. wait 한 thread 는 즉시 return — `self`
-        // 메모리 접근 없음, 아래 cleanup 후 free 해도 race 없음.
-        self.stop_complete.set(common.io());
         // 소유된 문자열 해제
         for (self.owned_strings.items) |s| native_alloc.free(s);
         self.owned_strings.deinit(native_alloc);
@@ -891,6 +904,15 @@ fn writeOutputToOutdir(
     std.Io.Dir.cwd().writeFile(common.io(), .{ .sub_path = full_path, .data = contents }) catch {};
 }
 
+/// 워커 스레드의 모든 종료 경로 공통 처리. 종료를 알리는 `stop_complete` 를 먼저 set 한 뒤
+/// worker 의 ref 를 내린다. set 은 unref 보다 먼저여야 한다 — unref 가 마지막이면 async_data
+/// 가 free 되므로, 그 전에 stop_complete 를 건드려야 한다. set 시점엔 worker 가 아직 ref 를
+/// 보유(이 함수가 unref 하기 전)하므로 async_data 는 살아있다.
+fn finishWorker(async_data: *WatchAsyncData) void {
+    async_data.stop_complete.set(common.io());
+    async_data.unref();
+}
+
 fn watchWorkerThread(async_data: *WatchAsyncData) void {
     const allocator = native_alloc;
     const bundle_opts = async_data.options;
@@ -920,7 +942,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             // OOM — TSFN 해제 + 정리 후 종료
             _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
             _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
-            async_data.deinit();
+            finishWorker(async_data);
             return;
         };
         const err_name: [:0]const u8 = @errorName(err);
@@ -934,7 +956,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         // TSFN 해제 + 정리 후 종료
         _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
         _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
-        async_data.deinit();
+        finishWorker(async_data);
         return;
     };
     defer result.deinit(allocator);
@@ -993,7 +1015,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         const event = allocator.create(WatchRebuildEvent) catch {
             _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
             _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
-            async_data.deinit();
+            finishWorker(async_data);
             return;
         };
         const err_name: [:0]const u8 = @errorName(err);
@@ -1003,7 +1025,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         }
         _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
         _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
-        async_data.deinit();
+        finishWorker(async_data);
         return;
     };
     defer tracked.deinit();
@@ -1566,11 +1588,9 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
     _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
     _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
 
-    // async_data는 stop handle의 reference가 해제될 때까지 유지되어야 한다.
-    // stop()이 호출되면 stop_flag가 설정되고, 여기에 도달한다.
-    // stop handle의 ref가 GC되면 wrap의 weak ref callback으로 정리.
-    // 단, TSFN은 이미 release했으므로 플러그인/문자열만 정리.
-    async_data.deinit();
+    // worker 종료 — stop_complete set + worker ref 해제. stop 이 아직 ref 를 들고 있으면
+    // 여기선 free 안 되고(refs≥1) stop 의 unref 가 free, stop 이 이미 끝났으면 여기서 free.
+    finishWorker(async_data);
 }
 
 /// handle.getBundleSourceMap() — 번들 전체 sourcemap JSON 을 lazy 생성해 반환.
@@ -1704,13 +1724,17 @@ fn napiWatchStop(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
     }
     if (async_data_ptr) |ptr| {
         const async_data: *WatchAsyncData = @ptrCast(@alignCast(ptr));
+        // stop 측 ref 를 이미 보유(napiWatch 의 초기 refs=1) → 아래 wait 동안 async_data 와
+        // stop_complete 는 항상 살아있다(worker 가 먼저 종료해 unref 해도 refs≥1). 마지막 unref
+        // 만 실제 free 하므로 waitTimeout 의 stop_complete 재read 가 UAF 없이 안전.
         async_data.stop_flag.store(true, .release);
-        // #3794 — worker thread 가 polling cycle 마다 stop_flag 를 체크해 종료하므로 fire-and-forget
-        // 이었다. caller (closeServerForRestart) 가 child process spawn 전에 부모 worker 의 outdir
-        // 쓰기가 완전히 멈췄음을 보장하려면 worker 의 deinit 진입까지 wait 해야 함. 5초 timeout 으로
-        // deadlock 방어 — polling timeout (수십~수백ms) 의 충분한 배수.
-        // 0.16: ResetEvent.timedWait 제거 → Io.Event.waitTimeout + 절대 deadline
-        // (spurious wakeup 은 error.Timeout 이므로 deadline 미래면 재대기). best-effort.
+
+        // #3794 — caller (closeServerForRestart) 가 child process spawn 전에 부모 worker 의
+        // outdir 쓰기가 멈췄음을 보장하려면 worker 종료까지 대기해야 한다. worker 는 polling
+        // cycle(≤200ms)마다 stop_flag 를 확인 후 종료하며 종료 직전 stop_complete 를 set 한다.
+        // 5초 timeout: worker 가 진행 못할 때(예: 진행 중 plugin TSFN hook 이 이 메인 스레드의
+        // libuv drain 을 기다리는 경우) 메인을 풀어 free-on-timeout(=UAF) 없이 best-effort 복귀.
+        // (refcount 라 timeout 으로 stop 이 먼저 unref 해도 worker 의 ref 가 남아 free 안전.)
         const stop_io = common.io();
         const stop_deadline: std.Io.Timeout = (std.Io.Timeout{ .duration = .{ .raw = std.Io.Duration.fromSeconds(5), .clock = .awake } }).toDeadline(stop_io);
         while (true) {
@@ -1722,6 +1746,8 @@ fn napiWatchStop(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
             };
             break;
         }
+        // stop 측 ref 해제. worker 가 이미 종료했으면 여기서 free, 아니면 worker 의 unref 가 free.
+        async_data.unref();
     }
 
     var js_undefined: c.napi_value = undefined;
@@ -1860,7 +1886,7 @@ pub fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
             watchReadyTsfn,
             &async_data.ready_tsfn,
         ) != c.napi_ok) {
-            async_data.deinit();
+            async_data.unref();
             return throwError(env, "failed to create ready tsfn");
         }
     }
@@ -1883,7 +1909,7 @@ pub fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
             &async_data.rebuild_tsfn,
         ) != c.napi_ok) {
             _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
-            async_data.deinit();
+            async_data.unref();
             return throwError(env, "failed to create rebuild tsfn");
         }
     }
@@ -1898,7 +1924,7 @@ pub fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
     if (c.napi_create_object(env, &js_handle) != c.napi_ok) {
         _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
         _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
-        async_data.deinit();
+        async_data.unref();
         return throwError(env, "failed to create handle object");
     }
 
@@ -1906,7 +1932,7 @@ pub fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
     if (c.napi_wrap(env, js_handle, @ptrCast(async_data), null, null, null) != c.napi_ok) {
         _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
         _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
-        async_data.deinit();
+        async_data.unref();
         return throwError(env, "failed to wrap handle");
     }
 
@@ -1931,11 +1957,17 @@ pub fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
     _ = c.napi_create_function(env, "requestLazySeed", "requestLazySeed".len, napiRequestLazySeed, null, &req_seed_fn);
     _ = c.napi_set_named_property(env, js_handle, "requestLazySeed", req_seed_fn);
 
-    // 워커 스레드 시작
+    // worker 의 ref 를 spawn **직전**에 올린다(refs 1→2: stop 측 + worker). spawn 후엔
+    // worker 가 자기 ref 를 내리고(`finishWorker`), stop 측 ref 는 `napiWatchStop` 가 내린다.
+    async_data.ref();
+
+    // 워커 스레드 시작 — detach. worker 는 async_data 의 ref 한 개를 들고, 종료 시 stop_complete
+    // 를 set + unref 한다(join 아님 — main 을 무기한 막지 않기 위함).
     const thread = std.Thread.spawn(.{}, watchWorkerThread, .{async_data}) catch {
         _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
         _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
-        async_data.deinit();
+        async_data.unref(); // worker 미기동 → worker ref 회수 (refs 2→1)
+        async_data.unref(); // stop 측 ref 회수 → refs 0 → free
         return throwError(env, "failed to spawn watch thread");
     };
     thread.detach();
