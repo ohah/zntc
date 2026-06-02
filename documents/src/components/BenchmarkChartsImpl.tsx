@@ -270,6 +270,18 @@ export default function BenchmarkCharts() {
       entries: benchmarkData.results.bundleCli,
     },
     {
+      title: "Cold Build (in-process)",
+      description:
+        "Cache-less initial full build via each tool's in-process programmatic API (in-memory). esbuild's small-fixture numbers are dominated by its Node↔Go service IPC round-trip; ZNTC/rolldown are napi (no IPC).",
+      entries: benchmarkData.results.coldBuild,
+    },
+    {
+      title: "Incremental Rebuild (in-process)",
+      description:
+        "Pure incremental rebuild compute (cache reuse, debounce/watch latency excluded): ZNTC watch({watchDelay:0}), esbuild ctx.rebuild(), rolldown bundle.generate().",
+      entries: benchmarkData.results.incrementalRebuild,
+    },
+    {
       title: "Bundle Size — Tree-shake + Minify",
       description:
         "Real npm libraries bundled and minified with the same input. Raw output bytes — lower is better. Tree-shaking + minifier quality, not speed.",
