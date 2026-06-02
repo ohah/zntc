@@ -773,66 +773,83 @@ fn parseIntersectionType(self: *Parser) ParseError2!NodeIndex {
 }
 
 /// oxc parse_type_operator_or_higher: keyof/unique/readonly/infer → postfix
+///
+/// 접두 타입연산자(keyof/readonly/unique symbol)는 원래 operand 를 **재귀** 파싱해
+/// `keyof keyof … T`(수만 중첩)에서 파서 스택 오버플로우였다(#4142, parseTypeOperatorOrHigher
+/// self-recursion). 접두 연산자를 반복 수집해 operand 를 1회 파싱하고 안쪽→바깥쪽으로 wrapper
+/// 노드를 만든다(재귀 제거 = postfix `T[]`/이항식과 동일한 비재귀 전략). `infer` 는 체인 대상이
+/// 아니라(자체 노드로 종료) operand 파서(parseTypeOperatorOperand)가 처리.
 fn parseTypeOperatorOrHigher(self: *Parser) ParseError2!NodeIndex {
-    if (self.current() == .identifier) {
+    // 접두 연산자 체인의 span.start 를 source 순(바깥→안쪽)으로 수집. 연산자가 없으면(대부분의
+    // 타입) append 가 안 일어나 무할당(.empty deinit=no-op) — 비-연산자 타입에 오버헤드 없음.
+    var op_starts: std.ArrayListUnmanaged(u32) = .empty;
+    defer op_starts.deinit(self.allocator);
+    while (self.current() == .identifier) {
         const text = self.tokenText();
-        // keyof T
         if (std.mem.eql(u8, text, "keyof") or std.mem.eql(u8, text, "readonly")) {
-            const span = self.currentSpan();
-            try self.advance();
-            const operand = try parseTypeOperatorOrHigher(self);
-            return try self.ast.addNode(.{
-                .tag = .ts_type_operator,
-                .span = .{ .start = span.start, .end = self.currentSpan().start },
-                .data = .{ .unary = .{ .operand = operand, .flags = 0 } },
-            });
-        }
-        // unique symbol → type operator. TS에서 unique는 symbol과만 결합 가능.
-        if (std.mem.eql(u8, text, "unique")) {
-            const next = try self.peekNextKind();
-            if (next == .identifier) {
-                const span = self.currentSpan();
-                try self.advance();
-                const operand = try parseTypeOperatorOrHigher(self);
-                return try self.ast.addNode(.{
-                    .tag = .ts_type_operator,
-                    .span = .{ .start = span.start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = operand, .flags = 0 } },
-                });
+            // keyof T / readonly T
+        } else if (std.mem.eql(u8, text, "unique") and (try self.peekNextKind()) == .identifier) {
+            // unique symbol → type operator (TS 에서 unique 는 symbol 과만 결합). 뒤가 식별자가
+            // 아니면 연산자가 아니라 type reference 라 체인에서 제외(operand 로 흘려보냄).
+        } else break;
+        try op_starts.append(self.allocator, self.currentSpan().start);
+        try self.advance();
+    }
+
+    // 체인 끝의 operand (infer 또는 postfix). 접두 연산자가 없으면 이게 곧 결과.
+    const operand = try parseTypeOperatorOperand(self);
+    if (op_starts.items.len == 0) return operand;
+
+    // 안쪽(체인 끝 = op_starts 마지막)부터 바깥쪽(op_starts 처음)으로 wrap. 모든 wrapper 의
+    // span.end 는 operand 파싱 직후 위치 — 재귀판도 그 사이 advance 가 없어 전부 같은 값이었다.
+    const end = self.currentSpan().start;
+    var node = operand;
+    var i = op_starts.items.len;
+    while (i > 0) {
+        i -= 1;
+        node = try self.ast.addNode(.{
+            .tag = .ts_type_operator,
+            .span = .{ .start = op_starts.items[i], .end = end },
+            .data = .{ .unary = .{ .operand = node, .flags = 0 } },
+        });
+    }
+    return node;
+}
+
+/// 접두 타입연산자(parseTypeOperatorOrHigher) 체인 끝의 operand: `infer T (extends C)?` 또는
+/// disallow_conditional_types 해제 후 postfix 타입. (재귀판에서 parseTypeOperatorOrHigher 가
+/// 접두 연산자가 아닐 때 하던 일을 그대로 분리 — #4142.)
+fn parseTypeOperatorOperand(self: *Parser) ParseError2!NodeIndex {
+    // infer T (extends C)?
+    if (self.current() == .identifier and std.mem.eql(u8, self.tokenText(), "infer")) {
+        const span = self.currentSpan();
+        try self.advance(); // skip 'infer'
+        // infer의 타입 파라미터 이름
+        try self.advance(); // type param name
+        // 선택적 constraint: infer T extends U (TS 4.7+)
+        // oxc try_parse_constraint_of_infer_type 대응:
+        // speculative 파싱으로 constraint 시도. extends 뒤에 타입을 파싱하되,
+        // 외부가 disallow_conditional_types가 아닌데 ? 가 오면 rollback
+        // (그 extends는 조건부 타입의 extends이므로 infer constraint가 아님)
+        if (self.current() == .kw_extends) {
+            const infer_saved = self.saveState();
+            const infer_err_count = self.errors.items.len;
+            try self.advance(); // skip 'extends'
+            // constraint 타입: parseType with disallow_conditional_types=true
+            const ctx_saved = self.ctx;
+            self.ctx.disallow_conditional_types = true;
+            _ = try parseType(self);
+            self.ctx = ctx_saved;
+            // 외부 컨텍스트가 disallow가 아닌데 ? 가 오면 → extends는 조건부 타입의 것
+            if (!ctx_saved.disallow_conditional_types and self.current() == .question) {
+                self.restoreState(infer_saved);
+                self.rollbackErrors(infer_err_count);
             }
-            // unique 단독 — type reference로 처리 (아래 fallthrough)
         }
-        // infer T (extends C)?
-        if (std.mem.eql(u8, text, "infer")) {
-            const span = self.currentSpan();
-            try self.advance(); // skip 'infer'
-            // infer의 타입 파라미터 이름
-            try self.advance(); // type param name
-            // 선택적 constraint: infer T extends U (TS 4.7+)
-            // oxc try_parse_constraint_of_infer_type 대응:
-            // speculative 파싱으로 constraint 시도. extends 뒤에 타입을 파싱하되,
-            // 외부가 disallow_conditional_types가 아닌데 ? 가 오면 rollback
-            // (그 extends는 조건부 타입의 extends이므로 infer constraint가 아님)
-            if (self.current() == .kw_extends) {
-                const infer_saved = self.saveState();
-                const infer_err_count = self.errors.items.len;
-                try self.advance(); // skip 'extends'
-                // constraint 타입: parseType with disallow_conditional_types=true
-                const ctx_saved = self.ctx;
-                self.ctx.disallow_conditional_types = true;
-                _ = try parseType(self);
-                self.ctx = ctx_saved;
-                // 외부 컨텍스트가 disallow가 아닌데 ? 가 오면 → extends는 조건부 타입의 것
-                if (!ctx_saved.disallow_conditional_types and self.current() == .question) {
-                    self.restoreState(infer_saved);
-                    self.rollbackErrors(infer_err_count);
-                }
-            }
-            return try self.ast.addEmptyExtraNode(
-                .ts_infer_type,
-                .{ .start = span.start, .end = self.currentSpan().start },
-            );
-        }
+        return try self.ast.addEmptyExtraNode(
+            .ts_infer_type,
+            .{ .start = span.start, .end = self.currentSpan().start },
+        );
     }
 
     // disallow_conditional_types 해제하여 postfix 파싱 (oxc L274-277)
