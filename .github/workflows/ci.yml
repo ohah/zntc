@@ -104,6 +104,12 @@ jobs:
       - name: Audit codegen sourcemap mapping (#2983)
         run: bun scripts/audit-codegen-sourcemap.ts
 
+      # 신규 재귀 AST walker 가 깊은 좌결합 체인(#4123)에서 스택 오버플로우를 재유입하지
+      # 않도록, 모든 ast_walk.children() 호출처가 분류(iterative/one_level/tracked)됐는지 검사.
+      # 미분류 신규 walker → fail. (장기 root-cause: 새 순회는 walkPreorderIterative 강제.)
+      - name: Audit recursive AST walkers (#4123)
+        run: bun scripts/audit-recursive-ast-walkers.mjs
+
   napi:
     name: NAPI Build & Test
     runs-on: ${{ matrix.os }}
