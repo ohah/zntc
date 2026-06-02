@@ -1490,6 +1490,7 @@ pub fn computeCrossChunkGlobalNames(
     lnk: *Linker,
 ) !void {
     lnk.clearCrossChunkGlobalNames();
+    lnk.ns_collision_present = false;
 
     // 1. cross-chunk 심볼 enumerate + (mod, name) dedup.
     const Sym = struct { mod: u32, name: []const u8 };
@@ -1530,6 +1531,9 @@ pub fn computeCrossChunkGlobalNames(
     defer used.deinit(allocator);
     for (syms.items) |s| {
         const preferred = lnk.getExportLocalName(s.mod, s.name) orelse s.name;
+        // #4101: preferred 가 이미 다른 cross-chunk 심볼이 점유 = *실제 동명 충돌*(예약어 회피
+        // 와 구분). ns 객체 finalize 재빌드 게이트(ns_collision_present)를 켠다.
+        if (used.contains(preferred)) lnk.ns_collision_present = true;
         const candidate = try deconflictGlobalName(allocator, &used, preferred);
         // candidate 소유권을 맵으로 이전. used 는 맵의 저장본을 borrow(used.deinit 가 키 미해제).
         try lnk.putCrossChunkGlobalName(s.mod, s.name, candidate);
