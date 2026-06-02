@@ -84,6 +84,17 @@ pub const Codegen = struct {
     /// `(void 0)` 으로 재작성할 때, lvalue 위치(`ns.x = 1` → `(void 0)=1`)면 SyntaxError
     /// 가 되므로 그 경우엔 재작성을 건너뛴다.
     member_assign_target: bool = false,
+    /// statement-start 모호성 추적 (esbuild `stmtStart`/`exportDefaultStart`/
+    /// `arrowExprStart`/`forOfInitStart`). 각 컨텍스트의 첫 토큰을 출력하기 직전
+    /// 현재 `buf.items.len` 으로 마킹하고, expression emitter 가 진입 시
+    /// `buf.items.len` 이 마크와 같으면 "내가 그 컨텍스트의 첫 토큰" 으로 판정해
+    /// 괄호를 친다 (`({}).x`, `(function(){})()`, `(class{})`, `(let)[x]`).
+    /// `maxInt` = 미마킹(절대 매치 안 됨). (PR2: 필드만 도입. 실제 마킹/판정은
+    /// statement-start 를 다루는 후속 PR.)
+    stmt_start: usize = std.math.maxInt(usize),
+    export_default_start: usize = std.math.maxInt(usize),
+    arrow_expr_start: usize = std.math.maxInt(usize),
+    for_of_init_start: usize = std.math.maxInt(usize),
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) Codegen {
         return initWithOptions(allocator, ast, .{});
     }
@@ -304,6 +315,7 @@ pub const Codegen = struct {
     pub const Error = std.mem.Allocator.Error;
     const node_dispatch_emit = @import("node_dispatch.zig");
     pub const emitNode = node_dispatch_emit.emitNode;
+    pub const emitExpr = node_dispatch_emit.emitExpr;
 
     /// identifier 노드의 symbol_id를 해결.
     /// symbol_ids[node_i]에서 직접 조회 (트랜스포머의 propagateSymbolId로 전파된 값).

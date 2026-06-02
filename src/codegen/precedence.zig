@@ -94,3 +94,19 @@ pub fn isLeftAssociative(op: Kind) bool {
 pub fn isRightAssociative(op: Kind) bool {
     return op == .star2;
 }
+
+/// 컨텍스트 의존 괄호 플래그 — precedence(Level)만으로 표현할 수 없는 괄호
+/// 조건을 부모→자식으로 전파한다. esbuild `printExprFlags`(js_printer.go) 의
+/// 부분 집합으로, 필요한 flag 는 후속 PR 에서 추가한다. (PR2: 정의만. 실제
+/// 발동은 new/call·optional-chain·for-init 을 다루는 후속 PR 에서.)
+pub const ExprFlags = packed struct {
+    /// `new X` 의 타겟 안 — 자식이 호출이면 괄호 (`new (foo())`). esbuild
+    /// `forbidCall`.
+    forbid_call: bool = false,
+    /// for-loop init 절 안 — `in` 연산자가 for-in 헤더로 오파싱되지 않도록
+    /// 괄호 필요. esbuild `forbidIn`.
+    forbid_in: bool = false,
+    /// 부모가 non-optional 멤버/호출 — 자식이 optional chain 의 시작이면 괄호로
+    /// 체인을 끊어 보존 (`(a?.b).c`). esbuild `hasNonOptionalChainParent`.
+    has_non_optional_chain_parent: bool = false,
+};
