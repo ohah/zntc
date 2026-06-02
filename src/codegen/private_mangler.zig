@@ -92,49 +92,69 @@ fn processClass(ast: *Ast, class_ni: u32) void {
 
 /// class body 안의 private_identifier 이름 수집 (nested class 는 독립 scope 라 제외 —
 /// 재귀 `processClass` 에서 별도 처리).
-fn collectPrivateNames(ast: *const Ast, idx: NodeIndex, out: *std.StringArrayHashMapUnmanaged(void)) void {
-    const ni = @intFromEnum(idx);
-    if (ni >= ast.nodes.items.len) return;
-    const node = ast.nodes.items[ni];
+const PrivateNamesCtx = struct { ast: *const Ast, out: *std.StringArrayHashMapUnmanaged(void) };
 
+fn privateNamesVisit(ctx: *PrivateNamesCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
+    _ = idx;
     if (node.tag == .private_identifier) {
-        const text = ast.getText(node.span);
-        out.put(ast.allocator, text, {}) catch {};
-        return;
+        const text = ctx.ast.getText(node.span);
+        ctx.out.put(ctx.ast.allocator, text, {}) catch {}; // 원본과 동일: put OOM 은 무시(미수집→unmangle)
+        return .skip_children;
     }
-
     // nested class / class expression 은 내부 private 이 독립 — skip.
-    if (node.tag == .class_declaration or node.tag == .class_expression) return;
+    if (node.tag == .class_declaration or node.tag == .class_expression) return .skip_children;
+    return .descend;
+}
 
-    var it = ast_walk.children(ast, node);
-    while (it.next()) |child| {
-        if (child.isNone()) continue;
-        collectPrivateNames(ast, child, out);
+fn collectPrivateNames(ast: *const Ast, idx: NodeIndex, out: *std.StringArrayHashMapUnmanaged(void)) void {
+    // 반복 순회(#4123). under-collection(OOM 으로 일부 이름 누락)은 일관: 누락된 #x 는
+    // rename 맵에 없어 applyRenames 가 전 occurrence 를 그대로 둔다 → unmangle, 안전.
+    var c = PrivateNamesCtx{ .ast = ast, .out = out };
+    ast_walk.walkPreorderIterative(ast.allocator, ast, idx, &c, privateNamesVisit) catch {};
+}
+
+const RenameTarget = struct { idx: NodeIndex, new_span: Span };
+
+const RenameCollectCtx = struct {
+    ast: *const Ast,
+    renames: *const std.StringHashMapUnmanaged(Span),
+    targets: *std.ArrayListUnmanaged(RenameTarget),
+    oom: bool,
+};
+
+fn renameCollectVisit(ctx: *RenameCollectCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
+    if (node.tag == .private_identifier) {
+        const text = ctx.ast.getText(node.span);
+        if (ctx.renames.get(text)) |new_span| {
+            ctx.targets.append(ctx.ast.allocator, .{ .idx = idx, .new_span = new_span }) catch {
+                ctx.oom = true;
+                return .stop;
+            };
+        }
+        return .skip_children;
     }
+    // nested class 는 외부 rename 적용 안 함.
+    if (node.tag == .class_declaration or node.tag == .class_expression) return .skip_children;
+    return .descend;
 }
 
 fn applyRenames(ast: *Ast, idx: NodeIndex, renames: *const std.StringHashMapUnmanaged(Span)) void {
-    const ni = @intFromEnum(idx);
-    if (ni >= ast.nodes.items.len) return;
-    const node = ast.nodes.items[ni];
-
-    if (node.tag == .private_identifier) {
-        const text = ast.getText(node.span);
-        if (renames.get(text)) |new_span| {
-            // span 과 data.string_ref 둘 다 — codegen 은 string_ref 를 읽음.
-            ast.nodes.items[ni].span = new_span;
-            ast.nodes.items[ni].data = .{ .string_ref = new_span };
-        }
-        return;
-    }
-
-    // nested class 는 외부 rename 적용 안 함.
-    if (node.tag == .class_declaration or node.tag == .class_expression) return;
-
-    var it = ast_walk.children(ast, node);
-    while (it.next()) |child| {
-        if (child.isNone()) continue;
-        applyRenames(ast, child, renames);
+    // 2-phase atomic (#4123): 재귀판은 무할당이라 부분상태가 없었다(깊으면 overflow). 반복판은
+    // worklist 할당이 OOM 가능 → 도중 OOM 으로 "일부만 rename" 되면 #private 정의/사용 불일치
+    // (corruption). 이를 막으려 rename 대상을 먼저 모으고(읽기 전용 반복 순회), 수집이 완전히
+    // 성공했을 때만 일괄 적용한다. 수집 단계 실패(OOM)면 아무것도 적용 안 함 = 전 occurrence
+    // 가 원래 #이름 유지(unmangle, 일관) → 안전. mutation 은 leaf span/data 만 바꿔 트리 구조
+    // 불변이라 적용 순서·재진입 무관.
+    var targets: std.ArrayListUnmanaged(RenameTarget) = .empty;
+    defer targets.deinit(ast.allocator);
+    var c = RenameCollectCtx{ .ast = ast, .renames = renames, .targets = &targets, .oom = false };
+    ast_walk.walkPreorderIterative(ast.allocator, ast, idx, &c, renameCollectVisit) catch return;
+    if (c.oom) return;
+    for (targets.items) |t| {
+        const ni = @intFromEnum(t.idx);
+        // span 과 data.string_ref 둘 다 — codegen 은 string_ref 를 읽음.
+        ast.nodes.items[ni].span = t.new_span;
+        ast.nodes.items[ni].data = .{ .string_ref = t.new_span };
     }
 }
 
