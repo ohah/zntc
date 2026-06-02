@@ -34,6 +34,7 @@ const unwrapNapi = common.unwrapNapi;
 const getStringArg = common.getStringArg;
 const getNamedProperty = common.getNamedProperty;
 const getObjectBool = common.getObjectBool;
+const getObjectUint32 = common.getObjectUint32;
 const getObjectStringArray = common.getObjectStringArray;
 const parseBuildOptions = options_mod.parseBuildOptions;
 const freeOptionsTypedSlices = options_mod.freeOptionsTypedSlices;
@@ -114,6 +115,10 @@ const WatchAsyncData = struct {
     /// false 로 보내 rebuild 경로의 디스크 I/O 를 완전히 제거할 수 있다. CLI 빌드는
     /// 기본 true 유지.
     emit_disk_sourcemap: bool = true,
+
+    /// watch 디바운스(ms) — 첫 이벤트 후 idle 대기 윈도우(연속 저장 병합). JS `watchDelay`
+    /// 옵션으로 override(기본 `watch_debounce_ms`=50). 0 이면 디바운스 없이 즉시 rebuild.
+    debounce_ms: u32 = watch_debounce_ms,
 
     /// #4079 PR-2 — `requestLazySeed(path)` 로 런타임에 누적되는 force-parse 경로 집합
     /// (각 string 은 native_alloc owned dupe). main thread(NAPI 콜백)와 worker thread 가
@@ -1150,11 +1155,12 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         const force_dirty = async_data.lazy_force_dirty.swap(false, .acq_rel);
         if (touched.count() == 0 and !force_dirty) continue;
 
-        // 디바운스: idle 50ms 확보까지 드레인. 지속 변경되는 파일로 인한 기아를 막기 위해
-        // 첫 이벤트로부터 watch_debounce_max_ms 초과 시 강제 종료.
+        // 디바운스: idle `debounce_ms`(watchDelay, 기본 50) 확보까지 드레인. 지속 변경되는
+        // 파일로 인한 기아를 막기 위해 첫 이벤트로부터 watch_debounce_max_ms 초과 시 강제 종료.
+        // debounce_ms==0 이면 drain 자체를 건너뛰어 즉시 rebuild(저지연).
         var debounce_timer: ?IoTimer = IoTimer.start(common.io());
-        while (!async_data.stop_flag.load(.acquire)) {
-            const more = tracked.waitForChanges(watch_debounce_ms) catch break;
+        while (async_data.debounce_ms > 0 and !async_data.stop_flag.load(.acquire)) {
+            const more = tracked.waitForChanges(async_data.debounce_ms) catch break;
             if (more.len == 0) break;
             collectTouched(&touched, allocator, more);
             if (debounce_timer) |*t| {
@@ -1827,6 +1833,9 @@ pub fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
     // `emitDiskSourcemap` 옵션 (기본 true) — bungae 등 lazy 라우트를 갖춘 dev server 는
     // false 로 보내 rebuild 경로의 `.map` 디스크 I/O 를 완전히 제거한다.
     async_data.emit_disk_sourcemap = getObjectBool(env, argv[0], "emitDiskSourcemap", true);
+    // watch 디바운스(ms) — `watchDelay` 옵션(CLI `--watch-delay` 와 동명). 기본 50ms 유지(연속
+    // 저장 병합 공개 계약). 0 이면 디바운스 drain skip → 즉시 rebuild(저지연, 빠른 저장 다중 rebuild).
+    async_data.debounce_ms = getObjectUint32(env, argv[0], "watchDelay", watch_debounce_ms);
 
     // onReady 콜백 추출
     const on_ready_fn = getNamedProperty(env, argv[0], "onReady");

@@ -1300,6 +1300,14 @@ interface BuildOptionsCommon {
   /** watch-mode rebuild callback. */
   onRebuild?: (event: WatchRebuildEvent) => void | Promise<void>;
   /**
+   * watch debounce window in milliseconds — after the first file event, the
+   * watcher waits this long for idle before rebuilding, merging rapid saves
+   * into one rebuild. Default `50`. Set `0` to rebuild immediately (no debounce;
+   * lower latency, but rapid saves may trigger multiple rebuilds). Mirrors the
+   * CLI `--watch-delay` flag. Only affects the NAPI `watch()` path.
+   */
+  watchDelay?: number;
+  /**
    * Whether to write the `.map` file to disk (Issue #1727 Phase B).
    *
    * - Default `true` — save `bundle.js.map` to the `output_filename + ".map"`

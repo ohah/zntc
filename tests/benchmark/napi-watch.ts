@@ -9,11 +9,11 @@
  * (FSEvents/inotify) + `--watch-delay` debounce 를 쓴다 — 둘 다 *폴링 아님*. (내부 Zig
  * 바이너리 `zig-out/bin/zntc` 만 500ms mtime 폴링 fallback 이며 사용자 경로가 아니다.)
  *
- * ⚠️ 결과 해석: rebuild median 의 ~50ms 는 *실제 컴파일* 이 아니라 NAPI watch 워커의
- * **고정 50ms 디바운스**(packages/core/src/napi/watch.zig `watch_debounce_ms` — 연속 저장
- * 병합용)다. tiny≈medium≈53ms(모듈 수 무관)가 그 증거. 실제 rebuild 컴파일은 ~3~16ms
- * (incremental-rebuild.ts 의 CLI 경로 참고). 즉 이 수치는 "watch 반응성"(디바운스 포함)이지
- * 컴파일 속도가 아니다.
+ * ⚠️ 결과 해석: rebuild median 의 ~50ms 는 *실제 컴파일* 이 아니라 NAPI watch 의 디바운스
+ * (기본 50ms, 연속 저장 병합용)다. tiny≈medium≈53ms(모듈 수 무관)가 그 증거. 이제 `watchDelay`
+ * 옵션으로 조절 가능 — `watch({…, watchDelay: 0})` 면 디바운스 없이 **진짜 incremental rebuild
+ * ~3ms** 가 드러난다(persistent_store 캐시 재사용). 즉 이 기본 수치는 "watch 반응성(디바운스
+ * 포함)"이지 컴파일 속도가 아니다.
  *
  * 실행: bun run napi-watch.ts
  */
