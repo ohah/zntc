@@ -993,9 +993,12 @@ pub fn main(init: std.process.Init) !void {
                 try stderr.print("[watch] Watching {d} files for changes...\n", .{mtime_map.count()});
             }
 
+            // 폴링 간격 = --watch-delay (기본 100ms). 과거엔 500ms 하드코딩이라 watch
+            // 반응성이 폴링 대기에 묻혔다(watch_cli.pollIntervalMs 가 0/과소값 floor).
+            const watch_poll_ms = watch_cli.pollIntervalMs(opts.watch_delay_ms);
             while (true) {
                 // 0.16: std.Thread.sleep 제거 → io.sleep(duration, clock).
-                io.sleep(std.Io.Duration.fromMilliseconds(500), .awake) catch {};
+                io.sleep(std.Io.Duration.fromMilliseconds(watch_poll_ms), .awake) catch {};
 
                 // mtime 변경 확인 + 변경 파일 수집
                 var changed = false;
@@ -1249,7 +1252,7 @@ pub fn main(init: std.process.Init) !void {
             };
             walkAndTranspile(allocator, io, input_path_str, out_dir, options) catch std.process.exit(1);
             if (opts.watch) {
-                try watch_cli.watchDirectory(transpileFile, allocator, io, input_path_str, out_dir, options, stderr);
+                try watch_cli.watchDirectory(transpileFile, allocator, io, input_path_str, out_dir, opts.watch_delay_ms, options, stderr);
             }
             return;
         };
@@ -1262,7 +1265,7 @@ pub fn main(init: std.process.Init) !void {
             };
             walkAndTranspile(allocator, io, input_path_str, out_dir, options) catch std.process.exit(1);
             if (opts.watch) {
-                try watch_cli.watchDirectory(transpileFile, allocator, io, input_path_str, out_dir, options, stderr);
+                try watch_cli.watchDirectory(transpileFile, allocator, io, input_path_str, out_dir, opts.watch_delay_ms, options, stderr);
             }
             return;
         }
@@ -1286,7 +1289,7 @@ pub fn main(init: std.process.Init) !void {
     } else {
         transpileFile(allocator, io, file_path, null, opts.output_file, options) catch std.process.exit(1);
         if (opts.watch) {
-            watch_cli.watchFile(transpileFile, allocator, io, file_path, opts.output_file, options, stderr) catch std.process.exit(1);
+            watch_cli.watchFile(transpileFile, allocator, io, file_path, opts.output_file, opts.watch_delay_ms, options, stderr) catch std.process.exit(1);
         }
     }
 }
