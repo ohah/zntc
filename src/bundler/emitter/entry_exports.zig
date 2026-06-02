@@ -8,6 +8,19 @@ const LinkingMetadata = linker_mod.LinkingMetadata;
 const OutputExports = @import("../bundler.zig").OutputExports;
 const FinalExportEntry = LinkingMetadata.FinalExportEntry;
 
+/// (#4120) CJS interop entry 의 `var <local> = <interop>;` materialize 문을 export 코드 앞에 emit.
+/// require_X 는 같은 청크 모듈 본문에서 정의(var 호이스팅 + __commonJS memoize) — 단, 평가 순서상
+/// CJS 모듈 본문이 이 materialize *전* 에 실행돼야 require_X() 가 함수다(emit 위치는 chunks.zig 보장).
+fn appendMaterializations(
+    out: *std.ArrayListUnmanaged(u8),
+    allocator: std.mem.Allocator,
+    entries: []const FinalExportEntry,
+) !void {
+    for (entries) |e| {
+        if (e.materialize) |stmt| try out.appendSlice(allocator, stmt);
+    }
+}
+
 /// `output.exports = "default"` + named 섞인 케이스를 graph diagnostic 으로 emit (#2159).
 /// pending_diagnostics 와 동일하게 linker 의 `fatal_diagnostics` 에 append — `result.errors`
 /// 에 노출되어 사용자가 fail-fast 가능 (Rollup 도 동일 케이스 throw).
@@ -50,6 +63,9 @@ pub fn emitEsmEntryExports(
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(allocator);
 
+    // (#4120) CJS interop entry: export 문 *전* 에 `var <local> = <interop>;` 을 깐다(식별자 export).
+    try appendMaterializations(&out, allocator, entries);
+
     try out.appendSlice(allocator, if (minify_whitespace) "export{" else "export {");
     for (entries, 0..) |e, i| {
         if (i > 0) try out.appendSlice(allocator, ",");
@@ -74,6 +90,10 @@ pub fn emitWrappedEntryExports(
 
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(allocator);
+
+    // (#4120) CJS interop entry: factory `return {...}` 앞에 `var <local> = <interop>;` materialize
+    // (factory scope 내 — require_X 본문은 청크 emit 순서상 이 앞에 실행됨).
+    try appendMaterializations(&out, allocator, entries);
 
     // `return + object literal` 의 minify-whitespace 정책. AST 기반 emit 가 아닌 순수 text
     // 합성이라 [[operandStartsIdentifierLikeDepth]] (statements.zig) 와 정책 동기화 필요 —
@@ -123,6 +143,10 @@ pub fn emitCjsEntryExports(
 
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(allocator);
+
+    // (#4120) CJS interop entry: `exports.x = local`/`module.exports = local` 전에
+    // `var <local> = <interop>;` materialize. require_X 본문은 청크 emit 순서상 이 앞에 실행됨.
+    try appendMaterializations(&out, allocator, entries);
 
     switch (mode) {
         .none => {},

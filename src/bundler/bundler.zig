@@ -1681,6 +1681,17 @@ pub const Bundler = struct {
 
             try chunk_mod.computeCrossChunkLinks(&chunk_graph, graph, self.allocator, if (linker) |*l| l else null);
 
+            // (#4120) metadata 가 consumer↔canonical 청크 동일성을 판정하도록 module_to_chunk 를
+            // 빌려준다(borrow — chunk_graph 소유, emit 동안 유효). defer 로 scope 이탈 시 먼저 비워
+            // chunk_graph.deinit(1674 defer, LIFO 라 나중 실행) 전에 dangling 차단.
+            if (linker) |*l| {
+                if (self.options.code_splitting and !self.options.preserve_modules)
+                    l.module_to_chunk = chunk_graph.module_to_chunk;
+            }
+            defer if (linker) |*l| {
+                l.module_to_chunk = null;
+            };
+
             // RFC #3940 / #4101 — cross-chunk 전역 일관 네이밍 채우기. imports_from 확정 직후.
             // dev_split + production splitting 모두. dev 는 emitLazyEntryExportAll local-key +
             // override(lazy 전용)로, production 은 provider 가 전역명을 public 으로 노출(`export

@@ -65,7 +65,7 @@ describe('CJS cross-chunk re-export (#4101)', () => {
   // ── 정적(static) re-export ─────────────────────────────────────────────
 
   for (const format of ['esm', 'cjs'] as const) {
-    test.todo(`${format}: 정적 — export { default, named } from CJS, 별도 entry 가 사용`, async () => {
+    test(`${format}: 정적 — export { default, named } from CJS, 별도 entry 가 사용`, async () => {
       const fixture = await createFixture({
         'cjslib.js': CJSLIB,
         'Route.ts': "export { default, named } from './cjslib.js';",
@@ -93,7 +93,7 @@ describe('CJS cross-chunk re-export (#4101)', () => {
 
   // ── 동적(dynamic) re-export ───────────────────────────────────────────
 
-  test.todo('esm: 동적 — import("./Route") 가 CJS default/named 재export 를 받음', async () => {
+  test('esm: 동적 — import("./Route") 가 CJS default/named 재export 를 받음', async () => {
     const fixture = await createFixture({
       'cjslib.js': CJSLIB,
       'Route.ts': "export { default, named } from './cjslib.js';",
@@ -117,7 +117,7 @@ describe('CJS cross-chunk re-export (#4101)', () => {
     expect(stdout.trim()).toBe('R D 9');
   });
 
-  test.todo('cjs: 동적 — import("./Route") 가 CJS default/named 재export 를 받음', async () => {
+  test('cjs: 동적 — import("./Route") 가 CJS default/named 재export 를 받음', async () => {
     const fixture = await createFixture({
       'cjslib.js': CJSLIB,
       'Route.ts': "export { default, named } from './cjslib.js';",
@@ -143,7 +143,7 @@ describe('CJS cross-chunk re-export (#4101)', () => {
 
   // ── default 단독 / named 단독 ─────────────────────────────────────────
 
-  test.todo('esm: default 단독 재export', async () => {
+  test('esm: default 단독 재export', async () => {
     const fixture = await createFixture({
       'cjslib.js': CJSLIB,
       'Route.ts': "export { default } from './cjslib.js';",
@@ -168,7 +168,7 @@ describe('CJS cross-chunk re-export (#4101)', () => {
     expect(stdout.trim()).toBe('R D');
   });
 
-  test.todo('esm: named 단독 재export', async () => {
+  test('esm: named 단독 재export', async () => {
     const fixture = await createFixture({
       'cjslib.js': CJSLIB,
       'Route.ts': "export { named } from './cjslib.js';",
@@ -195,7 +195,7 @@ describe('CJS cross-chunk re-export (#4101)', () => {
 
   // ── renamed re-export (`export { default as foo }`) ───────────────────
 
-  test.todo('esm: renamed — export { default as widget, named as n } from CJS', async () => {
+  test('esm: renamed — export { default as widget, named as n } from CJS', async () => {
     const fixture = await createFixture({
       'cjslib.js': CJSLIB,
       'Route.ts': "export { default as widget, named as n } from './cjslib.js';",
@@ -223,7 +223,7 @@ describe('CJS cross-chunk re-export (#4101)', () => {
 
   // ── 여러 consumer (재export 가 2 entry 에서 공유) ─────────────────────
 
-  test.todo('esm: 두 entry 가 같은 CJS 재export 를 공유', async () => {
+  test('esm: 두 entry 가 같은 CJS 재export 를 공유', async () => {
     const fixture = await createFixture({
       'cjslib.js': CJSLIB,
       'Route.ts': "export { default, named } from './cjslib.js';",
@@ -248,7 +248,7 @@ describe('CJS cross-chunk re-export (#4101)', () => {
 
   // ── iife (브라우저 시뮬) ──────────────────────────────────────────────
 
-  test.todo('iife: 동적 — CJS default/named 재export', async () => {
+  test('iife: 동적 — CJS default/named 재export', async () => {
     const fixture = await createFixture({
       'cjslib.js': CJSLIB,
       'Route.ts': "export { default, named } from './cjslib.js';",
@@ -274,7 +274,7 @@ describe('CJS cross-chunk re-export (#4101)', () => {
 
   // ── 회귀 가드: ESM named import 인 CJS(인터롭) 가 일반 named 와 섞임 ──
 
-  test.todo('esm: CJS named + ESM 모듈 named 혼합 재export 가 cross-chunk 정상', async () => {
+  test('esm: CJS named + ESM 모듈 named 혼합 재export 가 cross-chunk 정상', async () => {
     const fixture = await createFixture({
       'cjslib.js': CJSLIB,
       'esmlib.ts': "export const esmv = 'E';",
