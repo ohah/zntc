@@ -275,7 +275,7 @@ pub fn emitAssignment(self: anytype, node: Node, level: Level, flags: ExprFlags)
     // `(void 0) = x` SyntaxError 가 되므로 emitStaticMember 가 재작성을 건너뛰게 한다.
     // emitStaticMember 가 진입 즉시 리셋하므로 중첩 object 위치(rvalue)는 영향 없음.
     self.member_assign_target = true;
-    // 우결합: left = .assign, right = .assign.lower()(= .conditional)
+    // 우결합: left = .assign, right = .assign.lower()(= .yield, esbuild LAssign-1=LYield)
     try self.emitExpr(node.data.binary.left, .assign, child_flags);
     self.member_assign_target = false;
     try self.writeSpace();
@@ -478,17 +478,19 @@ fn identifierHasConstValue(self: anytype, idx: NodeIndex) bool {
 pub fn emitComputedKey(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
     try self.writeByte('[');
-    try self.emitNode(node.data.unary.operand);
+    // object computed key `[k]` 는 argument 위치 → .comma (esbuild Property.Key computed=LComma)
+    try self.emitExpr(node.data.unary.operand, .comma, .{});
     try self.writeByte(']');
 }
 
-pub fn emitStaticMember(self: anytype, node: Node) !void {
+pub fn emitStaticMember(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
+    _ = level; // PR6: optional-chain 끊기 wrap
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
     if (!self.ast.hasExtra(e, 2)) return;
     const object = self.ast.readExtraNode(e, 0);
     const property = self.ast.readExtraNode(e, 1);
-    const flags = self.ast.readExtra(e, 2);
+    const member_flags = self.ast.readExtra(e, 2);
     const MemberFlags = ast_mod.MemberFlags;
 
     // 이 member 가 assignment/update 의 lvalue 타겟인지. 진입 즉시 읽고 리셋해
@@ -583,8 +585,11 @@ pub fn emitStaticMember(self: anytype, node: Node) !void {
         }
     }
 
-    try calls.emitNodeMaybeUndefParen(self, object);
-    if (flags & MemberFlags.optional_chain != 0) {
+    // object level = .postfix. non-optional member 는 object 에 has_non_optional_chain_parent
+    // set(PR6 에서 object 가 optional-chain start 면 `(a?.b).c` 처럼 wrap). forbid_call 보존.
+    const obj_flags = ExprFlags{ .forbid_call = flags.forbid_call, .has_non_optional_chain_parent = (member_flags & MemberFlags.optional_chain) == 0 };
+    try calls.emitNodeMaybeUndefParen(self, object, Level.postfix, obj_flags);
+    if (member_flags & MemberFlags.optional_chain != 0) {
         try self.write("?.");
     } else {
         try self.writeByte('.');
@@ -598,20 +603,23 @@ pub fn emitStaticMember(self: anytype, node: Node) !void {
     try self.writeNodeSpan(prop_node);
 }
 
-pub fn emitComputedMember(self: anytype, node: Node) !void {
+pub fn emitComputedMember(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
+    _ = level; // PR6: optional-chain 끊기 wrap
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
     if (!self.ast.hasExtra(e, 2)) return;
     const object = self.ast.readExtraNode(e, 0);
     const property = self.ast.readExtraNode(e, 1);
-    const flags = self.ast.readExtra(e, 2);
+    const member_flags = self.ast.readExtra(e, 2);
     const MemberFlags = ast_mod.MemberFlags;
-    try calls.emitNodeMaybeUndefParen(self, object);
-    if (flags & MemberFlags.optional_chain != 0) {
+    const obj_flags = ExprFlags{ .forbid_call = flags.forbid_call, .has_non_optional_chain_parent = (member_flags & MemberFlags.optional_chain) == 0 };
+    try calls.emitNodeMaybeUndefParen(self, object, Level.postfix, obj_flags);
+    if (member_flags & MemberFlags.optional_chain != 0) {
         try self.write("?.");
     }
     try self.writeByte('[');
-    try self.emitNode(property);
+    // computed index 는 괄호 `[]` 안 → .lowest (esbuild EIndex.Index = LLowest)
+    try self.emitExpr(property, .lowest, .{});
     try self.writeByte(']');
 }
 

@@ -261,18 +261,18 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
         .object_expression => try expression_emit.emitObject(self, node),
         .object_property => try expression_emit.emitObjectProperty(self, node),
         .computed_property_key => try expression_emit.emitComputedKey(self, node),
-        .static_member_expression => try expression_emit.emitStaticMember(self, node),
-        .computed_member_expression => try expression_emit.emitComputedMember(self, node),
-        .private_field_expression => try expression_emit.emitStaticMember(self, node),
-        .call_expression => try call_emit.emitCall(self, node),
-        .new_expression => try call_emit.emitNew(self, node),
+        .static_member_expression => try expression_emit.emitStaticMember(self, node, level, flags),
+        .computed_member_expression => try expression_emit.emitComputedMember(self, node, level, flags),
+        .private_field_expression => try expression_emit.emitStaticMember(self, node, level, flags),
+        .call_expression => try call_emit.emitCall(self, node, level, flags),
+        .new_expression => try call_emit.emitNew(self, node, level, flags),
         .template_literal => try function_class_emit.emitTemplateLiteral(self, node),
         .template_element => {
             try self.addSourceMapping(node.span);
             try self.writeNodeSpan(node);
         },
         .tagged_template_expression => try function_class_emit.emitTaggedTemplate(self, node),
-        .import_expression => try call_emit.emitImportExpr(self, node),
+        .import_expression => try call_emit.emitImportExpr(self, node, level, flags),
         .meta_property => try call_emit.emitMetaProperty(self, node),
         // chain_expression: optional-chain wrapper — operand 가 자기 매핑 발행.
         // (TS·Flow type-cast 는 위 transparent-wrapper 분기에서 처리됨.) level/flags 투과.

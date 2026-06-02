@@ -7,6 +7,9 @@ const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const dev = @import("../bundler/emitter/dev.zig");
 const ImportRecord = @import("../bundler/types.zig").ImportRecord;
+const precedence = @import("precedence.zig");
+const Level = precedence.Level;
+const ExprFlags = precedence.ExprFlags;
 
 const IMPORT_META_URL_NODE = "require(\"url\").pathToFileURL(__filename).href";
 const IMPORT_META_NODE_OBJECT = "{url:" ++ IMPORT_META_URL_NODE ++ ",dirname:__dirname,filename:__filename}";
@@ -29,31 +32,36 @@ pub fn isUndefinedPeephole(self: anytype, idx: NodeIndex) bool {
 
 /// `void 0` peephole 가 적용될 자식 노드를 paren 으로 감싸 emit. 자식이 그 외엔 그대로 emit.
 /// callee/object/new.callee 슬롯 4곳에서 공유 — 정책은 [[isUndefinedPeephole]].
-pub fn emitNodeMaybeUndefParen(self: anytype, idx: NodeIndex) !void {
+pub fn emitNodeMaybeUndefParen(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) !void {
     const need = isUndefinedPeephole(self, idx);
     if (need) try self.writeByte('(');
-    try self.emitNode(idx);
+    try self.emitExpr(idx, level, flags);
     if (need) try self.writeByte(')');
 }
 
-pub fn emitCall(self: anytype, node: Node) !void {
+pub fn emitCall(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
+    _ = level; // PR6: wrap = level.gte(.new) || flags.forbid_call
+    _ = flags; // forbid_call 은 callee 로 전파 안 함(call 이 자기 wrap 에서 소진) — esbuild ECall parity.
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
     if (!self.ast.hasExtra(e, 3)) return;
     const callee = self.ast.readExtraNode(e, 0);
     const args_start = self.ast.readExtra(e, 1);
     const args_len = self.ast.readExtra(e, 2);
-    const flags = self.ast.readExtra(e, 3);
+    const call_flags = self.ast.readExtra(e, 3);
     const CallFlags = ast_mod.CallFlags;
-    const is_optional = (flags & CallFlags.optional_chain) != 0;
-    const is_pure = (flags & CallFlags.is_pure) != 0;
+    const is_optional = (call_flags & CallFlags.optional_chain) != 0;
+    const is_pure = (call_flags & CallFlags.is_pure) != 0;
 
     if (try tryRewriteRequire(self, callee, args_start, args_len)) return;
     if (try tryEmitGlobObject(self, callee, args_start, args_len)) return;
     if (try tryEmitRequireContextObject(self, node)) return;
 
     if (is_pure and !self.options.minify_whitespace) try self.write("/* @__PURE__ */ ");
-    try emitNodeMaybeUndefParen(self, callee);
+    // callee level = .postfix. non-optional call 은 callee 에 has_non_optional_chain_parent
+    // set(PR6 에서 callee 가 optional-chain start 면 wrap). forbid_call 은 전파 안 함(위 참조).
+    const callee_flags = ExprFlags{ .has_non_optional_chain_parent = !is_optional };
+    try emitNodeMaybeUndefParen(self, callee, Level.postfix, callee_flags);
     if (is_optional) try self.write("?.");
     try self.writeByte('(');
     try self.emitExpressionNodeList(args_start, args_len, self.listSep());
@@ -406,16 +414,18 @@ fn tryEmitWorkerURL(self: anytype, callee: ast_mod.NodeIndex, args_start: u32, a
     return true;
 }
 
-pub fn emitNew(self: anytype, node: Node) !void {
+pub fn emitNew(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
+    _ = level; // PR6: wrap = level.gte(.call)
+    _ = flags;
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
     if (!self.ast.hasExtra(e, 3)) return;
     var callee = self.ast.readExtraNode(e, 0);
     const args_start = self.ast.readExtra(e, 1);
     const args_len = self.ast.readExtra(e, 2);
-    const flags = self.ast.readExtra(e, 3);
+    const new_flags = self.ast.readExtra(e, 3);
     const CallFlags = ast_mod.CallFlags;
-    const is_pure = (flags & CallFlags.is_pure) != 0;
+    const is_pure = (new_flags & CallFlags.is_pure) != 0;
 
     if (is_pure and !self.options.minify_whitespace) try self.write("/* @__PURE__ */ ");
 
@@ -436,7 +446,9 @@ pub fn emitNew(self: anytype, node: Node) !void {
     }
     const needs_parens = newCalleeNeedsParens(self, callee);
     if (needs_parens) try self.writeByte('(');
-    try self.emitNode(callee);
+    // callee level = .new + forbid_call(set) — `new (foo())` 보존. ad-hoc 괄호는 PR6 에서
+    // precedence 로 대체될 때까지 유지(byte-identical).
+    try self.emitExpr(callee, Level.new, .{ .forbid_call = true });
     if (needs_parens) try self.writeByte(')');
     try self.writeByte('(');
     try self.emitExpressionNodeList(args_start, args_len, self.listSep());
@@ -474,13 +486,16 @@ pub fn emitMetaProperty(self: anytype, node: Node) !void {
     try self.writeNodeSpan(node);
 }
 
-pub fn emitImportExpr(self: anytype, node: Node) !void {
+pub fn emitImportExpr(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
+    _ = level;
+    _ = flags;
     try self.addSourceMapping(node.span);
     try self.write("import(");
-    try self.emitNode(node.data.binary.left);
+    // specifier / options 는 argument 위치 → .comma (esbuild EImportCall).
+    try self.emitExpr(node.data.binary.left, .comma, .{});
     if (!node.data.binary.right.isNone()) {
         try self.write(if (self.options.minify_whitespace) "," else ", ");
-        try self.emitNode(node.data.binary.right);
+        try self.emitExpr(node.data.binary.right, .comma, .{});
     }
     try self.writeByte(')');
 }
