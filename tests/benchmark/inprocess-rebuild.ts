@@ -81,8 +81,27 @@ const fixtures: Fixture[] = [
       return { entry };
     },
   },
+  {
+    name: 'large100',
+    build(dir) {
+      for (let i = 0; i < 100; i++) {
+        writeFileSync(join(dir, `m${i}.ts`), `export function fn${i}(x){return x+${i};}\n`);
+      }
+      const entry = join(dir, 'entry.ts');
+      const imps = Array.from({ length: 100 }, (_, i) => `import { fn${i} } from './m${i}';`).join(
+        '\n',
+      );
+      const calls = Array.from({ length: 100 }, (_, i) => `fn${i}(1)`).join('+');
+      writeFileSync(entry, `${imps}\nconsole.log(${calls});\n`);
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'fx', type: 'module' }));
+      return { entry };
+    },
+  },
 ];
 
+// 참고: incremental 의 최대 합성 fixture 는 large100. large1000(1000-module) 은 cold-build 에만
+// 둔다 — cold 는 build() 기반이라 안정적이나, incremental 은 watch(파일 1000개 감시) 경유라
+// 50-iter rapid-rewrite 에서 NAPI watch worker 가 간헐 segfault → 재현 가능한 공개 벤치로 부적합.
 const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
 
 function summarize(arr: number[]) {

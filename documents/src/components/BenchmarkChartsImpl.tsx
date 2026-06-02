@@ -272,13 +272,13 @@ export default function BenchmarkCharts() {
     {
       title: "Cold Build (in-process)",
       description:
-        "Cache-less initial full build via each tool's in-process programmatic API (in-memory). esbuild's small-fixture numbers are dominated by its Node↔Go service IPC round-trip; ZNTC/rolldown are napi (no IPC).",
+        "Cache-less initial full build via each tool's in-process programmatic API (in-memory), across 1→1000 synthetic modules plus a real dependency (lodash-es). esbuild's small-fixture numbers are dominated by its Node↔Go service IPC round-trip; ZNTC/rolldown are napi (no IPC). On the 1000-module graph ZNTC stays fastest (~1.6× esbuild, ~2× rolldown).",
       entries: benchmarkData.results.coldBuild,
     },
     {
       title: "Incremental Rebuild (in-process)",
       description:
-        "Pure incremental rebuild compute (cache reuse, debounce/watch latency excluded): ZNTC watch({watchDelay:0}), esbuild ctx.rebuild(), rolldown bundle.generate(). Median of 50 in-process rebuilds (constant-size in-place edit) — stable across runs.",
+        "Pure incremental rebuild compute (cache reuse, debounce/watch latency excluded): ZNTC watch({watchDelay:0}), esbuild ctx.rebuild(), rolldown bundle.generate(). Median of 50 in-process rebuilds (constant-size in-place edit) — stable across runs. Up to a 100-module graph + a real dependency; on the 100-module graph ZNTC rebuilds ~5× faster than esbuild.",
       entries: benchmarkData.results.incrementalRebuild,
     },
     {

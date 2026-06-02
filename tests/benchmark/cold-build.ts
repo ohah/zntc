@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
 /**
  * In-process **cold build** 벤치 — 캐시 없는 초기 full build(parse+transform+bundle) 비교.
- * incremental rebuild(inprocess-rebuild.ts)와 짝 — 같은 fixture(tiny/medium/lodash), in-process
- * programmatic API, write 없이 in-memory.
+ * incremental rebuild(inprocess-rebuild.ts)와 짝 — fixture(tiny/medium/large100/large1000/lodash),
+ * in-process programmatic API, write 없이 in-memory. large1000(1000-module)은 cold 전용
+ * (incremental 은 watch 기반이라 1000파일에서 NAPI watch 가 간헐 segfault → 최대 large100).
  *   - ZNTC:    `@zntc/core` build({ write:false }) — 매 호출 full build(persistent cache 미사용).
  *   - esbuild: `esbuild.build({ write:false })` — 매 호출 one-shot full build.
  *   - rolldown:`rolldown()` + `generate()` + `close()` — 매 iter fresh bundle = cold.
@@ -70,6 +71,38 @@ const fixtures: Fixture[] = [
         entry,
         `import { groupBy, sortBy, uniq, map, filter, reduce } from 'lodash-es';\nconsole.log(groupBy, sortBy, uniq, map, filter, reduce);\n`,
       );
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'fx', type: 'module' }));
+      return { entry };
+    },
+  },
+  {
+    name: 'large100',
+    build(dir) {
+      for (let i = 0; i < 100; i++) {
+        writeFileSync(join(dir, `m${i}.ts`), `export function fn${i}(x){return x+${i};}\n`);
+      }
+      const entry = join(dir, 'entry.ts');
+      const imps = Array.from({ length: 100 }, (_, i) => `import { fn${i} } from './m${i}';`).join(
+        '\n',
+      );
+      const calls = Array.from({ length: 100 }, (_, i) => `fn${i}(1)`).join('+');
+      writeFileSync(entry, `${imps}\nconsole.log(${calls});\n`);
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'fx', type: 'module' }));
+      return { entry };
+    },
+  },
+  {
+    name: 'large1000',
+    build(dir) {
+      for (let i = 0; i < 1000; i++) {
+        writeFileSync(join(dir, `m${i}.ts`), `export function fn${i}(x){return x+${i};}\n`);
+      }
+      const entry = join(dir, 'entry.ts');
+      const imps = Array.from({ length: 1000 }, (_, i) => `import { fn${i} } from './m${i}';`).join(
+        '\n',
+      );
+      const calls = Array.from({ length: 1000 }, (_, i) => `fn${i}(1)`).join('+');
+      writeFileSync(entry, `${imps}\nconsole.log(${calls});\n`);
       writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'fx', type: 'module' }));
       return { entry };
     },

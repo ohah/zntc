@@ -55,6 +55,14 @@
       { "tool": "rolldown", "scale": "medium (10 modules)", "medianMs": 1.18, "minMs": 0.97, "maxMs": 1.71, "p95Ms": 1.71 },
       { "tool": "esbuild", "scale": "medium (10 modules)", "medianMs": 4.59, "minMs": 4.27, "maxMs": 5.24, "p95Ms": 5.24 },
 
+      { "tool": "ZNTC", "scale": "large (100 modules)", "medianMs": 1.35, "minMs": 1.26, "maxMs": 1.44, "p95Ms": 1.44 },
+      { "tool": "rolldown", "scale": "large (100 modules)", "medianMs": 2.96, "minMs": 2.67, "maxMs": 3.25, "p95Ms": 3.25 },
+      { "tool": "esbuild", "scale": "large (100 modules)", "medianMs": 5.67, "minMs": 5.37, "maxMs": 7.11, "p95Ms": 7.11 },
+
+      { "tool": "ZNTC", "scale": "large (1000 modules)", "medianMs": 12.6, "minMs": 12.0, "maxMs": 13.0, "p95Ms": 13.0 },
+      { "tool": "rolldown", "scale": "large (1000 modules)", "medianMs": 25.5, "minMs": 24.2, "maxMs": 28.4, "p95Ms": 28.4 },
+      { "tool": "esbuild", "scale": "large (1000 modules)", "medianMs": 20.7, "minMs": 19.0, "maxMs": 24.5, "p95Ms": 24.5 },
+
       { "tool": "ZNTC", "scale": "lodash-es (real dep)", "medianMs": 10.7, "minMs": 10.2, "maxMs": 11.7, "p95Ms": 11.7 },
       { "tool": "rolldown", "scale": "lodash-es (real dep)", "medianMs": 13.2, "minMs": 12.3, "maxMs": 16.2, "p95Ms": 16.2 },
       { "tool": "esbuild", "scale": "lodash-es (real dep)", "medianMs": 22.9, "minMs": 20.5, "maxMs": 25.1, "p95Ms": 25.1 }
@@ -67,6 +75,10 @@
       { "tool": "ZNTC", "scale": "medium (10 modules)", "medianMs": 2.73, "minMs": 0.76, "maxMs": 4.57, "p95Ms": 4.57 },
       { "tool": "rolldown", "scale": "medium (10 modules)", "medianMs": 6.5, "minMs": 1.86, "maxMs": 12.3, "p95Ms": 12.3 },
       { "tool": "esbuild", "scale": "medium (10 modules)", "medianMs": 22.9, "minMs": 8.75, "maxMs": 29.8, "p95Ms": 29.8 },
+
+      { "tool": "ZNTC", "scale": "large (100 modules)", "medianMs": 5.11, "minMs": 4.27, "maxMs": 5.35, "p95Ms": 5.35 },
+      { "tool": "rolldown", "scale": "large (100 modules)", "medianMs": 15.65, "minMs": 14.5, "maxMs": 16.3, "p95Ms": 16.3 },
+      { "tool": "esbuild", "scale": "large (100 modules)", "medianMs": 27.45, "minMs": 22.0, "maxMs": 28.5, "p95Ms": 28.5 },
 
       { "tool": "ZNTC", "scale": "lodash-es (real dep)", "medianMs": 20.0, "minMs": 3.61, "maxMs": 24.2, "p95Ms": 24.2 },
       { "tool": "rolldown", "scale": "lodash-es (real dep)", "medianMs": 43.7, "minMs": 17.5, "maxMs": 52.4, "p95Ms": 52.4 },
