@@ -265,32 +265,46 @@ fn walkFunctionVarBindingPatterns(
     ctx: anytype,
     comptime onBindingPattern: fn (@TypeOf(ctx), ast_mod.NodeIndex) error{OutOfMemory}!bool,
 ) error{OutOfMemory}!bool {
-    if (idx.isNone()) return false;
-    const node = ast.getNode(idx);
-    switch (node.tag) {
-        .function_declaration,
-        .function_expression,
-        .function,
-        .arrow_function_expression,
-        => return false,
-        .variable_declaration => if (!ast.variableDeclarationKind(node).isLexical()) {
-            const list_start = ast.extra_data.items[node.data.extra + 1];
-            const list_len = ast.extra_data.items[node.data.extra + 2];
-            var i: u32 = 0;
-            while (i < list_len) : (i += 1) {
-                const decl_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[list_start + i]);
-                if (decl_idx.isNone()) continue;
-                const decl = ast.getNode(decl_idx);
-                if (decl.tag != .variable_declarator) continue;
-                if (try onBindingPattern(ctx, @enumFromInt(ast.extra_data.items[decl.data.extra]))) return true;
-            }
-        },
-        else => {},
-    }
+    // 반복 worklist(#4123): 깊은 좌결합 체인을 재귀로 내려가면 스택 오버플로우. scope state 가
+    // 없어(function 경계 prune + var-decl 콜백 + else descend) 단순 NodeIndex 스택이면 충분.
+    // comptime 콜백 + error 전파 때문에 walkPreorderIterative(비-erroring visit) 대신 inline.
+    var stack: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
+    defer stack.deinit(ast.allocator);
+    try stack.append(ast.allocator, idx);
+    var child_buf: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
+    defer child_buf.deinit(ast.allocator);
 
-    var it = ast_walk.children(ast, node);
-    while (it.next()) |child_idx| {
-        if (try walkFunctionVarBindingPatterns(ast, child_idx, ctx, onBindingPattern)) return true;
+    while (stack.pop()) |cur| {
+        if (cur.isNone() or @intFromEnum(cur) >= ast.nodes.items.len) continue;
+        const node = ast.getNode(cur);
+        switch (node.tag) {
+            // function/arrow scope 경계 — var 는 함수 밖으로 안 샘. prune(자식 안 봄).
+            .function_declaration,
+            .function_expression,
+            .function,
+            .arrow_function_expression,
+            => continue,
+            .variable_declaration => if (!ast.variableDeclarationKind(node).isLexical()) {
+                const list_start = ast.extra_data.items[node.data.extra + 1];
+                const list_len = ast.extra_data.items[node.data.extra + 2];
+                var i: u32 = 0;
+                while (i < list_len) : (i += 1) {
+                    const decl_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[list_start + i]);
+                    if (decl_idx.isNone()) continue;
+                    const decl = ast.getNode(decl_idx);
+                    if (decl.tag != .variable_declarator) continue;
+                    if (try onBindingPattern(ctx, @enumFromInt(ast.extra_data.items[decl.data.extra]))) return true;
+                }
+                // var-decl 도 자식(init 등) 계속 descend — 아래 child push 로 (원본 fall-through).
+            },
+            else => {},
+        }
+        try ast_walk.collectChildrenInto(ast, node, &child_buf, ast.allocator);
+        var i = child_buf.items.len;
+        while (i > 0) {
+            i -= 1;
+            try stack.append(ast.allocator, child_buf.items[i]);
+        }
     }
     return false;
 }
@@ -328,6 +342,34 @@ fn scanVariableDeclarationForUnsupportedBindingLiteShadow(
     return !inside_function;
 }
 
+/// scanForUnsupportedBindingLiteShadow 의 switch 가 tag 별로 특수 처리(=scope state 변경 또는
+/// bespoke binding 검사)하는 노드인지. 이 노드들은 반복 평탄화에서 recursive scanForUnsupported
+/// 로 위임한다(scope 중첩은 얕음). 그 외(generic expression 등)는 scanForUnsupported 가 곧
+/// scanChildren(같은 state) 이므로 worklist 가 자식을 직접 push 해 평탄화.
+///
+/// ⚠️ 이 집합은 scanForUnsupportedBindingLiteShadow switch 의 **non-`else` arm 전부**와 정확히
+/// 일치해야 한다. 빠지면(과거 .variable_declaration/.binding_identifier 누락) 그 노드가 generic
+/// 으로 처리돼 top-level lexical shadow / binding-name 검사를 건너뛴다(→ `.bindings` 오판,
+/// `import { Foo } from …; const Foo = 1` 가 full semantic 으로 안 올라감). 단위 테스트
+/// "ambiguous or overflowing named import shadows keep full semantic" 가 drift 를 잡는다.
+fn isScopeOrSpecialForBindingLite(tag: ast_mod.Node.Tag) bool {
+    return switch (tag) {
+        .program,
+        .block_statement,
+        .function_body,
+        .formal_parameters,
+        .catch_clause,
+        .function_declaration,
+        .function_expression,
+        .function,
+        .arrow_function_expression,
+        .variable_declaration,
+        .binding_identifier,
+        => true,
+        else => false,
+    };
+}
+
 fn scanChildrenForUnsupportedBindingLiteShadow(
     ast: *const Ast,
     node: ast_mod.Node,
@@ -336,9 +378,43 @@ fn scanChildrenForUnsupportedBindingLiteShadow(
     inside_function: bool,
     fn_shadow_count: ?*usize,
 ) error{OutOfMemory}!bool {
-    var it = ast_walk.children(ast, node);
-    while (it.next()) |child_idx| {
-        if (try scanForUnsupportedBindingLiteShadow(ast, child_idx, names, child_scope_depth, inside_function, fn_shadow_count)) return true;
+    // 반복 worklist(#4123): 원본은 scanForUnsupported↔scanChildren 상호재귀라 깊은 좌결합 체인
+    // (`+` 등, 같은 scope state)에서 스택 오버플로우였다(실측 — named-import + 40000항). generic
+    // 노드는 scanForUnsupported(generic)=scanChildren(같은 state) 이므로 자식을 직접 push 해
+    // 평탄화하고, scope/special 노드만 recursive scanForUnsupported 로 위임(scope 중첩=얕음).
+    // worklist state(child_scope_depth/inside_function/fn_shadow_count)는 generic descent 내내
+    // 불변이라 단순 NodeIndex 스택으로 충분(scope 노드는 자체 재귀로 state 재유도).
+    const Push = struct {
+        fn go(
+            a: *const Ast,
+            n: ast_mod.Node,
+            st: *std.ArrayListUnmanaged(ast_mod.NodeIndex),
+            cb: *std.ArrayListUnmanaged(ast_mod.NodeIndex),
+        ) error{OutOfMemory}!void {
+            try ast_walk.collectChildrenInto(a, n, cb, a.allocator);
+            var i = cb.items.len; // 소스 순서 보존: 역순 push → LIFO pop 이 forward
+            while (i > 0) {
+                i -= 1;
+                try st.append(a.allocator, cb.items[i]);
+            }
+        }
+    };
+
+    var stack: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
+    defer stack.deinit(ast.allocator);
+    var child_buf: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
+    defer child_buf.deinit(ast.allocator);
+
+    try Push.go(ast, node, &stack, &child_buf); // seed: node 의 직계 자식 (원본 순회 대상)
+
+    while (stack.pop()) |cur| {
+        if (cur.isNone() or @intFromEnum(cur) >= ast.nodes.items.len) continue;
+        const cnode = ast.getNode(cur);
+        if (isScopeOrSpecialForBindingLite(cnode.tag)) {
+            if (try scanForUnsupportedBindingLiteShadow(ast, cur, names, child_scope_depth, inside_function, fn_shadow_count)) return true;
+        } else {
+            try Push.go(ast, cnode, &stack, &child_buf);
+        }
     }
     return false;
 }
@@ -950,17 +1026,59 @@ fn markBindingLiteFunctionScope(
 }
 
 fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *BindingLite, value_context: bool, shadowed_names: []const []const u8) error{OutOfMemory}!void {
-    if (idx.isNone()) return;
+    // 반복 worklist(#4123): 원본은 generic descent(switch 의 else / value_context=true 인
+    // assignment_expression)에서 같은 (value_context, shadowed_names)로 자식을 재귀 → 깊은
+    // 좌결합 체인(`+` 등)에서 스택 오버플로우(실측 — named-import + 40000항). switch 본체를
+    // markBindingLiteValueUsesNode(special→handled/true, generic→false)로 추출하고 generic
+    // 노드만 worklist 로 평탄화한다. special 케이스의 sub-part 재귀(binding pattern/scope/value
+    // 식)는 다시 이 wrapper 를 타며, 깊은 value 식은 generic→worklist 로 평탄화되어 얕다.
+    // generic descent 동안 (value_context, shadowed_names)는 불변 → 단순 NodeIndex 스택으로 충분.
+    const Push = struct {
+        fn go(
+            a: *const Ast,
+            n: ast_mod.Node,
+            st: *std.ArrayListUnmanaged(ast_mod.NodeIndex),
+            cb: *std.ArrayListUnmanaged(ast_mod.NodeIndex),
+        ) error{OutOfMemory}!void {
+            try ast_walk.collectChildrenInto(a, n, cb, a.allocator);
+            var i = cb.items.len; // 소스 순서 보존: 역순 push → LIFO pop 이 forward
+            while (i > 0) {
+                i -= 1;
+                try st.append(a.allocator, cb.items[i]);
+            }
+        }
+    };
+
+    var stack: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
+    defer stack.deinit(ast.allocator);
+    var child_buf: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
+    defer child_buf.deinit(ast.allocator);
+
+    try stack.append(ast.allocator, idx);
+    while (stack.pop()) |cur| {
+        if (try markBindingLiteValueUsesNode(ast, cur, lite, value_context, shadowed_names)) continue; // special: 자체 처리됨
+        // generic 노드: 자식을 같은 (value_context, shadowed_names)로 descend.
+        try Push.go(ast, ast.getNode(cur), &stack, &child_buf);
+    }
+}
+
+/// markBindingLiteValueUses 의 per-node 처리. special 케이스(자체적으로 sub-part 를 적절한
+/// value_context 로 재귀)는 true 를, generic(자식을 같은 state 로 내려가야 하는 노드)은 false 를
+/// 반환한다. wrapper(markBindingLiteValueUses)가 false 노드의 자식 descent 를 worklist 로 평탄화한다.
+fn markBindingLiteValueUsesNode(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *BindingLite, value_context: bool, shadowed_names: []const []const u8) error{OutOfMemory}!bool {
+    // children() 는 extra_data 값을 그대로 yield 하므로(범위 검증 안 함) none 외에 out-of-range 도
+    // 가능 → getNode 전 bounds 가드(true=처리됨 취급, wrapper 는 자식 push 안 함). scanChildren 동일.
+    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return true;
     const node = ast.getNode(idx);
 
-    if (Transformer.isTypeOnlyNode(node.tag) or node.tag.isTypeOnlyDeclaration()) return;
+    if (Transformer.isTypeOnlyNode(node.tag) or node.tag.isTypeOnlyDeclaration()) return true;
 
     switch (node.tag) {
         .identifier_reference,
         .assignment_target_identifier,
         => {
             if (value_context) markBindingLiteUse(lite, ast.getText(node.span), shadowed_names);
-            return;
+            return true;
         },
         .binding_identifier,
         .import_declaration,
@@ -968,12 +1086,12 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
         .import_default_specifier,
         .import_namespace_specifier,
         .import_attribute,
-        => return,
+        => return true,
         .block_statement,
         .function_body,
         => {
             try markBindingLiteBlockScope(ast, node, lite, shadowed_names);
-            return;
+            return true;
         },
         .catch_clause => {
             var shadow_buf: [binding_lite_max_shadows][]const u8 = undefined;
@@ -981,34 +1099,34 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
             for (shadowed_names) |name| appendBindingLiteShadowName(&shadow_buf, &shadow_len, name);
             try collectBindingLitePatternShadows(ast, node.data.binary.left, lite, &shadow_buf, &shadow_len);
             try markBindingLiteValueUses(ast, node.data.binary.right, lite, true, shadow_buf[0..shadow_len]);
-            return;
+            return true;
         },
         .try_statement => {
             try markBindingLiteValueUses(ast, node.data.ternary.a, lite, true, shadowed_names);
             try markBindingLiteValueUses(ast, node.data.ternary.b, lite, true, shadowed_names);
             try markBindingLiteValueUses(ast, node.data.ternary.c, lite, true, shadowed_names);
-            return;
+            return true;
         },
         .export_specifier => {
             try markBindingLiteValueUses(ast, node.data.binary.left, lite, true, shadowed_names);
-            return;
+            return true;
         },
         .export_named_declaration => {
             const x = module_parser.readExportNamedExtras(ast, node.data.extra);
             try markBindingLiteValueUses(ast, x.decl, lite, true, shadowed_names);
             try markBindingLiteListValueUses(ast, .{ .start = x.specs_start, .len = x.specs_len }, lite, true, shadowed_names);
-            return;
+            return true;
         },
         .variable_declaration => {
             const list_start = ast.extra_data.items[node.data.extra + 1];
             const list_len = ast.extra_data.items[node.data.extra + 2];
             try markBindingLiteListValueUses(ast, .{ .start = list_start, .len = list_len }, lite, true, shadowed_names);
-            return;
+            return true;
         },
         .variable_declarator => {
             try markBindingPatternDefaultValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra]), lite, shadowed_names);
             try markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra + 2]), lite, true, shadowed_names);
-            return;
+            return true;
         },
         .function_declaration,
         .function_expression,
@@ -1023,7 +1141,7 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
                 @enumFromInt(ast.extra_data.items[e + 1]),
                 @enumFromInt(ast.extra_data.items[e + 2]),
             );
-            return;
+            return true;
         },
         .arrow_function_expression => {
             const e = node.data.extra;
@@ -1035,35 +1153,35 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
                 @enumFromInt(ast.extra_data.items[e]),
                 @enumFromInt(ast.extra_data.items[e + 1]),
             );
-            return;
+            return true;
         },
         .formal_parameters => {
             try markBindingLiteListValueUses(ast, node.data.list, lite, false, shadowed_names);
-            return;
+            return true;
         },
         .assignment_pattern,
         .assignment_target_with_default,
         => {
             try markBindingLiteValueUses(ast, node.data.binary.left, lite, false, shadowed_names);
             try markBindingLiteValueUses(ast, node.data.binary.right, lite, true, shadowed_names);
-            return;
+            return true;
         },
         // `(Foo = Bar()) =>` 같이 cover-grammar 로 패턴 자리에 남은 assignment_expression 은
         // value_context=false (formal_parameters 진입) 에서만 LHS=binding/RHS=value 로 쪼갠다.
         // expression context (`Foo = expr;`) 는 LHS 가 assignment_target_identifier 라 default
-        // child walk 로 그대로 value_context=true 가 전파돼야 import 가 use 마킹된다.
+        // child walk 로 그대로 value_context=true 가 전파돼야 import 가 use 마킹된다(generic descent).
         .assignment_expression => {
             if (!value_context) {
                 try markBindingLiteValueUses(ast, node.data.binary.left, lite, false, shadowed_names);
                 try markBindingLiteValueUses(ast, node.data.binary.right, lite, true, shadowed_names);
-                return;
+                return true;
             }
         },
         .formal_parameter => {
             const e = node.data.extra;
             try markBindingPatternDefaultValueUses(ast, @enumFromInt(ast.extra_data.items[e]), lite, shadowed_names);
             try markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e + 2]), lite, true, shadowed_names);
-            return;
+            return true;
         },
         .object_property => {
             const key = node.data.binary.left;
@@ -1075,21 +1193,19 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
                 if (key_node.tag == .computed_property_key) try markBindingLiteValueUses(ast, key, lite, true, shadowed_names);
                 try markBindingLiteValueUses(ast, value, lite, true, shadowed_names);
             }
-            return;
+            return true;
         },
         .static_member_expression,
         .private_field_expression,
         => {
             try markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra]), lite, true, shadowed_names);
-            return;
+            return true;
         },
         else => {},
     }
 
-    var it = ast_walk.children(ast, node);
-    while (it.next()) |child_idx| {
-        try markBindingLiteValueUses(ast, child_idx, lite, value_context, shadowed_names);
-    }
+    // generic 노드(else, 또는 value_context=true 인 assignment_expression): wrapper 가 descend.
+    return false;
 }
 
 /// 소스 문자열을 트랜스파일한다. I/O 없음, 순수 함수.
@@ -1694,6 +1810,53 @@ test "deep binary chain with minify does not overflow (#4123 flag-gated walkers)
     );
     defer result.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "deep chain under named-import binding-lite shadow scan does not overflow (#4123 PR-2c)" {
+    // `.ts` + named import → fast-path 의 buildTransformPlan 이 hasUnsupportedNamedImportLocalBindingShadow
+    // → scanForUnsupportedBindingLiteShadow ↔ scanChildrenForUnsupportedBindingLiteShadow 로 top-level
+    // 식을 순회한다. 깊은 좌결합 체인(`a + a + …`)이 그 generic descent 를 N-deep **상호재귀**시켜
+    // SIGSEGV 였다(#4123, named-import + 수만 항 실측). 반복 worklist 변환 후 정상 — shadow 없으니
+    // plan 은 `.bindings` 로 해소돼야 한다(크래시 없이 도달했다는 증거). fast_path_disabled=false 로
+    // 호출해야 이 스캔 경로를 탄다(true 면 buildTransformPlan 이 즉시 .full 반환하고 스캔 skip).
+    const n: usize = 20000; // pre-fix 크래시 임계(수천 항)를 넉넉히 초과.
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(std.testing.allocator);
+    try src.appendSlice(std.testing.allocator, "import { Foo, Bar } from \"./m\";\nconst a = 1;\nconst r = a");
+    var i: usize = 1;
+    while (i < n) : (i += 1) try src.appendSlice(std.testing.allocator, " + a");
+    try src.appendSlice(std.testing.allocator, ";\nFoo();\nBar(r);\n");
+
+    const plan = try testTransformPlan(src.items, "input.ts", .{});
+    try std.testing.expectEqual(SemanticRequirement.bindings, plan.semantic);
+    try std.testing.expectEqual(SemanticPlanReason.named_import_binding_elision, plan.reason);
+}
+
+test "deep chain using named import does not overflow value-use marking (#4123 PR-2c)" {
+    // semantic=.bindings 경로(named-import elision)는 markBindingLiteValueUses 로 import 사용처를
+    // 마킹하며 식 전체를 순회한다(generic descent = 같은 value_context 로 자식 재귀). import 를 깊은
+    // 좌결합 체인에서 쓰면 N-deep 재귀 → SIGSEGV 였다(#4123). switch 본체를 per-node 함수로 추출 후
+    // generic 노드만 worklist 로 평탄화해 해소. fast_path_disabled=false 로 호출해 .bindings 실행
+    // 경로(markBindingLiteValueUses)를 탄다. Foo 가 쓰이므로 import 는 보존(elision 안 됨).
+    const n: usize = 20000;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(std.testing.allocator);
+    try src.appendSlice(std.testing.allocator, "import { Foo } from \"./m\";\nexport const r = Foo");
+    var i: usize = 1;
+    while (i < n) : (i += 1) try src.appendSlice(std.testing.allocator, " + Foo");
+    try src.appendSlice(std.testing.allocator, ";\n");
+
+    var result = try transpileWithCallbackInternal(
+        std.testing.allocator,
+        src.items,
+        "input.ts",
+        .{},
+        null,
+        false, // fast-path enabled → .bindings 경로(markBindingLiteValueUses) 실행
+    );
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "Foo") != null);
 }
 
 test "TransformPlan: simple TypeScript strip skips semantic" {

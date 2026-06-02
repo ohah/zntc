@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
+const ast_walk = @import("../parser/ast_walk.zig");
 const es_helpers = @import("es_helpers.zig");
 const es2015_arrow = @import("es2015_arrow.zig");
 const es2015_generator = @import("es2015_generator.zig");
@@ -27,42 +28,68 @@ pub fn ES2017(comptime Transformer: type) type {
         /// 변환. nested function/arrow scope 는 traversal 안 함 (own this/await context 가짐).
         /// (#1911)
         fn rewriteAwaitToYieldAwait(self: *Transformer, node_idx: NodeIndex) Transformer.Error!void {
-            if (node_idx.isNone()) return;
-            const node = self.ast.getNode(node_idx);
-            switch (node.tag) {
-                .await_expression => {
-                    // 자식 먼저 — nested await 도 변환.
-                    try rewriteAwaitToYieldAwait(self, node.data.unary.operand);
-                    // __await(operand) call 만들기.
+            // 반복 post-order worklist(#4123): 원본은 generic else 에서 자식을, await_expression
+            // 에서 operand 를 재귀해, async-generator body 안 깊은 식(`await (a+b+c+…)`, 깊은
+            // statement 중첩, `await await …`)에서 스택오버플로우였다. await_expression 만 operand
+            // 를 **먼저** 변환한 뒤 자신을 yield 로 replace 해야 하므로(post-order + mutation),
+            // await 노드에 한해 post 프레임을 둔다. generic/boundary 는 mutation 이 없어 자식
+            // push(또는 skip)만 한다. operand subtree 의 in-place 변환은 NodeIndex 가 불변이라
+            // 보존되고, post 프레임이 스택 더 깊은 곳에 있어 operand 처리 완료 후에만 replace 된다.
+            const Frame = struct { idx: NodeIndex, post: bool };
+            var stack: std.ArrayListUnmanaged(Frame) = .empty;
+            defer stack.deinit(self.allocator);
+            var child_buf: std.ArrayListUnmanaged(NodeIndex) = .empty;
+            defer child_buf.deinit(self.allocator);
+
+            try stack.append(self.allocator, .{ .idx = node_idx, .post = false });
+            while (stack.pop()) |frame| {
+                if (frame.post) {
+                    // operand 는 이미 변환 완료. 이제 이 await 를 `yield __await(operand)` 로 replace.
+                    const node = self.ast.getNode(frame.idx);
                     self.runtime_helpers.await_helper = true;
                     const await_ref = try es_helpers.makeRuntimeHelperRef(self, "__await");
                     const await_call = try es_helpers.makeCallExpr(self, await_ref, &.{node.data.unary.operand}, node.span);
                     // span 보존하면서 await_expression → yield __await(value).
-                    self.ast.replaceNode(node_idx, .{
+                    self.ast.replaceNode(frame.idx, .{
                         .tag = .yield_expression,
                         .span = node.span,
                         .data = .{ .unary = .{ .operand = await_call, .flags = 0 } },
                     });
-                },
-                // 자체 async/await context 를 가진 nested scope — skip. `es2022_tla.hasTopLevelAwait`
-                // 의 boundary set 과 동일 (function/method/class 모두). class body 안 method
-                // 도 자체 컨텍스트라 await rewrite 에서 제외.
-                .function_declaration,
-                .function_expression,
-                .function,
-                .arrow_function_expression,
-                .method_definition,
-                .class_declaration,
-                .class_expression,
-                => {},
-                else => {
-                    // 일반 노드 — child iterator 로 모든 자식 traversal.
-                    const ast_walk = @import("../parser/ast_walk.zig");
-                    var it = ast_walk.children(self.ast, node);
-                    while (it.next()) |child| {
-                        try rewriteAwaitToYieldAwait(self, child);
-                    }
-                },
+                    continue;
+                }
+                // pre 프레임: children() 는 extra_data 값을 그대로 yield 하므로(범위 검증 안 함)
+                // none 외에 out-of-range 도 가능 → getNode 전 bounds 가드(post 프레임 idx 는 이미
+                // 검증된 await 노드라 안전). walkPreorderIterative/scanChildren 동일.
+                if (frame.idx.isNone() or @intFromEnum(frame.idx) >= self.ast.nodes.items.len) continue;
+                const node = self.ast.getNode(frame.idx);
+                switch (node.tag) {
+                    .await_expression => {
+                        // post-order: operand 를 먼저 변환(push post=false)한 뒤 자신을 replace.
+                        // LIFO 라 post 를 먼저 push 해야 operand 처리 *후* 실행된다.
+                        try stack.append(self.allocator, .{ .idx = frame.idx, .post = true });
+                        try stack.append(self.allocator, .{ .idx = node.data.unary.operand, .post = false });
+                    },
+                    // 자체 async/await context 를 가진 nested scope — skip. `es2022_tla.hasTopLevelAwait`
+                    // 의 boundary set 과 동일 (function/method/class 모두). class body 안 method
+                    // 도 자체 컨텍스트라 await rewrite 에서 제외.
+                    .function_declaration,
+                    .function_expression,
+                    .function,
+                    .arrow_function_expression,
+                    .method_definition,
+                    .class_declaration,
+                    .class_expression,
+                    => {},
+                    else => {
+                        // 일반 노드 — 모든 자식을 push (소스 순서 보존 위해 역순).
+                        try ast_walk.collectChildrenInto(self.ast, node, &child_buf, self.allocator);
+                        var i = child_buf.items.len;
+                        while (i > 0) {
+                            i -= 1;
+                            try stack.append(self.allocator, .{ .idx = child_buf.items[i], .post = false });
+                        }
+                    },
+                }
             }
         }
 

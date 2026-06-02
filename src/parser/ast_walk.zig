@@ -268,21 +268,26 @@ pub fn bindingIdentifiers(
 /// `root` 서브트리에 raw `#x` private syntax (`private_field_expression` /
 /// `private_identifier`) 가 남아 있는지 검사. transformer 가 lowering 했어야 할 노드가
 /// codegen 까지 도달했는지 검증하는 debug invariant 용도 — 정상 코드 경로에서는 항상 false.
-pub fn hasRawPrivateSyntax(ast: *const Ast, root: NodeIndex) bool {
-    if (root.isNone()) return false;
-    if (@intFromEnum(root) >= ast.nodes.items.len) return false;
+const RawPrivateCtx = struct { found: bool };
 
-    const node = ast.nodes.items[@intFromEnum(root)];
+fn rawPrivateVisit(ctx: *RawPrivateCtx, idx: NodeIndex, node: Node) WalkAction {
+    _ = idx;
     switch (node.tag) {
-        .private_field_expression, .private_identifier => return true,
-        else => {},
+        .private_field_expression, .private_identifier => {
+            ctx.found = true;
+            return .stop;
+        },
+        else => return .descend,
     }
+}
 
-    var it = children(ast, node);
-    while (it.next()) |child_idx| {
-        if (hasRawPrivateSyntax(ast, child_idx)) return true;
-    }
-    return false;
+pub fn hasRawPrivateSyntax(ast: *const Ast, root: NodeIndex) bool {
+    // 반복 순회(#4123): 깊은 좌결합 체인에서 재귀 시 스택 오버플로우. 이건 Debug/ReleaseSafe
+    // 전용 invariant(`assert(!hasRawPrivateSyntax(...))`) — OOM 시 false 반환(검사 skip, false
+    // panic 회피; ReleaseFast 에선 assert 자체가 compiled out).
+    var c = RawPrivateCtx{ .found = false };
+    walkPreorderIterative(ast.allocator, ast, root, &c, rawPrivateVisit) catch return false;
+    return c.found;
 }
 
 /// AST 루트(마지막 program 노드)에서 도달 가능한 노드 인덱스를 pre-order로 수집한다.
@@ -384,4 +389,22 @@ pub fn walkPreorderIterative(
             try stack.append(allocator, child_buf.items[i]);
         }
     }
+}
+
+/// `node` 의 직계 자식을 `children` iterator 순서(좌→우) 그대로 `out` 에 수집한다(`out` 은 먼저
+/// 비워짐). 반복 순회(#4123) 변환의 **sanctioned 공용 진입점** — 직접 `children()` 재귀가
+/// 재유입되지 않도록 트리 순회 호출을 한 곳에 모은다(durability audit 의 iterative_safe 단일
+/// 호출처). worklist(LIFO 스택)에 넣을 땐 호출자가 역순으로 push 해 소스 순서를 보존한다
+/// (NodeIndex 스택이든 {idx,post} 같은 frame 스택이든 호출자가 wrapping 을 결정). `out` 은
+/// none NodeIndex 도 그대로 담으므로(필터링 안 함), 호출자가 pop 시 `isNone` 가드를 둔다 —
+/// `walkPreorderIterative`/`children` 의 의미와 일치.
+pub fn collectChildrenInto(
+    ast: *const Ast,
+    node: Node,
+    out: *std.ArrayList(NodeIndex),
+    allocator: std.mem.Allocator,
+) std.mem.Allocator.Error!void {
+    out.clearRetainingCapacity();
+    var it = children(ast, node);
+    while (it.next()) |c| try out.append(allocator, c);
 }
