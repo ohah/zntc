@@ -719,9 +719,14 @@ test "CodeSplitting: cross-chunk export alias with renamed symbol" {
             std.mem.indexOf(u8, o.contents, "export{") != null)
         {
             has_export = true;
-            // 공통 청크에 val$1 rename이 있으면 "as val" 형태도 있어야 함
+            // #4101 production 전역 네이밍: 동명 cross-chunk(shared1.val + shared2.val)이 deconflict
+            // 되면 둘 다 *전역명*으로 distinct 노출(`export { val, val$1 }`) — 예전엔 `val$1 as val`
+            // 한쪽만(collapse) 노출돼 소비자가 둘 다 같은 값을 받았다(#B). val$1 이 있으면 export
+            // 에 distinct 노출 + collapse(`val$1 as val`) 부재여야 한다.
             if (std.mem.indexOf(u8, o.contents, "val$1") != null) {
-                try std.testing.expect(std.mem.indexOf(u8, o.contents, "as val") != null);
+                try std.testing.expect(std.mem.indexOf(u8, o.contents, "val$1 as val") == null);
+                try std.testing.expect(std.mem.indexOf(u8, o.contents, "val$1 }") != null or
+                    std.mem.indexOf(u8, o.contents, "val$1}") != null);
             }
         }
     }
