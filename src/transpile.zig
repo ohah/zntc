@@ -1640,6 +1640,37 @@ fn expectFastFullParity(
     try std.testing.expectEqual(@as(usize, 0), full.diagnostics.len);
 }
 
+test "deep left-assoc binary chain does not overflow the stack (#4123)" {
+    // `0 + 1 + 2 + … (N항)` 은 N-deep 좌편향 BinaryExpression 트리. 재귀 visitor
+    // (semantic visitNode / transformer visitBinaryNode / codegen emitBinary)가 이 깊이에서
+    // 스택 오버플로우했다(#4123, depth ~5000 에서 SIGSEGV). 좌 스파인 반복 평탄화 후 정상 처리.
+    const n: usize = 20000; // pre-fix 크래시 임계(~4000-5000) 를 넉넉히 초과.
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(std.testing.allocator);
+    try src.appendSlice(std.testing.allocator, "const x = 0");
+    var buf: [24]u8 = undefined;
+    var i: usize = 1;
+    while (i < n) : (i += 1) {
+        try src.appendSlice(std.testing.allocator, try std.fmt.bufPrint(&buf, " + {d}", .{i}));
+    }
+    try src.appendSlice(std.testing.allocator, ";\n");
+
+    // full=true 로 semantic 경로(#3)까지 포함해 세 site 모두 거친다.
+    var result = try transpileWithCallbackInternal(
+        std.testing.allocator,
+        src.items,
+        "input.js",
+        .{},
+        null,
+        true,
+    );
+    defer result.deinit(std.testing.allocator);
+
+    // 크래시 없이 도달 + 진단 0 + 출력이 모든 `+`(N-1 개)를 보존(codegen 정확성).
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+    try std.testing.expectEqual(n - 1, std.mem.count(u8, result.code, "+"));
+}
+
 test "TransformPlan: simple TypeScript strip skips semantic" {
     const plan = try testTransformPlan(
         "export const x: number = 1;\nexport function f(v: string): string { return v; }\ninterface Foo { x: number }\ntype Bar = string;\n",
