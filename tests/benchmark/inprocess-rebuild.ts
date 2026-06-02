@@ -2,10 +2,20 @@
 /**
  * In-process rebuild benchmark — fair comparison.
  *
- * 모든 도구를 *programmatic API* 로 호출해 spawn/polling overhead 제거.
+ * 모든 도구를 in-process programmatic API 의 **file-watch 경로**로 동일하게 측정:
+ * 파일 touch → 각 도구의 watch 콜백/이벤트 fire 까지의 시간(감지+rebuild+콜백 dispatch).
  *   - ZNTC: `@zntc/core` watch(opts) + onRebuild (NAPI worker thread)
- *   - esbuild: context().rebuild()
+ *   - esbuild: context().watch() + onEnd 플러그인
  *   - rolldown: watch().on('event')
+ *
+ * ⚠️ esbuild 를 `ctx.rebuild()`(watch 미경유 직접 호출)로 재면 파일감지/콜백 오버헤드를
+ * 건너뛰어 zntc/rolldown(file-watch)보다 부당하게 빨라진다 → 반드시 watch 로 통일.
+ * (zntc 는 incremental rebuild 를 watch() 로만 노출 — 직접 rebuild API 없음.)
+ *
+ * ⚠️ 결과 해석: zntc(NAPI) rebuild ~53ms floor(tiny≈medium, 모듈 수 무관)는 *컴파일* 이
+ * 아니라 NAPI watch 의 **고정 50ms 디바운스**(napi/watch.zig `watch_debounce_ms`). 세 도구
+ * 모두 watch 디바운스가 있으나 zntc 의 50ms 가 esbuild/rolldown 보다 커 더 느리게 보인다.
+ * 실제 컴파일 속도는 incremental-rebuild.ts(CLI, 디바운스 0)의 ~16ms 가 더 가깝다.
  *
  * 실행: bun run inprocess-rebuild.ts
  *
@@ -147,7 +157,10 @@ async function measureEsbuild(fx: Fixture) {
   const { entry } = fx.build(dir);
   const out = join(dir, 'out.js');
   const iters: number[] = [];
-  const initStart = performance.now();
+  // ⚠️ 공정성: zntc/rolldown 은 file-watch(touch→onRebuild)로 재므로 esbuild 도 직접
+  // `ctx.rebuild()`(watch 미경유, 감지/콜백 오버헤드 0) 대신 **watch API**(`ctx.watch()` +
+  // onEnd 플러그인)로 측정한다. 안 그러면 esbuild 만 파일감지 latency 를 건너뛰어 유리.
+  let onEndResolve: (() => void) | null = null;
   const ctx = await esbuildContext({
     entryPoints: [entry],
     outfile: out,
@@ -155,15 +168,43 @@ async function measureEsbuild(fx: Fixture) {
     write: true,
     loader: { '.ts': 'ts' },
     format: 'iife',
+    plugins: [
+      {
+        name: 'bench-onend',
+        setup(build) {
+          build.onEnd(() => {
+            if (onEndResolve) {
+              const r = onEndResolve;
+              onEndResolve = null;
+              r();
+            }
+          });
+        },
+      },
+    ],
   });
-  await ctx.rebuild();
+  const firstBuild = new Promise<void>((res) => {
+    onEndResolve = res;
+  });
+  const initStart = performance.now();
+  await ctx.watch(); // 초기 빌드 트리거 → onEnd
+  await firstBuild;
   const initialMs = performance.now() - initStart;
   try {
     await sleep(SETTLE_MS);
     for (let i = 0; i < ITERATIONS; i++) {
+      const p = new Promise<void>((res, rej) => {
+        onEndResolve = res;
+        setTimeout(() => {
+          if (onEndResolve) {
+            onEndResolve = null;
+            rej(new Error(`rebuild ${i} timeout`));
+          }
+        }, REBUILD_TIMEOUT_MS);
+      });
       appendFileSync(entry, `export const _i${i}=${i};console.log(_i${i});\n`);
       const t0 = performance.now();
-      await ctx.rebuild();
+      await p;
       iters.push(performance.now() - t0);
       await sleep(SETTLE_MS);
     }
