@@ -1,0 +1,2 @@
+0
+3550 63997986 1777404577895933320 5b9b1e56a268f1f00dd2ab8b75232553 1 vendor/node-api-headers/def/node_api.def

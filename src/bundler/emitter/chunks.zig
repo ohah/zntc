@@ -101,6 +101,29 @@ fn resolveOwnerLocal(l: *Linker, graph: *const ModuleGraph, mod_idx: ModuleIndex
     return null;
 }
 
+/// (#4120) owner 모듈이 CJS-wrapped 면 cross-chunk export `name` 은 런타임 interop 멤버라 진짜
+/// 로컬 바인딩이 없다. provider 청크에 `var <global> = <interop>;` 을 materialize 해 cross-chunk
+/// 소비자가 일반 식별자로 import 하게 한다(metadata 의 per-importer preamble 은 #4120 가드로 억제).
+/// interop RHS 는 Linker.cjsInteropAccessExpr 로 통합(entry/dynamic buildFinalExports 와 동일 형태).
+/// `export {}` *전* 에 1회 emit. require_X 는 모듈 본문에서 이미 정의(var 호이스팅 + memoize).
+fn writeCjsInteropMaterialize(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    linker: *Linker,
+    owner: *const Module,
+    name: []const u8,
+    global: []const u8,
+    minify: bool,
+) !void {
+    const rhs = try linker.cjsInteropAccessExpr(allocator, owner, name, minify);
+    defer allocator.free(rhs);
+    try out.appendSlice(allocator, "var ");
+    try out.appendSlice(allocator, global);
+    try out.appendSlice(allocator, if (minify) "=" else " = ");
+    try out.appendSlice(allocator, rhs);
+    try out.appendSlice(allocator, if (minify) ";" else ";\n");
+}
+
 pub fn emitChunks(
     allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
@@ -182,7 +205,13 @@ pub fn emitChunks(
             // 이름을 over-approx 로 포함한다. emit DCE 로 그 export 선언을 지우면 codegen
             // 의 `export { ... }` 절과 어긋나 Node `Export X is not defined` SyntaxError.
             // 보수적으로 all_used (DCE 미적용) — over-include 는 correctness-safe.
-            if (s.isReExportStarTarget(mi)) {
+            //
+            // (#4120) CJS-wrapped 모듈인데 used export 이름이 *하나도* 수집 안 된 경우(re-export
+            // 로만 도달한 동적 import 청크의 CJS — BFS seed 안 됨)도 all_used. 그대로 두면 statement
+            // shaker 가 `__commonJS` 콜백 본문을 통째 비워 `__commonJS({…(empty)})` → require_X()=
+            // undefined (Bug B). names 가 *있는* CJS(직접 import 등)는 computed 그대로 써 statement/
+            // property DCE 를 유지하므로 일반 CJS shaking 회귀 없음(빈 names 만 좁게 보존).
+            if (s.isReExportStarTarget(mi) or (m.wrap_kind == .cjs and computed[i].names.len == 0)) {
                 allocator.free(computed[i].names);
                 used_names_by_modidx[mi] = .{ .names = &.{}, .all_used = true };
             } else {
@@ -642,7 +671,13 @@ pub fn emitChunks(
             }
         }
 
-        // 청크 내 모듈을 exec_index 순으로 정렬
+        // 청크 내 모듈을 정렬. 단일번들(bundleOrderLessThan)과 동일하게 **래핑 모듈
+        // (__commonJS/__esm) 먼저, 그 안에서 exec_index** — `var require_X = __commonJS(...)`/
+        // `var init_X = __esm(...)` 선언이 그것을 참조하는 비-래핑 코드보다 앞서야 한다.
+        // (#4120) 예전 exec_index-only 는 동적 re-export 청크에서 비-래핑 entry(Route, 낮은
+        // exec_index)를 그 CJS dep(cjslib) *앞* 에 둬, entry final_exports 의 interop materialize
+        // (`__toESM(require_cjslib())`)가 require_cjslib 할당 전에 실행 → TypeError. 래핑은 lazy
+        // (body 는 첫 require/init 호출 시 실행)라 선언 reorder 가 side-effect 순서를 바꾸지 않는다.
         const sorted_mods = try allocator.alloc(ModuleIndex, chunk.modules.items.len);
         defer allocator.free(sorted_mods);
         @memcpy(sorted_mods, chunk.modules.items);
@@ -650,9 +685,14 @@ pub fn emitChunks(
         const ModSortCtx = struct {
             graph: *const ModuleGraph,
             fn lessThan(ctx: @This(), a: ModuleIndex, b: ModuleIndex) bool {
-                const a_exec = if (ctx.graph.getModule(a)) |ma| ma.exec_index else std.math.maxInt(u32);
-                const b_exec = if (ctx.graph.getModule(b)) |mb| mb.exec_index else std.math.maxInt(u32);
-                return a_exec < b_exec;
+                const ma = ctx.graph.getModule(a);
+                const mb = ctx.graph.getModule(b);
+                if (ma == null or mb == null) {
+                    const a_exec = if (ma) |m| m.exec_index else std.math.maxInt(u32);
+                    const b_exec = if (mb) |m| m.exec_index else std.math.maxInt(u32);
+                    return a_exec < b_exec;
+                }
+                return Module.bundleOrderLessThan({}, ma.?, mb.?);
             }
         };
         std.mem.sort(ModuleIndex, sorted_mods, ModSortCtx{ .graph = graph }, ModSortCtx.lessThan);
@@ -967,6 +1007,34 @@ pub fn emitChunks(
                 if (export_names.items.len == 0) break :xchunk_exports;
             }
 
+            // (#4120) CJS-interop cross-chunk export materialize: owner 가 CJS-wrapped 면 export 명은
+            // 런타임 멤버라 진짜 로컬 바인딩이 없다(resolveOwnerLocal=null → 예전엔 미존재 로컬을
+            // 그대로 노출해 ReferenceError/표현식 specifier). `export {}`/`exports.x=` *전* 에
+            // `var <global> = <interop>;` 을 깔고, 아래 export 루프는 local=global 로 노출. 소비자는
+            // metadata #4120 가드로 preamble 억제 후 일반 cross-chunk import.
+            // 키는 **owner 의 전역명**(name 아님) — 동명 collision(#4101: 서로 다른 CJS 모듈이 *같은*
+            // export 명을 cross-chunk 노출)에서 owner 마다 다른 전역명(`v`/`v$1`)이라, 각 owner 를
+            // 빠짐없이 materialize 해야 한다(예전 name-키+break 는 첫 owner 만 깔아 둘째 owner 의
+            // `export { v$1 }` 가 미선언 → ReferenceError).
+            var cjs_interop_globals: std.StringHashMapUnmanaged(void) = .empty;
+            defer cjs_interop_globals.deinit(allocator);
+            if (linker) |l| {
+                for (export_names.items) |name| {
+                    for (sorted_mods) |mod_idx| {
+                        const mi = @intFromEnum(mod_idx);
+                        if (mi >= module_count) continue;
+                        const global = l.getCrossChunkGlobalName(@intCast(mi), name) orelse continue;
+                        const owner = graph.getModule(mod_idx) orelse continue;
+                        if (owner.wrap_kind != .cjs) continue;
+                        // 진짜 로컬이 있으면(resolveOwnerLocal!=null) interop 아님 — materialize 불요.
+                        if (resolveOwnerLocal(l, graph, mod_idx, @intCast(mi), name) != null) continue;
+                        if (cjs_interop_globals.contains(global)) continue; // 이미 materialize
+                        try writeCjsInteropMaterialize(allocator, &chunk_output, l, owner, name, global, options.minify_whitespace);
+                        try cjs_interop_globals.put(allocator, global, {});
+                    }
+                }
+            }
+
             if (!cjs_x) {
                 if (!options.minify_whitespace) {
                     try chunk_output.appendSlice(allocator, "export { ");
@@ -994,7 +1062,13 @@ pub fn emitChunks(
                         // { default } from './cjslib'` 의 CJS default) export 명 fallback — #4117
                         // single-owner 경로(`found_local orelse name`)와 byte-identical. 해당
                         // 케이스 자체는 simple identifier 로 해석 불가한 선재 한계(별도 이슈).
-                        const local = resolveOwnerLocal(l, graph, mod_idx, @intCast(mi), name) orelse name;
+                        // (#4120) 이 owner 의 전역명이 materialize 됐으면 local=global(일반 식별자).
+                        // 그 외는 기존 resolveOwnerLocal 경로. owner 단위 전역명 키라 동명 collision 의
+                        // 둘째 owner 도 자기 전역명으로 정확히 매칭.
+                        const local = if (cjs_interop_globals.contains(global))
+                            global
+                        else
+                            resolveOwnerLocal(l, graph, mod_idx, @intCast(mi), name) orelse name;
                         if (cjs_x) {
                             try chunk_output.appendSlice(allocator, "exports.");
                             try chunk_output.appendSlice(allocator, global);

@@ -30,6 +30,11 @@ pub fn emitBundleRuntimeHelpers(
         if (m.wrap_kind == .cjs) needs_cjs_runtime = true;
         if (m.wrap_kind == .esm) needs_esm_wrap_runtime = true;
         if (moduleNeedsToEsmInterop(m, graph, linker)) needs_to_esm_runtime = true;
+        // (#4120) entry 가 `export { default } from './cjs'`(non can_skip)면 buildFinalExports 가
+        // `var _default = __toESM(require_X()).default` 를 materialize 한다 — default 를 import 하는
+        // consumer 가 없어 moduleNeedsToEsmInterop(import_bindings 만 스캔)이 못 잡는다(단일번들에서
+        // `__toESM is not defined` ReferenceError). emitChunkRuntimeHelpers 와 동일 검사 추가.
+        if (moduleReExportsCjsDefaultNeedsToEsm(m, graph, linker)) needs_to_esm_runtime = true;
         if (m.loader == .binary) needs_to_binary = true;
         if (needs_cjs_runtime and needs_esm_wrap_runtime and needs_to_esm_runtime and needs_to_binary) break;
     }
@@ -176,6 +181,34 @@ fn moduleNeedsToEsmInterop(module: *const Module, graph: *const ModuleGraph, lin
     return false;
 }
 
+/// (#4120) CJS 모듈 `m` 이 cross-chunk 으로 default 를 노출하고 그 default 가 __toESM interop 을
+/// 거쳐야 하면 true. provider 청크가 `var g = __toESM(require_X()).default` 를 materialize 하므로
+/// 그 청크에 __toESM 헬퍼가 필요하다. `module.exports = X` shape(can_skip)는 `require_X()` direct 라 제외.
+fn cjsCrossChunkDefaultNeedsToEsm(m: *const Module, linker: ?*const Linker) bool {
+    if (m.wrap_kind != .cjs) return false;
+    if (m.can_skip_cjs_default_interop) return false;
+    const l = linker orelse return false;
+    return l.getCrossChunkGlobalName(m.index.toU32(), "default") != null;
+}
+
+/// (#4120) 모듈 `m` 이 CJS default 를 ESM re-export(`export { default } from './cjs'`) 하고 그
+/// default 가 __toESM interop 을 거쳐야 하면 true. entry/dynamic 청크의 buildFinalExports 가
+/// `var _default = __toESM(require_X()).default` 를 materialize 하므로 __toESM 헬퍼가 필요하다.
+/// named re-export 는 `require_X().m`(헬퍼 불요), `module.exports = X` shape(can_skip)는 direct 라 제외.
+fn moduleReExportsCjsDefaultNeedsToEsm(m: *const Module, graph: *const ModuleGraph, linker: ?*const Linker) bool {
+    const l = linker orelse return false;
+    for (m.export_bindings) |eb| {
+        if (eb.kind != .re_export) continue;
+        const canon = l.resolveExportChain(m.index, eb.exported_name, 0) orelse continue;
+        if (!std.mem.eql(u8, canon.export_name, "default")) continue;
+        const cm = graph.getModule(canon.module_index) orelse continue;
+        if (cm.wrap_kind != .cjs) continue;
+        if (cm.can_skip_cjs_default_interop) continue;
+        return true;
+    }
+    return false;
+}
+
 /// transformer 비트맵 외 경로의 helper (asset binary loader / `--keep-names` 옵션)
 /// preamble. emitBundleRuntimeHelpers / emitChunkRuntimeHelpers 양쪽 공용 (#1961 PR 1h).
 fn emitOptionPathHelpers(
@@ -212,6 +245,15 @@ pub fn emitChunkRuntimeHelpers(
         if (m.wrap_kind == .cjs) needs_cjs_runtime = true;
         if (m.wrap_kind == .esm) needs_esm_wrap_runtime = true;
         if (moduleNeedsToEsmInterop(m, graph, linker)) needs_to_esm_runtime = true;
+        // (#4120) cross-chunk 으로 default 를 노출하는 CJS 모듈은 provider 청크 자체가
+        // `var g = __toESM(require_X()).default` 를 materialize(chunks.zig writeCjsInteropMaterialize)
+        // 한다 — 그 모듈이 *직접 import* 를 안 해도 __toESM 가 필요하다. (consumer 의 preamble 은
+        // #4120 가드로 억제돼 소비자 청크 헬퍼만으론 부족.) can_skip shape 는 direct(require_X())라 제외.
+        if (cjsCrossChunkDefaultNeedsToEsm(m, linker)) needs_to_esm_runtime = true;
+        // (#4120) entry/dynamic 청크: CJS default 를 ESM re-export(`export { default } from cjs`)하는
+        // 모듈은 buildFinalExports 가 `var _default = __toESM(require_X()).default` 를 materialize →
+        // 이 청크에 __toESM 필요. named 는 require_X().m(헬퍼 불요), can_skip shape 는 direct 라 제외.
+        if (moduleReExportsCjsDefaultNeedsToEsm(m, graph, linker)) needs_to_esm_runtime = true;
         if (m.loader == .binary) needs_to_binary = true;
         if (needs_cjs_runtime and needs_esm_wrap_runtime and needs_to_esm_runtime and needs_to_binary) break;
     }

@@ -84,6 +84,10 @@ pub const LinkingMetadata = struct {
     pub const FinalExportEntry = struct {
         local: []const u8,
         exported: []const u8,
+        /// (#4120) CJS interop 멤버 entry 면 emit *전* 깔아야 할 `var <local> = <interop>;` 문(owned).
+        /// null = 일반 entry. emitEsm/Cjs/WrappedEntryExports 가 export 문 앞(또는 factory 안)에 emit.
+        /// 소유권: buildFinalExports 가 owned_strings 로 LinkingMetadata 수명에 귀속.
+        materialize: ?[]const u8 = null,
 
         pub fn isDefault(self: FinalExportEntry) bool {
             return std.mem.eql(u8, self.exported, "default");

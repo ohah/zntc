@@ -733,6 +733,34 @@ pub fn buildMetadataForAst(
             // outer var를 선언하고 init preamble에서 할당한다.
             const is_helper_binding = ib.is_helper;
             const canonical_m_opt = self.getModule(canonical_mod);
+
+            // (#4120) cross-chunk CJS-interop 소비 억제: 이 바인딩의 *resolved canonical* 이 CJS
+            // 모듈이고 그게 소비자와 *다른 청크* 에 있으며, provider 가 그 멤버를 전역명으로
+            // materialize+export(cross_chunk_global_names) 하면, 소비자는 per-importer interop
+            // preamble(`var x = __toESM(require_X())…`) 대신 일반 cross-chunk import 로 받는다.
+            // require_X 는 provider 청크에만 있어 여기서 preamble 을 내면 (a) require_X 미정의
+            // (b) cross-chunk import 와 동명 중복선언이 된다. local 심볼만 전역명으로 rename(cross-
+            // chunk import 바인딩명과 일치)하고 skip. canonical_mod 직접-CJS 와 re-export 포워딩
+            // (canonical_mod=.none re-exporter, rb.canonical=CJS) 양 경로 공통 — rb.canonical 로 판정.
+            // default/named 한정 — namespace 는 별도 ns 합성 경로(linkNamespaceCrossChunkOnce)가 처리.
+            if (!is_helper_binding and ib.kind != .namespace) {
+                if (self.getResolvedBinding(module_index, ib.local_span)) |rb| {
+                    const canon_mi = @intFromEnum(rb.canonical.module_index);
+                    if (self.graph.getModule(rb.canonical.module_index)) |canon_mod| {
+                        if (canon_mod.wrap_kind == .cjs and
+                            self.isCrossChunkConsumer(module_index, canon_mi))
+                        {
+                            if (self.getCrossChunkGlobalName(canon_mi, rb.canonical.export_name)) |g| {
+                                if (ib.local_symbol.semanticIndex()) |sym_idx| {
+                                    try putOwnedRename(self, &renames, &owned_nested_renames, sym_idx, g);
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+
             if (!is_helper_binding and m.wrap_kind == .esm and canonical_m_opt != null and
                 (canonical_m_opt.?.wrap_kind == .cjs or canonical_mod == module_index))
             {
@@ -1488,6 +1516,43 @@ pub fn buildFinalExports(
             if (p.ns_target_mod) |nt| {
                 const ns_var = try self.ensureSharedNsVar(@enumFromInt(nt));
                 entries.appendAssumeCapacity(.{ .local = ns_var, .exported = p.exported });
+                continue;
+            }
+        }
+        // (#4120) canonical 이 CJS 모듈인 re-export: default/named 모두 런타임 interop 멤버라 진짜
+        // 로컬 바인딩이 없다(default=미정의 `_default`, named=`require_X().m` 표현식).
+        //   - CJS 모듈이 *다른 청크*(cross-chunk): provider 청크가 이미 전역명으로 materialize+export
+        //     (chunks.zig)하고 이 청크는 그걸 import 한다. 전역명을 local 로 써 import 바인딩 재노출만
+        //     (require_X 미정의·`var named`↔`const{named}` 동명충돌 회피).
+        //   - 같은 청크 + ESM: `var <syn> = <interop>;` materialize → `export { <syn> as x }` (ESM 은
+        //     export specifier 에 표현식 불가).
+        //   - 같은 청크 + CJS/iife/umd/amd: `exports.x = <interop>` / `return { x: <interop> }` 처럼
+        //     RHS/값 자리에 표현식이 유효 → materialize 없이 interop 식을 local 로 직접 사용.
+        if (p.cjs_interop) |canon| {
+            if (self.graph.getModule(canon.module_index)) |cjs_mod| {
+                const canon_mi = @intFromEnum(canon.module_index);
+                if (self.isCrossChunkConsumer(module_index, canon_mi)) {
+                    if (self.getCrossChunkGlobalName(canon_mi, canon.export_name)) |g| {
+                        entries.appendAssumeCapacity(.{ .local = g, .exported = p.exported });
+                        continue;
+                    }
+                }
+                // minify_whitespace 시 helper 이름이 `$tE`(축약)라야 — `__toESM` 고정이면 minified
+                // 번들에 `__toESM` 미정의(ReferenceError). preamble/metadata 와 동일 게이트.
+                const expr = try self.cjsInteropAccessExpr(self.allocator, cjs_mod, canon.export_name, self.minify_whitespace);
+                if (self.format == .esm) {
+                    defer self.allocator.free(expr);
+                    // syn = 안전 식별자(default→`_default`, named→멤버명). 같은 청크라 cross-chunk
+                    // import 와 충돌 없음(그 경로는 위 분기). materialize 를 export 문 앞에 깐다.
+                    const syn = self.resolveToLocalName(canon);
+                    const stmt = try std.fmt.allocPrint(self.allocator, "var {s} = {s};\n", .{ syn, expr });
+                    try owned_strings.append(self.allocator, stmt);
+                    entries.appendAssumeCapacity(.{ .local = syn, .exported = p.exported, .materialize = stmt });
+                } else {
+                    // expr 는 owned — owned_strings 로 LinkingMetadata 수명에 귀속.
+                    try owned_strings.append(self.allocator, expr);
+                    entries.appendAssumeCapacity(.{ .local = expr, .exported = p.exported });
+                }
                 continue;
             }
         }

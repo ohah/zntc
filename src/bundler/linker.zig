@@ -28,6 +28,7 @@ const unified_mangler = @import("../codegen/unified_mangler.zig");
 const profile = @import("../profile.zig");
 const debug_log = @import("../debug_log.zig");
 const CompiledModule = @import("compiled_module.zig").CompiledModule;
+const rt_names = @import("../runtime_helper_names.zig");
 const preamble_writer = @import("linker/preamble_writer.zig");
 const namespace_access = @import("linker/namespace_access.zig");
 const shared_namespace = @import("linker/shared_namespace.zig");
@@ -199,6 +200,13 @@ pub const Linker = struct {
     /// 재빌드 비용 0(#perf: RN/large 번들 finalize 회귀 방지).
     ns_collision_present: bool = false,
 
+    /// (#4120) `module_index → ChunkIndex` borrowed 슬라이스. `computeCrossChunkLinks` 직후
+    /// bundler 가 `chunk_graph.module_to_chunk` 를 빌려 세팅 — emit 동안만 유효(소유권 X, free 금지).
+    /// metadata 가 "consumer 모듈과 canonical CJS 모듈이 다른 청크인가"를 O(1) 판정해 cross-chunk
+    /// CJS-interop preamble 을 억제(provider 청크가 진짜 바인딩 export → 일반 import)하는 데 쓴다.
+    /// borrowed 라 finalize/단일번들 경로(splitting 아님)는 비워둔다(null) → 항상 same-chunk 취급.
+    module_to_chunk: ?[]const types.ChunkIndex = null,
+
     /// dev mode: HMR용 모듈 참조를 __zntc_modules["id"].fn()으로 생성.
     /// init_xxx() 대신 동적 lookup을 사용하여 new Function()에서도 접근 가능.
     dev_mode: bool = false,
@@ -358,6 +366,12 @@ pub const Linker = struct {
         /// hoisted ns_var (예: `Foo_ns`) 를 한 번 declare 하고 inner_map 매핑을
         /// 변수명으로 둔다 (per-access inline literal 중복 emit 방지, #1928).
         ns_target_mod: ?u32 = null,
+        /// (#4120) re-export 의 canonical 이 CJS 모듈인 경우 그 (module, export) ref. default/named
+        /// 모두 런타임 interop 멤버라 진짜 로컬 바인딩이 없다(default=`_default` 미정의, named=
+        /// `require_X().m` 표현식). `buildFinalExports`(entry/dynamic)가 이 ref 로 `var <syn> =
+        /// <interop>;` materialize + 식별자 export 한다. 다른 caller(shared ns / fan-out)는 무시
+        /// (기존 `local` 사용) — 순수 additive.
+        cjs_interop: ?SymbolRef = null,
     };
 
     /// re-export 체인 순환 방지 깊이 제한.
@@ -1362,6 +1376,18 @@ pub const Linker = struct {
     pub fn getCrossChunkGlobalName(self: *const Linker, module_index: u32, export_name: []const u8) ?[]const u8 {
         const inner = self.cross_chunk_global_names.get(module_index) orelse return null;
         return inner.get(export_name);
+    }
+
+    /// (#4120) consumer 모듈과 canonical 모듈이 *다른* 청크에 있는지. `module_to_chunk` 가
+    /// 세팅된 splitting emit 경로에서만 의미 있고, 미세팅(단일번들/finalize)이면 false(=same-chunk).
+    /// 둘 중 하나라도 청크 미배정(.none)이면 보수적으로 false(기존 same-chunk preamble 유지).
+    pub fn isCrossChunkConsumer(self: *const Linker, consumer_mod: u32, canonical_mod: u32) bool {
+        const m2c = self.module_to_chunk orelse return false;
+        if (consumer_mod >= m2c.len or canonical_mod >= m2c.len) return false;
+        const cc = m2c[consumer_mod];
+        const pc = m2c[canonical_mod];
+        if (cc.isNone() or pc.isNone()) return false;
+        return cc != pc;
     }
 
     /// 전역 이름 맵 비우기 — owned value 해제 + inner 맵 deinit.
@@ -2410,6 +2436,44 @@ pub const Linker = struct {
         return try std.fmt.allocPrint(self.allocator, "{s}().{s}", .{ req_var, ref.export_name });
     }
 
+    /// (#4120) CJS interop 멤버의 materialize RHS(`var <syn> = <RHS>`). cross-chunk(provider 청크,
+    /// chunks.zig) 와 entry/dynamic(buildFinalExports) 양쪽이 동일 형태를 써 단일번들 출력과 동형화.
+    ///   - "default" + `module.exports = X` shape(can_skip): `require_X()`
+    ///   - "default" 일반: `__toESM(require_X())[, 1)].default`
+    ///   - named: `require_X().<member>`
+    /// interop 모드(node `, 1` vs babel)는 CJS 모듈의 첫 importer def_format(없으면 babel)로 결정.
+    /// caller-owned 반환. allocator 는 caller 가 정한 수명(metadata=self.allocator, emit=청크 alloc).
+    pub fn cjsInteropAccessExpr(
+        self: *const Linker,
+        allocator: std.mem.Allocator,
+        cjs_mod: *const Module,
+        member: []const u8,
+        minify: bool,
+    ) ![]const u8 {
+        const req_var = try cjs_mod.allocRequireName(allocator, &self.rename_table);
+        defer allocator.free(req_var);
+        if (std.mem.eql(u8, member, "default")) {
+            if (cjs_mod.can_skip_cjs_default_interop) {
+                return std.fmt.allocPrint(allocator, "{s}()", .{req_var});
+            }
+            const toesm: []const u8 = if (minify) rt_names.NAMES.TOESM_MIN else "__toESM";
+            const suffix: []const u8 = if (self.cjsInteropIsNode(cjs_mod)) "(), 1)" else "())";
+            return std.fmt.allocPrint(allocator, "{s}({s}{s}.default", .{ toesm, req_var, suffix });
+        }
+        return std.fmt.allocPrint(allocator, "{s}().{s}", .{ req_var, member });
+    }
+
+    /// (#4120) CJS interop default 의 `__toESM` 2번째 인자(node 모드) 여부. consumer 의
+    /// cjsInteropMode 와 동형 — CJS 모듈 첫 importer 의 def_format(없으면 babel). RN 은 항상 babel.
+    fn cjsInteropIsNode(self: *const Linker, cjs_mod: *const Module) bool {
+        if (self.graph.resolve_cache.platform == .react_native) return false;
+        for (cjs_mod.importers.items) |imp| {
+            const im = self.graph.getModule(imp) orelse continue;
+            return im.def_format.isEsm();
+        }
+        return false;
+    }
+
     /// `import_records[idx].resolved` 가 valid 면 모듈 인덱스 반환, 아니면 null.
     /// `collectExportsRecursive` 의 3개 분기에서 공유.
     inline fn resolvedRecordModule(records: anytype, rec_idx_opt: ?u32) ?u32 {
@@ -2460,6 +2524,7 @@ pub const Linker = struct {
             // 만 기록하고 ns_var 등록은 호출 site 가 일임.
             var ns_target_mod: ?u32 = null;
             var owns_actual_local = false;
+            var cjs_interop: ?SymbolRef = null;
             var init_mod: ?u32 = if (m.wrap_kind == .esm) mod_i else null;
             const actual_local = if (eb.kind == .re_export_namespace) blk: {
                 ns_target_mod = resolvedRecordModule(m.import_records, eb.import_record_index);
@@ -2483,6 +2548,15 @@ pub const Linker = struct {
                         }
                     }
                     if (ns_target_mod == null) {
+                        // (#4120) canonical 이 CJS 모듈이면 default/named 모두 런타임 interop 멤버라
+                        // 진짜 로컬 바인딩이 없다. cjs_interop 에 ref 만 *additive* 기록 →
+                        // buildFinalExports(entry/dynamic)가 ESM 은 `var <syn> = <interop>;` materialize +
+                        // 식별자 export, CJS/iife 는 expr 를 RHS 로 직접 사용(표현식 specifier·미정의
+                        // _default 회피, #4120 Bug A). `local` 자체는 기존대로 — shared ns / fan-out
+                        // caller 가 expr(named)/`_default`(default)를 그대로 쓰기 때문(회귀 방지).
+                        if (self.graph.getModule(canonical.module_index)) |cm| {
+                            if (cm.wrap_kind == .cjs) cjs_interop = canonical;
+                        }
                         if (try self.cjsNamespaceExportAccess(canonical)) |expr| {
                             owns_actual_local = true;
                             init_mod = null;
@@ -2510,6 +2584,7 @@ pub const Linker = struct {
                 .owned = owns_actual_local,
                 .init_mod = init_mod,
                 .ns_target_mod = ns_target_mod,
+                .cjs_interop = cjs_interop,
             });
         }
 
