@@ -106,9 +106,12 @@ pub fn build(self: *ModuleGraph, io: std.Io, entry_points: []const []const u8) !
         // 이 await 뒤에 실행)되도록 defer await. recv 가 OOM 시 error 를 던질 때 워커가 떠도는
         // 채 채널이 teardown 되는 UAF + 기존 `try applyScanResult` 에러 경로의 await 누락을 함께
         // 막는다(정상 경로의 명시 await 를 이 defer 로 대체).
-        // (알려진 한계: 에러-abort 시 워커가 await 직전 send 한 미소비 ScanResult 의
-        // resolve_outputs 는 channel.deinit 가 item-단위로 못 풀어 해제 안 됨 — 이미 OOM 으로
-        // 빌드를 접는 rare 경로라 수용. leak-clean 종료가 필요하면 별도 drain follow-up.)
+        // (알려진 한계: 에러-abort 시 미소비 ScanResult 의 resolve_outputs 는 해제 안 됨 —
+        // (a) 워커가 await 직전 send 한 채널 큐 잔류분(channel.deinit 가 item-단위로 못 풂),
+        // (b) recvBatch 로 drain 됐으나 applyScanResult 중간 에러로 적용 못 한 batch 잔류분
+        //     (batch.deinit 도 backing 만 풀고 item 은 안 풂). 둘 다 같은 클래스이며 총량은
+        //     batch 화 전후로 비슷하다(미소비분이 큐↔batch 로 갈릴 뿐). 이미 빌드를 접는 rare
+        //     OOM/에러 경로라 수용 — leak-clean 종료가 필요하면 별도 drain follow-up.)
         defer group.await(io) catch {};
         var inflight: usize = 0;
 
@@ -122,13 +125,28 @@ pub fn build(self: *ModuleGraph, io: std.Io, entry_points: []const []const u8) !
         // 초기 알려진 모듈(entries/inject/run-before-main) 청크 dispatch.
         dispatchPendingChunked(self, io, &group, &channel, &spawned_up_to, &inflight, parallelism);
 
-        // Apply each worker result, then dispatch newly discovered modules (chunked).
+        // #4003 회귀 fix: 한 번에 쌓인 결과를 *모두* drain 한 뒤 한 번만 dispatch 한다.
+        // 이전엔 recv 1개 → 즉시 dispatch 라, fan-out(깊고 좁은) 그래프에서 pending tail 이
+        // 모듈당 1~5 → chunkSize=1 → 모듈당 group.async(0.16 per-task 비용)를 그대로 치러
+        // bundle 회귀(+29% large)를 만들었다. recvBatch 로 형제 결과를 합류시키면 pending
+        // 구간이 커져 dispatchPendingChunked 의 청킹(#4007)이 fan-out 에서도 발동한다.
+        var batch: std.ArrayListUnmanaged(graph_discovery_scan.ScanResult) = .empty;
+        defer batch.deinit(self.allocator);
         while (inflight > 0) {
             // #4009: 워커 send 가 OOM 으로 결과를 drop 하면 error.SendFailed — 무한 대기 대신
-            // 빌드를 실패시킨다(상단 defer group.await 가 워커 reap 보장).
-            const result = try channel.recv(io);
-            inflight -= 1;
-            try graph_discovery_scan.applyScanResult(self, io, result);
+            // 빌드를 실패시킨다(상단 defer group.await 가 워커 reap 보장). recvBatch 는 큐에
+            // 쌓인 결과 전체를 한 lock 으로 batch 로 옮긴다(최소 1개 대기).
+            // recvBatch 는 큐에 쌓인 결과 전체를 한 lock 으로 batch 로 옮긴다(최소 1개 대기,
+            // 내부에서 batch 를 clear 후 swap 하므로 별도 clear 불필요). n = 가져온 결과 수.
+            // 워커는 모듈당 결과 1개 send(discovery_scan.scanRangeWorker) → inflight(dispatch
+            // 시 per-module 누적)와 단위 일치 → `inflight -= n` 회계 불변.
+            const n = try channel.recvBatch(io, &batch);
+            inflight -= n;
+            // 적용 순서는 비보장이나 determinism 은 renumber(#3564)라 무관(applyScanResult 는
+            // result.module_idx 로 적용 → 순서 독립, 기존 swapRemove 경로도 비-FIFO 였음).
+            for (batch.items) |result| {
+                try graph_discovery_scan.applyScanResult(self, io, result);
+            }
             dispatchPendingChunked(self, io, &group, &channel, &spawned_up_to, &inflight, parallelism);
         }
         // (정상 종료 시 group reap 은 상단 `defer group.await` 가 처리)
