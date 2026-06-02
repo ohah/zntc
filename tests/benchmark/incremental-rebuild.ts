@@ -18,7 +18,11 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const ROOT = resolve(__dirname, '../..');
-const ZNTC_BIN = join(ROOT, 'zig-out/bin/zntc');
+// ⚠️ 실제 사용자 CLI = JS(`packages/core/bin/zntc.mjs`) — Node `fs.watch`(OS 네이티브:
+// macOS FSEvents / Linux inotify) + `--watch-delay` debounce 를 쓴다. 내부 Zig 바이너리
+// (`zig-out/bin/zntc`)는 500ms mtime 폴링 fallback 이라 watch 벤치에 쓰면 안 된다(폴링
+// 지연이 측정을 지배 → "ZNTC 느림" 거짓 결론). esbuild/rolldown 도 진짜 CLI 라 공정 비교.
+const ZNTC_CLI = join(ROOT, 'packages/core/bin/zntc.mjs');
 const ESBUILD_BIN = join(__dirname, 'node_modules/.bin/esbuild');
 const ROLLDOWN_BIN = join(__dirname, 'node_modules/.bin/rolldown');
 
@@ -98,12 +102,14 @@ import { basename } from 'node:path';
 const tools: ToolRunner[] = [
   {
     name: 'zntc',
-    enabled: existsSync(ZNTC_BIN),
+    enabled: existsSync(ZNTC_CLI),
     spawnWatch(dir, entry, outFile) {
-      // --watch-delay=0: debounce window 제거 (기본 50ms — 측정 차감 위해).
+      // 실제 사용자 CLI(JS) 를 그대로 실행 — `node zntc.mjs … --watch`. Node fs.watch
+      // (FSEvents/inotify) 기반. --watch-delay=0: debounce 제거(측정 차감). outFile 은
+      // watch 디렉토리(entry dir) 밖이라 self-trigger 피드백 루프 없음(아래 measureTool).
       return spawn(
-        ZNTC_BIN,
-        ['--bundle', basename(entry), '-o', basename(outFile), '--watch', '--watch-delay=0'],
+        'node',
+        [ZNTC_CLI, '--bundle', entry, '-o', outFile, '--watch', '--watch-delay=0'],
         { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] },
       );
     },
@@ -113,12 +119,13 @@ const tools: ToolRunner[] = [
     enabled: existsSync(ESBUILD_BIN),
     spawnWatch(dir, entry, outFile) {
       // `--watch=forever`: esbuild 는 stdin close 시 자동 stop 하므로 명시적 keep-alive.
+      // outFile 은 절대경로(watch dir 밖) — zntc 와 동일 조건.
       return spawn(
         ESBUILD_BIN,
         [
           basename(entry),
           '--bundle',
-          `--outfile=${basename(outFile)}`,
+          `--outfile=${outFile}`,
           '--watch=forever',
           '--loader:.ts=ts',
           '--format=iife',
@@ -131,7 +138,7 @@ const tools: ToolRunner[] = [
     name: 'rolldown',
     enabled: existsSync(ROLLDOWN_BIN),
     spawnWatch(dir, entry, outFile) {
-      return spawn(ROLLDOWN_BIN, [basename(entry), '-o', basename(outFile), '--watch'], {
+      return spawn(ROLLDOWN_BIN, [basename(entry), '-o', outFile, '--watch'], {
         cwd: dir,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -188,8 +195,13 @@ function summarize(arr: number[]): {
 
 async function measureTool(tool: ToolRunner, fx: Fixture): Promise<Stats | { error: string }> {
   const dir = mkdtempSync(join(tmpdir(), `inc-${tool.name}-${fx.name}-`));
+  // 출력은 watch 디렉토리(entry dir) *밖* 별도 디렉토리로 — 실제 사용자 CLI 는
+  // recursive fs.watch(entry dir)라, 출력이 watch dir 안이면 출력→재빌드 self-trigger
+  // 피드백 루프가 생겨 측정이 왜곡된다(esbuild/rolldown 은 출력을 안 watch 해 무관하나
+  // 조건 통일). entry-touch → output mtime 변화만 깨끗이 측정.
+  const outDir = mkdtempSync(join(tmpdir(), `inc-out-${tool.name}-${fx.name}-`));
   const { entry } = fx.build(dir);
-  const outFile = join(dir, `${tool.name}.out.js`);
+  const outFile = join(outDir, `${tool.name}.out.js`);
 
   const child = tool.spawnWatch(dir, entry, outFile);
   const stderrChunks: string[] = [];
@@ -212,6 +224,10 @@ async function measureTool(tool: ToolRunner, fx: Fixture): Promise<Stats | { err
 
     const iters: number[] = [];
     for (let i = 0; i < ITERATIONS; i++) {
+      // touch *직전* 에 lastMtime 을 현재 출력 mtime 으로 refresh — settle(200ms) 동안
+      // 일어난 noise rebuild(다중 fs.watch 이벤트 등)로 outFile mtime 이 앞서가 있으면,
+      // 다음 touch 측정이 그 stale mtime 으로 즉시 반환(≈0ms artifact)되는 걸 차단.
+      if (existsSync(outFile)) lastMtime = statSync(outFile).mtimeMs;
       // emit 결과물에 반영되는 변경 — esbuild 의 unchanged-skip 회피.
       // 변수 1개 추가 후 console.log 인자로 사용해 dead-code elim 도 회피.
       appendFileSync(entry, `export const _iter${i} = ${i};\nconsole.log(_iter${i});\n`);
@@ -233,6 +249,7 @@ async function measureTool(tool: ToolRunner, fx: Fixture): Promise<Stats | { err
     await sleep(100);
     if (!child.killed) child.kill('SIGKILL');
     rmSync(dir, { recursive: true, force: true });
+    rmSync(outDir, { recursive: true, force: true });
   }
 }
 
@@ -254,8 +271,8 @@ async function main() {
       `폴링 간격 ${POLL_INTERVAL_MS}ms 가 측정 하한 (≈ noise floor).\n`,
   );
 
-  if (!existsSync(ZNTC_BIN)) {
-    console.error(`ZNTC 바이너리 없음: ${ZNTC_BIN}\n  먼저 \`zig build\` 실행`);
+  if (!existsSync(ZNTC_CLI)) {
+    console.error(`ZNTC CLI 없음: ${ZNTC_CLI}\n  먼저 \`bun run build:js\`(또는 napi 빌드) 실행`);
     process.exit(1);
   }
 

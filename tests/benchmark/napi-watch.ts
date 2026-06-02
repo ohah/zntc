@@ -2,9 +2,12 @@
 /**
  * NAPI watch rebuild benchmark — `@zntc/core`의 `watch(options)` 측정.
  *
- * CLI `--bundle --watch` 는 500ms 폴링 (src/main.zig:904) → measurement 가
- * 폴링 대기에 묻힘. NAPI watch 는 별도 path — onReady/onRebuild 콜백 + worker
- * thread + 진짜 file watcher (kqueue/inotify 가능).
+ * 이 path 는 onReady/onRebuild 콜백 + NAPI worker thread + (NAPI 옵션 경유) 네이티브
+ * file watcher. spawn/IPC 없이 in-process 라 onRebuild 콜백 latency 만 깨끗이 측정.
+ *
+ * cf. 실제 사용자 CLI(JS `bin/zntc.mjs`, incremental-rebuild.ts)는 Node `fs.watch`
+ * (FSEvents/inotify) + `--watch-delay` debounce 를 쓴다 — 둘 다 *폴링 아님*. (내부 Zig
+ * 바이너리 `zig-out/bin/zntc` 만 500ms mtime 폴링 fallback 이며 사용자 경로가 아니다.)
  *
  * 실행: bun run napi-watch.ts
  */
