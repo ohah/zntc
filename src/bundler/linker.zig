@@ -2706,14 +2706,19 @@ pub const Linker = struct {
         // canonical_strings 로 소유권 이전. (전역명==per-chunk 결과면 no-op. reserve 마커는 안 둔다
         // — non-cross-chunk 동명 심볼(dup.v)까지 밀어내 `v$2` 가 되는 부작용 때문. calculateRenames
         // 자연 순서가 cross-chunk owner 에게 preferred 를 주므로 override 는 divergence 만 교정.)
-        // minify 는 아래 mangle 이 다시 덮으므로 production 전역 네이밍은 별도 increment.
-        for (module_indices) |mod_idx| {
-            const inner = self.cross_chunk_global_names.get(mod_idx.toU32()) orelse continue;
-            var git = inner.iterator();
-            while (git.next()) |e| {
-                const local = self.getExportLocalName(mod_idx.toU32(), e.key_ptr.*) orelse e.key_ptr.*;
-                const dup = try self.allocator.dupe(u8, e.value_ptr.*);
-                try self.putCanonicalName(mod_idx.toU32(), local, dup);
+        // ⚠️ **lazy(dev_split) 전용** — production 은 `export { local as public }` 브리지가
+        // public=전역명을 따로 노출(emit 측 처리)하므로 local 을 전역명으로 강제하면 안 된다
+        // (브리지가 mangle 된 local 을 전역 public 으로 보존; override 하면 그 분리가 깨짐).
+        // dev_split 은 emitLazyEntryExportAll 이 local 명을 그대로 노출하므로 local==전역명 필요.
+        if (self.graph.lazy_compilation) {
+            for (module_indices) |mod_idx| {
+                const inner = self.cross_chunk_global_names.get(mod_idx.toU32()) orelse continue;
+                var git = inner.iterator();
+                while (git.next()) |e| {
+                    const local = self.getExportLocalName(mod_idx.toU32(), e.key_ptr.*) orelse e.key_ptr.*;
+                    const dup = try self.allocator.dupe(u8, e.value_ptr.*);
+                    try self.putCanonicalName(mod_idx.toU32(), local, dup);
+                }
             }
         }
 

@@ -383,7 +383,7 @@ describe('cross-chunk re-export (#3321 follow-up bugfix)', () => {
   // 로 나와야 한다. dev_split 런타임 가드는 napi-lazy-dev-hmr 에 있고, 여기선 production
   // splitting 의 emit 형태(예약어 미축약)를 3포맷에서 잠근다.
   for (const format of ['iife', 'cjs', 'esm'] as const) {
-    test(`${format}: export { default } from cjs — 예약어가 축약 아닌 alias 로 emit (#4096)`, async () => {
+    test(`${format}: export { default } from cjs — 예약어가 bare 아닌 유효 식별자로 emit (#4096)`, async () => {
       const fixture = await createFixture({
         'cjslib.js': "module.exports = function(){ return 'D'; };\nmodule.exports.named = 9;",
         'Route.ts': "export { default, named } from './cjslib.js';",
@@ -404,15 +404,18 @@ describe('cross-chunk re-export (#3321 follow-up bugfix)', () => {
       );
       expect(route).toBeDefined();
       // cross-chunk import 라인(`… = __zntc_require(…)` / `… = require(…)` / `… from "…"`)을
-      // 찾아 예약어 default 가 alias 됐는지 확인.
+      // 찾아 예약어 default 가 유효 식별자로 바인딩됐는지 확인. 전역 네이밍(#4101)으로 deconflict
+      // 된 식별자(`default$1`) 또는 #4096 alias(`default: _default`) 둘 다 유효 — 핵심은 bare 아님.
       const crossImport = route!.text
         .split('\n')
         .find((l) => /\bdefault\b/.test(l) && /(__zntc_require|require|from)\s*[("]/.test(l));
       expect(crossImport).toBeDefined();
-      // alias 형태: `default: <local>` 또는 `default as <local>`.
-      expect(/\bdefault\s*(:|\bas\b)/.test(crossImport!)).toBe(true);
       // 축약 바인딩(`{ default }` / `{ default, … }` / `{ …, default }`) 부재 = SyntaxError 없음.
       expect(/\bdefault\s*[},]/.test(crossImport!)).toBe(false);
+      // iife/cjs 청크는 함수 본문으로 parse 검증(예약어 bare RHS/바인딩이면 throw). esm 은 불가.
+      if (format !== 'esm') {
+        expect(() => new Function('exports', 'module', 'require', route!.text)).not.toThrow();
+      }
     });
   }
 
@@ -449,15 +452,15 @@ describe('cross-chunk re-export (#3321 follow-up bugfix)', () => {
     });
   }
 
-  // #4101 production 범위 (todo): 서로 다른 모듈의 *같은* export 이름(두 `v`)이 한 shared
-  // 청크에 묶이고 여러 entry 가 둘 다 import 하면, production 브리지가 public=export 명이라
-  // 충돌 → `export { v$1 as v }` 하나만 노출 + 소비자 `import { v, v as v$2 }` 둘 다 같은
-  // public "v" 에 바인딩 → collapse(둘 다 한 값). dev_split 은 #4105 에서 전역 네이밍으로
-  // 해결됐으나 production 은 ① exports_to 가 export 명으로만 dedup(자료구조) ② 브리지
-  // public=전역명 ③ 소비자 import key=전역명 ④ override 를 lazy 로 게이트 ⑤ mangle 정합 이
-  // 필요한 별도 increment. 전역 네이밍 pass 를 production 으로 확장하면 green.
+  // #4101 production 전역 네이밍(DONE): 서로 다른 모듈의 *같은* export 이름(두 `v`)이 한 shared
+  // 청크에 묶이고 여러 entry 가 둘 다 import 해도, 전역 네이밍 pass(computeCrossChunkGlobalNames)
+  // 가 (module, export_name) 별 owned 전역명을 deconflict → provider `export { v, v$1 }` +
+  // consumer `import { v, v$1 }` 로 distinct. 예전엔 브리지 public=export 명이라 충돌 →
+  // `export { v$1 as v }` 하나만 노출 + 소비자가 둘 다 public "v" 에 바인딩 → collapse(둘 다 한
+  // 값)였다. dev_split 은 #4105, production 은 이 PR 에서 전역 네이밍 pass 를 production 으로
+  // 확장(bundler.zig: code_splitting 게이트)해 해결.
   for (const format of ['esm', 'iife'] as const) {
-    test.todo(`${format}: 다른 모듈의 같은 export 둘을 여러 entry 가 import (전역 네이밍 production #4101)`, async () => {
+    test(`${format}: 다른 모듈의 같은 export 둘을 여러 entry 가 import (전역 네이밍 production #4101)`, async () => {
       const fixture = await createFixture({
         'a.ts': "export const v = 'AV';",
         'b.ts': "export const v = 'BV';",
@@ -477,16 +480,228 @@ describe('cross-chunk re-export (#3321 follow-up bugfix)', () => {
       const outs = result.outputFiles!;
       writeOutputs(fixture.dir, outs);
       const e1 = outs.find((o) => o.path.includes('e1') && o.path.endsWith('.js'))!;
+      const e2 = outs.find((o) => o.path.includes('e2') && o.path.endsWith('.js'))!;
       const driver =
         format === 'esm'
           ? join(fixture.dir, e1.path)
           : browserDriver(
               fixture.dir,
               e1.path,
-              outs.map((o) => o.path),
+              // 다른 entry(e2)는 제외. entry 는 self-execute 하며 static cross-chunk import 를
+              // 즉시 __zntc_require 하므로, 같은 글로벌에 섞이면 (a) e2 도 실행돼 stdout 오염
+              // (b) chunk 미등록 시점에 require → throw. e1 + 공유 chunk 만 로드(실브라우저의
+              // 페이지당 1 entry 와 동치) → e1 이 distinct 값을 받는지만 검증.
+              outs.filter((o) => o.path.endsWith('.js') && o.path !== e2.path).map((o) => o.path),
             );
       const { stdout } = await runNode(driver);
-      expect(stdout.trim()).toBe('e1 AV BV'); // 현재 'e1 BV BV' (collapse)
+      expect(stdout.trim()).toBe('e1 AV BV'); // 예전 'e1 BV BV' (collapse) → 전역 네이밍으로 distinct
     });
   }
+
+  // #4101 회귀 방어: production 전역 네이밍을 모든 splitting 으로 확장하면서, consumer 는
+  // 전역명으로 import 키를 바꾸는데 single-owner provider 경로는 export 名을 그대로 노출 →
+  // 전역명≠export名(공유 `export default`, 분산 청크 동명)일 때 provider/consumer divergence
+  // = `SyntaxError: does not provide an export named …`. provider single-owner 도 전역명을
+  // public 으로 노출해야 일치. (collision owner_count>1 은 이미 전역명, common 은 global==name).
+
+  // 회귀 1: `export default` 가 여러 entry 에 공유 → shared 청크가 default 를 cross-chunk
+  // 노출. consumer 는 default 의 전역명(=local `thing`)으로 import → provider 도 그 전역명을
+  // 노출해야 한다. 예전(이 회귀)엔 `export { thing as default }` 만 내 consumer `import { thing }`
+  // 가 깨짐.
+  test('esm: 공유 export default 가 consumer/provider 전역명 일치 (#4101 회귀)', async () => {
+    const fixture = await createFixture({
+      'shared.ts': "export default function thing(){ return 'D'; }",
+      'e1.ts': "import f from './shared';\nconsole.log('e1', f());",
+      'e2.ts': "import f from './shared';\nconsole.log('e2', f());",
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'e1.ts'), join(fixture.dir, 'e2.ts')],
+      rootDir: fixture.dir,
+      platform: 'node',
+      splitting: true,
+      format: 'esm',
+    });
+    const outs = result.outputFiles!;
+    writeOutputs(fixture.dir, outs);
+    const e1 = outs.find((o) => o.path.includes('e1') && o.path.endsWith('.js'))!;
+    const { stdout } = await runNode(join(fixture.dir, e1.path));
+    expect(stdout.trim()).toBe('e1 D');
+  });
+
+  test('iife: 공유 export default 가 consumer/provider 전역명 일치 (#4101 회귀)', async () => {
+    const fixture = await createFixture({
+      'shared.ts': "export default function thing(){ return 'D'; }",
+      'e1.ts': "import f from './shared';\nconsole.log('e1', f());",
+      'e2.ts': "import f from './shared';\nconsole.log('e2', f());",
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'e1.ts'), join(fixture.dir, 'e2.ts')],
+      rootDir: fixture.dir,
+      platform: 'browser',
+      splitting: true,
+      format: 'iife',
+    });
+    const outs = result.outputFiles!;
+    writeOutputs(fixture.dir, outs);
+    const e1 = outs.find((o) => o.path.includes('e1') && o.path.endsWith('.js'))!;
+    const e2 = outs.find((o) => o.path.includes('e2') && o.path.endsWith('.js'))!;
+    // e1 + 공유 chunk 만 (다른 entry e2 제외 — self-execute/조기 require 회피).
+    const driver = browserDriver(
+      fixture.dir,
+      e1.path,
+      outs.filter((o) => o.path.endsWith('.js') && o.path !== e2.path).map((o) => o.path),
+    );
+    const { stdout } = await runNode(driver);
+    expect(stdout.trim()).toBe('e1 D');
+  });
+
+  // 회귀 2: 서로 다른 모듈의 동명 export 가 *서로 다른* 청크에 분산(각 owner_count==1).
+  // 전역 deconflict 가 a.v→`v`, b.v→`v$1` 를 배정 → main 은 `import { v$1 } from chunk-b`
+  // 하지만 chunk-b 는 single-owner 라 `export { v }` 만 냈다(divergence). provider 가 전역명
+  // 을 노출하면 `export { v as v$1 }` → 일치.
+  test('esm: 분산 청크 동명 export 가 consumer/provider 일치 (#4101 회귀)', async () => {
+    const fixture = await createFixture({
+      'a.ts': "export const v = 'AV';",
+      'b.ts': "export const v = 'BV';",
+      'route1.ts': "import { v } from './a';\nexport const r1 = v;",
+      'route2.ts': "import { v } from './b';\nexport const r2 = v;",
+      'main.ts':
+        "import { v as av } from './a';\nimport { v as bv } from './b';\n" +
+        "async function run(){ const m1=await import('./route1'); const m2=await import('./route2'); console.log('main', av, bv, m1.r1, m2.r2); }\nrun();",
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'main.ts')],
+      rootDir: fixture.dir,
+      platform: 'node',
+      splitting: true,
+      format: 'esm',
+    });
+    const outs = result.outputFiles!;
+    writeOutputs(fixture.dir, outs);
+    const main = outs.find((o) => o.path.includes('main') && o.path.endsWith('.js'))!;
+    const { stdout } = await runNode(join(fixture.dir, main.path));
+    expect(stdout.trim()).toBe('main AV BV AV BV');
+  });
+
+  // 회귀 3 (Angle A): 사용자 실제 export `v$1` 이 동명 collision 의 생성 전역명 `v$1` 과
+  // 한 청크에서 겹치면 안 된다. 전역 deconflict 가 used set 으로 회피(사용자 v$1→`v$1$1`)
+  // 하고, provider 가 전역명을 노출하면 중복 export(`export { v$1, v$1 }`) 없이 distinct.
+  test('esm: 사용자 v$1 export 가 collision 생성 v$1 과 충돌 안 함 (#4101 회귀)', async () => {
+    const fixture = await createFixture({
+      'a.ts': "export const v = 'AV';",
+      'b.ts': "export const v = 'BV';",
+      'c.ts': "export const v$1 = 'C1';",
+      'e1.ts':
+        "import { v as a } from './a';\nimport { v as b } from './b';\nimport { v$1 as c } from './c';\nconsole.log('e1', a, b, c);",
+      'e2.ts':
+        "import { v as a } from './a';\nimport { v as b } from './b';\nimport { v$1 as c } from './c';\nconsole.log('e2', a, b, c);",
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'e1.ts'), join(fixture.dir, 'e2.ts')],
+      rootDir: fixture.dir,
+      platform: 'node',
+      splitting: true,
+      format: 'esm',
+    });
+    const outs = result.outputFiles!;
+    writeOutputs(fixture.dir, outs);
+    // 어떤 청크도 같은 export 명을 2번 내면 안 된다(중복 export = SyntaxError).
+    for (const o of outs) {
+      if (!o.path.endsWith('.js')) continue;
+      const m = o.text.match(/export\s*\{([^}]*)\}/g) ?? [];
+      for (const stmt of m) {
+        const names = stmt
+          .replace(/export\s*\{|\}/g, '')
+          .split(',')
+          .map((s) => (s.includes(' as ') ? s.split(' as ')[1] : s).trim())
+          .filter(Boolean);
+        expect(new Set(names).size).toBe(names.length); // 중복 public 없음
+      }
+    }
+    const e1 = outs.find((o) => o.path.includes('e1') && o.path.endsWith('.js'))!;
+    const { stdout } = await runNode(join(fixture.dir, e1.path));
+    expect(stdout.trim()).toBe('e1 AV BV C1');
+  });
+
+  // 회귀 4(main 선재 버그 일반화): `export { local as exportName }`(local≠export명)이 여러
+  // entry 에 공유되면 provider 는 실제 local 을 참조해야 한다. 예전엔 local_name 스캔이
+  // 미-rename local 을 놓치고 export명으로 fallback → `export { renamed }`(main) /
+  // `export { renamed as _x }`(전역명 도입 시) — 둘 다 미존재 local 참조 = SyntaxError.
+  // getExportLocalName(권위 소스) 채택으로 해결.
+  test('esm: renamed export(local≠export명) 공유가 실제 local 참조 (#4101 회귀)', async () => {
+    const fixture = await createFixture({
+      'util.ts': "const _x = 'X';\nexport { _x as renamed };",
+      'e1.ts': "import { renamed } from './util';\nconsole.log('e1', renamed);",
+      'e2.ts': "import { renamed } from './util';\nconsole.log('e2', renamed);",
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'e1.ts'), join(fixture.dir, 'e2.ts')],
+      rootDir: fixture.dir,
+      platform: 'node',
+      splitting: true,
+      format: 'esm',
+    });
+    const outs = result.outputFiles!;
+    writeOutputs(fixture.dir, outs);
+    const e1 = outs.find((o) => o.path.includes('e1') && o.path.endsWith('.js'))!;
+    const { stdout } = await runNode(join(fixture.dir, e1.path));
+    expect(stdout.trim()).toBe('e1 X');
+  });
+
+  // 회귀 5: 단순 export + renamed export + re-export 가 한 shared 청크에 혼재해도 전부 정확.
+  test('esm: 단순+renamed+re-export 혼재 shared 청크 (#4101 회귀)', async () => {
+    const fixture = await createFixture({
+      'inner.ts': "export const reexported = 'RX';",
+      'util.ts':
+        "const _x = 'X';\nexport { _x as renamed };\nexport const helper = 'H';\nexport { reexported } from './inner';",
+      'e1.ts':
+        "import { helper, renamed, reexported } from './util';\nconsole.log('e1', helper, renamed, reexported);",
+      'e2.ts':
+        "import { helper, renamed, reexported } from './util';\nconsole.log('e2', helper, renamed, reexported);",
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'e1.ts'), join(fixture.dir, 'e2.ts')],
+      rootDir: fixture.dir,
+      platform: 'node',
+      splitting: true,
+      format: 'esm',
+    });
+    const outs = result.outputFiles!;
+    writeOutputs(fixture.dir, outs);
+    const e1 = outs.find((o) => o.path.includes('e1') && o.path.endsWith('.js'))!;
+    const { stdout } = await runNode(join(fixture.dir, e1.path));
+    expect(stdout.trim()).toBe('e1 H X RX');
+  });
+
+  // 회귀 6: 한 shared 청크에 collision(owner_count>1, `v`) 과 normal(owner_count==1, `only`)
+  // 이 공존 → collision 블록과 single-owner 경로를 동시에 타도 둘 다 정확.
+  test('esm: collision + normal export 가 한 청크에 공존 (#4101 회귀)', async () => {
+    const fixture = await createFixture({
+      'a.ts': "export const v = 'AV';\nexport const only = 'ONLY';",
+      'b.ts': "export const v = 'BV';",
+      'e1.ts':
+        "import { v as a, only } from './a';\nimport { v as b } from './b';\nconsole.log('e1', a, b, only);",
+      'e2.ts':
+        "import { v as a, only } from './a';\nimport { v as b } from './b';\nconsole.log('e2', a, b, only);",
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'e1.ts'), join(fixture.dir, 'e2.ts')],
+      rootDir: fixture.dir,
+      platform: 'node',
+      splitting: true,
+      format: 'esm',
+    });
+    const outs = result.outputFiles!;
+    writeOutputs(fixture.dir, outs);
+    const e1 = outs.find((o) => o.path.includes('e1') && o.path.endsWith('.js'))!;
+    const { stdout } = await runNode(join(fixture.dir, e1.path));
+    expect(stdout.trim()).toBe('e1 AV BV ONLY');
+  });
 });
