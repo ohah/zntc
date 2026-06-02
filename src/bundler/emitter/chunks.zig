@@ -80,6 +80,27 @@ fn crossChunkBindingName(linker: ?*Linker, sym: chunk_mod.CrossChunkSym) []const
     return sym.name;
 }
 
+/// cross-chunk export 의 **provider 측 로컬명**(이 청크에 선언된 실제 식별자, 전역 public 의
+/// RHS). owner 모듈 `mi` 가 export `name` 을 어떤 로컬로 들고 있는지 해석한다.
+/// - namespace re-export(`export * as X`)는 로컬 심볼이 elided 라 canonical 이 빗나간다 → 청크에
+///   materialize 된 shared ns 객체 변수(`ensureSharedNsVar`)가 곧 X 의 실제 값(#3321 후속).
+/// - 일반 export 는 canonical rename, 없으면 getExportLocalName(권위 소스)의 비예약어 local
+///   (`export { _x as renamed }` 의 `_x`). 예약어 local 은 bare 참조 불가 → null.
+/// 못 찾으면 null(호출부가 다른 owner 또는 export 명 fallback 으로 진행). single-owner·collision
+/// 양 경로 공용 — 분리돼 있던 단순 해석/full 해석을 하나로 통일.
+fn resolveOwnerLocal(l: *Linker, graph: *const ModuleGraph, mod_idx: ModuleIndex, mi: u32, name: []const u8) ?[]const u8 {
+    if (chunk_mod.nsReExportTarget(graph, mod_idx, name)) |ns_t| {
+        // ensureSharedNsVar OOM 은 무시하고 canonical fallback 으로 진행(기존 패턴과 일관).
+        if (l.ensureSharedNsVar(ns_t)) |ns_var| return ns_var else |_| {}
+    }
+    if (l.getCanonicalName(mi, name)) |renamed| return renamed;
+    if (l.getExportLocalName(mi, name)) |local| {
+        if (l.getCanonicalName(mi, local)) |renamed| return renamed;
+        if (!Linker.isReservedName(local)) return local;
+    }
+    return null;
+}
+
 pub fn emitChunks(
     allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
@@ -954,138 +975,73 @@ pub fn emitChunks(
                 }
             }
             for (export_names.items, 0..) |name, ni| {
-                // #4101 production cross-chunk same-name collision: 서로 다른 모듈이 *같은*
-                // export 명(`v`)을 이 청크에서 cross-chunk export 하면(global map 에 owner 2+),
-                // export 명 1개로 dedup 된 export_names 로는 한쪽만 노출돼 소비자가 둘 다 같은
-                // public 에 바인딩 → collapse. 각 owner 를 **전역 public**(`v`/`v$1`)으로 노출해
-                // 구별한다(소비자 import key 도 전역명, change B). common(owner 1개)은 아래
-                // 기존 경로(public=export 명=global) = byte-identical.
+                // #4101: cross-chunk export 는 **owner 단위**로 emit. owner = 이 export 명의
+                // 전역명을 가진 모듈(getCrossChunkGlobalName). common=owner 1개, 동명 collision=
+                // N개(다른 모듈이 같은 export 명). provider public = 각 owner 의 전역명(consumer
+                // import key 와 일치 → collapse 방지), local = resolveOwnerLocal(nsReExport→ns
+                // 변수 / canonical / getExportLocalName 권위 / 예약어). collision·single-owner 를
+                // 한 경로로 통합 — 예전엔 둘로 갈렸고 collision 쪽 단순 해석이 ns/예약어 collision
+                // 에서 미존재 로컬 노출(SyntaxError)했다. common(owner 1개)은 `<local> as <global=
+                // export명>` = byte-identical.
+                var emitted_any = false;
                 if (linker) |l| {
-                    var owner_count: usize = 0;
+                    var first_in_group = true;
                     for (sorted_mods) |mod_idx| {
                         const mi = @intFromEnum(mod_idx);
                         if (mi >= module_count) continue;
-                        if (l.getCrossChunkGlobalName(@intCast(mi), name) != null) owner_count += 1;
+                        const global = l.getCrossChunkGlobalName(@intCast(mi), name) orelse continue;
+                        // resolveOwnerLocal 이 못 찾으면(예약어 local 무-canonical, 예: `export
+                        // { default } from './cjslib'` 의 CJS default) export 명 fallback — #4117
+                        // single-owner 경로(`found_local orelse name`)와 byte-identical. 해당
+                        // 케이스 자체는 simple identifier 로 해석 불가한 선재 한계(별도 이슈).
+                        const local = resolveOwnerLocal(l, graph, mod_idx, @intCast(mi), name) orelse name;
+                        if (cjs_x) {
+                            try chunk_output.appendSlice(allocator, "exports.");
+                            try chunk_output.appendSlice(allocator, global);
+                            try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "=" else " = ");
+                            try chunk_output.appendSlice(allocator, local);
+                            try chunk_output.appendSlice(allocator, if (options.minify_whitespace) ";" else ";\n");
+                        } else {
+                            if (!first_in_group) try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "," else ", ");
+                            try chunk_output.appendSlice(allocator, local);
+                            if (!std.mem.eql(u8, local, global)) {
+                                try chunk_output.appendSlice(allocator, " as ");
+                                try chunk_output.appendSlice(allocator, global);
+                            }
+                        }
+                        first_in_group = false;
+                        emitted_any = true;
                     }
-                    if (owner_count > 1) {
-                        var first = true;
+                }
+                // fallback: linker 없음(단위 테스트) 또는 전역명 미보유 export(RBM, 또는 re-export
+                // source 가 타 청크 owner 라 이 청크 모듈에 전역명 키 없음). public = export 명,
+                // local = full scan(resolveOwnerLocal 첫 매치). #4117 single-owner 경로와 동치.
+                if (!emitted_any) {
+                    const local_name = if (linker) |l| blk: {
                         for (sorted_mods) |mod_idx| {
                             const mi = @intFromEnum(mod_idx);
                             if (mi >= module_count) continue;
-                            const global = l.getCrossChunkGlobalName(@intCast(mi), name) orelse continue;
-                            const local = l.getCanonicalName(@intCast(mi), l.getExportLocalName(@intCast(mi), name) orelse name) orelse global;
-                            if (cjs_x) {
-                                try chunk_output.appendSlice(allocator, "exports.");
-                                try chunk_output.appendSlice(allocator, global);
-                                try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "=" else " = ");
-                                try chunk_output.appendSlice(allocator, local);
-                                try chunk_output.appendSlice(allocator, if (options.minify_whitespace) ";" else ";\n");
-                            } else {
-                                if (!first) try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "," else ", ");
-                                try chunk_output.appendSlice(allocator, local);
-                                if (!std.mem.eql(u8, local, global)) {
-                                    try chunk_output.appendSlice(allocator, " as ");
-                                    try chunk_output.appendSlice(allocator, global);
-                                }
-                            }
-                            first = false;
+                            if (resolveOwnerLocal(l, graph, mod_idx, @intCast(mi), name)) |lo| break :blk lo;
                         }
-                        if (!cjs_x and ni + 1 < export_names.items.len) {
-                            try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "," else ", ");
-                        }
-                        continue;
-                    }
-                }
-                // export_name의 원본 심볼이 이 청크에서 rename되었는지 확인.
-                // rename된 경우: export { local_name as export_name }
-                // rename 안 된 경우: export { export_name }
-                const local_name = if (linker) |l| blk: {
-                    // exports_to의 이름은 canonical export name.
-                    // 이 이름을 선언한 모듈을 찾아 linker의 canonical_names를 조회한다.
-                    var found_local: ?[]const u8 = null;
-                    for (sorted_mods) |mod_idx| {
-                        const mi = @intFromEnum(mod_idx);
-                        if (mi >= module_count) continue;
-                        // namespace re-export(`export * as X` / `import * as X;
-                        // export {X}`)는 로컬 심볼이 없거나 elided 라 canonical
-                        // 조회가 빗나간다. 대상 청크에 materialize 된 shared ns
-                        // 객체 변수가 곧 X 의 실제 값 — cross-chunk import 로
-                        // 이 청크에 바인딩돼 있으므로 그 이름으로 export
-                        // (`export { inner_ns as X }`) (#3321 후속).
-                        if (chunk_mod.nsReExportTarget(graph, mod_idx, name)) |ns_t| {
-                            // else |_|: ensureSharedNsVar OOM 은 canonical
-                            // fallback 으로 진행 (getCanonicalName 패턴과 일관).
-                            if (l.ensureSharedNsVar(ns_t)) |ns_var| {
-                                found_local = ns_var;
-                                break;
-                            } else |_| {}
-                        }
-                        if (l.getCanonicalName(@intCast(mi), name)) |renamed| {
-                            found_local = renamed;
-                            break;
-                        }
-                        // export의 local_name이 다를 수 있으므로 export_map도 확인
-                        if (l.getExportLocalName(@intCast(mi), name)) |local| {
-                            if (l.getCanonicalName(@intCast(mi), local)) |renamed| {
-                                found_local = renamed;
-                                break;
-                            }
-                            // canonical 미등록(미-rename)이라도 비예약어 local 은 그대로 채택 —
-                            // getExportLocalName 이 곧 이 export 의 실제 chunk 로컬(권위 소스).
-                            // `export { _x as renamed }`(local `_x`≠export명)·same-name(local==
-                            // export명, 채택=fallback 과 동치) 모두 올바른 로컬 참조. 이로써 아래
-                            // `orelse name` fallback 은 *진짜 미해결*(ns/RBM 등 local 부재) 안전망
-                            // 으로만 남는다 — 예전엔 비예약어 renamed export 가 fallback=export명
-                            // 으로 떨어져 미존재 로컬 참조(`export { renamed }`/`exports.default =
-                            // default`) SyntaxError(main 선재 버그, #C 예약어 처리의 일반화).
-                            // ⚠️ `local` 이 예약어면(예: `export {default} from './x'` 의 source 명
-                            // `default`) bare 참조 불가 → 채택 말고 계속 순회해 실제 owner 를 찾는다.
-                            if (!Linker.isReservedName(local)) {
-                                found_local = local;
-                                break;
-                            }
-                        }
-                    }
-                    break :blk found_local orelse name;
-                } else name;
-
-                // #4101 cross-chunk 전역 네이밍: provider 가 노출하는 public 은 consumer 가
-                // import 하는 전역명(getCrossChunkGlobalName)과 같아야 한다. 이 export 명의
-                // 전역명을 가진 모듈(single-owner 경로라 최대 1개; owner_count>1 은 위 collision
-                // 블록이 처리)을 찾아 그 전역명을 public 으로 사용 — 공유 `export default`(전역명=
-                // local `thing`), 분산 청크 동명 export(전역명=`v$1`)도 rename 여부와 무관하게
-                // consumer 와 일치. 전역명 없으면 export 명(common: global==export명=byte-identical).
-                const public_name = if (linker) |l| blk2: {
-                    for (sorted_mods) |mod_idx| {
-                        const mi2 = @intFromEnum(mod_idx);
-                        if (mi2 >= module_count) continue;
-                        if (l.getCrossChunkGlobalName(@intCast(mi2), name)) |g| break :blk2 g;
-                    }
-                    break :blk2 name;
-                } else name;
-
-                if (cjs_x) {
-                    // exports.<public> = <local>;  (min: 공백 제거, 형태 동일)
-                    try chunk_output.appendSlice(allocator, "exports.");
-                    try chunk_output.appendSlice(allocator, public_name);
-                    try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "=" else " = ");
-                    try chunk_output.appendSlice(allocator, local_name);
-                    try chunk_output.appendSlice(allocator, if (options.minify_whitespace) ";" else ";\n");
-                    continue;
-                }
-
-                try chunk_output.appendSlice(allocator, local_name);
-                // local_name과 public(전역명)이 다르면 as 절 추가
-                if (!std.mem.eql(u8, local_name, public_name)) {
-                    try chunk_output.appendSlice(allocator, " as ");
-                    try chunk_output.appendSlice(allocator, public_name);
-                }
-                if (ni + 1 < export_names.items.len) {
-                    if (!options.minify_whitespace) {
-                        try chunk_output.appendSlice(allocator, ", ");
+                        break :blk name;
+                    } else name;
+                    if (cjs_x) {
+                        try chunk_output.appendSlice(allocator, "exports.");
+                        try chunk_output.appendSlice(allocator, name);
+                        try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "=" else " = ");
+                        try chunk_output.appendSlice(allocator, local_name);
+                        try chunk_output.appendSlice(allocator, if (options.minify_whitespace) ";" else ";\n");
                     } else {
-                        try chunk_output.append(allocator, ',');
+                        try chunk_output.appendSlice(allocator, local_name);
+                        if (!std.mem.eql(u8, local_name, name)) {
+                            try chunk_output.appendSlice(allocator, " as ");
+                            try chunk_output.appendSlice(allocator, name);
+                        }
                     }
+                }
+                // esm: 다음 export 명으로 trailing comma(cjs 는 statement 라 불필요).
+                if (!cjs_x and ni + 1 < export_names.items.len) {
+                    try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "," else ", ");
                 }
             }
             if (!cjs_x) {
