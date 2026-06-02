@@ -19,6 +19,22 @@ const ExprFlags = precedence.ExprFlags;
 const Error = std.mem.Allocator.Error;
 
 pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
+    return emitExpr(self, idx, .lowest, .{});
+}
+
+/// Expression 전용 emit 진입점 (esbuild `printExpr(expr, level, flags)`). 전처리
+/// (skip/comments/transparent-wrapper)부터 dispatch 까지 모든 노드를 처리하는 단일
+/// 진입점이며, `emitNode` 는 `emitExpr(.lowest, .{})` 의 alias 다 (esbuild 가
+/// printStmt 와 printExpr 를 분리하되 둘 다 같은 노드 dispatch 로 들어가는 것과
+/// 동형). `level` 은 "이 위치에서 괄호 없이 허용되는 최소 결합 강도", `flags` 는
+/// precedence 만으로 표현 못 하는 컨텍스트 괄호 조건이다.
+///
+/// PR4 단계: `level`/`flags` 는 transparent wrapper 의 level 투과를 빼면 받기만 하고
+/// 사용하지 않는다 — 괄호는 여전히 `parenthesized_expression` 노드(emitParen)가
+/// 담당하므로 출력은 byte-identical. PR5 에서 각 expression case 진입부에 `wrap`
+/// 계산이 채워지고, 자식 emit 이 적절한 child level/flags 를 받아 precedence 로
+/// 괄호를 재유도한다.
+pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) Error!void {
     if (idx.isNone()) return;
 
     // 번들 모드: skip_nodes에 있으면 출력하지 않음 (import/export 제거)
@@ -39,7 +55,7 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
 
     // TS/Flow type wrapper: operand 만 출력 (type 스트리핑, #3129 단일 source).
     // pre-visit body codegen 시 TS/Flow 노드가 남아있을 수 있어 명시 처리.
-    if (ast_mod.Node.Tag.isTransparentTypeWrapper(node.tag)) return self.emitNode(node.data.unary.operand);
+    if (ast_mod.Node.Tag.isTransparentTypeWrapper(node.tag)) return self.emitExpr(node.data.unary.operand, level, flags);
 
     switch (node.tag) {
         .program => try statement_emit.emitProgram(self, node),
@@ -229,37 +245,38 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
             try self.write("super");
         },
 
-        // Expressions — precedence-aware 경로(emitExpr)로 위임한다.
-        // (PR2: emitNode 는 항상 level=.lowest / flags=.{} 로 호출하므로 출력은
-        //  기존 paren 노드 기반과 동일=byte-identical. 후속 PR 에서 부모가 적절한
-        //  level/flags 를 내려보내고 emitExpr 가 precedence 로 괄호를 재유도한다.)
-        .unary_expression,
-        .update_expression,
-        .binary_expression,
-        .logical_expression,
-        .assignment_expression,
-        .conditional_expression,
-        .sequence_expression,
-        .parenthesized_expression,
-        .spread_element,
-        .await_expression,
-        .yield_expression,
-        .array_expression,
-        .object_expression,
-        .object_property,
-        .computed_property_key,
-        .static_member_expression,
-        .computed_member_expression,
-        .private_field_expression,
-        .call_expression,
-        .new_expression,
-        .template_literal,
-        .template_element,
-        .tagged_template_expression,
-        .import_expression,
-        .meta_property,
-        .chain_expression,
-        => try emitExpr(self, idx, .lowest, .{}),
+        // Expressions — 자식 emit 은 후속 PR 에서 child level/flags 를 받는다(PR4:
+        // 아직 emitNode=.lowest fallback, byte-identical).
+        .unary_expression => try expression_emit.emitUnary(self, node),
+        .update_expression => try expression_emit.emitUpdate(self, node),
+        .binary_expression, .logical_expression => try expression_emit.emitBinary(self, node),
+        .assignment_expression => try expression_emit.emitAssignment(self, node),
+        .conditional_expression => try expression_emit.emitConditional(self, node),
+        .sequence_expression => try expression_emit.emitSequence(self, node),
+        .parenthesized_expression => try expression_emit.emitParen(self, node),
+        .spread_element => try expression_emit.emitSpread(self, node),
+        .await_expression => try expression_emit.emitAwait(self, node),
+        .yield_expression => try expression_emit.emitYield(self, node),
+        .array_expression => try expression_emit.emitArray(self, node),
+        .object_expression => try expression_emit.emitObject(self, node),
+        .object_property => try expression_emit.emitObjectProperty(self, node),
+        .computed_property_key => try expression_emit.emitComputedKey(self, node),
+        .static_member_expression => try expression_emit.emitStaticMember(self, node),
+        .computed_member_expression => try expression_emit.emitComputedMember(self, node),
+        .private_field_expression => try expression_emit.emitStaticMember(self, node),
+        .call_expression => try call_emit.emitCall(self, node),
+        .new_expression => try call_emit.emitNew(self, node),
+        .template_literal => try function_class_emit.emitTemplateLiteral(self, node),
+        .template_element => {
+            try self.addSourceMapping(node.span);
+            try self.writeNodeSpan(node);
+        },
+        .tagged_template_expression => try function_class_emit.emitTaggedTemplate(self, node),
+        .import_expression => try call_emit.emitImportExpr(self, node),
+        .meta_property => try call_emit.emitMetaProperty(self, node),
+        // chain_expression: optional-chain wrapper — operand 가 자기 매핑 발행.
+        // (TS·Flow type-cast 는 위 transparent-wrapper 분기에서 처리됨.) level/flags 투과.
+        .chain_expression => try self.emitExpr(node.data.unary.operand, level, flags),
 
         // Functions / Classes
         .function_declaration, .function_expression, .function => try function_class_emit.emitFunction(self, node),
@@ -355,55 +372,5 @@ pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
             try self.addSourceMapping(node.span);
             try self.writeNodeSpan(node);
         },
-    }
-}
-
-/// Expression 전용 emit 진입점 (esbuild `printExpr(expr, level, flags)`).
-/// `level` 은 "이 위치에서 괄호 없이 허용되는 최소 결합 강도", `flags` 는
-/// precedence 만으로 표현 못 하는 컨텍스트 괄호 조건이다.
-///
-/// PR2 단계: `level`/`flags` 를 받기만 하고 사용하지 않는다 — 괄호는 여전히 AST
-/// 의 `parenthesized_expression` 노드(emitParen)가 담당하므로 출력은 emitNode
-/// 시절과 byte-identical 하다. 후속 PR 에서 각 case 진입부에 `wrap` 계산이
-/// 추가되고, 자식 호출이 `emitNode` → `emitExpr(child, childLevel, childFlags)`
-/// 로 이행한다.
-///
-/// 진입 보장: emitNode 의 expression case 가 skip/comment/transparent-wrapper
-/// 처리를 마친 뒤 정확히 아래 tag 들로만 위임하므로, 다른 tag 는 `unreachable`.
-pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) Error!void {
-    _ = level;
-    _ = flags;
-    const node = self.ast.getNode(idx);
-    switch (node.tag) {
-        .unary_expression => try expression_emit.emitUnary(self, node),
-        .update_expression => try expression_emit.emitUpdate(self, node),
-        .binary_expression, .logical_expression => try expression_emit.emitBinary(self, node),
-        .assignment_expression => try expression_emit.emitAssignment(self, node),
-        .conditional_expression => try expression_emit.emitConditional(self, node),
-        .sequence_expression => try expression_emit.emitSequence(self, node),
-        .parenthesized_expression => try expression_emit.emitParen(self, node),
-        .spread_element => try expression_emit.emitSpread(self, node),
-        .await_expression => try expression_emit.emitAwait(self, node),
-        .yield_expression => try expression_emit.emitYield(self, node),
-        .array_expression => try expression_emit.emitArray(self, node),
-        .object_expression => try expression_emit.emitObject(self, node),
-        .object_property => try expression_emit.emitObjectProperty(self, node),
-        .computed_property_key => try expression_emit.emitComputedKey(self, node),
-        .static_member_expression => try expression_emit.emitStaticMember(self, node),
-        .computed_member_expression => try expression_emit.emitComputedMember(self, node),
-        .private_field_expression => try expression_emit.emitStaticMember(self, node),
-        .call_expression => try call_emit.emitCall(self, node),
-        .new_expression => try call_emit.emitNew(self, node),
-        .template_literal => try function_class_emit.emitTemplateLiteral(self, node),
-        .template_element => {
-            try self.addSourceMapping(node.span);
-            try self.writeNodeSpan(node);
-        },
-        .tagged_template_expression => try function_class_emit.emitTaggedTemplate(self, node),
-        .import_expression => try call_emit.emitImportExpr(self, node),
-        .meta_property => try call_emit.emitMetaProperty(self, node),
-        // chain_expression / TS·Flow type-cast: transparent wrapper — operand 가 자기 매핑 발행.
-        .chain_expression => try self.emitNode(node.data.unary.operand),
-        else => unreachable,
     }
 }
