@@ -1,21 +1,15 @@
 #!/usr/bin/env bun
 /**
- * In-process rebuild benchmark — fair comparison.
+ * In-process **순수 incremental rebuild** 벤치 — 각 도구의 가장 빠른 programmatic rebuild
+ * 경로(디바운스/watch latency 제외, 캐시 재사용)로 컴파일 속도만 비교:
+ *   - ZNTC:    `@zntc/core` watch({ watchDelay: 0 }) + onRebuild — 디바운스 0(즉시 rebuild).
+ *              직접 rebuild API 가 없어 watch 경유(kqueue 감지+콜백 dispatch 소량 포함).
+ *   - esbuild: `context().rebuild()` — documented incremental(ctx 캐시 재사용).
+ *   - rolldown:`rolldown()` 빌드 객체 재사용 + `generate()` 재호출(변경 re-read + incremental).
  *
- * 모든 도구를 in-process programmatic API 의 **file-watch 경로**로 동일하게 측정:
- * 파일 touch → 각 도구의 watch 콜백/이벤트 fire 까지의 시간(감지+rebuild+콜백 dispatch).
- *   - ZNTC: `@zntc/core` watch(opts) + onRebuild (NAPI worker thread)
- *   - esbuild: context().watch() + onEnd 플러그인
- *   - rolldown: watch().on('event')
- *
- * ⚠️ esbuild 를 `ctx.rebuild()`(watch 미경유 직접 호출)로 재면 파일감지/콜백 오버헤드를
- * 건너뛰어 zntc/rolldown(file-watch)보다 부당하게 빨라진다 → 반드시 watch 로 통일.
- * (zntc 는 incremental rebuild 를 watch() 로만 노출 — 직접 rebuild API 없음.)
- *
- * ⚠️ 결과 해석: zntc(NAPI) rebuild ~53ms floor(tiny≈medium, 모듈 수 무관)는 *컴파일* 이
- * 아니라 NAPI watch 의 **고정 50ms 디바운스**(napi/watch.zig `watch_debounce_ms`). 세 도구
- * 모두 watch 디바운스가 있으나 zntc 의 50ms 가 esbuild/rolldown 보다 커 더 느리게 보인다.
- * 실제 컴파일 속도는 incremental-rebuild.ts(CLI, 디바운스 0)의 ~16ms 가 더 가깝다.
+ * ⚠️ watch latency(파일감지+디바운스 포함)는 *이* 벤치가 아니라 incremental-rebuild.ts(실제
+ * CLI) / napi-watch.ts 가 잰다. 거기 zntc 53ms 는 컴파일이 아니라 NAPI watch 기본 50ms 디바운스
+ * (이제 watchDelay 로 조절 가능). 본 벤치는 그 디바운스를 빼고 *순수 컴파일* 만 본다.
  *
  * 실행: bun run inprocess-rebuild.ts
  *
@@ -27,7 +21,7 @@
 
 import { watch as zntcWatch } from '../../packages/core/index.ts';
 import { context as esbuildContext } from 'esbuild';
-import { watch as rolldownWatch } from 'rolldown';
+import { rolldown } from 'rolldown';
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -114,6 +108,9 @@ async function measureZntc(fx: Fixture) {
     outfile: out,
     bundle: true,
     write: true,
+    // 순수 rebuild 측정 — 디바운스 0 으로 끄고 incremental rebuild 컴파일만 잰다.
+    // (zntc 는 직접 rebuild API 가 없어 watch 경유 — kqueue 감지+콜백 dispatch 소량 포함.)
+    watchDelay: 0,
     onReady: () => readyResolve(),
     onRebuild: () => {
       if (rebuildResolve) {
@@ -157,10 +154,7 @@ async function measureEsbuild(fx: Fixture) {
   const { entry } = fx.build(dir);
   const out = join(dir, 'out.js');
   const iters: number[] = [];
-  // ⚠️ 공정성: zntc/rolldown 은 file-watch(touch→onRebuild)로 재므로 esbuild 도 직접
-  // `ctx.rebuild()`(watch 미경유, 감지/콜백 오버헤드 0) 대신 **watch API**(`ctx.watch()` +
-  // onEnd 플러그인)로 측정한다. 안 그러면 esbuild 만 파일감지 latency 를 건너뛰어 유리.
-  let onEndResolve: (() => void) | null = null;
+  // 순수 rebuild — esbuild 의 documented incremental API `ctx.rebuild()`(컨텍스트 캐시 재사용).
   const ctx = await esbuildContext({
     entryPoints: [entry],
     outfile: out,
@@ -168,43 +162,16 @@ async function measureEsbuild(fx: Fixture) {
     write: true,
     loader: { '.ts': 'ts' },
     format: 'iife',
-    plugins: [
-      {
-        name: 'bench-onend',
-        setup(build) {
-          build.onEnd(() => {
-            if (onEndResolve) {
-              const r = onEndResolve;
-              onEndResolve = null;
-              r();
-            }
-          });
-        },
-      },
-    ],
-  });
-  const firstBuild = new Promise<void>((res) => {
-    onEndResolve = res;
   });
   const initStart = performance.now();
-  await ctx.watch(); // 초기 빌드 트리거 → onEnd
-  await firstBuild;
+  await ctx.rebuild();
   const initialMs = performance.now() - initStart;
   try {
     await sleep(SETTLE_MS);
     for (let i = 0; i < ITERATIONS; i++) {
-      const p = new Promise<void>((res, rej) => {
-        onEndResolve = res;
-        setTimeout(() => {
-          if (onEndResolve) {
-            onEndResolve = null;
-            rej(new Error(`rebuild ${i} timeout`));
-          }
-        }, REBUILD_TIMEOUT_MS);
-      });
       appendFileSync(entry, `export const _i${i}=${i};console.log(_i${i});\n`);
       const t0 = performance.now();
-      await p;
+      await ctx.rebuild();
       iters.push(performance.now() - t0);
       await sleep(SETTLE_MS);
     }
@@ -218,55 +185,26 @@ async function measureEsbuild(fx: Fixture) {
 async function measureRolldown(fx: Fixture) {
   const dir = mkdtempSync(join(tmpdir(), `inp-rd-${fx.name}-`));
   const { entry } = fx.build(dir);
-  const out = join(dir, 'out.js');
   const iters: number[] = [];
-  let t0 = 0;
-  let rebuildResolve: (() => void) | null = null;
-  let readyResolve!: () => void;
-  const readyP = new Promise<void>((res, rej) => {
-    readyResolve = res;
-    setTimeout(() => rej(new Error('rolldown ready timeout')), READY_TIMEOUT_MS);
-  });
+  // 순수 rebuild — rolldown() 빌드 객체 재사용 + generate() 재호출(변경 파일 re-read 후
+  // incremental 재번들; lodash initial 20ms→re-gen 13ms 로 캐시 재사용 확인). watch 미경유.
+  const bundle = await rolldown({ input: entry, cwd: dir });
   const initStart = performance.now();
-  const watcher = rolldownWatch({
-    input: entry,
-    output: { file: out, format: 'esm' },
-  });
-  watcher.on('event', (e: any) => {
-    if (e.code === 'BUNDLE_END' || e.code === 'END') {
-      if (rebuildResolve) {
-        iters.push(performance.now() - t0);
-        const r = rebuildResolve;
-        rebuildResolve = null;
-        r();
-      } else {
-        readyResolve();
-      }
-    }
-  });
+  await bundle.generate({ format: 'esm' });
+  const initialMs = performance.now() - initStart;
   try {
-    await readyP;
-    const initialMs = performance.now() - initStart;
     await sleep(SETTLE_MS);
     for (let i = 0; i < ITERATIONS; i++) {
-      const p = new Promise<void>((res, rej) => {
-        rebuildResolve = res;
-        setTimeout(() => {
-          if (rebuildResolve) {
-            rebuildResolve = null;
-            rej(new Error(`rebuild ${i} timeout`));
-          }
-        }, REBUILD_TIMEOUT_MS);
-      });
       appendFileSync(entry, `export const _i${i}=${i};console.log(_i${i});\n`);
-      t0 = performance.now();
-      await p;
+      const t0 = performance.now();
+      await bundle.generate({ format: 'esm' });
+      iters.push(performance.now() - t0);
       await sleep(SETTLE_MS);
     }
     return { initialMs, iters };
   } finally {
     try {
-      await watcher.close();
+      await bundle.close?.();
     } catch {}
     rmSync(dir, { recursive: true, force: true });
   }
@@ -282,7 +220,7 @@ function pad(s: string | number, n: number) {
 }
 
 async function main() {
-  console.log('# In-process rebuild benchmark (fair, no spawn/polling)\n');
+  console.log('# In-process 순수 incremental rebuild (디바운스/watch latency 제외, 컴파일만)\n');
   console.log(`Iter ${ITERATIONS}, settle ${SETTLE_MS}ms.\n`);
   for (const fx of fixtures) {
     console.log(`\n## ${fx.name}\n`);
