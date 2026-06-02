@@ -60,17 +60,17 @@
       { "tool": "esbuild", "scale": "lodash-es (real dep)", "medianMs": 22.9, "minMs": 20.5, "maxMs": 25.1, "p95Ms": 25.1 }
     ],
     "incrementalRebuild": [
-      { "tool": "ZNTC", "scale": "tiny (1 file)", "medianMs": 2.1, "minMs": 0.24, "maxMs": 2.4, "p95Ms": 2.4 },
-      { "tool": "rolldown", "scale": "tiny (1 file)", "medianMs": 4.17, "minMs": 0.97, "maxMs": 4.38, "p95Ms": 4.38 },
-      { "tool": "esbuild", "scale": "tiny (1 file)", "medianMs": 17.8, "minMs": 4.83, "maxMs": 22.2, "p95Ms": 22.2 },
+      { "tool": "ZNTC", "scale": "tiny (1 file)", "medianMs": 2.23, "minMs": 0.58, "maxMs": 3.16, "p95Ms": 3.16 },
+      { "tool": "rolldown", "scale": "tiny (1 file)", "medianMs": 4.18, "minMs": 1.13, "maxMs": 6.49, "p95Ms": 6.49 },
+      { "tool": "esbuild", "scale": "tiny (1 file)", "medianMs": 21.0, "minMs": 5.71, "maxMs": 28.4, "p95Ms": 28.4 },
 
-      { "tool": "ZNTC", "scale": "medium (10 modules)", "medianMs": 2.57, "minMs": 0.35, "maxMs": 2.82, "p95Ms": 2.82 },
-      { "tool": "rolldown", "scale": "medium (10 modules)", "medianMs": 5.99, "minMs": 1.46, "maxMs": 6.44, "p95Ms": 6.44 },
-      { "tool": "esbuild", "scale": "medium (10 modules)", "medianMs": 21.9, "minMs": 5.63, "maxMs": 24.8, "p95Ms": 24.8 },
+      { "tool": "ZNTC", "scale": "medium (10 modules)", "medianMs": 2.73, "minMs": 0.76, "maxMs": 4.57, "p95Ms": 4.57 },
+      { "tool": "rolldown", "scale": "medium (10 modules)", "medianMs": 6.5, "minMs": 1.86, "maxMs": 12.3, "p95Ms": 12.3 },
+      { "tool": "esbuild", "scale": "medium (10 modules)", "medianMs": 22.9, "minMs": 8.75, "maxMs": 29.8, "p95Ms": 29.8 },
 
-      { "tool": "ZNTC", "scale": "lodash-es (real dep)", "medianMs": 10.5, "minMs": 3.62, "maxMs": 17.8, "p95Ms": 17.8 },
-      { "tool": "rolldown", "scale": "lodash-es (real dep)", "medianMs": 38.9, "minMs": 14.2, "maxMs": 44.5, "p95Ms": 44.5 },
-      { "tool": "esbuild", "scale": "lodash-es (real dep)", "medianMs": 47.1, "minMs": 23.5, "maxMs": 54.6, "p95Ms": 54.6 }
+      { "tool": "ZNTC", "scale": "lodash-es (real dep)", "medianMs": 20.0, "minMs": 3.61, "maxMs": 24.2, "p95Ms": 24.2 },
+      { "tool": "rolldown", "scale": "lodash-es (real dep)", "medianMs": 43.7, "minMs": 17.5, "maxMs": 52.4, "p95Ms": 52.4 },
+      { "tool": "esbuild", "scale": "lodash-es (real dep)", "medianMs": 55.5, "minMs": 30.4, "maxMs": 60.8, "p95Ms": 60.8 }
     ],
     "napiWasmCli": [
       { "tool": "NAPI (.node)", "scale": "small (100 lines)", "medianMs": 0.049, "minMs": 0.048, "maxMs": 0.061, "p95Ms": 0.054 },

@@ -22,11 +22,14 @@
 import { watch as zntcWatch } from '../../packages/core/index.ts';
 import { context as esbuildContext } from 'esbuild';
 import { rolldown } from 'rolldown';
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const ITERATIONS = 10;
+// 단일 rebuild 가 GC 로 run-to-run 변동이 커, median 샘플 수를 늘려 안정화(10→50). 50 샘플
+// median 은 GC outlier 에 강건. 매 iteration 은 entry 를 append 가 아니라 baseSrc + 마커 1줄로
+// in-place 덮어써 파일 크기를 일정 유지(append 면 누적으로 파일이 커져 rebuild 가 무거워지는 confound 제거).
+const ITERATIONS = 50;
 const READY_TIMEOUT_MS = 15_000;
 const REBUILD_TIMEOUT_MS = 10_000;
 const SETTLE_MS = 200;
@@ -93,6 +96,7 @@ function summarize(arr: number[]) {
 async function measureZntc(fx: Fixture) {
   const dir = mkdtempSync(join(tmpdir(), `inp-zntc-${fx.name}-`));
   const { entry } = fx.build(dir);
+  const baseSrc = readFileSync(entry, 'utf8');
   const out = join(dir, 'out.js');
   const iters: number[] = [];
   let t0 = 0;
@@ -135,7 +139,7 @@ async function measureZntc(fx: Fixture) {
           }
         }, REBUILD_TIMEOUT_MS);
       });
-      appendFileSync(entry, `export const _i${i}=${i};console.log(_i${i});\n`);
+      writeFileSync(entry, `${baseSrc}\nexport const _b${i} = ${i};\nconsole.log(_b${i});\n`);
       t0 = performance.now();
       await p;
       await sleep(SETTLE_MS);
@@ -152,6 +156,7 @@ async function measureZntc(fx: Fixture) {
 async function measureEsbuild(fx: Fixture) {
   const dir = mkdtempSync(join(tmpdir(), `inp-esb-${fx.name}-`));
   const { entry } = fx.build(dir);
+  const baseSrc = readFileSync(entry, 'utf8');
   const out = join(dir, 'out.js');
   const iters: number[] = [];
   // 순수 rebuild — esbuild 의 documented incremental API `ctx.rebuild()`(컨텍스트 캐시 재사용).
@@ -169,7 +174,7 @@ async function measureEsbuild(fx: Fixture) {
   try {
     await sleep(SETTLE_MS);
     for (let i = 0; i < ITERATIONS; i++) {
-      appendFileSync(entry, `export const _i${i}=${i};console.log(_i${i});\n`);
+      writeFileSync(entry, `${baseSrc}\nexport const _b${i} = ${i};\nconsole.log(_b${i});\n`);
       const t0 = performance.now();
       await ctx.rebuild();
       iters.push(performance.now() - t0);
@@ -185,6 +190,7 @@ async function measureEsbuild(fx: Fixture) {
 async function measureRolldown(fx: Fixture) {
   const dir = mkdtempSync(join(tmpdir(), `inp-rd-${fx.name}-`));
   const { entry } = fx.build(dir);
+  const baseSrc = readFileSync(entry, 'utf8');
   const iters: number[] = [];
   // 순수 rebuild — rolldown() 빌드 객체 재사용 + generate() 재호출(변경 파일 re-read 후
   // incremental 재번들; lodash initial 20ms→re-gen 13ms 로 캐시 재사용 확인). watch 미경유.
@@ -195,7 +201,7 @@ async function measureRolldown(fx: Fixture) {
   try {
     await sleep(SETTLE_MS);
     for (let i = 0; i < ITERATIONS; i++) {
-      appendFileSync(entry, `export const _i${i}=${i};console.log(_i${i});\n`);
+      writeFileSync(entry, `${baseSrc}\nexport const _b${i} = ${i};\nconsole.log(_b${i});\n`);
       const t0 = performance.now();
       await bundle.generate({ format: 'esm' });
       iters.push(performance.now() - t0);
