@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "generated_at": "2026-06-02T00:00:00.000Z",
+  "_doc": [
+    "ZNTC vs 경쟁 도구(median) 비율 baseline. 회귀 게이트가 ubuntu-latest 한 runner의",
+    "bench-results JSON과 비교한다. 절대 ms 대신 비율을 쓰는 이유: GitHub 공유 runner는",
+    "run마다 2~3배 출렁여(특히 macOS) 절대값 baseline이 깨지지만, 같은 머신에서 같은 입력을",
+    "도는 esbuild/Bun 대비 비율은 환경 드리프트에 강하다. esbuild가 사실상 통제군.",
+    "",
+    "값 의미: ratios[task|scale][tool] = ZNTC_median / tool_median (작을수록 ZNTC가 빠름).",
+    "게이트: 현재 ZNTC/esbuild 비율 > baseline * (1 + tolerance) 이면 회귀 의심으로 flag.",
+    "esbuild 비율이 1차 기준(가장 안정). Bun 도 측정되면 corroboration — esbuild·Bun 두",
+    "비율이 *모두* 초과해야 flag(esbuild 가 그 run 에서 우연히 빨랐던 단독 오탐 제거).",
+    "",
+    "현재 값은 Zig 0.15.2 시절(PR #4003 마이그레이션 이전) ubuntu-latest CI 댓글 이력의",
+    "구간 median으로 시드했다 — 즉 '건강했던' 성능선. PR #4003(Zig 0.16 std.Io 오버홀)이",
+    "bundle 경로에 +19~29% 회귀를 남겨, 이 baseline 대비 현재 main은 의도적으로 flag된다.",
+    "회귀 fix가 머지되면 비율이 baseline으로 복귀해 경고가 자동 해제된다.",
+    "",
+    "한계(정직하게): (1) 단일 ubuntu run 의 5-iteration median 비율 1개를 보는 휴리스틱이라",
+    "통계적 유의성 도구가 아니다 — corroboration 으로 오탐을 줄이지만 완벽하지 않다. (2) tolerance",
+    "(15%) 미만의 ZNTC-단독 회귀는 구조적으로 미탐(false negative). 즉 '통과 == 무회귀'가 아니라",
+    "'큰 단발 회귀는 못 봤다' 수준의 보증이다. 누적 소회귀는 baseline 갱신 시 흡수돼 숨을 수",
+    "있으니, 갱신은 의도된 변경임을 확인하고 할 것. (3) esbuild 절대 성능이 runner 세대 교체로",
+    "드리프트하면 비율 baseline 도 함께 stale 해진다(재생성 필요).",
+    "",
+    "재생성: 신뢰 가능한(회귀 없는) main 빌드에서 ubuntu CI 의 bench-results JSON median 으로",
+    "ratios[task|scale][esbuild|Bun] = ZNTC_median/tool_median 을 갱신. 단발 run 노이즈를 피하려면",
+    "여러 ubuntu run 의 median 을 쓸 것. transpile-large 는 ZNTC가 esbuild보다 6.7배 느린 '기존",
+    "격차'라 회귀가 아니다 — baseline이 그 격차를 담아 상대 변화만 본다."
+  ],
+  "runner": "ubuntu-latest",
+  "tolerance": 0.15,
+  "ratios": {
+    "transpile|small (100 lines)": { "esbuild": 0.75, "Bun": 0.57 },
+    "transpile|medium (1K lines)": { "esbuild": 1.89, "Bun": 0.91 },
+    "transpile|large (5K lines)": { "esbuild": 6.7, "Bun": 1.36 },
+    "bundle|small (10 modules)": { "esbuild": 0.43, "Bun": 0.57 },
+    "bundle|medium (1000 modules)": { "esbuild": 0.62, "Bun": 1.2 },
+    "bundle|large (5000 modules)": { "esbuild": 0.65, "Bun": 1.3 }
+  }
+}
