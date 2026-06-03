@@ -1175,6 +1175,17 @@ pub const Bundler = struct {
             owned_graph_storage = ModuleGraph.init(self.allocator, self.getResolveCache());
         }
         const graph: *ModuleGraph = if (self.external_graph) |g| g else &owned_graph_storage;
+        // perf/hmr-graph-topology-reuse Phase A — 보존된 external_graph 재사용 훅.
+        // external_graph 가 *이미 모듈을 가진* 상태(=직전 빌드의 결과)면, 이번 빌드 전에
+        // 반드시 reset 해야 stale 모듈/edge 가 새 빌드를 오염시키지 않는다. Phase A 의
+        // prepareForPreservedRebuild 는 모듈을 전량 비워 매 빌드 fresh graph 와 byte-identical
+        // 출력을 보장한다(graph struct/backing/path_arena 만 재사용 — 객체 수명 안정 + alloc 절감).
+        // 위상 보존(edge/exec_index 재사용)은 transferModulesToStore 소유권 재설계가 필요해
+        // Phase B 로 분리. 따라서 여기 reset 은 빌드 종류(plugin/MF/glob/splitting 등)와 무관하게
+        // 항상 안전.
+        if (has_external_graph and graph.moduleCount() > 0) {
+            graph.prepareForPreservedRebuild();
+        }
         // this.emitFile (PR5): plugin 이 emit 한 asset 수집소. graph build 가 plugin hook 을
         // 호출하기 *전* 에 연결해야 한다. emit 된 asset 은 아래에서 OutputFile(kind=.asset)로
         // 복사되어 final_asset_outputs 에 합쳐지고, store 는 scratch 라 bundle() 종료 시 해제.

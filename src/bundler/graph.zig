@@ -291,6 +291,9 @@ pub const ModuleGraph = struct {
     /// RFC_GRAPH_PERSISTENCE Sub-PR-B.1 — 단일 모듈 invalidate (path 보존).
     /// 호출자 없음 (Sub-PR-B.3 에서 wire-up).
     pub const invalidateModule = graph_lifecycle.invalidateModule;
+    /// perf/hmr-graph-topology-reuse Phase A — persistent_graph 재사용 빌드 직전 reset.
+    /// 현재는 fresh 와 byte-identical(모듈 전량 clear). bundler.zig external_graph 훅이 호출.
+    pub const prepareForPreservedRebuild = graph_lifecycle.prepareForPreservedRebuild;
 
     const ensureBuiltinPlugins = graph_plugins.ensureBuiltinPlugins;
     pub const pluginRunnerWithBuiltins = graph_plugins.pluginRunnerWithBuiltins;

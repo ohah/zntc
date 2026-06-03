@@ -1176,3 +1176,327 @@ test "IncrementalBundler enable_persistence=false: default off, persistent_graph
     // default off 면 persistent_graph 미사용
     try std.testing.expect(ib.persistent_graph == null);
 }
+
+// ============================================================
+// perf/hmr-graph-topology-reuse Phase A — byte-identical 정확성 (corruption 방어 핵심)
+//
+// 보존(persistent_graph 재사용) 경로로 rebuild 한 *full 번들 출력* 이 같은 입력을 fresh full
+// 로 빌드한 출력과 **바이트 동일** 한지 검증한다. 이것이 silent corruption 방어의 핵심.
+// Bundler 를 직접 구동해(IncrementalBundler 는 rebuild 시 skip_bundle_output 이라 full output
+// 미생성) external_graph + module_store 보존 경로의 full output 을 fresh 와 대조한다.
+// ============================================================
+
+const ModuleGraph_t = @import("graph.zig").ModuleGraph;
+
+/// 보존 경로 한 빌드 헬퍼: 같은 graph/store/resolve_cache 를 재사용해 full output 빌드.
+/// changed 가 non-null 이면 그 set 을 changed_files 로 전달(web doBuild 와 동형). dev_mode
+/// full output(skip_bundle_output=false)으로 비교 가능한 result.output 을 만든다.
+fn preservedBuild(
+    graph: *ModuleGraph_t,
+    store: *module_store.PersistentModuleStore,
+    rc: *@import("resolve_cache.zig").ResolveCache,
+    entry: []const u8,
+    is_first: bool,
+    changed: ?*const std.StringHashMapUnmanaged(void),
+) !BundleResult {
+    var opts = @as(@import("bundler.zig").BundleOptions, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    if (!is_first) {
+        opts.module_store = store;
+        opts.changed_files = changed;
+    }
+    var b = Bundler.initWithGraph(std.testing.allocator, opts, rc, graph);
+    defer b.deinit();
+    return try b.bundle(std.testing.io);
+}
+
+test "Phase A byte-identical: 보존 rebuild 출력 == fresh full (body-only edit)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "util.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nconsole.log(x);");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    // 보존 graph + store + resolve_cache 세팅 (web doBuild 와 동형).
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    // build 1 (first): 보존 graph init 채움.
+    {
+        var r1 = try preservedBuild(&graph, &store, &rc, entry, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+    // build 2 (warm seed, 변경 없음 — store/graph 워밍).
+    {
+        var r2 = try preservedBuild(&graph, &store, &rc, entry, false, null);
+        defer r2.deinit(std.testing.allocator);
+        try std.testing.expect(!r2.hasErrors());
+    }
+
+    // index.ts body-only edit (import 위상 불변).
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nconsole.log(x + 1);");
+
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, entry, {});
+
+    // build 3 (보존 경로 rebuild) — full output.
+    var preserved = try preservedBuild(&graph, &store, &rc, entry, false, &touched);
+    defer preserved.deinit(std.testing.allocator);
+    try std.testing.expect(!preserved.hasErrors());
+
+    // fresh full (store/graph 없음, 수정된 파일 읽음).
+    var fresh = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer fresh.deinit();
+    var fresh_result = try fresh.bundle(std.testing.io);
+    defer fresh_result.deinit(std.testing.allocator);
+    try std.testing.expect(!fresh_result.hasErrors());
+
+    // 핵심: 보존 rebuild 출력 == fresh full 출력 (byte-identical).
+    try std.testing.expect(preserved.output.len > 0);
+    try std.testing.expectEqualStrings(fresh_result.output, preserved.output);
+}
+
+test "Phase A byte-identical: A→B→A 반복 후에도 fresh full 과 동일" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "util.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nconsole.log(x, 'A');");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuild(&graph, &store, &rc, entry, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+
+    const variants = [_][]const u8{
+        "import { x } from './util';\nconsole.log(x, 'B');",
+        "import { x } from './util';\nconsole.log(x, 'A');",
+        "import { x } from './util';\nconsole.log(x, 'B');",
+        "import { x } from './util';\nconsole.log(x, 'A');",
+    };
+    for (variants) |src| {
+        std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+        try writeFile(tmp.dir, "index.ts", src);
+        var touched: std.StringHashMapUnmanaged(void) = .empty;
+        defer touched.deinit(std.testing.allocator);
+        try touched.put(std.testing.allocator, entry, {});
+
+        var preserved = try preservedBuild(&graph, &store, &rc, entry, false, &touched);
+        defer preserved.deinit(std.testing.allocator);
+        try std.testing.expect(!preserved.hasErrors());
+
+        var fresh = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+        defer fresh.deinit();
+        var fresh_result = try fresh.bundle(std.testing.io);
+        defer fresh_result.deinit(std.testing.allocator);
+        try std.testing.expect(!fresh_result.hasErrors());
+
+        try std.testing.expectEqualStrings(fresh_result.output, preserved.output);
+    }
+}
+
+test "Phase A byte-identical: 모듈 추가(import 신규) 후에도 보존 graph 가 fresh 와 동일" {
+    // 위상 변화(모듈 추가): 보존 graph 가 prepareForPreservedRebuild 로 매 빌드 fresh
+    // discovery 라 추가/삭제도 정확. orphan slot 누수 없이 byte-identical 이어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "util.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "extra.ts", "export const y = 2;");
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nconsole.log(x);");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuild(&graph, &store, &rc, entry, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+    const mod_count_before = graph.modules.count();
+
+    // 새 import 추가 → extra.ts 가 그래프에 등장(모듈 추가, 위상 변화).
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "index.ts",
+        \\import { x } from './util';
+        \\import { y } from './extra';
+        \\console.log(x, y);
+    );
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, entry, {});
+
+    var preserved = try preservedBuild(&graph, &store, &rc, entry, false, &touched);
+    defer preserved.deinit(std.testing.allocator);
+    try std.testing.expect(!preserved.hasErrors());
+
+    var fresh = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer fresh.deinit();
+    var fresh_result = try fresh.bundle(std.testing.io);
+    defer fresh_result.deinit(std.testing.allocator);
+    try std.testing.expect(!fresh_result.hasErrors());
+
+    // 모듈 추가가 반영(보존 graph 가 fresh discovery)되고, 출력이 byte-identical.
+    try std.testing.expect(graph.modules.count() > mod_count_before);
+    try std.testing.expectEqualStrings(fresh_result.output, preserved.output);
+}
+
+test "Phase A byte-identical: 모듈 제거(import 삭제) 후에도 보존 graph 가 fresh 와 동일 (orphan 누수 0)" {
+    // 위상 변화(모듈 제거): 제거된 모듈이 보존 graph 의 orphan slot 으로 남아 emit 에 새는
+    // corruption 을 차단하는지 검증. prepareForPreservedRebuild 의 modules 전량 clear 가
+    // 핵심 — fresh 와 byte-identical 이면 제거 모듈이 새지 않음을 증명.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "util.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "extra.ts", "export const y = 2;");
+    try writeFile(tmp.dir, "index.ts",
+        \\import { x } from './util';
+        \\import { y } from './extra';
+        \\console.log(x, y);
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuild(&graph, &store, &rc, entry, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+
+    // extra.ts import 제거 → extra.ts 가 그래프에서 빠져야 함(위상 변화: 제거).
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nconsole.log(x);");
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, entry, {});
+
+    var preserved = try preservedBuild(&graph, &store, &rc, entry, false, &touched);
+    defer preserved.deinit(std.testing.allocator);
+    try std.testing.expect(!preserved.hasErrors());
+
+    var fresh = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer fresh.deinit();
+    var fresh_result = try fresh.bundle(std.testing.io);
+    defer fresh_result.deinit(std.testing.allocator);
+    try std.testing.expect(!fresh_result.hasErrors());
+
+    // 핵심: 제거된 extra.ts 의 export(`const y = 2`) 가 보존 출력에 *없어야* 한다 + byte-identical.
+    try std.testing.expectEqualStrings(fresh_result.output, preserved.output);
+}
+
+test "Phase A: 보존 graph 반복 rebuild leak 0 (GPA) — IncrementalBundler enable_persistence" {
+    // testing.allocator(GPA) 가 deinit 시 leak 검출. 보존 graph 를 여러 번 rebuild 해도
+    // path_arena retain_capacity + 모듈 전량 deinit 이 정확해 leak 0 이어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "util.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nconsole.log(x);");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var ib = IncrementalBundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .collect_module_codes = true,
+    });
+    ib.enable_persistence = true;
+    defer ib.deinit();
+
+    // 첫 빌드 + 여러 body-only rebuild.
+    {
+        const r = try ib.rebuild(std.testing.io);
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    const payloads = [_][]const u8{
+        "import { x } from './util';\nconsole.log(x, 1);",
+        "import { x } from './util';\nconsole.log(x, 2);",
+        "import { x } from './util';\nconsole.log(x, 3);",
+        "import { x } from './util';\nconsole.log(x, 4);",
+    };
+    for (payloads) |src| {
+        std.testing.io.sleep(std.Io.Duration.fromMilliseconds(20), .awake) catch {};
+        try writeFile(tmp.dir, "index.ts", src);
+        const r = try ib.rebuild(std.testing.io);
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    // 보존 graph 가 살아있고 leak 없이 deinit 가능(아래 defer ib.deinit + GPA 검출).
+    try std.testing.expect(ib.persistent_graph != null);
+}
+
+test "Phase A: enable_persistence + resolve_cache reset(interval) 교차 안전 (#3751 정합)" {
+    // 보존 graph 의 resolve_cache 포인터는 &self.resolve_cache.? (stable address). interval
+    // reset 으로 resolve_cache 가 deinit+재생성돼도 그 빌드 직전 prepareForPreservedRebuild 가
+    // 모듈을 전량 비워 stale interned ref 가 남지 않는다. UAF/double-free/leak 없이 진행.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "util.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nconsole.log(x);");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var ib = IncrementalBundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .collect_module_codes = true,
+    });
+    ib.enable_persistence = true;
+    ib.rebuild_reset_interval = 2; // 빠른 reset 유도.
+    defer ib.deinit();
+
+    var i: usize = 0;
+    while (i < 6) : (i += 1) {
+        std.testing.io.sleep(std.Io.Duration.fromMilliseconds(20), .awake) catch {};
+        const src = try std.fmt.allocPrint(std.testing.allocator, "import {{ x }} from './util';\nconsole.log(x, {d});", .{i});
+        defer std.testing.allocator.free(src);
+        try writeFile(tmp.dir, "index.ts", src);
+        const r = try ib.rebuild(std.testing.io);
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    try std.testing.expect(ib.persistent_graph != null);
+}

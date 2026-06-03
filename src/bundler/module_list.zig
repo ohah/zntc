@@ -63,6 +63,15 @@ pub fn StableSegmentedList(comptime T: type) type {
             self.len = 0;
         }
 
+        /// `len` 만 0 으로 — shelf chunk 할당은 보존(다음 append 가 재사용).
+        /// perf/hmr-graph-topology-reuse Phase A: persistent_graph 재사용 시
+        /// 모듈 슬롯을 논리적으로 비우되 backing 메모리를 재활용한다. caller 는 비우기
+        /// *전에* 각 element 의 deinit(Module.deinit) 을 직접 호출할 책임이 있다 —
+        /// 이 함수는 element 소유 리소스를 해제하지 않는다(len reset 만).
+        pub fn clearRetainingCapacity(self: *Self) void {
+            self.len = 0;
+        }
+
         pub fn append(self: *Self, allocator: Allocator, item: T) !void {
             const idx = self.len;
             const shelf_idx = shelfIndex(idx);
