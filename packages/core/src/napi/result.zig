@@ -181,6 +181,12 @@ pub fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult,
     }
 
     if (result.module_dev_codes) |codes| {
+        // NOTE(durability): one-shot build() 는 compiled_cache 를 주입하지 않으므로 emit 의
+        // dev_code hit-skip 분기(ModuleDevCode.changed=false, 빈 code placeholder)가 발생하지
+        // 않는다 — 여기 codes 는 항상 전부 changed=true(실제 code). 향후 build() 에
+        // compiled_cache 를 연결하면 changed=false 빈 placeholder 가 섞이므로, 그 PR 에서
+        // `if (!mc.changed) continue` 필터 + array 길이 보정을 추가해야 한다(현재는 dead path).
+        // watch.zig / incremental.zig 의 HMR 소비처는 이미 changed 를 필터한다.
         var js_codes: c.napi_value = undefined;
         _ = c.napi_create_array_with_length(env, codes.len, &js_codes);
         for (codes, 0..) |mc, i| {

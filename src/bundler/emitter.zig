@@ -909,6 +909,19 @@ pub fn emitWithTreeShaking(
         if (options.dev_mode and options.collect_module_codes) {
             const mod_id = makeModuleId(m.path, options.root_dir);
 
+            // compiled cache hit(소스 불변) 모듈은 id 만 방출하고 wrap+sourcemap+code 복사를 skip.
+            // watch 는 id 로 graph_changed 감지·캐시 키 정합만 하고(changed=false), HMR update 에는
+            // 변경분(아래 miss 경로, changed=true)만 올린다. 변경 1개인데 8067 모듈 전부 wrap 하던
+            // eCat(~70ms→~6ms) 병목 제거. id-only 항목이라 code 는 빈 placeholder.
+            if (hit_mask[i]) {
+                try dev_module_codes.append(allocator, .{
+                    .id = try allocator.dupe(u8, mod_id),
+                    .code = try allocator.dupe(u8, ""),
+                    .changed = false,
+                });
+                continue;
+            }
+
             // wrap 형식(IIFE + 런타임 alias + sourceURL)은 split 경로와 공유 — 한 곳에서 정의.
             const hmr_code = try wrapDevModuleCode(allocator, code, mod_id, options.sourcemap.enable);
 
@@ -954,6 +967,7 @@ pub fn emitWithTreeShaking(
                 .code = hmr_code,
                 .map = module_map,
                 .sm_builder = module_sm_builder,
+                .changed = true,
             });
         }
     }
