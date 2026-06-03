@@ -14,6 +14,7 @@
 const std = @import("std");
 const helpers = @import("helpers.zig");
 const e2e = helpers.e2e;
+const e2eWithOptions = helpers.e2eWithOptions;
 
 fn expectParenSurvives(output: []const u8, needle: []const u8) !void {
     if (std.mem.indexOf(u8, output, needle) == null) {
@@ -128,4 +129,27 @@ test "load-bearing: assignment shorthand default sequence ({x=(a,b)}=o)" {
     defer r.deinit();
     // 괄호 유실 시 `x=a,b` 는 default 가 `a` 로 바뀌고 `b` 가 별도 평가 → silent miscompile.
     try expectParenSurvives(r.output, "(a,b)");
+}
+
+test "load-bearing: 주석이 statement-start object 마크 무력화 (/*c*/{a:1}).b" {
+    var r = try e2eWithOptions(std.testing.allocator, "(/*c*/{a:1}).b;", .{});
+    defer r.deinit();
+    // 주석이 buf 위치를 밀어 stmt_start 마크와 어긋나면 `{a:1}.b` 의 `{` 가 block 으로
+    // 오파싱(legal 주석은 minify 에서도 생존 → 프로덕션 깨짐). save/restore 로 재앵커.
+    try expectParenSurvives(r.output, "({ a: 1 })");
+}
+
+test "load-bearing: 주석이 arrow body object 마크 무력화 ()=>(/*c*/{a:1})" {
+    var r = try e2eWithOptions(std.testing.allocator, "var f = () => (/*c*/{a:1});", .{});
+    defer r.deinit();
+    // 유실 시 `() => {a:1}` 의 `{` 가 block body → 객체 미반환(silent runtime miscompile).
+    try expectParenSurvives(r.output, "({ a: 1 })");
+}
+
+test "load-bearing: for-init sequence 의 in 누수 for((a in b),c;;)" {
+    var r = try e2e(std.testing.allocator, "for ((a in b), c;;) {}");
+    defer r.deinit();
+    // 유실 시 `for (a in b,c;;)` 는 for-in 헤더 오파싱 → SyntaxError. forbid_in 시드된
+    // sequence 는 통째로 감싼다(emitList 가 원소 flag clear 하므로 sequence 레벨 처리).
+    try expectParenSurvives(r.output, "(a in b,c)");
 }

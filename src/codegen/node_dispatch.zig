@@ -47,7 +47,13 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
     // STRING_TABLE_BIT가 설정된 span은 합성 노드(string_table 참조)이므로
     // 원본 소스 위치가 아님 → 주석 위치 비교를 건너뛴다.
     if (node.span.start != node.span.end and node.span.start & Ast.STRING_TABLE_BIT == 0) {
+        // 주석이 buf 위치를 밀면 statement-start 마크(stmt_start/arrow_expr_start 등)와
+        // 어긋나 `(/*c*/{a:1}).b` 같은 object/class/destructuring 의 wrap 이 유실된다
+        // (legal 주석은 minify 에서도 살아남아 프로덕션 깨짐). save/restore 로 마크를 주석
+        // 뒤(실제 첫 토큰 위치)로 재앵커한다 (esbuild printExprComments + start-flag 보존).
+        const start_flags = self.saveExprStartFlags();
         try statement_emit.emitComments(self, node.span.start);
+        self.restoreExprStartFlags(start_flags);
     }
 
     // 소스맵 매핑은 각 emitter / inline case 가 명시 발행 (oxc/esbuild 패턴).
@@ -438,7 +444,10 @@ fn exprNeedsParens(self: anytype, node: ast_mod.Node, level: Level, flags: ExprF
             // destructuring 할당(`({a}=b)`)이 statement-start / arrow body-start 면 괄호
             // 필수 — `{` 가 block 으로 오파싱되는 것을 막는다 (esbuild binaryExprVisitor).
             (self.atStmtOrArrowStart() and assignTargetIsObject(self, node.data.binary.left)),
-        .sequence_expression => level.gte(.comma),
+        // sequence 가 for-init(forbid_in)이면 top-level `in`(`for((a in b),c;;)`)이 원소로
+        // 누수돼 for-in 헤더 오파싱되는 것을 막아 통째로 감싼다 — emitList 가 원소에 .{} 를
+        // 줘 forbid_in 이 끊기므로 sequence 레벨에서 처리(esbuild 는 원소별 wrap, 여기선 전체).
+        .sequence_expression => level.gte(.comma) or flags.forbid_in,
         .yield_expression => level.gte(.assign),
         // object literal 이 statement-start / arrow body-start 면 `{` block 오파싱 방지
         // 괄호 (`({})`, `()=>({})`). esbuild EObject wrap.
