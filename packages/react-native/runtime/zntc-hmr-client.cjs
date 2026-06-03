@@ -5,8 +5,9 @@
  */
 'use strict';
 
-var REFRESH_TEXT_COLOR = -1; // #ffffff
-var REFRESH_BACKGROUND_COLOR = -14318360; // #2584e8
+// JSI 는 색상을 uint32 로 기대 — 음수(-1)는 HostFunction throw 위험. unsigned hex 사용.
+var REFRESH_TEXT_COLOR = 0xffffffff; // #ffffff
+var REFRESH_BACKGROUND_COLOR = 0xff2584e8; // #2584e8
 var BUFFER_LIMIT = 1024 * 1024;
 var prettyFormat = require('pretty-format');
 var prettyFormatImpl = prettyFormat && (prettyFormat.default || prettyFormat);
@@ -68,13 +69,10 @@ function getDirectNativeDevLoadingView() {
 
 function wrapNativeDevLoadingView(nativeDevLoadingView) {
   return {
-    showMessage: function (message, _type, options) {
-      nativeDevLoadingView.showMessage(
-        message,
-        REFRESH_TEXT_COLOR,
-        REFRESH_BACKGROUND_COLOR,
-        !!(options && options.dismissButton),
-      );
+    showMessage: function (message, _type, _options) {
+      // native DevLoadingView.showMessage 시그니처는 (message, color, backgroundColor) 3개.
+      // 4번째 인자를 넘기면 JSI HostFunction 이 arg-count mismatch 로 throw → 배너 미표시.
+      nativeDevLoadingView.showMessage(message, REFRESH_TEXT_COLOR, REFRESH_BACKGROUND_COLOR);
     },
     hide: function () {
       nativeDevLoadingView.hide();
@@ -136,11 +134,25 @@ var HMRClient = {
   },
 
   _showRefreshing: function () {
+    this._showTime = Date.now();
     this._safeCallDlv('showMessage', ['Refreshing...', 'refresh']);
   },
 
+  // ZNTC 의 HMR apply 는 동기라 update-start→update-done 이 거의 즉시 일어난다.
+  // 그대로 hide 하면 'Refreshing...' 배너가 한 프레임도 못 그려지고 사라진다.
+  // 최소 표시 시간(MIN_SHOW_MS)을 보장해 Metro 와 체감을 맞춘다. 그 사이 새 update 가
+  // 시작되면(_pendingUpdates>0) hide 를 건너뛰어 배너를 유지한다.
   _hideRefreshing: function () {
-    this._safeCallDlv('hide', []);
+    var self = this;
+    var MIN_SHOW_MS = 300;
+    var elapsed = Date.now() - (self._showTime || 0);
+    if (elapsed >= MIN_SHOW_MS) {
+      self._safeCallDlv('hide', []);
+      return;
+    }
+    setTimeout(function () {
+      if (self._pendingUpdates === 0) self._safeCallDlv('hide', []);
+    }, MIN_SHOW_MS - elapsed);
   },
 
   enable: function () {
