@@ -1419,6 +1419,126 @@ test "Phase A byte-identical: 모듈 제거(import 삭제) 후에도 보존 grap
     try std.testing.expectEqualStrings(fresh_result.output, preserved.output);
 }
 
+test "Phase A F1: prepareForPreservedRebuild 가 pkg_info_cache 를 비운다 (dangling key 차단, deterministic)" {
+    // F1 의 **결정적** 회귀 가드. byte-identical 통합 테스트는 path_arena retain_capacity
+    // 가 stale 키 영역을 동일 패키지 경로로 덮어써 값이 우연히 일치할 수 있어(silent)
+    // divergence 가 비결정적이다. 여기선 불변식을 직접 검증한다:
+    //   pkg_info_cache 키 = module_path(path_arena 소유)의 substring(dupe 없음).
+    //   prepareForPreservedRebuild 가 path_arena 를 recycle 하기 *전에* 이 캐시를 비우지
+    //   않으면 모든 키가 dangling → 이후 lookupPkgInfo(get) 가 회수된 arena 를 읽는다.
+    // 따라서 "prepareForPreservedRebuild 후 pkg_info_cache.count()==0" 이 fix 의 핵심 계약.
+    // fix 없으면(=clear 누락) count 가 그대로라 이 테스트가 실패한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "node_modules/pure-pkg/package.json",
+        \\{"name":"pure-pkg","sideEffects":false}
+    );
+    try writeFile(tmp.dir, "node_modules/pure-pkg/index.js",
+        \\export const used = 1;
+    );
+    try writeFile(tmp.dir, "index.ts",
+        \\import { used } from 'pure-pkg';
+        \\console.log(used);
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    // 패키지 의존 모듈을 discovery → applySideEffectsFromPackageJson 가 lookupPkgInfo 로
+    // pkg_info_cache 를 채운다 (키 = pure-pkg 디렉토리 경로 = path_arena 소유 substring).
+    try graph.build(std.testing.io, &.{entry});
+    try std.testing.expect(graph.pkg_info_cache.count() > 0); // 전제: 캐시가 실제로 찬다.
+
+    // 핵심: 보존 rebuild 준비가 path_arena 를 recycle 하므로 그 전에 캐시를 비워야 한다.
+    graph.prepareForPreservedRebuild();
+
+    // F1 fix 검증 — 비우지 않으면(=clear 누락) 키가 dangling 인 채 entry 가 남는다.
+    try std.testing.expectEqual(@as(usize, 0), graph.pkg_info_cache.count());
+}
+
+test "Phase A byte-identical: node_modules sideEffects=false 패키지 의존 시 보존 rebuild == fresh (F1 pkg_info_cache dangling key)" {
+    // F1 통합 가드(보완). 기존 Phase A 테스트는 전부 상대경로(./util)뿐이라 pkg_info_cache 가
+    // 빈 채로 유지돼 F1 을 비켜간다. 여기선 node_modules 패키지(package.json
+    // "sideEffects":false)를 import 해 pkg_info_cache 가 채워지게 한다.
+    //
+    // pkg_info_cache 키는 module_path(= path_arena 소유)의 substring(dupe 없음). 보존
+    // rebuild 의 prepareForPreservedRebuild 가 path_arena 를 recycle 하면 그 키가 dangling
+    // → fix 전엔 다음 빌드 lookupPkgInfo(get) 가 stale side_effects 를 반환할 수 있어
+    // tree-shaking/ESM 판정이 fresh 와 어긋난다(silent corruption). fix(=reset 전 cache
+    // 무효화) 후엔 fresh 와 byte-identical.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // sideEffects:false 패키지: used + unused export 를 둬서 side-effects 판정이 stale 이면
+    // tree-shaking 결과(미사용 export/모듈 제거)가 fresh 와 갈리도록.
+    try writeFile(tmp.dir, "node_modules/pure-pkg/package.json",
+        \\{"name":"pure-pkg","sideEffects":false}
+    );
+    try writeFile(tmp.dir, "node_modules/pure-pkg/index.js",
+        \\export const used = 1;
+        \\export const unused = 2;
+    );
+    try writeFile(tmp.dir, "index.ts",
+        \\import { used } from 'pure-pkg';
+        \\console.log(used);
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    // build 1 (first): 보존 graph + pkg_info_cache 채움.
+    {
+        var r1 = try preservedBuild(&graph, &store, &rc, entry, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+    // build 2 (warm seed). 이 빌드 직전 prepareForPreservedRebuild 가 path_arena 를 recycle
+    // → fix 전이면 pkg_info_cache 키가 dangling 된 상태로 재진입.
+    {
+        var r2 = try preservedBuild(&graph, &store, &rc, entry, false, null);
+        defer r2.deinit(std.testing.allocator);
+        try std.testing.expect(!r2.hasErrors());
+    }
+
+    // index.ts body-only edit (패키지 import 위상 불변 — pure-pkg 는 cache-hit/재resolve).
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "index.ts",
+        \\import { used } from 'pure-pkg';
+        \\console.log(used + 1);
+    );
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, entry, {});
+
+    // build 3 (보존 경로 rebuild): pkg_info_cache 가 fix 로 무효화돼 fresh re-parse →
+    // 올바른 sideEffects=false 판정 재획득.
+    var preserved = try preservedBuild(&graph, &store, &rc, entry, false, &touched);
+    defer preserved.deinit(std.testing.allocator);
+    try std.testing.expect(!preserved.hasErrors());
+
+    // fresh full (graph/store 없음 — pkg.json 매번 fresh parse).
+    var fresh = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer fresh.deinit();
+    var fresh_result = try fresh.bundle(std.testing.io);
+    defer fresh_result.deinit(std.testing.allocator);
+    try std.testing.expect(!fresh_result.hasErrors());
+
+    // 핵심: 보존 rebuild 출력 == fresh full (side_effects 판정이 stale 되지 않음).
+    try std.testing.expect(preserved.output.len > 0);
+    try std.testing.expectEqualStrings(fresh_result.output, preserved.output);
+}
+
 test "Phase A: 보존 graph 반복 rebuild leak 0 (GPA) — IncrementalBundler enable_persistence" {
     // testing.allocator(GPA) 가 deinit 시 leak 검출. 보존 graph 를 여러 번 rebuild 해도
     // path_arena retain_capacity + 모듈 전량 deinit 이 정확해 leak 0 이어야 한다.

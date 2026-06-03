@@ -128,6 +128,11 @@ pub fn invalidateModule(self: *ModuleGraph, idx: ModuleIndex) void {
 /// path_arena: clearRetainingCapacity 로 **메모리 보존 + 논리적 비움**. 이전 빌드 path
 /// 슬라이스는 modules/path_to_module 가 비워져 더 이상 참조되지 않으므로 재사용 안전
 /// (monotonic 누적 없이 capacity 재활용). retainCapacity 라 RSS 단방향 증가 없음.
+///
+/// **pkg_info_cache 무효화 (F1)**: path_arena 를 recycle 하면 pkg_info_cache 키
+/// (= module_path 의 substring, path_arena 소유)가 dangling 되므로 reset 직전에 비운다.
+/// reset() 는 path_arena 를 유지해 키가 살아있으니 pkg_info_cache 를 보존(doc 계약)하지만,
+/// 여기서는 path_arena 가 회수되므로 보존이 불가능 — value 메모리 해제 후 clearRetainingCapacity.
 pub fn prepareForPreservedRebuild(self: *ModuleGraph) void {
     // 1) 모든 모듈 슬롯 해제 (parse_arena 가 아직 graph 소유면 함께 해제 —
     //    transferModulesToStore 가 이미 store 로 넘긴 경우 parse_arena=null 이라 no-op).
@@ -139,6 +144,19 @@ pub fn prepareForPreservedRebuild(self: *ModuleGraph) void {
 
     // 2) path → idx 인덱스 비움 (backing 재사용).
     self.path_to_module.clearRetainingCapacity();
+
+    // 2.5) pkg_info_cache 비움 — **path_arena.reset 전에 반드시** (F1 dangling key).
+    //   키는 graph.zig:112 주석대로 module_path 의 substring(= path_arena 소유, dupe 없음).
+    //   아래 3) 에서 path_arena 를 recycle 하면 그 키 슬라이스가 회수된 arena 를 가리켜
+    //   dangling → 다음 빌드의 lookupPkgInfo(get) 가 stale is_module/side_effects 반환 →
+    //   잘못된 ESM/tree-shaking 판정(silent corruption). 보존 경로(prepareForPreservedRebuild)
+    //   에서만 path_arena 를 recycle 하므로, pkg_info_cache 무효화도 여기 한정이 맞다
+    //   (reset() 는 path_arena 를 유지해 키가 살아있으므로 pkg_info_cache 를 보존 — 그게 doc 계약).
+    //   value 소유 메모리(side_effects.patterns: graph.allocator dupe)는 graph.deinit
+    //   (graph.zig pkg_info_cache 해제 loop)과 **동일한 방식**으로 free 후 backing 재사용.
+    var pi_it = self.pkg_info_cache.valueIterator();
+    while (pi_it.next()) |info| info.side_effects.deinit(self.allocator);
+    self.pkg_info_cache.clearRetainingCapacity();
 
     // 3) path_arena 논리적 비움 + capacity 보존 (위 doc: 더 이상 참조 없음).
     _ = self.path_arena.reset(.retain_capacity);
