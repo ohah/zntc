@@ -195,6 +195,77 @@ pub const RenameTable = struct {
     }
 };
 
+/// HMR rename 보존 스냅샷 (perf/hmr-link-rename-reuse).
+///
+/// **문제**: HMR rebuild 는 매번 `Linker` 를 새로 만들고 `computeRenames`(전체 모듈
+/// top-level 이름 deconflict, RN 8067 모듈에서 ~106ms)를 재계산한다. 그러나 body-only
+/// 수정 (HMR 절대다수) 에서는 모든 모듈의 top-level 이름 집합이 불변이라 deconflict
+/// 결과 (rename_table) 도 byte-identical 하다. → 초기 빌드의 결과를 owned 스냅샷으로
+/// 보존했다가 다음 rebuild 에서 가드 통과 시 재주입하고 computeRenames 를 skip.
+///
+/// **소유권 (RFC #3933 dangling 클래스 회피)**: 스냅샷 안의 모든 문자열 (rename name,
+/// reserved global, fingerprint path) 은 `arena` 가 dupe 해 소유한다. `Linker` 의
+/// `canonical_strings` 에서 borrow 하면 Linker.deinit 후 dangling 이 되므로 **금지**.
+/// `arena.deinit()` 한 번이 일괄 해제 (CLAUDE.md 메모리 규약).
+///
+/// **fingerprint**: 재사용 안전성 가드(G0~G4)의 비교 기준. 초기 빌드 시점의 그래프
+/// 형태(모듈 수/순서/이름집합/전역참조)를 per-index 로 박제한다. rebuild 시 현재
+/// 그래프와 대조해 "이름 deconflict 결과가 바뀔 수 있는 변화"가 있었는지 판정한다.
+pub const PreservedRenames = struct {
+    /// 스냅샷 전용 arena — 모든 owned 문자열의 backing. `deinit` 이 일괄 해제.
+    arena: std.heap.ArenaAllocator,
+
+    /// 보존된 rename_table 엔트리. `SymbolID → owned name`. inner idx 는 *초기 빌드*
+    /// 의 module-local 인덱스라, 재파싱된 모듈은 idx 가 흔들릴 수 있어 inject 시
+    /// 이름으로 재유도(G3)한다. 변경 안 된 모듈은 idx 가 그대로라 직접 재키잉.
+    entries: []Entry,
+
+    /// 보존된 `reserved_globals` 키 집합 (owned). inject 시 Linker.reserved_globals 복원.
+    /// `computeRenames` 의 `collectReservedGlobals` 를 skip 하므로 직접 복원해야 한다.
+    reserved_globals: []const []const u8,
+
+    /// per-index fingerprint. 인덱스 = ModuleIndex 정수. 가드가 현재 그래프와 대조.
+    fingerprint: []const ModuleFingerprint,
+
+    /// 초기 빌드 모듈 수. 가드 G0 (모듈 추가/삭제) 1차 비교.
+    module_count: u32,
+
+    pub const Entry = struct {
+        /// 초기 빌드 시점의 SymbolID (module, inner). inner 는 by-name 재유도 전 키.
+        id: SymbolID,
+        /// 초기 빌드 시점의 module-local 이름 (재유도용 lookup 키, owned).
+        local_name: []const u8,
+        /// 최종 rename 결과 (owned).
+        canonical: []const u8,
+    };
+
+    /// 모듈 단위 fingerprint. 가드가 "이 모듈의 rename 결과에 영향을 주는 입력"이
+    /// 초기 빌드와 같은지 1-pass 로 판정한다.
+    pub const ModuleFingerprint = struct {
+        /// 경로 해시 (G0/G1 — 모듈 동일성). path 문자열 자체는 보관 안 함(해시로 충분).
+        path_hash: u64,
+        /// 실행 순서 (G1 — deconflict 는 exec_index 오름차순 tie-break 라 순서 변경 = 결과 변경).
+        exec_index: u32,
+        /// top-level owner 이름 집합의 order-independent 해시 (G2 — body-only edit 불변).
+        toplevel_name_set_hash: u64,
+        /// unresolved_references 집합의 order-independent 해시 (G4 — 새 전역참조 = reserved 변화).
+        unresolved_refs_hash: u64,
+        /// nested-scope binding(scope_maps[1..]) 이름 집합의 order-independent 해시.
+        /// G5 — `resolveNestedShadowConflicts`/`hasNestedBinding` 가 보는 shadow 입력.
+        /// body edit 으로 nested binding *이름* 이 추가/변경되면 import target rename 이
+        /// 달라질 수 있는데 toplevel 해시는 이를 못 잡는다(scope_maps[0] 만 봄).
+        nested_name_set_hash: u64,
+        /// import binding local_name 집합의 order-independent 해시 + wrap_kind.
+        /// G6 — nested shadow 비교의 다른 한쪽(import local name)과 wrap synthetic
+        /// landscape(ESM↔CJS wrap flip 시 init_/exports_/require_ 이름 변동) 변화 감지.
+        import_locals_wrap_hash: u64,
+    };
+
+    pub fn deinit(self: *PreservedRenames) void {
+        self.arena.deinit();
+    }
+};
+
 /// Re-export alias 레코드.
 /// `name`은 exported_name(barrel 기준). `canonical_name`은 체인 resolve 후
 /// linker가 주입한 최종 참조 이름. `ref_count`는 symbol-level tree-shaking 용.

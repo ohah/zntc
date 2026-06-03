@@ -16,6 +16,7 @@ const module_store = @import("module_store.zig");
 const CompiledModule = @import("compiled_module.zig").CompiledModule;
 const CompiledOutputCache = @import("compiled_cache.zig").CompiledOutputCache;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
+const PreservedRenames = @import("symbol.zig").PreservedRenames;
 
 /// JSON 문자열 값 내부의 특수 문자를 이스케이프한다 (RFC 8259 준수).
 fn writeJsonEscaped(writer: anytype, s: []const u8) !void {
@@ -98,6 +99,12 @@ pub const IncrementalBundler = struct {
     /// `deinit` 가 일괄 해제. caller 는 직접 접근 금지 — `doBuild` 만이 lifetime 관리.
     persistent_graph: ?ModuleGraph = null,
 
+    /// HMR rename 재사용 스냅샷 (perf/hmr-link-rename-reuse). 초기 빌드(또는 가드
+    /// fallback 빌드)가 만든 rename_table 보존본을 빌드 간 유지했다가, 다음 HMR rebuild
+    /// 의 `computeRenames` 를 skip 하는 데 쓴다. `deinit`/`reset`/`needs_full_rebuild` 에서
+    /// drop. arena 소유라 `deinit()` 한 번이 일괄 해제.
+    preserved_renames: ?PreservedRenames = null,
+
     /// 모듈 단위 dev/HMR 캐시 엔트리.
     /// `code` = `__zntc_register` wrapper (HMR 경로).
     /// `compiled` / `input_hash` = compiled output cache 재사용용 (populate 는 별도 PR).
@@ -125,6 +132,7 @@ pub const IncrementalBundler = struct {
         self.compiled_cache.deinit();
         if (self.resolve_cache) |*rc| rc.deinit();
         if (self.persistent_graph) |*g| g.deinit();
+        if (self.preserved_renames) |*pr| pr.deinit();
     }
 
     /// 외부에서 캐시 전체 무효화 (Control API `/reset-cache` 등).
@@ -143,6 +151,11 @@ pub const IncrementalBundler = struct {
         }
         self.rebuild_count = 0;
         self.needs_full_rebuild = true;
+        // 보존 스냅샷도 drop — 다음 빌드는 초기 빌드처럼 from-scratch deconflict 후 재캡처.
+        if (self.preserved_renames) |*pr| {
+            pr.deinit();
+            self.preserved_renames = null;
+        }
     }
 
     fn clearCache(self: *IncrementalBundler) void {
@@ -231,10 +244,16 @@ pub const IncrementalBundler = struct {
         // 가 sourcemap.enable=false default 라 dormant — sourcemap 활성화 시 sourcemap_builder
         // wire-up 또는 lazy 비활성화 follow-up 필수.
         if (opts.dev_mode and opts.sourcemap.enable) opts.sourcemap.lazy = true;
+        // perf/hmr-link-rename-reuse: dev 빌드는 항상 rename 재사용에 *참여* 한다.
+        // - 초기 빌드: reuse_renames=true 지만 skip_bundle_output=false 라 bundler 가 inject 는
+        //   막고 스냅샷 capture 만 한다 (BundleResult.rename_snapshot 으로 반환).
+        // - HMR rebuild: preserved_renames 를 주입 → bundler 가 가드 통과 시 computeRenames skip.
+        opts.reuse_renames = opts.dev_mode and opts.collect_module_codes;
         if (!is_first) {
             opts.module_store = &self.persistent_store;
             opts.changed_files = changed_files;
             if (opts.dev_mode and opts.collect_module_codes) opts.skip_bundle_output = true;
+            if (self.preserved_renames) |*pr| opts.preserved_renames = pr;
         }
 
         // RFC #3933 Sub-PR-B.2 — enable_persistence opt-in path. Bundler.initWithGraph wire-up.
@@ -282,7 +301,34 @@ pub const IncrementalBundler = struct {
             // 파일이 고쳐지면 full rebuild 가 에러 없이 끝나며 doBuild 의 `if (is_first)`
             // 분기에서 flag 가 자동 해제된다.
             self.needs_full_rebuild = true;
+            // 보존 스냅샷도 drop — full rebuild 가 from-scratch 재캡처. stale 스냅샷이
+            // 고친 후 첫 빌드에 잘못 주입되는 일 방지.
+            if (self.preserved_renames) |*pr| {
+                pr.deinit();
+                self.preserved_renames = null;
+            }
             return .{ .build_error = err_json };
+        }
+
+        // perf/hmr-link-rename-reuse: 새 스냅샷이 캡처됐으면(초기/fallback 빌드) 교체.
+        // 재사용-hit 빌드는 result.rename_snapshot=null 이라 기존 스냅샷 유지. result.deinit
+        // 이 arena 를 해제하기 전에 move out (소유권 이전).
+        //
+        // F5: result.rename_snapshot 이 null 인 경우는 두 가지로 갈린다 —
+        //  - reuse-hit: 새 deconflict 없음 → 기존 보존본 유지 (아래 두 분기 모두 skip).
+        //  - invalidated: fallback 재계산했으나 buildRenameSnapshot 이 불완전 스냅샷을
+        //    폐기 → 기존(stale) 보존본을 **drop**. 안 그러면 stale 이 다음 reuse-hit 에
+        //    잘못 주입(silent wrong-binding). "fallback 했는데 capture 실패 = preserved 없음"
+        //    상태가 일관되도록 보장한다.
+        if (result.rename_snapshot) |new_snap| {
+            if (self.preserved_renames) |*pr| pr.deinit();
+            self.preserved_renames = new_snap;
+            result.rename_snapshot = null; // double-free 방지 (result.deinit 가 안 건드리게)
+        } else if (result.rename_snapshot_invalidated) {
+            if (self.preserved_renames) |*pr| {
+                pr.deinit();
+                self.preserved_renames = null;
+            }
         }
 
         const graph_changed = is_first or !self.pathSetsEqual(result.module_paths);

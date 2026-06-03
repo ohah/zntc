@@ -389,6 +389,14 @@ pub const BundleOptions = struct {
     /// Compiled output cache. HMR/watch 에서 변경 안 된 모듈의 emit 을 스킵.
     /// IncrementalBundler 가 소유.
     compiled_cache: ?*@import("compiled_cache.zig").CompiledOutputCache = null,
+    /// HMR rename 재사용 활성 (perf/hmr-link-rename-reuse). true + `preserved_renames`
+    /// present + 가드 통과 시 `computeRenames`(전체 모듈 top-level 이름 deconflict, ~106ms)
+    /// 를 skip 하고 초기 빌드의 rename_table 을 재주입한다. IncrementalBundler 가
+    /// HMR-incremental 브랜치에서만 set — 초기/비-dev/splitting 경로는 영향 0(additive+gated).
+    reuse_renames: bool = false,
+    /// 재사용할 보존 스냅샷 (borrowed, IncrementalBundler 소유). `reuse_renames=true`
+    /// 일 때만 의미. null 이면 가드 평가 없이 기존 computeRenames.
+    preserved_renames: ?*const @import("symbol.zig").PreservedRenames = null,
     /// 활성화할 디버그 로그 카테고리 (ZNTC_DEBUG env 와 합집합).
     /// 예: `&.{"compiled_cache", "hmr"}`. 카테고리 enum 은 `src/debug_log.zig` 참조.
     debug: []const []const u8 = &.{},
@@ -476,6 +484,23 @@ pub const BundleResult = struct {
     /// 비결정성으로 rebuild 간 emit 이 달라지는 phantom update 방지.
     reparsed_paths: ?[]const []const u8 = null,
 
+    /// HMR rename 재사용 스냅샷 (perf/hmr-link-rename-reuse). `computeRenames` 가
+    /// **실제로 실행된** 빌드(초기 빌드 / 가드 fallback)에서만 채워진다 — 재사용-hit
+    /// 빌드는 새 deconflict 를 안 했으니 기존 스냅샷을 그대로 유지(여기 null)한다.
+    /// 소유권은 caller(IncrementalBundler)로 이전 — `result.deinit` 전에 move 하지 않으면
+    /// `deinit` 이 arena 를 해제한다. `rename_snapshot.?.deinit()` 으로 정리.
+    rename_snapshot: ?@import("symbol.zig").PreservedRenames = null,
+
+    /// F5 보수적 fail-safe: `computeRenames` 가 실제로 실행됐으나(초기/fallback)
+    /// `buildRenameSnapshot` 이 불완전 스냅샷을 폐기(null 반환)한 빌드를 표시한다.
+    /// 이 경우 `rename_snapshot` 은 null 이지만 **reuse-hit 의 null 과 의미가 정반대** —
+    /// reuse-hit 은 "새 deconflict 없음 → 기존 보존본 유지", invalidated 는 "fallback
+    /// 재계산했는데 capture 실패 → 기존(stale) 보존본을 **drop** 해야 함"이다. caller
+    /// (IncrementalBundler/watch)가 이 둘을 구분해, invalidated 면 preserved_renames 를
+    /// 버려 다음 빌드가 또 fallback→capture 를 시도하게 한다. 이 플래그가 없으면 stale
+    /// 보존본이 살아남아 다음 reuse-hit 에 잘못 주입될 수 있다(silent wrong-binding).
+    rename_snapshot_invalidated: bool = false,
+
     /// 단계별 빌드 시간 (나노초).
     pub const BundleTimings = struct {
         /// resolve + parse + finalize (graph build)
@@ -558,6 +583,12 @@ pub const BundleResult = struct {
             allocator.free(metas);
         }
         if (self.metafile_json) |mf| allocator.free(mf);
+        if (self.rename_snapshot) |snap| {
+            // arena 소유 — caller 가 move 하지 않았으면 여기서 해제. const-self 라 로컬
+            // 복사본에 대고 deinit (arena 핸들은 값이라 복사돼도 같은 backing 을 가리킴).
+            var s = snap;
+            s.deinit();
+        }
     }
 
     pub fn hasErrors(self: *const BundleResult) bool {
@@ -1343,6 +1374,14 @@ pub const Bundler = struct {
         // binding 이 짧은 이름 풀(54자)을 잠식해 candidate-emit 비율이 떨어지는
         // 회귀 방지. TreeShaker 생성 조건과 동일 predicate.
         const will_tree_shake = !self.options.dev_mode and self.options.scope_hoist and self.options.tree_shaking;
+        // perf/hmr-link-rename-reuse: computeRenames 가 *실제 실행* 되면 그 결과를 박제해
+        // BundleResult 로 이전한다 (재사용-hit 빌드는 null — 기존 스냅샷 유지). 초기/fallback
+        // 빌드에서만 채워진다.
+        var rename_snapshot_out: ?@import("symbol.zig").PreservedRenames = null;
+        errdefer if (rename_snapshot_out) |*s| s.deinit();
+        // F5: computeRenames 가 돌았지만 buildRenameSnapshot 이 불완전 스냅샷을 폐기(null)
+        // 했을 때 true. caller 가 stale preserved 를 drop 하도록 신호.
+        var rename_snapshot_invalidated = false;
         var link_scope = profile.begin(.link);
         var linker: ?Linker = if (self.options.scope_hoist or self.options.dev_mode) blk: {
             var l = Linker.initWithGlobalIdentifiers(self.allocator, graph, self.options.format, self.options.global_identifiers);
@@ -1370,13 +1409,56 @@ pub const Bundler = struct {
             });
             if (mangle_report_enabled) l.mangle_report = &mangle_collector;
             try l.link();
+
+            // perf/hmr-link-rename-reuse: HMR-incremental 경로에서 가드 통과 시
+            // computeRenames 를 skip 하고 초기 빌드 rename_table 을 재주입한다.
+            //
+            // - capture_eligible: 스냅샷을 *만들* 수 있는 빌드(초기 dev 빌드 포함). 초기
+            //   빌드는 `skip_bundle_output=false`(full output 필요)라 capture 는 여기서 허용하되
+            //   reuse(inject)는 막는다. minify(prod-deconflict→mangle)는 rename_table 의미가
+            //   달라 제외 — dev_mode 는 minify 비활성이라 실질 무관.
+            // - reuse_eligible: 스냅샷을 *주입* 할 수 있는 빌드(skip_bundle_output=HMR-incremental).
+            // 비-dev/splitting/RN prod 는 `reuse_renames=false` 라 두 경로 모두 비활성 →
+            // 기존 computeRenames 경로 byte-identical(회귀 0).
+            const capture_eligible = self.options.reuse_renames and
+                self.options.dev_mode and
+                self.options.collect_module_codes and
+                !self.options.code_splitting and
+                !self.options.minify_identifiers;
+            const reuse_eligible = capture_eligible and self.options.skip_bundle_output;
+            var can_reuse = false;
+            if (reuse_eligible) {
+                if (self.options.preserved_renames) |snap| {
+                    if (l.renameReuseGuard(snap)) {
+                        try l.injectPreservedRenames(snap);
+                        can_reuse = true;
+                    }
+                }
+            }
+
             // Phase 3b (#1328): populateReExportAliases 가 canonical_name 을 채우려면
             // computeRenames 이후여야 한다. populateImportSymbols / NamespaceAccesses /
             // SymbolRefCounts (tree-shaking companion metric) 까지 한 번에 묶어 emit.
+            // 재사용 시 compute_renames=false — injectPreservedRenames 가 이미 rename_table 을
+            // 채웠고, populate* 는 fresh graph 대상으로 그대로 실행(cross-module 이름 생성에 필요).
+            const did_compute_renames = !self.options.code_splitting and !can_reuse;
             try l.finalize(.{
-                .compute_renames = !self.options.code_splitting,
+                .compute_renames = did_compute_renames,
                 .compute_mangling = self.options.minify_identifiers and !will_tree_shake,
             });
+
+            // computeRenames 가 실제 실행됐을 때만 스냅샷 박제(초기/fallback). 재사용-hit 는
+            // 새 deconflict 가 없으니 caller 의 기존 스냅샷을 유지(여기 null).
+            // F5: buildRenameSnapshot 이 null 을 반환하면(불완전 스냅샷 폐기) capture 실패다.
+            // 이때 rename_snapshot_out 은 null 로 두되 invalidated 플래그를 켜, caller 가
+            // reuse-hit(=유지)과 구분해 stale preserved 를 drop 하게 한다.
+            if (did_compute_renames and capture_eligible) {
+                if (try l.buildRenameSnapshot(self.allocator)) |snap| {
+                    rename_snapshot_out = snap;
+                } else {
+                    rename_snapshot_invalidated = true;
+                }
+            }
             break :blk l;
         } else null;
         defer if (linker) |*l| l.deinit();
@@ -2323,6 +2405,8 @@ pub const Bundler = struct {
             },
             .reparsed_modules = reparsed_count,
             .reparsed_paths = reparsed_paths_out,
+            .rename_snapshot = rename_snapshot_out,
+            .rename_snapshot_invalidated = rename_snapshot_invalidated,
         };
     }
 };
