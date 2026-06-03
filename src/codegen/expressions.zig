@@ -439,9 +439,10 @@ pub fn emitObjectProperty(self: anytype, node: Node) !void {
                 if (self.pending_fn_name) |s| self.allocator.free(s);
                 self.pending_fn_name = saved;
             }
-            try self.emitNode(value);
+            // object property value 는 argument 위치 → .comma (esbuild Property.Value=LComma)
+            try self.emitExpr(value, .comma, .{});
         } else {
-            try self.emitNode(value);
+            try self.emitExpr(value, .comma, .{});
         }
     }
 }
