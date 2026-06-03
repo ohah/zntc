@@ -6,6 +6,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 import * as jscSafeUrl from 'jsc-safe-url';
 
+import { runMiddlewareForBun } from './bun-http-adapter.ts';
 import type { HmrBridge } from './hmr-bridge.ts';
 import { parseRequestUrl, sendText } from './http-utils.ts';
 import type { CliServerApi } from './middleware/cli-server-api.ts';
@@ -245,6 +246,142 @@ export async function createDevHttpServer(
         server.removeListener('request', requestHandler);
         if (upgradeHandler) server.removeListener('upgrade', upgradeHandler);
         server.close((err) => (err ? reject(err) : resolve()));
+      }),
+  };
+}
+
+// ─── Bun runtime 전용 dev http server ────────────────────────────────────────
+//
+// 배경(#RN-bun-hmr): Bun 에서 `zntc dev --platform=react-native` 를 띄우면
+// HMR WebSocket(`/hot`)이 연결되지 않는다. 원인은 node:http `server.on('upgrade')`
+// + 수동 RFC6455 핸드셰이크(`socket.write("HTTP/1.1 101 ...")`)가 Bun 의 node:http
+// 호환층에서 깨지는 것: socket.write 가 throw 없이 "성공"하지만 101 응답이 실제로
+// TCP 로 전달되지 않아 client 가 OPEN 도 CLOSE 도 못 받는다(node 에선 정상).
+//
+// 해결: Bun 에선 Bun.serve 의 native WebSocket(`server.upgrade(req)` + `websocket`
+// handler)으로 `/hot` 을 처리한다. 나머지 HTTP 요청(bundle/asset/symbolicate/
+// status 등)과 enhanceMiddleware 는 Bun `Request` → node req/res 어댑터
+// (runMiddlewareForBun)로 기존 미들웨어 체인을 *그대로* 재사용한다.
+//
+// 한계(코드 코멘트로 명시):
+//   - cli-server-api(`/message` `/events`)와 dev-middleware(`/inspector` 등)의
+//     WebSocket endpoint 는 `ws` 라이브러리의 `handleUpgrade(req, socket, head)`
+//     가 raw Node socket(실제 fd) 을 요구한다. Bun.serve 의 fetch 는 raw socket 을
+//     노출하지 않으므로 이 endpoint 들의 ws upgrade 는 Bun 에서 동작하지 않는다.
+//     → HMR(`/hot`)만 Bun.serve 로 보장. cli-server-api 의 broadcast(터미널 r/d)는
+//       그 client 가 연결돼야 동작하므로 Bun 에선 제한될 수 있다.
+//   - enhanceMiddleware(ctx.httpServer)의 `.on('upgrade')` 도 같은 이유로 동작
+//     불가 — no-op shim 을 넘겨 Rozenite 등이 crash 하지 않게만 한다(WS 의존
+//     기능은 degrade).
+
+/** Bun.serve websocket handler 가 받는 ws 객체의 최소 표면. */
+interface BunServerWebSocket {
+  send(data: string): void;
+  readonly data?: unknown;
+}
+
+/** Bun.serve 가 반환하는 server 객체의 최소 표면(우리가 쓰는 부분만). */
+interface BunServer {
+  port: number;
+  stop(closeActiveConnections?: boolean): void;
+  upgrade(req: Request, options?: { data?: unknown }): boolean;
+}
+
+/**
+ * enhanceMiddleware 에 넘길 httpServer shim. Bun.serve 는 listen 전 instance 가
+ * 없고 `.on('upgrade')` 도 지원 안 하므로, node Server 인터페이스 흉내만 내고
+ * upgrade 등록은 1회 경고 후 무시한다(한계 — 위 코멘트 참고).
+ */
+function createBunHttpServerShim(): Server {
+  let warned = false;
+  const shim: Record<string, unknown> = {
+    on(event: string): unknown {
+      if (event === 'upgrade' && !warned) {
+        warned = true;
+        process.stderr.write(
+          `[zntc:rn-dev] Bun runtime: enhanceMiddleware 의 httpServer.on('upgrade') 는 ` +
+            `Bun.serve 에서 지원되지 않습니다(raw socket 미노출). HMR(/hot)은 정상 동작하나 ` +
+            `WebSocket upgrade 에 의존하는 enhanceMiddleware 기능(Rozenite 등)은 제한됩니다.\n`,
+        );
+      }
+      return shim;
+    },
+    once(): unknown {
+      return shim;
+    },
+    removeListener(): unknown {
+      return shim;
+    },
+    off(): unknown {
+      return shim;
+    },
+    address(): { port: number } {
+      return { port: 0 };
+    },
+  };
+  return shim as unknown as Server;
+}
+
+export async function createBunDevHttpServer(
+  options: RnDevServerOptions,
+  deps: DevHttpServerDeps,
+): Promise<DevHttpServerHandle> {
+  const Bun = (globalThis as { Bun?: { serve(opts: unknown): BunServer } }).Bun;
+  if (!Bun) throw new Error('createBunDevHttpServer는 Bun runtime에서만 호출 가능합니다.');
+
+  const baseMiddleware = createBaseMiddleware(options, deps);
+  // enhanceMiddleware 는 node Server 모양의 httpServer 를 기대 — shim 전달.
+  const enhanced = options.enhanceMiddleware
+    ? options.enhanceMiddleware(baseMiddleware, { httpServer: createBunHttpServerShim() })
+    : baseMiddleware;
+
+  const hmr = deps.hmrBridge;
+
+  const serveOpts: Record<string, unknown> = {
+    port: options.port,
+    hostname: options.host,
+    // fetch 는 동기적으로 server.upgrade(req) 를 먼저 시도(첫 await 전)해야 native
+    // WebSocket 업그레이드가 성립한다. /hot 이외는 어댑터로 미들웨어 체인 실행.
+    async fetch(req: Request, server: BunServer): Promise<Response | undefined> {
+      const url = new URL(req.url);
+      if (hmr && (url.pathname === hmr.path || url.pathname.startsWith(`${hmr.path}?`))) {
+        // server.upgrade 성공 시 undefined 반환(Bun 이 101 native 처리).
+        if (server.upgrade(req)) return undefined;
+        return new Response('Upgrade required', { status: 426 });
+      }
+      return runMiddlewareForBun(enhanced, req);
+    },
+  };
+
+  if (hmr) {
+    serveOpts.websocket = {
+      open(ws: BunServerWebSocket): void {
+        hmr.acceptBun(ws);
+      },
+      message(ws: BunServerWebSocket, message: string | Buffer): void {
+        // RN HMR client 의 register-entrypoints / log 처리. Buffer 면 문자열화.
+        const text = typeof message === 'string' ? message : message.toString('utf-8');
+        hmr.handleBunMessage(ws, text);
+      },
+      close(ws: BunServerWebSocket): void {
+        hmr.removeBun(ws);
+      },
+    };
+  }
+
+  const server = Bun.serve(serveOpts);
+
+  return {
+    // node Server 가 아니라 Bun server — DevHttpServerHandle.server 타입과 다르지만
+    // serve.ts 는 url/port/stop 만 사용한다. 타입 호환을 위해 cast.
+    server: server as unknown as Server,
+    url: `http://${options.host}:${server.port}`,
+    port: server.port,
+    stop: () =>
+      new Promise<void>((resolve) => {
+        // true = active connection(WS 포함)도 강제 종료 → 포트 즉시 해제(restart 대비).
+        server.stop(true);
+        resolve();
       }),
   };
 }

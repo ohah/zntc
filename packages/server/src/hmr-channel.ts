@@ -19,8 +19,13 @@ export interface BunHmrClient {
   send(text: string): void;
 }
 
-/** Client → server 메시지 callback. socket 은 individual response 가능. */
-export type HmrIncomingHandler = (text: string, socket: Socket) => void;
+/**
+ * Client → server 메시지 callback. 두 번째 인자 `reply` 로 *그 client 에게만*
+ * 단일 응답을 보낼 수 있다 (예: `register-entrypoints` ACK). Node 든 Bun 이든
+ * 동일 시그니처 — runtime 차이(raw socket frame vs Bun ws.send)는 channel 이
+ * reply 구현으로 흡수한다. caller 는 plain text 만 넘기면 됨.
+ */
+export type HmrIncomingHandler = (text: string, reply: (text: string) => void) => void;
 
 export interface HmrChannel {
   /** Node `http.Server` 의 `'upgrade'` 이벤트 핸들러로 사용. */
@@ -28,6 +33,13 @@ export interface HmrChannel {
   /** Bun.serve 의 WebSocket client 등록. */
   addBunClient(ws: BunHmrClient): void;
   removeBunClient(ws: BunHmrClient): void;
+  /**
+   * Bun.serve websocket 의 `message(ws, msg)` 에서 호출 — client → server text
+   * 를 등록된 incoming 핸들러로 dispatch. reply 는 `ws.send` 로 연결돼 단일
+   * client 응답(ACK 등)이 그 Bun client 에게만 간다. Node 경로는 `accept` 의
+   * `socket.on('data')` 가 동일 역할 — 이쪽은 Bun 전용 진입점.
+   */
+  dispatchBunIncoming(ws: BunHmrClient, text: string): void;
   /**
    * Client → server text frame 핸들러 등록. RN HMR client 가 보내는
    * `register-entrypoints` / `log` 메시지 처리에 사용. 한 channel 에 여러 핸들러
@@ -107,13 +119,16 @@ export function createHmrChannel(): HmrChannel {
         recvBuffer = (
           recvBuffer.length === 0 ? chunk : Buffer.concat([recvBuffer, chunk])
         ) as Buffer;
+        // Node 경로의 reply — 이 socket 에만 text frame 으로 단일 응답. Bun 경로
+        // (dispatchBunIncoming) 의 ws.send 와 동일 역할이라 핸들러는 runtime 무관.
+        const reply = (text: string): void => writeTextFrame(socket, text);
         while (recvBuffer.length > 0) {
           const parsed = parseTextFrame(recvBuffer);
           if (!parsed) break;
           recvBuffer = recvBuffer.subarray(parsed.consumed);
           for (const handler of incomingHandlers) {
             try {
-              handler(parsed.text, socket);
+              handler(parsed.text, reply);
             } catch {
               /* swallow user errors */
             }
@@ -130,6 +145,18 @@ export function createHmrChannel(): HmrChannel {
     },
     removeBunClient(ws) {
       bunClients.delete(ws);
+    },
+    dispatchBunIncoming(ws, text) {
+      if (incomingHandlers.length === 0) return;
+      // reply → 이 Bun client 에게만 plain text send (Node 의 socket frame 과 대칭).
+      const reply = (out: string): void => ws.send(out);
+      for (const handler of incomingHandlers) {
+        try {
+          handler(text, reply);
+        } catch {
+          /* swallow user errors */
+        }
+      }
     },
     onIncoming(handler) {
       incomingHandlers.push(handler);

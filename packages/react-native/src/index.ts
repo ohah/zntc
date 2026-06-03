@@ -22,6 +22,7 @@ export {
   type Broadcast,
   buildRnDevServerOptions,
   createBaseMiddleware,
+  createBunDevHttpServer,
   createDevHttpServer,
   createHmrBridge,
   createPlatformState,

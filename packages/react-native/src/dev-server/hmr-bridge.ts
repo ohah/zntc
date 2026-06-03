@@ -11,6 +11,8 @@ import type { Socket } from 'node:net';
 
 import type { WatchRebuildEvent } from '@zntc/core';
 
+import type { BunHmrClient } from '@zntc/server';
+
 import { createMetroHmrAdapter, type MetroHmrAdapter } from '../metro-hmr-adapter.ts';
 import { colors, formatLogBadge, logError, logInfo } from './logger.ts';
 import type { PlatformState, PlatformStateCallbacks } from './platform-state.ts';
@@ -28,8 +30,22 @@ export interface HmrBridge {
   readonly adapter: MetroHmrAdapter;
   readonly callbacks: PlatformStateCallbacks;
   readonly path: string;
-  /** http upgrade chain 안에서 호출 — channel.accept + initial greeting. */
+  /** http upgrade chain 안에서 호출 (Node) — channel.accept + initial greeting. */
   acceptUpgrade(req: IncomingMessage, socket: Socket): void;
+  /**
+   * Bun.serve websocket `open(ws)` 에서 호출 — Bun client 등록 + initial greeting.
+   * Node 의 `acceptUpgrade` 와 대칭이지만 raw socket 핸드셰이크가 없다 (Bun.serve
+   * 의 `server.upgrade(req)` 가 RFC6455 핸드셰이크를 native 로 처리하므로).
+   */
+  acceptBun(ws: BunHmrClient): void;
+  /** Bun.serve websocket `close(ws)` 에서 호출 — Bun client 정리. */
+  removeBun(ws: BunHmrClient): void;
+  /**
+   * Bun.serve websocket `message(ws, msg)` 에서 호출 — client → server text 를
+   * incoming 핸들러(register-entrypoints ACK / log forwarding)로 dispatch.
+   * Node 경로는 `channel.accept` 의 `socket.on('data')` 가 같은 역할.
+   */
+  handleBunMessage(ws: BunHmrClient, text: string): void;
   /** RN runtime console.log forwarding 출력 표시 toggle. 새 상태 반환. */
   toggleLogs(): boolean;
 }
@@ -91,7 +107,9 @@ function buildOnRebuild(adapter: MetroHmrAdapter, opts: { silent?: boolean } = {
  * 의 console.log → dev server 터미널). `getLogsEnabled` false 시 출력 skip.
  */
 function buildIncomingHandler(adapter: MetroHmrAdapter, getLogsEnabled: () => boolean) {
-  return (text: string, socket: import('node:net').Socket): void => {
+  // reply 는 channel 이 주입 — Node 는 raw socket 의 text frame, Bun 은 ws.send.
+  // 둘 다 plain text 만 받으므로 핸들러는 runtime 무관(ACK_TEXT 그대로 전달).
+  return (text: string, reply: (text: string) => void): void => {
     let msg: { type?: string; level?: string; data?: unknown } | null = null;
     try {
       msg = JSON.parse(text);
@@ -100,9 +118,8 @@ function buildIncomingHandler(adapter: MetroHmrAdapter, getLogsEnabled: () => bo
     }
     if (!msg || typeof msg.type !== 'string') return;
     if (msg.type === 'register-entrypoints') {
-      // single-client ACK — adapter.channel 의 nodeSockets[other] 에는 안 보내고
-      // 이 socket 에만 직접 send. text frame builder 사용.
-      socket.write(buildAckFrame());
+      // single-client ACK — broadcast 가 아니라 요청한 client 에게만 응답.
+      reply(ACK_TEXT);
       return;
     }
     if (msg.type === 'log') {
@@ -128,12 +145,9 @@ function buildIncomingHandler(adapter: MetroHmrAdapter, getLogsEnabled: () => bo
   };
 }
 
+// RN HMR client 의 register-entrypoints 에 대한 ACK payload. 프레이밍(RFC6455
+// text frame)은 channel 의 reply 가 담당 — 여기선 plain text 만.
 const ACK_TEXT = JSON.stringify({ type: 'bundle-registered' });
-function buildAckFrame(): Buffer {
-  // RFC 6455 §5.2 server→client text frame (FIN + opcode 0x1). short payload.
-  const payload = Buffer.from(ACK_TEXT);
-  return Buffer.concat([Buffer.from([0x81, payload.length]), payload]);
-}
 
 export function createHmrBridge(options: HmrBridgeOptions): HmrBridge {
   const adapter = createMetroHmrAdapter();
@@ -148,6 +162,16 @@ export function createHmrBridge(options: HmrBridgeOptions): HmrBridge {
     acceptUpgrade(req, socket) {
       adapter.channel.accept(req, socket);
       adapter.sendInitialGreeting();
+    },
+    acceptBun(ws) {
+      adapter.channel.addBunClient(ws);
+      adapter.sendInitialGreeting();
+    },
+    removeBun(ws) {
+      adapter.channel.removeBunClient(ws);
+    },
+    handleBunMessage(ws, text) {
+      adapter.channel.dispatchBunIncoming(ws, text);
     },
     toggleLogs() {
       logsEnabled = !logsEnabled;

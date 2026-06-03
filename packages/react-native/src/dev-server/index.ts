@@ -15,6 +15,7 @@ export {
 } from './middleware/dev-middleware.ts';
 export {
   createBaseMiddleware,
+  createBunDevHttpServer,
   createDevHttpServer,
   type DevHttpServerDeps,
   type DevHttpServerHandle,
