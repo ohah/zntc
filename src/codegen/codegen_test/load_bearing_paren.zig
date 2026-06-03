@@ -101,6 +101,20 @@ test "load-bearing: optional-chain 끊기 타입래퍼 통과 (a?.b as T).c" {
     try expectParenSurvives(r.output, "(a?.b)");
 }
 
+test "load-bearing: 깊은 optional chain 은 spurious 끊김 괄호 없음 — depth cap 회귀 (#4042 dedup follow-up)" {
+    // 65+ 깊이 optional chain(break 컨텍스트 아님)이 codegen 의 옛 depth-64 cap 에선
+    // spine-walk 가 64 에서 false 를 반환 → has_non_optional_chain_parent 오설정 → 체인
+    // *중간*에 spurious 끊김 괄호(`var x=(a?.b...c64).c...`)가 생겼다. 이는 nullish 단락
+    // 지점을 바꿔 의미가 달라지는 silent miscompile. spineHasOptionalChain 단일화 시 cap 을
+    // 100_000 으로 통일해 해소 — 깊이와 무관하게 끊김 없는 chain 은 괄호가 0 개여야 한다.
+    // (잘못된 입력 주의: `(deep).d` 같은 명시 break 는 cap 과 무관하게 break 괄호 1개라
+    //  회귀를 못 잡는다. break 없는 declarator-init chain 이어야 cap 버그가 드러난다.)
+    const src = "var x = a?.b" ++ ".c" ** 70 ++ ";"; // depth 72, break 없음 → 괄호 0
+    var r = try e2e(std.testing.allocator, src);
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, r.output, "("));
+}
+
 test "load-bearing: new callee 가 optional chain new (a?.b)()" {
     var r = try e2e(std.testing.allocator, "new (a?.b)();");
     defer r.deinit();

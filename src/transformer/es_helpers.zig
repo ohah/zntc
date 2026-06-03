@@ -173,32 +173,8 @@ pub fn unwrapTransparentWrappersAst(ast: *const @import("../parser/ast.zig").Ast
 /// es2020.findOptionalChainBase 와 달리 mid-spine 타입 래퍼(`a?.b!.c` 의 `!`)를 통과한다 —
 /// 그쪽은 lowering 용이라 타입 래퍼에서 멈춰 여기엔 부적합.
 pub fn spineHasOptionalChainThroughTypeWrappers(ast: *const @import("../parser/ast.zig").Ast, idx: NodeIndex) bool {
-    const extras = ast.extra_data.items;
-    var cur = idx;
-    var guard: u32 = 0;
-    while (guard < 100_000) : (guard += 1) {
-        if (cur.isNone()) return false;
-        const n = ast.getNode(cur);
-        // 타입 래퍼는 spine 을 끊지 않으므로 통과 (SSoT: isTransparentTypeWrapper, 괄호는 제외).
-        if (ast_mod.Node.Tag.isTransparentTypeWrapper(n.tag)) {
-            cur = n.data.unary.operand;
-            continue;
-        }
-        switch (n.tag) {
-            .static_member_expression, .computed_member_expression, .private_field_expression => {
-                const e = n.data.extra;
-                if (e + 2 < extras.len and (extras[e + 2] & ast_mod.MemberFlags.optional_chain) != 0) return true;
-                cur = @enumFromInt(extras[e]); // object
-            },
-            .call_expression => {
-                const e = n.data.extra;
-                if (e + 3 < extras.len and (extras[e + 3] & ast_mod.CallFlags.optional_chain) != 0) return true;
-                cur = @enumFromInt(extras[e]); // callee
-            },
-            else => return false, // identifier / parenthesized_expression(체인 끊김) / 기타 head
-        }
-    }
-    return false;
+    // 단일 구현 `ast.spineHasOptionalChain` 에 위임(codegen objectContinuesOptionalChain 과 공용).
+    return ast_mod.spineHasOptionalChain(ast, idx);
 }
 
 /// transparent 타입 래퍼(TS as/satisfies/non-null/`<T>`, Flow as/colon-cast)를 벗기며 그 래퍼가

@@ -1852,6 +1852,41 @@ pub const MemberFlags = struct {
     pub const optional_chain: u32 = 0x01; // a?.b, a?.[b]
 };
 
+/// member/call spine 이 (TS/Flow type wrapper + chain_expression 을 통과하되 paren 은 경계로
+/// 두고) optional `?.` 로 시작/연속되는지. paren 은 optional chain 을 끊으므로(`(a?.b).c` 의
+/// `.c` 는 None) 통과하지 않는다. type wrapper(`as T`/`<T>x`/`!`)·chain_expression 은 체인을
+/// 안 끊어 통과한다. codegen(괄호 재유도: `objectContinuesOptionalChain`)과 transformer(타입
+/// 래퍼 통과 optional 검출: `spineHasOptionalChainThroughTypeWrappers`)의 공용 단일 구현.
+pub fn spineHasOptionalChain(ast: *const Ast, idx: NodeIndex) bool {
+    const extras = ast.extra_data.items;
+    var cur = idx;
+    var guard: u32 = 0;
+    while (guard < 100_000) : (guard += 1) {
+        if (cur.isNone() or @intFromEnum(cur) >= ast.nodes.items.len) return false;
+        const n = ast.getNode(cur);
+        if (n.tag == .chain_expression or Node.Tag.isTransparentTypeWrapper(n.tag)) {
+            cur = n.data.unary.operand;
+            continue;
+        }
+        switch (n.tag) {
+            .static_member_expression, .computed_member_expression, .private_field_expression => {
+                const e = n.data.extra;
+                if (e + 2 >= extras.len) return false; // 불완전 노드 — 체인 끊김(extras[e] 미보장 oob 방지)
+                if ((extras[e + 2] & MemberFlags.optional_chain) != 0) return true;
+                cur = @enumFromInt(extras[e]); // object
+            },
+            .call_expression => {
+                const e = n.data.extra;
+                if (e + 3 >= extras.len) return false;
+                if ((extras[e + 3] & CallFlags.optional_chain) != 0) return true;
+                cur = @enumFromInt(extras[e]); // callee
+            },
+            else => return false, // identifier / paren(체인 끊김) / 기타 head
+        }
+    }
+    return false;
+}
+
 /// unary_expression의 flags (D082).
 /// extra: [operand, operator_and_flags]
 /// operator_and_flags: bits [0-7] = operator Kind, bit 8 = postfix, bits [16-31] = 확장 플래그
