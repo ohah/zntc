@@ -406,17 +406,15 @@ pub const Codegen = struct {
             if (self.isSkipped(node_idx)) continue;
             if (!first) try self.write(sep);
             first = false;
-            const wrap = wrap_sequences and self.ast.getNode(node_idx).tag == .sequence_expression;
-            if (wrap) try self.writeByte('(');
             // expression list(call args/array items)는 argument 위치 → .comma.
-            // (PR5: emitExpr 가 아직 wrap 미발동이라 byte-identical. wrap_sequences ad-hoc 은
-            //  PR6 에서 .comma wrap 으로 대체되며 제거.) statement list 등은 emitNode(.lowest) 유지.
+            // sequence(.comma) 는 .comma wrap 으로 괄호(`f((a,b))`, esbuild parity) — 이전의
+            // wrap_sequences ad-hoc 괄호는 precedence wrap 으로 대체되어 제거(이중괄호 방지).
+            // statement list(formal params/function body 등)는 emitNode(.lowest) 유지.
             if (wrap_sequences) {
                 try self.emitExpr(node_idx, .comma, .{});
             } else {
                 try self.emitNode(node_idx);
             }
-            if (wrap) try self.writeByte(')');
         }
     }
 };
