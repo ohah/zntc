@@ -137,19 +137,9 @@ fn binaryChildLevels(self: anytype, node: Node) BinaryChildLevels {
 /// emitParen 투명화(#4042) 후, 자식 노드 구조를 *직접* 검사하는 헬퍼들(`??`/`||` 혼용,
 /// `**` 좌단항, RHS 부호 토큰)은 래퍼 너머의 실제 노드를 봐야 정확하다 — 래퍼는 더 이상
 /// `(` 를 출력하지 않으므로 출력 시작 토큰이 안쪽 operand 의 것이 된다.
+/// 단일 구현 `calls.skipWrappers(.., include_paren=true)` 에 위임.
 fn skipTransparent(self: anytype, idx: NodeIndex) NodeIndex {
-    var cur = idx;
-    var depth: u8 = 0;
-    while (depth < 32) : (depth += 1) {
-        if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return cur;
-        const n = self.ast.getNode(cur);
-        if (n.tag == .parenthesized_expression or n.tag == .chain_expression or
-            ast_mod.Node.Tag.isTransparentTypeWrapper(n.tag))
-        {
-            cur = n.data.unary.operand;
-        } else return cur;
-    }
-    return cur;
+    return calls.skipWrappers(self, idx, true);
 }
 
 /// 노드가 (transparent wrapper 너머로) `||`(.pipe2) 또는 `&&`(.amp2) logical_expression 인지.

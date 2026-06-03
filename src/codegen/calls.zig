@@ -14,18 +14,21 @@ const ExprFlags = precedence.ExprFlags;
 const IMPORT_META_URL_NODE = "require(\"url\").pathToFileURL(__filename).href";
 const IMPORT_META_NODE_OBJECT = "{url:" ++ IMPORT_META_URL_NODE ++ ",dirname:__dirname,filename:__filename}";
 
-/// transparent TYPE wrapper(TS `as T`/`<T>x`/`!`, Flow cast, chain_expression)만 벗긴다.
-/// **paren 은 벗기지 않는다** — paren 은 optional chain 을 끊는 경계이므로
-/// (`(a?.b).c` 의 `.c` 는 None, `a?.b!.c` 의 `.c` 는 Continue). objectContinuesOptionalChain 전용.
-fn skipTypeWrappers(self: anytype, idx: NodeIndex) NodeIndex {
+/// transparent wrapper 를 벗겨 실제 노드를 반환. chain_expression + TS/Flow type cast
+/// (`as T`/`<T>x`/`!`)는 항상 벗긴다. `include_paren=true` 면 parenthesized_expression 도
+/// 벗긴다(출력 토큰 기준 — emitParen 투명). `false` 면 paren 은 경계로 남긴다 —
+/// optional chain 을 끊으므로(`(a?.b).c` 의 `.c` 는 None, `a?.b!.c` 의 `.c` 는 Continue).
+/// codegen 의 wrapper-skip 3종(투명검사/type-only/optional-chain)을 단일화.
+pub fn skipWrappers(self: anytype, idx: NodeIndex, comptime include_paren: bool) NodeIndex {
     var cur = idx;
     var depth: u8 = 0;
     while (depth < 32) : (depth += 1) {
         if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return cur;
         const n = self.ast.getNode(cur);
-        if (n.tag == .chain_expression or ast_mod.Node.Tag.isTransparentTypeWrapper(n.tag)) {
-            cur = n.data.unary.operand;
-        } else return cur;
+        const transparent = n.tag == .chain_expression or
+            ast_mod.Node.Tag.isTransparentTypeWrapper(n.tag) or
+            (include_paren and n.tag == .parenthesized_expression);
+        if (transparent) cur = n.data.unary.operand else return cur;
     }
     return cur;
 }
@@ -39,7 +42,7 @@ pub fn objectContinuesOptionalChain(self: anytype, idx: NodeIndex) bool {
     var cur = idx;
     var depth: u8 = 0;
     while (depth < 64) : (depth += 1) {
-        cur = skipTypeWrappers(self, cur);
+        cur = skipWrappers(self, cur, false); // paren 은 체인 경계로 남긴다
         if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return false;
         const n = self.ast.getNode(cur);
         switch (n.tag) {
@@ -66,18 +69,8 @@ pub fn objectContinuesOptionalChain(self: anytype, idx: NodeIndex) bool {
 /// 한다 (esbuild ETemplate: `IsOptionalChain(tag)` → wrap). paren 까지 벗기는 이유는 emit 시
 /// 투명 paren 이 사라져 `(a?.b)`x`` 가 `a?.b`x``(invalid)로 깨지기 때문.
 pub fn isOptionalChainExpr(self: anytype, idx: NodeIndex) bool {
-    var cur = idx;
-    var depth: u8 = 0;
-    while (depth < 32) : (depth += 1) {
-        if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return false;
-        const n = self.ast.getNode(cur);
-        if (n.tag == .parenthesized_expression or n.tag == .chain_expression or
-            ast_mod.Node.Tag.isTransparentTypeWrapper(n.tag))
-        {
-            cur = n.data.unary.operand;
-        } else break;
-    }
-    return objectContinuesOptionalChain(self, cur);
+    // paren 까지 벗긴(출력 토큰 기준) 실제 노드가 chain 인지.
+    return objectContinuesOptionalChain(self, skipWrappers(self, idx, true));
 }
 
 /// `undefined` peephole 의 callee/object/new.callee 슬롯 paren 검사.
