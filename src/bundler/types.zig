@@ -21,6 +21,11 @@ pub const ModuleDevCode = struct {
     /// NAPI getter (`getHmrSourceMap(moduleId)`) 호출 시점에 generateJSON 을 수행한다.
     /// `map` 과 상호 배타 — lazy 경로에선 `sm_builder` 만, eager 경로에선 `map` 만 채워진다.
     sm_builder: ?*SourceMapBuilder = null,
+    /// emit 이 이 항목을 변경분으로 표시했는지. false = compiled cache hit(소스 불변) 모듈로,
+    /// `code` 는 빈 placeholder 이고 `id` 만 watch 의 graph_changed 감지·캐시 키 정합에 쓰인다.
+    /// watch 는 changed=true 만 HMR update 로 올려 변경 안 된 모듈의 phantom update 를 막는다.
+    /// 기본 true — initial 빌드/전체 방출(splitting 등 비-게이트 경로) 과 하위호환.
+    changed: bool = true,
 
     /// 각 항목의 소유 메모리만 해제 (백킹 slice 는 호출자 소유 — 예: ArrayList).
     pub fn freeItems(codes: []const ModuleDevCode, allocator: std.mem.Allocator) void {

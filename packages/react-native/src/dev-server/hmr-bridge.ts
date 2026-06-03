@@ -88,8 +88,18 @@ function buildOnRebuild(adapter: MetroHmrAdapter, opts: { silent?: boolean } = {
       );
       adapter.sendUpdate(annotated);
       if (!opts.silent) {
+        // ZNTC_PROFILE 활성 시에만 phase breakdown(det/grph/lnk/...) 노출. 일반 dev 출력은
+        // 간결하게 유지하고, 성능 진단 시 ZNTC_PROFILE=all 로 띄우면 단계별 ms 를 함께 본다.
+        const profileOn = process.env.ZNTC_PROFILE != null && process.env.ZNTC_PROFILE !== '';
+        const pd = profileOn
+          ? (event as unknown as { phaseDurations?: Record<string, number> }).phaseDurations
+          : undefined;
+        const r = (n?: number) => (n == null ? '-' : n.toFixed(0));
+        const bd = pd
+          ? ` ${colors.dim}[det=${r(pd.detect)} grph=${r(pd.graph)} lnk=${r(pd.link)} shk=${r(pd.shake)} emt=${r(pd.emit)} dlt=${r(pd.delta)} | gDisc=${r(pd.graphDiscover)} gBld=${r(pd.graphBuild)} eOut=${r(pd.emitOutput)} eMod=${r(pd.emitModulePass)} eCat=${r(pd.emitConcat)}]${colors.reset}`
+          : '';
         logInfo(
-          `HMR update ${colors.dim}[${state.platform}] ${event.updates.length} module(s) (${ms}ms)${colors.reset}`,
+          `HMR update ${colors.dim}[${state.platform}] ${event.updates.length} module(s) (${ms}ms)${colors.reset}${bd}`,
         );
       }
       return;

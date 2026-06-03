@@ -1444,6 +1444,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
                 // 단일 패스: 캐시와 비교하여 변경된 모듈만 수집
                 var update_list: std.ArrayList(WatchRebuildEvent.ModuleUpdate) = .empty;
                 for (dev_codes) |dc| {
+                    if (!dc.changed) continue; // cache hit(id-only 항목, code 빈 placeholder) — update 아님
                     const cached = module_code_cache.get(dc.id);
                     if (cached == null or !std.mem.eql(u8, cached.?, dc.code)) {
                         // 재파싱 목록이 있을 때만 필터 적용. 첫 증분 빌드 이후 캐시가
@@ -1476,25 +1477,57 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
                 }
             }
 
-            // 캐시 업데이트
+            // 캐시 정합: dev_codes 는 변경분(changed=true, 새 code) + cache hit(changed=false, 빈
+            // placeholder) 의 합집합이라 전체 모듈 id 를 담는다. 과거의 clear-후-전체-rebuild 는 hit 의
+            // 빈 code 로 캐시를 덮어 다음 rebuild 의 비교를 깨뜨리므로, 키 정합 + changed 선택 갱신으로 바꾼다.
             {
+                // 1) dev_codes 에 없는 키 제거 — 모듈 삭제 반영(없으면 count 불일치로 graph_changed 영구 true).
+                var live_ids = std.StringHashMap(void).init(allocator);
+                defer live_ids.deinit();
+                for (dev_codes) |dc| live_ids.put(dc.id, {}) catch {};
+                var stale: std.ArrayList([]const u8) = .empty;
+                defer stale.deinit(allocator);
                 var it = module_code_cache.iterator();
                 while (it.next()) |entry| {
-                    allocator.free(entry.key_ptr.*);
-                    allocator.free(entry.value_ptr.*);
+                    if (!live_ids.contains(entry.key_ptr.*)) stale.append(allocator, entry.key_ptr.*) catch {};
                 }
-                module_code_cache.clearRetainingCapacity();
+                for (stale.items) |k| {
+                    if (module_code_cache.fetchRemove(k)) |kv| {
+                        allocator.free(kv.key);
+                        allocator.free(kv.value);
+                    }
+                }
             }
+            // 2) changed=true 만 새 code 로 value 갱신/추가. changed=false(빈 code)는 기존 실제 code 를
+            //    유지해 캐시 오염을 막는다(initial 은 전부 changed=true 라 채워짐 — 방어적으로 빈 추가).
             for (dev_codes) |dc| {
-                const id_copy = allocator.dupe(u8, dc.id) catch continue;
-                const code_copy = allocator.dupe(u8, dc.code) catch {
-                    allocator.free(id_copy);
-                    continue;
-                };
-                module_code_cache.put(id_copy, code_copy) catch {
-                    allocator.free(id_copy);
-                    allocator.free(code_copy);
-                };
+                if (dc.changed) {
+                    if (module_code_cache.getPtr(dc.id)) |vp| {
+                        const code_copy = allocator.dupe(u8, dc.code) catch continue;
+                        allocator.free(vp.*);
+                        vp.* = code_copy;
+                    } else {
+                        const id_copy = allocator.dupe(u8, dc.id) catch continue;
+                        const code_copy = allocator.dupe(u8, dc.code) catch {
+                            allocator.free(id_copy);
+                            continue;
+                        };
+                        module_code_cache.put(id_copy, code_copy) catch {
+                            allocator.free(id_copy);
+                            allocator.free(code_copy);
+                        };
+                    }
+                } else if (!module_code_cache.contains(dc.id)) {
+                    const id_copy = allocator.dupe(u8, dc.id) catch continue;
+                    const code_copy = allocator.dupe(u8, "") catch {
+                        allocator.free(id_copy);
+                        continue;
+                    };
+                    module_code_cache.put(id_copy, code_copy) catch {
+                        allocator.free(id_copy);
+                        allocator.free(code_copy);
+                    };
+                }
             }
         }
         const delta_ns: u64 = if (delta_timer) |*t| t.read() else 0;

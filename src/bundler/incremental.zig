@@ -301,6 +301,7 @@ pub const IncrementalBundler = struct {
                 try actually_changed.ensureTotalCapacity(self.allocator, new_codes.len);
 
                 for (new_codes) |nc| {
+                    if (!nc.changed) continue; // cache hit(id-only, 빈 code) — changed_modules 제외
                     const cached = self.module_cache.get(nc.id);
                     const code_changed = if (cached) |c| !std.mem.eql(u8, c.code, nc.code) else true;
                     if (!code_changed) continue;
@@ -367,8 +368,13 @@ pub const IncrementalBundler = struct {
     }
 
     fn updateCache(self: *IncrementalBundler, result: *const BundleResult) void {
-        self.clearCache();
-
+        // last_paths 는 매 빌드 새 module_paths 로 교체(기존 동작). module_cache 는 아래에서
+        // changed 선택 갱신하므로 clearCache(전체 비움) 대신 last_paths 만 직접 교체한다.
+        if (self.last_paths) |paths| {
+            for (paths) |p| self.allocator.free(p);
+            self.allocator.free(paths);
+            self.last_paths = null;
+        }
         if (result.module_paths) |paths| {
             const copied = self.allocator.alloc([]const u8, paths.len) catch {
                 self.needs_full_rebuild = true;
@@ -380,17 +386,60 @@ pub const IncrementalBundler = struct {
             self.last_paths = copied;
         }
 
+        // module_cache 정합: dev_codes 는 변경분(changed=true, 새 code) + cache hit(changed=false,
+        // 빈 placeholder)의 합집합이다. hit 의 빈 code 로 캐시를 덮으면 다음 rebuild 의 diff 비교가
+        // 깨져(phantom update) 안 변한 모듈이 changed_modules 에 섞이므로, 키 정합 + changed 선택
+        // 갱신으로 hit 모듈의 기존 실제 code 를 유지한다.
         if (result.module_dev_codes) |codes| {
+            // 1) dev_codes 에 없는 키 제거 — 모듈 삭제 반영.
+            var live: std.StringHashMapUnmanaged(void) = .empty;
+            defer live.deinit(self.allocator);
+            for (codes) |c| live.put(self.allocator, c.id, {}) catch {};
+            var stale: std.ArrayList([]const u8) = .empty;
+            defer stale.deinit(self.allocator);
+            var it = self.module_cache.iterator();
+            while (it.next()) |e| {
+                if (!live.contains(e.key_ptr.*)) stale.append(self.allocator, e.key_ptr.*) catch {};
+            }
+            for (stale.items) |k| {
+                if (self.module_cache.fetchRemove(k)) |kv| {
+                    self.allocator.free(kv.value.id);
+                    self.allocator.free(kv.value.code);
+                    if (kv.value.compiled) |c| c.deinit(self.allocator);
+                }
+            }
+            // 2) changed=true 만 새 code 로 갱신/추가. changed=false 는 기존 실제 code 유지
+            //    (없으면 — first 빌드는 전부 changed=true — 빈 placeholder 추가).
             for (codes) |c| {
-                const id = self.allocator.dupe(u8, c.id) catch continue;
-                const code = self.allocator.dupe(u8, c.code) catch {
-                    self.allocator.free(id);
-                    continue;
-                };
-                self.module_cache.put(self.allocator, id, .{ .id = id, .code = code }) catch {
-                    self.allocator.free(id);
-                    self.allocator.free(code);
-                };
+                if (c.changed) {
+                    if (self.module_cache.getPtr(c.id)) |vp| {
+                        const code = self.allocator.dupe(u8, c.code) catch continue;
+                        self.allocator.free(vp.code);
+                        if (vp.compiled) |cc| cc.deinit(self.allocator);
+                        vp.code = code;
+                        vp.compiled = null;
+                    } else {
+                        const id = self.allocator.dupe(u8, c.id) catch continue;
+                        const code = self.allocator.dupe(u8, c.code) catch {
+                            self.allocator.free(id);
+                            continue;
+                        };
+                        self.module_cache.put(self.allocator, id, .{ .id = id, .code = code }) catch {
+                            self.allocator.free(id);
+                            self.allocator.free(code);
+                        };
+                    }
+                } else if (!self.module_cache.contains(c.id)) {
+                    const id = self.allocator.dupe(u8, c.id) catch continue;
+                    const code = self.allocator.dupe(u8, "") catch {
+                        self.allocator.free(id);
+                        continue;
+                    };
+                    self.module_cache.put(self.allocator, id, .{ .id = id, .code = code }) catch {
+                        self.allocator.free(id);
+                        self.allocator.free(code);
+                    };
+                }
             }
         }
     }
