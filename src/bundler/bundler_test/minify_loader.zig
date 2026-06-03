@@ -1817,8 +1817,11 @@ test "Minify: new (CallExpression)() keeps parens — safety (#1586)" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "new (") != null);
 }
 
-test "Minify: redundant parens removal preserved without minify_syntax (#1586)" {
-    // minify_syntax 비활성화 시 원본 parens 유지 (관찰 불변성).
+test "Minify: redundant parens removed for new-callee even without minify_syntax (#1586/#4042)" {
+    // #4042: precedence 기반 전환으로 *전 모드 통일* — minify_syntax 여부와 무관하게
+    // 군더더기 괄호 제거. `new (class Foo extends Error {})()` 의 callee 괄호는
+    // `new class Foo extends Error {}()` 로 떨어진다(class expression 은 PrimaryExpression
+    // 이라 new callee 슬롯에 직접 가능, 의미 동일 — esbuild parity).
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts",
@@ -1839,8 +1842,9 @@ test "Minify: redundant parens removal preserved without minify_syntax (#1586)" 
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // parens 유지
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "new (class") != null);
+    // 군더더기 괄호 제거(esbuild parity): `new class` (괄호 없음).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new class") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new (class") == null);
 }
 
 test "Minify: default export has no synthetic variable — no regression (#1585)" {

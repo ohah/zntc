@@ -48,19 +48,19 @@ test "ES2020: ?? no transform on es2020" {
 test "ES2020: ?. member" {
     var r = try e2eTarget(std.testing.allocator, "a?.b;", .es2019);
     defer r.deinit();
-    try std.testing.expectEqualStrings("(a==null?void 0:a.b);", r.output);
+    try std.testing.expectEqualStrings("a==null?void 0:a.b;", r.output);
 }
 
 test "ES2020: ?. computed" {
     var r = try e2eTarget(std.testing.allocator, "a?.[0];", .es2019);
     defer r.deinit();
-    try std.testing.expectEqualStrings("(a==null?void 0:a[0]);", r.output);
+    try std.testing.expectEqualStrings("a==null?void 0:a[0];", r.output);
 }
 
 test "ES2020: ?. call" {
     var r = try e2eTarget(std.testing.allocator, "a?.();", .es2019);
     defer r.deinit();
-    try std.testing.expectEqualStrings("(a==null?void 0:a());", r.output);
+    try std.testing.expectEqualStrings("a==null?void 0:a();", r.output);
 }
 
 test "ES2020: optional eval call indirect eval 보존" {
@@ -72,13 +72,13 @@ test "ES2020: optional eval call indirect eval 보존" {
 test "ES2020: ?. side effect (temp var)" {
     var r = try e2eTarget(std.testing.allocator, "foo()?.bar;", .es2019);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a;((_a=foo())==null?void 0:_a.bar);", r.output);
+    try std.testing.expectEqualStrings("var _a;(_a=foo())==null?void 0:_a.bar;", r.output);
 }
 
 test "ES2020: ?. chain continuation" {
     var r = try e2eTarget(std.testing.allocator, "a?.b.c;", .es2019);
     defer r.deinit();
-    try std.testing.expectEqualStrings("(a==null?void 0:a.b.c);", r.output);
+    try std.testing.expectEqualStrings("a==null?void 0:a.b.c;", r.output);
 }
 
 test "ES2020: ?. no transform on esnext" {
@@ -98,13 +98,13 @@ test "ES2021: ??= to es2020" {
 test "ES2021: ??= to es2019 (double lowering)" {
     var r = try e2eTarget(std.testing.allocator, "a ??= b;", .es2019);
     defer r.deinit();
-    try std.testing.expectEqualStrings("a!=null?a:(a=b);", r.output);
+    try std.testing.expectEqualStrings("a!=null?a:a=b;", r.output);
 }
 
 test "ES2021: ??= member to es2019 captures to temp" {
     var r = try e2eTarget(std.testing.allocator, "obj.x ??= b;", .es2019);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a;(_a=obj.x)!=null?_a:(obj.x=b);", r.output);
+    try std.testing.expectEqualStrings("var _a;(_a=obj.x)!=null?_a:obj.x=b;", r.output);
 }
 
 test "ES2021: ??= no transform on esnext" {
@@ -156,7 +156,7 @@ test "ES2016: **= member receiver 1회 평가" {
 test "ES2016: **= computed member key 1회 평가" {
     var r = try e2eTarget(std.testing.allocator, "obj[getKey()] **= 3;", .es2015);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "obj[(_a=getKey())]=Math.pow(obj[_a],3)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "obj[_a=getKey()]=Math.pow(obj[_a],3)") != null);
 }
 
 test "ES2016: ** no transform on es2016" {
@@ -235,19 +235,19 @@ test "ES2022: static block with methods preserved" {
 test "ES2017: async function declaration" {
     var r = try e2eFull(std.testing.allocator, "export async function foo() { return await bar(); }", .{ .unsupported = TransformOptions.compat.fromESTarget(.es2016) }, .{ .minify_whitespace = true }, ".mts");
     defer r.deinit();
-    try std.testing.expectEqualStrings("export function foo(){return __async(function*(){return(yield bar());}).call(this);}", r.output);
+    try std.testing.expectEqualStrings("export function foo(){return __async(function*(){return yield bar();}).call(this);}", r.output);
 }
 
 test "ES2017: async arrow block body" {
     var r = try e2eFull(std.testing.allocator, "export const f = async () => { await x; };", .{ .unsupported = TransformOptions.compat.fromESTarget(.es2016) }, .{ .minify_whitespace = true }, ".mts");
     defer r.deinit();
-    try std.testing.expectEqualStrings("export const f=()=>__async(function*(){(yield x);}).call(this);", r.output);
+    try std.testing.expectEqualStrings("export const f=()=>__async(function*(){yield x;}).call(this);", r.output);
 }
 
 test "ES2017: async arrow expression body" {
     var r = try e2eFull(std.testing.allocator, "export const f = async () => await x;", .{ .unsupported = TransformOptions.compat.fromESTarget(.es2016) }, .{ .minify_whitespace = true }, ".mts");
     defer r.deinit();
-    try std.testing.expectEqualStrings("export const f=()=>__async(function*(){return(yield x);}).call(this);", r.output);
+    try std.testing.expectEqualStrings("export const f=()=>__async(function*(){return yield x;}).call(this);", r.output);
 }
 
 test "ES2017: no transform on es2017" {
@@ -1997,7 +1997,7 @@ test "ES2015: derived constructor return 값이 super를 먼저 평가" {
 test "ES2015: derived constructor return comma expression super 평가 순서" {
     var r = try e2eTarget(std.testing.allocator, "class C extends P{constructor(){return (super(),undefined);}}", .es5);
     defer r.deinit();
-    const helper_pos = std.mem.indexOf(u8, r.output, "__possibleConstructorReturn(((__assertThisUninitialized") orelse return error.TestExpectedEqual;
+    const helper_pos = std.mem.indexOf(u8, r.output, "__possibleConstructorReturn((__assertThisUninitialized") orelse return error.TestExpectedEqual;
     const this_pos = std.mem.indexOfPos(u8, r.output, helper_pos, "),_this)") orelse return error.TestExpectedEqual;
     try std.testing.expect(helper_pos < this_pos);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__possibleConstructorReturn(_this,((__assertThisUninitialized") == null);
@@ -2730,13 +2730,13 @@ test "ES2020: ?. with method call" {
 test "ES2020: optional method call this 바인딩 보존" {
     var r = try e2eTarget(std.testing.allocator, "obj.method?.(1,2);", .es2019);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a;((_a=obj.method)==null?void 0:_a.call(obj,1,2));", r.output);
+    try std.testing.expectEqualStrings("var _a;(_a=obj.method)==null?void 0:_a.call(obj,1,2);", r.output);
 }
 
 test "ES2020: optional method call 복잡 receiver 1회 평가" {
     var r = try e2eTarget(std.testing.allocator, "getObj().method?.();", .es2019);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a,_b;((_b=(_a=getObj()).method)==null?void 0:_b.call(_a));", r.output);
+    try std.testing.expectEqualStrings("var _a,_b;(_b=(_a=getObj()).method)==null?void 0:_b.call(_a);", r.output);
 }
 
 test "ES2020: optional super method call this 바인딩 보존" {
@@ -2864,7 +2864,7 @@ test "ES2021: logical assignment computed super member key 1회 평가" {
     var r = try e2eTarget(std.testing.allocator, "class C extends B{m(){super[getKey()] ||= 1;}}", .es2020);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "=super") == null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "super[(_a=getKey())]||") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super[_a=getKey()]||") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "super[_a]=1") != null);
 }
 
@@ -2891,7 +2891,7 @@ test "ES2021: &&= member receiver 1회 평가" {
 test "ES2021: ??= computed member key 1회 평가" {
     var r = try e2eTarget(std.testing.allocator, "obj[getKey()] ??= 5;", .es2019);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a=getKey())") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=getKey()") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "obj[_a]=5") != null);
 }
 

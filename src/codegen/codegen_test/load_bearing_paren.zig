@@ -3,15 +3,13 @@
 //! tests/integration/tests/load-bearing-paren.test.ts 가 담당한다.
 //!
 //! 입력은 괄호가 *의미를 갖는*(= 빼면 다른 프로그램이 되거나 invalid 가 되는)
-//! 최소 표현이다. 현재(precedence 전환 전)는 parenthesized_expression 노드로
-//! 보존하고, 전환(PR4) 후에는 emitExpr 가 precedence 로 재유도한다 — 어느 쪽이든
-//! 괄호가 살아있어야 한다. indexOf 로 핵심 괄호 부분문자열 생존만 보므로
-//! minify/공백 정책 변화에 영향받지 않고 PR3·PR4 양쪽에서 통과한다.
+//! 최소 표현이다. precedence 전환 후 emitExpr 가 괄호를 재유도한다 — 다만 군더더기
+//! 제거로 *형태*가 바뀔 수 있어(예: `(42)`→`42 .`, `(a().b)`→`(a())`) 의미를 보존하는
+//! 한 핵심 부분문자열을 갱신한다. indexOf 로 핵심 보존 부분문자열만 본다.
 //!
-//! TODO(PR4): 아래 두 케이스는 현재 codegen 갭(이슈 #4042 인스턴스 6·7)이라
-//! precedence 전환에서 비로소 해소된다 — 그때 매트릭스에 추가한다.
-//!   - `({x:1} as T).c` (TS as strip 후 statement-start `{` 유실)
-//!   - es2019 optional-chain lowering 의 이중괄호 정리
+//! 인스턴스 6·7(#4042)도 precedence 전환에서 해소되어 아래에 포함:
+//!   - 6: `({x:1} as T).c` (TS as strip 후 object literal statement-start 괄호 재유도)
+//!   - 7: es2019 optional-chain lowering 의 이중괄호 정리는 es_downlevel `?.` 테이블이 커버.
 
 const std = @import("std");
 const helpers = @import("helpers.zig");
@@ -35,8 +33,10 @@ test "load-bearing: optional-chain 끊기 (a?.b).c" {
 test "load-bearing: numeric-then-dot (42).toString()" {
     var r = try e2e(std.testing.allocator, "(42).toString();");
     defer r.deinit();
-    // 괄호 유실 시 `42.toString` 은 `42.` 가 float 로 오파싱되어 invalid.
-    try expectParenSurvives(r.output, "(42)");
+    // 괄호 유실 시 `42.toString` 은 `42.` 가 float 로 오파싱되어 invalid. precedence 전환
+    // 후에는 괄호 대신 공백(`42 .toString`, esbuild needSpaceBeforeDot)으로 끊는다 —
+    // 둘 다 의미 보존. `42.` 로 붙는 invalid 출력만 회귀.
+    try expectParenSurvives(r.output, "42 .toString");
 }
 
 test "load-bearing: 음수 단항이 ** 의 좌측 (-a)**b" {
@@ -61,11 +61,13 @@ test "load-bearing: ?? 와 || 혼용 (a||b)??c" {
     try expectParenSurvives(r.output, "(a||b)");
 }
 
-test "load-bearing: new callee 의 call-chain new (a().b)()" {
+test "load-bearing: new callee 의 call-chain new (a()).b()" {
     var r = try e2e(std.testing.allocator, "new (a().b)();");
     defer r.deinit();
-    // 괄호 유실 시 `new a().b()` 는 `(new a()).b()` 로 결합이 깨진다(#1507).
-    try expectParenSurvives(r.output, "(a().b)");
+    // 괄호 유실 시 `new a().b()` 는 `(new a()).b()` 로 new 가 첫 call 에 결합돼 깨진다(#1507).
+    // precedence 전환 후 forbid_call 전파로 inner call 만 감싼다(`new (a()).b()`, esbuild parity)
+    // — `(a().b)` 전체 대신 `(a())` 로 동등 보존.
+    try expectParenSurvives(r.output, "new (a()).b()");
 }
 
 test "load-bearing: assignment 가 binary 피연산자 (a=b)+c" {
@@ -80,4 +82,20 @@ test "load-bearing: arrow 본문 object literal () => ({})" {
     // 괄호 유실 시 `() => {x:1}` 의 `{` 는 블록으로 파싱되어 객체를 반환하지 않는다.
     // arrow `=>` 직후의 `({` 를 함께 봐 다른 위치 괄호와의 우연 매칭을 배제한다.
     try expectParenSurvives(r.output, "=>({");
+}
+
+test "load-bearing: 인스턴스6 — TS as strip 후 object statement-start ({x:1} as T).c" {
+    var r = try e2e(std.testing.allocator, "({x:1} as any).c;");
+    defer r.deinit();
+    // `as any` 타입 래퍼를 벗겨도 object literal 이 statement-start 라 괄호 재유도 필요.
+    // 유실 시 `{x:1}.c` 의 `{` 가 블록으로 오파싱(이슈 #4042 인스턴스 6).
+    try expectParenSurvives(r.output, "({x:1})");
+}
+
+test "load-bearing: optional-chain 끊기 타입래퍼 통과 (a?.b as T).c" {
+    var r = try e2e(std.testing.allocator, "(a?.b as any).c;");
+    defer r.deinit();
+    // 타입 래퍼를 벗길 때 괄호까지 떼면 `a?.b.c` 로 체인이 이어져 의미가 바뀐다
+    // (a nullish 시 throw vs undefined). precedence 가 체인 끊기 괄호를 재유도.
+    try expectParenSurvives(r.output, "(a?.b)");
 }

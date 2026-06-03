@@ -539,6 +539,8 @@ pub fn emitExportDefault(self: anytype, node: Node) !void {
     // 선언 노드(function_declaration/class_declaration)는 exprNeedsParens 가 제외하므로
     // 마크가 걸려도 영향 없음.
     self.export_default_start = self.buf.items.len;
+    // value level = .comma (esbuild SExportDefault SExpr = LComma): 최상위 sequence
+    // (`export default (a,b)`)가 괄호로 감싸진다. function/class 선언은 wrap 안 됨(exprNeedsParens 제외).
     // contextual name: 익명 function/arrow/class → "default"
     if (self.fn_map_builder != null and self.isFunctionLike(inner_idx)) {
         const saved = self.pending_fn_name;
@@ -547,9 +549,9 @@ pub fn emitExportDefault(self: anytype, node: Node) !void {
             if (self.pending_fn_name) |s| self.allocator.free(s);
             self.pending_fn_name = saved;
         }
-        try self.emitNode(inner_idx);
+        try self.emitExpr(inner_idx, .comma, .{});
     } else {
-        try self.emitNode(inner_idx);
+        try self.emitExpr(inner_idx, .comma, .{});
     }
     // class/function 선언 뒤에는 세미콜론 불필요
     if (!inner_idx.isNone()) {

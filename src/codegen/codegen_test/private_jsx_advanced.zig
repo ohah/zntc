@@ -85,8 +85,9 @@ test "private method: conditional nullish temp is hoisted into standalone functi
     , .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function _compute_fn(){var _a;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a=(typeof this.options.refetchInterval===\"function\"") != null or
-        std.mem.indexOf(u8, r.output, "(_a=(typeof this.options.refetchInterval==\"function\"") != null);
+    // 군더더기 괄호 제거(#4042): `(_a = typeof ... ? ... : ...)` — 조건식 둘레의 inner 괄호 불필요.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a=typeof this.options.refetchInterval===\"function\"") != null or
+        std.mem.indexOf(u8, r.output, "(_a=typeof this.options.refetchInterval==\"function\"") != null);
 }
 
 test "private method: multiple methods" {

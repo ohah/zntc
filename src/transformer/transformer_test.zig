@@ -1484,11 +1484,12 @@ test "codegen: TS `(X as T)` 괄호 — numeric/statement-start/arrow 등 load-b
     //   - arrow/function callee: `(function(){} as T)()` 등
     const Keep = struct { src: []const u8, want: []const u8 };
     const keep = [_]Keep{
-        .{ .src = "(42 as number).toFixed(2);", .want = "(42).toFixed(2)" },
-        .{ .src = "(255 as number).toString(16);", .want = "(255).toString(16)" },
+        // numeric-then-dot: 괄호 대신 `42 .x` 공백(esbuild needSpaceBeforeDot)으로 보존.
+        .{ .src = "(42 as number).toFixed(2);", .want = "42 .toFixed(2)" },
+        .{ .src = "(255 as number).toString(16);", .want = "255 .toString(16)" },
         .{ .src = "({x:1} as any).c;", .want = "({ x: 1 }).c" },
         .{ .src = "(function(){} as any)();", .want = "(function() {" },
-        .{ .src = "(<any>42).x;", .want = "(42).x" },
+        .{ .src = "(<any>42).x;", .want = "42 .x" },
     };
     for (keep) |c| {
         var r = try parseAndTransform(std.testing.allocator, c.src);
@@ -1524,9 +1525,9 @@ test "codegen: Flow colon-cast `(expr: T)` 는 load-bearing 괄호만 보존 (pa
         .{ .src = "// @flow\n(c ? x : y: any).z;", .want = "(c ? x : y).z" },
         // statement-start 모호성 (object literal / new)
         .{ .src = "// @flow\n({x:1}: any).c;", .want = "({ x: 1 }).c" },
-        .{ .src = "// @flow\n(new C: any).x;", .want = "(new C()).x" },
-        // numeric-then-dot: `42.x` 는 float 오파싱 → invalid. 괄호 보존.
-        .{ .src = "// @flow\n(42: any).x;", .want = "(42).x" },
+        .{ .src = "// @flow\n(new C: any).x;", .want = "new C().x" },
+        // numeric-then-dot: `42.x` 는 float 오파싱 → invalid. `42 .x` 공백으로 보존.
+        .{ .src = "// @flow\n(42: any).x;", .want = "42 .x" },
     };
     for (keep) |c| {
         var r = try parseAndTransform(std.testing.allocator, c.src);
@@ -1567,7 +1568,7 @@ test "codegen: TS `<T>(expr)` prefix-assertion 도 load-bearing 괄호만 제거
     const keep = [_]Keep{
         .{ .src = "<T>(a + b) * c;", .want = "(a + b) * c" },
         .{ .src = "(<T>(a?.b)).c;", .want = "(a?.b).c" },
-        .{ .src = "<T>(a, b);", .want = "(a,b)" }, // sequence
+        .{ .src = "<T>(a, b);", .want = "a,b" }, // sequence: statement-level 이라 괄호 불필요
     };
     for (keep) |c| {
         var r = try parseAndTransform(std.testing.allocator, c.src);

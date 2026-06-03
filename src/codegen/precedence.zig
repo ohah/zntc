@@ -106,7 +106,12 @@ pub const ExprFlags = packed struct {
     /// for-loop init 절 안 — `in` 연산자가 for-in 헤더로 오파싱되지 않도록
     /// 괄호 필요. esbuild `forbidIn`.
     forbid_in: bool = false,
-    /// 부모가 non-optional 멤버/호출 — 자식이 optional chain 의 시작이면 괄호로
+    /// 부모가 non-optional 멤버/호출 — 자식이 optional chain 의 시작/연속이면 괄호로
     /// 체인을 끊어 보존 (`(a?.b).c`). esbuild `hasNonOptionalChainParent`.
+    ///
+    /// zntc 파서는 chain_expression 없이 paren 노드로만 optional chain 을 끊으므로(esbuild 의
+    /// OptionalChainContinue 를 노드로 표현 안 함), 멤버/호출이 "체인 연속(Continue)"인지는
+    /// object 를 구조적으로 본다(`calls.objectContinuesOptionalChain`). None(체인 밖)만
+    /// 이 flag 를 set 한다.
     has_non_optional_chain_parent: bool = false,
 };
