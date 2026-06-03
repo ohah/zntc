@@ -485,8 +485,8 @@ exports[`TSC: es6/Symbols symbolProperty46 1`] = `
 	set [Symbol.hasInstance](x) {
 	}
 }
-(new C())[Symbol.hasInstance] = 0;
-(new C())[Symbol.hasInstance] = "";
+new C()[Symbol.hasInstance] = 0;
+new C()[Symbol.hasInstance] = "";
 "
 `;
 
@@ -499,8 +499,8 @@ exports[`TSC: es6/Symbols symbolProperty47 1`] = `
 	set [Symbol.hasInstance](x) {
 	}
 }
-(new C())[Symbol.hasInstance] = 0;
-(new C())[Symbol.hasInstance] = "";
+new C()[Symbol.hasInstance] = 0;
+new C()[Symbol.hasInstance] = "";
 "
 `;
 
@@ -712,7 +712,7 @@ s ^= s;
 s ^= 0;
 s |= s;
 s |= 0;
-str += (s || str);
+str += s || str;
 "
 `;
 

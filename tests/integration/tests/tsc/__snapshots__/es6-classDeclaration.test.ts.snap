@@ -192,7 +192,7 @@ exports[`TSC: es6/classDeclaration emitClassDeclarationWithPropertyAccessInHerit
 function foo() {
 	return { B: B };
 }
-class C extends (foo()).B {
+class C extends foo().B {
 }
 "
 `;

@@ -318,7 +318,10 @@ pub fn emitClass(self: anytype, node: Node) !void {
     }
     if (!super_class.isNone()) {
         try self.write(" extends ");
-        try self.emitNode(super_class);
+        // extends 절은 LeftHandSideExpression 만 허용 → .postfix(esbuild LNew-1)로 emit해
+        // yield/conditional/logical/sequence 등 그 아래 결합강도는 괄호로 감싼다
+        // (`class C extends (yield 0)`, `extends (a?B:C)`). member/call/new 는 그대로.
+        try self.emitExpr(super_class, .postfix, .{});
     }
     try emitNestedExecutionBody(self, body);
 
@@ -410,6 +413,9 @@ pub fn emitPropertyDef(self: anytype, node: Node) !void {
         try self.writeSpace();
         try self.writeByte('=');
         try self.writeSpace();
+        // init level = .comma (esbuild class field init = LComma): 최상위 sequence
+        // (`f = (a,b)`)가 괄호로 감싸진다 — class field init 은 AssignmentExpression 이라
+        // 콤마를 직접 못 받는다(`f = a,b` 는 SyntaxError).
         // contextual name: class property = function-like → key 이름 사용
         if (self.fn_map_builder != null and self.isFunctionLike(value)) {
             const saved = self.pending_fn_name;
@@ -418,9 +424,9 @@ pub fn emitPropertyDef(self: anytype, node: Node) !void {
                 if (self.pending_fn_name) |s| self.allocator.free(s);
                 self.pending_fn_name = saved;
             }
-            try self.emitNode(value);
+            try self.emitExpr(value, .comma, .{});
         } else {
-            try self.emitNode(value);
+            try self.emitExpr(value, .comma, .{});
         }
     }
     try self.writeByte(';');
@@ -463,7 +469,8 @@ pub fn emitAccessorProp(self: anytype, node: Node) !void {
         try self.writeSpace();
         try self.writeByte('=');
         try self.writeSpace();
-        try self.emitNode(value);
+        // init level = .comma: 최상위 sequence 가 콤마 구분과 안 섞이게 (위 emitPropertyDef 참조).
+        try self.emitExpr(value, .comma, .{});
     }
     try self.writeByte(';');
 }

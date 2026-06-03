@@ -587,12 +587,12 @@ class C7 extends foo {
 exports[`TSC: classes classExtendingNull 1`] = `
 "class C1 extends null {
 }
-class C2 extends (null) {
+class C2 extends null {
 }
 class C3 extends null {
 	x = 1;
 }
-class C4 extends (null) {
+class C4 extends null {
 	x = 1;
 }
 "
@@ -993,7 +993,7 @@ exports[`TSC: classes classExpression4 1`] = `
 		return new C();
 	}
 };
-let x = (new C()).foo();
+let x = new C().foo();
 "
 `;
 
@@ -1128,7 +1128,7 @@ function B3() {
 class K extends B1() {
 	namae;
 }
-class C extends (new B2().anon) {
+class C extends new B2().anon {
 	name;
 }
 let b3Number = B3();
@@ -2873,20 +2873,20 @@ class DerivedWithFunctionExpression extends Base {
 class DerivedWithParenthesis extends Base {
 	prop = true;
 	constructor() {
-		(super());
+		super();
 	}
 }
 class DerivedWithParenthesisAfterStatement extends Base {
 	prop = true;
 	constructor() {
 		this.prop;
-		(super());
+		super();
 	}
 }
 class DerivedWithParenthesisBeforeStatement extends Base {
 	prop = true;
 	constructor() {
-		(super());
+		super();
 		this.prop;
 	}
 }
@@ -5265,8 +5265,8 @@ exports[`TSC: classes thisAndSuperInStaticMembers1 1`] = `
 	static y1 = this.x;
 	static y2 = this.x();
 	static y3 = this?.x();
-	static y4 = this[("x")]();
-	static y5 = this?.[("x")]();
+	static y4 = this["x"]();
+	static y5 = this?.["x"]();
 	static z1 = super.a;
 	static z2 = super["a"];
 	static z3 = super.f();
@@ -5284,7 +5284,7 @@ exports[`TSC: classes thisAndSuperInStaticMembers1 1`] = `
 	static z13 = { ...super.a } = { x: 0 };
 	static z14 = ++super.a;
 	static z15 = --super.a;
-	static z16 = ++super[("a")];
+	static z16 = ++super["a"];
 	static z17 = super.a++;
 	static z18 = super.a\`\`;
 	// these should be unaffected
@@ -5301,8 +5301,8 @@ exports[`TSC: classes thisAndSuperInStaticMembers2 1`] = `
 	static y1 = this.x;
 	static y2 = this.x();
 	static y3 = this?.x();
-	static y4 = this[("x")]();
-	static y5 = this?.[("x")]();
+	static y4 = this["x"]();
+	static y5 = this?.["x"]();
 	static z1 = super.a;
 	static z2 = super["a"];
 	static z3 = super.f();
@@ -5320,7 +5320,7 @@ exports[`TSC: classes thisAndSuperInStaticMembers2 1`] = `
 	static z13 = { ...super.a } = { x: 0 };
 	static z14 = ++super.a;
 	static z15 = --super.a;
-	static z16 = ++super[("a")];
+	static z16 = ++super["a"];
 	static z17 = super.a++;
 	static z18 = super.a\`\`;
 	// these should be unaffected
@@ -5337,8 +5337,8 @@ exports[`TSC: classes thisAndSuperInStaticMembers3 1`] = `
 	static y1 = this.x;
 	static y2 = this.x();
 	static y3 = this?.x();
-	static y4 = this[("x")]();
-	static y5 = this?.[("x")]();
+	static y4 = this["x"]();
+	static y5 = this?.["x"]();
 	static z3 = super.f();
 	static z4 = super["f"]();
 	// these should be unaffected
@@ -5355,8 +5355,8 @@ exports[`TSC: classes thisAndSuperInStaticMembers4 1`] = `
 	static y1 = this.x;
 	static y2 = this.x();
 	static y3 = this?.x();
-	static y4 = this[("x")]();
-	static y5 = this?.[("x")]();
+	static y4 = this["x"]();
+	static y5 = this?.["x"]();
 	static z3 = super.f();
 	static z4 = super["f"]();
 	// these should be unaffected
@@ -5827,7 +5827,7 @@ exports[`TSC: classes typeOfThisInStaticMembers7 1`] = `
 class D extends C {
 	static c = 2;
 	static d = this.c + 1;
-	static e = 1 + (super.a) + (this.c + 1) + 1;
+	static e = 1 + super.a + (this.c + 1) + 1;
 }
 "
 `;
@@ -6880,7 +6880,7 @@ exports[`TSC: classes privateNameFieldDestructuredBinding 1`] = `
 	constructor() {
 		let y;
 		({ x:this.#field, y } = this.testObject());
-		([this.#field, y] = this.testArray());
+		[this.#field, y] = this.testArray();
 		({ a:this.#field, b:[this.#field] } = { a: 1, b: [2] });
 		[this.#field, [this.#field]] = [1, [2]];
 		({ a:this.#field=1, b:[this.#field=1] } = { b: [] });
@@ -6912,13 +6912,13 @@ exports[`TSC: classes privateNameFieldParenthesisLeftAssignment 1`] = `
 		this.#p = p;
 	}
 	t2(p) {
-		((this.#p)) = p;
+		this.#p = p;
 	}
 	t3(p) {
-		(this.#p) = p;
+		this.#p = p;
 	}
 	t4(p) {
-		(((this.#p))) = p;
+		this.#p = p;
 	}
 }
 "
@@ -6962,17 +6962,17 @@ exports[`TSC: classes privateNameFieldUnaryMutation 1`] = `
 		}
 		for (this.#test = 0; this.#test < 10; this.#test++) {
 		}
-		(this.#test)++;
-		(this.#test)--;
-		++(this.#test);
-		--(this.#test);
-		const e = (this.#test)++;
-		const f = (this.#test)--;
-		const g = ++(this.#test);
-		const h = --(this.#test);
-		for (this.#test = 0; this.#test < 10; ++(this.#test)) {
+		this.#test++;
+		this.#test--;
+		++this.#test;
+		--this.#test;
+		const e = this.#test++;
+		const f = this.#test--;
+		const g = ++this.#test;
+		const h = --this.#test;
+		for (this.#test = 0; this.#test < 10; ++this.#test) {
 		}
-		for (this.#test = 0; this.#test < 10; (this.#test)++) {
+		for (this.#test = 0; this.#test < 10; this.#test++) {
 		}
 	}
 	test() {
@@ -6988,17 +6988,17 @@ exports[`TSC: classes privateNameFieldUnaryMutation 1`] = `
 		}
 		for (this.getInstance().#test = 0; this.getInstance().#test < 10; this.getInstance().#test++) {
 		}
-		(this.getInstance().#test)++;
-		(this.getInstance().#test)--;
-		++(this.getInstance().#test);
-		--(this.getInstance().#test);
-		const e = (this.getInstance().#test)++;
-		const f = (this.getInstance().#test)--;
-		const g = ++(this.getInstance().#test);
-		const h = --(this.getInstance().#test);
-		for (this.getInstance().#test = 0; this.getInstance().#test < 10; ++(this.getInstance().#test)) {
+		this.getInstance().#test++;
+		this.getInstance().#test--;
+		++this.getInstance().#test;
+		--this.getInstance().#test;
+		const e = this.getInstance().#test++;
+		const f = this.getInstance().#test--;
+		const g = ++this.getInstance().#test;
+		const h = --this.getInstance().#test;
+		for (this.getInstance().#test = 0; this.getInstance().#test < 10; ++this.getInstance().#test) {
 		}
-		for (this.getInstance().#test = 0; this.getInstance().#test < 10; (this.getInstance().#test)++) {
+		for (this.getInstance().#test = 0; this.getInstance().#test < 10; this.getInstance().#test++) {
 		}
 	}
 	getInstance() {
@@ -7036,14 +7036,14 @@ exports[`TSC: classes privateNameInLhsReceiverExpression 1`] = `
 "class Test {
 	#y = 123;
 	static something(obj) {
-		obj[(new class {
+		obj[new class {
 			#x = 1;
 			s = "prop";
-		}()).s].#y = 1;
-		obj[(new class {
+		}().s].#y = 1;
+		obj[new class {
 			#x = 1;
 			s = "prop";
-		}()).s].#y += 1;
+		}().s].#y += 1;
 	}
 }
 "
@@ -7180,7 +7180,7 @@ exports[`TSC: classes privateNameMethodAsync 1`] = `
 		yield 42;
 	}
 	async *#qux() {
-		yield (await Promise.resolve(42));
+		yield await Promise.resolve(42);
 	}
 };
 new C().foo().then(console.log);
@@ -7207,7 +7207,7 @@ exports[`TSC: classes privateNameMethodCallExpression 1`] = `
 		const str = this.#method2\`head\${1}middle\${2}tail\`;
 		this.getInstance().#method2\`test\${1}and\${2}\`;
 		this.getInstance().#method2(0, ...arr, 3);
-		const b2 = new (this.getInstance().#method2)(0, ...arr, 3);
+		const b2 = new (this.getInstance()).#method2(0, ...arr, 3);
 		//Error 
 		const str2 = this.getInstance().#method2\`head\${1}middle\${2}tail\`;
 	}
@@ -7724,7 +7724,7 @@ exports[`TSC: classes privateNameSetterExprReturnValue 1`] = `
 	set #foo(a) {
 	}
 	bar() {
-		let x = (this.#foo = 42 * 2);
+		let x = this.#foo = 42 * 2;
 		console.log(x);
 	}
 }
@@ -8194,7 +8194,7 @@ exports[`TSC: classes privateNameStaticFieldDestructuredBinding 1`] = `
 	constructor() {
 		let y;
 		({ x:A.#field, y } = this.testObject());
-		([A.#field, y] = this.testArray());
+		[A.#field, y] = this.testArray();
 		({ a:A.#field, b:[A.#field] } = { a: 1, b: [2] });
 		[A.#field, [A.#field]] = [1, [2]];
 		({ a:A.#field=1, b:[A.#field=1] } = { b: [] });
@@ -8325,7 +8325,7 @@ exports[`TSC: classes privateNameStaticMethodCallExpression 1`] = `
 		const str = AA.#method2\`head\${1}middle\${2}tail\`;
 		AA.getClass().#method2\`test\${1}and\${2}\`;
 		AA.getClass().#method2(0, ...arr, 3);
-		const b2 = new (AA.getClass().#method2)(0, ...arr, 3);
+		const b2 = new (AA.getClass()).#method2(0, ...arr, 3);
 		//Error 
 		const str2 = AA.getClass().#method2\`head\${1}middle\${2}tail\`;
 	}
