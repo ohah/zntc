@@ -8,6 +8,8 @@ const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const resolve_cache_mod = @import("resolve_cache.zig");
 const writeFile = @import("test_helpers.zig").writeFile;
+const bundler_symbol = @import("symbol.zig");
+const PreservedRenames = bundler_symbol.PreservedRenames;
 
 fn dirPath(tmp: *std.testing.TmpDir) ![:0]u8 {
     return try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
@@ -1710,4 +1712,310 @@ test "populateImportSymbols: named import의 local_symbol이 현재 모듈 seman
         }
     }
     try std.testing.expect(found);
+}
+
+// ============================================================
+// HMR rename 재사용 Tests (perf/hmr-link-rename-reuse)
+// ============================================================
+
+/// 두 rename_table 이 byte-identical 인지 (같은 SymbolID 집합 + 같은 이름) 단언.
+/// "재사용 ≡ recompute" 증명의 핵심 — 주입된 table 이 from-scratch computeRenames 와
+/// 완전히 동일해야 한다.
+fn expectRenameTablesEqual(a: *const Linker, b: *const Linker) !void {
+    try std.testing.expectEqual(a.rename_table.count(), b.rename_table.count());
+    var it = a.rename_table.map.iterator();
+    while (it.next()) |e| {
+        const other = b.rename_table.get(e.key_ptr.*) orelse {
+            std.debug.print("missing key in b: mod={d} inner={d}\n", .{
+                @intFromEnum(e.key_ptr.module), @intFromEnum(e.key_ptr.inner),
+            });
+            return error.MissingKey;
+        };
+        try std.testing.expectEqualStrings(e.value_ptr.*, other);
+    }
+}
+
+test "reuse: snapshot 주입 결과가 from-scratch recompute 와 byte-identical (다중 충돌)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // count 가 3개 모듈에서 충돌 → name$1, name$2 deconflict 발생.
+    try writeFile(tmp.dir, "a.ts", "import './b';\nimport './c';\nexport const count = 0;\nexport const name = 'a';");
+    try writeFile(tmp.dir, "b.ts", "export const count = 1;\nexport const name = 'b';");
+    try writeFile(tmp.dir, "c.ts", "export const count = 2;\nexport const name = 'c';");
+
+    // 1) 초기 빌드: computeRenames → 스냅샷 캡처.
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    // 정상 그래프 → capture 성공(non-null)이어야 한다. F5 null 폐기는 별도 테스트.
+    var snap = (try r.linker.buildRenameSnapshot(std.testing.allocator)).?;
+    defer snap.deinit();
+
+    // 2) 같은 그래프에 fresh Linker 를 link 만 하고(=deconflict 미실행), 스냅샷 주입.
+    var fresh = Linker.init(std.testing.allocator, r.graph, .esm);
+    defer fresh.deinit();
+    try fresh.link();
+    // 가드는 같은 그래프이므로 당연히 통과해야 한다.
+    try std.testing.expect(fresh.renameReuseGuard(&snap));
+    try fresh.injectPreservedRenames(&snap);
+
+    // 3) 주입 결과 == recompute 결과 (byte-identical).
+    try expectRenameTablesEqual(&r.linker, &fresh);
+    // sanity: 실제로 deconflict 가 일어났는지 (count$N 존재).
+    var saw_rename = false;
+    var it2 = fresh.rename_table.map.iterator();
+    while (it2.next()) |e| {
+        if (std.mem.indexOf(u8, e.value_ptr.*, "$") != null) saw_rename = true;
+    }
+    try std.testing.expect(saw_rename);
+}
+
+test "reuse: guard 통과 시 inject — single import 그래프" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './b';\nexport const count = 0;");
+    try writeFile(tmp.dir, "b.ts", "export const count = 1;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    var snap = (try r.linker.buildRenameSnapshot(std.testing.allocator)).?;
+    defer snap.deinit();
+
+    var fresh = Linker.init(std.testing.allocator, r.graph, .esm);
+    defer fresh.deinit();
+    try fresh.link();
+    try std.testing.expect(fresh.renameReuseGuard(&snap));
+    try fresh.injectPreservedRenames(&snap);
+    try expectRenameTablesEqual(&r.linker, &fresh);
+}
+
+test "reuse: G3 by-name 재유도 — 스냅샷의 inner idx 가 흔들려도 이름으로 복원" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './b';\nexport const count = 0;");
+    try writeFile(tmp.dir, "b.ts", "export const count = 1;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    var snap = (try r.linker.buildRenameSnapshot(std.testing.allocator)).?;
+    defer snap.deinit();
+
+    // 스냅샷의 모든 엔트리의 id.inner 를 의도적으로 망가뜨린다(maxInt-기반 가짜값).
+    // injectPreservedRenames 가 id.inner 를 신뢰하지 않고 local_name 으로 findSymbolIdx
+    // 재유도하므로, 망가진 idx 와 무관하게 동일 결과가 나와야 한다 (G3 핵심).
+    for (snap.entries) |*e| {
+        // local_name 은 유지, id.inner 만 손상.
+        e.id.inner = @enumFromInt(@as(u32, 0xFFFF));
+    }
+
+    var fresh = Linker.init(std.testing.allocator, r.graph, .esm);
+    defer fresh.deinit();
+    try fresh.link();
+    try fresh.injectPreservedRenames(&snap);
+    // by-name 재유도가 동작했으면 recompute 와 동일.
+    try expectRenameTablesEqual(&r.linker, &fresh);
+}
+
+test "reuse: fingerprint — 같은 그래프는 guard true, module_count 불일치는 false (G0)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './b';\nexport const count = 0;");
+    try writeFile(tmp.dir, "b.ts", "export const count = 1;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    var snap = (try r.linker.buildRenameSnapshot(std.testing.allocator)).?;
+    defer snap.deinit();
+
+    // 같은 그래프 → guard 통과.
+    try std.testing.expect(r.linker.renameReuseGuard(&snap));
+
+    // G0: 스냅샷의 module_count 를 조작해 불일치 유발 → fallback(false).
+    const real_count = snap.module_count;
+    snap.module_count = real_count + 1;
+    try std.testing.expect(!r.linker.renameReuseGuard(&snap));
+    snap.module_count = real_count;
+
+    // G2: 스냅샷의 첫 fingerprint 의 이름집합 해시를 조작 → fallback(false).
+    // fingerprint 는 []const 라 const-cast 로 한 엔트리만 손상(테스트 한정).
+    const fps = @constCast(snap.fingerprint);
+    const saved = fps[0].toplevel_name_set_hash;
+    fps[0].toplevel_name_set_hash = saved ^ 0xDEAD;
+    try std.testing.expect(!r.linker.renameReuseGuard(&snap));
+    fps[0].toplevel_name_set_hash = saved;
+
+    // 복원 후 다시 통과.
+    try std.testing.expect(r.linker.renameReuseGuard(&snap));
+}
+
+test "reuse: fingerprint — nested/import-local/wrap 해시 조작 시 fallback (G5/G6)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // a.ts 가 b.ts 의 foo 를 import 하고 nested 스코프(wrap 함수)를 가진다.
+    try writeFile(tmp.dir, "a.ts", "import { foo } from './b';\nexport function wrap(){ return foo; }");
+    try writeFile(tmp.dir, "b.ts", "export const foo = 1;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    var snap = (try r.linker.buildRenameSnapshot(std.testing.allocator)).?;
+    defer snap.deinit();
+
+    // baseline: 같은 그래프 → 통과.
+    try std.testing.expect(r.linker.renameReuseGuard(&snap));
+
+    const fps = @constCast(snap.fingerprint);
+
+    // G5: nested binding 이름집합 해시 조작 → fallback. (각 모듈 인덱스마다 검증)
+    for (fps) |*fp| {
+        const saved = fp.nested_name_set_hash;
+        fp.nested_name_set_hash = saved ^ 0xBEEF;
+        try std.testing.expect(!r.linker.renameReuseGuard(&snap));
+        fp.nested_name_set_hash = saved;
+    }
+    try std.testing.expect(r.linker.renameReuseGuard(&snap));
+
+    // G6: import local_name + wrap_kind 해시 조작 → fallback.
+    for (fps) |*fp| {
+        const saved = fp.import_locals_wrap_hash;
+        fp.import_locals_wrap_hash = saved ^ 0xBEEF;
+        try std.testing.expect(!r.linker.renameReuseGuard(&snap));
+        fp.import_locals_wrap_hash = saved;
+    }
+    try std.testing.expect(r.linker.renameReuseGuard(&snap));
+}
+
+test "reuse: nested shadow 추가 시 guard=false (toplevel 불변이라 G2 가 놓치는 hole)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 빌드 A: 이미 존재하는 top-level 함수 wrap, 내부에 nested binding 없음.
+    try writeFile(tmp.dir, "a.ts", "import { foo } from './b';\nexport function wrap(){ return foo; }");
+    try writeFile(tmp.dir, "b.ts", "export const foo = 1;");
+
+    // 빌드 A → 스냅샷. (스냅샷은 자체 arena 로 dupe 하므로 teardown 후에도 유효)
+    var snap: PreservedRenames = blk: {
+        var rA = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
+        defer rA.linker.deinit();
+        defer rA.destroyGraph();
+        defer rA.cache.deinit();
+        break :blk (try rA.linker.buildRenameSnapshot(std.testing.allocator)).?;
+    };
+    defer snap.deinit();
+
+    // a.ts 의 nested 스코프에 import local 과 같은 이름(foo)을 const 로 추가.
+    // top-level 이름집합(wrap)은 그대로 — G2 는 이 변화를 못 잡는다.
+    try writeFile(tmp.dir, "a.ts", "import { foo } from './b';\nexport function wrap(){ const foo = 1; return foo; }");
+
+    // 빌드 B: 같은 tmpDir → 같은 경로(path_hash 동일) → G1 통과, nested 만 다름.
+    var rB = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
+    defer rB.linker.deinit();
+    defer rB.destroyGraph();
+    defer rB.cache.deinit();
+
+    // a.ts 모듈의 fresh fingerprint 와 스냅샷을 직접 대조해 어떤 게이트가 잡는지 확인:
+    // toplevel/import-local 은 일치, nested 만 불일치여야 한다.
+    const a_idx = findModuleIdx(rB.graph, "a.ts").?;
+    const ai: usize = @intFromEnum(a_idx);
+    const cur = try rB.linker.moduleFingerprint(rB.graph.getModule(a_idx).?.*);
+    const old = snap.fingerprint[ai];
+    try std.testing.expectEqual(old.path_hash, cur.path_hash); // 같은 파일
+    try std.testing.expectEqual(old.toplevel_name_set_hash, cur.toplevel_name_set_hash); // G2 놓침
+    try std.testing.expectEqual(old.import_locals_wrap_hash, cur.import_locals_wrap_hash); // G6 놓침
+    try std.testing.expect(old.nested_name_set_hash != cur.nested_name_set_hash); // G5 가 잡음
+
+    // 결과: 가드는 nested 변화를 감지해 fallback(false) → full computeRenames 로 안전.
+    try std.testing.expect(!rB.linker.renameReuseGuard(&snap));
+}
+
+test "reuse: wrap_kind flip (ESM→CJS) 시 guard=false" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 빌드 A: b 가 ESM (wrap_kind=.none).
+    try writeFile(tmp.dir, "a.ts", "import { x } from './b';\nexport const y = x;");
+    try writeFile(tmp.dir, "b.js", "export const x = 1;");
+
+    var snap: PreservedRenames = blk: {
+        var rA = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
+        defer rA.linker.deinit();
+        defer rA.destroyGraph();
+        defer rA.cache.deinit();
+        // b 가 ESM 인지 sanity.
+        const b0 = findModuleIdx(rA.graph, "b.js").?;
+        try std.testing.expectEqual(types.WrapKind.none, rA.graph.getModule(b0).?.wrap_kind);
+        break :blk (try rA.linker.buildRenameSnapshot(std.testing.allocator)).?;
+    };
+    defer snap.deinit();
+
+    // b.js 를 CJS 로 교체 → wrap_kind=.cjs 로 바뀐다.
+    try writeFile(tmp.dir, "b.js", "module.exports = { x: 1 };");
+
+    var rB = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
+    defer rB.linker.deinit();
+    defer rB.destroyGraph();
+    defer rB.cache.deinit();
+
+    const b_idx = findModuleIdx(rB.graph, "b.js").?;
+    try std.testing.expectEqual(types.WrapKind.cjs, rB.graph.getModule(b_idx).?.wrap_kind);
+
+    // wrap_kind 가 import_locals_wrap_hash 의 seed 라 b 의 fingerprint 가 달라진다.
+    const bi: usize = @intFromEnum(b_idx);
+    const cur = try rB.linker.moduleFingerprint(rB.graph.getModule(b_idx).?.*);
+    try std.testing.expect(snap.fingerprint[bi].import_locals_wrap_hash != cur.import_locals_wrap_hash);
+
+    // 가드 fallback(false).
+    try std.testing.expect(!rB.linker.renameReuseGuard(&snap));
+}
+
+test "reuse: F5 — rename_table 키의 symbolLocalName 이 null 이면 스냅샷 폐기(capture null)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './b';\nexport const count = 0;");
+    try writeFile(tmp.dir, "b.ts", "export const count = 1;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    // 1) 대조군: 깨끗한 rename_table 은 capture 성공(non-null).
+    {
+        var ok = (try r.linker.buildRenameSnapshot(std.testing.allocator)).?;
+        ok.deinit();
+    }
+
+    // 2) symbolLocalName 이 null 을 반환하는 인위적 SymbolID 를 rename_table 에 주입한다.
+    //    module 인덱스를 모듈 수 밖(out-of-range)으로 잡으면 getModule→null →
+    //    symbolLocalName→null 이 된다. scope_maps 에도 없고 synthetic 도 아닌, totality 가
+    //    깨지는 정확한 케이스. value 는 borrow 라 별도 free 불필요(canonical_strings 소유가
+    //    아닌 string literal — RenameTable.deinit 은 map 만 해제).
+    const oob_module: types.ModuleIndex = @enumFromInt(@as(u32, @intCast(r.graph.moduleCount())) + 7);
+    const bad_id = bundler_symbol.SymbolID.make(oob_module, 0);
+    // sanity: 정말로 null 을 반환하는지 — buildRenameSnapshot 폐기 조건의 전제 확인.
+    try std.testing.expect(r.linker.symbolLocalName(bad_id) == null);
+    try r.linker.rename_table.put(std.testing.allocator, bad_id, "synthetic_should_not_leak");
+
+    // 3) 이제 capture 는 불완전 스냅샷을 폐기하고 null 을 반환해야 한다.
+    const captured = try r.linker.buildRenameSnapshot(std.testing.allocator);
+    try std.testing.expect(captured == null);
+
+    // 4) 가드 경로가 reuse 를 안 하는지: bundler 게이트는 `if (try buildRenameSnapshot()) |snap|`
+    //    형태라, capture 가 null 이면 그 분기 자체를 타지 않아 injectPreservedRenames 가
+    //    절대 호출되지 않는다(=reuse 비활성). 즉 reuse 의 *유일* 진입점인 non-null 스냅샷이
+    //    없으므로 구조적으로 재사용이 불가능하다. 아래는 그 불변식을 값 수준에서 재확인.
+    if (captured) |_| {
+        try std.testing.expect(false); // 도달 불가 — null 이어야 한다.
+    }
 }

@@ -35,6 +35,7 @@ const shared_namespace = @import("linker/shared_namespace.zig");
 pub const PreambleWriter = preamble_writer.PreambleWriter;
 pub const cjsImportNeedsToEsmInterop = preamble_writer.cjsImportNeedsToEsmInterop;
 pub const LinkingMetadata = @import("linker/metadata_types.zig").LinkingMetadata;
+pub const PreservedRenames = bundler_symbol.PreservedRenames;
 pub const MangleReportCollector = @import("linker/mangle_report.zig").MangleReportCollector;
 pub const MfStaticRemotes = @import("federation.zig").MfStaticRemotes;
 
@@ -576,14 +577,21 @@ pub const Linker = struct {
         try entry.value_ptr.append(self.allocator, owner);
     }
 
-    /// 단일 모듈의 top-level 심볼 이름을 name_to_owners에 수집한다.
-    /// 모듈 스코프의 모든 심볼 + export default 합성 _default 이름을 등록.
-    /// import binding은 다른 모듈의 심볼을 참조하므로 건너뛴다.
-    fn collectModuleNames(
+    /// 모듈의 top-level owner 이름을 **단일 출처**로 열거한다 (perf/hmr-link-rename-reuse).
+    ///
+    /// `collectModuleNames`(deconflict 입력 수집) 와 `buildRenameSnapshot` 의 fingerprint
+    /// 빌더(G2 이름집합 해시) 가 *정확히 같은 필터* 를 봐야 한다 — 한쪽만 어떤 이름을
+    /// 등록하면 가드가 거짓 통과/실패한다(드리프트=정확성 버그). 그래서 필터 로직을
+    /// 여기 한 곳에 두고 양쪽이 호출한다.
+    ///
+    /// `cb(ctx, name)` 를 등록 대상 이름마다 호출한다. 두 소비자(collectModuleNames /
+    /// fingerprint 빌더) 모두 이름만 필요하므로 sym_idx 는 노출하지 않는다.
+    fn forEachTopLevelOwnerName(
         self: *Linker,
         m: Module,
-        module_index: u32,
-        name_to_owners: *NameToOwnersMap,
+        comptime Ctx: type,
+        ctx: Ctx,
+        comptime cb: fn (Ctx, []const u8) anyerror!void,
     ) !void {
         const sem = m.semantic orelse return;
         if (sem.scope_maps.len == 0) return;
@@ -595,7 +603,7 @@ pub const Linker = struct {
             if (std.mem.eql(u8, sym_name, "default")) continue;
 
             // `_default` 합성 심볼은 scope_maps에도 등록되지만 owner 등록은 export_bindings
-            // 경로(line 394-)에서 전담한다. 여기서도 등록하면 같은 모듈의 같은 이름이
+            // 경로(아래)에서 전담한다. 여기서도 등록하면 같은 모듈의 같은 이름이
             // 이중 owner가 되어 collectModuleNames 충돌 처리가 `_default$1` 접미사를
             // 생성한다 (#1598).
             const sym_idx_for_kind = scope_entry.value_ptr.*;
@@ -658,29 +666,49 @@ pub const Linker = struct {
                 if (!generates_top_level_var) continue;
             }
 
-            try self.addNameOwner(name_to_owners, sym_name, .{
-                .module_index = module_index,
-                .exec_index = m.exec_index,
-                .path = m.path,
-            });
+            try cb(ctx, sym_name);
         }
 
         // codegen이 현재 모듈에 `_default` 합성 변수를 만드는 모든 export를 수집.
         // 충돌 시 _default$N으로 리네이밍되도록 등록한다.
-        const owner: NameOwner = .{ .module_index = module_index, .exec_index = m.exec_index, .path = m.path };
         for (m.export_bindings) |eb| {
             if (eb.hasSyntheticDefault(m.semanticSymbols())) {
-                try self.addNameOwner(name_to_owners, "_default", owner);
+                try cb(ctx, "_default");
                 continue;
             }
             if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
                 // export default function foo → foo 이름으로 등록
                 const local = m.exportBindingLocalName(eb);
                 if (module_scope.get(local) == null) {
-                    try self.addNameOwner(name_to_owners, local, owner);
+                    try cb(ctx, local);
                 }
             }
         }
+    }
+
+    /// 단일 모듈의 top-level 심볼 이름을 name_to_owners에 수집한다.
+    /// 모듈 스코프의 모든 심볼 + export default 합성 _default 이름을 등록.
+    /// import binding은 다른 모듈의 심볼을 참조하므로 건너뛴다.
+    fn collectModuleNames(
+        self: *Linker,
+        m: Module,
+        module_index: u32,
+        name_to_owners: *NameToOwnersMap,
+    ) !void {
+        const Ctx = struct {
+            linker: *Linker,
+            map: *NameToOwnersMap,
+            owner: NameOwner,
+            fn add(c: @This(), name: []const u8) anyerror!void {
+                try c.linker.addNameOwner(c.map, name, c.owner);
+            }
+        };
+        const owner: NameOwner = .{ .module_index = module_index, .exec_index = m.exec_index, .path = m.path };
+        try self.forEachTopLevelOwnerName(m, Ctx, .{
+            .linker = self,
+            .map = name_to_owners,
+            .owner = owner,
+        }, Ctx.add);
     }
 
     /// 후보 이름이 사용 가능한지 확인.
@@ -821,6 +849,232 @@ pub const Linker = struct {
         // 충돌하면 target module의 canonical name을 한 단계 더 rename.
         // 예: d3-color의 cubehelix와 d3-interpolate 내부의 function cubehelix 충돌.
         try self.resolveNestedShadowConflicts(&name_to_owners);
+    }
+
+    // ── HMR rename 보존/재사용 (perf/hmr-link-rename-reuse) ────────────────────
+
+    /// `computeRenames` 직후, 현재 `rename_table` + `reserved_globals` 를 owned
+    /// 스냅샷으로 박제한다. 다음 HMR rebuild 가 가드 통과 시 재주입해 computeRenames 를
+    /// skip 한다. fingerprint 도 한 번에 빌드 (scope_maps[0] 1-pass, import 스캔은
+    /// `forEachTopLevelOwnerName` 안에서만 — collectModuleNames 와 동일 비용).
+    ///
+    /// 모든 문자열은 스냅샷 arena 가 dupe 소유 — Linker.deinit 후에도 유효
+    /// (canonical_strings borrow 금지, RFC #3933 dangling 회피).
+    ///
+    /// **반환 null (F5 보수적 fail-safe)**: `symbolLocalName` 은 totality 가 정적으로
+    /// 보장되지 않는다(scope_maps[0] 역탐색 + synthetic fallback 둘 다 miss 하면 null).
+    /// rename_table 키 중 하나라도 local 이름을 못 얻으면 그 심볼의 rename 이 스냅샷에서
+    /// 조용히 누락된다 → reuse-hit rebuild 에서 그 rename 이 주입되지 않아 emit 이 원본
+    /// 이름을 써, 이미 로드된(renamed) 번들과 silent wrong-binding. 가드(G0~G6)는
+    /// 스냅샷 *자체* 의 불완전성은 못 잡는다. 그래서 불완전 스냅샷을 capture 하느니
+    /// **null 을 반환해 capture 를 폐기** — 그러면 caller 가 reuse 를 비활성화하고
+    /// 다음 rebuild 가 full computeRenames 를 돈다(정확성 > 성능). RN 8067 모듈 실측에선
+    /// null 발생이 0 이지만 코드가 totality 를 보장 못 하므로 정적 안전장치를 둔다.
+    pub fn buildRenameSnapshot(self: *Linker, gpa: std.mem.Allocator) !?PreservedRenames {
+        var snap: PreservedRenames = .{
+            .arena = std.heap.ArenaAllocator.init(gpa),
+            .entries = &.{},
+            .reserved_globals = &.{},
+            .fingerprint = &.{},
+            .module_count = @intCast(self.graph.moduleCount()),
+        };
+        errdefer snap.arena.deinit();
+        const a = snap.arena.allocator();
+
+        // 1. rename_table 엔트리 owned dupe. local_name 은 inject 시 by-name 재유도(G3)
+        //    의 lookup 키 — SymbolID.inner 로 심볼을 찾아 그 이름을 dupe 한다.
+        var entries: std.ArrayList(PreservedRenames.Entry) = .empty;
+        try entries.ensureTotalCapacity(a, self.rename_table.count());
+        var rit = self.rename_table.map.iterator();
+        while (rit.next()) |e| {
+            const id = e.key_ptr.*;
+            // 불완전 스냅샷 폐기: local 이름을 못 얻는 키가 하나라도 있으면 이 빌드의
+            // capture 를 통째로 무효화한다. 이미 alloc 한 arena 를 즉시 해제하고 null 반환
+            // → reuse 비활성, 다음 rebuild full 재계산 (위 doc 참고).
+            const local = self.symbolLocalName(id) orelse {
+                debug_log.print(.rename_reuse, "buildRenameSnapshot: symbolLocalName(module={d},inner={d}) null → 스냅샷 폐기(capture 실패), reuse 비활성\n", .{
+                    @intFromEnum(id.module),
+                    @intFromEnum(id.inner),
+                });
+                snap.arena.deinit();
+                return null;
+            };
+            entries.appendAssumeCapacity(.{
+                .id = id,
+                .local_name = try a.dupe(u8, local),
+                .canonical = try a.dupe(u8, e.value_ptr.*),
+            });
+        }
+        snap.entries = try entries.toOwnedSlice(a);
+
+        // 2. reserved_globals owned dupe.
+        var rg: std.ArrayList([]const u8) = .empty;
+        try rg.ensureTotalCapacity(a, self.reserved_globals.count());
+        var git = self.reserved_globals.keyIterator();
+        while (git.next()) |k| rg.appendAssumeCapacity(try a.dupe(u8, k.*));
+        snap.reserved_globals = try rg.toOwnedSlice(a);
+
+        // 3. per-index fingerprint 1-pass.
+        const mc = self.graph.moduleCount();
+        const fps = try a.alloc(PreservedRenames.ModuleFingerprint, mc);
+        for (0..mc) |i| {
+            const m = self.getModule(@intCast(i)) orelse {
+                fps[i] = .{
+                    .path_hash = 0,
+                    .exec_index = std.math.maxInt(u32),
+                    .toplevel_name_set_hash = 0,
+                    .unresolved_refs_hash = 0,
+                    .nested_name_set_hash = 0,
+                    .import_locals_wrap_hash = 0,
+                };
+                continue;
+            };
+            fps[i] = try self.moduleFingerprint(m.*);
+        }
+        snap.fingerprint = fps;
+
+        return snap;
+    }
+
+    /// 재사용 안전성 가드 (G0~G4). 현재(fresh) 그래프가 스냅샷과 "rename deconflict
+    /// 결과가 동일하게 나오는" 형태인지 판정한다. **하나라도 불확실하면 false → 호출자가
+    /// full computeRenames** (기존 경로). fail-safe: 가드 버그의 최악은 perf 회귀이지
+    /// 정확성 사고가 아니다 (G3 제외 — by-name 재유도가 테스트로 커버).
+    ///
+    /// per-index fingerprint 전체(path_hash/exec_index/toplevel_name_set_hash/
+    /// unresolved_refs_hash)를 비교한다. 변경 모듈만 골라 비교하는 대신 *모든* 모듈을
+    /// 비교 — 변경 안 된 모듈은 자명히 일치하고, 변경 모듈은 반드시 일치해야 하므로
+    /// 더 보수적이며 단순(graph_changed 사전계산 불필요).
+    /// - G0 모듈 추가/삭제: module_count 불일치 → false.
+    /// - G1 index/exec_index: per-index path_hash + exec_index 비교.
+    /// - G2 변경 모듈 이름집합: per-index toplevel_name_set_hash 비교.
+    /// - G3 inner idx: inject 의 by-name 재유도가 담당 (가드 아님).
+    /// - G4 reserved_globals: per-index unresolved_refs_hash 비교.
+    /// - G5 nested shadow 입력: per-index nested_name_set_hash 비교
+    ///   (scope_maps[1..] 이름이 import canonical 을 shadow → 추가 rename 유발).
+    /// - G6 import local + wrap: per-index import_locals_wrap_hash 비교
+    ///   (import local_name 집합 / ESM↔CJS wrap flip 시 synthetic 이름 landscape 변동).
+    pub fn renameReuseGuard(self: *Linker, snap: *const PreservedRenames) bool {
+        const mc = self.graph.moduleCount();
+        // G0: 모듈 수 동일.
+        if (mc != snap.module_count) return false;
+        if (snap.fingerprint.len != mc) return false;
+
+        for (0..mc) |i| {
+            const m = self.getModule(@intCast(i)) orelse return false;
+            const cur = self.moduleFingerprint(m.*) catch return false; // OOM → fail-safe
+            const old = snap.fingerprint[i];
+            // G1 + G0(per-index path): 같은 인덱스에 같은 경로/실행순서.
+            if (cur.path_hash != old.path_hash) return false;
+            if (cur.exec_index != old.exec_index) return false;
+            // G2: top-level owner 이름집합 불변 (body-only edit = 일치).
+            if (cur.toplevel_name_set_hash != old.toplevel_name_set_hash) return false;
+            // G4: unresolved_references (전역 참조) 불변.
+            if (cur.unresolved_refs_hash != old.unresolved_refs_hash) return false;
+            // G5: nested binding 이름집합 불변 (import shadow 결과 동일).
+            if (cur.nested_name_set_hash != old.nested_name_set_hash) return false;
+            // G6: import local_name 집합 + wrap_kind 불변.
+            if (cur.import_locals_wrap_hash != old.import_locals_wrap_hash) return false;
+        }
+        return true;
+    }
+
+    /// SymbolID 에 해당하는 module-local 이름 (scope_maps[0] reverse lookup → synthetic_name
+    /// fallback). `findSymbolIdx` 의 역방향 — idx 로 이름을 찾는다.
+    ///
+    /// **totality 미보장 (F5)**: 모듈이 그래프 밖이거나, semantic 이 없거나, idx 가
+    /// scope_maps[0] 역탐색·synthetic fallback 둘 다 miss 하면 null. `buildRenameSnapshot`
+    /// 이 이 null 을 만나면 스냅샷을 폐기한다(불완전 capture 방지). pub: linker_test.zig 가
+    /// 이 null 케이스를 직접 구성해 capture 폐기를 검증한다.
+    pub fn symbolLocalName(self: *const Linker, id: bundler_symbol.SymbolID) ?[]const u8 {
+        const m = self.getModule(@intFromEnum(id.module)) orelse return null;
+        const sem = m.semantic orelse return null;
+        const idx = @intFromEnum(id.inner);
+        if (sem.scope_maps.len > 0) {
+            var it = sem.scope_maps[0].iterator();
+            while (it.next()) |e| {
+                if (e.value_ptr.* == idx) return e.key_ptr.*;
+            }
+        }
+        if (idx < sem.symbols.items.len) {
+            const sym = sem.symbols.items[idx];
+            if (sym.synthetic_kind != null and sym.synthetic_name.len > 0) return sym.synthetic_name;
+        }
+        return null;
+    }
+
+    /// 모듈의 fingerprint 계산. order-independent 해시(sum)로 이름집합/unresolved 비교 —
+    /// scope_maps iteration 순서(비결정)에 무관해야 가드가 안정적이다.
+    /// pub: linker_test.zig 가 per-field 게이트 동작을 직접 대조 (which-gate 검증).
+    pub fn moduleFingerprint(self: *Linker, m: Module) !PreservedRenames.ModuleFingerprint {
+        var fp: PreservedRenames.ModuleFingerprint = .{
+            .path_hash = std.hash.Wyhash.hash(0x5a, m.path),
+            .exec_index = m.exec_index,
+            .toplevel_name_set_hash = 0,
+            .unresolved_refs_hash = 0,
+            .nested_name_set_hash = 0,
+            // wrap_kind 를 seed 로 접어 넣는다(빈 import 모듈도 wrap flip 을 감지).
+            .import_locals_wrap_hash = @intFromEnum(m.wrap_kind) +% 1,
+        };
+
+        // top-level owner 이름집합 (G2) — collectModuleNames 와 동일 필터 공유.
+        const Ctx = struct {
+            acc: *u64,
+            fn add(c: @This(), name: []const u8) anyerror!void {
+                // order-independent: 각 이름 해시를 wrapping-add. 같은 집합 → 같은 합.
+                c.acc.* +%= std.hash.Wyhash.hash(0xc0, name);
+            }
+        };
+        try self.forEachTopLevelOwnerName(m, Ctx, .{ .acc = &fp.toplevel_name_set_hash }, Ctx.add);
+
+        // nested binding 이름집합 (G5) — resolveNestedShadowConflicts/hasNestedBinding 입력.
+        // forEachNestedBindingName 으로 shadow pass 와 동일한 scope_maps[1..] 집합을 본다.
+        try forEachNestedBindingName(m, Ctx, .{ .acc = &fp.nested_name_set_hash }, Ctx.add);
+
+        // import binding local_name 집합 (G6) — nested shadow 비교의 다른 한쪽.
+        // 모든 binding 의 local_name 을 해시(namespace 포함, conservative superset).
+        for (m.import_bindings) |ib| {
+            fp.import_locals_wrap_hash +%= std.hash.Wyhash.hash(0xe0, ib.local_name);
+        }
+
+        // unresolved_references 집합 (G4) — collectReservedGlobals 입력.
+        if (m.semantic) |sem| {
+            var it = sem.unresolved_references.keyIterator();
+            while (it.next()) |k| fp.unresolved_refs_hash +%= std.hash.Wyhash.hash(0xd0, k.*);
+        }
+        return fp;
+    }
+
+    /// 보존 스냅샷을 현재(fresh) 그래프의 `rename_table`/`reserved_globals` 에 주입한다.
+    /// `renameReuseGuard` 통과 후에만 호출 — 이름집합/모듈순서 불변이 보장된 상태.
+    ///
+    /// **G3 (유일한 correctness-load-bearing)**: 변경 모듈은 재파싱돼 inner idx 가
+    /// 흔들릴 수 있으므로, 스냅샷 엔트리의 `id.inner` 를 신뢰하지 않고 *이름으로 재유도*
+    /// (`findSymbolIdx`, scope_maps[0] 대상) 해 fresh idx 로 재키잉한 뒤 주입한다. 이름은
+    /// G2 가 불변 보장하므로 모든 엔트리가 재유도 성공(total). 변경 안 된 모듈도 같은
+    /// 경로를 타 idx 가 그대로면 동일 결과 — 분기 없이 일관 처리.
+    ///
+    /// `assignSymbolCanonical` 싱크를 거쳐 rename_table/canonical_strings/canonical_names_used
+    /// 를 일관 갱신 (computeRenames 와 동일 sink).
+    pub fn injectPreservedRenames(self: *Linker, snap: *const PreservedRenames) !void {
+        // reserved_globals 복원 (collectReservedGlobals 를 skip 하므로 직접).
+        self.reserved_globals.clearRetainingCapacity();
+        for (snap.reserved_globals) |name| {
+            try self.reserved_globals.put(self.allocator, name, {});
+        }
+        // 외부 전달 전역 식별자도 동일하게 예약 (collectReservedGlobals 와 parity).
+        for (self.global_identifiers) |name| {
+            try self.reserved_globals.put(self.allocator, name, {});
+        }
+
+        for (snap.entries) |entry| {
+            const module_index = @intFromEnum(entry.id.module);
+            // by-name 재유도: 초기 idx 대신 fresh 그래프에서 이름으로 다시 찾는다.
+            const fresh_idx = self.findSymbolIdx(module_index, entry.local_name) orelse continue;
+            const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(module_index)), fresh_idx);
+            const dup = try self.allocator.dupe(u8, entry.canonical);
+            try self.assignSymbolCanonical(id, dup);
+        }
     }
 
     /// import binding의 canonical name이 importer 모듈의 중첩 스코프에 같은 이름이
@@ -1446,10 +1700,32 @@ pub const Linker = struct {
         return null;
     }
 
+    /// nested-scope binding(scope_maps[1..]) 의 모든 이름을 1-pass 로 순회한다.
+    /// `hasNestedBinding`(단일 lookup) 과 `moduleFingerprint`(집합 해시) 의 **공유
+    /// 입력 소스** — 둘이 보는 nested 이름 집합이 정확히 같도록 단일 정의로 묶는다
+    /// (드리프트 = G5 가 shadow pass 가 실제로 보는 것과 어긋남 = 정확성 버그).
+    /// scope_maps[0](모듈 스코프)은 제외 — 그건 G2 toplevel 해시가 담당.
+    fn forEachNestedBindingName(
+        m: Module,
+        comptime Ctx: type,
+        ctx: Ctx,
+        comptime cb: fn (Ctx, []const u8) anyerror!void,
+    ) !void {
+        const sem = m.semantic orelse return;
+        for (sem.scope_maps, 0..) |scope_map, scope_idx| {
+            if (scope_idx == 0) continue;
+            var it = scope_map.iterator();
+            while (it.next()) |e| try cb(ctx, e.key_ptr.*);
+        }
+    }
+
     /// 모듈의 중첩 스코프 (비-모듈 스코프) 에 해당 이름이 존재하는지 확인.
     /// esbuild/rolldown/rollup 과 동일하게 semantic.scope_maps 직접 scan — scope 깊이는
     /// 보통 1~10 정도라 별도 cache 없이 충분.
     // pub: shared_namespace.zig (RFC #3399 PR-2) 가 동일 scan 을 재사용 (단일 소스 — 복제 제거).
+    // 순회하는 scope_maps[1..] 집합은 `forEachNestedBindingName` 과 동일해야 한다
+    // (moduleFingerprint G5 해시가 같은 집합을 본다). 여기는 early-return lookup 이라
+    // 별도 구현이지만 *순회 범위*(scope_idx != 0)는 한 군데서만 바뀌도록 주석으로 고정.
     pub fn hasNestedBinding(self: *const Linker, module_index: u32, name: []const u8) bool {
         const m = self.getModule(module_index) orelse return false;
         const sem = m.semantic orelse return false;

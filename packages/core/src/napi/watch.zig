@@ -929,6 +929,13 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
     // rebuild 루프와 동일한 collect_module_codes 로 맞춘다 — options_hash 가 같아야
     // first-build 의 cache put 이 첫 rebuild 에서 그대로 hit 된다.
     initial_opts.collect_module_codes = bundle_opts.dev_mode;
+    // perf/hmr-link-rename-reuse (incremental.zig 와 동형): initial build 도 rename 재사용에
+    // *참여* 한다. capture_eligible 게이트(bundler.zig)는 reuse_renames + dev_mode +
+    // collect_module_codes + !code_splitting + !minify 로 평가되는데, initial 은
+    // skip_bundle_output=false 라 reuse(inject) 는 막히고 *snapshot capture 만* 수행된다
+    // (BundleResult.rename_snapshot 으로 반환). preserved_renames 는 첫 빌드에 주입 대상이
+    // 없으므로 여기서 주지 않는다.
+    initial_opts.reuse_renames = bundle_opts.dev_mode;
     // Lazy sourcemap (Issue #1727 Phase B): dev watch 세션에서는 initial/rebuild 모두
     // builder 를 handle 에 캐시해 `/bundle.js.map`, `/hmr-map/:id` 요청을 즉석 서빙.
     // rebuild 경로의 `emit_sourcemap_finalize` 29ms 를 HMR latency 밖으로 빼낸다.
@@ -1155,6 +1162,22 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         }
     }
 
+    // perf/hmr-link-rename-reuse — RN dev 서버 rebuild 경로(이 worker)는 IncrementalBundler
+    // 를 거치지 않고 Bundler 를 직접 호출하므로, IncrementalBundler.doBuild 가 하던 스냅샷
+    // 보존을 여기서 직접 한다 (incremental.zig:254~319 와 동형). persistent_store 와 같은
+    // 수명(worker 함수 스코프) — rebuild 루프 밖에서 선언해 빌드 간 보존. arena 소유라
+    // deinit 한 번이 일괄 해제.
+    var preserved_renames: ?bundler_mod.symbol.PreservedRenames = null;
+    defer if (preserved_renames) |*pr| pr.deinit();
+    // initial build 가 (skip_bundle_output=false 라) full computeRenames 를 돌고 스냅샷을
+    // 캡처했으면 보존본으로 move-out 한다. result.deinit(함수 스코프 defer, line ~975)이
+    // arena 를 다시 해제하지 않도록 result.rename_snapshot 을 null 로 — double-free 방지.
+    // 이전 preserved_renames 는 null 이라 그냥 대입.
+    if (result.rename_snapshot) |snap| {
+        preserved_renames = snap;
+        result.rename_snapshot = null;
+    }
+
     // Issue #1223 Phase 1: 이벤트 기반 워처 + 디바운스 + content hash 필터링.
     while (!async_data.stop_flag.load(.acquire)) {
         const first_events = tracked.waitForChanges(watch_poll_timeout_ms) catch &[_]zntc_lib.server.ChangeEvent{};
@@ -1286,6 +1309,14 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         // 조합은 incremental rebuild 시 module_dev_codes 도 비어있어 HMR client 가 받을 데이터 없음
         // — 그 조합은 그 자체로 비정상 사용 (caller responsibility).
         if (bundle_opts.skip_initial_output) incremental_opts.skip_bundle_output = true;
+        // perf/hmr-link-rename-reuse — 보존 스냅샷 주입(incremental.zig:251~256 와 동형).
+        // reuse_renames=true 로 bundler 의 capture/reuse 게이트에 참여시키고, 보존본이 있으면
+        // borrow 로 넘긴다. rebuild 는 위에서 dev_mode + collect_module_codes + skip_bundle_output
+        // 가 켜지므로(그리고 code_splitting/minify 비활성) reuse_eligible — 가드 통과 시
+        // computeRenames(전체 top-level deconflict, ~80~99ms 의 주범) 를 skip 한다. 가드 실패
+        // 시엔 bundler 가 full computeRenames 로 fallback 하며 새 스냅샷을 재캡처한다.
+        incremental_opts.reuse_renames = true;
+        if (preserved_renames) |*pr| incremental_opts.preserved_renames = pr;
         // #4079 PR-2 — requestLazySeed 로 누적된 force-parse 집합을 이번 rebuild 에 주입(초기
         // 옵션 set ∪ 누적). 헤더 배열만 복사(string 은 accum/options 소유) — 동시 append(realloc)
         // 에도 스냅샷 안정. snapshot 은 이 rebuild 동안만 유효(pathInForceParse=eql 비교, 미보관).
@@ -1319,6 +1350,33 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             continue;
         };
         defer rebuild_result.deinit(allocator);
+
+        // perf/hmr-link-rename-reuse — 보존 스냅샷 갱신(incremental.zig:304~331 와 동형).
+        // 넷 중 하나:
+        //  (a) 에러 빌드: stale 스냅샷이 고친 뒤 첫 빌드에 잘못 주입되지 않도록 보존본 drop
+        //      → 다음 rebuild 가 from-scratch 재캡처. (rebuild_result.rename_snapshot 은
+        //      에러 경로에서 null 이라 별도 move-out 불필요, deinit 가 정리.)
+        //  (b) 가드 fallback 으로 computeRenames 재실행: rebuild_result.rename_snapshot 이
+        //      non-null → 기존 보존본 deinit 후 새 것으로 교체. move-out 했으니 null 처리해
+        //      rebuild_result.deinit 의 double-free 방지.
+        //  (c) F5 capture 실패(invalidated): fallback 재계산했으나 buildRenameSnapshot 이
+        //      불완전 스냅샷을 폐기 → 기존(stale) 보존본 drop. reuse-hit 의 null 과 구분.
+        //  (d) reuse-hit: rebuild_result.rename_snapshot 이 null → 기존 보존본 유지.
+        if (rebuild_result.hasErrors()) {
+            if (preserved_renames) |*pr| {
+                pr.deinit();
+                preserved_renames = null;
+            }
+        } else if (rebuild_result.rename_snapshot) |new_snap| {
+            if (preserved_renames) |*pr| pr.deinit();
+            preserved_renames = new_snap;
+            rebuild_result.rename_snapshot = null;
+        } else if (rebuild_result.rename_snapshot_invalidated) {
+            if (preserved_renames) |*pr| {
+                pr.deinit();
+                preserved_renames = null;
+            }
+        }
 
         // #3799 root-cause fix — rebuild_result.hasErrors() 면 이전 코드는 별도 early-event +
         // continue 였다. 그러나 그러면 module_code_cache / file output / lazy sourcemap swap 등

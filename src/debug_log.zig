@@ -74,6 +74,11 @@ pub const Category = enum {
     /// 패턴 vs esbuild/rolldown 의 arrow `__export(ns, {name:()=>val})` 패턴 격차
     /// 식별용. 큰 namespace 일수록 zntc 가 손해.
     ns_inline_audit,
+    /// HMR rename 재사용 스냅샷(perf/hmr-link-rename-reuse) 진단. 특히
+    /// `buildRenameSnapshot` 이 rename_table 키 중 `symbolLocalName` null 을 만나
+    /// 스냅샷을 폐기(capture 실패 → 다음 rebuild 가 full computeRenames)한 빈도를
+    /// 관측. 실앱(RN 8067 모듈)에서 null capture 가 실제로 0 인지 확인용 (F5).
+    rename_reuse,
 
     /// 카테고리 이름으로 enum 조회 (공백 제거 + 대소문자 무시).
     pub fn fromString(s: []const u8) ?Category {
