@@ -344,6 +344,11 @@ pub fn emitBracedList(self: anytype, node: Node) !void {
 
 pub fn emitExpressionStatement(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
+    // statement-start 마킹: operand 의 첫 토큰이 `{`(object)·`function`·`class`·
+    // destructuring `{` 면 expression emitter 가 괄호로 감싸 block/선언문 오파싱을
+    // 막는다 (esbuild printStmt SExpr: `p.stmtStart = len(p.js)`). 출력 직전 위치를
+    // 마킹하므로, 그 사이 아무것도 안 쓴 expression 만 매치된다.
+    self.stmt_start = self.buf.items.len;
     try self.emitNode(node.data.unary.operand);
     try self.writeByte(';');
 }
