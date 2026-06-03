@@ -533,6 +533,12 @@ pub fn emitExportDefault(self: anytype, node: Node) !void {
     }
     try self.write("export default ");
     const inner_idx = node.data.unary.operand;
+    // export-default-start 마킹: `export default (function(){})` / `export default
+    // (class{})` 처럼 식 형태의 function/class 가 선언문(`export default function(){}`)
+    // 으로 오파싱되지 않도록 expression emitter 가 괄호를 친다 (esbuild exportDefaultStart).
+    // 선언 노드(function_declaration/class_declaration)는 exprNeedsParens 가 제외하므로
+    // 마크가 걸려도 영향 없음.
+    self.export_default_start = self.buf.items.len;
     // contextual name: 익명 function/arrow/class → "default"
     if (self.fn_map_builder != null and self.isFunctionLike(inner_idx)) {
         const saved = self.pending_fn_name;

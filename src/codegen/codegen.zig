@@ -357,6 +357,53 @@ pub const Codegen = struct {
     pub const emitRewriteValue = call_emit.emitRewriteValue;
     pub const emitRequireRewriteOrCall = call_emit.emitRequireRewriteOrCall;
 
+    /// statement-start 모호성 마크 4종의 현재 활성 여부 스냅샷 (esbuild
+    /// `exprStartFlags`). prefix(주석/`/* @__PURE__ */`)를 출력해 버퍼 위치가
+    /// 밀리기 전에 캡처하고, 출력 직후 `restoreExprStartFlags` 로 마크를 새 위치로
+    /// 옮겨 prefix 뒤의 expression 이 여전히 "그 컨텍스트의 첫 토큰" 으로 판정되게 한다.
+    pub const ExprStartFlags = packed struct {
+        stmt_start: bool = false,
+        export_default_start: bool = false,
+        arrow_expr_start: bool = false,
+        for_of_init_start: bool = false,
+    };
+
+    /// 현재 출력 위치에서 어떤 statement-start 마크가 활성인지 캡처 (esbuild
+    /// `saveExprStartFlags`).
+    pub fn saveExprStartFlags(self: *Codegen) ExprStartFlags {
+        const n = self.buf.items.len;
+        return .{
+            .stmt_start = self.stmt_start == n,
+            .export_default_start = self.export_default_start == n,
+            .arrow_expr_start = self.arrow_expr_start == n,
+            .for_of_init_start = self.for_of_init_start == n,
+        };
+    }
+
+    /// 캡처해 둔 마크를 현재 출력 위치로 복원 (esbuild `restoreExprStartFlags`).
+    /// prefix 출력 후 호출해 마크가 prefix 뒤 토큰을 가리키게 한다.
+    pub fn restoreExprStartFlags(self: *Codegen, flags: ExprStartFlags) void {
+        const n = self.buf.items.len;
+        if (flags.stmt_start) self.stmt_start = n;
+        if (flags.export_default_start) self.export_default_start = n;
+        if (flags.arrow_expr_start) self.arrow_expr_start = n;
+        if (flags.for_of_init_start) self.for_of_init_start = n;
+    }
+
+    /// 현재 위치가 statement-start 또는 arrow expression body-start 마크와 일치하는지.
+    /// object literal(`({})`)·destructuring 할당(`({a}=b)`) wrap 판정에 쓴다.
+    pub fn atStmtOrArrowStart(self: *Codegen) bool {
+        const n = self.buf.items.len;
+        return self.stmt_start == n or self.arrow_expr_start == n;
+    }
+
+    /// 현재 위치가 statement-start 또는 export-default-start 마크와 일치하는지.
+    /// function/class expression(`(function(){})`·`(class{})`) wrap 판정에 쓴다.
+    pub fn atStmtOrExportDefaultStart(self: *Codegen) bool {
+        const n = self.buf.items.len;
+        return self.stmt_start == n or self.export_default_start == n;
+    }
+
     // JSX 출력 함수 제거: Transformer의 jsx_lowering이 JSX → call_expression 변환을 담당.
     // emitJSXElement, emitJSXFragment, emitJSXTagName, emitJSXAttrsClassic,
     // emitJSXPropsAutomatic, emitJSXChildrenClassic, emitJSXChildrenAutomatic,

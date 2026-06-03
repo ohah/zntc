@@ -420,10 +420,34 @@ fn exprNeedsParens(self: anytype, node: ast_mod.Node, level: Level, flags: ExprF
             }
             break :blk level.gte(.conditional);
         },
-        .assignment_expression => level.gte(.assign),
+        .assignment_expression => level.gte(.assign) or
+            // destructuring 할당(`({a}=b)`)이 statement-start / arrow body-start 면 괄호
+            // 필수 — `{` 가 block 으로 오파싱되는 것을 막는다 (esbuild binaryExprVisitor).
+            (self.atStmtOrArrowStart() and assignTargetIsObject(self, node.data.binary.left)),
         .sequence_expression => level.gte(.comma),
         .yield_expression => level.gte(.assign),
-        // member/call/new + primary(object/array/function/class/literal/...) 는 PR6b.
+        // object literal 이 statement-start / arrow body-start 면 `{` block 오파싱 방지
+        // 괄호 (`({})`, `()=>({})`). esbuild EObject wrap.
+        .object_expression => self.atStmtOrArrowStart(),
+        // function/class expression 이 statement-start / export-default-start 면 선언문
+        // 형태와의 혼동을 막는 괄호 (`(function(){})()`, `export default (class{})`).
+        // 선언 노드(function_declaration/class_declaration)는 제외 — 그쪽은 마킹이
+        // 안 걸리고, 걸려도 선언을 식으로 바꾸면 안 된다. esbuild EFunction/EClass wrap.
+        .function_expression, .function, .class_expression => self.atStmtOrExportDefaultStart(),
+        // member/call/new optical-chain·precedence wrap 은 PR7(이 PR) 후속 커밋에서.
+        // (for-of init `let`/`async` 식별자 wrap 은 identifier_reference 의 inline
+        //  early-return 들과 충돌하므로 중앙 wrap 으로 처리하지 않는다.)
+        else => false,
+    };
+}
+
+/// 할당식의 좌변(lvalue 타겟)이 object destructuring 패턴인지. `({a}=b)` 처럼
+/// statement-start 에서 `{` 가 block 으로 오파싱되는 것을 막는 wrap 판정용.
+/// 배열 패턴(`[a]=b`)은 `[` 가 statement-start 에서 모호하지 않아 제외 (esbuild 동일).
+fn assignTargetIsObject(self: anytype, left: NodeIndex) bool {
+    if (left.isNone() or @intFromEnum(left) >= self.ast.nodes.items.len) return false;
+    return switch (self.ast.getNode(left).tag) {
+        .object_expression, .object_pattern, .object_assignment_target => true,
         else => false,
     };
 }
