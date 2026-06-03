@@ -372,11 +372,17 @@ describe('RN react-refresh prelude', () => {
 
     const bundle = readFileSync(outFile, 'utf-8');
 
-    // 실제 코드(injectIntoGlobalHook)는 1번만 포함되어야 함 (정의 + 호출)
-    const injectMatches = bundle.match(/injectIntoGlobalHook/g) || [];
-    // mock InitializeCore에 injectIntoGlobalHook이 1번, react-refresh/runtime에 정의가 1번
-    // = 총 2번 (정의 + 호출). 중복 주입 시 4번이 됨.
-    expect(injectMatches.length).toBeLessThanOrEqual(3);
+    // 이 테스트의 의도: --run-before-main 으로 InitializeCore 를 명시해도 *중복 추가하지 않음*.
+    // 과거엔 전체 문자열 `injectIntoGlobalHook` count(≤3)를 proxy 로 썼으나, HMR 프렐류드의
+    // __zntc_resolveRefresh 가 registry 에서 runtime 을 꺼내 호출하는 정적 참조
+    // (`__re.injectIntoGlobalHook(...)`, 4d3c5c17)와 mock 의 로깅 리터럴까지 세어 중복과
+    // 무관히 늘어나는 fragile 신호였다. 진짜 중복 여부는 다음 두 정의 사이트가 각각 1번:
+    //  (1) react-refresh/runtime 정의(`exports.injectIntoGlobalHook = function`) — 런타임 1회 포함
+    //  (2) InitializeCore 프렐류드 호출(`ReactRefreshRuntime.injectIntoGlobalHook`) — 프렐류드 1회
+    const runtimeDefs = bundle.match(/injectIntoGlobalHook\s*=\s*function/g) || [];
+    expect(runtimeDefs.length).toBe(1); // 런타임 중복 번들 아님
+    const initCoreCalls = bundle.match(/ReactRefreshRuntime\.injectIntoGlobalHook/g) || [];
+    expect(initCoreCalls.length).toBe(1); // InitializeCore 프렐류드 중복 추가 아님
   });
 
   test('HMR 런타임에 디버그 console.log가 없다', async () => {
