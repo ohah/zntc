@@ -458,8 +458,7 @@ pub fn wrapClassExprInIIFE(
     const arrow = try self.addExtraNode(.arrow_function_expression, span, &.{
         none, @intFromEnum(body_block), 0,
     });
-    const paren = try es_helpers.makeParenExpr(self, arrow, span);
-    return es_helpers.makeCallExpr(self, paren, &.{}, span);
+    return es_helpers.makeCallExpr(self, arrow, &.{}, span);
 }
 
 pub fn shouldDropClassExprName(self: *Transformer, tag: Tag, name_idx: NodeIndex) bool {

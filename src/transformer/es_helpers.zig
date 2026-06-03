@@ -323,14 +323,8 @@ pub fn makeVoidZero(self: anytype, span: Span) !NodeIndex {
     });
 }
 
-/// 식을 괄호로 감싼 parenthesized_expression 생성.
-pub fn makeParenExpr(self: anytype, inner: NodeIndex, span: Span) !NodeIndex {
-    return self.ast.addNode(.{
-        .tag = .parenthesized_expression,
-        .span = span,
-        .data = .{ .unary = .{ .operand = inner, .flags = 0 } },
-    });
-}
+// (makeParenExpr 제거 #4042 PR8: emitParen 투명화 + IIFE auto-wrap 후 합성 paren 은
+//  precedence 가 동일 재유도 — TSC byte-identical 로 확인. 합성 노드 자체가 불필요해짐.)
 
 /// 이름 문자열로 identifier_reference 노드 생성.
 /// addString + addNode를 한 번에 수행.
@@ -658,7 +652,9 @@ fn makeSingleEvalExpr(
         } },
     });
     return .{
-        .read = try makeParenExpr(self, assign, span),
+        // 합성 paren 제거(#4042 PR8): assign 을 직접 둔다 — 첫 사용 자리(member object/
+        // binary-left 등)의 precedence 가 `(temp = value)` 괄호를 재유도한다.
+        .read = assign,
         .value = try makeTempVarRef(self, temp_span, span),
         .write = try makeTempVarRef(self, temp_span, span),
     };
@@ -695,7 +691,8 @@ pub fn captureToTemp(self: anytype, value: NodeIndex, span: Span) !TempCapture {
     const assign = try makeAssignExpr(self, temp_lhs, value, span, @intFromEnum(token_mod.Kind.eq));
     return .{
         .span = temp_span,
-        .paren_assign = try makeParenExpr(self, assign, span),
+        // 합성 paren 제거(#4042 PR8): bare assign — 첫 사용 자리의 precedence 가 괄호 재유도.
+        .paren_assign = assign,
     };
 }
 

@@ -826,7 +826,7 @@ fn buildPiggybackedInitCall(self: *Transformer, prev_extra_name: []const u8, ini
             .span = zero_span,
             .data = .{ .list = seq_list },
         });
-        return es_helpers.makeParenExpr(self, seq, zero_span);
+        return seq;
     } else {
         return prev_call;
     }

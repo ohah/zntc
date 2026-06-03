@@ -71,12 +71,11 @@ pub fn ES2020(comptime Transformer: type) type {
                         .flags = @intFromEnum(token_mod.Kind.eq),
                     } },
                 });
-                const paren_assign = try helpers.makeParenExpr(self, assign_node, node.span);
                 const neq_null = try self.ast.addNode(.{
                     .tag = .binary_expression,
                     .span = node.span,
                     .data = .{ .binary = .{
-                        .left = paren_assign,
+                        .left = assign_node,
                         .right = null_node,
                         .flags = @intFromEnum(token_mod.Kind.neq),
                     } },
@@ -178,7 +177,7 @@ pub fn ES2020(comptime Transformer: type) type {
             });
             // 괄호로 감싸서 binary expression 안에서 우선순위 보장
             // 예: a?.b !== c?.d → (a == null ? void 0 : a.b) !== (c == null ? void 0 : c.d)
-            return helpers.makeParenExpr(self, cond, node.span);
+            return cond;
         }
 
         /// `prepareOptionalMemberCall` 의 두 가지 반환 모드.
@@ -308,7 +307,7 @@ pub fn ES2020(comptime Transformer: type) type {
                 .span = root.span,
                 .data = .{ .ternary = .{ .a = outer_eq_null, .b = try helpers.makeVoidZero(self, root.span), .c = inner } },
             });
-            return try helpers.makeParenExpr(self, outer, root.span);
+            return outer;
         }
 
         fn lowerOptionalSuperMethodCall(
@@ -321,7 +320,7 @@ pub fn ES2020(comptime Transformer: type) type {
             const member = try makeSuperMethodMember(self, self.ast.getNode(base_idx).tag, old_prop, member_flags, root.span);
             const receiver = try makeThisOrAlias(self, root.span);
             const cond = try buildOptionalCallEpilogue(self, member, receiver, root.data.extra, root.span);
-            return helpers.makeParenExpr(self, cond, root.span);
+            return cond;
         }
 
         /// `(fn = member); fn == null ? void 0 : fn.call(receiver, ...args)` 의 inner ternary 를 만든다.
@@ -642,7 +641,7 @@ pub fn ES2020(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .list = seq_list },
             });
-            return helpers.makeParenExpr(self, seq, span);
+            return seq;
         }
 
         fn isEvalIdentifier(self: *Transformer, idx: NodeIndex) bool {

@@ -291,15 +291,14 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                     .span = node.span,
                     .data = .{ .list = list },
                 });
-                return es_helpers.makeParenExpr(self, seq, node.span);
+                // sequence paren 은 precedence 재유도가 처리 (#4042 PR8)
+                return seq;
             }
 
             switch (node.tag) {
-                .parenthesized_expression => return es_helpers.makeParenExpr(
-                    self,
-                    try injectInstanceFieldsAfterSuperExpr(self, node.data.unary.operand, instance_fields, span),
-                    node.span,
-                ),
+                // 이미 parenthesized_expression 인 입력의 inner 만 재귀 변환 후 반환.
+                // paren 은 precedence 재유도가 처리 (#4042 PR8)
+                .parenthesized_expression => return try injectInstanceFieldsAfterSuperExpr(self, node.data.unary.operand, instance_fields, span),
                 .sequence_expression, .array_expression => {
                     const scratch_top = self.scratch.items.len;
                     defer self.scratch.shrinkRetainingCapacity(scratch_top);

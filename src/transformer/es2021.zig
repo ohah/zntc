@@ -25,7 +25,6 @@ pub fn ES2021(comptime Transformer: type) type {
             const target = (try es_helpers.prepareAssignmentTargetRef(self, node.data.binary.left, node.span)) orelse unreachable;
             const new_right = try self.visitNode(node.data.binary.right);
             const assign = try es_helpers.makeAssignExpr(self, target.write, new_right, node.span, @intFromEnum(token_mod.Kind.eq));
-            const paren_assign = try es_helpers.makeParenExpr(self, assign, node.span);
 
             if (self.options.unsupported.nullish_coalescing) {
                 // ternary lowering 은 condition 과 truthy branch 두 자리에 read 표현을 emit 한다.
@@ -37,7 +36,7 @@ pub fn ES2021(comptime Transformer: type) type {
                     return self.ast.addNode(.{
                         .tag = .conditional_expression,
                         .span = node.span,
-                        .data = .{ .ternary = .{ .a = neq_null, .b = target.value, .c = paren_assign } },
+                        .data = .{ .ternary = .{ .a = neq_null, .b = target.value, .c = assign } },
                     });
                 }
                 const captured = try es_helpers.captureToTemp(self, target.read, node.span);
@@ -46,7 +45,7 @@ pub fn ES2021(comptime Transformer: type) type {
                 return self.ast.addNode(.{
                     .tag = .conditional_expression,
                     .span = node.span,
-                    .data = .{ .ternary = .{ .a = neq_null, .b = captured_value, .c = paren_assign } },
+                    .data = .{ .ternary = .{ .a = neq_null, .b = captured_value, .c = assign } },
                 });
             }
 
@@ -55,7 +54,7 @@ pub fn ES2021(comptime Transformer: type) type {
                 .span = node.span,
                 .data = .{ .binary = .{
                     .left = target.read,
-                    .right = paren_assign,
+                    .right = assign,
                     .flags = @intFromEnum(token_mod.Kind.question2),
                 } },
             });
@@ -67,13 +66,12 @@ pub fn ES2021(comptime Transformer: type) type {
             const target = (try es_helpers.prepareAssignmentTargetRef(self, node.data.binary.left, node.span)) orelse unreachable;
             const new_right = try self.visitNode(node.data.binary.right);
             const assign = try es_helpers.makeAssignExpr(self, target.write, new_right, node.span, @intFromEnum(token_mod.Kind.eq));
-            const paren_assign = try es_helpers.makeParenExpr(self, assign, node.span);
             return self.ast.addNode(.{
                 .tag = .logical_expression,
                 .span = node.span,
                 .data = .{ .binary = .{
                     .left = target.read,
-                    .right = paren_assign,
+                    .right = assign,
                     .flags = @intFromEnum(logical_op),
                 } },
             });

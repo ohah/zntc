@@ -1403,11 +1403,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .binary = .{ .left = lhs, .right = rhs, .flags = 0 } },
             });
-            const expr = if (lhs_node.tag == .object_pattern)
-                try es_helpers.makeParenExpr(self, assign, span)
-            else
-                assign;
-            return es_helpers.makeExprStmt(self, expr, span);
+            // object_pattern assign 의 paren 은 precedence 재유도가 처리 (#4042 PR8)
+            return es_helpers.makeExprStmt(self, assign, span);
         }
 
         /// yield가 있는 variable_declaration의 각 declarator를 개별 연산으로 변환.
@@ -1504,10 +1501,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 return self.visitNode(expr_idx);
             }
 
-            // parenthesized_expression: 내부 재귀
+            // parenthesized_expression: 내부 재귀. paren 은 precedence 재유도가 처리 (#4042 PR8)
             if (node.tag == .parenthesized_expression) {
-                const inner = try visitExprWithYieldExtraction(self, node.data.unary.operand, ops, next_label);
-                return es_helpers.makeParenExpr(self, inner, node.span);
+                return visitExprWithYieldExtraction(self, node.data.unary.operand, ops, next_label);
             }
 
             // TS/Flow 타입 wrapper 는 런타임상 noop 이므로 통과한다. 그러지 않으면 타입 스트립
@@ -1944,12 +1940,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// negate=true이면 조건을 !로 반전.
         fn buildConditionalBreak(self: *Transformer, label: u32, cond: NodeIndex, negate: bool, span: Span) Transformer.Error!NodeIndex {
             const final_cond = if (negate) blk: {
-                const paren_cond = try es_helpers.makeParenExpr(self, cond, span);
+                // !cond 의 paren 은 precedence 재유도가 처리 (#4042 PR8)
                 break :blk try self.ast.addNode(.{
                     .tag = .unary_expression,
                     .span = span,
                     .data = .{ .extra = try self.ast.addExtras(&.{
-                        @intFromEnum(paren_cond),
+                        @intFromEnum(cond),
                         @intFromEnum(token_mod.Kind.bang),
                     }) },
                 });

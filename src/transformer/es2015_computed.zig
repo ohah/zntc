@@ -190,7 +190,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             // 마지막에 _a 반환
             try self.scratch.append(self.allocator, try es_helpers.makeTempVarRef(self, temp_span, temp_span));
 
-            // (sequence_expression) — 괄호로 감싸야 올바른 우선순위
+            // sequence_expression — paren 은 precedence 재유도가 처리 (#4042 PR8)
             const seq_list = try self.ast.addNodeList(self.scratch.items[seq_scratch_top..]);
             self.scratch.shrinkRetainingCapacity(seq_scratch_top);
 
@@ -199,7 +199,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .list = seq_list },
             });
-            return es_helpers.makeParenExpr(self, seq, span);
+            return seq;
         }
 
         /// member의 key NodeIndex를 반환. object_property는 binary.left, method_definition은 extra[0].

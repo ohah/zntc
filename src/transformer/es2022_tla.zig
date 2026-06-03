@@ -172,9 +172,8 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
         .data = .{ .extra = arrow_extra },
     });
 
-    // (arrow)() — 괄호 + 호출
-    const paren = try es_helpers.makeParenExpr(self, arrow, node.span);
-    const call = try es_helpers.makeCallExpr(self, paren, &.{}, node.span);
+    // (arrow)() — 호출 (arrow 는 call-target 위치에서 codegen 이 자동 wrap)
+    const call = try es_helpers.makeCallExpr(self, arrow, &.{}, node.span);
     const iife_stmt = try es_helpers.makeExprStmt(self, call, node.span);
 
     // async/await lowering 이 이 arrow 에 적용되어야 하므로 재방문이 필요한 경우가 있지만,

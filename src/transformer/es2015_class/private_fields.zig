@@ -336,7 +336,8 @@ pub fn PrivateFields(comptime Transformer: type) type {
                     .span = span,
                     .data = .{ .list = seq_list },
                 });
-                return es_helpers.makeParenExpr(self, seq, span);
+                // sequence paren 은 precedence 재유도가 처리 (#4042 PR8)
+                return seq;
             }
 
             // prefix: set(get() + 1) — expression 값이 새 값이라 세팅 결과 그대로 사용

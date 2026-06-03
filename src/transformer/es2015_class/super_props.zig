@@ -100,7 +100,7 @@ pub fn SuperProps(comptime Transformer: type) type {
             self.runtime_helpers.call_super = true;
             self.runtime_helpers.derived_constructor = true;
 
-            return es_helpers.makeParenExpr(self, seq, span);
+            return seq;
         }
 
         /// call_expression의 callee가 super.method (static_member_expression + super) 인지 확인.
@@ -268,7 +268,7 @@ pub fn SuperProps(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .list = seq_list },
             });
-            return es_helpers.makeParenExpr(self, seq, span);
+            return seq;
         }
 
         /// ClassName.prototype static_member_expression 생성.
@@ -513,8 +513,7 @@ pub fn SuperProps(comptime Transformer: type) type {
                     .span = span,
                     .data = .{ .list = seq_list },
                 });
-                const paren = try es_helpers.makeParenExpr(self, seq, span);
-                return wrapSuperPropInit(self, prop_ref, paren, span);
+                return wrapSuperPropInit(self, prop_ref, seq, span);
             }
 
             const get_call = try buildSuperPropGet(self, prop_ref.read, span);
