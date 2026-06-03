@@ -38,30 +38,9 @@ pub fn skipWrappers(self: anytype, idx: NodeIndex, comptime include_paren: bool)
 /// zntc 파서는 chain_expression 없이 paren 노드로만 체인을 끊으므로(transformer/define.zig
 /// 주석) 트리 구조에서 유도한다: `a?.b.c` 의 `.c` 는 object(`a?.b`)가 optional → Continue
 /// (끊지 않음), `(a?.b).c` 의 `.c` 는 object 가 paren → 체인 끊김 → None(끊음).
+/// 단일 구현 `ast.spineHasOptionalChain` 에 위임(transformer 와 공용).
 pub fn objectContinuesOptionalChain(self: anytype, idx: NodeIndex) bool {
-    var cur = idx;
-    var depth: u8 = 0;
-    while (depth < 64) : (depth += 1) {
-        cur = skipWrappers(self, cur, false); // paren 은 체인 경계로 남긴다
-        if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return false;
-        const n = self.ast.getNode(cur);
-        switch (n.tag) {
-            .static_member_expression, .computed_member_expression, .private_field_expression => {
-                const e = n.data.extra;
-                if (!self.ast.hasExtra(e, 2)) return false;
-                if ((self.ast.readExtra(e, 2) & ast_mod.MemberFlags.optional_chain) != 0) return true;
-                cur = self.ast.readExtraNode(e, 0); // object — Continue 여부 재귀
-            },
-            .call_expression => {
-                const e = n.data.extra;
-                if (!self.ast.hasExtra(e, 3)) return false;
-                if ((self.ast.readExtra(e, 3) & ast_mod.CallFlags.optional_chain) != 0) return true;
-                cur = self.ast.readExtraNode(e, 0); // callee
-            },
-            else => return false, // paren/identifier/literal 등 → 체인 끊김
-        }
-    }
-    return false;
+    return ast_mod.spineHasOptionalChain(self.ast, idx);
 }
 
 /// expression 이 (paren 포함 transparent wrapper 를 벗긴 뒤) optional chain(Start/Continue)인지.
