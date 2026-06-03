@@ -47,6 +47,7 @@ const SKIP_FUNCS = new Map<string, string>([
 	["emitStaticBlock", "container — body carries mappings"],
 	["emitNamespaceIIFE", "delegates to emitNamespaceIIFEInner"],
 	["emitExportSpecifier", "leaf-token mapping at local_node.span (not outer node.span)"],
+	["emitParen", "transparent (#4042) — operand 이 자기 매핑 발행, paren 노드는 토큰 미출력"],
 ]);
 
 /** `pub fn emit<Name>(self: anytype, node: Node, ...)` 시그니처 매치. */
