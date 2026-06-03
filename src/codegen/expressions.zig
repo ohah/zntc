@@ -133,24 +133,46 @@ fn binaryChildLevels(self: anytype, node: Node) BinaryChildLevels {
     return .{ .left = left_level, .right = right_level };
 }
 
-/// 노드가 `||`(.pipe2) 또는 `&&`(.amp2) logical_expression 인지.
+/// transparent wrapper(paren/chain/TS·Flow type cast)를 벗겨 실제 피연산자 노드를 반환.
+/// emitParen 투명화(#4042) 후, 자식 노드 구조를 *직접* 검사하는 헬퍼들(`??`/`||` 혼용,
+/// `**` 좌단항, RHS 부호 토큰)은 래퍼 너머의 실제 노드를 봐야 정확하다 — 래퍼는 더 이상
+/// `(` 를 출력하지 않으므로 출력 시작 토큰이 안쪽 operand 의 것이 된다.
+fn skipTransparent(self: anytype, idx: NodeIndex) NodeIndex {
+    var cur = idx;
+    var depth: u8 = 0;
+    while (depth < 32) : (depth += 1) {
+        if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return cur;
+        const n = self.ast.getNode(cur);
+        if (n.tag == .parenthesized_expression or n.tag == .chain_expression or
+            ast_mod.Node.Tag.isTransparentTypeWrapper(n.tag))
+        {
+            cur = n.data.unary.operand;
+        } else return cur;
+    }
+    return cur;
+}
+
+/// 노드가 (transparent wrapper 너머로) `||`(.pipe2) 또는 `&&`(.amp2) logical_expression 인지.
 fn binaryChildIsLogical(self: anytype, idx: NodeIndex) bool {
-    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
-    const n = self.ast.getNode(idx);
+    const real = skipTransparent(self, idx);
+    if (real.isNone() or @intFromEnum(real) >= self.ast.nodes.items.len) return false;
+    const n = self.ast.getNode(real);
     if (n.tag != .logical_expression) return false;
     const cop: Kind = @enumFromInt(n.data.binary.flags);
     return cop == .pipe2 or cop == .amp2;
 }
 
-/// `**` 좌측이 출력 시 prefix 단항으로 시작해 직접 올 수 없는 형태인지.
-/// esbuild BinOpPow: unary(비-update)/await/undefined(`void 0`)/number(음수)/(minify)boolean.
+/// `**` 좌측이 출력 시 prefix 단항으로 시작해 직접 올 수 없는 형태인지 (transparent
+/// wrapper 너머). esbuild BinOpPow: unary(비-update)/await/undefined(`void 0`)/number(음수)/
+/// (minify)boolean.
 fn powLeftNeedsParen(self: anytype, idx: NodeIndex) bool {
-    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
-    const n = self.ast.getNode(idx);
+    const real = skipTransparent(self, idx);
+    if (real.isNone() or @intFromEnum(real) >= self.ast.nodes.items.len) return false;
+    const n = self.ast.getNode(real);
     return switch (n.tag) {
         .unary_expression, .await_expression, .numeric_literal => true,
         .boolean_literal => self.options.minify_syntax, // !0/!1 peephole
-        else => calls.isUndefinedPeephole(self, idx), // undefined → void 0
+        else => calls.isUndefinedPeephole(self, real), // undefined → void 0
     };
 }
 
@@ -233,6 +255,9 @@ fn rhsLeadingSignChar(self: anytype, idx: NodeIndex) ?u8 {
     var cur = idx;
     var depth: u8 = 0;
     while (depth < 32) : (depth += 1) {
+        // transparent wrapper(paren 등)는 `(` 미출력 → 안쪽 토큰이 시작 (#4042).
+        cur = skipTransparent(self, cur);
+        if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return null;
         const n = self.ast.getNode(cur);
         switch (n.tag) {
             .unary_expression => return switch (unaryOpKind(self, n.data.extra) orelse return null) {
@@ -335,11 +360,33 @@ pub fn emitSequence(self: anytype, node: Node) !void {
     try self.emitList(node, ",");
 }
 
-pub fn emitParen(self: anytype, node: Node) !void {
-    try self.addSourceMapping(node.span);
-    try self.writeByte('(');
-    try self.emitNode(node.data.unary.operand);
-    try self.writeByte(')');
+/// `parenthesized_expression` 은 대체로 투명 — 괄호를 출력하지 않고 operand 를 부모의
+/// `level`/`flags` 그대로 재귀한다. 괄호가 필요하면 operand 의 precedence(exprNeedsParens)
+/// 가 재유도한다 (esbuild/oxc 는 paren 노드를 AST 에 두지 않고 precedence 로만 괄호를 낸다).
+/// 군더더기 괄호는 제거하고 load-bearing 만 재유도한다 — 전 모드 통일(#4042). `level`/
+/// `flags` 전파로 `(a?.b as T).c` 같은 타입래퍼 통과 optional-chain 끊기 괄호도 보존된다.
+///
+/// 예외 — function/arrow expression 둘레의 괄호는 *보존*한다 (esbuild 가 EFunction/EArrow
+/// 의 `IsParenthesized` 를 출력에 반영하는 것과 동일). IIFE(`(function(){})()`)·
+/// `var x=(function(){})`·`export default (function(){})` 형태가 유지된다. object/array 는
+/// esbuild 도 IsParenthesized 를 무시하므로 투명 처리한다(`({a:1})`→`{a:1}`).
+pub fn emitParen(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
+    const inner = node.data.unary.operand;
+    const real = skipTransparent(self, inner);
+    if (!real.isNone() and @intFromEnum(real) < self.ast.nodes.items.len) {
+        switch (self.ast.getNode(real).tag) {
+            .function_expression, .function, .arrow_function_expression => {
+                // 중첩 transparent wrapper 의 이중 괄호 방지 위해 skip 한 실제 노드를
+                // 새 .lowest 컨텍스트로 직접 emit (괄호가 precedence 를 리셋).
+                try self.writeByte('(');
+                try self.emitExpr(real, .lowest, .{});
+                try self.writeByte(')');
+                return;
+            },
+            else => {},
+        }
+    }
+    try self.emitExpr(inner, level, flags);
 }
 
 pub fn emitSpread(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
@@ -589,13 +636,22 @@ pub fn emitStaticMember(self: anytype, node: Node, level: Level, flags: ExprFlag
         }
     }
 
-    // object level = .postfix. non-optional member 는 object 에 has_non_optional_chain_parent
-    // set(PR6 에서 object 가 optional-chain start 면 `(a?.b).c` 처럼 wrap). forbid_call 보존.
-    const obj_flags = ExprFlags{ .forbid_call = flags.forbid_call, .has_non_optional_chain_parent = (member_flags & MemberFlags.optional_chain) == 0 };
+    // object level = .postfix. self 가 None(체인 밖: optional 아니고 object 도 체인 아님)이면
+    // object 에 has_non_optional_chain_parent set → object 가 optional chain start/continue 면
+    // `(a?.b).c` 처럼 끊는다. Start/Continue 면 clear. forbid_call 보존(esbuild EDot target flags).
+    const self_in_chain = (member_flags & MemberFlags.optional_chain) != 0 or
+        calls.objectContinuesOptionalChain(self, object);
+    const obj_flags = ExprFlags{
+        .forbid_call = flags.forbid_call,
+        .has_non_optional_chain_parent = !self_in_chain,
+    };
     try calls.emitNodeMaybeUndefParen(self, object, Level.postfix, obj_flags);
     if (member_flags & MemberFlags.optional_chain != 0) {
         try self.write("?.");
     } else {
+        // object 가 정수 리터럴로 끝나면 `42.x` 가 `42.`(소수점)으로 오파싱됨 → 공백
+        // (`42 .toString()`). esbuild needSpaceBeforeDot. `?.` 는 소수점 모호성 없어 제외.
+        if (self.need_space_before_dot == self.buf.items.len) try self.writeByte(' ');
         try self.writeByte('.');
     }
     // property name 슬롯은 reserved word 도 valid identifier 로 취급되므로 peephole
@@ -616,7 +672,12 @@ pub fn emitComputedMember(self: anytype, node: Node, level: Level, flags: ExprFl
     const property = self.ast.readExtraNode(e, 1);
     const member_flags = self.ast.readExtra(e, 2);
     const MemberFlags = ast_mod.MemberFlags;
-    const obj_flags = ExprFlags{ .forbid_call = flags.forbid_call, .has_non_optional_chain_parent = (member_flags & MemberFlags.optional_chain) == 0 };
+    const self_in_chain = (member_flags & MemberFlags.optional_chain) != 0 or
+        calls.objectContinuesOptionalChain(self, object);
+    const obj_flags = ExprFlags{
+        .forbid_call = flags.forbid_call,
+        .has_non_optional_chain_parent = !self_in_chain,
+    };
     try calls.emitNodeMaybeUndefParen(self, object, Level.postfix, obj_flags);
     if (member_flags & MemberFlags.optional_chain != 0) {
         try self.write("?.");

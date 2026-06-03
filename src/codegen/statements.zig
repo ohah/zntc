@@ -393,10 +393,16 @@ fn operandStartsIdentifierLikeDepth(self: anytype, idx: ast_mod.NodeIndex, depth
     if (depth >= 32) return true;
     if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return true;
     const n = self.ast.getNode(idx);
+    // TS/Flow type cast 래퍼(`x as T`/`<T>x`)는 strip 후 안쪽이 시작 토큰 → 따라간다.
+    if (ast_mod.Node.Tag.isTransparentTypeWrapper(n.tag)) {
+        return operandStartsIdentifierLikeDepth(self, n.data.unary.operand, depth + 1);
+    }
     return switch (n.tag) {
-        // S3 + S3b: paren / string / template / array / object / unary punctuator 처리.
-        // esbuild/rolldown/rspack 동일 정책.
-        .parenthesized_expression,
+        // transparent wrapper(paren/chain)는 codegen 이 `(` 미출력 → 안쪽 operand 의 시작
+        // 토큰이 출력 시작 토큰 (#4042 emitParen 투명화). 따라간다.
+        .parenthesized_expression, .chain_expression => operandStartsIdentifierLikeDepth(self, n.data.unary.operand, depth + 1),
+        // S3 + S3b: string / template / array / object 는 punctuator(`"`/`` ` ``/`[`/`{`)
+        // 로 시작 → identifier-like 아님. esbuild/rolldown/rspack 동일 정책.
         .string_literal,
         .template_literal,
         .array_expression,

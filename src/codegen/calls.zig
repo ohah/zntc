@@ -14,6 +14,72 @@ const ExprFlags = precedence.ExprFlags;
 const IMPORT_META_URL_NODE = "require(\"url\").pathToFileURL(__filename).href";
 const IMPORT_META_NODE_OBJECT = "{url:" ++ IMPORT_META_URL_NODE ++ ",dirname:__dirname,filename:__filename}";
 
+/// transparent TYPE wrapper(TS `as T`/`<T>x`/`!`, Flow cast, chain_expression)만 벗긴다.
+/// **paren 은 벗기지 않는다** — paren 은 optional chain 을 끊는 경계이므로
+/// (`(a?.b).c` 의 `.c` 는 None, `a?.b!.c` 의 `.c` 는 Continue). objectContinuesOptionalChain 전용.
+fn skipTypeWrappers(self: anytype, idx: NodeIndex) NodeIndex {
+    var cur = idx;
+    var depth: u8 = 0;
+    while (depth < 32) : (depth += 1) {
+        if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return cur;
+        const n = self.ast.getNode(cur);
+        if (n.tag == .chain_expression or ast_mod.Node.Tag.isTransparentTypeWrapper(n.tag)) {
+            cur = n.data.unary.operand;
+        } else return cur;
+    }
+    return cur;
+}
+
+/// `object` 가 (paren 을 건너지 않고 type-wrapper 만 건너서) optional `?.` 로 시작/연속되는
+/// 체인인지 — 이 멤버/호출이 esbuild 의 OptionalChainContinue(체인 연속)인지 판정한다.
+/// zntc 파서는 chain_expression 없이 paren 노드로만 체인을 끊으므로(transformer/define.zig
+/// 주석) 트리 구조에서 유도한다: `a?.b.c` 의 `.c` 는 object(`a?.b`)가 optional → Continue
+/// (끊지 않음), `(a?.b).c` 의 `.c` 는 object 가 paren → 체인 끊김 → None(끊음).
+pub fn objectContinuesOptionalChain(self: anytype, idx: NodeIndex) bool {
+    var cur = idx;
+    var depth: u8 = 0;
+    while (depth < 64) : (depth += 1) {
+        cur = skipTypeWrappers(self, cur);
+        if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return false;
+        const n = self.ast.getNode(cur);
+        switch (n.tag) {
+            .static_member_expression, .computed_member_expression, .private_field_expression => {
+                const e = n.data.extra;
+                if (!self.ast.hasExtra(e, 2)) return false;
+                if ((self.ast.readExtra(e, 2) & ast_mod.MemberFlags.optional_chain) != 0) return true;
+                cur = self.ast.readExtraNode(e, 0); // object — Continue 여부 재귀
+            },
+            .call_expression => {
+                const e = n.data.extra;
+                if (!self.ast.hasExtra(e, 3)) return false;
+                if ((self.ast.readExtra(e, 3) & ast_mod.CallFlags.optional_chain) != 0) return true;
+                cur = self.ast.readExtraNode(e, 0); // callee
+            },
+            else => return false, // paren/identifier/literal 등 → 체인 끊김
+        }
+    }
+    return false;
+}
+
+/// expression 이 (paren 포함 transparent wrapper 를 벗긴 뒤) optional chain(Start/Continue)인지.
+/// tagged template 의 tag 가 optional chain 이면 ECMAScript 상 SyntaxError 라 괄호로 감싸야
+/// 한다 (esbuild ETemplate: `IsOptionalChain(tag)` → wrap). paren 까지 벗기는 이유는 emit 시
+/// 투명 paren 이 사라져 `(a?.b)`x`` 가 `a?.b`x``(invalid)로 깨지기 때문.
+pub fn isOptionalChainExpr(self: anytype, idx: NodeIndex) bool {
+    var cur = idx;
+    var depth: u8 = 0;
+    while (depth < 32) : (depth += 1) {
+        if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return false;
+        const n = self.ast.getNode(cur);
+        if (n.tag == .parenthesized_expression or n.tag == .chain_expression or
+            ast_mod.Node.Tag.isTransparentTypeWrapper(n.tag))
+        {
+            cur = n.data.unary.operand;
+        } else break;
+    }
+    return objectContinuesOptionalChain(self, cur);
+}
+
 /// `undefined` peephole 의 callee/object/new.callee 슬롯 paren 검사.
 /// node_dispatch.zig 가 `void 0` (no paren) 으로 출력하므로, member/call/new 슬롯의
 /// caller 가 paren 으로 감싸 `void 0.x` → `void (0.x)` 오파싱 방지.
@@ -40,8 +106,9 @@ pub fn emitNodeMaybeUndefParen(self: anytype, idx: NodeIndex, level: Level, flag
 }
 
 pub fn emitCall(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
-    _ = level; // PR6: wrap = level.gte(.new) || flags.forbid_call
-    _ = flags; // forbid_call 은 callee 로 전파 안 함(call 이 자기 wrap 에서 소진) — esbuild ECall parity.
+    _ = level; // wrap(level>=.new | forbid_call | optional-chain | pure) 은 exprNeedsParens 중앙 처리.
+    _ = flags; // callee 의 has_non_optional_chain_parent 는 call 자신의 optional-ness 로 계산
+    // (incoming flags 전파 안 함). forbid_call 도 callee 로 전파 안 함 — esbuild ECall parity.
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
     if (!self.ast.hasExtra(e, 3)) return;
@@ -57,10 +124,19 @@ pub fn emitCall(self: anytype, node: Node, level: Level, flags: ExprFlags) !void
     if (try tryEmitGlobObject(self, callee, args_start, args_len)) return;
     if (try tryEmitRequireContextObject(self, node)) return;
 
-    if (is_pure and !self.options.minify_whitespace) try self.write("/* @__PURE__ */ ");
-    // callee level = .postfix. non-optional call 은 callee 에 has_non_optional_chain_parent
-    // set(PR6 에서 callee 가 optional-chain start 면 wrap). forbid_call 은 전파 안 함(위 참조).
-    const callee_flags = ExprFlags{ .has_non_optional_chain_parent = !is_optional };
+    // pure-comment 가 버퍼 위치를 밀면 callee(예: stmt-start 의 function expression)가
+    // statement-start 마크와 어긋난다 → save/restore 로 마크를 comment 뒤로 옮긴다
+    // (esbuild ECall). 그래야 `/* @__PURE__ */ (function(){})()` 의 괄호가 살아난다.
+    if (is_pure and !self.options.minify_whitespace) {
+        const start_flags = self.saveExprStartFlags();
+        try self.write("/* @__PURE__ */ ");
+        self.restoreExprStartFlags(start_flags);
+    }
+    // callee level = .postfix. self 가 None(체인 밖)이면 callee 에 has_non_optional_chain_parent
+    // set(callee 가 optional-chain start/continue 면 exprNeedsParens 가 wrap). forbid_call 은
+    // 전파 안 함 — call 이 자기 wrap 에서 소진(esbuild ECall parity).
+    const self_in_chain = is_optional or objectContinuesOptionalChain(self, callee);
+    const callee_flags = ExprFlags{ .has_non_optional_chain_parent = !self_in_chain };
     try emitNodeMaybeUndefParen(self, callee, Level.postfix, callee_flags);
     if (is_optional) try self.write("?.");
     try self.writeByte('(');
@@ -321,36 +397,24 @@ fn tryRewriteRequire(self: anytype, callee: ast_mod.NodeIndex, args_start: u32, 
     return false;
 }
 
-/// `new MemberExpression Arguments` 문법상 callee 는 MemberExpression 이어야 함.
-/// callee 의 member chain 안에 call_expression 이 있으면 `new A(x)` 가 `new (A)(x)` 로
-/// 잘못 파싱되어 뒤따르는 `()` 가 외부 call 로 붙음 (#1507). 감싸서 Primary 로 승격.
-fn newCalleeNeedsParens(self: anytype, idx: NodeIndex) bool {
+/// `new Animated.Value()` 처럼 callee 자체엔 call 이 없어도 linker rename 후
+/// `Animated`가 `require_x().Animated` 같은 call 포함 표현식으로 바뀌면 `new` 의 첫
+/// `()` 가 그 call 에 붙어 `(new require_x()).Animated.Value()` 로 결합이 달라진다 →
+/// member chain 의 leaf 식별자가 rename→call 이면 callee 전체를 괄호로 감싼다.
+/// AST 노드로는 식별자(identifier_reference)라 precedence(AST 기반)가 못 잡는 유일한
+/// new-callee 케이스이므로 ad-hoc 으로 유지 (#4042 PR7). 나머지(callee 안의 call/
+/// binary/conditional/sequence/… )는 precedence(.new + forbid_call)가 재유도한다.
+fn newCalleeNeedsRenameParens(self: anytype, idx: NodeIndex) bool {
     var cur = idx;
     while (true) {
         const n = self.ast.getNode(cur);
         switch (n.tag) {
-            .call_expression => return true,
-            // `undefined` 가 `void 0` peephole 적용 후 `new void 0` → `new void (0)` 로 오파싱.
-            .identifier_reference => return identifierRenameContainsCall(self, cur) or isUndefinedPeephole(self, cur),
+            .identifier_reference => return identifierRenameContainsCall(self, cur),
             .static_member_expression, .computed_member_expression, .private_field_expression => {
                 cur = self.ast.readExtraNode(n.data.extra, 0);
             },
-            // `new MemberExpression` callee 슬롯이 아닌 expression: paren 을 벗기면 결합이 깨진다.
-            // `new (a||b)()` → `new a||b()` 가 `(new a)||b()` 로 결합 (#2960).
-            // function/class expression 은 PrimaryExpression 이라 callee 슬롯에 직접 가능 (#1586).
-            .logical_expression,
-            .binary_expression,
-            .conditional_expression,
-            .assignment_expression,
-            .sequence_expression,
-            .arrow_function_expression,
-            .new_expression,
-            .yield_expression,
-            .await_expression,
-            .import_expression,
-            .unary_expression,
-            .update_expression,
-            => return true,
+            // paren 은 투명(codegen 이 괄호 미출력) — 안쪽으로 따라가 rename leaf 검사.
+            .parenthesized_expression => cur = n.data.unary.operand,
             else => return false,
         }
     }
@@ -415,12 +479,12 @@ fn tryEmitWorkerURL(self: anytype, callee: ast_mod.NodeIndex, args_start: u32, a
 }
 
 pub fn emitNew(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
-    _ = level; // PR6: wrap = level.gte(.call)
+    _ = level; // wrap(level>=.call | pure-comment) 은 exprNeedsParens 중앙 처리.
     _ = flags;
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
     if (!self.ast.hasExtra(e, 3)) return;
-    var callee = self.ast.readExtraNode(e, 0);
+    const callee = self.ast.readExtraNode(e, 0);
     const args_start = self.ast.readExtra(e, 1);
     const args_len = self.ast.readExtra(e, 2);
     const new_flags = self.ast.readExtra(e, 3);
@@ -432,23 +496,14 @@ pub fn emitNew(self: anytype, node: Node, level: Level, flags: ExprFlags) !void 
     if (try tryEmitWorkerURL(self, callee, args_start, args_len)) return;
 
     try self.write("new ");
-    // 원본의 잉여 parens 제거 (#1586): callee가 `(inner)` 형태이고 inner를
-    // 직접 새 callee로 써도 `new MemberExpression` 문법이 깨지지 않으면 벗긴다.
-    // newCalleeNeedsParens가 이미 call-chain 안전성을 판정하므로 재사용.
-    if (self.options.minify_syntax) {
-        while (true) {
-            const cn = self.ast.getNode(callee);
-            if (cn.tag != .parenthesized_expression) break;
-            const inner = cn.data.unary.operand;
-            if (newCalleeNeedsParens(self, inner)) break;
-            callee = inner;
-        }
-    }
-    const needs_parens = newCalleeNeedsParens(self, callee);
+    // callee 의 군더더기 괄호(`new (a)()`)는 emitParen 투명화가 제거하고, callee 안에
+    // call/binary/conditional/sequence 등이 섞이면 precedence(.new + forbid_call)가
+    // 괄호를 재유도한다. precedence 가 못 잡는 건 rename→call 체인(식별자)뿐이라 그것만 ad-hoc.
+    const needs_parens = newCalleeNeedsRenameParens(self, callee);
     if (needs_parens) try self.writeByte('(');
-    // callee level = .new + forbid_call(set) — `new (foo())` 보존. ad-hoc 괄호는 PR6 에서
-    // precedence 로 대체될 때까지 유지(byte-identical).
-    try self.emitExpr(callee, Level.new, .{ .forbid_call = true });
+    // callee = .new + forbid_call(set): `new (foo())` 보존. `undefined`→`void 0`
+    // peephole 슬롯이라 emitNodeMaybeUndefParen 경유(`new void 0`→`new void(0)` 오파싱 방지).
+    try emitNodeMaybeUndefParen(self, callee, Level.new, .{ .forbid_call = true });
     if (needs_parens) try self.writeByte(')');
     try self.writeByte('(');
     try self.emitExpressionNodeList(args_start, args_len, self.listSep());

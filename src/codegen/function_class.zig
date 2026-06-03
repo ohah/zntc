@@ -6,6 +6,7 @@ const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const debug_metadata = @import("debug_metadata.zig");
 const statement_emit = @import("statements.zig");
+const call_emit = @import("calls.zig");
 
 fn emitNestedExecutionBody(self: anytype, body: NodeIndex) !void {
     const saved_for_init = self.in_for_init;
@@ -77,8 +78,17 @@ pub fn emitTaggedTemplate(self: anytype, node: Node) !void {
         const is_pure = (flags & TaggedTemplateFlags.is_pure) != 0;
         if (is_pure and !self.options.minify_whitespace) try self.write("/* @__PURE__ */ ");
     }
-    // tag 는 .postfix (esbuild ETemplate tag = LPostfix; optional-chain tag 강제괄호는 PR6 wrap).
-    try self.emitExpr(@enumFromInt(extras[e]), .postfix, .{});
+    // tag 는 .postfix (esbuild ETemplate tag = LPostfix). 단 tag 가 optional chain 이면
+    // ECMAScript 상 tagged template tag 로 불가(`a?.b`x`` = SyntaxError) → 괄호로 감싼다
+    // (esbuild `IsOptionalChain(tag)` 분기). 투명 paren 이 사라져도 체인이 끊긴 채 보존된다.
+    const tag: NodeIndex = @enumFromInt(extras[e]);
+    if (call_emit.isOptionalChainExpr(self, tag)) {
+        try self.writeByte('(');
+        try self.emitExpr(tag, .lowest, .{});
+        try self.writeByte(')');
+    } else {
+        try self.emitExpr(tag, .postfix, .{});
+    }
     try self.emitNode(@enumFromInt(extras[e + 1]));
 }
 
@@ -186,14 +196,26 @@ pub fn emitArrow(self: anytype, node: Node) !void {
     const is_block_body = !body.isNone() and self.ast.getNode(body).tag == .block_statement;
     if (!is_block_body) try self.writeSpace();
 
-    // expression body 의 leftmost token 이 `{` 면 paren wrap (#2964): constant
-    // inline 으로 \`x => ({obj})[x]\` 가 \`x => {obj}[x]\` 로 변환되면 \`{\` 가
-    // block body 로 해석되어 SyntaxError. object_expression 이 leftmost 인 모든
-    // expression (member/binary/conditional 의 left chain) 을 검사.
-    const needs_paren = !is_block_body and !body.isNone() and expressionStartsWithBrace(self, body);
-    if (needs_paren) try self.writeByte('(');
-    try emitNestedExecutionBody(self, body);
-    if (needs_paren) try self.writeByte(')');
+    // arrow expression body: leftmost token 이 `{`(object literal)이면 block body 로
+    // 오파싱되는 것을 막아야 한다 (`x => ({obj})`). arrow_expr_start 를 body 출력 직전
+    // 위치로 마킹하면, leftmost object literal 이 그 위치에서 EObject wrap(exprNeedsParens)
+    // 으로 괄호를 친다 — member/binary/conditional left-chain 을 타고 내려간 object 도
+    // 그 사이 아무것도 안 써서 자동 커버 (esbuild EArrow: `p.arrowExprStart = len(p.js)`).
+    // body level = .comma (esbuild EArrow body = LComma).
+    const saved_for_init = self.in_for_init;
+    const saved_skip_var_init = self.skip_var_init;
+    self.in_for_init = false;
+    self.skip_var_init = false;
+    defer {
+        self.in_for_init = saved_for_init;
+        self.skip_var_init = saved_skip_var_init;
+    }
+    if (is_block_body or body.isNone()) {
+        try self.emitNode(body);
+    } else {
+        self.arrow_expr_start = self.buf.items.len;
+        try self.emitExpr(body, .comma, .{});
+    }
 }
 
 /// 파라미터 노드가 단순 식별자 1개(이름만 출력) 인지 — `binding_identifier` 또는
@@ -220,34 +242,8 @@ fn arrowParamsOmittable(self: anytype, params_idx: NodeIndex) bool {
     return isPlainIdentifierParam(self.ast.getNode(self.ast.readExtraNode(elem.data.extra, FP.pattern)).tag);
 }
 
-fn expressionStartsWithBrace(self: anytype, node_idx: ast_mod.NodeIndex) bool {
-    return expressionStartsWithBraceDepth(self, node_idx, 0);
-}
-
-fn expressionStartsWithBraceDepth(self: anytype, node_idx: ast_mod.NodeIndex, depth: u32) bool {
-    if (depth >= 32) return false;
-    if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) return false;
-    const n = self.ast.getNode(node_idx);
-    return switch (n.tag) {
-        .object_expression => true,
-        // member: extra = [object(0), property(1), flags(2)]
-        .static_member_expression, .computed_member_expression, .private_field_expression => blk: {
-            const ex = n.data.extra;
-            if (ex >= self.ast.extra_data.items.len) break :blk false;
-            const obj_idx: ast_mod.NodeIndex = @enumFromInt(self.ast.extra_data.items[ex]);
-            break :blk expressionStartsWithBraceDepth(self, obj_idx, depth + 1);
-        },
-        .binary_expression, .logical_expression, .assignment_expression => expressionStartsWithBraceDepth(self, n.data.binary.left, depth + 1),
-        .conditional_expression => expressionStartsWithBraceDepth(self, n.data.ternary.a, depth + 1),
-        .sequence_expression => blk: {
-            const list = n.data.list;
-            const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
-            if (indices.len == 0) break :blk false;
-            break :blk expressionStartsWithBraceDepth(self, @enumFromInt(indices[0]), depth + 1);
-        },
-        else => false,
-    };
-}
+// (expressionStartsWithBrace 제거: arrow expression body 의 `{` 모호성은 이제
+//  arrow_expr_start 마킹 + EObject wrap(precedence)이 처리한다 — #4042 PR7.)
 
 /// class: extra = [name, super, body, type_params, impl_start, impl_len, deco_start, deco_len]
 pub fn emitClass(self: anytype, node: Node) !void {

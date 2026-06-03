@@ -17,7 +17,9 @@ pub fn emitAssignmentPattern(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
     try self.emitNode(node.data.binary.left);
     try self.writeByte('=');
-    try self.emitNode(node.data.binary.right);
+    // default value level = .comma: 최상위 sequence(`[x=(a,b)]`)가 콤마 구분자와 섞이지
+    // 않게 괄호로 감싼다 (esbuild binding default = LComma).
+    try self.emitExpr(node.data.binary.right, .comma, .{});
 }
 
 pub fn emitBindingProperty(self: anytype, node: Node) !void {
@@ -147,6 +149,8 @@ pub fn emitVariableDeclarator(self: anytype, node: Node) !void {
         try writeSpace(self);
         try self.writeByte('=');
         try writeSpace(self);
+        // init level = .comma (esbuild SLocal declarator value = LComma): 최상위 sequence
+        // (`let x=(a,b)`)가 괄호로 감싸져 declarator 구분 콤마와 섞이지 않게 한다.
         // contextual name: binding_identifier = function/arrow/class → 변수명을 이름으로
         if (self.fn_map_builder != null and self.isFunctionLike(init_val)) {
             const saved = self.pending_fn_name;
@@ -155,9 +159,9 @@ pub fn emitVariableDeclarator(self: anytype, node: Node) !void {
                 if (self.pending_fn_name) |s| self.allocator.free(s);
                 self.pending_fn_name = saved;
             }
-            try self.emitNode(init_val);
+            try self.emitExpr(init_val, .comma, .{});
         } else {
-            try self.emitNode(init_val);
+            try self.emitExpr(init_val, .comma, .{});
         }
     }
 }
@@ -174,6 +178,8 @@ pub fn emitFormalParam(self: anytype, node: Node) !void {
     try self.emitNode(pattern);
     if (!default_val.isNone()) {
         try self.writeByte('=');
-        try self.emitNode(default_val);
+        // default value level = .comma: 최상위 sequence(`f(x=(a,b))`)가 파라미터 구분
+        // 콤마와 섞이지 않게 괄호로 감싼다 (esbuild fn arg default = LComma).
+        try self.emitExpr(default_val, .comma, .{});
     }
 }

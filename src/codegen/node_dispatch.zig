@@ -124,8 +124,18 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
                 try self.writeNodeSpan(node);
             }
         },
+        .numeric_literal => {
+            try self.addSourceMapping(node.span);
+            try self.writeNodeSpan(node);
+            // 정수 형태(`42`)면 바로 뒤 `.` 가 소수점으로 오파싱됨 → member 의 `.` 가
+            // 공백을 끼우도록 위치 마킹 (`42 .toString()`). `.`/`e`/`x`/`b`/`o` 가 있는
+            // float/hex/exp/radix(`1.5`/`0xff`/`1e3`)는 `.` 가 멤버로 안전 → 마킹 안 함.
+            // esbuild needSpaceBeforeDot (정수만). bigint(`42n`)는 별도 노드라 제외.
+            if (numericIsPlainInteger(self.ast.getText(node.span))) {
+                self.need_space_before_dot = self.buf.items.len;
+            }
+        },
         .null_literal,
-        .numeric_literal,
         .bigint_literal,
         .regexp_literal,
         => {
@@ -261,7 +271,7 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
         .assignment_expression => try expression_emit.emitAssignment(self, node, level, flags),
         .conditional_expression => try expression_emit.emitConditional(self, node, level, flags),
         .sequence_expression => try expression_emit.emitSequence(self, node),
-        .parenthesized_expression => try expression_emit.emitParen(self, node),
+        .parenthesized_expression => try expression_emit.emitParen(self, node, level, flags),
         .spread_element => try expression_emit.emitSpread(self, node, level, flags),
         .await_expression => try expression_emit.emitAwait(self, node, level, flags),
         .yield_expression => try expression_emit.emitYield(self, node, level, flags),
@@ -385,14 +395,18 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
     if (wrap) try self.writeByte(')');
 }
 
-/// 이 expression 노드가 부모가 요구한 `level` 에서 괄호가 필요한지 (esbuild
+/// 이 expression 노드가 부모가 요구한 `level`/`flags` 에서 괄호가 필요한지 (esbuild
 /// `printExpr` 진입부의 `wrap := level >= entry.Level`). wrap 을 emitExpr 한 곳에
-/// 모으기 위한 술어.
+/// 모아, emitter 내부 early-return 과 무관하게 정확히 여닫는다.
 ///
-/// PR6a 범위: 연산자(binary/unary/update/conditional/assignment/sequence/yield/
-/// await)만. member/call/new 의 precedence·optional-chain 끊기 wrap 과 primary 의
-/// statement-start wrap 은 ad-hoc 괄호(newCalleeNeedsParens/`(void 0)`) 제거 및
-/// emitParen 투명화와 함께 PR6b 에서 켠다 (지금 켜면 ad-hoc 과 이중괄호).
+/// 전 표현식 커버: 연산자(unary/update/binary/conditional/assignment/sequence/yield/
+/// await) + statement-start primary(object/function/class/destructuring) + member/
+/// call/new/import optional-chain·precedence wrap + arrow. precedence 로 표현 불가한
+/// 잔여 ad-hoc 은 newCalleeNeedsRenameParens(rename→call 체인)·emitNodeMaybeUndefParen
+/// (`void 0` peephole)·emitStaticMember 의 ns 미존재 `(void 0)` 뿐.
+///
+/// 주의 — identifier_reference 처럼 dispatch case 안에 early-return 이 있는 노드는
+/// 여기서 wrap 을 켜면 닫는 `)` 가 누락된다(전부 별도 fn 으로 dispatch 되는 노드만 안전).
 fn exprNeedsParens(self: anytype, node: ast_mod.Node, level: Level, flags: ExprFlags) bool {
     return switch (node.tag) {
         .unary_expression, .await_expression => level.gte(.prefix),
@@ -434,11 +448,61 @@ fn exprNeedsParens(self: anytype, node: ast_mod.Node, level: Level, flags: ExprF
         // 선언 노드(function_declaration/class_declaration)는 제외 — 그쪽은 마킹이
         // 안 걸리고, 걸려도 선언을 식으로 바꾸면 안 된다. esbuild EFunction/EClass wrap.
         .function_expression, .function, .class_expression => self.atStmtOrExportDefaultStart(),
-        // member/call/new optical-chain·precedence wrap 은 PR7(이 PR) 후속 커밋에서.
+        // arrow 는 .assign 미만에서만 괄호 없이 올 수 있다 (esbuild EArrow:
+        // `level >= LAssign`). `new (()=>{})()`, `(()=>{}).x`, `a ? ()=>b : c` 등.
+        .arrow_function_expression => level.gte(.assign),
+        // member optional-chain 끊기: 이 멤버가 체인 내부(Start=`?.` 또는 Continue=체인 안
+        // `.`)이고 부모가 non-optional 이면 괄호로 끊어 보존 (`(a?.b).c`). `a?.b.c` 의 `.c`
+        // 는 Continue 라 끊지 않는다. 그 외 멤버는 precedence 최고(member)라 wrap 없음 (esbuild EDot/EIndex).
+        .static_member_expression, .computed_member_expression, .private_field_expression => blk: {
+            if (!flags.has_non_optional_chain_parent) break :blk false;
+            const e = node.data.extra;
+            if (!self.ast.hasExtra(e, 2)) break :blk false;
+            const member_flags = self.ast.readExtra(e, 2);
+            // self 가 체인 내부(Start=`?.` 또는 Continue=object 가 체인)이고 부모가 None 이면 끊는다.
+            const self_in_chain = (member_flags & ast_mod.MemberFlags.optional_chain) != 0 or
+                call_emit.objectContinuesOptionalChain(self, self.ast.readExtraNode(e, 0));
+            break :blk self_in_chain;
+        },
+        // call wrap = level>=new(즉 new 의 callee) | forbid_call | optional-chain 끊기
+        // | pure-comment at postfix (esbuild ECall). `new (foo())`, `(a?.())()` 등.
+        .call_expression => blk: {
+            const e = node.data.extra;
+            if (!self.ast.hasExtra(e, 3)) break :blk false;
+            const call_flags = self.ast.readExtra(e, 3);
+            const is_pure = (call_flags & ast_mod.CallFlags.is_pure) != 0;
+            const chain_break = flags.has_non_optional_chain_parent and
+                ((call_flags & ast_mod.CallFlags.optional_chain) != 0 or
+                    call_emit.objectContinuesOptionalChain(self, self.ast.readExtraNode(e, 0)));
+            break :blk level.gte(.new) or flags.forbid_call or chain_break or
+                (is_pure and !self.options.minify_whitespace and level.gte(.postfix));
+        },
+        // new wrap = level>=call (member/call 의 타겟) | pure-comment at postfix
+        // (esbuild ENew). `(new X).y`, `(new X)()` 처럼 뒤에 `.`/`()` 가 붙는 경우.
+        .new_expression => blk: {
+            const e = node.data.extra;
+            if (!self.ast.hasExtra(e, 3)) break :blk false;
+            const new_flags = self.ast.readExtra(e, 3);
+            const is_pure = (new_flags & ast_mod.CallFlags.is_pure) != 0;
+            break :blk level.gte(.call) or
+                (is_pure and !self.options.minify_whitespace and level.gte(.postfix));
+        },
+        // import() call (esbuild EImportCall): call 과 동일 (level>=new | forbid_call).
+        .import_expression => level.gte(.new) or flags.forbid_call,
         // (for-of init `let`/`async` 식별자 wrap 은 identifier_reference 의 inline
         //  early-return 들과 충돌하므로 중앙 wrap 으로 처리하지 않는다.)
         else => false,
     };
+}
+
+/// numeric literal 텍스트가 정수 형태(ASCII 숫자만)인지 — 바로 뒤 `.` 가 소수점으로
+/// 오파싱되는 형태. `1.5`/`0xff`/`1e3`/`0b1`/`0o7`/`42n` 등은 false(그 뒤 `.` 안전).
+fn numericIsPlainInteger(text: []const u8) bool {
+    if (text.len == 0) return false;
+    for (text) |c| {
+        if (c < '0' or c > '9') return false;
+    }
+    return true;
 }
 
 /// 할당식의 좌변(lvalue 타겟)이 object destructuring 패턴인지. `({a}=b)` 처럼

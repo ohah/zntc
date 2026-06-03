@@ -95,6 +95,11 @@ pub const Codegen = struct {
     export_default_start: usize = std.math.maxInt(usize),
     arrow_expr_start: usize = std.math.maxInt(usize),
     for_of_init_start: usize = std.math.maxInt(usize),
+    /// 직전에 출력한 numeric literal 이 정수 형태(`42`)라 바로 뒤 `.` 가 소수점으로
+    /// 오파싱될 수 있는 위치. emit 직후 `buf.items.len` 으로 마킹하고, static member
+    /// 의 `.` emit 직전 위치가 일치하면 공백을 끼운다(`42 .toString()`). esbuild
+    /// `needSpaceBeforeDot`. `maxInt` = 미마킹(절대 매치 안 됨).
+    need_space_before_dot: usize = std.math.maxInt(usize),
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) Codegen {
         return initWithOptions(allocator, ast, .{});
     }

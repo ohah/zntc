@@ -275,7 +275,7 @@ test "minify_whitespace: return + paren expression — space 제거" {
     try expectMinifyFull(
         \\function f() { return (a + b); }
     ,
-        \\function f(){return(a+b)}
+        \\function f(){return a+b}
     );
 }
 
@@ -310,7 +310,7 @@ test "minify_whitespace: return + binary 의 left=paren — recursive 검출" {
     try expectMinifyFull(
         \\function f(t, x) { return (1 - t) * x; }
     ,
-        \\function f(t,x){return(1-t)*x}
+        \\function f(t,x){return (1-t)*x}
     );
 }
 
@@ -334,7 +334,7 @@ test "minify_whitespace: throw + paren — 공백 제거" {
     try expectMinifyFull(
         \\function f() { throw (a + b); }
     ,
-        \\function f(){throw(a+b)}
+        \\function f(){throw a+b}
     );
 }
 
@@ -637,14 +637,14 @@ test "minify: literal === literal still folds" {
 // ================================================================
 
 test "minify: comma operator with literal lhs" {
-    try expectMinify("const x = (0, foo);", "const x = (foo);");
+    try expectMinify("const x = (0, foo);", "const x = foo;");
 }
 
 test "minify: comma operator with string lhs" {
     try expectMinify(
         \\const x = ("unused", bar);
     ,
-        "const x = (bar);",
+        "const x = bar;",
     );
 }
 
@@ -653,7 +653,7 @@ test "minify: comma operator with non-literal lhs preserved" {
 }
 
 test "minify: comma operator with 3+ literal items simplified" {
-    try expectMinify("const x = (0, 1, foo);", "const x = (foo);");
+    try expectMinify("const x = (0, 1, foo);", "const x = foo;");
 }
 
 test "minify: comma operator mixed keeps non-literal" {
@@ -2109,7 +2109,7 @@ test "unused: (foo.bar)(); — call callee 자리 paren 은 minify 범위 밖" {
     // expression_statement 의 operand 자리 paren 만 대상 → 이 paren 은 그대로.
     try expectMinifyDead(
         "(foo.bar)();",
-        "function run() {\n\t(foo.bar)();\n}\nrun();",
+        "function run() {\n\tfoo.bar();\n}\nrun();",
     );
 }
 
@@ -2131,7 +2131,7 @@ test "unused: ({v} = o); — object destructuring assignment 은 paren 유지 ({
 test "unused: ([a] = arr); — array destructuring assignment 은 paren 유지" {
     try expectMinifyDead(
         "let a, arr = [1]; ([a] = arr); console.log(a);",
-        "function run() {\n\tlet a,arr = [1];\n\t([a] = arr);\n\tconsole.log(a);\n}\nrun();",
+        "function run() {\n\tlet a,arr = [1];\n\t[a] = arr;\n\tconsole.log(a);\n}\nrun();",
     );
 }
 
@@ -2506,7 +2506,7 @@ test "iife: returning call expression" {
 test "iife: returning object — paren-wrapped to keep statement-context safe" {
     try expectMinify(
         "const o = (() => { return { value: 3 }; })();",
-        "const o = ({ value: 3 });",
+        "const o = { value: 3 };",
     );
 }
 
@@ -2516,7 +2516,7 @@ test "iife: returning paren-wrapped object — paren preserved (codegen lifts la
     // simplification 이 별도로 lift 가능.
     try expectMinify(
         "const o = (() => ({ value: 3 }))();",
-        "const o = ({ value: 3 });",
+        "const o = { value: 3 };",
     );
 }
 
@@ -2567,7 +2567,7 @@ test "inline: precedence 보존 — chained binary inline" {
     // 정답: `((x+1)*2)-3`. node 실행: g(2) → 3.
     try expectMinifyDead(
         "function g(x) { const a = x+1; const b = a*2; const c = b-3; return c; } g(2);",
-        "function run() {\n\tfunction g(x) {\n\t\t;\n\t\t;\n\t\t;\n\t\treturn ((x + 1) * 2) - 3;\n\t}\n\tg(2);\n}\nrun();",
+        "function run() {\n\tfunction g(x) {\n\t\t;\n\t\t;\n\t\t;\n\t\treturn (x + 1) * 2 - 3;\n\t}\n\tg(2);\n}\nrun();",
     );
 }
 

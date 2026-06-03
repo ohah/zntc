@@ -1420,15 +1420,15 @@ test "Flow: trailing %checks 선언문 회귀 가드 (#3527)" {
 test "Flow: object type `proto` property modifier stripped" {
     var r = try e2eFlow(std.testing.allocator, "type T = { proto p: string }; let v: T = ({});");
     defer r.deinit();
-    try std.testing.expectEqualStrings("let v=({});", r.output);
+    try std.testing.expectEqualStrings("let v={};", r.output);
 }
 
 test "Flow: `proto` with variance + `proto` as key (회귀 가드)" {
     var r1 = try e2eFlow(std.testing.allocator, "type U = { proto +q: number }; let w: U = ({});");
     defer r1.deinit();
-    try std.testing.expectEqualStrings("let w=({});", r1.output);
+    try std.testing.expectEqualStrings("let w={};", r1.output);
     // `proto` 자체가 키인 경우는 modifier 아님 — 정상 strip 유지.
     var r2 = try e2eFlow(std.testing.allocator, "type P = { proto: string }; let z: P = ({});");
     defer r2.deinit();
-    try std.testing.expectEqualStrings("let z=({});", r2.output);
+    try std.testing.expectEqualStrings("let z={};", r2.output);
 }

@@ -960,7 +960,8 @@ test "Complex: destructuring imports used in complex expressions" {
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "const area = 200") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "2 * (30)") != null);
+    // 군더더기 괄호 제거(#4042): `2 * (30)` → `2 * 30` (동등). const-fold 후 단일 리터럴.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "2 * 30") != null);
 }
 
 // ============================================================
