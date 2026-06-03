@@ -229,14 +229,14 @@ f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 exports[`TSC: es6/templates taggedTemplateStringsWithManyCallAndMemberExpressions 1`] = `
 "// @target: es2015
 var f;
-var x = new (new (new f())())()\`abc\${0}def\`.member("hello")(42) === true;
+var x = new new new f()()()\`abc\${0}def\`.member("hello")(42) === true;
 "
 `;
 
 exports[`TSC: es6/templates taggedTemplateStringsWithManyCallAndMemberExpressionsES6 1`] = `
 "// @target: ES6
 var f;
-var x = new (new (new f())())()\`abc\${0}def\`.member("hello")(42) === true;
+var x = new new new f()()()\`abc\${0}def\`.member("hello")(42) === true;
 "
 `;
 
@@ -1171,13 +1171,13 @@ var x = new \`abc\${1}def\`();
 
 exports[`TSC: es6/templates templateStringInParentheses 1`] = `
 "// @target: es2015
-var x = (\`abc\${0}abc\`);
+var x = \`abc\${0}abc\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInParenthesesES6 1`] = `
 "// @target: ES6
-var x = (\`abc\${0}abc\`);
+var x = \`abc\${0}abc\`;
 "
 `;
 
@@ -1684,13 +1684,13 @@ var x = \`123\${\`456 \${" | "} 654\`}321 123\${\`456 \${" | "} 654\`}321\`;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedTypeAssertionOnAddition 1`] = `
 "// @target: es2015
-var x = \`abc\${(10 + 10)}def\`;
+var x = \`abc\${10 + 10}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedTypeAssertionOnAdditionES6 1`] = `
 "// @target: ES6
-var x = \`abc\${(10 + 10)}def\`;
+var x = \`abc\${10 + 10}def\`;
 "
 `;
 

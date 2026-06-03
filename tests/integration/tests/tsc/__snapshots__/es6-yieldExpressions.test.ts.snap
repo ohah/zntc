@@ -603,7 +603,7 @@ function* g() {
 			}
 			static {
 				const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
-				_m_decorators = [(yield "")];
+				_m_decorators = [yield ""];
 				__esDecorate(this, null, _m_decorators, { kind: "method", name: "m", static: false, private: false, access: { has: (obj) => "m" in obj, get: (obj) => obj.m }, metadata: _metadata }, null, _instanceExtraInitializers);
 				if (_metadata) {
 					Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
@@ -681,7 +681,7 @@ var __propKey = function(x) {
 function* g() {
 	let C = (() => {
 		let _classThis;
-		let _classDecorators = [(yield 0)];
+		let _classDecorators = [yield 0];
 		let _classDescriptor;
 		let _classExtraInitializers = [];
 		var C = class {
@@ -798,7 +798,7 @@ exports[`TSC: es6/yieldExpressions generatorTypeCheck9 1`] = `
 
 exports[`TSC: es6/yieldExpressions YieldExpression10_es6 1`] = `
 "var v = { *foo() {
-	yield (foo);
+	yield foo;
 } };
 "
 `;
@@ -806,7 +806,7 @@ exports[`TSC: es6/yieldExpressions YieldExpression10_es6 1`] = `
 exports[`TSC: es6/yieldExpressions YieldExpression11_es6 1`] = `
 "class C {
 	*foo() {
-		yield (foo);
+		yield foo;
 	}
 }
 "
@@ -823,7 +823,7 @@ exports[`TSC: es6/yieldExpressions YieldExpression19_es6 1`] = `
 "function* foo() {
 	function bar() {
 		function* quux() {
-			yield (foo);
+			yield foo;
 		}
 	}
 }
@@ -869,7 +869,7 @@ exports[`TSC: es6/yieldExpressions YieldExpression7_es6 1`] = `
 
 exports[`TSC: es6/yieldExpressions YieldExpression9_es6 1`] = `
 "var v = function*() {
-	yield (foo);
+	yield foo;
 };
 "
 `;

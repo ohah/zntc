@@ -153,7 +153,7 @@ function f19() {
 	[a, b] = [b, a];
 	({ a, b } = { b, a });
 	[[a, b]=[1, 2]] = [[2, 3]];
-	var x = ([a, b] = [1, 2]);
+	var x = [a, b] = [1, 2];
 }
 function f20(v) {
 	var x;
@@ -491,14 +491,14 @@ function f2(obj) {
 	let a1 = obj[1];
 	// string | null
 	let [b0, b1] = obj;
-	([a0, a1] = obj);
+	[a0, a1] = obj;
 	if (obj[0] && obj[1]) {
 		let c0 = obj[0];
 		// number
 		let c1 = obj[1];
 		// string
 		let [d0, d1] = obj;
-		([c0, c1] = obj);
+		[c0, c1] = obj;
 	}
 }
 function f3(obj) {
@@ -641,7 +641,7 @@ exports[`TSC: es6/destructuring destructuringObjectBindingPatternAndAssignment5 
 "function a() {
 	let x;
 	let y;
-	({ x, ...y } = ({}));
+	({ x, ...y } = {});
 }
 "
 `;
@@ -1259,7 +1259,7 @@ exports[`TSC: es6/destructuring destructuringParameterProperties2 1`] = `
 class C1 {
 	constructor(k,[a, b, c]) {
 		this.k = k;
-		if ((b === undefined && c === undefined) || (this.b === undefined && this.c === undefined)) {
+		if (b === undefined && c === undefined || this.b === undefined && this.c === undefined) {
 			this.a = a || k;
 		}
 	}
@@ -1287,7 +1287,7 @@ exports[`TSC: es6/destructuring destructuringParameterProperties3 1`] = `
 class C1 {
 	constructor(k,[a, b, c]) {
 		this.k = k;
-		if ((b === undefined && c === undefined) || (this.b === undefined && this.c === undefined)) {
+		if (b === undefined && c === undefined || this.b === undefined && this.c === undefined) {
 			this.a = a || k;
 		}
 	}
@@ -1317,7 +1317,7 @@ exports[`TSC: es6/destructuring destructuringParameterProperties4 1`] = `
 class C1 {
 	constructor(k,[a, b, c]) {
 		this.k = k;
-		if ((b === undefined && c === undefined) || (this.b === undefined && this.c === undefined)) {
+		if (b === undefined && c === undefined || this.b === undefined && this.c === undefined) {
 			this.a = a || k;
 		}
 	}
@@ -1728,7 +1728,7 @@ exports[`TSC: es6/destructuring emptyArrayBindingPatternParameter04 1`] = `
 exports[`TSC: es6/destructuring emptyAssignmentPatterns01_ES5 1`] = `
 "var a;
 ({} = a);
-([] = a);
+[] = a;
 var [] = [1, 2];
 "
 `;
@@ -1736,14 +1736,14 @@ var [] = [1, 2];
 exports[`TSC: es6/destructuring emptyAssignmentPatterns01_ES5iterable 1`] = `
 "var a;
 ({} = a);
-([] = a);
+[] = a;
 "
 `;
 
 exports[`TSC: es6/destructuring emptyAssignmentPatterns01_ES6 1`] = `
 "var a;
 ({} = a);
-([] = a);
+[] = a;
 "
 `;
 
@@ -1751,7 +1751,7 @@ exports[`TSC: es6/destructuring emptyAssignmentPatterns02_ES5 1`] = `
 "var a;
 let x,y,z,a1,a2,a3;
 ({} = { x, y, z } = a);
-([] = [a1, a2, a3] = a);
+[] = [a1, a2, a3] = a;
 "
 `;
 
@@ -1759,7 +1759,7 @@ exports[`TSC: es6/destructuring emptyAssignmentPatterns02_ES5iterable 1`] = `
 "var a;
 let x,y,z,a1,a2,a3;
 ({} = { x, y, z } = a);
-([] = [a1, a2, a3] = a);
+[] = [a1, a2, a3] = a;
 "
 `;
 
@@ -1767,28 +1767,28 @@ exports[`TSC: es6/destructuring emptyAssignmentPatterns02_ES6 1`] = `
 "var a;
 let x,y,z,a1,a2,a3;
 ({} = { x, y, z } = a);
-([] = [a1, a2, a3] = a);
+[] = [a1, a2, a3] = a;
 "
 `;
 
 exports[`TSC: es6/destructuring emptyAssignmentPatterns03_ES5 1`] = `
 "var a;
 ({} = {} = a);
-([] = [] = a);
+[] = [] = a;
 "
 `;
 
 exports[`TSC: es6/destructuring emptyAssignmentPatterns03_ES5iterable 1`] = `
 "var a;
 ({} = {} = a);
-([] = [] = a);
+[] = [] = a;
 "
 `;
 
 exports[`TSC: es6/destructuring emptyAssignmentPatterns03_ES6 1`] = `
 "var a;
 ({} = {} = a);
-([] = [] = a);
+[] = [] = a;
 "
 `;
 
@@ -1796,7 +1796,7 @@ exports[`TSC: es6/destructuring emptyAssignmentPatterns04_ES5 1`] = `
 "var a;
 let x,y,z,a1,a2,a3;
 ({ x, y, z } = {} = a);
-([a1, a2, a3] = [] = a);
+[a1, a2, a3] = [] = a;
 "
 `;
 
@@ -1804,7 +1804,7 @@ exports[`TSC: es6/destructuring emptyAssignmentPatterns04_ES5iterable 1`] = `
 "var a;
 let x,y,z,a1,a2,a3;
 ({ x, y, z } = {} = a);
-([a1, a2, a3] = [] = a);
+[a1, a2, a3] = [] = a;
 "
 `;
 
@@ -1812,7 +1812,7 @@ exports[`TSC: es6/destructuring emptyAssignmentPatterns04_ES6 1`] = `
 "var a;
 let x,y,z,a1,a2,a3;
 ({ x, y, z } = {} = a);
-([a1, a2, a3] = [] = a);
+[a1, a2, a3] = [] = a;
 "
 `;
 

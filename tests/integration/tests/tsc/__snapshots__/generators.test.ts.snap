@@ -120,9 +120,9 @@ function* g4() {
 	// ok, result is unused
 	noop(),yield,noop();
 	// ok, result is unused
-	(yield);
+	yield;
 	// ok, result is unused
-	(yield,noop()),noop();
+	yield,noop(),noop();
 	// ok, result is unused
 	for (yield; false; yield);
 	// ok, results are unused

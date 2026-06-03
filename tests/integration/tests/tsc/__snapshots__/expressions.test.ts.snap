@@ -285,12 +285,12 @@ var x3;
 x3.a = value;
 x3["a"] = value;
 // parentheses, the contained expression is reference
-(x1) = value;
+x1 = value;
 function fn2(x4) {
-	(x4) = value;
+	x4 = value;
 }
-(x3.a) = value;
-(x3["a"]) = value;
+x3.a = value;
+x3["a"] = value;
 "
 `;
 
@@ -495,16 +495,16 @@ x3.a += value;
 x3["a"] *= value;
 x3["a"] += value;
 // parentheses, the contained expression is reference
-(x1) *= value;
-(x1) += value;
+x1 *= value;
+x1 += value;
 function fn2(x4) {
-	(x4) *= value;
-	(x4) += value;
+	x4 *= value;
+	x4 += value;
 }
-(x3.a) *= value;
-(x3.a) += value;
-(x3["a"]) *= value;
-(x3["a"]) += value;
+x3.a *= value;
+x3.a += value;
+x3["a"] *= value;
+x3["a"] += value;
 "
 `;
 
@@ -6383,10 +6383,10 @@ var resultIsStringOrBoolean1 = condObject ? exprString1 : exprBoolean1;
 // union
 var resultIsAny2 = ((a) => a.length) ? exprAny1 : exprAny2;
 var resultIsBoolean2 = ((a) => a.length) ? exprBoolean1 : exprBoolean2;
-var resultIsNumber2 = ({}) ? exprNumber1 : exprNumber2;
-var resultIsString2 = ({ a: 1, b: "s" }) ? exprString1 : exprString2;
-var resultIsObject2 = ({ a: 1, b: "s" }) ? exprIsObject1 : exprIsObject2;
-var resultIsStringOrBoolean2 = ({ a: 1, b: "s" }) ? exprString1 : exprBoolean1;
+var resultIsNumber2 = {} ? exprNumber1 : exprNumber2;
+var resultIsString2 = { a: 1, b: "s" } ? exprString1 : exprString2;
+var resultIsObject2 = { a: 1, b: "s" } ? exprIsObject1 : exprIsObject2;
+var resultIsStringOrBoolean2 = { a: 1, b: "s" } ? exprString1 : exprBoolean1;
 // union
 var resultIsAny3 = foo() ? exprAny1 : exprAny2;
 var resultIsBoolean3 = new Date() ? exprBoolean1 : exprBoolean2;
@@ -8040,6 +8040,119 @@ var b;
 "
 `;
 
+exports[`TSC: expressions parenthesizedContexualTyping1 1`] = `
+"function fun(g,x) {
+	return g(x);
+}
+var a = fun((x) => x, 10);
+var b = fun(((x) => x), 10);
+var c = fun(((x) => x), 10);
+var d = fun(((x) => x), 10);
+var e = fun((x) => x, (x) => x, 10);
+var f = fun(((x) => x), ((x) => x), 10);
+var g = fun(((x) => x), ((x) => x), 10);
+var h = fun(((x) => x), ((x) => x), 10);
+// Ternaries in parens
+var i = fun(Math.random() < 0.5 ? (x) => x : (x) => undefined, 10);
+var j = fun(Math.random() < 0.5 ? ((x) => x) : ((x) => undefined), 10);
+var k = fun(Math.random() < 0.5 ? ((x) => x) : ((x) => undefined), (x) => x, 10);
+var l = fun(Math.random() < 0.5 ? ((x) => x) : ((x) => undefined), ((x) => x), 10);
+var lambda1 = (x) => x;
+var lambda2 = ((x) => x);
+var obj1 = { x: (x) => (x,undefined), y: (y) => (y,undefined) };
+var obj2 = { x: (x) => (x,undefined), y: (y) => (y,undefined) };
+"
+`;
+
+exports[`TSC: expressions parenthesizedContexualTyping2 1`] = `
+"// These tests ensure that in cases where it may *appear* that a value has a type,
+// they actually are properly being contextually typed. The way we test this is
+// that we invoke contextually typed arguments with type arguments.
+// Since 'any' cannot be invoked with type arguments, we should get errors
+// back if contextual typing is not taking effect.
+function fun(...rest) {
+	return undefined;
+}
+var a = fun((x) => {
+	x(undefined);
+	return x;
+}, 10);
+var b = fun(((x) => {
+	x(undefined);
+	return x;
+}), 10);
+var c = fun(((x) => {
+	x(undefined);
+	return x;
+}), 10);
+var d = fun(((x) => {
+	x(undefined);
+	return x;
+}), 10);
+var e = fun((x) => {
+	x(undefined);
+	return x;
+}, (x) => {
+	x(undefined);
+	return x;
+}, 10);
+var f = fun(((x) => {
+	x(undefined);
+	return x;
+}), ((x) => {
+	x(undefined);
+	return x;
+}), 10);
+var g = fun(((x) => {
+	x(undefined);
+	return x;
+}), ((x) => {
+	x(undefined);
+	return x;
+}), 10);
+var h = fun(((x) => {
+	x(undefined);
+	return x;
+}), ((x) => {
+	x(undefined);
+	return x;
+}), 10);
+// Ternaries in parens
+var i = fun(Math.random() < 0.5 ? (x) => {
+	x(undefined);
+	return x;
+} : (x) => undefined, 10);
+var j = fun(Math.random() < 0.5 ? ((x) => {
+	x(undefined);
+	return x;
+}) : ((x) => undefined), 10);
+var k = fun(Math.random() < 0.5 ? ((x) => {
+	x(undefined);
+	return x;
+}) : ((x) => undefined), (x) => {
+	x(undefined);
+	return x;
+}, 10);
+var l = fun(Math.random() < 0.5 ? ((x) => {
+	x(undefined);
+	return x;
+}) : ((x) => undefined), ((x) => {
+	x(undefined);
+	return x;
+}), 10);
+var lambda1 = (x) => {
+	x(undefined);
+	return x;
+};
+var lambda2 = ((x) => {
+	x(undefined);
+	return x;
+});
+var obj1 = { x: (x) => (x,undefined), y: (y) => (y,undefined) };
+var obj2 = { x: (x) => (x,undefined), y: (y) => (y,undefined) };
+"
+`;
+
 exports[`TSC: expressions parenthesizedContexualTyping3 1`] = `
 "// Contextual typing for parenthesized substitution expressions in tagged templates.
 /**
@@ -8050,12 +8163,12 @@ function tempFun(tempStrs,g,x) {
 }
 var a = tempFun\`\${(x) => x}  \${10}\`;
 var b = tempFun\`\${((x) => x)}  \${10}\`;
-var c = tempFun\`\${(((x) => x))} \${10}\`;
+var c = tempFun\`\${((x) => x)} \${10}\`;
 var d = tempFun\`\${(x) => x} \${(x) => x} \${10}\`;
 var e = tempFun\`\${(x) => x} \${((x) => x)} \${10}\`;
-var f = tempFun\`\${(x) => x} \${(((x) => x))} \${10}\`;
-var g = tempFun\`\${((x) => x)} \${((((x) => x)))} \${10}\`;
-var h = tempFun\`\${((x) => x)} \${((((x) => x)))} \${undefined}\`;
+var f = tempFun\`\${(x) => x} \${((x) => x)} \${10}\`;
+var g = tempFun\`\${((x) => x)} \${((x) => x)} \${10}\`;
+var h = tempFun\`\${((x) => x)} \${((x) => x)} \${undefined}\`;
 "
 `;
 
@@ -8319,12 +8432,12 @@ obj.foo(1, 2, ...a, "abc");
 obj.foo(1, 2, ...a).foo(1, 2, "abc");
 obj.foo(1, 2, ...a).foo(1, 2, ...a);
 obj.foo(1, 2, ...a).foo(1, 2, ...a, "abc");
-(obj.foo)(1, 2, "abc");
-(obj.foo)(1, 2, ...a);
-(obj.foo)(1, 2, ...a, "abc");
-((obj.foo)(1, 2, ...a).foo)(1, 2, "abc");
-((obj.foo)(1, 2, ...a).foo)(1, 2, ...a);
-((obj.foo)(1, 2, ...a).foo)(1, 2, ...a, "abc");
+obj.foo(1, 2, "abc");
+obj.foo(1, 2, ...a);
+obj.foo(1, 2, ...a, "abc");
+obj.foo(1, 2, ...a).foo(1, 2, "abc");
+obj.foo(1, 2, ...a).foo(1, 2, ...a);
+obj.foo(1, 2, ...a).foo(1, 2, ...a, "abc");
 xa[1].foo(1, 2, "abc");
 xa[1].foo(1, 2, ...a);
 xa[1].foo(1, 2, ...a, "abc");
@@ -8439,9 +8552,9 @@ foo(1, 2, ...a, "abc");
 obj.foo(1, 2, "abc");
 obj.foo(1, 2, ...a);
 obj.foo(1, 2, ...a, "abc");
-(obj.foo)(1, 2, "abc");
-(obj.foo)(1, 2, ...a);
-(obj.foo)(1, 2, ...a, "abc");
+obj.foo(1, 2, "abc");
+obj.foo(1, 2, ...a);
+obj.foo(1, 2, ...a, "abc");
 xa[1].foo(1, 2, "abc");
 xa[1].foo(1, 2, ...a);
 xa[1].foo(1, 2, ...a, "abc");
@@ -8511,7 +8624,7 @@ var A,B;
 f(g(7));
 f(g < A, B > 7);
 // Should error
-f(g < A, B > +(7));
+f(g < A, B > +7);
 // Should error
 "
 `;
@@ -8549,9 +8662,9 @@ new b.f(1, 2, "string");
 new b.f(1, 2, ...a);
 new b.f(1, 2, ...a, "string");
 // Parenthesised expression
-new (b.f)(1, 2, "string");
-new (b.f)(1, 2, ...a);
-new (b.f)(1, 2, ...a, "string");
+new b.f(1, 2, "string");
+new b.f(1, 2, ...a);
+new b.f(1, 2, ...a, "string");
 // Element access expression
 new d[1].f(1, 2, "string");
 new d[1].f(1, 2, ...a);
@@ -8569,9 +8682,9 @@ new c["a-b"](1, 2, "string");
 new c["a-b"](1, 2, ...a);
 new c["a-b"](1, 2, ...a, "string");
 // Parenthesised expression
-new (c["a-b"])(1, 2, "string");
-new (c["a-b"])(1, 2, ...a);
-new (c["a-b"])(1, 2, ...a, "string");
+new c["a-b"](1, 2, "string");
+new c["a-b"](1, 2, ...a);
+new c["a-b"](1, 2, ...a, "string");
 // Element access expression
 new g[1]["a-b"](1, 2, "string");
 new g[1]["a-b"](1, 2, ...a);
@@ -8620,9 +8733,9 @@ new b.f(1, 2, "string");
 new b.f(1, 2, ...a);
 new b.f(1, 2, ...a, "string");
 // Parenthesised expression
-new (b.f)(1, 2, "string");
-new (b.f)(1, 2, ...a);
-new (b.f)(1, 2, ...a, "string");
+new b.f(1, 2, "string");
+new b.f(1, 2, ...a);
+new b.f(1, 2, ...a, "string");
 // Element access expression
 new d[1].f(1, 2, "string");
 new d[1].f(1, 2, ...a);
@@ -8640,9 +8753,9 @@ new c["a-b"](1, 2, "string");
 new c["a-b"](1, 2, ...a);
 new c["a-b"](1, 2, ...a, "string");
 // Parenthesised expression
-new (c["a-b"])(1, 2, "string");
-new (c["a-b"])(1, 2, ...a);
-new (c["a-b"])(1, 2, ...a, "string");
+new c["a-b"](1, 2, "string");
+new c["a-b"](1, 2, ...a);
+new c["a-b"](1, 2, ...a, "string");
 // Element access expression
 new g[1]["a-b"](1, 2, "string");
 new g[1]["a-b"](1, 2, ...a);
@@ -8691,9 +8804,9 @@ new b.f(1, 2, "string");
 new b.f(1, 2, ...a);
 new b.f(1, 2, ...a, "string");
 // Parenthesised expression
-new (b.f)(1, 2, "string");
-new (b.f)(1, 2, ...a);
-new (b.f)(1, 2, ...a, "string");
+new b.f(1, 2, "string");
+new b.f(1, 2, ...a);
+new b.f(1, 2, ...a, "string");
 // Element access expression
 new d[1].f(1, 2, "string");
 new d[1].f(1, 2, ...a);
@@ -8711,9 +8824,9 @@ new c["a-b"](1, 2, "string");
 new c["a-b"](1, 2, ...a);
 new c["a-b"](1, 2, ...a, "string");
 // Parenthesised expression
-new (c["a-b"])(1, 2, "string");
-new (c["a-b"])(1, 2, ...a);
-new (c["a-b"])(1, 2, ...a, "string");
+new c["a-b"](1, 2, "string");
+new c["a-b"](1, 2, ...a);
+new c["a-b"](1, 2, ...a, "string");
 // Element access expression
 new g[1]["a-b"](1, 2, "string");
 new g[1]["a-b"](1, 2, ...a);
@@ -9492,9 +9605,9 @@ exports[`TSC: expressions contextuallyTypedIife 1`] = `
 })("lol");
 // Lots of Irritating Superfluous Parentheses
 (function(x) {
-}("!"));
-((((function(y) {
-}))))("-");
+})("!");
+(function(y) {
+})("-");
 // multiple arguments
 ((a, b, c) => {
 })("foo", 101, false);
@@ -9538,9 +9651,9 @@ exports[`TSC: expressions contextuallyTypedIifeStrict 1`] = `
 })("lol");
 // Lots of Irritating Superfluous Parentheses
 (function(x) {
-}("!"));
-((((function(y) {
-}))))("-");
+})("!");
+(function(y) {
+})("-");
 // multiple arguments
 ((a, b, c) => {
 })("foo", 101, false);
@@ -9680,7 +9793,7 @@ function fnVoid() {
 var t = new fnVoid();
 var t;
 // Chained new expressions
-var nested = new (new (new nestedCtor())())();
+var nested = new new new nestedCtor()()();
 var n = new nested();
 var n = new nested();
 "
@@ -9840,7 +9953,7 @@ exports[`TSC: expressions nullishCoalescingOperator6 1`] = `
 exports[`TSC: expressions nullishCoalescingOperator7 1`] = `
 "const foo1 = a ? 1 : 2;
 const foo2 = a ?? "foo" ? 1 : 2;
-const foo3 = a ?? "foo" ? (b ?? "bar") : (c ?? "baz");
+const foo3 = a ?? "foo" ? b ?? "bar" : c ?? "baz";
 function f() {
 	const foo4 = a ?? "foo" ? b ?? "bar" : c ?? "baz";
 }
@@ -10177,7 +10290,7 @@ class Derived extends Base {
 `;
 
 exports[`TSC: expressions parentheses 1`] = `
-"(o1)(o1 ?? 1);
+"o1(o1 ?? 1);
 (o2?.b)(o1 ?? 1);
 (o3?.b())(o1 ?? 1);
 (o4?.b().c)(o1 ?? 1);
@@ -10213,18 +10326,18 @@ exports[`TSC: expressions thisMethodCall 1`] = `
 
 exports[`TSC: expressions deleteChain 1`] = `
 "delete o1?.b;
-delete (o1?.b);
+delete o1?.b;
 delete o2?.b.c;
-delete (o2?.b.c);
+delete o2?.b.c;
 delete o3.b?.c;
-delete (o3.b?.c);
+delete o3.b?.c;
 delete o4.b?.c.d?.e;
-delete (o4.b?.c.d)?.e;
-delete (o4.b?.c.d?.e);
+delete o4.b?.c.d?.e;
+delete o4.b?.c.d?.e;
 delete o5.b?.().c.d?.e;
-delete (o5.b?.().c.d?.e);
+delete o5.b?.().c.d?.e;
 delete o6.b?.["c"].d?.["e"];
-delete (o6.b?.["c"].d?.["e"]);
+delete o6.b?.["c"].d?.["e"];
 "
 `;
 
@@ -11032,9 +11145,9 @@ let o9 = { x: 10, foo() {
 	this.x = 20;
 } };
 // Error
-let p1 = (10);
-let p2 = ((-10));
-let p3 = ([(10)]);
+let p1 = 10;
+let p2 = -10;
+let p3 = [10];
 let p4 = [[[[10]]]];
 let x1 = { x: 10, y: [20, 30], z: { a: { b: 42 } } };
 let q1 = 10;
@@ -11044,7 +11157,7 @@ let q4 = [1, 2, 3];
 let q5 = { x: 10, y: 20 };
 let e1 = v1;
 // Error
-let e2 = (true ? 1 : 0);
+let e2 = true ? 1 : 0;
 // Error
 let e3 = id(1);
 // Error
@@ -11491,17 +11604,17 @@ if (isFoo(value)) {
 
 exports[`TSC: expressions typeGuardNesting 1`] = `
 "let strOrBool;
-if ((typeof strOrBool === "boolean" && !strOrBool) || typeof strOrBool === "string") {
-	let label = (typeof strOrBool === "string") ? strOrBool : "string";
-	let bool = (typeof strOrBool === "boolean") ? strOrBool : false;
-	let label2 = (typeof strOrBool !== "boolean") ? strOrBool : "string";
-	let bool2 = (typeof strOrBool !== "string") ? strOrBool : false;
+if (typeof strOrBool === "boolean" && !strOrBool || typeof strOrBool === "string") {
+	let label = typeof strOrBool === "string" ? strOrBool : "string";
+	let bool = typeof strOrBool === "boolean" ? strOrBool : false;
+	let label2 = typeof strOrBool !== "boolean" ? strOrBool : "string";
+	let bool2 = typeof strOrBool !== "string" ? strOrBool : false;
 }
-if ((typeof strOrBool !== "string" && !strOrBool) || typeof strOrBool !== "boolean") {
-	let label = (typeof strOrBool === "string") ? strOrBool : "string";
-	let bool = (typeof strOrBool === "boolean") ? strOrBool : false;
-	let label2 = (typeof strOrBool !== "boolean") ? strOrBool : "string";
-	let bool2 = (typeof strOrBool !== "string") ? strOrBool : false;
+if (typeof strOrBool !== "string" && !strOrBool || typeof strOrBool !== "boolean") {
+	let label = typeof strOrBool === "string" ? strOrBool : "string";
+	let bool = typeof strOrBool === "boolean" ? strOrBool : false;
+	let label2 = typeof strOrBool !== "boolean" ? strOrBool : "string";
+	let bool2 = typeof strOrBool !== "string" ? strOrBool : false;
 }
 "
 `;
@@ -12515,7 +12628,7 @@ function positiveTestClassesWithOptionalProperties(x) {
 	}
 }
 function inParenthesizedExpression(x) {
-	if ("a" in (x)) {
+	if ("a" in x) {
 		let y = x.a;
 	} else {
 		let z = x.b;
@@ -12817,29 +12930,29 @@ function foo(x) {
 }
 // number
 function foo2(x) {
-	return typeof x === "string" ? ((x = "hello") && x) : // string
+	return typeof x === "string" ? (x = "hello") && x : // string
 	x;
 }
 // number
 function foo3(x) {
-	return typeof x === "string" ? ((x = 10) && x) : // number
+	return typeof x === "string" ? (x = 10) && x : // number
 	x;
 }
 // number
 function foo4(x) {
 	return typeof x === "string" ? x : // string
-	((x = 10) && x);
+	(x = 10) && x;
 }
 // number
 function foo5(x) {
 	return typeof x === "string" ? x : // string
-	((x = "hello") && x);
+	(x = "hello") && x;
 }
 // string
 function foo6(x) {
 	// Modify in both branches
-	return typeof x === "string" ? ((x = 10) && x) : // number
-	((x = "hello") && x);
+	return typeof x === "string" ? (x = 10) && x : // number
+	(x = "hello") && x;
 }
 // string
 function foo7(x) {
@@ -12850,15 +12963,15 @@ function foo7(x) {
 // boolean
 function foo8(x) {
 	var b;
-	return typeof x === "string" ? x === "hello" : ((b = x) && //  number | boolean
+	return typeof x === "string" ? x === "hello" : (b = x) && //  number | boolean
 	(typeof x === "boolean" ? x : // boolean
-	x == 10));
+	x == 10);
 }
 // boolean
 function foo9(x) {
 	var y = 10;
 	// usage of x or assignment to separate variable shouldn't cause narrowing of type to stop
-	return typeof x === "string" ? ((y = x.length) && x === "hello") : // boolean
+	return typeof x === "string" ? (y = x.length) && x === "hello" : // boolean
 	x === 10;
 }
 // boolean
@@ -12866,25 +12979,25 @@ function foo10(x) {
 	// Mixing typeguards
 	var b;
 	return typeof x === "string" ? x : // string
-	((b = x) && // x is number | boolean
-	typeof x === "number" && x.toString());
+	(b = x) && // x is number | boolean
+	typeof x === "number" && x.toString();
 }
 // x is number
 function foo11(x) {
 	// Mixing typeguards
 	var b;
 	return typeof x === "string" ? x : // string
-	((b = x) && // x is number | boolean
+	(b = x) && // x is number | boolean
 	typeof x === "number" && (x = 10) && // assignment to x
-	x);
+	x;
 }
 // x is number
 function foo12(x) {
 	// Mixing typeguards
 	var b;
-	return typeof x === "string" ? ((x = 10) && x.toString().length) : // number
-	((b = x) && // x is number | boolean
-	typeof x === "number" && x);
+	return typeof x === "string" ? (x = 10) && x.toString().length : // number
+	(b = x) && // x is number | boolean
+	typeof x === "number" && x;
 }
 // x is number
 "
@@ -13300,10 +13413,10 @@ function foo11(x) {
 		var y;
 		var b = x;
 		// number | boolean | string - because below we are changing value of x in if statement
-		return typeof x === "number" ? (// change value of x
-		x = 10 && x.toString()) : // number | boolean | string
-		(// do not change value
-		y = x && x.toString());
+		return typeof x === "number" ? // change value of x
+		x = 10 && x.toString() : // number | boolean | string
+		// do not change value
+		y = x && x.toString();
 	}
 }
 // number | boolean | string
@@ -13470,9 +13583,9 @@ function foo7(x) {
 	// Mixing typeguard narrowing
 	return typeof x !== "string" && ((z = x) && // number | boolean
 	(typeof x === "number" ? // change value of x
-	((x = 10) && x.toString()) : // x is number
+	(x = 10) && x.toString() : // x is number
 	// do not change value
-	((y = x) && x.toString())));
+	(y = x) && x.toString()));
 }
 // x is boolean
 "
@@ -13524,9 +13637,9 @@ function foo7(x) {
 	// Mixing typeguard narrowing
 	return typeof x === "string" || ((z = x) || // number | boolean
 	(typeof x === "number" ? // change value of x
-	((x = 10) && x.toString()) : // number | boolean | string
+	(x = 10) && x.toString() : // number | boolean | string
 	// do not change value
-	((y = x) && x.toString())));
+	(y = x) && x.toString()));
 }
 // number | boolean | string
 "
@@ -14215,7 +14328,7 @@ function fn6() {
 (() => ({ a: 1 }))();
 (() => obj1)();
 (() => ({}))();
-(() => (({})))();
+(() => ({}))();
 "
 `;
 
@@ -15739,201 +15852,88 @@ exports[`TSC: expressions assignmentToParenthesizedIdentifiers 1`] = `
 "var x;
 x = 3;
 // OK
-(x) = 3;
+x = 3;
 // OK
 x = "";
 // Error
-(x) = "";
+x = "";
 // Error
 var M;((M) => {})(M || (M = {}));
 M.y = 3;
 // OK
-(M).y = 3;
+M.y = 3;
 // OK
-(M.y) = 3;
+M.y = 3;
 // OK
 M.y = "";
 // Error
-(M).y = "";
+M.y = "";
 // Error
-(M.y) = "";
+M.y = "";
 // Error
 M = { y: 3 };
 // Error
-(M) = { y: 3 };
+M = { y: 3 };
 // Error
 var M2;((M2) => {let M3;((M3) => {})(M3 = M2.M3 || (M2.M3 = {}));M3 = { x: 3 };})(M2 || (M2 = {}));
 // Error
 M2.M3 = { x: 3 };
 // OK
-(M2).M3 = { x: 3 };
+M2.M3 = { x: 3 };
 // OK
-(M2.M3) = { x: 3 };
+M2.M3 = { x: 3 };
 // OK
 M2.M3 = { x: "" };
 // Error
-(M2).M3 = { x: "" };
+M2.M3 = { x: "" };
 // Error
-(M2.M3) = { x: "" };
+M2.M3 = { x: "" };
 // Error
 function fn() {
 }
 fn = () => 3;
 // Bug 823548: Should be error (fn is not a reference)
-(fn) = () => 3;
+fn = () => 3;
 // Should be error
 function fn2(x,y) {
 	x = 3;
-	(x) = 3;
+	x = 3;
 	// OK
 	x = "";
 	// Error
-	(x) = "";
+	x = "";
 	// Error
-	(y).t = 3;
+	y.t = 3;
 	// OK
-	(y.t) = 3;
+	y.t = 3;
 	// OK
-	(y).t = "";
+	y.t = "";
 	// Error
-	(y.t) = "";
+	y.t = "";
 	// Error
 	y["t"] = 3;
 	// OK
-	(y)["t"] = 3;
+	y["t"] = 3;
 	// OK
-	(y["t"]) = 3;
+	y["t"] = 3;
 	// OK
 	y["t"] = "";
 	// Error
-	(y)["t"] = "";
+	y["t"] = "";
 	// Error
-	(y["t"]) = "";
+	y["t"] = "";
 }
 // Error
 var E = /* @__PURE__ */ ((E) => {E[E["A"]=0]="A";return E;})(E || {});
 E = undefined;
 // Error
-(E) = undefined;
+E = undefined;
 // Error
 class C {
 }
 C = undefined;
 // Error
-(C) = undefined;
+C = undefined;
 // Error
-"
-`;
-
-exports[`TSC: expressions parenthesizedContexualTyping1 1`] = `
-"function fun(g,x) {
-	return g(x);
-}
-var a = fun((x) => x, 10);
-var b = fun(((x) => x), 10);
-var c = fun((((x) => x)), 10);
-var d = fun(((((x) => x))), 10);
-var e = fun((x) => x, (x) => x, 10);
-var f = fun(((x) => x), ((x) => x), 10);
-var g = fun((((x) => x)), (((x) => x)), 10);
-var h = fun(((((x) => x))), (((x) => x)), 10);
-// Ternaries in parens
-var i = fun((Math.random() < 0.5 ? (x) => x : (x) => undefined), 10);
-var j = fun((Math.random() < 0.5 ? ((x) => x) : ((x) => undefined)), 10);
-var k = fun((Math.random() < 0.5 ? ((x) => x) : ((x) => undefined)), (x) => x, 10);
-var l = fun(((Math.random() < 0.5 ? (((x) => x)) : (((x) => undefined)))), (((x) => x)), 10);
-var lambda1 = (x) => x;
-var lambda2 = ((x) => x);
-var obj1 = { x: (x) => (x,undefined), y: (y) => (y,undefined) };
-var obj2 = ({ x: (x) => (x,undefined), y: (y) => (y,undefined) });
-"
-`;
-
-exports[`TSC: expressions parenthesizedContexualTyping2 1`] = `
-"// These tests ensure that in cases where it may *appear* that a value has a type,
-// they actually are properly being contextually typed. The way we test this is
-// that we invoke contextually typed arguments with type arguments.
-// Since 'any' cannot be invoked with type arguments, we should get errors
-// back if contextual typing is not taking effect.
-function fun(...rest) {
-	return undefined;
-}
-var a = fun((x) => {
-	x(undefined);
-	return x;
-}, 10);
-var b = fun(((x) => {
-	x(undefined);
-	return x;
-}), 10);
-var c = fun((((x) => {
-	x(undefined);
-	return x;
-})), 10);
-var d = fun(((((x) => {
-	x(undefined);
-	return x;
-}))), 10);
-var e = fun((x) => {
-	x(undefined);
-	return x;
-}, (x) => {
-	x(undefined);
-	return x;
-}, 10);
-var f = fun(((x) => {
-	x(undefined);
-	return x;
-}), ((x) => {
-	x(undefined);
-	return x;
-}), 10);
-var g = fun((((x) => {
-	x(undefined);
-	return x;
-})), (((x) => {
-	x(undefined);
-	return x;
-})), 10);
-var h = fun(((((x) => {
-	x(undefined);
-	return x;
-}))), (((x) => {
-	x(undefined);
-	return x;
-})), 10);
-// Ternaries in parens
-var i = fun((Math.random() < 0.5 ? (x) => {
-	x(undefined);
-	return x;
-} : (x) => undefined), 10);
-var j = fun((Math.random() < 0.5 ? ((x) => {
-	x(undefined);
-	return x;
-}) : ((x) => undefined)), 10);
-var k = fun((Math.random() < 0.5 ? ((x) => {
-	x(undefined);
-	return x;
-}) : ((x) => undefined)), (x) => {
-	x(undefined);
-	return x;
-}, 10);
-var l = fun(((Math.random() < 0.5 ? (((x) => {
-	x(undefined);
-	return x;
-})) : (((x) => undefined)))), (((x) => {
-	x(undefined);
-	return x;
-})), 10);
-var lambda1 = (x) => {
-	x(undefined);
-	return x;
-};
-var lambda2 = ((x) => {
-	x(undefined);
-	return x;
-});
-var obj1 = { x: (x) => (x,undefined), y: (y) => (y,undefined) };
-var obj2 = ({ x: (x) => (x,undefined), y: (y) => (y,undefined) });
 "
 `;

@@ -143,13 +143,14 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       const clientTemp = output.match(/(_[a-z]+) = client;/)?.[1];
       expect(clientTemp).toBeDefined();
       const clientRead = output.indexOf(`${clientTemp} = client;`);
-      const andGuard = output.indexOf(`if (!(${clientTemp}))`, clientRead);
+      // #4042: 군더더기 괄호 제거 — `!(_a)` → `!_a` (단항 operand 가 식별자, 동등).
+      const andGuard = output.indexOf(`if (!${clientTemp})`, clientRead);
       const clientEnd = output.indexOf('client.end();');
       const skipOrMatch = output.match(/(_[a-z]+) = true;[\s\S]*?if \(\1\)[\s\S]*?skipOr\(\)/);
       const skipNullishMatch = output.match(
         /(_[a-z]+) = "value";[\s\S]*?if \(\1 != null\)[\s\S]*?skipNullish\(\)/,
       );
-      const conditionalGuard = output.indexOf('if (!(flag))');
+      const conditionalGuard = output.indexOf('if (!flag)');
       const thenBranch = output.indexOf('thenBranch()');
       const elseBranch = output.indexOf('elseBranch()');
 

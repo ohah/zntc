@@ -56,9 +56,9 @@ c.foo.bar().baz ??= result.foo.bar().baz;
 `;
 
 exports[`TSC: es2021 logicalAssignment3 1`] = `
-"(a.baz) &&= result.baz;
-(b.baz) ||= result.baz;
-(c.baz) ??= result.baz;
+"a.baz &&= result.baz;
+b.baz ||= result.baz;
+c.baz ??= result.baz;
 "
 `;
 
@@ -132,13 +132,13 @@ function bar3(f) {
 
 exports[`TSC: es2021 logicalAssignment6 1`] = `
 "function foo1(results,results1) {
-	(results ||= (results1 ||= [])).push(100);
+	(results ||= results1 ||= []).push(100);
 }
 function foo2(results,results1) {
-	(results ??= (results1 ??= [])).push(100);
+	(results ??= results1 ??= []).push(100);
 }
 function foo3(results,results1) {
-	(results &&= (results1 &&= [])).push(100);
+	(results &&= results1 &&= []).push(100);
 }
 "
 `;
