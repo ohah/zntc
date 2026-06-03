@@ -99,3 +99,33 @@ test "load-bearing: optional-chain 끊기 타입래퍼 통과 (a?.b as T).c" {
     // (a nullish 시 throw vs undefined). precedence 가 체인 끊기 괄호를 재유도.
     try expectParenSurvives(r.output, "(a?.b)");
 }
+
+test "load-bearing: new callee 가 optional chain new (a?.b)()" {
+    var r = try e2e(std.testing.allocator, "new (a?.b)();");
+    defer r.deinit();
+    // 괄호 유실 시 `new a?.b()` 는 SyntaxError(new 의 첫 `()` 가 optional chain 안으로
+    // 들어갈 수 없음). new 타겟에 has_non_optional_chain_parent set 으로 체인 끊기.
+    try expectParenSurvives(r.output, "(a?.b)");
+}
+
+test "load-bearing: 정수-점 numeric separator 100_000 .toString()" {
+    var r = try e2e(std.testing.allocator, "(100_000).toString();");
+    defer r.deinit();
+    // `100_000.toString` 은 `100_000.` 가 float 로 오파싱되어 invalid → 공백 보존
+    // (needSpaceBeforeDot, all-digit 만 보면 구분자 `_` 가 누락되던 회귀).
+    try expectParenSurvives(r.output, "100_000 .toString");
+}
+
+test "load-bearing: for-init top-level in 은 for-in 헤더 오파싱 방지 for((a in b);;)" {
+    var r = try e2e(std.testing.allocator, "for ((a in b);;) {}");
+    defer r.deinit();
+    // 괄호 유실 시 `for (a in b;;)` 는 for-in 헤더로 오파싱 → SyntaxError. forbid_in 시드.
+    try expectParenSurvives(r.output, "(a in b)");
+}
+
+test "load-bearing: assignment shorthand default sequence ({x=(a,b)}=o)" {
+    var r = try e2e(std.testing.allocator, "({x = (a, b)} = obj);");
+    defer r.deinit();
+    // 괄호 유실 시 `x=a,b` 는 default 가 `a` 로 바뀌고 `b` 가 별도 평가 → silent miscompile.
+    try expectParenSurvives(r.output, "(a,b)");
+}
