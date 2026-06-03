@@ -97,10 +97,7 @@ pub fn ES2015Template(comptime Transformer: type) type {
                     if (!visited.isNone()) {
                         // 보간 표현식이 + 연산자 right에 올 때 우선순위 문제 방지.
                         // 예: `${1+2}` → "" + (1 + 2), `${x ? "a" : "b"}` → "" + (x ? "a" : "b")
-                        if (needsParenForConcat(self, visited)) {
-                            const es_helpers = @import("es_helpers.zig");
-                            visited = try es_helpers.makeParenExpr(self, visited, span);
-                        }
+                        // (paren removed) emitParen 투명화 + precedence 재유도가 괄호 처리 (#4042 PR8)
                         result = try buildBinaryPlus(self, result, visited, span);
                     }
                 }
@@ -321,43 +318,10 @@ pub fn buildStringLiteral(self: anytype, text: []const u8) !NodeIndex {
     });
 }
 
-/// a + b binary expression을 만든다.
-/// 보간 표현식이 string concat (+) right operand에 올 때 괄호가 필요한지 판별.
-/// +보다 낮은 우선순위(conditional, assignment, comma 등)나
-/// 같은 우선순위(+, -)는 left-to-right 결합으로 의미가 달라지므로 괄호 필요.
-/// 리터럴, identifier, call, member 등 원자적 표현식은 괄호 불필요.
-fn needsParenForConcat(self: anytype, idx: NodeIndex) bool {
-    if (idx.isNone()) return false;
-    const node = self.ast.getNode(idx);
-    return switch (node.tag) {
-        // 괄호 불필요: 원자적 표현식
-        .identifier_reference,
-        .this_expression,
-        .numeric_literal,
-        .string_literal,
-        .boolean_literal,
-        .null_literal,
-        .bigint_literal,
-        .regexp_literal,
-        .template_literal,
-        .array_expression,
-        .object_expression,
-        .call_expression,
-        .new_expression,
-        .static_member_expression,
-        .computed_member_expression,
-        .parenthesized_expression,
-        .tagged_template_expression,
-        .unary_expression,
-        .update_expression,
-        .await_expression,
-        .private_field_expression,
-        => false,
-        // 그 외(binary, conditional, assignment, sequence, yield 등)는 괄호 필요
-        else => true,
-    };
-}
+// needsParenForConcat 제거: 보간 표현식 paren 은 emitParen 투명화 + precedence
+// 재유도가 처리한다 (#4042 PR8). 합성 paren wrapper 가 불필요해짐.
 
+/// a + b binary expression을 만든다.
 fn buildBinaryPlus(self: anytype, left: NodeIndex, right: NodeIndex, span: Span) !NodeIndex {
     return self.ast.addNode(.{
         .tag = .binary_expression,

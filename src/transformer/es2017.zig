@@ -169,7 +169,7 @@ pub fn ES2017(comptime Transformer: type) type {
         pub fn lowerAwaitExpression(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const new_operand = try self.visitNode(node.data.unary.operand);
             const yield_node = try es_helpers.makeYieldExpression(self, new_operand, node.span);
-            return es_helpers.makeParenExpr(self, yield_node, node.span);
+            return yield_node;
         }
 
         /// async function foo() { ... } → function foo() { return __async(function*() { ... }); }

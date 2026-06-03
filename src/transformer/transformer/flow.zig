@@ -382,12 +382,11 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
     });
 
     // (function(_m){...})(discriminant)
-    // function expression을 parenthesized로 감싸서 IIFE 형태로 만듦
-    const paren_fn = try es_helpers.makeParenExpr(self, fn_expr, span);
+    // function expression을 IIFE 형태로 호출 — emitCall이 callee를 자동으로 괄호 처리
     // call_expression extra: [callee, args_start, args_len, flags]
     const args_list = try self.ast.addNodeList(&.{new_discriminant});
     const call_extra = try self.ast.addExtras(&.{
-        @intFromEnum(paren_fn),
+        @intFromEnum(fn_expr),
         args_list.start,
         args_list.len,
         0, // flags

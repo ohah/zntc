@@ -272,16 +272,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 none,
             });
             const wrapper_fn = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
-            const paren = try es_helpers.makeParenExpr(self, wrapper_fn, span);
 
             // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
+            // IIFE callee paren 은 emitCall 자동 wrap 이 처리 (#4042 PR8)
             const iife_call = if (has_super and super_span != null) blk: {
                 const parent_arg = if (!super_expr_node.isNone())
                     super_expr_node // 표현식: 이미 visit된 AST 노드 (e.g. React.Component)
                 else
                     try self.makeIdentifierRefWithSymbol(super_span.?, super_idx); // 식별자
-                break :blk try es_helpers.makeCallExpr(self, paren, &.{parent_arg}, span);
-            } else try es_helpers.makeCallExpr(self, paren, &.{}, span);
+                break :blk try es_helpers.makeCallExpr(self, wrapper_fn, &.{parent_arg}, span);
+            } else try es_helpers.makeCallExpr(self, wrapper_fn, &.{}, span);
 
             // var ClassName = IIFE;
             const declarator = try es_helpers.makeDeclarator(self, new_name, iife_call, span);
@@ -529,16 +529,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const wrapper_params_node2 = try self.ast.addFormalParameters(wrapper_params, span);
             const wrapper_extra = try self.ast.addExtras(&.{ none, @intFromEnum(wrapper_params_node2), @intFromEnum(iife_body), 0, none });
             const wrapper_fn = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
-            const paren = try es_helpers.makeParenExpr(self, wrapper_fn, span);
 
             // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
+            // IIFE callee paren 은 emitCall 자동 wrap 이 처리 (#4042 PR8)
             return if (has_super and super_span != null) blk: {
                 const parent_arg = if (!expr_super_node.isNone())
                     expr_super_node
                 else
                     try self.makeIdentifierRefWithSymbol(super_span.?, super_idx);
-                break :blk try es_helpers.makeCallExpr(self, paren, &.{parent_arg}, span);
-            } else es_helpers.makeCallExpr(self, paren, &.{}, span);
+                break :blk try es_helpers.makeCallExpr(self, wrapper_fn, &.{parent_arg}, span);
+            } else es_helpers.makeCallExpr(self, wrapper_fn, &.{}, span);
         }
 
         // super() / super.property lowering — es2015_class/super_props.zig로 위임

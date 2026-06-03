@@ -105,9 +105,8 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             });
 
             // (_step = await _iter.next()).done
-            const paren_step = try es_helpers.makeParenExpr(self, step_assign, span);
             const done_prop = try es_helpers.makeIdentifierRef(self, "done");
-            const step_done = try es_helpers.makeStaticMember(self, paren_step, done_prop, span);
+            const step_done = try es_helpers.makeStaticMember(self, step_assign, done_prop, span);
 
             // !(...)
             const not_done = try es_helpers.makeUnaryNot(self, step_done, span);
@@ -236,7 +235,6 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .binary = .{ .left = ret_ref_assign, .right = iter_return, .flags = 0 } },
             });
-            const paren_ret_assign = try es_helpers.makeParenExpr(self, ret_assign, span);
 
             // (_step && !_step.done) && (_ret = _iter.return)
             const and2 = try self.ast.addNode(.{
@@ -244,7 +242,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .binary = .{
                     .left = and1,
-                    .right = paren_ret_assign,
+                    .right = ret_assign,
                     .flags = @intFromEnum(token_mod.Kind.amp2),
                 } },
             });

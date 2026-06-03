@@ -130,10 +130,9 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 .data = .{ .binary = .{ .left = step_ref_assign, .right = iter_next_call, .flags = 0 } },
             });
 
-            // (_e = _d.next()).done
-            const paren_step = try es_helpers.makeParenExpr(self, step_assign, span);
+            // (_e = _d.next()).done — paren 은 precedence 재유도가 처리 (#4042 PR8)
             const done_prop = try es_helpers.makeIdentifierRef(self, "done");
-            const step_done = try es_helpers.makeStaticMember(self, paren_step, done_prop, span);
+            const step_done = try es_helpers.makeStaticMember(self, step_assign, done_prop, span);
 
             // _a = (...).done
             const inc_ref_assign = try makeRefFromSpan(self, inc_span);
@@ -143,9 +142,8 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 .data = .{ .binary = .{ .left = inc_ref_assign, .right = step_done, .flags = 0 } },
             });
 
-            // !(_a = ...)
-            const paren_inc = try es_helpers.makeParenExpr(self, inc_assign, span);
-            const not_inc = try es_helpers.makeUnaryNot(self, paren_inc, span);
+            // !(_a = ...) — paren 은 precedence 재유도가 처리 (#4042 PR8)
+            const not_inc = try es_helpers.makeUnaryNot(self, inc_assign, span);
 
             // --- update: _a = true ---
             const inc_ref_update = try makeRefFromSpan(self, inc_span);

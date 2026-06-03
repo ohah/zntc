@@ -817,13 +817,11 @@ pub fn ES2022(comptime Transformer: type) type {
                 .data = .{ .extra = arrow_extra },
             });
 
-            // 괄호로 감싸기: (arrow)
-            const paren_arrow = try es_helpers.makeParenExpr(self, arrow, span);
-
             // call_expression: extra = [callee, args_start, args_len, flags]
+            // arrow 는 call-target(.postfix) 위치에서 codegen 이 자동 wrap 한다.
             const empty_args = try self.ast.addNodeList(&.{});
             const call = try self.ast.addExtras(&.{
-                @intFromEnum(paren_arrow),
+                @intFromEnum(arrow),
                 empty_args.start,
                 empty_args.len,
                 0, // flags
