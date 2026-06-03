@@ -57,7 +57,8 @@ pub fn emitTemplateLiteral(self: anytype, node: Node) !void {
         if (child_node.tag == .template_element) {
             try self.writeNodeSpan(child_node);
         } else {
-            try self.emitNode(child);
+            // `${}` substitution 은 괄호 안 → .lowest (esbuild ETemplate part = LLowest)
+            try self.emitExpr(child, .lowest, .{});
         }
     }
 }
@@ -76,7 +77,8 @@ pub fn emitTaggedTemplate(self: anytype, node: Node) !void {
         const is_pure = (flags & TaggedTemplateFlags.is_pure) != 0;
         if (is_pure and !self.options.minify_whitespace) try self.write("/* @__PURE__ */ ");
     }
-    try self.emitNode(@enumFromInt(extras[e]));
+    // tag 는 .postfix (esbuild ETemplate tag = LPostfix; optional-chain tag 강제괄호는 PR6 wrap).
+    try self.emitExpr(@enumFromInt(extras[e]), .postfix, .{});
     try self.emitNode(@enumFromInt(extras[e + 1]));
 }
 
