@@ -15,6 +15,7 @@ const binding_emit = @import("bindings.zig");
 const precedence = @import("precedence.zig");
 const Level = precedence.Level;
 const ExprFlags = precedence.ExprFlags;
+const Kind = @import("../lexer/token.zig").Kind;
 
 const Error = std.mem.Allocator.Error;
 
@@ -56,6 +57,13 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
     // TS/Flow type wrapper: operand 만 출력 (type 스트리핑, #3129 단일 source).
     // pre-visit body codegen 시 TS/Flow 노드가 남아있을 수 있어 명시 처리.
     if (ast_mod.Node.Tag.isTransparentTypeWrapper(node.tag)) return self.emitExpr(node.data.unary.operand, level, flags);
+
+    // precedence wrap: 자기 결합강도가 부모가 요구한 최소 level 이하면 괄호 (esbuild printExpr).
+    // wrap 을 emitExpr 한 곳에 집중해 emitter 내부 early-return 과 무관하게 정확히 닫는다.
+    // (PR6a: 연산자만. member/call/new wrap·emitParen 투명화·statement-start 는 ad-hoc 제거와
+    //  함께 PR6b. 소스 괄호는 paren 노드가 유지 → 합성 AST 에서만 괄호 추가.)
+    const wrap = exprNeedsParens(self, node, level, flags);
+    if (wrap) try self.writeByte('(');
 
     switch (node.tag) {
         .program => try statement_emit.emitProgram(self, node),
@@ -373,4 +381,49 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
             try self.writeNodeSpan(node);
         },
     }
+
+    if (wrap) try self.writeByte(')');
+}
+
+/// 이 expression 노드가 부모가 요구한 `level` 에서 괄호가 필요한지 (esbuild
+/// `printExpr` 진입부의 `wrap := level >= entry.Level`). wrap 을 emitExpr 한 곳에
+/// 모으기 위한 술어.
+///
+/// PR6a 범위: 연산자(binary/unary/update/conditional/assignment/sequence/yield/
+/// await)만. member/call/new 의 precedence·optional-chain 끊기 wrap 과 primary 의
+/// statement-start wrap 은 ad-hoc 괄호(newCalleeNeedsParens/`(void 0)`) 제거 및
+/// emitParen 투명화와 함께 PR6b 에서 켠다 (지금 켜면 ad-hoc 과 이중괄호).
+fn exprNeedsParens(self: anytype, node: ast_mod.Node, level: Level, flags: ExprFlags) bool {
+    return switch (node.tag) {
+        .unary_expression, .await_expression => level.gte(.prefix),
+        .update_expression => blk: {
+            const e = node.data.extra;
+            const extras = self.ast.extra_data.items;
+            if (e + 1 >= extras.len) break :blk false;
+            const is_postfix = (extras[e + 1] & ast_mod.UnaryFlags.postfix) != 0;
+            break :blk level.gte(if (is_postfix) Level.postfix else Level.prefix);
+        },
+        .binary_expression, .logical_expression => blk: {
+            const op: Kind = @enumFromInt(node.data.binary.flags);
+            const entry = precedence.binaryOpLevel(op) orelse break :blk false;
+            // logical 단락 폴드 시 right 가 logical 자리에 옴 → 자기(right) wrap 으로
+            // 위임하고 여기선 wrap 안 함(emitBinary 가 right 를 부모 level 로 투과).
+            if (node.tag == .logical_expression and self.options.linking_metadata != null) {
+                if (self.evalBooleanCondition(node.data.binary.left) != null) break :blk false;
+            }
+            break :blk level.gte(entry) or (op == .kw_in and flags.forbid_in);
+        },
+        .conditional_expression => blk: {
+            // conditional 폴드(상수 test) 시 분기가 그 자리 → 자기 wrap 으로 위임.
+            if (self.options.linking_metadata != null) {
+                if (self.evalBooleanCondition(node.data.ternary.a) != null) break :blk false;
+            }
+            break :blk level.gte(.conditional);
+        },
+        .assignment_expression => level.gte(.assign),
+        .sequence_expression => level.gte(.comma),
+        .yield_expression => level.gte(.assign),
+        // member/call/new + primary(object/array/function/class/literal/...) 는 PR6b.
+        else => false,
+    };
 }

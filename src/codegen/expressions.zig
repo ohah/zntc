@@ -158,7 +158,9 @@ fn powLeftNeedsParen(self: anytype, idx: NodeIndex) bool {
 /// (#4123) → 좌 스파인을 명시 스택으로 평탄화해 반복 emit 한다. 출력 텍스트와 addSourceMapping
 /// 순서(root → 스파인 top-down → 최좌단 leaf → operator+right bottom-up)는 재귀판과 동일.
 pub fn emitBinary(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
-    _ = level; // PR6: wrap = level.gte(entry) || (op==.kw_in && flags.forbid_in)
+    // wrap 은 emitExpr 진입부 exprNeedsParens 가 담당(중앙 집중). level 은 단락 폴드 시
+    // 살아남는 분기를 부모 level 로 투과해, 폴드로 wrap 을 위임받은 그 분기가 자기 wrap 을
+    // 정확히 걸 수 있게 한다(.lowest 로 투과하면 고-precedence 슬롯에서 괄호 유실).
     try self.addSourceMapping(node.span);
     const op: Kind = @enumFromInt(node.data.binary.flags);
     // 괄호 안이 아니면 자식에 forbid_in 전파(`for ((a in b);;)` 헤더 오파싱 방지).
@@ -172,8 +174,9 @@ pub fn emitBinary(self: anytype, node: Node, level: Level, flags: ExprFlags) !vo
                 try self.write(if (left_val) "true" else "false");
                 return;
             }
-            // 단락 폴드: logical 이 사라지고 right 가 그 자리 → 부모 flags 투과.
-            try self.emitExpr(node.data.binary.right, .lowest, flags);
+            // 단락 폴드: logical 이 사라지고 right 가 그 자리 → 부모 level/flags 투과
+            // (자식이 부모 level 로 자기 wrap → exprNeedsParens 의 wrap-위임이 정확해짐).
+            try self.emitExpr(node.data.binary.right, level, flags);
             return;
         }
     }
@@ -304,13 +307,13 @@ pub fn emitAssignment(self: anytype, node: Node, level: Level, flags: ExprFlags)
 }
 
 pub fn emitConditional(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
-    _ = level; // PR6: wrap = level.gte(.conditional)
+    // wrap 은 emitExpr 진입부가 담당. level 은 상수 폴드 시 살아남는 분기를 부모 level 로
+    // 투과해 그 분기가 자기 wrap 을 정확히 걸게 한다(.lowest 투과 시 고-precedence 슬롯 유실).
     try self.addSourceMapping(node.span);
     const t = node.data.ternary;
     if (self.options.linking_metadata != null) {
         if (self.evalBooleanCondition(t.a)) |cond| {
-            // 폴드된 분기는 conditional 이 사라지므로 부모 flags 그대로 투과(level 은 wrap 발동 후 정의).
-            try self.emitExpr(if (cond) t.b else t.c, .lowest, flags);
+            try self.emitExpr(if (cond) t.b else t.c, level, flags);
             return;
         }
     }
