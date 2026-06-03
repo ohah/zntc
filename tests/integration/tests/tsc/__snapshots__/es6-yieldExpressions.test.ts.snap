@@ -288,9 +288,9 @@ exports[`TSC: es6/yieldExpressions generatorTypeCheck26 1`] = `
 
 exports[`TSC: es6/yieldExpressions generatorTypeCheck27 1`] = `
 "function* g() {
-	yield* function*() {
+	yield* (function*() {
 		yield (x) => x.length;
-	}();
+	})();
 }
 "
 `;
@@ -306,9 +306,9 @@ exports[`TSC: es6/yieldExpressions generatorTypeCheck28 1`] = `
 
 exports[`TSC: es6/yieldExpressions generatorTypeCheck29 1`] = `
 "function* g2() {
-	yield function*() {
+	yield (function*() {
 		yield (x) => x.length;
-	}();
+	})();
 }
 "
 `;
@@ -321,18 +321,18 @@ exports[`TSC: es6/yieldExpressions generatorTypeCheck3 1`] = `
 
 exports[`TSC: es6/yieldExpressions generatorTypeCheck30 1`] = `
 "function* g2() {
-	yield function*() {
+	yield (function*() {
 		yield (x) => x.length;
-	}();
+	})();
 }
 "
 `;
 
 exports[`TSC: es6/yieldExpressions generatorTypeCheck31 1`] = `
 "function* g2() {
-	yield function*() {
+	yield (function*() {
 		yield (x) => x.length;
-	}();
+	})();
 }
 "
 `;
@@ -766,9 +766,9 @@ export const Nothing3 = strategy("Nothing", function*(state) {
 
 exports[`TSC: es6/yieldExpressions generatorTypeCheck64 1`] = `
 "function* g3() {
-	yield function*() {
+	yield (function*() {
 		yield (x) => x.length;
-	}();
+	})();
 }
 function* g4() {
 	yield (function*() {

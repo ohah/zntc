@@ -3185,7 +3185,8 @@ test "#1621 minify+es5: async → $aS/$gn 축약" {
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "$aS=function") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "$gn=function") != null);
+    // $gn(__generator helper)은 IIFE 정의 → #4042 IIFE auto-paren 으로 `(function` (esbuild parity).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$gn=(function") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__async(") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__generator(") == null);
 }
