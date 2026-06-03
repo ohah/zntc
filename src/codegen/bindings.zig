@@ -5,6 +5,7 @@ const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const writer = @import("writer.zig");
 const expressions = @import("expressions.zig");
+const ExprFlags = @import("precedence.zig").ExprFlags;
 
 const writeNewline = writer.writeNewline;
 const writeSpace = writer.writeSpace;
@@ -54,7 +55,9 @@ pub fn emitBindingProperty(self: anytype, node: Node) !void {
             try self.writeByte(':');
             try self.writeSpan(key_node.span);
             try self.writeByte('=');
-            try self.emitNode(node.data.binary.right);
+            // default value level = .comma: 최상위 sequence(`({x=(a,b)}=o)`)가 괄호로 감싸진다
+            // (default 는 AssignmentExpression 이라 `x=a,b` 는 다른 의미 — silent miscompile).
+            try self.emitExpr(node.data.binary.right, .comma, .{});
         } else {
             try self.writeByte(':');
             try self.emitNode(node.data.binary.right);
@@ -150,7 +153,10 @@ pub fn emitVariableDeclarator(self: anytype, node: Node) !void {
         try self.writeByte('=');
         try writeSpace(self);
         // init level = .comma (esbuild SLocal declarator value = LComma): 최상위 sequence
-        // (`let x=(a,b)`)가 괄호로 감싸져 declarator 구분 콤마와 섞이지 않게 한다.
+        // (`let x=(a,b)`)가 괄호로 감싸져 declarator 구분 콤마와 섞이지 않게 한다. for-init
+        // 안(`for(var x=(a in b);;)`)이면 forbid_in 전파 — top-level `in` 이 for-in 헤더로
+        // 오파싱되지 않게 괄호 (array/call 등 중첩에선 자식 emit 이 flag clear).
+        const init_flags = ExprFlags{ .forbid_in = self.in_for_init };
         // contextual name: binding_identifier = function/arrow/class → 변수명을 이름으로
         if (self.fn_map_builder != null and self.isFunctionLike(init_val)) {
             const saved = self.pending_fn_name;
@@ -159,9 +165,9 @@ pub fn emitVariableDeclarator(self: anytype, node: Node) !void {
                 if (self.pending_fn_name) |s| self.allocator.free(s);
                 self.pending_fn_name = saved;
             }
-            try self.emitExpr(init_val, .comma, .{});
+            try self.emitExpr(init_val, .comma, init_flags);
         } else {
-            try self.emitExpr(init_val, .comma, .{});
+            try self.emitExpr(init_val, .comma, init_flags);
         }
     }
 }

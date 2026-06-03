@@ -501,9 +501,11 @@ pub fn emitNew(self: anytype, node: Node, level: Level, flags: ExprFlags) !void 
     // 괄호를 재유도한다. precedence 가 못 잡는 건 rename→call 체인(식별자)뿐이라 그것만 ad-hoc.
     const needs_parens = newCalleeNeedsRenameParens(self, callee);
     if (needs_parens) try self.writeByte('(');
-    // callee = .new + forbid_call(set): `new (foo())` 보존. `undefined`→`void 0`
-    // peephole 슬롯이라 emitNodeMaybeUndefParen 경유(`new void 0`→`new void(0)` 오파싱 방지).
-    try emitNodeMaybeUndefParen(self, callee, Level.new, .{ .forbid_call = true });
+    // callee = .new + forbid_call + has_non_optional_chain_parent(set): `new (foo())` 보존 +
+    // optional chain 끊기(`new (a?.b)()`/`new (a?.b.c)()`/`new (a?.[b])()` — new 의 첫 `()` 가
+    // optional chain 안으로 들어가면 SyntaxError). new 타겟은 member object 처럼 non-optional
+    // 체인 부모다. `undefined`→`void 0` peephole 슬롯이라 emitNodeMaybeUndefParen 경유.
+    try emitNodeMaybeUndefParen(self, callee, Level.new, .{ .forbid_call = true, .has_non_optional_chain_parent = true });
     if (needs_parens) try self.writeByte(')');
     try self.writeByte('(');
     try self.emitExpressionNodeList(args_start, args_len, self.listSep());

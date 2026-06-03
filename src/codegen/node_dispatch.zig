@@ -495,12 +495,17 @@ fn exprNeedsParens(self: anytype, node: ast_mod.Node, level: Level, flags: ExprF
     };
 }
 
-/// numeric literal 텍스트가 정수 형태(ASCII 숫자만)인지 — 바로 뒤 `.` 가 소수점으로
-/// 오파싱되는 형태. `1.5`/`0xff`/`1e3`/`0b1`/`0o7`/`42n` 등은 false(그 뒤 `.` 안전).
+/// numeric literal 텍스트가 (소수점/지수/radix prefix/bigint 없는) 십진 정수 형태인지
+/// — 바로 뒤 `.` 가 소수점으로 오파싱되는 형태. `1.5`/`0xff`/`1e3`/`0b1`/`0o7`/`42n` 은
+/// false(`.`/`e`/`x`/`b`/`o`/`n` 이 `.` 를 멤버로 안전하게 만듦). 숫자 구분자(`100_000`)는
+/// 십진 정수라 true — `_` 만으로는 `.` 안전성이 안 생겨 공백 필요. esbuild needSpaceBeforeDot.
 fn numericIsPlainInteger(text: []const u8) bool {
     if (text.len == 0) return false;
     for (text) |c| {
-        if (c < '0' or c > '9') return false;
+        switch (c) {
+            '.', 'e', 'E', 'x', 'X', 'b', 'B', 'o', 'O', 'n', 'N' => return false,
+            else => {},
+        }
     }
     return true;
 }

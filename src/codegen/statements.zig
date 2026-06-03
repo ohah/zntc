@@ -885,7 +885,9 @@ pub fn emitFor(self: anytype, node: Node) !void {
     // 내부 for가 끝날 때 plain assignment로 되돌리지 않도록 해야 한다. (#1564 Case 1)
     const saved_for_init = self.in_for_init;
     self.in_for_init = true;
-    try self.emitNode(@enumFromInt(extras[0]));
+    // init 식의 top-level `in`(`for((a in b);;)`)이 for-in 헤더로 오파싱되지 않게 forbid_in.
+    // var_decl init 은 emitVariableDeclarator 가 self.in_for_init 로 별도 전파(flag 미투과 경로).
+    try self.emitExpr(@enumFromInt(extras[0]), .lowest, .{ .forbid_in = true });
     if (self.options.minify_whitespace) try self.writeByte(';') else try self.write("; ");
     self.in_for_init = saved_for_init;
     try self.emitNode(@enumFromInt(extras[1]));
