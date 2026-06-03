@@ -85,16 +85,15 @@ pub const Codegen = struct {
     /// 가 되므로 그 경우엔 재작성을 건너뛴다.
     member_assign_target: bool = false,
     /// statement-start 모호성 추적 (esbuild `stmtStart`/`exportDefaultStart`/
-    /// `arrowExprStart`/`forOfInitStart`). 각 컨텍스트의 첫 토큰을 출력하기 직전
-    /// 현재 `buf.items.len` 으로 마킹하고, expression emitter 가 진입 시
-    /// `buf.items.len` 이 마크와 같으면 "내가 그 컨텍스트의 첫 토큰" 으로 판정해
-    /// 괄호를 친다 (`({}).x`, `(function(){})()`, `(class{})`, `(let)[x]`).
-    /// `maxInt` = 미마킹(절대 매치 안 됨). (PR2: 필드만 도입. 실제 마킹/판정은
-    /// statement-start 를 다루는 후속 PR.)
+    /// `arrowExprStart`). 각 컨텍스트의 첫 토큰을 출력하기 직전 현재 `buf.items.len`
+    /// 으로 마킹하고, expression emitter 가 진입 시 `buf.items.len` 이 마크와 같으면
+    /// "내가 그 컨텍스트의 첫 토큰" 으로 판정해 괄호를 친다 (`({}).x`,
+    /// `(function(){})()`, `(class{})`). `maxInt` = 미마킹(절대 매치 안 됨).
+    /// (for-of init `let`/`async` wrap 은 sloppy `.js` 전용 + identifier early-return
+    ///  충돌로 미구현 — 필요 시 `for_of_init_start` 필드 재도입.)
     stmt_start: usize = std.math.maxInt(usize),
     export_default_start: usize = std.math.maxInt(usize),
     arrow_expr_start: usize = std.math.maxInt(usize),
-    for_of_init_start: usize = std.math.maxInt(usize),
     /// 직전에 출력한 numeric literal 이 정수 형태(`42`)라 바로 뒤 `.` 가 소수점으로
     /// 오파싱될 수 있는 위치. emit 직후 `buf.items.len` 으로 마킹하고, static member
     /// 의 `.` emit 직전 위치가 일치하면 공백을 끼운다(`42 .toString()`). esbuild
@@ -370,7 +369,6 @@ pub const Codegen = struct {
         stmt_start: bool = false,
         export_default_start: bool = false,
         arrow_expr_start: bool = false,
-        for_of_init_start: bool = false,
     };
 
     /// 현재 출력 위치에서 어떤 statement-start 마크가 활성인지 캡처 (esbuild
@@ -381,7 +379,6 @@ pub const Codegen = struct {
             .stmt_start = self.stmt_start == n,
             .export_default_start = self.export_default_start == n,
             .arrow_expr_start = self.arrow_expr_start == n,
-            .for_of_init_start = self.for_of_init_start == n,
         };
     }
 
@@ -392,7 +389,6 @@ pub const Codegen = struct {
         if (flags.stmt_start) self.stmt_start = n;
         if (flags.export_default_start) self.export_default_start = n;
         if (flags.arrow_expr_start) self.arrow_expr_start = n;
-        if (flags.for_of_init_start) self.for_of_init_start = n;
     }
 
     /// 현재 위치가 statement-start 또는 arrow expression body-start 마크와 일치하는지.
