@@ -13143,7 +13143,7 @@ function f2(param) {
 	// variables in function declaration
 	var var2;
 	// variables in function expressions
-	var r = function(param1) {
+	var r = (function(param1) {
 		// global vars in function declaration
 		num = typeof var1 === "string" && var1.length;
 		// string
@@ -13158,7 +13158,7 @@ function f2(param) {
 		num = typeof var3 === "string" && var3.length;
 		// string
 		num = typeof param1 === "string" && param1.length;
-	}(// string
+	})(// string
 	param);
 }
 // Arrow expression
@@ -13199,21 +13199,21 @@ strOrNum = typeof f4() === "string" && f4();
 exports[`TSC: expressions typeGuardsInFunctionAndModuleBlock 1`] = `
 "// typeguards are scoped in function/module block
 function foo(x) {
-	return typeof x === "string" ? x : function f() {
+	return typeof x === "string" ? x : (function f() {
 		var b = x;
 		// number | boolean
 		return typeof x === "boolean" ? x.toString() : // boolean
 		x.toString();
-	}();
+	})();
 }
 // number
 function foo2(x) {
-	return typeof x === "string" ? x : function f(a) {
+	return typeof x === "string" ? x : (function f(a) {
 		var b = x;
 		// new scope - number | boolean
 		return typeof x === "boolean" ? x.toString() : // boolean
 		x.toString();
-	}(// number
+	})(// number
 	x);
 }
 // x here is narrowed to number | boolean

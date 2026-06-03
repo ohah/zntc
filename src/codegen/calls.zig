@@ -96,6 +96,18 @@ pub fn isUndefinedPeephole(self: anytype, idx: NodeIndex) bool {
     return std.mem.eql(u8, self.ast.getText(n.span), "undefined");
 }
 
+/// callee 가 (래퍼 없이) 직접 function expression 인지 — IIFE auto-paren 대상.
+/// esbuild 가 `ECall` 의 target 이 `EFunction` 이면 `IsParenthesized=true` 로 마킹하는 것과
+/// 동형. paren(function)(source IIFE)은 emitParen 이 보존하므로 *직접* 노드만 검사해
+/// 이중괄호를 피한다. arrow 는 .postfix(call-target) level 로 이미 wrap 돼 여기 불필요.
+fn calleeIsBareFunctionExpr(self: anytype, idx: NodeIndex) bool {
+    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+    return switch (self.ast.getNode(idx).tag) {
+        .function_expression, .function => true,
+        else => false,
+    };
+}
+
 /// `void 0` peephole 가 적용될 자식 노드를 paren 으로 감싸 emit. 자식이 그 외엔 그대로 emit.
 /// callee/object/new.callee 슬롯 4곳에서 공유 — 정책은 [[isUndefinedPeephole]].
 pub fn emitNodeMaybeUndefParen(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) !void {
@@ -137,7 +149,14 @@ pub fn emitCall(self: anytype, node: Node, level: Level, flags: ExprFlags) !void
     // 전파 안 함 — call 이 자기 wrap 에서 소진(esbuild ECall parity).
     const self_in_chain = is_optional or objectContinuesOptionalChain(self, callee);
     const callee_flags = ExprFlags{ .has_non_optional_chain_parent = !self_in_chain };
+    // IIFE: callee 가 *직접* function expression 이면 괄호로 감싼다 (esbuild 가 ECall target
+    // 이 EFunction 이면 IsParenthesized 자동 마킹하는 것과 동형, `function(){}()`→`(function(){})()`).
+    // source `(function(){})()` 는 callee=paren(function)이라 직접 노드가 아니어서 emitParen 이
+    // 보존(이중괄호 회피). arrow 는 .postfix(call-target) level 로 exprNeedsParens 가 이미 wrap.
+    const iife_wrap = calleeIsBareFunctionExpr(self, callee);
+    if (iife_wrap) try self.writeByte('(');
     try emitNodeMaybeUndefParen(self, callee, Level.postfix, callee_flags);
+    if (iife_wrap) try self.writeByte(')');
     if (is_optional) try self.write("?.");
     try self.writeByte('(');
     try self.emitExpressionNodeList(args_start, args_len, self.listSep());
