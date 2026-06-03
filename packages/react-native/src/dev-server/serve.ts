@@ -2,7 +2,11 @@
 // 가 RnDevServerOptions 만 만들면 cli-server-api / dev-middleware 부가 lazy
 // 로드 + per-platform watch + HMR bridge + terminal actions 까지 자동 통합.
 
-import { createDevHttpServer, type DevHttpServerHandle } from './http-server.ts';
+import {
+  createBunDevHttpServer,
+  createDevHttpServer,
+  type DevHttpServerHandle,
+} from './http-server.ts';
 import { createHmrBridge, type HmrBridge } from './hmr-bridge.ts';
 import { logBundle, logError, logInfo, printZntcRnBanner } from './logger.ts';
 import { loadCliServerApi } from './middleware/cli-server-api.ts';
@@ -97,7 +101,12 @@ export async function serveRn(
     : undefined;
   const platforms = createPlatformStateRegistry(options, hmrBridge?.callbacks);
 
-  const httpHandle: DevHttpServerHandle = await createDevHttpServer(options, {
+  // #RN-bun-hmr — Bun 에선 node:http 의 수동 WS upgrade(socket.write 101)가
+  // 깨져 /hot 이 연결 안 됨. Bun.serve 의 native WebSocket 경로로 분기한다.
+  // node 는 기존 createDevHttpServer 그대로(회귀 없음).
+  const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
+  const createHttpServer = isBun ? createBunDevHttpServer : createDevHttpServer;
+  const httpHandle: DevHttpServerHandle = await createHttpServer(options, {
     broadcast,
     platforms,
     hmrBridge,
