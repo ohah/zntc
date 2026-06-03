@@ -94,6 +94,60 @@ describe('RN react-refresh prelude', () => {
     });
   }
 
+  /**
+   * 변형 fixture: setUpReactRefresh(InitializeCore)가 global.__ReactRefresh 를 set 하지 *않고*
+   * react-refresh/runtime 을 require 만 한다 (RN/Hermes 실제 동작 — global 대입은 타이밍/
+   * __METRO_GLOBAL_PREFIX__ 구성차로 불안정). 이 경우 $RefreshReg$ 의 __ReactRefresh 가
+   * undefined → __zntc_resolveRefresh() 가 __zntc_modules[__zntc_refresh_id] 에서 동일 runtime 을
+   * 꺼내 register 해야 한다 (이 PR 의 registry-resolve 경로 회귀 가드).
+   */
+  function createRNFixtureNoGlobalSet() {
+    return createFixture({
+      'node_modules/react-refresh/cjs/react-refresh-runtime.development.js': `
+        'use strict';
+        var families = new Map();
+        exports.register = function(type, id) {
+          families.set(id, { current: type });
+          if (typeof globalThis.__TEST_REFRESH_LOG__ === 'undefined') globalThis.__TEST_REFRESH_LOG__ = [];
+          globalThis.__TEST_REFRESH_LOG__.push({ action: 'register', id: id });
+        };
+        exports.createSignatureFunctionForTransform = function() { return function(type) { return type; }; };
+        exports.performReactRefresh = function() {
+          if (typeof globalThis.__TEST_REFRESH_LOG__ === 'undefined') globalThis.__TEST_REFRESH_LOG__ = [];
+          globalThis.__TEST_REFRESH_LOG__.push({ action: 'performReactRefresh', families: families.size });
+        };
+        exports.injectIntoGlobalHook = function(g) {
+          if (typeof globalThis.__TEST_REFRESH_LOG__ === 'undefined') globalThis.__TEST_REFRESH_LOG__ = [];
+          globalThis.__TEST_REFRESH_LOG__.push({ action: 'injectIntoGlobalHook' });
+        };
+        exports.isLikelyComponentType = function() { return false; };
+        exports.getFamilyByType = function() { return undefined; };
+        exports._families = families;
+      `,
+      'node_modules/react-refresh/runtime.js': `
+        'use strict';
+        module.exports = require('./cjs/react-refresh-runtime.development.js');
+      `,
+      'node_modules/react-refresh/package.json': `{ "name": "react-refresh", "main": "runtime.js" }`,
+      // __ReactRefresh 대입 *없는* InitializeCore — runtime require + injectIntoGlobalHook 만 수행.
+      'node_modules/react-native/Libraries/Core/InitializeCore.js': `
+        'use strict';
+        var ReactRefreshRuntime = require('react-refresh/runtime');
+        ReactRefreshRuntime.injectIntoGlobalHook(globalThis);
+        if (typeof globalThis.__TEST_REFRESH_LOG__ === 'undefined') globalThis.__TEST_REFRESH_LOG__ = [];
+        globalThis.__TEST_REFRESH_LOG__.push({ action: 'InitializeCore' });
+      `,
+      'node_modules/react-native/package.json': `{ "name": "react-native", "main": "index.js" }`,
+      'App.tsx': `
+        export default function App() { return "hello from App"; }
+      `,
+      'index.tsx': `
+        import App from './App';
+        globalThis.__APP_RESULT__ = App();
+      `,
+    });
+  }
+
   test('RN dev mode에서 InitializeCore가 prelude로 자동 포함된다', async () => {
     const fixture = await createRNFixture();
     cleanup = fixture.cleanup;
@@ -344,5 +398,70 @@ describe('RN react-refresh prelude', () => {
 
     // HMR 런타임의 디버그 로그가 제거되었는지 확인
     expect(bundle).not.toContain('[zntc:hmr]');
+  });
+
+  test('global.__ReactRefresh 미설정 시 __zntc_modules 레지스트리로 register 된다 (Hermes 모사)', async () => {
+    const fixture = await createRNFixtureNoGlobalSet();
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, 'out.js');
+    const result = await runZntcInDir(fixture.dir, [
+      '--bundle',
+      'index.tsx',
+      '-o',
+      outFile,
+      '--platform=react-native',
+      '--dev',
+    ]);
+    expect(result.exitCode).toBe(0);
+
+    const bundle = readFileSync(outFile, 'utf-8');
+    // (1) refresh_id 가 react-refresh/runtime 의 dev_id 로 주입되었는지 (정적).
+    expect(bundle).toContain('__zntc_g.__zntc_refresh_id=');
+    const ridMatch = bundle.match(/__zntc_g\.__zntc_refresh_id\s*=\s*("[^"]*")/);
+    expect(ridMatch).not.toBeNull();
+    expect(ridMatch![1]).toContain('react-refresh/runtime.js');
+    // (2) resolveRefresh 에 레지스트리 lookup 분기가 존재하는지 (정적).
+    expect(bundle).toContain('__zntc_g.__zntc_modules[__rid]');
+    // (3) $RefreshReg$ 는 여전히 __ReactRefresh || __zntc_resolveRefresh() 패턴 (브라우저 회귀 0).
+    expect(bundle).toContain('__zntc_g.__ReactRefresh || __zntc_resolveRefresh()');
+
+    // (4) 동적: 전역 require 를 무력화(Hermes 모사)해 resolveRefresh 의 require fallback 을
+    //     차단 → __zntc_modules 레지스트리 경로로만 register 가 성공해야 한다.
+    const testScript = join(fixture.dir, 'test_registry.js');
+    const bundleCode = readFileSync(outFile, 'utf-8');
+    writeFileSync(
+      testScript,
+      `
+      // require 를 undefined 로 셰도잉: __zntc_resolveRefresh 의
+      // require("react-refresh/runtime") fallback 이 TypeError → catch → null.
+      // 따라서 register 가 기록되면 그것은 __zntc_modules[__rid] 레지스트리 경로뿐이다.
+      (function(require) {
+        ${bundleCode}
+        var log = globalThis.__TEST_REFRESH_LOG__ || [];
+        var registers = log.filter(function(e) { return e.action === 'register'; });
+        if (registers.length === 0) {
+          console.error("FAIL: 레지스트리 resolve 실패 — register 0개", JSON.stringify(log));
+          process.exit(1);
+        }
+        var hasApp = registers.some(function(e) { return String(e.id).indexOf('App') !== -1; });
+        if (!hasApp) { console.error("FAIL: App 컴포넌트 미등록", JSON.stringify(log)); process.exit(1); }
+        console.log("PASS: registry resolve — " + registers.length + " components registered");
+      })(undefined);
+    `,
+    );
+
+    const run = spawn({ cmd: ['bun', 'run', testScript], stdout: 'pipe', stderr: 'pipe' });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(run.stdout).text(),
+      new Response(run.stderr).text(),
+      run.exited,
+    ]);
+    if (exitCode !== 0) {
+      console.error('stderr:', stderr);
+      console.error('stdout:', stdout);
+    }
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain('PASS');
   });
 });

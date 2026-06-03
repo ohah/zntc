@@ -67,6 +67,14 @@ pub fn emitBundleRuntimeHelpers(
     // HMR 런타임이 $RefreshReg$/$RefreshSig$도 정의하므로 별도 스텁 불필요.
     if (options.dev_mode) {
         try output.appendSlice(allocator, if (options.minify_whitespace) rt.HMR_RUNTIME_MIN else rt.HMR_RUNTIME);
+        // RN: react-refresh/runtime 의 dev_id 를 전역(__zntc_g.__zntc_refresh_id)으로 주입.
+        // __zntc_resolveRefresh()가 전역 require 대신 __zntc_modules[id] 로 runtime 을 꺼내
+        // setUpReactRefresh 와 동일 인스턴스를 공유한다(Metro 호환). 브라우저는 null → 미주입.
+        if (options.react_refresh_runtime_dev_id) |rid| {
+            try output.appendSlice(allocator, "__zntc_g.__zntc_refresh_id=");
+            try parent.appendJsonString(output, allocator, rid);
+            try output.appendSlice(allocator, ";\n");
+        }
     } else if (options.react_refresh) {
         // 비-dev 모드에서 react_refresh만 활성화된 경우 스텁 주입
         try output.appendSlice(allocator, rt.REFRESH_STUB);

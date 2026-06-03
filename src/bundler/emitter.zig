@@ -115,6 +115,10 @@ pub const EmitOptions = struct {
     root_dir: ?[]const u8 = null,
     /// React Fast Refresh 활성화. $RefreshReg$/$RefreshSig$ 주입.
     react_refresh: bool = false,
+    /// RN: react-refresh/runtime 모듈의 dev_id (= __zntc_modules 레지스트리 키).
+    /// HMR 런타임의 __zntc_resolveRefresh()가 전역 require 대신 이 키로 번들 모듈에서
+    /// runtime을 꺼내 setUpReactRefresh와 동일 인스턴스를 공유한다. null이면 미주입(브라우저).
+    react_refresh_runtime_dev_id: ?[]const u8 = null,
     /// Reanimated worklet 네이티브 변환.
     worklet_transform: bool = false,
     /// worklet의 `__pluginVersion` 값. null이면 ZNTC 기본 상수.

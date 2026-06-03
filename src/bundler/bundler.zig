@@ -573,6 +573,16 @@ pub const BundleResult = struct {
     }
 };
 
+/// react-refresh/runtime 의 entry 모듈(`react-refresh/runtime.js`) 경로인지 판별한다.
+/// RN 의 setUpReactRefresh 가 `require('react-refresh/runtime')` 로 로드하는 바로 그 모듈이라,
+/// 이 모듈의 dev_id 를 __zntc_resolveRefresh 에 넘겨야 동일 인스턴스를 공유할 수 있다.
+/// (pnpm `.pnpm/react-refresh@.../node_modules/react-refresh/runtime.js` 도 endsWith 로 매칭.)
+fn isReactRefreshRuntimePath(path: []const u8) bool {
+    if (std.mem.indexOf(u8, path, "react-refresh") == null) return false;
+    return std.mem.endsWith(u8, path, "/react-refresh/runtime.js") or
+        std.mem.endsWith(u8, path, "\\react-refresh\\runtime.js");
+}
+
 /// BundlerDiagnostic 을 allocator-owned OwnedDiagnostic 으로 deep copy 해 `dest` 에 채운다.
 /// `filled` 는 이미 채워진 item 수 — 루프 내부에서 매 entry 성공 후 증가한다 (호출자의
 /// errdefer 가 부분 할당분을 정확히 해제할 수 있도록).
@@ -1636,11 +1646,22 @@ pub const Bundler = struct {
             dev_emit_opts.worker_map_per_module = &worker_map_per_module;
 
             const la = graph.linkAccessor();
+            // RN Fast Refresh: react-refresh/runtime 모듈의 dev_id 를 찾아 둔다.
+            // __zntc_resolveRefresh 가 전역 require 대신 __zntc_modules[id] 로 이 runtime 을
+            // 꺼내 setUpReactRefresh 와 동일 인스턴스를 공유한다(Metro 호환). 아래로 전파.
+            const find_refresh_id = self.options.react_refresh and self.options.platform == .react_native;
+            var refresh_runtime_id: ?[]const u8 = null;
             for (0..graph.moduleCount()) |i| {
                 const idx = ModuleIndex.fromUsize(i);
                 const m = graph.getModule(idx) orelse continue;
-                la.setDevId(idx, emitter.makeModuleId(m.path, self.options.root_dir));
+                const mid = emitter.makeModuleId(m.path, self.options.root_dir);
+                la.setDevId(idx, mid);
+                if (find_refresh_id and refresh_runtime_id == null and isReactRefreshRuntimePath(m.path)) {
+                    // mid 는 graph 소유 path 의 부분 slice — emit 동안 graph 유효(복사/free 금지, Arena 규칙).
+                    refresh_runtime_id = mid;
+                }
             }
+            dev_emit_opts.react_refresh_runtime_dev_id = refresh_runtime_id;
 
             const emit_result = try emitter.emitWithTreeShaking(
                 io,
@@ -1728,6 +1749,13 @@ pub const Bundler = struct {
                 // 받아 hot-replace 시 리로드 대신 state 보존. $RefreshReg$/__zntc_make_hot/
                 // __zntc_resolveRefresh 는 entry HMR_RUNTIME 가 글로벌 노출 → cross-chunk 동작.
                 emit_opts.react_refresh = self.options.react_refresh;
+                // TODO(RN Fast Refresh): dev_split 경로는 아직 react_refresh_runtime_dev_id 를
+                // 전파하지 않는다 → RN(Hermes)에서 __zntc_resolveRefresh 가 __zntc_modules 레지스트리
+                // 대신 전역 require fallback(Hermes 엔 없음)으로 빠져 Fast Refresh 가 무력화된다.
+                // 단일번들 경로(~1652)처럼 아래 setDevId 루프에서 isReactRefreshRuntimePath 로
+                // react-refresh/runtime dev_id 를 잡아 emit_opts.react_refresh_runtime_dev_id 에
+                // 전파하는 후속 PR 필요. dev_split 은 code_splitting+lazy_compilation 동시일 때만이라
+                // RN dev 에선 드물어 1차 PR scope 에서 제외.
                 // RFC_LAZY_DEV_MODULE_HMR PR-1: emitChunks 가 per-module HMR code 를
                 // 수집하도록 collect_module_codes 전파(단일번들 경로와 동일 게이트).
                 emit_opts.collect_module_codes = self.options.collect_module_codes;
