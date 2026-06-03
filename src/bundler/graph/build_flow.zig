@@ -716,6 +716,144 @@ fn checkSelfReExport(self: *ModuleGraph) void {
     }
 }
 
+// ============================================================
+// perf/hmr-graph-topology-reuse Phase A — 위상(topology) 스냅샷 + 가드 primitive
+//
+// 이 함수들은 "body-only edit(모듈 집합·import 위상 불변)이면 보존, 아니면 full" 판정의
+// **corruption-defense 핵심**이다. 변경 모듈을 invalidate(=deinit) *하기 전에* 그 모듈의
+// (specifier, kind) 집합 + import_records[].resolved 가 가리키는 타겟 모듈 path 집합을
+// 스냅샷한다. import_records 는 parse_arena 소유라 재파싱 시 backing 이 사라지므로 **반드시
+// deinit 전에** 떠 둬야 한다(스냅샷은 자체 allocator 로 dupe → arena 수명 독립).
+//
+// Phase A 에서는 persistent_graph 가 매 빌드 fresh discovery(prepareForPreservedRebuild)라
+// 이 primitive 가 *판정 경로에 강제 연결되어 있지는 않다*. 하지만 (1) 단위 테스트로 정확성을
+// 못박아 두고 (2) Phase B 의 selective edge-reuse 가 그대로 호출할 가드 표면을 확정한다.
+// (Phase B: invalidateModule 전 snapshot → 재파싱 후 topologyMatches → 일치 시 보존, 불일치
+// 시 full BFS.)
+// ============================================================
+
+/// 한 import record 의 위상 식별자: specifier + kind + (resolve 된) 타겟 모듈 path.
+/// resolved_target_path = null 은 "아직 미해석 / external / disabled(specifier 기반)" 를 뜻하며
+/// resolve target diff 가드에서 specifier 와 함께 비교된다.
+pub const ImportTopologyEntry = struct {
+    specifier: []const u8,
+    kind: types.ImportKind,
+    /// resolve 결과 타겟 모듈의 절대 path (snapshot allocator 소유 — dupe). null = 미해석.
+    resolved_target_path: ?[]const u8,
+    /// 동적 import 여부(`dynamic_import` kind). dynamic_import diff 가드용 — kind 에 이미
+    /// 포함되지만 가드 가독성을 위해 명시 필드로도 노출.
+    is_dynamic: bool,
+};
+
+/// 변경 모듈의 위상 스냅샷. `entries` 와 각 `specifier`/`resolved_target_path` 문자열은
+/// 모두 `allocator` 소유 — `deinit` 으로 일괄 해제. invalidate(deinit) 전에 떠 둬야 한다.
+pub const ModuleTopologySnapshot = struct {
+    entries: []ImportTopologyEntry,
+    /// 변경 모듈이 그 시점에 가졌던 import record 개수(= entries.len). count 비교 fast-path.
+    record_count: usize,
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: *ModuleTopologySnapshot) void {
+        for (self.entries) |e| {
+            self.allocator.free(e.specifier);
+            if (e.resolved_target_path) |p| self.allocator.free(p);
+        }
+        self.allocator.free(self.entries);
+    }
+};
+
+/// 변경 모듈(mod_idx)의 import 위상을 스냅샷한다. **invalidateModule 호출 전**에 부른다.
+/// specifier/kind 는 import_records(parse_arena 소유)에서, resolved target path 는
+/// import_records[].resolved 가 가리키는 모듈의 path(path_arena 소유)에서 떠 dupe 한다.
+/// glob/require_context 같은 *동적 확장* record 는 위상 보존 대상이 아니므로(plan §30 잔존
+/// 위험) 스냅샷 자체를 거부(null 반환) → caller 가 full 로 폴백.
+pub fn snapshotModuleTopology(
+    self: *const ModuleGraph,
+    allocator: std.mem.Allocator,
+    mod_idx: usize,
+) !?ModuleTopologySnapshot {
+    if (mod_idx >= self.modules.count()) return null;
+    const mod = self.modules.at(mod_idx);
+
+    var entries: std.ArrayListUnmanaged(ImportTopologyEntry) = .empty;
+    errdefer {
+        for (entries.items) |e| {
+            allocator.free(e.specifier);
+            if (e.resolved_target_path) |p| allocator.free(p);
+        }
+        entries.deinit(allocator);
+    }
+
+    for (mod.import_records) |rec| {
+        // glob / require.context 는 build-time FS 확장이라 specifier-set 만으로 위상 불변을
+        // 증명할 수 없다 → 보존 거부(보수적 full). (plan §12 제외 빌드와 동형.)
+        if (rec.kind == .glob or rec.kind == .require_context) {
+            for (entries.items) |e| {
+                allocator.free(e.specifier);
+                if (e.resolved_target_path) |p| allocator.free(p);
+            }
+            entries.deinit(allocator);
+            return null;
+        }
+        const spec_copy = try allocator.dupe(u8, rec.specifier);
+        var target_path: ?[]const u8 = null;
+        errdefer allocator.free(spec_copy);
+        if (!rec.resolved.isNone()) {
+            const ti = rec.resolved.toUsize();
+            if (ti < self.modules.count()) {
+                target_path = try allocator.dupe(u8, self.modules.at(ti).path);
+            }
+        }
+        try entries.append(allocator, .{
+            .specifier = spec_copy,
+            .kind = rec.kind,
+            .resolved_target_path = target_path,
+            .is_dynamic = rec.kind == .dynamic_import,
+        });
+    }
+
+    return ModuleTopologySnapshot{
+        .entries = try entries.toOwnedSlice(allocator),
+        .record_count = mod.import_records.len,
+        .allocator = allocator,
+    };
+}
+
+/// 재파싱 후의 모듈 위상이 `old` 스냅샷과 **위상 동일**한지 판정. 동일 = body-only edit
+/// (보존 가능). 다음 중 하나라도 다르면 false(=full 폴백):
+///   - import record 개수 변화
+///   - specifier 변화 (추가/삭제/수정) — 순서 포함 엄격 비교(parser 가 source 순서 보존)
+///   - kind 변화 (static ↔ dynamic ↔ require ↔ re_export 등)
+///   - resolve target path 변화 (같은 specifier 가 다른 파일로 해석 — resolve-diff)
+///   - dynamic_import diff
+///
+/// glob/require_context 가 새로 등장하면 new 쪽 record 의 kind 비교에서 자동으로 불일치.
+pub fn topologyMatches(old: *const ModuleTopologySnapshot, new_mod: *const ModuleGraph, new_idx: usize) bool {
+    if (new_idx >= new_mod.modules.count()) return false;
+    const mod = new_mod.modules.at(new_idx);
+    if (old.record_count != mod.import_records.len) return false;
+    if (old.entries.len != mod.import_records.len) return false;
+
+    for (old.entries, mod.import_records) |oe, rec| {
+        if (rec.kind == .glob or rec.kind == .require_context) return false;
+        if (oe.kind != rec.kind) return false;
+        if (oe.is_dynamic != (rec.kind == .dynamic_import)) return false;
+        if (!std.mem.eql(u8, oe.specifier, rec.specifier)) return false;
+        // resolve target diff: 새 resolved 타겟 path 를 구해 old 와 비교.
+        const new_target: ?[]const u8 = blk: {
+            if (rec.resolved.isNone()) break :blk null;
+            const ti = rec.resolved.toUsize();
+            if (ti >= new_mod.modules.count()) break :blk null;
+            break :blk new_mod.modules.at(ti).path;
+        };
+        const old_target = oe.resolved_target_path;
+        if (old_target == null and new_target == null) continue;
+        if (old_target == null or new_target == null) return false;
+        if (!std.mem.eql(u8, old_target.?, new_target.?)) return false;
+    }
+    return true;
+}
+
 /// 증분 빌드 결과.
 pub const IncrementalBuildResult = struct {
     /// 그래프 구조 또는 내용이 변경되었는지
@@ -1176,4 +1314,133 @@ test "F4 watch: entry 가 한 개로 축소되면 entry_dir 가 그 dirname 으�
 
     const single_entry = [_][]const u8{"/repo/src/a/index.ts"};
     try std.testing.expectEqualStrings("/repo/src/a", computeEntryDir(&single_entry));
+}
+
+// ============================================================
+// perf/hmr-graph-topology-reuse Phase A — topology snapshot/guard primitive 단위 테스트
+//
+// 이 테스트들이 corruption 방어의 핵심: snapshot 이 deinit 전에 (specifier,kind,target)을
+// 정확히 떠서, 재파싱 후 위상 동일/변화를 정확히 판정하는지 검증한다. graph 는 직접 조립
+// (addModule + parse_arena 소유 import_records) 해 resolve 파이프라인 없이 primitive 만 격리.
+// ============================================================
+
+const ResolveCache_t = @import("../resolve_cache.zig").ResolveCache;
+const ImportRecord_t = types.ImportRecord;
+const Span_t = @import("../../lexer/token.zig").Span;
+
+/// 테스트 헬퍼: 모듈의 import_records 를 parse_arena 소유로 세팅한다.
+/// (specifier, kind, resolved) 튜플 리스트로부터 record 를 만든다.
+fn tSetRecords(
+    graph: *ModuleGraph,
+    idx: usize,
+    recs: []const struct { spec: []const u8, kind: types.ImportKind, resolved: i64 },
+) !void {
+    const m = graph.modules.at(idx);
+    if (m.parse_arena == null) {
+        m.parse_arena = @import("../module.zig").createParseArena(graph.allocator) orelse return error.OutOfMemory;
+    }
+    const pa = m.parse_arena.?.allocator();
+    const out = try pa.alloc(ImportRecord_t, recs.len);
+    for (recs, 0..) |r, i| {
+        out[i] = .{
+            .specifier = try pa.dupe(u8, r.spec),
+            .kind = r.kind,
+            .span = Span_t.EMPTY,
+            .resolved = if (r.resolved < 0) types.ModuleIndex.none else types.ModuleIndex.fromUsize(@intCast(r.resolved)),
+        };
+    }
+    m.import_records = out;
+}
+
+test "topology: body-only edit 는 위상 동일 판정(보존 가능)" {
+    var cache = ResolveCache_t.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    // 0=index, 1=util. index → util (static). util → (none).
+    _ = try graph.addModule(std.testing.io, "/p/index.ts");
+    _ = try graph.addModule(std.testing.io, "/p/util.ts");
+    try tSetRecords(&graph, 0, &.{.{ .spec = "./util", .kind = .static_import, .resolved = 1 }});
+
+    var snap = (try snapshotModuleTopology(&graph, std.testing.allocator, 0)).?;
+    defer snap.deinit();
+
+    // body-only: 같은 record 로 재구성 (재파싱 시뮬레이션) → 위상 동일.
+    try tSetRecords(&graph, 0, &.{.{ .spec = "./util", .kind = .static_import, .resolved = 1 }});
+    try std.testing.expect(topologyMatches(&snap, &graph, 0));
+}
+
+test "topology: import specifier 추가 → 위상 변화(full)" {
+    var cache = ResolveCache_t.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    _ = try graph.addModule(std.testing.io, "/p/index.ts");
+    _ = try graph.addModule(std.testing.io, "/p/util.ts");
+    _ = try graph.addModule(std.testing.io, "/p/extra.ts");
+    try tSetRecords(&graph, 0, &.{.{ .spec = "./util", .kind = .static_import, .resolved = 1 }});
+
+    var snap = (try snapshotModuleTopology(&graph, std.testing.allocator, 0)).?;
+    defer snap.deinit();
+
+    // specifier 1 개 추가 → record_count 변화 → 불일치.
+    try tSetRecords(&graph, 0, &.{
+        .{ .spec = "./util", .kind = .static_import, .resolved = 1 },
+        .{ .spec = "./extra", .kind = .static_import, .resolved = 2 },
+    });
+    try std.testing.expect(!topologyMatches(&snap, &graph, 0));
+}
+
+test "topology: 같은 specifier 가 다른 파일로 resolve → resolve-diff(full)" {
+    var cache = ResolveCache_t.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    // 0=index, 1=util-old, 2=util-new. 같은 './util' specifier 가 1→2 로 타겟 변경.
+    _ = try graph.addModule(std.testing.io, "/p/index.ts");
+    _ = try graph.addModule(std.testing.io, "/p/util-old.ts");
+    _ = try graph.addModule(std.testing.io, "/p/util-new.ts");
+    try tSetRecords(&graph, 0, &.{.{ .spec = "./util", .kind = .static_import, .resolved = 1 }});
+
+    var snap = (try snapshotModuleTopology(&graph, std.testing.allocator, 0)).?;
+    defer snap.deinit();
+
+    // specifier 동일하지만 resolve 타겟 path 가 다름 → resolve-diff → 불일치.
+    try tSetRecords(&graph, 0, &.{.{ .spec = "./util", .kind = .static_import, .resolved = 2 }});
+    try std.testing.expect(!topologyMatches(&snap, &graph, 0));
+}
+
+test "topology: static → dynamic kind 변화 → 위상 변화(full)" {
+    var cache = ResolveCache_t.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    _ = try graph.addModule(std.testing.io, "/p/index.ts");
+    _ = try graph.addModule(std.testing.io, "/p/util.ts");
+    try tSetRecords(&graph, 0, &.{.{ .spec = "./util", .kind = .static_import, .resolved = 1 }});
+
+    var snap = (try snapshotModuleTopology(&graph, std.testing.allocator, 0)).?;
+    defer snap.deinit();
+
+    // 같은 specifier/target 이지만 static → dynamic → 불일치(dynamic_import diff).
+    try tSetRecords(&graph, 0, &.{.{ .spec = "./util", .kind = .dynamic_import, .resolved = 1 }});
+    try std.testing.expect(!topologyMatches(&snap, &graph, 0));
+}
+
+test "topology: glob record 는 스냅샷 거부(null → 보수적 full)" {
+    var cache = ResolveCache_t.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    _ = try graph.addModule(std.testing.io, "/p/index.ts");
+    try tSetRecords(&graph, 0, &.{.{ .spec = "./pages/*.ts", .kind = .glob, .resolved = -1 }});
+
+    // glob 는 build-time FS 확장이라 위상 보존 대상 아님 → snapshot=null.
+    const snap = try snapshotModuleTopology(&graph, std.testing.allocator, 0);
+    try std.testing.expect(snap == null);
 }

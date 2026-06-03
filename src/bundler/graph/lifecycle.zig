@@ -96,6 +96,61 @@ pub fn invalidateModule(self: *ModuleGraph, idx: ModuleIndex) void {
     mod_ptr.* = @import("../module.zig").Module.init(saved_index, saved_path);
 }
 
+/// perf/hmr-graph-topology-reuse Phase A — persistent_graph 재사용 빌드 직전 호출.
+///
+/// **현재(Phase A) 의미 = "fresh 와 byte-identical 한 안전 reset"**:
+/// graph 인스턴스(SegmentedList backing, path_to_module backing, path_arena, 옵션,
+/// pkg_info_cache)는 보존하되, **모든 모듈 슬롯을 비우고**(`modules` clear) graph-global
+/// state 를 reset 한다. 이후 `buildIncremental` 이 entry 부터 다시 discovery 하며 슬롯을
+/// 새로 append → 출력은 매 빌드 fresh graph 와 동일.
+///
+/// **왜 슬롯 in-place 보존(invalidateModule)이 아니라 전량 clear 인가 (정확성 근거):**
+///   1. body-only edit 의 위상 보존(edge/exec_index 재사용)은 `transferModulesToStore`
+///      (build_flow:transferModulesToStore)가 매 빌드 graph 모듈의 parse_arena /
+///      import_records / resolved_deps 소유권을 store 로 *이전*(=graph 쪽을 비움)하는 한
+///      불가능하다. 그 소유권 재설계는 plan 의 **Phase B(최대 리스크)** 라 Phase A 범위 밖.
+///   2. invalidateModule 로 슬롯만 `.reserved` 로 되돌리고 보존하면, **모듈이 제거되는
+///      위상 변화**에서 옛 슬롯이 orphan 으로 남는다. `buildIncremental` 의 sequential
+///      루프는 `parse_start..modules.count()` 전 범위를 돌며 `.reserved` 슬롯을 무조건
+///      reparse → emitter(emitter.zig:400 `m.ast != null` 필터)가 *더 이상 import 되지
+///      않는 제거된 모듈을 그대로 emit* → silent corruption. `path_to_module` 도 그 orphan
+///      을 가리켜 다음 빌드 dedup 이 stale 슬롯을 hit.
+///   → 따라서 Phase A 는 슬롯을 보존하지 않는다. clear 후 fresh discovery 가 유일하게
+///      byte-identical 을 보장하는 경로다. (slot/edge 재사용은 Phase B 에서
+///      transferModulesToStore 비활성 + orphan prune 과 함께 도입.)
+///
+/// **보존 영역**: graph struct 자체(call-site 가 deinit/재init 을 피함 — 객체 수명 안정),
+/// modules SegmentedList 의 *backing chunk*(clearRetainingCapacity 로 재사용),
+/// path_to_module *backing*(clear 후 재채움), path_arena.
+///
+/// **재설정(reset) 영역**: reset() 가 비우는 graph-global state 전체 + modules + path_to_module.
+///
+/// path_arena: clearRetainingCapacity 로 **메모리 보존 + 논리적 비움**. 이전 빌드 path
+/// 슬라이스는 modules/path_to_module 가 비워져 더 이상 참조되지 않으므로 재사용 안전
+/// (monotonic 누적 없이 capacity 재활용). retainCapacity 라 RSS 단방향 증가 없음.
+pub fn prepareForPreservedRebuild(self: *ModuleGraph) void {
+    // 1) 모든 모듈 슬롯 해제 (parse_arena 가 아직 graph 소유면 함께 해제 —
+    //    transferModulesToStore 가 이미 store 로 넘긴 경우 parse_arena=null 이라 no-op).
+    var mod_it = self.modules.iterator(0);
+    while (mod_it.next()) |m| {
+        m.deinit(self.allocator);
+    }
+    self.modules.clearRetainingCapacity();
+
+    // 2) path → idx 인덱스 비움 (backing 재사용).
+    self.path_to_module.clearRetainingCapacity();
+
+    // 3) path_arena 논리적 비움 + capacity 보존 (위 doc: 더 이상 참조 없음).
+    _ = self.path_arena.reset(.retain_capacity);
+
+    // 4) entry_dir 은 graph-owned dupe — buildIncremental 의 entry_dir 재계산이 free 후
+    //    재dupe 하므로 여기서 건드리지 않는다(이중 free 방지). project_root 자동 추론도 동일.
+
+    // 5) graph-global per-build state reset (diagnostics / worker_entries / lazy_seeds /
+    //    requested_exports / source_read_cache / exec/cycle counter).
+    reset(self);
+}
+
 pub fn deinit(self: *ModuleGraph) void {
     // 0.16: entry_dir 는 graph-owned dupe (build_flow). project_root 는 entry_dir
     // 로의 borrow 또는 user-set borrow 라 별도 free 안 함.

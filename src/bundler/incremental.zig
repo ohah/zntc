@@ -256,15 +256,24 @@ pub const IncrementalBundler = struct {
             if (self.preserved_renames) |*pr| opts.preserved_renames = pr;
         }
 
-        // RFC #3933 Sub-PR-B.2 — enable_persistence opt-in path. Bundler.initWithGraph wire-up.
+        // RFC #3933 Sub-PR-B.2 + perf/hmr-graph-topology-reuse Phase A — enable_persistence
+        // opt-in path. Bundler.initWithGraph wire-up.
         //
-        // **정확성 가드 (본 PR scope 제한)**: graph state 의 selective invalidate 는 Sub-PR-B.3
-        // 영역. 본 PR 은 매 빌드 graph 를 *fresh init* (이전 graph 는 deinit) — 즉 실측 효과 0,
-        // API path 만 작동. persistent_graph 의 *진짜 reuse + replay short-circuit* 은 B.3 에서.
+        // **Phase A 의미**: persistent_graph 를 빌드 *간* 보존한다(매 빌드 deinit/재init 폐기).
+        // 첫 빌드는 init, 이후 빌드는 같은 graph 를 재사용 — bundle() 의 external_graph 훅
+        // (bundler.zig)이 빌드 직전 `prepareForPreservedRebuild` 로 모듈을 비워 fresh 와
+        // byte-identical 출력을 보장한다(graph struct/backing/path_arena 재사용 → 객체 수명
+        // 안정 + alloc 절감). 위상 보존(edge/exec_index 재사용)은 transferModulesToStore
+        // 소유권 재설계가 필요해 Phase B 로 분리.
+        //
+        // **정확성 가드**: graph_changed(아래 pathSetsEqual)가 위상 변화(모듈 추가/삭제)를
+        // 감지하면 그 빌드 자체는 prepareForPreservedRebuild 로 fresh discovery 라 정확하다.
+        // (Phase B 의 selective edge-reuse 도입 시 여기서 추가 fallback 가드가 필요.)
         var bundler = blk: {
             if (!self.enable_persistence) break :blk Bundler.initWithResolveCache(self.allocator, opts, &self.resolve_cache.?);
-            if (self.persistent_graph) |*pg| pg.deinit();
-            self.persistent_graph = ModuleGraph.init(self.allocator, &self.resolve_cache.?);
+            if (self.persistent_graph == null) {
+                self.persistent_graph = ModuleGraph.init(self.allocator, &self.resolve_cache.?);
+            }
             break :blk Bundler.initWithGraph(self.allocator, opts, &self.resolve_cache.?, &self.persistent_graph.?);
         };
         defer bundler.deinit(); // resolve_cache_external=true이므로 resolve_cache는 해제 안 됨
