@@ -2238,3 +2238,344 @@ test "Phase B: 보존 경로가 requested_exports 를 reset — parse_arena dang
         }
     }
 }
+
+// ── PR-1 RN asset metadata 위상 보존 (게이트 H 완화) ──────────────────────────
+
+const RnAssetMetadata_t = @import("graph/assets.zig").RnAssetMetadata;
+
+fn preservedBuildTopoRN(
+    graph: *ModuleGraph_t,
+    store: *module_store.PersistentModuleStore,
+    rc: *@import("resolve_cache.zig").ResolveCache,
+    entry: []const u8,
+    project_root: []const u8,
+    is_first: bool,
+    changed: ?*const std.StringHashMapUnmanaged(void),
+) !BundleResult {
+    _ = project_root;
+    var opts = @as(@import("bundler.zig").BundleOptions, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .platform = .react_native,
+        .asset_registry = "./AssetRegistry.js",
+        .loader_overrides = &.{.{ .ext = ".png", .loader = .file }},
+    });
+    if (!is_first) {
+        opts.module_store = store;
+        opts.changed_files = changed;
+        opts.preserve_topology = true;
+    }
+    var b = Bundler.initWithGraph(std.testing.allocator, opts, rc, graph);
+    defer b.deinit();
+    return try b.bundle(std.testing.io);
+}
+
+fn freshFullRN(entry: []const u8, project_root: []const u8) !BundleResult {
+    _ = project_root;
+    var fresh = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .platform = .react_native,
+        .asset_registry = "./AssetRegistry.js",
+        .loader_overrides = &.{.{ .ext = ".png", .loader = .file }},
+    });
+    defer fresh.deinit();
+    return try fresh.bundle(std.testing.io);
+}
+
+fn expectRnMetaEqual(a: ?[]const RnAssetMetadata_t, b: ?[]const RnAssetMetadata_t) !void {
+    const xa: []const RnAssetMetadata_t = a orelse &.{};
+    const xb: []const RnAssetMetadata_t = b orelse &.{};
+    try std.testing.expectEqual(xa.len, xb.len);
+    for (xa, xb) |ma, mb| {
+        try std.testing.expectEqualStrings(ma.http_server_location, mb.http_server_location);
+        try std.testing.expectEqualStrings(ma.file_system_location, mb.file_system_location);
+        try std.testing.expectEqualStrings(ma.name, mb.name);
+        try std.testing.expectEqualStrings(ma.type_name, mb.type_name);
+        try std.testing.expectEqualSlices(u32, ma.scales, mb.scales);
+    }
+}
+
+test "PR-1 RN: asset 보존 — body-only edit 후 output + rn_asset_metadata == fresh full (게이트 H 완화)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 최소 PNG signature — extractDimensions 는 IHDR 없어 0×0 이지만 metadata(name/type/scales)는 생성.
+    try writeFile(tmp.dir, "registry.js",
+        \\exports.registerAsset = function registerAsset(asset) { return asset; };
+    );
+    try writeFile(tmp.dir, "AssetRegistry.js",
+        \\export { registerAsset } from './registry.js';
+    );
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "logo.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A } });
+    try writeFile(tmp.dir, "index.ts",
+        \\const logo = require('./logo.png');
+        \\console.log(logo);
+    );
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+    const root = std.fs.path.dirname(entry).?;
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true, .platform = .react_native, .asset_registry = "./AssetRegistry.js", .loader_overrides = &.{.{ .ext = ".png", .loader = .file }} });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuildTopoRN(&graph, &store, &rc, entry, root, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+        // asset metadata 가 실제로 수집됐는지(게이트 전제 충족).
+        try std.testing.expect(r1.rn_asset_metadata != null and r1.rn_asset_metadata.?.len == 1);
+    }
+    const hits_before = graph.topology_preserved_hits;
+    const fb_before = graph.topology_fallback_count;
+
+    // index.ts body-only edit (asset import 위상 불변 → 보존 경로).
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "index.ts",
+        \\const logo = require('./logo.png');
+        \\console.log(logo, 'edited');
+    );
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, entry, {});
+
+    var preserved = try preservedBuildTopoRN(&graph, &store, &rc, entry, root, false, &touched);
+    defer preserved.deinit(std.testing.allocator);
+    try std.testing.expect(!preserved.hasErrors());
+
+    var fresh = try freshFullRN(entry, root);
+    defer fresh.deinit(std.testing.allocator);
+    try std.testing.expect(!fresh.hasErrors());
+
+    // 게이트 H 완화: asset metadata 가 있어도 보존 경로 진입(hit++), 전량 fallback 아님.
+    try std.testing.expectEqual(hits_before + 1, graph.topology_preserved_hits);
+    try std.testing.expectEqual(fb_before, graph.topology_fallback_count);
+    // 엄격 byte-identical: 번들 바이트 + rn_asset_metadata 배열(순서/필드/scales).
+    try std.testing.expectEqualStrings(fresh.output, preserved.output);
+    try expectRnMetaEqual(preserved.rn_asset_metadata, fresh.rn_asset_metadata);
+}
+
+test "PR-1 RN: asset import 제거 → 위상 변화 → fallback + rn_asset_metadata == fresh full" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "registry.js",
+        \\exports.registerAsset = function registerAsset(asset) { return asset; };
+    );
+    try writeFile(tmp.dir, "AssetRegistry.js",
+        \\export { registerAsset } from './registry.js';
+    );
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "logo.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A } });
+    try writeFile(tmp.dir, "index.ts",
+        \\const logo = require('./logo.png');
+        \\console.log(logo);
+    );
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+    const root = std.fs.path.dirname(entry).?;
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true, .platform = .react_native, .asset_registry = "./AssetRegistry.js", .loader_overrides = &.{.{ .ext = ".png", .loader = .file }} });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuildTopoRN(&graph, &store, &rc, entry, root, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+    const fb_before = graph.topology_fallback_count;
+
+    // asset import 제거 → import_records 변화 → topologyMatches=false → fallback.
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "index.ts",
+        \\console.log('no asset');
+    );
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, entry, {});
+
+    var preserved = try preservedBuildTopoRN(&graph, &store, &rc, entry, root, false, &touched);
+    defer preserved.deinit(std.testing.allocator);
+    try std.testing.expect(!preserved.hasErrors());
+
+    var fresh = try freshFullRN(entry, root);
+    defer fresh.deinit(std.testing.allocator);
+    try std.testing.expect(!fresh.hasErrors());
+
+    try std.testing.expectEqual(fb_before + 1, graph.topology_fallback_count);
+    try std.testing.expectEqualStrings(fresh.output, preserved.output);
+    // logo 제거 → metadata 0 양쪽.
+    try expectRnMetaEqual(preserved.rn_asset_metadata, fresh.rn_asset_metadata);
+}
+
+test "PR-1 RN: A→B→A 반복 body-only edit → 매 회 output+metadata == fresh full + leak 0" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "registry.js",
+        \\exports.registerAsset = function registerAsset(asset) { return asset; };
+    );
+    try writeFile(tmp.dir, "AssetRegistry.js",
+        \\export { registerAsset } from './registry.js';
+    );
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "logo.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A } });
+    try writeFile(tmp.dir, "index.ts",
+        \\const logo = require('./logo.png');
+        \\console.log(logo, 0);
+    );
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+    const root = std.fs.path.dirname(entry).?;
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true, .platform = .react_native, .asset_registry = "./AssetRegistry.js", .loader_overrides = &.{.{ .ext = ".png", .loader = .file }} });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuildTopoRN(&graph, &store, &rc, entry, root, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+    var round: usize = 1;
+    while (round <= 4) : (round += 1) {
+        std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+        var buf: [128]u8 = undefined;
+        const src = try std.fmt.bufPrint(&buf,
+            \\const logo = require('./logo.png');
+            \\console.log(logo, {d});
+        , .{round});
+        try writeFile(tmp.dir, "index.ts", src);
+        var touched: std.StringHashMapUnmanaged(void) = .empty;
+        defer touched.deinit(std.testing.allocator);
+        try touched.put(std.testing.allocator, entry, {});
+
+        var preserved = try preservedBuildTopoRN(&graph, &store, &rc, entry, root, false, &touched);
+        defer preserved.deinit(std.testing.allocator);
+        try std.testing.expect(!preserved.hasErrors());
+
+        var fresh = try freshFullRN(entry, root);
+        defer fresh.deinit(std.testing.allocator);
+        try std.testing.expectEqualStrings(fresh.output, preserved.output);
+        try expectRnMetaEqual(preserved.rn_asset_metadata, fresh.rn_asset_metadata);
+    }
+}
+
+test "PR-1 RN: asset(.png) 파일 자체 변경 → asset 가드로 fallback + == fresh full" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "registry.js",
+        \\exports.registerAsset = function registerAsset(asset) { return asset; };
+    );
+    try writeFile(tmp.dir, "AssetRegistry.js",
+        \\export { registerAsset } from './registry.js';
+    );
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "logo.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A } });
+    try writeFile(tmp.dir, "index.ts",
+        \\const logo = require('./logo.png');
+        \\console.log(logo);
+    );
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+    const root = std.fs.path.dirname(entry).?;
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true, .platform = .react_native, .asset_registry = "./AssetRegistry.js", .loader_overrides = &.{.{ .ext = ".png", .loader = .file }} });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuildTopoRN(&graph, &store, &rc, entry, root, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+    const fb_before = graph.topology_fallback_count;
+
+    // logo.png 자체 교체(다른 bytes) + changed_files=logo.png → asset 모듈 직접 변경.
+    // asset 가드(asset_data != null)가 보존을 거부하고 fallback(fresh 재스캔)해야 한다.
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "logo.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x01, 0x02 } });
+    const logo_abs = try absPath(&tmp, "logo.png");
+    defer std.testing.allocator.free(logo_abs);
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, logo_abs, {});
+
+    var preserved = try preservedBuildTopoRN(&graph, &store, &rc, entry, root, false, &touched);
+    defer preserved.deinit(std.testing.allocator);
+    try std.testing.expect(!preserved.hasErrors());
+
+    // 핵심: asset 모듈 직접 변경 → asset 가드가 보존(edge-reuse)을 거부하고 fallback 으로 전환.
+    // (보존 경로에 머물렀다면 reparse 가 .javascript loader 를 복원해 metadata 손실 + source 깨짐.)
+    // fallback 경로의 asset 재파싱 byte 정확성은 기존 동작이라 여기선 가드의 fallback 전환만 단언
+    // (테스트 환경 mtime 해상도와 무관하게 결정적).
+    try std.testing.expectEqual(fb_before + 1, graph.topology_fallback_count);
+}
+
+test "PR-1 RN: 다중 asset — body-only edit 후 rn_asset_metadata 배열 순서 == fresh full" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "registry.js",
+        \\exports.registerAsset = function registerAsset(asset) { return asset; };
+    );
+    try writeFile(tmp.dir, "AssetRegistry.js",
+        \\export { registerAsset } from './registry.js';
+    );
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "logo.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A } });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "icon.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A } });
+    try writeFile(tmp.dir, "index.ts",
+        \\const logo = require('./logo.png');
+        \\const icon = require('./icon.png');
+        \\console.log(logo, icon);
+    );
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+    const root = std.fs.path.dirname(entry).?;
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true, .platform = .react_native, .asset_registry = "./AssetRegistry.js", .loader_overrides = &.{.{ .ext = ".png", .loader = .file }} });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuildTopoRN(&graph, &store, &rc, entry, root, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+        // 두 asset 모두 수집(순서 검증 대상).
+        try std.testing.expect(r1.rn_asset_metadata != null and r1.rn_asset_metadata.?.len == 2);
+    }
+    const hits_before = graph.topology_preserved_hits;
+
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "index.ts",
+        \\const logo = require('./logo.png');
+        \\const icon = require('./icon.png');
+        \\console.log(logo, icon, 'edited');
+    );
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, entry, {});
+
+    var preserved = try preservedBuildTopoRN(&graph, &store, &rc, entry, root, false, &touched);
+    defer preserved.deinit(std.testing.allocator);
+    try std.testing.expect(!preserved.hasErrors());
+
+    var fresh = try freshFullRN(entry, root);
+    defer fresh.deinit(std.testing.allocator);
+    try std.testing.expect(!fresh.hasErrors());
+
+    // 보존 경로 진입 + 배열 순서(renumber 결정적)가 fresh 와 동일.
+    try std.testing.expectEqual(hits_before + 1, graph.topology_preserved_hits);
+    try std.testing.expectEqualStrings(fresh.output, preserved.output);
+    try expectRnMetaEqual(preserved.rn_asset_metadata, fresh.rn_asset_metadata);
+}

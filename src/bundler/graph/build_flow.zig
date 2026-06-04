@@ -633,6 +633,22 @@ fn linkDependencyUnique(self: *ModuleGraph, from: ModuleIndex, to: ModuleIndex) 
 
 /// Phase 2-4: DFS exec_index + ExportsKind 승격 + TLA 전파.
 /// build()와 buildIncremental() 양쪽에서 호출.
+/// renumber 직후 모든 모듈을 결정적 index 순서로 순회해 `graph.rn_asset_metadata` 를 재구성한다.
+/// fresh full 과 preserved(edge-reuse)가 같은 renumber-후 순서로 수집하므로 배열이 byte-identical.
+/// 항목 strings 는 각 module 의 parse_arena 소유 — list 는 borrow(여기서 free 하지 않으며,
+/// clearRetainingCapacity 로 이전 빌드 항목을 비운다).
+fn collectRnAssetMetadata(self: *ModuleGraph) !void {
+    self.rn_asset_metadata.clearRetainingCapacity();
+    const count = self.modules.count();
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        const m = self.modules.at(i);
+        if (m.rn_asset_metadata) |meta| {
+            try self.rn_asset_metadata.append(self.allocator, meta);
+        }
+    }
+}
+
 fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
     var scope = profile.begin(.graph_finalize);
     defer scope.end();
@@ -640,6 +656,10 @@ fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
     // discovery 워커 race 로 비결정인 module_index 를 BFS 순으로 재부여.
     // linker init 전에 수행해 외부 idx 키 자료구조 영향 0.
     try renumber.renumberModulesDeterministically(self, entry_points);
+
+    // renumber 직후 결정적 index 순서로 RN asset metadata 재수집 — fresh full 과 preserved
+    // (edge-reuse) 양쪽이 같은 순서로 모아 배열이 byte-identical(항목은 module.parse_arena 소유 borrow).
+    try collectRnAssetMetadata(self);
 
     const count = self.modules.count();
     if (count == 0) return;
@@ -1214,6 +1234,14 @@ pub fn buildIncrementalPreserved(
             if (graph_requested_exports.isLazyBarrelCandidate(self, self.modules.at(ui))) {
                 return fallbackFullRebuild(self, io, entry_points, store, changed_files);
             }
+            // **asset 가드**: asset 모듈(이미지 등)은 emit 후 loader=.javascript 로 굳는다. 보존 reparse
+            // 가 그 loader 를 복원하면 parseModule 의 isAsset() 분기를 우회 → parseAssetModule 미실행으로
+            // rn_asset_metadata 가 재생성되지 않고(누락) 바이너리를 raw JS 로 오파싱(source corruption).
+            // 직전 빌드 asset_data 로 감지해 보수적 full fallback(fresh 가 재스캔). asset 파일 자체
+            // 변경(.png 교체) 시나리오를 정확성 우선으로 처리.
+            if (self.modules.at(ui).asset_data != null) {
+                return fallbackFullRebuild(self, io, entry_points, store, changed_files);
+            }
             try changed_indices.append(self.allocator, ui);
         }
     }
@@ -1395,7 +1423,9 @@ fn canPreserveTopology(self: *const ModuleGraph) bool {
     if (self.runtime_polyfills != null) return false;
     if (self.inject_files.len > 0 or self.run_before_main_files.len > 0) return false;
     if (self.worker_entries.items.len > 0) return false;
-    if (self.rn_asset_metadata.items.len > 0) return false;
+    // (rn_asset_metadata 게이트 제거 — PR-1: metadata 를 module.parse_arena 소유로 옮겨
+    //  finalize 의 collectRnAssetMetadata 가 재수집하므로 위상 보존에서 자동 정합한다.
+    //  polyfill/worker 는 PR-2/후속에서 풀 때까지 유지.)
     if (self.runtime_polyfill_roots.items.len > 0) return false;
     // emit_store 에 chunk 요청이 있으면(plugin emitFile chunk) 보존 제외. emit_store 가
     // null 이면 chunk 미사용(hot path 0). 포인터만 검사 — chunk 내용은 injectEmittedChunks 영역.

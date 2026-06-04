@@ -158,8 +158,10 @@ pub fn applyAssetNamingPattern(
 }
 
 /// RN bundle 결과로 expose 되는 asset metadata. strings + scales 는 emit 시
-/// caller 가 전달한 `metadata_alloc` (BundleResult 까지 살아남는 long-lived
-/// allocator) 직접 소유 — clone 단계 없이 그대로 list 에 push 가능.
+/// caller 가 전달한 `metadata_alloc` 소유 — loader 는 이를 그 asset 모듈의 `parse_arena`
+/// 로 주어, metadata 가 module 라이프사이클(deinit/store/reparse)에 자동 정합되게 한다.
+/// `graph.rn_asset_metadata` list 는 finalize 가 module 들에서 borrow 로 재수집하며,
+/// `BundleResult` 로 내보낼 때만 `dupeRnAssetMetadata` 로 long-lived 복제한다.
 ///
 /// 노출되는 필드는 `rn-asset-copy` 의 release copy 경로가 실제 읽는 것만 (Metro
 /// `getAssetDestPath{IOS,Android}` 입력). width/height/hash 는 source string 안
@@ -187,6 +189,29 @@ pub fn freeRnAssetMetadata(allocator: std.mem.Allocator, meta: RnAssetMetadata) 
     allocator.free(meta.name);
     allocator.free(meta.type_name);
     allocator.free(meta.scales);
+}
+
+/// `RnAssetMetadata` 를 `allocator` 로 deep-copy. `freeRnAssetMetadata` 의 짝.
+/// 항목 strings 가 보통 module 의 `parse_arena`(short-lived) 소유라, graph 수명과
+/// 분리해 `BundleResult` 로 내보낼 때 long-lived allocator 로 복제한다.
+/// 부분 실패 시 errdefer 가 이미 dupe 된 슬라이스를 회수해 leak 을 막는다.
+pub fn dupeRnAssetMetadata(allocator: std.mem.Allocator, meta: RnAssetMetadata) !RnAssetMetadata {
+    const http = try allocator.dupe(u8, meta.http_server_location);
+    errdefer allocator.free(http);
+    const fs_loc = try allocator.dupe(u8, meta.file_system_location);
+    errdefer allocator.free(fs_loc);
+    const name = try allocator.dupe(u8, meta.name);
+    errdefer allocator.free(name);
+    const type_name = try allocator.dupe(u8, meta.type_name);
+    errdefer allocator.free(type_name);
+    const scales = try allocator.dupe(u32, meta.scales);
+    return .{
+        .http_server_location = http,
+        .file_system_location = fs_loc,
+        .name = name,
+        .type_name = type_name,
+        .scales = scales,
+    };
 }
 
 /// `emitAssetRegistryCall` 의 입력 — caller (loader) 가 module 단위로 모은 값들.

@@ -2396,14 +2396,6 @@ pub const Bundler = struct {
         lifecycle_runner.runBuildEnd(first_err);
         lifecycle_runner.runCloseBundle();
 
-        // RN asset metadata ownership 을 graph → BundleResult 로 transfer.
-        // graph.deinit 의 free 루프는 toOwnedSlice 후 비어있는 list 를 만남.
-        const rn_asset_metadata_out: ?[]RnAssetMetadata =
-            if (graph.rn_asset_metadata.items.len > 0)
-                try graph.rn_asset_metadata.toOwnedSlice(self.allocator)
-            else
-                null;
-
         // #3318 P1-6: host(mf.remotes) — 단일파일 출력에 init prelude +
         // 원격 동적 import→loadRemote 재작성. split 경로(output="" — host
         // 가 동시에 remote 인 niche)는 후속(follow-up). 게이트 = wrapContainer
@@ -2422,6 +2414,27 @@ pub const Bundler = struct {
                 output = host_out;
             }
         }
+
+        // RN asset metadata 를 graph → BundleResult 로 deep-copy. 항목 strings 는 이제
+        // module.parse_arena 소유(graph list 는 borrow)라 graph.deinit(arena destroy) 후
+        // dangling — self.allocator 로 dupe 해 BundleResult 수명과 분리한다. MF host 분기
+        // *뒤*에 둬, 그 분기가 error 로 빠질 때 duped metadata 가 새지 않게 한다(이 dupe 이후
+        // return 까지 추가 try 가 없어 blk-scope errdefer 로 충분).
+        const rn_asset_metadata_out: ?[]RnAssetMetadata = blk: {
+            const items = graph.rn_asset_metadata.items;
+            if (items.len == 0) break :blk null;
+            const out = try self.allocator.alloc(RnAssetMetadata, items.len);
+            var filled: usize = 0;
+            errdefer {
+                for (out[0..filled]) |m| graph_assets.freeRnAssetMetadata(self.allocator, m);
+                self.allocator.free(out);
+            }
+            for (items, 0..) |meta, i| {
+                out[i] = try graph_assets.dupeRnAssetMetadata(self.allocator, meta);
+                filled = i + 1;
+            }
+            break :blk out;
+        };
 
         return .{
             .output = output,
