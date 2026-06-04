@@ -1113,6 +1113,363 @@ pub fn buildIncremental(
     };
 }
 
+// ============================================================
+// perf/hmr-graph-topology-reuse Phase B — edge-reuse short-circuit (위상 보존 빌드)
+//
+// **목표**: body-only edit(모듈 집합·import 위상 불변)이면 변경 모듈만 재파싱+재resolve 하고
+// 나머지 모듈의 edge/exec_index/resolved_deps/parse_arena 를 **보존**(재discovery/재replay skip).
+// graphDiscover 170→~40ms 의 본체. 위상 변화면 full fallback(전량 clear + fresh discovery).
+//
+// **정확성(byte-identical) 핵심**:
+//   1. renumber 미수정 — 위상 불변이면 renumber=identity(SymbolRef 에 박힌 module index 안전).
+//      위상 변화는 topologyMatches=false → full fallback(renumber 정상 실행).
+//   2. 변경 모듈의 edge(dependencies/importers/dynamic_*) 는 invalidate 전에 스냅샷해 그대로
+//      복원 — unlink/relink 하면 dep.importers 내 위치가 바뀌어 출력이 fresh 와 달라진다.
+//      재resolve 는 `suppress_edge_link=true` 로 link 단계만 억제하고 import_records[].resolved
+//      + resolved_deps 만 새 parse_arena 기준으로 재구성한다(.specifier PathRef UAF 회피 —
+//      옛 resolved_deps 를 보존하지 않고 새 arena 로 새로 만든다).
+//   3. 위상 일치 = 모듈 추가/삭제 0 → orphan 없음(prune 불필요). 추가/삭제는 변경 모듈의
+//      specifier diff 로 topologyMatches=false → full fallback 에서 prepareForPreservedRebuild
+//      (전량 clear)가 처리.
+//
+// **parse_arena 단독 owner**: 보존 모드에선 transferModulesToStore 비활성(bundler.zig) →
+// graph 가 parse_arena 를 계속 소유. store 는 비어 cache-hit 경로를 타지 않는다. graph.deinit
+// (IncrementalBundler.deinit / RN worker defer)이 parse_arena 를 단독 해제 → double-free 없음.
+// ============================================================
+
+/// 위상(topology) 보존 증분 빌드. `preserve_topology=true` 일 때 bundler 가 호출.
+///
+/// - cold(graph 비어있음) 또는 위상 변화 가드 위반 시 → full discovery(`buildIncremental`).
+///   단 보존 모드는 store 를 안 채우므로 store cache-hit 없이 전량 parse(byte-identical full).
+/// - warm(graph 보존) + 변경 모듈 전부 body-only(topologyMatches) → 변경 모듈만 재파싱+재resolve,
+///   나머지 보존. finalizeGraph(renumber identity + DFS) 후 reparsed=변경 모듈.
+pub fn buildIncrementalPreserved(
+    self: *ModuleGraph,
+    io: std.Io,
+    entry_points: []const []const u8,
+    store: *module_store.PersistentModuleStore,
+    changed_files: ?*const std.StringHashMapUnmanaged(void),
+) !IncrementalBuildResult {
+    // cold / 첫 빌드 / 직전 fallback 으로 graph 가 비워진 경우 → full discovery.
+    // (store 는 보존 모드에서 비어있어 전량 cache-miss = full parse → byte-identical full.)
+    if (self.modules.count() == 0) {
+        return buildIncremental(self, io, entry_points, store, changed_files);
+    }
+
+    // 변경 정보가 없으면(initial-after-warm / CLI) 보존 판정 불가 → full fallback.
+    const cf = changed_files orelse return fallbackFullRebuild(self, io, entry_points, store, changed_files);
+
+    // **feature gate** — 보존 경로는 "모듈 집합 전체에서 discovery 중 파생되는 per-build 상태"
+    // (worker_entries / rn_asset_metadata / runtime_polyfill_roots / emit chunk / lazy seed 등)를
+    // 가진 빌드를 다루지 못한다(변경 모듈만 재resolve 하면 *변경되지 않은* 모듈의 기여분을
+    // 재생성/보존할 수 없어 byte-identical 이 깨짐). 이런 빌드는 보수적으로 full fallback.
+    // plan §12/§29 의 "plugin/MF/glob/require.context/code_splitting 보존 경로 제외" 와 동형 +
+    // RN 의 runtime polyfill / asset 까지 확장. 정확성 우선 — 불확실하면 full.
+    if (!canPreserveTopology(self)) {
+        return fallbackFullRebuild(self, io, entry_points, store, changed_files);
+    }
+
+    // entry_dir/project_root 재계산(buildIncremental 와 동일 — 보존 경로도 entry 변경 반영).
+    // entry 변경(추가/삭제)은 아래 "변경 모듈 = 현재 graph 모듈" 가드에서 위상 변화로 잡힌다.
+    if (entry_points.len > 0) {
+        const ed = computeEntryDir(entry_points);
+        if (self.entry_dir.len > 0) self.allocator.free(self.entry_dir);
+        self.entry_dir = if (ed.len == 0) "" else (self.allocator.dupe(u8, ed) catch "");
+        if (self.project_root_auto) {
+            self.project_root = "";
+            self.project_root_auto = false;
+        }
+    }
+    if (self.project_root.len == 0 and self.entry_dir.len > 0) {
+        self.project_root = graph_project_root.findProjectRoot(self.allocator, io, self.entry_dir) catch self.entry_dir;
+        self.project_root_auto = true;
+    }
+    graph_plugins.ensureBuiltinPlugins(self);
+
+    // 변경 모듈 인덱스 수집 — changed path 가 *현재 graph 에 있는* 모듈이어야 한다.
+    // 그래프에 없는 changed path = 신규 파일(모듈 추가 후보) → 위상 변화 → full fallback.
+    // entry_points 가 graph 에 없으면(신규 entry) 역시 full fallback.
+    var changed_indices: std.ArrayListUnmanaged(usize) = .empty;
+    defer changed_indices.deinit(self.allocator);
+    {
+        var it = cf.iterator();
+        while (it.next()) |e| {
+            const path = e.key_ptr.*;
+            const idx = self.path_to_module.get(path) orelse {
+                // changed 파일이 graph 에 없음 → 신규 모듈 추가(위상 변화) 가능성 → full.
+                return fallbackFullRebuild(self, io, entry_points, store, changed_files);
+            };
+            const ui = @intFromEnum(idx);
+            if (ui >= self.modules.count()) {
+                return fallbackFullRebuild(self, io, entry_points, store, changed_files);
+            }
+            // **lazy-barrel 가드 (requested_exports over-approx 회피)**: topologyMatches 는
+            // specifier/kind/resolve-target 만 보고 *imported 이름 집합* 은 안 본다. 보존 경로는
+            // requested_exports 를 reset 하지 않으므로, sideEffects:false re-export barrel 에서
+            // named import 가 *제거* 되면 옛 요청이 남아(over-approx) link 결정이 fresh 와 달라질
+            // 수 있다(shouldLinkResolvedRecordForModule). 변경 모듈이 그런 barrel 후보면 보수적
+            // full fallback. (일반 모듈은 isLazyBarrelCandidate=false → 항상 link → 영향 없음.)
+            if (graph_requested_exports.isLazyBarrelCandidate(self, self.modules.at(ui))) {
+                return fallbackFullRebuild(self, io, entry_points, store, changed_files);
+            }
+            try changed_indices.append(self.allocator, ui);
+        }
+    }
+    // 모든 entry 가 graph 에 있어야(신규 entry = 위상 변화) 보존 안전.
+    for (entry_points) |ep| {
+        if (self.path_to_module.get(ep) == null) {
+            return fallbackFullRebuild(self, io, entry_points, store, changed_files);
+        }
+    }
+    // 변경 모듈이 없으면(force_dirty 등) 보존된 graph 그대로 finalize — 출력 불변.
+    if (changed_indices.items.len == 0) {
+        resetPerBuildStateForPreserved(self);
+        self.topology_preserved_hits += 1;
+        try finalizeGraph(self, entry_points);
+        return .{ .graph_changed = false, .reparsed_indices = try self.allocator.alloc(types.ModuleIndex, 0) };
+    }
+
+    var discover_scope = profile.begin(.graph_discover);
+
+    // ── 각 변경 모듈: snapshot → edge 보존 invalidate → 재파싱 → 재resolve(link 억제) ──
+    // snapshot 들은 모든 변경 모듈 재파싱이 끝난 뒤 일괄 topologyMatches 검사에 쓴다.
+    var snapshots: std.ArrayListUnmanaged(ModuleTopologySnapshot) = .empty;
+    defer {
+        for (snapshots.items) |*s| s.deinit();
+        snapshots.deinit(self.allocator);
+    }
+
+    // 1) 모든 변경 모듈의 위상 스냅샷을 *invalidate/재파싱 전에* 먼저 떠 둔다(import_records 는
+    //    parse_arena 소유라 deinit 시 backing 이 사라짐). glob/require_context record 면
+    //    snapshot=null → 보존 거부 → full fallback.
+    var fallback = false;
+    for (changed_indices.items) |ui| {
+        const snap_opt = snapshotModuleTopology(self, self.allocator, ui) catch {
+            fallback = true;
+            break;
+        };
+        const snap = snap_opt orelse {
+            fallback = true;
+            break;
+        };
+        snapshots.append(self.allocator, snap) catch {
+            var s = snap;
+            s.deinit();
+            fallback = true;
+            break;
+        };
+    }
+    if (fallback) {
+        discover_scope.end();
+        return fallbackFullRebuild(self, io, entry_points, store, changed_files);
+    }
+
+    // 2) per-build global state reset (diagnostics / source_read_cache / exec·cycle counter).
+    //    snapshot 을 뜬 *뒤*, 변경 모듈 재파싱 *전*에 수행한다:
+    //    - diagnostics: 이전 빌드의 stale diag 제거(변경 모듈 재파싱이 자기 diag 재생성).
+    //    - source_read_cache: 변경 파일의 stale source 캐시 무효화(fresh read 강제).
+    //    - exec_counter/cycle_counter: finalizeGraph 의 DFS 가 0 부터 재부여해야 fresh 와 동일.
+    //    KEEP: modules/edges/resolved_deps/parse_arena/requested_exports/pkg_info_cache
+    //    (보존이 본 PR 의 목적). feature gate 가 worker_entries/rn_asset_metadata/
+    //    runtime_polyfill_roots 가 비어있음을 이미 보장하므로 그 reset 은 불필요(누적 0).
+    resetPerBuildStateForPreserved(self);
+
+    // 3) 변경 모듈을 edge 보존하며 재파싱(invalidate). reparseChangedModulePreserveEdges 는
+    //    dependencies/importers/dynamic_* 를 떼어 보관 → module.deinit(parse_arena/ast/semantic/
+    //    resolved_deps 해제) → 빈 Module init → edge 리스트 복원 → 재파싱.
+    for (changed_indices.items) |ui| {
+        reparseChangedModulePreserveEdges(self, io, ui);
+    }
+
+    // 4) 변경 모듈 재resolve — edge link 억제(보존된 edge 유지), import_records[].resolved +
+    //    resolved_deps 만 새 parse_arena 기준으로 재구성. 새 모듈이 추가되면(addModule count
+    //    증가) 위상 변화이므로 그 즉시 fallback.
+    const count_before_resolve = self.modules.count();
+    self.suppress_edge_link = true;
+    for (changed_indices.items) |ui| {
+        const m = self.modules.at(ui);
+        if (m.is_disabled or m.is_external) continue;
+        graph_resolve_imports.resolveModuleImports(self, io, ModuleIndex.fromUsize(ui)) catch {
+            self.suppress_edge_link = false;
+            discover_scope.end();
+            return fallbackFullRebuild(self, io, entry_points, store, changed_files);
+        };
+    }
+    self.suppress_edge_link = false;
+
+    // 5) 위상 일치 검사. (a) 모듈이 추가됐거나(count 증가 = 신규 dep) (b) 어느 변경 모듈이라도
+    //    snapshot 과 위상 불일치(specifier/kind/resolve-target diff)면 → full fallback.
+    if (self.modules.count() != count_before_resolve) {
+        discover_scope.end();
+        return fallbackFullRebuild(self, io, entry_points, store, changed_files);
+    }
+    for (changed_indices.items, snapshots.items) |ui, *snap| {
+        if (!topologyMatches(snap, self, ui)) {
+            discover_scope.end();
+            return fallbackFullRebuild(self, io, entry_points, store, changed_files);
+        }
+    }
+
+    discover_scope.end();
+
+    // 6) 위상 보존 확정 — renumber(identity) + DFS exec_index 재부여.
+    self.topology_preserved_hits += 1;
+    try finalizeGraph(self, entry_points);
+
+    // 변경 모듈만 reparsed(HMR diff source-of-truth). renumber 가 module index 를 재배치하므로
+    // pre-renumber 인덱스는 stale — changed_files 의 path 로 post-renumber index 를 재조회한다
+    // (path slice 는 path_arena 소유라 renumber 후에도 path_to_module 키로 유효).
+    var reparsed: std.ArrayListUnmanaged(types.ModuleIndex) = .empty;
+    errdefer reparsed.deinit(self.allocator);
+    {
+        var it = cf.iterator();
+        while (it.next()) |e| {
+            if (self.path_to_module.get(e.key_ptr.*)) |idx| {
+                try reparsed.append(self.allocator, idx);
+            }
+        }
+    }
+
+    return .{
+        .graph_changed = false, // 위상 불변 = 그래프 구조 불변
+        .reparsed_indices = try reparsed.toOwnedSlice(self.allocator),
+    };
+}
+
+/// 위상 변화/불확실 시 fail-safe full rebuild.
+///
+/// **핵심(성능)**: clear 전에 graph 의 현재 모듈을 store 로 이전(transferModulesToStore)한 뒤
+/// clear + buildIncremental 한다. 그러면 buildIncremental 이 store cache-hit 으로 변경 안 된
+/// 모듈의 재파싱을 skip → fallback 도 *증분*(전량 reparse 가 아님)이다. 보존 모드는 평소
+/// transferModulesToStore 를 비활성(graph 단독 owner)하지만, fallback 직전 1회 이전은
+/// "graph→store 핸드오프" 로, 직후 buildIncremental 의 cache-hit 이 arena 를 store→graph 로
+/// 되돌린다(incremental.zig: cached.module.parse_arena=null). 빌드 끝의 transferModulesToStore
+/// 는 보존 모드라 다시 skip → graph 가 단독 owner 로 복귀. double-free 없음(이전 후 graph 쪽
+/// parse_arena=null → prepareForPreservedRebuild 의 m.deinit 가 arena no-op).
+///
+/// 출력은 fresh full 과 byte-identical(store cache-hit 모듈도 fresh 와 동일 — Phase A 검증됨).
+fn fallbackFullRebuild(
+    self: *ModuleGraph,
+    io: std.Io,
+    entry_points: []const []const u8,
+    store: *module_store.PersistentModuleStore,
+    changed_files: ?*const std.StringHashMapUnmanaged(void),
+) !IncrementalBuildResult {
+    self.topology_fallback_count += 1;
+    // graph→store 핸드오프: 현재 모듈의 parse_arena 를 store 로 이전(graph 쪽 parse_arena=null).
+    // 이후 buildIncremental 이 store cache-hit 으로 미변경 모듈 reparse 를 skip.
+    transferModulesToStore(self, io, store);
+    self.prepareForPreservedRebuild();
+    return buildIncremental(self, io, entry_points, store, changed_files);
+}
+
+/// 위상 보존(edge-reuse) 경로가 안전한 빌드인지 판정. false 면 full fallback.
+///
+/// 보존 경로는 *변경 모듈만* 재resolve 하므로, "모든 모듈에서 discovery 중 파생되는 per-build
+/// 상태"를 가진 빌드는 다루지 못한다 — 변경되지 않은 모듈의 기여분을 재생성할 수 없어
+/// byte-identical 이 깨진다. 다음 중 하나라도 활성이면 보수적으로 거부(full):
+///   - 사용자 plugin (resolveId/load/transform 비결정 — plan §12 제외)
+///   - code_splitting / preserve_modules (per-chunk 처리 — plan §12 제외)
+///   - lazy_compilation (동적 import seed materialize)
+///   - runtime_polyfills (usage-mode 는 모듈 전체 feature 스캔 — body edit 가 feature 변화 가능)
+///   - inject_files / run_before_main_files (execution root 합류 — 변경 모듈만으론 재배선 불가)
+///   - MF(emit_store) (federation/emit chunk)
+///   - 이미 누적된 per-build 파생물 보유: worker_entries / rn_asset_metadata /
+///     runtime_polyfill_roots (변경 모듈만 재resolve 하면 이들의 unchanged 기여분이 보존 안 됨)
+///
+/// glob/require_context 는 snapshotModuleTopology 가 record 단위로 null 반환 → 거기서 거부.
+///
+/// **dev_mode 전제**: 보존 경로는 dev/HMR(web IncrementalBundler.enable_persistence, RN watch
+/// worker)에서만 켜진다. 비-dev(prod tree-shaking)에선 requested_exports over-approximation
+/// (named import 제거 시 옛 요청 잔존)이 tree-shake 결과를 fresh 와 다르게 만들 수 있어 거부한다.
+/// dev_mode 는 tree-shaking 비활성(bundler.zig will_tree_shake) + 전 모듈 __esm 래핑이라 그 위험이
+/// 없다. lazy-barrel link 결정(requested_exports 의 다른 소비처)은 buildIncrementalPreserved 의
+/// 변경-모듈 lazy-barrel 가드가 별도 차단.
+fn canPreserveTopology(self: *const ModuleGraph) bool {
+    if (!self.dev_mode) return false;
+    if (self.has_user_resolve_id_plugins or self.has_user_load_plugins or self.has_transform_plugins) return false;
+    if (self.code_splitting or self.preserve_modules) return false;
+    if (self.lazy_compilation) return false;
+    if (self.runtime_polyfills != null) return false;
+    if (self.inject_files.len > 0 or self.run_before_main_files.len > 0) return false;
+    if (self.worker_entries.items.len > 0) return false;
+    if (self.rn_asset_metadata.items.len > 0) return false;
+    if (self.runtime_polyfill_roots.items.len > 0) return false;
+    // emit_store 에 chunk 요청이 있으면(plugin emitFile chunk) 보존 제외. emit_store 가
+    // null 이면 chunk 미사용(hot path 0). 포인터만 검사 — chunk 내용은 injectEmittedChunks 영역.
+    if (self.emit_store) |store_ptr| {
+        const store: *const @import("../emit_store.zig").EmitStore = @ptrCast(@alignCast(store_ptr));
+        if (store.chunks.items.len > 0) return false;
+    }
+    return true;
+}
+
+/// 보존 경로 진입 시 per-build global state 만 reset(modules/edges/resolved_deps/parse_arena/
+/// requested_exports/pkg_info_cache 는 보존). `lifecycle.reset()` 의 부분집합:
+///   - diagnostics + owned_diagnostic_strings (변경 모듈 재파싱이 자기 diag 재생성)
+///   - source_read_cache (변경 파일 fresh read 강제)
+///   - exec_counter / cycle_counter (finalizeGraph DFS 가 0 부터 재부여 → fresh 와 동일 exec_index)
+/// requested_exports 는 reset 하지 *않는다* — unchanged 모듈의 export 요청 상태를 보존(변경 모듈
+/// 재resolve 가 자기 deps 요청을 idempotent 재등록). worker_entries/rn_asset_metadata/
+/// runtime_polyfill_roots 는 feature gate 가 비어있음을 보장하므로 reset 불요(누적 0).
+fn resetPerBuildStateForPreserved(self: *ModuleGraph) void {
+    for (self.owned_diagnostic_strings.items) |s| self.allocator.free(s);
+    self.owned_diagnostic_strings.clearRetainingCapacity();
+    self.diagnostics.clearRetainingCapacity();
+    self.source_read_cache.deinit(self.allocator);
+    self.source_read_cache = .{};
+    self.exec_counter = 0;
+    self.cycle_counter = 0;
+}
+
+/// 변경 모듈을 **edge 보존**하며 재파싱한다. dependencies/importers/dynamic_imports/
+/// dynamic_importers 리스트(graph allocator 소유, parse_arena 와 독립)를 떼어 보관 →
+/// module.deinit(parse_arena/ast/semantic/resolved_deps + edge 리스트 해제) → 같은 index/path
+/// 로 빈 Module init → 보관한 edge 리스트 복원 → 재파싱. 재resolve 는 caller 가 suppress_edge_link
+/// 로 link 를 억제하므로 edge 가 중복/이동 없이 그대로 유지된다.
+fn reparseChangedModulePreserveEdges(self: *ModuleGraph, io: std.Io, mod_idx: usize) void {
+    const m = self.modules.at(mod_idx);
+    const saved_index = m.index;
+    const saved_path = m.path;
+    // edge 리스트 move-out (deinit 가 해제하지 않도록 빈 리스트로 치환).
+    const saved_deps = m.dependencies;
+    const saved_importers = m.importers;
+    const saved_dyn = m.dynamic_imports;
+    const saved_dyn_importers = m.dynamic_importers;
+    // **file-identity 필드 보존**: body edit 은 같은 파일(같은 확장자/loader)이므로 module_type/
+    // loader/resolve_dir 이 불변이다. Module.init 은 이들을 default(.unknown) 로 두므로(addModule
+    // WithResolveDir 가 확장자로 채우는 로직을 우회), 보존하지 않으면 parseModule 이 모듈을
+    // 비-JS 로 오인해 빈 source/0 record 로 끝난다(byte-identical 깨짐). resolve_dir 은 graph
+    // allocator 소유라 m.deinit 가 free 하므로 move-out 후 복원.
+    const saved_module_type = m.module_type;
+    const saved_loader = m.loader;
+    const saved_resolve_dir = m.resolve_dir;
+    m.dependencies = .empty;
+    m.importers = .empty;
+    m.dynamic_imports = .empty;
+    m.dynamic_importers = .empty;
+    m.resolve_dir = null; // move-out: m.deinit 가 free 하지 않게(아래에서 복원).
+    // 나머지(parse_arena/ast/semantic/resolved_deps/import_records/alias_table 등) 일괄 해제.
+    m.deinit(self.allocator);
+    // 같은 index/path 로 빈 Module — edge + file-identity 복원.
+    m.* = @import("../module.zig").Module.init(saved_index, saved_path);
+    m.dependencies = saved_deps;
+    m.importers = saved_importers;
+    m.dynamic_imports = saved_dyn;
+    m.dynamic_importers = saved_dyn_importers;
+    m.module_type = saved_module_type;
+    m.loader = saved_loader;
+    m.resolve_dir = saved_resolve_dir;
+
+    // 재파싱(새 parse_arena + ast + import_records). mtime=0 → parseModule 이
+    // readModuleSourceWithMtime 로 fresh source + mtime 을 채운다.
+    m.mtime = 0;
+    self.parseModule(io, ModuleIndex.fromUsize(mod_idx));
+    const m2 = self.modules.at(mod_idx);
+    self.applySideEffectsFromPackageJson(io, m2);
+    m2.state = .ready;
+}
+
 /// 파일의 mtime 을 나노초로 반환. virtual module / embedded null byte / overlong
 /// path 는 error 로 폴백해 호출부가 `catch 0` 으로 처리하도록 한다.
 ///

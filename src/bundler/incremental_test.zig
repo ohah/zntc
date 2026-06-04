@@ -1620,3 +1620,510 @@ test "Phase A: enable_persistence + resolve_cache reset(interval) 교차 안전 
     }
     try std.testing.expect(ib.persistent_graph != null);
 }
+
+// ============================================================
+// perf/hmr-graph-topology-reuse Phase B — edge-reuse short-circuit byte-identical
+//
+// 보존(preserve_topology=true) 경로로 rebuild 한 full 번들 출력이 fresh full 과 **바이트 동일**
+// 한지 검증한다. Phase A 와 달리 graph 를 전량 clear 하지 않고 변경 모듈만 선택 재파싱(edge-reuse)
+// → exec_index/edge/resolved_deps 보존이 byte-identical 을 깨지 않는지가 핵심.
+// topology_preserved_hits / topology_fallback_count 로 "실제 보존 경로를 탔는지(전량 fallback 이
+// 아닌지)" 도 단언한다.
+// ============================================================
+
+/// 보존 경로(preserve_topology=true) 한 빌드 헬퍼. preservedBuild 와 동형이되 preserve_topology
+/// 를 켜 buildIncrementalPreserved(edge-reuse) 로 진입시킨다.
+fn preservedBuildTopo(
+    graph: *ModuleGraph_t,
+    store: *module_store.PersistentModuleStore,
+    rc: *@import("resolve_cache.zig").ResolveCache,
+    entry: []const u8,
+    is_first: bool,
+    changed: ?*const std.StringHashMapUnmanaged(void),
+) !BundleResult {
+    var opts = @as(@import("bundler.zig").BundleOptions, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    if (!is_first) {
+        opts.module_store = store;
+        opts.changed_files = changed;
+        opts.preserve_topology = true;
+    }
+    var b = Bundler.initWithGraph(std.testing.allocator, opts, rc, graph);
+    defer b.deinit();
+    return try b.bundle(std.testing.io);
+}
+
+fn freshFull(entry: []const u8) !BundleResult {
+    var fresh = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer fresh.deinit();
+    return try fresh.bundle(std.testing.io);
+}
+
+test "Phase B byte-identical: edge-reuse short-circuit 출력 == fresh full (다중 dep + re-export + 동적 import)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 그래프: index → barrel(re-export) → {a, b}; index → c(동적 import); 변경은 index body-only.
+    try writeFile(tmp.dir, "a.ts", "export const a = 1;");
+    try writeFile(tmp.dir, "b.ts", "export const b = 2;");
+    try writeFile(tmp.dir, "barrel.ts", "export { a } from './a';\nexport { b } from './b';");
+    try writeFile(tmp.dir, "c.ts", "export const c = 3;");
+    try writeFile(tmp.dir, "index.ts",
+        \\import { a, b } from './barrel';
+        \\console.log(a, b);
+        \\export async function load() { return import('./c'); }
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuildTopo(&graph, &store, &rc, entry, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+    const mod_count_after_first = graph.modules.count();
+    const hits_before = graph.topology_preserved_hits;
+    const fb_before = graph.topology_fallback_count;
+
+    // index.ts body-only edit (import/동적 import 위상 불변).
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "index.ts",
+        \\import { a, b } from './barrel';
+        \\console.log(a, b, 'edited');
+        \\export async function load() { return import('./c'); }
+    );
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, entry, {});
+
+    var preserved = try preservedBuildTopo(&graph, &store, &rc, entry, false, &touched);
+    defer preserved.deinit(std.testing.allocator);
+    try std.testing.expect(!preserved.hasErrors());
+
+    var fresh_result = try freshFull(entry);
+    defer fresh_result.deinit(std.testing.allocator);
+    try std.testing.expect(!fresh_result.hasErrors());
+
+    // 핵심 1: 보존(edge-reuse) 경로를 실제로 탔다(전량 fallback 아님) — preserved hit++ , fallback 불변.
+    try std.testing.expectEqual(hits_before + 1, graph.topology_preserved_hits);
+    try std.testing.expectEqual(fb_before, graph.topology_fallback_count);
+    // 핵심 2: 모듈 슬롯 보존(count 동일) + byte-identical.
+    try std.testing.expectEqual(mod_count_after_first, graph.modules.count());
+    try std.testing.expect(preserved.output.len > 0);
+    try std.testing.expectEqualStrings(fresh_result.output, preserved.output);
+}
+
+test "Phase B byte-identical: A→B→A 반복 body-only edit 후에도 fresh full 과 동일(보존 경로)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "util.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "other.ts", "export const y = 9;");
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nimport { y } from './other';\nconsole.log(x, y, 'A');");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuildTopo(&graph, &store, &rc, entry, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+
+    const variants = [_][]const u8{
+        "import { x } from './util';\nimport { y } from './other';\nconsole.log(x, y, 'B');",
+        "import { x } from './util';\nimport { y } from './other';\nconsole.log(x, y, 'A');",
+        "import { x } from './util';\nimport { y } from './other';\nconsole.log(x, y, 'B');",
+    };
+    var hits: usize = 0;
+    for (variants) |src| {
+        std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+        try writeFile(tmp.dir, "index.ts", src);
+        var touched: std.StringHashMapUnmanaged(void) = .empty;
+        defer touched.deinit(std.testing.allocator);
+        try touched.put(std.testing.allocator, entry, {});
+
+        const hits_before = graph.topology_preserved_hits;
+        var preserved = try preservedBuildTopo(&graph, &store, &rc, entry, false, &touched);
+        defer preserved.deinit(std.testing.allocator);
+        try std.testing.expect(!preserved.hasErrors());
+        if (graph.topology_preserved_hits > hits_before) hits += 1;
+
+        var fresh_result = try freshFull(entry);
+        defer fresh_result.deinit(std.testing.allocator);
+        try std.testing.expect(!fresh_result.hasErrors());
+        try std.testing.expectEqualStrings(fresh_result.output, preserved.output);
+    }
+    // 세 rebuild 모두 보존 경로(edge-reuse) hit.
+    try std.testing.expectEqual(@as(usize, 3), hits);
+}
+
+test "Phase B: 모듈 추가(import 신규) → 위상 변화 → full fallback + byte-identical" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "util.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "extra.ts", "export const y = 2;");
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nconsole.log(x);");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuildTopo(&graph, &store, &rc, entry, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+    const fb_before = graph.topology_fallback_count;
+
+    // 신규 import → extra.ts 모듈 추가(위상 변화) → fallback.
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "index.ts",
+        \\import { x } from './util';
+        \\import { y } from './extra';
+        \\console.log(x, y);
+    );
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, entry, {});
+
+    var preserved = try preservedBuildTopo(&graph, &store, &rc, entry, false, &touched);
+    defer preserved.deinit(std.testing.allocator);
+    try std.testing.expect(!preserved.hasErrors());
+
+    var fresh_result = try freshFull(entry);
+    defer fresh_result.deinit(std.testing.allocator);
+    try std.testing.expect(!fresh_result.hasErrors());
+
+    // fallback 발생(위상 변화) + 모듈 추가 반영 + byte-identical.
+    try std.testing.expectEqual(fb_before + 1, graph.topology_fallback_count);
+    try std.testing.expectEqualStrings(fresh_result.output, preserved.output);
+}
+
+test "Phase B: 모듈 제거(import 삭제) → fallback + orphan prune(제거 export 누수 0) + byte-identical" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "util.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "extra.ts", "export const REMOVED_MARKER_y = 222;");
+    try writeFile(tmp.dir, "index.ts",
+        \\import { x } from './util';
+        \\import { REMOVED_MARKER_y } from './extra';
+        \\console.log(x, REMOVED_MARKER_y);
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuildTopo(&graph, &store, &rc, entry, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+    const fb_before = graph.topology_fallback_count;
+
+    // extra.ts import 제거(위상 변화: 모듈 제거) → fallback + orphan prune.
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nconsole.log(x);");
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, entry, {});
+
+    var preserved = try preservedBuildTopo(&graph, &store, &rc, entry, false, &touched);
+    defer preserved.deinit(std.testing.allocator);
+    try std.testing.expect(!preserved.hasErrors());
+
+    var fresh_result = try freshFull(entry);
+    defer fresh_result.deinit(std.testing.allocator);
+    try std.testing.expect(!fresh_result.hasErrors());
+
+    // fallback + byte-identical + 제거된 모듈의 export 가 출력에 없어야 한다(orphan 누수 0).
+    try std.testing.expectEqual(fb_before + 1, graph.topology_fallback_count);
+    try std.testing.expectEqualStrings(fresh_result.output, preserved.output);
+    try std.testing.expect(std.mem.indexOf(u8, preserved.output, "REMOVED_MARKER_y") == null);
+}
+
+// resolve-target-diff 가드는 build_flow.zig 의 결정적 단위 테스트
+// ("topology: 같은 specifier 가 다른 파일로 resolve → resolve-diff(full)") 에서 격리 검증한다.
+// 통합 레벨에서 같은 시나리오를 만들려면 *persistent resolve_cache* 의 sibling-file 무효화까지
+// 얽혀(plan §30 transitive resolve 잔존 위험) 비결정적이라 단위 테스트로 고정한다.
+
+test "Phase B: 동적 import 추가(위상 변화) → fallback + byte-identical" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "util.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "lazy.ts", "export const z = 7;");
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nconsole.log(x);");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuildTopo(&graph, &store, &rc, entry, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+    const fb_before = graph.topology_fallback_count;
+
+    // 동적 import 추가 → import record 추가(위상 변화) → fallback.
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "index.ts",
+        \\import { x } from './util';
+        \\console.log(x);
+        \\export async function load() { return import('./lazy'); }
+    );
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, entry, {});
+
+    var preserved = try preservedBuildTopo(&graph, &store, &rc, entry, false, &touched);
+    defer preserved.deinit(std.testing.allocator);
+    try std.testing.expect(!preserved.hasErrors());
+
+    var fresh_result = try freshFull(entry);
+    defer fresh_result.deinit(std.testing.allocator);
+    try std.testing.expect(!fresh_result.hasErrors());
+
+    try std.testing.expectEqual(fb_before + 1, graph.topology_fallback_count);
+    try std.testing.expectEqualStrings(fresh_result.output, preserved.output);
+}
+
+test "Phase B: dep(비변경 모듈) 만 수정해도 보존 경로 + byte-identical (importers 보존)" {
+    // 변경 모듈이 entry 가 아니라 leaf dep 인 경우. importers 보존이 정확해야 byte-identical.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "util.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nconsole.log(x);");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+    const util_path = try absPath(&tmp, "util.ts");
+    defer std.testing.allocator.free(util_path);
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuildTopo(&graph, &store, &rc, entry, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+    const hits_before = graph.topology_preserved_hits;
+    const fb_before = graph.topology_fallback_count;
+
+    // util.ts body-only edit (leaf dep) — index.ts 는 그대로.
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "util.ts", "export const x = 42;");
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, util_path, {});
+
+    var preserved = try preservedBuildTopo(&graph, &store, &rc, entry, false, &touched);
+    defer preserved.deinit(std.testing.allocator);
+    try std.testing.expect(!preserved.hasErrors());
+
+    var fresh_result = try freshFull(entry);
+    defer fresh_result.deinit(std.testing.allocator);
+    try std.testing.expect(!fresh_result.hasErrors());
+
+    try std.testing.expectEqual(hits_before + 1, graph.topology_preserved_hits);
+    try std.testing.expectEqual(fb_before, graph.topology_fallback_count);
+    try std.testing.expectEqualStrings(fresh_result.output, preserved.output);
+    // 변경값 반영 확인.
+    try std.testing.expect(std.mem.indexOf(u8, preserved.output, "42") != null);
+}
+
+test "Phase B: 보존 경로 반복 rebuild GPA leak 0 (transferModulesToStore 비활성 — parse_arena 단독 owner)" {
+    // 보존 모드에선 store 로 양도하지 않고 graph 가 parse_arena 를 단독 소유. 여러 번 rebuild
+    // 후 graph.deinit + store.deinit 가 double-free/leak 없이 끝나야 한다(GPA 검출).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "export const a = 1;");
+    try writeFile(tmp.dir, "b.ts", "export const b = 2;");
+    try writeFile(tmp.dir, "index.ts", "import { a } from './a';\nimport { b } from './b';\nconsole.log(a, b);");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuildTopo(&graph, &store, &rc, entry, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+    // store 는 보존 모드에서 비어있어야 한다(transferModulesToStore 비활성).
+    try std.testing.expectEqual(@as(usize, 0), store.modules.count());
+
+    var i: usize = 0;
+    while (i < 5) : (i += 1) {
+        std.testing.io.sleep(std.Io.Duration.fromMilliseconds(20), .awake) catch {};
+        const src = try std.fmt.allocPrint(std.testing.allocator, "import {{ a }} from './a';\nimport {{ b }} from './b';\nconsole.log(a, b, {d});", .{i});
+        defer std.testing.allocator.free(src);
+        try writeFile(tmp.dir, "index.ts", src);
+        var touched: std.StringHashMapUnmanaged(void) = .empty;
+        defer touched.deinit(std.testing.allocator);
+        try touched.put(std.testing.allocator, entry, {});
+
+        var preserved = try preservedBuildTopo(&graph, &store, &rc, entry, false, &touched);
+        defer preserved.deinit(std.testing.allocator);
+        try std.testing.expect(!preserved.hasErrors());
+    }
+    // 보존 경로를 여러 번 탔고(전량 fallback 아님), store 는 끝까지 비어있다.
+    try std.testing.expect(graph.topology_preserved_hits >= 1);
+    try std.testing.expectEqual(@as(usize, 0), store.modules.count());
+}
+
+test "Phase B: 공유 dep 의 여러 importer — dep body edit 시 importers 순서 보존(byte-identical)" {
+    // shared.ts 를 a/b/c 셋이 import → shared.importers 에 [a,b,c] 순. shared body edit 시
+    // 보존 경로가 a/b/c 의 edge 를 건드리지 않아 importers 순서가 fresh 와 동일해야 한다
+    // (unlink/relink 했다면 shared 가 importers 끝으로 밀려 출력이 달라질 위험을 격리 검증).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "shared.ts", "export const s = 100;");
+    try writeFile(tmp.dir, "a.ts", "import { s } from './shared';\nexport const a = s + 1;");
+    try writeFile(tmp.dir, "b.ts", "import { s } from './shared';\nexport const b = s + 2;");
+    try writeFile(tmp.dir, "c.ts", "import { s } from './shared';\nexport const c = s + 3;");
+    try writeFile(tmp.dir, "index.ts",
+        \\import { a } from './a';
+        \\import { b } from './b';
+        \\import { c } from './c';
+        \\console.log(a, b, c);
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+    const shared_path = try absPath(&tmp, "shared.ts");
+    defer std.testing.allocator.free(shared_path);
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuildTopo(&graph, &store, &rc, entry, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+    const hits_before = graph.topology_preserved_hits;
+    const fb_before = graph.topology_fallback_count;
+
+    // shared.ts body-only edit (위상 불변 — 셋이 여전히 import).
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "shared.ts", "export const s = 999;");
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, shared_path, {});
+
+    var preserved = try preservedBuildTopo(&graph, &store, &rc, entry, false, &touched);
+    defer preserved.deinit(std.testing.allocator);
+    try std.testing.expect(!preserved.hasErrors());
+
+    var fresh_result = try freshFull(entry);
+    defer fresh_result.deinit(std.testing.allocator);
+    try std.testing.expect(!fresh_result.hasErrors());
+
+    // 보존 경로 hit(전량 fallback 아님) + importers 순서 보존 → byte-identical + 변경값 반영.
+    try std.testing.expectEqual(hits_before + 1, graph.topology_preserved_hits);
+    try std.testing.expectEqual(fb_before, graph.topology_fallback_count);
+    try std.testing.expectEqualStrings(fresh_result.output, preserved.output);
+    try std.testing.expect(std.mem.indexOf(u8, preserved.output, "999") != null);
+}
+
+test "Phase B: fallback 도 store cache-hit 으로 증분(전량 reparse 아님) + byte-identical" {
+    // 모듈 추가(위상 변화) → fallback. fast-fallback(graph→store 핸드오프)으로 변경 안 된
+    // 모듈은 store cache-hit 이라 reparse 가 적어야 한다. 정확성(byte-identical)은 필수.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "x.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "y.ts", "export const y = 2;");
+    try writeFile(tmp.dir, "extra.ts", "export const EXTRA_ADDED_MARKER = 31337;");
+    try writeFile(tmp.dir, "index.ts", "import { x } from './x';\nimport { y } from './y';\nconsole.log(x, y);");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuildTopo(&graph, &store, &rc, entry, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+    const fb_before = graph.topology_fallback_count;
+
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "index.ts",
+        \\import { x } from './x';
+        \\import { y } from './y';
+        \\import { EXTRA_ADDED_MARKER } from './extra';
+        \\console.log(x, y, EXTRA_ADDED_MARKER);
+    );
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, entry, {});
+
+    var preserved = try preservedBuildTopo(&graph, &store, &rc, entry, false, &touched);
+    defer preserved.deinit(std.testing.allocator);
+    try std.testing.expect(!preserved.hasErrors());
+
+    var fresh_result = try freshFull(entry);
+    defer fresh_result.deinit(std.testing.allocator);
+    try std.testing.expect(!fresh_result.hasErrors());
+
+    // fallback 발생 + byte-identical + 추가 모듈 반영(31337 값이 출력에 등장).
+    try std.testing.expectEqual(fb_before + 1, graph.topology_fallback_count);
+    try std.testing.expectEqualStrings(fresh_result.output, preserved.output);
+    try std.testing.expect(std.mem.indexOf(u8, preserved.output, "31337") != null);
+}

@@ -397,6 +397,13 @@ pub const BundleOptions = struct {
     /// 재사용할 보존 스냅샷 (borrowed, IncrementalBundler 소유). `reuse_renames=true`
     /// 일 때만 의미. null 이면 가드 평가 없이 기존 computeRenames.
     preserved_renames: ?*const @import("symbol.zig").PreservedRenames = null,
+    /// perf/hmr-graph-topology-reuse Phase B — 위상(topology) 보존 모드.
+    /// `external_graph` (initWithGraph) 와 함께일 때만 의미. true 면 (1) bundle() 이 매
+    /// 빌드 graph 를 전량 clear(prepareForPreservedRebuild)하지 않고 graph.buildIncrementalPreserved
+    /// 가 변경 모듈만 선택 재파싱(edge-reuse short-circuit, 위상 변화 시 내부 full fallback),
+    /// (2) `transferModulesToStore` 를 비활성(graph 가 parse_arena 단독 owner — store 양도 0).
+    /// IncrementalBundler.enable_persistence / RN watch worker 가 set. default false → Phase A 동작.
+    preserve_topology: bool = false,
     /// 활성화할 디버그 로그 카테고리 (ZNTC_DEBUG env 와 합집합).
     /// 예: `&.{"compiled_cache", "hmr"}`. 카테고리 enum 은 `src/debug_log.zig` 참조.
     debug: []const []const u8 = &.{},
@@ -1175,17 +1182,22 @@ pub const Bundler = struct {
             owned_graph_storage = ModuleGraph.init(self.allocator, self.getResolveCache());
         }
         const graph: *ModuleGraph = if (self.external_graph) |g| g else &owned_graph_storage;
-        // perf/hmr-graph-topology-reuse Phase A — 보존된 external_graph 재사용 훅.
+        // perf/hmr-graph-topology-reuse — 보존된 external_graph 재사용 훅.
         // external_graph 가 *이미 모듈을 가진* 상태(=직전 빌드의 결과)면, 이번 빌드 전에
-        // 반드시 reset 해야 stale 모듈/edge 가 새 빌드를 오염시키지 않는다. Phase A 의
-        // prepareForPreservedRebuild 는 모듈을 전량 비워 매 빌드 fresh graph 와 byte-identical
-        // 출력을 보장한다(graph struct/backing/path_arena 만 재사용 — 객체 수명 안정 + alloc 절감).
-        // 위상 보존(edge/exec_index 재사용)은 transferModulesToStore 소유권 재설계가 필요해
-        // Phase B 로 분리. 따라서 여기 reset 은 빌드 종류(plugin/MF/glob/splitting 등)와 무관하게
-        // 항상 안전.
-        if (has_external_graph and graph.moduleCount() > 0) {
+        // stale 모듈/edge 가 새 빌드를 오염시키지 않도록 처리해야 한다. 두 모드:
+        //
+        // - **Phase A (preserve_topology=false)**: prepareForPreservedRebuild 로 모듈을 전량
+        //   비워 매 빌드 fresh discovery → byte-identical(graph struct/backing/path_arena 만 재사용).
+        //
+        // - **Phase B (preserve_topology=true)**: 여기서 clear 하지 *않는다*. graph 가 직전 빌드의
+        //   모듈/edge/parse_arena 를 그대로 보유한 채 buildIncrementalPreserved 로 진입 →
+        //   변경 모듈만 선택 재파싱(edge-reuse). 위상 변화 가드 위반 시 그 함수 내부에서
+        //   prepareForPreservedRebuild + full fresh discovery 로 fallback(byte-identical full).
+        //   따라서 Phase B 에선 여기서 graph 를 비우면 안 된다(보존이 무효화됨).
+        if (has_external_graph and graph.moduleCount() > 0 and !self.options.preserve_topology) {
             graph.prepareForPreservedRebuild();
         }
+        graph.preserve_topology = self.options.preserve_topology;
         // this.emitFile (PR5): plugin 이 emit 한 asset 수집소. graph build 가 plugin hook 을
         // 호출하기 *전* 에 연결해야 한다. emit 된 asset 은 아래에서 OutputFile(kind=.asset)로
         // 복사되어 final_asset_outputs 에 합쳐지고, store 는 scratch 라 bundle() 종료 시 해제.
@@ -1260,7 +1272,14 @@ pub const Bundler = struct {
             var gb_scope = profile.begin(.graph_build);
             defer gb_scope.end();
             if (self.options.module_store) |store| {
-                const inc_result = try graph.buildIncremental(io, self.options.entry_points, store, self.options.changed_files);
+                // Phase B: preserve_topology(+external_graph) 면 위상 보존 증분 빌드(edge-reuse).
+                // 아니면 기존 buildIncremental(store cache-hit 기반). external_graph 없이
+                // preserve_topology 만 켜는 건 무의미(graph 보존이 없으면 매 빌드 cold) — 그
+                // 경우 owned graph 라 buildIncrementalPreserved 의 cold 분기가 full 로 처리.
+                const inc_result = if (self.options.preserve_topology and has_external_graph)
+                    try graph.buildIncrementalPreserved(io, self.options.entry_points, store, self.options.changed_files)
+                else
+                    try graph.buildIncremental(io, self.options.entry_points, store, self.options.changed_files);
                 reparsed_count = inc_result.reparsed_indices.len;
                 if (inc_result.reparsed_indices.len > 0) {
                     const list = try self.allocator.alloc([]const u8, inc_result.reparsed_indices.len);
@@ -2349,8 +2368,17 @@ pub const Bundler = struct {
         // 증분 빌드: graph.deinit() 전에 모듈을 store로 이전.
         // putModule이 parse_arena 소유권을 store로 가져가므로
         // graph.deinit()에서 이중 해제가 발생하지 않는다.
+        //
+        // **Phase B (preserve_topology)**: transferModulesToStore 비활성. 보존 모드에선 graph 가
+        // 빌드 사이 parse_arena 를 단독 소유(다음 빌드 buildIncrementalPreserved 가 보존된 arena 를
+        // 그대로 재사용)한다. 여기서 store 로 양도하면 graph(external_graph 라 deinit 안 됨)와 store 가
+        // 같은 parse_arena 를 동시에 참조 → store.deinit + 다음 빌드 graph 의 reuse 사이에서
+        // double-free/UAF. 보존 모드에선 store 를 채우지 않아 buildIncrementalPreserved 의 cache-hit
+        // 경로(있다면 fallback 의 buildIncremental)도 전량 cache-miss = full parse 로 정합을 맞춘다.
         if (self.options.module_store) |store| {
-            graph.transferModulesToStore(io, store);
+            if (!self.options.preserve_topology) {
+                graph.transferModulesToStore(io, store);
+            }
         }
 
         var first_err: ?*const types.BundlerDiagnostic = null;

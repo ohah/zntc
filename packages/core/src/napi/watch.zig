@@ -923,6 +923,21 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
     var persistent_store = module_store_mod.PersistentModuleStore.init(allocator);
     defer persistent_store.deinit();
 
+    // perf/hmr-graph-topology-reuse Phase B — RN watch worker 의 보존 graph + resolve cache.
+    // RN 은 IncrementalBundler 를 거치지 않고 Bundler 를 직접 구동하므로, 보존 graph 를 worker
+    // 함수 스코프에 직접 보유해 빌드 간 유지한다(initWithGraph). 초기/rebuild 모두 같은 graph +
+    // 같은 resolve_cache 를 재사용 → rebuild 에서 preserve_topology=true 로 buildIncrementalPreserved
+    // (edge-reuse) 진입. 위상 변화/feature(runtime polyfill·asset 등) 시 graph 내부에서 full fallback.
+    //
+    // **수명/소유권 (defer LIFO)**: persistent_resolve_cache → persistent_graph 순서로 선언해
+    // graph.deinit 이 resolve_cache.deinit *전에* 실행되도록 한다(graph 가 resolve_cache 포인터
+    // 보유). graph 가 parse_arena 단독 owner(transferModulesToStore 비활성, bundler.zig) 라
+    // persistent_store 는 비어 double-free 없음. store/graph 둘 다 같은 함수 스코프 defer.
+    var persistent_resolve_cache = Bundler.initResolveCacheFromOptions(allocator, bundle_opts);
+    defer persistent_resolve_cache.deinit();
+    var persistent_graph = bundler_mod.ModuleGraph.init(allocator, &persistent_resolve_cache);
+    defer persistent_graph.deinit();
+
     var initial_opts = bundle_opts;
     initial_opts.module_store = &persistent_store;
     initial_opts.compiled_cache = &async_data.compiled_cache;
@@ -936,12 +951,24 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
     // (BundleResult.rename_snapshot 으로 반환). preserved_renames 는 첫 빌드에 주입 대상이
     // 없으므로 여기서 주지 않는다.
     initial_opts.reuse_renames = bundle_opts.dev_mode;
+    // Phase B: 초기 빌드도 preserve_topology=true. graph 가 비어있어 buildIncrementalPreserved 의
+    // cold 분기(modules.count()==0)가 full discovery(buildIncremental)로 처리하지만, 빌드 끝의
+    // transferModulesToStore 가 비활성(bundler.zig, preserve_topology) 되어 parse_arena 가 store 로
+    // 양도되지 않고 graph 에 남는다 → 다음 rebuild 의 보존 경로가 그 arena 를 재사용. preserve_topology
+    // 없이 module_store 만 주면 transferModulesToStore 가 graph 를 비워 다음 rebuild 보존이 깨진다.
+    initial_opts.preserve_topology = true;
     // Lazy sourcemap (Issue #1727 Phase B): dev watch 세션에서는 initial/rebuild 모두
     // builder 를 handle 에 캐시해 `/bundle.js.map`, `/hmr-map/:id` 요청을 즉석 서빙.
     // rebuild 경로의 `emit_sourcemap_finalize` 29ms 를 HMR latency 밖으로 빼낸다.
     if (bundle_opts.dev_mode and bundle_opts.sourcemap.enable) initial_opts.sourcemap.lazy = true;
 
-    var bundler = Bundler.init(allocator, initial_opts);
+    // Phase B: 초기 빌드도 보존 graph + resolve cache 로 구동(initWithGraph). preserve_topology
+    // 는 set 하지 않는다(graph 비어있음 = cold discovery). 이 빌드가 graph 를 warm 으로 만들어
+    // 다음 rebuild 가 buildIncrementalPreserved(edge-reuse)로 진입할 수 있게 한다. transfer
+    // ModulesToStore 비활성(preserve_topology=false 라 여기선 store 로 양도되지만, 첫 빌드는
+    // 위상 변화 가드 무관 — 다음 rebuild 가 preserve_topology=true 면 store 양도가 비활성되어
+    // graph 가 단독 owner 로 굳는다).
+    var bundler = Bundler.initWithGraph(allocator, initial_opts, &persistent_resolve_cache, &persistent_graph);
     defer bundler.deinit();
     var result = bundler.bundle(common.io()) catch |err| {
         // 초기 빌드 실패 — rebuild 이벤트로 에러 전달
@@ -1013,8 +1040,8 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         result.sourcemap_builder = null;
     }
 
-    var persistent_resolve_cache = Bundler.initResolveCacheFromOptions(allocator, bundle_opts);
-    defer persistent_resolve_cache.deinit();
+    // persistent_resolve_cache 는 Phase B 보존 graph 와 함께 worker 초입(persistent_store 직후)
+    // 에서 선언됐다 — 초기 빌드도 같은 cache 를 쓰도록 앞당겼다(과거엔 여기서 별도 선언).
 
     // Issue #1223 Phase 1: 이벤트 기반 파일 워처 (kqueue/inotify, mtime 폴백).
     // 실패 시 워치 스레드 진입 직전에 종료한다.
@@ -1333,7 +1360,13 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             force_snapshot_buf = snap;
             break :blk snap;
         };
-        var rebundler = Bundler.initWithResolveCache(allocator, incremental_opts, &persistent_resolve_cache);
+        // Phase B: 보존 graph + preserve_topology 로 buildIncrementalPreserved(edge-reuse) 진입.
+        // 변경 모듈만 재파싱하고 나머지 위상/edge/parse_arena 를 보존(graphDiscover 절감). 위상 변화
+        // (모듈 추가/삭제, specifier/resolve 변화, 동적 import) 또는 feature(plugin/MF/splitting/
+        // runtime polyfill/asset/worker) 시 graph 내부에서 prepareForPreservedRebuild + full
+        // discovery 로 fallback → 셋(보존 hit / fallback / 원래 fresh) 다 byte-identical.
+        incremental_opts.preserve_topology = true;
+        var rebundler = Bundler.initWithGraph(allocator, incremental_opts, &persistent_resolve_cache, &persistent_graph);
         defer rebundler.deinit();
 
         var rebuild_result = rebundler.bundle(common.io()) catch |err| {

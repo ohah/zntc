@@ -125,6 +125,25 @@ pub const ModuleGraph = struct {
     /// (CLI / 첫 빌드 외부) 에서는 false — caller 자체가 없어 fstat 불필요.
     /// 5000-module 합성 벤치에서 fstat ~5000 회 절감.
     incremental_mode: bool = false,
+    /// perf/hmr-graph-topology-reuse Phase B — 위상(topology) 보존 모드.
+    /// true 면 (1) `transferModulesToStore` 가 비활성(graph 가 parse_arena 단독 owner —
+    /// store 로 양도하지 않음), (2) bundler external_graph 훅이 매 빌드 graph 를 전량 clear
+    /// (prepareForPreservedRebuild) 하지 않고 `buildIncrementalPreserved` 가 변경 모듈만
+    /// 선택적으로 재파싱(edge-reuse short-circuit)한다. 위상 변화(모듈 추가/삭제, specifier/
+    /// resolve target 변화)면 안에서 full fallback. enable_persistence(IncrementalBundler) /
+    /// RN watch worker 가 set. default false → 기존 경로(Phase A) 영향 0.
+    preserve_topology: bool = false,
+    /// Phase B 관측용 카운터(누적). edge-reuse short-circuit 가 성공(보존-hit)한 빌드 수와
+    /// 위상 변화/불확실로 full fallback 한 빌드 수. ZNTC_DEBUG / 단위 테스트가 "이번 rebuild 가
+    /// 실제 보존 경로를 탔는지(전량 fallback 이 아닌지)" 검증하는 데 사용. 빌드 정확성과 무관.
+    topology_preserved_hits: usize = 0,
+    topology_fallback_count: usize = 0,
+    /// Phase B edge-reuse 내부 플래그 — 변경 모듈 *재resolve* 중에만 일시적으로 true.
+    /// true 면 `linkDependency`/`linkDynamicImport` 가 no-op (보존된 edge 리스트를 그대로 두고
+    /// import_records[].resolved + resolved_deps 만 재구성하기 위함). 보존 모드에서 변경 모듈의
+    /// edge 를 unlink/relink 하면 dep.importers 내 위치가 바뀌어 byte-identical 이 깨지므로,
+    /// edge 는 invalidate 전 스냅샷으로 보존하고 link 단계만 억제한다. 재resolve 종료 즉시 false 복구.
+    suppress_edge_link: bool = false,
     /// dev mode: HMR을 위해 모든 모듈을 강제 래핑 (__esm).
     dev_mode: bool = false,
     /// `output.inlineDynamicImports` 런타임 부분. true 면 dynamic-import target 모듈을
@@ -356,6 +375,9 @@ pub const ModuleGraph = struct {
 
     pub const IncrementalBuildResult = graph_build_flow.IncrementalBuildResult;
     pub const buildIncremental = graph_build_flow.buildIncremental;
+    /// perf/hmr-graph-topology-reuse Phase B — 위상 보존 증분 빌드(edge-reuse short-circuit).
+    /// `preserve_topology=true` 일 때 bundler 가 buildIncremental 대신 호출.
+    pub const buildIncrementalPreserved = graph_build_flow.buildIncrementalPreserved;
     pub const getMtime = graph_build_flow.getMtime;
     pub const transferModulesToStore = graph_build_flow.transferModulesToStore;
 
