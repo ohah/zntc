@@ -79,6 +79,10 @@ pub const Category = enum {
     /// 스냅샷을 폐기(capture 실패 → 다음 rebuild 가 full computeRenames)한 빈도를
     /// 관측. 실앱(RN 8067 모듈)에서 null capture 가 실제로 0 인지 확인용 (F5).
     rename_reuse,
+    /// HMR 위상 보존(canPreserveTopology) fallback 게이트 진단 — 보존 경로 진입이 거부될 때
+    /// 걸린 게이트(plugin/splitting/lazy/inject/run_before_main/worker/emit_chunk/non-dev)를
+    /// 전부 출력. mobile-seller 가 무엇 때문에 fallback 하는지 측정용.
+    topology_preserve,
 
     /// 카테고리 이름으로 enum 조회 (공백 제거 + 대소문자 무시).
     pub fn fromString(s: []const u8) ?Category {

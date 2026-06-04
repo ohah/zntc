@@ -4,6 +4,7 @@ const std = @import("std");
 const types = @import("../types.zig");
 const ModuleIndex = types.ModuleIndex;
 const runtime_polyfills = @import("../runtime_polyfills.zig");
+const debug_log = @import("../../debug_log.zig");
 const module_store = @import("../module_store.zig");
 const fs = @import("../fs.zig");
 const MpscChannel = @import("../mpsc_channel.zig").MpscChannel;
@@ -1186,6 +1187,7 @@ pub fn buildIncrementalPreserved(
     // plan §12/§29 의 "plugin/MF/glob/require.context/code_splitting 보존 경로 제외" 와 동형 +
     // RN 의 runtime polyfill / asset 까지 확장. 정확성 우선 — 불확실하면 full.
     if (!canPreserveTopology(self)) {
+        logPreserveFallbackGates(self);
         return fallbackFullRebuild(self, io, entry_points, store, changed_files);
     }
 
@@ -1467,6 +1469,30 @@ fn canPreserveTopology(self: *const ModuleGraph) bool {
         if (store.chunks.items.len > 0) return false;
     }
     return true;
+}
+
+/// 측정용(ZNTC_DEBUG=topology_preserve): canPreserveTopology fallback 시 걸린 게이트를 전부 출력.
+/// `enabled` 가드라 비활성 시 비용 0. 무엇을 풀어야 보존 경로로 진입하는지 식별용
+/// (예: mobile-seller 가 plugin/splitting 등 어느 게이트로 fallback 하는지).
+fn logPreserveFallbackGates(self: *const ModuleGraph) void {
+    if (!debug_log.enabled(.topology_preserve)) return;
+    if (!self.dev_mode)
+        debug_log.print(.topology_preserve, "preserve-fallback gate: non-dev\n", .{});
+    if (self.has_user_resolve_id_plugins or self.has_user_load_plugins or self.has_transform_plugins)
+        debug_log.print(.topology_preserve, "preserve-fallback gate: plugin (resolveId={} load={} transform={})\n", .{ self.has_user_resolve_id_plugins, self.has_user_load_plugins, self.has_transform_plugins });
+    if (self.code_splitting or self.preserve_modules)
+        debug_log.print(.topology_preserve, "preserve-fallback gate: splitting={} preserve_modules={}\n", .{ self.code_splitting, self.preserve_modules });
+    if (self.lazy_compilation)
+        debug_log.print(.topology_preserve, "preserve-fallback gate: lazy_compilation\n", .{});
+    if (self.inject_files.len > 0)
+        debug_log.print(.topology_preserve, "preserve-fallback gate: inject_files ({d})\n", .{self.inject_files.len});
+    if (self.worker_entries.items.len > 0)
+        debug_log.print(.topology_preserve, "preserve-fallback gate: worker_entries ({d})\n", .{self.worker_entries.items.len});
+    if (self.emit_store) |store_ptr| {
+        const store: *const @import("../emit_store.zig").EmitStore = @ptrCast(@alignCast(store_ptr));
+        if (store.chunks.items.len > 0)
+            debug_log.print(.topology_preserve, "preserve-fallback gate: emit_chunks ({d})\n", .{store.chunks.items.len});
+    }
 }
 
 /// 보존 경로 진입 시 per-build global state 만 reset(modules/edges/resolved_deps/parse_arena/
