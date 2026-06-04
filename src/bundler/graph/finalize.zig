@@ -343,6 +343,20 @@ pub fn propagateTopLevelAwait(self: *ModuleGraph) void {
     const count = self.modules.count();
     if (count == 0) return;
 
+    // Base reset: `uses_top_level_await` 를 각 모듈의 self(자기 await) 값으로 되돌린 뒤 전파.
+    // 이 함수의 전파는 set-only(아래 BFS 는 true 만 set, 절대 demote 안 함)라, HMR 위상 보존
+    // (Phase B) 처럼 unchanged 모듈을 reparse 하지 않는 경로에서 직전 빌드의 transitive true 가
+    // stale 로 남는다 — 예: dep 가 await 를 제거했는데 그 importer 가 여전히 true → emit 이
+    // fresh(sync) 와 달리 async wrapper 를 박아 byte 가 갈린다. self 로 base 를 깔면 그 stale 이
+    // 지워진다. fresh full 빌드에선 모든 모듈이 reparse 되어 `uses==self` 라 이 loop 는 no-op.
+    {
+        var i: usize = 0;
+        while (i < count) : (i += 1) {
+            const m = self.modules.at(i);
+            m.uses_top_level_await = m.self_uses_top_level_await;
+        }
+    }
+
     // Fast path: TLA 모듈이 없으면 전파할 것도 없다.
     var has_tla = false;
     {

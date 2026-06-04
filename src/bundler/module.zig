@@ -329,6 +329,13 @@ pub const Module = struct {
     def_format: types.ModuleDefFormat = .unknown,
     /// Top-Level Await 사용 여부. TLA 모듈을 static import하는 모듈도 전이적으로 true.
     uses_top_level_await: bool = false,
+    /// 이 모듈 *자신의* body 가 top-level await 를 쓰는지 — parse 가 설정하는 base 값
+    /// (`uses_top_level_await` 의 transitive 전파 *전* 상태). `propagateTopLevelAwait` 가
+    /// 매 빌드 시작 시 `uses_top_level_await = self_uses_top_level_await` 로 base 를 깐 뒤
+    /// 전파한다. HMR 위상 보존(Phase B) 에서 unchanged 모듈은 reparse 되지 않아 직전 빌드의
+    /// transitive true 가 stale 로 남는데(set-only 전파라 demote 없음), 이 base reset 이
+    /// 그 stale 을 지운다. fresh full 빌드에선 `uses==self` 라 no-op.
+    self_uses_top_level_await: bool = false,
     side_effects: bool,
     /// side_effects가 package.json `sideEffects` 필드에 의해 결정됐음을 표시.
     /// true면 tree-shaker의 auto-purity 분석이 이 값을 덮어쓸 수 없다.

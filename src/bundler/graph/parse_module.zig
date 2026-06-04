@@ -210,6 +210,8 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
             };
             // TLA 감지: semantic analyzer가 스코프 체인을 추적하며 정확히 판별
             module.uses_top_level_await = analyzer.has_top_level_await;
+            // base(self) 값 보존 — propagateTopLevelAwait 가 매 빌드 이 값으로 reset 후 전파.
+            module.self_uses_top_level_await = analyzer.has_top_level_await;
 
             // Semantic Analyzer에서 사전 수집한 stmt↔symbol 매핑으로 StmtInfo 구축.
             // tree_shaker가 AST를 다시 순회하지 않아도 된다 (Phase 2 최적화).

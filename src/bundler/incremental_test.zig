@@ -2127,3 +2127,114 @@ test "Phase B: fallback 도 store cache-hit 으로 증분(전량 reparse 아님)
     try std.testing.expectEqualStrings(fresh_result.output, preserved.output);
     try std.testing.expect(std.mem.indexOf(u8, preserved.output, "31337") != null);
 }
+
+// ── /code-review max 회귀 가드 (Phase B HIGH 2건) ────────────────────────────
+
+test "Phase B byte-identical: dep 의 top-level await 제거 → importer TLA demote (set-only stale 방지)" {
+    // B-F1: propagateTopLevelAwait 는 importer 에 set-only 전파(demote 없음)다. 보존 경로는
+    // unchanged importer 를 reparse 하지 않으므로, dep 가 await 를 제거하면 importer 의 stale
+    // uses_top_level_await=true 가 남아 emit 이 fresh(sync)와 달리 async wrapper 를 박는다.
+    // self_uses_top_level_await base reset 이 이를 demote 하는지 byte-identical 로 가드.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.ts", "export const x = await Promise.resolve(1);");
+    try writeFile(tmp.dir, "index.ts",
+        \\import { x } from './dep';
+        \\console.log(x);
+    );
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuildTopo(&graph, &store, &rc, entry, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+    const hits_before = graph.topology_preserved_hits;
+
+    // dep.ts body-only edit: top-level await 제거 (import 위상 불변 → 보존 경로).
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "dep.ts", "export const x = 1;");
+    const dep_abs = try absPath(&tmp, "dep.ts");
+    defer std.testing.allocator.free(dep_abs);
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, dep_abs, {});
+
+    var preserved = try preservedBuildTopo(&graph, &store, &rc, entry, false, &touched);
+    defer preserved.deinit(std.testing.allocator);
+    try std.testing.expect(!preserved.hasErrors());
+
+    var fresh_result = try freshFull(entry);
+    defer fresh_result.deinit(std.testing.allocator);
+    try std.testing.expect(!fresh_result.hasErrors());
+
+    // 보존 경로를 탔고(전량 fallback 아님), importer TLA 가 fresh 처럼 demote 되어 byte-identical.
+    try std.testing.expectEqual(hits_before + 1, graph.topology_preserved_hits);
+    try std.testing.expectEqualStrings(fresh_result.output, preserved.output);
+}
+
+test "Phase B: 보존 경로가 requested_exports 를 reset — parse_arena dangling slice 누적/UAF 방지" {
+    // A-F1: requested_exports[dep].names 는 importer 의 parse_arena slice 를 dupe 없이 borrow
+    // 한다. 변경 모듈(index) reparse 가 그 arena 를 free 하는데 reset 안 하면 names 가 dangling
+    // 되어 재resolve 의 contains(std.mem.eql)가 UAF read + (freed page mismatch 시) 매 rebuild
+    // append 누적한다. resetPerBuildStateForPreserved 의 전량 deinit 으로 names.len 이 항상 1
+    // (index 가 요청하는 'a' 하나)로 유지됨을 가드.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.ts", "export const a = 1;\nexport const b = 2;");
+    try writeFile(tmp.dir, "index.ts",
+        \\import { a } from './dep';
+        \\console.log(a);
+    );
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+    const dep_abs = try absPath(&tmp, "dep.ts");
+    defer std.testing.allocator.free(dep_abs);
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuildTopo(&graph, &store, &rc, entry, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+    const dep_idx = graph.path_to_module.get(dep_abs) orelse return error.DepNotFound;
+    const dep_key: u32 = @intFromEnum(dep_idx);
+
+    var round: usize = 0;
+    while (round < 3) : (round += 1) {
+        std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+        // index body-only edit (named import 'a' 유지) → 보존 경로 재진입.
+        var buf: [128]u8 = undefined;
+        const src = try std.fmt.bufPrint(&buf,
+            \\import {{ a }} from './dep';
+            \\console.log(a, {d});
+        , .{round});
+        try writeFile(tmp.dir, "index.ts", src);
+        var touched: std.StringHashMapUnmanaged(void) = .empty;
+        defer touched.deinit(std.testing.allocator);
+        try touched.put(std.testing.allocator, entry, {});
+        var r = try preservedBuildTopo(&graph, &store, &rc, entry, false, &touched);
+        defer r.deinit(std.testing.allocator);
+        try std.testing.expect(!r.hasErrors());
+
+        // reset 이 매 빌드 names 를 비우고 변경 모듈 재resolve 가 'a' 하나만 재등록 → len 1 유지.
+        // (reset 누락 시 dangling slice 가 0xaa fill 로 eql=false 되어 append 누적 → len 증가.)
+        if (graph.requested_exports.get(dep_key)) |req| {
+            try std.testing.expectEqual(@as(usize, 1), req.names.items.len);
+        }
+    }
+}
