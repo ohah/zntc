@@ -5,6 +5,7 @@ const bundler_mod = zntc_lib.bundler;
 const Bundler = bundler_mod.Bundler;
 const TrackedFileSet = zntc_lib.server.TrackedFileSet;
 const profile_mod = zntc_lib.profile;
+const debug_log = zntc_lib.debug_log;
 const BundleOptions = bundler_mod.BundleOptions;
 const SourceMap = zntc_lib.codegen.sourcemap;
 const types_mod = zntc_lib.bundler.types;
@@ -1670,6 +1671,20 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             .link_populate_import_symbols_ms = nsToMs(profile_mod.totalNs(.link_populate_import_symbols)),
             .link_populate_namespace_accesses_ms = nsToMs(profile_mod.totalNs(.link_populate_namespace_accesses)),
         };
+        // 측정용(ZNTC_DEBUG=topology_preserve + ZNTC_PROFILE=all): grph(graph_discover) 분해 —
+        // fallback full discovery 의 lookup/miss_parse(plugin)/replay(edge 재구성)/miss_resolve 비중.
+        if (debug_log.enabled(.topology_preserve)) {
+            debug_log.print(.topology_preserve, "  grph sub(ms): lookup={d} miss_parse={d} replay={d}(add={d} reqExp={d} recDep={d} other={d}) miss_resolve={d}\n", .{
+                nsToMs(profile_mod.totalNs(.graph_discover_incr_cache_lookup)),
+                nsToMs(profile_mod.totalNs(.graph_discover_incr_miss_parse)),
+                nsToMs(profile_mod.totalNs(.graph_discover_incr_replay)),
+                nsToMs(profile_mod.totalNs(.graph_discover_incr_replay_add_module)),
+                nsToMs(profile_mod.totalNs(.graph_discover_incr_replay_request_exports)),
+                nsToMs(profile_mod.totalNs(.graph_discover_incr_replay_record_dep)),
+                nsToMs(profile_mod.totalNs(.graph_discover_incr_replay_other)),
+                nsToMs(profile_mod.totalNs(.graph_discover_incr_miss_resolve)),
+            });
+        }
         event.reparsed_modules = rebuild_result.reparsed_modules;
 
         // rebuild 이벤트 전송
