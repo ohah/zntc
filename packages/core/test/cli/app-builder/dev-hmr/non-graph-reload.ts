@@ -19,6 +19,7 @@ import {
   waitForServer,
   writeFileSync,
 } from '../helpers';
+import { waitForHmrBroadcast } from './hmr-wait';
 
 describe('CLI: Vite-style app builder > dev HMR > non-graph file reload', () => {
   test('index.html 변경 → FullReload broadcast 수신 (#3797)', async () => {
@@ -34,30 +35,20 @@ describe('CLI: Vite-style app builder > dev HMR > non-graph file reload', () => 
     const proc = spawn(RUNTIME, [CLI, 'dev', dir, `--port=${port}`], { cwd: dir });
     await waitForServer(port);
     try {
-      const messagePromise = new Promise<{ type: string }>((resolve) => {
-        const ws = new WebSocket(`ws://localhost:${port}/__hmr`);
-        ws.onmessage = (event) => {
-          const msg = JSON.parse(String(event.data));
-          // connected 무시, full-reload 받으면 종료
-          if (msg.type === 'full-reload') {
-            ws.close();
-            resolve(msg);
-          }
-        };
-        ws.onerror = () => resolve({ type: 'error' });
-        setTimeout(() => resolve({ type: 'timeout' }), 5000);
-      });
-      await new Promise((r) => setTimeout(r, 300));
       // HTML 변경 — module graph 밖, CSS 도 아님 → drain 의 fallback FullReload 가 처리해야.
-      writeFileSync(
-        join(dir, 'index.html'),
-        '<!doctype html><meta name="v" content="2"><script type="module" src="/src/main.ts"></script>',
+      const { result } = await waitForHmrBroadcast(
+        port,
+        () =>
+          writeFileSync(
+            join(dir, 'index.html'),
+            '<!doctype html><meta name="v" content="2"><script type="module" src="/src/main.ts"></script>',
+          ),
+        (m) => m.type === 'full-reload',
       );
-      const msg = await messagePromise;
-      expect(msg.type).toBe('full-reload');
+      expect(result?.type).toBe('full-reload');
     } finally {
       proc.kill();
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 20000);
 });
