@@ -39,20 +39,50 @@ describe('CLI: Vite-style app builder > dev HMR > new CSS import (#3813)', () =>
     try {
       const reloadOrUpdate = new Promise<{ type: string }>((resolve) => {
         const ws = new WebSocket(`ws://localhost:${port}/__hmr`);
-        const timeout = setTimeout(() => resolve({ type: 'timeout' }), 8000);
+        let retry: ReturnType<typeof setInterval> | undefined;
+        let settled = false;
+        // 모든 종료 경로(broadcast 수신 / timeout / ws error)를 단일 teardown 으로 통합한다.
+        // 한 경로라도 retry(setInterval) clear 를 빠뜨리면, finally 의 rmSync(dir) 이후에도
+        // interval 이 살아 삭제된 dir 에 write → ENOENT 가 *다음 테스트*에 오귀속되는 누수 flake.
+        const settle = (result: { type: string }) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          if (retry) clearInterval(retry);
+          try {
+            ws.close();
+          } catch {
+            /* already closing */
+          }
+          resolve(result);
+        };
+        const timeout = setTimeout(() => settle({ type: 'timeout' }), 15000);
+        // arm-race 방어: waitForServer 는 HTTP listen 만 확인하고 native 파일 watcher 의
+        // arm 은 기다리지 않는다(별도 subsystem). watcher arm 전에 쓴 변경은 fsevents/inotify
+        // 가 *영구히* 놓쳐(이미 지난 이벤트) broadcast 가 영영 안 온다 — 드물게 8s 타임아웃.
+        // 정상 경로는 write→broadcast ~60ms 라 첫 write 로 끝나고, 희귀 miss 만 재트리거가 구제.
+        // (broadcast 가 진짜 깨지면 모든 재시도가 유실 → 여전히 timeout → silent-drop 가드 유지.)
+        let n = 1;
+        const writeTrigger = () => {
+          n += 1;
+          writeFileSync(join(dir, 'src', 'styles.css'), `body { background: lime; /* ${n} */ }`);
+          writeFileSync(
+            join(dir, 'src', 'main.ts'),
+            `import "./styles.css"; console.log("v${n}");`,
+          );
+        };
         ws.onopen = async () => {
           await new Promise((r) => setTimeout(r, 300));
-          writeFileSync(join(dir, 'src', 'styles.css'), 'body { background: lime; }');
-          writeFileSync(join(dir, 'src', 'main.ts'), 'import "./styles.css"; console.log("v2");');
+          if (settled) return; // 300ms 대기 중 error/timeout 으로 종료됐으면 interval 안 건다
+          writeTrigger();
+          retry = setInterval(writeTrigger, 1500);
         };
         ws.onmessage = (event) => {
           const msg = JSON.parse(String(event.data));
-          if (msg.type === 'full-reload' || msg.type === 'update-done') {
-            clearTimeout(timeout);
-            ws.close();
-            resolve(msg);
-          }
+          if (msg.type === 'full-reload' || msg.type === 'update-done') settle(msg);
         };
+        // 형제 dev-HMR 테스트 관례 — ws 에러도 종료 경로로 처리(누수 차단 + 명확한 실패).
+        ws.onerror = () => settle({ type: 'error' });
       });
       const msg = await reloadOrUpdate;
       // broadcast 자체 수신 가드 — pre-#3779 회귀 (silent drop) 방지
@@ -61,5 +91,5 @@ describe('CLI: Vite-style app builder > dev HMR > new CSS import (#3813)', () =>
       proc.kill();
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 20000);
 });
