@@ -24,40 +24,11 @@ import {
   waitForServer,
   writeFileSync,
 } from '../helpers';
+import { waitForHmrBroadcast } from './hmr-wait';
 
-interface HmrMessage {
-  type: string;
-  modules?: Array<{ id: string; code: string }>;
-}
-
-/**
- * WebSocket 으로 `/__hmr` 에 연결한 뒤 `predicate` 가 true 를 반환할 때까지 메시지 수집.
- * connected 메시지는 자동 무시. 받은 메시지 전체를 `received` 로 반환해 시퀀스 검증에 사용.
- */
-function listen(
-  port: number,
-  predicate: (msg: HmrMessage) => boolean,
-  timeoutMs = 8000,
-): Promise<{ result?: HmrMessage; received: HmrMessage[] }> {
-  return new Promise((resolve) => {
-    const received: HmrMessage[] = [];
-    const ws = new WebSocket(`ws://localhost:${port}/__hmr`);
-    const t = setTimeout(() => resolve({ received }), timeoutMs);
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(String(event.data)) as HmrMessage;
-      if (msg.type === 'connected') return;
-      received.push(msg);
-      if (predicate(msg)) {
-        clearTimeout(t);
-        ws.close();
-        resolve({ result: msg, received });
-      }
-    };
-    ws.onerror = () => {
-      clearTimeout(t);
-      resolve({ received });
-    };
-  });
+interface UpdateModule {
+  id: string;
+  code: string;
 }
 
 async function sleep(ms: number) {
@@ -101,20 +72,22 @@ describe('CLI: Vite-style app builder > dev HMR > 종합 E2E (#3779 → #3826)',
       // PR #3779 — broadcast 시퀀스. PR #3825 — multi-error root-cause (success 유지).
       // PR #3799 — sourceMappingURL append.
       const origGreet = readFileSync(join(dir, 'src', 'greet.ts'), 'utf8');
-      const jsEditP = listen(port, (m) => m.type === 'update-done');
-      await sleep(300);
-      writeFileSync(join(dir, 'src', 'greet.ts'), origGreet.replace('hello', 'hi'));
-      const { received: jsReceived, result: jsDone } = await jsEditP;
+      const { received: jsReceived, result: jsDone } = await waitForHmrBroadcast(
+        port,
+        () => writeFileSync(join(dir, 'src', 'greet.ts'), origGreet.replace('hello', 'hi')),
+        (m) => m.type === 'update-done',
+      );
       expect(jsDone).toBeDefined();
       const jsTypes = jsReceived.map((m) => m.type);
       expect(jsTypes).toEqual(expect.arrayContaining(['update-start', 'update', 'update-done']));
       const updateMsg = jsReceived.find((m) => m.type === 'update');
-      expect(updateMsg?.modules?.length ?? 0).toBeGreaterThan(0);
-      expect(updateMsg!.modules![0].code.length).toBeGreaterThan(0);
+      const updateModules = updateMsg?.modules as UpdateModule[] | undefined;
+      expect(updateModules?.length ?? 0).toBeGreaterThan(0);
+      expect(updateModules![0].code.length).toBeGreaterThan(0);
       // PR #3799 — sourceMappingURL 주석 append
-      expect(updateMsg!.modules![0].code).toMatch(/\/\/# sourceMappingURL=\/__zntc_hmr_map\//);
+      expect(updateModules![0].code).toMatch(/\/\/# sourceMappingURL=\/__zntc_hmr_map\//);
       // sourcemap endpoint route 응답 (200 또는 404 둘 다 valid — sourcemap enable 여부 dependent)
-      const smId = updateMsg!.modules![0].id;
+      const smId = updateModules![0].id;
       const smResp = await fetch(
         `http://localhost:${port}/__zntc_hmr_map/${encodeURIComponent(smId)}`,
       );
@@ -130,13 +103,15 @@ describe('CLI: Vite-style app builder > dev HMR > 종합 E2E (#3779 → #3826)',
       // (#3813 limitation) → update-done 도 acceptable.
       const origMain = readFileSync(join(dir, 'src', 'main.ts'), 'utf8');
       writeFileSync(join(dir, 'src', 'added.ts'), 'export const x = "new";\n');
-      const graphP = listen(port, (m) => m.type === 'full-reload' || m.type === 'update-done');
-      await sleep(300);
-      writeFileSync(
-        join(dir, 'src', 'main.ts'),
-        `${origMain}\nimport { x } from "./added.ts";\nconsole.log(x);`,
+      const { result: graphResult } = await waitForHmrBroadcast(
+        port,
+        () =>
+          writeFileSync(
+            join(dir, 'src', 'main.ts'),
+            `${origMain}\nimport { x } from "./added.ts";\nconsole.log(x);`,
+          ),
+        (m) => m.type === 'full-reload' || m.type === 'update-done',
       );
-      const { result: graphResult } = await graphP;
       expect(['full-reload', 'update-done']).toContain(graphResult?.type);
 
       // 원복
@@ -148,17 +123,19 @@ describe('CLI: Vite-style app builder > dev HMR > 종합 E2E (#3779 → #3826)',
 
       // ───── 시나리오 4: HTML 변경 → fallback FullReload (#3797 drain else) ─────
       const origHtml = readFileSync(join(dir, 'index.html'), 'utf8');
-      const htmlP = listen(port, (m) => m.type === 'full-reload');
-      await sleep(300);
-      writeFileSync(
-        join(dir, 'index.html'),
-        origHtml.replace('<body>', '<body><meta name="v" content="2">'),
+      const { result: htmlResult } = await waitForHmrBroadcast(
+        port,
+        () =>
+          writeFileSync(
+            join(dir, 'index.html'),
+            origHtml.replace('<body>', '<body><meta name="v" content="2">'),
+          ),
+        (m) => m.type === 'full-reload',
       );
-      const { result: htmlResult } = await htmlP;
       expect(htmlResult?.type).toBe('full-reload');
     } finally {
       proc.kill();
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 30000);
 });

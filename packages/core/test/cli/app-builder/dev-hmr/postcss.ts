@@ -14,6 +14,7 @@ import {
   waitForServer,
   writeFileSync,
 } from '../helpers';
+import { waitForHmrBroadcast } from './hmr-wait';
 
 describe('CLI: Vite-style app builder > dev HMR and overlay', () => {
   test('dev incremental PostCSS reprocesses only the changed CSS', async () => {
@@ -53,20 +54,11 @@ describe('CLI: Vite-style app builder > dev HMR and overlay', () => {
       stderrChunks.length = 0;
 
       // a.css 한 파일만 변경 → incremental, "processed 1 CSS file".
-      const messagePromise = new Promise<any>((resolve) => {
-        const ws = new WebSocket(`ws://localhost:${port}/__hmr`);
-        ws.onmessage = (event) => {
-          const msg = JSON.parse(String(event.data));
-          if (msg.type === 'css-update' || msg.type === 'full-reload') {
-            ws.close();
-            resolve(msg);
-          }
-        };
-        setTimeout(() => resolve({ type: 'timeout' }), 10000);
-      });
-      await new Promise((r) => setTimeout(r, 300));
-      writeFileSync(join(dir, 'src', 'a.css'), '.a{color:green}');
-      await messagePromise;
+      await waitForHmrBroadcast(
+        port,
+        () => writeFileSync(join(dir, 'src', 'a.css'), '.a{color:green}'),
+        (m) => m.type === 'css-update' || m.type === 'full-reload',
+      );
       // 이벤트 후 stderr flush 위해 잠시 대기.
       await new Promise((r) => setTimeout(r, 200));
       expect(stderrChunks.join('')).toContain('[postcss] processed 1 CSS file');
@@ -74,5 +66,5 @@ describe('CLI: Vite-style app builder > dev HMR and overlay', () => {
       proc.kill();
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 20000);
 });

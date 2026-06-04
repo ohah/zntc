@@ -19,6 +19,7 @@ import {
   waitForServer,
   writeFileSync,
 } from '../helpers';
+import { waitForHmrBroadcast } from './hmr-wait';
 
 describe('CLI: Vite-style app builder > dev HMR > sourcemap endpoint (#3799)', () => {
   test('Update modules.code 에 sourceMappingURL 주석 + endpoint 응답', async () => {
@@ -31,28 +32,15 @@ describe('CLI: Vite-style app builder > dev HMR > sourcemap endpoint (#3799)', (
     const proc = spawn(RUNTIME, [CLI, 'dev', dir, `--port=${port}`], { cwd: dir });
     await waitForServer(port);
     try {
-      const updateMsg = await new Promise<{
-        type: string;
-        modules?: Array<{ id: string; code: string }>;
-      }>((resolve) => {
-        const ws = new WebSocket(`ws://localhost:${port}/__hmr`);
-        const timeout = setTimeout(() => resolve({ type: 'timeout' }), 8000);
-        ws.onopen = async () => {
-          await new Promise((r) => setTimeout(r, 300));
-          writeFileSync(join(dir, 'src', 'main.ts'), 'export const x = 2;');
-        };
-        ws.onmessage = (event) => {
-          const msg = JSON.parse(String(event.data));
-          if (msg.type === 'update') {
-            clearTimeout(timeout);
-            ws.close();
-            resolve(msg);
-          }
-        };
-      });
-      expect(updateMsg.type).toBe('update');
-      expect(updateMsg.modules?.length ?? 0).toBeGreaterThan(0);
-      const first = updateMsg.modules![0];
+      const { result: updateMsg } = await waitForHmrBroadcast(
+        port,
+        () => writeFileSync(join(dir, 'src', 'main.ts'), 'export const x = 2;'),
+        (m) => m.type === 'update',
+      );
+      expect(updateMsg?.type).toBe('update');
+      const modules = updateMsg?.modules as Array<{ id: string; code: string }> | undefined;
+      expect(modules?.length ?? 0).toBeGreaterThan(0);
+      const first = modules![0];
       // sourceMappingURL 주석 append 확인
       expect(first.code).toMatch(/\/\/# sourceMappingURL=\/__zntc_hmr_map\//);
 
@@ -67,5 +55,5 @@ describe('CLI: Vite-style app builder > dev HMR > sourcemap endpoint (#3799)', (
       proc.kill();
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 20000);
 });
