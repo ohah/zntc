@@ -2467,7 +2467,7 @@ test "PR-1 RN: A→B→A 반복 body-only edit → 매 회 output+metadata == fr
     }
 }
 
-test "PR-1 RN: asset(.png) 파일 자체 변경 → asset 가드로 fallback + == fresh full" {
+test "PR-1 RN: asset(.png) 파일 자체 변경 → 보존 reparse + == fresh full (fallback 없이)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "registry.js",
@@ -2497,10 +2497,12 @@ test "PR-1 RN: asset(.png) 파일 자체 변경 → asset 가드로 fallback + =
         defer r1.deinit(std.testing.allocator);
         try std.testing.expect(!r1.hasErrors());
     }
+    const hits_before = graph.topology_preserved_hits;
     const fb_before = graph.topology_fallback_count;
 
     // logo.png 자체 교체(다른 bytes) + changed_files=logo.png → asset 모듈 직접 변경.
-    // asset 가드(asset_data != null)가 보존을 거부하고 fallback(fresh 재스캔)해야 한다.
+    // 이제 보존 reparse 가 asset_data.original_loader(원본 .file)를 복원해 parseAssetModule 을
+    // 재실행하므로, fallback 없이 그 asset 모듈만 재파싱(새 hash/metadata)하고 위상을 보존한다.
     std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "logo.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x01, 0x02 } });
     const logo_abs = try absPath(&tmp, "logo.png");
@@ -2513,11 +2515,16 @@ test "PR-1 RN: asset(.png) 파일 자체 변경 → asset 가드로 fallback + =
     defer preserved.deinit(std.testing.allocator);
     try std.testing.expect(!preserved.hasErrors());
 
-    // 핵심: asset 모듈 직접 변경 → asset 가드가 보존(edge-reuse)을 거부하고 fallback 으로 전환.
-    // (보존 경로에 머물렀다면 reparse 가 .javascript loader 를 복원해 metadata 손실 + source 깨짐.)
-    // fallback 경로의 asset 재파싱 byte 정확성은 기존 동작이라 여기선 가드의 fallback 전환만 단언
-    // (테스트 환경 mtime 해상도와 무관하게 결정적).
-    try std.testing.expectEqual(fb_before + 1, graph.topology_fallback_count);
+    var fresh = try freshFullRN(entry, root);
+    defer fresh.deinit(std.testing.allocator);
+    try std.testing.expect(!fresh.hasErrors());
+
+    // asset 파일 자체 변경도 fallback 없이 보존 경로(reparse)로 처리 — hit++, fallback 불변.
+    try std.testing.expectEqual(hits_before + 1, graph.topology_preserved_hits);
+    try std.testing.expectEqual(fb_before, graph.topology_fallback_count);
+    // 새 bytes 의 hash/metadata 가 fresh full 과 byte-identical.
+    try std.testing.expectEqualStrings(fresh.output, preserved.output);
+    try expectRnMetaEqual(preserved.rn_asset_metadata, fresh.rn_asset_metadata);
 }
 
 test "PR-1 RN: 다중 asset — body-only edit 후 rn_asset_metadata 배열 순서 == fresh full" {
