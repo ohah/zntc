@@ -20,6 +20,7 @@ const Symbol = semantic_symbol.Symbol;
 const Reference = semantic_symbol.Reference;
 const SemanticSymbolId = semantic_symbol.SymbolId;
 const Scope = @import("../semantic/scope.zig").Scope;
+const RnAssetMetadata = @import("graph/assets.zig").RnAssetMetadata;
 const binding_scanner = @import("binding_scanner.zig");
 pub const ImportBinding = binding_scanner.ImportBinding;
 pub const ExportBinding = binding_scanner.ExportBinding;
@@ -424,6 +425,10 @@ pub const Module = struct {
     mtime: i128 = 0,
     /// file/copy 로더의 asset 출력 정보. null이면 asset이 아님.
     asset_data: ?AssetData = null,
+    /// RN AssetRegistry metadata (이미지 모듈만, asset_registry 활성 시). parse_arena 소유 —
+    /// finalize 의 collectRnAssetMetadata 가 graph 단위 list 로 borrow 재수집하고, reparse/store
+    /// 가 arena 라이프사이클로 자동 정합한다(위상 보존 경로에서 unchanged 모듈 metadata 보존).
+    rn_asset_metadata: ?RnAssetMetadata = null,
     /// CSS 번들링 메타데이터. null이면 CSS 모듈이 아님.
     css_data: ?CssData = null,
 

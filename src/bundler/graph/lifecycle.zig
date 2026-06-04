@@ -49,10 +49,8 @@ pub fn reset(self: *ModuleGraph) void {
     for (self.worker_entries.items) |we| self.allocator.free(we.resolved_path);
     self.worker_entries.clearRetainingCapacity();
 
-    const graph_assets = @import("assets.zig");
-    for (self.rn_asset_metadata.items) |meta| {
-        graph_assets.freeRnAssetMetadata(self.allocator, meta);
-    }
+    // rn_asset_metadata 항목은 module.parse_arena 소유(borrow) — 여기서 free 안 함.
+    // finalize 의 collectRnAssetMetadata 가 clear 후 module 들에서 재수집한다.
     self.rn_asset_metadata.clearRetainingCapacity();
 
     self.runtime_polyfill_roots.clearRetainingCapacity();
@@ -197,10 +195,7 @@ pub fn deinit(self: *ModuleGraph) void {
         self.allocator.free(we.resolved_path);
     }
     self.worker_entries.deinit(self.allocator);
-    const graph_assets = @import("assets.zig");
-    for (self.rn_asset_metadata.items) |meta| {
-        graph_assets.freeRnAssetMetadata(self.allocator, meta);
-    }
+    // rn_asset_metadata 항목은 module.parse_arena 소유(borrow) — list backing 만 해제.
     self.rn_asset_metadata.deinit(self.allocator);
     if (self.plugins_with_helpers) |p| self.allocator.free(p);
     self.runtime_polyfill_roots.deinit(self.allocator);

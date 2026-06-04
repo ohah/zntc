@@ -165,9 +165,9 @@ pub fn parseAssetModule(self: *ModuleGraph, io: std.Io, module: *Module) void {
                 // loader=.javascript는 호출자의 fall-through 신호.
                 // import_scanner가 source의 require()를 ImportRecord로 추출하고
                 // wrap_kind/exports_kind를 .cjs로 자동 결정한다.
-                // 첫 인자가 metadata_alloc (long-lived, graph), 두번째가 source_alloc
-                // (short-lived, parse_arena) — fs.RealReadFileCache.readFile 컨벤션.
-                const emitted = emitAssetRegistryCall(self.allocator, arena_alloc, .{
+                // 두 allocator 모두 arena_alloc(parse_arena): metadata 를 module 소유로 만들어
+                // finalize 재수집 + 위상 보존(reparse/store)에 자동 정합시킨다(PR-1).
+                const emitted = emitAssetRegistryCall(arena_alloc, arena_alloc, .{
                     .registry_path = registry_path,
                     .abs_path = module.path,
                     .bytes = raw,
@@ -182,11 +182,9 @@ pub fn parseAssetModule(self: *ModuleGraph, io: std.Io, module: *Module) void {
                     return;
                 };
                 module.source = emitted.source;
-                self.rn_asset_metadata_mutex.lock();
-                defer self.rn_asset_metadata_mutex.unlock();
-                self.rn_asset_metadata.append(self.allocator, emitted.metadata) catch {
-                    graph_assets.freeRnAssetMetadata(self.allocator, emitted.metadata);
-                };
+                // metadata(parse_arena 소유)를 module 에 저장 — finalize 의 collectRnAssetMetadata
+                // 가 graph list 로 재수집한다. graph 공유 list 직접 append 가 사라져 mutex 불요.
+                module.rn_asset_metadata = emitted.metadata;
                 module.module_type = .js;
                 module.loader = .javascript;
                 return;

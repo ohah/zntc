@@ -203,12 +203,13 @@ pub const ModuleGraph = struct {
     /// Worker 엔트리: new Worker(new URL(...)) 패턴에서 수집된 worker 파일 경로.
     /// 메인 그래프에는 모듈로 추가하지 않고, bundler에서 별도 빌드한다.
     worker_entries: std.ArrayList(WorkerEntry) = .empty,
-    /// RN AssetRegistry.registerAsset 호출에 emit 된 asset metadata 수집.
-    /// loader 가 emit 시점에 push, bundler 가 BundleResult.rn_asset_metadata 로 expose.
-    /// strings 는 graph.allocator 소유 (loader arena 가 free 되어도 안전하도록 dupe).
+    /// RN AssetRegistry.registerAsset 호출에 emit 된 asset metadata.
+    /// loader 가 `module.rn_asset_metadata`(parse_arena 소유)에 저장하고, finalize 의
+    /// collectRnAssetMetadata 가 renumber-후 결정적 순서로 이 list 를 borrow 재구성한다.
+    /// list 항목은 borrow(실제 owner=module.parse_arena) — bundler 가 BundleResult 로 expose
+    /// 할 때만 deep-copy(dupeRnAssetMetadata)로 long-lived 분리. (per-module 저장이라 graph 공유
+    /// append 가 없어져 mutex 불요.)
     rn_asset_metadata: std.ArrayListUnmanaged(@import("graph/assets.zig").RnAssetMetadata) = .empty,
-    /// rn_asset_metadata 병렬 append 보호 (scanWorker 호출 대응).
-    rn_asset_metadata_mutex: spin.SpinLock = .{},
 
     /// `worklet "directive"` plugin 활성 여부 — bundler 가 BundleOptions.worklet_transform 으로 set.
     /// graph 가 직접 사용 (parseModule 의 worklet exclude 휴리스틱).
