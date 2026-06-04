@@ -148,6 +148,9 @@ pub fn parseAssetModule(self: *ModuleGraph, io: std.Io, module: *Module) void {
                 .ext = ext,
                 .scales = scales_result.scales,
                 .scale_variants = scales_result.variants,
+                // 이 시점 module.loader 는 아직 원본(.file/.copy) — 아래 asset_registry 분기가
+                // .javascript 로 전환하기 전이다. reparse 가 복원할 원본 loader 를 보존.
+                .original_loader = module.loader,
             };
 
             const url = if (self.public_path.len > 0)

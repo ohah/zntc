@@ -449,6 +449,10 @@ pub const Module = struct {
         /// scale > 1 variant 파일들. 각 항목이 별개 OutputFile로 emit되어
         /// RN 네이티브가 `logo@2x.png` 등의 이름으로 로드 가능하다.
         scale_variants: []const ScaleVariant = &.{},
+        /// asset 파싱 시점의 원본 loader(.file/.copy). asset_registry 모드는 emit 후 loader 를
+        /// .javascript 로 전환하므로, HMR 위상 보존 reparse 가 이 값으로 원본 loader 를 복원해
+        /// parseAssetModule 재실행을 유도한다(없으면 바이너리를 raw JS 로 오파싱).
+        original_loader: types.Loader = .file,
     };
 
     pub const ScaleVariant = struct {

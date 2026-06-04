@@ -1234,14 +1234,6 @@ pub fn buildIncrementalPreserved(
             if (graph_requested_exports.isLazyBarrelCandidate(self, self.modules.at(ui))) {
                 return fallbackFullRebuild(self, io, entry_points, store, changed_files);
             }
-            // **asset 가드**: asset 모듈(이미지 등)은 emit 후 loader=.javascript 로 굳는다. 보존 reparse
-            // 가 그 loader 를 복원하면 parseModule 의 isAsset() 분기를 우회 → parseAssetModule 미실행으로
-            // rn_asset_metadata 가 재생성되지 않고(누락) 바이너리를 raw JS 로 오파싱(source corruption).
-            // 직전 빌드 asset_data 로 감지해 보수적 full fallback(fresh 가 재스캔). asset 파일 자체
-            // 변경(.png 교체) 시나리오를 정확성 우선으로 처리.
-            if (self.modules.at(ui).asset_data != null) {
-                return fallbackFullRebuild(self, io, entry_points, store, changed_files);
-            }
             try changed_indices.append(self.allocator, ui);
         }
     }
@@ -1488,6 +1480,13 @@ fn reparseChangedModulePreserveEdges(self: *ModuleGraph, io: std.Io, mod_idx: us
     const saved_module_type = m.module_type;
     const saved_loader = m.loader;
     const saved_resolve_dir = m.resolve_dir;
+    // asset 모듈(asset_registry 모드 .file/.copy)은 emit 후 loader 가 .javascript 로 굳는다.
+    // 그 .javascript 를 그대로 복원하면 parseModule 의 isAsset() 분기를 못 타 parseAssetModule 이
+    // 미실행되어 metadata 손실 + 바이너리를 raw JS 로 오파싱한다. asset_data.original_loader(원본
+    // .file/.copy)를 복원해 재파싱이 asset 로 다시 해석되게 한다 — source 는 Module.init 의 빈 값으로
+    // 둬 분기 진입(parse_module:62). 새 hash/scales/metadata + AssetRegistry import(specifier 불변)로
+    // 보존 경로 유지(fallback 불요).
+    const saved_asset_loader: ?types.Loader = if (m.asset_data) |ad| ad.original_loader else null;
     m.dependencies = .empty;
     m.importers = .empty;
     m.dynamic_imports = .empty;
@@ -1502,7 +1501,7 @@ fn reparseChangedModulePreserveEdges(self: *ModuleGraph, io: std.Io, mod_idx: us
     m.dynamic_imports = saved_dyn;
     m.dynamic_importers = saved_dyn_importers;
     m.module_type = saved_module_type;
-    m.loader = saved_loader;
+    m.loader = if (saved_asset_loader) |al| al else saved_loader;
     m.resolve_dir = saved_resolve_dir;
 
     // 재파싱(새 parse_arena + ast + import_records). mtime=0 → parseModule 이
