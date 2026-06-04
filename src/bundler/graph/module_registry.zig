@@ -196,8 +196,14 @@ pub fn addExternalModule(self: *ModuleGraph, specifier: []const u8) !ModuleIndex
 
 /// 양방향 의존성 등록. from → to (dependencies) + to → from (importers) 를 동시에 append.
 /// graph 가 양방향 관계 책임을 캡슐화. storage 가 SegmentedList 로 바뀌어도 caller 영향 없음.
+///
+/// **Phase B (suppress_edge_link)**: 위상 보존 모드의 변경 모듈 재resolve 중에는 no-op.
+/// edge(dependencies/importers)는 invalidate 전 스냅샷으로 이미 복원돼 있고, 여기서 다시
+/// append 하면 중복 + dep.importers 내 위치 변동(byte-identical 깨짐)이 발생하므로 억제한다.
+/// (resolved_deps/import_records[].resolved 재구성은 caller 가 별도로 수행 — link 만 건너뜀.)
 pub fn linkDependency(self: *ModuleGraph, from: ModuleIndex, to: ModuleIndex) !void {
     if (to.isNone()) return;
+    if (self.suppress_edge_link) return;
     const from_mod = self.moduleAtMut(from) orelse return;
     const to_mod = self.moduleAtMut(to) orelse return;
     try from_mod.dependencies.append(self.allocator, to);
@@ -207,6 +213,7 @@ pub fn linkDependency(self: *ModuleGraph, from: ModuleIndex, to: ModuleIndex) !v
 /// 양방향 dynamic import 등록. `linkDependency` 의 dynamic 버전.
 pub fn linkDynamicImport(self: *ModuleGraph, from: ModuleIndex, to: ModuleIndex) !void {
     if (to.isNone()) return;
+    if (self.suppress_edge_link) return;
     const from_mod = self.moduleAtMut(from) orelse return;
     const to_mod = self.moduleAtMut(to) orelse return;
     try from_mod.dynamic_imports.append(self.allocator, to);

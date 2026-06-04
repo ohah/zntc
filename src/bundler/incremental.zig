@@ -256,19 +256,21 @@ pub const IncrementalBundler = struct {
             if (self.preserved_renames) |*pr| opts.preserved_renames = pr;
         }
 
-        // RFC #3933 Sub-PR-B.2 + perf/hmr-graph-topology-reuse Phase A — enable_persistence
+        // RFC #3933 Sub-PR-B.2 + perf/hmr-graph-topology-reuse Phase A/B — enable_persistence
         // opt-in path. Bundler.initWithGraph wire-up.
         //
-        // **Phase A 의미**: persistent_graph 를 빌드 *간* 보존한다(매 빌드 deinit/재init 폐기).
-        // 첫 빌드는 init, 이후 빌드는 같은 graph 를 재사용 — bundle() 의 external_graph 훅
-        // (bundler.zig)이 빌드 직전 `prepareForPreservedRebuild` 로 모듈을 비워 fresh 와
-        // byte-identical 출력을 보장한다(graph struct/backing/path_arena 재사용 → 객체 수명
-        // 안정 + alloc 절감). 위상 보존(edge/exec_index 재사용)은 transferModulesToStore
-        // 소유권 재설계가 필요해 Phase B 로 분리.
+        // **Phase A/B 의미**: persistent_graph 를 빌드 *간* 보존한다(매 빌드 deinit/재init 폐기).
+        // 첫 빌드는 init, 이후 빌드는 같은 graph 를 재사용.
         //
-        // **정확성 가드**: graph_changed(아래 pathSetsEqual)가 위상 변화(모듈 추가/삭제)를
-        // 감지하면 그 빌드 자체는 prepareForPreservedRebuild 로 fresh discovery 라 정확하다.
-        // (Phase B 의 selective edge-reuse 도입 시 여기서 추가 fallback 가드가 필요.)
+        // - **Phase B (preserve_topology=true)**: bundle() 이 graph 를 비우지 않고
+        //   buildIncrementalPreserved 로 진입 → 변경 모듈만 선택 재파싱(edge-reuse). 위상 변화면
+        //   그 함수 내부에서 prepareForPreservedRebuild + full fresh discovery 로 fallback.
+        //   transferModulesToStore 비활성 → graph 가 parse_arena 단독 owner(double-free 방지).
+        //   출력은 fresh full 과 byte-identical(보존 경로/fallback 경로/원래 fresh 셋 다 동일).
+        //
+        // is_first(첫 빌드)에는 module_store 를 주입하지 않으므로 preserve_topology 도 무의미 —
+        // initWithGraph 의 cold 분기(graph 비어있음)가 full discovery 후 graph 를 warm 으로 만든다.
+        opts.preserve_topology = self.enable_persistence and !is_first;
         var bundler = blk: {
             if (!self.enable_persistence) break :blk Bundler.initWithResolveCache(self.allocator, opts, &self.resolve_cache.?);
             if (self.persistent_graph == null) {
