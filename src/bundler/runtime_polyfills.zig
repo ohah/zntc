@@ -52,6 +52,16 @@ pub const FeatureSet = struct {
         return self.set.count() == 0;
     }
 
+    /// 두 FeatureSet 이 같은 feature 집합인지(순서 무관). HMR 위상 보존(PR-2)에서 변경 모듈의
+    /// core-js usage 가 reparse 전후 동일한지 판정 — 동일하면 전역 polyfill union 불변(다른
+    /// 모듈은 unchanged 라 변경 모듈이 union 의 유일 변동 항)이라 roots 보존이 안전하다.
+    pub fn eql(self: *const FeatureSet, other: *const FeatureSet) bool {
+        if (self.set.count() != other.set.count()) return false;
+        var it = self.set.keyIterator();
+        while (it.next()) |k| if (!other.set.contains(k.*)) return false;
+        return true;
+    }
+
     pub fn keyIterator(self: *const FeatureSet) Map.KeyIterator {
         return self.set.keyIterator();
     }
@@ -800,4 +810,24 @@ fn testCollectWithModuleType(source: []const u8, module_type: ModuleType) !Featu
     // arena 는 helper 종료 시 deinit 되므로, FeatureSet 은 호출자가 직접 deinit 할 수
     // 있도록 std.testing.allocator 로 분리해 빌드한다.
     return collectModuleUsage(std.testing.allocator, &module);
+}
+
+test "FeatureSet.eql: 순서 무관 동일 / 부분집합 / 빈셋" {
+    const testing = std.testing;
+    var a = FeatureSet{};
+    defer a.deinit(testing.allocator);
+    try a.insert(testing.allocator, "x");
+    try a.insert(testing.allocator, "y");
+    var b = FeatureSet{};
+    defer b.deinit(testing.allocator);
+    try b.insert(testing.allocator, "y");
+    try b.insert(testing.allocator, "x");
+    try testing.expect(a.eql(&b)); // 순서 무관 동일
+    try b.insert(testing.allocator, "z");
+    try testing.expect(!a.eql(&b)); // 초집합(count 다름)
+    try testing.expect(!b.eql(&a)); // 대칭
+    var e = FeatureSet{};
+    defer e.deinit(testing.allocator);
+    try testing.expect(!a.eql(&e)); // vs 빈
+    try testing.expect(e.eql(&e)); // 빈 == 빈
 }
