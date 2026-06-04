@@ -1260,6 +1260,15 @@ pub fn buildIncrementalPreserved(
         for (snapshots.items) |*s| s.deinit();
         snapshots.deinit(self.allocator);
     }
+    // PR-2: usage mode polyfill 이면 변경 모듈의 core-js feature set 을 reparse *전*에 snapshot 해
+    // 두고, topologyMatches 통과 후 재수집과 비교한다(아래). 변하면 전역 union 변화 가능 → fallback.
+    // entry mode/null plan 은 고정이라 비교 불필요. (changed_indices 와 1:1 정렬.)
+    const polyfill_usage_diff = if (self.runtime_polyfills) |p| p.mode == .usage else false;
+    var old_usages: std.ArrayListUnmanaged(runtime_polyfills.FeatureSet) = .empty;
+    defer {
+        for (old_usages.items) |*u| u.deinit(self.allocator);
+        old_usages.deinit(self.allocator);
+    }
 
     // 1) 모든 변경 모듈의 위상 스냅샷을 *invalidate/재파싱 전에* 먼저 떠 둔다(import_records 는
     //    parse_arena 소유라 deinit 시 backing 이 사라짐). glob/require_context record 면
@@ -1280,6 +1289,17 @@ pub fn buildIncrementalPreserved(
             fallback = true;
             break;
         };
+        if (polyfill_usage_diff) {
+            var u = runtime_polyfills.collectModuleUsage(self.allocator, self.modules.at(ui)) catch {
+                fallback = true;
+                break;
+            };
+            old_usages.append(self.allocator, u) catch {
+                u.deinit(self.allocator);
+                fallback = true;
+                break;
+            };
+        }
     }
     if (fallback) {
         discover_scope.end();
@@ -1291,9 +1311,10 @@ pub fn buildIncrementalPreserved(
     //    - diagnostics: 이전 빌드의 stale diag 제거(변경 모듈 재파싱이 자기 diag 재생성).
     //    - source_read_cache: 변경 파일의 stale source 캐시 무효화(fresh read 강제).
     //    - exec_counter/cycle_counter: finalizeGraph 의 DFS 가 0 부터 재부여해야 fresh 와 동일.
-    //    KEEP: modules/edges/resolved_deps/parse_arena/requested_exports/pkg_info_cache
-    //    (보존이 본 PR 의 목적). feature gate 가 worker_entries/rn_asset_metadata/
-    //    runtime_polyfill_roots 가 비어있음을 이미 보장하므로 그 reset 은 불필요(누적 0).
+    //    KEEP: modules/edges/resolved_deps/parse_arena/requested_exports/pkg_info_cache +
+    //    runtime_polyfill_roots/run_before_main(보존이 본 PR 의 목적 — PR-2 가 게이트를 풀어 보존
+    //    경로로 진입하므로 roots/rbm 을 reset 하면 prelude 가 깨진다). worker_entries 는 게이트가
+    //    비어있음을 보장, rn_asset_metadata 는 module-level 재수집(PR-1).
     resetPerBuildStateForPreserved(self);
 
     // 3) 변경 모듈을 edge 보존하며 재파싱(invalidate). reparseChangedModulePreserveEdges 는
@@ -1329,6 +1350,24 @@ pub fn buildIncrementalPreserved(
         if (!topologyMatches(snap, self, ui)) {
             discover_scope.end();
             return fallbackFullRebuild(self, io, entry_points, store, changed_files);
+        }
+    }
+
+    // PR-2 feature-diff: usage mode 에서 변경 모듈의 core-js feature set 이 reparse 전후 다르면
+    // 전역 polyfill union 이 바뀔 수 있어(변경 모듈이 유일 변동 항) 보수적 fallback. 같으면 union
+    // 불변 → 보존된 runtime_polyfill_roots/polyfill 모듈이 그대로 유효(prelude byte-identical).
+    if (polyfill_usage_diff) {
+        for (changed_indices.items, old_usages.items) |ui, *old_u| {
+            var new_u = runtime_polyfills.collectModuleUsage(self.allocator, self.modules.at(ui)) catch {
+                discover_scope.end();
+                return fallbackFullRebuild(self, io, entry_points, store, changed_files);
+            };
+            const same = old_u.eql(&new_u);
+            new_u.deinit(self.allocator);
+            if (!same) {
+                discover_scope.end();
+                return fallbackFullRebuild(self, io, entry_points, store, changed_files);
+            }
         }
     }
 
@@ -1412,13 +1451,15 @@ fn canPreserveTopology(self: *const ModuleGraph) bool {
     if (self.has_user_resolve_id_plugins or self.has_user_load_plugins or self.has_transform_plugins) return false;
     if (self.code_splitting or self.preserve_modules) return false;
     if (self.lazy_compilation) return false;
-    if (self.runtime_polyfills != null) return false;
-    if (self.inject_files.len > 0 or self.run_before_main_files.len > 0) return false;
+    // (runtime_polyfills 게이트 제거 — PR-2: usage mode 는 buildIncrementalPreserved 의 변경-모듈
+    //  feature-diff 가드가 union 변화를 잡아 fallback, entry mode 는 고정이라 무조건 보존.)
+    // (run_before_main_files 게이트 제거 — PR-2: 고정 리스트(InitializeCore)라 보존 경로가 edge +
+    //  renumber seed 순서를 그대로 유지해 prelude byte-identical. inject_files 는 유지(후속).)
+    if (self.inject_files.len > 0) return false;
     if (self.worker_entries.items.len > 0) return false;
-    // (rn_asset_metadata 게이트 제거 — PR-1: metadata 를 module.parse_arena 소유로 옮겨
-    //  finalize 의 collectRnAssetMetadata 가 재수집하므로 위상 보존에서 자동 정합한다.
-    //  polyfill/worker 는 PR-2/후속에서 풀 때까지 유지.)
-    if (self.runtime_polyfill_roots.items.len > 0) return false;
+    // (rn_asset_metadata 게이트 제거 — PR-1: module.parse_arena 소유 + finalize 재수집.)
+    // (runtime_polyfill_roots 게이트 제거 — PR-2: roots/polyfill 모듈 보존(applyRuntimePolyfills
+    //  미호출), bundler.zig merge 가 동일 prelude 재생성.)
     // emit_store 에 chunk 요청이 있으면(plugin emitFile chunk) 보존 제외. emit_store 가
     // null 이면 chunk 미사용(hot path 0). 포인터만 검사 — chunk 내용은 injectEmittedChunks 영역.
     if (self.emit_store) |store_ptr| {
@@ -1443,8 +1484,11 @@ fn canPreserveTopology(self: *const ModuleGraph) bool {
 /// /code-review max HIGH). reset 해도 변경 모듈 재resolve 가 자기 deps 요청을 다시 채우고,
 /// requested_exports 소비처(lazy-barrel link/tree-shake)는 보존 경로의 dev 게이트(canPreserveTopology
 /// 의 `!dev_mode` + isLazyBarrelCandidate 의 dev=false)에서 비활성이라 정확성 영향 0.
-/// worker_entries/rn_asset_metadata/runtime_polyfill_roots 는 feature gate 가 비어있음을 보장하므로
-/// reset 불요(누적 0).
+/// worker_entries 는 feature gate 가 비어있음을 보장(누적 0). rn_asset_metadata(PR-1)는 finalize 의
+/// collectRnAssetMetadata 가 module-level 재수집하므로 reset 불요. runtime_polyfill_roots/
+/// run_before_main(PR-2)은 **보존 대상**이라 reset 하면 안 된다 — 게이트를 풀어 보존 경로로 진입하므로
+/// roots/rbm 을 비우면 bundler.zig merge 의 prelude 가 깨진다(변경 모듈 feature 불변 검증은
+/// buildIncrementalPreserved 의 feature-diff 가드가 담당).
 fn resetPerBuildStateForPreserved(self: *ModuleGraph) void {
     for (self.owned_diagnostic_strings.items) |s| self.allocator.free(s);
     self.owned_diagnostic_strings.clearRetainingCapacity();
@@ -1487,6 +1531,10 @@ fn reparseChangedModulePreserveEdges(self: *ModuleGraph, io: std.Io, mod_idx: us
     // 둬 분기 진입(parse_module:62). 새 hash/scales/metadata + AssetRegistry import(specifier 불변)로
     // 보존 경로 유지(fallback 불요).
     const saved_asset_loader: ?types.Loader = if (m.asset_data) |ad| ad.original_loader else null;
+    // polyfill/inject 주입 모듈(is_context_dep)은 applyRuntimePolyfills 에서만 set 되는데 보존 경로는
+    // 그걸 미호출하므로, 변경 모듈이 그런 모듈이면(드묾 — core-js/InitializeCore 편집) reparse 의
+    // Module.init default(false)로 플래그를 잃는다. 복원해 finalize 의 wrap_kind 강제를 유지(fallback 불요).
+    const saved_is_context_dep = m.is_context_dep;
     m.dependencies = .empty;
     m.importers = .empty;
     m.dynamic_imports = .empty;
@@ -1503,6 +1551,7 @@ fn reparseChangedModulePreserveEdges(self: *ModuleGraph, io: std.Io, mod_idx: us
     m.module_type = saved_module_type;
     m.loader = if (saved_asset_loader) |al| al else saved_loader;
     m.resolve_dir = saved_resolve_dir;
+    m.is_context_dep = saved_is_context_dep;
 
     // 재파싱(새 parse_arena + ast + import_records). mtime=0 → parseModule 이
     // readModuleSourceWithMtime 로 fresh source + mtime 을 채운다.
