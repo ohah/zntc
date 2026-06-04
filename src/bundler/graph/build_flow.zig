@@ -1203,12 +1203,14 @@ pub fn buildIncrementalPreserved(
             if (ui >= self.modules.count()) {
                 return fallbackFullRebuild(self, io, entry_points, store, changed_files);
             }
-            // **lazy-barrel 가드 (requested_exports over-approx 회피)**: topologyMatches 는
-            // specifier/kind/resolve-target 만 보고 *imported 이름 집합* 은 안 본다. 보존 경로는
-            // requested_exports 를 reset 하지 않으므로, sideEffects:false re-export barrel 에서
-            // named import 가 *제거* 되면 옛 요청이 남아(over-approx) link 결정이 fresh 와 달라질
-            // 수 있다(shouldLinkResolvedRecordForModule). 변경 모듈이 그런 barrel 후보면 보수적
-            // full fallback. (일반 모듈은 isLazyBarrelCandidate=false → 항상 link → 영향 없음.)
+            // **lazy-barrel 가드**: topologyMatches 는 specifier/kind/resolve-target 만 보고
+            // *imported 이름 집합* 은 안 본다. resetPerBuildStateForPreserved 가 requested_exports 를
+            // 전량 reset 하므로 over-approx(옛 요청 잔존)는 사라졌지만, 보존 경로는 unchanged barrel
+            // importer 를 재resolve 하지 않아 그 요청이 *under-approx*(비어 있음) 될 수 있다 — 비-dev
+            // 에서 sideEffects:false re-export barrel 의 link 결정(shouldLinkResolvedRecordForModule)
+            // 이 fresh 와 달라질 위험. 변경 모듈이 그런 barrel 후보면 보수적 full fallback. 현재
+            // canPreserveTopology 의 `!dev_mode` 게이트 + isLazyBarrelCandidate 의 dev=false 로 dev
+            // 보존 경로에선 dead 지만, 비-dev 보존이 미래에 켜질 때를 위한 방어로 유지.
             if (graph_requested_exports.isLazyBarrelCandidate(self, self.modules.at(ui))) {
                 return fallbackFullRebuild(self, io, entry_points, store, changed_files);
             }
@@ -1405,13 +1407,22 @@ fn canPreserveTopology(self: *const ModuleGraph) bool {
 }
 
 /// 보존 경로 진입 시 per-build global state 만 reset(modules/edges/resolved_deps/parse_arena/
-/// requested_exports/pkg_info_cache 는 보존). `lifecycle.reset()` 의 부분집합:
+/// pkg_info_cache 는 보존). `lifecycle.reset()` 의 부분집합:
 ///   - diagnostics + owned_diagnostic_strings (변경 모듈 재파싱이 자기 diag 재생성)
 ///   - source_read_cache (변경 파일 fresh read 강제)
 ///   - exec_counter / cycle_counter (finalizeGraph DFS 가 0 부터 재부여 → fresh 와 동일 exec_index)
-/// requested_exports 는 reset 하지 *않는다* — unchanged 모듈의 export 요청 상태를 보존(변경 모듈
-/// 재resolve 가 자기 deps 요청을 idempotent 재등록). worker_entries/rn_asset_metadata/
-/// runtime_polyfill_roots 는 feature gate 가 비어있음을 보장하므로 reset 불요(누적 0).
+///   - requested_exports (아래 UAF 방어로 전량 deinit)
+/// **requested_exports 를 반드시 reset(전량 deinit)** 해야 한다 — `RequestedExports.names`(state.zig)
+/// 는 `[]const u8` 을 *dupe 없이 borrow* 하며, 그 slice 는 importer 의 `ib.imported_name`/
+/// `eb.local_name`(parse_arena 소유, requested_exports.zig requestNamed). 변경 모듈을
+/// `reparseChangedModulePreserveEdges` 가 deinit(=parse_arena free)하면, 그 모듈이 dep 의
+/// `requested_exports[dep].names` 에 기여한 slice 가 dangling 된다(dep 는 unchanged 라 안 건드림).
+/// 다음 재resolve 의 `requestNamed`→`contains`(std.mem.eql)가 freed 메모리를 읽어 **UAF**(#4123 PR-3
+/// /code-review max HIGH). reset 해도 변경 모듈 재resolve 가 자기 deps 요청을 다시 채우고,
+/// requested_exports 소비처(lazy-barrel link/tree-shake)는 보존 경로의 dev 게이트(canPreserveTopology
+/// 의 `!dev_mode` + isLazyBarrelCandidate 의 dev=false)에서 비활성이라 정확성 영향 0.
+/// worker_entries/rn_asset_metadata/runtime_polyfill_roots 는 feature gate 가 비어있음을 보장하므로
+/// reset 불요(누적 0).
 fn resetPerBuildStateForPreserved(self: *ModuleGraph) void {
     for (self.owned_diagnostic_strings.items) |s| self.allocator.free(s);
     self.owned_diagnostic_strings.clearRetainingCapacity();
@@ -1420,6 +1431,9 @@ fn resetPerBuildStateForPreserved(self: *ModuleGraph) void {
     self.source_read_cache = .{};
     self.exec_counter = 0;
     self.cycle_counter = 0;
+    var req_it = self.requested_exports.valueIterator();
+    while (req_it.next()) |req| req.deinit(self.allocator);
+    self.requested_exports.clearRetainingCapacity();
 }
 
 /// 변경 모듈을 **edge 보존**하며 재파싱한다. dependencies/importers/dynamic_imports/

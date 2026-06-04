@@ -327,6 +327,8 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
         }
         suppressRuntimeHelperInternalUnresolved(module);
         module.uses_top_level_await = analyzer.has_top_level_await;
+        // base(self) 값 보존 — propagateTopLevelAwait 가 매 빌드 이 값으로 reset 후 전파.
+        module.self_uses_top_level_await = analyzer.has_top_level_await;
         if (module.transform_cache) |*cache| {
             cache.symbol_ids = analyzer.symbol_ids.items;
         }

@@ -962,12 +962,12 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
     // rebuild 경로의 `emit_sourcemap_finalize` 29ms 를 HMR latency 밖으로 빼낸다.
     if (bundle_opts.dev_mode and bundle_opts.sourcemap.enable) initial_opts.sourcemap.lazy = true;
 
-    // Phase B: 초기 빌드도 보존 graph + resolve cache 로 구동(initWithGraph). preserve_topology
-    // 는 set 하지 않는다(graph 비어있음 = cold discovery). 이 빌드가 graph 를 warm 으로 만들어
-    // 다음 rebuild 가 buildIncrementalPreserved(edge-reuse)로 진입할 수 있게 한다. transfer
-    // ModulesToStore 비활성(preserve_topology=false 라 여기선 store 로 양도되지만, 첫 빌드는
-    // 위상 변화 가드 무관 — 다음 rebuild 가 preserve_topology=true 면 store 양도가 비활성되어
-    // graph 가 단독 owner 로 굳는다).
+    // Phase B: 초기 빌드도 보존 graph + resolve cache 로 구동(initWithGraph). 위(959)에서 이미
+    // preserve_topology=true 로 설정했으므로 빌드 끝의 transferModulesToStore 가 비활성되어
+    // parse_arena 가 store 로 양도되지 않고 graph 에 남는다 → graph 가 단독 owner 로 굳어, 다음
+    // rebuild 가 그 warm graph 로 buildIncrementalPreserved(edge-reuse)에 진입한다. (cold 빌드는
+    // graph 가 비어 buildIncrementalPreserved 가 modules.count()==0 분기로 full discovery 폴백 —
+    // 위상 변화 가드 무관.)
     var bundler = Bundler.initWithGraph(allocator, initial_opts, &persistent_resolve_cache, &persistent_graph);
     defer bundler.deinit();
     var result = bundler.bundle(common.io()) catch |err| {
