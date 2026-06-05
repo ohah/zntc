@@ -3046,3 +3046,78 @@ test "PR-3: unsafe transform plugin(preserve_safe=false) → fallback" {
     //  환경 mtime 해상도와 무관하게 결정적.)
     try std.testing.expectEqual(fb_before + 1, graph.topology_fallback_count);
 }
+
+// ── PR-B: emit fast-path (compiled_cache + 보존-hit) byte-identical 가드 ──────
+
+fn preservedBuildTopoCache(
+    graph: *ModuleGraph_t,
+    store: *module_store.PersistentModuleStore,
+    rc: *@import("resolve_cache.zig").ResolveCache,
+    cache: *CompiledOutputCache,
+    entry: []const u8,
+    is_first: bool,
+    changed: ?*const std.StringHashMapUnmanaged(void),
+) !BundleResult {
+    var opts = @as(@import("bundler.zig").BundleOptions, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .collect_module_codes = true,
+        .compiled_cache = cache,
+    });
+    if (!is_first) {
+        opts.module_store = store;
+        opts.changed_files = changed;
+        opts.preserve_topology = true;
+    }
+    var b = Bundler.initWithGraph(std.testing.allocator, opts, rc, graph);
+    defer b.deinit();
+    return try b.bundle(std.testing.io);
+}
+
+test "PR-B: emit fast-path(compiled_cache+보존) unchanged 모듈 peek → byte-identical" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "util.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nconsole.log(x);");
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+    var cache = CompiledOutputCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    // 첫 빌드 — compiled_cache populate(util/index entry).
+    {
+        var r1 = try preservedBuildTopoCache(&graph, &store, &rc, &cache, entry, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+    const hits_before = graph.topology_preserved_hits;
+    const fb_before = graph.topology_fallback_count;
+    _ = cache.takeStats(); // 첫 빌드 miss 카운터 리셋 — rebuild 의 fast-path hit 만 관측.
+
+    // index body-only edit (util unchanged → fast-path peek 대상).
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nconsole.log(x, 'edited');");
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, entry, {});
+
+    var preserved = try preservedBuildTopoCache(&graph, &store, &rc, &cache, entry, false, &touched);
+    defer preserved.deinit(std.testing.allocator);
+    try std.testing.expect(!preserved.hasErrors());
+
+    var fresh = try freshFull(entry);
+    defer fresh.deinit(std.testing.allocator);
+
+    // 보존 hit(fallback 아님) + unchanged util 이 fast-path peek 으로 cache hit + 출력 byte-identical.
+    try std.testing.expectEqual(hits_before + 1, graph.topology_preserved_hits);
+    try std.testing.expectEqual(fb_before, graph.topology_fallback_count);
+    try std.testing.expect(cache.hits >= 1); // util fast-path peek
+    try std.testing.expectEqualStrings(fresh.output, preserved.output);
+}

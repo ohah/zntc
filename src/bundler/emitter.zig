@@ -653,11 +653,31 @@ pub fn emitWithTreeShaking(
         0;
 
     if (options.compiled_cache) |cache| {
+        // PR-B: HMR 위상 보존-hit 의 unchanged 모듈은 input(source/import/mtime)이 물리 불변이라
+        // 직전 Entry 의 input_hash 가 자기 자신과 일치한다. graph.changed_emit_paths(보존-hit 에서만
+        // non-null)에 없는 모듈은 전체 source 해시(computeInputHash) 없이 peek 으로 직전 결과를
+        // 재사용해 eMod O(N) 해시를 제거한다. 가드: options_hash 가 직전과 같을 때만(options 변동 시
+        // 전 모듈 full hash). fast-path 비활성/peek-miss/dupe 실패면 종전 computeInputHash 로 fall-through.
+        const fast_path = graph.changed_emit_paths != null and options_hash == cache.last_options_hash;
         for (sorted.items, 0..) |m, i| {
             if (hit_mask[i]) continue;
             if (m.mtime == 0) {
                 cache.skipped_no_mtime += 1;
                 continue; // mtime unknown → cache 비활성
+            }
+            if (fast_path and !graph.changed_emit_paths.?.contains(m.path)) {
+                if (cache.peekEntry(m.path)) |ent| {
+                    if (ent.compiled.dupe(allocator)) |dup| {
+                        results[i] = dup;
+                        input_hashes[i] = ent.input_hash; // Phase 2.5 put 정합(어차피 hit_mask=true 라 skip)
+                        if (linker) |l| {
+                            l.restoreSharedNamespaceDecls(results[i].shared_ns_decls) catch {};
+                        }
+                        cache.hits += 1;
+                        hit_mask[i] = true;
+                        continue;
+                    } else |_| {} // dupe 실패 → 종전 경로 fall-through
+                }
             }
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
             const input_hash = cache_mod.computeInputHash(m, options_hash, used_names, graph);
@@ -669,6 +689,7 @@ pub fn emitWithTreeShaking(
             }
             hit_mask[i] = true;
         }
+        cache.last_options_hash = options_hash; // 다음 빌드 fast-path 가드용
     }
 
     if (linker) |l| {

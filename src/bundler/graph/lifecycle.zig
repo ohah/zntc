@@ -180,6 +180,8 @@ pub fn deinit(self: *ModuleGraph) void {
     self.modules.deinit(self.allocator);
     // PR-Z4: path_to_module key 메모리는 path_arena 가 owned — 개별 free 불요, 일괄 해제.
     self.path_to_module.deinit(self.allocator);
+    // PR-B: changed_emit_paths key 는 path_arena borrow — set backing 만 해제(path_arena 보다 먼저).
+    if (self.changed_emit_paths) |*s| s.deinit(self.allocator);
     self.path_arena.deinit();
     var req_it = self.requested_exports.valueIterator();
     while (req_it.next()) |req| req.deinit(self.allocator);

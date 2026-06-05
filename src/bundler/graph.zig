@@ -138,6 +138,11 @@ pub const ModuleGraph = struct {
     /// 실제 보존 경로를 탔는지(전량 fallback 이 아닌지)" 검증하는 데 사용. 빌드 정확성과 무관.
     topology_preserved_hits: usize = 0,
     topology_fallback_count: usize = 0,
+    /// PR-B: HMR 위상 보존-hit 시 변경(reparse)된 모듈 path set. emit 이 unchanged 모듈의
+    /// 전체 source 해시(computeInputHash)를 skip 하고 직전 compiled_cache 결과를 재사용하게 한다
+    /// (eMod 절감). 보존-hit 에서만 non-null(빈 set=변경 0), fallback/full/첫빌드=null →
+    /// emit fast-path 자동 비활성. key=path_arena 소유 path(borrow), graph 수명. lifecycle.deinit 해제.
+    changed_emit_paths: ?std.StringHashMapUnmanaged(void) = null,
     /// Phase B edge-reuse 내부 플래그 — 변경 모듈 *재resolve* 중에만 일시적으로 true.
     /// true 면 `linkDependency`/`linkDynamicImport` 가 no-op (보존된 edge 리스트를 그대로 두고
     /// import_records[].resolved + resolved_deps 만 재구성하기 위함). 보존 모드에서 변경 모듈의
