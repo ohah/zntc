@@ -42,9 +42,16 @@ describe('CLI: Vite-style app builder > dev HMR > new CSS import (#3813)', () =>
       // (arm-race 방어/재시도/teardown 은 waitForHmrBroadcast 가 담당 — hmr-wait.ts 참고.)
       const { result } = await waitForHmrBroadcast(
         port,
-        () => {
+        (attempt) => {
           writeFileSync(join(dir, 'src', 'styles.css'), 'body { background: lime; }');
-          writeFileSync(join(dir, 'src', 'main.ts'), 'import "./styles.css"; console.log("v2");');
+          // 새 CSS import 는 첫 write 가 추가(아래 import 줄). 재시도는 console.log 값을 매번
+          // 바꿔(`v${attempt+1}`) *fresh* JS diff 를 만든다 — 첫 broadcast 가 fsevents event
+          // 분할로 css-update/noop 으로 떨어져도(predicate 불일치) 다음 재시도가 새 update 를
+          // 강제해 영구 timeout(동일내용 재시도→diff 0→noop) 을 막는다.
+          writeFileSync(
+            join(dir, 'src', 'main.ts'),
+            `import "./styles.css"; console.log("v${attempt + 1}");`,
+          );
         },
         (m) => m.type === 'full-reload' || m.type === 'update-done',
       );
