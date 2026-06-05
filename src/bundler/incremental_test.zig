@@ -3175,3 +3175,61 @@ test "renumber identity: 실제 reachable graph 재renumber 시 path→index 멱
         try std.testing.expectEqual(@as(u32, @intCast(i)), graph.modules.at(i).index.toU32());
     }
 }
+
+// lNs 변경∪importer 한정 partial-skip(보존-hit) 회귀 가드: 다수 모듈이 namespace member-access
+// 하는 fixture 를 reuse-hit rebuild 하면 carrier 기반 lNs 재계산 경로가 crash 없이 정상 동작하고
+// 변경 모듈이 올바르게 재방출돼야 한다. (skip 자체의 byte-identical 은 AST 보존 by-construction
+// + /code-review max 검증. 여기선 carrier recompute 경로가 깨지지 않음을 가드.)
+test "lNs partial-skip: reuse-hit namespace member-access rebuild 정상" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "shared.ts", "export const a = 1;\nexport const b = 2;\nexport const c = 3;\nexport const d = 4;\n");
+    const N = 12;
+    inline for (0..N) |n| {
+        const ns = std.fmt.comptimePrint("{d}", .{n});
+        try writeFile(tmp.dir, "m" ++ ns ++ ".ts", "import * as NS from './shared';\nexport const x" ++ ns ++ " = NS.a + NS.b + 0;\n");
+    }
+    var idx: std.ArrayList(u8) = .empty;
+    defer idx.deinit(std.testing.allocator);
+    inline for (0..N) |n| {
+        try idx.print(std.testing.allocator, "import {{ x{d} }} from './m{d}';\nconsole.log(x{d});\n", .{ n, n, n });
+    }
+    try writeFile(tmp.dir, "index.ts", idx.items);
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+    const m0 = try absPath(&tmp, "m0.ts");
+    defer std.testing.allocator.free(m0);
+
+    var ib = IncrementalBundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .collect_module_codes = true,
+    });
+    ib.enable_persistence = true;
+    defer ib.deinit();
+
+    // cold
+    {
+        const r = try ib.rebuild(std.testing.io);
+        switch (r) {
+            .success => |s| BundleResult.ModuleDevCode.freeAll(s.changed_modules, std.testing.allocator),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    // warm reuse-hit: m0 body-only edit(member-access 변경 NS.c 추가, 이름집합 불변).
+    var changed: std.StringHashMapUnmanaged(void) = .empty;
+    defer changed.deinit(std.testing.allocator);
+    try changed.put(std.testing.allocator, m0, {});
+    try writeFile(tmp.dir, "m0.ts", "import * as NS from './shared';\nexport const x0 = NS.a + NS.b + NS.c + 1;\n");
+
+    const r = try ib.rebuildWithChanges(std.testing.io, &changed);
+    switch (r) {
+        .success => |s| {
+            defer BundleResult.ModuleDevCode.freeAll(s.changed_modules, std.testing.allocator);
+            try std.testing.expectEqual(false, s.graph_changed); // 보존-hit
+            try std.testing.expect(s.changed_modules.len > 0); // m0 재방출
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
