@@ -13,6 +13,9 @@
 
 const std = @import("std");
 const spin = @import("../util/spin_lock.zig");
+/// kill-switch: 보존-hit lNs 변경∪importer 한정 skip 을 끄고 전량 재계산(byte-identical 회귀
+/// 진단/대조용). 설정 시 populateNamespaceAccesses 가 carrier 와 무관하게 모든 모듈 재계산.
+const ns_access_skip_disabled = @import("../env_flag.zig").Once("ZNTC_NO_NS_ACCESS_SKIP");
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const BundlerDiagnostic = types.BundlerDiagnostic;
@@ -2546,8 +2549,38 @@ pub const Linker = struct {
         var scope = profile.begin(.link_populate_namespace_accesses);
         defer scope.end();
 
+        // 보존-hit(carrier non-null = 위상 보존): lNs 출력(ib.namespace_used_properties)은 모듈
+        // parse_arena 소유(AST-resident)라 unchanged 모듈은 직전 빌드 값이 보존된다 → **변경 ∪
+        // 직접 importer** 만 재계산하고 나머지는 skip(byte-identical). 변경 모듈=재파싱(fresh AST →
+        // 값 null)이라 재계산 필수, 변경 모듈을 import 하는 모듈=직접 source 의 게이팅(wrap_kind /
+        // default_export_named_local / re_export_namespace)이 바뀔 수 있어 재계산. per-importer
+        // 분석은 importer 자신의 AST + *직접* source 게이팅만 읽고 re-export 체인 끝은 안 보므로
+        // 직접 importer 로 충분(이슈 #4176 위험#4). carrier=null(fallback)/키 미스/OOM → 전량
+        // (recompute=null, fail-safe). RN 같은 namespace-heavy 앱의 warm lNs 절감(web 은 ~0%).
+        var recompute: ?std.AutoHashMapUnmanaged(u32, void) = null;
+        defer if (recompute) |*r| r.deinit(self.allocator);
+        if (self.graph.changed_emit_paths != null and !ns_access_skip_disabled.enabled()) {
+            const ch = self.graph.changed_emit_paths.?;
+            var set: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            const ok = blk: {
+                var it = ch.iterator();
+                while (it.next()) |e| {
+                    const idx = self.graph.path_to_module.get(e.key_ptr.*) orelse break :blk false;
+                    set.put(self.allocator, @intFromEnum(idx), {}) catch break :blk false;
+                    // path 는 resolve 됐는데 module 미존재 = graph 불일치 → importer 누락 위험,
+                    // 전량 재계산으로 fail-safe(false-skip 차단).
+                    const m = self.getModule(@intFromEnum(idx)) orelse break :blk false;
+                    for (m.importers.items) |imp| set.put(self.allocator, @intFromEnum(imp), {}) catch break :blk false;
+                    for (m.dynamic_importers.items) |imp| set.put(self.allocator, @intFromEnum(imp), {}) catch break :blk false;
+                }
+                break :blk true;
+            };
+            if (ok) recompute = set else set.deinit(self.allocator);
+        }
+
         const mod_count = self.graph.moduleCount();
         for (0..mod_count) |i| {
+            if (recompute) |r| if (!r.contains(@intCast(i))) continue;
             const importer = self.moduleAtMut(@intCast(i)) orelse continue;
             const sem = importer.semantic orelse continue;
             const ast = if (importer.ast) |*a| a else continue;
