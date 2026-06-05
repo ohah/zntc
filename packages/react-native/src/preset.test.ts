@@ -523,9 +523,7 @@ describe('buildRnBundleOptions — plugins (asset/optional-babel/require-context
 
   test('preserveSafePlugins — additionalPlugins 있으면 false 강등', () => {
     const userPlugin: ZntcPlugin = { name: 'user:custom2', setup() {} };
-    const opts = buildRnBundleOptions(
-      baseInput({ extra: { additionalPlugins: [userPlugin] } }),
-    );
+    const opts = buildRnBundleOptions(baseInput({ extra: { additionalPlugins: [userPlugin] } }));
     expect(opts.preserveSafePlugins).toBe(false);
   });
 
@@ -542,9 +540,7 @@ describe('buildRnBundleOptions — plugins (asset/optional-babel/require-context
   });
 
   test('preserveSafePlugins — 명시 false override 가 내장-only(자동 true)보다 우선', () => {
-    const opts = buildRnBundleOptions(
-      baseInput({ extra: { preserveSafePlugins: false } }),
-    );
+    const opts = buildRnBundleOptions(baseInput({ extra: { preserveSafePlugins: false } }));
     expect(opts.preserveSafePlugins).toBe(false);
   });
 });
