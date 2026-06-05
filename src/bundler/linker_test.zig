@@ -1794,6 +1794,45 @@ test "reuse: guard 통과 시 inject — single import 그래프" {
     try expectRenameTablesEqual(&r.linker, &fresh);
 }
 
+test "reuse PR-C: 변경-한정 가드(carrier set)가 전량 가드와 동일 verdict" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './b';\nimport './c';\nexport const count = 0;\nexport const name = 'a';");
+    try writeFile(tmp.dir, "b.ts", "export const count = 1;\nexport const name = 'b';");
+    try writeFile(tmp.dir, "c.ts", "export const count = 2;\nexport const name = 'c';");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    var snap = (try r.linker.buildRenameSnapshot(std.testing.allocator)).?;
+    defer snap.deinit();
+
+    var fresh = Linker.init(std.testing.allocator, r.graph, .esm);
+    defer fresh.deinit();
+    try fresh.link();
+
+    // 전량(carrier=null): 같은 그래프 → 통과(종전 경로).
+    try std.testing.expect(r.graph.changed_emit_paths == null);
+    try std.testing.expect(fresh.renameReuseGuard(&snap));
+
+    // 변경-한정(carrier={modules[0]}): carrier 에 있는 모듈은 full fingerprint, 나머지는 G1 경량
+    // (path_hash/exec_index). 같은 그래프라 전부 일치 → 동일하게 통과(carrier branch 진입 검증).
+    var carrier: std.StringHashMapUnmanaged(void) = .empty;
+    defer carrier.deinit(std.testing.allocator);
+    try carrier.put(std.testing.allocator, r.graph.modules.at(0).path, {});
+    r.graph.changed_emit_paths = carrier;
+    try std.testing.expect(fresh.renameReuseGuard(&snap));
+
+    // 빈 carrier(전부 unchanged=G1 경량)도 동일 통과.
+    r.graph.changed_emit_paths = .empty;
+    try std.testing.expect(fresh.renameReuseGuard(&snap));
+
+    // graph.deinit 가 테스트 소유 carrier 를 이중 해제하지 않게 복원(빈 set 은 backing 없음).
+    r.graph.changed_emit_paths = null;
+}
+
 test "reuse: G3 by-name 재유도 — 스냅샷의 inner idx 가 흔들려도 이름으로 복원" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
