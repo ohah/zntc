@@ -95,6 +95,15 @@ export interface RnBundleInput {
     metroResolveRequest?: CustomResolver;
     /** Metro 호환 babel transformer path (svg-transformer 등). */
     babelTransformerPath?: string;
+    /**
+     * HMR 위상 보존 plugin 게이트 명시 override. 미지정(undefined)이면 preset 이 보수적으로
+     * 판정한다 — 내장 plugin 만이면 true, additionalPlugins/metroResolveRequest/
+     * babelTransformerPath 중 하나라도 있으면 false. 사용자가 "내 resolver/transformer 가
+     * 결정적·모듈별 순수(같은 입력→같은 출력, 전역 상태 무의존)"임을 보장할 수 있으면 true 로
+     * 명시해 보존을 강제(=HMR rebuild 가속)할 수 있다. 비결정이면 stale 번들 위험은 사용자 책임.
+     * false 명시로 강제 비활성도 가능.
+     */
+    preserveSafePlugins?: boolean;
     /** RN sourceExts override (default RN preset). */
     sourceExts?: string[];
     /** RN assetExts override (default RN preset). */
@@ -500,6 +509,22 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     inlineDynamicImports: true,
     workletTransform: true,
     codegenTransform: true,
+    // PR-3: RN preset 내장 plugin(asset/metro-resolve-request/require-context/codegen)은 전부
+    // 결정적·모듈별 순수 → HMR 위상 보존 안전. 단 "사용자 임의 코드"가 주입되는 경로가 하나라도
+    // 있으면 결정성(같은 입력→같은 출력)을 보장할 수 없어 false 로 강등(보존 끄고 종전 fallback):
+    //   - additionalPlugins: 사용자 ZntcPlugin 배열
+    //   - metroResolveRequest: 사용자 resolveRequest 함수(:414 에서 resolveId plugin 으로 래핑)
+    //   - babelTransformerPath: 사용자 transformer 모듈(:424 asset plugin onLoad 가 실행)
+    // 이들이 비결정이면 보존 경로가 unchanged 모듈을 재평가하지 않아 stale 번들이 될 수 있다.
+    // 단 사용자가 extra.preserveSafePlugins 를 명시하면(true/false) 그 값이 우선 — "내 resolver/
+    // transformer 는 결정적"이라는 책임 있는 opt-in(또는 명시 opt-out). `??` 라 false 도 존중.
+    preserveSafePlugins:
+      extra?.preserveSafePlugins ??
+      !(
+        (extra?.additionalPlugins && extra.additionalPlugins.length > 0) ||
+        extra?.metroResolveRequest ||
+        extra?.babelTransformerPath
+      ),
     resolveExtensions: buildResolveExtensions(rnPlatform, sourceExts),
     mainFields: ['react-native', 'browser', 'main'],
     loader: baseLoader,

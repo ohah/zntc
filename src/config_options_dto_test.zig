@@ -249,6 +249,7 @@ const ts_buildoptions_only_allowlist = [_][]const u8{
     "blockList", // RN resolver block list
     "collectModuleCodes", // NAPI 만 사용 (HMR module codes)
     "codegenTransform", // BuildOptions 전용 codegen transform hook
+    "preserveSafePlugins", // PR-3: HMR 위상 보존 plugin 게이트 완화 신호 (RN preset opt-in, NAPI 전용)
     "configurableExports", // RN configurable __toESM
     "devMode", // dev mode flag
     "emitDiskSourcemap", // sourcemap 디스크 emit

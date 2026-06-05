@@ -31,11 +31,28 @@ pub fn ensureBuiltinPlugins(self: anytype) void {
     self.has_user_resolve_id_plugins = false;
     self.has_user_load_plugins = false;
     self.has_transform_plugins = self.codegen_transform;
+    var user_transform = false;
     for (self.plugins) |p| {
         if (p.resolveId != null) self.has_user_resolve_id_plugins = true;
         if (p.load != null) self.has_user_load_plugins = true;
-        if (p.transform != null) self.has_transform_plugins = true;
+        if (p.transform != null) {
+            self.has_transform_plugins = true;
+            user_transform = true;
+        }
     }
+    // PR-3: preserve_safe_plugins(빌드 신호)면 user plugin 을 보존-안전으로 본다. codegen
+    // (native·결정적)은 has_transform_plugins 엔 포함되지만 unsafe transform 엔 불포함(user_transform
+    // 만 기준) — codegen-only RN 이 오분류되지 않게 한다.
+    //
+    // 주의(NAPI 현실): JS plugin 은 plugin_bridge 가 단일 dispatcher("js-plugin") 1개로 합쳐
+    // resolveId/load/transform 을 **전부 non-null** 로 채워 전달한다(per-plugin 분해 불가). 따라서
+    // 실제 RN/NAPI 빌드에선 JS plugin 이 하나라도 있으면 세 has_user_*/user_transform 이 항상 true
+    // → 안전성은 오직 preserve_safe_plugins 한 신호로 결정된다. 아래 hook 별 분리(user_transform 등)는
+    // 순수 Zig plugin 배열(유닛 테스트)에서만 fine-grained 하게 동작한다. 그러므로 preserve_safe_plugins
+    // 를 켜는 호출자(RN preset)는 "임의 사용자 코드 주입 경로가 없을 때만" 켜야 한다(preset.ts 게이트 참조).
+    self.has_unsafe_resolve_id_plugins = self.has_user_resolve_id_plugins and !self.preserve_safe_plugins;
+    self.has_unsafe_load_plugins = self.has_user_load_plugins and !self.preserve_safe_plugins;
+    self.has_unsafe_transform_plugins = user_transform and !self.preserve_safe_plugins;
 
     const u = self.transform_options_base.unsupported;
     self.helper_plugin_opts = .{

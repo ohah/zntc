@@ -1450,7 +1450,10 @@ fn fallbackFullRebuild(
 /// 변경-모듈 lazy-barrel 가드가 별도 차단.
 fn canPreserveTopology(self: *const ModuleGraph) bool {
     if (!self.dev_mode) return false;
-    if (self.has_user_resolve_id_plugins or self.has_user_load_plugins or self.has_transform_plugins) return false;
+    // PR-3: 비결정/전역 가능성이 있는 plugin 만 보존 거부. preserve_safe_plugins(빌드 호출자 보장,
+    //  RN preset)이면 결정적·모듈별 순수 plugin 으로 보고 has_unsafe_* 가 0 → 보존 통과. 변경 모듈만
+    //  plugin 재실행되고 unchanged 는 캐시 보존, topologyMatches 가 plugin 의 import/resolve 변화를 잡는다.
+    if (self.has_unsafe_resolve_id_plugins or self.has_unsafe_load_plugins or self.has_unsafe_transform_plugins) return false;
     if (self.code_splitting or self.preserve_modules) return false;
     if (self.lazy_compilation) return false;
     // (runtime_polyfills 게이트 제거 — PR-2: usage mode 는 buildIncrementalPreserved 의 변경-모듈
@@ -1478,8 +1481,8 @@ fn logPreserveFallbackGates(self: *const ModuleGraph) void {
     if (!debug_log.enabled(.topology_preserve)) return;
     if (!self.dev_mode)
         debug_log.print(.topology_preserve, "preserve-fallback gate: non-dev\n", .{});
-    if (self.has_user_resolve_id_plugins or self.has_user_load_plugins or self.has_transform_plugins)
-        debug_log.print(.topology_preserve, "preserve-fallback gate: plugin (resolveId={} load={} transform={})\n", .{ self.has_user_resolve_id_plugins, self.has_user_load_plugins, self.has_transform_plugins });
+    if (self.has_unsafe_resolve_id_plugins or self.has_unsafe_load_plugins or self.has_unsafe_transform_plugins)
+        debug_log.print(.topology_preserve, "preserve-fallback gate: unsafe-plugin (resolveId={} load={} transform={}; preserve_safe={})\n", .{ self.has_unsafe_resolve_id_plugins, self.has_unsafe_load_plugins, self.has_unsafe_transform_plugins, self.preserve_safe_plugins });
     if (self.code_splitting or self.preserve_modules)
         debug_log.print(.topology_preserve, "preserve-fallback gate: splitting={} preserve_modules={}\n", .{ self.code_splitting, self.preserve_modules });
     if (self.lazy_compilation)

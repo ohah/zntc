@@ -908,6 +908,9 @@ pub fn parseBuildOptions(
         // `codegenTransform: false` 명시하면 그게 우선 (escape hatch 동작 보장). OR 패턴은
         // false override 가 RN preset 의 true 에 묻혀 무력화되는 버그 있었음.
         .codegen_transform = getObjectBool(env, opts_obj, "codegenTransform", platform == .react_native and bundler_mod.RN_BOOL_PRESET.codegen_transform),
+        // PR-3: 호출자(RN preset)가 명시적으로 켜는 opt-in 신호. default false(보수적 — 임의 custom
+        // plugin 은 비결정 가능). preset 이 자기 plugin 구성이 결정적·모듈별 순수일 때만 true 로 보낸다.
+        .preserve_safe_plugins = getObjectBool(env, opts_obj, "preserveSafePlugins", false),
         .global_identifiers = global_identifiers orelse &.{},
         .polyfills = polyfills orelse &.{},
         .run_before_main = run_before_main orelse &.{},
