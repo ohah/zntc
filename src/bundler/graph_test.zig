@@ -1460,6 +1460,37 @@ test "renumber: orphan modules sorted by path regardless of add order" {
     try std.testing.expectEqual(@as(u32, 2), graph.modules.at(2).index.toU32());
 }
 
+test "renumber identity: 위상 불변이면 재renumber 가 멱등 (orphan path-sort)" {
+    // 보존 경로 finalize/renumber skip 의 안전 근거: 같은 모듈 집합/순서를 다시 renumber 해도
+    // old_to_new[i]==i (배치 불변). 위상이 안 바뀌면 renumber 가 출력에 영향 없음을 보장.
+    const alloc = std.testing.allocator;
+    var cache = resolve_cache_mod.ResolveCache.init(alloc, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(alloc, &cache);
+    defer graph.deinit();
+
+    try graph.modules.append(alloc, Module.init(@enumFromInt(0), "c.ts"));
+    try graph.modules.append(alloc, Module.init(@enumFromInt(1), "b.ts"));
+    try graph.modules.append(alloc, Module.init(@enumFromInt(2), "a.ts"));
+    const arena_alloc = graph.path_arena.allocator();
+    try graph.path_to_module.put(alloc, try arena_alloc.dupe(u8, "c.ts"), @enumFromInt(0));
+    try graph.path_to_module.put(alloc, try arena_alloc.dupe(u8, "b.ts"), @enumFromInt(1));
+    try graph.path_to_module.put(alloc, try arena_alloc.dupe(u8, "a.ts"), @enumFromInt(2));
+
+    // 1회: a/b/c = 0/1/2 (path 정렬). 2·3회: 이미 정렬 → 멱등(불변).
+    try renumber_mod.renumberModulesDeterministically(&graph, &.{});
+    try renumber_mod.renumberModulesDeterministically(&graph, &.{});
+    try renumber_mod.renumberModulesDeterministically(&graph, &.{});
+
+    try std.testing.expectEqualStrings("a.ts", graph.modules.at(0).path);
+    try std.testing.expectEqualStrings("b.ts", graph.modules.at(1).path);
+    try std.testing.expectEqualStrings("c.ts", graph.modules.at(2).path);
+    try std.testing.expectEqual(@as(u32, 0), graph.path_to_module.get("a.ts").?.toU32());
+    try std.testing.expectEqual(@as(u32, 1), graph.path_to_module.get("b.ts").?.toU32());
+    try std.testing.expectEqual(@as(u32, 2), graph.path_to_module.get("c.ts").?.toU32());
+    for (0..3) |i| try std.testing.expectEqual(@as(u32, @intCast(i)), graph.modules.at(i).index.toU32());
+}
+
 // F4 (Issue #65, PR #3704) 회귀 가드 — `buildIncremental` 가 stale entry_dir 를
 // 강제 재계산해야 watch 모드에서 entry 추가/삭제 후 [dir] 토큰이 정확.
 // 옛 코드는 `entry_dir.len == 0` 가드로 첫 build 후 영구 보존 → stale.
