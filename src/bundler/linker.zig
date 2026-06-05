@@ -2965,6 +2965,10 @@ pub const Linker = struct {
         compute_mangling: bool,
         clear_first: bool = false,
         populate_namespace_accesses: bool = true,
+        /// dev HMR reuse-hit 전용 — ref_count(populateSymbolRefCounts) populate 를 skip.
+        /// reuse-hit 는 computeRenames 도 skip 하고 capture_eligible 이 minify/splitting 을
+        /// 제외하므로 ref_count 가 어디서도 소비되지 않는다(아래 populate 가드 주석 참조).
+        skip_ref_counts: bool = false,
     }) !void {
         if (opts.clear_first) {
             self.clearCanonicalNames();
@@ -2977,7 +2981,15 @@ pub const Linker = struct {
         self.populateReExportAliases();
         self.populateImportSymbols();
         if (opts.populate_namespace_accesses) self.populateNamespaceAccesses();
-        self.populateSymbolRefCounts();
+        // ref_count(populateSymbolRefCounts)는 mangle candidate 우선순위(collectUnifiedInput)에서
+        // 소비된다 — 전역 computeMangling 뿐 아니라 code-splitting 의 per-chunk computeChunkMangling
+        // (computeRenamesForModules)도 소비하므로 `compute_renames=false` 라고 무조건 skip 하면
+        // splitting minified 출력의 짧은-이름 배정이 갈린다. 따라서 dev HMR reuse-hit
+        // (skip_ref_counts=true)만 안전하게 skip한다: reuse-hit 는 computeRenames 를 skip 하고
+        // capture_eligible 이 minify_identifiers/code_splitting 을 제외하므로 ref_count 가 어디서도
+        // 소비되지 않는다. 전체 모듈 import_bindings O(N) 순회 절약(lnk). 첫빌드/fallback/splitting
+        // (skip_ref_counts=false)은 종전대로 populate.
+        if (!opts.skip_ref_counts) self.populateSymbolRefCounts();
     }
 
     /// pre-shake AST mutation (cross-module const materialize) 직후, 후속 BFS 가

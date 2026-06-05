@@ -1480,6 +1480,9 @@ pub const Bundler = struct {
             try l.finalize(.{
                 .compute_renames = did_compute_renames,
                 .compute_mangling = self.options.minify_identifiers and !will_tree_shake,
+                // reuse-hit 만 ref_count populate skip. splitting(can_reuse=false)은 per-chunk
+                // mangling 이 ref_count 를 소비하므로 반드시 populate(byte-identical 보존).
+                .skip_ref_counts = can_reuse,
             });
 
             // computeRenames 가 실제 실행됐을 때만 스냅샷 박제(초기/fallback). 재사용-hit 는
