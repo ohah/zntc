@@ -500,6 +500,53 @@ describe('buildRnBundleOptions — plugins (asset/optional-babel/require-context
     expect(opts.plugins?.length).toBe(3);
     expect(opts.plugins?.[2]).toBe(userPlugin);
   });
+
+  // ── PR-3: HMR 위상 보존 plugin 게이트 ──────────────────────────────────────
+  test('preserveSafePlugins — 내장 plugin 만이면 자동 true(보존 안전)', () => {
+    const opts = buildRnBundleOptions(baseInput());
+    expect(opts.preserveSafePlugins).toBe(true);
+  });
+
+  test('preserveSafePlugins — metroResolveRequest(사용자 resolver) 있으면 false 강등', () => {
+    const opts = buildRnBundleOptions(
+      baseInput({ extra: { metroResolveRequest: () => ({ type: 'empty' }) } }),
+    );
+    expect(opts.preserveSafePlugins).toBe(false);
+  });
+
+  test('preserveSafePlugins — babelTransformerPath(사용자 transformer) 있으면 false 강등', () => {
+    const opts = buildRnBundleOptions(
+      baseInput({ extra: { babelTransformerPath: '/abs/svg-transformer.js' } }),
+    );
+    expect(opts.preserveSafePlugins).toBe(false);
+  });
+
+  test('preserveSafePlugins — additionalPlugins 있으면 false 강등', () => {
+    const userPlugin: ZntcPlugin = { name: 'user:custom2', setup() {} };
+    const opts = buildRnBundleOptions(
+      baseInput({ extra: { additionalPlugins: [userPlugin] } }),
+    );
+    expect(opts.preserveSafePlugins).toBe(false);
+  });
+
+  test('preserveSafePlugins — 명시 true override 가 보수 판정(metroResolveRequest)보다 우선', () => {
+    const opts = buildRnBundleOptions(
+      baseInput({
+        extra: {
+          metroResolveRequest: () => ({ type: 'empty' }),
+          preserveSafePlugins: true,
+        },
+      }),
+    );
+    expect(opts.preserveSafePlugins).toBe(true);
+  });
+
+  test('preserveSafePlugins — 명시 false override 가 내장-only(자동 true)보다 우선', () => {
+    const opts = buildRnBundleOptions(
+      baseInput({ extra: { preserveSafePlugins: false } }),
+    );
+    expect(opts.preserveSafePlugins).toBe(false);
+  });
 });
 
 describe('buildRnBundleOptions — extra (watchFolders / blockList / fallback)', () => {

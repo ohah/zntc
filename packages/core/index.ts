@@ -1266,6 +1266,12 @@ interface BuildOptionsCommon {
    * Avoids the Fabric early-register race (`View config not found for
    * component 'X'`). */
   codegenTransform?: boolean;
+  /**
+   * PR-3: HMR 위상 보존에서 plugin 게이트를 완화하는 **빌드 수준** opt-in 신호(per-plugin 아님).
+   * 이 빌드의 모든 plugin 이 결정적·모듈별 순수(ModuleGraph 무접근, 전역 상태/lifecycle 출력 영향
+   * 없음)임을 호출자가 보장할 때만 true. RN preset 이 내장 plugin 구성에 대해 자동으로 켠다.
+   * 임의 custom plugin 은 비결정 가능하므로 default false. */
+  preserveSafePlugins?: boolean;
   /** Global identifiers to reserve during scope hoisting. */
   globalIdentifiers?: string[];
   /** Paths of polyfills to run immediately at bundle start. */

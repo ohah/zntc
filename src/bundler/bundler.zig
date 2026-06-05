@@ -378,6 +378,9 @@ pub const BundleOptions = struct {
     /// RN view config codegen — `*NativeComponent.{js,ts}` 의 codegenNativeComponent
     /// 호출을 inline view config 로 교체 (#2348). --platform=react-native 에서 자동 활성.
     codegen_transform: bool = false,
+    /// PR-3: HMR 위상 보존에서 plugin 게이트를 완화하는 opt-in 신호 — 이 빌드의 모든 user
+    /// plugin 이 결정적·모듈별 순수임을 호출자(RN preset)가 보장. graph.preserve_safe_plugins 로 mirror.
+    preserve_safe_plugins: bool = false,
     /// 증분 빌드용 모�� 파싱 캐시. null이면 매번 전체 파싱.
     /// IncrementalBundler가 소유하고 빌드 간 보존한다.
     module_store: ?*@import("module_store.zig").PersistentModuleStore = null,
@@ -953,6 +956,7 @@ pub const Bundler = struct {
         // #1961: worker 모듈도 transformer pre-pass 가 동일 옵션 사용 — drift 방지.
         worker_graph.worklet_transform = self.options.worklet_transform;
         worker_graph.codegen_transform = self.options.codegen_transform;
+        worker_graph.preserve_safe_plugins = self.options.preserve_safe_plugins;
         worker_graph.react_refresh = self.options.react_refresh;
         worker_graph.styled_components = self.options.styled_components;
         worker_graph.styled_components_ssr = self.options.styled_components_ssr;
@@ -1235,6 +1239,7 @@ pub const Bundler = struct {
         // react_refresh / code_splitting) 만 별도 mirror.
         graph.worklet_transform = self.options.worklet_transform;
         graph.codegen_transform = self.options.codegen_transform;
+        graph.preserve_safe_plugins = self.options.preserve_safe_plugins;
         graph.react_refresh = self.options.react_refresh;
         graph.styled_components = self.options.styled_components;
         graph.styled_components_ssr = self.options.styled_components_ssr;

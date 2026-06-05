@@ -2904,3 +2904,145 @@ test "PR-2: polyfill 스텁 자체 변경 → 보존 reparse(is_context_dep 복�
     try std.testing.expectEqual(fb_before, graph.topology_fallback_count);
     try std.testing.expectEqualStrings(fresh.output, preserved.output);
 }
+
+// ── PR-3: plugin 게이트 결정적 plugin 한정 완화 ──────────────────────────────
+
+const plugin_mod_t = @import("plugin.zig");
+
+/// 결정적 identity transform — code 를 그대로(dupe) 반환. preserve_safe 보존 테스트용.
+fn pr3NoopTransform(ctx: ?*anyopaque, code: []const u8, id: []const u8, allocator: std.mem.Allocator, hook_ctx: *plugin_mod_t.HookContext) plugin_mod_t.PluginError!?[]const u8 {
+    _ = ctx;
+    _ = id;
+    _ = hook_ctx;
+    return try allocator.dupe(u8, code);
+}
+
+fn preservedBuildPlugin(
+    graph: *ModuleGraph_t,
+    store: *module_store.PersistentModuleStore,
+    rc: *@import("resolve_cache.zig").ResolveCache,
+    entry: []const u8,
+    plugins: []const plugin_mod_t.Plugin,
+    preserve_safe: bool,
+    is_first: bool,
+    changed: ?*const std.StringHashMapUnmanaged(void),
+) !BundleResult {
+    var opts = @as(@import("bundler.zig").BundleOptions, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .plugins = plugins,
+        .preserve_safe_plugins = preserve_safe,
+    });
+    if (!is_first) {
+        opts.module_store = store;
+        opts.changed_files = changed;
+        opts.preserve_topology = true;
+    }
+    var b = Bundler.initWithGraph(std.testing.allocator, opts, rc, graph);
+    defer b.deinit();
+    return try b.bundle(std.testing.io);
+}
+
+fn freshFullPlugin(entry: []const u8, plugins: []const plugin_mod_t.Plugin, preserve_safe: bool) !BundleResult {
+    var fresh = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .plugins = plugins,
+        .preserve_safe_plugins = preserve_safe,
+    });
+    defer fresh.deinit();
+    return try fresh.bundle(std.testing.io);
+}
+
+test "PR-3: preserve_safe transform plugin body-only edit → 보존 + byte-identical" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts",
+        \\export const x = 1;
+        \\console.log(x);
+    );
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+    const plugins = [_]plugin_mod_t.Plugin{.{ .name = "pr3-noop", .transform = pr3NoopTransform }};
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuildPlugin(&graph, &store, &rc, entry, &plugins, true, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+    const hits_before = graph.topology_preserved_hits;
+    const fb_before = graph.topology_fallback_count;
+
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "index.ts",
+        \\export const x = 1;
+        \\console.log(x, 'edited');
+    );
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, entry, {});
+
+    var preserved = try preservedBuildPlugin(&graph, &store, &rc, entry, &plugins, true, false, &touched);
+    defer preserved.deinit(std.testing.allocator);
+    try std.testing.expect(!preserved.hasErrors());
+
+    var fresh = try freshFullPlugin(entry, &plugins, true);
+    defer fresh.deinit(std.testing.allocator);
+    try std.testing.expect(!fresh.hasErrors());
+
+    // preserve_safe → plugin 있어도 보존 진입(hit++/fb 불변) + identity transform 이라 byte-identical.
+    try std.testing.expectEqual(hits_before + 1, graph.topology_preserved_hits);
+    try std.testing.expectEqual(fb_before, graph.topology_fallback_count);
+    try std.testing.expectEqualStrings(fresh.output, preserved.output);
+}
+
+test "PR-3: unsafe transform plugin(preserve_safe=false) → fallback" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts",
+        \\export const x = 1;
+        \\console.log(x);
+    );
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+    const plugins = [_]plugin_mod_t.Plugin{.{ .name = "pr3-noop", .transform = pr3NoopTransform }};
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var r1 = try preservedBuildPlugin(&graph, &store, &rc, entry, &plugins, false, true, null);
+        defer r1.deinit(std.testing.allocator);
+        try std.testing.expect(!r1.hasErrors());
+    }
+    const fb_before = graph.topology_fallback_count;
+
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "index.ts",
+        \\export const x = 1;
+        \\console.log(x, 'edited');
+    );
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, entry, {});
+
+    var preserved = try preservedBuildPlugin(&graph, &store, &rc, entry, &plugins, false, false, &touched);
+    defer preserved.deinit(std.testing.allocator);
+    try std.testing.expect(!preserved.hasErrors());
+
+    // preserve_safe=false → unsafe transform plugin → canPreserveTopology fallback.
+    // (fallback 경로의 byte 정확성은 기존 동작; 여기선 게이트의 fallback 전환만 단언 — 테스트
+    //  환경 mtime 해상도와 무관하게 결정적.)
+    try std.testing.expectEqual(fb_before + 1, graph.topology_fallback_count);
+}

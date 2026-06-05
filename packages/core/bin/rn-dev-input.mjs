@@ -91,6 +91,9 @@ export function buildRnBundleExtra(config, opts = {}) {
     fallback: resolver.extraNodeModules ?? undefined,
     metroResolveRequest: resolver.resolveRequest ?? undefined,
     babelTransformerPath: transformer.babelTransformerPath ?? undefined,
+    // HMR 위상 보존 게이트 명시 override (config top-level). 사용자가 "내 resolveRequest/
+    // transformer 는 결정적"임을 보장하면 true 로 보존 강제 — preset 의 보수적 자동판정을 덮어쓴다.
+    preserveSafePlugins: cfg.preserveSafePlugins ?? undefined,
     polyfills: getSerializerPolyfills(serializer, opts),
     extraVars: serializer.extraVars ?? undefined,
     prelude: serializer.prelude ?? undefined,

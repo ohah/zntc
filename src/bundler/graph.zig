@@ -296,6 +296,16 @@ pub const ModuleGraph = struct {
     has_user_load_plugins: bool = false,
     /// transform 은 user plugin 또는 builtin RN codegen 이 활성이면 실행 — 둘을 합친 게이트.
     has_transform_plugins: bool = false,
+    /// PR-3: 빌드 호출자(RN preset 등)가 "이 빌드의 모든 user plugin 이 결정적·모듈별 순수
+    /// (전역 상태/lifecycle 출력 영향 없음)"를 보장하는 opt-in 신호. 기본 false(보수적).
+    /// HMR 위상 보존(canPreserveTopology)이 plugin 게이트를 이 신호로 완화한다.
+    preserve_safe_plugins: bool = false,
+    /// PR-3: preserve-safe 가 아닌(=보존 불가) user plugin hook 보유 여부. canPreserveTopology
+    /// 게이트가 has_user_* 대신 이걸 본다. `ensureBuiltinPlugins` 가 채움(codegen 은 native·
+    /// 결정적이라 unsafe transform 에 불포함).
+    has_unsafe_resolve_id_plugins: bool = false,
+    has_unsafe_load_plugins: bool = false,
+    has_unsafe_transform_plugins: bool = false,
 
     pub const PkgInfo = graph_state.PkgInfo;
     pub const WorkerEntry = graph_state.WorkerEntry;
