@@ -964,37 +964,45 @@ pub const Linker = struct {
         if (mc != snap.module_count) return false;
         if (snap.fingerprint.len != mc) return false;
 
-        // PR-C: HMR 보존-hit 의 unchanged 모듈(carrier changed_emit_paths 에 없음)은 semantic 이
-        // 물리 보존이라 full fingerprint(이름집합 G2/unresolved G4/nested G5/import-wrap G6)가 자명히
-        // snapshot 과 일치 → G1 경량(path_hash/exec_index)만 확인하고 scope_maps/binding 순회
-        // (moduleFingerprint)를 건너뛴다(lnk 절감). carrier=null(fallback/비보존)이면 전량 비교(종전).
-        // G1 만 renumber/DFS 재실행 영향 가능 → 경량 확인이 fail-safe(불일치→false→full computeRenames).
-        const changed = self.graph.changed_emit_paths;
+        // HMR 보존-hit(carrier changed_emit_paths non-null = 위상 보존)에서는 **변경 모듈만**
+        // full fingerprint 를 검사하고 unchanged 는 아예 순회하지 않는다(lGuard O(N)→O(changed),
+        // release link 의 ~32% 제거). unchanged 모듈은 #4174 renumber identity(위상 보존 시
+        // module_index 불변) + 물리 보존(path/exec_index/semantic 불변)으로 fingerprint 가 자명히
+        // snapshot 과 일치하기 때문. carrier 는 emit source-hash skip(#4172) / injectPreservedRenames
+        // 가 이미 정확성에 신뢰하는 동일 출처라, 가드가 carrier 를 신뢰하는 것은 새로운 trust 가
+        // 아니라 종전 #4173 의 per-unchanged G1 경량(redundant fail-safe)을 제거하는 것이다.
+        // (#4173 G1 이 막던 renumber non-identity 는 #4174 가 구조적으로 차단.)
+        // count(G0) 가 모듈 add/remove 를, carrier=null(위상 변경 시)이 fallback 전량 비교를 보장.
+        if (self.graph.changed_emit_paths) |ch| {
+            var it = ch.iterator();
+            while (it.next()) |e| {
+                const idx = self.graph.path_to_module.get(e.key_ptr.*) orelse return false;
+                const i = @intFromEnum(idx);
+                if (i >= mc) return false;
+                const m = self.getModule(@intCast(i)) orelse return false;
+                if (!self.fingerprintMatches(m.*, snap.fingerprint[i])) return false;
+            }
+            return true;
+        }
+
+        // carrier=null(fallback / 비보존): 전량 비교(종전).
         for (0..mc) |i| {
             const m = self.getModule(@intCast(i)) orelse return false;
-            const old = snap.fingerprint[i];
-            if (changed) |ch| {
-                if (!ch.contains(m.path)) {
-                    // unchanged: G1 경량만 (path_hash 는 moduleFingerprint 와 동일 seed 0x5a).
-                    if (std.hash.Wyhash.hash(0x5a, m.path) != old.path_hash) return false;
-                    if (m.exec_index != old.exec_index) return false;
-                    continue;
-                }
-            }
-            const cur = self.moduleFingerprint(m.*) catch return false; // OOM → fail-safe
-            // G1 + G0(per-index path): 같은 인덱스에 같은 경로/실행순서.
-            if (cur.path_hash != old.path_hash) return false;
-            if (cur.exec_index != old.exec_index) return false;
-            // G2: top-level owner 이름집합 불변 (body-only edit = 일치).
-            if (cur.toplevel_name_set_hash != old.toplevel_name_set_hash) return false;
-            // G4: unresolved_references (전역 참조) 불변.
-            if (cur.unresolved_refs_hash != old.unresolved_refs_hash) return false;
-            // G5: nested binding 이름집합 불변 (import shadow 결과 동일).
-            if (cur.nested_name_set_hash != old.nested_name_set_hash) return false;
-            // G6: import local_name 집합 + wrap_kind 불변.
-            if (cur.import_locals_wrap_hash != old.import_locals_wrap_hash) return false;
+            if (!self.fingerprintMatches(m.*, snap.fingerprint[i])) return false;
         }
         return true;
+    }
+
+    /// 모듈의 현재 fingerprint(G1 path/exec + G2 toplevel + G4 unresolved + G5 nested +
+    /// G6 import-locals/wrap)가 snapshot 의 `old` 와 전부 일치하는지. OOM 은 fail-safe(false).
+    fn fingerprintMatches(self: *Linker, m: Module, old: PreservedRenames.ModuleFingerprint) bool {
+        const cur = self.moduleFingerprint(m) catch return false;
+        return cur.path_hash == old.path_hash and
+            cur.exec_index == old.exec_index and
+            cur.toplevel_name_set_hash == old.toplevel_name_set_hash and
+            cur.unresolved_refs_hash == old.unresolved_refs_hash and
+            cur.nested_name_set_hash == old.nested_name_set_hash and
+            cur.import_locals_wrap_hash == old.import_locals_wrap_hash;
     }
 
     /// SymbolID 에 해당하는 module-local 이름 (scope_maps[0] reverse lookup → synthetic_name
