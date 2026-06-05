@@ -1171,6 +1171,14 @@ pub fn buildIncrementalPreserved(
     store: *module_store.PersistentModuleStore,
     changed_files: ?*const std.StringHashMapUnmanaged(void),
 ) !IncrementalBuildResult {
+    // PR-B(F1): emit fast-path carrier 를 함수 최상단에서 clear(null) — 아래 어느 early-return
+    // (modules==0 / changed_files==null / !canPreserveTopology / 각종 fallback)을 타든 직전
+    // 보존-hit 의 stale set 이 남지 않게 한다. 보존-hit/early-return(변경0)만 이후 set 을 채운다.
+    // 이게 없으면 빌드 N(보존-hit, carrier={A}) 다음 빌드 N+1 이 fallback 으로 빠질 때 stale {A}
+    // 가 남아 emit 이 A 외 전 모듈을 unchanged 오판→peek stale.
+    if (self.changed_emit_paths) |*s| s.deinit(self.allocator);
+    self.changed_emit_paths = null;
+
     // cold / 첫 빌드 / 직전 fallback 으로 graph 가 비워진 경우 → full discovery.
     // (store 는 보존 모드에서 비어있어 전량 cache-miss = full parse → byte-identical full.)
     if (self.modules.count() == 0) {
@@ -1249,6 +1257,8 @@ pub fn buildIncrementalPreserved(
     if (changed_indices.items.len == 0) {
         resetPerBuildStateForPreserved(self);
         self.topology_preserved_hits += 1;
+        // PR-B: 변경 0 — carrier 빈 set(non-null) → emit 이 전 모듈을 peek 재사용(출력 불변).
+        self.changed_emit_paths = .empty;
         try finalizeGraph(self, entry_points);
         return .{ .graph_changed = false, .reparsed_indices = try self.allocator.alloc(types.ModuleIndex, 0) };
     }
@@ -1384,11 +1394,16 @@ pub fn buildIncrementalPreserved(
     // (path slice 는 path_arena 소유라 renumber 후에도 path_to_module 키로 유효).
     var reparsed: std.ArrayListUnmanaged(types.ModuleIndex) = .empty;
     errdefer reparsed.deinit(self.allocator);
+    // PR-B: emit fast-path carrier — 변경(reparse)된 모듈 path(path_arena 소유 borrow) set 구성.
+    // emit 이 이 set 에 없는 unchanged 모듈은 source 해시 없이 직전 compiled_cache 결과를 재사용.
+    self.changed_emit_paths = .empty;
     {
         var it = cf.iterator();
         while (it.next()) |e| {
             if (self.path_to_module.get(e.key_ptr.*)) |idx| {
                 try reparsed.append(self.allocator, idx);
+                // OOM 시 try 로 빌드 에러(부분 set 으로 stale peek 방지) — 다음 빌드 진입부가 clear.
+                try self.changed_emit_paths.?.put(self.allocator, self.modules.at(@intFromEnum(idx)).path, {});
             }
         }
     }

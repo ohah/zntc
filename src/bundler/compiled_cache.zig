@@ -338,6 +338,9 @@ pub const CompiledOutputCache = struct {
     hits: u64 = 0,
     misses: u64 = 0,
     skipped_no_mtime: u64 = 0,
+    /// PR-B: emit fast-path 의 options 변동 가드. 직전 빌드 options_hash. emit 진입 시 현재와
+    /// 비교해 다르면(드묾) fast-path 전역 off → 전 모듈 full source-hash(stale 방지).
+    last_options_hash: u64 = 0,
 
     pub const Entry = struct {
         input_hash: u64,
@@ -389,6 +392,14 @@ pub const CompiledOutputCache = struct {
         }
         self.hits += 1;
         return &ptr.compiled;
+    }
+
+    /// PR-B: hash 검증 없이 path 로 직전 Entry borrow(카운터 불변). emit fast-path 가 이번 빌드
+    /// unchanged(reparse 안 됨)로 판정한 모듈에만 쓴다 — unchanged 면 input 물리 불변이라 저장
+    /// input_hash 가 자기 자신과 일치(tryHit 자기 hit 과 동치). caller 가 input_hashes[i] 에
+    /// ent.input_hash 를 그대로 재사용해 Phase 2.5 put 정합 유지.
+    pub fn peekEntry(self: *CompiledOutputCache, path: []const u8) ?*const Entry {
+        return self.entries.getPtr(path);
     }
 
     /// emit 결과를 cache 에 저장. `compiled` 의 slice 들은 cache allocator 로 dupe.
