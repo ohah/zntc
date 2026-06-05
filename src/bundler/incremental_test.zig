@@ -3121,3 +3121,57 @@ test "PR-B: emit fast-path(compiled_cache+보존) unchanged 모듈 peek → byte
     try std.testing.expect(cache.hits >= 1); // util fast-path peek
     try std.testing.expectEqualStrings(fresh.output, preserved.output);
 }
+
+// ── renumber identity: 위상 불변 graph 재renumber 멱등 (finalize/renumber skip 안전 근거) ──
+
+test "renumber identity: 실제 reachable graph 재renumber 시 path→index 멱등 (BFS)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "d.ts", "export const d = 4;");
+    try writeFile(tmp.dir, "b.ts", "import { d } from './d';\nexport const b = d;");
+    try writeFile(tmp.dir, "c.ts", "export const c = 3;");
+    try writeFile(tmp.dir, "index.ts",
+        \\import { b } from './b';
+        \\import { c } from './c';
+        \\console.log(b, c);
+    );
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var rc = Bundler.initResolveCacheFromOptions(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var graph = ModuleGraph_t.init(std.testing.allocator, &rc);
+    defer graph.deinit();
+
+    {
+        var b = Bundler.initWithGraph(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = true }, &rc, &graph);
+        defer b.deinit();
+        var r = try b.bundle(std.testing.io);
+        defer r.deinit(std.testing.allocator);
+        try std.testing.expect(!r.hasErrors());
+    }
+
+    // 빌드 후 graph 는 이미 renumber 됨(finalizeGraph). path → index snapshot.
+    var snap: std.StringHashMapUnmanaged(u32) = .empty;
+    defer snap.deinit(std.testing.allocator);
+    {
+        var it = graph.path_to_module.iterator();
+        while (it.next()) |e| try snap.put(std.testing.allocator, e.key_ptr.*, e.value_ptr.toU32());
+    }
+    try std.testing.expect(snap.count() >= 4); // index/b/c/d (+ helper 가능)
+
+    // 위상 불변(같은 graph) 재renumber → 모든 path 의 index 불변(멱등=identity).
+    // 보존 경로가 finalize/renumber 를 매 rebuild 재실행해도 배치가 안 바뀜을 보장 → skip 안전 근거.
+    const renumber_id = @import("graph/renumber.zig");
+    try renumber_id.renumberModulesDeterministically(&graph, &.{entry});
+
+    var it2 = graph.path_to_module.iterator();
+    while (it2.next()) |e| {
+        const before = snap.get(e.key_ptr.*) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(before, e.value_ptr.toU32());
+    }
+    // Module.index == position (renumber 후 일관).
+    for (0..graph.modules.count()) |i| {
+        try std.testing.expectEqual(@as(u32, @intCast(i)), graph.modules.at(i).index.toU32());
+    }
+}
