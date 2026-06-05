@@ -960,10 +960,24 @@ pub const Linker = struct {
         if (mc != snap.module_count) return false;
         if (snap.fingerprint.len != mc) return false;
 
+        // PR-C: HMR 보존-hit 의 unchanged 모듈(carrier changed_emit_paths 에 없음)은 semantic 이
+        // 물리 보존이라 full fingerprint(이름집합 G2/unresolved G4/nested G5/import-wrap G6)가 자명히
+        // snapshot 과 일치 → G1 경량(path_hash/exec_index)만 확인하고 scope_maps/binding 순회
+        // (moduleFingerprint)를 건너뛴다(lnk 절감). carrier=null(fallback/비보존)이면 전량 비교(종전).
+        // G1 만 renumber/DFS 재실행 영향 가능 → 경량 확인이 fail-safe(불일치→false→full computeRenames).
+        const changed = self.graph.changed_emit_paths;
         for (0..mc) |i| {
             const m = self.getModule(@intCast(i)) orelse return false;
-            const cur = self.moduleFingerprint(m.*) catch return false; // OOM → fail-safe
             const old = snap.fingerprint[i];
+            if (changed) |ch| {
+                if (!ch.contains(m.path)) {
+                    // unchanged: G1 경량만 (path_hash 는 moduleFingerprint 와 동일 seed 0x5a).
+                    if (std.hash.Wyhash.hash(0x5a, m.path) != old.path_hash) return false;
+                    if (m.exec_index != old.exec_index) return false;
+                    continue;
+                }
+            }
+            const cur = self.moduleFingerprint(m.*) catch return false; // OOM → fail-safe
             // G1 + G0(per-index path): 같은 인덱스에 같은 경로/실행순서.
             if (cur.path_hash != old.path_hash) return false;
             if (cur.exec_index != old.exec_index) return false;
