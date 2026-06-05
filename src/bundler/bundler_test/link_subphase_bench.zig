@@ -13,6 +13,14 @@
 //! (`incremental_bench_v4` 는 store 기반 non-dev 경로라 `scope_hoist or dev_mode` 게이트에
 //! 걸려 **linker 자체를 생성하지 않는다** — link sub-phase 측정 불가. 그래서 별도 harness.)
 //!
+//! `other`(5 sub-phase 밖 잔여)도 분해한다 — lRen(computeRenames, 보존-hit 면 skip=0) +
+//! lChain(chain_cache 스캔) + lGuard(renameReuseGuard, #4173 G1 경량) + lInj
+//! (injectPreservedRenames). **측정 결과 warm 보존-hit 의 link 는 lExp ~34% / lRes ~26% /
+//! lInj ~37% 3-way 지배** (lReExp/lImp/lNs/lRen/lChain/lGuard 모두 ~0%). lInj=보존 rename
+//! 스냅샷 전량 재주입(O(snap.entries))으로, 변경 1개여도 전 모듈 rename 을 매 빌드 다시
+//! 주입한다 — #4176 이 안 다룬 warm 레버. (namespace-free fixture 에서도 ~37% 로 동일 →
+//! namespace synthetic 이름 artifact 아님, 진짜 O(rename 심볼 수).)
+//!
 //! 합성 fixture (leaf×M + barrel re-export + consumer×K) 가 sub-phase 를 자극한다:
 //!   - leaf×M + barrel(re-export×M)         → lExp (export_bindings) / lReExp / lRes 체인
 //!   - consumer×K (barrel named import ×2)   → lRes(체인 해석) / lImp (findExportBinding)
@@ -59,6 +67,9 @@ const LinkBreakdown = struct {
     limp_ns: u64,
     lns_ns: u64,
     lren_ns: u64, // computeRenames — reuse-hit(보존-hit)에선 skip 되어야 0. >0 이면 가드 미통과.
+    lchain_ns: u64, // chain_cache_enabled 스캔 (link 내, 첫 re-export 까지)
+    lguard_ns: u64, // renameReuseGuard (G1 경량, #4173)
+    linj_ns: u64, // injectPreservedRenames
 
     fn fromSnapshot(snap: *const profile.ProfileSnapshot) LinkBreakdown {
         return .{
@@ -69,6 +80,9 @@ const LinkBreakdown = struct {
             .limp_ns = snap.total(.link_populate_import_symbols),
             .lns_ns = snap.total(.link_populate_namespace_accesses),
             .lren_ns = snap.total(.link_compute_renames),
+            .lchain_ns = snap.total(.link_chain_cache_scan),
+            .lguard_ns = snap.total(.link_rename_reuse_guard),
+            .linj_ns = snap.total(.link_inject_renames),
         };
     }
 
@@ -82,6 +96,9 @@ const LinkBreakdown = struct {
             .limp_ns = @min(self.limp_ns, o.limp_ns),
             .lns_ns = @min(self.lns_ns, o.lns_ns),
             .lren_ns = @min(self.lren_ns, o.lren_ns),
+            .lchain_ns = @min(self.lchain_ns, o.lchain_ns),
+            .lguard_ns = @min(self.lguard_ns, o.lguard_ns),
+            .linj_ns = @min(self.linj_ns, o.linj_ns),
         };
     }
 };
@@ -160,10 +177,12 @@ fn printBreakdown(label: []const u8, bd: LinkBreakdown) void {
     // `other` = link 총합 − (5 sub-phase + computeRenames). chain_cache 스캔/renameReuseGuard
     // (G1 경량, #4173)/injectPreservedRenames/finalize glue 등 #4176 타깃 밖 잔여.
     // lRen(computeRenames)은 보존-hit 면 0(가드 통과 skip). >0 이면 reuse-hit 미발동 신호.
-    const sum6 = bd.lexp_ns + bd.lres_ns + bd.lreexp_ns + bd.limp_ns + bd.lns_ns + bd.lren_ns;
-    const other_ns = bd.link_ns -| sum6;
+    const sum9 = bd.lexp_ns + bd.lres_ns + bd.lreexp_ns + bd.limp_ns + bd.lns_ns +
+        bd.lren_ns + bd.lchain_ns + bd.lguard_ns + bd.linj_ns;
+    const other_ns = bd.link_ns -| sum9;
     std.debug.print(
-        \\  {s}: link={d:>5}us | lExp {d:>4}us {d:>2}% · lRes {d:>4}us {d:>2}% · lReExp {d:>4}us {d:>2}% · lImp {d:>4}us {d:>2}% · lNs {d:>4}us {d:>2}% · lRen {d:>5}us {d:>2}% · other {d:>5}us {d:>2}%
+        \\  {s}: link={d:>5}us | lExp {d:>4}us {d:>2}% · lRes {d:>4}us {d:>2}% · lReExp {d:>4}us {d:>2}% · lImp {d:>4}us {d:>2}% · lNs {d:>4}us {d:>2}% · lRen {d:>5}us {d:>2}%
+        \\         | lChain {d:>4}us {d:>2}% · lGuard {d:>5}us {d:>2}% · lInj {d:>5}us {d:>2}% · other {d:>5}us {d:>2}%
         \\
     , .{
         label,
@@ -180,6 +199,12 @@ fn printBreakdown(label: []const u8, bd: LinkBreakdown) void {
         pct(bd.lns_ns, bd.link_ns),
         bd.lren_ns / 1000,
         pct(bd.lren_ns, bd.link_ns),
+        bd.lchain_ns / 1000,
+        pct(bd.lchain_ns, bd.link_ns),
+        bd.lguard_ns / 1000,
+        pct(bd.lguard_ns, bd.link_ns),
+        bd.linj_ns / 1000,
+        pct(bd.linj_ns, bd.link_ns),
         other_ns / 1000,
         pct(other_ns, bd.link_ns),
     });
@@ -198,6 +223,9 @@ test "link sub-phase bench: dev HMR 보존-hit link 분해 (#4176)" {
         "link_populate_import_symbols",
         "link_populate_namespace_accesses",
         "link_compute_renames",
+        "link_chain_cache_scan",
+        "link_rename_reuse_guard",
+        "link_inject_renames",
     });
     defer profile.resetForTest();
 
