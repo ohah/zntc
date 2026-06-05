@@ -135,16 +135,14 @@ pub const LinkingMetadata = struct {
             while (vit.next()) |v| self.allocator.free(v.*);
             self.require_rewrites.deinit(self.allocator);
         }
-        // ns_member_rewrites의 inner map과 entries 배열 해제
+        // ns_member_rewrites의 inner map backing 만 해제. inner_map 의 *값* 은 전부 borrowed —
+        // owned_rename_values(위에서 먼저 free) / ns_inline_objects var_name / 전역 ns 캐시 /
+        // 모듈 export local 이 소유한다. 여기서 free 하면 (a) owned_rename_values 가 먼저 free 돼
+        // dangling read, (b) 진짜 소유자와 double-free → 병렬 emit 에서 flaky segfault (#4178).
+        // 키도 모듈 export 이름 borrow 라 map.deinit(backing만) 으로 충분.
         if (self.ns_member_rewrites.entries.len > 0) {
             for (self.ns_member_rewrites.entries) |*e| {
-                var m = @constCast(&e.map);
-                // 인라인 객체 문자열 (allocator에서 할당됨) 해제
-                var vit = m.valueIterator();
-                while (vit.next()) |v| {
-                    if (v.*.len > 0 and v.*[0] == '{') self.allocator.free(v.*);
-                }
-                m.deinit(self.allocator);
+                @constCast(&e.map).deinit(self.allocator);
             }
             self.allocator.free(self.ns_member_rewrites.entries);
         }
