@@ -1792,6 +1792,10 @@ test "reuse: guard 통과 시 inject — single import 그래프" {
     try std.testing.expect(fresh.renameReuseGuard(&snap));
     try fresh.injectPreservedRenames(&snap);
     try expectRenameTablesEqual(&r.linker, &fresh);
+    // RFC_PERSISTENT_LINKER Phase 1: 주입은 스냅샷 문자열을 borrow 하므로 per-entry
+    // dupe(alloc)가 없다 → canonical_strings(linker 소유분)는 비어 있어야 한다.
+    // dupe 로 회귀하면 이 단언이 깨진다(lInj 비용 재증가 가드).
+    try std.testing.expectEqual(@as(usize, 0), fresh.canonical_strings.items.len);
 }
 
 test "reuse PR-C: 변경-한정 가드(carrier set)가 전량 가드와 동일 verdict" {

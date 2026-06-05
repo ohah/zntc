@@ -1086,8 +1086,10 @@ pub const Linker = struct {
             // by-name 재유도: 초기 idx 대신 fresh 그래프에서 이름으로 다시 찾는다.
             const fresh_idx = self.findSymbolIdx(module_index, entry.local_name) orelse continue;
             const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(module_index)), fresh_idx);
-            const dup = try self.allocator.dupe(u8, entry.canonical);
-            try self.assignSymbolCanonical(id, dup);
+            // 스냅샷 문자열 borrow — 매 빌드 N dupe(alloc) 제거(lInj 절감, RFC_PERSISTENT_LINKER
+            // Phase 1). `entry.canonical` 은 snap(=PreservedRenames, IncrementalBundler 수명)
+            // 소유라 emit 까지 유효하고, linker.deinit 가 free 하지 않는다.
+            try self.assignSymbolCanonicalBorrowed(id, entry.canonical);
         }
     }
 
@@ -1692,6 +1694,21 @@ pub const Linker = struct {
             if (self.rename_table.get(id)) |prior| _ = self.canonical_names_used.fetchRemove(prior);
         }
         try self.canonical_strings.append(self.allocator, value);
+        try self.canonical_names_used.put(self.allocator, value, {});
+        if (id.isValid()) try self.rename_table.put(self.allocator, id, value);
+    }
+
+    /// `assignSymbolCanonical` 의 borrow 변형 — `value` 소유권을 `canonical_strings` 로
+    /// 이전하지 *않는다*. `value` 가 build 보다 오래 사는 외부 store 소유일 때만 쓴다
+    /// (현 유일 호출처 = `injectPreservedRenames` 의 `PreservedRenames` 스냅샷,
+    /// `IncrementalBundler.preserved_renames` 수명). `canonical_strings.append` 를 생략해
+    /// `linker.deinit`(canonical_strings 일괄 free)가 외부 소유 문자열을 free 하지 않게 한다
+    /// — 스냅샷 dangling/다음-빌드 재주입 시 use-after-free 방지. `canonical_names_used`/
+    /// `rename_table` 는 값 string 을 borrow 만 하므로(키/값 미소유) 그대로 put 안전.
+    fn assignSymbolCanonicalBorrowed(self: *Linker, id: bundler_symbol.SymbolID, value: []const u8) !void {
+        if (id.isValid()) {
+            if (self.rename_table.get(id)) |prior| _ = self.canonical_names_used.fetchRemove(prior);
+        }
         try self.canonical_names_used.put(self.allocator, value, {});
         if (id.isValid()) try self.rename_table.put(self.allocator, id, value);
     }
