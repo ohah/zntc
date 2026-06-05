@@ -1821,17 +1821,30 @@ test "reuse PR-C: 변경-한정 가드(carrier set)가 전량 가드와 동일 v
     try std.testing.expect(r.graph.changed_emit_paths == null);
     try std.testing.expect(fresh.renameReuseGuard(&snap));
 
-    // 변경-한정(carrier={modules[0]}): carrier 에 있는 모듈은 full fingerprint, 나머지는 G1 경량
-    // (path_hash/exec_index). 같은 그래프라 전부 일치 → 동일하게 통과(carrier branch 진입 검증).
+    // 변경-한정(carrier={modules[0]}): carrier 에 있는 모듈만 full fingerprint 검사, 나머지는
+    // 아예 순회 안 함(O(changed)). 같은 그래프라 carrier 모듈도 일치 → 동일하게 통과.
     var carrier: std.StringHashMapUnmanaged(void) = .empty;
     defer carrier.deinit(std.testing.allocator);
     try carrier.put(std.testing.allocator, r.graph.modules.at(0).path, {});
     r.graph.changed_emit_paths = carrier;
     try std.testing.expect(fresh.renameReuseGuard(&snap));
 
-    // 빈 carrier(전부 unchanged=G1 경량)도 동일 통과.
+    // 빈 carrier(변경 0 = 검사할 모듈 없음)도 통과.
     r.graph.changed_emit_paths = .empty;
     try std.testing.expect(fresh.renameReuseGuard(&snap));
+
+    // 정확성: carrier 모듈의 fingerprint 가 snapshot 과 다르면 reject(=full computeRenames).
+    // snapshot 의 modules[0] toplevel 이름집합 해시를 손상시키고 그 모듈을 carrier 에 넣으면
+    // O(changed) 가드가 그 모듈을 검사해 불일치 감지 → false 여야 한다(이름 추가 edit 모사).
+    const fp0 = @constCast(&snap.fingerprint[0]); // arena-backed, 테스트 목적 변형
+    const orig_hash = fp0.toplevel_name_set_hash;
+    fp0.toplevel_name_set_hash = orig_hash ^ 0xdead_beef;
+    r.graph.changed_emit_paths = carrier; // {modules[0]}
+    try std.testing.expect(!fresh.renameReuseGuard(&snap));
+    // 전량 가드(carrier=null)도 동일하게 false — verdict 일치.
+    r.graph.changed_emit_paths = null;
+    try std.testing.expect(!fresh.renameReuseGuard(&snap));
+    fp0.toplevel_name_set_hash = orig_hash; // 복원
 
     // graph.deinit 가 테스트 소유 carrier 를 이중 해제하지 않게 복원(빈 set 은 backing 없음).
     r.graph.changed_emit_paths = null;
