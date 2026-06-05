@@ -1710,18 +1710,19 @@ pub const Linker = struct {
         if (id.isValid()) try self.rename_table.put(self.allocator, id, value);
     }
 
-    /// `assignSymbolCanonical` 의 borrow 변형 — `value` 소유권을 `canonical_strings` 로
-    /// 이전하지 *않는다*. `value` 가 build 보다 오래 사는 외부 store 소유일 때만 쓴다
-    /// (현 유일 호출처 = `injectPreservedRenames` 의 `PreservedRenames` 스냅샷,
-    /// `IncrementalBundler.preserved_renames` 수명). `canonical_strings.append` 를 생략해
-    /// `linker.deinit`(canonical_strings 일괄 free)가 외부 소유 문자열을 free 하지 않게 한다
-    /// — 스냅샷 dangling/다음-빌드 재주입 시 use-after-free 방지. `canonical_names_used`/
-    /// `rename_table` 는 값 string 을 borrow 만 하므로(키/값 미소유) 그대로 put 안전.
+    /// `assignSymbolCanonical` 의 reuse-hit 전용 변형 — emit 이 소비하는 `rename_table` 만
+    /// 채운다. 단일 호출처 = `injectPreservedRenames`(reuse-hit, `PreservedRenames` 스냅샷,
+    /// `IncrementalBundler.preserved_renames` 수명).
+    ///
+    /// 두 가지를 생략한다(reuse-hit 정밀화):
+    ///  1. `canonical_strings.append` — `value` 는 스냅샷 소유라 linker.deinit 가 free 하면
+    ///     안 됨(double-free/dangling 방지). rename_table/canonical_names_used 는 값 미소유라 put 안전.
+    ///  2. `canonical_names_used.put`/`fetchRemove` — `canonical_names_used` 는 deconflict 의
+    ///     `isCanonicalNameTaken`(=`findAvailableCandidate`) 만 읽는데, reuse-hit 은 computeRenames/
+    ///     deconflict 를 통째로 skip 한다 → 이 맵은 reuse-hit 에서 *write-only(dead)*. 매 entry 의
+    ///     put 은 낭비라 생략(lInj 절감). canonical_names_used 는 per-build(deinit) 라 다음 빌드에도
+    ///     영향 없음. (fresh rename_table 이라 prior 도 없어 fetchRemove 도 dead.)
     fn assignSymbolCanonicalBorrowed(self: *Linker, id: bundler_symbol.SymbolID, value: []const u8) !void {
-        if (id.isValid()) {
-            if (self.rename_table.get(id)) |prior| _ = self.canonical_names_used.fetchRemove(prior);
-        }
-        try self.canonical_names_used.put(self.allocator, value, {});
         if (id.isValid()) try self.rename_table.put(self.allocator, id, value);
     }
 
