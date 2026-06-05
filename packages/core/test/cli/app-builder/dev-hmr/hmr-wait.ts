@@ -41,12 +41,19 @@ export interface HmrWaitOptions {
 }
 
 /**
- * `/__hmr` WebSocket 에 연결해 `trigger()` 로 변경을 일으키고 `predicate` 를 충족하는
+ * `/__hmr` WebSocket 에 연결해 `trigger(attempt)` 로 변경을 일으키고 `predicate` 를 충족하는
  * broadcast 가 올 때까지 기다린다(watcher arm-race 에 견고). 파일 시스템 정리는 호출부가 담당.
+ *
+ * `trigger` 는 1-based `attempt` 를 받는다. **재시도(attempt≥2)는 *fresh* 한 내용을 써야
+ * 한다**: 첫 trigger 의 broadcast 가 (fsevents 의 event 분할/coalescing/타이밍으로) predicate
+ * 에 안 맞는 종류(예: css-update / noop)로 떨어지면, 똑같은 내용을 다시 써도 bundler 가 diff 0
+ * → noop → 영영 매칭 broadcast 가 안 온다(retry 가 arm-race 만 구제하고 이 경우는 못 구제).
+ * attempt 로 내용을 변주하면 매 재시도가 진짜 새 변경 → 새 broadcast 를 강제한다. attempt 를
+ * 안 쓰는(고정 내용) 기존 호출부는 arm-race(첫 write 영구 유실)만 대상이라 그대로 안전하다.
  */
 export function waitForHmrBroadcast(
   port: number,
-  trigger: () => void,
+  trigger: (attempt: number) => void,
   predicate: (msg: HmrMessage) => boolean,
   opts: HmrWaitOptions = {},
 ): Promise<HmrWaitResult> {
@@ -68,17 +75,28 @@ export function waitForHmrBroadcast(
       }
       resolve(out);
     };
-    const timeout = setTimeout(() => settle({ received }), timeoutMs);
+    const t0 = Date.now();
+    const dbg = process.env.ZNTC_HMR_DEBUG
+      ? (s: string) => console.error(`[hmr-wait +${Date.now() - t0}ms] ${s}`)
+      : () => {};
+    let triggerCount = 0;
+    const timeout = setTimeout(() => {
+      dbg(`TIMEOUT triggers=${triggerCount} received=${JSON.stringify(received.map((m) => m.type))}`);
+      settle({ received });
+    }, timeoutMs);
     // trigger() 가 throw 하면(예: 경로 문제) async onopen / setInterval 의 unhandled rejection
     // 대신 settle 로 라우팅 → 호출부 단언이 명확히 실패한다.
     const safeTrigger = () => {
       try {
-        trigger();
+        triggerCount += 1;
+        dbg(`trigger #${triggerCount}`);
+        trigger(triggerCount);
       } catch {
         settle({ received });
       }
     };
     ws.onopen = async () => {
+      dbg('ws open');
       await new Promise((r) => setTimeout(r, initialDelayMs));
       if (settled) return; // 대기 중 error/timeout 으로 종료됐으면 interval 안 건다
       safeTrigger();
@@ -88,8 +106,12 @@ export function waitForHmrBroadcast(
       const msg = JSON.parse(String(event.data)) as HmrMessage;
       if (msg.type === 'connected') return; // 핸드셰이크 무시
       received.push(msg);
+      dbg(`recv ${msg.type}`);
       if (predicate(msg)) settle({ result: msg, received });
     };
-    ws.onerror = () => settle({ received });
+    ws.onerror = () => {
+      dbg('ws error');
+      settle({ received });
+    };
   });
 }
