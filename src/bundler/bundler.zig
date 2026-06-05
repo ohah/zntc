@@ -1464,7 +1464,14 @@ pub const Bundler = struct {
             var can_reuse = false;
             if (reuse_eligible) {
                 if (self.options.preserved_renames) |snap| {
-                    if (l.renameReuseGuard(snap)) {
+                    const guard_ok = blk_guard: {
+                        var g = profile.begin(.link_rename_reuse_guard);
+                        defer g.end();
+                        break :blk_guard l.renameReuseGuard(snap);
+                    };
+                    if (guard_ok) {
+                        var inj = profile.begin(.link_inject_renames);
+                        defer inj.end();
                         try l.injectPreservedRenames(snap);
                         can_reuse = true;
                     }

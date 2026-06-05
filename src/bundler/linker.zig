@@ -537,15 +537,19 @@ pub const Linker = struct {
 
         // re-export chain이 있으면 resolveExportChain 캐시 활성화.
         // 단순 그래프(re-export 없음)에서는 캐시 오버헤드가 이득보다 크므로 비활성.
-        var it = self.graph.modulesIterator();
-        while (it.next()) |m| {
-            for (m.export_bindings) |eb| {
-                if (eb.kind.isAnyReExport()) {
-                    self.chain_cache_enabled = true;
-                    break;
+        {
+            var scan_scope = profile.begin(.link_chain_cache_scan);
+            defer scan_scope.end();
+            var it = self.graph.modulesIterator();
+            while (it.next()) |m| {
+                for (m.export_bindings) |eb| {
+                    if (eb.kind.isAnyReExport()) {
+                        self.chain_cache_enabled = true;
+                        break;
+                    }
                 }
+                if (self.chain_cache_enabled) break;
             }
-            if (self.chain_cache_enabled) break;
         }
 
         try self.resolveImports();
