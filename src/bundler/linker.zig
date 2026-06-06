@@ -204,6 +204,13 @@ pub const Linker = struct {
     /// 재빌드 비용 0(#perf: RN/large 번들 finalize 회귀 방지).
     ns_collision_present: bool = false,
 
+    /// computeRenames 동안만 사는 메모이즈: `module_index → 그 모듈의 nested scope(scope 0 제외)
+    /// 바인딩 이름 union set`. `hasNestedBinding` 이 후보(`name$N`)마다 모듈의 모든 scope_maps 를
+    /// 재스캔하던 것(rename당 O(scopes), cold lRen 의 ~83%)을 O(1) 멤버십으로 바꾼다. 키는 borrow
+    /// (scope_maps 소유, semantic 수명 = graph > Linker). 빌드는 단일스레드 computeRenames 에서만,
+    /// 조회는 const(레이스 없음). 캐시 미존재(per-chunk/빌드 전) 는 원본 스캔 fallback → byte-identical.
+    nested_binding_cache: std.AutoHashMapUnmanaged(u32, std.StringHashMapUnmanaged(void)) = .empty,
+
     /// (#4120) `module_index → ChunkIndex` borrowed 슬라이스. `computeCrossChunkLinks` 직후
     /// bundler 가 `chunk_graph.module_to_chunk` 를 빌려 세팅 — emit 동안만 유효(소유권 X, free 금지).
     /// metadata 가 "consumer 모듈과 canonical CJS 모듈이 다른 청크인가"를 O(1) 판정해 cross-chunk
@@ -446,6 +453,9 @@ pub const Linker = struct {
         self.canonical_names_used.deinit(self.allocator);
         self.rename_table.deinit(self.allocator);
         self.reserved_globals.deinit(self.allocator);
+        // nested-binding 캐시: inner set 해제(computeRenames 에러 경로 안전망; 정상 경로는 defer 가 이미 clear).
+        self.clearNestedBindingCache();
+        self.nested_binding_cache.deinit(self.allocator);
         // cross-chunk 전역 이름(#4101): owned value 해제 + inner/outer 맵 deinit.
         self.clearCrossChunkGlobalNames();
         self.cross_chunk_global_names.deinit(self.allocator);
@@ -849,6 +859,12 @@ pub const Linker = struct {
             try self.collectModuleNames(m.*, @intCast(i), &name_to_owners);
         }
 
+        // 1.5. nested-binding 캐시 빌드 — 이후 calculateRenames/resolveNestedShadowConflicts 의
+        // hasNestedBinding O(scopes) 재스캔을 O(1) 로. owner 모듈만(질의 대상). 빌드 실패(OOM)는
+        // 캐시 비우고 전파 — 부분 캐시로 잘못된 멤버십 판정이 새지 않게(아래 build 가 보장).
+        try self.buildNestedBindingCache(&name_to_owners);
+        defer self.clearNestedBindingCache();
+
         // 2. 충돌하는 이름에 대해 리네임 계산
         try self.calculateRenames(&name_to_owners, false);
 
@@ -856,6 +872,40 @@ pub const Linker = struct {
         // 충돌하면 target module의 canonical name을 한 단계 더 rename.
         // 예: d3-color의 cubehelix와 d3-interpolate 내부의 function cubehelix 충돌.
         try self.resolveNestedShadowConflicts(&name_to_owners);
+    }
+
+    /// computeRenames 전용: owner 모듈마다 nested scope(scope 0 제외) 바인딩 이름 union set 을
+    /// 1회 빌드. 키는 borrow(scope_maps 소유). OOM 시 그 모듈의 부분 set 을 폐기하고 에러 전파
+    /// (부분 캐시는 false-negative 멤버십을 내 byte-difference 를 만들 수 있으므로 절대 사용 금지).
+    fn buildNestedBindingCache(self: *Linker, name_to_owners: *const NameToOwnersMap) !void {
+        var vit = name_to_owners.valueIterator();
+        while (vit.next()) |owners| {
+            for (owners.items) |owner| {
+                const gop = try self.nested_binding_cache.getOrPut(self.allocator, owner.module_index);
+                if (gop.found_existing) continue; // 같은 모듈 중복 빌드 방지
+                gop.value_ptr.* = .empty;
+                const m = self.getModule(owner.module_index) orelse continue; // 빈 set = nested 없음(스캔과 동일)
+                const sem = m.semantic orelse continue;
+                for (sem.scope_maps, 0..) |scope_map, scope_idx| {
+                    if (scope_idx == 0) continue; // top-level 제외(hasNestedBinding 스캔과 동일)
+                    var it = scope_map.iterator();
+                    while (it.next()) |e| {
+                        gop.value_ptr.put(self.allocator, e.key_ptr.*, {}) catch |err| {
+                            gop.value_ptr.deinit(self.allocator);
+                            _ = self.nested_binding_cache.remove(owner.module_index);
+                            return err;
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    /// nested-binding 캐시 해제(inner set deinit + outer clear). computeRenames defer + deinit 양쪽 호출(멱등).
+    fn clearNestedBindingCache(self: *Linker) void {
+        var it = self.nested_binding_cache.valueIterator();
+        while (it.next()) |set| set.deinit(self.allocator);
+        self.nested_binding_cache.clearRetainingCapacity();
     }
 
     // ── HMR rename 보존/재사용 (perf/hmr-link-rename-reuse) ────────────────────
@@ -1774,6 +1824,9 @@ pub const Linker = struct {
     // (moduleFingerprint G5 해시가 같은 집합을 본다). 여기는 early-return lookup 이라
     // 별도 구현이지만 *순회 범위*(scope_idx != 0)는 한 군데서만 바뀌도록 주석으로 고정.
     pub fn hasNestedBinding(self: *const Linker, module_index: u32, name: []const u8) bool {
+        // computeRenames 빌드한 union set 이 있으면 O(1) 멤버십. set 은 scope_maps[1..] 모든 키의
+        // 정확한 union 이라 아래 스캔과 *동일* 결과(byte-identical). 미존재(per-chunk/빌드 전)면 스캔.
+        if (self.nested_binding_cache.get(module_index)) |set| return set.contains(name);
         const m = self.getModule(module_index) orelse return false;
         const sem = m.semantic orelse return false;
         for (sem.scope_maps, 0..) |scope_map, scope_idx| {
