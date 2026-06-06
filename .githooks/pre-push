@@ -1,0 +1,50 @@
+#!/bin/sh
+# pre-push: lint + fmt + test before push.
+#
+# 포매팅은 pre-commit 이 commit 시점에 이미 적용한다(여기 fmt 체크는 안전망).
+# 느린 `zig build test` 는 `SKIP_TESTS=1 git push` 로 건너뛸 수 있다 — `--no-verify`(모든
+# 훅 skip → fmt 까지 누락, #4187 의 원인) 대신 이걸 쓰면 fmt/lint 안전망은 유지된다.
+#
+# 설치: `git config core.hooksPath .githooks` (루트 package.json 의 `prepare` 가 자동 설정).
+
+# mise 로 설치된 zig 사용 (portable)
+if command -v mise >/dev/null 2>&1; then
+    eval "$(mise env 2>/dev/null)" || true
+elif [ -x "$HOME/.local/bin/mise" ]; then
+    eval "$("$HOME/.local/bin/mise" env 2>/dev/null)" || true
+fi
+
+echo "[pre-push] Using zig $(zig version 2>/dev/null)"
+
+echo "[pre-push] zig fmt --check src/..."
+if ! zig fmt --check src/; then
+    echo "[pre-push] FAILED: zig formatting. Run 'zig fmt src/' (또는 commit 시 pre-commit 이 자동 처리)."
+    exit 1
+fi
+
+if [ -n "$SKIP_TESTS" ]; then
+    echo "[pre-push] SKIP_TESTS=1 → zig build test 건너뜀"
+else
+    echo "[pre-push] zig build test... (SKIP_TESTS=1 로 건너뛸 수 있음)"
+    if ! zig build test; then
+        echo "[pre-push] FAILED: tests. Fix test failures before pushing."
+        exit 1
+    fi
+fi
+
+# JS/TS 패키지: oxlint + oxfmt 체크
+if [ -x node_modules/.bin/oxlint ]; then
+    echo "[pre-push] oxlint..."
+    if ! bun run lint >/dev/null 2>&1; then
+        echo "[pre-push] FAILED: oxlint. Run 'bun run lint:fix' to fix."
+        exit 1
+    fi
+
+    echo "[pre-push] oxfmt --check..."
+    if ! bun run fmt:check >/dev/null 2>&1; then
+        echo "[pre-push] FAILED: oxfmt. Run 'bun run fmt' to fix."
+        exit 1
+    fi
+fi
+
+echo "[pre-push] All checks passed."
