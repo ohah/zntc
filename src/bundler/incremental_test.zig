@@ -3233,3 +3233,64 @@ test "lNs partial-skip: reuse-hit namespace member-access rebuild 정상" {
         else => return error.TestUnexpectedResult,
     }
 }
+
+// lImp(populateImportSymbols)/lReExp(populateReExportAliases) 변경∪importer partial-skip
+// 회귀 가드(#4189): named import 가 re-export barrel 체인을 경유하는 fixture 를 reuse-hit
+// rebuild 하면 carrier 기반 recompute 경로(헬퍼 carrierRecomputeSet)가 crash 없이 정상
+// 동작하고 변경 모듈이 재방출돼야 한다. (skip 자체 byte-identical 은 AST-resident 보존 +
+// reuse-hit 가드 G2 이름 안정 by-construction + /code-review max 검증.)
+test "lImp/lReExp partial-skip: reuse-hit named-import via re-export barrel 정상" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "src.ts", "export const a = 1;\nexport const b = 2;\nexport const c = 3;\n");
+    // barrel 이 src 를 named re-export (lReExp) — 소비자는 barrel 에서 named import (lImp).
+    try writeFile(tmp.dir, "barrel.ts", "export { a, b, c } from './src';\n");
+    const N = 12;
+    inline for (0..N) |n| {
+        const ns = std.fmt.comptimePrint("{d}", .{n});
+        try writeFile(tmp.dir, "m" ++ ns ++ ".ts", "import { a, b } from './barrel';\nexport const x" ++ ns ++ " = a + b + 0;\n");
+    }
+    var idx: std.ArrayList(u8) = .empty;
+    defer idx.deinit(std.testing.allocator);
+    inline for (0..N) |n| {
+        try idx.print(std.testing.allocator, "import {{ x{d} }} from './m{d}';\nconsole.log(x{d});\n", .{ n, n, n });
+    }
+    try writeFile(tmp.dir, "index.ts", idx.items);
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+    const m0 = try absPath(&tmp, "m0.ts");
+    defer std.testing.allocator.free(m0);
+
+    var ib = IncrementalBundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .collect_module_codes = true,
+    });
+    ib.enable_persistence = true;
+    defer ib.deinit();
+
+    {
+        const r = try ib.rebuild(std.testing.io);
+        switch (r) {
+            .success => |s| BundleResult.ModuleDevCode.freeAll(s.changed_modules, std.testing.allocator),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    // warm reuse-hit: m0 body-only edit(named import c 추가 — barrel 경유 lImp/lReExp 재해석,
+    // top-level 이름집합 x0 불변이라 G2 통과 → 보존-hit).
+    var changed: std.StringHashMapUnmanaged(void) = .empty;
+    defer changed.deinit(std.testing.allocator);
+    try changed.put(std.testing.allocator, m0, {});
+    try writeFile(tmp.dir, "m0.ts", "import { a, b, c } from './barrel';\nexport const x0 = a + b + c + 1;\n");
+
+    const r = try ib.rebuildWithChanges(std.testing.io, &changed);
+    switch (r) {
+        .success => |s| {
+            defer BundleResult.ModuleDevCode.freeAll(s.changed_modules, std.testing.allocator);
+            try std.testing.expectEqual(false, s.graph_changed); // 보존-hit
+            try std.testing.expect(s.changed_modules.len > 0); // m0 재방출
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}

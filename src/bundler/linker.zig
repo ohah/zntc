@@ -16,6 +16,10 @@ const spin = @import("../util/spin_lock.zig");
 /// kill-switch: 보존-hit lNs 변경∪importer 한정 skip 을 끄고 전량 재계산(byte-identical 회귀
 /// 진단/대조용). 설정 시 populateNamespaceAccesses 가 carrier 와 무관하게 모든 모듈 재계산.
 const ns_access_skip_disabled = @import("../env_flag.zig").Once("ZNTC_NO_NS_ACCESS_SKIP");
+/// kill-switch: 보존-hit lImp(populateImportSymbols) 변경∪importer 한정 skip 끄고 전량 재계산.
+const import_sym_skip_disabled = @import("../env_flag.zig").Once("ZNTC_NO_IMPORT_SYM_SKIP");
+/// kill-switch: 보존-hit lReExp(populateReExportAliases) 변경∪importer 한정 skip 끄고 전량 재계산.
+const reexport_alias_skip_disabled = @import("../env_flag.zig").Once("ZNTC_NO_REEXPORT_ALIAS_SKIP");
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const BundlerDiagnostic = types.BundlerDiagnostic;
@@ -2452,12 +2456,44 @@ pub const Linker = struct {
     /// 직접 읽어 문자열 기반 `resolveExportChain` 호출을 제거한다.
     ///
     /// link() 이후에 호출되어야 한다 — export_map과 canonical_names가 준비된 상태를 전제.
+    /// 보존-hit(carrier non-null = 위상 보존) 부분-skip 공용 recompute set =
+    /// **변경 모듈 ∪ 그 직접/dynamic importer**. AST-resident sink(lNs/lImp/lReExp)는 unchanged
+    /// 모듈의 직전 빌드 값이 보존되므로, 이 집합 밖 모듈은 재계산 skip 해도 byte-identical.
+    /// carrier=null(보존-hit 아님) / path 키 미스 / module 미존재(graph 불일치) / OOM → null
+    /// = 전량 재계산(fail-safe, false-skip 차단). 반환 set 은 caller 가 deinit.
+    fn carrierRecomputeSet(self: *const Linker) ?std.AutoHashMapUnmanaged(u32, void) {
+        const ch = self.graph.changed_emit_paths orelse return null;
+        var set: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        const ok = blk: {
+            var it = ch.iterator();
+            while (it.next()) |e| {
+                const idx = self.graph.path_to_module.get(e.key_ptr.*) orelse break :blk false;
+                set.put(self.allocator, @intFromEnum(idx), {}) catch break :blk false;
+                const m = self.getModule(@intFromEnum(idx)) orelse break :blk false;
+                for (m.importers.items) |imp| set.put(self.allocator, @intFromEnum(imp), {}) catch break :blk false;
+                for (m.dynamic_importers.items) |imp| set.put(self.allocator, @intFromEnum(imp), {}) catch break :blk false;
+            }
+            break :blk true;
+        };
+        if (ok) return set;
+        set.deinit(self.allocator);
+        return null;
+    }
+
     pub fn populateReExportAliases(self: *const Linker) void {
         var scope = profile.begin(.link_populate_re_export_aliases);
         defer scope.end();
 
+        // 보존-hit: lReExp 출력(m.alias_table canonical name)은 AST-resident 보존본. reuse-hit
+        // 가드 G2(변경 모듈 top-level 이름 안정)가 resolveExportChain 의 체인-끝 이름을 안정화
+        // → unchanged 모듈의 alias 는 직전 값 유효 → 변경 ∪ importer 만 재계산(byte-identical).
+        var recompute: ?std.AutoHashMapUnmanaged(u32, void) =
+            if (!reexport_alias_skip_disabled.enabled()) self.carrierRecomputeSet() else null;
+        defer if (recompute) |*r| r.deinit(self.allocator);
+
         const count = self.graph.moduleCount();
         for (0..count) |idx| {
+            if (recompute) |r| if (!r.contains(@intCast(idx))) continue;
             const m = self.moduleAtMut(@intCast(idx)) orelse continue;
             const mod_idx: ModuleIndex = ModuleIndex.fromUsize(idx);
             const table_ptr = if (m.alias_table) |*t| t else continue;
@@ -2526,8 +2562,17 @@ pub const Linker = struct {
         var scope = profile.begin(.link_populate_import_symbols);
         defer scope.end();
 
+        // 보존-hit: lImp 출력(ib.symbol/ib.local_symbol)은 importer.import_bindings(AST-resident)
+        // 보존본. ib.symbol = *직접* source(import_record.resolved)의 export SymbolRef 복사라,
+        // source 재파싱(symbol id 변동) 시 importer 의 ib.symbol 이 stale → 변경 ∪ 직접 importer
+        // 만 재계산(이슈 #4176 위험#2). chain end 아닌 직접 source 만 읽어 직접 importer 로 충분.
+        var recompute: ?std.AutoHashMapUnmanaged(u32, void) =
+            if (!import_sym_skip_disabled.enabled()) self.carrierRecomputeSet() else null;
+        defer if (recompute) |*r| r.deinit(self.allocator);
+
         const count = self.graph.moduleCount();
         for (0..count) |i| {
+            if (recompute) |r| if (!r.contains(@intCast(i))) continue;
             const importer = self.moduleAtMut(@intCast(i)) orelse continue;
             const sem_opt = importer.semantic;
             const module_scope_opt = if (sem_opt) |sem|
@@ -2610,26 +2655,9 @@ pub const Linker = struct {
         // 분석은 importer 자신의 AST + *직접* source 게이팅만 읽고 re-export 체인 끝은 안 보므로
         // 직접 importer 로 충분(이슈 #4176 위험#4). carrier=null(fallback)/키 미스/OOM → 전량
         // (recompute=null, fail-safe). RN 같은 namespace-heavy 앱의 warm lNs 절감(web 은 ~0%).
-        var recompute: ?std.AutoHashMapUnmanaged(u32, void) = null;
+        var recompute: ?std.AutoHashMapUnmanaged(u32, void) =
+            if (!ns_access_skip_disabled.enabled()) self.carrierRecomputeSet() else null;
         defer if (recompute) |*r| r.deinit(self.allocator);
-        if (self.graph.changed_emit_paths != null and !ns_access_skip_disabled.enabled()) {
-            const ch = self.graph.changed_emit_paths.?;
-            var set: std.AutoHashMapUnmanaged(u32, void) = .empty;
-            const ok = blk: {
-                var it = ch.iterator();
-                while (it.next()) |e| {
-                    const idx = self.graph.path_to_module.get(e.key_ptr.*) orelse break :blk false;
-                    set.put(self.allocator, @intFromEnum(idx), {}) catch break :blk false;
-                    // path 는 resolve 됐는데 module 미존재 = graph 불일치 → importer 누락 위험,
-                    // 전량 재계산으로 fail-safe(false-skip 차단).
-                    const m = self.getModule(@intFromEnum(idx)) orelse break :blk false;
-                    for (m.importers.items) |imp| set.put(self.allocator, @intFromEnum(imp), {}) catch break :blk false;
-                    for (m.dynamic_importers.items) |imp| set.put(self.allocator, @intFromEnum(imp), {}) catch break :blk false;
-                }
-                break :blk true;
-            };
-            if (ok) recompute = set else set.deinit(self.allocator);
-        }
 
         const mod_count = self.graph.moduleCount();
         for (0..mod_count) |i| {
