@@ -1180,9 +1180,22 @@ pub fn buildIncrementalPreserved(
     self.changed_emit_paths = null;
 
     // cold / 첫 빌드 / 직전 fallback 으로 graph 가 비워진 경우 → full discovery.
-    // (store 는 보존 모드에서 비어있어 전량 cache-miss = full parse → byte-identical full.)
+    // 보존 모드는 store 를 안 채워(transferModulesToStore 비활성) cold 빌드가 전량 cache-miss 다.
+    // buildIncremental 의 discovery 는 *순차*(증분=cache-hit-heavy 가정, scan_worker 미사용) 라
+    // cold(전량 miss)엔 정반대로 비효율 — RN 9080 모듈 dev cold graph 의 81%(scan_worker=0 실측).
+    // 보존할 것이 없으므로 build() 의 *병렬* scan_worker 경로로 라우팅한다. build() 는 store 를
+    // 쓰지 않아 modules 가 graph parse_arena 단독 owner 로 남고(보존 모드 불변식 유지), finalizeGraph
+    // 까지 동일 수행. 출력은 renumber/path-sort(#3564)로 discovery 순서·worker 수와 무관하게
+    // byte-identical. cold = 전량 fresh 이므로 graph_changed=true + reparsed=전 모듈(0..n).
+    // (buildIncremental 의 cold reparsed 는 disabled(.ready) 모듈을 제외하나, cold 는 disabled 포함
+    //  전 모듈이 first-emit 이라 전량 reparsed 가 더 정확 — 게다가 cold 는 consumer 가 graph_changed=true
+    //  로 reparsed 필터를 우회. index==position 은 finalizeGraph→renumber 가 보장. caller 가 free.)
     if (self.modules.count() == 0) {
-        return buildIncremental(self, io, entry_points, store, changed_files);
+        try build(self, io, entry_points);
+        const n = self.modules.count();
+        const reparsed = try self.allocator.alloc(types.ModuleIndex, n);
+        for (0..n) |i| reparsed[i] = @enumFromInt(@as(u32, @intCast(i)));
+        return .{ .graph_changed = true, .reparsed_indices = reparsed };
     }
 
     // 변경 정보가 없으면(initial-after-warm / CLI) 보존 판정 불가 → full fallback.
