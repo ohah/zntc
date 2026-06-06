@@ -258,7 +258,7 @@ function parseArgs(argv) {
     bundle: false,
     watch: false,
     watchJson: false,
-    watchDelay: 100,
+    watchDelay: 16,
     serve: false,
     serveDir: '.',
     port: undefined,

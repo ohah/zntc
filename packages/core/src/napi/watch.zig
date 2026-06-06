@@ -46,13 +46,15 @@ const installManualChunksResolver = plugin_bridge.installManualChunksResolver;
 
 /// Issue #1223 Phase 1: 워처 튜닝 상수.
 /// - watch_poll_timeout_ms: stop_flag 체크 주기 (이벤트 워처에서도 주기적으로 깨어나기 위함).
-/// - watch_debounce_ms: 첫 이벤트 이후 정적(idle) 구간 — 연속 저장 병합 윈도우.
-///   phase1c 의 공개 계약은 50ms 내 연속 저장 병합이다. macOS kqueue 는 CI 부하에 따라
-///   같은 파일의 후속 NOTE_WRITE 전달이 25ms idle 뒤에 도착할 수 있으므로, idle window 를
-///   계약값인 50ms 로 맞춰 빠른 저장을 한 rebuild 로 안정적으로 합친다.
+/// - watch_debounce_ms: 첫 이벤트 이후 정적(idle) 구간 — 연속 저장 병합 윈도우. **기본 16ms**
+///   (RN 8092 모듈 dev HMR 실측: warm rebuild ~145ms 중 이 idle 대기가 ~50ms=1위. 16ms 로
+///   낮춰 단일 편집 latency 절감). JS `watchDelay` / CLI `--watch-delay` 로 override — burst
+///   저장이 빈번하거나 macOS kqueue 후속 NOTE_WRITE 가 늦게(~25ms) 와 더블-rebuild 가 보이면
+///   `--watch-delay=30~50` 으로 올린다. 0 이면 즉시 rebuild(저지연, 병합 없음).
+///   (drain 루프가 burst 는 계속 병합하므로 base 만 낮추면 단일 편집 latency 만 줄어든다.)
 /// - watch_debounce_max_ms: 디바운스 최대 대기 시간 — 지속 변경되는 파일에 의한 기아 방지.
 const watch_poll_timeout_ms: u32 = 200;
-const watch_debounce_ms: u32 = 50;
+const watch_debounce_ms: u32 = 16;
 const watch_debounce_max_ms: u64 = 500;
 
 /// 파일 내용 해시 상한 (#1233). RN 등 대형 프로젝트의 vendor 번들/asset catalog/locale
@@ -125,7 +127,7 @@ const WatchAsyncData = struct {
     emit_disk_sourcemap: bool = true,
 
     /// watch 디바운스(ms) — 첫 이벤트 후 idle 대기 윈도우(연속 저장 병합). JS `watchDelay`
-    /// 옵션으로 override(기본 `watch_debounce_ms`=50). 0 이면 디바운스 없이 즉시 rebuild.
+    /// 옵션으로 override(기본 `watch_debounce_ms`=16). 0 이면 디바운스 없이 즉시 rebuild.
     debounce_ms: u32 = watch_debounce_ms,
 
     /// #4079 PR-2 — `requestLazySeed(path)` 로 런타임에 누적되는 force-parse 경로 집합
@@ -1228,7 +1230,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         const force_dirty = async_data.lazy_force_dirty.swap(false, .acq_rel);
         if (touched.count() == 0 and !force_dirty) continue;
 
-        // 디바운스: idle `debounce_ms`(watchDelay, 기본 50) 확보까지 드레인. 지속 변경되는
+        // 디바운스: idle `debounce_ms`(watchDelay, 기본 16) 확보까지 드레인. 지속 변경되는
         // 파일로 인한 기아를 막기 위해 첫 이벤트로부터 watch_debounce_max_ms 초과 시 강제 종료.
         // debounce_ms==0 이면 drain 자체를 건너뛰어 즉시 rebuild(저지연).
         var debounce_timer: ?IoTimer = IoTimer.start(common.io());
@@ -1998,8 +2000,8 @@ pub fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
     // `emitDiskSourcemap` 옵션 (기본 true) — bungae 등 lazy 라우트를 갖춘 dev server 는
     // false 로 보내 rebuild 경로의 `.map` 디스크 I/O 를 완전히 제거한다.
     async_data.emit_disk_sourcemap = getObjectBool(env, argv[0], "emitDiskSourcemap", true);
-    // watch 디바운스(ms) — `watchDelay` 옵션(CLI `--watch-delay` 와 동명). 기본 50ms 유지(연속
-    // 저장 병합 공개 계약). 0 이면 디바운스 drain skip → 즉시 rebuild(저지연, 빠른 저장 다중 rebuild).
+    // watch 디바운스(ms) — `watchDelay` 옵션(CLI `--watch-delay` 와 동명). 기본 16ms(연속
+    // 저장 병합 윈도우 — 단일 편집 latency 절감, override 가능). 0 이면 디바운스 drain skip → 즉시 rebuild(저지연, 빠른 저장 다중 rebuild).
     async_data.debounce_ms = getObjectUint32(env, argv[0], "watchDelay", watch_debounce_ms);
 
     // onReady 콜백 추출
