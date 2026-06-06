@@ -27,6 +27,7 @@
     "./tests/test-helpers"
   ],
   "scripts": {
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
     "test": "bun run test:integration",
     "test:integration": "bun run --cwd tests/integration test",
     "test:runtime-polyfills:coverage": "bun run scripts/check-runtime-polyfill-coverage.mjs",

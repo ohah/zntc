@@ -1,0 +1,45 @@
+#!/bin/sh
+# pre-commit: staged 파일만 자동 포매팅(빠름) → CI fmt:check 가 절대 깨지지 않게.
+#
+# 왜 pre-commit 인가: pre-push 는 느린 `zig build test` 를 돌려 `--no-verify` 로 우회하게
+# 되는데, 그러면 같은 훅의 fmt:check 도 같이 건너뛰어 포매팅 깨짐이 CI 까지 샌다(#4187).
+# 포매팅은 commit 시점에 staged 파일에만 적용하면 빠르고, push 플래그와 무관하게 항상 적용된다.
+#
+# 동작: staged .zig → `zig fmt`, staged TS/JS(fmt 범위) → `oxfmt format`, 변경분 재-stage.
+# 도구가 없으면 조용히 skip. SKIP_FMT=1 로 우회 가능.
+#
+# 설치: `git config core.hooksPath .githooks` (루트 package.json 의 `prepare` 가 자동 설정).
+
+[ -n "$SKIP_FMT" ] && exit 0
+
+# mise 로 설치된 zig 사용 (portable: PATH → $HOME/.local/bin → 무시)
+if command -v mise >/dev/null 2>&1; then
+    eval "$(mise env 2>/dev/null)" || true
+elif [ -x "$HOME/.local/bin/mise" ]; then
+    eval "$("$HOME/.local/bin/mise" env 2>/dev/null)" || true
+fi
+
+# 추가/수정된 staged 파일만 (삭제/rename 제외)
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$staged" ] && exit 0
+
+# 1) Zig 포매팅
+zig_files=$(echo "$staged" | grep '\.zig$')
+if [ -n "$zig_files" ] && command -v zig >/dev/null 2>&1; then
+    echo "[pre-commit] zig fmt ($(echo "$zig_files" | wc -l | tr -d ' ') files)"
+    echo "$zig_files" | xargs zig fmt
+    echo "$zig_files" | xargs git add
+fi
+
+# 2) TS/JS 포매팅 (oxfmt 범위 = packages/ tests/integration tests/e2e tests/benchmark)
+js_files=$(echo "$staged" \
+    | grep -E '\.(ts|tsx|js|jsx|mjs|cjs)$' \
+    | grep -E '^(packages/|tests/integration/|tests/e2e/|tests/benchmark/)' \
+    | grep -vE '(/dist/|/test-results/|dev-overlay-client\.raw\.js)')
+if [ -n "$js_files" ] && [ -x node_modules/.bin/oxfmt ]; then
+    echo "[pre-commit] oxfmt format ($(echo "$js_files" | wc -l | tr -d ' ') files)"
+    echo "$js_files" | xargs node_modules/.bin/oxfmt format >/dev/null 2>&1
+    echo "$js_files" | xargs git add
+fi
+
+exit 0
