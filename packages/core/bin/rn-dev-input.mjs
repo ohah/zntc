@@ -211,6 +211,9 @@ export function buildRnDevServerInput(opts, config) {
         opts.minifySyntax ||
         cfg.minify ||
         false,
+      // watch 디바운스(ms) — CLI `--watch-delay`. native NAPI watch 의 debounce_ms 로 전달
+      // (buildRnBundleOptions → watch → getObjectUint32("watchDelay")). 기본 16.
+      watchDelay: opts.watchDelay,
       extra: buildRnBundleExtra(cfg, opts),
       override: buildRnBundleOverride({ config: cfg, opts }),
     },

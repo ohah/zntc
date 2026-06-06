@@ -2,7 +2,7 @@
 
 const std = @import("std");
 
-/// 폴링 fallback watch 의 mtime 확인 주기(ms). `--watch-delay`(기본 100) 값을 쓰되 0/과소값은
+/// 폴링 fallback watch 의 mtime 확인 주기(ms). `--watch-delay`(기본 16) 값을 쓰되 0/과소값은
 /// busy-loop 방지로 10ms floor. JS CLI(bin/zntc.mjs)의 fs.watch debounce 와 같은 노브 —
 /// 거기선 이벤트 후 debounce, 폴링인 여기선 확인 주기. (예전엔 500ms 하드코딩이라 반응성 저하.)
 pub fn pollIntervalMs(delay_ms: u32) i64 {
@@ -10,7 +10,7 @@ pub fn pollIntervalMs(delay_ms: u32) i64 {
 }
 
 /// 단일 파일을 폴링 방식으로 감시한다 (D048).
-/// 파일의 mtime을 `delay_ms`(--watch-delay, 기본 100ms)마다 확인하여 변경되면 재트랜스파일.
+/// 파일의 mtime을 `delay_ms`(--watch-delay, 기본 16ms)마다 확인하여 변경되면 재트랜스파일.
 /// Ctrl+C로 종료될 때까지 무한 루프를 돈다.
 pub fn watchFile(
     comptime transpileFn: anytype,
@@ -50,7 +50,7 @@ pub fn watchFile(
 }
 
 /// 디렉토리를 폴링 방식으로 감시한다 (D048).
-/// 매 `delay_ms`(--watch-delay, 기본 100ms)마다 디렉토리를 재순회하여 .ts/.tsx 파일의
+/// 매 `delay_ms`(--watch-delay, 기본 16ms)마다 디렉토리를 재순회하여 .ts/.tsx 파일의
 /// mtime을 확인하고, 변경된 파일만 재트랜스파일한다.
 pub fn watchDirectory(
     comptime transpileFn: anytype,

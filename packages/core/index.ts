@@ -1308,7 +1308,7 @@ interface BuildOptionsCommon {
   /**
    * watch debounce window in milliseconds — after the first file event, the
    * watcher waits this long for idle before rebuilding, merging rapid saves
-   * into one rebuild. Default `50`. Set `0` to rebuild immediately (no debounce;
+   * into one rebuild. Default `16`. Set `0` to rebuild immediately (no debounce;
    * lower latency, but rapid saves may trigger multiple rebuilds). Mirrors the
    * CLI `--watch-delay` flag. Only affects the NAPI `watch()` path.
    */

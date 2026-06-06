@@ -194,8 +194,9 @@ pub const CliOptions = struct {
     tsconfig_raw: ?[]const u8 = null,
     /// --node-paths=PATH,...: NODE_PATH 추가 탐색 경로
     node_paths_list: std.ArrayList([]const u8) = .empty,
-    /// --watch-delay=MS: watch 리빌드 디바운스 지연 (밀리초)
-    watch_delay_ms: u32 = 100,
+    /// --watch-delay=MS: watch 리빌드 디바운스 지연 (밀리초). 기본 16ms — 단일 편집 latency 최소화
+    /// (drain 루프가 burst 저장은 계속 병합). RN dev HMR 실측 후 50→16 조정.
+    watch_delay_ms: u32 = 16,
     /// --watch-folder=DIR (반복): 번들 그래프 밖의 디렉토리를 감시 루트에 추가.
     /// Metro의 watchFolders에 대응. 내부 표현은 roots + include/exclude로 일반화되어
     /// 나중에 Rollup/Vite의 watch.include/exclude 스펙도 같은 필드로 매핑된다.

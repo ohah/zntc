@@ -993,7 +993,7 @@ pub fn main(init: std.process.Init) !void {
                 try stderr.print("[watch] Watching {d} files for changes...\n", .{mtime_map.count()});
             }
 
-            // 폴링 간격 = --watch-delay (기본 100ms). 과거엔 500ms 하드코딩이라 watch
+            // 폴링 간격 = --watch-delay (기본 16ms). 과거엔 500ms 하드코딩이라 watch
             // 반응성이 폴링 대기에 묻혔다(watch_cli.pollIntervalMs 가 0/과소값 floor).
             const watch_poll_ms = watch_cli.pollIntervalMs(opts.watch_delay_ms);
             while (true) {

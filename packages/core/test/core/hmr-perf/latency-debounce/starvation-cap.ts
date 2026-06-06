@@ -20,6 +20,9 @@ describe('Issue #1223 HMR perf - latency and debounce - starvation cap', () => {
     const { promise: rebuildP, resolve: rebuildDone } = Promise.withResolvers<void>();
     const handle = watch({
       entryPoints: [entry],
+      // 기본 디바운스 16ms 라 20ms 간격 쓰기는 윈도우를 갱신하지 못한다 → starvation 시나리오
+      // (윈도우 지속 갱신 → 500ms 상한 강제 리빌드)를 재현하려면 20ms < window 가 되도록 명시.
+      watchDelay: 50,
       onReady() {
         readyDone();
       },

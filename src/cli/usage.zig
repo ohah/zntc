@@ -44,7 +44,7 @@ pub fn printUsage(writer: anytype) !void {
         \\  --quotes=<style>                 String quote style (double|single|preserve)
         \\  --legal-comments=<mode>          none | inline | eof — license/legal comment placement
         \\  -w, --watch                      Watch for file changes
-        \\  --watch-delay=<ms>               Debounce window for file events (default: 50)
+        \\  --watch-delay=<ms>               Debounce window for file events (default: 16)
         \\  -p, --project <path>             Path to tsconfig.json file or directory
         \\  --tsconfig-path <path>           Alias of -p/--project (matches NAPI `tsconfigPath`)
         \\  --tsconfig-raw=<json>            Inline tsconfig JSON (overrides file/auto-discovery)

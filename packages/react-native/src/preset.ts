@@ -58,6 +58,8 @@ export interface RnBundleInput {
   dev: boolean;
   /** sourcemap emit. dev 시 inline 권장. */
   sourcemap?: boolean;
+  /** watch 디바운스(ms) — dev server watch 의 첫 이벤트 후 idle 병합 윈도우. 기본 16(native). */
+  watchDelay?: number;
   /** prod build 의 minify. */
   minify?: boolean;
   /** console.* 호출 제거. Metro production Babel plugin 과 같은 정책을 원하는 release 경로에서 사용. */
@@ -395,6 +397,7 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     dev,
     sourcemap,
     minify,
+    watchDelay,
     dropConsole,
     dropDebugger,
     extra,
@@ -495,6 +498,8 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     platform: 'react-native',
     sourcemap: sourcemap ?? dev,
     minify: minify ?? false,
+    // watch 디바운스 — 지정 시에만 전달(미지정이면 native NAPI watch 기본 16ms 사용).
+    ...(watchDelay !== undefined ? { watchDelay } : {}),
     dropConsole: dropConsole ?? false,
     dropDebugger: dropDebugger ?? false,
     plugins,
