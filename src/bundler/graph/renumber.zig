@@ -18,6 +18,10 @@ const RequestedExports = @import("state.zig").RequestedExports;
 const bundler_symbol = @import("../symbol.zig");
 const profile = @import("../../profile.zig");
 
+/// kill-switch: renumber identity fast-path 를 끄고 항상 전체 renumber 수행(byte-identical
+/// 대조/진단용). fast-path 는 self-verifying 이라 정상 동작엔 영향 없음.
+const renumber_identity_fastpath_disabled = @import("../../env_flag.zig").Once("ZNTC_NO_RENUMBER_FASTPATH");
+
 pub const RenumberError = error{ RenumberIncomplete, OutOfMemory };
 
 pub fn renumberModulesDeterministically(
@@ -81,6 +85,23 @@ pub fn renumberModulesDeterministically(
         new_idx += 1;
     }
     if (new_idx != old_count) return error.RenumberIncomplete;
+
+    // identity fast-path (#4175): BFS 순서가 현재 배치와 동일(new_to_old[i]==i ∀i)이면 이후
+    // 단계가 전부 no-op 다 — old_to_new[x]==x 라 ModuleList 재할당/field remap/path_to_module·
+    // requested_exports·worker_entries remap 모두 자기 자신으로 매핑. 즉 self.modules 등 현 상태가
+    // 그대로 정답. 위상 보존-hit(HMR reuse-hit)에서 발생. **byte-identical 보장(가정 아님)**:
+    // 순서를 실제 BFS 로 계산해 identity 일 때만 건너뛴다(cold/worker-race 비-identity 는 전체 수행).
+    // 절감 = 재할당 + 2개 HashMap 재구축 + 전 모듈 field remap(renumber 비용의 대부분).
+    if (!renumber_identity_fastpath_disabled.enabled()) {
+        var identity = true;
+        for (new_to_old, 0..) |old_u32, new_i| {
+            if (old_u32 != @as(u32, @intCast(new_i))) {
+                identity = false;
+                break;
+            }
+        }
+        if (identity) return;
+    }
 
     var new_list: ModuleList = .{};
     errdefer new_list.deinit(allocator);
