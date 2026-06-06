@@ -81,7 +81,9 @@ export function waitForHmrBroadcast(
       : () => {};
     let triggerCount = 0;
     const timeout = setTimeout(() => {
-      dbg(`TIMEOUT triggers=${triggerCount} received=${JSON.stringify(received.map((m) => m.type))}`);
+      dbg(
+        `TIMEOUT triggers=${triggerCount} received=${JSON.stringify(received.map((m) => m.type))}`,
+      );
       settle({ received });
     }, timeoutMs);
     // trigger() 가 throw 하면(예: 경로 문제) async onopen / setInterval 의 unhandled rejection
