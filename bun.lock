@@ -545,7 +545,7 @@
     },
     "packages/core": {
       "name": "@zntc/core",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "bin": {
         "zntc": "./bin/zntc.mjs",
       },
@@ -572,7 +572,7 @@
     },
     "packages/init": {
       "name": "@zntc/init",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "bin": {
         "zntc-init": "./bin/zntc-init.mjs",
       },
@@ -582,7 +582,7 @@
     },
     "packages/react-native": {
       "name": "@zntc/react-native",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "dependencies": {
         "@react-native-community/cli-server-api": "^15.0.0",
         "@zntc/core": "workspace:*",
@@ -604,7 +604,7 @@
     },
     "packages/rspack-loader": {
       "name": "@zntc/rspack-loader",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "dependencies": {
         "@zntc/core": "workspace:*",
       },
@@ -624,7 +624,7 @@
     },
     "packages/server": {
       "name": "@zntc/server",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "dependencies": {
         "@zntc/core": "workspace:*",
       },
@@ -634,7 +634,7 @@
     },
     "packages/vite-plugin": {
       "name": "@zntc/vite-plugin",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "dependencies": {
         "@zntc/core": "workspace:*",
       },
@@ -648,14 +648,14 @@
     },
     "packages/wasm": {
       "name": "@zntc/wasm",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "devDependencies": {
         "@types/node": "^25.5.2",
       },
     },
     "packages/web": {
       "name": "@zntc/web",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "dependencies": {
         "@zntc/core": "workspace:*",
       },
