@@ -554,15 +554,15 @@
         "@zntc/test-helpers": "workspace:*",
       },
       "optionalDependencies": {
-        "@zntc/core-darwin-arm64": "0.1.1",
-        "@zntc/core-darwin-x64": "0.1.1",
-        "@zntc/core-linux-arm64-gnu": "0.1.1",
-        "@zntc/core-linux-arm64-musl": "0.1.1",
-        "@zntc/core-linux-x64-gnu": "0.1.1",
-        "@zntc/core-linux-x64-musl": "0.1.1",
-        "@zntc/core-win32-arm64-msvc": "0.1.1",
-        "@zntc/core-win32-ia32-msvc": "0.1.1",
-        "@zntc/core-win32-x64-msvc": "0.1.1",
+        "@zntc/core-darwin-arm64": "0.1.2",
+        "@zntc/core-darwin-x64": "0.1.2",
+        "@zntc/core-linux-arm64-gnu": "0.1.2",
+        "@zntc/core-linux-arm64-musl": "0.1.2",
+        "@zntc/core-linux-x64-gnu": "0.1.2",
+        "@zntc/core-linux-x64-musl": "0.1.2",
+        "@zntc/core-win32-arm64-msvc": "0.1.2",
+        "@zntc/core-win32-ia32-msvc": "0.1.2",
+        "@zntc/core-win32-x64-msvc": "0.1.2",
         "browserslist": "^4.24.0",
         "core-js": "^3.49.0",
         "core-js-compat": "^3.49.0",
@@ -3126,24 +3126,6 @@
     "@zntc/benchmark": ["@zntc/benchmark@workspace:tests/benchmark"],
 
     "@zntc/core": ["@zntc/core@workspace:packages/core"],
-
-    "@zntc/core-darwin-arm64": ["@zntc/core-darwin-arm64@0.1.1", "", { "os": "darwin", "cpu": "arm64" }, "sha512-ZhCUcErEm101VpfoIRQdAiNrhmEpP7FjlXVjBsJIwB6sDjInv4tt9ZLZwwU4HPDheKgHiNZp2wqWazdLzQN7Lw=="],
-
-    "@zntc/core-darwin-x64": ["@zntc/core-darwin-x64@0.1.1", "", { "os": "darwin", "cpu": "x64" }, "sha512-go2WSnwSsFMiCy4roFrr0mc+rqDcmri9EBAqVw4TPcBYSrABY+z4vHHGikyzQGJY5tfzDBZpz4FecXooAfb6Bw=="],
-
-    "@zntc/core-linux-arm64-gnu": ["@zntc/core-linux-arm64-gnu@0.1.1", "", { "os": "linux", "cpu": "arm64" }, "sha512-vFF08GrUvjvsuOKIgRmOjSwohhiRekNr4boozX/qV+xKfjBUTq27QkEDjL29W7lyB/TwlyJASTLZVydZwlBo7A=="],
-
-    "@zntc/core-linux-arm64-musl": ["@zntc/core-linux-arm64-musl@0.1.1", "", { "os": "linux", "cpu": "arm64" }, "sha512-FgMrITlMp8vQRaZWyMCgmPeN/A04q28RBcsIeZNiZbU/t7Wm++dIrAyVcTeymCCBLo6YTGdRPBrx5wvlZdSUAA=="],
-
-    "@zntc/core-linux-x64-gnu": ["@zntc/core-linux-x64-gnu@0.1.1", "", { "os": "linux", "cpu": "x64" }, "sha512-akoA4ElGT9one9xalBzKDVY1SYHRyw6dwzW69ALf7UDRCPB/f+Awi6DOrrl2G8JYmo5Eh+eLdg/ba1gNIOa8QQ=="],
-
-    "@zntc/core-linux-x64-musl": ["@zntc/core-linux-x64-musl@0.1.1", "", { "os": "linux", "cpu": "x64" }, "sha512-73g3NqRufvvdeGvZedlpsym78rTYX2Uer3nw0CS1N24mBufMQwpr5wulPSwQFyEUoFDCkkurhi+5LrS1bJ4lyg=="],
-
-    "@zntc/core-win32-arm64-msvc": ["@zntc/core-win32-arm64-msvc@0.1.1", "", { "os": "win32", "cpu": "arm64" }, "sha512-zeXry9pjoe2+eTJBEm6koklC8oZnmERWMlsYqxEoGB/kboiDMN2JsBof4VlyGsKQDy2hAlJ0aUwxkH0h60K6PA=="],
-
-    "@zntc/core-win32-ia32-msvc": ["@zntc/core-win32-ia32-msvc@0.1.1", "", { "os": "win32", "cpu": "ia32" }, "sha512-4P5iw0vZdIFCvNetNY/63bS6CcTgv57ZdMqWebESZrKRuzxb2b8/bdy6BF39/VeStOLkSHef38U7qp7W1aRamg=="],
-
-    "@zntc/core-win32-x64-msvc": ["@zntc/core-win32-x64-msvc@0.1.1", "", { "os": "win32", "cpu": "x64" }, "sha512-mLo2EectkhT49E3EKlvOuz0aFphSfkpxwiLveGbQOf2ej4+YuzmFs4Ili8hEerH0NhJLzwSXGDM18Ga69EXz6Q=="],
 
     "@zntc/e2e": ["@zntc/e2e@workspace:tests/e2e"],
 
