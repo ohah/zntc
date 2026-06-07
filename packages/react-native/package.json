@@ -1,6 +1,6 @@
 {
   "name": "@zntc/react-native",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "ZNTC React Native platform — Metro HMR adapter + RN preset (buildRnBundleOptions) + plugin factories + RN runtime",
   "keywords": [
     "bundler",
