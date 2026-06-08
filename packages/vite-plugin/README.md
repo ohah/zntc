@@ -1,18 +1,25 @@
 # @zntc/vite-plugin
 
-Vite 의 esbuild transform 을 ZNTC 로 교체하는 플러그인. TypeScript / JSX / Flow / decorators 변환을 ZNTC (Zig 기반) 가 담당하면서 Vite 의 dev server / HMR / plugin 생태계는 그대로 유지.
+English · **[한국어](./README_KO.md)**
 
-## 설치
+> Replace Vite's esbuild transform with ZNTC — TypeScript / JSX / Flow / decorators handled by ZNTC (Zig-based), while Vite's dev server / HMR / plugin ecosystem stays intact.
+
+[![npm](https://img.shields.io/npm/v/@zntc/vite-plugin.svg)](https://www.npmjs.com/package/@zntc/vite-plugin)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ohah/zntc/blob/main/LICENSE)
+
+This plugin swaps Vite's built-in esbuild transform step for [ZNTC](https://github.com/ohah/zntc), a single-pass transpiler written in Zig. TypeScript, JSX, Flow, and decorator transforms all flow through ZNTC, and you keep the rest of the Vite pipeline (dev server, HMR, plugins) untouched.
+
+## Installation
 
 ```bash
 bun add -D @zntc/vite-plugin @zntc/core
-# 또는
+# or
 npm i -D @zntc/vite-plugin @zntc/core
 ```
 
-`@zntc/core` 가 dependency 로 함께 따라옴 (NAPI binary 포함).
+`@zntc/core` (which ships the native NAPI binary) is required alongside the plugin.
 
-## 사용
+## Usage
 
 ```ts
 // vite.config.ts
@@ -21,37 +28,31 @@ import { zntc } from '@zntc/vite-plugin';
 
 export default defineConfig({
   plugins: [zntc()],
-  // esbuild 자동 비활성화 (zntc 가 .ts/.tsx/.jsx 변환 담당)
+  // Disable esbuild — ZNTC handles .ts / .tsx / .jsx transforms.
   esbuild: false,
 });
 ```
 
-## 옵션
+### Options
 
 ```ts
 zntc({
-  include: /\.(tsx?|jsx)$/, // 변환할 파일 패턴 (default)
-  exclude: /node_modules/, // 제외 패턴 (default)
-  tsconfigCache: true, // tsconfig autodiscover 결과 캐시 (default: true)
+  include: /\.(tsx?|jsx)$/, // files to transform (default)
+  exclude: /node_modules/, // files to skip (default)
+  tsconfigCache: true, // cache tsconfig autodiscovery results (default: true)
   transpileOptions: {
-    // ZNTC transpile 옵션 (target / jsx / decorators 등)
+    // ZNTC transpile options (target / jsx / decorators, etc.)
     target: 'es2020',
     jsx: 'automatic',
   },
 });
 ```
 
-## Framework plugin 과 함께 쓰기
+### Using with framework plugins
 
-대부분의 framework plugin (`@vitejs/plugin-react`, `@vitejs/plugin-vue`,
-`@sveltejs/vite-plugin-svelte`, `vite-plugin-solid`) 은 ZNTC 와 충돌 없이 같이
-쓸 수 있습니다. 다만 **babel 기반으로 `.tsx` 를 자체적으로 다시 변환하는 plugin**
-— 대표적으로 `@preact/preset-vite` — 와 함께 쓰면 `.tsx` 가 둘 다 처리되면서
-결과가 깨질 수 있습니다 (component body 의 JSX return 이 비어버림).
+Most framework plugins (`@vitejs/plugin-react`, `@vitejs/plugin-vue`, `@sveltejs/vite-plugin-svelte`, `vite-plugin-solid`) work alongside ZNTC without conflict. The exception is a **Babel-based plugin that re-transforms `.tsx` on its own** — most notably `@preact/preset-vite` — where `.tsx` gets processed twice and the output can break (the JSX return inside a component body ends up empty).
 
-이 경우 `jsx: 'preserve'` 옵션을 사용합니다 — ZNTC 는 `.tsx`/`.jsx` 처리를
-건너뛰고 framework plugin 이 JSX + TS 까지 모두 담당합니다. `.ts` 는 그대로
-ZNTC 가 처리.
+In that case set `jsx: 'preserve'`. ZNTC then skips `.tsx` / `.jsx` and lets the framework plugin handle both JSX and TS, while `.ts` is still processed by ZNTC.
 
 ```ts
 // preact + vite
@@ -64,13 +65,17 @@ export default defineConfig({
 });
 ```
 
-`jsx: 'preserve'` 는 tsc `"jsx": "preserve"` 와 동등한 의미 — JSX 변환을
-downstream tool 에 위임합니다.
+`jsx: 'preserve'` is equivalent to tsc's `"jsx": "preserve"` — it delegates JSX transformation to a downstream tool.
 
-## peer
+### Peer requirements
 
-- `vite >= 5.0.0` (8.x 권장)
+- `vite >= 5.0.0` (8.x recommended)
 
-## 라이센스
+## Documentation
 
-MIT.
+- Monorepo: <https://github.com/ohah/zntc>
+- Docs: <https://ohah.github.io/zntc>
+
+## License
+
+MIT

@@ -1,29 +1,40 @@
 # @zntc/web
 
-ZNTC 의 web platform layer — dev server (HTTP/HTTPS + WebSocket HMR), HMR overlay, postcss/sass/lightningcss CSS pipeline, dev controller (file watcher + module graph).
+English · **[한국어](./README_KO.md)**
 
-## 설치
+> ZNTC web platform layer — dev server (HTTP/HTTPS + WebSocket HMR), HMR overlay, postcss / sass / lightningcss CSS pipeline, and dev controller (file watcher + module graph).
+
+[![npm](https://img.shields.io/npm/v/@zntc/web.svg)](https://www.npmjs.com/package/@zntc/web)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ohah/zntc/blob/main/LICENSE)
+
+`@zntc/web` powers the app-mode side of [ZNTC](https://github.com/ohah/zntc): the `zntc dev` / `zntc preview` / `zntc build` commands. It adds a dev server with WebSocket-based HMR, an error overlay, a CSS pipeline (postcss / sass / lightningcss), and a dev controller that wires a file watcher to the module graph. The `zntc` CLI loads this package automatically, so you rarely import it yourself.
+
+## Installation
 
 ```bash
 bun add -D @zntc/web
-# 또는
+# or
 npm i -D @zntc/web
 ```
 
-`@zntc/core` 가 dependency 로 자동 install 됨 (NAPI binary 포함).
+`@zntc/core` (which ships the native NAPI binary and the `zntc` CLI) is installed automatically as a dependency.
 
-### Optional (CSS pipeline)
+### Optional — CSS pipeline
 
 ```bash
 bun add -D postcss postcss-load-config sass
 ```
 
-- `postcss` / `postcss-load-config` — `postcss.config.{js,ts}` 자동 탐색 / Tailwind / PostCSS plugins
-- `sass` — `.scss` / `.sass` 파일 처리
+- `postcss` / `postcss-load-config` — auto-discovers `postcss.config.{js,ts}` for Tailwind and other PostCSS plugins
+- `sass` — handles `.scss` / `.sass` files
 
-## 사용
+These are optional dependencies; install only what your project needs.
 
-`zntc dev`, `zntc preview`, `zntc build` (app mode) CLI 가 자동으로 `@zntc/web` 을 dynamic import 해서 사용. 사용자 코드에서 직접 import 할 일은 거의 없음.
+## Usage
+
+### Dev server + HMR
+
+In app mode, the `zntc` CLI dynamically imports `@zntc/web` for you — installing the package is all that's required:
 
 ```bash
 bunx zntc dev       # dev server + HMR
@@ -31,18 +42,35 @@ bunx zntc build     # production app build
 bunx zntc preview   # production preview server
 ```
 
-자세한 설정: [docs/CONFIG.md](https://github.com/ohah/zts/blob/main/docs/CONFIG.md) · [docs/HMR.md](https://github.com/ohah/zts/blob/main/docs/HMR.md)
+`zntc dev` serves your app over HTTP (or HTTPS when TLS options are set), pushes Hot Module Replacement updates over WebSocket, and surfaces build errors through the HMR overlay in the browser.
 
-## 직접 import (고급)
+### postcss / sass
 
-`createAppDevController` 가 dev controller 의 main entry. 옵션 surface 가 넓고 `@zntc/core` 의 `prepareAppDevSync` 결과를 받음 — 사용 예는 [docs/HMR.md](https://github.com/ohah/zts/blob/main/docs/HMR.md) 참조.
+When the optional CSS packages are installed, the CSS pipeline activates automatically:
 
-## 관련 패키지
+- `postcss.config.{js,ts}` is auto-discovered (Tailwind / PostCSS plugins).
+- `.scss` / `.sass` files are compiled through `sass`.
+- lightningcss handles transforms and minification.
 
-- [@zntc/core](https://npmjs.com/package/@zntc/core) — 트랜스파일러 / 번들러 코어
-- [@zntc/react-native](https://npmjs.com/package/@zntc/react-native) — RN platform layer
-- [@zntc/vite-plugin](https://npmjs.com/package/@zntc/vite-plugin) — Vite 사용 시 ZNTC transform 적용
+No extra configuration is needed beyond installing the relevant packages.
 
-## 라이센스
+### Direct import (advanced)
 
-MIT.
+`createAppDevController` is the dev controller's main entry point. It consumes the result of `prepareAppDevSync` from `@zntc/core` and exposes a broad option surface for embedding the dev server in custom tooling. The package also exports a `@zntc/web/css` entry for the CSS pipeline. See the [HMR guide](https://ohah.github.io/zntc) for usage examples.
+
+## Documentation
+
+📚 **Official docs: <https://ohah.github.io/zntc>**
+
+- Monorepo / source: <https://github.com/ohah/zntc>
+- Config reference and HMR details are part of the main ZNTC documentation.
+
+Related packages:
+
+- [@zntc/core](https://www.npmjs.com/package/@zntc/core) — transpiler / bundler core
+- [@zntc/react-native](https://www.npmjs.com/package/@zntc/react-native) — React Native platform layer
+- [@zntc/vite-plugin](https://www.npmjs.com/package/@zntc/vite-plugin) — apply the ZNTC transform when using Vite
+
+## License
+
+MIT

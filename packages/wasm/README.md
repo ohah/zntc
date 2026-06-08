@@ -1,72 +1,78 @@
 # @zntc/wasm
 
-ZNTC 의 WASM 빌드 — 브라우저 / Bun / Node 환경에서 native binary (`zntc.node`) 없이 순수 WASM 으로 트랜스파일/번들 실행.
+English · **[한국어](./README_KO.md)**
 
-`@zntc/core` 의 NAPI 모듈을 쓸 수 없는 환경 (Edge runtime, Cloudflare Workers, 브라우저 in-page transpile 등) 용.
+> WASM build of [ZNTC](https://github.com/ohah/zntc) — transpile and bundle JavaScript / TypeScript / Flow in the browser, Deno, or Cloudflare Workers, with no native binary required.
 
-## 설치
+[![npm](https://img.shields.io/npm/v/@zntc/wasm.svg)](https://www.npmjs.com/package/@zntc/wasm)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ohah/zntc/blob/main/LICENSE)
+
+`@zntc/wasm` runs the ZNTC pipeline as pure WebAssembly. It's for environments where the `@zntc/core` NAPI module can't be loaded — browser in-page transpile, Edge runtimes, Cloudflare Workers, Deno — without needing a platform-specific `.node` binary.
+
+For server-side builds on Node / Bun, prefer [`@zntc/core`](https://www.npmjs.com/package/@zntc/core) (native speed). Reach for `@zntc/wasm` when the environment rules out NAPI.
+
+## Installation
 
 ```bash
 bun add -D @zntc/wasm
-# 또는
+# or
 npm i -D @zntc/wasm
 ```
 
-WASM binary (`zntc.wasm` ~1.1MB / `zntc-bundler.wasm` ~2.0MB, gzipped 시 388KB / 675KB) 가 함께 install 됨.
+The WASM binaries ship with the package: `zntc.wasm` (~1.1 MB / 388 KB gzipped, transpile-only) and `zntc-bundler.wasm` (~2.0 MB / 675 KB gzipped, bundler).
 
-## 사용 예
+## Usage
 
-### Browser / Edge runtime
+### Browser / Edge runtime / Workers
 
 ```ts
 import { init, transpile } from '@zntc/wasm';
-import wasmUrl from '@zntc/wasm/zntc.wasm?url'; // Vite 전용 syntax
+import wasmUrl from '@zntc/wasm/zntc.wasm?url'; // Vite-specific syntax
 
 await init(wasmUrl);
-const r = transpile('const x: number = 1;', { filename: 'input.ts' });
-console.log(r.code);
+const result = transpile('const x: number = 1;', { filename: 'input.ts' });
+console.log(result.code);
 ```
 
-> Vite 가 아닌 bundler 는 `fetch(new URL('@zntc/wasm/zntc.wasm', import.meta.url))` 또는 각자의 asset import 패턴 사용.
+> Bundlers other than Vite use `fetch(new URL('@zntc/wasm/zntc.wasm', import.meta.url))` or their own asset-import pattern to obtain the WASM URL.
 
-### Node.js / Bun (auto-resolve)
+### Deno / Node.js / Bun (auto-resolve)
 
 ```ts
 import { init, transpile } from '@zntc/wasm';
 
-await init(); // 동봉 zntc.wasm 자동 로드 (fs.readFileSync)
-const r = transpile('const x: number = 1;', { filename: 'input.ts' });
+await init(); // loads the bundled zntc.wasm automatically (fs.readFileSync)
+const result = transpile('const x: number = 1;', { filename: 'input.ts' });
 ```
 
-### Bundler 사용
+### Bundler build
 
 ```ts
-import { bundlerLastErrorMessage, build, initBundler } from '@zntc/wasm';
+import { build, initBundler, bundlerLastErrorMessage } from '@zntc/wasm';
 import wasmUrl from '@zntc/wasm/zntc-bundler.wasm?url';
 
-await initBundler(wasmUrl); // transpile 용 init() 와 별도
+await initBundler(wasmUrl); // separate from init() used for transpile
 const out = build('/main.ts', { format: 'esm', target: 'es2020' });
 if (out === null) throw new Error(bundlerLastErrorMessage());
 ```
 
-`build` 는 sync 이며 실패 시 `null` 반환 — `bundlerLastErrorMessage()` 로 마지막 에러 조회.
+`build` is synchronous and returns `null` on failure — call `bundlerLastErrorMessage()` to read the last error.
 
-## NAPI 와 차이
+## `@zntc/core` vs `@zntc/wasm`
 
-| 항목        | @zntc/core (NAPI) | @zntc/wasm                            |
-| ----------- | ----------------- | ------------------------------------- |
-| 환경        | Node.js / Bun     | + Browser / Edge / Workers            |
-| 속도        | 빠름 (~native)    | 50~70% (WASM 오버헤드)                |
-| binary 크기 | ~4MB (.node)      | 1.1MB + 2.0MB (gzipped 388KB + 675KB) |
-| install     | 플랫폼별 prebuilt | 단일 wasm (universal)                 |
+|             | `@zntc/core` (NAPI)   | `@zntc/wasm`                              |
+| ----------- | --------------------- | ----------------------------------------- |
+| Environment | Node.js / Bun         | + Browser / Edge / Workers / Deno         |
+| Speed       | Native                | ~50–70% (WASM overhead)                   |
+| Binary size | ~4 MB (`.node`)       | 1.1 MB + 2.0 MB (388 KB + 675 KB gzipped) |
+| Install     | Per-platform prebuilt | Single universal `.wasm`                  |
 
-대부분의 server-side 빌드 사용 사례는 `@zntc/core` 권장. `@zntc/wasm` 은 환경 제약 시.
+## Documentation
 
-## 관련
+- Repository: <https://github.com/ohah/zntc>
+- Official docs: <https://ohah.github.io/zntc>
+- Native build: [`@zntc/core`](https://www.npmjs.com/package/@zntc/core)
 
-- [@zntc/core](https://npmjs.com/package/@zntc/core) — Native (NAPI) 빌드
-- [docs/USAGE.md](https://github.com/ohah/zts/blob/main/docs/USAGE.md)
+## License
 
-## 라이센스
-
-MIT.
+MIT
