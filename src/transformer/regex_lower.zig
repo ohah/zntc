@@ -190,17 +190,19 @@ pub fn rewriteReplacementNamedRefs(
         if (content[i] == '$' and i + 2 < content.len and content[i + 1] == '<') {
             if (std.mem.indexOfScalarPos(u8, content, i + 2, '>')) |gt| {
                 const name = content[i + 2 .. gt];
-                var found_idx: ?u32 = null;
+                // ES2025 duplicate named group: 같은 이름의 모든 인덱스를 이어붙인다
+                // (`$<y>` → `$1$2`). alternation 상 한쪽만 참여하므로 비참여 그룹은
+                // 빈 문자열 — babel __wrapRegExp 의 `group.join("$")` 동형 (#4198).
+                var found = false;
                 for (mapping) |m| {
                     if (std.mem.eql(u8, m.name, name)) {
-                        found_idx = m.index;
-                        break;
+                        var buf: [16]u8 = undefined;
+                        const s = std.fmt.bufPrint(&buf, "${d}", .{m.index}) catch unreachable;
+                        try out.appendSlice(allocator, s);
+                        found = true;
                     }
                 }
-                if (found_idx) |idx| {
-                    var buf: [16]u8 = undefined;
-                    const s = std.fmt.bufPrint(&buf, "${d}", .{idx}) catch unreachable;
-                    try out.appendSlice(allocator, s);
+                if (found) {
                     i = gt + 1;
                     changed = true;
                     continue;
@@ -421,6 +423,41 @@ test "regex: named backref — character class 안의 \\k는 그대로" {
     const out = (try runLower("/(?<n>a)[\\k<n>]/", .{ .regex_named_groups = true })).?;
     defer testing.allocator.free(out);
     try testing.expectEqualStrings("/(a)[\\k<n>]/", out);
+}
+
+// #4198: ES2025 duplicate named capture group — mapping 은 per-occurrence 로
+// 모든 (name, index) 쌍을 보존해야 호출자가 array 병합/`$1$2` 합성 가능.
+test "#4198: duplicate named group mapping 은 occurrence 별 전부 보존" {
+    const r = try lower(testing.allocator, "/(?<y>\\d{4})-a|(?<y>\\d{4})-b/", .{ .unsupported = .{ .regex_named_groups = true } });
+    defer if (r.text) |t| testing.allocator.free(t);
+    defer if (r.named_groups) |ng| testing.allocator.free(ng);
+    try testing.expectEqualStrings("/(\\d{4})-a|(\\d{4})-b/", r.text.?);
+    const ng = r.named_groups.?;
+    try testing.expectEqual(@as(usize, 2), ng.len);
+    try testing.expectEqualStrings("y", ng[0].name);
+    try testing.expectEqual(@as(u32, 1), ng[0].index);
+    try testing.expectEqualStrings("y", ng[1].name);
+    try testing.expectEqual(@as(u32, 2), ng[1].index);
+}
+
+test "#4198: replacement $<dup> → 모든 인덱스 이어붙임 ($1$2)" {
+    const mapping = [_]NamedGroupMapping{
+        .{ .name = "y", .index = 1 },
+        .{ .name = "y", .index = 2 },
+    };
+    const out = (try rewriteReplacementNamedRefs(testing.allocator, "[$<y>]", &mapping)).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("[$1$2]", out);
+}
+
+test "#4198: replacement 단일 이름은 기존과 동일 ($N)" {
+    const mapping = [_]NamedGroupMapping{
+        .{ .name = "y", .index = 1 },
+        .{ .name = "m", .index = 2 },
+    };
+    const out = (try rewriteReplacementNamedRefs(testing.allocator, "$<m>/$<y>", &mapping)).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("$2/$1", out);
 }
 
 // #2472 회귀 가드: 32개 stack-cap 시 33번째부터 std.debug.assert 가 ReleaseFast 에서
