@@ -1381,6 +1381,41 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       expect(result.runOutput).toBe('abc:123');
     });
 
+    test('ES2025 duplicate named capture group → groups map array 병합 (#4198)', async () => {
+      // 회귀: 그룹맵이 중복 키 객체({"y":1,"y":2}, last-win)로 emit 되어
+      // 첫 분기 매치 시 groups.y === undefined silent miscompile.
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            const re = /(?<y>\\d{4})-a|(?<y>\\d{4})-b/;
+            console.log('2024-a'.match(re)?.groups?.y);
+            console.log('2025-b'.match(re)?.groups?.y);
+          `,
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('2024\n2025');
+    });
+
+    test('ES2025 duplicate named group + replace $<name> → $1$2 (#4198)', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            console.log('2024-a'.replace(/(?<y>\\d{4})-a|(?<y>\\d{4})-b/, '<$<y>>'));
+            console.log('2025-b'.replace(/(?<y>\\d{4})-a|(?<y>\\d{4})-b/, '<$<y>>'));
+          `,
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('<2024>\n<2025>');
+    });
+
     test('named backreference \\k<name>', async () => {
       const result = await bundleAndRun(
         {

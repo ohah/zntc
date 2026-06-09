@@ -742,7 +742,23 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 // identifier 는 실무상 짧으므로 256 byte 스택 버퍼로 heap alloc 회피.
                 const props_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(props_top);
-                for (ng) |entry| {
+                // ES2025 duplicate named group 의 value 노드 수집 버퍼.
+                var dup_vals: std.ArrayList(NodeIndex) = .empty;
+                defer dup_vals.deinit(self.allocator);
+                for (ng, 0..) |entry, ei| {
+                    // ES2025 duplicate named group: 같은 이름은 첫 등장에서 array 값
+                    // (`{"y": [1, 2]}`) 으로 합쳐 emit. 객체 리터럴 중복 키는 last-win
+                    // 이라 첫 분기 매치 시 groups.NAME 이 undefined 가 되는 silent
+                    // miscompile (#4198). 런타임 buildGroups/Symbol.replace 는 array
+                    // 값을 이미 지원 (babel 동형).
+                    var seen_before = false;
+                    for (ng[0..ei]) |prev| {
+                        if (std.mem.eql(u8, prev.name, entry.name)) {
+                            seen_before = true;
+                            break;
+                        }
+                    }
+                    if (seen_before) continue;
                     var stack_buf: [256]u8 = undefined;
                     const need_heap = entry.name.len + 2 > stack_buf.len;
                     const quoted = if (need_heap)
@@ -756,7 +772,20 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                         .span = key_span,
                         .data = .{ .string_ref = key_span },
                     });
-                    const val_node = try es_helpers.makeNumericLiteral(self, entry.index);
+                    dup_vals.clearRetainingCapacity();
+                    for (ng[ei..]) |later| {
+                        if (std.mem.eql(u8, later.name, entry.name)) {
+                            try dup_vals.append(self.allocator, try es_helpers.makeNumericLiteral(self, later.index));
+                        }
+                    }
+                    const val_node = if (dup_vals.items.len == 1) dup_vals.items[0] else val_blk: {
+                        const vals_list = try self.ast.addNodeList(dup_vals.items);
+                        break :val_blk try self.ast.addNode(.{
+                            .tag = .array_expression,
+                            .span = node.span,
+                            .data = .{ .list = vals_list },
+                        });
+                    };
                     const prop_node = try self.ast.addNode(.{
                         .tag = .object_property,
                         .span = node.span,
