@@ -681,6 +681,12 @@ pub const GENERATOR_RUNTIME_MIN = "var " ++ NAMES.GENERATOR_MIN ++ "=function(){
 /// 환경에서 strip 후에도 `re.exec(s).groups.NAME` / `s.replace(re, "$<NAME>")` 가 동작하도록
 /// RegExp 를 wrap 한다. Babel `_wrapRegExp` 와 동일 패턴 (RegExp 상속 + exec/Symbol.replace
 /// override + WeakMap 으로 groups map 보유).
+///
+/// constructor-side `setPrototypeOf(BabelRegExp, RegExp)` 는 `Symbol.species` 상속용 (#4200):
+/// 없으면 `matchAll`/`split` 의 SpeciesConstructor 가 %RegExp% 로 폴백해 strip 된 패턴의
+/// plain RegExp 를 새로 만들어 exec override 를 우회 → `.groups` 전부 유실. species 가
+/// BabelRegExp 를 반환해야 `new BabelRegExp(re, flags)` 가 `_groups.get(re)` 폴백으로
+/// 원본의 groups map 을 물려받는다 (babel `_inherits` 동형).
 pub const WRAP_REGEXP_RUNTIME =
     \\var __wrapRegExp = function() {
     \\  __wrapRegExp = function(re, groups) { return new BabelRegExp(re, undefined, groups); };
@@ -692,6 +698,7 @@ pub const WRAP_REGEXP_RUNTIME =
     \\    return Object.setPrototypeOf(_this, BabelRegExp.prototype);
     \\  }
     \\  Object.setPrototypeOf(BabelRegExp.prototype, RegExp.prototype);
+    \\  Object.setPrototypeOf(BabelRegExp, RegExp);
     \\  BabelRegExp.prototype.exec = function(str) {
     \\    var result = _super.exec.call(this, str);
     \\    if (result) {
@@ -739,7 +746,7 @@ pub const WRAP_REGEXP_RUNTIME =
     \\};
     \\
 ;
-pub const WRAP_REGEXP_RUNTIME_MIN = "var " ++ NAMES.WRAP_REGEXP_MIN ++ "=function(){" ++ NAMES.WRAP_REGEXP_MIN ++ "=function(re,groups){return new BabelRegExp(re,undefined,groups)};var _super=RegExp.prototype;var _groups=new WeakMap();function BabelRegExp(re,flags,groups){var _this=new RegExp(re,flags);_groups.set(_this,groups||_groups.get(re));return Object.setPrototypeOf(_this,BabelRegExp.prototype)}Object.setPrototypeOf(BabelRegExp.prototype,RegExp.prototype);BabelRegExp.prototype.exec=function(str){var result=_super.exec.call(this,str);if(result){result.groups=buildGroups(result,this);var indices=result.indices;if(indices)indices.groups=buildGroups(indices,this)}return result};BabelRegExp.prototype[Symbol.replace]=function(str,substitution){if(typeof substitution===\"string\"){var groups=_groups.get(this);return _super[Symbol.replace].call(this,str,substitution.replace(/\\$<([^>]+)(>|$)/g,function(match,name,end){if(end===\"\")return match;var group=groups[name];return Array.isArray(group)?\"$\"+group.join(\"$\"):typeof group===\"number\"?\"$\"+group:\"\"}))}else if(typeof substitution===\"function\"){var _this=this;return _super[Symbol.replace].call(this,str,function(){var args=arguments;if(typeof args[args.length-1]!==\"object\"){args=[].slice.call(args);args.push(buildGroups(args,_this))}return substitution.apply(this,args)})}return _super[Symbol.replace].call(this,str,substitution)};function buildGroups(result,re){var g=_groups.get(re);return Object.keys(g).reduce(function(groups,name){var i=g[name];if(typeof i===\"number\")groups[name]=result[i];else{var k=0;while(result[i[k]]===undefined&&k+1<i.length)k++;groups[name]=result[i[k]]}return groups},Object.create(null))}return " ++ NAMES.WRAP_REGEXP_MIN ++ ".apply(this,arguments)};";
+pub const WRAP_REGEXP_RUNTIME_MIN = "var " ++ NAMES.WRAP_REGEXP_MIN ++ "=function(){" ++ NAMES.WRAP_REGEXP_MIN ++ "=function(re,groups){return new BabelRegExp(re,undefined,groups)};var _super=RegExp.prototype;var _groups=new WeakMap();function BabelRegExp(re,flags,groups){var _this=new RegExp(re,flags);_groups.set(_this,groups||_groups.get(re));return Object.setPrototypeOf(_this,BabelRegExp.prototype)}Object.setPrototypeOf(BabelRegExp.prototype,RegExp.prototype);Object.setPrototypeOf(BabelRegExp,RegExp);BabelRegExp.prototype.exec=function(str){var result=_super.exec.call(this,str);if(result){result.groups=buildGroups(result,this);var indices=result.indices;if(indices)indices.groups=buildGroups(indices,this)}return result};BabelRegExp.prototype[Symbol.replace]=function(str,substitution){if(typeof substitution===\"string\"){var groups=_groups.get(this);return _super[Symbol.replace].call(this,str,substitution.replace(/\\$<([^>]+)(>|$)/g,function(match,name,end){if(end===\"\")return match;var group=groups[name];return Array.isArray(group)?\"$\"+group.join(\"$\"):typeof group===\"number\"?\"$\"+group:\"\"}))}else if(typeof substitution===\"function\"){var _this=this;return _super[Symbol.replace].call(this,str,function(){var args=arguments;if(typeof args[args.length-1]!==\"object\"){args=[].slice.call(args);args.push(buildGroups(args,_this))}return substitution.apply(this,args)})}return _super[Symbol.replace].call(this,str,substitution)};function buildGroups(result,re){var g=_groups.get(re);return Object.keys(g).reduce(function(groups,name){var i=g[name];if(typeof i===\"number\")groups[name]=result[i];else{var k=0;while(result[i[k]]===undefined&&k+1<i.length)k++;groups[name]=result[i[k]]}return groups},Object.create(null))}return " ++ NAMES.WRAP_REGEXP_MIN ++ ".apply(this,arguments)};";
 
 /// __await: async generator 안 await 표현의 wrapper. (#1911)
 /// `await x` 는 async generator body 안에서 `yield __await(x)` 로 변환되며,
