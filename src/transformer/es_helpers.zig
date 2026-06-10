@@ -539,13 +539,24 @@ pub fn makeMemberFromKeyIdx(self: anytype, obj: NodeIndex, key_idx: NodeIndex, s
     if (key_node.tag == .computed_property_key) {
         const inner = try self.visitNode(key_node.data.unary.operand);
         return makeComputedMember(self, obj, inner, span);
-    } else {
-        // 프로퍼티 키는 문자열 이름이므로 visitNode(symbol 전파) 대신 span만 복사.
-        // destructuring { polyfillGlobal: renamed } → _ref.polyfillGlobal 에서
-        // linker가 polyfillGlobal → polyfillGlobal$4 로 잘못 리네이밍하는 것을 방지.
-        const new_key = try makeIdentifierRefFromSpan(self, key_node.data.string_ref);
-        return makeMemberFromKey(self, obj, new_key, key_node.tag, span);
     }
+    if (key_node.tag == .numeric_literal or key_node.tag == .bigint_literal) {
+        // #4241: numeric/bigint key 는 data 가 `.none` variant — string_ref 로
+        // 읽으면 빈/garbage span → `this[]` SyntaxError. 노드를 그대로 computed
+        // key 로: `obj[1e3]`/`obj[10n]` 은 ToPropertyKey 가 "1000"/"10" 으로
+        // 정규화 → 런타임 정확 (exp/hex/bigint 모두). span 으로 원본 텍스트 보존.
+        const num = try self.ast.addNode(.{
+            .tag = key_node.tag,
+            .span = key_node.span,
+            .data = key_node.data,
+        });
+        return makeComputedMember(self, obj, num, span);
+    }
+    // 프로퍼티 키는 문자열 이름이므로 visitNode(symbol 전파) 대신 span만 복사.
+    // destructuring { polyfillGlobal: renamed } → _ref.polyfillGlobal 에서
+    // linker가 polyfillGlobal → polyfillGlobal$4 로 잘못 리네이밍하는 것을 방지.
+    const new_key = try makeIdentifierRefFromSpan(self, key_node.data.string_ref);
+    return makeMemberFromKey(self, obj, new_key, key_node.tag, span);
 }
 
 /// callee(args...) call expression 생성.
@@ -765,6 +776,16 @@ pub fn buildDefinePropertyKeyArg(self: anytype, key_idx: NodeIndex) !NodeIndex {
         // string literal key 는 이미 quote 포함이라 buildQuotedKeyLiteral 로 감싸면 이중 quote.
         // visitNode 경로가 quote 보존 + unicode_brace_escape 같은 ES5 lower 까지 동시 처리.
         return self.visitNode(key_idx);
+    }
+    if (key_node.tag == .numeric_literal or key_node.tag == .bigint_literal) {
+        // #4241: numeric/bigint key 는 노드 그대로 — defineProperty(proto, 1e3, …)
+        // 가 ToPropertyKey 로 "1000"/"10" 정규화. 따옴표로 감싸면 "1e3"/"10n" ≠
+        // "1000"/"10" (silent 오동작) 이고, data 가 `.none` variant 라 위험.
+        return self.ast.addNode(.{
+            .tag = key_node.tag,
+            .span = key_node.span,
+            .data = key_node.data,
+        });
     }
     return buildQuotedKeyLiteral(self, key_node.span);
 }

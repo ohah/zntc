@@ -2009,6 +2009,68 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
     });
   });
 
+  describe('numeric 프로퍼티 키 (#4241)', () => {
+    test('class field/accessor numeric key — defineProperty 정규화', async () => {
+      // 회귀: makeMemberFromKeyIdx 가 numeric data 를 string_ref 로 오독 →
+      // this[] SyntaxError. buildDefinePropertyKeyArg 는 "1e3" 박제 →
+      // 런타임 "1000" 과 불일치.
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            "class C { 10 = 'ten'; 0x10 = 'hex'; get 1e3() { return 'K'; } }",
+            'const c = new C() as any;',
+            'console.log(c[10], c[16], c[1000]);',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('ten hex K');
+    });
+
+    test('numeric key destructuring 값 읽기', async () => {
+      // 회귀: `{ 10: x } = o` 의 값 읽기가 _a[] (빈 span).
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'const o = { 10: 99, 20: 7 } as any;',
+            'const { 10: x, 20: y } = o;',
+            'console.log(x + y);',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('106');
+    });
+
+    test('bigint key — numeric 과 동일 .none variant (리뷰 적발)', async () => {
+      // 회귀: bigint_literal 도 data=.none — else 경로 string_ref 오독 →
+      // class field `this.`(SyntaxError)/destructuring `_a.`. (bigint getter
+      // 의 defineProperty 키는 es5 에서만 도달인데 bigint=es2020 이라 비현실,
+      // 게다가 bun 파서가 `get 10n()` 미지원이라 field/destructuring 만 검증.)
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            "class C { 10n = 'ten' }",
+            'const c = new C() as any;',
+            'const { 10n: x } = { 10n: 9 } as any;',
+            'console.log(c[10], x);',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2021'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('ten 9');
+    });
+  });
+
   describe('destructuring 경계', () => {
     test('array hole (sparse) destructuring', async () => {
       const result = await bundleAndRun(
