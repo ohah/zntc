@@ -6,7 +6,9 @@
 //! dedup(중복 키 객체)/`$<name>` 매칭/파서 중복 검증이 전부 어긋난다.
 //!
 //! 사용처: regexp/parser.zig (중복 검증) · regexp/transform.zig (\k 해석) ·
-//! transformer/regex_lower.zig ($<name> 재작성) · transformer/node_dispatch.zig
+//! transformer/regex_lower.zig (pattern-side dup 감지 — replacement-side $<name>
+//! 비교는 string-escape superset 인 transformer/cooked_name.zig #4216) ·
+//! transformer/node_dispatch.zig
 //! (groups map dedup + canonical key emit).
 
 const std = @import("std");

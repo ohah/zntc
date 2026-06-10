@@ -17,6 +17,7 @@ const std = @import("std");
 const compat = @import("compat.zig");
 const regexp = @import("../regexp/mod.zig");
 const group_name = @import("../regexp/group_name.zig");
+const cooked_name = @import("cooked_name.zig");
 
 pub const Options = struct {
     unsupported: compat.UnsupportedFeatures,
@@ -219,7 +220,10 @@ pub fn rewriteReplacementNamedRefs(
                 // 빈 문자열 — babel __wrapRegExp 의 `group.join("$")` 동형 (#4198).
                 var found = false;
                 for (mapping) |m| {
-                    if (group_name.eqlCanonical(m.name, name)) {
+                    // #4216: replacement 쪽 이름은 JS string 표기 — \x79 등
+                    // string-escape 도 cook 하면 그룹 이름과 동치. cooked_name 은
+                    // \u 계열을 포함한 superset 디코더라 그룹이름 측에도 안전.
+                    if (cooked_name.eql(m.name, name)) {
                         var buf: [16]u8 = undefined;
                         const s = std.fmt.bufPrint(&buf, "${d}", .{m.index}) catch unreachable;
                         try out.appendSlice(allocator, s);
@@ -520,6 +524,13 @@ test "#4202: (?im-s:...) / (?-i:...) 변형도 비차지 + \\k 인덱스와 일�
     const ng = r.named_groups.?;
     try testing.expectEqual(@as(usize, 1), ng.len);
     try testing.expectEqual(@as(u32, 1), ng[0].index);
+}
+
+test "#4216: replacement $<\\x79> — string-escape 표기도 그룹 이름과 cook 동치" {
+    const mapping = [_]NamedGroupMapping{.{ .name = "y", .index = 1 }};
+    const out = (try rewriteReplacementNamedRefs(testing.allocator, "[$<\\x79>]", &mapping)).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("[$1]", out);
 }
 
 test "#4198: replacement $<dup> → 모든 인덱스 이어붙임 ($1$2)" {

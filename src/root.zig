@@ -46,6 +46,7 @@ test {
     _ = runtime_helper_modules;
     _ = server;
     _ = app;
+    _ = @import("transformer/cooked_name.zig");
     _ = @import("test_arena.zig");
     _ = @import("env_flag.zig");
     _ = util.wyhash;
