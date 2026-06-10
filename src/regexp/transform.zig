@@ -155,7 +155,8 @@ const T = struct {
     fn isAstralUnicodeEscape(n: Node) bool {
         if (n.tag != .character) return false;
         const kind: ast.CharacterKind = @enumFromInt(n.data[1]);
-        return kind == .unicode_escape and n.data[0] > 0xFFFF;
+        // #4237: literal astral (.symbol) 도 cp 단위 노드 — 동일 분할 대상.
+        return (kind == .unicode_escape or kind == .symbol) and n.data[0] > 0xFFFF;
     }
 
     // ── #3509: positive character class 의 astral → surrogate-alternation ──
@@ -346,6 +347,12 @@ const T = struct {
             .indexed_reference,
             => return self.b.add(n),
             .character => {
+                // #4237: 단일 노드 컨텍스트(quantifier body 등 — expandList 의
+                // 1→2 surrogate 분할 불가 위치)의 astral 은 u-strip 시 의미가
+                // 변함(`/😀+/u` 의 + 가 low surrogate 로 격하) → u 보존 게이트.
+                if (self.opts.unicode_brace and n.data[0] > 0xFFFF) {
+                    self.astral_u_incomplete = true;
+                }
                 // #4225: u-전용 fold 등가(Kelvin U+212A 등)를 가진 atom 은
                 // u-strip 시 /i 의 non-unicode fold 로 등가가 소실 → u 보존 게이트
                 // (#3509 "틀린 출력 0"). lower() 의 #4211 재변환이 전체 일관 보존.

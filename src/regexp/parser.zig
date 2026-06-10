@@ -688,11 +688,15 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         return false;
                     }
                     self.advance();
-                    if (emit_ast) {
-                        self.last_node = self.addNode(.character, .{
-                            .start = self.pos - 1,
-                            .end = self.pos,
-                        }, .{ c, @intFromEnum(ast.CharacterKind.symbol), 0 });
+                    {
+                        const lit_start = self.pos - 1;
+                        const cp = self.consumeLiteralCp(c);
+                        if (emit_ast) {
+                            self.last_node = self.addNode(.character, .{
+                                .start = lit_start,
+                                .end = self.pos,
+                            }, .{ cp, @intFromEnum(ast.CharacterKind.symbol), 0 });
+                        }
                     }
                     return true;
                 },
@@ -702,26 +706,53 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         return false;
                     }
                     self.advance();
-                    if (emit_ast) {
-                        self.last_node = self.addNode(.character, .{
-                            .start = self.pos - 1,
-                            .end = self.pos,
-                        }, .{ c, @intFromEnum(ast.CharacterKind.symbol), 0 });
+                    {
+                        const lit_start = self.pos - 1;
+                        const cp = self.consumeLiteralCp(c);
+                        if (emit_ast) {
+                            self.last_node = self.addNode(.character, .{
+                                .start = lit_start,
+                                .end = self.pos,
+                            }, .{ cp, @intFromEnum(ast.CharacterKind.symbol), 0 });
+                        }
                     }
                     return true;
                 },
                 ')' => return false, // alternative 종료
                 else => {
                     self.advance();
-                    if (emit_ast) {
-                        self.last_node = self.addNode(.character, .{
-                            .start = self.pos - 1,
-                            .end = self.pos,
-                        }, .{ c, @intFromEnum(ast.CharacterKind.symbol), 0 });
+                    {
+                        const lit_start = self.pos - 1;
+                        const cp = self.consumeLiteralCp(c);
+                        if (emit_ast) {
+                            self.last_node = self.addNode(.character, .{
+                                .start = lit_start,
+                                .end = self.pos,
+                            }, .{ cp, @intFromEnum(ast.CharacterKind.symbol), 0 });
+                        }
                     }
                     return true;
                 },
             }
+        }
+
+        /// literal 문자 atom 의 코드포인트 소비 (#4237). non-ASCII 첫 byte 면
+        /// UTF-8 시퀀스 tail 을 추가 소비해 단일 코드포인트 반환 — byte 단위
+        /// 노드는 printer 재인쇄 시 continuation byte 가 개별 cp 로 인코드돼
+        /// mojibake, transform 의 cp 기반 판정(fold 등)도 오류였다.
+        /// validate-only 경로도 동일하게 tail 을 소비해 파싱 진행이 일치한다.
+        /// invalid UTF-8 은 기존 byte 동작 폴백. 호출 규약: 첫 byte 는 이미
+        /// advance 된 상태.
+        fn consumeLiteralCp(self: *Self, first: u32) u32 {
+            if (first < 0x80) return first;
+            const start = self.pos - 1;
+            const fb: u8 = @intCast(first & 0xFF);
+            const len = std.unicode.utf8ByteSequenceLength(fb) catch return first;
+            if (len <= 1 or start + len > self.source.len) return first;
+            const cp = std.unicode.utf8Decode(self.source[start .. start + len]) catch return first;
+            var k: usize = 1;
+            while (k < len) : (k += 1) self.advance();
+            return cp;
         }
 
         // ================================================================
@@ -997,12 +1028,14 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     }
                     // non-unicode: literal
                     self.advance();
-                    self.setClassValue(c);
+                    // #4237: identity escape 의 non-ASCII (\é 등) 도 cp 단위.
+                    const id_cp = self.consumeLiteralCp(c);
+                    self.setClassValue(id_cp);
                     if (emit_ast) {
                         self.last_node = self.addNode(.character, .{
                             .start = bs_pos,
                             .end = self.pos,
-                        }, .{ c, @intFromEnum(ast.CharacterKind.identifier), 0 });
+                        }, .{ id_cp, @intFromEnum(ast.CharacterKind.identifier), 0 });
                     }
                     return true;
                 },
@@ -1099,12 +1132,14 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         return false;
                     }
                     self.advance();
-                    self.setClassValue(c);
+                    // #4237: identity escape 의 non-ASCII (\é 등) 도 cp 단위.
+                    const id_cp = self.consumeLiteralCp(c);
+                    self.setClassValue(id_cp);
                     if (emit_ast) {
                         self.last_node = self.addNode(.character, .{
                             .start = bs_pos,
                             .end = self.pos,
-                        }, .{ c, @intFromEnum(ast.CharacterKind.identifier), 0 });
+                        }, .{ id_cp, @intFromEnum(ast.CharacterKind.identifier), 0 });
                     }
                     return true;
                 },
@@ -1164,7 +1199,17 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                 }
                             }
                             if (!first_is_escape and !self.last_class_is_class_escape) {
-                                if (first_value > self.last_class_value) {
+                                // #4237: non-u 모드의 range 의미는 UTF-16 unit —
+                                // astral 리터럴이 양끝이면 native 는 시작=low
+                                // surrogate / 끝=high surrogate 가 비교 대상.
+                                // cp 비교는 [😀-！] 류 valid 패턴 오거부.
+                                var lo_cmp = first_value;
+                                var hi_cmp = self.last_class_value;
+                                if (!self.flags.hasUnicodeMode()) {
+                                    if (lo_cmp > 0xFFFF) lo_cmp = 0xDC00 | ((lo_cmp - 0x10000) & 0x3FF);
+                                    if (hi_cmp > 0xFFFF) hi_cmp = 0xD800 | ((hi_cmp - 0x10000) >> 10);
+                                }
+                                if (lo_cmp > hi_cmp) {
                                     self.setError("character class range out of order");
                                     return false;
                                 }
@@ -1233,14 +1278,18 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 return self.parseEscape();
             }
             const ch = self.peek();
-            self.last_class_value = ch;
             self.last_class_is_class_escape = false;
             self.advance();
+            const lit_start = self.pos - 1;
+            const cp = self.consumeLiteralCp(ch);
+            // #4237: range 비교(`a-z`)도 코드포인트 기준 — byte 비교는
+            // non-ASCII range 에서 부정확했다.
+            self.last_class_value = cp;
             if (emit_ast) {
                 self.last_node = self.addNode(.character, .{
-                    .start = self.pos - 1,
+                    .start = lit_start,
                     .end = self.pos,
-                }, .{ ch, @intFromEnum(ast.CharacterKind.symbol), 0 });
+                }, .{ cp, @intFromEnum(ast.CharacterKind.symbol), 0 });
             }
             return true;
         }
@@ -1997,12 +2046,14 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             }
 
             self.advance();
-            self.setClassValue(ch);
+            const lit_start = self.pos - 1;
+            const cp = self.consumeLiteralCp(ch);
+            self.setClassValue(cp);
             if (emit_ast) {
                 self.last_node = self.addNode(.character, .{
-                    .start = self.pos - 1,
+                    .start = lit_start,
                     .end = self.pos,
-                }, .{ ch, @intFromEnum(ast.CharacterKind.symbol), 0 });
+                }, .{ cp, @intFromEnum(ast.CharacterKind.symbol), 0 });
             }
             return true;
         }
