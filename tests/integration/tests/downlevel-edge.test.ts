@@ -1416,6 +1416,26 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       expect(result.runOutput).toBe('<2024>\n<2025>');
     });
 
+    test('ES2025 duplicate named group + \\k<name> backref → (?:\\1\\2) 연접 (#4198)', async () => {
+      // 회귀: \k<dup> 가 첫 occurrence 인덱스로만 내려가 두 번째 분기에서
+      // 비참여 그룹 backref(빈 문자열 매치)가 되는 silent miscompile.
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            const re = /(?<y>a)x\\k<y>|(?<y>bb)\\k<y>/;
+            console.log('axa'.match(re)?.[0]);
+            console.log('bbbb'.match(re)?.[0]);
+            console.log(String('bb'.match(re)?.[0]));
+          `,
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('axa\nbbbb\nundefined');
+    });
+
     test('named backreference \\k<name>', async () => {
       const result = await bundleAndRun(
         {

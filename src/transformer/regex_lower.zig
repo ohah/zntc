@@ -450,6 +450,18 @@ test "#4198: replacement $<dup> → 모든 인덱스 이어붙임 ($1$2)" {
     try testing.expectEqualStrings("[$1$2]", out);
 }
 
+test "#4198: duplicate named group 의 \\k<name> → 모든 인덱스 backref 연접 (?:\\1\\2)" {
+    const out = (try runLower("/(?<y>a)\\k<y>|(?<y>b)\\k<y>/", .{ .regex_named_groups = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/(a)(?:\\1\\2)|(b)(?:\\1\\2)/", out);
+}
+
+test "#4198: duplicate \\k<name> + quantifier — (?:) 래핑으로 안전" {
+    const out = (try runLower("/(?<y>a)\\k<y>+|(?<y>b)/", .{ .regex_named_groups = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/(a)(?:\\1\\2)+|(b)/", out);
+}
+
 test "#4198: replacement 단일 이름은 기존과 동일 ($N)" {
     const mapping = [_]NamedGroupMapping{
         .{ .name = "y", .index = 1 },

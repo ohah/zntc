@@ -125,13 +125,6 @@ const T = struct {
     /// 정확히 다운레벨 못한 astral 구문 발견 (lower() 가 u-strip 보류 판단).
     astral_u_incomplete: bool = false,
 
-    fn resolveIndex(self: *T, name: []const u8) ?u32 {
-        for (self.names) |g| {
-            if (std.mem.eql(u8, g.name, name)) return g.index;
-        }
-        return null;
-    }
-
     /// surrogate pair 2 노드를 list 에 push (cp>0xFFFF).
     fn pushSurrogate(self: *T, span: ast.Span, cp: u32, out: *std.ArrayList(u32)) TransformError!void {
         const sp = cps.splitSurrogatePair(cp);
@@ -342,8 +335,35 @@ const T = struct {
             },
             .named_reference => {
                 if (self.opts.strip_named and !self.in_class) {
-                    if (self.resolveIndex(self.in.source[n.data[0]..n.data[1]])) |gi| {
-                        return self.b.add(.{ .tag = .indexed_reference, .span = n.span, .data = .{ gi, 0, 0 } });
+                    const name = self.in.source[n.data[0]..n.data[1]];
+                    var count: u32 = 0;
+                    var first: u32 = 0;
+                    for (self.names) |g| {
+                        if (std.mem.eql(u8, g.name, name)) {
+                            if (count == 0) first = g.index;
+                            count += 1;
+                        }
+                    }
+                    if (count == 1) {
+                        return self.b.add(.{ .tag = .indexed_reference, .span = n.span, .data = .{ first, 0, 0 } });
+                    }
+                    if (count > 1) {
+                        // ES2025 duplicate named group: `\k<y>` 는 단일 `\N` 으로 표현
+                        // 불가 → 모든 인덱스의 backref 연접 `(?:\1\2)` 로 내린다.
+                        // 비참여 그룹 backref 는 빈 문자열 매치라 참여한 쪽 값만
+                        // 남는다 — `$<y>`→`$1$2` 와 동일 트릭, regexpu 동형 (#4198).
+                        // `(?:)` 래핑은 quantifier (`\k<y>+`) 안전용.
+                        var refs: std.ArrayList(u32) = .empty;
+                        defer refs.deinit(self.b.a);
+                        for (self.names) |g| {
+                            if (std.mem.eql(u8, g.name, name)) {
+                                const r = try self.b.add(.{ .tag = .indexed_reference, .span = n.span, .data = .{ g.index, 0, 0 } });
+                                try refs.append(self.b.a, @intFromEnum(r));
+                            }
+                        }
+                        const l = try self.b.addList(refs.items);
+                        const seq = try self.b.add(.{ .tag = .alternative, .span = n.span, .data = .{ l.start, l.len, 0 } });
+                        return self.b.add(.{ .tag = .ignore_group, .span = n.span, .data = .{ 0, 0, @intFromEnum(seq) } });
                     }
                 }
                 return self.b.add(n); // 못 찾으면 보존 (ad-hoc 동일)
