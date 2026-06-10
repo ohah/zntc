@@ -120,6 +120,7 @@ pub fn deinit(self: *Transformer) void {
 /// `ast.deinit()` + `allocator.destroy(ast)` 둘 다 책임.
 pub fn deinitExceptAst(self: *Transformer) void {
     self.scratch.deinit(self.allocator);
+    if (self.temp_collision_set) |*set| set.deinit(self.allocator);
     self.pending_nodes.deinit(self.allocator);
     self.symbol_ids.deinit(self.allocator);
     self.helper_ref_nodes.deinit(self.allocator);

@@ -108,11 +108,40 @@ pub fn makeTempVarSpan(self: anytype) !Span {
         self.temp_var_counter += 1;
         const name = tempVarName(idx, &buf);
         if (collidesWithPrivateField(self, name)) continue;
+        // #4220: 사용자 식별자(_a 등)와 충돌하면 skip — 충돌 시 temp 대입이
+        // 사용자 const 를 덮거나(TypeError) mangler/tree-shake 가 선언·사용을
+        // 잘못 결합해 silent miscompile 이었다.
+        if (try collidesWithUserSymbol(self, name)) continue;
         return self.ast.addString(name);
     }
 }
 
-fn collidesWithPrivateField(self: anytype, name: []const u8) bool {
+/// 모듈 심볼 중 temp 패턴(`_`+letter[+digits]) 이름만 lazy 수집해 조회 (#4220).
+/// symbols 가 비어있는 경로(semantic-off 테스트)는 집합도 비어 기존 동작.
+pub fn collidesWithUserSymbol(self: anytype, name: []const u8) !bool {
+    if (self.temp_collision_set == null) {
+        var set: std.StringHashMapUnmanaged(void) = .empty;
+        errdefer set.deinit(self.allocator);
+        for (self.symbols) |sym| {
+            const sym_name = self.ast.getText(sym.name);
+            if (isTempLikeName(sym_name)) try set.put(self.allocator, sym_name, {});
+        }
+        self.temp_collision_set = set;
+    }
+    return self.temp_collision_set.?.contains(name);
+}
+
+fn isTempLikeName(name: []const u8) bool {
+    if (name.len < 2 or name.len > 6) return false;
+    if (name[0] != '_') return false;
+    if (name[1] < 'a' or name[1] > 'z') return false;
+    for (name[2..]) |c| {
+        if (c < '0' or c > '9') return false;
+    }
+    return true;
+}
+
+pub fn collidesWithPrivateField(self: anytype, name: []const u8) bool {
     for (self.current_private_fields) |pf| {
         if (std.mem.eql(u8, pf.var_name, name)) return true;
     }
