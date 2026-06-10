@@ -1400,6 +1400,25 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       expect(result.runOutput).toBe('2024\n2025');
     });
 
+    test('named group + matchAll → species 가 wrapper 유지, .groups 보존 (#4200)', async () => {
+      // 회귀: ctor-side setPrototypeOf 부재 → Symbol.species 폴백으로 matchAll 이
+      // plain RegExp 를 재생성 → exec override 우회 → groups 전부 undefined.
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            const out = [...'a-1 b-2'.matchAll(/(?<w>[a-z])-(?<n>\\d)/g)].map((m) => m.groups.w + m.groups.n);
+            console.log(out.join(','));
+            console.log('x1y2'.split(/(?<d>\\d)/).join('|'));
+          `,
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('a1,b2\nx|1|y|2|');
+    });
+
     test('ES2025 duplicate named group + replace $<name> → $1$2 (#4198)', async () => {
       const result = await bundleAndRun(
         {
