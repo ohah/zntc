@@ -95,6 +95,12 @@ fn collectConstEnum(self: *Transformer, node: Node) Error!void {
         };
 
         var value: ConstEnumValue = undefined;
+        // #4232: concat 중간 문자열 수거 — 멤버 저장(아래 재-dupe) 후 일괄 해제.
+        var temp_strings: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (temp_strings.items) |ts| self.allocator.free(ts);
+            temp_strings.deinit(self.allocator);
+        }
         if (init_idx.isNone()) {
             const next: f64 = if (prev_number) |pv| pv + 1 else 0;
             value = .{ .number = next };
@@ -103,6 +109,7 @@ fn collectConstEnum(self: *Transformer, node: Node) Error!void {
                 .current_members = collected.items,
                 .current_name = enum_name_src,
                 .current_symbol_id = self.getSymbolIdAt(name_idx),
+                .temp_strings = &temp_strings,
             })) orelse return;
         }
         switch (value) {
@@ -139,6 +146,10 @@ const ConstEnumEvalCtx = struct {
     current_members: []const ConstEnumMember,
     current_name: []const u8,
     current_symbol_id: ?u32,
+    /// #4232: concat (`+`) 이 만드는 중간/결과 문자열 수거 리스트 — 평가
+    /// 종료 후 호출자가 일괄 해제 (멤버 저장은 재-dupe). 없으면 GPA 에서
+    /// 연산자당 1건 누수 (arena 호출처는 무해했으나 GPA-contract 위반).
+    temp_strings: *std.ArrayList([]const u8),
 };
 
 /// const enum initializer expression 재귀 평가.
@@ -198,8 +209,9 @@ fn evalConstEnumExpr(
             // 문자열 + 문자열은 concatenation (TS 가 허용).
             if (lv == .string and rv == .string and op == .plus) {
                 const concat = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ lv.string, rv.string });
-                defer self.allocator.free(concat);
-                return .{ .string = try self.allocator.dupe(u8, concat) };
+                errdefer self.allocator.free(concat);
+                try ctx.temp_strings.append(self.allocator, concat);
+                return .{ .string = concat };
             }
             if (lv != .number or rv != .number) return null;
             const ln = lv.number;
