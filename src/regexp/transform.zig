@@ -302,6 +302,15 @@ const T = struct {
             const child: NodeIndex = @enumFromInt(cid);
             const cn = self.in.getNode(child);
             if (self.opts.unicode_brace and isAstralUnicodeEscape(cn)) {
+                // #4225: astral fast-path 도 fold 게이트 적용 (Deseret/Adlam 등
+                // astral u-전용 등가) — 게이트 시 surrogate 분해 없이 보존 경로로.
+                if ((self.opts.ignore_case or self.mod_i_depth > 0) and
+                    iu_fold.hasEntry(cn.data[0]))
+                {
+                    self.astral_u_incomplete = true;
+                    try ids.append(self.b.a, @intFromEnum(try self.node(child)));
+                    continue;
+                }
                 try self.pushSurrogate(cn.span, cn.data[0], &ids);
             } else {
                 try ids.append(self.b.a, @intFromEnum(try self.node(child)));
@@ -332,11 +341,29 @@ const T = struct {
                 return self.b.add(.{ .tag = .alternative, .span = n.span, .data = .{ l.start, l.len, 0 } });
             },
             .boundary_assertion,
-            .character,
             .character_class_escape,
             .unicode_property_escape,
             .indexed_reference,
             => return self.b.add(n),
+            .character => {
+                // #4225: u-전용 fold 등가(Kelvin U+212A 등)를 가진 atom 은
+                // u-strip 시 /i 의 non-unicode fold 로 등가가 소실 → u 보존 게이트
+                // (#3509 "틀린 출력 0"). lower() 의 #4211 재변환이 전체 일관 보존.
+                // i-유효성은 글로벌 /i 또는 (?i:) 영역(#4211 mod_i_depth) 둘 다.
+                if (self.opts.unicode_brace and
+                    (self.opts.ignore_case or self.mod_i_depth > 0))
+                {
+                    const kind: ast.CharacterKind = @enumFromInt(n.data[1]);
+                    // literal(symbol) non-ASCII 는 파서가 UTF-8 byte 단위 노드라
+                    // data[0] 이 코드포인트가 아님 — fold 판정 불가 → 보수 보존.
+                    const fold_risk = if (kind == .symbol and n.data[0] >= 0x80)
+                        true
+                    else
+                        iu_fold.hasEntry(n.data[0]);
+                    if (fold_risk) self.astral_u_incomplete = true;
+                }
+                return self.b.add(n);
+            },
             .dot => {
                 // #4211: (?-s:) 안의 `.` 는 global /s 비적용 — 재작성 금지.
                 if (self.opts.dotall and self.mod_s_off_depth == 0) return self.makeDotAllClass(n.span);
