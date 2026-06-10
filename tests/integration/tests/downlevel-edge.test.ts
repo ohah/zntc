@@ -3165,6 +3165,43 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
     });
   });
 
+  describe('const enum string 인라인 escape (#4228)', () => {
+    test('quote/escape/brace — 전 타겟 유효 산출물', async () => {
+      // 회귀: raw body verbatim 재인용 → 내부 " 미escape 로 전 타겟 SyntaxError,
+      // \u{...} 잔존으로 es5 SyntaxError.
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            String.raw`const enum E { A = '\u{1F600}', Q = 'say "hi"', S = "it's", C = 'a\'b' }`,
+            'console.log(E.A, E.Q, E.S, E.C);',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe(`😀 say "hi" it's a'b`);
+      expect(result.bundleOutput).not.toContain('\\u{');
+    });
+
+    test('quote escape 는 타겟 무관 (esnext — brace 보존)', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            String.raw`const enum E { A = '\u{1F600}', Q = 'say "hi"' }`,
+            'console.log(E.A, E.Q);',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=esnext'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('😀 say "hi"');
+    });
+  });
+
   describe('regex 추가 엣지', () => {
     test('ES2025 inline modifier 그룹 (?i:) 은 capture 인덱스 비차지 (#4202)', async () => {
       // 회귀: 텍스트 스캐너가 (?i:) 를 capturing 으로 오집계 → groups map 이
