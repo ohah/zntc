@@ -299,7 +299,7 @@ Options:
 - `--target=es5` ~ `es2025` / `esnext` 지원
 - 엔진 타겟(`--target=chrome80,safari14,node16` 등)은 compat-table 기반 feature-level 다운레벨링
 - ES2023: hashbang(`#!`) strip
-- ES2025: `using` / `await using` 다운레벨
+- ES2025: `using` / `await using` 다운레벨, duplicate named capture group (`/(?<y>..)|(?<y>..)/`) — es2018~es2024 타겟에서도 strip+`__wrapRegExp` 로 다운레벨 (#4199)
 
 ### 런타임 API 폴리필
 

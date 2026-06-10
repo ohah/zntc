@@ -1547,6 +1547,29 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       }
     });
 
+    test('ES2025 dup named group gate — es2022 에서 dup 만 strip (#4199)', async () => {
+      // named group 자체는 es2018+ 지원이라 기존엔 dup 이 verbatim 패스스루
+      // (es2018~es2024 엔진에서 SyntaxError). gate 가 strip 경로를 활성화.
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            String.raw`const re = /(?<y>\d{4})-a|(?<y>\d{4})-b/;`,
+            String.raw`console.log('2024-a'.match(re)?.groups?.y, '2025-b'.match(re)?.groups?.y);`,
+            String.raw`console.log('x1'.match(/(?<s>\d)/)?.groups?.s);`,
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2022'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('2024 2025\n1');
+      // dup regex 만 wrap, 단일 이름은 native named group 유지
+      expect(result.bundleOutput).toContain('__wrapRegExp');
+      expect(result.bundleOutput).toContain('(?<s>');
+      expect(result.bundleOutput).not.toContain('(?<y>');
+    });
+
     test('named backreference \\k<name>', async () => {
       const result = await bundleAndRun(
         {

@@ -98,6 +98,10 @@ pub const Feature = enum(u5) {
     /// `\u{X}` brace unicode escape (ES2015). 문자열/template 내부는 surrogate pair로,
     /// regex 의 `u` flag + `\u{X}` 도 surrogate pair + flag strip (#1388).
     unicode_brace_escape,
+    /// ES2025 duplicate named capture group (`(?<y>..)|(?<y>..)`). 미지원 타겟에선
+    /// regex_named_groups 와 같은 strip+__wrapRegExp 경로로 다운레벨 (#4199).
+    /// NOTE: Feature enum 과 UnsupportedFeatures 필드는 비트 위치가 1:1 — 끝에만 추가.
+    regex_duplicate_named_groups,
 
     /// 이 feature가 도입된 ES 버전.
     pub fn esVersion(self: Feature) ESTarget {
@@ -111,7 +115,7 @@ pub const Feature = enum(u5) {
             .logical_assignment => .es2021,
             .class_static_block, .class_private_method, .class_private_field, .top_level_await => .es2022,
             .hashbang => .es2023,
-            .using => .es2025,
+            .using, .regex_duplicate_named_groups => .es2025,
         };
     }
 };
@@ -161,8 +165,17 @@ pub const UnsupportedFeatures = packed struct(u32) {
     regex_dotall: bool = false,
     regex_named_groups: bool = false,
     unicode_brace_escape: bool = false,
+    regex_duplicate_named_groups: bool = false,
 
-    _: u4 = 0,
+    _: u3 = 0,
+
+    /// regex literal lowering 이 필요한 비트가 하나라도 set 인지.
+    /// node_dispatch 조기탈출/graph prepass 게이트가 공유 — 새 regex 비트는
+    /// 여기 한 곳만 추가하면 된다 (#4199 에서 게이트 2곳 누락이 실제 발생).
+    pub fn needsRegexLowering(self: @This()) bool {
+        return self.regex_dotall or self.regex_named_groups or self.regex_sticky or
+            self.unicode_brace_escape or self.regex_duplicate_named_groups;
+    }
 
     /// 어떤 feature flag 라도 set 됐는지 (= packed struct 가 zero 가 아닌지).
     /// `.{}` (기본값, 모든 비트 false) 와 명시적으로 어느 비트라도 set 된 상태를 구분할 때 사용.
@@ -589,6 +602,15 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .using, .engine = .safari, .major = 18, .minor = 2 },
     .{ .feature = .using, .engine = .node, .major = 22 },
     .{ .feature = .using, .engine = .deno, .major = 1, .minor = 38 },
+
+    // ── ES2025: duplicate named capture groups (#4199) ── (hermes row 없음 = 미지원)
+    .{ .feature = .regex_duplicate_named_groups, .engine = .chrome, .major = 125 },
+    .{ .feature = .regex_duplicate_named_groups, .engine = .edge, .major = 125 },
+    .{ .feature = .regex_duplicate_named_groups, .engine = .firefox, .major = 129 },
+    .{ .feature = .regex_duplicate_named_groups, .engine = .safari, .major = 17, .minor = 4 },
+    .{ .feature = .regex_duplicate_named_groups, .engine = .ios, .major = 17, .minor = 4 },
+    .{ .feature = .regex_duplicate_named_groups, .engine = .node, .major = 23 },
+    .{ .feature = .regex_duplicate_named_groups, .engine = .deno, .major = 1, .minor = 44 },
     // edge, ios, hermes: 미지원 → compat_table에 없음 → 항상 다운레벨링
 
     // ── ES2015: regex_sticky (/y) ──
@@ -649,6 +671,8 @@ fn getMinVersion(engine: Engine, feature: Feature) ?struct { major: u16, minor: 
 /// React Native (Hermes) preset.
 /// 명시되지 않은 features 는 native keep (default false).
 pub fn fromHermesPreset() UnsupportedFeatures {
+    // NOTE: regex_duplicate_named_groups 비트는 별도 set 안 함 — 아래
+    // regex_named_groups=true 가 strip 경로를 superset 으로 커버 (#4199).
     return .{
         // 호환 마진 다운레벨링 (closure 의미 / state machine 종속 / Hermes runtime 버그 회피)
         .arrow = true, // #1299: object property arrow ternary 뒤 prop 누락

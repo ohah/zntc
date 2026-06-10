@@ -62,6 +62,7 @@ export const FEATURES = [
   'regex_dotall', // ES2018
   'regex_named_groups', // ES2018
   'unicode_brace_escape', // ES2015
+  'regex_duplicate_named_groups', // ES2025
 ] as const;
 
 export type Feature = (typeof FEATURES)[number];
@@ -286,6 +287,16 @@ export const SUPPORT: Partial<Record<Feature, Partial<Record<Engine, [number, nu
     // ES2025 `using` / `await using` 선언. 2026-04 기준 어떤 엔진도 미지원이라
     // SUPPORT 테이블은 비어있고, computeUnsupported는 모든 엔진에서 비트를 set.
     // 엔진 지원이 시작되면 여기에 추가.
+  },
+  regex_duplicate_named_groups: {
+    // ES2025 duplicate named capture group (#4199). compat.zig 거울.
+    chrome: [125, 0],
+    edge: [125, 0],
+    firefox: [129, 0],
+    safari: [17, 4],
+    ios: [17, 4],
+    node: [23, 0],
+    deno: [1, 44],
   },
 };
 
