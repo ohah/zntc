@@ -125,6 +125,13 @@ const T = struct {
     in_class: bool = false,
     /// 정확히 다운레벨 못한 astral 구문 발견 (lower() 가 u-strip 보류 판단).
     astral_u_incomplete: bool = false,
+    /// `(?-s:)` 영역 깊이 (#4211). 내부 `.` 는 global /s dotall 의 적용 대상이
+    /// 아니므로 재작성하면 안 된다 — modifier 그룹은 출력에 보존되어 모던 엔진이
+    /// 영역 의미를 직접 제공한다 (`(?s:)` 내부 재작성은 의미 동치라 추적 불요).
+    mod_s_off_depth: u32 = 0,
+    /// i 를 건드리는 modifier 영역 깊이 (#4211). 내부 class 의 iu fold 확장은
+    /// 영역별 유효 i 를 정확히 반영할 수 없어 u-보존 게이트로 폴백.
+    mod_i_depth: u32 = 0,
 
     /// surrogate pair 2 노드를 list 에 push (cp>0xFFFF).
     fn pushSurrogate(self: *T, span: ast.Span, cp: u32, out: *std.ArrayList(u32)) TransformError!void {
@@ -331,7 +338,8 @@ const T = struct {
             .indexed_reference,
             => return self.b.add(n),
             .dot => {
-                if (self.opts.dotall) return self.makeDotAllClass(n.span);
+                // #4211: (?-s:) 안의 `.` 는 global /s 비적용 — 재작성 금지.
+                if (self.opts.dotall and self.mod_s_off_depth == 0) return self.makeDotAllClass(n.span);
                 return self.b.add(n);
             },
             .named_reference => {
@@ -383,7 +391,11 @@ const T = struct {
                 // 미지원(\p{}/class_string/\D\W\S) → incomplete → u 보존(오변환 0).
                 if (self.opts.unicode_brace) {
                     const negative = (n.data[0] & 1) != 0;
-                    if (negative or self.opts.ignore_case or self.classHasAstral(n)) {
+                    // #4211: i-modifier 영역 안 class 는 영역별 유효 i 를 fold 확장에
+                    // 반영할 수 없다 — u 보존(부분 커버리지, 틀린 출력 0, #3509 동형).
+                    if (self.mod_i_depth > 0) {
+                        self.astral_u_incomplete = true;
+                    } else if (negative or self.opts.ignore_case or self.classHasAstral(n)) {
                         var set = cps.CodePointSet{};
                         defer set.deinit(self.b.a);
                         if (try self.collectClassSet(n, &set)) {
@@ -429,6 +441,18 @@ const T = struct {
                 return self.b.add(.{ .tag = .capturing_group, .span = n.span, .data = .{ name0, name1, @intFromEnum(body) } });
             },
             .ignore_group => {
+                // modifier 비트: bit0=i, bit1=m, bit2=s (ast.zig ignore_group).
+                const s_off = (n.data[1] & 0b100) != 0;
+                const i_mod = ((n.data[0] | n.data[1]) & 0b001) != 0;
+                // in_class 와 동일한 save/restore 관용구 — 에러 경로에서도 오염 없음.
+                const saved_s = self.mod_s_off_depth;
+                const saved_i = self.mod_i_depth;
+                if (s_off) self.mod_s_off_depth += 1;
+                if (i_mod) self.mod_i_depth += 1;
+                defer {
+                    self.mod_s_off_depth = saved_s;
+                    self.mod_i_depth = saved_i;
+                }
                 const body = try self.node(@enumFromInt(n.data[2]));
                 return self.b.add(.{ .tag = .ignore_group, .span = n.span, .data = .{ n.data[0], n.data[1], @intFromEnum(body) } });
             },
