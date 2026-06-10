@@ -346,8 +346,35 @@ fn makeConstEnumLiteralNode(self: *Transformer, value: ConstEnumValue, _: Span) 
             defer buf.deinit(self.allocator);
             try buf.ensureTotalCapacity(self.allocator, raw.len + 2);
             try buf.append(self.allocator, '"');
-            try buf.appendSlice(self.allocator, raw);
+            // #4228: raw body 는 escape 보존 슬라이스 (출처 quote 는 '/" 혼합 가능
+            // — concat 포함). escape pair 는 원자 보존하고 unescaped `"` 만 추가
+            // escape — verbatim 재인용은 `'say "hi"'` 류에서 전 타겟 SyntaxError.
+            var i: usize = 0;
+            while (i < raw.len) : (i += 1) {
+                const ch = raw[i];
+                if (ch == '\\' and i + 1 < raw.len) {
+                    try buf.append(self.allocator, '\\');
+                    try buf.append(self.allocator, raw[i + 1]);
+                    i += 1;
+                } else if (ch == '"') {
+                    try buf.appendSlice(self.allocator, "\\\"");
+                } else {
+                    try buf.append(self.allocator, ch);
+                }
+            }
             try buf.append(self.allocator, '"');
+            // #4214 동형: 합성 노드는 visit 우회라 \u{...} brace escape 를 직접
+            // 다운레벨 (es5 등 unicode_brace 미지원 타겟).
+            if (self.options.unsupported.unicode_brace_escape) {
+                const unicode_escape_lower = @import("../unicode_escape_lower.zig");
+                if (try unicode_escape_lower.lowerContent(self.allocator, buf.items[1 .. buf.items.len - 1])) |lowered| {
+                    defer self.allocator.free(lowered);
+                    buf.clearRetainingCapacity();
+                    try buf.append(self.allocator, '"');
+                    try buf.appendSlice(self.allocator, lowered);
+                    try buf.append(self.allocator, '"');
+                }
+            }
             const str_span = try self.ast.addString(buf.items);
             return self.ast.addNode(.{
                 .tag = .string_literal,
