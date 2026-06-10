@@ -738,6 +738,78 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             if (result.named_groups) |ng| {
                 self.runtime_helpers.wrap_regex = true;
 
+                // 그룹 이름이 문자 그대로 __proto__ 면 객체 리터럴 키는 (quoted 포함)
+                // B.3.1 proto setter 라 own property 가 안 생긴다 (#4204). es2015+ 는
+                // computed key 로 회피하지만 computed key 자체가 ES2015 문법이라
+                // es5 (object_extensions 미지원) 는 JSON.parse('{...}') 폴백 — B.3.1
+                // 은 JSON.parse 평가를 면제하므로 모든 키가 own property 로 생긴다.
+                // (canonical 이름은 quote/backslash/개행 불포함 → escape 불요)
+                var has_proto = false;
+                for (ng) |entry| {
+                    if (group_name.eqlCanonical(entry.name, "__proto__")) {
+                        has_proto = true;
+                        break;
+                    }
+                }
+                if (has_proto and self.options.unsupported.object_extensions) {
+                    var json: std.ArrayList(u8) = .empty;
+                    defer json.deinit(self.allocator);
+                    try json.appendSlice(self.allocator, "'{");
+                    var first = true;
+                    for (ng, 0..) |entry, ei| {
+                        var seen_before = false;
+                        for (ng[0..ei]) |prev| {
+                            if (group_name.eqlCanonical(prev.name, entry.name)) {
+                                seen_before = true;
+                                break;
+                            }
+                        }
+                        if (seen_before) continue;
+                        if (!first) try json.append(self.allocator, ',');
+                        first = false;
+                        try json.append(self.allocator, '"');
+                        try group_name.appendCanonical(self.allocator, &json, entry.name);
+                        try json.appendSlice(self.allocator, "\":");
+                        var count: u32 = 0;
+                        for (ng[ei..]) |later| {
+                            if (group_name.eqlCanonical(later.name, entry.name)) count += 1;
+                        }
+                        if (count > 1) try json.append(self.allocator, '[');
+                        var first_idx = true;
+                        for (ng[ei..]) |later| {
+                            if (group_name.eqlCanonical(later.name, entry.name)) {
+                                if (!first_idx) try json.append(self.allocator, ',');
+                                first_idx = false;
+                                try json.print(self.allocator, "{d}", .{later.index});
+                            }
+                        }
+                        if (count > 1) try json.append(self.allocator, ']');
+                    }
+                    try json.appendSlice(self.allocator, "}'");
+                    const json_span = try self.ast.addString(json.items);
+                    const json_node = try self.ast.addNode(.{
+                        .tag = .string_literal,
+                        .span = json_span,
+                        .data = .{ .string_ref = json_span },
+                    });
+                    const json_ident_span = try self.ast.addString("JSON");
+                    const json_ident = try self.ast.addNode(.{
+                        .tag = .identifier_reference,
+                        .span = json_ident_span,
+                        .data = .{ .string_ref = json_ident_span },
+                    });
+                    const parse_span = try self.ast.addString("parse");
+                    const parse_ident = try self.ast.addNode(.{
+                        .tag = .identifier_reference,
+                        .span = parse_span,
+                        .data = .{ .string_ref = parse_span },
+                    });
+                    const json_parse = try es_helpers.makeStaticMember(self, json_ident, parse_ident, node.span);
+                    const map_call = try es_helpers.makeCallExpr(self, json_parse, &.{json_node}, node.span);
+                    const wrap_ref_json = try es_helpers.makeRuntimeHelperRef(self, "__wrapRegExp");
+                    break :blk try es_helpers.makeCallExpr(self, wrap_ref_json, &.{ new_regex, map_call }, node.span);
+                }
+
                 // {name1: 1, name2: 2, ...} object literal 합성. property key 는 quoted
                 // string literal (`"name"`) — reserved word/하이픈 등 고려 않게 일관 처리.
                 // 키는 canonical UTF-8 디코드라 ArrayList 합성 (#4201).
@@ -772,11 +844,28 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                     try group_name.appendCanonical(self.allocator, &quoted, entry.name);
                     try quoted.append(self.allocator, '"');
                     const key_span = try self.ast.addString(quoted.items);
-                    const key_node = try self.ast.addNode(.{
+                    const str_key = try self.ast.addNode(.{
                         .tag = .string_literal,
                         .span = key_span,
                         .data = .{ .string_ref = key_span },
                     });
+                    // 그룹 이름이 문자 그대로 __proto__ 면 (합법 ES 이름) 객체 리터럴
+                    // 키 `"__proto__"` 는 B.3.1 proto setter 로 동작 — own property 가
+                    // 안 생기고 (array 값이면 map 의 prototype 오염) groups 전체 무효.
+                    // computed key `["__proto__"]` 는 항상 own property 정의 (#4204).
+                    // minify 는 computed key 를 변형 대상에서 제외하므로 보존됨.
+                    // 단 computed key 자체가 ES2015 문법 — es5 등 object_extensions
+                    // 미지원 타겟에선 quoted key 폴백 (합성 노드는 visit 을 안 거쳐
+                    // es2015_computed lowering 미적용 — #4214 와 같은 클래스).
+                    const key_node = if (!self.options.unsupported.object_extensions and
+                        std.mem.eql(u8, quoted.items[1 .. quoted.items.len - 1], "__proto__"))
+                        try self.ast.addNode(.{
+                            .tag = .computed_property_key,
+                            .span = node.span,
+                            .data = .{ .unary = .{ .operand = str_key, .flags = 0 } },
+                        })
+                    else
+                        str_key;
                     dup_vals.clearRetainingCapacity();
                     for (ng[ei..]) |later| {
                         if (group_name.eqlCanonical(later.name, entry.name)) {

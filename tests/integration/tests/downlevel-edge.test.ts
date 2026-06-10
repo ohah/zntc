@@ -1502,6 +1502,51 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       expect(result.runOutput).toBe('2024\n<2025>\naba');
     });
 
+    test('group 이름 __proto__ — computed key 로 emit, proto setter 회피 (#4204)', async () => {
+      // 회귀: 객체 리터럴 키 "__proto__" 는 B.3.1 proto setter — own property 가
+      // 안 생기고 array 값이면 map prototype 오염 → groups 전체 무효.
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            String.raw`const re = /(?<__proto__>\d+)-a|(?<__proto__>\d+)-b/;`,
+            String.raw`console.log('12-a'.match(re)?.groups?.__proto__);`,
+            String.raw`console.log('34-b'.match(re)?.groups?.__proto__);`,
+            String.raw`console.log(Object.keys('12-a'.match(re)?.groups ?? {}).length);`,
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('12\n34\n1');
+    });
+
+    test('__proto__ 그룹명 — es5(JSON.parse 폴백) + minify 보존 (#4204)', async () => {
+      // es5 는 computed key 가 ES2015 문법이라 JSON.parse('{...}') 폴백 (B.3.1 면제).
+      // minify 변형은 computed key 폴딩 회귀 가드.
+      for (const args of [['--target=es5'], ['--target=es2017', '--minify']]) {
+        const result = await bundleAndRun(
+          {
+            'index.ts': [
+              // NOTE: ?\./?? 미사용 — --bundle --minify 의 temp 선언 누락(#4218,
+              // 본 fix 와 무관한 pre-existing)에 안 걸리게 plain 접근으로 검증.
+              String.raw`const re = /(?<__proto__>\d+)-a|(?<__proto__>\d+)-b/;`,
+              String.raw`const m = '12-a'.match(re);`,
+              String.raw`const g = m && m.groups;`,
+              String.raw`console.log(g && g.__proto__);`,
+              String.raw`console.log(g ? Object.keys(g).length : -1);`,
+            ].join('\n'),
+          },
+          'index.ts',
+          args,
+        );
+        await result.cleanup();
+        expect(result.exitCode).toBe(0);
+        expect(result.runOutput).toBe('12\n1');
+      }
+    });
+
     test('named backreference \\k<name>', async () => {
       const result = await bundleAndRun(
         {
