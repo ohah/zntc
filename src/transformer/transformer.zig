@@ -106,6 +106,10 @@ pub const Transformer = struct {
     /// 비어 있으면 unused import 제거 비활성.
     symbols: []const Symbol = &.{},
 
+    /// #4220: 합성 temp(_a, _b2 …)와 충돌하는 사용자 심볼 이름 집합 (lazy).
+    /// 키는 source 슬라이스 (ast/source 수명 — transform 동안 안정).
+    temp_collision_set: ?std.StringHashMapUnmanaged(void) = null,
+
     /// #1791 per-reference 기록 (`semantic/analyzer::SemanticAnalyzer.references`).
     /// import binding elision 판정은 `Symbol.reference_count` 대신 여기서 symbol 별
     /// Reference 를 돌며 **value-use 가 하나라도 있는지** 로 판단한다. 비어있으면

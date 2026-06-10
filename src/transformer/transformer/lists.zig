@@ -354,6 +354,11 @@ pub fn hoistTempVarsSkippingSpans(self: *Transformer, body_idx: NodeIndex, saved
         const name = es_helpers.tempVarName(i, &buf);
         if (tempNameInSpans(self, name, skip_spans)) continue;
         if (has_block and bodyHasTopLevelVarBinding(self, body_node, name)) continue;
+        // #4220: makeTempVarSpan 이 skip 한 이름(사용자/private 충돌)을 여기서
+        // 재생성-선언하면 함수 스코프 `var _a` 가 outer 사용자 `_a` 를 shadow
+        // — make-시점과 동일 predicate 로 일관 skip (집합 불변이라 결정 일치).
+        if (es_helpers.collidesWithPrivateField(self, name)) continue;
+        if (try es_helpers.collidesWithUserSymbol(self, name)) continue;
         const name_span = try self.ast.addString(name);
         const binding = try self.ast.addNode(.{
             .tag = .binding_identifier,
