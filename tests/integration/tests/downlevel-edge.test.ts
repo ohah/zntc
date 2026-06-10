@@ -3185,6 +3185,23 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       expect(result.bundleOutput).not.toContain('\\u{');
     });
 
+    test('멤버 lookup cooked 비교 — E["\\u0041"] 인라인 (#4231)', async () => {
+      // 회귀: raw escape 표기 비교라 인라인 실패 + 선언 삭제 → ReferenceError.
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            String.raw`const enum E { A = 1, 'a b' = 2 }`,
+            String.raw`console.log(E['\u0041'], E.A, E['a b'], E['a\u0020b']);`,
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=esnext'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('1 1 2 2');
+    });
+
     test('quote escape 는 타겟 무관 (esnext — brace 보존)', async () => {
       const result = await bundleAndRun(
         {
