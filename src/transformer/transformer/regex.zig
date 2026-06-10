@@ -6,6 +6,7 @@ const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const regex_lower = @import("../regex_lower.zig");
+const unicode_escape_lower = @import("../unicode_escape_lower.zig");
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
@@ -41,8 +42,18 @@ pub fn tryRewriteReplaceNamedRefs(self: *Transformer, callee_idx: NodeIndex, arg
     const new_content = (try regex_lower.rewriteReplacementNamedRefs(self.allocator, replacement.content, mapping)) orelse return null;
     defer self.allocator.free(new_content);
 
+    // #4214: 합성 string_literal 은 visit 을 다시 거치지 않아 리터럴 레벨
+    // lowering 이 누락된다 — node_dispatch 의 string_literal 분기와 동일하게
+    // \u{...} brace escape 를 직접 다운레벨 (es5 등 unicode_brace 미지원 타겟).
+    const lowered: ?[]u8 = if (self.options.unsupported.unicode_brace_escape)
+        try unicode_escape_lower.lowerContent(self.allocator, new_content)
+    else
+        null;
+    defer if (lowered) |l| self.allocator.free(l);
+    const final_content: []const u8 = lowered orelse new_content;
+
     const quote: u8 = if (replacement.is_template) '"' else replacement.quote;
-    const new_raw = try std.fmt.allocPrint(self.allocator, "{c}{s}{c}", .{ quote, new_content, quote });
+    const new_raw = try std.fmt.allocPrint(self.allocator, "{c}{s}{c}", .{ quote, final_content, quote });
     defer self.allocator.free(new_raw);
     const new_span = try self.ast.addString(new_raw);
     const new_str_node = try self.ast.addNode(.{
