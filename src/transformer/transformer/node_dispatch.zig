@@ -27,6 +27,7 @@ const es2015_destructuring = @import("../es2015_destructuring.zig");
 const es2015_class = @import("../es2015_class.zig");
 const es2015_generator = @import("../es2015_generator.zig");
 const regex_lower = @import("../regex_lower.zig");
+const group_name = @import("../../regexp/group_name.zig");
 const unicode_escape_lower = @import("../unicode_escape_lower.zig");
 const es2022_tla = @import("../es2022_tla.zig");
 const jsx_lowering_mod = @import("../jsx_lowering.zig");
@@ -753,20 +754,24 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                     // 값을 이미 지원 (babel 동형).
                     var seen_before = false;
                     for (ng[0..ei]) |prev| {
-                        if (std.mem.eql(u8, prev.name, entry.name)) {
+                        // #4201: 이름 정체성 = escape 디코드된 코드포인트 시퀀스
+                        // ((?<y>) ≡ (?<y>)). raw byte 비교는 escape 표기 혼용 시
+                        // dedup 을 놓쳐 중복 JS 키(last-win) miscompile 재발.
+                        if (group_name.eqlCanonical(prev.name, entry.name)) {
                             seen_before = true;
                             break;
                         }
                     }
                     if (seen_before) continue;
-                    var stack_buf: [256]u8 = undefined;
-                    const need_heap = entry.name.len + 2 > stack_buf.len;
-                    const quoted = if (need_heap)
-                        try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{entry.name})
-                    else
-                        std.fmt.bufPrint(&stack_buf, "\"{s}\"", .{entry.name}) catch unreachable;
-                    defer if (need_heap) self.allocator.free(quoted);
-                    const key_span = try self.ast.addString(quoted);
+                    // 키는 canonical UTF-8 로 emit — escape 표기가 키에 남으면 JS 쪽
+                    // 디코드 결과가 같은 키로 충돌할 수 있다. escape 없는 이름은
+                    // byte-identical (#4201).
+                    var quoted: std.ArrayList(u8) = .empty;
+                    defer quoted.deinit(self.allocator);
+                    try quoted.append(self.allocator, '"');
+                    try group_name.appendCanonical(self.allocator, &quoted, entry.name);
+                    try quoted.append(self.allocator, '"');
+                    const key_span = try self.ast.addString(quoted.items);
                     const key_node = try self.ast.addNode(.{
                         .tag = .string_literal,
                         .span = key_span,
@@ -774,7 +779,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                     });
                     dup_vals.clearRetainingCapacity();
                     for (ng[ei..]) |later| {
-                        if (std.mem.eql(u8, later.name, entry.name)) {
+                        if (group_name.eqlCanonical(later.name, entry.name)) {
                             try dup_vals.append(self.allocator, try es_helpers.makeNumericLiteral(self, later.index));
                         }
                     }
