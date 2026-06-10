@@ -2997,6 +2997,24 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
   });
 
   describe('regex 추가 엣지', () => {
+    test('ES2025 inline modifier 그룹 (?i:) 은 capture 인덱스 비차지 (#4202)', async () => {
+      // 회귀: 텍스트 스캐너가 (?i:) 를 capturing 으로 오집계 → groups map 이
+      // {"y": 2} 로 +1 시프트 → groups.y undefined / $<y> 빈 치환.
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            console.log('ID42'.match(/(?i:id)(?<y>\\d+)/)?.groups?.y);
+            console.log('ID42'.replace(/(?i:id)(?<y>\\d+)/, '[$<y>]'));
+          `,
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('42\n[42]');
+    });
+
     test('named group + lookbehind 조합', async () => {
       const result = await bundleAndRun(
         {
