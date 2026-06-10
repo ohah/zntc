@@ -1455,6 +1455,33 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       expect(result.runOutput).toBe('axa\nbbbb\nundefined');
     });
 
+    test('named group wrapper 를 source 로 재구성(cloneRegExp 패턴) — 크래시 없이 plain regex 동작 (#4207)', async () => {
+      // 회귀: buildGroups 가 groups map 부재 시 Object.keys(undefined) TypeError.
+      // strip 된 source 로 만든 clone 의 native 동작 = named group 없는 plain regex
+      // (groups undefined, $<n> verbatim, 콜백 groups 인자 생략).
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            const re = /(?<y>\\d{4})-x/g;
+            const clone = new (re.constructor as RegExpConstructor)(re.source, re.flags);
+            console.log(clone.test('2024-x'));
+            clone.lastIndex = 0;
+            console.log(String(clone.exec('2024-x')?.groups));
+            clone.lastIndex = 0;
+            console.log('2024-x'.replace(clone, '[$<y>]'));
+            clone.lastIndex = 0;
+            console.log('2024-x'.replace(clone, function () { return 'fn:' + arguments.length; }));
+            console.log([...'2024-x'.matchAll(re)][0]?.groups?.y);
+          `,
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('true\nundefined\n[$<y>]\nfn:4\n2024');
+    });
+
     test('named backreference \\k<name>', async () => {
       const result = await bundleAndRun(
         {
