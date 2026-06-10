@@ -1484,6 +1484,13 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                 return false;
                             };
                             codepoint = codepoint * 16 + d;
+                            // #4201: in-loop cap — 9+ hex digit 에서 u32 오버플로우
+                            // (Debug 패닉 / ReleaseFast accept-invalid). group_name.zig
+                            // nextCodepoint 와 동일 가드.
+                            if (codepoint > 0x10FFFF) {
+                                self.setError("invalid unicode escape in group name");
+                                return false;
+                            }
                             self.advance();
                         }
                         if (!self.eat('}') or self.pos == hex_start + 1) {

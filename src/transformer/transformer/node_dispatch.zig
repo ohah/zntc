@@ -740,7 +740,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
 
                 // {name1: 1, name2: 2, ...} object literal 합성. property key 는 quoted
                 // string literal (`"name"`) — reserved word/하이픈 등 고려 않게 일관 처리.
-                // identifier 는 실무상 짧으므로 256 byte 스택 버퍼로 heap alloc 회피.
+                // 키는 canonical UTF-8 디코드라 ArrayList 합성 (#4201).
                 const props_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(props_top);
                 // ES2025 duplicate named group 의 value 노드 수집 버퍼.
