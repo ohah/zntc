@@ -3144,6 +3144,27 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
     });
   });
 
+  describe('replace 재작성 합성 리터럴 \\u{} 다운레벨 (#4214)', () => {
+    test('es5 — 합성 string literal 의 brace escape 가 lowering 됨', async () => {
+      // 회귀: 재작성 합성 노드가 visit 우회 → \u{...}(ES2015 문법)가 es5
+      // 산출물에 잔존해 진짜 ES5 엔진에서 SyntaxError.
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            String.raw`console.log('xA'.replace(/(?<y>A)/, '<\u{41}> $<y>'));`,
+            'console.log("xB".replace(/(?<z>B)/, `[\\u{1F600}] $<z>`));',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('x<A> A\nx[😀] B');
+      expect(result.bundleOutput).not.toContain('\\u{');
+    });
+  });
+
   describe('regex 추가 엣지', () => {
     test('ES2025 inline modifier 그룹 (?i:) 은 capture 인덱스 비차지 (#4202)', async () => {
       // 회귀: 텍스트 스캐너가 (?i:) 를 capturing 으로 오집계 → groups map 이
