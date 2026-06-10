@@ -3130,6 +3130,26 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       expect(result.runOutput).toBe('[42:foo]');
     });
 
+    test('template replacement 에 " / 개행 — 정적 재작성 bail, 런타임 경로로 정상 (#4203)', async () => {
+      // 회귀: template 본문을 " 재인용 시 escape 없이 verbatim emit → 본문에
+      // " 또는 raw 개행이 있으면 SyntaxError 산출물. bail 후엔 template 그대로
+      // 유지되어 __wrapRegExp Symbol.replace 가 런타임에 동일 의미로 처리.
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'console.log("x9".replace(/(?<y>\\d+)/, `a"b $<y>`));',
+            'console.log("x9".replace(/(?<y>\\d+)/, `l1',
+            'l2 $<y>`));',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('xa"b 9\nxl1\nl2 9');
+    });
+
     test('let 변수 regex는 추적 안 됨 (재할당 가능)', async () => {
       // let 은 재할당 가능 → 추적 비활성. ES2018+ 타겟이라 named group 그대로 유지.
       const result = await bundleAndRun(
