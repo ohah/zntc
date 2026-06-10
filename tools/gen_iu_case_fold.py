@@ -36,7 +36,18 @@ lines.append("};")
 lines.append("")
 lines.append("/// cp 의 simple case-fold 등가 codepoint 들 (ASCII fast-path 포함).")
 lines.append("/// out 에 append. 자기 자신은 호출부가 이미 보유하므로 제외.")
-lines.append("pub fn appendEquivalents(cp: u32, out: *std.ArrayList(u32), a: std.mem.Allocator) !void {")
+lines.append("pub fn hasEntry(cp: u32) bool {{
+    var lo: usize = 0;
+    var hi: usize = TABLE.len;
+    while (lo < hi) {{
+        const mid = lo + (hi - lo) / 2;
+        if (TABLE[mid].cp == cp) return true;
+        if (TABLE[mid].cp < cp) lo = mid + 1 else hi = mid;
+    }}
+    return false;
+}}
+
+pub fn appendEquivalents(cp: u32, out: *std.ArrayList(u32), a: std.mem.Allocator) !void {")
 lines.append("    // ASCII swap 은 추가(early-return 아님) — k/K/s/S 는 테이블에도 존재")
 lines.append("    // (Kelvin U+212A, ſ U+017F). regexpu getCaseEquivalents 와 동형.")
 lines.append("    if (cp >= 'A' and cp <= 'Z') {")

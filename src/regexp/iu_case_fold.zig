@@ -751,6 +751,20 @@ const TABLE = [_]Entry{
     .{ .cp = 0x1E943, .eq = &.{0x1E921} },
 };
 
+/// cp 가 u-전용 fold 등가(테이블 등재)를 갖는가 (#4225). ASCII swap 만 있는
+/// 문자는 미등재 — /i 의 non-unicode fold 로도 커버되므로 게이트 불요.
+/// NOTE: tools/gen_iu_case_fold.py 가 함께 생성 — 손수정 금지.
+pub fn hasEntry(cp: u32) bool {
+    var lo: usize = 0;
+    var hi: usize = TABLE.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (TABLE[mid].cp == cp) return true;
+        if (TABLE[mid].cp < cp) lo = mid + 1 else hi = mid;
+    }
+    return false;
+}
+
 /// cp 의 simple case-fold 등가 codepoint 들 (ASCII fast-path 포함).
 /// out 에 append. 자기 자신은 호출부가 이미 보유하므로 제외.
 pub fn appendEquivalents(cp: u32, out: *std.ArrayList(u32), a: std.mem.Allocator) !void {

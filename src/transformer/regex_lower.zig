@@ -601,6 +601,25 @@ test "#4211: i-영역 class + 바깥 astral class — u 보존 시 전체 verbat
     try testing.expectEqualStrings("/(?i:[a-z])[\\u{1F600}-\\u{1F601}]/u", r.text.?);
 }
 
+// #4225: u-전용 fold 등가를 가진 리터럴 atom — u 보존 게이트.
+test "#4225: /k/iu 리터럴 atom — Kelvin fold 소실 방지 (u 보존, byte-exact)" {
+    const out = (try runLower("/ka/iu", .{ .unicode_brace_escape = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/ka/iu", out);
+}
+
+test "#4225: astral fold atom (\\u{10400} Deseret) — fast-path 도 u 보존" {
+    const out = (try runLower("/\\u{10400}b/iu", .{ .unicode_brace_escape = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/\\u{10400}b/iu", out);
+}
+
+test "#4225: fold 무관 atom 은 기존 u-strip 유지" {
+    const out = (try runLower("/x\\u{1F600}/iu", .{ .unicode_brace_escape = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/x\\uD83D\\uDE00/i", out);
+}
+
 // #2472 회귀 가드: 32개 stack-cap 시 33번째부터 std.debug.assert 가 ReleaseFast 에서
 // 비활성화되어 OOB 쓰기 (UB) 가 발생했음. dynamic ArrayList 로 전환 후 50개도 정상 동작.
 test "#2472 regression: 50 named groups + last backref — no truncation" {
