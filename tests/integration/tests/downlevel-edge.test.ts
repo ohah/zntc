@@ -3219,6 +3219,26 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
     });
   });
 
+  describe('identifier \\u{} escape 합성 키 (#4229)', () => {
+    test('es5 class accessor 키 + super prop — brace lowering/canonical', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            String.raw`class C { get \u{61}b() { return 7; } }`,
+            String.raw`class D extends C { m() { return super.\u{61}b; } }`,
+            'console.log(new D().m());',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('7');
+      expect(result.bundleOutput).not.toContain('\\u{');
+    });
+  });
+
   describe('regex 추가 엣지', () => {
     test('ES2025 inline modifier 그룹 (?i:) 은 capture 인덱스 비차지 (#4202)', async () => {
       // 회귀: 텍스트 스캐너가 (?i:) 를 capturing 으로 오집계 → groups map 이

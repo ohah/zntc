@@ -136,7 +136,27 @@ pub fn SuperProps(comptime Transformer: type) type {
 
             // Parent.prototype.method 또는 static Parent.method
             const super_base = try buildSuperBaseRef(self, span);
-            const new_method_prop = try self.visitNode(method_prop_idx);
+            var new_method_prop = try self.visitNode(method_prop_idx);
+            // #4229: identifier escape (\u{6d} 등) 는 합성 member 에 verbatim
+            // 잔존하면 es5 산출물에 ES2015 문법 — canonical(디코드) identifier 로.
+            {
+                const mp = self.ast.getNode(new_method_prop);
+                if (mp.tag == .identifier_reference) {
+                    const raw = self.ast.getText(mp.data.string_ref);
+                    if (std.mem.indexOfScalar(u8, raw, '\\') != null) {
+                        const group_name = @import("../../regexp/group_name.zig");
+                        var decoded: std.ArrayList(u8) = .empty;
+                        defer decoded.deinit(self.allocator);
+                        try group_name.appendCanonical(self.allocator, &decoded, raw);
+                        const dec_span = try self.ast.addString(decoded.items);
+                        new_method_prop = try self.ast.addNode(.{
+                            .tag = .identifier_reference,
+                            .span = dec_span,
+                            .data = .{ .string_ref = dec_span },
+                        });
+                    }
+                }
+            }
             const method_member = try es_helpers.makeStaticMember(self, super_base, new_method_prop, span);
 
             // Parent.prototype.method.call
@@ -218,11 +238,22 @@ pub fn SuperProps(comptime Transformer: type) type {
 
         fn makeStaticSuperPropArg(self: *Transformer, prop_idx: NodeIndex) Transformer.Error!NodeIndex {
             const prop = self.ast.getNode(prop_idx);
-            const text = if (prop.tag == .identifier_reference or prop.tag == .binding_identifier)
-                self.ast.getText(prop.data.string_ref)
-            else
-                self.ast.getText(prop.span);
-            return makeStringLiteralFromText(self, text);
+            if (prop.tag == .identifier_reference or prop.tag == .binding_identifier) {
+                const raw = self.ast.getText(prop.data.string_ref);
+                // #4229: identifier 의 \u{...}/\uHHHH escape 는 이름 표기일 뿐 —
+                // 그대로 escape 루프에 넣으면 `\` 이중화로 멤버명이 리터럴
+                // 백슬래시 문자열이 된다 (모던 엔진 포함 오동작). canonical
+                // (디코드된 UTF-8) 이름으로 변환 후 인용.
+                if (std.mem.indexOfScalar(u8, raw, '\\') != null) {
+                    const group_name = @import("../../regexp/group_name.zig");
+                    var decoded: std.ArrayList(u8) = .empty;
+                    defer decoded.deinit(self.allocator);
+                    try group_name.appendCanonical(self.allocator, &decoded, raw);
+                    return makeStringLiteralFromText(self, decoded.items);
+                }
+                return makeStringLiteralFromText(self, raw);
+            }
+            return makeStringLiteralFromText(self, self.ast.getText(prop.span));
         }
 
         fn makeSuperPropRefForAssignment(self: *Transformer, prop_idx: NodeIndex, is_computed: bool, span: Span) Transformer.Error!SuperPropRef {
