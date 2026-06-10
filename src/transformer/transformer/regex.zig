@@ -136,6 +136,14 @@ fn extractReplacementContent(self: *Transformer, arg_idx: NodeIndex) Error!?Repl
             const body = raw[1 .. raw.len - 1];
             // 본문 안에 ${ 가 있으면 보간 있는 케이스 — 안전하게 fallback.
             if (std.mem.indexOf(u8, body, "${") != null) return null;
+            // #4203: template 본문은 `"` 재인용 시 escape 없이 verbatim emit 되므로,
+            // `"`/개행이 있으면 깨진 string literal 이 되고, `\r`(cooked CRLF→LF 정규화)
+            // / U+2028/9(pre-ES2019 string 에서 SyntaxError) 는 의미가 달라진다.
+            // 해당 문자는 정적 재작성 포기 — 런타임 __wrapRegExp Symbol.replace 가
+            // 동일 의미로 처리 (틀린 출력 0 원칙, #3509 게이트 선례).
+            if (std.mem.indexOfAny(u8, body, "\"\r\n") != null or
+                std.mem.indexOf(u8, body, "\u{2028}") != null or
+                std.mem.indexOf(u8, body, "\u{2029}") != null) return null;
             const owned = try self.allocator.dupe(u8, body);
             return .{ .content = owned, .quote = '"', .is_template = true };
         },
