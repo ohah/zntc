@@ -3102,6 +3102,48 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
     });
   });
 
+  describe('template CRLF cooked 정규화 (#4213)', () => {
+    test('es5 template lowering — TV/TRV CR·CRLF→LF + line continuation', async () => {
+      // 회귀: buildStringLiteral/buildRawStringLiteral 이 raw CR 를 \r 로
+      // 보존 → CRLF(Windows) 소스에서 native cooked(LF 정규화)와 divergence.
+      const result = await bundleAndRun(
+        {
+          'index.ts':
+            'const s = `l1\r\nl2`;\n' +
+            'console.log(JSON.stringify(s), s.length);\n' +
+            'const r = String.raw`r1\r\nr2`;\n' +
+            'console.log(JSON.stringify(r));\n',
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('"l1\\nl2" 5\n"r1\\nr2"');
+    });
+
+    test('escape pair 원자성 — \\\\+CRLF backspace 오염 가드 + continuation (#4213)', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts':
+            'const a = `x\\\\\r\ny`;\n' + // \\ + CRLF: escaped backslash 뒤 줄바꿈
+            'console.log(JSON.stringify(a));\n' +
+            'const c = `m\rn`;\n' + // lone CR
+            'console.log(JSON.stringify(c));\n' +
+            'const lc = `a\\\r\nb`;\n' + // line continuation
+            'console.log(JSON.stringify(lc));\n' +
+            'function tag(s: TemplateStringsArray){return JSON.stringify(s[0])+JSON.stringify(s.raw[0]);}\n' +
+            'console.log(tag`t1\r\nt2`);\n',
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('"x\\\\\\ny"\n"m\\nn"\n"ab"\n"t1\\nt2""t1\\nt2"');
+    });
+  });
+
   describe('regex 추가 엣지', () => {
     test('ES2025 inline modifier 그룹 (?i:) 은 capture 인덱스 비차지 (#4202)', async () => {
       // 회귀: 텍스트 스캐너가 (?i:) 를 capturing 으로 오집계 → groups map 이
