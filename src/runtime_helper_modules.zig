@@ -339,6 +339,8 @@ pub fn isRegisteredHelperBaseName(base_name: []const u8) bool {
 }
 
 /// map 에 들어있는 등록 helper base name 을 제거한다.
+/// NOTE(#4221): unresolved_references 의 키는 analyzer 소유 dupe — remove 는
+/// 키를 해제하지 않는다 (현 호출처는 parse_arena 라 arena 가 일괄 회수).
 pub fn removeRegisteredHelperBaseNames(map: *std.StringHashMapUnmanaged(void)) void {
     for (MODULES) |m| {
         for (m.helpers) |h| {

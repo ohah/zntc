@@ -254,6 +254,9 @@ pub const SemanticAnalyzer = struct {
         for (self.scope_maps.items) |*m| m.deinit(self.allocator);
         self.scope_maps.deinit(self.allocator);
         self.exported_names.deinit(self.allocator);
+        // #4221: 키는 전부 dupe 사본 (소유) — 함께 해제.
+        var unres_it = self.unresolved_references.keyIterator();
+        while (unres_it.next()) |k| self.allocator.free(k.*);
         self.unresolved_references.deinit(self.allocator);
         self.labels.deinit(self.allocator);
         // resolvePrivateName에서 할당된 문자열 해제
@@ -961,7 +964,15 @@ pub const SemanticAnalyzer = struct {
 
         // 스코프 체인을 전부 올라갔는데 선언을 찾지 못함 → 미해결 참조 (글로벌).
         // 번들러 linker가 이 이름들을 예약하여 scope hoisting 시 shadowing을 방지.
-        self.unresolved_references.put(self.allocator, name, {}) catch {};
+        // #4221: 이름이 string_table 슬라이스(합성 노드)일 수 있다 — emitter 소비
+        // 시점까지 string_table 이 realloc 되면 dangling (#3100 클래스). declare
+        // 쪽(getTextStable)과 대칭으로 stable 사본 키 사용. 이미 등록된 키면
+        // 사본을 만들지 않는다.
+        if (self.unresolved_references.contains(name)) return;
+        const stable_name = self.allocator.dupe(u8, name) catch return;
+        self.unresolved_references.put(self.allocator, stable_name, {}) catch {
+            self.allocator.free(stable_name);
+        };
     }
 
     /// 노드가 식별자 참조이면 resolveIdentifier를 호출하고 true를 반환한다.
