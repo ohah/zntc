@@ -27,6 +27,7 @@ pub const transform = @import("transform.zig");
 pub const codepoint_set = @import("codepoint_set.zig");
 pub const iu_case_fold = @import("iu_case_fold.zig");
 pub const unicode_property = @import("unicode_property.zig");
+pub const group_name = @import("group_name.zig");
 
 /// 정규식 리터럴을 검증한다.
 /// pattern: `/` 사이의 패턴 텍스트 (예: "\\d{4}")
@@ -98,6 +99,7 @@ test {
     _ = unicode_property;
 
     // test files
+    _ = @import("group_name.zig");
     _ = @import("parser_test.zig");
     _ = @import("unicode_property_test.zig");
     _ = @import("flags_test.zig");

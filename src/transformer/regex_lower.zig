@@ -16,6 +16,7 @@
 const std = @import("std");
 const compat = @import("compat.zig");
 const regexp = @import("../regexp/mod.zig");
+const group_name = @import("../regexp/group_name.zig");
 
 pub const Options = struct {
     unsupported: compat.UnsupportedFeatures,
@@ -200,7 +201,7 @@ pub fn rewriteReplacementNamedRefs(
                 // 빈 문자열 — babel __wrapRegExp 의 `group.join("$")` 동형 (#4198).
                 var found = false;
                 for (mapping) |m| {
-                    if (std.mem.eql(u8, m.name, name)) {
+                    if (group_name.eqlCanonical(m.name, name)) {
                         var buf: [16]u8 = undefined;
                         const s = std.fmt.bufPrint(&buf, "${d}", .{m.index}) catch unreachable;
                         try out.appendSlice(allocator, s);
@@ -443,6 +444,23 @@ test "#4198: duplicate named group mapping 은 occurrence 별 전부 보존" {
     try testing.expectEqual(@as(u32, 1), ng[0].index);
     try testing.expectEqualStrings("y", ng[1].name);
     try testing.expectEqual(@as(u32, 2), ng[1].index);
+}
+
+// #4201: 그룹 이름 정체성 = escape 디코드된 코드포인트 시퀀스.
+test "#4201: \\k<\\u0079> 가 (?<y>) 를 canonical 매칭" {
+    const out = (try runLower("/(?<y>a)b\\k<\\u0079>/", .{ .regex_named_groups = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/(a)b\\1/", out);
+}
+
+test "#4201: escape-aliased duplicate — $<y> 가 양쪽 occurrence 모두 매칭" {
+    const mapping = [_]NamedGroupMapping{
+        .{ .name = "y", .index = 1 },
+        .{ .name = "\\u0079", .index = 2 },
+    };
+    const out = (try rewriteReplacementNamedRefs(testing.allocator, "[$<y>]", &mapping)).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("[$1$2]", out);
 }
 
 // #4202: ES2025 inline modifier 그룹 (?i:...) 은 non-capturing — capture 인덱스를

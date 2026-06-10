@@ -1482,6 +1482,26 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       expect(result.runOutput).toBe('true\nundefined\n[$<y>]\nfn:4\n2024');
     });
 
+    test('escape 표기 그룹 이름 — canonical 동치 (dedup/replace/\\k) (#4201)', async () => {
+      // 회귀: 이름 비교가 raw byte 라 (?<y>) 와 (?<\u0079>) 가 다른 이름 취급
+      // → 중복 JS 키(last-win) miscompile 재발 + $<y> 재작성 누락 + \k 매칭 실패.
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            String.raw`const re = /(?<y>\d{4})-a|(?<\u0079>\d{4})-b/;`,
+            String.raw`console.log('2024-a'.match(re)?.groups?.y);`,
+            String.raw`console.log('2025-b'.replace(re, '<$<y>>'));`,
+            String.raw`console.log('aba'.match(/(?<y>a)b\k<\u0079>/)?.[0]);`,
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('2024\n<2025>\naba');
+    });
+
     test('named backreference \\k<name>', async () => {
       const result = await bundleAndRun(
         {

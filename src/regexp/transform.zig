@@ -12,6 +12,7 @@ const std = @import("std");
 const ast = @import("ast.zig");
 const cps = @import("codepoint_set.zig");
 const iu_fold = @import("iu_case_fold.zig");
+const group_name = @import("group_name.zig");
 
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
@@ -339,7 +340,7 @@ const T = struct {
                     var count: u32 = 0;
                     var first: u32 = 0;
                     for (self.names) |g| {
-                        if (std.mem.eql(u8, g.name, name)) {
+                        if (group_name.eqlCanonical(g.name, name)) {
                             if (count == 0) first = g.index;
                             count += 1;
                         }
@@ -356,7 +357,7 @@ const T = struct {
                         var refs: std.ArrayList(u32) = .empty;
                         defer refs.deinit(self.b.a);
                         for (self.names) |g| {
-                            if (std.mem.eql(u8, g.name, name)) {
+                            if (group_name.eqlCanonical(g.name, name)) {
                                 const r = try self.b.add(.{ .tag = .indexed_reference, .span = n.span, .data = .{ g.index, 0, 0 } });
                                 try refs.append(self.b.a, @intFromEnum(r));
                             }

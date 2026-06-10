@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const char_helpers = @import("char_helpers.zig");
+const group_name = @import("group_name.zig");
 const flags_mod = @import("flags.zig");
 const Flags = flags_mod.Flags;
 
@@ -342,7 +343,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 for (self.named_refs.items()) |ref_name| {
                     var found = false;
                     for (self.named_groups.items()) |entry| {
-                        if (std.mem.eql(u8, ref_name, entry.name)) {
+                        // #4201: 이름 정체성은 escape 디코드된 코드포인트 시퀀스
+                        if (group_name.eqlCanonical(ref_name, entry.name)) {
                             found = true;
                             break;
                         }
@@ -1297,7 +1299,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         const cur_depth = @min(self.alt_depth, 7);
                         const cur_path = self.alt_indices[0 .. cur_depth + 1];
                         for (self.named_groups.items()) |existing| {
-                            if (std.mem.eql(u8, existing.name, name)) {
+                            // #4201: 이름 정체성은 escape 디코드된 코드포인트 시퀀스
+                            if (group_name.eqlCanonical(existing.name, name)) {
                                 const ex_path = existing.alt_path[0 .. existing.alt_depth + 1];
                                 if (!canParticipate(ex_path, cur_path)) {
                                     self.setError("duplicate named capturing group in same alternative");
