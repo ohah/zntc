@@ -151,7 +151,12 @@ pub fn extractNamedGroupMap(allocator: std.mem.Allocator, pattern: []const u8) !
         }
         if (i + 2 < pattern.len and pattern[i + 1] == '?') {
             const tag = pattern[i + 2];
-            if (tag == ':' or tag == '=' or tag == '!') {
+            // ES2025 inline modifier 그룹 `(?ims-ims:...)` 도 non-capturing (#4202).
+            // 빠뜨리면 AST 카운터 (regexp/transform.zig 의 ignore_group skip) 와
+            // 인덱스가 어긋나 groups map / `$<name>` 재작성이 +1 시프트된다.
+            if (tag == ':' or tag == '=' or tag == '!' or
+                tag == 'i' or tag == 'm' or tag == 's' or tag == '-')
+            {
                 i += 1;
                 continue;
             }
@@ -438,6 +443,30 @@ test "#4198: duplicate named group mapping 은 occurrence 별 전부 보존" {
     try testing.expectEqual(@as(u32, 1), ng[0].index);
     try testing.expectEqualStrings("y", ng[1].name);
     try testing.expectEqual(@as(u32, 2), ng[1].index);
+}
+
+// #4202: ES2025 inline modifier 그룹 (?i:...) 은 non-capturing — capture 인덱스를
+// 차지하면 안 된다 (AST 카운터와 어긋나 groups map 이 +1 시프트되던 버그).
+test "#4202: (?i:...) modifier 그룹은 capture 인덱스 비차지" {
+    const r = try lower(testing.allocator, "/(?i:id)(?<y>\\d+)/", .{ .unsupported = .{ .regex_named_groups = true } });
+    defer if (r.text) |t| testing.allocator.free(t);
+    defer if (r.named_groups) |ng| testing.allocator.free(ng);
+    try testing.expectEqualStrings("/(?i:id)(\\d+)/", r.text.?);
+    const ng = r.named_groups.?;
+    try testing.expectEqual(@as(usize, 1), ng.len);
+    try testing.expectEqualStrings("y", ng[0].name);
+    try testing.expectEqual(@as(u32, 1), ng[0].index);
+}
+
+test "#4202: (?im-s:...) / (?-i:...) 변형도 비차지 + \\k 인덱스와 일치" {
+    const r = try lower(testing.allocator, "/(?im-s:a)(?-i:b)(?<y>c)\\k<y>/", .{ .unsupported = .{ .regex_named_groups = true } });
+    defer if (r.text) |t| testing.allocator.free(t);
+    defer if (r.named_groups) |ng| testing.allocator.free(ng);
+    // \k<y> 의 AST 경로와 groups map 의 텍스트 스캐너가 같은 인덱스(1)를 내야 한다.
+    try testing.expectEqualStrings("/(?im-s:a)(?-i:b)(c)\\1/", r.text.?);
+    const ng = r.named_groups.?;
+    try testing.expectEqual(@as(usize, 1), ng.len);
+    try testing.expectEqual(@as(u32, 1), ng[0].index);
 }
 
 test "#4198: replacement $<dup> → 모든 인덱스 이어붙임 ($1$2)" {
