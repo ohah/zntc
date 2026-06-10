@@ -151,8 +151,10 @@ pub fn buildRawStringLiteral(self: anytype, text: []const u8) !NodeIndex {
             buf.appendAssumeCapacity('\\');
             buf.appendAssumeCapacity('n');
         } else if (c == '\r') {
+            // ECMA-262 TRV: <CR><LF> / 단독 <CR> 은 <LF> 로 정규화 (#4213).
             buf.appendAssumeCapacity('\\');
-            buf.appendAssumeCapacity('r');
+            buf.appendAssumeCapacity('n');
+            if (j + 1 < text.len and text[j + 1] == '\n') j += 1;
         } else {
             buf.appendAssumeCapacity(c);
         }
@@ -276,15 +278,39 @@ pub fn buildStringLiteral(self: anytype, text: []const u8) !NodeIndex {
         if (c == '"') {
             buf.appendAssumeCapacity('\\');
             buf.appendAssumeCapacity('"');
-        } else if (c == '\\' and j + 1 < text.len and text[j + 1] == '`') {
-            buf.appendAssumeCapacity('`');
-            j += 1;
+        } else if (c == '\\' and j + 1 < text.len) {
+            // escape pair 는 원자 소비 (#4213 리뷰): 짝을 안 맞추면 `\\`+CR 의
+            // 두 번째 백슬래시가 LineContinuation 으로 오인돼 "\b"(backspace)
+            // 류 오염이 생긴다.
+            const n1 = text[j + 1];
+            if (n1 == '`') {
+                buf.appendAssumeCapacity('`');
+                j += 1;
+            } else if (n1 == '\n') {
+                // LineContinuation: TV 기여 없음 — 통째로 소거.
+                j += 1;
+            } else if (n1 == '\r') {
+                j += 1;
+                if (j + 1 < text.len and text[j + 1] == '\n') j += 1;
+            } else if (n1 == 0xe2 and j + 3 < text.len and
+                text[j + 2] == 0x80 and (text[j + 3] == 0xa8 or text[j + 3] == 0xa9))
+            {
+                // `\` + U+2028/9 도 LineTerminatorSequence — continuation 소거.
+                j += 3;
+            } else {
+                // 그 외 escape 는 verbatim pair 보존 ("..." 에서도 동일 cooked).
+                buf.appendAssumeCapacity('\\');
+                buf.appendAssumeCapacity(n1);
+                j += 1;
+            }
         } else if (c == '\n') {
             buf.appendAssumeCapacity('\\');
             buf.appendAssumeCapacity('n');
         } else if (c == '\r') {
+            // ECMA-262 TV: <CR><LF> / 단독 <CR> 은 <LF> 로 정규화 (#4213).
             buf.appendAssumeCapacity('\\');
-            buf.appendAssumeCapacity('r');
+            buf.appendAssumeCapacity('n');
+            if (j + 1 < text.len and text[j + 1] == '\n') j += 1;
         } else if (c == 0xe2 and j + 2 < text.len and text[j + 1] == 0x80 and (text[j + 2] == 0xa8 or text[j + 2] == 0xa9)) {
             // U+2028 (Line Separator) / U+2029 (Paragraph Separator)
             // 템플릿 리터럴에서는 유효하지만 ES5 문자열 리터럴에서는 줄바꿈으로 취급

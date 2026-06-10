@@ -2665,9 +2665,11 @@ test "ES2015: template with newline and substitution" {
 }
 
 test "ES2015: template with carriage return" {
+    // ECMA-262 TV: <CR><LF>/<CR> 은 <LF> 로 정규화 (#4213) — 이전 기대값
+    // "a\r\nb" 는 스펙 위반(native cooked 와 divergence) 박제였다.
     var r = try e2eTarget(std.testing.allocator, "var s=`a\r\nb`;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var s=\"a\\r\\nb\";", r.output);
+    try std.testing.expectEqualStrings("var s=\"a\\nb\";", r.output);
 }
 
 test "ES2015: template with U+2028 line separator" {
