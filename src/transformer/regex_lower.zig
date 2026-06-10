@@ -620,6 +620,21 @@ test "#4225: fold 무관 atom 은 기존 u-strip 유지" {
     try testing.expectEqualStrings("/x\\uD83D\\uDE00/i", out);
 }
 
+// #4237: literal non-ASCII cp 단위 노드 + astral 단일컨텍스트 u-보존 게이트.
+test "#4237: literal sharp-s dotall 재인쇄 mojibake 없음" {
+    const out = (try runLower("/\xC5\xBF.b/s", .{ .regex_dotall = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/\xC5\xBF[\\s\\S]b/", out);
+}
+
+test "#4237: astral literal + quantifier /u — u 보존 게이트" {
+    const r = try lower(testing.allocator, "/\xF0\x9F\x98\x80+x/u", .{ .unsupported = .{ .unicode_brace_escape = true } });
+    defer if (r.text) |t| testing.allocator.free(t);
+    defer if (r.named_groups) |ng| testing.allocator.free(ng);
+    try testing.expect(r.text != null);
+    try testing.expect(std.mem.endsWith(u8, r.text.?, "/u"));
+}
+
 // #2472 회귀 가드: 32개 stack-cap 시 33번째부터 std.debug.assert 가 ReleaseFast 에서
 // 비활성화되어 OOB 쓰기 (UB) 가 발생했음. dynamic ArrayList 로 전환 후 50개도 정상 동작.
 test "#2472 regression: 50 named groups + last backref — no truncation" {
