@@ -772,7 +772,16 @@ pub fn buildDefinePropertyKeyArg(self: anytype, key_idx: NodeIndex) !NodeIndex {
 /// 식별자/numeric/string literal key node 의 span 을 `"name"` 형태 string_literal 로 감쌈.
 /// heap alloc 경유로 긴 key name truncation 회피. (#1510 item4)
 pub fn buildQuotedKeyLiteral(self: anytype, key_span: Span) !NodeIndex {
-    const key_text = self.ast.getText(key_span);
+    const key_text_raw = self.ast.getText(key_span);
+    // #4229: 합성 노드는 visit 미경유라 identifier 의 \u{...} brace escape 가
+    // es5 산출물에 잔존(ES2015 문법 SyntaxError) — #4214 동형으로 직접 lowering.
+    const unicode_escape_lower = @import("unicode_escape_lower.zig");
+    const lowered: ?[]u8 = if (self.options.unsupported.unicode_brace_escape)
+        try unicode_escape_lower.lowerContent(self.allocator, key_text_raw)
+    else
+        null;
+    defer if (lowered) |l| self.allocator.free(l);
+    const key_text = lowered orelse key_text_raw;
     const quoted = try self.allocator.alloc(u8, key_text.len + 2);
     defer self.allocator.free(quoted);
     quoted[0] = '"';
