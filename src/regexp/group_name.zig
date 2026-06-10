@@ -13,6 +13,11 @@ const std = @import("std");
 
 /// raw 표기에서 다음 코드포인트를 디코드. `\uHHHH`(상위 surrogate 면 후속
 /// `\uHHHH` 와 pair 결합) / `\u{...}` / raw UTF-8 모두 처리.
+///
+/// NOTE: escape 디코드는 string_escape.decodeUnicodeHexEscape / parser.zig
+/// parseGroupNameChar 와 의도적 별도 구현 — RegExp HexTrailSurrogate 는
+/// Hex4Digits 전용이라 brace-trail 결합을 막는 가드(`s[i+2] != '{'`)가 필요하고,
+/// 셋의 overflow/empty 처리 정합은 각자의 in-loop cap 으로 유지한다.
 /// 잘못된 시퀀스면 null — 호출자는 raw-byte 동작으로 폴백한다 (이름은 이미
 /// 파서 검증을 통과한 상태라 실전에선 도달하지 않는 방어선).
 fn nextCodepoint(s: []const u8, i: *usize) ?u21 {
@@ -104,6 +109,19 @@ pub fn appendCanonical(allocator: std.mem.Allocator, out: *std.ArrayList(u8), ra
 // ─── 테스트 ───
 
 const testing = std.testing;
+
+test "eqlCanonical: 인자 순서 대칭 + prefix 불일치" {
+    try testing.expect(eqlCanonical("\\u0079", "y")); // 역순
+    try testing.expect(!eqlCanonical("ye", "\\u0079"));
+    try testing.expect(!eqlCanonical("\\u0079e", "y"));
+}
+
+test "appendCanonical: surrogate-pair escape → astral UTF-8" {
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    try appendCanonical(testing.allocator, &out, "\\uD835\\uDC66");
+    try testing.expectEqualStrings("\xF0\x9D\x91\xA6", out.items); // 𝑦 U+1D466
+}
 
 test "eqlCanonical: escape 표기 동치" {
     try testing.expect(eqlCanonical("y", "\\u0079"));
