@@ -160,7 +160,7 @@ export interface TranspileResult {
 
 // ─── ES Target → UnsupportedFeatures bitmask ───
 
-// compat.zig Feature enum 순서와 1:1 대응 (총 28 bits, src/transformer/compat.zig 참조):
+// compat.zig Feature enum 순서와 1:1 대응 (총 29 bits, src/transformer/compat.zig 참조):
 //   0-10  ES2015 (arrow, class, template_literal, destructuring, for_of, spread,
 //                  object_extensions, default_params, block_scoping, generator, new_target)
 //   11    ES2016 (exponentiation)
@@ -175,21 +175,22 @@ export interface TranspileResult {
 //   24    ES2015 (regex_sticky)
 //   25-26 ES2018 (regex_dotall, regex_named_groups)
 //   27    ES2015 (unicode_brace_escape)
+//   28    ES2025 (regex_duplicate_named_groups)
 //
 // 타겟 T 에 대해 "T 이후 도입된" 모든 feature 비트를 set 한다.
 // Feature 추가 시 compat.zig 와 함께 갱신.
 export const ES_TARGET_BITS: Record<string, number> = {
-  es5: 0x0fffffff, // bits 0-27 (모든 feature)
-  es2015: 0x06fff800, // bits 11-23, 25, 26 (ES2015/regex_sticky/unicode_brace_escape 제외)
-  es2016: 0x06fff000, // bits 12-23, 25, 26
-  es2017: 0x06ffe000, // bits 13-23, 25, 26
-  es2018: 0x00ffc000, // bits 14-23 (ES2018 features 도 제외)
-  es2019: 0x00ff8000, // bits 15-23
-  es2020: 0x00fe0000, // bits 17-23
-  es2021: 0x00fc0000, // bits 18-23
-  es2022: 0x00c00000, // bits 22-23 (hashbang + using)
-  es2023: 0x00800000, // bit 23 (using only)
-  es2024: 0x00800000, // ES2024 에 구문 변환 기능 없음
+  es5: 0x1fffffff, // bits 0-28 (모든 feature)
+  es2015: 0x16fff800, // bits 11-23, 25, 26, 28 (ES2015/regex_sticky/unicode_brace_escape 제외)
+  es2016: 0x16fff000, // bits 12-23, 25, 26, 28
+  es2017: 0x16ffe000, // bits 13-23, 25, 26, 28
+  es2018: 0x10ffc000, // bits 14-23, 28 (ES2018 features 도 제외)
+  es2019: 0x10ff8000, // bits 15-23, 28
+  es2020: 0x10fe0000, // bits 17-23, 28
+  es2021: 0x10fc0000, // bits 18-23, 28
+  es2022: 0x10c00000, // bits 22-23, 28 (hashbang + using + regex dup-named)
+  es2023: 0x10800000, // bits 23, 28
+  es2024: 0x10800000, // bits 23, 28 (ES2024 자체 구문 변환 기능 없음)
   es2025: 0x0,
   esnext: 0x0,
 };

@@ -139,6 +139,7 @@ const RUNTIME_FEATURES = new Set([
 
 // --- 구문 변환 대상 feature + 도입 연도 ---
 const SYNTAX_FEATURES: Record<string, number> = {
+  'Duplicate named capturing groups': 2025,
   // ES2015 (ES6)
   'default function parameters': 2015,
   'rest parameters': 2015,

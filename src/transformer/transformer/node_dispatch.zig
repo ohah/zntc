@@ -715,7 +715,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         },
         .regexp_literal => blk: {
             const u = self.options.unsupported;
-            if (!(u.regex_dotall or u.regex_named_groups or u.regex_sticky or u.unicode_brace_escape)) {
+            if (!u.needsRegexLowering()) {
                 break :blk self.copyNodeDirect(idx);
             }
             const raw = self.ast.getText(node.span);

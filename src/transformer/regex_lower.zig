@@ -52,7 +52,12 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
     const has_i = std.mem.indexOfScalar(u8, flags, 'i') != null;
 
     const need_dotall = has_s and opts.unsupported.regex_dotall;
-    const need_named = opts.unsupported.regex_named_groups and hasNamedGroup(pattern);
+    // #4199: duplicate named group (ES2025) 은 named group 자체를 지원하는
+    // es2018~es2024 타겟에서도 SyntaxError — 중복이 실재하면 strip 경로 전체를
+    // 활성화한다 (#4198 의 array 병합/$1$2/\k 연접이 정확성을 보장).
+    const need_named = (opts.unsupported.regex_named_groups and hasNamedGroup(pattern)) or
+        (opts.unsupported.regex_duplicate_named_groups and
+            try hasDuplicateNamedGroup(allocator, pattern));
     const need_sticky = has_y and opts.unsupported.regex_sticky;
     // `u` flag 자체는 runtime 지원 대상이 아니지만, `\u{X}` brace escape 는 `u` flag 하에서만
     // 허용된다. brace escape 를 surrogate pair 로 내리면서 flag 도 함께 strip 한다.
@@ -223,6 +228,23 @@ pub fn rewriteReplacementNamedRefs(
         return null;
     }
     return try out.toOwnedSlice(allocator);
+}
+
+/// pattern 에 canonical 동일 이름의 named group 이 2개 이상 있는지 (#4199).
+/// extractNamedGroupMap 재사용 — 호출 빈도는 "dup gate 만 미지원인 타겟 ×
+/// named group 패턴" 으로 좁다.
+fn hasDuplicateNamedGroup(allocator: std.mem.Allocator, pattern: []const u8) !bool {
+    // named group 이 2개 미만이면 dup 불가 — alloc 전 비할당 프리스캔.
+    if (std.mem.count(u8, pattern, "(?<") < 2) return false;
+    if (!hasNamedGroup(pattern)) return false;
+    const map = try extractNamedGroupMap(allocator, pattern);
+    defer allocator.free(map);
+    for (map, 0..) |entry, i| {
+        for (map[0..i]) |prev| {
+            if (group_name.eqlCanonical(prev.name, entry.name)) return true;
+        }
+    }
+    return false;
 }
 
 /// pattern에 `(?<name>...)` (lookbehind 제외) 가 있는지 스캔.
@@ -517,6 +539,28 @@ test "#4198: replacement 단일 이름은 기존과 동일 ($N)" {
     const out = (try rewriteReplacementNamedRefs(testing.allocator, "$<m>/$<y>", &mapping)).?;
     defer testing.allocator.free(out);
     try testing.expectEqualStrings("$2/$1", out);
+}
+
+// #4199: es2018~es2024 (named group 지원, dup 미지원) gate.
+test "#4199: dup gate — es2022 류 타겟에서 duplicate 만 strip" {
+    // dup 있음 → strip + mapping
+    const r = try lower(testing.allocator, "/(?<y>a)|(?<y>b)/", .{ .unsupported = .{ .regex_duplicate_named_groups = true } });
+    defer if (r.text) |t| testing.allocator.free(t);
+    defer if (r.named_groups) |ng| testing.allocator.free(ng);
+    try testing.expectEqualStrings("/(a)|(b)/", r.text.?);
+    try testing.expectEqual(@as(usize, 2), r.named_groups.?.len);
+}
+
+test "#4199: dup gate — 단일 이름은 no-op (named group 유지)" {
+    const out = try runLower("/(?<y>a)-(?<m>b)/", .{ .regex_duplicate_named_groups = true });
+    try testing.expect(out == null);
+}
+
+test "#4199: dup gate — escape-aliased dup 도 감지 (canonical)" {
+    const r = try lower(testing.allocator, "/(?<y>a)|(?<\\u0079>b)/", .{ .unsupported = .{ .regex_duplicate_named_groups = true } });
+    defer if (r.text) |t| testing.allocator.free(t);
+    defer if (r.named_groups) |ng| testing.allocator.free(ng);
+    try testing.expectEqualStrings("/(a)|(b)/", r.text.?);
 }
 
 // #2472 회귀 가드: 32개 stack-cap 시 33번째부터 std.debug.assert 가 ReleaseFast 에서

@@ -301,7 +301,12 @@ pub const TransformOptions = struct {
                 // named capture 는 wrap 변환에 helper module import 필요 — prepass 거쳐야
                 // graph 가 helper module 을 등록.
                 .regexp_literal => {
-                    if (u.regex_dotall or u.regex_named_groups or u.regex_sticky or u.unicode_brace_escape) return true;
+                    if (u.regex_dotall or u.regex_named_groups or u.regex_sticky or
+                        u.unicode_brace_escape) return true;
+                    // dup-gate 만 set 인 es2018~es2024 에선 named group 후보가 있을
+                    // 때만 prepass — 일반 regex 모듈에 graph prepass 비용 미부과 (#4199).
+                    if (u.regex_duplicate_named_groups and
+                        std.mem.indexOf(u8, ast.getText(node.span), "(?<") != null) return true;
                 },
                 else => {},
             }
