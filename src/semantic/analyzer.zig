@@ -1100,7 +1100,7 @@ pub const SemanticAnalyzer = struct {
             .null_literal => .{ .kind = .null_ },
             .numeric_literal => .{ .kind = .number, .number_text = self.ast.getText(node.span) },
             .identifier_reference => blk: {
-                const text = self.ast.getText(node.span);
+                const text = self.ast.identifierNameText(node);
                 if (std.mem.eql(u8, text, "undefined")) break :blk ConstValue{ .kind = .undefined_ };
                 break :blk ConstValue{};
             },
@@ -1141,7 +1141,8 @@ pub const SemanticAnalyzer = struct {
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .identifier_reference, .assignment_target_identifier => {
-                const name = self.ast.getSourceText(node.span);
+                // #4218: 합성 식별자는 이름이 string_ref 에만 있다 (span = sourcemap 용)
+                const name = self.ast.identifierNameText(node);
                 self.resolveIdentifier(name, idx, .{ .write = true });
             },
             .array_assignment_target, .object_assignment_target => {
@@ -1184,7 +1185,7 @@ pub const SemanticAnalyzer = struct {
         if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) return false;
         const node = self.ast.getNode(node_idx);
         if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
-            const name = self.ast.getSourceText(node.span);
+            const name = self.ast.identifierNameText(node);
             self.resolveIdentifier(name, node_idx, flags);
             return true;
         }
@@ -1231,7 +1232,7 @@ pub const SemanticAnalyzer = struct {
         const t = self.ast.getNode(ti);
         switch (t.tag) {
             .identifier_reference, .assignment_target_identifier => {
-                const flags = self.lookupBindingFlags(self.ast.getSourceText(t.span)) orelse return;
+                const flags = self.lookupBindingFlags(self.ast.identifierNameText(t)) orelse return;
                 if (flags.is_import) try self.addImportMutationError(t.span, is_delete);
             },
             .static_member_expression, .computed_member_expression, .private_field_expression => {
@@ -1239,7 +1240,7 @@ pub const SemanticAnalyzer = struct {
                 // named import 멤버(`obj.x`)는 object 가 namespace import 가 아니라 제외.
                 const obj = self.ast.getNode(self.unwrapTarget(self.ast.readExtraNode(t.data.extra, 0)));
                 if (obj.tag != .identifier_reference) return;
-                const flags = self.lookupBindingFlags(self.ast.getSourceText(obj.span)) orelse return;
+                const flags = self.lookupBindingFlags(self.ast.identifierNameText(obj)) orelse return;
                 if (flags.is_namespace_import) try self.addImportMutationError(t.span, is_delete);
             },
             // destructuring target — leaf 까지 재귀(visitAsWriteTarget 구조 대응). default 값
@@ -1504,7 +1505,7 @@ pub const SemanticAnalyzer = struct {
 
             // ---- 식별자 참조 추적 ----
             .identifier_reference, .assignment_target_identifier => {
-                const name = self.ast.getSourceText(node.span);
+                const name = self.ast.identifierNameText(node);
                 // assignment_target_identifier 는 parser 가 LHS 로 확정한 pure write 위치
                 // (for-in/of LHS 등 assignment_expression 상위 분기를 거치지 않는 target).
                 // compound/update 는 각각의 분기에서 tryResolveNodeAsRef 로 flags 를 직접 지정.
@@ -1660,7 +1661,7 @@ pub const SemanticAnalyzer = struct {
                         if (callee_ni < self.ast.nodes.items.len) {
                             const callee_node = self.ast.nodes.items[callee_ni];
                             if (callee_node.tag == .identifier_reference) {
-                                const callee_name = self.ast.getSourceText(callee_node.span);
+                                const callee_name = self.ast.identifierNameText(callee_node);
                                 if (std.mem.eql(u8, callee_name, "eval")) {
                                     self.markScopeFieldToRoot("subtree_has_direct_eval");
                                 }

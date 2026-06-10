@@ -661,7 +661,9 @@ fn parsePredicateSubject(self: *Parser) ParseError2!NodeIndex {
     return try self.ast.addNode(.{
         .tag = .identifier_reference,
         .span = id_span,
-        .data = .{ .none = 0 },
+        // #4218: identifier_reference 는 data.string_ref 가 이름 정본
+        // (ast.identifierNameText) — .none 저장은 invariant 위반.
+        .data = .{ .string_ref = id_span },
     });
 }
 
@@ -1660,7 +1662,7 @@ fn parseImportType(self: *Parser, start: u32) ParseError2!NodeIndex {
             .data = .{ .binary = .{ .left = result, .right = try self.ast.addNode(.{
                 .tag = .identifier_reference,
                 .span = member_span,
-                .data = .{ .none = 0 },
+                .data = .{ .string_ref = member_span },
             }), .flags = 0 } },
         });
     }

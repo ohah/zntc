@@ -417,9 +417,10 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         // ================================================================
 
         /// reference 의 `node.span` 은 `name_span` 사용 (binding 과 동일한 정책).
-        /// 다른 정책 (e.g. for-of 자체의 source span) 을 쓰면 post-transform
-        /// `SemanticAnalyzer.getSourceText(node.span)` 이 원본 source 영역의 다른
-        /// 텍스트를 읽어 binding 매칭 실패 → symbol_id 가 None → mangler 의
+        /// #4218 이후 analyzer 는 `ast.identifierNameText`(string_ref 정본)로
+        /// 이름을 읽으므로 span 분리도 동작은 하지만, 여기는 합성 전용 이름이라
+        /// 원본 위치 매핑 가치가 없어 단순한 동일-span 정책을 유지한다. (구 사유:
+        /// `getSourceText(node.span)` 이 원본 텍스트를 읽어 매칭 실패 → mangler 의
         /// cross-module rename 이 declaration 에만 적용되는 비대칭이 발생한다.
         fn makeRefFromSpan(self: *Transformer, name_span: Span) Transformer.Error!NodeIndex {
             return self.ast.addNode(.{

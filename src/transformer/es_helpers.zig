@@ -124,6 +124,8 @@ fn collidesWithPrivateField(self: anytype, name: []const u8) bool {
 }
 
 /// 임시 변수 identifier_reference 노드 생성.
+/// node_span(원본 위치, sourcemap 용)과 span(string_table 이름)이 다를 수 있다 —
+/// semantic 의 이름 해석은 ast.identifierNameText 가 string_ref 를 정본으로 읽는다 (#4218).
 pub fn makeTempVarRef(self: anytype, span: Span, node_span: Span) !NodeIndex {
     return self.ast.addNode(.{
         .tag = .identifier_reference,

@@ -179,7 +179,7 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
             // (`void 0.x` 가 `void (0.x)` 로 오파싱 되는 위험 회피) — 그 외는 paren 불필요.
             // global binding 일 때만 치환 (shadow rebind 드물지만 보호).
             if (self.options.minify_syntax and node.tag == .identifier_reference and sym_id == null) {
-                const text = self.ast.getText(node.span);
+                const text = self.ast.identifierNameText(node);
                 if (std.mem.eql(u8, text, "undefined")) {
                     try self.addSourceMapping(node.span);
                     try self.write("void 0");

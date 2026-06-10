@@ -1542,6 +1542,22 @@ pub const Ast = struct {
         return self.getText(span);
     }
 
+    /// identifier 류 노드의 "이름" 텍스트 (#4218).
+    ///
+    /// transformer 가 합성한 식별자(es_helpers.makeTempVarRef 등)는 sourcemap
+    /// 용으로 node.span 을 원본 소스 위치로 유지하고 실제 이름은
+    /// data.string_ref(string_table) 에만 둘 수 있다. codegen 은 string_ref 를
+    /// 정본으로 출력하므로 이름 해석(semantic)도 string_ref 가 string_table
+    /// 참조면 그쪽을 읽어야 한다 — span 으로 읽으면 원본 텍스트(`o.a?.b` 등)가
+    /// 이름이 되어 미해결 참조가 되고, bundle 의 post-transform 재분석에서
+    /// temp 선언만 심볼을 얻어 tree-shake 오삭제/반쪽 rename 이 발생했다.
+    /// 파서 생성 노드는 string_ref == span 이라 동작 불변.
+    pub fn identifierNameText(self: *const Ast, node: Node) []const u8 {
+        const ref = node.data.string_ref;
+        if (ref.start & STRING_TABLE_BIT != 0) return self.getText(ref);
+        return self.getText(node.span);
+    }
+
     /// 합성 문자열을 string_table에 추가하고, 이를 가리키는 Span을 반환한다.
     /// 반환된 Span의 start에는 bit 31이 설정되어 getText()가 string_table에서 읽도록 한다.
     ///
