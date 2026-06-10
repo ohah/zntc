@@ -1570,6 +1570,24 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       expect(result.bundleOutput).not.toContain('(?<y>');
     });
 
+    test('(?-s:) 영역 dot 은 dotall 재작성 제외 (#4211)', async () => {
+      // 회귀: transform 이 modifier 비트를 무시하고 (?-s:) 안 `.` 도 [\s\S] 로
+      // 재작성 → 개행을 오매치하는 silent miscompile.
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            String.raw`const re = /(?-s:a.b)x./s;`,
+            String.raw`console.log(re.test('a\nbxq'), re.test('axbxq'), re.test('axbx\n'));`,
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('false true true');
+    });
+
     test('named backreference \\k<name>', async () => {
       const result = await bundleAndRun(
         {

@@ -87,8 +87,21 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
             .unicode_brace = need_unicode,
             .ignore_case = has_i,
         }, allocator);
-        defer tr.deinit();
         astral_u_incomplete = tr.astral_u_incomplete;
+        // #4211: u 를 보존하기로 결정되면(incomplete) 패턴 *전체*가 u-유효해야
+        // 한다 — 이미 적용된 surrogate-alternation/complement 재작성은 u-strip
+        // 전제라 부분 적용 시 비일관 miscompile (kept-u 아래서 lone surrogate
+        // 매치 불가). unicode_brace 끄고 재변환해 astral 구문을 verbatim 유지.
+        if (astral_u_incomplete and need_unicode) {
+            tr.deinit();
+            tr = try regexp.transform.transform(in_ast, .{
+                .dotall = need_dotall,
+                .strip_named = need_named,
+                .unicode_brace = false,
+                .ignore_case = has_i,
+            }, allocator);
+        }
+        defer tr.deinit();
         owned_pattern = regexp.printer.print(tr.ast, allocator) catch return .{ .text = null };
         break :blk owned_pattern.?;
     } else pattern;
@@ -561,6 +574,31 @@ test "#4199: dup gate — escape-aliased dup 도 감지 (canonical)" {
     defer if (r.text) |t| testing.allocator.free(t);
     defer if (r.named_groups) |ng| testing.allocator.free(ng);
     try testing.expectEqualStrings("/(a)|(b)/", r.text.?);
+}
+
+// #4211: transform 이 modifier 영역의 유효 플래그를 존중.
+test "#4211: (?-s:) 안 dot 은 dotall 재작성 제외" {
+    const out = (try runLower("/(?-s:a.b)x./s", .{ .regex_dotall = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/(?-s:a.b)x[\\s\\S]/", out);
+}
+
+test "#4211: (?-i:[k])/iu — fold 확장 대신 u 보존 (byte-exact)" {
+    const r = try lower(testing.allocator, "/(?-i:[k])y/iu", .{ .unsupported = .{ .unicode_brace_escape = true } });
+    defer if (r.text) |t| testing.allocator.free(t);
+    defer if (r.named_groups) |ng| testing.allocator.free(ng);
+    try testing.expect(r.text != null);
+    try testing.expectEqualStrings("/(?-i:[k])y/iu", r.text.?);
+}
+
+test "#4211: i-영역 class + 바깥 astral class — u 보존 시 전체 verbatim (일관성)" {
+    // 부분 재작성(surrogate-alternation)은 kept-u 아래서 lone surrogate 가
+    // pair 안을 매치 못해 miscompile — 재변환으로 전체 보존되어야 한다.
+    const r = try lower(testing.allocator, "/(?i:[a-z])[\\u{1F600}-\\u{1F601}]/u", .{ .unsupported = .{ .unicode_brace_escape = true } });
+    defer if (r.text) |t| testing.allocator.free(t);
+    defer if (r.named_groups) |ng| testing.allocator.free(ng);
+    try testing.expect(r.text != null);
+    try testing.expectEqualStrings("/(?i:[a-z])[\\u{1F600}-\\u{1F601}]/u", r.text.?);
 }
 
 // #2472 회귀 가드: 32개 stack-cap 시 33번째부터 std.debug.assert 가 ReleaseFast 에서
