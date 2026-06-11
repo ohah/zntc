@@ -1724,6 +1724,66 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
     });
   });
 
+  describe('for-of/for-in binding object rest LHS (#4254)', () => {
+    for (const target of ['es2015', 'es2016', 'es2017', 'es5']) {
+      test(`for-of binding object rest 가 ${target} 에서 정상 lowering`, async () => {
+        // 회귀: for_of native(es2015~17)인데 LHS binding object rest 를
+        // lowerDestructuringDeclaration 이 LHS 슬롯에 multi-declarator 로 expand
+        // → `for(var _a,a=_a.a,... of)` invalid 문법. body-destructure 로.
+        const result = await bundleAndRun(
+          {
+            'index.ts': [
+              'const out: any[] = [];',
+              'for (const { a, ...r } of [{ a: 1, b: 2 }, { a: 3, c: 4 }] as any) out.push(a + ":" + Object.keys(r).join(""));',
+              'console.log(out.join("|"));',
+            ].join('\n'),
+          },
+          'index.ts',
+          [`--target=${target}`],
+        );
+        cleanup = result.cleanup;
+        expect(result.exitCode).toBe(0);
+        expect(result.runOutput).toBe('1:b|3:c');
+      });
+    }
+
+    test('for-of plain destructuring 은 es2017 에서 native 유지 (과트리거 회피)', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': ['for (const { a, b } of [{ a: 1, b: 2 }] as any) console.log(a, b);'].join(
+            '\n',
+          ),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('1 2');
+      expect(result.bundleOutput).not.toContain('__rest');
+    });
+
+    test('for-of binding object rest + closure capture per-iteration (es2017)', async () => {
+      // 회귀(리뷰): lowerForInOfDestructuring var 강등 시 loop/destructure 가
+      // 함수스코프 단일 바인딩으로 붕괴 → 모든 closure 가 마지막 iter 값 캡처.
+      // block_scoping native(es2015+)면 const 보존해야 per-iteration.
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'const fns: any[] = [];',
+            'for (const { a, ...r } of [{ a: 1, b: 2 }, { a: 3, c: 4 }] as any) fns.push(() => a + ":" + Object.keys(r).join(""));',
+            'console.log(fns.map((f: any) => f()).join("|"));',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('1:b|3:c');
+    });
+  });
+
   describe('for-of / iteration 경계', () => {
     test('for-of over string (코드포인트)', async () => {
       const result = await bundleAndRun(

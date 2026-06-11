@@ -942,13 +942,16 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             });
         }
 
-        /// for-in 루프의 destructuring을 분해한다.
+        /// for-in/for-of 루프의 binding destructuring을 분해한다 (node.tag 보존).
         /// for (var [i,j,k] in obj) { body }
         /// → for (var _ref in obj) { var i = _ref[0], j = _ref[1], k = _ref[2]; body }
+        /// for (const { a, ...r } of arr) { body }  (#4254: object rest at es2015~17)
+        /// → for (var _ref of arr) { var a = _ref.a, r = __rest(_ref, ["a"]); body }
         ///
-        /// for-in은 left에 단일 변수만 허용하므로, destructuring pattern이 있으면
-        /// 임시 변수로 교체하고 body 앞에 분해된 선언문을 삽입한다.
-        pub fn lowerForInDestructuring(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+        /// for-in/for-of 는 left 에 단일 binding 만 허용하므로 destructuring pattern 을
+        /// 임시 변수로 교체하고 body 앞에 분해 선언문을 삽입한다. LHS 슬롯에 multi-
+        /// declarator 를 직접 넣으면(`for(var _a,a=_a.a,... of)`) invalid 문법이 된다.
+        pub fn lowerForInOfDestructuring(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const span = node.span;
             const left = node.data.ternary.a; // variable_declaration
             const right = node.data.ternary.b; // right-hand side expression
@@ -979,9 +982,17 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const temp_span = try es_helpers.makeTempVarSpan(self);
 
             // 2) for-in의 left를 var _ref 로 교체
+            // #4254: per-iteration 바인딩 보존 — block_scoping native(es2015+)면
+            // 원본 let/const 유지. var 로 강등하면 loop temp/destructure 가 함수
+            // 스코프 단일 바인딩으로 붕괴해 closure capture 가 깨진다(마지막 iter
+            // 값만 캡처). block_scoping 미지원(es5)이면 var (for-of 는 es5 에서 이
+            // 경로 미도달=lowerForOfStatement; for-in 만, 기존 var 동작 유지).
+            const orig_kind = self.ast.variableDeclarationKind(left_node);
+            const out_kind: ast_mod.VariableDeclarationKind = if (self.options.unsupported.block_scoping) .@"var" else orig_kind;
+
             const temp_binding = try es_helpers.makeBindingIdentifier(self, temp_span);
             const temp_decl = try es_helpers.makeDeclarator(self, temp_binding, NodeIndex.none, span);
-            const new_left = try es_helpers.makeVarDeclaration(self, &.{temp_decl}, .@"var", span);
+            const new_left = try es_helpers.makeVarDeclaration(self, &.{temp_decl}, out_kind, span);
 
             // 3) right를 visit
             const new_right = try self.visitNode(right);
@@ -998,7 +1009,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
             // scratch에 쌓인 declarator들로 variable_declaration 생성
             const decl_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-            const var_extra = try self.ast.addExtras(&.{ 0, decl_list.start, decl_list.len }); // 0 = var
+            const var_extra = try self.ast.addExtras(&.{ @intFromEnum(out_kind), decl_list.start, decl_list.len });
             const destr_decl = try self.ast.addNode(.{
                 .tag = .variable_declaration,
                 .span = span,
@@ -1011,9 +1022,9 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             else
                 new_body;
 
-            // 7) 새 for_in_statement 생성
+            // 7) 새 for_in/for_of_statement 생성 (입력 tag 보존)
             return self.ast.addNode(.{
-                .tag = .for_in_statement,
+                .tag = node.tag,
                 .span = span,
                 .data = .{ .ternary = .{ .a = new_left, .b = new_right, .c = final_body } },
             });
