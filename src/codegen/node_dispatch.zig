@@ -257,7 +257,7 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
                 }
             }
             try self.addSourceMapping(node.span);
-            try self.writeSpan(node.data.string_ref);
+            try self.writeIdentifierSpan(node.data.string_ref);
         },
 
         .this_expression => {

@@ -91,6 +91,11 @@ pub const CodegenOptions = struct {
     sourcemap: bool = false,
     /// non-ASCII 문자를 \uXXXX로 이스케이프 (D031)
     ascii_only: bool = false,
+    /// #4243: identifier 위치의 `\u{...}` brace escape(ES2015)를 es5 호환 `\uXXXX`
+    /// 로 다운레벨. unicode_brace_escape 미지원 타겟(es5)일 때 transform 이 set.
+    /// codegen 이 모든 identifier/property/key emit funnel 에서 일괄 적용(소스/
+    /// 합성/디스트럭처링/클래스필드 구분 없이 한 지점).
+    lower_unicode_brace: bool = false,
     /// 소스맵 sourceRoot 필드
     source_root: []const u8 = "",
     /// 소스맵에 sourcesContent 포함 여부 (기본: true)

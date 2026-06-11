@@ -443,7 +443,7 @@ pub fn emitObjectProperty(self: anytype, node: Node) !void {
     if (value.isNone()) {
         if (identifierHasRename(self, key) or identifierHasConstValue(self, key)) {
             const key_node = self.ast.getNode(key);
-            try self.writeSpan(key_node.data.string_ref);
+            try self.writeIdentifierSpan(key_node.data.string_ref);
             if (self.options.minify_whitespace) {
                 try self.writeByte(':');
             } else {
@@ -456,7 +456,7 @@ pub fn emitObjectProperty(self: anytype, node: Node) !void {
     } else {
         const key_node = self.ast.getNode(key);
         if (key_node.tag == .identifier_reference) {
-            try self.writeSpan(key_node.data.string_ref);
+            try self.writeIdentifierSpan(key_node.data.string_ref);
         } else if (key_node.tag == .string_literal and self.options.minify_syntax) {
             const raw = self.ast.getText(key_node.span);
             if (objectKeyUnquotable(raw)) {
@@ -650,7 +650,7 @@ pub fn emitStaticMember(self: anytype, node: Node, level: Level, flags: ExprFlag
     // 같이 빠지므로 명시 발행 후 raw span 출력.
     const prop_node = self.ast.getNode(property);
     try self.addSourceMapping(prop_node.span);
-    try self.writeNodeSpan(prop_node);
+    try self.writeIdentifierSpan(prop_node.span);
 }
 
 pub fn emitComputedMember(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {

@@ -127,6 +127,60 @@ pub fn writeNodeSpan(self: anytype, node: ast_mod.Node) !void {
     try self.writeSpan(node.span);
 }
 
+/// identifier/property/key 이름 emit 전용 (#4243). lower_unicode_brace 시
+/// `\u{...}` brace escape(ES2015)를 es5 호환 `\uXXXX`(surrogate pair 포함)로
+/// 다운레벨. 그 외엔 writeSpan 과 동일(ascii_only 등 동작 보존). identifier
+/// 위치는 모두 이 함수로 funnel → 소스/합성/디스트럭처링/클래스필드 일괄 처리.
+pub fn writeIdentifierSpan(self: anytype, span: Span) !void {
+    if (self.options.lower_unicode_brace) {
+        const unicode_escape_lower = @import("../transformer/unicode_escape_lower.zig");
+        const text = self.ast.getText(span);
+        if (unicode_escape_lower.containsBraceEscape(text)) {
+            // `\u{...}` brace escape(ES2015) → raw UTF-8 codepoint. identifier 는
+            // string 과 달리 surrogate-pair escape(`𠀀`)가 es5 에서도
+            // invalid 이므로 raw 디코드가 정답(BMP/astral 모두 valid ES5 IdName).
+            // 비-brace 바이트는 그대로 — `\uHHHH` 4-digit 는 es5 valid 라 보존.
+            var out: std.ArrayList(u8) = .empty;
+            defer out.deinit(self.allocator);
+            var i: usize = 0;
+            while (i < text.len) {
+                // escaped backslash(`\\`)는 원자 복사 — 둘째 `\` 가 escape 시작으로
+                // 오인돼 `\\u{..}` 가 잘못 디코드되는 것 방지(containsBraceEscape 와
+                // 일관). identifier span 엔 현재 도달 불가하나 방어적.
+                if (text[i] == '\\' and i + 1 < text.len and text[i + 1] == '\\') {
+                    try out.appendSlice(self.allocator, text[i .. i + 2]);
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\\' and i + 2 < text.len and text[i + 1] == 'u' and text[i + 2] == '{') {
+                    if (unicode_escape_lower.parseBraceHex(text, i + 2)) |r| {
+                        var buf: [4]u8 = undefined;
+                        if (std.unicode.utf8Encode(@intCast(r.cp), &buf)) |n| {
+                            try out.appendSlice(self.allocator, buf[0..n]);
+                            i = r.end;
+                            continue;
+                        } else |_| {}
+                    }
+                }
+                try out.append(self.allocator, text[i]);
+                i += 1;
+            }
+            // 한계(극단 edge): ascii_only + astral(>U+FFFF) identifier 는
+            // writeAsciiOnly 가 surrogate-pair escape(`𠀀`)로 재escape →
+            // identifier 로는 어떤 엔진도 invalid. 단 es5 에서 astral identifier 의
+            // 유효한 ASCII 표현 자체가 없으므로(brace=ES2015, surrogate escape 불가)
+            // 표현 불가 케이스. BMP+ascii_only 는 정상(`é`).
+            if (self.options.ascii_only) {
+                try self.writeAsciiOnly(out.items);
+            } else {
+                try self.write(out.items);
+            }
+            return;
+        }
+    }
+    try self.writeSpan(span);
+}
+
 pub fn writeStringLiteral(self: anytype, span: Span) !void {
     const text = self.ast.getText(span);
     if (text.len < 2) {
