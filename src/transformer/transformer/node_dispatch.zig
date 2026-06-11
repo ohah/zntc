@@ -365,7 +365,13 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                         const has_object_rest = self.options.unsupported.object_spread and
                             left_node.tag == .object_assignment_target and
                             self.ast.nodeListSplitRest(left_node.data.list).rest_operand != null;
-                        if (self.options.unsupported.destructuring or has_private or has_object_rest) {
+                        // #4244: destructuring 이 native(es2017+)라도 super lowering 이
+                        // 활성(extracted private/static method 등)이면 super member
+                        // target 이 READ-lowering 돼 `[__superGet(...)]=v` Invalid LHS.
+                        // super target 실재 시 lowering 강제(trySuperAssignTarget 경로).
+                        const has_super = self.needsSuperLowering() and
+                            es2015_class.ES2015Class(Transformer).destructuringTargetHasSuper(self, left_idx);
+                        if (self.options.unsupported.destructuring or has_private or has_object_rest or has_super) {
                             return es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignment(self, node);
                         }
                     }

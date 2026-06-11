@@ -466,6 +466,13 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 try self.scratch.append(self.allocator, call);
                 return;
             }
+            // #4244: super member target (`[super.x] = …`, `({a: super.x} = o)`) →
+            // __superSet write helper. generic `visitNode(target)=value` 는 super.x 를
+            // READ(`__superGet`)로 내려 `__superGet(...)=v` (Invalid LHS) 를 만든다.
+            if (try es2015_class.ES2015Class(Transformer).trySuperAssignTarget(self, target_old_idx, value, span)) |super_set| {
+                try self.scratch.append(self.allocator, super_set);
+                return;
+            }
             const target_node = self.ast.getNode(target_old_idx);
             if (target_node.tag == .object_assignment_target or target_node.tag == .array_assignment_target or target_node.tag == .object_pattern or target_node.tag == .array_pattern) {
                 // nested: _inner = value; 각 element 재귀 emit.

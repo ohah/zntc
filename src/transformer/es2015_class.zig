@@ -553,6 +553,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
         pub const isSuperComputedMember = super_props_mod.isSuperComputedMember;
         pub const lowerSuperComputedMember = super_props_mod.lowerSuperComputedMember;
         pub const lowerSuperPropertyAssignment = super_props_mod.lowerSuperPropertyAssignment;
+        pub const trySuperAssignTarget = super_props_mod.trySuperAssignTarget;
+        pub const destructuringTargetHasSuper = super_props_mod.destructuringTargetHasSuper;
         pub const lowerSuperPropertyUpdate = super_props_mod.lowerSuperPropertyUpdate;
         pub const isSuperComputedMethodCall = super_props_mod.isSuperComputedMethodCall;
         pub const lowerSuperComputedMethodCall = super_props_mod.lowerSuperComputedMethodCall;
