@@ -838,16 +838,34 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         }
 
         fn makeRestExcludeKey(self: *Transformer, key_node: Node) Transformer.Error!NodeIndex {
-            const raw = switch (key_node.tag) {
-                .identifier_reference, .binding_identifier => self.ast.getText(key_node.span),
-                .string_literal => blk: {
-                    const text = self.ast.getText(key_node.span);
-                    if (text.len >= 2 and (text[0] == '\'' or text[0] == '"')) break :blk text[1 .. text.len - 1];
-                    break :blk text;
+            // __rest 헬퍼는 `e[i] = String(e[i])` 로 exclusion 원소를 런타임 정규화
+            // (runtime_helpers.zig REST_RUNTIME). 따라서 #4242:
+            switch (key_node.tag) {
+                .identifier_reference, .binding_identifier => {
+                    // 이름 표기 — \u escape 는 디코드해야 es5 에서 잔존(SyntaxError)
+                    // /이중escape 안 됨. escape 없으면 byte-identical.
+                    const raw = self.ast.getText(key_node.span);
+                    if (std.mem.indexOfScalar(u8, raw, '\\') == null) {
+                        return self.wrapInStringLiteral(raw);
+                    }
+                    const group_name = @import("../regexp/group_name.zig");
+                    var decoded: std.ArrayList(u8) = .empty;
+                    defer decoded.deinit(self.allocator);
+                    try group_name.appendCanonical(self.allocator, &decoded, raw);
+                    return self.wrapInStringLiteral(decoded.items);
                 },
-                else => "",
-            };
-            return self.wrapInStringLiteral(raw);
+                // string/numeric/bigint key 는 노드 그대로 — 헬퍼 String() 이
+                // 정규화. 이전: string 은 strip+requote 로 `'q"z'`→`"q"z"`
+                // SyntaxError, numeric/bigint 는 `else=>""` 빈 exclusion(누락).
+                .string_literal, .numeric_literal, .bigint_literal => {
+                    return self.ast.addNode(.{
+                        .tag = key_node.tag,
+                        .span = key_node.span,
+                        .data = key_node.data,
+                    });
+                },
+                else => return self.wrapInStringLiteral(""),
+            }
         }
 
         /// `__rest(_ref, [exclude_keys...])` 호출과 visit 된 binding 을 한 쌍으로 빌드.

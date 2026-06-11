@@ -2071,6 +2071,45 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
     });
   });
 
+  describe('object rest exclusion 키 (#4242)', () => {
+    test('quote/numeric/escaped-ident 키 — 정확 제외 (es5)', async () => {
+      // 회귀: string `'q"z'`→`"q"z"` SyntaxError, numeric `else=>""` 빈 exclusion
+      // (제외 안 됨), escaped ident `\u0061b` es5 잔존. __rest 헬퍼가 String()
+      // 정규화하므로 numeric/string 은 노드 패스스루, ident 는 canonical 디코드.
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            String.raw`const o = { 'q"z': 1, 10: 2, ab: 3, keep: 4 } as any;`,
+            String.raw`const { 'q"z': a, 10: b, ab: c, ...r } = o;`,
+            "console.log(a, b, c, Object.keys(r).join(','));",
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('1 2 3 keep');
+    });
+
+    test('numeric 키 제외가 실제로 동작 (es5, #4241 후속)', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            "const o = { 10: 'x', 20: 'y', 30: 'z' } as any;",
+            'const { 10: m, ...rest } = o;',
+            "console.log(m, Object.keys(rest).join(','));",
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('x 20,30');
+    });
+  });
+
   describe('destructuring 경계', () => {
     test('array hole (sparse) destructuring', async () => {
       const result = await bundleAndRun(
