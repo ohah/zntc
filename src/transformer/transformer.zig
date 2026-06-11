@@ -388,6 +388,7 @@ pub const Transformer = struct {
     pub const visitBinaryStatementBody = control_flow_mod.visitBinaryStatementBody;
     pub const visitForInOfTernary = control_flow_mod.visitForInOfTernary;
     pub const tryLowerForInOfPrivateTarget = control_flow_mod.tryLowerForInOfPrivateTarget;
+    pub const maybeLowerForInOfBindingDestructuring = control_flow_mod.maybeLowerForInOfBindingDestructuring;
     pub const visitForStatement = control_flow_mod.visitForStatement;
     pub const visitSwitchStatement = control_flow_mod.visitSwitchStatement;
     pub const visitSwitchCase = control_flow_mod.visitSwitchCase;
