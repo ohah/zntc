@@ -501,7 +501,9 @@ mountComp();
   {
     name: 'H2_vue_h_render',
     category: 'H_jsx_ts',
-    packages: ['vue'],
+    // 버전 고정: vue@3.5.36(latest)는 deps 가 `workspace:*` 로 잘못 배포돼
+    // npm·bun 둘 다 설치 실패(EUNSUPPORTEDPROTOCOL). browser-smoke 와 동일.
+    packages: ['vue@3.5.35'],
     entry: `import { createApp, h } from 'vue';
 
 const mount = document.createElement('div');
