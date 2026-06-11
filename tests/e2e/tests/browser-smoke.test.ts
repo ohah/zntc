@@ -121,7 +121,10 @@ const cases: BrowserSmokeCase[] = [
   },
   {
     name: 'vue',
-    pkg: 'vue',
+    // 버전 고정: vue@3.5.36(latest)는 published package.json 의 deps 가
+    // `workspace:*` 프로토콜로 잘못 배포돼 npm·bun 둘 다 해석 실패
+    // (EUNSUPPORTEDPROTOCOL). 미고정 시 broken latest 를 잡아 E2E flake.
+    pkg: 'vue@3.5.35',
     entry: `import { ref } from 'vue';\nconsole.log(ref(0).value);`,
     expected: '0',
   },
