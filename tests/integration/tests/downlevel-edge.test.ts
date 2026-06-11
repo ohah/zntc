@@ -2049,6 +2049,32 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
     });
   });
 
+  describe('es5 computed object-literal 의 string/numeric 키 (#4249)', () => {
+    test('computed key + string/numeric 키 공존 → computed member (dot 아님)', async () => {
+      // 회귀: lowerComputedProperties 가 비-computed 키를 무조건 _a.key (dot)로
+      // emit → `_a."q\"z"`/`_a.10` SyntaxError. string/numeric 은 _a["q\"z"]/
+      // _a[10] (computed) 여야.
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'const k = "x";',
+            'const o = { [k]: 1, "q\\"z": 2, 10: 4, "a b": 5, foo: 3 } as any;',
+            'console.log(o["q\\"z"], o[10], o["a b"], o.foo, o.x);',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('2 4 5 3 1');
+      // dot 뒤 비-identifier 키가 없어야 (SyntaxError 방지).
+      expect(result.bundleOutput).not.toContain('."q');
+      // temp 변수(_a/_b…) 의 dot-member 뒤 숫자(`_a.10`)= numeric dotted 회귀.
+      expect(result.bundleOutput).not.toMatch(/_[a-z]+\.\d/);
+    });
+  });
+
   describe('numeric 프로퍼티 키 (#4241)', () => {
     test('class field/accessor numeric key — defineProperty 정규화', async () => {
       // 회귀: makeMemberFromKeyIdx 가 numeric data 를 string_ref 로 오독 →

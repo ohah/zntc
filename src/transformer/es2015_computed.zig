@@ -143,41 +143,20 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 const val_idx = member.data.binary.right;
                 if (key_idx.isNone()) continue;
 
-                const key = self.ast.getNode(key_idx);
                 const new_val = if (val_idx.isNone())
                     // shorthand → key 복제
                     try self.visitNode(key_idx)
                 else
                     try self.visitNode(val_idx);
 
-                // _a[computed_key] = val 또는 _a.key = val
-                const member_expr = if (key.tag == .computed_property_key) blk: {
-                    // computed: _a[expr]
-                    const inner_key = try self.visitNode(key.data.unary.operand);
-                    const me = try self.ast.addExtras(&.{
-                        @intFromEnum(try es_helpers.makeTempVarRef(self, temp_span, temp_span)),
-                        @intFromEnum(inner_key),
-                        0,
-                    });
-                    break :blk try self.ast.addNode(.{
-                        .tag = .computed_member_expression,
-                        .span = span,
-                        .data = .{ .extra = me },
-                    });
-                } else blk: {
-                    // static: _a.key
-                    const new_key = try self.visitNode(key_idx);
-                    const me = try self.ast.addExtras(&.{
-                        @intFromEnum(try es_helpers.makeTempVarRef(self, temp_span, temp_span)),
-                        @intFromEnum(new_key),
-                        0,
-                    });
-                    break :blk try self.ast.addNode(.{
-                        .tag = .static_member_expression,
-                        .span = span,
-                        .data = .{ .extra = me },
-                    });
-                };
+                // _a[key] = val. #4249: key 종류별 dot(identifier) vs computed
+                // (string/numeric/bigint/computed) 분기를 makeMemberFromKeyIdx 로
+                // 위임(#4241 동형). 이전엔 비-computed 키를 무조건 static_member
+                // (dot)로 emit → `_a."q\"z"`/`_a.10` 같은 비-identifier 키가
+                // SyntaxError. property 키는 rename 비대상이라 makeMemberFromKeyIdx
+                // 가 (computed inner 만 visit, 그 외 span 복사) 적절.
+                const obj_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+                const member_expr = try es_helpers.makeMemberFromKeyIdx(self, obj_ref, key_idx, span);
 
                 const assign = try self.ast.addNode(.{
                     .tag = .assignment_expression,
