@@ -959,6 +959,12 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
             const left_node = self.ast.getNode(left);
 
+            // assignment-target LHS (`for ({a, ...r} of arr)`) 는 binding 이 아니므로
+            // 별도 처리: body 에 `({a,...r} = _ref)` assignment 를 prepend (#4254 후속).
+            if (left_node.tag == .object_assignment_target or left_node.tag == .array_assignment_target) {
+                return lowerForInOfAssignTargetDestructuring(self, node);
+            }
+
             // variable_declaration에서 첫 번째 declarator의 패턴을 추출
             const le = left_node.data.extra;
             const list_start = self.readU32(le, 1);
@@ -1023,6 +1029,45 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 new_body;
 
             // 7) 새 for_in/for_of_statement 생성 (입력 tag 보존)
+            return self.ast.addNode(.{
+                .tag = node.tag,
+                .span = span,
+                .data = .{ .ternary = .{ .a = new_left, .b = new_right, .c = final_body } },
+            });
+        }
+
+        /// for-of/for-in 의 LHS 가 assignment-target object/array rest 일 때
+        /// (`for ({a, ...r} of arr)`), body 에 `({a,...r} = _ref)` 를 prepend (#4254 후속).
+        /// `for (kind _ref of arr) { ({a,...r} = _ref); body }`. 그 assignment 는
+        /// visit 시 lowerDestructuringAssignment(#4251 object_spread 게이트)가 __rest
+        /// 로 lowering. assignment target(a/r)은 outer 변수라 _ref 만 per-iteration
+        /// 바인딩(closure 는 outer 캡처).
+        fn lowerForInOfAssignTargetDestructuring(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            const span = node.span;
+            const left = node.data.ternary.a; // object/array_assignment_target
+            const right = node.data.ternary.b;
+            const body = node.data.ternary.c;
+
+            const temp_span = try es_helpers.makeTempVarSpan(self);
+            const out_kind: ast_mod.VariableDeclarationKind = if (self.options.unsupported.block_scoping) .@"var" else .@"const";
+            const temp_binding = try es_helpers.makeBindingIdentifier(self, temp_span);
+            const temp_decl = try es_helpers.makeDeclarator(self, temp_binding, NodeIndex.none, span);
+            const new_left = try es_helpers.makeVarDeclaration(self, &.{temp_decl}, out_kind, span);
+
+            const new_right = try self.visitNode(right);
+            const new_body = try self.visitNode(body);
+
+            // ({a,...r} = _ref) — visit 시 lowerDestructuringAssignment 로 __rest lowering.
+            const ref_for_assign = try es_helpers.makeTempVarRef(self, temp_span, span);
+            const assign = try es_helpers.makeAssignExpr(self, left, ref_for_assign, span, 0);
+            const visited_assign = try self.visitNode(assign);
+            const assign_stmt = try es_helpers.makeExprStmt(self, visited_assign, span);
+
+            const final_body = if (!new_body.isNone())
+                try self.prependStatementsToBody(new_body, &.{assign_stmt})
+            else
+                new_body;
+
             return self.ast.addNode(.{
                 .tag = node.tag,
                 .span = span,

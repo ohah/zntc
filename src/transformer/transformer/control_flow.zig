@@ -167,22 +167,33 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
 /// - `for ({x: this.#x} of arr) BODY` → `for (var _t of arr) { ({x: this.#x} = _t); BODY }`
 /// body prefix의 assignment 는 이후 일반 assignment_expression lowering 경로를 거쳐
 /// __classPrivateFieldSet / destructuring helper 로 변환됨.
-/// #4254: for-in/for-of 의 LHS binding destructuring 을 lowering 해야 하면
+/// #4254(+후속): for-in/for-of 의 LHS destructuring(binding/assignment-target)을 lowering 해야 하면
 /// lowerForInOfDestructuring(body-destructure) 으로 라우팅. 두 경우:
 ///   - es5(unsupported.destructuring): 모든 destructuring binding (기존 for-in).
 ///   - es2015~17(unsupported.object_spread): object rest binding 만 (for_of 가
 ///     native 라 LHS 슬롯 expand 불가 → body-destructure).
 /// LHS 가 binding(variable_declaration) 아니거나 lowering 불요면 null.
-pub fn maybeLowerForInOfBindingDestructuring(self: *Transformer, node: Node) Error!?NodeIndex {
+pub fn maybeLowerForInOfDestructuring(self: *Transformer, node: Node) Error!?NodeIndex {
     const left = node.data.ternary.a;
     if (left.isNone()) return null;
     const left_node = self.ast.getNode(left);
-    if (left_node.tag != .variable_declaration) return null;
     const D = es2015_destructuring.ES2015Destructuring(Transformer);
-    if (self.options.unsupported.destructuring and D.hasDestructuring(self, left_node)) {
-        return try D.lowerForInOfDestructuring(self, node);
+    if (left_node.tag == .variable_declaration) {
+        if (self.options.unsupported.destructuring and D.hasDestructuring(self, left_node)) {
+            return try D.lowerForInOfDestructuring(self, node);
+        }
+        if (self.options.unsupported.object_spread and D.hasObjectRest(self, left_node)) {
+            return try D.lowerForInOfDestructuring(self, node);
+        }
+        return null;
     }
-    if (self.options.unsupported.object_spread and D.hasObjectRest(self, left_node)) {
+    // #4254 후속: assignment-target object rest LHS (`for ({a,...r} of arr)`).
+    // es2015~17(for_of native, object_spread 미지원)에서 native 잔존 → es2017 엔진
+    // SyntaxError. rest 실재 시만(plain `for({a} of)` 과트리거 회피).
+    if (left_node.tag == .object_assignment_target and
+        self.options.unsupported.object_spread and
+        self.ast.nodeListSplitRest(left_node.data.list).rest_operand != null)
+    {
         return try D.lowerForInOfDestructuring(self, node);
     }
     return null;
