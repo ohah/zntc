@@ -1782,6 +1782,27 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe('1:b|3:c');
     });
+
+    test('for-of assignment-target object rest LHS (es2015~17, #4254 후속)', async () => {
+      // 회귀: `for ({a,...r} of arr)` (LHS=object_assignment_target)가 es2015~17
+      // 에서 native 잔존 → 진짜 es2017 엔진 SyntaxError(object rest=ES2018).
+      // body 에 `({a,...r} = _ref)` prepend → __rest lowering.
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'let a: any, r: any; const out: any[] = [];',
+            'for ({ a, ...r } of [{ a: 1, b: 2 }, { a: 3, c: 4 }] as any) out.push(a + ":" + Object.keys(r).join(""));',
+            'console.log(out.join("|"));',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('1:b|3:c');
+      expect(result.bundleOutput).toContain('__rest');
+    });
   });
 
   describe('for-of / iteration 경계', () => {

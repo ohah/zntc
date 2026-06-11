@@ -470,7 +470,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             if (node.tag == .for_in_statement and self.current_private_fields.len > 0) {
                 if (try self.tryLowerForInOfPrivateTarget(node)) |result| return result;
             }
-            if (try self.maybeLowerForInOfBindingDestructuring(node)) |result| return result;
+            if (try self.maybeLowerForInOfDestructuring(node)) |result| return result;
             return self.visitForInOfTernary(node);
         },
         .try_statement,
@@ -492,7 +492,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             // #4254: for_of 가 native(es2015~17)인데 LHS binding 이 object rest 면
             // LHS 슬롯에 destructuring expand 불가 → body-destructure 로.
             if (!self.options.unsupported.for_of) {
-                if (try self.maybeLowerForInOfBindingDestructuring(node)) |result| return result;
+                if (try self.maybeLowerForInOfDestructuring(node)) |result| return result;
             }
             if (self.options.unsupported.for_of) {
                 return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatement(self, node);
