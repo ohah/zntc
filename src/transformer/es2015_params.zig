@@ -137,6 +137,16 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 const param = self.ast.getNode(@enumFromInt(raw_idx));
 
                 if (param.tag == .spread_element or param.tag == .rest_element) {
+                    // #4251: rest parameter(`...args`)는 ES2015 — default_params 지원
+                    // 타겟(es2016/es2017)에선 native 유지. arguments 기반 lowering 은
+                    // arrow 에 arguments 가 없어 ReferenceError(이 경로가 es2017 에서
+                    // 도는 건 object_spread 만 미지원이라 object rest 때문). es5(default_
+                    // params 미지원)만 `var args = [].slice.call(arguments, N)`.
+                    if (!self.options.unsupported.default_params) {
+                        const new_rest = try maybeVisit(self, @enumFromInt(raw_idx));
+                        try self.scratch.append(self.allocator, new_rest);
+                        continue;
+                    }
                     // rest parameter: ...args → var args = [].slice.call(arguments, N)
                     const rest_binding = try maybeVisit(self, param.data.unary.operand);
                     const rest_stmt = try buildRestSlice(self, rest_binding, param_index, span);
