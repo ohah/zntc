@@ -358,7 +358,14 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                     if (left_node.tag == .object_assignment_target or left_node.tag == .array_assignment_target) {
                         const has_private = self.current_private_fields.len > 0 and
                             es2015_class.ES2015Class(Transformer).destructuringTargetHasPrivateField(self, left_idx);
-                        if (self.options.unsupported.destructuring or has_private) {
+                        // #4251: object rest (`({a, ...r} = o)`, ES2018) 는 destructuring
+                        // 지원 타겟(es2017)에서도 lowering 필요 — 게이트가 destructuring
+                        // (ES2015)만 보면 native 잔존(진짜 es2017 엔진 SyntaxError).
+                        // rest 실재 시만(es2017 plain `({a}=o)` 과트리거 회피).
+                        const has_object_rest = self.options.unsupported.object_spread and
+                            left_node.tag == .object_assignment_target and
+                            self.ast.nodeListSplitRest(left_node.data.list).rest_operand != null;
+                        if (self.options.unsupported.destructuring or has_private or has_object_rest) {
                             return es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignment(self, node);
                         }
                     }

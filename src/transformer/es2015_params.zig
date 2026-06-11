@@ -30,6 +30,28 @@ const es_helpers = @import("es_helpers.zig");
 
 pub fn ES2015Params(comptime Transformer: type) type {
     return struct {
+        /// 파라미터 패턴 안에 object rest (`{a, ...r}`, ES2018) 가 있는지 검사 (#4251).
+        /// default_params(ES2015) 는 지원하나 object_spread(ES2018) 만 미지원인
+        /// 타겟(es2016/es2017)에서, object rest 가 든 param 만 lowering 하기 위한
+        /// target-aware 게이트. (default-param-only 함수의 불필요 lowering 회피.)
+        pub fn hasObjectRestParam(self: *const Transformer, params: ast_mod.NodeList) bool {
+            const old_params = self.ast.extra_data.items[params.start .. params.start + params.len];
+            for (old_params) |raw_idx| {
+                const param = self.ast.getNode(@enumFromInt(raw_idx));
+                const pattern_idx: NodeIndex = switch (param.tag) {
+                    .object_pattern => @enumFromInt(raw_idx),
+                    .formal_parameter => @enumFromInt(self.ast.extra_data.items[param.data.extra + ast_mod.FormalParameterExtra.pattern]),
+                    .assignment_pattern => param.data.binary.left,
+                    else => continue,
+                };
+                if (pattern_idx.isNone()) continue;
+                const pattern = self.ast.getNode(pattern_idx);
+                if (pattern.tag == .object_pattern and
+                    self.ast.nodeListSplitRest(pattern.data.list).rest_operand != null) return true;
+            }
+            return false;
+        }
+
         /// 파라미터 목록에서 default/rest 파라미터가 있는지 검사한다.
         pub fn hasDefaultOrRest(self: *const Transformer, params: ast_mod.NodeList) bool {
             const old_params = self.ast.extra_data.items[params.start .. params.start + params.len];

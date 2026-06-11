@@ -42,7 +42,11 @@ pub fn transform(self: anytype) Error!NodeIndex {
     }
 
     // Pass 2: ES2015 params lowering 일괄 적용
-    if (self.options.unsupported.default_params) {
+    // #4251: object rest 가 든 param (`{a, ...r}`, ES2018) 은 default_params 지원
+    // 타겟(es2017)에서도 lowering 필요 → object_spread 도 게이트. per-function 은
+    // lowerAllFunctionParams 가 target-aware 로 object-rest param 만 선별(default-
+    // param-only 함수 과트리거 방지).
+    if (self.options.unsupported.default_params or self.options.unsupported.object_spread) {
         var pass2_scope = profile.begin(.transform_pass2);
         defer pass2_scope.end();
         try lowerAllFunctionParams(self);
@@ -118,6 +122,17 @@ pub fn transform(self: anytype) Error!NodeIndex {
 /// Pass 1에서 생성된 모든 function_declaration, function_expression, function,
 /// method_definition 노드를 순회하며, default/rest/destructuring params가 있으면
 /// lowerParams를 적용하고 extra_data를 in-place 수정한다.
+/// params 목록에 array-rest param (`...rest`, spread_element/rest_element) 이
+/// 있는지 (#4251). kept-arrow 의 array-rest 는 arguments 의존이라 lowering 불가.
+fn hasArrayRestParam(self: anytype, params: ast_mod.NodeList) bool {
+    const items = self.ast.extra_data.items[params.start .. params.start + params.len];
+    for (items) |raw| {
+        const t = self.ast.getNode(@as(NodeIndex, @enumFromInt(raw))).tag;
+        if (t == .spread_element or t == .rest_element) return true;
+    }
+    return false;
+}
+
 fn lowerAllFunctionParams(self: anytype) Error!void {
     const Self = @TypeOf(self.*);
     const node_count = self.ast.nodes.items.len;
@@ -135,7 +150,14 @@ fn lowerAllFunctionParams(self: anytype) Error!void {
                 if (params_node.tag != .formal_parameters) continue;
                 const params_list = params_node.data.list;
                 if (params_list.len == 0) continue;
-                if (!es2015_params.ES2015Params(Self).hasDefaultOrRest(self, params_list)) continue;
+                // #4251: default_params 미지원(es5..es2015)이면 전체(default/rest/
+                // destructuring) lowering. object_spread 만 미지원(es2016/es2017)이면
+                // object rest 든 param 만 — default-param-only 함수 불필요 lowering 회피.
+                const needs_lowering = if (self.options.unsupported.default_params)
+                    es2015_params.ES2015Params(Self).hasDefaultOrRest(self, params_list)
+                else
+                    es2015_params.ES2015Params(Self).hasObjectRestParam(self, params_list);
+                if (!needs_lowering) continue;
 
                 var lr = try es2015_params.ES2015Params(Self).lowerParamsPass2(self, params_list, node.span);
                 defer lr.body_stmts.deinit(self.allocator);
@@ -151,6 +173,63 @@ fn lowerAllFunctionParams(self: anytype) Error!void {
                     if (!body_idx.isNone()) {
                         const new_body = try self.prependStatementsToBody(body_idx, lr.body_stmts.items);
                         self.ast.extra_data.items[e + 2] = @intFromEnum(new_body);
+                    }
+                }
+            },
+            // #4251: arrow 의 object rest param 은 es2017(arrow 지원, object_spread
+            // 미지원)에서 arrow→function 변환 없이(this 보존) param 만 lowering.
+            // es5 에선 arrow 가 Pass 1 에서 function 으로 변환돼 위 arm 이 처리 →
+            // 여기 도달하는 건 orphan(무해). default/array-rest arrow param 도 그
+            // 경로라, 여기선 object rest 만 대상(hasObjectRestParam).
+            .arrow_function_expression => {
+                // arrow 가 미지원(es5..es2015)이면 Pass 1 에서 function 으로 변환됨 →
+                // 여기 남은 arrow 노드는 orphan(변환 전 원본). 처리하면 temp 카운터를
+                // 소비해 live function 의 temp 이름이 밀리고 dead `var _a` 가 샌다.
+                // arrow 가 지원되는 타겟(es2016/es2017)에서만 keep-arrow lowering.
+                if (self.options.unsupported.arrow) continue;
+                const e = node.data.extra;
+                if (e + 1 >= self.ast.extra_data.items.len) continue;
+                const params_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 0]);
+                if (params_idx.isNone() or @intFromEnum(params_idx) >= self.ast.nodes.items.len) continue;
+                const params_node = self.ast.getNode(params_idx);
+                if (params_node.tag != .formal_parameters) continue;
+                const params_list = params_node.data.list;
+                if (params_list.len == 0) continue;
+                if (!es2015_params.ES2015Params(Self).hasObjectRestParam(self, params_list)) continue;
+                // #4251: array-rest param(`...rest`, ES2015)은 es2017 native 지원이나
+                // lowerParamsPass2 가 `[].slice.call(arguments, N)` 로 내림 — arrow 엔
+                // arguments 가 없어 ReferenceError. array-rest 가 섞인 arrow 는
+                // keep-arrow lowering 불가 → skip(native 유지, 진짜 es2017 엔진에선
+                // object rest SyntaxError 잔존이나 크래시는 회피). 드문 조합 #4254 추적.
+                if (hasArrayRestParam(self, params_list)) continue;
+
+                var lr = try es2015_params.ES2015Params(Self).lowerParamsPass2(self, params_list, node.span);
+                defer lr.body_stmts.deinit(self.allocator);
+
+                const new_params_node = try self.ast.addFormalParameters(lr.new_params, params_node.span);
+                self.ast.extra_data.items[e + 0] = @intFromEnum(new_params_node);
+
+                if (lr.body_stmts.items.len > 0) {
+                    const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
+                    if (!body_idx.isNone()) {
+                        // arrow expression body → `{ return expr; }` 먼저 (implicit
+                        // return 보존), 그 후 rest 추출문 prepend. (es2015_arrow 동형.)
+                        const body_node = self.ast.getNode(body_idx);
+                        const block_body = if (body_node.tag != .block_statement and body_node.tag != .function_body) blk: {
+                            const ret = try self.ast.addNode(.{
+                                .tag = .return_statement,
+                                .span = node.span,
+                                .data = .{ .unary = .{ .operand = body_idx, .flags = 0 } },
+                            });
+                            const list = try self.ast.addNodeList(&.{ret});
+                            break :blk try self.ast.addNode(.{
+                                .tag = .block_statement,
+                                .span = node.span,
+                                .data = .{ .list = list },
+                            });
+                        } else body_idx;
+                        const new_body = try self.prependStatementsToBody(block_body, lr.body_stmts.items);
+                        self.ast.extra_data.items[e + 1] = @intFromEnum(new_body);
                     }
                 }
             },
