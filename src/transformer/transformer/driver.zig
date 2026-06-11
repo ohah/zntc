@@ -122,17 +122,6 @@ pub fn transform(self: anytype) Error!NodeIndex {
 /// Pass 1에서 생성된 모든 function_declaration, function_expression, function,
 /// method_definition 노드를 순회하며, default/rest/destructuring params가 있으면
 /// lowerParams를 적용하고 extra_data를 in-place 수정한다.
-/// params 목록에 array-rest param (`...rest`, spread_element/rest_element) 이
-/// 있는지 (#4251). kept-arrow 의 array-rest 는 arguments 의존이라 lowering 불가.
-fn hasArrayRestParam(self: anytype, params: ast_mod.NodeList) bool {
-    const items = self.ast.extra_data.items[params.start .. params.start + params.len];
-    for (items) |raw| {
-        const t = self.ast.getNode(@as(NodeIndex, @enumFromInt(raw))).tag;
-        if (t == .spread_element or t == .rest_element) return true;
-    }
-    return false;
-}
-
 fn lowerAllFunctionParams(self: anytype) Error!void {
     const Self = @TypeOf(self.*);
     const node_count = self.ast.nodes.items.len;
@@ -196,13 +185,9 @@ fn lowerAllFunctionParams(self: anytype) Error!void {
                 const params_list = params_node.data.list;
                 if (params_list.len == 0) continue;
                 if (!es2015_params.ES2015Params(Self).hasObjectRestParam(self, params_list)) continue;
-                // #4251: array-rest param(`...rest`, ES2015)은 es2017 native 지원이나
-                // lowerParamsPass2 가 `[].slice.call(arguments, N)` 로 내림 — arrow 엔
-                // arguments 가 없어 ReferenceError. array-rest 가 섞인 arrow 는
-                // keep-arrow lowering 불가 → skip(native 유지, 진짜 es2017 엔진에선
-                // object rest SyntaxError 잔존이나 크래시는 회피). 드문 조합 #4254 추적.
-                if (hasArrayRestParam(self, params_list)) continue;
-
+                // (이전 #4251 array-rest skip 제거: lowerParamsImpl 이 default_params
+                //  지원 타겟에선 array-rest 를 native 유지하므로 arrow arguments 크래시
+                //  없음. object rest 만 temp+body 분해.)
                 var lr = try es2015_params.ES2015Params(Self).lowerParamsPass2(self, params_list, node.span);
                 defer lr.body_stmts.deinit(self.allocator);
 

@@ -2403,14 +2403,14 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       expect(result.bundleOutput).toContain('__rest');
     });
 
-    test('arrow object-rest + array-rest 조합은 크래시 회피 (es2017, #4254)', async () => {
-      // 리뷰 적발: array-rest(...rest)는 ES2015 native 인데 lowerParamsPass2 가
-      // arguments 기반으로 내려 arrow 에서 ReferenceError → 그 조합은 skip(native
-      // 유지). 모던 엔진에선 동작(크래시 없음); 근본해결은 #4254.
+    test('arrow object-rest + array-rest 조합 — object 만 lower, array-rest native (es2017)', async () => {
+      // surgical 근본해결: array-rest(...rest, ES2015)는 native 유지, object rest
+      // (ES2018)만 __rest 로. arrow 엔 arguments 없으므로 arguments 기반 array-rest
+      // lowering 은 금지(이전엔 skip → 이제 정상 lowering).
       const result = await bundleAndRun(
         {
           'index.ts': [
-            'const f = ({ a, ...r }: any, ...rest: any[]) => a + rest.length;',
+            'const f = ({ a, ...r }: any, ...rest: any[]) => a + ":" + Object.keys(r).join("") + ":" + rest.length;',
             'console.log(f({ a: 1, b: 2 }, 7, 8, 9));',
           ].join('\n'),
         },
@@ -2419,8 +2419,9 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       );
       cleanup = result.cleanup;
       expect(result.exitCode).toBe(0);
-      expect(result.runOutput).toBe('4');
-      // arguments 기반 array-rest lowering 이 arrow 에 새지 않아야.
+      expect(result.runOutput).toBe('1:b:3');
+      expect(result.bundleOutput).toContain('__rest');
+      expect(result.bundleOutput).toContain('...rest');
       expect(result.bundleOutput).not.toContain('slice.call(arguments');
     });
   });
