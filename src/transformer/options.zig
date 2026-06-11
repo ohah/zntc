@@ -280,10 +280,19 @@ pub const TransformOptions = struct {
                 .for_of_statement => if (u.for_of) return true,
                 .for_await_of_statement => if (u.needsForAwaitOfDownlevel()) return true,
                 .spread_element => if (u.spread) return true,
-                .array_pattern,
                 .object_pattern,
-                .array_assignment_target,
                 .object_assignment_target,
+                => {
+                    if (u.destructuring) return true;
+                    // #4248: object rest (`{...r}`, ES2018) 는 object_spread 로
+                    // lowering(__rest 헬퍼). destructuring 지원 타겟(es2017 등)에서도
+                    // rest 가 있으면 prepass 필요 — 누락 시 bundle 에서 __rest 미등록
+                    // ReferenceError. rest 실재 시만 검사(plain `{a}` 과트리거 회피).
+                    if (u.object_spread and
+                        ast.nodeListSplitRest(node.data.list).rest_operand != null) return true;
+                },
+                .array_pattern,
+                .array_assignment_target,
                 .assignment_target_with_default,
                 .binding_rest_element,
                 .assignment_target_rest,

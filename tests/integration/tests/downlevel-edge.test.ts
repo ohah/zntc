@@ -2110,6 +2110,48 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
     });
   });
 
+  describe('object rest 헬퍼 주입 게이트 (#4248)', () => {
+    for (const target of ['es2015', 'es2016', 'es2017']) {
+      test(`object rest var-decl 이 ${target} bundle 에서 __rest 주입`, async () => {
+        // 회귀: object rest(ES2018)는 destructuring 지원 타겟에서도 lowering 되는데
+        // prepass 게이트가 u.destructuring(ES2015)만 검사 → bundle 에서 __rest
+        // 미등록 ReferenceError. es5 는 우연히 destructuring 게이트로 통과했었음.
+        const result = await bundleAndRun(
+          {
+            'index.ts': [
+              'const o = { a: 1, b: 2, c: 3 } as any;',
+              'const { a, ...r } = o;',
+              "console.log(a, Object.keys(r).join(','));",
+            ].join('\n'),
+          },
+          'index.ts',
+          [`--target=${target}`],
+        );
+        cleanup = result.cleanup;
+        expect(result.exitCode).toBe(0);
+        expect(result.runOutput).toBe('1 b,c');
+      });
+    }
+
+    test('rest 없는 plain object pattern 은 es2017 에서 __rest 미생성 (과트리거 회피)', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'const o = { a: 1, b: 2 } as any;',
+            'const { a, b } = o;',
+            'console.log(a + b);',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('3');
+      expect(result.bundleOutput).not.toContain('__rest');
+    });
+  });
+
   describe('destructuring 경계', () => {
     test('array hole (sparse) destructuring', async () => {
       const result = await bundleAndRun(
