@@ -2110,6 +2110,122 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
     });
   });
 
+  describe('함수 파라미터/assignment-target object rest lowering (#4251)', () => {
+    test('함수 파라미터 object rest 가 es2017 에서 lowering+동작', async () => {
+      // 회귀: param object rest(ES2018)가 es2017 에서 lowering 안 됨(transform
+      // dispatch 가 default_params/destructuring=ES2015 만 게이트) → native 잔존,
+      // 진짜 es2017 엔진 SyntaxError.
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'function f({ a, ...r }: any) { return a + ":" + Object.keys(r).join(","); }',
+            'console.log(f({ a: 1, b: 2, c: 3 }));',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('1:b,c');
+      expect(result.bundleOutput).toContain('__rest');
+    });
+
+    test('assignment-target object rest 가 es2017 에서 lowering+동작', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'let a: any, r: any;',
+            '({ a, ...r } = { a: 1, b: 2, c: 3 } as any);',
+            'console.log(a, Object.keys(r).join(","));',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('1 b,c');
+      expect(result.bundleOutput).toContain('__rest');
+    });
+
+    test('default-param-only 함수는 es2017 에서 미-lowering (과트리거 회피)', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': ['function g(a = 5) { return a; }', 'console.log(g(), g(9));'].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('5 9');
+      // default 가 body 로 안 내려가야 (es2017 native).
+      expect(result.bundleOutput).not.toContain('void 0');
+    });
+
+    test('mixed default + object rest (es2017) native 일치', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'function m(a = 1, { b, ...r }: any) { return a + b + ":" + Object.keys(r).join(","); }',
+            'console.log(m(undefined, { b: 2, c: 3, d: 4 }));',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('3:c,d');
+    });
+
+    test('arrow object rest 가 es2017 에서 keep-arrow lowering (this 보존)', async () => {
+      // 회귀: arrow object rest 가 es2017 에서 미lowering(arrow 는 변환 안 되고
+      // param lowering 경로 부재) → native 잔존. arrow→function 변환은 this 를
+      // 깨므로 arrow 유지한 채 param 만 lowering.
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'const obj = {',
+            '  v: 10,',
+            '  m() { return [{ a: 1, b: 2, c: 3 }].map(({ a, ...r }: any) => this.v + a + Object.keys(r).length); },',
+            '};',
+            'const f = ({ a, ...r }: any) => a + ":" + Object.keys(r).join(",");',
+            'console.log(obj.m()[0], f({ a: 1, b: 2, c: 3 }));',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('13 1:b,c');
+      expect(result.bundleOutput).toContain('__rest');
+    });
+
+    test('arrow object-rest + array-rest 조합은 크래시 회피 (es2017, #4254)', async () => {
+      // 리뷰 적발: array-rest(...rest)는 ES2015 native 인데 lowerParamsPass2 가
+      // arguments 기반으로 내려 arrow 에서 ReferenceError → 그 조합은 skip(native
+      // 유지). 모던 엔진에선 동작(크래시 없음); 근본해결은 #4254.
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'const f = ({ a, ...r }: any, ...rest: any[]) => a + rest.length;',
+            'console.log(f({ a: 1, b: 2 }, 7, 8, 9));',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('4');
+      // arguments 기반 array-rest lowering 이 arrow 에 새지 않아야.
+      expect(result.bundleOutput).not.toContain('slice.call(arguments');
+    });
+  });
+
   describe('object rest 헬퍼 주입 게이트 (#4248)', () => {
     for (const target of ['es2015', 'es2016', 'es2017']) {
       test(`object rest var-decl 이 ${target} bundle 에서 __rest 주입`, async () => {
