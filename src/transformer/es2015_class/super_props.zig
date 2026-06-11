@@ -412,6 +412,62 @@ pub fn SuperProps(comptime Transformer: type) type {
             return buildSuperPropGet(self, try self.visitNode(prop_idx), span);
         }
 
+        /// #4244: destructuring assignment target 이 super member (`[super.x] = …`,
+        /// `({a: super.x} = o)`) 일 때, generic `visitNode(target) = value` 는
+        /// super.x 를 READ(`__superGet`)로 내려 `__superGet(...) = v` (Invalid LHS)
+        /// 를 만든다. 대신 write helper(`__superSet(base, prop, value, receiver)`)로.
+        /// target 이 super member 가 아니면 null (호출자가 generic 경로).
+        pub fn trySuperAssignTarget(self: *Transformer, target_idx: NodeIndex, value: NodeIndex, span: Span) Transformer.Error!?NodeIndex {
+            if (!self.needsSuperLowering()) return null;
+            if (target_idx.isNone()) return null;
+            const target = self.ast.getNode(target_idx);
+            const is_computed = switch (target.tag) {
+                .static_member_expression => false,
+                .computed_member_expression => true,
+                else => return null,
+            };
+            const te = target.data.extra;
+            if (te >= self.ast.extra_data.items.len) return null;
+            const obj_idx: NodeIndex = self.readNodeIdx(te, 0);
+            if (!isSuperUnwrapped(self, obj_idx)) return null;
+            const prop_idx: NodeIndex = self.readNodeIdx(te, 1);
+            const prop_arg = if (is_computed)
+                try self.visitNode(prop_idx)
+            else
+                try makeStaticSuperPropArg(self, prop_idx);
+            return try buildSuperPropSet(self, prop_arg, value, span);
+        }
+
+        /// #4244: destructuring assignment target 트리에 super member 가 있는지
+        /// (force-gate). destructuring 이 native(es2017+)라도 needsSuperLowering
+        /// 활성이면 super member 가 READ-lowering 돼 Invalid LHS — lowering 을 강제해
+        /// trySuperAssignTarget 경로로 보낸다. destructuringTargetHasPrivateField 동형.
+        pub fn destructuringTargetHasSuper(self: *Transformer, node_idx: NodeIndex) bool {
+            if (node_idx.isNone()) return false;
+            const node = self.ast.getNode(node_idx);
+            return switch (node.tag) {
+                .static_member_expression, .computed_member_expression => blk: {
+                    const e = node.data.extra;
+                    if (e >= self.ast.extra_data.items.len) break :blk false;
+                    const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                    break :blk isSuperUnwrapped(self, obj_idx);
+                },
+                .object_assignment_target, .array_assignment_target => blk: {
+                    const start = node.data.list.start;
+                    const len = node.data.list.len;
+                    var i: u32 = 0;
+                    while (i < len) : (i += 1) {
+                        const child_raw = self.ast.extra_data.items[start + i];
+                        if (destructuringTargetHasSuper(self, @enumFromInt(child_raw))) break :blk true;
+                    }
+                    break :blk false;
+                },
+                .assignment_target_property_property => destructuringTargetHasSuper(self, node.data.binary.right),
+                .assignment_target_with_default => destructuringTargetHasSuper(self, node.data.binary.left),
+                else => false,
+            };
+        }
+
         /// super.x = v / super.x += v / super.x ||= v 를 receiver 보존 helper로 낮춘다.
         pub fn lowerSuperPropertyAssignment(self: *Transformer, node: Node) ?Transformer.Error!NodeIndex {
             const left_idx = node.data.binary.left;

@@ -393,6 +393,58 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
     });
   });
 
+  describe('super prop destructuring assignment target (#4244)', () => {
+    for (const [name, body, expected] of [
+      ['array [super.ab]', '[super.ab] = [7]; return this.ab;', '7'],
+      ['object {x:super.ab}', '({ x: super.ab } = { x: 9 } as any); return this.ab;', '9'],
+      ['computed [super[k]]', 'const k = "ab"; [super[k]] = [5]; return this.ab;', '5'],
+      ['default [super.ab=3]', '[super.ab = 3] = [] as any; return this.ab;', '3'],
+      ['nested [[super.ab]]', '[[super.ab]] = [[8]] as any; return this.ab;', '8'],
+    ] as [string, string, string][]) {
+      test(`${name} es5 → __superSet (Invalid LHS 회피)`, async () => {
+        // 회귀: super member 가 destructuring assignment target 이면 READ
+        // lowering(`__superGet(...)=v`)으로 빠져 Invalid LHS. __superSet write
+        // 로 분기해야.
+        const result = await bundleAndRun(
+          {
+            'index.ts': [
+              'class A { ab: any = 0; }',
+              `class B extends A { m() { ${body} } }`,
+              'console.log(new B().m());',
+            ].join('\n'),
+          },
+          'index.ts',
+          ['--target=es5'],
+        );
+        cleanup = result.cleanup;
+        expect(result.exitCode).toBe(0);
+        expect(result.runOutput).toBe(expected);
+        expect(result.bundleOutput).not.toMatch(/__superGet\([^;]*\) =/);
+      });
+    }
+
+    test('es2017 + private method 안 super target (force-gate) — Invalid LHS 회피', async () => {
+      // 회귀: destructuring 이 native(es2017)라도 extracted private method 의
+      // super lowering 활성 → [super.ab] 가 [__superGet(...)]=v Invalid LHS.
+      // destructuringTargetHasSuper force-gate 로 lowering 강제.
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'class A { ab: any = 0; }',
+            'class B extends A { #h() { [super.ab] = [5]; return this.ab; } run() { return this.#h(); } }',
+            'console.log(new B().run());',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('5');
+      expect(result.bundleOutput).not.toMatch(/__superGet\([^;]*\) =/);
+    });
+  });
+
   describe('class private + static + decorator 조합', () => {
     test('private field + static + getter', async () => {
       const result = await bundleAndRun(
