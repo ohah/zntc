@@ -1517,6 +1517,7 @@ fn transpileWithCallbackInternal(
         .minify_syntax = options.minify_syntax,
         .sourcemap = options.sourcemap,
         .ascii_only = if (options.charset_utf8) false else options.ascii_only,
+        .lower_unicode_brace = options.unsupported.unicode_brace_escape,
         .quote_style = options.quote_style,
         .linking_metadata = if (mangle_metadata) |*mm| mm else null,
         .platform = options.platform,

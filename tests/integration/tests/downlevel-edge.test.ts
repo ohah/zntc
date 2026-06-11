@@ -1730,6 +1730,46 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
     });
   });
 
+  describe('identifier \\u{} brace escape es5 다운레벨 (#4243)', () => {
+    test('binding/reference/member/destructuring/non-ASCII (es5)', async () => {
+      // 회귀: identifier 위치 \u{...}(ES2015 brace escape)가 es5 산출물에 raw
+      // 잔존 → 진짜 ES5 엔진 SyntaxError. codegen dot-member 는 span 기반 emit
+      // 이라 span+string_ref 둘 다 lowered 필요.
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            String.raw`var \u{61}b = 5;`,
+            String.raw`const o = { cd: 7, caf\u{e9}: 3 } as any;`,
+            String.raw`const { \u{63}d } = o;`,
+            String.raw`class C { \u{61}b = 7; m() { return this.\u{61}b; } }`,
+            String.raw`console.log(\u{61}b, o.\u{63}d, \u{63}d, o.caf\u{e9}, new C().m());`,
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('5 7 7 3 7');
+      // es5 산출물에 brace escape 잔존 0 (진짜 ES5 엔진 SyntaxError 방지).
+      expect(result.bundleOutput).not.toContain('\\u{');
+    });
+
+    test('es2015 타겟은 \\u{} 보존 (supported, 미-lowering)', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': [String.raw`var \u{61}b = 5;`, String.raw`console.log(\u{61}b);`].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2015'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('5');
+      expect(result.bundleOutput).toContain('\\u{61}');
+    });
+  });
+
   describe('신규 ES feature', () => {
     test('BigInt literal (ES2020) — es2019 target', async () => {
       const result = await bundleAndRun(

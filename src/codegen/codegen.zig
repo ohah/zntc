@@ -303,6 +303,7 @@ pub const Codegen = struct {
     pub const writeSpan = writer_emit.writeSpan;
     pub const writeAsciiOnly = writer_emit.writeAsciiOnly;
     pub const writeNodeSpan = writer_emit.writeNodeSpan;
+    pub const writeIdentifierSpan = writer_emit.writeIdentifierSpan;
     pub const writeStringLiteral = writer_emit.writeStringLiteral;
 
     // ================================================================
