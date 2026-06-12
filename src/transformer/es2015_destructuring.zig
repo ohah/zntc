@@ -76,6 +76,34 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             return self.ast.nodeListSplitRest(pattern.data.list).rest_operand != null;
         }
 
+        /// assignment-target 트리(object/array_assignment_target)에 object rest 가
+        /// 중첩 포함되어 있는지 재귀 검사 (#4261). for-of/for-in LHS 게이트용 —
+        /// top-level `object_assignment_target` rest 뿐 아니라 `for ([b, {a,...r}] of)`
+        /// 처럼 array-target 안에 중첩된 object rest 도 검출. array rest(`[a,...r]`,
+        /// ES2015)는 제외(object rest=ES2018 만 lowering 필요).
+        pub fn destructuringTargetHasObjectRest(self: *const Transformer, node_idx: NodeIndex) bool {
+            if (node_idx.isNone()) return false;
+            const node = self.ast.getNode(node_idx);
+            return switch (node.tag) {
+                .object_assignment_target => blk: {
+                    if (self.ast.nodeListSplitRest(node.data.list).rest_operand != null) break :blk true;
+                    break :blk targetListHasObjectRest(self, node.data.list);
+                },
+                .array_assignment_target => targetListHasObjectRest(self, node.data.list),
+                .assignment_target_property_property => destructuringTargetHasObjectRest(self, node.data.binary.right),
+                .assignment_target_with_default => destructuringTargetHasObjectRest(self, node.data.binary.left),
+                else => false,
+            };
+        }
+
+        fn targetListHasObjectRest(self: *const Transformer, list: NodeList) bool {
+            const items = self.ast.extra_data.items[list.start .. list.start + list.len];
+            for (items) |raw| {
+                if (destructuringTargetHasObjectRest(self, @enumFromInt(raw))) return true;
+            }
+            return false;
+        }
+
         /// destructuring이 있는 variable_declaration을 분해한다.
         /// 각 destructuring declarator를 여러 개의 단순 declarator로 풀어서 반환.
         pub fn lowerDestructuringDeclaration(self: *Transformer, node: Node) Transformer.Error!NodeIndex {

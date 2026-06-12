@@ -187,12 +187,14 @@ pub fn maybeLowerForInOfDestructuring(self: *Transformer, node: Node) Error!?Nod
         }
         return null;
     }
-    // #4254 후속: assignment-target object rest LHS (`for ({a,...r} of arr)`).
-    // es2015~17(for_of native, object_spread 미지원)에서 native 잔존 → es2017 엔진
-    // SyntaxError. rest 실재 시만(plain `for({a} of)` 과트리거 회피).
-    if (left_node.tag == .object_assignment_target and
+    // #4254 후속(+#4261): assignment-target object rest LHS (`for ({a,...r} of arr)`,
+    // `for ([b, {a,...r}] of arr)`). es2015~17(for_of native, object_spread 미지원)
+    // 에서 native 잔존 → es2017 엔진 SyntaxError. object/array_assignment_target
+    // 트리에 object rest 가 중첩 포함되면 lowering(plain `for({a} of)`/array rest
+    // `for([a,...x] of)` 과트리거 회피).
+    if ((left_node.tag == .object_assignment_target or left_node.tag == .array_assignment_target) and
         self.options.unsupported.object_spread and
-        self.ast.nodeListSplitRest(left_node.data.list).rest_operand != null)
+        D.destructuringTargetHasObjectRest(self, left))
     {
         return try D.lowerForInOfDestructuring(self, node);
     }
