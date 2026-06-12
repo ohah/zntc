@@ -1803,6 +1803,45 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       expect(result.runOutput).toBe('1:b|3:c');
       expect(result.bundleOutput).toContain('__rest');
     });
+
+    test('nested array-target object rest (for ([b, {a,...r}] of), es2017, #4261)', async () => {
+      // 회귀: array_assignment_target 안에 중첩된 object rest 가 게이트(top-level
+      // object-target rest 만 검사)를 못 통과해 native 잔존 → es2017 SyntaxError.
+      // destructuringTargetHasObjectRest 재귀 검출로 lowering.
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'let b: any, a: any, r: any; const out: any[] = [];',
+            'for ([b, { a, ...r }] of [[1, { a: 2, c: 3 }], [4, { a: 5, d: 6 }]] as any) out.push(b + ":" + a + ":" + Object.keys(r).join(""));',
+            'console.log(out.join("|"));',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('1:2:c|4:5:d');
+      expect(result.bundleOutput).toContain('__rest');
+    });
+
+    test('nested object rest standalone assignment (es2017, #4261 부수)', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'let b: any, a: any, r: any;',
+            '([b, { a, ...r }] = [1, { a: 2, c: 3 }] as any);',
+            'console.log(b, a, Object.keys(r).join(""));',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('1 2 c');
+      expect(result.bundleOutput).toContain('__rest');
+    });
   });
 
   describe('for-of / iteration 경계', () => {

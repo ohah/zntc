@@ -358,13 +358,13 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                     if (left_node.tag == .object_assignment_target or left_node.tag == .array_assignment_target) {
                         const has_private = self.current_private_fields.len > 0 and
                             es2015_class.ES2015Class(Transformer).destructuringTargetHasPrivateField(self, left_idx);
-                        // #4251: object rest (`({a, ...r} = o)`, ES2018) 는 destructuring
-                        // 지원 타겟(es2017)에서도 lowering 필요 — 게이트가 destructuring
-                        // (ES2015)만 보면 native 잔존(진짜 es2017 엔진 SyntaxError).
-                        // rest 실재 시만(es2017 plain `({a}=o)` 과트리거 회피).
+                        // #4251(+#4261): object rest (`({a, ...r} = o)`, ES2018) 는
+                        // destructuring 지원 타겟(es2017)에서도 lowering 필요 — 게이트가
+                        // destructuring(ES2015)만 보면 native 잔존(es2017 엔진 SyntaxError).
+                        // object/array_assignment_target 트리에 object rest 가 중첩
+                        // (`([b, {a,...r}] = o)`)되어도 검출(top-level rest 만 보면 누락).
                         const has_object_rest = self.options.unsupported.object_spread and
-                            left_node.tag == .object_assignment_target and
-                            self.ast.nodeListSplitRest(left_node.data.list).rest_operand != null;
+                            es2015_destructuring.ES2015Destructuring(Transformer).destructuringTargetHasObjectRest(self, left_idx);
                         // #4244: destructuring 이 native(es2017+)라도 super lowering 이
                         // 활성(extracted private/static method 등)이면 super member
                         // target 이 READ-lowering 돼 `[__superGet(...)]=v` Invalid LHS.
