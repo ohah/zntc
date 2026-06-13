@@ -102,6 +102,9 @@ pub const Feature = enum(u5) {
     /// regex_named_groups 와 같은 strip+__wrapRegExp 경로로 다운레벨 (#4199).
     /// NOTE: Feature enum 과 UnsupportedFeatures 필드는 비트 위치가 1:1 — 끝에만 추가.
     regex_duplicate_named_groups,
+    /// ES2025 inline modifier group `(?ims-ims:...)` (#4210). 미지원 타겟에선
+    /// 다운레벨 부재 — verbatim 패스스루 + loud 진단으로 silent SyntaxError 방지.
+    regex_modifiers,
 
     /// 이 feature가 도입된 ES 버전.
     pub fn esVersion(self: Feature) ESTarget {
@@ -115,7 +118,7 @@ pub const Feature = enum(u5) {
             .logical_assignment => .es2021,
             .class_static_block, .class_private_method, .class_private_field, .top_level_await => .es2022,
             .hashbang => .es2023,
-            .using, .regex_duplicate_named_groups => .es2025,
+            .using, .regex_duplicate_named_groups, .regex_modifiers => .es2025,
         };
     }
 };
@@ -166,8 +169,11 @@ pub const UnsupportedFeatures = packed struct(u32) {
     regex_named_groups: bool = false,
     unicode_brace_escape: bool = false,
     regex_duplicate_named_groups: bool = false,
+    /// ES2025 inline modifier group `(?ims-ims:...)` (#4210). lowering 미구현 단계 —
+    /// 비트는 진단 게이트 전용(needsRegexLowering 에는 아직 미포함, passthrough 유지).
+    regex_modifiers: bool = false,
 
-    _: u3 = 0,
+    _: u2 = 0,
 
     /// regex literal lowering 이 필요한 비트가 하나라도 set 인지.
     /// node_dispatch 조기탈출/graph prepass 게이트가 공유 — 새 regex 비트는
@@ -613,6 +619,16 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .regex_duplicate_named_groups, .engine = .deno, .major = 1, .minor = 44 },
     // edge, ios, hermes: 미지원 → compat_table에 없음 → 항상 다운레벨링
 
+    // ── ES2025: regex inline modifiers `(?ims-ims:...)` (#4210) ──
+    // BCD: safari 가 26 으로 늦음(dup-named 의 17.4 와 다름). hermes 미지원.
+    .{ .feature = .regex_modifiers, .engine = .chrome, .major = 125 },
+    .{ .feature = .regex_modifiers, .engine = .edge, .major = 125 },
+    .{ .feature = .regex_modifiers, .engine = .firefox, .major = 132 },
+    .{ .feature = .regex_modifiers, .engine = .safari, .major = 26 },
+    .{ .feature = .regex_modifiers, .engine = .ios, .major = 26 },
+    .{ .feature = .regex_modifiers, .engine = .node, .major = 23 },
+    .{ .feature = .regex_modifiers, .engine = .deno, .major = 1, .minor = 44 },
+
     // ── ES2015: regex_sticky (/y) ──
     .{ .feature = .regex_sticky, .engine = .chrome, .major = 49 },
     .{ .feature = .regex_sticky, .engine = .firefox, .major = 3 },
@@ -965,7 +981,9 @@ test "unsupportedFeatures — 최신 엔진은 모두 지원" {
     const f = unsupportedFeatures(&.{
         .{ .engine = .chrome, .major = 134 },
         .{ .engine = .firefox, .major = 132 },
-        .{ .engine = .safari, .major = 18, .minor = 2 },
+        // safari 26: regex_modifiers (#4210) 가 safari 26 부터라 이전 버전은
+        // 모든 feature 지원이 아니다 (dup-named 의 17.4 와 다른 경계).
+        .{ .engine = .safari, .major = 26 },
     });
     try std.testing.expectEqual(@as(u32, 0), @as(u32, @bitCast(f)));
 }
@@ -1125,4 +1143,27 @@ test "browserslistToUnsupported — 다중 엔진 union" {
 test "browserslistToUnsupported — stat 쿼리는 null" {
     try std.testing.expectEqual(@as(?UnsupportedFeatures, null), browserslistToUnsupported("defaults"));
     try std.testing.expectEqual(@as(?UnsupportedFeatures, null), browserslistToUnsupported("last 2 versions"));
+}
+
+test "regex_modifiers — es2024는 미지원, es2025는 지원 (#4210)" {
+    try std.testing.expect(fromESTarget(.es2024).regex_modifiers);
+    try std.testing.expect(!fromESTarget(.es2025).regex_modifiers);
+    try std.testing.expect(!fromESTarget(.esnext).regex_modifiers);
+    // es5 = 모든 feature 미지원에 포함
+    try std.testing.expect(fromESTarget(.es5).regex_modifiers);
+}
+
+test "regex_modifiers — safari 26 경계 (dup-named 의 17.4 와 다름, #4210)" {
+    // Safari 25 < 26 → modifiers 미지원이지만 dup-named(17.4)는 지원
+    const s25 = unsupportedFeatures(&.{.{ .engine = .safari, .major = 25 }});
+    try std.testing.expect(s25.regex_modifiers);
+    try std.testing.expect(!s25.regex_duplicate_named_groups);
+    // Safari 26 → 둘 다 지원
+    const s26 = unsupportedFeatures(&.{.{ .engine = .safari, .major = 26 }});
+    try std.testing.expect(!s26.regex_modifiers);
+    // node 22 < 23 → 미지원, node 23 → 지원
+    try std.testing.expect(unsupportedFeatures(&.{.{ .engine = .node, .major = 22 }}).regex_modifiers);
+    try std.testing.expect(!unsupportedFeatures(&.{.{ .engine = .node, .major = 23 }}).regex_modifiers);
+    // hermes: compat table 미등록 → 항상 미지원
+    try std.testing.expect(unsupportedFeatures(&.{.{ .engine = .hermes, .major = 0, .minor = 12 }}).regex_modifiers);
 }

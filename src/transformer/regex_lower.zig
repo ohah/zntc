@@ -17,6 +17,7 @@ const std = @import("std");
 const compat = @import("compat.zig");
 const regexp = @import("../regexp/mod.zig");
 const group_name = @import("../regexp/group_name.zig");
+const char_helpers = @import("../regexp/char_helpers.zig");
 const cooked_name = @import("cooked_name.zig");
 
 pub const Options = struct {
@@ -285,6 +286,42 @@ fn hasNamedGroup(pattern: []const u8) bool {
         if (c == '(' and i + 2 < pattern.len and pattern[i + 1] == '?' and pattern[i + 2] == '<') {
             if (i + 3 < pattern.len and (pattern[i + 3] == '=' or pattern[i + 3] == '!')) continue;
             return true;
+        }
+    }
+    return false;
+}
+
+/// `(?ims-ims:...)` inline modifier 그룹(ES2025)이 패턴에 있는지. char class 안과
+/// escape 는 제외하고, `(?:`(non-capturing)·`(?<name>`·lookaround 와 구분한다 —
+/// `(?` 뒤가 modifier 문자(i/m/s) ≥1 개 (선택적 `-[ims]+`) + `:` 로 끝나야 한다.
+pub fn hasModifierGroup(pattern: []const u8) bool {
+    var i: usize = 0;
+    var in_class: bool = false;
+    while (i < pattern.len) : (i += 1) {
+        const c = pattern[i];
+        if (c == '\\') {
+            i += 1;
+            continue;
+        }
+        if (in_class) {
+            if (c == ']') in_class = false;
+            continue;
+        }
+        if (c == '[') {
+            in_class = true;
+            continue;
+        }
+        if (c == '(' and i + 1 < pattern.len and pattern[i + 1] == '?') {
+            var j = i + 2;
+            var mods: u32 = 0;
+            // modifier 문자 정의는 파서(char_helpers.isModifierChar)와 공유 — 둘이
+            // 어긋나면 검출/파싱 불일치. ES2025 는 i/m/s 만 inline modifier.
+            while (j < pattern.len and char_helpers.isModifierChar(pattern[j])) : (j += 1) mods += 1;
+            if (j < pattern.len and pattern[j] == '-') {
+                j += 1;
+                while (j < pattern.len and char_helpers.isModifierChar(pattern[j])) : (j += 1) mods += 1;
+            }
+            if (mods > 0 and j < pattern.len and pattern[j] == ':') return true;
         }
     }
     return false;
@@ -664,4 +701,35 @@ test "#2472 regression: 50 named groups + last backref — no truncation" {
     try testing.expect(std.mem.indexOf(u8, out, "\\50") != null);
     // 32-stack 회귀 시 named[32..] 가 누락되어 backref 변환 실패 → "\\k<n49>" 잔존했음.
     try testing.expect(std.mem.indexOf(u8, out, "\\k<n") == null);
+}
+
+test "hasModifierGroup — inline modifier 그룹 검출 (#4210)" {
+    // enabling / disabling / 혼합 / 패턴 중간
+    try testing.expect(hasModifierGroup("(?i:a)"));
+    try testing.expect(hasModifierGroup("(?s:.)x"));
+    try testing.expect(hasModifierGroup("(?-i:b)"));
+    try testing.expect(hasModifierGroup("(?im-s:a)"));
+    try testing.expect(hasModifierGroup("foo(?i:bar)baz"));
+    try testing.expect(hasModifierGroup("(?m:^a$)"));
+}
+
+test "hasModifierGroup — non-modifier 그룹과 구분 (#4210)" {
+    // non-capturing / named / lookaround 은 modifier 아님
+    try testing.expect(!hasModifierGroup("(?:a)"));
+    try testing.expect(!hasModifierGroup("(?<n>a)"));
+    try testing.expect(!hasModifierGroup("(?=a)"));
+    try testing.expect(!hasModifierGroup("(?<=a)"));
+    try testing.expect(!hasModifierGroup("(?!a)"));
+    try testing.expect(!hasModifierGroup("plain"));
+    // modifier 문자 없이 `:` 만 → 아님
+    try testing.expect(!hasModifierGroup("(?:-)"));
+}
+
+test "hasModifierGroup — char class 안 / escape 는 제외 (#4210)" {
+    // `[(?i:]` 는 char class 멤버라 modifier 아님
+    try testing.expect(!hasModifierGroup("[(?i:]"));
+    // escape 된 `\(` 는 group 시작 아님
+    try testing.expect(!hasModifierGroup("\\(?i:"));
+    // class 밖의 진짜 modifier 는 여전히 검출
+    try testing.expect(hasModifierGroup("[abc](?i:x)"));
 }

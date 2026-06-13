@@ -7,6 +7,7 @@ const Node = ast_mod.Node;
 const profile = @import("../profile.zig");
 const define_mod = @import("transformer/define.zig");
 const codegen_options = @import("../codegen/options.zig");
+const regex_lower = @import("regex_lower.zig");
 
 /// define 치환 엔트리. key=식별자 텍스트, value=치환 문자열.
 /// `parser.scan_results.DefineEntry` 와 동일 정의 — parser 의 inline scan 도 같은 entries 사용.
@@ -316,6 +317,11 @@ pub const TransformOptions = struct {
                     // 때만 prepass — 일반 regex 모듈에 graph prepass 비용 미부과 (#4199).
                     if (u.regex_duplicate_named_groups and
                         std.mem.indexOf(u8, ast.getText(node.span), "(?<") != null) return true;
+                    // #4210: modifier-gate 만 set 인 es2024↓ 에서도 modifier 그룹이 실재할
+                    // 때만 prepass — run() 이 loud 진단을 띄운다 (lowering 은 미구현이라
+                    // regexp 는 passthrough, 출력 무변경). hasModifierGroup 으로 후보 게이트.
+                    if (u.regex_modifiers and
+                        regex_lower.hasModifierGroup(ast.getText(node.span))) return true;
                 },
                 else => {},
             }
@@ -376,6 +382,27 @@ pub const TransformOptions = struct {
     pub const jsx_pragma_ignored_msg =
         "@jsx / @jsxFrag pragma ignored — the effective JSX runtime is automatic; " ++
         "add /** @jsxRuntime classic */ to use a custom factory, or remove the pragma";
+
+    /// ES2025 inline modifier group `(?ims-ims:...)` 를 미지원 타겟에서 쓰고 있는지 (#4210).
+    /// lowering 미구현이라 verbatim 패스스루 → 구형 엔진에서 regex 컴파일 SyntaxError.
+    /// caller 가 loud 진단을 띄운다. `regex_modifiers` 비트가 set 인 (es2024↓) 타겟에서만
+    /// 노드를 스캔 — 모던 타겟(es2025+)은 비트가 false 라 스캔조차 안 한다.
+    pub fn usesUnsupportedRegexModifier(self: @This(), ast: *const Ast) bool {
+        if (!self.unsupported.regex_modifiers) return false;
+        for (ast.nodes.items) |node| {
+            if (node.tag == .regexp_literal and
+                regex_lower.hasModifierGroup(ast.getText(node.span))) return true;
+        }
+        return false;
+    }
+
+    /// `usesUnsupportedRegexModifier` 가 true 일 때 caller 가 띄우는 메시지.
+    /// graph pre-pass(structured diagnostic) 와 transpile(`std.log.warn`) 양쪽이 공유.
+    pub const regex_modifier_unsupported_msg =
+        "regular expression inline modifier group ((?i:...) / (?ims-ims:...)) is an " ++
+        "ES2025 feature not supported by the configured target — it is emitted unchanged " ++
+        "and will throw a SyntaxError on older engines. Raise the target to es2025+, or " ++
+        "rewrite the pattern without inline modifiers.";
 };
 
 /// 점-구분 pragma 의 head segment. `jsx_lowering.makeFactoryCallee` 가 동일하게
