@@ -810,6 +810,9 @@ pub const BundlerDiagnostic = struct {
         /// `@jsx` / `@jsxFrag` pragma 가 있는데 effective JSX runtime 이 automatic — classic
         /// factory 가 무시됨 (D026). warning severity.
         jsx_pragma_ignored,
+        /// ES2025 regex inline modifier `(?ims-ims:...)` 를 미지원 타겟에서 사용 — lowering
+        /// 부재로 verbatim 패스스루, 구형 엔진 SyntaxError (#4210). warning severity.
+        regex_modifier_unsupported,
     };
 
     pub const Severity = enum {

@@ -63,6 +63,7 @@ export const FEATURES = [
   'regex_named_groups', // ES2018
   'unicode_brace_escape', // ES2015
   'regex_duplicate_named_groups', // ES2025
+  'regex_modifiers', // ES2025
 ] as const;
 
 export type Feature = (typeof FEATURES)[number];
@@ -295,6 +296,17 @@ export const SUPPORT: Partial<Record<Feature, Partial<Record<Engine, [number, nu
     firefox: [129, 0],
     safari: [17, 4],
     ios: [17, 4],
+    node: [23, 0],
+    deno: [1, 44],
+  },
+  regex_modifiers: {
+    // ES2025 inline modifier group `(?ims-ims:...)` (#4210). compat.zig 거울.
+    // safari 가 26 으로 늦음(dup-named 의 17.4 와 다름). hermes 미지원.
+    chrome: [125, 0],
+    edge: [125, 0],
+    firefox: [132, 0],
+    safari: [26, 0],
+    ios: [26, 0],
     node: [23, 0],
     deno: [1, 44],
   },

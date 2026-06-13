@@ -121,6 +121,10 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     if (opts.jsxClassicPragmaIgnoredUnderAutomatic(ast_ptr)) {
         self.addDiag(.jsx_pragma_ignored, .warning, module.path, Span.EMPTY, .parse, TransformOptions.jsx_pragma_ignored_msg, null);
     }
+    // #4210: ES2025 regex inline modifier 미지원 타겟 사용 → verbatim 패스스루. loud 진단.
+    if (opts.usesUnsupportedRegexModifier(ast_ptr)) {
+        self.addDiag(.regex_modifier_unsupported, .warning, module.path, Span.EMPTY, .parse, TransformOptions.regex_modifier_unsupported_msg, null);
+    }
     // #1961 PR 1h 후 splitting / single-bundle 양쪽에서 helper module virtual import
     // 모델 활성. mangler 가 helper module top-level 식별자를 reserved 처리
     // (linker.zig 의 candidates collect 에서 isVirtualId 분기) — cross-module binding
