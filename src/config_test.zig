@@ -224,6 +224,34 @@ test "TsConfig.load - extends inheritance" {
     try std.testing.expectEqualStrings("./build", config.out_dir.?);
 }
 
+test "#4359 TsConfig.load - extends + 양쪽 paths overwrite leak 없음" {
+    const allocator = std.testing.allocator;
+    const tmp_dir = "/tmp/zntc_test_config_paths_overwrite";
+    std.Io.Dir.cwd().createDirPath(std.testing.io, tmp_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, tmp_dir) catch {};
+
+    // base 와 child 둘 다 paths 정의 → mergeFrom 이 base paths 를 승계한 뒤 child paths 가 덮어쓴다.
+    // overwrite 전 컨테이너 해제 안 하면 base PathEntry 배열/targets leak (testing.allocator 검출).
+    const base_content =
+        \\{ "compilerOptions": { "paths": { "@base/*": ["./base-src/*"] } } }
+    ;
+    const base_path = try std.fs.path.join(allocator, &.{ tmp_dir, "base.json" });
+    defer allocator.free(base_path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = base_path, .data = base_content });
+
+    const tsconfig_content =
+        \\{ "extends": "./base.json", "compilerOptions": { "paths": { "@app/*": ["./app-src/*"], "@util/*": ["./util/*"] } } }
+    ;
+    const tsconfig_path = try std.fs.path.join(allocator, &.{ tmp_dir, "tsconfig.json" });
+    defer allocator.free(tsconfig_path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = tsconfig_path, .data = tsconfig_content });
+
+    var config = try TsConfig.load(allocator, std.testing.io, tmp_dir);
+    defer config.deinit();
+    // child paths 가 이김. (핵심 검증은 testing.allocator 의 leak 미검출.)
+    try std.testing.expect(config.paths.len >= 1);
+}
+
 test "TsConfig.load - partial compilerOptions" {
     const allocator = std.testing.allocator;
 
