@@ -194,6 +194,25 @@ test "Scanner: getLineColumn" {
     try std.testing.expectEqual(@as(u32, 0), lc2.column);
 }
 
+test "Scanner #4343: BOM 영역 offset getLineColumn underflow 없음" {
+    // BOM(3 byte) 후 코드. line_offsets[0]=3 이므로 offset<3(BOM 영역) 조회 시 lo=0 →
+    // line_idx=lo-1 u32 underflow + OOB 였다. clamp 로 panic 없이 line 0 col 0.
+    const source = "\xEF\xBB\xBFab\ncd";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    try drainTokensToEof(&scanner);
+
+    inline for (.{ 0, 1, 2 }) |off| {
+        const lc = scanner.getLineColumn(off);
+        try std.testing.expectEqual(@as(u32, 0), lc.line);
+        try std.testing.expectEqual(@as(u32, 0), lc.column);
+    }
+    // BOM 이후 'a'(offset 3) → line 0, col 0 (BOM-투명 컬럼).
+    const lc_a = scanner.getLineColumn(3);
+    try std.testing.expectEqual(@as(u32, 0), lc_a.line);
+    try std.testing.expectEqual(@as(u32, 0), lc_a.column);
+}
+
 test "Scanner: hashbang" {
     const source = "#!/usr/bin/env node\nconst x = 1;";
     var scanner = try Scanner.init(std.testing.allocator, source);
