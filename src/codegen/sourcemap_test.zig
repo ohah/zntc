@@ -38,6 +38,23 @@ test "VLQ: encode -16" {
     try std.testing.expectEqualStrings("hB", buf.items);
 }
 
+test "#4351 VLQ: encode i32 minInt — overflow panic 없이 인코딩" {
+    // -2147483648 의 magnitude(2147483648)<<1 = 2^32 라 u32 를 넘는다. 기존 @intCast(-value)/u32
+    // 는 panic. u64 + @abs 로 33비트 VLQ 인코딩.
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try encodeVLQ(std.testing.allocator, &buf, -2147483648);
+    try std.testing.expectEqualStrings("hgggggE", buf.items);
+}
+
+test "#4351 VLQ: encode i32 maxInt 회귀" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try encodeVLQ(std.testing.allocator, &buf, 2147483647);
+    // magnitude 2147483647 → <<1 = 4294967294 (33-bit). non-empty + 결정적.
+    try std.testing.expect(buf.items.len > 0);
+}
+
 test "SourceMapBuilder: simple mapping" {
     var builder = SourceMapBuilder.init(std.testing.allocator);
     defer builder.deinit();

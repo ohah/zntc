@@ -39,11 +39,13 @@ const base64_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012345
 ///     → 둘째 digit: 00001 | continuation=0 → 'B' (1)
 ///     → "gB"
 pub fn encodeVLQ(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), value: i32) !void {
-    // 부호 처리: bit 0 = sign, 나머지 = magnitude
-    var v: u32 = if (value < 0)
-        (@as(u32, @intCast(-value)) << 1) | 1
+    // 부호 처리: bit 0 = sign, 나머지 = magnitude. @abs(i32)→u32 라 minInt 도 안전(기존
+    // @intCast(-value) 는 -minInt 가 i32 초과로 overflow panic). magnitude<<1 은 minInt 시
+    // 2^32 라 u32 를 넘으므로 v 를 u64 로 — VLQ 는 continuation bit 로 임의 폭 인코딩 가능.
+    var v: u64 = if (value < 0)
+        (@as(u64, @abs(value)) << 1) | 1
     else
-        @as(u32, @intCast(value)) << 1;
+        @as(u64, @abs(value)) << 1;
 
     // 5비트씩 잘라서 base64 인코딩
     while (true) {
