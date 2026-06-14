@@ -147,21 +147,8 @@ fn parseProxy(opts: *Options, allocator: std.mem.Allocator, value: []const u8, s
         try stderr.print("zntc {s}: --proxy requires PATH=TARGET\n", .{@tagName(opts.command)});
         std.process.exit(1);
     };
-    const path_str = value[0..eq_pos];
-    const target_str = value[eq_pos + 1 ..];
-    const after_scheme = if (std.mem.indexOf(u8, target_str, "://")) |s| target_str[s + 3 ..] else target_str;
-    var target_host: []const u8 = after_scheme;
-    var target_port: u16 = 80;
-    if (std.mem.indexOf(u8, after_scheme, ":")) |colon| {
-        target_host = after_scheme[0..colon];
-        target_port = std.fmt.parseInt(u16, after_scheme[colon + 1 ..], 10) catch 80;
-    }
-    try opts.proxy_list.append(allocator, .{
-        .path = path_str,
-        .target = target_str,
-        .target_host = target_host,
-        .target_port = target_port,
-    });
+    // host/port 추출 + scheme 기본 포트(https=443)는 ProxyRule.fromTarget 공유.
+    try opts.proxy_list.append(allocator, lib.server.DevServer.ProxyRule.fromTarget(value[0..eq_pos], value[eq_pos + 1 ..]));
 }
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, opts: Options) !void {
