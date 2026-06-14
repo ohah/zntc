@@ -351,9 +351,12 @@ pub fn buildRefreshSigCall(self: *Transformer, sig: RefreshSignature) Error!Node
     });
     self.copySymbolId(sig.component_idx, comp_ref);
 
-    // "signature" 문자열 리터럴
-    var quoted_buf: [1024]u8 = undefined;
-    const quoted = std.fmt.bufPrint(&quoted_buf, "\"{s}\"", .{sig.signature}) catch return error.OutOfMemory;
+    // "signature" 문자열 리터럴. hook 이 많은 컴포넌트는 signature 가 길이 상한이
+    // 없으므로 고정 스택 버퍼 대신 힙에 빌드한다 — 과거 [1024]u8 버퍼는 초과 시
+    // 가짜 OOM 으로 refresh 변환을 중단시켰다 (#4389 buildRefreshRegCall 과 동일 클래스).
+    // addString 이 intern(복사)하므로 임시 버퍼는 즉시 해제해도 안전.
+    const quoted = try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{sig.signature});
+    defer self.allocator.free(quoted);
     const quoted_span = try self.ast.addString(quoted);
     const sig_str = try self.ast.addNode(.{
         .tag = .string_literal,
