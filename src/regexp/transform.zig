@@ -45,6 +45,9 @@ pub const Options = struct {
     /// regex 가 `u`/`v` 플래그를 가졌는가 (#4210). i-fold 는 non-u(ASCII) 전용이라
     /// /u 영역에선 bail — 파서가 unicode_brace 를 끈 재변환에도 정확히 게이트.
     global_u: bool = false,
+    /// 타겟이 lookbehind `(?<=…)`(ES2018)를 지원하는가 (#4210 PR3). m-modifier 의
+    /// `^` 앵커 재작성이 lookbehind 를 출력하므로, false 면 m-lowering bail(보존).
+    lookbehind_ok: bool = false,
 };
 
 pub const NamedGroup = struct {
@@ -145,6 +148,9 @@ const T = struct {
     ///   - lowering 경로(#4210): effective 값으로 dot 재작성 / fold 확장.
     mod_s: ?bool = null,
     mod_i: ?bool = null,
+    /// 영역별 effective m (#4210 PR3). `(?m:)` 영역의 `^`/`$` 는 multiline 앵커 →
+    /// lookbehind/lookahead 로 재작성.
+    mod_m: ?bool = null,
     /// 현재 i-enabling 영역에서 fold 못한 atom(비-ASCII/negated/복잡 class)을 만났는가
     /// (#4210 PR2b). 영역별 save/restore — true 면 ignore_group 이 i 비트를 보존(bail).
     i_fold_incomplete: bool = false,
@@ -222,6 +228,71 @@ const T = struct {
     fn inAsciiIFoldRegion(self: *T) bool {
         return self.opts.lower_modifiers and self.mod_i == true and
             !self.opts.ignore_case and !self.opts.global_u;
+    }
+
+    // ── #4210 PR3: ES2025 `(?m:…)` multiline 앵커 재작성 ──
+
+    /// m-enabling 영역의 `^`/`$` 를 재작성하는 컨텍스트인가. lookbehind 출력에
+    /// 의존하므로 lookbehind 미지원 타겟(es2017↓)에선 false → m bail(보존).
+    fn inMRewriteRegion(self: *T) bool {
+        return self.opts.lower_modifiers and self.mod_m == true and self.opts.lookbehind_ok;
+    }
+
+    /// `[\n\r  ]` (ECMAScript LineTerminator 집합) character_class.
+    fn makeNewlineClass(self: *T, span: ast.Span) TransformError!NodeIndex {
+        const SE = @intFromEnum(ast.CharacterKind.single_escape);
+        const nl = [_]struct { cp: u32, kind: u32 }{
+            .{ .cp = 0x0A, .kind = SE }, // \n
+            .{ .cp = 0x0D, .kind = SE }, // \r
+            .{ .cp = 0x2028, .kind = UESC }, //
+            .{ .cp = 0x2029, .kind = UESC }, //
+        };
+        var kids: [4]u32 = undefined;
+        for (nl, 0..) |e, k| {
+            kids[k] = @intFromEnum(try self.b.add(.{ .tag = .character, .span = span, .data = .{ e.cp, e.kind, 0 } }));
+        }
+        const l = try self.b.addList(&kids);
+        return self.b.add(.{ .tag = .character_class, .span = span, .data = .{ 0, l.start, l.len } });
+    }
+
+    /// `^`(multiline) → `(?:^|(?<=[\n\r  ]))` (입력시작 OR 줄종결자 뒤).
+    fn makeMLineStart(self: *T, span: ast.Span) TransformError!NodeIndex {
+        const caret = try self.b.add(.{ .tag = .boundary_assertion, .span = span, .data = .{ @intFromEnum(ast.BoundaryAssertionKind.start), 0, 0 } });
+        const lb = try self.makeLookaround(.lookbehind, span);
+        return self.makeAltGroup(caret, lb, span);
+    }
+
+    /// `$`(multiline) → `(?:$|(?=[\n\r  ]))` (입력끝 OR 줄종결자 앞).
+    fn makeMLineEnd(self: *T, span: ast.Span) TransformError!NodeIndex {
+        const dollar = try self.b.add(.{ .tag = .boundary_assertion, .span = span, .data = .{ @intFromEnum(ast.BoundaryAssertionKind.end), 0, 0 } });
+        const la = try self.makeLookaround(.lookahead, span);
+        return self.makeAltGroup(dollar, la, span);
+    }
+
+    /// `(?<=[\n\r…])` / `(?=[\n\r…])` — body 는 파서 관례대로 disjunction 으로 감싼다.
+    fn makeLookaround(self: *T, kind: ast.LookAroundAssertionKind, span: ast.Span) TransformError!NodeIndex {
+        const body = try self.singleDisjunction(try self.makeNewlineClass(span), span);
+        return self.b.add(.{ .tag = .lookaround_assertion, .span = span, .data = .{ @intFromEnum(kind), @intFromEnum(body), 0 } });
+    }
+
+    /// atom 하나를 `disjunction→alternative→atom` 으로 감싼다 (lookaround body 가
+    /// 기대하는 파서 출력 구조). 단일 alt·단일 term 이라 인쇄는 atom 그대로.
+    fn singleDisjunction(self: *T, atom: NodeIndex, span: ast.Span) TransformError!NodeIndex {
+        const al = try self.b.addList(&.{@intFromEnum(atom)});
+        const alt = try self.b.add(.{ .tag = .alternative, .span = span, .data = .{ al.start, al.len, 0 } });
+        const dl = try self.b.addList(&.{@intFromEnum(alt)});
+        return self.b.add(.{ .tag = .disjunction, .span = span, .data = .{ dl.start, dl.len, 0 } });
+    }
+
+    /// 두 atom 을 `(?:a|b)` 로 묶는다 (alternation in non-capturing group).
+    fn makeAltGroup(self: *T, a: NodeIndex, b: NodeIndex, span: ast.Span) TransformError!NodeIndex {
+        const a1l = try self.b.addList(&.{@intFromEnum(a)});
+        const alt1 = try self.b.add(.{ .tag = .alternative, .span = span, .data = .{ a1l.start, a1l.len, 0 } });
+        const a2l = try self.b.addList(&.{@intFromEnum(b)});
+        const alt2 = try self.b.add(.{ .tag = .alternative, .span = span, .data = .{ a2l.start, a2l.len, 0 } });
+        const dl = try self.b.addList(&.{ @intFromEnum(alt1), @intFromEnum(alt2) });
+        const disj = try self.b.add(.{ .tag = .disjunction, .span = span, .data = .{ dl.start, dl.len, 0 } });
+        return self.b.add(.{ .tag = .ignore_group, .span = span, .data = .{ 0, 0, @intFromEnum(disj) } });
     }
 
     fn isAstralUnicodeEscape(n: Node) bool {
@@ -413,7 +484,18 @@ const T = struct {
                 const l = try self.expandList(n.getNodeList());
                 return self.b.add(.{ .tag = .alternative, .span = n.span, .data = .{ l.start, l.len, 0 } });
             },
-            .boundary_assertion,
+            .boundary_assertion => {
+                // #4210 PR3: (?m:) 영역의 `^`/`$` → multiline 앵커 재작성.
+                // `\b`/`\B` 는 m 무관 → 그대로.
+                if (self.inMRewriteRegion()) {
+                    switch (@as(ast.BoundaryAssertionKind, @enumFromInt(n.data[0]))) {
+                        .start => return try self.makeMLineStart(n.span),
+                        .end => return try self.makeMLineEnd(n.span),
+                        else => {},
+                    }
+                }
+                return self.b.add(n);
+            },
             .character_class_escape,
             .unicode_property_escape,
             .indexed_reference,
@@ -582,15 +664,19 @@ const T = struct {
                 // effective: enabling→true, disabling→false, 무관→상속(불변).
                 const saved_s = self.mod_s;
                 const saved_i = self.mod_i;
+                const saved_m = self.mod_m;
                 const saved_ifi = self.i_fold_incomplete;
                 if (en & 0b100 != 0) self.mod_s = true;
                 if (dis & 0b100 != 0) self.mod_s = false;
                 if (en & 0b001 != 0) self.mod_i = true;
                 if (dis & 0b001 != 0) self.mod_i = false;
+                if (en & 0b010 != 0) self.mod_m = true;
+                if (dis & 0b010 != 0) self.mod_m = false;
                 self.i_fold_incomplete = false; // 이 영역의 fold-bail 만 집계
                 defer {
                     self.mod_s = saved_s;
                     self.mod_i = saved_i;
+                    self.mod_m = saved_m;
                     self.i_fold_incomplete = saved_ifi; // 내부 bail 은 상위로 누설 안 함
                 }
                 const body = try self.node(@enumFromInt(n.data[2]));
@@ -600,11 +686,14 @@ const T = struct {
                 // #4210 lowering: s-enabling 은 dot 이 body 에서 [\s\S] 로 baked-in →
                 // 항상 strip. i-enabling 은 이 영역의 모든 atom 이 fold 됐을 때만
                 // (비-bail, non-u, 전역 /i off) strip — bail 시 i 보존(이미 fold 된
-                // atom 은 [cC] 라 i 적용이 no-op 이라 의미 동치). m/disabling 보존.
+                // atom 은 [cC] 라 i 적용이 no-op 이라 의미 동치). m-enabling 은
+                // lookbehind 지원 시 `^`/`$` 가 앵커로 재작성됐으니 strip. disabling 보존.
                 var kept_en = en & ~@as(u32, 0b100); // s-enabling 제거
                 const i_lowered = (en & 0b001 != 0) and !self.i_fold_incomplete and
                     !self.opts.ignore_case and !self.opts.global_u;
                 if (i_lowered) kept_en &= ~@as(u32, 0b001); // i-enabling 제거
+                const m_lowered = (en & 0b010 != 0) and self.opts.lookbehind_ok;
+                if (m_lowered) kept_en &= ~@as(u32, 0b010); // m-enabling 제거
                 // 보존된 modifier 비트가 남으면 진단 신호(transpile/prepass 가 경고).
                 if (kept_en != 0 or dis != 0) self.kept_modifier = true;
                 return self.b.add(.{ .tag = .ignore_group, .span = n.span, .data = .{ kept_en, dis, @intFromEnum(body) } });

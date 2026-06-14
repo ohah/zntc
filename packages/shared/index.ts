@@ -177,15 +177,16 @@ export interface TranspileResult {
 //   27    ES2015 (unicode_brace_escape)
 //   28    ES2025 (regex_duplicate_named_groups)
 //   29    ES2025 (regex_modifiers)
+//   30    ES2018 (regex_lookbehind — query-only)
 //
 // 타겟 T 에 대해 "T 이후 도입된" 모든 feature 비트를 set 한다.
 // Feature 추가 시 compat.zig 와 함께 갱신.
 export const ES_TARGET_BITS: Record<string, number> = {
-  es5: 0x3fffffff, // bits 0-29 (모든 feature)
-  es2015: 0x36fff800, // bits 11-23, 25, 26, 28, 29 (ES2015/regex_sticky/unicode_brace_escape 제외)
-  es2016: 0x36fff000, // bits 12-23, 25, 26, 28, 29
-  es2017: 0x36ffe000, // bits 13-23, 25, 26, 28, 29
-  es2018: 0x30ffc000, // bits 14-23, 28, 29 (ES2018 features 도 제외)
+  es5: 0x7fffffff, // bits 0-30 (모든 feature)
+  es2015: 0x76fff800, // bits 11-23, 25, 26, 28, 29, 30 (ES2015/regex_sticky/unicode_brace_escape 제외)
+  es2016: 0x76fff000, // bits 12-23, 25, 26, 28, 29, 30
+  es2017: 0x76ffe000, // bits 13-23, 25, 26, 28, 29, 30
+  es2018: 0x30ffc000, // bits 14-23, 28, 29 (ES2018 features 도 제외 — lookbehind 지원)
   es2019: 0x30ff8000, // bits 15-23, 28, 29
   es2020: 0x30fe0000, // bits 17-23, 28, 29
   es2021: 0x30fc0000, // bits 18-23, 28, 29

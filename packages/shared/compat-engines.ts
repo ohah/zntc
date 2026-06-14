@@ -64,6 +64,7 @@ export const FEATURES = [
   'unicode_brace_escape', // ES2015
   'regex_duplicate_named_groups', // ES2025
   'regex_modifiers', // ES2025
+  'regex_lookbehind', // ES2018 (query-only — m-modifier 앵커 재작성 가능 여부)
 ] as const;
 
 export type Feature = (typeof FEATURES)[number];
@@ -309,6 +310,17 @@ export const SUPPORT: Partial<Record<Feature, Partial<Record<Engine, [number, nu
     ios: [26, 0],
     node: [23, 0],
     deno: [1, 44],
+  },
+  regex_lookbehind: {
+    // ES2018 lookbehind `(?<=…)` (#4210 m-modifier 앵커 재작성 의존). compat.zig 거울.
+    // safari 가 16.4 로 늦음(named-group 11.1 과 다름). hermes 미지원.
+    chrome: [62, 0],
+    edge: [79, 0],
+    firefox: [78, 0],
+    safari: [16, 4],
+    ios: [16, 4],
+    node: [8, 10],
+    deno: [1, 0],
   },
 };
 
