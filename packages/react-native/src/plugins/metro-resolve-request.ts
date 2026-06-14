@@ -59,7 +59,12 @@ export function createMetroResolveRequestPlugin(opts: MetroResolveRequestOptions
             metroPlatform,
           );
           if (result.type === 'sourceFile') return { path: result.filePath };
-          if (result.type === 'assetFiles') return { path: result.filePaths[0] ?? args.path };
+          if (result.type === 'assetFiles') {
+            // 빈 filePaths 는 해석 실패 — bare specifier(args.path)를 경로로 반환하면 안 된다.
+            // 첫 asset 이 있으면 그 경로로, 없으면 null 로 ZNTC 기본 해석기에 위임.
+            const assetPath = result.filePaths[0];
+            return assetPath ? { path: assetPath } : null;
+          }
           // Metro `{ type: 'empty' }` → ZNTC `disabled` flag (빈 모듈로 처리 —
           // ZNTC 가 자동으로 module.exports = {} 출력, 별도 onLoad 불필요).
           if (result.type === 'empty') return { disabled: true };

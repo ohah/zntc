@@ -49,12 +49,11 @@ describe('createMetroResolveRequestPlugin', () => {
     });
   });
 
-  test('Resolution.assetFiles 빈 배열 → 원래 path 유지', () => {
+  test('Resolution.assetFiles 빈 배열 → null (기본 해석기 위임, bare specifier 누출 금지)', () => {
     const resolver: CustomResolver = () => ({ type: 'assetFiles', filePaths: [] });
     const handler = captureHandler({ resolveRequest: resolver, platform: 'android' });
-    expect(handler({ path: './missing.png', importer: '/abs/x' })).toEqual({
-      path: './missing.png',
-    });
+    // 빈 filePaths 는 해석 실패 — 원래 specifier(./missing.png)를 경로로 반환하면 안 됨.
+    expect(handler({ path: './missing.png', importer: '/abs/x' })).toBeNull();
   });
 
   test('Resolution.empty → `{ disabled: true }`', () => {
