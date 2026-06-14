@@ -109,9 +109,11 @@ pub fn parseType(self: *Parser) ParseError2!NodeIndex {
         _ = try parseType(self); // true branch
         try self.expect(.colon);
         _ = try parseType(self); // false branch
+        // span 은 check type `t` 시작 ~ false branch 끝(currentSpan().start)까지 — 다른 composite
+        // type constructor 와 동일. 기존엔 `t` 의 span 만 재사용해 끝이 left operand 에서 잘렸다(#4384).
         return try self.ast.addNode(.{
             .tag = .flow_literal_type,
-            .span = self.ast.getNode(t).span,
+            .span = .{ .start = self.ast.getNode(t).span.start, .end = self.currentSpan().start },
             .data = .{ .none = 0 },
         });
     }
