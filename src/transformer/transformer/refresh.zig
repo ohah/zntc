@@ -262,9 +262,12 @@ pub fn buildRefreshRegCall(self: *Transformer, reg: RefreshRegistration, refresh
         .data = .{ .string_ref = reg.handle_span },
     });
 
-    // "ComponentName" 문자열 리터럴 (따옴표 포함)
-    var quoted_buf: [256]u8 = undefined;
-    const quoted = std.fmt.bufPrint(&quoted_buf, "\"{s}\"", .{reg.name}) catch return error.OutOfMemory;
+    // "ComponentName" 문자열 리터럴 (따옴표 포함). 컴포넌트 이름은 길이 상한이
+    // 없으므로(긴 namespaced/generated 이름) 고정 스택 버퍼 대신 힙에 빌드한다 —
+    // 과거 [256]u8 버퍼는 254바이트 초과 시 가짜 OOM 으로 refresh 변환을 중단시켰다.
+    // addString 이 문자열을 intern(복사)하므로 임시 버퍼는 즉시 해제해도 안전.
+    const quoted = try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{reg.name});
+    defer self.allocator.free(quoted);
     const quoted_span = try self.ast.addString(quoted);
     const name_str = try self.ast.addNode(.{
         .tag = .string_literal,
