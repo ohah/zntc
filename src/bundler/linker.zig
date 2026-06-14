@@ -592,6 +592,36 @@ pub const Linker = struct {
         try entry.value_ptr.append(self.allocator, owner);
     }
 
+    /// import binding 이 번들 top-level 변수를 생성하는지 — `forEachTopLevelOwnerName` 의
+    /// 충돌 후보 판정. 과거 inline 루프(local_name 으로 매칭한 *첫* binding 으로 판정)와 동일
+    /// 로직을 추출해 linear-scan 경로와 index-lookup 경로가 공유한다(드리프트 차단).
+    fn importBindingGeneratesTopLevelVar(self: *const Linker, m: *const Module, ib: ImportBinding) bool {
+        if (ib.kind == .namespace) return true;
+        if (ib.import_record_index >= m.import_records.len) return false;
+        const rec = m.import_records[ib.import_record_index];
+        if (rec.resolved.isNone()) return !rec.is_lazy_resolved;
+        const target_idx = @intFromEnum(rec.resolved);
+        if (target_idx >= self.graph.moduleCount()) return m.wrap_kind == .esm;
+        const target_module = self.getModule(target_idx).?;
+        const helper_modules = @import("../runtime_helper_modules.zig");
+        if (helper_modules.isVirtualId(target_module.path)) return false;
+        const target_wrap = target_module.wrap_kind;
+        if (m.wrap_kind == .esm) {
+            // CJS named import 는 `require_xxx().prop` 직접 참조로 치환하므로 별도 top-level
+            // var 미생성. helper binding (JSX runtime 등) 은 call site 가 식별자라 var 할당 필요.
+            if (target_wrap == .cjs and ib.kind == .named and !ib.is_helper and
+                !isMetroNonInlinedRequireSpecifier(rec.specifier))
+            {
+                return false;
+            }
+            // __esm: scope-hoisted 타겟의 import 는 skip 되어 var 미생성.
+            return target_wrap != .none;
+        } else {
+            // non-esm: CJS 타겟만 require() preamble 에서 var 생성.
+            return target_wrap == .cjs;
+        }
+    }
+
     /// 모듈의 top-level owner 이름을 **단일 출처**로 열거한다 (perf/hmr-link-rename-reuse).
     ///
     /// `collectModuleNames`(deconflict 입력 수집) 와 `buildRenameSnapshot` 의 fingerprint
@@ -611,6 +641,26 @@ pub const Linker = struct {
         const sem = m.semantic orelse return;
         if (sem.scope_maps.len == 0) return;
         const module_scope = sem.scope_maps[0];
+
+        // 대형 fan-out(배럴/mega-entry): 아래 루프가 import 심볼마다 `import_bindings` 전체를
+        // local_name 으로 스캔하면 O(symbols×bindings)=O(N²). bindings 가 많을 때만 local_name→
+        // 첫 binding 인덱스를 1회 구축해 O(1) 조회로 전환. 작은 모듈은 맵 alloc 비용을 피하려
+        // 기존 linear-scan 유지(임계값 미만은 K² 가 어차피 저렴). 직렬(메인스레드) 단계라 로컬
+        // 맵으로 충분 — 동시성 무관.
+        const INDEX_THRESHOLD = 64;
+        // name_index 를 먼저 .empty 로 두고 그 안에 빌드 → defer 가 빌드 중 error(OOM 등)까지
+        // 커버해 누수 불가. ensureTotalCapacity 실패 시에도 .empty deinit 은 안전한 no-op.
+        var name_index: ?std.StringHashMapUnmanaged(u32) = null;
+        defer if (name_index) |*idx| idx.deinit(self.allocator);
+        if (m.import_bindings.len > INDEX_THRESHOLD) {
+            name_index = .empty;
+            const idx = &name_index.?;
+            try idx.ensureTotalCapacity(self.allocator, @intCast(m.import_bindings.len));
+            for (m.import_bindings, 0..) |ib, bi| {
+                const gop = idx.getOrPutAssumeCapacity(ib.local_name);
+                if (!gop.found_existing) gop.value_ptr.* = @intCast(bi); // 첫 binding 우선(루프와 동일)
+            }
+        }
 
         var scope_it = module_scope.iterator();
         while (scope_it.next()) |scope_entry| {
@@ -647,33 +697,15 @@ pub const Linker = struct {
                 // - namespace import 의 inline ns_var (`var z = external_ns;`) 는
                 //   wrap_kind 에 무관하게 emit 되므로 collision detection 대상.
                 const generates_top_level_var = blk: {
+                    // index 경로: local_name → 첫 binding O(1) 조회 (대형 fan-out).
+                    if (name_index) |*idx| {
+                        const bi = idx.get(sym_name) orelse break :blk m.wrap_kind == .esm;
+                        break :blk self.importBindingGeneratesTopLevelVar(&m, m.import_bindings[bi]);
+                    }
+                    // linear 경로: local_name 으로 첫 매칭 binding 검색 (작은 모듈).
                     for (m.import_bindings) |ib| {
                         if (!std.mem.eql(u8, ib.local_name, sym_name)) continue;
-                        if (ib.kind == .namespace) break :blk true;
-                        if (ib.import_record_index >= m.import_records.len) break :blk false;
-                        const rec = m.import_records[ib.import_record_index];
-                        if (rec.resolved.isNone()) break :blk !rec.is_lazy_resolved;
-                        const target_idx = @intFromEnum(rec.resolved);
-                        if (target_idx >= self.graph.moduleCount()) break :blk m.wrap_kind == .esm;
-                        const target_module = self.getModule(target_idx).?;
-                        const helper_modules = @import("../runtime_helper_modules.zig");
-                        if (helper_modules.isVirtualId(target_module.path)) break :blk false;
-                        const target_wrap = target_module.wrap_kind;
-                        if (m.wrap_kind == .esm) {
-                            // CJS named import는 `require_xxx().prop` 직접 참조로 치환하므로
-                            // 별도 top-level var를 만들지 않는다. helper binding (JSX runtime
-                            // 등) 은 call site 가 식별자 (`_jsx(...)`) 라 var 할당이 필요.
-                            if (target_wrap == .cjs and ib.kind == .named and !ib.is_helper and
-                                !isMetroNonInlinedRequireSpecifier(rec.specifier))
-                            {
-                                break :blk false;
-                            }
-                            // __esm: scope-hoisted 타겟의 import는 skip되어 var 미생성
-                            break :blk target_wrap != .none;
-                        } else {
-                            // non-esm: CJS 타겟만 require() preamble에서 var 생성
-                            break :blk target_wrap == .cjs;
-                        }
+                        break :blk self.importBindingGeneratesTopLevelVar(&m, ib);
                     }
                     // import_bindings에 매칭 없음: __esm은 기본 호이스팅, 그 외는 미생성
                     break :blk m.wrap_kind == .esm;
