@@ -224,8 +224,11 @@ export function identifyWorkspaceEntries(
   const seen = new Set<string>();
   const out: IdentifiedWorkspace[] = [];
   const push = (w: IdentifiedWorkspace) => {
-    if (seen.has(w.cwd)) return;
-    seen.add(w.cwd);
+    // path/glob 은 같은 cwd 매칭을 dedup. inline 엔트리는 모두 cwd=rootDir 라 cwd 로
+    // dedup 하면 첫 개만 남으므로 name 으로 식별한다(여러 inline preset 공존 허용).
+    const key = w.source === 'inline' ? `inline:${w.name}` : w.cwd;
+    if (seen.has(key)) return;
+    seen.add(key);
     out.push(w);
   };
 
