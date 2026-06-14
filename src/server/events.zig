@@ -17,6 +17,12 @@ pub const WsClients = struct {
     pub fn add(self: *WsClients, io: std.Io, writer: *std.Io.Writer) void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
+        self.addLocked(writer);
+    }
+
+    /// `add` 의 락-없는 본문. caller 가 `mutex` 보유 가정 — 초기 write 와 등록을 한 임계영역으로
+    /// 묶어 broadcast 와 직렬화하려는 경우(공유 writer race + setup-창 miss 제거)에 쓴다.
+    pub fn addLocked(self: *WsClients, writer: *std.Io.Writer) void {
         if (self.len < max_clients) {
             self.items[self.len] = writer;
             self.len += 1;
