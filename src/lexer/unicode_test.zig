@@ -31,6 +31,41 @@ test "decodeUtf8: 4-byte UTF-8 (emoji)" {
     try std.testing.expectEqual(@as(u3, 4), result.len);
 }
 
+test "#4345 decodeUtf8: malformed 시퀀스는 (U+FFFD, len=1) — 후속 바이트 오소비/overlong 금지" {
+    // 2-byte lead + 비-continuation('A') → 'A' 를 삼키면 안 됨. (U+FFFD, 1) 로 lead 만 소비.
+    {
+        const r = decodeUtf8("\xC0\x41");
+        try std.testing.expectEqual(@as(u21, 0xFFFD), r.codepoint);
+        try std.testing.expectEqual(@as(u3, 1), r.len);
+    }
+    // overlong null (C0 80) → 거부.
+    {
+        const r = decodeUtf8("\xC0\x80");
+        try std.testing.expectEqual(@as(u21, 0xFFFD), r.codepoint);
+        try std.testing.expectEqual(@as(u3, 1), r.len);
+    }
+    // overlong 3-byte (E0 80 80) → 거부.
+    {
+        const r = decodeUtf8("\xE0\x80\x80");
+        try std.testing.expectEqual(@as(u21, 0xFFFD), r.codepoint);
+    }
+    // surrogate (ED A0 80 = U+D800) → UTF-8 에서 불법.
+    {
+        const r = decodeUtf8("\xED\xA0\x80");
+        try std.testing.expectEqual(@as(u21, 0xFFFD), r.codepoint);
+        try std.testing.expectEqual(@as(u3, 1), r.len);
+    }
+    // truncated 3-byte 의 두 번째가 비-continuation → 거부.
+    {
+        const r = decodeUtf8("\xE0\x41\x42");
+        try std.testing.expectEqual(@as(u21, 0xFFFD), r.codepoint);
+        try std.testing.expectEqual(@as(u3, 1), r.len);
+    }
+    // 유효 시퀀스는 그대로.
+    try std.testing.expectEqual(@as(u21, 0xE9), decodeUtf8("\xC3\xA9").codepoint); // é
+    try std.testing.expectEqual(@as(u21, 0x1F600), decodeUtf8("\xF0\x9F\x98\x80").codepoint); // 😀
+}
+
 test "isIdentifierStart: ASCII" {
     try std.testing.expect(isIdentifierStart('a'));
     try std.testing.expect(isIdentifierStart('Z'));
