@@ -1656,6 +1656,59 @@ test "Parser: break in nested function inside loop is error" {
     try std.testing.expectEqualStrings("'break' outside of loop or switch", parser.errors.items[0].message);
 }
 
+// #4328: break/continue 종결이 expectSemicolon 을 거쳐 ASI 를 강제해야 한다.
+// `break <label>` 다음 같은 줄 잡토큰은 spec 위반 → 에러여야 함(이전엔 eat(.semicolon)
+// 라 leniently 별도 statement 로 수용).
+test "Parser: break label followed by junk on same line is error (#4328)" {
+    var scanner = try Scanner.init(std.testing.allocator, "while (true) { break foo extra; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: continue label followed by junk on same line is error (#4328)" {
+    var scanner = try Scanner.init(std.testing.allocator, "for (;;) { continue foo extra; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: debugger followed by junk on same line is error (#4328)" {
+    var scanner = try Scanner.init(std.testing.allocator, "debugger extra;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+// 유효 종결(세미콜론/줄바꿈 ASI/`}`/label)은 회귀 없이 통과해야 한다.
+test "Parser: labelled break/continue valid terminations have no error (#4328)" {
+    const cases = [_][]const u8{
+        "foo: while (true) { break foo; }", // 세미콜론
+        "foo: while (true) { break foo\n}", // 줄바꿈 ASI
+        "foo: while (true) { continue foo }", // `}` 앞 ASI
+        "while (true) { break\nx; }", // 라벨 없는 break + 줄바꿈
+        "debugger;", // debugger 세미콜론
+    };
+    for (cases) |src| {
+        var scanner = try Scanner.init(std.testing.allocator, src);
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        defer parser.deinit();
+
+        _ = try parser.parse();
+        try std.testing.expect(parser.errors.items.len == 0);
+    }
+}
+
 test "Parser: with statement in strict mode is error" {
     var scanner = try Scanner.init(std.testing.allocator,
         \\"use strict";
@@ -4739,15 +4792,25 @@ test "TS: ternary alternate parenthesized arrow does not consume typed-arrow spe
 // 으로 `canBeBindingName()` 이 literal keyword 도 포함했었고, 그 결과
 // `break true;` 가 `break true` (labeled) 로 잘못 파싱됐었다 (/simplify 사후
 // 리뷰 발견). `isLiteralKeyword()` 가드 추가.
-test "TS: break/continue does not consume literal keyword as label" {
-    var r = try parseTs(std.testing.allocator,
-        \\while (true) break true;
-        \\while (true) continue null;
-    );
-    defer r.deinit();
-    // ASI 가 `break;` / `continue;` 다음에 적용되고 `true;`/`null;` 가 별도
-    // expression-statement 가 된다. parser-level 에러 없음.
-    try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
+test "Parser: break/continue with literal keyword on same line is error (#4328)" {
+    // `true`/`null` 은 literal keyword 라 label position 에서 제외된다(label 미소비).
+    // 그 결과 `break`/`continue` (라벨 없음) 뒤 같은 줄에 잡토큰이 남아 expectSemicolon
+    // 이 거부 — spec/엔진과 일치한다(node: `SyntaxError: Unexpected token 'true'`).
+    // 이전엔 eat(.semicolon) 라 `true;`/`null;` 를 별도 statement 로 leniently 수용했음.
+    // (parseTs 헬퍼는 내부에서 0-error 를 강제하므로 에러 기대 테스트엔 직접 Parser 사용.)
+    const cases = [_][]const u8{
+        "while (true) break true;",
+        "while (true) continue null;",
+    };
+    for (cases) |src| {
+        var scanner = try Scanner.init(std.testing.allocator, src);
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        defer parser.deinit();
+
+        _ = try parser.parse();
+        try std.testing.expect(parser.errors.items.len > 0);
+    }
 }
 
 // `@(inst["foo"]) method() {}` 같은 parenthesized decorator + computed member

@@ -975,7 +975,11 @@ fn parseSimpleStatement(self: *Parser, tag: Tag) ParseError2!NodeIndex {
     }
 
     const end = self.currentSpan().end;
-    _ = try self.eat(.semicolon);
+    // break/continue/debugger 도 다른 statement 와 동일하게 ASI 를 강제한다(#4328).
+    // eat(.semicolon) 은 `;` 만 소비할 뿐 종결을 검증 안 해, `break foo extra;` 의
+    // `extra` 같은 라벨 뒤 잡토큰을 leniently 수용했다. expectSemicolon 은
+    // `;`/줄바꿈/`}`/EOF 만 허용하고 그 외엔 에러.
+    try self.expectSemicolon();
     return try self.ast.addNode(.{
         .tag = tag,
         .span = .{ .start = start, .end = end },
