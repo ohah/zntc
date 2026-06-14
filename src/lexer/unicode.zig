@@ -14,9 +14,13 @@
 
 const std = @import("std");
 
+/// `decodeUtf8` 결과 — 코드포인트 + 소비 바이트 수. (named: invalid sentinel 을 const 로 공유하려면
+/// 반환 타입이 명명돼야 함 — 익명 struct 리터럴은 nominal 타입이 매번 달라 coerce 실패.)
+pub const Utf8Decoded = struct { codepoint: u21, len: u3 };
+
 /// UTF-8 바이트 시퀀스에서 코드포인트 하나를 디코딩한다.
 /// 반환: (코드포인트, 소비한 바이트 수). 유효하지 않으면 (0xFFFD, 1).
-pub fn decodeUtf8(bytes: []const u8) struct { codepoint: u21, len: u3 } {
+pub fn decodeUtf8(bytes: []const u8) Utf8Decoded {
     if (bytes.len == 0) return .{ .codepoint = 0, .len = 0 };
 
     const b0 = bytes[0];
@@ -24,33 +28,46 @@ pub fn decodeUtf8(bytes: []const u8) struct { codepoint: u21, len: u3 } {
     // ASCII (0xxxxxxx)
     if (b0 < 0x80) return .{ .codepoint = b0, .len = 1 };
 
+    const invalid = Utf8Decoded{ .codepoint = 0xFFFD, .len = 1 };
+    // continuation byte: 10xxxxxx. 미검증 시 비-continuation(예: 후속 ASCII)을 잘못 흡수해
+    // codepoint 오디코드 + 후속 바이트 오소비. 위반 시 lead 1바이트만 소비(invalid)해 다음 재처리.
+    const isCont = struct {
+        fn f(b: u8) bool {
+            return (b & 0xC0) == 0x80;
+        }
+    }.f;
+
     // 2바이트 (110xxxxx 10xxxxxx)
     if (b0 >= 0xC0 and b0 < 0xE0) {
-        if (bytes.len < 2) return .{ .codepoint = 0xFFFD, .len = 1 };
+        if (bytes.len < 2 or !isCont(bytes[1])) return invalid;
         const cp = (@as(u21, b0 & 0x1F) << 6) | @as(u21, bytes[1] & 0x3F);
+        if (cp < 0x80) return invalid; // overlong
         return .{ .codepoint = cp, .len = 2 };
     }
 
     // 3바이트 (1110xxxx 10xxxxxx 10xxxxxx)
     if (b0 >= 0xE0 and b0 < 0xF0) {
-        if (bytes.len < 3) return .{ .codepoint = 0xFFFD, .len = 1 };
+        if (bytes.len < 3 or !isCont(bytes[1]) or !isCont(bytes[2])) return invalid;
         const cp = (@as(u21, b0 & 0x0F) << 12) |
             (@as(u21, bytes[1] & 0x3F) << 6) |
             @as(u21, bytes[2] & 0x3F);
+        if (cp < 0x800) return invalid; // overlong
+        if (cp >= 0xD800 and cp <= 0xDFFF) return invalid; // surrogate (UTF-8 불법)
         return .{ .codepoint = cp, .len = 3 };
     }
 
     // 4바이트 (11110xxx 10xxxxxx 10xxxxxx 10xxxxxx)
     if (b0 >= 0xF0 and b0 < 0xF8) {
-        if (bytes.len < 4) return .{ .codepoint = 0xFFFD, .len = 1 };
+        if (bytes.len < 4 or !isCont(bytes[1]) or !isCont(bytes[2]) or !isCont(bytes[3])) return invalid;
         const cp = (@as(u21, b0 & 0x07) << 18) |
             (@as(u21, bytes[1] & 0x3F) << 12) |
             (@as(u21, bytes[2] & 0x3F) << 6) |
             @as(u21, bytes[3] & 0x3F);
+        if (cp < 0x10000 or cp > 0x10FFFF) return invalid; // overlong / 범위 초과
         return .{ .codepoint = cp, .len = 4 };
     }
 
-    return .{ .codepoint = 0xFFFD, .len = 1 };
+    return invalid;
 }
 
 /// ECMAScript IdentifierStart 문자인지 판별한다.
