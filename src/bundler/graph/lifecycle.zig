@@ -70,6 +70,10 @@ pub fn reset(self: *ModuleGraph) void {
 
     self.exec_counter = 0;
     self.cycle_counter = 0;
+
+    // requestDependencyExports CSR 캐시 무효화 — rebuild 후 같은 importer_idx 의 binding 이
+    // 바뀌어도 stale 캐시를 재사용하지 않도록. backing 은 보존(clearRetainingCapacity 재사용).
+    self.rdx_cache_owner = null;
 }
 
 /// 단일 모듈의 state 부분 reset (path 보존, graph slot 유지). 변경 감지된 모듈을
@@ -203,4 +207,7 @@ pub fn deinit(self: *ModuleGraph) void {
     self.runtime_polyfill_roots.deinit(self.allocator);
     // PR-3a lazy seeds — path 는 path_arena 소유라 리스트 자체만 해제.
     self.lazy_seeds.deinit(self.allocator);
+    // requestDependencyExports per-importer CSR 캐시 (self.allocator 소유).
+    self.rdx_offsets.deinit(self.allocator);
+    self.rdx_order.deinit(self.allocator);
 }
