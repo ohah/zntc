@@ -163,9 +163,19 @@ pub inline fn unwrapNapi(comptime T: type, env: c.napi_env, value: c.napi_value)
 /// `DebugAllocator` / arena / page 등 size-tracking allocator 로 전환하는 순간
 /// invalid-free panic. 정확 크기로 `dupe` 후 임시 buf 즉시 free 해 contract 준수.
 pub fn getStringArg(env: c.napi_env, value: c.napi_value, alloc: std.mem.Allocator) ?[]const u8 {
+    return getStringArgImpl(env, value, alloc, false);
+}
+
+/// `getStringArg` 와 동일하나 빈 문자열(`''`)을 유효 입력으로 허용한다 — null 은 napi 실패/비-string
+/// 만 의미. transpile/tokenize 의 source 처럼 빈 입력이 정당한(빈 출력) 경우에 쓴다. (#4320)
+pub fn getStringArgAllowEmpty(env: c.napi_env, value: c.napi_value, alloc: std.mem.Allocator) ?[]const u8 {
+    return getStringArgImpl(env, value, alloc, true);
+}
+
+fn getStringArgImpl(env: c.napi_env, value: c.napi_value, alloc: std.mem.Allocator, allow_empty: bool) ?[]const u8 {
     var len: usize = 0;
     if (c.napi_get_value_string_utf8(env, value, null, 0, &len) != c.napi_ok) return null;
-    if (len == 0) return null;
+    if (len == 0) return if (allow_empty) (alloc.dupe(u8, "") catch null) else null;
     const tmp = alloc.alloc(u8, len + 1) catch return null;
     defer alloc.free(tmp);
     var actual: usize = 0;

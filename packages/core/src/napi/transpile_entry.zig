@@ -13,6 +13,7 @@ const native_alloc = common.nativeAlloc();
 
 const throwError = common.throwError;
 const getStringArg = common.getStringArg;
+const getStringArgAllowEmpty = common.getStringArgAllowEmpty;
 const setUint32Prop = common.setUint32Prop;
 const setStringProp = common.setStringProp;
 
@@ -31,9 +32,9 @@ pub fn napiTranspile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c
         return throwError(env, "transpile requires at least 2 arguments (source, filename)");
     }
 
-    // source (필수)
-    const source = getStringArg(env, argv[0], native_alloc) orelse {
-        return throwError(env, "invalid or empty source");
+    // source (필수) — 빈 문자열('')은 유효(빈 출력), null 은 napi 실패/비-string 만.
+    const source = getStringArgAllowEmpty(env, argv[0], native_alloc) orelse {
+        return throwError(env, "invalid source (not a string)");
     };
     defer native_alloc.free(source);
 
@@ -137,8 +138,8 @@ pub fn napiTokenize(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.
     }
     if (argc < 1) return throwError(env, "tokenize requires source");
 
-    const source = getStringArg(env, argv[0], native_alloc) orelse {
-        return throwError(env, "invalid or empty source");
+    const source = getStringArgAllowEmpty(env, argv[0], native_alloc) orelse {
+        return throwError(env, "invalid source (not a string)");
     };
     defer native_alloc.free(source);
 

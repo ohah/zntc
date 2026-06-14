@@ -524,7 +524,8 @@ export function transpile(
   source: string,
   options: TranspileOptions & { cache?: TsconfigCache } = {},
 ): TranspileResult {
-  if (!source) throw new Error('@zntc/core: empty source');
+  // 빈 문자열('')은 유효한 입력(빈 출력) — null/undefined/비-string 만 거부.
+  if (typeof source !== 'string') throw new Error('@zntc/core: source must be a string');
   validateTsConfigRaw(options.tsconfigRaw);
 
   const optionsJson = buildOptionsJson(options, resolveUnsupported(options));
@@ -537,7 +538,8 @@ export function transpile(
 }
 
 export function tokenize(source: string, options: TokenizeOptions = {}): TokenizeToken[] {
-  if (!source) throw new Error('@zntc/core: empty source');
+  // 빈 문자열('')은 유효한 입력(토큰 0개) — null/undefined/비-string 만 거부.
+  if (typeof source !== 'string') throw new Error('@zntc/core: source must be a string');
   return ensureNative().tokenize(source, options.filename ?? 'input.js');
 }
 
