@@ -1393,6 +1393,9 @@ fn serializeFunctionInfo(
 ) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     const alloc = native_alloc;
+    // 아래 try 들이 OOM 으로 실패하면 buf 의 grown backing 이 새므로 errdefer 로 해제. 성공 경로는
+    // toOwnedSlice 가 buf 를 비워 ownership 을 caller 로 이전하므로 errdefer 가 실행되지 않는다.
+    errdefer buf.deinit(alloc);
 
     try buf.appendSlice(alloc, "{\"name\":");
     if (func.name) |name| {
