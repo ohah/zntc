@@ -185,7 +185,7 @@ pub const Transformer = struct {
 
     /// ES2015 generator: for loop의 update label (labeled continue 대상).
     /// collectForOperations에서 update nop 추가 직전에 설정.
-    generator_for_update_label: ?u32 = null,
+    generator_loop_continue_label: ?u32 = null,
 
     /// ES2015 generator: for-of 변환에서 생성한 임시 변수 span.
     /// buildGeneratorBody에서 호이스팅 변수에 추가.
