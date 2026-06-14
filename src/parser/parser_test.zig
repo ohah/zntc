@@ -3468,6 +3468,26 @@ test "Flow: conditional type" {
     try expectNoParseErrorFlow("type X<T> = T extends string ? number : boolean;");
 }
 
+test "#4384 Flow conditional type span 은 false branch 끝까지 커버" {
+    var scanner = try Scanner.init(std.testing.allocator, "type X<T> = T extends string ? number : boolean;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_flow = true;
+    defer parser.deinit();
+    _ = try parser.parse();
+    // conditional type node 의 span 이 false branch(boolean)까지 포함해야 한다.
+    // 수정 전: span 이 check type 'T' 에서 잘려 "boolean" 미포함.
+    var covers_false_branch = false;
+    for (parser.ast.nodes.items) |n| {
+        if (n.tag == .flow_literal_type and
+            std.mem.indexOf(u8, parser.ast.getText(n.span), "boolean") != null)
+        {
+            covers_false_branch = true;
+        }
+    }
+    try std.testing.expect(covers_false_branch);
+}
+
 test "Flow: positional function type params" {
     // () => T as positional param
     try expectNoParseErrorFlow("type X = (() => AnimatedProps, props: $ReadOnly<{[string]: mixed}>) => AnimatedProps;");
