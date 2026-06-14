@@ -298,6 +298,9 @@ describe('CLI flag ↔ BuildOptions / TranspileOptions schema sync', () => {
     '--no-tree-shaking',
     '--no-scope-hoist',
     '--no-emit-disk-sourcemap',
+    // positive `--react-refresh`(string-bool)가 BuildOptions.reactRefresh 와 직접 매핑.
+    // negation 형은 flag 이름이 `noReactRefresh` 로 추론돼 키 매칭이 안 되므로 CLI-only.
+    '--no-react-refresh',
     '--open',
     '--clean',
     // #4062 PR-C-3 — `zntc dev --lazy`: dev 서버 오케스트레이션 플래그(JS dev 서버가 on-demand
@@ -459,6 +462,9 @@ describe('CLI flag ↔ BuildOptions / TranspileOptions schema sync', () => {
     // dev 활성 스위치 `zntc dev --lazy`(PR-C-3, cliOnlyFlags) 가 이 둘을 내부적으로 켠다.
     'lazyCompilation',
     'lazyForceParse',
+    // HMR 위상 보존 plugin 게이트 완화 — RN preset 이 내장 plugin 구성에 자동 set 하는
+    // build-level opt-in. 임의 custom plugin 은 비결정적이라 CLI flag 미노출(config/preset 전용).
+    'preserveSafePlugins',
   ]);
 
   test('CLI flag 가 BuildOptions / TranspileOptions 키와 매칭되거나 cliOnlyFlags 에 등록', () => {

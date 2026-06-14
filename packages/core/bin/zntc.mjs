@@ -258,7 +258,11 @@ function parseArgs(argv) {
     bundle: false,
     watch: false,
     watchJson: false,
-    watchDelay: 16,
+    // SCALAR_KEYS 머지 키 — config.watchDelay 가 적용되려면 default 가 `undefined`
+    // 여야 한다(머지 조건 `opts[key] === undefined`). 16ms 디바운스 default 는
+    // 소비처(setTimeout)에서 `?? 16` 으로 보정(#4223 — 이전 `16` default 라 config
+    // watchDelay 가 silent 무시되던 schema-drift 가드 발동).
+    watchDelay: undefined,
     serve: false,
     serveDir: '.',
     port: undefined,
@@ -1359,6 +1363,8 @@ function mergeConfigIntoOpts(opts, config) {
     'runtimePolyfills',
     'coreJs',
     'tokenizeFormat',
+    // #4223 — config.watchDelay 가 머지되도록(opts default=undefined, 소비처 `?? 16`).
+    'watchDelay',
   ];
   for (const key of SCALAR_KEYS) {
     if (opts[key] === undefined && config[key] !== undefined) {
@@ -1421,7 +1427,10 @@ function mergeConfigIntoOpts(opts, config) {
   // tristate bool: false 가 명시적 의미를 가져서 default 를 undefined 로 두는 키.
   // CLI 가 미지정(undefined)일 때만 config 값(true/false)을 채택한다 (CLI flag 우선).
   // inlineDynamicImports=false 의 single-file 보정은 applySingleFileDynamicImportDefault.
-  for (const key of ['inlineDynamicImports']) {
+  // reactRefresh(#4223): `zntc dev` 는 default on(parseArgs 가 opts.reactRefresh=true) →
+  //   그 경우 머지 skip(opts defined). build/transpile 은 opts undefined 라 config(true/
+  //   false) 채택 — 이전 머지 리스트 누락으로 silent 무시되던 schema-drift 해소.
+  for (const key of ['inlineDynamicImports', 'reactRefresh']) {
     if (opts[key] === undefined && config[key] !== undefined) {
       opts[key] = config[key];
     }
@@ -1772,7 +1781,7 @@ async function runWatch(opts, config) {
       }
 
       clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(rebuild, opts.watchDelay);
+      debounceTimer = setTimeout(rebuild, opts.watchDelay ?? 16);
     });
     attachWatcherErrorHandler(watcher, dir, opts.logLevel);
   }
@@ -2734,7 +2743,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
         }
         dirty.add(absPath);
         clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(drain, opts.watchDelay);
+        debounceTimer = setTimeout(drain, opts.watchDelay ?? 16);
       });
       attachWatcherErrorHandler(watcher, dir, opts.logLevel);
     }
