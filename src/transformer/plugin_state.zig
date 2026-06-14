@@ -50,6 +50,10 @@ pub const RefreshSignature = struct {
     handle_span: Span,
     /// 컴포넌트 이름 (문자열)
     component_name: []const u8,
+    /// 등록 대상 컴포넌트 binding node. linker/mangler rename 이 `_s(Component, "sig")`
+    /// 의 Component 참조에도 적용되도록 symbol_id 를 이 노드에서 복사한다
+    /// (`RefreshRegistration.component_idx` 와 동일 역할 — 없으면 rename 후 dangling ref).
+    component_idx: NodeIndex,
     /// Hook 시그니처 문자열 ("useState{[foo, setFoo](0)}\nuseEffect{}")
     signature: []const u8,
 };

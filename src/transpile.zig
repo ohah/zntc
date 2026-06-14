@@ -2833,3 +2833,27 @@ test "TransformPlan: full-route guards for binding-lite follow-up" {
         };
     }
 }
+
+test "#4390 refresh hook-sig: _s component ref follows mangler rename" {
+    // 컴포넌트 App 이 minify_identifiers 로 rename 되면 _s(Component, "sig") 의
+    // Component 참조도 같은 이름을 따라야 한다. symbol_id 미전파 시 _s(App, ...) 로
+    // 남아 dangling reference (App 는 rename 되어 더 이상 존재하지 않음).
+    const src =
+        \\function App() {
+        \\  const x = useState(0);
+        \\  useEffect(() => {}, []);
+        \\  return null;
+        \\}
+    ;
+    var r = try transpile(std.testing.allocator, src, "/src/App.tsx", .{
+        .react_refresh = true,
+        .react_refresh_hook_signatures = true,
+        .minify_identifiers = true,
+    });
+    defer r.deinit(std.testing.allocator);
+    // 컴포넌트가 rename 됐고(_c = t / function t), _s 의 첫 인자도 같은 t 를 가리켜야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "_c = t;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "_s(t,") != null);
+    // dangling 원본 이름 참조가 남으면 안 된다.
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "_s(App,") == null);
+}

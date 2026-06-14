@@ -340,12 +340,16 @@ pub fn buildRefreshSigCall(self: *Transformer, sig: RefreshSignature) Error!Node
         .data = .{ .string_ref = sig.handle_span },
     });
 
-    // Component 식별자
+    // Component 식별자. buildRefreshAssignment 의 `_c = Component` 와 동일하게
+    // component binding 의 symbol_id 를 복사해 linker/mangler rename 을 따라가게 한다
+    // (없으면 컴포넌트가 rename 됐을 때 _s(원본이름, ...) 로 남아 dangling ref).
+    const comp_span = try self.ast.addString(sig.component_name);
     const comp_ref = try self.ast.addNode(.{
         .tag = .identifier_reference,
-        .span = zero_span,
-        .data = .{ .string_ref = try self.ast.addString(sig.component_name) },
+        .span = comp_span,
+        .data = .{ .string_ref = comp_span },
     });
+    self.copySymbolId(sig.component_idx, comp_ref);
 
     // "signature" 문자열 리터럴
     var quoted_buf: [1024]u8 = undefined;
@@ -561,6 +565,7 @@ pub fn makeSigHandle(self: *Transformer) Error!Span {
 pub fn maybeRegisterRefreshSignature(
     self: *Transformer,
     func_name: ?[]const u8,
+    component_idx: NodeIndex,
     old_body_idx: NodeIndex,
     new_body: *NodeIndex,
 ) Error!void {
@@ -575,6 +580,7 @@ pub fn maybeRegisterRefreshSignature(
     try self.plugins.refresh.signatures.append(self.allocator, .{
         .handle_span = handle_span,
         .component_name = name,
+        .component_idx = component_idx,
         .signature = signature,
     });
 
