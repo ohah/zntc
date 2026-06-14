@@ -852,7 +852,10 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             return false;
                         }
                         const octal_start = self.pos - 1;
-                        while (!self.isEnd() and self.peek() >= '0' and self.peek() <= '7') {
+                        // Annex B legacy octal: 최대 3 octal digit (값 ≤ 0o377 = 255). 초과 digit 은
+                        // 별도 리터럴로 남긴다 — 무제한 소비 시 `\0777` 이 511 로 디코드돼 byte 범위를
+                        // 넘고 octal 재방출이 round-trip 안 됐다(#4376). '0' 포함 3 자리로 제한.
+                        while (self.pos - octal_start < 3 and !self.isEnd() and self.peek() >= '0' and self.peek() <= '7') {
                             self.advance();
                         }
                         const val = char_helpers.computeOctalValue(self.source, octal_start, self.pos);

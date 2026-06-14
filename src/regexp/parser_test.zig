@@ -103,6 +103,29 @@ test "braced quantifier without atom in unicode mode" {
 // Tests — AST 모드 (emit_ast=true)
 // ============================================================
 
+test "#4376 legacy octal escape 는 최대 3 digit (Annex B, 값 ≤ 255)" {
+    // `\0777` 은 `\077`(octal 077 = 63) + 리터럴 '7' 이어야 한다(Annex B: 최대 3 octal digit).
+    // 수정 전엔 4 digit 전부 소비해 511 로 디코드 → byte 범위 초과 + octal round-trip 깨짐.
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("\\0777", .{}, std.testing.allocator);
+    defer p.deinit();
+    const result = p.parse();
+    try std.testing.expect(result != null);
+    var tree = result.?;
+    defer tree.deinit();
+
+    const root = tree.getNode(tree.root);
+    const alts = root.getNodeList();
+    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const terms = alt.getNodeList();
+    // octal atom + 리터럴 '7' = 2 terms (수정 전: 1 term, value 511).
+    try std.testing.expectEqual(@as(u32, 2), terms.len);
+    const ch0 = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    try std.testing.expectEqual(@as(u32, 0o77), ch0.data[0]); // 63
+    const ch1 = tree.getNode(@enumFromInt(tree.extra_data[terms.start + 1]));
+    try std.testing.expectEqual(@as(u32, '7'), ch1.data[0]); // literal '7'
+}
+
 test "AST: basic literal pattern" {
     // "abc" → Disjunction > Alternative > [Character('a'), Character('b'), Character('c')]
     const P = PatternParser(true);
