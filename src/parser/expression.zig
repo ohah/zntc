@@ -1938,25 +1938,10 @@ fn containsLoneSurrogate(s: []const u8) bool {
             }
         }
     }
-    // 마지막 몇 바이트도 체크
-    while (i < s.len) : (i += 1) {
-        if (s[i] == '\\' and i + 5 < s.len and s[i + 1] == 'u' and s[i + 2] != '{') {
-            const codepoint = parseHex4(s[i + 2 .. i + 6]) orelse continue;
-            if (codepoint >= 0xD800 and codepoint <= 0xDFFF) {
-                if (codepoint >= 0xD800 and codepoint <= 0xDBFF) {
-                    // check for low surrogate
-                    if (i + 11 < s.len and s[i + 6] == '\\' and s[i + 7] == 'u') {
-                        const low = parseHex4(s[i + 8 .. i + 12]) orelse return true;
-                        if (low >= 0xDC00 and low <= 0xDFFF) {
-                            i += 11;
-                            continue;
-                        }
-                    }
-                }
-                return true;
-            }
-        }
-    }
+    // 위 loop 가 `i+5 < s.len`(i ≤ s.len-6)로 완전한 `\uHHHH`(6 byte)가 시작 가능한 모든 위치를
+    // 빠짐없이 검사한다 — 6 byte 가 안 남는 끝부분엔 escape 가 시작될 수 없으므로 추가 검사 불필요.
+    // (과거 "마지막 몇 바이트" 보조 loop 는 inner 가드 `i+5<s.len` 가 i≥s.len-5 에서 절대 참이 될
+    //  수 없어 dead code 였다 — 제거. #4365)
     return false;
 }
 
