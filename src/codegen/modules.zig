@@ -484,7 +484,8 @@ pub fn emitExportDefault(self: anytype, node: Node) !void {
                         if (!self.options.esm_var_assign_only) try self.write("var ");
                         try self.write(def_name);
                         try self.writeByte('=');
-                        try self.emitNode(inner);
+                        // sequence(comma) inner 는 괄호 wrap 필요 — `=a,b` 가 `(=a),b` 로 깨짐 (#4289).
+                        try self.emitExpr(inner, .comma, .{});
                         try self.writeByte(';');
                     } else if (!self.isExportDefaultSelfRef(inner, def_name)) {
                         // namespace import이면 ns var name을 직접 사용 (rename과 다름).
@@ -492,7 +493,7 @@ pub fn emitExportDefault(self: anytype, node: Node) !void {
                             // mangling으로 이름이 바뀐 경우 (View → View$44) 할당 필요.
                             try self.write(def_name);
                             try self.writeByte('=');
-                            try self.emitNode(inner);
+                            try self.emitExpr(inner, .comma, .{});
                             try self.writeByte(';');
                         }
                     }
@@ -502,7 +503,7 @@ pub fn emitExportDefault(self: anytype, node: Node) !void {
         }
         try self.write(self.options.cjs_module_name);
         try self.write(".exports=");
-        try self.emitNode(node.data.unary.operand);
+        try self.emitExpr(node.data.unary.operand, .comma, .{});
         try self.writeByte(';');
         return;
     }
@@ -596,7 +597,8 @@ pub fn emitDefaultVarAssignment(self: anytype, name: []const u8, inner: NodeInde
         try self.write(name);
         try self.write(" = ");
     }
-    try self.emitNode(inner);
+    // sequence(comma) inner 는 괄호 wrap — `var x = a,b` 가 두 선언으로 깨짐 (#4289).
+    try self.emitExpr(inner, .comma, .{});
     try self.writeByte(';');
 }
 
