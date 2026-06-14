@@ -205,7 +205,7 @@ export async function loadModuleDefault<T>(
   const allowArray = options?.allowArray === true;
   const ext = extname(absPath).toLowerCase();
   if (ext === '.json') {
-    const raw = readFileOrThrowNotFound(absPath);
+    const raw = readFileOrThrowNotFound(absPath, kind);
     try {
       return JSON.parse(raw) as T;
     } catch (err) {
@@ -242,7 +242,7 @@ async function loadTsModule(
   allowArray: boolean,
 ): Promise<unknown> {
   init();
-  const source = readFileOrThrowNotFound(absPath);
+  const source = readFileOrThrowNotFound(absPath, kind);
   // ZNTC parser 는 filename 의 `.cts` 확장자를 보고 CommonJS Script 모드로 진입해
   // 최상위 `export default` 를 거부한다 (`src/parser/parser.zig:283` 부근). 사용자가
   // `.cts` 에 `export default {...}` 를 쓴 의도는 TS 식 ESM 이므로 파싱 단계에서만
@@ -313,12 +313,12 @@ export async function importAndResolveDefault<T = UserConfig>(
   return value as T;
 }
 
-function readFileOrThrowNotFound(absPath: string): string {
+function readFileOrThrowNotFound(absPath: string, kind: ModuleKind): string {
   try {
     return readFileSync(absPath, 'utf8');
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new Error(`@zntc/core: config file not found: ${absPath}`);
+      throw new Error(`@zntc/core: ${kind} file not found: ${absPath}`);
     }
     throw err;
   }

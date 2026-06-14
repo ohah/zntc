@@ -62,6 +62,11 @@ describe('loadWorkspace', () => {
     expect(ws).toEqual(['./pkg-a', { name: 'shared' }]);
   });
 
+  test('#4332: 없는 workspace 파일 → "workspace file not found" (config 아님)', () => {
+    const p = join(dir, 'does-not-exist.workspace.ts');
+    expect(loadWorkspace(p)).rejects.toThrow(/workspace file not found/);
+  });
+
   test('.json: 배열 export', async () => {
     const p = join(dir, 'b.workspace.json');
     writeFileSync(p, JSON.stringify(['./pkg-x', { name: 'y' }]));
