@@ -1009,6 +1009,23 @@ test "Enum: undefined export still errors" {
     try analyzeHasError("export { Nonexistent };", "not defined");
 }
 
+test "#4398 export binding: 함수 파라미터 이름은 module export 를 만족 못함" {
+    // x 는 함수 파라미터(함수 스코프) 일 뿐 module-scope binding 이 아니므로
+    // export { x } 는 에러여야 한다. 과거엔 모든 스코프 심볼을 이름으로 스캔해
+    // 파라미터를 hit → false-negative (에러 미발생).
+    try analyzeHasError("function f(x) { return x; }\nexport { x };", "not defined");
+}
+
+test "#4398 export binding: 중첩 로컬 이름도 module export 를 만족 못함" {
+    try analyzeHasError("function f() { let inner = 1; return inner; }\nexport { inner };", "not defined");
+}
+
+test "#4398 export binding: forward module-scope 선언/import 는 여전히 valid" {
+    // 모듈 스코프 binding 의 forward 참조(선언이 export 뒤) 는 유효 — 회귀 가드.
+    try analyzeNoErrors("export { y };\nlet y = 1;");
+    try analyzeNoErrors("export { Z };\nimport { Z } from \"./m\";");
+}
+
 // ====================================================================
 // D5: import type declaration + 다른 import → export 검증
 // ====================================================================

@@ -3821,12 +3821,17 @@ pub const SemanticAnalyzer = struct {
     /// export { x } (without from) — x가 선언된 바인딩인지 검증한다.
     /// module scope에서 VarDeclaredNames + LexicallyDeclaredNames에 없으면 에러.
     fn checkExportBinding(self: *SemanticAnalyzer, name: []const u8, span: Span) AllocError!void {
-        // RFC #3310 (D20): import 는 module top hoist 라 forward `export { X };
-        // import X` 도 valid — predeclareImportDecl 가 1st-pass 에서 user import 를
-        // .import_binding symbol 로 등록하므로 이 symbol scan 이 forward import 도 hit.
-        for (self.symbols.items) |sym| {
-            const sym_name = self.ast.getText(sym.name);
-            if (std.mem.eql(u8, sym_name, name)) return; // 존재
+        // module scope 에서만 조회한다 (markSymbolExported 와 동일 기준). 함수 파라미터나
+        // 중첩 스코프 로컬은 module export 를 만족하지 못하므로, 전체 symbol 을 이름으로
+        // 스캔하던 과거 방식은 그런 이름을 hit 해 false-negative(에러 누락) 였다.
+        // RFC #3310 (D20): import 는 module top hoist 라 forward `export { X }; import X`
+        // 도 valid — predeclareImportDecl 가 1st-pass 에서 user import 를 .import_binding
+        // symbol 로 module scope 에 등록하므로 이 module-scope 조회가 forward import 도 hit.
+        const module_scope = self.findVarScope();
+        if (!module_scope.isNone()) {
+            const scope_idx = module_scope.toIndex();
+            if (scope_idx < self.scope_maps.items.len and
+                self.scope_maps.items[scope_idx].get(name) != null) return; // 존재
         }
         // 찾지 못함 → 에러
         try self.addErrorMsgCode(span, try std.fmt.allocPrint(
