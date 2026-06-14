@@ -2195,3 +2195,26 @@ test "#2474 regression: 20-element catch destructure conflicts with body let —
     }
     try std.testing.expect(found);
 }
+
+test "SemanticAnalyzer: bundle-mode member-target with none object does not OOB (#4271)" {
+    // `().x = 1` 류 error-recovery 입력에서 member-target 의 object 가 .none 으로
+    // 언래핑되어 checkImportMutation 이 getNode(.none) → OOB panic 하던 회귀.
+    // 가드 적용 후에는 panic 없이 완료되어야 한다.
+    const sources = [_][]const u8{
+        "().x = 1;",
+        "delete ().x;",
+        "().x++;",
+        "import * as ns from \"m\"; ().x = ns;",
+    };
+    for (sources) |src| {
+        var scanner = try Scanner.init(std.testing.allocator, src);
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        defer parser.deinit();
+        _ = parser.parse() catch continue; // 파서가 완전히 거부하면 이 케이스 스킵
+        var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+        defer ana.deinit();
+        ana.check_import_mutation = true; // 번들 모드에서만 검사 활성
+        ana.analyze() catch {}; // analyzer 에러는 무관 — 핵심은 OOB panic 부재
+    }
+}
