@@ -306,27 +306,12 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
         );
     }
 
-    // import(...) — dynamic import는 expression. expression statement로 파싱.
-    if (self.current() == .l_paren) {
-        // import 키워드는 이미 advance()됨. parsePrimaryExpression에 위임하기 위해
-        // 수동으로 import expression 생성.
-        try self.expect(.l_paren);
-        const arg = try self.parseAssignmentExpression();
-        const options = try parseImportCallOptions(self);
-        try self.expect(.r_paren);
-        const import_expr = try self.ast.addNode(.{
-            .tag = .import_expression,
-            .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = arg, .right = options, .flags = 0 } },
-        });
-        // 후속 .then() 등의 member/call 체이닝 처리
-        _ = try self.eat(.semicolon);
-        return try self.ast.addNode(.{
-            .tag = .expression_statement,
-            .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .unary = .{ .operand = import_expr, .flags = 0 } },
-        });
-    }
+    // NOTE: dynamic import `import(...)` / `import.meta` 는 parseStatement(statement.zig)가
+    // `import` 다음 `(`/`.` 를 보고 parseExpressionStatement 로 라우팅한다(parseImportCallArgs 가
+    // appendImportRecord 까지 수행). 따라서 parseImportDeclaration 은 절대 `.l_paren` 상태로
+    // 진입하지 않는다 — 과거 여기 있던 `l_paren` 블록은 dead code 였고, parseImportCallArgs 와 달리
+    // appendImportRecord 가 없어 도달 시 dynamic import 가 그래프에서 누락될 잠재 divergence 였다.
+    // 제거. (#4366)
 
     // 스펙ifier 파싱
     const scratch_top = self.saveScratch();
