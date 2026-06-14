@@ -106,6 +106,40 @@ test "#3511 i+u negated — fold-확장 후 complement (게이트 해제)" {
     }
 }
 
+test "#4307 v-flag intersection/subtraction class → bail (union miscompile 금지)" {
+    const a = std.testing.allocator;
+    const o = transform.Options{ .unicode_brace = true, .ignore_case = true };
+    // [\d&&\w]/iv = 교집합 = \d. collectClassSet 이 kind 무시하면 union(\w)으로 오변환.
+    // kind!=union 이면 bail → /v 보존(astral_u_incomplete) → 오변환 0.
+    {
+        var in = mod.parse("[\\d&&\\w]", "iv", a) orelse return error.ParseFailed;
+        defer in.deinit();
+        var r = try transform.transform(in, o, a);
+        defer r.deinit();
+        try std.testing.expect(r.astral_u_incomplete); // bail (union 으로 안 내림)
+        const out = try printer.print(r.ast, a);
+        defer a.free(out);
+        // union 확장(\w = A-Z/a-z/_)이 새어 나오면 안 됨.
+        try std.testing.expect(std.mem.indexOf(u8, out, "\\u005A") == null); // 'Z'
+    }
+    // [\w--\d]/iv = 차집합. 마찬가지로 bail.
+    {
+        var in = mod.parse("[\\w--\\d]", "iv", a) orelse return error.ParseFailed;
+        defer in.deinit();
+        var r = try transform.transform(in, o, a);
+        defer r.deinit();
+        try std.testing.expect(r.astral_u_incomplete);
+    }
+    // union(기본) class 는 회귀 없이 다운레벨 — bail 아님.
+    {
+        var in = mod.parse("[\\d]", "iv", a) orelse return error.ParseFailed;
+        defer in.deinit();
+        var r = try transform.transform(in, o, a);
+        defer r.deinit();
+        try std.testing.expect(!r.astral_u_incomplete); // 정상 처리
+    }
+}
+
 test "transform 조합 — dotall + strip_named" {
     const o = transform.Options{ .dotall = true, .strip_named = true };
     try expectTransform("(?<a>.)b", "", o, "([\\s\\S])b"); // dotall 은 group 안에도 적용

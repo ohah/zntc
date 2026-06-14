@@ -335,6 +335,10 @@ const T = struct {
     /// class body → CodePointSet. 단순 positive(character/range/\d\w\s)만
     /// 지원. negative-escape(\D\W\S)/property/class_string/nested → false.
     fn collectClassSet(self: *T, n: Node, set: *cps.CodePointSet) TransformError!bool {
+        // 이 함수는 union 의미 전용 — v-flag 의 `[a&&b]`(intersection)/`[a--b]`(subtraction)를
+        // 평탄 union 으로 수집하면 교집합/차집합이 합집합으로 뒤집힌다(silent miscompile). non-union
+        // 은 bail → 호출부가 원본 /u·/v 를 보존(astral_u_incomplete/i_fold_incomplete) → 오변환 0. #4307
+        if (n.classKind() != .@"union") return false;
         const a = self.b.a;
         for (self.in.getNodeList(n.getClassBody())) |cid| {
             const m = self.in.getNode(@enumFromInt(cid));
