@@ -1840,13 +1840,10 @@ fn rewriteDynamicImports(
             continue;
         }
 
-        // 코드에서 원본 specifier를 찾아 교체
-        if (std.mem.indexOf(u8, result, rec.specifier)) |pos| {
-            const new_result = try std.mem.concat(allocator, u8, &.{
-                result[0..pos],
-                replacement,
-                result[pos + rec.specifier.len ..],
-            });
+        // 코드에서 원본 specifier를 청크 파일명으로 교체. opener/quote/`)` 경계를
+        // 확인하며 모든 occurrence 를 순회(positional walk) — prefix 충돌
+        // (`./x` vs `./xyz`)·문자열 리터럴 오재작성·다중 호출 누락 방지(#4295).
+        if (try rewriteImportSpecifier(allocator, result, rec.specifier, replacement)) |new_result| {
             allocator.free(result);
             result = new_result;
         }
@@ -1957,6 +1954,68 @@ fn rewriteImportCallToWrapper(
     const call_end = after_spec + 2; // include ')'
 
     return try std.mem.concat(allocator, u8, &.{ code[0..call_start], replacement, code[call_end..] });
+}
+
+/// `import("specifier")` / `import('specifier')` 호출 안의 *specifier 텍스트만*
+/// replacement 로 교체한다(호출 전체가 아니라 따옴표 사이의 specifier 만 — 청크
+/// 파일명 치환용). opener(`import("`/`import('`) 와 닫는 quote 다음이 `)` 또는
+/// `,`(import attributes 두 번째 인자) 인지 경계를 확인하므로:
+///   - prefix 충돌: specifier `./x` 가 `import("./xyz")` 안의 `./x` 와 매칭돼도
+///     닫는 quote 불일치(`y` != `"`)로 skip → `./xyz` 손상 없음.
+///   - 문자열 리터럴/주석 속 specifier 텍스트(`const s="./x"`)는 앞 opener
+///     불일치로 skip.
+///   - import attributes(`import("./x", { with: {…} })`)는 닫는 quote 뒤가 `,`
+///     라 `)` 만 허용하면 specifier 가 미교체로 남는 miscompile → `,` 도 허용
+///     (specifier 만 바꾸므로 attributes 인자는 그대로 보존). codegen 의
+///     `emitImportExpr` 는 quote 직후 공백 없이 `,` 를 찍는다(calls.zig).
+/// 코드 전체를 positional walk 하여 *모든* 진짜 호출을 교체(첫 occurrence 한계
+/// 없음 — `import("./x");import("./x")` 둘 다 치환). 한 번이라도 교체하면 새
+/// owned slice, 아니면 null(caller 가 원본 유지). #4295.
+fn rewriteImportSpecifier(
+    allocator: std.mem.Allocator,
+    code: []const u8,
+    specifier: []const u8,
+    replacement: []const u8,
+) !?[]u8 {
+    if (specifier.len == 0) return null;
+    const opener_len = "import(\"".len;
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var any = false;
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, code, i, specifier)) |pos| {
+        const gate_ok = blk: {
+            if (pos < opener_len) break :blk false;
+            const opener = code[pos - opener_len .. pos];
+            if (!std.mem.eql(u8, opener, "import(\"") and !std.mem.eql(u8, opener, "import('")) break :blk false;
+            const quote = code[pos - 1];
+            const after = pos + specifier.len;
+            if (after + 1 >= code.len) break :blk false;
+            if (code[after] != quote) break :blk false;
+            // 닫는 quote 다음: `)`(인자 1개) 또는 `,`(import attributes 2번째 인자).
+            // prefix 충돌은 위 quote 체크가 이미 막으므로 `,` 허용해도 안전.
+            if (code[after + 1] != ')' and code[after + 1] != ',') break :blk false;
+            break :blk true;
+        };
+        if (gate_ok) {
+            try out.appendSlice(allocator, code[i..pos]);
+            try out.appendSlice(allocator, replacement);
+            i = pos + specifier.len;
+            any = true;
+        } else {
+            // 가짜 매칭(prefix 충돌/문자열 리터럴) — 한 글자만 흘려보내고 그
+            // 안쪽에 겹쳐 있을 수 있는 진짜 매칭을 놓치지 않도록 +1 만 전진.
+            try out.appendSlice(allocator, code[i .. pos + 1]);
+            i = pos + 1;
+        }
+    }
+    if (!any) {
+        out.deinit(allocator);
+        return null;
+    }
+    try out.appendSlice(allocator, code[i..]);
+    return try out.toOwnedSlice(allocator);
 }
 
 /// hash 치환 후 chunk 별 sourcemap 마무리. chunk loop 는 모든 chunk 의
@@ -3113,4 +3172,103 @@ test "appendCssLinkPrologue: DOM-guarded link injection for href" {
     try std.testing.expect(std.mem.indexOf(u8, s, "rel=\"stylesheet\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, s, "new URL(\"./route-a-1a2b3c4d.css\",import.meta.url)") != null);
     try std.testing.expect(std.mem.endsWith(u8, s, "appendChild(__zntc_css);}\n"));
+}
+
+fn testRewriteSpecifier(
+    code: []const u8,
+    specifier: []const u8,
+    replacement: []const u8,
+    expected: ?[]const u8,
+) !void {
+    const result = try rewriteImportSpecifier(std.testing.allocator, code, specifier, replacement);
+    if (expected) |exp| {
+        try std.testing.expect(result != null);
+        defer std.testing.allocator.free(result.?);
+        try std.testing.expectEqualStrings(exp, result.?);
+    } else {
+        try std.testing.expect(result == null);
+    }
+}
+
+test "rewriteImportSpecifier: 기본 단일 호출 교체" {
+    try testRewriteSpecifier(
+        "import(\"./x\")",
+        "./x",
+        "./x-abc1234.js",
+        "import(\"./x-abc1234.js\")",
+    );
+}
+
+test "rewriteImportSpecifier: prefix 충돌 — ./x 가 ./xyz 손상 안 함" {
+    try testRewriteSpecifier(
+        "import(\"./xyz\");import(\"./x\")",
+        "./x",
+        "./x-h.js",
+        "import(\"./xyz\");import(\"./x-h.js\")",
+    );
+}
+
+test "rewriteImportSpecifier: 문자열 리터럴 속 specifier 미교체" {
+    try testRewriteSpecifier(
+        "const s=\"./x\";import(\"./x\")",
+        "./x",
+        "./x-h.js",
+        "const s=\"./x\";import(\"./x-h.js\")",
+    );
+}
+
+test "rewriteImportSpecifier: 다중 occurrence 전부 교체" {
+    try testRewriteSpecifier(
+        "import(\"./x\");foo();import(\"./x\")",
+        "./x",
+        "./x-h.js",
+        "import(\"./x-h.js\");foo();import(\"./x-h.js\")",
+    );
+}
+
+test "rewriteImportSpecifier: single quote opener" {
+    try testRewriteSpecifier(
+        "import('./x')",
+        "./x",
+        "./x-h.js",
+        "import('./x-h.js')",
+    );
+}
+
+test "rewriteImportSpecifier: import attributes 2번째 인자 보존" {
+    // codegen 비-minify: `import("./x", { with: {…} })` — 닫는 quote 뒤가 `,`.
+    try testRewriteSpecifier(
+        "import(\"./x\", { with: { type: \"json\" } })",
+        "./x",
+        "./x-h.js",
+        "import(\"./x-h.js\", { with: { type: \"json\" } })",
+    );
+}
+
+test "rewriteImportSpecifier: import attributes minify (quote 직후 ,)" {
+    try testRewriteSpecifier(
+        "import('./x',{with:{type:'json'}})",
+        "./x",
+        "./x-h.js",
+        "import('./x-h.js',{with:{type:'json'}})",
+    );
+}
+
+test "rewriteImportSpecifier: import 호출 없으면 null (문자열만)" {
+    try testRewriteSpecifier(
+        "const s=\"./x\";",
+        "./x",
+        "./x-h.js",
+        null,
+    );
+}
+
+test "rewriteImportSpecifier: prefix-only 매칭만 있으면 null" {
+    // `./x` 가 `./xyz` 안에만 등장 — 진짜 import 호출 아님.
+    try testRewriteSpecifier(
+        "import(\"./xyz\")",
+        "./x",
+        "./x-h.js",
+        null,
+    );
 }
