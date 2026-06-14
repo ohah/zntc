@@ -71,17 +71,23 @@ fn processClass(ast: *Ast, class_ni: u32) void {
     var renames: std.StringHashMapUnmanaged(Span) = .empty;
     defer renames.deinit(ast.allocator);
     var counter: u32 = 0;
-    for (names.keys()) |orig| {
+    outer: for (names.keys()) |orig| {
         var buf: [8]u8 = undefined;
-        const new_text = formatPrivateName(&buf, counter) orelse break;
+        // generated 이름이 rename 되지 않고 *생존하는 다른* 원본 이름과 같으면 중복 private
+        // 선언(JS SyntaxError)이 되므로 건너뛰고 다음 counter 를 쓴다. `names` 가 원본 전체
+        // 집합 = reserved set — 긴 원본은 짧은 generated 와 겹치지 않아 over-reserve 무해.
+        const new_text = candidate: while (true) {
+            const c = formatPrivateName(&buf, counter) orelse break :outer; // 이름 풀 소진
+            counter += 1;
+            if (names.contains(c) and !std.mem.eql(u8, c, orig)) continue;
+            break :candidate c;
+        };
         if (new_text.len >= orig.len) {
             // 원본보다 길어지면 rename 이득 없음 — skip (원본 유지)
-            counter += 1;
             continue;
         }
         const new_span = ast.addString(new_text) catch break;
         renames.put(ast.allocator, orig, new_span) catch break;
-        counter += 1;
     }
 
     if (renames.count() == 0) return;
