@@ -2806,6 +2806,27 @@ function postProcessCssOutputs(result: BuildResult, options: BuildOptions): void
 }
 
 /**
+ * 단일 출력 파일의 디스크 경로를 결정한다(순수 함수 — 단위 테스트용 분리).
+ *
+ * outfile 모드에선 메인 번들(`bundle.js`)을 outfile 로, 그 짝 sourcemap(`bundle.js.map`)을
+ * `outfile.map` 으로 보낸다. **메인 map 에만 특정**(`=== 'bundle.js.map'`) — 과거 `endsWith('.map')`
+ * 광범위 매칭은 메인이 아닌 map(다중 청크 등)도 같은 `outfile.map` 으로 보내 덮어썼다. 그 외
+ * 파일은 outdir 가 있으면 그 아래로, 없으면 cwd 기준으로 해석.
+ *
+ * @internal
+ */
+export function resolveOutputPath(
+  filePath: string,
+  opts: { outfileResolved: string | null; outdir?: string },
+): string {
+  const { outfileResolved, outdir } = opts;
+  if (outfileResolved && filePath === 'bundle.js') return outfileResolved;
+  if (outfileResolved && filePath === 'bundle.js.map') return `${outfileResolved}.map`;
+  if (outdir) return join(resolve(outdir), filePath);
+  return resolve(filePath);
+}
+
+/**
  * write/outdir/outfile 옵션에 따라 빌드 결과를 디스크에 기록한다.
  */
 function writeOutputFiles(result: BuildResult, options: BuildOptions): void {
@@ -2828,18 +2849,7 @@ function writeOutputFiles(result: BuildResult, options: BuildOptions): void {
   const outfileResolved = options.outfile ? resolve(options.outfile) : null;
 
   for (const file of result.outputFiles) {
-    let outPath: string;
-    if (outfileResolved && file.path === 'bundle.js') {
-      // 메인 번들 → outfile 경로로 출력
-      outPath = outfileResolved;
-    } else if (outfileResolved && file.path.endsWith('.map')) {
-      // 소스맵 → outfile 옆에 .map으로 출력
-      outPath = outfileResolved + '.map';
-    } else if (options.outdir) {
-      outPath = join(resolve(options.outdir), file.path);
-    } else {
-      outPath = resolve(file.path);
-    }
+    const outPath = resolveOutputPath(file.path, { outfileResolved, outdir: options.outdir });
     const dir = dirname(outPath);
     if (!createdDirs.has(dir)) {
       mkdirSync(dir, { recursive: true });

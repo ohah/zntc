@@ -4,6 +4,7 @@ import './test/core/api';
 import './test/core/build-sync';
 import './test/core/build-async';
 import './test/core/output-file-shape';
+import './test/core/resolve-output-path';
 import './test/core/build-plugins';
 import './test/core/edge-cases';
 import './test/core/plugin-advanced';
