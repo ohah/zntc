@@ -653,22 +653,8 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator,
                 i += 1;
                 const kv = args[i];
                 if (std.mem.indexOf(u8, kv, "=")) |eq_pos| {
-                    const path_str = kv[0..eq_pos];
-                    const target_str = kv[eq_pos + 1 ..];
-                    // target에서 host:port 추출 (http://host:port)
-                    const after_scheme = if (std.mem.indexOf(u8, target_str, "://")) |s| target_str[s + 3 ..] else target_str;
-                    var target_host: []const u8 = after_scheme;
-                    var target_port: u16 = 80;
-                    if (std.mem.indexOf(u8, after_scheme, ":")) |colon| {
-                        target_host = after_scheme[0..colon];
-                        target_port = std.fmt.parseInt(u16, after_scheme[colon + 1 ..], 10) catch 80;
-                    }
-                    try opts.proxy_list.append(allocator, .{
-                        .path = path_str,
-                        .target = target_str,
-                        .target_host = target_host,
-                        .target_port = target_port,
-                    });
+                    // host/port 추출 + scheme 기본 포트(https=443)는 ProxyRule.fromTarget 공유.
+                    try opts.proxy_list.append(allocator, lib.server.DevServer.ProxyRule.fromTarget(kv[0..eq_pos], kv[eq_pos + 1 ..]));
                 } else {
                     try stderr.print("zntc: --proxy requires PATH=TARGET format (e.g. /api=http://localhost:8080)\n", .{});
                     std.process.exit(1);

@@ -176,6 +176,21 @@ pub const DevServer = struct {
         target_host: []const u8,
         /// target에서 추출한 port
         target_port: u16,
+
+        /// `--proxy PATH=TARGET` 의 target(`http(s)://host[:port]`)에서 host/port 추출.
+        /// 명시 port 가 없으면 scheme 기본값(https=443, 그 외=80). host/target 은 입력 슬라이스
+        /// borrow — caller 가 수명 보장. cli/options.zig·cli/app.zig 공유(중복·발산 제거).
+        pub fn fromTarget(path: []const u8, target: []const u8) ProxyRule {
+            const default_port: u16 = if (std.mem.startsWith(u8, target, "https://")) 443 else 80;
+            const after_scheme = if (std.mem.indexOf(u8, target, "://")) |s| target[s + 3 ..] else target;
+            var host: []const u8 = after_scheme;
+            var port: u16 = default_port;
+            if (std.mem.indexOf(u8, after_scheme, ":")) |colon| {
+                host = after_scheme[0..colon];
+                port = std.fmt.parseInt(u16, after_scheme[colon + 1 ..], 10) catch default_port;
+            }
+            return .{ .path = path, .target = target, .target_host = host, .target_port = port };
+        }
     };
 
     /// PR-3b-iii: lazy on-demand 컴파일 상태. entry 빌드가 채운 seed 경로 목록(역참조용)과
@@ -2125,6 +2140,22 @@ pub fn sanitizePath(raw: []const u8) ?[]const u8 {
 // ──────────────────────────────────────────────────────────────────
 // Tests
 // ──────────────────────────────────────────────────────────────────
+
+test "#4316 ProxyRule.fromTarget: scheme 기본 포트(https=443) + 명시 포트 우선" {
+    const testing = std.testing;
+    const R = DevServer.ProxyRule;
+    // https + port 생략 → 443
+    try testing.expectEqual(@as(u16, 443), R.fromTarget("/api", "https://example.com").target_port);
+    try testing.expectEqualStrings("example.com", R.fromTarget("/api", "https://example.com").target_host);
+    // http + port 생략 → 80
+    try testing.expectEqual(@as(u16, 80), R.fromTarget("/api", "http://example.com").target_port);
+    // 명시 포트는 scheme 기본값보다 우선
+    try testing.expectEqual(@as(u16, 8080), R.fromTarget("/api", "http://localhost:8080").target_port);
+    try testing.expectEqual(@as(u16, 9443), R.fromTarget("/api", "https://example.com:9443").target_port);
+    try testing.expectEqualStrings("localhost", R.fromTarget("/api", "http://localhost:8080").target_host);
+    // scheme 없으면 80 (기존 동작 유지)
+    try testing.expectEqual(@as(u16, 80), R.fromTarget("/api", "localhost").target_port);
+}
 
 // PR-3b-iii: lazy on-demand 라우트의 역참조 핵심. 요청 청크 이름의 pathhash 8-hex 가
 // seed 경로의 truncate(Wyhash) 와 일치하면 그 seed 경로를 돌려준다(chunk_names 패턴 무관).
