@@ -359,6 +359,17 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
         }
     }
 
+    // 숫자 리터럴 타입(decimal/float/binary/octal/hex/exponential/bigint) — 하드코딩 나열이
+    // binary/octal/exponential 을 누락했으므로 TS(D15)와 동일하게 isNumericLiteral() 로 일반화 (#4293).
+    if (self.current().isNumericLiteral()) {
+        try self.advance();
+        return try self.ast.addNode(.{
+            .tag = .flow_literal_type,
+            .span = .{ .start = span.start, .end = self.currentSpan().start },
+            .data = .{ .string_ref = span },
+        });
+    }
+
     switch (self.current()) {
         // void
         .kw_void => {
@@ -418,15 +429,8 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
                 .data = .{ .none = 0 },
             });
         },
-        .decimal,
-        .float,
-        .hex,
-        .string_literal,
-        .decimal_bigint,
-        .hex_bigint,
-        .octal_bigint,
-        .binary_bigint,
-        => {
+        // 숫자 리터럴은 위 isNumericLiteral() guard 가 처리 — 여기선 문자열 리터럴 타입만.
+        .string_literal => {
             try self.advance();
             return try self.ast.addNode(.{
                 .tag = .flow_literal_type,
@@ -471,10 +475,8 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
         // 음수 리터럴 타입: -1
         .minus => {
             try self.advance(); // skip -
-            if (self.current() == .decimal or self.current() == .float or self.current() == .hex or
-                self.current() == .decimal_bigint or self.current() == .hex_bigint or
-                self.current() == .octal_bigint or self.current() == .binary_bigint)
-            {
+            // TS(D15)와 동일하게 isNumericLiteral() 로 일반화 — binary/octal/exponential 포함 (#4293).
+            if (self.current().isNumericLiteral()) {
                 try self.advance();
                 return try self.ast.addNode(.{
                     .tag = .flow_literal_type,
