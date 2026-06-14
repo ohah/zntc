@@ -439,29 +439,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
 
             // IIFE (lowerClassDeclaration과 동일 패턴) — name_span을 재사용.
-            const expr_fresh_name = try es_helpers.makeBindingIdentifier(self, name_span);
+            // func_node 는 위에서 이미 fresh name(`func_name` = makeBindingIdentifier, symbol
+            // 무연결)으로 빌드되고 instance_fields → `_this` alias → __classCallCheck prepend 까지
+            // 끝난 상태이므로 그대로 사용한다. 이전엔 여기서 재빌드하며 `_this` alias prepend 를
+            // 누락해, 화살표-함수 인스턴스 필드(`f = () => this`)가 `_this is not defined` 로
+            // 런타임 크래시했다 (#4279). 재빌드 제거로 비대칭을 구조적으로 차단.
             const expr_super_param = "_super";
-
-            // func_node를 fresh name으로 재생성 (symbol 연결 없음)
-            func_node = if (cm.constructor_idx) |ctor_idx|
-                try buildFunctionFromConstructor(self, ctor_idx, expr_fresh_name, cm.instance_fields.items, has_super and super_span != null, span)
-            else if (has_super and super_span != null)
-                try buildDefaultSuperConstructor(self, expr_fresh_name, super_span.?, cm.instance_fields.items, span)
-            else
-                try buildEmptyFunction(self, expr_fresh_name, span);
-
-            if (cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
-                func_node = try prependToFunctionBody(self, func_node, cm.instance_fields.items);
-            }
-            // classCallCheck
-            {
-                const check_id = try es_helpers.makeRuntimeHelperRef(self, "__classCallCheck");
-                const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .none = 0 } });
-                const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
-                const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
-                func_node = try prependToFunctionBody(self, func_node, &.{try es_helpers.makeExprStmt(self, call, span)});
-                self.runtime_helpers.class_call_check = true;
-            }
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);

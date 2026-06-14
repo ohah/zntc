@@ -788,6 +788,20 @@ test "ES5: class with async method + non-async method" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.defineProperty(Foo.prototype,\"sync\"") != null);
 }
 
+test "ES5: class expression with arrow `this` field declares _this alias (#4279)" {
+    // class 식(expression) + 메서드(has_extra → IIFE) + 화살표 this 필드.
+    // 과거 IIFE 재빌드가 `var _this = this;` alias prepend 를 누락 → 화살표 필드가
+    // `_this is not defined` 로 런타임 크래시했다. 재빌드 제거 후 alias 가 보존돼야 한다.
+    var r = try e2eTarget(std.testing.allocator,
+        \\const C = class {
+        \\  m() { return 1; }
+        \\  f = () => this;
+        \\};
+    , .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _this=this") != null);
+}
+
 test "ES5: async with while(true) + await + break" {
     var r = try e2eTarget(std.testing.allocator, "async function foo() { while (true) { var x = await next(); if (!x) break; } }", .es5);
     defer r.deinit();
