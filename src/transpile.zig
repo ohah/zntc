@@ -2857,3 +2857,28 @@ test "#4390 refresh hook-sig: _s component ref follows mangler rename" {
     // dangling 원본 이름 참조가 남으면 안 된다.
     try std.testing.expect(std.mem.indexOf(u8, r.code, "_s(App,") == null);
 }
+
+test "#4392 refresh hook-sig: long signature (>1024B) not truncated/aborted" {
+    // hook 이 많은 컴포넌트는 signature 문자열이 1024바이트를 넘는다. 과거
+    // buildRefreshSigCall 의 고정 [1024]u8 버퍼는 초과 시 가짜 OOM 으로 transpile
+    // 전체를 중단시켰다.
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(std.testing.allocator);
+    try src.appendSlice(std.testing.allocator, "function App() {\n");
+    var i: usize = 0;
+    while (i < 120) : (i += 1) {
+        var line: [40]u8 = undefined;
+        const s = try std.fmt.bufPrint(&line, "  useHookNumber{d}();\n", .{i});
+        try src.appendSlice(std.testing.allocator, s);
+    }
+    try src.appendSlice(std.testing.allocator, "  return null;\n}\n");
+
+    var r = try transpile(std.testing.allocator, src.items, "/src/App.tsx", .{
+        .react_refresh = true,
+        .react_refresh_hook_signatures = true,
+    });
+    defer r.deinit(std.testing.allocator);
+    // 가짜 OOM abort 없이 signature 전체(마지막 hook 포함)가 emit 되어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "$RefreshSig$") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "useHookNumber119") != null);
+}
