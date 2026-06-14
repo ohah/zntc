@@ -226,6 +226,11 @@ pub const Transformer = struct {
     /// 번들러 emitter가 이 비트맵을 읽어 필요한 헬퍼만 출력에 주입한다.
     runtime_helpers: RuntimeHelpers = .{},
 
+    /// ES2025 inline modifier 다운레벨(#4210) 중, 못 내려 출력에 보존된 modifier
+    /// 그룹을 만났는가. transform 후 transpile/prepass 가 이 값으로 loud 진단을
+    /// 띄운다 (source-scan 보다 정확 — 실제 fold bail 을 반영).
+    used_unsupported_modifier: bool = false,
+
     /// 런타임 헬퍼를 ES5 문법으로 출력 (arrow, rest params 제거).
     /// unsupported.arrow일 때 자동 설정.
     runtime_es5_compat: bool = false,

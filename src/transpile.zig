@@ -1444,11 +1444,6 @@ fn transpileWithCallbackInternal(
     if (effective_opts.jsxClassicPragmaIgnoredUnderAutomatic(&parser.ast)) {
         std.log.warn("zntc: {s}: {s}", .{ file_path, TransformOptions.jsx_pragma_ignored_msg });
     }
-    // #4210: ES2025 regex inline modifier 를 미지원 타겟에서 사용 → verbatim 패스스루.
-    // silent SyntaxError 대신 loud 진단 (graph pre-pass 와 동일 메시지/경로).
-    if (effective_opts.usesUnsupportedRegexModifier(&parser.ast)) {
-        std.log.warn("zntc: {s}: {s}", .{ file_path, TransformOptions.regex_modifier_unsupported_msg });
-    }
     // RFC_TRANSFORMER_OWN_AST PR-2: clone 회피 — transformer 가 parser.ast 의 ownership 을
     // 양도받아 *동일 instance* 를 직접 mutate. cloneForTransformer 의 deep copy 회피로
     // 87MB synthetic 기준 peak RSS -84 MB (-2.6%, n=30 p<0.0001) 절감 (clone 배열이
@@ -1467,6 +1462,12 @@ fn transpileWithCallbackInternal(
     transformer.line_offsets = scanner.line_offsets.items;
     const root = transformer.transform() catch return error.TransformError;
     mem_profile.snap(&arena, "transform");
+
+    // #4210: 다운레벨 못한 ES2025 inline modifier 그룹이 출력에 보존됨 → loud 진단
+    // (transform-driven — 실제 fold bail 을 정확 반영, graph pre-pass 와 동일 메시지).
+    if (transformer.used_unsupported_modifier) {
+        std.log.warn("zntc: {s}: {s}", .{ file_path, TransformOptions.regex_modifier_unsupported_msg });
+    }
 
     if (options.stop_after == .transform) {
         return .{ .code = try allocator.dupe(u8, "") };
