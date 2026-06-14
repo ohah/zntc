@@ -98,6 +98,7 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
             .ignore_case = has_i,
             .lower_modifiers = need_modifier,
             .global_u = has_u,
+            .lookbehind_ok = !opts.unsupported.regex_lookbehind,
         }, allocator);
         astral_u_incomplete = tr.astral_u_incomplete;
         kept_modifier = tr.kept_modifier;
@@ -114,6 +115,7 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
                 .ignore_case = has_i,
                 .lower_modifiers = need_modifier,
                 .global_u = has_u,
+                .lookbehind_ok = !opts.unsupported.regex_lookbehind,
             }, allocator);
             kept_modifier = tr.kept_modifier;
         }
@@ -767,10 +769,10 @@ test "#4210: 혼합 (?s:.)(?i:x) — s·i 둘 다 다운레벨 (PR2b)" {
     try testing.expectEqualStrings("/(?:[\\s\\S])(?:[xX])/", out);
 }
 
-test "#4210: 혼합 (?sm:^.$) — s 만 strip, m 보존 → (?m:^[\\s\\S]$)" {
+test "#4210: 혼합 (?sm:^.$) — s·m 둘 다 다운레벨 (PR3)" {
     const out = (try runLower("/(?sm:^.$)/", .{ .regex_modifiers = true })).?;
     defer testing.allocator.free(out);
-    try testing.expectEqualStrings("/(?m:^[\\s\\S]$)/", out);
+    try testing.expectEqualStrings("/(?:(?:^|(?<=[\\n\\r\\u2028\\u2029]))[\\s\\S](?:$|(?=[\\n\\r\\u2028\\u2029])))/", out);
 }
 
 test "#4210: 혼합 (?si:x.) — s·i 둘 다 strip → (?:[xX][\\s\\S]) (PR2b)" {
@@ -822,4 +824,37 @@ test "#4210 PR2b: 순수 s-enabling 은 kept_modifier 없음(완전 다운레벨
 test "#4210: modifier 비트 미set(모던 타겟) → 변환 없음" {
     const r = try lower(testing.allocator, "/(?s:.)x/", .{ .unsupported = .{} });
     try testing.expect(r.text == null);
+}
+
+test "#4210 PR3: (?m:^a$) → multiline 앵커 재작성 (lookbehind 지원)" {
+    // regex_lookbehind 미set = lookbehind 지원(es2018+).
+    const out = (try runLower("/(?m:^a$)/", .{ .regex_modifiers = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/(?:(?:^|(?<=[\\n\\r\\u2028\\u2029]))a(?:$|(?=[\\n\\r\\u2028\\u2029])))/", out);
+}
+
+test "#4210 PR3: (?im:^a) — m 앵커 + i fold" {
+    const out = (try runLower("/(?im:^a)/", .{ .regex_modifiers = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/(?:(?:^|(?<=[\\n\\r\\u2028\\u2029]))[aA])/", out);
+}
+
+test "#4210 PR3: (?m:abc) 앵커 없음 → m strip(no-op)" {
+    const out = (try runLower("/(?m:abc)/", .{ .regex_modifiers = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/(?:abc)/", out);
+}
+
+test "#4210 PR3: lookbehind 미지원(es2017) → m bail + kept_modifier" {
+    const r = try lower(testing.allocator, "/(?m:^a$)/", .{ .unsupported = .{ .regex_modifiers = true, .regex_lookbehind = true } });
+    defer if (r.text) |t| testing.allocator.free(t);
+    if (r.named_groups) |ng| testing.allocator.free(ng);
+    try testing.expect(r.kept_modifier);
+    try testing.expect(std.mem.indexOf(u8, r.text.?, "(?m:") != null);
+}
+
+test "#4210 PR3: \\b 는 m 무관 — (?m:\\bx) 의 \\b 그대로" {
+    const out = (try runLower("/(?m:\\bx)/", .{ .regex_modifiers = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/(?:\\bx)/", out);
 }

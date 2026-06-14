@@ -102,9 +102,14 @@ pub const Feature = enum(u5) {
     /// regex_named_groups 와 같은 strip+__wrapRegExp 경로로 다운레벨 (#4199).
     /// NOTE: Feature enum 과 UnsupportedFeatures 필드는 비트 위치가 1:1 — 끝에만 추가.
     regex_duplicate_named_groups,
-    /// ES2025 inline modifier group `(?ims-ims:...)` (#4210). 미지원 타겟에선
-    /// 다운레벨 부재 — verbatim 패스스루 + loud 진단으로 silent SyntaxError 방지.
+    /// ES2025 inline modifier group `(?ims-ims:...)` (#4210). s/i enabling 은
+    /// 다운레벨, m 은 lookbehind 지원 타겟에서 앵커 재작성, 그 외 잔여는 진단.
     regex_modifiers,
+    /// ES2018 lookbehind assertion `(?<=…)`/`(?<!…)`. zntc 는 lookbehind 를 다운레벨
+    /// 하지 *않는다* — 이 비트는 "타겟이 lookbehind 를 지원하는가" 쿼리 전용
+    /// (#4210 m-modifier 앵커 재작성이 lookbehind 출력에 의존). needsRegexLowering
+    /// 에 넣지 않음.
+    regex_lookbehind,
 
     /// 이 feature가 도입된 ES 버전.
     pub fn esVersion(self: Feature) ESTarget {
@@ -112,7 +117,7 @@ pub const Feature = enum(u5) {
             .arrow, .class, .template_literal, .destructuring, .for_of, .spread, .object_extensions, .default_params, .block_scoping, .generator, .new_target, .regex_sticky, .unicode_brace_escape => .es2015,
             .exponentiation => .es2016,
             .async_await => .es2017,
-            .object_spread, .regex_dotall, .regex_named_groups => .es2018,
+            .object_spread, .regex_dotall, .regex_named_groups, .regex_lookbehind => .es2018,
             .optional_catch_binding => .es2019,
             .nullish_coalescing, .optional_chaining => .es2020,
             .logical_assignment => .es2021,
@@ -169,11 +174,14 @@ pub const UnsupportedFeatures = packed struct(u32) {
     regex_named_groups: bool = false,
     unicode_brace_escape: bool = false,
     regex_duplicate_named_groups: bool = false,
-    /// ES2025 inline modifier group `(?ims-ims:...)` (#4210). s-enabling `(?s:)` 는
-    /// 다운레벨(needsRegexLowering 포함), i/m/disabling 잔여는 보존 + 진단.
+    /// ES2025 inline modifier group `(?ims-ims:...)` (#4210). s/i enabling 다운레벨,
+    /// m 은 lookbehind 지원 시 앵커 재작성, 그 외 잔여는 진단.
     regex_modifiers: bool = false,
+    /// ES2018 lookbehind `(?<=…)` 미지원 (#4210). 쿼리 전용 — m-modifier 앵커
+    /// 재작성(`^`→`(?<=…)`)이 가능한 타겟인지 판별. lowering 트리거 아님.
+    regex_lookbehind: bool = false,
 
-    _: u2 = 0,
+    _: u1 = 0,
 
     /// regex literal lowering 이 필요한 비트가 하나라도 set 인지.
     /// node_dispatch 조기탈출/graph prepass 게이트가 공유 — 새 regex 비트는
@@ -628,6 +636,16 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .regex_modifiers, .engine = .ios, .major = 26 },
     .{ .feature = .regex_modifiers, .engine = .node, .major = 23 },
     .{ .feature = .regex_modifiers, .engine = .deno, .major = 1, .minor = 44 },
+
+    // ── ES2018: lookbehind assertion `(?<=…)` (#4210 m-modifier 앵커 재작성 의존) ──
+    // BCD: safari 가 16.4 로 늦음(named-group 11.1 과 다름 → 프록시 불가). hermes 미지원.
+    .{ .feature = .regex_lookbehind, .engine = .chrome, .major = 62 },
+    .{ .feature = .regex_lookbehind, .engine = .edge, .major = 79 },
+    .{ .feature = .regex_lookbehind, .engine = .firefox, .major = 78 },
+    .{ .feature = .regex_lookbehind, .engine = .safari, .major = 16, .minor = 4 },
+    .{ .feature = .regex_lookbehind, .engine = .ios, .major = 16, .minor = 4 },
+    .{ .feature = .regex_lookbehind, .engine = .node, .major = 8, .minor = 10 },
+    .{ .feature = .regex_lookbehind, .engine = .deno, .major = 1 },
 
     // ── ES2015: regex_sticky (/y) ──
     .{ .feature = .regex_sticky, .engine = .chrome, .major = 49 },
@@ -1166,4 +1184,21 @@ test "regex_modifiers — safari 26 경계 (dup-named 의 17.4 와 다름, #4210
     try std.testing.expect(!unsupportedFeatures(&.{.{ .engine = .node, .major = 23 }}).regex_modifiers);
     // hermes: compat table 미등록 → 항상 미지원
     try std.testing.expect(unsupportedFeatures(&.{.{ .engine = .hermes, .major = 0, .minor = 12 }}).regex_modifiers);
+}
+
+test "regex_lookbehind — safari 16.4 경계 + es2018 (#4210 m-anchor 게이트)" {
+    // es2017 미지원, es2018 지원 (m-modifier 앵커 재작성 가능 여부)
+    try std.testing.expect(fromESTarget(.es2017).regex_lookbehind);
+    try std.testing.expect(!fromESTarget(.es2018).regex_lookbehind);
+    try std.testing.expect(fromESTarget(.es5).regex_lookbehind);
+    // Safari 16.3 < 16.4 → lookbehind 미지원 (named-group 11.1 과 경계 다름)
+    const s163 = unsupportedFeatures(&.{.{ .engine = .safari, .major = 16, .minor = 3 }});
+    try std.testing.expect(s163.regex_lookbehind);
+    try std.testing.expect(!s163.regex_named_groups); // named 는 11.1 부터 지원
+    const s164 = unsupportedFeatures(&.{.{ .engine = .safari, .major = 16, .minor = 4 }});
+    try std.testing.expect(!s164.regex_lookbehind);
+    // hermes: 미등록 → 미지원(m-modifier bail)
+    try std.testing.expect(unsupportedFeatures(&.{.{ .engine = .hermes, .major = 0, .minor = 12 }}).regex_lookbehind);
+    // regex_lookbehind 는 lowering 트리거가 아님 — needsRegexLowering 에 미포함.
+    try std.testing.expect(!(UnsupportedFeatures{ .regex_lookbehind = true }).needsRegexLowering());
 }
