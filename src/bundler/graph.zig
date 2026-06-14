@@ -119,6 +119,17 @@ pub const ModuleGraph = struct {
     exec_counter: u32 = 0,
     cycle_counter: u32 = 0,
 
+    /// `requestDependencyExports` 의 per-importer 캐시 (record_index → binding 인덱스, CSR).
+    /// 과거엔 record 마다 `import_bindings` 전체를 선형 스캔 → mega-entry/대형 barrel(한 모듈이
+    /// N개 import)에서 record N개 × binding N개 = **O(N²)**. `resolveModuleImports` 가 한 모듈의
+    /// record 를 연속 처리하므로 importer 가 바뀔 때만 1회 O(N) 재구축 → 전체 O(N).
+    /// `rdx_offsets[rec]..rdx_offsets[rec+1]` 범위가 `rdx_order` 안의 binding 인덱스(원래 순서 보존).
+    /// self.allocator 소유(arena 아님), clearRetainingCapacity 로 재사용, graph deinit 에서 해제.
+    /// `rdx_cache_owner` = 캐시가 담은 importer_idx (null = 비어있음/무효).
+    rdx_cache_owner: ?usize = null,
+    rdx_offsets: std.ArrayListUnmanaged(u32) = .empty,
+    rdx_order: std.ArrayListUnmanaged(u32) = .empty,
+
     /// Incremental rebuild path 여부. bundler 가 `module_store` / `changed_files`
     /// / `compiled_cache` 중 하나라도 주입한 경우 true — `readModuleSourceWithMtime`
     /// 가 fstat 호출로 mtime 을 채워야 cache invalidation 이 동작. fresh build

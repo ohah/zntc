@@ -303,6 +303,43 @@ pub fn requestedExportsForReExportRecord(
     return changed;
 }
 
+/// `requestDependencyExports` 의 static_import 경로가 record 마다 `import_bindings` 전체를
+/// 선형 스캔하던 것을 제거하기 위한 per-importer CSR 인덱스(record_index → binding 인덱스)를
+/// 보장한다. importer 가 바뀔 때만 1회 O(bindings) 재구축하고, `resolveModuleImports` 가 한
+/// 모듈의 record 를 연속 처리하므로 전체적으로 O(total bindings) (과거 O(records×bindings)).
+/// scatter 는 binding 인덱스 오름차순으로 채워 record 내 원래 순서를 보존 → 출력 byte-identical.
+fn ensureBindingsByRecord(self: anytype, importer_idx: usize, importer: *const Module) !void {
+    if (self.rdx_cache_owner) |owner| {
+        if (owner == importer_idx) return;
+    }
+    const num_records = importer.import_records.len;
+    self.rdx_offsets.clearRetainingCapacity();
+    self.rdx_order.clearRetainingCapacity();
+    try self.rdx_offsets.appendNTimes(self.allocator, 0, num_records + 1);
+    // record 별 binding 개수 → offsets[rec+1] 에 누적
+    for (importer.import_bindings) |ib| {
+        if (ib.import_record_index < num_records)
+            self.rdx_offsets.items[ib.import_record_index + 1] += 1;
+    }
+    // prefix sum → offsets[rec] = record rec 구간의 시작 위치
+    for (1..num_records + 1) |k|
+        self.rdx_offsets.items[k] += self.rdx_offsets.items[k - 1];
+    const valid_total = self.rdx_offsets.items[num_records];
+    try self.rdx_order.appendNTimes(self.allocator, 0, valid_total);
+    // counting-sort scatter — cursor 는 offsets 복사본(record 당 다음 쓰기 위치)
+    const cursor = try self.allocator.alloc(u32, num_records);
+    defer self.allocator.free(cursor);
+    @memcpy(cursor, self.rdx_offsets.items[0..num_records]);
+    for (importer.import_bindings, 0..) |ib, bi| {
+        if (ib.import_record_index < num_records) {
+            const rec = ib.import_record_index;
+            self.rdx_order.items[cursor[rec]] = @intCast(bi);
+            cursor[rec] += 1;
+        }
+    }
+    self.rdx_cache_owner = importer_idx;
+}
+
 pub fn requestDependencyExports(
     self: anytype,
     importer_idx: usize,
@@ -317,12 +354,18 @@ pub fn requestDependencyExports(
             defer s.end();
             var changed = false;
             var found_binding = false;
-            for (importer.import_bindings) |ib| {
-                if (ib.import_record_index != rec_i) continue;
-                found_binding = true;
-                switch (ib.kind) {
-                    .namespace => changed = (try requestAll(self, dep_idx)) or changed,
-                    .default, .named => changed = (try requestNamed(self, dep_idx, ib.imported_name)) or changed,
+            // O(records×bindings) → O(bindings): record rec_i 에 속한 binding 만 순회.
+            try ensureBindingsByRecord(self, importer_idx, importer);
+            if (rec_i + 1 < self.rdx_offsets.items.len) {
+                const start = self.rdx_offsets.items[rec_i];
+                const end = self.rdx_offsets.items[rec_i + 1];
+                for (self.rdx_order.items[start..end]) |bi| {
+                    const ib = importer.import_bindings[bi];
+                    found_binding = true;
+                    switch (ib.kind) {
+                        .namespace => changed = (try requestAll(self, dep_idx)) or changed,
+                        .default, .named => changed = (try requestNamed(self, dep_idx, ib.imported_name)) or changed,
+                    }
                 }
             }
             if (!found_binding) {
@@ -391,7 +434,71 @@ pub fn reExportRecordMatchesRequest(m: *const Module, rec_i: usize, req: *const 
 
 const binding_scanner = @import("../binding_scanner.zig");
 const ExportBinding = binding_scanner.ExportBinding;
+const ImportBinding = binding_scanner.ImportBinding;
 const Span = @import("../../lexer/token.zig").Span;
+
+/// `ensureBindingsByRecord` 단위 테스트용 최소 stub — 실제 ModuleGraph 없이
+/// CSR 인덱스 필드(+allocator)만 노출. ensureBindingsByRecord 는 self 에서 이 4개와
+/// importer 인자만 읽으므로 full graph 불필요.
+const RdxStub = struct {
+    allocator: std.mem.Allocator,
+    rdx_cache_owner: ?usize = null,
+    rdx_offsets: std.ArrayListUnmanaged(u32) = .empty,
+    rdx_order: std.ArrayListUnmanaged(u32) = .empty,
+};
+
+test "ensureBindingsByRecord: record 별 그룹화 + 원래 순서 보존 + 캐시 hit" {
+    const testing = std.testing;
+    var module = Module.init(@enumFromInt(0), "idx.ts");
+    defer module.deinit(testing.allocator);
+
+    // 4 records — Module.deinit 가 record.kind(.require_context) 만 보므로 zeroes(=.static_import) 안전.
+    var recs: [4]ImportRecord = undefined;
+    for (&recs) |*r| r.* = std.mem.zeroes(ImportRecord);
+    module.import_records = &recs;
+
+    // 6 bindings, record 분포: rec0=1(bi3) · rec1=2(bi0,bi2) · rec2=0 · rec3=3(bi1,bi4,bi5).
+    // import_record_index 가 뒤섞여 있어 counting-sort scatter 의 순서 보존을 검증.
+    const recmap = [_]u32{ 1, 3, 1, 0, 3, 3 };
+    const ibs = try testing.allocator.alloc(ImportBinding, recmap.len);
+    defer testing.allocator.free(ibs);
+    for (ibs, 0..) |*ib, i| {
+        ib.* = .{ .kind = .named, .local_name = "x", .imported_name = "x", .local_span = Span.EMPTY, .import_record_index = recmap[i] };
+    }
+    module.import_bindings = ibs;
+
+    var stub = RdxStub{ .allocator = testing.allocator };
+    defer stub.rdx_offsets.deinit(testing.allocator);
+    defer stub.rdx_order.deinit(testing.allocator);
+
+    try ensureBindingsByRecord(&stub, 0, &module);
+
+    try testing.expectEqual(@as(?usize, 0), stub.rdx_cache_owner);
+    const off = stub.rdx_offsets.items;
+    try testing.expectEqual(@as(usize, 5), off.len); // num_records+1
+    try testing.expectEqual(@as(u32, 1), off[1] - off[0]); // rec0
+    try testing.expectEqual(@as(u32, 2), off[2] - off[1]); // rec1
+    try testing.expectEqual(@as(u32, 0), off[3] - off[2]); // rec2 (binding 없음)
+    try testing.expectEqual(@as(u32, 3), off[4] - off[3]); // rec3
+
+    const ord = stub.rdx_order.items;
+    try testing.expectEqual(@as(u32, 3), ord[off[0]]); // rec0 → bi3
+    try testing.expectEqual(@as(u32, 0), ord[off[1]]); // rec1 → bi0 (작은 인덱스 먼저)
+    try testing.expectEqual(@as(u32, 2), ord[off[1] + 1]); // rec1 → bi2
+    try testing.expectEqual(@as(u32, 1), ord[off[3]]); // rec3 → bi1
+    try testing.expectEqual(@as(u32, 4), ord[off[3] + 1]); // rec3 → bi4
+    try testing.expectEqual(@as(u32, 5), ord[off[3] + 2]); // rec3 → bi5
+
+    // 같은 importer 재호출 = 재구축 skip(cache hit): 센티넬이 보존되면 clear 안 된 것.
+    try stub.rdx_order.append(testing.allocator, 999);
+    try ensureBindingsByRecord(&stub, 0, &module);
+    try testing.expectEqual(@as(u32, 999), stub.rdx_order.items[stub.rdx_order.items.len - 1]);
+
+    // importer 변경 = 재구축: owner 갱신 + 센티넬 사라짐.
+    try ensureBindingsByRecord(&stub, 1, &module);
+    try testing.expectEqual(@as(?usize, 1), stub.rdx_cache_owner);
+    try testing.expectEqual(@as(usize, recmap.len), stub.rdx_order.items.len); // 999 제거됨
+}
 
 test "populateExportIndexByName: 빈 export_bindings 면 null" {
     const testing = std.testing;

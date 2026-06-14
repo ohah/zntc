@@ -1557,6 +1557,8 @@ fn resetPerBuildStateForPreserved(self: *ModuleGraph) void {
     var req_it = self.requested_exports.valueIterator();
     while (req_it.next()) |req| req.deinit(self.allocator);
     self.requested_exports.clearRetainingCapacity();
+    // requestDependencyExports CSR 캐시 무효화 (preserve-topology rebuild — 변경 모듈의 binding 변동).
+    self.rdx_cache_owner = null;
 }
 
 /// 변경 모듈을 **edge 보존**하며 재파싱한다. dependencies/importers/dynamic_imports/
