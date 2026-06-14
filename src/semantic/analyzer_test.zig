@@ -1071,8 +1071,10 @@ test "#4400 analyzer: 분석 중 allocation 실패는 OutOfMemory 로 표면화 
     //
     // references 는 analyze() 가 nodes/4 만큼 미리 예약하므로, catch-site(references.append)
     // 가 실제 grow-alloc 하도록 참조 밀집(같은 변수 다수 사용) 소스를 쓴다.
+    // `undeclaredGlobal;` 로 addUnresolvedReference 의 dupe/put catch-site 도 커버.
     const source =
         "let a = 1;\n" ++
+        "undeclaredGlobal;\n" ++
         ("a;\n" ** 60);
 
     var scanner = try Scanner.init(std.testing.allocator, source);
