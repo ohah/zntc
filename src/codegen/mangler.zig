@@ -495,17 +495,18 @@ pub fn isReservedOrGlobal(name: []const u8) bool {
         // 3글자
         "for",    "let",    "new",    "try",
         "var",    "NaN",
-        // 4글자
+        // 4글자 (`eval` 은 strict mode BindingIdentifier 금지 — #4312)
            "case",   "else",
-        "enum",   "null",   "this",   "true",
-        "void",   "with",
+        "enum",   "eval",   "null",   "this",
+        "true",   "void",   "with",
         // 5글자
-          "await",  "break",
-        "catch",  "class",  "const",  "false",
-        "super",  "throw",  "while",  "yield",
+          "await",
+        "break",  "catch",  "class",  "const",
+        "false",  "super",  "throw",  "while",
+        "yield",
         // 6글자
-        "delete", "export", "import", "return",
-        "switch", "typeof",
+         "delete", "export", "import",
+        "return", "switch", "typeof",
     };
     for (reserved) |r| {
         if (std.mem.eql(u8, name, r)) return true;

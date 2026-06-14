@@ -43,6 +43,8 @@ test "isReservedOrGlobal" {
     try std.testing.expect(isReservedOrGlobal("return"));
     try std.testing.expect(!isReservedOrGlobal("a"));
     try std.testing.expect(!isReservedOrGlobal("foo"));
+    // #4312: strict mode(ESM) 에서 `eval` 은 BindingIdentifier 금지 → base54 가 배정 못 하게 reserve.
+    try std.testing.expect(isReservedOrGlobal("eval"));
     // 'e', 'm' 은 legacy CJS alias path 용으로 reserved.
     try std.testing.expect(isReservedOrGlobal("e"));
     try std.testing.expect(isReservedOrGlobal("m"));
