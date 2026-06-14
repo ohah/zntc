@@ -108,13 +108,29 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8) !
     };
     defer allocator.free(source);
 
+    // pre-flight: 입력이 transpile 되는지 1회 검증. 실패하거나 진단이 있으면 측정이 무의미하므로
+    // 명확히 에러로 알린다(과거엔 worker 가 catch return 으로 조용히 swallow 해 거짓 sub-ms 수치).
+    {
+        var probe = lib.transpile.transpileWithCallback(allocator, source, input_file, .{}, null) catch |err| {
+            try stderr.print("zntc bench: transpile failed for '{s}': {}\n", .{ input_file, err });
+            std.process.exit(1);
+        };
+        defer probe.deinit(allocator);
+        if (probe.diagnostics.len > 0) {
+            try stderr.print("zntc bench: '{s}' 에 {d}개 진단 — 측정 무의미, 유효한 입력으로 실행하세요\n", .{ input_file, probe.diagnostics.len });
+            std.process.exit(1);
+        }
+    }
+
     // Benchmark 실행 — bench.zig 의 공용 runner (NAPI 와 공유).
     const Ctx = struct {
         source: []const u8,
         filename: []const u8,
         fn run(a: std.mem.Allocator, raw_ctx: ?*anyopaque) anyerror!void {
             const self: *@This() = @ptrCast(@alignCast(raw_ctx.?));
-            var result = lib.transpile.transpileWithCallback(a, self.source, self.filename, .{}, null) catch return;
+            // 에러는 swallow(catch return) 하지 않고 전파 — runBenchmark 가 해당 iteration 을
+            // 스킵(catch continue)해 bogus near-zero 샘플 기록을 막는다.
+            var result = try lib.transpile.transpileWithCallback(a, self.source, self.filename, .{}, null);
             result.deinit(a);
         }
     };
