@@ -155,6 +155,13 @@ pub const SemanticAnalyzer = struct {
     /// mangler liveness 및 위치 기반 최적화(dead store, single-use inline 등) consumer의 입력.
     references: std.ArrayList(symbol_mod.Reference),
 
+    /// OOM 표면화 플래그. void 반환 visitor 내부의 allocation 실패(symbol/reference/const
+    /// 기록)는 signature cascade 없이 이 플래그로 잡고, `analyze()` 끝에서
+    /// error.OutOfMemory 로 변환한다. 과거엔 그 실패를 조용히 삼켜 symbol/reference 가
+    /// 누락된 채 성공 반환 → import elision / mangler liveness 가 잘못된 입력으로
+    /// silent miscompile (사용 중 import 제거 등) 위험이 있었다.
+    alloc_failed: bool = false,
+
     /// Annex B: if/else/labeled body에서 function declaration을 만나면
     /// var hoisting conflict check를 건너뛴다.
     /// sloppy mode에서 `if (true) function f() {}` 같은 구문이 let/const와 충돌하지 않도록 한다.
@@ -298,6 +305,10 @@ pub const SemanticAnalyzer = struct {
         const root_idx: NodeIndex = self.ast.transformed_root orelse
             @as(NodeIndex, @enumFromInt(@as(u32, @intCast(self.ast.nodes.items.len - 1))));
         try self.visitNode(root_idx);
+
+        // void visitor 내부에서 삼킨 allocation 실패를 여기서 표면화 — symbol/reference 가
+        // 누락된 분석 결과가 transform/codegen 으로 흘러가 silent miscompile 되는 것 방지.
+        if (self.alloc_failed) return error.OutOfMemory;
     }
 
     // ================================================================
@@ -720,7 +731,9 @@ pub const SemanticAnalyzer = struct {
             .stmt_idx = self.current_top_stmt_idx orelse symbol_mod.Reference.NO_STMT,
             .scope_stmt_idx = self.current_stmt_idx,
             .flags = .{ .declare = true },
-        }) catch {};
+        }) catch {
+            self.alloc_failed = true;
+        };
     }
 
     /// 가장 가까운 var scope(function/global/module)를 찾는다.
@@ -913,7 +926,9 @@ pub const SemanticAnalyzer = struct {
                     .stmt_idx = self.current_top_stmt_idx orelse symbol_mod.Reference.NO_STMT,
                     .scope_stmt_idx = self.current_stmt_idx,
                     .flags = effective,
-                }) catch {};
+                }) catch {
+                    self.alloc_failed = true;
+                };
                 return;
             }
             // helper sym 미등록 = helper import 가 prepend 되지 않은 경로 (예: graph
@@ -953,7 +968,9 @@ pub const SemanticAnalyzer = struct {
                     .stmt_idx = self.current_top_stmt_idx orelse symbol_mod.Reference.NO_STMT,
                     .scope_stmt_idx = self.current_stmt_idx,
                     .flags = effective,
-                }) catch {};
+                }) catch {
+                    self.alloc_failed = true;
+                };
 
                 return;
             }
@@ -1128,7 +1145,9 @@ pub const SemanticAnalyzer = struct {
         const sym_idx = self.findSymbolInCurrentScope(name_span) orelse return;
         self.symbols.items[sym_idx].const_kind = cv.kind;
         if (cv.kind == .number and cv.number_text.len > 0) {
-            self.numeric_const_texts.put(self.allocator, @intCast(sym_idx), cv.number_text) catch {};
+            self.numeric_const_texts.put(self.allocator, @intCast(sym_idx), cv.number_text) catch {
+                self.alloc_failed = true;
+            };
         }
     }
 
@@ -2490,7 +2509,9 @@ pub const SemanticAnalyzer = struct {
                     if (name_idx.isNone() or @intFromEnum(name_idx) >= self.ast.nodes.items.len) continue;
                     const name_node = self.ast.getNode(name_idx);
                     if (name_node.tag != .binding_identifier) continue;
-                    self.declareSymbolWithNode(name_node.span, .class_decl, stmt.span, @intFromEnum(name_idx)) catch {};
+                    self.declareSymbolWithNode(name_node.span, .class_decl, stmt.span, @intFromEnum(name_idx)) catch {
+                        self.alloc_failed = true;
+                    };
                 },
                 else => {},
             }
@@ -2554,7 +2575,9 @@ pub const SemanticAnalyzer = struct {
         const n = self.ast.getNode(idx);
         switch (n.tag) {
             .binding_identifier => {
-                self.declareSymbolWithNode(n.span, sym_kind, decl_span, @intFromEnum(idx)) catch {};
+                self.declareSymbolWithNode(n.span, sym_kind, decl_span, @intFromEnum(idx)) catch {
+                    self.alloc_failed = true;
+                };
             },
             .array_pattern, .object_pattern => {
                 if (n.data.list.start + n.data.list.len > self.ast.extra_data.items.len) return;
@@ -3610,7 +3633,9 @@ pub const SemanticAnalyzer = struct {
                     if (cv.kind != .none) {
                         self.symbols.items[sym_index].const_kind = cv.kind;
                         if (cv.kind == .number and cv.number_text.len > 0) {
-                            self.numeric_const_texts.put(self.allocator, @intCast(sym_index), cv.number_text) catch {};
+                            self.numeric_const_texts.put(self.allocator, @intCast(sym_index), cv.number_text) catch {
+                                self.alloc_failed = true;
+                            };
                         }
                     }
                 }

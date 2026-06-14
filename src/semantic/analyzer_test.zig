@@ -1026,6 +1026,82 @@ test "#4398 export binding: forward module-scope 선언/import 는 여전히 val
     try analyzeNoErrors("export { Z };\nimport { Z } from \"./m\";");
 }
 
+/// 정확히 N 번째 alloc 만 실패시키는 테스트용 allocator. std.testing.FailingAllocator 는
+/// fail_index 이후 *모든* alloc 을 실패시켜, catch 가 삼킨 직후의 try-alloc 까지 실패→error
+/// 로 cascade 되므로 "삼킴" 자체를 격리하지 못한다. 이건 한 번만 실패시키고 나머지는 통과.
+const OneShotFailAllocator = struct {
+    child: std.mem.Allocator,
+    fail_at: usize,
+    count: usize = 0,
+
+    fn allocator(self: *OneShotFailAllocator) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{
+            .alloc = oafAlloc,
+            .resize = oafResize,
+            .remap = oafRemap,
+            .free = oafFree,
+        } };
+    }
+    fn oafAlloc(ctx: *anyopaque, n: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
+        const self: *OneShotFailAllocator = @ptrCast(@alignCast(ctx));
+        const cur = self.count;
+        self.count += 1;
+        if (cur == self.fail_at) return null; // 이 번째 alloc 만 실패
+        return self.child.rawAlloc(n, alignment, ra);
+    }
+    fn oafResize(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) bool {
+        const self: *OneShotFailAllocator = @ptrCast(@alignCast(ctx));
+        return self.child.rawResize(buf, alignment, new_len, ra);
+    }
+    fn oafRemap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
+        const self: *OneShotFailAllocator = @ptrCast(@alignCast(ctx));
+        return self.child.rawRemap(memory, alignment, new_len, ra);
+    }
+    fn oafFree(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, ra: usize) void {
+        const self: *OneShotFailAllocator = @ptrCast(@alignCast(ctx));
+        self.child.rawFree(buf, alignment, ra);
+    }
+};
+
+test "#4400 analyzer: 분석 중 allocation 실패는 OutOfMemory 로 표면화 (silent swallow 금지)" {
+    // symbol/reference/const 기록의 allocation 실패가 누락된 채 성공 반환되면 import
+    // elision / mangler liveness 가 잘못된 입력을 받아 silent miscompile 위험. 과거
+    // catch {} 가 이를 삼켰다. 이제 어느 allocation 하나가 실패해도(그게 catch-site 여도)
+    // analyze() 는 반드시 error.OutOfMemory 를 반환해야 한다.
+    //
+    // references 는 analyze() 가 nodes/4 만큼 미리 예약하므로, catch-site(references.append)
+    // 가 실제 grow-alloc 하도록 참조 밀집(같은 변수 다수 사용) 소스를 쓴다.
+    const source =
+        "let a = 1;\n" ++
+        ("a;\n" ** 60);
+
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    // 1) 실패 없는 run 으로 analyzer 의 총 alloc 횟수 측정.
+    var counting = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = std.math.maxInt(usize) });
+    {
+        var ana = SemanticAnalyzer.init(counting.allocator(), &parser.ast);
+        defer ana.deinit();
+        try ana.analyze();
+    }
+    const total = counting.allocations;
+    try std.testing.expect(total > 0);
+
+    // 2) 각 alloc 을 *하나씩* 실패시킨다 — catch-site 든 try-site 든 전부 OutOfMemory.
+    //    한 곳이라도 success 면 그 alloc 실패가 조용히 삼켜졌다는 뜻(RED).
+    var i: usize = 0;
+    while (i < total) : (i += 1) {
+        var oaf = OneShotFailAllocator{ .child = std.testing.allocator, .fail_at = i };
+        var ana = SemanticAnalyzer.init(oaf.allocator(), &parser.ast);
+        defer ana.deinit();
+        try std.testing.expectError(error.OutOfMemory, ana.analyze());
+    }
+}
+
 // ====================================================================
 // D5: import type declaration + 다른 import → export 검증
 // ====================================================================
