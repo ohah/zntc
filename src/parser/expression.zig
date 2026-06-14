@@ -498,15 +498,13 @@ fn tryReinterpretAsTypedArrow(self: *Parser, paren_expr: NodeIndex) ParseError2!
     const paren_node = self.ast.getNode(paren_expr);
     const arrow_start = paren_node.span.start;
 
-    // Empty parens `()` are stored with data.none = 0 (no inner expression).
-    // Non-empty parens `(expr)` store data.unary.operand = inner expression node index.
-    // data.none reads the same bytes as unary.operand via extern union — 0 means empty
-    // because node index 0 is always the program root, never a valid sub-expression.
-    const is_empty_paren = (paren_node.data.none == 0);
-    const normalized_params: NodeIndex = if (is_empty_paren)
-        try self.coverExpressionToArrowParams(.none)
-    else
-        try self.coverExpressionToArrowParams(paren_expr);
+    // parenthesized_expression(빈 `()` 포함)을 arrow 파라미터로 정규화.
+    // coverExpressionToArrowParams 가 paren 의 operand 를 재귀로 풀고, 빈 괄호는
+    // operand 가 NodeIndex.none 이라 자동으로 빈 FormalParameters 로 처리한다.
+    // (빈 괄호는 operand=NodeIndex.none(=maxInt), 비-빈은 0 이 될 수 없는 실제
+    //  노드 인덱스이므로 `data.none == 0` 으로 empty 를 가르려던 과거 분기는 항상
+    //  false 인 죽은 코드였다 — 단일 경로로 일임.)
+    const normalized_params = try self.coverExpressionToArrowParams(paren_expr);
 
     try self.advance(); // skip =>
     const body = try parseArrowBody(self, false, normalized_params);
