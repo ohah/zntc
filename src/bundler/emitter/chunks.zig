@@ -1852,7 +1852,9 @@ fn rewriteDynamicImports(
 
 /// `import("specifier")` 호출 전체를 미리 만들어진 expression 으로 교체.
 /// 매칭 실패 시 null. codegen 출력 형태 (`import("./x")`) 만 처리 — import attributes
-/// 같은 second-arg 폼은 미지원 (현재 codegen 이 emit 하지 않음).
+/// 같은 second-arg 폼(`import("./x", {…})`)은 호출 전체 치환이라 닫는 `)` 위치를
+/// balance-scan 해야 해 현재 미지원(별도 이슈). specifier 만 바꾸는 경로는
+/// `rewriteImportSpecifier` 가 attributes 도 처리한다.
 /// Single-file output 용 dynamic import 재작성 (chunk_graph 없음 가정).
 /// `emit` (라인 258) 가 사용하는 single-file path 는 chunk 분리 없이 모든 모듈을
 /// 한 파일에 합치므로 *동일 bundle = same_chunk* 라는 단순 가정만 필요. dynamic
@@ -1943,10 +1945,12 @@ fn rewriteImportCallToWrapper(
 
 const ImportCallSpan = struct { call_start: usize, call_end: usize };
 
-/// `code` 의 `pos` 에서 길이 `spec_len` 인 토큰이 실제 `import("…")`/`import('…')` 호출 안인지
-/// 검증. 맞으면 호출 전체 span(`call_start..call_end`, 닫는 `)` 포함), 아니면 null. opener+quote+
-/// `)` 경계로 prefix 충돌·문자열 리터럴 내 substring 을 배제한다.
-fn importCallSpanAt(code: []const u8, pos: usize, spec_len: usize) ?ImportCallSpan {
+/// `code` 의 `pos` 에서 길이 `spec_len` 인 토큰이 `import("…"`/`import('…'` 형태로 열리고
+/// 닫는 quote 까지 맞는지 검증. 맞으면 *닫는 quote 다음* 바이트 인덱스(= specifier 끝 다음
+/// 다음)를 반환, 아니면 null. opener+quote 경계로 prefix 충돌(`./x` vs `./xyz`)·문자열 리터럴
+/// 내 substring 을 배제한다. 닫는 quote 다음 토큰(`)` 인자1개 vs `,` import attributes)은 caller
+/// 가 용도에 맞게 판정한다(반환 인덱스는 항상 `< code.len` 이라 caller 의 `code[close]` 안전).
+fn importSpecifierCloseAt(code: []const u8, pos: usize, spec_len: usize) ?usize {
     const opener_len = "import(\"".len;
     if (pos < opener_len) return null;
     const opener = code[pos - opener_len .. pos];
@@ -1954,14 +1958,33 @@ fn importCallSpanAt(code: []const u8, pos: usize, spec_len: usize) ?ImportCallSp
     const quote = code[pos - 1];
     const after = pos + spec_len;
     if (after + 1 >= code.len) return null;
-    if (code[after] != quote or code[after + 1] != ')') return null;
-    return .{ .call_start = pos - opener_len, .call_end = after + 2 };
+    if (code[after] != quote) return null;
+    return after + 1;
 }
 
-/// `import("<specifier>")` / `import('<specifier>')` 호출 안의 specifier 만 replacement 로
-/// 교체한다. opener(`import("`/`import('`) + 닫는 quote + `)` 경계를 확인하므로 prefix 충돌
+/// `code` 의 `pos` 에서 길이 `spec_len` 인 토큰이 실제 `import("…")`/`import('…')` *호출 1개*
+/// (인자 1개, 닫는 quote 직후 `)`) 안인지 검증. 맞으면 호출 전체 span(`call_start..call_end`,
+/// 닫는 `)` 포함), 아니면 null. 호출 전체를 다른 식으로 치환하는 wrapper 가 사용 — 정확한
+/// `call_end` 가 필요하므로 import attributes(`, {…})`)가 붙은 호출은 의도적으로 미지원(닫는
+/// `)` 위치가 attributes object 너머라 balance-scan 이 필요, 별도 이슈).
+fn importCallSpanAt(code: []const u8, pos: usize, spec_len: usize) ?ImportCallSpan {
+    const close = importSpecifierCloseAt(code, pos, spec_len) orelse return null;
+    if (code[close] != ')') return null;
+    return .{ .call_start = pos - "import(\"".len, .call_end = close + 1 };
+}
+
+/// `import("<specifier>")` / `import('<specifier>')` 호출 안의 specifier 텍스트만 replacement
+/// 로 교체한다. opener(`import("`/`import('`) + 닫는 quote 경계를 확인하므로 prefix 충돌
 /// (`./x` vs `./xyz`)·문자열 리터럴 내 substring 을 오재작성하지 않고, 모든 occurrence 를
 /// positional walk 로 처리한다. 매칭 없으면 null. (bare indexOf substring 교체의 #4295 수정)
+///
+/// import attributes(`import("./x", { with: {…} })`)는 닫는 quote 뒤가 `,` 라 `)` 만 허용하면
+/// specifier 가 미교체로 남아 split 청크 파일명을 못 가리키는 miscompile(ESM splitting + 동적
+/// import 가 내부 청크로 분리될 때)이 된다. codegen `emitImportExpr`(calls.zig)가 quote 직후
+/// 공백 없이 `,` 를 찍으므로 닫는 quote 다음으로 `)` 또는 `,` 를 허용 — specifier *텍스트만*
+/// 바꾸는 경로라 attributes 인자는 그대로 보존되어 안전하다(호출 전체를 치환하는
+/// `rewriteImportCallToWrapper` 와 달리 정확한 `call_end` 가 불필요). prefix 충돌 방어는
+/// `importSpecifierCloseAt` 의 닫는 quote 일치 체크가 담당하므로 `,` 허용해도 무방하다.
 fn rewriteImportSpecifier(
     allocator: std.mem.Allocator,
     code: []const u8,
@@ -1976,7 +1999,11 @@ fn rewriteImportSpecifier(
     while (i < code.len) {
         const rel = std.mem.indexOf(u8, code[i..], specifier) orelse break;
         const pos = i + rel;
-        if (importCallSpanAt(code, pos, specifier.len) != null) {
+        const is_call = if (importSpecifierCloseAt(code, pos, specifier.len)) |close|
+            code[close] == ')' or code[close] == ','
+        else
+            false;
+        if (is_call) {
             try out.appendSlice(allocator, code[i..pos]);
             try out.appendSlice(allocator, replacement);
             i = pos + specifier.len;
@@ -3181,5 +3208,32 @@ test "rewriteImportSpecifier: prefix 충돌·문자열 리터럴·다중 occurre
     // 실제 import 호출이 없으면 null.
     {
         try std.testing.expect((try rewriteImportSpecifier(a, "const s=\"./x\";", "./x", "./X")) == null);
+    }
+}
+
+test "rewriteImportSpecifier: import attributes specifier 교체 + 인자 보존" {
+    const a = std.testing.allocator;
+
+    // codegen 비-minify: 닫는 quote 뒤가 `,` — specifier 만 바꾸고 attributes 인자 보존.
+    {
+        const r = (try rewriteImportSpecifier(a, "import(\"./x\", { with: { type: \"json\" } })", "./x", "./X")).?;
+        defer a.free(r);
+        try std.testing.expectEqualStrings("import(\"./X\", { with: { type: \"json\" } })", r);
+    }
+    // codegen minify(공백 없음) + single quote.
+    {
+        const r = (try rewriteImportSpecifier(a, "import('./x',{with:{type:'json'}})", "./x", "./X")).?;
+        defer a.free(r);
+        try std.testing.expectEqualStrings("import('./X',{with:{type:'json'}})", r);
+    }
+    // attributes object 안에 specifier 텍스트가 또 있어도(문자열 리터럴) 진짜 호출만 교체.
+    {
+        const r = (try rewriteImportSpecifier(a, "import(\"./x\", { with: { src: \"./x\" } })", "./x", "./X")).?;
+        defer a.free(r);
+        try std.testing.expectEqualStrings("import(\"./X\", { with: { src: \"./x\" } })", r);
+    }
+    // attributes 가 있어도 prefix 충돌은 닫는 quote 불일치로 skip(null).
+    {
+        try std.testing.expect((try rewriteImportSpecifier(a, "import(\"./xyz\", { with: {} })", "./x", "./X")) == null);
     }
 }
