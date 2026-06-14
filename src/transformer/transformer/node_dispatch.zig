@@ -135,9 +135,13 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             if (self.options.unsupported.template_literal) {
                 return es2015_template.ES2015Template(Transformer).lowerTemplateLiteral(self, node);
             }
-            // no-substitution template (data.none == 0)은 리프 노드 — visitListNode으로 처리하면
-            // data.list = {start: X, len: 0}이 되어 codegen의 data.none == 0 체크가 깨짐
-            if (node.data.none == 0) return self.copyNodeDirect(idx);
+            // raw-span shorthand (#2957): transformer(emotion/styled) 가 만든 list.len==0
+            // template 만 리프로 복사. parser-created template 은 quasi 가 최소 1개라
+            // 항상 list.len>0 이므로 children 을 visit 한다. (과거 `data.none == 0` 은
+            // data.list.start 와 alias 라, 치환 template 이 extra_data[0] 에서 시작하면
+            // start==0 → 리프 오판 → expression 의 transform-pass 변환(ES 다운레벨 등)이
+            // 통째로 누락됐다. codegen emitTemplateLiteral 과 동일한 list.len 기준으로 통일.)
+            if (node.data.list.len == 0) return self.copyNodeDirect(idx);
             return self.visitListNode(idx);
         },
 

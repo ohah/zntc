@@ -1043,6 +1043,24 @@ test "ES5 downlevel: labeled for-of retains label on inner for_statement" {
     try std.testing.expect(std.mem.indexOf(u8, code, "continue OUTER") != null);
 }
 
+test "#4396 template literal: 치환 expression ES 다운레벨이 list.start==0 에서도 적용" {
+    // `${a ?? b}` 가 파일 첫 노드면 template 의 list.start 가 0 이 될 수 있다.
+    // 과거 node_dispatch 의 `data.none == 0`(= list.start==0 와 alias) 체크가 이를
+    // no-substitution 리프로 오판해 expression 의 nullish 다운레벨이 통째로 누락됐다.
+    const source = "`${a ?? b}`;";
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .nullish_coalescing = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // ?? 가 다운레벨돼야 한다 (`!= null` ternary). raw ?? 가 남으면 miscompile.
+    try std.testing.expect(std.mem.indexOf(u8, code, "??") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "!= null") != null);
+}
+
 test "ES5 downlevel: nested labeled for-of preserves `break OUTER`" {
     const source =
         \\OUTER: for (const row of data) {
