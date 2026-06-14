@@ -1715,6 +1715,33 @@ test "Bundler: dev mode refresh registration" {
     try std.testing.expect(std.mem.indexOf(u8, output, "_s(App") == null);
 }
 
+test "#4388 Bundler: refresh registration with 254-byte+ component name" {
+    // 컴포넌트 이름은 길이 상한이 없다. 과거 buildRefreshRegCall 은 "name" 을
+    // 고정 [256]u8 스택 버퍼에 bufPrint → 254바이트 초과 시 가짜 OOM 으로
+    // refresh 변환(나아가 번들) 전체를 중단시켰다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const long_name = "C" ++ ("o" ** 300); // 301 byte PascalCase 식별자
+    try writeFile(tmp.dir, "App.ts", "function " ++ long_name ++ "() { return null; }\n");
+
+    const entry = try absPath(&tmp, "App.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .react_refresh = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 전체 이름이 truncate/abort 없이 $RefreshReg$ 에 등록되어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"" ++ long_name ++ "\"") != null);
+}
+
 // ----------------------------------------------------------------
 // react-refresh Vite plugin-react 호환 path filter 회귀 가드
 // ----------------------------------------------------------------
