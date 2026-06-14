@@ -579,12 +579,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 try visitExprWithYieldExtraction(self, right, ops, next_label)
             else
                 try self.visitNode(right);
-            const iterable_value = if (stmt.tag == .for_in_statement) blk: {
-                const object_ref = try es_helpers.makeIdentifierRef(self, "Object");
-                const keys_ref = try es_helpers.makeIdentifierRef(self, "keys");
-                const keys_member = try es_helpers.makeStaticMember(self, object_ref, keys_ref, span);
-                break :blk try es_helpers.makeCallExpr(self, keys_member, &.{new_right}, span);
-            } else new_right;
+            // for-of: _arr = iterable. for-in: _arr = [] 후 native `for (_k in obj) _arr.push(_k)`
+            // 로 own+상속 enumerable 키를 수집한다. `Object.keys` 는 own 만 + `Object` shadow 취약
+            // 이라 for-in 의미(own+상속, shadow 무관)에 어긋났다. 수집 for-in 은 yield 없는
+            // self-contained 문 → 아래에서 statement op 으로 verbatim 방출.
+            const iterable_value = if (stmt.tag == .for_in_statement)
+                try self.ast.addListNode(.array_expression, span, .{ .start = 0, .len = 0 })
+            else
+                new_right;
 
             // init: _i = 0, _arr = iterable (assignment)
             // __generator 콜백은 매 호출마다 새 실행 컨텍스트이므로
@@ -608,6 +610,26 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             });
             const arr_stmt = try es_helpers.makeExprStmt(self, arr_assign, span);
             try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = arr_stmt } });
+
+            // for-in: `for (_k in obj) _arr.push(_k)` 로 own+상속 enumerable 키를 _arr 에 수집.
+            // hoist 된 _k 사용(기존 _i/_arr 와 동일). yield 없는 문이라 statement op 으로 verbatim.
+            if (stmt.tag == .for_in_statement) {
+                const key_span = try es_helpers.makeTempVarSpan(self);
+                try self.generator_temp_var_spans.append(self.allocator, key_span);
+                const key_ref_left = try es_helpers.makeTempVarRef(self, key_span, key_span);
+                const arr_ref_push = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
+                const push_prop = try es_helpers.makeIdentifierRef(self, "push");
+                const push_member = try es_helpers.makeStaticMember(self, arr_ref_push, push_prop, span);
+                const key_arg = try es_helpers.makeTempVarRef(self, key_span, key_span);
+                const push_call = try es_helpers.makeCallExpr(self, push_member, &.{key_arg}, span);
+                const push_stmt = try es_helpers.makeExprStmt(self, push_call, span);
+                const collect = try self.ast.addNode(.{
+                    .tag = .for_in_statement,
+                    .span = span,
+                    .data = .{ .ternary = .{ .a = key_ref_left, .b = new_right, .c = push_stmt } },
+                });
+                try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = collect } });
+            }
 
             // cond_label
             const cond_label = next_label.*;

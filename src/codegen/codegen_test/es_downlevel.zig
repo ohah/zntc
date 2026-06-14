@@ -3303,7 +3303,9 @@ test "ES5: async for-in body extracts await into state machine" {
         \\}
     );
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.keys") != null);
+    // #4337: for-in 은 native for-in 으로 키 수집(own+상속, shadow-safe) — Object.keys(own-only) 아님.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.keys") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, " in fields)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "(yield validateField") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "validateField(field)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.sent()") != null);
