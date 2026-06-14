@@ -708,7 +708,9 @@ fn buildStackDetailsArray(self: *Transformer, line_offset: i32, zero_span: Span)
 /// 정수 값을 numeric_literal 노드로 변환. 음수면 unary_expression(`-`)으로 감싼다.
 /// (JS 스펙상 음수 리터럴은 unary minus + 양수 리터럴의 조합)
 fn makeI32Literal(self: *Transformer, value: i32) Error!NodeIndex {
-    const abs_val: u32 = if (value >= 0) @intCast(value) else @intCast(-value);
+    // @abs 는 i32→u32 라 minInt(-2147483648)도 2147483648 로 안전. (기존 @intCast(-value) 는
+    // -minInt 가 i32 범위를 넘어 overflow panic.) 부호는 아래 value>=0 분기가 그대로 처리.
+    const abs_val: u32 = @abs(value);
     var buf: [16]u8 = undefined;
     const s = std.fmt.bufPrint(&buf, "{d}", .{abs_val}) catch return error.OutOfMemory;
     const span = try self.ast.addString(s);
