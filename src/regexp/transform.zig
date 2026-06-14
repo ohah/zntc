@@ -18,6 +18,7 @@ const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const UNNAMED = std.math.maxInt(u32);
 const UESC = @intFromEnum(ast.CharacterKind.unicode_escape);
+const SYM = @intFromEnum(ast.CharacterKind.symbol);
 
 /// ECMAScript `\s` 집합 (WhiteSpace + LineTerminator). 전부 BMP.
 const WS_RANGES = [_][2]u32{
@@ -39,8 +40,11 @@ pub const Options = struct {
     /// ES2025 inline modifier 그룹 `(?i:…)`/`(?s:…)` 다운레벨 (#4210). 켜지면
     /// enabling i/s 영역을 fold/dot 재작성으로 baked-in 한 뒤 modifier 비트를
     /// strip 한다. disabling(`-i`/`-s`)·`m`·전역 /i on·u/astral 은 보수적 bail
-    /// (그룹 보존 → lower() 가 진단). global /s 플래그(=`s` flag 존재) 여부.
+    /// (그룹 보존 → kept_modifier → 호출자가 진단).
     lower_modifiers: bool = false,
+    /// regex 가 `u`/`v` 플래그를 가졌는가 (#4210). i-fold 는 non-u(ASCII) 전용이라
+    /// /u 영역에선 bail — 파서가 unicode_brace 를 끈 재변환에도 정확히 게이트.
+    global_u: bool = false,
 };
 
 pub const NamedGroup = struct {
@@ -55,6 +59,9 @@ pub const Result = struct {
     /// (negated/\p{}/class_string 등)을 만났는가. true 면 호출자는 `u`
     /// flag 를 strip 하면 안 된다 (silent 오변환 방지 — 부분 커버리지).
     astral_u_incomplete: bool,
+    /// lower_modifiers 요청 시, 다운레벨 못해 출력에 보존된 modifier 그룹이 있는가
+    /// (#4210). 호출자(lower→transpile/prepass)가 loud 진단을 띄운다.
+    kept_modifier: bool,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Result) void {
@@ -138,6 +145,13 @@ const T = struct {
     ///   - lowering 경로(#4210): effective 값으로 dot 재작성 / fold 확장.
     mod_s: ?bool = null,
     mod_i: ?bool = null,
+    /// 현재 i-enabling 영역에서 fold 못한 atom(비-ASCII/negated/복잡 class)을 만났는가
+    /// (#4210 PR2b). 영역별 save/restore — true 면 ignore_group 이 i 비트를 보존(bail).
+    i_fold_incomplete: bool = false,
+    /// 다운레벨 못해 출력에 보존된 modifier 그룹이 있는가 (#4210). transpile/prepass 가
+    /// transform 후 이 값으로 진단을 띄운다 (source-scan 보다 정확 — escape/flag/내용
+    /// 의존 bail 을 정확 반영).
+    kept_modifier: bool = false,
 
     /// surrogate pair 2 노드를 list 에 push (cp>0xFFFF).
     fn pushSurrogate(self: *T, span: ast.Span, cp: u32, out: *std.ArrayList(u32)) TransformError!void {
@@ -156,6 +170,58 @@ const T = struct {
         const list = try self.b.addList(&.{ @intFromEnum(e_s), @intFromEnum(e_ns) });
         // character_class data: [flags, list_start, list_len], flags bit0=neg, bits1-2=kind(union=0)
         return self.b.add(.{ .tag = .character_class, .span = span, .data = .{ 0, list.start, list.len } });
+    }
+
+    // ── #4210 PR2b: ES2025 `(?i:…)` non-u ASCII case-fold ──
+
+    /// ASCII 글자 c1·c2(대/소) → 리터럴 `[c1c2]` (.symbol 이라 글자는 escape 불필요).
+    fn makeAsciiFoldClass(self: *T, c1: u32, c2: u32, span: ast.Span) TransformError!NodeIndex {
+        const x = try self.b.add(.{ .tag = .character, .span = span, .data = .{ c1, SYM, 0 } });
+        const y = try self.b.add(.{ .tag = .character, .span = span, .data = .{ c2, SYM, 0 } });
+        const l = try self.b.addList(&.{ @intFromEnum(x), @intFromEnum(y) });
+        return self.b.add(.{ .tag = .character_class, .span = span, .data = .{ 0, l.start, l.len } });
+    }
+
+    /// non-u ASCII case-fold: set 의 ASCII 글자에 대/소 swap 을 추가. set 에 비-ASCII
+    /// (>=0x80) 멤버가 있으면 false(= fold 불가, 호출자 bail). regexpu 와 달리 Kelvin
+    /// (U+212A)·ſ(U+017F) 같은 u-전용 special fold 는 포함하지 않음 — non-u Canonicalize
+    /// 는 toUpperCase 기반이라 이들이 ASCII 로 collapse 되지 않는다.
+    fn asciiFoldExpand(self: *T, set: *cps.CodePointSet) TransformError!bool {
+        var extra: std.ArrayList(u32) = .empty;
+        defer extra.deinit(self.b.a);
+        for (set.items()) |r| {
+            if (r.max >= 0x80) return false; // 비-ASCII 멤버 → fold 불가
+            var cp = r.min;
+            while (true) : (cp += 1) {
+                if (cp >= 'A' and cp <= 'Z') {
+                    try extra.append(self.b.a, cp + 0x20);
+                } else if (cp >= 'a' and cp <= 'z') {
+                    try extra.append(self.b.a, cp - 0x20);
+                }
+                if (cp == r.max) break;
+            }
+        }
+        for (extra.items) |e| try set.addOne(self.b.a, e);
+        try set.normalize(self.b.a);
+        return true;
+    }
+
+    /// BMP CodePointSet → 단일 `[…]` (범위/단일 자식, \uXXXX 표기 — 모든 특수문자 안전).
+    fn buildBmpClass(self: *T, set: *cps.CodePointSet, span: ast.Span) TransformError!NodeIndex {
+        var kids: std.ArrayList(u32) = .empty;
+        defer kids.deinit(self.b.a);
+        for (set.items()) |r| {
+            try kids.append(self.b.a, @intFromEnum(try self.rangeChild(r.min, r.max, span)));
+        }
+        const l = try self.b.addList(kids.items);
+        return self.b.add(.{ .tag = .character_class, .span = span, .data = .{ 0, l.start, l.len } });
+    }
+
+    /// i-enabling 영역에서 atom 을 fold 할 수 있는 컨텍스트인가 (#4210 PR2b).
+    /// non-u(`!global_u`) + 전역 /i off(`!ignore_case`) + (?i:) 영역(mod_i==true).
+    fn inAsciiIFoldRegion(self: *T) bool {
+        return self.opts.lower_modifiers and self.mod_i == true and
+            !self.opts.ignore_case and !self.opts.global_u;
     }
 
     fn isAstralUnicodeEscape(n: Node) bool {
@@ -375,6 +441,15 @@ const T = struct {
                         iu_fold.hasEntry(n.data[0]);
                     if (fold_risk) self.astral_u_incomplete = true;
                 }
+                // #4210 PR2b: i-enabling 영역의 ASCII 글자 → [cC] non-u fold.
+                if (self.inAsciiIFoldRegion()) {
+                    const cp = n.data[0];
+                    if (cp >= 'A' and cp <= 'Z') return try self.makeAsciiFoldClass(cp, cp + 0x20, n.span);
+                    if (cp >= 'a' and cp <= 'z') return try self.makeAsciiFoldClass(cp, cp - 0x20, n.span);
+                    // 비-ASCII atom 은 non-u fold 불가 → 영역 bail(그룹 i 비트 보존).
+                    // ASCII 비-글자(숫자·기호·control)는 identity(그대로, bail 아님).
+                    if (cp >= 0x80) self.i_fold_incomplete = true;
+                }
                 return self.b.add(n);
             },
             .dot => {
@@ -454,6 +529,21 @@ const T = struct {
                         self.astral_u_incomplete = true;
                     }
                 }
+                // #4210 PR2b: non-u i-enabling 영역의 positive class → ASCII case-fold.
+                // negated/비-ASCII/복잡(\p{}·class_string·\D\W\S·\s 포함) 는 bail(보존).
+                if (self.inAsciiIFoldRegion()) {
+                    const negative = (n.data[0] & 1) != 0;
+                    if (negative) {
+                        self.i_fold_incomplete = true; // negated non-u fold 미묘 → bail
+                    } else {
+                        var set = cps.CodePointSet{};
+                        defer set.deinit(self.b.a);
+                        if ((try self.collectClassSet(n, &set)) and (try self.asciiFoldExpand(&set))) {
+                            return try self.buildBmpClass(&set, n.span);
+                        }
+                        self.i_fold_incomplete = true; // collect 실패 또는 비-ASCII → bail
+                    }
+                }
                 const saved = self.in_class;
                 self.in_class = true;
                 const l = try self.expandList(n.getClassBody());
@@ -492,24 +582,32 @@ const T = struct {
                 // effective: enabling→true, disabling→false, 무관→상속(불변).
                 const saved_s = self.mod_s;
                 const saved_i = self.mod_i;
+                const saved_ifi = self.i_fold_incomplete;
                 if (en & 0b100 != 0) self.mod_s = true;
                 if (dis & 0b100 != 0) self.mod_s = false;
                 if (en & 0b001 != 0) self.mod_i = true;
                 if (dis & 0b001 != 0) self.mod_i = false;
+                self.i_fold_incomplete = false; // 이 영역의 fold-bail 만 집계
                 defer {
                     self.mod_s = saved_s;
                     self.mod_i = saved_i;
+                    self.i_fold_incomplete = saved_ifi; // 내부 bail 은 상위로 누설 안 함
                 }
                 const body = try self.node(@enumFromInt(n.data[2]));
-                // #4210 lowering: s-enabling 영역의 `.` 는 body 에서 [\s\S] 로
-                // baked-in(dot 핸들러) → s-enabling 비트만 strip. i/m/모든
-                // disabling 은 보수적으로 보존(lower() 진단이 잔여 경고). 모든
-                // 비트가 빠지면 평범한 `(?:…)`.
-                if (self.opts.lower_modifiers) {
-                    const kept_en = en & ~@as(u32, 0b100); // s-enabling(4) 제거
-                    return self.b.add(.{ .tag = .ignore_group, .span = n.span, .data = .{ kept_en, dis, @intFromEnum(body) } });
+                if (!self.opts.lower_modifiers) {
+                    return self.b.add(.{ .tag = .ignore_group, .span = n.span, .data = .{ en, dis, @intFromEnum(body) } });
                 }
-                return self.b.add(.{ .tag = .ignore_group, .span = n.span, .data = .{ en, dis, @intFromEnum(body) } });
+                // #4210 lowering: s-enabling 은 dot 이 body 에서 [\s\S] 로 baked-in →
+                // 항상 strip. i-enabling 은 이 영역의 모든 atom 이 fold 됐을 때만
+                // (비-bail, non-u, 전역 /i off) strip — bail 시 i 보존(이미 fold 된
+                // atom 은 [cC] 라 i 적용이 no-op 이라 의미 동치). m/disabling 보존.
+                var kept_en = en & ~@as(u32, 0b100); // s-enabling 제거
+                const i_lowered = (en & 0b001 != 0) and !self.i_fold_incomplete and
+                    !self.opts.ignore_case and !self.opts.global_u;
+                if (i_lowered) kept_en &= ~@as(u32, 0b001); // i-enabling 제거
+                // 보존된 modifier 비트가 남으면 진단 신호(transpile/prepass 가 경고).
+                if (kept_en != 0 or dis != 0) self.kept_modifier = true;
+                return self.b.add(.{ .tag = .ignore_group, .span = n.span, .data = .{ kept_en, dis, @intFromEnum(body) } });
             },
             .quantifier => {
                 const body = try self.node(n.getQuantifierBody());
@@ -548,6 +646,7 @@ pub fn transform(in: ast.RegExpAst, opts: Options, allocator: std.mem.Allocator)
         },
         .named_groups = named,
         .astral_u_incomplete = t.astral_u_incomplete,
+        .kept_modifier = t.kept_modifier,
         .allocator = allocator,
     };
 }

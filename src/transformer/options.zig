@@ -383,22 +383,9 @@ pub const TransformOptions = struct {
         "@jsx / @jsxFrag pragma ignored — the effective JSX runtime is automatic; " ++
         "add /** @jsxRuntime classic */ to use a custom factory, or remove the pragma";
 
-    /// ES2025 inline modifier group `(?ims-ims:...)` 중 *다운레벨 안 되는* 그룹을 미지원
-    /// 타겟에서 쓰고 있는지 (#4210). PR2 가 s-enabling `(?s:)` 는 내리므로, 잔여
-    /// (i/m/disabling = `scanModifiers().unlowered`)만 verbatim 패스스루 → 구형 엔진
-    /// SyntaxError → caller 가 loud 진단. `regex_modifiers` 비트가 set 인 (es2024↓)
-    /// 타겟에서만 스캔 — 모던 타겟(es2025+)은 비트 false 라 스캔조차 안 한다.
-    pub fn usesUnsupportedRegexModifier(self: @This(), ast: *const Ast) bool {
-        if (!self.unsupported.regex_modifiers) return false;
-        for (ast.nodes.items) |node| {
-            if (node.tag == .regexp_literal and
-                regex_lower.scanModifiers(ast.getText(node.span)).unlowered) return true;
-        }
-        return false;
-    }
-
-    /// `usesUnsupportedRegexModifier` 가 true 일 때 caller 가 띄우는 메시지.
-    /// graph pre-pass(structured diagnostic) 와 transpile(`std.log.warn`) 양쪽이 공유.
+    /// ES2025 inline modifier(#4210) 중 다운레벨 못한 잔여가 보존됐을 때 caller 가
+    /// 띄우는 메시지. 진단은 transform-driven(`transformer.used_unsupported_modifier`)
+    /// — graph pre-pass(structured diagnostic) 와 transpile(`std.log.warn`) 공유.
     pub const regex_modifier_unsupported_msg =
         "regular expression inline modifier group ((?i:...) / (?ims-ims:...)) is an " ++
         "ES2025 feature not supported by the configured target — it is emitted unchanged " ++

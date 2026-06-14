@@ -728,6 +728,8 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             const raw = self.ast.getText(node.span);
             const result = try regex_lower.lower(self.allocator, raw, .{ .unsupported = u });
             defer if (result.named_groups) |ng| self.allocator.free(ng);
+            // #4210: 다운레벨 못해 보존된 modifier 그룹 → 진단 신호(transpile/prepass).
+            if (result.kept_modifier) self.used_unsupported_modifier = true;
             const new_text = result.text orelse break :blk self.copyNodeDirect(idx);
             defer self.allocator.free(new_text);
 
