@@ -2040,24 +2040,28 @@ function collectPluginRegistry(plugins: ZntcPlugin[]): PluginRegistry {
       onResolve(opts, cb) {
         registry.hooks.resolveId.push({
           pluginName: plugin.name,
-          filter: opts.filter,
+          filter: stripStatefulFilterFlags(opts.filter),
           callback: cb,
         });
       },
       onLoad(opts, cb) {
-        registry.hooks.load.push({ pluginName: plugin.name, filter: opts.filter, callback: cb });
+        registry.hooks.load.push({
+          pluginName: plugin.name,
+          filter: stripStatefulFilterFlags(opts.filter),
+          callback: cb,
+        });
       },
       onTransform(opts, cb) {
         registry.hooks.transform.push({
           pluginName: plugin.name,
-          filter: opts.filter,
+          filter: stripStatefulFilterFlags(opts.filter),
           callback: cb,
         });
       },
       onRenderChunk(opts, cb) {
         registry.hooks.renderChunk.push({
           pluginName: plugin.name,
-          filter: opts.filter,
+          filter: stripStatefulFilterFlags(opts.filter),
           callback: cb,
         });
       },
@@ -2076,14 +2080,14 @@ function collectPluginRegistry(plugins: ZntcPlugin[]): PluginRegistry {
       onAstFunction(opts, cb) {
         registry.astFunctionHooks.push({
           pluginName: plugin.name,
-          filter: opts.filter,
+          filter: stripStatefulFilterFlags(opts.filter),
           callback: cb,
         });
       },
       onResolveContext(opts, cb) {
         registry.hooks.resolveContext.push({
           pluginName: plugin.name,
-          filter: opts.filter,
+          filter: stripStatefulFilterFlags(opts.filter),
           callback: cb,
         });
       },
@@ -2210,6 +2214,16 @@ function getPluginContext(
   slot.__emitFile = emitFile;
   slot.__getFileName = getFileName;
   return ctx;
+}
+
+/**
+ * 플러그인 filter 정규식을 무상태로 정규화. `g`/`y` 플래그 정규식의 `.test()` 는 lastIndex 를
+ * 누적(stateful)해, 같은 정규식으로 여러 파일을 검사하면 격번으로 skip 된다(#4291). 등록 시
+ * 플래그를 제거해 immutable·무상태 정규식으로 저장한다 — 사용자 RegExp 객체는 변형하지 않는다.
+ */
+function stripStatefulFilterFlags(re: RegExp): RegExp {
+  if (!re.global && !re.sticky) return re;
+  return new RegExp(re.source, re.flags.replace(/[gy]/g, ''));
 }
 
 /**
