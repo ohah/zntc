@@ -1095,13 +1095,21 @@ fn parseImportAttributes(self: *Parser) ParseError2!NodeList {
         _ = try self.eat(.colon);
         var value_node: NodeIndex = NodeIndex.none;
         const value_span = self.currentSpan();
-        if (self.current() == .string_literal and self.current() != .r_curly and self.current() != .eof) {
+        // ECMAScript WithClause: attribute value 는 StringLiteral 이어야 한다. (`!= .r_curly`/`.eof`
+        // 는 `== .string_literal` 이면 이미 참이라 dead — 제거.)
+        if (self.current() == .string_literal) {
             value_node = try self.ast.addNode(.{
                 .tag = .string_literal,
                 .span = value_span,
                 .data = .{ .string_ref = value_span },
             });
             try self.advance();
+        } else {
+            // 비-string value(예: `type: json`)는 과거 silent 수용됐다 — 진단 + 잘못된 토큰 1개
+            // 소비해 recovery 진행.
+            try self.addError(value_span, "string literal as import attribute value");
+            if (self.current() != .r_curly and self.current() != .eof and self.current() != .comma)
+                try self.advance();
         }
 
         const attr_node = try self.ast.addNode(.{

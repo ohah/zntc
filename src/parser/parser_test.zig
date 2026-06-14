@@ -4945,3 +4945,14 @@ test "Parser regression #4108: genuine duplicate import-attribute keys still det
         \\import data from "m" with { "type": "1", "type": "2" };
     )) > 0);
 }
+
+test "Parser regression #4382: import attribute value 는 string literal 이어야 — 비-string 진단" {
+    // identifier value(`type: json`) → 에러(과거 silent 수용).
+    try std.testing.expect((try parseModuleErrCount(
+        \\import x from "m" with { type: json };
+    )) > 0);
+    // string value 는 정상(0 에러).
+    try std.testing.expectEqual(@as(usize, 0), try parseModuleErrCount(
+        \\import x from "m" with { type: "json" };
+    ));
+}
