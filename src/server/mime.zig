@@ -52,8 +52,9 @@ fn lookup(ext: []const u8) []const u8 {
         .{ ".ogg", "audio/ogg" },
     };
 
+    // 확장자는 대소문자 무관(`.JS`/`.PNG` 등) — 맵 키는 소문자이므로 ignore-case 비교.
     inline for (map) |entry| {
-        if (std.mem.eql(u8, ext, entry[0])) return entry[1];
+        if (std.ascii.eqlIgnoreCase(ext, entry[0])) return entry[1];
     }
 
     return "application/octet-stream";
