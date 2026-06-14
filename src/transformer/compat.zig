@@ -169,8 +169,8 @@ pub const UnsupportedFeatures = packed struct(u32) {
     regex_named_groups: bool = false,
     unicode_brace_escape: bool = false,
     regex_duplicate_named_groups: bool = false,
-    /// ES2025 inline modifier group `(?ims-ims:...)` (#4210). lowering 미구현 단계 —
-    /// 비트는 진단 게이트 전용(needsRegexLowering 에는 아직 미포함, passthrough 유지).
+    /// ES2025 inline modifier group `(?ims-ims:...)` (#4210). s-enabling `(?s:)` 는
+    /// 다운레벨(needsRegexLowering 포함), i/m/disabling 잔여는 보존 + 진단.
     regex_modifiers: bool = false,
 
     _: u2 = 0,
@@ -180,7 +180,7 @@ pub const UnsupportedFeatures = packed struct(u32) {
     /// 여기 한 곳만 추가하면 된다 (#4199 에서 게이트 2곳 누락이 실제 발생).
     pub fn needsRegexLowering(self: @This()) bool {
         return self.regex_dotall or self.regex_named_groups or self.regex_sticky or
-            self.unicode_brace_escape or self.regex_duplicate_named_groups;
+            self.unicode_brace_escape or self.regex_duplicate_named_groups or self.regex_modifiers;
     }
 
     /// 어떤 feature flag 라도 set 됐는지 (= packed struct 가 zero 가 아닌지).
