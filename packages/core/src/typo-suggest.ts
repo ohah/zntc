@@ -135,6 +135,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // ─── 모듈 / Resolve ───
   'external',
   'alias',
+  // alias 의 exact-match 변형 (프로그램틱/config 전용 — `--alias` 만 CLI 노출).
+  'aliasExact',
   'define',
   'server',
   'loader',
@@ -211,6 +213,11 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'watchDelay',
   'jobs',
   'codegenTransform',
+  // ─── lazy compilation (D105) — build()/watch() 프리미티브, dev 서버가 오케스트레이션 ───
+  'lazyCompilation',
+  'lazyForceParse',
+  // ─── HMR 위상 보존 plugin 게이트 완화 (RN preset 자동 set, build-level opt-in) ───
+  'preserveSafePlugins',
   // ─── config-only ───
   'extends',
   // ─── React Native dev server (#2605) — top-level keys for RN config ───
