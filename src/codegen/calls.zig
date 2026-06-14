@@ -171,12 +171,21 @@ fn tryEmitGlobObject(self: anytype, callee: ast_mod.NodeIndex, args_start: u32, 
         if (!std.mem.eql(u8, rec.specifier, pattern)) continue;
 
         if (rec.glob_matches) |matches| {
-            try self.write("{\n");
+            // whitespace 는 헬퍼 경유 — minify_whitespace 시 no-op, 아니면 indent_level 추적
+            // (과거 하드코딩 "\n"/"  " 는 minify 출력에 새고 nested context 에서 mis-indent).
+            try self.write("{");
+            try self.writeNewline();
+            self.indent_level += 1;
             for (matches, 0..) |match_path, i| {
-                if (i > 0) try self.write(",\n");
-                try self.write("  \"");
+                if (i > 0) {
+                    try self.write(",");
+                    try self.writeNewline();
+                }
+                try self.writeIndent();
+                try self.write("\"");
                 try writeJsStringContent(self, match_path);
-                try self.write("\": ");
+                try self.write("\":");
+                try self.writeSpace();
 
                 if (rec.glob_eager) {
                     if (rec.glob_import_name) |import_name| {
@@ -190,20 +199,32 @@ fn tryEmitGlobObject(self: anytype, callee: ast_mod.NodeIndex, args_start: u32, 
                         try self.write("\")");
                     }
                 } else {
+                    // lazy: `() => import("...")` — `=>` 둘레 공백도 minify 시 제거(writeSpace).
+                    try self.write("()");
+                    try self.writeSpace();
+                    try self.write("=>");
+                    try self.writeSpace();
                     if (rec.glob_import_name) |import_name| {
-                        try self.write("() => import(\"");
+                        try self.write("import(\"");
                         try writeJsStringContent(self, match_path);
-                        try self.write("\").then(m => m.");
+                        try self.write("\").then(m");
+                        try self.writeSpace();
+                        try self.write("=>");
+                        try self.writeSpace();
+                        try self.write("m.");
                         try self.write(import_name);
                         try self.write(")");
                     } else {
-                        try self.write("() => import(\"");
+                        try self.write("import(\"");
                         try writeJsStringContent(self, match_path);
                         try self.write("\")");
                     }
                 }
             }
-            try self.write("\n}");
+            self.indent_level -= 1;
+            try self.writeNewline();
+            try self.writeIndent();
+            try self.write("}");
         } else {
             try self.write("{}");
         }

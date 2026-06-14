@@ -43,6 +43,19 @@ describe('import.meta.glob > basic patterns', () => {
     expect(text).not.toContain('import.meta.glob');
   });
 
+  test('#4372 minify 시 glob 객체에 newline/공백 없음 (minify invariant)', () => {
+    writeFileSync(
+      join(dir, 'min.ts'),
+      'const m = import.meta.glob("./pages/*.tsx");\nexport { m };',
+    );
+    const result = buildSync({ entryPoints: [join(dir, 'min.ts')], format: 'esm', minify: true });
+    expect(result.errors.length).toBe(0);
+    const text = result.outputFiles[0].text;
+    // 과거 glob 객체는 하드코딩 "\n"/"  " 와 `() => ` 공백을 minify 출력에도 흘렸다.
+    expect(text).toContain('"./pages/Home.tsx":()=>import(');
+    expect(text).not.toContain('"./pages/Home.tsx": (');
+  });
+
   test('매칭 파일 없는 패턴 → 빈 객체', () => {
     writeFileSync(
       join(dir, 'empty.ts'),
