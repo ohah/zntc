@@ -552,7 +552,11 @@ fn transformEmotionTemplate(
     const node = self.ast.getNode(template_idx);
     if (node.tag != .template_literal) return template_idx;
 
-    if (node.data.none == 0) {
+    // list.len==0 = transformer raw-span shorthand(text in node.span). parser-created
+    // template 은 quasi 최소 1개라 항상 len>0. (과거 `data.none == 0` 은 data.list.start
+    // 와 alias 라, 보간 template 이 extra_data[0] 에서 시작하면 start==0 → no-interp 오판
+    // → 보간 expression 변환 누락. node_dispatch/codegen 과 동일하게 list.len 기준.)
+    if (node.data.list.len == 0) {
         return try transformNoInterpTemplate(self, template_idx, node, label_text, source_map_text);
     }
     return try transformInterpTemplate(self, template_idx, node, label_text, source_map_text);
