@@ -3248,15 +3248,19 @@ pub const SemanticAnalyzer = struct {
 
         // 각 declarator에서 바인딩 이름 추출
         // variable_declarator의 data는 extra: [name, type_ann, init_expr]
+        // 형제 declarator-리더(predeclareVarDecl:2230 등)와 동일한 바운드 가드 — 이 함수만 누락해
+        // malformed/truncated AST(error-recovery)에서 OOB panic 했다(방어적 analyzer 설계 일치).
+        if (decl_start + decl_len > extras.len) return;
         const decl_indices = self.ast.extra_data.items[decl_start .. decl_start + decl_len];
         for (decl_indices) |raw_idx| {
             const decl_idx: NodeIndex = @enumFromInt(raw_idx);
             if (decl_idx.isNone()) continue;
             const decl_node = self.ast.getNode(decl_idx);
             if (decl_node.tag == .variable_declarator) {
-                // extra: [name, type_ann, init_expr]
+                // extra: [name, type_ann, init_expr] — 3-슬롯 읽으므로 decl_extra+2 바운드 가드.
                 const decl_extra = decl_node.data.extra;
                 const decl_extras = self.ast.extra_data.items;
+                if (decl_extra + 2 >= decl_extras.len) continue;
                 const binding_idx: NodeIndex = @enumFromInt(decl_extras[decl_extra]);
                 const init_idx: NodeIndex = @enumFromInt(decl_extras[decl_extra + 2]);
 
