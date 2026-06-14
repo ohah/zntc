@@ -1148,6 +1148,7 @@ fn decodeStringKey(input: []const u8, buf: *[256]u8) []const u8 {
             if (input[i + 1] == 'u') {
                 // \uHHHH
                 if (i + 5 < input.len) {
+                    const esc_start = i; // '\' 위치 — 인코딩 불가 시 원문 \uHHHH 보존용
                     i += 2; // skip \u
                     var codepoint: u21 = 0;
                     var valid = true;
@@ -1170,9 +1171,19 @@ fn decodeStringKey(input: []const u8, buf: *[256]u8) []const u8 {
                         codepoint = codepoint * 16 + digit;
                         i += 1;
                     }
-                    if (valid and codepoint < 128 and out < 256) {
-                        buf[out] = @intCast(codepoint);
-                        out += 1;
+                    if (valid) {
+                        // codepoint 를 UTF-8 로 정확히 인코딩(비-ASCII 도 보존). 인코딩 불가
+                        // (lone surrogate 등)면 원문 \uHHHH 를 보존 → 정보 손실/거짓 중복 방지.
+                        // surrogate pair(예: 😀)는 각 half 가 인코딩 불가라 원문 escape
+                        // 로 남는다 — dedup 키의 escape-형태 구분성 유지(같은 escape 만 중복).
+                        var utf8: [4]u8 = undefined;
+                        const bytes: []const u8 = if (std.unicode.utf8Encode(codepoint, &utf8)) |n|
+                            utf8[0..n]
+                        else |_|
+                            input[esc_start..i];
+                        const k = @min(bytes.len, 256 - out); // while 가드로 out<256 보장
+                        @memcpy(buf[out .. out + k], bytes[0..k]);
+                        out += k;
                     }
                     continue;
                 }

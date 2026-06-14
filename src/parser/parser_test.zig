@@ -4864,6 +4864,22 @@ test "Parser regression #4108: distinct escaped import-attribute keys are not fa
     ));
 }
 
+test "Parser regression #4309: distinct non-ASCII escaped import-attribute keys are not false duplicates" {
+    // é(é) vs è(è): 서로 다른 비-ASCII escape 키 → 중복 아님.
+    // (codepoint<128 만 기록하면 둘 다 ""→거짓 중복)
+    try std.testing.expectEqual(@as(usize, 0), try parseModuleErrCount(
+        \\import data from "m" with { "\u00e9": "1", "\u00e8": "2" };
+    ));
+    // 비-ASCII 가 섞인 escape 키도 구분 (café vs cafè)
+    try std.testing.expectEqual(@as(usize, 0), try parseModuleErrCount(
+        \\import data from "m" with { "caf\u00e9": "1", "caf\u00e8": "2" };
+    ));
+    // 같은 비-ASCII escape 키 2회 → 진짜 중복 검출
+    try std.testing.expect((try parseModuleErrCount(
+        \\import data from "m" with { "\u00e9": "1", "\u00e9": "2" };
+    )) > 0);
+}
+
 test "Parser regression #4108: genuine duplicate import-attribute keys still detected" {
     // 둘 다 escape, 같은 디코드 값(ab) → 진짜 중복 → 검출
     try std.testing.expect((try parseModuleErrCount(
