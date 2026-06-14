@@ -78,13 +78,16 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .program => {
             // Plugin visitor 훅 선취권 (file-level worklet directive 등)
             if (try self.dispatchVisitor(.on_program, idx)) |replacement| return replacement;
-            // ES2022 top-level await 다운레벨링: 미지원 타겟에서 async IIFE 로 wrap. (#1384)
-            if (self.options.unsupported.top_level_await) {
-                if (try es2022_tla.lowerProgram(Transformer, self, node)) |wrapped| {
-                    return wrapped;
+            // ES2022 top-level await 다운레벨링: 미지원 타겟에서 async IIFE 로 wrap (#1384).
+            // wrap 결과도 `.program` 노드라 아래 css_prop hoist 가 동일 적용돼야 한다 — 과거엔
+            // 여기서 early-return 해 TLA+styled-components(css-prop) 동시 사용 시 추출된
+            // module-level decl 이 hoist 되지 않고 소실됐다.
+            const result = blk: {
+                if (self.options.unsupported.top_level_await) {
+                    if (try es2022_tla.lowerProgram(Transformer, self, node)) |wrapped| break :blk wrapped;
                 }
-            }
-            const result = try self.visitListNode(idx);
+                break :blk try self.visitListNode(idx);
+            };
             // styled-components cssProp transform 으로 추출된 module-level decl 들을
             // program body 끝에 hoist. trailing_nodes 가 nearest list (declarator list 등)
             // 에 들어가는 케이스 회피.

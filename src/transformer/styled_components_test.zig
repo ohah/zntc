@@ -1594,6 +1594,32 @@ test "styled (cssProp): intrinsic tag + template_literal css value 추출" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red") != null);
 }
 
+test "styled (cssProp) #4339: top-level-await wrap 시에도 추출된 module-level decl 보존" {
+    // TLA 다운레벨(async IIFE wrap)과 cssProp 추출이 동시에 일어나는 파일. 과거엔 program 의
+    // TLA wrap 이 early-return 해 css_prop_pending_decls 가 hoist 되지 않고 소실(undefined ref).
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const el = <div css={`color: red;`}>x</div>;
+        \\await Promise.resolve(1);
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+            .unsupported = .{ .top_level_await = true },
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // 추출된 generated decl 이 소실되지 않아야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red") != null);
+}
+
 test "styled (cssProp): 옵션 비활성 시 변환 없음 (안전한 기본 동작)" {
     var r = try e2eFull(
         std.testing.allocator,
