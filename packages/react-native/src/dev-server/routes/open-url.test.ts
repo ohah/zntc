@@ -65,7 +65,7 @@ describe('handleOpenUrl — happy path', () => {
     expect(res.payload).toEqual({ success: true });
   });
 
-  test('win32 → cmd /c start', async () => {
+  test('win32 → rundll32 (cmd 인젝션 회피)', async () => {
     const rec: Recorded[] = [];
     await handleOpenUrl(
       streamReq('{"url":"https://w.test"}') as never,
@@ -73,7 +73,10 @@ describe('handleOpenUrl — happy path', () => {
       fakeSpawner(rec),
       'win32',
     );
-    expect(rec[0]).toMatchObject({ command: 'cmd', args: ['/c', 'start', '', 'https://w.test'] });
+    expect(rec[0]).toMatchObject({
+      command: 'rundll32',
+      args: ['url.dll,FileProtocolHandler', 'https://w.test'],
+    });
   });
 
   test('linux → xdg-open', async () => {
@@ -128,5 +131,50 @@ describe('handleOpenUrl — error path', () => {
     );
     expect(res.statusCode).toBe(500);
     expect(res.payload).toEqual({ error: 'Failed to open URL' });
+  });
+});
+
+describe('handleOpenUrl — URL 검증(보안) #4275', () => {
+  const rejected = [
+    ['file:// 임의 파일', 'file:///etc/passwd'],
+    ['javascript: 스킴', 'javascript:alert(1)'],
+    ['커스텀 스킴', 'myapp://launch'],
+    ['cmd 메타문자 + 공백', 'https://x.test & calc'],
+    ['공백 포함', 'https://x.test/ a'],
+    ['백슬래시', 'https://x.test\\foo'],
+    ['따옴표', 'https://x.test"q'],
+    ['제어문자(CR)', 'https://x.test\r'],
+    ['scheme 없음', 'x.test'],
+  ] as const;
+
+  for (const [label, url] of rejected) {
+    test(`거부: ${label} → 400, spawner 미호출`, async () => {
+      const rec: Recorded[] = [];
+      const res = makeRes();
+      await handleOpenUrl(
+        streamReq(JSON.stringify({ url })) as never,
+        res as never,
+        fakeSpawner(rec),
+        'win32',
+      );
+      expect(rec).toHaveLength(0);
+      expect(res.statusCode).toBe(400);
+    });
+  }
+
+  test('허용: 쿼리스트링(&) 정상 URL → 200 + rundll32 에 그대로 전달', async () => {
+    const rec: Recorded[] = [];
+    const res = makeRes();
+    await handleOpenUrl(
+      streamReq('{"url":"https://x.test/?a=1&b=2"}') as never,
+      res as never,
+      fakeSpawner(rec),
+      'win32',
+    );
+    expect(res.statusCode).toBe(200);
+    expect(rec[0]).toMatchObject({
+      command: 'rundll32',
+      args: ['url.dll,FileProtocolHandler', 'https://x.test/?a=1&b=2'],
+    });
   });
 });
