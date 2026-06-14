@@ -468,13 +468,7 @@ pub const Linker = struct {
         while (cc_it.next()) |key| self.allocator.free(key.*);
         self.chain_cache.deinit(self.allocator);
         // ns_export_cache: 슬라이스 + owned local 해제
-        var nec_it = self.ns_export_cache.iterator();
-        while (nec_it.next()) |entry| {
-            for (entry.value_ptr.*) |exp| {
-                if (exp.owned) self.allocator.free(exp.local);
-            }
-            self.allocator.free(entry.value_ptr.*);
-        }
+        self.freeNsExportCacheEntries();
         self.ns_export_cache.deinit(self.allocator);
         // ns_inline_cache: 문자열 해제
         var nic_it = self.ns_inline_cache.valueIterator();
@@ -3085,6 +3079,22 @@ pub const Linker = struct {
         self.canonical_names_used.clearRetainingCapacity();
         // 값이 방금 free 된 stale slice 를 가리키지 않도록 rename_table 도 함께 clear.
         self.rename_table.clear();
+        // ns_export_cache 의 non-owned local 도 rename_table → canonical_strings 를 borrow 하므로
+        // (collectExportsRecursive "default" 경로) canonical_strings free 뒤엔 stale → 함께 무효화. #4297
+        self.freeNsExportCacheEntries();
+        self.ns_export_cache.clearRetainingCapacity();
+    }
+
+    /// ns_export_cache 의 모든 엔트리 해제(owned local + 슬라이스). 컨테이너 정리
+    /// (deinit vs clearRetainingCapacity)는 호출자가 한다. deinit/clearCanonicalNames 공용.
+    fn freeNsExportCacheEntries(self: *Linker) void {
+        var nec_it = self.ns_export_cache.iterator();
+        while (nec_it.next()) |entry| {
+            for (entry.value_ptr.*) |exp| {
+                if (exp.owned) self.allocator.free(exp.local);
+            }
+            self.allocator.free(entry.value_ptr.*);
+        }
     }
 
     /// RFC #3940 Sub-PR-L.5a — graph carry-over 가 `module.pending_renames` 에 stash 한 rename

@@ -2078,3 +2078,25 @@ test "reuse: F5 — rename_table 키의 symbolLocalName 이 null 이면 스냅�
         try std.testing.expect(false); // 도달 불가 — null 이어야 한다.
     }
 }
+
+test "clearCanonicalNames: ns_export_cache 도 무효화 (non-owned local canonical_strings UAF, #4297)" {
+    const allocator = std.testing.allocator;
+    var cache = resolve_cache_mod.ResolveCache.init(allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(allocator, &cache);
+    defer graph.deinit();
+    var linker = Linker.init(allocator, &graph, .esm);
+    defer linker.deinit();
+
+    // ns_export_cache 의 non-owned local 은 canonical_strings 를 borrow → clearCanonicalNames 가
+    // canonical_strings 를 free 하면 stale. 캐시도 무효화돼야 한다. owned 엔트리로 free 까지 검증.
+    const owned_local = try allocator.dupe(u8, "_default");
+    const slice = try allocator.alloc(Linker.NsExportPair, 1);
+    slice[0] = .{ .exported = "x", .local = owned_local, .owned = true };
+    try linker.ns_export_cache.put(allocator, 0, slice);
+
+    linker.clearCanonicalNames();
+
+    // 버그: 캐시 미정리 → stale 엔트리 잔존(+owned local leak, testing allocator 감지).
+    try std.testing.expectEqual(@as(usize, 0), linker.ns_export_cache.count());
+}
