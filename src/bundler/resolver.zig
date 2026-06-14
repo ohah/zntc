@@ -211,9 +211,11 @@ pub const DirEntryCache = struct {
                 .symlink => {
                     // symlink는 대상이 파일인지 디렉토리인지 readdir만으로 알 수 없으므로 양쪽에 등록.
                     // Linux의 bun install이 node_modules에 symlink 디렉토리를 만들기 때문에 필수.
-                    set.files.put(self.allocator, entry.name, {}) catch {};
-                    const name2 = self.allocator.dupe(u8, entry.name) catch continue;
-                    set.dirs.put(self.allocator, name2, {}) catch self.allocator.free(name2);
+                    // dupe 를 *먼저* — entry.name 을 put 실패 시 free 해도 name2 가 dangling 안 되게.
+                    const name2 = self.allocator.dupe(u8, entry.name) catch null;
+                    // files.put 실패 시 entry.name free — file/directory arm 과 동일 소유권(leak 방지).
+                    set.files.put(self.allocator, entry.name, {}) catch self.allocator.free(entry.name);
+                    if (name2) |n2| set.dirs.put(self.allocator, n2, {}) catch self.allocator.free(n2);
                 },
                 else => self.allocator.free(entry.name),
             }
