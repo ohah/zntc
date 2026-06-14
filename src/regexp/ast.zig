@@ -206,6 +206,12 @@ pub const Node = struct {
         return .{ .start = self.data[1], .len = self.data[2] };
     }
 
+    /// character_class의 결합 종류(union/intersection/subtraction).
+    /// data[0]: bit 0 = negative, bits 1-2 = CharacterClassContentsKind (parser.zig).
+    pub fn classKind(self: Node) CharacterClassContentsKind {
+        return @enumFromInt((self.data[0] >> 1) & 0b11);
+    }
+
     /// quantifier의 body NodeIndex를 가져온다.
     /// data[2]의 bits 0-30.
     pub fn getQuantifierBody(self: Node) NodeIndex {
