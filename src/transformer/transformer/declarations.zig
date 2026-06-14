@@ -308,7 +308,7 @@ pub fn visitFunction(self: *Transformer, node: Node) Error!NodeIndex {
             if (name_node.tag != .binding_identifier and name_node.tag != .identifier_reference) break :blk null;
             break :blk self.ast.getText(name_node.data.string_ref);
         };
-        try self.maybeRegisterRefreshSignature(fn_name_for_sig, old_body_idx, &new_body);
+        try self.maybeRegisterRefreshSignature(fn_name_for_sig, new_name, old_body_idx, &new_body);
     }
 
     const none = @intFromEnum(NodeIndex.none);
