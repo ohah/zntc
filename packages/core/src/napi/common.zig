@@ -68,7 +68,8 @@ pub fn io() std.Io {
 /// g_threaded 가 *Threaded 를 소유하므로 setAsyncLimit(Threaded.mutex 보호) 가능.
 /// ⚠️ 공유 전역 io 라 동시 in-flight 빌드가 서로 다른 jobs 면 마지막 setter 값을
 /// 공유한다(메모리 안전 — mutex 보호, determinism #3564 무관 — byte-identical).
-/// null(jobs=0)=기본 async_limit(cpu-1) 유지.
+/// jobs=0(미지정): high-core 면 vnode open 경합 회피로 총 8 스레드 cap, 아니면 기본(cpu-1)
+/// 유지(asyncLimitForJobs). 명시값은 그대로 존중.
 pub fn setJobs(max_threads: u32) void {
     if (@import("zntc_lib").bundler.asyncLimitForJobs(max_threads)) |lim| {
         if (g_threaded) |*t| t.setAsyncLimit(lim);
