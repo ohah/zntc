@@ -620,29 +620,56 @@ pub const DevServer = struct {
         try req.appendSlice(allocator, request.head.target);
         try req.appendSlice(allocator, " HTTP/1.1\r\n");
 
-        // Host 헤더
+        // Host 헤더 — 표준 포트(80)면 `:port` 생략(엄격한 backend / virtual-host 호환).
         try req.appendSlice(allocator, "Host: ");
         try req.appendSlice(allocator, rule.target_host);
-        try req.append(allocator, ':');
-        var port_buf: [5]u8 = undefined;
-        const port_str = std.fmt.bufPrint(&port_buf, "{d}", .{rule.target_port}) catch unreachable;
-        try req.appendSlice(allocator, port_str);
+        if (rule.target_port != 80) {
+            try req.append(allocator, ':');
+            var port_buf: [5]u8 = undefined;
+            const port_str = std.fmt.bufPrint(&port_buf, "{d}", .{rule.target_port}) catch unreachable;
+            try req.appendSlice(allocator, port_str);
+        }
         try req.appendSlice(allocator, "\r\nConnection: close\r\n");
 
-        // 원본 요청 헤더 전달 (Host, Connection 제외)
+        // 바디 유무는 reader 가 head 문자열을 invalidate 하기 전에 캡처(숫자/enum 필드라 안전).
+        const has_body = request.head.content_length != null or request.head.transfer_encoding != .none;
+
+        // 원본 요청 헤더 전달 (Host/Connection 제외). Content-Length/Transfer-Encoding 도 제외 —
+        // 바디는 아래에서 디코드(chunked 포함)해 단일 Content-Length 로 다시 보내므로, 원본 framing
+        // 헤더를 그대로 두면 backend 가 바디를 잘못 해석한다.
         var header_iter = request.iterateHeaders();
         while (header_iter.next()) |h| {
             if (std.ascii.eqlIgnoreCase(h.name, "host")) continue;
             if (std.ascii.eqlIgnoreCase(h.name, "connection")) continue;
+            // 항상 제외 — 바디가 있으면 디코드 후 단일 Content-Length 로 재구성, 없으면 어차피 부재.
+            if (std.ascii.eqlIgnoreCase(h.name, "content-length")) continue;
+            if (std.ascii.eqlIgnoreCase(h.name, "transfer-encoding")) continue;
             try req.appendSlice(allocator, h.name);
             try req.appendSlice(allocator, ": ");
             try req.appendSlice(allocator, h.value);
             try req.appendSlice(allocator, "\r\n");
         }
-        try req.appendSlice(allocator, "\r\n");
 
-        // NOTE: POST/PUT 바디 전달은 Zig 0.15.2 HTTP Server API 제약으로 미지원.
-        // GET/DELETE 프록시는 정상 동작.
+        // POST/PUT/PATCH 등 바디 전달: client 바디(chunked 면 디코드)를 읽어 단일 Content-Length
+        // 로 backend 에 보낸다. (0.16 HTTP API 로 가능 — 과거 0.15.2 제약 주석은 무효.) 주의:
+        // readerExpectContinue/None 이 head 문자열을 invalidate 하므로 위 헤더 구성 *뒤* 에 호출.
+        var req_body: []const u8 = "";
+        var req_body_owned = false;
+        defer if (req_body_owned) allocator.free(req_body);
+        if (has_body) {
+            var body_buf: [4096]u8 = undefined;
+            const body_reader = request.readerExpectContinue(&body_buf) catch return error.ProxyBodyReadFailed;
+            req_body = body_reader.allocRemaining(allocator, .unlimited) catch return error.ProxyBodyReadFailed;
+            req_body_owned = true;
+            var len_buf: [20]u8 = undefined;
+            const len_str = std.fmt.bufPrint(&len_buf, "{d}", .{req_body.len}) catch unreachable;
+            try req.appendSlice(allocator, "Content-Length: ");
+            try req.appendSlice(allocator, len_str);
+            try req.appendSlice(allocator, "\r\n");
+        }
+
+        try req.appendSlice(allocator, "\r\n");
+        if (req_body.len > 0) try req.appendSlice(allocator, req_body);
 
         // 0.16: net.Stream 직접 writeAll/read 제거 → writer/reader 인터페이스.
         var backend_send_buf: [4096]u8 = undefined;
