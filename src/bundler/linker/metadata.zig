@@ -21,7 +21,6 @@ const ResolvedBinding = linker_mod.ResolvedBinding;
 const profile = @import("../../profile.zig");
 const debug_log = @import("../../debug_log.zig");
 const makeExportKey = types.makeModuleKey;
-const makeExportKeyBuf = types.makeModuleKeyBuf;
 const PreambleWriter = linker_mod.PreambleWriter;
 const NsExportPair = Linker.NsExportPair;
 const getOrCreateRequireVar = linker_mod.getOrCreateRequireVar;
@@ -1620,8 +1619,10 @@ pub fn buildCrossModuleConstValuesProfiled(
             // export_name → local_name 매핑. namespace object export 는 scalar const 가 아니므로
             // symbol lookup 전에 제외한다.
             const local_name = local: {
-                var key_buf: [4096]u8 = undefined;
-                const key = makeExportKeyBuf(&key_buf, canon.module_index.toU32(), canon.export_name);
+                var key_mk: types.ModuleKey = .{};
+                defer key_mk.deinit(self.allocator);
+                // 조회 전용 — OOM 시 빈 키 → export_map 미스 → 아래 export_name 폴백과 동일 경로.
+                const key = key_mk.makeOrEmpty(self.allocator, canon.module_index.toU32(), canon.export_name);
                 if (self.export_map.get(key)) |entry| {
                     if (entry.binding.kind == .re_export_namespace) continue;
                     break :local target_module.exportBindingLocalName(entry.binding);

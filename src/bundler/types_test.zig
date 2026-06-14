@@ -57,6 +57,43 @@ test "ImportRecord: default resolved is none" {
     try std.testing.expect(record.resolved.isNone());
 }
 
+test "ModuleKey: 긴 이름은 heap으로 spill되어 makeModuleKey와 동일한 키를 만든다" {
+    const allocator = std.testing.allocator;
+
+    // 4091바이트(= 4096 - 5)를 초과하는 이름은 기존 고정 스택 버퍼를 넘긴다.
+    // (이전 구현은 ReleaseFast에서 assert가 소거되어 stack-smashing이 발생했다.)
+    const long_name = try allocator.alloc(u8, 5000);
+    defer allocator.free(long_name);
+    @memset(long_name, 'a');
+
+    var mk = types.ModuleKey{};
+    defer mk.deinit(allocator);
+    const key = try mk.make(allocator, 7, long_name);
+
+    // 긴 이름이므로 heap으로 spill되어야 한다 (스택 버퍼 오버플로 방지).
+    try std.testing.expect(mk.spill != null);
+
+    // heap 버전(makeModuleKey)과 바이트가 정확히 같아야 map 조회가 일치한다.
+    const heap_key = try types.makeModuleKey(allocator, 7, long_name);
+    defer allocator.free(heap_key);
+    try std.testing.expectEqualSlices(u8, heap_key, key);
+}
+
+test "ModuleKey: 짧은 이름은 할당 없이 스택 버퍼를 쓴다" {
+    const allocator = std.testing.allocator;
+
+    var mk = types.ModuleKey{};
+    defer mk.deinit(allocator);
+    const key = try mk.make(allocator, 3, "foo");
+
+    // 버퍼에 맞으므로 spill이 없어야 한다 (일반 경로 = 무할당).
+    try std.testing.expect(mk.spill == null);
+
+    const heap_key = try types.makeModuleKey(allocator, 3, "foo");
+    defer allocator.free(heap_key);
+    try std.testing.expectEqualSlices(u8, heap_key, key);
+}
+
 test "BundlerDiagnostic: default suggestion is null" {
     const diag = BundlerDiagnostic{
         .code = .unresolved_import,

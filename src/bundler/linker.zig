@@ -304,7 +304,7 @@ pub const Linker = struct {
     unified_module_scopes: []std.DynamicBitSet = &.{},
 
     /// resolveExportChain 메모이제이션 캐시.
-    /// 키: makeModuleKeyBuf 형식 (4바이트 module_index + 0x00 + name).
+    /// 키: ModuleKey 형식 (4바이트 module_index + 0x00 + name).
     /// Phase 1(fixpoint) + Phase 2(BFS) 간 중복 resolve를 제거.
     /// re-export chain이 있을 때만 활성화 (단순 그래프에서는 오버헤드).
     chain_cache: std.StringHashMapUnmanaged(ChainCacheEntry) = .empty,
@@ -2182,8 +2182,11 @@ pub const Linker = struct {
         // re-export chain이 없는 단순 그래프에서는 캐시 오버헤드가 이득보다 큼.
         // depth=0에서만 캐시 (재귀 호출은 chain 내부라 캐시 불필요).
         if (depth == 0 and self.chain_cache_enabled) {
-            var cache_key_buf: [4096]u8 = undefined;
-            const cache_key = types.makeModuleKeyBuf(&cache_key_buf, @intCast(mod_i), name);
+            var cache_mk: types.ModuleKey = .{};
+            defer cache_mk.deinit(self.allocator);
+            // 키 생성 실패(OOM)는 캐시를 우회하고 직접 계산 — 정확성에는 영향 없음.
+            const cache_key = cache_mk.make(self.allocator, @intCast(mod_i), name) catch
+                return self.resolveExportChainInner(module_idx, name, depth, true);
             if (self.chain_cache.get(cache_key)) |entry| {
                 return entry.result;
             }
@@ -2218,9 +2221,10 @@ pub const Linker = struct {
         const mod_i = @intFromEnum(module_idx);
         const m_any = self.graph.getModule(module_idx) orelse return null;
 
-        // 1. 직접 export 확인
-        var key_buf: [4096]u8 = undefined;
-        const key = makeExportKeyBuf(&key_buf, @intCast(mod_i), name);
+        // 1. 직접 export 확인 (조회 전용 — OOM 시 빈 키 → export_map 미스 → re-export 해석 계속)
+        var key_mk: types.ModuleKey = .{};
+        defer key_mk.deinit(self.allocator);
+        const key = key_mk.makeOrEmpty(self.allocator, @intCast(mod_i), name);
         if (self.export_map.get(key)) |entry| {
             if (entry.binding.kind == .re_export) {
                 // re-export: 소스 모듈로 재귀
@@ -2348,8 +2352,10 @@ pub const Linker = struct {
     /// resolveStarExport 판정을 공유해 drift 를 막는다. #3982
     /// 직접 export(또는 named re-export)면 그 정의가 우선이라 ambiguous 아님.
     pub fn isAmbiguousStarExport(self: *const Linker, module_idx: ModuleIndex, name: []const u8) bool {
-        var key_buf: [4096]u8 = undefined;
-        const dk = makeExportKeyBuf(&key_buf, module_idx.toU32(), name);
+        var key_mk: types.ModuleKey = .{};
+        defer key_mk.deinit(self.allocator);
+        // 조회 전용 — OOM 시 빈 키 → contains 미스 → resolveStarExport로 계속 판정.
+        const dk = key_mk.makeOrEmpty(self.allocator, module_idx.toU32(), name);
         if (self.export_map.contains(dk)) return false;
         return self.resolveStarExport(module_idx, name, 0) == .ambiguous;
     }
@@ -3285,7 +3291,6 @@ pub const Linker = struct {
     }
 
     pub const makeExportKey = types.makeModuleKey;
-    pub const makeExportKeyBuf = types.makeModuleKeyBuf;
 };
 
 /// CJS 모듈의 require_xxx 변수명을 캐시에서 가져오거나 새로 생성.

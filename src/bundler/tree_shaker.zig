@@ -792,8 +792,10 @@ pub const TreeShaker = struct {
     }
 
     pub fn isExportUsed(self: *const TreeShaker, module_index: u32, export_name: []const u8) bool {
-        var key_buf: [4096]u8 = undefined;
-        const key = types.makeModuleKeyBuf(&key_buf, module_index, export_name);
+        var mk: types.ModuleKey = .{};
+        defer mk.deinit(self.allocator);
+        // 조회 전용 — OOM 시 빈 키(항상 miss) → "사용 안 됨"으로 안전 폴백.
+        const key = mk.makeOrEmpty(self.allocator, module_index, export_name);
         return self.used_exports.contains(key);
     }
 
@@ -2309,8 +2311,9 @@ pub const TreeShaker = struct {
     }
 
     fn markExportUsed(self: *TreeShaker, module_index: u32, export_name: []const u8) !void {
-        var key_buf: [4096]u8 = undefined;
-        const lookup_key = types.makeModuleKeyBuf(&key_buf, module_index, export_name);
+        var mk: types.ModuleKey = .{};
+        defer mk.deinit(self.allocator);
+        const lookup_key = try mk.make(self.allocator, module_index, export_name);
         if (self.used_exports.contains(lookup_key)) return;
 
         const key = try types.makeModuleKey(self.allocator, module_index, export_name);
