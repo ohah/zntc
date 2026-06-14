@@ -16,6 +16,15 @@ test "기본 MIME type 매핑" {
     try testing.expectEqualStrings("application/json", fromExtension("bundle.js.map"));
 }
 
+test "#4314 대문자/혼합 확장자 case-insensitive 매칭" {
+    const testing = std.testing;
+    try testing.expectEqualStrings("application/javascript; charset=utf-8", fromExtension("app.JS"));
+    try testing.expectEqualStrings("image/png", fromExtension("logo.PNG"));
+    try testing.expectEqualStrings("text/css; charset=utf-8", fromExtension("style.CSS"));
+    try testing.expectEqualStrings("font/woff2", fromExtension("font.WOFF2"));
+    try testing.expectEqualStrings("image/jpeg", fromExtension("photo.Jpg"));
+}
+
 test "알 수 없는 확장자" {
     const testing = std.testing;
     try testing.expectEqualStrings("application/octet-stream", fromExtension("file.xyz"));
