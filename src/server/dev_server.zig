@@ -861,15 +861,23 @@ pub const DevServer = struct {
     fn handleWebSocket(self: *DevServer, ws: *http.Server.WebSocket, writer: *std.Io.Writer) void {
         self.routineLog("  [ws] client connected\n", .{});
 
-        // broadcast 리스트에 등록
-        self.ws_clients.add(self.io, writer);
-        defer self.ws_clients.remove(self.io, writer);
-
+        // 초기 write(connected + error_state)와 broadcast 등록을 ws_clients.mutex 한 임계영역으로
+        // 묶는다. 이렇게 하면 (1) 초기 write 가 broadcast(같은 mutex 보유 + 같은 writer write)와
+        // 직렬화돼 공유 writer 프레임 인터리브 race 가 없고, (2) write 와 등록이 원자적이라 등록
+        // 직전/직후에 일어난 error_state broadcast 를 놓치는 setup-창 miss 도 없다. broadcast 가
+        // 이미 mutex 보유 중 blocking write 하는 established 패턴과 동일(Io.Mutex 라 경합 시 sleep).
+        // lock 순서는 ws_clients→error_state(sendIfPresent 가 error_state.mutex 중첩) 단방향 —
+        // error_state set/clear 와 broadcast 는 항상 순차(중첩 없음)라 역순 경로가 없어 deadlock-safe. #4302
+        self.ws_clients.mutex.lockUncancelable(self.io);
         ws.writeMessage("{\"type\":\"connected\"}", .text) catch {
+            self.ws_clients.mutex.unlock(self.io);
             self.routineLog("  [ws] failed to send connected message\n", .{});
             return;
         };
         self.error_state.sendIfPresent(self.io, writer);
+        self.ws_clients.addLocked(writer);
+        self.ws_clients.mutex.unlock(self.io);
+        defer self.ws_clients.remove(self.io, writer);
 
         // 클라이언트 메시지 수신 루프 (ping/pong은 std.http가 자동 처리)
         while (true) {
