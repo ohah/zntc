@@ -46,6 +46,16 @@ const DEFAULT_EXCLUDE = /node_modules/;
 /// jsx: 'preserve' 모드에서 ZNTC 가 위임할 파일 패턴 — JSX 가 있을 수 있는 확장자.
 const JSX_EXT_PATTERN = /\.[jt]sx$/;
 
+/**
+ * Vite 5 이하에서만 esbuild 변환을 비활성화해야 하는지 판단(Vite 6+ 는 Rolldown 기반이라 불필요).
+ * version 문자열의 major 세그먼트만 robust 파싱 — `parseInt('6.0.0-beta')` 류 취약성 회피, 파싱
+ * 불가 시 보수적으로 false(비활성화 안 함). 순수 함수로 분리해 단위 테스트 가능.
+ */
+export function shouldDisableEsbuildForVite(version: string): boolean {
+  const major = Number.parseInt(version.split('.', 1)[0] ?? '', 10);
+  return Number.isFinite(major) && major < 6;
+}
+
 export function zntc(options: ZntcPluginOptions = {}): Plugin {
   const include = options.include ?? DEFAULT_INCLUDE;
   const exclude = options.exclude ?? DEFAULT_EXCLUDE;
@@ -61,11 +71,12 @@ export function zntc(options: ZntcPluginOptions = {}): Plugin {
     name: '@zntc/vite-plugin',
 
     // Vite 5: esbuild transform 비활성화, Vite 6+: 이미 Rolldown 기반이므로 불필요
-    config(_, _env) {
-      // Vite 5 이하에서만 esbuild 비활성화 (Vite 6+는 Rolldown 사용)
+    async config(_, _env) {
+      // ESM/CJS 양쪽에서 동작하도록 dynamic import 의 `version` named export 사용
+      // (CJS require 는 ESM 패키지에서 throw → 기존엔 catch 가 삼켜 Vite 5 에서 미비활성).
       try {
-        const viteVersion = parseInt(require('vite/package.json').version);
-        if (viteVersion < 6) return { esbuild: false };
+        const { version } = await import('vite');
+        if (shouldDisableEsbuildForVite(version)) return { esbuild: false };
       } catch {}
       return {};
     },
