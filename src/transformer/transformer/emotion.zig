@@ -612,12 +612,16 @@ fn transformInterpTemplate(
     }
     const last_idx: NodeIndex = @enumFromInt(items[last_te_pos]);
 
+    // label(첫 quasi)과 sourcemap(마지막 quasi) 재작성은 서로 독립적이다. 한쪽의
+    // format-check 가 실패해도(예상치 못한 quasi 모양) 그 재작성만 건너뛰고 다른 쪽은
+    // 계속 진행한다 — 과거엔 label 체크 실패의 `return template_idx` 가 sourcemap
+    // 재작성까지 통째로 버렸다. 둘 다 건너뛰면 아래 합성 단계가 원본을 그대로 반환.
     // First element 재작성 — `\`text${` → `\`label:<name>;text${`
     var new_first: NodeIndex = first_idx;
-    if (label_text) |l| {
+    if (label_text) |l| label_blk: {
         const raw = self.ast.getText(first_node.span);
-        if (raw.len < 3 or raw[0] != '`') return template_idx;
-        if (raw[raw.len - 2] != '$' or raw[raw.len - 1] != '{') return template_idx;
+        if (raw.len < 3 or raw[0] != '`') break :label_blk;
+        if (raw[raw.len - 2] != '$' or raw[raw.len - 1] != '{') break :label_blk;
         const inner = raw[1 .. raw.len - 2];
 
         var buf: std.ArrayList(u8) = .empty;
@@ -637,11 +641,11 @@ fn transformInterpTemplate(
 
     // Last element 재작성 — `}text\`` → `}text<sourcemap>\``
     var new_last: NodeIndex = last_idx;
-    if (source_map_text) |sm| {
+    if (source_map_text) |sm| sm_blk: {
         const last_node = self.ast.getNode(last_idx);
         const raw = self.ast.getText(last_node.span);
-        if (raw.len < 2 or raw[raw.len - 1] != '`') return template_idx;
-        if (raw[0] != '}') return template_idx;
+        if (raw.len < 2 or raw[raw.len - 1] != '`') break :sm_blk;
+        if (raw[0] != '}') break :sm_blk;
         const inner = raw[1 .. raw.len - 1];
 
         var buf: std.ArrayList(u8) = .empty;
