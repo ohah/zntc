@@ -69,8 +69,19 @@ fn mapTsConfigJsxToRuntime(tsconfig_jsx: ?[]const u8) ?codegen.JsxRuntime {
 pub fn merge(ts: *const TsConfig, explicit: ExplicitFlags) MergedFlags {
     const experimental_decorators = explicit.experimental_decorators orelse ts.experimental_decorators;
     const es_target: ?compat.ESTarget = explicit.es_target orelse blk: {
-        if (ts.target) |t_str| break :blk std.meta.stringToEnum(compat.ESTarget, t_str);
-        break :blk null;
+        const t_str = ts.target orelse break :blk null;
+        // tsconfig target 은 대소문자 무관(TS 공식: "ES2020"/"ESNext"/"es2020"). enum 필드명은
+        // 소문자라 입력을 소문자로 정규화해 매칭 — 미정규화 시 PascalCase 가 null→다운레벨 비활성.
+        // 버퍼 크기는 enum 최장 필드명에서 comptime 계산(compat.Engine.fromString 동형).
+        const max_len = comptime blk2: {
+            var m: usize = 0;
+            for (std.meta.fields(compat.ESTarget)) |f| m = @max(m, f.name.len);
+            break :blk2 m;
+        };
+        var buf: [max_len]u8 = undefined;
+        if (t_str.len > buf.len or t_str.len == 0) break :blk null;
+        const lower = std.ascii.lowerString(buf[0..t_str.len], t_str);
+        break :blk std.meta.stringToEnum(compat.ESTarget, lower);
     };
     return .{
         .experimental_decorators = experimental_decorators,
@@ -93,6 +104,29 @@ pub fn merge(ts: *const TsConfig, explicit: ExplicitFlags) MergedFlags {
 }
 
 // ─── 테스트 ───
+
+test "merge: tsconfig target 은 대소문자 무관 (#4287)" {
+    // TS 공식 tsconfig target 은 PascalCase("ES2020"/"ESNext"). enum 은 소문자라
+    // 정규화 없으면 null → 다운레벨 비활성. 대소문자 무관하게 인식돼야 한다.
+    const cases = [_]struct { in: []const u8, want: compat.ESTarget }{
+        .{ .in = "ES2020", .want = .es2020 },
+        .{ .in = "es2020", .want = .es2020 },
+        .{ .in = "ESNext", .want = .esnext },
+        .{ .in = "esnext", .want = .esnext },
+        .{ .in = "ES2015", .want = .es2015 },
+        .{ .in = "ES5", .want = .es5 },
+    };
+    for (cases) |c| {
+        var ts = TsConfig{};
+        ts.target = c.in;
+        const merged = merge(&ts, .{});
+        try std.testing.expectEqual(@as(?compat.ESTarget, c.want), merged.es_target);
+    }
+    // 인식 불가 값은 여전히 null.
+    var bad = TsConfig{};
+    bad.target = "nonsense";
+    try std.testing.expectEqual(@as(?compat.ESTarget, null), merge(&bad, .{}).es_target);
+}
 
 test "merge: explicit values win over tsconfig" {
     var ts = TsConfig{};
