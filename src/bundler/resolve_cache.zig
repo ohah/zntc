@@ -1111,12 +1111,23 @@ pub fn matchGlob(pattern: []const u8, text: []const u8) bool {
             while (true) {
                 const comma = std.mem.indexOfScalar(u8, rest, ',');
                 const alt = if (comma) |idx| rest[0..idx] else rest;
+                const total = prefix.len + alt.len + suffix.len;
                 var expanded_buf: [4096]u8 = undefined;
-                if (prefix.len + alt.len + suffix.len <= expanded_buf.len) {
+                if (total <= expanded_buf.len) {
                     @memcpy(expanded_buf[0..prefix.len], prefix);
                     @memcpy(expanded_buf[prefix.len .. prefix.len + alt.len], alt);
-                    @memcpy(expanded_buf[prefix.len + alt.len .. prefix.len + alt.len + suffix.len], suffix);
-                    if (matchGlob(expanded_buf[0 .. prefix.len + alt.len + suffix.len], text)) return true;
+                    @memcpy(expanded_buf[prefix.len + alt.len .. total], suffix);
+                    if (matchGlob(expanded_buf[0..total], text)) return true;
+                } else {
+                    // 4096 초과(매우 긴 패턴): stack buffer 부족 → heap 으로 정확히 매치. 과거엔 silent
+                    // skip 해 긴 alternative 가 매치 안 되는 correctness gap 이었다. matchGlob 은 pure
+                    // fn(allocator 인자 없음) + 이 경로는 극히 드물어 page_allocator 사용.
+                    const heap = std.heap.page_allocator.alloc(u8, total) catch break;
+                    defer std.heap.page_allocator.free(heap);
+                    @memcpy(heap[0..prefix.len], prefix);
+                    @memcpy(heap[prefix.len .. prefix.len + alt.len], alt);
+                    @memcpy(heap[prefix.len + alt.len .. total], suffix);
+                    if (matchGlob(heap, text)) return true;
                 }
                 if (comma) |idx| {
                     rest = rest[idx + 1 ..];

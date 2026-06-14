@@ -23,6 +23,15 @@ test "matchGlob: wildcard" {
     try std.testing.expect(!matchGlob("@mui/*", "@mui/icons/filled"));
 }
 
+test "#4380 matchGlob: 긴 brace alternative(>4096) 도 silent skip 없이 매치" {
+    // prefix+alt+suffix 가 4096 stack buffer 를 초과하는 긴 alternative. 과거엔 silent skip 해
+    // 매치 실패(false)였다 — heap fallback 으로 정확히 매치.
+    const long = "x" ** 5000;
+    try std.testing.expect(matchGlob("{" ++ long ++ "}", long));
+    // 매치 안 되는 긴 alt 는 정상적으로 false (crash/skip 없이).
+    try std.testing.expect(!matchGlob("{" ++ long ++ "}", "y" ** 5000));
+}
+
 test "matchGlob: doublestar and brace alternates" {
     try std.testing.expect(matchGlob("**/runtimeKind.{js,ts}", "src/runtimeKind.ts"));
     try std.testing.expect(matchGlob("**/runtimeKind.{js,ts}", "lib/module/runtimeKind.js"));
