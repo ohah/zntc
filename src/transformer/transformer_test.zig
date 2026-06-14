@@ -2353,6 +2353,24 @@ test "TLA: import declarations are kept outside of wrapper" {
     try std.testing.expect(import_pos < async_pos);
 }
 
+test "#4337 generator for-in 은 native for-in 으로 키 수집 (Object.keys 아님)" {
+    // generator 안 for-in 다운레벨: Object.keys(own-only/shadow 취약) 대신 native for-in 으로
+    // own+상속 enumerable 키를 수집해야 한다(for-in 의미 보존).
+    const source = "function* g(o){ for (var k in o) yield k; }";
+    var r = try parseAsModuleAndTransform(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .generator = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // Object.keys 미사용(own-only/shadow). native for-in 으로 객체 `o` 의 키 수집 + push.
+    try std.testing.expect(std.mem.indexOf(u8, code, "Object.keys") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, " in o)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, ".push(") != null);
+}
+
 test "TLA: ES5 downlevel produces __async + __generator wrap, no bare yield" {
     // target=es5 (async_await + top_level_await + generator 전부 unsupported) 에서
     // bare yield leak 이 없어야 한다 (#1384 재현 케이스).
