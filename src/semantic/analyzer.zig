@@ -986,9 +986,16 @@ pub const SemanticAnalyzer = struct {
         // 쪽(getTextStable)과 대칭으로 stable 사본 키 사용. 이미 등록된 키면
         // 사본을 만들지 않는다.
         if (self.unresolved_references.contains(name)) return;
-        const stable_name = self.allocator.dupe(u8, name) catch return;
+        // OOM 으로 미해결 글로벌 이름이 누락되면 linker 가 그 이름을 예약하지 못해
+        // scope hoisting 시 shadowing → silent miscompile. alloc_failed 로 표면화
+        // (analyze() 끝에서 error.OutOfMemory). 다른 OOM-삼킴 catch 들과 동일 정책.
+        const stable_name = self.allocator.dupe(u8, name) catch {
+            self.alloc_failed = true;
+            return;
+        };
         self.unresolved_references.put(self.allocator, stable_name, {}) catch {
             self.allocator.free(stable_name);
+            self.alloc_failed = true;
         };
     }
 
