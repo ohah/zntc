@@ -14,7 +14,7 @@
  * 빈 문자열 prefix `""` 를 포함하면 전체 노출 — 주의해서 사용.
  */
 
-import { resolve as pathResolve } from 'node:path';
+import { join, resolve as pathResolve } from 'node:path';
 
 import { readFileIfExists } from './config-loader.ts';
 
@@ -79,7 +79,8 @@ export function loadEnv(
 
   const merged: Record<string, string> = {};
   for (const file of files) {
-    Object.assign(merged, parseDotenvFile(`${dir}/${file}`));
+    // path.join — `${dir}/${file}` 문자열 연결은 Windows 에서 backslash/슬래시 혼합 경로 생성.
+    Object.assign(merged, parseDotenvFile(join(dir, file)));
   }
 
   const filtered: Record<string, string> = {};
