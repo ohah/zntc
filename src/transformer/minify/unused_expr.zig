@@ -611,9 +611,13 @@ fn rewriteObjectUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: 
 ///   - 끝에 남은 pending 도 새 template_literal 로 flush.
 /// transformed 를 최종 sequence / single / empty 로 환원.
 ///
-/// `data.none == 0` (substitution 없는 단순 `` `static` ``) 는 그대로 removable.
+/// `data.list.len == 0` (transformer raw-span shorthand) 는 그대로 removable. parser
+/// no-substitution `` `static` `` 은 quasi 1개(len>0)라 아래 loop 가 template_element 만
+/// 보고 removable 판정. (과거 `data.none == 0` 은 data.list.start 와 alias 라, 보간 template
+/// 이 extra_data[0] 에서 시작하면 start==0 → 무조건 removable 오판 → `` `${sideEffect()}` `` 의
+/// 부작용까지 DCE 로 삭제. node_dispatch/codegen 과 동일하게 list.len 기준.)
 fn rewriteTemplateLiteralUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: *bool, depth: u32) bool {
-    if (node.data.none == 0) return true;
+    if (node.data.list.len == 0) return true;
     const list = node.data.list;
     if (list.start + list.len > ast.extra_data.items.len) return false;
     const items = ast.extra_data.items[list.start .. list.start + list.len];
@@ -797,8 +801,11 @@ fn isStmtRemovableDepth(ast: *const Ast, idx: NodeIndex, ctx: MinifyCtx, depth: 
         },
 
         .template_literal => blk: {
-            // 단순 문자열 template (data.none = 0) — substitution 없음, removable.
-            if (node.data.none == 0) break :blk true;
+            // raw-span shorthand(list.len==0) — substitution 없음, removable. parser
+            // no-sub `` `static` `` 은 len>0 라 아래 loop 가 template_element 만 보고 판정.
+            // (`data.none == 0` 은 list.start alias → 보간 template@start==0 이 부작용
+            // 검사 없이 removable 오판되던 버그.)
+            if (node.data.list.len == 0) break :blk true;
             const list = node.data.list;
             if (list.start + list.len > ast.extra_data.items.len) break :blk false;
             for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {

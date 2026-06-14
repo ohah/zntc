@@ -737,15 +737,16 @@ fn scanObjectKeys(self: *Transformer, obj_idx: NodeIndex) ObjectKeyScan {
 }
 
 /// template_literal 의 CSS whitespace 를 minify. no-interp / 보간 있는 케이스 모두 처리.
-/// codegen.zig:2270 convention — `data.none == 0` 이면 no-interp (text in node.span),
-/// 그 외엔 children 이 alternating template_element + expression.
+/// codegen emitTemplateLiteral convention — `list.len == 0` (transformer raw-span shorthand)
+/// 이면 no-interp (text in node.span), 그 외엔 children 이 alternating template_element +
+/// expression. (과거 `data.none == 0` 은 list.start alias → 보간 template@start==0 오판.)
 /// 변경 없으면 identity (template_idx).
 fn minifyCssTemplate(self: *Transformer, template_idx: NodeIndex) Error!NodeIndex {
     if (template_idx.isNone()) return template_idx;
     const node = self.ast.getNode(template_idx);
     if (node.tag != .template_literal) return template_idx;
 
-    if (node.data.none == 0) {
+    if (node.data.list.len == 0) {
         // no-interp: text 는 node.span 에 직접 — `\`text\`` 형태.
         return try minifyNoInterpTemplate(self, template_idx, node);
     }
@@ -1408,7 +1409,7 @@ fn forwardObjectInterpolations(
 /// 의 expressions reduce 와 동등 (단, ZNTC 는 binding/function 검출 없이 모든 expression
 /// 을 forward — closure capture 회피, 사용자가 props 기반 동적 스타일링 가능).
 ///
-/// no-interp template (data.none == 0) 은 input 그대로 반환.
+/// no-interp template (list.len == 0) 은 input 그대로 반환.
 fn forwardTemplateInterpolations(
     self: *Transformer,
     template_idx: NodeIndex,
@@ -1417,7 +1418,8 @@ fn forwardTemplateInterpolations(
     if (template_idx.isNone()) return template_idx;
     const template = self.ast.getNode(template_idx);
     if (template.tag != .template_literal) return template_idx;
-    if (template.data.none == 0) return template_idx; // no-interp
+    // (과거 `template.data.none == 0` no-interp 가드는 list.start alias 라 보간
+    //  template@start==0 을 오판 → 아래 list.len==0 체크가 정본. 중복분기 제거.)
     const list = template.data.list;
     if (list.len == 0) return template_idx;
 
