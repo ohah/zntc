@@ -94,14 +94,50 @@ pub const OutputExports = enum {
 /// (federation.zig ↔ bundler.zig circular import 회피, types 는 양쪽 공통).
 pub const MfBundleConfig = types.MfBundleConfig;
 
+/// 기본(--jobs 미지정) worker 풀 상한. graph discovery 가 같은 디렉토리의 모듈 파일을
+/// 여러 워커로 동시 `openat` 하면 **커널 디렉토리 vnode 락에서 직렬화**된다(macOS `sample`
+/// 실증: 단일 dir 5000파일에서 jobs=15 의 `__openat` 누적 시간이 jobs=4 대비 17×, 50개
+/// dir 로 분산하면 7× 감소). 따라서 cpu-1 풀은 high-core 에서 open 경합을 증폭해 *음의
+/// 스케일링*(실측 단일dir: jobs=4 119ms → 16스레드 250ms)을 낸다. open 처리량은 vnode
+/// 직렬화로 ~8 스레드에서 포화하므로 기본 총 스레드를 8 로 cap 한다(esbuild/Bun 도 I/O
+/// 스레드를 cpu 수만큼 안 쓰고 바운드). cpu ≤ 8 이면 기본(총 cpu)이 이미 ≤ 8 이라 무변경.
+const DEFAULT_THREAD_CAP = 8;
+
+/// 기본(--jobs 미지정) async_limit *값* 을 cpu 수로 계산. null = 기본(cpu-1) 유지.
+/// 순수 함수라 머신 독립적으로 단위 테스트 가능(아래 test). 총 스레드 = async_limit+1.
+fn defaultAsyncLimitValue(cpu_count: usize) ?u32 {
+    if (cpu_count <= DEFAULT_THREAD_CAP) return null; // 총 cpu ≤ cap → 기본 유지(무변경)
+    return DEFAULT_THREAD_CAP - 1; // 메인 + (cap-1) 워커 = 총 DEFAULT_THREAD_CAP
+}
+
 /// `--jobs`(max_threads) → io 의 `async_limit` 매핑 (#4004). `bundle(io)` 는 io 를
 /// 인터페이스로만 받아 동시성을 못 바꾸므로, io 를 *소유* 한 진입점(CLI main / NAPI
-/// common)에서 빌드 전 `Threaded.setAsyncLimit` 으로 적용한다. `null` 이면 기본값
-/// (생성 시 cpu-1) 유지. async_limit 은 "메인 스레드 제외 최대 풀 크기"라:
-///   0 → 기본 유지 / 1 → `.nothing`(=0, inline 순차, 디버깅) / N → `.limited(N-1)`.
+/// common)에서 빌드 전 `Threaded.setAsyncLimit` 으로 적용한다. async_limit 은 "메인 스레드
+/// 제외 최대 풀 크기"라(총 스레드 = async_limit+1):
+///   --jobs=0(미지정) → high-core 면 [[DEFAULT_THREAD_CAP]] 로 cap, 아니면 기본(cpu-1) 유지
+///   --jobs=1 → `.nothing`(=0, inline 순차, 디버깅) / --jobs=N → `.limited(N-1)`.
+/// 명시 `--jobs` 는 그대로 존중한다(cap 미적용 — 사용자가 의도적으로 고른 값).
 pub fn asyncLimitForJobs(max_threads: u32) ?std.Io.Limit {
-    if (max_threads == 0) return null;
-    return .limited(max_threads - 1);
+    if (max_threads != 0) return .limited(max_threads - 1);
+    // 기본: vnode open 경합 회피로 총 스레드를 cap. getCpuCount 실패 시 기본 유지.
+    const cpu = std.Thread.getCpuCount() catch return null;
+    const val = defaultAsyncLimitValue(cpu) orelse return null;
+    return .limited(val);
+}
+
+test "asyncLimitForJobs: 명시 --jobs 매핑 (#4004)" {
+    try std.testing.expectEqual(@as(?std.Io.Limit, .limited(3)), asyncLimitForJobs(4));
+    try std.testing.expectEqual(@as(?std.Io.Limit, .limited(0)), asyncLimitForJobs(1)); // inline 순차
+}
+
+test "defaultAsyncLimitValue: high-core 만 cap (vnode open 경합 회피)" {
+    // 총 cpu ≤ cap(8) → 무변경(null). cap 초과 → 총 8 스레드(async_limit=7) 로 제한.
+    try std.testing.expectEqual(@as(?u32, null), defaultAsyncLimitValue(2));
+    try std.testing.expectEqual(@as(?u32, null), defaultAsyncLimitValue(4)); // 전형적 CI 러너
+    try std.testing.expectEqual(@as(?u32, null), defaultAsyncLimitValue(8));
+    try std.testing.expectEqual(@as(?u32, DEFAULT_THREAD_CAP - 1), defaultAsyncLimitValue(9));
+    try std.testing.expectEqual(@as(?u32, DEFAULT_THREAD_CAP - 1), defaultAsyncLimitValue(16));
+    try std.testing.expectEqual(@as(?u32, DEFAULT_THREAD_CAP - 1), defaultAsyncLimitValue(64));
 }
 
 pub const BundleOptions = struct {
