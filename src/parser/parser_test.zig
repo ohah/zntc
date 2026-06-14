@@ -4735,19 +4735,45 @@ test "TS: ternary alternate parenthesized arrow does not consume typed-arrow spe
     try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
 }
 
-// literal keyword (`true`/`false`/`null`) 는 valid label 이 아님. 이전 widening
-// 으로 `canBeBindingName()` 이 literal keyword 도 포함했었고, 그 결과
-// `break true;` 가 `break true` (labeled) 로 잘못 파싱됐었다 (/simplify 사후
-// 리뷰 발견). `isLiteralKeyword()` 가드 추가.
-test "TS: break/continue does not consume literal keyword as label" {
-    var r = try parseTs(std.testing.allocator,
-        \\while (true) break true;
-        \\while (true) continue null;
-    );
-    defer r.deinit();
-    // ASI 가 `break;` / `continue;` 다음에 적용되고 `true;`/`null;` 가 별도
-    // expression-statement 가 된다. parser-level 에러 없음.
-    try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
+// literal keyword (`true`/`false`/`null`) 는 valid label 이 아님 — `isLiteralKeyword()`
+// 가드로 label 로 소비되지 않는다. 따라서 `break`/`continue` 는 라벨 없이 끝나는데, 같은 줄에
+// `true`/`null` 이 이어지므로 restricted production(`break [no LineTerminator here]
+// LabelIdentifier`)도 `break ;`도 성립 안 함 → SyntaxError(#4328 expectSemicolon 이 ASI 종결
+// 강제). 가드가 없었다면 `true` 가 label 로 소비돼 0 에러였을 것 — 에러 존재가 가드 동작을 입증.
+test "Parser #4328: break/continue 라벨 자리 literal keyword 는 ASI 에러" {
+    inline for (.{ "while (true) break true;", "while (true) continue null;" }) |src| {
+        var scanner = try Scanner.init(std.testing.allocator, src);
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        defer parser.deinit();
+        _ = try parser.parse();
+        try std.testing.expect(parser.errors.items.len > 0);
+    }
+}
+
+test "Parser #4328: break/continue 라벨 뒤 잡토큰은 ASI 에러" {
+    // `break foo` 후 같은 줄 `extra` → expectSemicolon 위반.
+    inline for (.{ "while (true) { break foo extra; }", "while (true) { continue foo extra; }" }) |src| {
+        var scanner = try Scanner.init(std.testing.allocator, src);
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        defer parser.deinit();
+        _ = try parser.parse();
+        try std.testing.expect(parser.errors.items.len > 0);
+    }
+    // 유효 케이스: `break foo;`(세미콜론), `}` 앞(ASI), 줄바꿈(ASI) → 에러 없음.
+    inline for (.{
+        "foo: while (true) { break foo; }",
+        "foo: while (true) { break foo }",
+        "while (true) { break\n x }",
+    }) |src| {
+        var scanner = try Scanner.init(std.testing.allocator, src);
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        defer parser.deinit();
+        _ = try parser.parse();
+        try std.testing.expect(parser.errors.items.len == 0);
+    }
 }
 
 // `@(inst["foo"]) method() {}` 같은 parenthesized decorator + computed member
