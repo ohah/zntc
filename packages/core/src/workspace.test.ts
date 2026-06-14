@@ -198,6 +198,32 @@ describe('identifyWorkspaceEntries', () => {
     expect(r[0]?.source).toBe('inline');
   });
 
+  test('다중 inline 엔트리 — 모두 식별 (cwd 동일이어도 name 으로 dedup) (#4285)', () => {
+    const r = identifyWorkspaceEntries(
+      [
+        { name: 'a', entryPoints: ['./a.ts'] },
+        { name: 'b', entryPoints: ['./b.ts'] },
+        { name: 'c', entryPoints: ['./c.ts'] },
+      ],
+      dir,
+    );
+    // 버그 땐 cwd(=rootDir) dedup 으로 'a' 만 남았다.
+    expect(r.map((e) => e.name)).toEqual(['a', 'b', 'c']);
+    // name 필터가 두 번째 이후 inline 도 찾을 수 있어야 한다.
+    expect(filterWorkspaces(r, 'b').map((e) => e.name)).toEqual(['b']);
+  });
+
+  test('다중 inline — 같은 name 은 첫 번째만 (dedup)', () => {
+    const r = identifyWorkspaceEntries(
+      [
+        { name: 'dup', entryPoints: ['./1.ts'] },
+        { name: 'dup', entryPoints: ['./2.ts'] },
+      ],
+      dir,
+    );
+    expect(r).toHaveLength(1);
+  });
+
   test('3종 형식 동시 사용', () => {
     const r = identifyWorkspaceEntries(
       ['./packages/app', './packages/lib-*', { name: 'inline-x', entryPoints: ['x'] }],
