@@ -36,6 +36,11 @@ pub const Options = struct {
     /// `i` flag 활성 여부. negated class 의 정확 다운레벨은 case-fold 와
     /// 얽히므로(#3511), `i`+`u` negated 는 보수적으로 게이트(미변환).
     ignore_case: bool = false,
+    /// ES2025 inline modifier 그룹 `(?i:…)`/`(?s:…)` 다운레벨 (#4210). 켜지면
+    /// enabling i/s 영역을 fold/dot 재작성으로 baked-in 한 뒤 modifier 비트를
+    /// strip 한다. disabling(`-i`/`-s`)·`m`·전역 /i on·u/astral 은 보수적 bail
+    /// (그룹 보존 → lower() 가 진단). global /s 플래그(=`s` flag 존재) 여부.
+    lower_modifiers: bool = false,
 };
 
 pub const NamedGroup = struct {
@@ -125,13 +130,14 @@ const T = struct {
     in_class: bool = false,
     /// 정확히 다운레벨 못한 astral 구문 발견 (lower() 가 u-strip 보류 판단).
     astral_u_incomplete: bool = false,
-    /// `(?-s:)` 영역 깊이 (#4211). 내부 `.` 는 global /s dotall 의 적용 대상이
-    /// 아니므로 재작성하면 안 된다 — modifier 그룹은 출력에 보존되어 모던 엔진이
-    /// 영역 의미를 직접 제공한다 (`(?s:)` 내부 재작성은 의미 동치라 추적 불요).
-    mod_s_off_depth: u32 = 0,
-    /// i 를 건드리는 modifier 영역 깊이 (#4211). 내부 class 의 iu fold 확장은
-    /// 영역별 유효 i 를 정확히 반영할 수 없어 u-보존 게이트로 폴백.
-    mod_i_depth: u32 = 0,
+    /// 영역별 effective s/i (#4211/#4225 → #4210). null=상속(global flag),
+    /// true=(?s:)/(?i:) 으로 켜짐, false=(?-s:)/(?-i:) 으로 꺼짐. enclosing
+    /// modifier group 진입 시 save/restore (regexpu `modifiersData` 동형).
+    ///   - 비-lowering 경로: `mod_s != false` ⟺ 옛 `mod_s_off_depth==0`,
+    ///     `mod_i != null` ⟺ 옛 `mod_i_depth>0` (동작 보존).
+    ///   - lowering 경로(#4210): effective 값으로 dot 재작성 / fold 확장.
+    mod_s: ?bool = null,
+    mod_i: ?bool = null,
 
     /// surrogate pair 2 노드를 list 에 push (cp>0xFFFF).
     fn pushSurrogate(self: *T, span: ast.Span, cp: u32, out: *std.ArrayList(u32)) TransformError!void {
@@ -305,7 +311,7 @@ const T = struct {
             if (self.opts.unicode_brace and isAstralUnicodeEscape(cn)) {
                 // #4225: astral fast-path 도 fold 게이트 적용 (Deseret/Adlam 등
                 // astral u-전용 등가) — 게이트 시 surrogate 분해 없이 보존 경로로.
-                if ((self.opts.ignore_case or self.mod_i_depth > 0) and
+                if ((self.opts.ignore_case or self.mod_i != null) and
                     iu_fold.hasEntry(cn.data[0]))
                 {
                     self.astral_u_incomplete = true;
@@ -358,7 +364,7 @@ const T = struct {
                 // (#3509 "틀린 출력 0"). lower() 의 #4211 재변환이 전체 일관 보존.
                 // i-유효성은 글로벌 /i 또는 (?i:) 영역(#4211 mod_i_depth) 둘 다.
                 if (self.opts.unicode_brace and
-                    (self.opts.ignore_case or self.mod_i_depth > 0))
+                    (self.opts.ignore_case or self.mod_i != null))
                 {
                     const kind: ast.CharacterKind = @enumFromInt(n.data[1]);
                     // literal(symbol) non-ASCII 는 파서가 UTF-8 byte 단위 노드라
@@ -372,8 +378,12 @@ const T = struct {
                 return self.b.add(n);
             },
             .dot => {
-                // #4211: (?-s:) 안의 `.` 는 global /s 비적용 — 재작성 금지.
-                if (self.opts.dotall and self.mod_s_off_depth == 0) return self.makeDotAllClass(n.span);
+                // #4211: (?-s:) 안의 `.` 는 global /s 비적용 — 재작성 금지
+                // (mod_s != false ⟺ 옛 mod_s_off_depth==0). #4210: (?s:) 영역
+                // (mod_s==true) 은 lowering 시 dot 을 직접 dotall 화.
+                if ((self.opts.dotall and self.mod_s != false) or
+                    (self.opts.lower_modifiers and self.mod_s == true))
+                    return self.makeDotAllClass(n.span);
                 return self.b.add(n);
             },
             .named_reference => {
@@ -427,7 +437,7 @@ const T = struct {
                     const negative = (n.data[0] & 1) != 0;
                     // #4211: i-modifier 영역 안 class 는 영역별 유효 i 를 fold 확장에
                     // 반영할 수 없다 — u 보존(부분 커버리지, 틀린 출력 0, #3509 동형).
-                    if (self.mod_i_depth > 0) {
+                    if (self.mod_i != null) {
                         self.astral_u_incomplete = true;
                     } else if (negative or self.opts.ignore_case or self.classHasAstral(n)) {
                         var set = cps.CodePointSet{};
@@ -476,19 +486,30 @@ const T = struct {
             },
             .ignore_group => {
                 // modifier 비트: bit0=i, bit1=m, bit2=s (ast.zig ignore_group).
-                const s_off = (n.data[1] & 0b100) != 0;
-                const i_mod = ((n.data[0] | n.data[1]) & 0b001) != 0;
+                const en = n.data[0]; // enabling
+                const dis = n.data[1]; // disabling
                 // in_class 와 동일한 save/restore 관용구 — 에러 경로에서도 오염 없음.
-                const saved_s = self.mod_s_off_depth;
-                const saved_i = self.mod_i_depth;
-                if (s_off) self.mod_s_off_depth += 1;
-                if (i_mod) self.mod_i_depth += 1;
+                // effective: enabling→true, disabling→false, 무관→상속(불변).
+                const saved_s = self.mod_s;
+                const saved_i = self.mod_i;
+                if (en & 0b100 != 0) self.mod_s = true;
+                if (dis & 0b100 != 0) self.mod_s = false;
+                if (en & 0b001 != 0) self.mod_i = true;
+                if (dis & 0b001 != 0) self.mod_i = false;
                 defer {
-                    self.mod_s_off_depth = saved_s;
-                    self.mod_i_depth = saved_i;
+                    self.mod_s = saved_s;
+                    self.mod_i = saved_i;
                 }
                 const body = try self.node(@enumFromInt(n.data[2]));
-                return self.b.add(.{ .tag = .ignore_group, .span = n.span, .data = .{ n.data[0], n.data[1], @intFromEnum(body) } });
+                // #4210 lowering: s-enabling 영역의 `.` 는 body 에서 [\s\S] 로
+                // baked-in(dot 핸들러) → s-enabling 비트만 strip. i/m/모든
+                // disabling 은 보수적으로 보존(lower() 진단이 잔여 경고). 모든
+                // 비트가 빠지면 평범한 `(?:…)`.
+                if (self.opts.lower_modifiers) {
+                    const kept_en = en & ~@as(u32, 0b100); // s-enabling(4) 제거
+                    return self.b.add(.{ .tag = .ignore_group, .span = n.span, .data = .{ kept_en, dis, @intFromEnum(body) } });
+                }
+                return self.b.add(.{ .tag = .ignore_group, .span = n.span, .data = .{ en, dis, @intFromEnum(body) } });
             },
             .quantifier => {
                 const body = try self.node(n.getQuantifierBody());

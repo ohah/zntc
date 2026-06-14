@@ -64,13 +64,17 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
     // `u` flag 자체는 runtime 지원 대상이 아니지만, `\u{X}` brace escape 는 `u` flag 하에서만
     // 허용된다. brace escape 를 surrogate pair 로 내리면서 flag 도 함께 strip 한다.
     const need_unicode = has_u and opts.unsupported.unicode_brace_escape;
+    // #4210: ES2025 inline modifier 다운레벨. PR2 는 s-enabling `(?s…:…)` 만
+    // 내린다(dot→[\s\S] 후 s 비트 strip). i/m/disabling 잔여는 그룹 보존 +
+    // 진단(usesUnsupportedRegexModifier). lowerable 일 때만 transform 실행.
+    const need_modifier = opts.unsupported.regex_modifiers and scanModifiers(pattern).lowerable;
 
-    if (!need_dotall and !need_named and !need_sticky and !need_unicode) return .{ .text = null };
+    if (!need_dotall and !need_named and !need_sticky and !need_unicode and !need_modifier) return .{ .text = null };
 
-    // sticky 는 flag strip 만 → 패턴 무변경. dotall/named/unicode 만 패턴 변환.
+    // sticky 는 flag strip 만 → 패턴 무변경. dotall/named/unicode/modifier 만 패턴 변환.
     // sticky-only 면 parse/transform/print 를 건너뛰고 원본 패턴 verbatim
     // (불필요 작업 제거 + canonical 정규화 미적용 — ad-hoc 과 동일 바이트).
-    const need_pattern_xform = need_dotall or need_named or need_unicode;
+    const need_pattern_xform = need_dotall or need_named or need_unicode or need_modifier;
 
     // parse → AST transform → dumb printer (#1475 PR2 정공법; ad-hoc byte-walk
     // 제거). 파서는 렉서 validate 와 동일하므로(이미 통과한 리터럴) parse 실패는
@@ -88,6 +92,7 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
             .strip_named = need_named,
             .unicode_brace = need_unicode,
             .ignore_case = has_i,
+            .lower_modifiers = need_modifier,
         }, allocator);
         astral_u_incomplete = tr.astral_u_incomplete;
         // #4211: u 를 보존하기로 결정되면(incomplete) 패턴 *전체*가 u-유효해야
@@ -291,10 +296,23 @@ fn hasNamedGroup(pattern: []const u8) bool {
     return false;
 }
 
-/// `(?ims-ims:...)` inline modifier 그룹(ES2025)이 패턴에 있는지. char class 안과
-/// escape 는 제외하고, `(?:`(non-capturing)·`(?<name>`·lookaround 와 구분한다 —
-/// `(?` 뒤가 modifier 문자(i/m/s) ≥1 개 (선택적 `-[ims]+`) + `:` 로 끝나야 한다.
-pub fn hasModifierGroup(pattern: []const u8) bool {
+/// 패턴의 inline modifier 그룹(ES2025) 스캔 결과.
+pub const ModifierScan = struct {
+    /// modifier 그룹이 하나라도 있는가 (`(?:`·`(?<name>`·lookaround 와 구분).
+    any: bool = false,
+    /// PR2 가 다운레벨 가능한 s-enabling 그룹(`(?s…:…)`)이 있는가 → transform 실행.
+    lowerable: bool = false,
+    /// 완전 다운레벨 안 되는 그룹(순수 s-enabling 외 — i/m/disabling 포함)이
+    /// 있는가 → 미지원 타겟에서 진단 대상.
+    unlowered: bool = false,
+};
+
+/// `(?ims-ims:...)` inline modifier 그룹을 스캔. char class 안과 escape 는 제외하고,
+/// `(?:`·`(?<name>`·lookaround 와 구분한다 — `(?` 뒤가 modifier 문자(i/m/s) ≥1 개
+/// (선택적 `-[ims]+`) + `:` 로 끝나야 한다. 비트 정의(i=1,m=2,s=4)는 파서
+/// char_helpers 와 공유 — 어긋나면 검출/파싱 불일치.
+pub fn scanModifiers(pattern: []const u8) ModifierScan {
+    var r = ModifierScan{};
     var i: usize = 0;
     var in_class: bool = false;
     while (i < pattern.len) : (i += 1) {
@@ -313,18 +331,28 @@ pub fn hasModifierGroup(pattern: []const u8) bool {
         }
         if (c == '(' and i + 1 < pattern.len and pattern[i + 1] == '?') {
             var j = i + 2;
-            var mods: u32 = 0;
-            // modifier 문자 정의는 파서(char_helpers.isModifierChar)와 공유 — 둘이
-            // 어긋나면 검출/파싱 불일치. ES2025 는 i/m/s 만 inline modifier.
-            while (j < pattern.len and char_helpers.isModifierChar(pattern[j])) : (j += 1) mods += 1;
+            var en: u8 = 0;
+            var dis: u8 = 0;
+            while (j < pattern.len and char_helpers.isModifierChar(pattern[j])) : (j += 1)
+                en |= char_helpers.modifierBit(pattern[j]);
             if (j < pattern.len and pattern[j] == '-') {
                 j += 1;
-                while (j < pattern.len and char_helpers.isModifierChar(pattern[j])) : (j += 1) mods += 1;
+                while (j < pattern.len and char_helpers.isModifierChar(pattern[j])) : (j += 1)
+                    dis |= char_helpers.modifierBit(pattern[j]);
             }
-            if (mods > 0 and j < pattern.len and pattern[j] == ':') return true;
+            if ((en != 0 or dis != 0) and j < pattern.len and pattern[j] == ':') {
+                r.any = true;
+                if (en & 0b100 != 0) r.lowerable = true; // s-enabling (s=4)
+                if (!(en == 0b100 and dis == 0)) r.unlowered = true; // 순수 s-enabling 외
+            }
         }
     }
-    return false;
+    return r;
+}
+
+/// modifier 그룹이 하나라도 있는가 (graph prepass 게이트 / 진단 후보).
+pub fn hasModifierGroup(pattern: []const u8) bool {
+    return scanModifiers(pattern).any;
 }
 
 // ─── 테스트 ───
@@ -732,4 +760,65 @@ test "hasModifierGroup — char class 안 / escape 는 제외 (#4210)" {
     try testing.expect(!hasModifierGroup("\\(?i:"));
     // class 밖의 진짜 modifier 는 여전히 검출
     try testing.expect(hasModifierGroup("[abc](?i:x)"));
+}
+
+test "scanModifiers — lowerable(s-enabling) / unlowered 분류 (#4210)" {
+    // 순수 s-enabling → lowerable, NOT unlowered
+    const s = scanModifiers("(?s:.)x");
+    try testing.expect(s.any and s.lowerable and !s.unlowered);
+    // i-enabling → unlowered, NOT lowerable
+    const i = scanModifiers("(?i:a)");
+    try testing.expect(i.any and !i.lowerable and i.unlowered);
+    // 혼합 (?is:) → lowerable(s strip) + unlowered(i 잔여)
+    const is = scanModifiers("(?is:a)");
+    try testing.expect(is.any and is.lowerable and is.unlowered);
+    // disabling (?-s:) → NOT lowerable(enabling 아님), unlowered
+    const ds = scanModifiers("(?-s:a)");
+    try testing.expect(ds.any and !ds.lowerable and ds.unlowered);
+    // (?s-i:) → s-enabling lowerable + disabling 으로 unlowered
+    const sdi = scanModifiers("(?s-i:a)");
+    try testing.expect(sdi.any and sdi.lowerable and sdi.unlowered);
+    // modifier 없음
+    const none = scanModifiers("(?:a)(?<n>b)");
+    try testing.expect(!none.any and !none.lowerable and !none.unlowered);
+}
+
+test "#4210: (?s:.) → (?:[\\s\\S]) 다운레벨 + s-enabling strip" {
+    const out = (try runLower("/(?s:.)x/", .{ .regex_modifiers = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/(?:[\\s\\S])x/", out);
+}
+
+test "#4210: 중첩 dot — a(?s:b.c)d 내부 dot 만 dotall" {
+    const out = (try runLower("/a(?s:b.c)d/", .{ .regex_modifiers = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/a(?:b[\\s\\S]c)d/", out);
+}
+
+test "#4210: 혼합 (?s:.)(?i:x) — s 다운레벨, i 보존" {
+    const out = (try runLower("/(?s:.)(?i:x)/", .{ .regex_modifiers = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/(?:[\\s\\S])(?i:x)/", out);
+}
+
+test "#4210: 혼합 (?sm:^.$) — s 만 strip, m 보존 → (?m:^[\\s\\S]$)" {
+    const out = (try runLower("/(?sm:^.$)/", .{ .regex_modifiers = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/(?m:^[\\s\\S]$)/", out);
+}
+
+test "#4210: 혼합 (?si:x.) — s 만 strip, i 보존 → (?i:x[\\s\\S])" {
+    const out = (try runLower("/(?si:x.)/", .{ .regex_modifiers = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/(?i:x[\\s\\S])/", out);
+}
+
+test "#4210: i-only (?i:foo) 는 lowerable 아님 → 변환 없음(.text=null)" {
+    const r = try lower(testing.allocator, "/(?i:foo)/", .{ .unsupported = .{ .regex_modifiers = true } });
+    try testing.expect(r.text == null);
+}
+
+test "#4210: modifier 비트 미set(모던 타겟) → 변환 없음" {
+    const r = try lower(testing.allocator, "/(?s:.)x/", .{ .unsupported = .{} });
+    try testing.expect(r.text == null);
 }
