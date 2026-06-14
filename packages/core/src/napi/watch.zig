@@ -83,6 +83,9 @@ const WatchAsyncData = struct {
     env: c.napi_env,
     // 소유된 옵션 (워커 스레드에서 유효해야 하므로 복사)
     options: BundleOptions,
+    // options 가 parseBuildOptions 결과로 채워졌는지. 에러 경로에서 undefined-options 의
+    // freeOptionsTypedSlices 크래시를 막는 가드 (#4277).
+    options_set: bool = false,
     owned_strings: std.ArrayList([]const u8),
     owned_string_arrays: std.ArrayList([]const []const u8),
     // NAPI 플러그인 (JS 콜백 기반)
@@ -160,7 +163,8 @@ const WatchAsyncData = struct {
         for (self.owned_string_arrays.items) |arr| native_alloc.free(arr);
         self.owned_string_arrays.deinit(native_alloc);
         // typed slices (define/module_specifier_map/alias) — native_alloc 소유, 명시 free (#2396).
-        freeOptionsTypedSlices(&self.options);
+        // 에러 경로(worker 미기동)에선 options 가 미할당일 수 있어 가드 (#4277).
+        if (self.options_set) freeOptionsTypedSlices(&self.options);
         // NAPI 플러그인 해제
         for (self.napi_plugins.items) |np| np.deinit();
         self.napi_plugins.deinit(native_alloc);
@@ -1932,7 +1936,9 @@ pub fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
                 break :blk true;
             };
             if (!ok) {
-                native_alloc.destroy(async_data);
+                // arr 는 owned_string_arrays 에 미등록 상태 → 컨테이너 직접 해제 후 full cleanup.
+                native_alloc.free(arr);
+                async_data.unref();
                 return throwError(env, "OutOfMemory");
             }
             @field(async_data.*, pair[1]) = arr;
@@ -1941,20 +1947,23 @@ pub fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
 
     // 옵션 파싱
     var opts = parseBuildOptions(env, argv[0], &async_data.owned_strings, &async_data.owned_string_arrays) orelse {
-        native_alloc.destroy(async_data);
+        async_data.unref();
         return throwError(env, "invalid watch options");
     };
+    // typed slices 를 정리 대상으로 즉시 등록 — 이후 에러 경로의 unref→deinit 가 해제.
+    async_data.options = opts;
+    async_data.options_set = true;
 
     // _pluginDispatcher가 있으면 NapiPlugin 생성 (napiBuild와 동일 패턴)
     if (getNamedProperty(env, argv[0], "_pluginDispatcher")) |dispatcher_fn| {
         const np = native_alloc.create(NapiPlugin) catch {
-            native_alloc.destroy(async_data);
+            async_data.unref();
             return throwError(env, "OutOfMemory");
         };
         np.* = .{
             .name = native_alloc.dupe(u8, "js-plugin") catch {
                 native_alloc.destroy(np);
-                native_alloc.destroy(async_data);
+                async_data.unref();
                 return throwError(env, "OutOfMemory");
             },
             .tsfn = undefined,
@@ -1977,7 +1986,7 @@ pub fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
         ) != c.napi_ok) {
             native_alloc.free(np.name);
             native_alloc.destroy(np);
-            native_alloc.destroy(async_data);
+            async_data.unref();
             return throwError(env, "failed to create threadsafe function");
         }
 
@@ -1991,11 +2000,12 @@ pub fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
         if (installManualChunksResolver(env, fn_val, &opts)) |resolver| {
             async_data.napi_manual_chunks = resolver;
         } else {
-            native_alloc.destroy(async_data);
+            async_data.unref();
             return throwError(env, "failed to install manualChunks resolver");
         }
     }
 
+    // opts.plugins / manualChunks resolver 가 채워진 최종 상태로 갱신 (worker 가 읽음).
     async_data.options = opts;
     // `emitDiskSourcemap` 옵션 (기본 true) — bungae 등 lazy 라우트를 갖춘 dev server 는
     // false 로 보내 rebuild 경로의 `.map` 디스크 I/O 를 완전히 제거한다.

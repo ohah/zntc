@@ -31,6 +31,9 @@ const BuildAsyncData = struct {
     completion_tsfn: c.napi_threadsafe_function,
     // 소유된 옵션 (워커 스레드에서 유효해야 하므로 복사)
     options: BundleOptions,
+    // options 가 parseBuildOptions 결과로 채워졌는지. 에러 경로에서 undefined-options 의
+    // freeOptionsTypedSlices 크래시를 막는 가드 (#4277).
+    options_set: bool = false,
     // logLevel/logLimit 필터 — buildResultToJS 가 진단 출력 시 사용 (#2158).
     log_opts: LogFilterOptions,
     // 소유된 문자열 목록 (deinit 시 해제)
@@ -45,6 +48,23 @@ const BuildAsyncData = struct {
     result: ?bundler_mod.BundleResult = null,
     err_msg: ?[*:0]const u8 = null,
 };
+
+/// async_data 가 소유한 모든 리소스 해제 + 구조체 free. 완료 콜백과 진입 함수의
+/// 에러 경로가 공유한다(정리 로직 drift 방지). completion_tsfn 의 release 는 생성
+/// 여부가 호출 지점마다 달라 호출자가 직접 처리한다. options typed slices 는
+/// `options_set` 가드로만 해제(에러 경로의 undefined-options 크래시 방지).
+fn deinitAsyncData(async_data: *BuildAsyncData) void {
+    for (async_data.owned_strings.items) |s| native_alloc.free(s);
+    async_data.owned_strings.deinit(native_alloc);
+    for (async_data.owned_string_arrays.items) |arr| native_alloc.free(arr);
+    async_data.owned_string_arrays.deinit(native_alloc);
+    if (async_data.options_set) freeOptionsTypedSlices(&async_data.options);
+    for (async_data.napi_plugins.items) |np| np.deinit();
+    async_data.napi_plugins.deinit(native_alloc);
+    async_data.zig_plugins.deinit(native_alloc);
+    if (async_data.napi_manual_chunks) |mc| mc.deinit();
+    native_alloc.destroy(async_data);
+}
 
 /// 독립 스레드에서 번들링 실행 (libuv 워커 미사용 → TSFN 데드락 방지)
 fn buildWorkerThread(async_data: *BuildAsyncData) void {
@@ -65,22 +85,9 @@ fn buildWorkerThread(async_data: *BuildAsyncData) void {
 fn buildCompleteTsfn(env: c.napi_env, _: c.napi_value, _: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
     const async_data: *BuildAsyncData = @ptrCast(@alignCast(data.?));
     defer {
-        // TSFN 해제
+        // 완료 시점엔 completion_tsfn 이 항상 생성돼 있으므로 여기서 release.
         _ = c.napi_release_threadsafe_function(async_data.completion_tsfn, c.napi_tsfn_release);
-        // 소유된 문자열 해제 (개별 문자열)
-        for (async_data.owned_strings.items) |s| native_alloc.free(s);
-        async_data.owned_strings.deinit(native_alloc);
-        // 배열 컨테이너만 해제 (내부 문자열은 owned_strings에서 이미 해제됨)
-        for (async_data.owned_string_arrays.items) |arr| native_alloc.free(arr);
-        async_data.owned_string_arrays.deinit(native_alloc);
-        // typed slices (define/module_specifier_map/alias) — native_alloc 소유, 명시 free (#2396).
-        freeOptionsTypedSlices(&async_data.options);
-        // NAPI 플러그인 해제
-        for (async_data.napi_plugins.items) |np| np.deinit();
-        async_data.napi_plugins.deinit(native_alloc);
-        async_data.zig_plugins.deinit(native_alloc);
-        if (async_data.napi_manual_chunks) |mc| mc.deinit();
-        native_alloc.destroy(async_data);
+        deinitAsyncData(async_data);
     }
 
     if (async_data.err_msg) |msg| {
@@ -134,20 +141,23 @@ pub fn napiBuild(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
 
     // 옵션 파싱 (모든 문자열을 소유 메모리로 복사)
     var opts = parseBuildOptions(env, argv[0], &async_data.owned_strings, &async_data.owned_string_arrays) orelse {
-        native_alloc.destroy(async_data);
+        deinitAsyncData(async_data);
         return throwError(env, "invalid build options");
     };
+    // typed slices 를 정리 대상으로 즉시 등록 — 이후 에러 경로의 deinitAsyncData 가 해제.
+    async_data.options = opts;
+    async_data.options_set = true;
 
     // _pluginDispatcher가 있으면 NapiPlugin 생성
     if (getNamedProperty(env, argv[0], "_pluginDispatcher")) |dispatcher_fn| {
         const np = native_alloc.create(NapiPlugin) catch {
-            native_alloc.destroy(async_data);
+            deinitAsyncData(async_data);
             return throwError(env, "OutOfMemory");
         };
         np.* = .{
             .name = native_alloc.dupe(u8, "js-plugin") catch {
                 native_alloc.destroy(np);
-                native_alloc.destroy(async_data);
+                deinitAsyncData(async_data);
                 return throwError(env, "OutOfMemory");
             },
             .tsfn = undefined,
@@ -171,7 +181,7 @@ pub fn napiBuild(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
         ) != c.napi_ok) {
             native_alloc.free(np.name);
             native_alloc.destroy(np);
-            native_alloc.destroy(async_data);
+            deinitAsyncData(async_data);
             return throwError(env, "failed to create threadsafe function");
         }
 
@@ -185,17 +195,18 @@ pub fn napiBuild(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
         if (installManualChunksResolver(env, fn_val, &opts)) |resolver| {
             async_data.napi_manual_chunks = resolver;
         } else {
-            native_alloc.destroy(async_data);
+            deinitAsyncData(async_data);
             return throwError(env, "failed to install manualChunks resolver");
         }
     }
 
+    // opts.plugins / manualChunks resolver 가 채워진 최종 상태로 갱신 (worker 가 읽음).
     async_data.options = opts;
 
     // Promise 생성
     var promise: c.napi_value = undefined;
     if (c.napi_create_promise(env, &async_data.deferred, &promise) != c.napi_ok) {
-        native_alloc.destroy(async_data);
+        deinitAsyncData(async_data);
         return throwError(env, "failed to create promise");
     }
 
@@ -215,14 +226,16 @@ pub fn napiBuild(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
         buildCompleteTsfn,
         &async_data.completion_tsfn,
     ) != c.napi_ok) {
-        native_alloc.destroy(async_data);
+        // completion_tsfn 생성 실패 — 아직 미생성이라 release 불필요.
+        deinitAsyncData(async_data);
         return throwError(env, "failed to create completion tsfn");
     }
 
     // 독립 스레드에서 빌드 실행 (libuv 워커 미사용 → TSFN 데드락 방지)
     const thread = std.Thread.spawn(.{}, buildWorkerThread, .{async_data}) catch {
+        // completion_tsfn 은 생성됐으므로 release 후 나머지 자원 정리.
         _ = c.napi_release_threadsafe_function(async_data.completion_tsfn, c.napi_tsfn_release);
-        native_alloc.destroy(async_data);
+        deinitAsyncData(async_data);
         return throwError(env, "failed to spawn build thread");
     };
     thread.detach();
