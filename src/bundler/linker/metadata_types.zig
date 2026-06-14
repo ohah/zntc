@@ -28,6 +28,10 @@ pub const LinkingMetadata = struct {
     /// export default의 합성 변수명. 이름 충돌 시 "_default$1" 등으로 변경됨.
     /// codegen이 `export default X` → `var <이름> = X;` 출력할 때 사용.
     default_export_name: []const u8 = "_default",
+    /// default export 가 합성 placeholder(`export default <expr>` → `var _default = expr`)인지.
+    /// codegen 분기(var 선언+할당 vs 기존 binding 할당) 선택용 — 과거엔 이름이 "_default" 로
+    /// 시작하는지로 재추론했으나 mangler/linker 가 그 이름을 쓰면 오판하므로 의도를 flag 로 명시.
+    default_export_is_synthetic: bool = false,
     /// namespace import의 member access 직접 치환 맵 (esbuild 방식).
     /// key: namespace 식별자의 symbol_id, value: export_name → canonical_local_name.
     /// codegen이 `ns.prop`를 만나면 이 맵으로 직접 치환 (namespace 객체 생성 불필요).
