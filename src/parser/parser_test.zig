@@ -2530,6 +2530,15 @@ test "TS arrow: empty params with return type" {
     try expectNoParseError("const f = (): void => {};");
 }
 
+test "#4386 TS empty-paren typed arrow in ternary/speculative position" {
+    // 빈 `()` 의 parenthesized_expression 은 operand=NodeIndex.none 으로 저장된다.
+    // tryReinterpretAsTypedArrow 의 빈/비-빈 단일 경로 정규화가 빈 괄호도 올바른
+    // arrow params(빈 FormalParameters)로 풀어야 한다 (speculative 경로 포함).
+    try expectNoParseError("const b = true ? (): number => 1 : 2;");
+    try expectNoParseError("const c = [(): void => {}];");
+    try expectNoParseError("const d = foo((): string => \"x\");");
+}
+
 test "TS arrow: contextual keyword as param name (get/set/number)" {
     // contextual keyword는 import default specifier와 arrow param 모두에서 식별자로 유효
     try expectNoParseError("const f = (get: number) => get;");
