@@ -82,6 +82,14 @@ pub const TsConfig = struct {
         };
     };
 
+    /// paths 슬라이스 + 각 entry.targets 컨테이너를 해제한다. 내부 문자열(key/target)은
+    /// `_allocated_strings` 가 소유하므로 여기서 만지지 않는다. deinit 과 paths overwrite(mergeFrom
+    /// 으로 승계한 base paths 를 child paths 로 덮어쓸 때) 양쪽이 공유 — 컨테이너 leak 방지.
+    fn freePathsContainers(allocator: std.mem.Allocator, paths: []const PathEntry) void {
+        for (paths) |p| if (p.targets.len > 0) allocator.free(p.targets);
+        if (paths.len > 0) allocator.free(paths);
+    }
+
     /// TsConfig가 소유한 동적 메모리를 해제한다.
     /// load()로 생성한 TsConfig는 반드시 deinit()을 호출해야 한다.
     pub fn deinit(self: *TsConfig) void {
@@ -92,10 +100,7 @@ pub const TsConfig = struct {
                 }
                 list.deinit(allocator);
             }
-            // paths 슬라이스 + 각 entry.targets 슬라이스는 allocator 에 별도 할당. 내부 문자열은
-            // _allocated_strings 가 소유하므로 여기서는 컨테이너만 해제.
-            for (self.paths) |p| if (p.targets.len > 0) allocator.free(p.targets);
-            if (self.paths.len > 0) allocator.free(self.paths);
+            freePathsContainers(allocator, self.paths);
         }
         self.paths = &.{};
         self._allocated_strings = null;
@@ -299,6 +304,9 @@ pub const TsConfig = struct {
         if (co.get("paths")) |v| {
             if (v == .object) {
                 const entries = try parsePathsObject(v.object, allocator, &config._allocated_strings.?);
+                // mergeFrom 이 base tsconfig 의 paths 를 먼저 승계했을 수 있다 — child paths 로
+                // 덮어쓰기 전 이전 컨테이너 해제(내부 문자열은 _allocated_strings 소유라 안전). #4359
+                freePathsContainers(allocator, config.paths);
                 config.paths = entries;
             }
         }
