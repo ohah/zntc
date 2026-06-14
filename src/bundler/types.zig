@@ -937,23 +937,65 @@ pub fn spanKey(span: Span) u64 {
     return @as(u64, span.start) << 32 | span.end;
 }
 
+/// 복합 키 바이트를 `dst`에 기록: [4 bytes module_index][0x00][name bytes].
+/// `dst.len == 5 + name.len` 이어야 한다. `makeModuleKey`/`ModuleKey.make` 공용.
+fn writeModuleKeyInto(dst: []u8, module_index: u32, name: []const u8) void {
+    @memcpy(dst[0..4], std.mem.asBytes(&module_index));
+    dst[4] = 0;
+    @memcpy(dst[5..], name);
+}
+
 /// 모듈 인덱스 + 이름 → 복합 키 (힙 할당). linker/tree_shaker의 export 맵에서 사용.
 /// 형식: [4 bytes module_index][0x00][name bytes]
 pub fn makeModuleKey(allocator: std.mem.Allocator, module_index: u32, name: []const u8) ![]const u8 {
-    var buf = try allocator.alloc(u8, 4 + 1 + name.len);
-    @memcpy(buf[0..4], std.mem.asBytes(&module_index));
-    buf[4] = 0;
-    @memcpy(buf[5..], name);
+    const buf = try allocator.alloc(u8, 5 + name.len);
+    writeModuleKeyInto(buf, module_index, name);
     return buf;
 }
 
-/// 모듈 인덱스 + 이름 → 복합 키 (스택 버퍼, 조회용). 할당 없음.
-/// name이 4091바이트를 초과하면 assert 실패.
-pub fn makeModuleKeyBuf(buf: *[4096]u8, module_index: u32, name: []const u8) []const u8 {
-    const total = 5 + name.len;
-    std.debug.assert(total <= 4096);
-    @memcpy(buf[0..4], std.mem.asBytes(&module_index));
-    buf[4] = 0;
-    @memcpy(buf[5 .. 5 + name.len], name);
-    return buf[0..total];
-}
+/// 모듈 인덱스 + 이름 → 복합 키 (조회/저장용 임시 키). 키 형식은 `makeModuleKey`와 동일:
+/// [4 bytes module_index][0x00][name bytes].
+///
+/// 이름이 내부 스택 버퍼(4091바이트)에 맞으면 **할당 없이** 버퍼를 쓰고, 초과하면 heap으로
+/// spill 한다. export/import 이름은 문자열 리터럴(`export { x as "..." }`)로 길이 제한이
+/// 없으므로, 고정 버퍼 + `std.debug.assert`(ReleaseFast에서 소거됨) 만으로는 stack-smashing
+/// 위험이 있었다. spill 된 메모리는 `deinit`으로 해제해야 한다.
+///
+/// 사용 패턴:
+/// ```
+/// var mk: types.ModuleKey = .{};
+/// defer mk.deinit(allocator);
+/// const key = try mk.make(allocator, module_index, name);
+/// ```
+pub const ModuleKey = struct {
+    buf: [4096]u8 = undefined,
+    /// 이름이 버퍼를 초과할 때만 set 되는 heap 할당분. `deinit`에서 해제.
+    spill: ?[]u8 = null,
+
+    pub fn make(self: *ModuleKey, allocator: std.mem.Allocator, module_index: u32, name: []const u8) std.mem.Allocator.Error![]const u8 {
+        const total = 5 + name.len;
+        const dst = if (total <= self.buf.len)
+            self.buf[0..total]
+        else dst: {
+            const spilled = try allocator.alloc(u8, total);
+            self.spill = spilled;
+            break :dst spilled;
+        };
+        writeModuleKeyInto(dst, module_index, name);
+        return dst;
+    }
+
+    /// `make`의 **조회 전용** 편의판: OOM 시 빈 키를 반환한다. 실제 키는 최소 5바이트라
+    /// 빈 키는 어떤 키와도 일치하지 않으므로 해시맵 조회에서 항상 miss → 안전한 폴백.
+    /// 캐시/맵에 *저장*하는 경로엔 쓰지 말 것(빈 키로 저장하면 충돌) — `make` + 명시적 처리.
+    pub fn makeOrEmpty(self: *ModuleKey, allocator: std.mem.Allocator, module_index: u32, name: []const u8) []const u8 {
+        return self.make(allocator, module_index, name) catch &[_]u8{};
+    }
+
+    pub fn deinit(self: *ModuleKey, allocator: std.mem.Allocator) void {
+        if (self.spill) |spilled| {
+            allocator.free(spilled);
+            self.spill = null;
+        }
+    }
+};
