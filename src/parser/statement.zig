@@ -975,7 +975,8 @@ fn parseSimpleStatement(self: *Parser, tag: Tag) ParseError2!NodeIndex {
     }
 
     const end = self.currentSpan().end;
-    _ = try self.eat(.semicolon);
+    // ASI 강제 — 라벨/키워드 뒤엔 `;`/줄바꿈/`}`/EOF 만 허용(잡토큰 leniently 수용 금지).
+    try self.expectSemicolon();
     return try self.ast.addNode(.{
         .tag = tag,
         .span = .{ .start = start, .end = end },
