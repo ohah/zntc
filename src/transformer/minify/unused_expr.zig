@@ -51,21 +51,25 @@ pub fn simplifySequence(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, ch
     if (list.len < 2) return;
     if (list.start + list.len > ast.extra_data.items.len) return;
 
-    const indices = ast.extra_data.items[list.start .. list.start + list.len];
-    const last_raw = indices[list.len - 1];
+    // 마지막 원소(값)는 항상 유지 대상. u32 값 복사라 이후 extra_data realloc 과 무관.
+    const last_raw = ast.extra_data.items[list.start + list.len - 1];
     if (last_raw >= ast.nodes.items.len) return;
 
-    // Phase 1 (collect only, no mutation): 유지할 원소 / 제거할 원소 분류.
+    // Phase 1 (collect only, no list mutation): 유지할 원소 / 제거할 원소 분류.
     var kept_buf: std.ArrayListUnmanaged(u32) = .empty;
     defer kept_buf.deinit(ast.allocator);
     var removed_buf: std.ArrayListUnmanaged(u32) = .empty;
     defer removed_buf.deinit(ast.allocator);
 
-    for (indices[0 .. list.len - 1]) |raw| {
+    // realloc-safe 순회 — simplifyUnusedInPlace 재귀가 extra_data 를 grow → ArrayList realloc
+    // → 캡처된 raw-slice invalid (#2422/#2426 동일 패턴). 마지막 원소를 제외한 prefix 만 순회.
+    var iter = ast.iterateExtraList(.{ .start = list.start, .len = list.len - 1 });
+    while (iter.next()) |idx| {
+        const raw = @intFromEnum(idx);
         if (raw >= ast.nodes.items.len) return;
         // 내부 부분 rewrite 도 동시에 수행 (`a ? b : c` → `a || c` 등).
         // rewriter 가 내부 제거분은 이미 감산함 — 최종 removable 로 판정되면 호출자가 raw 전체 감산.
-        if (simplifyUnusedInPlace(ast, ctx, @enumFromInt(raw), changed, 0)) {
+        if (simplifyUnusedInPlace(ast, ctx, idx, changed, 0)) {
             removed_buf.append(ast.allocator, raw) catch return;
         } else {
             kept_buf.append(ast.allocator, raw) catch return;

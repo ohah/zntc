@@ -2651,3 +2651,12 @@ test "dead-brace: var in esm_var_assign_only mode — abandon (hoist scan 미커
         .{ .minify_whitespace = true, .esm_var_assign_only = true },
     );
 }
+
+test "minify: statement-position sequence with rewritable middle element (#4273 UAF 회귀)" {
+    // 중간 배열이 (x(), y())로 축약되며 extra_data를 grow → 과거 simplifySequence가
+    // raw-slice를 잡은 채 순회해 realloc 시 use-after-free(프로덕션 freeing allocator).
+    // iterateExtraList 전환 후 안전 + 올바른 축약. (이 경로를 정확히 통과)
+    try expectMinifyFull("(a, [x(), y()], z());", "a,x(),y(),z();");
+    // 여러 rewritable 중간 원소로 extra_data grow를 누적 (realloc 유발 가능성 ↑).
+    try expectMinifyFull("(a, [x()], [y()], [w()], z());", "a,x(),y(),w(),z();");
+}
