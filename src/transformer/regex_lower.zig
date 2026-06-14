@@ -89,7 +89,9 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
     var astral_u_incomplete = false;
     var kept_modifier = false;
     const pattern_text: []const u8 = if (need_pattern_xform) blk: {
-        var in_ast = regexp.parse(pattern, flags, allocator) orelse return .{ .text = null };
+        // parse/print 실패 시 원본(modifier 포함) verbatim 유지 → need_modifier 면
+        // 잔여로 보고해 진단(silent SyntaxError 방지). #4210.
+        var in_ast = regexp.parse(pattern, flags, allocator) orelse return .{ .text = null, .kept_modifier = need_modifier };
         defer in_ast.deinit();
         var tr = try regexp.transform.transform(in_ast, .{
             .dotall = need_dotall,
@@ -120,7 +122,7 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
             kept_modifier = tr.kept_modifier;
         }
         defer tr.deinit();
-        owned_pattern = regexp.printer.print(tr.ast, allocator) catch return .{ .text = null };
+        owned_pattern = regexp.printer.print(tr.ast, allocator) catch return .{ .text = null, .kept_modifier = need_modifier };
         break :blk owned_pattern.?;
     } else pattern;
     const strip_u = need_unicode and !astral_u_incomplete;
@@ -824,6 +826,24 @@ test "#4210 PR2b: 순수 s-enabling 은 kept_modifier 없음(완전 다운레벨
 test "#4210: modifier 비트 미set(모던 타겟) → 변환 없음" {
     const r = try lower(testing.allocator, "/(?s:.)x/", .{ .unsupported = .{} });
     try testing.expect(r.text == null);
+}
+
+test "#4210 회귀: i-영역 비-ASCII class 는 중첩 class 미생성 — 보존 + 진단" {
+    // class fold bail(é 비-ASCII) 시 fall-through 로 글자가 [cC] 로 fold 되어
+    // `[[cC]…]` 중첩 class 가 생기던 miscompile (종합 리뷰 적발). !in_class 가드로 보존.
+    const r = try lower(testing.allocator, "/(?i:[caf\u{00E9}])/", .{ .unsupported = .{ .regex_modifiers = true } });
+    defer if (r.text) |t| testing.allocator.free(t);
+    if (r.named_groups) |ng| testing.allocator.free(ng);
+    try testing.expect(r.kept_modifier);
+    try testing.expect(std.mem.indexOf(u8, r.text.?, "[[") == null); // 중첩 class 없음
+    try testing.expect(std.mem.indexOf(u8, r.text.?, "(?i:") != null);
+}
+
+test "#4210 회귀: i-영역 \\D class(collect bail)도 중첩 class 미생성" {
+    const r = try lower(testing.allocator, "/(?i:[a\\D])/", .{ .unsupported = .{ .regex_modifiers = true } });
+    defer if (r.text) |t| testing.allocator.free(t);
+    if (r.named_groups) |ng| testing.allocator.free(ng);
+    try testing.expect(std.mem.indexOf(u8, r.text.?, "[[") == null);
 }
 
 test "#4210 PR3: (?m:^a$) → multiline 앵커 재작성 (lookbehind 지원)" {
