@@ -122,6 +122,7 @@ test {
     // `pub const` 가 아닌 file-private const 로만 import → 다른 파일이
     // dev 를 직접 reference 안 하면 test reachability 안 잡힘.
     _ = @import("emitter/dev.zig");
+    _ = @import("emitter/chunks.zig"); // inline test (rewriteImportSpecifier 등)
 
     // test files
     _ = @import("bundler_test.zig");

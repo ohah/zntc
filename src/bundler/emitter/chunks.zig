@@ -1840,13 +1840,8 @@ fn rewriteDynamicImports(
             continue;
         }
 
-        // 코드에서 원본 specifier를 찾아 교체
-        if (std.mem.indexOf(u8, result, rec.specifier)) |pos| {
-            const new_result = try std.mem.concat(allocator, u8, &.{
-                result[0..pos],
-                replacement,
-                result[pos + rec.specifier.len ..],
-            });
+        // 실제 `import("specifier")` 호출 안의 specifier 만 교체 (prefix 충돌/문자열 리터럴 회피).
+        if (try rewriteImportSpecifier(allocator, result, rec.specifier, replacement)) |new_result| {
             allocator.free(result);
             result = new_result;
         }
@@ -1942,21 +1937,62 @@ fn rewriteImportCallToWrapper(
     replacement: []const u8,
 ) !?[]u8 {
     const spec_pos = std.mem.indexOf(u8, code, specifier) orelse return null;
-    // `import("` 또는 `import('` 가 specifier 앞에 와야 함.
-    if (spec_pos < "import(\"".len) return null;
-    const opener = code[spec_pos - "import(\"".len .. spec_pos];
+    const span = importCallSpanAt(code, spec_pos, specifier.len) orelse return null;
+    return try std.mem.concat(allocator, u8, &.{ code[0..span.call_start], replacement, code[span.call_end..] });
+}
+
+const ImportCallSpan = struct { call_start: usize, call_end: usize };
+
+/// `code` 의 `pos` 에서 길이 `spec_len` 인 토큰이 실제 `import("…")`/`import('…')` 호출 안인지
+/// 검증. 맞으면 호출 전체 span(`call_start..call_end`, 닫는 `)` 포함), 아니면 null. opener+quote+
+/// `)` 경계로 prefix 충돌·문자열 리터럴 내 substring 을 배제한다.
+fn importCallSpanAt(code: []const u8, pos: usize, spec_len: usize) ?ImportCallSpan {
+    const opener_len = "import(\"".len;
+    if (pos < opener_len) return null;
+    const opener = code[pos - opener_len .. pos];
     if (!std.mem.eql(u8, opener, "import(\"") and !std.mem.eql(u8, opener, "import('")) return null;
-    const quote = code[spec_pos - 1];
+    const quote = code[pos - 1];
+    const after = pos + spec_len;
+    if (after + 1 >= code.len) return null;
+    if (code[after] != quote or code[after + 1] != ')') return null;
+    return .{ .call_start = pos - opener_len, .call_end = after + 2 };
+}
 
-    const after_spec = spec_pos + specifier.len;
-    if (after_spec + 1 >= code.len) return null;
-    if (code[after_spec] != quote) return null;
-    if (code[after_spec + 1] != ')') return null;
-
-    const call_start = spec_pos - "import(\"".len;
-    const call_end = after_spec + 2; // include ')'
-
-    return try std.mem.concat(allocator, u8, &.{ code[0..call_start], replacement, code[call_end..] });
+/// `import("<specifier>")` / `import('<specifier>')` 호출 안의 specifier 만 replacement 로
+/// 교체한다. opener(`import("`/`import('`) + 닫는 quote + `)` 경계를 확인하므로 prefix 충돌
+/// (`./x` vs `./xyz`)·문자열 리터럴 내 substring 을 오재작성하지 않고, 모든 occurrence 를
+/// positional walk 로 처리한다. 매칭 없으면 null. (bare indexOf substring 교체의 #4295 수정)
+fn rewriteImportSpecifier(
+    allocator: std.mem.Allocator,
+    code: []const u8,
+    specifier: []const u8,
+    replacement: []const u8,
+) !?[]u8 {
+    if (specifier.len == 0) return null;
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var i: usize = 0;
+    var any = false;
+    while (i < code.len) {
+        const rel = std.mem.indexOf(u8, code[i..], specifier) orelse break;
+        const pos = i + rel;
+        if (importCallSpanAt(code, pos, specifier.len) != null) {
+            try out.appendSlice(allocator, code[i..pos]);
+            try out.appendSlice(allocator, replacement);
+            i = pos + specifier.len;
+            any = true;
+        } else {
+            // import 호출이 아닌 occurrence — 첫 글자만 흘려보내 다음 후보부터 재검색.
+            try out.appendSlice(allocator, code[i .. pos + 1]);
+            i = pos + 1;
+        }
+    }
+    if (!any) {
+        out.deinit(allocator);
+        return null;
+    }
+    try out.appendSlice(allocator, code[i..]);
+    return try out.toOwnedSlice(allocator);
 }
 
 /// hash 치환 후 chunk 별 sourcemap 마무리. chunk loop 는 모든 chunk 의
@@ -3113,4 +3149,37 @@ test "appendCssLinkPrologue: DOM-guarded link injection for href" {
     try std.testing.expect(std.mem.indexOf(u8, s, "rel=\"stylesheet\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, s, "new URL(\"./route-a-1a2b3c4d.css\",import.meta.url)") != null);
     try std.testing.expect(std.mem.endsWith(u8, s, "appendChild(__zntc_css);}\n"));
+}
+
+test "rewriteImportSpecifier: prefix 충돌·문자열 리터럴·다중 occurrence (#4295)" {
+    const a = std.testing.allocator;
+
+    // prefix 충돌: "./x" 가 "./xyz" 의 prefix — import("./xyz") 는 보존돼야 한다.
+    {
+        const r = (try rewriteImportSpecifier(a, "import(\"./x\");import(\"./xyz\");", "./x", "./X")).?;
+        defer a.free(r);
+        try std.testing.expectEqualStrings("import(\"./X\");import(\"./xyz\");", r);
+    }
+    // 문자열 리터럴 내 specifier 는 건드리지 않고 실제 import 만 교체.
+    {
+        const r = (try rewriteImportSpecifier(a, "const s=\"./x here\";import(\"./x\");", "./x", "./X")).?;
+        defer a.free(r);
+        try std.testing.expectEqualStrings("const s=\"./x here\";import(\"./X\");", r);
+    }
+    // 다중 occurrence 모두 교체.
+    {
+        const r = (try rewriteImportSpecifier(a, "import(\"./x\");import(\"./x\");", "./x", "./X")).?;
+        defer a.free(r);
+        try std.testing.expectEqualStrings("import(\"./X\");import(\"./X\");", r);
+    }
+    // single-quote opener.
+    {
+        const r = (try rewriteImportSpecifier(a, "import('./x')", "./x", "./X")).?;
+        defer a.free(r);
+        try std.testing.expectEqualStrings("import('./X')", r);
+    }
+    // 실제 import 호출이 없으면 null.
+    {
+        try std.testing.expect((try rewriteImportSpecifier(a, "const s=\"./x\";", "./x", "./X")) == null);
+    }
 }
