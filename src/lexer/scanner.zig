@@ -264,6 +264,10 @@ pub const Scanner = struct {
                 hi = mid;
             }
         }
+        // lo == 0: offset 이 첫 line_offset(BOM 파일은 3)보다 앞 — BOM 영역. line_idx = lo-1 의
+        // u32 underflow + OOB 를 방지하기 위해 line 0, column 0 으로 clamp(BOM 바이트엔 의미있는
+        // 행/열이 없다). 일반 파일은 offsets[0]=0 이라 항상 lo>=1.
+        if (lo == 0) return .{ .line = 0, .column = 0 };
         const line_idx = lo - 1;
         return .{
             .line = line_idx,
