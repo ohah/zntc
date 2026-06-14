@@ -3376,3 +3376,41 @@ test "ES5: class async method + nested-member optional-call hoists temp decl (re
             std.mem.indexOf(u8, r.output, ",_b") != null);
     }
 }
+
+test "ES5 generator: labeled `continue` in for-of jumps to iterator advance, not cond (#4281)" {
+    // 라벨된 for-of 의 `continue outer` 는 outer iterator advance(_a++)로 가야 한다.
+    // 버그 땐 outer cond 로 점프(`...return[3,3];return[3,1]`)해 _a++ 를 건너뛰어 무한 루프했다.
+    // 수정 후엔 advance case 로 점프(`...return[3,3];return[3,6]`). (런타임: value=4, 종료)
+    var r = try e2eTarget(std.testing.allocator,
+        \\function* g() {
+        \\  let s = 0;
+        \\  outer: for (const x of [1, 2, 3]) {
+        \\    for (const y of [0]) { if (x === 2) continue outer; s += x; }
+        \\  }
+        \\  return s;
+        \\}
+    , .es5);
+    defer r.deinit();
+    // continue outer 가 outer cond(case 1)로 바로 점프하던 버그 시그니처가 없어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "if(!(x===2))return[3,3];return[3,1]") == null);
+    // continue outer 가 outer advance(_a++) case 로 점프.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "if(!(x===2))return[3,3];return[3,6]") != null);
+}
+
+test "ES5 generator: labeled `continue` in do-while jumps to cond, not body (#4281)" {
+    // 라벨된 do-while 의 `continue outer` 는 조건 평가 지점으로 가야 한다.
+    // 버그 땐 body_label 로 점프(`...return[3,2];return[3,1]`)해 조건을 재평가하지 않았다.
+    // 수정 후엔 cond case 로 점프(`...return[3,2];return[3,3]`). (런타임: value=8, 종료)
+    var r = try e2eTarget(std.testing.allocator,
+        \\function* g() {
+        \\  let i = 0, s = 0;
+        \\  outer: do { i++; if (i === 2) continue outer; s += i; } while (i < 4);
+        \\  return s;
+        \\}
+    , .es5);
+    defer r.deinit();
+    // continue outer 가 body_label(case 1)로 점프하던 버그 시그니처가 없어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "if(!(i===2))return[3,2];return[3,1]") == null);
+    // continue outer 가 cond(case 3)로 점프.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "if(!(i===2))return[3,2];return[3,3]") != null);
+}

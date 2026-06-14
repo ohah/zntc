@@ -534,7 +534,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // update (별도 label — continue의 대상)
             const update_label = next_label.*;
             next_label.* += 1;
-            self.generator_for_update_label = update_label;
+            self.generator_loop_continue_label = update_label;
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } }); // mark update_label
             if (!update_idx.isNone()) {
                 const new_update = try self.visitNode(update_idx);
@@ -697,7 +697,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // update: _i++
             const update_label = next_label.*;
             next_label.* += 1;
-            self.generator_for_update_label = update_label;
+            self.generator_loop_continue_label = update_label;
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
             const idx_ref_update = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
             const update_extra = try self.ast.addExtras(&.{
@@ -868,21 +868,25 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 body_node.tag == .for_in_statement or
                 body_node.tag == .for_of_statement;
 
-            const is_for = body_node.tag == .for_statement;
+            // while 을 제외한 모든 루프(for/for-of/for-in/do-while)는 `continue` 타겟
+            // (증분·iterator advance·조건 평가)이 body 수집 *후*에야 정해지므로 sentinel +
+            // generator_loop_continue_label 로 지연 fixup 한다. while 만 `continue` = cond_label
+            // (루프 최상단)이라 즉시 결정.
+            const continue_via_update_label = is_loop and body_node.tag != .while_statement;
             const depth = self.generator_label_stack.items.len;
             const break_sent = breakSentinel(depth);
             const continue_sent = continueSentinel(depth);
 
             const continue_label: ?u32 = if (!is_loop)
                 null
-            else if (is_for)
-                continue_sent // for loop: body 처리 후 fixup
+            else if (continue_via_update_label)
+                continue_sent // body 처리 후 generator_loop_continue_label 로 fixup
             else
-                next_label.*; // while/do-while: cond_label
+                next_label.*; // while: cond_label
 
             const ops_start = ops.items.len;
-            const saved_update_label = self.generator_for_update_label;
-            self.generator_for_update_label = null;
+            const saved_update_label = self.generator_loop_continue_label;
+            self.generator_loop_continue_label = null;
 
             try self.generator_label_stack.append(self.allocator, .{
                 .name = label_name,
@@ -894,8 +898,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             _ = self.generator_label_stack.pop();
 
-            const actual_continue = if (is_for) self.generator_for_update_label orelse @as(u32, 0) else @as(u32, 0);
-            self.generator_for_update_label = saved_update_label;
+            const actual_continue = if (continue_via_update_label) self.generator_loop_continue_label orelse @as(u32, 0) else @as(u32, 0);
+            self.generator_loop_continue_label = saved_update_label;
 
             const end_label = next_label.*;
             next_label.* += 1;
@@ -903,7 +907,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // fixup: break sentinel → end_label, continue sentinel → actual_continue
             const ops_slice = ops.items[ops_start..];
             fixupSentinel(ops_slice, break_sent, end_label);
-            if (is_for) {
+            if (continue_via_update_label) {
                 fixupSentinel(ops_slice, continue_sent, actual_continue);
             }
 
@@ -1069,6 +1073,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // continue는 condition 평가 지점으로 점프
             const cond_label = next_label.*;
             next_label.* += 1;
+            // 라벨된 `continue label;` 도 (unlabeled 와 동일하게) 조건 평가 지점으로 가도록
+            // cond_label 을 generator_loop_continue_label 로 노출 — 이전엔 라벨 경로가 body_label 로
+            // 잘못 점프해 조건을 재평가하지 않았다 (#4281).
+            self.generator_loop_continue_label = cond_label;
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } }); // mark cond_label
 
             // condition → if true, goto body_label
