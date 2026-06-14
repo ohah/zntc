@@ -340,6 +340,14 @@ pub const SourceMapBuilder = struct {
                 last.original_line == mapping.original_line and
                 last.original_column == mapping.original_column)
             {
+                // 좌표가 모두 같음. name_index 까지 같으면 진짜 중복 → 생략. 좌표는 같지만 last 엔
+                // 이름이 없고 new 에 있으면 last 를 교체(이름 정보가 더 유용 — Sentry/DevTools 의
+                // 식별자 복원). 위치당 segment 1 개 유지. 그 외(new 무명/다른 이름)는 last 유지.
+                if (!std.meta.eql(last.name_index, mapping.name_index) and
+                    last.name_index == null and mapping.name_index != null)
+                {
+                    self.mappings.items[self.mappings.items.len - 1] = mapping;
+                }
                 return;
             }
             if (self.is_sorted) {

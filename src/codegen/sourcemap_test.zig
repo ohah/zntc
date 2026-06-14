@@ -57,6 +57,25 @@ test "SourceMapBuilder: simple mapping" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"sources\":[\"input.ts\"]") != null);
 }
 
+test "#4326 dedup 은 name_index 를 고려 — 같은 좌표 named 매핑 보존" {
+    var builder = SourceMapBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    _ = try builder.addSource("input.ts");
+    const nm = try builder.addName("originalName");
+
+    // 같은 좌표(0,0,0,0,0)에 unnamed → named 순서로 추가.
+    try builder.addMapping(.{ .generated_line = 0, .generated_column = 0, .original_line = 0, .original_column = 0 });
+    try builder.addMapping(.{ .generated_line = 0, .generated_column = 0, .original_line = 0, .original_column = 0, .name_index = nm });
+
+    // 이름 있는 매핑이 보존돼야 한다(dedup 이 버리면 안 됨). 위치당 1 segment 유지.
+    try std.testing.expectEqual(@as(usize, 1), builder.mappings.items.len);
+    try std.testing.expectEqual(@as(?u32, nm), builder.mappings.items[0].name_index);
+
+    // 완전 동일(이름 포함) 중복은 여전히 생략.
+    try builder.addMapping(.{ .generated_line = 0, .generated_column = 0, .original_line = 0, .original_column = 0, .name_index = nm });
+    try std.testing.expectEqual(@as(usize, 1), builder.mappings.items.len);
+}
+
 test "SourceMapBuilder: multi-line mapping" {
     var builder = SourceMapBuilder.init(std.testing.allocator);
     defer builder.deinit();
