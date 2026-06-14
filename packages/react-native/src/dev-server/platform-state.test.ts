@@ -7,6 +7,7 @@ import type { WatchHandle } from '@zntc/core';
 
 import { buildRnDevServerOptions } from './options.ts';
 import {
+  createBundleRefresher,
   createPlatformStateRegistry,
   getCachedSourceMap,
   type PlatformState,
@@ -48,6 +49,76 @@ function fakeState(overrides: Partial<PlatformState> = {}): PlatformState {
     ...overrides,
   };
 }
+
+describe('createBundleRefresher — in-flight staleness generation guard (Finding #26)', () => {
+  function makeHarness() {
+    let stale = false;
+    let buildCount = 0;
+    const resolvers: Array<() => void> = [];
+    const refresher = createBundleRefresher({
+      // bundle 은 항상 존재 가정 — staleness 만으로 refresh 여부 결정.
+      isFresh: () => !stale,
+      build: () => {
+        buildCount += 1;
+        return new Promise<void>((resolve) => resolvers.push(resolve));
+      },
+      setStale: () => {
+        stale = true;
+      },
+      clearStale: () => {
+        stale = false;
+      },
+    });
+    return {
+      refresher,
+      isStale: () => stale,
+      buildCount: () => buildCount,
+      finishBuild: (i: number) => resolvers[i]?.(),
+    };
+  }
+
+  test('in-flight build 중 markStale 재호출 시 완료가 stale 을 clear 하지 않음', async () => {
+    const h = makeHarness();
+    // 1. 첫 staleness + refresh → build #1 in-flight
+    h.refresher.markStale();
+    expect(h.isStale()).toBe(true);
+    const p1 = h.refresher.refresh();
+    expect(h.buildCount()).toBe(1);
+
+    // 2. in-flight 중 두 번째 staleness 신호 (generation bump)
+    h.refresher.markStale();
+
+    // 3. build #1 완료 → 새 staleness 가 있었으므로 stale 유지(다음 요청 rebuild). 마스킹 금지.
+    h.finishBuild(0);
+    await p1;
+    expect(h.isStale()).toBe(true);
+  });
+
+  test('in-flight 중 markStale 없으면 완료가 stale 을 정상 clear', async () => {
+    const h = makeHarness();
+    h.refresher.markStale();
+    const p1 = h.refresher.refresh();
+    h.finishBuild(0);
+    await p1;
+    expect(h.isStale()).toBe(false);
+  });
+
+  test('in-flight refresh 는 coalesce — 동시 refresh 가 build 를 중복 트리거하지 않음', async () => {
+    const h = makeHarness();
+    h.refresher.markStale();
+    const a = h.refresher.refresh();
+    const b = h.refresher.refresh();
+    expect(h.buildCount()).toBe(1);
+    h.finishBuild(0);
+    await Promise.all([a, b]);
+  });
+
+  test('이미 신선하면 build 스킵', () => {
+    const h = makeHarness();
+    void h.refresher.refresh();
+    expect(h.buildCount()).toBe(0);
+  });
+});
 
 describe('getCachedSourceMap', () => {
   test('cache 미존재 + handle 결과 → postProcess 반영', () => {
