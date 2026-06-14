@@ -440,6 +440,16 @@ const T = struct {
 
         const dl = try self.b.addList(alts.items);
         const disj = try self.b.add(.{ .tag = .disjunction, .span = span, .data = .{ dl.start, dl.len, 0 } });
+        if (alts.items.len == 0) {
+            // 빈 집합(예: `[^\u{0}-\u{10FFFF}]` = 전체 범위의 complement)은 *아무것도* 매치하지
+            // 않아야 한다. `(?:)` 는 빈 문자열을 매치하므로 의미 반전 — empty 의 negative lookahead
+            // `(?!)` 로 never-match 표현. (#4374)
+            return self.b.add(.{
+                .tag = .lookaround_assertion,
+                .span = span,
+                .data = .{ @intFromEnum(ast.LookAroundAssertionKind.negative_lookahead), @intFromEnum(disj), 0 },
+            });
+        }
         // ignore_group: enabling=0, disabling=0 → `(?:…)`
         return self.b.add(.{ .tag = .ignore_group, .span = span, .data = .{ 0, 0, @intFromEnum(disj) } });
     }

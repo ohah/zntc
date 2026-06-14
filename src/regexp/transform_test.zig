@@ -106,6 +106,13 @@ test "#3511 i+u negated — fold-확장 후 complement (게이트 해제)" {
     }
 }
 
+test "#4374 빈 character class(negated full range) → never-match (?!) (not (?:))" {
+    const o = transform.Options{ .unicode_brace = true };
+    // [^\u{0}-\u{10FFFF}] = 전체 범위 complement = 빈 집합 → 아무것도 매치 안 함.
+    // `(?:)`(빈 문자열 매치)가 아니라 negative-lookahead-of-empty `(?!)`(never-match)여야 한다.
+    try expectTransform("[^\\u{0}-\\u{10FFFF}]", "u", o, "(?!)");
+}
+
 test "#4307 v-flag intersection/subtraction class → bail (union miscompile 금지)" {
     const a = std.testing.allocator;
     const o = transform.Options{ .unicode_brace = true, .ignore_case = true };
