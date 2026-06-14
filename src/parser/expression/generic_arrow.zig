@@ -86,6 +86,10 @@ pub fn tryParseGenericArrow(self: *Parser, is_async: bool) ParseError2!?NodeInde
 
     if (self.current() != .r_paren) {
         self.restoreScratch(scratch_top);
+        // speculative-fail rollback: 위 type_param_failed 경로와 동일하게 param 노드들을 truncate —
+        // 안 하면 parseBindingIdentifier 가 만든 노드가 orphan 으로 AST 에 잔존(#4355).
+        self.ast.nodes.items.len = saved_nodes_len;
+        self.ast.extra_data.shrinkRetainingCapacity(saved_extra_len);
         self.restoreState(saved);
         self.rollbackErrors(err_count);
         return null;
@@ -104,6 +108,9 @@ pub fn tryParseGenericArrow(self: *Parser, is_async: bool) ParseError2!?NodeInde
     // => 가 와야 arrow function
     if (self.current() != .arrow or self.scanner.token.has_newline_before) {
         self.restoreScratch(scratch_top);
+        // speculative-fail rollback: param + return-type 노드 truncate(orphan 방지, #4355).
+        self.ast.nodes.items.len = saved_nodes_len;
+        self.ast.extra_data.shrinkRetainingCapacity(saved_extra_len);
         self.restoreState(saved);
         self.rollbackErrors(err_count);
         return null;

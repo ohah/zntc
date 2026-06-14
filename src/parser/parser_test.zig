@@ -4238,6 +4238,19 @@ fn parseTs(alloc: std.mem.Allocator, source: []const u8) !ParsedSource {
     return parseSource(alloc, source, .ts);
 }
 
+test "#4355 generic-arrow speculation 실패 시 orphan binding 노드 없음" {
+    // `<T>(a, b)` 는 generic-arrow speculation 을 트리거하지만 `=>` 가 없어 실패 → type-assertion
+    // 으로 re-parse. 실패 speculation 의 param binding(a, b)을 AST 에서 truncate 하지 않으면 orphan.
+    var r = try parseTs(std.testing.allocator, "const x = <T>(a, b);");
+    defer r.deinit();
+    var bid: usize = 0;
+    for (r.parser.ast.nodes.items) |n| {
+        if (n.tag == .binding_identifier) bid += 1;
+    }
+    // const binding `x` 1개만 — orphan a/b binding 없음. (수정 전: 1 + orphan 2 = 3)
+    try std.testing.expectEqual(@as(usize, 1), bid);
+}
+
 /// 첫 번째 property signature 의 (key, type_ann, flags) 추출. TS / Flow 공통 layout.
 const PropSig = struct {
     key: ast_mod.NodeIndex,
