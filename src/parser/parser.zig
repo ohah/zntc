@@ -1125,7 +1125,13 @@ pub const Parser = struct {
         stmt: NodeIndex,
         in_prologue: *bool,
     ) !void {
-        if (stmt.isNone()) return;
+        if (stmt.isNone()) {
+            // 실재하지만 .none 으로 stripped 된 문(global{}, export type, declare 등)도 directive
+            // 가 아니므로 prologue 를 종료한다 — 안 하면 이후 string literal 이 directive 로 오인돼
+            // strict 가 소급 적용된다(ECMAScript: 선행 비-string-literal 문이 prologue 를 끝낸다). #4368
+            in_prologue.* = false;
+            return;
+        }
         if (in_prologue.* and self.tryConvertToDirective(stmt).isNone()) {
             in_prologue.* = false;
         }

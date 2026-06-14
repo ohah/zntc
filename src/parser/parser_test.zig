@@ -4238,6 +4238,22 @@ fn parseTs(alloc: std.mem.Allocator, source: []const u8) !ParsedSource {
     return parseSource(alloc, source, .ts);
 }
 
+test "#4368 directive prologue: stripped .none 문 뒤 string literal 은 directive 아님" {
+    // `declare const` 은 TS strip → .none(실재하는 비-directive 문). 그 뒤 "use strict" 가
+    // directive 로 오변환되면 strict 가 소급 적용된다 — prologue 가 .none 에서 종료돼야 한다.
+    var r = try parseTs(std.testing.allocator,
+        \\declare const a: number;
+        \\"use strict";
+    );
+    defer r.deinit();
+    var dir_count: usize = 0;
+    for (r.parser.ast.nodes.items) |n| {
+        if (n.tag == .directive) dir_count += 1;
+    }
+    // .none 문 뒤라 "use strict" 는 directive 가 아님(.directive 노드 0). 수정 전: 1.
+    try std.testing.expectEqual(@as(usize, 0), dir_count);
+}
+
 test "#4355 generic-arrow speculation 실패 시 orphan binding 노드 없음" {
     // `<T>(a, b)` 는 generic-arrow speculation 을 트리거하지만 `=>` 가 없어 실패 → type-assertion
     // 으로 re-parse. 실패 speculation 의 param binding(a, b)을 AST 에서 truncate 하지 않으면 orphan.
