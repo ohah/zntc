@@ -1294,9 +1294,11 @@ pub fn buildMetadataForAst(
 
     // collectModuleNames에서 등록한 _default 충돌의 canonical name을 조회.
     var default_export_name: []const u8 = "_default";
+    var default_export_is_synthetic = false;
     for (m.export_bindings) |eb| {
         if (eb.hasSyntheticDefault(m.semanticSymbols())) {
             default_export_name = self.getCanonicalName(module_index, "_default") orelse "_default";
+            default_export_is_synthetic = true;
             break;
         }
         if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
@@ -1361,6 +1363,7 @@ pub fn buildMetadataForAst(
         .cjs_import_preamble = combined_preamble,
         .require_rewrites = require_rewrites,
         .default_export_name = default_export_name,
+        .default_export_is_synthetic = default_export_is_synthetic,
         .ns_member_rewrites = ns_rewrites,
         .ns_inline_objects = ns_inlines,
         .const_values = const_values,

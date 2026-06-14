@@ -479,7 +479,10 @@ pub fn emitExportDefault(self: anytype, node: Node) !void {
                     try self.emitNode(inner);
                 } else {
                     const def_name = if (self.options.linking_metadata) |md| md.default_export_name else "_default";
-                    if (std.mem.startsWith(u8, def_name, "_default")) {
+                    // 합성 placeholder 여부는 linker 가 설정한 flag 로 판별 — 이름 prefix 재추론 금지
+                    // (mangler/linker 가 그 이름을 쓰면 오판). metadata 없으면(비-bundle) 합성 간주.
+                    const is_synthetic_default = if (self.options.linking_metadata) |md| md.default_export_is_synthetic else true;
+                    if (is_synthetic_default) {
                         // 합성 변수 (_default, _default$1 등): var 선언 + 할당 필요.
                         if (!self.options.esm_var_assign_only) try self.write("var ");
                         try self.write(def_name);
