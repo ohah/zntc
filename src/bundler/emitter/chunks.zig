@@ -2080,7 +2080,7 @@ fn finalizeChunkSourceMaps(
 }
 
 const PlaceholderInfo = struct {
-    placeholder: [HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN]u8,
+    placeholder: [HASH_PLACEHOLDER_PREFIX.len + PLACEHOLDER_HASH_LEN]u8,
     real_hash: [HASH_PLACEHOLDER_LEN]u8,
 };
 
@@ -2128,7 +2128,7 @@ fn resolveContentHashes(
     // 가 replaceAllPlaceholders 의 byte-window 매칭에서 garbage 와 충돌해 silent
     // corruption 을 일으키지 않게 한다. chunks_to_outputs[0..out_idx] 슬라이싱과
     // 동형.
-    const ph_total = HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN;
+    const ph_total = HASH_PLACEHOLDER_PREFIX.len + PLACEHOLDER_HASH_LEN;
     const infos_init = infos[0..out_idx];
     for (outputs) |*out| {
         // contents: 모든 placeholder를 한 번의 스캔으로 치환
@@ -2173,18 +2173,24 @@ fn resolveContentHashes(
     }
 }
 
-/// placeholder 해시 길이 (8자리 hex).
+/// 최종 content hash 길이 (8자리 hex) — 출력 파일명에 들어가는 hash.
 const HASH_PLACEHOLDER_LEN = 8;
+/// **중간** placeholder 의 hash 부분 길이 (16자리 hex = full u64 chunkIndexHash). 출력 전 content
+/// hash 로 치환되므로 사용자에게 안 보인다. content hash(8)보다 넓게 둬 chunkIndexHash 를 u32 로
+/// 절단하지 않는다 — 절단 시 두 청크가 low-32 충돌하면 같은 placeholder 가 돼 cross-chunk import
+/// 가 잘못 치환(silent mislink)됐다(#4353). replaceAllPlaceholders 는 이미 길이변경 치환 지원.
+const PLACEHOLDER_HASH_LEN = 16;
 /// placeholder 구분 문자열. 최종 출력에서 content hash로 치환된다.
 /// 다른 코드에서 절대 등장하지 않을 문자열을 사용.
 const HASH_PLACEHOLDER_PREFIX = "\x00ZH";
 
 /// 청크의 인덱스 해시로 placeholder 바이트를 생성한다.
 /// chunkPlaceholderStem과 resolveContentHashes에서 공용.
-fn buildPlaceholder(chunk: *const Chunk, ph: *[HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN]u8) void {
+fn buildPlaceholder(chunk: *const Chunk, ph: *[HASH_PLACEHOLDER_PREFIX.len + PLACEHOLDER_HASH_LEN]u8) void {
     @memcpy(ph[0..HASH_PLACEHOLDER_PREFIX.len], HASH_PLACEHOLDER_PREFIX);
     const idx_hash = chunkIndexHash(chunk);
-    _ = std.fmt.bufPrint(ph[HASH_PLACEHOLDER_PREFIX.len..], "{x:0>8}", .{@as(u32, @truncate(idx_hash))}) catch unreachable;
+    // full u64 를 16-hex 로 — u32 절단 시 low-32 충돌로 placeholder 가 겹쳐 오치환됐다(#4353).
+    _ = std.fmt.bufPrint(ph[HASH_PLACEHOLDER_PREFIX.len..], "{x:0>16}", .{idx_hash}) catch unreachable;
 }
 
 /// ASCII JS 식별자 여부(보수적: 비-ASCII 는 false → 호출부가 quote, 객체
@@ -2420,7 +2426,7 @@ fn chunkPlaceholderStem(
         return;
     }
 
-    var hash_buf: [HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN]u8 = undefined;
+    var hash_buf: [HASH_PLACEHOLDER_PREFIX.len + PLACEHOLDER_HASH_LEN]u8 = undefined;
     buildPlaceholder(chunk, &hash_buf);
 
     try applyNamingPatternWithDir(out, allocator, pattern, base_name, &hash_buf, dir);
@@ -2444,7 +2450,9 @@ fn chunkIndexHash(chunk: *const Chunk) u64 {
 /// content hash 계산: 청크의 최종 출력 코드를 Wyhash하여 8자리 hex 반환.
 /// placeholder 바이트를 건너뛰어 자기 참조 순환을 방지한다.
 pub fn contentHash(content: []const u8, buf: *[HASH_PLACEHOLDER_LEN]u8) void {
-    const ph_total = HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN;
+    // ph_total 은 *placeholder* 를 건너뛰기 위한 폭이므로 PLACEHOLDER_HASH_LEN(16). 출력 buf 는
+    // content hash 폭(HASH_PLACEHOLDER_LEN=8) 유지.
+    const ph_total = HASH_PLACEHOLDER_PREFIX.len + PLACEHOLDER_HASH_LEN;
     var hasher = std.hash.Wyhash.init(0);
     var i: usize = 0;
     var run_start: usize = 0; // 현재 non-placeholder 구간의 시작
@@ -2510,9 +2518,9 @@ fn replaceAllPlaceholders(allocator: std.mem.Allocator, input: []const u8, infos
 /// 단일 placeholder를 실제 content hash로 치환한다.
 /// 반환값은 allocator 소유.
 fn replacePlaceholders(allocator: std.mem.Allocator, input: []const u8, placeholder_hash: []const u8, real_hash: []const u8) ![]const u8 {
-    // placeholder_hash는 "\x00ZH" + 8hex, real_hash는 8hex
+    // placeholder_hash는 "\x00ZH" + 16hex, real_hash는 8hex
     // 치환 대상: placeholder_hash 전체 → real_hash
-    const ph_len = HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN;
+    const ph_len = HASH_PLACEHOLDER_PREFIX.len + PLACEHOLDER_HASH_LEN;
     if (placeholder_hash.len != ph_len) return try allocator.dupe(u8, input);
 
     // 치환 횟수 카운트
