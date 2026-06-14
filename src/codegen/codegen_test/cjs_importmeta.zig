@@ -239,3 +239,13 @@ test "import.meta: unknown property CJS browser" {
 }
 
 // ============================================================
+
+test "Codegen CJS: export default sequence 는 괄호 보존 (#4289)" {
+    // `export default (1, 2)` 의 default 는 sequence 전체(=2). 괄호 없이 `module.exports=1,2`
+    // 로 내면 `(module.exports=1),2` 로 파싱돼 default 가 1 이 된다 → 괄호 필수.
+    var r = try e2eCJS(std.testing.allocator, "export default (1, 2);");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "module.exports=(1,2)") != null);
+    // 버그 시그니처(괄호 없는 bare sequence)가 없어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "module.exports=1,2;") == null);
+}
