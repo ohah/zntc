@@ -1236,11 +1236,18 @@ pub const SemanticAnalyzer = struct {
         return idx;
     }
 
+    /// `unwrapTarget` 후 노드를 안전하게 반환. 내부 노드가 없어 인덱스가 .none/범위초과면 null.
+    /// getNode 직접 호출 시의 OOB panic 을 막고, 호출부마다 가드를 복붙하다 한쪽을 빠뜨리는
+    /// 분기 비대칭(이 함수의 과거 OOB 버그 원인)을 구조적으로 차단한다.
+    fn unwrapTargetNode(self: *const SemanticAnalyzer, start: NodeIndex) ?Node {
+        const idx = self.unwrapTarget(start);
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return null;
+        return self.ast.getNode(idx);
+    }
+
     fn checkImportMutation(self: *SemanticAnalyzer, target_idx: NodeIndex, is_delete: bool) AllocError!void {
         if (!self.check_import_mutation) return;
-        const ti = self.unwrapTarget(target_idx);
-        if (ti.isNone() or @intFromEnum(ti) >= self.ast.nodes.items.len) return;
-        const t = self.ast.getNode(ti);
+        const t = self.unwrapTargetNode(target_idx) orelse return;
         switch (t.tag) {
             .identifier_reference, .assignment_target_identifier => {
                 const flags = self.lookupBindingFlags(self.ast.identifierNameText(t)) orelse return;
@@ -1249,7 +1256,8 @@ pub const SemanticAnalyzer = struct {
             .static_member_expression, .computed_member_expression, .private_field_expression => {
                 // object 도 wrapper 언래핑 후 *직접* namespace import 식별자인지. `ns.a.b`(중첩)·
                 // named import 멤버(`obj.x`)는 object 가 namespace import 가 아니라 제외.
-                const obj = self.ast.getNode(self.unwrapTarget(self.ast.readExtraNode(t.data.extra, 0)));
+                // unwrapTargetNode 가 .none/범위초과를 null 로 흡수 → getNode OOB 방지.
+                const obj = self.unwrapTargetNode(self.ast.readExtraNode(t.data.extra, 0)) orelse return;
                 if (obj.tag != .identifier_reference) return;
                 const flags = self.lookupBindingFlags(self.ast.identifierNameText(obj)) orelse return;
                 if (flags.is_namespace_import) try self.addImportMutationError(t.span, is_delete);
