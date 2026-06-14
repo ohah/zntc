@@ -3861,6 +3861,27 @@ test "TS: numeric literal type accepts all numeric kinds (D15)" {
     try expectNoParseErrorWithExt("export type T = -1;", ".ts");
 }
 
+test "Flow: numeric literal type accepts all numeric kinds (#4293)" {
+    // TS(D15)와 동일 — Flow 리터럴 타입 dispatch 도 binary/octal/exponential 누락이 root cause.
+    // isNumericLiteral() 로 일반화돼야 한다.
+    try expectNoParseErrorFlow("type T = 1e3;");
+    try expectNoParseErrorFlow("type T = 1e999;");
+    try expectNoParseErrorFlow("type T = 1e-10;");
+    try expectNoParseErrorFlow("type T = 0b101;");
+    try expectNoParseErrorFlow("type T = 0o77;");
+    // 음수 리터럴
+    try expectNoParseErrorFlow("type T = -1e999;");
+    try expectNoParseErrorFlow("type T = -0b101;");
+    try expectNoParseErrorFlow("type T = -0o77;");
+    // 기존 통과 케이스 회귀 가드
+    try expectNoParseErrorFlow("type T = 1;");
+    try expectNoParseErrorFlow("type T = 1.5;");
+    try expectNoParseErrorFlow("type T = 0xff;");
+    try expectNoParseErrorFlow("type T = 1n;");
+    try expectNoParseErrorFlow("type T = -1;");
+    try expectNoParseErrorFlow("type T = 'str';");
+}
+
 test "TS: type predicate subject accepts contextual keyword (D14)" {
     // immer `src/utils/common.ts` 의 `(target: any): target is Map<...> => ...` 패턴.
     // `target` 은 ECMAScript contextual keyword (`new.target` 용) 라 `.kw_target` 으로
