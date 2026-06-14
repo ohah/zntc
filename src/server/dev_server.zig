@@ -983,6 +983,15 @@ pub const DevServer = struct {
             // 수 있어 dedup 가드 (StringHashMap 기반 set).
             var changed_set: std.StringHashMapUnmanaged(void) = .empty;
             defer changed_set.deinit(self.allocator);
+            // ev.path 는 watcher 내부 메모리 alias(kqueue: fd_to_path 슬라이스) — 같은 iteration 의
+            // rescan 삭제가 removePath→free(kv.key) 하면 dangling 된다. intake 에서 dupe 로 소유해
+            // changed_set key / changed_paths 가 이 dupe 를 참조하고, iteration 끝에서 일괄 free
+            // (deletion_dupes 와 동일 UAF-fix 패턴). #4299
+            var event_path_dupes: std.ArrayList([]const u8) = .empty;
+            defer {
+                for (event_path_dupes.items) |d| self.allocator.free(d);
+                event_path_dupes.deinit(self.allocator);
+            }
             var needs_rescan = false;
             for (events) |ev| {
                 self.routineLog("  [watch] changed: {s}\n", .{std.fs.path.basename(ev.path)});
@@ -992,9 +1001,16 @@ pub const DevServer = struct {
                         continue; // dir entry event 는 changed_paths 에 넣지 않음 (caller 가 file path 만 처리).
                     }
                 }
-                const gop = changed_set.getOrPut(self.allocator, ev.path) catch continue;
+                const path_dupe = self.allocator.dupe(u8, ev.path) catch continue;
+                // 소유권을 먼저 free-list 에 등록 — 이후 어느 단계가 실패해도 iteration 끝에서
+                // 일괄 free 되어 leak/dangling 없음 (deletion_dupes 와 동일 순서).
+                event_path_dupes.append(self.allocator, path_dupe) catch {
+                    self.allocator.free(path_dupe);
+                    continue;
+                };
+                const gop = changed_set.getOrPut(self.allocator, path_dupe) catch continue;
                 if (gop.found_existing) continue; // dedup
-                changed_paths.append(self.allocator, ev.path) catch {};
+                changed_paths.append(self.allocator, path_dupe) catch {};
 
                 // SSE: watch_change 이벤트. 0.16: std.io.fixedBufferStream 제거
                 // → std.Io.Writer.fixed (고정 버퍼 writer, buffered() 로 결과 조회).
