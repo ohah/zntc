@@ -142,7 +142,7 @@ const T = struct {
     astral_u_incomplete: bool = false,
     /// 영역별 effective s/i (#4211/#4225 → #4210). null=상속(global flag),
     /// true=(?s:)/(?i:) 으로 켜짐, false=(?-s:)/(?-i:) 으로 꺼짐. enclosing
-    /// modifier group 진입 시 save/restore (regexpu `modifiersData` 동형).
+    /// modifier group 진입 시 save/restore.
     ///   - 비-lowering 경로: `mod_s != false` ⟺ 옛 `mod_s_off_depth==0`,
     ///     `mod_i != null` ⟺ 옛 `mod_i_depth>0` (동작 보존).
     ///   - lowering 경로(#4210): effective 값으로 dot 재작성 / fold 확장.
@@ -189,9 +189,9 @@ const T = struct {
     }
 
     /// non-u ASCII case-fold: set 의 ASCII 글자에 대/소 swap 을 추가. set 에 비-ASCII
-    /// (>=0x80) 멤버가 있으면 false(= fold 불가, 호출자 bail). regexpu 와 달리 Kelvin
-    /// (U+212A)·ſ(U+017F) 같은 u-전용 special fold 는 포함하지 않음 — non-u Canonicalize
-    /// 는 toUpperCase 기반이라 이들이 ASCII 로 collapse 되지 않는다.
+    /// (>=0x80) 멤버가 있으면 false(= fold 불가, 호출자 bail). Kelvin(U+212A)·ſ(U+017F)
+    /// 같은 u-전용 special fold 는 포함하지 않음 — non-u Canonicalize 는 toUpperCase
+    /// 기반이라 이들이 ASCII 로 collapse 되지 않는다(over-fold 미스컴파일 방지).
     fn asciiFoldExpand(self: *T, set: *cps.CodePointSet) TransformError!bool {
         var extra: std.ArrayList(u32) = .empty;
         defer extra.deinit(self.b.a);
@@ -225,9 +225,12 @@ const T = struct {
 
     /// i-enabling 영역에서 atom 을 fold 할 수 있는 컨텍스트인가 (#4210 PR2b).
     /// non-u(`!global_u`) + 전역 /i off(`!ignore_case`) + (?i:) 영역(mod_i==true).
+    /// `!in_class`: character class 내부에선 per-char fold 금지 — class fold 가
+    /// 통째로 처리(성공)하거나 bail(보존)한다. 안 막으면 fold 가 fall-through
+    /// (bail) class body 안에서 글자를 `[cC]` 로 바꿔 중첩 class `[[cC]…]` 생성(#4210).
     fn inAsciiIFoldRegion(self: *T) bool {
         return self.opts.lower_modifiers and self.mod_i == true and
-            !self.opts.ignore_case and !self.opts.global_u;
+            !self.opts.ignore_case and !self.opts.global_u and !self.in_class;
     }
 
     // ── #4210 PR3: ES2025 `(?m:…)` multiline 앵커 재작성 ──
