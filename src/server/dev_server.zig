@@ -1658,7 +1658,8 @@ pub const DevServer = struct {
             var hash_buf: [8]u8 = undefined;
             const h: u32 = @truncate(std.hash.Wyhash.hash(0, sp));
             _ = std.fmt.bufPrint(&hash_buf, "{x:0>8}", .{h}) catch continue;
-            if (std.mem.eql(u8, seg, &hash_buf)) return sp;
+            // hash 생성은 소문자(`{x}`)지만 isHex 는 대문자도 허용 → 비교도 case-insensitive 로 일관.
+            if (std.ascii.eqlIgnoreCase(seg, &hash_buf)) return sp;
         }
         return null;
     }
@@ -2172,6 +2173,15 @@ test "resolveLazySeedPath: 청크 이름의 pathhash 로 seed 역참조" {
 
     const got = DevServer.resolveLazySeedPath(&seeds, name) orelse return error.TestUnexpectedResult;
     try testing.expectEqualStrings(seeds[0], got);
+
+    // #4318: 대문자 hex 요청도 같은 seed 로 역참조. isHex 는 대문자를 허용하므로 비교도
+    // case-insensitive 여야 일관(프록시/대소문자 정규화 경유 요청 404 방지).
+    var upper_buf: [8]u8 = undefined;
+    _ = std.ascii.upperString(&upper_buf, &hash_buf);
+    var uname_buf: [64]u8 = undefined;
+    const uname = std.fmt.bufPrint(&uname_buf, "heavy-{s}.js", .{upper_buf}) catch unreachable;
+    const ugot = DevServer.resolveLazySeedPath(&seeds, uname) orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings(seeds[0], ugot);
 
     // 매칭 seed 없는 8-hex → null (static fallback).
     try testing.expect(DevServer.resolveLazySeedPath(&seeds, "stranger-12345678.js") == null);
