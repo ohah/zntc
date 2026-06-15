@@ -92,7 +92,7 @@ pub fn visitImportDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
 /// visit switch 용 wrapper — `verbatim_module_syntax` 와 symbol table 준비 여부를
 /// 먼저 가드한 뒤 `isImportSpecifierUnused` 에 위임. #1791 Phase D 의 elision 조건을
 /// default/named/namespace 세 switch arm 이 동일하게 적용하도록 모아둔다.
-pub fn shouldElideImportSpecifier(self: *const Transformer, spec_idx: NodeIndex, spec_node: Node) bool {
+pub fn shouldElideImportSpecifier(self: *Transformer, spec_idx: NodeIndex, spec_node: Node) bool {
     if (self.options.verbatim_module_syntax) return false;
     if (!hasImportElisionFacts(self)) return false;
     return isImportSpecifierUnused(self, spec_idx, spec_node);
@@ -304,7 +304,7 @@ fn hasImportElisionFacts(self: *const Transformer) bool {
 /// 있음에도 "미사용" 으로 오판했음 (PR #1793 revert 원인).
 ///
 /// `self.references` 가 비어있으면 보수적으로 "사용 중" 간주. symbol_id 조회 실패도 동일.
-fn isImportSpecifierUnused(self: *const Transformer, spec_idx: NodeIndex, spec_node: Node) bool {
+fn isImportSpecifierUnused(self: *Transformer, spec_idx: NodeIndex, spec_node: Node) bool {
     // #1791: Phase D 를 **named specifier 한정**. default/namespace 는 JSX pragma,
     // CSS-in-JS default export, namespace member access 같은 implicit value use 가
     // 많아 false positive 위험이 큼 (#1793 revert 원인). bungae 의 실제 crash 경로
@@ -334,8 +334,30 @@ fn isImportSpecifierUnused(self: *const Transformer, spec_idx: NodeIndex, spec_n
     const sym_id = self.symbol_ids.items[sym_node_idx] orelse return false;
     if (sym_id >= self.symbols.len) return false;
 
-    // Reference 들 중 value-use 하나라도 있으면 keep. 판정은 `Reference.isValueUse`
-    // 가 공통으로 수행 — linker 의 `isImportBindingTypeOnly` 와 동일 기준.
+    // 대형 모듈(barrel/mega-entry): references 를 specifier 마다 선형 스캔하면
+    // O(specifiers×references)=O(N²). references 가 많을 때만 **value-use symbol_id 집합**을
+    // 1회 구축해 O(1) 멤버십 조회로 전환. references slice(ptr+len) 로 캐시 무효화 → references
+    // 가 바뀌면 자동 재구축. 작은 모듈은 맵 구축 비용을 피해 기존 linear-scan 유지.
+    const VUS_THRESHOLD = 64;
+    if (self.references.len > VUS_THRESHOLD) build: {
+        const need_build = if (self.value_used_symbols_built_for) |bf|
+            (bf.ptr != self.references.ptr or bf.len != self.references.len)
+        else
+            true;
+        if (need_build) {
+            self.value_used_symbols.clearRetainingCapacity();
+            self.value_used_symbols.ensureTotalCapacity(self.allocator, @intCast(self.references.len)) catch break :build;
+            for (self.references) |r| {
+                if (r.isValueUse()) self.value_used_symbols.putAssumeCapacity(@intFromEnum(r.symbol_id), {});
+            }
+            self.value_used_symbols_built_for = self.references;
+        }
+        // value-use 가 하나도 없으면 미사용(elide 가능) → 집합에 없으면 true.
+        return !self.value_used_symbols.contains(sym_id);
+    }
+
+    // 작은 references: 선형 스캔(맵 구축 비용 회피). value-use 하나라도 있으면 keep.
+    // 판정은 `Reference.isValueUse` 가 공통 수행 — linker 의 `isImportBindingTypeOnly` 와 동일.
     for (self.references) |r| {
         if (@intFromEnum(r.symbol_id) != sym_id) continue;
         if (r.isValueUse()) return false;
