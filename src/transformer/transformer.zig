@@ -116,6 +116,15 @@ pub const Transformer = struct {
     /// elision 비활성 (보수적 보존). caller 가 symbols 와 함께 설정.
     references: []const @import("../semantic/symbol.zig").Reference = &.{},
 
+    /// `isImportSpecifierUnused` 가 specifier 마다 `references` 전체를 선형 스캔(O(N²))하지
+    /// 않도록, **value-use 가 있는 symbol_id 집합**을 1회 구축해 캐시한다(대형 fan-out 만).
+    /// `value_used_symbols_built_for` = 집합을 구축한 `references` slice(ptr+len) — 현재
+    /// transformer 는 모듈마다 fresh 생성이라 intra-module 1회 구축이지만, references 가
+    /// 바뀌면(다른 slice) ptr/len 불일치로 자동 재구축(stale 방지). self.allocator 소유,
+    /// deinitExceptAst 에서 해제.
+    value_used_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    value_used_symbols_built_for: ?[]const @import("../semantic/symbol.zig").Reference = null,
+
     /// Full semantic을 건너뛰는 standalone transpile 경로에서 named import elision만
     /// 판단하기 위한 lightweight binding facts.
     binding_lite: ?*const BindingLite = null,
