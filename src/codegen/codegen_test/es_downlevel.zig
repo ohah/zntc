@@ -180,9 +180,11 @@ test "ES2016: **= no transform on es2016" {
 // --- catch binding (ES2019) ---
 
 test "ES2019: optional catch binding" {
+    // 합성 binding 은 hoist 없는 유일 임시 이름(_a)을 쓴다. 고정 `_unused` 는 외부
+    // 동명 변수를 섀도잉하는 miscompile 이라 제거됨(#4415).
     var r = try e2eTarget(std.testing.allocator, "try { x; } catch { y; }", .es2018);
     defer r.deinit();
-    try std.testing.expectEqualStrings("try{x;}catch(_unused){y;}", r.output);
+    try std.testing.expectEqualStrings("try{x;}catch(_a){y;}", r.output);
 }
 
 test "ES2019: catch with binding preserved" {
