@@ -233,7 +233,17 @@ esbuild 스타일: `onResolve`, `onLoad`, `onTransform`, `onRenderChunk`, `onGen
 - `--platform=react-native` → RN 프리셋: `.ios.*` / `.android.*` / `.native.*` 확장자, `react-native` main-field / exports 조건, `--flow` 자동 활성화
   - 기본(버전 미지정)은 보수적 Hermes 프리셋 — 사실상 ES5에 가깝게 다운레벨
   - `--rn-version=<spec>`을 함께 주면 **RN 버전별 정밀 다운레벨**. 진실 소스는 [RN javascript-environment 문서](https://reactnative.dev/docs/javascript-environment)의 "JavaScript Syntax Transformers" 목록 — 문서에 있는 기능(class/async/destructuring/optional-chaining 등)은 **네이티브로 유지**하고, 문서에 없는 기능(logical-assignment, class static block, top-level await, using, 일부 regex)만 다운레벨한다. 단 Hermes 런타임 버그(#1299) 회피용으로 arrow → function, `let`/`const` → `var`는 항상 강제 다운레벨.
-  - `--rn-version`은 `--platform=react-native`를 함의(별도 지정 불필요). 연산자: `0.80` / `>=0.74` / `==0.76`은 그 버전 기준, `<=0.84` / `<0.84`는 가장 보수적(가장 낮은 지원 버전 기준)으로 다운레벨. 검증된 문서 범위는 0.70~0.85이며 범위 밖은 클램프. 예: `zntc --bundle app.tsx --rn-version ">=0.74"`
+  - `--rn-version`은 `--platform=react-native`를 함의(별도 지정 불필요). 연산자: `0.80` / `>=0.74` / `==0.76`은 그 버전 기준, `<=0.84` / `<0.84`는 가장 보수적(가장 낮은 지원 버전 기준)으로 다운레벨. 예: `zntc --bundle app.tsx --rn-version ">=0.74"`
+  - **지원 버전**: RN **0.70 ~ 0.85 (+ latest)**. 이 범위의 문서 Syntax Transformers 목록이 전부 동일해 **현재는 단일 매트릭스**(어떤 버전을 줘도 같은 다운레벨 세트). 0.70 미만은 0.70으로, 범위 초과는 최신으로 클램프. 입력은 `major.minor` 형식 필수(`74` 같은 단일 정수 거부). RN이 향후 목록을 바꾸면 버전 분기점(change-point)을 추가해 해당 버전부터 다르게 분기한다.
+  - **출력 크기 효과** (합성 fixture — class/async/generator 120개, src ~93KB, `--minify`):
+
+    | 모드 | minified raw | gzip |
+    | --- | --- | --- |
+    | `--platform=react-native` (blunt, 사실상 ES5) | 184 KB | 7.0 KB |
+    | `--rn-version 0.84` (정밀) | **82 KB (−55%)** | **5.6 KB (−20%)** |
+    | 참고: `--target=esnext` (다운레벨 없음, 천장) | 66 KB | 3.1 KB |
+
+    class/async/generator 를 네이티브로 보존해 ES5 보일러플레이트(`_inherits`/`_createClass`/regenerator state machine)를 제거한 결과. precise→native 잔여 gap 은 #1299 안전망(arrow→function, let/const→var) + private-field 다운레벨. (합성 벤치라 실앱 수치는 코드 구성에 따라 달라짐.)
 - `--packages=external` → 모든 bare package import를 external 처리. relative/absolute import는 기존처럼 번들
 
 ### React Native CLI 초기화
