@@ -537,6 +537,12 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    // --rn-version 은 번들 경로에서만 다운레벨 매트릭스를 적용한다. 단일 파일 transpile 은
+    // RN 다운레벨 파이프라인이 없어 무시되므로(is_serve 는 위에서 early-return) 명시 경고.
+    if (opts.rn_version != null and !opts.is_bundle) {
+        try stderr.print("zntc: warning: --rn-version requires --bundle (ignored for single-file transpile)\n", .{});
+    }
+
     // --bundle
     if (opts.is_bundle) {
         const entry_file = opts.input_file orelse {
