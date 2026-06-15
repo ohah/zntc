@@ -8,8 +8,8 @@
 //!   - D058: DFS 후위 순서 = ESM 실행 순서
 //!   - D065: 순환 참조 감지 (in_stack 배열, Rollup 알고리즘)
 //!   - D076: DFS 순회
-//!   - D078: 양방향 인접 리스트 (Module.addDependency)
-//!   - D079: import_scanner.extractImports로 import 추출
+//!   - D078: 양방향 인접 리스트 (linkDependency 가 유일한 등록 API)
+//!   - D079: 파서 inline scan 으로 import 추출 (scan_results → import_scanner)
 //!
 //! 참고:
 //!   - references/rollup/src/utils/executionOrder.ts
