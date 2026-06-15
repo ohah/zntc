@@ -69,7 +69,9 @@ pub const Tag = enum(u8) {
     character_class_escape,
 
     /// Unicode property escape: `\p{...}`, `\P{...}`.
-    /// data: [name_start, name_end, flags]
+    /// data: [prop_start, prop_end, flags]
+    ///   prop_start..prop_end: `{...}` 안의 프로퍼티 텍스트 전체 — lone(`Letter`)
+    ///   이든 name=value(`Script=Greek`)이든 printer 가 그대로 재출력한다.
     ///   flags: bit 0 = negative
     unicode_property_escape,
 

@@ -11,8 +11,6 @@
 //! 아니라 "print 멱등 + 구조 보존" 이다 (printer_test.zig 참조).
 //!
 //! 알려진 비-라운드트립 (AST layout 한계, printer 책임 아님):
-//!   - `\p{Script=Greek}` 의 `=value` 는 parser 가 name 범위만 보존하므로
-//!     `\p{Script}` 로 축약된다 (#1475 후속 PR 에서 AST 확장 시 해소).
 //!   - octal escape 는 parser 가 단일 `octal` kind 만 보존(자릿수 미보존)하므로
 //!     최소 자릿수로 출력 (`\07`→`\7`). 값은 동일.
 

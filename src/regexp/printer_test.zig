@@ -103,6 +103,8 @@ test "printer roundtrip — atoms / classes / quantifiers" {
         .{ "\\uD83D", "" },
         .{ "\\p{Letter}", "u" },
         .{ "\\P{ASCII}", "u" },
+        .{ "\\p{Script=Greek}", "u" },
+        .{ "\\p{Script_Extensions=Greek}", "u" },
         .{ "[\\q{abc|de}]", "v" },
         .{ "[\\w&&[a-z]]", "v" },
         .{ "[\\w--[a-z]]", "v" },
@@ -118,6 +120,17 @@ test "printer exact — canonical input unchanged" {
     try expectExact("(?:x|y)\\d*", "", "(?:x|y)\\d*");
     try expectExact("\\bfoo\\B", "", "\\bfoo\\B");
     try expectExact("(?i-s:Ab)", "", "(?i-s:Ab)");
+}
+
+test "printer exact — unicode property name=value preserved (#4413)" {
+    // `\p{name=value}` 의 `=value` 가 재출력 시 보존되어야 한다. 이전엔 parser 가
+    // name 범위만 노드에 저장해 `\p{Script}` 로 축약 → 런타임 SyntaxError(유효 입력
+    // miscompile). 이제 프로퍼티 텍스트 전체(name..value)를 저장한다.
+    try expectExact("\\p{Script=Greek}", "u", "\\p{Script=Greek}");
+    try expectExact("\\P{Script=Greek}", "u", "\\P{Script=Greek}");
+    try expectExact("\\p{Script_Extensions=Greek}", "u", "\\p{Script_Extensions=Greek}");
+    // lone property(값 없음)는 동작 불변.
+    try expectExact("\\p{Letter}", "u", "\\p{Letter}");
 }
 
 test "printer hex case — oxc canonical UPPERCASE (#1475 R2 제거)" {
