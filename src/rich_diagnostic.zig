@@ -139,7 +139,6 @@ pub fn fromDiagnostic(d: Diagnostic, file_path: []const u8) RichDiagnostic {
 }
 
 /// `BundlerDiagnostic.ErrorCode` → 대응하는 `ZNTCxxxx` error_codes.Code.
-/// 아직 전용 코드가 없는 진단은 null — 호출부가 코드/docs URL 없이 렌더한다.
 /// (exhaustive switch — ErrorCode 추가 시 여기서 컴파일 에러로 누락을 잡는다.)
 pub fn bundlerErrorCode(code: BundlerDiagnostic.ErrorCode) ?error_codes.Code {
     return switch (code) {
@@ -153,15 +152,13 @@ pub fn bundlerErrorCode(code: BundlerDiagnostic.ErrorCode) ?error_codes.Code {
         .json_parse_error => .json_parse_error,
         .no_loader => .no_loader,
         .assign_to_import => .assign_to_import,
-        // 아직 전용 ZNTC 코드 미할당 — 코드/페이지 추가는 follow-up.
-        .ambiguous_export,
-        .require_context_invalid,
-        .require_context_no_handler,
-        .plugin_error,
-        .output_exports_conflict,
-        .jsx_pragma_ignored,
-        .regex_modifier_unsupported,
-        => null,
+        .ambiguous_export => .ambiguous_export,
+        .output_exports_conflict => .output_exports_conflict,
+        .require_context_invalid => .require_context_invalid,
+        .require_context_no_handler => .require_context_no_handler,
+        .plugin_error => .plugin_error,
+        .jsx_pragma_ignored => .jsx_pragma_ignored,
+        .regex_modifier_unsupported => .regex_modifier_unsupported,
     };
 }
 
@@ -263,4 +260,17 @@ test "fromDiagnostic: forwards labels" {
 
     try std.testing.expectEqual(@as(usize, 1), rich.labels.len);
     try std.testing.expectEqualStrings("opening '{' is here", rich.labels[0].message.?);
+}
+
+test "bundlerErrorCode maps new bundler diagnostics to ZNTC numbers (#4432)" {
+    // 번호 할당 박제 — 누군가 재번호하면 fail. (mapping 자체는 exhaustive switch 로 보장.)
+    try std.testing.expectEqualStrings("ZNTC0105", bundlerErrorCode(.ambiguous_export).?.format());
+    try std.testing.expectEqualStrings("ZNTC0106", bundlerErrorCode(.output_exports_conflict).?.format());
+    try std.testing.expectEqualStrings("ZNTC0203", bundlerErrorCode(.require_context_invalid).?.format());
+    try std.testing.expectEqualStrings("ZNTC0204", bundlerErrorCode(.require_context_no_handler).?.format());
+    try std.testing.expectEqualStrings("ZNTC0205", bundlerErrorCode(.plugin_error).?.format());
+    try std.testing.expectEqualStrings("ZNTC1500", bundlerErrorCode(.jsx_pragma_ignored).?.format());
+    try std.testing.expectEqualStrings("ZNTC1501", bundlerErrorCode(.regex_modifier_unsupported).?.format());
+    // 기존 매핑 회귀 가드(대표).
+    try std.testing.expectEqualStrings("ZNTC0100", bundlerErrorCode(.unresolved_import).?.format());
 }

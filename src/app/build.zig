@@ -1,6 +1,7 @@
 const std = @import("std");
 const app_env = @import("env.zig");
 const bundler_mod = @import("../bundler/mod.zig");
+const rich_diagnostic = @import("../rich_diagnostic.zig");
 const transformer_mod = @import("../transformer/transformer.zig");
 
 const Bundler = bundler_mod.Bundler;
@@ -715,8 +716,15 @@ fn printAppBundleDiagnostics(diags: []const bundler_mod.BundleResult.OwnedDiagno
     for (diags) |d| {
         if (d.severity != .@"error") continue;
         const where = if (d.file_path.len > 0) d.file_path else "<input>";
-        std.debug.print("error[{s}]: {s}\n  at {s}\n", .{ @tagName(d.code), d.message, where });
-        if (d.suggestion) |s| std.debug.print("  hint: {s}\n", .{s});
+        // main.zig CLI 진단과 동일하게 [ZNTCxxxx] + docs URL 노출.
+        if (rich_diagnostic.bundlerErrorCode(d.code)) |zc| {
+            std.debug.print("[{s}] error: {s}\n  at {s}\n", .{ zc.format(), d.message, where });
+            if (d.suggestion) |s| std.debug.print("  hint: {s}\n", .{s});
+            std.debug.print("  docs: {s}\n", .{zc.docsUrl()});
+        } else {
+            std.debug.print("error[{s}]: {s}\n  at {s}\n", .{ @tagName(d.code), d.message, where });
+            if (d.suggestion) |s| std.debug.print("  hint: {s}\n", .{s});
+        }
     }
 }
 

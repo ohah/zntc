@@ -64,7 +64,8 @@ function getCategory(num) {
   if (num < 1100) return { name: "시맨틱: 재선언", nameEn: "Semantic: Redeclaration" };
   if (num < 1200) return { name: "시맨틱: private", nameEn: "Semantic: Private Member" };
   if (num < 1300) return { name: "시맨틱: export/label", nameEn: "Semantic: Export/Label" };
-  return { name: "시맨틱: class/기타", nameEn: "Semantic: Class/Other" };
+  if (num < 1500) return { name: "시맨틱: class/기타", nameEn: "Semantic: Class/Other" };
+  return { name: "트랜스포머", nameEn: "Transformer" };
 }
 
 // 재현 코드 매핑 (주요 에러들)

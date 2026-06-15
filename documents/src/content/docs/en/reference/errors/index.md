@@ -25,6 +25,8 @@ ZNTC assigns a unique code to every diagnostic. Click a code for details and a r
 | [`ZNTC0102`](/zntc/en/reference/errors/zntc0102) | Circular dependency detected |
 | [`ZNTC0103`](/zntc/en/reference/errors/zntc0103) | Module resolution failed |
 | [`ZNTC0104`](/zntc/en/reference/errors/zntc0104) | Re-export references the module itself (self-cycle) |
+| [`ZNTC0105`](/zntc/en/reference/errors/zntc0105) | Ambiguous import: a name is exported by multiple modules via 'export *' |
+| [`ZNTC0106`](/zntc/en/reference/errors/zntc0106) | Output exports conflict with the selected module format |
 
 ## Bundler: File/Loader
 
@@ -33,6 +35,9 @@ ZNTC assigns a unique code to every diagnostic. Click a code for details and a r
 | [`ZNTC0200`](/zntc/en/reference/errors/zntc0200) | Failed to read file |
 | [`ZNTC0201`](/zntc/en/reference/errors/zntc0201) | Failed to parse JSON |
 | [`ZNTC0202`](/zntc/en/reference/errors/zntc0202) | No loader is configured for this file type |
+| [`ZNTC0203`](/zntc/en/reference/errors/zntc0203) | Invalid require.context() call |
+| [`ZNTC0204`](/zntc/en/reference/errors/zntc0204) | require.context() requires a configured handler |
+| [`ZNTC0205`](/zntc/en/reference/errors/zntc0205) | Bundler plugin error |
 
 ## Parser: Import/Export
 
@@ -214,3 +219,10 @@ ZNTC assigns a unique code to every diagnostic. Click a code for details and a r
 | [`ZNTC1402`](/zntc/en/reference/errors/zntc1402) | NativeProps body is not an object literal or known wrapper |
 | [`ZNTC1403`](/zntc/en/reference/errors/zntc1403) | Duplicate component name in schema |
 | [`ZNTC1404`](/zntc/en/reference/errors/zntc1404) | Inheritance / intersection chain exceeds depth limit |
+
+## Transformer
+
+| Code | Message |
+|------|--------|
+| [`ZNTC1500`](/zntc/en/reference/errors/zntc1500) | @jsx / @jsxFrag pragma ignored under the automatic JSX runtime |
+| [`ZNTC1501`](/zntc/en/reference/errors/zntc1501) | Regular expression inline modifier group is an ES2025 feature not supported by the target |
