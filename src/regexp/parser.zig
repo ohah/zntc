@@ -1018,12 +1018,16 @@ pub fn PatternParser(comptime emit_ast: bool) type {
 
                         self.last_class_is_class_escape = true; // property escape도 range endpoint 불가
                         if (emit_ast) {
+                            // data[0..1] 은 printer 가 그대로 재출력할 프로퍼티 텍스트 범위다.
+                            // `\p{name=value}` 는 value_end 까지 저장해야 `=value` 가 round-trip
+                            // 시 보존된다(name_end 만 저장하면 `\p{name}` 으로 축약 → miscompile).
+                            const prop_end = if (has_value) value_end else name_end;
                             self.last_node = self.addNode(.unicode_property_escape, .{
                                 .start = bs_pos,
                                 .end = self.pos,
                             }, .{
                                 name_start,
-                                name_end,
+                                prop_end,
                                 @as(u32, @intFromBool(negative)),
                             });
                         }
