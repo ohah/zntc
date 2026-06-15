@@ -26,7 +26,12 @@ pub fn parseLiteral(ast: *const Ast, node: Node) ?f64 {
 }
 
 /// 숫자를 문자열로 포맷하여 string_table에 추가하고 span을 반환한다.
+///
+/// Infinity / NaN 은 JS 숫자 리터럴이 아니므로(`{d}` 가 `inf`/`nan` 을 내뱉음)
+/// fold 를 포기한다(null). 모든 fold 경로가 이 함수의 null 을 "폴딩 안 함"
+/// 으로 처리하므로 원본 식이 그대로 유지되어 semantic-preserving 이 보장된다.
 pub fn formatNumber(ast: *Ast, value: f64) ?Span {
+    if (!std.math.isFinite(value)) return null;
     var buf: [32]u8 = undefined;
     const text = std.fmt.bufPrint(&buf, "{d}", .{value}) catch return null;
     return ast.addString(text) catch null;
