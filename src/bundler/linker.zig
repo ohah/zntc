@@ -146,6 +146,23 @@ pub const ResolvedBinding = struct {
     canonical: SymbolRef,
 };
 
+/// export_map 키 — 과거 "module_index\x00name" 문자열을 조회마다 버퍼에 빌드+문자열 해싱
+/// 하던 것을 (module_index, name) struct 키로 대체. name 은 export_bindings(parse_arena,
+/// graph 수명) 슬라이스를 borrow → put 시 alloc/dupe 도, 조회 시 키 빌드도 없음. ② 심볼
+/// 모델(Ref) 방향의 측정-우선 스파이크.
+const ExportKey = struct { module_index: u32, name: []const u8 };
+const ExportKeyContext = struct {
+    pub fn hash(_: ExportKeyContext, k: ExportKey) u64 {
+        var h = std.hash.Wyhash.init(0);
+        h.update(std.mem.asBytes(&k.module_index));
+        h.update(k.name);
+        return h.final();
+    }
+    pub fn eql(_: ExportKeyContext, a: ExportKey, b: ExportKey) bool {
+        return a.module_index == b.module_index and std.mem.eql(u8, a.name, b.name);
+    }
+};
+
 pub const Linker = struct {
     allocator: std.mem.Allocator,
     /// Module storage 접근 포인터 (#1779 PR #2). 기존 `[]const Module` slice
@@ -155,8 +172,8 @@ pub const Linker = struct {
     /// 출력 포맷.
     format: types.Format,
 
-    /// 모듈별 export 맵: "module_index\x00exported_name" → ExportEntry
-    export_map: std.StringHashMapUnmanaged(ExportEntry) = .empty,
+    /// 모듈별 export 맵: (module_index, exported_name) → ExportEntry. 키는 name 을 borrow.
+    export_map: std.HashMapUnmanaged(ExportKey, ExportEntry, ExportKeyContext, 80) = .empty,
 
     /// import→export 바인딩 결과: (module_index, local_span_key) → ResolvedBinding
     resolved_bindings: std.AutoHashMapUnmanaged(BindingKey, ResolvedBinding) = .empty,
@@ -446,10 +463,7 @@ pub const Linker = struct {
         for (self.unified_module_scopes) |*b| b.deinit();
         if (self.unified_module_scopes.len > 0) self.allocator.free(self.unified_module_scopes);
 
-        var eit = self.export_map.keyIterator();
-        while (eit.next()) |key| {
-            self.allocator.free(key.*);
-        }
+        // 키 name 은 borrow(export_bindings 소유) → 개별 free 불필요.
         self.export_map.deinit(self.allocator);
         self.resolved_bindings.deinit(self.allocator);
         for (self.canonical_strings.items) |s| self.allocator.free(s);
@@ -2005,12 +2019,8 @@ pub const Linker = struct {
             const mod_idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
             for (m.export_bindings) |eb| {
                 if (std.mem.eql(u8, eb.exported_name, "*")) continue;
-                const key = try makeExportKey(self.allocator, @intCast(i), eb.exported_name);
-                // C2 수정: 중복 키 시 이전 키 해제
-                if (self.export_map.fetchRemove(key)) |old| {
-                    self.allocator.free(old.key);
-                }
-                try self.export_map.put(self.allocator, key, .{
+                // 키는 name borrow → 중복 키는 put 이 value 만 덮어씀(free 불필요).
+                try self.export_map.put(self.allocator, .{ .module_index = @intCast(i), .name = eb.exported_name }, .{
                     .binding = eb,
                     .module_index = mod_idx,
                 });
@@ -2247,11 +2257,8 @@ pub const Linker = struct {
         const mod_i = @intFromEnum(module_idx);
         const m_any = self.graph.getModule(module_idx) orelse return null;
 
-        // 1. 직접 export 확인 (조회 전용 — OOM 시 빈 키 → export_map 미스 → re-export 해석 계속)
-        var key_mk: types.ModuleKey = .{};
-        defer key_mk.deinit(self.allocator);
-        const key = key_mk.makeOrEmpty(self.allocator, @intCast(mod_i), name);
-        if (self.export_map.get(key)) |entry| {
+        // 1. 직접 export 확인 — struct 키 (조회마다 문자열 빌드/해싱 없음).
+        if (self.export_map.get(.{ .module_index = @intCast(mod_i), .name = name })) |entry| {
             if (entry.binding.kind == .re_export) {
                 // re-export: 소스 모듈로 재귀
                 if (entry.binding.import_record_index) |rec_idx| {
@@ -2378,11 +2385,7 @@ pub const Linker = struct {
     /// resolveStarExport 판정을 공유해 drift 를 막는다. #3982
     /// 직접 export(또는 named re-export)면 그 정의가 우선이라 ambiguous 아님.
     pub fn isAmbiguousStarExport(self: *const Linker, module_idx: ModuleIndex, name: []const u8) bool {
-        var key_mk: types.ModuleKey = .{};
-        defer key_mk.deinit(self.allocator);
-        // 조회 전용 — OOM 시 빈 키 → contains 미스 → resolveStarExport로 계속 판정.
-        const dk = key_mk.makeOrEmpty(self.allocator, module_idx.toU32(), name);
-        if (self.export_map.contains(dk)) return false;
+        if (self.export_map.contains(.{ .module_index = module_idx.toU32(), .name = name })) return false;
         return self.resolveStarExport(module_idx, name, 0) == .ambiguous;
     }
 
@@ -3331,8 +3334,6 @@ pub const Linker = struct {
         // cross-chunk import 경계 → collectUnifiedInput 이 reserved 로 보호.
         try self.runUnifiedMangle(&chunk_set, occupied_names);
     }
-
-    pub const makeExportKey = types.makeModuleKey;
 };
 
 /// CJS 모듈의 require_xxx 변수명을 캐시에서 가져오거나 새로 생성.
