@@ -19,6 +19,7 @@
 //!   1200-1299  시맨틱: export/label
 //!   1300-1399  시맨틱: class/getter/setter/object
 //!   1400-1499  codegen: RN view config 빌드
+//!   1500-1599  트랜스포머: 기능 경고/다운레벨
 
 /// 문서 사이트 에러 레퍼런스 base URL. Code.docsUrl이 여기에 코드를 붙여 전체 URL 생성.
 const docs_url_base = "https://ohah.github.io/zntc/reference/errors/";
@@ -49,6 +50,8 @@ pub const Code = enum(u16) {
     circular_dependency = 102,
     resolve_error = 103,
     circular_reexport = 104,
+    ambiguous_export = 105,
+    output_exports_conflict = 106,
 
     // ═══════════════════════════════════════════════════════
     // 0200-0299: 번들러 — 파일/로더
@@ -56,6 +59,9 @@ pub const Code = enum(u16) {
     read_error = 200,
     json_parse_error = 201,
     no_loader = 202,
+    require_context_invalid = 203,
+    require_context_no_handler = 204,
+    plugin_error = 205,
 
     // ═══════════════════════════════════════════════════════
     // 0300-0399: 파서 — import/export
@@ -241,6 +247,14 @@ pub const Code = enum(u16) {
     /// 인헤리턴스 / intersection chain 깊이 한계 초과 (cycle 또는 이상 구조).
     codegen_inheritance_too_deep = 1404,
 
+    // ═══════════════════════════════════════════════════════
+    // 1500-1599: 트랜스포머 — 기능 경고/다운레벨
+    // ═══════════════════════════════════════════════════════
+    /// @jsx/@jsxFrag pragma 가 automatic JSX runtime 아래에서 무시됨 (warning).
+    jsx_pragma_ignored = 1500,
+    /// RegExp inline modifier group ((?i:...)) 가 타겟 미지원이라 그대로 emit (warning).
+    regex_modifier_unsupported = 1501,
+
     /// 에러 코드를 "ZNTC0001" 형식의 문자열로 반환한다.
     pub fn format(self: Code) []const u8 {
         @setEvalBranchQuota(100_000);
@@ -321,9 +335,14 @@ pub const Code = enum(u16) {
             .circular_dependency => "Circular dependency detected",
             .resolve_error => "Module resolution failed",
             .circular_reexport => "Re-export references the module itself (self-cycle)",
+            .ambiguous_export => "Ambiguous import: a name is exported by multiple modules via 'export *'",
+            .output_exports_conflict => "Output exports conflict with the selected module format",
             .read_error => "Failed to read file",
             .json_parse_error => "Failed to parse JSON",
             .no_loader => "No loader is configured for this file type",
+            .require_context_invalid => "Invalid require.context() call",
+            .require_context_no_handler => "require.context() requires a configured handler",
+            .plugin_error => "Bundler plugin error",
             // 파서: import/export
             .import_in_script => "'import' declaration is only allowed in module code",
             .import_not_top_level => "'import' declaration must be at the top level",
@@ -462,6 +481,9 @@ pub const Code = enum(u16) {
             .codegen_invalid_native_props_body => "NativeProps body is not an object literal or known wrapper",
             .codegen_duplicate_component => "Duplicate component name in schema",
             .codegen_inheritance_too_deep => "Inheritance / intersection chain exceeds depth limit",
+            // 트랜스포머
+            .jsx_pragma_ignored => "@jsx / @jsxFrag pragma ignored under the automatic JSX runtime",
+            .regex_modifier_unsupported => "Regular expression inline modifier group is an ES2025 feature not supported by the target",
         };
     }
 };

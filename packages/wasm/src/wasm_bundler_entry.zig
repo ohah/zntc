@@ -274,7 +274,8 @@ fn captureDiagnostic(result: *const BundleResult) void {
     for (diags) |d| {
         if (d.severity != .@"error") continue;
         clearLastError();
-        const tag_name = @tagName(d.code);
+        // CLI/app 진단과 동일하게 ZNTCxxxx 코드 노출(이전엔 enum tag 이름).
+        const tag_name = if (zntc_lib.rich_diagnostic.bundlerErrorCode(d.code)) |zc| zc.format() else @tagName(d.code);
         last_error_msg = if (d.file_path.len > 0 and d.suggestion != null)
             std.fmt.allocPrint(wasm_alloc, "× {s}: {s} [{s}]\n  hint: {s}", .{ d.file_path, d.message, tag_name, d.suggestion.? }) catch null
         else if (d.file_path.len > 0)
