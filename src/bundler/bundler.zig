@@ -1808,7 +1808,6 @@ pub const Bundler = struct {
             dev_emit_opts.run_before_main = self.options.run_before_main;
             dev_emit_opts.worker_map_per_module = &worker_map_per_module;
 
-            const la = graph.linkAccessor();
             // RN Fast Refresh: react-refresh/runtime 모듈의 dev_id 를 찾아 둔다.
             // __zntc_resolveRefresh 가 전역 require 대신 __zntc_modules[id] 로 이 runtime 을
             // 꺼내 setUpReactRefresh 와 동일 인스턴스를 공유한다(Metro 호환). 아래로 전파.
@@ -1818,7 +1817,7 @@ pub const Bundler = struct {
                 const idx = ModuleIndex.fromUsize(i);
                 const m = graph.getModule(idx) orelse continue;
                 const mid = emitter.makeModuleId(m.path, self.options.root_dir);
-                la.setDevId(idx, mid);
+                graph.setDevId(idx, mid);
                 if (find_refresh_id and refresh_runtime_id == null and isReactRefreshRuntimePath(m.path)) {
                     // mid 는 graph 소유 path 의 부분 slice — emit 동안 graph 유효(복사/free 금지, Arena 규칙).
                     refresh_runtime_id = mid;
@@ -1925,11 +1924,10 @@ pub const Bundler = struct {
                 // PR-2: dev_id 설정(단일번들 경로 1635~1640 과 동일). wrap-all 이 켜진
                 // dev_split 에서 dev lowering 이 __zntc_modules[dev_id] 를 emit 하는데
                 // dev_id 가 비면 __zntc_modules[""] 누출 → setDevId 로 모듈 ID 채움.
-                const la = graph.linkAccessor();
                 for (0..graph.moduleCount()) |i| {
                     const idx = ModuleIndex.fromUsize(i);
                     const m = graph.getModule(idx) orelse continue;
-                    la.setDevId(idx, emitter.makeModuleId(m.path, self.options.root_dir));
+                    graph.setDevId(idx, emitter.makeModuleId(m.path, self.options.root_dir));
                 }
             }
 

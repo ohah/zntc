@@ -37,9 +37,6 @@ const runtime_helper_modules = @import("../runtime_helper_modules.zig");
 pub const module_store = @import("module_store.zig");
 const phase_mod = @import("phase.zig");
 pub const ModulePhase = phase_mod.ModulePhase;
-pub const ParseAccessor = phase_mod.ParseAccessor;
-pub const ResolveAccessor = phase_mod.ResolveAccessor;
-pub const LinkAccessor = phase_mod.LinkAccessor;
 const graph_transform_prepass = @import("graph/transform_prepass.zig");
 const graph_package_side_effects = @import("graph/package_side_effects.zig");
 const graph_parse_helpers = @import("graph/parse_helpers.zig");
@@ -356,25 +353,15 @@ pub const ModuleGraph = struct {
     // 포인터가 유효하게 유지된다 — worker race-safety 의 핵심 불변식.
     //
     // - read 는 누구나: `getModule(idx)` → `?*const Module`
-    // - mutate 는 phase-tagged accessor 경유: `parseAccessor()` / `resolveAccessor()` /
-    //   `linkAccessor()` (정의는 phase.zig)
-    // - `moduleAtMut` 는 accessor 내부 전용. 다른 호출자는 phase accessor 를 쓸 것.
+    // - mutate 는 graph/*.zig 내부 메서드가 `moduleAtMut` 로 수행 (storage owner 전용).
+    //   외부 파일은 read(getModule/iterator) + `linkDependency`/`setDevId` 만 사용.
+    //   phase 경계 규약은 docs/INVARIANTS.md.
     // ============================================================
 
-    /// Parse phase mutation accessor 발급. parser/scanner worker 가 자기 module 의
-    /// AST/semantic/source 등을 write 할 때 사용. 정의는 phase.zig.
-    pub inline fn parseAccessor(self: *ModuleGraph) phase_mod.ParseAccessor {
-        return .{ .graph = self };
-    }
-
-    /// Resolve phase mutation accessor 발급. main thread 의 import 매칭 결과 적용용.
-    pub inline fn resolveAccessor(self: *ModuleGraph) phase_mod.ResolveAccessor {
-        return .{ .graph = self };
-    }
-
-    /// Link phase mutation accessor 발급. DFS exec_index/cycle_group 부여용.
-    pub inline fn linkAccessor(self: *ModuleGraph) phase_mod.LinkAccessor {
-        return .{ .graph = self };
+    /// dev mode 모듈 ID write. link phase 에서 emit 직전 한 번만 설정한다.
+    /// (과거 LinkAccessor.setDevId — accessor 계층 제거 후 graph 메서드로 흡수.)
+    pub inline fn setDevId(self: *ModuleGraph, idx: ModuleIndex, dev_id: []const u8) void {
+        if (self.moduleAtMut(idx)) |m| m.dev_id = dev_id;
     }
 
     /// modules storage. `std.SegmentedList` 대신 `StableSegmentedList` 사용 — 후자가
