@@ -2106,6 +2106,28 @@ test "TransformPlan: semantic-sensitive options keep full semantic" {
     try std.testing.expectEqual(SemanticPlanReason.target_requires_downlevel, downlevel_plan.reason);
 }
 
+test "ES2019 optional catch binding: synthesized name avoids outer variable shadow (#4415)" {
+    // target < es2019 의 빈 catch{} lowering 이 합성하는 binding 이름이 catch body 가
+    // 참조하는 외부 변수(_a)를 섀도잉하면, body 가 잡힌 에러 객체를 읽는 silent
+    // miscompile 이 된다. full semantic 경로에서 충돌 회피가 동작하는지 검증.
+    const compat = @import("transformer/compat.zig");
+    var result = try transpileWithCallbackInternal(
+        std.testing.allocator,
+        "let _a = 5;\ntry { x(); } catch { _a; }\n",
+        "input.ts",
+        .{ .unsupported = compat.fromESTarget(.es2018), .es_target = .es2018 },
+        null,
+        true,
+    );
+    defer result.deinit(std.testing.allocator);
+
+    // 외부 _a 를 피해 다른 이름을 써야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "catch (_b)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "catch (_a)") == null);
+    // catch 파라미터는 그 자체로 선언이므로 hoist 된 `var _` 누수가 없어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "var _") == null);
+}
+
 test "TransformPlan parity: fast TS strip matches full semantic output" {
     const cases = [_]struct {
         name: []const u8,
