@@ -27,7 +27,7 @@ chunk 는 건드리지 않는다. 결과로 **한 번 등록된 `*Module` 포인
 
 ### 금지
 
-- 외부 코드가 `graph.modules` 에 직접 접근 **금지**. accessor API 경유.
+- 외부 코드가 `graph.modules` 에 직접 접근 **금지**. §3 의 공개 API 경유.
 - 내부 코드 (graph.zig) 라도 slice 전달 (`graph.modules.items`) 금지 — 이미
   SegmentedList 라서 불가능하지만, 혹시 회귀하지 않도록 명시.
 
@@ -44,7 +44,7 @@ chunk 는 건드리지 않는다. 결과로 **한 번 등록된 `*Module` 포인
 Phase 는 엄격히 순차적이다. build 함수가 모든 parse worker 를 join 한 후에만
 resolve 로 진행하고, resolve 가 끝나야 link 를 시작한다.
 
-## 3. Accessor API
+## 3. ModuleGraph 공개 API
 
 외부 코드 (graph.zig 외 모든 파일) 는 `ModuleGraph` 의 아래 API 만 사용:
 
@@ -54,29 +54,36 @@ pub inline fn getModule(self: *const ModuleGraph, idx: ModuleIndex) ?*const Modu
 pub inline fn moduleCount(self: *const ModuleGraph) usize;
 pub inline fn modulesIterator(self: *const ModuleGraph) ModulesIterator;
 
-// Phase-tagged mutation (phase.zig 에서 정의)
-pub inline fn parseAccessor(self: *ModuleGraph) ParseAccessor;
-pub inline fn resolveAccessor(self: *ModuleGraph) ResolveAccessor;
-pub inline fn linkAccessor(self: *ModuleGraph) LinkAccessor;
-
-// 양방향 의존성
+// 양방향 의존성 (resolve phase)
 pub fn linkDependency(self: *ModuleGraph, from: ModuleIndex, to: ModuleIndex) !void;
+pub fn linkDynamicImport(self: *ModuleGraph, from: ModuleIndex, to: ModuleIndex) !void;
+
+// link phase: dev mode module id (emit 직전 1회)
+pub inline fn setDevId(self: *ModuleGraph, idx: ModuleIndex, dev_id: []const u8) void;
 ```
 
-### `moduleAtMut` 는 accessor 내부 전용
+> **이력**: 과거에는 phase 별 mutation 을 `ParseAccessor`/`ResolveAccessor`/
+> `LinkAccessor` 로 type 강제하려 했으나, 실제 mutation 이 graph/*.zig 내부
+> 메서드에서 `moduleAtMut` 로 직접 일어나 accessor 가 호출되지 않는 죽은
+> 계층이 됐다 (강제는 끝내 도입되지 않음). 그 계층은 제거됐고, 유일 실사용이던
+> `setDevId` 만 `ModuleGraph` 메서드로 남았다. race-safety 는 §1 의 포인터
+> 안정성 + §2 의 phase 순차 join + §5 worker 규약으로 확보한다 (type 강제 아님).
+
+### `moduleAtMut` 는 storage owner 내부 전용
 
 ```zig
-// graph.zig 에 pub 으로 노출되지만 phase accessor 구현용.
+// graph.zig 에 pub 으로 노출되지만 graph/*.zig 의 phase 메서드 구현용.
 pub inline fn moduleAtMut(self: *ModuleGraph, idx: ModuleIndex) ?*Module;
 ```
 
-외부 파일이 직접 호출 금지. 테스트 코드에서만 예외 허용 (phase 강제 대상 아님).
+외부 파일이 직접 호출 금지. 테스트 코드에서만 예외 허용.
 
-## 4. Phase-tagged accessor 규약
+## 4. Phase 별 mutation 분류 (컨벤션)
 
-`phase.zig` 에 `ParseAccessor` / `ResolveAccessor` / `LinkAccessor` 3개 struct
-가 있다. 각각 `*ModuleGraph` 만 보관 (zero-cost) 하고, 자기 phase 가 mutate
-권한을 가진 field 의 setter 만 노출한다.
+아래 분류는 "어느 phase 가 어느 field 를 mutate 하는가" 를 정한 **컨벤션**이다
+(§3 이력 참조 — type 으로 강제되지 않으며, graph/*.zig 의 phase 메서드가
+`moduleAtMut` 로 직접 write 한다). 새 코드는 이 표를 따르고, 위반은 리뷰와
+§5 worker 규약으로 막는다.
 
 ### 단일-phase field (분류)
 
@@ -107,16 +114,16 @@ match 로 등록된 module 에 마킹. tree-shaker 가 runtime require root 로 
 | `side_effects` | default (JSON=false) | package.json 정책 적용 (true→false 단조) |
 | `uses_top_level_await` | 자기 모듈 await 감지 | transitive 전파 (false→true 단조) |
 
-**slice identity 는 parse phase 에서 freeze**. resolve 가 `setImportRecords`
-로 slice 를 재할당하지 않는다 — `setRecordResolved(idx, rec_i, dep)` 만 사용.
+**slice identity 는 parse phase 에서 freeze**. resolve 는 slice 를 재할당하지
+않고 `import_records[i].resolved` 만 element-wise 로 채운다.
 
 ## 5. Worker thread 규약
 
 ### 허용
 
 - `parseModule(idx)` 에 `ModuleIndex` 만 capture.
-- 자기 `idx` 에 해당하는 module 의 field 를 write (phase.zig 의
-  `ParseAccessor` 경유).
+- 자기 `idx` 에 해당하는 module 의 field 만 write (graph/*.zig 의 parse 메서드
+  경유 — 다른 module 은 건드리지 않는다).
 - `graph.getModule(idx)` 로 읽기 (다른 module 도 읽기는 OK — 단 해당 module
   의 parse 가 이미 완료된 경우만).
 
@@ -128,7 +135,7 @@ match 로 등록된 module 에 마킹. tree-shaker 가 runtime require root 로 
   invalid. 더 본질적으로는 Module 이 같은 chunk 에 머물러도, ArenaAllocator
   같은 struct-in-place 는 copy 시 state 포인터가 깨진다.
 - 다른 module 의 field mutate.
-- `graph.modules` 의 다른 accessor 직접 접근.
+- `graph.modules` 직접 접근 (read-only iterator/getModule 만 사용).
 
 ### 체크리스트
 
@@ -163,13 +170,12 @@ for (0..graph.moduleCount()) |i| {
 }
 ```
 
-### mutation 필요 → phase accessor 또는 linkAccessor
+### mutation 필요 → graph 메서드 (link phase)
 
 ```zig
-const la = graph.linkAccessor();
 for (0..graph.moduleCount()) |i| {
     const idx = ModuleIndex.fromUsize(i);
-    la.setDevId(idx, makeId(...));
+    graph.setDevId(idx, makeId(...));
 }
 ```
 
@@ -215,17 +221,18 @@ caller 는 `defer for (&modules) |*m| m.deinit(alloc);` 금지 (double-free).
 `ModuleGraph` 또는 `Module` 을 건드리는 PR 을 올릴 때 확인:
 
 - [ ] `graph.modules.items` / `.len` 같은 ArrayList 전용 API 사용 안 함
-- [ ] `[]Module` slice 를 새 함수 인자로 받지 않음 (accessor/iterator 사용)
+- [ ] `[]Module` slice 를 새 함수 인자로 받지 않음 (getModule/iterator 사용)
 - [ ] 새 worker 가 `ModuleIndex` 외 다른 것을 capture 하지 않음
-- [ ] multi-phase field 를 직접 assign 하지 않음 (accessor setter 사용)
-- [ ] graph.zig 내부 phase mutation 은 본 문서의 phase 분류표에 맞음
+- [ ] 외부 파일이 module field 를 직접 mutate 하지 않음 (graph 메서드 경유)
+- [ ] graph/*.zig 의 phase mutation 은 본 문서의 phase 분류표 (§4) 에 맞음
 - [ ] 새 field 추가 시 phase 분류표 (§4) 갱신
 
 ## References
 
 - `#1779` 에픽 PR: `#1780` (accessor 뼈대), `#1781` (call site 교체),
   `#1782` (slice API 제거), `#1783` (SegmentedList), `#1784` (ModuleList 상수)
-- `src/bundler/graph.zig` — storage + accessor 진입점
-- `src/bundler/phase.zig` — phase-tagged accessor 정의
+- `src/bundler/graph.zig` — storage + read/mutation 진입점
+- `src/bundler/graph/accessors.zig` — `moduleAtMut` 등 storage owner 내부 헬퍼
+- `src/bundler/phase.zig` — `ModulePhase` 정의
 - `src/bundler/module.zig` — Module struct + 메서드
 - 비교: rolldown (Rust borrow checker), esbuild (Go GC + SoA), Bun (수동 invariant)

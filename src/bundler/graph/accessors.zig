@@ -35,8 +35,9 @@ pub fn findModuleByPath(self: anytype, path: []const u8) ?*const Module {
     return null;
 }
 
-/// **Accessor 전용**. 직접 호출 금지 — `parseAccessor()` 등 phase accessor 의
-/// setter 메서드를 사용하라. 외부 mutable pointer 노출은 worker race 의 root.
+/// **graph storage owner 내부 전용**. graph/*.zig 의 phase 메서드만 호출한다.
+/// 외부 파일은 read(getModule/iterator) + linkDependency/setDevId 만 사용 —
+/// 외부로 mutable pointer 를 노출하면 worker race 의 root 가 된다.
 pub inline fn moduleAtMut(self: anytype, idx: ModuleIndex) ?*Module {
     const i = validModuleSlot(self, idx) orelse return null;
     return self.modules.at(i);
