@@ -112,6 +112,7 @@ ZNTC assigns a unique code to every diagnostic. Click a code for details and a r
 | [`ZNTC0620`](/zntc/en/reference/errors/zntc0620) | 'super' is not allowed outside of a method |
 | [`ZNTC0621`](/zntc/en/reference/errors/zntc0621) | 'super()' is only allowed in a class constructor |
 | [`ZNTC0622`](/zntc/en/reference/errors/zntc0622) | 'super' cannot be used as the base of an optional chain |
+| [`ZNTC0623`](/zntc/en/reference/errors/zntc0623) | Invalid optional chain in 'new' expression |
 | [`ZNTC0607`](/zntc/en/reference/errors/zntc0607) | Tagged template cannot be used in optional chain |
 | [`ZNTC0608`](/zntc/en/reference/errors/zntc0608) | Property key expected |
 | [`ZNTC0609`](/zntc/en/reference/errors/zntc0609) | Expected ':' after property key |
@@ -150,6 +151,7 @@ ZNTC assigns a unique code to every diagnostic. Click a code for details and a r
 | [`ZNTC0802`](/zntc/en/reference/errors/zntc0802) | Octal escape sequences are not allowed in strict mode |
 | [`ZNTC0803`](/zntc/en/reference/errors/zntc0803) | Deleting an identifier is not allowed in strict mode |
 | [`ZNTC0804`](/zntc/en/reference/errors/zntc0804) | \"use strict\" not allowed in function with non-simple parameters |
+| [`ZNTC0805`](/zntc/en/reference/errors/zntc0805) | Cannot assign to or delete an imported binding |
 
 ## Parser: Await/Yield/JSX/TS
 
