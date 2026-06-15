@@ -4,7 +4,8 @@
 //! 진단 정보를 하나의 타입으로 통합한다.
 //!
 //! 기존 Diagnostic/BundlerDiagnostic은 그대로 유지하고,
-//! 렌더링 시 fromDiagnostic()/fromBundlerDiagnostic()으로 변환한다.
+//! 렌더링 시 fromDiagnostic()으로 변환한다. BundlerDiagnostic 의 ZNTC 코드는
+//! bundlerErrorCode()로 매핑한다.
 //!
 //! 설계:
 //!   - severity: error/warning/info

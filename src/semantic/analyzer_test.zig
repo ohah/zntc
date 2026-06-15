@@ -84,6 +84,37 @@ test "SemanticAnalyzer: sloppy block duplicate function is allowed (Annex B, #44
     try std.testing.expect(ana.errors.items.len == 0);
 }
 
+test "SemanticAnalyzer: class method if-body inherits strict — Annex B gate off (#4414 sibling)" {
+    // class body strict 는 if/else body 의 Annex B 게이트(in_annex_b_context)에도
+    // 적용돼야 한다. canRedeclare 뿐 아니라 이 게이트도 isCurrentStrict 기준.
+    var scanner = try Scanner.init(std.testing.allocator, "class C { m() { if (x) { function f(){} function f(){} } } }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len > 0);
+}
+
+test "SemanticAnalyzer: sloppy if-body duplicate function allowed (Annex B, #4414 sibling control)" {
+    // 대조군: class 밖 sloppy if-body 는 Annex B 로 허용.
+    var scanner = try Scanner.init(std.testing.allocator, "if (x) { function f(){} function f(){} }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len == 0);
+}
+
 test "SemanticAnalyzer: function declaration creates symbol" {
     var scanner = try Scanner.init(std.testing.allocator, "function foo() {}");
     defer scanner.deinit();
