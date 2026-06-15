@@ -137,28 +137,30 @@ pub fn fromDiagnostic(d: Diagnostic, file_path: []const u8) RichDiagnostic {
     };
 }
 
-/// BundlerDiagnostic을 RichDiagnostic으로 변환한다.
-pub fn fromBundlerDiagnostic(d: BundlerDiagnostic) RichDiagnostic {
-    return .{
-        .severity = switch (d.severity) {
-            .@"error" => .@"error",
-            .warning => .warning,
-            .info => .info,
-        },
-        .code = switch (d.code) {
-            .unresolved_import => error_codes.Code.unresolved_import.format(),
-            .missing_export => error_codes.Code.missing_export.format(),
-            .circular_dependency => error_codes.Code.circular_dependency.format(),
-            .parse_error => error_codes.Code.import_in_script.format(),
-            .read_error => error_codes.Code.read_error.format(),
-            .json_parse_error => error_codes.Code.json_parse_error.format(),
-            .no_loader => error_codes.Code.no_loader.format(),
-            .resolve_error => error_codes.Code.resolve_error.format(),
-        },
-        .message = d.message,
-        .span = d.span,
-        .file_path = d.file_path,
-        .help = d.suggestion,
+/// `BundlerDiagnostic.ErrorCode` → 대응하는 `ZNTCxxxx` error_codes.Code.
+/// 아직 전용 코드가 없는 진단은 null — 호출부가 코드/docs URL 없이 렌더한다.
+/// (exhaustive switch — ErrorCode 추가 시 여기서 컴파일 에러로 누락을 잡는다.)
+pub fn bundlerErrorCode(code: BundlerDiagnostic.ErrorCode) ?error_codes.Code {
+    return switch (code) {
+        .unresolved_import => .unresolved_import,
+        .missing_export => .missing_export,
+        .circular_dependency => .circular_dependency,
+        .circular_reexport => .circular_reexport,
+        .parse_error => .import_in_script,
+        .read_error => .read_error,
+        .resolve_error => .resolve_error,
+        .json_parse_error => .json_parse_error,
+        .no_loader => .no_loader,
+        .assign_to_import => .assign_to_import,
+        // 아직 전용 ZNTC 코드 미할당 — 코드/페이지 추가는 follow-up.
+        .ambiguous_export,
+        .require_context_invalid,
+        .require_context_no_handler,
+        .plugin_error,
+        .output_exports_conflict,
+        .jsx_pragma_ignored,
+        .regex_modifier_unsupported,
+        => null,
     };
 }
 

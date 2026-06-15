@@ -825,12 +825,22 @@ pub fn main(init: std.process.Init) !void {
                     .warning => "warning",
                     .info => "info",
                 };
-                try stderr.print("[{s}] {s}: {s}\n", .{ sev_str, d.file_path, d.message });
+                // 전용 ZNTC 코드가 있으면 `[ZNTCxxxx] sev: file: msg` + docs URL 로
+                // 렌더(transpile 진단과 동일하게 코드/문서 링크 노출). 아직 코드가
+                // 없는 진단은 기존 `[sev] file: msg` 평문 유지.
+                if (lib.rich_diagnostic.bundlerErrorCode(d.code)) |zc| {
+                    try stderr.print("[{s}] {s}: {s}: {s}\n", .{ zc.format(), sev_str, d.file_path, d.message });
+                } else {
+                    try stderr.print("[{s}] {s}: {s}\n", .{ sev_str, d.file_path, d.message });
+                }
                 // (#3986) suggestion 은 *교정된 이름*이 아니라 unresolved specifier 또는
                 // 조언 문장(producer 가 record.specifier / 전체 문장을 넣음)이다. ZNTC 엔
                 // typo-detector 가 없어 'did you mean' 프레이밍은 항상 오도였다. app
                 // bundle 진단(app/build.zig:719 `hint:`)과 동일하게 중립 hint 로 렌더.
                 if (d.suggestion) |s| try stderr.print("  hint: {s}\n", .{s});
+                if (lib.rich_diagnostic.bundlerErrorCode(d.code)) |zc| {
+                    try stderr.print("  docs: {s}\n", .{zc.docsUrl()});
+                }
             }
         }
 
