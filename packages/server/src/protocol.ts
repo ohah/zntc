@@ -56,7 +56,7 @@ export interface HmrFullReloadMessage {
   timestamp: number;
 }
 
-// Zig dev server (src/server/dev_server.zig:574,586) 의 hot-update broadcast.
+// Zig dev server (src/server/dev_server.zig:1253-1265) 의 hot-update broadcast.
 // `update-start` / `update-done` 는 client 가 overlay 를 정리할 신호이고, 본
 // 업데이트 `update` 의 modules 는 dev overlay client 의 `__zntc_apply_update`
 // 가 평가한다 (없으면 location.reload fallback).

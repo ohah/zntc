@@ -1,7 +1,8 @@
 //! ZNTC WASM bundler 진입점 (#1885 Phase 2/3).
 //!
-//! wasm32-wasip1-threads 타겟용 — bundler 전용. transpile-only 빌드 (wasm_entry.zig)
-//! 와 분리해서 brower 호환성/번들 사이즈 트레이드오프 분리.
+//! wasm32-wasi (single-threaded) 타겟용 — bundler 전용. transpile-only 빌드
+//! (wasm_entry.zig) 와 분리해서 brower 호환성/번들 사이즈 트레이드오프 분리.
+//! (Zig 0.16 에서 멀티스레드 wasm 의 WasmAllocator/io 미지원으로 +threads 제거됨.)
 
 const std = @import("std");
 const zntc_lib = @import("zntc_lib");

@@ -33,7 +33,7 @@ src/
     env.zig                 #   .env 처리, define 주입
   lexer/                    # Phase 1: 렉서 ✅
     mod.zig                 #   렉서 엔트리 + re-export
-    token.zig               #   토큰 종류(Kind ~208개), Span, Token, 키워드 맵
+    token.zig               #   토큰 종류(Kind enum 142개), Span, Token, 키워드 맵
     scanner.zig             #   스캔 로직 (모든 토큰 타입 처리)
     unicode.zig             #   유니코드 식별자 (UTF-8 디코딩, ID_Start/ID_Continue)
   parser/                   # Phase 2: 파서 ✅
@@ -142,7 +142,7 @@ src/
     chunk.zig               #   Code splitting (BitSet, 공통 청크, cross-chunk)
     emitter.zig             #   출력 생성 (exec_index 순서, ESM/CJS/IIFE)
     emitter/                #   emitter 서브 모듈
-      dev.zig               #     dev mode 번들링 (HMR, __zntc_register)
+      dev.zig               #     dev mode 유틸 (addModuleMappings/makeModuleId — 프로덕션도 사용). HMR register 런타임은 bundler/runtime_helpers.zig
       chunks.zig            #     code splitting + hash/naming
       esm_wrap.zig          #     __esm 래퍼 + export getter
       cjs_wrap.zig          #     __commonJS 래퍼
@@ -158,7 +158,7 @@ src/
     plugin.zig              #   Zig builtin 플러그인 (함수 포인터 기반, 내부 전용)
     json_to_esm.zig         #   JSON → ESM AST 변환 (export default <value>)
     asset_meta.zig          #   asset 로더 메타 (file/dataurl/text/binary/copy)
-    block_list.zig          #   noExternal/exclude 패턴 매칭
+    block_list.zig          #   resolver blockList — 해석 단계 경로 차단 패턴 (Metro/webpack blocklist 호환)
     fs.zig                  #   번들러 fs 추상화 (in-mem fixture 지원)
     phase.zig               #   파이프라인 phase 정의 (scan/resolve/link/emit)
     mpsc_channel.zig        #   MPSC 채널 (Producer-Consumer 파이프라인)
@@ -192,7 +192,7 @@ src/
     dev_server.zig          #   HTTP + WebSocket 서버 (HMR, Fast Refresh, SSE, Control API)
     file_watcher.zig        #   파일 변경 감지 (watch/serve, watchFolders 지원)
     watch_scan.zig          #   공통 디렉토리 walker (TOCTOU-free, glob filter)
-    tracked_file_set.zig    #   감시 대상 파일 추적 (StableSegmentedList 기반)
+    tracked_file_set.zig    #   감시 대상 파일 추적 (StringHashMap 기반)
     mime.zig                #   MIME 타입 매핑
   regexp/                   # RegExp 검증 ✅
     mod.zig                 #   RegExp 엔트리 + re-export
@@ -220,11 +220,11 @@ packages/
     src/                    #   inject / dev-controller / style/ (postcss · sass · css-modules · css-parser · loader)
     dist/                   #   zntc self-build (server 가 inline)
   server/                   # @zntc/server — private (npm 미공개, web/RN 공통 protocol/watcher/HMR)
-    src/                    #   protocol (HMR_MSG / 상수) / ws-frame (RFC 6455) / watcher / hmr-channel
+    src/                    #   protocol (HMR_MSG / 상수) / ws-frame (RFC 6455) / watcher (web 재노출, 프로덕션 CLI 는 zntc.mjs 가 node:fs watch 인라인) / hmr-channel
     dist/                   #   zntc self-build — web 의 dist 에 자동 inline
   wasm/                     # @zntc/wasm — WASM 빌드 (브라우저 playground, Deno/Workers)
     src/wasm_entry.zig      #   transpile only WASM 진입
-    src/wasm_bundler_entry.zig  # 번들러 포함 WASM 진입 (wasm32-wasi + threads)
+    src/wasm_bundler_entry.zig  # 번들러 포함 WASM 진입 (wasm32-wasi, single-threaded)
   shared/                   # core/wasm 공유 타입 (TranspileOptions, Target, compat-engines)
   @zntc/vite-plugin/          # Vite 플러그인 (esbuild transform → ZNTC 교체, @zntc/core 만 사용)
 
@@ -280,6 +280,6 @@ tools/                      # 개발 도구
 | `zig build test262-run` | Test262 50,504건 실행 (pass-rate 측정) |
 | `zig build napi` | `@zntc/core` 용 NAPI .node 빌드 (`zig-out/lib/zntc.node`) |
 | `zig build wasm` | `@zntc/wasm` transpile-only WASM |
-| `zig build wasm-bundler` | bundler 포함 WASM (wasm32-wasi + threads) |
+| `zig build wasm-bundler` | bundler 포함 WASM (wasm32-wasi, single-threaded) |
 | `zig build schema` | `BuildOptions` JSON 스키마 자동 생성 |
 | `zig build bench-callback` | NAPI 콜백 hot-path 마이크로벤치 (#1891) |

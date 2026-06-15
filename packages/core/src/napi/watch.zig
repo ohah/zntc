@@ -717,7 +717,8 @@ fn addWatchRootDirs(
     defer walker.deinit();
     while (walker.next(common.io()) catch null) |entry| {
         if (entry.kind != .directory) continue;
-        // node_modules, .git, .zntc-* 등 skip (watch_scan 의 hasSkippedSegment 와 일관)
+        // node_modules, .git, .zntc-* 등 skip. (watch_scan 의 hasSkippedSegment 는 '/'
+        // 세그먼트 정확 매칭이지만 여기는 substring 매칭 — 동작이 완전히 같지는 않음.)
         if (std.mem.indexOf(u8, entry.path, "node_modules") != null) continue;
         if (std.mem.indexOf(u8, entry.path, ".git") != null) continue;
         if (std.mem.indexOf(u8, entry.path, ".zntc-") != null) continue;
