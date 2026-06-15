@@ -436,6 +436,25 @@ test "minify: division by zero not folded" {
     try expectMinify("const x = 1 / 0;", "const x = 1 / 0;");
 }
 
+test "minify: overflow to Infinity not folded (inf is not a JS literal)" {
+    // `1e308 * 10` 는 +Infinity 로 오버플로한다. fold 하면 `{d}` 가 `inf` 를 내뱉어
+    // 런타임 ReferenceError 가 되므로 폴딩을 포기하고 원본 식을 유지해야 한다.
+    try expectMinify("const x = 1e308 * 10;", "const x = 1e308 * 10;");
+}
+
+test "minify: exponentiation overflow to Infinity not folded" {
+    try expectMinify("const x = 2 ** 1024;", "const x = 2 ** 1024;");
+}
+
+test "minify: NaN-producing fold not folded (nan is not a JS literal)" {
+    // 중첩 fold 가 +Infinity 를 만든 뒤 빼면 NaN 이다. 최종 결과가 유한하지 않으면
+    // 어떤 fold 도 커밋하지 않아 `nan`/`inf` 가 출력에 새지 않는다.
+    try expectMinify(
+        "const x = 1e308 * 1e308 - 1e308 * 1e308;",
+        "const x = 1e308 * 1e308 - 1e308 * 1e308;",
+    );
+}
+
 test "minify: non-literal not folded" {
     try expectMinify("const x = a + b;", "const x = a + b;");
 }
