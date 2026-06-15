@@ -2639,10 +2639,12 @@ function prepareNapiOptions(options: BuildOptions): {
   cleanup: () => void;
 } {
   const napiOptions: Record<string, unknown> = { ...options };
-  // rnVersion 검증 — native parseRnVersion 과 동일 의미(연산자? major.minor[.patch]).
-  // 잘못된 값을 NAPI 가 silent 하게 blunt 프리셋으로 흘려보내지 않도록 여기서 명시 에러.
+  // rnVersion 검증 — native parseRnVersion 과 *정확히* 동일 문법으로 맞춤(불일치 시 NAPI 가
+  // 잘못된 값을 silent 하게 blunt 프리셋으로 흘려보냄). 연산자? major.minor[.patch...],
+  // 공백은 space/tab 만(\n/\r 거부), major/minor 는 u16(≤65535) 범위.
   if (typeof options.rnVersion === 'string') {
-    if (!/^\s*(>=|<=|==|>|<)?\s*\d+\.\d+(\.\d+)?\s*$/.test(options.rnVersion)) {
+    const m = /^[ \t]*(?:>=|<=|==|>|<)?[ \t]*(\d+)\.(\d+)(?:\.\d+)*[ \t]*$/.exec(options.rnVersion);
+    if (!m || Number(m[1]) > 65535 || Number(m[2]) > 65535) {
       throw new Error(
         `Invalid rnVersion '${options.rnVersion}' (expected e.g. '0.74', '>=0.74', '<=0.84', '==0.76')`,
       );

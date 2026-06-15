@@ -121,6 +121,11 @@ function assignRnBuildOptionOverrides(out, config, opts = {}) {
   } else if (opts.inlineDynamicImports === false || cfg.inlineDynamicImports === false) {
     out.inlineDynamicImports = false;
   }
+  // --rn-version: RN preset 경로(runRnBundle/runRnDev)에서도 버전별 정밀 매트릭스를 적용하도록
+  // override 로 forward. 없으면 preset 의 blunt fromHermesPreset 이 그대로 쓰인다.
+  if (typeof opts.rnVersion === 'string' || typeof cfg.rnVersion === 'string') {
+    out.rnVersion = opts.rnVersion ?? cfg.rnVersion;
+  }
 }
 
 /**
