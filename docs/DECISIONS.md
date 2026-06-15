@@ -43,11 +43,11 @@
 - **이유**: 파서에는 영향 없음. JSX 구문 파싱은 동일하고 트랜스포머에서 설정으로 분기. SWC/oxc 둘 다 전부 지원
 
 ### D009: 소스맵
-- **결정**: inline + external + hidden 전부 지원
+- **결정**: 3가지 모드 전부 지원. **현행화 (2026-06-15)**: 코드의 `SourceMapMode` enum 은 `linked` / `external` / `inline` 이다 (원안 명칭 `external`/`hidden` 에서 이름이 정리되며 의미가 재배치됨 — `fromString` 은 `"linked"`/`"external"`/`"inline"` 만 받음).
 - **이유**: 소스맵 코어를 한 번 만들면 출력 방식은 플래그 차이일 뿐. 프로덕션 도구라면 전부 필요
-  - inline: JS 파일 끝에 base64로 삽입 (개발용)
-  - external: 별도 .map 파일 생성 (프로덕션 표준)
-  - hidden: .map 생성하지만 JS에 URL 주석 안 넣음 (Sentry 등 별도 업로드용)
+  - `inline`: JS 파일 끝에 base64 data URL 로 삽입 (개발용)
+  - `linked` (기본): 별도 .map 파일 생성 + JS 에 `//# sourceMappingURL` 주석 (프로덕션 표준)
+  - `external`: .map 생성하지만 JS에 URL 주석 안 넣음 (Sentry/CI 등 별도 업로드용 — 원안의 `hidden` 에 해당)
 
 ### D010: tsconfig.json 지원 범위
 - **결정**: 모든 옵션을 파싱하되, Phase별로 사용 범위를 구분
@@ -90,10 +90,10 @@
 - **참고**: line/column은 AST 노드에 저장하지 않음 (4개 도구 모두 동일). 에러 출력이나 소스맵 생성 시 line offset 테이블에서 계산
 
 ### D016: 헬퍼 함수 전략
-- **결정**: 인라인 + 외부(tslib) 둘 다 지원
-- **이유**: 인라인은 의존성 없이 동작, 외부는 출력 크기 절약. SWC도 둘 다 지원 (`externalHelpers` 옵션)
-  - 기본: 인라인 (파일마다 필요한 헬퍼를 삽입)
-  - 옵션: 외부 (`import { __awaiter } from "tslib"`)
+- **결정(원안)**: 인라인 + 외부(tslib) 둘 다 지원
+- **현행화 (2026-06-15)**: 현재 코드는 **인라인 경로만** 구현되어 있다. `externalHelpers`/`importHelpers` 류의 옵션이 CLI/NAPI/config 어디에도 없으며, tslib 는 인라인 헬퍼의 이름 충돌 가드(`runtime_helper_names.zig` TSLIB_UMD_EXPORTS) 용도로만 등장한다. 외부(tslib import) emit 모드는 미구현 — 향후 수요 시 재논의.
+  - 기본: 인라인 (파일마다 필요한 헬퍼를 삽입). 또한 일부 헬퍼는 가상 모듈로 자동 주입(`runtime_helper_modules.zig`)
+  - (미구현) 외부: `import { __awaiter } from "tslib"`
 
 ### D017: .d.ts 생성 (isolatedDeclarations)
 - **결정**: 지원 (Phase 5)
@@ -109,7 +109,7 @@
   - **BOM 처리**: UTF-8 BOM(0xEF 0xBB 0xBF)을 파일 시작에서 스킵, 출력에는 넣지 않음
   - **줄 끝 문자**: `\n`, `\r\n`, `\r`, U+2028, U+2029 전부 줄바꿈으로 인식
   - **유니코드 식별자**: `\uXXXX`, `\u{XXXX}` 이스케이프 시퀀스 지원 + 정규화
-  - **import attributes**: ES2024 `with { type: "json" }` + deprecated `assert { ... }` 둘 다 파싱. 네 경로 모두 AST 보존 + codegen 라운드트립:
+  - **import attributes** (구현은 렉서가 아니라 **파서** — `parseImportAttributes`. `with`/`assert` 는 렉서가 일반 식별자로 토큰화하고 파서가 contextual 로 판별): ES2024 `with { type: "json" }` + deprecated `assert { ... }` 둘 다 파싱. 네 경로 모두 AST 보존 + codegen 라운드트립:
     - static `import x from "./y" with { ... }` · dynamic `import("./y", { with: {...} })` · `export { x } from "./y" with { ... }` · `export * / export * as ns from "./y" with { ... }`
     - `assert` 는 static 에서 `with` 로 자동 마이그레이션 (ES2024 표준 통일)
   - **direct eval 감지**: `eval()` 직접 호출 감지 → 해당 스코프 변수 최적화 비활성화
@@ -146,8 +146,9 @@
 - **구현**: lexer(`Scanner`) 가 주석 스캔 중 감지 → `Ast.jsx_pragma_*` 로 carry → `TransformOptions.withModuleJsxPragmas(ast)` 가 module 단위로 `jsx_runtime`/`jsx_factory`/`jsx_fragment`/`jsx_import_source` override. 우선순위 file pragma > tsconfig/CLI. `@jsx`/`@jsxFrag` 는 effective runtime 이 classic 일 때만 효과 (automatic 에선 무시 — esbuild 는 error 이나 TS 처럼 관대)
 
 ### D027: AMD / SystemJS 모듈 출력
-- **결정**: 미지원
-- **이유**: 거의 사장된 형식. SWC만 지원하고 esbuild/oxc/Bun은 미지원
+- **결정(원안)**: 미지원
+- **현행화 (2026-06-15)**: **AMD 는 이후 구현되어 출시됨** — `Format.amd`, `format_wrapper.zig` 가 `define([...], function(...) {...})` prologue/epilogue 생성, CLI `--format=amd` (`cli/usage.zig`/`cli/options.zig`) + NAPI 노출 + 테스트 보유. SystemJS 는 여전히 미지원.
+- **이유(원안)**: 거의 사장된 형식. SWC만 지원하고 esbuild/oxc/Bun은 미지원
 
 ### D028: Compiler Assumptions (Babel 호환)
 - **결정**: Phase 6에서 점진적 추가
@@ -176,13 +177,14 @@
 ---
 
 ### D034: 토큰 enum 설계
-- **결정**: oxc 방식 — 세분화 `#[repr(u8)]` 플랫 enum (~208개)
-- **이유**: TS 키워드를 개별 토큰으로 (파서에서 문자열 비교 불필요), 숫자를 11가지로 세분화 (Decimal/Float/Hex/Octal/Binary/BigInt 등), JSXText 전용 토큰. linter/AST API(D014) 확장 시 풍부한 토큰 정보가 유리. 208개도 u8에 들어가므로 성능 차이 없음
+- **결정(원안)**: oxc 방식 — 세분화 `#[repr(u8)]` 플랫 enum (~208개), TS 키워드를 개별 토큰으로
+- **현행화 (2026-06-15)**: 현재 `Kind` enum 멤버는 **142개** (~208 은 초기 추정치이자 stale). 숫자 11가지 세분화·JSXText 전용 토큰은 유효하나, **TS contextual 키워드 30개(`type`/`namespace`/`declare`/`as`/`satisfies`/`readonly`/`keyof`/`number`/`string`/`boolean` 등)는 개별 토큰을 폐기하고 일반 식별자로 통합됐다.** 이제 파서가 `isContextual`/`eatContextual` 헬퍼로 문자열 비교해 판별한다 (즉 "파서에서 문자열 비교 불필요" 라는 원안과 반대로 동작). 이유: TS contextual 키워드는 문맥에 따라 식별자로도 쓰여 전용 토큰이 오히려 파서 분기를 늘림.
 - **참고**: esbuild/Bun은 ~86-107개 (미니멀), SWC는 ~120개 (Token + TokenValue 분리)
 
 ### D035: 문자열 인코딩
-- **결정**: UTF-8 기본, lazy UTF-16 변환 (Bun 방식)
-- **이유**: 실제 JS 코드의 95%+가 ASCII라 변환 거의 안 일어남. UTF-8이면 소스를 슬라이스로 참조 가능 (복사 없음). 정확한 JS 문자열 시맨틱이 필요한 경우에만 UTF-16 변환
+- **결정(원안)**: UTF-8 기본, lazy UTF-16 변환 (Bun 방식)
+- **현행화 (2026-06-15)**: 렉서는 **UTF-8 소스를 직접 순회**한다. 원안의 "lazy UTF-16 변환" 메커니즘은 현재 코드에 없다 — `tokenText` 는 raw UTF-8 슬라이스, line/column 은 byte 컬럼(`getLineColumn`), 소스맵도 byte 컬럼이다. 필요 시 도입할 수 있으나 현재는 UTF-16 변환 경로가 존재하지 않는다.
+- **이유(원안)**: 실제 JS 코드의 95%+가 ASCII라 변환 거의 안 일어남. UTF-8이면 소스를 슬라이스로 참조 가능 (복사 없음)
 
 ### D036: 렉서-파서 연동 방식
 - **결정**: 파서가 렉서 호출 (esbuild/Bun 방식) + 옵션으로 토큰 저장 (oxc 방식)
@@ -244,8 +246,9 @@
 - **참고**: oxc가 가장 유연하고, 추후 Prettier 연동 시 Space 2/4 전환이 자연스러움
 
 ### D045: 줄바꿈 처리
-- **결정**: `\n` 정규화 + CRLF 옵션 (SWC 방식)
-- **이유**: 내부적으로 `\n`으로 통일하고, 출력 시 설정에 따라 `\n` 또는 `\r\n`으로 변환. 크로스 플랫폼(Windows/Unix) 지원. 원본 줄바꿈 보존은 소스맵으로 매핑하므로 불필요
+- **결정(원안)**: `\n` 정규화 + CRLF 옵션 (SWC 방식)
+- **현행화 (2026-06-15)**: 출력은 항상 `\n`. `CodegenOptions.newline` 필드는 존재하지만 CLI/NAPI/config 어디서도 값을 할당하지 않아 CRLF 옵션은 **현재 미동작(미배선)**. 크로스 플랫폼 CRLF 출력이 필요해지면 옵션을 배선해야 한다.
+- **이유(원안)**: 내부적으로 `\n`으로 통일하고, 출력 시 설정에 따라 `\n` 또는 `\r\n`으로 변환
 - **비교**: esbuild(`\n` 정규화), oxc(원본 구조 유지), SWC(설정 가능)
 
 ### D046: 소스맵 V3 VLQ 인코딩
@@ -291,7 +294,7 @@
 - **이유**: 재선언 검증에 필요한 최소 정보만. references(참조 추적)는 Phase 6(minifier/bundler)에서 추가
 - **SymbolKind**: var/let/const/function/class/parameter/catch_binding/import_binding (8가지). 재선언 규칙이 kind별로 다르므로 세분화
 - **D053a 이행 현황 (Phase 6 완료 후 재정리)**:
-  - **`references: ArrayList(Reference)` 재도입 (RFC #1634 완료)**: 2026-03-21 `/simplify` 에서 제거됐던 구조를 per-reference 위치 기반 최적화의 전제로 재도입. `Reference { node_index, scope_id, symbol_id, stmt_idx, kind }` — analyzer 가 resolve 성공 시 append. `reference_count`/`write_count` scalar 는 hot path O(1) 캐시로 유지. mangler liveness, `StmtInfo.referenced_symbols`, 후속 dead store/single-use inline 등이 이 배열을 소비.
+  - **`references: ArrayList(Reference)` 재도입 (RFC #1634 완료)**: 2026-03-21 `/simplify` 에서 제거됐던 구조를 per-reference 위치 기반 최적화의 전제로 재도입. `Reference { node_index, scope_id, symbol_id, stmt_idx, kind }` — analyzer 가 resolve 성공 시 append. `reference_count`/`write_count` scalar 는 hot path O(1) 캐시로 유지. `StmtInfo.referenced_symbols`, 후속 dead store/single-use inline 등이 이 배열을 소비한다. (단 mangler slot 할당은 scope-nesting 전환 이후 이 배열을 더 이상 입력으로 쓰지 않고 scope tree + scope_maps 로만 결정한다 — `references` 필드는 다른 consumer 호환용으로만 유지.)
   - **`is_exported`/`is_default_export` (#1633 완료)**: `analyzer.visitExportNamedDeclaration`/`visitExportDefaultDeclaration` 경로에서 대상 심볼에 세팅. 단일 파일 `--minify-identifiers` 경로의 export mangle 버그를 해소. 번들러는 여전히 `Module.export_bindings` + `linker.collectManglingCandidates` 를 entry-boundary 필터링의 권원으로 사용하며, 플래그는 단일 파일 mangler.shouldSkip 의 근거로 한정.
   - **후속**: `ReferenceFlags` bitset 으로 풍부화 (declare/type/value 구분) 는 별도 이슈로 관리 — `stmt_declared` 까지 제거해 analyzer 가 "references 하나" 만 보유하는 이상적 구조 도달 경로.
 
@@ -325,14 +328,14 @@
 | **D069** | External 옵션 | 문자열 + `*` 글롭 | esbuild | Rolldown 정규식 (Zig에 엔진 없음, CLI에서 불편) |
 | **D070** | 모듈 ID | `ModuleIndex = enum(u32)` | esbuild, Bun, Rolldown, SWC | Rollup 문자열 (해시맵 필요, 비교 O(n)) |
 | **D071** | 소스맵 체이닝 | AST 직접 매핑 + 플러그인 collapse | Rolldown (~60줄) | Rollup 트리 (메모리 증가), Vite (JS 의존성) |
-| **D072** | 청크 해싱 | xxhash64 + 플레이스홀더 2단계 | Rolldown | xxhash128 (불필요), md4 (느림) |
+| **D072** | 청크 해싱 | 플레이스홀더 2단계 (현행 해시=Wyhash+hex, 원안 xxhash64+base64url 미반영) | Rolldown | xxhash128 (불필요), md4 (느림) |
 | **D073** | 모듈 타입/에셋 | ModuleType enum + ParserAndGenerator | rspack | esbuild 로더 (확장 불가), Rollup 전부 플러그인 (DX 나쁨) |
 | **D074** | CSS | B1 복사 → B3 Lightning CSS C ABI | Rolldown, Vite v8 | 자체 파서 (수개월), PostCSS (JS 전용) |
 | **D075** | 개발 서버 | 번들 모드 + SSE → WebSocket HMR | esbuild --serve, Vite v8 방향 | 언번들 ESM (대형 프로젝트 느림, Vite도 전환 중) |
 | **D076** | 그래프 순회 | DFS | Rollup, Rolldown, SWC | BFS (exec_index/순환 감지에 별도 알고리즘 필요) |
 | **D077** | 병렬 파싱 | 싱글 MVP → Rolldown 슬롯 예약 | Rolldown | 처음부터 병렬 (동기화 버그 디버깅 고통) |
 | **D078** | 그래프 저장 | 양방향 인접 리스트 | — (HMR 고려) | 순방향만 (HMR 역추적 비효율), 엣지 배열 (O(1) 접근 불가) |
-| **D079** | Import 추출 | 파싱 후 AST 순회 | Rollup, Rolldown | 파서에서 수집 (완성된 파서 수정 리스크) |
+| **D079** | Import 추출 | (현행) 파서 inline scan — #919 로 AST 재순회 제거. 원안=파싱 후 AST 순회 | Rollup, Rolldown | — |
 | **D080** | 옵션 스펙 + 플러그인 | Rollup 수준 옵션 + 함수 포인터 PluginDriver | Rolldown (pre-sort) | 문자열 라우팅 (오타), 매크로 (Zig 불가), trait (장황) |
 | **D081** | Resolver 구조 | 3계층 (resolver + cache + plugin) | Rolldown/oxc | 단일 파일 (커지면 가독성↓), 기능별 5개+ (오버엔지니어링) |
 
@@ -370,7 +373,8 @@
 ### D061: Arena Allocator 도입 전략
 - **결정**: 번들러 전에 1~3단계 완료, 4단계는 번들러와 동시
 - **이유**: 번들러 후 도입 시 변경 범위 3배. `std.heap.ArenaAllocator` 사용하면 `std.mem.Allocator` 인터페이스 동일하므로 기존 코드 변경 최소.
-- **설계**: Arena = 소유권 경계. 각 모듈(Parser/Transformer/Codegen)은 할당만 수행, 해제는 호출자가 Arena 단위로. Phase별 Arena 분리 (parse arena → transform arena → codegen arena). 번들러에서는 파일별 독립 Arena로 멀티스레드 lock-free 달성.
+- **설계(원안)**: Arena = 소유권 경계. 각 모듈(Parser/Transformer/Codegen)은 할당만 수행, 해제는 호출자가 Arena 단위로. Phase별 Arena 분리 (parse arena → transform arena → codegen arena). 번들러에서는 파일별 독립 Arena로 멀티스레드 lock-free 달성.
+- **현행화 (2026-06-15)**: Phase별 Arena 분리는 **폐기**됐다. Scanner 의 comments/line_offsets 를 Codegen 이 마지막에 참조하므로 phase 별로 일찍 해제할 수 없고, RFC_TRANSFORMER_OWN_AST 이후 `parser.ast` 와 `transformer.ast` 가 동일 instance(clone 회피)라 회수할 영역 자체가 없다. 따라서 **파일당 단일 Arena**(`var arena ...; defer arena.deinit();`)로 환원됐다 (`transpile.zig`). "파일별 독립 Arena 로 멀티스레드 lock-free" 는 그대로 유효. CLAUDE.md 의 "성공 경로에서 `arena.deinit()` 명시 호출 금지, `defer arena.deinit()` 하나로 충분" 규칙과 일치.
 - **단계**: 1) Parser (하루), 2) Semantic Analyzer, 3) Transformer/Codegen, 4) 번들러 파일별 Arena
 
 ### D062: WASM AST API 직렬화
@@ -395,7 +399,11 @@
   - 커스텀 조건은 추가 방식 (Rollup처럼), `module` 절대 자동 제거 안 함
   - TS 확장자 매핑: `.js`→`[.js, .ts, .tsx]` (Rolldown 방식)
   - `default`는 항상 마지막 (Node.js 스펙)
-- **main fields 우선순위**: `module` → `main` (ESM 우선). `--platform=node` 분기 없음 — esbuild 와 의도적으로 다른 결정. 이유: dual-package 라이브러리(fp-ts/lodash-es/effect)에서 ESM 경로 진입 시 cross-module DCE 가 훨씬 깊게 들어가 번들 크기 이점이 크다 (fp-ts 사례에서 70KB → 2.4KB). 사용자 가시 동작은 `CONFIG.md` "package.json field / exports condition 우선순위" 섹션 참조.
+- **main fields 우선순위 (현행화 2026-06-15)**: `--platform` 별로 분기한다 (`resolve_cache.zig` `defaultMainFieldsFor`).
+  - `node` / `neutral`: `module` → `main` (ESM 우선 — `--platform=node` 도 esbuild 와 달리 ESM 경로를 먼저 시도)
+  - `browser`: `browser` → `module` → `main`
+  - `react_native`: `react-native` → `browser` → `main`
+  - 이유: `node`/`neutral` 의 ESM 우선은 dual-package 라이브러리(fp-ts/lodash-es/effect)에서 cross-module DCE 가 훨씬 깊게 들어가 번들 크기 이점이 크기 때문 (fp-ts 70KB → 2.4KB). `browser`/`react_native` 는 각 플랫폼의 관용 필드를 앞에 둔다. 사용자 가시 동작은 `CONFIG.md` "main fields" 섹션 참조.
 - **참고**: `references/rolldown/crates/rolldown_resolver/src/resolver_config.rs`, `references/bun/src/resolver/package_json.zig`
 
 ### D065: 순환 참조 처리
@@ -416,7 +424,8 @@
 ### D066: 번들러 에러 핸들링
 - **결정**: esbuild의 suggestion + Bun의 step enum + ZNTC 기존 Diagnostic 확장
 - **비교**: Rollup(파싱 에러 시 전체 빌드 중단) vs SWC(miette/anyhow, Rust 전용) vs webpack(구조화 안 된 문자열) vs esbuild(suggestion 포함, 파일별 독립) vs Bun(step enum, Logger.Log 중앙 수집)
-- **이유**: esbuild의 suggestion이 DX에서 압도적 — `import './foo'` 실패 시 `Did you mean './foo.js'?` 제안. Bun의 `step: Step` enum (read_file/parse/resolve)이 디버깅에 결정적.
+- **이유**: esbuild의 suggestion이 DX에서 압도적. Bun의 `step: Step` enum (read_file/parse/resolve)이 디버깅에 결정적.
+- **현행화 (2026-06-15)**: ZNTC 에는 typo-detector 가 없어 `suggestion` 은 *교정된 이름*("Did you mean ...")이 아니라 미해결 specifier 또는 조언 문장이다. 따라서 번들러 진단 렌더링은 "Did you mean" 프레이밍 대신 중립 `hint:` 로 출력한다 (구 "Did you mean './foo.js'?" 프레이밍은 폐기). `src/levenshtein.zig` 는 현재 Zig 측 호출처가 없다.
 - **배제 이유**:
   - Rollup: 파싱 에러 하나로 전체 빌드 중단은 대형 프로젝트에서 불편
   - SWC: miette는 Rust 전용 에코시스템, Zig에서 재현 불필요
@@ -430,7 +439,7 @@
       file_path: []const u8,
       span: Span,              // 기존 ZNTC Span 재사용
       step: Step,              // resolve, parse, transform, link
-      suggestion: ?[]const u8, // "Did you mean './foo.js'?"
+      suggestion: ?[]const u8, // 조언 문장/미해결 specifier (중립 hint 로 렌더, "Did you mean" 아님)
       notes: []Note,           // 보조 위치 ("opened here", "defined here")
   }
   ```
@@ -467,7 +476,7 @@
   - `__toESM(mod, isNodeMode, target)` — CJS→ESM 변환 (__esModule 플래그 체크, default 처리)
   - `__toCommonJS(mod)` — ESM→CJS 변환 (__esModule 프로퍼티 추가)
   - `__export(target, all)` — ESM exports를 Object.defineProperty getter로 구현
-  - `__reExport(target, mod, secondTarget)` — export * from 처리
+- **현행화 (2026-06-15)**: 실제로 emit 되는 핵심 헬퍼는 위 5개(`__commonJS`/`__esm`/`__toESM`/`__toCommonJS`/`__export`)다. 원안의 6번째 `__reExport(target, mod, secondTarget)` 은 별도 헬퍼로 emit 되지 않고 `export * from` 처리를 `__copyProps(<ns>, <req>())` 로 인라인한다 (esbuild `__reExport(ns, __toESM(require()))` 에 대응). 즉 `__reExport` 라는 이름의 런타임 함수는 코드에 없다.
 - **구현**: Rolldown처럼 runtime-base.js에 헬퍼 정의, 사용된 헬퍼만 번들에 포함 (비트플래그로 추적)
 - **참고**: `references/esbuild/internal/runtime/runtime.go`, `references/rolldown/crates/rolldown/src/runtime/runtime-base.js`
 
@@ -515,16 +524,17 @@
 - **참고**: `references/rolldown/crates/rolldown_sourcemap/src/lib.rs`, `references/esbuild/internal/sourcemap/sourcemap.go`
 
 ### D072: 청크 네이밍/해싱
-- **결정**: Rolldown 호환 `[name]-[hash].js` + xxhash64 + 플레이스홀더 2단계
+- **결정(원안)**: Rolldown 호환 `[name]-[hash].js` + xxhash64 + base64url + 플레이스홀더 2단계
+- **현행화 (2026-06-15)**: 패턴(`[name]-[hash].js`)과 플레이스홀더 2단계는 그대로지만, **해시 함수와 인코딩이 다르다** — 실제 `contentHash`(`emitter/chunks.zig`)는 `std.hash.Wyhash` + hex(`{x:0>8}`) 를 쓴다 (xxhash64/base64url 아님). 번들러 전체에 xxhash 코드가 없다. 외부 의존성 0 / content hash 라는 목표는 충족하나 알고리즘 명세는 stale.
 - **비교**: esbuild(xxhash64, goroutine별 격리) vs Rollup/Rolldown(xxhash128, 플레이스홀더 `!~{idx}~`) vs webpack/rspack(md4→xxhash64 전환 중, `[contenthash]`)
-- **이유**: `[hash]` = content hash (Rollup/Rolldown/esbuild 공통). xxhash64은 Zig 표준 라이브러리에 `std.hash.XxHash64` 내장으로 외부 의존성 0. Rolldown 플레이스홀더 방식이 순환 import 해시 문제를 우아하게 해결.
+- **이유**: `[hash]` = content hash (Rollup/Rolldown/esbuild 공통). Zig 표준 라이브러리 내장 해시로 외부 의존성 0. Rolldown 플레이스홀더 방식이 순환 import 해시 문제를 우아하게 해결.
 - **배제 이유**:
   - xxhash128: xxhash64로 충분 (충돌 확률 무시 가능). 128비트는 해시 길이만 늘림
   - md4/sha256: 느림. webpack도 xxhash64로 전환 중
   - esbuild goroutine 격리: Go에 최적화된 설계. Zig에서는 플레이스홀더가 더 자연스러움
 - **설계**:
   - 기본 패턴: `[name]-[hash].js` (entry/chunk), `assets/[name]-[hash][ext]` (asset)
-  - 해시: xxhash64, 기본 8자, base64url 인코딩
+  - 해시: (현행) Wyhash, 8자 hex. (원안은 xxhash64 + base64url 였으나 미반영)
   - 2단계: 코드젠 시 `!~{idx}~` 플레이스홀더 삽입 → 전체 청크 완성 후 content hash 계산 → 치환
   - 사용자 설정: `entryFileNames`, `chunkFileNames`, `assetFileNames` (Rollup 호환)
 - **참고**: `references/rolldown/crates/rolldown_utils/src/hash_placeholder.rs`, `references/esbuild/internal/xxhash/`
@@ -624,19 +634,10 @@
   - 헬퍼 함수로 캡슐화하여 불일치 방지
 
 ### D079: import 추출 방식
-- **결정**: 파싱 후 AST 순회 (방법 B)
-- **비교**: 파서에서 바로 수집(A, esbuild/Bun — 파서가 수집) vs 파싱 후 AST 순회(B, Rollup/Rolldown)
-- **이유**: ZNTC 파서가 이미 완성됨 (Phase 2, Test262 100%). 번들러 때문에 파서를 수정하면 안정성 리스크. AST 순회는 O(N)이라 속도 영향 무시 가능. `import_declaration`, `export_named_declaration`, `import_expression` 태그만 찾으면 됨.
-- **배제 이유**:
-  - 파서에서 수집: 파서와 번들러 관심사가 섞임. 파서 수정 시 번들러 의존성 추출도 영향받음. esbuild/Bun은 파서를 번들러와 함께 만들었기 때문에 가능한 것
-- **설계**:
-  ```
-  fn extractImports(ast: *const Ast) []ImportRecord {
-      // AST 순회: import_declaration, export_named_declaration,
-      // export_all_declaration, import_expression 태그 수집
-      // 각각 specifier + kind (static/dynamic/reexport) 반환
-  }
-  ```
+- **결정(원안)**: 파싱 후 AST 순회 (방법 B), 파서에서 수집(A)은 배제
+- **현행화 (2026-06-15)**: 실제로는 **방법 A (파서 inline scan)** 로 전환됐다 (#919, AST 재순회 제거). `enable_scan=true` 일 때 파서가 파싱 중 `scan_import_records`/`scan_export_bindings` 를 채운다 (`parser/module.zig` + `bundler/import_scanner.zig` + `parser/scan_results.zig`). 원안의 "관심사 분리" 우려보다 별도 O(N) AST 재순회 제거 이득이 커서 의도적으로 변경됨. (ROADMAP "파서 inline scan ✅ 완료" 와 일치.)
+- **비교**: 파서에서 바로 수집(A, esbuild/Bun) vs 파싱 후 AST 순회(B, Rollup/Rolldown)
+- **참고**: `parser/scan_results.zig` (`ScanImportRecord`/`ScanExportBinding`), `bundler/import_scanner.zig`
 
 ### D080: 번들러 옵션 스펙 + 플러그인 훅 포인트
 - **결정**: Rollup/Rolldown 수준 옵션 세트. 플러그인 훅 포인트는 처음부터 설계에 포함.
@@ -798,12 +799,12 @@
 - **왜 Visitor-Hook 아키텍처(Option B)로 가지 않았나**: Zig는 trait/interface가 없어 hook dispatch가 타입 안전성을 약화시킴. ZNTC는 내부 플러그인만 상정(써드파티 AST 플러그인 비목표)이라 hook 인프라는 과설계. 위 규칙을 지키면 추후 B로 전환 비용이 저렴 (state는 이미 plugin별로 뭉쳐있음 → dispatch만 간접화).
 - **참고**: oxc의 `TransformCtx`도 동일 패턴 (내부 플러그인 state를 단일 ctx struct). oxlint만 외부 JS 플러그인을 별도 프로세스 경계로 분리.
 - **관련**: #1195, PR #1196 (Phase 1a — worklet 이사), PR #1197 (Phase 1b — refresh 이사)
-- **알려진 cross-plugin 위반**: `worklet_plugin.zig`가 `plugins.refresh.suppress_registration`을 직접 세팅. 후속 과제로 core에 중립 API(`t.suppressRefreshInScope(...)` 등) 도입하여 해소 예정.
+- **(해소됨, 2026-06-15)** 과거 `worklet_plugin.zig` 가 `plugins.refresh.suppress_registration` 을 직접 세팅하던 cross-plugin 위반은 더 이상 없다 — 현재 `suppress_registration` 의 writer 는 core 훅(`transformer/functions.zig`) 뿐이고 reader 는 refresh 플러그인 자신(`transformer/refresh.zig`)이다. `worklet_plugin.zig` 는 `plugins.worklet.*` 만 건드린다.
 
 ### D098: TranspileOptions 전달을 단일 JSON payload로 통일 (2026-04-14)
 - **결정**: CLI/NAPI/WASM 공용 경계에서 옵션을 필드별 인자 → 단일 JSON 페이로드로 전환. `transpile.zig`의 `optionsFromJson()`이 유일한 파서.
 - **이유**: 필드별 인자는 타겟(CLI/NAPI/WASM)마다 파싱/검증을 중복 구현 → 필드 추가 시 3곳에 흩어진 변경. 실제로 `TranspileResult`의 `es_target` / `source_root` 같은 신규 필드가 일부 타겟에만 연결되어 있던 버그(2c63d360 수정) 발생.
-- **효과**: `zntc.config.json` 자동 로드(D099)도 동일 파서 재사용 → 옵션이 한 곳에 정의되면 모든 경로로 자동 전파. DTO ↔ TS `TranspileOptions` 필드 sync는 `src/transpile_options_dto_test.zig`로 자동 검증.
+- **효과**: `zntc.config.json` 자동 로드(D099)도 동일 파서 재사용 → 옵션이 한 곳에 정의되면 모든 경로로 자동 전파. DTO ↔ TS `TranspileOptions` 필드 sync는 `src/config_options_dto_test.zig`로 자동 검증 (DTO 가 `TranspileOptionsDto` → `ConfigOptionsDto` 로 rename 되며 테스트 파일명도 변경됨 — 구 `transpile_options_dto_test.zig` 는 존재하지 않음).
 - **관련 커밋**: 8047603a(migrate), 0d1efd43(DTO sync test)
 
 ### D099: `zntc.config.json` 자동 로드 + JSON Schema 자동 생성 (2026-04-14)
@@ -895,12 +896,12 @@
   - default 없음 = caller 추가 명시 부담 (모든 ResolvedModule literal 에 `.owner = .owned/.borrowed`). 비용보다 안전성 이득 큼 (silent UB > verbose 명시).
   - `dataurl_arena` 가 dedup 없음 (base64 큰 데이터 hash 매칭 거의 없음) — IncrementalBundler reset 으로 bound 보장.
   - 모든 mutex (cache_shard / path_pool shard / dataurl_arena / browser_cache) 의 lock order 명시 (deadlock 방지).
-- **영향 범위**:
-  - `internResolvedModule` (resolve_cache.zig:873) — 모든 variant 분기 추가
+- **영향 범위** (파일/라인은 2026-06-15 기준으로 현행화):
+  - `internResolvedModule` (`resolve_cache.zig`, 현재 `pub fn internResolvedModule` ~900행) — 모든 variant 분기 추가
   - NAPI bridge `pluginResolveId` (packages/core/src/napi/plugin_bridge.zig) — `buildOwnedFile/Virtual/Disabled` 헬퍼로 dupe+owner atomic 보장
   - `runtime_helper_modules.resolveIdHook` — borrow specifier → `.owner = .borrowed`
   - `clonePathRefIfNeeded` (module_store.zig) — `.interned` 만 store-owned 로 clone (others pass-through)
-  - resolve_imports.zig:182/350 `unreachable` → `std.debug.panic` (release UB → meaningful diagnostic)
+  - `bundler/graph/resolve_imports.zig` (구 `bundler/resolve_imports.zig` 에서 이동) ~222/449행 `unreachable` → `std.debug.panic` (release UB → meaningful diagnostic)
 
 ### D105: 웹 CLI lazy 컴파일 = 접근 1(JS dev 서버 + 네이티브 프리미티브) (2026-05-31)
 - **결정**: 웹 CLI(`zntc dev`)의 lazy on-demand 컴파일은 **JS dev 서버(zntc.mjs)가 정본**으로 남고, lazy 의 어려운 로직(parse 지연·shared-off+export-all 결정론·경로해시 네이밍·IIFE registry)은 **네이티브(번들러)에 단일 진실**로 두며, **NAPI `build`/`watch` API 로 프리미티브를 노출**해 JS 가 그 위에 **얇게**(seed맵+청크캐시+라우트) 오케스트레이션한다. Zig DevServer(`startDevServer`)는 RN/임베더/no-JS 경로로 유지(웹 정본 아님). 접근 2(웹 CLI 를 네이티브 Zig 서버로 전환)는 **불채택**.

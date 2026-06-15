@@ -1,12 +1,14 @@
 //! ZNTC Transformer
 //!
-//! 원본 AST를 순회하면서 새 AST를 빌드한다 (D041).
+//! 단일 AST를 append-only로 in-place 변환한다 (transformer.zig 헤더 참조 —
+//! RFC_TRANSFORMER_OWN_AST 이후 D041 의 "새 AST 빌드" 모델에서 변경됨).
 //! TypeScript 전용 노드를 제거하고, TS 구문을 JS로 변환한다.
 //!
 //! 설계:
-//! - 새 AST 생성 방식 (D041: oxc/SWC 방식)
+//! - append-only in-place 변환 (clone deep copy 회피)
 //! - Switch 기반 visitor + comptime 보조 (D042: esbuild/Bun 방식)
-//! - 단일 패스, 변환 우선순위로 순서 제어 (D043)
+//! - 주 패스는 단일 순회로 변환 우선순위 제어 (D043). 단 ES2015 default/object-spread
+//!   params 다운레벨이 켜지면 driver 의 lowerAllFunctionParams 가 전체 노드를 한 번 더 순회
 //!
 //! 참고:
 //! - references/oxc/crates/oxc_transformer/src/

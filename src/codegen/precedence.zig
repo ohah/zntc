@@ -13,8 +13,8 @@
 //! 로 둠)이고, 여기 Level 은 단항/postfix/new/call/member 까지 포함하는 23단계
 //! 이며 `??` 와 `||`/`&&` 를 분리한다(ECMAScript 가 괄호 없는 혼용을 금지하므로
 //! codegen 은 둘을 구분해야 한다). 두 표를 통합하면 양쪽 제약이 섞여 버그를
-//! 유발하므로 통합하지 않는다. 이 파일은 PR1 시점에는 호출처가 없는 인프라이며,
-//! emitExpr 전환(후속 PR)에서 사용된다.
+//! 유발하므로 통합하지 않는다. codegen(`expressions.zig` 등)이 binaryOpLevel /
+//! isRightAssociative / isLeftAssociative / ExprFlags 를 직접 사용한다.
 
 const Kind = @import("../lexer/token.zig").Kind;
 
@@ -97,8 +97,8 @@ pub fn isRightAssociative(op: Kind) bool {
 
 /// 컨텍스트 의존 괄호 플래그 — precedence(Level)만으로 표현할 수 없는 괄호
 /// 조건을 부모→자식으로 전파한다. esbuild `printExprFlags`(js_printer.go) 의
-/// 부분 집합으로, 필요한 flag 는 후속 PR 에서 추가한다. (PR2: 정의만. 실제
-/// 발동은 new/call·optional-chain·for-init 을 다루는 후속 PR 에서.)
+/// 부분 집합. `forbid_call`(new/call) 과 `has_non_optional_chain_parent`
+/// (optional-chain) 은 codegen 에서 라이브로 사용된다.
 pub const ExprFlags = packed struct {
     /// `new X` 의 타겟 안 — 자식이 호출이면 괄호 (`new (foo())`). esbuild
     /// `forbidCall`.

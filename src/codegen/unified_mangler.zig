@@ -1,18 +1,13 @@
-//! Unified Mangler — Issue #1760 Phase 1 스켈레톤.
+//! Unified Mangler.
 //!
 //! `mangleAll()` 한 번의 호출로 cross-module top-level + per-module nested
 //! mangling 을 순차 수행한다. 두 phase 가 같은 base54 counter + reserved set
 //! 을 공유해 shadow 를 원천 차단한다 (결과는 `(module_index, symbol_id)` 키 HashMap,
 //! linker 가 build-scope `rename_table` 로 옮긴다).
 //!
-//! Phase 1 범위:
-//!   - 타입 정의 + 동작하는 스켈레톤
-//!   - 기존 `linker.computeMangling` / `buildMetadataForAst` 경로는 그대로
-//!   - 이 모듈은 아직 호출되지 않음 — 단위 테스트와 후속 property 비교용
-//!
-//! 후속 단계 (#1760 마이그레이션 전략):
-//!   2. 신/구 결과 property 비교 (번들 크기/이름 길이 총합/reserved/shadow)
-//!   3. Bundler 의 호출 지점 교체
+//! 현재 이 모듈이 mangling 의 라이브 경로다 — `linker.computeMangling` →
+//! `runUnifiedMangle` → `unified_mangler.mangleAll` 로 호출된다. (과거에는 단위
+//! 테스트/property 비교용 스켈레톤이었으나 bundler 호출 지점이 이미 교체됨.)
 
 const std = @import("std");
 const builtin = @import("builtin");

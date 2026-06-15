@@ -30,14 +30,14 @@
 //!
 //! ## 미등록 helper
 //!
-//! 다음 helper 들은 정의 string 상수 매핑이 아직 검증되지 않아 등록되지 않았다 —
-//! `__spreadArray`, `__arrayLikeToArray`, `__toConsumableArray`, `__toBinary`,
-//! `__name`, `__using`, `__callDispose`, `__classPrivateMethodInit`,
-//! `__classPrivateMethodGet`, `__classPrivateFieldSet`,
-//! `__classCheckPrivateStaticAccess`, `__classCheckPrivateStaticFieldDescriptor`,
-//! `__classStaticPrivateFieldSpecGet`, `__classStaticPrivateFieldSpecSet`.
-//! 미등록 helper 가 import 되면 plugin 이 null 반환 → 호출자가 기존 preamble 경로로
-//! fallback. transformer 통합 PR 에서 이 helper 들의 매핑이 추가되며 fallback 도 제거된다.
+//! 의도적으로 등록되지 않는 helper 는 `__spreadArray` 와 `__arrayLikeToArray` 둘 뿐이다:
+//! `__spreadArray` 는 transformer 가 emit 하지 않고 `__toConsumableArray` 가 대체하며,
+//! `__arrayLikeToArray` 는 spread-array 모듈 내부 closure-internal 이라 외부 export 하지
+//! 않는다 (아래 모듈 등록·테스트 참조). 그 외 `__toConsumableArray`/`__name`/`__toBinary`/
+//! `__classPrivateMethodInit`/`__classPrivateFieldSet`/`__classCheckPrivateStaticAccess`/
+//! `__using`/`__callDispose` 등은 모두 가상 모듈로 등록되어 있다.
+//! 등록되지 않은 helper 가 import 되면 plugin 이 null 반환 → 호출자가 기존 preamble 경로로
+//! fallback.
 
 const std = @import("std");
 const rt = @import("bundler/runtime_helpers.zig");

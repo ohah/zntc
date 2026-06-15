@@ -347,7 +347,7 @@ export function readFileIfExists(absPath: string): string | null {
  * 동기 stat (`existsSync`) 사용 — CLI 시작 시 한 번만 호출되므로 비용 무시 가능.
  * parent 디렉토리 traversal 은 모노레포 워크스페이스 (#2111 / Phase 3-4) 에서 처리.
  *
- * Note: Zig CLI (`src/main.zig:293` `applyZntcConfigJson`) 은 현재 `.json` 만
+ * Note: Zig CLI (`src/cli/options.zig` `applyZntcConfigJson`) 은 현재 `.json` 만
  * 직접 처리한다. 다른 확장자는 JS CLI (`zntc.mjs`) 만 자동 탐색하므로 두 경로의
  * 동작이 의도적으로 갈린다. 통합은 #2105 (Phase 2-3 bundler 옵션 매핑) 에서.
  */

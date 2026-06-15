@@ -43,8 +43,9 @@ pub const ImportBinding = struct {
     /// null = 정보 없음 (fallback: 전체 seed). BFS가 dead-scope access를 걸러내는 근거.
     namespace_used_property_stmts: ?[]const []const u32 = null,
     /// #1328 Phase 2: source 모듈의 export 심볼 참조. invalid = 미해결.
-    /// Phase 3에서 linker가 cross-module resolve로 채움. 기존 문자열 로직은
-    /// 병존 (Phase 4에서 제거).
+    /// Phase 3에서 linker가 cross-module resolve로 채움. 문자열 이름 기반
+    /// resolve 경로(`findExportBinding(imported_name)`)는 re-export 등을 위해
+    /// 영구 병존 — 제거 대상 아님.
     symbol: symbol_mod.SymbolRef = symbol_mod.SymbolRef.invalid,
     /// #1328 Phase 4c-3b: 현재 모듈의 로컬 바인딩 심볼 (semantic scope).
     /// import preamble/rename 경로에서 "현재 모듈 기준" canonical 조회에 사용.
@@ -85,7 +86,8 @@ pub const ExportBinding = struct {
     /// #1328 Phase 2: 이 export가 가리키는 심볼.
     ///   - .local: 현재 모듈의 심볼 (semantic 선언 또는 bundler 합성 `_default`)
     ///   - .re_export: source 모듈의 export 심볼 (Phase 3에서 linker가 채움)
-    /// invalid = 미해결. 기존 문자열 로직은 병존 (Phase 4에서 제거).
+    /// invalid = 미해결. 문자열 이름 기반 resolve 경로는 re-export(.re_export) 등을
+    /// 위해 영구 병존 — 제거 대상 아님.
     symbol: symbol_mod.SymbolRef = symbol_mod.SymbolRef.invalid,
 
     pub const Kind = enum {

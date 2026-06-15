@@ -351,6 +351,9 @@ zntc --bundle entry.ts                              # → ["node:fs", "node:path
 zntc --bundle --external=react entry.ts             # → ["react"] (CLI 가 비어있지 않으면 CLI 만 사용 — concat 안 함)
 ```
 
+위 "CLI 비어있지 않으면 CLI 만 사용(replace)" 정책은 실사용 진입점인 **npm CLI(`packages/core/bin/zntc.mjs`, ARRAY_KEYS 머지)** 기준이다.
+> **알려진 불일치 (2026-06-15)**: Zig 독립 바이너리(`zig-out/bin/zntc`)의 `applyZntcConfigJson` 은 config 의 `external`/`alias` 배열을 먼저 `external_list` 에 append 한 뒤 CLI flag 도 같은 리스트에 append 하므로 **concat** 으로 동작한다 (위 예시는 `["node:fs", "node:path", "react"]`). 실사용자는 npm CLI 를 쓰므로 영향은 제한적이지만, Zig CLI 를 직접 쓰는 경우 동작이 다르다.
+
 `packagesExternal`은 esbuild 호환 `--packages=external`과 동일하게 모든 bare package import를 external 처리한다. `./local`, `../local`, `/abs/local` 같은 relative/absolute import는 계속 번들 대상이다.
 
 ### 5. `tsconfig` + `zntc.config` + CLI 3-way (jsx)
@@ -530,14 +533,15 @@ dual-package (CJS + ESM 동시 출시) 라이브러리에서 ZNTC 가 어떤 ent
 
 ### main fields
 
-기본값 (`--main-fields` 미지정 시):
+기본값 (`--main-fields` 미지정 시) — `--platform` 별로 다르다 (`src/bundler/resolve_cache.zig` `defaultMainFieldsFor`):
 
 ```
-1. "module"   ← ESM 우선
-2. "main"     ← CJS fallback
+node / neutral : "module" → "main"            (ESM 우선)
+browser        : "browser" → "module" → "main"
+react-native   : "react-native" → "browser" → "main"
 ```
 
-코드: `src/bundler/resolver.zig` `resolveByMainFields`. `--main-fields=main,module` 처럼 명시 override 가능.
+코드: `src/bundler/resolve_cache.zig` `defaultMainFieldsFor` + `resolver.zig` `resolveByMainFields`. `--main-fields=main,module` 처럼 명시 override 가능 (override 시에는 platform 분기 없이 지정한 목록 그대로 사용).
 
 ### exports conditions
 
@@ -551,7 +555,7 @@ dual-package (CJS + ESM 동시 출시) 라이브러리에서 ZNTC 가 어떤 ent
 
 ### platform=node 에서도 ESM 우선 — esbuild 와 차이
 
-esbuild `--platform=node` 는 `main_fields=main,module` + `conditions=node,require,...` 로 잡혀서 **CJS 경로**를 우선한다. ZNTC 는 platform 분기 없이 항상 위 기본값 — `--platform=node` 빌드도 ESM 경로를 먼저 시도한다.
+esbuild `--platform=node` 는 `main_fields=main,module` + `conditions=node,require,...` 로 잡혀서 **CJS 경로**를 우선한다. ZNTC 의 `node`/`neutral` 기본 main fields 는 `module` → `main` 이므로 `--platform=node` 빌드도 ESM 경로를 먼저 시도한다. (`browser`/`react-native` 는 각각 `browser`/`react-native` 필드를 앞에 두지만, 둘 다 `module`/CJS-only 보다 dual-package ESM 진입을 막지는 않는다.)
 
 **효과**: fp-ts (2.16.x), lodash-es, effect 등 dual-package 라이브러리에서 ESM (`es6/`, `esm/`) 경로로 진입 → cross-module dead code elimination 이 깊게 들어가 esbuild 대비 번들 크기가 크게 줄어든다.
 
