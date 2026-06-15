@@ -110,6 +110,19 @@ jobs:
       - name: Audit recursive AST walkers (#4123)
         run: bun scripts/audit-recursive-ast-walkers.mjs
 
+      # error_codes.zig 에 코드를 추가하고 generate-error-docs.mjs 를 재실행하지 않으면
+      # docsUrl() 이 존재하지 않는 페이지로 404 링크를 만든다 (#4421). 생성기를 돌려
+      # 산출물이 커밋과 일치하는지 검사 — 불일치(신규/수정 페이지)면 fail.
+      - name: Audit error docs sync (#4421)
+        run: |
+          bun scripts/generate-error-docs.mjs
+          changed="$(git status --porcelain documents/src/content/docs/reference/errors documents/src/content/docs/en/reference/errors)"
+          if [ -n "$changed" ]; then
+            echo "::error::error 문서가 error_codes.zig 와 동기화되지 않았습니다. 'node scripts/generate-error-docs.mjs' 실행 후 커밋하세요."
+            echo "$changed"
+            exit 1
+          fi
+
   napi:
     name: NAPI Build & Test
     runs-on: ${{ matrix.os }}
