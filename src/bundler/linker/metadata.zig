@@ -359,6 +359,19 @@ fn mergeUnifiedPhaseB(
     }
 }
 
+/// record `rec_i` 에 속한 import binding 이 있는지 — `namespace_only=true` 면 namespace
+/// binding 한정. 대형 모듈은 precompute 된 비트셋으로 O(1), 작은 모듈(bitset=null)은
+/// import_bindings 선형 스캔(맵 alloc 회피). 두 호출처(has_binding/has_namespace)가 동일
+/// 분기 로직을 공유해 드리프트 차단.
+fn recordHasBindingAt(bitset: ?std.DynamicBitSet, import_bindings: []const ImportBinding, rec_i: usize, namespace_only: bool) bool {
+    if (bitset) |b| return b.isSet(rec_i);
+    for (import_bindings) |ib| {
+        if (ib.import_record_index != rec_i) continue;
+        if (!namespace_only or ib.kind == .namespace) return true;
+    }
+    return false;
+}
+
 /// transformer 이후의 ast를 기반으로 LinkingMetadata를 생성한다.
 /// skip_nodes와 renames가 ast의 노드 인덱스와 일치.
 pub fn buildMetadataForAst(
@@ -1136,6 +1149,25 @@ pub fn buildMetadataForAst(
             defer hoisted_specifiers.deinit(self.allocator);
             var linked_specifiers: std.StringHashMapUnmanaged(void) = .empty;
             defer linked_specifiers.deinit(self.allocator);
+            // record 별 binding/namespace-binding 존재 여부를 1회 precompute → 아래 record
+            // 루프가 record 마다 `import_bindings` 전체를 선형 스캔(O(records×bindings)=O(N²))
+            // 하지 않도록. mega-entry/대형 barrel 의 wrapped 경로 핫스팟(dev=전 모듈 wrap).
+            // **임계값 초과(대형 fan-out)만** 비트셋 — dev 의 수많은 작은 wrapped 모듈마다
+            // (병렬 emit 에서 locked) alloc 이 누적되지 않도록 작은 모듈은 inline 스캔 유지.
+            const REC_INDEX_THRESHOLD = 64;
+            var rec_has_binding: ?std.DynamicBitSet = null;
+            var rec_has_namespace: ?std.DynamicBitSet = null;
+            defer if (rec_has_binding) |*b| b.deinit();
+            defer if (rec_has_namespace) |*b| b.deinit();
+            if (m.import_records.len > REC_INDEX_THRESHOLD) {
+                rec_has_binding = try std.DynamicBitSet.initEmpty(self.allocator, m.import_records.len);
+                rec_has_namespace = try std.DynamicBitSet.initEmpty(self.allocator, m.import_records.len);
+                for (m.import_bindings) |ib| {
+                    if (ib.import_record_index >= m.import_records.len) continue;
+                    rec_has_binding.?.set(ib.import_record_index);
+                    if (ib.kind == .namespace) rec_has_namespace.?.set(ib.import_record_index);
+                }
+            }
             for (m.import_records, 0..) |rec, rec_i| {
                 try linked_specifiers.put(self.allocator, rec.specifier, {});
                 if (rec.resolved.isNone()) {
@@ -1160,9 +1192,7 @@ pub fn buildMetadataForAst(
                     // 처리한다. 원본 import_declaration을 남기면 body에서 raw
                     // require/destructuring이 다시 emit된다. side-effect-only import는
                     // binding 처리가 없으므로 유지한다.
-                    const has_binding = for (m.import_bindings) |ib| {
-                        if (ib.import_record_index == rec_i) break true;
-                    } else false;
+                    const has_binding = recordHasBindingAt(rec_has_binding, m.import_bindings, rec_i, false);
                     if (has_binding) {
                         try hoisted_specifiers.put(self.allocator, rec.specifier, {});
                     }
@@ -1174,10 +1204,7 @@ pub fn buildMetadataForAst(
                     // `(init_removed(), __toCommonJS(exports_removed))` orphan 호출이 남아
                     // RN release 런타임에서 ReferenceError 가 난다.
                     // self-import는 제외 (순환 자기 참조 시 body codegen이 처리).
-                    const has_namespace = for (m.import_bindings) |ib| {
-                        if (ib.import_record_index == rec_i and ib.kind == .namespace)
-                            break true;
-                    } else false;
+                    const has_namespace = recordHasBindingAt(rec_has_namespace, m.import_bindings, rec_i, true);
                     if (!has_namespace or (self.tree_shaker_active and !tmod.is_included)) {
                         try hoisted_specifiers.put(self.allocator, rec.specifier, {});
                     }
