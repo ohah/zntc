@@ -211,6 +211,48 @@ describe('Zig CLI: zntc.config.json bundler-only 옵션 (#2105)', () => {
     expect(out).not.toContain('FROM_CONFIG');
   });
 
+  test('define: CLI --define 가 config 의 같은 키를 override, config-only 키는 유지 (#4412)', async () => {
+    // 이전엔 config define 이 CLI 보다 앞에 쌓이고 소비자가 first-match-wins 라
+    // config 값이 이겼다(CLI > config 위반). 키 단위 last-wins 로 CLI 가 이겨야 한다.
+    const r = await runConfigBundle({
+      files: {
+        'index.ts': `console.log(__BUILD__, __VER__);`,
+        'zntc.config.json': JSON.stringify({
+          define: [
+            { key: '__BUILD__', value: '"production"' },
+            { key: '__VER__', value: '"v1.0"' },
+          ],
+        }),
+      },
+      args: ['--define:__BUILD__="staging"'],
+    });
+    cleanup = r.cleanup;
+
+    expect(r.exitCode).toBe(0);
+    const out = readFileSync(r.outFile!, 'utf8');
+    expect(out).toContain('"staging"'); // CLI 가 같은 키를 override
+    expect(out).toContain('"v1.0"'); // config-only 키는 유지
+    expect(out).not.toContain('"production"'); // config 값은 덮임
+    expect(out).not.toContain('__BUILD__');
+  });
+
+  test('external: CLI --external 가 config external 을 대체 (concat 아님, #4412)', async () => {
+    // config 의 external(ext-a)은 CLI --external 이 주어지면 버려진다(concat 금지).
+    // 따라서 ext-a 는 더 이상 external 이 아니어서 resolve 실패로 빌드가 실패해야 한다.
+    // concat(이전 버그)이었다면 ext-a 가 external 로 남아 성공했을 것.
+    const r = await runConfigBundle({
+      files: {
+        'index.ts': `import "ext-a";\nconsole.log(1);`,
+        'zntc.config.json': JSON.stringify({ external: ['ext-a'] }),
+      },
+      args: ['--format=esm', '--external=ext-b'],
+    });
+    cleanup = r.cleanup;
+
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stdout + r.stderr).toContain('ext-a');
+  });
+
   test('config 부재: 기존 동작 회귀 없음', async () => {
     const fixture = await createFixture({
       'index.ts': "console.log('NO_CONFIG');",
