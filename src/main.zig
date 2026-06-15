@@ -431,6 +431,11 @@ pub fn main(init: std.process.Init) !void {
 
     // --serve (정적 서버 또는 --bundle과 조합하여 번들 서빙)
     if (opts.is_serve) {
+        // standalone --serve 는 브라우저 전용 dev 서버(platform=browser 고정)다. RN dev 는
+        // 별도 서버(`zntc dev` → @zntc/react-native serveRn)를 쓰므로 여기선 rn-version 무시.
+        if (opts.rn_version != null) {
+            try stderr.print("zntc: warning: --rn-version ignored by standalone --serve (browser-only); use `zntc dev` for React Native\n", .{});
+        }
         return standalone_modes.runServe(allocator, io, .{
             .is_bundle = opts.is_bundle,
             .input_file = opts.input_file,
@@ -731,9 +736,12 @@ pub fn main(init: std.process.Init) !void {
             .verbatim_module_syntax = opts.verbatim_module_syntax orelse false,
             .unsupported = opts.unsupported,
             // --rn-version 매트릭스를 번들러로 전달 (applyPlatformPreset 가 blunt 프리셋 대신 사용).
-            // rn_version 이 있으면 위 react_native 블록에서 opts.unsupported 가 이미 매트릭스로
-            // 설정됨 — 재파싱 대신 재사용해 drift 방지.
-            .rn_version_matrix = if (opts.rn_version != null) opts.unsupported else null,
+            // spec 에서 직접 재도출 — opts.unsupported 에 의존하지 않아(read-after-write 결합 제거)
+            // 제어흐름 변경에 견고. 동일 pure 함수라 재파싱해도 drift 없음. (parse 시 검증됨 → .?)
+            .rn_version_matrix = if (opts.rn_version) |spec|
+                lib.transformer.TransformOptions.compat.fromReactNativeVersionSpec(spec)
+            else
+                null,
             .conditions = opts.conditions_list.items,
             .preserve_symlinks = opts.preserve_symlinks,
             .resolve_symlink_siblings = opts.resolve_symlink_siblings,

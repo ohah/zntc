@@ -788,6 +788,9 @@ pub const Bundler = struct {
     /// 사용자가 --target으로 지정한 값은 무시된다 (Hermes는 ES 버전으로 표현 불가능한
     /// 부분 지원 조합이라 target 직교성이 깨짐). 관련 이슈: #1283.
     fn applyPlatformPreset(opts: *BundleOptions) void {
+        // 불변식: rn_version_matrix 는 platform==react_native 일 때만 적용된다. rnVersion 은
+        // 모든 진입점(CLI/NAPI)에서 platform=react_native 를 함의하므로, 비-RN 플랫폼에
+        // rn_version_matrix 가 실린 조합은 도달 불가 — 만약 그렇게 호출되면 매트릭스는 무시된다.
         if (opts.platform == .react_native) {
             // --rn-version 이 있으면 버전별 정밀 매트릭스, 없으면 기존 blunt 프리셋.
             opts.unsupported = opts.rn_version_matrix orelse compat.fromHermesPreset();
