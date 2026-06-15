@@ -858,6 +858,15 @@ interface BuildOptionsCommon {
   entryPoints: string[];
   format?: 'esm' | 'cjs' | 'iife' | 'umd' | 'amd';
   external?: string[];
+  /**
+   * React Native version target — e.g. `'0.80'`, `'>=0.74'`, `'<=0.84'`, `'==0.76'`.
+   * Implies `platform: 'react-native'` and applies a per-version downlevel matrix
+   * derived from the RN javascript-environment docs (syntax the docs list as supported
+   * stays native; everything else is downleveled) instead of the blunt Hermes preset.
+   * `>=`/bare/`==` target that version; `<=`/`<` use the most conservative matrix.
+   * Conflicts with `platform: 'node' | 'neutral'`.
+   */
+  rnVersion?: string;
   minify?: boolean;
   minifyWhitespace?: boolean;
   minifyIdentifiers?: boolean;
@@ -2630,6 +2639,20 @@ function prepareNapiOptions(options: BuildOptions): {
   cleanup: () => void;
 } {
   const napiOptions: Record<string, unknown> = { ...options };
+  // rnVersion 검증 — native parseRnVersion 과 동일 의미(연산자? major.minor[.patch]).
+  // 잘못된 값을 NAPI 가 silent 하게 blunt 프리셋으로 흘려보내지 않도록 여기서 명시 에러.
+  if (typeof options.rnVersion === 'string') {
+    if (!/^\s*(>=|<=|==|>|<)?\s*\d+\.\d+(\.\d+)?\s*$/.test(options.rnVersion)) {
+      throw new Error(
+        `Invalid rnVersion '${options.rnVersion}' (expected e.g. '0.74', '>=0.74', '<=0.84', '==0.76')`,
+      );
+    }
+    if (options.platform === 'node' || options.platform === 'neutral') {
+      throw new Error(
+        `rnVersion conflicts with platform: '${options.platform}' (rnVersion implies react-native)`,
+      );
+    }
+  }
   const define = withDefaultBuildDefines(options);
   if (define) napiOptions.define = define;
   delete napiOptions.write;

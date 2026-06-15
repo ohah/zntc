@@ -727,6 +727,135 @@ pub fn fromHermesPreset() UnsupportedFeatures {
     };
 }
 
+// ─── React Native 버전별 다운레벨 매트릭스 (`--rn-version`) ───
+//
+// `--platform=react-native` 단독은 기존대로 `fromHermesPreset()` (blunt, 사실상 ES5).
+// `--rn-version <spec>` 을 함께 주면 RN 버전별 정밀 매트릭스가 적용된다.
+//
+// 진실 소스: reactnative.dev/docs/<ver>/javascript-environment 의 "Syntax Transformers" 목록.
+// 목록에 있는 기능(class/async/destructuring/optional-chaining 등)은 네이티브로 두고, 목록에
+// 없는 기능만 다운레벨한다. fromHermesPreset(blunt) 과는 *독립적으로* 도출된 집합 — 일부 regex
+// 기능(lookbehind/dup-named/modifiers)은 문서에 없어 blunt 보다 더 많이 다운레벨할 수 있다
+// (= fromHermesPreset 의 부분집합이 아니다).
+//
+// 추가로 알려진 Hermes 런타임 버그 안전망(RN_SAFETY_NET)을 항상 merge 한다. 이 둘은 Hermes
+// 가 *문법*은 지원하지만 런타임 평가 버그가 있어 다운레벨이 필요(semantic-preserving 절대원칙):
+//   - arrow: object-literal 의 arrow-ternary 평가 뒤 후속 prop 누락 (#1299)
+//   - block_scoping: `for (let …)` 가 object literal 평가를 깨뜨려 후속 prop 누락 (#1299)
+
+/// #1299 — Hermes 런타임 버그 회피용 항상-다운레벨 집합. RN 버전과 무관하게 merge.
+/// (특정 RN/Hermes 버전에서 수정 확인되면 버전 게이트로 완화 가능 — 현재는 증거 없어 전 버전 유지.)
+const RN_SAFETY_NET = UnsupportedFeatures{ .arrow = true, .block_scoping = true };
+
+/// padding 비트(_)를 제외한 정의된 feature 비트 마스크 (bit 0..30 = 31 features).
+const ALL_FEATURES_MASK: u32 = (1 << 31) - 1;
+
+/// RN 문서(reactnative.dev/docs/<ver>/javascript-environment)의 "Syntax Transformers"
+/// 목록에 있는 = "지원"(네이티브 유지, 다운레벨 안 함) 기능. set=지원.
+/// 목록에 *없는* 기능은 다운레벨한다 (Hermes 가 실제로 지원해도 문서 기준을 따름 — 사용자 결정).
+///   - generator / new_target / logical_assignment: 문서 미기재 → 다운레벨.
+///   - regex_lookbehind: 문서 미기재 → unsupported 유지(query-only). Hermes lookbehind 지원이
+///     미검증이라 lookbehind 기반 m-modifier 재작성을 *비활성*하는 게 안전(broken regex 방지).
+///   - hashbang: JS 문법 기능이 아니라 문서에 없음 → 여기서 "supported"로 표시해 strip 하지 않음
+///     (fromHermesPreset 과 동일 동작; 복소 여집합이 의도치 않게 shebang 을 제거하는 것 방지).
+/// 진실 소스 검증(2026-06-15): 0.70 ~ 0.85 + latest 의 목록이 전부 byte 동일 → 단일 매트릭스.
+const RN_DOC_SUPPORTED = UnsupportedFeatures{
+    .arrow = true, // ES2015 Arrow functions
+    .block_scoping = true, // ES2015 Block scoping / Constants
+    .spread = true, // ES2015 Call spread / Rest Params
+    .class = true, // ES2015 Classes (+ ES2022 public Class Fields)
+    .object_extensions = true, // ES2015 Computed / Concise method / Shorthand
+    .destructuring = true, // ES2015 Destructuring
+    .for_of = true, // ES2015 for…of
+    .default_params = true, // ES2015 Parameters (default/rest/destructure)
+    .regex_sticky = true, // ES2015 Sticky Regex /y
+    .template_literal = true, // ES2015 Template Literals
+    .unicode_brace_escape = true, // ES2015 Literals \u{} / Unicode Regex /u
+    .exponentiation = true, // ES2016 Exponentiation **
+    .async_await = true, // ES2017 Async Functions
+    .object_spread = true, // ES2018 Object Spread
+    .optional_catch_binding = true, // ES2019 Optional Catch Binding
+    .nullish_coalescing = true, // ES2020 Nullish Coalescing ??
+    .optional_chaining = true, // ES2020 Optional Chaining ?.
+    .hashbang = true, // 문서 외 — shebang 은 strip 안 함 (fromHermesPreset 정합)
+};
+
+/// RN minor 버전별 "지원 기능" 변경점 (오름차순). 사이 버전은 직전 변경점을 상속한다
+/// (compat_table 과 동일한 sparse 표현 — 모든 minor 를 커버하되 변경점만 기록).
+/// 첫 엔트리(0.70) = 지원 최저 RN. 그 미만은 가장 보수적으로 0.70 데이터로 클램프.
+/// 현재 문서가 전 버전 동일하므로 변경점 1개. RN 이 목록을 바꾸면 여기에 추가하면 된다.
+const RnSupportChangePoint = struct { minor: u16, supported: UnsupportedFeatures };
+const rn_support_changepoints = [_]RnSupportChangePoint{
+    .{ .minor = 70, .supported = RN_DOC_SUPPORTED },
+};
+
+/// (major, minor) → 지원 기능 집합. 가장 높은 `minor <= 요청` 변경점을 상속.
+/// 최저 변경점 미만이면 최저로 클램프(가장 보수적), major>0(미래 RN 1.x)이면 최신 변경점.
+fn rnSupportedFor(major: u16, minor: u16) UnsupportedFeatures {
+    if (major == 0 and minor < rn_support_changepoints[0].minor) {
+        return rn_support_changepoints[0].supported;
+    }
+    var result = rn_support_changepoints[0].supported;
+    for (rn_support_changepoints) |cp| {
+        if (major > 0 or minor >= cp.minor) result = cp.supported;
+    }
+    return result;
+}
+
+/// RN 버전(major.minor) → UnsupportedFeatures.
+/// = (문서 지원 기능의 여집합) + #1299 안전망(arrow/block_scoping 강제 다운레벨).
+pub fn fromReactNativeVersion(major: u16, minor: u16) UnsupportedFeatures {
+    const supported = @as(u32, @bitCast(rnSupportedFor(major, minor)));
+    const unsupported = (~supported) & ALL_FEATURES_MASK;
+    return (@as(UnsupportedFeatures, @bitCast(unsupported))).merge(RN_SAFETY_NET);
+}
+
+/// `major.minor[.patch]` 파싱 (patch 무시). digit/dot 외 문자가 있으면 null.
+/// RN 버전은 항상 `major.minor` 형식 — 점 없는 단일 정수("74")는 거부한다(0.74 오인 방지).
+fn parseRnVersion(s: []const u8) ?struct { major: u16, minor: u16 } {
+    if (s.len == 0) return null;
+    for (s) |c| {
+        if (!((c >= '0' and c <= '9') or c == '.')) return null;
+    }
+    const dot = std.mem.indexOfScalar(u8, s, '.') orelse return null; // 점 필수
+    if (dot == 0) return null; // ".74" — major 비어있음
+    const major = std.fmt.parseInt(u16, s[0..dot], 10) catch return null;
+    const rest = s[dot + 1 ..];
+    const minor_end = std.mem.indexOfScalar(u8, rest, '.') orelse rest.len;
+    if (minor_end == 0) return null; // "0." — minor 비어있음
+    const minor = std.fmt.parseInt(u16, rest[0..minor_end], 10) catch return null;
+    return .{ .major = major, .minor = minor };
+}
+
+/// `--rn-version` 스펙 문자열 → UnsupportedFeatures. 파싱 실패 시 null.
+/// 연산자 의미(안전 우선):
+///   - `>=` / `>` / `==` / 연산자 없음 → 그 버전 floor (newer 는 superset 이므로 안전)
+///   - `<=` / `<` → 가장 보수적(테이블 최저) — "그 버전 *이하* 어디서든 동작" 보장
+pub fn fromReactNativeVersionSpec(spec: []const u8) ?UnsupportedFeatures {
+    var s = std.mem.trim(u8, spec, " \t");
+    if (s.len == 0) return null;
+
+    var conservative_upper = false; // `<=` / `<` 는 하한 미상 → 최보수
+    if (std.mem.startsWith(u8, s, ">=")) {
+        s = s[2..];
+    } else if (std.mem.startsWith(u8, s, "<=")) {
+        s = s[2..];
+        conservative_upper = true;
+    } else if (std.mem.startsWith(u8, s, "==")) {
+        s = s[2..];
+    } else if (std.mem.startsWith(u8, s, ">")) {
+        s = s[1..];
+    } else if (std.mem.startsWith(u8, s, "<")) {
+        s = s[1..];
+        conservative_upper = true;
+    }
+    s = std.mem.trim(u8, s, " \t");
+
+    const ver = parseRnVersion(s) orelse return null;
+    if (conservative_upper) return fromReactNativeVersion(0, 0); // 최저로 클램프
+    return fromReactNativeVersion(ver.major, ver.minor);
+}
+
 /// ESTarget → UnsupportedFeatures.
 /// 타겟 ES 버전보다 높은 버전에서 도입된 feature를 unsupported로 설정.
 pub fn fromESTarget(target: ESTarget) UnsupportedFeatures {
@@ -1201,4 +1330,98 @@ test "regex_lookbehind — safari 16.4 경계 + es2018 (#4210 m-anchor 게이트
     try std.testing.expect(unsupportedFeatures(&.{.{ .engine = .hermes, .major = 0, .minor = 12 }}).regex_lookbehind);
     // regex_lookbehind 는 lowering 트리거가 아님 — needsRegexLowering 에 미포함.
     try std.testing.expect(!(UnsupportedFeatures{ .regex_lookbehind = true }).needsRegexLowering());
+}
+
+// ─── React Native 버전 타겟 (`--rn-version`) ───
+//
+// `--platform=react-native` 단독은 기존대로 `fromHermesPreset()` (보수적, 사실상 ES5).
+// `--rn-version` 을 함께 주면 RN 버전별 정밀 매트릭스(`fromReactNativeVersion`)가 적용된다:
+//   - @react-native/babel-preset (hermes-stable profile) 패리티 = Hermes 네이티브 지원
+//     기능은 그대로 두고 실제 갭만 다운레벨.
+//   - + 알려진 Hermes 런타임 버그 안전망 {arrow, block_scoping} (#1299) 은 항상 유지.
+// 연산자 의미(안전 우선): `>=`/`>`/`==`/bare → 그 버전 floor, `<=`/`<` → 가장 보수적(테이블 최저).
+
+test "RN spec — bare / >= / == 는 동일 floor 로 해석" {
+    const bare = fromReactNativeVersionSpec("0.74").?;
+    const gte = fromReactNativeVersionSpec(">=0.74").?;
+    const eq = fromReactNativeVersionSpec("==0.74").?;
+    try std.testing.expectEqual(@as(u32, @bitCast(bare)), @as(u32, @bitCast(gte)));
+    try std.testing.expectEqual(@as(u32, @bitCast(bare)), @as(u32, @bitCast(eq)));
+}
+
+test "RN spec — 공백/연산자 변형 + 잘못된 입력" {
+    try std.testing.expect(fromReactNativeVersionSpec(">= 0.74") != null);
+    try std.testing.expect(fromReactNativeVersionSpec(" 0.80 ") != null);
+    try std.testing.expect(fromReactNativeVersionSpec("<=0.84") != null);
+    // 잘못된 입력 → null (CLI 가 친절한 에러로 안내)
+    try std.testing.expectEqual(@as(?UnsupportedFeatures, null), fromReactNativeVersionSpec(""));
+    try std.testing.expectEqual(@as(?UnsupportedFeatures, null), fromReactNativeVersionSpec("garbage"));
+    try std.testing.expectEqual(@as(?UnsupportedFeatures, null), fromReactNativeVersionSpec("0.x"));
+    try std.testing.expectEqual(@as(?UnsupportedFeatures, null), fromReactNativeVersionSpec(">=abc"));
+    // 점 없는 단일 정수는 거부 (RN 은 항상 0.minor — "74" 를 0.74 로 오인하지 않도록)
+    try std.testing.expectEqual(@as(?UnsupportedFeatures, null), fromReactNativeVersionSpec("74"));
+    try std.testing.expectEqual(@as(?UnsupportedFeatures, null), fromReactNativeVersionSpec(".74"));
+    try std.testing.expectEqual(@as(?UnsupportedFeatures, null), fromReactNativeVersionSpec("0."));
+}
+
+test "RN target — arrow/block_scoping 안전망은 모든 버전에서 항상 유지 (#1299)" {
+    inline for (.{ "0.70", "0.74", "0.80", "0.84", "0.99" }) |v| {
+        const f = fromReactNativeVersionSpec(v).?;
+        try std.testing.expect(f.arrow); // Hermes object-literal arrow-ternary 버그 회피
+        try std.testing.expect(f.block_scoping); // Hermes for-let 평가 버그 회피
+    }
+}
+
+test "RN target — using / top_level_await 는 모든 RN 버전에서 미지원" {
+    inline for (.{ "0.70", "0.84" }) |v| {
+        const f = fromReactNativeVersionSpec(v).?;
+        try std.testing.expect(f.using); // ES2025, Hermes 미구현
+        try std.testing.expect(f.top_level_await); // Hermes 미구현 (Metro IIFE 래핑)
+    }
+}
+
+test "RN target — 문서에 있는 지원 기능은 네이티브 유지 (listed = supported)" {
+    // 진실 소스 = reactnative.dev/docs/0.84/javascript-environment 의 Syntax Transformers.
+    // 목록에 있는 기능은 다운레벨하지 않는다 (fromHermesPreset 과 달리 ES5 로 안 내림).
+    const f = fromReactNativeVersionSpec("0.84").?;
+    try std.testing.expect(!f.class); // ES2015 Classes
+    try std.testing.expect(!f.async_await); // ES2017
+    try std.testing.expect(!f.optional_chaining); // ES2020
+    try std.testing.expect(!f.nullish_coalescing); // ES2020
+    try std.testing.expect(!f.exponentiation); // ES2016
+    try std.testing.expect(!f.object_spread); // ES2018
+    try std.testing.expect(!f.optional_catch_binding); // ES2019
+}
+
+test "RN target — 문서에 없는 기능은 다운레벨 (listed 외 = transpile)" {
+    const f = fromReactNativeVersionSpec("0.84").?;
+    try std.testing.expect(f.logical_assignment); // ES2021 — 문서 미기재
+    try std.testing.expect(f.class_static_block); // static block (≠ ES2022 static property)
+    try std.testing.expect(f.top_level_await); // 문서 미기재
+    try std.testing.expect(f.using); // ES2025 — 문서 미기재
+}
+
+test "RN target — 단조성: 구버전 unsupported ⊇ 신버전 unsupported" {
+    const old = @as(u32, @bitCast(fromReactNativeVersion(0, 70)));
+    const new = @as(u32, @bitCast(fromReactNativeVersion(0, 84)));
+    try std.testing.expectEqual(new, old & new); // new ⊆ old
+}
+
+test "RN target — 범위 밖 클램프" {
+    // 최저(0.70) 미만 → 가장 보수적 = 0.70 과 동일
+    try std.testing.expectEqual(
+        @as(u32, @bitCast(fromReactNativeVersion(0, 70))),
+        @as(u32, @bitCast(fromReactNativeVersionSpec("0.50").?)),
+    );
+    // 최신 초과 → 최신 테이블 엔트리(0.85)와 동일
+    try std.testing.expectEqual(
+        @as(u32, @bitCast(fromReactNativeVersion(0, 85))),
+        @as(u32, @bitCast(fromReactNativeVersionSpec("0.999").?)),
+    );
+}
+
+test "RN target — <= / < 는 가장 보수적(테이블 최저)" {
+    const oldest = @as(u32, @bitCast(fromReactNativeVersion(0, 70)));
+    try std.testing.expectEqual(oldest, @as(u32, @bitCast(fromReactNativeVersionSpec("<=0.84").?)));
+    try std.testing.expectEqual(oldest, @as(u32, @bitCast(fromReactNativeVersionSpec("<0.84").?)));
 }

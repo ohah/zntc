@@ -110,6 +110,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'format',
   'platform',
   'target',
+  'rnVersion',
   'browserslist',
   'runtimePolyfills',
   'coreJs',

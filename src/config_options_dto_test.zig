@@ -224,6 +224,7 @@ const ts_buildoptions_only_allowlist = [_][]const u8{
     "platform", // discriminated union 으로 처리됨
     "target",
     "browserslist",
+    "rnVersion", // RN 버전 타겟 — NAPI 가 내부 rn_version_matrix 로 해석 (1:1 DTO 필드 아님)
     "runtimePolyfills", // JS wrapper가 core-js compat 후보를 native graph plan 으로 전달
     "coreJs", // runtimePolyfills 전용 core-js 버전 힌트
     "plugins",

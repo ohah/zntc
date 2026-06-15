@@ -255,6 +255,10 @@ pub const BundleOptions = struct {
     verbatim_module_syntax: bool = false,
     /// Unsupported features bitmask (ES/엔진 타겟에서 변환됨)
     unsupported: compat.UnsupportedFeatures = .{},
+    /// --rn-version 으로 지정된 RN 버전별 정밀 다운레벨 매트릭스 (진실 소스 = RN 문서).
+    /// null 이면 applyPlatformPreset 가 blunt fromHermesPreset 적용(기존 동작),
+    /// non-null 이면 이 값을 unsupported 로 사용.
+    rn_version_matrix: ?compat.UnsupportedFeatures = null,
     /// package.json exports 커스텀 조건 (--conditions, esbuild 호환)
     conditions: []const []const u8 = &.{},
     /// symlink를 따라가지 않고 링크 자체 경로로 해석 (--preserve-symlinks)
@@ -785,7 +789,8 @@ pub const Bundler = struct {
     /// 부분 지원 조합이라 target 직교성이 깨짐). 관련 이슈: #1283.
     fn applyPlatformPreset(opts: *BundleOptions) void {
         if (opts.platform == .react_native) {
-            opts.unsupported = compat.fromHermesPreset();
+            // --rn-version 이 있으면 버전별 정밀 매트릭스, 없으면 기존 blunt 프리셋.
+            opts.unsupported = opts.rn_version_matrix orelse compat.fromHermesPreset();
         }
     }
 

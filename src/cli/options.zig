@@ -172,6 +172,11 @@ pub const CliOptions = struct {
     main_fields_list: std.ArrayList([]const u8) = .empty,
     /// React Native 서브 플랫폼 (--rn-platform=ios|android)
     rn_platform: RnPlatform = .none,
+    /// React Native 타겟 버전 스펙 (--rn-version=">=0.74" / "0.80" / "<=0.84" / "==0.76").
+    /// 설정 시 platform=react-native 함의 + 버전별 정밀 다운레벨 매트릭스 적용
+    /// (blunt fromHermesPreset 대신, 진실 소스 = RN javascript-environment 문서).
+    /// raw 스펙 보관 — 유효성 검증은 파싱 시점에 완료.
+    rn_version: ?[]const u8 = null,
     /// --outbase: 엔트리 포인트 공통 기준 경로 (출력 디렉토리 구조 결정)
     outbase: ?[]const u8 = null,
     /// --packages=external: 모든 bare import를 external 처리
@@ -766,6 +771,22 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator,
                 try stderr.print("zntc: unknown --rn-platform '{s}' (expected: ios, android)\n", .{val});
                 std.process.exit(1);
             };
+        } else if (std.mem.startsWith(u8, arg, "--rn-version=") or std.mem.eql(u8, arg, "--rn-version")) {
+            // `--rn-version=<spec>` 와 `--rn-version <spec>` 두 형식 모두 허용.
+            const val = if (std.mem.startsWith(u8, arg, "--rn-version=")) arg["--rn-version=".len..] else blk: {
+                i += 1;
+                if (i >= args.len) {
+                    try stderr.print("zntc: --rn-version requires a value (e.g. '>=0.74')\n", .{});
+                    std.process.exit(1);
+                }
+                break :blk args[i];
+            };
+            // 파싱 시점에 검증 — 잘못된 스펙은 즉시 에러.
+            if (lib.transformer.TransformOptions.compat.fromReactNativeVersionSpec(val) == null) {
+                try stderr.print("zntc: invalid --rn-version '{s}' (expected e.g. '0.74', '>=0.74', '<=0.84', '==0.76')\n", .{val});
+                std.process.exit(1);
+            }
+            opts.rn_version = val;
         } else if (std.mem.eql(u8, arg, "--format=iife")) {
             opts.bundle_format = .iife;
             opts.bundle_format_explicit = true;
