@@ -331,13 +331,22 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// 새 스코프를 생성하고 진입한다. 반환값: 이전 스코프 ID (나갈 때 복원용).
+    ///
+    /// strict mode 는 하향 sticky 다(ECMAScript): 부모 스코프가 strict 면 자식도
+    /// strict. 호출부는 모듈-전역 플래그(`self.is_strict_mode`)만 넘기므로, class
+    /// body(항상 strict, 10.2.1) 안의 메서드/블록이 strict 를 잃지 않도록 여기서
+    /// 부모의 `is_strict` 를 OR 한다.
     fn enterScope(self: *SemanticAnalyzer, kind: ScopeKind, is_strict: bool) AllocError!ScopeId {
         const parent = self.current_scope;
+        const parent_strict = if (!parent.isNone())
+            self.scopes.items[parent.toIndex()].is_strict
+        else
+            false;
         const new_id: ScopeId = @enumFromInt(@as(u32, @intCast(self.scopes.items.len)));
         try self.scopes.append(self.allocator, .{
             .parent = parent,
             .kind = kind,
-            .is_strict = is_strict,
+            .is_strict = is_strict or parent_strict,
         });
         // scope_maps는 scopes와 동일 인덱스를 공유 — 빈 HashMap 추가
         try self.scope_maps.append(self.allocator, .empty);
@@ -834,12 +843,15 @@ pub const SemanticAnalyzer = struct {
         // existing의 flags가 new의 excludes와 겹치면 재선언 불가
         if (existing_flags.intersects(new_flags.excludes())) {
             // 특수 케이스: parameter + parameter → non-strict에서 허용 (function f(a, a) {})
-            if (existing == .parameter and new == .parameter and !self.is_strict_mode) {
+            // isCurrentStrict() 로 판단해야 sloppy .js 의 class 메서드(항상 strict) 안
+            // 중복 파라미터가 올바르게 거부된다.
+            if (existing == .parameter and new == .parameter and !self.isCurrentStrict()) {
                 return true;
             }
             // sloppy mode var scope에서 function/var 재선언 허용 (ECMAScript B.3.2-B.3.5):
-            // function + function, var + function, function + var 조합
-            if (!self.is_strict_mode) {
+            // function + function, var + function, function + var 조합. Annex B 는 sloppy
+            // 전용이므로 현재 스코프 기준(class body strict 상속 반영)으로 판단한다.
+            if (!self.isCurrentStrict()) {
                 const is_fn_fn = existing.isFunctionLike() and new.isFunctionLike();
                 const is_var_fn = (existing == .variable_var and new.isFunctionLike()) or
                     (existing.isFunctionLike() and new == .variable_var);

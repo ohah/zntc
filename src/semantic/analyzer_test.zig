@@ -53,6 +53,37 @@ test "SemanticAnalyzer: var redeclaration is allowed" {
     try std.testing.expect(ana.errors.items.len == 0);
 }
 
+test "SemanticAnalyzer: class method body inherits strict — duplicate block function is error (#4414)" {
+    // class body 는 항상 strict(10.2.1) 이고 strict 는 하향 sticky 다. sloppy 파일이라도
+    // 메서드 body 안 블록에서 중복 function 선언은 거부되어야 한다(Annex B 미적용).
+    var scanner = try Scanner.init(std.testing.allocator, "class C { m() { { function f(){} function f(){} } } }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len > 0);
+}
+
+test "SemanticAnalyzer: sloppy block duplicate function is allowed (Annex B, #4414 control)" {
+    // 대조군: class 밖 sloppy 블록은 strict 가 아니므로 Annex B B.3.2 로 허용되어야 한다.
+    var scanner = try Scanner.init(std.testing.allocator, "{ function f(){} function f(){} }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len == 0);
+}
+
 test "SemanticAnalyzer: function declaration creates symbol" {
     var scanner = try Scanner.init(std.testing.allocator, "function foo() {}");
     defer scanner.deinit();
