@@ -1813,11 +1813,18 @@ fn foldUnary(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
             if (operand.tag == .numeric_literal) {
                 if (numeric.parseLiteral(ast, operand)) |val| {
                     if (numeric.formatNumber(ast, -val)) |span| {
-                        replaceNode(ast, node_idx, .{
-                            .tag = .numeric_literal,
-                            .span = span,
-                            .data = .{ .none = 0 },
-                        }, changed);
+                        // binary fold 와 동일한 size 가드: fold 결과가 원본보다 길면
+                        // 접지 않는다. `-1e21` 의 {d} 전개(`-1000…0`, 23자)가 원본
+                        // `-1e21`(5자)보다 커지는 팽창을 막는다 (esbuild 기준).
+                        const orig_len = (node.span.end & ~ast_mod.Ast.STRING_TABLE_BIT) -| (node.span.start & ~ast_mod.Ast.STRING_TABLE_BIT);
+                        const new_len = (span.end & ~ast_mod.Ast.STRING_TABLE_BIT) -| (span.start & ~ast_mod.Ast.STRING_TABLE_BIT);
+                        if (new_len <= orig_len) {
+                            replaceNode(ast, node_idx, .{
+                                .tag = .numeric_literal,
+                                .span = span,
+                                .data = .{ .none = 0 },
+                            }, changed);
+                        }
                     }
                 }
             }

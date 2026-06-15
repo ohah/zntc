@@ -459,6 +459,19 @@ test "minify: non-literal not folded" {
     try expectMinify("const x = a + b;", "const x = a + b;");
 }
 
+test "minify: unary minus fold guarded against expansion (-1e21 / -2e3 stay)" {
+    // -리터럴 fold 가 {d} 전개로 원본보다 길어지면 접지 않는다(binary fold 와 동일 가드).
+    // `-1e21` → `-1000…0`(23자), `-2e3` → `-2000`(5자) 팽창 방지.
+    try expectMinify("const x = -1e21;", "const x = -1e21;");
+    try expectMinify("const x = -2e3;", "const x = -2e3;");
+}
+
+test "minify: unary minus fold kept when shorter or equal (-0x10 → -16)" {
+    // 축소/동일 길이는 그대로 fold.
+    try expectMinify("const x = -0x10;", "const x = -16;");
+    try expectMinify("const x = -1;", "const x = -1;");
+}
+
 // ================================================================
 // Phase 2: Dead Code Elimination
 // ================================================================
