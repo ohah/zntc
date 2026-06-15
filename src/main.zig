@@ -576,6 +576,16 @@ pub fn main(init: std.process.Init) !void {
             opts.preserve_modules_root = resolved_pm_root;
         }
 
+        // --rn-version 은 react-native 플랫폼을 함의한다 (별도 --platform 명시 불필요).
+        // node/neutral 은 명시 시에만 설정되는 값이라 명백한 충돌 → 에러. browser 기본값은 함의 허용.
+        if (opts.rn_version != null and opts.platform != .react_native) {
+            if (opts.platform == .node or opts.platform == .neutral) {
+                try stderr.print("zntc: --rn-version conflicts with --platform={s} (--rn-version implies react-native)\n", .{@tagName(opts.platform)});
+                std.process.exit(1);
+            }
+            opts.platform = .react_native;
+        }
+
         // --rn-platform은 --platform=react-native와 함께 사용해야 한다
         if (opts.rn_platform != .none and opts.platform != .react_native) {
             try stderr.print("zntc: --rn-platform requires --platform=react-native\n", .{});
@@ -592,7 +602,11 @@ pub fn main(init: std.process.Init) !void {
             if (opts.target_explicit) {
                 try stderr.print("zntc: warning: --target ignored when --platform=react-native (Hermes matrix applied)\n", .{});
             }
-            opts.unsupported = lib.transformer.TransformOptions.compat.fromHermesPreset();
+            // --rn-version 이 있으면 RN 버전별 정밀 매트릭스(문서 기준), 없으면 blunt 프리셋.
+            opts.unsupported = if (opts.rn_version) |spec|
+                lib.transformer.TransformOptions.compat.fromReactNativeVersionSpec(spec).? // 파싱 시 검증됨
+            else
+                lib.transformer.TransformOptions.compat.fromHermesPreset();
             opts.es_target = null;
             // RN preset: 사용자가 `--legal-comments=` 명시 안 했으면 .none default (Metro 패턴 정합).
             if (!opts.legal_comments_explicit) opts.legal_comments = .none;
@@ -710,6 +724,10 @@ pub fn main(init: std.process.Init) !void {
             .use_define_for_class_fields = opts.use_define_for_class_fields orelse true,
             .verbatim_module_syntax = opts.verbatim_module_syntax orelse false,
             .unsupported = opts.unsupported,
+            // --rn-version 매트릭스를 번들러로 전달 (applyPlatformPreset 가 blunt 프리셋 대신 사용).
+            // rn_version 이 있으면 위 react_native 블록에서 opts.unsupported 가 이미 매트릭스로
+            // 설정됨 — 재파싱 대신 재사용해 drift 방지.
+            .rn_version_matrix = if (opts.rn_version != null) opts.unsupported else null,
             .conditions = opts.conditions_list.items,
             .preserve_symlinks = opts.preserve_symlinks,
             .resolve_symlink_siblings = opts.resolve_symlink_siblings,

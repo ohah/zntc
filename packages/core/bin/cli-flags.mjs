@@ -131,6 +131,9 @@ export const FLAG_REGISTRY = [
     forms: ['equal'],
   },
   { kind: 'string', flag: '--rn-platform', target: 'rnPlatform', forms: ['equal', 'pair'] },
+  // RN 버전 타겟 — platform=react-native 함의 + RN 문서 기준 버전별 정밀 다운레벨.
+  // 예: --rn-version=0.80 / --rn-version ">=0.74" / "<=0.84" / "==0.76"
+  { kind: 'string', flag: '--rn-version', target: 'rnVersion', forms: ['equal', 'pair'] },
   // #2540 PR #7 — RN preset 의 projectRoot. 기본 cwd, 사용자 monorepo root 지정 시 사용.
   { kind: 'string', flag: '--rn-project-root', target: 'rnProjectRoot', forms: ['equal', 'pair'] },
   // ─── RN CLI 호환 flag 매트릭스 (#2605 audit P0) ───

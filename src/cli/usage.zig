@@ -93,6 +93,9 @@ pub fn printUsage(writer: anytype) !void {
         \\  --conditions=<cond,...>          Custom export conditions (e.g. production)
         \\  --platform=browser|node|neutral  Target platform (default: browser)
         \\  --rn-platform=ios|android        RN sub-platform (.ios.*/.android.* extensions)
+        \\  --rn-version=<spec>              RN version target (implies platform=react-native). Downlevels per the RN
+        \\                                   javascript-environment docs instead of the blunt ES5 preset. Accepts
+        \\                                   '0.80', '>=0.74', '<=0.84', '==0.76' (>= / bare = that version; <= = most conservative).
         \\
         \\TypeScript options:
         \\  --experimental-decorators         Legacy decorator (__decorateClass)

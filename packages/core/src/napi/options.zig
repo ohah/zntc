@@ -314,7 +314,12 @@ pub fn parseBuildOptions(
     // platform
     const platform_str = getObjectString(env, opts_obj, "platform", native_alloc);
     if (platform_str) |s| if (!trackStr(owned_strings, s)) return null;
-    const platform: Platform = if (platform_str) |s|
+    // rnVersion: 지정 시 react-native 플랫폼 함의 + 버전별 정밀 다운레벨 매트릭스(진실 소스 = RN 문서).
+    // 형식 검증은 JS 측(index.ts)에서 수행 — 여기서 null 이면 blunt fromHermesPreset 으로 안전 fallback.
+    const rn_version_str = getObjectString(env, opts_obj, "rnVersion", native_alloc);
+    if (rn_version_str) |s| if (!trackStr(owned_strings, s)) return null;
+    const rn_version_matrix: ?compat.UnsupportedFeatures = if (rn_version_str) |s| compat.fromReactNativeVersionSpec(s) else null;
+    const platform: Platform = if (rn_version_str != null) .react_native else if (platform_str) |s|
         if (std.mem.eql(u8, s, "node")) .node else if (std.mem.eql(u8, s, "neutral")) .neutral else if (std.mem.eql(u8, s, "react-native")) .react_native else .browser
     else
         .browser;
@@ -571,7 +576,10 @@ pub fn parseBuildOptions(
     // JS side (browserslist 해석 등)에서 미리 계산한 unsupported bitmask가 있으면 우선.
     // 0이면 미설정으로 간주 — 어차피 unsupported=0은 esnext와 동일해서 target 기반 경로로 fallback해도 결과 동일.
     const unsupported_override = getObjectUint32(env, opts_obj, "unsupported", 0);
-    const unsupported: compat.UnsupportedFeatures = if (unsupported_override != 0)
+    // rnVersion 매트릭스가 최우선 (있으면 target/override 무시 — react-native 매트릭스가 지배).
+    const unsupported: compat.UnsupportedFeatures = if (rn_version_matrix) |m|
+        m
+    else if (unsupported_override != 0)
         @bitCast(unsupported_override)
     else if (target_str) |s|
         if (std.meta.stringToEnum(compat.ESTarget, s)) |t| compat.fromESTarget(t) else .{}
@@ -774,6 +782,7 @@ pub fn parseBuildOptions(
         .entry_points = entries,
         .format = format,
         .platform = platform,
+        .rn_version_matrix = rn_version_matrix,
         .external = external orelse &.{},
         .mf = mf_cfg,
         .debug = debug_categories orelse &.{},
