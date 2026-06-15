@@ -38,6 +38,23 @@ pub fn isFlowPath(path: []const u8) bool {
     return std.mem.endsWith(u8, path, ".js.flow") or std.mem.endsWith(u8, path, ".jsx.flow");
 }
 
+/// import record identity(kind + span + specifier) 해시맵 컨텍스트 — `mergeImportRecords` 의
+/// 대형 fan-out O(N²) 선형 스캔을 O(1) 조회로 바꾸기 위함. zero-sized(필드 없음)라 Unmanaged
+/// 해시맵의 non-Context 메서드를 그대로 쓴다.
+const ImportRecordIdentityCtx = struct {
+    pub fn hash(_: ImportRecordIdentityCtx, rec: ImportRecord) u64 {
+        var h = std.hash.Wyhash.init(0);
+        h.update(std.mem.asBytes(&rec.kind));
+        h.update(std.mem.asBytes(&rec.span.start));
+        h.update(std.mem.asBytes(&rec.span.end));
+        h.update(rec.specifier);
+        return h.final();
+    }
+    pub fn eql(_: ImportRecordIdentityCtx, a: ImportRecord, b: ImportRecord) bool {
+        return sameImportRecordIdentity(a, b);
+    }
+};
+
 pub fn mergeImportRecords(
     arena_alloc: std.mem.Allocator,
     previous: []const ImportRecord,
@@ -45,9 +62,42 @@ pub fn mergeImportRecords(
 ) ![]ImportRecord {
     var records: std.ArrayList(ImportRecord) = .empty;
     errdefer records.deinit(arena_alloc);
+
+    // 대형 fan-out(mega-entry — HMR/resync 경로): previous/records 를 record 마다 identity 로
+    // 선형 스캔하면 O(transformed×previous)+O(transformed×records)=O(N²). 임계값 초과 시
+    // identity 해시맵으로 O(1) 조회. arena_alloc 은 module parse_arena(long-lived)라 개별
+    // deinit 안 함(arena 일괄 해제 — #1287); 임계값으로 대형 모듈만 인덱싱해 arena 누적 제한.
+    const Ctx = ImportRecordIdentityCtx;
+    const use_index = previous.len + transformed.len > 64;
+    var prev_index: std.HashMapUnmanaged(ImportRecord, ImportRecord, Ctx, 80) = .empty;
+    var added: std.HashMapUnmanaged(ImportRecord, void, Ctx, 80) = .empty;
+    // 이 함수는 arena 를 소유하지 않으므로(caller 가 deinit) 여기 deinit 은 함수 반환 시
+    // 실행 = caller arena.deinit 보다 먼저라 #1287 순서 문제 없음. 실제 arena 면 free 는
+    // 안전한 no-op(일괄 해제), non-arena caller(테스트 등)는 누수 방지. 미사용 시 .empty no-op.
+    defer prev_index.deinit(arena_alloc);
+    defer added.deinit(arena_alloc);
+    if (use_index) {
+        try prev_index.ensureTotalCapacity(arena_alloc, @intCast(previous.len));
+        // `added` 는 loop1(transformed) + loop2(synthetic previous 만)에서 추가되므로
+        // transformed.len + synthetic 수가 정확한 상한. previous 순회 김에 synthetic 카운트
+        // (별도 스캔 없음) → previous.len 전체 예약 대비 과다예약 제거.
+        var synthetic_prev: usize = 0;
+        for (previous) |rec| {
+            const gop = prev_index.getOrPutAssumeCapacity(rec);
+            if (!gop.found_existing) gop.value_ptr.* = rec; // 첫 매칭 우선(findImportRecord 와 동일)
+            if (isSyntheticImportRecord(rec)) synthetic_prev += 1;
+        }
+        try added.ensureTotalCapacity(arena_alloc, @intCast(transformed.len + synthetic_prev));
+    }
+
     for (transformed) |rec| {
-        if (hasImportRecord(records.items, rec)) continue;
-        const merged = if (findImportRecord(previous, rec)) |prev| prev else rec;
+        if (use_index) {
+            if (added.getOrPutAssumeCapacity(rec).found_existing) continue;
+        } else if (hasImportRecord(records.items, rec)) continue;
+        const merged = if (use_index)
+            (prev_index.get(rec) orelse rec)
+        else
+            (findImportRecord(previous, rec) orelse rec);
         try records.append(arena_alloc, merged);
     }
     for (previous) |rec| {
@@ -55,7 +105,9 @@ pub fn mergeImportRecords(
         // strictExecutionOrder 가 타입 전용 모듈까지 평가한다. AST 에 없는 record 는 버리고,
         // AST 노드가 없는 synthetic record(Flow enum runtime 등)만 보존한다.
         if (!isSyntheticImportRecord(rec)) continue;
-        if (hasImportRecord(records.items, rec)) continue;
+        if (use_index) {
+            if (added.getOrPutAssumeCapacity(rec).found_existing) continue;
+        } else if (hasImportRecord(records.items, rec)) continue;
         try records.append(arena_alloc, rec);
     }
     return records.toOwnedSlice(arena_alloc);
@@ -129,6 +181,31 @@ test "mergeImportRecords keeps previous resolved state for unchanged record" {
 
     try std.testing.expectEqual(@as(usize, 1), merged.len);
     try std.testing.expectEqual(@as(u32, 7), @intFromEnum(merged[0].resolved));
+}
+
+test "mergeImportRecords: index 경로(>64 records) — dedup + previous 보존 + synthetic 보존" {
+    const Span = @import("../../lexer/token.zig").Span;
+    const N = 70; // > 64 임계값 → identity 해시맵(index) 경로 강제
+    var prev_buf: [N + 1]ImportRecord = undefined;
+    var trans_buf: [N + 1]ImportRecord = undefined;
+    for (0..N) |i| {
+        const s = Span{ .start = @intCast(i + 1), .end = @intCast(i + 1) }; // start!=0 → non-synthetic, 유니크 identity
+        prev_buf[i] = .{ .specifier = "./dep", .kind = .static_import, .span = s, .resolved = @enumFromInt(@as(u32, @intCast(i + 100))) };
+        trans_buf[i] = .{ .specifier = "./dep", .kind = .static_import, .span = s };
+    }
+    prev_buf[N] = .{ .specifier = "\x00synth", .kind = .require, .span = Span.EMPTY }; // synthetic, transformed 에 없음 → 보존
+    trans_buf[N] = trans_buf[0]; // 첫 record 와 동일 identity → dedup 대상
+
+    const merged = try mergeImportRecords(std.testing.allocator, prev_buf[0 .. N + 1], trans_buf[0 .. N + 1]);
+    defer std.testing.allocator.free(merged);
+
+    // transformed N개(중복 1개 제거) + synthetic 1개
+    try std.testing.expectEqual(@as(usize, N + 1), merged.len);
+    // 매칭된 transformed 는 previous 의 resolved 를 보존 (index 경로 = linear 경로 등가)
+    for (0..N) |i| {
+        try std.testing.expectEqual(@as(u32, @intCast(i + 100)), @intFromEnum(merged[i].resolved));
+    }
+    try std.testing.expectEqualStrings("\x00synth", merged[N].specifier);
 }
 
 /// `ExportBinding[]` -> `[]const []const u8` 평탄 이름 슬라이스 (#1883).
