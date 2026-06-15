@@ -45,8 +45,10 @@ pub fn ES2019(comptime Transformer: type) type {
             // body 를 먼저 방문해 body 내부 lowering 이 temp 카운터를 소비하게 한 뒤,
             // 카운터 *너머* 의 이름을 고른다. catch 파라미터는 그 자체로 선언이라
             // hoist 가 불필요하므로 카운터를 bump 하지 않는다(= `var _a;` 누수 없음).
-            // 고른 이름은 body temp(카운터 미만)·사용자 심볼·private field 어느 것과도
-            // 겹치지 않으므로 어떤 외부 참조도 섀도잉하지 않는다.
+            // 고른 이름은 body temp(카운터 미만)·사용자 심볼·private field 와 겹치지
+            // 않는다. (한계: 어디에도 선언/import 안 된 temp-형 전역(`_a`)이나 semantic
+            // 미수집 경로(OOM fallback) 에서는 충돌 집합이 비어 회피가 약해진다 —
+            // makeTempVarSpan 과 동일한 systemic 한계.)
             const new_body = try self.visitNode(body);
             var probe = self.temp_var_counter;
             var name_buf: [16]u8 = undefined;

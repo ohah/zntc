@@ -1445,9 +1445,11 @@ pub const SemanticAnalyzer = struct {
             .if_statement => {
                 try self.visitNode(node.data.ternary.a);
                 // Annex B: if/else body에서 function declaration은 sloppy mode에서
-                // var hoisting conflict check를 건너뛴다.
+                // var hoisting conflict check를 건너뛴다. strict 는 하향 sticky 이므로
+                // class body(항상 strict) 안의 메서드 if-body 까지 반영하도록
+                // isCurrentStrict() 로 판단(canRedeclare 와 동일 기준).
                 const saved_annex_b = self.in_annex_b_context;
-                if (!self.is_strict_mode) self.in_annex_b_context = true;
+                if (!self.isCurrentStrict()) self.in_annex_b_context = true;
                 try self.visitNode(node.data.ternary.b);
                 try self.visitNode(node.data.ternary.c);
                 self.in_annex_b_context = saved_annex_b;
