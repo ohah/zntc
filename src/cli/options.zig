@@ -435,6 +435,36 @@ fn applyZntcConfigJson(opts: *CliOptions, io: std.Io, allocator: std.mem.Allocat
     }
 }
 
+/// 배열 옵션 머지 정책: CLI 가 하나라도 값을 지정하면 config 분(앞쪽 `cfg_len`
+/// 개)을 버리고 CLI 값만 남긴다(concat 금지). CONFIG.md case 4 / D099(CLI > config).
+/// CLI 가 아무 것도 안 지정하면 config 분을 그대로 둔다.
+fn mergeArrayReplace(list: anytype, cfg_len: usize) void {
+    if (cfg_len == 0 or list.items.len <= cfg_len) return;
+    const T = @TypeOf(list.items[0]);
+    const keep = list.items.len - cfg_len;
+    std.mem.copyForwards(T, list.items[0..keep], list.items[cfg_len..]);
+    list.shrinkRetainingCapacity(keep);
+}
+
+/// 객체 옵션 머지 정책: 같은 key 가 여러 번 있으면 *마지막* 것만 남긴다.
+/// config 항목이 앞, CLI 항목이 뒤에 쌓이므로 결과적으로 CLI 가 키 단위로 config 를
+/// override 한다(CONFIG.md case 2). key_field 는 비교할 `[]const u8` 필드 이름.
+fn dedupKeepLast(list: anytype, comptime key_field: []const u8) void {
+    const items = list.items;
+    var write: usize = 0;
+    var read: usize = 0;
+    outer: while (read < items.len) : (read += 1) {
+        const key = @field(items[read], key_field);
+        var later = read + 1;
+        while (later < items.len) : (later += 1) {
+            if (std.mem.eql(u8, @field(items[later], key_field), key)) continue :outer;
+        }
+        items[write] = items[read];
+        write += 1;
+    }
+    list.shrinkRetainingCapacity(write);
+}
+
 /// CLI 인자를 파싱하여 CliOptions를 반환한다.
 /// --help 출력이나 파싱 에러로 프로그램을 종료해야 하면 null을 반환한다.
 pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !?CliOptions {
@@ -458,6 +488,13 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator,
             try stderr.print("[zntc] zntc.config.json load failed: {}\n", .{err});
         },
     };
+
+    // config 가 채운 배열 옵션 길이 스냅샷 — 아래 CLI 루프가 끝난 뒤 CLI > config
+    // 우선순위로 머지하기 위함(배열은 CLI 가 비어있지 않으면 config 를 대체).
+    const cfg_external_len = opts.external_list.items.len;
+    const cfg_conditions_len = opts.conditions_list.items.len;
+    const cfg_resolve_ext_len = opts.resolve_extensions_list.items.len;
+    const cfg_main_fields_len = opts.main_fields_list.items.len;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -1059,6 +1096,17 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator,
             });
         }
     }
+
+    // ─── CLI ↔ config 머지 우선순위 적용 (CONFIG.md / D099: CLI > config) ────────
+    // 배열 옵션: CLI 가 하나라도 지정하면 config 분을 버린다(concat 금지).
+    mergeArrayReplace(&opts.external_list, cfg_external_len);
+    mergeArrayReplace(&opts.conditions_list, cfg_conditions_len);
+    mergeArrayReplace(&opts.resolve_extensions_list, cfg_resolve_ext_len);
+    mergeArrayReplace(&opts.main_fields_list, cfg_main_fields_len);
+    // 객체 옵션: 키 기준 last-wins — config(앞) 항목을 동일 키의 CLI(뒤) 항목이 override.
+    dedupKeepLast(&opts.define_list, "key");
+    dedupKeepLast(&opts.alias_list, "from");
+    dedupKeepLast(&opts.loader_list, "ext");
 
     return opts;
 }
