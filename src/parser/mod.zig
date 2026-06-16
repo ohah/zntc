@@ -24,4 +24,5 @@ test {
     _ = @import("parser_test.zig");
     _ = @import("ast_test.zig");
     _ = @import("ast_walk_test.zig");
+    _ = @import("ast_codec_test.zig");
 }
