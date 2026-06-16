@@ -1,6 +1,25 @@
 const std = @import("std");
 const boringssl_build = @import("build/boringssl.zig");
 
+/// 이 빌드의 commit 식별자(#4438 디스크 캐시 무효화 키 — src/build_id.zig 참조).
+/// `git rev-parse HEAD`(clone depth 무관 — `describe` 와 달리 shallow clone 에서도 같은 commit =
+/// 같은 값) + working tree dirty 여부. git 이 없거나 실패하면 "unknown"(tarball 빌드 등).
+fn gitBuildId(b: *std.Build) []const u8 {
+    const sha = gitRun(b, &.{ "git", "rev-parse", "HEAD" }) orelse return "unknown";
+    // dirty 면 "-dirty" 부착(변경 내용 자체는 구분 못 함 — build_id.zig 의 dirty 주의 참조).
+    const dirty = gitRun(b, &.{ "git", "status", "--porcelain", "--untracked-files=no" });
+    return if (dirty != null) b.fmt("{s}-dirty", .{sha}) else sha;
+}
+
+/// argv 를 실행해 trim 된 stdout 반환. 실패/비-제로 exit/빈 출력은 null. out_code 는
+/// runAllowFail 이 error 경로에서만 쓰므로(성공 시 미기록) 읽지 않는다.
+fn gitRun(b: *std.Build, argv: []const []const u8) ?[]const u8 {
+    var code: u8 = 0;
+    const out = b.runAllowFail(argv, &code, .ignore) catch return null;
+    const t = std.mem.trim(u8, out, " \t\r\n");
+    return if (t.len > 0) t else null;
+}
+
 // Although this function looks imperative, note that its job is to
 // declaratively construct a build graph that will be executed by an external
 // runner.
@@ -58,6 +77,15 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .strip = strip_setting,
     });
+
+    // #4438 디스크 캐시 무효화 키: 이 빌드의 git 식별자를 build_options 로 노출(src/build_id.zig
+    // 가 읽음). 현재 build_id 는 root.zig 의 test 블록에서만 참조 → lib_mod(테스트)만 필요.
+    // graph 통합이 build_id 를 non-test 경로(bundler)에서 쓰면 root.zig 를 root 로 하는 나머지
+    // 3개 모듈(wasm_lib_mod / wasm_bundler_lib_mod / napi_lib_mod)에도 build_options 를 추가할 것
+    // — 빠뜨리면 해당 타깃(zig build wasm/wasm-bundler/napi) 빌드만 깨져 로컬 `zig build`/test 는 통과.
+    const build_opts = b.addOptions();
+    build_opts.addOption([]const u8, "git_sha", gitBuildId(b));
+    lib_mod.addOptions("build_options", build_opts);
 
     // We will also create a module for our other entry point, 'main.zig'.
     const exe_mod = b.createModule(.{
