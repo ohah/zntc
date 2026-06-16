@@ -25,6 +25,7 @@ const Reference = symbol_mod.Reference;
 const Scope = @import("../semantic/scope.zig").Scope;
 const Span = @import("../lexer/token.zig").Span;
 const wyhash = @import("../util/wyhash.zig");
+const codec_io = @import("../util/codec_io.zig");
 
 pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
 pub const FORMAT_VERSION: u32 = 1;
@@ -65,16 +66,10 @@ pub const Error = error{
 
 // ── serialize ───────────────────────────────────────────────────────────────
 
-fn putU32(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, v: u32) !void {
-    try buf.appendSlice(alloc, std.mem.asBytes(&v));
-}
-fn putU64(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, v: u64) !void {
-    try buf.appendSlice(alloc, std.mem.asBytes(&v));
-}
-fn putBytes(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, b: []const u8) !void {
-    try putU32(buf, alloc, @intCast(b.len));
-    try buf.appendSlice(alloc, b);
-}
+// IO 원시함수/Reader 는 공유 `util/codec_io.zig` 사용(ast_codec/module_codec 와 동일 1벌).
+const putU32 = codec_io.putU32;
+const putU64 = codec_io.putU64;
+const putBytes = codec_io.putBytes;
 
 // HashMap 직렬화 (PR3). 모두 `[count][entry…]`. 키 문자열은 putBytes 로 그대로 (deserialize
 // 가 arena dupe). 값 usize 는 심볼 인덱스(symbol_ids 와 동일하게 u32 범위)라 u32 로 고정 —
@@ -151,25 +146,7 @@ pub fn serialize(sem: *const ModuleSemanticData, out: *std.ArrayList(u8), alloc:
 
 // ── deserialize ──────────────────────────────────────────────────────────────
 
-const Reader = struct {
-    buf: []const u8,
-    pos: usize = 0,
-
-    fn take(self: *Reader, n: usize) Error![]const u8 {
-        const end = std.math.add(usize, self.pos, n) catch return error.Truncated;
-        if (end > self.buf.len) return error.Truncated;
-        const b = self.buf[self.pos..][0..n];
-        self.pos = end;
-        return b;
-    }
-    fn u32v(self: *Reader) Error!u32 {
-        return std.mem.bytesToValue(u32, (try self.take(4))[0..4]);
-    }
-    fn bytes(self: *Reader) Error![]const u8 {
-        const n = try self.u32v();
-        return self.take(n);
-    }
-};
+const Reader = codec_io.Reader;
 
 // HashMap 역직렬화 (PR3). checksum 통과 후 호출되므로 count 는 신뢰 가능 → ensureTotalCapacity
 // 후 putAssumeCapacity. 키는 payload 슬라이스를 arena 에 dupe(arena.deinit 이 일괄 해제).

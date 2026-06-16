@@ -50,6 +50,7 @@ test {
     _ = @import("test_arena.zig");
     _ = @import("env_flag.zig");
     _ = util.wyhash;
+    _ = util.codec_io;
 
     // diagnostic system
     _ = ansi_mod;
