@@ -23,6 +23,7 @@ const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const wyhash = @import("../util/wyhash.zig");
+const codec_io = @import("../util/codec_io.zig");
 
 pub const MAGIC: u32 = 0x5A4E5443; // "ZNTC"
 pub const FORMAT_VERSION: u32 = 1;
@@ -41,17 +42,11 @@ pub const Error = error{
 
 // ── serialize ───────────────────────────────────────────────────────────────
 
-fn putU32(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, v: u32) !void {
-    try buf.appendSlice(alloc, std.mem.asBytes(&v));
-}
-fn putU64(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, v: u64) !void {
-    try buf.appendSlice(alloc, std.mem.asBytes(&v));
-}
-/// length-prefixed 바이트열.
-fn putBytes(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, b: []const u8) !void {
-    try putU32(buf, alloc, @intCast(b.len));
-    try buf.appendSlice(alloc, b);
-}
+// IO 원시함수/Reader 는 공유 `util/codec_io.zig` 사용(semantic_codec/module_codec 와 동일 1벌).
+const putU32 = codec_io.putU32;
+const putU64 = codec_io.putU64;
+const putBytes = codec_io.putBytes;
+
 /// jsx_pragma 등 source-backed optional slice → (offset, len). null 이면 offset=NULL_OFFSET.
 fn putPragma(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, ast: *const Ast, p: ?[]const u8) !void {
     if (p) |s| {
@@ -109,37 +104,18 @@ pub fn serialize(ast: *const Ast, out: *std.ArrayList(u8), alloc: std.mem.Alloca
 
 // ── deserialize ──────────────────────────────────────────────────────────────
 
-const Reader = struct {
-    buf: []const u8,
-    pos: usize = 0,
+const Reader = codec_io.Reader;
 
-    fn take(self: *Reader, n: usize) Error![]const u8 {
-        // checked add — 손상된 length-prefix 가 pos+n 을 오버플로우시켜 경계검사를 우회하는 것 방지.
-        const end = std.math.add(usize, self.pos, n) catch return error.Truncated;
-        if (end > self.buf.len) return error.Truncated;
-        const b = self.buf[self.pos..][0..n];
-        self.pos = end;
-        return b;
-    }
-    fn u32v(self: *Reader) Error!u32 {
-        return std.mem.bytesToValue(u32, (try self.take(4))[0..4]);
-    }
-    fn bytes(self: *Reader) Error![]const u8 {
-        const n = try self.u32v();
-        return self.take(n);
-    }
-    fn byte(self: *Reader) Error!u8 {
-        return (try self.take(1))[0];
-    }
-    fn pragma(self: *Reader, source: []const u8) Error!?[]const u8 {
-        const off = try self.u32v();
-        const len = try self.u32v();
-        if (off == NULL_OFFSET) return null;
-        const end = std.math.add(u32, off, len) catch return error.Truncated;
-        if (end > source.len) return error.Truncated;
-        return source[off..][0..len];
-    }
-};
+/// jsx_pragma 복원: `(offset, len)` → source-backed slice. off==NULL_OFFSET 이면 null.
+/// ast-specific(source 베이스 의존)이라 codec_io.Reader 가 아닌 ast_codec 의 free 헬퍼.
+fn readPragma(r: *Reader, source: []const u8) Error!?[]const u8 {
+    const off = try r.u32v();
+    const len = try r.u32v();
+    if (off == NULL_OFFSET) return null;
+    const end = std.math.add(u32, off, len) catch return error.Truncated;
+    if (end > source.len) return error.Truncated;
+    return source[off..][0..len];
+}
 
 /// flat bytes → 새 Ast. magic/version/checksum 검증 후 복원. 검증 실패는 error(재파싱 fallback).
 /// 반환된 `ast.source` 는 새로 dupe 된 메모리이며 `Ast.deinit` 가 해제하지 않으므로,
@@ -209,10 +185,10 @@ pub fn deserialize(data: []const u8, alloc: std.mem.Allocator) Error!Ast {
     ast.has_ts_export_equals = (try r.byte()) != 0;
     ast.has_flow_enum_declaration = (try r.byte()) != 0;
 
-    ast.jsx_pragma_factory = try r.pragma(source);
-    ast.jsx_pragma_fragment = try r.pragma(source);
-    ast.jsx_pragma_runtime = try r.pragma(source);
-    ast.jsx_pragma_import_source = try r.pragma(source);
+    ast.jsx_pragma_factory = try readPragma(&r, source);
+    ast.jsx_pragma_fragment = try readPragma(&r, source);
+    ast.jsx_pragma_runtime = try readPragma(&r, source);
+    ast.jsx_pragma_import_source = try readPragma(&r, source);
 
     const tb = try r.u32v();
     ast.transform_boundary = if (tb == NULL_OFFSET) null else tb;

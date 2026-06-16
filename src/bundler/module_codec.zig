@@ -34,6 +34,7 @@ const ast_codec = @import("../parser/ast_codec.zig");
 const semantic_codec = @import("semantic_codec.zig");
 const Ast = @import("../parser/ast.zig").Ast;
 const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
+const codec_io = @import("../util/codec_io.zig");
 
 pub const MAGIC: u32 = 0x5A4D4F44; // "ZMOD"
 pub const FORMAT_VERSION: u32 = 1;
@@ -67,9 +68,8 @@ comptime {
 
 // ── serialize ───────────────────────────────────────────────────────────────
 
-fn putU32(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, v: u32) !void {
-    try buf.appendSlice(alloc, std.mem.asBytes(&v));
-}
+// IO 원시함수/Reader 는 공유 `util/codec_io.zig` 사용(하위 codec 들과 동일 1벌).
+const putU32 = codec_io.putU32;
 
 /// `out.items[at..][0..4]` 에 u32 를 덮어쓴다(길이 prefix backpatch).
 fn patchU32(out: *std.ArrayList(u8), at: usize, v: u32) void {
@@ -109,26 +109,7 @@ pub fn serialize(
 
 // ── deserialize ──────────────────────────────────────────────────────────────
 
-const Reader = struct {
-    buf: []const u8,
-    pos: usize = 0,
-
-    fn take(self: *Reader, n: usize) Error![]const u8 {
-        // checked add — 손상된 length-prefix 가 pos+n 을 오버플로우시켜 경계검사를 우회하는 것 방지.
-        const end = std.math.add(usize, self.pos, n) catch return error.Truncated;
-        if (end > self.buf.len) return error.Truncated;
-        const b = self.buf[self.pos..][0..n];
-        self.pos = end;
-        return b;
-    }
-    fn u32v(self: *Reader) Error!u32 {
-        return std.mem.bytesToValue(u32, (try self.take(4))[0..4]);
-    }
-    fn block(self: *Reader) Error![]const u8 {
-        const n = try self.u32v();
-        return self.take(n);
-    }
-};
+const Reader = codec_io.Reader;
 
 /// flat bytes → source+AST+semantic. magic/version 검증 후 두 하위 블록을 같은 `arena` 에
 /// 복원한다(소유권 단일화 — 위 doc 참조). 검증/손상 실패는 항상 error 이며, 부분 복원분은
@@ -146,8 +127,8 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!Deserialize
     if (std.mem.bytesToValue(u32, data[4..8]) != FORMAT_VERSION) return error.UnsupportedVersion;
 
     var r = Reader{ .buf = data[HEADER_LEN..] };
-    const ast_block = try r.block();
-    const sem_block = try r.block();
+    const ast_block = try r.bytes();
+    const sem_block = try r.bytes();
 
     // 같은 arena 주입 → ast(source 포함)+semantic 이 한 소유권. 하위 codec 의 errdefer/free 는
     // arena 에서 no-op 이고, ast 가 성공한 뒤 semantic 이 실패해도 caller 의 arena.deinit 이 회수.
