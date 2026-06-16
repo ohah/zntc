@@ -42,6 +42,7 @@ pub const semantic_codec = @import("semantic_codec.zig");
 pub const module_codec = @import("module_codec.zig");
 pub const disk_cache = @import("disk_cache.zig");
 pub const cache_key = @import("cache_key.zig");
+pub const disk_module_store = @import("disk_module_store.zig");
 pub const css_scanner = @import("css_scanner.zig");
 pub const css_emitter = @import("css_emitter.zig");
 pub const symbol = @import("symbol.zig");
@@ -134,6 +135,7 @@ test {
     _ = @import("module_codec_test.zig");
     _ = @import("disk_cache_test.zig");
     _ = @import("cache_key_test.zig");
+    _ = @import("disk_module_store_test.zig");
     _ = @import("tree_shaker_test.zig");
     _ = @import("linker_test.zig");
     _ = @import("emitter_test.zig");
