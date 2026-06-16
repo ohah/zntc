@@ -49,6 +49,7 @@ test {
     _ = @import("transformer/cooked_name.zig");
     _ = @import("test_arena.zig");
     _ = @import("env_flag.zig");
+    _ = @import("build_id.zig");
     _ = util.wyhash;
     _ = util.codec_io;
 
