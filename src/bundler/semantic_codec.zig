@@ -6,7 +6,8 @@
 //!   (`[]const u8`, 합성 심볼만 non-empty)만 별도 — memcpy 후 ""로 리셋하고 사이드테이블에서
 //!   복원(arena dupe).
 //! - HashMap 5개(scope_maps/exported_names/unresolved_references/numeric_const_texts/
-//!   helper_scope_map)는 **PR3**. 여기선 빈 맵으로 복원.
+//!   helper_scope_map)는 **PR3**에서 복원한다. 키 문자열은 source/string_table(parse_arena)
+//!   슬라이스라 deserialize 가 주입 arena 에 dupe; 값은 심볼인덱스(usize→u32)/Span/void/텍스트.
 //!
 //! 소유권: `ModuleSemanticData` 는 deinit 이 없고 원본은 `parse_arena` 가 일괄 소유한다.
 //! deserialize 본은 parse_arena 가 없으므로 **caller 가 arena 를 주입** — 모든 배열·문자열을
@@ -22,6 +23,7 @@ const symbol_mod = @import("../semantic/symbol.zig");
 const Symbol = symbol_mod.Symbol;
 const Reference = symbol_mod.Reference;
 const Scope = @import("../semantic/scope.zig").Scope;
+const Span = @import("../lexer/token.zig").Span;
 const wyhash = @import("../util/wyhash.zig");
 
 pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
@@ -36,6 +38,21 @@ comptime {
         if (@typeInfo(f.type) == .pointer and !std.mem.eql(u8, f.name, "synthetic_name")) {
             @compileError("Symbol." ++ f.name ++ ": semantic_codec 는 synthetic_name 외 슬라이스를 round-trip 처리하지 않는다 — codec 복원 로직 추가 필요.");
         }
+    }
+    // Scope/Reference 는 사이드테이블 없이 통째로 memcpy 한다(synthetic_name 같은 예외 없음).
+    // 슬라이스/포인터 필드가 추가되면 dangling 을 복사 → UAF. 컴파일 에러로 복원 로직을 강제.
+    for (.{ Scope, Reference }) |T| {
+        for (@typeInfo(T).@"struct".fields) |f| {
+            if (@typeInfo(f.type) == .pointer) {
+                @compileError(@typeName(T) ++ "." ++ f.name ++ ": semantic_codec 는 통째 memcpy 한다 — 슬라이스/포인터는 round-trip 시 dangling. side-table 복원 로직 추가 필요.");
+            }
+        }
+    }
+    // serialize/deserialize 는 ModuleSemanticData 의 9개 필드를 손으로 열거한다. 필드가 추가되면
+    // 직렬화에서 silently 누락 → PR4 cache-hit 연결 시 그 필드만 default 로 stale miscompile.
+    // 필드 수를 못박아 새 필드 추가를 컴파일 에러로 만들어 codec 갱신을 강제한다.
+    if (@typeInfo(ModuleSemanticData).@"struct".fields.len != 9) {
+        @compileError("ModuleSemanticData 필드 수가 바뀜 — semantic_codec 의 serialize/deserialize 에 새 필드 직렬화 추가 후 이 가드를 갱신.");
     }
 }
 
@@ -57,6 +74,40 @@ fn putU64(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, v: u64) !void {
 fn putBytes(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, b: []const u8) !void {
     try putU32(buf, alloc, @intCast(b.len));
     try buf.appendSlice(alloc, b);
+}
+
+// HashMap 직렬화 (PR3). 모두 `[count][entry…]`. 키 문자열은 putBytes 로 그대로 (deserialize
+// 가 arena dupe). 값 usize 는 심볼 인덱스(symbol_ids 와 동일하게 u32 범위)라 u32 로 고정 —
+// disk 크기 절감 + host arch 무관.
+fn putStrMapUsize(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, m: *const std.StringHashMapUnmanaged(usize)) !void {
+    try putU32(buf, alloc, m.count());
+    var it = m.iterator();
+    while (it.next()) |e| {
+        try putBytes(buf, alloc, e.key_ptr.*);
+        try putU32(buf, alloc, @intCast(e.value_ptr.*));
+    }
+}
+fn putStrMapSpan(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, m: *const std.StringHashMapUnmanaged(Span)) !void {
+    try putU32(buf, alloc, m.count());
+    var it = m.iterator();
+    while (it.next()) |e| {
+        try putBytes(buf, alloc, e.key_ptr.*);
+        try putU32(buf, alloc, e.value_ptr.start);
+        try putU32(buf, alloc, e.value_ptr.end);
+    }
+}
+fn putStrSet(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, m: *const std.StringHashMapUnmanaged(void)) !void {
+    try putU32(buf, alloc, m.count());
+    var it = m.keyIterator();
+    while (it.next()) |k| try putBytes(buf, alloc, k.*);
+}
+fn putNumTexts(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, m: *const std.AutoHashMapUnmanaged(u32, []const u8)) !void {
+    try putU32(buf, alloc, m.count());
+    var it = m.iterator();
+    while (it.next()) |e| {
+        try putU32(buf, alloc, e.key_ptr.*);
+        try putBytes(buf, alloc, e.value_ptr.*);
+    }
 }
 
 /// semantic 의 relocatable 부분을 `out` 에 직렬화 (append).
@@ -82,6 +133,14 @@ pub fn serialize(sem: *const ModuleSemanticData, out: *std.ArrayList(u8), alloc:
             try putBytes(&payload, alloc, s.synthetic_name);
         }
     }
+
+    // HashMap 5개 (PR3). scope_maps 는 scopes 와 동일 인덱스를 공유하는 맵 배열.
+    try putU32(&payload, alloc, @intCast(sem.scope_maps.len));
+    for (sem.scope_maps) |*m| try putStrMapUsize(&payload, alloc, m);
+    try putStrMapSpan(&payload, alloc, &sem.exported_names);
+    try putStrSet(&payload, alloc, &sem.unresolved_references);
+    try putNumTexts(&payload, alloc, &sem.numeric_const_texts);
+    try putStrMapUsize(&payload, alloc, &sem.helper_scope_map);
 
     const checksum = wyhash.hashU64(payload.items);
     try putU32(out, alloc, MAGIC);
@@ -112,13 +171,63 @@ const Reader = struct {
     }
 };
 
-/// `arena` 에 모든 배열·문자열을 alloc 하여 ModuleSemanticData 복원. HashMap 5개는 빈 맵(PR3).
-/// caller 가 `arena.deinit()` 로 일괄 해제(원본 parse_arena 모델과 동일). 검증 실패는 error.
+// HashMap 역직렬화 (PR3). checksum 통과 후 호출되므로 count 는 신뢰 가능 → ensureTotalCapacity
+// 후 putAssumeCapacity. 키는 payload 슬라이스를 arena 에 dupe(arena.deinit 이 일괄 해제).
+fn readStrMapUsize(r: *Reader, arena: std.mem.Allocator) Error!std.StringHashMapUnmanaged(usize) {
+    var m: std.StringHashMapUnmanaged(usize) = .empty;
+    const n = try r.u32v();
+    try m.ensureTotalCapacity(arena, n);
+    var i: u32 = 0;
+    while (i < n) : (i += 1) {
+        const key = try arena.dupe(u8, try r.bytes());
+        m.putAssumeCapacity(key, @intCast(try r.u32v()));
+    }
+    return m;
+}
+fn readStrMapSpan(r: *Reader, arena: std.mem.Allocator) Error!std.StringHashMapUnmanaged(Span) {
+    var m: std.StringHashMapUnmanaged(Span) = .empty;
+    const n = try r.u32v();
+    try m.ensureTotalCapacity(arena, n);
+    var i: u32 = 0;
+    while (i < n) : (i += 1) {
+        const key = try arena.dupe(u8, try r.bytes());
+        const start = try r.u32v();
+        const end = try r.u32v();
+        m.putAssumeCapacity(key, .{ .start = start, .end = end });
+    }
+    return m;
+}
+fn readStrSet(r: *Reader, arena: std.mem.Allocator) Error!std.StringHashMapUnmanaged(void) {
+    var m: std.StringHashMapUnmanaged(void) = .empty;
+    const n = try r.u32v();
+    try m.ensureTotalCapacity(arena, n);
+    var i: u32 = 0;
+    while (i < n) : (i += 1) {
+        const key = try arena.dupe(u8, try r.bytes());
+        m.putAssumeCapacity(key, {});
+    }
+    return m;
+}
+fn readNumTexts(r: *Reader, arena: std.mem.Allocator) Error!std.AutoHashMapUnmanaged(u32, []const u8) {
+    var m: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    const n = try r.u32v();
+    try m.ensureTotalCapacity(arena, n);
+    var i: u32 = 0;
+    while (i < n) : (i += 1) {
+        const key = try r.u32v();
+        const text = try arena.dupe(u8, try r.bytes());
+        m.putAssumeCapacity(key, text);
+    }
+    return m;
+}
+
+/// `arena` 에 모든 배열·문자열·HashMap 을 alloc 하여 ModuleSemanticData 전체를 복원(PR3 로
+/// HashMap 5개 포함). caller 가 `arena.deinit()` 로 일괄 해제(원본 parse_arena 모델과 동일).
+/// 검증 실패는 항상 error(fail-safe 재파싱).
 ///
-/// ⚠️ HashMap 5개(scope_maps/exported_names/unresolved_references/numeric_const_texts/
-/// helper_scope_map)가 빈 채로 복원되므로, 이 결과를 linker 의 cache-hit 경로에 연결하면
-/// import 미링크 / 글로벌 shadowing / 잘못된 export 판정으로 **silent miscompile** 한다.
-/// PR3(HashMap 복원) 전까지 파이프라인 연결 금지 — 현재는 codec 단위 테스트 전용.
+/// ⚠️ codec 자체는 완전하나 graph 통합(buildIncremental 의 디스크 cache-hit 분기)은 **PR4**
+/// 에서 한다 — 무효화 키(버전·옵션·tsconfig·.env) 정합성이 PR5 전까지 미비하므로 그 전에
+/// 파이프라인에 연결하면 stale 캐시로 잘못된 결과가 나온다. 현재는 codec 단위 테스트 전용.
 pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSemanticData {
     if (data.len < HEADER_LEN) return error.Truncated;
     if (std.mem.bytesToValue(u32, data[0..4]) != MAGIC) return error.BadMagic;
@@ -165,15 +274,24 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
         symbols_slice[idx].synthetic_name = try arena.dupe(u8, text);
     }
 
+    // HashMap 5개 (PR3). scope_maps 는 맵 배열 — 길이만큼 alloc 후 각 맵 복원.
+    const scope_maps_len = try r.u32v();
+    const scope_maps = try arena.alloc(std.StringHashMapUnmanaged(usize), scope_maps_len);
+    for (scope_maps) |*m| m.* = try readStrMapUsize(&r, arena);
+    const exported_names = try readStrMapSpan(&r, arena);
+    const unresolved_references = try readStrSet(&r, arena);
+    const numeric_const_texts = try readNumTexts(&r, arena);
+    const helper_scope_map = try readStrMapUsize(&r, arena);
+
     return .{
         .symbols = .{ .items = symbols_slice, .capacity = symbols_slice.len },
         .scopes = scopes,
-        .scope_maps = &.{}, // PR3
-        .exported_names = .empty, // PR3
+        .scope_maps = scope_maps,
+        .exported_names = exported_names,
         .symbol_ids = symbol_ids,
-        .unresolved_references = .empty, // PR3
+        .unresolved_references = unresolved_references,
         .references = references,
-        .numeric_const_texts = .empty, // PR3
-        .helper_scope_map = .empty, // PR3
+        .numeric_const_texts = numeric_const_texts,
+        .helper_scope_map = helper_scope_map,
     };
 }

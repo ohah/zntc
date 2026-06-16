@@ -7,6 +7,7 @@ const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 const Scope = @import("../semantic/scope.zig").Scope;
 const Reference = @import("../semantic/symbol.zig").Reference;
+const Span = @import("../lexer/token.zig").Span;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
@@ -26,16 +27,18 @@ test "semantic_codec: analyzer round-trip — relocatable 필드 보존" {
 
     try testing.expect(ana.symbols.items.len > 0); // 비어있으면 검증 무의미
 
+    try testing.expect(ana.scope_maps.items.len > 0); // 맵 round-trip 검증 의미 보장
+
     const sem = ModuleSemanticData{
         .symbols = ana.symbols,
         .scopes = ana.scopes.items,
-        .scope_maps = &.{},
-        .exported_names = .empty,
+        .scope_maps = ana.scope_maps.items,
+        .exported_names = ana.exported_names,
         .symbol_ids = ana.symbol_ids.items,
-        .unresolved_references = .empty,
+        .unresolved_references = ana.unresolved_references,
         .references = ana.references.items,
-        .numeric_const_texts = .empty,
-        .helper_scope_map = .empty,
+        .numeric_const_texts = ana.numeric_const_texts,
+        .helper_scope_map = ana.helper_scope_map,
     };
 
     var buf: std.ArrayList(u8) = .empty;
@@ -64,6 +67,18 @@ test "semantic_codec: analyzer round-trip — relocatable 필드 보존" {
         try testing.expectEqual(s1.declaration_span, s2.declaration_span);
         try testing.expectEqualStrings(s1.synthetic_name, s2.synthetic_name);
     }
+
+    // scope_maps: 실 analyzer 출력 — 맵 개수 + 각 키→심볼인덱스 동일
+    try testing.expectEqual(sem.scope_maps.len, sem2.scope_maps.len);
+    for (sem.scope_maps, sem2.scope_maps) |*m1, *m2| {
+        try testing.expectEqual(m1.count(), m2.count());
+        var it = m1.iterator();
+        while (it.next()) |e| {
+            try testing.expectEqual(e.value_ptr.*, m2.get(e.key_ptr.*).?);
+        }
+    }
+    try testing.expectEqual(sem.unresolved_references.count(), sem2.unresolved_references.count());
+    try testing.expectEqual(sem.numeric_const_texts.count(), sem2.numeric_const_texts.count());
 }
 
 test "semantic_codec: synthetic_name 보존 (합성 심볼)" {
@@ -97,6 +112,75 @@ test "semantic_codec: synthetic_name 보존 (합성 심볼)" {
     try testing.expectEqual(@as(usize, 2), sem2.symbols.items.len);
     try testing.expectEqualStrings("", sem2.symbols.items[0].synthetic_name);
     try testing.expectEqualStrings("__syn_helper", sem2.symbols.items[1].synthetic_name);
+}
+
+test "semantic_codec: HashMap 5개 round-trip (값 타입별)" {
+    const alloc = testing.allocator;
+
+    // scope_maps: 2개 스코프(StringHashMap usize). 빈 맵도 1개 섞어 경계 확인.
+    var sm0: std.StringHashMapUnmanaged(usize) = .empty;
+    var sm1: std.StringHashMapUnmanaged(usize) = .empty;
+    defer sm0.deinit(alloc);
+    defer sm1.deinit(alloc);
+    try sm0.put(alloc, "a", 0);
+    try sm0.put(alloc, "f", 1);
+    try sm1.put(alloc, "x", 2);
+    var scope_maps = [_]std.StringHashMapUnmanaged(usize){ sm0, sm1, .empty };
+
+    var exported: std.StringHashMapUnmanaged(Span) = .empty;
+    defer exported.deinit(alloc);
+    try exported.put(alloc, "f", .{ .start = 9, .end = 10 });
+
+    var unres: std.StringHashMapUnmanaged(void) = .empty;
+    defer unres.deinit(alloc);
+    try unres.put(alloc, "globalThis", {});
+
+    var nums: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    defer nums.deinit(alloc);
+    try nums.put(alloc, 0, "1");
+    try nums.put(alloc, 2, "42");
+
+    var helper: std.StringHashMapUnmanaged(usize) = .empty;
+    defer helper.deinit(alloc);
+    try helper.put(alloc, "_jsx", 3);
+
+    const sem = ModuleSemanticData{
+        .symbols = .empty,
+        .scopes = &.{},
+        .scope_maps = &scope_maps,
+        .exported_names = exported,
+        .symbol_ids = &.{},
+        .unresolved_references = unres,
+        .references = &.{},
+        .numeric_const_texts = nums,
+        .helper_scope_map = helper,
+    };
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try codec.serialize(&sem, &buf, alloc);
+
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const sem2 = try codec.deserialize(buf.items, arena.allocator());
+
+    try testing.expectEqual(@as(usize, 3), sem2.scope_maps.len);
+    try testing.expectEqual(@as(?usize, 0), sem2.scope_maps[0].get("a"));
+    try testing.expectEqual(@as(?usize, 1), sem2.scope_maps[0].get("f"));
+    try testing.expectEqual(@as(?usize, 2), sem2.scope_maps[1].get("x"));
+    try testing.expectEqual(@as(u32, 0), sem2.scope_maps[2].count());
+
+    const exp = sem2.exported_names.get("f").?;
+    try testing.expectEqual(@as(u32, 9), exp.start);
+    try testing.expectEqual(@as(u32, 10), exp.end);
+
+    try testing.expect(sem2.unresolved_references.contains("globalThis"));
+    try testing.expectEqual(@as(u32, 1), sem2.unresolved_references.count());
+
+    try testing.expectEqualStrings("1", sem2.numeric_const_texts.get(0).?);
+    try testing.expectEqualStrings("42", sem2.numeric_const_texts.get(2).?);
+
+    try testing.expectEqual(@as(?usize, 3), sem2.helper_scope_map.get("_jsx"));
 }
 
 test "semantic_codec: 변조/버전/매직/truncated 거부 (fail-safe)" {
