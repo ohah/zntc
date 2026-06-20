@@ -115,6 +115,21 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
     var parser: Parser = undefined;
     if (!self.initParserForModule(io, module, arena_alloc, &scanner, &parser)) return;
 
+    // #4438 디스크 캐시 무효화 키 캡처(configure 후·parse 전): load 경로가 parse 를 스킵하고
+    // pre-parse 설정값으로 키를 조회하므로, store 경로도 같은 시점의 effective flags 를 써야 키가
+    // 일치한다(post-parse 확정 is_module/is_strict 는 source 함수라 source_hash 에 반영됨).
+    // source 는 plugin transform 까지 반영된 최종값. disk_cache 비활성이면 skip(출력·비용 0).
+    if (self.disk_cache != null) {
+        const cache_key_mod = @import("../cache_key.zig");
+        const wyhash = @import("../../util/wyhash.zig");
+        module.disk_cache_key = cache_key_mod.compute(
+            wyhash.hashU64(module.source),
+            cache_key_mod.parseFlagsFromParser(&parser),
+            self.disk_options_hash,
+            self.disk_compiler_build_id,
+        );
+    }
+
     setup_scope.end();
     {
         var parse_scope = profile.begin(.graph_discover_pm_parse);

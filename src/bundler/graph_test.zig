@@ -1664,3 +1664,56 @@ test "graph.invalidateModule: path 보존, ast/semantic/resolved_deps clear" {
     // resolved_deps clear
     try std.testing.expectEqual(@as(usize, 0), graph.getModule(target_idx).?.resolved_deps.items.len);
 }
+
+test "graph: 디스크 캐시 키 캡처 — 활성 시 모듈별 키 (#4438)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "import { a } from './a'; console.log(a);");
+    try writeFile(tmp.dir, "a.ts", "export const a = 1;");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
+    defer std.testing.allocator.free(entry);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+
+    var store = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer store.deinit();
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.disk_cache = &store;
+    graph.disk_options_hash = 0x1234;
+    graph.disk_compiler_build_id = 0xABCD;
+
+    try graph.build(std.testing.io, &.{entry});
+    try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
+
+    // 두 모듈 모두 키가 캡처(0 아님)되고, source 가 다르니 키도 다르다.
+    const k0 = graph.getModule(ModuleIndex.fromUsize(0)).?.disk_cache_key;
+    const k1 = graph.getModule(ModuleIndex.fromUsize(1)).?.disk_cache_key;
+    try std.testing.expect(k0 != 0 and k1 != 0);
+    try std.testing.expect(k0 != k1);
+}
+
+test "graph: 디스크 캐시 비활성 시 키 미설정 (#4438)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    // disk_cache = null (기본) → parseModule 이 키 계산을 skip.
+
+    try graph.build(std.testing.io, &.{entry});
+    try std.testing.expectEqual(@as(u64, 0), graph.getModule(ModuleIndex.fromUsize(0)).?.disk_cache_key);
+}

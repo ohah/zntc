@@ -133,6 +133,15 @@ pub const ModuleGraph = struct {
     /// (CLI / 첫 빌드 외부) 에서는 false — caller 자체가 없어 fstat 불필요.
     /// 5000-module 합성 벤치에서 fstat ~5000 회 절감.
     incremental_mode: bool = false,
+    /// #4438 디스크 캐시(parse/semantic 영속화). null 이면 비활성(기본). bundler 가 BundleOptions
+    /// 의 store 인스턴스를 주입. parseModule 이 이 store 가 있을 때만 모듈별 키를 계산해
+    /// `module.disk_cache_key` 에 캡처한다(store/load 호출은 후속 단계).
+    disk_cache: ?*@import("disk_module_store.zig").DiskModuleStore = null,
+    /// 디스크 캐시 키의 옵션 dimension(보수 전략 = `computeDiskOptionsHash` — plugin 을 포인터가
+    /// 아니라 이름+훅으로 해시해 프로세스 간 안정). bundler 주입.
+    disk_options_hash: u64 = 0,
+    /// 디스크 캐시 키의 컴파일러-버전 dimension(`build_id.current()`). bundler 주입.
+    disk_compiler_build_id: u64 = 0,
     /// perf/hmr-graph-topology-reuse Phase B — 위상(topology) 보존 모드.
     /// true 면 (1) `transferModulesToStore` 가 비활성(graph 가 parse_arena 단독 owner —
     /// store 로 양도하지 않음), (2) bundler external_graph 훅이 매 빌드 graph 를 전량 clear

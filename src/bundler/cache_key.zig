@@ -75,6 +75,21 @@ pub const ParseFlags = packed struct(u8) {
     }
 };
 
+/// 설정 완료된(**pre-parse**) parser 의 effective 상태에서 ParseFlags 를 뽑는다. store 경로(parse
+/// 후 디스크 저장)와 load 경로(parse 스킵 — pre-parse 설정값으로 키 조회)가 **반드시 동일한
+/// 매핑**을 써야 키가 일치한다(불일치 시 cache 영영 miss). 한 곳에 둬 drift 를 막는다.
+/// post-parse 확정값(unambiguous 의 is_module/is_strict)은 source 의 함수라 source_hash 에 이미
+/// 반영되므로, pre-parse 설정값(확장자/loader/jsx_in_js/--flow 반영)으로 충분하다.
+pub fn parseFlagsFromParser(parser: anytype) ParseFlags {
+    return .{
+        .is_ts = parser.source_mode == .ts,
+        .is_jsx = parser.is_jsx,
+        .is_module = parser.is_module,
+        .is_flow = parser.is_flow,
+        .is_strict = parser.is_strict_mode,
+    };
+}
+
 /// **정밀 전략**이 키에 넣는, parse/pre-pass 에 영향을 주는 옵션의 명시적 집합 —
 /// `TransformOptions` 에서 결과에 영향을 주는 필드를 **손으로 추린** 것이다.
 /// 단순 타입(bool/정수/enum)만 허용한다 — 슬라이스/포인터(define/plugins 등)는 caller 가
