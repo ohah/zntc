@@ -1762,3 +1762,80 @@ test "graph: 디스크 캐시 store — build 시 모듈 영속화 + load round-
     const miss = try store.load(std.testing.io, std.testing.allocator, arena.allocator(), 0xDEADBEEF);
     try std.testing.expect(miss == null);
 }
+
+/// #4438 통합3 PR1: build 직후 module(=정상 materialize 결과, ground truth)을 캡처하고,
+/// parser 없이 `materializeFromCachedAst`(헬퍼)로 같은 module.ast 를 재구성한 뒤 graph 레벨
+/// 출력이 동등한지 검증한다. caller 는 pre-pass 미실행 fixture(.mjs/.cjs, minify off)를 써서
+/// module.* 가 materialize 결과 그대로 남도록 한다(헬퍼=resync 기반과 진짜 비교).
+fn expectCachedAstMaterializeEquivalent(graph: *ModuleGraph) !void {
+    const m = graph.modules.at(0);
+    const arena_alloc = m.parse_arena.?.allocator();
+
+    // ground truth (materialize 결과) 캡처.
+    const gt_kind = m.exports_kind;
+    const gt_wrap = m.wrap_kind;
+    const gt_exported = m.exported_names.len;
+    const gt_specs = try std.testing.allocator.alloc([]const u8, m.import_records.len);
+    defer {
+        for (gt_specs) |s| std.testing.allocator.free(s);
+        std.testing.allocator.free(gt_specs);
+    }
+    for (m.import_records, 0..) |r, i| gt_specs[i] = try std.testing.allocator.dupe(u8, r.specifier);
+
+    // 실제 load(fresh module)는 graph-level 필드가 비어있다 — import_records 를 비워
+    // resync 의 mergeImportRecords(previous=empty)가 load 와 동일 경로를 타게 한다.
+    m.import_records = &.{};
+
+    // parser 없이 module.ast 만으로 재구성.
+    try graph.materializeFromCachedAst(m, arena_alloc);
+
+    // materialize 와 동등해야 한다.
+    try std.testing.expectEqual(gt_kind, m.exports_kind);
+    try std.testing.expectEqual(gt_wrap, m.wrap_kind);
+    try std.testing.expectEqual(gt_exported, m.exported_names.len);
+    try std.testing.expectEqual(gt_specs.len, m.import_records.len);
+    for (gt_specs, m.import_records) |g, r| try std.testing.expectEqualStrings(g, r.specifier);
+}
+
+test "graph: materializeFromCachedAst — ESM 동등 재구성 (#4438 통합3 PR1)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // .mjs: TS strip 없음 + ESM + minify off → transformer pre-pass 미실행 → module.* =
+    // materialize 결과 그대로(ground truth). import + named export + re-export 커버.
+    try writeFile(tmp.dir, "index.mjs", "import { a } from './a.mjs'; export const b = a + 1; export { a };");
+    try writeFile(tmp.dir, "a.mjs", "export const a = 1;");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.mjs" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+
+    try expectCachedAstMaterializeEquivalent(&graph);
+}
+
+test "graph: materializeFromCachedAst — CJS 동등 재구성 (#4438 통합3 PR1)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // .cjs: require + module.exports → exports_kind=.commonjs / wrap_kind=.cjs 경로 커버.
+    try writeFile(tmp.dir, "index.cjs", "const a = require('./a.cjs'); module.exports = a.x + 1;");
+    try writeFile(tmp.dir, "a.cjs", "module.exports = { x: 1 };");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.cjs" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+
+    try expectCachedAstMaterializeEquivalent(&graph);
+}
