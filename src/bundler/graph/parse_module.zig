@@ -257,6 +257,22 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
     module.ast = parser.ast;
     module.line_offsets = scanner.line_offsets.items;
 
+    // #4438 디스크 캐시 store: parse+semantic 산출물을 디스크에 영속화한다. 아래 transformer
+    // pre-pass 가 module.ast 를 mutate 하므로 **pre-pass 전** AST 를 저장해야 한다 — load(후속
+    // PR)는 이 산출물을 복원한 뒤 materialize/pre-pass 를 재실행하므로, store/load 가 같은 시점
+    // (parse 직후) AST 여야 정합한다. best-effort: 쓰기 실패는 catch 로 흘려 캐시가 no-cache 보다
+    // 빌드를 더 깨뜨리지 않게 한다(disk full 등). semantic 이 OOM 으로 null 이면 skip(부분 데이터
+    // 저장 방지). 키는 parse 직전 동일 게이트(self.disk_cache != null)에서 이미 캡처됐다.
+    // 지금은 store 만 — load(parse 스킵)는 graph 통합 3 → 출력 영향 0(항상 parse 실행).
+    // self.allocator 는 worker 동시 호출에 안전(release=mimalloc / debug=DebugAllocator).
+    if (self.disk_cache) |dc| {
+        if (module.ast) |*ast| {
+            if (module.semantic) |*sem| {
+                dc.store(io, self.allocator, module.disk_cache_key, ast, sem) catch {};
+            }
+        }
+    }
+
     if (!self.materializeParserMetadata(module, &parser, arena_alloc)) return;
 
     // #1961/#1913: transformer pre-pass. helper module 을 graph 의 1급 모듈로
