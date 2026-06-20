@@ -500,6 +500,12 @@ pub const LegalComments = enum {
     /// 별도 .LEGAL.txt 파일로만 추출
     external,
 
+    /// `.default` 를 minify 여부로 실제 모드(minify→eof / 아니면 inline)로 해석. 그 외는 그대로.
+    pub fn resolveDefault(self: LegalComments, minify: bool) LegalComments {
+        if (self != .default) return self;
+        return if (minify) .eof else .@"inline";
+    }
+
     pub fn fromString(s: []const u8) ?LegalComments {
         if (std.mem.eql(u8, s, "none")) return .none;
         if (std.mem.eql(u8, s, "inline")) return .@"inline";

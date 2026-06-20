@@ -1269,6 +1269,11 @@ pub const Bundler = struct {
             const eo = self.makeEmitOptions();
             graph.disk_options_hash = @import("compiled_cache.zig").computeDiskOptionsHash(&eo);
             graph.disk_compiler_build_id = @import("../build_id.zig").current();
+            // load hit 게이트: effective legal_comments 가 load-안전(inline/none)일 때만 load 활성.
+            // eof/linked/external 은 module.legal_comments 가 출력에 반영되나 load 는 scanner 없이
+            // 재구성 못함 → load off(store 는 계속 = 다음 안전 모드 빌드가 hit). #4438 graph 통합 3.
+            const lc = self.options.legal_comments.resolveDefault(self.options.minify_whitespace);
+            graph.disk_load_enabled = lc == .@"inline" or lc == .none;
         }
         graph.inline_dynamic_imports = self.options.inline_dynamic_imports;
         // require.context 등 parser inline scan 의 build-time 정적 평가에 사용 (#1579 Phase 2.6)

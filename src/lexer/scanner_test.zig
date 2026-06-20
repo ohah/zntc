@@ -1553,3 +1553,30 @@ test "peekIsNextByteSameLine: unterminated block comment → false" {
     defer scanner.deinit();
     try std.testing.expect(!scanner.peekIsNextByteSameLine('='));
 }
+
+test "computeLineOffsets: scanner line_offsets 와 byte-identical (#4438)" {
+    // 디스크 캐시 load 경로가 scanner 없이 재계산한 line_offsets 가 scanner 의 점진적
+    // recordNewline 결과와 정확히 일치해야 sourcemap·진단 위치가 cold 와 어긋나지 않는다.
+    const cases = [_][]const u8{
+        "", // 빈 → [0]
+        "abc", // newline 없음
+        "a\nb\nc", // \n
+        "a\r\nb\rc", // \r\n + 단독 \r
+        "line1\nline2\n", // trailing \n
+        "\n\n\n", // 연속 \n
+        "\xEF\xBB\xBF;\nx", // BOM → [0]=3
+        "a\xE2\x80\xA8b\xE2\x80\xA9c", // U+2028(LS) + U+2029(PS)
+        "x\r\n\r\ny", // 연속 \r\n
+    };
+    for (cases) |src| {
+        var scanner = try Scanner.init(std.testing.allocator, src);
+        defer scanner.deinit();
+        try drainTokensToEof(&scanner);
+        const expected = scanner.line_offsets.items;
+
+        const actual = try Scanner.computeLineOffsets(std.testing.allocator, src);
+        defer std.testing.allocator.free(actual);
+
+        try std.testing.expectEqualSlices(u32, expected, actual);
+    }
+}

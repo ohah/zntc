@@ -1839,3 +1839,110 @@ test "graph: materializeFromCachedAst — CJS 동등 재구성 (#4438 통합3 PR
 
     try expectCachedAstMaterializeEquivalent(&graph);
 }
+
+test "graph: load hit — 복원 module 이 cold parse 와 동등 + parse 스킵 (#4438 통합3 PR2)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.mjs", "import { a } from './a.mjs'; export const b = a + 1; export { a };");
+    try writeFile(tmp.dir, "a.mjs", "export const a = 1;");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.mjs" });
+    defer std.testing.allocator.free(entry);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+
+    // ground truth — 1st build: 캐시 empty → miss → parse + store.
+    var gt_specs: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (gt_specs.items) |s| std.testing.allocator.free(s);
+        gt_specs.deinit(std.testing.allocator);
+    }
+    var gt_kind: types.ExportsKind = undefined;
+    var gt_exported: usize = 0;
+    var gt_count: usize = 0;
+    {
+        var store1 = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+        defer store1.deinit();
+        var c1 = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+        defer c1.deinit();
+        var g1 = ModuleGraph.init(std.testing.allocator, &c1);
+        defer g1.deinit();
+        g1.disk_cache = &store1;
+        g1.disk_options_hash = 0x1234;
+        g1.disk_compiler_build_id = 0xABCD;
+        g1.disk_load_enabled = true;
+        try g1.build(std.testing.io, &.{entry});
+        try std.testing.expectEqual(@as(u64, 0), g1.disk_load_hits.load(.monotonic)); // empty → 전부 miss
+        const m1 = g1.modules.at(0);
+        gt_kind = m1.exports_kind;
+        gt_exported = m1.exported_names.len;
+        gt_count = g1.moduleCount();
+        for (m1.import_records) |r| try gt_specs.append(std.testing.allocator, try std.testing.allocator.dupe(u8, r.specifier));
+    }
+
+    // 2nd build: 캐시 채워짐 → load hit (parse 스킵).
+    var store2 = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer store2.deinit();
+    var c2 = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer c2.deinit();
+    var g2 = ModuleGraph.init(std.testing.allocator, &c2);
+    defer g2.deinit();
+    g2.disk_cache = &store2;
+    g2.disk_options_hash = 0x1234; // 1st 와 같은 키 dimension → hit
+    g2.disk_compiler_build_id = 0xABCD;
+    g2.disk_load_enabled = true;
+    try g2.build(std.testing.io, &.{entry});
+
+    // parse 스킵 증거: load hit > 0.
+    try std.testing.expect(g2.disk_load_hits.load(.monotonic) > 0);
+    // cold parse 와 동등 (모듈 수 / exports_kind / exported_names / import_records specifier).
+    try std.testing.expectEqual(gt_count, g2.moduleCount());
+    const m2 = g2.modules.at(0);
+    try std.testing.expectEqual(gt_kind, m2.exports_kind);
+    try std.testing.expectEqual(gt_exported, m2.exported_names.len);
+    try std.testing.expectEqual(gt_specs.items.len, m2.import_records.len);
+    for (gt_specs.items, m2.import_records) |g, r| try std.testing.expectEqualStrings(g, r.specifier);
+}
+
+test "graph: load hit 게이트 — legal comment 모듈은 load OFF (#4438 통합3 PR2)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // @license 마커 → loadUnsafeSource 게이트 → 캐시가 있어도 load OFF(cold parse) → hit 0.
+    // (lazy-barrel elision 이 module.legal_comments 를 읽는데 load 는 빈 배열이라 banner 누락 방지.)
+    try writeFile(tmp.dir, "index.mjs", "/*! @license MIT */\nexport const x = 1;\n");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.mjs" });
+    defer std.testing.allocator.free(entry);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+
+    // 1st build: store 진행(게이트는 load 만 막음).
+    {
+        var s1 = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+        defer s1.deinit();
+        var c1 = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+        defer c1.deinit();
+        var g1 = ModuleGraph.init(std.testing.allocator, &c1);
+        defer g1.deinit();
+        g1.disk_cache = &s1;
+        g1.disk_load_enabled = true;
+        try g1.build(std.testing.io, &.{entry});
+    }
+
+    // 2nd build: 캐시 채워졌지만 legal comment 게이트로 load OFF → hit 0.
+    var s2 = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer s2.deinit();
+    var c2 = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer c2.deinit();
+    var g2 = ModuleGraph.init(std.testing.allocator, &c2);
+    defer g2.deinit();
+    g2.disk_cache = &s2;
+    g2.disk_load_enabled = true;
+    try g2.build(std.testing.io, &.{entry});
+
+    try std.testing.expectEqual(@as(u64, 0), g2.disk_load_hits.load(.monotonic));
+}

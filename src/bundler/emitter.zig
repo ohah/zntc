@@ -2278,8 +2278,7 @@ pub const emitChunkRuntimeHelpers = emitter_runtime.emitChunkRuntimeHelpers;
 
 /// default → 실제 모드로 해석. default는 minify 시 eof, 아니면 inline.
 fn resolveDefaultLegalComments(mode: types.LegalComments, minify: bool) types.LegalComments {
-    if (mode != .default) return mode;
-    return if (minify) .eof else .@"inline";
+    return mode.resolveDefault(minify);
 }
 
 /// eof/linked/external 모드에서 legal comments를 수집하여 출력 끝에 추가.
