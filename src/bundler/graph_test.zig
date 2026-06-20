@@ -1717,3 +1717,48 @@ test "graph: 디스크 캐시 비활성 시 키 미설정 (#4438)" {
     try graph.build(std.testing.io, &.{entry});
     try std.testing.expectEqual(@as(u64, 0), graph.getModule(ModuleIndex.fromUsize(0)).?.disk_cache_key);
 }
+
+test "graph: 디스크 캐시 store — build 시 모듈 영속화 + load round-trip (#4438)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "import { a } from './a'; console.log(a);");
+    try writeFile(tmp.dir, "a.ts", "export const a = 1;");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
+    defer std.testing.allocator.free(entry);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+
+    var store = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer store.deinit();
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.disk_cache = &store;
+    graph.disk_options_hash = 0x1234;
+    graph.disk_compiler_build_id = 0xABCD;
+
+    try graph.build(std.testing.io, &.{entry});
+    try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
+
+    // store 가 build 중 두 모듈을 디스크에 썼으면, 같은 키로 load 가 복원한다 — 실제 모듈
+    // AST+semantic codec round-trip self-check (load 는 테스트 전용, 파이프라인 미연결).
+    const k0 = graph.getModule(ModuleIndex.fromUsize(0)).?.disk_cache_key;
+    const k1 = graph.getModule(ModuleIndex.fromUsize(1)).?.disk_cache_key;
+    try std.testing.expect(k0 != 0 and k1 != 0);
+
+    // 복원본(ast.source 포함)은 arena 소유 — arena.deinit 가 일괄 회수(개별 deinit 금지).
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const r0 = try store.load(std.testing.io, std.testing.allocator, arena.allocator(), k0);
+    try std.testing.expect(r0 != null);
+    const r1 = try store.load(std.testing.io, std.testing.allocator, arena.allocator(), k1);
+    try std.testing.expect(r1 != null);
+
+    // 미저장 키는 miss(null)로 degrade — fail-safe.
+    const miss = try store.load(std.testing.io, std.testing.allocator, arena.allocator(), 0xDEADBEEF);
+    try std.testing.expect(miss == null);
+}

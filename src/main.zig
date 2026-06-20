@@ -830,6 +830,19 @@ pub fn main(init: std.process.Init) !void {
         // watch + dev: 초기 빌드에서도 module_codes 수집 (HMR 캐시 초기화용)
         var initial_opts = bundle_opts;
         if (opts.watch and opts.dev) initial_opts.collect_module_codes = true;
+
+        // #4438 디스크 모듈 캐시 (실험적, env-gated): `ZNTC_DISK_CACHE=<dir>` 설정 시 활성.
+        // 현재는 store 단계 — parse+semantic 산출물을 <dir> 에 영속화만 한다(load=후속 PR).
+        // 미설정/빈 값/init 실패면 비활성(null) → 디스크 미접근, 출력·비용 0.
+        var disk_module_store: ?lib.bundler.disk_module_store.DiskModuleStore = null;
+        defer if (disk_module_store) |*s| s.deinit();
+        if (env_flag.get("ZNTC_DISK_CACHE")) |dir| {
+            if (dir.len > 0) {
+                disk_module_store = lib.bundler.disk_module_store.DiskModuleStore.init(allocator, dir) catch null;
+                if (disk_module_store) |*s| initial_opts.disk_module_cache = s;
+            }
+        }
+
         var bundler = Bundler.init(allocator, initial_opts);
         defer bundler.deinit();
 
