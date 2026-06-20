@@ -2,8 +2,8 @@
 //!
 //! zts AST 는 인덱스/오프셋 기반(relocatable)이라 `nodes`/`extra_data`/`string_table`
 //! 을 flat memcpy 하고 `source` 베이스만 새로 잡으면 완전 복원된다 (Span 이 offset+len
-//! 기반이라 노드 내 텍스트 참조가 베이스와 무관). 따라서 rkyv 같은 무거운 직렬화 라이브러리
-//! 없이 단순 바이트 복사로 충분하다.
+//! 기반이라 노드 내 텍스트 참조가 베이스와 무관). 따라서 무거운 직렬화 라이브러리 없이
+//! 단순 바이트 복사로 충분하다.
 //!
 //! 안전: `[MAGIC][FORMAT_VERSION][checksum(payload)]` 헤더로 버전 스큐/손상을 방어한다.
 //! 검증 실패는 항상 `error` 를 반환 — 호출자는 캐시를 버리고 재파싱(fail-safe). 잘못된
@@ -39,6 +39,16 @@ pub const Error = error{
     ChecksumMismatch,
     Truncated,
 } || std.mem.Allocator.Error;
+
+comptime {
+    // serialize/deserialize 는 Ast 의 특정 필드 subset 만 다룬다(나머지는 빈 값으로 복원하거나
+    // 직렬화 불필요로 분류됨). Ast 가 새 필드를 얻으면 — 특히 source-backed slice(`jsx_pragma_*`
+    // 류)나 deserialize 정확성에 영향을 주는 필드면 — 직렬화 누락 시 cache-hit 후 stale 출력이
+    // 된다. 다른 codec(semantic/module/cache_key)처럼 필드 수를 못박아, 변경 시 새 필드를
+    // "직렬화 / 빈값복원" 중 어디로 분류할지 재검토를 컴파일 에러로 강제한다.
+    if (@typeInfo(Ast).@"struct".fields.len != 24)
+        @compileError("Ast 필드 수가 바뀜 — 새 필드의 직렬화 필요 여부를 판정해 ast_codec 갱신 후 이 수를 갱신할 것.");
+}
 
 // ── serialize ───────────────────────────────────────────────────────────────
 

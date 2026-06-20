@@ -33,9 +33,11 @@ const Ast = @import("../parser/ast.zig").Ast;
 const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
 
 /// 한 캐시 엔트리(한 모듈) 크기 상한 — 손상/거대 파일 방어. 초과 시 load 는 miss 로 degrade.
-/// 512MB 는 정상 모듈(typescript.js ~9MB src → 직렬화 수십 MB)에 넉넉한 손상 방어 천장이지
-/// 실제 quota 가 아니다 — 정상 모듈은 근접하지 않는다.
-pub const MAX_ENTRY_BYTES: usize = 512 * 1024 * 1024;
+/// 정상 모듈(typescript.js ~9MB src → 직렬화 수십 MB)보다 넉넉하되, **너무 크면 안 된다**:
+/// 손상 캐시의 거대 length-prefix 가 이 상한까지 read alloc 을 시도하다 OOM 으로 전파되면
+/// 손상 엔트리가 빌드를 hard-fail 시켜 fail-safe 를 깨므로(code-review 종합), 손상이 현실적
+/// 메모리 압박 없이 miss 로 degrade 하도록 64MB 로 둔다.
+pub const MAX_ENTRY_BYTES: usize = 64 * 1024 * 1024;
 
 pub const DiskModuleStore = struct {
     disk: DiskCache,
