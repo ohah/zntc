@@ -79,10 +79,8 @@ pub fn build(b: *std.Build) void {
     });
 
     // #4438 디스크 캐시 무효화 키: 이 빌드의 git 식별자를 build_options 로 노출(src/build_id.zig
-    // 가 읽음). 현재 build_id 는 root.zig 의 test 블록에서만 참조 → lib_mod(테스트)만 필요.
-    // graph 통합이 build_id 를 non-test 경로(bundler)에서 쓰면 root.zig 를 root 로 하는 나머지
-    // 3개 모듈(wasm_lib_mod / wasm_bundler_lib_mod / napi_lib_mod)에도 build_options 를 추가할 것
-    // — 빠뜨리면 해당 타깃(zig build wasm/wasm-bundler/napi) 빌드만 깨져 로컬 `zig build`/test 는 통과.
+    // 가 읽음). build_id 가 bundler(non-test 경로)에서 쓰이므로 root.zig 를 root 로 하는 모든
+    // 모듈에 추가한다 — lib_mod(여기) + wasm_lib_mod / wasm_bundler_lib_mod / napi_lib_mod(아래).
     const build_opts = b.addOptions();
     build_opts.addOption([]const u8, "git_sha", gitBuildId(b));
     lib_mod.addOptions("build_options", build_opts);
@@ -243,6 +241,7 @@ pub fn build(b: *std.Build) void {
             .target = wasm_target,
             .optimize = wasm_optimize,
         });
+        wasm_lib_mod.addOptions("build_options", build_opts); // #4438 build_id (bundler non-test 경로)
 
         const wasm_mod = b.createModule(.{
             .root_source_file = b.path("packages/wasm/src/wasm_entry.zig"),
@@ -291,6 +290,7 @@ pub fn build(b: *std.Build) void {
             .optimize = wasm_optimize,
             .single_threaded = true,
         });
+        wasm_bundler_lib_mod.addOptions("build_options", build_opts); // #4438 build_id
 
         const wasm_bundler_mod = b.createModule(.{
             .root_source_file = b.path("packages/wasm/src/wasm_bundler_entry.zig"),
@@ -336,6 +336,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = napi_optimize,
         });
+        napi_lib_mod.addOptions("build_options", build_opts); // #4438 build_id
 
         const napi_mod = b.createModule(.{
             .root_source_file = b.path("packages/core/src/napi_entry.zig"),

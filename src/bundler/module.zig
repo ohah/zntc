@@ -423,6 +423,9 @@ pub const Module = struct {
     /// 파일 mtime (나노초). graph.build / store 히트 경로에서 설정.
     /// 0 = 미확인 (가상 모듈, plugin 소스 등). compiled output cache key 구성에 사용.
     mtime: i128 = 0,
+    /// #4438 디스크 캐시 무효화 키(parse 시 계산, parser flags 가 살아있을 때 캡처). 0 = 미설정
+    /// (디스크 캐시 비활성 또는 가상 모듈). graph 의 디스크 store/load 가 이 키로 디스크를 조회.
+    disk_cache_key: u64 = 0,
     /// file/copy 로더의 asset 출력 정보. null이면 asset이 아님.
     asset_data: ?AssetData = null,
     /// RN AssetRegistry metadata (이미지 모듈만, asset_registry 활성 시). parse_arena 소유 —

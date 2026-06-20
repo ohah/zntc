@@ -273,6 +273,31 @@ pub fn computeOptionsHash(options: *const EmitOptions) u64 {
     return h.final();
 }
 
+/// **디스크 캐시(#4438)용** options_hash. `computeOptionsHash` 와 같되 plugin 을 포인터 identity
+/// (`@intFromPtr`)가 아니라 **이름 + 훅 존재 비트**로 식별한다 — 포인터는 프로세스 재시작마다
+/// 바뀌어(ASLR) disk 키가 매 실행 달라지므로(in-memory 와 달리 disk 는 프로세스 간 안정해야 함).
+/// 같은 이름·훅 모양의 **다른 IMPL**: 빌트인 plugin 은 `build_id`(zts git SHA)로, user plugin 은
+/// `plugin_version`(향후, AST plugin epic)으로 구분 — 그 전까지는 user plugin impl 변경이
+/// disk 캐시를 무효화하지 못하는 한계(commit/재설치로 우회).
+pub fn computeDiskOptionsHash(options: *const EmitOptions) u64 {
+    var no_plugins = options.*; // 값 복사(슬라이스 헤더만) — plugins 만 비워 포인터 해시 제외
+    no_plugins.plugins = &.{};
+    var h = InputHasher.init(0);
+    h.addU64(computeOptionsHash(&no_plugins)); // plugins 외 전체 옵션(안정)
+    h.addU64(options.plugins.len);
+    for (options.plugins) |p| {
+        h.addStr(p.name);
+        var hooks: u8 = 0; // 훅 존재 비트(포인터 아님 → 안정)
+        if (p.resolveId != null) hooks |= 1;
+        if (p.load != null) hooks |= 2;
+        if (p.transform != null) hooks |= 4;
+        if (p.renderChunk != null) hooks |= 8;
+        if (p.generateBundle != null) hooks |= 16;
+        h.addU64(hooks);
+    }
+    return h.final();
+}
+
 // ===========================================================================
 // computeInputHash — 모듈별 최종 hash
 // ===========================================================================

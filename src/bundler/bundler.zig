@@ -432,6 +432,10 @@ pub const BundleOptions = struct {
     /// Compiled output cache. HMR/watch 에서 변경 안 된 모듈의 emit 을 스킵.
     /// IncrementalBundler 가 소유.
     compiled_cache: ?*@import("compiled_cache.zig").CompiledOutputCache = null,
+    /// #4438 디스크 캐시 모듈 store(parse/semantic 영속화). null 이면 비활성(기본). caller 가
+    /// 소유. 주입되면 graph 가 parseModule 시 모듈별 무효화 키를 계산해 `module.disk_cache_key`
+    /// 에 캡처한다(디스크 store/load 호출은 후속 단계 — 현재는 키 캡처만, 출력 영향 0).
+    disk_module_cache: ?*@import("disk_module_store.zig").DiskModuleStore = null,
     /// HMR rename 재사용 활성 (perf/hmr-link-rename-reuse). true + `preserved_renames`
     /// present + 가드 통과 시 `computeRenames`(전체 모듈 top-level 이름 deconflict, ~106ms)
     /// 를 skip 하고 초기 빌드의 rename_table 을 재주입한다. IncrementalBundler 가
@@ -1256,6 +1260,16 @@ pub const Bundler = struct {
         graph.incremental_mode = self.options.module_store != null or
             self.options.changed_files != null or
             self.options.compiled_cache != null;
+        // #4438 디스크 캐시: store 주입 시 키 dimension(옵션 해시·빌드 식별자)을 graph 에 배선.
+        // parseModule 이 모듈별 키를 계산해 module.disk_cache_key 에 캡처(store/load 는 후속).
+        // 디스크 키는 source_hash 기반(mtime 무관)이라 incremental_mode(=fstat) 를 켜지 않는다.
+        // 옵션 해시는 disk 전용(plugin 포인터 대신 이름+훅 — 프로세스 간 안정) 사용.
+        if (self.options.disk_module_cache) |dc| {
+            graph.disk_cache = dc;
+            const eo = self.makeEmitOptions();
+            graph.disk_options_hash = @import("compiled_cache.zig").computeDiskOptionsHash(&eo);
+            graph.disk_compiler_build_id = @import("../build_id.zig").current();
+        }
         graph.inline_dynamic_imports = self.options.inline_dynamic_imports;
         // require.context 등 parser inline scan 의 build-time 정적 평가에 사용 (#1579 Phase 2.6)
         graph.defines = self.options.define;
