@@ -143,6 +143,13 @@ pub const ModuleGraph = struct {
     disk_options_hash: u64 = 0,
     /// 디스크 캐시 키의 컴파일러-버전 dimension(`build_id.current()`). bundler 주입.
     disk_compiler_build_id: u64 = 0,
+    /// #4438 load hit 활성 여부. bundler 가 legal_comments 모드가 load-안전(inline/none)일 때만
+    /// true 로 설정. eof/linked/external 은 module.legal_comments 가 출력(banner)에 반영되는데 load
+    /// 는 scanner 없이 그걸 재구성 못하므로 load 비활성(store 는 무관하게 계속 — AST 만 저장).
+    disk_load_enabled: bool = false,
+    /// #4438 디스크 캐시 load hit 카운터(계측/테스트). parseModule 이 worker 에서 병렬 increment 하므로
+    /// atomic. hit = parse 를 스킵하고 캐시에서 복원한 모듈 수.
+    disk_load_hits: std.atomic.Value(u64) = .init(0),
     /// perf/hmr-graph-topology-reuse Phase B — 위상(topology) 보존 모드.
     /// true 면 (1) `transferModulesToStore` 가 비활성(graph 가 parse_arena 단독 owner —
     /// store 로 양도하지 않음), (2) bundler external_graph 훅이 매 빌드 graph 를 전량 clear

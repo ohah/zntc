@@ -324,6 +324,44 @@ pub const Scanner = struct {
         return false;
     }
 
+    /// #4438 디스크 캐시 load 경로 전용 — scanner 없이 source 만으로 line_offsets 를 1패스 계산.
+    /// `Scanner.init`(BOM 시 [0]=3 / 그 외 [0]=0) + scan 루프의 `recordNewline`(각 줄바꿈 \n,
+    /// \r, \r\n, U+2028/2029 의 *다음* byte offset)과 **byte-identical** 해야 한다 — load 후
+    /// sourcemap·진단 위치가 cold 와 어긋나지 않도록. 동등성은 scanner test 가 박제.
+    /// `recordNewline`/`handleNewline`/`isLineSeparator` 의 로직을 그대로 미러한다(drift 시 깨짐).
+    pub fn computeLineOffsets(allocator: std.mem.Allocator, source: []const u8) std.mem.Allocator.Error![]u32 {
+        var offsets: std.ArrayList(u32) = .empty;
+        errdefer offsets.deinit(allocator);
+        offsets.ensureTotalCapacity(allocator, source.len / 20 + 1) catch {};
+        var i: u32 = 0;
+        // BOM: Scanner.init 이 current/line_start=3, line_offsets[0]=3 으로 시작.
+        if (std.mem.startsWith(u8, source, "\xEF\xBB\xBF")) {
+            try offsets.append(allocator, 3);
+            i = 3;
+        } else {
+            try offsets.append(allocator, 0);
+        }
+        while (i < source.len) {
+            const c = source[i];
+            if (c == '\n') {
+                i += 1;
+                try offsets.append(allocator, i);
+            } else if (c == '\r') {
+                i += 1;
+                if (i < source.len and source[i] == '\n') i += 1; // \r\n
+                try offsets.append(allocator, i);
+            } else if (c == 0xE2 and i + 2 < source.len and
+                source[i + 1] == 0x80 and (source[i + 2] == 0xA8 or source[i + 2] == 0xA9))
+            {
+                i += 3; // U+2028 / U+2029
+                try offsets.append(allocator, i);
+            } else {
+                i += 1;
+            }
+        }
+        return offsets.toOwnedSlice(allocator);
+    }
+
     // ====================================================================
     // 공백 스킵
     // ====================================================================

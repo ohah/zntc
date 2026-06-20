@@ -128,6 +128,13 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
             self.disk_options_hash,
             self.disk_compiler_build_id,
         );
+
+        // load hit: 캐시에서 AST+semantic 복원 → parse/semantic/legal_comments/store 를 스킵하고
+        // 메타를 재구성한다. miss/손상/load 비활성이면 false → 아래 기존 parse 경로로 계속.
+        if (tryDiskLoadHit(self, io, module, arena_alloc, plugin_transform_applied)) {
+            setup_scope.end();
+            return;
+        }
     }
 
     setup_scope.end();
@@ -302,4 +309,76 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
     }
 
     module.state = .parsed;
+}
+
+/// #4438 디스크 캐시 load hit — parse/semantic 을 스킵하고 캐시에서 복원+재구성한다. 키 캡처
+/// 직후·parse 전에 호출. hit 처리 시 true(caller 는 parse 스킵 후 return), miss/손상/비활성이면
+/// false(기존 parse 계속). legal_comments 안전 모드(disk_load_enabled)에서만 시도한다.
+///
+/// cold 경로(parse→semantic→materialize→pre-pass)와 **동일 최종 module 상태**에 도달:
+///  - `load`: AST(pre-transform) + semantic 복원
+///  - `line_offsets`: scanner 없이 source 에서 재계산(Scanner.computeLineOffsets)
+///  - `materializeFromCachedAst`: import_records/bindings/exports_kind/semantic 재분석 등 재구성
+///  - transformer pre-pass: cold(parse_module 286-301)와 동일 분기로 transform_cache + post-transform
+///    AST 재생성(pre-pass 가 끝에 resync 재호출해 materialize 결과를 덮어쓰는 것도 cold 동일)
+///
+/// `legal_comments`/`mtime`/`uses_top_level_await` 등은: legal=안전모드만(빈 배열=inline 출력 동일),
+/// uses_tla=resync 가 재설정, mtime=source read 시 설정. (graph 통합 3 PR②)
+/// #4438 load hit 안전성 게이트 — load 가 cold parse 와 출력이 달라지는 두 패턴이 source 에 있으면
+/// 보수적으로 load OFF(cold parse 로 정확성 유지). 둘 다 load 가 scanner 산출물을 근사하지 못하는
+/// 데서 비롯한다:
+///  1) **string/template 안 U+2028/U+2029** — scanner 는 토큰 내부의 이 문자를 line break 로
+///     기록하지 않지만(content) `computeLineOffsets` 는 무조건 기록 → load 시 line_offsets 가
+///     어긋나 sourcemap line/col 이 cold 와 달라진다. 토큰 사이의 U+2028 은 일치하나 이 문자
+///     자체가 드물어 통째 게이트한다.
+///  2) **legal comment(`@license`/`@preserve`/`/*!`)** — `module.legal_comments` 가 emitter 의
+///     lazy-barrel elision 게이트(`legal_comments.len != 0`)에 쓰이는데 load 는 그 slice 를
+///     빈 채로 둔다 → banner 를 가진 barrel 이 잘못 elide 되어 누락. `isLegalComment`(scanner.zig)
+///     의 마커를 보수적으로 검출한다(false positive=load OFF 안전, false negative 없음).
+fn loadUnsafeSource(source: []const u8) bool {
+    return std.mem.indexOf(u8, source, "\xE2\x80\xA8") != null or // U+2028 (LS)
+        std.mem.indexOf(u8, source, "\xE2\x80\xA9") != null or // U+2029 (PS)
+        std.mem.indexOf(u8, source, "@license") != null or
+        std.mem.indexOf(u8, source, "@preserve") != null or
+        std.mem.indexOf(u8, source, "/*!") != null;
+}
+
+fn tryDiskLoadHit(
+    self: *ModuleGraph,
+    io: std.Io,
+    module: *module_mod.Module,
+    arena_alloc: std.mem.Allocator,
+    plugin_transform_applied: bool,
+) bool {
+    if (!self.disk_load_enabled) return false;
+    if (loadUnsafeSource(module.source)) return false;
+    const dc = self.disk_cache orelse return false;
+    const restored = (dc.load(io, self.allocator, arena_alloc, module.disk_cache_key) catch return false) orelse return false;
+
+    module.ast = restored.ast;
+    module.semantic = restored.semantic;
+    module.line_offsets = Scanner.computeLineOffsets(arena_alloc, module.source) catch {
+        // OOM — 캐시 무관 자원고갈. 부분 복원이라 parse 로 degrade 불가 → 모듈만 비우고 진행.
+        module.state = .ready;
+        return true;
+    };
+
+    self.materializeFromCachedAst(module, arena_alloc) catch {
+        module.state = .ready;
+        return true;
+    };
+
+    {
+        const run_prepass = self.shouldRunTransformerPrePass(module, plugin_transform_applied);
+        if (run_prepass) {
+            self.runTransformerPrePass(module, arena_alloc);
+        } else {
+            module.transform_cache = null;
+            suppressRuntimeHelperInternalUnresolved(module);
+        }
+    }
+
+    module.state = .parsed;
+    _ = self.disk_load_hits.fetchAdd(1, .monotonic);
+    return true;
 }
