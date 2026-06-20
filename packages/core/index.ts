@@ -867,6 +867,14 @@ interface BuildOptionsCommon {
    * Conflicts with `platform: 'node' | 'neutral'`.
    */
   rnVersion?: string;
+  /**
+   * #4438 Disk cache: persist parse/semantic across builds for faster cold rebuilds.
+   * `true` enables it at the default dir `node_modules/.cache/zntc`; pass `cacheDir`
+   * for a custom path. Opt-in (off by default). Mirrors CLI `--disk-cache`.
+   */
+  diskCache?: boolean;
+  /** #4438 Disk cache directory (implies `diskCache`). Mirrors CLI `--cache-dir`. */
+  cacheDir?: string;
   minify?: boolean;
   minifyWhitespace?: boolean;
   minifyIdentifiers?: boolean;

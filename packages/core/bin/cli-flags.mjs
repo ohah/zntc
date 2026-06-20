@@ -136,6 +136,9 @@ export const FLAG_REGISTRY = [
   { kind: 'string', flag: '--rn-version', target: 'rnVersion', forms: ['equal', 'pair'] },
   // #2540 PR #7 — RN preset 의 projectRoot. 기본 cwd, 사용자 monorepo root 지정 시 사용.
   { kind: 'string', flag: '--rn-project-root', target: 'rnProjectRoot', forms: ['equal', 'pair'] },
+  // #4438 디스크 캐시 opt-in: --disk-cache(활성, 기본 node_modules/.cache/zntc) / --cache-dir <path>.
+  { kind: 'bool', flag: '--disk-cache', target: 'diskCache' },
+  { kind: 'string', flag: '--cache-dir', target: 'cacheDir', forms: ['equal', 'pair'] },
   // ─── RN CLI 호환 flag 매트릭스 (#2605 audit P0) ───
   // `react-native bundle` / Metro CLI 의 standard flag 들 — `zntc bundle --platform=react-native`
   // 가 dropin 으로 동작하기 위한 호환 layer. zntc 내부 옵션 (outfile 등) 과 별개로 받아 매핑.

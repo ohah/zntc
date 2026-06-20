@@ -111,6 +111,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'platform',
   'target',
   'rnVersion',
+  'diskCache',
+  'cacheDir',
   'browserslist',
   'runtimePolyfills',
   'coreJs',

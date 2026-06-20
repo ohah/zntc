@@ -23,7 +23,6 @@ export const NAPI_INTERNAL_ONLY_KEYS = [
   'devMode',
   'emitDiskSourcemap',
   'entryErrorGuard',
-  'experimentalCodeCache',
   'fallback',
   'globalIdentifiers',
   'onReady',

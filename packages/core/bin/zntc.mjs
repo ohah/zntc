@@ -349,6 +349,8 @@ function parseArgs(argv) {
     mainFields: [],
     rnPlatform: undefined,
     rnVersion: undefined,
+    diskCache: false, // #4438 디스크 캐시 활성 (--disk-cache)
+    cacheDir: undefined, // #4438 디스크 캐시 경로 (--cache-dir)
     jsxInJs: false,
     outExtensionJs: undefined,
     sourceRoot: undefined,
@@ -1326,6 +1328,7 @@ function mergeConfigIntoOpts(opts, config) {
     'platform',
     'target',
     'rnVersion',
+    'cacheDir', // #4438 디스크 캐시 경로 (NAPI 가 disk_cache_dir 로 해석)
     'banner',
     'footer',
     'globalName',
@@ -1406,6 +1409,7 @@ function mergeConfigIntoOpts(opts, config) {
     // 머지 안 되던 실 BuildOption bool.
     'analyze',
     'devMode',
+    'diskCache', // #4438 디스크 캐시 활성 (NAPI 가 disk_cache_dir 로 해석)
   ];
   for (const key of BOOL_KEYS) {
     if ((opts[key] === false || opts[key] === undefined) && config[key] === true) {
@@ -1546,6 +1550,9 @@ async function buildBundleOptions(opts, config, { filterCallerPreWarmCss = false
     target: opts.target,
     // --rn-version: platform=react-native 함의 + RN 문서 기준 버전별 다운레벨 (NAPI 가 해석).
     rnVersion: opts.rnVersion,
+    // #4438 디스크 캐시 opt-in: --disk-cache(활성) / --cache-dir <path>. NAPI 가 disk_cache_dir 로 해석.
+    diskCache: opts.diskCache,
+    cacheDir: opts.cacheDir,
     browserslist: opts.browserslist,
     external: opts.external,
     packagesExternal: opts.packagesExternal,

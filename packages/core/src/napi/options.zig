@@ -324,6 +324,16 @@ pub fn parseBuildOptions(
     else
         .browser;
 
+    // #4438 디스크 캐시 (opt-in): cacheDir(경로) 우선, diskCache(bool)면 기본 node_modules/.cache/zntc.
+    // bundler 가 이 경로로 내부 DiskModuleStore 를 생성/소유(disk_cache.init 이 root dupe — borrowed 안전).
+    const cache_dir_str = getObjectString(env, opts_obj, "cacheDir", native_alloc);
+    if (cache_dir_str) |s| if (!trackStr(owned_strings, s)) return null;
+    const disk_cache_dir: ?[]const u8 = blk: {
+        // 빈 cacheDir("")은 비활성으로 취급(main.zig env 가드 `dir.len > 0` 과 일관). cacheDir 우선.
+        if (cache_dir_str) |s| if (s.len > 0) break :blk s;
+        break :blk if (getObjectBoolOptional(env, opts_obj, "diskCache") orelse false) "node_modules/.cache/zntc" else null;
+    };
+
     // external
     const external = getObjectStringArray(env, opts_obj, "external", native_alloc);
     if (external) |exts| {
@@ -783,6 +793,7 @@ pub fn parseBuildOptions(
         .format = format,
         .platform = platform,
         .rn_version_matrix = rn_version_matrix,
+        .disk_cache_dir = disk_cache_dir,
         .external = external orelse &.{},
         .mf = mf_cfg,
         .debug = debug_categories orelse &.{},
