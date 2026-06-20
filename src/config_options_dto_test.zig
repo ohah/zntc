@@ -225,6 +225,8 @@ const ts_buildoptions_only_allowlist = [_][]const u8{
     "target",
     "browserslist",
     "rnVersion", // RN 버전 타겟 — NAPI 가 내부 rn_version_matrix 로 해석 (1:1 DTO 필드 아님)
+    "diskCache", // #4438 disk cache 활성 — NAPI 가 disk_cache_dir 로 변환 (1:1 DTO 아님)
+    "cacheDir", // #4438 disk cache 경로 — NAPI 가 disk_cache_dir 로 변환
     "runtimePolyfills", // JS wrapper가 core-js compat 후보를 native graph plan 으로 전달
     "coreJs", // runtimePolyfills 전용 core-js 버전 힌트
     "plugins",
@@ -238,7 +240,6 @@ const ts_buildoptions_only_allowlist = [_][]const u8{
     "codegenTransform", // RN view config codegen (#2348)
     "moduleSpecifierMap", // cherry-pick import 분해 (#2393)
     "strictExecutionOrder", // 모듈 실행 순서 보장
-    "experimentalCodeCache", // persistent cache 실험
     "watch", // CLI flag, BuildOptions 노출 안 함이 정석이지만 일부 wrapper 가 노출
     "extends", // config-only
     "server", // config-only dev server defaults
