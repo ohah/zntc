@@ -90,6 +90,8 @@ pub fn printUsage(writer: anytype) !void {
         \\  --metafile=<path>                Emit build metadata to file (esbuild compat)
         \\  --analyze                        Print bundle analyzer summary
         \\  --shim-missing-exports           Stub-export missing named imports (rolldown compat)
+        \\  --disk-cache                     Persist parse/semantic to node_modules/.cache/zntc (faster cold rebuilds)
+        \\  --cache-dir <path>               Disk cache directory (implies --disk-cache)
         \\  --conditions=<cond,...>          Custom export conditions (e.g. production)
         \\  --platform=browser|node|neutral  Target platform (default: browser)
         \\  --rn-platform=ios|android        RN sub-platform (.ios.*/.android.* extensions)
