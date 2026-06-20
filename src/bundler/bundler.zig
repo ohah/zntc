@@ -432,10 +432,14 @@ pub const BundleOptions = struct {
     /// Compiled output cache. HMR/watch 에서 변경 안 된 모듈의 emit 을 스킵.
     /// IncrementalBundler 가 소유.
     compiled_cache: ?*@import("compiled_cache.zig").CompiledOutputCache = null,
-    /// #4438 디스크 캐시 모듈 store(parse/semantic 영속화). null 이면 비활성(기본). caller 가
-    /// 소유. 주입되면 graph 가 parseModule 시 모듈별 무효화 키를 계산해 `module.disk_cache_key`
-    /// 에 캡처한다(디스크 store/load 호출은 후속 단계 — 현재는 키 캡처만, 출력 영향 0).
+    /// #4438 디스크 캐시 모듈 store(parse/semantic 영속화) — 테스트/직접 주입용 포인터(caller 소유).
+    /// 일반 경로는 아래 `disk_cache_dir` 로 bundler 가 내부 store(`owned_disk_cache`)를 생성/소유한다.
     disk_module_cache: ?*@import("disk_module_store.zig").DiskModuleStore = null,
+    /// #4438 디스크 캐시 디렉토리(opt-in, 정식 표면). non-null 이면 bundler 가 그 경로에
+    /// DiskModuleStore 를 생성해 parse/semantic 을 영속화 → 다음 cold build 가 parse 스킵(hit).
+    /// CLI `--disk-cache`(기본 node_modules/.cache/zntc) / `--cache-dir <path>`, config·NAPI `cache`.
+    /// `disk_module_cache`(직접 주입)보다 우선.
+    disk_cache_dir: ?[]const u8 = null,
     /// HMR rename 재사용 활성 (perf/hmr-link-rename-reuse). true + `preserved_renames`
     /// present + 가드 통과 시 `computeRenames`(전체 모듈 top-level 이름 deconflict, ~106ms)
     /// 를 skip 하고 초기 빌드의 rename_table 을 재주입한다. IncrementalBundler 가
@@ -787,6 +791,9 @@ pub const Bundler = struct {
     /// 포인터를 parking 하지 않음(mf→non-mf 전환·조기 resolve 안전).
     mf_eff_external: ?[]const []const u8 = null,
     mf_eff_globals: ?[]const types.GlobalEntry = null,
+    /// #4438 `disk_cache_dir` 가 주어지면 bundler 가 생성/소유하는 DiskModuleStore. graph 에
+    /// 포인터로 주입되고 deinit 가 유일 free 지점. `disk_module_cache`(직접 주입)보다 우선.
+    owned_disk_cache: ?@import("disk_module_store.zig").DiskModuleStore = null,
 
     /// platform=react-native → Hermes unsupported matrix로 덮어쓰기.
     /// 사용자가 --target으로 지정한 값은 무시된다 (Hermes는 ES 버전으로 표현 불가능한
@@ -872,6 +879,7 @@ pub const Bundler = struct {
         // #3318 ④ combined seam 버퍼(컨테이너만; 원소 borrow).
         if (self.mf_eff_external) |x| self.allocator.free(x);
         if (self.mf_eff_globals) |x| self.allocator.free(x);
+        if (self.owned_disk_cache) |*s| s.deinit();
     }
 
     /// BundleOptions → TransformOptions base 변환 (#1961 PR 1f). graph 와 emitter
@@ -1261,10 +1269,20 @@ pub const Bundler = struct {
             self.options.changed_files != null or
             self.options.compiled_cache != null;
         // #4438 디스크 캐시: store 주입 시 키 dimension(옵션 해시·빌드 식별자)을 graph 에 배선.
-        // parseModule 이 모듈별 키를 계산해 module.disk_cache_key 에 캡처(store/load 는 후속).
         // 디스크 키는 source_hash 기반(mtime 무관)이라 incremental_mode(=fstat) 를 켜지 않는다.
         // 옵션 해시는 disk 전용(plugin 포인터 대신 이름+훅 — 프로세스 간 안정) 사용.
-        if (self.options.disk_module_cache) |dc| {
+        // disk_cache_dir(문자열, 정식 opt-in) 우선 — bundler 가 store 를 생성/소유(owned_disk_cache).
+        // 없으면 disk_module_cache(테스트 직접 주입). 둘 다 없으면 비활성.
+        const disk_cache_ptr: ?*@import("disk_module_store.zig").DiskModuleStore = blk: {
+            if (self.options.disk_cache_dir) |dir| {
+                if (self.owned_disk_cache == null) {
+                    self.owned_disk_cache = @import("disk_module_store.zig").DiskModuleStore.init(self.allocator, dir) catch null;
+                }
+                if (self.owned_disk_cache) |*s| break :blk s;
+            }
+            break :blk self.options.disk_module_cache;
+        };
+        if (disk_cache_ptr) |dc| {
             graph.disk_cache = dc;
             const eo = self.makeEmitOptions();
             graph.disk_options_hash = @import("compiled_cache.zig").computeDiskOptionsHash(&eo);

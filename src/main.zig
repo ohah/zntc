@@ -831,16 +831,13 @@ pub fn main(init: std.process.Init) !void {
         var initial_opts = bundle_opts;
         if (opts.watch and opts.dev) initial_opts.collect_module_codes = true;
 
-        // #4438 디스크 모듈 캐시 (실험적, env-gated): `ZNTC_DISK_CACHE=<dir>` 설정 시 활성.
-        // 현재는 store 단계 — parse+semantic 산출물을 <dir> 에 영속화만 한다(load=후속 PR).
-        // 미설정/빈 값/init 실패면 비활성(null) → 디스크 미접근, 출력·비용 0.
-        var disk_module_store: ?lib.bundler.disk_module_store.DiskModuleStore = null;
-        defer if (disk_module_store) |*s| s.deinit();
-        if (env_flag.get("ZNTC_DISK_CACHE")) |dir| {
-            if (dir.len > 0) {
-                disk_module_store = lib.bundler.disk_module_store.DiskModuleStore.init(allocator, dir) catch null;
-                if (disk_module_store) |*s| initial_opts.disk_module_cache = s;
-            }
+        // #4438 디스크 캐시 opt-in: CLI(--disk-cache / --cache-dir <path>) 우선, env
+        // (ZNTC_DISK_CACHE) 하위호환. bundler 가 disk_cache_dir 로 내부 store 를 생성/소유하므로
+        // 여기선 경로 문자열만 전달한다(미설정이면 비활성 → 디스크 미접근).
+        if (opts.disk_cache_dir) |dir| {
+            initial_opts.disk_cache_dir = dir;
+        } else if (env_flag.get("ZNTC_DISK_CACHE")) |dir| {
+            if (dir.len > 0) initial_opts.disk_cache_dir = dir;
         }
 
         var bundler = Bundler.init(allocator, initial_opts);

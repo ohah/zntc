@@ -177,6 +177,10 @@ pub const CliOptions = struct {
     /// (blunt fromHermesPreset 대신, 진실 소스 = RN javascript-environment 문서).
     /// raw 스펙 보관 — 유효성 검증은 파싱 시점에 완료.
     rn_version: ?[]const u8 = null,
+    /// #4438 디스크 캐시 디렉토리(opt-in). `--disk-cache`(기본 node_modules/.cache/zntc) /
+    /// `--cache-dir <path>`. null=비활성. bundler 가 이 경로에 parse/semantic 을 영속화 →
+    /// 다음 cold build 가 parse 스킵. env `ZNTC_DISK_CACHE` 하위호환(main.zig).
+    disk_cache_dir: ?[]const u8 = null,
     /// --outbase: 엔트리 포인트 공통 기준 경로 (출력 디렉토리 구조 결정)
     outbase: ?[]const u8 = null,
     /// --packages=external: 모든 bare import를 external 처리
@@ -787,6 +791,19 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator,
                 std.process.exit(1);
             }
             opts.rn_version = val;
+        } else if (std.mem.eql(u8, arg, "--disk-cache")) {
+            // #4438 디스크 캐시 활성(기본 경로). --cache-dir 가 있으면 그쪽이 우선(순서 무관).
+            if (opts.disk_cache_dir == null) opts.disk_cache_dir = "node_modules/.cache/zntc";
+        } else if (std.mem.startsWith(u8, arg, "--cache-dir=") or std.mem.eql(u8, arg, "--cache-dir")) {
+            // `--cache-dir=<path>` / `--cache-dir <path>`. 경로 지정 = 디스크 캐시 활성(+override).
+            opts.disk_cache_dir = if (std.mem.startsWith(u8, arg, "--cache-dir=")) arg["--cache-dir=".len..] else blk: {
+                i += 1;
+                if (i >= args.len) {
+                    try stderr.print("zntc: --cache-dir requires a value (a directory path)\n", .{});
+                    std.process.exit(1);
+                }
+                break :blk args[i];
+            };
         } else if (std.mem.eql(u8, arg, "--format=iife")) {
             opts.bundle_format = .iife;
             opts.bundle_format_explicit = true;
@@ -1170,4 +1187,29 @@ test "parseArgs: cert/key 미지정 시 둘 다 null (plain HTTP 기본)" {
     defer opts.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(?[]const u8, null), opts.serve_cert_path);
     try std.testing.expectEqual(@as(?[]const u8, null), opts.serve_key_path);
+}
+
+test "parseArgs: --cache-dir <path> → disk_cache_dir (#4438)" {
+    const args = [_][]const u8{ "zntc", "--bundle", "--cache-dir", "/tmp/zc", "a.ts" };
+    var opts = (parseCliArguments(&args, std.testing.allocator) catch return error.TestUnexpectedResult) orelse return error.TestUnexpectedResult;
+    defer opts.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("/tmp/zc", opts.disk_cache_dir.?);
+}
+
+test "parseArgs: --disk-cache → 기본 경로 node_modules/.cache/zntc (#4438)" {
+    const args = [_][]const u8{ "zntc", "--bundle", "--disk-cache", "a.ts" };
+    var opts = (parseCliArguments(&args, std.testing.allocator) catch return error.TestUnexpectedResult) orelse return error.TestUnexpectedResult;
+    defer opts.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("node_modules/.cache/zntc", opts.disk_cache_dir.?);
+}
+
+test "parseArgs: --cache-dir 가 --disk-cache 보다 우선 (순서 무관) (#4438)" {
+    const a1 = [_][]const u8{ "zntc", "--bundle", "--disk-cache", "--cache-dir", "/x", "a.ts" };
+    var o1 = (parseCliArguments(&a1, std.testing.allocator) catch return error.TestUnexpectedResult) orelse return error.TestUnexpectedResult;
+    defer o1.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("/x", o1.disk_cache_dir.?);
+    const a2 = [_][]const u8{ "zntc", "--bundle", "--cache-dir", "/y", "--disk-cache", "a.ts" };
+    var o2 = (parseCliArguments(&a2, std.testing.allocator) catch return error.TestUnexpectedResult) orelse return error.TestUnexpectedResult;
+    defer o2.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("/y", o2.disk_cache_dir.?);
 }
