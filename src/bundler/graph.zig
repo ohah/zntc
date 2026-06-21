@@ -149,7 +149,8 @@ pub const ModuleGraph = struct {
     disk_load_enabled: bool = false,
     /// #4438 디스크 캐시 load hit 카운터(계측/테스트). parseModule 이 worker 에서 병렬 increment 하므로
     /// atomic. hit = parse 를 스킵하고 캐시에서 복원한 모듈 수.
-    disk_load_hits: std.atomic.Value(u64) = .init(0),
+    /// usize: 32-bit 타겟(wasm32/x86-win)은 64-bit atomic 을 지원하지 않으므로 워드 크기 카운터 사용.
+    disk_load_hits: std.atomic.Value(usize) = .init(0),
     /// perf/hmr-graph-topology-reuse Phase B — 위상(topology) 보존 모드.
     /// true 면 (1) `transferModulesToStore` 가 비활성(graph 가 parse_arena 단독 owner —
     /// store 로 양도하지 않음), (2) bundler external_graph 훅이 매 빌드 graph 를 전량 clear
