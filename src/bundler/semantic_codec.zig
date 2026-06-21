@@ -29,25 +29,50 @@ const wyhash = @import("../util/wyhash.zig");
 const codec_io = @import("../util/codec_io.zig");
 
 pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
-pub const FORMAT_VERSION: u32 = 1;
+// v2: #4438 Symbol/Scope/Reference 필드별 결정적 직렬화. v1(통째 memcpy)과 레이아웃이 달라
+// bump(구 캐시 = version mismatch miss). cache_key.CODEC_FORMAT 가 키에 접어 무효화.
+pub const FORMAT_VERSION: u32 = 2;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로
 /// 안전한 sentinel(SymbolId.none/ScopeId.none 과 동일 패턴).
 const NULL_U32: u32 = std.math.maxInt(u32);
 
+/// struct 의 `"name:typename;name:typename;…"` 시그니처를 comptime 문자열로 만든다.
+/// 필드 수뿐 아니라 **이름+타입+순서**까지 못박아 rename/retype/reorder(필드 수 불변 변경)도
+/// 컴파일 에러로 잡는다 — 이 codec 은 필드별 명시 직렬화라 그런 변경이 silent 하면 cache-hit
+/// drift(miscompile)가 된다.
+fn fieldSig(comptime T: type) []const u8 {
+    comptime {
+        var sig: []const u8 = "";
+        for (@typeInfo(T).@"struct".fields) |f| {
+            sig = sig ++ f.name ++ ":" ++ @typeName(f.type) ++ ";";
+        }
+        return sig;
+    }
+}
+
 comptime {
     // Symbol/Scope/Reference 는 일반 struct 라 통째 memcpy 가 padding/미초기화 바이트를 직렬화
     // stream 에 섞어 비결정적이었다(#4438). 이제 `putSymbol`/`putScope`/`putReference` 가 필드별
-    // 명시 직렬화한다. 새 필드 추가 시 직렬화에서 silently 누락 → cache-hit drift 이므로 필드
-    // 수를 못박아 codec 갱신을 컴파일 에러로 강제한다. 새 필드가 슬라이스/포인터면 side-table
-    // 복원(synthetic_name 패턴)이 추가로 필요하다.
-    if (@typeInfo(Symbol).@"struct".fields.len != 11)
-        @compileError("Symbol 필드 수가 바뀜 — putSymbol/readSymbol 의 명시 직렬화 갱신 후 이 가드를 갱신.");
-    if (@typeInfo(Scope).@"struct".fields.len != 6)
-        @compileError("Scope 필드 수가 바뀜 — putScope/readScope 의 명시 직렬화 갱신 후 이 가드를 갱신.");
-    if (@typeInfo(Reference).@"struct".fields.len != 6)
-        @compileError("Reference 필드 수가 바뀜 — putReference/readReference 의 명시 직렬화 갱신 후 이 가드를 갱신.");
+    // 명시 직렬화한다. 필드를 추가/삭제/rename/retype/reorder 하면 직렬화가 silently 어긋나
+    // cache-hit drift 이므로, **필드 시그니처(이름+타입+순서)**를 못박아 codec 갱신을 컴파일
+    // 에러로 강제한다. 새 필드가 슬라이스/포인터면 side-table 복원(synthetic_name 패턴)이 추가 필요.
+    // (필드 수만 핀하면 rename/retype/reorder 를 못 잡아 silent miscompile 위험 — 결함4.)
+    const symbol_sig = "name:lexer.token.Span;scope_id:semantic.scope.ScopeId;origin_scope:semantic.scope.ScopeId;" ++
+        "kind:semantic.symbol.SymbolKind;decl_flags:semantic.symbol.DeclFlags;declaration_span:lexer.token.Span;" ++
+        "reference_count:u32;write_count:u32;const_kind:semantic.symbol.ConstValue.Kind;" ++
+        "synthetic_kind:?semantic.symbol.SyntheticKind;synthetic_name:[]const u8;";
+    if (!std.mem.eql(u8, fieldSig(Symbol), symbol_sig))
+        @compileError("Symbol 필드 시그니처가 바뀜 — putSymbol/readSymbol 의 명시 직렬화 갱신 후 이 시그니처를 갱신.\n실제: " ++ fieldSig(Symbol));
+    const scope_sig = "parent:semantic.scope.ScopeId;kind:semantic.scope.ScopeKind;is_strict:bool;" ++
+        "subtree_has_direct_eval:bool;subtree_has_with:bool;symbol_count:u16;";
+    if (!std.mem.eql(u8, fieldSig(Scope), scope_sig))
+        @compileError("Scope 필드 시그니처가 바뀜 — putScope/readScope 의 명시 직렬화 갱신 후 이 시그니처를 갱신.\n실제: " ++ fieldSig(Scope));
+    const reference_sig = "node_index:parser.ast.NodeIndex;scope_id:semantic.scope.ScopeId;symbol_id:semantic.symbol.SymbolId;" ++
+        "stmt_idx:u32;scope_stmt_idx:u32;flags:semantic.symbol.ReferenceFlags;";
+    if (!std.mem.eql(u8, fieldSig(Reference), reference_sig))
+        @compileError("Reference 필드 시그니처가 바뀜 — putReference/readReference 의 명시 직렬화 갱신 후 이 시그니처를 갱신.\n실제: " ++ fieldSig(Reference));
     // serialize/deserialize 는 ModuleSemanticData 의 9개 필드를 손으로 열거한다. 필드가 추가되면
     // 직렬화에서 silently 누락 → PR4 cache-hit 연결 시 그 필드만 default 로 stale miscompile.
     // 필드 수를 못박아 새 필드 추가를 컴파일 에러로 만들어 codec 갱신을 강제한다.
@@ -220,11 +245,23 @@ pub fn serialize(sem: *const ModuleSemanticData, out: *std.ArrayList(u8), alloc:
 
 const Reader = codec_io.Reader;
 
-// HashMap 역직렬화 (PR3). checksum 통과 후 호출되므로 count 는 신뢰 가능 → ensureTotalCapacity
-// 후 putAssumeCapacity. 키는 payload 슬라이스를 arena 에 dupe(arena.deinit 이 일괄 해제).
+// 각 맵 엔트리는 최소 4바이트(키 길이 prefix `[len:u32]` 또는 u32 키)를 소비한다. 따라서 정상
+// 입력이면 `count ≤ remaining/4`. checksum 통과해도 손상 캐시가 거대 count(예: maxInt(u32))를 줄
+// 수 있는데, 그대로 `ensureTotalCapacity(count)` 에 넘기면 Zig hash_map 의 capacityForSize 가
+// `ceilPowerOfTwo(count) catch unreachable` 라 **OOM degrade 가 아니라 panic** 한다(배열 경로의
+// arena.alloc 은 OOM 으로 안전 degrade — 비대칭). 미리 payload 길이로 count 를 상한해 panic 을
+// error.Truncated(=miss, 재파싱 fail-safe)로 바꾼다.
+const MIN_MAP_ENTRY_BYTES: usize = 4;
+fn checkedMapCount(r: *const Reader, n: u32) Error!u32 {
+    if (n > r.remaining() / MIN_MAP_ENTRY_BYTES) return error.Truncated;
+    return n;
+}
+
+// HashMap 역직렬화 (PR3). checksum 통과 후라도 count 는 손상 가능 → `checkedMapCount` 로
+// payload 길이 대비 sanity 검증 후 ensureTotalCapacity. 키는 payload 슬라이스를 arena 에 dupe.
 fn readStrMapUsize(r: *Reader, arena: std.mem.Allocator) Error!std.StringHashMapUnmanaged(usize) {
     var m: std.StringHashMapUnmanaged(usize) = .empty;
-    const n = try r.u32v();
+    const n = try checkedMapCount(r, try r.u32v());
     try m.ensureTotalCapacity(arena, n);
     var i: u32 = 0;
     while (i < n) : (i += 1) {
@@ -235,7 +272,7 @@ fn readStrMapUsize(r: *Reader, arena: std.mem.Allocator) Error!std.StringHashMap
 }
 fn readStrMapSpan(r: *Reader, arena: std.mem.Allocator) Error!std.StringHashMapUnmanaged(Span) {
     var m: std.StringHashMapUnmanaged(Span) = .empty;
-    const n = try r.u32v();
+    const n = try checkedMapCount(r, try r.u32v());
     try m.ensureTotalCapacity(arena, n);
     var i: u32 = 0;
     while (i < n) : (i += 1) {
@@ -248,7 +285,7 @@ fn readStrMapSpan(r: *Reader, arena: std.mem.Allocator) Error!std.StringHashMapU
 }
 fn readStrSet(r: *Reader, arena: std.mem.Allocator) Error!std.StringHashMapUnmanaged(void) {
     var m: std.StringHashMapUnmanaged(void) = .empty;
-    const n = try r.u32v();
+    const n = try checkedMapCount(r, try r.u32v());
     try m.ensureTotalCapacity(arena, n);
     var i: u32 = 0;
     while (i < n) : (i += 1) {
@@ -259,7 +296,7 @@ fn readStrSet(r: *Reader, arena: std.mem.Allocator) Error!std.StringHashMapUnman
 }
 fn readNumTexts(r: *Reader, arena: std.mem.Allocator) Error!std.AutoHashMapUnmanaged(u32, []const u8) {
     var m: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
-    const n = try r.u32v();
+    const n = try checkedMapCount(r, try r.u32v());
     try m.ensureTotalCapacity(arena, n);
     var i: u32 = 0;
     while (i < n) : (i += 1) {
@@ -333,8 +370,11 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
     var r = Reader{ .buf = payload };
 
     // 필드별 역직렬화(#4438 put* 의 짝). 각 배열은 `[count]` 후 레코드별 명시 read.
-    // count 는 checksum 통과 후라 신뢰 가능하지만, 손상 캐시가 거대 count 를 줘도 take 의
-    // 경계검사가 read 도중 Truncated 를 낸다(over-alloc 만 가능, OOB read 불가) → fail-safe.
+    // 손상 캐시가 거대 count 를 줘도: (1) **배열**(arena.alloc) 경로는 OutOfMemory 로 안전
+    // degrade 하고 read 도중 take 의 경계검사가 Truncated 를 낸다(OOB read 불가). (2) **HashMap**
+    // 경로는 `ensureTotalCapacity(count)` 가 capacityForSize 의 `ceilPowerOfTwo catch unreachable`
+    // 로 panic 할 수 있어 비대칭이므로, readStr*/readNumTexts 가 `checkedMapCount` 로 payload 길이
+    // 대비 count 를 먼저 상한(엔트리당 ≥4B)해 panic 을 Truncated(=miss, 재파싱)로 바꾼다 → 둘 다 fail-safe.
     const symbols_len = try r.u32v();
     const symbols_slice = try arena.alloc(Symbol, symbols_len);
     for (symbols_slice) |*s| s.* = try readSymbol(&r, arena);

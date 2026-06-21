@@ -26,7 +26,10 @@ const wyhash = @import("../util/wyhash.zig");
 const codec_io = @import("../util/codec_io.zig");
 
 pub const MAGIC: u32 = 0x5A4E5443; // "ZNTC"
-pub const FORMAT_VERSION: u32 = 1;
+// v2: #4438 필드별 결정적 직렬화 + leaf sub-variant 폭(none=4/wide=8). v1(통째 memcpy)과
+// 바이트 레이아웃이 완전히 달라 구버전 캐시를 읽으면 위험 → bump 로 version mismatch=miss degrade.
+// cache_key.CODEC_FORMAT 가 이 값을 키에 접으므로 구 캐시는 키 자체가 달라져 무효화된다.
+pub const FORMAT_VERSION: u32 = 2;
 
 /// null `?[]const u8` 표식 (jsx_pragma offset 자리).
 const NULL_OFFSET: u32 = std.math.maxInt(u32);
@@ -63,6 +66,10 @@ const putBytes = codec_io.putBytes;
 ///   `[count:u32]` 다음 노드마다 `span.start(u32) span.end(u32) tag(u16) data[0..dataWidth(tag)]`.
 /// data 는 active variant 의 의미 폭만 쓰고 padding/union 꼬리는 stream 에서 제외 →
 /// 결정적. deserialize 가 0-init Node 에 정확히 역으로 복원(꼬리는 0).
+///
+/// `dataWidth` 는 leaf 을 sub-variant 별로 세분한다: none-only leaf=4(꼬리 [4..8] poison 을
+/// stream 에서 제외), string_ref/number_bytes 를 쓰는 wide leaf=8. wide leaf 의 `.none` 노드는
+/// 파서가 `Data.noneLeaf` 로 꼬리를 0-채워 만들므로 8B 전부 결정적(ast.zig WIDE_LEAF_TAGS 참조).
 fn putNodes(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, nodes: []const Node) !void {
     try putU32(buf, alloc, @intCast(nodes.len));
     for (nodes) |n| {

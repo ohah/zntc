@@ -208,7 +208,9 @@ fn parseTsModuleBody(self: *Parser, start: u32) ParseError2!NodeIndex {
         const str_node = try self.ast.addNode(.{
             .tag = .string_literal,
             .span = self.currentSpan(),
-            .data = .{ .none = 0 },
+            // wide-leaf(.string_ref 도 쓰는 태그)의 .none 은 union 꼬리를 0 으로 박아야 codec
+            // (직렬화 폭 8)이 결정적(#4438). noneLeaf 가 꼬리까지 0-채움.
+            .data = Node.Data.noneLeaf(0),
         });
         try self.advance();
         // body 없는 shorthand: declare module 'X'; 또는 ASI
@@ -976,7 +978,8 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
             return try self.ast.addNode(.{
                 .tag = .ts_literal_type,
                 .span = span,
-                .data = .{ .none = 0 },
+                // wide-leaf .none → 꼬리 0-채움(codec 결정성, #4438).
+                .data = Node.Data.noneLeaf(0),
             });
         },
         // 모든 numeric literal kind (decimal/float/binary/octal/hex/exponential/bigint)
@@ -1682,7 +1685,8 @@ fn parseTemplateLiteralType(self: *Parser) ParseError2!NodeIndex {
         return try self.ast.addNode(.{
             .tag = .ts_literal_type,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .none = 0 },
+            // wide-leaf .none → 꼬리 0-채움(codec 결정성, #4438).
+            .data = Node.Data.noneLeaf(0),
         });
     }
     // template_head + 타입 보간 + template_middle/tail

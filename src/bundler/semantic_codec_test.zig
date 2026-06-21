@@ -338,3 +338,45 @@ test "semantic_codec: 변조/버전/매직/truncated 거부 (fail-safe)" {
     // truncated
     try testing.expectError(error.Truncated, codec.deserialize(buf.items[0..8], arena.allocator()));
 }
+
+// #4438 결함2 회귀: checksum 은 유효하지만 HashMap count 가 거대한 손상 캐시는 panic 이 아니라
+// error 로 거부돼야 한다. 빈 sem 직렬화의 payload 끝 4B(= helper_scope_map count)를 maxInt(u32)
+// 로 바꾸고 checksum 을 재계산(=유효) → checkedMapCount 가 payload 길이 대비 상한해 Truncated.
+// 가드 없으면 ensureTotalCapacity(maxInt) 의 ceilPowerOfTwo unreachable 로 panic(테스트 크래시).
+test "semantic_codec: checksum 유효 + 거대 map count → panic 아닌 error (결함2)" {
+    const alloc = testing.allocator;
+    const wyhash = @import("../util/wyhash.zig");
+
+    var symbols: std.ArrayList(Symbol) = .empty;
+    defer symbols.deinit(alloc);
+    const sem = ModuleSemanticData{
+        .symbols = symbols,
+        .scopes = &.{},
+        .scope_maps = &.{},
+        .exported_names = .empty,
+        .symbol_ids = &.{},
+        .unresolved_references = .empty,
+        .references = &.{},
+        .numeric_const_texts = .empty,
+        .helper_scope_map = .empty,
+    };
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try codec.serialize(&sem, &buf, alloc);
+
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+
+    // payload 끝 4B = 마지막 map(helper_scope_map) 의 count. maxInt(u32) 로 변조.
+    const dup = try alloc.dupe(u8, buf.items);
+    defer alloc.free(dup);
+    const HEADER_LEN: usize = 16; // magic(4)+version(4)+checksum(8)
+    std.mem.writeInt(u32, dup[dup.len - 4 ..][0..4], std.math.maxInt(u32), .little);
+    // checksum 재계산(payload = HEADER_LEN..). 변조했어도 checksum 은 유효하게 만들어 가드만 검증.
+    const new_checksum = wyhash.hashU64(dup[HEADER_LEN..]);
+    std.mem.writeInt(u64, dup[8..16], new_checksum, .little);
+
+    // checksum 통과(ChecksumMismatch 아님) + count 상한 위반 → Truncated (panic 아님).
+    try testing.expectError(error.Truncated, codec.deserialize(dup, arena.allocator()));
+}

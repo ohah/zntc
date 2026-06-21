@@ -529,6 +529,12 @@ pub const Node = struct {
             /// extra 노드의 간접 NodeIndex 리스트 필드. {start_offset, len_offset} 쌍.
             /// extra_data[e + start_offset .. + start_offset + extra_data[e + len_offset]]가 NodeIndex 리스트.
             list_offsets: []const [2]u8 = &.{},
+            /// `kind == .leaf` 전용: 이 태그가 실제로 쓰는 `Data` sub-variant 의 의미 바이트 폭.
+            /// leaf 은 `none`(u32=4) / `string_ref`(Span=8) / `number_bytes`([8]u8=8) 셋을 conflate 하므로
+            /// 직렬화 폭이 태그마다 다르다. `.none` 만 쓰는 태그는 4(꼬리 4B 는 미초기화 poison →
+            /// 직렬화 제외해야 결정적), `string_ref`/`number_bytes` 를 쓸 수 있는 태그는 8(좁히면 데이터 손실).
+            /// leaf 가 아닌 kind 는 무시(`dataWidth` 가 kind 로 분기).
+            leaf_width: u8 = 8,
         };
 
         // ────────────────────────────────────────────────────
@@ -537,18 +543,44 @@ pub const Node = struct {
         // ────────────────────────────────────────────────────
         fn getLayout(tag: Tag) Layout {
             return switch (tag) {
-                // === leaf ===
+                // === leaf (wide: `string_ref`(Span=8) 또는 `number_bytes`([8]u8=8) 을 쓸 수 있어 8B) ===
+                // ⚠️ 폭 분류 기준 = **파서가 만드는 노드**(디스크 캐시 ast_codec 은 transformer pre-pass
+                // **전** parse 산출물만 직렬화한다 — graph/parse_module.zig:267 참조). transformer/
+                // plugin 이 다른 variant 로 만드는 노드(예: number_bytes numeric_literal)는 캐시되지 않으므로
+                // 폭 분류에 포함하지 않는다. 폭을 8 미만으로 좁히면 string_ref 의 상위 4B 가 손실되므로 8.
+                .string_literal, // 파서: 대부분 string_ref, ambient module 이름(ts) 만 .none
+                .regexp_literal,
+                .identifier_reference,
+                .private_identifier,
+                .binding_identifier,
+                .import_default_specifier,
+                .import_namespace_specifier,
+                .jsx_text,
+                .jsx_identifier,
+                // assignment_target_identifier: 파서 cover.zig 가 `identifier_reference`(string_ref)
+                // 를 setTag 로 retag 한 노드 — string_ref 데이터를 그대로 보유하고 codegen
+                // (debug_metadata.zig)이 `data.string_ref` 를 읽으므로 wide(8B). 별도 addNode 생성
+                // site 가 없어(setTag 경로) data-variant 스캔으로는 안 잡힘 — retag 경로 주의.
+                .assignment_target_identifier,
+                // literal type: 파서가 키워드 리터럴(true/false/template)일 때 `.none`,
+                // 값 리터럴(string/number/bigint)일 때 `.string_ref`. schema_builder 가
+                // 값 리터럴의 `data.string_ref` 를 읽으므로 8B 보존 필수(좁히면 silent miscompile).
+                .ts_literal_type,
+                .flow_literal_type,
+                => .{ .kind = .leaf, .leaf_width = 8 },
+
+                // === leaf (none-only: 파서가 항상 `Data.none`(u32=4B) → 4B) ===
+                // active variant 가 `none` 뿐이라 의미 폭이 4B 다. 직렬화를 4B 로 좁혀 union 꼬리
+                // [4..8] 의 미초기화 poison 을 stream 에서 제외 → 결정적(#4438 none-leaf 누출 차단).
+                // (boolean_literal/numeric_literal 은 파서에서 .none 뿐 — transformer 가 만드는
+                //  number_bytes/string_ref 변형은 pre-pass 후라 캐시 대상 아님.)
                 .invalid,
                 .elision,
                 .boolean_literal,
-                .null_literal,
                 .numeric_literal,
+                .null_literal,
                 .bigint_literal,
-                .string_literal,
-                .regexp_literal,
                 .this_expression,
-                .identifier_reference,
-                .private_identifier,
                 .empty_statement,
                 .debugger_statement,
                 .directive,
@@ -556,13 +588,7 @@ pub const Node = struct {
                 .super_expression,
                 .meta_property,
                 .template_element,
-                .binding_identifier,
-                .assignment_target_identifier,
-                .import_default_specifier,
-                .import_namespace_specifier,
                 .jsx_empty_expression,
-                .jsx_text,
-                .jsx_identifier,
                 .jsx_closing_element,
                 .jsx_opening_fragment,
                 .jsx_closing_fragment,
@@ -592,18 +618,13 @@ pub const Node = struct {
                 .flow_this_type,
                 .flow_mixed_keyword,
                 .flow_empty_keyword,
-                // literal type: 파서가 키워드 리터럴(true/false)일 때 .none,
-                // 값 리터럴(string/number/bigint/template)일 때 .string_ref 로 저장.
-                // 실체가 leaf 이며 codegen 이 data 를 읽지 않음 (TS/Flow strip 대상).
-                .ts_literal_type,
-                .flow_literal_type,
                 // flow_match_binding_pattern: leaf, span = 식별자
                 .flow_match_binding_pattern,
                 // flow_match_opaque_pattern: leaf, opaque (transformer 가 false 로 lower)
                 .flow_match_opaque_pattern,
                 // flow_match_rest: leaf, data.none = has-binding flag
                 .flow_match_rest,
-                => .{ .kind = .leaf },
+                => .{ .kind = .leaf, .leaf_width = 4 },
 
                 // === unary ===
                 .expression_statement,
@@ -861,6 +882,42 @@ pub const Node = struct {
             }
         }
 
+        /// leaf 태그 중 **파서가** active variant 를 `string_ref`/`number_bytes`(8B)로 만들 수 있는
+        /// 집합(직렬화 폭 8). 나머지 leaf 는 파서에서 `none`(4B)뿐이라 폭 4. (디스크 캐시는 transformer
+        /// pre-pass 전 parse 산출물만 직렬화하므로 transformer/plugin 의 wide 변형은 분류 대상 아님 —
+        /// graph/parse_module.zig:267.) 이 분류가 틀리면(wide 를 4 로 좁히면) string_ref 의 상위 4B 가
+        /// 손실돼 silent miscompile, none-only 를 8 로 넓히면 꼬리 poison 누출(#4438). codec(ast_codec)
+        /// 이 `dataWidth(=leaf_width)` 로 직렬화/역직렬화하므로 진실 소스를 한 곳에 둔다.
+        pub const WIDE_LEAF_TAGS = [_]Tag{
+            .string_literal,           .regexp_literal,             .identifier_reference,
+            .private_identifier,       .binding_identifier,         .assignment_target_identifier,
+            .import_default_specifier, .import_namespace_specifier, .jsx_text,
+            .jsx_identifier,           .ts_literal_type,            .flow_literal_type,
+        };
+
+        // leaf_width 무결성 comptime 검증:
+        //  (1) 모든 leaf 의 leaf_width 는 4 또는 8.
+        //  (2) WIDE_LEAF_TAGS ⊆ {leaf_width==8}, 그 외 모든 leaf 는 leaf_width==4.
+        // getLayout 의 leaf 분류와 위 목록이 어긋나면(태그 이동/오타) 컴파일 에러로 막는다 —
+        // 직렬화 폭 drift = round-trip 손실(좁힘) 또는 비결정성(넓힘)이라 silent 하면 위험.
+        comptime {
+            @setEvalBranchQuota(10_000);
+            for (std.enums.values(Tag)) |t| {
+                const L = getLayout(t);
+                if (L.kind != .leaf) continue;
+                if (L.leaf_width != 4 and L.leaf_width != 8)
+                    @compileError("leaf_width 는 4(none) 또는 8(string_ref/number_bytes) 이어야 함: " ++ @tagName(t));
+                var is_wide = false;
+                for (WIDE_LEAF_TAGS) |w| {
+                    if (w == t) is_wide = true;
+                }
+                if (is_wide and L.leaf_width != 8)
+                    @compileError("WIDE_LEAF_TAGS 에 있으나 leaf_width != 8: " ++ @tagName(t));
+                if (!is_wide and L.leaf_width != 4)
+                    @compileError("none-only leaf 인데 leaf_width != 4 (또는 WIDE_LEAF_TAGS 누락): " ++ @tagName(t));
+            }
+        }
+
         /// 태그의 데이터 레이아웃 종류를 반환한다.
         pub fn dataKind(tag: Tag) DataKind {
             return getLayout(tag).kind;
@@ -872,15 +929,19 @@ pub const Node = struct {
         /// 역직렬화가 나머지를 0 으로 채워 결정성을 보장한다 — 폭 밖 바이트는 어떤 reader
         /// 도 읽지 않으므로(active variant 가 아님) round-trip 동치.
         ///
-        ///   leaf   : none(4)/string_ref(8)/number_bytes(8) 중 어느 것이든 ≤ 8
+        ///   leaf   : 태그별 sub-variant 폭 — none(4) / string_ref·number_bytes(8). `leaf_width`
+        ///            테이블이 진실 소스(none-only=4, wide=8). 8 로 일괄 처리하면 none-only leaf 의
+        ///            꼬리 [4..8] poison 이 stream 에 누출돼 같은 입력도 byte 비결정(#4438).
         ///   unary  : operand(4)+flags(2)+_pad(2) = 8
         ///   binary : left(4)+right(4)+flags(2)+_pad(2) = 12
         ///   ternary: a(4)+b(4)+c(4) = 12
         ///   list   : start(4)+len(4) = 8
         ///   extra  : u32 인덱스 = 4
         pub fn dataWidth(tag: Tag) usize {
-            return switch (dataKind(tag)) {
-                .leaf, .unary, .list => 8,
+            const layout = getLayout(tag);
+            return switch (layout.kind) {
+                .leaf => layout.leaf_width,
+                .unary, .list => 8,
                 .binary, .ternary => 12,
                 .extra => 4,
             };
@@ -959,6 +1020,19 @@ pub const Node = struct {
 
         /// extra_data 배열 인덱스 (큰 데이터용)
         extra: u32,
+
+        /// `Data{ .none = v }` 와 동일하되 **union 꼬리([4..12])를 0 으로 채운** 결정적 생성자.
+        /// extern union 의 aggregate literal `.{ .none = v }` 은 active variant 밖 꼬리를 미초기화로
+        /// 남긴다(주변 메모리 = poison). wide-leaf 태그(WIDE_LEAF_TAGS, 직렬화 폭 8)를 `.none` 으로
+        /// 만들면 그 poison 이 [4..8] 에 들어가 codec(폭 8) 직렬화 stream 을 비결정화한다(#4438).
+        /// 그런 태그의 `.none` 생성은 이 헬퍼를 써서 꼬리를 0 으로 박는다 — round-trip 동일 + 결정적.
+        /// (none-only leaf 는 폭이 4 라 [4..8] 을 직렬화하지 않으므로 헬퍼 불필요.)
+        pub fn noneLeaf(v: u32) Data {
+            var d: Data = undefined;
+            @memset(std.mem.asBytes(&d), 0);
+            d.none = v;
+            return d;
+        }
     };
 };
 

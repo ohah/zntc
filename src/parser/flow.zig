@@ -114,7 +114,8 @@ pub fn parseType(self: *Parser) ParseError2!NodeIndex {
         return try self.ast.addNode(.{
             .tag = .flow_literal_type,
             .span = .{ .start = self.ast.getNode(t).span.start, .end = self.currentSpan().start },
-            .data = .{ .none = 0 },
+            // wide-leaf .none → 꼬리 0-채움(codec 결정성, #4438).
+            .data = ast_mod.Node.Data.noneLeaf(0),
         });
     }
 
@@ -244,7 +245,8 @@ fn parsePostfixType(self: *Parser) ParseError2!NodeIndex {
                 base = try self.ast.addNode(.{
                     .tag = .flow_literal_type,
                     .span = .{ .start = start, .end = self.currentSpan().start },
-                    .data = .{ .none = 0 },
+                    // wide-leaf .none → 꼬리 0-채움(codec 결정성, #4438).
+                    .data = ast_mod.Node.Data.noneLeaf(0),
                 });
             }
         } else break;
@@ -269,7 +271,8 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
         return try self.ast.addNode(.{
             .tag = .flow_literal_type,
             .span = span,
-            .data = .{ .none = 0 },
+            // wide-leaf .none → 꼬리 0-채움(codec 결정성, #4438).
+            .data = ast_mod.Node.Data.noneLeaf(0),
         });
     }
 
@@ -285,7 +288,8 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
         return try self.ast.addNode(.{
             .tag = .flow_literal_type,
             .span = span,
-            .data = .{ .none = 0 },
+            // wide-leaf .none → 꼬리 0-채움(codec 결정성, #4438).
+            .data = ast_mod.Node.Data.noneLeaf(0),
         });
     }
 
@@ -313,7 +317,8 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
         return try self.ast.addNode(.{
             .tag = .flow_literal_type,
             .span = span,
-            .data = .{ .none = 0 },
+            // wide-leaf .none → 꼬리 0-채움(codec 결정성, #4438).
+            .data = ast_mod.Node.Data.noneLeaf(0),
         });
     }
 
@@ -401,7 +406,8 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
             return try self.ast.addNode(.{
                 .tag = .flow_literal_type,
                 .span = .{ .start = span.start, .end = self.currentSpan().start },
-                .data = .{ .none = 0 },
+                // wide-leaf .none → 꼬리 0-채움(codec 결정성, #4438).
+                .data = ast_mod.Node.Data.noneLeaf(0),
             });
         },
         // null
@@ -428,7 +434,8 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
             return try self.ast.addNode(.{
                 .tag = .flow_literal_type,
                 .span = span,
-                .data = .{ .none = 0 },
+                // wide-leaf .none → 꼬리 0-채움(codec 결정성, #4438).
+                .data = ast_mod.Node.Data.noneLeaf(0),
             });
         },
         // 숫자 리터럴은 위 isNumericLiteral() guard 가 처리 — 여기선 문자열 리터럴 타입만.
@@ -780,7 +787,8 @@ fn makeLiteralType(self: *Parser, start: u32) !NodeIndex {
     return self.ast.addNode(.{
         .tag = .flow_literal_type,
         .span = .{ .start = start, .end = self.currentSpan().start },
-        .data = .{ .none = 0 },
+        // wide-leaf .none → 꼬리 0-채움(codec 결정성, #4438).
+        .data = ast_mod.Node.Data.noneLeaf(0),
     });
 }
 
@@ -1390,7 +1398,8 @@ fn parseFlowComponentOrHookType(self: *Parser) ParseError2!NodeIndex {
     return try self.ast.addNode(.{
         .tag = .flow_literal_type,
         .span = .{ .start = start, .end = self.currentSpan().start },
-        .data = .{ .none = 0 },
+        // wide-leaf .none → 꼬리 0-채움(codec 결정성, #4438).
+        .data = ast_mod.Node.Data.noneLeaf(0),
     });
 }
 

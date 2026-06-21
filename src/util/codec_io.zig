@@ -33,6 +33,13 @@ pub const Reader = struct {
     buf: []const u8,
     pos: usize = 0,
 
+    /// 아직 읽지 않은 payload 바이트 수. count-prefix sanity 검증(엔트리당 최소 바이트 ×
+    /// count > remaining 이면 손상)에 쓴다 — HashMap 등 `ensureTotalCapacity(count)` 전에
+    /// 거대 count 를 거부해 ceilPowerOfTwo unreachable panic 을 막는다(fail-safe).
+    pub fn remaining(self: *const Reader) usize {
+        return self.buf.len - self.pos;
+    }
+
     pub fn take(self: *Reader, n: usize) ReadError![]const u8 {
         // checked add — 손상된 length-prefix 가 pos+n 을 오버플로우시켜 경계검사를 우회하는 것 방지.
         const end = std.math.add(usize, self.pos, n) catch return error.Truncated;

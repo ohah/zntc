@@ -37,7 +37,9 @@ const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
 const codec_io = @import("../util/codec_io.zig");
 
 pub const MAGIC: u32 = 0x5A4D4F44; // "ZMOD"
-pub const FORMAT_VERSION: u32 = 1;
+// v2: 하위 ast_codec/semantic_codec 가 #4438 결정적 포맷(v2)으로 바뀌어 조합 블록 레이아웃도
+// 달라졌다. bump(구 캐시 = version mismatch miss). cache_key.CODEC_FORMAT 가 키에 접어 무효화.
+pub const FORMAT_VERSION: u32 = 2;
 /// header = magic(4) + version(4). 결합 checksum 없음(위 doc 참조).
 const HEADER_LEN: usize = 8;
 
