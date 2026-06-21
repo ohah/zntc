@@ -227,6 +227,17 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_exe_unit_tests.step);
 
+    // 직접 실행용 test binary install. `zig build test`(addRunArtifact)는 zig 0.16 의 `--listen=-`
+    // IPC 모드라, async test runner 가 한 test 의 pass-path stderr(bench 의 std.debug.print /
+    // prod 경로의 std.log.warn 등)를 인접 test 의 실패 출력으로 오보고한다 — 직접 binary 실행은
+    // sequential 사람모드라 IPC 가 없어 오보고가 없다(`./test` 는 항상 전체 pass). CI 는
+    // `zig build test-bin` 으로 빌드 후 zig-out/bin 의 binary 를 직접 실행해 이 오보고를 원천 차단한다.
+    const install_lib_test = b.addInstallArtifact(lib_unit_tests, .{ .dest_sub_path = "lib-unit-test" });
+    const install_exe_test = b.addInstallArtifact(exe_unit_tests, .{ .dest_sub_path = "exe-unit-test" });
+    const test_bin_step = b.step("test-bin", "Build test binaries for direct (non-IPC) execution");
+    test_bin_step.dependOn(&install_lib_test.step);
+    test_bin_step.dependOn(&install_exe_test.step);
+
     // ─── WASM 빌드 ───
     // `zig build wasm` — wasm32-wasi 타겟으로 트랜스파일 전용 WASM 모듈을 빌드한다.
     // packages/wasm/src/wasm_entry.zig가 진입점이며, transpile 함수만 export한다.
