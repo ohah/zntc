@@ -253,7 +253,10 @@ export function buildOptionsJson(
   unsupportedOverride?: number,
 ): string {
   const payload: Record<string, unknown> = {};
-  if (opts.target) payload.target = opts.target;
+  // 미지정 target = esnext(다운레벨 없음, resolveUnsupported=0 과 동일 의도). 명시하지 않으면
+  // optionsJson 에 target 이 빠져 native 가 보수적 default 로 떨어져 esnext 기능(hashbang 등)을
+  // strip 한다 — esbuild 는 미지정=esnext(유지). 의도를 명시해 회귀 방지.
+  payload.target = opts.target ?? 'esnext';
   if (unsupportedOverride !== undefined && unsupportedOverride !== 0)
     payload.unsupported = unsupportedOverride;
   if (opts.flow) payload.flow = true;
