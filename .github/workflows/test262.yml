@@ -33,7 +33,12 @@ jobs:
           cache-key: test262-unit
 
       - name: Run Test262 runner unit tests
-        run: zig build test262
+        # zig build test262 = run_lib_unit_tests (--listen=- IPC). Debug Test 와 동일하게 async
+        # runner 가 인접 test 의 pass-path stderr 를 오보고하므로, 직접 binary 실행으로 회피한다
+        # (build.zig 의 test-bin step — test262 runner unit 은 lib_mod 에 포함되어 lib-unit-test 가 커버).
+        run: |
+          zig build test-bin
+          ./zig-out/bin/lib-unit-test
 
   test262-lexer:
     name: Test262 Lexer Conformance
