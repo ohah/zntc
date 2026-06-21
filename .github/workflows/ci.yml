@@ -42,9 +42,9 @@ jobs:
           zig build test-bin
           ./zig-out/bin/lib-unit-test
           ./zig-out/bin/exe-unit-test
-
-      - name: Run Test262 Runner Tests
-        run: zig build test262
+        # (Test262 runner unit test 는 lib_mod 에 포함되어 위 lib-unit-test 가 이미 커버 —
+        #  별도 `zig build test262` step 은 IPC 오보고를 다시 들이므로 제거. test262.yml 의
+        #  Test262 Conformance workflow 가 독립적으로 동일 직접-binary 실행을 수행한다.)
 
   release-build:
     name: Release Build (${{ matrix.os }}, ${{ matrix.optimize }})
