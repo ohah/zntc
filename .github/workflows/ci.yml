@@ -35,7 +35,13 @@ jobs:
         run: zig build
 
       - name: Run Tests
-        run: zig build test
+        # `zig build test`(--listen=- IPC)는 async runner 가 한 test 의 pass-path stderr 를
+        # 인접 test 실패로 오보고한다(zig 0.16). test binary 를 직접 실행하면 sequential
+        # 사람모드라 오보고가 없다. lib → exe 순차(pipefail 로 lib 실패 시 즉시 중단).
+        run: |
+          zig build test-bin
+          ./zig-out/bin/lib-unit-test
+          ./zig-out/bin/exe-unit-test
 
       - name: Run Test262 Runner Tests
         run: zig build test262
