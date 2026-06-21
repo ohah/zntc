@@ -13,12 +13,13 @@ describe('@zntc/core 옵션 조합 심화 - hashbang and targets', () => {
     expect(result.code.length).toBeLessThan(80);
   });
 
-  test('hashbang + sourcemap + es2022 (hashbang 제거됨)', () => {
+  test('hashbang + sourcemap + es2022 (hashbang 보존)', () => {
     const result = transpile('#!/usr/bin/env node\nconst x = 1;', {
       sourcemap: true,
       target: 'es2022',
     });
-    expect(result.code).not.toContain('#!');
+    // hashbang 은 target 무관 항상 보존 — es2022 라도 strip 하지 않는다.
+    expect(result.code).toContain('#!/usr/bin/env node');
     expect(result.map).toBeDefined();
   });
 
