@@ -866,6 +866,26 @@ pub const Node = struct {
             return getLayout(tag).kind;
         }
 
+        /// 이 태그의 active `Data` variant 가 실제로 의미를 갖는 바이트 폭.
+        /// `Data` extern union 은 12바이트지만 작은 variant 가 active 일 때 나머지 꼬리
+        /// 바이트는 미초기화(union 특성)다. 직렬화(ast_codec #4438)가 이 폭만큼만 쓰고
+        /// 역직렬화가 나머지를 0 으로 채워 결정성을 보장한다 — 폭 밖 바이트는 어떤 reader
+        /// 도 읽지 않으므로(active variant 가 아님) round-trip 동치.
+        ///
+        ///   leaf   : none(4)/string_ref(8)/number_bytes(8) 중 어느 것이든 ≤ 8
+        ///   unary  : operand(4)+flags(2)+_pad(2) = 8
+        ///   binary : left(4)+right(4)+flags(2)+_pad(2) = 12
+        ///   ternary: a(4)+b(4)+c(4) = 12
+        ///   list   : start(4)+len(4) = 8
+        ///   extra  : u32 인덱스 = 4
+        pub fn dataWidth(tag: Tag) usize {
+            return switch (dataKind(tag)) {
+                .leaf, .unary, .list => 8,
+                .binary, .ternary => 12,
+                .extra => 4,
+            };
+        }
+
         /// extra 노드의 NodeIndex 자식 필드 오프셋을 반환한다.
         /// extra가 아닌 노드는 빈 배열 반환.
         pub fn extraChildOffsets(tag: Tag) []const u8 {

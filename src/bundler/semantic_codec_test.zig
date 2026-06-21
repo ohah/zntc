@@ -183,6 +183,113 @@ test "semantic_codec: HashMap 5개 round-trip (값 타입별)" {
     try testing.expectEqual(@as(?usize, 3), sem2.helper_scope_map.get("_jsx"));
 }
 
+// #4438 회귀 가드: Symbol/Scope/Reference 의 struct 꼬리 padding(미초기화)이 직렬화에 새지
+// 않아야 한다(결정성). 통째 memcpy 는 poison 을 stream 에 섞어 같은 의미도 byte 가 달라졌다.
+// 정반대 poison(0xAA/0x55)으로 raw 를 채우고 의미 필드만 동일 세팅 → byte-identical 이어야.
+test "semantic_codec: struct padding poison 이 직렬화에 새지 않는다 (#4438 결정성)" {
+    const alloc = testing.allocator;
+
+    const build = struct {
+        fn f(a: std.mem.Allocator, poison: u8) !struct {
+            sem: ModuleSemanticData,
+            symbols: std.ArrayList(Symbol),
+            scopes: []Scope,
+            refs: []Reference,
+            ids: []?u32,
+        } {
+            var symbols: std.ArrayList(Symbol) = .empty;
+            var s: Symbol = undefined;
+            @memset(std.mem.asBytes(&s), poison);
+            s.synthetic_name = ""; // 슬라이스는 명시 세팅(poison ptr 미사용)
+            s.name = .{ .start = 1, .end = 2 };
+            s.scope_id = @enumFromInt(0);
+            s.origin_scope = @enumFromInt(0);
+            s.kind = .variable_const;
+            s.decl_flags = .{ .block_scoped = true, .is_const = true };
+            s.declaration_span = .{ .start = 1, .end = 2 };
+            s.reference_count = 5;
+            s.write_count = 0;
+            s.const_kind = .number;
+            s.synthetic_kind = null;
+            try symbols.append(a, s);
+
+            const scopes = try a.alloc(Scope, 1);
+            @memset(std.mem.asBytes(&scopes[0]), poison);
+            scopes[0].parent = @enumFromInt(std.math.maxInt(u32));
+            scopes[0].kind = .global;
+            scopes[0].is_strict = true;
+            scopes[0].subtree_has_direct_eval = false;
+            scopes[0].subtree_has_with = false;
+            scopes[0].symbol_count = 1;
+
+            const refs = try a.alloc(Reference, 1);
+            @memset(std.mem.asBytes(&refs[0]), poison);
+            refs[0].node_index = @enumFromInt(3);
+            refs[0].scope_id = @enumFromInt(0);
+            refs[0].symbol_id = @enumFromInt(0);
+            refs[0].stmt_idx = 0;
+            refs[0].scope_stmt_idx = 0;
+            refs[0].flags = .{ .read = true };
+
+            const ids = try a.alloc(?u32, 2);
+            ids[0] = 0;
+            ids[1] = null;
+
+            return .{
+                .sem = .{
+                    .symbols = symbols,
+                    .scopes = scopes,
+                    .scope_maps = &.{},
+                    .exported_names = .empty,
+                    .symbol_ids = ids,
+                    .unresolved_references = .empty,
+                    .references = refs,
+                    .numeric_const_texts = .empty,
+                    .helper_scope_map = .empty,
+                },
+                .symbols = symbols,
+                .scopes = scopes,
+                .refs = refs,
+                .ids = ids,
+            };
+        }
+    }.f;
+
+    var r1 = try build(alloc, 0xAA);
+    defer {
+        r1.symbols.deinit(alloc);
+        alloc.free(r1.scopes);
+        alloc.free(r1.refs);
+        alloc.free(r1.ids);
+    }
+    var r2 = try build(alloc, 0x55);
+    defer {
+        r2.symbols.deinit(alloc);
+        alloc.free(r2.scopes);
+        alloc.free(r2.refs);
+        alloc.free(r2.ids);
+    }
+
+    var b1: std.ArrayList(u8) = .empty;
+    defer b1.deinit(alloc);
+    var b2: std.ArrayList(u8) = .empty;
+    defer b2.deinit(alloc);
+    try codec.serialize(&r1.sem, &b1, alloc);
+    try codec.serialize(&r2.sem, &b2, alloc);
+
+    try testing.expectEqualSlices(u8, b1.items, b2.items);
+
+    // round-trip 의미 복원.
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const rt = try codec.deserialize(b1.items, arena.allocator());
+    try testing.expectEqual(@as(usize, 1), rt.symbols.items.len);
+    try testing.expectEqual(@as(u32, 5), rt.symbols.items[0].reference_count);
+    try testing.expectEqual(@as(?u32, 0), rt.symbol_ids[0]);
+    try testing.expectEqual(@as(?u32, null), rt.symbol_ids[1]);
+    try testing.expect(rt.references[0].flags.read);
+}
+
 test "semantic_codec: 변조/버전/매직/truncated 거부 (fail-safe)" {
     const alloc = testing.allocator;
 

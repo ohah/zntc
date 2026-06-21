@@ -57,6 +57,42 @@ const putU32 = codec_io.putU32;
 const putU64 = codec_io.putU64;
 const putBytes = codec_io.putBytes;
 
+/// Node 배열을 결정적으로 직렬화한다. `sliceAsBytes` 통째 memcpy 는 struct 꼬리 padding
+/// (`tag:u16` 뒤 2B)과 `Data` union 의 active variant 밖 꼬리 바이트가 미초기화라 같은 입력도
+/// byte 가 달라진다(#4438). 노드별로 의미 필드만 명시 직렬화한다:
+///   `[count:u32]` 다음 노드마다 `span.start(u32) span.end(u32) tag(u16) data[0..dataWidth(tag)]`.
+/// data 는 active variant 의 의미 폭만 쓰고 padding/union 꼬리는 stream 에서 제외 →
+/// 결정적. deserialize 가 0-init Node 에 정확히 역으로 복원(꼬리는 0).
+fn putNodes(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, nodes: []const Node) !void {
+    try putU32(buf, alloc, @intCast(nodes.len));
+    for (nodes) |n| {
+        try putU32(buf, alloc, n.span.start);
+        try putU32(buf, alloc, n.span.end);
+        const tag_int: u16 = @intFromEnum(n.tag);
+        try buf.appendSlice(alloc, std.mem.asBytes(&tag_int));
+        const width = Node.Tag.dataWidth(n.tag);
+        try buf.appendSlice(alloc, std.mem.asBytes(&n.data)[0..width]);
+    }
+}
+
+/// StringHashMap 키 집합을 **정렬 후** 직렬화한다(`[count:u32]` + 키마다 `[len:u32][bytes]`).
+/// HashMap iteration 순서는 비결정적이라 정렬 없이는 같은 입력도 byte stream 이 달라진다(#4438).
+fn putSortedKeySet(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, m: *const std.StringHashMapUnmanaged(void)) !void {
+    try putU32(buf, alloc, @intCast(m.count()));
+    if (m.count() == 0) return;
+    const keys = try alloc.alloc([]const u8, m.count());
+    defer alloc.free(keys);
+    var it = m.keyIterator();
+    var i: usize = 0;
+    while (it.next()) |k| : (i += 1) keys[i] = k.*;
+    std.mem.sortUnstable([]const u8, keys, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lessThan);
+    for (keys) |k| try putBytes(buf, alloc, k);
+}
+
 /// jsx_pragma 등 source-backed optional slice → (offset, len). null 이면 offset=NULL_OFFSET.
 fn putPragma(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, ast: *const Ast, p: ?[]const u8) !void {
     if (p) |s| {
@@ -76,15 +112,15 @@ pub fn serialize(ast: *const Ast, out: *std.ArrayList(u8), alloc: std.mem.Alloca
     defer payload.deinit(alloc);
 
     try putBytes(&payload, alloc, ast.source);
-    try putBytes(&payload, alloc, std.mem.sliceAsBytes(ast.nodes.items));
+    try putNodes(&payload, alloc, ast.nodes.items);
     try putBytes(&payload, alloc, std.mem.sliceAsBytes(ast.extra_data.items));
     try putBytes(&payload, alloc, ast.string_table.items);
 
     // declare_only_names 키 (transpile.zig type-only export 판정용). 키는 source/string_table
     // backed slice 라 문자열 자체를 저장하고, deserialize 가 string_table 에 귀속시켜 복원.
-    try putU32(&payload, alloc, @intCast(ast.declare_only_names.count()));
-    var decl_it = ast.declare_only_names.keyIterator();
-    while (decl_it.next()) |k| try putBytes(&payload, alloc, k.*);
+    // 키를 정렬(lexicographic)해 HashMap iteration 순서 비결정성을 제거한다 — 같은 입력은
+    // 항상 같은 byte stream (캐시 결정성). deserialize 는 순서 무관(키 set 복원).
+    try putSortedKeySet(&payload, alloc, &ast.declare_only_names);
 
     // 메타 플래그 7개 (1바이트씩)
     const flags = [_]bool{
@@ -144,9 +180,6 @@ pub fn deserialize(data: []const u8, alloc: std.mem.Allocator) Error!Ast {
 
     const source = try alloc.dupe(u8, try r.bytes());
     errdefer alloc.free(source);
-    const nodes_bytes = try r.bytes();
-    const extra_bytes = try r.bytes();
-    const strtab_bytes = try r.bytes();
 
     var ast: Ast = .{
         .nodes = .empty,
@@ -158,10 +191,26 @@ pub fn deserialize(data: []const u8, alloc: std.mem.Allocator) Error!Ast {
     };
     errdefer ast.deinit();
 
-    // 손상된 캐시가 비배수 길이를 주면 @memcpy(dest.len != src.len) 가 패닉 → fail-safe 위반.
-    if (nodes_bytes.len % @sizeOf(Node) != 0) return error.Truncated;
-    try ast.nodes.resize(alloc, nodes_bytes.len / @sizeOf(Node));
-    @memcpy(std.mem.sliceAsBytes(ast.nodes.items), nodes_bytes);
+    // 노드는 `putNodes` 의 짝으로 명시 역직렬화한다(통째 memcpy 아님). 각 Node 를 0-init 후
+    // span/tag/data(active variant 폭만) 복원 — data 의 union 꼬리는 0(직렬화에서 제외됨)이라
+    // 결정적이며 reader 가 폭 밖을 읽지 않으므로 동치.
+    const node_count = try r.u32v();
+    try ast.nodes.ensureTotalCapacityPrecise(alloc, node_count);
+    var ni: u32 = 0;
+    while (ni < node_count) : (ni += 1) {
+        const start = try r.u32v();
+        const end = try r.u32v();
+        const tag_int = std.mem.bytesToValue(u16, (try r.take(2))[0..2]);
+        const tag = std.enums.fromInt(Node.Tag, tag_int) orelse return error.Truncated;
+        const width = Node.Tag.dataWidth(tag);
+        const dbytes = try r.take(width);
+        var node = Node{ .tag = tag, .span = .{ .start = start, .end = end }, .data = std.mem.zeroes(Node.Data) };
+        @memcpy(std.mem.asBytes(&node.data)[0..width], dbytes);
+        ast.nodes.appendAssumeCapacity(node);
+    }
+
+    const extra_bytes = try r.bytes();
+    const strtab_bytes = try r.bytes();
 
     if (extra_bytes.len % @sizeOf(u32) != 0) return error.Truncated;
     try ast.extra_data.resize(alloc, extra_bytes.len / @sizeOf(u32));
