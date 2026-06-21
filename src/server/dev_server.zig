@@ -387,7 +387,12 @@ pub const DevServer = struct {
         var tls_ctx: ?tls.TlsContext = null;
         if (options.cert_path != null and options.key_path != null) {
             tls_ctx = tls.TlsContext.init(options.cert_path.?, options.key_path.?) catch |err| {
-                getLog().print("zntc: TLS context init failed: {}\n", .{err}) catch {};
+                // zig test 0.16 async runner 는 병렬 실행 중 이 직접-stderr 출력을 무관 test 에
+                // 오귀속한다(비결정 CI fail — DevServer.init CertLoadFailed test 의 stderr 가
+                // cache_key_test 등에 섞여 "failed: error.CertLoadFailed" 로 보고). test 컴파일에선
+                // skip(prod 영향 0). 근본은 zig test stderr 캡처 격리(외부 이슈).
+                if (!builtin.is_test)
+                    getLog().print("zntc: TLS context init failed: {}\n", .{err}) catch {};
                 return err;
             };
         } else if (options.cert_path != null or options.key_path != null) {
