@@ -33,8 +33,9 @@ describe('@zntc/core API: source kind', () => {
     expect(jsxOnly.code).not.toContain('<div');
   });
 
-  test('빈 소스 에러', () => {
-    expect(() => transpile('')).toThrow();
+  test('빈 소스는 빈 출력 (빈 파일은 유효 입력)', () => {
+    // 7095b96d: transpile/tokenize 가 빈 소스('')를 유효 입력(빈 출력)으로 처리 — esbuild 정렬.
+    expect(transpile('').code).toBe('');
   });
 
   test('파싱 에러', () => {
