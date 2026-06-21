@@ -12,19 +12,21 @@ import {
 } from './helpers';
 
 describe('@zntc/core ES2023/hashbang', () => {
-  test('target es5: hashbang이 제거됨', () => {
+  test('target es5: hashbang은 보존됨 (shebang 은 다운레벨 대상 아님)', () => {
     const result = transpile("#!/usr/bin/env node\nconsole.log('hello');", {
       target: 'es5',
     });
-    expect(result.code).not.toContain('#!');
+    // hashbang(#!)은 런타임(Node)이 스크립트 실행에 쓰는 shebang 이라 어떤 target 으로
+    // 다운레벨해도 strip 하지 않는다 — 본문만 다운레벨된다.
+    expect(result.code).toContain('#!/usr/bin/env node');
     expect(result.code).toContain('hello');
   });
 
-  test('target es2022: hashbang이 제거됨 (es2022 < es2023)', () => {
+  test('target es2022: hashbang은 보존됨 (shebang 은 target 무관 유지)', () => {
     const result = transpile('#!/usr/bin/env node\nconst x = 1;', {
       target: 'es2022',
     });
-    expect(result.code).not.toContain('#!');
+    expect(result.code).toContain('#!/usr/bin/env node');
     expect(result.code).toContain('x = 1');
   });
 

@@ -165,8 +165,8 @@ pub const UnsupportedFeatures = packed struct(u32) {
     /// top-level 문장을 async IIFE 로 감싸 wrapping (esbuild 호환). (#1384)
     top_level_await: bool = false,
     // ES2023
-    /// hashbang(#!) "타겟이 hashbang 을 지원하는가" 쿼리 전용 비트 — codegen 은 이 비트와 무관하게
-    /// hashbang 을 항상 보존한다(shebang 은 다운레벨 대상이 아님; regex_lookbehind 와 동일 패턴).
+    /// hashbang(#!) "타겟이 hashbang 을 지원하는가"를 나타내는 비트. codegen 은 이 비트를 읽지 않고
+    /// hashbang 을 항상 보존한다(shebang 은 다운레벨 대상이 아님) — 비트는 compat 매트릭스 대칭/진단용.
     hashbang: bool = false,
     // ES2025
     using: bool = false,

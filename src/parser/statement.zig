@@ -40,7 +40,7 @@ pub fn parse(self: *Parser) !NodeIndex {
     var stmts: std.ArrayList(NodeIndex) = .empty;
     defer stmts.deinit(self.allocator);
 
-    // hashbang (#! ...) — AST에 노드로 추가 (codegen에서 strip_hashbang 조건부 출력)
+    // hashbang (#! ...) — AST에 노드로 추가 (codegen이 target 무관 항상 출력 — shebang 은 다운레벨 대상 아님)
     if (self.current() == .hashbang_comment) {
         const hashbang_node = try self.ast.addNode(.{
             .tag = .hashbang,
