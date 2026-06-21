@@ -32,7 +32,8 @@ const std = @import("std");
 
 /// put 마다 1씩 증가하는 프로세스 전역 단조 카운터. 같은 프로세스 내 모든 put 의 tmp 이름을
 /// 유일하게 만든다(atomic fetchAdd 라 두 put 이 같은 값을 받지 않음).
-var put_seq = std.atomic.Value(u64).init(0);
+/// usize: 32-bit 타겟(wasm32/x86-win)은 64-bit atomic 을 지원하지 않으므로 워드 크기 카운터 사용.
+var put_seq = std.atomic.Value(usize).init(0);
 
 pub const DiskCache = struct {
     allocator: std.mem.Allocator,
