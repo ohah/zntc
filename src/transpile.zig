@@ -1529,7 +1529,6 @@ fn transpileWithCallbackInternal(
         .platform = options.platform,
         .source_root = options.source_root,
         .sources_content = options.sources_content,
-        .strip_hashbang = options.unsupported.hashbang,
         .assert_no_raw_private_syntax = options.unsupported.requiresPrivateDownlevel(),
         // JSX: Transformer가 이미 call_expression으로 lowering 완료. codegen에 JSX 옵션 불필요.
     });

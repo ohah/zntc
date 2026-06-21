@@ -253,10 +253,10 @@ export function buildOptionsJson(
   unsupportedOverride?: number,
 ): string {
   const payload: Record<string, unknown> = {};
-  // 미지정 target = esnext(다운레벨 없음, resolveUnsupported=0 과 동일 의도). 명시하지 않으면
-  // optionsJson 에 target 이 빠져 native 가 보수적 default 로 떨어져 esnext 기능(hashbang 등)을
-  // strip 한다 — esbuild 는 미지정=esnext(유지). 의도를 명시해 회귀 방지.
-  payload.target = opts.target ?? 'esnext';
+  // target 미지정 시 payload 에 강제하지 않는다 — native 가 tsconfig autodiscover / 기본값으로
+  // 결정하도록 위임한다 (esnext 강제는 tsconfig target 다운레벨을 덮어쓰는 회귀였음). hashbang 등
+  // 'strip 하면 안 되는' 기능은 codegen 이 target 무관 항상 보존하므로 esnext 명시가 불필요.
+  if (opts.target) payload.target = opts.target;
   if (unsupportedOverride !== undefined && unsupportedOverride !== 0)
     payload.unsupported = unsupportedOverride;
   if (opts.flow) payload.flow = true;

@@ -111,10 +111,11 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
             try self.writeByte(';');
         },
         .hashbang => {
-            if (!self.options.strip_hashbang) {
-                try self.addSourceMapping(node.span);
-                try self.writeNodeSpan(node);
-            }
+            // hashbang(#!)은 런타임(Node)이 스크립트 실행에 쓰는 shebang — JS 문법 기능이 아니므로
+            // 어떤 ES target 으로 다운레벨해도 strip 하지 않는다 (esbuild / RN_DOC_SUPPORTED 정합).
+            // UnsupportedFeatures.hashbang 비트는 "타겟이 hashbang 지원하는가" 쿼리 전용(regex_lookbehind 와 동일).
+            try self.addSourceMapping(node.span);
+            try self.writeNodeSpan(node);
         },
 
         // Literals

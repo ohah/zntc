@@ -130,8 +130,6 @@ pub const CodegenOptions = struct {
     /// --keep-names: minify 시 함수/클래스의 .name 프로퍼티 보존.
     /// codegen이 rename 감지 후 __name() 호출을 수집, 선언 직후에 append.
     keep_names: bool = false,
-    /// ES2023 미만 타겟에서 hashbang (#!) 제거
-    strip_hashbang: bool = false,
     // JSX 옵션 제거: Transformer의 jsx_lowering이 JSX -> call_expression 변환을 담당.
     // JsxRuntime enum은 graph.zig/emitter.zig/transpile.zig에서 여전히 사용.
     /// __esm 호이스팅 모드: variable_declaration을 할당문으로 변환 (키워드 제거).
