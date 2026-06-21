@@ -219,7 +219,9 @@ pub fn assertNoAsyncSelfLoop(output: []const u8) !void {
             continue;
         };
         if (case_label == target_label) {
-            std.debug.print("\nself-loop detected: case {d} → return[3,{d}] in:\n{s}\n", .{ case_label, target_label, output });
+            // self-loop 발견 = error.AsyncSelfLoopDetected 로 신호. positive control 은 expectError 로,
+            // negative control 은 try 로 검증하므로 별도 print 불필요. std.debug.print(직접 stderr)는
+            // zig test 0.16 async runner 에서 무관 test 에 오귀속되므로 쓰지 않는다 (#4457 와 동일 근본).
             return error.AsyncSelfLoopDetected;
         }
         search_start = target_end;
