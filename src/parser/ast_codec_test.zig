@@ -3,6 +3,9 @@
 const std = @import("std");
 const testing = std.testing;
 const codec = @import("ast_codec.zig");
+const ast_mod = @import("ast.zig");
+const Node = ast_mod.Node;
+const Ast = ast_mod.Ast;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("parser.zig").Parser;
 const Codegen = @import("../codegen/codegen.zig").Codegen;
@@ -50,6 +53,78 @@ test "ast_codec: serialize→deserialize round-trip == codegen byte-identical" {
 
         try testing.expectEqualStrings(out1, out2);
     }
+}
+
+// #4438 회귀 가드: 직렬화는 의미 필드만 같으면 byte-identical 이어야 한다(결정성). 통째
+// memcpy 는 struct 꼬리 padding(`tag` 뒤)과 `Data` union 의 active variant 밖 꼬리 바이트가
+// 미초기화라 같은 의미도 byte 가 달라졌다(ubuntu/Debug 의 poison → cache_key.차등 fail).
+// 두 Ast 의 노드 raw 메모리를 정반대 poison(0xAA/0x55)으로 채우고 의미 필드만 동일하게
+// 세팅 → 직렬화 byte 가 같아야 통과. memcpy 회귀 시 이 테스트가 결정적으로 잡는다.
+test "ast_codec: 노드 padding/union 꼬리 poison 이 직렬화에 새지 않는다 (#4438 결정성)" {
+    const alloc = testing.allocator;
+
+    const build = struct {
+        fn f(a: std.mem.Allocator, poison: u8) !Ast {
+            var ast = Ast.init(a, "const x = 1;");
+            errdefer ast.deinit();
+            // 각 노드: raw 를 poison 으로 덮고 의미 필드만 세팅. variant 폭이 12 미만이라
+            // 꼬리(>width)가 poison 으로 남는다 — 직렬화가 이를 제외해야 결정적.
+            var n0: Node = undefined; // leaf, number_bytes(8) — 꼬리 4B
+            @memset(std.mem.asBytes(&n0), poison);
+            n0.tag = .numeric_literal;
+            n0.span = .{ .start = 6, .end = 7 };
+            n0.data = .{ .number_bytes = @bitCast(@as(f64, 1.0)) };
+            try ast.nodes.append(a, n0);
+
+            var n1: Node = undefined; // leaf, string_ref(8) — 꼬리 4B + tag padding
+            @memset(std.mem.asBytes(&n1), poison ^ 0xFF);
+            n1.tag = .identifier_reference;
+            n1.span = .{ .start = 0, .end = 1 };
+            n1.data = .{ .string_ref = .{ .start = 6, .end = 7 } };
+            try ast.nodes.append(a, n1);
+
+            var n2: Node = undefined; // unary(8) — operand+flags+_pad, 꼬리 4B
+            @memset(std.mem.asBytes(&n2), poison);
+            n2.tag = .return_statement;
+            n2.span = .{ .start = 0, .end = 1 };
+            n2.data = .{ .unary = .{ .operand = @enumFromInt(0), .flags = 3 } };
+            try ast.nodes.append(a, n2);
+
+            var n3: Node = undefined; // extra(4) — u32 인덱스, 꼬리 8B
+            @memset(std.mem.asBytes(&n3), poison);
+            n3.tag = .call_expression;
+            n3.span = .{ .start = 0, .end = 1 };
+            n3.data = .{ .extra = 0 };
+            try ast.nodes.append(a, n3);
+            return ast;
+        }
+    }.f;
+
+    var a1 = try build(alloc, 0xAA);
+    defer a1.deinit();
+    var a2 = try build(alloc, 0x55);
+    defer a2.deinit();
+
+    var b1: std.ArrayList(u8) = .empty;
+    defer b1.deinit(alloc);
+    var b2: std.ArrayList(u8) = .empty;
+    defer b2.deinit(alloc);
+    try codec.serialize(&a1, &b1, alloc);
+    try codec.serialize(&a2, &b2, alloc);
+
+    // 정반대 poison 인데 직렬화 byte 가 동일 → padding/union 꼬리가 stream 에 안 샘.
+    try testing.expectEqualSlices(u8, b1.items, b2.items);
+
+    // round-trip 으로 의미 복원 검증.
+    var rt = try codec.deserialize(b1.items, alloc);
+    defer {
+        alloc.free(rt.source);
+        rt.deinit();
+    }
+    try testing.expectEqual(@as(usize, 4), rt.nodes.items.len);
+    try testing.expectEqual(Node.Tag.numeric_literal, rt.nodes.items[0].tag);
+    try testing.expectEqual(@as(f64, 1.0), @as(f64, @bitCast(rt.nodes.items[0].data.number_bytes)));
+    try testing.expectEqual(@as(u16, 3), rt.nodes.items[2].data.unary.flags);
 }
 
 test "ast_codec: 변조/버전/매직/truncated 거부 (fail-safe)" {
