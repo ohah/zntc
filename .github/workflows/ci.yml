@@ -3,8 +3,23 @@ name: CI
 on:
   push:
     branches: [main]
+    # 순수 문서 변경은 build/test 에 영향 없음 — 24-job 매트릭스 skip. documents/
+    # 사이트는 docs.yml 이 별도 배포. tests/**/*.md fixture 영향을 피하려 docs 위치/
+    # 루트 *.md 로 한정(전역 **.md 미사용).
+    paths-ignore:
+      - 'documents/**'
+      - 'docs/**'
+      - '*.md'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/pull_request_template.md'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'documents/**'
+      - 'docs/**'
+      - '*.md'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/pull_request_template.md'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

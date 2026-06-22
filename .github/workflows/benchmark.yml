@@ -23,7 +23,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # ubuntu-latest 만 — 회귀 게이트(check-regression.ts)가 ubuntu JSON 만 읽고,
+        # macOS/Windows 공유 runner 는 run 마다 2~3배 출렁여 추세 신뢰 불가(노이즈).
+        # 전체 OS wall-time 비교가 필요하면 workflow_dispatch 로 수동 실행.
+        os: [ubuntu-latest]
 
     steps:
       - name: Checkout

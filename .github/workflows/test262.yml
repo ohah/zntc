@@ -40,72 +40,8 @@ jobs:
           zig build test-bin
           ./zig-out/bin/lib-unit-test
 
-  test262-lexer:
-    name: Test262 Lexer Conformance
-    runs-on: ubuntu-latest
-    needs: test262-unit
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
-          # lexer/parser job 이 동일 ReleaseFast 빌드를 의도적으로 공유 (cross-job
-          # 캐시 재사용). 분리하지 말 것 — save race 는 동일 산출물이라 무해.
-          cache-key: test262-run
-
-      - name: Build (ReleaseFast)
-        run: zig build -Doptimize=ReleaseFast
-
-      - name: Test262 — literals/numeric
-        run: zig build run -- --test262 tests/test262/test/language/literals/numeric/
-
-      - name: Test262 — literals/string
-        run: zig build run -- --test262 tests/test262/test/language/literals/string/
-
-      - name: Test262 — literals/bigint
-        run: zig build run -- --test262 tests/test262/test/language/literals/bigint/
-
-      - name: Test262 — literals/regexp
-        run: zig build run -- --test262 tests/test262/test/language/literals/regexp/
-
-      - name: Test262 — literals/boolean
-        run: zig build run -- --test262 tests/test262/test/language/literals/boolean/
-
-      - name: Test262 — literals/null
-        run: zig build run -- --test262 tests/test262/test/language/literals/null/
-
-      - name: Test262 — comments
-        run: zig build run -- --test262 tests/test262/test/language/comments/
-
-      - name: Test262 — white-space
-        run: zig build run -- --test262 tests/test262/test/language/white-space/
-
-      - name: Test262 — line-terminators
-        run: zig build run -- --test262 tests/test262/test/language/line-terminators/
-
-      - name: Test262 — template-literal
-        run: zig build run -- --test262 tests/test262/test/language/expressions/template-literal/
-
-      - name: Test262 — identifiers
-        run: zig build run -- --test262 tests/test262/test/language/identifiers/
-
-      - name: Test262 — keywords
-        run: zig build run -- --test262 tests/test262/test/language/keywords/
-
-      - name: Test262 — future-reserved-words
-        run: zig build run -- --test262 tests/test262/test/language/future-reserved-words/
-
-      - name: Test262 — asi
-        run: zig build run -- --test262 tests/test262/test/language/asi/
-
   test262-parser:
-    name: Test262 Parser Conformance
+    name: Test262 Language Conformance
     runs-on: ubuntu-latest
     needs: test262-unit
 
@@ -119,12 +55,14 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-          # test262-lexer 와 동일 ReleaseFast 빌드 — 키 공유로 cross-job 재사용.
           cache-key: test262-run
 
       - name: Build (ReleaseFast)
         run: zig build -Doptimize=ReleaseFast
 
+      # 전체 language/ 한 번에 — literals/comments/asi 등 (이전 별도 lexer job 의 모든
+      # 카테고리) 이 이 디렉토리의 부분집합이라 단일 run 으로 동일 커버리지. 실패 시
+      # 위반 파일 경로가 출력되므로 카테고리별 step 분리 없이도 회귀 위치 식별 가능.
       - name: Test262 — full language/
         run: zig build run -- --test262 tests/test262/test/language/
 
