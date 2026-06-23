@@ -139,3 +139,44 @@ test "disk_cache: 여러 key 독립 보관" {
         try testing.expectEqualStrings(want, got);
     }
 }
+
+test "disk_cache: initVersioned 가 옛 build_id dir GC + 사용자 dir 보존 (#4438)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+
+    const BID_OLD: u64 = 0x1111111111111111;
+    const BID_NEW: u64 = 0x2222222222222222;
+
+    // 옛 버전 캐시 채움 → <root>/1111.../<shard>/ 생성(put 이 dir lazy 생성).
+    {
+        var old = try DiskCache.initVersioned(testing.allocator, testing.io, root, BID_OLD);
+        defer old.deinit();
+        try old.put(testing.io, KEY_A, "old-version-entry");
+    }
+    // 비-hex 사용자 디렉토리(GC 가 건드리면 안 됨).
+    try tmp.dir.createDirPath(testing.io, "user-data");
+
+    // 새 버전 init → prune 이 옛 16-hex dir 삭제 후 새 dir 사용.
+    {
+        var new = try DiskCache.initVersioned(testing.allocator, testing.io, root, BID_NEW);
+        defer new.deinit();
+        try new.put(testing.io, KEY_A, "new-version-entry");
+        const got = (try new.get(testing.io, testing.allocator, KEY_A, MAX)).?;
+        defer testing.allocator.free(got);
+        try testing.expectEqualStrings("new-version-entry", got); // 새 버전은 정상 read
+    }
+
+    var old_hex: [16]u8 = undefined;
+    _ = std.fmt.bufPrint(&old_hex, "{x:0>16}", .{BID_OLD}) catch unreachable;
+    // 옛 build_id dir 은 GC 됨(access 성공하면 미삭제 = 실패).
+    if (tmp.dir.access(testing.io, &old_hex, .{})) |_| {
+        return error.OldVersionDirNotPruned;
+    } else |_| {}
+    // 사용자 dir(비-hex)·새 build_id dir 은 보존.
+    try tmp.dir.access(testing.io, "user-data", .{});
+    var new_hex: [16]u8 = undefined;
+    _ = std.fmt.bufPrint(&new_hex, "{x:0>16}", .{BID_NEW}) catch unreachable;
+    try tmp.dir.access(testing.io, &new_hex, .{});
+}

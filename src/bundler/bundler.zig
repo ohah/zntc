@@ -1275,8 +1275,13 @@ pub const Bundler = struct {
         // 없으면 disk_module_cache(테스트 직접 주입). 둘 다 없으면 비활성.
         const disk_cache_ptr: ?*@import("disk_module_store.zig").DiskModuleStore = blk: {
             if (self.options.disk_cache_dir) |dir| {
+                // #4438: dirty 빌드(zts 바이너리가 dirty tree 에서 컴파일됨)는 build_id 가 변경
+                // 내용을 구분 못 해(<sha>-dirty 고정) stale 재사용 위험 → disk cache 비활성(정확성
+                // 우선, 캐시는 perf-only). 릴리스(클린) 바이너리 사용자는 무관(항상 false).
+                if (@import("../build_id.zig").isDirty()) break :blk null;
                 if (self.owned_disk_cache == null) {
-                    self.owned_disk_cache = @import("disk_module_store.zig").DiskModuleStore.init(self.allocator, dir) catch null;
+                    // build_id 네임스페이스(버전별 격리)+옛 버전 dir best-effort GC(디스크 bloat 방지).
+                    self.owned_disk_cache = @import("disk_module_store.zig").DiskModuleStore.initVersioned(self.allocator, io, dir, @import("../build_id.zig").current()) catch null;
                 }
                 if (self.owned_disk_cache) |*s| break :blk s;
             }

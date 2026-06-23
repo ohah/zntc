@@ -120,6 +120,10 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
     // 일치한다(post-parse 확정 is_module/is_strict 는 source 함수라 source_hash 에 반영됨).
     // source 는 plugin transform 까지 반영된 최종값. disk_cache 비활성이면 skip(출력·비용 0).
     if (self.disk_cache != null) {
+        // compiler_build_id == 0 은 cache_key 의 컴파일러-버전 가드를 무력화한다(로직이 바뀐
+        // rebuild 후에도 같은 키 → stale). production wiring 은 build_id.current()(0→1 매핑)로
+        // 항상 비0 — 0 이면 배선 실수(테스트도 실제값 사용).
+        std.debug.assert(self.disk_compiler_build_id != 0);
         const cache_key_mod = @import("../cache_key.zig");
         const wyhash = @import("../../util/wyhash.zig");
         module.disk_cache_key = cache_key_mod.compute(

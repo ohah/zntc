@@ -1929,6 +1929,7 @@ test "graph: load hit 게이트 — legal comment 모듈은 load OFF (#4438 통�
         var g1 = ModuleGraph.init(std.testing.allocator, &c1);
         defer g1.deinit();
         g1.disk_cache = &s1;
+        g1.disk_compiler_build_id = 0xABCD;
         g1.disk_load_enabled = true;
         try g1.build(std.testing.io, &.{entry});
     }
@@ -1941,6 +1942,7 @@ test "graph: load hit 게이트 — legal comment 모듈은 load OFF (#4438 통�
     var g2 = ModuleGraph.init(std.testing.allocator, &c2);
     defer g2.deinit();
     g2.disk_cache = &s2;
+    g2.disk_compiler_build_id = 0xABCD;
     g2.disk_load_enabled = true;
     try g2.build(std.testing.io, &.{entry});
 
@@ -1970,6 +1972,7 @@ test "graph: load hit 게이트 — import.meta 모듈은 load OFF (#4438 ON==OF
         var g1 = ModuleGraph.init(std.testing.allocator, &c1);
         defer g1.deinit();
         g1.disk_cache = &s1;
+        g1.disk_compiler_build_id = 0xABCD;
         g1.disk_load_enabled = true;
         try g1.build(std.testing.io, &.{entry});
     }
@@ -1981,6 +1984,7 @@ test "graph: load hit 게이트 — import.meta 모듈은 load OFF (#4438 ON==OF
     var g2 = ModuleGraph.init(std.testing.allocator, &c2);
     defer g2.deinit();
     g2.disk_cache = &s2;
+    g2.disk_compiler_build_id = 0xABCD;
     g2.disk_load_enabled = true;
     try g2.build(std.testing.io, &.{entry});
 
@@ -2013,6 +2017,7 @@ test "graph: 진단 낸 모듈은 store skip → cache ON 2nd build 도 진단 �
         var g1 = ModuleGraph.init(std.testing.allocator, &c1);
         defer g1.deinit();
         g1.disk_cache = &s1;
+        g1.disk_compiler_build_id = 0xABCD;
         g1.disk_load_enabled = true;
         try g1.build(std.testing.io, &.{entry});
         first_count = 0;
@@ -2030,6 +2035,7 @@ test "graph: 진단 낸 모듈은 store skip → cache ON 2nd build 도 진단 �
     var g2 = ModuleGraph.init(std.testing.allocator, &c2);
     defer g2.deinit();
     g2.disk_cache = &s2;
+    g2.disk_compiler_build_id = 0xABCD;
     g2.disk_load_enabled = true;
     try g2.build(std.testing.io, &.{entry});
 

@@ -37,6 +37,14 @@ pub fn current() u64 {
     return compute(build_options.git_sha, @tagName(builtin.mode), builtin.zig_version_string);
 }
 
+/// 이 zts **바이너리가 dirty working tree 에서 컴파일됐는지**(컴파일타임 git 상태). dirty 면
+/// git_sha 가 `<sha>-dirty` 로 고정돼 변경 내용을 구분 못 하므로(같은 마커로 다른 코드가 같은
+/// build_id) disk cache 의 컴파일러-버전 가드가 무력 — caller(bundler)가 dirty 빌드는 disk cache
+/// 를 비활성화하는 데 쓴다. 릴리스(클린) 바이너리 사용자는 항상 false(영향 없음).
+pub fn isDirty() bool {
+    return std.mem.indexOf(u8, build_options.git_sha, "-dirty") != null;
+}
+
 test "build_id: 각 dimension 이 키를 바꾸고 0 이 아님" {
     const t = std.testing;
     try t.expect(current() != 0);
