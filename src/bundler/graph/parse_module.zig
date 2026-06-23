@@ -148,9 +148,16 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
         };
     }
 
+    // #4438 ON==OFF: load hit 은 parse 전에 return 하므로 parse/semantic 단계의 진단
+    // (use_strict_non_simple / assign_to_import 등)을 재발행하지 못한다. 진단을 낸 모듈을
+    // store 하면 다음 빌드 load hit 이 cold 와 달리 에러를 삼킨다 → 그런 모듈은 store skip 해
+    // 항상 cold parse(=진단 재발행)되게 한다(가장 보수적).
+    var emitted_error_diag = false;
+
     if (parser.errors.items.len > 0) {
         // 파싱 에러 기록. recoverable validation 에러(use_strict_non_simple 등)는
         // AST가 정상이고 런타임도 실행하므로 모듈을 스킵하지 않는다 (#1291).
+        emitted_error_diag = true;
         var has_fatal = false;
         for (parser.errors.items) |err| {
             const msg = if (err.message.len > 0) err.message else "Parse error";
@@ -215,6 +222,7 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
             if (sem_err.code == .assign_to_import) {
                 const m = if (sem_err.message.len > 0) sem_err.message else "Cannot assign to or delete an imported binding";
                 self.addDiag(.assign_to_import, .@"error", module.path, sem_err.span, .link, m, null);
+                emitted_error_diag = true; // #4438 ON==OFF: 진단 발행 → store skip
             }
         }
 
@@ -273,9 +281,13 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
     // 지금은 store 만 — load(parse 스킵)는 graph 통합 3 → 출력 영향 0(항상 parse 실행).
     // self.allocator 는 worker 동시 호출에 안전(release=mimalloc / debug=DebugAllocator).
     if (self.disk_cache) |dc| {
-        if (module.ast) |*ast| {
-            if (module.semantic) |*sem| {
-                dc.store(io, self.allocator, module.disk_cache_key, ast, sem) catch {};
+        // #4438 ON==OFF: 진단을 낸 모듈은 store skip — load hit 이 parse 를 스킵해 그 진단을
+        // 재발행 못 하므로, 캐시되면 다음 빌드에서 에러가 사라진다(cold≠load).
+        if (!emitted_error_diag) {
+            if (module.ast) |*ast| {
+                if (module.semantic) |*sem| {
+                    dc.store(io, self.allocator, module.disk_cache_key, ast, sem) catch {};
+                }
             }
         }
     }
@@ -335,12 +347,17 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
 ///     lazy-barrel elision 게이트(`legal_comments.len != 0`)에 쓰이는데 load 는 그 slice 를
 ///     빈 채로 둔다 → banner 를 가진 barrel 이 잘못 elide 되어 누락. `isLegalComment`(scanner.zig)
 ///     의 마커를 보수적으로 검출한다(false positive=load OFF 안전, false negative 없음).
+///  3) **`import.meta`** — cold 은 import.meta 가 has_module_syntax 를 켜 exports_kind=.esm
+///     로 만들지만, load 의 import_scanner 는 import/export 선언만 보고 meta_property 를 무시해
+///     .none 으로 떨어진다(require-target/entry/RN-wrap 에서 wrap_kind·출력 발산). import.meta
+///     substring 을 보수적으로 검출한다(과검출=load OFF 안전).
 fn loadUnsafeSource(source: []const u8) bool {
     return std.mem.indexOf(u8, source, "\xE2\x80\xA8") != null or // U+2028 (LS)
         std.mem.indexOf(u8, source, "\xE2\x80\xA9") != null or // U+2029 (PS)
         std.mem.indexOf(u8, source, "@license") != null or
         std.mem.indexOf(u8, source, "@preserve") != null or
-        std.mem.indexOf(u8, source, "/*!") != null;
+        std.mem.indexOf(u8, source, "/*!") != null or
+        std.mem.indexOf(u8, source, "import.meta") != null; // #4438 exports_kind 발산 방지
 }
 
 fn tryDiskLoadHit(

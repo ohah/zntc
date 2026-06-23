@@ -68,7 +68,11 @@ pub const ParseFlags = packed struct(u8) {
     is_module: bool = false,
     is_flow: bool = false,
     is_strict: bool = false,
-    _pad: u3 = 0,
+    // #4438: `.d.ts`/`.d.mts`/`.d.cts` ambient 컨텍스트는 파싱을 바꾼다(initializer 없는
+    // const 허용, rest-param trailing comma 등). 경로 파생이라 source_hash/다른 플래그에
+    // 안 잡혀, 키에 명시 포함하지 않으면 byte-identical `.d.ts`↔`.ts` 가 키 충돌 → stale 재사용.
+    is_ambient: bool = false,
+    _pad: u2 = 0,
 
     pub fn bits(self: ParseFlags) u32 {
         return @as(u8, @bitCast(self));
@@ -87,6 +91,10 @@ pub fn parseFlagsFromParser(parser: anytype) ParseFlags {
         .is_module = parser.is_module,
         .is_flow = parser.is_flow,
         .is_strict = parser.is_strict_mode,
+        // configureAmbientFromPath(.d.ts 등)가 pre-parse 에 설정한 ambient 상태. 키 캡처가
+        // parse 전이라 path 파생값만 반영(parse 중 declare 블록의 transient 설정과 무관 — 그건
+        // source 의 함수라 source_hash 에 잡힘). store/load 가 같은 시점이라 키 일치 보장.
+        .is_ambient = parser.ctx.in_ambient,
     };
 }
 

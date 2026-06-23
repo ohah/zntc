@@ -1946,3 +1946,98 @@ test "graph: load hit 게이트 — legal comment 모듈은 load OFF (#4438 통�
 
     try std.testing.expectEqual(@as(usize, 0), g2.disk_load_hits.load(.monotonic));
 }
+
+test "graph: load hit 게이트 — import.meta 모듈은 load OFF (#4438 ON==OFF)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // import.meta 는 cold 에서 has_module_syntax→exports_kind=.esm 로 만들지만, load 의
+    // import_scanner 는 meta_property 를 안 봐 .none 으로 발산(require-target/entry/RN-wrap 에서
+    // wrap_kind 차이). loadUnsafeSource 게이트로 cold parse 유지 → 캐시 있어도 load OFF(hit 0).
+    try writeFile(tmp.dir, "index.mjs", "const u = import.meta.url; console.log(u);");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.mjs" });
+    defer std.testing.allocator.free(entry);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+
+    {
+        var s1 = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+        defer s1.deinit();
+        var c1 = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+        defer c1.deinit();
+        var g1 = ModuleGraph.init(std.testing.allocator, &c1);
+        defer g1.deinit();
+        g1.disk_cache = &s1;
+        g1.disk_load_enabled = true;
+        try g1.build(std.testing.io, &.{entry});
+    }
+
+    var s2 = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer s2.deinit();
+    var c2 = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer c2.deinit();
+    var g2 = ModuleGraph.init(std.testing.allocator, &c2);
+    defer g2.deinit();
+    g2.disk_cache = &s2;
+    g2.disk_load_enabled = true;
+    try g2.build(std.testing.io, &.{entry});
+
+    try std.testing.expectEqual(@as(usize, 0), g2.disk_load_hits.load(.monotonic));
+}
+
+test "graph: 진단 낸 모듈은 store skip → cache ON 2nd build 도 진단 재발행 (#4438 ON==OFF)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // import 바인딩 변형 → assign_to_import(ZNTC0805) error. AST/semantic 은 산출되어 store
+    // 까지 도달하지만, 캐시하면 2nd build load hit 이 parse 를 스킵해 진단을 삼킨다(#4020 의도적
+    // fatal 이 cache 로 사라짐). store skip 으로 위반 모듈은 항상 cold parse 되게 한 것을 가드.
+    try writeFile(tmp.dir, "index.mjs", "import { a } from './a.mjs'; a = 1;");
+    try writeFile(tmp.dir, "a.mjs", "export const a = 1;");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.mjs" });
+    defer std.testing.allocator.free(entry);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+
+    // 1st build: cold → 진단 emit + 위반 모듈 store skip(a.mjs 는 store 됨).
+    var first_count: usize = undefined;
+    {
+        var s1 = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+        defer s1.deinit();
+        var c1 = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+        defer c1.deinit();
+        var g1 = ModuleGraph.init(std.testing.allocator, &c1);
+        defer g1.deinit();
+        g1.disk_cache = &s1;
+        g1.disk_load_enabled = true;
+        try g1.build(std.testing.io, &.{entry});
+        first_count = 0;
+        for (g1.diagnostics.items) |d| {
+            if (d.code == .assign_to_import and d.severity == .@"error") first_count += 1;
+        }
+        try std.testing.expect(first_count > 0); // 진단 존재 전제(소스가 실제로 트리거)
+    }
+
+    // 2nd build: a.mjs 는 load hit 되지만(캐시 동작 증명), 위반 모듈은 store 안 돼 cold parse → 진단 재발행.
+    var s2 = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer s2.deinit();
+    var c2 = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer c2.deinit();
+    var g2 = ModuleGraph.init(std.testing.allocator, &c2);
+    defer g2.deinit();
+    g2.disk_cache = &s2;
+    g2.disk_load_enabled = true;
+    try g2.build(std.testing.io, &.{entry});
+
+    try std.testing.expect(g2.disk_load_hits.load(.monotonic) > 0); // a.mjs load hit = 캐시 동작 증명
+    var second_count: usize = 0;
+    for (g2.diagnostics.items) |d| {
+        if (d.code == .assign_to_import and d.severity == .@"error") second_count += 1;
+    }
+    // 핵심: cache ON 2nd build 도 1st 와 같은 진단 수(ON==OFF). store skip 없으면 0 으로 떨어진다.
+    try std.testing.expectEqual(first_count, second_count);
+}
