@@ -86,6 +86,37 @@ test "cache_key: compute 결정성 + 입력별 민감도" {
     try testing.expect(base != cache_key.compute(sh, flags, 0x1111, BUILD_ID +% 1)); // build id
 }
 
+test "cache_key: is_ambient 가 키에 반영 (#4438 .d.ts↔.ts 충돌 가드)" {
+    const sh = wyhash.hashU64(SRC);
+    // byte-identical source + 동일 나머지 플래그라도 ambient 여부가 다르면 키가 달라야
+    // 한다(.d.ts ambient AST 가 byte-identical .ts non-ambient 에 stale 재사용되는 것 방지).
+    const non_ambient = cache_key.ParseFlags{ .is_ts = true, .is_module = true };
+    const ambient = cache_key.ParseFlags{ .is_ts = true, .is_module = true, .is_ambient = true };
+    try testing.expect(cache_key.compute(sh, non_ambient, 0x1111, BUILD_ID) !=
+        cache_key.compute(sh, ambient, 0x1111, BUILD_ID));
+}
+
+test "cache_key: parseFlagsFromParser 가 ambient 상태를 캡처 (#4438 wiring)" {
+    const alloc = testing.allocator;
+    // .d.ts → configureAmbientFromPath 가 ctx.in_ambient=true → ParseFlags.is_ambient=true.
+    var scanner = try Scanner.init(alloc, SRC);
+    defer scanner.deinit();
+    var parser = Parser.init(alloc, &scanner);
+    defer parser.deinit();
+    parser.configureForBundler(".ts");
+    parser.configureAmbientFromPath("foo.d.ts");
+    try testing.expect(cache_key.parseFlagsFromParser(&parser).is_ambient);
+
+    // .ts → ambient 아님.
+    var scanner2 = try Scanner.init(alloc, SRC);
+    defer scanner2.deinit();
+    var parser2 = Parser.init(alloc, &scanner2);
+    defer parser2.deinit();
+    parser2.configureForBundler(".ts");
+    parser2.configureAmbientFromPath("foo.ts");
+    try testing.expect(!cache_key.parseFlagsFromParser(&parser2).is_ambient);
+}
+
 test "cache_key: hashSelective 가 모든 필드를 반영 (reflection 완전성)" {
     const base = cache_key.SelectiveOptions{};
     const base_h = cache_key.hashSelective(&base);
