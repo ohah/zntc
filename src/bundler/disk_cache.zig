@@ -8,6 +8,9 @@
 //! - **atomic write**: 유니크 tmp 파일에 쓰고 `rename` 으로 교체한다. POSIX rename 은 원자적이라
 //!   reader 가 half-written 파일을 보지 못한다. tmp 이름에 프로세스 전역 단조 카운터(seq)를
 //!   박아 같은 프로세스 내 동시 쓰기끼리 충돌하지 않는다.
+//!   (**의도적 비-fsync**: rename 전 fsync 를 하지 않는다. 전원손실 시 final 이 zero-length/부분
+//!   일 수 있으나, get 이 fail-open + codec checksum 으로 miss→재파싱하므로 정확성 안전. 매 write
+//!   fsync 는 write 비용만 늘고 정확성 이득 0이라 트레이드오프상 생략 — 손실=엔트리 1건 재파싱.)
 //! - **fail-open get**: 캐시 읽기 실패(없음/권한/손상/크기초과)는 전부 cache miss(`null`)로
 //!   degrade 해 재파싱하게 한다 — 캐시는 no-cache 보다 빌드를 더 깨뜨리면 안 된다. 시스템 자원
 //!   고갈(`OutOfMemory`)만 전파한다.
@@ -42,6 +45,20 @@ pub const DiskCache = struct {
 
     pub fn init(allocator: std.mem.Allocator, root_dir: []const u8) std.mem.Allocator.Error!DiskCache {
         return .{ .allocator = allocator, .root = try allocator.dupe(u8, root_dir) };
+    }
+
+    /// `root_dir/<build_id:016x>` 를 실제 캐시 루트로 쓴다(컴파일러 버전별 격리). 동시에 같은
+    /// `root_dir` 안의 **다른** build_id 디렉토리(16-hex 이름)를 best-effort 삭제(GC). 컴파일러
+    /// 버전이 바뀌면 옛 캐시는 키가 달라 영영 안 읽혀 누적되므로(디스크 bloat) 새 버전 init 때
+    /// 정리한다. 삭제는 16-hex 디렉토리 이름으로만 게이트(사용자 파일 오삭제 방지)+best-effort.
+    /// 동일 바이너리 재빌드는 같은 build_id → 같은 subdir → load hit 유지.
+    pub fn initVersioned(allocator: std.mem.Allocator, io: std.Io, root_dir: []const u8, build_id: u64) std.mem.Allocator.Error!DiskCache {
+        var hex: [16]u8 = undefined;
+        _ = std.fmt.bufPrint(&hex, "{x:0>16}", .{build_id}) catch unreachable; // 16자리 고정
+        pruneOtherVersions(io, root_dir, hex[0..]);
+        const versioned = try std.fs.path.join(allocator, &[_][]const u8{ root_dir, hex[0..] });
+        defer allocator.free(versioned);
+        return init(allocator, versioned);
     }
 
     pub fn deinit(self: *DiskCache) void {
@@ -89,3 +106,27 @@ pub const DiskCache = struct {
         };
     }
 };
+
+/// `root_dir` 안의 16-hex 디렉토리 중 `current_hex` 가 아닌 것을 삭제(다른 컴파일러 버전 캐시 GC).
+/// best-effort: 루트 부재/권한/삭제 실패는 전부 무시(캐시 정리가 빌드를 막으면 안 됨). 16-hex
+/// 이름 게이트로 사용자 파일/디렉토리는 건드리지 않는다.
+fn pruneOtherVersions(io: std.Io, root_dir: []const u8, current_hex: []const u8) void {
+    var dir = std.Io.Dir.cwd().openDir(io, root_dir, .{ .iterate = true }) catch return; // 루트 없음/권한 → skip
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch return) |entry| {
+        if (entry.kind != .directory) continue;
+        if (!isHex16(entry.name)) continue;
+        if (std.mem.eql(u8, entry.name, current_hex)) continue;
+        dir.deleteTree(io, entry.name) catch {}; // best-effort
+    }
+}
+
+/// 정확히 16자리 소문자 hex 인지(캐시 build_id 디렉토리 이름 형식 — 삭제 게이트).
+fn isHex16(name: []const u8) bool {
+    if (name.len != 16) return false;
+    for (name) |c| {
+        if (!((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f'))) return false;
+    }
+    return true;
+}

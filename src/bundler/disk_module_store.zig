@@ -46,6 +46,12 @@ pub const DiskModuleStore = struct {
         return .{ .disk = try DiskCache.init(allocator, root_dir) };
     }
 
+    /// build_id 로 네임스페이스(버전별 격리) + 옛 버전 dir best-effort GC. 자세한 내용은
+    /// `DiskCache.initVersioned` 참조. production(bundler)이 disk_cache_dir opt-in 에 쓴다.
+    pub fn initVersioned(allocator: std.mem.Allocator, io: std.Io, root_dir: []const u8, build_id: u64) std.mem.Allocator.Error!DiskModuleStore {
+        return .{ .disk = try DiskCache.initVersioned(allocator, io, root_dir, build_id) };
+    }
+
     pub fn deinit(self: *DiskModuleStore) void {
         self.disk.deinit();
     }

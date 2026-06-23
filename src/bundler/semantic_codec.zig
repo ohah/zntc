@@ -38,6 +38,14 @@ const HEADER_LEN: usize = 16;
 /// 안전한 sentinel(SymbolId.none/ScopeId.none 과 동일 패턴).
 const NULL_U32: u32 = std.math.maxInt(u32);
 
+comptime {
+    // synthetic_kind 직렬화(putSymbol/readSymbol)가 0xFF 를 ?SyntheticKind 의 null sentinel 로
+    // 쓴다. SyntheticKind(enum(u8))에 값 0xFF 변형이 생기면 null 로 오역(silent miscompile)되므로
+    // 0xFF 가 유효 변형이 아님을 못박는다(현재 4 변형이라 여유 충분 — 미래 회귀 가드).
+    if (std.enums.fromInt(symbol_mod.SyntheticKind, 0xFF) != null)
+        @compileError("SyntheticKind 0xFF 변형이 semantic_codec 의 null sentinel 과 충돌 — sentinel 폭 확장 필요.");
+}
+
 /// struct 의 `"name:typename;name:typename;…"` 시그니처를 comptime 문자열로 만든다.
 /// 필드 수뿐 아니라 **이름+타입+순서**까지 못박아 rename/retype/reorder(필드 수 불변 변경)도
 /// 컴파일 에러로 잡는다 — 이 codec 은 필드별 명시 직렬화라 그런 변경이 silent 하면 cache-hit
