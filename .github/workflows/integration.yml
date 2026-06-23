@@ -13,6 +13,10 @@ on:
       - '.github/actions/bun-cache/**'
   pull_request:
     branches: [main]
+    # draft PR 동안 무거운 잡 skip(아래 prepare-* 의 if). draft→ready 전환 시 다시 돌도록
+    # ready_for_review 를 트리거 타입에 추가 — 기본 types(opened/synchronize/reopened)엔
+    # 없어 누락 시 ready 후 CI 가 발화하지 않는다.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'src/**'
       - 'packages/**'
@@ -28,6 +32,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 잡별 변경 영역 감지 — 파이프라인 일부만 바뀐 PR 에서 무관한 무거운 잡
+  # (hermes/e2e/compat-table/determinism)을 skip. 트랜스파일러는 파이프라인이라
+  # codegen 등 코어가 바뀌면 거의 모든 잡에 영향 → core 앵커를 보수적으로 넓게 잡아
+  # 무손실 유지(영향 가능성 있으면 무조건 포함; 과포함은 비용만 늘 뿐 커버리지 손실 없음).
+  # 추가 안전망: integration-ubuntu/macos 는 always-on 이라 cross-surface 회귀 백스톱.
+  changes:
+    name: Detect changed areas
+    runs-on: ubuntu-latest
+    outputs:
+      compat: ${{ steps.filter.outputs.compat }}
+      determinism: ${{ steps.filter.outputs.determinism }}
+      e2e: ${{ steps.filter.outputs.e2e }}
+      hermes: ${{ steps.filter.outputs.hermes }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            core: &core
+              - 'src/lexer/**'
+              - 'src/parser/**'
+              - 'src/semantic/**'
+              - 'src/transformer/**'
+              - 'src/codegen/**'
+              - 'src/regexp/**'
+              - 'src/transpile/**'
+              - 'src/util/**'
+              - 'src/cli/**'
+              - 'src/*.zig'
+              - 'build.zig'
+              - 'build.zig.zon'
+              - 'tests/**'
+              - '.github/workflows/integration.yml'
+              - '.github/actions/**'
+            compat:
+              - *core
+            determinism:
+              - *core
+              - 'src/bundler/**'
+            e2e:
+              - *core
+              - 'src/bundler/**'
+              - 'src/app/**'
+              - 'src/server/**'
+              - 'packages/web/**'
+              - 'packages/server/**'
+            hermes:
+              - *core
+              - 'src/bundler/**'
+              - 'packages/react-native/**'
+
   lint-format:
     name: Lint & Format
     runs-on: ubuntu-latest
@@ -54,6 +110,9 @@ jobs:
   prepare-zntc-ubuntu:
     name: Prepare ZNTC (ubuntu-latest)
     runs-on: ubuntu-latest
+    # draft PR 동안 skip — 이 prepare 가 skip 되면 의존 잡(integration-ubuntu/e2e)도
+    # cascade skip. push(main) 에선 항상 실행.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
 
     steps:
       - uses: actions/checkout@v4
@@ -79,6 +138,8 @@ jobs:
   prepare-zntc-cli-ubuntu:
     name: Prepare ZNTC CLI (ubuntu-latest)
     runs-on: ubuntu-latest
+    # draft PR 동안 skip — 의존 잡(smoke/compat-table/determinism)도 cascade skip.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
 
     steps:
       - uses: actions/checkout@v4
@@ -102,6 +163,8 @@ jobs:
   prepare-zntc-macos:
     name: Prepare ZNTC (macos-latest)
     runs-on: macos-latest
+    # draft PR 동안 skip — 의존 잡(integration-macos/hermes)도 cascade skip.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
 
     steps:
       - uses: actions/checkout@v4
@@ -188,7 +251,10 @@ jobs:
   hermes:
     name: Hermes Validation (RN Bundle)
     runs-on: macos-latest
-    needs: prepare-zntc-macos
+    needs: [prepare-zntc-macos, changes]
+    # RN 패키지 또는 코어 transpile/bundle 경로가 바뀔 때만. web/server/dev 전용 변경엔
+    # skip(draft skip 은 prepare-zntc-macos cascade). 코어 회귀는 always-on integration 이 백스톱.
+    if: needs.changes.outputs.hermes == 'true'
 
     steps:
       - uses: actions/checkout@v4
@@ -208,7 +274,10 @@ jobs:
   compat-table:
     name: compat-table ES Downlevel
     runs-on: ubuntu-latest
-    needs: prepare-zntc-cli-ubuntu
+    needs: [prepare-zntc-cli-ubuntu, changes]
+    # ES 다운레벨은 코어 transpile 경로(parser/transformer/codegen 등)만 의존 —
+    # bundler/dev-server/RN/web 전용 변경엔 skip.
+    if: needs.changes.outputs.compat == 'true'
 
     steps:
       - uses: actions/checkout@v4
@@ -239,7 +308,10 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    needs: prepare-zntc-ubuntu
+    needs: [prepare-zntc-ubuntu, changes]
+    # 브라우저 dev server 경로 — 코어 + bundler + dev server(src/app,server) + web 패키지
+    # 변경 시. RN/Flow 전용 변경엔 skip.
+    if: needs.changes.outputs.e2e == 'true'
 
     steps:
       - uses: actions/checkout@v4
@@ -305,7 +377,9 @@ jobs:
   determinism:
     name: Build Determinism (N=10) (#3564)
     runs-on: ubuntu-latest
-    needs: prepare-zntc-cli-ubuntu
+    needs: [prepare-zntc-cli-ubuntu, changes]
+    # 번들 byte-identity — 코어 + bundler 변경 시. dev-server/RN/web/napi 전용 변경엔 skip.
+    if: needs.changes.outputs.determinism == 'true'
 
     steps:
       - uses: actions/checkout@v4
