@@ -26,6 +26,62 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # PR 에선 무거운 매트릭스(release-build, napi-package-smoke)를 축소하고 push(main)
+  # 에선 풀로 돌리기 위해 event 별 matrix JSON 을 방출한다. job-level if 는 matrix
+  # 컨텍스트를 못 쓰므로(GHA 제약) 동적 매트릭스 + fromJSON 으로 구현(표준 패턴).
+  # 풀 매트릭스는 머지마다 push(main)에서 전수 검증되므로 release 안전(release.yml 불변).
+  setup-matrix:
+    name: Compute matrices (PR=축소 / push=풀)
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.gen.outputs.release }}
+      smoke: ${{ steps.gen.outputs.smoke }}
+    steps:
+      - id: gen
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          # 풀 매트릭스(pr 플래그 포함). pull_request 면 pr==true 만, 그 외(push/dispatch)는 전체.
+          # release-build: ReleaseFast 는 배포 모드 + "ReleaseFast-only 회귀" 이력이라 PR 3-OS 유지.
+          #   ReleaseSafe(ubuntu 만 PR) / ReleaseSmall 은 미배포 카나리아 → PR 손실 0.
+          release_full='[
+            {"os":"ubuntu-latest","optimize":"ReleaseFast","pr":true},
+            {"os":"macos-latest","optimize":"ReleaseFast","pr":true},
+            {"os":"windows-latest","optimize":"ReleaseFast","pr":true},
+            {"os":"ubuntu-latest","optimize":"ReleaseSafe","pr":true},
+            {"os":"macos-latest","optimize":"ReleaseSafe","pr":false},
+            {"os":"windows-latest","optimize":"ReleaseSafe","pr":false},
+            {"os":"ubuntu-latest","optimize":"ReleaseSmall","pr":false},
+            {"os":"macos-latest","optimize":"ReleaseSmall","pr":false},
+            {"os":"windows-latest","optimize":"ReleaseSmall","pr":false}
+          ]'
+          # napi-package-smoke: PR 대표 5개 = 각 ABI 1개 + 32-bit ia32 카나리아(#3632 이력).
+          #   arm64-gnu/musl·darwin-x64 3개는 push 에서. install/resolve 는 platform 무관이라
+          #   PR 대표로 충분, arch 고유 dlopen/ABI 회귀는 push(main) 백스톱.
+          # win32-arm64-msvc 는 smoke 에서 의도적 제외(arm64-windows zig 0.16.0 바이너리가
+          #   네이티브 러너 segfault; cross-build 는 release.yml 검증). ia32 는 Node v24 가
+          #   win-x86 폐지 → v22 + host 32-bit binary(host_zig_target) 강제.
+          smoke_full='[
+            {"platform":"linux-x64-gnu","os":"ubuntu-latest","zig_target":"native","pr":true},
+            {"platform":"linux-arm64-gnu","os":"ubuntu-24.04-arm","zig_target":"native","pr":false},
+            {"platform":"linux-x64-musl","os":"ubuntu-latest","zig_target":"x86_64-linux-musl","smoke_container":"node:24-alpine","pr":true},
+            {"platform":"linux-arm64-musl","os":"ubuntu-24.04-arm","zig_target":"aarch64-linux-musl","smoke_container":"node:24-alpine","pr":false},
+            {"platform":"darwin-arm64","os":"macos-latest","zig_target":"native","pr":true},
+            {"platform":"darwin-x64","os":"macos-15-intel","zig_target":"native","pr":false},
+            {"platform":"win32-x64-msvc","os":"windows-latest","zig_target":"native","pr":true},
+            {"platform":"win32-ia32-msvc","os":"windows-latest","zig_target":"x86-windows-msvc","host_zig_target":"x86-windows-msvc","node_version":"22","node_arch":"x86","pr":true}
+          ]'
+          if [ "$EVENT" = "pull_request" ]; then
+            release=$(jq -c '[.[] | select(.pr) | del(.pr)]' <<< "$release_full")
+            smoke=$(jq -c '[.[] | select(.pr) | del(.pr)]' <<< "$smoke_full")
+          else
+            release=$(jq -c '[.[] | del(.pr)]' <<< "$release_full")
+            smoke=$(jq -c '[.[] | del(.pr)]' <<< "$smoke_full")
+          fi
+          echo "release={\"include\":$release}" >> "$GITHUB_OUTPUT"
+          echo "smoke={\"include\":$smoke}" >> "$GITHUB_OUTPUT"
+
   debug-test:
     name: Debug Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -63,12 +119,14 @@ jobs:
 
   release-build:
     name: Release Build (${{ matrix.os }}, ${{ matrix.optimize }})
+    needs: setup-matrix
     runs-on: ${{ matrix.os }}
+    # 매트릭스는 setup-matrix 가 event 별로 방출(PR=ReleaseFast 3-OS + ReleaseSafe
+    # ubuntu = 4, push(main)=풀 3×3 = 9). job-level if 는 matrix 컨텍스트 미지원이라
+    # 동적 매트릭스로 구현. 선정 근거는 setup-matrix 의 release_full 주석 참조.
     strategy:
       fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        optimize: [ReleaseSafe, ReleaseFast, ReleaseSmall]
+      matrix: ${{ fromJSON(needs.setup-matrix.outputs.release) }}
 
     steps:
       - name: Checkout
@@ -218,60 +276,13 @@ jobs:
 
   napi-package-smoke:
     name: NAPI Package Smoke (${{ matrix.platform }})
+    needs: setup-matrix
     runs-on: ${{ matrix.os }}
+    # 매트릭스는 setup-matrix 가 event 별로 방출(PR=대표 5 / push=풀 8). 플랫폼 선정
+    # 근거(win32-arm64 제외, ia32 node22 등)는 setup-matrix 의 smoke_full 주석 참조.
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: linux-x64-gnu
-            os: ubuntu-latest
-            zig_target: native
-          - platform: linux-arm64-gnu
-            os: ubuntu-24.04-arm
-            zig_target: native
-          # musl: zig 가 ubuntu host 에서 musl libc 까지 self-contained cross
-          # build → require/transpile 검증은 alpine container 안에서.
-          - platform: linux-x64-musl
-            os: ubuntu-latest
-            zig_target: x86_64-linux-musl
-            smoke_container: node:24-alpine
-          - platform: linux-arm64-musl
-            os: ubuntu-24.04-arm
-            zig_target: aarch64-linux-musl
-            smoke_container: node:24-alpine
-          - platform: darwin-arm64
-            os: macos-latest
-            zig_target: native
-          - platform: darwin-x64
-            os: macos-15-intel
-            zig_target: native
-          # win32-x64-gnu (mingw) 는 sub-package 미존재 — install 매칭이 npm 의
-          # os/cpu 로 mingw vs MSVC 구분 못 하고, GHA windows-latest = MSVC node
-          # 라 install 시나리오 검증 의미 없음 (napi-rs/swc/oxc 모두 미publish).
-          # mingw build 가능성은 PR 2 의 release.yml 매트릭스에서 자연 검증.
-          # windows-latest 자체가 x86_64-windows-msvc 라 zig native = target 동일.
-          # 'native' 로 두면 host dogfood build 1회로 충분 (Build platform NAPI step skip).
-          - platform: win32-x64-msvc
-            os: windows-latest
-            zig_target: native
-          # win32-arm64-msvc 는 의도적으로 smoke 매트릭스에서 제외. Zig 0.16.0 의
-          # arm64-windows 컴파일러 바이너리가 windows-11-arm 네이티브 러너에서 segfault
-          # 하며(upstream — 0.15.2 정상), 네이티브 .node 로드 검증엔 arm64 하드웨어가
-          # 필요하다. arm64-windows .node 의 빌드는 release.yml(build-napi/build-cli)이
-          # 매 PR x64 호스트에서 -Dtarget=aarch64-windows-msvc cross-build 로 검증한다
-          # (Zig 표준 — cross 산출물은 byte-identical). install/resolve 흐름은 platform
-          # 무관이라 다른 8개 플랫폼이 커버. arm64 런타임 보증이 필요하면 릴리스 시점/
-          # 실하드웨어에서 별도 검증(매 PR 에뮬레이션 러너는 유지보수·안정성 비용 과다).
-          # win32-ia32-msvc: Node.js v24 가 win-x86 빌드를 폐지했으므로 v22 LTS
-          # (마지막 win-x86 공식 빌드 유지) 로 native require 검증. host dogfood
-          # 도 32-bit Node 가 dlopen 해야 하므로 host_zig_target 으로 32-bit
-          # binary 강제. release.yml 의 publish 는 9 platform 그대로.
-          - platform: win32-ia32-msvc
-            os: windows-latest
-            zig_target: x86-windows-msvc
-            host_zig_target: x86-windows-msvc
-            node_version: '22'
-            node_arch: x86
+      matrix: ${{ fromJSON(needs.setup-matrix.outputs.smoke) }}
 
     steps:
       - name: Checkout
