@@ -286,3 +286,53 @@ test "SourceMap: enum members map to their source line" {
 }
 
 // ================================================================
+
+/// #4472 가드용 — multi-expr block 을 comma sequence 로 접는 경로는
+/// `minify_whitespace` + `minify_syntax` 가 **둘 다** 켜져야 활성화된다.
+fn e2eMinify(allocator: std.mem.Allocator, source: []const u8) !helpers.TestResult {
+    return e2eWithOptions(allocator, source, .{ .minify_whitespace = true, .minify_syntax = true });
+}
+
+// ============================================================
+// #4472 — multi-expr block → comma sequence 접기 시 statement-start 괄호 소실
+// ============================================================
+//
+// `if (c) { ({a} = o); g(); }` 를 `if(c) a,b;` 로 접는 경로가 statement_start 를
+// 찍지 않아, 선두 object destructuring 할당의 **필수 괄호**가 빠졌다:
+//   `if(c){a:x}=f(),g();`  ← `{` 를 블록으로, `a:` 를 라벨로 파싱 → SyntaxError
+// 빌드는 green 인데 산출물이 런타임에 죽는 silent miscompile (monaco-editor 번들).
+
+test "#4472 minify: if body sequence 선두 object destructuring 할당에 괄호 유지" {
+    var r = try e2eMinify(std.testing.allocator,
+        \\function f(c, o, g) { let a, b; if (c) { ({ a, b } = o); g(a); } return [a, b]; }
+    );
+    defer r.deinit();
+    // `if(c)({a,b}=o),g(a);` — 괄호가 빠지면 `if(c){a,b}=o` 로 파싱 불가.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "if(c)({a,b}=o)") != null);
+}
+
+test "#4472 minify: if body sequence 선두 object literal 에 괄호 유지" {
+    var r = try e2eMinify(std.testing.allocator,
+        \\function f(c, g) { if (c) { ({}).toString(); g(1); } }
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "if(c)({}).toString()") != null);
+}
+
+test "#4472 minify: 배열 구조분해는 괄호가 필요없다 (과잉 괄호 방지)" {
+    var r = try e2eMinify(std.testing.allocator,
+        \\function f(c, arr, g) { let a, b; if (c) { [a, b] = arr; g(2); } return [a, b]; }
+    );
+    defer r.deinit();
+    // `[` 는 statement 선두여도 블록으로 오파싱되지 않는다 → 괄호 없이 그대로.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "if(c)[a,b]=") != null);
+}
+
+test "#4472 minify: while / for body 도 동일하게 보호된다" {
+    var r = try e2eMinify(std.testing.allocator,
+        \\function f(c, o, g) { let a; while (c) { ({ a } = o); g(3); } for (;c;) { ({ a } = o); g(4); } return a; }
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "while(c)({a}=o)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ")({a}=o),g(4)") != null);
+}
