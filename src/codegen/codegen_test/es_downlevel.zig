@@ -207,17 +207,19 @@ test "ES2022: static block to IIFE" {
     try std.testing.expectEqualStrings("class Foo{}(()=>{console.log(\"init\");})();", r.output);
 }
 
+// #4468: static block 은 이제 **AST 로** 출력된다 (예전엔 writeNodeSpan 으로 소스
+// 원문을 복사 → rename/define 등 AST 변형이 통째로 유실됐다). 그래서 다른 블록과
+// 똑같이 statement 종결 `;` 가 붙는다 — minify_syntax 가 꺼진 상태의 일관된 동작.
 test "ES2022: static block no transform on es2022" {
-    // static_block은 writeNodeSpan으로 소스를 그대로 복사하므로 공백이 유지됨
     var r = try e2eTarget(std.testing.allocator, "class Foo{static{console.log(\"init\")}}", .es2022);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Foo{static{console.log(\"init\")}}", r.output);
+    try std.testing.expectEqualStrings("class Foo{static{console.log(\"init\");}}", r.output);
 }
 
 test "ES2022: static block no transform on esnext" {
     var r = try e2eTarget(std.testing.allocator, "class Foo{static{console.log(\"init\")}}", .esnext);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Foo{static{console.log(\"init\")}}", r.output);
+    try std.testing.expectEqualStrings("class Foo{static{console.log(\"init\");}}", r.output);
 }
 
 test "ES2022: multiple static blocks" {
@@ -3418,3 +3420,20 @@ test "ES5 generator: labeled `continue` in do-while jumps to cond, not body (#42
     // continue outer 가 cond(case 3)로 점프.
     try std.testing.expect(std.mem.indexOf(u8, r.output, "if(!(i===2))return[3,2];return[3,3]") != null);
 }
+
+// #4468: static block 이 소스 원문 복사되던 시절엔 블록 안에서 **TS 타입이 strip
+// 되지 않아** 문법적으로 깨진 JS 가 나왔다. 통합 스냅샷에만 의존하지 않도록
+// codegen 유닛에서도 고정한다.
+test "#4468 static block: TS 타입 어노테이션이 블록 안에서도 strip 된다" {
+    var r = try e2eTarget(std.testing.allocator, "let getX;class C{#x=1;static{getX=(obj: C): number => obj.#x;}}", .esnext);
+    defer r.deinit();
+    // `: C` / `: number` 가 남으면 JS 로 파싱 불가.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "obj: C") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ": number") == null);
+    // minify_whitespace 에선 단일 파라미터 괄호가 빠진다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "obj=>obj.#x") != null);
+}
+
+// 주석 배치(빈 블록 안의 주석이 밖으로 새지 않는지)는 codegen 유닛에서 검증할 수
+// 없다 — 이 harness 는 `comments` 배열을 배선하지 않아 codegen 이 주석을 못 본다.
+// 통합 스냅샷(tests/integration/tests/tsc/__snapshots__/classes.test.ts.snap)이 담당.

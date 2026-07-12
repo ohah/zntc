@@ -98,6 +98,7 @@ pub const Code = enum(u16) {
     static_method_prototype = 410,
     class_after_decorator = 411,
     class_or_export_after_decorator = 412,
+    decorator_invalid_target = 415,
     labelled_function_in_loop = 413,
     lexical_in_statement = 414,
 
@@ -373,6 +374,7 @@ pub const Code = enum(u16) {
             .static_method_prototype => "Static class method cannot be named 'prototype'",
             .class_after_decorator => "Class expected after decorator",
             .class_or_export_after_decorator => "Class or export expected after decorator",
+            .decorator_invalid_target => "Decorators are not valid on class static blocks",
             .labelled_function_in_loop => "Labelled function declaration is not allowed in loop body",
             .lexical_in_statement => "Lexical declaration is not allowed in statement position",
             // 파서: 바인딩/식별자/파라미터

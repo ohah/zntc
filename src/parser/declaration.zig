@@ -523,6 +523,20 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
             // static { } — static block
             // static initializer는 자체 arguments 바인딩이 없음.
             // new.target은 허용 (undefined로 평가, ECMAScript 15.7.15)
+
+            // 데코레이터는 static block 에 붙을 수 없다 (#4468).
+            // TC39 decorators 제안이 허용하는 대상은 class / method / getter /
+            // setter / field / auto-accessor 뿐이고 static block 은 빠져 있다.
+            // TypeScript 도 "Decorators are not valid here" 로 거부한다.
+            //
+            // 예전엔 파서가 데코레이터를 수집만 하고 static_block 노드에 **버렸고**,
+            // codegen 이 소스 span 을 통째 복사하던 탓에 `@decorator` 텍스트만
+            // 우연히 출력에 되풀이됐다 → 의미는 적용 안 되면서 결과물은 JS 로
+            // 파싱조차 안 되는 깨진 코드였다. 이제 명시적으로 진단한다.
+            if (decorators.len > 0) {
+                try self.addErrorCode(self.currentSpan(), "Decorators are not valid on class static blocks", .decorator_invalid_target);
+            }
+
             try self.advance(); // skip 'static'
             const saved_in_static = self.in_static_initializer;
             const saved_new_target = self.allow_new_target;

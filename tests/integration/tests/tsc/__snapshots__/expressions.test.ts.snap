@@ -14283,8 +14283,8 @@ fn(32);
 exports[`TSC: expressions typeSatisfaction_ensureInterfaceImpl 1`] = `
 "const car = { start() {
 }, move(d) {
-}, // d should be number
-stop() {
+	// d should be number
+}, stop() {
 } };
 "
 `;

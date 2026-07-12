@@ -224,8 +224,8 @@ exports[`TSC: generators generatorReturnTypeIndirectReferenceToGlobalType 1`] = 
 
 exports[`TSC: generators generatorReturnTypeInference 1`] = `
 "function* g000() {
+	// Generator<never, void, unknown>
 }
-// Generator<never, void, unknown>
 // 'yield' iteration type inference
 function* g001() {
 	// Generator<undefined, void, unknown>
@@ -351,8 +351,8 @@ function* g311() {
 
 exports[`TSC: generators generatorReturnTypeInferenceNonStrict 1`] = `
 "function* g000() {
+	// Generator<never, void, unknown>
 }
-// Generator<never, void, unknown>
 // 'yield' iteration type inference
 function* g001() {
 	// Generator<any (implicit), void, unknown>

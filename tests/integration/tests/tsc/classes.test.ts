@@ -1872,8 +1872,12 @@ function foo () {
       [],
     );
   });
+  // #4468: 데코레이터는 class static block 에 붙을 수 없다 (TC39 decorators 제안이
+  // 허용하는 대상에 static block 이 없다). TypeScript 도 "Decorators are not valid
+  // here" 로 거부한다. 예전엔 파서가 데코레이터를 버리면서 codegen 이 소스를 통째
+  // 복사해 `@decorator` 텍스트만 출력에 되풀이 → JS 로 파싱조차 안 되는 결과물이었다.
   test('classStaticBlock19', async () => {
-    await expectPass(
+    await expectError(
       `class C {
     @decorator
     static {

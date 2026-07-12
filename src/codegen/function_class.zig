@@ -340,15 +340,23 @@ pub fn emitClassBody(self: anytype, node: Node) !void {
 }
 
 // static_block: unary = { operand = body(block_statement) }
-// 파서 원본 노드는 writeNodeSpan, 합성 노드(span={0,0})와 minify 모드는
-// 마지막 세미콜론 트리밍을 위해 AST 기반으로 출력한다.
+//
+// **항상 AST 로 출력한다** (#4468). 예전엔 파서 원본 노드(span != 0)를 non-minify
+// 경로에서 `writeNodeSpan` 으로 **소스 원문 복사**했는데, 그러면 AST 에 가해진 변형이
+// static block 안에서만 통째로 유실된다:
+//
+//   - 번들 deconflict rename: `class Node` → `Node$1` 로 바뀌어도 블록 안의 자기참조
+//     `new Node(...)` 는 옛 이름으로 남는다. 번들에 `Node` 선언이 없으므로 그 참조는
+//     **전역 바인딩을 탈취**한다 — 브라우저에서 `new Node()` 는 DOM `Node` 를 잡아
+//     `TypeError: Illegal constructor` 로 죽는다 (monaco-editor 가 이 패턴을 쓴다).
+//   - `--define` 치환: `static { this.m = __MODE__; }` 의 `__MODE__` 가 그대로 남아
+//     런타임 ReferenceError.
+//   - 그 밖의 모든 transform(TS strip, JSX, 다운레벨)도 동일하게 무시된다.
+//
+// minify 경로가 이미 AST 로 출력하고 있었고 그쪽은 정상이었다 — 즉 AST 출력은 이미
+// 검증된 경로다. 소스 복사는 원본 공백/주석을 보존하는 것 외에 이점이 없다.
 pub fn emitStaticBlock(self: anytype, node: Node) !void {
-    const has_parser_span = node.span.start != 0 or node.span.end != 0;
-    const minify = self.options.minify_whitespace and self.options.minify_syntax;
-    if (has_parser_span and !minify) {
-        try self.writeNodeSpan(node);
-        return;
-    }
+    try self.addSourceMapping(node.span);
     try self.write("static");
     try self.writeSpace();
     try emitNestedExecutionBody(self, node.data.unary.operand);

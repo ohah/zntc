@@ -215,3 +215,103 @@ test "rename leak: 충돌 없는 let 은 suffix 없이 그대로" {
     // suffix 가 붙은 변형이 있으면 over-fix
     try testing.expect(std.mem.indexOf(u8, code, "counter$") == null);
 }
+
+// ============================================================
+// #4468 — class static block 이 AST 로 emit 되지 않아 생긴 누수
+// ============================================================
+//
+// 근본: codegen 의 emitStaticBlock 이 non-minify 경로에서 `writeNodeSpan` 으로
+// **소스 원문을 그대로 복사**했다 → static block 안에서는 AST 에 가해진 모든 변형
+// (deconflict rename, --define 치환, TS/JSX transform, 다운레벨)이 통째로 유실됐다.
+
+test "#4468 static block: 클래스 자기참조가 deconflict rename 을 따라간다 (프로덕션 경로)" {
+    // monaco-editor 의 vs/base/common/linkedList.js 패턴.
+    // 전역 `Node`(DOM) 때문에 두 클래스가 모두 rename 되는데, static block 안의
+    // 자기참조만 옛 이름으로 남으면 → 번들에 `Node` 선언이 없으므로 그 참조가
+    // **전역 DOM Node 를 탈취** → `new Node()` = TypeError: Illegal constructor.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.js",
+        \\export class Node {
+        \\  static { this.Undefined = new Node("from-a"); }
+        \\  constructor(v) { this.v = v; }
+        \\}
+    );
+    try writeFile(tmp.dir, "b.js",
+        \\export class Node { constructor(k) { this.k = k; } }
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import { Node as A } from './a.js';
+        \\import { Node as B } from './b.js';
+        \\console.log(Node.ELEMENT_NODE);
+        \\console.log(A.Undefined.v, new B("x").k);
+    );
+
+    // 파일 로컬 bundleEntry 래퍼는 dev_mode + block_scoping 을 강제한다 — monaco 가
+    // 깨진 건 그냥 `zntc build`(기본 옵션) 였으므로 그 경로를 그대로 탄다.
+    var r = try helpers.bundleEntry(testing.allocator, &tmp, "entry.js", .{});
+    defer r.deinit();
+    const code = r.code();
+
+    // 두 클래스 모두 rename 됐어야 한다 (전역 Node 가 이름을 예약).
+    try testing.expect(std.mem.indexOf(u8, code, "class Node$1") != null);
+    try testing.expect(std.mem.indexOf(u8, code, "class Node$2") != null);
+
+    // 핵심: static block 안의 자기참조가 rename 을 따라가야 한다.
+    // `new Node(` 가 남아 있으면 전역 DOM Node 로 해석돼 런타임 크래시.
+    try testing.expect(std.mem.indexOf(u8, code, "new Node(") == null);
+    try testing.expect(std.mem.indexOf(u8, code, "new Node$1(") != null);
+}
+
+test "#4468 static block: --define 치환이 블록 안에서도 적용된다" {
+    // static block 이 소스 복사되면 `__MODE__` 가 그대로 남아 런타임 ReferenceError.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\class C {
+        \\  static { this.mode = __MODE__; }
+        \\  static viaField = __MODE__;
+        \\}
+        \\console.log(C.mode, C.viaField);
+    );
+
+    var r = try helpers.bundleEntry(testing.allocator, &tmp, "entry.js", .{
+        .define = &[_]@import("../../transformer/transformer.zig").DefineEntry{
+            .{ .key = "__MODE__", .value = "\"prod\"" },
+        },
+    });
+    defer r.deinit();
+    const code = r.code();
+
+    // 필드 초기화자와 static block 양쪽 모두 치환돼야 한다.
+    try testing.expect(std.mem.indexOf(u8, code, "__MODE__") == null);
+    try testing.expect(std.mem.indexOf(u8, code, "this.mode = \"prod\"") != null);
+}
+
+test "#4468 static block: --minify-identifiers 경로에서도 rename 을 따라간다" {
+    // 옛 span-copy 게이트는 `minify_whitespace AND minify_syntax` 였다 — 즉
+    // `--minify-identifiers` 만 켠 빌드도 원문 복사 경로를 탔고, 클래스가 `a` 로
+    // mangle 되는 동안 static block 은 `new Node(...)` 를 그대로 들고 있었다.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.js",
+        \\export class Node {
+        \\  static { this.Undefined = new Node("from-a"); }
+        \\  constructor(v) { this.v = v; }
+        \\}
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import { Node as A } from './a.js';
+        \\console.log(Node.ELEMENT_NODE, A.Undefined.v);
+    );
+
+    var r = try helpers.bundleEntry(testing.allocator, &tmp, "entry.js", .{
+        .minify_identifiers = true,
+    });
+    defer r.deinit();
+    const code = r.code();
+
+    // mangle 된 클래스 이름이 static block 안에서도 동일하게 쓰여야 한다.
+    // 원본 이름 `new Node(` 가 남아 있으면 전역 DOM Node 로 해석돼 크래시.
+    try testing.expect(std.mem.indexOf(u8, code, "new Node(") == null);
+}
