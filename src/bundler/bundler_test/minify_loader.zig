@@ -4033,3 +4033,97 @@ test "#4467 알려지지 않은 query 는 건드리지 않는다 (vue SFC 등)" 
     // ViteQuery 가 null 을 반환해 resolver 가 예전처럼 동작해야 한다.
     try std.testing.expect(types.ViteQuery.fromPath("./App.vue?vue&type=style&lang.css") == null);
 }
+
+test "#4467 query-suffix 로 block_list 를 우회할 수 없다" {
+    // 회귀: resolve() 의 query 분기가 block_list 검사 **전에** early-return 해서,
+    // `forbidden/x.txt` 는 막히는데 `forbidden/x.txt?raw` 는 통과했다 — query 를
+    // 붙이기만 하면 차단 정책이 뚫리는 구멍.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "forbidden");
+    try writeFile(tmp.dir, "forbidden/x.txt", "secret");
+    try writeFile(tmp.dir, "entry.ts", "import t from './forbidden/x.txt?raw';\nconsole.log(t);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .block_list = &.{"forbidden/.*"},
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    // 차단됐어야 한다 — 내용이 번들에 들어가면 BUG.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "secret") == null);
+}
+
+test "#4467 ?sharedworker 는 SharedWorker 를 만든다" {
+    // 회귀: sharedworker 를 worker 와 같은 enum 값으로 접어서 `new Worker` 가 나갔다.
+    // `sw.port` 가 없어 런타임에 조용히 깨진다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import SW from './bus.js?sharedworker';\nconsole.log(new SW());");
+    try writeFile(tmp.dir, "bus.js", "self.onconnect = () => {};");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new SharedWorker(new URL(") != null);
+}
+
+test "#4467 ?worker 는 type:module 을 붙이지 않는다 (worker 청크가 classic IIFE)" {
+    // 회귀: 래퍼가 { type: "module" } 을 하드코딩했다. 그런데 zntc 는 worker entry 를
+    // 항상 classic script(IIFE)로 방출한다 — module worker semantics(strict mode,
+    // importScripts 부재)가 적용돼 classic 번들이 시작부터 터질 수 있다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import W from './w.js?worker';\nconsole.log(new W());");
+    try writeFile(tmp.dir, "w.js", "self.onmessage = () => {};");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker(new URL(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "type: \"module\"") == null);
+}
+
+test "#4467 query 모듈의 watcher 경로는 디스크 경로여야 한다" {
+    // 회귀: module_paths(=watcher 가 감시할 목록)에 `/abs/x.txt?raw` 를 넘겨서,
+    // watcher 가 존재하지 않는 파일을 감시하고 진짜 `/abs/x.txt` 는 아무도 안 봤다.
+    // → 편집해도 rebuild 가 안 걸림 (CLI --watch 에서 재현됨).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "note.txt", "V1");
+    try writeFile(tmp.dir, "entry.ts", "import t from './note.txt?raw';\nconsole.log(t);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    const paths = result.module_paths orelse return error.ExpectedModulePaths;
+    var found_bare = false;
+    for (paths) |p| {
+        // query 가 붙은 경로가 watcher 목록에 있으면 BUG — 디스크에 없는 이름이다.
+        try std.testing.expect(std.mem.indexOfScalar(u8, p, '?') == null);
+        if (std.mem.endsWith(u8, p, "note.txt")) found_bare = true;
+    }
+    // 실제 파일이 감시 목록에 있어야 한다.
+    try std.testing.expect(found_bare);
+}

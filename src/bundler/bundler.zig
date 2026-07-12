@@ -2207,7 +2207,11 @@ pub const Bundler = struct {
             errdefer for (paths[0..path_count]) |p| self.allocator.free(p);
             var it = graph.modulesIterator();
             while (it.next()) |m| {
-                paths[path_count] = try self.allocator.dupe(u8, m.path);
+                // watcher 가 실제로 stat/감시할 **디스크 경로** 여야 한다 (#4467).
+                // `?raw` / `?url` 모듈의 path 는 `/abs/x.txt?raw` 라 디스크에 없는
+                // 이름이다 — 그대로 넘기면 watcher 가 존재하지 않는 파일을 감시하고
+                // 진짜 `/abs/x.txt` 는 아무도 안 봐서, 편집해도 rebuild 가 안 걸린다.
+                paths[path_count] = try self.allocator.dupe(u8, m.diskPath());
                 path_count += 1;
             }
             break :blk paths;

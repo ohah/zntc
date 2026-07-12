@@ -618,25 +618,22 @@ pub const Resolver = struct {
         if (self.realpath_cache) |rc| rc.io = io;
 
         // Vite query-suffix (`./a.txt?raw`, `./w.js?worker`) — 파일시스템을 치기 전에
-        // query 를 벗기고, resolve 된 절대경로에 **다시 붙인다** (#4467).
+        // query 를 벗기고, **모든 정책 검사를 통과한 뒤** 절대경로에 다시 붙인다 (#4467).
         //
         // query 를 붙인 채로 두는 이유: 같은 파일이라도 query 마다 다른 모듈이어야 한다
         // (`x.png` 는 자산, `x.png?raw` 는 문자열). 모듈 경로가 곧 dedup 키라 query 가
         // 살아 있어야 둘이 갈린다. loader 결정도 이 query 를 읽는다.
         //
+        // ⚠️ 재부착은 block_list 검사 **뒤** 여야 한다. 앞에서 early-return 하면
+        // `forbidden/x.txt` 는 막히는데 `forbidden/x.txt?raw` 는 통과하는, query 를
+        // 붙이기만 하면 차단 정책이 뚫리는 구멍이 생긴다.
+        //
         // vue/svelte SFC 의 `?vue&lang.css` 처럼 **알려지지 않은** query 는 건드리지
         // 않는다 — 그쪽은 플러그인이 가상 경로로 처리하는 기존 관용구다.
-        if (types.ViteQuery.fromPath(specifier) != null) {
-            const bare = types.stripPathQuery(specifier);
-            var r = try self.resolveInner(source_dir, bare);
-            const suffix = specifier[bare.len..];
-            const with_q = std.mem.concat(self.allocator, u8, &.{ r.path, suffix }) catch return error.OutOfMemory;
-            self.allocator.free(r.path);
-            r.path = with_q;
-            return r;
-        }
+        const has_vite_query = types.ViteQuery.fromPath(specifier) != null;
+        const bare_specifier = if (has_vite_query) types.stripPathQuery(specifier) else specifier;
 
-        const result = try self.resolveInner(source_dir, specifier);
+        var result = try self.resolveInner(source_dir, bare_specifier);
         if (self.block_list.len > 0 and !result.disabled) {
             const bl = @import("block_list.zig");
             for (self.block_list) |pat| {
@@ -646,6 +643,17 @@ pub const Resolver = struct {
                     return error.ModuleNotFound;
                 }
             }
+        }
+
+        if (has_vite_query) {
+            const suffix = specifier[bare_specifier.len..];
+            const with_q = std.mem.concat(self.allocator, u8, &.{ result.path, suffix }) catch {
+                self.allocator.free(result.path);
+                if (result.resolve_dir) |dir| self.allocator.free(dir);
+                return error.OutOfMemory;
+            };
+            self.allocator.free(result.path);
+            result.path = with_q;
         }
         return result;
     }

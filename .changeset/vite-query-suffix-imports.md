@@ -11,7 +11,8 @@ Vite 생태계 문서·레시피가 널리 쓰는 관용구인데 zntc 가 resol
 | `?raw` | 파일 내용을 문자열로 인라인 (`text` 로더) |
 | `?url` | 자산으로 방출하고 URL 문자열을 export. **`--asset-inline-limit` 을 무시**한다 — 사용자가 URL 을 명시 요청한 것이므로 작은 파일도 data URL 로 바뀌지 않는다 |
 | `?inline` | data URL 로 인라인 (`dataurl` 로더). 크기와 무관하게 항상 인라인 |
-| `?worker` / `?sharedworker` | Worker 생성 함수를 default export — `new W()` 로 Worker 를 만든다 |
+| `?worker` | Worker 생성 함수를 default export — `new W()` 로 Worker 를 만든다 |
+| `?sharedworker` | SharedWorker 생성 함수를 default export |
 
 ```js
 import txt from "./data.txt?raw";      // "hello raw content"
@@ -27,8 +28,10 @@ const w = new W();
 
 ```js
 export default function WorkerWrapper(options) {
-  return new Worker(new URL("./x.worker.js", import.meta.url), Object.assign({ type: "module" }, options));
+  return new Worker(new URL("./x.worker.js", import.meta.url), options);
 }
 ```
+
+`{ type: "module" }` 을 붙이지 **않는다.** zntc 는 worker entry 를 항상 classic script(IIFE)로 방출하므로, module worker 로 로드하면 strict mode / `importScripts` 부재 같은 다른 semantics 가 걸려 classic 번들이 터질 수 있다. Vite 도 worker 출력이 `es` 일 때만 붙인다.
 
 `?vue&type=style&lang.css` 같은 **알려지지 않은 query 는 건드리지 않는다** — 그쪽은 플러그인이 가상 경로로 처리하는 기존 관용구다.

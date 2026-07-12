@@ -1078,6 +1078,9 @@ pub const ViteQuery = enum {
     inline_,
     /// `?worker` — Worker 생성자 함수를 default export.
     worker,
+    /// `?sharedworker` — SharedWorker 생성자 함수를 default export.
+    /// `.worker` 와 합치면 `sw.port` 가 없는 일반 Worker 가 나가 조용히 깨진다.
+    shared_worker,
 
     /// specifier / path 의 query 에서 Vite suffix 를 뽑는다. 없으면 null.
     ///
@@ -1094,7 +1097,8 @@ pub const ViteQuery = enum {
         var it = std.mem.tokenizeScalar(u8, query, '&');
         while (it.next()) |tok| {
             // `?worker` 는 다른 토큰과 조합돼도(`?worker&inline`) worker 가 이긴다.
-            if (std.mem.eql(u8, tok, "worker") or std.mem.eql(u8, tok, "sharedworker")) return .worker;
+            if (std.mem.eql(u8, tok, "worker")) return .worker;
+            if (std.mem.eql(u8, tok, "sharedworker")) return .shared_worker;
             if (found != null) continue;
             if (std.mem.eql(u8, tok, "raw")) found = .raw;
             if (std.mem.eql(u8, tok, "url")) found = .url;
@@ -1109,7 +1113,16 @@ pub const ViteQuery = enum {
             .raw => .text,
             .url => .file,
             .inline_ => .dataurl,
-            .worker => null,
+            .worker, .shared_worker => null,
+        };
+    }
+
+    /// 이 query 가 만드는 Worker 생성자 이름. worker 계열이 아니면 null.
+    pub fn workerConstructor(self: ViteQuery) ?[]const u8 {
+        return switch (self) {
+            .worker => "Worker",
+            .shared_worker => "SharedWorker",
+            else => null,
         };
     }
 };
@@ -1127,7 +1140,7 @@ test "ViteQuery.fromPath" {
     try std.testing.expectEqual(ViteQuery.worker, ViteQuery.fromPath("./w.js?worker").?);
     // worker 가 조합에서 이긴다
     try std.testing.expectEqual(ViteQuery.worker, ViteQuery.fromPath("./w.js?worker&inline").?);
-    try std.testing.expectEqual(ViteQuery.worker, ViteQuery.fromPath("./w.js?sharedworker").?);
+    try std.testing.expectEqual(ViteQuery.shared_worker, ViteQuery.fromPath("./w.js?sharedworker").?);
     // 알려지지 않은 query 는 null — vue SFC 등 기존 관용구를 건드리지 않는다
     try std.testing.expect(ViteQuery.fromPath("./App.vue?vue&type=style&lang.css") == null);
     try std.testing.expect(ViteQuery.fromPath("./a.txt") == null);
