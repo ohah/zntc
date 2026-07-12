@@ -258,7 +258,10 @@ pub const CssUrlRecord = struct {
 ///
 /// 2글자 이상만 scheme 으로 인정 — Windows 드라이브 문자(`C:`)를 scheme 으로
 /// 오인해 로컬 경로를 통째로 skip 하는 것을 막는다.
-fn hasUriScheme(s: []const u8) bool {
+///
+/// CSS 전용 규칙이 아니라 RFC3986 술어라서 resolve_cache 의 worker specifier
+/// 정규화(#4483)도 이 함수를 공유한다.
+pub fn hasUriScheme(s: []const u8) bool {
     if (s.len < 3) return false;
     if (!std.ascii.isAlphabetic(s[0])) return false;
     var i: usize = 1;

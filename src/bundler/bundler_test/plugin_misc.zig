@@ -821,6 +821,95 @@ test "Worker: non-worker new URL is preserved verbatim" {
     try std.testing.expect(result.asset_outputs == null);
 }
 
+test "#4483 Worker: bare specifier (no ./) resolves like ./ and is rewritten" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // `new URL(spec, import.meta.url)` 의 spec 은 URL 상대 참조 — base 가 모듈 자신의
+    // URL 이라 `"worker.ts"` 와 `"./worker.ts"` 는 **같은 파일**. monaco-editor 의
+    // cssMode.js/tsMode.js 가 쓰는 형태 (`new URL("css.worker.js", import.meta.url)`).
+    try writeFile(tmp.dir, "entry.ts",
+        \\const wDot = new Worker(new URL("./worker.ts", import.meta.url));
+        \\const wBare = new Worker(new URL("worker.ts", import.meta.url));
+        \\wDot.postMessage(1); wBare.postMessage(2);
+    );
+    try writeFile(tmp.dir, "worker.ts", "self.onmessage = (e) => self.postMessage('ok');");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    // 두 형태 모두 chunk filename 으로 치환 — 원문(`"worker.ts"`) 은 어디에도 안 남는다.
+    // (과거: bare 는 npm 패키지로 resolve 시도 → ModuleNotFound → 원문 그대로 emit → 런타임 404)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"worker.ts\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "./worker.ts") == null);
+
+    // 같은 파일을 가리키므로 worker chunk 는 1개만 (중복 빌드 없음).
+    const assets = result.asset_outputs orelse return error.TestUnexpectedResult;
+    var worker_count: usize = 0;
+    var chunk_name: []const u8 = "";
+    for (assets) |a| {
+        if (!std.mem.startsWith(u8, a.path, "worker-")) continue;
+        worker_count += 1;
+        chunk_name = a.path;
+    }
+    try std.testing.expectEqual(@as(usize, 1), worker_count);
+
+    // 두 참조 모두 *같은* chunk 를 가리킨다.
+    const needle = try std.fmt.allocPrint(std.testing.allocator, "new URL(\"./{s}\", import.meta.url)", .{chunk_name});
+    defer std.testing.allocator.free(needle);
+    const first = std.mem.indexOf(u8, result.output, needle) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOfPos(u8, result.output, first + needle.len, needle) != null);
+}
+
+test "#4483 Worker: scheme / root-absolute specifier 는 정규화하지 않는다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // 실제 worker 를 하나 둬서 worker_map 이 비지 않게 한다 — 비어 있으면 codegen 이
+    // fast-exit 해서 "건드리지 않음" 검증이 공허해진다.
+    try writeFile(tmp.dir, "entry.ts",
+        \\const local = new Worker(new URL("worker.ts", import.meta.url));
+        \\const cdn = new Worker(new URL("https://cdn.example.com/w.js", import.meta.url));
+        \\const inline = new Worker(new URL("data:text/javascript,self.onmessage=()=>{}", import.meta.url));
+        \\const root = new Worker(new URL("/abs.worker.js", import.meta.url));
+        \\const proto = new Worker(new URL("//cdn.example.com/p.js", import.meta.url));
+        \\console.log(local, cdn, inline, root, proto);
+    );
+    try writeFile(tmp.dir, "worker.ts", "self.onmessage = (e) => self.postMessage('ok');");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    // bare 는 정규화되어 chunk 로 치환.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker(new URL(\"./worker-") != null);
+    // 스킴 있는 절대 URL / root-absolute / protocol-relative 는 원문 그대로
+    // (`./` 를 붙이면 origin·scheme 의미가 깨진다).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new URL(\"https://cdn.example.com/w.js\", import.meta.url)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new URL(\"data:text/javascript,self.onmessage=()=>{}\", import.meta.url)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new URL(\"/abs.worker.js\", import.meta.url)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new URL(\"//cdn.example.com/p.js\", import.meta.url)") != null);
+    // 정규화 사고가 나면 이런 형태가 나온다 — 절대 없어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"./https:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"./data:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\".//") == null);
+}
+
 test "Worker: minified bundle preserves worker URL replacement" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

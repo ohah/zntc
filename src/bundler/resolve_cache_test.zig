@@ -4,6 +4,7 @@ const ResolveCache = resolve_cache.ResolveCache;
 const matchGlob = resolve_cache.matchGlob;
 const matchPackageSubPath = resolve_cache.matchPackageSubPath;
 const isNodeBuiltin = resolve_cache.isNodeBuiltin;
+const normalizeWorkerSpecifier = resolve_cache.normalizeWorkerSpecifier;
 const profile = @import("../profile.zig");
 const ResolvedModule = @import("plugin.zig").ResolvedModule;
 
@@ -704,4 +705,161 @@ test "internResolvedModule: .dataurl mime OOM 시 errdefer 가 mime + data 둘 �
         .owner = .owned,
     } });
     try testing.expectError(error.OutOfMemory, r);
+}
+
+// ============================================================
+// #4483 — worker specifier 는 URL 상대 참조 (`./` 생략 가능)
+// ============================================================
+
+/// 테스트 헬퍼 — worker kind 정규화 결과. null = 정규화 대상 아님(원문 사용).
+fn normWorker(buf: []u8, specifier: []const u8) ?[]const u8 {
+    return normalizeWorkerSpecifier(.worker, specifier, buf);
+}
+
+test "#4483 normalizeWorkerSpecifier: bare 상대 지정자에 ./ 를 붙인다" {
+    var buf: [1024]u8 = undefined;
+    // `new URL("x.worker.js", import.meta.url)` 의 base 는 모듈 자신의 URL →
+    // `./x.worker.js` 와 같은 파일. resolver 가 npm 패키지로 오인하지 않게 정규화.
+    try std.testing.expectEqualStrings("./x.worker.js", normWorker(&buf, "x.worker.js").?);
+    try std.testing.expectEqualStrings("./sub/dir/w.js", normWorker(&buf, "sub/dir/w.js").?);
+    // monaco-editor 의 실제 형태 (cssMode.js → css.worker.js).
+    try std.testing.expectEqualStrings("./css.worker.js", normWorker(&buf, "css.worker.js").?);
+    // query/fragment 가 붙은 bare 도 상대 참조.
+    try std.testing.expectEqualStrings("./w.js?inline", normWorker(&buf, "w.js?inline").?);
+    // `..foo` 는 상대 경로가 아니라 그냥 파일명 — `./..foo` 가 맞다.
+    try std.testing.expectEqualStrings("./..foo.js", normWorker(&buf, "..foo.js").?);
+}
+
+test "#4483 normalizeWorkerSpecifier: 이미 상대 경로면 정규화 안 함" {
+    var buf: [1024]u8 = undefined;
+    try std.testing.expect(normWorker(&buf, "./w.js") == null);
+    try std.testing.expect(normWorker(&buf, "../w.js") == null);
+    try std.testing.expect(normWorker(&buf, "../../a/w.js") == null);
+}
+
+test "#4483 normalizeWorkerSpecifier: scheme/root-absolute/protocol-relative 는 건드리지 않는다" {
+    var buf: [1024]u8 = undefined;
+    // scheme 있는 절대 URL — base 를 무시하는 valid worker 소스.
+    try std.testing.expect(normWorker(&buf, "https://cdn.example.com/w.js") == null);
+    try std.testing.expect(normWorker(&buf, "http://a/w.js") == null);
+    try std.testing.expect(normWorker(&buf, "data:text/javascript,1") == null);
+    try std.testing.expect(normWorker(&buf, "blob:abc") == null);
+    try std.testing.expect(normWorker(&buf, "chrome-extension://id/w.js") == null);
+    // root-absolute + protocol-relative — origin 기준이라 파일 시스템 상대가 아니다.
+    try std.testing.expect(normWorker(&buf, "/abs/w.js") == null);
+    try std.testing.expect(normWorker(&buf, "//cdn.example.com/w.js") == null);
+    // query/fragment 만 있는 참조 — 대상이 자기 자신이라 `./` 를 붙이면 안 된다.
+    try std.testing.expect(normWorker(&buf, "?v=1") == null);
+    try std.testing.expect(normWorker(&buf, "#frag") == null);
+    try std.testing.expect(normWorker(&buf, "") == null);
+}
+
+test "#4483 normalizeWorkerSpecifier: worker 가 아닌 kind 는 bare 를 그대로 (npm 패키지)" {
+    var buf: [1024]u8 = undefined;
+    // import/require 의 bare 는 npm 패키지 — 정규화하면 resolution 이 깨진다.
+    try std.testing.expect(normalizeWorkerSpecifier(.static_import, "react", &buf) == null);
+    try std.testing.expect(normalizeWorkerSpecifier(.dynamic_import, "react-dom/client", &buf) == null);
+    try std.testing.expect(normalizeWorkerSpecifier(.require, "lodash", &buf) == null);
+    // CSS url() 의 bare 는 여전히 패키지 경로로 resolve 된다 (별도 이슈) — 건드리지 않는다.
+    try std.testing.expect(normalizeWorkerSpecifier(.css_url, "logo.png", &buf) == null);
+}
+
+test "#4483 normalizeWorkerSpecifier: 버퍼보다 긴 specifier 는 정규화 생략 (fallback)" {
+    var small: [8]u8 = undefined;
+    // `"./" + spec` 이 버퍼에 안 들어가면 정규화를 포기 → caller 가 원문으로 resolve (기존 동작).
+    try std.testing.expect(normWorker(&small, "verylongspecifier.js") == null);
+    // 경계: len + 2 == buf.len 은 정규화 성공.
+    var exact: [8]u8 = undefined;
+    try std.testing.expectEqualStrings("./abcdef", normWorker(&exact, "abcdef").?);
+}
+
+test "#4483 isExternal: --packages=external 이 bare worker specifier 를 삼키지 않는다" {
+    var cache = ResolveCache.init(std.testing.allocator, .{ .packages_external = true });
+    defer cache.deinit();
+
+    // 정규화 *전* 의 bare 는 external 로 오인된다 (packages_external + non-path).
+    try std.testing.expect(cache.isExternal("css.worker.js"));
+    // resolveNormalized 가 isExternal 호출 *전* 에 정규화하므로 실제로는 이 형태가 넘어간다.
+    var buf: [1024]u8 = undefined;
+    try std.testing.expect(!cache.isExternal(normWorker(&buf, "css.worker.js").?));
+}
+
+test "#4483 resolve: bare worker specifier 가 형제 파일로 해석된다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir_path);
+    const f = try tmp.dir.createFile(std.testing.io, "css.worker.js", .{});
+    f.close(std.testing.io);
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+
+    // `./` 없는 worker 지정자 → 형제 파일. (static_import 였다면 npm 패키지라 실패해야 정상.)
+    const worker = try cache.resolve(std.testing.io, dir_path, "css.worker.js", .worker);
+    try std.testing.expect(worker != null);
+    try std.testing.expect(std.mem.endsWith(u8, worker.?.file.path, "css.worker.js"));
+
+    // 같은 파일을 `./` 로 가리켜도 같은 경로.
+    const dotted = try cache.resolve(std.testing.io, dir_path, "./css.worker.js", .worker);
+    try std.testing.expectEqualStrings(worker.?.file.path, dotted.?.file.path);
+
+    // worker 가 아닌 kind 는 정규화 대상이 아니다 → bare 는 npm 패키지 → 못 찾음.
+    try std.testing.expectError(
+        error.ModuleNotFound,
+        cache.resolve(std.testing.io, dir_path, "css.worker.js", .static_import),
+    );
+}
+
+test "#4483 resolve: 형제 파일이 없으면 원문(패키지 경로) 폴백" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // node_modules/wpkg/w.js — `new Worker(new URL("wpkg/w.js", import.meta.url))` 형태의
+    // 패키지 경로 worker. 정규화("./wpkg/w.js") 는 실패하고 원문 폴백이 이걸 찾아야 한다.
+    try tmp.dir.createDir(std.testing.io, "node_modules", .default_dir);
+    try tmp.dir.createDir(std.testing.io, "node_modules/wpkg", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "node_modules/wpkg/package.json", .data = "{\"name\":\"wpkg\"}" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "node_modules/wpkg/w.js", .data = "self.onmessage=()=>{};" });
+
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir_path);
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+
+    const resolved = try cache.resolve(std.testing.io, dir_path, "wpkg/w.js", .worker);
+    try std.testing.expect(resolved != null);
+    try std.testing.expect(std.mem.indexOf(u8, resolved.?.file.path, "node_modules") != null);
+    try std.testing.expect(std.mem.endsWith(u8, resolved.?.file.path, "w.js"));
+
+    // 아무 데도 없는 worker 는 여전히 ModuleNotFound (폴백이 에러를 삼키지 않는다).
+    try std.testing.expectError(
+        error.ModuleNotFound,
+        cache.resolve(std.testing.io, dir_path, "nope.worker.js", .worker),
+    );
+}
+
+test "#4483 resolve: 사용자 external 패턴은 원문 철자로도 계속 먹힌다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir_path);
+    const f = try tmp.dir.createFile(std.testing.io, "css.worker.js", .{});
+    f.close(std.testing.io);
+
+    // `--external:*.worker.js` — 사용자가 원문 철자(bare)로 건 패턴. 정규화("./css.worker.js")
+    // 뒤에 매칭했다면 `*` 가 `/` 를 안 넘어서 조용히 무효가 됐을 것이다.
+    var cache = ResolveCache.init(std.testing.allocator, .{ .external_patterns = &.{"*.worker.js"} });
+    defer cache.deinit();
+
+    // 형제 파일이 실재해도 external 의사가 우선 → null (번들에 넣지 않음).
+    try std.testing.expect(try cache.resolve(std.testing.io, dir_path, "css.worker.js", .worker) == null);
+
+    // 패턴 없는 cache 는 정상적으로 형제 파일을 찾는다 (위 null 이 resolve 실패가 아님을 보장).
+    var plain = ResolveCache.init(std.testing.allocator, .{});
+    defer plain.deinit();
+    try std.testing.expect(try plain.resolve(std.testing.io, dir_path, "css.worker.js", .worker) != null);
 }
