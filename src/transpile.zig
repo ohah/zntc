@@ -2931,3 +2931,56 @@ test "#4481 return/throw 직후 괄호 안 주석은 inline (ASI 방지)" {
     try std.testing.expect(std.mem.indexOf(u8, result.code, "return /* inner */\n") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.code, "throw /* inner */\n") == null);
 }
+
+// ============================================================
+// #4482 — AST 미니파이어가 노드 태그를 바꾼 뒤의 load-bearing 괄호
+// ============================================================
+//
+// `minify_syntax` 는 상수를 인라인하고 `-a` 를 **numeric_literal("-2")** 로 접는다.
+// 그 순간 codegen 의 `exprNeedsParens` 가 보던 `.unary_expression` 태그가 사라져
+// `.prefix` 이상 슬롯의 필수 괄호가 유실됐다 (`-2**2` = SyntaxError,
+// `-2 .toString()` = 값이 문자열이 아닌 숫자 — silent). 폴딩은 transpile 레이어에서
+// 일어나 codegen 유닛 하네스로는 재현되지 않으므로 여기서 가드한다.
+// (`!0`/`void 0` peephole 은 codegen 레벨이라 load_bearing_paren.zig 가 커버.)
+
+fn expectMinifiedCodeContains(source: []const u8, needle: []const u8) !void {
+    var result = try transpileWithCallbackInternal(
+        std.testing.allocator,
+        source,
+        "input.js",
+        .{ .minify_syntax = true, .minify_whitespace = true },
+        null,
+        true,
+    );
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+    if (std.mem.indexOf(u8, result.code, needle) == null) {
+        std.debug.print("\n#4482: \"{s}\" 가 출력에 없음:\n{s}\n", .{ needle, result.code });
+        return error.LoadBearingParenLost;
+    }
+}
+
+test "#4482 minify: 폴딩된 음수 리터럴이 ** 좌측이면 괄호" {
+    // `-2**2` 는 SyntaxError — `**` 좌변에 단항이 직접 올 수 없다.
+    try expectMinifiedCodeContains("const a = 2; g((-a) ** 2);", "(-2)**2");
+}
+
+test "#4482 minify: 폴딩된 음수 리터럴이 member object 면 괄호" {
+    // `-2 .toString()` 은 `-(2 .toString())` 로 파싱된다 — 문자열 "-2" 가 아니라 숫자 -2.
+    // 빌드는 통과하고 런타임 값만 틀리는 silent miscompile.
+    try expectMinifiedCodeContains("const a = 2; g((-a).toString());", "(-2).toString");
+}
+
+test "#4482 minify: 음수 리터럴이 call callee / new callee 면 괄호" {
+    try expectMinifiedCodeContains("const a = 2; g((-a)());", "(-2)()");
+}
+
+test "#4482 minify: 폴딩된 음수 리터럴 앞 단항 부호는 공백으로 끊는다" {
+    // `--2` 는 prefix 감소 연산으로 오파싱 → SyntaxError (리터럴은 lvalue 가 아님).
+    try expectMinifiedCodeContains("const a = 2; g(-(-a));", "- -2");
+}
+
+test "#4482 minify: 과잉 괄호 방지 — 양수 리터럴은 그대로" {
+    try expectMinifiedCodeContains("const a = 2; g(a ** 2);", "4");
+    try expectMinifiedCodeContains("g(2 ** 3);", "8");
+}

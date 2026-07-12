@@ -80,15 +80,6 @@ fn calleeIsBareFunctionExpr(self: anytype, idx: NodeIndex) bool {
     };
 }
 
-/// `void 0` peephole 가 적용될 자식 노드를 paren 으로 감싸 emit. 자식이 그 외엔 그대로 emit.
-/// callee/object/new.callee 슬롯 4곳에서 공유 — 정책은 [[isUndefinedPeephole]].
-pub fn emitNodeMaybeUndefParen(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) !void {
-    const need = isUndefinedPeephole(self, idx);
-    if (need) try self.writeByte('(');
-    try self.emitExpr(idx, level, flags);
-    if (need) try self.writeByte(')');
-}
-
 pub fn emitCall(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
     _ = level; // wrap(level>=.new | forbid_call | optional-chain | pure) 은 exprNeedsParens 중앙 처리.
     _ = flags; // callee 의 has_non_optional_chain_parent 는 call 자신의 optional-ness 로 계산
@@ -127,7 +118,7 @@ pub fn emitCall(self: anytype, node: Node, level: Level, flags: ExprFlags) !void
     // 보존(이중괄호 회피). arrow 는 .postfix(call-target) level 로 exprNeedsParens 가 이미 wrap.
     const iife_wrap = calleeIsBareFunctionExpr(self, callee);
     if (iife_wrap) try self.writeByte('(');
-    try emitNodeMaybeUndefParen(self, callee, Level.postfix, callee_flags);
+    try self.emitExpr(callee, Level.postfix, callee_flags);
     if (iife_wrap) try self.writeByte(')');
     if (is_optional) try self.write("?.");
     try self.writeByte('(');
@@ -516,8 +507,7 @@ pub fn emitNew(self: anytype, node: Node, level: Level, flags: ExprFlags) !void 
     // callee = .new + forbid_call + has_non_optional_chain_parent(set): `new (foo())` 보존 +
     // optional chain 끊기(`new (a?.b)()`/`new (a?.b.c)()`/`new (a?.[b])()` — new 의 첫 `()` 가
     // optional chain 안으로 들어가면 SyntaxError). new 타겟은 member object 처럼 non-optional
-    // 체인 부모다. `undefined`→`void 0` peephole 슬롯이라 emitNodeMaybeUndefParen 경유.
-    try emitNodeMaybeUndefParen(self, callee, Level.new, .{ .forbid_call = true, .has_non_optional_chain_parent = true });
+    try self.emitExpr(callee, Level.new, .{ .forbid_call = true, .has_non_optional_chain_parent = true });
     if (needs_parens) try self.writeByte(')');
     try self.writeByte('(');
     try self.emitExpressionNodeList(args_start, args_len, self.listSep());

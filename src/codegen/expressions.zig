@@ -10,6 +10,7 @@ const calls = @import("calls.zig");
 const precedence = @import("precedence.zig");
 const Level = precedence.Level;
 const ExprFlags = precedence.ExprFlags;
+const ConstValue = @import("../semantic/symbol.zig").ConstValue;
 
 /// minify_syntax 시 string_literal 객체 키를 따옴표 없이 emit 가능한지.
 /// `raw` 는 따옴표 포함 리터럴 텍스트. escape 없는 단순 리터럴이고 valid ES
@@ -46,8 +47,19 @@ pub fn emitUnary(self: anytype, node: Node, level: Level, flags: ExprFlags) !voi
             return;
         }
     }
-    try self.write(op.symbol());
-    if (op == .kw_typeof or op == .kw_void or op == .kw_delete) try self.writeByte(' ');
+    const sym = op.symbol();
+    try self.write(sym);
+    if (op == .kw_typeof or op == .kw_void or op == .kw_delete) {
+        try self.writeByte(' ');
+    } else if ((op == .plus or op == .minus) and leadingSignChar(self, operand) == sym[0]) {
+        // 단항 `-`/`+` 뒤에 같은 부호로 시작하는 피연산자가 오면 토큰이 `--`/`++` 로
+        // 합쳐진다 (#4482). `-(--t)` → `---t` (SyntaxError), `-(-t)` → `--t` (t 를
+        // 감소시키는 **silent miscompile**). 한 칸 띄워 끊는다: `- --t`, `- -t`.
+        // 괄호가 아니라 공백인 이유 — 스펙상 단항 피연산자에 괄호는 불필요하고,
+        // 공백이 1 byte 더 작다 (esbuild printSpaceBeforeOperator 동일).
+        // minify 여부와 무관하게 필요하다: 이 슬롯은 어느 모드에서도 공백을 안 넣는다.
+        try self.writeByte(' ');
+    }
     // operand level = .prefix.lower() (esbuild EUnary value = LPrefix-1)
     try self.emitExpr(operand, Level.prefix.lower(), .{});
 }
@@ -63,7 +75,13 @@ pub fn emitUpdate(self: anytype, node: Node, level: Level, flags: ExprFlags) !vo
     const extra_flags = extras[e + 1];
     const is_postfix = (extra_flags & ast_mod.UnaryFlags.postfix) != 0;
     const op: Kind = @enumFromInt(@as(u8, @truncate(extra_flags)));
-    if (!is_postfix) try self.write(op.symbol());
+    if (!is_postfix) {
+        // `a < !--b` 를 tight 하게 붙이면 `a<!--b` 가 되는데, classic script 에서 `<!--` 는
+        // 한 줄 주석의 시작(Annex B) 이라 그 뒤가 통째로 사라진다 (#4482). `<!` 직후의
+        // prefix `--` 만 한 칸 끊는다. (`--` 뒤 `>` 는 줄 선두가 아니면 안전하므로 제외.)
+        if (op == .minus2 and std.mem.endsWith(u8, self.buf.items, "<!")) try self.writeByte(' ');
+        try self.write(op.symbol());
+    }
     // operand 는 update 의 lvalue 타겟 — 미존재 ns 멤버를 `(void 0)` 으로 바꾸면
     // `(void 0)++` SyntaxError 가 되므로 emitStaticMember 가 재작성을 건너뛰게 한다.
     self.member_assign_target = true;
@@ -91,7 +109,7 @@ fn emitBinaryOperator(self: anytype, node: Node) !void {
         try self.writeSpace();
         try self.write(sym);
         if (self.options.minify_whitespace and (op == .plus or op == .minus) and
-            rhsLeadingSignChar(self, node.data.binary.right) == sym[0])
+            leadingSignChar(self, node.data.binary.right) == sym[0])
         {
             try self.writeByte(' ');
         } else {
@@ -237,11 +255,24 @@ pub fn unaryOpKind(self: anytype, extra_base: u32) ?Kind {
     return @enumFromInt(@as(u8, @truncate(extras[extra_base + 1])));
 }
 
-/// binary `+`/`-` 의 RHS 가 출력 시 `+` 또는 `-` 로 시작하는지 — 시작하면 그 문자 반환,
-/// 아니면 null. minify 시 `++`/`--` 토큰 오결합 방지용. unary `+`/`-`, prefix `++`/`--`,
-/// 그리고 (상수 폴딩으로 생긴) 음수 numeric/bigint literal 만 해당. 더 높은 우선순위
-/// 이항식은 codegen 이 paren 없이 출력하므로 leftmost leaf 로 내려가 검사한다.
-fn rhsLeadingSignChar(self: anytype, idx: NodeIndex) ?u8 {
+/// 식별자가 번들 상수 인라인 대상이면 그 상수값, 아니면 null. codegen 의 identifier
+/// 경로가 리터럴 텍스트를 **직접** 쓰므로(노드 태그는 그대로 identifier_reference),
+/// 출력 시작 토큰을 보는 검사들은 이 값을 봐야 실제 출력과 일치한다.
+pub fn constInlineValue(self: anytype, idx: NodeIndex) ?ConstValue {
+    const meta = self.options.linking_metadata orelse return null;
+    const sid = self.resolveSymbolId(idx, meta) orelse return null;
+    return meta.const_values.get(sid);
+}
+
+/// 노드가 출력 시 `+` 또는 `-` 로 시작하는지 — 시작하면 그 문자, 아니면 null.
+/// 앞에 같은 부호가 있으면 `++`/`--` 로 토큰이 합쳐지므로 공백을 끼워야 한다.
+/// binary `+`/`-` 의 RHS 슬롯(emitBinaryOperator)과 단항 `+`/`-` 의 피연산자 슬롯
+/// (emitUnary) 이 공유한다 (#4482).
+///
+/// 해당 케이스: unary `+`/`-`, prefix `++`/`--`, (상수 폴딩으로 생긴) 음수 numeric/
+/// bigint literal, 음수로 const-인라인되는 식별자. 더 높은 우선순위 이항식은 codegen 이
+/// 괄호 없이 출력하므로 leftmost leaf 로 내려가 검사한다.
+fn leadingSignChar(self: anytype, idx: NodeIndex) ?u8 {
     var cur = idx;
     var depth: u8 = 0;
     while (depth < 32) : (depth += 1) {
@@ -272,6 +303,13 @@ fn rhsLeadingSignChar(self: anytype, idx: NodeIndex) ?u8 {
             .numeric_literal, .bigint_literal => {
                 const text = self.ast.getText(n.span);
                 return if (text.len > 0 and text[0] == '-') '-' else null;
+            },
+            // 번들 상수 인라인이 이 자리에 리터럴 텍스트를 직접 쓴다 (`const NEG = -2` → `-2`).
+            // `void 0`/`true`/`null` 은 부호로 시작하지 않아 해당 없음.
+            .identifier_reference => {
+                const cv = constInlineValue(self, cur) orelse return null;
+                if (cv.kind != .number) return null;
+                return if (cv.number_text.len > 0 and cv.number_text[0] == '-') '-' else null;
             },
             // 같은/낮은 우선순위 RHS 는 paren 으로 감싸져 `(` 로 시작 → 안전(null).
             // 더 높은 우선순위(`a + b*c` 의 `b*c`)면 leftmost leaf 로 내려가 검사.
@@ -635,7 +673,7 @@ pub fn emitStaticMember(self: anytype, node: Node, level: Level, flags: ExprFlag
         .forbid_call = flags.forbid_call,
         .has_non_optional_chain_parent = !self_in_chain,
     };
-    try calls.emitNodeMaybeUndefParen(self, object, Level.postfix, obj_flags);
+    try self.emitExpr(object, Level.postfix, obj_flags);
     if (member_flags & MemberFlags.optional_chain != 0) {
         try self.write("?.");
     } else {
@@ -668,7 +706,7 @@ pub fn emitComputedMember(self: anytype, node: Node, level: Level, flags: ExprFl
         .forbid_call = flags.forbid_call,
         .has_non_optional_chain_parent = !self_in_chain,
     };
-    try calls.emitNodeMaybeUndefParen(self, object, Level.postfix, obj_flags);
+    try self.emitExpr(object, Level.postfix, obj_flags);
     if (member_flags & MemberFlags.optional_chain != 0) {
         try self.write("?.");
     }

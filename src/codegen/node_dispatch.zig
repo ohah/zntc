@@ -17,6 +17,7 @@ const precedence = @import("precedence.zig");
 const Level = precedence.Level;
 const ExprFlags = precedence.ExprFlags;
 const Kind = @import("../lexer/token.zig").Kind;
+const ConstValue = @import("../semantic/symbol.zig").ConstValue;
 
 const Error = std.mem.Allocator.Error;
 
@@ -183,25 +184,29 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
 
             // Peephole: global `undefined` → `void 0` (minify_syntax 활성화 시).
             // 9 bytes → 6 bytes, 3 bytes 절감 (esbuild/rolldown/rspack 동일).
-            // call.callee / member.object / new.callee 슬롯에서는 caller 가 paren 추가
-            // (`void 0.x` 가 `void (0.x)` 로 오파싱 되는 위험 회피) — 그 외는 paren 불필요.
+            // `void 0` 는 prefix 단항이라 `.prefix` 이상 슬롯(member/call/new 타겟,
+            // `**` 좌변)에선 괄호 필수 — `void 0.x` 는 `void (0.x)` 로 오파싱된다.
+            // 중앙 wrap(exprNeedsParens)은 이 case 의 early-return 들 때문에 쓸 수 없어
+            // (닫는 `)` 유실) 여기서 level 을 보고 직접 감싼다.
             // global binding 일 때만 치환 (shadow rebind 드물지만 보호).
             if (self.options.minify_syntax and node.tag == .identifier_reference and sym_id == null) {
                 const text = self.ast.identifierNameText(node);
                 if (std.mem.eql(u8, text, "undefined")) {
                     try self.addSourceMapping(node.span);
-                    try self.write("void 0");
+                    try emitPrefixStartText(self, "void 0", level);
                     return;
                 }
             }
 
             if (self.options.linking_metadata) |meta| {
                 if (sym_id) |sid| {
-                    // 상수 인라인: import symbol이 상수이면 리터럴로 대체
+                    // 상수 인라인: import symbol이 상수이면 리터럴로 대체.
+                    // 값이 음수(`-2`) 또는 `void 0` 면 출력이 prefix 단항으로 시작하므로
+                    // 위 `void 0` 과 같은 이유로 level 기반 괄호가 필요하다 (#4482).
                     if (node.tag == .identifier_reference) {
                         if (meta.const_values.get(sid)) |cv| {
                             try self.addSourceMapping(node.span);
-                            try self.writeConstValue(cv);
+                            try emitConstValueAtLevel(self, cv, level);
                             return;
                         }
                     }
@@ -421,6 +426,16 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
 pub fn exprNeedsParens(self: anytype, node: ast_mod.Node, level: Level, flags: ExprFlags) bool {
     return switch (node.tag) {
         .unary_expression, .await_expression => level.gte(.prefix),
+        // 출력이 **prefix 단항으로 시작하는 리터럴** — precedence 상 unary 와 동급으로
+        // 다뤄야 한다 (#4482). minify 가 `-a` 를 numeric_literal("-2") 로 접고
+        // `true` 를 `!0` 으로 바꾸면서 태그가 바뀌어, 위 `.unary_expression` 매칭을
+        // 빠져나가 괄호가 유실됐다:
+        //   `(-a) ** b`      → `-2**2`         (SyntaxError — `**` 좌변에 단항 불가)
+        //   `(-a).toString()`→ `-2 .toString()`(값이 문자열 "-2" 가 아닌 숫자 -2 — silent)
+        //   `true.toString()`→ `!0.toString()` (SyntaxError)
+        .numeric_literal, .bigint_literal => level.gte(.prefix) and
+            startsWithMinus(self.ast.getText(node.span)),
+        .boolean_literal => self.options.minify_syntax and level.gte(.prefix),
         .update_expression => blk: {
             const e = node.data.extra;
             const extras = self.ast.extra_data.items;
@@ -507,6 +522,39 @@ pub fn exprNeedsParens(self: anytype, node: ast_mod.Node, level: Level, flags: E
         //  early-return 들과 충돌하므로 중앙 wrap 으로 처리하지 않는다.)
         else => false,
     };
+}
+
+/// 리터럴 텍스트가 `-` 로 시작하는지 (상수 폴딩이 만든 음수 리터럴). 출력이 prefix
+/// 단항 `-` 로 시작한다는 뜻이라 `.prefix` 이상 슬롯에선 괄호가 필요하다.
+fn startsWithMinus(text: []const u8) bool {
+    return text.len > 0 and text[0] == '-';
+}
+
+/// prefix 단항으로 시작하는 텍스트(`void 0`, `-2`)를 identifier case 안에서 emit —
+/// `.prefix` 이상 슬롯이면 괄호로 감싼다 (#4482). identifier dispatch 는 early-return
+/// 이 많아 중앙 wrap(emitExpr 진입부)을 쓸 수 없다(닫는 `)` 유실).
+fn emitPrefixStartText(self: anytype, text: []const u8, level: Level) Error!void {
+    const wrap = level.gte(.prefix);
+    if (wrap) try self.writeByte('(');
+    try self.write(text);
+    if (wrap) try self.writeByte(')');
+}
+
+/// 상수 인라인 값 emit + 출력 형태에 따른 후처리 (#4482).
+/// - `void 0` / 음수 숫자 → prefix 단항으로 시작 → `.prefix` 이상 슬롯에서 괄호.
+/// - 십진 정수(`2`) → 바로 뒤 `.` 가 소수점으로 오파싱 → `need_space_before_dot` 마킹
+///   (numeric_literal 노드 경로와 동일. 상수 인라인은 리터럴 노드를 거치지 않아 이
+///   마킹이 없었다).
+fn emitConstValueAtLevel(self: anytype, cv: ConstValue, level: Level) Error!void {
+    switch (cv.kind) {
+        .undefined_ => return emitPrefixStartText(self, "void 0", level),
+        .number => {
+            if (startsWithMinus(cv.number_text)) return emitPrefixStartText(self, cv.number_text, level);
+            try self.write(cv.number_text);
+            if (numericIsPlainInteger(cv.number_text)) self.need_space_before_dot = self.buf.items.len;
+        },
+        else => try self.writeConstValue(cv),
+    }
 }
 
 /// numeric literal 텍스트가 (소수점/지수/radix prefix/bigint 없는) 십진 정수 형태인지

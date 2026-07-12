@@ -167,3 +167,77 @@ test "load-bearing: for-init sequence 의 in 누수 for((a in b),c;;)" {
     // sequence 는 통째로 감싼다(emitList 가 원소 flag clear 하므로 sequence 레벨 처리).
     try expectParenSurvives(r.output, "(a in b,c)");
 }
+
+// ============================================================
+// #4482 — minify 가 노드 태그를 바꾼 뒤의 load-bearing 괄호 / 토큰 병합
+// ============================================================
+//
+// 위 매트릭스는 *소스 그대로의* 노드 태그를 전제한다. minify 는 그 태그를 바꾼다:
+//   `-a` (a=2 상수)  → numeric_literal("-2")     — `.unary_expression` 아님
+//   `true`           → `!0` (boolean_literal)     — 출력만 단항으로 시작
+//   `undefined`      → `void 0` (identifier)      — 출력만 단항으로 시작
+// 그래서 `exprNeedsParens` 의 `.unary_expression` case 를 빠져나가 괄호가 유실됐다.
+// (상수 폴딩이 만드는 음수 numeric_literal 케이스는 AST 미니파이어가 transpile 레이어에서
+//  돌아 codegen 하네스로는 재현이 안 된다 → transpile.zig 의 #4482 테스트가 커버.)
+// 또 단항 `-`/`+` 피연산자 슬롯엔 토큰 병합 방지 공백 가드가 없어 `-(-t)` → `--t`
+// (t 를 감소시키는 silent miscompile) 가 나왔다.
+
+fn e2eMinifySyntax(allocator: std.mem.Allocator, source: []const u8) !helpers.TestResult {
+    return e2eWithOptions(allocator, source, .{ .minify_whitespace = true, .minify_syntax = true });
+}
+
+test "#4482 minify: !0/!1 peephole 도 ** 좌측이면 괄호" {
+    var r = try e2eMinifySyntax(std.testing.allocator, "g(true ** 2);");
+    defer r.deinit();
+    try expectParenSurvives(r.output, "(!0)**2");
+}
+
+test "#4482 minify: void 0 peephole 도 ** 좌측이면 괄호" {
+    var r = try e2eMinifySyntax(std.testing.allocator, "g(undefined ** 2);");
+    defer r.deinit();
+    try expectParenSurvives(r.output, "(void 0)**2");
+}
+
+test "#4482 minify: !0 이 member object 면 괄호" {
+    var r = try e2eMinifySyntax(std.testing.allocator, "g(true.toString());");
+    defer r.deinit();
+    // 유실 시 `!0.toString()` → SyntaxError.
+    try expectParenSurvives(r.output, "(!0).toString");
+}
+
+test "#4482: 단항 - 뒤 prefix -- 는 공백으로 끊는다 (minify 무관)" {
+    var r = try e2e(std.testing.allocator, "let t = 5; g(-(--t));");
+    defer r.deinit();
+    // 유실 시 `-(--t)` → `---t` = `--` + `-t` → SyntaxError. d3-ease elastic 이 이 패턴.
+    try expectParenSurvives(r.output, "- --t");
+}
+
+test "#4482: 단항 - 뒤 단항 - 도 공백으로 끊는다" {
+    var r = try e2e(std.testing.allocator, "g(-(-t));");
+    defer r.deinit();
+    // 유실 시 `--t` — **파싱되는** prefix 감소 연산 → t 를 바꾸는 silent miscompile.
+    try expectParenSurvives(r.output, "- -t");
+}
+
+test "#4482: 단항 + 뒤 prefix ++ 도 공백" {
+    var r = try e2e(std.testing.allocator, "let t = 5; g(+(++t));");
+    defer r.deinit();
+    try expectParenSurvives(r.output, "+ ++t");
+}
+
+test "#4482: `<` 뒤 `!--x` 는 HTML 주석(<!--) 오파싱 방지 공백" {
+    var r = try e2e(std.testing.allocator, "let b = 1; g(a < !--b);");
+    defer r.deinit();
+    // 유실 시 `a<!--b` — classic script 에서 `<!--` 는 한 줄 주석 시작(Annex B) 이라
+    // 그 뒤가 통째로 사라진다.
+    try expectParenSurvives(r.output, "<! --b");
+}
+
+test "#4482: 과잉 공백/괄호 방지 — 부호가 다르면 그대로 붙인다" {
+    var r = try e2e(std.testing.allocator, "g(-(+t)); g(+(-t)); g(1 - -2); g(2 ** 3); g(a ** -b);");
+    defer r.deinit();
+    try expectParenSurvives(r.output, "-+t");
+    try expectParenSurvives(r.output, "+-t");
+    try expectParenSurvives(r.output, "2**3");
+    try expectParenSurvives(r.output, "a**-b");
+}
