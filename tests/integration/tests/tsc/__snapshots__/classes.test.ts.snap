@@ -2,9 +2,9 @@
 
 exports[`TSC: classes classAbstractAccessor 1`] = `
 "class A {
+	// error
+	// error
 }
-// error
-// error
 "
 `;
 
@@ -202,8 +202,8 @@ c = new B();
 
 exports[`TSC: classes classAbstractInstantiations2 1`] = `
 "class A {
+	// ...
 }
-// ...
 class B {
 	foo() {
 		return this.bar();
@@ -248,8 +248,8 @@ class G {
 // error -- declarations must be adjacent
 // error -- use of modifier abstract must match on all overloads.
 class H {
+	// error -- not declared abstract
 }
-// error -- not declared abstract
 "
 `;
 
@@ -389,8 +389,8 @@ class AA {
 	}
 }
 class BB extends AA {
+	// inherits bar. But BB is abstract, so this is OK.
 }
-// inherits bar. But BB is abstract, so this is OK.
 "
 `;
 
@@ -826,8 +826,8 @@ var r = [d1, d2];
 
 exports[`TSC: classes classImplementsMergedClassInterface 1`] = `
 "class C2 {
+	// error -- missing x
 }
-// error -- missing x
 class C3 {
 	// error -- missing y
 	x;
@@ -1161,11 +1161,9 @@ exports[`TSC: classes classStaticBlock1 1`] = `
 "const a = 2;
 class C {
 	static {
-        const a = 1;
-
-        a;
-    }
-
+		const a = 1;
+		a;
+	}
 }
 "
 `;
@@ -1180,22 +1178,20 @@ function f() {
 	const b1 = 22;
 	class C1 {
 		static {
-            var a1 = 111;
-            var a2 = 111;
-            const b1 = 222;
-            const b2 = 222;
-        }
-    
+			var a1 = 111;
+			var a2 = 111;
+			const b1 = 222;
+			const b2 = 222;
+		}
 	}
 }
 class C2 {
 	static {
-        var a1 = 111;
-        var a2 = 111;
-        const b1 = 222;
-        const b2 = 222;
-    }
-
+		var a1 = 111;
+		var a2 = 111;
+		const b1 = 222;
+		const b2 = 222;
+	}
 }
 "
 `;
@@ -1208,12 +1204,10 @@ class C {
 		this.#x = x;
 	}
 	static {
-    // getX has privileged access to #x
-    getX = (obj: C) => obj.#x;
-  }
-
+		// getX has privileged access to #x
+		getX = (obj) => obj.#x;
+	}
 }
-// getX has privileged access to #x
 "
 `;
 
@@ -1221,9 +1215,8 @@ exports[`TSC: classes classStaticBlock12 1`] = `
 "class C {
 	static #x = 1;
 	static {
-    C.#x;
-  }
-
+		C.#x;
+	}
 }
 "
 `;
@@ -1232,10 +1225,8 @@ exports[`TSC: classes classStaticBlock13 1`] = `
 "class C {
 	static #x = 123;
 	static {
-    console.log(C.#x)
-  }
-
-  
+		console.log(C.#x);
+	}
 	foo() {
 		return C.#x;
 	}
@@ -1248,18 +1239,18 @@ exports[`TSC: classes classStaticBlock14 1`] = `
 	static #_1 = 1;
 	static #_3 = 1;
 	static #_5 = 1;
-	static {}
-  
-	static {}
-  
-	static {}
-  
-	static {}
-  
-	static {}
-  
-	static {}
-
+	static {
+	}
+	static {
+	}
+	static {
+	}
+	static {
+	}
+	static {
+	}
+	static {
+	}
 }
 "
 `;
@@ -1270,18 +1261,18 @@ class C {
 	static #_1 = 1;
 	static #_3 = 3;
 	static #_5 = 5;
-	static {}
-  
-	static {}
-  
-	static {}
-  
-	static {}
-  
-	static {}
-  
-	static {}
-
+	static {
+	}
+	static {
+	}
+	static {
+	}
+	static {
+	}
+	static {
+	}
+	static {
+	}
 }
 console.log(_C__1);
 "
@@ -1295,24 +1286,20 @@ class C {
 		this.#x = x;
 	}
 	static {
-    // getX has privileged access to #x
-    getX = (obj: C) => obj.#x;
-    getY = (obj: D) => obj.#y;
-  }
-
+		// getX has privileged access to #x
+		getX = (obj) => obj.#x;
+		getY = (obj) => obj.#y;
+	}
 }
-// getX has privileged access to #x
 let getY;
 class D {
 	#y = 1;
 	static {
-    // getY has privileged access to y
-    getX = (obj: C) => obj.#x;
-    getY = (obj: D) => obj.#y;
-  }
-
+		// getY has privileged access to y
+		getX = (obj) => obj.#x;
+		getY = (obj) => obj.#y;
+	}
 }
-// getY has privileged access to y
 "
 `;
 
@@ -1327,12 +1314,12 @@ class A {
 		return this.#x;
 	}
 	static {
-    friendA = {
-      getX(obj) { return obj.#x },
-      setX(obj, value) { obj.#x = value }
-    };
-  }
-
+		friendA = { getX(obj) {
+			return obj.#x;
+		}, setX(obj,value) {
+			obj.#x = value;
+		} };
+	}
 }
 ;
 class B {
@@ -1355,29 +1342,15 @@ exports[`TSC: classes classStaticBlock18 1`] = `
 	return class {
 		static foo = 1;
 		static {
-      const c = class {
-        static bar = 2;
-        static {
-          // do
-        }
-      }
-    }
-  
+			const c = class {
+				static bar = 2;
+				static {
+					// do
+				}
+			};
+		}
 	};
 }
-// do
-"
-`;
-
-exports[`TSC: classes classStaticBlock19 1`] = `
-"class C {
-	@decorator
-    static {
-        // something
-    }
-
-}
-// something
 "
 `;
 
@@ -1386,20 +1359,15 @@ exports[`TSC: classes classStaticBlock2 1`] = `
 const b = 2;
 class C {
 	static {
-        const a = 11;
-
-        a;
-        b;
-    }
-
-    
+		const a = 11;
+		a;
+		b;
+	}
 	static {
-        const a = 11;
-
-        a;
-        b;
-    }
-
+		const a = 11;
+		a;
+		b;
+	}
 }
 "
 `;
@@ -1408,11 +1376,9 @@ exports[`TSC: classes classStaticBlock21 1`] = `
 "class C {
 	/* jsdocs */
 	static {
-        // something
-    }
-
+		// something
+	}
 }
-// something
 "
 `;
 
@@ -1420,20 +1386,18 @@ exports[`TSC: classes classStaticBlock23 1`] = `
 "const nums = [1, 2, 3].map((n) => Promise.resolve(n));
 class C {
 	static {
-    for await (const nn of nums) {
-        console.log(nn)
-    }
-  }
-
+		for await (const nn of nums) {
+			console.log(nn);
+		}
+	}
 }
 async function foo() {
 	class C {
 		static {
-      for await (const nn of nums) {
-          console.log(nn)
-      }
-    }
-  
+			for await (const nn of nums) {
+				console.log(nn);
+			}
+		}
 	}
 }
 "
@@ -1443,9 +1407,8 @@ exports[`TSC: classes classStaticBlock24 1`] = `
 "export class C {
 	static x;
 	static {
-    C.x = 1;
-  }
-
+		C.x = 1;
+	}
 }
 "
 `;
@@ -1455,20 +1418,15 @@ exports[`TSC: classes classStaticBlock25 1`] = `
 const b = 2;
 class C {
 	static {
-        const a = 11;
-
-        a;
-        b;
-    }
-
-    
+		const a = 11;
+		a;
+		b;
+	}
 	static {
-        const a = 11;
-
-        a;
-        b;
-    }
-
+		const a = 11;
+		a;
+		b;
+	}
 }
 "
 `;
@@ -1478,20 +1436,17 @@ exports[`TSC: classes classStaticBlock27 1`] = `
 void class Foo {
 	static prop = 1;
 	static {
-        console.log(Foo.prop);
-        Foo.prop++;
-    }
-    
+		console.log(Foo.prop);
+		Foo.prop++;
+	}
 	static {
-        console.log(Foo.prop);
-        Foo.prop++;
-    }
-    
+		console.log(Foo.prop);
+		Foo.prop++;
+	}
 	static {
-        console.log(Foo.prop);
-        Foo.prop++;
-    }
-
+		console.log(Foo.prop);
+		Foo.prop++;
+	}
 };
 "
 `;
@@ -1500,9 +1455,8 @@ exports[`TSC: classes classStaticBlock28 1`] = `
 "let foo;
 class C {
 	static {
-        foo = 1
-    }
-
+		foo = 1;
+	}
 }
 console.log(foo);
 "
@@ -1513,16 +1467,12 @@ exports[`TSC: classes classStaticBlock3 1`] = `
 class C {
 	static f1 = 1;
 	static {
-        console.log(C.f1, C.f2, C.f3)
-    }
-
-    
+		console.log(C.f1, C.f2, C.f3);
+	}
 	static f2 = 2;
 	static {
-        console.log(C.f1, C.f2, C.f3)
-    }
-
-    
+		console.log(C.f1, C.f2, C.f3);
+	}
 	static f3 = 3;
 }
 "
@@ -1532,14 +1482,11 @@ exports[`TSC: classes classStaticBlock4 1`] = `
 "class C {
 	static s1 = 1;
 	static {
-        this.s1;
-        C.s1;
-
-        this.s2;
-        C.s2;
-    }
-
-    
+		this.s1;
+		C.s1;
+		this.s2;
+		C.s2;
+	}
 	static s2 = 2;
 	static ss2 = this.s1;
 }
@@ -1555,11 +1502,10 @@ class C extends B {
 	static b = 3;
 	static c = super.a;
 	static {
-        this.b;
-        super.b;
-        super.a;
-    }
-
+		this.b;
+		super.b;
+		super.a;
+	}
 }
 "
 `;
@@ -1568,9 +1514,8 @@ exports[`TSC: classes classStaticBlock9 1`] = `
 "class A {
 	static bar = A.foo + 1;
 	static {
-        A.foo + 2;
-    }
-    
+		A.foo + 2;
+	}
 	static foo = 1;
 }
 "
@@ -1580,15 +1525,13 @@ exports[`TSC: classes classStaticBlockUseBeforeDef1 1`] = `
 "class C {
 	static x;
 	static {
-        this.x = 1;
-    }
-    
+		this.x = 1;
+	}
 	static y = this.x;
 	static z;
 	static {
-        this.z = this.y;
-    }
-
+		this.z = this.y;
+	}
 }
 "
 `;
@@ -1596,9 +1539,8 @@ exports[`TSC: classes classStaticBlockUseBeforeDef1 1`] = `
 exports[`TSC: classes classStaticBlockUseBeforeDef2 1`] = `
 "class C {
 	static {
-        this.x = 1;
-    }
-    
+		this.x = 1;
+	}
 	static x;
 }
 "
@@ -1607,10 +1549,8 @@ exports[`TSC: classes classStaticBlockUseBeforeDef2 1`] = `
 exports[`TSC: classes classStaticBlockUseBeforeDef3 1`] = `
 "class A {
 	static {
-        A.doSomething(); // should not error
-    }
-
-    
+		A.doSomething();
+	}
 	// should not error
 	static doSomething() {
 		console.log("gotcha!");
@@ -1618,35 +1558,30 @@ exports[`TSC: classes classStaticBlockUseBeforeDef3 1`] = `
 }
 class Baz {
 	static {
-        console.log(FOO);   // should error
-    }
-
+		console.log(FOO);
+	}
 }
 // should error
 const FOO = "FOO";
 class Bar {
 	static {
-        console.log(FOO); // should not error
-    }
-
+		console.log(FOO);
+	}
 }
 // should not error
 let u = "FOO";
 class CFA {
 	static {
-        u = "BAR";
-        u;  // should be "BAR"
-    }
-
-    
+		u = "BAR";
+		u;
+	}
 	// should be "BAR"
 	static t = 1;
 	static doSomething() {
 	}
 	static {
-        u;  // should be "BAR"
-    }
-
+		u;
+	}
 }
 // should be "BAR"
 u;
@@ -1658,15 +1593,13 @@ exports[`TSC: classes classStaticBlockUseBeforeDef4 1`] = `
 "class C {
 	static accessor x;
 	static {
-        this.x = 1;
-    }
-    
+		this.x = 1;
+	}
 	static accessor y = this.x;
 	static accessor z;
 	static {
-        this.z = this.y;
-    }
-
+		this.z = this.y;
+	}
 }
 "
 `;
@@ -1674,9 +1607,8 @@ exports[`TSC: classes classStaticBlockUseBeforeDef4 1`] = `
 exports[`TSC: classes classStaticBlockUseBeforeDef5 1`] = `
 "class C {
 	static {
-        this.x = 1;
-    }
-    
+		this.x = 1;
+	}
 	static accessor x;
 }
 "
@@ -1998,10 +1930,10 @@ exports[`TSC: classes classConstructorAccessibility4 1`] = `
 		}
 		// OK
 		class C extends A {
+			// OK
 		}
 	}
 }
-// OK
 class D {
 	constructor() {
 	}
@@ -2013,10 +1945,10 @@ class D {
 		}
 		// OK
 		class F extends D {
+			// OK
 		}
 	}
 }
-// OK
 "
 `;
 
@@ -9633,14 +9565,13 @@ class C2 {
 class C3 {
 	static #a2_accessor_storage = 1;
 	static {
-        class C3_Inner {
-            accessor a2 = 2;
-            static {
-                #a2_accessor_storage in C3;
-            }
-        }
-    }
-
+		class C3_Inner {
+			accessor a2 = 2;
+			static {
+				#a2_accessor_storage in C3;
+			}
+		}
+	}
 }
 class C4_1 {
 	static accessor a3 = 1;
@@ -9677,10 +9608,9 @@ exports[`TSC: classes autoAccessor2 1`] = `
 		this.#b = 4;
 	}
 	static {
-        this.#c = 5;
-        this.#d = 6;
-    }
-
+		this.#c = 5;
+		this.#d = 6;
+	}
 }
 "
 `;
@@ -10099,11 +10029,11 @@ class B extends A {
 }
 // error
 class BD extends A {
+	// ok because it's implicitly initialised
 }
-// ok because it's implicitly initialised
 class BDBang extends A {
+	// ! is not allowed, this is an ambient declaration
 }
-// ! is not allowed, this is an ambient declaration
 class BOther extends A {
 	m() {
 		return 2;
@@ -10113,8 +10043,8 @@ class BOther extends A {
 // ok, even though it's not in the base
 // initialiser not allowed with declare
 class U {
+	// ok, even though there's no base
 }
-// ok, even though there's no base
 class C {
 	p;
 }
@@ -10123,8 +10053,8 @@ class D extends C {
 }
 // error
 class DD extends C {
+	// ok
 }
-// ok
 class F extends E {
 	p1;
 }
@@ -10440,17 +10370,17 @@ exports[`TSC: classes instanceMemberAssignsToClassPrototype 1`] = `
 
 exports[`TSC: classes memberFunctionOverloadMixingStaticAndInstance 1`] = `
 "class C {
+	// error
 }
-// error
 class D {
+	// error
 }
-// error    
 class E {
+	// error
 }
-// error
 class F {
+	// error
 }
-// error    
 "
 `;
 

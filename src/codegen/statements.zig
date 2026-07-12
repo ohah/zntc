@@ -320,6 +320,32 @@ fn singleUnwrappableStmt(self: anytype, block: Node) ?NodeIndex {
 
 /// { item1 item2 ... } — 블록과 클래스 바디 공통.
 /// `{` 앞 공백: 마지막 바이트가 공백/줄바꿈이 아니면 자동 추가 (이중 공백 방지).
+/// 아직 소비되지 않은 주석 중 `end` 이전에 시작하는 것이 남아 있는가 (#4468).
+/// minify 모드에선 legal 주석만 출력되므로, 그 외 주석은 "없는" 것으로 본다 —
+/// 없는데도 분기에 들어가면 빈 블록에 쓸데없는 공백이 생긴다.
+fn blockHasPendingCommentBefore(self: anytype, end: u32) bool {
+    var i = self.next_comment_idx;
+    while (i < self.comments.len) : (i += 1) {
+        const c = self.comments[i];
+        if (c.start >= end) return false;
+        if (!self.options.minify_whitespace or c.is_legal) return true;
+    }
+    return false;
+}
+
+/// emitComments 가 마지막 주석 뒤에 남긴 newline + indent 를 되감는다.
+/// 호출자가 곧바로 `}` 앞의 newline/indent 를 다시 쓰기 때문에, 그대로 두면
+/// 빈 줄이 하나 생긴다.
+fn trimTrailingBlankForBlockClose(self: anytype) void {
+    if (self.options.minify_whitespace) return;
+    while (self.buf.items.len > 0) {
+        const last = self.buf.items[self.buf.items.len - 1];
+        if (last == ' ' or last == '\t' or last == '\n' or last == '\r') {
+            self.buf.items.len -= 1;
+        } else break;
+    }
+}
+
 pub fn emitBracedList(self: anytype, node: Node) !void {
     if (!self.options.minify_whitespace and self.buf.items.len > 0) {
         const last = self.buf.items[self.buf.items.len - 1];
@@ -348,6 +374,22 @@ pub fn emitBracedList(self: anytype, node: Node) !void {
             try self.emitNode(idx);
         }
         self.indent_level -= 1;
+    } else if (blockHasPendingCommentBefore(self, node.span.end)) {
+        // 빈 블록 안의 주석 (#4468).
+        //
+        // 주석은 statement 앞에서 flush 되는데, 문장이 하나도 없는 블록에는 flush
+        // 지점이 없다. 그래서 `function f() { /* todo */ }` 의 주석이 함수 *밖*
+        // 으로 밀려 나갔다 (빈 if 블록, 빈 static block 도 동일).
+        //
+        // 블록 span 안에 남아 있는 주석을 여기서 소비해 제자리에 남긴다.
+        self.indent_level += 1;
+        try writeNewline(self);
+        try writeIndent(self);
+        try emitComments(self, node.span.end);
+        self.indent_level -= 1;
+        // emitComments 는 각 주석 뒤에 newline + indent 를 남긴다. 아래 공통
+        // writeNewline/writeIndent 가 빈 줄을 덧붙이지 않도록 그 꼬리를 되감는다.
+        trimTrailingBlankForBlockClose(self);
     }
     if (lastNonElidedStmt(self, indices)) |last_stmt| {
         if (!stmtNeedsTrailingSemicolonBeforeBlockClose(self, last_stmt)) {
