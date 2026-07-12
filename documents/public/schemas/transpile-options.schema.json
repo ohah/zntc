@@ -52,6 +52,7 @@
     "intro": {"type": "string"},
     "outro": {"type": "string"},
     "assetNames": {"type": "string"},
+    "assetInlineLimit": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Inline assets at or below this size (bytes) as data URLs instead of emitting files. 0 disables inlining (default: 4096)."},
     "chunkNames": {"type": "string"},
     "entryNames": {"type": "string"},
     "preserveModules": {"type": "boolean"},

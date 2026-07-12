@@ -763,6 +763,7 @@ pub fn main(init: std.process.Init) !void {
             .entry_names = opts.entry_names,
             .chunk_names = opts.chunk_names,
             .asset_names = opts.asset_names,
+            .asset_inline_limit = opts.asset_inline_limit,
             .asset_registry = opts.asset_registry,
             .loader_overrides = opts.loader_list.items,
             .metafile = opts.metafile_path != null or opts.analyze,

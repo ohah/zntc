@@ -90,6 +90,12 @@ bun run build        # production bundle into dist/
 bun run preview      # preview dist/
 ```
 
+Images, fonts, and media imported from `src/` — or referenced from CSS `url()` —
+are hashed into `dist/` with no loader configuration needed, and anything at or
+below 4 KB is inlined as a `data:` URL. To override the defaults, `zntc dev` /
+`zntc build` accept `--loader:.ext=type`, `--asset-names`, and
+`--asset-inline-limit`. See [Bundling — Assets](/zntc/en/guides/bundling/#assets).
+
 ## When to use web mode
 
 | Situation                                              | Recommended mode                                              |

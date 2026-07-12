@@ -19,6 +19,7 @@
 const std = @import("std");
 const spin = @import("../util/spin_lock.zig");
 const types = @import("types.zig");
+const default_asset_inline_limit = types.default_asset_inline_limit;
 const ModuleIndex = types.ModuleIndex;
 const ModuleType = types.ModuleType;
 const BundlerDiagnostic = types.BundlerDiagnostic;
@@ -190,6 +191,11 @@ pub const ModuleGraph = struct {
     public_path: []const u8 = "",
     /// 에셋 파일명 패턴 (--asset-names). asset 로더에서 사용.
     asset_names: []const u8 = "[name]-[hash]",
+    /// 이 크기(byte) 이하의 asset 은 별도 파일 대신 data URL 로 인라인 (#4466).
+    /// `--asset-inline-limit`. 0 = 인라인 끔 (항상 파일 방출).
+    /// 확장자 기본 테이블로 `.file` 이 된 자산에만 적용 — `--loader:.x=file` 로
+    /// 명시 지정한 경우엔 무시된다 (Module.loader_explicit).
+    asset_inline_limit: u32 = default_asset_inline_limit,
     /// Metro AssetRegistry 모듈 경로. null이면 URL 문자열, 값이 있으면 registerAsset 래핑.
     asset_registry: ?[]const u8 = null,
     /// 엔트리 포인트 기준 디렉토리. [dir] 패턴 치환에 사용.

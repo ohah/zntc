@@ -46,6 +46,16 @@ updates stylesheets for CSS edits without a full page reload.
 | `--env-dir <dir>`           | directory for `.env*` files                                                       |
 | `--spa-fallback[=file]`     | in `preview`, fall back route-like 404 requests to `index.html` or the given file |
 | `--jsx*`                    | JSX runtime (`--jsx`, `--jsx-dev`, `--jsx-import-source`, `--jsx-factory`, `--jsx-fragment`). When unset, the app root `tsconfig.json` `jsx` / `jsxImportSource` is used |
+| `--loader:.ext=<type>`      | Per-extension loader override — same vocabulary as `zntc --bundle`                |
+| `--asset-names <pattern>`   | Asset filename pattern (default: `[name]-[hash]`)                                |
+| `--asset-inline-limit <n>`  | Inline assets of at most `n` bytes as data URLs (default: `4096`, `0` = never)    |
+
+Assets referenced from bundled JS and CSS (`import logo from "./logo.png"`,
+`url(./font.woff2)`) go through the bundler asset pipeline, so `zntc dev` /
+`zntc build` accept the same `--loader:.ext=type` / `--asset-names` /
+`--asset-inline-limit` options as `zntc --bundle`. Common image, font, and media
+extensions already default to the `file` loader, so most apps need no flag at all
+— see [Bundling — Assets](/zntc/en/guides/bundling/#assets).
 
 `zntc dev` / `zntc build` resolve the JSX runtime in this order: CLI `--jsx*`
 options → app root `tsconfig.json` (`compilerOptions.jsx` / `jsxImportSource`) →
@@ -241,7 +251,8 @@ use preact by adding just `/** @jsxImportSource preact */` — that file alone u
 | `--entry-names=<pattern>`          | Entry name pattern (`[name]`, `[hash]`)                                                                                                        |
 | `--chunk-names=<pattern>`          | Chunk name pattern                                                                                                                             |
 | `--asset-names=<pattern>`          | Asset name pattern                                                                                                                             |
-| `--loader:.ext=type`               | Loader by extension (`file\|dataurl\|base64\|text\|binary\|copy\|empty\|json\|css\|js\|ts\|jsx\|tsx`)                                          |
+| `--asset-inline-limit=<bytes>`     | Inline assets of at most this size as data URLs instead of emitting files (default `4096`, `0` = never). Applies only to assets that default to `file` by extension — an explicit `--loader:.ext=file` is never inlined |
+| `--loader:.ext=type`               | Loader by extension (`file\|dataurl\|base64\|text\|binary\|copy\|empty\|json\|css\|js\|ts\|jsx\|tsx`). Common image / font / media extensions already default to `file` |
 | `--metafile` / `--metafile=<path>` | Build meta JSON (stdout or file)                                                                                                               |
 | `--analyze`                        | Bundle analysis report (printed to stderr). Pair with `--metafile=<path>` to also write JSON to disk; upload it at [/analyze/](/zntc/analyze/) |
 | `--legal-comments=<mode>`          | License comments: `none\|inline\|eof\|linked\|external` (`linked`/`external` currently fall back to `eof`)                                     |

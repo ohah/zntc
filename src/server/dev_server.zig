@@ -143,6 +143,12 @@ pub const DevServer = struct {
     proxy: []const ProxyRule = &.{},
     base_path: []const u8 = "/",
     define: []const @import("../transformer/transformer.zig").DefineEntry = &.{},
+    /// asset 옵션 — `zntc dev` 도 build 와 동일하게 `--loader:.ext=type` /
+    /// `--asset-names` / `--asset-inline-limit` 을 존중해야 한다 (#4466). 안 그러면
+    /// dev 와 build 가 서로 다른 자산을 만들어 "dev 에선 되는데 build 하면 깨진다".
+    loader_overrides: []const @import("../bundler/types.zig").LoaderOverride = &.{},
+    asset_names: []const u8 = "[name]-[hash]",
+    asset_inline_limit: u32 = @import("../bundler/types.zig").default_asset_inline_limit,
     jsx_runtime: @import("../codegen/codegen.zig").JsxRuntime = .classic,
     jsx_import_source: []const u8 = "react",
     jsx_factory: []const u8 = "React.createElement",
@@ -150,6 +156,21 @@ pub const DevServer = struct {
     sourcemap_cache: struct {
         mutex: spin.SpinLock = .{},
         data: ?[]const u8 = null,
+    } = .{},
+    /// 번들러 asset 출력(file 로더 자산 + CSS 청크)의 **메모리** 캐시 — path → contents
+    /// (#4466). 둘 다 allocator 소유.
+    ///
+    /// CSS 의 `url()` 은 이제 `/codicon-a1b2c3d4.ttf` 같은 방출 자산을 가리키는데, dev
+    /// 서버는 root_dir 의 정적 파일만 서빙하므로 이게 없으면 404 → dev 에서만 폰트/
+    /// 아이콘이 깨진다 (prod 빌드는 정상).
+    ///
+    /// **디스크에 쓰지 않는다.** root_dir 은 `zntc --serve` 에선 사용자의 *소스*
+    /// 디렉토리다. 번들 산출물(`main.css`, worker 청크, plugin emitFile, mf-manifest)
+    /// 을 거기 쓰면 이름이 겹치는 손수 작성한 소스 파일을 truncate 로 덮어써 날려
+    /// 버린다. 그래서 메모리에 들고 있다가 요청 시 응답한다.
+    asset_cache: struct {
+        mutex: spin.SpinLock = .{},
+        map: std.StringHashMapUnmanaged([]const u8) = .empty,
     } = .{},
     /// dev overlay client — raw template (overlay_client_template) 의 `__ZNTC_HMR_*__`
     /// sentinel 을 protocol 상수로 치환한 결과. init 에서 1회 생성, deinit 에서 free.
@@ -306,6 +327,9 @@ pub const DevServer = struct {
         proxy: []const ProxyRule = &.{},
         base_path: []const u8 = "/",
         define: []const @import("../transformer/transformer.zig").DefineEntry = &.{},
+        loader_overrides: []const @import("../bundler/types.zig").LoaderOverride = &.{},
+        asset_names: []const u8 = "[name]-[hash]",
+        asset_inline_limit: u32 = @import("../bundler/types.zig").default_asset_inline_limit,
         jsx_runtime: @import("../codegen/codegen.zig").JsxRuntime = .classic,
         jsx_import_source: []const u8 = "react",
         jsx_factory: []const u8 = "React.createElement",
@@ -417,6 +441,9 @@ pub const DevServer = struct {
             .proxy = options.proxy,
             .base_path = options.base_path,
             .define = options.define,
+            .loader_overrides = options.loader_overrides,
+            .asset_names = options.asset_names,
+            .asset_inline_limit = options.asset_inline_limit,
             .jsx_runtime = options.jsx_runtime,
             .jsx_import_source = options.jsx_import_source,
             .jsx_factory = options.jsx_factory,
@@ -476,6 +503,14 @@ pub const DevServer = struct {
 
         if (self.abs_entry) |ae| self.allocator.free(ae);
         self.lazy_state.deinit(self.allocator);
+        {
+            var it = self.asset_cache.map.iterator();
+            while (it.next()) |e| {
+                self.allocator.free(e.key_ptr.*);
+                self.allocator.free(e.value_ptr.*);
+            }
+            self.asset_cache.map.deinit(self.allocator);
+        }
         // overlay_client 는 init 에서 반드시 알록된 owned slice (default 미제공).
         self.allocator.free(self.overlay_client);
         if (self.tls_ctx) |*c| c.deinit();
@@ -960,6 +995,9 @@ pub const DevServer = struct {
             .collect_module_codes = true,
             .plugins = self.plugins,
             .define = self.define,
+            .loader_overrides = self.loader_overrides,
+            .asset_names = self.asset_names,
+            .asset_inline_limit = self.asset_inline_limit,
             .jsx_runtime = self.jsx_runtime,
             .jsx_import_source = self.jsx_import_source,
             .jsx_factory = self.jsx_factory,
@@ -1552,6 +1590,9 @@ pub const DevServer = struct {
 
         self.serveStaticFile(request, rel_path) catch |err| switch (err) {
             error.FileNotFound => {
+                // 번들러가 방출한 asset (CSS url() 대상 폰트/이미지, CSS 청크) — 소스
+                // 파일이 없을 때만 조회해 사용자 파일을 가리지 않는다 (#4466).
+                if (try self.serveCachedAsset(request, rel_path)) return;
                 // SPA 폴백: 확장자 없는 경로 → index.html (React Router 등)
                 if (self.entry_point != null and std.fs.path.extension(rel_path).len == 0) {
                     self.serveStaticFile(request, "index.html") catch |e2| switch (e2) {
@@ -1583,6 +1624,9 @@ pub const DevServer = struct {
             .react_refresh = true,
             .plugins = self.plugins,
             .define = self.define,
+            .loader_overrides = self.loader_overrides,
+            .asset_names = self.asset_names,
+            .asset_inline_limit = self.asset_inline_limit,
             .jsx_runtime = self.jsx_runtime,
             .jsx_import_source = self.jsx_import_source,
             .jsx_factory = self.jsx_factory,
@@ -1625,6 +1669,9 @@ pub const DevServer = struct {
         self.error_state.clear(self.io, self.allocator);
         self.ws_clients.broadcast(self.io, "{\"type\":\"clear-error\"}");
 
+        // CSS url() 이 가리키는 방출 자산을 메모리 캐시에 담는다 (#4466).
+        self.cacheAssetOutputs(&result);
+
         // 소스맵 캐시 업데이트 (소유권 이전 — dupe 불필요)
         if (result.sourcemap) |sm| {
             self.sourcemap_cache.mutex.lock();
@@ -1639,6 +1686,61 @@ pub const DevServer = struct {
         });
 
         self.routineLog("  200 {s} (bundled)\n", .{bundle_path});
+    }
+
+    /// 번들러 asset 출력을 메모리 캐시에 담아 두어 정적 서빙 fallback 이 응답할 수
+    /// 있게 한다 (#4466). 디스크는 건드리지 않는다 — 이유는 `asset_cache` 주석 참고.
+    ///
+    /// 실패는 무시한다 — 자산 하나 못 담았다고 dev 서버 응답을 세울 이유는 없다.
+    fn cacheAssetOutputs(self: *DevServer, result: *const BundleResult) void {
+        const outs = result.asset_outputs orelse return;
+
+        self.asset_cache.mutex.lock();
+        defer self.asset_cache.mutex.unlock();
+
+        for (outs) |out| {
+            const gop = self.asset_cache.map.getOrPut(self.allocator, out.path) catch continue;
+            const contents = self.allocator.dupe(u8, out.contents) catch {
+                if (!gop.found_existing) _ = self.asset_cache.map.remove(out.path);
+                continue;
+            };
+            if (gop.found_existing) {
+                self.allocator.free(gop.value_ptr.*); // 이전 빌드 내용 교체
+            } else {
+                gop.key_ptr.* = self.allocator.dupe(u8, out.path) catch {
+                    self.allocator.free(contents);
+                    _ = self.asset_cache.map.remove(out.path);
+                    continue;
+                };
+            }
+            gop.value_ptr.* = contents;
+        }
+    }
+
+    /// 메모리 asset 캐시에서 rel_path 를 서빙. 없으면 false (호출자가 정적 파일/404 로 진행).
+    ///
+    /// **소스 파일이 우선이다** — 호출자가 root_dir 정적 서빙을 먼저 시도하고, 거기서
+    /// FileNotFound 일 때만 여기로 온다. 그래야 사용자가 손수 둔 파일이 동명의 번들
+    /// 산출물에 가려지지 않는다.
+    fn serveCachedAsset(self: *DevServer, request: *http.Server.Request, rel_path: []const u8) !bool {
+        const contents = blk: {
+            self.asset_cache.mutex.lock();
+            defer self.asset_cache.mutex.unlock();
+            const found = self.asset_cache.map.get(rel_path) orelse return false;
+            // lock 을 쥔 채 respond(블로킹 IO)하지 않도록 복사본을 들고 나간다.
+            break :blk try self.allocator.dupe(u8, found);
+        };
+        defer self.allocator.free(contents);
+
+        const content_type = mime.fromExtension(rel_path);
+        try request.respond(contents, .{
+            .extra_headers = &.{
+                .{ .name = "content-type", .value = content_type },
+                .{ .name = "cache-control", .value = "no-cache" },
+            },
+        });
+        self.routineLog("  200 /{s} (bundled asset)\n", .{rel_path});
+        return true;
     }
 
     /// PR-3b-iii: serveBundle/serveLazyChunk 공용 — 빌드 에러를 진단 주석 JS 로 응답한다
@@ -1712,6 +1814,9 @@ pub const DevServer = struct {
             .react_refresh = true,
             .plugins = self.plugins,
             .define = self.define,
+            .loader_overrides = self.loader_overrides,
+            .asset_names = self.asset_names,
+            .asset_inline_limit = self.asset_inline_limit,
             .jsx_runtime = self.jsx_runtime,
             .jsx_import_source = self.jsx_import_source,
             .jsx_factory = self.jsx_factory,
@@ -1745,6 +1850,9 @@ pub const DevServer = struct {
             self.lazy_state.invalidateChunks(self.allocator);
             try self.lazy_state.setSeedPaths(self.allocator, result.lazy_seed_paths orelse &.{});
         }
+
+        // CSS url() 이 가리키는 방출 자산을 메모리 캐시에 담는다 (#4466).
+        self.cacheAssetOutputs(&result);
 
         const outputs = result.outputs orelse {
             // code_splitting 인데 outputs 가 없으면 비정상 — 단일 output 으로 폴백.
@@ -1873,6 +1981,9 @@ pub const DevServer = struct {
             .react_refresh = true,
             .plugins = self.plugins,
             .define = self.define,
+            .loader_overrides = self.loader_overrides,
+            .asset_names = self.asset_names,
+            .asset_inline_limit = self.asset_inline_limit,
             .jsx_runtime = self.jsx_runtime,
             .jsx_import_source = self.jsx_import_source,
             .jsx_factory = self.jsx_factory,

@@ -308,6 +308,7 @@ module.exports = {
 | `file-loader` / `asset/resource`                | `--loader:.png=file`                                           |
 | `url-loader` / `asset/inline`                   | `--loader:.png=dataurl`                                        |
 | `raw-loader` / `asset/source`                   | `--loader:.txt=text`                                           |
+| `asset` (auto — inline below `dataUrlCondition`) | Built-in default for image / font / media extensions. Tune the threshold with `--asset-inline-limit=<bytes>` (default `4096`, `0` = never) |
 | `svg-loader` / `@svgr/webpack`                  | `--loader:.svg=text`/`file`/`dataurl` or plugin                |
 | `json-loader`                                   | `--loader:.json=json` (built-in default)                       |
 | `sass-loader` / `less-loader` / `stylus-loader` | Sass/SCSS is supported in app mode. Pre-compile Less/Stylus    |

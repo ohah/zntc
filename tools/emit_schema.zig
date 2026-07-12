@@ -36,6 +36,7 @@ const field_docs = std.StaticStringMap([]const u8).initComptime(.{
     .{ "sourcesContent", "Include original source in sourcemap (default: true)." },
     .{ "sourceRoot", "SourceMap `sourceRoot` field." },
     .{ "define", "Define list: `{ key, value }` pairs. `value` is raw JSON (strings must include quotes)." },
+    .{ "assetInlineLimit", "Inline assets at or below this size (bytes) as data URLs instead of emitting files. 0 disables inlining (default: 4096)." },
 });
 
 /// DTO의 모든 필드를 순회하며 `"properties": {...}` 내부를 생성.

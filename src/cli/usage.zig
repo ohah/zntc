@@ -64,6 +64,9 @@ pub fn printUsage(writer: anytype) !void {
         \\  --mode <name>                    Env mode (dev=development, build=production)
         \\  --env-dir <dir>                  Directory for .env files (default: app root)
         \\  --env-prefix <csv>               Exposed env prefixes (default: VITE_,ZNTC_)
+        \\  --loader:.ext=<type>             Per-extension loader (also accepted by `zntc build`/`dev`)
+        \\  --asset-names=<pattern>          Asset filename pattern (default: [name]-[hash])
+        \\  --asset-inline-limit=<bytes>     Inline assets <= this size as data URLs (default: 4096, 0 = never)
         \\
         \\Bundle options:
         \\  --bundle                         Enable bundle mode
@@ -86,6 +89,7 @@ pub fn printUsage(writer: anytype) !void {
         \\  --entry-names=<pattern>          Entry filename pattern (e.g. `[name]-[hash]`)
         \\  --chunk-names=<pattern>          Chunk filename pattern
         \\  --asset-names=<pattern>          Asset filename pattern
+        \\  --asset-inline-limit=<bytes>     Inline assets <= this size as data URLs (default: 4096, 0 = never)
         \\  --metafile                       Emit build metadata to stderr
         \\  --metafile=<path>                Emit build metadata to file (esbuild compat)
         \\  --analyze                        Print bundle analyzer summary

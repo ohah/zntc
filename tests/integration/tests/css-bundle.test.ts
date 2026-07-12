@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'bun:test';
 import { createFixture, runZntc } from './helpers';
 import { join } from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 
 describe('CSS Bundling', () => {
   let cleanup: (() => Promise<void>) | undefined;
@@ -274,10 +274,40 @@ describe('CSS Bundling', () => {
     expect(hasError).toBe(true);
   });
 
-  it('CSS with url() image reference → preserved in output', async () => {
+  // #4466: CSS url() 자산은 해시 파일로 방출되고 url 이 재작성된다.
+  // 이 테스트는 예전에 `expect(css).toContain('url(./img/hero.png)')` 로
+  // "원문 보존" 을 기대했는데, 그건 dangling 404 버그(#4466)를 명세로 박제한
+  // 것이었다. 실제로는 참조 대상이 fixture 에 없어서 "재작성 안 됨" 이 우연히
+  // 통과했을 뿐이다.
+
+  it('#4466 CSS url() 자산 → 해시 파일 방출 + url 재작성', async () => {
     const fixture = await createFixture({
       'index.ts': `import './style.css';`,
       'style.css': `.bg { background: url(./img/hero.png) no-repeat; }`,
+      // inline limit(4096) 초과 → 별도 파일로 방출되어야 함
+      'img/hero.png': 'X'.repeat(5000),
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    // 원문 경로는 사라지고, 해시가 붙은 방출 자산을 가리켜야 한다
+    expect(css).not.toContain('url(./img/hero.png)');
+    expect(css).toMatch(/url\("\.\/hero-[0-9a-f]{8}\.png"\)/);
+
+    // 실제 자산 파일이 out.js 옆에 방출됐는지
+    const emitted = (await readdir(fixture.dir)).filter((f) => /^hero-[0-9a-f]{8}\.png$/.test(f));
+    expect(emitted).toHaveLength(1);
+  });
+
+  it('#4466 CSS url() 작은 자산 → data URL 인라인', async () => {
+    const fixture = await createFixture({
+      'index.ts': `import './style.css';`,
+      'style.css': `.bg { background: url(./img/tiny.png); }`,
+      'img/tiny.png': 'tiny',
     });
     cleanup = fixture.cleanup;
 
@@ -285,8 +315,49 @@ describe('CSS Bundling', () => {
     await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
-    // url() 참조가 그대로 유지되어야 함
+    expect(css).toContain('url("data:image/png;base64,');
+  });
+
+  it('#4466 해석 불가 url() → 경고 + 원문 유지 (빌드는 성공)', async () => {
+    const fixture = await createFixture({
+      'index.ts': `import './style.css';`,
+      // hero.png 를 fixture 에 두지 않는다 — 배포 스크립트가 나중에 복사하는 흔한 패턴
+      'style.css': `.bg { background: url(./img/hero.png) no-repeat; }`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+
+    // 하드 에러가 아니라 경고 — 기존에 빌드되던 프로젝트를 깨지 않는다
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toContain('Cannot resolve CSS url()');
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     expect(css).toContain('url(./img/hero.png)');
+  });
+
+  it('#4466 external / SVG fragment / 절대경로 url() 은 건드리지 않는다', async () => {
+    const fixture = await createFixture({
+      'index.ts': `import './style.css';`,
+      'style.css': [
+        `.a { background: url(https://cdn.example.com/a.png); }`,
+        `.b { filter: url(#blur); }`,
+        `.c { background: url(/public/keep.png); }`,
+        `.d { background: url(data:image/gif;base64,R0lGOD); }`,
+      ].join('\n'),
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    expect(css).toContain('url(https://cdn.example.com/a.png)');
+    expect(css).toContain('url(#blur)'); // SVG filter 참조 — 파일이 아니다
+    expect(css).toContain('url(/public/keep.png)'); // public 디렉토리 규약
+    expect(css).toContain('url(data:image/gif;base64,R0lGOD)');
   });
 
   it('CSS imported from dynamically imported module', async () => {

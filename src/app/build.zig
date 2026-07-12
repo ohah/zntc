@@ -6,6 +6,9 @@ const transformer_mod = @import("../transformer/transformer.zig");
 
 const Bundler = bundler_mod.Bundler;
 const BundleOptions = bundler_mod.BundleOptions;
+const bundler_types = bundler_mod.types;
+const css_scanner = bundler_mod.css_scanner;
+const wyhash = @import("../util/wyhash.zig");
 const Plugin = bundler_mod.plugin.Plugin;
 const DefineEntry = transformer_mod.DefineEntry;
 const JsxRuntime = @import("../codegen/codegen.zig").JsxRuntime;
@@ -64,6 +67,15 @@ pub const AppBuildOptions = struct {
     emotion_extra_css_sources: []const []const u8 = &.{},
     /// emotion.importMap re-export 케이스 단순화 — vendored emotion styled source.
     emotion_extra_styled_sources: []const []const u8 = &.{},
+    /// 확장자별 로더 오버라이드 (--loader:.ttf=file). 앱 빌더도 번들러와 동일한
+    /// loader vocab 을 받는다 — 예전엔 `zntc build` 가 --loader 를 아예 거부해
+    /// CSS/JS 가 참조하는 자산을 제어할 방법이 없었다 (#4466).
+    loader_overrides: []const bundler_types.LoaderOverride = &.{},
+    /// 에셋 파일명 패턴 (--asset-names).
+    asset_names: []const u8 = "[name]-[hash]",
+    /// 이 크기(byte) 이하의 asset 은 data URL 로 인라인 (--asset-inline-limit).
+    /// 0 = 인라인 끔. 기본 4096 (#4466).
+    asset_inline_limit: u32 = bundler_types.default_asset_inline_limit,
     /// JS plugin dispatcher 들 — `napiBuildAppSync` 의 `_pluginDispatcherSync` 를
     /// 통해 전달. 비어 있으면 plugin 없는 build. bundle pipeline 의 Bundler.init 에
     /// 그대로 전달 (#2538 4-4 PR-1).
@@ -160,7 +172,9 @@ pub fn buildApp(allocator: std.mem.Allocator, io: std.Io, opts: AppBuildOptions)
         // semver/UX 정책 결정과 함께).
         .entry_names = if (opts.splitting) "[name]-[hash]" else "[name]",
         .chunk_names = "[name]-[hash]",
-        .asset_names = "[name]-[hash]",
+        .asset_names = opts.asset_names,
+        .asset_inline_limit = opts.asset_inline_limit,
+        .loader_overrides = opts.loader_overrides,
         .css_names = "[name]",
         .output_filename = "bundle.js",
         .root_dir = root,
@@ -200,6 +214,17 @@ pub fn buildApp(allocator: std.mem.Allocator, io: std.Io, opts: AppBuildOptions)
     defer {
         for (reserved_keys.items) |key| allocator.free(key);
         reserved_keys.deinit(allocator);
+    }
+    // 원본 자산 경로 → 출력 파일명. 같은 자산을 여러 곳에서 참조해도 한 번만
+    // 기록하고, 서로 다른 자산이 basename 을 다투면 hash 로 구분한다 (#4466).
+    var emitted_assets: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer {
+        var it = emitted_assets.iterator();
+        while (it.next()) |e| {
+            allocator.free(e.key_ptr.*);
+            allocator.free(e.value_ptr.*);
+        }
+        emitted_assets.deinit(allocator);
     }
     try addReserved(allocator, &reserved, &reserved_keys, "index.html");
 
@@ -285,7 +310,7 @@ pub fn buildApp(allocator: std.mem.Allocator, io: std.Io, opts: AppBuildOptions)
             if (!already_emitted) {
                 const contents = try std.Io.Dir.cwd().readFileAlloc(io, style_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024));
                 defer allocator.free(contents);
-                const rewritten_css = try rewriteCssUrls(allocator, io, contents, style_path, outdir, base, &reserved, &reserved_keys, &output_count);
+                const rewritten_css = try rewriteCssUrls(allocator, io, contents, style_path, outdir, base, &reserved, &reserved_keys, &output_count, &emitted_assets);
                 defer allocator.free(rewritten_css);
                 try writeOutput(allocator, io, outdir, rel, rewritten_css);
                 try addReserved(allocator, &reserved, &reserved_keys, rel);
@@ -319,12 +344,12 @@ pub fn buildApp(allocator: std.mem.Allocator, io: std.Io, opts: AppBuildOptions)
             defer allocator.free(root_asset_path);
             std.Io.Dir.cwd().access(io, root_asset_path, .{}) catch break :blk parts.path[1..];
             rel_owned = true;
-            break :blk try copyAssetFile(allocator, io, root_asset_path, outdir, &reserved, &reserved_keys, &output_count);
+            break :blk try copyAssetFile(allocator, io, root_asset_path, outdir, &reserved, &reserved_keys, &output_count, &emitted_assets);
         } else blk: {
             const asset_path = (try resolveHtmlRef(allocator, root, html_dir, ref)) orelse continue;
             defer allocator.free(asset_path);
             rel_owned = true;
-            break :blk try copyAssetFile(allocator, io, asset_path, outdir, &reserved, &reserved_keys, &output_count);
+            break :blk try copyAssetFile(allocator, io, asset_path, outdir, &reserved, &reserved_keys, &output_count, &emitted_assets);
         };
         defer if (rel_owned) allocator.free(rel_for_url);
         if (rel_for_url.len > 0) {
@@ -383,6 +408,17 @@ pub fn prepareDev(allocator: std.mem.Allocator, io: std.Io, opts: AppDevPrepareO
         for (reserved_keys.items) |key| allocator.free(key);
         reserved_keys.deinit(allocator);
     }
+    // 원본 자산 경로 → 출력 파일명. 같은 자산을 여러 곳에서 참조해도 한 번만
+    // 기록하고, 서로 다른 자산이 basename 을 다투면 hash 로 구분한다 (#4466).
+    var emitted_assets: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer {
+        var it = emitted_assets.iterator();
+        while (it.next()) |e| {
+            allocator.free(e.key_ptr.*);
+            allocator.free(e.value_ptr.*);
+        }
+        emitted_assets.deinit(allocator);
+    }
     try addReserved(allocator, &reserved, &reserved_keys, "index.html");
     try addReserved(allocator, &reserved, &reserved_keys, "bundle.js");
 
@@ -412,7 +448,7 @@ pub fn prepareDev(allocator: std.mem.Allocator, io: std.Io, opts: AppDevPrepareO
             if (!already_emitted) {
                 const contents = try std.Io.Dir.cwd().readFileAlloc(io, style_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024));
                 defer allocator.free(contents);
-                const rewritten_css = try rewriteCssUrls(allocator, io, contents, style_path, outdir, base, &reserved, &reserved_keys, &output_count);
+                const rewritten_css = try rewriteCssUrls(allocator, io, contents, style_path, outdir, base, &reserved, &reserved_keys, &output_count, &emitted_assets);
                 defer allocator.free(rewritten_css);
                 try writeOutput(allocator, io, outdir, rel, rewritten_css);
                 try addReserved(allocator, &reserved, &reserved_keys, rel);
@@ -535,16 +571,15 @@ const UrlParts = struct {
     suffix: []const u8,
 };
 
+/// `?query` / `#fragment` 분리 — CSS 스캐너와 동일 규칙 (단일 구현 재사용).
 fn splitUrl(value: []const u8) UrlParts {
-    const idx = std.mem.indexOfAny(u8, value, "?#") orelse value.len;
-    return .{ .path = value[0..idx], .suffix = value[idx..] };
+    const parts = css_scanner.splitUrlSuffix(value);
+    return .{ .path = parts.path, .suffix = parts.suffix };
 }
 
+/// external URL 판정 — CSS 스캐너와 동일 규칙 (`http(s):` / `//` / `data:`).
 fn isExternalUrl(value: []const u8) bool {
-    return std.mem.startsWith(u8, value, "http://") or
-        std.mem.startsWith(u8, value, "https://") or
-        std.mem.startsWith(u8, value, "//") or
-        std.mem.startsWith(u8, value, "data:");
+    return css_scanner.isExternalCssSpecifier(value);
 }
 
 /// `<link rel=stylesheet>` source 의 outdir-내 emit path 를 결정한다.
@@ -751,6 +786,17 @@ fn addReserved(
     try reserved_keys.append(allocator, owned);
 }
 
+/// 자산 파일 하나를 outdir 로 복사하고 출력 파일명을 돌려준다.
+///
+/// 이름 충돌 처리 (#4466): 예전엔 basename 만 쓰고 `reserved` 에 이미 있으면
+/// **쓰기를 건너뛰고 같은 이름을 반환**했다. 그래서 서로 다른 `a/logo.png` 와
+/// `b/logo.png` 가 둘 다 `logo.png` 로 매핑되고, 실제로는 a 의 내용만 기록돼
+/// b 를 참조하던 규칙이 조용히 a 의 이미지를 그렸다 (silent wrong asset).
+///
+/// 이제 원본 경로별로 출력명을 기억하고, basename 이 *다른* 원본에 이미 잡혀
+/// 있으면 content hash 를 붙여 (`logo-a1b2c3d4.png`) 구분한다. 충돌이 없는
+/// 흔한 경우엔 예전과 똑같이 깨끗한 basename 이 나오므로 기존 출력이 흔들리지
+/// 않는다.
 fn copyAssetFile(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -759,18 +805,57 @@ fn copyAssetFile(
     reserved: *std.StringHashMapUnmanaged(void),
     reserved_keys: *std.ArrayList([]const u8),
     output_count: *usize,
+    emitted: *std.StringHashMapUnmanaged([]const u8),
 ) ![]const u8 {
-    const name = std.fs.path.basename(asset_path);
+    // 같은 원본을 두 번 참조 → 첫 결정을 그대로 재사용 (재읽기/재기록 없음).
+    if (emitted.get(asset_path)) |name| return try allocator.dupe(u8, name);
+
+    const contents = try std.Io.Dir.cwd().readFileAlloc(io, asset_path, allocator, std.Io.Limit.limited(100 * 1024 * 1024));
+    defer allocator.free(contents);
+
+    const base_name = std.fs.path.basename(asset_path);
+    const name: []const u8 = if (!reserved.contains(base_name))
+        try allocator.dupe(u8, base_name)
+    else blk: {
+        // basename 이 이미 다른 원본(또는 번들러 출력/public 파일)에 잡혔다 →
+        // content hash 로 구분.
+        const ext = std.fs.path.extension(base_name);
+        const stem = base_name[0 .. base_name.len - ext.len];
+        const hash = wyhash.hashHex8(contents);
+        break :blk try std.fmt.allocPrint(allocator, "{s}-{s}{s}", .{ stem, hash, ext });
+    };
+    errdefer allocator.free(name);
+
+    // 해시까지 붙였는데도 이미 있다면 = 같은 내용이 이미 기록된 것. 재기록 불필요.
     if (!reserved.contains(name)) {
-        const contents = try std.Io.Dir.cwd().readFileAlloc(io, asset_path, allocator, std.Io.Limit.limited(100 * 1024 * 1024));
-        defer allocator.free(contents);
         try writeOutput(allocator, io, outdir, name, contents);
         try addReserved(allocator, reserved, reserved_keys, name);
         output_count.* += 1;
     }
-    return try allocator.dupe(u8, name);
+
+    // 반환값을 map 에 넣기 *전에* 먼저 만든다. put 이 성공한 뒤에는 name/src_key 의
+    // 소유권이 map 으로 넘어가므로, 그 다음에 실패할 수 있는 할당을 두면 errdefer 가
+    // map 이 들고 있는 메모리를 free 해 double free 가 된다.
+    const ret = try allocator.dupe(u8, name);
+    errdefer allocator.free(ret);
+
+    const src_key = try allocator.dupe(u8, asset_path);
+    errdefer allocator.free(src_key);
+
+    // 여기서부터는 실패 가능 지점이 없다 — put 이 성공하면 map 이 name/src_key 소유.
+    try emitted.put(allocator, src_key, name);
+    return ret;
 }
 
+/// HTML 이 `<link rel="stylesheet">` 로 직접 건 CSS 의 url() 재작성.
+/// (JS 가 `import` 한 CSS 는 번들러 CSS 파이프라인이 처리 — css_emitter.zig)
+///
+/// 스캔은 css_scanner.extractCssUrls 에 위임한다 (#4466). 예전엔
+/// `indexOf("url(")` + `indexOfScalar(')')` substring 스캔이라 세 가지가 틀렸다:
+///   - `/* url(x) */` 주석과 `content: "url(y)"` 문자열 안의 것을 자산으로 오인
+///   - `blur(4px)` 같이 `url` 로 끝나지 않는 함수는 괜찮았지만 `myurl(` 은 오탐
+///   - `url("a)b.png")` 처럼 따옴표 안에 `)` 가 있으면 거기서 잘려 CSS 파손
+/// 이제 주석/문자열을 토큰으로 인식하는 스캐너를 쓰고 image-set() 도 함께 처리한다.
 fn rewriteCssUrls(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -781,44 +866,65 @@ fn rewriteCssUrls(
     reserved: *std.StringHashMapUnmanaged(void),
     reserved_keys: *std.ArrayList([]const u8),
     output_count: *usize,
+    emitted: *std.StringHashMapUnmanaged([]const u8),
 ) ![]const u8 {
     const style_dir = std.fs.path.dirname(style_path) orelse ".";
+
+    const urls = css_scanner.extractCssUrls(allocator, css, 0);
+    defer allocator.free(urls);
+
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
-    var offset: usize = 0;
-    while (std.mem.indexOf(u8, css[offset..], "url(")) |idx_rel| {
-        const start = offset + idx_rel;
-        const value_start = start + "url(".len;
-        const close_rel = std.mem.indexOfScalar(u8, css[value_start..], ')') orelse break;
-        const close = value_start + close_rel;
-        try out.appendSlice(allocator, css[offset..start]);
 
-        var raw = std.mem.trim(u8, css[value_start..close], " \t\r\n");
-        if (raw.len >= 2 and ((raw[0] == '"' and raw[raw.len - 1] == '"') or (raw[0] == '\'' and raw[raw.len - 1] == '\''))) {
-            raw = raw[1 .. raw.len - 1];
-        }
+    var cursor: usize = 0;
+    for (urls) |u| {
+        if (u.span.start < cursor or u.span.end > css.len) continue;
 
-        if (raw.len == 0 or raw[0] == '#' or isExternalUrl(raw)) {
-            try out.appendSlice(allocator, css[start .. close + 1]);
-        } else {
-            const parts = splitUrl(raw);
-            const root_absolute = parts.path.len > 0 and parts.path[0] == '/';
-            const rel_for_url = if (root_absolute) parts.path[1..] else blk: {
-                const asset_path = try std.fs.path.resolve(allocator, &.{ style_dir, parts.path });
+        // 재작성 텍스트 계산. 실패하면 원문을 그대로 흘려보낸다 (빌드 중단 없음).
+        const rel_for_url: ?[]const u8 = switch (u.kind) {
+            // `/logo.png` — public 디렉토리 규약. 파일로 resolve 하지 않고
+            // `--base` prefix 만 붙인다 (기존 동작 유지).
+            .root_absolute => null,
+            .relative => blk: {
+                const asset_path = try std.fs.path.resolve(allocator, &.{ style_dir, u.specifier });
                 defer allocator.free(asset_path);
-                break :blk try copyAssetFile(allocator, io, asset_path, outdir, reserved, reserved_keys, output_count);
-            };
-            defer if (!root_absolute) allocator.free(rel_for_url);
-            const rewritten = try joinBaseUrlWithSuffix(allocator, base, rel_for_url, parts.suffix);
-            defer allocator.free(rewritten);
-            try out.appendSlice(allocator, "url(\"");
-            try out.appendSlice(allocator, rewritten);
-            try out.appendSlice(allocator, "\")");
-        }
-        offset = close + 1;
+                break :blk copyAssetFile(allocator, io, asset_path, outdir, reserved, reserved_keys, output_count, emitted) catch |err| switch (err) {
+                    // 참조 대상이 없어도 빌드를 세우지 않는다 — 배포 스크립트가
+                    // 나중에 넣는 자산이 흔하다 (번들러 CSS 경로와 동일한 정책).
+                    error.FileNotFound => continue,
+                    else => return err,
+                };
+            },
+        };
+        defer if (rel_for_url) |r| allocator.free(r);
+
+        const url_body = rel_for_url orelse u.specifier[1..]; // root_absolute 는 선행 `/` 제거
+        const rewritten = try joinBaseUrlWithSuffix(allocator, base, url_body, u.suffix);
+        defer allocator.free(rewritten);
+
+        try out.appendSlice(allocator, css[cursor..u.span.start]);
+        try out.append(allocator, '"');
+        try appendCssStringEscaped(allocator, &out, rewritten);
+        try out.append(allocator, '"');
+        cursor = u.span.end;
     }
-    try out.appendSlice(allocator, css[offset..]);
+    try out.appendSlice(allocator, css[cursor..]);
     return try out.toOwnedSlice(allocator);
+}
+
+/// CSS double-quoted string 안전 escape — 따옴표/백슬래시/개행이 든 경로가 문자열을
+/// 조기 종료해 CSS 를 깨뜨리는 것을 막는다. css_emitter 의 동명 함수와 같은 규칙
+/// (CSS spec §4.3.5: hex escape 뒤 공백 1개로 terminate).
+fn appendCssStringEscaped(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8) !void {
+    for (s) |c| {
+        switch (c) {
+            '"' => try buf.appendSlice(allocator, "\\22 "),
+            '\\' => try buf.appendSlice(allocator, "\\\\"),
+            '\n' => try buf.appendSlice(allocator, "\\A "),
+            '\r' => try buf.appendSlice(allocator, "\\D "),
+            else => try buf.append(allocator, c),
+        }
+    }
 }
 
 fn copyPublicDir(

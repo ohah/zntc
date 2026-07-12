@@ -1869,13 +1869,27 @@ describe('에셋 로더 + RN 프리셋', () => {
     }
   });
 
-  test('loader 미설정 시 .png 빌드 에러', async () => {
+  // #4466: .png/.ttf 등 알려진 바이너리 자산은 --loader 없이도 기본 file 로더가
+  // 붙는다 (Vite/rspack parity). 알려지지 않은 확장자만 여전히 no-loader 에러.
+  test('#4466 loader 미설정 .png → 기본 로더로 성공 (작으면 data URL)', async () => {
     const fixture = await createFixture({
       'entry.ts': `const icon = require('./icon.png');\nconsole.log(icon);`,
     });
     cleanup = fixture.cleanup;
     // 바이너리 파일은 createFixture(문자열 전용)로 못 만들므로 직접 작성
     writeFileSync(join(fixture.dir, 'icon.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    const result = await runZntcInDir(fixture.dir, ['--bundle', join(fixture.dir, 'entry.ts')]);
+    expect(result.stderr).not.toContain('No loader is configured');
+    expect(result.stdout).toContain('data:image/png;base64,');
+  });
+
+  test('#4466 알려지지 않은 확장자(.xyz)는 여전히 no-loader 에러', async () => {
+    const fixture = await createFixture({
+      'entry.ts': `const blob = require('./data.xyz');\nconsole.log(blob);`,
+      'data.xyz': 'whatever',
+    });
+    cleanup = fixture.cleanup;
 
     const result = await runZntcInDir(fixture.dir, ['--bundle', join(fixture.dir, 'entry.ts')]);
     expect(result.stderr).toContain('No loader is configured');
@@ -1947,7 +1961,7 @@ describe('에셋 로더 + RN 프리셋', () => {
     expect(result.stdout).toContain('require_sound');
   });
 
-  test('ESM import 에셋도 no-loader 에러', async () => {
+  test('#4466 ESM import 에셋도 기본 로더로 성공', async () => {
     const fixture = await createFixture({
       'entry.ts': `import icon from './icon.png';\nconsole.log(icon);`,
     });
@@ -1955,7 +1969,8 @@ describe('에셋 로더 + RN 프리셋', () => {
     writeFileSync(join(fixture.dir, 'icon.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
     const result = await runZntcInDir(fixture.dir, ['--bundle', join(fixture.dir, 'entry.ts')]);
-    expect(result.stderr).toContain('No loader is configured');
+    expect(result.stderr).not.toContain('No loader is configured');
+    expect(result.stdout).toContain('data:image/png;base64,');
   });
 
   test('loader=empty → undefined export', async () => {

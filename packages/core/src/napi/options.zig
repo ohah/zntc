@@ -854,6 +854,16 @@ pub fn parseBuildOptions(
         .entry_names = entry_names orelse "[dir]/[name]",
         .chunk_names = chunk_names orelse "[name]-[hash]",
         .asset_names = asset_names orelse "[name]-[hash]",
+        // #4466: 이 byte 수 이하의 asset 은 별도 파일 대신 data URL 로 인라인.
+        // 0 = 인라인 끔(항상 파일 emit). 미지정 시 default(4096) — Vite
+        // `assetsInlineLimit` 상당. getObjectUint32 는 키 부재/undefined 면
+        // default 를 그대로 돌려주므로 "명시 0" 과 "미지정" 이 구분된다.
+        .asset_inline_limit = getObjectUint32(
+            env,
+            opts_obj,
+            "assetInlineLimit",
+            bundler_mod.types.default_asset_inline_limit,
+        ),
         // cssNames: PR B-2 부터 Zig field 는 있었지만 NAPI 매핑이 누락돼 사용자
         // 명시값이 무시되던 pre-existing bug 동반 fix (PR B-4b sub-2 root cause).
         .css_names = css_names orelse "[dir]/[name]",

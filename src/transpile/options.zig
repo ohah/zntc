@@ -160,6 +160,9 @@ pub const ConfigOptionsDto = struct {
     intro: ?[]const u8 = null,
     outro: ?[]const u8 = null,
     assetNames: ?[]const u8 = null,
+    /// #4466: 이 byte 수 이하의 asset 을 data URL 로 인라인 (0 = 인라인 끔).
+    /// 미지정(null) 시 `bundler.types.default_asset_inline_limit` (4096).
+    assetInlineLimit: ?u32 = null,
     chunkNames: ?[]const u8 = null,
     entryNames: ?[]const u8 = null,
     preserveModules: ?bool = null,

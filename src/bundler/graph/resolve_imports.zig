@@ -113,6 +113,13 @@ pub fn replayCachedResolvedDeps(self: *ModuleGraph, io: std.Io, mod_idx: usize) 
                 defer s_rd.end();
                 if (dep.kind == .dynamic_import) {
                     try self.linkDynamicImport(mod_index, ext_idx);
+                } else if (dep.kind == .css_url) {
+                    // external 로 분류된 css_url 도 JS 의존성 엣지를 만들지 않는다.
+                    if (dep.record_index) |rec_idx| {
+                        if (rec_idx < mod_ptr.import_records.len) {
+                            prepareCssUrlAsset(self, mod_idx, rec_idx, ext_idx);
+                        }
+                    }
                 } else {
                     try self.linkDependency(mod_index, ext_idx);
                 }
@@ -155,13 +162,22 @@ fn replayLinkResolvedDep(
         if (request_changed) try resolveDeferredRequestedImportsIfReady(self, io, dep_idx);
         return;
     }
-    var s_re = profile.begin(.graph_discover_incr_replay_request_exports);
-    _ = try graph_requested_exports.requestAll(self, dep_idx);
-    s_re.end();
+    // `.css_url` 은 JS export 를 요청하지 않는다 (asset 은 JS 그래프 밖).
+    if (dep.kind != .css_url) {
+        var s_re = profile.begin(.graph_discover_incr_replay_request_exports);
+        _ = try graph_requested_exports.requestAll(self, dep_idx);
+        s_re.end();
+    }
     var s_rd = profile.begin(.graph_discover_incr_replay_record_dep);
     defer s_rd.end();
     if (dep.kind == .dynamic_import) {
         try self.linkDynamicImport(mod_index, dep_idx);
+    } else if (dep.kind == .css_url) {
+        if (dep.record_index) |rec_idx| {
+            if (rec_idx < self.modules.at(mod_idx).import_records.len) {
+                prepareCssUrlAsset(self, mod_idx, rec_idx, dep_idx);
+            }
+        }
     } else {
         try self.linkDependency(mod_index, dep_idx);
     }
@@ -247,8 +263,45 @@ fn recordResolvedDep(
     defer s_lk.end();
     if (kind == .dynamic_import) {
         try self.linkDynamicImport(mod_index, dep_idx);
+    } else if (kind == .css_url) {
+        prepareCssUrlAsset(self, mod_idx, rec_i, dep_idx);
     } else {
         try self.linkDependency(mod_index, dep_idx);
+    }
+}
+
+/// `.css_url` record 가 방금 resolve 된 asset 모듈을 CSS 참조에 맞게 준비한다 (#4466).
+/// 모든 link 경로(신규 resolve / cached replay / external)가 공유한다.
+///
+/// **dependency 엣지를 만들지 않는다.** CSS `url()` 이 가리키는 asset 은 JS 실행
+/// 의존성이 아니다. 엣지를 만들면 chunk.zig 의 도달성 BFS 가 `m.dependencies` 를
+/// 타고 asset 모듈에 도달하는데, parseAssetModule 이 asset 의 module_type 을 .js 로
+/// 바꿔 두기 때문에 `isJavaScriptLike()` 필터를 통과해 JS 청크에 배정된다. 결과는
+/// 아무도 부르지 않는 `var require_codicon = __commonJS(…)` 죽은 코드.
+///
+/// 엣지 없이도 asset 은 정상 emit 된다 — addModuleWithResolveDir 가 이미 그래프에
+/// 등록했고, bundler.zig 의 asset 수집은 dependency/청크가 아니라 `asset_data` 를
+/// 가진 *모든* 모듈을 훑기 때문이다. record.resolved 로 css_emitter 가 출력
+/// 파일명을 되찾는다.
+fn prepareCssUrlAsset(self: *ModuleGraph, mod_idx: usize, rec_i: usize, dep_idx: ModuleIndex) void {
+    const record = self.modules.at(mod_idx).import_records[rec_i];
+    const dep = self.modules.at(@intFromEnum(dep_idx));
+
+    // CSS `url()` 대상은 확장자와 무관하게 파일 자산이다 (Vite 동작).
+    // 기본 확장자 테이블에 없는 것(`.cur`, `.apng`, `.svgz` …)은 loader 가 `.none`
+    // 인데, 그대로 두면 parse_module 이 `no_loader` **에러**로 빌드를 세운다 —
+    // 이 CSS 는 예전엔 (재작성은 안 됐지만) 멀쩡히 빌드되던 것이라 명백한 회귀다.
+    // 명시 `--loader` 지정(.explicit)은 존중해 건드리지 않는다.
+    if (dep.loader == .none and !dep.loader_explicit) {
+        dep.loader = .file;
+    }
+
+    // `url(./sprite.svg#icon)` / `url(./f.eot?#iefix)` — suffix 가 붙은 참조는 data
+    // URL 로 인라인하면 suffix 를 붙일 자리가 없다 (base64 뒤에 `#icon` 을 이어붙이면
+    // fragment 의미가 깨지거나 URL 자체가 망가진다). 파일로 방출하게 인라인을 끈다.
+    // SVG 스프라이트는 4KB 미만이 흔해서 기본 inline-limit 에 그대로 걸린다.
+    if (record.css_url_suffix.len > 0) {
+        dep.asset_no_inline = true;
     }
 }
 
@@ -333,8 +386,20 @@ pub fn applyResolveResult(
             try recordResolvedDep(self, mod_index, mod_idx, rec_i, dep_idx, record.kind);
             return;
         }
-        const sev: types.BundlerDiagnostic.Severity = if (record.kind == .dynamic_import) .warning else .@"error";
-        self.addDiag(.unresolved_import, sev, self.modules.at(mod_idx).path, record.span, .resolve, "Cannot resolve module", record.specifier);
+        // `.css_url` 은 경고에 그친다 (Vite parity, #4466). CSS 의 `url()` 은 빌드
+        // 타임에 해석되지 않아도 런타임에 유효할 수 있다 — 서버가 따로 서빙하거나,
+        // 배포 스크립트가 나중에 복사해 넣는 자산이 흔하다. 여기서 빌드를 세우면
+        // 지금까지 (재작성은 안 되지만) 멀쩡히 빌드되던 프로젝트가 업그레이드
+        // 하자마자 깨진다. 해석 실패한 url 은 emitter 가 원문 그대로 흘려보낸다.
+        const sev: types.BundlerDiagnostic.Severity = switch (record.kind) {
+            .dynamic_import, .css_url => .warning,
+            else => .@"error",
+        };
+        const msg = if (record.kind == .css_url)
+            "Cannot resolve CSS url() asset — left unchanged"
+        else
+            "Cannot resolve module";
+        self.addDiag(.unresolved_import, sev, self.modules.at(mod_idx).path, record.span, .resolve, msg, record.specifier);
         // 실패 확정 마킹 — 성공(recordResolvedDep 가 resolved 설정)·external 과 동일하게
         // "재resolve 불필요" 상태로 둬야 shouldResolveRecordForModule/resolveModuleImports
         // 가 이 record 를 다시 resolve(+ 중복 진단)하지 않는다.
@@ -469,6 +534,9 @@ pub fn applyResolveResult(
         });
         if (record.kind == .dynamic_import) {
             try self.linkDynamicImport(mod_index, ext_idx);
+        } else if (record.kind == .css_url) {
+            // external 로 분류된 css_url 도 JS 의존성 엣지를 만들면 안 된다. asset 이
+            // 아니므로 emitter 는 원문 url 을 그대로 흘려보낸다.
         } else {
             try self.linkDependency(mod_index, ext_idx);
         }

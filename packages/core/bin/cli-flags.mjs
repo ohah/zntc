@@ -194,6 +194,8 @@ export const FLAG_REGISTRY = [
   { kind: 'int', flag: '--line-limit', target: 'lineLimit', forms: ['equal'] },
   // Rollup output.experimentalMinChunkSize 류 — 작은 common 청크 자동 병합 (bytes).
   { kind: 'int', flag: '--min-chunk-size', target: 'minChunkSize', forms: ['equal'] },
+  // #4466 — 이 byte 수 이하 asset 을 data URL 로 인라인 (0 = 끔). 기본 4096.
+  { kind: 'int', flag: '--asset-inline-limit', target: 'assetInlineLimit', forms: ['equal'] },
   // RN CLI 호환 — `--max-workers N` (Metro). zntc `--jobs` 와 의미 동일이므로 alias.
   { kind: 'int', flag: '--max-workers', target: 'jobs', forms: ['equal'] },
 
