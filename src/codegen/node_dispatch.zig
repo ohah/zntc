@@ -418,7 +418,7 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
 ///
 /// 주의 — identifier_reference 처럼 dispatch case 안에 early-return 이 있는 노드는
 /// 여기서 wrap 을 켜면 닫는 `)` 가 누락된다(전부 별도 fn 으로 dispatch 되는 노드만 안전).
-fn exprNeedsParens(self: anytype, node: ast_mod.Node, level: Level, flags: ExprFlags) bool {
+pub fn exprNeedsParens(self: anytype, node: ast_mod.Node, level: Level, flags: ExprFlags) bool {
     return switch (node.tag) {
         .unary_expression, .await_expression => level.gte(.prefix),
         .update_expression => blk: {

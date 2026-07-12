@@ -7,6 +7,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const Kind = @import("../lexer/token.zig").Kind;
 const string_escape = @import("../string_escape.zig");
 const writer = @import("writer.zig");
+const call_emit = @import("calls.zig");
 const precedence = @import("precedence.zig");
 const Level = precedence.Level;
 
@@ -515,13 +516,21 @@ fn operandStartsIdentifierLikeDepth(self: anytype, idx: ast_mod.NodeIndex, depth
 /// `emitComments` 가 newline + indent 를 끼우는데, 그게 keyword 직후에 오면
 /// `return` 은 ASI 로 종료 (`return;`), `throw` 는 syntax error 가 된다.
 /// `/* @__PURE__ */ jsxs(...)` 같은 leading annotation 이 흔한 회귀 케이스.
+///
+/// 주석 소비 기준점은 **transparent wrapper 를 벗긴 실제 첫 토큰**의 위치다. paren 이
+/// 투명해진(#4042) 뒤로 `return ( /* c */ g() )` 의 첫 출력 토큰은 `g` 인데, 래퍼(`(`)의
+/// span 으로 flush 하면 괄호 *안* 주석이 안 걸린다 → 나중에 emitExpr 의 emitComments 가
+/// newline + indent 와 함께 출력 → `return` 은 ASI 로 끝나 undefined 반환(silent),
+/// `throw` 는 `Illegal newline after throw`. 안쪽 노드 위치로 flush 하면 바깥 주석까지
+/// 함께 소비된다(위치가 더 뒤이므로).
 fn emitNoLineTerminatorOperand(self: anytype, operand: NodeIndex, level: Level) !void {
     if (operand.isNone()) return;
-    const operand_node = self.ast.getNode(operand);
-    const has_real_span = operand_node.span.start != operand_node.span.end and
-        (operand_node.span.start & ast_mod.Ast.STRING_TABLE_BIT) == 0;
-    if (has_real_span) {
-        try emitLeadingCommentsInline(self, operand_node.span.start);
+    const first_token_node = call_emit.skipWrappers(self, operand, true);
+    if (!first_token_node.isNone()) {
+        const n = self.ast.getNode(first_token_node);
+        const has_real_span = n.span.start != n.span.end and
+            (n.span.start & ast_mod.Ast.STRING_TABLE_BIT) == 0;
+        if (has_real_span) try emitLeadingCommentsInline(self, n.span.start);
     }
     try self.emitExpr(operand, level, .{});
 }
@@ -656,10 +665,27 @@ fn emitIfReturnChainTail(self: anytype, t: anytype, is_first: bool) !void {
 
 fn tryEmitIfReturnTernary(self: anytype, t: anytype) !bool {
     if (!self.options.minify_syntax or !canEmitIfReturnChain(self, t, 0)) return false;
-    try self.write("return ");
+    try self.write("return");
+    try writeFoldedTestSeparator(self, t.a);
     try emitIfReturnChainTail(self, t, true);
     try self.writeByte(';');
     return true;
+}
+
+/// 폴딩된 `return <test>?A:B` 의 `return` 과 test 사이 separator (#4481).
+/// test 가 precedence 로 괄호에 감싸이면 출력이 `(` 로 시작해 공백이 불필요하다
+/// (`return(m=g())?1:2`). writeKeywordOperandSeparator 는 AST 의 leftmost 토큰만 봐서
+/// 그 괄호(합성)를 알 수 없으므로 wrap 여부를 직접 물어본다.
+fn writeFoldedTestSeparator(self: anytype, test_idx: NodeIndex) !void {
+    if (self.options.minify_whitespace) {
+        // transparent wrapper(paren) 너머 실제 첫 노드가 wrap 주체다 (#4042).
+        const real = call_emit.skipWrappers(self, test_idx, true);
+        if (!real.isNone() and @intFromEnum(real) < self.ast.nodes.items.len) {
+            if (self.exprNeedsParens(self.ast.getNode(real), .conditional, .{})) return;
+            if (!operandStartsIdentifierLike(self, real)) return;
+        }
+    }
+    try self.writeByte(' ');
 }
 
 /// statement list 의 `indices[i]` 가 `if(c)return A;` (else 없음/elided) 이고 바로 다음
@@ -682,7 +708,8 @@ fn tryEmitReturnFallthrough(self: anytype, indices: []const u32, i: usize) !?usi
     if (next.tag != .return_statement or next.data.unary.operand.isNone()) return null;
     const b_arg = next.data.unary.operand;
     if (self.ast.getNode(b_arg).tag == .sequence_expression) return null;
-    try self.write("return ");
+    try self.write("return");
+    try writeFoldedTestSeparator(self, t.a);
     // `return` 직후 cond — leading comment ASI 회피 + test level(.conditional).
     try emitNoLineTerminatorOperand(self, t.a, .conditional);
     try writeSpace(self);
@@ -729,6 +756,7 @@ fn tryEmitIfExprStatement(self: anytype, t: anytype) !bool {
         const then_expr = singleExprStmt(self, t.b) orelse return false;
         if (!isSafeAndOperand(self.ast.getNode(t.a).tag)) return false;
         if (!isSafeAndOperand(self.ast.getNode(then_expr).tag)) return false;
+        if (startsWithLetIdentifier(self, t.a)) return false;
         markFoldedStmtStart(self);
         // `&&` 는 좌결합 → left=.logical_and.lower(), right=.logical_and (esbuild
         // binaryExprVisitor). 이 level 로 내려야 `c&&({a}=o)` 처럼 assignment/sequence
@@ -746,6 +774,7 @@ fn tryEmitIfExprStatement(self: anytype, t: anytype) !bool {
     if (!isSafeTernaryTest(self.ast.getNode(t.a).tag)) return false;
     if (!canEmitTernaryBranch(self, t.b)) return false;
     if (!canEmitTernaryBranch(self, t.c)) return false;
+    if (startsWithLetIdentifier(self, t.a)) return false;
     markFoldedStmtStart(self);
     try self.emitExpr(t.a, .conditional, .{}); // esbuild EIf: test=.conditional
     try writeSpace(self);
@@ -761,11 +790,48 @@ fn tryEmitIfExprStatement(self: anytype, t: anytype) !bool {
 }
 
 /// `if` → `&&`/`?:` 폴딩은 조건식을 **statement 선두**로 끌어올린다 (`if(c)` 의 `if(` 가
-/// 사라지므로). emitExpressionStatement 와 동일하게 그 위치를 마킹해야 선두 `{`/`function`/
-/// `class` 가 block·선언문으로 오파싱되는 것을 막는 괄호가 붙는다 — 마킹이 없으면
-/// `if({}.x)h()` → `{}.x&&h()` (SyntaxError) 처럼 깨진다. (#4472 의 comma-fold 와 같은 처방.)
+/// 사라지므로). emitExpressionStatement(`stmt_start` 마킹)와 동일한 조건을 만들어 줘야
+/// 선두 `{`/`function`/`class` 가 block·선언문으로 오파싱되는 것을 막는 괄호가 붙는다 —
+/// 마킹이 없으면 `if({}.x)h()` → `{}.x&&h()` (SyntaxError). (#4472 comma-fold 와 같은 처방.)
 fn markFoldedStmtStart(self: anytype) void {
     self.stmt_start = self.buf.items.len;
+}
+
+/// 폴딩된 조건식의 **첫 토큰**이 식별자 `let` 인지 (sloppy mode 의 `var let = [...]`).
+///
+/// `stmt_start` 마킹으로는 못 막는 statement-start 위험이다 — `let` 은 식별자라
+/// `exprNeedsParens` 가 괄호를 못 씌우고(identifier 는 dispatch early-return 이라
+/// 중앙 wrap 불가), statement 가 `let [` 로 시작하면 파서가 **lexical 선언**(배열
+/// 구조분해)으로 읽는다: `if (let[0]) g();` → `let[0]&&g();` → SyntaxError.
+/// 폴딩 자체를 포기하면 `if(` 가 남아 `let` 이 statement 선두가 아니게 되므로 안전하다.
+/// (`let` 을 변수명으로 쓰는 코드는 사실상 없고, minify_identifiers 면 rename 되므로
+///  과잉 거부 비용은 0 에 가깝다.)
+fn startsWithLetIdentifier(self: anytype, idx: NodeIndex) bool {
+    var cur = call_emit.skipWrappers(self, idx, true);
+    var depth: u8 = 0;
+    while (depth < 32) : (depth += 1) {
+        if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return false;
+        const n = self.ast.getNode(cur);
+        switch (n.tag) {
+            .identifier_reference => return std.mem.eql(u8, self.ast.identifierNameText(n), "let"),
+            // 첫 토큰은 leftmost leaf 에서 나온다 — 그 쪽으로 내려간다.
+            .static_member_expression, .computed_member_expression => {
+                const e = n.data.extra;
+                if (!self.ast.hasExtra(e, 1)) return false;
+                cur = call_emit.skipWrappers(self, self.ast.readExtraNode(e, 0), true);
+            },
+            .call_expression, .binary_expression, .logical_expression => {
+                const next = if (n.tag == .call_expression) blk: {
+                    const e = n.data.extra;
+                    if (!self.ast.hasExtra(e, 1)) return false;
+                    break :blk self.ast.readExtraNode(e, 0);
+                } else n.data.binary.left;
+                cur = call_emit.skipWrappers(self, next, true);
+            },
+            else => return false,
+        }
+    }
+    return false;
 }
 
 fn emitIfVerbatim(self: anytype, t: anytype) !void {

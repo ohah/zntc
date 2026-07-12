@@ -2903,3 +2903,31 @@ test "#4392 refresh hook-sig: long signature (>1024B) not truncated/aborted" {
     try std.testing.expect(std.mem.indexOf(u8, r.code, "$RefreshSig$") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.code, "useHookNumber119") != null);
 }
+
+// ============================================================
+// #4481 — `return`/`throw` 직후 *괄호 안* 주석의 line terminator (ASI)
+// ============================================================
+//
+// paren 이 투명해진(#4042) 뒤 `return ( /*c*/ g() )` 의 첫 출력 토큰은 `g` 다. 그런데
+// 주석 flush 기준을 래퍼 span(`(` 위치)으로 잡으면 괄호 *안* 주석이 안 걸리고, 나중에
+// emitComments 가 newline + indent 와 함께 출력한다 → `return` 은 ASI 로 끝나 undefined 를
+// 반환하고(빌드 green, 값만 틀림) `throw` 는 `Illegal newline after throw` 로 죽는다.
+// minify 없이도 재현되며, codegen 유닛 하네스는 주석을 배선하지 않아 여기서 가드한다.
+
+test "#4481 return/throw 직후 괄호 안 주석은 inline (ASI 방지)" {
+    var result = try transpileWithCallbackInternal(
+        std.testing.allocator,
+        "function f(g) { return ( /* inner */ g() ); }\nfunction h(g) { throw ( /* inner */ new Error(g) ); }\n",
+        "input.js",
+        .{},
+        null,
+        true,
+    );
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "return /* inner */ g()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "throw /* inner */ new Error") != null);
+    // 줄바꿈이 keyword 와 operand 사이에 끼면 안 된다.
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "return /* inner */\n") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "throw /* inner */\n") == null);
+}
