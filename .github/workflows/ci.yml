@@ -202,6 +202,14 @@ jobs:
             exit 1
           fi
 
+      # changesets 는 `fixed` 그룹(main 7개)만 bump 한다. root package.json / platform
+      # 바이너리 9개(`packages/core-*`) / `@zntc/core` 의 optionalDependencies 는 그
+      # 시야 밖이라 손으로 올려 왔는데, 하나라도 빠지면 **0.1.3 core 가 0.1.2 네이티브
+      # 바이너리를 받는** 치명적 불일치가 난다. `changeset:version` 이 자동 동기화하지만,
+      # 누군가 손으로 버전을 건드려 어긋난 채 머지되는 것도 여기서 막는다.
+      - name: Audit release version lockstep
+        run: bun run test:version-lockstep
+
   napi:
     name: NAPI Build & Test
     runs-on: ${{ matrix.os }}
