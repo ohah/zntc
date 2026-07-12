@@ -2981,6 +2981,14 @@ test "#4482 minify: 폴딩된 음수 리터럴 앞 단항 부호는 공백으로
 }
 
 test "#4482 minify: 과잉 괄호 방지 — 양수 리터럴은 그대로" {
-    try expectMinifiedCodeContains("const a = 2; g(a ** 2);", "4");
-    try expectMinifiedCodeContains("g(2 ** 3);", "8");
+    // needle 이 `4`/`8` 이면 `(4)`/`(8)` 에도 매치해 과잉 괄호를 못 잡는다 → 호출 형태로 고정.
+    try expectMinifiedCodeContains("const a = 2; g(a ** 2);", "g(4)");
+    try expectMinifiedCodeContains("g(2 ** 3);", "g(8)");
+    try expectMinifiedCodeContains("g(-(+t));", "g(-+t)");
+    try expectMinifiedCodeContains("g(a ** -b);", "g(a**-b)");
+    // 괄호로 감싸이는 피연산자 앞에는 공백을 넣지 않는다 (`- (-a-b)` 가 아니라 `-(-a-b)`).
+    try expectMinifiedCodeContains("g(-(-a - b));", "g(-(-a-b))");
+    try expectMinifiedCodeContains("g(a - (-b - a));", "g(a-(-b-a))");
+    // `<<` 는 maximal-munch 로 먼저 떨어져 `<!--` 가 생기지 않는다 → 공백 불필요.
+    try expectMinifiedCodeContains("g(x << !--b);", "g(x<<!--b)");
 }

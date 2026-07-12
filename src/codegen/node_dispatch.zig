@@ -135,6 +135,9 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
         },
         .numeric_literal => {
             try self.addSourceMapping(node.span);
+            // 상수 폴딩이 만든 음수 리터럴(`-2`)은 출력이 `-` 로 시작 → 직전 연산자와
+            // `--` 로 합쳐질 수 있다 (`a- -2`, `- -2`). wrap 된 경우엔 앞이 `(` 라 무발동 (#4482).
+            if (startsWithMinus(self.ast.getText(node.span))) try self.printSpaceBeforeOperator(.minus);
             try self.writeNodeSpan(node);
             // 정수 형태(`42`)면 바로 뒤 `.` 가 소수점으로 오파싱됨 → member 의 `.` 가
             // 공백을 끼우도록 위치 마킹 (`42 .toString()`). `.`/`e`/`x`/`b`/`o` 가 있는
@@ -144,8 +147,12 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
                 self.need_space_before_dot = self.buf.items.len;
             }
         },
+        .bigint_literal => {
+            try self.addSourceMapping(node.span);
+            if (startsWithMinus(self.ast.getText(node.span))) try self.printSpaceBeforeOperator(.minus);
+            try self.writeNodeSpan(node);
+        },
         .null_literal,
-        .bigint_literal,
         .regexp_literal,
         => {
             try self.addSourceMapping(node.span);
@@ -540,20 +547,26 @@ fn emitPrefixStartText(self: anytype, text: []const u8, level: Level) Error!void
     if (wrap) try self.writeByte(')');
 }
 
-/// 상수 인라인 값 emit + 출력 형태에 따른 후처리 (#4482).
-/// - `void 0` / 음수 숫자 → prefix 단항으로 시작 → `.prefix` 이상 슬롯에서 괄호.
+/// 상수 인라인 값 emit + 출력 형태에 따른 후처리 (#4482). 값 자체의 텍스트는
+/// `writeConstValue` 단일 구현이 쓰고, 여기서는 **출력 형태**만 본다.
+/// - `void 0` / 음수 숫자 → prefix 단항으로 시작 → `.prefix` 이상 슬롯에서 괄호,
+///   괄호가 없으면 직전 연산자와의 토큰 병합 방지 공백.
 /// - 십진 정수(`2`) → 바로 뒤 `.` 가 소수점으로 오파싱 → `need_space_before_dot` 마킹
-///   (numeric_literal 노드 경로와 동일. 상수 인라인은 리터럴 노드를 거치지 않아 이
-///   마킹이 없었다).
+///   (numeric_literal 노드 경로와 동일. 상수 인라인은 리터럴 노드를 거치지 않아 이 마킹이 없었다).
 fn emitConstValueAtLevel(self: anytype, cv: ConstValue, level: Level) Error!void {
-    switch (cv.kind) {
-        .undefined_ => return emitPrefixStartText(self, "void 0", level),
-        .number => {
-            if (startsWithMinus(cv.number_text)) return emitPrefixStartText(self, cv.number_text, level);
-            try self.write(cv.number_text);
-            if (numericIsPlainInteger(cv.number_text)) self.need_space_before_dot = self.buf.items.len;
-        },
-        else => try self.writeConstValue(cv),
+    const is_negative_number = cv.kind == .number and startsWithMinus(cv.number_text);
+    const starts_with_prefix_op = cv.kind == .undefined_ or is_negative_number;
+    const wrap = starts_with_prefix_op and level.gte(.prefix);
+    if (wrap) {
+        try self.writeByte('(');
+    } else if (is_negative_number) {
+        try self.printSpaceBeforeOperator(.minus);
+    }
+    try self.writeConstValue(cv);
+    if (wrap) {
+        try self.writeByte(')');
+    } else if (cv.kind == .number and numericIsPlainInteger(cv.number_text)) {
+        self.need_space_before_dot = self.buf.items.len;
     }
 }
 

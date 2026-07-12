@@ -52,9 +52,12 @@ pub fn isOptionalChainExpr(self: anytype, idx: NodeIndex) bool {
     return objectContinuesOptionalChain(self, skipWrappers(self, idx, true));
 }
 
-/// `undefined` peephole 의 callee/object/new.callee 슬롯 paren 검사.
-/// node_dispatch.zig 가 `void 0` (no paren) 으로 출력하므로, member/call/new 슬롯의
-/// caller 가 paren 으로 감싸 `void 0.x` → `void (0.x)` 오파싱 방지.
+/// 전역 `undefined` 가 `void 0` peephole 로 치환되는 식별자인지 (unbound global 만).
+///
+/// 괄호는 이제 node_dispatch 의 identifier case 가 `level` 을 보고 직접 친다(#4482) —
+/// caller 측 wrapping(emitNodeMaybeUndefParen)은 제거됐다. 이 술어의 유일한 소비자는
+/// `powLeftNeedsParen` 이며, **번들 상수 인라인된 undefined 는 여기서 false** 다
+/// (sym_id 가 잡히므로) — 그쪽은 powLeftNeedsParen 이 constInlineValue 로 따로 본다.
 pub fn isUndefinedPeephole(self: anytype, idx: NodeIndex) bool {
     if (!self.options.minify_syntax) return false;
     if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;

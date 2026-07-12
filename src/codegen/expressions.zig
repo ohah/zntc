@@ -47,18 +47,15 @@ pub fn emitUnary(self: anytype, node: Node, level: Level, flags: ExprFlags) !voi
             return;
         }
     }
-    const sym = op.symbol();
-    try self.write(sym);
-    if (op == .kw_typeof or op == .kw_void or op == .kw_delete) {
+    const is_keyword_op = op == .kw_typeof or op == .kw_void or op == .kw_delete;
+    // 직전 연산자와 붙어 `--`/`++` 로 합쳐지면 한 칸 끼운다 (`- -x`, `- --x`) (#4482).
+    if (!is_keyword_op) try self.printSpaceBeforeOperator(op);
+    try self.write(op.symbol());
+    if (is_keyword_op) {
         try self.writeByte(' ');
-    } else if ((op == .plus or op == .minus) and leadingSignChar(self, operand) == sym[0]) {
-        // 단항 `-`/`+` 뒤에 같은 부호로 시작하는 피연산자가 오면 토큰이 `--`/`++` 로
-        // 합쳐진다 (#4482). `-(--t)` → `---t` (SyntaxError), `-(-t)` → `--t` (t 를
-        // 감소시키는 **silent miscompile**). 한 칸 띄워 끊는다: `- --t`, `- -t`.
-        // 괄호가 아니라 공백인 이유 — 스펙상 단항 피연산자에 괄호는 불필요하고,
-        // 공백이 1 byte 더 작다 (esbuild printSpaceBeforeOperator 동일).
-        // minify 여부와 무관하게 필요하다: 이 슬롯은 어느 모드에서도 공백을 안 넣는다.
-        try self.writeByte(' ');
+    } else {
+        // 이 `-`/`+`/`!` 도 다음 토큰과 합쳐질 수 있다 → 기록.
+        self.recordOperatorToken(op);
     }
     // operand level = .prefix.lower() (esbuild EUnary value = LPrefix-1)
     try self.emitExpr(operand, Level.prefix.lower(), .{});
@@ -76,11 +73,10 @@ pub fn emitUpdate(self: anytype, node: Node, level: Level, flags: ExprFlags) !vo
     const is_postfix = (extra_flags & ast_mod.UnaryFlags.postfix) != 0;
     const op: Kind = @enumFromInt(@as(u8, @truncate(extra_flags)));
     if (!is_postfix) {
-        // `a < !--b` 를 tight 하게 붙이면 `a<!--b` 가 되는데, classic script 에서 `<!--` 는
-        // 한 줄 주석의 시작(Annex B) 이라 그 뒤가 통째로 사라진다 (#4482). `<!` 직후의
-        // prefix `--` 만 한 칸 끊는다. (`--` 뒤 `>` 는 줄 선두가 아니면 안전하므로 제외.)
-        if (op == .minus2 and std.mem.endsWith(u8, self.buf.items, "<!")) try self.writeByte(' ');
+        // 직전 연산자와 붙어 `---`(=`--`+`-`) 나 `<!--`(HTML 주석) 가 되면 한 칸 끊는다.
+        try self.printSpaceBeforeOperator(op);
         try self.write(op.symbol());
+        self.recordOperatorToken(op);
     }
     // operand 는 update 의 lvalue 타겟 — 미존재 ns 멤버를 `(void 0)` 으로 바꾸면
     // `(void 0)++` SyntaxError 가 되므로 emitStaticMember 가 재작성을 건너뛰게 한다.
@@ -89,7 +85,10 @@ pub fn emitUpdate(self: anytype, node: Node, level: Level, flags: ExprFlags) !vo
     const operand_level = if (is_postfix) Level.postfix.lower() else Level.prefix.lower();
     try self.emitExpr(operand, operand_level, .{});
     self.member_assign_target = false;
-    if (is_postfix) try self.write(op.symbol());
+    if (is_postfix) {
+        try self.write(op.symbol());
+        self.recordOperatorToken(op);
+    }
 }
 
 /// 이항 연산자 심볼 + 양옆 spacing 을 좌/우 피연산자 사이에 emit. 재귀·반복 경로 공용.
@@ -101,20 +100,14 @@ fn emitBinaryOperator(self: anytype, node: Node) !void {
         try self.write(op.symbol());
         try self.writeByte(' ');
     } else {
-        const sym = op.symbol();
-        // `+`/`-` 도 minify 시엔 tight (`a+b`). 단 RHS 가 unary `+`/`-` 또는 prefix
-        // `++`/`--` 로 시작하면 `++`/`--` 로 토큰이 잘못 합쳐지므로(`a+ +b` → `a++b`)
-        // 그 경우에만 한 칸 삽입. 좌측은 합쳐질 일 없음 — postfix `a++` + `+b` 는
-        // `a+++b` 로 다시 lex 해도 `(a++)+b` 라 의미 동일.
+        // RHS 가 `+`/`-` 로 시작해 토큰이 합쳐지는 경우(`a+ +b`)는 RHS 자신이 emit 직전에
+        // printSpaceBeforeOperator 로 끊는다 — 여기선 이 연산자를 기록만 한다 (#4482).
+        // 좌측은 합쳐질 일 없음: postfix `a++` + `+b` 는 `a+++b` 로 다시 lex 해도
+        // `(a++)+b` 라 의미가 같다.
         try self.writeSpace();
-        try self.write(sym);
-        if (self.options.minify_whitespace and (op == .plus or op == .minus) and
-            leadingSignChar(self, node.data.binary.right) == sym[0])
-        {
-            try self.writeByte(' ');
-        } else {
-            try self.writeSpace();
-        }
+        try self.write(op.symbol());
+        self.recordOperatorToken(op);
+        try self.writeSpace();
     }
 }
 
@@ -170,18 +163,56 @@ fn binaryChildIsLogical(self: anytype, idx: NodeIndex) bool {
     return cop == .pipe2 or cop == .amp2;
 }
 
-/// `**` 좌측이 출력 시 prefix 단항으로 시작해 직접 올 수 없는 형태인지 (transparent
-/// wrapper 너머). esbuild BinOpPow: unary(비-update)/await/undefined(`void 0`)/number(음수)/
-/// (minify)boolean.
+/// `**` 좌측이 **출력 시** prefix 단항으로 시작하는지 — 그러면 `-a ** b` 가 SyntaxError 라
+/// 괄호가 필수다 (esbuild BinOpPow).
+///
+/// 중요 — AST 태그만 봐서는 안 된다 (#4482). codegen 은 emit 시점에 노드를 갈아치운다:
+///   - 상수 단락 fold: `(ON && -1) ** k` → emitBinary 가 살아남는 분기(`-1`)를 그 자리에 emit
+///   - 상수 조건 fold: `(ON ? -1 : 2) ** k` → emitConditional 이 동일
+///   - 상수 인라인:   `U ** 2` (U=undefined) → identifier 자리에 `void 0` 텍스트
+/// 그래서 **실제로 먼저 나올 토큰**을 따라 내려간다. 여기서 true 면 `binaryChildLevels` 가
+/// 좌측 level 을 올리고, 실제 괄호는 그 자리에 emit 되는 노드의 wrap 이 만든다.
 fn powLeftNeedsParen(self: anytype, idx: NodeIndex) bool {
-    const real = skipTransparent(self, idx);
-    if (real.isNone() or @intFromEnum(real) >= self.ast.nodes.items.len) return false;
-    const n = self.ast.getNode(real);
-    return switch (n.tag) {
-        .unary_expression, .await_expression, .numeric_literal => true,
-        .boolean_literal => self.options.minify_syntax, // !0/!1 peephole
-        else => calls.isUndefinedPeephole(self, real), // undefined → void 0
-    };
+    var cur = skipTransparent(self, idx);
+    var depth: u8 = 0;
+    while (depth < 32) : (depth += 1) {
+        if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return false;
+        const n = self.ast.getNode(cur);
+        switch (n.tag) {
+            // `-x` / `!x` / `void x` / `await x` — 단항으로 시작.
+            .unary_expression, .await_expression => return true,
+            // 상수 폴딩이 만든 음수 리터럴(`-2`). 양수면 exprNeedsParens 가 괄호를 안 친다.
+            .numeric_literal, .bigint_literal => return true,
+            .boolean_literal => return self.options.minify_syntax, // `!0`/`!1` peephole
+            .identifier_reference => {
+                if (constInlineValue(self, cur)) |cv| {
+                    return switch (cv.kind) {
+                        .undefined_ => true, // `void 0`
+                        .number => cv.number_text.len > 0 and cv.number_text[0] == '-',
+                        else => false, // true/false/null → 키워드로 시작
+                    };
+                }
+                return calls.isUndefinedPeephole(self, cur); // 전역 `undefined` → `void 0`
+            },
+            // 상수 단락 fold — emitBinary 와 **같은 판정**을 해야 한다.
+            .logical_expression => {
+                if (self.options.linking_metadata == null) return false;
+                const left_val = self.evalBooleanCondition(n.data.binary.left) orelse return false;
+                const op: Kind = @enumFromInt(n.data.binary.flags);
+                // 단락 확정 → `true`/`false` 텍스트로 접힘 (키워드로 시작).
+                if ((op == .amp2 and !left_val) or (op == .pipe2 and left_val)) return false;
+                cur = skipTransparent(self, n.data.binary.right); // 우변이 그 자리에 온다
+            },
+            // 상수 조건 fold — emitConditional 과 같은 판정.
+            .conditional_expression => {
+                if (self.options.linking_metadata == null) return false;
+                const cond = self.evalBooleanCondition(n.data.ternary.a) orelse return false;
+                cur = skipTransparent(self, if (cond) n.data.ternary.b else n.data.ternary.c);
+            },
+            else => return false,
+        }
+    }
+    return false;
 }
 
 /// 이항 노드 emit. 좌결합 체인(a+b+c+…)은 좌 스파인이 N-deep 라 순수 재귀면 스택 오버플로우
@@ -262,65 +293,6 @@ pub fn constInlineValue(self: anytype, idx: NodeIndex) ?ConstValue {
     const meta = self.options.linking_metadata orelse return null;
     const sid = self.resolveSymbolId(idx, meta) orelse return null;
     return meta.const_values.get(sid);
-}
-
-/// 노드가 출력 시 `+` 또는 `-` 로 시작하는지 — 시작하면 그 문자, 아니면 null.
-/// 앞에 같은 부호가 있으면 `++`/`--` 로 토큰이 합쳐지므로 공백을 끼워야 한다.
-/// binary `+`/`-` 의 RHS 슬롯(emitBinaryOperator)과 단항 `+`/`-` 의 피연산자 슬롯
-/// (emitUnary) 이 공유한다 (#4482).
-///
-/// 해당 케이스: unary `+`/`-`, prefix `++`/`--`, (상수 폴딩으로 생긴) 음수 numeric/
-/// bigint literal, 음수로 const-인라인되는 식별자. 더 높은 우선순위 이항식은 codegen 이
-/// 괄호 없이 출력하므로 leftmost leaf 로 내려가 검사한다.
-fn leadingSignChar(self: anytype, idx: NodeIndex) ?u8 {
-    var cur = idx;
-    var depth: u8 = 0;
-    while (depth < 32) : (depth += 1) {
-        // transparent wrapper(paren 등)는 `(` 미출력 → 안쪽 토큰이 시작 (#4042).
-        cur = skipTransparent(self, cur);
-        if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return null;
-        const n = self.ast.getNode(cur);
-        switch (n.tag) {
-            .unary_expression => return switch (unaryOpKind(self, n.data.extra) orelse return null) {
-                .plus => '+',
-                .minus => '-',
-                else => null, // !x, ~x, typeof/void/delete x → 다른 글자로 시작
-            },
-            .update_expression => {
-                const extras = self.ast.extra_data.items;
-                const e = n.data.extra;
-                if (e + 1 >= extras.len) return null;
-                if ((extras[e + 1] & ast_mod.UnaryFlags.postfix) != 0) {
-                    cur = @enumFromInt(extras[e]); // `x++` → operand 의 첫 글자로 시작 → 내려감
-                    continue;
-                }
-                return switch (@as(Kind, @enumFromInt(@as(u8, @truncate(extras[e + 1]))))) {
-                    .plus2 => '+',
-                    .minus2 => '-',
-                    else => null,
-                };
-            },
-            .numeric_literal, .bigint_literal => {
-                const text = self.ast.getText(n.span);
-                return if (text.len > 0 and text[0] == '-') '-' else null;
-            },
-            // 번들 상수 인라인이 이 자리에 리터럴 텍스트를 직접 쓴다 (`const NEG = -2` → `-2`).
-            // `void 0`/`true`/`null` 은 부호로 시작하지 않아 해당 없음.
-            .identifier_reference => {
-                const cv = constInlineValue(self, cur) orelse return null;
-                if (cv.kind != .number) return null;
-                return if (cv.number_text.len > 0 and cv.number_text[0] == '-') '-' else null;
-            },
-            // 같은/낮은 우선순위 RHS 는 paren 으로 감싸져 `(` 로 시작 → 안전(null).
-            // 더 높은 우선순위(`a + b*c` 의 `b*c`)면 leftmost leaf 로 내려가 검사.
-            .binary_expression, .logical_expression => {
-                cur = n.data.binary.left;
-                continue;
-            },
-            else => return null,
-        }
-    }
-    return null;
 }
 
 pub fn emitAssignment(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {

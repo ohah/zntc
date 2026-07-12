@@ -5,6 +5,7 @@ const ast_mod = @import("../parser/ast.zig");
 const Span = @import("../lexer/token.zig").Span;
 const Ast = ast_mod.Ast;
 const ConstValue = @import("../semantic/symbol.zig").ConstValue;
+const Kind = @import("../lexer/token.zig").Kind;
 
 pub fn write(self: anytype, s: []const u8) !void {
     try self.buf.appendSlice(self.allocator, s);
@@ -26,6 +27,48 @@ pub fn writeByte(self: anytype, b: u8) !void {
     } else {
         self.gen_col += 1;
     }
+}
+
+/// 방금 출력한 연산자 토큰을 기록 (esbuild `prevOp`/`prevOpEnd`). 다음 토큰이
+/// 이것과 붙어 `++`/`--`/`<!--` 로 합쳐질 수 있는지 `printSpaceBeforeOperator` 가 판정한다.
+/// **연산자 심볼을 write 한 직후**에 부른다 — 그 사이에 다른 바이트가 나가면
+/// `prev_op_end != buf.len` 이 되어 자동으로 무효화된다(공백/괄호가 이미 끊어준 경우).
+pub fn recordOperatorToken(self: anytype, op: Kind) void {
+    self.prev_op = op;
+    self.prev_op_end = self.buf.items.len;
+}
+
+/// 연산자(또는 연산자로 *시작하는* 토큰: 음수 리터럴 `-2`)를 출력하기 **직전**에 불러,
+/// 직전 연산자와 붙으면 다른 토큰으로 합쳐지는 경우 공백 한 칸을 끼운다 (#4482,
+/// esbuild `printSpaceBeforeOperator`).
+///
+///   `- -x`   : `--x` 로 합쳐지면 prefix 감소 — **파싱되는** silent miscompile
+///   `- --x`  : `---x` → `--` + `-x` → SyntaxError
+///   `+ ++x`  : 동일
+///   `<! --x` : `<!--` 는 classic script 에서 한 줄 주석(Annex B) → 뒤가 통째로 사라짐
+///
+/// postfix `x++` 뒤의 `+`(`x+++y`)는 다시 lex 해도 `(x++)+y` 라 의미가 같아 끊지 않는다.
+/// 판정이 **출력 바이트** 기준이라, AST 상 어느 노드가 emit 될지(상수 폴딩·치환)와 무관하게
+/// 정확하다 — 태그 룩어헤드는 fold 로 사라질 분기를 봐서 구멍이 났다.
+pub fn printSpaceBeforeOperator(self: anytype, op: Kind) !void {
+    if (self.prev_op_end != self.buf.items.len) return;
+    const merges = switch (op) {
+        // `+ +x` / `+ ++x`
+        .plus, .plus2 => self.prev_op == .plus,
+        // `- -x` / `- --x`
+        .minus, .minus2 => self.prev_op == .minus,
+        else => false,
+    };
+    const html_open_comment = op == .minus2 and self.prev_op == .bang and endsWithLtBang(self.buf.items);
+    if (merges or html_open_comment) try self.writeByte(' ');
+}
+
+/// buf 가 `<` + `!` 로 끝나는지 — 뒤에 `--` 가 붙으면 `<!--` (HTML open comment).
+/// `<<!` 는 제외한다: lexer 가 `<<` 를 maximal-munch 로 먼저 떼므로 `<!--` 토큰이 생기지 않는다.
+fn endsWithLtBang(buf: []const u8) bool {
+    if (buf.len < 2) return false;
+    if (buf[buf.len - 1] != '!' or buf[buf.len - 2] != '<') return false;
+    return buf.len < 3 or buf[buf.len - 3] != '<';
 }
 
 pub fn trimTrailingSemicolonBeforeMinifyBoundary(self: anytype) void {
