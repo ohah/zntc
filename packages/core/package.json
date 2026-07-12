@@ -1,6 +1,6 @@
 {
   "name": "@zntc/core",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "ZNTC native transpiler & compiler binding",
   "keywords": [
     "bundler",
@@ -76,15 +76,15 @@
     "@zntc/test-helpers": "workspace:*"
   },
   "optionalDependencies": {
-    "@zntc/core-darwin-arm64": "0.1.2",
-    "@zntc/core-darwin-x64": "0.1.2",
-    "@zntc/core-linux-arm64-gnu": "0.1.2",
-    "@zntc/core-linux-arm64-musl": "0.1.2",
-    "@zntc/core-linux-x64-gnu": "0.1.2",
-    "@zntc/core-linux-x64-musl": "0.1.2",
-    "@zntc/core-win32-arm64-msvc": "0.1.2",
-    "@zntc/core-win32-ia32-msvc": "0.1.2",
-    "@zntc/core-win32-x64-msvc": "0.1.2",
+    "@zntc/core-darwin-arm64": "0.1.3",
+    "@zntc/core-darwin-x64": "0.1.3",
+    "@zntc/core-linux-arm64-gnu": "0.1.3",
+    "@zntc/core-linux-arm64-musl": "0.1.3",
+    "@zntc/core-linux-x64-gnu": "0.1.3",
+    "@zntc/core-linux-x64-musl": "0.1.3",
+    "@zntc/core-win32-arm64-msvc": "0.1.3",
+    "@zntc/core-win32-ia32-msvc": "0.1.3",
+    "@zntc/core-win32-x64-msvc": "0.1.3",
     "browserslist": "^4.24.0",
     "core-js": "^3.49.0",
     "core-js-compat": "^3.49.0",
