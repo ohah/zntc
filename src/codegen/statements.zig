@@ -7,6 +7,8 @@ const NodeIndex = ast_mod.NodeIndex;
 const Kind = @import("../lexer/token.zig").Kind;
 const string_escape = @import("../string_escape.zig");
 const writer = @import("writer.zig");
+const precedence = @import("precedence.zig");
+const Level = precedence.Level;
 
 const writeNewline = writer.writeNewline;
 const writeIndent = writer.writeIndent;
@@ -251,14 +253,12 @@ fn canEmitTernaryBranch(self: anytype, branch_idx: NodeIndex) bool {
     return canEmitMultiExprBlockAsSequence(self, branch_idx);
 }
 
-/// ternary branch emit. comma sequence (single sequence_expression 또는 multi-expr
-/// block) 는 paren 으로 감싼다 — comma 가 `?:` 보다 우선순위 낮음.
+/// ternary branch emit. 단일 expression 은 `?:` 분기 자리의 level(`.yield`, esbuild EIf 의
+/// yes/no)로 emit 해 필요한 괄호(comma sequence 등)를 precedence 가 재유도하게 한다 (#4481).
+/// multi-expr block 은 AST 노드가 아니라 여기서 합성하는 comma 열이라 직접 감싼다.
 fn emitTernaryBranch(self: anytype, branch_idx: NodeIndex) !void {
     if (singleExprStmt(self, branch_idx)) |e| {
-        const seq = self.ast.getNode(e).tag == .sequence_expression;
-        if (seq) try self.writeByte('(');
-        try self.emitNode(e);
-        if (seq) try self.writeByte(')');
+        try self.emitExpr(e, .yield, .{});
         return;
     }
     try self.writeByte('(');
@@ -417,7 +417,7 @@ pub fn emitReturn(self: anytype, node: Node) !void {
     try self.write("return");
     if (!node.data.unary.operand.isNone()) {
         try writeKeywordOperandSeparator(self, node.data.unary.operand);
-        try emitNoLineTerminatorOperand(self, node.data.unary.operand);
+        try emitNoLineTerminatorOperand(self, node.data.unary.operand, .lowest);
     }
     try self.writeByte(';');
 }
@@ -426,7 +426,7 @@ pub fn emitThrow(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
     try self.write("throw");
     try writeKeywordOperandSeparator(self, node.data.unary.operand);
-    try emitNoLineTerminatorOperand(self, node.data.unary.operand);
+    try emitNoLineTerminatorOperand(self, node.data.unary.operand, .lowest);
     try self.writeByte(';');
 }
 
@@ -515,7 +515,7 @@ fn operandStartsIdentifierLikeDepth(self: anytype, idx: ast_mod.NodeIndex, depth
 /// `emitComments` 가 newline + indent 를 끼우는데, 그게 keyword 직후에 오면
 /// `return` 은 ASI 로 종료 (`return;`), `throw` 는 syntax error 가 된다.
 /// `/* @__PURE__ */ jsxs(...)` 같은 leading annotation 이 흔한 회귀 케이스.
-fn emitNoLineTerminatorOperand(self: anytype, operand: NodeIndex) !void {
+fn emitNoLineTerminatorOperand(self: anytype, operand: NodeIndex, level: Level) !void {
     if (operand.isNone()) return;
     const operand_node = self.ast.getNode(operand);
     const has_real_span = operand_node.span.start != operand_node.span.end and
@@ -523,7 +523,7 @@ fn emitNoLineTerminatorOperand(self: anytype, operand: NodeIndex) !void {
     if (has_real_span) {
         try emitLeadingCommentsInline(self, operand_node.span.start);
     }
-    try self.emitNode(operand);
+    try self.emitExpr(operand, level, .{});
 }
 
 /// `emitNoLineTerminatorOperand` 의 leading-comment 소비 — `emitComments` 와
@@ -564,9 +564,14 @@ pub fn emitIf(self: anytype, node: Node) !void {
     try emitIfVerbatim(self, t);
 }
 
-/// #3095: `cond` 가 paren 없이 `?:` test(= ShortCircuitExpression 또는 그보다 tight)
-/// 자리에 올 수 있는 노드 tag 인지 — 보수적 whitelist. assignment / sequence / yield /
-/// arrow / conditional 등은 `?:` 보다 느슨해 paren 이 필요하므로 거부 (transform skip).
+/// #3095: `cond` 가 `?:` test(= ShortCircuitExpression 또는 그보다 tight) 자리에 그대로
+/// 올 수 있는 노드 tag 인지 — 폴딩 **적격성** whitelist. assignment / sequence / yield /
+/// arrow / conditional 등 `?:` 보다 느슨한 것은 괄호가 필요해 이득이 없으므로 거부(폴딩 skip).
+///
+/// 주의 — 이건 *괄호 안전성* 게이트가 아니다. 안전성은 폴딩된 피연산자를 실제 자리의
+/// precedence level 로 emit 해 `exprNeedsParens` 가 담당한다 (#4481). paren 노드가 투명해진
+/// (#4042) 뒤로는 `.parenthesized_expression` 이 여기 있어도 안쪽 노드가 그대로 노출되므로,
+/// tag whitelist 만으로 안전성을 보장하려는 시도는 성립하지 않는다.
 fn isSafeTernaryTest(tag: ast_mod.Node.Tag) bool {
     return switch (tag) {
         .identifier_reference,
@@ -628,17 +633,23 @@ fn canEmitIfReturnChain(self: anytype, t: anytype, depth: u8) bool {
 /// `is_first` 면 cond 를 `emitNoLineTerminatorOperand` 로 (`return` 직후 ASI 회피).
 /// `?:` 는 right-assoc 이라 `a?1:b?2:3` 가 `a?1:(b?2:3)` 로 정확히 파싱됨 — paren 불필요.
 fn emitIfReturnChainTail(self: anytype, t: anytype, is_first: bool) !void {
-    if (is_first) try emitNoLineTerminatorOperand(self, t.a) else try self.emitNode(t.a);
+    // test=.conditional / 분기=.yield (esbuild EIf) — `return (m=f())?A:B` 처럼 test 의
+    // assignment 괄호를 precedence 가 재유도한다 (#4481).
+    if (is_first)
+        try emitNoLineTerminatorOperand(self, t.a, .conditional)
+    else
+        try self.emitExpr(t.a, .conditional, .{});
     try writeSpace(self);
     try self.writeByte('?');
     try writeSpace(self);
-    try self.emitNode(singleReturnArg(self, t.b).?);
+    try self.emitExpr(singleReturnArg(self, t.b).?, .yield, .{});
     try writeSpace(self);
     try self.writeByte(':');
     try writeSpace(self);
     if (singleReturnArg(self, t.c)) |b_arg| {
-        try self.emitNode(b_arg);
+        try self.emitExpr(b_arg, .yield, .{});
     } else {
+        // `?:` 는 우결합이라 tail 체인(`a?1:b?2:3`)에 괄호 불필요.
         try emitIfReturnChainTail(self, self.ast.getNode(t.c).data.ternary, false);
     }
 }
@@ -672,15 +683,16 @@ fn tryEmitReturnFallthrough(self: anytype, indices: []const u32, i: usize) !?usi
     const b_arg = next.data.unary.operand;
     if (self.ast.getNode(b_arg).tag == .sequence_expression) return null;
     try self.write("return ");
-    try emitNoLineTerminatorOperand(self, t.a); // `return` 직후 cond — leading comment ASI 회피
+    // `return` 직후 cond — leading comment ASI 회피 + test level(.conditional).
+    try emitNoLineTerminatorOperand(self, t.a, .conditional);
     try writeSpace(self);
     try self.writeByte('?');
     try writeSpace(self);
-    try self.emitNode(a_arg);
+    try self.emitExpr(a_arg, .yield, .{});
     try writeSpace(self);
     try self.writeByte(':');
     try writeSpace(self);
-    try self.emitNode(b_arg);
+    try self.emitExpr(b_arg, .yield, .{});
     try self.writeByte(';');
     return j;
 }
@@ -699,9 +711,10 @@ fn singleExprStmt(self: anytype, idx_in: NodeIndex) ?NodeIndex {
     return n.data.unary.operand;
 }
 
-/// `&&` 의 좌/우 피연산자로 paren 없이 올 수 있는 노드 tag 인지 — `?:` test whitelist 에서
+/// `&&` 의 좌/우 피연산자로 괄호 없이 올 수 있는 노드 tag 인지 — `?:` test whitelist 에서
 /// `logical_expression` 만 추가로 제외 (`||`/`??` 가 `&&` 보다 느슨해 `(a||b)&&c` paren 필요;
 /// `a&&b` 는 valid 지만 op 검사 회피 위해 통째로 제외 — 보수적).
+/// `isSafeTernaryTest` 와 마찬가지로 적격성 판단이며, 괄호 안전성은 precedence 가 담당한다.
 fn isSafeAndOperand(tag: ast_mod.Node.Tag) bool {
     return isSafeTernaryTest(tag) and tag != .logical_expression;
 }
@@ -712,15 +725,19 @@ fn tryEmitIfExprStatement(self: anytype, t: anytype) !bool {
     if (!self.options.minify_syntax) return false;
     const has_else = !t.c.isNone() and !isElidedAlternate(self, t.c);
     if (!has_else) {
-        // `if(c)a();` → `c&&a();` — c 와 a() 둘 다 `&&` 피연산자로 paren 없이 와야 함.
+        // `if(c)a();` → `c&&a();`
         const then_expr = singleExprStmt(self, t.b) orelse return false;
         if (!isSafeAndOperand(self.ast.getNode(t.a).tag)) return false;
         if (!isSafeAndOperand(self.ast.getNode(then_expr).tag)) return false;
-        try self.emitNode(t.a);
+        markFoldedStmtStart(self);
+        // `&&` 는 좌결합 → left=.logical_and.lower(), right=.logical_and (esbuild
+        // binaryExprVisitor). 이 level 로 내려야 `c&&({a}=o)` 처럼 assignment/sequence
+        // 피연산자의 필수 괄호를 exprNeedsParens 가 재유도한다 (#4481).
+        try self.emitExpr(t.a, Level.logical_and.lower(), .{});
         try writeSpace(self);
         try self.write("&&");
         try writeSpace(self);
-        try self.emitNode(then_expr);
+        try self.emitExpr(then_expr, .logical_and, .{});
         try self.writeByte(';');
         return true;
     }
@@ -729,7 +746,8 @@ fn tryEmitIfExprStatement(self: anytype, t: anytype) !bool {
     if (!isSafeTernaryTest(self.ast.getNode(t.a).tag)) return false;
     if (!canEmitTernaryBranch(self, t.b)) return false;
     if (!canEmitTernaryBranch(self, t.c)) return false;
-    try self.emitNode(t.a);
+    markFoldedStmtStart(self);
+    try self.emitExpr(t.a, .conditional, .{}); // esbuild EIf: test=.conditional
     try writeSpace(self);
     try self.writeByte('?');
     try writeSpace(self);
@@ -740,6 +758,14 @@ fn tryEmitIfExprStatement(self: anytype, t: anytype) !bool {
     try emitTernaryBranch(self, t.c);
     try self.writeByte(';');
     return true;
+}
+
+/// `if` → `&&`/`?:` 폴딩은 조건식을 **statement 선두**로 끌어올린다 (`if(c)` 의 `if(` 가
+/// 사라지므로). emitExpressionStatement 와 동일하게 그 위치를 마킹해야 선두 `{`/`function`/
+/// `class` 가 block·선언문으로 오파싱되는 것을 막는 괄호가 붙는다 — 마킹이 없으면
+/// `if({}.x)h()` → `{}.x&&h()` (SyntaxError) 처럼 깨진다. (#4472 의 comma-fold 와 같은 처방.)
+fn markFoldedStmtStart(self: anytype) void {
+    self.stmt_start = self.buf.items.len;
 }
 
 fn emitIfVerbatim(self: anytype, t: anytype) !void {
