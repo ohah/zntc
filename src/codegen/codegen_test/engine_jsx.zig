@@ -560,3 +560,67 @@ test "JSX dev: keyed value still works (#4110 regression guard)" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "{ children: y }, \"k\", false,") != null);
 }
+
+// ============================================================
+// #4470 — `--jsx=preserve` 는 JSX 를 AST 로 출력한다 (소스 원문 복사 X)
+// ============================================================
+//
+// 예전엔 JSX 서브트리를 `writeNodeSpan` 으로 통째 복사해서, JSX 안에서만
+// rename / TS strip / define 치환이 전부 무시됐다. 게다가 transformer 가
+// container/text 만 `jsx_transform` 게이트로 lowering 해 `<div>{x}</div>` 가
+// `<div>"..."x</div>` 같은 깨진 JSX 로 나갔다.
+
+fn e2ePreserve(allocator: std.mem.Allocator, source: []const u8) !helpers.TestResult {
+    return helpers.e2eFull(allocator, source, .{
+        .jsx_transform = true,
+        .jsx_runtime = .preserve,
+    }, .{}, ".tsx");
+}
+
+test "#4470 preserve: JSX text / expression container 가 보존된다" {
+    var r = try e2ePreserve(std.testing.allocator,
+        \\const cls = "c";
+        \\export const v = <div a="x">hello {cls} world<br /></div>;
+    );
+    defer r.deinit();
+    // 텍스트는 원문, 표현식은 중괄호 유지.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "hello {cls} world") != null);
+    // 옛 버그: 텍스트가 string_literal 로 lowering 돼 따옴표가 붙었다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"hello ") == null);
+}
+
+test "#4470 preserve: attribute 의 중괄호가 유지된다" {
+    var r = try e2ePreserve(std.testing.allocator,
+        \\const n = 1;
+        \\export const v = <div a={n} b="lit" c />;
+    );
+    defer r.deinit();
+    // 파서가 `{}` 를 소비하므로 codegen 이 다시 만들어야 한다 — `a=n` 이면 문법 파손.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "a={n}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "b=\"lit\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "c ") != null or
+        std.mem.indexOf(u8, r.output, "c/>") != null);
+}
+
+test "#4470 preserve: JSX 안의 TypeScript 어노테이션이 strip 된다" {
+    var r = try e2ePreserve(std.testing.allocator,
+        \\const cls = "c";
+        \\export const v = <div t={cls as string} />;
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "as string") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "t={cls}") != null);
+}
+
+test "#4470 preserve: fragment / spread / member 태그" {
+    var r = try e2ePreserve(std.testing.allocator,
+        \\const rest = { z: 1 };
+        \\const NS = { Panel: null };
+        \\export const v = <NS.Panel {...rest}><>{1}</></NS.Panel>;
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "<NS.Panel") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "{...rest}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "<>{1}</>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "</NS.Panel>") != null);
+}

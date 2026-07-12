@@ -10,6 +10,7 @@ const module_emit = @import("modules.zig");
 const type_runtime_emit = @import("type_runtime.zig");
 const expression_emit = @import("expressions.zig");
 const call_emit = @import("calls.zig");
+const jsx_emit = @import("jsx.zig");
 const function_class_emit = @import("function_class.zig");
 const binding_emit = @import("bindings.zig");
 const precedence = @import("precedence.zig");
@@ -160,6 +161,12 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
         .private_identifier,
         .binding_identifier,
         .assignment_target_identifier,
+        // JSX 태그 이름 (#4470). `--jsx=preserve` 에서 `<Foo/>` / `<Foo.Bar/>` 의
+        // 이름이 번들 deconflict rename 을 따라가야 한다 — semantic analyzer 가
+        // 대문자 태그와 member 루트를 심볼로 해석해 두므로 여기서 그대로 걸린다.
+        // intrinsic 태그(`<div>`)와 속성 이름은 심볼이 없어 원문으로 떨어진다
+        // (analyzer 가 jsx_attribute 의 name 을 방문하지 않는다).
+        .jsx_identifier,
         => {
             // mangler / ns_prefix 치환 / inline 치환이 발생하면 원본 이름을 sourcemap
             // names 배열에 등록해 mapping.name_index 로 참조 — Sentry / DevTools 가
@@ -354,24 +361,21 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
         },
 
         // JSX: 일반적으로 Transformer 의 jsx_lowering 이 call_expression 으로 변환.
-        // jsx_runtime == .preserve 면 JSX 노드가 codegen 까지 도달 — 원본 소스
-        // slice 를 그대로 emit (downstream tool 이 처리하도록 위임).
-        //
-        // 알려진 제약: JSX 자식 (attribute value / expression container) 내부의
-        // TypeScript 어노테이션 (e.g. `<Foo prop={value as Type}>`) 은 strip 되지
-        // 않은 채 raw 로 남는다. preserve 모드의 주 사용처가 vite plugin chain 의
-        // downstream tool 위임이라 그쪽이 TS 까지 함께 처리하는 것으로 가정.
-        .jsx_element,
-        .jsx_fragment,
+        // jsx_runtime == .preserve 면 JSX 노드가 codegen 까지 도달 — **AST 로** 출력한다
+        // (#4470). 예전엔 소스 span 통째 복사라 JSX 안에서만 rename / TS strip / define
+        // 치환이 전부 무시됐다 (자세한 배경은 codegen/jsx.zig 헤더).
+        .jsx_element => try jsx_emit.emitJsxElement(self, node),
+        .jsx_fragment => try jsx_emit.emitJsxFragment(self, node),
+        .jsx_attribute => try jsx_emit.emitJsxAttribute(self, node),
+        .jsx_spread_attribute, .jsx_spread_child => try jsx_emit.emitJsxSpread(self, node),
+        .jsx_expression_container => try jsx_emit.emitJsxExpressionContainer(self, node),
+        .jsx_text => try jsx_emit.emitJsxText(self, node),
+        .jsx_member_expression => try jsx_emit.emitJsxMemberExpression(self, node),
+        // 파서가 만들지 않는 태그들 (jsx_element 가 opening/closing 을 흡수, namespaced
+        // name 미지원). 방어적으로 원문 유지 — 도달하면 그대로 통과시킨다.
         .jsx_opening_element,
         .jsx_closing_element,
-        .jsx_attribute,
-        .jsx_spread_attribute,
-        .jsx_spread_child,
-        .jsx_expression_container,
-        .jsx_text,
         .jsx_namespaced_name,
-        .jsx_member_expression,
         => {
             try self.addSourceMapping(node.span);
             try self.writeNodeSpan(node);
