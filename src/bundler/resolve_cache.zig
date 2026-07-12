@@ -23,6 +23,7 @@ const types = @import("types.zig");
 const ModuleType = types.ModuleType;
 const ImportKind = types.ImportKind;
 const pkg_json = @import("package_json.zig");
+const css_scanner = @import("css_scanner.zig");
 const profile = @import("../profile.zig");
 const debug_log = @import("../debug_log.zig");
 
@@ -436,7 +437,7 @@ pub const ResolveCache = struct {
         specifier: []const u8,
         kind: ImportKind,
     ) ResolveError!?ResolvedModule {
-        return self.resolveInner(false, io, source_dir, specifier, kind);
+        return self.resolveNormalized(false, io, source_dir, specifier, kind);
     }
 
     /// 스레드 안전 resolve. 병렬 resolve 의 union 직접 사용.
@@ -447,7 +448,50 @@ pub const ResolveCache = struct {
         specifier: []const u8,
         kind: ImportKind,
     ) ResolveError!?ResolvedModule {
-        return self.resolveInner(true, io, source_dir, specifier, kind);
+        return self.resolveNormalized(true, io, source_dir, specifier, kind);
+    }
+
+    /// worker specifier 를 URL 의미론에 맞춰 정규화한 뒤 resolve (#4483).
+    ///
+    /// `new URL(spec, import.meta.url)` 의 spec 은 URL 상대 참조라 base 가 모듈 자신의
+    /// URL 이다 → `"x.worker.js"` 와 `"./x.worker.js"` 는 **같은 파일**. 그런데 resolver 는
+    /// `./` 없는 지정자를 npm 패키지로 보고 node_modules 를 뒤져 ModuleNotFound 를 낸다
+    /// (그리고 `--packages=external` 은 아예 external 패키지로 삼킨다). 그래서 kind 를 아는
+    /// 이 레이어 — `isExternal` 을 부르는 `resolveInner` **직전** — 에서 `./` 를 붙인다.
+    ///
+    /// import record 의 원문 specifier 는 **절대 건드리지 않는다**: bundler 의 worker_map
+    /// 키와 codegen 의 조회 키가 둘 다 소스 원문이라, 스캔 시점에 고쳐 놓으면 lookup 이
+    /// 어긋나 다시 원문 emit (= 같은 버그) 로 돌아간다.
+    ///
+    /// 상대 경로로 못 찾으면 **원문 그대로 한 번 더** 시도한다. 정규화가 기존 동작을
+    /// 빼앗지 않도록 하는 폴백 — `new Worker(new URL("monaco-editor/esm/vs/editor/editor.worker.js",
+    /// import.meta.url))` 처럼 패키지 경로를 쓰는 코드가 실재하고 (Vite 도 양쪽을 지원),
+    /// 예전엔 그게 node_modules 로 resolve 됐다.
+    fn resolveNormalized(
+        self: *ResolveCache,
+        comptime thread_safe: bool,
+        io: std.Io,
+        source_dir: []const u8,
+        specifier: []const u8,
+        kind: ImportKind,
+    ) ResolveError!?ResolvedModule {
+        var worker_spec_buf: [MAX_WORKER_SPEC_BYTES]u8 = undefined;
+        const normalized = normalizeWorkerSpecifier(kind, specifier, &worker_spec_buf) orelse
+            return self.resolveInner(thread_safe, io, source_dir, specifier, kind);
+
+        // 사용자가 원문 철자로 건 external 패턴(`--external:x.worker.js`)은 정규화 뒤에도
+        // 계속 먹혀야 한다. 정규화는 *파일을 찾기 위한* 것이지 사용자의 external 의사를
+        // 무시하려는 게 아니다. (자동 규칙인 `--packages=external` 의 "bare = 패키지" 는
+        // 일부러 건너뛴다 — 그게 #4483 의 부수 버그였다.)
+        if (self.matchesExternalPattern(specifier)) return null;
+
+        if (self.resolveInner(thread_safe, io, source_dir, normalized, kind)) |resolved| {
+            return resolved;
+        } else |err| switch (err) {
+            // 형제 파일이 없다 → 원문(패키지 경로) 폴백.
+            error.ModuleNotFound => return self.resolveInner(thread_safe, io, source_dir, specifier, kind),
+            else => return err,
+        }
     }
 
     /// resolve 공통 구현. thread_safe=true이면 mutex로 캐시 접근 보호 + resolver 스택 복사.
@@ -1033,12 +1077,18 @@ pub const ResolveCache = struct {
         // --packages=external: 모든 bare import를 external 처리
         if (self.packages_external and !is_path) return true;
 
-        // 사용자 지정 external 패턴
+        return self.matchesExternalPattern(specifier);
+    }
+
+    /// 사용자 지정 external 패턴(`--external:...`) 매칭만 따로 판정.
+    /// `isExternal` 의 자동 규칙(node: / builtin / `--packages=external`) 은 빼고 본다 —
+    /// worker specifier 정규화(#4483) 가 사용자 패턴은 존중하되 "bare = 패키지" 자동
+    /// 규칙에는 걸리지 않아야 하기 때문.
+    fn matchesExternalPattern(self: *const ResolveCache, specifier: []const u8) bool {
         for (self.external_patterns) |pattern| {
             if (matchGlob(pattern, specifier)) return true;
             if (matchPackageSubPath(pattern, specifier)) return true;
         }
-
         return false;
     }
 
@@ -1065,6 +1115,53 @@ pub fn findPackageDirPath(path: []const u8) ?[]const u8 {
 
     if (pkg_end == 0) return null;
     return path[0 .. nm_pos + nm.len + pkg_end];
+}
+
+/// worker specifier 정규화 버퍼 크기. `"./"` + specifier 를 담는다.
+/// 이보다 긴 specifier 는 정규화 없이 원문 그대로 resolve (경로가 이 길이를 넘으면
+/// 어차피 파일 시스템에서 열리지 않는다).
+const MAX_WORKER_SPEC_BYTES: usize = std.fs.max_path_bytes + 2;
+
+/// `new URL(spec, import.meta.url)` 의 spec 이 `./` 가 생략된 bare 상대 참조인지 (#4483).
+///
+/// URL 의미론상 base 는 모듈 자신의 URL 이므로 `"x.js"` 와 `"./x.js"` 는 같은 파일을
+/// 가리킨다. 반면 resolver 는 `./` 없는 지정자를 npm 패키지 이름으로 보고 node_modules
+/// 를 뒤진다 → ModuleNotFound. 그래서 여기서 bare 를 골라내 `./` 를 붙여준다.
+///
+/// 정규화 제외 (원문 그대로 두면 resolve 실패 → warning + 원문 emit, 이게 맞는 동작):
+/// - scheme 있는 절대 URL (`https:`, `data:`, `blob:`, `chrome-extension:` …)
+/// - `//cdn.example.com/w.js` — protocol-relative
+/// - `/abs.js` — root-absolute (origin 기준이라 파일 시스템 상대가 아니다)
+/// - `./` / `../` — 이미 명시적 상대 경로
+/// - `?query` / `#fragment` 만 있는 참조 — 대상 파일이 자기 자신이다
+fn isBareUrlRelativeSpecifier(specifier: []const u8) bool {
+    if (specifier.len == 0) return false;
+    // 대상 파일이 자기 자신인 참조 — `./` 를 붙이면 다른 파일을 가리키게 된다.
+    if (specifier[0] == '?' or specifier[0] == '#') return false;
+    // `./` `../` 명시적 상대 + `/abs.js` root-absolute + `//cdn/w.js` protocol-relative
+    // (셋 다 isRelativeOrAbsolute 가 true).
+    if (resolver_mod.isRelativeOrAbsolute(specifier)) return false;
+    // `https:` / `data:` / `blob:` … (Windows 드라이브 `C:` 는 scheme 으로 안 침).
+    if (css_scanner.hasUriScheme(specifier)) return false;
+    return true;
+}
+
+/// worker specifier 를 URL 의미론에 맞춰 정규화 (#4483).
+///
+/// bare 상대 참조면 `buf` 에 `"./" ++ specifier` 를 써서 그 slice 를 반환한다.
+/// 반환 slice 는 `buf` 를 빌리므로 buf 의 수명 안에서만 유효.
+///
+/// null = 정규화 대상 아님 (worker 가 아닌 kind / 이미 상대 경로 / 절대 URL /
+/// `"./" ++ specifier` 가 buf 를 넘김) → caller 는 원문 그대로 resolve.
+pub fn normalizeWorkerSpecifier(kind: ImportKind, specifier: []const u8, buf: []u8) ?[]const u8 {
+    if (kind != .worker) return null;
+    if (!isBareUrlRelativeSpecifier(specifier)) return null;
+    // 버퍼 초과 — 이만큼 긴 경로는 어차피 파일 시스템에서 안 열린다. 원문으로 진행.
+    if (specifier.len + 2 > buf.len) return null;
+    buf[0] = '.';
+    buf[1] = '/';
+    @memcpy(buf[2 .. 2 + specifier.len], specifier);
+    return buf[0 .. specifier.len + 2];
 }
 
 /// specifier가 Node.js 빌트인 모듈인지 판별.
