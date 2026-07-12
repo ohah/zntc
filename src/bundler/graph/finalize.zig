@@ -212,6 +212,9 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
         if (m.getInitName(null)) |n| _ = used_names.put(self.allocator, n, 1) catch {};
         if (m.getExportsName(null)) |n| _ = used_names.put(self.allocator, n, 1) catch {};
         if (m.getRequireName(null)) |n| _ = used_names.put(self.allocator, n, 1) catch {};
+        // semantic 없는 모듈(asset/disabled)의 이름도 seed — incremental rebuild 에서
+        // 새 모듈이 같은 base 를 다시 집지 않도록 (#4475).
+        if (m.wrapper_name_synthetic) |n| _ = used_names.put(self.allocator, n, 1) catch {};
     }
 
     var it = self.modules.iterator(0);
@@ -221,8 +224,23 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
         const needs_exports = m.exports_symbol == null;
         const needs_require = m.wrap_kind == .cjs and m.require_symbol == null;
         if (!needs_init and !needs_exports and !needs_require) continue;
-        const sem_ptr = if (m.semantic) |*s| s else continue;
         const arena = if (m.parse_arena) |a| a.allocator() else continue;
+
+        // semantic 이 없는 모듈 (asset / disabled / optional-missing) — JS 파싱을 거치지
+        // 않아 심볼 테이블이 없다. 예전엔 여기서 `continue` 해 등록을 통째로 건너뛰었고,
+        // emit 은 basename 기반 fallback 이름을 써서 `a/logo.png` 와 `b/logo.png` 가 둘 다
+        // `require_logo` 가 됐다 → 두 번째 선언이 첫 번째를 가려 한쪽 자산이 다른 쪽의
+        // URL 을 돌려주는 조용한 오컴파일 (#4475).
+        //
+        // 심볼 테이블은 못 만들지만 이름 deconflict 는 할 수 있다 — 전용 슬롯에 담는다.
+        if (m.semantic == null) {
+            if (needs_require and m.wrapper_name_synthetic == null) {
+                const base = types.makeRequireVarName(arena, m.path) catch continue;
+                m.wrapper_name_synthetic = uniqueName(arena, base, &used_names, self.allocator) catch continue;
+            }
+            continue;
+        }
+        const sem_ptr = if (m.semantic) |*s| s else continue;
 
         if (needs_init) {
             const init_base = types.makeInitVarName(arena, m.path) catch continue;
