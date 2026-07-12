@@ -149,7 +149,9 @@ pub fn nameHasDirectNonStarExport(m: *const Module, name: []const u8) bool {
 pub fn shouldLinkResolvedRecordForModule(self: anytype, mod_idx: usize, rec_i: usize, record: ImportRecord) bool {
     const m = self.modules.at(mod_idx);
     switch (record.kind) {
-        .side_effect, .require, .dynamic_import, .worker, .glob, .require_context => return true,
+        // .css_url: asset 을 찾으려면 resolve 는 반드시 돌아야 한다. JS 의존성
+        // 엣지를 만들지 않는 것은 recordResolvedDep 이 따로 처리 (#4466).
+        .side_effect, .require, .dynamic_import, .worker, .glob, .require_context, .css_url => return true,
         .static_import, .re_export => {},
     }
 
@@ -383,6 +385,10 @@ pub fn requestDependencyExports(
             defer s.end();
             return requestAll(self, dep_idx);
         },
+        // CSS url() 이 가리키는 asset 은 JS 그래프 밖에 있다 — 요청할 export 가
+        // 없다. requestAll 을 부르면 asset 모듈이 "전 export 필요" 로 표시돼
+        // JS 번들 쪽으로 딸려 들어갈 여지를 만든다 (#4466).
+        .css_url => return false,
     }
 }
 

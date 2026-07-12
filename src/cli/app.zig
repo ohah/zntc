@@ -4,6 +4,8 @@ const std = @import("std");
 const lib = @import("zntc_lib");
 
 const JsxRuntime = lib.codegen.codegen.JsxRuntime;
+const bundler_types = lib.bundler.types;
+const cli_options = @import("options.zig");
 
 pub const Command = enum { dev, build, preview };
 
@@ -30,10 +32,16 @@ pub const Options = struct {
     jsx_factory: ?[]const u8 = null,
     jsx_fragment: ?[]const u8 = null,
     proxy_list: std.ArrayList(lib.server.DevServer.ProxyRule) = .empty,
+    // Asset 옵션 — `zntc --bundle` 과 동일 vocab (#4466). 예전엔 app 커맨드가
+    // --loader 를 아예 거부해 CSS/JS 가 참조하는 자산 처리를 제어할 수 없었다.
+    loader_list: std.ArrayList(bundler_types.LoaderOverride) = .empty,
+    asset_names: []const u8 = "[name]-[hash]",
+    asset_inline_limit: u32 = bundler_types.default_asset_inline_limit,
 
     pub fn deinit(self: *Options, allocator: std.mem.Allocator) void {
         self.env_prefixes.deinit(allocator);
         self.proxy_list.deinit(allocator);
+        self.loader_list.deinit(allocator);
     }
 };
 
@@ -108,6 +116,26 @@ pub fn parseArgs(allocator: std.mem.Allocator, io: std.Io, command: Command, arg
             opts.jsx_fragment = value;
         } else if (try appStringFlag(args, &i, "--proxy")) |value| {
             try parseProxy(&opts, allocator, value, stderr);
+        } else if (std.mem.startsWith(u8, arg, "--loader:")) {
+            // --loader:.ttf=file — `zntc --bundle` 과 **같은 파서**를 쓴다 (cli/options.zig).
+            const override = cli_options.parseLoaderKeyValue(arg["--loader:".len..]) catch |err| switch (err) {
+                error.MissingEquals => {
+                    try stderr.print("zntc {s}: --loader requires .EXT=TYPE format: {s}\n", .{ @tagName(command), arg });
+                    std.process.exit(1);
+                },
+                error.UnknownLoader => {
+                    try stderr.print("zntc {s}: unknown loader in '{s}' ({s})\n", .{ @tagName(command), arg, cli_options.loader_help });
+                    std.process.exit(1);
+                },
+            };
+            try opts.loader_list.append(allocator, override);
+        } else if (try appStringFlag(args, &i, "--asset-names")) |value| {
+            opts.asset_names = value;
+        } else if (try appStringFlag(args, &i, "--asset-inline-limit")) |value| {
+            opts.asset_inline_limit = std.fmt.parseInt(u32, value, 10) catch {
+                try stderr.print("zntc {s}: --asset-inline-limit requires a number (bytes): {s}\n", .{ @tagName(command), value });
+                std.process.exit(1);
+            };
         } else if (arg.len > 0 and arg[0] != '-') {
             if (opts.root_or_outdir == null) {
                 opts.root_or_outdir = arg;
@@ -199,6 +227,9 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, opts: Options) !void {
                 .sourcemap = opts.sourcemap,
                 .splitting = opts.splitting,
                 .jsx = jsx_config,
+                .loader_overrides = opts.loader_list.items,
+                .asset_names = opts.asset_names,
+                .asset_inline_limit = opts.asset_inline_limit,
             }) catch |err| {
                 try stderr.print("zntc build: app build failed: {}\n", .{err});
                 std.process.exit(1);
@@ -247,6 +278,11 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, opts: Options) !void {
                 .proxy = opts.proxy_list.items,
                 .base_path = base,
                 .define = server_defines,
+                // dev 도 build 와 같은 자산 처리를 해야 한다 — 안 그러면 dev 에서만
+                // 되거나 build 에서만 되는 차이가 생긴다 (#4466).
+                .loader_overrides = opts.loader_list.items,
+                .asset_names = opts.asset_names,
+                .asset_inline_limit = opts.asset_inline_limit,
                 .jsx_runtime = jsx_config.runtime,
                 .jsx_import_source = jsx_config.import_source,
                 .jsx_factory = jsx_config.factory,

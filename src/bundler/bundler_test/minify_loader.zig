@@ -2570,11 +2570,113 @@ test "Asset loader: [ext] pattern" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "static/woff2/font-") != null);
 }
 
-test "No loader: .png without --loader errors" {
+// #4466: `.png`/`.ttf` 등 알려진 바이너리 자산은 이제 --loader 없이도 기본
+// `.file` 로더가 붙는다 (Vite/rspack parity). 예전엔 `no_loader` 에러였다.
+// 알려지지 않은 확장자는 여전히 에러 — 아래 ".xyz" 테스트가 그 선을 지킨다.
+
+test "#4466 기본 로더: .png 는 --loader 없이도 성공 (작으면 data URL 인라인)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "const icon = require('./icon.png');\nconsole.log(icon);");
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "icon.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47 } });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 4바이트 → inline limit(4096) 이하 → 별도 파일 없이 data URL
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "data:image/png;base64,") != null);
+    try std.testing.expect(result.asset_outputs == null or result.asset_outputs.?.len == 0);
+}
+
+test "#4466 기본 로더: inline limit 초과 자산은 파일로 방출" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import icon from './icon.png';\nconsole.log(icon);");
+    // 5000B > 기본 한계 4096B
+    const big = [_]u8{0xAB} ** 5000;
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "icon.png", .data = &big });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "data:image/png") == null);
+    const assets = result.asset_outputs orelse return error.ExpectedAssetOutput;
+    try std.testing.expectEqual(@as(usize, 1), assets.len);
+    try std.testing.expect(std.mem.endsWith(u8, assets[0].path, ".png"));
+}
+
+test "#4466 기본 로더: --asset-inline-limit=0 이면 항상 파일 방출" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import icon from './icon.png';\nconsole.log(icon);");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "icon.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47 } });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .asset_inline_limit = 0,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "data:image/png") == null);
+    const assets = result.asset_outputs orelse return error.ExpectedAssetOutput;
+    try std.testing.expectEqual(@as(usize, 1), assets.len);
+}
+
+test "#4466 기본 로더: 명시 --loader:.png=file 은 inline limit 을 이긴다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import icon from './icon.png';\nconsole.log(icon);");
+    // 4바이트 — 한계 이하지만, 사용자가 file 을 **명시**했으므로 파일이어야 한다.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "icon.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47 } });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .loader_overrides = &.{.{ .ext = ".png", .loader = .file }},
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "data:image/png") == null);
+    const assets = result.asset_outputs orelse return error.ExpectedAssetOutput;
+    try std.testing.expectEqual(@as(usize, 1), assets.len);
+}
+
+test "No loader: 알려지지 않은 확장자(.xyz)는 여전히 에러" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const blob = require('./data.xyz');\nconsole.log(blob);");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "data.xyz", .data = "whatever" });
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
@@ -2618,7 +2720,7 @@ test "No loader: .png with --loader:.png=file succeeds" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_icon") != null);
 }
 
-test "No loader: ESM import of .png without --loader errors" {
+test "#4466 기본 로더: ESM import of .png 도 --loader 없이 성공" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import icon from './icon.png';\nconsole.log(icon);");
@@ -2635,14 +2737,35 @@ test "No loader: ESM import of .png without --loader errors" {
     const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
-    try std.testing.expect(result.hasErrors());
-    const has_no_loader = for (result.getDiagnostics()) |d| {
-        if (std.mem.indexOf(u8, d.message, "No loader is configured") != null) break true;
-    } else false;
-    try std.testing.expect(has_no_loader);
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "data:image/png;base64,") != null);
 }
 
-test "No loader: .mp3 without --loader errors" {
+test "#4466 기본 로더: 폰트(.woff2/.ttf) 도 --loader 없이 성공" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import f from './x.woff2';\nconsole.log(f);");
+    const big = [_]u8{0xCD} ** 5000; // 한계 초과 → 파일 방출
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "x.woff2", .data = &big });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const assets = result.asset_outputs orelse return error.ExpectedAssetOutput;
+    try std.testing.expectEqual(@as(usize, 1), assets.len);
+    try std.testing.expect(std.mem.endsWith(u8, assets[0].path, ".woff2"));
+}
+
+test "#4466 기본 로더: .mp3 도 --loader 없이 성공" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "const audio = require('./sound.mp3');\nconsole.log(audio);");
@@ -2659,7 +2782,7 @@ test "No loader: .mp3 without --loader errors" {
     const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
-    try std.testing.expect(result.hasErrors());
+    try std.testing.expect(!result.hasErrors());
 }
 
 test "Plugin load hook overrides asset loader" {
@@ -3402,4 +3525,340 @@ test "#1621 runtime correctness: es5 minified bundle 실행 결과 일치" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__classCallCheck(") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__toConsumableArray(") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__arrayLikeToArray(") == null);
+}
+
+// ============================================================
+// #4466 — CSS url() 자산 방출 + 재작성
+// ============================================================
+
+/// 번들 결과에서 CSS 출력 하나를 찾는다.
+fn findCssOutput(result: anytype) ?[]const u8 {
+    const outs = result.asset_outputs orelse return null;
+    for (outs) |o| {
+        if (std.mem.endsWith(u8, o.path, ".css")) return o.contents;
+    }
+    return null;
+}
+
+test "#4466 CSS url(): 자산 해시 방출 + url 재작성" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import './style.css';");
+    try writeFile(tmp.dir, "style.css",
+        \\@font-face { font-family: icons; src: url(./icons.woff2) format("woff2"); }
+    );
+    // inline limit 초과 → 별도 파일
+    const font = [_]u8{0x77} ** 5000;
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "icons.woff2", .data = &font });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    const css = findCssOutput(result) orelse return error.ExpectedCssOutput;
+    // 원문 참조는 사라지고 해시 자산을 가리켜야 한다 (dangling 404 방지)
+    try std.testing.expect(std.mem.indexOf(u8, css, "url(./icons.woff2)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, css, "icons-") != null);
+    try std.testing.expect(std.mem.indexOf(u8, css, ".woff2\"") != null);
+
+    // 자산 파일이 실제로 방출됐는지
+    const outs = result.asset_outputs orelse return error.ExpectedAssetOutput;
+    var found_font = false;
+    for (outs) |o| {
+        if (std.mem.endsWith(u8, o.path, ".woff2")) {
+            found_font = true;
+            try std.testing.expectEqualSlices(u8, &font, o.contents);
+        }
+    }
+    try std.testing.expect(found_font);
+}
+
+test "#4466 CSS url(): CSS 전용 자산은 JS 번들에 죽은 __commonJS 로 실리지 않는다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import './style.css';\nconsole.log('hi');");
+    try writeFile(tmp.dir, "style.css", ".a { background: url(./bg.png); }");
+    const img = [_]u8{0x11} ** 5000;
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "bg.png", .data = &img });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // JS 는 이 자산을 아무도 require 하지 않는다 → 래퍼가 없어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_bg") == null);
+    // 그래도 자산 파일은 방출된다.
+    const outs = result.asset_outputs orelse return error.ExpectedAssetOutput;
+    var found = false;
+    for (outs) |o| {
+        if (std.mem.endsWith(u8, o.path, ".png")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
+test "#4466 CSS url(): JS 와 CSS 가 같은 자산을 참조하면 파일 1개로 dedup + JS 래퍼 유지" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import './style.css';\nimport u from './shared.png';\nconsole.log(u);");
+    try writeFile(tmp.dir, "style.css", ".a { background: url(./shared.png); }");
+    const img = [_]u8{0x22} ** 5000;
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "shared.png", .data = &img });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // JS 가 실제로 import 하므로 래퍼는 남아야 한다
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_shared") != null);
+
+    // 자산 파일은 하나만
+    const outs = result.asset_outputs orelse return error.ExpectedAssetOutput;
+    var png_count: usize = 0;
+    for (outs) |o| {
+        if (std.mem.endsWith(u8, o.path, ".png")) png_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), png_count);
+}
+
+test "#4466 CSS url(): 작은 자산은 data URL 로 인라인 (별도 파일 없음)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import './style.css';");
+    try writeFile(tmp.dir, "style.css", ".a { background: url(./tiny.png); }");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "tiny.png", .data = "tiny" });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    const css = findCssOutput(result) orelse return error.ExpectedCssOutput;
+    try std.testing.expect(std.mem.indexOf(u8, css, "url(\"data:image/png;base64,") != null);
+
+    const outs = result.asset_outputs orelse return error.ExpectedAssetOutput;
+    for (outs) |o| {
+        try std.testing.expect(!std.mem.endsWith(u8, o.path, ".png"));
+    }
+}
+
+test "#4466 CSS url(): 해석 실패는 경고 — 빌드는 성공하고 원문 유지" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import './style.css';");
+    // gone.png 를 만들지 않는다
+    try writeFile(tmp.dir, "style.css", ".a { background: url(./gone.png); }");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    // 하드 에러가 아니어야 한다 — 기존에 빌드되던 프로젝트를 깨지 않는다
+    try std.testing.expect(!result.hasErrors());
+    const css = findCssOutput(result) orelse return error.ExpectedCssOutput;
+    try std.testing.expect(std.mem.indexOf(u8, css, "url(./gone.png)") != null);
+}
+
+test "#4466 CSS url(): external/SVG fragment/절대경로는 손대지 않는다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import './style.css';");
+    try writeFile(tmp.dir, "style.css",
+        \\.a { background: url(https://cdn.example.com/a.png); }
+        \\.b { filter: url(#blur); }
+        \\.c { background: url(/public/keep.png); }
+        \\.d { background: url(data:image/gif;base64,R0lGOD); }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const css = findCssOutput(result) orelse return error.ExpectedCssOutput;
+    try std.testing.expect(std.mem.indexOf(u8, css, "url(https://cdn.example.com/a.png)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, css, "url(#blur)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, css, "url(/public/keep.png)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, css, "url(data:image/gif;base64,R0lGOD)") != null);
+}
+
+test "#4466 CSS url(): ?query / #fragment suffix 보존 (IE9 ?#iefix)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import './style.css';");
+    try writeFile(tmp.dir, "style.css",
+        \\@font-face { src: url(./f.eot?#iefix) format("embedded-opentype"); }
+    );
+    const font = [_]u8{0x33} ** 5000;
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "f.eot", .data = &font });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    const css = findCssOutput(result) orelse return error.ExpectedCssOutput;
+    // 해시 재작성 + suffix 보존
+    try std.testing.expect(std.mem.indexOf(u8, css, ".eot?#iefix\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, css, "url(./f.eot?#iefix)") == null);
+}
+
+test "#4466 CSS url(): --public-path 접두" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import './style.css';");
+    try writeFile(tmp.dir, "style.css", ".a { background: url(./bg.png); }");
+    const img = [_]u8{0x44} ** 5000;
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "bg.png", .data = &img });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .public_path = "/static/",
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    const css = findCssOutput(result) orelse return error.ExpectedCssOutput;
+    try std.testing.expect(std.mem.indexOf(u8, css, "url(\"/static/bg-") != null);
+}
+
+// --- #4466 code-review max 후속: 리뷰가 잡아낸 회귀들의 가드 ---
+
+test "#4466 CSS url(): 기본 테이블 밖 확장자(.cur)도 빌드를 깨지 않는다" {
+    // 회귀: `.css_url` 이 일반 import 파이프라인을 타면서, 기본 asset 확장자 테이블에
+    // 없는 `.cur`/`.apng`/`.svgz` 등이 `no_loader` **에러**로 빌드를 세웠다. CSS url()
+    // 대상은 확장자와 무관하게 파일 자산이다 (Vite 동작).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import './style.css';");
+    try writeFile(tmp.dir, "style.css", ".c { cursor: url(./p.cur), auto; }");
+    const cur = [_]u8{0x55} ** 5000; // 인라인 한계 초과 → 파일
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "p.cur", .data = &cur });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const css = findCssOutput(result) orelse return error.ExpectedCssOutput;
+    try std.testing.expect(std.mem.indexOf(u8, css, "p-") != null);
+    try std.testing.expect(std.mem.indexOf(u8, css, ".cur\"") != null);
+}
+
+test "#4466 CSS url(): root-absolute 는 경고 없이 원문 유지" {
+    // 회귀: `url(/logo.png)` (public 디렉토리 규약) 이 ImportRecord 로 등록돼
+    // resolver 가 못 찾고 "Cannot resolve CSS url() asset" 경고를 헛되이 뿜었다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import './style.css';");
+    try writeFile(tmp.dir, "style.css", ".a { background: url(/logo.png); }");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 진단이 아예 없어야 한다 — 정상적인 public 디렉토리 참조다.
+    for (result.getDiagnostics()) |d| {
+        try std.testing.expect(std.mem.indexOf(u8, d.message, "Cannot resolve CSS url()") == null);
+    }
+    const css = findCssOutput(result) orelse return error.ExpectedCssOutput;
+    try std.testing.expect(std.mem.indexOf(u8, css, "url(/logo.png)") != null);
+}
+
+test "#4466 CSS url(): #fragment 참조 자산은 인라인하지 않는다 (SVG 스프라이트)" {
+    // 회귀: `.svg` 가 기본 file 로더 + 4KB inline limit 대상이라, 작은 스프라이트가
+    // data URL 로 인라인되면서 `#icon` fragment 가 통째로 사라졌다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import './style.css';");
+    try writeFile(tmp.dir, "style.css", ".i { background: url(./sprite.svg#icon); }");
+    try writeFile(tmp.dir, "sprite.svg", "<svg><g id=\"icon\"/></svg>"); // 4KB 미만
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    const css = findCssOutput(result) orelse return error.ExpectedCssOutput;
+    // data URL 이 아니라 파일이어야 하고, fragment 가 살아 있어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, css, "data:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, css, ".svg#icon\"") != null);
+
+    const outs = result.asset_outputs orelse return error.ExpectedAssetOutput;
+    var found_svg = false;
+    for (outs) |o| {
+        if (std.mem.endsWith(u8, o.path, ".svg")) found_svg = true;
+    }
+    try std.testing.expect(found_svg);
+}
+
+test "#4466 CSS url(): external 판정된 url() 이 @import 로 새어나가지 않는다" {
+    // 회귀: `--packages=external` 등으로 css_url record 가 is_external 이 되면
+    // ExternalImportCollector 가 그걸 @import 로 오인해 출력 CSS 상단에
+    // `@import "hero.png";` 를 뿜었다 → 브라우저가 PNG 를 stylesheet 로 fetch.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import './style.css';");
+    try writeFile(tmp.dir, "style.css", ".b { background: url(hero.png); }");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .packages_external = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    const css = findCssOutput(result) orelse return error.ExpectedCssOutput;
+    try std.testing.expect(std.mem.indexOf(u8, css, "@import") == null);
 }

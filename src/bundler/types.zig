@@ -291,6 +291,14 @@ pub const ImportKind = enum {
     glob,
     /// require.context("./pages", true, /\.tsx$/, "sync") — webpack/Metro 호환 (#1579)
     require_context,
+    /// CSS 본문의 `url(./font.woff2)` / `image-set("a.png" 1x)` 참조 (#4466).
+    ///
+    /// JS 실행 의존성이 *아니다* — 대상 asset 모듈은 그래프에 등록되어 파일로
+    /// emit 되지만, `Module.dependencies` 에는 링크되지 않는다 (resolve_imports
+    /// 의 recordResolvedDep 참고). 링크하면 asset 모듈(parseAssetModule 이
+    /// module_type 을 .js 로 바꾼다)이 JS 청크 도달성 BFS 에 걸려 죽은
+    /// `__commonJS` 래퍼로 번들에 실린다.
+    css_url,
 
     /// importer 본문보다 먼저 평가 효과가 발생해야 하는 정적 ESM 의존성 종류.
     /// `export { x } from`/`export * from`(re_export)도 source 모듈의 side effect 를
@@ -559,6 +567,13 @@ pub const FormatOutput = struct {
 // 로더 (Asset Loader)
 // ============================================================
 
+/// `--asset-inline-limit` 기본값 (byte). 이 크기 이하의 asset 은 별도 파일 대신
+/// data URL 로 인라인된다. Vite `assetsInlineLimit` 과 동일한 4KB (#4466).
+///
+/// 4KB 근거: base64 는 원본의 약 4/3 크기라 4KB 자산이 ~5.5KB 텍스트가 된다.
+/// 그보다 크면 CSS/JS 를 부풀려 첫 페인트를 늦추는 쪽이 손해다.
+pub const default_asset_inline_limit: u32 = 4096;
+
 /// 모듈의 로딩 방식. ModuleType(파일의 본질)과 별개로,
 /// 번들러가 파일을 어떻게 처리할지 결정한다.
 /// --loader:.png=file 같은 CLI 옵션으로 확장자별 오버라이드 가능.
@@ -592,8 +607,32 @@ pub const Loader = enum {
     /// 알 수 없는 로더 (에러 발생)
     none,
 
+    /// 기본 `.file` 로더가 붙는 바이너리 자산 확장자 (소문자, dot 포함).
+    /// 폰트/이미지/미디어 — Vite `KNOWN_ASSET_TYPES` 와 동일 집합.
+    ///
+    /// 이 목록에 없는 확장자는 여전히 `.none` → `--loader:.ext=<type>` 로 명시해야
+    /// 한다. 여기 있는 확장자는 명시 override 가 없으면 `.file` + inline-limit
+    /// (`--asset-inline-limit`, 기본 4096B) 적용 대상이다 (#4466).
+    pub const default_asset_extensions = [_][]const u8{
+        // 이미지
+        ".png",  ".jpg",   ".jpeg", ".jfif", ".pjpeg",       ".pjp",
+        ".gif",  ".svg",   ".ico",  ".webp", ".avif",        ".bmp",
+        // 폰트 — CSS `@font-face { src: url(...) }` 의 주 대상
+        ".woff", ".woff2", ".eot",  ".ttf",  ".otf",
+        // 미디어
+                ".mp4",
+        ".webm", ".ogg",   ".mp3",  ".wav",  ".flac",        ".aac",
+        ".opus", ".mov",   ".m4a",  ".vtt",
+        // 기타
+         ".webmanifest", ".pdf",
+    };
+
     /// 확장자에서 기본 로더를 추론한다.
-    /// JS/JSON/CSS는 해당 로더, 나머지는 .none (--loader로 명시 필요).
+    /// JS/JSON/CSS/TXT 는 해당 로더, 알려진 바이너리 자산은 .file,
+    /// 나머지는 .none (--loader로 명시 필요).
+    ///
+    /// 확장자 비교는 ASCII case-insensitive — `LOGO.PNG` 도 자산으로 인식한다
+    /// (파일시스템이 대소문자를 보존하는 macOS/Windows 대비).
     pub fn fromExtension(ext: []const u8) Loader {
         if (std.mem.eql(u8, ext, ".ts") or
             std.mem.eql(u8, ext, ".tsx") or
@@ -609,6 +648,9 @@ pub const Loader = enum {
         if (std.mem.eql(u8, ext, ".json")) return .json;
         if (std.mem.eql(u8, ext, ".css")) return .css;
         if (std.mem.eql(u8, ext, ".txt")) return .text;
+        for (default_asset_extensions) |asset_ext| {
+            if (std.ascii.eqlIgnoreCase(ext, asset_ext)) return .file;
+        }
         return .none;
     }
 
@@ -640,6 +682,13 @@ pub const Loader = enum {
 pub const ParsedLoader = struct {
     loader: Loader,
     module_type: ?ModuleType = null,
+    /// 사용자가 `--loader:.ext=…` 로 **명시**한 로더인가. 확장자 기본 테이블에서
+    /// 추론된 것이면 false.
+    ///
+    /// `--asset-inline-limit` 은 명시 지정을 존중해 이 값이 true 면 인라인하지
+    /// 않는다 — `--loader:.png=file` 을 준 사용자가 작은 png 를 data URL 로
+    /// 돌려받으면 놀라기 때문 (#4466).
+    explicit: bool = false,
 
     pub fn fromExtension(ext: []const u8) ParsedLoader {
         const loader = Loader.fromExtension(ext);
@@ -651,12 +700,13 @@ pub const ParsedLoader = struct {
 
     pub fn fromString(s: []const u8) ?ParsedLoader {
         if (ModuleType.fromLoaderString(s)) |module_type| {
-            return .{ .loader = .javascript, .module_type = module_type };
+            return .{ .loader = .javascript, .module_type = module_type, .explicit = true };
         }
         const loader = Loader.fromString(s) orelse return null;
         return .{
             .loader = loader,
             .module_type = null,
+            .explicit = true,
         };
     }
 };
@@ -756,6 +806,12 @@ pub const ImportRecord = struct {
     /// layer/supports semantic 을 유지 (esbuild parity). JS record 는 미사용
     /// — 빈 string default.
     css_condition_tail: []const u8 = "",
+    /// `.css_url` record 전용 — specifier 뒤에 붙어 있던 `?query` / `#fragment`
+    /// 원문 (예: `url(./f.ttf?#iefix)` → `"?#iefix"`, `url(./i.svg#icon)` →
+    /// `"#icon"`). specifier 는 suffix 를 뗀 파일 경로라 resolve 가 성공하고,
+    /// emit 시 재작성된 URL 뒤에 이 suffix 를 그대로 다시 붙인다 (#4466).
+    /// IE9 `?#iefix` 훅과 SVG fragment 참조를 보존하기 위함. JS record 는 미사용.
+    css_url_suffix: []const u8 = "",
 };
 
 // ============================================================

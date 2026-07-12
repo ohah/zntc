@@ -55,6 +55,7 @@ Phase B1: 기반 (✅ 완료)          Phase B2: 핵심 (✅ 대부분 완료) P
                                                                 CSS 번들링 ✅
                                                                  ├ @import 인라이닝 (css_scanner.zig)
                                                                  ├ 별도 .css 파일 emit (css_emitter.zig)
+                                                                 ├ url() 자산 방출 + 재작성
                                                                  ├ Lightning CSS minify (optional)
                                                                  └ CSS modules (후순위)
 ```
@@ -107,21 +108,74 @@ src/bundler/
   │   책임: exec_index 순서로 코드 배치, 런타임 로더 생성
   │   의존: codegen (기존 Phase 4 재사용)
   │
-  ├─ css_scanner.zig      # CSS @import 추출기
+  ├─ css_scanner.zig      # CSS @import + url() 자산 추출기
   │   입력: CSS 소스 코드
-  │   출력: CssImportRecord[] (specifier + span)
-  │   책임: @import/@charset/주석 스킵, 첫 non-import 규칙에서 중단
+  │   출력: CssImportRecord[] (specifier + span), CssUrlRecord[] (specifier + span + suffix)
+  │   책임: @import/@charset/주석 스킵, 첫 non-import 규칙에서 중단.
+  │        본문의 url()/image-set() 자산 참조 추출 (extractCssUrls)
   │
   └─ css_emitter.zig      # CSS 번들 생성
       입력: 모듈 그래프 + 엔트리 인덱스
       출력: 연결된 CSS OutputFile
-      책임: DFS로 CSS 모듈 수집, exec_index 정렬, @import strip, 파일명 패턴
+      책임: DFS로 CSS 모듈 수집, exec_index 정렬, @import strip, 파일명 패턴,
+           url() 자산 참조 재작성
 ```
 
 설계 원칙:
 - **단방향 의존**: resolver → graph → linker → tree_shaker → chunk → emitter
 - **독립 테스트 가능**: 각 모듈이 입력/출력 명확, 다른 모듈의 내부를 모름
 - **기존 코드 재사용**: parser, semantic, codegen, transformer를 도구로 위임
+
+## CSS `url()` 자산 파이프라인 (#4466)
+
+CSS 본문이 참조하는 자산(`url()` / `image-set()`)을 JS import 자산과 **동일한 파이프라인**으로
+방출하고 CSS 의 url 을 재작성한다. 이전에는 url() 을 통째로 무시해 자산이 dist 에 나오지 않고
+CSS 는 원문 그대로 남아 런타임 404(dangling)가 났다.
+
+```
+css_scanner.extractCssUrls   → CssUrlRecord[] (specifier + span + ?query#fragment suffix)
+        ↓  (parseCssModule: @import record 뒤에 이어붙임)
+ImportRecord{ kind = .css_url, span = url() 인자 구간 }
+        ↓  (resolve_imports: 일반 모듈 해석과 동일 resolver)
+asset Module (loader = .file / inline 시 .asset_dataurl)
+        ↓  (css_emitter.appendCssBodyRewritingUrls)
+url("./hero-a1b2c3d4.png")   ← span 구간만 치환, 나머지 바이트는 원문 보존
+```
+
+- **`.css_url` 은 JS 실행 의존성이 아니다.** 대상 asset 모듈은 그래프에 등록되어 파일로 emit
+  되지만 `Module.dependencies` 에는 링크하지 않는다. 링크하면 asset 모듈(parseAssetModule 이
+  module_type 을 `.js` 로 바꾼다)이 JS 청크 도달성 BFS 에 걸려 죽은 `__commonJS` 래퍼로 번들에
+  실린다.
+- **span 치환**: record 의 span 은 `url(` 과 `)` *사이* 구간이라, 치환해도 `url(`/`)` 와 그 밖의
+  모든 바이트(공백·주석·선언 순서)가 원문 그대로 보존된다.
+- **재작성 결과**: `--public-path` 가 있으면 그 prefix + output_name, 없으면 **출력 CSS 파일
+  위치 기준 상대경로**. 그래서 emitCssBundle 은 본문보다 출력 파일명을 **먼저** 정한다
+  (파일명 패턴은 본문 내용에 의존하지 않으므로 순환 없음).
+- **suffix 보존**: `?query` / `#fragment` 는 원문 그대로 다시 붙인다 (`url(./f.eot?#iefix)` →
+  `url("./f-a1b2c3d4.eot?#iefix")`, IE9 훅). 단 data URL 로 인라인된 자산에는 붙이지 않는다 —
+  data URL 뒤에 `?#iefix` 를 이어붙이면 URL 이 깨진다.
+- **재작성 제외**(원문 그대로 통과): `url(#gradient)` (SVG filter/gradient 참조 — 파일 아님),
+  `url(/abs.png)` (절대경로 = `public/` 디렉토리 규약), `url(https://…)` / `url(//cdn…)` /
+  `url(data:…)` / `url(blob:…)` (external).
+- **해석 실패는 warning** (Vite parity): 빌드를 세우지 않고 `Cannot resolve CSS url() asset —
+  left unchanged` 경고 후 원문을 흘려보낸다. CSS 의 url 은 빌드 타임에 해석되지 않아도 런타임에
+  유효할 수 있고(서버가 따로 서빙 / 배포 스크립트가 나중에 복사), 여기서 실패시키면 지금까지
+  멀쩡히 빌드되던 프로젝트가 업그레이드하자마자 깨진다.
+
+### 기본 asset 로더 + inline limit
+
+`Loader.fromExtension` 이 폰트/이미지/미디어 확장자에 기본 `.file` 을 준다 (전엔 전부 `.none` →
+`No loader is configured` 에러). 목록은 Vite `KNOWN_ASSET_TYPES` 와 동일 집합이며 확장자 비교는
+대소문자 무시. 목록 밖 확장자는 여전히 `--loader:.ext=type` 명시가 필요하다.
+
+`--asset-inline-limit=<bytes>` (기본 4096, `0`=끔) 이하 자산은 별도 파일 대신 data URL 로
+인라인한다. 세 가지를 존중한다:
+
+- `--loader:.png=file` 처럼 **명시** 지정된 로더는 인라인하지 않는다 (`ParsedLoader.explicit`).
+  명시 요청이 암묵 기본값을 항상 이긴다.
+- `.copy` 는 "원본을 그대로 복사" 라는 명시적 의도라 인라인 대상이 아니다.
+- RN `asset_registry` 모드는 **절대** 인라인하지 않는다. Metro AssetRegistry 는 파일 경로 +
+  `@2x`/`@3x` scale variant 를 전제로 동작하므로 data URL 로 바꾸면 네이티브가 자산을 못 찾는다.
 
 ## ESM 실행 순서 보장
 - 스코프 호이스팅 시 원본 ESM의 top-level 코드 실행 순서가 바뀌면 안 됨

@@ -336,6 +336,10 @@ pub const BundleOptions = struct {
     chunk_names: []const u8 = "[name]-[hash]",
     /// 에셋 파일명 패턴 (--asset-names, 기본: "[name]-[hash]")
     asset_names: []const u8 = "[name]-[hash]",
+    /// 이 크기(byte) 이하의 asset 은 별도 파일 대신 data URL 로 인라인
+    /// (--asset-inline-limit, 기본 4096 = Vite assetsInlineLimit). 0 = 인라인 끔.
+    /// 확장자 기본 테이블로 `.file` 이 된 자산에만 적용 (#4466).
+    asset_inline_limit: u32 = types.default_asset_inline_limit,
     /// CSS 출력 파일명 패턴 (--css-names, 기본: "[dir]/[name]")
     /// PR B-4b sub-2: entry_names 와 일관성을 위해 같이 `[dir]/[name]`. CSS
     /// 측 [dir] 토큰 처리는 PR B-2 / B-3 의 applyCssChunkNameWithDir 가 담당.
@@ -1000,6 +1004,12 @@ pub const Bundler = struct {
         var worker_graph = ModuleGraph.init(arena_alloc, &worker_resolve_cache);
         worker_graph.loader_overrides = self.options.loader_overrides;
         worker_graph.public_path = self.options.public_path;
+        // asset 관련 옵션이 worker graph 에 빠져 있으면 worker 번들만 ModuleGraph 의
+        // 하드코딩 기본값으로 되돌아간다 — `--asset-inline-limit=0` 을 줘도 worker
+        // 안에서는 인라인되고, `--asset-names` 패턴도 무시된다 (#4466).
+        worker_graph.asset_names = self.options.asset_names;
+        worker_graph.asset_inline_limit = self.options.asset_inline_limit;
+        worker_graph.asset_registry = self.options.asset_registry;
         worker_graph.project_root = self.options.project_root;
         worker_graph.pure = self.options.pure;
         worker_graph.ignore_annotations = self.options.ignore_annotations;
@@ -1307,6 +1317,7 @@ pub const Bundler = struct {
         graph.public_path = self.options.public_path;
         graph.project_root = self.options.project_root;
         graph.asset_names = self.options.asset_names;
+        graph.asset_inline_limit = self.options.asset_inline_limit;
         graph.asset_registry = self.options.asset_registry;
         graph.inject_files = self.options.inject;
         graph.run_before_main_files = self.options.run_before_main;

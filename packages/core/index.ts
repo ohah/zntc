@@ -978,6 +978,15 @@ interface BuildOptionsCommon {
   entryNames?: string;
   chunkNames?: string;
   assetNames?: string;
+  /** 이 byte 수 **이하**의 asset 은 별도 파일로 emit 하지 않고 data URL 로 인라인한다
+   * (#4466). Vite 의 `assetsInlineLimit` 상당.
+   *
+   * - 기본값: `4096` (4KB)
+   * - `0`: 인라인 끔 — 크기와 무관하게 항상 파일로 emit
+   *
+   * 인라인된 asset 은 `assetNames` 패턴을 타지 않고, CSS `url()` / import 값이
+   * `data:` URI 로 치환된다. */
+  assetInlineLimit?: number;
   /** CSS chunk path pattern. Default: `[dir]/[name]` (PR B-4b sub-2; esbuild parity).
    * Supports `[name]`, `[hash]` (content), and `[dir]` (entry-relative). */
   cssNames?: string;

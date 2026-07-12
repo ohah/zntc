@@ -54,6 +54,23 @@ pub fn emitCssBundle(
     var output: std.ArrayListUnmanaged(u8) = .empty;
     defer output.deinit(allocator);
 
+    // 출력 파일명을 본문보다 *먼저* 정한다 — url() 재작성이 출력 CSS 의 디렉토리를
+    // 기준으로 상대경로를 만들어야 하기 때문 (#4466). 파일명 패턴은 본문 내용에
+    // 의존하지 않으므로 순환은 없다.
+    const entry_mod = graph.getModule(entry_idx) orelse return null;
+    const entry_path = entry_mod.path;
+    // PR B-4b sub-2: [dir] 토큰은 entry_dir-relative dir 로 치환. graph.entry_dir
+    // 가 없으면(non-bundling 단일 emit) 빈 dir 폴백 — 토큰 + 인접 '/' skip.
+    const entry_abs_dir = std.fs.path.dirname(entry_path) orelse "";
+    const raw_dir = chunk_mod.entryRelativeDir(graph.entry_dir, entry_abs_dir);
+    const css_path = applyCssNamingPattern(allocator, css_names, entry_path, raw_dir) catch return null;
+    // 이 함수는 error union 이 아니라 `?OutputFile` 을 반환한다 — `errdefer` 는 아래의
+    // 여러 `catch return null` 경로에서 **발동하지 않아** css_path 가 샌다.
+    // 성공적으로 OutputFile 에 넘길 때만 소유권을 놓는 flag 로 관리한다.
+    var css_path_owned = true;
+    defer if (css_path_owned) allocator.free(css_path);
+    const css_dir = std.fs.path.dirnamePosix(css_path) orelse "";
+
     var prefix_decls = PrefixDeclCollector.init();
     defer prefix_decls.deinit(allocator);
     for (css_modules.items) |mod| prefix_decls.collectFromModule(allocator, mod) catch return null;
@@ -66,31 +83,30 @@ pub fn emitCssBundle(
 
     prefix_decls.appendLayersTo(allocator, &output) catch return null;
 
-    appendCssModules(allocator, &output, css_modules.items) catch return null;
+    appendCssModules(allocator, &output, graph, css_modules.items, css_dir) catch return null;
 
     if (output.items.len == 0) return null;
 
-    // 출력 파일명 결정
-    const entry_mod = graph.getModule(entry_idx) orelse return null;
-    const entry_path = entry_mod.path;
-    // PR B-4b sub-2: [dir] 토큰은 entry_dir-relative dir 로 치환. graph.entry_dir
-    // 가 없으면(non-bundling 단일 emit) 빈 dir 폴백 — 토큰 + 인접 '/' skip.
-    const entry_abs_dir = std.fs.path.dirname(entry_path) orelse "";
-    const raw_dir = chunk_mod.entryRelativeDir(graph.entry_dir, entry_abs_dir);
-    const css_path = applyCssNamingPattern(allocator, css_names, entry_path, raw_dir) catch return null;
-
+    const contents = output.toOwnedSlice(allocator) catch return null;
+    css_path_owned = false; // 아래 OutputFile 로 소유권 이전
     return .{
         .path = css_path,
-        .contents = output.toOwnedSlice(allocator) catch return null,
+        .contents = contents,
     };
 }
 
 /// 정렬된 CSS 모듈들을 @import strip 후 줄바꿈 구분하여 buf 에 이어붙인다.
 /// emitCssBundle(단일) / emitCssChunks(청크별) 가 공유.
+///
+/// `css_dir` = 출력 CSS 파일의 outdir 기준 디렉토리 ("" = outdir 루트).
+/// 본문의 `url()` 자산 참조를 emit 된 자산 경로로 재작성할 때 상대경로 기준점이
+/// 된다 (#4466).
 fn appendCssModule(
     allocator: std.mem.Allocator,
     buf: *std.ArrayListUnmanaged(u8),
+    graph: *const ModuleGraph,
     mod: *const Module,
+    css_dir: []const u8,
 ) !void {
     const strip_end: u32 = if (mod.css_data) |cd| cd.strip_end else 0;
     // strip_end == source.len 케이스: @import 들로만 채워진 CSS (예: index aggregator
@@ -98,13 +114,130 @@ fn appendCssModule(
     // 원본 통째 emit → ExternalImportCollector 의 prepend 와 합쳐져 같은 @import
     // 2회 출력. `<=` 로 boundary 포함시 빈 슬라이스 반환 → trimmed.len == 0 으로
     // early return.
-    const stripped = if (strip_end > 0 and strip_end <= mod.source.len) mod.source[strip_end..] else mod.source;
+    const body_start: u32 = if (strip_end > 0 and strip_end <= mod.source.len) strip_end else 0;
+    const stripped = mod.source[body_start..];
     const trimmed = std.mem.trim(u8, stripped, " \t\n\r");
     if (trimmed.len == 0) return;
-    try buf.appendSlice(allocator, stripped);
+
+    try appendCssBodyRewritingUrls(allocator, buf, graph, mod, body_start, css_dir);
+
     if (stripped.len > 0 and stripped[stripped.len - 1] != '\n') {
         try buf.append(allocator, '\n');
     }
+}
+
+/// CSS 본문을 복사하면서 `.css_url` record 의 span 을 재작성된 자산 URL 로 치환한다.
+///
+/// record 의 span 은 `url(` 과 `)` *사이* 구간이라, 치환해도 `url(`/`)` 와 그 밖의
+/// 모든 바이트(공백·주석·선언 순서)는 원문 그대로 보존된다. 재작성 대상이 없거나
+/// resolve 실패한 record 는 원문을 그대로 흘려보낸다 — CSS 를 깨뜨리는 것보다
+/// dangling 참조를 유지하는 쪽이 안전하고, 진단은 resolver 가 이미 냈다.
+fn appendCssBodyRewritingUrls(
+    allocator: std.mem.Allocator,
+    buf: *std.ArrayListUnmanaged(u8),
+    graph: *const ModuleGraph,
+    mod: *const Module,
+    body_start: u32,
+    css_dir: []const u8,
+) !void {
+    const url_count: u32 = if (mod.css_data) |cd| cd.url_count else 0;
+    if (url_count == 0) {
+        try buf.appendSlice(allocator, mod.source[body_start..]);
+        return;
+    }
+
+    // css_url record 는 parseCssModule 이 @import 뒤에 순서대로 넣는다 —
+    // import_records 뒤쪽 url_count 개. span.start 오름차순이 보장된다
+    // (extractCssUrls 가 좌→우 단일 패스).
+    const records = mod.import_records;
+    const url_start = records.len - url_count;
+
+    var cursor: u32 = body_start;
+    for (records[url_start..]) |rec| {
+        if (rec.span.start < cursor or rec.span.end > mod.source.len) continue;
+
+        const href = cssAssetHref(allocator, graph, rec, css_dir) catch null;
+        if (href == null) continue; // 재작성 불가 → 원문 유지
+        defer allocator.free(href.?);
+
+        try buf.appendSlice(allocator, mod.source[cursor..rec.span.start]);
+        try buf.append(allocator, '"');
+        try appendCssStringEscaped(allocator, buf, href.?);
+        try buf.append(allocator, '"');
+        cursor = rec.span.end;
+    }
+    try buf.appendSlice(allocator, mod.source[cursor..]);
+}
+
+/// `.css_url` record 가 가리키는 자산의 최종 CSS href. 재작성 대상이 아니면 null.
+///
+/// - 파일로 방출된 자산(`asset_data`) → `--public-path` 접두, 없으면 출력 CSS
+///   위치 기준 상대경로. `?query#fragment` suffix 는 원문 그대로 다시 붙인다.
+/// - data URL 로 인라인된 자산(`asset_dataurl`) → data URL 그대로. suffix 는
+///   붙이지 않는다 (data URL 에 `?#iefix` 를 이어붙이면 URL 이 깨진다).
+fn cssAssetHref(
+    allocator: std.mem.Allocator,
+    graph: *const ModuleGraph,
+    rec: @import("types.zig").ImportRecord,
+    css_dir: []const u8,
+) !?[]const u8 {
+    if (rec.resolved.isNone()) return null;
+    const asset = graph.getModule(rec.resolved) orelse return null;
+
+    if (asset.asset_data) |ad| {
+        if (graph.public_path.len > 0) {
+            return try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ graph.public_path, ad.output_name, rec.css_url_suffix });
+        }
+        const rel = try relativeUrlFrom(allocator, css_dir, ad.output_name);
+        defer allocator.free(rel);
+        return try std.fmt.allocPrint(allocator, "{s}{s}", .{ rel, rec.css_url_suffix });
+    }
+
+    if (asset.asset_dataurl.len > 0) {
+        return try allocator.dupe(u8, asset.asset_dataurl);
+    }
+
+    // asset 이 아님 (예: `url(./other.css)` 처럼 CSS 를 가리키는 경우) → 원문 유지.
+    return null;
+}
+
+/// outdir 기준 상대경로 `to_path` 를, 같은 outdir 기준의 `from_dir` 에서 가리키는
+/// URL 로 변환한다. 둘 다 outdir 기준 `/` 구분 경로라 파일시스템을 건드리지 않는다.
+///
+/// ""          → "logo-a1.png"  ⇒ "./logo-a1.png"
+/// "assets"    → "assets/x.png" ⇒ "./x.png"      (공통 prefix 제거)
+/// "css"       → "assets/x.png" ⇒ "../assets/x.png"
+fn relativeUrlFrom(allocator: std.mem.Allocator, from_dir: []const u8, to_path: []const u8) ![]const u8 {
+    var from = std.mem.trim(u8, from_dir, "/");
+    var to = to_path;
+
+    // 공통 선행 세그먼트 제거 — `../a/x` 대신 `./x` 가 나오도록.
+    while (from.len > 0) {
+        const from_seg_end = std.mem.indexOfScalar(u8, from, '/') orelse from.len;
+        const to_seg_end = std.mem.indexOfScalar(u8, to, '/') orelse break;
+        if (!std.mem.eql(u8, from[0..from_seg_end], to[0..to_seg_end])) break;
+        from = if (from_seg_end == from.len) "" else from[from_seg_end + 1 ..];
+        to = to[to_seg_end + 1 ..];
+    }
+
+    // 남은 from 세그먼트 수만큼 상위로 올라간다.
+    var up: usize = 0;
+    if (from.len > 0) {
+        up = 1;
+        for (from) |c| {
+            if (c == '/') up += 1;
+        }
+    }
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    if (up == 0) {
+        try out.appendSlice(allocator, "./");
+    } else {
+        for (0..up) |_| try out.appendSlice(allocator, "../");
+    }
+    try out.appendSlice(allocator, to);
+    return out.toOwnedSlice(allocator);
 }
 
 /// External @import URL (`http:`/`https:`/`//`/`data:`) 을 dedup 수집 + 출력 CSS
@@ -150,6 +283,12 @@ const ExternalImportCollector = struct {
     /// drop 회귀.
     fn collectFromModule(self: *ExternalImportCollector, allocator: std.mem.Allocator, mod: *const Module) !void {
         for (mod.import_records) |rec| {
+            // CSS 모듈의 import_records 에는 `@import`(.side_effect) 와 본문 url()
+            // 자산(.css_url) 이 **함께** 들어있다 (#4466). 여기서 다루는 건 @import 뿐 —
+            // kind 를 안 보면, `--packages=external` 등으로 external 판정된 url() 자산이
+            // 출력 CSS 상단에 `@import "hero.png";` 로 튀어나와 브라우저가 PNG 를
+            // stylesheet 로 fetch 한다.
+            if (rec.kind == .css_url) continue;
             if (!rec.is_external) continue;
             if (rec.specifier.len == 0) continue;
             const composite_key = try std.fmt.allocPrint(allocator, "{s}\x00{s}", .{ rec.specifier, rec.css_condition_tail });
@@ -263,9 +402,11 @@ fn appendCssStringEscaped(allocator: std.mem.Allocator, buf: *std.ArrayListUnman
 fn appendCssModules(
     allocator: std.mem.Allocator,
     buf: *std.ArrayListUnmanaged(u8),
+    graph: *const ModuleGraph,
     css_modules: []const *const Module,
+    css_dir: []const u8,
 ) !void {
-    for (css_modules) |mod| try appendCssModule(allocator, buf, mod);
+    for (css_modules) |mod| try appendCssModule(allocator, buf, graph, mod, css_dir);
 }
 
 /// CSS 모듈 트리를 dep-first 로 순회하며 @charset / @layer prefix decl 을
@@ -325,6 +466,7 @@ fn emitCssModuleTree(
     idx: ModuleIndex,
     buf: *std.ArrayListUnmanaged(u8),
     visited: *std.AutoHashMapUnmanaged(ModuleIndex, void),
+    css_dir: []const u8,
 ) !void {
     if (idx.isNone()) return;
     if (visited.contains(idx)) return;
@@ -335,10 +477,10 @@ fn emitCssModuleTree(
     if (mod.module_type != .css) return;
     for (mod.dependencies.items) |dep| {
         if (graph.getModule(dep)) |dm| {
-            if (dm.module_type == .css) try emitCssModuleTree(allocator, graph, dep, buf, visited);
+            if (dm.module_type == .css) try emitCssModuleTree(allocator, graph, dep, buf, visited, css_dir);
         }
     }
-    try appendCssModule(allocator, buf, mod);
+    try appendCssModule(allocator, buf, graph, mod, css_dir);
 }
 
 /// 청크별 CSS 계획 항목. `path`/`contents` 는 `allocator` 소유.
@@ -460,12 +602,24 @@ pub fn planCssChunks(
         try ext_imports.appendTo(allocator, &buf);
         try prefix_decls.appendLayersTo(allocator, &buf);
 
+        const cidx: ChunkIndex = @enumFromInt(@as(u32, @intCast(chunk_idx)));
+
+        // url() 재작성이 출력 CSS 디렉토리 기준 상대경로를 만들어야 하는데, 최종
+        // 경로는 내용 해시([hash])에 의존한다 → 순환. 디렉토리는 내용과 무관하므로
+        // (패턴의 [dir]/리터럴 경로만 좌우) 빈 내용으로 한 번 계산해 dirname 만
+        // 취한다. 패턴 해석을 복제하지 않아 cssPathForChunk 와 항상 일관 (#4466).
+        const css_dir = blk: {
+            const probe = try cssPathForChunk(allocator, chunk_graph.getChunk(cidx), css_names, "");
+            defer allocator.free(probe);
+            break :blk try allocator.dupe(u8, std.fs.path.dirnamePosix(probe) orelse "");
+        };
+        defer allocator.free(css_dir);
+
         for (list.items) |mod| {
-            try emitCssModuleTree(allocator, graph, mod.index, &buf, &emit_visited);
+            try emitCssModuleTree(allocator, graph, mod.index, &buf, &emit_visited, css_dir);
         }
         if (buf.items.len == 0) continue;
 
-        const cidx: ChunkIndex = @enumFromInt(@as(u32, @intCast(chunk_idx)));
         const css_path = try cssPathForChunk(allocator, chunk_graph.getChunk(cidx), css_names, buf.items);
         errdefer allocator.free(css_path);
         const contents = try buf.toOwnedSlice(allocator);

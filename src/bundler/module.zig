@@ -313,6 +313,10 @@ pub const Module = struct {
     /// 모듈의 로딩 방식 (file/dataurl/text/binary/copy 등).
     /// addModule에서 확장자 또는 --loader 옵션으로 결정.
     loader: types.Loader = .none,
+    /// loader 가 `--loader:.ext=…` 로 **명시** 지정된 것인가 (확장자 기본 테이블
+    /// 추론이면 false). `--asset-inline-limit` 이 명시 지정을 존중하도록 하는
+    /// 근거 — 자세한 건 types.ParsedLoader.explicit 참고 (#4466).
+    loader_explicit: bool = false,
     /// 모듈의 export 방식 (CJS/ESM 판별)
     exports_kind: types.ExportsKind = .none,
     /// 모듈 래핑 방식 (CJS → __commonJS 팩토리 함수)
@@ -428,6 +432,21 @@ pub const Module = struct {
     disk_cache_key: u64 = 0,
     /// file/copy 로더의 asset 출력 정보. null이면 asset이 아님.
     asset_data: ?AssetData = null,
+    /// 이 asset 은 data URL 로 인라인하면 안 된다 (#4466).
+    ///
+    /// CSS 가 `url(./sprite.svg#icon)` / `url(./f.eot?#iefix)` 처럼 **suffix 를 달아**
+    /// 참조하면, 인라인된 data URL 뒤에는 그 suffix 를 붙일 자리가 없다. 반드시
+    /// 파일로 방출해야 `./sprite-a1b2c3d4.svg#icon` 이 성립한다. resolve 시점에
+    /// prepareCssUrlAsset 이 세운다.
+    asset_no_inline: bool = false,
+    /// data URL 로 인라인된 asset 의 URL 원문 (`data:image/png;base64,…`).
+    /// `.dataurl` 로더이거나, `--asset-inline-limit` 이하 크기라 자동 인라인된
+    /// 경우에 설정된다. parse_arena 소유.
+    ///
+    /// 인라인된 asset 은 별도 파일을 만들지 않으므로 `asset_data` 가 null 이다.
+    /// css_emitter 는 `asset_data` 가 있으면 파일 URL 을, 없고 이 값이 있으면
+    /// data URL 을 `url()` 에 써넣는다 (#4466).
+    asset_dataurl: []const u8 = "",
     /// RN AssetRegistry metadata (이미지 모듈만, asset_registry 활성 시). parse_arena 소유 —
     /// finalize 의 collectRnAssetMetadata 가 graph 단위 list 로 borrow 재수집하고, reparse/store
     /// 가 arena 라이프사이클로 자동 정합한다(위상 보존 경로에서 unchanged 모듈 metadata 보존).
@@ -469,8 +488,11 @@ pub const Module = struct {
 
     /// CSS 번들링 메타데이터. parseCssModule에서 설정.
     pub const CssData = struct {
-        /// @import 규칙 개수.
+        /// @import 규칙 개수. import_records 앞쪽 import_count 개가 `@import`,
+        /// 그 뒤 url_count 개가 `.css_url` (본문 자산 참조).
         import_count: u32,
+        /// 본문 `url()` / `image-set()` 자산 참조 개수 (#4466).
+        url_count: u32 = 0,
         /// 마지막 @import 규칙 끝의 byte offset. emit 시 이 위치 이후부터 출력.
         strip_end: u32 = 0,
         /// 파일 상단 `@charset` / bare `@layer` 선언. strip_end 가 통째로

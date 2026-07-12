@@ -55,6 +55,7 @@ CLI > config > `--tsconfig-raw` > tsconfig file > defaults. 같은 옵션이 여
 | `banner` / `footer`                          |         `--banner:js=` 등          |               ✅               |            ❌             | scalar                                                             |
 | `intro` / `outro`                            |      `--intro=` / `--outro=`       |               ✅               |            ❌             | 포맷 wrapper 내부 코드 삽입                                        |
 | `entryNames` / `chunkNames` / `assetNames` / `cssNames` |       flag         |               ✅               |            ❌             | scalar. `entryNames` / `cssNames` default `[dir]/[name]` (sub-2 부터, breaking) |
+| `assetInlineLimit`                           |      `--asset-inline-limit=`       |               ✅               |            ❌             | number. default `4096` — 이하 크기 asset 은 data URL 인라인, `0` = 끔 |
 | `globalName`                                 |          `--global-name=`          |               ✅               |            ❌             | iife/umd 시 사용                                                   |
 | `globals`                                    |        `--global:SPEC=NAME`        |               ✅               |            ❌             | external specifier → IIFE/UMD global                               |
 | `publicPath`                                 |          `--public-path=`          |               ✅               |            ❌             | asset URL prefix                                                   |

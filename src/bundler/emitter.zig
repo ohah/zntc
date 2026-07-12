@@ -375,6 +375,26 @@ pub fn emit(
     return emitWithTreeShaking(io, allocator, graph, options, linker, null);
 }
 
+/// CSS `url()` 로만 참조된 asset 모듈인가 (#4466).
+///
+/// `.css_url` import record 는 dependency 엣지를 만들지 않으므로(resolve_imports
+/// 의 recordResolvedDep 참고), CSS 에서만 참조된 asset 은 `importers` 가 비어
+/// 있다 — JS 쪽 누구도 이 모듈을 require 하지 않는다는 뜻이다.
+///
+/// 이런 모듈을 JS 출력에 넣으면 아무도 호출하지 않는 `var require_codicon =
+/// __commonJS({...})` 죽은 래퍼가 되고, inline-limit 으로 data URL 이 된 자산은
+/// base64 전체가 CSS 와 JS 양쪽에 **중복**된다. 자산 파일 자체는 bundler.zig 의
+/// asset 수집(= `asset_data` 를 가진 모든 모듈)이 따로 방출하므로, 여기서 빼도
+/// dist 에는 정상적으로 나온다.
+///
+/// 청크 경로(chunk.zig)는 도달성 BitSet 이 비면 이미 skip 하므로 영향 없다 —
+/// 이 가드는 non-splitting 단일 번들과 dev per-module emit 경로용이다.
+fn isCssOnlyAsset(m: *const Module) bool {
+    if (!m.loader.isAsset()) return false;
+    if (m.is_entry_point) return false;
+    return m.importers.items.len == 0 and m.dynamic_importers.items.len == 0;
+}
+
 /// tree-shaking 적용된 번들 출력. shaker가 null이면 모든 모듈 포함 (기존 동작).
 /// 0.16: 병렬 module emit 이 std.Thread.Pool → std.Io.Group 으로 옮겨져 io 필요.
 pub fn emitWithTreeShaking(
@@ -399,6 +419,8 @@ pub fn emitWithTreeShaking(
         const is_asset = m.loader.isAsset() and m.source.len > 0;
         const is_js = (m.module_type.isJavaScriptLike() or m.module_type == .json) and (m.ast != null or m.is_disabled or is_asset);
         if (is_js) {
+            // CSS `url()` 로만 참조된 asset 은 JS 출력에서 뺀다 (#4466).
+            if (isCssOnlyAsset(m)) continue;
             // tree-shaking: 미포함 모듈 스킵
             if (shaker) |s| {
                 if (!s.isIncluded(@intCast(i))) continue;

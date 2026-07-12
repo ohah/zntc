@@ -15,10 +15,13 @@ const profile = @import("../../profile.zig");
 
 /// 확장자에 대한 로더를 결정한다.
 /// --loader 오버라이드가 있으면 우선 사용, 없으면 확장자 기본값.
+///
+/// `explicit` 은 "사용자가 --loader 로 직접 지정했다" 는 뜻 — inline-limit 이
+/// 이 값을 보고 비켜난다 (#4466). 명시 지정이 암묵 기본값보다 항상 우선한다.
 pub fn resolveLoader(self: *const ModuleGraph, ext: []const u8) types.ParsedLoader {
     for (self.loader_overrides) |override| {
         if (std.mem.eql(u8, override.ext, ext)) {
-            return .{ .loader = override.loader, .module_type = override.module_type };
+            return .{ .loader = override.loader, .module_type = override.module_type, .explicit = true };
         }
     }
     return types.ParsedLoader.fromExtension(ext);
@@ -101,6 +104,7 @@ pub fn addModuleWithResolveDir(self: *ModuleGraph, io: std.Io, abs_path: []const
     // 로더 결정: --loader 오버라이드 → 확장자 기본값
     const parsed_loader = resolveLoader(self, ext_for_loader);
     module.loader = parsed_loader.loader;
+    module.loader_explicit = parsed_loader.explicit;
     module.module_type = parsed_loader.module_type orelse moduleTypeForLoader(module.module_type, module.loader);
     s_alloc.end();
 

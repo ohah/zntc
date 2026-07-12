@@ -17,6 +17,7 @@ const ScaleCollection = graph_assets.ScaleCollection;
 const collectScaleVariants = graph_assets.collectScaleVariants;
 const computeAssetDir = graph_assets.computeAssetDir;
 const assetSourceFromBytes = graph_assets.sourceFromBytes;
+const dataUrlFromBytes = graph_assets.dataUrlFromBytes;
 const parseScaleSuffix = graph_assets.parseScaleSuffix;
 const graph_mod = @import("../graph.zig");
 const ModuleGraph = graph_mod.ModuleGraph;
@@ -47,9 +48,44 @@ pub fn parseCssModule(self: *ModuleGraph, io: std.Io, module: *Module) void {
     const raw_imports = scan_result.imports;
     const import_count: u32 = @intCast(raw_imports.len);
 
-    if (import_count > 0) {
-        // import_records 생성
-        const records = arena_alloc.alloc(types.ImportRecord, import_count) catch {
+    // strip_end = max(last @import end, last prefix decl end + `;`) — 캡처되어
+    // emitter 가 별도 보존 emit 하는 모든 영역을 본문 source 에서 제외해 double
+    // emit 회피. prefix decl 의 `text` 슬라이스가 source slice 이므로 pointer
+    // 산술로 end offset 복원 (text + `;` 분 1 추가).
+    var strip_end: u32 = if (import_count > 0) raw_imports[import_count - 1].span.end else 0;
+    for (scan_result.prefix_decls) |pd| {
+        const text_end_offset: usize = @intFromPtr(pd.text.ptr) - @intFromPtr(module.source.ptr) + pd.text.len;
+        // `;` 다음까지 포함 (text 는 `;` 미포함 — emitter 가 따로 부착)
+        const decl_end: u32 = @intCast(@min(text_end_offset + 1, module.source.len));
+        if (decl_end > strip_end) strip_end = decl_end;
+    }
+
+    // 본문의 `url(...)` / `image-set(...)` 자산 참조 (#4466). strip_end 이후만 훑어
+    // prelude 의 `@import url(...)` 과 겹치지 않게 한다.
+    //
+    // `.root_absolute`(`url(/logo.png)`) 는 **제외**한다 — public 디렉토리 규약이라
+    // 파일로 resolve 할 대상이 아니다. ImportRecord 로 만들면 resolver 가 못 찾고
+    // "Cannot resolve CSS url() asset" 경고를 헛되이 뿜는다.
+    const all_urls = css_scanner_mod.extractCssUrls(arena_alloc, module.source, strip_end);
+    var url_records: []css_scanner_mod.CssUrlRecord = &.{};
+    if (all_urls.len > 0) {
+        const buf = arena_alloc.alloc(css_scanner_mod.CssUrlRecord, all_urls.len) catch {
+            module.state = .ready;
+            return;
+        };
+        var n: usize = 0;
+        for (all_urls) |u| {
+            if (u.kind != .relative) continue;
+            buf[n] = u;
+            n += 1;
+        }
+        url_records = buf[0..n];
+    }
+    const url_count: u32 = @intCast(url_records.len);
+
+    if (import_count + url_count > 0) {
+        // import_records 생성 — @import 먼저, 그 뒤 css_url.
+        const records = arena_alloc.alloc(types.ImportRecord, import_count + url_count) catch {
             module.state = .ready;
             return;
         };
@@ -65,22 +101,22 @@ pub fn parseCssModule(self: *ModuleGraph, io: std.Io, module: *Module) void {
                 .css_condition_tail = imp.condition_tail,
             };
         }
+        for (url_records, 0..) |u, i| {
+            records[import_count + i] = .{
+                .specifier = u.specifier,
+                .kind = .css_url,
+                // span = 재작성 대상 구간 (url() 인자). emit 시 이 구간을 통째로
+                // 새 URL 문자열로 치환한다.
+                .span = u.span,
+                .css_url_suffix = u.suffix,
+            };
+        }
         module.import_records = records;
     }
 
-    // strip_end = max(last @import end, last prefix decl end + `;`) — 캡처되어
-    // emitter 가 별도 보존 emit 하는 모든 영역을 본문 source 에서 제외해 double
-    // emit 회피. prefix decl 의 `text` 슬라이스가 source slice 이므로 pointer
-    // 산술로 end offset 복원 (text + `;` 분 1 추가).
-    var strip_end: u32 = if (import_count > 0) raw_imports[import_count - 1].span.end else 0;
-    for (scan_result.prefix_decls) |pd| {
-        const text_end_offset: usize = @intFromPtr(pd.text.ptr) - @intFromPtr(module.source.ptr) + pd.text.len;
-        // `;` 다음까지 포함 (text 는 `;` 미포함 — emitter 가 따로 부착)
-        const decl_end: u32 = @intCast(@min(text_end_offset + 1, module.source.len));
-        if (decl_end > strip_end) strip_end = decl_end;
-    }
     module.css_data = .{
         .import_count = import_count,
+        .url_count = url_count,
         .strip_end = strip_end,
         .prefix_decls = scan_result.prefix_decls,
     };
@@ -102,9 +138,11 @@ pub fn parseAssetModule(self: *ModuleGraph, io: std.Io, module: *Module) void {
     };
     const arena_alloc = module.parse_arena.?.allocator();
 
-    switch (module.loader) {
-        .text, .dataurl, .base64, .binary => {
-            // text/dataurl/base64/binary: 모두 raw bytes → JS 표현식 변환. assetSourceFromBytes
+    // 라벨: inline-limit 이 걸린 .file 은 파일 방출 코드를 건너뛰고 공통 꼬리
+    // (CJS wrap 설정) 로 바로 빠진다.
+    asset_switch: switch (module.loader) {
+        .text, .base64, .binary => {
+            // text/base64/binary: 모두 raw bytes → JS 표현식 변환. assetSourceFromBytes
             // 헬퍼가 plugin onLoad 경로와 공유 (#2157).
             const raw = readModuleSourceWithMtime(self, io, module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
             module.source = assetSourceFromBytes(arena_alloc, module.loader, raw, module.path, self.transform_options_base.minify_whitespace) orelse {
@@ -112,9 +150,53 @@ pub fn parseAssetModule(self: *ModuleGraph, io: std.Io, module: *Module) void {
                 return;
             };
         },
+        .dataurl => {
+            // data URL 은 한 번만 만든다 — CSS `url()` 은 따옴표 없는 원문이,
+            // JS 는 따옴표로 감싼 문자열이 필요할 뿐이라 base64 를 두 번 돌릴 이유가 없다.
+            const raw = readModuleSourceWithMtime(self, io, module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
+            const url = dataUrlFromBytes(arena_alloc, raw, module.path) orelse {
+                module.state = .ready;
+                return;
+            };
+            module.asset_dataurl = url;
+            module.source = std.fmt.allocPrint(arena_alloc, "\"{s}\"", .{url}) catch {
+                module.state = .ready;
+                return;
+            };
+        },
         .file, .copy => {
             // 파일 읽기 → content hash → 출력 경로 생성 → URL 문자열
             const raw = readModuleSourceWithMtime(self, io, module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
+
+            // inline-limit: 확장자 기본 테이블로 .file 이 된 작은 자산은 별도 파일을
+            // 만들지 않고 data URL 로 인라인한다 (Vite `assetsInlineLimit` 상당, #4466).
+            //
+            // 세 가지를 존중한다:
+            //   - `--loader:.png=file` 처럼 **명시** 지정된 로더는 건드리지 않는다.
+            //     명시 요청이 암묵 기본값을 항상 이긴다.
+            //   - `.copy` 는 "원본을 그대로 복사" 라는 명시적 의도라 인라인 대상 아님.
+            //   - RN asset_registry 모드는 **절대** 인라인하지 않는다. Metro
+            //     AssetRegistry 는 파일 경로 + @2x/@3x scale variant 를 전제로
+            //     동작하므로 data URL 로 바꾸면 네이티브가 자산을 못 찾는다.
+            //   - `asset_no_inline` — CSS 가 `#fragment`/`?query` 를 달아 참조하는
+            //     자산. data URL 뒤엔 suffix 를 붙일 자리가 없다 (Module 주석 참고).
+            if (module.loader == .file and !module.loader_explicit and
+                !module.asset_no_inline and
+                self.asset_registry == null and
+                self.asset_inline_limit > 0 and raw.len <= self.asset_inline_limit)
+            {
+                if (dataUrlFromBytes(arena_alloc, raw, module.path)) |url| {
+                    module.asset_dataurl = url;
+                    module.source = std.fmt.allocPrint(arena_alloc, "\"{s}\"", .{url}) catch {
+                        module.state = .ready;
+                        return;
+                    };
+                    // asset_data 를 설정하지 *않는다* → 별도 출력 파일 없음.
+                    break :asset_switch;
+                }
+                // data URL 생성 실패(OOM) 는 치명적이지 않다 — 아래 파일 방출로 폴백.
+            }
+
             const hash = contentHash(raw);
             const ext = std.fs.path.extension(module.path);
             const basename = std.fs.path.basename(module.path);

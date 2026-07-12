@@ -71,6 +71,26 @@ pub fn base64Encode(allocator: std.mem.Allocator, data: []const u8) ![]const u8 
     return buf;
 }
 
+/// raw bytes → `data:<mime>;base64,<...>` (따옴표 없는 URL 원문).
+///
+/// JS 소스용 따옴표 래핑은 sourceFromBytes 가 한다. CSS `url()` 에는 따옴표
+/// 없는 원문이 필요해 분리했다 (#4466).
+pub fn dataUrlFromBytes(
+    alloc: std.mem.Allocator,
+    raw: []const u8,
+    module_path: []const u8,
+) ?[]const u8 {
+    const encoded = base64Encode(alloc, raw) catch return null;
+    const full_mime = mime.fromExtension(module_path);
+    // mime.fromExtension 은 `text/css; charset=utf-8` 같은 파라미터를 붙여 줄 수
+    // 있다. data URL 의 base64 앞에는 media type 만 온다.
+    const mime_type = if (std.mem.indexOf(u8, full_mime, ";")) |semi|
+        full_mime[0..semi]
+    else
+        full_mime;
+    return std.fmt.allocPrint(alloc, "data:{s};base64,{s}", .{ mime_type, encoded }) catch null;
+}
+
 /// raw bytes 를 asset loader 의 값 표현식으로 변환한다.
 /// `file` / `copy` 는 asset_outputs 라이프사이클이 별개라 제외 — caller 가 별도 처리.
 /// `javascript` / `json` / `css` / `none` 은 변환 없이 raw contents 가 source — null 반환.
@@ -88,13 +108,8 @@ pub fn sourceFromBytes(
             break :blk std.fmt.allocPrint(alloc, "\"{s}\"", .{escaped}) catch null;
         },
         .dataurl => blk: {
-            const encoded = base64Encode(alloc, raw) catch break :blk null;
-            const full_mime = mime.fromExtension(module_path);
-            const mime_type = if (std.mem.indexOf(u8, full_mime, ";")) |semi|
-                full_mime[0..semi]
-            else
-                full_mime;
-            break :blk std.fmt.allocPrint(alloc, "\"data:{s};base64,{s}\"", .{ mime_type, encoded }) catch null;
+            const url = dataUrlFromBytes(alloc, raw, module_path) orelse break :blk null;
+            break :blk std.fmt.allocPrint(alloc, "\"{s}\"", .{url}) catch null;
         },
         .base64 => blk: {
             const encoded = base64Encode(alloc, raw) catch break :blk null;

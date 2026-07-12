@@ -303,6 +303,8 @@ function parseArgs(argv) {
     entryNames: undefined,
     chunkNames: undefined,
     assetNames: undefined,
+    // #4466 — undefined 여야 native default(4096)를 덮지 않는다. 명시 0 = 인라인 끔.
+    assetInlineLimit: undefined,
     cssNames: undefined,
     jsx: undefined,
     jsxDev: false,
@@ -1336,6 +1338,7 @@ function mergeConfigIntoOpts(opts, config) {
     'entryNames',
     'chunkNames',
     'assetNames',
+    'assetInlineLimit', // #4466 asset data URL 인라인 임계값 (숫자 scalar)
     'cssNames',
     'jsx',
     'jsxFactory',
@@ -1630,6 +1633,7 @@ async function buildBundleOptions(opts, config, { filterCallerPreWarmCss = false
     entryNames: opts.entryNames,
     chunkNames: opts.chunkNames,
     assetNames: opts.assetNames,
+    assetInlineLimit: opts.assetInlineLimit,
     cssNames: opts.cssNames,
     jsx: opts.jsx,
     jsxDev: opts.jsxDev,

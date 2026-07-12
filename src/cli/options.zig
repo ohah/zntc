@@ -6,6 +6,27 @@ const usage_cli = @import("usage.zig");
 /// 이 로직이 cli/options.zig 에만 있어 NAPI 가 silent drift → 발행
 /// @zntc/core 에서 MF 미동작했던 갭을 구조적으로 봉인(#3318).
 const mf_options = lib.bundler.mf_options;
+const bundler_types = lib.bundler.types;
+
+pub const LoaderFlagError = error{ MissingEquals, UnknownLoader };
+
+/// `--loader:.ext=type` 의 `.ext=type` 부분을 파싱한다.
+/// `zntc --bundle`(여기)과 `zntc build`/`dev`(cli/app.zig)가 공유 — 두 파서가 갈리면
+/// 같은 플래그가 커맨드마다 다르게 동작한다 (#4466).
+pub fn parseLoaderKeyValue(kv: []const u8) LoaderFlagError!bundler_types.LoaderOverride {
+    const eq_pos = std.mem.indexOfScalar(u8, kv, '=') orelse return error.MissingEquals;
+    const ext_str = kv[0..eq_pos];
+    const loader_str = kv[eq_pos + 1 ..];
+    const parsed = bundler_types.ParsedLoader.fromString(loader_str) orelse return error.UnknownLoader;
+    return .{
+        .ext = ext_str,
+        .loader = parsed.loader,
+        .module_type = parsed.module_type,
+    };
+}
+
+/// `--loader` 에러 메시지의 단일 출처 — 커맨드별로 문구가 갈리지 않도록.
+pub const loader_help = "expected: file, dataurl, base64, text, binary, copy, json, css, empty, js, jsx, ts, tsx";
 
 /// CLI 인자를 파싱한 결과를 담는 구조체.
 /// main()에서 개별 변수 30여 개로 흩어져 있던 옵션을 하나로 모은다.
@@ -115,6 +136,9 @@ pub const CliOptions = struct {
     entry_names: []const u8 = "[dir]/[name]",
     chunk_names: []const u8 = "[name]-[hash]",
     asset_names: []const u8 = "[name]-[hash]",
+    /// --asset-inline-limit=<bytes>: 이 크기 이하 asset 은 data URL 로 인라인.
+    /// 0 = 인라인 끔 (항상 파일 방출). 기본 4096 (#4466).
+    asset_inline_limit: u32 = bundler_types.default_asset_inline_limit,
     /// --asset-registry=PATH: Metro AssetRegistry 모듈 경로. null=일반 URL, ""(명시적 off),
     /// RN 플랫폼은 미지정 시 기본 경로 자동 적용.
     asset_registry: ?[]const u8 = null,
@@ -411,6 +435,7 @@ fn applyZntcConfigJson(opts: *CliOptions, io: std.Io, allocator: std.mem.Allocat
         opts.inline_dynamic_imports_explicit = true;
     }
     if (dto.minChunkSize) |v| opts.min_chunk_size = @as(usize, v);
+    if (dto.assetInlineLimit) |v| opts.asset_inline_limit = v;
     // manualChunks: record form 매핑 — `[{name, patterns}]`. function form 은 JS-only.
     if (dto.manualChunks) |list| for (list) |e| {
         const patterns = try allocator.alloc([]const u8, e.patterns.len);
@@ -919,6 +944,12 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator,
             opts.chunk_names = arg["--chunk-names=".len..];
         } else if (std.mem.startsWith(u8, arg, "--asset-names=")) {
             opts.asset_names = arg["--asset-names=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--asset-inline-limit=")) {
+            const val = arg["--asset-inline-limit=".len..];
+            opts.asset_inline_limit = std.fmt.parseInt(u32, val, 10) catch {
+                try stderr.print("zntc: --asset-inline-limit requires a number (bytes): {s}\n", .{val});
+                std.process.exit(1);
+            };
         } else if (std.mem.startsWith(u8, arg, "--asset-registry=")) {
             opts.asset_registry = arg["--asset-registry=".len..];
         } else if (std.mem.eql(u8, arg, "--no-asset-registry")) {
@@ -1042,25 +1073,19 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator,
                 try stderr.print("zntc: --legal-comments={s} is not yet fully implemented, falling back to eof behavior\n", .{val});
             }
         } else if (std.mem.startsWith(u8, arg, "--loader:")) {
-            // --loader:.png=file (esbuild 호환)
+            // --loader:.png=file (esbuild 호환) — 파싱은 cli/app.zig 와 공유.
             const kv = arg["--loader:".len..];
-            if (std.mem.indexOf(u8, kv, "=")) |eq_pos| {
-                const ext_str = kv[0..eq_pos];
-                const loader_str = kv[eq_pos + 1 ..];
-                if (CliOptions.ParsedLoader.fromString(loader_str)) |parsed_loader| {
-                    try opts.loader_list.append(allocator, .{
-                        .ext = ext_str,
-                        .loader = parsed_loader.loader,
-                        .module_type = parsed_loader.module_type,
-                    });
-                } else {
-                    try stderr.print("zntc: unknown loader '{s}' (expected: file, dataurl, base64, text, binary, copy, json, css, empty, js, jsx, ts, tsx)\n", .{loader_str});
+            const override = parseLoaderKeyValue(kv) catch |err| switch (err) {
+                error.MissingEquals => {
+                    try stderr.print("zntc: --loader requires .EXT=TYPE format: {s}\n", .{arg});
                     std.process.exit(1);
-                }
-            } else {
-                try stderr.print("zntc: --loader requires .EXT=TYPE format: {s}\n", .{arg});
-                std.process.exit(1);
-            }
+                },
+                error.UnknownLoader => {
+                    try stderr.print("zntc: unknown loader in '{s}' ({s})\n", .{ arg, loader_help });
+                    std.process.exit(1);
+                },
+            };
+            try opts.loader_list.append(allocator, override);
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try usage_cli.printUsage(stdout);
             return null;

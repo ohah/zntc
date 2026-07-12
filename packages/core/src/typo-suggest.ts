@@ -181,6 +181,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'entryNames',
   'chunkNames',
   'assetNames',
+  'assetInlineLimit',
   'cssNames',
   // ─── TypeScript / decorator ───
   'experimentalDecorators',

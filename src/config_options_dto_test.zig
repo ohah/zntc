@@ -50,6 +50,7 @@ const bundler_only_fields = [_][]const u8{
     "intro",
     "outro",
     "assetNames",
+    "assetInlineLimit", // #4466 asset data URL 인라인 임계값
     "chunkNames",
     "cssNames",
     "entryNames",

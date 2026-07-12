@@ -130,6 +130,83 @@ zntc --bundle entry.ts --loader:.png=file --loader:.svg=dataurl
 
 Supported loaders: `js`, `jsx`, `ts`, `tsx`, `json`, `css`, `text`, `file`, `dataurl`, `base64`, `binary`, `copy`, `empty`
 
+### Default loaders by extension
+
+Common binary asset extensions get the `file` loader with no flag at all, so `import logo from "./logo.png"` and `url(./font.woff2)` work out of the box:
+
+| Kind    | Extensions                                                                       |
+| ------- | -------------------------------------------------------------------------------- |
+| Image   | `.png` `.jpg` `.jpeg` `.jfif` `.pjpeg` `.pjp` `.gif` `.svg` `.ico` `.webp` `.avif` `.bmp` |
+| Font    | `.woff` `.woff2` `.eot` `.ttf` `.otf`                                            |
+| Media   | `.mp4` `.webm` `.ogg` `.mp3` `.wav` `.flac` `.aac` `.opus` `.mov` `.m4a` `.vtt`  |
+| Other   | `.webmanifest` `.pdf`                                                            |
+
+Extension matching is case-insensitive, so `LOGO.PNG` counts too. Extensions **outside** this table still need an explicit `--loader:.ext=type` — otherwise the build fails with `No loader is configured`.
+
+## Assets
+
+### CSS `url()`
+
+`url()` references in CSS go through the same asset pipeline as JS imports: the target file is emitted with a content hash and the `url()` is rewritten in place.
+
+```css
+/* src/style.css */
+@font-face {
+  font-family: "Inter";
+  src: url(./fonts/inter.woff2) format("woff2");
+}
+.bg {
+  background: url(./img/hero.png) no-repeat;
+}
+```
+
+```css
+/* dist/style.css */
+@font-face {
+  font-family: "Inter";
+  src: url("./inter-9f3c1a20.woff2") format("woff2");
+}
+.bg {
+  background: url("./hero-a1b2c3d4.png") no-repeat;
+}
+```
+
+This covers `@font-face { src: url(...) }`, `background` / `background-image`, `border-image`, `cursor`, `mask-image`, `list-style-image`, CSS custom properties, and `image-set()` / `-webkit-image-set()` (including the bare-string form). The rewritten URL is relative to the emitted CSS file, or prefixed with `--public-path` when that option is set.
+
+`?query` and `#fragment` suffixes are preserved, so the IE9 `@font-face` hack keeps working:
+
+```css
+src: url(./f.eot?#iefix);   /* → url("./f-a1b2c3d4.eot?#iefix") */
+background: url(./i.svg#icon);  /* fragment preserved */
+```
+
+These forms are **not** rewritten and pass through verbatim:
+
+| Form                                                        | Why                                             |
+| ----------------------------------------------------------- | ----------------------------------------------- |
+| `url(#gradient)`                                            | SVG filter / gradient reference, not a file     |
+| `url(/logo.png)`                                            | Root-absolute path — the `public/` convention   |
+| `url(https://…)` `url(//cdn…)` `url(data:…)` `url(blob:…)` | External                                        |
+
+If an asset cannot be resolved, ZNTC emits a warning (`Cannot resolve CSS url() asset — left unchanged`) and leaves the original `url()` alone rather than failing the build — such assets are often served or copied in by a separate deploy step.
+
+### Inlining small assets
+
+Assets of at most `--asset-inline-limit` bytes (default `4096`) are inlined as `data:` URLs instead of being emitted as separate files. `0` turns inlining off.
+
+```bash
+zntc --bundle entry.ts --outdir dist/ --asset-inline-limit=8192   # inline up to 8 KB
+zntc --bundle entry.ts --outdir dist/ --asset-inline-limit=0      # always emit files
+```
+
+Inlining applies only to assets that got `file` from the default extension table above. These are never inlined:
+
+- an explicit `--loader:.png=file` — an explicit request wins over the implicit default
+- the `copy` loader — "copy the original as-is" is already an explicit intent
+- React Native asset-registry mode — Metro's AssetRegistry needs real file paths and `@2x` / `@3x` scale variants
+
+The equivalent config key is `assetInlineLimit` (Vite's `assetsInlineLimit`).
+
 ## Web Worker
 
 ZNTC auto-detects the `new Worker(new URL("./worker.ts", import.meta.url))` pattern and emits the worker entry as a **standalone IIFE bundle**. No additional build configuration or entry option is needed.
