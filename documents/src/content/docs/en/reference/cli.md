@@ -286,6 +286,13 @@ use preact by adding just `/** @jsxImportSource preact */` — that file alone u
 | `--resolve-symlink-siblings`            | On lookup miss, retry from the source dir realpath (RN/pnpm peer sibling resolution) |
 | `--disable-hierarchical-lookup`         | Disable parent `node_modules` hierarchy lookup (Metro-style single-tree resolution) |
 
+Vite-style query suffixes need no flag: `./data.txt?raw` (string), `./icon.png?url`
+(asset URL — ignores `--asset-inline-limit`), `./icon.png?inline` (data URL),
+`./x.worker.js?worker` (Worker constructor). The query is part of the module
+identity, so `./x.png` and `./x.png?raw` are different modules. Unknown queries
+(`?vue&type=style&lang.css`) pass through untouched — see
+[Bundling — Query suffixes](/zntc/en/guides/bundling/#query-suffixes-raw--url--inline--worker).
+
 ## Watch / Dev Server
 
 | Option                          | Description                                                                                             |

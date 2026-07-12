@@ -253,6 +253,10 @@ To write native-style plugins, use `setup(build) { build.onLoad(...) }`.
 | `import.meta.glob`                   | Supported (Vite-compatible `eager` / `import` options)                                                   |
 | `import.meta.hot`                    | Supported (`--serve --bundle`)                                                                           |
 | `import.meta.url`                    | Supported (ESM standard)                                                                                 |
+| `?raw` import suffix                 | Supported (file contents as a string)                                                                    |
+| `?url` / `?inline` import suffix     | Supported (`?url` emits an asset and ignores `--asset-inline-limit`; `?inline` always inlines as a data URL) |
+| `?worker` / `?sharedworker` suffix   | Supported — default-exports a Worker constructor (`new W()`), built as a standalone chunk ([details](/zntc/en/guides/bundling/#query-suffixes-raw--url--inline--worker)) |
+| Unknown query suffix (`?vue&type=…`) | Passed through untouched — left to plugins that handle virtual paths                                     |
 | `@vitejs/plugin-react`               | `--jsx=automatic` (automatic runtime built-in)                                                           |
 | `@vitejs/plugin-react` Fast Refresh  | Built-in HMR (React Refresh)                                                                             |
 | `@vitejs/plugin-vue`                 | Not supported ([details + workarounds](/zntc/en/guides/plugin-recipes/#framework-sfc-vue--svelte--currently-unsupported)) |

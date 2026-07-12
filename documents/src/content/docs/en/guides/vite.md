@@ -80,6 +80,26 @@ bun vite preview   # preview the build output
 
 Pick whichever fits your project. If you already use Vite, sticking with Vite + `@zntc/vite-plugin` is the natural choice.
 
+## Query-suffix imports
+
+ZNTC's own bundler understands the Vite query-suffix idiom, so source that already uses it keeps building when you move a bundle or a worker setup over to `zntc --bundle` / `zntc build`:
+
+| Suffix                      | Behavior                                                                                                       |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `?raw`                      | File contents inlined as a string                                                                              |
+| `?url`                      | Emitted as an asset, URL string exported (`--asset-inline-limit` is ignored — an explicit URL request wins)     |
+| `?inline`                   | Inlined as a `data:` URL, regardless of size                                                                    |
+| `?worker` / `?sharedworker` | Default-exports a Worker constructor function (`new W()`), built as its own chunk                              |
+
+```js
+import txt from "./data.txt?raw";
+import u from "./icon.png?url";
+import W from "./x.worker.js?worker";
+const w = new W();
+```
+
+Unknown queries (`./Comp.vue?vue&type=style&lang.css`) are passed through untouched, so plugins that use virtual paths keep working. See [Bundling — Query suffixes](/zntc/en/guides/bundling/#query-suffixes-raw--url--inline--worker).
+
 ## How it works
 
 `@zntc/vite-plugin`'s `zntc()` attaches to these Vite hooks:
