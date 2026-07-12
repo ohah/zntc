@@ -336,3 +336,81 @@ test "#4472 minify: while / for body 도 동일하게 보호된다" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "while(c)({a}=o)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, ")({a}=o),g(4)") != null);
 }
+
+// ============================================================
+// #4481 — if → `&&`/`?:` 폴딩 시 필수 괄호 소실
+// ============================================================
+//
+// 폴딩 경로가 피연산자를 `emitNode`(= level `.lowest`)로 emit 해 중앙 precedence
+// 괄호 로직(exprNeedsParens)을 통째로 우회했다. paren 노드가 투명해진(#4042) 뒤로는
+// 소스의 괄호도 방어막이 아니라서, `if (c) ({a} = o)` 가 `c&&{a}=o` 로 방출됐다
+// (`&&` 가 `=` 보다 tight → `(c&&{a})=o` 로 파싱 → SyntaxError). monaco-editor 의
+// ts.worker / codemirror 가 이 패턴을 쓴다.
+//
+// 처방: 폴딩된 피연산자를 실제 자리의 level 로 emit (`&&` left/right, `?:` test/분기)
+// + 조건식이 statement 선두로 올라오므로 stmt_start 마킹.
+
+test "#4481 minify: if → && 폴딩 시 object destructuring 할당에 괄호 유지" {
+    var r = try e2eMinify(std.testing.allocator,
+        \\function f(c, o) { let a, b; if (c) ({ x: a, y: b } = o); return [a, b]; }
+    );
+    defer r.deinit();
+    // 괄호가 빠지면 `c&&{x:a,y:b}=o` → SyntaxError: Invalid left-hand side in assignment.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "c&&({x:a,y:b}=o)") != null);
+}
+
+test "#4481 minify: shorthand destructuring / 부정 조건도 동일" {
+    var r = try e2eMinify(std.testing.allocator,
+        \\function f(c, o) { let a; if (!c) ({ a } = o); return a; }
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "!c&&({a}=o)") != null);
+}
+
+test "#4481 minify: if test 의 할당(`no-cond-assign: except-parens`)에 괄호 유지" {
+    var r = try e2eMinify(std.testing.allocator,
+        \\function f(g, h) { let m; if ((m = g())) h(m); }
+    );
+    defer r.deinit();
+    // 괄호가 빠지면 `m=g()&&h(m)` — 파싱은 되지만 `m = (g() && h(m))` 로 **의미가 바뀐다**
+    // (silent miscompile: h 가 undefined 를 받고 m 에 g() 결과가 안 들어감).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(m=g())&&h(m)") != null);
+}
+
+test "#4481 minify: 폴딩으로 선두에 온 object/function 에 괄호 유지" {
+    var r = try e2eMinify(std.testing.allocator,
+        \\function f(g) { if ({}.x) g(); }
+    );
+    defer r.deinit();
+    // 조건식이 statement 선두로 올라오므로 `{` 가 블록으로 오파싱된다 → `({}).x&&g()`.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "({}).x&&g()") != null);
+}
+
+test "#4481 minify: if/else → ?: 폴딩도 test/분기 괄호 유지" {
+    var r = try e2eMinify(std.testing.allocator,
+        \\function f(c, g, h, a, b) { let m; if ((m = g())) h(m); else h(0); if (c) (a(), b()); else h(1); }
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(m=g())?h(m):h(0)") != null);
+    // comma sequence 분기는 `?:` 보다 느슨 → 괄호 필수.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "c?(a(),b()):h(1)") != null);
+}
+
+test "#4481 minify: if-return fallthrough 삼항도 test 괄호 유지" {
+    var r = try e2eMinify(std.testing.allocator,
+        \\function f(g) { let m; if ((m = g())) return 1; return 2; }
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(m=g())?1:2") != null);
+}
+
+test "#4481 minify: 괄호가 필요없는 폴딩은 그대로 (과잉 괄호 방지)" {
+    var r = try e2eMinify(std.testing.allocator,
+        \\function f(c, g, a, b) { if (c) g(a); if (a.b) g(1); if (!c) g(2); if (c) g(3); else g(4); }
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "c&&g(a)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "a.b&&g(1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "!c&&g(2)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "c?g(3):g(4)") != null);
+}
