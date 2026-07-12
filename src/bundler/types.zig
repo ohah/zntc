@@ -1061,3 +1061,82 @@ pub const ModuleKey = struct {
         }
     }
 };
+
+/// Vite 식 query-suffix import (#4467).
+///
+/// `import txt from "./a.txt?raw"` 처럼 specifier 뒤에 붙는 query 로 로딩 방식을
+/// 지정하는 관용구. Vite 생태계 문서·레시피가 널리 쓴다 (monaco 의 워커 셋업 등).
+///
+/// 표준 대체가 있는 것도 있지만(`?url` ≈ `new URL(f, import.meta.url)`), 라이브러리
+/// 문서가 이 형태를 전제해서 마이그레이션 마찰이 된다.
+pub const ViteQuery = enum {
+    /// `?raw` — 파일 내용을 문자열로 인라인 (default export).
+    raw,
+    /// `?url` — 자산으로 방출하고 URL 문자열을 export. inline-limit 무시(항상 URL).
+    url,
+    /// `?inline` — data URL 로 인라인.
+    inline_,
+    /// `?worker` — Worker 생성자 함수를 default export.
+    worker,
+
+    /// specifier / path 의 query 에서 Vite suffix 를 뽑는다. 없으면 null.
+    ///
+    /// query 는 `&` 로 여러 토큰이 올 수 있다 (`?worker&inline`). 알려진 토큰을
+    /// 하나라도 만나면 그것으로 판정하며, worker 가 가장 강하다(다른 토큰과 조합돼도
+    /// worker 로 취급 — Vite 동일).
+    pub fn fromPath(path: []const u8) ?ViteQuery {
+        const q = std.mem.indexOfScalar(u8, path, '?') orelse return null;
+        const end = std.mem.indexOfScalarPos(u8, path, q, '#') orelse path.len;
+        if (q + 1 >= end) return null;
+        const query = path[q + 1 .. end];
+
+        var found: ?ViteQuery = null;
+        var it = std.mem.tokenizeScalar(u8, query, '&');
+        while (it.next()) |tok| {
+            // `?worker` 는 다른 토큰과 조합돼도(`?worker&inline`) worker 가 이긴다.
+            if (std.mem.eql(u8, tok, "worker") or std.mem.eql(u8, tok, "sharedworker")) return .worker;
+            if (found != null) continue;
+            if (std.mem.eql(u8, tok, "raw")) found = .raw;
+            if (std.mem.eql(u8, tok, "url")) found = .url;
+            if (std.mem.eql(u8, tok, "inline")) found = .inline_;
+        }
+        return found;
+    }
+
+    /// 이 query 가 강제하는 로더. `.worker` 는 로더가 아니라 별도 가상 모듈이라 null.
+    pub fn loader(self: ViteQuery) ?Loader {
+        return switch (self) {
+            .raw => .text,
+            .url => .file,
+            .inline_ => .dataurl,
+            .worker => null,
+        };
+    }
+};
+
+/// `?query` / `#fragment` 를 뗀 순수 경로. resolver 가 파일시스템을 치기 전에 쓴다.
+pub fn stripPathQuery(path: []const u8) []const u8 {
+    const cut = std.mem.indexOfAny(u8, path, "?#") orelse return path;
+    return path[0..cut];
+}
+
+test "ViteQuery.fromPath" {
+    try std.testing.expectEqual(ViteQuery.raw, ViteQuery.fromPath("./a.txt?raw").?);
+    try std.testing.expectEqual(ViteQuery.url, ViteQuery.fromPath("./a.png?url").?);
+    try std.testing.expectEqual(ViteQuery.inline_, ViteQuery.fromPath("./a.svg?inline").?);
+    try std.testing.expectEqual(ViteQuery.worker, ViteQuery.fromPath("./w.js?worker").?);
+    // worker 가 조합에서 이긴다
+    try std.testing.expectEqual(ViteQuery.worker, ViteQuery.fromPath("./w.js?worker&inline").?);
+    try std.testing.expectEqual(ViteQuery.worker, ViteQuery.fromPath("./w.js?sharedworker").?);
+    // 알려지지 않은 query 는 null — vue SFC 등 기존 관용구를 건드리지 않는다
+    try std.testing.expect(ViteQuery.fromPath("./App.vue?vue&type=style&lang.css") == null);
+    try std.testing.expect(ViteQuery.fromPath("./a.txt") == null);
+    try std.testing.expect(ViteQuery.fromPath("./a.txt?") == null);
+}
+
+test "stripPathQuery" {
+    try std.testing.expectEqualStrings("./a.txt", stripPathQuery("./a.txt?raw"));
+    try std.testing.expectEqualStrings("./a.txt", stripPathQuery("./a.txt#x"));
+    try std.testing.expectEqualStrings("./a.txt", stripPathQuery("./a.txt?raw#x"));
+    try std.testing.expectEqualStrings("./a.txt", stripPathQuery("./a.txt"));
+}

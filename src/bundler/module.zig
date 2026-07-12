@@ -791,6 +791,15 @@ pub const Module = struct {
         return types.stringLessThan({}, a.path, b.path);
     }
 
+    /// 파일시스템/파일명 계산에 쓸 경로 — Vite query-suffix 를 뗀 것 (#4467).
+    ///
+    /// `module.path` 는 `/abs/x.png?url` 처럼 query 를 **유지**한다 (같은 파일도
+    /// query 마다 다른 모듈이라 dedup 키로 필요). 하지만 파일을 열거나 basename /
+    /// extension 을 뽑을 때 그대로 쓰면 `x.png?url` 이라는 파일을 찾게 된다.
+    pub fn diskPath(self: *const Module) []const u8 {
+        return types.stripPathQuery(self.path);
+    }
+
     pub fn init(index: ModuleIndex, path: []const u8) Module {
         return .{
             .index = index,
