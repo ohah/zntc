@@ -321,6 +321,7 @@ pub const Codegen = struct {
     const node_dispatch_emit = @import("node_dispatch.zig");
     pub const emitNode = node_dispatch_emit.emitNode;
     pub const emitExpr = node_dispatch_emit.emitExpr;
+    pub const exprNeedsParens = node_dispatch_emit.exprNeedsParens;
 
     /// identifier 노드의 symbol_id를 해결.
     /// symbol_ids[node_i]에서 직접 조회 (트랜스포머의 propagateSymbolId로 전파된 값).
