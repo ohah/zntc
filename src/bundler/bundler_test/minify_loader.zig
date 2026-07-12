@@ -3862,3 +3862,50 @@ test "#4466 CSS url(): external 판정된 url() 이 @import 로 새어나가지 
     const css = findCssOutput(result) orelse return error.ExpectedCssOutput;
     try std.testing.expect(std.mem.indexOf(u8, css, "@import") == null);
 }
+
+test "#4475 동명 basename 자산의 require 래퍼가 deconflict 된다" {
+    // 회귀: asset 모듈은 semantic 이 없어 래퍼 이름 등록을 건너뛰었고, emit 이
+    // basename 기반 fallback(`require_logo`)을 써서 두 자산이 같은 이름을 가졌다.
+    // 두 번째 선언이 첫 번째를 가려 `import x from './a/logo.png'` 가 b 의 URL 을
+    // 돌려주는 조용한 오컴파일.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "a");
+    try tmp.dir.createDirPath(std.testing.io, "b");
+    try writeFile(tmp.dir, "entry.ts", "import x from './a/logo.png';\nimport y from './b/logo.png';\nconsole.log(x, y);");
+    // inline limit 초과 + 내용이 서로 달라야 해시가 갈린다.
+    const img_a = [_]u8{0xA1} ** 5000;
+    const img_b = [_]u8{0xB2} ** 5000;
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "a/logo.png", .data = &img_a });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "b/logo.png", .data = &img_b });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    // 두 자산이 각각 방출됐어야 한다.
+    const outs = result.asset_outputs orelse return error.ExpectedAssetOutput;
+    var png_count: usize = 0;
+    for (outs) |o| {
+        if (std.mem.endsWith(u8, o.path, ".png")) png_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), png_count);
+
+    // 래퍼 이름이 충돌하면 안 된다 — `var require_logo` 가 두 번 나오면 BUG.
+    var idx: usize = 0;
+    var decl_count: usize = 0;
+    while (std.mem.indexOfPos(u8, result.output, idx, "var require_logo")) |pos| {
+        // `var require_logo$2` 도 매치되므로, 정확히 `require_logo` 로 끝나는지 본다.
+        const after = pos + "var require_logo".len;
+        if (after < result.output.len and result.output[after] == ' ') decl_count += 1;
+        idx = pos + 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), decl_count);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_logo$") != null);
+}

@@ -194,6 +194,15 @@ pub const Module = struct {
     /// 정적으로 export 안 된 named import 를 이 export 의 member 로 해석(CJS fallback 과 동형이되
     /// 대상이 namespace 가 아니라 default/named export value). parse_arena 가 backing 소유.
     synthetic_named_exports: ?[]const u8 = null,
+    /// semantic 이 없는 모듈(asset / disabled / optional-missing)의 deconflict 된 CJS
+    /// 래퍼 이름 (#4475). graph 의 registerWrapperSymbols 가 채운다. parse_arena 소유.
+    ///
+    /// 이런 모듈은 JS 파싱을 거치지 않아 `semantic` 이 null 이고, 그래서 예전엔 래퍼
+    /// 이름 등록을 통째로 건너뛴 뒤 emit 시 `makeRequireVarName(path)` 로 폴백했다.
+    /// 그 폴백은 basename 기반이라 `a/logo.png` 와 `b/logo.png` 가 **둘 다**
+    /// `require_logo` 가 됐고, 두 번째 선언이 첫 번째를 가려 한쪽 자산이 다른 쪽의
+    /// URL 을 돌려주는 조용한 오컴파일이 났다.
+    wrapper_name_synthetic: ?[]const u8 = null,
     /// 파싱된 AST. nodes/extra_data/string_table 의 backing 은 `parse_arena` 가 소유.
     ///
     /// ### Ownership 규약 (D1 디버그 인프라 — RFC #1672)
@@ -594,6 +603,9 @@ pub const Module = struct {
 
     pub fn allocRequireName(self: *const Module, allocator: std.mem.Allocator, rt: ?*const RenameTable) ![]const u8 {
         if (self.getRequireName(rt)) |n| return allocator.dupe(u8, n);
+        // semantic 없는 모듈(asset/disabled)은 registerWrapperSymbols 가 deconflict 해
+        // 둔 이름을 쓴다 (#4475). 이게 없으면 basename 충돌로 래퍼가 서로를 가린다.
+        if (self.wrapper_name_synthetic) |n| return allocator.dupe(u8, n);
         return types.makeRequireVarName(allocator, self.path);
     }
 
