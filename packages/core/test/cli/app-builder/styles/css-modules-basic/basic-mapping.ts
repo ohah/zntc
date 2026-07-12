@@ -57,7 +57,10 @@ describe('CLI: Vite-style app builder > styles > CSS Modules basics > mapping', 
     expect(css).toMatch(/\.card_card__[A-Za-z0-9_-]{8}/);
     expect(css).toMatch(/\.card_active__[A-Za-z0-9_-]{8}/);
     expect(css).toMatch(/\.card_title_text__[A-Za-z0-9_-]{8}/);
-    expect(css).toContain('url("./icon.png")');
+    // #4466: CSS Modules 를 거친 CSS 도 자산 파이프라인을 탄다 — url() 이 원문으로
+    // 남지 않고 재작성된다. icon.png 는 4바이트(inline limit 4096 이하)라 data URL.
+    expect(css).not.toContain('url("./icon.png")');
+    expect(css).toContain('url("data:image/png;base64,');
     rmSync(dir, { recursive: true, force: true });
   });
 });
