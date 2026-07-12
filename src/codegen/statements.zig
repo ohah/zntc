@@ -205,6 +205,23 @@ pub fn canEmitMultiExprBlockAsSequence(self: anytype, body_idx: NodeIndex) bool 
 /// declaration 또는 control flow statement 가 끼면 false (block 그대로 emit).
 fn emitMultiExprBlockAsSequence(self: anytype, body_idx: NodeIndex) !bool {
     if (!canEmitMultiExprBlockAsSequence(self, body_idx)) return false;
+    // statement-start 마킹 (#4472). 이 경로는 `if (c) { a; b; }` 의 body block 을
+    // `if(c) a,b;` 로 접는다 — 즉 sequence 의 **첫 원소가 statement 선두**에 놓인다.
+    //
+    // emitExpressionStatement 는 operand 를 emit 하기 전에 stmt_start 를 찍어,
+    // object destructuring 할당(`({a} = b)`)과 object literal(`({})`)이 선두에 올 때
+    // 괄호가 붙도록 한다. 그런데 아래 inner 는 expression_statement 를 건너뛰고
+    // operand 를 직접 emit 하므로 그 마킹이 없었다 → `if(c){a:x}=f(),g();` 처럼
+    // 괄호가 빠진 코드가 나왔다. 브라우저는 선두 `{` 를 블록으로, `a:` 를 라벨로
+    // 읽어 `SyntaxError: Unexpected token ':'` — 빌드는 green 인데 런타임에 죽는다.
+    //
+    // 두 번째 원소부터는 `,` 뒤라 expression 위치이므로 `{` 가 object literal 로
+    // 명확히 파싱된다 — 마킹은 첫 원소에만 필요하고, 여기서 찍으면 inner 가 그
+    // 사이에 아무것도 쓰지 않으므로 정확히 첫 원소에 걸린다.
+    //
+    // inner 를 공유하는 ternary branch 경로(`c ? a,b : d`)는 statement 선두가
+    // 아니라서 이 마킹을 하면 안 된다 — 그래서 inner 가 아니라 여기서 찍는다.
+    self.stmt_start = self.buf.items.len;
     try emitMultiExprBlockSeqInner(self, body_idx);
     try self.writeByte(';');
     return true;
