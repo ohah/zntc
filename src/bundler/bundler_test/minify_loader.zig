@@ -4127,3 +4127,107 @@ test "#4467 query 모듈의 watcher 경로는 디스크 경로여야 한다" {
     // 실제 파일이 감시 목록에 있어야 한다.
     try std.testing.expect(found_bare);
 }
+
+// ============================================================
+// #4482 — 번들(linking_metadata) 경로의 emit-시점 노드 교체와 load-bearing 괄호/공백
+// ============================================================
+//
+// codegen 은 emit 시점에 노드를 갈아치운다: 상수 인라인(identifier → `void 0`/`-2` 텍스트),
+// 상수 단락 fold(`ON && -1` → `-1`), 상수 조건 fold(`ON ? -1 : 2` → `-1`).
+// 그래서 **AST 태그**를 보는 괄호/공백 판정은 fold 로 사라질 분기를 보게 되어 구멍이 났다.
+// 이 경로는 linking_metadata 가 있어야만 활성화되므로 transpile/codegen 유닛으로는 재현되지
+// 않는다 — 번들 테스트로 박제한다.
+
+fn bundleMinified(tmp: *std.testing.TmpDir, comptime opts: struct { syntax: bool = true }) !@import("../bundler.zig").BundleResult {
+    const entry = try absPath(tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .node,
+        .minify_syntax = opts.syntax,
+        .minify_whitespace = true,
+    });
+    defer b.deinit();
+    return b.bundle(std.testing.io);
+}
+
+test "#4482 bundle: 상수 인라인된 undefined 가 ** 좌변이면 괄호" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "flags.ts", "export const U = undefined;");
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { U } from './flags';
+        \\globalThis.a = U ** 2;
+    );
+    var result = try bundleMinified(&tmp, .{});
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    // 유실 시 `void 0**2` — SyntaxError (단항이 ** 좌변에 직접 못 옴).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "(void 0)**2") != null);
+}
+
+test "#4482 bundle: 상수 인라인된 undefined 가 member object 면 괄호" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "flags.ts", "export const U = undefined;");
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { U } from './flags';
+        \\try { globalThis.a = U.toString(); } catch (e) { globalThis.a = "TypeError"; }
+    );
+    var result = try bundleMinified(&tmp, .{ .syntax = false });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    // 유실 시 `void 0.toString()` = `void (0..toString())` → SyntaxError.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "(void 0).toString()") != null);
+}
+
+test "#4482 bundle: 상수 인라인된 정수는 member 앞에 공백 (`2 .toString()`)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "flags.ts", "export const N = 2;");
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { N } from './flags';
+        \\globalThis.a = N.toString();
+    );
+    var result = try bundleMinified(&tmp, .{ .syntax = false });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    // 유실 시 `2.toString()` — `2.` 가 float 로 오파싱 → SyntaxError.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "2 .toString()") != null);
+}
+
+test "#4482 bundle: emit 시점 fold 로 살아남는 분기가 ** 좌변이면 괄호" {
+    // `(ON && -1) ** k` / `(ON ? -1 : 2) ** k` — codegen 이 logical/conditional 을 접고
+    // 살아남는 `-1` 을 그 자리에 emit 한다. AST 태그(logical/conditional)만 보면 단항이
+    // 아니라고 판단해 괄호를 안 붙였다 → `-1 ** k` = SyntaxError. minify 없이도 발생.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "flags.ts", "export const ON = true;");
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { ON } from './flags';
+        \\globalThis.r1 = (ON && -1) ** globalThis.k;
+        \\globalThis.r2 = (ON ? -1 : 2) ** globalThis.k;
+    );
+    var result = try bundleMinified(&tmp, .{ .syntax = false });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, result.output, "(-1)**globalThis.k"));
+}
+
+test "#4482 bundle: emit 시점 fold 로 살아남는 분기의 부호 토큰 병합 방지" {
+    // `x - (ON ? -1 : 1)` → `x--1` (SyntaxError), `-(ON ? -t : t)` → `--t` (t 를 감소시키는
+    // silent miscompile). 공백 판정이 **출력 바이트** 기준이라야 fold 를 따라간다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "flags.ts", "export const ON = true;");
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { ON } from './flags';
+        \\globalThis.b = globalThis.x - (ON ? -1 : 1);
+        \\globalThis.c = -(ON ? -globalThis.t : globalThis.t);
+    );
+    var result = try bundleMinified(&tmp, .{ .syntax = false });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "globalThis.x- -1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "=- -globalThis.t") != null);
+}

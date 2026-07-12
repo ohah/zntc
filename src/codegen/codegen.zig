@@ -18,6 +18,7 @@ const Comment = @import("../lexer/scanner.zig").Comment;
 const rt = @import("../bundler/runtime_helpers.zig");
 const options_mod = @import("options.zig");
 const writer_emit = @import("writer.zig");
+const Kind = @import("../lexer/token.zig").Kind;
 const debug_metadata = @import("debug_metadata.zig");
 
 pub const ModuleFormat = options_mod.ModuleFormat;
@@ -99,6 +100,13 @@ pub const Codegen = struct {
     /// 의 `.` emit 직전 위치가 일치하면 공백을 끼운다(`42 .toString()`). esbuild
     /// `needSpaceBeforeDot`. `maxInt` = 미마킹(절대 매치 안 됨).
     need_space_before_dot: usize = std.math.maxInt(usize),
+    /// 직전에 출력한 **연산자 토큰**과 그 끝 위치 (esbuild `prevOp`/`prevOpEnd`).
+    /// 인접 토큰이 `++`/`--`/`<!--` 로 잘못 합쳐지는 것을 막는 공백을 넣을지 판정한다
+    /// (`printSpaceBeforeOperator`). AST 태그가 아니라 **실제 출력 바이트** 기준이라,
+    /// 상수 폴딩/치환으로 emit 되는 노드가 바뀌어도(`x - (ON ? -1 : 1)` → `x- -1`)
+    /// 정확하다 (#4482). `maxInt` = 미마킹(절대 매치 안 됨).
+    prev_op: Kind = .eof,
+    prev_op_end: usize = std.math.maxInt(usize),
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) Codegen {
         return initWithOptions(allocator, ast, .{});
     }
@@ -299,6 +307,8 @@ pub const Codegen = struct {
     pub const writeNewline = writer_emit.writeNewline;
     pub const writeIndent = writer_emit.writeIndent;
     pub const writeSpace = writer_emit.writeSpace;
+    pub const printSpaceBeforeOperator = writer_emit.printSpaceBeforeOperator;
+    pub const recordOperatorToken = writer_emit.recordOperatorToken;
     pub const writeConstValue = writer_emit.writeConstValue;
     pub const writeSpan = writer_emit.writeSpan;
     pub const writeAsciiOnly = writer_emit.writeAsciiOnly;
