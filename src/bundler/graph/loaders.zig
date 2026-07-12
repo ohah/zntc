@@ -378,7 +378,14 @@ pub fn parseWorkerWrapperModule(self: *ModuleGraph, module: *Module) void {
     const arena_alloc = module.parse_arena.?.allocator();
 
     const disk = module.diskPath();
-    const basename = std.fs.path.basename(disk);
+    const raw_basename = std.fs.path.basename(disk);
+    // basename 이 그대로 JS 문자열 리터럴에 들어간다 — `my"odd.worker.js` 처럼 따옴표/
+    // 백슬래시가 든 파일명(실제로 생성 가능하다)이면 합성 소스가 깨져 parse error 가
+    // 난다. asset 로더가 쓰는 것과 같은 escape 를 태운다.
+    const basename = graph_assets.escapeJsString(arena_alloc, raw_basename) catch {
+        module.state = .ready;
+        return;
+    };
 
     module.source = std.fmt.allocPrint(arena_alloc,
         \\export default function WorkerWrapper(options) {{
