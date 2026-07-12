@@ -130,6 +130,8 @@ zntc --bundle entry.ts --loader:.png=file --loader:.svg=dataurl
 
 Supported loaders: `js`, `jsx`, `ts`, `tsx`, `json`, `css`, `text`, `file`, `dataurl`, `base64`, `binary`, `copy`, `empty`
 
+`--loader` maps an **extension** to a loader. To pick the loader for a single import instead, use a Vite-style query suffix (`./data.txt?raw`, `./icon.png?url`) — see [Query suffixes](#query-suffixes-raw--url--inline--worker).
+
 ### Default loaders by extension
 
 Common binary asset extensions get the `file` loader with no flag at all, so `import logo from "./logo.png"` and `url(./font.woff2)` work out of the box:
@@ -207,6 +209,33 @@ Inlining applies only to assets that got `file` from the default extension table
 
 The equivalent config key is `assetInlineLimit` (Vite's `assetsInlineLimit`).
 
+### Query suffixes (`?raw` / `?url` / `?inline` / `?worker`)
+
+ZNTC understands the Vite-style query-suffix idiom, so an import can pick its own loading mode per call site — no `--loader` flag involved:
+
+| Suffix                      | Behavior                                                                                                                                            |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `?raw`                      | Inline the file contents as a string (the `text` loader)                                                                                            |
+| `?url`                      | Emit the file as an asset and export its URL string. **Ignores `--asset-inline-limit`** — you asked for a URL, so even a file below the limit stays a real file instead of turning into a data URL |
+| `?inline`                   | Inline as a `data:` URL (the `dataurl` loader). Always inlined, regardless of size                                                                  |
+| `?worker` / `?sharedworker` | Default-export a Worker constructor function — `new W()` gives you the Worker                                                                       |
+
+```js
+import txt from "./data.txt?raw";      // "hello raw content"
+import u   from "./icon.png?url";      // "./icon-a1b2c3d4.png"
+import i   from "./icon.png?inline";   // "data:image/png;base64,..."
+import W   from "./x.worker.js?worker";
+const w = new W();
+```
+
+The query is part of the module identity: the same file imported under different queries becomes **different modules**. `import "./x.png"` is an asset while `import "./x.png?raw"` is a string, and importing both gives you both.
+
+`?worker` doesn't introduce a separate worker mechanism — it synthesizes the standard pattern (`new Worker(new URL(f, import.meta.url), { type: "module" })`) and reuses the existing [Web Worker](#web-worker) machinery, so the worker is built as its own chunk and the URL is rewritten to the final filename.
+
+**Unknown** queries are left alone. A specifier like `./Comp.vue?vue&type=style&lang.css` passes through untouched, because that form is the established idiom for plugins handling virtual paths.
+
+The standard alternatives keep working too, if you'd rather not depend on the query form: `?url` ≈ `new URL(f, import.meta.url)`, and `?worker` ≈ `new Worker(new URL(f, import.meta.url), { type: "module" })`.
+
 ## Web Worker
 
 ZNTC auto-detects the `new Worker(new URL("./worker.ts", import.meta.url))` pattern and emits the worker entry as a **standalone IIFE bundle**. No additional build configuration or entry option is needed.
@@ -229,6 +258,8 @@ self.onmessage = (e) => {
 ```
 
 `SharedWorker` is auto-detected with the same pattern (`new SharedWorker(new URL(...))`).
+
+The Vite-style `import W from "./worker.ts?worker"` form is supported as well — it synthesizes this same pattern and feeds it into the machinery described below, so everything in this section applies to it ([Query suffixes](#query-suffixes-raw--url--inline--worker)).
 
 ### Output
 
