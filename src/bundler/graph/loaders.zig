@@ -145,7 +145,7 @@ pub fn parseAssetModule(self: *ModuleGraph, io: std.Io, module: *Module) void {
             // text/base64/binary: 모두 raw bytes → JS 표현식 변환. assetSourceFromBytes
             // 헬퍼가 plugin onLoad 경로와 공유 (#2157).
             const raw = readModuleSourceWithMtime(self, io, module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
-            module.source = assetSourceFromBytes(arena_alloc, module.loader, raw, module.path, self.transform_options_base.minify_whitespace) orelse {
+            module.source = assetSourceFromBytes(arena_alloc, module.loader, raw, module.diskPath(), self.transform_options_base.minify_whitespace) orelse {
                 module.state = .ready;
                 return;
             };
@@ -154,7 +154,7 @@ pub fn parseAssetModule(self: *ModuleGraph, io: std.Io, module: *Module) void {
             // data URL 은 한 번만 만든다 — CSS `url()` 은 따옴표 없는 원문이,
             // JS 는 따옴표로 감싼 문자열이 필요할 뿐이라 base64 를 두 번 돌릴 이유가 없다.
             const raw = readModuleSourceWithMtime(self, io, module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
-            const url = dataUrlFromBytes(arena_alloc, raw, module.path) orelse {
+            const url = dataUrlFromBytes(arena_alloc, raw, module.diskPath()) orelse {
                 module.state = .ready;
                 return;
             };
@@ -185,7 +185,7 @@ pub fn parseAssetModule(self: *ModuleGraph, io: std.Io, module: *Module) void {
                 self.asset_registry == null and
                 self.asset_inline_limit > 0 and raw.len <= self.asset_inline_limit)
             {
-                if (dataUrlFromBytes(arena_alloc, raw, module.path)) |url| {
+                if (dataUrlFromBytes(arena_alloc, raw, module.diskPath())) |url| {
                     module.asset_dataurl = url;
                     module.source = std.fmt.allocPrint(arena_alloc, "\"{s}\"", .{url}) catch {
                         module.state = .ready;
@@ -198,8 +198,8 @@ pub fn parseAssetModule(self: *ModuleGraph, io: std.Io, module: *Module) void {
             }
 
             const hash = contentHash(raw);
-            const ext = std.fs.path.extension(module.path);
-            const basename = std.fs.path.basename(module.path);
+            const ext = std.fs.path.extension(module.diskPath());
+            const basename = std.fs.path.basename(module.diskPath());
             const name_without_ext = if (ext.len > 0 and basename.len > ext.len)
                 basename[0 .. basename.len - ext.len]
             else
@@ -209,7 +209,7 @@ pub fn parseAssetModule(self: *ModuleGraph, io: std.Io, module: *Module) void {
             const primary_scale = if (scale_info) |info| info.scale else 1;
 
             // [dir]: entry_dir 기준 상대 디렉토리 경로
-            const dir = computeAssetDir(module.path, self.entry_dir);
+            const dir = computeAssetDir(module.diskPath(), self.entry_dir);
 
             const output_name = applyAssetNamingPattern(arena_alloc, self.asset_names, name_without_ext, &hash, ext, dir) catch {
                 module.state = .ready;
@@ -312,7 +312,7 @@ fn readModuleSource(
     const loaded = blk: {
         var scope = profile.begin(.graph_discover_pm_setup_read_file);
         defer scope.end();
-        break :blk self.source_read_cache.readFile(io, self.allocator, alloc, module.path, max_bytes) catch {
+        break :blk self.source_read_cache.readFile(io, self.allocator, alloc, module.diskPath(), max_bytes) catch {
             self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, step, "Cannot read file", null);
             module.state = .ready;
             return null;
@@ -339,11 +339,56 @@ pub fn readModuleSourceWithMtime(
         return readModuleSource(self, io, module, alloc, max_bytes, step);
     }
 
-    const loaded = self.source_read_cache.readFileWithStat(io, self.allocator, alloc, module.path, max_bytes) catch {
+    const loaded = self.source_read_cache.readFileWithStat(io, self.allocator, alloc, module.diskPath(), max_bytes) catch {
         self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, step, "Cannot read file", null);
         module.state = .ready;
         return null;
     };
     module.mtime = loaded.stat.mtime;
     return loaded.loaded.contents;
+}
+
+/// `?worker` 가상 모듈 (#4467).
+///
+/// `import W from "./x.worker.js?worker"` → `new W()` 로 Worker 를 만드는 함수를
+/// default export 하는 JS 소스를 **합성**한다:
+///
+/// ```js
+/// export default function WorkerWrapper(options) {
+///   return new Worker(new URL("./x.worker.js", import.meta.url), Object.assign({ type: "module" }, options));
+/// }
+/// ```
+///
+/// 새 인프라를 만들지 않고 **기존 worker 기계를 그대로 재사용**한다 — 합성 소스가
+/// `new Worker(new URL(...))` 표준 패턴이라, import_scanner 가 이걸 worker record 로
+/// 잡고 bundler 가 별도 청크로 빌드한 뒤 URL 을 최종 파일명으로 재작성한다.
+/// (그 표준 패턴은 zntc 에서 이미 동작한다 — #4467 이슈의 "표준 대체" 표 참고.)
+///
+/// `./<basename>` 로 참조하는 이유: 이 모듈의 sourceDir 은 `dirname(path)` 이고,
+/// `?worker` 는 basename 안에 있으므로 디렉토리는 실제 워커 파일이 있는 곳이다.
+/// 절대경로를 쓰면 Windows 백슬래시를 JS 문자열로 escape 해야 해서 더 번거롭다.
+///
+/// `new W()` 가 Worker 를 돌려주는 건 JS 규칙 그대로다 — 생성자가 객체를 반환하면
+/// 그 객체가 `this` 를 대체한다. `W()` (new 없이) 도 동작한다.
+pub fn parseWorkerWrapperModule(self: *ModuleGraph, module: *Module) void {
+    module.parse_arena = module.parse_arena orelse module_mod.createParseArena(self.allocator) orelse {
+        module.state = .ready;
+        return;
+    };
+    const arena_alloc = module.parse_arena.?.allocator();
+
+    const disk = module.diskPath();
+    const basename = std.fs.path.basename(disk);
+
+    module.source = std.fmt.allocPrint(arena_alloc,
+        \\export default function WorkerWrapper(options) {{
+        \\  return new Worker(new URL("./{s}", import.meta.url), Object.assign({{ type: "module" }}, options));
+        \\}}
+        \\
+    , .{basename}) catch {
+        module.state = .ready;
+        return;
+    };
+    module.module_type = .js;
+    module.loader = .javascript;
 }

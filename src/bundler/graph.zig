@@ -453,6 +453,7 @@ pub const ModuleGraph = struct {
     const graph_loaders = @import("graph/loaders.zig");
     pub const parseCssModule = graph_loaders.parseCssModule;
     pub const parseAssetModule = graph_loaders.parseAssetModule;
+    pub const parseWorkerWrapperModule = graph_loaders.parseWorkerWrapperModule;
     pub const readModuleSourceWithMtime = graph_loaders.readModuleSourceWithMtime;
     const graph_json_module = @import("graph/json_module.zig");
     pub const parseJsonModule = graph_json_module.parse;

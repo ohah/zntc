@@ -3909,3 +3909,127 @@ test "#4475 동명 basename 자산의 require 래퍼가 deconflict 된다" {
     try std.testing.expectEqual(@as(usize, 1), decl_count);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_logo$") != null);
 }
+
+// ============================================================
+// #4467 — Vite query-suffix import (?raw / ?url / ?inline / ?worker)
+// ============================================================
+
+test "#4467 ?raw — 파일 내용을 문자열로 인라인" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import txt from './data.txt?raw';\nconsole.log(txt);");
+    try writeFile(tmp.dir, "data.txt", "hello raw content");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"hello raw content\"") != null);
+}
+
+test "#4467 ?url — inline-limit 이하여도 파일로 방출 (명시 요청)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import u from './tiny.png?url';\nconsole.log(u);");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "tiny.png", .data = "tiny" }); // 4B
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // `?url` 은 사용자가 URL 을 명시 요청한 것 — inline-limit 에 먹히면 안 된다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "data:") == null);
+    const outs = result.asset_outputs orelse return error.ExpectedAssetOutput;
+    var found = false;
+    for (outs) |o| {
+        if (std.mem.endsWith(u8, o.path, ".png")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
+test "#4467 ?inline — data URL 로 인라인" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import i from './big.png?inline';\nconsole.log(i);");
+    const big = [_]u8{0x99} ** 5000; // 한계 초과지만 ?inline 이 이긴다
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "big.png", .data = &big });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "data:image/png;base64,") != null);
+}
+
+test "#4467 같은 파일의 ?url 과 ?inline 은 별개 모듈" {
+    // #4475 (래퍼 이름 deconflict) 가 없으면 둘이 서로를 가려 같은 값이 나온다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import u from './x.png?url';
+        \\import i from './x.png?inline';
+        \\console.log(u, i);
+    );
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "x.png", .data = "tiny" });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 파일 URL 과 data URL 이 **둘 다** 나와야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "data:image/png;base64,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".png\"") != null);
+}
+
+test "#4467 ?worker — Worker 생성 함수를 default export" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import W from './calc.worker.js?worker';\nconst w = new W();\nconsole.log(w);");
+    try writeFile(tmp.dir, "calc.worker.js", "self.onmessage = (e) => self.postMessage(e.data * 2);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 표준 worker 패턴으로 합성돼 기존 worker 기계가 별도 청크로 빌드한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker(new URL(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "import.meta.url") != null);
+    // 워커가 별도 파일로 방출됐는지
+    const outs = result.asset_outputs orelse return error.ExpectedAssetOutput;
+    var found_worker = false;
+    for (outs) |o| {
+        if (std.mem.indexOf(u8, o.path, "calc.worker") != null) found_worker = true;
+    }
+    try std.testing.expect(found_worker);
+}
+
+test "#4467 알려지지 않은 query 는 건드리지 않는다 (vue SFC 등)" {
+    // `?vue&type=style&lang.css` 같은 기존 관용구는 플러그인 영역이다.
+    // ViteQuery 가 null 을 반환해 resolver 가 예전처럼 동작해야 한다.
+    try std.testing.expect(types.ViteQuery.fromPath("./App.vue?vue&type=style&lang.css") == null);
+}

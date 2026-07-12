@@ -106,6 +106,19 @@ pub fn addModuleWithResolveDir(self: *ModuleGraph, io: std.Io, abs_path: []const
     module.loader = parsed_loader.loader;
     module.loader_explicit = parsed_loader.explicit;
     module.module_type = parsed_loader.module_type orelse moduleTypeForLoader(module.module_type, module.loader);
+
+    // Vite query-suffix (`?raw` / `?url` / `?inline`) 가 로더를 강제한다 (#4467).
+    // 사용자가 명시적으로 요구한 것이므로 `loader_explicit` 로 표시 — `?url` 이
+    // inline-limit 에 먹혀 data URL 이 되면 요청과 어긋난다.
+    // `?worker` 는 로더가 아니라 별도 가상 모듈이라 여기서 처리하지 않는다
+    // (parse 단계의 parseWorkerWrapperModule).
+    if (types.ViteQuery.fromPath(abs_path)) |vq| {
+        if (vq.loader()) |l| {
+            module.loader = l;
+            module.loader_explicit = true;
+            module.module_type = moduleTypeForLoader(module.module_type, l);
+        }
+    }
     s_alloc.end();
 
     var s_put = profile.begin(.graph_discover_incr_add_module_put);

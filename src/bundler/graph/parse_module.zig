@@ -57,6 +57,16 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
         return;
     }
 
+    // Vite `?worker` (#4467) — 실제 파일 내용 대신 Worker 생성 래퍼 소스를 합성하고
+    // 일반 JS 파이프라인으로 흘려보낸다. 합성 소스의 `new Worker(new URL(...))` 를
+    // import_scanner 가 잡아 기존 worker 기계가 별도 청크로 빌드한다.
+    // 플러그인이 이미 source 를 준 경우엔 건너뛴다 (플러그인 우선).
+    if (module.source.len == 0) {
+        if (types.ViteQuery.fromPath(module.path)) |vq| {
+            if (vq == .worker) self.parseWorkerWrapperModule(module);
+        }
+    }
+
     // Asset 로더: 파일을 읽어서 fake JS 모듈로 변환 (rolldown 방식)
     // 플러그인이 이미 소스를 반환한 경우 건너뜀 (플러그인 우선)
     if (module.loader.isAsset() and module.source.len == 0) {
