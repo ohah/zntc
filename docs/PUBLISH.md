@@ -254,6 +254,12 @@ bun run changeset:status   # 누적 changeset — 어느 패키지가 어떤 bum
 
   CI(`Lint` 잡)의 `Audit release version lockstep` 과 `pre-release-check` 가 정합성을 검사한다 — 누가 손으로 버전을 건드려 어긋난 채 머지되는 것도 막는다. 어긋나면 `bun run sync-versions` 로 복구.
 
+- **publish 직후 `bun.lock` 자동 동기화** — `@zntc/core` 의 `optionalDependencies` 가 가리키는 platform 바이너리 9개는 `workspaces` 밖이라 bun 이 **npm 에서 해석**한다. 릴리스 시점엔 그 버전이 아직 npm 에 없어 lockfile 에 안 들어가고, **publish 된 뒤에야** 해석 가능해진다. 그 순간부터 lockfile 이 stale 이 되어 **이후 모든 PR 의 `bun install --frozen-lockfile` 이 실패**한다.
+
+  `release.yml` 의 `sync-lockfile` 잡이 publish 후 npm 색인을 기다렸다가 `bun install` → `bun.lock` 커밋을 main 에 자동 push 한다. 손댈 것 없다.
+
+  > v0.1.2 때 이 문제로 수습 커밋 3개가 필요했다. platform 패키지를 `workspaces` 에 넣으면 로컬 링크가 되어 근본 해결되지만, `publint` / `publish-smoke` 가 workspaces 를 훑어 publishable 패키지를 세는데 이들은 `dist/` 없는 바이너리 전용이라 그 검증이 통째로 깨진다 — 그래서 workspaces 밖에 둔 채 lockfile 동기화를 자동화했다.
+
 ---
 
 ## 6. 실패 / 롤백
