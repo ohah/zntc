@@ -315,3 +315,38 @@ test "#4468 static block: --minify-identifiers 경로에서도 rename 을 따라
     // 원본 이름 `new Node(` 가 남아 있으면 전역 DOM Node 로 해석돼 크래시.
     try testing.expect(std.mem.indexOf(u8, code, "new Node(") == null);
 }
+
+// ============================================================
+// #4470 — `--jsx=preserve` + `--bundle` 시 JSX 태그 이름이 rename 을 따라간다
+// ============================================================
+
+test "#4470 preserve: JSX 엘리먼트/member 태그가 deconflict rename 을 따라간다" {
+    // scope hoisting 후 import local 이름(`A`/`B`)은 번들에 존재하지 않는다.
+    // JSX 태그가 그 이름을 그대로 들고 있으면 downstream 변환 결과가
+    // `ReferenceError: A is not defined`.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.jsx", "export const Widget = { Panel: () => null };");
+    try writeFile(tmp.dir, "b.jsx", "export const Widget = { Panel: () => null };");
+    try writeFile(tmp.dir, "entry.jsx",
+        \\import { Widget as A } from './a.jsx';
+        \\import { Widget as B } from './b.jsx';
+        \\export const p = <A x={1} />;
+        \\export const q = <B.Panel y={2} />;
+    );
+
+    var r = try helpers.bundleEntry(testing.allocator, &tmp, "entry.jsx", .{
+        .jsx_runtime = .preserve,
+    });
+    defer r.deinit();
+    const code = r.code();
+
+    // 두 Widget 이 deconflict 됐어야 한다.
+    try testing.expect(std.mem.indexOf(u8, code, "Widget$1") != null);
+    // 태그가 번들에 없는 import local 이름을 참조하면 BUG.
+    try testing.expect(std.mem.indexOf(u8, code, "<A ") == null);
+    try testing.expect(std.mem.indexOf(u8, code, "<B.") == null);
+    // 실제 심볼을 가리켜야 한다.
+    try testing.expect(std.mem.indexOf(u8, code, "<Widget ") != null);
+    try testing.expect(std.mem.indexOf(u8, code, ".Panel") != null);
+}

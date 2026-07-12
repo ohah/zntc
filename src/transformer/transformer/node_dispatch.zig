@@ -267,7 +267,12 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .jsx_spread_attribute,
         .jsx_expression_container,
         => {
-            if (self.options.jsx_transform) {
+            // `shouldLowerJsx()` = jsx_transform && runtime != .preserve (#4470).
+            // 예전엔 `jsx_transform` 만 봐서, preserve 모드인데도 container/text 만
+            // lowering 됐다 → jsx_element 는 남아 있는데 그 자식은 string_literal /
+            // bare expression 으로 바뀌어 `<div>{x}</div>` 가 `<div>"..."x</div>` 로
+            // 나가는 깨진 JSX 가 됐다. element/fragment 와 같은 게이트를 쓴다.
+            if (self.options.shouldLowerJsx()) {
                 return jsx_lowering_mod.JsxLowering(Transformer).lowerJSXExpressionContainer(self, node);
             }
             return self.visitUnaryNode(idx);
@@ -969,9 +974,10 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .jsx_closing_fragment,
         => self.copyNodeDirect(idx),
 
-        // JSX leaf — jsx_text는 별도 처리 (jsx_transform 시 lowerJSXText)
+        // JSX leaf — jsx_text는 별도 처리 (lowering 시 lowerJSXText).
+        // preserve 모드에서는 원문 텍스트 노드를 그대로 둔다 (#4470).
         .jsx_text => {
-            if (self.options.jsx_transform) {
+            if (self.options.shouldLowerJsx()) {
                 return jsx_lowering_mod.JsxLowering(Transformer).lowerJSXText(self, node);
             }
             return self.copyNodeDirect(idx);
