@@ -76,6 +76,7 @@ ZNTC assigns a unique code to every diagnostic. Click a code for details and a r
 | [`ZNTC0410`](/zntc/en/reference/errors/zntc0410) | Static class method cannot be named 'prototype' |
 | [`ZNTC0411`](/zntc/en/reference/errors/zntc0411) | Class expected after decorator |
 | [`ZNTC0412`](/zntc/en/reference/errors/zntc0412) | Class or export expected after decorator |
+| [`ZNTC0415`](/zntc/en/reference/errors/zntc0415) | Decorators are not valid on class static blocks |
 | [`ZNTC0413`](/zntc/en/reference/errors/zntc0413) | Labelled function declaration is not allowed in loop body |
 | [`ZNTC0414`](/zntc/en/reference/errors/zntc0414) | Lexical declaration is not allowed in statement position |
 
