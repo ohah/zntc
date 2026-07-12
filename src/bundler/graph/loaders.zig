@@ -348,21 +348,27 @@ pub fn readModuleSourceWithMtime(
     return loaded.loaded.contents;
 }
 
-/// `?worker` 가상 모듈 (#4467).
+/// `?worker` / `?sharedworker` 가상 모듈 (#4467).
 ///
 /// `import W from "./x.worker.js?worker"` → `new W()` 로 Worker 를 만드는 함수를
 /// default export 하는 JS 소스를 **합성**한다:
 ///
 /// ```js
 /// export default function WorkerWrapper(options) {
-///   return new Worker(new URL("./x.worker.js", import.meta.url), Object.assign({ type: "module" }, options));
+///   return new Worker(new URL("./x.worker.js", import.meta.url), options);
 /// }
 /// ```
 ///
 /// 새 인프라를 만들지 않고 **기존 worker 기계를 그대로 재사용**한다 — 합성 소스가
 /// `new Worker(new URL(...))` 표준 패턴이라, import_scanner 가 이걸 worker record 로
 /// 잡고 bundler 가 별도 청크로 빌드한 뒤 URL 을 최종 파일명으로 재작성한다.
-/// (그 표준 패턴은 zntc 에서 이미 동작한다 — #4467 이슈의 "표준 대체" 표 참고.)
+/// import_scanner 는 `SharedWorker` 도 같은 패턴으로 인식한다.
+///
+/// **`type: "module"` 을 넣지 않는다.** zntc 는 worker entry 를 항상 classic script
+/// 로 방출한다 (bundler.workerFormat() 이 node+cjs 를 빼면 언제나 `.iife`). 그런데
+/// `{type:"module"}` 로 로드하면 브라우저가 module worker semantics(strict mode,
+/// `importScripts` 부재)를 적용해 classic 번들이 시작부터 터질 수 있다. Vite 도
+/// worker 출력이 `es` 일 때만 `type:"module"` 을 붙인다.
 ///
 /// `./<basename>` 로 참조하는 이유: 이 모듈의 sourceDir 은 `dirname(path)` 이고,
 /// `?worker` 는 basename 안에 있으므로 디렉토리는 실제 워커 파일이 있는 곳이다.
@@ -370,18 +376,23 @@ pub fn readModuleSourceWithMtime(
 ///
 /// `new W()` 가 Worker 를 돌려주는 건 JS 규칙 그대로다 — 생성자가 객체를 반환하면
 /// 그 객체가 `this` 를 대체한다. `W()` (new 없이) 도 동작한다.
-pub fn parseWorkerWrapperModule(self: *ModuleGraph, module: *Module) void {
+pub fn parseWorkerWrapperModule(self: *ModuleGraph, module: *Module, query: types.ViteQuery) void {
     module.parse_arena = module.parse_arena orelse module_mod.createParseArena(self.allocator) orelse {
         module.state = .ready;
         return;
     };
     const arena_alloc = module.parse_arena.?.allocator();
 
+    const ctor = query.workerConstructor() orelse {
+        module.state = .ready;
+        return;
+    };
+
     const disk = module.diskPath();
     const raw_basename = std.fs.path.basename(disk);
     // basename 이 그대로 JS 문자열 리터럴에 들어간다 — `my"odd.worker.js` 처럼 따옴표/
-    // 백슬래시가 든 파일명(실제로 생성 가능하다)이면 합성 소스가 깨져 parse error 가
-    // 난다. asset 로더가 쓰는 것과 같은 escape 를 태운다.
+    // 백슬래시가 든 파일명(실제 생성 가능)이면 합성 소스가 깨져 parse error 가 난다.
+    // asset 로더가 쓰는 것과 같은 escape 를 태운다.
     const basename = graph_assets.escapeJsString(arena_alloc, raw_basename) catch {
         module.state = .ready;
         return;
@@ -389,10 +400,10 @@ pub fn parseWorkerWrapperModule(self: *ModuleGraph, module: *Module) void {
 
     module.source = std.fmt.allocPrint(arena_alloc,
         \\export default function WorkerWrapper(options) {{
-        \\  return new Worker(new URL("./{s}", import.meta.url), Object.assign({{ type: "module" }}, options));
+        \\  return new {s}(new URL("./{s}", import.meta.url), options);
         \\}}
         \\
-    , .{basename}) catch {
+    , .{ ctor, basename }) catch {
         module.state = .ready;
         return;
     };

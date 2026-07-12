@@ -230,11 +230,13 @@ const w = new W();
 
 The query is part of the module identity: the same file imported under different queries becomes **different modules**. `import "./x.png"` is an asset while `import "./x.png?raw"` is a string, and importing both gives you both.
 
-`?worker` doesn't introduce a separate worker mechanism — it synthesizes the standard pattern (`new Worker(new URL(f, import.meta.url), { type: "module" })`) and reuses the existing [Web Worker](#web-worker) machinery, so the worker is built as its own chunk and the URL is rewritten to the final filename.
+`?worker` doesn't introduce a separate worker mechanism — it synthesizes the standard pattern (`new Worker(new URL(f, import.meta.url))`) and reuses the existing [Web Worker](#web-worker) machinery, so the worker is built as its own chunk and the URL is rewritten to the final filename. `?sharedworker` synthesizes `new SharedWorker(...)` instead.
+
+The synthesized call does **not** pass `{ type: "module" }`: zntc always emits worker entries as classic scripts (IIFE), and loading a classic bundle as a module worker would apply different semantics (strict mode, no `importScripts`).
 
 **Unknown** queries are left alone. A specifier like `./Comp.vue?vue&type=style&lang.css` passes through untouched, because that form is the established idiom for plugins handling virtual paths.
 
-The standard alternatives keep working too, if you'd rather not depend on the query form: `?url` ≈ `new URL(f, import.meta.url)`, and `?worker` ≈ `new Worker(new URL(f, import.meta.url), { type: "module" })`.
+The standard alternatives keep working too, if you'd rather not depend on the query form: `?url` ≈ `new URL(f, import.meta.url)`, and `?worker` ≈ `new Worker(new URL(f, import.meta.url))`.
 
 ## Web Worker
 

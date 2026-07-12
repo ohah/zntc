@@ -207,7 +207,7 @@ asset Module (loader = .file, inline-limit 무시)
 
   ```js
   export default function WorkerWrapper(options) {
-    return new Worker(new URL("./x.worker.js", import.meta.url), Object.assign({ type: "module" }, options));
+    return new Worker(new URL("./x.worker.js", import.meta.url), options);
   }
   ```
 

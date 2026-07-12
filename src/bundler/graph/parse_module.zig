@@ -63,7 +63,7 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
     // 플러그인이 이미 source 를 준 경우엔 건너뛴다 (플러그인 우선).
     if (module.source.len == 0) {
         if (types.ViteQuery.fromPath(module.path)) |vq| {
-            if (vq == .worker) self.parseWorkerWrapperModule(module);
+            if (vq == .worker or vq == .shared_worker) self.parseWorkerWrapperModule(module, vq);
         }
     }
 

@@ -958,7 +958,14 @@ pub fn buildIncremental(
             var mod = self.modules.at(i);
             if (mod.state == .ready) continue; // disabled 모듈 등
 
+            // store 키는 **모듈 identity** (query 포함) — `x.png` 와 `x.png?raw` 는
+            // 서로 다른 모듈이라 캐시 엔트리도 갈려야 한다.
             const mod_path = mod.path;
+            // 파일시스템 접근(stat)과 watcher 의 changed_files 매칭은 **디스크 경로**
+            // 로 해야 한다 (#4467). watcher 는 `/abs/x.txt` 를 보고하는데 모듈 path 는
+            // `/abs/x.txt?raw` 라, 그대로 비교하면 영원히 "안 바뀜" 으로 판정돼
+            // 캐시된 mtime 이 재사용되고 편집이 반영되지 않는다.
+            const mod_fs_path = mod.diskPath();
 
             // Watcher-driven mtime skip (Issue #1727 §3): watcher 가 이 파일을 건드리지
             // 않았다고 보고했고 cache 에도 있으면 stat syscall 을 생략하고 cached mtime 을
@@ -968,13 +975,13 @@ pub fn buildIncremental(
                 var s_mtime = profile.begin(.graph_discover_incr_mtime);
                 defer s_mtime.end();
                 if (changed_files) |cf| {
-                    if (!cf.contains(mod_path)) {
+                    if (!cf.contains(mod_fs_path)) {
                         if (store.modules.get(mod_path)) |cached_entry| {
                             break :blk cached_entry.mtime;
                         }
                     }
                 }
-                break :blk getMtime(io, mod_path) catch 0;
+                break :blk getMtime(io, mod_fs_path) catch 0;
             };
 
             // 캐시 조회. `defer` 가 아닌 명시 `end()` — getIfFresh 호출 자체만 측정해야
