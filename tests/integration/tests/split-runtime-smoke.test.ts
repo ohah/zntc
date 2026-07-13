@@ -84,11 +84,8 @@ export const b = () => ticker() + "|B:" + minute.label;
 
   test('#4492 splitting: `import * as ns` 의 멤버 접근도 같은 청크 참조가 오염되지 않는다', async () => {
     // 같은 루트커즈의 **다른 표면** — ns 멤버 재작성(`ns.second` → 식별자)도 게이트 없이
-    // 전역 공개명을 썼다.
-    //
-    // ⚠️ materialize 된 ns **객체 getter**(`{get second(){return second}}`) 는 아직 미해결이다
-    // (#4502) — 그 경로는 `exp.local` 이 미-deconflict 이름이라 순진하게 게이트하면 #4101 이
-    // 회귀한다. 여기선 멤버 경로만 고정한다.
+    // 전역 공개명을 썼다. materialize 된 ns **객체 getter** 는 #4502 에서 별도로 고쳤다
+    // (아래 테스트).
     const files: Record<string, string> = {
       'shared/p.js': `export const second = { label: "second" };\nexport const other = { label: "other" };\n`,
       'shared/consumer.js': `import * as ns from "./p.js";
@@ -127,6 +124,67 @@ export const b = () => member() + "|B:" + other.label;
       // 수정 전: `ReferenceError: second is not defined`
       expect(r.err, `모듈 평가 실패:\n${r.err}`).toBe('');
       expect(r.out).toBe('second|A:second / second|B:other');
+    } finally {
+      await cleanup();
+    }
+  }, 120000);
+
+  test('#4502 splitting: materialize 된 ns 객체 getter 가 같은 청크의 chunk-local 이름을 쓴다', async () => {
+    // 네 번째 표면 — ns 를 **값으로** 쓰면(`const o = ns`) 정적 멤버 재작성이 불가능해
+    // 객체가 materialize 된다: `var ns_ns = {get second(){return <name>}, ...}`.
+    // 이 객체 리터럴은 **정의자 청크**(p.js 가 있는 공유 청크) preamble 로 들어가는데,
+    // getter 본문이 cross-chunk 전역 공개명(`second`)을 쓰면 그 청크엔 그 이름의 선언이
+    // 없다(로컬은 `--minify` 로 `n`) → `ReferenceError: second is not defined`.
+    //
+    //   let n={label:"second"}, r={label:"other"};
+    //   var ns_ns = {get second(){return second}, get other(){return r}};
+    //                             ^^^^^^ 선언 없음      ^ 얘는 맞음(비-cross-chunk)
+    //
+    // 순진하게 "같은 청크면 exp.local" 로 게이트하면 #4101 이 회귀한다 — 리터럴 생성
+    // 시점에 chunk-local rename 이 미확정이라 exp.local 이 미-deconflict 원본 이름이기
+    // 때문. 처방은 리터럴 생성을 per-chunk rename **이후**로 미루는 것.
+    // (#4101 lock 은 cross-chunk-reexport.test.ts 의 'namespace re-export collision' 테스트.)
+    const files: Record<string, string> = {
+      'shared/p.js': `export const second = { label: "second" };\nexport const other = { label: "other" };\n`,
+      'shared/consumer.js': `import * as ns from "./p.js";
+export function useNs() {
+  const o = ns;                      // ns 를 값으로 → 객체 materialize 강제
+  return o.second.label + "+" + o.other.label + "+" + Object.keys(o).length;
+}
+`,
+      'a.js': `import { useNs } from "./shared/consumer.js";
+import { second } from "./shared/p.js";               // 다른 청크가 second 를 소비 → 전역 공개명 생성
+export const a = () => useNs() + "|A:" + second.label;
+`,
+      'b.js': `import { useNs } from "./shared/consumer.js";
+import { other } from "./shared/p.js";
+export const b = () => useNs() + "|B:" + other.label;
+`,
+      'entry.js': `Promise.all([import("./a.js"), import("./b.js")]).then(([m1, m2]) => {
+  console.log(m1.a() + " / " + m2.b());
+});
+`,
+    };
+
+    const { dir, cleanup } = await createFixture(files);
+    try {
+      const outDir = join(dir, 'out');
+      const build = await runZntc([
+        '--bundle',
+        join(dir, 'entry.js'),
+        '--splitting',
+        '--outdir',
+        outDir,
+        '--minify',
+        '--format=esm',
+      ]);
+      expect(build.exitCode).toBe(0);
+      writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
+
+      const r = runNode(join(outDir, 'entry.js'));
+      // 수정 전: `ReferenceError: second is not defined`
+      expect(r.err, `모듈 평가 실패:\n${r.err}`).toBe('');
+      expect(r.out).toBe('second+other+2|A:second / second+other+2|B:other');
     } finally {
       await cleanup();
     }

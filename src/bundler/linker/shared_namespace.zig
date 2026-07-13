@@ -231,7 +231,8 @@ pub fn registerNamespaceRewrites(
                 }
                 const fresh = try makeUniqueNsVarName(self, exp.exported, &seen_exports);
                 try ns_target_to_var.put(self.allocator, target, fresh);
-                const obj_str = try buildInlineObjectStr(self, target, 0);
+                // 비-shared 경로 — 리터럴은 importer 의 self-preamble(= importer 청크) 로 들어간다.
+                const obj_str = try buildInlineObjectStr(self, importer_mod_idx, target, 0);
                 try ns_inline_list.append(self.allocator, .{
                     .symbol_id = null,
                     .object_literal = obj_str,
@@ -284,7 +285,8 @@ pub fn registerNamespaceRewrites(
         if (self.useSharedNsInline(target_mod_idx)) {
             _ = try appendSharedNsInlineEntry(self, ns_inline_list, symbol_id, target_mod_idx, &seen_exports);
         } else {
-            const obj_str = try buildInlineObjectStr(self, target_mod_idx, 0);
+            // 비-shared 경로 — importer self-preamble(= importer 청크) 이 emitter.
+            const obj_str = try buildInlineObjectStr(self, importer_mod_idx, target_mod_idx, 0);
             const ns_var_name = try makeUniqueNsVarName(self, var_name, &seen_exports);
             try ns_inline_list.append(self.allocator, .{
                 .symbol_id = symbol_id,
@@ -369,7 +371,11 @@ fn getOrCreateSharedNamespaceVar(
     }
     mutable_self.ns_cache_mutex.unlock();
 
-    const object_literal = try buildInlineObjectStr(self, target_mod_idx, 0);
+    // shared 경로 — 리터럴은 **정의자 청크**(=target 이 속한 청크) preamble 로 들어간다.
+    // 이 시점(computeCrossChunkLinks/metadata)엔 청크 컨텍스트가 없을 수도 있어 sentinel 키로
+    // 캐시된다. splitting emit 은 appendSharedNamespacePreambleFiltered 가 청크-확정 이름으로
+    // 재빌드하므로 여기 값은 단일 번들 / 증분 persist 용 스냅샷이다 (#4502).
+    const object_literal = try buildInlineObjectStr(self, target_mod_idx, target_mod_idx, 0);
     errdefer self.allocator.free(object_literal);
     const base_name = try makeSharedNamespaceBaseName(self, target_mod_idx);
     defer self.allocator.free(base_name);
@@ -435,20 +441,21 @@ pub fn appendSharedNamespacePreambleFiltered(
             if (!f.contains(target_mod_idx)) continue;
         }
         const entry = self.ns_shared_inline_cache.get(target_mod_idx) orelse continue;
-        // #4101 ns collision: entry.object_literal 은 cross-chunk 전역명 확정 전(computeCrossChunk
-        // Links)에 frozen 됐다 — getter 가 미-deconflict inner const 참조(`{get k(){return k}}`).
-        // *실제 동명 충돌이 있을 때만*(ns_collision_present) 전역명 확정된 이 시점에 ns_inline_cache
-        // 무효화 후 재빌드 → getter(buildInlineObjectStr)가 getCrossChunkGlobalName 으로 올바른
-        // const(=provider 청크 local)를 가리킨다. 비충돌(대부분)은 frozen 유지(재빌드 비용 0 —
-        // RN/large 번들 finalize 회귀 방지). OOM 시 frozen fallback(.ptr 비교로 free 분기).
-        const obj_literal = if (self.ns_collision_present) blk: {
-            const ms = @constCast(self);
-            // 옛 캐시 값은 fetchRemove 로 소유권 회수 후 free — 단순 remove 는 orphan 누수
-            // (deinit 은 맵에 남은 값만 해제). 재빌드가 새 값을 다시 캐시한다.
-            if (ms.ns_inline_cache.fetchRemove(target_mod_idx)) |kv| self.allocator.free(kv.value);
-            break :blk buildInlineObjectStr(self, target_mod_idx, 0) catch entry.object_literal;
-        } else entry.object_literal;
-        defer if (obj_literal.ptr != entry.object_literal.ptr) self.allocator.free(obj_literal);
+        // (#4101 / #4502) `entry.object_literal` 은 청크·rename 확정 *전*(computeCrossChunkLinks 의
+        // ensureSharedNsVar)에 frozen 됐다 — getter 본문이 미-deconflict 원본 이름이다.
+        // splitting emit(=`module_to_chunk` 세팅)에서는 이 리터럴이 **정의자 청크**(target 의 청크)
+        // preamble 로 들어가고, 호출 시점은 그 청크의 `computeRenamesForModules` *이후* 다(emit
+        // 루프가 그렇게 배치, chunks.zig 의 ns preamble insert 참조). 따라서 여기서 emitter=target
+        // 으로 재빌드하면 getter 가 (같은 청크 선언 → 확정된 chunk-local 이름 / 다른 청크 선언 →
+        // cross-chunk 전역 공개명) 을 정확히 고른다. 결과는 `(청크, target)` 키로 캐시되므로 청크당
+        // 1회. 단일 번들/preserve_modules(청크 컨텍스트 없음)는 frozen 유지 → byte-identical.
+        // OOM 시 frozen fallback (`rebuilt == null`).
+        const rebuilt: ?[]const u8 = if (self.module_to_chunk != null)
+            buildInlineObjectStr(self, target_mod_idx, target_mod_idx, 0) catch null
+        else
+            null;
+        defer if (rebuilt) |r| self.allocator.free(r);
+        const obj_literal = rebuilt orelse entry.object_literal;
         if (self.minify_whitespace) {
             if (try tryRewriteGetterObjToArrowExport(self.allocator, obj_literal)) |arrow_map| {
                 defer self.allocator.free(arrow_map);
@@ -483,7 +490,7 @@ pub fn appendSharedNamespacePreambleFiltered(
         // (~9 exports 부터 helper 패턴이 더 짧음). 어느 라이브러리에서 격차가 큰지
         // 식별용 — export count 는 `get ` prefix 개수로 근사.
         if (debug_log.enabled(.ns_inline_audit)) {
-            const literal = entry.object_literal;
+            const literal = obj_literal;
             const export_count = std.mem.count(u8, literal, "get ");
             debug_log.print(.ns_inline_audit, "  - {s}: exports={d} bytes={d}\n", .{
                 entry.var_name,
@@ -778,11 +785,27 @@ fn makeUniqueNsVarName(self: *const Linker, base: []const u8, exports: *const st
     }
 }
 
+/// (#4502) `ns_inline_cache` 키 = `(emitter 청크 << 32) | target`.
+/// 같은 target 이라도 리터럴을 **담는 청크(emitter)** 가 다르면 getter 본문 이름이 달라진다
+/// (선언이 그 청크 안 → chunk-local rename / 밖 → cross-chunk 전역 공개명). target 단독 키면
+/// 먼저 만든 청크의 문자열이 다른 청크로 새어 나간다. 청크 컨텍스트 부재(단일 번들 /
+/// preserve_modules / emit 前)면 `.none`(=maxInt(u32)) 이 sentinel 슬롯이 된다.
+fn nsInlineCacheKey(self: *const Linker, emitter_mod_idx: u32, target_mod_idx: u32) u64 {
+    const chunk_bits: u64 = @intFromEnum(self.chunkOfModule(emitter_mod_idx));
+    return (chunk_bits << 32) | @as(u64, target_mod_idx);
+}
+
 /// 모듈의 모든 export를 인라인 객체 문자열로 생성 (재귀적).
 /// `export * as ns` export는 소스 모듈의 인라인 객체로 중첩.
-/// 결과는 `self.ns_inline_cache` 에 target_mod_idx 별로 캐싱 — linker 전역 공유.
+/// 결과는 `self.ns_inline_cache` 에 `(emitter 청크, target)` 별로 캐싱 — linker 전역 공유.
+///
+/// `emitter_mod_idx`: 이 리터럴이 **어느 청크의 텍스트로 들어가는가**를 대표하는 모듈.
+/// - shared 경로(정의자 청크 preamble) → target 자신
+/// - 비-shared 경로(importer self-preamble) → importer 모듈
+/// getter 본문 이름 해석이 이 청크 기준으로 갈린다 (#4502).
 pub fn buildInlineObjectStr(
     self: *const Linker,
+    emitter_mod_idx: u32,
     target_mod_idx: u32,
     depth: u32,
 ) std.mem.Allocator.Error![]const u8 {
@@ -791,10 +814,11 @@ pub fn buildInlineObjectStr(
         return try self.allocator.dupe(u8, "{}");
 
     const mutable_self = @constCast(self);
+    const cache_key = nsInlineCacheKey(self, emitter_mod_idx, target_mod_idx);
 
     // 캐시 히트: 복사본 반환 (호출자가 소유권을 가짐)
     mutable_self.ns_cache_mutex.lock();
-    const cache_hit = self.ns_inline_cache.get(target_mod_idx);
+    const cache_hit = self.ns_inline_cache.get(cache_key);
     mutable_self.ns_cache_mutex.unlock();
     if (cache_hit) |cached_str| {
         return try self.allocator.dupe(u8, cached_str);
@@ -887,7 +911,8 @@ pub fn buildInlineObjectStr(
                     continue;
                 }
             }
-            const nested = try buildInlineObjectStr(self, src_mod, depth + 1);
+            // 중첩 객체도 같은 emitter 청크의 텍스트 — emitter 를 그대로 물려준다.
+            const nested = try buildInlineObjectStr(self, emitter_mod_idx, src_mod, depth + 1);
             defer self.allocator.free(nested);
             try buf.appendSlice(self.allocator, nested);
         } else {
@@ -905,10 +930,20 @@ pub fn buildInlineObjectStr(
                 defer self.allocator.free(value);
                 try buf.appendSlice(self.allocator, value);
             } else {
-                // #4101 ns collision: materialize 된 ns 객체의 getter 가 참조하는 inner const 도
-                // 동명 deconflict 시 cross-chunk 전역명을 써야 한다(그게 곧 provider 청크 local
-                // 명). chunk-local rename 은 이 시점 미확정이라 getCrossChunkGlobalName 사용.
-                try buf.appendSlice(self.allocator, self.getCrossChunkGlobalName(decl_mod_idx, exp.exported) orelse exp.local);
+                // getter 본문 이름은 **이 리터럴을 담는 청크(emitter)** 기준으로 해석한다.
+                //  - 선언이 다른 청크(#4101): 그 청크가 import 해 오는 cross-chunk 전역 공개명.
+                //    전역명은 provider 청크의 public 이름이자 consumer import 명이라 양쪽 일치.
+                //  - 선언이 같은 청크(#4502): 그 청크의 **확정된 chunk-local 이름**(=exp.local).
+                //    전역 공개명을 쓰면 이 청크엔 그 이름의 선언이 없어 자유 변수 → ReferenceError.
+                // exp.local 이 확정 이름이려면 이 호출이 **해당 청크의 per-chunk rename 이후**여야
+                // 한다 (collectExportsRecursive 가 rename_table 을 읽어 local 을 해석). 그래서
+                // 공유 ns preamble 생성이 emit 루프의 computeRenamesForModules *뒤* 로 옮겨졌다.
+                const use_global = self.isCrossChunkConsumer(emitter_mod_idx, decl_mod_idx);
+                const member_name = if (use_global)
+                    (self.getCrossChunkGlobalName(decl_mod_idx, exp.exported) orelse exp.local)
+                else
+                    exp.local;
+                try buf.appendSlice(self.allocator, member_name);
             }
             try buf.appendSlice(self.allocator, get_close);
         }
@@ -919,11 +954,16 @@ pub fn buildInlineObjectStr(
     // double-check 후 put. race 로 다른 스레드가 이미 put 했으면 내 result 폐기.
     mutable_self.ns_cache_mutex.lock();
     defer mutable_self.ns_cache_mutex.unlock();
-    if (self.ns_inline_cache.get(target_mod_idx)) |raced| {
+    if (self.ns_inline_cache.get(cache_key)) |raced| {
         self.allocator.free(result);
         return try self.allocator.dupe(u8, raced);
     }
-    try mutable_self.ns_inline_cache.put(self.allocator, target_mod_idx, result);
+    // put 실패 시에만 result 해제 (성공하면 맵이 소유 — errdefer 로 걸면 뒤의 dupe OOM 에서
+    // 맵이 소유한 메모리를 또 해제해 double-free).
+    mutable_self.ns_inline_cache.put(self.allocator, cache_key, result) catch |e| {
+        self.allocator.free(result);
+        return e;
+    };
     return try self.allocator.dupe(u8, result);
 }
 
