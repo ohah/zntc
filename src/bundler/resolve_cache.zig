@@ -451,22 +451,22 @@ pub const ResolveCache = struct {
         return self.resolveNormalized(true, io, source_dir, specifier, kind);
     }
 
-    /// worker specifier 를 URL 의미론에 맞춰 정규화한 뒤 resolve (#4483).
+    /// worker specifier 를 URL 의미론까지 고려해 resolve (#4483).
     ///
     /// `new URL(spec, import.meta.url)` 의 spec 은 URL 상대 참조라 base 가 모듈 자신의
-    /// URL 이다 → `"x.worker.js"` 와 `"./x.worker.js"` 는 **같은 파일**. 그런데 resolver 는
-    /// `./` 없는 지정자를 npm 패키지로 보고 node_modules 를 뒤져 ModuleNotFound 를 낸다
-    /// (그리고 `--packages=external` 은 아예 external 패키지로 삼킨다). 그래서 kind 를 아는
-    /// 이 레이어 — `isExternal` 을 부르는 `resolveInner` **직전** — 에서 `./` 를 붙인다.
+    /// URL 이다 → `"x.worker.js"` 와 `"./x.worker.js"` 는 **같은 파일**을 가리킨다. 그런데
+    /// resolver 는 `./` 없는 지정자를 npm 패키지 이름으로 보고 node_modules 를 뒤져
+    /// ModuleNotFound 를 냈고, worker resolve 실패는 warning 으로만 삼켜져 원문이 그대로
+    /// 방출됐다 → 해시된 산출물 이름과 어긋나 런타임 404.
     ///
-    /// import record 의 원문 specifier 는 **절대 건드리지 않는다**: bundler 의 worker_map
-    /// 키와 codegen 의 조회 키가 둘 다 소스 원문이라, 스캔 시점에 고쳐 놓으면 lookup 이
-    /// 어긋나 다시 원문 emit (= 같은 버그) 로 돌아간다.
+    /// **기존 해석을 먼저 시도하고, 못 찾았을 때만 `./` 를 붙여 재시도한다.** 순서가 중요하다 —
+    /// `./` 를 먼저 시도하면 `--alias` / tsconfig `paths` 로 매핑되던 worker 지정자가 같은 이름의
+    /// 형제 파일에 조용히 가려진다. 이 순서면 기존에 resolve 되던 것은 **하나도 바뀌지 않고**,
+    /// 지금까지 실패하던 bare 형제 파일만 새로 해석된다.
     ///
-    /// 상대 경로로 못 찾으면 **원문 그대로 한 번 더** 시도한다. 정규화가 기존 동작을
-    /// 빼앗지 않도록 하는 폴백 — `new Worker(new URL("monaco-editor/esm/vs/editor/editor.worker.js",
-    /// import.meta.url))` 처럼 패키지 경로를 쓰는 코드가 실재하고 (Vite 도 양쪽을 지원),
-    /// 예전엔 그게 node_modules 로 resolve 됐다.
+    /// import record 의 원문 specifier 는 **절대 건드리지 않는다**: bundler 의 worker_map 키와
+    /// codegen 의 조회 키가 둘 다 소스 원문이라, 스캔 시점에 고쳐 놓으면 lookup 이 어긋나
+    /// 다시 원문 emit (= 같은 버그) 으로 돌아간다.
     fn resolveNormalized(
         self: *ResolveCache,
         comptime thread_safe: bool,
@@ -475,23 +475,16 @@ pub const ResolveCache = struct {
         specifier: []const u8,
         kind: ImportKind,
     ) ResolveError!?ResolvedModule {
-        var worker_spec_buf: [MAX_WORKER_SPEC_BYTES]u8 = undefined;
-        const normalized = normalizeWorkerSpecifier(kind, specifier, &worker_spec_buf) orelse
-            return self.resolveInner(thread_safe, io, source_dir, specifier, kind);
-
-        // 사용자가 원문 철자로 건 external 패턴(`--external:x.worker.js`)은 정규화 뒤에도
-        // 계속 먹혀야 한다. 정규화는 *파일을 찾기 위한* 것이지 사용자의 external 의사를
-        // 무시하려는 게 아니다. (자동 규칙인 `--packages=external` 의 "bare = 패키지" 는
-        // 일부러 건너뛴다 — 그게 #4483 의 부수 버그였다.)
-        if (self.matchesExternalPattern(specifier)) return null;
-
-        if (self.resolveInner(thread_safe, io, source_dir, normalized, kind)) |resolved| {
-            return resolved;
+        if (self.resolveInner(thread_safe, io, source_dir, specifier, kind)) |resolved| {
+            return resolved; // null(external) 포함 — 기존 동작 그대로.
         } else |err| switch (err) {
-            // 형제 파일이 없다 → 원문(패키지 경로) 폴백.
-            error.ModuleNotFound => return self.resolveInner(thread_safe, io, source_dir, specifier, kind),
+            error.ModuleNotFound => {},
             else => return err,
         }
+        // 여기까지 왔다 = 기존 해석으로는 못 찾음. worker 의 bare 상대 참조면 URL 의미론으로 재시도.
+        var buf: [MAX_WORKER_SPEC_BYTES]u8 = undefined;
+        const normalized = normalizeWorkerSpecifier(kind, specifier, &buf) orelse return error.ModuleNotFound;
+        return self.resolveInner(thread_safe, io, source_dir, normalized, kind);
     }
 
     /// resolve 공통 구현. thread_safe=true이면 mutex로 캐시 접근 보호 + resolver 스택 복사.
@@ -509,7 +502,7 @@ pub const ResolveCache = struct {
         {
             var external_scope = profile.begin(.resolve_external);
             defer external_scope.end();
-            if (self.isExternal(specifier)) return null;
+            if (self.isExternalForKind(specifier, kind)) return null;
         }
 
         // 스택 버퍼로 캐시 키 생성 (alloc/free 제거)
@@ -1065,7 +1058,12 @@ pub const ResolveCache = struct {
         self.external_patterns = patterns;
     }
 
+    /// `kind` 를 모르는 호출자용 (기존 API 유지 — 테스트/도구).
     pub fn isExternal(self: *const ResolveCache, specifier: []const u8) bool {
+        return self.isExternalForKind(specifier, .static_import);
+    }
+
+    pub fn isExternalForKind(self: *const ResolveCache, specifier: []const u8, kind: ImportKind) bool {
         // node: 프리픽스는 platform과 무관하게 항상 external
         if (std.mem.startsWith(u8, specifier, "node:")) return true;
 
@@ -1074,17 +1072,13 @@ pub const ResolveCache = struct {
         // 상대/절대 경로는 Node builtin 이 될 수 없으므로 builtin 목록 선형 탐색을 피한다.
         if (self.platform == .node and !is_path and isNodeBuiltin(specifier)) return true;
 
-        // --packages=external: 모든 bare import를 external 처리
-        if (self.packages_external and !is_path) return true;
+        // --packages=external: 모든 bare import를 external 처리.
+        // 단 worker 는 제외한다 (#4483) — `new URL(spec, import.meta.url)` 의 spec 은 URL
+        // 상대 참조지 npm 패키지 이름이 아니다. 여기서 삼키면 `--packages=external` 을 켠
+        // 순간 형제 worker 파일이 통째로 external 로 빠져 404 가 된다.
+        // (사용자가 명시한 `--external:` 패턴은 아래에서 그대로 존중한다.)
+        if (self.packages_external and !is_path and kind != .worker) return true;
 
-        return self.matchesExternalPattern(specifier);
-    }
-
-    /// 사용자 지정 external 패턴(`--external:...`) 매칭만 따로 판정.
-    /// `isExternal` 의 자동 규칙(node: / builtin / `--packages=external`) 은 빼고 본다 —
-    /// worker specifier 정규화(#4483) 가 사용자 패턴은 존중하되 "bare = 패키지" 자동
-    /// 규칙에는 걸리지 않아야 하기 때문.
-    fn matchesExternalPattern(self: *const ResolveCache, specifier: []const u8) bool {
         for (self.external_patterns) |pattern| {
             if (matchGlob(pattern, specifier)) return true;
             if (matchPackageSubPath(pattern, specifier)) return true;
@@ -1117,10 +1111,10 @@ pub fn findPackageDirPath(path: []const u8) ?[]const u8 {
     return path[0 .. nm_pos + nm.len + pkg_end];
 }
 
-/// worker specifier 정규화 버퍼 크기. `"./"` + specifier 를 담는다.
-/// 이보다 긴 specifier 는 정규화 없이 원문 그대로 resolve (경로가 이 길이를 넘으면
-/// 어차피 파일 시스템에서 열리지 않는다).
-const MAX_WORKER_SPEC_BYTES: usize = std.fs.max_path_bytes + 2;
+/// worker specifier 정규화 버퍼 크기 (`"./"` + specifier). 소스에 리터럴로 박히는
+/// 지정자라 이 상한이면 충분하다. 초과하면 정규화를 건너뛴다(= 기존 동작).
+/// `std.fs.max_path_bytes` 를 쓰면 Windows 에서 96KB 스택 프레임이 되므로 고정값을 쓴다.
+const MAX_WORKER_SPEC_BYTES: usize = 1024;
 
 /// `new URL(spec, import.meta.url)` 의 spec 이 `./` 가 생략된 bare 상대 참조인지 (#4483).
 ///
@@ -1136,8 +1130,12 @@ const MAX_WORKER_SPEC_BYTES: usize = std.fs.max_path_bytes + 2;
 /// - `?query` / `#fragment` 만 있는 참조 — 대상 파일이 자기 자신이다
 fn isBareUrlRelativeSpecifier(specifier: []const u8) bool {
     if (specifier.len == 0) return false;
-    // 대상 파일이 자기 자신인 참조 — `./` 를 붙이면 다른 파일을 가리키게 된다.
-    if (specifier[0] == '?' or specifier[0] == '#') return false;
+    // query/fragment 가 붙은 지정자는 건드리지 않는다.
+    // - `?worker`/`?sharedworker` 같은 알려진 쿼리를 정규화하면 resolver 가 형제 파일로
+    //   해석해 **WorkerWrapper 팩토리** 청크를 만든다 (worker 본문이 아니라).
+    // - `?v=1` 같은 미지의 쿼리는 resolver 가 벗기지 못해 어차피 못 연다.
+    // 둘 다 지금(= `./` 를 붙인 형태)과 동작이 같아야 하므로 정규화 대상에서 뺀다.
+    if (std.mem.indexOfAny(u8, specifier, "?#") != null) return false;
     // `./` `../` 명시적 상대 + `/abs.js` root-absolute + `//cdn/w.js` protocol-relative
     // (셋 다 isRelativeOrAbsolute 가 true).
     if (resolver_mod.isRelativeOrAbsolute(specifier)) return false;
