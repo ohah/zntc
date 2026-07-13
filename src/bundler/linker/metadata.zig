@@ -947,7 +947,8 @@ pub fn buildMetadataForAst(
                 {
                     const preamble_name = importBindingName(self, module_index, ib, local_name);
                     // ESM-local getter 객체 (CJS plain-star 멤버는 부재, inner-CJS 는 __toESM).
-                    const obj = try self.buildNamespaceInlineObject(@intCast(canonical_mod), 0);
+                    // emitter = 이 모듈(자기 self-preamble 로 들어감) → getter 이름이 이 청크 기준.
+                    const obj = try self.buildNamespaceInlineObject(module_index, @intCast(canonical_mod), 0);
                     defer self.allocator.free(obj);
                     try preamble.writeNamespaceObject(preamble_name, obj);
                     // 각 `export * from <CJS>` 의 동적 멤버를 런타임 복사.

@@ -447,15 +447,17 @@ pub fn emitChunks(
         // 이 청크의 정의자 모듈에 속한 namespace object literal 만 inline.
         // referrer 청크가 자기 self-preamble 에 inline 하던 동작 (entry 에 vendor
         // 코드 누출) 을 정의자 청크 preamble 로 옮긴다.
-        if (linker) |l| if (l.use_shared_ns_preamble) {
-            var chunk_targets: std.AutoHashMapUnmanaged(u32, void) = .empty;
-            defer chunk_targets.deinit(allocator);
-            try chunk_targets.ensureTotalCapacity(allocator, @intCast(chunk.modules.items.len));
-            for (chunk.modules.items) |mod_idx| {
-                chunk_targets.putAssumeCapacity(@intFromEnum(mod_idx), {});
-            }
-            try l.appendSharedNamespacePreambleFiltered(&chunk_output, &chunk_targets);
-        };
+        //
+        // (#4502) **생성은 아래 `computeRenamesForModules` 뒤로 미룬다.** ns 객체 getter 본문은
+        // 이 청크에 선언이 있는 심볼이면 그 청크의 *확정된* chunk-local 이름을 써야 하는데,
+        // 여기(rename 전)선 아직 미확정이다 — 이전엔 그 대리물로 cross-chunk 전역 공개명을
+        // 썼고, 그 이름은 정작 이 청크 안엔 선언이 없어 ReferenceError 였다. 텍스트가 들어갈
+        // **위치만** 기억해 두고 나중에 `insertSlice` 로 꽂는다 (출력 순서는 종전과 동일 —
+        // sourcemap base 인 `module_line` 은 이 insert 이후에 계산되므로 영향 없음).
+        const ns_preamble_pos: ?usize = if (linker) |l|
+            (if (l.use_shared_ns_preamble) chunk_output.items.len else null)
+        else
+            null;
 
         var rbm_cross_imports: std.ArrayList(RunBeforeMainCrossImport) = .empty;
         defer {
@@ -725,6 +727,26 @@ pub fn emitChunks(
         if (linker) |l| {
             try l.computeRenamesForModules(sorted_mods, occupied.items);
         }
+
+        // (#4502) 이제 이 청크의 chunk-local 이름이 확정됐다 — 공유 namespace preamble 을
+        // 생성해 위에서 잡아 둔 자리에 삽입. getter 본문이 (같은 청크 선언 → 확정 local 명 /
+        // 다른 청크 선언 → cross-chunk 전역 공개명) 으로 정확히 해석된다.
+        if (ns_preamble_pos) |pos| if (linker) |l| {
+            var chunk_targets: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer chunk_targets.deinit(allocator);
+            try chunk_targets.ensureTotalCapacity(allocator, @intCast(chunk.modules.items.len));
+            for (chunk.modules.items) |mod_idx| {
+                chunk_targets.putAssumeCapacity(@intFromEnum(mod_idx), {});
+            }
+            // appendSharedNamespacePreambleFiltered 는 linker 의 allocator 로 append 하므로
+            // deinit 도 같은 allocator 로 (기존엔 chunk_output 에 직접 append 했었다).
+            var ns_preamble: std.ArrayList(u8) = .empty;
+            defer ns_preamble.deinit(l.allocator);
+            try l.appendSharedNamespacePreambleFiltered(&ns_preamble, &chunk_targets);
+            if (ns_preamble.items.len > 0) {
+                try chunk_output.insertSlice(allocator, pos, ns_preamble.items);
+            }
+        };
 
         // 엔트리 모듈 인덱스 (final exports용). manual/common 은 엔트리 모듈 없음.
         const entry_mod_idx: ?u32 = switch (chunk.kind) {

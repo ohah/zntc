@@ -219,11 +219,6 @@ pub const Linker = struct {
     /// 값(전역 이름)은 이 맵이 소유(owned dupe) — borrowed-ptr UAF(#3933) 회피.
     /// **Inc-1: 채우기만(비활성 read)** — 동작 변경 0, 후속 increment 가 wire.
     cross_chunk_global_names: std.AutoHashMapUnmanaged(u32, std.StringHashMapUnmanaged([]const u8)) = .empty,
-    /// #4101 ns collision: cross-chunk 전역명 deconflict 에서 *실제 동명 충돌*(예약어 회피
-    /// 아님)이 1건이라도 발생했는지. true 일 때만 ns 객체 literal 을 finalize 에서 canonical
-    /// 재빌드(getter 가 deconflict 된 inner const 참조) — 비충돌(대부분)은 frozen 유지해
-    /// 재빌드 비용 0(#perf: RN/large 번들 finalize 회귀 방지).
-    ns_collision_present: bool = false,
 
     /// computeRenames 동안만 사는 메모이즈: `module_index → 그 모듈의 nested scope(scope 0 제외)
     /// 바인딩 이름 union set`. `hasNestedBinding` 이 후보(`name$N`)마다 모듈의 모든 scope_maps 를
@@ -335,8 +330,13 @@ pub const Linker = struct {
     /// 슬라이스는 `allocator.dupe` 한 독립 할당이라 다른 키의 put 으로도 무효화되지 않음 —
     /// lock 해제 후에도 안전하게 읽기 가능.
     ns_export_cache: std.AutoHashMapUnmanaged(u32, []NsExportPair) = .empty,
-    /// buildInlineObjectStr 결과 캐시. 키: target_mod_idx. 값 문자열 linker 소유.
-    ns_inline_cache: std.AutoHashMapUnmanaged(u32, []const u8) = .empty,
+    /// buildInlineObjectStr 결과 캐시. 값 문자열 linker 소유.
+    /// 키: `(emitter 청크 << 32) | target_mod_idx` (#4502). 같은 target 이라도 리터럴을
+    /// **담는 청크가 다르면 getter 본문 이름이 달라진다** — 선언이 그 청크 안이면
+    /// chunk-local rename, 밖이면 cross-chunk 전역 공개명. target 단독 키로 캐싱하면
+    /// 먼저 만든 청크의 문자열이 다른 청크로 새어 나가 ReferenceError.
+    /// 청크 컨텍스트가 없으면(단일 번들 / preserve_modules) sentinel 청크로 단일 슬롯.
+    ns_inline_cache: std.AutoHashMapUnmanaged(u64, []const u8) = .empty,
     /// target module 별 공유 namespace object var. namespace 를 값으로 쓰는 여러 importer 가
     /// 같은 객체 선언을 중복 emit 하지 않도록 bundle/chunk preamble 에서 한 번만 쓴다.
     ns_shared_inline_cache: std.AutoHashMapUnmanaged(u32, SharedNsInline) = .empty,
@@ -1767,6 +1767,14 @@ pub const Linker = struct {
         const pc = m2c[canonical_mod];
         if (cc.isNone() or pc.isNone()) return false;
         return cc != pc;
+    }
+
+    /// (#4502) `module_index → ChunkIndex` raw 조회. 청크 컨텍스트가 없거나(단일 번들 /
+    /// preserve_modules) 미배정이면 `.none`. `ns_inline_cache` 의 emitter-청크 키 계산에 쓴다.
+    pub fn chunkOfModule(self: *const Linker, mod_idx: u32) types.ChunkIndex {
+        const m2c = self.module_to_chunk orelse return .none;
+        if (mod_idx >= m2c.len) return .none;
+        return m2c[mod_idx];
     }
 
     /// 전역 이름 맵 비우기 — owned value 해제 + inner 맵 deinit.
