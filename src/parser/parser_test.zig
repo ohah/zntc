@@ -2374,6 +2374,58 @@ test "new + optional chain: 진단은 callee 당 정확히 1개 (중복/cascade 
     try expectSingleParseError("new new a().b?.c", "Invalid optional chain in 'new' expression");
 }
 
+/// 소스를 파싱하고 `message` 와 일치하는 에러가 정확히 `expected` 개인지 검증한다.
+/// 다른 진단이 함께 나야 하는 케이스(#4048: 623 + 607)에서 특정 진단의 중복만 가드할 때 사용 —
+/// 전체 개수를 세는 expectSingleParseError 로는 표현할 수 없다.
+fn expectParseErrorCount(source: []const u8, message: []const u8, expected: usize) !void {
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    var count: usize = 0;
+    for (parser.errors.items) |err| {
+        if (std.mem.eql(u8, err.message, message)) count += 1;
+    }
+    try std.testing.expectEqual(expected, count);
+}
+
+test "new + optional chain: callee 보고 + trailing `?.` 가 겹쳐도 623 은 1개 (#4048)" {
+    const msg = "Invalid optional chain in 'new' expression";
+    // #4048 재현 케이스. callee 의 `?.`(parseNewCallee 보고)와 tagged template 뒤 trailing
+    // `?.`(postfix 루프의 argless-new head 검사)가 *같은 new* 를 각각 보고해 623 이 2번 나왔다.
+    // new 노드의 callee_optional_chain 비트로 "이미 보고함" 을 전파해 1개로 수렴.
+    try expectSingleParseError("new a?.b`x`?.c", msg);
+    try expectSingleParseError("new a?.b.c`x`?.d", msg);
+    // 중첩 new: 안쪽 callee 에서 난 보고가 바깥 new(체인 head)까지 전파돼야 한다.
+    try expectSingleParseError("new new a?.b`x`?.c", msg);
+    // 인자 있는 안쪽 new 를 거쳐도 전파(바깥 argless new 가 head).
+    try expectSingleParseError("new new a?.b()`x`?.c", msg);
+    // 회귀 가드: 원래도 1개였던 인접 형태들이 그대로 1개인지.
+    try expectSingleParseError("new a?.b()", msg);
+    try expectSingleParseError("new a?.b`x`", msg);
+    try expectSingleParseError("new a`x`?.b", msg);
+    try expectSingleParseError("new a?.b?.c", msg);
+}
+
+test "new + optional chain: 623 dedup 이 다른 진단/다른 new 를 삼키지 않는다 (#4048)" {
+    const msg623 = "Invalid optional chain in 'new' expression";
+    const msg607 = "Tagged template cannot be used in optional chain";
+    // dedup 은 623 을 *같은 new* 안에서만 접는다. 서로 다른 new 두 개면 각자 위반이므로 2개:
+    //   ① 안쪽 `new a?.b` = callee optional chain,
+    //   ② 바깥 argless new = trailing `?.c` 의 invalid base.
+    // (paren 이 체인을 끊어 안쪽 보고가 바깥으로 전파되지 않는다.)
+    try expectParseErrorCount("new (new a?.b)`x`?.c", msg623, 2);
+    // 623 을 접어도 *다른 코드*의 진단(607)은 그대로 살아 있어야 한다.
+    // `?.c` 뒤의 `` `y` `` 는 optional chain 위 tagged template → 607.
+    try expectParseErrorCount("new a?.b`x`?.c`y`?.d", msg623, 1);
+    try expectParseErrorCount("new a?.b`x`?.c`y`?.d", msg607, 1);
+    // new 없는 순수 optional chain 은 623 과 무관 — 607 만 단독으로.
+    try expectSingleParseError("a?.b`x`?.c", msg607);
+    try expectParseErrorCount("a?.b`x`?.c", msg623, 0);
+}
+
 test "new + optional chain: 유효 형태는 통과" {
     // paren 으로 감싼 optional chain 은 new 의 피연산자로 유효.
     try expectNoParseError("new (a?.b)()");

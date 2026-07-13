@@ -906,9 +906,22 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                 // ECMAScript: OptionalChain 의 base 는 MemberExpression/CallExpression 만 가능.
                 // base 체인 head 가 인자 없는 new(NewExpression)면 SyntaxError(`new new a()?.b`,
                 // `new new a().b?.c`, `new a\`tpl\`?.b`). 인자 있는 new·call·기타 head 는 유효.
-                if (!reported_new_optional and optionalChainBaseIsArglessNew(self, expr)) {
-                    try self.addErrorCode(self.ast.getNode(expr).span, "Invalid optional chain in 'new' expression", .optional_chain_new);
-                    reported_new_optional = true;
+                if (!reported_new_optional) {
+                    const head_new = optionalChainArglessNewHead(self, expr);
+                    if (!head_new.isNone()) {
+                        // 단, 그 new 의 callee 에 이미 `?.` 가 있었다면(`new a?.b\`x\`?.c`)
+                        // parseNewCallee 가 *같은 new* 로 623 을 이미 보고했다. 여기서 또 내면
+                        // 한 new 에 623 이 2번 (#4048). callee_optional_chain 비트로 판별한다 —
+                        // callee 의 `?.` 는 복구 과정에서 비-optional 멤버로 소비돼 AST 구조만
+                        // 봐서는 알 수 없기 때문.
+                        const head_flags = self.ast.readExtra(self.ast.getNode(head_new).data.extra, 3);
+                        if ((head_flags & ast_mod.CallFlags.callee_optional_chain) == 0) {
+                            try self.addErrorCode(self.ast.getNode(expr).span, "Invalid optional chain in 'new' expression", .optional_chain_new);
+                        }
+                        // 보고했든 (callee 보고로) 생략했든 이 체인의 argless-new head 는 처리 완료.
+                        // 뒤따르는 `?.` 마다 같은 head 를 재발견하므로 여기서 닫는다.
+                        reported_new_optional = true;
+                    }
                 }
                 try self.advance(); // skip ?.
                 if (self.current() == .l_bracket) {
@@ -1118,13 +1131,16 @@ fn followedByParenOnly(self: *const Parser) bool {
     return self.current() == .l_paren;
 }
 
-/// `?.`(OptionalChain)의 base 체인 head 가 *인자 없는* new(NewExpression)인지 판정.
+/// `?.`(OptionalChain)의 base 체인 head 가 *인자 없는* new(NewExpression)면 그 new 노드를,
+/// 아니면 `.none` 을 반환한다.
 /// ECMAScript: OptionalChain 의 base 는 MemberExpression/CallExpression 만 가능하므로,
 /// 비-optional 멤버 접근(`.x`/`[k]`/`#p`)·tagged template 만 거쳐 인자 없는 new 에 도달하면
 /// SyntaxError(`new new a().b?.c`, `new a\`tpl\`?.b` 등). 인자 있는 new(MemberExpression)·
 /// call_expression·그 외 head 에서 멈춘다(유효). 즉시 base 가 argless new 인 `new new a()?.b`
 /// 도 이 walk 의 첫 step 에서 잡힌다. depth 가드로 무한루프 방지(정상 AST 는 짧다).
-fn optionalChainBaseIsArglessNew(self: *const Parser, base: NodeIndex) bool {
+/// 노드를 돌려주는 이유: 호출부가 head new 의 `callee_optional_chain` 비트를 보고 "이미
+/// parseNewCallee 가 같은 new 로 623 을 보고했는지" 판단해야 하기 때문 (#4048).
+fn optionalChainArglessNewHead(self: *const Parser, base: NodeIndex) NodeIndex {
     var cur = base;
     var guard: u32 = 0;
     while (guard < 100_000) : (guard += 1) {
@@ -1136,22 +1152,34 @@ fn optionalChainBaseIsArglessNew(self: *const Parser, base: NodeIndex) bool {
             .tagged_template_expression,
             => {
                 // member 의 object / tagged template 의 tag = extra[0].
-                cur = self.ast.readExtraNode(node.data.extra, 0);
-                if (cur.isNone()) return false;
+                const next = self.ast.readExtraNode(node.data.extra, 0);
+                if (next.isNone()) return .none;
+                cur = next;
             },
-            .new_expression => return (self.ast.readExtra(node.data.extra, 3) & ast_mod.CallFlags.had_arguments) == 0,
-            else => return false,
+            .new_expression => {
+                const had_args = (self.ast.readExtra(node.data.extra, 3) & ast_mod.CallFlags.had_arguments) != 0;
+                return if (had_args) .none else cur;
+            },
+            else => return .none,
         }
     }
-    return false;
+    return .none;
 }
 
-fn finishNewExpressionWithArgs(self: *Parser, start: u32, callee: NodeIndex, arg_list: NodeList) !NodeIndex {
+/// new callee 에서 optional chain(`?.`)을 봤으면 new 노드에 남길 flag 비트.
+fn newCalleeOptionalFlag(callee_optional: bool) u32 {
+    return if (callee_optional) ast_mod.CallFlags.callee_optional_chain else 0;
+}
+
+fn finishNewExpressionWithArgs(self: *Parser, start: u32, callee: NodeIndex, arg_list: NodeList, callee_optional: bool) !NodeIndex {
     // had_arguments: 인자 절(괄호)이 있는 new = MemberExpression → trailing optional chain
-    // (`new a()?.b`)의 valid base. 무인자 new 경로는 flags=0 으로 두어 `new new a()?.b`/
-    // `new new a().b?.c` 등을 optionalChainBaseIsArglessNew 가 거부.
+    // (`new a()?.b`)의 valid base. 무인자 new 경로는 had_arguments 를 빼두어 `new new a()?.b`/
+    // `new new a().b?.c` 등을 optionalChainArglessNewHead 가 잡아낸다.
     const ne = try self.ast.addExtras(&.{
-        @intFromEnum(callee), arg_list.start, arg_list.len, ast_mod.CallFlags.had_arguments,
+        @intFromEnum(callee),
+        arg_list.start,
+        arg_list.len,
+        ast_mod.CallFlags.had_arguments | newCalleeOptionalFlag(callee_optional),
     });
     const new_expr = try self.ast.addNode(.{
         .tag = .new_expression,
@@ -1167,7 +1195,12 @@ fn finishNewExpressionWithArgs(self: *Parser, start: u32, callee: NodeIndex, arg
 /// new 표현식의 callee를 파싱한다.
 /// new는 중첩 가능하므로 new를 만나면 재귀한다.
 /// member access (.prop, [expr])만 허용하고 호출 ()은 상위에서 처리.
-fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
+///
+/// `out_callee_optional`: callee 에서 `?.` 를 만나 ZNTC0623 을 보고했으면 true 로 set 한다
+/// (false 로 초기화된 채 넘어온다고 가정하지 않고, set 만 한다 = OR 누적). 중첩 new 재귀에는
+/// **같은 포인터**를 넘겨 `new new a?.b\`x\`?.c` 처럼 안쪽 callee 에서 난 보고가 바깥 new 까지
+/// 전파되게 한다 — trailing `?.` 검사는 체인 head(= 가장 바깥 new)의 flag 만 보기 때문 (#4048).
+fn parseNewCallee(self: *Parser, out_callee_optional: *bool) ParseError2!NodeIndex {
     // ECMAScript: new import(...) / new import.source(...) / new import.defer(...) は금지
     // 단, new import.meta 는 허용 (import.meta는 MemberExpression)
     if (self.current() == .kw_import) {
@@ -1188,15 +1221,16 @@ fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
     if (self.current() == .kw_new) {
         const span = self.currentSpan();
         try self.advance(); // skip 'new'
-        const callee = try parseNewCallee(self);
+        // 같은 out 포인터를 넘겨 안쪽 new 의 callee 보고를 바깥까지 전파 (#4048).
+        const callee = try parseNewCallee(self, out_callee_optional);
         _ = trySkipTypeArgsSpeculative(self, true, type_args.canFollowTypeArgumentsInExpression);
         if (self.current() == .l_paren) {
             try self.advance();
             const arg_list = try parseArgumentList(self);
-            return try finishNewExpressionWithArgs(self, span.start, callee, arg_list);
+            return try finishNewExpressionWithArgs(self, span.start, callee, arg_list, out_callee_optional.*);
         }
         const ne_no_args = try self.ast.addExtras(&.{
-            @intFromEnum(callee), 0, 0, 0,
+            @intFromEnum(callee), 0, 0, newCalleeOptionalFlag(out_callee_optional.*),
         });
         return try self.ast.addNode(.{
             .tag = .new_expression,
@@ -1216,7 +1250,8 @@ fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
         }
     }
     // new callee 에 optional chain(`a?.b`)이 있으면 SyntaxError — 진단은 callee 당 1회만.
-    var reported_optional_new = false;
+    // 보고 여부는 out 파라미터로 new 노드까지 올려보낸다(로컬 플래그로 끝내면 postfix 루프가
+    // 같은 new 를 모른 채 623 을 또 낸다 — #4048).
     while (true) {
         const expr_start = self.ast.getNode(expr).span.start;
         switch (self.current()) {
@@ -1259,12 +1294,12 @@ fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
             .question_dot => {
                 // ECMAScript: new 의 callee(MemberExpression)는 OptionalExpression 일 수 없다
                 // (`new a?.b()` / `new a.b?.c()` = SyntaxError). 진단은 callee 당 1회만 내고
-                // (`reported_optional_new`), `?.`와 뒤따르는 멤버를 일반 멤버처럼 소비해 postfix
+                // (`out_callee_optional`), `?.`와 뒤따르는 멤버를 일반 멤버처럼 소비해 postfix
                 // 루프가 `(new ...)?.x` 로 잘못 재해석하는 것을 막는다. paren 으로 감싼
                 // `new (a?.b)()` 는 `?.`가 paren 내부라 이 루프에 도달하지 않아 유효 통과.
-                if (!reported_optional_new) {
+                if (!out_callee_optional.*) {
                     try self.addErrorCode(self.currentSpan(), "Invalid optional chain in 'new' expression", .optional_chain_new);
-                    reported_optional_new = true;
+                    out_callee_optional.* = true;
                 }
                 try self.advance(); // consume `?.`
                 if (self.current() == .l_bracket) {
@@ -1452,7 +1487,9 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
             }
 
             // callee: 재귀적으로 new 또는 primary + member chain
-            const callee = try parseNewCallee(self);
+            // callee 에 `?.` 가 있어 623 을 보고했으면 그 사실을 new 노드 flag 로 보존한다 (#4048).
+            var callee_optional = false;
+            const callee = try parseNewCallee(self, &callee_optional);
 
             // TS/Flow: new X<T>() — type argument를 speculatively 파싱하여 skip
             _ = trySkipTypeArgsSpeculative(self, true, type_args.canFollowTypeArgumentsInExpression);
@@ -1461,12 +1498,12 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
             if (self.current() == .l_paren) {
                 try self.advance(); // skip (
                 const arg_list = try parseArgumentList(self);
-                return try finishNewExpressionWithArgs(self, span.start, callee, arg_list);
+                return try finishNewExpressionWithArgs(self, span.start, callee, arg_list, callee_optional);
             }
 
             // 인자 없는 new: new Foo
             const ne2_no = try self.ast.addExtras(&.{
-                @intFromEnum(callee), 0, 0, 0,
+                @intFromEnum(callee), 0, 0, newCalleeOptionalFlag(callee_optional),
             });
             return try self.ast.addNode(.{
                 .tag = .new_expression,

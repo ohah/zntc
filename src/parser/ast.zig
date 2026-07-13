@@ -1951,9 +1951,16 @@ pub const CallFlags = struct {
     /// Arguments`, MemberExpression) 면 set, `new a`/`new new a()` 의 바깥 new (= NewExpression)
     /// 면 unset. trailing optional chain(`new ...?.x`)의 base 체인 head 가 인자 없는 new 면
     /// SyntaxError — ECMAScript 상 OptionalChain base 는 MemberExpression/CallExpression 만 가능.
-    /// parse-time 전용(finishNewExpressionWithArgs set, optionalChainBaseIsArglessNew read);
+    /// parse-time 전용(finishNewExpressionWithArgs set, optionalChainArglessNewHead read);
     /// codegen/transformer 는 미사용.
     pub const had_arguments: u32 = 0x04;
+    /// new_expression 전용: callee 에 optional chain(`?.`)이 있었는가 (`new a?.b`). 이건
+    /// SyntaxError 라서 parseNewCallee 가 그 자리에서 ZNTC0623 을 보고하고, 복구를 위해 `?.` 를
+    /// **비-optional 멤버로 소비**한다 — 그래서 callee 서브트리에는 optional 흔적이 남지 않는다.
+    /// 이 비트가 그 잃어버린 구조 정보를 new 노드에 보존한다. trailing `?.`(`new a?.b\`x\`?.c`)를
+    /// 검사하는 postfix 루프가 같은 new 에 대해 623 을 또 보고하지 않도록 하는 데 쓴다 (#4048).
+    /// parse-time 전용; codegen/transformer 는 미사용.
+    pub const callee_optional_chain: u32 = 0x08;
 };
 
 /// static_member_expression / computed_member_expression / private_field_expression의 flags (D082).
