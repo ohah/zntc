@@ -759,22 +759,22 @@ pub fn buildMetadataForAst(
             // preamble(`var x = __toESM(require_X())…`) 대신 일반 cross-chunk import 로 받는다.
             // require_X 는 provider 청크에만 있어 여기서 preamble 을 내면 (a) require_X 미정의
             // (b) cross-chunk import 와 동명 중복선언이 된다. local 심볼만 전역명으로 rename(cross-
-            // chunk import 바인딩명과 일치)하고 skip. canonical_mod 직접-CJS 와 re-export 포워딩
-            // (canonical_mod=.none re-exporter, rb.canonical=CJS) 양 경로 공통 — rb.canonical 로 판정.
+            // chunk import 바인딩명과 일치)하고 skip.
+            // (#4494) canonical 해석은 `cjsCanonicalForBinding` 으로 통합 — re-export 포워딩(resolved
+            // binding 존재)뿐 아니라 **직접 CJS import**(resolved binding 없음, import_record 가 곧
+            // canonical)까지 커버한다. 예전엔 rb 만 봐서 직접 import 는 게이트가 발화하지 않았고,
+            // 소비자가 preamble 을 그대로 내 provider 청크의 require 썽크를 참조했다(#4494).
+            // chunk.zig 의 cross-chunk 심볼 등록과 **같은 판정 함수**를 써야 lockstep 이 유지된다.
             // default/named 한정 — namespace 는 별도 ns 합성 경로(linkNamespaceCrossChunkOnce)가 처리.
             if (!is_helper_binding and ib.kind != .namespace) {
-                if (self.getResolvedBinding(module_index, ib.local_span)) |rb| {
-                    const canon_mi = @intFromEnum(rb.canonical.module_index);
-                    if (self.graph.getModule(rb.canonical.module_index)) |canon_mod| {
-                        if (canon_mod.wrap_kind == .cjs and
-                            self.isCrossChunkConsumer(module_index, canon_mi))
-                        {
-                            if (self.getCrossChunkGlobalName(canon_mi, rb.canonical.export_name)) |g| {
-                                if (ib.local_symbol.semanticIndex()) |sym_idx| {
-                                    try putOwnedRename(self, &renames, &owned_nested_renames, sym_idx, g);
-                                }
-                                continue;
+                if (self.cjsCanonicalForBinding(module_index, &m, ib)) |canon| {
+                    const canon_mi = @intFromEnum(canon.module_index);
+                    if (self.isCrossChunkConsumer(module_index, canon_mi)) {
+                        if (self.getCrossChunkGlobalName(canon_mi, canon.export_name)) |g| {
+                            if (ib.local_symbol.semanticIndex()) |sym_idx| {
+                                try putOwnedRename(self, &renames, &owned_nested_renames, sym_idx, g);
                             }
+                            continue;
                         }
                     }
                 }

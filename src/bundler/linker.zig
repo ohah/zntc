@@ -3093,6 +3093,46 @@ pub const Linker = struct {
         return self.resolved_bindings.get(bk);
     }
 
+    /// (#4494) **직접** import(`import x from './a.cjs'`)의 CJS canonical. CJS 가 아니면 null.
+    ///
+    /// CJS 는 정적 export 가 없어 `resolveExportChain` 이 null → `resolveImports` 가 resolved
+    /// binding 을 **등록하지 못한다**(re-export 포워딩만 `resolveOrCjsFallback` 로 등록됨).
+    /// 그래서 직접 import 는 import_record 의 target 이 곧 canonical 이고 export 이름은
+    /// `ib.imported_name`("default" 또는 멤버명)이다.
+    ///
+    /// 판정은 `wrap_kind == .cjs` 하나 — `resolveOrCjsFallback` 의 `has_cjs_export_signal` 는
+    /// 붙이지 않는다. 여기서 묻는 건 "이 import 가 `require_X()` 썽크를 거치는가"이고, 그 답은
+    /// 래핑 여부(=wrap_kind)로 결정된다. metadata 의 preamble 조건(`canonical.wrap_kind == .cjs`)
+    /// 과 정확히 같은 집합이어야 억제/등록이 lockstep 을 유지한다.
+    pub fn cjsDirectCanonical(self: *const Linker, m: *const Module, ib: ImportBinding) ?SymbolRef {
+        if (ib.import_record_index >= m.import_records.len) return null;
+        const target = m.import_records[ib.import_record_index].resolved;
+        if (target.isNone()) return null;
+        const tm = self.graph.getModule(target) orelse return null;
+        if (tm.wrap_kind != .cjs) return null;
+        return .{ .module_index = target, .export_name = ib.imported_name };
+    }
+
+    /// (#4494) import 바인딩이 최종적으로 가리키는 **CJS canonical**(re-export 포워딩 + 직접
+    /// import 통합). CJS 가 아니면 null.
+    ///
+    /// chunk.zig 의 cross-chunk 심볼 등록과 metadata.zig 의 #4120 interop 억제 게이트가 *같은
+    /// 판정*을 써야 한다 — 어긋나면 한쪽만 발화해 `require_X is not defined` / 중복선언이 된다.
+    /// namespace(별도 ns 합성 경로)·helper 바인딩은 호출부에서 제외한다.
+    pub fn cjsCanonicalForBinding(
+        self: *const Linker,
+        module_index: u32,
+        m: *const Module,
+        ib: ImportBinding,
+    ) ?SymbolRef {
+        if (self.getResolvedBinding(module_index, ib.local_span)) |rb| {
+            const cm = self.graph.getModule(rb.canonical.module_index) orelse return null;
+            if (cm.wrap_kind != .cjs) return null;
+            return rb.canonical;
+        }
+        return self.cjsDirectCanonical(m, ib);
+    }
+
     fn addDiag(
         self: *Linker,
         code: BundlerDiagnostic.ErrorCode,
@@ -3298,6 +3338,14 @@ pub const Linker = struct {
         if (self.graph.lazy_compilation) {
             for (module_indices) |mod_idx| {
                 const inner = self.cross_chunk_global_names.get(mod_idx.toU32()) orelse continue;
+                // (#4494) CJS-wrapped owner 는 제외. CJS 는 export local 이 없어 `local` 이 export 명
+                // 으로 fallback 하는데, `putCanonicalName` 은 그 이름으로 **CJS 클로저 *안*의 사적
+                // 심볼**을 찾아(findSymbolIdx) 전역명으로 rename 해버린다(엉뚱한 바인딩 개명 + emit
+                // 의 resolveOwnerLocal 이 그 rename 을 보고 materialize 를 skip → 클로저 스코프 이름을
+                // export → ReferenceError). CJS 전역명은 모듈 심볼이 아니라 emit 이 materialize 한다.
+                if (self.graph.getModule(mod_idx)) |om| {
+                    if (om.wrap_kind == .cjs) continue;
+                }
                 var git = inner.iterator();
                 while (git.next()) |e| {
                     const local = self.getExportLocalName(mod_idx.toU32(), e.key_ptr.*) orelse e.key_ptr.*;
