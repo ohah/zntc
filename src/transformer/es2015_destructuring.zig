@@ -406,6 +406,11 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         .span = key_node.span,
                         .data = .{ .string_ref = key_node.data.string_ref },
                     });
+                    // 새로 만든 노드는 symbol_ids 밖이라 그대로 두면 mangler rename 이
+                    // 통째로 스킵된다 — `({o: {s, w = 1}} = box)` 가 es5 로 낮아질 때
+                    // 원본 이름으로 대입돼 미선언 전역이 된다 (#4493 의 es5 표면).
+                    // 이 파일의 다른 노드 생성 지점과 동일하게 심볼을 물려준다.
+                    self.propagateSymbolId(key_idx, target_node);
 
                     // shorthand_with_default: {a = 1} → a = _ref.a === void 0 ? 1 : _ref.a
                     // flags bit 0 = shorthand_with_default, right = default value
