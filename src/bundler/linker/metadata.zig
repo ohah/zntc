@@ -321,10 +321,18 @@ fn putOwnedRename(
 /// 바인딩이 cross-chunk 심볼로 해석되고 전역 이름이 있으면 그걸(provider/consumer 가
 /// 합의한 deconflict 이름, 같은 이름 다른 모듈 `v`/`v$1` 구분), 아니면 per-chunk
 /// `getCanonicalByRef`(같은 청크/비충돌), 그것도 없으면 `fallback`.
-/// 같은 청크 import 는 전역 맵에 없어 fallback 경로 = 기존 동작 불변.
+///
+/// **소비자가 provider 와 다른 청크일 때만** 전역명을 쓴다 (#4492). 전역명 맵은
+/// `(canonical module, export)` 키라 "다른 어떤 청크가 이 심볼을 소비하는가" 만 말해준다 —
+/// **누가 묻는지는 모른다**. 게이트 없이 쓰면 같은 청크 소비자도 그 청크 바깥에서만
+/// 존재하는 공개명을 받아 자유 변수가 된다 (원래 주석의 "같은 청크 import 는 전역 맵에
+/// 없다" 는 전제가 틀렸다).
 fn importBindingName(self: *const Linker, module_index: u32, ib: anytype, fallback: []const u8) []const u8 {
     if (self.getResolvedBinding(module_index, ib.local_span)) |rb| {
-        if (self.getCrossChunkGlobalName(@intFromEnum(rb.canonical.module_index), rb.canonical.export_name)) |g| return g;
+        const canon_mi = @intFromEnum(rb.canonical.module_index);
+        if (self.isCrossChunkConsumer(module_index, canon_mi)) {
+            if (self.getCrossChunkGlobalName(canon_mi, rb.canonical.export_name)) |g| return g;
+        }
     }
     return self.getCanonicalByRef(ib.local_symbol) orelse fallback;
 }
@@ -1102,10 +1110,19 @@ pub fn buildMetadataForAst(
             // #4101 cross-chunk 전역 일관 네이밍 — 이 바인딩이 cross-chunk 심볼로 해석되고
             // 전역 이름이 있으면(같은 이름 다른 모듈 `v`/`v$1` 구분) per-chunk target_name 대신
             // 전역명을 본문 참조로 쓴다. synth_member/lazy_esm(특수 표현)은 target_name 유지.
-            const effective_target = if (resolved) |rb|
-                (self.getCrossChunkGlobalName(@intFromEnum(rb.canonical.module_index), rb.canonical.export_name) orelse target_name)
-            else
-                target_name;
+            //
+            // **소비자가 provider 와 다른 청크일 때만** 이다 (#4492). 전역명은 `(canonical
+            // module, export)` 키라 **다른 어떤 청크든** 그 심볼을 소비하면 non-null 이 된다 —
+            // 소비자를 안 보고 적용하면, provider 와 **같은 청크**에 있는 소비자까지 그 청크
+            // 바깥에서만 존재하는 공개명(`exports.second` 의 좌변)으로 본문을 재작성한다.
+            // minify_identifiers 로 로컬이 `n` 으로 mangle 되면 `second` 는 자유 변수가 되어
+            // 런타임 `ReferenceError` (빌드·파싱은 통과). 형제 호출부(cjs_interop / entry
+            // exports)는 이미 `isCrossChunkConsumer` 로 게이트한다 — 여기만 빠져 있었다.
+            const effective_target = if (resolved) |rb| blk_eff: {
+                const canon_mi = @intFromEnum(rb.canonical.module_index);
+                if (!self.isCrossChunkConsumer(module_index, canon_mi)) break :blk_eff target_name;
+                break :blk_eff self.getCrossChunkGlobalName(canon_mi, rb.canonical.export_name) orelse target_name;
+            } else target_name;
             if (!isReservedName(effective_target) and effective_target.len > 0 and isValidIdentStartByte(effective_target[0])) {
                 if (ib.local_symbol.semanticIndex()) |sym_idx| {
                     // #3664 P2: synthetic_named_exports → canonical(default/target) export 의 member
