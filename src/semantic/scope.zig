@@ -84,6 +84,38 @@ pub const Scope = struct {
     }
 };
 
+/// `start` 가 속한 **실행 단위**(execution unit) 스코프의 인덱스.
+///
+/// "실행 단위" = 코드가 *언제* 실행되는지를 가르는 경계 스코프. 같은 실행 단위 안에서는
+/// 소스 순서 == 실행 순서(straight-line)지만, 경계를 넘으면 그렇지 않다:
+///   - function 본문은 *호출될 때* 실행된다.
+///   - class_body(필드 초기화자 / static block)는 *클래스 평가·인스턴스 생성 시점* 에 실행된다.
+///   - global / module 은 최상위 실행 단위.
+/// block / switch / catch 는 바깥과 실행 시점이 같으므로 경계가 아니다 → 부모로 올라간다.
+///
+/// dead-store 제거(#4503)처럼 "이 read 가 저 write 사이에 끼어들 수 있는가" 를 판정할 때,
+/// 두 참조의 실행 단위가 다르면 소스 순서로는 아무것도 결론지을 수 없다.
+///
+/// 스코프 체인이 손상됐거나(범위 밖 인덱스) 순환이면 `null` — 호출자가 보수적으로 처리한다.
+pub fn enclosingExecUnit(scopes: []const Scope, start: ScopeId) ?u32 {
+    var sid = start;
+    // 스코프 개수만큼만 거슬러 올라간다 (손상된 parent 체인의 무한 루프 방어).
+    var hops: usize = 0;
+    while (hops <= scopes.len) : (hops += 1) {
+        if (sid.isNone()) return null;
+        const idx = sid.toIndex();
+        if (idx >= scopes.len) return null;
+        const sc = scopes[idx];
+        switch (sc.kind) {
+            .global, .module, .function, .class_body => return idx,
+            .block, .switch_block, .catch_clause => {},
+        }
+        if (sc.parent.isNone()) return idx; // 루트 도달 — 방어적으로 자기 자신을 단위로.
+        sid = sc.parent;
+    }
+    return null;
+}
+
 /// `start` 또는 그 조상 스코프 중 `pred` 를 만족하는 것이 있으면 true.
 /// 잘못된 인덱스를 만나면 false (defensive — analyzer 가 항상 valid 한 chain 보장).
 pub fn anyAncestor(scopes: []const Scope, start: ScopeId, comptime pred: fn (Scope) bool) bool {
