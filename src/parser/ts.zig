@@ -669,10 +669,113 @@ fn parsePredicateSubject(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
+/// 타입 문법의 최대 중첩 깊이 (#4146).
+///
+/// 타입 파서는 상호재귀 하강이다:
+///   parseType → parseUnionType → … → parsePrimaryType
+///            → { 괄호 / 조건부 / 함수 / 제네릭 인자 / 튜플 / 객체 / 매핑 … }
+///            → (다시) parseType
+/// 즉 중첩 1단계마다 이 체인 전체가 스택에 한 겹 더 쌓인다. `T[]`(postfix while 루프) 나
+/// `A | B`(flat NodeList) 처럼 반복으로 접히는 형태와 달리, 위 형태들은 **grammar 상 바깥
+/// 노드가 안쪽 타입 전체를 자식으로 갖는 진짜 트리**라 단일 함수 루프로 평탄화되지 않는다
+/// (#4142 의 접두 `keyof` 체인은 한 함수의 self-recursion 이라 반복화가 가능했다).
+/// 그래서 여기서는 재귀를 유지하되 **깊이 상한**으로 크래시(SIGSEGV)를 진단으로 바꾼다.
+///
+/// 값 근거 (256) — 양쪽에서 실측해 잡은 값이다:
+/// - 안전 쪽(상한): 중첩 1단계가 쓰는 스택은 Debug 빌드 최악 경로(괄호/함수 타입 — 백트래킹
+///   프레임 포함)에서 약 2.6KB 실측(8MB 스택에서 ~3,130 단계에 SIGSEGV). 256 × 2.6KB ≈ 0.67MB
+///   라 1MB 급의 작은 스레드 스택에서도 여유가 있고, ReleaseFast 는 프레임이 더 작아 더 여유롭다.
+/// - 실코드 쪽(하한): node_modules + 저장소 소스 **94,403개 실파일**을 상한 32 로 낮춰 전량
+///   파싱했을 때도 초과 0건 — 실제 TS 의 구문 중첩은 32 단계에도 못 미친다. 256 은 그 8배 이상.
+///   (`Recursive<T>` 류 타입 레벨 재귀는 **타입 체커**의 인스턴스화 깊이라 구문 중첩과 무관하다.)
+/// tsc 자신도 이 정도 깊이면 "Maximum call stack size exceeded" 로 죽으므로 관용도 손해가 없다.
+///
+/// 경계: parseType **프레임** 수를 센다(가장 안쪽 leaf 타입도 한 프레임). 즉 `(`×255 는 통과,
+/// `(`×256 부터 거부 — parser_test 의 경계 테스트가 이 값을 고정한다.
+const max_type_depth: u32 = 256;
+
 /// TS 타입을 파싱한다. 조건부 > 유니온 > 인터섹션 > postfix > primary 우선순위.
 /// oxc의 parse_ts_type와 동일한 구조.
-/// 함수 타입/컨스트럭터 타입은 유니온보다 먼저 감지 (oxc parse_function_or_constructor_type)
+///
+/// 이 함수가 타입 문법의 **유일한 진입점**이다 — 위 5개 중첩 형태를 포함해 모든 재귀 사이클이
+/// 여기로 되돌아온다. 그래서 깊이 카운팅도 여기 한 곳에서만 한다 (#4146).
 pub fn parseType(self: *Parser) ParseError2!NodeIndex {
+    if (self.type_depth >= max_type_depth) return typeDepthOverflow(self);
+    self.type_depth += 1;
+    defer self.type_depth -= 1;
+    return parseTypeInner(self);
+}
+
+/// 중첩 한계 초과: 진단용 span 을 기록하고(첫 지점만) 문제의 타입 토큰을 통째로 건너뛴다.
+/// 진단 자체는 parse() 종료 시 1건 기록된다 — speculation 이 되돌려지면 이 표시도 함께
+/// 되돌려져야 하기 때문(restoreState).
+fn typeDepthOverflow(self: *Parser) ParseError2!NodeIndex {
+    const span = self.currentSpan();
+    if (self.type_depth_overflow == null) self.type_depth_overflow = span;
+    try skipDeeplyNestedType(self);
+    return try self.ast.addNode(.{ .tag = .invalid, .span = span, .data = .{ .none = 0 } });
+}
+
+/// 한계를 넘은 타입의 토큰을 균형 맞춰 소비한다 (#4146).
+///
+/// **토큰을 안 먹고 invalid 노드만 돌려주면 크래시가 사라지지 않는다.** 남은 `((((…))))` /
+/// `[[[[…]]]]` 는 statement 로 흘러가 이번엔 **식(expression) 파서**가 같은 깊이로 재귀하고,
+/// 조건부 타입의 남은 `: never : never …` 는 **중첩 라벨 statement** 로 재파싱된다 — 둘 다
+/// 같은 스택 오버플로우가 다른 경로로 재현된다. 그래서 여기서 통째로 소비한다.
+///
+/// 괄호/브래킷/중괄호/꺾쇠 균형을 세고, **균형 0 인 지점의** 닫는 토큰 · `,` · `;` · `=` · EOF
+/// 에서 멈춘다. 그 토큰들은 바깥 레벨의 소유라 남겨 둬야 바깥이 추가 에러 없이 정상 unwind
+/// 한다(예: `(((…)))` 는 바깥이 소비한 `(` 개수만큼 `)` 가 정확히 남는다).
+///
+/// ⚠️ 멈춤 조건은 **반드시 `depth == 0` 게이트와 함께**여야 한다. `;` 를 균형과 무관하게 멈춤
+/// 으로 두면 `{ a: string; b: (((…))) }` 의 **객체 타입 멤버 구분자** `;` 에서 스킵이 중도
+/// 이탈해 안쪽 깊은 토큰이 그대로 남는다 → 식 파서로 흘러가 결국 같은 SIGSEGV (실제로 이
+/// 게이트가 빠져 크래시가 재현됐다. `,` 구분자 형태만 통과해 놓치기 쉽다).
+///
+/// 조건부의 `?`/`:` 는 멈춤 토큰이 **아니다** — 위의 라벨 statement 재파싱을 막으려면 꼬리의
+/// `: never …` 까지 다 먹어야 한다.
+fn skipDeeplyNestedType(self: *Parser) ParseError2!void {
+    var depth: u32 = 0;
+    while (self.current() != .eof) {
+        switch (self.current()) {
+            .l_paren, .l_bracket, .l_curly => {
+                depth += 1;
+                try self.advance();
+            },
+            .r_paren, .r_bracket, .r_curly => {
+                if (depth == 0) return; // 바깥 레벨 소유 — 남긴다
+                depth -= 1;
+                try self.advance();
+            },
+            // `;` 는 statement 끝(균형 0)에서만 멈춤. 균형 안쪽에서는 객체 타입 멤버 구분자다.
+            .semicolon, .comma, .eq => {
+                if (depth == 0) return;
+                try self.advance();
+            },
+            else => {
+                // 꺾쇠는 `<<`/`>>`/`>=` 같은 복합 토큰으로 렉싱된다. expect*AngleBracket 이
+                // 복합 토큰을 한 글자씩 분할 소비하므로 균형이 1개 단위로 정확해진다
+                // (분할 없이 `>>` 를 통째로 남기면 바깥 레벨과 개수가 어긋난다).
+                // 여는 쪽은 `<`/`<<` 만 센다 — `<=`/`<<=` 는 타입 문법에 나올 수 없는데
+                // 열림으로 세면 짝 없는 균형이 부풀어 바깥의 닫는 토큰까지 먹어치운다.
+                const kind = self.current();
+                if (kind == .l_angle or kind == .shift_left) {
+                    depth += 1;
+                    try self.expectOpeningAngleBracket();
+                } else if (self.isAtClosingAngleBracket()) {
+                    if (depth == 0) return;
+                    depth -= 1;
+                    try self.expectClosingAngleBracket();
+                } else {
+                    try self.advance();
+                }
+            },
+        }
+    }
+}
+
+/// 함수 타입/컨스트럭터 타입은 유니온보다 먼저 감지 (oxc parse_function_or_constructor_type)
+fn parseTypeInner(self: *Parser) ParseError2!NodeIndex {
     // 컨스트럭터 타입: new (x: T) => R, abstract new (x: T) => R
     if (self.current() == .kw_new) {
         const next = try self.peekNextKind();
