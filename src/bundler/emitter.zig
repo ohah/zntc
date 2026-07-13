@@ -51,8 +51,12 @@ const cjs_wrap_mangle_disabled = @import("../env_flag.zig").Once("ZNTC_NO_CJS_WR
 /// 참조와 wrapper 파라미터가 이 이름을 공유한다. `$` prefix 는 mangler
 /// base54 알파벳(`$` 비포함) 및 runtime helper 와 비충돌: 144-lib smoke
 /// 런타임 MATCH 전수 통과로 실증.
-const CJS_MANGLE_EXPORTS = "$e";
-const CJS_MANGLE_MODULE = "$m";
+// CJS 래퍼의 고정 파라미터 이름. mangler 예약과 **같은 소스**를 봐야 한다 —
+// 여기서만 바꾸면 mangler 가 그 이름을 사용자 심볼에 배정해 섀도잉이 난다 (#4491).
+const rt_names = @import("../runtime_helper_names.zig");
+
+const CJS_MANGLE_EXPORTS = rt_names.NAMES.CJS_WRAPPER_EXPORTS_MIN;
+const CJS_MANGLE_MODULE = rt_names.NAMES.CJS_WRAPPER_MODULE_MIN;
 const error_codes = @import("../error_codes.zig");
 
 /// ZNTC0002 TLA+non-ESM 경고 주석. comptime 고정 — 코드/메시지가 error_codes와 항상 일치.

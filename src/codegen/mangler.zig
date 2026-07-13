@@ -519,6 +519,12 @@ pub fn isReservedOrGlobal(name: []const u8) bool {
     for (names.ALL_SHORT_NAMES) |s| {
         if (std.mem.eql(u8, name, s)) return true;
     }
+    // #4491: CJS 래퍼의 고정 파라미터 이름(`$c(($e, $m) => {...})`). helper 가 아니라
+    //        파라미터라 PAIRS 에 없지만, 배정해 버리면 래퍼 파라미터가 그 심볼을
+    //        **섀도잉**한다 → `TypeError: $m is not a function` (런타임에만 터짐).
+    for (names.CJS_WRAPPER_PARAM_NAMES) |s| {
+        if (std.mem.eql(u8, name, s)) return true;
+    }
     return false;
 }
 

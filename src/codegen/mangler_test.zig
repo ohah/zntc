@@ -70,6 +70,27 @@ test "isReservedOrGlobal: all #1621 runtime helper short names registered" {
     try std.testing.expect(!isReservedOrGlobal("$eX2"));
 }
 
+test "#4491 nextBase54Name: CJS 래퍼 파라미터 이름($e/$m)도 건너뛴다" {
+    // 래퍼 파라미터는 helper 가 아니라 PAIRS 에 없다. 예약하지 않으면 mangler 가 모듈
+    // 게터에 `$m` 을 배정하고, 다른 CJS 래퍼 안에서 그 게터를 참조하면 래퍼의 `$m`
+    // 파라미터(= module 객체)가 게터를 섀도잉한다 → `TypeError: $m is not a function`.
+    // **빌드도 파싱도 통과하고 런타임에만** 터지는 계열이라 재파싱 게이트로는 못 잡는다.
+    const rt = @import("../runtime_helper_names.zig");
+    const nextBase54Name = mangler.nextBase54Name;
+    var buf: [8]u8 = undefined;
+    var counter: u32 = 0;
+    var i: usize = 0;
+    while (i < 50_000) : (i += 1) {
+        const name = nextBase54Name(&counter, &buf);
+        for (rt.CJS_WRAPPER_PARAM_NAMES) |s| {
+            try std.testing.expect(!std.mem.eql(u8, name, s));
+        }
+    }
+    // 이름 풀이 실제로 `$` 영역까지 내려오는지 (테스트가 헛돌지 않는지) 확인.
+    try std.testing.expect(mangler.isReservedOrGlobal("$m"));
+    try std.testing.expect(mangler.isReservedOrGlobal("$e"));
+}
+
 test "nextBase54Name: skips all runtime helper short names" {
     const rt = @import("../runtime_helper_names.zig");
     const nextBase54Name = mangler.nextBase54Name;
