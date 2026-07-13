@@ -451,22 +451,32 @@ pub const ResolveCache = struct {
         return self.resolveNormalized(true, io, source_dir, specifier, kind);
     }
 
-    /// worker specifier 를 URL 의미론까지 고려해 resolve (#4483).
+    /// URL 상대 참조(worker #4483 / CSS `url()` #4485) 를 URL 의미론까지 고려해 resolve.
     ///
-    /// `new URL(spec, import.meta.url)` 의 spec 은 URL 상대 참조라 base 가 모듈 자신의
-    /// URL 이다 → `"x.worker.js"` 와 `"./x.worker.js"` 는 **같은 파일**을 가리킨다. 그런데
-    /// resolver 는 `./` 없는 지정자를 npm 패키지 이름으로 보고 node_modules 를 뒤져
-    /// ModuleNotFound 를 냈고, worker resolve 실패는 warning 으로만 삼켜져 원문이 그대로
-    /// 방출됐다 → 해시된 산출물 이름과 어긋나 런타임 404.
+    /// 두 지정자 모두 base 가 **참조하는 파일 자신의 URL** 이다:
+    /// - `new URL(spec, import.meta.url)` — base = 모듈 자신의 URL
+    /// - CSS `url(spec)` — base = 스타일시트 자신의 URL (CSS 스펙)
+    ///
+    /// 그래서 `"x.png"` 와 `"./x.png"` 는 **같은 파일**을 가리켜야 한다. 그런데 resolver 는
+    /// `./` 없는 지정자를 npm 패키지 이름으로 보고 node_modules 를 뒤져 ModuleNotFound 를
+    /// 냈고, worker/css_url 의 resolve 실패는 warning 으로만 삼켜져 원문이 그대로 방출됐다
+    /// → 해시된 산출물 이름과 어긋나 런타임 404.
     ///
     /// **기존 해석을 먼저 시도하고, 못 찾았을 때만 `./` 를 붙여 재시도한다.** 순서가 중요하다 —
-    /// `./` 를 먼저 시도하면 `--alias` / tsconfig `paths` 로 매핑되던 worker 지정자가 같은 이름의
-    /// 형제 파일에 조용히 가려진다. 이 순서면 기존에 resolve 되던 것은 **하나도 바뀌지 않고**,
-    /// 지금까지 실패하던 bare 형제 파일만 새로 해석된다.
+    /// `./` 를 먼저 시도하면
+    /// - `--alias` / tsconfig `paths` 로 매핑되던 worker 지정자가 같은 이름의 형제 파일에
+    ///   조용히 가려지고,
+    /// - 지금 node_modules 패키지로 해석되고 있는 `url(imgpkg/pic.png)` 가 형제 디렉토리에
+    ///   가려진다 (#4485 이전부터 동작하던 것 → 회귀).
+    ///
+    /// 이 순서면 기존에 resolve 되던 것은 **하나도 바뀌지 않고**, 지금까지 실패하던 bare
+    /// 형제 파일만 새로 해석된다 (= "패키지 우선 + 상대 폴백"). 대가로 동명의 패키지가 있으면
+    /// 형제 파일이 가려지지만, 그건 **지금도 그렇게 동작하는 것**이라 회귀가 아니다.
     ///
     /// import record 의 원문 specifier 는 **절대 건드리지 않는다**: bundler 의 worker_map 키와
     /// codegen 의 조회 키가 둘 다 소스 원문이라, 스캔 시점에 고쳐 놓으면 lookup 이 어긋나
-    /// 다시 원문 emit (= 같은 버그) 으로 돌아간다.
+    /// 다시 원문 emit (= 같은 버그) 으로 돌아간다. CSS 도 같다 — css_emitter 는 record 의
+    /// span/suffix 로 원문 구간을 치환하므로 정규화가 resolve 레이어 밖으로 새면 안 된다.
     fn resolveNormalized(
         self: *ResolveCache,
         comptime thread_safe: bool,
@@ -481,9 +491,10 @@ pub const ResolveCache = struct {
             error.ModuleNotFound => {},
             else => return err,
         }
-        // 여기까지 왔다 = 기존 해석으로는 못 찾음. worker 의 bare 상대 참조면 URL 의미론으로 재시도.
-        var buf: [MAX_WORKER_SPEC_BYTES]u8 = undefined;
-        const normalized = normalizeWorkerSpecifier(kind, specifier, &buf) orelse return error.ModuleNotFound;
+        // 여기까지 왔다 = 기존 해석으로는 못 찾음.
+        // worker / css_url 의 bare 상대 참조면 URL 의미론으로 재시도.
+        var buf: [MAX_URL_RELATIVE_SPEC_BYTES]u8 = undefined;
+        const normalized = normalizeUrlRelativeSpecifier(kind, specifier, &buf) orelse return error.ModuleNotFound;
         return self.resolveInner(thread_safe, io, source_dir, normalized, kind);
     }
 
@@ -1069,14 +1080,29 @@ pub const ResolveCache = struct {
 
         const is_path = resolver_mod.isRelativeOrAbsolute(specifier);
 
+        // worker / css_url 의 지정자는 **URL 상대 참조**지 모듈 지정자가 아니다 → Node builtin
+        // 판정을 적용하면 안 된다 (#4483 / #4485). `isNodeBuiltin` 은 sub-path 도 builtin 으로
+        // 치기 때문에(`util/types`) `url(path/logo.png)` / `url(url/x.png)` 처럼 첫 세그먼트가
+        // builtin 이름과 겹치는 자산 디렉토리가 `--platform=node` 에서 통째로 external 로 빠져
+        // 원문 방출(= 404) 됐다. CSS 의 `url()` 이 `require("path")` 를 가리킬 리는 없다.
+        const is_url_relative_kind = kind == .worker or kind == .css_url;
+
         // 상대/절대 경로는 Node builtin 이 될 수 없으므로 builtin 목록 선형 탐색을 피한다.
-        if (self.platform == .node and !is_path and isNodeBuiltin(specifier)) return true;
+        if (self.platform == .node and !is_path and !is_url_relative_kind and isNodeBuiltin(specifier)) return true;
 
         // --packages=external: 모든 bare import를 external 처리.
         // 단 worker 는 제외한다 (#4483) — `new URL(spec, import.meta.url)` 의 spec 은 URL
         // 상대 참조지 npm 패키지 이름이 아니다. 여기서 삼키면 `--packages=external` 을 켠
         // 순간 형제 worker 파일이 통째로 external 로 빠져 404 가 된다.
         // (사용자가 명시한 `--external:` 패턴은 아래에서 그대로 존중한다.)
+        //
+        // `.css_url` 은 **일부러 제외하지 않는다** (#4485 알려진 한계). worker 와 달리 CSS 의
+        // bare url() 은 이 플래그 하에서 지금도 external 로 빠져 원문 방출되고 있고
+        // (`url(imgpkg/pic.png)`), 여기서 carve-out 하면 그게 갑자기 node_modules 자산으로
+        // **해석·방출**돼 `--packages=external` 사용자의 산출물이 바뀐다. 그 정책 변경은
+        // 이 수정의 범위가 아니다.
+        // 그래서 `--packages=external` + `url(logo.png)` 는 여전히 external 로 빠져
+        // 원문 그대로 방출된다 (재작성하려면 `url(./logo.png)` 로 쓴다).
         if (self.packages_external and !is_path and kind != .worker) return true;
 
         for (self.external_patterns) |pattern| {
@@ -1111,16 +1137,16 @@ pub fn findPackageDirPath(path: []const u8) ?[]const u8 {
     return path[0 .. nm_pos + nm.len + pkg_end];
 }
 
-/// worker specifier 정규화 버퍼 크기 (`"./"` + specifier). 소스에 리터럴로 박히는
+/// URL 상대 참조 정규화 버퍼 크기 (`"./"` + specifier). 소스에 리터럴로 박히는
 /// 지정자라 이 상한이면 충분하다. 초과하면 정규화를 건너뛴다(= 기존 동작).
 /// `std.fs.max_path_bytes` 를 쓰면 Windows 에서 96KB 스택 프레임이 되므로 고정값을 쓴다.
-const MAX_WORKER_SPEC_BYTES: usize = 1024;
+const MAX_URL_RELATIVE_SPEC_BYTES: usize = 1024;
 
-/// `new URL(spec, import.meta.url)` 의 spec 이 `./` 가 생략된 bare 상대 참조인지 (#4483).
+/// specifier 가 `./` 가 생략된 bare 상대 참조인지 (#4483 worker / #4485 CSS url).
 ///
-/// URL 의미론상 base 는 모듈 자신의 URL 이므로 `"x.js"` 와 `"./x.js"` 는 같은 파일을
-/// 가리킨다. 반면 resolver 는 `./` 없는 지정자를 npm 패키지 이름으로 보고 node_modules
-/// 를 뒤진다 → ModuleNotFound. 그래서 여기서 bare 를 골라내 `./` 를 붙여준다.
+/// URL 의미론상 base 는 참조하는 파일 자신의 URL 이므로 `"x.png"` 와 `"./x.png"` 는 같은
+/// 파일을 가리킨다. 반면 resolver 는 `./` 없는 지정자를 npm 패키지 이름으로 보고
+/// node_modules 를 뒤진다 → ModuleNotFound. 그래서 여기서 bare 를 골라내 `./` 를 붙여준다.
 ///
 /// 정규화 제외 (원문 그대로 두면 resolve 실패 → warning + 원문 emit, 이게 맞는 동작):
 /// - scheme 있는 절대 URL (`https:`, `data:`, `blob:`, `chrome-extension:` …)
@@ -1135,6 +1161,8 @@ fn isBareUrlRelativeSpecifier(specifier: []const u8) bool {
     //   해석해 **WorkerWrapper 팩토리** 청크를 만든다 (worker 본문이 아니라).
     // - `?v=1` 같은 미지의 쿼리는 resolver 가 벗기지 못해 어차피 못 연다.
     // 둘 다 지금(= `./` 를 붙인 형태)과 동작이 같아야 하므로 정규화 대상에서 뺀다.
+    // (`.css_url` 은 css_scanner 가 `?query`/`#fragment` 를 `css_url_suffix` 로 미리
+    //  떼어 두므로 여기 도달하는 specifier 에 `?#` 가 없다 — 이 가드는 worker 용이다.)
     if (std.mem.indexOfAny(u8, specifier, "?#") != null) return false;
     // `./` `../` 명시적 상대 + `/abs.js` root-absolute + `//cdn/w.js` protocol-relative
     // (셋 다 isRelativeOrAbsolute 가 true).
@@ -1144,15 +1172,26 @@ fn isBareUrlRelativeSpecifier(specifier: []const u8) bool {
     return true;
 }
 
-/// worker specifier 를 URL 의미론에 맞춰 정규화 (#4483).
+/// URL 상대 참조 지정자를 URL 의미론에 맞춰 정규화 (#4483 worker / #4485 CSS url).
 ///
 /// bare 상대 참조면 `buf` 에 `"./" ++ specifier` 를 써서 그 slice 를 반환한다.
 /// 반환 slice 는 `buf` 를 빌리므로 buf 의 수명 안에서만 유효.
 ///
-/// null = 정규화 대상 아님 (worker 가 아닌 kind / 이미 상대 경로 / 절대 URL /
+/// null = 정규화 대상 아님 (worker/css_url 이 아닌 kind / 이미 상대 경로 / 절대 URL /
 /// `"./" ++ specifier` 가 buf 를 넘김) → caller 는 원문 그대로 resolve.
-pub fn normalizeWorkerSpecifier(kind: ImportKind, specifier: []const u8, buf: []u8) ?[]const u8 {
-    if (kind != .worker) return null;
+///
+/// **`resolveNormalized` 의 폴백 경로에서만 쓴다.** 정규화된 문자열이 resolve 레이어
+/// 밖으로 새면 (record.specifier 를 고치는 등) emitter/codegen 의 조회 키와 어긋난다.
+///
+/// `.static_import` / `.require` / `.dynamic_import` 의 bare 는 진짜 npm 패키지 이름이라
+/// 정규화 대상이 아니다 — `import "react"` 가 `./react` 로 바뀌면 resolution 이 깨진다.
+pub fn normalizeUrlRelativeSpecifier(kind: ImportKind, specifier: []const u8, buf: []u8) ?[]const u8 {
+    switch (kind) {
+        // `new URL(spec, import.meta.url)` — base 는 모듈 자신의 URL (#4483).
+        // CSS `url(spec)` — base 는 스타일시트 자신의 URL (#4485).
+        .worker, .css_url => {},
+        else => return null,
+    }
     if (!isBareUrlRelativeSpecifier(specifier)) return null;
     // 버퍼 초과 — 이만큼 긴 경로는 어차피 파일 시스템에서 안 열린다. 원문으로 진행.
     if (specifier.len + 2 > buf.len) return null;

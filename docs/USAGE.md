@@ -346,6 +346,11 @@ Options:
     없으면 출력 CSS 위치 기준 상대경로
   - `?query` / `#fragment` suffix 보존 — `url(./f.eot?#iefix)` → `url("./f-a1b2c3d4.eot?#iefix")`
     (IE9 훅), `url(./i.svg#icon)` 도 fragment 유지
+  - **`./` 없는 bare 도 재작성** (#4485) — CSS 스펙상 `url()` 의 base 는 스타일시트 자신의 URL 이라
+    `url(logo.png)` 와 `url(./logo.png)` 는 같은 파일이다. 해석 순서는 **패키지 우선 + 상대 폴백** —
+    `url(imgpkg/pic.png)` 는 예전처럼 node_modules 패키지 자산으로 해석되고, 거기서 못 찾은
+    bare 만 스타일시트 형제 파일로 해석된다. 단 `--packages=external` 을 켜면 bare 는 여전히
+    패키지로 간주돼 external 로 빠진다(원문 방출) — 이때는 `url(./logo.png)` 로 쓴다.
   - **재작성 제외**(원문 그대로 통과): `url(#gradient)` (SVG filter/gradient 참조 — 파일 아님),
     `url(/abs.png)` (절대경로 = `public/` 디렉토리 규약), `url(https://…)` / `url(//cdn…)` /
     `url(data:…)` / `url(blob:…)` (external)

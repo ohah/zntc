@@ -339,8 +339,16 @@ pub fn applyResolveResult(
             self.addDiag(.unresolved_import, .warning, self.modules.at(mod_idx).path, record.span, .resolve, "Cannot resolve worker module", record.specifier);
             return;
         }
-        // ModuleNotFound — browser에서 Node 빌트인은 빈 CJS로 대체
-        if (self.resolve_cache.platform.isBrowserLike() and resolve_cache_mod.isNodeBuiltin(record.specifier)) {
+        // ModuleNotFound — browser에서 Node 빌트인은 빈 CJS로 대체.
+        // `.css_url` 은 제외한다 (#4485): CSS `url()` 의 대상은 **파일**이지 모듈이 아니라
+        // Node builtin 일 수가 없다. `isNodeBuiltin` 이 sub-path 도 builtin 으로 치기 때문에
+        // (`util/types`) `url(path/gone.png)` 같은 참조가 여기서 빈 CJS stub 으로 삼켜져
+        // "Cannot resolve CSS url()" 경고가 사라졌다 — bare url() 이 형제 파일로 해석되는
+        // 지금은 그 경고가 오탈자를 잡아주는 유일한 안전망이라 삼키면 안 된다.
+        if (record.kind != .css_url and
+            self.resolve_cache.platform.isBrowserLike() and
+            resolve_cache_mod.isNodeBuiltin(record.specifier))
+        {
             const dep_idx = try self.addDisabledModule(record.specifier);
             try appendResolvedDep(self, mod_idx, .{
                 .record_index = @intCast(rec_i),
