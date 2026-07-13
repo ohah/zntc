@@ -261,7 +261,16 @@ pub fn registerNamespaceRewrites(
         // 없으나, cross-chunk 전역명(emit 前 글로벌 패스)은 이미 확정 — 게다가 그 전역명이 곧
         // provider 청크의 local 명이자 consumer import 명이라 양쪽 일치. cross-chunk 미해당
         // (intra-chunk/non-shared)이면 fallback=exp.local(기존).
-        try inner_map.put(self.allocator, exp.exported, self.getCrossChunkGlobalName(target_mod_idx, exp.exported) orelse exp.local);
+        // **importer 가 target 과 다른 청크일 때만** 전역 공개명을 쓴다 (#4492). 전역명은
+        // `(모듈, export)` 키라 "다른 어떤 청크가 이 심볼을 소비하는가" 만 말해주고 **누가
+        // 묻는지는 모른다** — 게이트 없이 쓰면 같은 청크 importer 도 그 청크 바깥에서만
+        // 존재하는 공개명을 받아 자유 변수가 된다 (mangle 로 local != global 이 되는 순간 폭발).
+        const use_global = self.isCrossChunkConsumer(importer_mod_idx, target_mod_idx);
+        const member_name = if (use_global)
+            (self.getCrossChunkGlobalName(target_mod_idx, exp.exported) orelse exp.local)
+        else
+            exp.local;
+        try inner_map.put(self.allocator, exp.exported, member_name);
     }
     try ns_rewrite_list.append(self.allocator, .{
         .symbol_id = symbol_id,
