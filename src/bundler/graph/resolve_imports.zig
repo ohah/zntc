@@ -534,9 +534,12 @@ pub fn applyResolveResult(
         });
         if (record.kind == .dynamic_import) {
             try self.linkDynamicImport(mod_index, ext_idx);
-        } else if (record.kind == .css_url) {
-            // external 로 분류된 css_url 도 JS 의존성 엣지를 만들면 안 된다. asset 이
-            // 아니므로 emitter 는 원문 url 을 그대로 흘려보낸다.
+        } else if (record.kind == .css_url or record.kind == .worker) {
+            // external 로 분류된 css_url / worker 는 JS 의존성 엣지를 만들면 안 된다.
+            // 이것들은 import 가 아니라 **URL 문자열**이다 — 엣지를 걸면 UMD/AMD 의
+            // 의존성 배열(`define(["css.worker.js"], …)`)에 딸려 들어가 AMD 로더가 worker
+            // 스크립트를 메인 번들의 모듈 의존성으로 fetch·실행하려 든다 (#4483).
+            // emitter 는 원문 URL 을 그대로 흘려보낸다.
         } else {
             try self.linkDependency(mod_index, ext_idx);
         }

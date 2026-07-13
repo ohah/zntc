@@ -5009,3 +5009,97 @@ test "react_native inlineRequires: for-of binding default visits ESM value impor
     defer std.testing.allocator.free(lazy_marker);
     try std.testing.expect(std.mem.indexOf(u8, result.output, lazy_marker) != null);
 }
+
+// ---- #4483 code-review max 지적 반영분 ----
+
+test "#4483 Worker: 같은 리터럴이라도 base 가 import.meta.url 이 아니면 재작성 안 함" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // worker_map 의 키는 지정자 **문자열** 뿐이라, codegen 이 base 인자를 확인하지 않으면
+    // 같은 문자열을 다른 base 로 쓴 무관한 `new URL(...)` 까지 worker 청크로 재작성된다.
+    // (bare 를 재작성 대상에 넣으면서 노출도가 커졌다 — scan 단계는 base 를 검사한다.)
+    try writeFile(tmp.dir, "entry.ts",
+        \\const w = new Worker(new URL("worker.ts", import.meta.url));
+        \\globalThis.cdn = new URL("worker.ts", "https://cdn.example.com/w/");
+        \\w.postMessage(1);
+    );
+    try writeFile(tmp.dir, "worker.ts", "self.onmessage = () => self.postMessage('ok');");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // CDN URL 은 원문 그대로 (base 가 import.meta.url 이 아니다).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"worker.ts\", \"https://cdn.example.com/w/\"") != null);
+    // worker 참조는 청크로 재작성.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new URL(\"./worker-") != null);
+}
+
+test "#4483 Worker: alias 로 매핑되는 worker 지정자가 형제 파일에 가려지지 않는다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // `./` 를 **먼저** 시도하면 alias/tsconfig paths 로 매핑되던 worker 가 같은 이름의
+    // 형제 파일에 조용히 가려진다. 기존 해석을 먼저 시도하고 실패했을 때만 `./` 를 붙인다.
+    try writeFile(tmp.dir, "entry.ts",
+        \\const w = new Worker(new URL("shared/task.ts", import.meta.url));
+        \\w.postMessage(1);
+    );
+    try writeFile(tmp.dir, "shared/task.ts", "self.postMessage('SIBLING');");
+    try writeFile(tmp.dir, "real/task.ts", "self.postMessage('ALIASED');");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const aliased = try absPath(&tmp, "real/task.ts");
+    defer std.testing.allocator.free(aliased);
+
+    const alias_entries = [_]types.AliasEntry{.{ .from = "shared/task.ts", .to = aliased }};
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .alias = &alias_entries });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const assets = result.asset_outputs orelse return error.TestUnexpectedResult;
+    var found_aliased = false;
+    for (assets) |a| {
+        if (std.mem.indexOf(u8, a.contents, "ALIASED") != null) found_aliased = true;
+        // 형제 파일이 이겼다면 alias 가 무시된 것 — 회귀.
+        try std.testing.expect(std.mem.indexOf(u8, a.contents, "SIBLING") == null);
+    }
+    try std.testing.expect(found_aliased);
+}
+
+test "#4483 Worker: external worker 는 UMD/AMD 의존성 배열에 들어가지 않는다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // worker 는 import 가 아니라 URL 문자열이다. external 로 분류돼도 의존성 엣지를 걸면
+    // AMD 로더가 worker 스크립트를 메인 번들의 모듈 의존성으로 fetch·실행하려 든다.
+    try writeFile(tmp.dir, "entry.ts",
+        \\const w = new Worker(new URL("worker.ts", import.meta.url));
+        \\w.postMessage(1);
+    );
+    try writeFile(tmp.dir, "worker.ts", "self.onmessage = () => self.postMessage('ok');");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const externals = [_][]const u8{"worker.ts"};
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .umd,
+        .external = &externals,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "define([\"worker.ts\"]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"worker.ts\"") != null); // URL 은 원문 유지
+}

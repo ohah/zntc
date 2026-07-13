@@ -482,6 +482,10 @@ pub fn emitWithTreeShaking(
         for (sorted.items) |m| {
             for (m.import_records) |rec| {
                 if (!rec.is_external or seen.contains(rec.specifier)) continue;
+                // worker / css_url 은 import 가 아니라 **URL 문자열**이다. external 로
+                // 분류돼도 UMD/AMD 의존성 배열에 넣으면 AMD 로더가 그 URL 을 메인 번들의
+                // 모듈 의존성으로 fetch·실행하려 들어 페이지가 부팅에 실패한다 (#4483).
+                if (rec.kind == .worker or rec.kind == .css_url) continue;
                 const mapped = types.GlobalEntry.lookup(options.globals, rec.specifier);
                 if (requires_globals_mapping and mapped == null) continue;
                 const param = if (mapped) |gname|

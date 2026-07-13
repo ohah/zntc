@@ -454,6 +454,22 @@ pub fn writeImportMetaUrl(self: anytype) !void {
     try self.write("import.meta.url");
 }
 
+/// 노드가 `import.meta.url` 인지 (scan.zig 의 worker 패턴 인식과 같은 판정).
+fn isImportMetaUrl(self: anytype, idx: ast_mod.NodeIndex) bool {
+    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+    const node = self.ast.getNode(idx);
+    if (node.tag != .static_member_expression) return false;
+    const e = node.data.extra;
+    if (!self.ast.hasExtra(e, 2)) return false;
+    const obj_idx = self.ast.readExtraNode(e, 0);
+    if (obj_idx.isNone() or @intFromEnum(obj_idx) >= self.ast.nodes.items.len) return false;
+    if (self.ast.getNode(obj_idx).tag != .meta_property) return false;
+    const prop_idx = self.ast.readExtraNode(e, 1);
+    if (prop_idx.isNone() or @intFromEnum(prop_idx) >= self.ast.nodes.items.len) return false;
+    const prop = self.ast.getNode(prop_idx);
+    return std.mem.eql(u8, self.ast.getText(prop.span), "url");
+}
+
 /// `new URL("specifier", import.meta.url)` 가 worker 등록된 specifier 를 가리키면
 /// `new URL("./<filename>", <import.meta.url polyfill>)` 로 직접 emit. 매칭 시 true 반환.
 /// graph.zig 가 worker_threads 패턴을 detect 해 worker_map 에 등록 → codegen 은 lookup 만.
@@ -467,11 +483,16 @@ fn tryEmitWorkerURL(self: anytype, callee: ast_mod.NodeIndex, args_start: u32, a
     if (!std.mem.eql(u8, self.ast.getText(callee_node.span), "URL")) return false;
 
     const extras = self.ast.extra_data.items;
-    if (args_start >= extras.len) return false;
+    // base 인자(`import.meta.url`)까지 확인해야 한다 — worker_map 키는 지정자 **문자열**
+    // 뿐이라, 같은 문자열을 다른 base 로 쓴 무관한 `new URL("x.worker.js", "https://cdn/")`
+    // 까지 worker 청크로 재작성돼 버린다 (scan 단계는 이 검사를 한다, #4483).
+    if (args_len < 2 or args_start + 1 >= extras.len) return false;
     const arg0_idx: ast_mod.NodeIndex = @enumFromInt(extras[args_start]);
     if (arg0_idx.isNone() or @intFromEnum(arg0_idx) >= self.ast.nodes.items.len) return false;
     const arg0_node = self.ast.getNode(arg0_idx);
     if (arg0_node.tag != .string_literal) return false;
+    const arg1_idx: ast_mod.NodeIndex = @enumFromInt(extras[args_start + 1]);
+    if (!isImportMetaUrl(self, arg1_idx)) return false;
     const spec = Ast.stripStringQuotes(self.ast.getText(arg0_node.span));
 
     const filename = worker_map.get(spec) orelse return false;
