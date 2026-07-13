@@ -1192,6 +1192,24 @@ fn finishNewExpressionWithArgs(self: *Parser, start: u32, callee: NodeIndex, arg
     return new_expr;
 }
 
+/// 인자 없는 `new` 노드 생성 — extras 레이아웃을 `finishNewExpressionWithArgs` 와 **단일 소스**로
+/// 유지한다. 예전엔 두 곳에 복붙돼 있어, 새 플래그를 한쪽에만 넣으면 조용히 유실됐다 (#4048).
+fn finishNewExpressionNoArgs(
+    self: *Parser,
+    start: u32,
+    callee: NodeIndex,
+    callee_optional: bool,
+) !NodeIndex {
+    const extra = try self.ast.addExtras(&.{
+        @intFromEnum(callee), 0, 0, newCalleeOptionalFlag(callee_optional),
+    });
+    return try self.ast.addNode(.{
+        .tag = .new_expression,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .extra = extra },
+    });
+}
+
 /// new 표현식의 callee를 파싱한다.
 /// new는 중첩 가능하므로 new를 만나면 재귀한다.
 /// member access (.prop, [expr])만 허용하고 호출 ()은 상위에서 처리.
@@ -1221,22 +1239,20 @@ fn parseNewCallee(self: *Parser, out_callee_optional: *bool) ParseError2!NodeInd
     if (self.current() == .kw_new) {
         const span = self.currentSpan();
         try self.advance(); // skip 'new'
-        // 같은 out 포인터를 넘겨 안쪽 new 의 callee 보고를 바깥까지 전파 (#4048).
-        const callee = try parseNewCallee(self, out_callee_optional);
+        // **안쪽 new 전용 플래그**로 받는다 (#4048). 바깥의 `out_callee_optional` 을 그대로
+        // 넘기면 "안쪽 new 의 callee 에 `?.` 가 있었다" 는 사실이 **바깥 new** 에 찍혀,
+        // 바깥 new 자신의 별개 위반(argless new 뒤 trailing `?.`)이 조용히 사라진다.
+        // 두 new 는 서로 다른 위반이므로 각각 보고돼야 한다 — 괄호 형태
+        // (`new (new a?.b)\`x\`?.c`)가 실제로 2건을 내는 것과 일관되게.
+        var inner_callee_optional = false;
+        const callee = try parseNewCallee(self, &inner_callee_optional);
         _ = trySkipTypeArgsSpeculative(self, true, type_args.canFollowTypeArgumentsInExpression);
         if (self.current() == .l_paren) {
             try self.advance();
             const arg_list = try parseArgumentList(self);
-            return try finishNewExpressionWithArgs(self, span.start, callee, arg_list, out_callee_optional.*);
+            return try finishNewExpressionWithArgs(self, span.start, callee, arg_list, inner_callee_optional);
         }
-        const ne_no_args = try self.ast.addExtras(&.{
-            @intFromEnum(callee), 0, 0, newCalleeOptionalFlag(out_callee_optional.*),
-        });
-        return try self.ast.addNode(.{
-            .tag = .new_expression,
-            .span = .{ .start = span.start, .end = self.currentSpan().start },
-            .data = .{ .extra = ne_no_args },
-        });
+        return try finishNewExpressionNoArgs(self, span.start, callee, inner_callee_optional);
     }
 
     // primary expression + member chain (호출 제외)
@@ -1502,14 +1518,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
             }
 
             // 인자 없는 new: new Foo
-            const ne2_no = try self.ast.addExtras(&.{
-                @intFromEnum(callee), 0, 0, newCalleeOptionalFlag(callee_optional),
-            });
-            return try self.ast.addNode(.{
-                .tag = .new_expression,
-                .span = .{ .start = span.start, .end = self.currentSpan().start },
-                .data = .{ .extra = ne2_no },
-            });
+            return try finishNewExpressionNoArgs(self, span.start, callee, callee_optional);
         },
         .kw_super => {
             // super expression: super() 또는 super.prop 또는 super[expr]
