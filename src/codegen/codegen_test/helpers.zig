@@ -155,7 +155,35 @@ pub fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_optio
         } else break :blk raw_output;
     } else raw_output;
 
+    // 산출물 재파싱 게이트 (#4472/#4481/#4482 계열). 이 계열의 버그는 전부 "빌드 green +
+    // 산출물이 파싱 불가" 였다 — codegen 이 필수 괄호를 빠뜨리거나(`c&&{x:a}=o`) 인접 토큰을
+    // 합쳐(`f(---t)`) 놓아도, 문자열 비교 테스트는 그 needle 만 맞으면 통과했다.
+    // 위 입력 파서 진단 검사(#1906)의 **대칭** — 방출한 것을 다시 파싱해 본다.
+    try expectReparses(allocator, output, ext, source);
+
     return .{ .output = output, .arena = arena };
+}
+
+/// codegen 산출물을 zntc 자체 파서로 다시 파싱해 진단이 없는지 확인.
+/// (JSX preserve 처럼 확장자 의존 문법이 남을 수 있어 원본과 같은 ext 로 파싱한다.)
+fn expectReparses(allocator: std.mem.Allocator, output: []const u8, ext: []const u8, source: []const u8) !void {
+    var scanner = Scanner.init(allocator, output) catch return; // scanner 실패는 아래 파서가 잡는다
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(ext);
+    _ = parser.parse() catch |err| {
+        std.debug.print(
+            "\n산출물 재파싱 실패 ({s}) — codegen 이 파싱 불가한 코드를 방출했다\n  입력: {s}\n  출력: {s}\n",
+            .{ @errorName(err), source, output },
+        );
+        return error.OutputNotParsable;
+    };
+    if (parser.hasErrors()) {
+        std.debug.print(
+            "\n산출물 재파싱 실패 — codegen 이 파싱 불가한 코드를 방출했다\n  진단: {s}\n  입력: {s}\n  출력: {s}\n",
+            .{ parser.errors.items[0].message, source, output },
+        );
+        return error.OutputNotParsable;
+    }
 }
 
 pub fn e2eWithOptions(allocator: std.mem.Allocator, source: []const u8, cg_options: CodegenOptions) !TestResult {
