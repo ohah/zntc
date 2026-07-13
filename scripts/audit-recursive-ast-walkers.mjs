@@ -36,6 +36,7 @@ const ALLOWLIST = {
   // --- sanctioned 헬퍼 / 명시 스택·큐·collector (깊이 무관 안전) ---
   "src/parser/ast_walk.zig::walkPreorderIterative": { class: "iterative_safe", note: "the sanctioned iterative helper" },
   "src/parser/ast_walk.zig::collectChildrenInto": { class: "iterative_safe", note: "sanctioned child-collection entry point for iterative worklists (#4123 PR-2c)" },
+  "src/bundler/emitter/dead_store.zig::stmtBreaksFlow": { class: "iterative_safe", note: "명시 스택(worklist)으로 서브트리 순회 — 두 store 사이 statement 가 바깥 흐름을 끊는지 판정 (#4503). 재귀 없음." },
   "src/parser/ast_walk.zig::collectReachableNodeIndices": { class: "iterative_safe", note: "explicit stack worklist" },
   "src/transformer/minify.zig::markReachableNodes": { class: "iterative_safe", note: "BFS queue" },
   "src/transformer/es2015_block_scoping.zig::collectChildIndices": { class: "iterative_safe", note: "one-level collector feeding caller stack" },
