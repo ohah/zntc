@@ -225,13 +225,20 @@ test "TsconfigCache: clear 후 같은 dir 다시 lookup 시 정상 재캐시" {
 
     const r1 = cache.findTsconfigPath(testing.io, a);
     try testing.expect(r1 != null);
+    // `clear()` 는 arena 를 reset 한다 → 그 순간 `r1` 은 **해제된 메모리를 가리킨다**.
+    // 비교용으로 미리 복사해 둔다 (예전엔 clear 뒤에 r1 을 그대로 읽어 use-after-free —
+    // retain_capacity 라 대개는 우연히 살아 읽혀 통과했고, 메모리가 재사용/poison 되는
+    // 실행에서만 SIGSEGV 로 터졌다. seed 에 따라 갈리는 flake 의 정체다).
+    const r1_copy = try testing.allocator.dupe(u8, r1.?);
+    defer testing.allocator.free(r1_copy);
+
     cache.clear();
     try testing.expectEqual(@as(usize, 0), cache.size());
 
     const r2 = cache.findTsconfigPath(testing.io, a);
     try testing.expect(r2 != null);
     try testing.expectEqual(@as(usize, 1), cache.size());
-    try testing.expectEqualStrings(r1.?, r2.?); // 같은 결과
+    try testing.expectEqualStrings(r1_copy, r2.?); // 같은 결과
 }
 
 test "TsconfigCache: bare filename (no dirname) 안전 처리" {
