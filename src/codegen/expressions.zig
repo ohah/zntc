@@ -181,8 +181,13 @@ fn powLeftNeedsParen(self: anytype, idx: NodeIndex) bool {
         switch (n.tag) {
             // `-x` / `!x` / `void x` / `await x` — 단항으로 시작.
             .unary_expression, .await_expression => return true,
-            // 상수 폴딩이 만든 음수 리터럴(`-2`). 양수면 exprNeedsParens 가 괄호를 안 친다.
-            .numeric_literal, .bigint_literal => return true,
+            // 상수 폴딩이 만든 **음수** 리터럴(`-2`)만 단항으로 시작한다. 양수(`2**3`)는
+            // 괄호가 필요없고 exprNeedsParens 도 안 친다 — 여기서 true 를 주면 level 만
+            // 올라가고 wrap 은 안 걸려 계약이 깨진다(assertPowLeftWrapped 가 잡는다).
+            .numeric_literal, .bigint_literal => {
+                const text = self.ast.getText(n.span);
+                return text.len > 0 and text[0] == '-';
+            },
             .boolean_literal => return self.options.minify_syntax, // `!0`/`!1` peephole
             .identifier_reference => {
                 if (constInlineValue(self, cur)) |cv| {
@@ -213,6 +218,39 @@ fn powLeftNeedsParen(self: anytype, idx: NodeIndex) bool {
         }
     }
     return false;
+}
+
+/// `**` 좌변 괄호 계약의 **사후조건** (#4482).
+///
+/// `binaryChildLevels` 는 "괄호가 필요하다" 를 자식 level 을 `.call` 로 올리는 것으로
+/// 표현한다. 그런데 그 level 을 실제 `(` 로 바꾸는 쪽(`exprNeedsParens`, identifier
+/// dispatch 의 self-wrap)이 그 노드 종류를 모르면 **level 은 그냥 버려진다** — 이게
+/// #4482 의 정확한 발생 기전이었다 (`-2**2`, `void 0**2` = SyntaxError). 두 목록이
+/// 어긋나도 아무도 안 잡아줬다.
+///
+/// 그래서 판정을 문자열/태그로 재확인하지 않고, **실제로 방출된 첫 바이트**가 `(` 인지
+/// 본다. 어떤 경로로 괄호가 나왔든(중앙 wrap / self-wrap / 소스 괄호) 통과하고, 어떤
+/// 이유로든 빠지면 잡힌다. 새 노드 종류를 `powLeftNeedsParen` 에 추가하면서 wrap 쪽을
+/// 안 고치면 여기서 즉시 터진다.
+///
+/// runtime_safety 빌드(Debug/ReleaseSafe = 테스트·CI)에서만 검사한다.
+fn assertPowLeftWrapped(self: anytype, node: Node, left: NodeIndex, left_start: usize) void {
+    if (!std.debug.runtime_safety) return;
+    const op: Kind = @enumFromInt(node.data.binary.flags);
+    if (op != .star2) return;
+    if (!powLeftNeedsParen(self, left)) return;
+    // 주석이 앞설 수 있어(`/*c*/(-2)**2`) 첫 non-comment 바이트를 찾는 대신, `(` 가 어딘가
+    // 앞쪽에 있는지가 아니라 **좌변 출력이 `(` 로 시작**하는지를 본다. 주석은 minify 에서
+    // 사라지고, 남는 경우엔 legal 주석뿐이라 이 단언을 켠 빌드에서만 예외적으로 관대하게 둔다.
+    const emitted = self.buf.items[left_start..];
+    if (emitted.len == 0) return;
+    if (emitted[0] == '(' or emitted[0] == '/') return;
+    std.debug.panic(
+        "`**` 좌변이 prefix 단항으로 시작하는데 괄호가 없다 — level 을 올렸지만 wrap 이 안 걸렸다 (#4482).\n" ++
+            "  좌변 출력: {s}\n" ++
+            "  powLeftNeedsParen 에 노드 종류를 추가했다면 exprNeedsParens(또는 identifier self-wrap)도 함께 고쳐야 한다.",
+        .{emitted[0..@min(emitted.len, 60)]},
+    );
 }
 
 /// 이항 노드 emit. 좌결합 체인(a+b+c+…)은 좌 스파인이 N-deep 라 순수 재귀면 스택 오버플로우
@@ -246,7 +284,9 @@ pub fn emitBinary(self: anytype, node: Node, level: Level, flags: ExprFlags) !vo
     // 빠른 경로(depth 1, 대부분의 `a OP b`): 좌 자식이 스파인 노드가 아니면 기존 형태(할당 0).
     if (!emitSpineContinues(self, left)) {
         const lv = binaryChildLevels(self, node);
+        const left_start = self.buf.items.len;
         try self.emitExpr(left, lv.left, child_flags);
+        assertPowLeftWrapped(self, node, left, left_start);
         try emitBinaryOperator(self, node);
         try self.emitExpr(node.data.binary.right, lv.right, child_flags);
         return;
