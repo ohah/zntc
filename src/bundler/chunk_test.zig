@@ -1255,3 +1255,78 @@ test "generateChunks: external 가 manual pattern 매칭돼도 manual chunk 안 
     // entry chunk 만. vendor manual chunk 는 매칭 모듈 0 이라 생성 안 됨.
     try std.testing.expectEqual(@as(usize, 1), cg.chunks.items.len);
 }
+
+// ============================================================
+// (#4494) 직접 CJS import 의 cross-chunk 심볼 등록
+// ============================================================
+
+const linker_mod = @import("linker.zig");
+const Linker = linker_mod.Linker;
+const test_helpers = @import("test_helpers.zig");
+
+// 다른 청크의 CJS 모듈을 **직접** import(`import d from './lib.cjs'`)하면 cross-chunk
+// 심볼로 등록돼야 한다. CJS 는 정적 export 가 없어 `resolveExportChain` 이 null →
+// resolved binding 이 없고, 예전엔 그대로 skip 돼 심볼이 등록되지 않았다. 그 결과
+// 소비자 청크가 provider 청크에만 있는 `require_X()` 썽크를 참조 = ReferenceError (#4494).
+test "computeCrossChunkLinks: 직접 CJS import 도 cross-chunk 심볼로 등록 (#4494)" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // lib.cjs 는 a/b 양쪽에서 도달 → common 청크. a 는 그 CJS 를 직접 import(cross-chunk).
+    try test_helpers.writeFile(tmp.dir, "lib.cjs", "module.exports = { tag: 1 };");
+    try test_helpers.writeFile(tmp.dir, "shared.ts", "import d from './lib.cjs';\nexport const s = d.tag;");
+    try test_helpers.writeFile(tmp.dir, "a.ts", "import d from './lib.cjs';\nimport { s } from './shared';\nconsole.log(d.tag, s);");
+    try test_helpers.writeFile(tmp.dir, "b.ts", "import { s } from './shared';\nconsole.log(s);");
+
+    const ep_a = try test_helpers.absPath(&tmp, "a.ts");
+    defer alloc.free(ep_a);
+    const ep_b = try test_helpers.absPath(&tmp, "b.ts");
+    defer alloc.free(ep_b);
+
+    var cache = resolve_cache_mod.ResolveCache.init(alloc, .{});
+    defer cache.deinit();
+    const graph = try alloc.create(ModuleGraph);
+    defer alloc.destroy(graph);
+    graph.* = ModuleGraph.init(alloc, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{ ep_a, ep_b });
+
+    var linker = Linker.init(alloc, graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+
+    var cg = try chunk_mod.generateChunks(alloc, graph, &.{ ep_a, ep_b }, .{});
+    defer cg.deinit();
+    try chunk_mod.computeCrossChunkLinks(&cg, graph, alloc, &linker);
+
+    // lib.cjs / a.ts 의 모듈 인덱스를 path 로 찾는다.
+    var cjs_mi: ?u32 = null;
+    var a_mi: ?u32 = null;
+    for (0..graph.moduleCount()) |i| {
+        const m = graph.getModule(ModuleIndex.fromUsize(@intCast(i))) orelse continue;
+        if (std.mem.endsWith(u8, m.path, "lib.cjs")) cjs_mi = @intCast(i);
+        if (std.mem.endsWith(u8, m.path, "a.ts")) a_mi = @intCast(i);
+    }
+    try std.testing.expect(cjs_mi != null);
+    try std.testing.expect(a_mi != null);
+    // CJS 로 래핑됐는지 (전제 확인)
+    try std.testing.expect(graph.getModule(ModuleIndex.fromUsize(cjs_mi.?)).?.wrap_kind == .cjs);
+
+    const a_chunk = cg.getModuleChunk(ModuleIndex.fromUsize(a_mi.?));
+    const cjs_chunk = cg.getModuleChunk(ModuleIndex.fromUsize(cjs_mi.?));
+    try std.testing.expect(!a_chunk.isNone() and !cjs_chunk.isNone());
+    // lib.cjs 가 a 와 같은 청크면 이 테스트의 전제(cross-chunk)가 성립하지 않는다.
+    try std.testing.expect(a_chunk != cjs_chunk);
+
+    // a 청크가 lib.cjs 청크에서 "default" 를 가져온다 (canonical = lib.cjs).
+    const syms = cg.getChunk(a_chunk).imports_from.get(@intFromEnum(cjs_chunk));
+    try std.testing.expect(syms != null);
+    var found = false;
+    for (syms.?.items) |sym| {
+        if (std.mem.eql(u8, sym.name, "default") and sym.canonical_module == cjs_mi.?) found = true;
+    }
+    try std.testing.expect(found);
+    // provider 청크는 그 이름을 노출한다.
+    try std.testing.expect(cg.getChunk(cjs_chunk).exports_to.contains("default"));
+}

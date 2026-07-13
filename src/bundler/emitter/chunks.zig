@@ -720,6 +720,29 @@ pub fn emitChunks(
             for (rbm_cross_imports.items) |imp| {
                 try occupied.append(allocator, imp.name);
             }
+            // (#4494) **provider 측** CJS-interop materialize 전역명도 점유. 이 청크가 CJS 모듈의
+            // 멤버를 cross-chunk 로 노출하면 아래 xchunk_exports 블록이 `var <global> = <interop>;`
+            // 를 청크 top-level 에 *새로* 깐다. 이 이름은 어떤 모듈의 심볼도 아니라 rename 입력에
+            // 안 잡혀, 같은 이름의 청크 로컬(`const named = …`)이 있으면 `var`↔`const` 재선언
+            // SyntaxError 가 난다. 점유로 등록해 로컬을 밀어낸다(`named` → `named$1`).
+            //
+            // 조건은 materialize 발화 조건의 **보수적 상위집합**(owner=CJS + 전역명 보유). materialize
+            // 는 여기에 더해 `resolveOwnerLocal == null`(진짜 로컬 없음)·entry 청크 분기 등을 본다.
+            // 과잉 예약은 안전하다 — 동명 로컬을 한 번 더 rename 할 뿐(미스는 SyntaxError, 과잉은
+            // 이름만 바뀜). CJS owner 는 대개 소수라 wrap_kind 로 먼저 걸러 스캔을 줄인다.
+            if (linker) |l| {
+                for (sorted_mods) |mod_idx| {
+                    const mi = @intFromEnum(mod_idx);
+                    if (mi >= module_count) continue;
+                    const owner = graph.getModule(mod_idx) orelse continue;
+                    if (owner.wrap_kind != .cjs) continue;
+                    var eit = chunk.exports_to.iterator();
+                    while (eit.next()) |e| {
+                        const global = l.getCrossChunkGlobalName(@intCast(mi), e.key_ptr.*) orelse continue;
+                        try occupied.append(allocator, global);
+                    }
+                }
+            }
         }
 
         // per-chunk 리네임 계산: 각 청크는 독립된 네임스페이스이므로
@@ -1048,8 +1071,15 @@ pub fn emitChunks(
                         const global = l.getCrossChunkGlobalName(@intCast(mi), name) orelse continue;
                         const owner = graph.getModule(mod_idx) orelse continue;
                         if (owner.wrap_kind != .cjs) continue;
-                        // 진짜 로컬이 있으면(resolveOwnerLocal!=null) interop 아님 — materialize 불요.
-                        if (resolveOwnerLocal(l, graph, mod_idx, @intCast(mi), name) != null) continue;
+                        // (#4494) 예전엔 `resolveOwnerLocal != null` 이면 "진짜 로컬이 있으니 interop
+                        // 불요" 로 skip 했다. 하지만 **CJS-wrapped 모듈은 청크 top-level 로컬이 하나도
+                        // 없다** — 본문 전체가 `__commonJS(...)` 클로저 안이다. resolveOwnerLocal 은
+                        // getCanonicalName 으로 *클로저 안* 심볼까지 찾아내므로(예: `function tag(){}` +
+                        // `module.exports={tag}` 를 `import {tag}` — minify 시 rename_table 에 (mod,"tag")
+                        // 엔트리가 생긴다), materialize 를 건너뛰고 클로저-스코프 이름을 그대로
+                        // `export { o as tag }` 로 노출 → ReferenceError. export 명이 `default`(예약어라
+                        // 로컬일 수 없음)뿐이던 시절엔 안 드러났고, #4494 로 멤버명이 cross-chunk 키가
+                        // 되면서 재현됐다. owner=CJS 면 **항상** materialize 한다.
                         if (cjs_interop_globals.contains(global)) continue; // 이미 materialize
                         try writeCjsInteropMaterialize(allocator, &chunk_output, l, owner, name, global, options.minify_whitespace);
                         try cjs_interop_globals.put(allocator, global, {});
