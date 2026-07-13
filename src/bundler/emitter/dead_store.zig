@@ -1,15 +1,47 @@
 //! Dead-store pruning helpers used by bundler emission.
+//!
+//! ## 이 패스가 기대는 가정과 그 한계 (#4503)
+//!
+//! 이 패스는 "같은 statement list 안의 두 store 사이에 read 가 없으면 앞 store 는 죽었다"
+//! 로 판정한다. 이때 "사이" 는 `Reference` 배열의 위치(`ref_pos`, 즉 **소스 순서**)로
+//! 재는데, 소스 순서가 실행 순서와 같은 것은 **한 함수의 한 활성화(activation) 안에서
+//! straight-line 으로 흐를 때뿐**이다. 아래 세 경우엔 그 가정이 깨져서 살아 있는 store 를
+//! 지우는 무성 오컴파일이 났다:
+//!
+//!   1. **클로저 읽기** (#4503) — `buf = t; flush(); buf = "";` 에서 `flush` 가 `buf` 를
+//!      클로저로 읽으면, 그 read 의 소스 위치는 두 store 밖(보통 앞)이라 `hasReadBetween`
+//!      이 못 본다. 실제로는 사이의 `flush()` 호출 때 읽힌다.
+//!      → `readEscapesExecUnit`: read 가 write 와 **다른 실행 단위**(함수/클래스 본문)에
+//!      하나라도 있으면 제거 금지.
+//!
+//!   2. **재진입(re-entrancy)** — read 와 write 가 *같은* 함수 안에 있어도, 그 변수가 함수
+//!      **밖** 에 선언돼 있으면 호출이 겹칠 때 바인딩 하나를 공유한다. 두 store 사이의 호출이
+//!      그 함수를 다시 부르거나(재귀), `await`/`yield` 로 다른 호출과 인터리빙되면 *다른
+//!      활성화* 가 앞 store 의 값을 읽는다 — 소스 순서에는 전혀 나타나지 않는 read다.
+//!      → `storeIsProtected` 의 "선언 실행 단위 == write 실행 단위" 조건.
+//!
+//!   3. **abrupt completion** — `x = 1; if (c) break lbl; x = 2;` 처럼 사이에서 흐름이
+//!      끊기면 뒤 store 가 실행되지 않아 앞 store 의 값이 살아남는다.
+//!      → `windowBreaksFlow`: 사이 statement 가 바깥 흐름을 끊으면(밖으로 나가는
+//!      return/break/continue/throw) 제거 금지.
+//!
+//! 판정이 불확실하면 **항상 "유지"**(보수적). 크기 몇 바이트보다 정확성이 우선이다.
+//! 반대로 *진짜* dead store — 함수 지역변수를 그 함수 안에서 덮어쓰는, DSE 수익의 대부분 —
+//! 는 세 가드 모두 통과하므로 계속 제거된다.
 
 const std = @import("std");
 const Module = @import("../module.zig").Module;
 const ast_mod = @import("../../parser/ast.zig");
 const Ast = ast_mod.Ast;
 const NodeIndex = ast_mod.NodeIndex;
+const ast_walk = @import("../../parser/ast_walk.zig");
 const purity = @import("../purity.zig");
 const TokenKind = @import("../../lexer/token.zig").Kind;
 const semantic_symbol = @import("../../semantic/symbol.zig");
 const Reference = semantic_symbol.Reference;
 const Symbol = semantic_symbol.Symbol;
+const scope_mod = @import("../../semantic/scope.zig");
+const Scope = scope_mod.Scope;
 
 const AssignmentInfo = struct {
     stmt_idx: u32,
@@ -39,22 +71,64 @@ const RefEvent = struct {
     }
 };
 
+/// 심볼별 "read 가 일어난 실행 단위" 요약 (`scope_mod.enclosingExecUnit` 기준).
+///
+/// write 와 *다른* 실행 단위에서 읽히는지만 알면 되므로, 첫 단위 하나 + "무조건 차단" 플래그로
+/// 충분하다 (판정 O(1)).
+const ReadUnits = struct {
+    /// 처음 만난 read 의 실행 단위. read 가 하나도 없으면 `null` (→ 진짜 dead store).
+    unit: ?u32 = null,
+    /// 어떤 write 와 비교하든 무조건 차단:
+    ///   - 서로 다른 실행 단위 두 곳 이상에서 read (둘 중 하나는 반드시 write 와 어긋난다), 또는
+    ///   - 실행 단위를 못 구한 read 가 있음 (스코프 체인 이상 → 보수적으로 차단).
+    blocked: bool = false,
+};
+
 const DeadStoreRefIndex = struct {
     const EventList = std.ArrayListUnmanaged(RefEvent);
 
     by_key: std.AutoHashMapUnmanaged(RefKey, EventList) = .empty,
     all_events: std.ArrayListUnmanaged(RefEvent) = .empty,
     declare_events: std.ArrayListUnmanaged(RefEvent) = .empty,
+    /// symbol id → read 실행 단위 요약. 길이 == symbols.len.
+    read_units: []ReadUnits = &.{},
+    /// `read_units` 를 만들 때 쓴 스코프 트리. 질의 때 다른 slice 를 넘겨 단위가 어긋나는 일이
+    /// 없도록 인덱스가 직접 들고 있는다.
+    scopes: []const Scope = &.{},
 
-    fn init(allocator: std.mem.Allocator, references: []const Reference) !DeadStoreRefIndex {
-        var index: DeadStoreRefIndex = .{};
+    fn init(
+        allocator: std.mem.Allocator,
+        references: []const Reference,
+        scopes: []const Scope,
+        symbol_count: usize,
+    ) !DeadStoreRefIndex {
+        var index: DeadStoreRefIndex = .{ .scopes = scopes };
         errdefer index.deinit(allocator);
 
-        for (references, 0..) |ref, ref_pos| {
-            if (ref.scope_stmt_idx == Reference.NO_STMT) continue;
+        index.read_units = try allocator.alloc(ReadUnits, symbol_count);
+        @memset(index.read_units, .{});
 
+        for (references, 0..) |ref, ref_pos| {
             const symbol_id: u32 = @intFromEnum(ref.symbol_id);
             const scope_id: u32 = @intFromEnum(ref.scope_id);
+
+            // read 실행 단위 집계는 `scope_stmt_idx` 유무와 무관하게 **모든 참조** 를 본다.
+            // stmt 인덱스가 없는 read 도 클로저 read 일 수 있으므로 놓치면 안 된다 (#4503).
+            if (ref.flags.read and ref.isValueUse() and symbol_id < index.read_units.len) {
+                const ru = &index.read_units[symbol_id];
+                if (scope_mod.enclosingExecUnit(scopes, ref.scope_id)) |unit| {
+                    if (ru.unit) |first| {
+                        if (first != unit) ru.blocked = true;
+                    } else {
+                        ru.unit = unit;
+                    }
+                } else {
+                    ru.blocked = true;
+                }
+            }
+
+            if (ref.scope_stmt_idx == Reference.NO_STMT) continue;
+
             const event: RefEvent = .{
                 .ref_pos = @intCast(ref_pos),
                 .node_idx = @intFromEnum(ref.node_index),
@@ -89,6 +163,21 @@ const DeadStoreRefIndex = struct {
         self.by_key.deinit(allocator);
         self.all_events.deinit(allocator);
         self.declare_events.deinit(allocator);
+        allocator.free(self.read_units);
+        self.read_units = &.{};
+    }
+
+    /// `write_unit` 밖에서 이 심볼을 읽는 곳이 하나라도 있는가? (#4503 핵심 가드)
+    ///
+    /// true 면 그 read 는 두 store 사이의 **임의 호출 시점** 에 일어날 수 있어 `ref_pos` 기반
+    /// "사이에 read 없음" 판정이 무효다 → dead store 제거 금지.
+    /// 판정 불가(심볼 범위 밖)도 보수적으로 true.
+    fn readEscapesExecUnit(self: *const DeadStoreRefIndex, symbol_id: u32, write_unit: u32) bool {
+        if (symbol_id >= self.read_units.len) return true;
+        const ru = self.read_units[symbol_id];
+        if (ru.blocked) return true;
+        const read_unit = ru.unit orelse return false; // read 자체가 없음 — 진짜 dead.
+        return read_unit != write_unit;
     }
 
     fn findWriteForNode(self: *const DeadStoreRefIndex, symbol_id: u32, node_idx: u32) ?RefEvent {
@@ -162,6 +251,12 @@ const DeadStoreRefIndex = struct {
     }
 };
 
+/// 유닛 테스트용 스코프 트리: 0=module, 1=module 안의 function.
+const test_scopes = [_]Scope{
+    .{ .parent = .none, .kind = .module, .is_strict = true },
+    .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = true },
+};
+
 test "DeadStoreRefIndex matches transformed assignment by unique same-statement write" {
     const allocator = std.testing.allocator;
     const old_lhs_node: NodeIndex = @enumFromInt(10);
@@ -177,7 +272,7 @@ test "DeadStoreRefIndex matches transformed assignment by unique same-statement 
         },
     };
 
-    var index = try DeadStoreRefIndex.init(allocator, &references);
+    var index = try DeadStoreRefIndex.init(allocator, &references, &test_scopes, 4);
     defer index.deinit(allocator);
 
     try std.testing.expect(index.findWriteForNode(2, transformed_lhs_node) == null);
@@ -207,11 +302,255 @@ test "DeadStoreRefIndex does not guess when same-statement writes are ambiguous"
         },
     };
 
-    var index = try DeadStoreRefIndex.init(allocator, &references);
+    var index = try DeadStoreRefIndex.init(allocator, &references, &test_scopes, 4);
     defer index.deinit(allocator);
 
     try std.testing.expect(index.findWriteForAssignment(2, 200, 3) == null);
 }
+
+test "readEscapesExecUnit: 다른 함수(클로저)의 read 는 write 를 살린다 (#4503)" {
+    const allocator = std.testing.allocator;
+    // 심볼 2 를 module scope(0) 에서 write, function scope(1) 안에서 read.
+    const references = [_]Reference{
+        .{
+            .node_index = @enumFromInt(10),
+            .scope_id = @enumFromInt(1), // 클로저 안
+            .symbol_id = @enumFromInt(2),
+            .scope_stmt_idx = 0,
+            .flags = .{ .read = true },
+        },
+        .{
+            .node_index = @enumFromInt(11),
+            .scope_id = @enumFromInt(0), // module 최상위 write
+            .symbol_id = @enumFromInt(2),
+            .scope_stmt_idx = 1,
+            .flags = .{ .write = true },
+        },
+    };
+
+    var index = try DeadStoreRefIndex.init(allocator, &references, &test_scopes, 4);
+    defer index.deinit(allocator);
+
+    // write 는 module(0), read 는 function(1) → 실행 단위가 달라 제거 금지.
+    try std.testing.expect(index.readEscapesExecUnit(2, 0));
+    // 같은 실행 단위(function) 안의 write 라면 read 위치와 일치 → 기존 ref_pos 분석 유효.
+    try std.testing.expect(!index.readEscapesExecUnit(2, 1));
+    // read 가 아예 없는 심볼(3) 은 여전히 dead store 제거 대상.
+    try std.testing.expect(!index.readEscapesExecUnit(3, 0));
+    // 심볼 범위 밖은 보수적으로 차단.
+    try std.testing.expect(index.readEscapesExecUnit(99, 0));
+}
+
+test "readEscapesExecUnit: scope_stmt_idx 없는 read 도 집계된다 (#4503)" {
+    const allocator = std.testing.allocator;
+    // NO_STMT read 는 event 인덱스에서 제외되지만 실행 단위 집계에는 반드시 포함돼야 한다.
+    const references = [_]Reference{
+        .{
+            .node_index = @enumFromInt(10),
+            .scope_id = @enumFromInt(1),
+            .symbol_id = @enumFromInt(2),
+            .scope_stmt_idx = Reference.NO_STMT,
+            .flags = .{ .read = true },
+        },
+    };
+
+    var index = try DeadStoreRefIndex.init(allocator, &references, &test_scopes, 4);
+    defer index.deinit(allocator);
+
+    try std.testing.expect(index.readEscapesExecUnit(2, 0));
+}
+
+test "readEscapesExecUnit: type-only read 는 실행 단위 집계에서 제외" {
+    const allocator = std.testing.allocator;
+    const references = [_]Reference{
+        .{
+            .node_index = @enumFromInt(10),
+            .scope_id = @enumFromInt(1),
+            .symbol_id = @enumFromInt(2),
+            .scope_stmt_idx = 0,
+            .flags = .{ .read = true, .type_context = true },
+        },
+    };
+
+    var index = try DeadStoreRefIndex.init(allocator, &references, &test_scopes, 4);
+    defer index.deinit(allocator);
+
+    // TS 타입 문맥 참조는 런타임 read 가 아니므로 dead store 제거를 막지 않는다.
+    try std.testing.expect(!index.readEscapesExecUnit(2, 0));
+}
+
+test "enclosingExecUnit: block/catch 스코프는 부모 함수로 올라간다" {
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .module, .is_strict = true },
+        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = true },
+        .{ .parent = @enumFromInt(1), .kind = .block, .is_strict = true },
+        .{ .parent = @enumFromInt(2), .kind = .catch_clause, .is_strict = true },
+        .{ .parent = @enumFromInt(1), .kind = .class_body, .is_strict = true },
+    };
+    try std.testing.expectEqual(@as(?u32, 0), scope_mod.enclosingExecUnit(&scopes, @enumFromInt(0)));
+    try std.testing.expectEqual(@as(?u32, 1), scope_mod.enclosingExecUnit(&scopes, @enumFromInt(1)));
+    try std.testing.expectEqual(@as(?u32, 1), scope_mod.enclosingExecUnit(&scopes, @enumFromInt(2))); // block → function
+    try std.testing.expectEqual(@as(?u32, 1), scope_mod.enclosingExecUnit(&scopes, @enumFromInt(3))); // catch → block → function
+    try std.testing.expectEqual(@as(?u32, 4), scope_mod.enclosingExecUnit(&scopes, @enumFromInt(4))); // class body 는 자체 경계
+    try std.testing.expectEqual(@as(?u32, null), scope_mod.enclosingExecUnit(&scopes, @enumFromInt(99))); // 범위 밖
+}
+
+/// 한 모듈에 대한 dead-store 패스의 공용 컨텍스트. 인자 8개를 함수마다 실어나르지 않도록 묶었다.
+const Pass = struct {
+    /// AST walk 스택 전용 (emitter 의 arena).
+    allocator: std.mem.Allocator,
+    ast: *Ast,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    ref_index: *const DeadStoreRefIndex,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+    skip_nodes: *std.DynamicBitSet,
+    module: *const Module,
+
+    /// 이 심볼의 store 를 **절대 지우면 안 되는** 사유가 있는가 (심볼 단위 가드).
+    ///
+    /// `write_scope_id` 는 지우려는 store 가 있는 스코프. 판정 불가는 전부 "보호"(true).
+    fn storeIsProtected(self: *const Pass, sym_idx: u32, write_scope_id: u32) bool {
+        if (sym_idx >= self.symbols.len) return true;
+        const sym = self.symbols[sym_idx];
+
+        const write_unit = scope_mod.enclosingExecUnit(self.scopes, @enumFromInt(write_scope_id)) orelse return true;
+
+        // (1) #4503 — 클로저/다른 함수에서의 read. 그 read 는 두 store 사이의 임의 호출 시점에
+        //     일어날 수 있어 소스 순서(ref_pos) 기반 "사이에 read 없음" 판정이 무효다.
+        if (self.ref_index.readEscapesExecUnit(sym_idx, write_unit)) return true;
+
+        // (2) **재진입(re-entrancy)** — write 하는 실행 단위 *밖* 에 선언된 변수는 그 함수의
+        //     호출이 겹쳐도 같은 바인딩 하나를 공유한다. 그래서 두 store 사이의 호출이
+        //       - 그 함수 자신을 다시 부르거나 (재귀),
+        //       - await/yield 지점에서 다른 호출과 인터리빙되거나,
+        //       - 예외로 밖으로 빠져나가
+        //     앞 store 의 값을 관측할 수 있다. 이 read 들은 write 와 *같은* 실행 단위에 있어서
+        //     (1) 이 못 잡는다 — 소스 순서로는 보이지 않는 다른 *활성화(activation)* 의 read다.
+        //
+        //     반대로 write 와 같은 실행 단위에 선언된 진짜 지역변수는 호출마다 새 바인딩이라
+        //     다른 활성화가 앞 store 의 값을 볼 수 없다 → DSE 의 주 수익 구간은 그대로 유지된다.
+        const decl_unit = scope_mod.enclosingExecUnit(self.scopes, sym.scope_id) orelse return true;
+        if (decl_unit != write_unit) return true;
+
+        // (3) 다른 모듈이 import 해 읽을 수 있는 심볼 (live binding) — 모듈 안 참조만으로는
+        //     관측 여부를 알 수 없다.
+        if (isExportedSymbol(self.module, sym_idx)) return true;
+
+        // (4) direct eval / with 가 있는 스코프의 바인딩은 이름으로 동적 조회될 수 있다
+        //     (참조 배열에 안 잡힘). mangler 와 같은 기준으로 차단.
+        const decl_scope = @intFromEnum(sym.scope_id);
+        if (decl_scope >= self.scopes.len) return true;
+        if (self.scopes[decl_scope].blocksMangling()) return true;
+
+        return false;
+    }
+
+    /// 두 store `stmts[from]` / `stmts[to]` **사이** 의 statement 들이 바깥 흐름을 끊는가.
+    ///
+    /// 끊는 경로가 있으면 뒤 store 가 실행되지 않고 앞 store 의 값이 살아남는다
+    /// (`x = 1; if (c) break lbl; x = 2;` → break 시 x 는 1). 소스 순서 분석으로는 그 경로를
+    /// 볼 수 없으므로 보수적으로 제거를 포기한다.
+    fn windowBreaksFlow(self: *const Pass, stmts: []const u32, from: usize, to: usize) bool {
+        if (to <= from + 1) return false; // 사이가 비었음 — 끊길 여지 없음.
+        var i = from + 1;
+        while (i < to) : (i += 1) {
+            if (self.stmtBreaksFlow(stmts[i])) return true;
+        }
+        return false;
+    }
+
+    /// statement 하나가 **자기를 담고 있는 statement list 의 흐름** 을 끊을 수 있는가.
+    ///
+    /// 끊는 것:
+    ///   - `return` / `throw`
+    ///   - 바깥으로 나가는 `break` / `continue`
+    /// 끊지 **않는** 것 (여기서 걸러야 진짜 dead store 를 계속 지울 수 있다):
+    ///   - 함수/메서드/클래스 본문 안의 return/throw — 그 함수만 끊는다.
+    ///   - 이 statement 안에 **완전히 포함된** loop/switch 에 묶이는 라벨 없는 break/continue
+    ///     (`for (…) { if (v) break; }` 의 break, `switch (v) { case 1: …; break; }` 의 break).
+    /// 라벨 있는 break/continue 는 바깥 라벨을 타깃할 수 있으므로 보수적으로 "끊는다" 로 본다.
+    ///
+    /// OOM 은 "끊는다"(보수적)로 취급.
+    fn stmtBreaksFlow(self: *const Pass, root: u32) bool {
+        const ast = self.ast;
+        // 인덱스가 이상하면 "끊는다"(=제거 포기). 이 파일의 다른 모든 불확실 경로(OOM, 스코프
+        // 체인 이상)와 같은 방향 — 모르면 보수적으로 유지한다.
+        if (root >= ast.nodes.items.len) return true;
+
+        // 빠른 경로: 표현식/선언 statement 안에는 return/break/continue/throw **statement** 가
+        // 올 수 없다 (중첩 함수 본문 안에만 올 수 있고 그건 경계 밖). 창 안 statement 의 대부분이
+        // 여기 해당 — AST walk 자체를 건너뛴다.
+        switch (ast.nodes.items[root].tag) {
+            .expression_statement, .variable_declaration, .empty_statement, .debugger_statement => return false,
+            else => {},
+        }
+
+        // loop/switch 중첩 깊이를 프레임에 실어 나른다 (라벨 없는 break/continue 의 결속 대상 판정).
+        const Frame = struct { idx: u32, loop_depth: u16, switch_depth: u16 };
+        var stack: std.ArrayListUnmanaged(Frame) = .empty;
+        defer stack.deinit(self.allocator);
+        var child_buf: std.ArrayListUnmanaged(NodeIndex) = .empty;
+        defer child_buf.deinit(self.allocator);
+        stack.append(self.allocator, .{ .idx = root, .loop_depth = 0, .switch_depth = 0 }) catch return true;
+
+        while (stack.pop()) |frame| {
+            if (frame.idx >= ast.nodes.items.len) continue;
+            const node = ast.nodes.items[frame.idx];
+            var loop_depth = frame.loop_depth;
+            var switch_depth = frame.switch_depth;
+
+            switch (node.tag) {
+                .return_statement, .throw_statement => return true,
+                .break_statement => {
+                    // `data.unary.operand` = 라벨 (없으면 none) — parser 의 parseSimpleStatement.
+                    if (!node.data.unary.operand.isNone()) return true; // 라벨 → 바깥 타깃 가능.
+                    if (loop_depth == 0 and switch_depth == 0) return true; // 바깥 흐름을 끊는다.
+                    continue; // 창 안 loop/switch 에 묶임 — 뒤 store 는 여전히 실행된다.
+                },
+                .continue_statement => {
+                    if (!node.data.unary.operand.isNone()) return true;
+                    if (loop_depth == 0) return true;
+                    continue;
+                },
+                // 함수/메서드/클래스 경계 — 안쪽 return/throw/break 는 바깥 흐름과 무관.
+                // (tag 목록은 es2022_tla 의 경계 집합과 동일하게 유지한다.)
+                .function_declaration,
+                .function_expression,
+                .function,
+                .arrow_function_expression,
+                .method_definition,
+                .accessor_property,
+                .class_declaration,
+                .class_expression,
+                => continue,
+                .while_statement,
+                .do_while_statement,
+                .for_statement,
+                .for_in_statement,
+                .for_of_statement,
+                .for_await_of_statement,
+                => loop_depth += 1,
+                .switch_statement => switch_depth += 1,
+                else => {},
+            }
+
+            child_buf.clearRetainingCapacity();
+            var it = ast_walk.children(ast, node);
+            while (it.next()) |c| child_buf.append(self.allocator, c) catch return true;
+            for (child_buf.items) |c| {
+                if (c.isNone()) continue;
+                stack.append(self.allocator, .{
+                    .idx = @intFromEnum(c),
+                    .loop_depth = loop_depth,
+                    .switch_depth = switch_depth,
+                }) catch return true;
+            }
+        }
+        return false;
+    }
+};
 
 pub fn markDeadOverwrittenAssignments(
     allocator: std.mem.Allocator,
@@ -219,6 +558,7 @@ pub fn markDeadOverwrittenAssignments(
     symbol_ids: []const ?u32,
     references: []const Reference,
     symbols: []const Symbol,
+    scopes: []const Scope,
     unresolved_globals: ?*const purity.GlobalRefSet,
     skip_nodes: *std.DynamicBitSet,
     module: *const Module,
@@ -230,10 +570,21 @@ pub fn markDeadOverwrittenAssignments(
     if (list.start + list.len > ast.extra_data.items.len) return;
     const stmts = ast.extra_data.items[list.start .. list.start + list.len];
 
-    var ref_index = try DeadStoreRefIndex.init(allocator, references);
+    var ref_index = try DeadStoreRefIndex.init(allocator, references, scopes, symbols.len);
     defer ref_index.deinit(allocator);
 
-    markDeadOverwrittenInStatementList(ast, stmts, symbol_ids, symbols, &ref_index, unresolved_globals, skip_nodes, module);
+    const pass: Pass = .{
+        .allocator = allocator,
+        .ast = ast,
+        .symbol_ids = symbol_ids,
+        .symbols = symbols,
+        .scopes = scopes,
+        .ref_index = &ref_index,
+        .unresolved_globals = unresolved_globals,
+        .skip_nodes = skip_nodes,
+        .module = module,
+    };
+    markDeadOverwrittenInStatementList(&pass, stmts);
 }
 
 pub fn markDeadOverwrittenFunctionBodiesOnly(
@@ -242,6 +593,7 @@ pub fn markDeadOverwrittenFunctionBodiesOnly(
     symbol_ids: []const ?u32,
     references: []const Reference,
     symbols: []const Symbol,
+    scopes: []const Scope,
     unresolved_globals: ?*const purity.GlobalRefSet,
     skip_nodes: *std.DynamicBitSet,
     module: *const Module,
@@ -250,57 +602,55 @@ pub fn markDeadOverwrittenFunctionBodiesOnly(
     const root = ast.nodes.items[ast.nodes.items.len - 1];
     if (root.tag != .program) return;
 
-    var ref_index = try DeadStoreRefIndex.init(allocator, references);
+    var ref_index = try DeadStoreRefIndex.init(allocator, references, scopes, symbols.len);
     defer ref_index.deinit(allocator);
+
+    const pass: Pass = .{
+        .allocator = allocator,
+        .ast = ast,
+        .symbol_ids = symbol_ids,
+        .symbols = symbols,
+        .scopes = scopes,
+        .ref_index = &ref_index,
+        .unresolved_globals = unresolved_globals,
+        .skip_nodes = skip_nodes,
+        .module = module,
+    };
 
     for (ast.nodes.items) |node| {
         if (ast.functionBodyBlock(node) == null) continue;
-        markDeadOverwrittenFunctionBody(ast, node, symbol_ids, symbols, &ref_index, unresolved_globals, skip_nodes, module);
+        markDeadOverwrittenFunctionBody(&pass, node);
     }
 }
 
-fn markDeadOverwrittenInStatementList(
-    ast: *Ast,
-    stmts: []const u32,
-    symbol_ids: []const ?u32,
-    symbols: []const Symbol,
-    ref_index: *const DeadStoreRefIndex,
-    unresolved_globals: ?*const purity.GlobalRefSet,
-    skip_nodes: *std.DynamicBitSet,
-    module: *const Module,
-) void {
+fn markDeadOverwrittenInStatementList(pass: *const Pass, stmts: []const u32) void {
+    const ast = pass.ast;
     for (stmts, 0..) |raw_stmt, i| {
         if (raw_stmt >= ast.nodes.items.len) continue;
-        if (raw_stmt < skip_nodes.capacity() and skip_nodes.isSet(raw_stmt)) continue;
-        markDeadOverwrittenDeclarationInitializers(ast, raw_stmt, i, stmts, symbol_ids, symbols, ref_index, unresolved_globals, module);
-        const current = assignmentInfoForStmt(ast, raw_stmt, symbol_ids, unresolved_globals, true) orelse continue;
-        const current_write = ref_index.findWriteForAssignment(current.sym_idx, current.lhs_idx, @intCast(i)) orelse continue;
-        const next_event = ref_index.findOverwriteAfter(current_write) orelse continue;
+        if (raw_stmt < pass.skip_nodes.capacity() and pass.skip_nodes.isSet(raw_stmt)) continue;
+        markDeadOverwrittenDeclarationInitializers(pass, raw_stmt, i, stmts);
+        const current = assignmentInfoForStmt(ast, raw_stmt, pass.symbol_ids, pass.unresolved_globals, true) orelse continue;
+        const current_write = pass.ref_index.findWriteForAssignment(current.sym_idx, current.lhs_idx, @intCast(i)) orelse continue;
+        if (pass.storeIsProtected(current.sym_idx, current_write.scope_id)) continue;
+        const next_event = pass.ref_index.findOverwriteAfter(current_write) orelse continue;
         if (next_event.stmt_idx <= i or next_event.stmt_idx >= stmts.len) continue;
+        if (pass.windowBreaksFlow(stmts, i, next_event.stmt_idx)) continue;
         const next_raw = stmts[next_event.stmt_idx];
         if (next_raw >= ast.nodes.items.len) continue;
-        if (next_raw < skip_nodes.capacity() and skip_nodes.isSet(next_raw)) continue;
-        const next_assign = assignmentInfoForStmt(ast, next_raw, symbol_ids, unresolved_globals, false) orelse continue;
+        if (next_raw < pass.skip_nodes.capacity() and pass.skip_nodes.isSet(next_raw)) continue;
+        const next_assign = assignmentInfoForStmt(ast, next_raw, pass.symbol_ids, pass.unresolved_globals, false) orelse continue;
         if (next_assign.sym_idx != current.sym_idx) continue;
-        if (ref_index.findWriteForAssignment(next_assign.sym_idx, next_assign.lhs_idx, next_event.stmt_idx) == null) continue;
-        if (current.stmt_idx < skip_nodes.capacity()) skip_nodes.set(current.stmt_idx);
+        if (pass.ref_index.findWriteForAssignment(next_assign.sym_idx, next_assign.lhs_idx, next_event.stmt_idx) == null) continue;
+        if (current.stmt_idx < pass.skip_nodes.capacity()) pass.skip_nodes.set(current.stmt_idx);
     }
 
     for (stmts) |raw_stmt| {
-        markDeadOverwrittenNestedStatementLists(ast, raw_stmt, symbol_ids, symbols, ref_index, unresolved_globals, skip_nodes, module);
+        markDeadOverwrittenNestedStatementLists(pass, raw_stmt);
     }
 }
 
-fn markDeadOverwrittenNestedStatementLists(
-    ast: *Ast,
-    node_idx: u32,
-    symbol_ids: []const ?u32,
-    symbols: []const Symbol,
-    ref_index: *const DeadStoreRefIndex,
-    unresolved_globals: ?*const purity.GlobalRefSet,
-    skip_nodes: *std.DynamicBitSet,
-    module: *const Module,
-) void {
+fn markDeadOverwrittenNestedStatementLists(pass: *const Pass, node_idx: u32) void {
+    const ast = pass.ast;
     if (node_idx >= ast.nodes.items.len) return;
     const node = ast.nodes.items[node_idx];
 
@@ -308,7 +658,7 @@ fn markDeadOverwrittenNestedStatementLists(
         const list = node.data.list;
         if (list.start + list.len <= ast.extra_data.items.len) {
             const stmts = ast.extra_data.items[list.start .. list.start + list.len];
-            markDeadOverwrittenInStatementList(ast, stmts, symbol_ids, symbols, ref_index, unresolved_globals, skip_nodes, module);
+            markDeadOverwrittenInStatementList(pass, stmts);
         }
     }
 
@@ -364,29 +714,21 @@ fn markDeadOverwrittenNestedStatementLists(
                 const bs = extras[ex + 1];
                 const bl = extras[ex + 2];
                 if (bs + bl <= extras.len) {
-                    markDeadOverwrittenInStatementList(ast, extras[bs .. bs + bl], symbol_ids, symbols, ref_index, unresolved_globals, skip_nodes, module);
+                    markDeadOverwrittenInStatementList(pass, extras[bs .. bs + bl]);
                 }
             }
         },
         else => {},
     }
     for (bodies[0..nb]) |child| {
-        markDeadOverwrittenNestedStatementLists(ast, child, symbol_ids, symbols, ref_index, unresolved_globals, skip_nodes, module);
+        markDeadOverwrittenNestedStatementLists(pass, child);
     }
 
-    markDeadOverwrittenFunctionBody(ast, node, symbol_ids, symbols, ref_index, unresolved_globals, skip_nodes, module);
+    markDeadOverwrittenFunctionBody(pass, node);
 }
 
-fn markDeadOverwrittenFunctionBody(
-    ast: *Ast,
-    node: ast_mod.Node,
-    symbol_ids: []const ?u32,
-    symbols: []const Symbol,
-    ref_index: *const DeadStoreRefIndex,
-    unresolved_globals: ?*const purity.GlobalRefSet,
-    skip_nodes: *std.DynamicBitSet,
-    module: *const Module,
-) void {
+fn markDeadOverwrittenFunctionBody(pass: *const Pass, node: ast_mod.Node) void {
+    const ast = pass.ast;
     if (ast.functionBodyBlock(node)) |body_idx| {
         if (@intFromEnum(body_idx) < ast.nodes.items.len) {
             const body = ast.nodes.items[@intFromEnum(body_idx)];
@@ -394,7 +736,7 @@ fn markDeadOverwrittenFunctionBody(
                 const list = body.data.list;
                 if (list.start + list.len <= ast.extra_data.items.len) {
                     const stmts = ast.extra_data.items[list.start .. list.start + list.len];
-                    markDeadOverwrittenInStatementList(ast, stmts, symbol_ids, symbols, ref_index, unresolved_globals, skip_nodes, module);
+                    markDeadOverwrittenInStatementList(pass, stmts);
                 }
             }
         }
@@ -402,16 +744,12 @@ fn markDeadOverwrittenFunctionBody(
 }
 
 fn markDeadOverwrittenDeclarationInitializers(
-    ast: *Ast,
+    pass: *const Pass,
     stmt_idx: u32,
     stmt_pos: usize,
     stmts: []const u32,
-    symbol_ids: []const ?u32,
-    symbols: []const Symbol,
-    ref_index: *const DeadStoreRefIndex,
-    unresolved_globals: ?*const purity.GlobalRefSet,
-    module: *const Module,
 ) void {
+    const ast = pass.ast;
     if (stmt_idx >= ast.nodes.items.len) return;
     const stmt = ast.nodes.items[stmt_idx];
     if (stmt.tag != .variable_declaration) return;
@@ -436,24 +774,26 @@ fn markDeadOverwrittenDeclarationInitializers(
     const init_idx: NodeIndex = @enumFromInt(ast.extra_data.items[de + 2]);
     if (name_idx.isNone() or init_idx.isNone()) return;
     const name_ni = @intFromEnum(name_idx);
-    if (name_ni >= ast.nodes.items.len or name_ni >= symbol_ids.len) return;
+    if (name_ni >= ast.nodes.items.len or name_ni >= pass.symbol_ids.len) return;
     const name = ast.nodes.items[name_ni];
     if (name.tag != .binding_identifier) return;
-    const sym_idx: u32 = @intCast(symbol_ids[name_ni] orelse return);
-    if (sym_idx >= symbols.len) return;
-    if (isExportedSymbol(module, sym_idx)) return;
-    if (!purity.isExprPure(ast, init_idx, unresolved_globals)) return;
+    const sym_idx: u32 = @intCast(pass.symbol_ids[name_ni] orelse return);
+    if (sym_idx >= pass.symbols.len) return;
+    if (!purity.isExprPure(ast, init_idx, pass.unresolved_globals)) return;
 
-    const decl_scope = @intFromEnum(symbols[sym_idx].scope_id);
-    const declare_event = ref_index.findDeclare(sym_idx, decl_scope, @intCast(stmt_pos)) orelse return;
-    const next_event = ref_index.findOverwriteAfter(declare_event) orelse return;
+    const decl_scope = @intFromEnum(pass.symbols[sym_idx].scope_id);
+    // 초기화자도 store 다 — 뒤의 재대입 사이에서 클로저가 읽을 수 있으면 지우면 안 된다 (#4503).
+    if (pass.storeIsProtected(sym_idx, decl_scope)) return;
+    const declare_event = pass.ref_index.findDeclare(sym_idx, decl_scope, @intCast(stmt_pos)) orelse return;
+    const next_event = pass.ref_index.findOverwriteAfter(declare_event) orelse return;
     if (next_event.stmt_idx <= stmt_pos or next_event.stmt_idx >= stmts.len) return;
+    if (pass.windowBreaksFlow(stmts, stmt_pos, next_event.stmt_idx)) return;
 
     const next_raw = stmts[next_event.stmt_idx];
     if (next_raw >= ast.nodes.items.len) return;
-    const next_assign = assignmentInfoForStmt(ast, next_raw, symbol_ids, unresolved_globals, false) orelse return;
+    const next_assign = assignmentInfoForStmt(ast, next_raw, pass.symbol_ids, pass.unresolved_globals, false) orelse return;
     if (next_assign.sym_idx != sym_idx) return;
-    if (ref_index.findWriteForAssignment(next_assign.sym_idx, next_assign.lhs_idx, next_event.stmt_idx) == null) return;
+    if (pass.ref_index.findWriteForAssignment(next_assign.sym_idx, next_assign.lhs_idx, next_event.stmt_idx) == null) return;
     ast.extra_data.items[de + 2] = @intFromEnum(NodeIndex.none);
 }
 
