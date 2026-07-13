@@ -89,10 +89,13 @@ interface RenderCase {
   /**
    * **아직 열린 결함이라 현재는 실패가 정상**인 경우, 그 이슈 번호.
    *
-   * `test.fail()` 로 표시한다 — 지금은 CI 를 red 로 만들지 않고, **결함이 고쳐지면
-   * 테스트가 통과해버려서 오히려 실패**한다("expected to fail but passed"). 그때가
-   * 이 마커를 떼는 시점이다. 게이트를 먼저 들이고 수정과 함께 해제하기 위한 장치이며,
-   * 결함이 조용히 잊히지 않는다.
+   * `test.fail()` 로 표시한다 — CI 를 red 로 만들지 않되, **결함이 고쳐지면 테스트가
+   * 통과해버려서 오히려 실패**한다("expected to fail but passed"). 그때가 이 마커를
+   * 떼는 시점이다. 게이트를 먼저 들이고 수정과 함께 해제하기 위한 장치이며, 결함이
+   * 조용히 잊히지 않는다.
+   *
+   * 실제로 이 장치가 동작했다 — #4493·#4503 이 수정되자 두 케이스가 통과해버려 CI 가
+   * 알려줬고, 그래서 마커를 뗐다. 새 결함을 게이트에 먼저 들일 때 다시 쓴다.
    */
   knownBroken?: string;
 }
@@ -127,10 +130,10 @@ setTimeout(() => { globalThis.__ready = true; }, 200);
     height: 260,
     settleMs: 700,
     minColors: 20,
-    knownBroken: '#4493',
     guards:
-      '#4493 — 중첩 shorthand+기본값 리네임 누락(ReferenceError: stackWeight). ' +
-      'import 만으로는 통과하고 new Chart() 를 **그려야** 터진다. 1~3층 전부 통과하는 결함.',
+      '#4493(수정됨) — 중첩 shorthand+기본값 리네임 누락(ReferenceError: stackWeight). ' +
+      'import 만으로는 통과하고 new Chart() 를 **그려야** 터졌다. 1~3층 전부 통과하던 결함이라, ' +
+      '이 케이스가 회귀를 막는 유일한 그물이다.',
     entry: `
 import { Chart, BarController, BarElement, CategoryScale, LinearScale } from "chart.js";
 Chart.register(BarController, BarElement, CategoryScale, LinearScale);
@@ -152,11 +155,10 @@ setTimeout(() => { globalThis.__ready = true; }, 400);
     height: 260,
     settleMs: 500,
     minColors: 10,
-    knownBroken: '#4503',
     guards:
-      '#4503 — dead-store 제거가 클로저 읽기를 놓쳐 대입문 삭제 → **무성 오컴파일**. ' +
-      '에러 0 · 파싱 0 · 평가 0 인데 하이라이팅 결과만 틀리다(`functionfunction f f(a)`). ' +
-      '이 게이트가 실제로 잡아낸 결함이며, **픽셀 대조 없이는 관측 자체가 불가능**하다. ' +
+      '#4503(수정됨) — dead-store 제거가 클로저 읽기를 놓쳐 대입문 삭제 → **무성 오컴파일**. ' +
+      '에러 0 · 파싱 0 · 평가 0 인데 하이라이팅 결과만 틀렸다(`functionfunction f f(a)`). ' +
+      '**이 게이트가 실제로 찾아낸 결함**이며, 픽셀 대조 없이는 관측 자체가 불가능했다. ' +
       '더불어 #4491(CJS 래퍼 $e/$m 섀도잉)도 이 경로가 지킨다. ' +
       '**full `highlight.js` 를 써야 한다** — `lib/core` 서브셋은 190개 CJS 언어 모듈 경로를 비껴가서 둘 다 못 잡는다.',
     entry: `
