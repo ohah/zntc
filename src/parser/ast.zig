@@ -484,6 +484,15 @@ pub const Node = struct {
         /// noop — 타입 스트립 후 operand 만 남는다. 새 wrapper 태그 추가 시
         /// 이 함수만 갱신하면 코드베이스 전 분기가 따라온다 (#3129).
         pub fn isTransparentTypeWrapper(tag: Tag) bool {
+            return isParenFreeTypeWrapper(tag) or tag == .flow_type_cast_expression;
+        }
+
+        /// transparent type wrapper 중 **소스에 괄호가 없는** 것만 (`x as T`/`x satisfies T`/
+        /// `x!`/`<T>x`/`x<T>`/Flow `x as T`). Flow 의 `flow_type_cast_expression`(`(x: T)`)은
+        /// **괄호 자체**라 제외된다 — 괄호는 문법상 경계를 만들기 때문에(OptionalChain 의 base 를
+        /// PrimaryExpression 으로 만들어 체인을 끊는다: `(new a: any)?.b` 는 유효) 괄호를
+        /// 투명하게 통과하면 안 되는 **구문 검사**에서 이 술어를 써야 한다 (#4500).
+        pub fn isParenFreeTypeWrapper(tag: Tag) bool {
             return switch (tag) {
                 .ts_as_expression,
                 .ts_satisfies_expression,
@@ -491,7 +500,6 @@ pub const Node = struct {
                 .ts_type_assertion,
                 .ts_instantiation_expression,
                 .flow_as_expression,
-                .flow_type_cast_expression,
                 => true,
                 else => false,
             };

@@ -419,6 +419,9 @@ fn newCalleeNeedsRenameParens(self: anytype, idx: NodeIndex) bool {
             .static_member_expression, .computed_member_expression, .private_field_expression => {
                 cur = self.ast.readExtraNode(n.data.extra, 0);
             },
+            // tagged template 도 callee 체인의 일부다(`` new tag`x`.B() `` 의 callee = `` tag`x`.B ``,
+            // #4500) — tag 가 rename→call 이면 똑같이 괄호가 필요하다. tag = extra[0].
+            .tagged_template_expression => cur = self.ast.readExtraNode(n.data.extra, 0),
             // paren 은 투명(codegen 이 괄호 미출력) — 안쪽으로 따라가 rename leaf 검사.
             .parenthesized_expression => cur = n.data.unary.operand,
             else => return false,
