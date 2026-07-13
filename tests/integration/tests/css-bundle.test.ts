@@ -360,6 +360,59 @@ describe('CSS Bundling', () => {
     expect(css).toContain('url(data:image/gif;base64,R0lGOD)');
   });
 
+  // #4485: CSS 스펙상 url() 의 base 는 스타일시트 자신의 URL 이므로
+  // `url(logo.png)` 와 `url(./logo.png)` 는 **같은 파일**이다. bare 는 resolver 가
+  // npm 패키지로 오인해 못 찾고 원문 그대로 방출했다 → 런타임 404.
+
+  it('#4485 CSS url() bare (`./` 없음) 도 자산으로 재작성된다', async () => {
+    const fixture = await createFixture({
+      'index.ts': `import './style.css';`,
+      'style.css': [
+        `.a { background: url(./img/hero.png); }`, // 기존에 되던 것
+        `.b { background: url(img/hero2.png); }`, // #4485 — bare
+      ].join('\n'),
+      'img/hero.png': 'X'.repeat(5000),
+      'img/hero2.png': 'Y'.repeat(5000),
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+    // 더 이상 "못 찾았다" 경고가 없어야 한다
+    expect(result.stderr).not.toContain('Cannot resolve CSS url()');
+
+    const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
+    expect(css).not.toContain('url(img/hero2.png)'); // 원문 유지 = 404
+    expect(css).toMatch(/url\("\.\/hero-[0-9a-f]{8}\.png"\)/);
+    expect(css).toMatch(/url\("\.\/hero2-[0-9a-f]{8}\.png"\)/);
+
+    const emitted = (await readdir(fixture.dir)).filter((f) => /^hero2?-[0-9a-f]{8}\.png$/.test(f));
+    expect(emitted).toHaveLength(2);
+  });
+
+  it('#4485 CSS url() bare 는 node_modules 패키지 자산으로 먼저 해석된다 (기존 동작 보존)', async () => {
+    // 순서가 핵심 — 기존 해석을 **먼저** 시도하고 ModuleNotFound 일 때만 `./` 폴백.
+    // `./` 를 먼저 붙였다면 동명의 형제 디렉토리가 패키지를 조용히 가려 회귀가 된다.
+    const fixture = await createFixture({
+      'index.ts': `import './style.css';`,
+      'style.css': `.c { background: url(imgpkg/pic.png); }`,
+      'node_modules/imgpkg/package.json': `{"name":"imgpkg"}`,
+      'node_modules/imgpkg/pic.png': 'P'.repeat(5000), // 패키지 쪽
+      'imgpkg/pic.png': 'S'.repeat(5000), // 동명의 형제 디렉토리 (가리면 안 됨)
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+
+    const emitted = (await readdir(fixture.dir)).filter((f) => /^pic-[0-9a-f]{8}\.png$/.test(f));
+    expect(emitted).toHaveLength(1);
+    const asset = await readFile(join(fixture.dir, emitted[0]!), 'utf-8');
+    expect(asset).toBe('P'.repeat(5000)); // 패키지가 이긴다 (형제 파일 'S' 가 아니라)
+  });
+
   it('CSS imported from dynamically imported module', async () => {
     const fixture = await createFixture({
       'index.ts': `const mod = import('./lazy.ts');\nconsole.log("main");`,
