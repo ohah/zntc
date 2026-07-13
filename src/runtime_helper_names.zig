@@ -17,6 +17,10 @@ const std = @import("std");
 pub const NAMES = struct {
     // bundler interop
     pub const CJS_FACTORY_MIN = "$c"; // __commonJS — 호출 빈도 가장 높음 (모듈 wrapper 마다)
+    // CJS 래퍼의 고정 파라미터 이름 (`$c(($e, $m) => {...})`). helper 가 아니라 파라미터라
+    // PAIRS 에는 없지만 mangler 예약 대상이다 — [[CJS_WRAPPER_PARAM_NAMES]] (#4491).
+    pub const CJS_WRAPPER_EXPORTS_MIN = "$e"; // exports (ESM_FACTORY_MIN 과 철자가 같다)
+    pub const CJS_WRAPPER_MODULE_MIN = "$m"; // module
     pub const REQUIRE_MIN = "$r"; // __commonJS body 내부 function __require
     pub const ESM_FACTORY_MIN = "$e"; // __esm
     pub const EXPORT_MIN = "$x"; // __export
@@ -145,6 +149,22 @@ pub const ALL_SHORT_NAMES: [PAIRS.len][]const u8 = blk: {
     var names: [PAIRS.len][]const u8 = undefined;
     for (PAIRS, 0..) |p, i| names[i] = p.short;
     break :blk names;
+};
+
+/// minify 시 CJS 래퍼가 쓰는 **고정 파라미터 이름** (`$c(($e, $m) => { ... })`).
+/// helper 이름이 아니라 *래퍼 파라미터*라 `PAIRS` 에 없지만, mangler 이름 풀과 같은
+/// `$` 영역에서 나오므로 **반드시 예약해야 한다** (#4491).
+///
+/// 예약하지 않으면 모듈이 많아질 때 mangler 가 모듈 게터에 `$m` 을 배정하고, 다른 CJS
+/// 래퍼 안에서 그 게터를 참조하면 래퍼의 `$m` 파라미터(= module 객체)가 게터를 **섀도잉**
+/// 한다 → `TypeError: $m is not a function`. 빌드도 파싱도 통과하고 **런타임에만** 터진다
+/// (highlight.js: 언어 모듈 190개+ → 자연히 걸림).
+///
+/// `$e` 는 우연히 `ESM_FACTORY_MIN` 과 같은 이름이라 지금까지 예약됐고 `$m` 만 노출됐다 —
+/// 우연에 기대지 않도록 둘 다 여기에 명시한다.
+pub const CJS_WRAPPER_PARAM_NAMES = [_][]const u8{
+    NAMES.CJS_WRAPPER_EXPORTS_MIN,
+    NAMES.CJS_WRAPPER_MODULE_MIN,
 };
 
 /// tslib UMD 가 global 에 노출하는 private class helper 이름.
