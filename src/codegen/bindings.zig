@@ -53,7 +53,23 @@ pub fn emitBindingProperty(self: anytype, node: Node) !void {
         const is_shorthand_default = (node.data.binary.flags & shorthand_with_default) != 0;
         if (is_shorthand_default and node.tag == .assignment_target_property_identifier) {
             try self.writeByte(':');
-            try self.writeSpan(key_node.span);
+            // value(=대입 대상 바인딩) 위치. writeSpan 은 원본 span 을 그대로 복사해서
+            // mangler rename / ns 치환을 통째로 건너뛴다 — `({o: {s, w = 1}} = box)` 의
+            // `w` 가 리네임 대상이면 미선언 전역에 대입되고 진짜 지역 변수는 영영 대입되지
+            // 않는다 (#4493 — ReferenceError / 무성 오염).
+            //
+            // 단 치환이 있을 때만 emitNode 를 태운다. 무조건 태우면 이 노드가 대입 대상인데도
+            // tag 가 identifier_reference 라서 `undefined` peephole(`undefined` → `void 0`)이
+            // 발동한다 — `({undefined = 1} = o)` 가 `{undefined:void 0=1}` 로 방출돼 **번들
+            // 전체가 SyntaxError**. 치환이 없으면 원본 토큰을 그대로 두는 게 맞고, 이는 위
+            // shorthand(right=none) 분기가 쓰는 게이트와 동일하다.
+            //
+            // key 는 위에서 이미 원본 span 으로 출력했으므로 프로퍼티 이름은 보존된다.
+            if (expressions.identifierHasRename(self, node.data.binary.left)) {
+                try self.emitNode(node.data.binary.left);
+            } else {
+                try self.writeSpan(key_node.span);
+            }
             try self.writeByte('=');
             // default value level = .comma: 최상위 sequence(`({x=(a,b)}=o)`)가 괄호로 감싸진다
             // (default 는 AssignmentExpression 이라 `x=a,b` 는 다른 의미 — silent miscompile).

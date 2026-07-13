@@ -2879,6 +2879,137 @@ test "#4390 refresh hook-sig: _s component ref follows mangler rename" {
     try std.testing.expect(std.mem.indexOf(u8, r.code, "_s(App,") == null);
 }
 
+test "#4493 구조분해 할당의 shorthand+기본값 프로퍼티도 rename 을 따라간다" {
+    // `({stackWeight = 1} = o)` 는 cover grammar 로
+    // assignment_target_property_identifier(left=바인딩, right=기본값, flags=shorthand_with_default)
+    // 가 된다. codegen 이 이걸 longhand `key:value=default` 로 펼칠 때 value 위치를
+    // 원본 span 으로 복사하면 mangler rename 을 건너뛴다 → 미선언 전역에 대입되고
+    // (strict ESM 에선 ReferenceError) 진짜 지역 변수는 영영 대입되지 않는다.
+    const src =
+        \\export function buildStacks(boxes) {
+        \\  let pos, stack, stackWeight;
+        \\  ({ position: pos, options: { stack, stackWeight = 1 } } = boxes);
+        \\  return pos + stack + stackWeight;
+        \\}
+    ;
+    var r = try transpile(std.testing.allocator, src, "/src/a.js", .{
+        .minify_identifiers = true,
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer r.deinit(std.testing.allocator);
+    // key(프로퍼티 이름) 는 보존되고 value(바인딩) 는 rename 되어야 한다.
+    // 버그 시: `stackWeight:stackWeight=1` (value 가 원본 이름 그대로).
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "stackWeight:stackWeight=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "stackWeight:") != null);
+    // 기본값 없는 shorthand(`stack`) 도 같은 규칙 — 이미 정상이던 대조군.
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "stack:stack") == null);
+}
+
+test "#4493 최상위(비중첩) 구조분해 할당의 shorthand+기본값도 동일" {
+    // 중첩은 트리거 조건이 아니다 — 선언(`let {x = 1} = o`)이 아니라 **할당**
+    // (`({x = 1} = o)`) 형태이기만 하면 최상위에서도 샌다.
+    const src =
+        \\export function f(o) {
+        \\  let stackWeight;
+        \\  ({ stackWeight = 1 } = o);
+        \\  return stackWeight;
+        \\}
+    ;
+    var r = try transpile(std.testing.allocator, src, "/src/a.js", .{
+        .minify_identifiers = true,
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "stackWeight:stackWeight=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "stackWeight:") != null);
+}
+
+test "#4493 TS namespace export 도 shorthand+기본값에서 ns 치환을 따라간다" {
+    // 같은 raw-span 복사가 mangler rename 뿐 아니라 **ns_prefix 치환**(`x` → `N.x`) 도
+    // 건너뛰었다. minify 와 무관하게 터지는 표면 — 수정 전에는 `({x:x=1}=o)` 로 방출돼
+    // 자유변수(전역) 에 대입되고 `N.x` 는 초기값 그대로 남았다 (무성 오염).
+    const src =
+        \\namespace N {
+        \\  export let x = 0;
+        \\  export function f(o: any) { ({ x = 1 } = o); return x; }
+        \\}
+    ;
+    var r = try transpile(std.testing.allocator, src, "/src/a.ts", .{});
+    defer r.deinit(std.testing.allocator);
+    // 대입 대상이 ns 멤버여야 한다. `x:x=1` 이면 전역에 대입 → N.x 는 영영 안 바뀐다.
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "N.x=1") != null or
+        std.mem.indexOf(u8, r.code, "N.x = 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "x:x=1") == null);
+}
+
+test "#4493 es5 다운레벨의 중첩 구조분해 대입 타겟도 rename 을 따라간다" {
+    // es5 에서는 codegen 이 아니라 transformer 가 구조분해를 풀어낸다
+    // (`{s, w = 1}` → `s = _ref.s, w = _ref.w === void 0 ? 1 : _ref.w`).
+    // 이때 합성한 대입 타겟 노드에 symbol_id 를 물려주지 않으면 mangler rename 이
+    // 스킵돼 원본 이름으로 대입된다 — 같은 #4493 이 다른 emit 경로로 재현된다.
+    const src =
+        \\export function buildStacks(box) {
+        \\  var pos, stack, stackWeight;
+        \\  ({ position: pos, options: { stack, stackWeight = 1 } } = box);
+        \\  return pos + stack + stackWeight;
+        \\}
+    ;
+    var r = try transpile(std.testing.allocator, src, "/src/a.js", .{
+        .minify_identifiers = true,
+        .minify_whitespace = true,
+        .minify_syntax = true,
+        .es_target = .es5,
+        .unsupported = @import("transformer/compat.zig").fromESTarget(.es5),
+    });
+    defer r.deinit(std.testing.allocator);
+    // 원본 이름으로의 **대입**이 남으면 미선언 전역 대입이다. `,` 앞을 붙여 대입 타겟만
+    // 본다 — `_b.stackWeight===void 0` 같은 프로퍼티 읽기와 헷갈리지 않게.
+    try std.testing.expect(std.mem.indexOf(u8, r.code, ",stack=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, ",stackWeight=") == null);
+    // 프로퍼티 읽기(`.stack` / `.stackWeight`)는 그대로 남아야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, r.code, ".stack") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, ".stackWeight") != null);
+}
+
+test "#4493 `undefined` 바인딩에 void 0 peephole 이 새지 않는다" {
+    // 이 노드는 대입 대상인데도 tag 가 identifier_reference 라, value 위치를 무조건
+    // emitNode 로 태우면 `undefined` → `void 0` peephole 이 발동한다.
+    // `{undefined:void 0=1}` 은 대입 대상이 될 수 없어 **번들 전체가 SyntaxError** 다.
+    // (`({undefined = 1} = o)` 는 문법상 합법 — 런타임에 read-only 전역 대입으로 실패할 뿐.)
+    const src =
+        \\function f(o) {
+        \\  ({ undefined = 1 } = o);
+        \\}
+    ;
+    var r = try transpile(std.testing.allocator, src, "/src/a.js", .{
+        .minify_identifiers = true,
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "void 0=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "undefined:undefined=1") != null);
+}
+
+test "#4493 rename 이 없으면 shorthand+기본값 출력은 그대로 (회귀 0)" {
+    // mangler 를 끄면 value 위치도 원본 이름이므로 emit 이 바뀌지 않아야 한다.
+    const src =
+        \\function f(o) {
+        \\  let stackWeight;
+        \\  ({ stackWeight = 1 } = o);
+        \\  return stackWeight;
+        \\}
+    ;
+    var r = try transpile(std.testing.allocator, src, "/src/a.js", .{
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "stackWeight:stackWeight=1") != null);
+}
+
 test "#4392 refresh hook-sig: long signature (>1024B) not truncated/aborted" {
     // hook 이 많은 컴포넌트는 signature 문자열이 1024바이트를 넘는다. 과거
     // buildRefreshSigCall 의 고정 [1024]u8 버퍼는 초과 시 가짜 OOM 으로 transpile
