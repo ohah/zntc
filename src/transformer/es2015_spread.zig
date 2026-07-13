@@ -119,6 +119,22 @@ pub fn ES2015Spread(comptime Transformer: type) type {
 
             const new_callee = try self.visitNode(callee_idx);
 
+            // callee 는 **두 번** 필요하다 — `X.bind` 의 수신자, 그리고 `apply` 의 첫 인자.
+            // 단순 식별자면 부작용이 없어 복제로 충분하지만(`Foo.bind.apply(Foo, ...)`),
+            // member(`a.b`)·tagged template(`` tag`x` ``)·중첩 new 같은 callee 는 두 번
+            // 평가하면 안 되므로 temp 에 담는다 — `(_a = a.b).bind.apply(_a, ...)` (TS 동형).
+            // 예전엔 callee 를 identifier 로 가정하고 `string_ref` 를 그대로 읽어 재구성해서,
+            // 그 외 callee 는 `extra` 인덱스를 span 으로 오독해 컴파일러가 죽었다
+            // (`new a.b(...args)` --target=es5 crash). #4500 의 파서 수정으로
+            // `` new tag`x`(...args) `` / `new new A().b(...args)` 도 이 경로로 들어온다.
+            const bind_target: NodeIndex, const this_arg: NodeIndex =
+                if (es_helpers.isSimpleIdentifier(self, new_callee))
+                    .{ new_callee, try es_helpers.cloneNode(self, new_callee) }
+                else blk: {
+                    const cap = try es_helpers.captureToTemp(self, new_callee, span);
+                    break :blk .{ cap.paren_assign, try es_helpers.makeTempVarRef(self, cap.span, span) };
+                };
+
             // [null].concat(args) — null을 첫 인자로 추가 (bind의 this)
             const null_span = try self.ast.addString("null");
             const null_node = try self.ast.addNode(.{
@@ -169,7 +185,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
                 .data = .{ .string_ref = bind_span },
             });
             const bind_me = try self.ast.addExtras(&.{
-                @intFromEnum(new_callee), @intFromEnum(bind_prop), 0,
+                @intFromEnum(bind_target), @intFromEnum(bind_prop), 0,
             });
             const bind_member = try self.ast.addNode(.{
                 .tag = .static_member_expression,
@@ -194,14 +210,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             });
 
             // Foo.bind.apply(Foo, [null].concat(args))
-            // new_callee를 재사용하지 않고 새 identifier 생성 (AST 노드는 1곳에서만 참조)
-            const new_callee_node = self.ast.getNode(new_callee);
-            const callee_ref2 = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = new_callee_node.span,
-                .data = .{ .string_ref = new_callee_node.data.string_ref },
-            });
-            const apply_args = try self.ast.addNodeList(&.{ callee_ref2, null_concat });
+            const apply_args = try self.ast.addNodeList(&.{ this_arg, null_concat });
             const apply_extra = try self.ast.addExtras(&.{
                 @intFromEnum(apply_member), apply_args.start, apply_args.len, 0,
             });

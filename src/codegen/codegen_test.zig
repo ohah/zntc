@@ -11,6 +11,7 @@
 //   engine_jsx.zig         — 엔진 타겟 + JSX 런타임 모드
 //   private_jsx_advanced.zig — private method, JSX text/dev/auto, ES2025
 //   function_map.zig       — Metro x_facebook_sources function map E2E 테스트
+//   new_callee_chain.zig   — new callee 의 member/tagged-template 체인 방출 + idempotency (#4500)
 
 comptime {
     _ = @import("codegen_test/helpers.zig");
@@ -28,4 +29,5 @@ comptime {
     _ = @import("codegen_test/import_attributes.zig");
     _ = @import("codegen_test/class_expr_anonymize.zig");
     _ = @import("codegen_test/load_bearing_paren.zig");
+    _ = @import("codegen_test/new_callee_chain.zig");
 }

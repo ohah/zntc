@@ -2329,6 +2329,95 @@ fn expectSingleParseError(source: []const u8, message: []const u8) !void {
     try std.testing.expectEqualStrings(message, parser.errors.items[0].message);
 }
 
+/// 소스를 `ext` 확장자 설정(TS/Flow)으로 파싱하고 에러가 *정확히 1개*이며 메시지가 일치하는지 검증.
+fn expectSingleParseErrorWithExt(source: []const u8, ext: []const u8, message: []const u8) !void {
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(ext);
+
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 1), parser.errors.items.len);
+    try std.testing.expectEqualStrings(message, parser.errors.items[0].message);
+}
+
+/// 단일 new 표현식 소스의 **바깥** new_expression 을 찾아 callee 의 tag 와 인자 절 유무를 검증.
+/// AST 노드는 post-order(자식 먼저)로 추가되므로 **마지막** new_expression 이 바깥 new 다.
+/// `new new Inner().C()` 처럼 중첩 new 뒤의 member 체인이 바깥 callee 로 흡수됐는지 박제한다.
+fn expectOuterNewCallee(source: []const u8, callee_tag: Tag, had_arguments: bool) !void {
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var outer: ?ast_mod.Node = null;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag == .new_expression) outer = node;
+    }
+    try std.testing.expect(outer != null);
+    const callee = parser.ast.readExtraNode(outer.?.data.extra, 0);
+    try std.testing.expectEqual(callee_tag, parser.ast.getNode(callee).tag);
+    const flags = parser.ast.readExtra(outer.?.data.extra, 3);
+    try std.testing.expectEqual(had_arguments, (flags & ast_mod.CallFlags.had_arguments) != 0);
+}
+
+test "new callee: 중첩 new 뒤 member/subscript 체인은 바깥 new 의 callee (#4500)" {
+    // ECMAScript `MemberExpression: new MemberExpression Arguments` — `new new Inner().C()` 의
+    // `.C` 는 **바깥 new 의 callee** 다(`new (new Inner().C)()`). 예전엔 parseNewCallee 가 중첩
+    // new 직후 즉시 return 해 `.C` 가 바깥 new *밖*으로 새어나갔고, argless 로 끝난 바깥 new 에
+    // codegen 이 `()` 를 붙여 `new new Inner()().C()` (TypeError)를 진단 없이 방출했다.
+    try expectOuterNewCallee("new new Inner().C()", .static_member_expression, true);
+    try expectOuterNewCallee("new new A().b", .static_member_expression, false);
+    try expectOuterNewCallee("new new A()[k]()", .computed_member_expression, true);
+    try expectOuterNewCallee("new new A().b.c()", .static_member_expression, true);
+    // 인자 없는 중첩 new(`new new a()()`)·일반 callee 는 기존 그대로 (회귀 가드).
+    try expectOuterNewCallee("new new a()()", .new_expression, true);
+    try expectOuterNewCallee("new new a", .new_expression, false);
+    try expectOuterNewCallee("new a.b()", .static_member_expression, true);
+    try expectOuterNewCallee("new a()", .identifier_reference, true);
+    try expectOuterNewCallee("new a", .identifier_reference, false);
+}
+
+test "new callee: tagged template 도 callee 의 일부 (#4500)" {
+    // `MemberExpression: MemberExpression TemplateLiteral` — `new tag`x`.B()` 의 callee 는
+    // `` tag`x`.B `` 이고 뒤의 `()` 만 new 의 Arguments 다. callee 루프에 template arm 이
+    // 없어 `` new tag()`x`.B() `` 로 오파싱되던 것을 박제.
+    try expectOuterNewCallee("new tag`x`.B()", .static_member_expression, true);
+    try expectOuterNewCallee("new tag`x`", .tagged_template_expression, false);
+    try expectOuterNewCallee("new tag`x${y}z`.B()", .static_member_expression, true);
+    // 인자 *있는* new 뒤의 template 은 callee 가 아니라 new 결과를 태그한다(`(new a())`x``).
+    // callee 루프는 `(` 에서 break 하므로 이 형태는 영향 없음.
+    try expectOuterNewCallee("new a()`x`", .identifier_reference, true);
+}
+
+test "new + optional chain: TS 타입 래퍼(!/as/<T>)가 argless-new head 를 가리지 못한다 (#4500)" {
+    // 타입 소거 후 남는 JS 형태가 `new a\`x\`?.b`(SyntaxError)와 같으므로 `!` 가 끼어도 거부해야
+    // 한다. optionalChainBaseIsArglessNew 의 walk 가 타입 래퍼를 안 넘어가 head(argless new)를
+    // 못 찾고 조용히 수용하던 accept-invalid 버그.
+    try expectSingleParseErrorWithExt("declare const a: any;\nnew a`x`!?.b;", ".ts", "Invalid optional chain in 'new' expression");
+    try expectSingleParseErrorWithExt("declare const a: any;\nnew a`x`!.b?.c;", ".ts", "Invalid optional chain in 'new' expression");
+    try expectSingleParseErrorWithExt("declare const a: any;\nnew new a().b!?.c;", ".ts", "Invalid optional chain in 'new' expression");
+    // 인자 *있는* new 는 MemberExpression → 래퍼가 끼어도 유효(오거부 가드).
+    try expectNoParseErrorWithExt("declare const a: any;\nnew a()!?.b;", ".ts");
+    try expectNoParseErrorWithExt("declare const a: any;\nnew a()`x`!?.b;", ".ts");
+    // paren 은 체인을 끊는다 — `(new a)!?.b` 의 base 는 PrimaryExpression → 유효.
+    try expectNoParseErrorWithExt("declare const a: any;\n(new a)!?.b;", ".ts");
+}
+
+test "new + optional chain: Flow `(x: T)` cast 는 괄호 자체 → 체인을 끊는다 (#4500)" {
+    // `flow_type_cast_expression` 은 다른 타입 래퍼(`as`/`!`)와 달리 **괄호가 노드 그 자체**다.
+    // walk 가 이걸 투명하게 통과하면 유효한 `(new a: any)?.b`(= `(new a)?.b`)를 오거부한다.
+    // → `isParenFreeTypeWrapper` 로 걸러 통과 금지. (`isTransparentTypeWrapper` 를 쓰면 회귀)
+    try expectFlowParseResult("(new a: any)?.b;", .{});
+    try expectFlowParseResult("(new a: any).b?.c;", .{});
+    // 괄호 없는 Flow 래퍼(`as`)는 통과해야 한다 — argless new head 도달 → SyntaxError 유지.
+    try expectFlowParseResult("new a`x` as any;\nnew (a: any)`x`?.b;", .{ .expect_error = true });
+}
+
 test "new + optional chain: callee 의 optional chain 은 SyntaxError" {
     // ECMAScript: new 의 MemberExpression callee 는 OptionalExpression 일 수 없다.
     // V8/esbuild 와 동일하게 거부. (이전엔 수용하고 `(new obj)?.fn()` 로 오파싱했다.)
@@ -2406,11 +2495,26 @@ test "new + optional chain: callee 보고 + trailing `?.` 가 겹쳐도 623 은 
     // new 노드의 callee_optional_chain 비트로 "이미 보고함" 을 전파해 1개로 수렴.
     try expectSingleParseError("new a?.b`x`?.c", msg);
     try expectSingleParseError("new a?.b.c`x`?.d", msg);
-    // 중첩 new 는 **서로 다른 new 의 서로 다른 위반**이다 — 각각 1건씩 나야 한다.
-    // (안쪽 callee 의 `?.` / 바깥 argless new 뒤 trailing `?.`)
-    // 안쪽 보고를 바깥까지 전파하면 바깥의 별개 위반이 조용히 사라진다. 괄호 형태
-    // `new (new a?.b)`x`?.c` 가 2건을 내는 것과도 어긋난다.
-    try expectParseErrorCount("new new a?.b`x`?.c", msg, 2, 2);
+
+    // 중첩 new 의 623 개수 = **위반 callee 의 개수**. 그리고 tagged template 이 안쪽 new 의
+    // callee 에 속하는지 바깥 new 의 callee 에 속하는지는 *안쪽 new 가 닫혔는지*로 갈린다
+    // (#4500 이 바로잡은 지점 — `MemberExpression: MemberExpression TemplateLiteral` 은
+    // callee 안으로 greedy 하게 흡수된다). node 로 확인한 세 형태:
+    //
+    //   new new a.b`x`.c    안쪽 new 가 안 닫힘 → `` `x` ``+`.c` 는 **안쪽 callee**  (a.b 가 tag 로 호출됨)
+    //   new (new a.b)`x`.c  괄호가 안쪽 new 를 닫음 → `` `x` `` 는 **바깥 callee**   (a.b 가 construct 됨)
+    //   new new a.b()`x`.c  인자절이 안쪽 new 를 닫음 → `` `x` `` 는 **바깥 callee**  (a.b 가 construct 됨)
+    //
+    // 따라서 `?.` 판본의 위반 callee 수도 1 / 2 / 2 로 갈린다.
+    //
+    // ① bare: `?.` 가 **전부 안쪽 callee 하나**에 들어간다 — 바깥 new 의 callee 는 `new (…)`
+    //    (= 유효한 NewExpression) 이고 뒤따르는 체인 자체가 없다. 위반 callee 1개 → 623 1건.
+    //    (#4048 은 `` `x` `` 가 두 new 를 다 빠져나가던 옛 오파싱을 전제로 2건을 기대했다.)
+    try expectParseErrorCount("new new a?.b`x`?.c", msg, 1, 1);
+    // ②③ 안쪽 new 가 인자절/괄호로 닫히면 `` `x`?.c `` 는 **바깥 callee** 로 간다 →
+    //    안쪽·바깥 각각 `?.` 를 품은 별개 위반 → 2건. (안쪽 보고가 바깥으로 전파되면 이 2건이
+    //    1건으로 뭉개진다 — #4048 리뷰가 막으려던 회귀. 지금은 안쪽 new 를
+    //    parsePrimaryExpression 이 자기 지역 플래그로 처리해 구조적으로 전파가 불가능하다.)
     try expectParseErrorCount("new new a?.b()`x`?.c", msg, 2, 2);
     try expectParseErrorCount("new (new a?.b)`x`?.c", msg, 2, 2);
     // 회귀 가드: 원래도 1개였던 인접 형태들이 그대로 1개인지.
@@ -2425,15 +2529,24 @@ test "new + optional chain: 623 dedup 이 다른 진단/다른 new 를 삼키지
     const msg607 = "Tagged template cannot be used in optional chain";
     // dedup 은 623 을 *같은 new* 안에서만 접는다. 서로 다른 new 두 개면 각자 위반이므로 2개:
     //   ① 안쪽 `new a?.b` = callee optional chain,
-    //   ② 바깥 argless new = trailing `?.c` 의 invalid base.
+    //   ② 바깥 new = 괄호로 안쪽이 닫힌 뒤 이어지는 `` `x`?.c `` (= 바깥 callee)의 `?.`.
     try expectParseErrorCount("new (new a?.b)`x`?.c", msg623, 2, 2);
-    // 623 을 접어도 *다른 코드*의 진단(607)은 그대로 살아 있어야 한다.
-    // `?.c` 뒤의 `` `y` `` 는 optional chain 위 tagged template → 607.
-    try expectParseErrorCount("new a?.b`x`?.c`y`?.d", msg623, 1, 2);
-    try expectParseErrorCount("new a?.b`x`?.c`y`?.d", msg607, 1, 2);
-    // new 없는 순수 optional chain 은 623 과 무관 — 607 만 단독으로.
+
+    // `new a?.b`x`?.c`y`?.d` — #4500 이후 이 체인은 **통째로 new 의 callee** 다
+    //  (`` `x` ``/`` `y` `` 가 callee 로 흡수되므로). 즉 optional chain *식* 자체가 없고,
+    // `?.` 들은 callee 복구 과정에서 일반 멤버로 소비된다 → 위반 callee 1개 = 623 1건이 전부.
+    // 607("optional chain 위 tagged template")은 여기서 **성립하지 않는다** — 예전엔
+    // `` `x` `` 가 callee 밖으로 새어 postfix 루프가 optional chain 으로 오인해 붙던 진단이다.
+    // "한 broken callee = SyntaxError 1개(2차 cascade 노이즈 없음)" 라는 이 파일의 계약과도 일치.
+    try expectParseErrorCount("new a?.b`x`?.c`y`?.d", msg623, 1, 1);
+    try expectParseErrorCount("new a?.b`x`?.c`y`?.d", msg607, 0, 1);
+    // 607 자체는 멀쩡하다 — new 가 없어 진짜 optional chain 인 형태에선 그대로 발행된다.
+    // (dedup 이 *다른 코드*의 진단을 삼키지 않는다는 원래 가드는 이 케이스가 지킨다.)
     try expectSingleParseError("a?.b`x`?.c", msg607);
     try expectParseErrorCount("a?.b`x`?.c", msg623, 0, 1);
+    // 인자 있는 new 는 MemberExpression → 뒤는 진짜 optional chain → 607 살아 있음.
+    try expectParseErrorCount("new a()`x`?.c`y`?.d", msg607, 1, 1);
+    try expectParseErrorCount("new a()`x`?.c`y`?.d", msg623, 0, 1);
 }
 
 test "new + optional chain: 유효 형태는 통과" {

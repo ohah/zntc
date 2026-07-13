@@ -374,7 +374,11 @@ fn isLiveMinifyNode(live_nodes: ?*const std.DynamicBitSet, node_idx: u32) bool {
 
 fn markCallCalleeSequences(ast: *const Ast, protected_sequences: *std.DynamicBitSet) void {
     for (ast.nodes.items) |node| {
-        if (node.tag != .call_expression and node.tag != .new_expression) continue;
+        // tagged template 의 tag 도 callee 자리다(extra[0]) — `` (0, o.tag)`x` `` 의 sequence 를
+        // 풀면 tag 가 this=o 로 호출된다(`` o.tag`x` ``). #4500 의 파서 수정으로 tagged template 이
+        // new 의 callee 로도 들어오면서(`` new (0, o.tag)`x`() ``) 같은 경로가 새로 열렸다.
+        if (node.tag != .call_expression and node.tag != .new_expression and
+            node.tag != .tagged_template_expression) continue;
         markSequenceInCallee(ast, @enumFromInt(ast.readExtra(node.data.extra, 0)), protected_sequences);
     }
 }

@@ -7,6 +7,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const debug_metadata = @import("debug_metadata.zig");
 const statement_emit = @import("statements.zig");
 const call_emit = @import("calls.zig");
+const ExprFlags = @import("precedence.zig").ExprFlags;
 
 fn emitNestedExecutionBody(self: anytype, body: NodeIndex) !void {
     const saved_for_init = self.in_for_init;
@@ -64,7 +65,7 @@ pub fn emitTemplateLiteral(self: anytype, node: Node) !void {
     }
 }
 
-pub fn emitTaggedTemplate(self: anytype, node: Node) !void {
+pub fn emitTaggedTemplate(self: anytype, node: Node, flags: ExprFlags) !void {
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const extras = self.ast.extra_data.items;
@@ -74,8 +75,8 @@ pub fn emitTaggedTemplate(self: anytype, node: Node) !void {
     // 호출을 dead-code elimination 가능 (styled-components `pure` 옵션 등).
     if (e + 2 < extras.len) {
         const TaggedTemplateFlags = ast_mod.TaggedTemplateFlags;
-        const flags = extras[e + 2];
-        const is_pure = (flags & TaggedTemplateFlags.is_pure) != 0;
+        const tt_flags = extras[e + 2];
+        const is_pure = (tt_flags & TaggedTemplateFlags.is_pure) != 0;
         if (is_pure and !self.options.minify_whitespace) try self.write("/* @__PURE__ */ ");
     }
     // tag 는 .postfix (esbuild ETemplate tag = LPostfix). 단 tag 가 optional chain 이면
@@ -87,7 +88,11 @@ pub fn emitTaggedTemplate(self: anytype, node: Node) !void {
         try self.emitExpr(tag, .lowest, .{});
         try self.writeByte(')');
     } else {
-        try self.emitExpr(tag, .postfix, .{});
+        // forbid_call 은 tag 로 전파한다(member 의 object 와 동일 — expressions.emitStaticMember).
+        // 이 tagged template 이 new 의 callee 인데(`` new (f())`x` ``) tag 안의 call 을 괄호로
+        // 안 감싸면 `` new f()`x`() `` 로 방출돼, 재파싱 시 `f` 가 *생성*되고 template 결과가
+        // *호출*되는 다른 프로그램이 된다(#4500).
+        try self.emitExpr(tag, .postfix, .{ .forbid_call = flags.forbid_call });
     }
     try self.emitNode(@enumFromInt(extras[e + 1]));
 }

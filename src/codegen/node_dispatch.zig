@@ -315,7 +315,7 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
             try self.addSourceMapping(node.span);
             try self.writeNodeSpan(node);
         },
-        .tagged_template_expression => try function_class_emit.emitTaggedTemplate(self, node),
+        .tagged_template_expression => try function_class_emit.emitTaggedTemplate(self, node, flags),
         .import_expression => try call_emit.emitImportExpr(self, node, level, flags),
         .meta_property => try call_emit.emitMetaProperty(self, node),
         // chain_expression: optional-chain wrapper — operand 가 자기 매핑 발행.

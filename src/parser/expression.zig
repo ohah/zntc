@@ -1006,28 +1006,7 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                     reported_optional_template = true;
                 }
                 // tagged template: expr`text` 또는 expr`text${...}...`
-                // tagged template에서는 잘못된 이스케이프 허용 (cooked가 undefined)
-                const tmpl = if (self.current() == .template_head)
-                    try parseTemplateLiteral(self, true)
-                else blk: {
-                    const tmpl_span = self.currentSpan();
-                    try self.advance();
-                    // no-substitution template — text 는 span 에서 직접 읽으므로
-                    // 자식 리스트는 비어 있다. layout=.list 에 맞춰 빈 NodeList 저장.
-                    break :blk try self.ast.addListNode(
-                        .template_literal,
-                        tmpl_span,
-                        .{ .start = 0, .len = 0 },
-                    );
-                };
-                {
-                    const te = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(tmpl), 0 });
-                    expr = try self.ast.addNode(.{
-                        .tag = .tagged_template_expression,
-                        .span = .{ .start = expr_start, .end = self.currentSpan().start },
-                        .data = .{ .extra = te },
-                    });
-                }
+                expr = try finishTaggedTemplate(self, expr, expr_start);
             },
             .l_angle, .shift_left => {
                 // TS generic type arguments: foo<Type>() or foo<<T>() => T>()
@@ -1140,11 +1119,24 @@ fn followedByParenOnly(self: *const Parser) bool {
 /// 도 이 walk 의 첫 step 에서 잡힌다. depth 가드로 무한루프 방지(정상 AST 는 짧다).
 /// 노드를 돌려주는 이유: 호출부가 head new 의 `callee_optional_chain` 비트를 보고 "이미
 /// parseNewCallee 가 같은 new 로 623 을 보고했는지" 판단해야 하기 때문 (#4048).
+///
+/// **괄호 없는** TS/Flow 타입 래퍼(`!`/`as T`/`satisfies T`/`<T>x`/`x<T>`)는 투명하게
+/// 통과한다 — 타입 소거 후 남는 JS 형태가 같기 때문(`new a\`x\`!?.b` 는 `new a\`x\`?.b` 와
+/// 동일하게 SyntaxError). 통과하지 않으면 head 를 못 찾아 진단을 놓쳤다(#4500).
+/// 반대로 **괄호는 통과하지 않는다** — `(new a)?.b` 는 base 가 PrimaryExpression 이라 유효.
+/// Flow 의 `(x: T)` cast(`flow_type_cast_expression`)는 괄호 그 자체라 `isTransparentTypeWrapper`
+/// 가 아니라 `isParenFreeTypeWrapper` 를 써야 한다 — 안 그러면 유효한 `(new a: any)?.b` 를
+/// 오거부한다.
 fn optionalChainArglessNewHead(self: *const Parser, base: NodeIndex) NodeIndex {
     var cur = base;
     var guard: u32 = 0;
     while (guard < 100_000) : (guard += 1) {
+        if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return .none;
         const node = self.ast.getNode(cur);
+        if (ast_mod.Node.Tag.isParenFreeTypeWrapper(node.tag)) {
+            cur = node.data.unary.operand;
+            continue;
+        }
         switch (node.tag) {
             .static_member_expression,
             .computed_member_expression,
@@ -1152,9 +1144,8 @@ fn optionalChainArglessNewHead(self: *const Parser, base: NodeIndex) NodeIndex {
             .tagged_template_expression,
             => {
                 // member 의 object / tagged template 의 tag = extra[0].
-                const next = self.ast.readExtraNode(node.data.extra, 0);
-                if (next.isNone()) return .none;
-                cur = next;
+                // `.none`/범위 밖은 루프 선두 가드가 잡는다(#4500).
+                cur = self.ast.readExtraNode(node.data.extra, 0);
             },
             .new_expression => {
                 const had_args = (self.ast.readExtra(node.data.extra, 3) & ast_mod.CallFlags.had_arguments) != 0;
@@ -1192,8 +1183,12 @@ fn finishNewExpressionWithArgs(self: *Parser, start: u32, callee: NodeIndex, arg
     return new_expr;
 }
 
-/// 인자 없는 `new` 노드 생성 — extras 레이아웃을 `finishNewExpressionWithArgs` 와 **단일 소스**로
-/// 유지한다. 예전엔 두 곳에 복붙돼 있어, 새 플래그를 한쪽에만 넣으면 조용히 유실됐다 (#4048).
+/// 인자 절(괄호)이 없는 new (`new a`, `new new a()` 의 바깥 new = NewExpression).
+/// had_arguments unset → `optionalChainArglessNewHead` 가 이 비트로 trailing
+/// `?.`(`new new a()?.b`)를 거부한다.
+///
+/// extras 레이아웃을 `finishNewExpressionWithArgs` 와 **단일 소스**로 유지한다. 예전엔 두 곳에
+/// 복붙돼 있어, 새 플래그를 한쪽에만 넣으면 조용히 유실됐다 (#4048).
 fn finishNewExpressionNoArgs(
     self: *Parser,
     start: u32,
@@ -1210,14 +1205,46 @@ fn finishNewExpressionNoArgs(
     });
 }
 
+/// `tag_expr` 뒤의 template literal 을 소비해 tagged template 노드를 만든다
+/// (ECMAScript `MemberExpression: MemberExpression TemplateLiteral`).
+/// postfix 루프와 new callee 루프(parseNewCallee)의 공용 구현 — 두 곳의 tagged template
+/// 생성이 갈라지면 `new tag\`x\`.B()` 같은 형태가 한쪽에서만 붙는다(#4500).
+fn finishTaggedTemplate(self: *Parser, tag_expr: NodeIndex, start: u32) !NodeIndex {
+    // tagged template 에서는 잘못된 이스케이프 허용 (cooked 가 undefined)
+    const tmpl = if (self.current() == .template_head)
+        try parseTemplateLiteral(self, true)
+    else blk: {
+        const tmpl_span = self.currentSpan();
+        try self.advance();
+        // no-substitution template — text 는 span 에서 직접 읽으므로
+        // 자식 리스트는 비어 있다. layout=.list 에 맞춰 빈 NodeList 저장.
+        break :blk try self.ast.addListNode(
+            .template_literal,
+            tmpl_span,
+            .{ .start = 0, .len = 0 },
+        );
+    };
+    const te = try self.ast.addExtras(&.{ @intFromEnum(tag_expr), @intFromEnum(tmpl), 0 });
+    return try self.ast.addNode(.{
+        .tag = .tagged_template_expression,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .extra = te },
+    });
+}
+
 /// new 표현식의 callee를 파싱한다.
-/// new는 중첩 가능하므로 new를 만나면 재귀한다.
-/// member access (.prop, [expr])만 허용하고 호출 ()은 상위에서 처리.
+/// member access (.prop, [expr], `tpl`)만 허용하고 호출 ()은 상위에서 처리.
 ///
-/// `out_callee_optional`: callee 에서 `?.` 를 만나 ZNTC0623 을 보고했으면 true 로 set 한다
-/// (false 로 초기화된 채 넘어온다고 가정하지 않고, set 만 한다 = OR 누적). 중첩 new 재귀에는
-/// **같은 포인터**를 넘겨 `new new a?.b\`x\`?.c` 처럼 안쪽 callee 에서 난 보고가 바깥 new 까지
-/// 전파되게 한다 — trailing `?.` 검사는 체인 head(= 가장 바깥 new)의 flag 만 보기 때문 (#4048).
+/// 중첩 new(`new new a()`)는 **여기서 재귀하지 않는다** — 아래 `parsePrimaryExpression` 의
+/// `kw_new` 분기가 만들고, 그 결과를 member 루프로 흘린다 (#4500).
+///
+/// `out_callee_optional`: **이 callee** 에서 `?.` 를 만나 ZNTC0623 을 보고했으면 true 로 set
+/// 한다(set 만 한다 = OR 누적). 호출부는 이 값을 new 노드의 `callee_optional_chain` 비트로
+/// 남겨, postfix 루프가 *같은 new* 를 trailing `?.` 로 재보고하지 않게 한다 (#4048).
+///
+/// 중첩 new 는 각자의 플래그를 갖는다 — 안쪽 new 는 `parsePrimaryExpression` 이 자기 지역
+/// 변수로 받아 자기 노드에 찍는다. 즉 안쪽 보고가 바깥 new 로 전파되지 않아, 바깥 new 의
+/// 별개 위반이 조용히 사라지는 일이 없다(#4048 리뷰 요구사항이 구조적으로 성립).
 fn parseNewCallee(self: *Parser, out_callee_optional: *bool) ParseError2!NodeIndex {
     // ECMAScript: new import(...) / new import.source(...) / new import.defer(...) は금지
     // 단, new import.meta 는 허용 (import.meta는 MemberExpression)
@@ -1236,26 +1263,18 @@ fn parseNewCallee(self: *Parser, out_callee_optional: *bool) ParseError2!NodeInd
         // import. → parsePrimaryExpression에서 처리
         // 결과를 확인하여 import.source/defer면 에러
     }
-    if (self.current() == .kw_new) {
-        const span = self.currentSpan();
-        try self.advance(); // skip 'new'
-        // **안쪽 new 전용 플래그**로 받는다 (#4048). 바깥의 `out_callee_optional` 을 그대로
-        // 넘기면 "안쪽 new 의 callee 에 `?.` 가 있었다" 는 사실이 **바깥 new** 에 찍혀,
-        // 바깥 new 자신의 별개 위반(argless new 뒤 trailing `?.`)이 조용히 사라진다.
-        // 두 new 는 서로 다른 위반이므로 각각 보고돼야 한다 — 괄호 형태
-        // (`new (new a?.b)\`x\`?.c`)가 실제로 2건을 내는 것과 일관되게.
-        var inner_callee_optional = false;
-        const callee = try parseNewCallee(self, &inner_callee_optional);
-        _ = trySkipTypeArgsSpeculative(self, true, type_args.canFollowTypeArgumentsInExpression);
-        if (self.current() == .l_paren) {
-            try self.advance();
-            const arg_list = try parseArgumentList(self);
-            return try finishNewExpressionWithArgs(self, span.start, callee, arg_list, inner_callee_optional);
-        }
-        return try finishNewExpressionNoArgs(self, span.start, callee, inner_callee_optional);
-    }
-
-    // primary expression + member chain (호출 제외)
+    // primary expression + member chain (호출 제외).
+    // 중첩 new(`new new Inner().C()`)도 parsePrimaryExpression 의 `kw_new` 분기가 그대로
+    // 처리한다(new.target 포함) — 여기서 따로 재귀하지 않고 **아래 member 루프로 흘린다**.
+    // 안쪽 new 뒤의 `.C`/`[k]`/`` `tpl` `` 는 ECMAScript 상 **바깥 new 의 callee** 에 속하기
+    // 때문(`MemberExpression: new MemberExpression Arguments` → `new (new Inner().C)()`).
+    // 예전엔 이 자리에서 중첩 new 를 만들고 즉시 return 해 `.C` 가 바깥 new *밖*으로
+    // 새어나갔고, argless 로 끝난 바깥 new 에 codegen 이 `()` 를 붙여
+    // `new new Inner()().C()` 라는 잘못된 코드를 진단 없이 방출했다(#4500).
+    //
+    // 이 위임 덕에 안쪽 new 의 callee 보고는 안쪽 `parsePrimaryExpression` 의 지역 플래그로
+    // 끝나고, 바깥 `out_callee_optional` 에는 **이 루프가 직접 본 `?.`** 만 기록된다 — #4048 이
+    // 별도 `inner_callee_optional` 지역변수로 막던 "안쪽→바깥 전파" 가 구조적으로 불가능해진다.
     var expr = try parsePrimaryExpression(self);
     // import.source(...) / import.defer(...)는 ImportCall (CallExpression)이므로 new 불가
     // parsePrimaryExpression이 전체 호출을 소비하므로 결과 tag를 확인
@@ -1354,6 +1373,14 @@ fn parseNewCallee(self: *Parser, out_callee_optional: *bool) ParseError2!NodeInd
                     // 종료한다. 단일 623 진단 유지(2차 에러·dangling `.invalid` prop 없음).
                     break;
                 }
+            },
+            .no_substitution_template, .template_head => {
+                // `new tag\`x\`.B()` — tagged template 도 callee(MemberExpression)의 일부다
+                // (`MemberExpression: MemberExpression TemplateLiteral`). 즉 callee 는
+                // `` tag`x`.B `` 이고, 뒤의 `()` 만 바깥 new 의 Arguments 다. 이 arm 이 없어
+                // `else => break` 로 빠지면 tag 가 new 밖에 남아 `` new tag()`x`.B() `` 로
+                // 오파싱됐다(#4500).
+                expr = try finishTaggedTemplate(self, expr, expr_start);
             },
             else => break,
         }
