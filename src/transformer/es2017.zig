@@ -28,6 +28,24 @@ pub fn ES2017(comptime Transformer: type) type {
         /// 변환. nested function/arrow scope 는 traversal 안 함 (own this/await context 가짐).
         /// (#1911)
         fn rewriteAwaitToYieldAwait(self: *Transformer, node_idx: NodeIndex) Transformer.Error!void {
+            return rewriteRemainingAwait(self, node_idx, true);
+        }
+
+        /// async function body 안에 **남아 있는** await 표현을 `yield value` 로 변환 (#4488).
+        ///
+        /// 왜 필요한가 — visitor 는 자기가 *방문한* `await_expression` 만 yield 로 낮춘다
+        /// (`lowerAwaitExpression`). 그런데 `for await` 다운레벨(es2018_for_await)은 body 를
+        /// visit 하는 **도중에 새 await 노드를 만든다**. 그 노드는 이미 지나간 방문을 받지 못해
+        /// generator 안에 raw `await` 로 남았다 → `'await' is not allowed in non-async function`.
+        /// (es2015/es2016 타겟에서 산출물이 파싱조차 안 됐다.)
+        /// body visit 이 **끝난 뒤** 한 번 훑어 남은 것을 정리한다.
+        fn rewriteRemainingAwaitToYield(self: *Transformer, node_idx: NodeIndex) Transformer.Error!void {
+            return rewriteRemainingAwait(self, node_idx, false);
+        }
+
+        /// `wrap_await_helper` = true → `yield __await(v)` (async generator: 사용자 yield 와 구분),
+        /// false → `yield v` (plain async: __async 헬퍼의 generator 프로토콜).
+        fn rewriteRemainingAwait(self: *Transformer, node_idx: NodeIndex, comptime wrap_await_helper: bool) Transformer.Error!void {
             // 반복 post-order worklist(#4123): 원본은 generic else 에서 자식을, await_expression
             // 에서 operand 를 재귀해, async-generator body 안 깊은 식(`await (a+b+c+…)`, 깊은
             // statement 중첩, `await await …`)에서 스택오버플로우였다. await_expression 만 operand
@@ -44,16 +62,18 @@ pub fn ES2017(comptime Transformer: type) type {
             try stack.append(self.allocator, .{ .idx = node_idx, .post = false });
             while (stack.pop()) |frame| {
                 if (frame.post) {
-                    // operand 는 이미 변환 완료. 이제 이 await 를 `yield __await(operand)` 로 replace.
+                    // operand 는 이미 변환 완료. 이제 이 await 를 yield 로 replace.
                     const node = self.ast.getNode(frame.idx);
-                    self.runtime_helpers.await_helper = true;
-                    const await_ref = try es_helpers.makeRuntimeHelperRef(self, "__await");
-                    const await_call = try es_helpers.makeCallExpr(self, await_ref, &.{node.data.unary.operand}, node.span);
-                    // span 보존하면서 await_expression → yield __await(value).
+                    const yielded = if (wrap_await_helper) blk: {
+                        self.runtime_helpers.await_helper = true;
+                        const await_ref = try es_helpers.makeRuntimeHelperRef(self, "__await");
+                        break :blk try es_helpers.makeCallExpr(self, await_ref, &.{node.data.unary.operand}, node.span);
+                    } else node.data.unary.operand;
+                    // span 보존하면서 await_expression → yield <value>.
                     self.ast.replaceNode(frame.idx, .{
                         .tag = .yield_expression,
                         .span = node.span,
-                        .data = .{ .unary = .{ .operand = await_call, .flags = 0 } },
+                        .data = .{ .unary = .{ .operand = yielded, .flags = 0 } },
                     });
                     continue;
                 }
@@ -128,6 +148,20 @@ pub fn ES2017(comptime Transformer: type) type {
             });
             // inner function 자체도 visitNode 거쳐 generator/await downlevel 적용.
             const lowered_inner = try self.visitNode(inner_func);
+            // 위 rewriteAwaitToYieldAwait 는 inner visit **전** 이라, 그 visit 중 for-await
+            // 다운레벨이 새로 만든 await 를 놓친다 → 한 번 더 훑는다 (#4488).
+            // 주의 — visit 은 body 를 **새 노드로 교체**하므로 원래 `body_idx` 가 아니라
+            // 낮아진 결과의 body 를 봐야 한다. generator 가 state machine 으로 접힌 타겟
+            // (es5)에선 함수 형태가 아니거나 남은 await 가 없어 no-op.
+            if (!lowered_inner.isNone() and @intFromEnum(lowered_inner) < self.ast.nodes.items.len) {
+                const li = self.ast.getNode(lowered_inner);
+                switch (li.tag) {
+                    .function_expression, .function, .function_declaration => {
+                        try rewriteAwaitToYieldAwait(self, self.readNodeIdx(li.data.extra, 2));
+                    },
+                    else => {},
+                }
+            }
 
             // __asyncGenerator(this, arguments, function*() {...})
             self.runtime_helpers.async_generator = true;
@@ -184,6 +218,9 @@ pub fn ES2017(comptime Transformer: type) type {
 
             const new_name = try self.visitNode(name_idx);
             const new_body = try self.visitBodyWorkletAware(body_idx);
+            // body 를 visit 하는 도중 for-await 다운레벨이 **새로 만든** await 노드는 visitor 의
+            // await→yield 변환을 못 받는다 → 여기서 정리 (#4488).
+            try rewriteRemainingAwaitToYield(self, new_body);
 
             const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
 
@@ -229,6 +266,8 @@ pub fn ES2017(comptime Transformer: type) type {
 
             const new_params = try self.visitNode(params_idx);
             const new_body = try self.visitBodyWorkletAware(body_idx);
+            // body visit 중 for-await 다운레벨이 새로 만든 await 정리 (#4488, lowerAsyncFunction 동일).
+            try rewriteRemainingAwaitToYield(self, new_body);
 
             // expression body → { return expr; }
             const body_node = self.ast.getNode(new_body);

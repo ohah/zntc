@@ -3437,3 +3437,61 @@ test "#4468 static block: TS 타입 어노테이션이 블록 안에서도 strip
 // 주석 배치(빈 블록 안의 주석이 밖으로 새지 않는지)는 codegen 유닛에서 검증할 수
 // 없다 — 이 harness 는 `comments` 배열을 배선하지 않아 codegen 이 주석을 못 본다.
 // 통합 스냅샷(tests/integration/tests/tsc/__snapshots__/classes.test.ts.snap)이 담당.
+
+// ============================================================
+// #4488 — for-await 다운레벨이 generator 안에 raw `await` 를 남김
+// ============================================================
+//
+// `for await` 다운레벨은 iterator 프로토콜 + **`await` 표현식**을 만든다. 그 await 는 바깥
+// async lowering 이 `yield` 로 바꿔 줘야 하는데, visitor 는 자기가 *방문한* await 만 낮춘다.
+// for-await 는 body 를 visit 하는 **도중에** 새 await 노드를 만들므로 이미 지나간 방문을
+// 받지 못했다 → generator 안에 raw `await` 가 남아 산출물이 파싱조차 안 됐다
+// (`'await' is not allowed in non-async function`, es2015/es2016).
+//
+// 파싱 가능성 자체는 helpers 의 **산출물 재파싱 게이트**가 잡는다 (이 버그를 그렇게 찾았다).
+// 여기서는 세 async 형태가 모두 `yield` 로 낮아졌는지를 명시적으로 박제한다.
+
+fn expectNoRawAwait(output: []const u8) !void {
+    // `__await(` 헬퍼 호출(async generator 의 `yield __await(v)`)은 정상 — 그 외의 `await ` 만 본다.
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, output, i, "await")) |pos| {
+        i = pos + 5;
+        if (pos >= 2 and std.mem.eql(u8, output[pos - 2 .. pos], "__")) continue; // __await / __asyncValues 등
+        if (pos + 5 < output.len and (output[pos + 5] == '(' or output[pos + 5] == '=')) continue; // __await(v) / 헬퍼 정의
+        if (pos > 0 and (std.ascii.isAlphanumeric(output[pos - 1]) or output[pos - 1] == '_' or output[pos - 1] == '$')) continue;
+        std.debug.print("\ngenerator 안에 raw await 잔존:\n{s}\n", .{output});
+        return error.RawAwaitInGenerator;
+    }
+}
+
+test "#4488 ES2015: async function 의 for-await 가 generator 안에 await 를 남기지 않는다" {
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "async function f(xs){ for await (const x of xs) { use(x); } }",
+        .es2015,
+    );
+    defer r.deinit();
+    try expectNoRawAwait(r.output);
+}
+
+test "#4488 ES2015: async generator 의 for-await 도 yield __await 로 낮아진다" {
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "async function* g(xs){ for await (const x of xs) { yield x; } }",
+        .es2015,
+    );
+    defer r.deinit();
+    try expectNoRawAwait(r.output);
+    // async generator 는 사용자 yield 와 구분하기 위해 `yield __await(v)` 형태여야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__await(") != null);
+}
+
+test "#4488 ES2015: async arrow 의 for-await 도 동일" {
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "const f = async (xs) => { for await (const x of xs) { use(x); } };",
+        .es2015,
+    );
+    defer r.deinit();
+    try expectNoRawAwait(r.output);
+}
