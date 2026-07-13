@@ -101,6 +101,23 @@ pub const Parser = struct {
     /// 괄호 매칭 스택 — 여는 괄호의 위치를 추적하여 닫힘 에러 시 "opened here" 표시.
     bracket_stack: std.ArrayList(BracketInfo),
 
+    /// TS 타입 문법의 현재 중첩 깊이 (#4146). ts.parseType 진입 시 +1, 이탈 시 -1.
+    /// 타입 파서는 상호재귀 하강이라 중첩 1단계마다 파서 스택이 한 겹씩 쌓인다 —
+    /// 한계 없이 두면 깊은 입력에서 스택 오버플로우(SIGSEGV)로 프로세스가 죽는다.
+    /// speculative 파싱의 restoreState 로 되돌릴 필요가 없다 — 호출 스택을 그대로 미러링하는
+    /// 값이라 defer 로 정확히 복원된다.
+    type_depth: u32 = 0,
+
+    /// 타입 중첩 한계를 **처음** 초과한 지점 (#4146). null 이 아니면 그 소스는 fatal 이다.
+    /// 진단은 파싱 중에 append 하지 않는다 — speculative 경로에서 초과가 나면 rollbackErrors 가
+    /// 그 진단만 지워 "에러 0건인데 타입은 버려진" silent 오컴파일이 된다. 대신 span 만 들고
+    /// 있다가 parse() 종료 시 정확히 1건 기록한다(pruneDiagnosticsAfterTypeOverflow).
+    ///
+    /// **파싱 중에 후속 진단을 억제하면 안 된다**: speculation 성공/실패를 `errors.items.len`
+    /// 증감으로 판정하는 곳들이 있어(식 컨텍스트의 타입 인자 백트래킹), 억제하면 실패한
+    /// speculation 이 성공으로 오판돼 **유효한 코드**(`a < a < a < …` 비교 체인)가 깨진다.
+    type_depth_overflow: ?Span = null,
+
     /// 메모리 할당자
     allocator: std.mem.Allocator,
 
@@ -1450,7 +1467,39 @@ pub const Parser = struct {
     pub fn parse(self: *Parser) !NodeIndex {
         var scope = profile.begin(.parse);
         defer scope.end();
-        return statement.parse(self);
+        const root = try statement.parse(self);
+        try self.pruneDiagnosticsAfterTypeOverflow();
+        return root;
+    }
+
+    /// #4146: 타입 중첩 한계를 초과한 소스의 진단을 정리한다.
+    ///
+    /// 초과 지점부터 파서는 복구 모드로 흘러가며 "Expected ')'" 류 후속 에러를 중첩 깊이만큼
+    /// 쏟아낸다. 사용자에게 의미 있는 건 "타입이 너무 깊게 중첩됨" 하나뿐이므로, **초과 지점
+    /// 이후의(span 기준) 진단만** 버리고 그 1건을 기록한다.
+    ///
+    /// 길이(index) 워터마크가 아니라 **span 기준**인 이유: unambiguous 모드의 module 에러는
+    /// 파일 앞쪽에서 발생해도 파싱 끝에 한꺼번에 병합된다(resolveModuleKind). index 로 자르면
+    /// 깊은 타입보다 **앞줄에서 난 진짜 에러**(top-level return 등)까지 잘려 나간다.
+    fn pruneDiagnosticsAfterTypeOverflow(self: *Parser) !void {
+        const span = self.type_depth_overflow orelse return;
+
+        var kept: usize = 0;
+        for (self.errors.items) |err| {
+            if (err.span.start < span.start) {
+                self.errors.items[kept] = err;
+                kept += 1;
+            } else if (err.labels.len > 0) {
+                self.allocator.free(err.labels); // 버리는 진단이 소유한 labels 해제
+            }
+        }
+        self.errors.shrinkRetainingCapacity(kept);
+
+        try self.errors.append(self.allocator, .{
+            .span = span,
+            .message = ErrorCode.ts_type_too_deeply_nested.message(),
+            .code = .ts_type_too_deeply_nested,
+        });
     }
 
     /// 파싱 누적 diagnostic 이 하나라도 있는지. 문법 위반 source 가 codegen 에 silent 통과
@@ -1520,6 +1569,7 @@ pub const Parser = struct {
     const PeekResult = struct { kind: Kind, has_newline_before: bool };
 
     /// 스캐너 상태를 저장한다. lookahead 후 restoreState로 되돌릴 때 사용.
+    /// speculation 과 함께 되돌려야 하는 파서 상태(type_depth_overflow — #4146)도 함께 싣는다.
     pub const ScannerState = struct {
         current: u32,
         start: u32,
@@ -1533,6 +1583,11 @@ pub const Parser = struct {
         /// speculative parse 시 스캔된 comment 가 codegen 으로 leak 되지 않도록
         /// 복원 — 누락 시 같은 comment 가 speculation 횟수만큼 중복 emit.
         comments_len: usize,
+        /// 타입 중첩 한계 초과 표시 (#4146). **버려지는 speculation 이 낸 초과는 함께
+        /// 버려야 한다.** 예: `a < a < a < …` (유효한 비교 연산 체인)은 식 파서가 먼저
+        /// 타입 인자로 speculative 파싱했다가 `>` 가 없어 되돌린다. 이때 초과 표시가 남으면
+        /// **유효한 코드가 ZNTC0919 로 죽는다**(실측 회귀 — 400항 비교 체인).
+        type_depth_overflow: ?Span,
     };
 
     pub fn saveState(self: *const Parser) ScannerState {
@@ -1547,10 +1602,14 @@ pub const Parser = struct {
             .template_depth_len = self.scanner.template_depth_stack.items.len,
             .line_offsets_len = self.scanner.line_offsets.items.len,
             .comments_len = self.scanner.comments.items.len,
+            .type_depth_overflow = self.type_depth_overflow,
         };
     }
 
     pub fn restoreState(self: *Parser, s: ScannerState) void {
+        // #4146: speculation 이 낸 초과 표시를 되돌린다. (type_depth 자체는 parseType 의
+        // defer 로 이미 호출 스택과 함께 정확히 복원돼 있어 저장/복원 대상이 아니다.)
+        self.type_depth_overflow = s.type_depth_overflow;
         self.scanner.current = s.current;
         self.scanner.start = s.start;
         self.scanner.token = s.token;

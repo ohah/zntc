@@ -1102,6 +1102,181 @@ test "Parser: deep keyof chain does not overflow the stack (#4142)" {
 }
 
 // ============================================================
+// #4146: 깊게 중첩된 타입 구문 — 스택 오버플로우 대신 진단
+// ============================================================
+
+/// `type X = <prefix × n><leaf><suffix × n>;` 소스를 파싱하고 진단만 돌려주는 헬퍼.
+/// 반환: (진단 개수, 첫 진단 code) — 크래시하면 테스트 프로세스가 죽으므로 "반환했다" 자체가
+/// 스택 오버플로우 부재의 증거다.
+fn parseNestedType(
+    prefix: []const u8,
+    leaf: []const u8,
+    suffix: []const u8,
+    n: usize,
+    out_code: *?@import("../error_codes.zig").Code,
+) !usize {
+    const alloc = std.testing.allocator;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(alloc);
+    try src.appendSlice(alloc, "type X = ");
+    var i: usize = 0;
+    while (i < n) : (i += 1) try src.appendSlice(alloc, prefix);
+    try src.appendSlice(alloc, leaf);
+    i = 0;
+    while (i < n) : (i += 1) try src.appendSlice(alloc, suffix);
+    // 뒤에 정상 statement 를 붙여, 복구가 남은 토큰을 식/라벨 statement 로 흘려보내
+    // **또 다른 스택 오버플로우**를 내지 않는지까지 함께 본다.
+    try src.appendSlice(alloc, ";\nconst v = 1;\n");
+
+    var scanner = try Scanner.init(alloc, src.items);
+    defer scanner.deinit();
+    var parser = Parser.init(alloc, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    out_code.* = if (parser.errors.items.len > 0) parser.errors.items[0].code else null;
+    return parser.errors.items.len;
+}
+
+test "Parser: deeply nested type syntax degrades to a diagnostic, not SIGSEGV (#4146)" {
+    // 타입 파서는 상호재귀 하강(parseType → … → primary → 각 형태 → 다시 parseType)이라
+    // 중첩 1단계 = 파서 스택 한 겹. 아래 5개 형태는 전부 이 사이클을 돌아 Debug 빌드에서
+    // ~3,100-4,000 단계에 SIGSEGV(exit 134) 였다(#4146). 깊이 상한(max_type_depth) 도입 후에는
+    // **크래시 없이 ZNTC0919 진단 정확히 1건**으로 끝난다.
+    //
+    // n 은 수정 전 크래시 임계(~3,100)를 넉넉히 넘긴 값. 재귀로 되돌리면 이 테스트가
+    // 스택 오버플로우로 죽는다(진단 assert 이전에 프로세스가 죽음).
+    const n: usize = 20000;
+    const cases = [_]struct { name: []const u8, prefix: []const u8, leaf: []const u8, suffix: []const u8 }{
+        .{ .name = "parenthesized", .prefix = "(", .leaf = "T", .suffix = ")" },
+        .{ .name = "conditional", .prefix = "A extends B ? ", .leaf = "T", .suffix = " : never" },
+        .{ .name = "function", .prefix = "() => ", .leaf = "T", .suffix = "" },
+        .{ .name = "generic", .prefix = "A<", .leaf = "T", .suffix = ">" },
+        .{ .name = "tuple", .prefix = "[", .leaf = "T", .suffix = "]" },
+        // 이슈에 없던 같은 계열 — 객체 타입도 같은 사이클을 돈다(회귀 방지로 함께 고정).
+        .{ .name = "object", .prefix = "{ a: ", .leaf = "T", .suffix = " }" },
+        // ⚠️ 객체 타입의 **`;` 멤버 구분자** 형태. 복구 스킵이 `;` 를 균형과 무관하게 "멈춤"
+        // 으로 처리하면 여기서 중도 이탈해 안쪽 깊은 토큰이 남고, 그게 식 파서로 흘러가
+        // **다시 SIGSEGV** 난다(초기 구현의 실제 크래시). `,` 구분자 형태만 있으면 통과해
+        // 버리므로 두 형태를 모두 고정한다.
+        .{ .name = "object-semicolon", .prefix = "{ a: string; b: ", .leaf = "T", .suffix = " }" },
+    };
+
+    for (cases) |c| {
+        var code: ?@import("../error_codes.zig").Code = null;
+        const errs = try parseNestedType(c.prefix, c.leaf, c.suffix, n, &code);
+        // 진단은 정확히 1건 — 초과 이후의 복구 에러는 억제된다(수만 건 폭발 방지).
+        std.testing.expectEqual(@as(usize, 1), errs) catch |e| {
+            std.debug.print("form={s}: expected 1 diagnostic, got {d}\n", .{ c.name, errs });
+            return e;
+        };
+        try std.testing.expectEqual(
+            @import("../error_codes.zig").Code.ts_type_too_deeply_nested,
+            code.?,
+        );
+    }
+}
+
+test "Parser: 타입 중첩 한계 경계값 (#4146)" {
+    // 한계는 parseType 프레임 수(가장 안쪽 leaf 타입도 한 프레임) — 255 겹 통과, 256 겹 거부.
+    // 상한을 바꾸면 여기가 깨진다(의도적 변경이면 함께 갱신).
+    var code: ?@import("../error_codes.zig").Code = null;
+    try std.testing.expectEqual(@as(usize, 0), try parseNestedType("(", "T", ")", 255, &code));
+
+    const errs = try parseNestedType("(", "T", ")", 256, &code);
+    try std.testing.expectEqual(@as(usize, 1), errs);
+    try std.testing.expectEqual(
+        @import("../error_codes.zig").Code.ts_type_too_deeply_nested,
+        code.?,
+    );
+}
+
+test "Parser: 깊은 타입보다 앞에서 난 진단은 보존된다 (#4146)" {
+    // 초과 이후의 복구 캐스케이드만 버리고, **초과 지점보다 앞(span 기준)** 의 진짜 진단은
+    // 남겨야 한다. index 워터마크로 자르면, 파일 앞줄에서 났지만 파싱 끝에 한꺼번에 병합되는
+    // deferred module 에러(top-level return 등)까지 잘려 나간다 — 그래서 span 기준으로 자른다.
+    const n: usize = 1000;
+    const alloc = std.testing.allocator;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(alloc);
+    try src.appendSlice(alloc, "return 1;\ntype X = "); // top-level return = 앞줄의 진짜 에러
+    var i: usize = 0;
+    while (i < n) : (i += 1) try src.appendSlice(alloc, "(");
+    try src.appendSlice(alloc, "T");
+    i = 0;
+    while (i < n) : (i += 1) try src.appendSlice(alloc, ")");
+    try src.appendSlice(alloc, ";\nexport {};\n"); // export → module 확정 → deferred 에러 병합
+
+    var scanner = try Scanner.init(alloc, src.items);
+    defer scanner.deinit();
+    var parser = Parser.init(alloc, &scanner);
+    parser.configureFromExtension(".ts");
+    defer parser.deinit();
+    _ = try parser.parse();
+    try parser.resolveModuleKind();
+
+    // 앞줄 에러 + ZNTC0919, 정확히 2건 (중간의 복구 캐스케이드는 제거).
+    try std.testing.expectEqual(@as(usize, 2), parser.errors.items.len);
+    try std.testing.expectEqual(
+        @import("../error_codes.zig").Code.ts_type_too_deeply_nested,
+        parser.errors.items[1].code.?,
+    );
+}
+
+test "Parser: 되돌려진 speculation 의 깊이 초과는 유효 코드를 죽이지 않는다 (#4146)" {
+    // `a < a < a < …` 는 **유효한 비교 연산 체인**이다. 그런데 TS 파서는 `ident <` 를 보면
+    // 먼저 **타입 인자**로 speculative 파싱한다 → `A<A<A<…` 처럼 타입 문법을 깊게 내려가
+    // 중첩 한계를 넘긴다 → 그 speculation 은 닫는 `>` 가 없어 결국 되돌려진다.
+    // 이때 초과 표시(type_depth_overflow)가 남으면 **유효한 코드가 ZNTC0919 로 죽는다**.
+    // 그래서 초과 표시는 saveState/restoreState 로 speculation 과 함께 되돌린다.
+    //
+    // 또한 이 초과를 "파싱 중 에러 append" 로 구현하면 안 된다 — speculation 성공/실패를
+    // `errors.items.len` 증감으로 판정하는 백트래킹이 있어, 진단을 억제/추가하는 순간
+    // 실패한 speculation 이 성공으로 오판된다(초기 구현에서 실제로 이 회귀가 났다).
+    const n: usize = 5000; // 한계(256) 를 한참 넘고, 수정 전엔 파서가 SIGSEGV 나던 깊이.
+    const alloc = std.testing.allocator;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(alloc);
+    try src.appendSlice(alloc, "const a = 1;\nconst r = a");
+    var i: usize = 0;
+    while (i < n) : (i += 1) try src.appendSlice(alloc, " < a");
+    try src.appendSlice(alloc, ";\n");
+
+    var scanner = try Scanner.init(alloc, src.items);
+    defer scanner.deinit();
+    var parser = Parser.init(alloc, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    // 유효 코드이므로 진단 0건 + 비교 연산 노드가 n 개 그대로 남아야 한다.
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var lt: usize = 0;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag == .binary_expression) lt += 1;
+    }
+    try std.testing.expectEqual(n, lt);
+}
+
+test "Parser: nesting below the limit still parses exactly as before (#4146 회귀 0)" {
+    // 상한(256) 아래의 중첩은 가드가 개입하면 안 된다 — 진단 0건.
+    // 실측상 실제 코드(node_modules 94,403 파일)의 타입 중첩은 32 단계에도 못 미치므로
+    // 200 단계는 "실코드가 절대 도달하지 않는 영역"을 이미 넘어선 검증이다.
+    const n: usize = 200;
+    const cases = [_]struct { prefix: []const u8, leaf: []const u8, suffix: []const u8 }{
+        .{ .prefix = "(", .leaf = "T", .suffix = ")" },
+        .{ .prefix = "A extends B ? ", .leaf = "T", .suffix = " : never" },
+        .{ .prefix = "() => ", .leaf = "T", .suffix = "" },
+        .{ .prefix = "A<", .leaf = "T", .suffix = ">" },
+        .{ .prefix = "[", .leaf = "T", .suffix = "]" },
+        .{ .prefix = "{ a: ", .leaf = "T", .suffix = " }" },
+    };
+    for (cases) |c| {
+        var code: ?@import("../error_codes.zig").Code = null;
+        try std.testing.expectEqual(@as(usize, 0), try parseNestedType(c.prefix, c.leaf, c.suffix, n, &code));
+    }
+}
+
+// ============================================================
 // TypeScript declaration tests
 // ============================================================
 
