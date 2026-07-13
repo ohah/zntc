@@ -81,4 +81,54 @@ export const b = () => ticker() + "|B:" + minute.label;
       await cleanup();
     }
   }, 120000);
+
+  test('#4492 splitting: `import * as ns` 의 멤버 접근도 같은 청크 참조가 오염되지 않는다', async () => {
+    // 같은 루트커즈의 **다른 표면** — ns 멤버 재작성(`ns.second` → 식별자)도 게이트 없이
+    // 전역 공개명을 썼다.
+    //
+    // ⚠️ materialize 된 ns **객체 getter**(`{get second(){return second}}`) 는 아직 미해결이다
+    // (#4502) — 그 경로는 `exp.local` 이 미-deconflict 이름이라 순진하게 게이트하면 #4101 이
+    // 회귀한다. 여기선 멤버 경로만 고정한다.
+    const files: Record<string, string> = {
+      'shared/p.js': `export const second = { label: "second" };\nexport const other = { label: "other" };\n`,
+      'shared/consumer.js': `import * as ns from "./p.js";
+export function member() { return ns.second.label; }
+`,
+      'a.js': `import { member } from "./shared/consumer.js";
+import { second } from "./shared/p.js";               // 다른 청크가 second 를 소비 → 전역 공개명 생성
+export const a = () => member() + "|A:" + second.label;
+`,
+      'b.js': `import { member } from "./shared/consumer.js";
+import { other } from "./shared/p.js";
+export const b = () => member() + "|B:" + other.label;
+`,
+      'entry.js': `Promise.all([import("./a.js"), import("./b.js")]).then(([m1, m2]) => {
+  console.log(m1.a() + " / " + m2.b());
+});
+`,
+    };
+
+    const { dir, cleanup } = await createFixture(files);
+    try {
+      const outDir = join(dir, 'out');
+      const build = await runZntc([
+        '--bundle',
+        join(dir, 'entry.js'),
+        '--splitting',
+        '--outdir',
+        outDir,
+        '--minify',
+        '--format=esm',
+      ]);
+      expect(build.exitCode).toBe(0);
+      writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
+
+      const r = runNode(join(outDir, 'entry.js'));
+      // 수정 전: `ReferenceError: second is not defined`
+      expect(r.err, `모듈 평가 실패:\n${r.err}`).toBe('');
+      expect(r.out).toBe('second|A:second / second|B:other');
+    } finally {
+      await cleanup();
+    }
+  }, 120000);
 });
