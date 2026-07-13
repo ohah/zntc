@@ -1256,6 +1256,72 @@ fn removeModuleFromList(list: *std.ArrayListUnmanaged(ModuleIndex), target: Modu
 // computeCrossChunkLinks — 크로스 청크 의존성 계산
 // ============================================================
 
+/// (#4495) 이 (canonical 모듈, export 이름) 심볼의 **선언이 emit 되지 않는지** 판정.
+///
+/// `exports_to`/`imports_from` 은 스캐너 시점 메타데이터(`import_bindings` /
+/// `export_bindings`)만 보고 만들어진다. 그런데 그 사이에 tree-shaker 가
+///   - 크로스-모듈 const-inline: `export const extra = 1` 이 소비자 AST 에 리터럴 `1`
+///     로 박히고 나면 참조가 0 → 선언 statement 가 DCE
+///   - 단순 미사용 named import: 참조가 애초에 0 → 선언 statement 가 DCE
+/// 로 **선언을 지운다**. 그런데도 심볼이 목록에 남으면 provider 청크가 선언 없이
+/// `export { extra };` 를 내보내고, node 는 모듈 로드 자체를 거부한다
+/// (`SyntaxError: Export 'extra' is not defined in module`). 소비자 청크 쪽
+/// `import { extra }` 도 같은 목록에서 나오므로 두 목록을 한 지점에서 함께 막는다.
+///
+/// **판정 실패 방향은 항상 "유지"(false)**. emitter 가 statement DCE 를 *건너뛰는*
+/// 모듈은 선언이 그대로 남으므로 export 를 지우면 안 된다:
+///   - tree-shaker 비활성(dev / `--no-tree-shaking`) → `tree_shaker_active == false`
+///   - 래핑 모듈(`__esm`/`__commonJS`) → emitter 의 statement-shake 게이트가 제외
+///   - `export * from` 소스 → emitter 가 `all_used` 로 DCE 자체를 끈다
+///   - 청크 entry 모듈 + `minify_syntax=false` → 같은 게이트가 statement-shake 를 끈다
+/// canonical 이 `.local` 선언이 아닐 때(re-export/star/합성 ns 변수/CJS 런타임 멤버)도
+/// 로컬 선언 유무로 판정할 수 없으므로 유지한다.
+///
+/// 순수 판정부 — Linker/ChunkGraph 조회와 분리해 유닛 테스트 대상으로 노출한다.
+/// `is_chunk_entry` / `minify_syntax` / `is_star_target` 은 emitter 의
+/// statement-shake 게이트를 그대로 옮긴 입력이다.
+pub fn crossChunkExportShakenDecision(
+    m: *const Module,
+    export_name: []const u8,
+    is_chunk_entry: bool,
+    minify_syntax: bool,
+    is_star_target: bool,
+) bool {
+    if (!m.tree_shaker_active) return false;
+    if (m.wrap_kind != .none) return false;
+    if (is_star_target) return false;
+    if (is_chunk_entry and !minify_syntax) return false;
+    const eb = m.findExportBinding(export_name) orelse return false;
+    if (eb.kind != .local) return false;
+    return !m.isLocalBindingAlive(m.exportBindingLocalName(eb.*));
+}
+
+fn crossChunkExportIsShaken(
+    chunk_graph: *const ChunkGraph,
+    lnk: *const Linker,
+    src_chunk_idx: ChunkIndex,
+    canonical_module: u32,
+    export_name: []const u8,
+) bool {
+    const m = lnk.getModule(canonical_module) orelse return false;
+    const is_star_target = if (lnk.tree_shaker) |s| s.isReExportStarTarget(canonical_module) else false;
+    const src_ci = @intFromEnum(src_chunk_idx);
+    const is_chunk_entry = blk: {
+        if (src_ci >= chunk_graph.chunks.items.len) break :blk true; // 알 수 없으면 보수적(=유지 쪽)
+        break :blk switch (chunk_graph.chunks.items[src_ci].kind) {
+            .entry_point => |info| @intFromEnum(info.module) == canonical_module,
+            .common, .manual => false,
+        };
+    };
+    return crossChunkExportShakenDecision(
+        m,
+        export_name,
+        is_chunk_entry,
+        lnk.graph.transform_options_base.minify_syntax,
+        is_star_target,
+    );
+}
+
 /// 각 청크의 크로스 청크 의존성을 계산한다.
 ///
 /// 청크 A의 모듈이 청크 B의 모듈을 정적 import하면 A.cross_chunk_imports에 B가 추가된다.
@@ -1278,6 +1344,7 @@ fn addCrossChunkSymbol(
     allocator: std.mem.Allocator,
     chunk_graph: *ChunkGraph,
     chunk: *Chunk,
+    lnk: *const Linker,
     seen_static: *std.AutoHashMapUnmanaged(u32, void),
     src_chunk_idx: ChunkIndex,
     export_name: []const u8,
@@ -1286,6 +1353,10 @@ fn addCrossChunkSymbol(
     canonical_module: u32,
 ) !void {
     const src_ci = @intFromEnum(src_chunk_idx);
+
+    // (#4495) 선언이 DCE 된 심볼은 어떤 목록에도 올리지 않는다 — provider 의
+    // `export {}` 도, 소비자의 `import {}` 도 여기 한 곳에서만 나온다.
+    if (crossChunkExportIsShaken(chunk_graph, lnk, src_chunk_idx, canonical_module, export_name)) return;
 
     // 심볼의 canonical 청크가 *직접 의존*이 아닐 수 있다(re-export 체인
     // importer→page→inner: importer 는 inner 를 직접 의존 안 함). emitter 는
@@ -1328,7 +1399,7 @@ fn linkReExportName(
     const src_chunk_idx = chunk_graph.getModuleChunk(canon.module_index);
     if (src_chunk_idx.isNone()) return;
     if (src_chunk_idx == chunk.index) return; // 같은 청크 → 스킵
-    try addCrossChunkSymbol(allocator, chunk_graph, chunk, seen_static, src_chunk_idx, canon.export_name, @intFromEnum(canon.module_index));
+    try addCrossChunkSymbol(allocator, chunk_graph, chunk, lnk, seen_static, src_chunk_idx, canon.export_name, @intFromEnum(canon.module_index));
 }
 
 /// `mod_idx` 의 `export_name` 이 namespace re-export 인지 판정하고, 맞으면
@@ -1470,7 +1541,7 @@ fn linkNamespaceCrossChunk(
     // seam — ensureSharedNsVar 가 선제 materialize. 상세는 그 doc 참조.
     const ns_var = try lnk.ensureSharedNsVar(target);
     // ns_var 는 합성 namespace 변수명(예약어 아님) → canonical_module 미사용.
-    try addCrossChunkSymbol(allocator, chunk_graph, chunk, seen_static, tgt_chunk, ns_var, @intFromEnum(target));
+    try addCrossChunkSymbol(allocator, chunk_graph, chunk, lnk, seen_static, tgt_chunk, ns_var, @intFromEnum(target));
     try fanOutModuleExports(allocator, chunk_graph, chunk, seen_static, lnk, target, module_count);
 }
 
@@ -1621,7 +1692,7 @@ pub fn computeCrossChunkLinks(
                     if (src_chunk_idx.isNone()) continue;
                     if (src_chunk_idx == chunk.index) continue; // 같은 청크 → 스킵
 
-                    try addCrossChunkSymbol(allocator, chunk_graph, chunk, &seen_static, src_chunk_idx, rb.canonical.export_name, @intFromEnum(rb.canonical.module_index));
+                    try addCrossChunkSymbol(allocator, chunk_graph, chunk, lnk, &seen_static, src_chunk_idx, rb.canonical.export_name, @intFromEnum(rb.canonical.module_index));
 
                     // canonical 이 namespace re-export 면 그 이름만 가져와선
                     // 안 된다 — 정적 멤버는 정의자 export 로 elision, 값/동적은

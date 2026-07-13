@@ -9,6 +9,7 @@ const ChunkIndex = chunk_mod.ChunkIndex;
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const Module = @import("module.zig").Module;
+const ExportBinding = @import("module.zig").ExportBinding;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
 const resolve_cache_mod = @import("resolve_cache.zig");
 
@@ -426,6 +427,85 @@ fn makeTestModule(alloc: std.mem.Allocator, index: u32, path: []const u8) Module
     // ArrayList 필드는 .empty으로 초기화됨 — append 시 allocator를 전달
     _ = alloc;
     return m;
+}
+
+// ============================================================
+// Tests — crossChunkExportShakenDecision (#4495)
+// ============================================================
+
+/// 크로스-청크 export 목록에서 뺄지 말지의 결정표.
+///
+/// `tree_shaker_active=true` + `is_included=false` = 모듈 자체가 emit 안 됨 →
+/// `isLocalBindingAlive` 가 dead 판정하는 가장 단순한 경로. 나머지 축(래핑 /
+/// star 소스 / 청크 entry+non-minify / export kind)은 전부 **유지(false)** 쪽으로
+/// 보수 폴백해야 한다 — 잘못 빼면 소비자가 미바인딩(ReferenceError) 된다.
+fn shakenDecisionModule(dead: bool) Module {
+    var m = Module.init(@enumFromInt(0), "barrel.ts");
+    m.module_type = .js;
+    m.state = .ready;
+    m.tree_shaker_active = true;
+    m.is_included = !dead;
+    return m;
+}
+
+test "crossChunkExportShakenDecision: 선언이 DCE 된 .local export 는 목록에서 제외 (#4495)" {
+    var m = shakenDecisionModule(true);
+    var ebs = [_]ExportBinding{
+        .{ .exported_name = "extra", .local_name = "extra", .local_span = .{ .start = 0, .end = 0 }, .kind = .local },
+    };
+    m.export_bindings = &ebs;
+
+    try std.testing.expect(chunk_mod.crossChunkExportShakenDecision(&m, "extra", false, true, false));
+    // 살아있는 선언(모듈이 emit 됨) → 유지.
+    var alive = shakenDecisionModule(false);
+    alive.export_bindings = &ebs;
+    try std.testing.expect(!chunk_mod.crossChunkExportShakenDecision(&alive, "extra", false, true, false));
+}
+
+test "crossChunkExportShakenDecision: emitter 가 statement DCE 를 건너뛰는 모듈은 보수적 유지 (#4495)" {
+    var ebs = [_]ExportBinding{
+        .{ .exported_name = "extra", .local_name = "extra", .local_span = .{ .start = 0, .end = 0 }, .kind = .local },
+    };
+
+    // tree-shaker 비활성(dev / --no-tree-shaking) → 판정 불가 → 유지.
+    var no_shaker = shakenDecisionModule(true);
+    no_shaker.export_bindings = &ebs;
+    no_shaker.tree_shaker_active = false;
+    try std.testing.expect(!chunk_mod.crossChunkExportShakenDecision(&no_shaker, "extra", false, true, false));
+
+    // 래핑 모듈(__esm / __commonJS) → emitter statement-shake 게이트 제외 → 유지.
+    for ([_]types.WrapKind{ .esm, .cjs }) |wk| {
+        var wrapped = shakenDecisionModule(true);
+        wrapped.export_bindings = &ebs;
+        wrapped.wrap_kind = wk;
+        try std.testing.expect(!chunk_mod.crossChunkExportShakenDecision(&wrapped, "extra", false, true, false));
+    }
+
+    // `export * from "./this"` 소스 → emitter 가 all_used 로 DCE 자체를 끔 → 유지.
+    var star = shakenDecisionModule(true);
+    star.export_bindings = &ebs;
+    try std.testing.expect(!chunk_mod.crossChunkExportShakenDecision(&star, "extra", false, true, true));
+
+    // 청크 entry 모듈 + minify_syntax=false → statement-shake 안 돎(선언 그대로 emit) → 유지.
+    var entry = shakenDecisionModule(true);
+    entry.export_bindings = &ebs;
+    try std.testing.expect(!chunk_mod.crossChunkExportShakenDecision(&entry, "extra", true, false, false));
+    // 같은 entry 라도 minify_syntax=true 면 shake 가 돌아 선언이 사라진다 → 제외.
+    try std.testing.expect(chunk_mod.crossChunkExportShakenDecision(&entry, "extra", true, true, false));
+}
+
+test "crossChunkExportShakenDecision: .local 이 아닌 export / 미등록 이름은 유지 (#4495)" {
+    // re-export 는 canonical 선언이 이 모듈에 없다 → 로컬 선언 유무로 판정 불가.
+    var re = shakenDecisionModule(true);
+    var re_ebs = [_]ExportBinding{
+        .{ .exported_name = "extra", .local_name = "extra", .local_span = .{ .start = 0, .end = 0 }, .kind = .re_export },
+    };
+    re.export_bindings = &re_ebs;
+    try std.testing.expect(!chunk_mod.crossChunkExportShakenDecision(&re, "extra", false, true, false));
+
+    // 합성 namespace 변수(`X_ns`) 처럼 export_bindings 에 없는 이름 → 유지.
+    var ns = shakenDecisionModule(true);
+    try std.testing.expect(!chunk_mod.crossChunkExportShakenDecision(&ns, "barrel_ns", false, true, false));
 }
 
 test "generateChunks: single entry, no dynamic imports" {
