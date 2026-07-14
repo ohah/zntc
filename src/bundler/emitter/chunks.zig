@@ -607,30 +607,33 @@ pub fn emitChunks(
                     // forwarding 하면 지연이 복원된다. 실제 호출은 모듈이 완전히 평가된 뒤에
                     // 일어나므로(`entry` → `require_a()` → a 본문 → `require_b()` → …) 그때는
                     // provider 의 `exports.require_X` 가 이미 채워져 있다.
-                    var holder_buf: [64]u8 = undefined;
-                    const holder = try std.fmt.bufPrint(&holder_buf, "__zntc_w{d}", .{dep_ci});
-                    try chunk_output.appendSlice(allocator, if (min) "const " else "const ");
-                    try chunk_output.appendSlice(allocator, holder);
-                    try chunk_output.appendSlice(allocator, if (min) "=require(\"" else " = require(\"");
+                    // ⚠️ **holder 변수를 두지 않는다.** `const __zntc_w0 = require(...)` 처럼
+                    // 우리가 이름을 지어 top-level 에 깔면 그 이름은 deconflict 를 안 거쳐서
+                    // 사용자 코드의 동명 top-level 심볼과 **중복 선언**(SyntaxError)이 난다.
+                    // `require()` 는 node 가 memoize 하므로 forwarding 안에서 다시 불러도 싸다.
+                    //
+                    // side-effect require: 실행/등록 순서 보장(기존 동작 유지).
+                    try chunk_output.appendSlice(allocator, if (min) "require(\"" else "require(\"");
                     try chunk_output.appendSlice(allocator, bind_arg);
                     try chunk_output.appendSlice(allocator, if (min) "\");" else "\");\n");
 
-                    // `require_X` / `init_X` — 함수. lazy forwarding.
+                    // `require_X` / `init_X` — 함수. 호출 시점에 조회(lazy forwarding).
                     try chunk_output.appendSlice(allocator, "const ");
                     try chunk_output.appendSlice(allocator, names.a);
-                    try chunk_output.appendSlice(allocator, if (min) "=function(){return " else " = function() { return ");
-                    try chunk_output.appendSlice(allocator, holder);
-                    try chunk_output.appendSlice(allocator, ".");
+                    try chunk_output.appendSlice(allocator, if (min) "=function(){return require(\"" else " = function() { return require(\"");
+                    try chunk_output.appendSlice(allocator, bind_arg);
+                    try chunk_output.appendSlice(allocator, if (min) "\")." else "\").");
                     try chunk_output.appendSlice(allocator, names.a);
                     try chunk_output.appendSlice(allocator, if (min) ".apply(this,arguments)};" else ".apply(this, arguments); };\n");
 
-                    // `exports_X` — 객체. lazy 로 바꿀 수 없어 그대로 바인딩한다(ESM-wrap dep 만).
+                    // `exports_X` — 객체라 lazy 로 못 바꾼다(ESM-wrap dep 만). provider 가 파일
+                    // top-level 에서 즉시 만들므로 이 시점에 이미 존재한다.
                     if (names.b) |b| {
                         try chunk_output.appendSlice(allocator, "const ");
                         try chunk_output.appendSlice(allocator, b);
-                        try chunk_output.appendSlice(allocator, if (min) "=" else " = ");
-                        try chunk_output.appendSlice(allocator, holder);
-                        try chunk_output.appendSlice(allocator, ".");
+                        try chunk_output.appendSlice(allocator, if (min) "=require(\"" else " = require(\"");
+                        try chunk_output.appendSlice(allocator, bind_arg);
+                        try chunk_output.appendSlice(allocator, if (min) "\")." else "\").");
                         try chunk_output.appendSlice(allocator, b);
                         try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
                     }
