@@ -226,4 +226,47 @@ describe('#4524: --preserve-modules × CJS', () => {
       await cleanup();
     }
   });
+  test('#4526 --format=cjs 에서도 CJS ↔ CJS 순환이 동작한다 (구조분해 금지)', async () => {
+    // ⚠️ cjs 소비자가 `const { require_b } = require("./b.js")` 로 **구조분해**하면 로드 시점에
+    // 값을 **복사**한다. 순환에서 b.js 가 아직 평가 중인 a.js 를 require 하면
+    // `exports.require_a` 가 미할당 → **undefined 를 박제** → 나중에 호출 시
+    // `TypeError: require_a is not a function`.
+    // node 는 require 가 lazy 라 순환을 정상 처리하고, ESM 은 live binding 이라 무사하다.
+    // cjs 만 이 지연이 없어서, 래퍼 심볼(함수)을 lazy forwarding 으로 바인딩한다.
+    const { outDir, cleanup } = await buildPm(
+      {
+        'a.cjs': 'const b = require("./b.cjs");\nexports.a = function a(){ return "A+" + b.b(); };',
+        'b.cjs': 'const a = require("./a.cjs");\nexports.b = function b(){ return "B"; };',
+        'entry.js': 'import { a } from "./a.cjs";\nconsole.log("result:", a());',
+      },
+      'entry.js',
+      'cjs',
+    );
+    try {
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      expect(stderr).not.toContain('TypeError');
+      expect(stdout.trim()).toBe('result: A+B');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('#4526 --format=cjs 에서 CJS 가 ESM 형제를 require 해도 동작한다', async () => {
+    const { outDir, cleanup } = await buildPm(
+      {
+        'b.js': 'export function tag(){ return "B-tag"; }',
+        'a.cjs': 'const b = require("./b.js");\nmodule.exports = { run: () => "A-" + b.tag() };',
+        'entry.js': 'import a from "./a.cjs";\nconsole.log(a.run());',
+      },
+      'entry.js',
+      'cjs',
+    );
+    try {
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      expect(stderr).not.toContain('ReferenceError');
+      expect(stdout.trim()).toBe('A-B-tag');
+    } finally {
+      await cleanup();
+    }
+  });
 });

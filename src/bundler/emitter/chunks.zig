@@ -592,27 +592,60 @@ pub fn emitChunks(
                 const dm = graph.getModule(dm_idx).?;
                 const names = try wrapperNamesFor(allocator, dm, linker);
                 defer names.deinit(allocator);
-                const open = if (cjs_require)
-                    (if (options.minify_whitespace) "const{" else "const { ")
-                else
-                    (if (options.minify_whitespace) "import{" else "import { ");
-                const mid = if (cjs_require)
-                    (if (options.minify_whitespace) "}=require(\"" else " } = require(\"")
-                else
-                    (if (options.minify_whitespace) "}from\"" else " } from \"");
-                const close = if (cjs_require)
-                    (if (options.minify_whitespace) "\");" else "\");\n")
-                else
-                    (if (options.minify_whitespace) "\";" else "\";\n");
-                try chunk_output.appendSlice(allocator, open);
-                try chunk_output.appendSlice(allocator, names.a);
-                if (names.b) |b| {
-                    try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "," else ", ");
-                    try chunk_output.appendSlice(allocator, b);
+                const min = options.minify_whitespace;
+
+                if (cjs_require) {
+                    // (#4526) ⚠️ cjs 는 **구조분해하면 안 된다**.
+                    // `const { require_b } = require("./b.js")` 는 **로드 시점에 값을 복사**한다.
+                    // CJS↔CJS 순환에서 b.js 가 a.js 를 require 하면 a 는 아직 평가 중이라
+                    // `exports.require_a` 가 미할당 → b 가 **undefined 를 박제**하고, 나중에
+                    // 호출할 때 `TypeError: require_a is not a function`.
+                    // node 는 require 가 lazy 라 순환을 정상 처리하고, ESM 은 live binding 이라
+                    // 무사하다. cjs 만 이 지연이 없다.
+                    //
+                    // 래퍼 심볼(`require_X` / `init_X`)은 **함수**라 호출 시점에 조회하도록
+                    // forwarding 하면 지연이 복원된다. 실제 호출은 모듈이 완전히 평가된 뒤에
+                    // 일어나므로(`entry` → `require_a()` → a 본문 → `require_b()` → …) 그때는
+                    // provider 의 `exports.require_X` 가 이미 채워져 있다.
+                    var holder_buf: [64]u8 = undefined;
+                    const holder = try std.fmt.bufPrint(&holder_buf, "__zntc_w{d}", .{dep_ci});
+                    try chunk_output.appendSlice(allocator, if (min) "const " else "const ");
+                    try chunk_output.appendSlice(allocator, holder);
+                    try chunk_output.appendSlice(allocator, if (min) "=require(\"" else " = require(\"");
+                    try chunk_output.appendSlice(allocator, bind_arg);
+                    try chunk_output.appendSlice(allocator, if (min) "\");" else "\");\n");
+
+                    // `require_X` / `init_X` — 함수. lazy forwarding.
+                    try chunk_output.appendSlice(allocator, "const ");
+                    try chunk_output.appendSlice(allocator, names.a);
+                    try chunk_output.appendSlice(allocator, if (min) "=function(){return " else " = function() { return ");
+                    try chunk_output.appendSlice(allocator, holder);
+                    try chunk_output.appendSlice(allocator, ".");
+                    try chunk_output.appendSlice(allocator, names.a);
+                    try chunk_output.appendSlice(allocator, if (min) ".apply(this,arguments)};" else ".apply(this, arguments); };\n");
+
+                    // `exports_X` — 객체. lazy 로 바꿀 수 없어 그대로 바인딩한다(ESM-wrap dep 만).
+                    if (names.b) |b| {
+                        try chunk_output.appendSlice(allocator, "const ");
+                        try chunk_output.appendSlice(allocator, b);
+                        try chunk_output.appendSlice(allocator, if (min) "=" else " = ");
+                        try chunk_output.appendSlice(allocator, holder);
+                        try chunk_output.appendSlice(allocator, ".");
+                        try chunk_output.appendSlice(allocator, b);
+                        try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
+                    }
+                } else {
+                    // esm: live binding 이라 구조분해(=named import)로 충분하다.
+                    try chunk_output.appendSlice(allocator, if (min) "import{" else "import { ");
+                    try chunk_output.appendSlice(allocator, names.a);
+                    if (names.b) |b| {
+                        try chunk_output.appendSlice(allocator, if (min) "," else ", ");
+                        try chunk_output.appendSlice(allocator, b);
+                    }
+                    try chunk_output.appendSlice(allocator, if (min) "}from\"" else " } from \"");
+                    try chunk_output.appendSlice(allocator, bind_arg);
+                    try chunk_output.appendSlice(allocator, if (min) "\";" else "\";\n");
                 }
-                try chunk_output.appendSlice(allocator, mid);
-                try chunk_output.appendSlice(allocator, bind_arg);
-                try chunk_output.appendSlice(allocator, close);
             } else if (symbols != null and symbols.?.items.len > 0) {
                 // 심볼 수준 import: import { a, b } from './chunk-xxx.js';
                 if (!options.minify_whitespace) {
