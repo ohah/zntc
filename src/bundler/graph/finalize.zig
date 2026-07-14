@@ -221,6 +221,25 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
         if (m.wrapper_name_synthetic) |n| _ = used_names.put(self.allocator, n, 1) catch {};
     }
 
+    // (#4530) **사용자 top-level 심볼도 같은 풀에 seed 한다.** 예전엔 래퍼 이름끼리만
+    // deconflict 해서, 사용자 코드에 `function require_legacy(){}` 같은 top-level 심볼이
+    // 있으면 CJS 래퍼(`var require_legacy = __commonJS(...)`)와 **중복 선언**됐다
+    // → `SyntaxError: Identifier 'require_legacy' has already been declared`.
+    // **단일 번들에서도** 재현되는 결함이다(번들 스코프에 모든 모듈의 top-level 이 호이스팅됨).
+    //
+    // preserve-modules 는 파일마다 스코프가 따로라 전역 deconflict 가 과하지만, 이름이
+    // 파일 경계를 넘는 **공개 키**이기도 해서 전역으로 유일하면 provider/consumer 가 항상
+    // 같은 값을 본다 — 안전한 방향의 과잉이다.
+    var user_seed_it = self.modules.iterator(0);
+    while (user_seed_it.next()) |m| {
+        const sem_ptr = if (m.semantic) |*s| s else continue;
+        if (sem_ptr.scope_maps.len == 0) continue;
+        var name_it = sem_ptr.scope_maps[0].keyIterator();
+        while (name_it.next()) |name_ptr| {
+            _ = used_names.put(self.allocator, name_ptr.*, 1) catch {};
+        }
+    }
+
     var it = self.modules.iterator(0);
     while (it.next()) |m| {
         if (m.wrap_kind == .none) continue;
