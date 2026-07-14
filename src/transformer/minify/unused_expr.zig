@@ -38,7 +38,8 @@ fn wrapInParen(ast: *Ast, inner_idx: NodeIndex) !NodeIndex {
 }
 
 /// sequence_expression (comma operator) 축약. #1644 PR1.5 확장.
-/// 마지막 원소 **앞에** 오는 모든 `isStmtRemovable` 원소 제거: `(1, foo, bar, baz())` → `baz()`.
+/// 마지막 원소 **앞에** 오는 모든 삭제 가능(`purity.isRemovableAtStmtPos`) 원소 제거:
+/// `(1, foo, bar, baz())` → `baz()`.
 /// 단일 원소만 남으면 sequence 자체를 그 노드로 교체.
 ///
 /// 이전 구현은 prefix 리터럴만 제거. 이번 PR 에서 중간 원소도 제거 가능하도록 확장.
@@ -234,8 +235,9 @@ fn isSafeStmtLead(ast: *const Ast, idx: NodeIndex, depth: u32) bool {
 //   - `a && b` / `a || b` / `a ?? b` 에서 right removable → left 만 남김 (short-circuit 의미상 OK)
 //   - template_literal 전체 (모든 substitution removable) → true 판정만
 
-// depth 제한은 `isStmtRemovableDepth` 와 맞춤 — 두 함수가 상호 재귀.
-const max_unused_simplify_depth: u32 = max_stmt_removable_depth;
+// depth 제한은 `purity.isRemovableAtStmtPosDepth` 와 맞춤 — 두 함수가 같은 depth 카운터를
+// 주고받으므로 상한이 어긋나면 안 된다.
+const max_unused_simplify_depth: u32 = purity.max_stmt_removable_depth;
 
 fn simplifyUnusedInPlace(ast: *Ast, ctx: MinifyCtx, idx: NodeIndex, changed: *bool, depth: u32) bool {
     if (depth >= max_unused_simplify_depth) return false;
@@ -712,116 +714,15 @@ fn appendTemplateElement(ast: *Ast, elem_span: Span) u32 {
     return ni;
 }
 
-/// expression 이 **statement 자리에서 안전히 삭제 가능한지** 판정. `purity.isExprPure`
-/// 는 "expression 내부로서" pure 를 보므로 identifier_reference / member access 도
-/// pure 로 인정하지만, statement 자리에서는:
-///   - unresolved identifier → `ReferenceError` side-effect
-///   - member access → getter / Proxy trap 실행
-/// 가 발생하므로 엄격 기준이 필요하다.
+/// expression 이 **statement 자리에서 안전히 삭제 가능한지** 판정.
 ///
-/// 보수적 허용 목록:
-///   - 리터럴 (numeric, string, boolean, null, bigint, regex)
-///   - `this` / function expression / arrow
-///   - pure unary (`!x`, `+1`, `~0`, `typeof x` — delete 제외)
-///   - pure binary / logical / conditional — 자식이 모두 removable
-///   - parenthesized — 내부 expression 이 removable
-///   - @__PURE__ call/new
-///   - identifier_reference: function 스코프 이하 local 바인딩만 (top-level / import / 미해결 제외)
-///   - member access: 제외 (getter 위험)
+/// 실제 규칙은 `purity.isRemovableAtStmtPos` 가 소유한다 (#4514 — dead-store 제거 패스
+/// `bundler/emitter/dead_store.zig` 도 같은 술어를 써야 해서 공용 모듈로 옮겼다).
+/// 여기서는 `MinifyCtx` → `purity.StmtRemovalCtx` 어댑터 역할만 한다.
 ///
 /// **호출 site contract**: statement 자리 또는 sequence_expression 원소 자리 전용.
 /// call_expression 의 callee 자리에 쓰면 `(0, f)()` 의 `0` 을 제거해 this 바인딩을
 /// 바꾸는 회귀 가능 — 새 호출 site 추가 시 contract 확인.
-fn isStmtRemovable(ast: *const Ast, idx: NodeIndex, ctx: MinifyCtx) bool {
-    return isStmtRemovableDepth(ast, idx, ctx, 0);
-}
-
-const max_stmt_removable_depth: u32 = 128;
-
 fn isStmtRemovableDepth(ast: *const Ast, idx: NodeIndex, ctx: MinifyCtx, depth: u32) bool {
-    if (depth >= max_stmt_removable_depth) return false;
-    if (idx.isNone()) return true;
-    const ni = @intFromEnum(idx);
-    if (ni >= ast.nodes.items.len) return false;
-    const node = ast.nodes.items[ni];
-    const d = depth + 1;
-
-    return switch (node.tag) {
-        .numeric_literal,
-        .string_literal,
-        .boolean_literal,
-        .null_literal,
-        .bigint_literal,
-        .regexp_literal,
-        .this_expression,
-        .function_expression,
-        .arrow_function_expression,
-        => true,
-
-        // identifier_reference: function 스코프 이하 local 만. top-level (scope_id=0) 과
-        // import 바인딩은 live binding 이라 `import * as ns` 등의 초기화 순서를 건드릴 수
-        // 있어 보수적으로 유지 (dead store removeDeadStores 와 동일 가드).
-        .identifier_reference => blk: {
-            if (ni >= ctx.symbol_ids.len) break :blk false;
-            const sid = ctx.symbol_ids[ni] orelse break :blk false;
-            if (sid >= ctx.symbols.len) break :blk false;
-            const sym = ctx.symbols[sid];
-            if (@intFromEnum(sym.scope_id) == 0) break :blk false;
-            if (sym.decl_flags.is_import) break :blk false;
-            break :blk true;
-        },
-
-        .parenthesized_expression => isStmtRemovableDepth(ast, node.data.unary.operand, ctx, d),
-
-        .unary_expression => blk: {
-            const e = node.data.extra;
-            if (!ast.hasExtra(e, 1)) break :blk false;
-            const op_kind: u8 = @truncate(ast.readExtra(e, 1) & 0xFF);
-            if (op_kind == @intFromEnum(Kind.kw_delete)) break :blk false;
-            break :blk isStmtRemovableDepth(ast, @enumFromInt(ast.readExtra(e, 0)), ctx, d);
-        },
-
-        .binary_expression, .logical_expression => isStmtRemovableDepth(ast, node.data.binary.left, ctx, d) and
-            isStmtRemovableDepth(ast, node.data.binary.right, ctx, d),
-
-        .conditional_expression => blk: {
-            const t = node.data.ternary;
-            break :blk isStmtRemovableDepth(ast, t.a, ctx, d) and
-                isStmtRemovableDepth(ast, t.b, ctx, d) and
-                isStmtRemovableDepth(ast, t.c, ctx, d);
-        },
-
-        .sequence_expression => blk: {
-            const list = node.data.list;
-            if (list.start + list.len > ast.extra_data.items.len) break :blk false;
-            for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
-                if (!isStmtRemovableDepth(ast, @enumFromInt(raw), ctx, d)) break :blk false;
-            }
-            break :blk true;
-        },
-
-        .template_literal => blk: {
-            // raw-span shorthand(list.len==0) — substitution 없음, removable. parser
-            // no-sub `` `static` `` 은 len>0 라 아래 loop 가 template_element 만 보고 판정.
-            // (`data.none == 0` 은 list.start alias → 보간 template@start==0 이 부작용
-            // 검사 없이 removable 오판되던 버그.)
-            if (node.data.list.len == 0) break :blk true;
-            const list = node.data.list;
-            if (list.start + list.len > ast.extra_data.items.len) break :blk false;
-            for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
-                if (raw >= ast.nodes.items.len) break :blk false;
-                const child = ast.nodes.items[raw];
-                // template_element 는 리터럴 문자열 조각 — 항상 removable.
-                if (child.tag == .template_element) continue;
-                if (!isStmtRemovableDepth(ast, @enumFromInt(raw), ctx, d)) break :blk false;
-            }
-            break :blk true;
-        },
-
-        // @__PURE__ call/new — 사용자 assertion. member callee 여도 "제거해도 됨" 선언이므로
-        // purity 가 true 면 그대로 따름 (esbuild/rolldown 동일).
-        .call_expression, .new_expression => purity.isExprPure(ast, idx, ctx.unresolved_globals),
-
-        else => false,
-    };
+    return purity.isRemovableAtStmtPosDepth(ast, idx, ctx.stmtRemovalCtx(), depth);
 }

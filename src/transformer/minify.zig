@@ -107,6 +107,16 @@ pub const MinifyCtx = struct {
     /// elide 가능. caller (emitter) 가 `shaker != null` 일 때만 true 세팅.
     allow_top_level_dead: bool = false,
 
+    /// statement 자리 삭제 가능성 판정(`purity.isRemovableAtStmtPos`) 에 필요한 부분만
+    /// 추린 뷰. dead-store 제거 패스와 같은 술어를 공유하기 위한 어댑터 (#4514).
+    pub fn stmtRemovalCtx(self: MinifyCtx) purity.StmtRemovalCtx {
+        return .{
+            .symbol_ids = self.symbol_ids,
+            .symbols = self.symbols,
+            .unresolved_globals = self.unresolved_globals,
+        };
+    }
+
     /// semantic 없이 호출할 때 사용. dead store pass 는 skip 된다.
     pub const empty: MinifyCtx = .{
         .symbols = &.{},

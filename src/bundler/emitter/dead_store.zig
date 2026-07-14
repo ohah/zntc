@@ -25,9 +25,26 @@
 //!      → `windowBreaksFlow`: 사이 statement 가 바깥 흐름을 끊으면(밖으로 나가는
 //!      return/break/continue/throw) 제거 금지.
 //!
+//!   4. **mapped `arguments` aliasing** (#4514) — 비엄격(sloppy) 함수의 **파라미터** 는
+//!      `arguments` 객체와 양방향 aliasing 이다 (ECMA-262 CreateMappedArgumentsObject).
+//!      `arguments[0]` 읽기는 참조 배열에 파라미터의 read 로 잡히지 않으므로 두 store
+//!      사이의 `arguments` 접근이 앞 store 의 값을 관측할 수 있다.
+//!      → `storeIsProtected` 의 파라미터 차단.
+//!
+//! ## store 를 **지워도 되는가** — 값이 아니라 *평가 부수효과* (#4514)
+//!
+//! 위 1~4 는 "그 값을 읽는 코드가 있는가"(liveness) 다. 그것과 **별개** 로, 지우려는 store 의
+//! RHS/초기화자가 **평가만으로 관측 가능한 효과** 를 낼 수 있으면 값이 죽었어도 지우면 안 된다:
+//!   - `x = obj.p` — `p` 가 getter/Proxy trap 이면 호출이 사라진다
+//!   - `x = a.b.c` — `a.b` 가 nullish 면 던져야 할 TypeError 가 사라진다
+//!   - `x = undeclaredGlobal` — 던져야 할 ReferenceError 가 사라진다
+//! 이 패스는 예전에 tree-shaking 용 `purity.isExprPure` 를 썼는데, 그건 member access 와
+//! 미해결 식별자를 pure 로 친다 (esbuild 동일 — "선언을 안 만들어도 되는가" 기준).
+//! → 지금은 문 자리 DCE 와 같은 엄격 술어 `purity.isRemovableAtStmtPos` 를 쓴다.
+//!
 //! 판정이 불확실하면 **항상 "유지"**(보수적). 크기 몇 바이트보다 정확성이 우선이다.
 //! 반대로 *진짜* dead store — 함수 지역변수를 그 함수 안에서 덮어쓰는, DSE 수익의 대부분 —
-//! 는 세 가드 모두 통과하므로 계속 제거된다.
+//! 는 모든 가드를 통과하므로 계속 제거된다.
 
 const std = @import("std");
 const Module = @import("../module.zig").Module;
@@ -408,6 +425,16 @@ const Pass = struct {
     skip_nodes: *std.DynamicBitSet,
     module: *const Module,
 
+    /// 지우려는 store 의 RHS/초기화자가 **평가 부수효과 없이 통째로 삭제 가능한지** 판정할 때
+    /// 쓰는 컨텍스트 (#4514). 문 자리 DCE(`minify/unused_expr.zig`) 와 **같은 술어** 를 쓴다.
+    fn removalCtx(self: *const Pass) purity.StmtRemovalCtx {
+        return .{
+            .symbol_ids = self.symbol_ids,
+            .symbols = self.symbols,
+            .unresolved_globals = self.unresolved_globals,
+        };
+    }
+
     /// 이 심볼의 store 를 **절대 지우면 안 되는** 사유가 있는가 (심볼 단위 가드).
     ///
     /// `write_scope_id` 는 지우려는 store 가 있는 스코프. 판정 불가는 전부 "보호"(true).
@@ -443,6 +470,17 @@ const Pass = struct {
         const decl_scope = @intFromEnum(sym.scope_id);
         if (decl_scope >= self.scopes.len) return true;
         if (self.scopes[decl_scope].blocksMangling()) return true;
+
+        // (5) **mapped `arguments`** (#4514) — 비엄격 함수의 파라미터는 `arguments` 객체와
+        //     양방향 aliasing 이라 `arguments[0]` 읽기가 파라미터의 read 로 잡히지 않는다.
+        //     `function f(a){ a = 1; use(arguments[0]); a = 2; }` 에서 `a = 1` 을 지우면
+        //     `arguments[0]` 이 원래 인자값을 보게 된다.
+        //
+        //     엄격성은 **입력 파싱 기준**(ESM = strict)이지만 출력은 `--format=iife/cjs` 에서
+        //     "use strict" 없이 나갈 수 있어 런타임에는 sloppy 다 — 즉 `scopes[].is_strict` 로
+        //     걸러도 안전하지 않다. 파라미터를 두 번 연속 덮어쓰는(사이에 read 없는) 코드는
+        //     실전에 거의 없어 DSE 수익 손실이 사실상 0 이므로, 파라미터는 무조건 보호한다.
+        if (sym.decl_flags.is_parameter) return true;
 
         return false;
     }
@@ -629,7 +667,7 @@ fn markDeadOverwrittenInStatementList(pass: *const Pass, stmts: []const u32) voi
         if (raw_stmt >= ast.nodes.items.len) continue;
         if (raw_stmt < pass.skip_nodes.capacity() and pass.skip_nodes.isSet(raw_stmt)) continue;
         markDeadOverwrittenDeclarationInitializers(pass, raw_stmt, i, stmts);
-        const current = assignmentInfoForStmt(ast, raw_stmt, pass.symbol_ids, pass.unresolved_globals, true) orelse continue;
+        const current = assignmentInfoForStmt(ast, raw_stmt, pass.removalCtx(), true) orelse continue;
         const current_write = pass.ref_index.findWriteForAssignment(current.sym_idx, current.lhs_idx, @intCast(i)) orelse continue;
         if (pass.storeIsProtected(current.sym_idx, current_write.scope_id)) continue;
         const next_event = pass.ref_index.findOverwriteAfter(current_write) orelse continue;
@@ -638,7 +676,7 @@ fn markDeadOverwrittenInStatementList(pass: *const Pass, stmts: []const u32) voi
         const next_raw = stmts[next_event.stmt_idx];
         if (next_raw >= ast.nodes.items.len) continue;
         if (next_raw < pass.skip_nodes.capacity() and pass.skip_nodes.isSet(next_raw)) continue;
-        const next_assign = assignmentInfoForStmt(ast, next_raw, pass.symbol_ids, pass.unresolved_globals, false) orelse continue;
+        const next_assign = assignmentInfoForStmt(ast, next_raw, pass.removalCtx(), false) orelse continue;
         if (next_assign.sym_idx != current.sym_idx) continue;
         if (pass.ref_index.findWriteForAssignment(next_assign.sym_idx, next_assign.lhs_idx, next_event.stmt_idx) == null) continue;
         if (current.stmt_idx < pass.skip_nodes.capacity()) pass.skip_nodes.set(current.stmt_idx);
@@ -706,18 +744,15 @@ fn markDeadOverwrittenNestedStatementLists(pass: *const Pass, node_idx: u32) voi
                 nb += 1;
             }
         },
-        .switch_case => {
-            // extra: [test_expr, body.start, body.len]. case 본문 stmt list 직접 분석.
-            const ex = node.data.extra;
-            const extras = ast.extra_data.items;
-            if (ex + 2 < extras.len) {
-                const bs = extras[ex + 1];
-                const bl = extras[ex + 2];
-                if (bs + bl <= extras.len) {
-                    markDeadOverwrittenInStatementList(pass, extras[bs .. bs + bl]);
-                }
-            }
-        },
+        // **switch 본문은 의도적으로 미분석**이다 (#4514). 예전엔 `.switch_case` arm 이
+        // 있었지만 `.switch_statement` 로 내려가는 재귀가 없어 **도달 불가능한 죽은 코드**였다
+        // (switch_case 는 statement list 의 원소가 아니라 switch_statement 의 자식이다).
+        // 즉 지금까지 switch case 안에서는 DSE 가 한 번도 돌지 않았다 — 버그가 아니라
+        // **놓친 최적화**다. 여기서 되살리지 않는 이유:
+        //   - 이 PR 은 purity 오판(무성 오컴파일) 수정이 목적이라, 한 번도 실행된 적 없는
+        //     영역에 DSE 를 새로 켜면 size 측정과 회귀 원인 추적이 뒤섞인다.
+        //   - 켜려면 case 진입점이 여러 개(fallthrough / 직접 진입)라는 점을 별도로 검증해야
+        //     한다. 별도 PR 로 다룬다.
         else => {},
     }
     for (bodies[0..nb]) |child| {
@@ -779,7 +814,9 @@ fn markDeadOverwrittenDeclarationInitializers(
     if (name.tag != .binding_identifier) return;
     const sym_idx: u32 = @intCast(pass.symbol_ids[name_ni] orelse return);
     if (sym_idx >= pass.symbols.len) return;
-    if (!purity.isExprPure(ast, init_idx, pass.unresolved_globals)) return;
+    // 초기화자도 store 다 — 평가만으로 관측 가능한 효과(getter / TypeError /
+    // ReferenceError)가 있으면 지우면 안 된다 (#4514).
+    if (!purity.isRemovableAtStmtPos(ast, init_idx, pass.removalCtx())) return;
 
     const decl_scope = @intFromEnum(pass.symbols[sym_idx].scope_id);
     // 초기화자도 store 다 — 뒤의 재대입 사이에서 클로저가 읽을 수 있으면 지우면 안 된다 (#4503).
@@ -791,7 +828,7 @@ fn markDeadOverwrittenDeclarationInitializers(
 
     const next_raw = stmts[next_event.stmt_idx];
     if (next_raw >= ast.nodes.items.len) return;
-    const next_assign = assignmentInfoForStmt(ast, next_raw, pass.symbol_ids, pass.unresolved_globals, false) orelse return;
+    const next_assign = assignmentInfoForStmt(ast, next_raw, pass.removalCtx(), false) orelse return;
     if (next_assign.sym_idx != sym_idx) return;
     if (pass.ref_index.findWriteForAssignment(next_assign.sym_idx, next_assign.lhs_idx, next_event.stmt_idx) == null) return;
     ast.extra_data.items[de + 2] = @intFromEnum(NodeIndex.none);
@@ -806,12 +843,14 @@ fn isExportedSymbol(module: *const Module, sym_idx: u32) bool {
     return false;
 }
 
+/// `require_removable_rhs` — 이 statement 를 **지울 후보** 로 볼 때만 true. RHS 평가가
+/// 관측 가능한 효과(getter / TypeError / ReferenceError)를 낼 수 있으면 후보에서 제외한다
+/// (#4514). 뒤에 오는 *덮어쓰는* store 를 식별할 때는 지우지 않으므로 false 로 부른다.
 fn assignmentInfoForStmt(
     ast: *const Ast,
     stmt_idx: u32,
-    symbol_ids: []const ?u32,
-    unresolved_globals: ?*const purity.GlobalRefSet,
-    require_pure_rhs: bool,
+    removal_ctx: purity.StmtRemovalCtx,
+    require_removable_rhs: bool,
 ) ?AssignmentInfo {
     if (stmt_idx >= ast.nodes.items.len) return null;
     const stmt = ast.nodes.items[stmt_idx];
@@ -829,11 +868,11 @@ fn assignmentInfoForStmt(
     const lhs = ast.nodes.items[@intFromEnum(lhs_idx)];
     if (lhs.tag != .assignment_target_identifier and lhs.tag != .identifier_reference) return null;
     const lhs_ni = @intFromEnum(lhs_idx);
-    if (lhs_ni >= symbol_ids.len) return null;
-    const sym_idx: u32 = @intCast(symbol_ids[lhs_ni] orelse return null);
+    if (lhs_ni >= removal_ctx.symbol_ids.len) return null;
+    const sym_idx: u32 = @intCast(removal_ctx.symbol_ids[lhs_ni] orelse return null);
 
     const rhs_idx = expr.data.binary.right;
-    if (require_pure_rhs and !purity.isExprPure(ast, rhs_idx, unresolved_globals)) return null;
+    if (require_removable_rhs and !purity.isRemovableAtStmtPos(ast, rhs_idx, removal_ctx)) return null;
 
     return .{
         .stmt_idx = stmt_idx,
