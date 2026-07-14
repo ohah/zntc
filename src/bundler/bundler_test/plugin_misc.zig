@@ -570,6 +570,49 @@ test "Worker: new Worker(new URL) produces separate IIFE bundle" {
     try std.testing.expect(found_worker);
 }
 
+test "Worker: TS non-null assertion 이 붙은 callee 도 감지 (#4505)" {
+    // worker scan 은 **타입 소거 전** AST 를 본다. `new Worker!(new URL(...))` 의 callee 는
+    // `Worker!`(ts_non_null) 이지만 소거 후 런타임은 `new Worker(...)` 와 같으므로 worker
+    // 자산을 방출해야 한다. #4505 로 `!` 가 callee **안**에 머물게 되면서 이 경로에 도달한다
+    // (예전엔 `!` 가 new 밖으로 새어나가 `new Worker()(...)` 라는 다른 프로그램이 됐다).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.ts",
+        \\declare const Worker: any;
+        \\const w = new Worker!(new URL('./worker.ts', import.meta.url));
+        \\w.postMessage('hi');
+    );
+    try writeFile(tmp.dir, "worker.ts",
+        \\self.onmessage = (e) => self.postMessage('pong');
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+    });
+    defer b.deinit();
+
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // `!` 는 소거되고 specifier 는 chunk 파일명으로 치환된다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker(new URL(\"./worker-") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "./worker.ts") == null);
+    // 생성된 인스턴스를 *호출*하던 예전 오방출(`new Worker()(...)`)이 아니어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker()(") == null);
+
+    try std.testing.expect(result.asset_outputs != null);
+    var found_worker = false;
+    for (result.asset_outputs.?) |a| {
+        if (std.mem.startsWith(u8, a.path, "worker-")) found_worker = true;
+    }
+    try std.testing.expect(found_worker);
+}
+
 test "Worker: no Worker pattern means no extra assets" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

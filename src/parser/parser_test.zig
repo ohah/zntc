@@ -2345,11 +2345,22 @@ fn expectSingleParseErrorWithExt(source: []const u8, ext: []const u8, message: [
 /// 단일 new 표현식 소스의 **바깥** new_expression 을 찾아 callee 의 tag 와 인자 절 유무를 검증.
 /// AST 노드는 post-order(자식 먼저)로 추가되므로 **마지막** new_expression 이 바깥 new 다.
 /// `new new Inner().C()` 처럼 중첩 new 뒤의 member 체인이 바깥 callee 로 흡수됐는지 박제한다.
-fn expectOuterNewCallee(source: []const u8, callee_tag: Tag, had_arguments: bool) !void {
+///
+/// `ext` 가 non-null 이면 그 확장자로 파서를 설정한다(TS 전용 접미사 `!`/`<T>` 검증용, #4505).
+/// `callee_object_tag` 가 non-null 이면 callee(member/tagged template)의 object/tag(extra[0])
+/// 태그까지 확인한다 — `!` 가 callee **안**에 있음을 박제하려면 callee 태그만으론 부족하다.
+fn expectOuterNewCalleeImpl(
+    source: []const u8,
+    ext: ?[]const u8,
+    callee_tag: Tag,
+    callee_object_tag: ?Tag,
+    had_arguments: bool,
+) !void {
     var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
+    if (ext) |e| parser.configureFromExtension(e);
 
     _ = try parser.parse();
     try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
@@ -2361,8 +2372,25 @@ fn expectOuterNewCallee(source: []const u8, callee_tag: Tag, had_arguments: bool
     try std.testing.expect(outer != null);
     const callee = parser.ast.readExtraNode(outer.?.data.extra, 0);
     try std.testing.expectEqual(callee_tag, parser.ast.getNode(callee).tag);
+    if (callee_object_tag) |obj_tag| {
+        const obj = parser.ast.readExtraNode(parser.ast.getNode(callee).data.extra, 0);
+        try std.testing.expectEqual(obj_tag, parser.ast.getNode(obj).tag);
+    }
     const flags = parser.ast.readExtra(outer.?.data.extra, 3);
     try std.testing.expectEqual(had_arguments, (flags & ast_mod.CallFlags.had_arguments) != 0);
+}
+
+fn expectOuterNewCallee(source: []const u8, callee_tag: Tag, had_arguments: bool) !void {
+    return expectOuterNewCalleeImpl(source, null, callee_tag, null, had_arguments);
+}
+
+fn expectOuterNewCalleeTs(
+    source: []const u8,
+    callee_tag: Tag,
+    callee_object_tag: ?Tag,
+    had_arguments: bool,
+) !void {
+    return expectOuterNewCalleeImpl(source, ".ts", callee_tag, callee_object_tag, had_arguments);
 }
 
 test "new callee: 중첩 new 뒤 member/subscript 체인은 바깥 new 의 callee (#4500)" {
@@ -2392,6 +2420,38 @@ test "new callee: tagged template 도 callee 의 일부 (#4500)" {
     // 인자 *있는* new 뒤의 template 은 callee 가 아니라 new 결과를 태그한다(`(new a())`x``).
     // callee 루프는 `(` 에서 break 하므로 이 형태는 영향 없음.
     try expectOuterNewCallee("new a()`x`", .identifier_reference, true);
+}
+
+test "new callee: TS non-null assertion(`!`) 접미사도 callee 의 일부 (#4505)" {
+    // `new a!.b()` 의 callee 는 `a!.b` 다(`new (a!.b)()` — tsc AST 동일:
+    // `NewExpression(callee = PropertyAccess(NonNullExpression(a), b))`).
+    // callee 루프에 `!` arm 이 없어 `else => break` 로 빠지면 `.b` 가 바깥 new *밖*으로 새고,
+    // argless 로 끝난 new 에 codegen 이 `()` 를 붙여 `new a().b()` 를 방출했다 (#4505).
+    try expectOuterNewCalleeTs("new a!.b()", .static_member_expression, .ts_non_null_expression, true);
+    try expectOuterNewCalleeTs("new a!.b!.c()", .static_member_expression, .ts_non_null_expression, true);
+    try expectOuterNewCalleeTs("new a!`x`.B()", .static_member_expression, .tagged_template_expression, true);
+    try expectOuterNewCalleeTs("new a![k]()", .computed_member_expression, .ts_non_null_expression, true);
+    // callee 가 `a!` 자체 — 예전엔 callee=`a` 인 argless new 에 postfix 가 `()` 를 call 로 붙여
+    // `new a()()` 였다.
+    try expectOuterNewCalleeTs("new a!()", .ts_non_null_expression, null, true);
+    try expectOuterNewCalleeTs("new a!", .ts_non_null_expression, null, false);
+    // 인자 *있는* new 뒤의 `!` 는 callee 가 아니라 new 결과에 붙는다 — callee 는 `a` (회귀 가드).
+    try expectOuterNewCalleeTs("new a()!.b", .identifier_reference, null, true);
+}
+
+test "new callee: TS type arguments(`<T>`) 뒤의 체인도 callee (#4505)" {
+    // `` new a<T>`x`.B() `` 의 callee 는 `` a<T>`x`.B `` 다(타입 소거 후 `` a`x`.B ``).
+    // type-args speculation 이 callee 루프 *바깥*(`kw_new`)에 있어서 `<T>` 를 건너뛴 뒤의
+    // `` `x`.B `` 가 바깥 new 밖으로 샜다 → speculation 을 루프 **안**으로 옮겨 해결 (#4505).
+    try expectOuterNewCalleeTs("new a<T>`x`.B()", .static_member_expression, .tagged_template_expression, true);
+    try expectOuterNewCalleeTs("new a<T>`x`()", .tagged_template_expression, .identifier_reference, true);
+    try expectOuterNewCalleeTs("new a<T>.b()", .static_member_expression, .identifier_reference, true);
+    // 정상 형태 회귀 가드 — `<T>` 뒤가 바로 `(` 면 new **자신의** 타입 인자다(callee 는 `a`).
+    try expectOuterNewCalleeTs("new a<T>()", .identifier_reference, null, true);
+    try expectOuterNewCalleeTs("new a<T, U>(1)", .identifier_reference, null, true);
+    try expectOuterNewCalleeTs("new a<T>", .identifier_reference, null, false);
+    // callee 체인 뒤의 `<U>` 도 new 의 타입 인자 자리 — callee 는 `a!.b` 로 유지.
+    try expectOuterNewCalleeTs("new a!.b<U>()", .static_member_expression, .ts_non_null_expression, true);
 }
 
 test "new + optional chain: TS 타입 래퍼(!/as/<T>)가 argless-new head 를 가리지 못한다 (#4500)" {

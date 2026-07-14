@@ -69,3 +69,33 @@ test "new callee: 명시 괄호 형태의 round-trip (#4500)" {
     try expectEmitAndIdempotent("const x = new (new A().b)();", "const x=new new A().b();");
     try expectEmitAndIdempotent("const y = new (tag`x`.B)();", "const y=new tag`x`.B();");
 }
+
+test "new callee: TS non-null assertion(`!`) 은 callee 안에 머문다 (#4505)" {
+    // `new a!.b()` 의 callee 는 `a!.b` 다(`new (a!.b)()`, tsc 동일). `!` 를 callee 루프에서
+    // 흡수하지 않으면 `.b` 가 new 밖으로 새고 argless 로 끝난 new 에 codegen 이 `()` 를 붙여
+    // `new a().b()` — **a 를 생성한 뒤 그 결과의 .b 를 호출**하는 다른 프로그램이 됐다.
+    try expectEmitAndIdempotent("const x = new a!.b();", "const x=new a.b();");
+    try expectEmitAndIdempotent("const y = new a!.b!.c();", "const y=new a.b.c();");
+    try expectEmitAndIdempotent("const t = new a!`x`.B();", "const t=new a`x`.B();");
+    // callee 가 `a!` 자체인 형태 — 예전엔 `new a()()` (생성 결과를 *호출*) 였다.
+    try expectEmitAndIdempotent("const z = new a!();", "const z=new a();");
+    // 인자 *있는* new 뒤의 `!` 는 callee 가 아니라 new 결과에 붙는다(`(new f())!.b`) — 회귀 가드.
+    try expectEmitAndIdempotent("const w = new f()!.b;", "const w=new f().b;");
+    // new 없는 `a!.b()` 는 원래 정상 (회귀 가드).
+    try expectEmitAndIdempotent("const v = a!.b();", "const v=a.b();");
+}
+
+test "new callee: TS type arguments(`<T>`) 뒤의 체인도 callee (#4505)" {
+    // `` new a<T>`x`.B() `` 의 callee 는 `` a<T>`x`.B `` 다(타입 소거 후 `` a`x`.B ``).
+    // type-args speculation 이 callee 루프 *바깥*에 있어 `<T>` 뒤 체인이 new 밖으로 샜다.
+    try expectEmitAndIdempotent("const x = new a<T>`x`.B();", "const x=new a`x`.B();");
+    try expectEmitAndIdempotent("const y = new a<T>`x`();", "const y=new a`x`();");
+    try expectEmitAndIdempotent("const z = new a<T>.b();", "const z=new a.b();");
+    // 정상 형태 회귀 가드 — `<T>` 뒤가 바로 `(` 면 new 자신의 타입 인자다.
+    try expectEmitAndIdempotent("const w = new a<T>();", "const w=new a();");
+    try expectEmitAndIdempotent("const u = new a<T, U>(1);", "const u=new a(1);");
+    // callee 체인 뒤의 `<U>` 도 (타입 인자로) 소거되고 인자 절만 남는다.
+    try expectEmitAndIdempotent("const v = new a!.b<U>();", "const v=new a.b();");
+    // `<` 가 type-args 가 아니면 비교 연산자로 남아야 한다 — speculation 실패 경로 가드.
+    try expectEmitAndIdempotent("const c = new a<T>[k]();", "const c=new a()<T>[k]();");
+}

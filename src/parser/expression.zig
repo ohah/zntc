@@ -1399,6 +1399,11 @@ fn parseNewCallee(self: *Parser, out_callee_optional: *bool) ParseError2!NodeInd
     // new callee 에 optional chain(`a?.b`)이 있으면 SyntaxError — 진단은 callee 당 1회만.
     // 보고 여부는 out 파라미터로 new 노드까지 올려보낸다(로컬 플래그로 끝내면 postfix 루프가
     // 같은 new 를 모른 채 623 을 또 낸다 — #4048).
+    //
+    // `type_args_attempted`: 아래 루프의 `<T>` arm 이 speculation 을 **시도**했는지.
+    // 루프 뒤의 마무리 speculation(예전 `kw_new` 자리의 호출)을 중복 실행하지 않기 위한 것 —
+    // 시도해서 실패했다면 같은 파서 상태에서 다시 해도 결과가 같다 (#4505).
+    var type_args_attempted = false;
     while (true) {
         const expr_start = self.ast.getNode(expr).span.start;
         switch (self.current()) {
@@ -1494,8 +1499,49 @@ fn parseNewCallee(self: *Parser, out_callee_optional: *bool) ParseError2!NodeInd
                 // 오파싱됐다(#4500).
                 expr = try finishTaggedTemplate(self, expr, expr_start);
             },
+            .l_angle, .shift_left => {
+                // TS type arguments: `new a<T>\`x\`.B()` / `new a<T>.b()` / `new a<T>()`.
+                // 타입 인자 **뒤**에 오는 `` `x` ``/`.B` 도 여전히 callee(MemberExpression)의
+                // 일부이므로, speculation 을 이 루프 **안**에서 해야 뒤의 체인을 계속 흡수한다.
+                // 예전엔 speculation 이 루프 *바깥*(`kw_new`)에 있어 `<T>` 를 건너뛴 뒤 체인이
+                // 바깥 new 밖으로 새어나갔고, argless 로 끝난 new 에 codegen 이 `()` 를 붙여
+                // `` new a()`x`.B() `` 를 진단 없이 방출했다 (#4505).
+                //
+                // 두 가드는 postfix 루프와 동일한 이유다: literal LHS 는 generic-call target 이
+                // 될 수 없고, 이미 speculation 안이면 재진입이 O(2^N) 로 폭주한다. 가드로
+                // break 하는 경우엔 `type_args_attempted` 를 세우지 않아, 루프 뒤 마무리
+                // speculation 이 예전 동작을 그대로 이어받는다.
+                if (self.ast.getNode(expr).tag.isLiteralTag()) break;
+                if (self.in_type_args_speculation) break;
+                type_args_attempted = true;
+                // 성공: 스캐너가 `<T>` 뒤로 전진(타입 인자는 AST 에 남지 않는다) → 루프 계속.
+                // 실패: `<` 는 비교 연산자 → 루프 종료(상위가 이항식으로 처리).
+                if (!trySkipTypeArgsSpeculative(self, true, type_args.canFollowTypeArgumentsInExpression)) break;
+            },
+            .bang => {
+                // TS non-null assertion: `new a!.b()` 의 callee 는 `a!.b` 다
+                // (`new (a!.b)()`). `!` 는 타입 소거 후 사라지지만, **파싱 시점에** callee 안으로
+                // 흡수하지 않으면 뒤의 `.b` 가 new 밖으로 새어나가 `new a().b()` 라는 다른
+                // 프로그램이 된다 (#4505). postfix 루프의 `.bang` arm 과 동일한 규칙:
+                //   - 줄바꿈 뒤의 `!` 는 논리 NOT 이므로 제외.
+                //   - `!` 는 postfix 연산자 → 뒤의 `/` 는 regex 가 아니라 나눗셈.
+                if (self.scanner.token.has_newline_before) break;
+                self.scanner.prev_token_kind = .r_paren;
+                try self.advance();
+                expr = try self.ast.addNode(.{
+                    .tag = .ts_non_null_expression,
+                    .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
+                });
+            },
             else => break,
         }
+    }
+    // 루프가 `<T>` 에 닿기 전에 빠져나온 경로(literal LHS·중첩 speculation 가드, `?.` 복구의
+    // `new a?.<T>()`)를 위한 마무리 — 예전 `kw_new` 자리의 speculation 을 그대로 옮겼다.
+    // 여기서 건너뛴 `<T>` 는 callee 가 아니라 **new 자신의** 타입 인자 위치다(`new a<T>()`).
+    if (!type_args_attempted) {
+        _ = trySkipTypeArgsSpeculative(self, true, type_args.canFollowTypeArgumentsInExpression);
     }
     return expr;
 }
@@ -1643,11 +1689,12 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
 
             // callee: 재귀적으로 new 또는 primary + member chain
             // callee 에 `?.` 가 있어 623 을 보고했으면 그 사실을 new 노드 flag 로 보존한다 (#4048).
+            //
+            // TS/Flow type argument(`new X<T>()`)의 skip 도 parseNewCallee 안에서 끝낸다 —
+            // 여기(루프 바깥)에서 하면 `<T>` 뒤에 이어지는 callee 체인(`` new a<T>`x`.B() ``)을
+            // 흡수할 수 없다 (#4505).
             var callee_optional = false;
             const callee = try parseNewCallee(self, &callee_optional);
-
-            // TS/Flow: new X<T>() — type argument를 speculatively 파싱하여 skip
-            _ = trySkipTypeArgsSpeculative(self, true, type_args.canFollowTypeArgumentsInExpression);
 
             // 인자: (args) — 있으면 소비, 없으면 인자 없는 new (new Foo)
             if (self.current() == .l_paren) {
