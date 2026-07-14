@@ -533,4 +533,67 @@ describe('#4524: --preserve-modules × CJS', () => {
       }
     });
   }
+  // ─── #4528 3차: 리뷰가 "고쳐지지 않았다" 고 잡은 2건 ───
+
+  for (const format of ['esm', 'cjs'] as const) {
+    test(`#4528 ${format}: 소비자 자신의 init 이 첫 호출이어도 const/class 가 undefined 가 아니다`, async () => {
+      // ⚠️ forwarding 안에서 심볼 갱신을 `init_X()` **호출 전에** 하면 여전히 undefined 다
+      // (값이 `__esm` 클로저 안에서 대입되므로). init 은 memoize 라 재갱신 기회도 없다.
+      // → **init 을 먼저 돌리고 그 다음 갱신**해야 한다.
+      //
+      // ⚠️ 이 픽스처는 entry 가 **b.js 를 먼저** import 한다 — 그래야 소비자 자신의 `init_b()`
+      // 가 첫 호출이 되어 버그가 드러난다. a.cjs 를 먼저 import 하면 provider 의 init 이 먼저
+      // 돌아 **버그가 가려진다**(이전 테스트가 딱 그래서 통과하고 있었다).
+      const { outDir, cleanup } = await buildPm(
+        {
+          'b.js':
+            'export const CONST = "C";\n' +
+            'export class W { hi(){ return "W"; } }\n' +
+            'export let mut = "M";\n' +
+            'export function fn(){ return "F"; }',
+          'a.cjs': 'const b = require("./b.js");\nmodule.exports = { run: () => b.CONST };',
+          'entry.js':
+            'import { CONST, W, mut, fn } from "./b.js";\n' +
+            'import a from "./a.cjs";\n' +
+            'console.log([CONST, new W().hi(), mut, fn()].join("|") + " " + a.run());',
+        },
+        'entry.js',
+        format,
+      );
+      try {
+        const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+        // 버그 시: TypeError: W is not a constructor (CONST/mut 은 undefined, 함수만 살아남음)
+        expect(stderr).not.toContain('TypeError');
+        expect(stdout.trim()).toBe('C|W|M|F C');
+      } finally {
+        await cleanup();
+      }
+    });
+
+    test(`#4528 ${format}: 동명 심볼을 내는 wrap 된 dep 이 둘이어도 중복 선언되지 않는다`, async () => {
+      // `let tag;` 가 두 번 나오면 **파싱 불가**(SyntaxError). 심볼 분기와 **같은** `$N`
+      // deconflict 를 써야 한다.
+      const { outDir, cleanup } = await buildPm(
+        {
+          'b.js': 'export function tag(){ return "B"; }',
+          'c.js': 'export function tag(){ return "C"; }',
+          'a.cjs':
+            'const b = require("./b.js");\nconst c = require("./c.js");\nmodule.exports = { x: 1 };',
+          'entry.js':
+            'import { tag } from "./b.js";\n' +
+            'import a from "./a.cjs";\n' +
+            'console.log(tag() + a.x);',
+        },
+        'entry.js',
+        format,
+      );
+      try {
+        const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+        expect(stderr).not.toContain('SyntaxError');
+        expect(stdout.trim()).toBe('B1');
+      } finally {
+        await cleanup();
+      }
+    });
+  }
 });
