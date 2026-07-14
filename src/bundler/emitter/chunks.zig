@@ -990,7 +990,11 @@ pub fn emitChunks(
             const em = graph.getModule(info.module) orelse break :cjs_dyn_entry;
             if (em.wrap_kind != .cjs) break :cjs_dyn_entry;
             const l = linker orelse break :cjs_dyn_entry;
-            const expr = try l.cjsInteropAccessExpr(allocator, em, linker_mod.CJS_NS_EXPORT_NAME, options.minify_whitespace);
+            // 진짜 `import()` 대상이면 **namespace 통째**(#4522), federation expose /
+            // plugin emitFile 이면 기존 계약(`default` = module.exports 값) 그대로.
+            const is_ns = dynamicCjsNamespaceEntry(chunk, graph, true, options.preserve_modules) != null;
+            const member = if (is_ns) linker_mod.CJS_NS_EXPORT_NAME else "default";
+            const expr = try l.cjsInteropAccessExpr(allocator, em, member, options.minify_whitespace);
             defer allocator.free(expr);
             const min = options.minify_whitespace;
             if (options.format == .esm) {
@@ -1901,16 +1905,16 @@ fn rewriteDynamicImports(
         // 슬롯에 통째로 실어 보낸다(위 `cjs_dyn_entry` 참조 — CJS 의 named 멤버는 ESM
         // export 문법으로 정적 표현이 불가능해서 그 방법밖에 없다). 소비자는 한 겹 벗겨야
         // 진짜 namespace 를 얻는다. 조건은 provider 쪽 emit 조건과 **정확히 같아야** 한다.
-        const cjs_dyn_unwrap = !emit_options.preserve_modules and blk: {
-            const tc = chunk_graph.getChunk(target_chunk_idx);
-            const info = switch (tc.kind) {
-                .entry_point => |i| i,
-                .common, .manual => break :blk false,
-            };
-            if (!info.is_dynamic) break :blk false;
-            if (info.module != rec.resolved) break :blk false;
-            const em = graph.getModule(info.module) orelse break :blk false;
-            break :blk em.wrap_kind == .cjs;
+        const cjs_dyn_unwrap = blk: {
+            const mi = dynamicCjsNamespaceEntry(
+                target_chunk,
+                graph,
+                linker != null,
+                emit_options.preserve_modules,
+            ) orelse break :blk false;
+            // 그 청크가 **이 대상 모듈**의 dynamic entry 일 때만. (CJS 가 남의 dynamic entry
+            // 청크에 병합돼 들어온 경우엔 provider 가 그 모듈용 namespace 를 안 낸다.)
+            break :blk mi == rec.resolved;
         };
         const unwrap: []const u8 = if (cjs_dyn_unwrap) ".default" else "";
 
@@ -1952,14 +1956,23 @@ fn rewriteDynamicImports(
 
         // ESM: 네이티브 import() 유지 — specifier 만 청크 파일명으로 교체.
         // 단 CJS dynamic entry 청크면 namespace 를 한 겹 벗겨야 한다(#4522).
+        // ⚠️ 여기서 `rewriteImportCallToWrapper`(첫 indexOf 1회 + attributes 미지원)를 쓰면
+        // 문자열 리터럴 선행 occurrence / import attributes 에서 **specifier 가 통째로
+        // 미치환** 되어 ERR_MODULE_NOT_FOUND 다(#4295 회귀). specifier 교체는 아래 기존
+        // positional-walk 경로와 **같은 규칙**으로 하고 suffix 만 덧붙인다.
         if (cjs_dyn_unwrap) {
-            const wrapper = try std.fmt.allocPrint(allocator, "import(\"{s}\").then((m)=>m.default)", .{replacement});
-            defer allocator.free(wrapper);
-            if (try rewriteImportCallToWrapper(allocator, result, rec.specifier, wrapper)) |new_result| {
+            if (try rewriteImportCallAppendSuffix(
+                allocator,
+                result,
+                rec.specifier,
+                replacement,
+                ".then((m)=>m.default)",
+            )) |new_result| {
                 allocator.free(result);
                 result = new_result;
+                continue;
             }
-            continue;
+            // 폴백: suffix 를 못 붙였으면 최소한 specifier 는 고친다(아래 공통 경로).
         }
 
         // 실제 `import("specifier")` 호출 안의 specifier 만 교체 (prefix 충돌/문자열 리터럴 회피).
@@ -2074,6 +2087,123 @@ pub fn rewriteDynamicImportsSingleFile(
     }
 
     return result;
+}
+
+/// (#4522) 이 청크가 **동적 CJS entry** 라서 `default` 슬롯에 namespace 를 통째로 싣는가.
+/// 그렇다면 그 모듈 인덱스를 돌려준다.
+///
+/// provider emit(`cjs_dyn_entry`) / consumer unwrap(`rewriteDynamicImports`) / `__toESM` 헬퍼
+/// 주입(runtime_helpers) — **세 곳이 반드시 같은 술어**를 봐야 한다. 어긋나면:
+///   - provider 만 켜짐 → 소비자가 안 벗겨 값이 한 겹 더 감싸진다.
+///   - consumer 만 켜짐 → export 가 없는데 `.default` 를 벗겨 **undefined** → TypeError.
+/// 실제로 `linker == null`(scopeHoist=false) 에서 provider 는 bail 하는데 consumer 는 안 봐서
+/// 후자가 났다. 그래서 복붙을 없애고 여기 한 곳으로 모은다.
+pub fn dynamicCjsNamespaceEntry(
+    chunk: *const Chunk,
+    graph: *const ModuleGraph,
+    has_linker: bool,
+    preserve_modules: bool,
+) ?ModuleIndex {
+    if (preserve_modules) return null;
+    if (!has_linker) return null; // provider 가 `linker orelse break` 로 bail 하는 조건
+    const info = switch (chunk.kind) {
+        .entry_point => |i| i,
+        .common, .manual => return null,
+    };
+    if (!info.is_dynamic) return null;
+    // (#4522) federation expose / plugin emitFile 청크도 dynamic entry 모양이지만 그 소비자는
+    // zntc 가 아니라 **container factory / 사용자 코드**다. `default` 슬롯 의미를 바꾸면
+    // (module.exports 값 → namespace) 그쪽이 조용히 깨진다 → 진짜 `import()` 대상만.
+    if (!info.is_import_call) return null;
+    const em = graph.getModule(info.module) orelse return null;
+    if (em.wrap_kind != .cjs) return null;
+    return info.module;
+}
+
+/// (#4522) `import("<spec>")` 호출의 specifier 를 바꾸고 **호출 뒤에** suffix 를 덧붙인다
+/// (`import("./c.js").then((m)=>m.default)`).
+///
+/// `rewriteImportSpecifier` 와 **같은 positional walk** 를 쓴다 — 문자열 리터럴 안의 substring
+/// 이나 prefix 충돌(`./x` vs `./xyz`)을 오재작성하지 않고 **모든 occurrence** 를 처리한다.
+/// 호출 끝은 괄호 균형으로 찾으므로 import attributes(`import("./x", { with: {…} })`)도
+/// 안전하다.
+///
+/// ⚠️ `rewriteImportCallToWrapper` 를 쓰면 안 된다 — 첫 `indexOf` 1회만 보고(문자열 리터럴이
+/// 앞에 있으면 그걸 잡고 실패) attributes 도 의도적으로 미지원이라, 둘 다 **specifier 미치환
+/// → ERR_MODULE_NOT_FOUND** 다(#4295 가 고쳤던 바로 그 miscompile).
+///
+/// 호출 끝을 못 찾으면 null — caller 는 기존 specifier-only 경로로 폴백한다.
+fn rewriteImportCallAppendSuffix(
+    allocator: std.mem.Allocator,
+    code: []const u8,
+    specifier: []const u8,
+    replacement: []const u8,
+    suffix: []const u8,
+) !?[]u8 {
+    if (specifier.len == 0) return null;
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var i: usize = 0;
+    var any = false;
+    while (i < code.len) {
+        const rel = std.mem.indexOf(u8, code[i..], specifier) orelse break;
+        const pos = i + rel;
+        const close: ?usize = blk: {
+            const c = importSpecifierCloseAt(code, pos, specifier.len) orelse break :blk null;
+            break :blk if (code[c] == ')' or code[c] == ',') c else null;
+        };
+        if (close) |c| {
+            const call_end = importCallEndFrom(code, c) orelse {
+                out.deinit(allocator);
+                return null; // 균형 파괴 — 폴백
+            };
+            try out.appendSlice(allocator, code[i..pos]);
+            try out.appendSlice(allocator, replacement);
+            try out.appendSlice(allocator, code[pos + specifier.len .. call_end + 1]);
+            try out.appendSlice(allocator, suffix);
+            i = call_end + 1;
+            any = true;
+        } else {
+            // import 호출이 아닌 occurrence — 첫 글자만 흘려보내고 다음 후보부터 재검색.
+            try out.appendSlice(allocator, code[i .. pos + 1]);
+            i = pos + 1;
+        }
+    }
+    if (!any) {
+        out.deinit(allocator);
+        return null;
+    }
+    try out.appendSlice(allocator, code[i..]);
+    return try out.toOwnedSlice(allocator);
+}
+
+/// `import(` 를 닫는 `)` 의 인덱스. `from` 은 specifier 닫는 quote **다음** 바이트(= 이미
+/// `import(` 안이므로 depth 1 에서 시작). 문자열 리터럴 안의 괄호는 건너뛴다.
+fn importCallEndFrom(code: []const u8, from: usize) ?usize {
+    var depth: usize = 1;
+    var j = from;
+    while (j < code.len) : (j += 1) {
+        switch (code[j]) {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if (depth == 0) return j;
+            },
+            '"', '\'', '`' => {
+                const q = code[j];
+                j += 1;
+                while (j < code.len) : (j += 1) {
+                    if (code[j] == '\\') {
+                        j += 1;
+                        continue;
+                    }
+                    if (code[j] == q) break;
+                }
+            },
+            else => {},
+        }
+    }
+    return null;
 }
 
 fn rewriteImportCallToWrapper(

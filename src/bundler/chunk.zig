@@ -170,6 +170,11 @@ pub const ChunkKind = union(enum) {
         module: ModuleIndex,
         /// 동적 import로 생성된 진입점인지 여부
         is_dynamic: bool,
+        /// (#4522) 그 dynamic entry 가 **진짜 `import()` 대상**인지. federation expose /
+        /// plugin `emitFile({type:'chunk'})` 도 같은 dynamic entry 모양을 쓰지만, 그쪽
+        /// 소비자는 zntc 가 아니라 **container factory / 사용자 코드**다. 그래서 CJS 청크의
+        /// `default` 슬롯 의미를 바꾸면(값 → namespace) 조용히 깨진다 — 그 둘은 제외한다.
+        is_import_call: bool = false,
     },
     /// 여러 진입점이 공유하는 공통 청크
     common,
@@ -521,6 +526,8 @@ fn isAsciiAlpha(c: u8) bool {
 const EntryInfo = struct {
     module_idx: ModuleIndex,
     is_dynamic: bool,
+    /// (#4522) 진짜 `import()` 대상인가 (federation expose / plugin emitFile 은 false).
+    is_import_call: bool = false,
 };
 
 /// 모듈 그래프에서 청크를 생성한다 (esbuild/rolldown 패턴).
@@ -624,6 +631,7 @@ fn addDynamicEntry(
     dynamic_seen: *std.AutoHashMapUnmanaged(u32, void),
     graph: *const ModuleGraph,
     idx: ModuleIndex,
+    is_import_call: bool,
 ) !void {
     if (graph.getModule(idx)) |m| {
         if (m.is_external) return; // external phantom 은 async chunk 불요(번들 외부)
@@ -634,7 +642,7 @@ fn addDynamicEntry(
     for (entries.items) |e| {
         if (@intFromEnum(e.module_idx) == di and !e.is_dynamic) return; // 이미 user entry
     }
-    try entries.append(allocator, .{ .module_idx = idx, .is_dynamic = true });
+    try entries.append(allocator, .{ .module_idx = idx, .is_dynamic = true, .is_import_call = is_import_call });
 }
 
 /// entries 에서 module_idx 의 entry bit(= entries 인덱스)를 찾는다. 없으면 null(entry 청크 아님).
@@ -695,7 +703,7 @@ pub fn generateChunks(
         var it = graph.modulesIterator();
         while (it.next()) |m| {
             for (m.dynamic_imports.items) |dyn_idx|
-                try addDynamicEntry(allocator, &entries, &dynamic_seen, graph, dyn_idx);
+                try addDynamicEntry(allocator, &entries, &dynamic_seen, graph, dyn_idx, true);
         }
     }
 
@@ -711,7 +719,7 @@ pub fn generateChunks(
             const fidx = ModuleIndex.fromUsize(mi);
             const fm = graph.getModule(fidx) orelse continue;
             if (!fm.is_federation_expose) continue;
-            try addDynamicEntry(allocator, &entries, &dynamic_seen, graph, fidx);
+            try addDynamicEntry(allocator, &entries, &dynamic_seen, graph, fidx, false); // MF expose — 소비자는 container factory
         }
     }
 
@@ -723,7 +731,7 @@ pub fn generateChunks(
             const eidx = ModuleIndex.fromUsize(mi);
             const em = graph.getModule(eidx) orelse continue;
             if (!em.is_emitted_chunk_entry) continue;
-            try addDynamicEntry(allocator, &entries, &dynamic_seen, graph, eidx);
+            try addDynamicEntry(allocator, &entries, &dynamic_seen, graph, eidx, false); // plugin emitFile — 소비자는 사용자 코드
         }
     }
 
@@ -833,6 +841,7 @@ pub fn generateChunks(
             .bit = @intCast(bit_idx),
             .module = entry.module_idx,
             .is_dynamic = entry.is_dynamic,
+            .is_import_call = entry.is_import_call,
         } }, bits);
         chunk.name = name;
         chunk.explicit_file_name = explicit_file_name;
