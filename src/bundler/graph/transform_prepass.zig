@@ -588,7 +588,18 @@ pub fn resyncAfterAstMutation(
         const previous_kind = module.exports_kind;
         const preserve_esm = refreshed_kind == .none and previous_kind.isEsm();
         module.exports_kind = if (preserve_esm) previous_kind else refreshed_kind;
-        module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
+        // #4520: wrap_kind 는 `promoteExportsKinds` 가 그래프 전역 정보로 정하는 결정이라
+        // 여기(단일 모듈 구문 재스캔)서 복원할 수 없다. 확정 전(파스 직후 prepass / 디스크
+        // 캐시 복원)에는 이 재계산이 곧 최초 분류라 유지하고, 확정 후(tree-shaker 의 post-link
+        // AST 변형 resync)에는 건드리지 않는다.
+        //
+        // 이 가드가 없으면 크로스-모듈 const-inline 등으로 AST 가 변형된 dynamic import
+        // target 의 `__esm` lazy wrap 이 `.none` 으로 풀려, emitter 가 `import("./x")` 를
+        // `init_x()` 호출로 재작성하지 못하고 원문 그대로 남긴다 (번들 밖 sibling 파일을
+        // 찾아 런타임 실패) + 모듈 본문이 top-level 로 평탄화되어 TDZ 까지 유발한다.
+        if (!self.wrap_kinds_finalized) {
+            module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
+        }
         module.has_cjs_export_signal = refreshed_scan_result.has_module_exports or refreshed_scan_result.has_exports_dot;
         module.has_esmodule_marker = refreshed_scan_result.has_esmodule_marker;
         module.can_skip_cjs_default_interop = Module.computeCanSkipCjsDefaultInterop(

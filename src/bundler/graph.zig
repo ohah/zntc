@@ -118,6 +118,16 @@ pub const ModuleGraph = struct {
     exec_counter: u32 = 0,
     cycle_counter: u32 = 0,
 
+    /// `promoteExportsKinds` 가 wrap_kind 확정을 마쳤는지 (#4520).
+    ///
+    /// wrap_kind 는 "누가 나를 require 하는가 / 내가 dynamic import target 인가 /
+    /// RN·dev wrap-all 인가" 같은 **그래프 전역** 정보로 정해진다. 반면
+    /// `resyncAfterAstMutation` 은 **단일 모듈 구문 재스캔**이라 그 정보를 복원할 수
+    /// 없다. 확정 전(파스 직후 transform prepass / 디스크 캐시 복원)에는 재스캔이
+    /// 곧 최초 분류라 그대로 써도 되지만, 확정 후(tree-shaker 의 post-link AST 변형
+    /// 등)에 다시 덮어쓰면 `__esm` lazy wrap 이 통째로 날아간다.
+    wrap_kinds_finalized: bool = false,
+
     /// `requestDependencyExports` 의 per-importer 캐시 (record_index → binding 인덱스, CSR).
     /// 과거엔 record 마다 `import_bindings` 전체를 선형 스캔 → mega-entry/대형 barrel(한 모듈이
     /// N개 import)에서 record N개 × binding N개 = **O(N²)**. `resolveModuleImports` 가 한 모듈의

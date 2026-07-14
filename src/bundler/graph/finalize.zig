@@ -163,6 +163,10 @@ pub fn promoteExportsKinds(self: *ModuleGraph) void {
             m.wrap_kind = .esm;
         }
     }
+
+    // #4520: 여기까지가 wrap_kind 의 그래프 전역 결정. 이후 AST 변형 resync 가
+    // 단일 모듈 재스캔으로 이 결과를 덮어쓰지 못하게 잠근다.
+    self.wrap_kinds_finalized = true;
 }
 
 fn shouldUseMetroCjsForMixedModule(self: *ModuleGraph, module: *const Module) bool {

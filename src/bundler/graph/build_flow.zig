@@ -698,6 +698,45 @@ fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
         }
     }
 
+    // #4520: dynamic import 로만 도달하는 모듈에도 exec_index 를 부여한다.
+    //
+    // 위 DFS 는 entry(+emit chunk entry)에서 `dependencies`(정적 edge)만 따라가므로,
+    // `import()` 로만 닿는 모듈은 한 번도 방문되지 않아 exec_index 가 초기값
+    // maxInt(u32) 로 남는다. 그러면 `Module.bundleOrderLessThan` 의 exec_index 비교가
+    // 전부 동률이 되어 **경로 사전순** tie-break 으로 떨어지고, 방출 순서가 위상 순서를
+    // 어긴다 (의존성이 소비자보다 뒤에 나옴 → TDZ `Cannot access 'X' before
+    // initialization`). 단일 번들처럼 dynamic target 이 같은 파일로 인라인될 때 실제
+    // 런타임 크래시로 드러난다.
+    //
+    // dynamic target 을 **추가 DFS 루트**로 삼아 같은 후위 순회를 돌리면, 그 서브그래프
+    // 안에서도 "의존성 먼저" 위상 순서가 보장된다. 정적 루트 DFS 를 모두 마친 뒤에
+    // 돌리는 것이 핵심 — 이미 방문된 모듈은 dfs 가 즉시 return 하므로 기존 모듈의
+    // exec_index 는 한 개도 바뀌지 않고(회귀 0), 새로 번호를 받는 건 예전에
+    // maxInt 였던 모듈들뿐이다. 이들은 정적 모듈보다 큰 번호를 받아 여전히 뒤에
+    // 배치되는데, 정적 importer 가 없는 모듈이라 이는 안전하다.
+    //
+    // 루트 순회는 module index 오름차순 + 각 모듈의 dynamic_imports 등록 순 — renumber
+    // 로 결정화된 순서라 빌드 간 exec_index 가 결정적이다 (#3564).
+    {
+        // 정적 루트 DFS 가 끝난 **지금** 미방문인 모듈 = 동적 도달 전용. 아래 DFS 가
+        // 이들을 방문해버리므로 반드시 먼저 표시한다 (emitter 의 TLA 경고 억제가 참조).
+        var mi: usize = 0;
+        while (mi < self.modules.count()) : (mi += 1) {
+            self.modules.at(mi).only_dynamically_reached = !visited.isSet(mi);
+        }
+
+        mi = 0;
+        while (mi < self.modules.count()) : (mi += 1) {
+            const dyn = self.modules.at(mi).dynamic_imports.items;
+            for (dyn) |target_idx| {
+                const ti = @intFromEnum(target_idx);
+                if (ti >= self.modules.count()) continue;
+                if (visited.isSet(ti)) continue;
+                try graph_cycles.dfs(self, target_idx, &visited, &in_stack);
+            }
+        }
+    }
+
     // dfs 는 dependencies 만 따라가서 exec_index/TLA 분석 정확. dynamic edge 통한
     // static cycle 멤버 marking 은 별도 pass (#2211).
     try graph_cycles.markViaDynamic(self, entry_indices.items);
@@ -1561,6 +1600,8 @@ fn resetPerBuildStateForPreserved(self: *ModuleGraph) void {
     self.source_read_cache = .{};
     self.exec_counter = 0;
     self.cycle_counter = 0;
+    // #4520: exec_counter 와 같은 per-build 상태 — finalizeGraph 의 promoteExportsKinds 가 재확정.
+    self.wrap_kinds_finalized = false;
     var req_it = self.requested_exports.valueIterator();
     while (req_it.next()) |req| req.deinit(self.allocator);
     self.requested_exports.clearRetainingCapacity();
