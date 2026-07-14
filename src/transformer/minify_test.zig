@@ -1801,9 +1801,25 @@ test "unused: foo() === pure → foo()" {
     );
 }
 
-test "unused: pure < foo() → foo()" {
+test "unused: pure < foo() → 그대로 (`<` 는 ToPrimitive 를 건다)" {
+    // 예전엔 `foo()` 로 축약했는데 **불건전**하다. `<` 는 양쪽 피연산자에 ToPrimitive 를
+    // 걸어 `foo()` 결과의 `valueOf`/`Symbol.toPrimitive` 를 부른다 — 왼쪽 리터럴을 지우면
+    // 그 호출이 사라진다.
+    //
+    //   function foo(){ return { valueOf(){ log.push("vo"); return 1; } }; }
+    //   1 < foo();   // node: valueOf 호출됨.  `foo();` 로 바꾸면 호출 안 됨.
+    //
+    // esbuild 도 이 문을 건드리지 않는다(`function f(){1<foo()}`). 강제 변환이 전혀 없는
+    // `===`/`!==` 만 축약 대상이다.
     try expectMinifyDead(
         "1 < foo();",
+        "function run() {\n\t1 < foo();\n}\nrun();",
+    );
+}
+
+test "unused: pure === foo() → foo() (`===` 는 강제 변환 없음)" {
+    try expectMinifyDead(
+        "1 === foo();",
         "function run() {\n\tfoo();\n}\nrun();",
     );
 }
@@ -1964,12 +1980,19 @@ test "unused: {a: foo(), b: 1}; → impure sequence" {
     );
 }
 
-test "unused: {[foo()]: 1, b: bar()}; → computed key + value impure 모두 추출" {
-    // sequence 로 축약됨. paren unwrap 은 sequence 의 leading 원소 (foo() — call, identifier
-    // callee) 가 safe 라 unwrap 허용 → `foo(),bar();`.
+test "unused: {[foo()]: 1, b: bar()}; → computed key 가 있으면 통째로 유지" {
+    // 예전엔 `foo(),bar();` 로 축약했는데 **불건전**하다. computed key 는 평가만 되는 게
+    // 아니라 그 **값에 ToPropertyKey** 가 걸린다 — 객체면 `toString` 이 불린다.
+    //
+    //   function foo(){ return { toString(){ log.push("ts"); return "k"; } }; }
+    //   ({ [foo()]: 1 });   // node: toString 호출됨.  `foo();` 로 바꾸면 호출 안 됨.
+    //
+    // esbuild 는 `foo() + "", bar()` 로 **강제 변환을 보존한 채** 추출한다. zntc 는 그
+    // 합성 대신 객체를 그대로 둔다(semantic-preserving 우선, #1577). computed key 가 없는
+    // 객체는 예전대로 분해된다 — 아래 테스트들이 그걸 잠근다.
     try expectMinifyDead(
         "({[foo()]: 1, b: bar()});",
-        "function run() {\n\tfoo(),bar();\n}\nrun();",
+        "function run() {\n\t({ [foo()]: 1, b: bar() });\n}\nrun();",
     );
 }
 
@@ -1989,11 +2012,13 @@ test "unused: {m() {}}; → method 값은 function_expression 이라 removable" 
     );
 }
 
-test "unused: {[foo()]() {}}; → computed key side-effect 보존" {
-    // method 자체는 drop 가능하지만 `[foo()]` key expression 은 객체 생성 시 evaluate → 보존.
+test "unused: {[foo()]() {}}; → computed key 가 있으면 통째로 유지" {
+    // method 자체는 drop 가능하지만 `[foo()]` key 는 객체 생성 시 evaluate **되고** 그 값에
+    // ToPropertyKey 가 걸린다. 예전처럼 `foo();` 로 축약하면 evaluate 는 살지만 **toString
+    // 호출이 사라진다** — 위 `{[foo()]: 1, …}` 테스트와 같은 루트커즈다.
     try expectMinifyDead(
         "({[foo()]() {}});",
-        "function run() {\n\tfoo();\n}\nrun();",
+        "function run() {\n\t({ [foo()]() {\n\t} });\n}\nrun();",
     );
 }
 

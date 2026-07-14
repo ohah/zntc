@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
 import { join } from 'node:path';
-import { createFixture, runNode, writeOutputs } from './helpers';
+import { createFixture, runNode, runZntc, writeOutputs } from './helpers';
 import { init, close, build } from '../../../packages/core/index';
 
 // code-splitting 산출물을 **실제로 실행**해 값을 검증하는 스모크.
@@ -215,4 +215,27 @@ describe('code-splitting 런타임 스모크', () => {
       expect(out).toBe('RESULT ESM-DEFAULT|OTHER|same:ESM-DEFAULT b:same:ESM-DEFAULT ESM-DEFAULT');
     });
   }
+  test('#4510 후속: `import { "default" as d }` 도 CJS default interop 을 탄다', async () => {
+    // ES2022 arbitrary module namespace names. binding_scanner 는 AST span 텍스트를 그대로
+    // 담아 이름을 **따옴표째** 저장한다(`"\"default\""`). default 판정이 bare `"default"` 와만
+    // 비교하면 이 형태가 interop 을 통째로 비껴가 `require_x()["default"]` = **undefined** 가
+    // 된다 — 문법은 유효해서 빌드·파싱 다 통과하고 실행만 틀린다.
+    //
+    // node 정본: `import { "default" as d }` === `import d from` → d = module.exports.
+    const { dir, cleanup } = await createFixture({
+      'x.cjs': 'module.exports = { a: 1 };',
+      'entry.js': 'import { "default" as d } from "./x.cjs";\n' + 'console.log("d.a =", d && d.a);',
+    });
+    try {
+      const outFile = join(dir, 'bundle.mjs');
+      const res = await runZntc(['--bundle', join(dir, 'entry.js'), '-o', outFile, '--format=esm']);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+
+      const { stdout } = await runNode(outFile);
+      // 버그 시: `d.a = undefined`
+      expect(stdout.trim()).toBe('d.a = 1');
+    } finally {
+      await cleanup();
+    }
+  });
 });

@@ -138,6 +138,7 @@ test {
     _ = @import("disk_module_store_test.zig");
     _ = @import("tree_shaker_test.zig");
     _ = @import("linker_test.zig");
+    _ = @import("linker/preamble_writer_test.zig"); // #4510 CJS interop 회귀 가드
     _ = @import("emitter_test.zig");
     _ = @import("chunk_test.zig");
     _ = @import("mf_integrity.zig"); // #3422 inline test (computeSri)

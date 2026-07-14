@@ -11,7 +11,27 @@ const rt = @import("../runtime_helpers.zig");
 /// 동일 invariant 를 유지한다 — 어긋나면 preamble 이 `__toESM` 을 부르는데
 /// 정의가 없는 ReferenceError 가 발생 (#812 회귀).
 pub inline fn cjsImportNeedsToEsmInterop(is_namespace: bool, imported_name: []const u8) bool {
-    return is_namespace or std.mem.eql(u8, imported_name, "default");
+    return is_namespace or isDefaultExportName(imported_name);
+}
+
+/// module-export name 이 `default` 인가 — **따옴표 형태까지 포함**한다.
+///
+/// ES2022 arbitrary module namespace names 때문에 `import { "default" as d }` 가 유효하고,
+/// node/esbuild 는 이걸 `import d from` 과 **동일하게** 다룬다. 그런데 binding_scanner 는
+/// AST span 텍스트를 그대로 담아 이름에 **따옴표가 붙은 채** 저장한다(`"\"default\""`).
+/// 그래서 bare `"default"` 와만 비교하면 이 형태가 default-interop 을 통째로 비껴가
+/// `require_x()["default"]` = **undefined** 가 된다 (문법은 유효 → 무성 오컴파일).
+///
+/// default 판정 3곳(`cjsImportNeedsToEsmInterop` / `Linker.cjsInteropAccessExpr` /
+/// `binding_scanner.isDefaultImport`)이 **반드시 lockstep** 이어야 하므로 여기 단일 소스로 둔다.
+pub fn isDefaultExportName(name: []const u8) bool {
+    return std.mem.eql(u8, unquoteName(name), "default");
+}
+
+/// 따옴표가 있으면 벗긴 알맹이, 없으면 원본.
+pub fn unquoteName(name: []const u8) []const u8 {
+    if (!isQuotedName(name)) return name;
+    return name[1 .. name.len - 1];
 }
 
 /// 이름이 `obj.<name>` 점 접근에 그대로 쓸 수 있는 평범한 ASCII 식별자인지.

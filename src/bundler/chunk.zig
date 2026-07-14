@@ -1632,12 +1632,23 @@ pub fn computeCrossChunkGlobalNames(
         //  - namespace 키("*", CJS_NS_EXPORT_NAME)는 `ns` 로 대체 → `ns$single`.
         //  - 비-식별자 멤버명(`'foo-bar'`)은 식별자 문자만 남기고 sanitize → `foo_bar$x`.
         //    (키는 여전히 원문 멤버명이라 materialize 는 `require_x()["foo-bar"]` 로 정확히 나온다.)
-        var synth: ?[]u8 = null;
+        var synth: ?[]const u8 = null;
         defer if (synth) |b| allocator.free(b);
         const preferred = blk: {
-            const om = lnk.getModule(s.mod) orelse break :blk (lnk.getExportLocalName(s.mod, s.name) orelse s.name);
-            if (om.wrap_kind != .cjs) break :blk (lnk.getExportLocalName(s.mod, s.name) orelse s.name);
-            const req = try om.allocRequireName(allocator, null);
+            const om = lnk.getModule(s.mod);
+            const is_cjs = if (om) |m| m.wrap_kind == .cjs else false;
+            if (!is_cjs) {
+                // ESM owner 는 진짜 로컬(항상 유효 식별자)을 `local as 공개명` 으로 브리지한다.
+                if (lnk.getExportLocalName(s.mod, s.name)) |local| break :blk local;
+                // 로컬이 없으면(re-export 등) export 명이 그대로 공개명이 되는데, ES2022
+                // arbitrary module namespace name(`export { v as "a-b" }`)이면 **식별자가
+                // 아니다** → `var "a-b"` / `import { "a-b" }` 로 파싱 불가 산출물이 된다.
+                if (preamble_writer.isPlainMemberName(s.name)) break :blk s.name;
+                const h = try sanitizeGlobalNameHead(allocator, s.name);
+                synth = h;
+                break :blk h;
+            }
+            const req = try om.?.allocRequireName(allocator, null);
             defer allocator.free(req);
             const req_prefix = "require_";
             const tag = if (std.mem.startsWith(u8, req, req_prefix) and req.len > req_prefix.len)
