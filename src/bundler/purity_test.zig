@@ -12,6 +12,7 @@ const purity = @import("purity.zig");
 const Ast = @import("../parser/ast.zig").Ast;
 const Node = @import("../parser/ast.zig").Node;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+const NodeTag = @import("../parser/ast.zig").Node.Tag;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
@@ -1009,4 +1010,240 @@ test "null context: all builtins impure" {
         const init = initOfDecl(&ctx, i);
         try std.testing.expect(!purity.isExprPure(&ctx.ast, init, null));
     }
+}
+
+// ================================================================
+// isRemovableAtStmtPos — 문 자리 / dead-store 삭제용 엄격 술어 (#4514)
+// ================================================================
+
+fn removalCtx(ctx: *const TestCtx) purity.StmtRemovalCtx {
+    return .{
+        .symbol_ids = ctx.analyzer.symbol_ids.items,
+        .symbols = ctx.analyzer.symbols.items,
+        .unresolved_globals = &ctx.analyzer.unresolved_references,
+    };
+}
+
+/// 소스에서 `name` 과 텍스트가 같은 **첫 번째** `identifier_reference` 노드를 찾는다.
+fn firstIdentRef(ctx: *const TestCtx, name: []const u8) !NodeIndex {
+    for (ctx.ast.nodes.items, 0..) |node, i| {
+        if (node.tag != .identifier_reference) continue;
+        if (std.mem.eql(u8, ctx.ast.getText(node.span), name)) return @enumFromInt(i);
+    }
+    return error.IdentNotFound;
+}
+
+/// 주어진 tag 의 첫 번째 노드.
+fn firstNodeOfTag(ctx: *const TestCtx, tag: NodeTag) !NodeIndex {
+    for (ctx.ast.nodes.items, 0..) |node, i| {
+        if (node.tag == tag) return @enumFromInt(i);
+    }
+    return error.NodeNotFound;
+}
+
+test "isRemovableAtStmtPos: member access 는 삭제 불가 (getter / TypeError)" {
+    const alloc = std.testing.allocator;
+    // `isExprPure` 는 member 를 pure 로 보지만(tree-shaking 기준), 이미 실행이 확정된
+    // 표현식을 지우는 자리에서는 getter 호출 / nullish base TypeError 가 사라진다.
+    var ctx = try setup(alloc, "const a = obj.p;\nconst b = obj[k];\n");
+    defer ctx.deinit();
+
+    const static_member = try firstNodeOfTag(&ctx, .static_member_expression);
+    const computed_member = try firstNodeOfTag(&ctx, .computed_member_expression);
+
+    // 기존(완화) 술어는 pure 로 본다 — 대비 확인.
+    try std.testing.expect(purity.isExprPure(&ctx.ast, static_member, &ctx.analyzer.unresolved_references));
+    // 엄격 술어는 유지.
+    try std.testing.expect(!purity.isRemovableAtStmtPos(&ctx.ast, static_member, removalCtx(&ctx)));
+    try std.testing.expect(!purity.isRemovableAtStmtPos(&ctx.ast, computed_member, removalCtx(&ctx)));
+}
+
+test "isRemovableAtStmtPos: 미해결 전역 읽기는 삭제 불가 (ReferenceError)" {
+    const alloc = std.testing.allocator;
+    var ctx = try setup(alloc, "function f() { let z = undeclaredGlobal; z = 2; return z; }\n");
+    defer ctx.deinit();
+
+    const ident = try firstIdentRef(&ctx, "undeclaredGlobal");
+    try std.testing.expect(purity.isExprPure(&ctx.ast, ident, &ctx.analyzer.unresolved_references));
+    try std.testing.expect(!purity.isRemovableAtStmtPos(&ctx.ast, ident, removalCtx(&ctx)));
+}
+
+test "isRemovableAtStmtPos: var / 파라미터 읽기는 삭제 가능 (DSE 수익 보존)" {
+    const alloc = std.testing.allocator;
+    // TDZ 가 없는 바인딩(var / 파라미터 / catch / function 선언)은 계속 제거 대상이다.
+    var ctx = try setup(alloc, "function f(p) { var loc = 1; let a = loc; a = p; a = 2; return a + loc; }\n");
+    defer ctx.deinit();
+
+    try std.testing.expect(purity.isRemovableAtStmtPos(&ctx.ast, try firstIdentRef(&ctx, "loc"), removalCtx(&ctx)));
+    try std.testing.expect(purity.isRemovableAtStmtPos(&ctx.ast, try firstIdentRef(&ctx, "p"), removalCtx(&ctx)));
+}
+
+test "isRemovableAtStmtPos: block-scoped(let/const/class) 읽기는 TDZ 때문에 삭제 불가" {
+    const alloc = std.testing.allocator;
+    // TDZ 는 **시간** 개념이라 소스 위치 비교로 못 잡는다 — hoisting 된 함수가 선언 실행 전에
+    // 불리면 선언보다 텍스트상 뒤에 있는 읽기도 TDZ 다. 참조 노드의 실행 단위를 이 술어가
+    // 알 수 없으므로 block-scoped 선언 읽기는 통째로 유지한다.
+    var ctx = try setup(alloc, "function f() { const loc = 1; let a = loc; a = 2; return a + loc; }\n");
+    defer ctx.deinit();
+
+    try std.testing.expect(!purity.isRemovableAtStmtPos(&ctx.ast, try firstIdentRef(&ctx, "loc"), removalCtx(&ctx)));
+}
+
+test "isRemovableAtStmtPos: top-level 바인딩 / import 는 삭제 불가 (live binding)" {
+    const alloc = std.testing.allocator;
+    var ctx = try setup(alloc,
+        \\import { imported } from "./m";
+        \\var top = 1;
+        \\function f() { let a = top; a = imported; a = 2; return a; }
+    );
+    defer ctx.deinit();
+
+    try std.testing.expect(!purity.isRemovableAtStmtPos(&ctx.ast, try firstIdentRef(&ctx, "top"), removalCtx(&ctx)));
+    try std.testing.expect(!purity.isRemovableAtStmtPos(&ctx.ast, try firstIdentRef(&ctx, "imported"), removalCtx(&ctx)));
+}
+
+test "isRemovableAtStmtPos: hoisted function 선언 읽기는 삭제 가능" {
+    const alloc = std.testing.allocator;
+    // function 선언은 hoisting 으로 초기화까지 끝나 TDZ 가 없다. (이 코드베이스는
+    // generator/async 선언에도 block_scoped 를 세우므로 명시 제외가 필요하다.)
+    var ctx = try setup(alloc, "function f() { let a = g; a = 2; function* g() {} return a; }\n");
+    defer ctx.deinit();
+
+    try std.testing.expect(purity.isRemovableAtStmtPos(&ctx.ast, try firstIdentRef(&ctx, "g"), removalCtx(&ctx)));
+}
+
+test "isRemovableAtStmtPos: 리터럴 / 논리 / 삼항 / 함수식은 삭제 가능" {
+    const alloc = std.testing.allocator;
+    var ctx = try setup(alloc,
+        \\function f() {
+        \\  var loc = 1;
+        \\  let a = !loc;
+        \\  a = loc ? 1 : 2;
+        \\  a = loc && 1;
+        \\  a = () => loc;
+        \\  a = 3;
+        \\  return a;
+        \\}
+    );
+    defer ctx.deinit();
+
+    const c = removalCtx(&ctx);
+    try std.testing.expect(purity.isRemovableAtStmtPos(&ctx.ast, try firstNodeOfTag(&ctx, .unary_expression), c));
+    try std.testing.expect(purity.isRemovableAtStmtPos(&ctx.ast, try firstNodeOfTag(&ctx, .conditional_expression), c));
+    try std.testing.expect(purity.isRemovableAtStmtPos(&ctx.ast, try firstNodeOfTag(&ctx, .logical_expression), c));
+    try std.testing.expect(purity.isRemovableAtStmtPos(&ctx.ast, try firstNodeOfTag(&ctx, .arrow_function_expression), c));
+}
+
+test "isRemovableAtStmtPos: 객체 / 배열 리터럴은 삭제 가능 (DSE 수익 보존)" {
+    const alloc = std.testing.allocator;
+    var ctx = try setup(alloc, "function f(c) { let x = { a: 1, m() {} }; x = c; let y = [1, 2]; y = c; return [x, y]; }\n");
+    defer ctx.deinit();
+
+    const c = removalCtx(&ctx);
+    try std.testing.expect(purity.isRemovableAtStmtPos(&ctx.ast, try firstNodeOfTag(&ctx, .object_expression), c));
+    try std.testing.expect(purity.isRemovableAtStmtPos(&ctx.ast, try firstNodeOfTag(&ctx, .array_expression), c));
+}
+
+test "isRemovableAtStmtPos: 객체 spread / computed key / 배열 spread 는 삭제 불가" {
+    const alloc = std.testing.allocator;
+    // spread 는 iterator/Proxy trap, computed key 는 ToPropertyKey → toString 호출.
+    var ctx = try setup(alloc, "function f(c) { let x = { ...c }; x = 1; return x; }\n");
+    defer ctx.deinit();
+    try std.testing.expect(!purity.isRemovableAtStmtPos(&ctx.ast, try firstNodeOfTag(&ctx, .object_expression), removalCtx(&ctx)));
+
+    var ctx2 = try setup(alloc, "function f(c) { let x = { [c]: 1 }; x = 1; return x; }\n");
+    defer ctx2.deinit();
+    try std.testing.expect(!purity.isRemovableAtStmtPos(&ctx2.ast, try firstNodeOfTag(&ctx2, .object_expression), removalCtx(&ctx2)));
+
+    var ctx3 = try setup(alloc, "function f(c) { let x = [...c]; x = 1; return x; }\n");
+    defer ctx3.deinit();
+    try std.testing.expect(!purity.isRemovableAtStmtPos(&ctx3.ast, try firstNodeOfTag(&ctx3, .array_expression), removalCtx(&ctx3)));
+}
+
+test "isRemovableAtStmtPos: 산술 / 관계 / in / instanceof 이항은 삭제 불가 (ToPrimitive)" {
+    const alloc = std.testing.allocator;
+    // `+` 는 ToPrimitive → 사용자 valueOf/toString 호출. `in`/`instanceof` 는 TypeError 가능.
+    // 변환이 전혀 없는 `===` / `!==` 만 삭제 가능.
+    const cases = [_][]const u8{
+        "function f(p, q) { let a = p + q; a = 1; return a; }",
+        "function f(p, q) { let a = p < q; a = 1; return a; }",
+        "function f(p, q) { let a = p == q; a = 1; return a; }",
+        "function f(p, q) { let a = p in q; a = 1; return a; }",
+        "function f(p, q) { let a = p instanceof q; a = 1; return a; }",
+    };
+    for (cases) |src| {
+        var ctx = try setup(alloc, src);
+        defer ctx.deinit();
+        try std.testing.expect(!purity.isRemovableAtStmtPos(&ctx.ast, try firstNodeOfTag(&ctx, .binary_expression), removalCtx(&ctx)));
+    }
+
+    var ok = try setup(alloc, "function f(p, q) { let a = p === q; a = 1; return a; }");
+    defer ok.deinit();
+    try std.testing.expect(purity.isRemovableAtStmtPos(&ok.ast, try firstNodeOfTag(&ok, .binary_expression), removalCtx(&ok)));
+}
+
+test "isRemovableAtStmtPos: 단항 -/+/~/delete 는 삭제 불가, !/void/typeof 는 가능 (ToNumeric)" {
+    const alloc = std.testing.allocator;
+    const blocked = [_][]const u8{
+        "function f(p) { let a = -p; a = 1; return a; }",
+        "function f(p) { let a = +p; a = 1; return a; }",
+        "function f(p) { let a = ~p; a = 1; return a; }",
+        "function f(p) { let a = delete p.x; a = 1; return a; }",
+    };
+    for (blocked) |src| {
+        var ctx = try setup(alloc, src);
+        defer ctx.deinit();
+        try std.testing.expect(!purity.isRemovableAtStmtPos(&ctx.ast, try firstNodeOfTag(&ctx, .unary_expression), removalCtx(&ctx)));
+    }
+
+    const allowed = [_][]const u8{
+        "function f(p) { let a = !p; a = 1; return a; }",
+        "function f(p) { let a = void p; a = 1; return a; }",
+        "function f(p) { let a = typeof p; a = 1; return a; }",
+    };
+    for (allowed) |src| {
+        var ctx = try setup(alloc, src);
+        defer ctx.deinit();
+        try std.testing.expect(purity.isRemovableAtStmtPos(&ctx.ast, try firstNodeOfTag(&ctx, .unary_expression), removalCtx(&ctx)));
+    }
+}
+
+test "isRemovableAtStmtPos: 치환 있는 template literal 은 삭제 불가 (ToString)" {
+    const alloc = std.testing.allocator;
+    var ctx = try setup(alloc, "function f(p) { let a = `t${p}`; a = 1; return a; }\n");
+    defer ctx.deinit();
+    try std.testing.expect(!purity.isRemovableAtStmtPos(&ctx.ast, try firstNodeOfTag(&ctx, .template_literal), removalCtx(&ctx)));
+
+    // 치환 없는 template 은 그냥 문자열 리터럴 — 삭제 가능.
+    var ctx2 = try setup(alloc, "function f() { let a = `static`; a = 1; return a; }\n");
+    defer ctx2.deinit();
+    try std.testing.expect(purity.isRemovableAtStmtPos(&ctx2.ast, try firstNodeOfTag(&ctx2, .template_literal), removalCtx(&ctx2)));
+}
+
+test "isRemovableAtStmtPos: 자식에 member 가 하나라도 있으면 삭제 불가" {
+    const alloc = std.testing.allocator;
+    // `===` 자체는 변환이 없지만 피연산자 `obj.p` 평가에서 getter 가 돈다.
+    var ctx = try setup(alloc, "function f(p) { let a = p === obj.p; a = 2; return a; }\n");
+    defer ctx.deinit();
+
+    try std.testing.expect(!purity.isRemovableAtStmtPos(&ctx.ast, try firstNodeOfTag(&ctx, .binary_expression), removalCtx(&ctx)));
+}
+
+test "isRemovableAtStmtPos: 빌트인 pure call 은 인자까지 엄격 검사한다" {
+    const alloc = std.testing.allocator;
+    // 무인자 `new Set()` 은 삭제 가능.
+    var ctx = try setup(alloc, "function f() { let a = new Set(); a = 2; return a; }\n");
+    defer ctx.deinit();
+    try std.testing.expect(purity.isRemovableAtStmtPos(&ctx.ast, try firstNodeOfTag(&ctx, .new_expression), removalCtx(&ctx)));
+
+    // `String(obj.p)` 는 pure 로 판정되지만 **인자** 평가에서 getter 가 돈다 → 유지.
+    var ctx2 = try setup(alloc, "function f() { let a = String(obj.p); a = 2; return a; }\n");
+    defer ctx2.deinit();
+    try std.testing.expect(purity.isExprPure(&ctx2.ast, try firstNodeOfTag(&ctx2, .call_expression), &ctx2.analyzer.unresolved_references));
+    try std.testing.expect(!purity.isRemovableAtStmtPos(&ctx2.ast, try firstNodeOfTag(&ctx2, .call_expression), removalCtx(&ctx2)));
+
+    // 일반 call 은 애초에 pure 가 아니다.
+    var ctx3 = try setup(alloc, "function f() { let a = sideEffect(); a = 2; return a; }\n");
+    defer ctx3.deinit();
+    try std.testing.expect(!purity.isRemovableAtStmtPos(&ctx3.ast, try firstNodeOfTag(&ctx3, .call_expression), removalCtx(&ctx3)));
 }

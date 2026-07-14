@@ -21,6 +21,7 @@ const Node = @import("../parser/ast.zig").Node;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const CallFlags = @import("../parser/ast.zig").CallFlags;
 const Token = @import("../lexer/token.zig");
+const symbol_mod = @import("../semantic/symbol.zig");
 
 /// 재귀 깊이 제한. 초과 시 보수적으로 불순 처리.
 const max_depth: u32 = 128;
@@ -810,4 +811,251 @@ fn canBeSymbolDepth(ast: *const Ast, idx: NodeIndex, depth: u32) bool {
 
         else => true,
     };
+}
+
+// ================================================================
+// Statement-position removability (#4514)
+// ================================================================
+//
+// `isExprPure` 는 **"이 표현식을 값으로 쓰는 게 안전한가"** 가 아니라 tree-shaking 용
+// **"이 선언을 통째로 안 만들어도 되는가"** 를 본다. 그래서 esbuild 와 마찬가지로
+// `identifier_reference` 와 member access 를 pure 로 친다.
+//
+// 반면 **이미 실행되기로 확정된 표현식을 삭제** 하는 패스(문 자리 DCE, dead-store 제거)에서는
+// 그 완화가 곧 무성 오컴파일이다:
+//   - `obj.p` — p 가 getter / Proxy trap 이면 삭제 = 호출 소실
+//   - `a.b.c` — `a.b` 가 nullish 면 삭제 = 던져야 할 TypeError 소실
+//   - `undeclaredGlobal` / TDZ 읽기 — 삭제 = ReferenceError 소실
+//
+// 그래서 그 패스들은 아래 **엄격 술어** 를 쓴다. 판정 불가는 전부 "유지"(false).
+
+/// `isRemovableAtStmtPos` 가 필요로 하는 semantic 컨텍스트.
+pub const StmtRemovalCtx = struct {
+    /// AST node index → symbol index. null = 미해결 전역(또는 심볼 아님).
+    symbol_ids: []const ?u32,
+    symbols: []const symbol_mod.Symbol,
+    unresolved_globals: ?*const GlobalRefSet,
+};
+
+pub const max_stmt_removable_depth: u32 = 128;
+
+/// expression 의 **평가 자체를 통째로 없애도 관측 불가능한지** 판정한다.
+///
+/// **호출 site contract**: 결과값이 버려지는 자리 전용 —
+///   - statement 자리 (`foo;`) 또는 `sequence_expression` 의 비마지막 원소
+///   - dead store 의 RHS / 초기화자 (그 값을 읽는 코드가 없음이 별도로 증명된 경우)
+///
+/// call callee (`(0, f)()` 의 `0`) 처럼 값이 관측되는 자리에 쓰면 semantic 위반.
+///
+/// **판정 기준: 평가가 (a) 사용자 코드(getter / valueOf / toString / Symbol.toPrimitive /
+/// Proxy trap)를 부르지 않고 (b) throw 하지 않는가.** 둘 다 확실할 때만 true.
+/// 그래서 값 계산으로는 "순수" 해 보이는 것도 아래는 전부 거부한다:
+///   - member access (`o.p`, `o[k]`) — getter / Proxy trap / nullish base TypeError
+///   - 산술·관계·`==`·`in`·`instanceof` — ToPrimitive 가 valueOf/toString 을 부르고
+///     Symbol 피연산자면 TypeError. 변환이 아예 없는 `===` / `!==` 만 허용.
+///   - 단항 `-` / `+` / `~` — ToNumeric 이 valueOf 를 부른다. `!` / `void` / `typeof` 만 허용.
+///   - 치환이 있는 template literal — ToString 이 toString 을 부른다.
+///   - pure call/new 의 **인자** — pure 판정은 callee 만 본다. 인자는 따로 엄격 검사.
+pub fn isRemovableAtStmtPos(ast: *const Ast, idx: NodeIndex, ctx: StmtRemovalCtx) bool {
+    return isRemovableAtStmtPosDepth(ast, idx, ctx, 0);
+}
+
+pub fn isRemovableAtStmtPosDepth(ast: *const Ast, idx: NodeIndex, ctx: StmtRemovalCtx, depth: u32) bool {
+    if (depth >= max_stmt_removable_depth) return false;
+    if (idx.isNone()) return true;
+    const ni = @intFromEnum(idx);
+    if (ni >= ast.nodes.items.len) return false;
+    const node = ast.nodes.items[ni];
+    const d = depth + 1;
+
+    return switch (node.tag) {
+        .numeric_literal,
+        .string_literal,
+        .boolean_literal,
+        .null_literal,
+        .bigint_literal,
+        .regexp_literal,
+        .this_expression,
+        .function_expression,
+        .arrow_function_expression,
+        => true,
+
+        .identifier_reference => isIdentRemovableAtStmtPos(ni, ctx),
+
+        .parenthesized_expression => isRemovableAtStmtPosDepth(ast, node.data.unary.operand, ctx, d),
+
+        .unary_expression => blk: {
+            const e = node.data.extra;
+            if (!ast.hasExtra(e, 1)) break :blk false;
+            const op_kind: u8 = @truncate(ast.readExtra(e, 1) & 0xFF);
+            // `!` / `void` / `typeof` 만 사용자 코드를 절대 안 부른다.
+            // `-x` / `+x` / `~x` 는 ToNumeric → valueOf/Symbol.toPrimitive 호출 + Symbol
+            // 피연산자면 TypeError. `delete` 는 mutation.
+            const op: Token.Kind = @enumFromInt(op_kind);
+            switch (op) {
+                .bang, .kw_void, .kw_typeof => {},
+                else => break :blk false,
+            }
+            break :blk isRemovableAtStmtPosDepth(ast, @enumFromInt(ast.readExtra(e, 0)), ctx, d);
+        },
+
+        .binary_expression => blk: {
+            // ToPrimitive 가 전혀 안 도는 연산만 허용 — `===` / `!==`.
+            // 나머지(`+`, `-`, `<`, `==`, `in`, `instanceof` …)는 valueOf/toString 호출
+            // 또는 TypeError 가 가능하다.
+            const op: Token.Kind = @enumFromInt(node.data.binary.flags);
+            switch (op) {
+                .eq3, .neq2 => {},
+                else => break :blk false,
+            }
+            break :blk isRemovableAtStmtPosDepth(ast, node.data.binary.left, ctx, d) and
+                isRemovableAtStmtPosDepth(ast, node.data.binary.right, ctx, d);
+        },
+
+        // `&&` / `||` / `??` — ToBoolean / nullish 검사는 사용자 코드를 부르지 않는다.
+        .logical_expression => isRemovableAtStmtPosDepth(ast, node.data.binary.left, ctx, d) and
+            isRemovableAtStmtPosDepth(ast, node.data.binary.right, ctx, d),
+
+        .conditional_expression => blk: {
+            const t = node.data.ternary;
+            break :blk isRemovableAtStmtPosDepth(ast, t.a, ctx, d) and
+                isRemovableAtStmtPosDepth(ast, t.b, ctx, d) and
+                isRemovableAtStmtPosDepth(ast, t.c, ctx, d);
+        },
+
+        .sequence_expression => blk: {
+            const list = node.data.list;
+            if (list.start + list.len > ast.extra_data.items.len) break :blk false;
+            for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+                if (!isRemovableAtStmtPosDepth(ast, @enumFromInt(raw), ctx, d)) break :blk false;
+            }
+            break :blk true;
+        },
+
+        .object_expression => isObjectRemovableAtStmtPos(ast, node, ctx, d),
+        .array_expression => isArrayRemovableAtStmtPos(ast, node, ctx, d),
+
+        .template_literal => blk: {
+            // **치환이 있으면 무조건 유지**. `` `${o}` `` 는 ToString(o) → o.toString() /
+            // Symbol.toPrimitive 를 부르고, Symbol 피연산자면 TypeError 다. 치환이 없는
+            // template(리터럴 조각뿐)만 삭제 가능하다.
+            // (list.len==0 = transformer raw-span shorthand — 치환 없음.)
+            const list = node.data.list;
+            if (list.len == 0) break :blk true;
+            if (list.start + list.len > ast.extra_data.items.len) break :blk false;
+            for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+                if (raw >= ast.nodes.items.len) break :blk false;
+                if (ast.nodes.items[raw].tag != .template_element) break :blk false; // 치환 있음
+            }
+            break :blk true;
+        },
+
+        // `@__PURE__` 또는 빌트인 화이트리스트로 pure 가 확정된 call/new. 그 판정은 **callee**
+        // 만 보므로 인자는 여기서 따로 엄격 검사한다 — `String(o.p)` 의 getter, `new Set([o.p])`
+        // 의 getter 가 그대로 사라지기 때문(#4514 와 같은 계열).
+        .call_expression, .new_expression => isExprPure(ast, idx, ctx.unresolved_globals) and
+            argsRemovableAtStmtPos(ast, node, ctx, d),
+
+        else => false,
+    };
+}
+
+/// `identifier_reference` 하나를 삭제해도 되는지. 삭제 시 사라지는 관측 가능한 효과는
+/// **ReferenceError** 뿐이므로(값은 버려짐), 그 가능성을 전부 배제할 수 있을 때만 true.
+fn isIdentRemovableAtStmtPos(ni: u32, ctx: StmtRemovalCtx) bool {
+    if (ni >= ctx.symbol_ids.len) return false;
+    // 미해결 전역 — 존재하지 않으면 읽는 순간 ReferenceError (#4514 증상 3).
+    const sid = ctx.symbol_ids[ni] orelse return false;
+    if (sid >= ctx.symbols.len) return false;
+    const sym = ctx.symbols[sid];
+
+    // top-level(scope 0) 바인딩과 import 는 live binding — `import * as ns` 등의 초기화
+    // 순서를 건드릴 수 있고 module TDZ 도 가능하다. 보수적으로 유지.
+    if (@intFromEnum(sym.scope_id) == 0) return false;
+    if (sym.decl_flags.is_import) return false;
+
+    // **TDZ** — `let` / `const` / `class` 는 선언이 *실행되기 전* 읽으면 ReferenceError 다.
+    // 소스 위치 비교로는 못 잡는다: 선언보다 텍스트상 뒤에 있어도, 그 읽기가 hoisting 된
+    // 함수 안에 있고 그 함수가 선언 실행 전에 불리면 TDZ 다
+    // (`function o(){ h(); let x = 1; function h(){ let a = x; a = 2; } }`).
+    // 참조 노드가 어느 실행 단위인지는 이 술어가 알 수 없으므로 **block-scoped 선언 읽기는
+    // 통째로 유지**한다. `var` / 파라미터 / `catch` 바인딩 / function 선언은 TDZ 가 없어
+    // 그대로 제거 대상 — DSE 수익은 유지된다.
+    // (generator/async function 선언에도 block_scoped 가 서므로 `is_function` 으로 제외.)
+    if (sym.decl_flags.block_scoped and !sym.decl_flags.is_function) return false;
+
+    return true;
+}
+
+/// 객체 리터럴 생성이 삭제 가능한지. 값 슬롯은 평가되므로 재귀 검사하고, **computed key** 는
+/// ToPropertyKey → ToPrimitive 로 사용자 `toString` 을 부를 수 있어 전부 거부한다.
+/// 메서드/getter/setter 는 **정의만** 될 뿐 생성 시 호출되지 않으므로 본문은 안 본다.
+fn isObjectRemovableAtStmtPos(ast: *const Ast, node: Node, ctx: StmtRemovalCtx, depth: u32) bool {
+    const list = node.data.list;
+    if (list.len == 0) return true;
+    if (list.start + list.len > ast.extra_data.items.len) return false;
+
+    for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+        if (raw >= ast.nodes.items.len) return false;
+        const prop = ast.nodes.items[raw];
+        switch (prop.tag) {
+            .object_property => {
+                if (isComputedKey(ast, prop.data.binary.left)) return false;
+                if (!isRemovableAtStmtPosDepth(ast, Ast.objectPropertyValue(prop), ctx, depth)) return false;
+            },
+            .method_definition => {
+                const e = prop.data.extra;
+                if (e + ast_mod.MethodExtra.deco_len >= ast.extra_data.items.len) return false;
+                if (isComputedKey(ast, @enumFromInt(ast.extra_data.items[e + ast_mod.MethodExtra.key]))) return false;
+                if (ast.extra_data.items[e + ast_mod.MethodExtra.deco_len] > 0) return false; // decorator
+            },
+            // spread (`{...x}`) 는 iterator/Proxy trap → 거부. 그 외 미지 tag 도 보수적 거부.
+            else => return false,
+        }
+    }
+    return true;
+}
+
+fn isComputedKey(ast: *const Ast, key_idx: NodeIndex) bool {
+    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
+    return ast.nodes.items[@intFromEnum(key_idx)].tag == .computed_property_key;
+}
+
+/// 배열 리터럴 생성이 삭제 가능한지. hole(elision)은 평가가 없고, spread 는 iterator protocol
+/// (Symbol.iterator getter / next 호출) 이라 거부한다.
+fn isArrayRemovableAtStmtPos(ast: *const Ast, node: Node, ctx: StmtRemovalCtx, depth: u32) bool {
+    const list = node.data.list;
+    if (list.len == 0) return true;
+    if (list.start + list.len > ast.extra_data.items.len) return false;
+
+    for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+        const elem_idx: NodeIndex = @enumFromInt(raw);
+        if (elem_idx.isNone()) continue; // hole
+        if (@intFromEnum(elem_idx) >= ast.nodes.items.len) return false;
+        const elem = ast.nodes.items[@intFromEnum(elem_idx)];
+        if (elem.tag == .elision) continue;
+        if (elem.tag == .spread_element) return false;
+        if (!isRemovableAtStmtPosDepth(ast, elem_idx, ctx, depth)) return false;
+    }
+    return true;
+}
+
+/// pure 로 확정된 call/new 의 **인자** 가 전부 삭제 가능한지. `isExprPure` 의 인자 검사는
+/// 완화된 tree-shaking 기준(member = pure)이고 `@__PURE__` 는 인자를 아예 안 본다.
+fn argsRemovableAtStmtPos(ast: *const Ast, node: Node, ctx: StmtRemovalCtx, depth: u32) bool {
+    const e = node.data.extra;
+    if (!ast.hasExtra(e, 2)) return false;
+    const args_start = ast.readExtra(e, 1);
+    const args_len = ast.readExtra(e, 2);
+    if (args_len == 0) return true;
+    if (args_start + args_len > ast.extra_data.items.len) return false;
+
+    for (ast.extra_data.items[args_start .. args_start + args_len]) |raw| {
+        const arg_idx: NodeIndex = @enumFromInt(raw);
+        if (arg_idx.isNone()) continue;
+        if (@intFromEnum(arg_idx) >= ast.nodes.items.len) return false;
+        if (ast.nodes.items[@intFromEnum(arg_idx)].tag == .spread_element) return false;
+        if (!isRemovableAtStmtPosDepth(ast, arg_idx, ctx, depth)) return false;
+    }
+    return true;
 }
