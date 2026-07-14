@@ -28,6 +28,8 @@ const isReservedName = Linker.isReservedName;
 const NamePair = PreambleWriter.NamePair;
 const NS_VAR_PREFIX = linker_mod.NS_VAR_PREFIX;
 const EXPR_RENAME_MARKER = linker_mod.EXPR_RENAME_MARKER;
+const CJS_NS_EXPORT_NAME = linker_mod.CJS_NS_EXPORT_NAME;
+const preamble_writer = @import("preamble_writer.zig");
 const shared_ns = @import("shared_namespace.zig");
 const allocEsmInitExpr = shared_ns.allocEsmInitExpr;
 const writeEsmInitExprBody = shared_ns.writeEsmInitExprBody;
@@ -158,7 +160,7 @@ fn nsForceInline(
 /// (shared-ns preamble, CJS wrapper 정의 *전* emit → ReferenceError) 대신 직접 CJS
 /// interop preamble(`var ns = __toESM(require())`, per-module = CJS region 후) 로
 /// 처리하도록 canonical 을 redirect 한다(#3975 emit-ordering 근본 수정).
-fn pureCjsStarTarget(self: *const Linker, mod_idx: u32) ?u32 {
+pub fn pureCjsStarTarget(self: *const Linker, mod_idx: u32) ?u32 {
     const m = self.getModule(mod_idx) orelse return null;
     if (m.wrap_kind == .cjs) return null; // 이미 CJS — redirect 불필요
     var cjs_src: ?u32 = null;
@@ -765,9 +767,17 @@ pub fn buildMetadataForAst(
             // canonical)까지 커버한다. 예전엔 rb 만 봐서 직접 import 는 게이트가 발화하지 않았고,
             // 소비자가 preamble 을 그대로 내 provider 청크의 require 썽크를 참조했다(#4494).
             // chunk.zig 의 cross-chunk 심볼 등록과 **같은 판정 함수**를 써야 lockstep 이 유지된다.
-            // default/named 한정 — namespace 는 별도 ns 합성 경로(linkNamespaceCrossChunkOnce)가 처리.
-            if (!is_helper_binding and ib.kind != .namespace) {
-                if (self.cjsCanonicalForBinding(module_index, &m, ib)) |canon| {
+            // (#4510) namespace(`import * as ns from './x.cjs'`)도 같은 기계로 처리한다 — CJS ns 는
+            // 정적 멤버 해석이 불가능해 `var ns = __toESM(require_X())` preamble 로 만들어지는데,
+            // require_X 는 provider 청크에만 있어 cross-chunk 소비 시 ReferenceError 였다. canonical
+            // 은 `cjsNamespaceCanonical`(키 = "*"), 나머지 흐름(전역명 rename + preamble 억제)은
+            // default/named 와 완전히 동일. ESM ns 는 여기 해당 없음(별도 ns 합성 경로).
+            if (!is_helper_binding) {
+                const canon_opt = if (ib.kind == .namespace)
+                    self.cjsNamespaceCanonical(&m, ib)
+                else
+                    self.cjsCanonicalForBinding(module_index, &m, ib);
+                if (canon_opt) |canon| {
                     const canon_mi = @intFromEnum(canon.module_index);
                     if (self.isCrossChunkConsumer(module_index, canon_mi)) {
                         if (self.getCrossChunkGlobalName(canon_mi, canon.export_name)) |g| {
@@ -790,7 +800,12 @@ pub fn buildMetadataForAst(
                         !isMetroNonInlinedRequireSpecifier(rec.specifier))
                     {
                         if (ib.local_symbol.semanticIndex()) |sym_idx| {
-                            const direct_access = try std.fmt.allocPrint(self.allocator, "{s}" ++ EXPR_RENAME_MARKER ++ "{s}", .{ req_var, ib.imported_name });
+                            // (#4510) 비-식별자 멤버명(`import { 'foo-bar' as x }`)은 점 접근이
+                            // 문법 오류 → `require_x()["foo-bar"]` computed 접근. 두 형태 모두
+                            // `isImportExpressionRename` 이 인식해야 codegen 이 import 선언을 skip 한다.
+                            const access = try preamble_writer.allocMemberAccess(self.allocator, ib.imported_name);
+                            defer self.allocator.free(access);
+                            const direct_access = try std.fmt.allocPrint(self.allocator, "{s}(){s}", .{ req_var, access });
                             errdefer self.allocator.free(direct_access);
                             try owned_nested_renames.append(self.allocator, direct_access);
                             try renames.put(self.allocator, sym_idx, direct_access);

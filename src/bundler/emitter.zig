@@ -926,7 +926,7 @@ pub fn emitWithTreeShaking(
         // 우회하는 single-file 전용 헬퍼 사용. wrap_kind=.esm 인 dynamic target 의
         // `import("./x")` 를 `Promise.resolve().then(() => (init_x(), exports_x))`
         // 로 변환 → bundle self-contained (외부 sibling 파일 fallback 제거).
-        const rewritten = chunks.rewriteDynamicImportsSingleFile(allocator, code, m, graph, options.platform == .react_native, if (linker) |l| &l.rename_table else null) catch null;
+        const rewritten = chunks.rewriteDynamicImportsSingleFile(allocator, code, m, graph, options.platform == .react_native, linker, options.minify_whitespace) catch null;
         defer if (rewritten) |r| allocator.free(r);
         const code_after_rewrite = rewritten orelse code;
 

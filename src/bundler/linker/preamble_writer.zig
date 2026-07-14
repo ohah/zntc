@@ -14,6 +14,82 @@ pub inline fn cjsImportNeedsToEsmInterop(is_namespace: bool, imported_name: []co
     return is_namespace or std.mem.eql(u8, imported_name, "default");
 }
 
+/// 이름이 `obj.<name>` 점 접근에 그대로 쓸 수 있는 평범한 ASCII 식별자인지.
+/// 비-ASCII 는 보수적으로 false (호출부가 quote → 항상 합법). 예약어(`default`)는
+/// 멤버 접근 위치에선 유효하므로 true.
+pub fn isPlainMemberName(name: []const u8) bool {
+    if (name.len == 0) return false;
+    for (name, 0..) |c, i| {
+        const ok = std.ascii.isAlphabetic(c) or c == '_' or c == '$' or (i > 0 and std.ascii.isDigit(c));
+        if (!ok) return false;
+    }
+    return true;
+}
+
+/// JS 문자열 리터럴(쌍따옴표) 을 buf 에 append. 제어문자/따옴표/백슬래시 escape.
+pub fn appendJsStringLiteral(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), value: []const u8) !void {
+    const hex = "0123456789abcdef";
+    try buf.append(allocator, '"');
+    for (value) |c| {
+        switch (c) {
+            '\\' => try buf.appendSlice(allocator, "\\\\"),
+            '"' => try buf.appendSlice(allocator, "\\\""),
+            '\n' => try buf.appendSlice(allocator, "\\n"),
+            '\r' => try buf.appendSlice(allocator, "\\r"),
+            '\t' => try buf.appendSlice(allocator, "\\t"),
+            else => {
+                if (c < 0x20) {
+                    try buf.appendSlice(allocator, "\\u00");
+                    try buf.append(allocator, hex[c >> 4]);
+                    try buf.append(allocator, hex[c & 0x0f]);
+                } else {
+                    try buf.append(allocator, c);
+                }
+            },
+        }
+    }
+    try buf.append(allocator, '"');
+}
+
+/// (#4510) import/export 이름이 **문자열 리터럴 소스 그대로**인지(`"foo-bar"` / `'foo-bar'`).
+///
+/// ES2022 arbitrary module namespace name(`import { 'foo-bar' as x }`)의 이름은 binding_scanner
+/// 가 AST span 텍스트를 그대로 담아 **따옴표를 포함한 채** 저장된다(그래야 codegen 이
+/// `export { local as "foo-bar" }` 를 원문 그대로 재출력할 수 있다). 즉 이 이름 자체가 이미
+/// 유효한 JS 문자열 리터럴이므로 프로퍼티 키/computed 접근에 verbatim 으로 쓸 수 있다.
+pub fn isQuotedName(name: []const u8) bool {
+    if (name.len < 2) return false;
+    const q = name[0];
+    return (q == '"' or q == '\'') and name[name.len - 1] == q;
+}
+
+/// (#4510) 프로퍼티 키 텍스트를 buf 에 append — 식별자면 그대로, 문자열 리터럴 원문이면
+/// verbatim(이미 quote 됨), 그 외엔 quote. 객체 키(`{ <key>: v }`)·computed 접근 공용.
+pub fn appendPropertyKey(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), name: []const u8) !void {
+    if (isPlainMemberName(name) or isQuotedName(name)) {
+        try buf.appendSlice(allocator, name);
+        return;
+    }
+    try appendJsStringLiteral(allocator, buf, name);
+}
+
+/// (#4510) 멤버 접근 텍스트(`.foo` / `["foo-bar"]`) 를 allocator 소유 문자열로 만든다.
+///
+/// 멤버명이 식별자가 아니면 점 접근(`req_x()."foo-bar"`)은 **문법 오류**다 — computed 접근
+/// (`req_x()["foo-bar"]`)으로 써야 한다. CJS interop 식을 만드는 모든 경로(preamble writer /
+/// `Linker.cjsInteropAccessExpr` / metadata 의 expression rename)가 이 함수 하나를 쓴다.
+pub fn allocMemberAccess(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+    if (isPlainMemberName(name)) {
+        return std.fmt.allocPrint(allocator, ".{s}", .{name});
+    }
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    try buf.append(allocator, '[');
+    try appendPropertyKey(allocator, &buf, name);
+    try buf.append(allocator, ']');
+    return buf.toOwnedSlice(allocator);
+}
+
 /// CJS/dev preamble 생성용 writer.
 pub const PreambleWriter = struct {
     buf: std.ArrayList(u8) = .empty,
@@ -55,6 +131,18 @@ pub const PreambleWriter = struct {
         try self.buf.appendSlice(self.allocator, s);
     }
 
+    /// (#4510) 멤버 접근 emit — 평범한 식별자면 `.foo`, 아니면 `["foo-bar"]`.
+    fn writeMemberAccess(self: *PreambleWriter, name: []const u8) !void {
+        if (isPlainMemberName(name)) {
+            try self.write(".");
+            try self.write(name);
+            return;
+        }
+        try self.write("[");
+        try appendPropertyKey(self.allocator, &self.buf, name);
+        try self.write("]");
+    }
+
     pub fn writeUnresolvedRequire(
         self: *PreambleWriter,
         local_name: []const u8,
@@ -93,8 +181,7 @@ pub const PreambleWriter = struct {
         try self.write("\")");
         // named import만 .property 접근 추가 (namespace/default는 모듈 전체)
         if (!is_namespace and !std.mem.eql(u8, imported_name, "default")) {
-            try self.write(".");
-            try self.write(imported_name);
+            try self.writeMemberAccess(imported_name);
         }
         try self.write(";\n");
     }
@@ -146,8 +233,10 @@ pub const PreambleWriter = struct {
             try self.write(";\n");
         } else {
             try self.write(req_var);
-            try self.write("().");
-            try self.write(imported_name);
+            try self.write("()");
+            // (#4510) `import { 'foo-bar' as x }` 같은 비-식별자 멤버명은 점 접근이 문법
+            // 오류(`req_x()."foo-bar"`) → computed 접근으로 emit.
+            try self.writeMemberAccess(imported_name);
             try self.write(";\n");
         }
     }
@@ -197,7 +286,9 @@ pub const PreambleWriter = struct {
         for (named_bindings, 0..) |nb, i| {
             if (i > 0) try self.write(", ");
             if (!std.mem.eql(u8, nb.imported, nb.local)) {
-                try self.write(nb.imported);
+                // (#4510) 비-식별자 멤버명은 destructuring 키로도 quote 필요
+                // (`var { "foo-bar": x } = …`). shorthand 는 애초에 불가능.
+                try appendPropertyKey(self.allocator, &self.buf, nb.imported);
                 try self.write(": ");
                 try self.write(nb.local);
             } else {
