@@ -26,6 +26,7 @@ async function buildPm(
   files: Record<string, string>,
   entry: string,
   format: 'esm' | 'cjs' = 'esm',
+  minify = false,
 ) {
   const { dir, cleanup } = await createFixture(files);
   const outDir = join(dir, 'dist');
@@ -36,6 +37,7 @@ async function buildPm(
     '--outdir',
     outDir,
     `--format=${format}`,
+    ...(minify ? ['--minify'] : []),
   ]);
   expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
   if (format === 'esm') {
@@ -418,6 +420,114 @@ describe('#4524: --preserve-modules × CJS', () => {
       try {
         const { stdout } = await runNode(join(outDir, 'main.js'));
         expect(stdout.trim()).toBe('ENTRY BODY RAN');
+      } finally {
+        await cleanup();
+      }
+    });
+  }
+  // ─── #4528 후속: /code-review max 가 잡은 회귀 4건 ───
+
+  for (const format of ['esm', 'cjs'] as const) {
+    test(`#4528 ${format}: wrap 된 ESM dep 의 class/const/let export 가 undefined 로 스냅샷되지 않는다`, async () => {
+      // cjs 는 `exports.X = X` 로 **값 스냅샷**인데, ESM-wrap 모듈의 `const`/`class` 는
+      // `__esm` 클로저(=`init_X()`) 안에서 **늦게 대입**된다 → 파일 top-level 스냅샷은
+      // **undefined**. 함수 선언만 hoisting 으로 우연히 살아남아 버그가 가려진다.
+      // → provider 는 **getter** 로 노출하고, 소비자는 **init 시점에 갱신**한다.
+      // ⚠️ 선-init(`init_X()` 를 export 전에 호출)은 답이 아니다 — ESM-wrap 끼리 순환하면
+      // 아직 미평가인 상대의 `init_Y`(undefined)를 부르게 된다.
+      const { outDir, cleanup } = await buildPm(
+        {
+          'b.js':
+            'export const CONST = "C";\n' +
+            'export class W { hi(){ return "W"; } }\n' +
+            'export let mut = "M";\n' +
+            'export function fn(){ return "F"; }',
+          'a.cjs':
+            'const b = require("./b.js");\n' +
+            'module.exports = { run: () => [b.CONST, new b.W().hi(), b.mut, b.fn()].join("|") };',
+          'entry.js':
+            'import a from "./a.cjs";\n' +
+            'import { CONST, W, mut, fn } from "./b.js";\n' +
+            'console.log(a.run() + " / " + [CONST, new W().hi(), mut, fn()].join("|"));',
+        },
+        'entry.js',
+        format,
+      );
+      try {
+        const { stdout } = await runNode(join(outDir, 'entry.js'));
+        // 버그 시: `undefined|...` (함수만 살아남음)
+        expect(stdout.trim()).toBe('C|W|M|F / C|W|M|F');
+      } finally {
+        await cleanup();
+      }
+    });
+
+    test(`#4528 ${format}: ESM-wrap 모듈끼리 순환해도 심볼이 undefined 로 박제되지 않는다`, async () => {
+      const { outDir, cleanup } = await buildPm(
+        {
+          'b.js': 'import { tagC } from "./c.js";\nexport function tag(){ return "B" + tagC(); }',
+          'c.js':
+            'import { tag } from "./b.js";\n' +
+            'export function tagC(){ return "C"; }\n' +
+            'export function useB(){ return tag(); }',
+          'a.cjs':
+            'const b = require("./b.js");\n' +
+            'const c = require("./c.js");\n' +
+            'module.exports = { run: () => b.tag() + "/" + c.useB() };',
+          'entry.js': 'import a from "./a.cjs";\nconsole.log(a.run());',
+        },
+        'entry.js',
+        format,
+      );
+      try {
+        const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+        expect(stderr).not.toContain('TypeError');
+        expect(stdout.trim()).toBe('BC/BC');
+      } finally {
+        await cleanup();
+      }
+    });
+
+    test(`#4528 ${format}: ESM-wrap user entry 도 본문을 실행한다`, async () => {
+      // `pm_entry_call` 이 `.cjs` 만 보면 ESM-wrap entry 는 `init_X()` 가 아무 데서도 안 불려
+      // 본문이 통째로 미실행이다 — 같은 결함의 절반만 고친 꼴.
+      const { outDir, cleanup } = await buildPm(
+        {
+          'entry.js':
+            'console.log("ENTRY BODY RAN");\nimport { h } from "./a.cjs";\nexport const e = 1;',
+          'a.cjs': 'const e = require("./entry.js");\nexports.h = function(){ return "H"; };',
+        },
+        'entry.js',
+        format,
+      );
+      try {
+        const { stdout } = await runNode(join(outDir, 'entry.js'));
+        expect(stdout.trim()).toBe('ENTRY BODY RAN');
+      } finally {
+        await cleanup();
+      }
+    });
+
+    test(`#4528 ${format}: CJS entry 의 module.exports 교체가 썽크 export 를 지우지 않는다`, async () => {
+      // cjs 는 `module.exports = require_X()` 가 exports **객체를 교체**한다 — 바로 위에서 깐
+      // `exports.require_X` 가 사라져, 이 entry 를 import 하는 다른 파일의 forwarding 썽크가
+      // `undefined.apply` 로 죽는다. 교체 뒤에 **다시 붙인다**.
+      const { outDir, cleanup } = await buildPm(
+        {
+          'main.cjs':
+            'exports.m = function(){ return "M"; };\n' +
+            'setTimeout(() => { console.log(require("./b.cjs").useMain()); }, 0);',
+          'b.cjs':
+            'const m = require("./main.cjs");\n' +
+            'exports.useMain = function(){ return "via:" + m.m(); };',
+        },
+        'main.cjs',
+        format,
+      );
+      try {
+        const { stdout, stderr } = await runNode(join(outDir, 'main.js'));
+        expect(stderr).not.toContain('TypeError');
+        expect(stdout.trim()).toBe('via:M');
       } finally {
         await cleanup();
       }

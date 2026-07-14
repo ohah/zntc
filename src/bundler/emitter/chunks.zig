@@ -591,6 +591,20 @@ pub fn emitChunks(
                 (if (graph.getModule(mi)) |dm0| dm0.wrap_kind == .cjs else false)
             else
                 false;
+            // (#4528) cjs + **ESM-wrap dep** 의 심볼은 래퍼 분기에서 lazy 로 다룬다(위 참조).
+            // 아래 심볼 분기(구조분해 = 값 스냅샷)를 태우면 안 된다.
+            const pm_esm_wrap_dep_syms: ?[]chunk_mod.CrossChunkSym = blk: {
+                if (pm_wrapper_dep == null or pm_cjs_dep) break :blk null;
+                if (!cjs_require) break :blk null; // esm 은 live binding 이라 named import 로 충분
+                const sy = symbols orelse break :blk null;
+                if (sy.items.len == 0) break :blk null;
+                std.mem.sort(chunk_mod.CrossChunkSym, sy.items, {}, struct {
+                    fn lt(_: void, a: chunk_mod.CrossChunkSym, b: chunk_mod.CrossChunkSym) bool {
+                        return std.mem.lessThan(u8, a.name, b.name);
+                    }
+                }.lt);
+                break :blk sy.items;
+            };
 
             if (pm_wrapper_dep) |dm_idx| {
                 // (#4524) preserve-modules: dep 이 CJS 면 그 파일의 `require_X` 썽크를
@@ -650,6 +664,21 @@ pub fn emitChunks(
                         try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
                     }
 
+                    // (#4528) ESM-wrap dep 의 **심볼**도 여기서 다룬다. `const { tag } =
+                    // require("./b.js")` 로 구조분해하면 **로드 시점 값 스냅샷**이라, 그 값이
+                    // `__esm` 클로저(=`init_X()`) 안에서 늦게 대입되는 `const`/`class` 면
+                    // undefined 를 박제하고(함수만 hoisting 으로 우연히 살아남는다), 순환에서도
+                    // 미평가 값을 집는다. → `let` 으로 선언하고 **init forwarding 안에서 갱신**한다.
+                    // 소비자 preamble 은 그 심볼을 쓰기 **전에** 반드시 `init_X()` 를 부른다.
+                    if (pm_esm_wrap_dep_syms) |syms| {
+                        try chunk_output.appendSlice(allocator, "let ");
+                        for (syms, 0..) |sym, si| {
+                            if (si > 0) try chunk_output.appendSlice(allocator, if (min) "," else ", ");
+                            try chunk_output.appendSlice(allocator, crossChunkBindingName(linker, sym));
+                        }
+                        try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
+                    }
+
                     // `require_X` / `init_X` — 함수. 호출 시점에 조회(lazy forwarding).
                     try chunk_output.appendSlice(allocator, "const ");
                     try chunk_output.appendSlice(allocator, names.a);
@@ -663,6 +692,16 @@ pub fn emitChunks(
                         try chunk_output.appendSlice(allocator, if (min) "=m." else " = m.");
                         try chunk_output.appendSlice(allocator, b);
                         try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
+                    }
+                    if (pm_esm_wrap_dep_syms) |syms| {
+                        for (syms) |sym| {
+                            const bind = crossChunkBindingName(linker, sym);
+                            try chunk_output.appendSlice(allocator, if (min) "" else "\t\t");
+                            try chunk_output.appendSlice(allocator, bind);
+                            try chunk_output.appendSlice(allocator, if (min) "=m." else " = m.");
+                            try chunk_output.appendSlice(allocator, sym.name);
+                            try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
+                        }
                     }
                     try chunk_output.appendSlice(allocator, if (min) "return m." else "\t\treturn m.");
                     try chunk_output.appendSlice(allocator, names.a);
@@ -682,7 +721,7 @@ pub fn emitChunks(
                 }
             }
 
-            if (!pm_cjs_dep and symbols != null and symbols.?.items.len > 0) {
+            if (!pm_cjs_dep and pm_esm_wrap_dep_syms == null and symbols != null and symbols.?.items.len > 0) {
                 // 심볼 수준 import: import { a, b } from './chunk-xxx.js';
                 if (!options.minify_whitespace) {
                     try chunk_output.appendSlice(allocator, if (reg_like) "const { " else "import { ");
@@ -1133,7 +1172,22 @@ pub fn emitChunks(
             // ⚠️ preserve-modules 는 **모든 모듈이 자기 entry_point 청크**라 `chunk_is_user_entry`
             // 가 전부 참이다 — 그걸 쓰면 dep 까지 eager 호출해 CJS 순환이 다시 죽는다.
             // 진짜 진입점은 모듈의 `is_entry_point` 플래그다.
-            const pm_entry_call = em.is_entry_point and em.wrap_kind == .cjs;
+            // **user entry** 는 그 파일이 곧 프로그램의 시작점이다 — wrap 된 모듈은 아무도
+            // 래퍼를 부르지 않아 **본문이 아예 실행되지 않았다**(`console.log` 조차 안 찍힘).
+            // entry 만 여기서 직접 호출한다. dep 은 여전히 lazy 다(eager 호출은 순환을 죽인다).
+            //
+            // ⚠️ ESM-wrap entry 도 대상이다 — `.cjs` 만 보면 `init_X()` 가 아무 데서도 안 불려
+            // 본문이 통째로 미실행이다(같은 결함의 절반만 고친 꼴).
+            //
+            // ⚠️ **순환에 낀 entry 를 제외하면 안 된다** — entry 가 순환에 끼는 건 흔하고
+            // (`main.cjs` ⇄ `b.cjs`), 제외하면 진입점 본문이 아예 안 돈다(조용한 무동작).
+            // 단일 entry 순환은 정상 동작한다: 상대(dep)는 eager 호출을 안 하므로 entry 본문이
+            // 먼저 돌고 그 안에서 dep 썽크를 부른다 — node 와 같은 순서다.
+            // **다중 entry 가 서로 순환**하면(rollup 식 "모든 파일이 entry") ESM 평가 순서상
+            // 먼저 평가되는 쪽이 아직 미평가인 상대의 `var require_X`(=undefined)를 불러
+            // TypeError 다 — node 는 require 가 dynamic 이라 되지만 ESM 출력으로는 흉내낼 수
+            // 없다. 그건 별도 이슈로 남긴다(예전엔 본문이 아예 안 돌아 **조용히** 틀렸다).
+            const pm_entry_call = em.is_entry_point and em.wrap_kind.isWrapped();
 
             if (options.format == .cjs) {
                 // 청크가 `require()` 로 소비되므로 exports 객체에 깐다.
@@ -1146,10 +1200,24 @@ pub fn emitChunks(
                     try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
                 }
                 if (pm_entry_call) {
-                    // 원본 `.cjs` 진입점과 같은 계약: 본문을 실행하고 그 exports 를 노출.
-                    try chunk_output.appendSlice(allocator, if (min) "module.exports=" else "module.exports = ");
-                    try chunk_output.appendSlice(allocator, names.a);
-                    try chunk_output.appendSlice(allocator, if (min) "();" else "();\n");
+                    if (em.wrap_kind == .cjs) {
+                        // 원본 `.cjs` 진입점과 같은 계약: 본문을 실행하고 그 exports 를 노출.
+                        // ⚠️ `module.exports = …` 는 exports **객체를 교체**한다 — 바로 위에서 깐
+                        // `exports.require_X` 가 사라져, 이 entry 를 import 하는 다른 파일의
+                        // forwarding 썽크가 `undefined.apply` 로 죽는다. 교체 뒤에 **다시 붙인다**.
+                        try chunk_output.appendSlice(allocator, if (min) "module.exports=" else "module.exports = ");
+                        try chunk_output.appendSlice(allocator, names.a);
+                        try chunk_output.appendSlice(allocator, if (min) "();" else "();\n");
+                        try chunk_output.appendSlice(allocator, "if(module.exports&&(typeof module.exports==\"object\"||typeof module.exports==\"function\"))module.exports.");
+                        try chunk_output.appendSlice(allocator, names.a);
+                        try chunk_output.appendSlice(allocator, if (min) "=" else " = ");
+                        try chunk_output.appendSlice(allocator, names.a);
+                        try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
+                    } else {
+                        // ESM-wrap entry: 본문 실행만(exports 는 exports_X 가 들고 있다).
+                        try chunk_output.appendSlice(allocator, names.a);
+                        try chunk_output.appendSlice(allocator, if (min) "();" else "();\n");
+                    }
                 }
             } else {
                 try chunk_output.appendSlice(allocator, if (min) "export{" else "export { ");
@@ -1160,10 +1228,16 @@ pub fn emitChunks(
                 }
                 try chunk_output.appendSlice(allocator, if (min) "};" else " };\n");
                 if (pm_entry_call) {
-                    // 본문 실행 + node CJS↔ESM 계약(default = module.exports).
-                    try chunk_output.appendSlice(allocator, "export default ");
-                    try chunk_output.appendSlice(allocator, names.a);
-                    try chunk_output.appendSlice(allocator, if (min) "();" else "();\n");
+                    if (em.wrap_kind == .cjs) {
+                        // 본문 실행 + node CJS↔ESM 계약(default = module.exports).
+                        try chunk_output.appendSlice(allocator, "export default ");
+                        try chunk_output.appendSlice(allocator, names.a);
+                        try chunk_output.appendSlice(allocator, if (min) "();" else "();\n");
+                    } else {
+                        // ESM-wrap entry: 본문 실행만.
+                        try chunk_output.appendSlice(allocator, names.a);
+                        try chunk_output.appendSlice(allocator, if (min) "();" else "();\n");
+                    }
                 }
             }
         }
@@ -1375,11 +1449,7 @@ pub fn emitChunks(
                         else
                             resolveOwnerLocal(l, graph, mod_idx, @intCast(mi), name) orelse name;
                         if (cjs_x) {
-                            try chunk_output.appendSlice(allocator, "exports.");
-                            try chunk_output.appendSlice(allocator, global);
-                            try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "=" else " = ");
-                            try chunk_output.appendSlice(allocator, local);
-                            try chunk_output.appendSlice(allocator, if (options.minify_whitespace) ";" else ";\n");
+                            try appendCjsExportBinding(allocator, &chunk_output, global, local, pm_wrapped_esm_provider, options.minify_whitespace);
                         } else {
                             if (!first_in_group) try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "," else ", ");
                             try chunk_output.appendSlice(allocator, local);
@@ -1405,11 +1475,7 @@ pub fn emitChunks(
                         break :blk name;
                     } else name;
                     if (cjs_x) {
-                        try chunk_output.appendSlice(allocator, "exports.");
-                        try chunk_output.appendSlice(allocator, name);
-                        try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "=" else " = ");
-                        try chunk_output.appendSlice(allocator, local_name);
-                        try chunk_output.appendSlice(allocator, if (options.minify_whitespace) ";" else ";\n");
+                        try appendCjsExportBinding(allocator, &chunk_output, name, local_name, pm_wrapped_esm_provider, options.minify_whitespace);
                     } else {
                         try chunk_output.appendSlice(allocator, local_name);
                         if (!std.mem.eql(u8, local_name, name)) {
@@ -2390,6 +2456,37 @@ pub fn preserveModulesWrapperChunk(
     const em = graph.getModule(info.module) orelse return null;
     if (!em.wrap_kind.isWrapped()) return null;
     return info.module;
+}
+
+/// (#4528) cjs 청크의 cross-chunk export 한 줄.
+///
+/// 보통은 `exports.<public> = <local>;` — **값 스냅샷**이다. 그런데 preserve-modules 의
+/// **ESM-wrap provider** 는 그 값(`const`/`let`/`class`)이 `__esm` 클로저(=`init_X()`) 안에서
+/// **늦게 대입**되므로, 파일 top-level 에서 스냅샷하면 **undefined** 가 나간다
+/// (함수 선언만 hoisting 으로 우연히 살아남아 버그가 가려진다).
+/// → **getter** 로 노출해 읽는 시점에 평가되게 한다(live). 선-init 은 답이 아니다 —
+/// ESM-wrap 끼리 순환하면 아직 미평가인 상대의 `init_X`(undefined)를 부르게 된다.
+fn appendCjsExportBinding(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    public: []const u8,
+    local: []const u8,
+    live: bool,
+    min: bool,
+) !void {
+    if (!live) {
+        try out.appendSlice(allocator, "exports.");
+        try out.appendSlice(allocator, public);
+        try out.appendSlice(allocator, if (min) "=" else " = ");
+        try out.appendSlice(allocator, local);
+        try out.appendSlice(allocator, if (min) ";" else ";\n");
+        return;
+    }
+    try out.appendSlice(allocator, "Object.defineProperty(exports,\"");
+    try out.appendSlice(allocator, public);
+    try out.appendSlice(allocator, if (min) "\",{get:function(){return " else "\", { get: function() { return ");
+    try out.appendSlice(allocator, local);
+    try out.appendSlice(allocator, if (min) "},enumerable:true});" else "; }, enumerable: true });\n");
 }
 
 /// (#4524) 위 청크가 export/import 해야 할 **래퍼 심볼 이름들**. caller 가 free.
