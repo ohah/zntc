@@ -35,3 +35,10 @@ var a = require_a();      // ← 본문은 또 다른 이름
 wrap 된 CJS 진입점은 아무도 `require_X()` 를 부르지 않아 **본문이 아예 실행되지 않았다**(`console.log` 조차 안 찍힘). 진입점만 직접 호출한다 — dep 는 여전히 lazy 다(eager 호출은 CJS 순환을 죽인다, #4526).
 
 ⚠️ preserve-modules 는 **모든 모듈이 자기 `entry_point` 청크**라 청크 종류로는 진입점을 못 가른다 — 모듈의 `is_entry_point` 플래그를 봐야 한다.
+
+추가(코드리뷰): 첫 수정이 **회귀 4건**을 만들었다.
+
+- **`module.exports = require_X()` 가 exports 객체를 교체**해, 바로 위에서 깐 `exports.require_X` 를 지웠다 → 이 entry 를 import 하는 다른 파일의 forwarding 썽크가 `undefined.apply` 로 죽는다. 교체 뒤 **재부착**.
+- **`pm_entry_call` 이 `.cjs` 만 봐서** ESM-wrap user entry 는 여전히 본문 미실행이었다(같은 결함의 절반). `isWrapped()` 로 넓혔다.
+- **cjs 의 `exports.X = X` 는 값 스냅샷**인데 ESM-wrap 모듈의 `const`/`class` 는 `__esm` 클로저(=`init_X()`) 안에서 **늦게 대입**된다 → 파일 top-level 스냅샷은 **undefined**(함수 선언만 hoisting 으로 우연히 살아남아 버그가 가려졌다). provider 는 **getter** 로 노출, 소비자는 **init 시점 갱신**. ⚠️ 선-init 은 답이 아니다 — ESM-wrap 끼리 순환하면 아직 미평가인 상대의 `init_Y`(undefined)를 부른다.
+- **회귀 가드가 무력했다** — `buildPm` 에 `minify` 파라미터를 넣는 편집이 조용히 실패해 `--minify` 테스트가 minify 없이 돌고 있었다. 이제 esm/cjs × plain/minify 매트릭스를 실제로 돈다.
