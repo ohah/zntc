@@ -160,7 +160,14 @@ pub fn scanObjectDefinePropertyCjs(self: *Parser, callee: NodeIndex, arg_list: N
 
 /// new Worker(new URL("./worker.ts", import.meta.url)) 패턴을 inline scan으로 수집한다.
 /// graph 후처리 AST walk를 피하기 위해 new_expression 생성 시점의 callee/args를 사용한다.
-pub fn scanWorkerNewExpression(self: *Parser, callee: NodeIndex, arg_list: NodeList) void {
+pub fn scanWorkerNewExpression(self: *Parser, callee_raw: NodeIndex, arg_list: NodeList) void {
+    // 이 scan 은 **타입 소거 전** AST 를 본다. `new Worker!(new URL(...))` 의 callee 는
+    // `Worker!`(ts_non_null) 이지만 타입 소거 후 런타임 의미는 `new Worker(...)` 와 같으므로,
+    // 괄호 없는 타입 래퍼를 벗겨내고 판별해야 worker 자산을 놓치지 않는다. #4505 로 이 래퍼가
+    // callee **안**에 머물게 되면서 여기까지 도달한다(예전엔 `!` 가 new 밖으로 새어나가
+    // 애초에 new_expression 이 아니었다). 괄호(`new (Worker)(...)`)는 벗기지 않는다 —
+    // optionalChainArglessNewHead 와 같은 규칙(괄호는 별개 노드).
+    const callee = stripParenFreeTypeWrappers(self, callee_raw);
     if (!isIdentifierText(self, callee, "Worker") and !isIdentifierText(self, callee, "SharedWorker")) return;
     if (arg_list.len < 1 or arg_list.start >= self.ast.extra_data.items.len) return;
 
@@ -193,6 +200,20 @@ pub fn scanWorkerNewExpression(self: *Parser, callee: NodeIndex, arg_list: NodeL
         .span = spec_node.span,
         .url_span = url_new.span,
     }) catch {};
+}
+
+/// 괄호 없는 TS/Flow 타입 래퍼(`!`/`as T`/`satisfies T`/`<T>x`)를 모두 벗겨 안쪽 표현식을
+/// 돌려준다 — 타입 소거 후 남는 JS 노드가 곧 런타임 대상이기 때문. depth 가드로 무한루프 방지.
+fn stripParenFreeTypeWrappers(self: *const Parser, idx: NodeIndex) NodeIndex {
+    var cur = idx;
+    var guard: u32 = 0;
+    while (guard < 100_000) : (guard += 1) {
+        if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return cur;
+        const node = self.ast.nodes.items[@intFromEnum(cur)];
+        if (!ast_mod.Node.Tag.isParenFreeTypeWrapper(node.tag)) return cur;
+        cur = node.data.unary.operand;
+    }
+    return cur;
 }
 
 fn isIdentifierText(self: *Parser, idx: NodeIndex, expected: []const u8) bool {

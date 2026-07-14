@@ -167,3 +167,102 @@ describe('new callee 체인 (#4500)', () => {
     expect(run2.stdout.trim()).toBe('5');
   });
 });
+
+// #4505 — TS 접미사(`!` non-null / `<T>` type args)가 new 의 callee **밖으로 새던** 잔여 2건.
+//
+// 스펙상 `!` / `<T>` 뒤의 `.b` / `` `x`.B `` 는 바깥 new 의 callee 다(`new (a!.b)()`).
+// tsc AST 도 `NewExpression(callee = PropertyAccess(NonNullExpression(a), b))`.
+//
+// 수정 전 방출(둘 다 진단 없는 silent miscompile):
+//   `new a!.b()`      → `new a().b()`      → TypeError: a is not a constructor
+//   `` new a<T>`x`.B() `` → `` new a()`x`.B() `` → TypeError: (intermediate value) is not a function
+describe('new callee 의 TS 접미사 (#4505)', () => {
+  let cleanup: (() => Promise<void>) | undefined;
+
+  afterEach(async () => {
+    if (cleanup) {
+      await cleanup();
+      cleanup = undefined;
+    }
+  });
+
+  test('non-null assertion: new a!.b()', async () => {
+    const r = await transpileAndRun(
+      `
+      class B { ok = 42; }
+      const a = { b: B } as any;
+      const x = new a!.b();
+      console.log(x.ok);
+    `,
+      [],
+      { ext: 'ts' },
+    );
+    cleanup = r.cleanup;
+    expect(r.transpileExitCode).toBe(0);
+    // 오파싱 시 `new a().b()` 가 방출돼 `a` 를 생성하려다 TypeError 로 죽는다.
+    expect(r.runOutput.trim()).toBe('42');
+  });
+
+  test('type arguments + tagged template: new a<T>`x`.B()', async () => {
+    const r = await transpileAndRun(
+      `
+      function a<T>(strings: TemplateStringsArray) {
+        return { B: class { ok = 9; } };
+      }
+      const y = new a<string>\`x\`.B();
+      console.log(y.ok);
+    `,
+      [],
+      { ext: 'ts' },
+    );
+    cleanup = r.cleanup;
+    expect(r.transpileExitCode).toBe(0);
+    // 오파싱 시 `` new a()`x`.B() `` → 생성 결과를 태그로 호출 → TypeError.
+    expect(r.runOutput.trim()).toBe('9');
+  });
+
+  test('callee 가 `a!` 자체: new a!() 는 생성 결과를 호출하지 않는다', async () => {
+    const r = await transpileAndRun(
+      `
+      class A { ok = 3; }
+      const a = A as any;
+      const x = new a!();
+      console.log(x.ok);
+    `,
+      [],
+      { ext: 'ts' },
+    );
+    cleanup = r.cleanup;
+    expect(r.transpileExitCode).toBe(0);
+    // 오파싱 시 `new a()()` — 생성된 인스턴스를 *호출*한다 → TypeError: not a function.
+    expect(r.runOutput.trim()).toBe('3');
+  });
+
+  test('idempotency: TS 접미사가 소거된 방출물을 다시 transpile 해도 의미가 같다', async () => {
+    // `new a!.b()` 는 `new a.b()` 로 방출된다. 그걸 다시 파싱했을 때도 callee 가 `a.b` 로
+    // 유지돼야 한다(2-pass/번들 가드).
+    const dir = await mkdtemp(join(tmpdir(), 'zntc-4505-'));
+    cleanup = async () => rm(dir, { recursive: true, force: true });
+
+    const src = join(dir, 'in.ts');
+    const out1 = join(dir, 'out1.js');
+    const out2 = join(dir, 'out2.js');
+    await writeFile(
+      src,
+      `class B { constructor(){ this.ok = 5; } }\n` +
+        `const a = { b: B };\n` +
+        `const x = new a!.b();\nconsole.log(x.ok);\n`,
+    );
+
+    const t1 = await runZntc([src, '-o', out1]);
+    expect(t1.exitCode).toBe(0);
+    const t2 = await runZntc([out1, '-o', out2]);
+    expect(t2.exitCode).toBe(0);
+
+    // runNode 는 exit != 0 이면 throw — 오파싱 시 TypeError 로 여기서 잡힌다.
+    const run1 = await runNode(out1);
+    const run2 = await runNode(out2);
+    expect(run1.stdout.trim()).toBe('5');
+    expect(run2.stdout.trim()).toBe('5');
+  });
+});
