@@ -1180,6 +1180,22 @@ pub const SemanticAnalyzer = struct {
         };
     }
 
+    /// destructuring **패턴**의 프로퍼티 key 가 computed(`[expr]`)면 그 표현식을 방문한다.
+    ///
+    /// 패턴의 key 는 보통 프로퍼티 이름일 뿐이라 순회하지 않는다 — 순회하면 `{k: v}` 의 `k`
+    /// 가 변수 참조로 잘못 resolve 된다. 하지만 computed key 는 **런타임에 평가되는 값 표현식**
+    /// 이므로 그 안의 식별자는 진짜 읽기 참조다.
+    ///
+    /// object_property(일반 객체 리터럴) 쪽은 이미 computed key 를 방문하고 있었는데,
+    /// 패턴 쪽(binding_property / assignment_target_property_property)만 빠져 있었다. 그래서
+    /// `({[k]: t = d} = o)` 의 `k` 는 참조 0 → DCE/const-inline 이 `const k` 를 지우고,
+    /// codegen 은 key 를 원본 이름으로 내보내 `ReferenceError: k is not defined` (#4515).
+    fn visitComputedPatternKey(self: *SemanticAnalyzer, key_idx: NodeIndex) AllocError!void {
+        if (key_idx.isNone() or @intFromEnum(key_idx) >= self.ast.nodes.items.len) return;
+        if (self.ast.getNode(key_idx).tag != .computed_property_key) return;
+        try self.visitNode(key_idx);
+    }
+
     /// Destructuring assignment target을 순회하며 leaf 식별자를 write 참조로 해결한다.
     /// 필요한 이유: 파서가 `{v}` 같은 shorthand를 `assignment_target_property_identifier`로만
     /// 태그하고 내부 식별자 노드는 `identifier_reference`로 유지하기 때문. visitNode의
@@ -1210,6 +1226,11 @@ pub const SemanticAnalyzer = struct {
             },
             .assignment_target_property_property => {
                 // long-form `{key: target}` — right = target.
+                // key 는 프로퍼티 이름이라 순회하지 않지만, computed key(`{[k]: t}`)의 `[k]` 는
+                // **값으로 평가되는 표현식**이라 반드시 읽기 참조로 방문해야 한다 (#4515).
+                // 빠뜨리면 `k` 에 참조가 안 잡혀 DCE/const-inline 이 선언을 지워버리는데
+                // codegen 은 key 를 원본 이름으로 내보내 ReferenceError 가 된다.
+                try self.visitComputedPatternKey(node.data.binary.left);
                 try self.visitAsWriteTarget(node.data.binary.right);
             },
             .assignment_target_with_default => {
@@ -2335,6 +2356,10 @@ pub const SemanticAnalyzer = struct {
                 }
             },
             .binding_property, .assignment_target_property_property => {
+                // computed key(`const {[k]: t} = o`)의 `[k]` 도 패턴 안의 값 표현식이다 —
+                // `let`/`const` 는 predeclare 경로라 registerBinding 을 안 타므로 여기서
+                // 방문하지 않으면 `k` 참조가 영영 안 잡힌다 (#4515).
+                try self.visitComputedPatternKey(node.data.binary.left);
                 try self.visitBindingPatternExpressions(node.data.binary.right);
             },
             .assignment_target_property_identifier => {
@@ -3923,6 +3948,9 @@ pub const SemanticAnalyzer = struct {
             .assignment_target_property_property,
             => {
                 // binary: { left = key, right = value }
+                // computed key(`let {[k]: t} = o`)의 `[k]` 는 값으로 평가되는 표현식 —
+                // 바인딩은 아니지만 읽기 참조로 방문해야 `k` 선언이 살아남는다 (#4515).
+                try self.visitComputedPatternKey(node.data.binary.left);
                 try self.registerBinding(node.data.binary.right, kind);
             },
             .assignment_target_property_identifier => {

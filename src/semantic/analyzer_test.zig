@@ -2375,3 +2375,49 @@ test "SemanticAnalyzer: bundle-mode member-target with none object does not OOB 
         ana.analyze() catch {}; // analyzer 에러는 무관 — 핵심은 OOB panic 부재
     }
 }
+
+test "Reference #4515: 패턴 프로퍼티의 computed key 가 읽기 참조로 잡힌다" {
+    // analyzer 가 패턴 프로퍼티의 computed key(`[k]`)를 **아예 방문하지 않아** `k` 의
+    // reference_count 가 0 이었다 → DCE/const-inline 이 `const k` 선언을 지우는데 codegen 은
+    // key 를 원본 이름으로 내보낸다 → `ReferenceError: k is not defined`.
+    //
+    // 일반 객체 리터럴(`{[k]: v}`)의 computed key 는 이미 방문하고 있었고 **패턴**만 빠져
+    // 있었다. 세 walker 전부(registerBinding / visitBindingPatternExpressions /
+    // visitAsWriteTarget) 막아야 한다.
+    var counts: [8]u32 = undefined;
+
+    // 1) 구조분해 **할당** (visitAsWriteTarget 경로)
+    {
+        const n = getRefCounts("const k = 'a'; const o = {}; let t; ({ [k]: t = 1 } = o);", "k", &counts);
+        try std.testing.expectEqual(@as(usize, 1), n);
+        try std.testing.expectEqual(@as(u32, 1), counts[0]); // 버그 시 0
+    }
+    // 2) const/let 선언 (predeclare → visitBindingPatternExpressions 경로)
+    {
+        const n = getRefCounts("const k = 'a'; const o = {}; const { [k]: t } = o;", "k", &counts);
+        try std.testing.expectEqual(@as(usize, 1), n);
+        try std.testing.expectEqual(@as(u32, 1), counts[0]); // 버그 시 0
+    }
+    // 3) var 선언 (registerBinding 경로 — predeclare 아님)
+    {
+        const n = getRefCounts("const k = 'a'; const o = {}; var { [k]: t } = o;", "k", &counts);
+        try std.testing.expectEqual(@as(usize, 1), n);
+        try std.testing.expectEqual(@as(u32, 1), counts[0]); // 버그 시 0
+    }
+    // 4) 함수 파라미터 패턴 (registerParams → registerBinding 경로)
+    {
+        const n = getRefCounts("const k = 'a'; function f({ [k]: p }) { return p; }", "k", &counts);
+        try std.testing.expectEqual(@as(usize, 1), n);
+        try std.testing.expectEqual(@as(u32, 1), counts[0]); // 버그 시 0
+    }
+}
+
+test "Reference #4515: non-computed key 는 여전히 참조로 잡히지 않는다 (회귀 0)" {
+    // 패턴의 일반 key 는 프로퍼티 **이름**일 뿐이라 변수 참조가 아니다. 방문하면
+    // 같은 이름의 변수(특히 namespace import)가 잘못 resolve 된다.
+    var counts: [8]u32 = undefined;
+    // `k` 라는 변수가 있어도 `{ k: t }` 의 key 는 그 변수를 참조하지 않는다.
+    const n = getRefCounts("const k = 'a'; const o = {}; const { k: t } = o;", "k", &counts);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(@as(u32, 0), counts[0]);
+}

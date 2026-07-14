@@ -107,6 +107,47 @@ pub const Codegen = struct {
     /// 정확하다 (#4482). `maxInt` = 미마킹(절대 매치 안 됨).
     prev_op: Kind = .eof,
     prev_op_end: usize = std.math.maxInt(usize),
+    /// `undefinedPeepholeApplies` 의 모듈 단위 캐시. null = 아직 스캔 안 함.
+    undefined_shadowed: ?bool = null,
+
+    /// `undefined` → `void 0` peephole 을 이 식별자에 적용할 수 있는가.
+    ///
+    /// peephole 은 **unbound global** `undefined` 참조에만 유효하다. 지역 바인딩이
+    /// 섀도잉하면(`let undefined = x`) `void 0` 은 값이 **틀린다**.
+    ///
+    /// 예전 가드는 `sym_id == null` 하나였는데, `sym_id` 는 `linking_metadata` 가 있을
+    /// 때만(=번들 모드) 채워진다. transpile 모드엔 metadata 가 없어 sym_id 가 **항상**
+    /// null → "unbound" 판정이 무조건 참 → 섀도잉된 `undefined` 까지 `void 0` 으로
+    /// 바뀌었다. 그래서 이 모듈에 `undefined` 라는 이름의 **바인딩**이 하나라도 있으면
+    /// peephole 을 끈다. 섀도잉은 극히 드물어 size 영향은 사실상 0 이다.
+    ///
+    /// node_dispatch(식별자 case) 와 expressions(`identifierEmitsSubstituted`) 가 **같은**
+    /// 술어를 봐야 shorthand 확장 판단이 어긋나지 않는다 — 그래서 여기 한 곳에 둔다.
+    pub fn undefinedPeepholeApplies(self: *Codegen, n: Node, sym_id: ?u32) bool {
+        if (!self.options.minify_syntax) return false;
+        if (n.tag != .identifier_reference) return false;
+        if (sym_id != null) return false; // 번들 모드: 해석된 심볼 = 지역 바인딩
+        if (!std.mem.eql(u8, self.ast.identifierNameText(n), "undefined")) return false;
+        return !self.undefinedIsShadowed();
+    }
+
+    /// 이 모듈 AST 에 `undefined` 라는 이름의 바인딩이 있는가 (모듈당 1회 스캔·캐시).
+    /// peephole 이 실제로 `undefined` 텍스트를 만났을 때만 호출되므로 대부분의 모듈은
+    /// 스캔조차 하지 않는다.
+    fn undefinedIsShadowed(self: *Codegen) bool {
+        if (self.undefined_shadowed) |v| return v;
+        var found = false;
+        for (self.ast.nodes.items) |n| {
+            if (n.tag != .binding_identifier) continue;
+            if (std.mem.eql(u8, self.ast.identifierNameText(n), "undefined")) {
+                found = true;
+                break;
+            }
+        }
+        self.undefined_shadowed = found;
+        return found;
+    }
+
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) Codegen {
         return initWithOptions(allocator, ast, .{});
     }

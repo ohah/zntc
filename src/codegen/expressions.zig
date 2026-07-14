@@ -7,6 +7,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const Kind = @import("../lexer/token.zig").Kind;
 const unicode = @import("../lexer/unicode.zig");
 const calls = @import("calls.zig");
+const cg_options = @import("options.zig");
 const precedence = @import("precedence.zig");
 const Level = precedence.Level;
 const ExprFlags = precedence.ExprFlags;
@@ -491,7 +492,15 @@ pub fn emitObjectProperty(self: anytype, node: Node) !void {
     const value = node.data.binary.right;
     if (key.isNone()) return;
     if (value.isNone()) {
-        if (identifierHasRename(self, key) or identifierHasConstValue(self, key)) {
+        // shorthand `{x}` — 이 노드 **하나**가 프로퍼티 이름(키)이자 값 표현식이다.
+        // emitNode 는 값 표현식으로서 치환(rename / const-inline / undefined peephole /
+        // ns / CJS 파라미터 재작성)을 적용하는데, 치환이 일어나면 그 결과는 더 이상
+        // 원본 이름이 아니라서 shorthand 로 두면 **프로퍼티 이름까지 같이 바뀐다**
+        // (`{exports}` → `{$e}` — 키가 `$e` 로 바뀜) 또는 아예 식별자가 아니게 된다
+        // (`{undefined}` → `{void 0}` — SyntaxError).
+        //
+        // 따라서 치환이 하나라도 걸리면 longhand(`이름: 값`)로 펼쳐 키를 원본으로 고정한다.
+        if (identifierEmitsSubstituted(self, key, .value)) {
             const key_node = self.ast.getNode(key);
             try self.writeIdentifierSpan(key_node.data.string_ref);
             if (self.options.minify_whitespace) {
@@ -537,33 +546,118 @@ pub fn emitObjectProperty(self: anytype, node: Node) !void {
     }
 }
 
-pub fn identifierHasRename(self: anytype, idx: NodeIndex) bool {
+/// shorthand 프로퍼티 자리의 식별자가 **어떤 자리**에 놓였는지.
+///
+/// shorthand 는 노드 **하나**가 프로퍼티 이름(키)이자 값/대입대상이다. 그런데 파서는 이
+/// 노드를 늘 `identifier_reference`(=값 참조) 로 태그한다 — `({x} = o)` 의 `x` 도 마찬가지다.
+/// 그래서 태그만 봐서는 "값이냐 대입 대상이냐"를 알 수 없고, **호출자(자리)** 가 알려줘야 한다.
+///
+/// 애초에 파서가 자리에 맞는 태그(`assignment_target_identifier`)를 달아 주면 이 구분이
+/// 필요 없지만, 그 retag 는 `makeRestExcludeKey` 같은 태그 스위치 소비자들을 조용히
+/// 깨뜨린다(#4515 참고) — codegen 안에서 자리를 명시하는 쪽이 반경이 0 이다.
+pub const ShorthandSlot = enum {
+    /// 객체 리터럴 `{x}` — 값 표현식. 모든 치환이 유효하다.
+    value,
+    /// 구조분해 대입/바인딩 `({x} = o)`, `let {x} = o` — 대입 대상.
+    /// 값 전용 치환(`undefined`→`void 0`, 상수 인라인)은 여기서 터지면 **invalid JS** 다
+    /// (`{undefined:void 0=1}` — 대입 대상이 될 수 없다).
+    assignment_target,
+};
+
+/// `emitNode(idx)` 가 이 식별자를 **원본 이름 그대로**가 아닌 다른 텍스트로 낼지 여부.
+///
+/// shorthand 를 longhand(`이름: 값`)로 펼칠지 판단한다. 펼치지 않으면 노드 하나가 키이자
+/// 값이라 **프로퍼티 이름까지 같이 바뀐다** (`{exports}` → `{$e}`) 또는 식별자가 아닌 토큰이
+/// 키 자리에 앉는다 (`{undefined}` → `{void 0}` — SyntaxError).
+///
+/// **node_dispatch.zig 의 식별자 case 와 치환 목록이 1:1로 대응해야 한다.** 거기서 치환하는데
+/// 여기서 false 를 주면 위 오방출이 난다. 반대(여기 true, 거기 no-op)는 불필요한 longhand
+/// 확장일 뿐 안전하다.
+///
+/// `slot == .assignment_target` 이면 값 전용 치환(peephole/상수인라인)에 대해 **false** 를
+/// 돌려준다 — 그 자리에선 emitNode 를 태우면 안 되고 원본 토큰을 그대로 써야 하기 때문이다.
+/// 호출자는 false 를 "원본 span 출력" 으로 해석한다.
+pub fn identifierEmitsSubstituted(self: anytype, idx: NodeIndex, slot: ShorthandSlot) bool {
     if (idx.isNone()) return false;
-    const key_node = self.ast.getNode(idx);
-    if (self.options.linking_metadata) |meta| {
-        if (self.resolveSymbolId(idx, meta)) |sym_id| {
-            if (meta.renames.get(sym_id) != null) return true;
-        }
-    }
-    if (self.ns_prefix) |_| {
-        if (key_node.tag == .identifier_reference or key_node.tag == .assignment_target_identifier) {
-            const name = self.ast.getText(key_node.data.string_ref);
-            if (self.ns_exports) |exports| {
-                if (exports.contains(name)) return true;
+    const n = self.ast.getNode(idx);
+
+    const sym_id: ?u32 = if (self.options.linking_metadata) |meta|
+        self.resolveSymbolId(idx, meta)
+    else
+        null;
+
+    // ---- 값 전용 치환: 대입 대상 자리에서는 emitNode 를 태우면 안 된다 ----
+    // node_dispatch 는 이 둘을 `identifier_reference` 태그에만 건다. shorthand 대입 대상도
+    // 태그가 identifier_reference 라서(파서가 그렇게 만든다) 그냥 emitNode 하면 발동한다.
+    if (slot == .value) {
+        // 1) undefined → `void 0` peephole (unbound global 값 참조만).
+        if (self.undefinedPeepholeApplies(n, sym_id)) return true;
+        // 2) 상수 인라인 (값 참조만).
+        if (self.options.linking_metadata) |meta| {
+            if (sym_id) |sid| {
+                if (n.tag == .identifier_reference and meta.const_values.get(sid) != null) return true;
             }
         }
     }
+
+    // ---- 자리와 무관하게 유효한 치환 (대입 대상에도 그대로 적용돼야 한다) ----
+    if (self.options.linking_metadata) |meta| {
+        if (sym_id) |sid| {
+            // 3) namespace 인라인 객체 → 변수명 치환.
+            if (meta.ns_inline_objects.get(sid) != null) return true;
+            // 4) mangler rename.
+            if (meta.renames.get(sid) != null) return true;
+        }
+    }
+
+    // 5) namespace IIFE 내부 export 참조 → `ns.name`.
+    if (self.ns_prefix != null and
+        (n.tag == .identifier_reference or n.tag == .assignment_target_identifier))
+    {
+        if (self.ns_exports) |exports| {
+            if (exports.contains(self.ast.getText(n.data.string_ref))) return true;
+        }
+    }
+
+    // 6) CJS 래퍼의 free `exports`/`module` — 파라미터를 짧은 이름으로 바꾼 경우.
+    if (self.options.module_format == .cjs and sym_id == null and
+        (n.tag == .identifier_reference or n.tag == .assignment_target_identifier))
+    {
+        const ident = self.ast.getText(n.data.string_ref);
+        if (std.mem.eql(u8, ident, "exports") and
+            !std.mem.eql(u8, self.options.cjs_exports_name, cg_options.default_cjs_exports_name)) return true;
+        if (std.mem.eql(u8, ident, "module") and
+            !std.mem.eql(u8, self.options.cjs_module_name, cg_options.default_cjs_module_name)) return true;
+    }
+
     return false;
 }
 
-fn identifierHasConstValue(self: anytype, idx: NodeIndex) bool {
+/// 대입 대상 shorthand 자리에서 `emitNode` 가 **안전한지**.
+///
+/// false 면 값 전용 치환(peephole / 상수 인라인)이 발동해 대입 대상 자리에 `void 0` 이나
+/// 리터럴이 앉아 invalid JS 가 된다 → 호출자는 원본 span 을 그대로 써야 한다.
+pub fn targetIdentSafeToEmit(self: anytype, idx: NodeIndex) bool {
     if (idx.isNone()) return false;
-    if (self.options.linking_metadata) |meta| {
-        if (self.resolveSymbolId(idx, meta)) |sym_id| {
-            if (meta.const_values.get(sym_id)) |cv| return cv.isSafeToInline();
+    const n = self.ast.getNode(idx);
+    if (n.tag != .identifier_reference) return true; // binding_identifier 등은 값 전용 치환 대상이 아님
+
+    const sym_id: ?u32 = if (self.options.linking_metadata) |meta|
+        self.resolveSymbolId(idx, meta)
+    else
+        null;
+
+    if (sym_id) |sid| {
+        // 상수 인라인 대상이면 emitNode 가 리터럴을 낸다 — 대입 대상 자리엔 불가.
+        if (self.options.linking_metadata) |meta| {
+            if (meta.const_values.get(sid) != null) return false;
         }
+        return true;
     }
-    return false;
+    // unbound global `undefined` → peephole 이 `void 0` 을 낸다.
+    if (self.options.minify_syntax and
+        std.mem.eql(u8, self.ast.identifierNameText(n), "undefined")) return false;
+    return true;
 }
 
 pub fn emitComputedKey(self: anytype, node: Node) !void {
