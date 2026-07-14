@@ -311,13 +311,19 @@ console.log([d.viaDefault, d.viaShorthand, d.viaLiteral, d.exportsIsObject].join
   }, 120000);
 
   test('#4515-3 CJS shorthand 대입이 진짜 exports 파라미터에 꽂힌다', async () => {
-    // 위 테스트의 반대편: 대입 대상이 재작성되지 않으면 `$e` 는 그대로고 미선언 전역만
-    // 생긴다. 여기서는 exports 를 **직접** 덮어써 그 효과를 관측한다.
+    // 위 테스트의 반대편: 대입 **대상**이 재작성되지 않으면 `$e`(exports 파라미터)는 그대로고
+    // 미선언 전역 `exports` 만 하나 생긴다.
+    //
+    // 관측 방법에 주의 — `exports` 파라미터를 재대입해도 `module.exports` 는 안 바뀐다
+    // (CJS 는 `module.exports` 를 돌려준다). 그래서 `module.exports = exports` 로 한 번 더
+    // 꽂아야 효과가 밖에서 보인다. node 정본도 이 형태에서만 `REWRITTEN` 이다.
     const { dir, cleanup } = await createFixture({
       'dep.cjs': `
 const src = { exports: { tag: "REWRITTEN" } };
 ({ exports } = src);
-// 대입이 진짜 exports 파라미터에 꽂혔다면 이 모듈의 exports 는 위 객체가 된다.
+// 대입이 진짜 exports 파라미터에 꽂혔다면 여기서 그 객체가 module.exports 가 된다.
+// 전역으로 샜다면 exports 파라미터는 여전히 빈 객체다 → NOT_REWRITTEN.
+module.exports = exports;
 `,
       'entry.js': `
 import d from "./dep.cjs";
