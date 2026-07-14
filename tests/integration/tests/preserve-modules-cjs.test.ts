@@ -348,4 +348,79 @@ describe('#4524: --preserve-modules × CJS', () => {
       await cleanup();
     }
   });
+  // ─── #4528: wrap 된 모듈의 남은 구멍 3건 ───
+
+  const WRAPPED = {
+    'b.js': 'import { helper } from "./a.cjs";\nexport function tag(){ return "B+" + helper(); }',
+    'a.cjs':
+      'const b = require("./b.js");\n' +
+      'exports.helper = function(){ return "H"; };\n' +
+      'exports.callB = function(){ return b.tag(); };',
+    'entry.js':
+      'import { tag } from "./b.js";\n' +
+      'import { callB } from "./a.cjs";\n' +
+      'console.log(tag() + "|" + callB());',
+  };
+
+  for (const format of ['esm', 'cjs'] as const) {
+    test(`#4528 ${format}: wrap 된 ESM dep 의 named import 가 바인딩된다`, async () => {
+      // ⚠️ **wrap 종류마다 규칙이 다르다.**
+      // - CJS: 본문 **전체**가 `__commonJS` 클로저 안 → top-level 에 export 명이 없다(래퍼뿐).
+      // - ESM-wrap: 클로저에 들어가는 건 **부수효과 문장뿐**이고 `function tag(){}` 같은
+      //   **선언은 파일 top-level 에 남는다** → 소비자도 bare 로 참조한다(단일 번들과 동일).
+      // 그래서 CJS dep 만 심볼 목록을 버리고, ESM-wrap dep 은 래퍼 **와 함께** 심볼도 가져와야
+      // 한다. 예전엔 둘 다 버려서 `ReferenceError: tag is not defined`.
+      const { outDir, cleanup } = await buildPm(WRAPPED, 'entry.js', format);
+      try {
+        const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+        expect(stderr).not.toContain('Error');
+        expect(stdout.trim()).toBe('B+H|B+H');
+      } finally {
+        await cleanup();
+      }
+    });
+
+    test(`#4528 ${format} --minify: 래퍼 이름이 provider/consumer/본문 3자에서 일치한다`, async () => {
+      // `rename_table` 은 **청크별**이라 provider emit 시점과 consumer emit 시점에 같은 심볼이
+      // 다른 이름으로 해석됐다 → `import{o}` vs `export{require_a}` → `--minify` 가 통째로 깨졌다.
+      // 래퍼 선언은 emitter 가 직접 찍어서 codegen 의 rename 대상이 아니다(=본문은 canonical 을
+      // 쓴다) → canonical 하나로 통일하면 3자가 항상 일치한다.
+      const { outDir, cleanup } = await buildPm(
+        {
+          'a.cjs':
+            'const b = require("./b.cjs");\nexports.a = function a(){ return "A+" + b.b(); };',
+          'b.cjs': 'const a = require("./a.cjs");\nexports.b = function b(){ return "B"; };',
+          'entry.js': 'import { a } from "./a.cjs";\nconsole.log("result:", a());',
+        },
+        'entry.js',
+        format,
+        true,
+      );
+      try {
+        const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+        expect(stderr).not.toContain('Error');
+        expect(stdout.trim()).toBe('result: A+B');
+      } finally {
+        await cleanup();
+      }
+    });
+
+    test(`#4528 ${format}: CJS user entry 가 본문을 실행한다`, async () => {
+      // wrap 된 CJS 진입점은 아무도 `require_X()` 를 부르지 않아 **본문이 아예 실행되지
+      // 않았다**(console.log 조차 안 찍힘). 진입점만 직접 호출한다 — dep 는 여전히 lazy 다
+      // (eager 호출은 CJS 순환을 죽인다).
+      // ⚠️ preserve-modules 는 **모든 모듈이 자기 entry_point 청크**라 chunk 종류로는 못 가른다.
+      const { outDir, cleanup } = await buildPm(
+        { 'main.cjs': 'console.log("ENTRY BODY RAN");\nmodule.exports = { x: 1 };' },
+        'main.cjs',
+        format,
+      );
+      try {
+        const { stdout } = await runNode(join(outDir, 'main.js'));
+        expect(stdout.trim()).toBe('ENTRY BODY RAN');
+      } finally {
+        await cleanup();
+      }
+    });
+  }
 });
