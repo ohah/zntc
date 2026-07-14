@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
 import { join } from 'node:path';
+import { writeFileSync } from 'node:fs';
 import { createFixture, runNode, runZntc, writeOutputs } from './helpers';
 import { init, close, build } from '../../../packages/core/index';
 
@@ -234,6 +235,57 @@ describe('code-splitting 런타임 스모크', () => {
       const { stdout } = await runNode(outFile);
       // 버그 시: `d.a = undefined`
       expect(stdout.trim()).toBe('d.a = 1');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('#4522 code-split 된 동적 CJS import 도 named 멤버를 노출한다 (인라인과 같은 값)', async () => {
+    // CJS 는 정적 export 가 없어 named 멤버를 ESM `export` 문법으로 표현할 수 없다. 그래서
+    // 동적 CJS entry 청크는 **namespace 통째**를 `default` 슬롯에 실어 보내고, 소비자가
+    // `.default` 로 한 겹 벗긴다. 예전엔 `default` **값 하나**만 내보내서 named 가 유실됐고,
+    // 그 결과 **같은 소스가 청킹에 따라 런타임 값이 갈렸다**(인라인=정상 / splitting=TypeError).
+    //
+    // 정본: node 는 `import('./x.cjs')` 에서 named 를 노출한다(cjs-module-lexer).
+    // rolldown / rspack 도 code-split 상태에서 노출한다 — esbuild 만 예외.
+    const files = {
+      'legacy.cjs': 'module.exports = { foo() { return "FOO"; }, bar: 42 };',
+      'entry.js':
+        'import("./legacy.cjs").then((m) => {\n' +
+        '  console.log("keys:" + Object.keys(m).sort().join(",") + "|foo:" + (typeof m.foo === "function" ? m.foo() : "MISSING") + "|default:" + (m.default ? m.default.bar : "MISSING"));\n' +
+        '});',
+    };
+
+    // splitting 과 인라인이 **같은 값**을 내야 한다.
+    const { dir, cleanup } = await createFixture(files);
+    try {
+      const outDir = join(dir, 'dist');
+      const split = await runZntc([
+        '--bundle',
+        join(dir, 'entry.js'),
+        '--splitting',
+        '--outdir',
+        outDir,
+        '--format=esm',
+      ]);
+      expect(split.exitCode, `빌드 실패:\n${split.stderr}`).toBe(0);
+      writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
+      const splitOut = await runNode(join(outDir, 'entry.js'));
+
+      const inlineFile = join(dir, 'inline.mjs');
+      const inline = await runZntc([
+        '--bundle',
+        join(dir, 'entry.js'),
+        '-o',
+        inlineFile,
+        '--format=esm',
+      ]);
+      expect(inline.exitCode, `빌드 실패:\n${inline.stderr}`).toBe(0);
+      const inlineOut = await runNode(inlineFile);
+
+      // 버그 시 splitting: `keys:default|foo:MISSING|default:42`
+      expect(splitOut.stdout.trim()).toBe('keys:bar,default,foo|foo:FOO|default:42');
+      expect(splitOut.stdout.trim()).toBe(inlineOut.stdout.trim());
     } finally {
       await cleanup();
     }
