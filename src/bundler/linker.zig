@@ -893,6 +893,28 @@ pub const Linker = struct {
         for (self.global_identifiers) |name| {
             try self.reserved_globals.put(self.allocator, name, {});
         }
+
+        // (#4530) **생성된 래퍼 심볼 이름도 예약**한다 — CJS `require_X`, ESM-wrap
+        // `init_X`/`exports_X`. 이들은 emitter 가 직접 찍는 top-level 선언인데
+        // `extendSymbol` 이 `scope_id = .none` 으로 만들어 **scope_maps 에 안 들어간다**
+        // → linker 의 rename 풀(`name_to_owners`)이 못 본다. 그래서 사용자 코드에
+        // `function require_legacy(){}` 가 있으면 **중복 선언**됐다
+        // (`SyntaxError: Identifier 'require_legacy' has already been declared`).
+        // **단일 번들에서도** 재현된다(번들 스코프에 모든 모듈의 top-level 이 호이스팅됨).
+        //
+        // ⚠️ 래퍼 쪽 이름을 바꾸는 걸로 풀면 안 된다 — graph finalize 의 `used_names` 와
+        // 여기 `$N` 할당기가 **서로를 못 보는 두 개의 독립 풀**이라 한 단계 위에서 다시
+        // 충돌한다(`require_legacy$2` 를 양쪽이 각각 발급). 예약해서 **사용자 심볼을
+        // 리네임**시키면 할당기가 하나로 모인다. 래퍼는 자연스러운 이름을 유지하므로
+        // size/warm-rebuild 안정성도 낫다(`computeRenames` 는 매 빌드 실행 → watch 도 커버).
+        var wit = self.graph.modulesIterator();
+        while (wit.next()) |m| {
+            if (m.wrap_kind == .none) continue;
+            if (m.getInitName(null)) |n| try self.reserved_globals.put(self.allocator, n, {});
+            if (m.getExportsName(null)) |n| try self.reserved_globals.put(self.allocator, n, {});
+            if (m.getRequireName(null)) |n| try self.reserved_globals.put(self.allocator, n, {});
+            if (m.wrapper_name_synthetic) |n| try self.reserved_globals.put(self.allocator, n, {});
+        }
     }
 
     /// 이름 충돌 감지 + 리네임 계산 (Rolldown renamer 패턴).
