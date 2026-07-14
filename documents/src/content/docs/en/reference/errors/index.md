@@ -183,6 +183,7 @@ ZNTC assigns a unique code to every diagnostic. Click a code for details and a r
 | [`ZNTC0917`](/zntc/en/reference/errors/zntc0917) | 'yield' is not allowed outside generator function |
 | [`ZNTC0918`](/zntc/en/reference/errors/zntc0918) | TypeScript syntax is not allowed in JavaScript source |
 | [`ZNTC0919`](/zntc/en/reference/errors/zntc0919) | Type is nested too deeply |
+| [`ZNTC0920`](/zntc/en/reference/errors/zntc0920) | Expression is nested too deeply |
 
 ## Semantic: Redeclaration
 
