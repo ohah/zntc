@@ -250,6 +250,18 @@ fn moduleInlinesDynamicCjsImport(
     return false;
 }
 
+/// (#4524) preserve-modules: 모듈 `m` 이 **다른 파일**의 ESM-wrap 모듈을 가져오는가.
+/// 그 preamble 은 `(init_X(), __toCommonJS(exports_X))` 라 `__toCommonJS`(= ESM-wrap 런타임)
+/// 가 소비자 청크에 필요하다. preserve-modules 는 모듈 하나 = 파일 하나라 dep 은 늘 다른 파일.
+fn moduleImportsWrappedEsmAcrossFile(m: *const Module, graph: *const ModuleGraph) bool {
+    for (m.import_records) |rec| {
+        if (rec.resolved == .none) continue;
+        const target = graph.getModule(rec.resolved) orelse continue;
+        if (target.wrap_kind == .esm) return true;
+    }
+    return false;
+}
+
 /// (#4524) 모듈 `m` 이 CJS 모듈을 **동적 import** 하는가 (같은 단위 여부 무관).
 /// preserve-modules 는 대상이 늘 다른 파일이라 `moduleInlinesDynamicCjsImport` 의
 /// same-unit 판정으로는 못 잡는다.
@@ -325,9 +337,16 @@ pub fn emitChunkRuntimeHelpers(
         // (#4510) 같은 청크 안 CJS 를 동적 import → `__toESM(require_x())` 로 재작성(same_chunk 분기).
         if (moduleInlinesDynamicCjsImport(m, graph, chunkContainsModule, chunk)) needs_to_esm_runtime = true;
         // (#4524) preserve-modules: **다른 파일**의 CJS 를 동적 import 하면 소비자가
-        // `.then((m)=>__toESM(m.default))` 로 namespace 를 합성한다(chunks.zig pm_dyn_cjs)
+        // `.then((m)=>__toESM(m.require_X()))` 로 namespace 를 합성한다(chunks.zig pm_dyn_cjs)
         // → 헬퍼가 **소비자 청크**에 필요하다. same-chunk 판정을 보는 위 검사로는 못 잡는다.
         if (options.preserve_modules and moduleDynamicallyImportsCjs(m, graph)) needs_to_esm_runtime = true;
+        // (#4524) preserve-modules: **다른 파일**의 ESM-wrap 모듈을 정적으로 가져오면 소비자
+        // preamble 이 `(init_X(), __toCommonJS(exports_X))` 를 낸다 — `__toCommonJS` 는
+        // ESM-wrap 런타임 소속이라 이 청크에 그 런타임이 있어야 한다. 소비자 청크 자체엔
+        // wrap 된 모듈이 없을 수 있어(`m.wrap_kind == .esm` 검사로는 못 잡음) 별도로 본다.
+        if (options.preserve_modules and moduleImportsWrappedEsmAcrossFile(m, graph)) {
+            needs_esm_wrap_runtime = true;
+        }
         if (m.loader == .binary) needs_to_binary = true;
         if (needs_cjs_runtime and needs_esm_wrap_runtime and needs_to_esm_runtime and needs_to_binary) break;
     }
@@ -350,11 +369,7 @@ pub fn emitChunkRuntimeHelpers(
             if (em.wrap_kind == .cjs and !em.can_skip_cjs_default_interop) needs_to_esm_runtime = true;
         }
     }
-    // (#4524) `needs_to_esm_runtime` 단독도 게이트를 통과해야 한다. preserve-modules 의
-    // 소비자 청크는 CJS 도 ESM-wrap 도 없는 **순수 ESM 파일**인데, 다른 파일의 CJS 를
-    // 동적 import 하면 자기가 `__toESM(m.default)` 로 namespace 를 합성한다 — 예전 게이트는
-    // 그 청크를 통째로 건너뛰어 `ReferenceError: __toESM is not defined` 였다.
-    if (needs_cjs_runtime or needs_esm_wrap_runtime or needs_to_esm_runtime) {
+    if (needs_cjs_runtime or needs_esm_wrap_runtime) {
         // bundle 경로와 동일 정책. chunk 의 module index 들을 graph 로 resolve 후 동일 검사.
         if (needsRequireShimForChunk(chunk, graph, options)) {
             try rt.appendRequireShim(output, allocator, options.minify_whitespace);
@@ -365,6 +380,16 @@ pub fn emitChunkRuntimeHelpers(
         if (needs_to_esm_runtime or needs_esm_wrap_runtime) {
             try rt.appendToEsmRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
         }
+    } else if (options.preserve_modules and needs_to_esm_runtime) {
+        // (#4524) preserve-modules 의 소비자 청크는 CJS 도 ESM-wrap 도 없는 **순수 ESM 파일**
+        // 인데, 다른 파일의 CJS 를 동적 import 하면 자기가 `__toESM(m.default)` 로 namespace 를
+        // 합성한다 — 위 게이트만으론 그 청크를 통째로 건너뛰어 `__toESM is not defined` 다.
+        //
+        // ⚠️ 게이트를 통째로 `or needs_to_esm_runtime` 로 넓히면 **일반 splitting 이 깨진다**:
+        // `needsRequireShimForChunk` 가 순수 ESM 청크에서도 돌아 `import { createRequire }` 를
+        // 한 번 더 깔고(모듈 자신이 이미 import 했으면 **중복 바인딩 → 파싱 불가**), 쓰지도
+        // 않는 __toESM 블록(~900B)이 붙는다. 그래서 preserve-modules 로 좁히고 __toESM 만 낸다.
+        try rt.appendToEsmRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
     }
     if (needs_esm_wrap_runtime) {
         try rt.appendEsmWrapRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
