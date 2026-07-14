@@ -269,4 +269,50 @@ describe('#4524: --preserve-modules × CJS', () => {
       await cleanup();
     }
   });
+  test('#4526 forwarding 이 사용자 top-level 심볼과 충돌하지 않는다 (holder 변수 없음)', async () => {
+    // `const __zntc_w0 = require(...)` 처럼 우리가 이름을 지어 top-level 에 깔면 그 이름은
+    // deconflict 를 안 거쳐서 사용자 코드의 동명 심볼과 **중복 선언**(SyntaxError) 이 난다.
+    // `require()` 는 memoize 되므로 forwarding 안에서 다시 부르면 holder 자체가 불필요하다.
+    const { outDir, cleanup } = await buildPm(
+      {
+        'legacy.cjs': LEGACY,
+        'entry.js':
+          'const __zntc_w0 = "USER";\n' +
+          'import d from "./legacy.cjs";\n' +
+          'console.log(__zntc_w0 + "|" + d.foo());',
+      },
+      'entry.js',
+      'cjs',
+    );
+    try {
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      // 버그 시: SyntaxError: Identifier '__zntc_w0' has already been declared
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout.trim()).toBe('USER|FOO');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('#4526 --format=cjs: ESM-wrap 모듈이 순환에 껴도 동작한다', async () => {
+    const { outDir, cleanup } = await buildPm(
+      {
+        'b.js': 'import { a } from "./a.cjs";\nexport function tag(){ return "B(" + a() + ")"; }',
+        'a.cjs':
+          'const b = require("./b.js");\n' +
+          'exports.a = function a(){ return "A"; };\n' +
+          'exports.run = function(){ return b.tag(); };',
+        'entry.js': 'import a from "./a.cjs";\nconsole.log(a.run());',
+      },
+      'entry.js',
+      'cjs',
+    );
+    try {
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      expect(stderr).not.toContain('ReferenceError');
+      expect(stdout.trim()).toBe('B(A)');
+    } finally {
+      await cleanup();
+    }
+  });
 });

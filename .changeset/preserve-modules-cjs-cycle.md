@@ -31,3 +31,5 @@ const require_b = function() { return __zntc_w0.require_b.apply(this, arguments)
 ```
 
 실제 호출은 모듈이 완전히 평가된 뒤에 일어나므로(`entry` → `require_a()` → a 본문 → `require_b()` → …) 그때는 provider 의 `exports.require_X` 가 이미 채워져 있다.
+
+⚠️ **holder 변수(`const __zntc_w0 = require(...)`)를 두면 안 된다.** 우리가 이름을 지어 top-level 에 깔면 그 이름은 deconflict 를 안 거쳐서 사용자 코드의 동명 top-level 심볼과 **중복 선언**(`SyntaxError: Identifier '__zntc_w0' has already been declared`)이 난다. `require()` 는 node 가 memoize 하므로 forwarding 안에서 다시 불러도 싸다 — holder 자체가 불필요하다.
