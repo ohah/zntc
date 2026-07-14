@@ -21,6 +21,7 @@ const RuntimeHelpers = @import("../../transformer/runtime_helper_bits.zig").Runt
 const Codegen = @import("../../codegen/codegen.zig").Codegen;
 const CodegenOptions = @import("../../codegen/codegen.zig").CodegenOptions;
 const SourceMap = @import("../../codegen/sourcemap.zig");
+const linker_mod = @import("../linker.zig");
 const Linker = @import("../linker.zig").Linker;
 const RenameTable = @import("../symbol.zig").RenameTable;
 const LinkingMetadata = @import("../linker.zig").LinkingMetadata;
@@ -963,6 +964,37 @@ pub fn emitChunks(
             }
         }
 
+        // (#4510) **CJS 모듈을 동적 import** 한 청크(`import('./x.cjs')` → dynamic entry 청크).
+        // CJS 는 정적 export 가 없어 buildFinalExports 가 null 을 주고, codegen 도 `__commonJS`
+        // wrapper 선언만 낸다 → 청크가 (a) 모듈 본문을 **실행조차 안 하고** (b) 아무것도 export
+        // 하지 않아, `await import('./x.cjs')` 가 빈 namespace 를 준다(`m.default` = undefined).
+        // Node 가 CJS 를 ESM 으로 로드할 때와 같은 계약 = "default = module.exports" 를 맞춘다:
+        //   ESM        : `export default require_x();`  (interop 식은 static import 와 동일 소스)
+        //   cjs/iife 등 : `exports.default = require_x();` (청크가 require 로 소비되므로 exports 객체)
+        // require_X() 호출 자체가 모듈 본문 실행이라 (a)도 함께 해결된다(__commonJS memoize →
+        // 다른 청크가 이미 실행했으면 캐시된 exports 재사용, 인스턴스 1개 유지).
+        // user entry 청크는 대상 아님 — 그쪽은 bootstrap/`emitCjsEntryExports` 계약이 따로 있다.
+        if (!options.preserve_modules) cjs_dyn_entry: {
+            const info = switch (chunk.kind) {
+                .entry_point => |i| i,
+                .common, .manual => break :cjs_dyn_entry,
+            };
+            if (!info.is_dynamic) break :cjs_dyn_entry;
+            const em = graph.getModule(info.module) orelse break :cjs_dyn_entry;
+            if (em.wrap_kind != .cjs) break :cjs_dyn_entry;
+            const l = linker orelse break :cjs_dyn_entry;
+            const expr = try l.cjsInteropAccessExpr(allocator, em, "default", options.minify_whitespace);
+            defer allocator.free(expr);
+            const min = options.minify_whitespace;
+            if (options.format == .esm) {
+                try chunk_output.appendSlice(allocator, "export default ");
+            } else {
+                try chunk_output.appendSlice(allocator, if (min) "exports.default=" else "exports.default = ");
+            }
+            try chunk_output.appendSlice(allocator, expr);
+            try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
+        }
+
         // 크로스 청크 export: exports_to에 심볼이 있으면 export 문 생성.
         // 다른 청크가 이 청크에서 심볼을 가져가는 경우에만 출력.
         // preserve-modules에서는 모듈 자체의 export가 유지되므로 cross-chunk export 불필요.
@@ -1788,9 +1820,11 @@ fn rewriteDynamicImports(
                     break :blk try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>({s}(),{s}))", .{ init_name, exports_name });
                 },
                 .cjs => blk: {
-                    const require_name = try target_mod.allocRequireName(allocator, if (linker) |l| &l.rename_table else null);
-                    defer allocator.free(require_name);
-                    break :blk try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>{s}())", .{require_name});
+                    // (#4510) `import('./x.cjs')` 의 결과는 **module namespace** 라 `default` 가
+                    // 있어야 한다(Node 의 CJS↔ESM 계약: default = module.exports). raw `require_x()`
+                    // 를 그대로 주면 `m.default` 가 undefined. `__toESM` 은 default 를 달아 주고
+                    // 멤버도 복사하므로 static import 와 같은 값 해석이 된다.
+                    break :blk try dynamicCjsNamespaceExpr(allocator, linker, target_mod, emit_options.minify_whitespace);
                 },
                 .none => blk: {
                     // namespace 객체 합성: { <exported>: <청크-로컬 이름>, ... }
@@ -1902,6 +1936,29 @@ fn rewriteDynamicImports(
     return result;
 }
 
+/// (#4510) 같은 번들/청크 안에 인라인된 **CJS 모듈의 동적 import** 를 대체할 표현식.
+/// `Promise.resolve().then(()=>__toESM(require_x()))` — `import()` 는 module namespace 를
+/// resolve 하므로 `default`(= module.exports, Node 의 CJS↔ESM 계약)가 있어야 한다. raw
+/// `require_x()` 는 `m.default` 가 undefined 다(#4510-3).
+/// interop 인자(node `, 1` vs babel)와 minify 시 헬퍼 축약명(`$tE`)은 static import 경로와
+/// 같은 소스(`Linker.cjsInteropAccessExpr`)를 써야 두 경로의 값 해석이 어긋나지 않는다.
+/// linker 가 없으면(단위 테스트) 기존 raw require 형태로 폴백.
+fn dynamicCjsNamespaceExpr(
+    allocator: std.mem.Allocator,
+    linker: ?*const Linker,
+    target_mod: *const Module,
+    minify: bool,
+) ![]const u8 {
+    if (linker) |l| {
+        const ns_expr = try l.cjsInteropAccessExpr(allocator, target_mod, linker_mod.CJS_NS_EXPORT_NAME, minify);
+        defer allocator.free(ns_expr);
+        return std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>{s})", .{ns_expr});
+    }
+    const require_name = try target_mod.allocRequireName(allocator, null);
+    defer allocator.free(require_name);
+    return std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>{s}())", .{require_name});
+}
+
 /// `import("specifier")` 호출 전체를 미리 만들어진 expression 으로 교체.
 /// 매칭 실패 시 null. codegen 출력 형태 (`import("./x")`) 만 처리 — import attributes
 /// 같은 second-arg 폼(`import("./x", {…})`)은 호출 전체 치환이라 닫는 `)` 위치를
@@ -1921,8 +1978,10 @@ pub fn rewriteDynamicImportsSingleFile(
     module: *const Module,
     graph: *const ModuleGraph,
     lower_unresolved_dynamic_imports: bool,
-    rename_tbl: ?*const RenameTable,
+    linker: ?*const Linker,
+    minify: bool,
 ) ![]const u8 {
+    const rename_tbl: ?*const RenameTable = if (linker) |l| &l.rename_table else null;
     if (module.import_records.len == 0) return try allocator.dupe(u8, code);
     if (!graph.inline_dynamic_imports) return try allocator.dupe(u8, code);
 
@@ -1965,11 +2024,8 @@ pub fn rewriteDynamicImportsSingleFile(
                 defer allocator.free(exports_name);
                 break :blk try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>({s}(),{s}))", .{ init_name, exports_name });
             },
-            .cjs => blk: {
-                const require_name = try target_mod.allocRequireName(allocator, rename_tbl);
-                defer allocator.free(require_name);
-                break :blk try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>{s}())", .{require_name});
-            },
+            // (#4510) CJS 동적 import 의 namespace 는 `__toESM(require_x())` — 위 chunk 경로와 동일.
+            .cjs => try dynamicCjsNamespaceExpr(allocator, linker, target_mod, minify),
             .none => continue,
         };
         defer allocator.free(replacement_expr);

@@ -3,6 +3,7 @@
 const std = @import("std");
 const rt = @import("../runtime_helpers.zig");
 const Module = @import("../module.zig").Module;
+const ModuleIndex = @import("../types.zig").ModuleIndex;
 const ModuleGraph = @import("../graph.zig").ModuleGraph;
 const Chunk = @import("../chunk.zig").Chunk;
 const linker_mod = @import("../linker.zig");
@@ -35,6 +36,11 @@ pub fn emitBundleRuntimeHelpers(
         // consumer 가 없어 moduleNeedsToEsmInterop(import_bindings 만 스캔)이 못 잡는다(단일번들에서
         // `__toESM is not defined` ReferenceError). emitChunkRuntimeHelpers 와 동일 검사 추가.
         if (moduleReExportsCjsDefaultNeedsToEsm(m, graph, linker)) needs_to_esm_runtime = true;
+        // (#4510) 인라인된 CJS 동적 import → `__toESM(require_x())` 로 재작성(rewriteDynamicImports*).
+        // 단일 번들은 모든 모듈이 같은 파일이라 항상 인라인 대상.
+        if (graph.inline_dynamic_imports and moduleInlinesDynamicCjsImport(m, graph, alwaysSameUnit, undefined)) {
+            needs_to_esm_runtime = true;
+        }
         if (m.loader == .binary) needs_to_binary = true;
         if (needs_cjs_runtime and needs_esm_wrap_runtime and needs_to_esm_runtime and needs_to_binary) break;
     }
@@ -194,8 +200,12 @@ fn moduleNeedsToEsmInterop(module: *const Module, graph: *const ModuleGraph, lin
 /// 그 청크에 __toESM 헬퍼가 필요하다. `module.exports = X` shape(can_skip)는 `require_X()` direct 라 제외.
 fn cjsCrossChunkDefaultNeedsToEsm(m: *const Module, linker: ?*const Linker) bool {
     if (m.wrap_kind != .cjs) return false;
-    if (m.can_skip_cjs_default_interop) return false;
     const l = linker orelse return false;
+    // (#4510) namespace 전역명(키 "*")이 있으면 provider 가 `var ns$x = __toESM(require_X())` 를
+    // materialize 한다 — ns 객체는 can_skip shape 여도 __toESM 이 필요하다(default 만 있는 값이
+    // 아니라 프로퍼티까지 복사한 객체라야 `ns.member` 가 동작).
+    if (l.getCrossChunkGlobalName(m.index.toU32(), linker_mod.CJS_NS_EXPORT_NAME) != null) return true;
+    if (m.can_skip_cjs_default_interop) return false;
     return l.getCrossChunkGlobalName(m.index.toU32(), "default") != null;
 }
 
@@ -213,6 +223,42 @@ fn moduleReExportsCjsDefaultNeedsToEsm(m: *const Module, graph: *const ModuleGra
         if (cm.wrap_kind != .cjs) continue;
         if (cm.can_skip_cjs_default_interop) continue;
         return true;
+    }
+    return false;
+}
+
+/// (#4510) 모듈 `m` 이 **같은 출력 단위 안에 인라인된 CJS 모듈** 을 동적 import 하는지.
+/// 그 `import('./x.cjs')` 는 `Promise.resolve().then(()=>__toESM(require_x()))` 로 재작성되므로
+/// (chunks.zig `dynamicCjsNamespaceExpr`) __toESM 헬퍼가 필요하다 — import_bindings 만 보는
+/// `moduleNeedsToEsmInterop` 은 dynamic import record 를 못 잡는다.
+/// `same_unit` 은 "대상이 이 출력 단위(번들/청크)에 함께 있는가" 판정 — 재작성 조건과 일치해야
+/// 한다(다른 청크면 specifier 치환만 하므로 헬퍼 불요).
+fn moduleInlinesDynamicCjsImport(
+    m: *const Module,
+    graph: *const ModuleGraph,
+    same_unit: *const fn (ctx: *const anyopaque, target: ModuleIndex) bool,
+    ctx: *const anyopaque,
+) bool {
+    for (m.import_records) |rec| {
+        if (rec.kind != .dynamic_import) continue;
+        if (rec.resolved == .none) continue;
+        const target = graph.getModule(rec.resolved) orelse continue;
+        if (target.wrap_kind != .cjs) continue;
+        if (same_unit(ctx, rec.resolved)) return true;
+    }
+    return false;
+}
+
+/// 단일 번들: 모든 모듈이 한 파일 → 대상이 항상 같은 단위.
+fn alwaysSameUnit(_: *const anyopaque, _: ModuleIndex) bool {
+    return true;
+}
+
+/// 청크: 대상 모듈이 이 청크의 module 목록에 있는지.
+fn chunkContainsModule(ctx: *const anyopaque, target: ModuleIndex) bool {
+    const chunk: *const Chunk = @ptrCast(@alignCast(ctx));
+    for (chunk.modules.items) |mi| {
+        if (mi == target) return true;
     }
     return false;
 }
@@ -262,8 +308,18 @@ pub fn emitChunkRuntimeHelpers(
         // 모듈은 buildFinalExports 가 `var _default = __toESM(require_X()).default` 를 materialize →
         // 이 청크에 __toESM 필요. named 는 require_X().m(헬퍼 불요), can_skip shape 는 direct 라 제외.
         if (moduleReExportsCjsDefaultNeedsToEsm(m, graph, linker)) needs_to_esm_runtime = true;
+        // (#4510) 같은 청크 안 CJS 를 동적 import → `__toESM(require_x())` 로 재작성(same_chunk 분기).
+        if (moduleInlinesDynamicCjsImport(m, graph, chunkContainsModule, chunk)) needs_to_esm_runtime = true;
         if (m.loader == .binary) needs_to_binary = true;
         if (needs_cjs_runtime and needs_esm_wrap_runtime and needs_to_esm_runtime and needs_to_binary) break;
+    }
+    // (#4510) dynamic entry 청크의 CJS entry 는 `export default __toESM(require_x()).default` 를
+    // 깐다(chunks.zig cjs_dyn_entry) — 그 모듈을 import 하는 바인딩이 이 청크에 없어도 필요.
+    // can_skip shape 는 `require_x()` direct 라 제외(cjsInteropAccessExpr 와 동일 조건).
+    if (chunk.kind == .entry_point and chunk.kind.entry_point.is_dynamic) {
+        if (graph.getModule(chunk.kind.entry_point.module)) |em| {
+            if (em.wrap_kind == .cjs and !em.can_skip_cjs_default_interop) needs_to_esm_runtime = true;
+        }
     }
     if (needs_cjs_runtime or needs_esm_wrap_runtime) {
         // bundle 경로와 동일 정책. chunk 의 module index 들을 graph 로 resolve 후 동일 검사.

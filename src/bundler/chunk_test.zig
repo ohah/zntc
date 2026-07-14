@@ -904,6 +904,44 @@ test "deconflictGlobalName: 동명 → \\$N 유니크화 + 예약어 회피 (#41
     try std.testing.expectEqualStrings("foo", nf);
 }
 
+test "sanitizeGlobalNameHead: ns 키/비-식별자 멤버명 → 유효 식별자 head (#4510)" {
+    const alloc = std.testing.allocator;
+
+    // namespace 키("*") → `ns` (공개명은 `ns$<모듈태그>` 가 된다).
+    const ns = try chunk_mod.sanitizeGlobalNameHead(alloc, "*");
+    defer alloc.free(ns);
+    try std.testing.expectEqualStrings("ns", ns);
+
+    // 평범한 멤버명은 그대로(기존 공개명과 바이트 동일 — 회귀 방지).
+    const plain = try chunk_mod.sanitizeGlobalNameHead(alloc, "named");
+    defer alloc.free(plain);
+    try std.testing.expectEqualStrings("named", plain);
+
+    const def = try chunk_mod.sanitizeGlobalNameHead(alloc, "default");
+    defer alloc.free(def);
+    try std.testing.expectEqualStrings("default", def);
+
+    // 비-식별자 멤버명은 binding_scanner 가 **따옴표까지** 담아 둔 원문이 들어온다.
+    // 따옴표를 벗기고 식별자 문자만 남긴다.
+    const dq = try chunk_mod.sanitizeGlobalNameHead(alloc, "\"foo-bar\"");
+    defer alloc.free(dq);
+    try std.testing.expectEqualStrings("foo_bar", dq);
+
+    const sq = try chunk_mod.sanitizeGlobalNameHead(alloc, "'a.b c'");
+    defer alloc.free(sq);
+    try std.testing.expectEqualStrings("a_b_c", sq);
+
+    // 숫자로 시작하는 이름은 식별자가 될 수 없으므로 첫 글자를 `_` 로.
+    const num = try chunk_mod.sanitizeGlobalNameHead(alloc, "\"0abc\"");
+    defer alloc.free(num);
+    try std.testing.expectEqualStrings("_abc", num);
+
+    // 전부 비-식별자 문자 → 빈 문자열 방지.
+    const empty = try chunk_mod.sanitizeGlobalNameHead(alloc, "\"\"");
+    defer alloc.free(empty);
+    try std.testing.expectEqualStrings("_", empty);
+}
+
 test "computeCrossChunkLinks: static cross-chunk import" {
     // 구조: 청크 A(모듈 0), 청크 B(모듈 1). 모듈 0 → 모듈 1 정적 의존.
     // 기대: A.cross_chunk_imports에 B가 포함.

@@ -23,9 +23,11 @@ pub const ChunkIndex = types.ChunkIndex;
 const Module = @import("module.zig").Module;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
 const TreeShaker = @import("tree_shaker.zig").TreeShaker;
-const Linker = @import("linker.zig").Linker;
-const SymbolRef = @import("linker.zig").SymbolRef;
+const linker_mod = @import("linker.zig");
+const Linker = linker_mod.Linker;
+const SymbolRef = linker_mod.SymbolRef;
 const metadata_mod = @import("linker/metadata.zig");
+const preamble_writer = @import("linker/preamble_writer.zig");
 
 // ============================================================
 // BitSet — 진입점 비트 마스크
@@ -1625,6 +1627,11 @@ pub fn computeCrossChunkGlobalNames(
         //  - `require_` 접두사를 **떼는** 건 dev/lazy 계약(정의자 청크에 갇힌 `require_x` 를 lazy 청크가
         //    렉시컬 참조하면 안 된다) 과 텍스트로도 헷갈리지 않게 하기 위함.
         // (ESM owner 는 진짜 로컬을 `local as 공개명` 으로 브리지하므로 기존대로 로컬명 우선 — 바이트 동일.)
+        //
+        // (#4510) 공개명의 **앞부분** 은 항상 유효 식별자여야 한다:
+        //  - namespace 키("*", CJS_NS_EXPORT_NAME)는 `ns` 로 대체 → `ns$single`.
+        //  - 비-식별자 멤버명(`'foo-bar'`)은 식별자 문자만 남기고 sanitize → `foo_bar$x`.
+        //    (키는 여전히 원문 멤버명이라 materialize 는 `require_x()["foo-bar"]` 로 정확히 나온다.)
         var synth: ?[]u8 = null;
         defer if (synth) |b| allocator.free(b);
         const preferred = blk: {
@@ -1637,7 +1644,9 @@ pub fn computeCrossChunkGlobalNames(
                 req[req_prefix.len..]
             else
                 req;
-            const b = try std.fmt.allocPrint(allocator, "{s}${s}", .{ s.name, tag });
+            const head = try sanitizeGlobalNameHead(allocator, s.name);
+            defer allocator.free(head);
+            const b = try std.fmt.allocPrint(allocator, "{s}${s}", .{ head, tag });
             synth = b;
             break :blk b;
         };
@@ -1646,6 +1655,27 @@ pub fn computeCrossChunkGlobalNames(
         try lnk.putCrossChunkGlobalName(s.mod, s.name, candidate);
         try used.put(allocator, lnk.getCrossChunkGlobalName(s.mod, s.name).?, {});
     }
+}
+
+/// (#4510) cross-chunk 공개명(`<head>$<모듈 태그>`)의 head 를 유효 식별자로 만든다.
+///  - namespace 키("*") → `ns`
+///  - 비-식별자 멤버명(`'foo-bar'` — binding_scanner 가 따옴표까지 담아 둔 원문) → 따옴표를
+///    벗기고 식별자 문자만 남긴다(`foo_bar`).
+/// 서로 다른 멤버명이 같은 head 로 접히더라도 `deconflictGlobalName` 이 `$N` 으로 갈라준다
+/// (맵 키는 원문 export 명이라 값 해석은 영향 없음). 반환값은 caller 소유.
+pub fn sanitizeGlobalNameHead(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+    if (std.mem.eql(u8, name, linker_mod.CJS_NS_EXPORT_NAME)) return allocator.dupe(u8, "ns");
+    if (preamble_writer.isPlainMemberName(name)) return allocator.dupe(u8, name);
+    const inner = if (preamble_writer.isQuotedName(name)) name[1 .. name.len - 1] else name;
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    for (inner) |c| {
+        const ok = std.ascii.isAlphabetic(c) or c == '_' or c == '$' or
+            (buf.items.len > 0 and std.ascii.isDigit(c));
+        try buf.append(allocator, if (ok) c else '_');
+    }
+    if (buf.items.len == 0) try buf.append(allocator, '_');
+    return buf.toOwnedSlice(allocator);
 }
 
 /// `preferred` 이름을 `used`(이미 배정된 전역 이름) + JS 예약어를 회피해 유니크화.
@@ -1666,19 +1696,6 @@ pub fn deconflictGlobalName(
     return candidate;
 }
 
-/// 이름이 `require_X().<name>` 멤버 접근 + `var <name>` 선언에 그대로 쓸 수 있는 평범한
-/// 식별자인지. `import { 'a-b' as x }`(ES2022 arbitrary module namespace name) 같은 이름은
-/// interop 식/선언을 만들 수 없으므로 cross-chunk 배선 대상에서 제외한다. 예약어(`default`)는
-/// 멤버 접근에 유효하고 공개명은 별도 합성명이라 허용.
-fn isPlainMemberName(name: []const u8) bool {
-    if (name.len == 0) return false;
-    for (name, 0..) |c, i| {
-        const ok = std.ascii.isAlphabetic(c) or c == '_' or c == '$' or (i > 0 and std.ascii.isDigit(c));
-        if (!ok) return false;
-    }
-    return true;
-}
-
 /// (#4494) **직접 CJS import** 바인딩이 cross-chunk 배선 대상이면 그 canonical 을 반환.
 ///
 /// `import x from './a.cjs'` 는 CJS 에 정적 export 가 없어 resolved binding 이 없다(=호출부의
@@ -1691,8 +1708,12 @@ fn isPlainMemberName(name: []const u8) bool {
 ///  - preserve-modules: 전역명 자체를 안 만들고 emit 의 xchunk export 블록도 통째로 skip.
 ///  - 비-ESM(cjs/iife/umd/amd) + provider 가 **entry 청크**: emit 이 `emitCjsEntryExports` 에
 ///    일임하며 xchunk 블록을 early-break → materialize 가 방출되지 않는다.
-/// 그 외 제외: namespace(ns 합성 경로) · helper(esm_wrap 경로) · type-only(런타임에 존재하지 않음)
-/// · 비-식별자 멤버명(interop 식 생성 불가).
+/// 그 외 제외: namespace(`cjsNsCrossChunkCanonical` 이 따로 처리) · helper(esm_wrap 경로) ·
+/// type-only(런타임에 존재하지 않음).
+/// (#4510) 비-식별자 멤버명(`import { 'a-b' as x }`)도 이제 배선한다 — interop 식은 computed
+/// 접근(`require_X()['a-b']`)으로, 공개명은 sanitize 한 합성명으로 만들 수 있다. 멤버명이 bare
+/// `*` 인 경우만 방어적으로 제외 — namespace 키(`CJS_NS_EXPORT_NAME`)와 충돌하면 materialize
+/// 가 서로를 덮어쓴다.
 fn cjsDirectCrossChunkCanonical(
     lnk: *const Linker,
     chunk_graph: *const ChunkGraph,
@@ -1701,11 +1722,46 @@ fn cjsDirectCrossChunkCanonical(
 ) ?SymbolRef {
     if (chunk_graph.preserve_modules) return null;
     if (ib.kind == .namespace or ib.is_helper) return null;
-    if (!isPlainMemberName(ib.imported_name)) return null;
+    if (std.mem.eql(u8, ib.imported_name, linker_mod.CJS_NS_EXPORT_NAME)) return null;
     if (m.semantic) |*sem| {
         if (metadata_mod.isImportBindingTypeOnly(sem, ib)) return null;
     }
     const canon = lnk.cjsDirectCanonical(m, ib) orelse return null;
+    return cjsCrossChunkProviderOk(lnk, chunk_graph, canon);
+}
+
+/// (#4510) **CJS namespace import**(`import * as ns from './x.cjs'`) 바인딩이 cross-chunk
+/// 배선 대상이면 그 canonical(키 = "*") 을 반환.
+///
+/// CJS ns 는 `var ns = __toESM(require_X())` preamble 로만 만들 수 있는데 `require_X` 는
+/// provider 청크에 갇혀 있다 → 소비자 청크에서 `require_X is not defined`(#4510-1). 등록하면
+/// #4120 경로(provider 가 ns 객체를 전역명으로 materialize + export, 소비자는 preamble 억제 후
+/// 일반 cross-chunk import)가 default/named 와 동일하게 발화한다.
+fn cjsNsCrossChunkCanonical(
+    lnk: *const Linker,
+    chunk_graph: *const ChunkGraph,
+    m: *const Module,
+    ib: anytype,
+) ?SymbolRef {
+    if (chunk_graph.preserve_modules) return null;
+    if (ib.kind != .namespace or ib.is_helper) return null;
+    if (m.semantic) |*sem| {
+        if (metadata_mod.isImportBindingTypeOnly(sem, ib)) return null;
+    }
+    const canon = lnk.cjsNamespaceCanonical(m, ib) orelse return null;
+    return cjsCrossChunkProviderOk(lnk, chunk_graph, canon);
+}
+
+/// provider 가 실제로 materialize 하는 구성인지 확인하고 canonical 을 그대로 통과시킨다.
+/// (#4494) **provider 가 materialize 하지 못하면 등록하면 안 된다** — 소비자만 preamble 을
+/// 억제해 값이 조용히 `undefined` 가 된다(기존의 시끄러운 ReferenceError 보다 나쁘다).
+///  - 비-ESM(cjs/iife/umd/amd) + provider 가 **entry 청크**: emit 이 `emitCjsEntryExports` 에
+///    일임하며 xchunk export 블록을 early-break → materialize 가 방출되지 않는다.
+fn cjsCrossChunkProviderOk(
+    lnk: *const Linker,
+    chunk_graph: *const ChunkGraph,
+    canon: SymbolRef,
+) ?SymbolRef {
     const cjs_chunk = chunk_graph.getModuleChunk(canon.module_index);
     if (cjs_chunk.isNone()) return null;
     if (lnk.format != .esm and chunk_graph.getChunk(cjs_chunk).kind == .entry_point) return null;
@@ -1778,9 +1834,15 @@ pub fn computeCrossChunkLinks(
                     // 전역명을 못 찾아 발화하지 않아 → 소비자 청크가 provider 청크에만 있는 `require_X()`
                     // 썽크를 참조 = ReferenceError. import_record 로 canonical(CJS)+export 명(`default`/
                     // 멤버명)을 만들어 등록하면 기존 #4120 경로(provider materialize + 소비자 preamble
-                    // 억제)가 그대로 발화한다. namespace 는 ns 합성 경로(linkNamespaceCrossChunkOnce),
-                    // helper 는 esm_wrap 경로가 담당하므로 제외 — metadata 게이트의 제외 조건과 동일.
-                    const canonical: SymbolRef = if (lnk.getResolvedBinding(@intCast(mi), ib.local_span)) |rb|
+                    // 억제)가 그대로 발화한다. helper 는 esm_wrap 경로가 담당하므로 제외.
+                    //
+                    // (#4510) CJS **namespace** import 도 같은 기계로 등록(키 = "*"). ESM ns 는
+                    // cjsNsCrossChunkCanonical 이 null 을 주고 기존 ns 합성 경로
+                    // (linkNamespaceCrossChunkOnce)가 그대로 담당한다. CJS ns 는 resolved binding 이
+                    // 없으므로 rb 분기보다 **먼저** 봐야 한다.
+                    const canonical: SymbolRef = if (cjsNsCrossChunkCanonical(lnk, chunk_graph, m, ib)) |c|
+                        c
+                    else if (lnk.getResolvedBinding(@intCast(mi), ib.local_span)) |rb|
                         rb.canonical
                     else if (cjsDirectCrossChunkCanonical(lnk, chunk_graph, m, ib)) |c|
                         c

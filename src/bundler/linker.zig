@@ -55,6 +55,18 @@ pub const NS_VAR_PREFIX = "__ns_";
 /// 식별하므로 양쪽이 동일한 marker를 참조해야 한다.
 pub const EXPR_RENAME_MARKER = "().";
 
+/// (#4510) 비-식별자 멤버명(`import { 'foo-bar' as x }`)의 expression rename 형태:
+/// `require_xxx()["foo-bar"]`. 점 접근이 문법 오류라 computed 접근으로 emit 되며,
+/// 이 경우 `EXPR_RENAME_MARKER`("().") 가 나타나지 않으므로 별도 marker 가 필요하다.
+pub const EXPR_RENAME_MARKER_COMPUTED = "()[";
+
+/// (#4510) CJS 모듈의 **namespace 객체**(`import * as ns from './x.cjs'`)를 cross-chunk 로
+/// 주고받을 때 쓰는 export 키. CJS 는 정적 export 가 없어 멤버별 키로는 ns 객체 전체를
+/// 표현할 수 없다. binding_scanner 가 namespace 바인딩에 쓰는 `*` 와 같은 값이다.
+/// (`import { '*' as x }` 의 멤버명은 따옴표를 포함한 `"'*'"` 라 이 키와 겹치지 않지만,
+/// 키 충돌은 값 오염으로 이어지므로 chunk.zig 가 방어적으로 한 번 더 제외한다.)
+pub const CJS_NS_EXPORT_NAME = "*";
+
 /// `__ns_N.prop` 형태의 namespace-access rename 인지 판정.
 pub inline fn isNamespaceRename(rename: []const u8) bool {
     return std.mem.startsWith(u8, rename, NS_VAR_PREFIX);
@@ -65,7 +77,9 @@ pub inline fn isNamespaceRename(rename: []const u8) bool {
 /// binding을 만들지 않는다. dev/HMR payload에서 원본 import가 CJS require로
 /// 재출력되면 같은 binding을 중복 생성하므로 여기서 skip 대상으로 본다.
 pub inline fn isImportExpressionRename(rename: []const u8) bool {
-    return isNamespaceRename(rename) or std.mem.indexOf(u8, rename, EXPR_RENAME_MARKER) != null;
+    return isNamespaceRename(rename) or
+        std.mem.indexOf(u8, rename, EXPR_RENAME_MARKER) != null or
+        std.mem.indexOf(u8, rename, EXPR_RENAME_MARKER_COMPUTED) != null;
 }
 
 /// Metro inlineRequires가 eager/non-inline로 유지하는 RN core specifier.
@@ -2910,14 +2924,17 @@ pub const Linker = struct {
 
         const req_var = try target.allocRequireName(self.allocator, &self.rename_table);
         defer self.allocator.free(req_var);
-        return try std.fmt.allocPrint(self.allocator, "{s}().{s}", .{ req_var, ref.export_name });
+        const access = try preamble_writer.allocMemberAccess(self.allocator, ref.export_name);
+        defer self.allocator.free(access);
+        return try std.fmt.allocPrint(self.allocator, "{s}(){s}", .{ req_var, access });
     }
 
     /// (#4120) CJS interop 멤버의 materialize RHS(`var <syn> = <RHS>`). cross-chunk(provider 청크,
     /// chunks.zig) 와 entry/dynamic(buildFinalExports) 양쪽이 동일 형태를 써 단일번들 출력과 동형화.
+    ///   - `CJS_NS_EXPORT_NAME`("*", #4510 namespace): `__toESM(require_X()[, 1])`
     ///   - "default" + `module.exports = X` shape(can_skip): `require_X()`
     ///   - "default" 일반: `__toESM(require_X())[, 1)].default`
-    ///   - named: `require_X().<member>`
+    ///   - named: `require_X().<member>` (비-식별자 멤버명은 `require_X()["a-b"]`, #4510)
     /// interop 모드(node `, 1` vs babel)는 CJS 모듈의 첫 importer def_format(없으면 babel)로 결정.
     /// caller-owned 반환. allocator 는 caller 가 정한 수명(metadata=self.allocator, emit=청크 alloc).
     pub fn cjsInteropAccessExpr(
@@ -2929,15 +2946,24 @@ pub const Linker = struct {
     ) ![]const u8 {
         const req_var = try cjs_mod.allocRequireName(allocator, &self.rename_table);
         defer allocator.free(req_var);
+        const toesm: []const u8 = if (minify) rt_names.NAMES.TOESM_MIN else "__toESM";
+        // (#4510) namespace: `import * as ns from './x.cjs'` 의 ns 객체 = `__toESM(require_X())`.
+        // preamble writer 의 namespace 분기(writeCjsImportInner)와 **같은 식** — provider 가
+        // materialize 한 값을 소비자가 그대로 쓰므로 어긋나면 same-chunk/cross-chunk 동작이 갈린다.
+        if (std.mem.eql(u8, member, CJS_NS_EXPORT_NAME)) {
+            const suffix: []const u8 = if (self.cjsInteropIsNode(cjs_mod)) "(), 1)" else "())";
+            return std.fmt.allocPrint(allocator, "{s}({s}{s}", .{ toesm, req_var, suffix });
+        }
         if (std.mem.eql(u8, member, "default")) {
             if (cjs_mod.can_skip_cjs_default_interop) {
                 return std.fmt.allocPrint(allocator, "{s}()", .{req_var});
             }
-            const toesm: []const u8 = if (minify) rt_names.NAMES.TOESM_MIN else "__toESM";
             const suffix: []const u8 = if (self.cjsInteropIsNode(cjs_mod)) "(), 1)" else "())";
             return std.fmt.allocPrint(allocator, "{s}({s}{s}.default", .{ toesm, req_var, suffix });
         }
-        return std.fmt.allocPrint(allocator, "{s}().{s}", .{ req_var, member });
+        const access = try preamble_writer.allocMemberAccess(allocator, member);
+        defer allocator.free(access);
+        return std.fmt.allocPrint(allocator, "{s}(){s}", .{ req_var, access });
     }
 
     /// (#4120) CJS interop default 의 `__toESM` 2번째 인자(node 모드) 여부. consumer 의
@@ -3111,6 +3137,28 @@ pub const Linker = struct {
         const tm = self.graph.getModule(target) orelse return null;
         if (tm.wrap_kind != .cjs) return null;
         return .{ .module_index = target, .export_name = ib.imported_name };
+    }
+
+    /// (#4510) **namespace** import(`import * as ns from './x.cjs'`)가 가리키는 CJS canonical.
+    /// CJS 가 아니면 null. export 키는 항상 `CJS_NS_EXPORT_NAME`("*") — ns 객체 전체를 뜻한다.
+    ///
+    /// CJS namespace 는 정적 멤버 해석이 불가능해 `var ns = __toESM(require_X())` preamble 로
+    /// 만들어진다. 그 `require_X` 는 CJS 모듈이 속한 청크에만 있으므로, 소비자가 *다른 청크* 면
+    /// provider 가 ns 객체를 전역명으로 materialize+export 하고 소비자는 그걸 import 해야 한다
+    /// (#4494 의 default/named 와 같은 기계, 키만 "*").
+    ///
+    /// metadata 의 `pureCjsStarTarget` redirect(단일 `export * from <CJS>` 만 있는 ESM 을 통한
+    /// 간접 ns import → underlying CJS 로 canonical 재지정, #3975)까지 동일하게 따라간다 —
+    /// chunk.zig(등록)와 metadata.zig(억제)가 **같은 canonical** 을 봐야 lockstep 이 유지된다.
+    pub fn cjsNamespaceCanonical(self: *const Linker, m: *const Module, ib: ImportBinding) ?SymbolRef {
+        if (ib.kind != .namespace) return null;
+        if (ib.import_record_index >= m.import_records.len) return null;
+        const target = m.import_records[ib.import_record_index].resolved;
+        if (target.isNone()) return null;
+        const tm = self.graph.getModule(target) orelse return null;
+        if (tm.wrap_kind == .cjs) return .{ .module_index = target, .export_name = CJS_NS_EXPORT_NAME };
+        const redirected = metadata_mod.pureCjsStarTarget(self, target.toU32()) orelse return null;
+        return .{ .module_index = @enumFromInt(redirected), .export_name = CJS_NS_EXPORT_NAME };
     }
 
     /// (#4494) import 바인딩이 최종적으로 가리키는 **CJS canonical**(re-export 포워딩 + 직접
