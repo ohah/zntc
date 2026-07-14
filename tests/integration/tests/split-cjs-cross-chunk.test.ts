@@ -290,4 +290,95 @@ describe('code-splitting 런타임 스모크', () => {
       await cleanup();
     }
   });
+  test('#4522 후속: 문자열 리터럴이 앞서 나와도 import() specifier 가 청크로 치환된다', async () => {
+    // 소비자 재작성을 `rewriteImportCallToWrapper`(첫 indexOf 1회) 로 하면 앞선 문자열
+    // 리터럴 occurrence 를 잡고 실패해 **specifier 가 통째로 미치환** → ERR_MODULE_NOT_FOUND.
+    // `rewriteImportSpecifier` 와 같은 positional walk 를 써야 한다(#4295 가 고쳤던 그 버그).
+    const { dir, cleanup } = await createFixture({
+      'legacy.cjs': 'module.exports = { foo() { return "FOO"; } };',
+      'entry.js':
+        'const label = "./legacy.cjs";\n' +
+        'console.log("label:" + label);\n' +
+        'import("./legacy.cjs").then((m) => console.log("foo:" + m.foo()));',
+    });
+    try {
+      const outDir = join(dir, 'dist');
+      const res = await runZntc([
+        '--bundle',
+        join(dir, 'entry.js'),
+        '--splitting',
+        '--outdir',
+        outDir,
+        '--format=esm',
+      ]);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      // 버그 시: ERR_MODULE_NOT_FOUND (./legacy.cjs 를 dist 에서 찾음)
+      expect(stderr).not.toContain('ERR_MODULE_NOT_FOUND');
+      expect(stdout.trim().split('\n').pop()).toBe('foo:FOO');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('#4522 후속: import attributes 가 붙어도 specifier 가 청크로 치환된다', async () => {
+    // `import("./x.cjs", { with: {} })` — 닫는 quote 뒤가 `,` 라, `)` 만 허용하는 재작성기는
+    // specifier 를 미치환으로 남긴다(#4295 회귀).
+    const { dir, cleanup } = await createFixture({
+      'legacy.cjs': 'module.exports = { foo() { return "FOO"; } };',
+      'entry.js':
+        'import("./legacy.cjs", { with: {} }).then((m) => console.log("foo:" + m.foo()));',
+    });
+    try {
+      const outDir = join(dir, 'dist');
+      const res = await runZntc([
+        '--bundle',
+        join(dir, 'entry.js'),
+        '--splitting',
+        '--outdir',
+        outDir,
+        '--format=esm',
+      ]);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      expect(stderr).not.toContain('ERR_MODULE_NOT_FOUND');
+      expect(stdout.trim()).toBe('foo:FOO');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('#4522 후속: __esModule CJS 도 default / named 가 모두 맞는다 (이중 interop 없음)', async () => {
+    // 청크가 namespace 를 싣고 소비자가 한 겹 벗기므로 `__toESM` 이 두 번 걸리면 안 된다.
+    // rolldown 과 같은 값이 나와야 한다.
+    const { dir, cleanup } = await createFixture({
+      'legacy.cjs':
+        'Object.defineProperty(exports, "__esModule", { value: true });\n' +
+        'exports.default = { kind: "REAL_DEFAULT" };\n' +
+        'exports.named = "NAMED";',
+      'entry.js':
+        'import("./legacy.cjs").then((m) => {\n' +
+        '  console.log("keys:" + Object.keys(m).sort().join(",") + "|default:" + (m.default && m.default.kind) + "|named:" + m.named);\n' +
+        '});',
+    });
+    try {
+      const outDir = join(dir, 'dist');
+      const res = await runZntc([
+        '--bundle',
+        join(dir, 'entry.js'),
+        '--splitting',
+        '--outdir',
+        outDir,
+        '--format=esm',
+      ]);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
+      const { stdout } = await runNode(join(outDir, 'entry.js'));
+      expect(stdout.trim()).toBe('keys:default,named|default:REAL_DEFAULT|named:NAMED');
+    } finally {
+      await cleanup();
+    }
+  });
 });

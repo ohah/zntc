@@ -10,6 +10,7 @@ const linker_mod = @import("../linker.zig");
 const Linker = linker_mod.Linker;
 const RuntimeHelpers = @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers;
 const parent = @import("../emitter.zig");
+const chunks = @import("chunks.zig");
 const EmitOptions = parent.EmitOptions;
 
 /// 번들 레벨 런타임 헬퍼 주입 (CJS interop + decorator + async).
@@ -316,13 +317,20 @@ pub fn emitChunkRuntimeHelpers(
     // (#4510/#4522) dynamic entry 청크의 CJS entry 는 `export default __toESM(require_x())` 를
     // 깐다(chunks.zig cjs_dyn_entry) — 그 모듈을 import 하는 바인딩이 이 청크에 없어도 필요.
     //
+    // 술어는 provider/consumer 와 **같은 소스**(chunks.dynamicCjsNamespaceEntry)를 봐야 한다.
+    // 복붙해 두면 조용히 어긋난다 — 실제로 `linker == null` 을 provider 만 보고 있었다.
+    //
     // ⚠️ can_skip shape 예외를 두면 안 된다. #4510 때는 `default` **값 하나**만 실어 보내서
     // can_skip 이면 `require_x()` direct(헬퍼 불요)였지만, #4522 부터는 **namespace 통째**를
     // 보내므로 shape 와 무관하게 항상 `__toESM` 이 필요하다. 예외를 남기면 청크가
     // `ReferenceError: __toESM is not defined` 로 죽는다.
-    if (chunk.kind == .entry_point and chunk.kind.entry_point.is_dynamic) {
+    if (chunks.dynamicCjsNamespaceEntry(chunk, graph, linker != null, options.preserve_modules) != null) {
+        needs_to_esm_runtime = true;
+    } else if (!options.preserve_modules and chunk.kind == .entry_point and chunk.kind.entry_point.is_dynamic) {
+        // federation expose / plugin emitFile 청크는 기존 계약(`default` = module.exports 값)
+        // 을 유지한다 — non can_skip shape 만 `__toESM(require_x()).default` 라 헬퍼가 필요.
         if (graph.getModule(chunk.kind.entry_point.module)) |em| {
-            if (em.wrap_kind == .cjs) needs_to_esm_runtime = true;
+            if (em.wrap_kind == .cjs and !em.can_skip_cjs_default_interop) needs_to_esm_runtime = true;
         }
     }
     if (needs_cjs_runtime or needs_esm_wrap_runtime) {
