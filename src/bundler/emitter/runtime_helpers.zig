@@ -250,6 +250,19 @@ fn moduleInlinesDynamicCjsImport(
     return false;
 }
 
+/// (#4524) 모듈 `m` 이 CJS 모듈을 **동적 import** 하는가 (같은 단위 여부 무관).
+/// preserve-modules 는 대상이 늘 다른 파일이라 `moduleInlinesDynamicCjsImport` 의
+/// same-unit 판정으로는 못 잡는다.
+fn moduleDynamicallyImportsCjs(m: *const Module, graph: *const ModuleGraph) bool {
+    for (m.import_records) |rec| {
+        if (rec.kind != .dynamic_import) continue;
+        if (rec.resolved == .none) continue;
+        const target = graph.getModule(rec.resolved) orelse continue;
+        if (target.wrap_kind == .cjs) return true;
+    }
+    return false;
+}
+
 /// 단일 번들: 모든 모듈이 한 파일 → 대상이 항상 같은 단위.
 fn alwaysSameUnit(_: *const anyopaque, _: ModuleIndex) bool {
     return true;
@@ -311,6 +324,10 @@ pub fn emitChunkRuntimeHelpers(
         if (moduleReExportsCjsDefaultNeedsToEsm(m, graph, linker)) needs_to_esm_runtime = true;
         // (#4510) 같은 청크 안 CJS 를 동적 import → `__toESM(require_x())` 로 재작성(same_chunk 분기).
         if (moduleInlinesDynamicCjsImport(m, graph, chunkContainsModule, chunk)) needs_to_esm_runtime = true;
+        // (#4524) preserve-modules: **다른 파일**의 CJS 를 동적 import 하면 소비자가
+        // `.then((m)=>__toESM(m.default))` 로 namespace 를 합성한다(chunks.zig pm_dyn_cjs)
+        // → 헬퍼가 **소비자 청크**에 필요하다. same-chunk 판정을 보는 위 검사로는 못 잡는다.
+        if (options.preserve_modules and moduleDynamicallyImportsCjs(m, graph)) needs_to_esm_runtime = true;
         if (m.loader == .binary) needs_to_binary = true;
         if (needs_cjs_runtime and needs_esm_wrap_runtime and needs_to_esm_runtime and needs_to_binary) break;
     }
@@ -333,7 +350,11 @@ pub fn emitChunkRuntimeHelpers(
             if (em.wrap_kind == .cjs and !em.can_skip_cjs_default_interop) needs_to_esm_runtime = true;
         }
     }
-    if (needs_cjs_runtime or needs_esm_wrap_runtime) {
+    // (#4524) `needs_to_esm_runtime` 단독도 게이트를 통과해야 한다. preserve-modules 의
+    // 소비자 청크는 CJS 도 ESM-wrap 도 없는 **순수 ESM 파일**인데, 다른 파일의 CJS 를
+    // 동적 import 하면 자기가 `__toESM(m.default)` 로 namespace 를 합성한다 — 예전 게이트는
+    // 그 청크를 통째로 건너뛰어 `ReferenceError: __toESM is not defined` 였다.
+    if (needs_cjs_runtime or needs_esm_wrap_runtime or needs_to_esm_runtime) {
         // bundle 경로와 동일 정책. chunk 의 module index 들을 graph 로 resolve 후 동일 검사.
         if (needsRequireShimForChunk(chunk, graph, options)) {
             try rt.appendRequireShim(output, allocator, options.minify_whitespace);

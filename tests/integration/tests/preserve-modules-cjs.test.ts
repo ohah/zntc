@@ -1,101 +1,117 @@
-import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
+import { describe, test, expect } from 'bun:test';
 import { join } from 'node:path';
-import { createFixture, byContent } from './helpers';
-import { init, close, build } from '../../../packages/core/index';
+import { writeFileSync } from 'node:fs';
+import { createFixture, runNode, runZntc } from './helpers';
 
-// P3-A (#3321): preserve-modules + format=cjs — 모듈 1:1 파일, cross-module
-// 결합은 require()/module.exports (Node 네이티브 require 가 경로로 해석).
-// code splitting 없음(전부 빌드타임 known). ESM preserve-modules / 단일
-// CJS 번들 경로는 불변(회귀).
+/**
+ * #4524 회귀 가드 — `--preserve-modules` × CJS.
+ *
+ * 루트커즈: **CJS 는 정적 export 가 없어 파일 경계를 넘을 수단이 `require_X` 썽크뿐인데**,
+ * preserve-modules 가 그걸 export 하지 않았다. 소비자는 그 썽크를 **렉시컬 참조**했는데
+ * 그건 다른 파일의 지역변수다 → `ReferenceError: require_legacy is not defined`.
+ * 정적 import 조차 못 썼고, 동적 import 는 빈 namespace 였다.
+ *
+ * 처방(rolldown 동일): 파일이 썽크를 export(`export { require_X }`)하고 소비자가 import 한다.
+ * interop 은 소비자가 자기 preamble(`var d = require_X()`)로 이미 하고 있으므로 이름만
+ * 건너오면 된다. 동적 import 는 소비자가 `.then((m)=>__toESM(m.default))` 로 namespace 를
+ * 합성한다 — provider 의 `default` 는 raw `module.exports` 여야 하므로(단독 import 시 node
+ * CJS↔ESM 계약) namespace 를 실을 수 없기 때문이다.
+ *
+ * 빌드 exit 0 · 파싱 통과 · **실행만** 실패하는 계열이라 반드시 node 로 돌려 값을 본다.
+ */
 
-describe('preserve-modules + cjs (P3-A)', () => {
-  let cleanup: (() => Promise<void>) | undefined;
-  beforeAll(() => init());
-  afterAll(() => close());
-  afterEach(async () => {
-    if (cleanup) {
+const LEGACY = 'module.exports = { foo() { return "FOO"; }, bar: 42 };';
+
+async function buildPm(files: Record<string, string>, entry: string) {
+  const { dir, cleanup } = await createFixture(files);
+  const outDir = join(dir, 'dist');
+  const res = await runZntc([
+    '--bundle',
+    join(dir, entry),
+    '--preserve-modules',
+    '--outdir',
+    outDir,
+    '--format=esm',
+  ]);
+  expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+  writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
+  return { dir, outDir, cleanup };
+}
+
+describe('#4524: --preserve-modules × CJS', () => {
+  test('정적 import (default + named) 가 동작한다', async () => {
+    const { outDir, cleanup } = await buildPm(
+      {
+        'legacy.cjs': LEGACY,
+        'entry.js':
+          'import d, { foo } from "./legacy.cjs";\n' +
+          'console.log("default.bar:" + d.bar + "|foo:" + foo());',
+      },
+      'entry.js',
+    );
+    try {
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      // 버그 시: ReferenceError: require_legacy is not defined
+      expect(stderr).not.toContain('ReferenceError');
+      expect(stdout.trim()).toBe('default.bar:42|foo:FOO');
+    } finally {
       await cleanup();
-      cleanup = undefined;
     }
   });
 
-  const files = {
-    'dep.ts': `export const dep = "DEP_MARKER";`,
-    'index.ts': `import { dep } from "./dep";\nexport function main(){ return dep + "!"; }\nconsole.log(main());`,
-  };
-
-  test('모듈당 파일 분리 + cross-module require() + exports', async () => {
-    const fixture = await createFixture(files);
-    cleanup = fixture.cleanup;
-    const result = await build({
-      entryPoints: [join(fixture.dir, 'index.ts')],
-      preserveModules: true,
-      format: 'cjs',
-    });
-    const outs = result.outputFiles!;
-    const js = outs.filter((o) => o.path.endsWith('.js'));
-    // 모듈 1:1 → index, dep 두 파일
-    expect(js.length).toBeGreaterThanOrEqual(2);
-
-    const idx = byContent(outs, 'function main');
-    const dep = byContent(outs, 'DEP_MARKER');
-    expect(idx).toBeDefined();
-    expect(dep).toBeDefined();
-
-    // index: cross-module 는 ESM import 아닌 require()
-    expect(idx!.text).toContain('require("');
-    expect(idx!.text).not.toMatch(/^\s*import\s/m);
-    expect(idx!.text).toContain('exports.main');
-    // dep: CJS export
-    expect(dep!.text).toContain('exports.dep');
-    expect(dep!.text).not.toMatch(/^\s*export\s/m);
+  test('동적 import 가 named 멤버를 노출한다 (빈 namespace 아님)', async () => {
+    const { outDir, cleanup } = await buildPm(
+      {
+        'legacy.cjs': LEGACY,
+        'entry.js':
+          'const m = await import("./legacy.cjs");\n' +
+          'console.log("keys:" + Object.keys(m).sort().join(",") + "|foo:" + (typeof m.foo === "function" ? m.foo() : "MISSING"));',
+      },
+      'entry.js',
+    );
+    try {
+      const { stdout } = await runNode(join(outDir, 'entry.js'));
+      // 버그 시: `keys:` (빈 namespace) / `foo:MISSING`
+      expect(stdout.trim()).toBe('keys:bar,default,foo|foo:FOO');
+    } finally {
+      await cleanup();
+    }
   });
 
-  test('minify + side-effect import: require("..."); 가 닫힘(괄호 누락 없음)', async () => {
-    const fixture = await createFixture({
-      'side.ts': `console.log("SIDE_FX");`,
-      'index.ts': `import "./side";\nexport const ok = 1;`,
-    });
-    cleanup = fixture.cleanup;
-    const result = await build({
-      entryPoints: [join(fixture.dir, 'index.ts')],
-      preserveModules: true,
-      format: 'cjs',
-      minifyWhitespace: true,
-    });
-    const idx = byContent(result.outputFiles!, 'exports.ok')!;
-    expect(idx).toBeDefined();
-    // side-effect require 가 well-formed: require("...."); (괄호+세미콜론)
-    expect(idx.text).toMatch(/require\("[^"]+"\);/);
-    // 잘못된 형태 require("...."; (괄호 누락) 가 없어야 함
-    expect(idx.text).not.toMatch(/require\("[^"]+";/);
+  test('`import * as ns` 도 동작한다', async () => {
+    const { outDir, cleanup } = await buildPm(
+      {
+        'legacy.cjs': LEGACY,
+        'entry.js':
+          'import * as ns from "./legacy.cjs";\n' +
+          'console.log("ns.bar:" + ns.bar + "|ns.foo:" + ns.foo());',
+      },
+      'entry.js',
+    );
+    try {
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      expect(stderr).not.toContain('ReferenceError');
+      expect(stdout.trim()).toBe('ns.bar:42|ns.foo:FOO');
+    } finally {
+      await cleanup();
+    }
   });
 
-  test('회귀: preserve-modules + esm 는 ESM import/export 그대로', async () => {
-    const fixture = await createFixture(files);
-    cleanup = fixture.cleanup;
-    const result = await build({
-      entryPoints: [join(fixture.dir, 'index.ts')],
-      preserveModules: true,
-      format: 'esm',
-    });
-    const outs = result.outputFiles!;
-    const idx = byContent(outs, 'function main')!;
-    expect(idx.text).toMatch(/import\s*\{\s*dep\s*\}\s*from/);
-    expect(idx.text).not.toContain('require("');
-  });
-
-  test('회귀: 단일 CJS 번들(preserve-modules 아님)은 불변', async () => {
-    const fixture = await createFixture(files);
-    cleanup = fixture.cleanup;
-    const result = await build({
-      entryPoints: [join(fixture.dir, 'index.ts')],
-      format: 'cjs',
-    });
-    const outs = result.outputFiles!;
-    // 단일 번들 — DEP_MARKER 와 main 이 한 파일에
-    const single = byContent(outs, 'DEP_MARKER')!;
-    expect(single).toBeDefined();
-    expect(single.text).toContain('function main');
+  test('anti-regression: ESM 전용 그래프는 중복 export 없이 그대로 동작한다', async () => {
+    const { outDir, cleanup } = await buildPm(
+      {
+        'dep.js': 'export const v = 1;\nexport function f(){ return "ESM"; }',
+        'entry.js': 'import { v, f } from "./dep.js";\nconsole.log(v + " " + f());',
+      },
+      'entry.js',
+    );
+    try {
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      // 중복 export 면 `SyntaxError: Duplicate export`
+      expect(stderr).toBe('');
+      expect(stdout.trim()).toBe('1 ESM');
+    } finally {
+      await cleanup();
+    }
   });
 });

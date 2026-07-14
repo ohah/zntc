@@ -13,6 +13,7 @@ const Chunk = chunk_mod.Chunk;
 const ChunkIndex = types.ChunkIndex;
 const Module = @import("../module.zig").Module;
 const ModuleGraph = @import("../graph.zig").ModuleGraph;
+const rt_names = @import("../../runtime_helper_names.zig");
 const ast_mod = @import("../../parser/ast.zig");
 const Ast = ast_mod.Ast;
 const NodeIndex = ast_mod.NodeIndex;
@@ -657,6 +658,42 @@ pub fn emitChunks(
                 try chunk_output.appendSlice(allocator, sym_open);
                 try chunk_output.appendSlice(allocator, bind_arg);
                 try chunk_output.appendSlice(allocator, sym_close);
+            } else if (pm_cjs_thunk: {
+                // (#4524) preserve-modules: dep 이 CJS 면 그 파일의 `require_X` 썽크를
+                // **named import** 해야 한다. CJS 는 정적 export 가 없어 파일 경계를 넘을
+                // 수단이 이 썽크뿐인데, 예전엔 side-effect import 만 내고 소비자가 썽크를
+                // **렉시컬 참조**해서 `ReferenceError: require_X is not defined` 였다.
+                // interop 은 소비자가 자기 preamble(`var d = require_X()`)로 이미 하고 있으므로
+                // 이름만 건너오면 그대로 동작한다 — rolldown 과 같은 형태다.
+                if (!options.preserve_modules) break :pm_cjs_thunk false;
+                const dm_idx = switch (dep_chunk.kind) {
+                    .entry_point => |i| i.module,
+                    .common, .manual => break :pm_cjs_thunk false,
+                };
+                const dm = graph.getModule(dm_idx) orelse break :pm_cjs_thunk false;
+                break :pm_cjs_thunk dm.wrap_kind == .cjs;
+            }) {
+                const dm_idx = dep_chunk.kind.entry_point.module;
+                const dm = graph.getModule(dm_idx).?;
+                const thunk = try dm.allocRequireName(allocator, if (linker) |l| &l.rename_table else null);
+                defer allocator.free(thunk);
+                const open = if (cjs_require)
+                    (if (options.minify_whitespace) "const{" else "const { ")
+                else
+                    (if (options.minify_whitespace) "import{" else "import { ");
+                const mid = if (cjs_require)
+                    (if (options.minify_whitespace) "}=require(\"" else " } = require(\"")
+                else
+                    (if (options.minify_whitespace) "}from\"" else " } from \"");
+                const close = if (cjs_require)
+                    (if (options.minify_whitespace) "\");" else "\");\n")
+                else
+                    (if (options.minify_whitespace) "\";" else "\";\n");
+                try chunk_output.appendSlice(allocator, open);
+                try chunk_output.appendSlice(allocator, thunk);
+                try chunk_output.appendSlice(allocator, mid);
+                try chunk_output.appendSlice(allocator, bind_arg);
+                try chunk_output.appendSlice(allocator, close);
             } else {
                 // 심볼 정보 없음 → side-effect (실행/등록 순서 보장용)
                 const se_open = if (reg_split)
@@ -981,6 +1018,35 @@ pub fn emitChunks(
         // 이제 두 경로가 **같은 값**을 만든다. 소비자는 `.default` 로 벗긴다
         // (`rewriteDynamicImports` 의 cross-chunk 분기 — 그쪽 주석 참조).
         // node/rolldown/rspack 모두 named 멤버를 노출한다(esbuild 만 예외).
+        // (#4524) preserve-modules 의 **CJS 모듈 파일**: `require_X` 썽크를 export 한다.
+        // CJS 는 정적 export 가 없어 파일 경계를 넘을 수단이 이 썽크뿐이다. 예전엔 아무것도
+        // export 하지 않아 소비자가 썽크를 **렉시컬 참조**했고(다른 파일의 지역변수!)
+        // `ReferenceError: require_X is not defined` 였다 — 정적 import 조차 못 썼다.
+        //
+        // interop 은 소비자가 자기 preamble(`var d = require_X()` / `__toESM(require_X())`)로
+        // 이미 한다 — 이름만 건너오면 된다. splitting 처럼 provider 가 interop 값을 전역명으로
+        // materialize 하는 건 **번들링 기법**이라, "모듈 하나 = 파일 하나, 자기 모양 유지" 인
+        // preserve-modules 계약에 맞지 않는다. rolldown 도 썽크를 export 한다.
+        //
+        // `export default require_X();` 는 방출된 파일을 **단독으로** import 했을 때의 Node
+        // CJS↔ESM 계약(default = module.exports)을 맞춘다(rolldown 동일).
+        if (options.preserve_modules and options.format == .esm) pm_cjs_export: {
+            const info = switch (chunk.kind) {
+                .entry_point => |i| i,
+                .common, .manual => break :pm_cjs_export,
+            };
+            const em = graph.getModule(info.module) orelse break :pm_cjs_export;
+            if (em.wrap_kind != .cjs) break :pm_cjs_export;
+            const thunk = try em.allocRequireName(allocator, if (linker) |l| &l.rename_table else null);
+            defer allocator.free(thunk);
+            const min = options.minify_whitespace;
+            try chunk_output.appendSlice(allocator, if (min) "export default " else "export default ");
+            try chunk_output.appendSlice(allocator, thunk);
+            try chunk_output.appendSlice(allocator, if (min) "();export{" else "();\nexport { ");
+            try chunk_output.appendSlice(allocator, thunk);
+            try chunk_output.appendSlice(allocator, if (min) "};" else " };\n");
+        }
+
         if (!options.preserve_modules) cjs_dyn_entry: {
             const info = switch (chunk.kind) {
                 .entry_point => |i| i,
@@ -1952,6 +2018,30 @@ fn rewriteDynamicImports(
                 result = new_result;
             }
             continue;
+        }
+
+        // (#4524) preserve-modules: 대상 파일은 `export default require_X()` 로 **raw
+        // module.exports** 를 낸다(모듈 자기 모양 유지 — `import d from './legacy.js'` 가
+        // module.exports 여야 하므로 namespace 를 실을 수 없다). 그래서 namespace 합성은
+        // **소비자**가 한다: `import(...).then((m)=>__toESM(m.default))` (rolldown 동일).
+        if (emit_options.preserve_modules) pm_dyn_cjs: {
+            const tm = graph.getModule(rec.resolved) orelse break :pm_dyn_cjs;
+            if (tm.wrap_kind != .cjs) break :pm_dyn_cjs;
+            const toesm: []const u8 = if (emit_options.minify_whitespace) rt_names.NAMES.TOESM_MIN else "__toESM";
+            const suffix = try std.fmt.allocPrint(allocator, ".then((m)=>{s}(m.default))", .{toesm});
+            defer allocator.free(suffix);
+            if (try rewriteImportCallAppendSuffix(
+                allocator,
+                result,
+                rec.specifier,
+                replacement,
+                suffix,
+            )) |new_result| {
+                allocator.free(result);
+                result = new_result;
+                continue;
+            }
+            // 폴백: suffix 를 못 붙였으면 최소한 specifier 는 고친다(아래 공통 경로).
         }
 
         // ESM: 네이티브 import() 유지 — specifier 만 청크 파일명으로 교체.
