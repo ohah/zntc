@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { join } from 'node:path';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { createFixture, runNode, runZntc } from './helpers';
 
 /**
@@ -107,4 +107,83 @@ describe('#4530: 래퍼 심볼 ↔ 사용자 top-level 심볼 deconflict', () =>
       }
     });
   }
+  test('동명 사용자 심볼이 여러 모듈에 있어도 $N 레벨에서 재충돌하지 않는다', async () => {
+    // ⚠️ 래퍼 **이름을 바꾸는** 방식으로 풀면 안 된다 — graph finalize 의 `used_names` 와
+    // linker 의 `$N` 할당기가 **서로를 못 보는 두 개의 독립 풀**이라, 한 단계 위에서 다시
+    // 충돌한다(양쪽이 각각 `require_legacy$2` 를 발급 → SyntaxError).
+    // 래퍼를 **예약**해서 사용자 심볼을 리네임시키면 할당기가 하나로 모인다.
+    const { dir, cleanup } = await createFixture({
+      'legacy.cjs': LEGACY,
+      'u1.js': 'import d from "./legacy.cjs";\nexport const x = () => d.foo();',
+      'm1.js': 'function require_legacy(){ return "A"; }\nexport const a = require_legacy();',
+      'm2.js': 'function require_legacy(){ return "B"; }\nexport const b = require_legacy();',
+      'entry.js':
+        'function require_legacy(){ return "C"; }\n' +
+        'import d from "./legacy.cjs";\n' +
+        'import { x } from "./u1.js";\n' +
+        'import { a } from "./m1.js";\n' +
+        'import { b } from "./m2.js";\n' +
+        'console.log(require_legacy() + a + b + d.foo() + x());',
+    });
+    try {
+      const out = join(dir, 'b.mjs');
+      const res = await runZntc(['--bundle', join(dir, 'entry.js'), '-o', out, '--format=esm']);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      const { stdout, stderr } = await runNode(out);
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout.trim()).toBe('CABFOOFOO');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('--minify 에서도 충돌하지 않는다', async () => {
+    const { dir, cleanup } = await createFixture({
+      'legacy.cjs': LEGACY,
+      'u1.js': 'import d from "./legacy.cjs";\nexport const x = () => d.foo();',
+      'entry.js':
+        'function require_legacy(){ return "USER"; }\n' +
+        'import d from "./legacy.cjs";\n' +
+        'import { x } from "./u1.js";\n' +
+        'console.log(require_legacy() + "|" + d.foo() + "|" + x());',
+    });
+    try {
+      const out = join(dir, 'b.mjs');
+      const res = await runZntc([
+        '--bundle',
+        join(dir, 'entry.js'),
+        '-o',
+        out,
+        '--format=esm',
+        '--minify',
+      ]);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      const { stdout, stderr } = await runNode(out);
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout.trim()).toBe('USER|FOO|FOO');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('충돌이 없으면 래퍼 이름이 그대로다 (과잉 deconflict 없음)', async () => {
+    // 래퍼를 **예약**하는 방식이라 래퍼는 자연스러운 이름을 유지하고, 충돌하는 **사용자
+    // 심볼**만 리네임된다 — size/warm-rebuild 안정성이 낫다.
+    const { dir, cleanup } = await createFixture({
+      'legacy.cjs': LEGACY,
+      'u1.js': 'import d from "./legacy.cjs";\nexport const x = () => d.foo();',
+      'entry.js':
+        'import d from "./legacy.cjs";\nimport { x } from "./u1.js";\nconsole.log(d.foo() + x());',
+    });
+    try {
+      const out = join(dir, 'b.mjs');
+      const res = await runZntc(['--bundle', join(dir, 'entry.js'), '-o', out, '--format=esm']);
+      expect(res.exitCode).toBe(0);
+      const text = readFileSync(out, 'utf-8');
+      expect(text).toContain('var require_legacy = __commonJS');
+      expect(text).not.toContain('require_legacy$');
+    } finally {
+      await cleanup();
+    }
+  });
 });
