@@ -581,7 +581,18 @@ pub fn emitChunks(
             // 폴백)으로 그 이름이 등록된다 → 심볼 분기가 먼저 타면 provider 가 내지도 않는
             // `import { foo } from "./legacy.js"` 를 내고, 소비자 preamble 의 `require_legacy` 는
             // 여전히 미-import 다 → `SyntaxError: Identifier 'foo' has already been declared`.
-            if (preserveModulesWrapperChunk(dep_chunk, graph, options)) |dm_idx| {
+            // (#4528) **CJS dep 만** 심볼 목록을 버린다. CJS 는 본문 전체가 `__commonJS`
+            // 클로저 안이라 top-level 에 export 명이 없다(래퍼뿐) — 심볼을 import 하면
+            // provider 가 내지도 않는 이름을 가져와 SyntaxError 다.
+            // **ESM-wrap 은 다르다**: 선언(`function tag(){}`)은 파일 top-level 에 남고
+            // 소비자도 bare 로 참조하므로, 래퍼 심볼 **과 함께** 심볼도 가져와야 한다.
+            const pm_wrapper_dep: ?ModuleIndex = preserveModulesWrapperChunk(dep_chunk, graph, options);
+            const pm_cjs_dep = if (pm_wrapper_dep) |mi|
+                (if (graph.getModule(mi)) |dm0| dm0.wrap_kind == .cjs else false)
+            else
+                false;
+
+            if (pm_wrapper_dep) |dm_idx| {
                 // (#4524) preserve-modules: dep 이 CJS 면 그 파일의 `require_X` 썽크를
                 // **named import** 해야 한다. CJS 는 정적 export 가 없어 파일 경계를 넘을
                 // 수단이 이 썽크뿐인데, 예전엔 side-effect import 만 내고 소비자가 썽크를
@@ -590,7 +601,8 @@ pub fn emitChunks(
                 // 이름만 건너오면 그대로 동작한다 — rolldown 과 같은 형태다.
                 // 술어는 provider(export emit) 와 **같은 소스**를 본다.
                 const dm = graph.getModule(dm_idx).?;
-                const names = try wrapperNamesFor(allocator, dm, linker);
+                // (#4528) provider 와 **같은 소스** — canonical(rename_table 미사용).
+                const names = try wrapperNamesFor(allocator, dm, null);
                 defer names.deinit(allocator);
                 const min = options.minify_whitespace;
 
@@ -656,7 +668,8 @@ pub fn emitChunks(
                     try chunk_output.appendSlice(allocator, names.a);
                     try chunk_output.appendSlice(allocator, if (min) ".apply(this,arguments)};" else ".apply(this, arguments);\n\t};\n");
                 } else {
-                    // esm: live binding 이라 구조분해(=named import)로 충분하다.
+                    // esm: live binding 이라 named import 로 충분하다.
+                    // 키는 canonical, 로컬은 mangle 된 이름 — alias 로 잇는다(#4528).
                     try chunk_output.appendSlice(allocator, if (min) "import{" else "import { ");
                     try chunk_output.appendSlice(allocator, names.a);
                     if (names.b) |b| {
@@ -667,7 +680,9 @@ pub fn emitChunks(
                     try chunk_output.appendSlice(allocator, bind_arg);
                     try chunk_output.appendSlice(allocator, if (min) "\";" else "\";\n");
                 }
-            } else if (symbols != null and symbols.?.items.len > 0) {
+            }
+
+            if (!pm_cjs_dep and symbols != null and symbols.?.items.len > 0) {
                 // 심볼 수준 import: import { a, b } from './chunk-xxx.js';
                 if (!options.minify_whitespace) {
                     try chunk_output.appendSlice(allocator, if (reg_like) "const { " else "import { ");
@@ -750,8 +765,9 @@ pub fn emitChunks(
                 try chunk_output.appendSlice(allocator, sym_open);
                 try chunk_output.appendSlice(allocator, bind_arg);
                 try chunk_output.appendSlice(allocator, sym_close);
-            } else {
+            } else if (pm_wrapper_dep == null) {
                 // 심볼 정보 없음 → side-effect (실행/등록 순서 보장용)
+                // ⚠️ 래퍼 분기가 이미 결합을 냈으면(preserve-modules) 여기서 또 내면 중복이다.
                 const se_open = if (reg_split)
                     "__zntc_require(\""
                 else if (cjs_require)
@@ -1091,7 +1107,13 @@ pub fn emitChunks(
         // require("./x.js")` 를 내는데 provider 는 아무것도 안 깔아 undefined 다.
         if (preserveModulesWrapperChunk(chunk, graph, options)) |em_idx| pm_wrap_export: {
             const em = graph.getModule(em_idx) orelse break :pm_wrap_export;
-            const names = try wrapperNamesFor(allocator, em, linker);
+            // (#4528) ⚠️ 래퍼 심볼은 **canonical(미-mangle) 이름**으로 통일한다(rename_table 미사용).
+            // `rename_table` 은 **청크별**이라 같은 심볼이 provider emit 시점과 consumer emit
+            // 시점에 다른 이름으로 해석됐다 → `import{o}` vs `export{require_a}` 로 어긋나
+            // `--minify` 빌드가 통째로 깨졌다. 게다가 청크 **본문**은 canonical 을 그대로 쓴다
+            // (래퍼 선언은 emitter 가 직접 찍는다 — codegen 의 rename 대상이 아니다).
+            // 그러니 canonical 하나로 맞추면 본문·provider·consumer 3자가 항상 일치한다.
+            const names = try wrapperNamesFor(allocator, em, null);
             defer names.deinit(allocator);
             const min = options.minify_whitespace;
 
@@ -1104,6 +1126,15 @@ pub fn emitChunks(
             //    실행된다.
             // 래퍼 **선언만** 내보내면 호출 시점이 소비자에게 남아 node 의 lazy 의미가 보존된다.
             // (rolldown 은 `export default require_X();` 를 내지만 같은 순환 위험을 안는다.)
+            // (#4528) **user entry** 는 그 파일이 곧 프로그램의 시작점이다 — wrap 된 CJS 는
+            // 아무도 `require_X()` 를 부르지 않아 **본문이 아예 실행되지 않았다**(`console.log`
+            // 조차 안 찍힘). entry 는 여기서 직접 호출한다. dep 청크는 여전히 lazy 다
+            // (eager 호출은 CJS 순환을 죽인다 — 위 주석 참조).
+            // ⚠️ preserve-modules 는 **모든 모듈이 자기 entry_point 청크**라 `chunk_is_user_entry`
+            // 가 전부 참이다 — 그걸 쓰면 dep 까지 eager 호출해 CJS 순환이 다시 죽는다.
+            // 진짜 진입점은 모듈의 `is_entry_point` 플래그다.
+            const pm_entry_call = em.is_entry_point and em.wrap_kind == .cjs;
+
             if (options.format == .cjs) {
                 // 청크가 `require()` 로 소비되므로 exports 객체에 깐다.
                 for ([_]?[]const u8{ names.a, names.b }) |maybe| {
@@ -1114,6 +1145,12 @@ pub fn emitChunks(
                     try chunk_output.appendSlice(allocator, n);
                     try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
                 }
+                if (pm_entry_call) {
+                    // 원본 `.cjs` 진입점과 같은 계약: 본문을 실행하고 그 exports 를 노출.
+                    try chunk_output.appendSlice(allocator, if (min) "module.exports=" else "module.exports = ");
+                    try chunk_output.appendSlice(allocator, names.a);
+                    try chunk_output.appendSlice(allocator, if (min) "();" else "();\n");
+                }
             } else {
                 try chunk_output.appendSlice(allocator, if (min) "export{" else "export { ");
                 try chunk_output.appendSlice(allocator, names.a);
@@ -1122,6 +1159,12 @@ pub fn emitChunks(
                     try chunk_output.appendSlice(allocator, b);
                 }
                 try chunk_output.appendSlice(allocator, if (min) "};" else " };\n");
+                if (pm_entry_call) {
+                    // 본문 실행 + node CJS↔ESM 계약(default = module.exports).
+                    try chunk_output.appendSlice(allocator, "export default ");
+                    try chunk_output.appendSlice(allocator, names.a);
+                    try chunk_output.appendSlice(allocator, if (min) "();" else "();\n");
+                }
             }
         }
 
@@ -1157,7 +1200,20 @@ pub fn emitChunks(
         // PR-3b-ii: lazy reg(IIFE/CJS) entry 청크는 소비자(동적 청크)가 시작 시 미파싱이라
         // exports_to 가 비어도 export-all 해야 하므로 별도로 진입한다.
         const lazy_reg_entry = graph.lazy_compilation and entry_mod_idx != null and (options.format == .cjs or reg_split);
-        if ((chunk.exports_to.count() > 0 or rbm_export_names.items.len > 0 or lazy_reg_entry) and !options.preserve_modules) xchunk_exports: {
+        // (#4528) preserve-modules 에서도 **ESM-wrap** 모듈은 이 블록이 필요하다.
+        // `__esm` 클로저 안에 들어가는 건 **부수효과 문장뿐**이고, `function tag(){}` 같은
+        // **선언은 파일 top-level 에 남는다** — 소비자도 그걸 bare 로 참조한다(단일 번들과 동일).
+        // 그런데 wrap 된 모듈은 buildFinalExports 가 null 이라 자기 export 를 못 낸다 →
+        // 이 블록이 아니면 `export { tag }` 가 어디서도 안 나오고 소비자는
+        // `ReferenceError: tag is not defined`.
+        // CJS 는 반대다 — 본문 **전체**가 클로저 안이라 top-level 선언이 없다(래퍼뿐).
+        const pm_wrapped_esm_provider = options.preserve_modules and blk: {
+            const mi = preserveModulesWrapperChunk(chunk, graph, options) orelse break :blk false;
+            const em = graph.getModule(mi) orelse break :blk false;
+            break :blk em.wrap_kind == .esm;
+        };
+        if ((chunk.exports_to.count() > 0 or rbm_export_names.items.len > 0 or lazy_reg_entry) and
+            (!options.preserve_modules or pm_wrapped_esm_provider)) xchunk_exports: {
             // 결정론적 출력을 위해 이름을 정렬
             var export_names: std.ArrayList([]const u8) = .empty;
             defer export_names.deinit(allocator);
@@ -1187,7 +1243,12 @@ pub fn emitChunks(
             //    은 이 경로가 cross-chunk `exports.x=local;`. → cjs 와 동일하게
             //    entry 청크는 break(이중정의·module.exports= 손상 방지).
             const reg_fmt = options.format == .cjs or reg_split;
-            if (reg_fmt and entry_mod_idx != null) {
+            // (#4528) ⚠️ preserve-modules 의 **wrap 된 ESM provider** 는 예외다.
+            // 이 break 의 전제("entry 모듈 export 는 emitCjsEntryExports 가 이미 깐다")가
+            // 거짓이다 — wrap 된 모듈은 export 가 `__export(exports_X, …)` 로 들어가고
+            // emitCjsEntryExports 를 타지 않는다. break 하면 `exports.tag` 가 어디서도 안 나와
+            // 소비자가 `TypeError: tag is not a function`.
+            if (reg_fmt and entry_mod_idx != null and !pm_wrapped_esm_provider) {
                 // PR-3b-ii: lazy 면 entry 청크가 hoisted 모듈 export 를 local name 으로 전부
                 // 노출(export-all) — on-demand 동적 청크가 시작 시 미파싱 seed 라 어떤 export 를
                 // 참조할지 몰라도 찾게 + demand-driven 이 아니라 결정론(seed force-parse 무관).
@@ -1216,9 +1277,14 @@ pub fn emitChunks(
             // entry 모듈 export 가 아닌 cross-chunk 심볼(예: 호이스팅된 다른
             // 모듈 심볼)만 남겨 합집합을 정확히 1회 emit. 전부 제거 시 블록 생략.
             // cross-chunk 소비자는 codegen 이 낸 동일 `export {}` 로 바인딩.
+            // (#4528) ⚠️ **wrap 된 모듈에는 이 필터를 걸면 안 된다.** 전제("codegen 이 entry
+            // 모듈의 `export {}` 를 이미 낸다")가 거짓이다 — wrap 된 모듈의 export 는
+            // `__export(exports_X, {...})` 로 들어가고 `export {}` 는 나오지 않는다.
+            // 필터를 걸면 이름이 전부 제거돼 블록이 생략되고, 소비자는
+            // `SyntaxError: does not provide an export named 'tag'` 를 만난다.
             if (!cjs_x) {
                 if (entry_mod_idx) |ei| {
-                    if (graph.getModule(ModuleIndex.fromUsize(@intCast(ei)))) |em| {
+                    if (graph.getModule(ModuleIndex.fromUsize(@intCast(ei)))) |em| if (!em.wrap_kind.isWrapped()) {
                         var w: usize = 0;
                         for (export_names.items) |nm| {
                             var entry_exported = false;
@@ -1234,7 +1300,7 @@ pub fn emitChunks(
                             }
                         }
                         export_names.shrinkRetainingCapacity(w);
-                    }
+                    };
                 }
                 if (export_names.items.len == 0) break :xchunk_exports;
             }
