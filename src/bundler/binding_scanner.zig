@@ -17,6 +17,7 @@ const Node = @import("../parser/ast.zig").Node;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const ast_walk = @import("../parser/ast_walk.zig");
 const Span = @import("../lexer/token.zig").Span;
+const preamble_writer = @import("linker/preamble_writer.zig");
 const types = @import("types.zig");
 const module_parser = @import("../parser/module.zig");
 const ModuleIndex = types.ModuleIndex;
@@ -69,8 +70,10 @@ pub const ImportBinding = struct {
     /// (kind=.named, imported_name="default") 어느 쪽이든 source의 default를
     /// import하는 케이스 통칭.
     pub fn importsDefault(self: ImportBinding) bool {
+        // (#4510) `import { "default" as X }` 도 default import 다 — 이름에 따옴표가
+        // 붙어 저장되므로 bare 비교로는 못 잡는다. 판정은 preamble_writer 단일 소스.
         return self.kind == .default or
-            (self.kind == .named and std.mem.eql(u8, self.imported_name, "default"));
+            (self.kind == .named and preamble_writer.isDefaultExportName(self.imported_name));
     }
 };
 

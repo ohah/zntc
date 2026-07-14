@@ -261,25 +261,29 @@ fn simplifyUnusedInPlace(ast: *Ast, ctx: MinifyCtx, idx: NodeIndex, changed: *bo
     };
 }
 
-/// 비교 연산 (`==`, `===`, `!=`, `!==`, `<`, `>`, `<=`, `>=`, `in`, `instanceof`) 은
-/// 양쪽 operand 가 pure 면 전체 removable. 한쪽만 removable 이면 나머지로 교체.
-/// 비교 외 binary (`+`, `-`, `*`, `|`, ...) 는 양쪽 pure 여야 removable — JS `valueOf`/`toString`
-/// 의 side-effect 는 purity 가 이미 식별. 부분 rewrite 는 안 함 (의미 보존 복잡).
+/// **강제 변환(ToPrimitive)이 없는 연산만** 손댄다 — `===` / `!==`.
+///
+/// 예전엔 `==`/`<`/`in`/`instanceof`/`+` 까지 "양쪽 operand 가 removable 이면 전체 removable"
+/// 로 봤는데, 이건 술어를 **잘못된 질문에 쓴 것**이다. `isStmtRemovable(operand)` 은 "이
+/// 표현식의 **평가**를 통째로 없애도 되는가" 를 답한다. 그런데 강제 변환 연산에서는
+/// operand 의 **값이 관측**된다 — `({valueOf(){…}}) + 1` 의 객체 리터럴은 *생성*이야
+/// 부수효과가 없지만(=문 자리에선 removable) `+` 가 그 값에 ToPrimitive 를 걸어
+/// `valueOf` 를 부른다. 그래서 문 전체를 지우면 **부수효과가 사라진다**.
+/// (`in`/`instanceof` 는 TypeError 도 던질 수 있다.)
+///
+/// 이 술어는 `purity.isRemovableAtStmtPos` 의 `.binary_expression` arm(`===`/`!==` 만 허용)
+/// 과 **같은 규칙**이어야 한다. 여기서만 느슨하면 그 arm 이 무의미해진다.
 fn rewriteBinaryUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: *bool, depth: u32) bool {
     const op: Kind = @enumFromInt(node.data.binary.flags);
-    const is_comparison = switch (op) {
-        .eq3, .neq2, .eq2, .neq, .l_angle, .r_angle, .lt_eq, .gt_eq, .kw_in, .kw_instanceof => true,
+    const coercion_free = switch (op) {
+        .eq3, .neq2 => true,
         else => false,
     };
+    if (!coercion_free) return false;
 
     const left_idx = node.data.binary.left;
     const right_idx = node.data.binary.right;
     const d = depth + 1;
-
-    if (!is_comparison) {
-        return isStmtRemovableDepth(ast, left_idx, ctx, d) and
-            isStmtRemovableDepth(ast, right_idx, ctx, d);
-    }
 
     const left_rem = isStmtRemovableDepth(ast, left_idx, ctx, d);
     const right_rem = isStmtRemovableDepth(ast, right_idx, ctx, d);
@@ -517,7 +521,32 @@ fn rewriteCallOrNewUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, change
 /// `{k: v, [k()]: v2};` 의 key / value / spread 를 분해해 pure 는 drop, impure 만 남김.
 /// spread 는 `{...x}` 의 x 가 side-effect (iterator, proxy trap) 이므로 sequence 원소로 보존.
 /// method / getter / setter 는 value 가 function_expression 이라 pure — 전체 drop 가능.
-/// computed key (`[expr]`) 의 expr 은 pure 면 drop, impure 면 sequence 에 추가.
+///
+/// **computed key 가 하나라도 있으면 통째로 유지한다.** key 표현식은 평가만 되는 게 아니라
+/// 그 **값에 ToPropertyKey** 가 걸린다 — 객체면 `toString`/`Symbol.toPrimitive` 가 불린다.
+/// 그래서 "이 key 표현식을 문 자리에서 지울 수 있는가"(=`isStmtRemovable`)는 잘못된 질문이고,
+/// key 를 drop 하는 것도 key 만 bare statement 로 남기는 것도 둘 다 그 호출을 잃는다.
+/// `purity.isObjectRemovableAtStmtPos` 의 computed-key 거부와 **같은 규칙**이다.
+/// 프로퍼티 목록에 computed key (`[expr]: v` / `[expr]() {}`) 가 하나라도 있는가.
+fn anyComputedKey(ast: *Ast, props: []const u32) bool {
+    for (props) |raw| {
+        if (raw >= ast.nodes.items.len) return true; // 알 수 없으면 보수적으로 "있다"
+        const prop = ast.nodes.items[raw];
+        const key_ni: u32 = switch (prop.tag) {
+            .object_property => @intFromEnum(prop.data.binary.left),
+            .method_definition => blk: {
+                const me = prop.data.extra;
+                if (me + @as(u32, ast_mod.MethodExtra.key) >= ast.extra_data.items.len) return true;
+                break :blk ast.extra_data.items[me + ast_mod.MethodExtra.key];
+            },
+            else => continue,
+        };
+        if (key_ni >= ast.nodes.items.len) return true;
+        if (ast.nodes.items[key_ni].tag == .computed_property_key) return true;
+    }
+    return false;
+}
+
 fn rewriteObjectUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: *bool, depth: u32) bool {
     const list = node.data.list;
     if (list.start + list.len > ast.extra_data.items.len) return false;
@@ -525,6 +554,8 @@ fn rewriteObjectUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: 
     if (list.len == 0) return true;
 
     const props = ast.extra_data.items[list.start .. list.start + list.len];
+
+    if (anyComputedKey(ast, props)) return false;
 
     // Spread 혼합 처리 (oxc 방식): spread 원소는 expression 자리에 직접 놓을 수 없고
     // `{...x}` 형태 유지가 필요하므로 변환 복잡도 대비 ROI 가 낮다.
@@ -563,37 +594,17 @@ fn rewriteObjectUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: 
 
         switch (prop.tag) {
             .object_property => {
-                // data.binary: left = key, right = value
-                const key_idx = prop.data.binary.left;
+                // computed key 는 위에서 이미 걸러졌다 (anyComputedKey) — 여기 오는 key 는
+                // 평가 자체가 없는 정적 이름/리터럴이다.
                 const value_idx = prop.data.binary.right;
-
-                // computed key 는 evaluate side-effect 가능 — pure 면 drop, 아니면 남김.
-                const key_ni = @intFromEnum(key_idx);
-                if (key_ni < ast.nodes.items.len and
-                    ast.nodes.items[key_ni].tag == .computed_property_key)
-                {
-                    const inner = ast.nodes.items[key_ni].data.unary.operand;
-                    const key_rem = simplifyUnusedInPlace(ast, ctx, inner, changed, depth + 1);
-                    if (!key_rem) kept.append(ast.allocator, inner) catch return false;
-                }
 
                 // value — shorthand 면 key 와 같지만 판정 동일. 재귀로 축약 + removable 판정.
                 const value_rem = simplifyUnusedInPlace(ast, ctx, value_idx, changed, depth + 1);
                 if (!value_rem) kept.append(ast.allocator, value_idx) catch return false;
             },
             // method_definition / getter / setter — function body 는 evaluate 시 pure (객체
-            // 생성 시 호출 안 됨). 단 computed key (`[foo()]() {}`) 의 expression 은 객체
-            // 생성 시 evaluate → side-effect 보존 필요.
-            .method_definition => {
-                const me = prop.data.extra;
-                if (me + @as(u32, ast_mod.MethodExtra.key) >= ast.extra_data.items.len) return false;
-                const key_raw = ast.extra_data.items[me + ast_mod.MethodExtra.key];
-                if (key_raw >= ast.nodes.items.len) continue;
-                if (ast.nodes.items[key_raw].tag != .computed_property_key) continue;
-                const inner = ast.nodes.items[key_raw].data.unary.operand;
-                const key_rem = simplifyUnusedInPlace(ast, ctx, inner, changed, depth + 1);
-                if (!key_rem) kept.append(ast.allocator, inner) catch return false;
-            },
+            // 생성 시 호출 안 됨). computed key 는 위에서 걸러졌다.
+            .method_definition => continue,
             else => {
                 // 알 수 없는 property — 보수적으로 전체 유지.
                 return false;

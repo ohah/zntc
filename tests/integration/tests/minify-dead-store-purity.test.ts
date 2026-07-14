@@ -321,13 +321,11 @@ describe('#4514: dead-store 가 평가 부수효과를 지우지 않는다', () 
     // 유지가 곧 정답이므로 여기서 잠근다 — 나중에 "왜 안 지우지?" 로 되돌리지 말 것.
     const r = await bundleAndRun(
       {
-        'index.ts':
-          `
+        'index.ts': `
           function f() {
             const local = "SRC";
             let x = local;              // block-scoped 읽기 → 유지
-            x = local + "CONCAT";       // ` +
-          ` 는 ToPrimitive → valueOf 호출 가능 → 유지
+            x = local + "CONCAT";       // 더하기는 ToPrimitive → valueOf 호출 가능 → 유지
             x = "LIVE";
             return x + local.length;
           }
@@ -341,6 +339,81 @@ describe('#4514: dead-store 가 평가 부수효과를 지우지 않는다', () 
       expect(r.exitCode).toBe(0);
       expect(r.runOutput).toBe('LIVE3');
       expect(r.bundleOutput).toContain('CONCAT');
+    } finally {
+      await r.cleanup();
+    }
+  });
+});
+
+// ─── #4514 후속: 술어를 공유하지 않던 두 호출부 (rewriteBinaryUnused / rewriteObjectUnused) ───
+//
+// `isStmtRemovable(operand)` 은 "이 표현식의 **평가**를 없애도 되는가" 를 답한다. 그런데
+// 강제 변환 연산에서는 operand 의 **값이 관측**된다 — 술어를 잘못된 질문에 쓰면 부수효과가
+// 사라진다. (`--minify-syntax` 경로라 dead-store 와 별개 표면이다.)
+
+describe('#4514 후속: 강제 변환(ToPrimitive / ToPropertyKey) 부수효과 보존', () => {
+  test('--minify: 이항 연산 피연산자의 valueOf 호출이 보존된다', async () => {
+    const r = await bundleAndRun(
+      {
+        'index.ts': `
+          const log: string[] = [];
+          function f() {
+            ({ valueOf() { log.push("valueOf"); return 1; } }) + 1;   // 값이 ToPrimitive 로 관측됨
+          }
+          f();
+          console.log(JSON.stringify(log));
+        `,
+      },
+      'index.ts',
+      ['--minify'],
+    );
+    try {
+      expect(r.exitCode).toBe(0);
+      // 버그 시: [] — 문 전체가 삭제돼 valueOf 가 안 불린다.
+      expect(r.runOutput).toBe('["valueOf"]');
+    } finally {
+      await r.cleanup();
+    }
+  });
+
+  test('--minify: computed key 의 toString(ToPropertyKey) 호출이 보존된다', async () => {
+    const r = await bundleAndRun(
+      {
+        'index.ts': `
+          const log: string[] = [];
+          function g(k: any) { ({ [k]: 1 }); }   // key 의 값에 ToPropertyKey → toString
+          g({ toString() { log.push("toString"); return "x"; } });
+          console.log(JSON.stringify(log));
+        `,
+      },
+      'index.ts',
+      ['--minify'],
+    );
+    try {
+      expect(r.exitCode).toBe(0);
+      // 버그 시: [] — key 가 pure 로 판정돼 drop → toString 이 안 불린다.
+      expect(r.runOutput).toBe('["toString"]');
+    } finally {
+      await r.cleanup();
+    }
+  });
+
+  test('--minify: 배열 원소의 이항 연산 부수효과도 보존된다', async () => {
+    const r = await bundleAndRun(
+      {
+        'index.ts': `
+          const log: string[] = [];
+          function a(k: any) { [k + 1]; }
+          a({ valueOf() { log.push("valueOf"); return 1; } });
+          console.log(JSON.stringify(log));
+        `,
+      },
+      'index.ts',
+      ['--minify'],
+    );
+    try {
+      expect(r.exitCode).toBe(0);
+      expect(r.runOutput).toBe('["valueOf"]');
     } finally {
       await r.cleanup();
     }

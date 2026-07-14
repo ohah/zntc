@@ -134,12 +134,31 @@ pub const Codegen = struct {
     /// 이 모듈 AST 에 `undefined` 라는 이름의 바인딩이 있는가 (모듈당 1회 스캔·캐시).
     /// peephole 이 실제로 `undefined` 텍스트를 만났을 때만 호출되므로 대부분의 모듈은
     /// 스캔조차 하지 않는다.
+    ///
+    /// **import 바인딩도 포함해야 한다.** `import { v as undefined }` 의 local 은 별도
+    /// `binding_identifier` 노드가 아니라 `import_specifier` 의 오른쪽 자식이고, 그 태그는
+    /// `identifier_reference` 다(`parseIdentifierName`). 그래서 binding_identifier 만 훑으면
+    /// 이 바인딩이 안 보이고, 게다가 그 local 노드 자신이 peephole 을 맞아
+    /// `import { v as void 0 }` — **파싱 불가** 산출물이 나온다.
     fn undefinedIsShadowed(self: *Codegen) bool {
         if (self.undefined_shadowed) |v| return v;
         var found = false;
         for (self.ast.nodes.items) |n| {
-            if (n.tag != .binding_identifier) continue;
-            if (std.mem.eql(u8, self.ast.identifierNameText(n), "undefined")) {
+            const named: ?Node = switch (n.tag) {
+                // `let/var/const` · 파라미터 · catch · function/class 이름
+                .binding_identifier => n,
+                // `import undefined from` · `import * as undefined` — 이름이 노드 자신
+                .import_default_specifier, .import_namespace_specifier => n,
+                // `import { v as undefined }` — local 은 오른쪽 자식(identifier_reference)
+                .import_specifier => blk: {
+                    const local = n.data.binary.right;
+                    if (local.isNone() or @intFromEnum(local) >= self.ast.nodes.items.len) break :blk null;
+                    break :blk self.ast.getNode(local);
+                },
+                else => continue,
+            };
+            const name_node = named orelse continue;
+            if (std.mem.eql(u8, self.ast.identifierNameText(name_node), "undefined")) {
                 found = true;
                 break;
             }

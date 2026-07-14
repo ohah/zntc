@@ -2954,7 +2954,7 @@ pub const Linker = struct {
             const suffix: []const u8 = if (self.cjsInteropIsNode(cjs_mod)) "(), 1)" else "())";
             return std.fmt.allocPrint(allocator, "{s}({s}{s}", .{ toesm, req_var, suffix });
         }
-        if (std.mem.eql(u8, member, "default")) {
+        if (preamble_writer.isDefaultExportName(member)) {
             if (cjs_mod.can_skip_cjs_default_interop) {
                 return std.fmt.allocPrint(allocator, "{s}()", .{req_var});
             }

@@ -655,8 +655,8 @@ pub fn targetIdentSafeToEmit(self: anytype, idx: NodeIndex) bool {
         return true;
     }
     // unbound global `undefined` → peephole 이 `void 0` 을 낸다.
-    if (self.options.minify_syntax and
-        std.mem.eql(u8, self.ast.identifierNameText(n), "undefined")) return false;
+    // 술어를 여기서 재구현하면 섀도잉 검사(`undefinedIsShadowed`)를 빠뜨린다 — 반드시 위임한다.
+    if (self.undefinedPeepholeApplies(n, sym_id)) return false;
     return true;
 }
 
