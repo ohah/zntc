@@ -670,11 +670,34 @@ pub fn emitChunks(
                     // undefined 를 박제하고(함수만 hoisting 으로 우연히 살아남는다), 순환에서도
                     // 미평가 값을 집는다. → `let` 으로 선언하고 **init forwarding 안에서 갱신**한다.
                     // 소비자 preamble 은 그 심볼을 쓰기 **전에** 반드시 `init_X()` 를 부른다.
+                    // ⚠️ 같은 export 명을 내는 ESM-wrap dep 이 둘 이상이면 `let tag;` 가 **중복
+                    // 선언**된다(SyntaxError, 파싱 불가). 심볼 분기가 쓰는 것과 **같은** `$N`
+                    // deconflict 를 적용해야 한다 — 로컬명은 아래 init 갱신과도 일치해야 하므로
+                    // 한 번 계산해 재사용한다.
+                    var pm_locals: std.ArrayListUnmanaged([]const u8) = .empty;
+                    defer {
+                        for (pm_locals.items) |x| allocator.free(x);
+                        pm_locals.deinit(allocator);
+                    }
                     if (pm_esm_wrap_dep_syms) |syms| {
+                        for (syms) |sym| {
+                            const bind = crossChunkBindingName(linker, sym);
+                            const has_g = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null else false;
+                            const total = name_total_count.get(sym.name) orelse 1;
+                            const seen_gop = try name_seen_count.getOrPut(allocator, sym.name);
+                            if (!seen_gop.found_existing) seen_gop.value_ptr.* = 0;
+                            seen_gop.value_ptr.* += 1;
+                            const seen = seen_gop.value_ptr.*;
+                            const local = if (total > 1 and seen > 1 and !has_g)
+                                try std.fmt.allocPrint(allocator, "{s}${d}", .{ bind, seen })
+                            else
+                                try allocator.dupe(u8, bind);
+                            try pm_locals.append(allocator, local);
+                        }
                         try chunk_output.appendSlice(allocator, "let ");
-                        for (syms, 0..) |sym, si| {
+                        for (pm_locals.items, 0..) |local, si| {
                             if (si > 0) try chunk_output.appendSlice(allocator, if (min) "," else ", ");
-                            try chunk_output.appendSlice(allocator, crossChunkBindingName(linker, sym));
+                            try chunk_output.appendSlice(allocator, local);
                         }
                         try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
                     }
@@ -694,18 +717,27 @@ pub fn emitChunks(
                         try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
                     }
                     if (pm_esm_wrap_dep_syms) |syms| {
-                        for (syms) |sym| {
-                            const bind = crossChunkBindingName(linker, sym);
+                        // ⚠️ **init 을 먼저 돌리고 그 다음에 갱신**해야 한다. dep 의 `const`/`let`/
+                        // `class` 값은 `init_X()`(=`__esm` 클로저) **안에서** 대입되므로, 갱신을
+                        // init **전에** 하면 여전히 undefined 를 집는다(함수 선언만 hoisting 으로
+                        // 우연히 살아남는다 — 바로 그 은폐 패턴). init 은 memoize 라 이후 재갱신이
+                        // 없으니 이 순서가 유일한 기회다.
+                        try chunk_output.appendSlice(allocator, if (min) "const r=m." else "\t\tconst r = m.");
+                        try chunk_output.appendSlice(allocator, names.a);
+                        try chunk_output.appendSlice(allocator, if (min) ".apply(this,arguments);" else ".apply(this, arguments);\n");
+                        for (syms, 0..) |sym, si| {
                             try chunk_output.appendSlice(allocator, if (min) "" else "\t\t");
-                            try chunk_output.appendSlice(allocator, bind);
+                            try chunk_output.appendSlice(allocator, pm_locals.items[si]);
                             try chunk_output.appendSlice(allocator, if (min) "=m." else " = m.");
                             try chunk_output.appendSlice(allocator, sym.name);
                             try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
                         }
+                        try chunk_output.appendSlice(allocator, if (min) "return r};" else "\t\treturn r;\n\t};\n");
+                    } else {
+                        try chunk_output.appendSlice(allocator, if (min) "return m." else "\t\treturn m.");
+                        try chunk_output.appendSlice(allocator, names.a);
+                        try chunk_output.appendSlice(allocator, if (min) ".apply(this,arguments)};" else ".apply(this, arguments);\n\t};\n");
                     }
-                    try chunk_output.appendSlice(allocator, if (min) "return m." else "\t\treturn m.");
-                    try chunk_output.appendSlice(allocator, names.a);
-                    try chunk_output.appendSlice(allocator, if (min) ".apply(this,arguments)};" else ".apply(this, arguments);\n\t};\n");
                 } else {
                     // esm: live binding 이라 named import 로 충분하다.
                     // 키는 canonical, 로컬은 mangle 된 이름 — alias 로 잇는다(#4528).
