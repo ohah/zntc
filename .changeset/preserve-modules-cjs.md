@@ -20,3 +20,5 @@ const m = await import("./legacy.cjs");  // keys: []  (빈 namespace)
 동적 import 는 소비자가 `.then((m) => __toESM(m.default))` 로 namespace 를 합성한다 — provider 의 `default` 는 **raw `module.exports`** 여야 하므로(방출 파일을 단독 import 했을 때의 node CJS↔ESM 계약) namespace 를 실을 수 없기 때문이다. splitting(#4522)이 provider 에 namespace 를 싣는 것과 대비된다.
 
 함께 수정: 청크 런타임 헬퍼 주입 게이트가 `needs_cjs_runtime or needs_esm_wrap_runtime` 이라 **`__toESM` 만 필요한 청크를 통째로 건너뛰었다**. preserve-modules 의 소비자는 CJS 도 ESM-wrap 도 없는 순수 ESM 파일이라 `ReferenceError: __toESM is not defined` 가 났다.
+
+추가: provider(export emit)에만 `format == .esm` 조건이 있어 **`--format=cjs` 에서 어긋났다** — 소비자는 `const { require_X } = require("./x.js")` 를 내는데 provider 는 아무것도 안 깔아 `require_X is not a function`. 두 곳이 `preserveModulesCjsThunkChunk` 단일 술어를 보게 하고, cjs 형식은 `exports.require_X = require_X` 로 깐다.
