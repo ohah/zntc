@@ -22,7 +22,11 @@ import { createFixture, runNode, runZntc } from './helpers';
 
 const LEGACY = 'module.exports = { foo() { return "FOO"; }, bar: 42 };';
 
-async function buildPm(files: Record<string, string>, entry: string) {
+async function buildPm(
+  files: Record<string, string>,
+  entry: string,
+  format: 'esm' | 'cjs' = 'esm',
+) {
   const { dir, cleanup } = await createFixture(files);
   const outDir = join(dir, 'dist');
   const res = await runZntc([
@@ -31,10 +35,12 @@ async function buildPm(files: Record<string, string>, entry: string) {
     '--preserve-modules',
     '--outdir',
     outDir,
-    '--format=esm',
+    `--format=${format}`,
   ]);
   expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
-  writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
+  if (format === 'esm') {
+    writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
+  }
   return { dir, outDir, cleanup };
 }
 
@@ -110,6 +116,27 @@ describe('#4524: --preserve-modules × CJS', () => {
       // 중복 export 면 `SyntaxError: Duplicate export`
       expect(stderr).toBe('');
       expect(stdout.trim()).toBe('1 ESM');
+    } finally {
+      await cleanup();
+    }
+  });
+  test('--format=cjs 도 동작한다 (provider/consumer 술어가 어긋나지 않는다)', async () => {
+    // provider 에만 `format == .esm` 조건이 있으면, 소비자는 `const { require_X } =
+    // require("./x.js")` 를 내는데 provider 는 아무것도 안 깔아 `require_X is not a function`.
+    const { outDir, cleanup } = await buildPm(
+      {
+        'legacy.cjs': LEGACY,
+        'entry.js':
+          'import d, { foo } from "./legacy.cjs";\n' +
+          'console.log("default.bar:" + d.bar + "|foo:" + foo());',
+      },
+      'entry.js',
+      'cjs',
+    );
+    try {
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      expect(stderr).not.toContain('TypeError');
+      expect(stdout.trim()).toBe('default.bar:42|foo:FOO');
     } finally {
       await cleanup();
     }

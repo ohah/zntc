@@ -658,22 +658,14 @@ pub fn emitChunks(
                 try chunk_output.appendSlice(allocator, sym_open);
                 try chunk_output.appendSlice(allocator, bind_arg);
                 try chunk_output.appendSlice(allocator, sym_close);
-            } else if (pm_cjs_thunk: {
+            } else if (preserveModulesCjsThunkChunk(dep_chunk, graph, options)) |dm_idx| {
                 // (#4524) preserve-modules: dep 이 CJS 면 그 파일의 `require_X` 썽크를
                 // **named import** 해야 한다. CJS 는 정적 export 가 없어 파일 경계를 넘을
                 // 수단이 이 썽크뿐인데, 예전엔 side-effect import 만 내고 소비자가 썽크를
                 // **렉시컬 참조**해서 `ReferenceError: require_X is not defined` 였다.
                 // interop 은 소비자가 자기 preamble(`var d = require_X()`)로 이미 하고 있으므로
                 // 이름만 건너오면 그대로 동작한다 — rolldown 과 같은 형태다.
-                if (!options.preserve_modules) break :pm_cjs_thunk false;
-                const dm_idx = switch (dep_chunk.kind) {
-                    .entry_point => |i| i.module,
-                    .common, .manual => break :pm_cjs_thunk false,
-                };
-                const dm = graph.getModule(dm_idx) orelse break :pm_cjs_thunk false;
-                break :pm_cjs_thunk dm.wrap_kind == .cjs;
-            }) {
-                const dm_idx = dep_chunk.kind.entry_point.module;
+                // 술어는 provider(export emit) 와 **같은 소스**를 본다.
                 const dm = graph.getModule(dm_idx).?;
                 const thunk = try dm.allocRequireName(allocator, if (linker) |l| &l.rename_table else null);
                 defer allocator.free(thunk);
@@ -1030,21 +1022,30 @@ pub fn emitChunks(
         //
         // `export default require_X();` 는 방출된 파일을 **단독으로** import 했을 때의 Node
         // CJS↔ESM 계약(default = module.exports)을 맞춘다(rolldown 동일).
-        if (options.preserve_modules and options.format == .esm) pm_cjs_export: {
-            const info = switch (chunk.kind) {
-                .entry_point => |i| i,
-                .common, .manual => break :pm_cjs_export,
-            };
-            const em = graph.getModule(info.module) orelse break :pm_cjs_export;
-            if (em.wrap_kind != .cjs) break :pm_cjs_export;
+        // 소비자(cross_chunk_imports 분기)의 조건과 **정확히 같아야** 한다 — provider 만
+        // format 을 보고 있으면 `--format=cjs` 에서 소비자가 `const { require_X } =
+        // require("./x.js")` 를 내는데 provider 는 아무것도 안 깔아 undefined 다.
+        if (preserveModulesCjsThunkChunk(chunk, graph, options)) |em_idx| pm_cjs_export: {
+            const em = graph.getModule(em_idx) orelse break :pm_cjs_export;
             const thunk = try em.allocRequireName(allocator, if (linker) |l| &l.rename_table else null);
             defer allocator.free(thunk);
             const min = options.minify_whitespace;
-            try chunk_output.appendSlice(allocator, if (min) "export default " else "export default ");
-            try chunk_output.appendSlice(allocator, thunk);
-            try chunk_output.appendSlice(allocator, if (min) "();export{" else "();\nexport { ");
-            try chunk_output.appendSlice(allocator, thunk);
-            try chunk_output.appendSlice(allocator, if (min) "};" else " };\n");
+            if (options.format == .cjs) {
+                // 청크가 `require()` 로 소비되므로 exports 객체에 깐다.
+                try chunk_output.appendSlice(allocator, if (min) "exports.default=" else "exports.default = ");
+                try chunk_output.appendSlice(allocator, thunk);
+                try chunk_output.appendSlice(allocator, if (min) "();exports." else "();\nexports.");
+                try chunk_output.appendSlice(allocator, thunk);
+                try chunk_output.appendSlice(allocator, if (min) "=" else " = ");
+                try chunk_output.appendSlice(allocator, thunk);
+                try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
+            } else {
+                try chunk_output.appendSlice(allocator, "export default ");
+                try chunk_output.appendSlice(allocator, thunk);
+                try chunk_output.appendSlice(allocator, if (min) "();export{" else "();\nexport { ");
+                try chunk_output.appendSlice(allocator, thunk);
+                try chunk_output.appendSlice(allocator, if (min) "};" else " };\n");
+            }
         }
 
         if (!options.preserve_modules) cjs_dyn_entry: {
@@ -2205,6 +2206,30 @@ pub fn dynamicCjsNamespaceEntry(
     // zntc 가 아니라 **container factory / 사용자 코드**다. `default` 슬롯 의미를 바꾸면
     // (module.exports 값 → namespace) 그쪽이 조용히 깨진다 → 진짜 `import()` 대상만.
     if (!info.is_import_call) return null;
+    const em = graph.getModule(info.module) orelse return null;
+    if (em.wrap_kind != .cjs) return null;
+    return info.module;
+}
+
+/// (#4524) preserve-modules 에서 이 청크가 **CJS 모듈 파일**이라 `require_X` 썽크를
+/// export 해야 하는가. 그렇다면 그 모듈 인덱스를 돌려준다.
+///
+/// provider(export emit) 와 consumer(named import emit) 가 **반드시 같은 술어**를 봐야 한다.
+/// 어긋나면 소비자가 존재하지 않는 이름을 import 한다 — 실제로 provider 에만 `format == .esm`
+/// 조건이 있어 `--format=cjs` 에서 `require_X is not a function` 이 났다.
+pub fn preserveModulesCjsThunkChunk(
+    chunk: *const Chunk,
+    graph: *const ModuleGraph,
+    options: *const EmitOptions,
+) ?ModuleIndex {
+    if (!options.preserve_modules) return null;
+    // 썽크를 실어 나를 수 있는 형식만. iife/umd/amd + preserve-modules 는 청크 경계 결합
+    // 수단이 없어 대상이 아니다.
+    if (options.format != .esm and options.format != .cjs) return null;
+    const info = switch (chunk.kind) {
+        .entry_point => |i| i,
+        .common, .manual => return null,
+    };
     const em = graph.getModule(info.module) orelse return null;
     if (em.wrap_kind != .cjs) return null;
     return info.module;
