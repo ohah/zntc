@@ -279,14 +279,55 @@ describe('#4514: dead-store 가 평가 부수효과를 지우지 않는다', () 
     }
   });
 
-  test('anti-regression: 지역 식별자·순수 연산 dead store 도 여전히 제거된다', async () => {
+  test('anti-regression: TDZ 없는 바인딩(var / 파라미터) 읽기 dead store 는 여전히 제거된다', async () => {
+    // DSE 수익의 대부분이 여기서 나온다 — 이게 죽으면 보수화가 과했다는 뜻이다.
     const r = await bundleAndRun(
       {
         'index.ts': `
+          function f(param: string) {
+            var src = "VAR_SRC";
+            let x = src;            // var 읽기 — TDZ 없음
+            x = param;              // 파라미터 읽기 — TDZ 없음
+            x = "DEAD_LITERAL";
+            x = "LIVE";
+            return x + src.length + param;
+          }
+          console.log(f("P"));
+        `,
+      },
+      'index.ts',
+      ['--minify'],
+    );
+    try {
+      expect(r.exitCode).toBe(0);
+      expect(r.runOutput).toBe('LIVE7P');
+      // 앞의 세 store 는 전부 제거된다 → `let x; x="LIVE"`.
+      expect(r.bundleOutput).not.toContain('DEAD_LITERAL');
+      expect(r.bundleOutput).toContain('let x;');
+    } finally {
+      await r.cleanup();
+    }
+  });
+
+  test('block-scoped(let/const) 읽기 dead store 는 TDZ 때문에 의도적으로 유지한다', async () => {
+    // `let`/`const`/`class` 읽기는 **선언이 실행되기 전**이면 ReferenceError(TDZ) 다.
+    // 그런데 텍스트 순서로는 못 가른다 — 읽기가 hoisting 된 함수 안에 있고 그 함수가
+    // 선언 실행 전에 불릴 수 있기 때문이다:
+    //
+    //   function o(){ h(); let x = 1; function h(){ let a = x; a = 2; } }   // TDZ
+    //
+    // 참조 노드가 어느 실행 단위인지 이 술어는 모르므로 block-scoped 읽기는 통째로
+    // 유지한다. esbuild 도 이 store 를 DSE 로 지우지 않는다(상수 인라인으로 지울 뿐).
+    // 유지가 곧 정답이므로 여기서 잠근다 — 나중에 "왜 안 지우지?" 로 되돌리지 말 것.
+    const r = await bundleAndRun(
+      {
+        'index.ts':
+          `
           function f() {
-            const local = "DEAD_IDENT_SOURCE";
-            let x = local;              // 지역 바인딩 읽기 — ReferenceError 불가
-            x = local + "DEAD_CONCAT";  // 순수 이항 연산
+            const local = "SRC";
+            let x = local;              // block-scoped 읽기 → 유지
+            x = local + "CONCAT";       // ` +
+          ` 는 ToPrimitive → valueOf 호출 가능 → 유지
             x = "LIVE";
             return x + local.length;
           }
@@ -298,9 +339,8 @@ describe('#4514: dead-store 가 평가 부수효과를 지우지 않는다', () 
     );
     try {
       expect(r.exitCode).toBe(0);
-      expect(r.runOutput).toBe('LIVE17');
-      // 앞의 두 store 는 부수효과가 없으므로 계속 제거돼야 한다.
-      expect(r.bundleOutput).not.toContain('DEAD_CONCAT');
+      expect(r.runOutput).toBe('LIVE3');
+      expect(r.bundleOutput).toContain('CONCAT');
     } finally {
       await r.cleanup();
     }
