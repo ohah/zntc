@@ -313,12 +313,16 @@ pub fn emitChunkRuntimeHelpers(
         if (m.loader == .binary) needs_to_binary = true;
         if (needs_cjs_runtime and needs_esm_wrap_runtime and needs_to_esm_runtime and needs_to_binary) break;
     }
-    // (#4510) dynamic entry 청크의 CJS entry 는 `export default __toESM(require_x()).default` 를
+    // (#4510/#4522) dynamic entry 청크의 CJS entry 는 `export default __toESM(require_x())` 를
     // 깐다(chunks.zig cjs_dyn_entry) — 그 모듈을 import 하는 바인딩이 이 청크에 없어도 필요.
-    // can_skip shape 는 `require_x()` direct 라 제외(cjsInteropAccessExpr 와 동일 조건).
+    //
+    // ⚠️ can_skip shape 예외를 두면 안 된다. #4510 때는 `default` **값 하나**만 실어 보내서
+    // can_skip 이면 `require_x()` direct(헬퍼 불요)였지만, #4522 부터는 **namespace 통째**를
+    // 보내므로 shape 와 무관하게 항상 `__toESM` 이 필요하다. 예외를 남기면 청크가
+    // `ReferenceError: __toESM is not defined` 로 죽는다.
     if (chunk.kind == .entry_point and chunk.kind.entry_point.is_dynamic) {
         if (graph.getModule(chunk.kind.entry_point.module)) |em| {
-            if (em.wrap_kind == .cjs and !em.can_skip_cjs_default_interop) needs_to_esm_runtime = true;
+            if (em.wrap_kind == .cjs) needs_to_esm_runtime = true;
         }
     }
     if (needs_cjs_runtime or needs_esm_wrap_runtime) {

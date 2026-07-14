@@ -967,13 +967,20 @@ pub fn emitChunks(
         // (#4510) **CJS 모듈을 동적 import** 한 청크(`import('./x.cjs')` → dynamic entry 청크).
         // CJS 는 정적 export 가 없어 buildFinalExports 가 null 을 주고, codegen 도 `__commonJS`
         // wrapper 선언만 낸다 → 청크가 (a) 모듈 본문을 **실행조차 안 하고** (b) 아무것도 export
-        // 하지 않아, `await import('./x.cjs')` 가 빈 namespace 를 준다(`m.default` = undefined).
-        // Node 가 CJS 를 ESM 으로 로드할 때와 같은 계약 = "default = module.exports" 를 맞춘다:
-        //   ESM        : `export default require_x();`  (interop 식은 static import 와 동일 소스)
-        //   cjs/iife 등 : `exports.default = require_x();` (청크가 require 로 소비되므로 exports 객체)
+        // 하지 않아, `await import('./x.cjs')` 가 빈 namespace 를 준다.
         // require_X() 호출 자체가 모듈 본문 실행이라 (a)도 함께 해결된다(__commonJS memoize →
         // 다른 청크가 이미 실행했으면 캐시된 exports 재사용, 인스턴스 1개 유지).
         // user entry 청크는 대상 아님 — 그쪽은 bootstrap/`emitCjsEntryExports` 계약이 따로 있다.
+        //
+        // (#4522) 실어 보내는 값은 **namespace 통째**(`__toESM(require_x())`)여야 한다.
+        // 예전엔 `default` 슬롯 하나(`__toESM(require_x()).default`)만 내보냈는데, CJS 의
+        // named 멤버는 ESM `export` 문법으로 **정적으로 표현할 수 없어**(CJS 는 정적 export 가
+        // 없다) 그대로 유실됐다 → `(await import('./x.cjs')).foo` 가 undefined.
+        // 같은-청크 경로는 `import()` **호출 자체**를 `__toESM(require_x())` 표현식으로 치환해
+        // namespace 가 통째로 살아남는다 — 그래서 같은 소스가 청킹에 따라 갈렸다.
+        // 이제 두 경로가 **같은 값**을 만든다. 소비자는 `.default` 로 벗긴다
+        // (`rewriteDynamicImports` 의 cross-chunk 분기 — 그쪽 주석 참조).
+        // node/rolldown/rspack 모두 named 멤버를 노출한다(esbuild 만 예외).
         if (!options.preserve_modules) cjs_dyn_entry: {
             const info = switch (chunk.kind) {
                 .entry_point => |i| i,
@@ -983,7 +990,7 @@ pub fn emitChunks(
             const em = graph.getModule(info.module) orelse break :cjs_dyn_entry;
             if (em.wrap_kind != .cjs) break :cjs_dyn_entry;
             const l = linker orelse break :cjs_dyn_entry;
-            const expr = try l.cjsInteropAccessExpr(allocator, em, "default", options.minify_whitespace);
+            const expr = try l.cjsInteropAccessExpr(allocator, em, linker_mod.CJS_NS_EXPORT_NAME, options.minify_whitespace);
             defer allocator.free(expr);
             const min = options.minify_whitespace;
             if (options.format == .esm) {
@@ -1890,6 +1897,23 @@ fn rewriteDynamicImports(
         };
         defer allocator.free(replacement);
 
+        // (#4522) 대상이 **CJS 인 dynamic entry 청크**면 그 청크는 namespace 를 `default`
+        // 슬롯에 통째로 실어 보낸다(위 `cjs_dyn_entry` 참조 — CJS 의 named 멤버는 ESM
+        // export 문법으로 정적 표현이 불가능해서 그 방법밖에 없다). 소비자는 한 겹 벗겨야
+        // 진짜 namespace 를 얻는다. 조건은 provider 쪽 emit 조건과 **정확히 같아야** 한다.
+        const cjs_dyn_unwrap = !emit_options.preserve_modules and blk: {
+            const tc = chunk_graph.getChunk(target_chunk_idx);
+            const info = switch (tc.kind) {
+                .entry_point => |i| i,
+                .common, .manual => break :blk false,
+            };
+            if (!info.is_dynamic) break :blk false;
+            if (info.module != rec.resolved) break :blk false;
+            const em = graph.getModule(info.module) orelse break :blk false;
+            break :blk em.wrap_kind == .cjs;
+        };
+        const unwrap: []const u8 = if (cjs_dyn_unwrap) ".default" else "";
+
         // cjs+splitting(P3-B): 네이티브 import() 가 없으므로 호출 전체를
         //   Promise.resolve().then(()=>require("./chunk.js"))
         // 로 재작성(RFC §4.3, 디리스크 스파이크 검증). 대상 청크는 dynamic
@@ -1906,7 +1930,7 @@ fn rewriteDynamicImports(
             const target_id = reg_ids[@intFromEnum(target_chunk_idx)]; // borrow
             const chunkfile = try std.fmt.allocPrint(allocator, "{s}{s}", .{ stem, out_ext });
             defer allocator.free(chunkfile);
-            const wrapper = try std.fmt.allocPrint(allocator, "__zntc_load_chunk(\"{s}\").then(function(){{return __zntc_require(\"{s}\")}})", .{ chunkfile, target_id });
+            const wrapper = try std.fmt.allocPrint(allocator, "__zntc_load_chunk(\"{s}\").then(function(){{return __zntc_require(\"{s}\"){s}}})", .{ chunkfile, target_id, unwrap });
             defer allocator.free(wrapper);
             if (try rewriteImportCallToWrapper(allocator, result, rec.specifier, wrapper)) |new_result| {
                 allocator.free(result);
@@ -1917,7 +1941,19 @@ fn rewriteDynamicImports(
 
         const cjs_split = emit_options.format == .cjs and !emit_options.preserve_modules;
         if (cjs_split) {
-            const wrapper = try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>require(\"{s}\"))", .{replacement});
+            const wrapper = try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>require(\"{s}\"){s})", .{ replacement, unwrap });
+            defer allocator.free(wrapper);
+            if (try rewriteImportCallToWrapper(allocator, result, rec.specifier, wrapper)) |new_result| {
+                allocator.free(result);
+                result = new_result;
+            }
+            continue;
+        }
+
+        // ESM: 네이티브 import() 유지 — specifier 만 청크 파일명으로 교체.
+        // 단 CJS dynamic entry 청크면 namespace 를 한 겹 벗겨야 한다(#4522).
+        if (cjs_dyn_unwrap) {
+            const wrapper = try std.fmt.allocPrint(allocator, "import(\"{s}\").then((m)=>m.default)", .{replacement});
             defer allocator.free(wrapper);
             if (try rewriteImportCallToWrapper(allocator, result, rec.specifier, wrapper)) |new_result| {
                 allocator.free(result);
