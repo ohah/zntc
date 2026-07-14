@@ -29,8 +29,13 @@ test "Module: state transitions" {
 }
 
 test "bundleOrderLessThan: exec_index 동률 시 path 사전순" {
-    // dynamic-only 미방문 모듈은 모두 exec_index = maxInt(u32) — 동률 처리에서
-    // stable sort 가 input 순(= module_index) 보존하던 비결정성 차단 검증.
+    // exec_index 동률(초기값 maxInt(u32))에서 stable sort 가 input 순(= module_index)을
+    // 보존하던 비결정성을 path 사전순 tie-break 로 차단하는지 검증.
+    //
+    // ⚠️ 예전 주석은 "dynamic-only 미방문 모듈은 모두 maxInt 라 항상 동률" 이라고 썼는데,
+    // #4520 부터는 `import()` 전용 모듈도 DFS 루트가 되어 **진짜 exec_index 를 받는다**
+    // (그전엔 방출 순서가 의존성 역순이라 TDZ 였다). 그래서 동률은 이제 "DFS 가 아직
+    // 방문하지 않은 모듈"(external/미해결 등)에서만 생긴다 — tie-break 자체는 그대로 필요하다.
     var a = Module.init(@enumFromInt(0), "z/last.ts");
     var b = Module.init(@enumFromInt(1), "a/first.ts");
     // exec_index 동률 (default maxInt)
