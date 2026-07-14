@@ -202,4 +202,187 @@ console.log(results.join(" | "));
     // 객체 리터럴 shorthand 의 **key** 는 프로퍼티 이름이라 rename 되면 안 된다.
     expect(code).toContain('literalValue:');
   }, 120000);
+
+  // ================================================================
+  // #4515 — #4493 잔여 4건. 전부 main 에 있던 별개 루트커즈.
+  // ================================================================
+
+  test('#4515-1 assignment target 의 computed key 가 DCE 로 사라지지 않는다', async () => {
+    // 루트커즈: semantic analyzer 가 패턴 프로퍼티의 computed key(`[k]`)를 **아예 방문하지
+    // 않았다**. `k` 에 읽기 참조가 안 잡히니 DCE/const-inline 이 `const k` 를 지우는데,
+    // codegen 은 key 를 원본 이름으로 내보낸다 → `ReferenceError: k is not defined`.
+    // (object_property(일반 리터럴)는 computed key 를 방문하고 있었고 패턴만 빠져 있었다.)
+    const entry = `
+const k = "kk";
+const d = 42;
+const o = { kk: undefined };
+let t;
+({ [k]: t = d } = o);
+console.log(t);
+`;
+    const { out, err } = await buildAndRun(entry);
+    // 수정 전: `ReferenceError: k is not defined`
+    expect(err, `실행 실패:\n${err}`).toBe('');
+    expect(out).toBe('42');
+  }, 120000);
+
+  test('#4515-1 computed key — var/let/const/param/할당 전 형태', async () => {
+    // 선언형(`let {[k]: t} = o`)도 같은 구멍이었다. let/const 는 predeclare 경로라
+    // registerBinding 을 안 타고 visitBindingPatternExpressions 로 빠지는데 거기에도
+    // computed key 방문이 없었다 — 세 walker 전부 막아야 한다.
+    const entry = `
+const k1 = "a", k2 = "b", k3 = "c", k4 = "d";
+const o = { a: 1, b: 2, c: 3, d: 4 };
+var { [k1]: v1 } = o;
+let { [k2]: v2 } = o;
+const { [k3]: v3 } = o;
+let v4; ({ [k1]: v4 } = o);
+function f({ [k4]: p }) { return p; }
+console.log([v1, v2, v3, v4, f(o)].join(","));
+`;
+    const { out, err } = await buildAndRun(entry);
+    expect(err, `실행 실패:\n${err}`).toBe('');
+    expect(out).toBe('1,2,3,1,4');
+  }, 120000);
+
+  test('#4515-2 `{ undefined }` 객체 리터럴 shorthand 가 SyntaxError 가 되지 않는다', async () => {
+    // shorthand 는 노드 하나가 키이자 값이라, 값 쪽 peephole(`undefined` → `void 0`)이 발동하면
+    // 키 자리에 `void 0` 이 앉는다 → `{void 0}` → 번들 전체가 SyntaxError.
+    // 처방: 치환이 걸리면 longhand(`undefined: void 0`)로 펼쳐 키를 원본 이름으로 고정.
+    const entry = `
+const o = { undefined };
+console.log(Object.keys(o).join(",") + "|" + String(o.undefined));
+`;
+    const { out, err, code } = await buildAndRun(entry);
+    // 수정 전: `SyntaxError: Unexpected token 'void'` (파싱조차 안 됨)
+    expect(err, `실행 실패:\n${err}`).toBe('');
+    expect(code).not.toContain('{void 0}');
+    // 프로퍼티 이름은 반드시 `undefined` 로 보존돼야 한다.
+    expect(out).toBe('undefined|undefined');
+  }, 120000);
+
+  test('#4515-3 CJS 래퍼의 exports/module 파라미터 재작성이 shorthand 를 커버한다', async () => {
+    // __commonJS 래퍼는 `exports`/`module` 파라미터를 짧은 이름(`$e`/`$m`)으로 바꾸고 본문의
+    // free 참조도 함께 재작성한다. 그런데 shorthand 자리는 원본 span 을 그대로 복사해서
+    // 재작성이 통째로 누락됐다 — `({exports} = o)` 가 그대로 나가 **미선언 전역**에 대입되고
+    // 진짜 `$e` 파라미터는 영영 대입되지 않는다 (무성 오염).
+    //
+    // #4493 이 넣었던 `identifierHasRename` 게이트는 rename 만 봐서 이 경로를 못 잡았다.
+    const { dir, cleanup } = await createFixture({
+      // .cjs → __commonJS 래퍼로 감싸진다. --minify 라야 파라미터가 실제로 mangle 된다.
+      'dep.cjs': `
+const src = { exports: 5 };
+let viaDefault, viaShorthand, viaLiteral;
+({ exports: viaDefault = 1 } = src);   // shorthand + 기본값
+({ exports: viaShorthand } = src);     // longhand (대조군)
+const held = { exports };              // 객체 리터럴 shorthand — 키는 "exports" 여야 한다
+viaLiteral = Object.keys(held).join("");
+// 진짜 exports 객체가 살아 있어야 한다 (위 대입들이 그걸 덮어쓰면 안 된다).
+module.exports = {
+  viaDefault,
+  viaShorthand,
+  viaLiteral,
+  exportsIsObject: typeof held.exports === "object",
+};
+`,
+      'entry.js': `
+import d from "./dep.cjs";
+console.log([d.viaDefault, d.viaShorthand, d.viaLiteral, d.exportsIsObject].join(","));
+`,
+    });
+    try {
+      const outFile = join(dir, 'bundle.mjs');
+      const build = await runZntc([
+        '--bundle',
+        join(dir, 'entry.js'),
+        '-o',
+        outFile,
+        '--minify',
+        '--format=esm',
+      ]);
+      expect(build.exitCode, `빌드 실패:\n${build.stderr}`).toBe(0);
+      const { out, err } = runNode(outFile);
+      expect(err, `실행 실패:\n${err}`).toBe('');
+      // 수정 전: `5,5,$e,true` — 객체 리터럴 키가 `$e` 로 오염됐다.
+      expect(out).toBe('5,5,exports,true');
+    } finally {
+      await cleanup();
+    }
+  }, 120000);
+
+  test('#4515-3 CJS shorthand 대입이 진짜 exports 파라미터에 꽂힌다', async () => {
+    // 위 테스트의 반대편: 대입 대상이 재작성되지 않으면 `$e` 는 그대로고 미선언 전역만
+    // 생긴다. 여기서는 exports 를 **직접** 덮어써 그 효과를 관측한다.
+    const { dir, cleanup } = await createFixture({
+      'dep.cjs': `
+const src = { exports: { tag: "REWRITTEN" } };
+({ exports } = src);
+// 대입이 진짜 exports 파라미터에 꽂혔다면 이 모듈의 exports 는 위 객체가 된다.
+`,
+      'entry.js': `
+import d from "./dep.cjs";
+console.log(d && d.tag ? d.tag : "NOT_REWRITTEN");
+`,
+    });
+    try {
+      const outFile = join(dir, 'bundle.mjs');
+      const build = await runZntc([
+        '--bundle',
+        join(dir, 'entry.js'),
+        '-o',
+        outFile,
+        '--minify',
+        '--format=esm',
+      ]);
+      expect(build.exitCode, `빌드 실패:\n${build.stderr}`).toBe(0);
+      const { out, err } = runNode(outFile);
+      expect(err, `실행 실패:\n${err}`).toBe('');
+      // 수정 전: `NOT_REWRITTEN` (대입이 미선언 전역으로 샜다)
+      expect(out).toBe('REWRITTEN');
+    } finally {
+      await cleanup();
+    }
+  }, 120000);
+
+  test('#4515-4 `({[k] = 1} = o)` / `({"s" = 1} = o)` 는 SyntaxError', async () => {
+    // CoverInitializedName 의 key 는 문법상 IdentifierReference 뿐이다. computed/string/numeric
+    // 키는 대입할 바인딩 이름이 없어 어느 문맥에서도 valid 가 아니다 (V8 도 SyntaxError).
+    // 수정 전: 파서가 조용히 수용하고 `({ [k]:[k] =1 } = o)` 같은 invalid JS 를 방출했다.
+    for (const src of [
+      'const k = "a"; const o = {}; ({ [k] = 1 } = o);',
+      'const o = {}; ({ "s" = 1 } = o);',
+      'const o = {}; ({ 1 = 1 } = o);',
+    ]) {
+      const { dir, cleanup } = await createFixture({ 'entry.js': src });
+      try {
+        const build = await runZntc([
+          '--bundle',
+          join(dir, 'entry.js'),
+          '-o',
+          join(dir, 'bundle.mjs'),
+          '--format=esm',
+        ]);
+        expect(build.exitCode, `수용하면 안 된다: ${src}`).not.toBe(0);
+      } finally {
+        await cleanup();
+      }
+    }
+  }, 120000);
+
+  test('#4515 정상 shorthand 는 그대로 유지된다 (불필요한 longhand 확장 없음)', async () => {
+    // 치환이 없으면 shorthand 를 유지해야 한다 — 무조건 펼치면 size 회귀다.
+    const entry = `
+export function f(o) {
+  const { alpha, beta } = o;
+  return alpha + beta;
+}
+console.log(f({ alpha: 1, beta: 2 }));
+`;
+    const { out, err, code } = await buildAndRun(entry);
+    expect(err, `실행 실패:\n${err}`).toBe('');
+    expect(out).toBe('3');
+    // mangle 되면 `{alpha:a,beta:b}` 로 펼쳐지는 게 정상. 확장 자체는 rename 때문이지
+    // 이번 수정 때문이 아니다 — `{undefined:` 같은 헛확장이 없는지만 본다.
+    expect(code).not.toContain('undefined:');
+  }, 120000);
 });

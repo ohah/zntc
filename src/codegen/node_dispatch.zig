@@ -195,14 +195,11 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
             // `**` 좌변)에선 괄호 필수 — `void 0.x` 는 `void (0.x)` 로 오파싱된다.
             // 중앙 wrap(exprNeedsParens)은 이 case 의 early-return 들 때문에 쓸 수 없어
             // (닫는 `)` 유실) 여기서 level 을 보고 직접 감싼다.
-            // global binding 일 때만 치환 (shadow rebind 드물지만 보호).
-            if (self.options.minify_syntax and node.tag == .identifier_reference and sym_id == null) {
-                const text = self.ast.identifierNameText(node);
-                if (std.mem.eql(u8, text, "undefined")) {
-                    try self.addSourceMapping(node.span);
-                    try emitPrefixStartText(self, "void 0", level);
-                    return;
-                }
+            // unbound global 참조일 때만 치환 — 섀도잉된 지역 `undefined` 는 값이 달라진다.
+            if (self.undefinedPeepholeApplies(node, sym_id)) {
+                try self.addSourceMapping(node.span);
+                try emitPrefixStartText(self, "void 0", level);
+                return;
             }
 
             if (self.options.linking_metadata) |meta| {

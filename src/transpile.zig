@@ -3010,6 +3010,100 @@ test "#4493 rename 이 없으면 shorthand+기본값 출력은 그대로 (회귀
     try std.testing.expect(std.mem.indexOf(u8, r.code, "stackWeight:stackWeight=1") != null);
 }
 
+// ================================================================
+// #4515 — #4493 잔여 4건 (전부 별개 루트커즈)
+// ================================================================
+
+test "#4515 `{ undefined }` 객체 리터럴 shorthand 가 `{void 0}` 로 새지 않는다" {
+    // shorthand 는 노드 **하나**가 프로퍼티 이름(키)이자 값이다. 값 쪽 peephole
+    // (`undefined` → `void 0`)이 발동하면 키 자리에 `void 0` 이 앉아 `{void 0}` →
+    // 번들 전체가 SyntaxError. 치환이 걸리면 longhand 로 펼쳐 키를 원본으로 고정해야 한다.
+    const src =
+        \\export const o = { undefined };
+    ;
+    var r = try transpile(std.testing.allocator, src, "/src/a.js", .{
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer r.deinit(std.testing.allocator);
+    // 버그 시: `{void 0}` (SyntaxError)
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "{void 0}") == null);
+    // 키는 원본 이름으로 보존 + 값만 치환 → `{undefined:void 0}`
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "undefined:void 0") != null);
+}
+
+test "#4515 정상 객체 리터럴 shorthand 는 확장되지 않는다 (회귀 0)" {
+    // 치환이 없으면 shorthand 유지 — 무조건 펼치면 size 회귀다.
+    const src =
+        \\export function f(alpha, beta) { return { alpha, beta }; }
+    ;
+    var r = try transpile(std.testing.allocator, src, "/src/a.js", .{
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "{alpha,beta}") != null);
+}
+
+test "#4515 `({undefined = 1} = o)` 대입 대상에는 peephole 이 발동하지 않는다" {
+    // 대입 대상 자리인데 태그는 `identifier_reference` 라, 값 전용 치환을 그대로 태우면
+    // `{undefined:void 0=1}` — 대입 대상이 될 수 없어 SyntaxError.
+    // (`({undefined = 1} = o)` 는 문법상 합법 — 런타임 TypeError 일 뿐이다.)
+    const src =
+        \\export function f(o) { ({ undefined = 1 } = o); }
+    ;
+    var r = try transpile(std.testing.allocator, src, "/src/a.js", .{
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "void 0=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "undefined:undefined=1") != null);
+}
+
+test "#4515 패턴의 computed key 가 semantic 참조로 잡힌다 (DCE 방지)" {
+    // analyzer 가 패턴 프로퍼티의 computed key(`[k]`)를 방문하지 않아 `k` 에 읽기 참조가
+    // 안 잡혔다 → DCE/const-inline 이 선언을 지우는데 codegen 은 key 를 원본 이름으로
+    // 내보낸다 → ReferenceError. 여기서는 `k` 가 **사용된 것으로** 집계돼 rename 이
+    // 키 안쪽까지 따라오는지로 관측한다.
+    const src =
+        \\export function f(o) {
+        \\  const someKeyName = "kk";
+        \\  let target;
+        \\  ({ [someKeyName]: target = 1 } = o);
+        \\  return target;
+        \\}
+    ;
+    var r = try transpile(std.testing.allocator, src, "/src/a.js", .{
+        .minify_identifiers = true,
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer r.deinit(std.testing.allocator);
+    // computed key 안의 식별자가 rename 을 따라가야 한다 — 원본 이름이 남아 있으면
+    // 참조가 안 잡혀 선언만 지워지는(또는 리네임 불일치) 상태다.
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "[someKeyName]") == null);
+}
+
+test "#4515 선언형 패턴의 computed key 도 동일 (let/const predeclare 경로)" {
+    // let/const 는 predeclare 경로라 registerBinding 을 안 타고
+    // visitBindingPatternExpressions 로 빠진다 — 거기에도 computed key 방문이 필요하다.
+    const src =
+        \\export function f(o) {
+        \\  const someKeyName = "kk";
+        \\  const { [someKeyName]: target } = o;
+        \\  return target;
+        \\}
+    ;
+    var r = try transpile(std.testing.allocator, src, "/src/a.js", .{
+        .minify_identifiers = true,
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "[someKeyName]") == null);
+}
+
 test "#4392 refresh hook-sig: long signature (>1024B) not truncated/aborted" {
     // hook 이 많은 컴포넌트는 signature 문자열이 1024바이트를 넘는다. 과거
     // buildRefreshSigCall 의 고정 [1024]u8 버퍼는 초과 시 가짜 OOM 으로 transpile

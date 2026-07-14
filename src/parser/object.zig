@@ -126,6 +126,22 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
     } else if (try self.eat(.eq)) {
         // shorthand with default: { x = 1 }  (destructuring default)
         // CoverInitializedName — destructuring 변환에서 소비되지 않으면 에러
+        //
+        // 문법상 CoverInitializedName 의 key 는 **IdentifierReference 뿐**이다. computed
+        // (`{[k] = 1}`) / string (`{"s" = 1}`) / numeric 키는 destructuring 으로 소비돼도
+        // 대입할 바인딩 이름이 없어 어느 문맥에서도 valid 가 아니다 → 즉시 SyntaxError.
+        // 아래 bare shorthand(`{ x }`) 분기가 같은 키 종류를 이미 거부하는 것과 대칭 (#4515).
+        // 이 검사가 없으면 파서가 조용히 수용하고 codegen 이 `{[k]:[k] =1}` 같은
+        // invalid JS 를 방출한다.
+        if (!key.isNone()) {
+            const key_node = self.ast.getNode(key);
+            switch (key_node.tag) {
+                .numeric_literal, .bigint_literal, .string_literal, .computed_property_key => {
+                    try self.addErrorCode(key_node.span, "Invalid shorthand property initializer", .property_colon_expected);
+                },
+                else => {},
+            }
+        }
         value = try self.parseAssignmentExpression();
         prop_flags = Parser.shorthand_with_default;
         self.has_cover_init_name = true;

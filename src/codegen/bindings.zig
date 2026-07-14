@@ -33,12 +33,15 @@ pub fn emitBindingProperty(self: anytype, node: Node) !void {
     } else {
         try self.writeSpan(key_node.span);
     }
-    // shorthand (right=none): \`{key}\` — 기본은 콜론 생략. 단 implicit RHS 식별자가
-    // mangle 됐으면 \`key:mangled\` longhand 로 expand (#2977 yargs). \`let {x}=obj\` 와
-    // \`({x}=obj)\` (binding_property / assignment_target_property_identifier) 양쪽에 적용.
-    // expressions.zig 의 emitObjectProperty 와 동일한 분기.
+    // shorthand (right=none): `{key}` — 기본은 콜론 생략. 단 대입 대상 위치에 치환이 걸리면
+    // `key:치환값` longhand 로 펼친다 (#2977 yargs). 안 펼치면 노드 하나가 키이자 대입 대상이라
+    // **프로퍼티 이름까지 같이 바뀐다** — CJS 래퍼에서 `({exports} = o)` 가 `({$e} = o)` 로
+    // 나가 진짜 `exports` 파라미터는 영영 대입되지 않고 미선언 전역만 오염된다 (#4515).
+    // `let {x}=obj`(binding_property) 와 `({x}=obj)`(assignment_target_property_identifier)
+    // 양쪽에 적용. expressions.zig 의 emitObjectProperty shorthand 분기와 동일한 판단이되,
+    // slot 이 `.assignment_target` 이라 값 전용 치환(peephole/상수인라인)은 제외된다.
     if (node.data.binary.right.isNone()) {
-        if (expressions.identifierHasRename(self, node.data.binary.left)) {
+        if (expressions.identifierEmitsSubstituted(self, node.data.binary.left, .assignment_target)) {
             try self.writeByte(':');
             try self.emitNode(node.data.binary.left);
         }
@@ -53,19 +56,22 @@ pub fn emitBindingProperty(self: anytype, node: Node) !void {
         const is_shorthand_default = (node.data.binary.flags & shorthand_with_default) != 0;
         if (is_shorthand_default and node.tag == .assignment_target_property_identifier) {
             try self.writeByte(':');
-            // value(=대입 대상 바인딩) 위치. writeSpan 은 원본 span 을 그대로 복사해서
-            // mangler rename / ns 치환을 통째로 건너뛴다 — `({o: {s, w = 1}} = box)` 의
+            // value(=대입 대상 바인딩) 위치. writeSpan 은 원본 span 을 그대로 복사해서 mangler
+            // rename / ns / CJS 파라미터 치환을 통째로 건너뛴다 — `({o: {s, w = 1}} = box)` 의
             // `w` 가 리네임 대상이면 미선언 전역에 대입되고 진짜 지역 변수는 영영 대입되지
             // 않는다 (#4493 — ReferenceError / 무성 오염).
             //
-            // 단 치환이 있을 때만 emitNode 를 태운다. 무조건 태우면 이 노드가 대입 대상인데도
-            // tag 가 identifier_reference 라서 `undefined` peephole(`undefined` → `void 0`)이
-            // 발동한다 — `({undefined = 1} = o)` 가 `{undefined:void 0=1}` 로 방출돼 **번들
-            // 전체가 SyntaxError**. 치환이 없으면 원본 토큰을 그대로 두는 게 맞고, 이는 위
-            // shorthand(right=none) 분기가 쓰는 게이트와 동일하다.
+            // 반대로 **무조건** emitNode 를 태우면, 이 노드가 대입 대상인데도 태그가
+            // `identifier_reference` 라서 값 전용 치환이 발동한다 — `({undefined = 1} = o)` 가
+            // `{undefined:void 0=1}` 로 방출돼 번들 전체가 SyntaxError.
+            //
+            // 그래서 "값 전용 치환이 안 터질 때만" emitNode 를 태운다(targetIdentSafeToEmit).
+            // #4493 은 이 자리를 `identifierHasRename` 으로 게이트했는데 그러면 rename 이 없는
+            // CJS `exports`/`module` 재작성이 통째로 누락됐다 (#4515) — 게이트 조건을 "치환
+            // 유무" 가 아니라 "값 전용 치환의 위험 유무" 로 바로잡은 것이 핵심이다.
             //
             // key 는 위에서 이미 원본 span 으로 출력했으므로 프로퍼티 이름은 보존된다.
-            if (expressions.identifierHasRename(self, node.data.binary.left)) {
+            if (expressions.targetIdentSafeToEmit(self, node.data.binary.left)) {
                 try self.emitNode(node.data.binary.left);
             } else {
                 try self.writeSpan(key_node.span);
