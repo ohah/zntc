@@ -13,6 +13,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const Parser = @import("parser.zig").Parser;
 const ParseError2 = @import("parser.zig").ParseError2;
 const Kind = @import("../lexer/token.zig").Kind;
+const expression = @import("expression.zig");
 
 /// JSX children 루프: <tag>...</tag> 또는 <>...</> 내부의 자식 노드들을 파싱.
 /// element와 fragment에서 공유.
@@ -114,7 +115,15 @@ inline fn advanceAfterJSXClose(self: *Parser, as_child: bool) !void {
     }
 }
 
+/// 깊이 가드 초크포인트 ⑤ (#4519). JSX element 도 식이다 — `<a><a>…</a></a>` 의 중첩은
+/// children → parseJSXElementAsChild → 여기로 되돌아오는 사이클이라 expression.zig 의 4개
+/// 초크포인트(assignment/binary/unary/newCallee)를 하나도 지나지 않는다. 같은 카운터
+/// (`expr_depth`) 로 여기서도 세지 않으면 깊은 JSX 트리가 그대로 SIGSEGV.
 fn parseJSXElementImpl(self: *Parser, as_child: bool) ParseError2!NodeIndex {
+    if (self.expr_depth >= expression.max_expr_depth) return expression.exprDepthOverflow(self);
+    self.expr_depth += 1;
+    defer self.expr_depth -= 1;
+
     self.ast.has_jsx = true;
     const start = self.currentSpan().start;
     try self.scanner.nextInsideJSXElement(); // '<' 이후 JSX 모드

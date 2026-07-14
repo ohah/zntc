@@ -18,7 +18,8 @@ const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const Span = @import("../lexer/token.zig").Span;
 const Parser = @import("parser.zig").Parser;
 const ParseError2 = @import("parser.zig").ParseError2;
-const PropertySignatureFlags = @import("ts.zig").PropertySignatureFlags;
+const ts = @import("ts.zig");
+const PropertySignatureFlags = ts.PropertySignatureFlags;
 
 /// Flow 타입 키워드 → AST 태그 매핑.
 /// TS와 달리 mixed, empty가 추가되고, unknown/object/undefined/intrinsic는 없다.
@@ -88,7 +89,17 @@ pub fn tryParseReturnType(self: *Parser) ParseError2!NodeIndex {
 
 /// Flow 타입을 파싱한다.
 /// Babel: flowParseType → flowParseUnionType
+///
+/// 깊이 가드 초크포인트 ③ (#4518). conditional type(`A extends B ? T : U`)과 shorthand 함수
+/// 타입(`T => R`)의 재귀는 **check type 을 다 파싱한 뒤**(prefix/primary 프레임이 이미 pop 된
+/// 뒤) 일어나므로, 그 중첩에서 스택에 쌓이는 건 `parseType` 프레임뿐이다 — prefix/primary 만
+/// 세면 conditional 이 그대로 SIGSEGV 났다(실측 31,509 단계, 초기 구현에서 재현).
+/// 근거·경계는 parsePrefixType 주석 참고.
 pub fn parseType(self: *Parser) ParseError2!NodeIndex {
+    if (self.type_depth >= ts.max_type_depth) return ts.typeDepthOverflow(self);
+    self.type_depth += 1;
+    defer self.type_depth -= 1;
+
     const enter_allow = self.flow_allow_conditional_type;
     const t = try parseUnionType(self);
 
@@ -204,7 +215,34 @@ fn parseIntersectionType(self: *Parser) ParseError2!NodeIndex {
 
 /// Prefix 타입: ?Type (Flow nullable)
 /// Babel: flowParsePrefixType
+///
+/// 깊이 가드 초크포인트 ① (#4518). TS 와 **같은 카운터·같은 상한·같은 진단**(ZNTC0919)을 쓴다
+/// — Flow 파서는 독립 구현이라 ts.parseType 의 가드(#4146)가 전혀 걸리지 않았고, `// @flow`
+/// 소스의 깊은 타입 중첩이 그대로 SIGSEGV 였다(Debug 실측: 괄호 2,865 · 객체 2,606 ·
+/// 제네릭 2,946 · 인덱스드 7,375 단계).
+///
+/// **왜 `flow.parseType` 한 곳이 아니라 prefix + primary 두 곳인가.**
+/// TS 와 달리 Flow 는 `parseType` 을 **거치지 않고** 되돌아오는 재귀 사이클이 있다:
+///   - `keyof T` / `renders T` : primary → prefix → postfix → primary (실측 5,023 단계에 SIGSEGV)
+///   - `{ ...{ ...T } }`       : primary → object → member → primary (4,031)
+///   - `interface extends …`   : primary → heritage → primary (6,380)
+///   - `? ? T`                 : prefix → prefix (69,317)
+///   - `A[B[C]]`(indexed)      : postfix → parseType → … → prefix (7,375)
+/// parseType 에만 가드를 두면 위 5개가 전부 새어 나간다. 반면 **모든 사이클은 prefix 나
+/// primary 중 하나를 반드시 지난다** — 그래서 두 곳을 초크포인트로 잡는다. (사이클을 없애려
+/// heritage/spread 의 호출 대상을 바꾸는 방법도 있지만, 정상 코드의 파싱 결과가 바뀔 위험이
+/// 있어 **문법은 그대로 두고 카운팅만** 한다.)
+///
+/// 여기에 conditional type(`A extends B ? T : U`) 용 초크포인트 ③(parseType)이 더해져 총 3곳이다.
+///
+/// 경계: 일반 중첩(괄호/객체/튜플/제네릭/함수) 1단계는 parseType·prefix·primary 를 모두 지나므로
+/// **3 프레임**, 우회 사이클(keyof/spread/heritage/nullable/conditional)은 1~2 프레임을 쓴다.
+/// 즉 상한 256 은 실질 **85단계 이상**의 타입 중첩을 허용한다.
 fn parsePrefixType(self: *Parser) ParseError2!NodeIndex {
+    if (self.type_depth >= ts.max_type_depth) return ts.typeDepthOverflow(self);
+    self.type_depth += 1;
+    defer self.type_depth -= 1;
+
     if (self.current() == .question) {
         const start = self.currentSpan().start;
         try self.advance(); // skip '?'
@@ -261,7 +299,16 @@ fn parsePostfixType(self: *Parser) ParseError2!NodeIndex {
 
 /// 기본 타입을 파싱한다.
 /// Babel: flowParsePrimaryType
+///
+/// 깊이 가드 초크포인트 ② (#4518). `keyof`/`renders`(→prefix), object spread(`{ ...T }`),
+/// `interface extends` heritage 는 **primary → … → primary** 로 되돌아오는 사이클이라
+/// prefix 를 지나지 않는다. 이 한 곳을 더 세어야 그 사이클들이 막힌다.
+/// (근거·경계는 위 parsePrefixType 주석 참고.)
 fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
+    if (self.type_depth >= ts.max_type_depth) return ts.typeDepthOverflow(self);
+    self.type_depth += 1;
+    defer self.type_depth -= 1;
+
     const span = self.currentSpan();
 
     // keyof T — 타입 연산자 (Flow 최신)

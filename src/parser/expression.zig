@@ -27,6 +27,91 @@ const generic_arrow = @import("expression/generic_arrow.zig");
 const scan = @import("expression/scan.zig");
 const type_args = @import("expression/type_args.zig");
 
+/// 식(expression) 문법의 최대 중첩 깊이 (#4519).
+///
+/// 식 파서도 타입 파서(#4146)와 똑같은 상호재귀 하강이다:
+///   parseAssignmentExpression → parseConditionalExpression → parseBinaryExpression
+///     → parseUnaryExpression → parsePostfix → parseCall → parsePrimaryExpression
+///     → { 괄호 / 배열 / 객체 / 호출인자 / 첨자 / 템플릿 / arrow body } → (다시) assignment
+/// 중첩 1단계마다 이 체인 전체가 스택에 한 겹 더 쌓여, `const x = ((((…1…))))` 같은 입력이
+/// 프로세스를 SIGSEGV 로 죽였다.
+///
+/// **왜 반복(iterative) 변환이 아닌가.** #4123(좌결합 이항 체인)은 `a + a + a …` 처럼
+/// **좌-스파인**이라 평탄화가 가능했다(파서는 이미 precedence-climbing 루프라 재귀도 안 한다).
+/// 반면 `((((1))))` · `[[[[1]]]]` · `f(f(f(…)))` 는 문법상 **바깥 노드가 안쪽 식 전체를 자식으로
+/// 갖는 진짜 트리**라 단일 루프로 접히지 않는다. 게다가 파서를 명시 work-stack 으로 재작성해도
+/// **크래시는 사라지지 않는다** — 실측상 `[...[...[…]]]`(스프레드)/객체 중첩은 파서보다
+/// **transformer 의 AST visitor**(visitNode↔visitNodeInner 상호재귀)가 먼저 죽는다(Debug
+/// 임계: 스프레드 379 · 객체 572 단계). 즉 크래시를 없애려면 파이프라인 **전체**가 감당할 수
+/// 있는 중첩 깊이로 입력을 제한해야 하고, 그게 이 상한이다.
+///
+/// 값 근거 (768) — 양쪽에서 실측해 잡았다. 세는 단위는 **아래 5개 초크포인트의 프레임 수**다:
+/// `(`/`[`/`{`/호출/첨자/템플릿 중첩은 1단계당 assignment+binary+unary = **3 프레임**,
+/// 스프레드(`[...[…]]`)는 **6 프레임**, ternary·대입·단항·`**`·`new`·JSX 체인은 **1 프레임**.
+/// 즉 "파이프라인이 그 중첩 1단계에 쓰는 스택"에 대체로 비례한다 — 실측상 counted 1 프레임당
+/// 스택은 어느 형태든 Debug 최악 ~7KB 로 수렴한다(그래서 하나의 상한으로 전부 묶을 수 있다).
+///
+/// - 안전 쪽(상한): 상한 768 에서 **각 형태가 통과할 수 있는 최대 중첩**을 전부 실측하고,
+///   그 깊이의 소스를 **끝까지(파싱→transform→codegen) 돌려 크래시가 없음**을 확인했다:
+///     괄호/배열/호출/객체/첨자/템플릿 255단계 · 스프레드 127단계 · ternary/대입/단항/`**`/
+///     `new`/arrow/JSX 765단계.
+///   수정 전 SIGSEGV 임계(Debug, 8MB 스택) 대비 여유는 **1.48x ~ 4.6x**(스프레드 2.98x,
+///   객체 2.24x). ReleaseFast 는 프레임이 3~4배 작아 같은 상한에서 5배 이상 여유다.
+/// - 실코드 쪽(하한): node_modules + 저장소 소스 + test262 **303,399개 실파일**(RN Flow 포함)의
+///   최대 식 중첩은 **598 프레임**(google-closure-compiler-js 의 3MB 생성 번들 `jscomp.js`)이고,
+///   그 다음이 284(firebase 번들)다. 손으로 쓴 소스는 대부분 30 이하 — 768 은 코퍼스 p100 보다
+///   위, 그 다음 순위보다는 2.7배 위다. (상한을 이보다 크게 잡으면 위의 크래시 여유가 1.3배
+///   아래로 떨어진다 — 코퍼스 최댓값과 크래시 임계 사이가 그만큼 좁다.)
+/// V8 자신도 이 정도 깊이면 "Maximum call stack size exceeded" 로 죽으므로 관용도 손해가 없다.
+/// (jsx.zig 도 같은 카운터·같은 상한을 쓴다 — JSX element 중첩 역시 식 중첩이다.)
+pub const max_expr_depth: u32 = 768;
+
+/// 중첩 한계 초과: 진단용 span 을 기록하고(첫 지점만) 문제의 식 토큰을 통째로 건너뛴다.
+/// 진단 자체는 parse() 종료 시 1건 기록된다 — speculation 이 되돌려지면 이 표시도 함께
+/// 되돌려져야 하기 때문(restoreState).
+pub fn exprDepthOverflow(self: *Parser) ParseError2!NodeIndex {
+    const span = self.currentSpan();
+    self.markDepthOverflow(span, .expr_too_deeply_nested);
+    try skipDeeplyNestedExpression(self);
+    return try self.ast.addNode(.{ .tag = .invalid, .span = span, .data = .{ .none = 0 } });
+}
+
+/// 한계를 넘은 식의 토큰을 균형 맞춰 소비한다 (#4519).
+///
+/// **토큰을 안 먹고 invalid 노드만 돌려주면 크래시가 사라지지 않는다.** 남은 `((((…))))` 는
+/// 복구 경로를 타고 다시 식 파서로 흘러들어가 같은 깊이로 재귀한다(타입 쪽 #4146 과 동일한 함정).
+///
+/// 괄호/브래킷/중괄호 균형을 세고, **균형 0 인 지점의** 닫는 토큰 · `,` · `;` · EOF 에서 멈춘다.
+/// 그 토큰들은 바깥 레벨의 소유라 남겨 둬야 바깥이 추가 에러 없이 정상 unwind 한다
+/// (`(((…)))` 는 바깥이 소비한 `(` 개수만큼 `)` 가 정확히 남는다).
+///
+/// ⚠️ 타입 쪽 `skipDeeplyNestedType` 과 달리 **꺾쇠(`<`/`>`)를 괄호로 세면 안 된다** — 식에서
+/// `<`/`>` 는 비교 연산자다. `f(((a < b)))` 를 스킵할 때 `<` 를 열림으로 세면 짝이 부풀어
+/// 바깥 레벨 소유의 `)` 까지 먹어치운다. 같은 이유로 `=` 도 멈춤 토큰이 아니다(대입 연산자).
+fn skipDeeplyNestedExpression(self: *Parser) ParseError2!void {
+    var depth: u32 = 0;
+    while (self.current() != .eof) {
+        switch (self.current()) {
+            .l_paren, .l_bracket, .l_curly => {
+                depth += 1;
+                try self.advance();
+            },
+            .r_paren, .r_bracket, .r_curly => {
+                if (depth == 0) return; // 바깥 레벨 소유 — 남긴다
+                depth -= 1;
+                try self.advance();
+            },
+            // `,`(인자/원소 구분자)·`;`(statement 끝)는 균형 0 에서만 멈춤. 균형 안쪽에서는
+            // 스킵 대상 식의 일부다 (`f(a, (((…))))` 의 안쪽 `,` 에서 이탈하면 안 된다).
+            .comma, .semicolon => {
+                if (depth == 0) return;
+                try self.advance();
+            },
+            else => try self.advance(),
+        }
+    }
+}
+
 /// 콤마 연산자(sequence expression)를 포함한 최상위 표현식 파싱.
 /// ECMAScript: Expression = AssignmentExpression (',' AssignmentExpression)*
 /// 콤마가 없으면 단일 AssignmentExpression을 그대로 반환하고,
@@ -133,9 +218,15 @@ pub fn parseArrowBody(self: *Parser, is_async: bool, param_idx: NodeIndex) Parse
     return body;
 }
 
+/// 깊이 가드 초크포인트 ① (#4519). 괄호/배열/객체/호출인자/첨자/템플릿/arrow body/ternary/
+/// 대입 체인 — 식 중첩의 대부분이 이 함수를 지나 되돌아온다.
 pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
     var scope = profile.begin(.parse_expression_assignment);
     defer scope.end();
+
+    if (self.expr_depth >= max_expr_depth) return exprDepthOverflow(self);
+    self.expr_depth += 1;
+    defer self.expr_depth -= 1;
 
     // TS 제네릭 arrow function: <T>() => body, <const T>() => body
     // TSX 모드에서는 trailing comma(<T,>), constraint(<T extends X>), default(<T = X>)가
@@ -518,7 +609,15 @@ fn tryReinterpretAsTypedArrow(self: *Parser, paren_expr: NodeIndex) ParseError2!
 }
 
 /// 이항 연산자를 precedence climbing으로 파싱.
+///
+/// 깊이 가드 초크포인트 ② (#4519). 좌결합 체인(`a + a + a …`)은 아래 while 루프라 재귀하지
+/// 않지만, **우결합 `**`**(`a ** a ** a …`)은 이 함수가 자기 자신을 재귀 호출한다 —
+/// assignment 를 지나지 않는 사이클이라 여기서 따로 세지 않으면 그대로 SIGSEGV (실측 1,130단계).
 fn parseBinaryExpression(self: *Parser, min_prec: u8) ParseError2!NodeIndex {
+    if (self.expr_depth >= max_expr_depth) return exprDepthOverflow(self);
+    self.expr_depth += 1;
+    defer self.expr_depth -= 1;
+
     var left = try parseUnaryExpression(self);
 
     // ECMAScript: PrivateIdentifier는 독립 표현식이 아니라 `#field in obj` 형태로만 유효.
@@ -606,7 +705,14 @@ fn parseBinaryExpression(self: *Parser, min_prec: u8) ParseError2!NodeIndex {
     return left;
 }
 
+/// 깊이 가드 초크포인트 ③ (#4519). 접두 단항 체인(`!!!!x` · `typeof typeof x` ·
+/// `await await x` · `- - x`)은 이 함수의 self-recursion 이라 assignment 를 지나지 않는다
+/// — 여기서 세지 않으면 그대로 SIGSEGV (실측 1,161단계).
 pub fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
+    if (self.expr_depth >= max_expr_depth) return exprDepthOverflow(self);
+    self.expr_depth += 1;
+    defer self.expr_depth -= 1;
+
     const kind = self.current();
     switch (kind) {
         .bang, .tilde, .minus, .plus, .kw_typeof, .kw_void, .kw_delete => {
@@ -1245,7 +1351,13 @@ fn finishTaggedTemplate(self: *Parser, tag_expr: NodeIndex, start: u32) !NodeInd
 /// 중첩 new 는 각자의 플래그를 갖는다 — 안쪽 new 는 `parsePrimaryExpression` 이 자기 지역
 /// 변수로 받아 자기 노드에 찍는다. 즉 안쪽 보고가 바깥 new 로 전파되지 않아, 바깥 new 의
 /// 별개 위반이 조용히 사라지는 일이 없다(#4048 리뷰 요구사항이 구조적으로 성립).
+/// 깊이 가드 초크포인트 ④ (#4519). `new new new … X` 는 primary → newCallee → primary 로
+/// 되돌아오는 사이클이라 assignment/binary/unary 를 지나지 않는다 (실측 1,177단계).
 fn parseNewCallee(self: *Parser, out_callee_optional: *bool) ParseError2!NodeIndex {
+    if (self.expr_depth >= max_expr_depth) return exprDepthOverflow(self);
+    self.expr_depth += 1;
+    defer self.expr_depth -= 1;
+
     // ECMAScript: new import(...) / new import.source(...) / new import.defer(...) は금지
     // 단, new import.meta 는 허용 (import.meta는 MemberExpression)
     if (self.current() == .kw_import) {

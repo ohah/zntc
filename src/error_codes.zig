@@ -203,6 +203,7 @@ pub const Code = enum(u16) {
     yield_outside_generator = 917,
     ts_syntax_in_js = 918,
     ts_type_too_deeply_nested = 919,
+    expr_too_deeply_nested = 920,
 
     // ═══════════════════════════════════════════════════════
     // 1000-1099: 시맨틱 — 재선언/스코프
@@ -462,6 +463,7 @@ pub const Code = enum(u16) {
             .ts_index_sig_optional => "An index signature parameter cannot have a question mark",
             .ts_syntax_in_js => "TypeScript syntax is not allowed in JavaScript source",
             .ts_type_too_deeply_nested => "Type is nested too deeply",
+            .expr_too_deeply_nested => "Expression is nested too deeply",
             // 시맨틱: 재선언
             .identifier_redeclared => "Identifier has already been declared",
             .binding_strict_mode => "Cannot be used as a binding identifier in strict mode",
