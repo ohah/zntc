@@ -1319,7 +1319,8 @@ pub fn emitChunks(
             break :blk em.wrap_kind == .esm;
         };
         if ((chunk.exports_to.count() > 0 or rbm_export_names.items.len > 0 or lazy_reg_entry) and
-            (!options.preserve_modules or pm_wrapped_esm_provider)) xchunk_exports: {
+            (!options.preserve_modules or pm_wrapped_esm_provider))
+        xchunk_exports: {
             // 결정론적 출력을 위해 이름을 정렬
             var export_names: std.ArrayList([]const u8) = .empty;
             defer export_names.deinit(allocator);
