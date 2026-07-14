@@ -692,7 +692,11 @@ fn parsePredicateSubject(self: *Parser) ParseError2!NodeIndex {
 ///
 /// 경계: parseType **프레임** 수를 센다(가장 안쪽 leaf 타입도 한 프레임). 즉 `(`×255 는 통과,
 /// `(`×256 부터 거부 — parser_test 의 경계 테스트가 이 값을 고정한다.
-const max_type_depth: u32 = 256;
+///
+/// Flow 타입 파서(flow.zig)도 **같은 상수·같은 카운터**를 공유한다 (#4518). 다만 Flow 는
+/// 초크포인트가 2개(prefix/primary)라 중첩 1단계당 2 프레임이 올라간다 — 자세한 근거는
+/// flow.zig 의 `parsePrefixType` 주석 참고.
+pub const max_type_depth: u32 = 256;
 
 /// TS 타입을 파싱한다. 조건부 > 유니온 > 인터섹션 > postfix > primary 우선순위.
 /// oxc의 parse_ts_type와 동일한 구조.
@@ -709,9 +713,9 @@ pub fn parseType(self: *Parser) ParseError2!NodeIndex {
 /// 중첩 한계 초과: 진단용 span 을 기록하고(첫 지점만) 문제의 타입 토큰을 통째로 건너뛴다.
 /// 진단 자체는 parse() 종료 시 1건 기록된다 — speculation 이 되돌려지면 이 표시도 함께
 /// 되돌려져야 하기 때문(restoreState).
-fn typeDepthOverflow(self: *Parser) ParseError2!NodeIndex {
+pub fn typeDepthOverflow(self: *Parser) ParseError2!NodeIndex {
     const span = self.currentSpan();
-    if (self.type_depth_overflow == null) self.type_depth_overflow = span;
+    self.markDepthOverflow(span, .ts_type_too_deeply_nested);
     try skipDeeplyNestedType(self);
     return try self.ast.addNode(.{ .tag = .invalid, .span = span, .data = .{ .none = 0 } });
 }
@@ -734,7 +738,7 @@ fn typeDepthOverflow(self: *Parser) ParseError2!NodeIndex {
 ///
 /// 조건부의 `?`/`:` 는 멈춤 토큰이 **아니다** — 위의 라벨 statement 재파싱을 막으려면 꼬리의
 /// `: never …` 까지 다 먹어야 한다.
-fn skipDeeplyNestedType(self: *Parser) ParseError2!void {
+pub fn skipDeeplyNestedType(self: *Parser) ParseError2!void {
     var depth: u32 = 0;
     while (self.current() != .eof) {
         switch (self.current()) {
