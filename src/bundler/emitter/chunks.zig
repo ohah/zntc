@@ -617,19 +617,19 @@ pub fn emitChunks(
                     try chunk_output.appendSlice(allocator, bind_arg);
                     try chunk_output.appendSlice(allocator, if (min) "\");" else "\");\n");
 
-                    // `require_X` / `init_X` — 함수. 호출 시점에 조회(lazy forwarding).
-                    try chunk_output.appendSlice(allocator, "const ");
-                    try chunk_output.appendSlice(allocator, names.a);
-                    try chunk_output.appendSlice(allocator, if (min) "=function(){return require(\"" else " = function() { return require(\"");
-                    try chunk_output.appendSlice(allocator, bind_arg);
-                    try chunk_output.appendSlice(allocator, if (min) "\")." else "\").");
-                    try chunk_output.appendSlice(allocator, names.a);
-                    try chunk_output.appendSlice(allocator, if (min) ".apply(this,arguments)};" else ".apply(this, arguments); };\n");
-
-                    // `exports_X` — 객체라 lazy 로 못 바꾼다(ESM-wrap dep 만). provider 가 파일
-                    // top-level 에서 즉시 만들므로 이 시점에 이미 존재한다.
+                    // `exports_X` (ESM-wrap dep) 는 **객체**라 forwarding 으로 감쌀 수 없다.
+                    // 그런데 소비자의 사용처는 **항상** `(init_X(), __toCommonJS(exports_X))` —
+                    // 즉 `init_X()` 가 **먼저** 평가되는 순차식이다. 그래서 `let` 으로 선언해 두고
+                    // **init forwarding 안에서 갱신**하면, 순환에서 로드 시점에 undefined 였더라도
+                    // 읽히기 직전에 진짜 객체로 채워진다.
+                    //
+                    // ⚠️ eager 복사(`const exports_X = require(...).exports_X`)만 두면 안 된다.
+                    // 순환에서 dep 이 **아직 평가 중**이면 provider 의 `exports.exports_X = …` 가
+                    // 아직 안 깔려 **undefined 를 박제**하고, 나중에
+                    // `__toCommonJS(undefined)` → `TypeError: Cannot convert undefined or null
+                    // to object` 로 죽는다. (첫 수정이 여기까지 못 갔다.)
                     if (names.b) |b| {
-                        try chunk_output.appendSlice(allocator, "const ");
+                        try chunk_output.appendSlice(allocator, "let ");
                         try chunk_output.appendSlice(allocator, b);
                         try chunk_output.appendSlice(allocator, if (min) "=require(\"" else " = require(\"");
                         try chunk_output.appendSlice(allocator, bind_arg);
@@ -637,6 +637,24 @@ pub fn emitChunks(
                         try chunk_output.appendSlice(allocator, b);
                         try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
                     }
+
+                    // `require_X` / `init_X` — 함수. 호출 시점에 조회(lazy forwarding).
+                    try chunk_output.appendSlice(allocator, "const ");
+                    try chunk_output.appendSlice(allocator, names.a);
+                    try chunk_output.appendSlice(allocator, if (min) "=function(){const m=require(\"" else " = function() { const m = require(\"");
+                    try chunk_output.appendSlice(allocator, bind_arg);
+                    try chunk_output.appendSlice(allocator, if (min) "\");" else "\");\n");
+                    if (names.b) |b| {
+                        // 순환에서 로드 시점엔 undefined 였을 수 있다 — 읽히기 직전에 갱신.
+                        try chunk_output.appendSlice(allocator, if (min) "" else "\t\t");
+                        try chunk_output.appendSlice(allocator, b);
+                        try chunk_output.appendSlice(allocator, if (min) "=m." else " = m.");
+                        try chunk_output.appendSlice(allocator, b);
+                        try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
+                    }
+                    try chunk_output.appendSlice(allocator, if (min) "return m." else "\t\treturn m.");
+                    try chunk_output.appendSlice(allocator, names.a);
+                    try chunk_output.appendSlice(allocator, if (min) ".apply(this,arguments)};" else ".apply(this, arguments);\n\t};\n");
                 } else {
                     // esm: live binding 이라 구조분해(=named import)로 충분하다.
                     try chunk_output.appendSlice(allocator, if (min) "import{" else "import { ");

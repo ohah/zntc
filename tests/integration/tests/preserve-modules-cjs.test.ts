@@ -315,4 +315,37 @@ describe('#4524: --preserve-modules × CJS', () => {
       await cleanup();
     }
   });
+  test('#4526 --format=cjs: ESM-wrap dep 이 순환에 껴도 exports_X 가 undefined 로 박제되지 않는다', async () => {
+    // `exports_X` 는 **객체**라 forwarding 으로 감쌀 수 없다. eager 복사만 두면 순환에서 dep 이
+    // **아직 평가 중**일 때 provider 의 `exports.exports_X = …` 가 아직 안 깔려 **undefined 를
+    // 박제**하고, 나중에 `__toCommonJS(undefined)` →
+    // `TypeError: Cannot convert undefined or null to object` 로 죽는다.
+    //
+    // 소비자의 사용처가 **항상** `(init_X(), __toCommonJS(exports_X))` — 즉 `init_X()` 가 먼저
+    // 평가되는 순차식이므로, `let` 으로 선언하고 **init forwarding 안에서 갱신**하면 읽히기
+    // 직전에 진짜 객체로 채워진다.
+    //
+    // ⚠️ entry 가 **b.js(ESM) 를 먼저** import 해야 b 가 먼저 평가되며 이 순서가 재현된다.
+    const { outDir, cleanup } = await buildPm(
+      {
+        'b.js':
+          'import { helper } from "./a.cjs";\nexport function tag(){ return "B+" + helper(); }',
+        'a.cjs':
+          'const b = require("./b.js");\n' +
+          'exports.helper = function(){ return "H"; };\n' +
+          'exports.callB = function(){ return b.tag(); };',
+        'entry.js': 'import { callB } from "./a.cjs";\nconsole.log(callB());',
+      },
+      'entry.js',
+      'cjs',
+    );
+    try {
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      // 버그 시: TypeError: Cannot convert undefined or null to object
+      expect(stderr).not.toContain('TypeError');
+      expect(stdout.trim()).toBe('B+H');
+    } finally {
+      await cleanup();
+    }
+  });
 });
