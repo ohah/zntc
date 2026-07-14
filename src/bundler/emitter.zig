@@ -602,11 +602,12 @@ pub fn emitWithTreeShaking(
 
     // TLA 검증: 비-ESM 출력에서 TLA 사용 시 경고 주석 삽입.
     // Top-Level Await는 ESM 전용 기능이므로 CJS/IIFE/UMD/AMD 포맷에서는 동작하지 않는다.
-    // DFS로 exec_index가 부여된 모듈만 확인한다 — 동적 import로만 도달하는 모듈은
-    // exec_index가 maxInt(u32)이며, 비동기 로딩이므로 경고 불필요.
+    // 정적 import 체인으로 닿는 모듈만 확인한다 — `import()` 로만 도달하는 모듈은
+    // 비동기 로딩이라 경고 불필요. (#4520 전에는 `exec_index == maxInt` 로 대신
+    // 판별했으나, 이제 그 모듈들도 exec_index 를 받으므로 명시 플래그를 본다.)
     if (options.format != .esm) {
         for (sorted.items) |m| {
-            if (m.uses_top_level_await and m.exec_index != std.math.maxInt(u32)) {
+            if (m.uses_top_level_await and !m.only_dynamically_reached) {
                 try output.appendSlice(allocator, tla_warning_comment);
                 break;
             }

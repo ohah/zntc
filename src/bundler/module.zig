@@ -429,7 +429,20 @@ pub const Module = struct {
     is_emitted_chunk_entry: bool = false,
     /// DFS 후위 순서 = ESM 실행 순서 (D058, D076).
     /// maxInt = 미방문 (DFS에서 할당되지 않음).
+    ///
+    /// #4520 이후로는 `import()` 로만 닿는 모듈에도 (정적 모듈을 모두 매긴 뒤에)
+    /// 번호가 부여된다 — 그 서브그래프 안에서도 "의존성 먼저" 위상 순서를 지켜야
+    /// 하기 때문. 따라서 **maxInt 여부를 "동적 도달 전용" 판별에 쓰면 안 된다**.
+    /// 그 판별은 `only_dynamically_reached` 를 볼 것.
     exec_index: u32,
+    /// 정적 import 체인(entry / emit chunk entry 기점)으로는 닿지 않고 `import()`
+    /// 로만 도달하는 모듈 (#4520). finalizeGraph 의 정적 루트 DFS 가 끝난 시점에
+    /// 미방문인 모듈이 여기 해당한다.
+    ///
+    /// 용도: 동적 로딩은 비동기라 TLA 가 동기 실행을 막지 않는다 — 비-ESM 출력의
+    /// TLA 경고를 이 모듈들에 대해 억제. 예전엔 `exec_index == maxInt` 로 대신
+    /// 판별했으나, #4520 이 그 모듈들에도 exec_index 를 부여하면서 명시 플래그로 분리.
+    only_dynamically_reached: bool = false,
     /// 순환 참조 그룹 ID. 0 = 순환 없음 (D065)
     cycle_group: u32,
     state: State,

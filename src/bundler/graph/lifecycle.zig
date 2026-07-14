@@ -70,6 +70,9 @@ pub fn reset(self: *ModuleGraph) void {
 
     self.exec_counter = 0;
     self.cycle_counter = 0;
+    // #4520: wrap_kind 확정 잠금은 per-build 상태 — 매 빌드 promoteExportsKinds 가 다시 확정한다.
+    // 안 풀면 rebuild 의 변경 모듈 재파스-resync 가 최초 분류를 건너뛰어 stale wrap_kind 가 남는다.
+    self.wrap_kinds_finalized = false;
 
     // requestDependencyExports CSR 캐시 무효화 — rebuild 후 같은 importer_idx 의 binding 이
     // 바뀌어도 stale 캐시를 재사용하지 않도록. backing 은 보존(clearRetainingCapacity 재사용).
