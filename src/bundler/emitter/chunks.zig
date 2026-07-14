@@ -575,7 +575,45 @@ pub fn emitChunks(
             // imports_from에서 이 청크→dep_chunk로 가져오는 심볼 목록 조회
             const symbols = chunk.imports_from.get(dep_ci);
 
-            if (symbols != null and symbols.?.items.len > 0) {
+            // (#4524) preserve-modules + **wrap 된 dep** 은 래퍼 심볼만 가져온다 — 심볼 분기
+            // 보다 **먼저** 봐야 한다. wrap 된 모듈은 export 명(`foo`)을 파일 밖으로 내지 않는데
+            // (본문이 클로저 안), `imports_from` 에는 re-export 해석(resolveExportChain 의 CJS
+            // 폴백)으로 그 이름이 등록된다 → 심볼 분기가 먼저 타면 provider 가 내지도 않는
+            // `import { foo } from "./legacy.js"` 를 내고, 소비자 preamble 의 `require_legacy` 는
+            // 여전히 미-import 다 → `SyntaxError: Identifier 'foo' has already been declared`.
+            if (preserveModulesWrapperChunk(dep_chunk, graph, options)) |dm_idx| {
+                // (#4524) preserve-modules: dep 이 CJS 면 그 파일의 `require_X` 썽크를
+                // **named import** 해야 한다. CJS 는 정적 export 가 없어 파일 경계를 넘을
+                // 수단이 이 썽크뿐인데, 예전엔 side-effect import 만 내고 소비자가 썽크를
+                // **렉시컬 참조**해서 `ReferenceError: require_X is not defined` 였다.
+                // interop 은 소비자가 자기 preamble(`var d = require_X()`)로 이미 하고 있으므로
+                // 이름만 건너오면 그대로 동작한다 — rolldown 과 같은 형태다.
+                // 술어는 provider(export emit) 와 **같은 소스**를 본다.
+                const dm = graph.getModule(dm_idx).?;
+                const names = try wrapperNamesFor(allocator, dm, linker);
+                defer names.deinit(allocator);
+                const open = if (cjs_require)
+                    (if (options.minify_whitespace) "const{" else "const { ")
+                else
+                    (if (options.minify_whitespace) "import{" else "import { ");
+                const mid = if (cjs_require)
+                    (if (options.minify_whitespace) "}=require(\"" else " } = require(\"")
+                else
+                    (if (options.minify_whitespace) "}from\"" else " } from \"");
+                const close = if (cjs_require)
+                    (if (options.minify_whitespace) "\");" else "\");\n")
+                else
+                    (if (options.minify_whitespace) "\";" else "\";\n");
+                try chunk_output.appendSlice(allocator, open);
+                try chunk_output.appendSlice(allocator, names.a);
+                if (names.b) |b| {
+                    try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "," else ", ");
+                    try chunk_output.appendSlice(allocator, b);
+                }
+                try chunk_output.appendSlice(allocator, mid);
+                try chunk_output.appendSlice(allocator, bind_arg);
+                try chunk_output.appendSlice(allocator, close);
+            } else if (symbols != null and symbols.?.items.len > 0) {
                 // 심볼 수준 import: import { a, b } from './chunk-xxx.js';
                 if (!options.minify_whitespace) {
                     try chunk_output.appendSlice(allocator, if (reg_like) "const { " else "import { ");
@@ -658,34 +696,6 @@ pub fn emitChunks(
                 try chunk_output.appendSlice(allocator, sym_open);
                 try chunk_output.appendSlice(allocator, bind_arg);
                 try chunk_output.appendSlice(allocator, sym_close);
-            } else if (preserveModulesCjsThunkChunk(dep_chunk, graph, options)) |dm_idx| {
-                // (#4524) preserve-modules: dep 이 CJS 면 그 파일의 `require_X` 썽크를
-                // **named import** 해야 한다. CJS 는 정적 export 가 없어 파일 경계를 넘을
-                // 수단이 이 썽크뿐인데, 예전엔 side-effect import 만 내고 소비자가 썽크를
-                // **렉시컬 참조**해서 `ReferenceError: require_X is not defined` 였다.
-                // interop 은 소비자가 자기 preamble(`var d = require_X()`)로 이미 하고 있으므로
-                // 이름만 건너오면 그대로 동작한다 — rolldown 과 같은 형태다.
-                // 술어는 provider(export emit) 와 **같은 소스**를 본다.
-                const dm = graph.getModule(dm_idx).?;
-                const thunk = try dm.allocRequireName(allocator, if (linker) |l| &l.rename_table else null);
-                defer allocator.free(thunk);
-                const open = if (cjs_require)
-                    (if (options.minify_whitespace) "const{" else "const { ")
-                else
-                    (if (options.minify_whitespace) "import{" else "import { ");
-                const mid = if (cjs_require)
-                    (if (options.minify_whitespace) "}=require(\"" else " } = require(\"")
-                else
-                    (if (options.minify_whitespace) "}from\"" else " } from \"");
-                const close = if (cjs_require)
-                    (if (options.minify_whitespace) "\");" else "\");\n")
-                else
-                    (if (options.minify_whitespace) "\";" else "\";\n");
-                try chunk_output.appendSlice(allocator, open);
-                try chunk_output.appendSlice(allocator, thunk);
-                try chunk_output.appendSlice(allocator, mid);
-                try chunk_output.appendSlice(allocator, bind_arg);
-                try chunk_output.appendSlice(allocator, close);
             } else {
                 // 심볼 정보 없음 → side-effect (실행/등록 순서 보장용)
                 const se_open = if (reg_split)
@@ -1025,25 +1035,38 @@ pub fn emitChunks(
         // 소비자(cross_chunk_imports 분기)의 조건과 **정확히 같아야** 한다 — provider 만
         // format 을 보고 있으면 `--format=cjs` 에서 소비자가 `const { require_X } =
         // require("./x.js")` 를 내는데 provider 는 아무것도 안 깔아 undefined 다.
-        if (preserveModulesCjsThunkChunk(chunk, graph, options)) |em_idx| pm_cjs_export: {
-            const em = graph.getModule(em_idx) orelse break :pm_cjs_export;
-            const thunk = try em.allocRequireName(allocator, if (linker) |l| &l.rename_table else null);
-            defer allocator.free(thunk);
+        if (preserveModulesWrapperChunk(chunk, graph, options)) |em_idx| pm_wrap_export: {
+            const em = graph.getModule(em_idx) orelse break :pm_wrap_export;
+            const names = try wrapperNamesFor(allocator, em, linker);
+            defer names.deinit(allocator);
             const min = options.minify_whitespace;
+
+            // ⚠️ 래퍼를 **호출**하면 안 된다(`export default require_X();` 금지).
+            // 그건 CJS 본문을 provider 파일 **평가 시점**에 실행시킨다:
+            //  - CJS↔CJS 순환: `a.cjs` ⇄ `b.cjs` 에서 b.js 가 먼저 평가되며, 아직 미평가인
+            //    a.js 의 `require_a`(hoisted `var`, undefined)를 호출 → TypeError.
+            //    node 는 require 가 lazy 라 이 순환을 정상 처리한다.
+            //  - 조건부 require(`if (x) require('./heavy')`)의 부수효과가 **무조건** 시작 시
+            //    실행된다.
+            // 래퍼 **선언만** 내보내면 호출 시점이 소비자에게 남아 node 의 lazy 의미가 보존된다.
+            // (rolldown 은 `export default require_X();` 를 내지만 같은 순환 위험을 안는다.)
             if (options.format == .cjs) {
                 // 청크가 `require()` 로 소비되므로 exports 객체에 깐다.
-                try chunk_output.appendSlice(allocator, if (min) "exports.default=" else "exports.default = ");
-                try chunk_output.appendSlice(allocator, thunk);
-                try chunk_output.appendSlice(allocator, if (min) "();exports." else "();\nexports.");
-                try chunk_output.appendSlice(allocator, thunk);
-                try chunk_output.appendSlice(allocator, if (min) "=" else " = ");
-                try chunk_output.appendSlice(allocator, thunk);
-                try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
+                for ([_]?[]const u8{ names.a, names.b }) |maybe| {
+                    const n = maybe orelse continue;
+                    try chunk_output.appendSlice(allocator, "exports.");
+                    try chunk_output.appendSlice(allocator, n);
+                    try chunk_output.appendSlice(allocator, if (min) "=" else " = ");
+                    try chunk_output.appendSlice(allocator, n);
+                    try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
+                }
             } else {
-                try chunk_output.appendSlice(allocator, "export default ");
-                try chunk_output.appendSlice(allocator, thunk);
-                try chunk_output.appendSlice(allocator, if (min) "();export{" else "();\nexport { ");
-                try chunk_output.appendSlice(allocator, thunk);
+                try chunk_output.appendSlice(allocator, if (min) "export{" else "export { ");
+                try chunk_output.appendSlice(allocator, names.a);
+                if (names.b) |b| {
+                    try chunk_output.appendSlice(allocator, if (min) "," else ", ");
+                    try chunk_output.appendSlice(allocator, b);
+                }
                 try chunk_output.appendSlice(allocator, if (min) "};" else " };\n");
             }
         }
@@ -2029,7 +2052,11 @@ fn rewriteDynamicImports(
             const tm = graph.getModule(rec.resolved) orelse break :pm_dyn_cjs;
             if (tm.wrap_kind != .cjs) break :pm_dyn_cjs;
             const toesm: []const u8 = if (emit_options.minify_whitespace) rt_names.NAMES.TOESM_MIN else "__toESM";
-            const suffix = try std.fmt.allocPrint(allocator, ".then((m)=>{s}(m.default))", .{toesm});
+            // provider 는 래퍼 **선언만** export 한다(호출 금지 — 순환/조건부 require 보호).
+            // 그래서 소비자가 썽크를 호출해 namespace 를 만든다: `__toESM(m.require_X())`.
+            const thunk = try tm.allocRequireName(allocator, if (linker) |l| &l.rename_table else null);
+            defer allocator.free(thunk);
+            const suffix = try std.fmt.allocPrint(allocator, ".then((m)=>{s}(m.{s}()))", .{ toesm, thunk });
             defer allocator.free(suffix);
             if (try rewriteImportCallAppendSuffix(
                 allocator,
@@ -2211,28 +2238,65 @@ pub fn dynamicCjsNamespaceEntry(
     return info.module;
 }
 
-/// (#4524) preserve-modules 에서 이 청크가 **CJS 모듈 파일**이라 `require_X` 썽크를
-/// export 해야 하는가. 그렇다면 그 모듈 인덱스를 돌려준다.
+/// (#4524) preserve-modules 에서 이 청크가 **wrap 된 모듈 파일**이라 래퍼 심볼을 export
+/// 해야 하는가. 그렇다면 그 모듈 인덱스를 돌려준다.
+///
+/// **루트커즈**: wrap 된 모듈(CJS `__commonJS` / ESM `__esm`)은 본문이 클로저 안이라 파일
+/// top-level 에 남는 게 **래퍼 심볼뿐**이다 — CJS 는 `require_X`, ESM-wrap 은 `init_X` /
+/// `exports_X`. preserve-modules 는 그걸 export 하지 않아서 소비자가 **다른 파일의 지역변수**
+/// 를 렉시컬 참조했다:
+///
+///     import "./b.js";                                   // side-effect 만
+///     const b = (init_b(), __toCommonJS(exports_b));     // ← b.js 의 지역변수!
+///
+/// → `ReferenceError: init_b is not defined`. 정적 import 조차 못 썼다.
 ///
 /// provider(export emit) 와 consumer(named import emit) 가 **반드시 같은 술어**를 봐야 한다.
 /// 어긋나면 소비자가 존재하지 않는 이름을 import 한다 — 실제로 provider 에만 `format == .esm`
 /// 조건이 있어 `--format=cjs` 에서 `require_X is not a function` 이 났다.
-pub fn preserveModulesCjsThunkChunk(
+pub fn preserveModulesWrapperChunk(
     chunk: *const Chunk,
     graph: *const ModuleGraph,
     options: *const EmitOptions,
 ) ?ModuleIndex {
     if (!options.preserve_modules) return null;
-    // 썽크를 실어 나를 수 있는 형식만. iife/umd/amd + preserve-modules 는 청크 경계 결합
-    // 수단이 없어 대상이 아니다.
+    // 래퍼 심볼을 실어 나를 수 있는 형식만. iife/umd/amd + preserve-modules 는 청크 경계
+    // 결합 수단이 없어 대상이 아니다.
     if (options.format != .esm and options.format != .cjs) return null;
     const info = switch (chunk.kind) {
         .entry_point => |i| i,
         .common, .manual => return null,
     };
     const em = graph.getModule(info.module) orelse return null;
-    if (em.wrap_kind != .cjs) return null;
+    if (!em.wrap_kind.isWrapped()) return null;
     return info.module;
+}
+
+/// (#4524) 위 청크가 export/import 해야 할 **래퍼 심볼 이름들**. caller 가 free.
+const WrapperNames = struct {
+    a: []const u8,
+    b: ?[]const u8 = null,
+
+    fn deinit(self: WrapperNames, allocator: std.mem.Allocator) void {
+        allocator.free(self.a);
+        if (self.b) |x| allocator.free(x);
+    }
+};
+
+fn wrapperNamesFor(
+    allocator: std.mem.Allocator,
+    em: *const Module,
+    linker: ?*const Linker,
+) !WrapperNames {
+    const rt_tbl = if (linker) |l| &l.rename_table else null;
+    return switch (em.wrap_kind) {
+        .cjs => .{ .a = try em.allocRequireName(allocator, rt_tbl) },
+        .esm => .{
+            .a = try em.allocInitName(allocator, rt_tbl),
+            .b = try em.allocExportsName(allocator, rt_tbl),
+        },
+        .none => unreachable, // preserveModulesWrapperChunk 가 걸러냄
+    };
 }
 
 /// (#4522) `import("<spec>")` 호출의 specifier 를 바꾸고 **호출 뒤에** suffix 를 덧붙인다
