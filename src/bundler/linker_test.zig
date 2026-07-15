@@ -2100,3 +2100,81 @@ test "clearCanonicalNames: ns_export_cache 도 무효화 (non-owned local canoni
     // 버그: 캐시 미정리 → stale 엔트리 잔존(+owned local leak, testing allocator 감지).
     try std.testing.expectEqual(@as(usize, 0), linker.ns_export_cache.count());
 }
+
+test "reuse: #4538 CJS 소비자 scope-0 shadow 추가가 fingerprint 를 바꾼다 (stale reuse 방지)" {
+    // #4533 이후 resolveWrapperConsumerShadows 가 CJS 소비자의 scope-0(클로저 지역) 바인딩도
+    // 주입 래퍼와 대조해 개명한다. 그 이름이 warm 재빌드에서 새로 생겨도 moduleFingerprint 가
+    // 안 담으면 renameReuseGuard 가 stale snapshot 을 재사용해 shadow 가 재출현한다.
+    // → moduleFingerprint 가 CJS scope-0 이름을 담아 변화를 잡는지 검증.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "legacy.cjs", "exports.foo = function(){ return 1; };\n");
+
+    // build1: consumer.cjs 에 shadow 없음.
+    try writeFile(tmp.dir, "consumer.cjs", "module.exports = require('./legacy.cjs').foo();\n");
+    try writeFile(tmp.dir, "index.ts", "import c from './consumer.cjs';\nconsole.log(c);\n");
+    var snap = blk: {
+        var r1 = try buildLinkAndRename(std.testing.allocator, &tmp, "index.ts");
+        defer r1.linker.deinit();
+        defer r1.destroyGraph();
+        defer r1.cache.deinit();
+        break :blk (try r1.linker.buildRenameSnapshot(std.testing.allocator)).?;
+    };
+    defer snap.deinit();
+
+    // build2: consumer.cjs 의 scope-0 에 require_legacy shadow 추가(다른 건 그대로).
+    try writeFile(tmp.dir, "consumer.cjs",
+        \\function require_legacy(){ return 2; }
+        \\module.exports = require('./legacy.cjs').foo() + require_legacy();
+        \\
+    );
+    var r2 = try buildLinkAndRename(std.testing.allocator, &tmp, "index.ts");
+    defer r2.linker.deinit();
+    defer r2.destroyGraph();
+    defer r2.cache.deinit();
+
+    // 핵심: scope-0 shadow 가 생겼으니 guard 는 **false**(재계산) 여야 한다.
+    // fingerprint 가 CJS scope-0 을 안 담으면 여기서 true(stale) → shadow 재출현.
+    try std.testing.expect(!r2.linker.renameReuseGuard(&snap));
+}
+
+test "reuse: #4538 shadow 이름이 scope-0↔nested 이동해도 fingerprint 가 바뀐다 (상쇄 방지)" {
+    // #4538 fold 가 scope-0 을 nested 와 같은 seed 로 더하면, require_legacy 를 top-level 에서
+    // 함수 안으로 옮길 때 두 항이 상쇄돼 fingerprint 불변 → stale reuse. 다른 seed(0xc1)로 방지.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "legacy.cjs", "exports.foo = function(){ return 1; };\n");
+
+    // build1: outer() 는 **이미 존재**하고, require_legacy 는 top-level(scope 0)에 있다.
+    // (이름 집합 = {outer, require_legacy}; nested = {}). 이동만 격리하려고 build 바인딩 추가 없이.
+    try writeFile(tmp.dir, "consumer.cjs",
+        \\function outer(){ return 0; }
+        \\function require_legacy(){ return 2; }
+        \\module.exports = require('./legacy.cjs').foo() + require_legacy() + outer();
+        \\
+    );
+    try writeFile(tmp.dir, "index.ts", "import c from './consumer.cjs';\nconsole.log(c);\n");
+    var snap = blk: {
+        var r1 = try buildLinkAndRename(std.testing.allocator, &tmp, "index.ts");
+        defer r1.linker.deinit();
+        defer r1.destroyGraph();
+        defer r1.cache.deinit();
+        break :blk (try r1.linker.buildRenameSnapshot(std.testing.allocator)).?;
+    };
+    defer snap.deinit();
+
+    // build2: require_legacy 를 **기존 outer() 안(nested)** 으로 이동. 전체 이름 multiset 불변
+    // ({outer@s0, require_legacy@s1} vs build1 {outer@s0, require_legacy@s0}) — scope 만 바뀜.
+    try writeFile(tmp.dir, "consumer.cjs",
+        \\function outer(){ function require_legacy(){ return 2; } return require_legacy(); }
+        \\module.exports = require('./legacy.cjs').foo() + outer();
+        \\
+    );
+    var r2 = try buildLinkAndRename(std.testing.allocator, &tmp, "index.ts");
+    defer r2.linker.deinit();
+    defer r2.destroyGraph();
+    defer r2.cache.deinit();
+
+    // 이동으로 shadow 스코프가 바뀌었으니 guard 는 **false**(재계산) 여야 한다.
+    try std.testing.expect(!r2.linker.renameReuseGuard(&snap));
+}

@@ -24,6 +24,7 @@ const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const BundlerDiagnostic = types.BundlerDiagnostic;
 const Module = @import("module.zig").Module;
+const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
 pub const ImportBinding = @import("binding_scanner.zig").ImportBinding;
 const ExportBinding = @import("binding_scanner.zig").ExportBinding;
@@ -930,6 +931,55 @@ pub const Linker = struct {
         if (m.wrapper_name_synthetic) |n| try self.reserved_globals.put(self.allocator, n, {});
     }
 
+    /// 소비자 `m` 이 참조하는 **wrapped 대상 모듈**(일반 import + require.context 매치)을 하나씩
+    /// `cb(ctx, w, via_context)` 로 yield 한다. cb 가 true 를 반환하면 순회를 중단한다.
+    /// `via_context` = require.context 로 도달(주입 헬퍼가 다름 — `deconflictConsumerShadows` 참조).
+    ///
+    /// ⚠️ 이 대상 집합을 보는 **세 소비처가 정확히 일치**해야 정합한다: (1) `moduleFingerprint` 의
+    /// CJS scope-0 fold 게이트, (2) `resolveWrapperConsumerShadows` 의 shadow rename, (3)
+    /// `computeRenamesForModules` 의 per-chunk 래퍼 이름 예약(참조측). 단일 iterator 로 묶어
+    /// 드리프트를 막는다(emitter.zig 주입도 같은 context_resolved_paths→path_to_module 를 쓴다).
+    fn forEachWrapperImportTarget(
+        self: *Linker,
+        m: *const Module,
+        ctx: anytype,
+        comptime cb: fn (@TypeOf(ctx), *const Module, bool) anyerror!bool,
+    ) !void {
+        for (m.import_records) |rec| {
+            if (rec.is_external) continue;
+            if (rec.kind == .require_context) {
+                for (rec.context_resolved_paths) |abs_opt| {
+                    const abs = abs_opt orelse continue;
+                    const wi = self.graph.path_to_module.get(abs) orelse continue;
+                    const w = self.graph.getModule(wi) orelse continue;
+                    if (w.wrap_kind == .none and w.wrapper_name_synthetic == null) continue;
+                    if (try cb(ctx, w, true)) return;
+                }
+                continue;
+            }
+            if (rec.resolved.isNone()) continue;
+            const w = self.getModule(@intFromEnum(rec.resolved)) orelse continue;
+            if (w.wrap_kind == .none and w.wrapper_name_synthetic == null) continue;
+            if (try cb(ctx, w, false)) return;
+        }
+    }
+
+    /// 이 모듈(소비자)이 wrapped 모듈(또는 asset 래퍼)을 하나라도 import 하는가 —
+    /// 그래야 `require_x()`/`init_x()`/헬퍼가 이 모듈에 주입되고 scope 바인딩이 그걸 가릴 수 있다.
+    /// `moduleFingerprint` 의 CJS scope-0 fold 게이트 (#4538) — shadow 가 불가능한 모듈까지
+    /// 매 편집마다 warm reuse 를 잃지 않도록.
+    fn moduleImportsWrapped(self: *Linker, m: *const Module) !bool {
+        var found = false;
+        const C = struct {
+            fn cb(f: *bool, _: *const Module, _: bool) !bool {
+                f.* = true;
+                return true; // 하나 찾으면 중단
+            }
+        };
+        try self.forEachWrapperImportTarget(m, &found, C.cb);
+        return found;
+    }
+
     /// 이름 충돌 감지 + 리네임 계산 (Rolldown renamer 패턴).
     /// exec_index가 가장 낮은 모듈이 원본 이름 유지, 나머지는 $1, $2, ...
     pub fn computeRenames(self: *Linker) !void {
@@ -972,18 +1022,6 @@ pub const Linker = struct {
         try self.resolveWrapperConsumerShadows(&name_to_owners, null);
     }
 
-    /// **번들 기준** 중첩 스코프의 시작 인덱스. CJS 로 래핑된 모듈은 파일 top-level(scope 0)
-    /// 자체가 `__commonJS` 클로저 **안**이라 번들 기준으로는 중첩이다 — 그 스코프의 바인딩도
-    /// 주입된 래퍼 참조를 가릴 수 있다. 나머지(ESM/none)는 scope 1 부터.
-    ///
-    /// ⚠️ 비-CJS 소비자의 **scope 0**(top-level) 은 `require_X`/`init_X`/`exports_X` 에 대해선
-    /// #4530 예약이 담당하지만, **런타임 헬퍼 이름**(`__toESM`/`__toCommonJS`)은 예약되지
-    /// 않으므로 여기서 안 본다 = 미커버 → **#4538** epic(헬퍼명 shadow). cold 공통 케이스는
-    /// 이 gap 에 안 걸린다(사용자가 지역 변수를 `__toESM` 로 이름 짓는 건 사실상 없음).
-    fn nestedScopeStart(m: *const Module) usize {
-        return if (m.wrap_kind == .cjs) 0 else 1;
-    }
-
     /// 소비자의 스코프 바인딩이 **주입된 래퍼 참조**를 가리는 걸 막는다 (#4533).
     ///
     /// `require("./x")` 는 emit 시 그 자리에서 `require_x()` 로 재작성되고, `init_x()` 호출도
@@ -1020,9 +1058,8 @@ pub const Linker = struct {
         while (i < count) : (i += 1) {
             const ci: u32 = if (only) |o| o[i].toU32() else @intCast(i);
             const c = self.getModule(ci) orelse continue;
-            const csem = c.semantic orelse continue;
-            const start = nestedScopeStart(c);
-            if (csem.scope_maps.len <= start) continue;
+            const csem = if (c.semantic) |*s| s else continue;
+            if (csem.scope_maps.len == 0) continue;
 
             // direct `eval`/`with` 이 있는 소비자는 개명하지 않는다 — 그 안의 동적 조회가
             // 바인딩을 **이름 문자열**로 참조할 수 있어 리네임이 `ReferenceError` 를 낸다.
@@ -1030,41 +1067,67 @@ pub const Linker = struct {
             // 경우 shadow 는 남지만(매우 드문 eval+shadow 조합) 오컴파일보다 낫다.
             if (csem.scopes.len > 0 and csem.scopes[0].blocksMangling()) continue;
 
-            for (c.import_records) |rec| {
-                if (rec.is_external or rec.resolved.isNone()) continue;
-                const w = self.getModule(@intFromEnum(rec.resolved)) orelse continue;
-                if (w.wrap_kind == .none and w.wrapper_name_synthetic == null) continue;
-
-                // 래퍼가 이 소비자 자리에 주입하는 이름들(현재 확정 이름 — rename_table 반영).
-                // ⚠️ 이 목록은 `reserveWrapperNames`(4개 래퍼명)와 **동기화**해야 한다 — 슬롯을
-                // 한쪽에만 추가하면 미매칭(shadow) 또는 미예약(재선언)이 샌다.
-                // ESM-wrap 소비 interop 은 `(init_x(), <toCommonJS>(exports_x))` 를 끼우므로 런타임
-                // 헬퍼 이름도 가려질 수 있다. emit 은 `--minify-whitespace` 에서 축약명(`$tE`/`$tC`,
-                // NAMES.TOESM_MIN/TOCOMMONJS_MIN)을 쓰고 그 외엔 full 이름을 쓰므로 **둘 다** 넣는다.
-                const names = [_]?[]const u8{
-                    w.getRequireName(&self.rename_table),
-                    w.getInitName(&self.rename_table),
-                    w.getExportsName(&self.rename_table),
-                    w.wrapper_name_synthetic, // asset/disabled (#4536) — semantic 없어 rt 무관
-                    if (w.wrap_kind == .esm) "__toCommonJS" else null,
-                    if (w.wrap_kind == .esm) rt.NAMES.TOCOMMONJS_MIN else null,
-                    if (w.wrap_kind != .none) "__toESM" else null,
-                    if (w.wrap_kind != .none) rt.NAMES.TOESM_MIN else null,
-                };
-                for (names) |maybe_n| {
-                    const n = maybe_n orelse continue;
-                    // 소비자의 중첩 스코프(들)에서 n 을 찾아 리네임. 같은 이름이 여러 스코프에
-                    // 바인딩될 수 있으므로(함수마다 `function require_legacy(){}`) 전부 순회한다.
-                    for (csem.scope_maps[start..], start..) |scope_map, sidx| {
-                        const sym_idx = scope_map.get(n) orelse continue;
-                        const sid = bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(ci)), sym_idx);
-                        if (self.rename_table.get(sid) != null) continue; // 이미 리네임됨(중복 import)
-                        const cand = try self.pickConsumerShadowName(n, ci, c, name_to_owners);
-                        try self.assignSymbolCanonical(sid, cand);
-                        // scope 1+ 개명만 metadata nested 스캔이 필요하다(scope 0 은 module-scope 루프).
-                        if (sidx >= 1) try self.nonminify_nested_shadow_modules.put(self.allocator, ci, {});
-                    }
+            // 소비자가 참조하는 각 wrapped 대상마다 그 자리 주입 이름과 동명인 바인딩을 개명.
+            const Ctx = struct { self: *Linker, ci: u32, c: *const Module, csem: *const ModuleSemanticData, nto: *const NameToOwnersMap };
+            const C = struct {
+                fn cb(x: Ctx, w: *const Module, via_context: bool) !bool {
+                    try x.self.deconflictConsumerShadows(x.ci, x.c, x.csem, w, x.nto, via_context);
+                    return false; // 계속
                 }
+            };
+            try self.forEachWrapperImportTarget(c, Ctx{ .self = self, .ci = ci, .c = c, .csem = csem, .nto = name_to_owners }, C.cb);
+        }
+    }
+
+    /// 소비자 `c`(index `ci`)가 참조하는 wrapped 모듈 `w` 하나에 대해, `w` 가 이 소비자 자리에
+    /// 주입하는 이름들과 동명인 소비자 스코프 바인딩을 개명한다. (require.context 처럼 한 소비자가
+    /// 여러 대상을 참조할 수 있어 대상 단위로 분리.)
+    fn deconflictConsumerShadows(self: *Linker, ci: u32, c: *const Module, csem: *const ModuleSemanticData, w: *const Module, name_to_owners: *const NameToOwnersMap, via_context: bool) !void {
+        // `w` 는 래퍼가 있는 대상임이 보장된다 — 유일 호출 경로인 `forEachWrapperImportTarget`
+        // 가 `.none && synthetic==null` 을 이미 걸러 yield 하므로(955/962), `.none` 판단은 그
+        // iterator 한 곳에만 둔다(여기서 재검사하면 드리프트 소지 — 이 PR 의 통합 목적과 상충).
+
+        // 래퍼가 이 소비자 자리에 주입하는 이름들(현재 확정 이름 — rename_table 반영).
+        // ⚠️ 이 목록은 `reserveWrapperNames`(4개 래퍼명)와 **동기화**해야 한다 — 슬롯을
+        // 한쪽에만 추가하면 미매칭(shadow) 또는 미예약(재선언)이 샌다.
+        // ESM-wrap 소비 interop 은 `(init_x(), <toCommonJS>(exports_x))` 를 끼우므로 런타임
+        // 헬퍼 이름도 가려질 수 있다. emit 은 `--minify-whitespace` 에서 축약명(`$tE`/`$tC`,
+        // NAMES.TOESM_MIN/TOCOMMONJS_MIN)을 쓰고 그 외엔 full 이름을 쓰므로 **둘 다** 넣는다.
+        //
+        // ⚠️ 주입 헬퍼가 소비 방식마다 다르다:
+        //   - 일반 import: `__toESM`(래핑된 대상 소비 시) / `__toCommonJS`(ESM-wrap 대상만).
+        //   - require.context(via_context): dev 단일번들 codegen 이 **대상 wrap 무관하게** 매치마다
+        //     `(__zntc_modules[id].fn(), __toCommonJS(__zntc_modules[id].exports))` 를 찍으므로
+        //     `__toCommonJS` 는 **항상** 주입된다. 반대로 `__toESM` 은 context 자리에 안 나온다.
+        const to_cjs = via_context or w.wrap_kind == .esm;
+        const to_esm = !via_context and w.wrap_kind != .none;
+        const names = [_]?[]const u8{
+            w.getRequireName(&self.rename_table),
+            w.getInitName(&self.rename_table),
+            w.getExportsName(&self.rename_table),
+            w.wrapper_name_synthetic, // asset/disabled (#4536) — semantic 없어 rt 무관
+            if (to_cjs) "__toCommonJS" else null,
+            if (to_cjs) rt.NAMES.TOCOMMONJS_MIN else null,
+            if (to_esm) "__toESM" else null,
+            if (to_esm) rt.NAMES.TOESM_MIN else null,
+        };
+        for (names) |maybe_n| {
+            const n = maybe_n orelse continue;
+            // 소비자의 **전 스코프**(0 포함)에서 n 을 찾아 리네임 (#4538). scope 0 은:
+            //   - CJS 소비자: `__commonJS` 클로저 안이라 번들 기준 중첩 → 래퍼도 가림.
+            //   - ESM 소비자: 래퍼 이름은 #4530 예약이 이미 개명(→ 아래 skip-guard 가 건너뜀)
+            //     하지만 **런타임 헬퍼 이름**(`__toESM` 등)은 예약 대상이 아니라 여기서 처리해야
+            //     scope-0 헬퍼 shadow 가 잡힌다.
+            // 같은 이름이 여러 스코프에 바인딩될 수 있으므로(함수마다 `function require_legacy(){}`)
+            // 전부 순회한다.
+            for (csem.scope_maps, 0..) |scope_map, sidx| {
+                const sym_idx = scope_map.get(n) orelse continue;
+                const sid = bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(ci)), sym_idx);
+                if (self.rename_table.get(sid) != null) continue; // 이미 리네임됨(#4530/중복 import)
+                const cand = try self.pickConsumerShadowName(n, ci, c, name_to_owners);
+                try self.assignSymbolCanonical(sid, cand);
+                // scope 1+ 개명만 metadata nested 스캔이 필요하다(scope 0 은 module-scope 루프).
+                if (sidx >= 1) try self.nonminify_nested_shadow_modules.put(self.allocator, ci, {});
             }
         }
     }
@@ -1346,6 +1409,26 @@ pub const Linker = struct {
         // nested binding 이름집합 (G5) — resolveNestedShadowConflicts/hasNestedBinding 입력.
         // forEachNestedBindingName 으로 shadow pass 와 동일한 scope_maps[1..] 집합을 본다.
         try forEachNestedBindingName(m, Ctx, .{ .acc = &fp.nested_name_set_hash }, Ctx.add);
+
+        // (#4538) CJS 로 래핑된 소비자의 **scope 0** 은 `__commonJS` 클로저 안이라 번들 기준
+        // 중첩이다 — `resolveWrapperConsumerShadows`(#4533)가 그 이름도 주입 래퍼와 대조해
+        // 개명한다. 그런데 G2(toplevel)는 CJS scope-0 사용자 로컬을 제외하므로, warm 재빌드에서
+        // scope-0 shadow 바인딩이 **새로 생겨도** fingerprint 가 안 바뀌어 stale snapshot 이
+        // 재사용되고 shadow 가 재출현한다. G5 에 CJS scope-0 이름을 접어 넣어 그 변화를 잡는다.
+        //
+        // ⚠️ scope-0 은 **다른 seed(0xc1)** 로 해시한다 — nested(scope 1+, 0xc0)와 같은 seed·같은
+        //   누산기면 이름이 scope-0↔nested 로 **이동**할 때 두 항이 상쇄돼 fingerprint 가 불변
+        //   (relocation miscompile). seed 를 나누면 이동도 변화로 잡힌다.
+        // ⚠️ 소비자가 **wrapped 모듈을 import 할 때만** 접는다 — 안 그러면 wrapped import 가 없어
+        //   scope-0 shadow 가 애초에 불가능한 CJS 모듈까지 매 scope-0 편집마다 reuse 를 잃는다(perf).
+        if (m.wrap_kind == .cjs and try self.moduleImportsWrapped(&m)) {
+            if (m.semantic) |sem| {
+                if (sem.scope_maps.len > 0) {
+                    var s0 = sem.scope_maps[0].keyIterator();
+                    while (s0.next()) |k| fp.nested_name_set_hash +%= std.hash.Wyhash.hash(0xc1, k.*);
+                }
+            }
+        }
 
         // import binding local_name 집합 (G6) — nested shadow 비교의 다른 한쪽.
         // 모든 binding 의 local_name 을 해시(namespace 포함, conservative superset).
@@ -2043,10 +2126,15 @@ pub const Linker = struct {
     }
 
     /// nested-scope binding(scope_maps[1..]) 의 모든 이름을 1-pass 로 순회한다.
-    /// `hasNestedBinding`(단일 lookup) 과 `moduleFingerprint`(집합 해시) 의 **공유
-    /// 입력 소스** — 둘이 보는 nested 이름 집합이 정확히 같도록 단일 정의로 묶는다
+    /// `hasNestedBinding`(단일 lookup) 과 `moduleFingerprint`(G5 nested 이름집합)의 **공유
+    /// 입력 소스** — 둘이 보는 scope 1+ 집합이 정확히 같도록 단일 정의로 묶는다
     /// (드리프트 = G5 가 shadow pass 가 실제로 보는 것과 어긋남 = 정확성 버그).
-    /// scope_maps[0](모듈 스코프)은 제외 — 그건 G2 toplevel 해시가 담당.
+    /// scope_maps[0](모듈 스코프)은 여기선 제외.
+    ///
+    /// ⚠️ 단, `moduleFingerprint` 는 이 함수의 출력에 더해 **CJS 소비자의 scope-0** 이름을 별도
+    /// seed(0xc1)로 추가 fold 한다(#4538 — CJS scope-0 도 `resolveWrapperConsumerShadows` 의
+    /// shadow 대상). 즉 CJS 모듈에선 G5 fingerprint 가 이 함수 출력의 **상위집합**이다 — 이건
+    /// 의도된 것이지 드리프트가 아니다(scope-0 은 별도 seed 라 상쇄 안 됨).
     fn forEachNestedBindingName(
         m: Module,
         comptime Ctx: type,
@@ -3532,11 +3620,15 @@ pub const Linker = struct {
         for (module_indices) |mod_idx| {
             const cm = self.graph.getModule(mod_idx) orelse continue;
             try self.reserveWrapperNames(cm); // (a) 선언측
-            for (cm.import_records) |rec| { // (b) 참조측
-                if (rec.is_external or rec.resolved.isNone()) continue;
-                const w = self.graph.getModule(rec.resolved) orelse continue;
-                try self.reserveWrapperNames(w);
-            }
+            // (b) 참조측 — 이 청크가 참조하는 래퍼(일반 import + require.context)를 예약해
+            // pickConsumerShadowName 후보가 형제 래퍼와 안 겹치게. 단일 iterator 로 shadow/게이트와 정합.
+            const C = struct {
+                fn cb(l: *Linker, w: *const Module, _: bool) !bool {
+                    try l.reserveWrapperNames(w);
+                    return false;
+                }
+            };
+            try self.forEachWrapperImportTarget(cm, self, C.cb);
         }
 
         // 1. 지정된 모듈의 top-level 심볼 이름 수집
