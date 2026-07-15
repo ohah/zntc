@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
 import { join } from 'node:path';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { createFixture, runNode, runZntc, writeOutputs } from './helpers';
 import { init, close, build } from '../../../packages/core/index';
 
@@ -381,4 +381,66 @@ describe('code-splitting 런타임 스모크', () => {
       await cleanup();
     }
   });
+
+  // (#4537) **CJS-wrapped entry** + `--splitting`. entry 가 `require()` 를 써서 `__commonJS`
+  // 로 래핑되면 `var require_entry = __commonJS(...)` **선언만** 나오고 아무도 `require_entry()`
+  // 를 안 불러 entry 본문이 통째로 미실행이었다(splitting 만; 단일번들은 끝에서 호출). 빌드
+  // exit 0 · 파싱 통과 · 실행만 무동작(stdout 빈 문자열)이라 node 로 돌려야만 잡힌다.
+  //
+  // ⚠️ minify 변형 필수(이 파일 규약, l.17): 호출은 `appendModuleCall` 이 rename_table 로
+  // 이름을 푸는데, minify 는 래퍼명(`require_entry`→`o`)을 한 번 더 바꾼다. 선언과 호출이
+  // 다른 이름으로 풀리면 `ReferenceError: <name> is not defined` — minify 에서만 터진다.
+  for (const format of ['esm', 'cjs'] as const) {
+    for (const { name, minify } of MATRIX) {
+      test(`#4537 ${format}/${name}: --splitting 에서 CJS-wrapped entry 본문이 실행된다`, async () => {
+        const { dir, cleanup } = await createFixture({
+          'legacy.cjs': 'exports.foo = function(){ return "FOO"; };',
+          'other.js': 'export const val = "OTHER";',
+          'entry.js':
+            'function load(){ return require("./legacy.cjs").foo(); }\n' +
+            'import("./other.js").then((m) => console.log(load() + m.val));',
+        });
+        try {
+          const outDir = join(dir, 'dist');
+          const args = [
+            '--bundle',
+            join(dir, 'entry.js'),
+            '--splitting',
+            '--outdir',
+            outDir,
+            `--format=${format}`,
+          ];
+          if (minify) args.push('--minify');
+          const res = await runZntc(args);
+          expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+          if (format === 'esm')
+            writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
+
+          // 실제로 청크가 쪼개졌는지(cross-chunk 경계 존재) — 청킹 휴리스틱이 바뀌어 단일
+          // 청크로 합쳐지면 splitting entry 경로를 안 밟아 이 가드가 진공이 된다.
+          const jsFiles = readdirSync(outDir).filter((f) => f.endsWith('.js'));
+          expect(jsFiles.length).toBeGreaterThan(1);
+
+          // non-vacuity: entry 가 **자기 자신의** `__commonJS` 래퍼(`require_entry`)로 래핑되고
+          // **그 래퍼가 호출**되는지 — plain 에서 구조로 직접 확인한다(minify 는 이름을 mangle
+          // 하므로 `$c`/`__commonJS` 만 보면 helper 정의·`require_legacy` 형제 래퍼와도 매칭돼
+          // scope-hoist entry 를 진공 통과시킨다). #4537 회귀 시(선언만·호출없음, 또는 scope-hoist
+          // 로 래퍼 소멸) plain 변형이 이 두 assert 로 잡는다. minify 변형은 stdout 으로 rename
+          // 일치까지 검증(불일치면 ReferenceError → 빈 stdout).
+          const entryCode = readFileSync(join(outDir, 'entry.js'), 'utf8');
+          if (!minify) {
+            expect(entryCode).toContain('var require_entry =');
+            expect(entryCode).toContain('require_entry();');
+          }
+
+          const { stdout } = await runNode(join(outDir, 'entry.js'));
+          // 버그 시: 빈 문자열(본문 미실행 — exit 0). minify rename 불일치 회귀 시: node 가
+          // `ReferenceError` 로 non-zero exit → `runNode` 가 throw(빈 stdout 아님).
+          expect(stdout.trim()).toBe('FOOOTHER');
+        } finally {
+          await cleanup();
+        }
+      });
+    }
+  }
 });

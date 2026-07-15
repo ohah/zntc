@@ -103,6 +103,14 @@ fn resolveOwnerLocal(l: *Linker, graph: *const ModuleGraph, mod_idx: ModuleIndex
     return null;
 }
 
+/// 모듈이 ESM-wrap + top-level await 인가. 그 `init_X()` 호출은 `await` 를 요구하므로 비-async
+/// 컨텍스트에선 낼 수 없다: reg_split factory·dev_split factory 는 함수라 top-level await 불가,
+/// CJS-format 청크도 top-level await 불가. 세 entry-invoke 지점이 공유해 드리프트를 막는다
+/// (각 지점의 컨텍스트별 await-합법성 게이트는 호출부에 남는다 — ESM-format 청크만 허용).
+fn isTlaEsmModule(m: anytype) bool {
+    return m.wrap_kind == .esm and m.uses_top_level_await;
+}
+
 /// (#4120) owner 모듈이 CJS-wrapped 면 cross-chunk export `name` 은 런타임 interop 멤버라 진짜
 /// 로컬 바인딩이 없다. provider 청크에 `var <global> = <interop>;` 을 materialize 해 cross-chunk
 /// 소비자가 일반 식별자로 import 하게 한다(metadata 의 per-importer preamble 은 #4120 가드로 억제).
@@ -1137,7 +1145,7 @@ pub fn emitChunks(
                     }
                 }
                 const m = graph.getModule(mod_idx) orelse continue;
-                const tla = m.wrap_kind == .esm and m.uses_top_level_await;
+                const tla = isTlaEsmModule(m);
                 if (m.wrap_kind.isWrapped() and !tla) {
                     try parent.appendModuleCall(&chunk_output, allocator, m, if (linker) |l| &l.rename_table else null);
                 }
@@ -1544,7 +1552,7 @@ pub fn emitChunks(
                     // 를 내는데, reg_split 청크 factory 는 비-async `function(...)` 이라 top-level
                     // await = SyntaxError. TLA+reg_split entry 는 이 PR 이전에도 미실행이었으므로
                     // 여기서 제외(회귀 없음 — 무효 JS 생성 방지). 비-TLA wrapped entry 만 호출.
-                    const tla_entry = em.wrap_kind == .esm and em.uses_top_level_await;
+                    const tla_entry = isTlaEsmModule(em);
                     if (em.wrap_kind.isWrapped() and !tla_entry) {
                         try parent.appendModuleCall(&chunk_output, allocator, em, if (linker) |l| &l.rename_table else null);
                     }
@@ -1592,6 +1600,33 @@ pub fn emitChunks(
                 }
                 try chunk_output.appendSlice(allocator, reg_ids[ci]);
                 try chunk_output.appendSlice(allocator, if (min) "\");" else "\");\n");
+            }
+        }
+
+        // (#4537) 표준 splitting(비-reg_split·비-preserve-modules)의 wrapped **user entry**
+        // 는 본문을 실행할 호출이 없다. 단일번들은 맨 끝에서 require_X()/init_X() 로 entry 를
+        // 실행하는데(emitter.zig:1093, appendGuardedModuleCall), splitting 은 그 호출이 세
+        // 경로의 게이트에 전부 걸려 어디서도 안 나온다: dev_split_chunk(reg_split 한정, 게다가
+        // entry 자신은 skip)·preserveModulesWrapperChunk(preserve-modules 한정)·reg_split(1559,
+        // iife/umd/amd 의 bootstrap). 그래서 `var require_X=__commonJS(...)` 선언만 남고 호출이
+        // 없어 entry 본문이 통째로 미실행이었다(#4537). 단일번들과 대칭으로 여기서 호출한다.
+        // reg_split=1559, preserve-modules=pm_entry_call 이 각자 담당하므로 제외(이중호출 방지).
+        // (__commonJS/__esm memoize 라 설령 중복돼도 본문은 1회지만, 이중 호출문 자체를 막는다.)
+        if (!reg_split and !options.preserve_modules and chunk_is_user_entry) {
+            if (entry_mod_idx) |ei| {
+                if (graph.getModule(@enumFromInt(ei))) |em| {
+                    // CJS-format 청크의 TLA(.esm+top-level await) entry 는 top-level await 가
+                    // 불가하므로 제외(reg_split 1547 과 동일 근거). ESM-format 청크는 top-level
+                    // await 가 합법이라 appendModuleCall 이 `await init_X()` 로 처리한다.
+                    const tla_cjs = options.format == .cjs and isTlaEsmModule(em);
+                    if (em.is_entry_point and em.wrap_kind.isWrapped() and !tla_cjs) {
+                        // 단일번들과 동일하게 `appendGuardedModuleCall` — entry_error_guard(RN/Metro)
+                        // 활성 시 `__zntc_guarded(require_X)` 로 wrap, 아니면 appendModuleCall 과 동등.
+                        // (표준 splitting entry 는 top-level 호출이라 단일번들이 가장 가까운 대응;
+                        // reg_split/dev_split 은 factory/bootstrap 자체 error 처리라 별개.)
+                        try parent.appendGuardedModuleCall(&chunk_output, allocator, em, options, if (linker) |l| &l.rename_table else null);
+                    }
+                }
             }
         }
 
