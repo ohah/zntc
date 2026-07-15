@@ -353,6 +353,29 @@ describe('#4533: 주입된 래퍼 참조 ↔ 소비자 스코프 바인딩', () 
     }
   });
 
+  test('(11) ESM 소비자의 top-level(scope 0) 헬퍼명 shadow (#4538)', async () => {
+    // ESM 소비자가 CJS 를 import 하면 __toESM(require_x()) 가 소비자 scope 0 에 주입된다.
+    // __toESM 는 예약 대상이 아니라, 사용자가 top-level __toESM 를 선언하면 가려졌다(#4538).
+    // 소비자 전 스코프(0 포함)를 헬퍼명으로 대조해 개명한다.
+    const { dir, cleanup } = await createFixture({
+      'legacy.cjs': 'exports.foo = function(){ return "FOO"; };',
+      'entry.mjs':
+        'import d from "./legacy.cjs";\n' +
+        'function __toESM(x){ return "USERHELPER"; }\n' +
+        'console.log(d.foo() + __toESM());',
+    });
+    try {
+      const out = join(dir, 'b.mjs');
+      const res = await runZntc(['--bundle', join(dir, 'entry.mjs'), '-o', out, '--format=esm']);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      const { stdout, stderr } = await runNode(out);
+      expect(stderr).not.toContain('TypeError');
+      expect(stdout.trim()).toBe('FOOUSERHELPER'); // node 정본과 동일
+    } finally {
+      await cleanup();
+    }
+  });
+
   test('(10) code-splitting — 래퍼 선언과 동명인 co-chunk 사용자 top-level (중복선언 방지)', async () => {
     // 래퍼 var require_legacy = __commonJS 가 이 청크에 선언되는데 동명 사용자 함수가 같은
     // 청크에 있고 legacy 는 다른 청크에서만 import → per-chunk reserved 가 **선언측** 래퍼를
