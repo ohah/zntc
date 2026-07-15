@@ -267,10 +267,39 @@ fn captureRenamesToPending(
 
         if (old_sym.synthetic_kind == null) {
             const name = old_sym.nameText(source);
-            const new_idx = if (module_scope) |scope| scope.get(name) else null;
+            // ⚠️ old_sym 이 정말 **module-scope(scope 0) 심볼**일 때만 module_scope 로 재유도한다.
+            // 같은 이름이 scope 0 과 nested 양쪽에 있으면(#4533 소비자 shadow-rename 케이스),
+            // module_scope.get(name) 은 **scope 0 idx** 를 주는데 old_sym 이 nested 였다면 rename 이
+            // 엉뚱한 심볼에 붙는다 → 아래 span 폴백으로 가야 한다.
+            const old_is_module_scope = if (old_sem.scope_maps.len > 0)
+                (old_sem.scope_maps[0].get(name) orelse std.math.maxInt(usize)) == old_idx
+            else
+                false;
+            const new_idx = if (old_is_module_scope) (if (module_scope) |scope| scope.get(name) else null) else null;
             if (new_idx) |idx| {
                 if (idx < new_sem.symbols.items.len and new_sem.symbols.items[idx].synthetic_kind == null) {
                     try rebuilt.put(arena, bundler_symbol.SymbolID.make(module.index, idx), rename);
+                }
+                continue;
+            }
+            // module_scope(scope 0) 에 없으면 **nested 바인딩**이다 (#4533 소비자 shadow-rename).
+            // rename_table 에 nested entry 가 생기는 건 이번(#4533) 부터다. 이름은 nested 스코프
+            // 에서 유일하지 않으므로 `declaration_span` 으로 매칭한다 — const-materialization 은
+            // leaf 식별자만 치환하고 선언 위치는 안 옮기므로 span 안정.
+            //
+            // ⚠️ 이 폴백은 **pending 이 비지 않은(=module-scope rename 도 있는) 소비자가
+            // AST 변형(const-materialize)까지 겪을 때**만 발동한다 — 그 경우 `applyPendingRenames`
+            // 가 `removeModule` 로 nested entry 까지 지우므로 여기서 재-stash 해야 한다. nested-only
+            // 소비자는 pending 이 비어 applyPendingRenames 가 skip → rename_table 이 보존되어
+            // 이 경로가 필요 없다(그래서 cold 단순 케이스로는 재현 안 됨).
+            if (old_sym.declaration_span.end > old_sym.declaration_span.start) {
+                for (new_sem.symbols.items, 0..) |new_sym, idx| {
+                    if (new_sym.synthetic_kind != null) continue;
+                    if (new_sym.declaration_span.start != old_sym.declaration_span.start) continue;
+                    if (new_sym.declaration_span.end != old_sym.declaration_span.end) continue;
+                    if (!std.mem.eql(u8, new_sym.nameText(source), name)) continue;
+                    try rebuilt.put(arena, bundler_symbol.SymbolID.make(module.index, idx), rename);
+                    break;
                 }
             }
             continue;
