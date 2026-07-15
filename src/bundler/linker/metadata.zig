@@ -1294,6 +1294,24 @@ pub fn buildMetadataForAst(
             }
         }
 
+        // (#4533) nested(scope 1+) 바인딩의 shadow-rename 반영. `resolveWrapperConsumerShadows`
+        // 가 소비자의 가리는 바인딩을 `rename_table` 로 개명했는데, 위 self-rename 루프는
+        // scope_maps[0] 만 본다. minify 빌드에선 mangler(아래 mergeUnifiedPhaseB)가 nested 를
+        // 담당하고 scope-aware 라 shadow 를 자연히 피하므로 non-minify 에서만 스캔한다.
+        if (!self.manglerActive() and self.moduleHasNestedShadow(module_index)) {
+            var s: usize = 1;
+            while (s < sem.scope_maps.len) : (s += 1) {
+                var nit = sem.scope_maps[s].iterator();
+                while (nit.next()) |e| {
+                    const sym_idx: u32 = @intCast(e.value_ptr.*);
+                    if (renames.contains(sym_idx)) continue;
+                    if (self.nestedRenameFor(module_index, sym_idx)) |renamed| {
+                        try putOwnedRename(self, &renames, &owned_nested_renames, sym_idx, renamed);
+                    }
+                }
+            }
+        }
+
         // nested rename 을 `Linker.unified_result` 에서 조회. Phase A (module
         // scope) 은 위 self-rename 루프에서 canonical_name 경유로 이미 처리됨.
         // metadata 가 dupe 하여 소유 — unified_result 가 deinit 되어도 안전.

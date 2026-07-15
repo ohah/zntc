@@ -31,6 +31,7 @@ const Span = @import("../lexer/token.zig").Span;
 const Ast = @import("../parser/ast.zig").Ast;
 const semantic_symbol = @import("../semantic/symbol.zig");
 const bundler_symbol = @import("symbol.zig");
+const rt = @import("runtime_helpers.zig");
 const unified_mangler = @import("../codegen/unified_mangler.zig");
 const profile = @import("../profile.zig");
 const debug_log = @import("../debug_log.zig");
@@ -240,6 +241,12 @@ pub const Linker = struct {
     /// (scope_maps 소유, semantic 수명 = graph > Linker). 빌드는 단일스레드 computeRenames 에서만,
     /// 조회는 const(레이스 없음). 캐시 미존재(per-chunk/빌드 전) 는 원본 스캔 fallback → byte-identical.
     nested_binding_cache: std.AutoHashMapUnmanaged(u32, std.StringHashMapUnmanaged(void)) = .empty,
+
+    /// (#4533) `resolveWrapperConsumerShadows` 가 **nested(scope 1+)** 소비자 바인딩을 개명한
+    /// **모듈 index 집합**. non-minify 에서 `buildMetadataForAst` 의 nested-scope rename_table
+    /// 스캔은 이 rename 만 반영하므로, 이 집합에 없는 모듈(절대다수)은 그 O(nested 바인딩) 스캔을
+    /// 통째로 건너뛴다. scope 0 개명은 module-scope self-rename 루프가 담당하므로 여기 무관.
+    nonminify_nested_shadow_modules: std.AutoHashMapUnmanaged(u32, void) = .empty,
 
     /// (#4120) `module_index → ChunkIndex` borrowed 슬라이스. `computeCrossChunkLinks` 직후
     /// bundler 가 `chunk_graph.module_to_chunk` 를 빌려 세팅 — emit 동안만 유효(소유권 X, free 금지).
@@ -488,6 +495,7 @@ pub const Linker = struct {
         // nested-binding 캐시: inner set 해제(computeRenames 에러 경로 안전망; 정상 경로는 defer 가 이미 clear).
         self.clearNestedBindingCache();
         self.nested_binding_cache.deinit(self.allocator);
+        self.nonminify_nested_shadow_modules.deinit(self.allocator);
         // cross-chunk 전역 이름(#4101): owned value 해제 + inner/outer 맵 deinit.
         self.clearCrossChunkGlobalNames();
         self.cross_chunk_global_names.deinit(self.allocator);
@@ -908,13 +916,18 @@ pub const Linker = struct {
         // 리네임**시키면 할당기가 하나로 모인다. 래퍼는 자연스러운 이름을 유지하므로
         // size/warm-rebuild 안정성도 낫다(`computeRenames` 는 매 빌드 실행 → watch 도 커버).
         var wit = self.graph.modulesIterator();
-        while (wit.next()) |m| {
-            if (m.wrap_kind == .none) continue;
-            if (m.getInitName(null)) |n| try self.reserved_globals.put(self.allocator, n, {});
-            if (m.getExportsName(null)) |n| try self.reserved_globals.put(self.allocator, n, {});
-            if (m.getRequireName(null)) |n| try self.reserved_globals.put(self.allocator, n, {});
-            if (m.wrapper_name_synthetic) |n| try self.reserved_globals.put(self.allocator, n, {});
-        }
+        while (wit.next()) |m| try self.reserveWrapperNames(m);
+    }
+
+    /// 한 모듈의 래퍼 심볼 이름(`require_X`/`init_X`/`exports_X` + asset `wrapper_name_synthetic`)을
+    /// `reserved_globals` 에 예약한다 — 사용자 심볼이 그 이름과 겹치면 리네임되도록(#4530/#4533).
+    /// `collectReservedGlobals`(전 모듈)와 `computeRenamesForModules`(청크)가 공유하는 단일 소스.
+    fn reserveWrapperNames(self: *Linker, m: *const Module) !void {
+        if (m.wrap_kind == .none and m.wrapper_name_synthetic == null) return;
+        if (m.getInitName(null)) |n| try self.reserved_globals.put(self.allocator, n, {});
+        if (m.getExportsName(null)) |n| try self.reserved_globals.put(self.allocator, n, {});
+        if (m.getRequireName(null)) |n| try self.reserved_globals.put(self.allocator, n, {});
+        if (m.wrapper_name_synthetic) |n| try self.reserved_globals.put(self.allocator, n, {});
     }
 
     /// 이름 충돌 감지 + 리네임 계산 (Rolldown renamer 패턴).
@@ -922,6 +935,8 @@ pub const Linker = struct {
     pub fn computeRenames(self: *Linker) !void {
         var scope = profile.begin(.link_compute_renames);
         defer scope.end();
+
+        self.nonminify_nested_shadow_modules.clearRetainingCapacity();
 
         // 0. 모든 모듈의 미해결 참조를 수집 → reserved_globals
         try self.collectReservedGlobals();
@@ -952,6 +967,148 @@ pub const Linker = struct {
         // 충돌하면 target module의 canonical name을 한 단계 더 rename.
         // 예: d3-color의 cubehelix와 d3-interpolate 내부의 function cubehelix 충돌.
         try self.resolveNestedShadowConflicts(&name_to_owners);
+
+        // 4. 주입된 래퍼 참조(require_x())가 소비자의 스코프 바인딩에 가려지는 것 방지 (#4533).
+        try self.resolveWrapperConsumerShadows(&name_to_owners, null);
+    }
+
+    /// **번들 기준** 중첩 스코프의 시작 인덱스. CJS 로 래핑된 모듈은 파일 top-level(scope 0)
+    /// 자체가 `__commonJS` 클로저 **안**이라 번들 기준으로는 중첩이다 — 그 스코프의 바인딩도
+    /// 주입된 래퍼 참조를 가릴 수 있다. 나머지(ESM/none)는 scope 1 부터.
+    ///
+    /// ⚠️ 비-CJS 소비자의 **scope 0**(top-level) 은 `require_X`/`init_X`/`exports_X` 에 대해선
+    /// #4530 예약이 담당하지만, **런타임 헬퍼 이름**(`__toESM`/`__toCommonJS`)은 예약되지
+    /// 않으므로 여기서 안 본다 = 미커버 → **#4538** epic(헬퍼명 shadow). cold 공통 케이스는
+    /// 이 gap 에 안 걸린다(사용자가 지역 변수를 `__toESM` 로 이름 짓는 건 사실상 없음).
+    fn nestedScopeStart(m: *const Module) usize {
+        return if (m.wrap_kind == .cjs) 0 else 1;
+    }
+
+    /// 소비자의 스코프 바인딩이 **주입된 래퍼 참조**를 가리는 걸 막는다 (#4533).
+    ///
+    /// `require("./x")` 는 emit 시 그 자리에서 `require_x()` 로 재작성되고, `init_x()` 호출도
+    /// 소비자 본문에 끼워진다. 그 지점의 스코프 체인에 래퍼 이름과 **동명 바인딩**이 있으면
+    /// 그게 래퍼를 가린다:
+    ///
+    ///     function load(){
+    ///       function require_legacy(){ ... }        // 소비자의 바인딩
+    ///       return require("./legacy.cjs").foo();   // → require_legacy().foo() → 가려짐
+    ///     }
+    ///     → TypeError (빌드 green · 파싱 green · 실행만 실패)
+    ///
+    /// **가리는 사용자 바인딩을 리네임**한다(래퍼 이름은 절대 안 건드림). 래퍼 이름은 cross-chunk
+    /// 전역명·preserve-modules 공개 export·mangler 등 **여러 서브시스템이 공유**하는 값이라 그걸
+    /// 바꾸면 파급이 크지만, 소비자의 지역 바인딩은 그 모듈 안에서만 참조되므로 리네임이
+    /// **로컬**하다(rename_table 한 entry + codegen 이 참조 치환 — mangler 가 nested local 을
+    /// 개명하는 것과 같은 경로).
+    ///
+    /// 소비자 자기 `import_records` 로 "무엇을 import 하는가" 를 본다(reverse 인접 불필요).
+    /// asset/disabled 래퍼(`wrapper_name_synthetic`)도 같은 방식으로 커버된다 — 리네임 대상이
+    /// 래퍼가 아니라 **소비자의 바인딩**이라 래퍼에 심볼 테이블이 없어도 무관하다(#4536).
+    ///
+    /// `only` 가 주어지면 그 모듈들만 소비자로 본다(code-splitting per-chunk — 소비자 바인딩은
+    /// 그 소비자의 청크에서 rename_table 에 반영된다). `null` 이면 전 모듈.
+    fn resolveWrapperConsumerShadows(self: *Linker, name_to_owners: *const NameToOwnersMap, only: ?[]const ModuleIndex) !void {
+        // ⚠️ minify 는 skip — mangler 가 **모든** 바인딩을 유일 단문자명으로 개명하고 주입
+        // 참조는 래퍼의 mangled 이름을 쓰므로(`a().foo()`) 섀도가 원천 불가하다. 여기서 굳이
+        // 리네임하면 metadata 반영이 minify 에서 꺼져 있어(mergeUnifiedPhaseB 가 nested 담당)
+        // 헛일이 될 뿐이다.
+        if (self.manglerActive()) return;
+
+        const count = if (only) |o| o.len else self.graph.moduleCount();
+        var i: usize = 0;
+        while (i < count) : (i += 1) {
+            const ci: u32 = if (only) |o| o[i].toU32() else @intCast(i);
+            const c = self.getModule(ci) orelse continue;
+            const csem = c.semantic orelse continue;
+            const start = nestedScopeStart(c);
+            if (csem.scope_maps.len <= start) continue;
+
+            // direct `eval`/`with` 이 있는 소비자는 개명하지 않는다 — 그 안의 동적 조회가
+            // 바인딩을 **이름 문자열**로 참조할 수 있어 리네임이 `ReferenceError` 를 낸다.
+            // mangler 도 같은 이유로 `blocksMangling()` 모듈을 통째로 skip 한다(#1258). 이
+            // 경우 shadow 는 남지만(매우 드문 eval+shadow 조합) 오컴파일보다 낫다.
+            if (csem.scopes.len > 0 and csem.scopes[0].blocksMangling()) continue;
+
+            for (c.import_records) |rec| {
+                if (rec.is_external or rec.resolved.isNone()) continue;
+                const w = self.getModule(@intFromEnum(rec.resolved)) orelse continue;
+                if (w.wrap_kind == .none and w.wrapper_name_synthetic == null) continue;
+
+                // 래퍼가 이 소비자 자리에 주입하는 이름들(현재 확정 이름 — rename_table 반영).
+                // ⚠️ 이 목록은 `reserveWrapperNames`(4개 래퍼명)와 **동기화**해야 한다 — 슬롯을
+                // 한쪽에만 추가하면 미매칭(shadow) 또는 미예약(재선언)이 샌다.
+                // ESM-wrap 소비 interop 은 `(init_x(), <toCommonJS>(exports_x))` 를 끼우므로 런타임
+                // 헬퍼 이름도 가려질 수 있다. emit 은 `--minify-whitespace` 에서 축약명(`$tE`/`$tC`,
+                // NAMES.TOESM_MIN/TOCOMMONJS_MIN)을 쓰고 그 외엔 full 이름을 쓰므로 **둘 다** 넣는다.
+                const names = [_]?[]const u8{
+                    w.getRequireName(&self.rename_table),
+                    w.getInitName(&self.rename_table),
+                    w.getExportsName(&self.rename_table),
+                    w.wrapper_name_synthetic, // asset/disabled (#4536) — semantic 없어 rt 무관
+                    if (w.wrap_kind == .esm) "__toCommonJS" else null,
+                    if (w.wrap_kind == .esm) rt.NAMES.TOCOMMONJS_MIN else null,
+                    if (w.wrap_kind != .none) "__toESM" else null,
+                    if (w.wrap_kind != .none) rt.NAMES.TOESM_MIN else null,
+                };
+                for (names) |maybe_n| {
+                    const n = maybe_n orelse continue;
+                    // 소비자의 중첩 스코프(들)에서 n 을 찾아 리네임. 같은 이름이 여러 스코프에
+                    // 바인딩될 수 있으므로(함수마다 `function require_legacy(){}`) 전부 순회한다.
+                    for (csem.scope_maps[start..], start..) |scope_map, sidx| {
+                        const sym_idx = scope_map.get(n) orelse continue;
+                        const sid = bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(ci)), sym_idx);
+                        if (self.rename_table.get(sid) != null) continue; // 이미 리네임됨(중복 import)
+                        const cand = try self.pickConsumerShadowName(n, ci, c, name_to_owners);
+                        try self.assignSymbolCanonical(sid, cand);
+                        // scope 1+ 개명만 metadata nested 스캔이 필요하다(scope 0 은 module-scope 루프).
+                        if (sidx >= 1) try self.nonminify_nested_shadow_modules.put(self.allocator, ci, {});
+                    }
+                }
+            }
+        }
+    }
+
+    /// 소비자 바인딩 개명용 안전한 이름을 고른다. `findAvailableCandidate` 는 owner/reserved/
+    /// canonical/소비자 **중첩(scope 1+)** 바인딩을 피하지만, CJS 소비자의 **scope 0**(클로저
+    /// 안이라 owner 도 nested 스캔 대상도 아님)은 못 본다 → 그 이름과 겹치면 재선언/오컴파일
+    /// (#4533 리뷰). 여기서 scope 0 까지 추가로 검사해 정말 안전한 이름을 준다.
+    fn pickConsumerShadowName(self: *Linker, base: []const u8, module_index: u32, c: *const Module, name_to_owners: *const NameToOwnersMap) ![]const u8 {
+        const csem = c.semantic;
+        var suffix: u32 = 1;
+        while (true) {
+            const cand = try self.findAvailableCandidate(base, module_index, &suffix, name_to_owners);
+            // CJS 소비자의 scope 0(클로저 지역)과 충돌하는가? (findAvailableCandidate 미검사 영역)
+            const scope0_hit = blk: {
+                if (c.wrap_kind != .cjs) break :blk false;
+                const sem = csem orelse break :blk false;
+                if (sem.scope_maps.len == 0) break :blk false;
+                break :blk sem.scope_maps[0].get(cand) != null;
+            };
+            if (!scope0_hit) return cand;
+            self.allocator.free(cand);
+            suffix += 1; // 다음 후보로
+        }
+    }
+
+    /// (#4533) nested 심볼(scope 1+)의 `rename_table` 조회. `buildMetadataForAst` 의
+    /// module-scope self-rename 루프는 `scope_maps[0]` 만 보므로, `resolveWrapperConsumerShadows`
+    /// 가 nested 바인딩에 건 shadow-rename 은 여기로 조회해 metadata 에 반영한다(non-minify).
+    /// ⚠️ minify 빌드에선 mangler(Phase B, `mergeUnifiedPhaseB`)가 nested rename 을 담당하고
+    /// 애초에 scope-aware 라 shadow 를 자연히 피하므로, `manglerActive()` 로 게이트해서만 쓴다.
+    pub fn nestedRenameFor(self: *const Linker, module_index: u32, sym_idx: u32) ?[]const u8 {
+        return self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(module_index)), sym_idx));
+    }
+
+    /// unified mangler(Phase B nested rename)가 이번 빌드에 도는가.
+    pub fn manglerActive(self: *const Linker) bool {
+        return self.graph.minify_identifiers;
+    }
+
+    /// 이 모듈이 nested(scope 1+) 소비자 shadow-rename 을 받았는가 (#4533). `buildMetadataForAst`
+    /// 가 nested-scope rename_table 스캔을 이 모듈에만 돌리도록 게이트한다(영향 모듈에 비례).
+    pub fn moduleHasNestedShadow(self: *const Linker, module_index: u32) bool {
+        return self.nonminify_nested_shadow_modules.contains(module_index);
     }
 
     /// computeRenames 전용: owner 모듈마다 nested scope(scope 0 제외) 바인딩 이름 union set 을
@@ -3362,6 +3519,25 @@ pub const Linker = struct {
                 try self.reserved_globals.put(self.allocator, entry.key_ptr.*, {});
             }
         }
+        // (#4533) global-identifier + 래퍼 이름을 예약한다. 두 갈래를 모두 예약해야 한다:
+        //   (a) **선언측** — 이 청크에 놓이는 wrapped 모듈의 래퍼(`var require_X = __commonJS`)와
+        //       동명인 **사용자 top-level 심볼**이 이 청크에 있으면 중복 선언 SyntaxError(#4530).
+        //   (b) **참조측** — 이 청크의 소비자가 import 하는 래퍼. `pickConsumerShadowName` 후보가
+        //       형제 래퍼(`require_x$1`) 이름과 겹치면 오컴파일(#4533).
+        //
+        // ⚠️ **전 모듈 래퍼를 예약하면 안 된다**: reserved_globals 는 calculateRenames 도 쓰므로,
+        // 이 청크와 무관한 래퍼 이름까지 예약하면 그 이름과 동명인 **다른 청크의 사용자 심볼**이
+        // 불필요하게 리네임돼 content-hash 파일명이 흔들린다. (a)+(b) 로 청크 범위에 한정한다.
+        for (self.global_identifiers) |name| try self.reserved_globals.put(self.allocator, name, {});
+        for (module_indices) |mod_idx| {
+            const cm = self.graph.getModule(mod_idx) orelse continue;
+            try self.reserveWrapperNames(cm); // (a) 선언측
+            for (cm.import_records) |rec| { // (b) 참조측
+                if (rec.is_external or rec.resolved.isNone()) continue;
+                const w = self.graph.getModule(rec.resolved) orelse continue;
+                try self.reserveWrapperNames(w);
+            }
+        }
 
         // 1. 지정된 모듈의 top-level 심볼 이름 수집
         var name_to_owners: NameToOwnersMap = .empty;
@@ -3393,6 +3569,11 @@ pub const Linker = struct {
 
         // 2. 충돌하는 이름에 대해 리네임 계산 (cross-chunk 점유 마커는 skip)
         try self.calculateRenames(&name_to_owners, true);
+
+        // 2.1 주입된 래퍼 참조가 소비자 스코프 바인딩에 가려지는 것 방지 (#4533). code-splitting 은
+        // 이 per-chunk 경로만 타므로 여기서도 불러야 한다(전역 computeRenames 는 안 탄다). 소비자
+        // 바인딩을 리네임하는 방식이라 그 소비자가 이 청크에 있어야 반영된다 → module_indices 대상.
+        try self.resolveWrapperConsumerShadows(&name_to_owners, module_indices);
 
         // 2.5 #4101 cross-chunk 전역 네이밍 override — 이 청크가 export 하는 cross-chunk 심볼을
         // 전역 이름으로 고정. calculateRenames 의 per-chunk deconflict 순서(exec_index)가 전역
