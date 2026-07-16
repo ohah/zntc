@@ -683,6 +683,26 @@ pub fn emitWithTreeShaking(
     else
         0;
 
+    // #4535: non-dev 증분 캐시 키에 접을 provider emit fingerprint 테이블 (ModuleIndex → fp).
+    // dev 는 모듈을 registry(path-id)로 래핑해 provider 변경이 소비자 emit 바이트를 안 바꾸므로
+    // stale 재사용이 정답 → folding 불필요(HMR 핫패스 보호). linker 없으면 정적 인라인 없음 → 무의미.
+    var emit_fps: []u64 = &.{};
+    defer if (emit_fps.len > 0) allocator.free(emit_fps);
+    if (options.compiled_cache != null and !options.dev_mode) {
+        if (linker) |l| {
+            const n = graph.moduleCount();
+            emit_fps = try allocator.alloc(u64, n);
+            // Merkle deep-fold: deep(M)=local(M)+Σ deep(dep). re-export barrel 통한 전이 상태까지
+            // 소비자 키에 반영. state = 방문 마킹(사이클 차단).
+            const fp_state = try allocator.alloc(u8, n);
+            defer allocator.free(fp_state);
+            @memset(fp_state, 0);
+            for (0..n) |k| {
+                _ = l.emitDeepFingerprint(@intCast(k), emit_fps, fp_state, 0);
+            }
+        }
+    }
+
     if (options.compiled_cache) |cache| {
         // PR-B: HMR 위상 보존-hit 의 unchanged 모듈은 input(source/import/mtime)이 물리 불변이라
         // 직전 Entry 의 input_hash 가 자기 자신과 일치한다. graph.changed_emit_paths(보존-hit 에서만
@@ -711,7 +731,7 @@ pub fn emitWithTreeShaking(
                 }
             }
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
-            const input_hash = cache_mod.computeInputHash(m, options_hash, used_names, graph);
+            const input_hash = cache_mod.computeInputHash(m, options_hash, used_names, graph, emit_fps);
             input_hashes[i] = input_hash;
             const hit = cache.tryHit(m.path, input_hash) orelse continue;
             results[i] = hit.dupe(allocator) catch continue;
