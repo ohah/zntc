@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
 import { join } from 'node:path';
+import { writeFileSync } from 'node:fs';
 import { createFixture, writeOutputs, runNode } from './helpers';
 import { init, close, build } from '../../../packages/core/index';
 import type { ManualChunksModuleInfo } from '../../../packages/core/index';
@@ -1164,5 +1165,45 @@ describe('manualChunks NAPI bridge', () => {
     // ReferenceError 없이 실행, .local(pv) 정상, 타-청크 re-export(rx)는 제외
     const { stdout } = await runNode(join(fixture.dir, entry.path));
     expect(stdout).toBe('PV PV undefined');
+  });
+
+  // (#4542) manualChunks 로 **CJS-wrapped user entry** 를 manual 청크로 relocate 하면, 그 청크는
+  // `.manual` kind 라 `chunk_is_user_entry`=false → #4537 의 entry-invoke 게이트가 안 걸려
+  // `var require_entry = __commonJS(...)` 선언만 남고 `require_entry()` 호출이 없어 본문 미실행이었다.
+  // 이제 게이트를 "청크에 든 is_entry_point 모듈"로 잡아 relocate 된 entry 도 호출한다.
+  test('#4542 manualChunks 로 relocate 된 CJS-wrapped entry 가 --splitting 에서 실행된다', async () => {
+    const fixture = await createFixture({
+      'entry.js':
+        'function load(){ return require("./legacy.cjs").foo(); }\n' +
+        'import("./other.js").then((m) => console.log(load() + m.val));',
+      'legacy.cjs': 'exports.foo = function(){ return "FOO"; };',
+      'other.js': 'export const val = "OTHER";',
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'entry.js')],
+      rootDir: fixture.dir,
+      platform: 'node',
+      splitting: true,
+      format: 'esm',
+      manualChunks: (id) => (id.endsWith('entry.js') ? 'manual-entry' : null),
+    });
+    expect(result.errors ?? []).toHaveLength(0);
+    const outs = result.outputFiles!;
+    // 비-vacuity: entry 모듈이 실제로 manual 청크로 relocate 됐는지(`__commonJS` 래핑 + manual 경로).
+    const entryChunk = outs.find(
+      (o) => o.text.includes('require_entry') && o.text.includes('__commonJS'),
+    );
+    expect(entryChunk, 'entry 모듈이 담긴 청크를 못 찾음').toBeDefined();
+    expect(entryChunk!.path).toContain('manual-entry');
+    // 핵심: require_entry() 호출이 있어야 한다(버그: 선언만 남고 미호출).
+    expect(entryChunk!.text).toContain('require_entry()');
+    // 실제 실행 — 버그 시 무출력.
+    const dist = join(fixture.dir, 'dist');
+    writeOutputs(dist, outs);
+    writeFileSync(join(dist, 'package.json'), JSON.stringify({ type: 'module' }));
+    const entryFile = entryChunk!.path.split('/').pop()!;
+    const { stdout } = await runNode(join(dist, entryFile));
+    expect(stdout.trim()).toBe('FOOOTHER');
   });
 });
