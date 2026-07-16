@@ -1709,35 +1709,19 @@ pub fn emitChunks(
         // reg_split=1559, preserve-modules=pm_entry_call 이 각자 담당하므로 제외(이중호출 방지).
         // (__commonJS/__esm memoize 라 설령 중복돼도 본문은 1회지만, 이중 호출문 자체를 막는다.)
         //
-        // ⚠️ (#4542) 게이트를 `chunk_is_user_entry`(chunk.kind==.entry_point)라는 **프록시**가 아니라
-        // "이 청크가 **프로그램 entry 출력**(node 가 직접 실행)인가" 라는 근본 신호로 잡는다.
-        // manualChunks 로 user entry 를 manual 청크로 relocate 하면 그 manual 청크가 곧 그 entry 의
-        // 출력인데(chunk.zig:1163 이 manualChunks 우선으로 entry 를 거기 남긴다), 프록시가 `.manual`
-        // 이라 실패해 호출이 안 나왔다. "entry 를 그것이 든 출력 청크에서 호출"은 #4537 의 의미를
-        // chunk.kind 무관하게 일반화한 것이다.
-        //   - **프로그램 entry 출력 청크** = 비-dynamic `.entry_point`(node 가 실행) 또는 `.manual`
-        //     (relocate 된 entry 출력일 수 있음). dynamic `.entry_point`(dynamic-import 대상/plugin
-        //     `emitFile` on-demand 청크)와 `.common`(user entry 는 chunk.zig:1166 에서 evict)은 제외.
-        //     ⚠️ 제외를 **모듈** 플래그(is_emitted_chunk_entry)로 하면 user entry 이면서 동시에
-        //     emitFile 된 모듈을 잘못 뺀다 — on-demand 여부는 **청크** 단위 사실이다.
-        //   - user entry 는 `is_entry_point`(build_flow 가 user/emitted entry 에만 설정, dynamic-import
-        //     대상은 false)로 식별. reg_split(bootstrap)·preserve-modules(pm_entry_call)는 각자 담당→제외.
-        // ⚠️ manualChunks 가 한 청크에 user entry 를 다른 entry 의 dep 와 **묶으면** 그 청크 로드 시
-        // entry 본문이 실행된다("자기 출력 청크에서 호출"의 일관된 결과, #4537 과 동일 성질) — 비정상
-        // config 의 예측 가능한 귀결로 수용.
-        // ⚠️ 이 esm/cjs 경로만 일반화한다. 같은 `chunk_is_user_entry` 프록시가 reg_split(iife/umd/amd)
-        // invoke+bootstrap(1644/1676)과 run_before_main polyfill(477/1021/1093)에도 쓰여 relocate 시
-        // 동일 증상이나, 각자 factory registry(reg_ids)·federation bootstrapSpan·cross-chunk RBM import
-        // 기계에 묶여 별도 수정이 필요 → #4548(reg_split)·#4549(RBM) 후속.
-        // `chunk_is_user_entry`(341: 비-dynamic `.entry_point`) 에 relocate 목적지인 `.manual` 을
-        // 더한 것이 곧 "프로그램 entry 출력 청크" — 기존 신호를 재사용(분류 규칙 단일 소스).
-        const chunk_is_entry_output = chunk_is_user_entry or chunk.kind == .manual;
-        if (!reg_split and !options.preserve_modules and chunk_is_entry_output) {
+        // 게이트는 `chunk_is_user_entry`(비-dynamic `.entry_point`). (#4553) user entry 는 항상 자기
+        // entry_point 청크에 있다(manualChunks 로도 relocate 안 됨 — chunk.zig 가 manual 청크에서 user
+        // entry 제외) → `.manual`/`.common` 은 user entry 를 담지 않으므로 여기서 볼 필요가 없다.
+        // 청크 내 `is_entry_point` 모듈을 스캔해 호출한다 — user entry 이면서 동시에 plugin `emitFile`
+        // 된 both-case(같은 non-dynamic entry_point 청크에 공존)도 정확히 1회 호출. dynamic-import
+        // 대상은 `is_entry_point=false`(build_flow)라 자동 제외. reg_split(bootstrap)·preserve-modules
+        // (pm_entry_call)는 각자 담당하므로 게이트 제외.
+        if (!reg_split and !options.preserve_modules and chunk_is_user_entry) {
             for (sorted_mods) |mod_idx| {
                 const em = graph.getModule(mod_idx) orelse continue;
                 if (!em.is_entry_point) continue; // user/emitted entry (dynamic-import 대상은 false)
                 // CJS-format 청크의 TLA(.esm+top-level await) entry 는 top-level await 가 불가하므로
-                // 제외(reg_split TLA 제외 1651 과 동일 근거). ESM-format 은 합법이라 appendModuleCall 이
+                // 제외(reg_split TLA 제외와 동일 근거). ESM-format 은 합법이라 appendModuleCall 이
                 // `await init_X()` 로 처리한다.
                 const tla_cjs = options.format == .cjs and isTlaEsmModule(em);
                 if (em.wrap_kind.isWrapped() and !tla_cjs) {

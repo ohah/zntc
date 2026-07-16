@@ -558,6 +558,20 @@ const EntryInfo = struct {
 /// shaker가 null이 아니면 tree-shaking 결과를 반영하여 미포함 모듈을 스킵한다.
 /// manual chunk 이름을 slot index 로 매핑. 이미 있으면 기존 slot 반환, 없으면 새 slot 생성.
 /// record entries + resolver 동적 결과의 dedup 통합 지점.
+/// (#4553) manualChunks 가 user entry 를 매칭했을 때 1회 경고 — entry 는 relocate 되지 않고 자기
+/// 청크에 유지된다(rollup/esbuild 동일). `warned` 로 entry 당 중복 emit 을 막는다.
+fn warnManualChunksEntry(
+    warned: *std.AutoHashMapUnmanaged(u32, void),
+    allocator: std.mem.Allocator,
+    mi: u32,
+    entry_path: []const u8,
+    chunk_name: []const u8,
+) !void {
+    const gop = try warned.getOrPut(allocator, mi);
+    if (gop.found_existing) return;
+    std.log.warn("zntc: manualChunks 가 entry '{s}' 를 청크 '{s}' 로 지정했으나, entry 는 relocate 되지 않고 자기 청크에 유지됩니다 (rollup/esbuild 동일).", .{ entry_path, chunk_name });
+}
+
 fn ensureNameSlot(
     name_to_slot: *std.StringHashMapUnmanaged(usize),
     effective_names: *std.ArrayList([]const u8),
@@ -780,6 +794,21 @@ pub fn generateChunks(
         if (e.is_dynamic) try dynamic_entry_modules.put(allocator, @intFromEnum(e.module_idx), {});
     }
 
+    // (#4553) user(비-dynamic) entry 모듈은 manual 청크에서 제외 — dynamic import 대상과 동일 정책.
+    // user entry 는 **항상 자기 entry_point 청크**에 있어야 한다(rollup/esbuild 불변식): entry 실행에
+    // 딸린 인프라(bootstrap·보편 wrapper·"use client" 호이스팅·run_before_main·HMR runtime·dev_split
+    // 선-init)가 전부 "entry 는 자기 청크에 산다"는 전제에 묶여 있어, manualChunks 로 entry 를 옮기면
+    // 그 전제를 쓰는 emit site 전부가 깨진다(#4542/#4548/#4549/#4551 계열). manualChunks 로 entry 이동
+    // 은 rollup/esbuild 도 지원하지 않는다 — entry 는 옮기지 않고 매칭 시 warn(아래).
+    var user_entry_modules: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer user_entry_modules.deinit(allocator);
+    for (entries.items) |e| {
+        if (!e.is_dynamic) try user_entry_modules.put(allocator, @intFromEnum(e.module_idx), {});
+    }
+    // 같은 entry 를 resolver·record 양쪽이 매칭해도 warn 은 entry 당 1회만 (이중 emit 방지).
+    var warned_manual_entries: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer warned_manual_entries.deinit(allocator);
+
     // Resolver 결과 미리 수집 — 모듈당 1회 호출. NAPI TSFN 경로에서도 재호출 없음.
     // resolver 없으면 배열 할당 자체 skip (빌드당 module_count × 16B 절약).
     var resolver_assignments: ?[]?usize = null;
@@ -794,6 +823,13 @@ pub fn generateChunks(
             if (m.is_external) continue;
             if (dynamic_entry_modules.contains(@intCast(mi))) continue;
             if (fn_ptr(manual_resolver_ctx, m.path, @ptrCast(graph))) |chunk_name| {
+                // (#4553) user entry 는 manual 로 안 옮긴다 — resolver 는 **호출하되**(getModuleInfo
+                // 등 hook 부작용 보존) 배정 결과만 무시하고 warn. resolver 를 아예 안 부르면 inspection
+                // hook 을 쓰는 소비자가 깨진다.
+                if (user_entry_modules.contains(@intCast(mi))) {
+                    try warnManualChunksEntry(&warned_manual_entries, allocator, @intCast(mi), m.path, chunk_name);
+                    continue;
+                }
                 ra[mi] = try ensureNameSlot(&name_to_slot, &effective_names, allocator, chunk_name);
             }
         }
@@ -916,9 +952,19 @@ pub fn generateChunks(
                     continue;
                 }
             }
-            const idx = types.ManualChunkEntry.lookup(manual_chunks, m.path) orelse continue;
-            // record name 의 slot index (effective_names 병합으로 record 가 먼저 등록됨).
-            try manual_seeds[idx].append(allocator, ModuleIndex.fromUsize(mi));
+            const rec_idx = types.ManualChunkEntry.lookup(manual_chunks, m.path) orelse continue;
+            // ⚠️ `lookup` 은 **raw record index** 를 준다. 중복 이름 record(예: 두 pattern group 을
+            // 같은 청크명으로)는 `ensureNameSlot` 이 한 slot 으로 dedupe 하므로 raw index 가
+            // manual_count 를 넘을 수 있다 → `manual_seeds[idx]`/`effective_names[idx]` OOB. name 으로
+            // deduped slot 을 되찾아 쓴다.
+            const slot = name_to_slot.get(manual_chunks[rec_idx].name) orelse continue;
+            // (#4553) user entry 는 pattern 매칭돼도 manual 로 안 옮긴다 — 배정 무시 + warn.
+            // (resolver 경로는 위에서 처리 — ra[mi] 가 null 이라 여기까지 오는 건 record pattern.)
+            if (user_entry_modules.contains(@intCast(mi))) {
+                try warnManualChunksEntry(&warned_manual_entries, allocator, @intCast(mi), m.path, effective_names.items[slot]);
+                continue;
+            }
+            try manual_seeds[slot].append(allocator, ModuleIndex.fromUsize(mi));
         }
     }
 
@@ -1008,6 +1054,10 @@ pub fn generateChunks(
                 const mi = @intFromEnum(mod_idx);
                 if (m.is_external) continue;
                 if (splitting_info[mi].hasBit(manual_bit)) continue;
+                // (#4553) user entry 는 manual bit 를 받지 않는다 — seed 로 안 걸러졌어도(vendor seed 의
+                // transitive dep 로 도달) 여기서 막아 entry 가 manual 청크로 빨려가지 않게 한다. entry 를
+                // 통해 dep 로 전파도 중단(entry 의 exclusive dep 는 entry 청크에 남음).
+                if (user_entry_modules.contains(@intCast(mi))) continue;
                 // 다른 slot 의 seed 면 skip — 그쪽에서 처리됨
                 if (module_primary_slot[mi]) |other| {
                     if (other != i) continue;
@@ -1151,7 +1201,6 @@ pub fn generateChunks(
 
     // 엔트리 모듈은 반드시 자신의 엔트리 청크에 할당되어야 함.
     // Phase 3에서 공통 청크에 배정되었을 수 있으므로, 강제로 엔트리 청크로 이동.
-    // 단, manual chunk 에 배정된 경우는 manual 우선 정책이라 그대로 유지.
     for (entries.items, 0..) |entry, ci| {
         const chunk_idx: ChunkIndex = @enumFromInt(@as(u32, @intCast(ci)));
         const current = chunk_graph.getModuleChunk(entry.module_idx);
@@ -1160,6 +1209,11 @@ pub fn generateChunks(
             chunk_graph.assignModuleToChunk(entry.module_idx, chunk_idx);
             try chunk_graph.getChunkMut(chunk_idx).addModule(allocator, entry.module_idx);
         } else if (current != chunk_idx) {
+            // manual chunk 에 있으면 그대로 유지. (#4553) **user entry** 는 위 seed/BFS 에서 이미
+            // manual 제외라 여기 걸리지 않는다 — 이 예외가 지금 보호하는 건 **dynamic import 대상**이
+            // manual seed 의 static dep 로 Phase 2.5 전파돼 manual 청크에 흡수된 경우다(seed 는 dynamic
+            // 을 빼지만 전파는 안 뺌 — 기존 동작). 그걸 자기 dynamic 청크로 도로 빼내면 manual 청크의
+            // static import 가 cross-chunk 로 바뀌며 미노출 심볼 ReferenceError.
             if (chunk_graph.getChunk(current).kind == .manual) continue;
             // 공통 청크에 잘못 배정됨 → 이전 청크에서 제거 후 엔트리 청크로 이동
             const old_chunk = chunk_graph.getChunkMut(current);
