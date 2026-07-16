@@ -1294,6 +1294,71 @@ test "generateChunks: external 가 manual pattern 매칭돼도 manual chunk 안 
     try std.testing.expectEqual(@as(usize, 1), cg.chunks.items.len);
 }
 
+test "generateChunks: (#4553) manualChunks 매칭돼도 user entry 는 자기 entry_point 청크 유지" {
+    // Option A: user entry 는 manual 청크로 relocate 되지 않는다(rollup/esbuild 불변식). 패턴이
+    // entry 와 non-entry 를 모두 매칭해도, entry 는 자기 entry_point 청크에 남고 non-entry(lib)만
+    // manual 청크로 간다. (entry-in-manual 이면 entry 실행 인프라가 흩어져 깨지던 #4542/#4548 계열
+    // 화수분의 근원 제거.)
+    const alloc = std.testing.allocator;
+
+    var modules: [2]Module = .{
+        makeTestModule(alloc, 0, "entry.ts"),
+        makeTestModule(alloc, 1, "lib.ts"),
+    };
+    var tg = try TestGraph.init(alloc, &modules);
+    defer tg.deinit(alloc);
+
+    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1)); // entry → lib (static)
+
+    // 패턴이 entry 와 lib 를 **모두** 매칭.
+    const manual_entries = [_]types.ManualChunkEntry{.{ .name = "grp", .patterns = &.{ "entry", "lib" } }};
+    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, .{ .manual_chunks = &manual_entries });
+    defer cg.deinit();
+
+    const entry_ci = cg.getModuleChunk(@enumFromInt(0));
+    const lib_ci = cg.getModuleChunk(@enumFromInt(1));
+    try std.testing.expect(!entry_ci.isNone());
+    try std.testing.expect(!lib_ci.isNone());
+    try std.testing.expect(entry_ci != lib_ci); // 서로 다른 청크
+    // 핵심: entry 는 relocate 안 됨(자기 entry_point 청크), lib 만 manual.
+    try std.testing.expect(cg.getChunk(entry_ci).kind == .entry_point);
+    try std.testing.expect(cg.getChunk(lib_ci).kind == .manual);
+}
+
+test "generateChunks: (#4553 code-review) 중복 이름 record 는 crash 없이 한 청크로 병합" {
+    // 두 pattern group 을 같은 청크명으로 지정하는 건 합법. `ManualChunkEntry.lookup` 이 raw record
+    // index 를 반환하는데 ensureNameSlot 이 이름을 한 slot 으로 dedupe → raw index(=1)로
+    // manual_seeds/effective_names(len=1)를 인덱싱하면 OOB panic 이었다(pre-existing). name→slot
+    // 매핑으로 수정. react·lodash 둘 다 'vendor' 한 청크로.
+    const alloc = std.testing.allocator;
+
+    var modules: [3]Module = .{
+        makeTestModule(alloc, 0, "entry.ts"),
+        makeTestModule(alloc, 1, "react.ts"),
+        makeTestModule(alloc, 2, "lodash.ts"),
+    };
+    var tg = try TestGraph.init(alloc, &modules);
+    defer tg.deinit(alloc);
+
+    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
+    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(2));
+
+    // 같은 이름 'vendor' 를 두 record 로 — dedupe 되어 slot 1개.
+    const manual_entries = [_]types.ManualChunkEntry{
+        .{ .name = "vendor", .patterns = &.{"react"} },
+        .{ .name = "vendor", .patterns = &.{"lodash"} },
+    };
+    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, .{ .manual_chunks = &manual_entries });
+    defer cg.deinit();
+
+    // crash 없이: react·lodash 는 같은 'vendor' manual 청크로 병합.
+    const react_ci = cg.getModuleChunk(@enumFromInt(1));
+    const lodash_ci = cg.getModuleChunk(@enumFromInt(2));
+    try std.testing.expect(!react_ci.isNone());
+    try std.testing.expect(react_ci == lodash_ci); // 두 record 가 한 청크로
+    try std.testing.expect(cg.getChunk(react_ci).kind == .manual);
+}
+
 // ============================================================
 // (#4494) 직접 CJS import 의 cross-chunk 심볼 등록
 // ============================================================

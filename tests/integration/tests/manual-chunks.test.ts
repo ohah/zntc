@@ -1105,7 +1105,12 @@ describe('manualChunks NAPI bridge', () => {
   // 미재작성된 raw specifier 로 남아 런타임 ERR_MODULE_NOT_FOUND (별도
   // 파일 없음). same-chunk 동적 import 는 inline_dynamic_imports 무관 항상
   // namespace 스냅샷으로 재작성돼야 한다.
-  test('버그픽스: manualChunks 병합된 동적 import 대상은 namespace 스냅샷으로 재작성', async () => {
+  // (#4553) entry 가 page 를 static+dynamic 둘 다 import. manualChunks 가 page+index 를 매칭해도
+  // entry(index)는 자기 청크에 남고(Option A), dynamic import 는 실제 cross-chunk 로드로 재작성된다.
+  // (예전엔 entry 가 'main' 으로 relocate 되며 dynamic 대상이 같은 청크로 병합→snapshot 이었는데,
+  //  그 병합은 entry-relocation 파생 동작이라 제거. snapshot 재작성 기능 자체는 inline-dynamic-imports
+  //  / bundle-dynamic-import 테스트가 커버.)
+  test('#4553 manualChunks 가 entry 매칭해도 entry 는 분리 + dynamic import 정상', async () => {
     const fixture = await createFixture({
       'page.ts': `export function fp(){ return "FP"; }\nexport const pv = "PV";`,
       'index.ts':
@@ -1121,21 +1126,22 @@ describe('manualChunks NAPI bridge', () => {
       manualChunks: (id: string) => (id.includes('page') || id.includes('index') ? 'main' : null),
     });
     const outs = result.outputFiles!;
-    const entry = outs.find((o) => /main|index/.test(o.path) && o.path.endsWith('.js'))!;
+    const entry = outs.find((o) => o.text.includes('main()') && o.path.endsWith('.js'))!;
     expect(entry).toBeDefined();
-    // raw `import("./page")` (확장자/파일 없는 source specifier) 가 남으면 안 됨
+    // Option A: entry 는 manual 'main' 청크로 relocate 되지 않는다.
+    expect(entry.path).not.toContain('main-');
+    // raw `import("./page")` (확장자/파일 없는 source specifier) 가 남으면 안 됨 — 실제 청크 경로로 재작성.
     expect(entry.text).not.toMatch(/import\(["']\.\/page["']\)/);
-    expect(entry.text).toContain('Promise.resolve().then(');
     writeOutputs(fixture.dir, outs);
     const { stdout } = await runNode(join(fixture.dir, entry.path));
     expect(stdout).toBe('FP PV FP');
   });
 
-  // /simplify #2c 가드: 병합된 동적 대상이 *타 청크* 심볼을 re-export 하면
-  // namespace 스냅샷에 넣을 수 없다(이 청크에 로컬 식별자 미바인딩 →
-  // ReferenceError). re-export 계열은 스냅샷에서 제외(문서화된 한계) —
-  // .local export 는 정상, 크래시 없음.
-  test('버그픽스: 병합된 동적 대상의 타-청크 re-export 는 크래시 없이 제외(.local 정상)', async () => {
+  // (#4553) entry 가 dynamic import 하는 page 가 타 청크(inner)의 심볼을 re-export 하는 경우.
+  // Option A: entry(index)는 자기 청크에 남고, dynamic import 는 실제 cross-chunk 로드라 re-export
+  // 된 rx 도 정상 해석된다(`typeof p.rx === "string"`). 예전 entry-relocation 병합 경로에선 rx 를
+  // snapshot 에서 제외해 undefined 였는데, 실제 로드가 되면서 더 정확해졌다(크래시 없음, .local 정상).
+  test('#4553 entry 매칭 + dynamic 대상의 타-청크 re-export — 실제 로드로 정상 해석', async () => {
     const fixture = await createFixture({
       'inner.ts': `export const rx = "RX";`,
       'page.ts': `export { rx } from "./inner";\nexport const pv = "PV";`,
@@ -1149,7 +1155,6 @@ describe('manualChunks NAPI bridge', () => {
       entryPoints: [join(fixture.dir, 'index.ts')],
       format: 'esm',
       splitting: true,
-      // page+index → main 병합. inner 는 별도 청크로 강제(타 청크 re-export).
       manualChunks: (id: string) =>
         id.includes('inner')
           ? 'innerchunk'
@@ -1158,20 +1163,61 @@ describe('manualChunks NAPI bridge', () => {
             : null,
     });
     const outs = result.outputFiles!;
-    const entry = outs.find((o) => /main|index/.test(o.path) && o.path.endsWith('.js'))!;
+    const entry = outs.find((o) => o.text.includes('main()') && o.path.endsWith('.js'))!;
     expect(entry).toBeDefined();
+    // Option A: entry 는 manual 'main' 로 relocate 안 됨.
+    expect(entry.path).not.toContain('main-');
     expect(entry.text).not.toMatch(/import\(["']\.\/page["']\)/);
     writeOutputs(fixture.dir, outs);
-    // ReferenceError 없이 실행, .local(pv) 정상, 타-청크 re-export(rx)는 제외
+    // ReferenceError 없이 실행, .local(pv) 정상, 타-청크 re-export(rx)도 실제 로드로 해석.
+    const { stdout } = await runNode(join(fixture.dir, entry.path));
+    expect(stdout).toBe('PV PV string');
+  });
+
+  // /simplify #2c 가드(유지): **non-entry** 모듈(mid)이 manual 청크로 그룹된 동적 대상(page, 같은
+  // manual 청크)을 dynamic import 하면 namespace **스냅샷**으로 재작성된다. 그 스냅샷은 page 가 *타
+  // 청크*(innerchunk)에서 re-export 한 심볼(rx)을 못 넣어 undefined(문서화된 한계) — 크래시 없이
+  // .local(pv) 은 정상. (entry 는 relocate 안 돼 이 병합에 안 끼므로, 병합 주체를 non-entry 로 둔다.)
+  test('#4553 non-entry 병합 동적 대상의 타-청크 re-export 는 스냅샷에서 제외(undefined, 크래시 없음)', async () => {
+    const fixture = await createFixture({
+      'inner.ts': `export const rx = "RX";`,
+      'page.ts': `export { rx } from "./inner";\nexport const pv = "PV";`,
+      // mid: non-entry. page 를 static + dynamic 둘 다 import → page 가 mid 와 같은 manual 청크로 병합.
+      'mid.ts':
+        'import { pv } from "./page";\n' +
+        'export async function run(){ const p = await import("./page"); return [p.pv, pv, typeof p.rx].join(" "); }',
+      'index.ts': 'import { run } from "./mid";\nrun().then((r) => console.log(r));',
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'index.ts')],
+      format: 'esm',
+      splitting: true,
+      manualChunks: (id: string) =>
+        id.includes('inner')
+          ? 'innerchunk'
+          : id.includes('page') || id.includes('mid')
+            ? 'main'
+            : null,
+    });
+    const outs = result.outputFiles!;
+    const mainChunk = outs.find((o) => o.path.includes('main') && o.path.endsWith('.js'))!;
+    // 비-vacuity: page 가 실제로 main 으로 병합 + 동적 import 가 스냅샷으로 재작성됨.
+    expect(mainChunk.text).toContain('"PV"');
+    expect(mainChunk.text).toContain('Promise.resolve().then(');
+    writeOutputs(fixture.dir, outs);
+    const entry = outs.find((o) => o.path.includes('index') && o.path.endsWith('.js'))!;
+    // .local(pv) 정상, 타-청크 re-export(rx) 는 스냅샷에서 제외 → undefined. 크래시 없음.
     const { stdout } = await runNode(join(fixture.dir, entry.path));
     expect(stdout).toBe('PV PV undefined');
   });
 
-  // (#4542) manualChunks 로 **CJS-wrapped user entry** 를 manual 청크로 relocate 하면, 그 청크는
-  // `.manual` kind 라 `chunk_is_user_entry`=false → #4537 의 entry-invoke 게이트가 안 걸려
-  // `var require_entry = __commonJS(...)` 선언만 남고 `require_entry()` 호출이 없어 본문 미실행이었다.
-  // 이제 게이트를 "청크에 든 is_entry_point 모듈"로 잡아 relocate 된 entry 도 호출한다.
-  test('#4542 manualChunks 로 relocate 된 CJS-wrapped entry 가 --splitting 에서 실행된다', async () => {
+  // (#4553) manualChunks 가 user entry 를 매칭해도 **entry 는 자기 entry_point 청크에 남는다**
+  // (rollup/esbuild 불변식). 예전엔 entry 를 manual 청크로 relocate 했는데, 그러면 entry 실행에
+  // 딸린 인프라(bootstrap·보편 wrapper·"use client" 호이스팅·run_before_main·HMR·dev_split)가
+  // 전부 "entry 는 자기 청크에 산다"는 전제에 묶여 깨졌다(#4542/#4548/#4549/#4551 화수분). 이제
+  // entry 는 옮기지 않으므로 표준 경로로 정상 실행되고, entry 만 매칭한 manual 청크는 비어서 skip.
+  test('#4553 manualChunks 가 CJS-wrapped entry 를 매칭해도 entry 는 자기 청크에서 실행된다', async () => {
     const fixture = await createFixture({
       'entry.js':
         'function load(){ return require("./legacy.cjs").foo(); }\n' +
@@ -1190,15 +1236,18 @@ describe('manualChunks NAPI bridge', () => {
     });
     expect(result.errors ?? []).toHaveLength(0);
     const outs = result.outputFiles!;
-    // 비-vacuity: entry 모듈이 실제로 manual 청크로 relocate 됐는지(`__commonJS` 래핑 + manual 경로).
+    // 비-vacuity: entry 모듈이 실제로 wrap(__commonJS)되어 이 빌드에 존재하는지.
     const entryChunk = outs.find(
       (o) => o.text.includes('require_entry') && o.text.includes('__commonJS'),
     );
     expect(entryChunk, 'entry 모듈이 담긴 청크를 못 찾음').toBeDefined();
-    expect(entryChunk!.path).toContain('manual-entry');
-    // 핵심: require_entry() 호출이 있어야 한다(버그: 선언만 남고 미호출).
+    // 핵심(Option A): entry 는 manual 청크('manual-entry')로 relocate 되지 **않는다** — 자기 청크에.
+    expect(entryChunk!.path).not.toContain('manual-entry');
+    // 표준 entry-invoke 로 호출된다.
     expect(entryChunk!.text).toContain('require_entry()');
-    // 실제 실행 — 버그 시 무출력.
+    // entry 만 매칭한 manual 청크는 비어서 생성 안 됨.
+    expect(outs.some((o) => o.path.includes('manual-entry'))).toBe(false);
+    // 실제 실행 — 정상.
     const dist = join(fixture.dir, 'dist');
     writeOutputs(dist, outs);
     writeFileSync(join(dist, 'package.json'), JSON.stringify({ type: 'module' }));
