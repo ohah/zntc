@@ -3294,3 +3294,214 @@ test "lImp/lReExp partial-skip: reuse-hit named-import via re-export barrel 정�
         else => return error.TestUnexpectedResult,
     }
 }
+
+// #4535: consumer-유발 wrap_kind flip. a.js 가 lib.js 를 require 하기 시작하면 lib 이 CJS-wrap
+// 으로 flip → lib 를 import 하는 index.js 의 interop emit 이 바뀌어야 하는데 index.js source 는
+// 불변. computeInputHash 가 provider(lib)의 emit_fingerprint(wrap_kind 포함)를 접어 miss 유발.
+// ⚠️ compiled_cache ON + dev_mode OFF 필수(dev 는 registry 간접화로 은폐).
+test "reuse #4535: consumer-induced wrap_kind flip warm==cold" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "lib.js", "export function greet(){ return \"HI\"; }");
+    try writeFile(tmp.dir, "a.js", "export function run(){ return \"A1\"; }");
+    try writeFile(tmp.dir, "index.js",
+        \\import { greet } from './lib.js';
+        \\import { run } from './a.js';
+        \\console.log(greet(), run());
+        \\
+    );
+    const entry = try absPath(&tmp, "index.js");
+    defer std.testing.allocator.free(entry);
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var cc = CompiledOutputCache.init(std.testing.allocator);
+    defer cc.deinit();
+    const base_opts = @as(@import("bundler.zig").BundleOptions, .{
+        .entry_points = &.{entry},
+        .dev_mode = false,
+        .module_store = &store,
+        .compiled_cache = &cc,
+    });
+    for (0..2) |_| {
+        var b = Bundler.init(std.testing.allocator, base_opts);
+        var r = try b.bundle(std.testing.io);
+        try std.testing.expect(!r.hasErrors());
+        r.deinit(std.testing.allocator);
+        b.deinit();
+    }
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    // a.js 편집 → lib.js 를 require → lib.js 가 CJS-wrap 으로 flip. index.js 는 불변.
+    try writeFile(tmp.dir, "a.js", "export function run(){ return require('./lib.js').greet() + \"A2\"; }");
+    const a_abs = try absPath(&tmp, "a.js");
+    defer std.testing.allocator.free(a_abs);
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, a_abs, {});
+    var warm_opts = base_opts;
+    warm_opts.changed_files = &touched;
+    var warm = Bundler.init(std.testing.allocator, warm_opts);
+    var warm_r = try warm.bundle(std.testing.io);
+    defer warm_r.deinit(std.testing.allocator);
+    defer warm.deinit();
+    try std.testing.expect(!warm_r.hasErrors());
+    var cold = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = false });
+    var cold_r = try cold.bundle(std.testing.io);
+    defer cold_r.deinit(std.testing.allocator);
+    defer cold.deinit();
+    try std.testing.expect(!cold_r.hasErrors());
+    try std.testing.expectEqualStrings(cold_r.output, warm_r.output);
+}
+
+// #4535 [0]: transitive re-export barrel. origin(q.js)이 심볼을 rename 하면 barrel(barrel.js)의
+// emitFingerprint 가 origin canonical 을 chain-resolve 해 바뀌어야, barrel 통해 import 하는
+// main.js 가 miss 된다(안 그러면 옛 심볼명 참조 → ReferenceError). compiled_cache ON + dev OFF.
+test "reuse #4535: re-export barrel origin rename warm==cold" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "q.js", "function fmt(x){ return x + 1; }\nexport { fmt };");
+    try writeFile(tmp.dir, "barrel.js", "export { fmt } from './q.js';");
+    try writeFile(tmp.dir, "main.js",
+        \\import { fmt } from './barrel.js';
+        \\console.log(fmt(1));
+        \\
+    );
+    const entry = try absPath(&tmp, "main.js");
+    defer std.testing.allocator.free(entry);
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var cc = CompiledOutputCache.init(std.testing.allocator);
+    defer cc.deinit();
+    const base_opts = @as(@import("bundler.zig").BundleOptions, .{
+        .entry_points = &.{entry},
+        .dev_mode = false,
+        .module_store = &store,
+        .compiled_cache = &cc,
+    });
+    for (0..2) |_| {
+        var b = Bundler.init(std.testing.allocator, base_opts);
+        var r = try b.bundle(std.testing.io);
+        try std.testing.expect(!r.hasErrors());
+        r.deinit(std.testing.allocator);
+        b.deinit();
+    }
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    // q.js 만 편집: 심볼 rename (fmt → fmtImpl as fmt). barrel/main 은 불변.
+    try writeFile(tmp.dir, "q.js", "function fmtImpl(x){ return x + 2; }\nexport { fmtImpl as fmt };");
+    const q_abs = try absPath(&tmp, "q.js");
+    defer std.testing.allocator.free(q_abs);
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, q_abs, {});
+    var warm_opts = base_opts;
+    warm_opts.changed_files = &touched;
+    var warm = Bundler.init(std.testing.allocator, warm_opts);
+    var warm_r = try warm.bundle(std.testing.io);
+    defer warm_r.deinit(std.testing.allocator);
+    defer warm.deinit();
+    try std.testing.expect(!warm_r.hasErrors());
+    var cold = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = false });
+    var cold_r = try cold.bundle(std.testing.io);
+    defer cold_r.deinit(std.testing.allocator);
+    defer cold.deinit();
+    try std.testing.expect(!cold_r.hasErrors());
+    try std.testing.expectEqualStrings(cold_r.output, warm_r.output);
+}
+
+// #4535 [2]: export 재정렬. provider(p.js) export 순서가 소비자(main.js)의 `import * as ns` inline
+// namespace object 속성 순서(`{a,b}` vs `{b,a}`)를 바꾼다. emitFingerprint 가 order-dependent 라야
+// 재정렬을 감지해 main.js 를 miss 시킨다. compiled_cache ON + dev OFF.
+test "reuse #4535: export reorder warm==cold" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "p.js", "export function a(){ return 'A'; }\nexport function b(){ return 'B'; }");
+    try writeFile(tmp.dir, "main.js",
+        \\import * as ns from './p.js';
+        \\console.log(Object.keys(ns).join(','));
+        \\
+    );
+    const entry = try absPath(&tmp, "main.js");
+    defer std.testing.allocator.free(entry);
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var cc = CompiledOutputCache.init(std.testing.allocator);
+    defer cc.deinit();
+    const base_opts = @as(@import("bundler.zig").BundleOptions, .{
+        .entry_points = &.{entry},
+        .dev_mode = false,
+        .module_store = &store,
+        .compiled_cache = &cc,
+    });
+    for (0..2) |_| {
+        var b = Bundler.init(std.testing.allocator, base_opts);
+        var r = try b.bundle(std.testing.io);
+        try std.testing.expect(!r.hasErrors());
+        r.deinit(std.testing.allocator);
+        b.deinit();
+    }
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    // p.js 만 재정렬(같은 이름·본문, 순서만). main.js 는 불변.
+    try writeFile(tmp.dir, "p.js", "export function b(){ return 'B'; }\nexport function a(){ return 'A'; }");
+    const p_abs = try absPath(&tmp, "p.js");
+    defer std.testing.allocator.free(p_abs);
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, p_abs, {});
+    var warm_opts = base_opts;
+    warm_opts.changed_files = &touched;
+    var warm = Bundler.init(std.testing.allocator, warm_opts);
+    var warm_r = try warm.bundle(std.testing.io);
+    defer warm_r.deinit(std.testing.allocator);
+    defer warm.deinit();
+    try std.testing.expect(!warm_r.hasErrors());
+    var cold = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = false });
+    var cold_r = try cold.bundle(std.testing.io);
+    defer cold_r.deinit(std.testing.allocator);
+    defer cold.deinit();
+    try std.testing.expect(!cold_r.hasErrors());
+    try std.testing.expectEqualStrings(cold_r.output, warm_r.output);
+}
+
+// #4535 [Merkle]: star re-export barrel(`export *`). origin(x.js)이 심볼 rename 하면 deep-fold 가
+// barrel 의 deep fp 에 x 의 local fp 를 접어 barrel/main 을 miss 시킨다(single-hop 은 export*=chain
+// null 이라 못 잡아 ReferenceError 였음). compiled_cache ON + dev OFF.
+test "reuse #4535: star re-export barrel origin rename warm==cold" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "x.js", "export function foo(){ return 'F'; }");
+    try writeFile(tmp.dir, "barrel.js", "export * from './x.js';");
+    try writeFile(tmp.dir, "main.js", "import { foo } from './barrel.js';\nconsole.log(foo());\n");
+    const entry = try absPath(&tmp, "main.js");
+    defer std.testing.allocator.free(entry);
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    var cc = CompiledOutputCache.init(std.testing.allocator);
+    defer cc.deinit();
+    const base_opts = @as(@import("bundler.zig").BundleOptions, .{ .entry_points = &.{entry}, .dev_mode = false, .module_store = &store, .compiled_cache = &cc });
+    for (0..2) |_| {
+        var b = Bundler.init(std.testing.allocator, base_opts);
+        var r = try b.bundle(std.testing.io);
+        try std.testing.expect(!r.hasErrors());
+        r.deinit(std.testing.allocator);
+        b.deinit();
+    }
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "x.js", "function fooImpl(){ return 'F2'; }\nexport { fooImpl as foo };");
+    const x_abs = try absPath(&tmp, "x.js");
+    defer std.testing.allocator.free(x_abs);
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(std.testing.allocator);
+    try touched.put(std.testing.allocator, x_abs, {});
+    var warm_opts = base_opts;
+    warm_opts.changed_files = &touched;
+    var warm = Bundler.init(std.testing.allocator, warm_opts);
+    var warm_r = try warm.bundle(std.testing.io);
+    defer warm_r.deinit(std.testing.allocator);
+    defer warm.deinit();
+    try std.testing.expect(!warm_r.hasErrors());
+    var cold = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .dev_mode = false });
+    var cold_r = try cold.bundle(std.testing.io);
+    defer cold_r.deinit(std.testing.allocator);
+    defer cold.deinit();
+    try std.testing.expect(!cold_r.hasErrors());
+    try std.testing.expectEqualStrings(cold_r.output, warm_r.output);
+}

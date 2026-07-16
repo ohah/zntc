@@ -312,6 +312,13 @@ pub fn computeInputHash(
     options_hash: u64,
     used_export_names: ?[]const []const u8,
     graph: *const ModuleGraph,
+    /// #4535: ModuleIndex → provider 의 `Linker.emitDeepFingerprint`(local + Σ dep.deep, Merkle).
+    /// 소비자 emit 바이트가 관측하는 provider 의 post-link 상태(wrap_kind/상수값/canonical 이름 등)를
+    /// **re-export barrel 통한 전이까지** 키에 접는다. 빈 slice = folding 비활성(non-incremental /
+    /// dev / linker 없음 — 종전 동작). ⚠️ **deep** 값이라 아래 per-record fold 와 own-index fold
+    /// 둘 다 필요 — own-index fold(자신의 deep)가 consumer-induced wrap flip 을, per-record fold 가
+    /// 각 provider 변경을 잡는다(어느 쪽도 제거하면 stale-hit).
+    provider_emit_fps: []const u64,
 ) u64 {
     var h = InputHasher.init(0);
     h.addI128(module.mtime);
@@ -324,6 +331,13 @@ pub fn computeInputHash(
         h.addBool(true);
         h.addStrList(names);
     } else h.addBool(false);
+
+    // #4535: 이 모듈 **자신의** emit_fingerprint 도 접는다 — 다른 모듈이 `require()`/`import`
+    // 를 추가해 이 모듈의 wrap_kind/exports_kind 가 flip 되면(consumer-induced), 자기 source/
+    // mtime 은 그대로여도 자기 emit 바이트가 바뀐다. provider fingerprint(아래 import 루프)만으론
+    // 이 self-flip 을 못 잡는다.
+    const own_idx = module.index.toUsize();
+    if (own_idx < provider_emit_fps.len) h.addU64(provider_emit_fps[own_idx]);
 
     h.addU64(module.import_records.len);
     for (module.import_records) |rec| {
@@ -342,6 +356,10 @@ pub fn computeInputHash(
                 // 방어: 범위 밖이면 stable sentinel 로 hash (극히 이례적).
                 h.addStr("");
             }
+            // #4535: provider 의 emit fingerprint 를 접는다 — provider 내용/wrap 이 바뀌어
+            // 소비자 emit 바이트가 바뀌어야 하는데 소비자 source/path 는 그대로인 stale-hit 방지.
+            const ridx = rec.resolved.toUsize();
+            if (ridx < provider_emit_fps.len) h.addU64(provider_emit_fps[ridx]);
         }
     }
 
@@ -518,8 +536,8 @@ test "computeInputHash: transformed source participates in cache key (#2038)" {
     a.source = "console.log('plugin output A');";
     b.source = "console.log('plugin output B');";
 
-    const hash_a = computeInputHash(&a, 0xCAFE, null, &graph);
-    const hash_b = computeInputHash(&b, 0xCAFE, null, &graph);
+    const hash_a = computeInputHash(&a, 0xCAFE, null, &graph, &.{});
+    const hash_b = computeInputHash(&b, 0xCAFE, null, &graph, &.{});
     try std.testing.expect(hash_a != hash_b);
 }
 
@@ -538,8 +556,8 @@ test "computeInputHash: unchanged transformed source keeps cache key stable (#20
     a.source = "console.log('same plugin output');";
     b.source = "console.log('same plugin output');";
 
-    const hash_a = computeInputHash(&a, 0xCAFE, null, &graph);
-    const hash_b = computeInputHash(&b, 0xCAFE, null, &graph);
+    const hash_a = computeInputHash(&a, 0xCAFE, null, &graph, &.{});
+    const hash_b = computeInputHash(&b, 0xCAFE, null, &graph, &.{});
     try std.testing.expectEqual(hash_a, hash_b);
 }
 

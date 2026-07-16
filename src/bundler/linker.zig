@@ -2241,6 +2241,109 @@ pub const Linker = struct {
         return self.lookupSymbolCanonical(module_index, name);
     }
 
+    /// #4535: 한 모듈의 **local** emit-영향 상태를 해시한다(자기 자신만; 전이성은 아래 deep-fold 가
+    /// 담당). `emitDeepFingerprint` 가 `local + Σ dep.deep` (Merkle) 로 합성하고, 그 deep 값을
+    /// `compiled_cache.computeInputHash` 가 각 resolved import 대상마다 접어, provider 의 wrap_kind
+    /// flip / 인라인 상수값 변경 / canonical 이름 변경이 **re-export barrel 을 통해서도** 소비자
+    /// 캐시 키에 반영되게 한다(증분 emit 캐시 stale 방지).
+    ///
+    /// ⚠️ **non-dev 전용** — dev 는 모듈을 registry(path-id)로 래핑해 provider 변경이 소비자
+    /// 바이트를 안 바꾸므로 stale 재사용이 정답이다. folding 은 emitter 가 `!dev_mode` 에서만 건넨다.
+    pub fn emitFingerprint(self: *const Linker, m: *const Module) u64 {
+        var h: u64 = 0x4535;
+        // 1. Module-level emit-영향 사실 (interop/wrap/reachability/TLA).
+        h = h *% 31 +% @as(u64, @intFromEnum(m.wrap_kind));
+        h = h *% 31 +% @as(u64, @intFromEnum(m.exports_kind));
+        h = h *% 31 +% @as(u64, @intFromBool(m.has_cjs_export_signal));
+        h = h *% 31 +% @as(u64, @intFromBool(m.can_skip_cjs_default_interop));
+        // ⚠️ is_included(tree-shaking)는 증분 경로에서 빌드 간 비결정적(store 재사용 시 stale)이라
+        // fingerprint 에서 제외 — provider dead/alive 는 소비자의 used_export_names(computeInputHash
+        // 가 이미 해시) + path-set clear(incremental.zig)로 커버된다.
+        h = h *% 31 +% @as(u64, @intFromBool(m.uses_top_level_await));
+        h = h *% 31 +% @as(u64, @intFromBool(m.isInCycle()));
+        // 2. 래퍼명(cross-chunk deconflict 결과 — 소비자 preamble 이 이 이름을 호출/참조).
+        if (m.getRequireName(&self.rename_table)) |n| h ^= std.hash.Wyhash.hash(0x11, n);
+        if (m.getInitName(&self.rename_table)) |n| h ^= std.hash.Wyhash.hash(0x12, n);
+        if (m.getExportsName(&self.rename_table)) |n| h ^= std.hash.Wyhash.hash(0x13, n);
+        if (m.wrapper_name_synthetic) |n| h ^= std.hash.Wyhash.hash(0x14, n);
+        // 3. export 별: exported_name + 자기 canonical local + 자기 인라인 const 값.
+        //    ⚠️ **order-dependent 누산**(`h*31 +% eh`) — export 순서가 소비자의 inline namespace
+        //    object 속성 순서(`{a,b}` vs `{b,a}`)를 바꾸므로 재정렬도 감지해야 한다. export_bindings
+        //    는 파싱(binding_scanner) 소스 순서라 빌드 간 결정적. (re-export 의 origin 상태는 여기서
+        //    chain-resolve 하지 않는다 — deep-fold 가 origin.deep 을 접어 전이성을 담당.)
+        const mi: u32 = m.index.toU32();
+        for (m.export_bindings) |eb| {
+            var eh: u64 = std.hash.Wyhash.hash(0x21, eb.exported_name);
+            eh ^= std.hash.Wyhash.hash(0x22, self.getCanonicalForExport(eb, mi));
+            // 소비자가 인라인하는 const 값 — buildCrossModuleConstValues 의 provider-side read 와 동일.
+            if (m.semantic) |sem| {
+                if (sem.scope_maps.len > 0) {
+                    const local = m.exportBindingLocalName(eb);
+                    if (sem.scope_maps[0].get(local)) |sidx| {
+                        if (sidx < sem.symbols.items.len) {
+                            const sym = sem.symbols.items[sidx];
+                            eh ^= (@as(u64, @intFromEnum(sym.const_kind)) +% 1) *% 0x9e3779b1;
+                            eh ^= @as(u64, sym.write_count) *% 0x100000001b3;
+                            if (sym.const_kind == .number) {
+                                eh ^= std.hash.Wyhash.hash(0x24, sem.numericConstText(@intCast(sidx)));
+                            }
+                        }
+                    }
+                }
+            }
+            h = h *% 31 +% eh;
+        }
+        return h;
+    }
+
+    /// #4535 Merkle deep-fold: `deep(M) = local(M) *31 +% Σ deep(dep)`. 소비자 emit 바이트가
+    /// **re-export barrel 을 통해** 관측하는 origin 의 전이 상태(이름·상수값·wrap_kind·star)를
+    /// 자동 흡수한다 — single-hop `emitFingerprint` 만으론 barrel 의 local fp 가 origin 을 안 담아
+    /// stale-hit(ReferenceError/잘못된 값)이 났다.
+    ///
+    /// `out`(ModuleIndex→deep fp)/`state`(0=미방문·1=on-stack·2=완료)는 emitter 가 소유. 사이클은
+    /// on-stack 재방문 시 local 만 반환해 무한재귀를 끊는다(사이클 멤버의 deep 은 서로의 local 을
+    /// 포함 — 대부분의 사이클 내 변경을 감지). 방문 순서는 결정적 acyclic 부분엔 무영향; 사이클
+    /// 부분은 진입순(ModuleIndex)에 의존한다. ⚠️ 사이클 back-edge 로만 도달하는 전이 provider 를
+    /// 놓치는 좁은 topology 잔여가 있으나(완전 정확엔 SCC 축약 필요, 후속) **비-회귀**(fp 미도입
+    /// 시보다 항상 더 많이 감지). `depth` 는 매우 깊은 선형 체인의 native stack overflow 방어 —
+    /// 상한 초과 시 local 만(그 지점 이하 전이 미반영, 크래시보다 안전).
+    pub fn emitDeepFingerprint(self: *const Linker, idx: u32, out: []u64, state: []u8, depth: u32) u64 {
+        if (idx >= out.len) return 0;
+        if (state[idx] == 2) return out[idx];
+        const m = self.graph.getModule(@enumFromInt(idx)) orelse {
+            state[idx] = 2;
+            out[idx] = 0;
+            return 0;
+        };
+        if (state[idx] == 1) return self.emitFingerprint(m); // 사이클 차단: local 만.
+        if (depth >= 4096) return self.emitFingerprint(m); // stack overflow 방어(비-memoize).
+        state[idx] = 1;
+        var h = self.emitFingerprint(m);
+        for (m.import_records) |rec| {
+            if (rec.is_external) continue;
+            // #4535: require.context 대상은 `rec.resolved`(=.none)가 아니라 `context_resolved_paths`
+            // →`path_to_module` 로 해석해야 접힌다. 안 접으면 context 대상의 wrap flip/이름 변경이
+            // 소비자 키에 반영 안 돼 stale-hit(초기 구현이 context_expansion_deps 를 봐 dead 였던 버그).
+            // ⚠️ `forEachWrapperImportTarget`(위)와 **동일 해석 경로**지만 그건 wrapped-only 로 필터해
+            // 여기선 재사용 불가(fingerprint 는 전 대상 필요) — require.context resolution 변경 시 양쪽
+            // 동반 수정(이 walk 가 4번째 사본 — 드리프트 주의).
+            if (rec.kind == .require_context) {
+                for (rec.context_resolved_paths) |abs_opt| {
+                    const abs = abs_opt orelse continue;
+                    const wi = self.graph.path_to_module.get(abs) orelse continue;
+                    h = h *% 31 +% self.emitDeepFingerprint(wi.toU32(), out, state, depth + 1);
+                }
+                continue;
+            }
+            if (rec.resolved.isNone()) continue;
+            h = h *% 31 +% self.emitDeepFingerprint(rec.resolved.toU32(), out, state, depth + 1);
+        }
+        state[idx] = 2;
+        out[idx] = h;
+        return h;
+    }
+
     fn lookupSymbolCanonical(self: *const Linker, module_index: u32, name: []const u8) ?[]const u8 {
         const idx = self.findSymbolIdx(module_index, name) orelse return null;
         // emit 경로는 build-scope `rename_table` 을 읽는다 — `Symbol.canonical_name` field 는
