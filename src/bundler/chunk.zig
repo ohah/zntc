@@ -265,6 +265,16 @@ pub const Chunk = struct {
     /// 공통 청크에서 export 문을 생성할 때 사용.
     exports_to: std.StringHashMapUnmanaged(void),
 
+    /// (#4541) raw `require("./x.cjs")` 로 **다른 청크**의 CJS 모듈을 참조하면 그 `require_X` 썽크를
+    /// cross-chunk export/import 해야 한다(esbuild/rolldown 동형: provider `export{require_X}`,
+    /// 소비자 `import{require_X}` 후 `require_X()`). import binding 이 없는 raw require 라 기존
+    /// exports_to/imports_from(심볼 export명 키) 기계가 못 봐 별도 트랙으로 둔다(래퍼는 scope_id
+    /// =.none 이라 rename 풀에도 없음, canonical 이름은 reserveWrapperNames 로 전역 유일).
+    /// wrapper_cross_exports = 이 청크가 썽크로 export 해야 할 (CJS wrap) 모듈 index 집합.
+    wrapper_cross_exports: std.AutoHashMapUnmanaged(u32, void),
+    /// src_chunk_index → 이 청크가 그 청크에서 import 해야 할 wrapper(CJS) 모듈 index 목록.
+    wrapper_cross_imports: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)),
+
     /// 기본값으로 Chunk를 생성한다.
     pub fn init(index: ChunkIndex, kind: ChunkKind, bits: BitSet) Chunk {
         return .{
@@ -279,6 +289,8 @@ pub const Chunk = struct {
             .cross_chunk_dynamic_imports = .empty,
             .imports_from = .empty,
             .exports_to = .empty,
+            .wrapper_cross_exports = .empty,
+            .wrapper_cross_imports = .empty,
         };
     }
 
@@ -295,6 +307,10 @@ pub const Chunk = struct {
         }
         self.imports_from.deinit(allocator);
         self.exports_to.deinit(allocator);
+        self.wrapper_cross_exports.deinit(allocator);
+        var wit = self.wrapper_cross_imports.iterator();
+        while (wit.next()) |entry| entry.value_ptr.deinit(allocator);
+        self.wrapper_cross_imports.deinit(allocator);
         // PR B-1: name_dir 은 sanitizeNameDir 의 결과 — chunk 가 owning.
         // doc 의 "빌림" 표현은 부정확 — 실제로는 chunk lifetime 와 일치하므로
         // 여기서 free 한다(chunk.rel_dir 와 달리 항상 alloc 된 메모리).
@@ -1806,6 +1822,13 @@ pub fn computeCrossChunkLinks(
             chunk.imports_from.clearAndFree(allocator);
         }
         chunk.exports_to.clearAndFree(allocator);
+        // (#4541) 재실행(HMR re-link) 멱등 — 새 wrapper 맵도 초기화(안 하면 stale export/import).
+        chunk.wrapper_cross_exports.clearAndFree(allocator);
+        {
+            var wit = chunk.wrapper_cross_imports.iterator();
+            while (wit.next()) |entry| entry.value_ptr.deinit(allocator);
+            chunk.wrapper_cross_imports.clearAndFree(allocator);
+        }
     }
 
     for (chunk_graph.chunks.items) |*chunk| {
@@ -1940,6 +1963,34 @@ pub fn computeCrossChunkLinks(
                 }
                 if (has_star)
                     try fanOutModuleExports(allocator, chunk_graph, chunk, &seen_static, lnk, mod_idx, module_count);
+
+                // (#4541) raw `require("./x.cjs")` 로 **다른 청크**의 CJS 를 참조: import binding 이
+                // 없어 위 심볼 루프가 못 보고 chunk-level 의존 edge(side-effect import)만 생긴다.
+                // 그 결과 소비자가 provider 청크에만 있는 `require_X()` 썽크를 미-import 참조 →
+                // ReferenceError(#4541). 여기서 provider 는 썽크를 export, 소비자는 import 하도록
+                // 표시한다(esbuild/rolldown 동형). ⚠️ require_X 는 **lazy**(호출 시점 평가)라 provider
+                // 에서 eager materialize(default$X=require_X())하지 않고 썽크 자체를 넘긴다.
+                for (m.import_records) |rec| {
+                    if (rec.kind != .require) continue;
+                    if (rec.resolved.isNone()) continue;
+                    const tmod = graph.getModule(rec.resolved) orelse continue;
+                    if (tmod.wrap_kind != .cjs) continue; // require_X 썽크(CJS)만 — ESM-wrap 은 후속
+                    const target_chunk = chunk_graph.getModuleChunk(rec.resolved);
+                    if (target_chunk.isNone() or target_chunk == chunk.index) continue;
+                    const ti = @intFromEnum(rec.resolved);
+                    const tci = @intFromEnum(target_chunk);
+                    try chunk_graph.chunks.items[tci].wrapper_cross_exports.put(allocator, ti, {});
+                    const wgop = try chunk.wrapper_cross_imports.getOrPut(allocator, tci);
+                    if (!wgop.found_existing) wgop.value_ptr.* = .empty;
+                    for (wgop.value_ptr.items) |e| {
+                        if (e == ti) break;
+                    } else try wgop.value_ptr.append(allocator, ti);
+                    // cross_chunk_imports 보장: 위 정적-의존 루프(m.dependencies)가 보통 이미 이
+                    // provider 를 추가하지만(raw require = 의존 edge), 그 edge 가 없는 경우를 대비해
+                    // seen_static dedup 으로 방어적 append(중복 없음 — 소비자 import emit 이 이 목록 순회).
+                    const sgop = try seen_static.getOrPut(allocator, tci);
+                    if (!sgop.found_existing) try chunk.cross_chunk_imports.append(allocator, target_chunk);
+                }
             }
 
             // 동적 의존성 → cross_chunk_dynamic_imports

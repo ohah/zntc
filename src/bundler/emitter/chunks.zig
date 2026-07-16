@@ -761,6 +761,58 @@ pub fn emitChunks(
                 }
             }
 
+            // (#4541) 이 dep 청크에서 raw-require 한 CJS 썽크(require_X)를 named import 로 가져온다.
+            // esm: `import { require_X } from "…"` / cjs·iife: `const { require_X } = require/__zntc_require`.
+            // require_X 는 canonical(reserveWrapperNames 로 전역 유일)이라 rename_table 불요 — provider
+            // export·소비자 import·본문 `require_X()` 3자가 같은 이름을 쓴다(#4524 계약과 동일).
+            // ⚠️ esm/cjs 포맷만 — reg_split(iife/umd/amd)은 registry 모델이라 별도(후속).
+            // ⚠️ preserve-modules 는 #4524 가 자체 wrapper thunk export/import 를 담당하므로 제외.
+            var wrapper_import_emitted = false;
+            if (!reg_split and !options.preserve_modules) {
+                if (chunk.wrapper_cross_imports.get(dep_ci)) |wlist| {
+                    if (wlist.items.len > 0) {
+                        const min = options.minify_whitespace;
+                        std.mem.sort(u32, wlist.items, {}, comptime std.sort.asc(u32));
+                        if (cjs_require) {
+                            // (#4526) ⚠️ cjs 는 **구조분해 금지**(`const{require_X}=require(...)`는 로드
+                            // 시점 값 스냅샷 → CJS↔CJS cross-chunk 순환에서 provider 의 `exports.require_X`
+                            // 가 아직 미할당이라 undefined 박제 → TypeError). require_X 는 함수라 **호출
+                            // 시점 조회(lazy forwarding)**로 지연을 복원한다(require 는 node memoize).
+                            try chunk_output.appendSlice(allocator, "require(\"");
+                            try chunk_output.appendSlice(allocator, bind_arg);
+                            try chunk_output.appendSlice(allocator, if (min) "\");" else "\");\n");
+                            for (wlist.items) |wm| {
+                                const tmod = graph.getModule(@enumFromInt(wm)) orelse continue;
+                                const wn = try wrapperNamesFor(allocator, tmod, null);
+                                defer wn.deinit(allocator);
+                                try chunk_output.appendSlice(allocator, "const ");
+                                try chunk_output.appendSlice(allocator, wn.a);
+                                try chunk_output.appendSlice(allocator, if (min) "=function(){return require(\"" else " = function() { return require(\"");
+                                try chunk_output.appendSlice(allocator, bind_arg);
+                                try chunk_output.appendSlice(allocator, "\").");
+                                try chunk_output.appendSlice(allocator, wn.a);
+                                try chunk_output.appendSlice(allocator, if (min) ".apply(this,arguments)};" else ".apply(this, arguments); };\n");
+                            }
+                        } else {
+                            // esm: live binding 이라 named import 로 충분(순환도 안전).
+                            try chunk_output.appendSlice(allocator, if (min) "import{" else "import { ");
+                            for (wlist.items, 0..) |wm, wi| {
+                                const tmod = graph.getModule(@enumFromInt(wm)) orelse continue;
+                                const wn = try wrapperNamesFor(allocator, tmod, null);
+                                defer wn.deinit(allocator);
+                                try chunk_output.appendSlice(allocator, wn.a);
+                                if (wi + 1 < wlist.items.len)
+                                    try chunk_output.appendSlice(allocator, if (min) "," else ", ");
+                            }
+                            try chunk_output.appendSlice(allocator, if (min) "}from\"" else " } from \"");
+                            try chunk_output.appendSlice(allocator, bind_arg);
+                            try chunk_output.appendSlice(allocator, if (min) "\";" else "\";\n");
+                        }
+                        wrapper_import_emitted = true;
+                    }
+                }
+            }
+
             if (!pm_cjs_dep and pm_esm_wrap_dep_syms == null and symbols != null and symbols.?.items.len > 0) {
                 // 심볼 수준 import: import { a, b } from './chunk-xxx.js';
                 if (!options.minify_whitespace) {
@@ -844,9 +896,10 @@ pub fn emitChunks(
                 try chunk_output.appendSlice(allocator, sym_open);
                 try chunk_output.appendSlice(allocator, bind_arg);
                 try chunk_output.appendSlice(allocator, sym_close);
-            } else if (pm_wrapper_dep == null) {
+            } else if (pm_wrapper_dep == null and !wrapper_import_emitted) {
                 // 심볼 정보 없음 → side-effect (실행/등록 순서 보장용)
-                // ⚠️ 래퍼 분기가 이미 결합을 냈으면(preserve-modules) 여기서 또 내면 중복이다.
+                // ⚠️ 래퍼 분기(preserve-modules) 또는 #4541 wrapper named import 가 이미 결합을
+                // 냈으면 여기서 또 내면 중복이다.
                 const se_open = if (reg_split)
                     "__zntc_require(\""
                 else if (cjs_require)
@@ -1535,6 +1588,49 @@ pub fn emitChunks(
                     try chunk_output.appendSlice(allocator, " };\n");
                 } else {
                     try chunk_output.appendSlice(allocator, "};");
+                }
+            }
+        }
+
+        // (#4541) 다른 청크가 raw-require 한 이 청크의 CJS 썽크(require_X)를 export 한다.
+        // esm: `export { require_X };` / cjs: `exports.require_X = require_X;`. require_X 는 이 청크
+        // 본문에 `var require_X = __commonJS(...)` 로 이미 선언(모듈 region) → 여기선 참조만.
+        // canonical 이름(reserveWrapperNames 전역 유일)이라 소비자 import·본문 `require_X()` 와 일치.
+        // ⚠️ esm/cjs 만(reg_split 은 registry 모델, 후속). preserve-modules 는 #4524 담당 → 제외.
+        if (!reg_split and !options.preserve_modules and chunk.wrapper_cross_exports.count() > 0) {
+            const min = options.minify_whitespace;
+            const cjs_out = options.format == .cjs;
+            var wids: std.ArrayListUnmanaged(u32) = .empty;
+            defer wids.deinit(allocator);
+            var wit = chunk.wrapper_cross_exports.keyIterator();
+            while (wit.next()) |k| try wids.append(allocator, k.*);
+            std.mem.sort(u32, wids.items, {}, comptime std.sort.asc(u32));
+            for (wids.items) |wm| {
+                const tmod = graph.getModule(@enumFromInt(wm)) orelse continue;
+                // ⚠️ 공개명(canonical, 소비자 import 키)과 provider 청크의 **실제 로컬명**을 분리한다.
+                // --minify 는 provider 본문의 `var require_X = __commonJS(...)` 선언을 mangle(`r`)하는데
+                // (rename_table 은 청크별), 소비자는 canonical `require_X` 로 import·호출한다. 따라서
+                // provider 는 `export { <로컬 r> as require_X }`(esm) / `exports.require_X = r`(cjs)로
+                // 로컬→공개 aliasing 해야 3자(export·import·본문)가 일치한다.
+                const wn_local = try wrapperNamesFor(allocator, tmod, linker);
+                defer wn_local.deinit(allocator);
+                const wn_pub = try wrapperNamesFor(allocator, tmod, null);
+                defer wn_pub.deinit(allocator);
+                const same = std.mem.eql(u8, wn_local.a, wn_pub.a);
+                if (cjs_out) {
+                    try chunk_output.appendSlice(allocator, "exports.");
+                    try chunk_output.appendSlice(allocator, wn_pub.a);
+                    try chunk_output.appendSlice(allocator, if (min) "=" else " = ");
+                    try chunk_output.appendSlice(allocator, wn_local.a);
+                    try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
+                } else {
+                    try chunk_output.appendSlice(allocator, if (min) "export{" else "export { ");
+                    try chunk_output.appendSlice(allocator, wn_local.a);
+                    if (!same) {
+                        try chunk_output.appendSlice(allocator, " as ");
+                        try chunk_output.appendSlice(allocator, wn_pub.a);
+                    }
+                    try chunk_output.appendSlice(allocator, if (min) "};" else " };\n");
                 }
             }
         }

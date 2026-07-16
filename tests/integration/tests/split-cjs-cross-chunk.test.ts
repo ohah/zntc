@@ -103,6 +103,67 @@ describe('code-splitting 런타임 스모크', () => {
     }
   }
 
+  // (#4541) **raw `require("./x.cjs")`** 한 CJS 가 common chunk 에 안착하면, 소비자 청크가 그
+  // `require_x()` 썽크를 import 없이 참조했다(provider 는 export 안 함, 소비자는 side-effect import
+  // 만) → `ReferenceError: require_x is not defined`. import binding 이 없는 raw require 라 기존
+  // cross-chunk 심볼 기계가 못 봤다. 이제 provider 가 썽크를 export, 소비자가 import 한다
+  // (esbuild/rolldown 동형). 빌드 green·파싱 통과·실행만 실패라 node 로 돌려야만 잡힌다.
+  const RAW_REQUIRE_COMMON: Files = {
+    'shared.cjs': 'exports.s = function(){ return "SHARED"; };',
+    'a.js': 'const sh = require("./shared.cjs");\nexport const a = "A:" + sh.s();',
+    'b.js': 'const sh = require("./shared.cjs");\nexport const b = "B:" + sh.s();',
+    'entry.js':
+      'Promise.all([import("./a.js"), import("./b.js")]).then(([m1, m2]) =>\n' +
+      '  console.log("RESULT", m1.a, m2.b));',
+  };
+  for (const { name, minify } of MATRIX) {
+    for (const format of ['esm', 'cjs'] as const) {
+      test(`#4541 ${format}/${name}: raw require() 한 common-chunk CJS 썽크가 cross-chunk 노출된다`, async () => {
+        // 버그 시: ReferenceError: require_shared is not defined
+        expect(await buildAndRun(RAW_REQUIRE_COMMON, { minify, format })).toBe(
+          'RESULT A:SHARED B:SHARED',
+        );
+      });
+    }
+  }
+
+  // (#4541 후속, #4526 계열) cjs 소비자는 cross-chunk 썽크를 **구조분해하면 안 된다**
+  // (`const{require_X}=require(...)`는 로드 시점 스냅샷 → CJS↔CJS cross-chunk 순환에서 provider 의
+  // `exports.require_X` 미할당 시점을 박제 → TypeError). require_X 는 함수라 **호출 시점 조회
+  // (lazy forwarding)**로 지연 복원한다. ⚠️ 구조적 가드 — 순환은 청커가 상호의존 모듈을 같은
+  // 청크로 합쳐 재현이 불안정하므로, 방출된 소비자 청크가 forwarding(`.apply(this, arguments)`)을
+  // 쓰고 eager 구조분해(`const { require_`)를 안 쓰는지 직접 확인해 r0 revert 를 잡는다.
+  test('#4541 cjs: cross-chunk 썽크 소비자가 eager 구조분해 대신 lazy forwarding 을 쓴다', async () => {
+    const { dir, cleanup } = await createFixture(RAW_REQUIRE_COMMON);
+    try {
+      const outDir = join(dir, 'dist');
+      const res = await runZntc([
+        '--bundle',
+        join(dir, 'entry.js'),
+        '--splitting',
+        '--outdir',
+        outDir,
+        '--format=cjs',
+      ]);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      // 소비자 청크(shared.cjs 를 raw-require 한 a/b) 를 찾는다.
+      const jsFiles = readdirSync(outDir).filter((f) => f.endsWith('.js'));
+      const consumer = jsFiles
+        .map((f) => readFileSync(join(outDir, f), 'utf8'))
+        .find((c) => c.includes('require_shared') && !c.includes('exports.require_shared'));
+      expect(consumer, '소비자 청크(require_shared 참조)를 못 찾음').toBeDefined();
+      // lazy forwarding: 호출 시점 조회 `require("...").require_shared.apply(...)`.
+      expect(consumer!).toContain('.apply(this, arguments)');
+      // eager 구조분해(로드 시점 스냅샷)를 쓰면 안 된다.
+      expect(consumer!).not.toContain('const { require_shared }');
+      // 그리고 실제로 실행돼야 한다.
+      const { stdout } = await runNode(join(outDir, 'entry.js'));
+      expect(stdout.trim()).toBe('RESULT A:SHARED B:SHARED');
+    } finally {
+      await cleanup();
+    }
+  });
+
   // (#4494) CJS 모듈이 export 멤버와 **같은 이름의 내부 심볼**을 가진 경우.
   // provider 는 `var <전역명> = require_lib().tag;` 를 청크 top-level 에 깔아야 하는데,
   // 예전엔 "이 이름의 로컬이 이미 있다"고 오판(그 로컬은 `__commonJS` 클로저 *안*의 `tag` 다)해
