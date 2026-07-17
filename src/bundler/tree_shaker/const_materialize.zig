@@ -378,6 +378,10 @@ fn materializeCrossModuleConstFactsForIndex(
     const_values.deinit(self.allocator);
     if (!materialized.changed) return false;
 
+    // (#4544) 이 모듈 AST 에 cross-module const 를 bake 함 → module_store 캐시에서 제외되도록 표시.
+    // baked 값은 provider const 에 의존하므로 소비자 mtime 캐시로 재사용하면 stale (transferModulesToStore 가 evict).
+    m.const_baked = true;
+
     const skip_minify = const_profile.policy.skipMinifyIfSafe() and !materialized.needs_minify;
     minifyAndResyncModule(self, m, sem, ast, const_profile, skip_minify);
     return true;

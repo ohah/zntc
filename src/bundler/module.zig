@@ -285,6 +285,14 @@ pub const Module = struct {
     /// null = transform_prepass 미실행 또는 namespace import 없음 → linker 가 자체 build.
     namespace_access_index: ?@import("linker/namespace_access.zig").NamespaceAccessIndex = null,
 
+    /// (#4544) tree-shake 가 이 모듈의 AST 에 **cross-module const** 값을 리터럴로 bake 했는지.
+    /// baked 리터럴은 provider 의 `export const N` 값에 의존하는 **graph-derived** 산출물이라,
+    /// 소비자 자기 mtime 키로 module_store 에 캐시하면 provider 변경 시 stale 해진다(#4535 2번째 층).
+    /// true 인 모듈은 `transferModulesToStore` 가 캐시에서 제외(+기존 엔트리 evict) → 다음 warm 빌드가
+    /// clean reparse 후 현재 provider 값으로 fresh 재-materialize. build-scope 플래그(store round-trip
+    /// 안 함): cache-miss 재파스마다 false 로 초기화되고, cross-module bake 발생 시에만 set.
+    const_baked: bool = false,
+
     /// wrap_kind != .none 모듈의 `init_<path>` 함수 심볼 id (semantic 공간).
     /// null = 미래핑 또는 semantic 없음 (fallback: makeInitVarName 재할당).
     init_symbol: ?SemanticSymbolId = null,
