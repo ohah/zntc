@@ -109,6 +109,16 @@ pub const PersistentModuleStore = struct {
         return cached;
     }
 
+    /// (#4544) 경로의 캐시 엔트리를 제거(내용 free + key free). 엔트리가 없으면 no-op.
+    /// cross-module const 를 bake 한 모듈을 캐시에서 빼(그리고 과거 non-baked 엔트리도 지워)
+    /// 다음 warm 빌드가 clean reparse 하도록 강제하는 데 쓴다.
+    pub fn evict(self: *PersistentModuleStore, path: []const u8) void {
+        const entry = self.modules.fetchRemove(path) orelse return;
+        self.allocator.free(entry.key);
+        var cached = entry.value;
+        self.freeCachedModule(&cached);
+    }
+
     /// 빌드 완료 후 모듈을 캐시에 저장.
     /// Module의 parse_arena 소유권을 store로 이전 (Module.parse_arena = null 설정).
     pub fn putModule(self: *PersistentModuleStore, path: []const u8, module: *Module, mtime: i128) void {
@@ -373,6 +383,45 @@ test "PersistentModuleStore: parse_arena ownership 왕복 후 alloc 정상 (#269
 
     store.putModule("\x00zntc:runtime/extends", &mod2, 2);
     mod2.deinit(allocator);
+}
+
+// (#4544) evict: cross-module const 를 bake 한 모듈을 캐시에서 빼는 경로. store 의 가장
+// double-free/UAF 취약한 지점(엔트리 내용 free + key free)을 직접 가드한다.
+test "PersistentModuleStore: evict 완전 저장 엔트리 + parse_arena=null dangling + 없는 경로 no-op" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var store = PersistentModuleStore.init(allocator);
+    defer store.deinit();
+
+    // 없는 경로 evict = no-op (crash 없이 반환).
+    store.evict("\x00zntc:absent");
+    try testing.expect(!store.modules.contains("\x00zntc:absent"));
+
+    // case 1: 완전 저장 엔트리(arena 를 store 가 소유) evict → arena 포함 전체 free, 엔트리 제거.
+    var m1 = Module.init(@enumFromInt(0), "\x00zntc:evict/full");
+    m1.parse_arena = Module_mod.createParseArena(allocator) orelse return error.OutOfMemory;
+    _ = try m1.parse_arena.?.allocator().alloc(u8, 128);
+    store.putModule("\x00zntc:evict/full", &m1, 1);
+    m1.deinit(allocator); // graph 쪽 잔여(arena 는 이미 store 로 이전됨)
+    try testing.expect(store.modules.contains("\x00zntc:evict/full"));
+    store.evict("\x00zntc:evict/full");
+    try testing.expect(!store.modules.contains("\x00zntc:evict/full"));
+
+    // case 2: cache-hit 로 arena 를 graph 가 환수해 store 엔트리의 parse_arena=null 인 dangling
+    // 상태를 evict — freeCachedModule 이 null arena 를 이중 free 하지 않아야 한다.
+    var m2 = Module.init(@enumFromInt(0), "\x00zntc:evict/dangling");
+    m2.parse_arena = Module_mod.createParseArena(allocator) orelse return error.OutOfMemory;
+    _ = try m2.parse_arena.?.allocator().alloc(u8, 64);
+    store.putModule("\x00zntc:evict/dangling", &m2, 1);
+    m2.deinit(allocator);
+    const cached = store.getIfFresh("\x00zntc:evict/dangling", 1) orelse return error.CacheMiss;
+    // graph 가 arena 소유권 환수(cache-hit replay 시 build_flow 가 하는 것과 동일).
+    const arena = cached.module.parse_arena.?;
+    cached.module.parse_arena = null;
+    store.evict("\x00zntc:evict/dangling"); // null arena → freeCachedModule 이 arena free 안 함
+    try testing.expect(!store.modules.contains("\x00zntc:evict/dangling"));
+    Module_mod.destroyParseArena(allocator, arena); // graph 가 소유하므로 여기서 해제
 }
 
 // Regression #3755: putModule OOM rollback 시 cached_module = module.* shallow copy 의

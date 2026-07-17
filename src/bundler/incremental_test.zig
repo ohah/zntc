@@ -3352,6 +3352,93 @@ test "reuse #4535: consumer-induced wrap_kind flip warm==cold" {
     try std.testing.expectEqualStrings(cold_r.output, warm_r.output);
 }
 
+// #4544 warm==cold 하네스: 초기 파일들로 warm store 를 채운 뒤(2회 빌드) provider 파일 1개를
+// 편집(changed_files)하고 warm 재빌드한 결과가 cold 빌드와 byte-identical 인지 확인한다.
+// tree_shaker const-materialize 가 소비자 AST 에 provider const 를 bake→module_store 박제하면
+// warm 이 소비자를 reparse 안 해 옛 값이 남는데(#4544), crude-b(m.const_baked evict)가 이를 막는다.
+// materialize 는 dev OFF tree-shake 에서만 → dev_mode=false + compiled_cache ON. [[project_4544]]
+const Frag4544 = struct { name: []const u8, content: []const u8 };
+fn expect4544WarmEqCold(
+    files: []const Frag4544,
+    entry_name: []const u8,
+    edit_name: []const u8,
+    edit_content: []const u8,
+) !void {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    for (files) |f| try writeFile(tmp.dir, f.name, f.content);
+    const entry = try absPath(&tmp, entry_name);
+    defer alloc.free(entry);
+    var store = module_store.PersistentModuleStore.init(alloc);
+    defer store.deinit();
+    var cc = CompiledOutputCache.init(alloc);
+    defer cc.deinit();
+    const base_opts = @as(@import("bundler.zig").BundleOptions, .{
+        .entry_points = &.{entry},
+        .dev_mode = false,
+        .module_store = &store,
+        .compiled_cache = &cc,
+    });
+    for (0..2) |_| {
+        var b = Bundler.init(alloc, base_opts);
+        var r = try b.bundle(std.testing.io);
+        try std.testing.expect(!r.hasErrors());
+        r.deinit(alloc);
+        b.deinit();
+    }
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, edit_name, edit_content);
+    const edit_abs = try absPath(&tmp, edit_name);
+    defer alloc.free(edit_abs);
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(alloc);
+    try touched.put(alloc, edit_abs, {});
+    var warm_opts = base_opts;
+    warm_opts.changed_files = &touched;
+    var warm = Bundler.init(alloc, warm_opts);
+    var warm_r = try warm.bundle(std.testing.io);
+    defer warm_r.deinit(alloc);
+    defer warm.deinit();
+    try std.testing.expect(!warm_r.hasErrors());
+    var cold = Bundler.init(alloc, .{ .entry_points = &.{entry}, .dev_mode = false });
+    var cold_r = try cold.bundle(std.testing.io);
+    defer cold_r.deinit(alloc);
+    defer cold.deinit();
+    try std.testing.expect(!cold_r.hasErrors());
+    try std.testing.expectEqualStrings(cold_r.output, warm_r.output);
+}
+
+// value 위치(`console.log(bump(), z)`): provider z 가 1→2 로 바뀌면 소비자가 옛 `1` 을 박제하면 안 됨.
+test "reuse #4544: provider const change re-inlines in consumer warm==cold" {
+    try expect4544WarmEqCold(&.{
+        .{ .name = "shared.js", .content = "export function bump(){ return 42; }" },
+        .{ .name = "other.js", .content = "export const z = 1;" },
+        .{ .name = "index.js", .content =
+        \\import { bump } from './shared.js';
+        \\import { z } from './other.js';
+        \\console.log(bump(), z);
+        \\
+        },
+    }, "index.js", "other.js", "export const z = 2;");
+}
+
+// code-review finding 1/2 가드: minify-sensitive(`N+1` — binary 피연산자) + dead-branch
+// (`if(FLAG){import}`) 로 baked 되는 소비자. 이전 부분수정(non-sensitive 만 path-B 위임)은
+// 이 둘을 못 막았다. crude-b 는 baked 모듈을 일괄 evict 하므로 위치·minify 무관하게 커버.
+test "reuse #4544: sensitive + dead-branch consumer warm==cold" {
+    try expect4544WarmEqCold(&.{
+        .{ .name = "flags.js", .content = "export const N = 1;\nexport const FLAG = 0;\n" },
+        .{ .name = "dead.js", .content = "export const d = 99;" },
+        .{ .name = "index.js", .content =
+        \\import { N, FLAG } from './flags.js';
+        \\console.log(N + 1);
+        \\if (FLAG) { import('./dead.js').then((m) => console.log(m.d)); }
+        \\
+        },
+    }, "index.js", "flags.js", "export const N = 2;\nexport const FLAG = 1;\n");
+}
+
 // #4535 [0]: transitive re-export barrel. origin(q.js)이 심볼을 rename 하면 barrel(barrel.js)의
 // emitFingerprint 가 origin canonical 을 chain-resolve 해 바뀌어야, barrel 통해 import 하는
 // main.js 가 miss 된다(안 그러면 옛 심볼명 참조 → ReferenceError). compiled_cache ON + dev OFF.

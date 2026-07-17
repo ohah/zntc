@@ -1697,6 +1697,14 @@ pub fn transferModulesToStore(self: *ModuleGraph, io: std.Io, store: *module_sto
     for (0..self.moduleCount()) |i| {
         const m = self.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         if (m.parse_arena == null) continue; // disabled 등 arena 없는 모듈 스킵
+        // (#4544) cross-module const 를 AST 에 bake 한 모듈은 캐시하지 않는다. baked 리터럴은
+        // provider const 에 의존하는 graph-derived 산출물이라, 소비자 자기 mtime 키로 캐시하면
+        // provider 변경 시 stale (#4535 2번째 층). store 에서 제외 → 다음 warm 빌드가 clean
+        // reparse 후 현재 provider 값으로 fresh 재-materialize. 과거 non-baked 시절 엔트리도 evict.
+        if (m.const_baked) {
+            store.evict(m.path);
+            continue;
+        }
         // mtime 은 buildIncremental / build 가 이미 module.mtime 에 기록.
         // 여기서 재-stat 하면 watcher-driven mtime cache 효과가 half-revert
         // 됨 (Issue #1727 §3). 0 이면 초기 경로에서 실패했던 모듈 —
