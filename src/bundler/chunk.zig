@@ -1952,6 +1952,13 @@ pub fn computeCrossChunkLinks(
         // churn 을 피하려 청크 단위로 target dedup.
         var seen_ns_target: std.AutoHashMapUnmanaged(u32, void) = .empty;
         defer seen_ns_target.deinit(allocator);
+        // (#4560) direct-leaf `import * as ns` fan-out 은 **부분 작업**(fanOutModuleExports 만)이라
+        // linkNamespaceCrossChunk 의 풀 작업(markNsCrossChunk+ensureSharedNsVar+ns 객체 등록)과 dedup
+        // 도메인이 다르다. seen_ns_target 을 공유하면 이 브랜치가 먼저 dep 를 넣어 뒤이은
+        // linkNamespaceCrossChunkOnce(같은 청크의 `export * as ns`·값-사용)를 조기 return 시켜 ns 객체
+        // 합성이 누락된다(code-review). 별도 set 으로 격리 — fanOut 은 seen_static 으로 멱등이라 안전.
+        var seen_ns_fanout: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        defer seen_ns_fanout.deinit(allocator);
 
         for (chunk.modules.items) |mod_idx| {
             // 청크에 포함된 모듈은 반드시 graph 범위 내에 있어야 함
@@ -2055,20 +2062,29 @@ pub fn computeCrossChunkLinks(
                         try linkNamespaceCrossChunkOnce(allocator, chunk_graph, chunk, &seen_static, &seen_ns_target, lnk, ns_target, module_count);
                         continue;
                     }
-                    // (#4532 증상2) preserve-modules(ESM): direct leaf `import * as ns from "./dep"`.
-                    // ns.val/ns.greet 는 registerNamespaceRewrites 가 bare 멤버로 평탄화하는데, nsReExportTarget
-                    // 은 namespace **re-export**(imported="*")만 잡아 이 direct leaf import 를 놓쳐 멤버가
-                    // cross-chunk 등록 안 됨 → 소비자 청크서 미정의 ReferenceError. dep 의 export 를 fan-out
-                    // 해 imports_from 에 넣으면 뒤이은 computeCrossChunkGlobalNames(wrap 은 전역명, non-wrap
-                    // ESM 은 자연명) + provider export + rewrite 가 발화한다. **ESM dep 전부**(wrap·non-wrap)
-                    // 등록해야 한다 — plain ESM dep(가장 흔함)도 같은 평탄화라 미등록이면 똑같이 깨진다. CJS
-                    // dep 은 cjsNs interop 별경로라 제외. seen_ns_target 로 같은 dep 반복 DFS 방지.
-                    if (chunk_graph.pm_xchunk_naming and ib.kind == .namespace) {
+                    // (#4532 증상2 / #4560) direct leaf `import * as ns from "./dep"` 의 멤버 접근
+                    // (`ns.channel`)은 registerNamespaceRewrites 가 bare 멤버로 평탄화하는데,
+                    // nsReExportTarget 은 namespace **re-export**(imported="*")만 잡아 이 direct leaf import
+                    // 를 놓쳐 멤버가 cross-chunk 등록 안 됨 → 소비자 청크서 미정의 ReferenceError.
+                    // dep 의 export 를 fan-out 해 imports_from 에 넣으면 computeCrossChunkGlobalNames(전역명)
+                    // + provider export + rewrite 가 발화한다. linkReExportName 이 crossChunkExportIsShaken
+                    // 으로 **전역 dead export** 는 거르지만, 소비자가 실제 쓰는 멤버만 추리진 않아 dep 의
+                    // live export 를 통째로 등록한다 — rolldown 의 per-usage canonical-ref 보다 약간
+                    // 과등록(mermaid 실측 ~0.08% dead import, correctness 무해). CJS dep 은 cjsNs interop
+                    // 별경로라 제외, seen_ns_fanout(별도 set)로 dedup — seen_ns_target 공유 시 이 부분
+                    // 작업이 뒤이은 풀 ns-object 배선을 조기 return 시킨다(위 선언부 주석).
+                    //   - **splitting**(#4560): dev 제외. mermaid `import * as khroma; khroma.channel(color,"r")`
+                    //     가 lazy 다이어그램 청크서 bare `channel` → render() ReferenceError 였다. dev 는
+                    //     member rewrite 가 wrapped local 을 써 전역명 경로를 안 타므로 preserve-modules 와
+                    //     동일하게 제외한다.
+                    //   - **preserve-modules**(#4532): pm_xchunk_naming(ESM·non-minify·non-dev) 한정.
+                    const ns_fanout_ok = if (chunk_graph.preserve_modules) chunk_graph.pm_xchunk_naming else !graph.dev_mode;
+                    if (ns_fanout_ok and ib.kind == .namespace) {
                         if (graph.getModule(src_mod)) |dep| {
                             if (dep.wrap_kind != .cjs) {
                                 const dep_chunk = chunk_graph.getModuleChunk(src_mod);
                                 if (!dep_chunk.isNone() and dep_chunk != chunk.index) {
-                                    const gop = try seen_ns_target.getOrPut(allocator, @intFromEnum(src_mod));
+                                    const gop = try seen_ns_fanout.getOrPut(allocator, @intFromEnum(src_mod));
                                     if (!gop.found_existing)
                                         try fanOutModuleExports(allocator, chunk_graph, chunk, &seen_static, lnk, src_mod, module_count);
                                 }
