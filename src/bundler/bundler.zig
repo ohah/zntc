@@ -1914,6 +1914,8 @@ pub const Bundler = struct {
                     .manual_resolver = self.options.manual_chunks_resolver,
                     .manual_resolver_ctx = self.options.manual_chunks_ctx,
                     .inline_dynamic_imports = self.options.inline_dynamic_imports,
+                    .run_before_main = self.options.run_before_main,
+                    .reg_split = self.options.format.isWrappedFormat() and !self.options.preserve_modules,
                 });
             defer chunk_graph.deinit();
 

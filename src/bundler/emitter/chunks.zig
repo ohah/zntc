@@ -152,7 +152,7 @@ pub fn emitChunks(
         const cjs_ok = options.format == .cjs;
         // iife/umd/amd 모두 동일 레지스트리 기계(PR3) + entry 만 보편 wrapper
         // (umd/amd, PR4). preserve-modules 와는 비호환.
-        const reg_ok = (options.format == .iife or options.format == .umd or options.format == .amd) and !options.preserve_modules;
+        const reg_ok = options.format.isWrappedFormat() and !options.preserve_modules;
         if (!cjs_ok and !reg_ok) {
             return if (options.preserve_modules)
                 error.PreserveModulesRequiresESM
@@ -239,7 +239,7 @@ pub fn emitChunks(
     // IIFE splitting(P3-B PR3): 런타임 레지스트리 활성화. 안정 모듈 ID 의
     // root = preserve_modules_root ?? 모든 entry-point 청크 모듈 절대경로의
     // 공통 조상(module_id, 결정적). 루프 1회 전 계산해 모든 청크가 공유.
-    const reg_split = (options.format == .iife or options.format == .umd or options.format == .amd) and !options.preserve_modules;
+    const reg_split = options.format.isWrappedFormat() and !options.preserve_modules;
     var iife_id_root: ?[]const u8 = null;
     defer if (iife_id_root) |r| allocator.free(r);
     if (reg_split) {
@@ -2375,7 +2375,7 @@ fn rewriteDynamicImports(
         // 청크파일은 bare(접두 ./ 없음) — 로더가 __zntc_public_path 접두.
         // 대상 청크는 dynamic entry → id = entry 모듈 안정 모듈 ID. require
         // 캐시가 상태 보존(스파이크 검증). RFC §4.3 + PR3 결정(<script>).
-        const reg_split = (emit_options.format == .iife or emit_options.format == .umd or emit_options.format == .amd) and !emit_options.preserve_modules;
+        const reg_split = emit_options.format.isWrappedFormat() and !emit_options.preserve_modules;
         if (reg_split) {
             const target_id = reg_ids[@intFromEnum(target_chunk_idx)]; // borrow
             const chunkfile = try std.fmt.allocPrint(allocator, "{s}{s}", .{ stem, out_ext });

@@ -1255,4 +1255,95 @@ describe('manualChunks NAPI bridge', () => {
     const { stdout } = await runNode(join(dist, entryFile));
     expect(stdout.trim()).toBe('FOOOTHER');
   });
+
+  // (#4552) run_before_main 모듈은 entry 앞에서 실행돼야 하므로 entry 청크에 **co-locate** 된다 —
+  // manualChunks 가 매칭해도 별도 청크로 split 안 함. reg_split(iife/umd/amd)에서 RBM 이 다른 청크에
+  // 있으면 그 청크의 RBM 은 lazy `__esm`+factory 스코프라, entry 가 `import { init_X } from ...`(IIFE 서
+  // SyntaxError)로 깨졌다. 이제 RBM 은 dynamic import 대상처럼 manual 배정에서 제외돼 entry 와 co-locate.
+  test('#4552 iife: run_before_main 은 manualChunks 매칭돼도 entry 와 co-locate + 실행', async () => {
+    const fixture = await createFixture({
+      'setup.js': `globalThis.__DEV__ = "DEV_SET";`,
+      'entry.js': `console.log("ENTRY sees", globalThis.__DEV__);`,
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'entry.js')],
+      platform: 'node',
+      format: 'iife',
+      splitting: true,
+      runBeforeMain: [join(fixture.dir, 'setup.js')],
+      // RBM 을 별도 청크로 빼려는 시도 — co-location 정책이 무시한다.
+      manualChunks: (id) => (id.endsWith('setup.js') ? 'rbm-chunk' : null),
+    });
+    expect(result.errors ?? []).toHaveLength(0);
+    const outs = result.outputFiles!;
+    // 핵심: RBM 이 별도 'rbm-chunk' 로 split 되지 않는다(co-locate).
+    expect(outs.some((o) => o.path.includes('rbm-chunk'))).toBe(false);
+    const entryChunk = outs.find((o) => o.text.includes('ENTRY sees'))!;
+    expect(entryChunk).toBeDefined();
+    // IIFE 에 ESM import 가 없어야(버그: cross-chunk RBM → import 방출 → SyntaxError).
+    expect(entryChunk.text).not.toMatch(/^\s*import\s*[{*]/m);
+    // 실제 실행 — RBM 이 entry 앞에 실행.
+    writeOutputs(fixture.dir, outs);
+    const { stdout } = await runNode(join(fixture.dir, entryChunk.path));
+    expect(stdout.trim()).toBe('ENTRY sees DEV_SET');
+  });
+
+  // (#4552 code-review) RBM 의 **transitive dep**(closure)도 co-locate 해야 한다 — RBM(setup)이
+  // import 한 shared 가 manualChunks 로 빠지면 entry prelude 가 shared 를 cross-chunk 참조해 여전히
+  // 깨진다. 최상위 RBM 만이 아니라 클로저 전체를 manual 에서 제외.
+  test('#4552 iife: run_before_main 의 closure(dep)도 entry 와 co-locate', async () => {
+    const fixture = await createFixture({
+      'shared.js': `export const S = "SHARED";`,
+      'setup.js': `import { S } from "./shared.js";\nglobalThis.__DEV__ = "DEV_" + S;`,
+      'entry.js': `console.log("ENTRY", globalThis.__DEV__);`,
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'entry.js')],
+      platform: 'node',
+      format: 'iife',
+      splitting: true,
+      runBeforeMain: [join(fixture.dir, 'setup.js')],
+      // shared(RBM closure member)를 별도 청크로 빼려는 시도 — co-location 이 무시한다.
+      manualChunks: (id) => (id.endsWith('shared.js') ? 'vendor' : null),
+    });
+    expect(result.errors ?? []).toHaveLength(0);
+    const outs = result.outputFiles!;
+    // 핵심: RBM closure(shared 포함)가 별도 'vendor' 로 split 되지 않는다.
+    expect(outs.some((o) => o.path.includes('vendor'))).toBe(false);
+    const entryChunk = outs.find((o) => o.text.includes('ENTRY'))!;
+    expect(entryChunk.text).not.toMatch(/^\s*import\s*[{*]/m);
+    writeOutputs(fixture.dir, outs);
+    const { stdout } = await runNode(join(fixture.dir, entryChunk.path));
+    expect(stdout.trim()).toBe('ENTRY DEV_SHARED');
+  });
+
+  // (#4552 code-review) esm/cjs 는 cross-chunk RBM 이 valid ESM import 로 동작하므로, 사용자가
+  // manualChunks 로 RBM 을 별도 청크에 두면 **존중**한다(reg_split 만 co-locate 강제).
+  test('#4552 esm: run_before_main 은 manualChunks 배치 존중(별도 청크 유지)', async () => {
+    const fixture = await createFixture({
+      'setup.js': `globalThis.__DEV__ = "DEV_SET";`,
+      'entry.js': `console.log("ENTRY sees", globalThis.__DEV__);`,
+    });
+    cleanup = fixture.cleanup;
+    const result = await build({
+      entryPoints: [join(fixture.dir, 'entry.js')],
+      platform: 'node',
+      format: 'esm',
+      splitting: true,
+      runBeforeMain: [join(fixture.dir, 'setup.js')],
+      manualChunks: (id) => (id.endsWith('setup.js') ? 'rbm-chunk' : null),
+    });
+    expect(result.errors ?? []).toHaveLength(0);
+    const outs = result.outputFiles!;
+    // esm 은 사용자 배치 존중 → 별도 rbm-chunk 유지.
+    expect(outs.some((o) => o.path.includes('rbm-chunk'))).toBe(true);
+    // 비-vacuity: esm cross-chunk RBM 은 valid ESM import 로 실제 동작(그래서 존중해도 안전).
+    const entryChunk = outs.find((o) => o.text.includes('ENTRY sees'))!;
+    writeOutputs(fixture.dir, outs);
+    writeFileSync(join(fixture.dir, 'package.json'), JSON.stringify({ type: 'module' }));
+    const { stdout } = await runNode(join(fixture.dir, entryChunk.path));
+    expect(stdout.trim()).toBe('ENTRY sees DEV_SET');
+  });
 });

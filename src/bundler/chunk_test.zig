@@ -1325,6 +1325,40 @@ test "generateChunks: (#4553) manualChunks 매칭돼도 user entry 는 자기 en
     try std.testing.expect(cg.getChunk(lib_ci).kind == .manual);
 }
 
+test "generateChunks: (#4552) run_before_main 은 manualChunks 매칭돼도 entry 와 co-locate" {
+    // RBM 모듈은 entry 앞에서 실행돼야 하므로 entry 청크에 co-locate — manual 로 split 안 함(reg_split
+    // 에서 cross-chunk RBM 은 lazy __esm+factory 스코프라 실행 불가). 매칭된 non-RBM(lib)만 manual.
+    const alloc = std.testing.allocator;
+
+    var modules: [3]Module = .{
+        makeTestModule(alloc, 0, "entry.ts"),
+        makeTestModule(alloc, 1, "setup.ts"), // RBM
+        makeTestModule(alloc, 2, "lib.ts"),
+    };
+    var tg = try TestGraph.init(alloc, &modules);
+    defer tg.deinit(alloc);
+
+    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1)); // entry → setup (RBM dep)
+    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(2)); // entry → lib
+
+    // 패턴이 setup(RBM)·lib 를 모두 매칭. run_before_main 이 setup 을 RBM 으로 지정.
+    const manual_entries = [_]types.ManualChunkEntry{.{ .name = "grp", .patterns = &.{ "setup", "lib" } }};
+    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, .{
+        .manual_chunks = &manual_entries,
+        .run_before_main = &.{"setup.ts"},
+        .reg_split = true, // RBM co-location 은 reg_split(iife/umd/amd) 한정
+    });
+    defer cg.deinit();
+
+    const entry_ci = cg.getModuleChunk(@enumFromInt(0));
+    const setup_ci = cg.getModuleChunk(@enumFromInt(1));
+    const lib_ci = cg.getModuleChunk(@enumFromInt(2));
+    // 핵심: setup(RBM)은 entry 와 같은 청크(co-locate), lib 만 manual.
+    try std.testing.expect(setup_ci == entry_ci);
+    try std.testing.expect(cg.getChunk(entry_ci).kind == .entry_point);
+    try std.testing.expect(cg.getChunk(lib_ci).kind == .manual);
+}
+
 test "generateChunks: (#4553 code-review) 중복 이름 record 는 crash 없이 한 청크로 병합" {
     // 두 pattern group 을 같은 청크명으로 지정하는 건 합법. `ManualChunkEntry.lookup` 이 raw record
     // index 를 반환하는데 ensureNameSlot 이 이름을 한 slot 으로 dedupe → raw index(=1)로
