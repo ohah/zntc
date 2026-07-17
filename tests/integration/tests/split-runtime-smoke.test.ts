@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { runZntc, createFixture } from './helpers';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
@@ -124,6 +124,76 @@ export const b = () => member() + "|B:" + other.label;
       // 수정 전: `ReferenceError: second is not defined`
       expect(r.err, `모듈 평가 실패:\n${r.err}`).toBe('');
       expect(r.out).toBe('second|A:second / second|B:other');
+    } finally {
+      await cleanup();
+    }
+  }, 120000);
+
+  test('#4560 splitting: `import * as ns` 멤버가 다른 청크에 있으면 크로스-청크로 등록된다', async () => {
+    // #4492 계열이 **over-registration**(같은 청크인데 전역 공개명 오염) 이라면 #4560 은
+    // 정반대 **under-registration**: `ns.member` 는 linker 가 bare `member` 로 평탄화하는데,
+    // 그 member 가 **다른 청크**(공통 청크)에 있고 named-import 로 소비하는 데가 하나도 없으면
+    // (오직 namespace 멤버 접근만) `computeCrossChunkLinks` 의 어느 경로도 소비자 청크
+    // `imports_from` 에 등록하지 않는다 → 소비자 청크서 bare `member` = 선언 없는 자유 변수
+    // → `ReferenceError`. (mermaid: 각 다이어그램 청크가 자체 `fade` 를 정의하고 그 안에서
+    // 공통 청크의 `khroma.channel` 을 namespace 멤버로 부름.)
+    //
+    // 핵심 조건: channel 을 **named-import 하는 소비자가 없어야** 한다. 있으면 import_bindings
+    // 루프가 이미 등록해버려 버그가 안 난다(#4492 는 named-import 가 있었다).
+    const files: Record<string, string> = {
+      // 함수라 minify 인라인 불가 → 공통 청크에 실제 심볼로 남는다.
+      'pkg/channel.js': `export const channel = (c, ch) => { let v = 0; for (const k in c) if (k === ch) v = c[k]; return v * 2; };\n`,
+      // 각 다이어그램이 fade 를 **자체 정의**(mermaid 처럼 중복) → k.channel 이 leaf 청크서 평탄화.
+      'diagram1.js': `import * as k from "./pkg/channel.js";
+function fade(c) { return k.channel(c, "r") + "," + k.channel(c, "g"); }
+export const d1 = () => "d1:" + fade({ r: 1, g: 2 });
+`,
+      'diagram2.js': `import * as k from "./pkg/channel.js";
+function fade(c) { return k.channel(c, "b") + "," + k.channel(c, "g"); }
+export const d2 = () => "d2:" + fade({ b: 3, g: 4 });
+`,
+      'entry.js': `Promise.all([import("./diagram1.js"), import("./diagram2.js")]).then(([m1, m2]) => {
+  console.log(m1.d1() + " / " + m2.d2());
+});
+`,
+    };
+
+    const { dir, cleanup } = await createFixture(files);
+    try {
+      const outDir = join(dir, 'out');
+      const build = await runZntc([
+        '--bundle',
+        join(dir, 'entry.js'),
+        '--splitting',
+        '--outdir',
+        outDir,
+        '--minify',
+        '--format=esm',
+      ]);
+      expect(build.exitCode).toBe(0);
+      writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
+
+      // cross-chunk 경계를 **실제로** 검증한다 (런타임 출력만 보면 청킹 휴리스틱이
+      // channel.js 를 다이어그램 청크마다 복제해버려도 green 이라 fix 가 우회된다).
+      // diagram 청크가 별도 청크에서 `channel` 을 import 하는 edge 가 있어야 한다.
+      const chunkFiles = readdirSync(outDir).filter(
+        (f) => f.startsWith('diagram') && f.endsWith('.js'),
+      );
+      expect(chunkFiles.length).toBeGreaterThan(0);
+      const importsChannel = chunkFiles.some((f) =>
+        /import\{[^}]*\bchannel\b[^}]*\}from"\.\/chunk-/.test(
+          readFileSync(join(outDir, f), 'utf-8'),
+        ),
+      );
+      expect(
+        importsChannel,
+        'diagram 청크가 channel 을 cross-chunk import 하지 않음 — fix 우회',
+      ).toBe(true);
+
+      const r = runNode(join(outDir, 'entry.js'));
+      // 수정 전: `ReferenceError: channel is not defined`
+      expect(r.err, `모듈 평가 실패:\n${r.err}`).toBe('');
+      expect(r.out).toBe('d1:2,4 / d2:6,8');
     } finally {
       await cleanup();
     }
