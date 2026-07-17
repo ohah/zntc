@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { join } from 'node:path';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readFileSync } from 'node:fs';
 import { createFixture, runNode, runZntc } from './helpers';
 
 /**
@@ -596,4 +596,38 @@ describe('#4524: --preserve-modules × CJS', () => {
       }
     });
   }
+
+  // 증상1(조용한 오컴파일): 서로 다른 wrap 된 dep(b/c, a.cjs 가 require 해 ESM-wrap)의 동명 심볼
+  // `tag` 를 소비자 본문이 **둘 다** 호출하면 cross-chunk 전역명(`tag`/`tag$1`)으로 구분돼야 한다.
+  // 네이밍 인프라가 꺼져 있으면 두 참조가 한 이름으로 붕괴 → node 정본 `BC`, 버그 시 `BB`.
+  // ⚠️ ESM 출력 + non-minify 한정 — CJS-format 은 bare 전역명 bind 불가, minify 는 mangler 미예약
+  //    충돌 위험이라 둘 다 후속.
+  test('#4532 esm: 동명 wrap dep 두 심볼을 소비자 본문이 둘 다 참조해도 붕괴 안 함', async () => {
+    const { outDir, cleanup } = await buildPm(
+      {
+        'b.js': 'export function tag(){ return "B"; }',
+        'c.js': 'export function tag(){ return "C"; }',
+        'a.cjs':
+          'const b = require("./b.js");\nconst c = require("./c.js");\nmodule.exports = { x: 1 };',
+        'entry.js':
+          'import { tag } from "./b.js";\n' +
+          'import { tag as tag2 } from "./c.js";\n' +
+          'import "./a.cjs";\n' +
+          'console.log(tag() + tag2());',
+      },
+      'entry.js',
+    );
+    try {
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout.trim()).toBe('BC');
+      // 네이밍 경로가 실제로 발화했는지 핀(natural-ESM fallback 이면 `BC` 는 나와도 이 fix 코드가
+      // 안 탄다 — b/c 가 ESM-wrap 이라 deconflict 전역명 `tag$1` 이 방출돼야 한다).
+      const bundled =
+        readFileSync(join(outDir, 'entry.js'), 'utf8') + readFileSync(join(outDir, 'c.js'), 'utf8');
+      expect(bundled).toContain('tag$1');
+    } finally {
+      await cleanup();
+    }
+  });
 });

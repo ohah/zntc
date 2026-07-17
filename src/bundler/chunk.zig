@@ -1728,6 +1728,19 @@ pub fn computeCrossChunkGlobalNames(
     var used: std.StringHashMapUnmanaged(void) = .empty;
     defer used.deinit(allocator);
     for (syms.items) |s| {
+        // (#4532 증상1) preserve-modules 는 전역명을 **ESM-wrap owner 로 한정**한다.
+        // preserve-modules 는 모든 모듈이 자기 청크라 모든 import 가 cross-chunk 로 잡히는데:
+        //  - non-wrap ESM provider(.none): codegen 이 소스 `export { tag }` 를 자연명 재방출 →
+        //    전역명 붙이면 consumer 만 `import { tag$1 }`, provider 는 `export { tag }` 로 어긋남.
+        //  - CJS owner(.cjs): re-export barrel 등 소비 경로의 전역명 배선(`foo$legacy`)이 아직
+        //    없어(증상3 영역, 후속) 켜면 barrel 이 미정의 이름을 export → SyntaxError.
+        // ESM-wrap owner(.esm)만 provider emit 이 `pm_wrapped_esm_provider` 로 전역명(`local as
+        // global`)을 노출하므로 consumer/​provider 가 합의된다 → 동명 심볼 붕괴(증상1)를 여기서 해소.
+        // (splitting 은 non-wrap ESM·CJS 도 emit 측이 브리지하므로 전부 네이밍 → preserve 한정 skip.)
+        if (chunk_graph.preserve_modules) {
+            const owner = lnk.getModule(s.mod);
+            if (owner == null or owner.?.wrap_kind != .esm) continue;
+        }
         // (#4494) **CJS owner 의 공개명은 원문 멤버명을 쓰면 안 된다.** CJS 멤버는 provider 청크
         // top-level 에 `var <공개명> = require_X().<멤버>;` 로 *새 식별자를 만들어* 노출된다
         // (#4120 materialize). 멤버명을 그대로 쓰면:

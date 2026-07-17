@@ -1930,8 +1930,22 @@ pub const Bundler = struct {
             // (#4120) metadata 가 consumer↔canonical 청크 동일성을 판정하도록 module_to_chunk 를
             // 빌려준다(borrow — chunk_graph 소유, emit 동안 유효). defer 로 scope 이탈 시 먼저 비워
             // chunk_graph.deinit(1674 defer, LIFO 라 나중 실행) 전에 dangling 차단.
+            // (#4532) preserve_modules(ESM 출력)도 module_to_chunk 를 대여한다 — preserve-modules 는
+            // 모든 모듈이 자기 청크라 모든 모듈 간 import 가 cross-chunk 이고, 이 대여가 없으면
+            // isCrossChunkConsumer 가 false 라 소비자 본문 rewrite 가 죽어 동명 심볼이 붕괴한다(증상1).
+            // ⚠️ **ESM 출력 한정**: CJS 출력은 소비자가 bare 전역명을 bind 못 해(require 라 `var
+            // tag$1=require_c().tag$1` materialize 필요) → ReferenceError. CJS-format 증상1 은 후속.
+            // (#4532) ⚠️ **ESM 출력 + non-minify 한정**. CJS 출력은 소비자가 bare 전역명 bind 불가
+            // (materialize 필요) → ReferenceError. minify 는 identifier mangler 가 전역명을 예약하지
+            // 않아(computeChunkMangling 은 code_splitting 게이트라 preserve-modules 서 skip) 대형
+            // 빌드서 mangled local 과 전역명 충돌 위험 → 둘 다 후속. splitting(code_splitting and
+            // !preserve_modules)은 종전대로 별개 항으로 유지 — 아래 두 게이트가 splitting 을
+            // preserve-modules 와 함께 켠 CJS 조합에서도 새 네이밍을 발화시키면 안 되기 때문.
+            const pm_xchunk_naming = self.options.preserve_modules and
+                self.options.format == .esm and
+                !self.options.minify_identifiers;
             if (linker) |*l| {
-                if (self.options.code_splitting and !self.options.preserve_modules)
+                if ((self.options.code_splitting and !self.options.preserve_modules) or pm_xchunk_naming)
                     l.module_to_chunk = chunk_graph.module_to_chunk;
             }
             defer if (linker) |*l| {
@@ -1943,10 +1957,12 @@ pub const Bundler = struct {
             // override(lazy 전용)로, production 은 provider 가 전역명을 public 으로 노출(`export
             // { local as global }`) + 소비자 import key=global 로 일치(emit 측 분기). 단순 export
             // (local==export명)는 global==export명이라 byte-identical, 동명 충돌(global=`v$1`)·공유
-            // default·renamed export 만 달라진다. ⚠️ preserve_modules 는 제외 — emit 측 xchunk
-            // 블록이 `!preserve_modules` 게이트라, 켜면 consumer 만 전역명으로 바뀌어 mismatch.
+            // default·renamed export 만 달라진다. (#4532) preserve_modules 도 포함한다 — provider
+            // emit 측이 #4528 의 `pm_wrapped_esm_provider` 로 이미 전역명을 노출하므로 consumer 만
+            // 바뀌는 mismatch 는 없다. 단 computeCrossChunkGlobalNames 안에서 **wrap 된 owner 로 한정**
+            // 한다(non-wrap ESM provider 는 자연명 export → 전역명 붙이면 provider/consumer 어긋남).
             if (linker) |*l| {
-                if (self.options.code_splitting and !self.options.preserve_modules)
+                if ((self.options.code_splitting and !self.options.preserve_modules) or pm_xchunk_naming)
                     try chunk_mod.computeCrossChunkGlobalNames(self.allocator, &chunk_graph, l);
             }
 
