@@ -630,4 +630,77 @@ describe('#4524: --preserve-modules × CJS', () => {
       await cleanup();
     }
   });
+
+  // 증상2: `import * as ns from "./dep.js"` (dep 는 wrap.cjs 가 require 해 ESM-wrap) 의 `ns.val`/
+  // `ns.greet()` 멤버 접근이 bare `val`/`greet` 로 평탄화되는데, 그 멤버가 cross-chunk 로 등록 안 돼
+  // 소비자 청크서 미정의 → ReferenceError. dep export 를 fan-out 해 소비자가 import·바인딩하게 한다.
+  // ⚠️ ESM 출력 + non-minify 한정(증상1 게이트 공유).
+  test('#4532 esm: import * as ns (ESM-wrap dep) 의 멤버 접근이 cross-chunk 바인딩된다', async () => {
+    const { outDir, cleanup } = await buildPm(
+      {
+        'dep.js': 'export const val = 42;\nexport function greet(){ return "G"; }',
+        'wrap.cjs': 'module.exports = require("./dep.js");',
+        'entry.js':
+          'import * as ns from "./dep.js";\n' +
+          'import "./wrap.cjs";\n' +
+          'console.log(ns.val + "|" + ns.greet());',
+      },
+      'entry.js',
+    );
+    try {
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      // 버그 시: ReferenceError: val is not defined (평탄화된 bare 멤버 미바인딩)
+      expect(stderr).not.toContain('ReferenceError');
+      expect(stdout.trim()).toBe('42|G');
+      // fix 경로 pin: 평탄화된 멤버가 dep 청크에서 cross-chunk import 돼야 한다(fan-out 발화).
+      const entryJs = readFileSync(join(outDir, 'entry.js'), 'utf8');
+      expect(entryJs).toMatch(/import\s*\{[^}]*\bval\b[^}]*\}\s*from\s*["']\.\/dep\.js["']/);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  // (code-review) plain ESM dep(non-wrap, 가장 흔함) 도 같은 평탄화라 fan-out 게이트가 wrap-only 면
+  // 미등록으로 남아 똑같이 ReferenceError. dep wrap_kind != .cjs 로 non-wrap ESM 도 등록해야 한다.
+  test('#4532 esm: import * as ns (plain non-wrap ESM dep) 도 cross-chunk 바인딩된다', async () => {
+    const { outDir, cleanup } = await buildPm(
+      {
+        'dep.js': 'export const val = 7;\nexport function greet(){ return "P"; }',
+        'entry.js': 'import * as ns from "./dep.js";\nconsole.log(ns.val + "|" + ns.greet());',
+      },
+      'entry.js',
+    );
+    try {
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      expect(stderr).not.toContain('ReferenceError');
+      expect(stdout.trim()).toBe('7|P');
+      const entryJs = readFileSync(join(outDir, 'entry.js'), 'utf8');
+      expect(entryJs).toMatch(/import\s*\{[^}]*\bval\b[^}]*\}\s*from\s*["']\.\/dep\.js["']/);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  // (code-review) value-use 경로: ns 를 값으로도 쓰면(Object.keys(ns)) 소비자가 imported 멤버로 ns
+  // 객체를 합성해야 한다 — 멤버-접근만 검증하면 이 경로 회귀가 green CI 로 샌다.
+  test('#4532 esm: import * as ns value-use (Object.keys) 가 동작한다', async () => {
+    const { outDir, cleanup } = await buildPm(
+      {
+        'dep.js': 'export const val = 42;\nexport function greet(){ return "G"; }',
+        'wrap.cjs': 'module.exports = require("./dep.js");',
+        'entry.js':
+          'import * as ns from "./dep.js";\n' +
+          'import "./wrap.cjs";\n' +
+          'console.log(Object.keys(ns).sort().join(",") + "|" + ns.val);',
+      },
+      'entry.js',
+    );
+    try {
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      expect(stderr).not.toContain('ReferenceError');
+      expect(stdout.trim()).toBe('greet,val|42');
+    } finally {
+      await cleanup();
+    }
+  });
 });

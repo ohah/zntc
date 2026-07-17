@@ -1925,25 +1925,28 @@ pub const Bundler = struct {
                 chunk_mod.mergeSmallChunks(&chunk_graph, graph, self.options.min_chunk_size);
             }
 
-            try chunk_mod.computeCrossChunkLinks(&chunk_graph, graph, self.allocator, if (linker) |*l| l else null);
-
-            // (#4120) metadata 가 consumer↔canonical 청크 동일성을 판정하도록 module_to_chunk 를
-            // 빌려준다(borrow — chunk_graph 소유, emit 동안 유효). defer 로 scope 이탈 시 먼저 비워
-            // chunk_graph.deinit(1674 defer, LIFO 라 나중 실행) 전에 dangling 차단.
-            // (#4532) preserve_modules(ESM 출력)도 module_to_chunk 를 대여한다 — preserve-modules 는
-            // 모든 모듈이 자기 청크라 모든 모듈 간 import 가 cross-chunk 이고, 이 대여가 없으면
-            // isCrossChunkConsumer 가 false 라 소비자 본문 rewrite 가 죽어 동명 심볼이 붕괴한다(증상1).
-            // ⚠️ **ESM 출력 한정**: CJS 출력은 소비자가 bare 전역명을 bind 못 해(require 라 `var
-            // tag$1=require_c().tag$1` materialize 필요) → ReferenceError. CJS-format 증상1 은 후속.
-            // (#4532) ⚠️ **ESM 출력 + non-minify 한정**. CJS 출력은 소비자가 bare 전역명 bind 불가
-            // (materialize 필요) → ReferenceError. minify 는 identifier mangler 가 전역명을 예약하지
-            // 않아(computeChunkMangling 은 code_splitting 게이트라 preserve-modules 서 skip) 대형
-            // 빌드서 mangled local 과 전역명 충돌 위험 → 둘 다 후속. splitting(code_splitting and
-            // !preserve_modules)은 종전대로 별개 항으로 유지 — 아래 두 게이트가 splitting 을
-            // preserve-modules 와 함께 켠 CJS 조합에서도 새 네이밍을 발화시키면 안 되기 때문.
+            // (#4532) preserve_modules(ESM·non-minify 출력)의 cross-file 심볼 네이밍 게이트. CJS
+            // 출력은 소비자가 bare 전역명 bind 불가(materialize 필요), minify 는 identifier mangler 가
+            // 전역명 미예약(computeChunkMangling 은 code_splitting 게이트라 preserve-modules 서 skip)
+            // 충돌 위험 → 둘 다 후속. splitting(code_splitting and !preserve_modules)은 별개 항 유지.
+            // ⚠️ `!dev_mode` 도 필수: dev 는 namespace member rewrite 가 wrapped local(`(init(),
+            // exp.local)`)을 쓰고 negotiated 전역명 경로를 안 타 동명 멤버가 붕괴한다(code-review).
             const pm_xchunk_naming = self.options.preserve_modules and
                 self.options.format == .esm and
-                !self.options.minify_identifiers;
+                !self.options.minify_identifiers and
+                !self.options.dev_mode;
+            // (#4532 증상2) computeCrossChunkLinks 의 direct `import * as ns`(leaf ESM-wrap dep) fan-out
+            // 을 이 게이트로 한정 — dep export 를 소비자 imports_from 에 등록해 아래 네이밍/provider
+            // emit 이 발화한다(안 하면 평탄화된 bare 멤버 val/greet 가 미정의 → ReferenceError).
+            chunk_graph.pm_xchunk_naming = pm_xchunk_naming;
+
+            try chunk_mod.computeCrossChunkLinks(&chunk_graph, graph, self.allocator, if (linker) |*l| l else null);
+
+            // (#4120/#4532) metadata 가 consumer↔canonical 청크 동일성을 판정하도록 module_to_chunk 를
+            // 빌려준다(borrow, emit 동안 유효). preserve-modules(ESM)도 대여 — 없으면 isCrossChunkConsumer
+            // 가 false 라 소비자 본문 rewrite 가 죽어 동명 심볼 붕괴(증상1). splitting 항의 `!preserve_modules`
+            // 는 splitting+preserve+cjs 조합에서 새 네이밍 발화(ReferenceError) 회귀를 막으려 유지.
+            // defer 로 scope 이탈 시 chunk_graph.deinit 전에 dangling 차단.
             if (linker) |*l| {
                 if ((self.options.code_splitting and !self.options.preserve_modules) or pm_xchunk_naming)
                     l.module_to_chunk = chunk_graph.module_to_chunk;

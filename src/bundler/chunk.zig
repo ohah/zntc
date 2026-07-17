@@ -347,6 +347,11 @@ pub const ChunkGraph = struct {
     /// 이름을 소비자가 `import { default as … }` 로 가져와 링크 에러가 난다.
     preserve_modules: bool = false,
 
+    /// (#4532) preserve-modules(ESM·non-minify) cross-file 심볼 네이밍이 켜졌는지. bundler.zig 가
+    /// computeCrossChunkLinks 전에 세팅. direct `import * as ns`(ESM-wrap dep) fan-out(증상2)을
+    /// 이 게이트 + dep `wrap_kind==.esm` 로 한정해, 네이밍이 켜진 경우에만 imports_from 에 등록한다.
+    pm_xchunk_naming: bool = false,
+
     /// module_count 크기의 빈 ChunkGraph를 생성한다.
     pub fn init(allocator: std.mem.Allocator, module_count: usize) !ChunkGraph {
         const module_to_chunk = try allocator.alloc(ChunkIndex, module_count);
@@ -2046,8 +2051,30 @@ pub fn computeCrossChunkLinks(
                     if (ib.import_record_index >= m.import_records.len) continue;
                     const src_mod = m.import_records[ib.import_record_index].resolved;
                     if (src_mod.isNone()) continue;
-                    const ns_target = nsReExportTarget(graph, src_mod, ib.imported_name) orelse continue;
-                    try linkNamespaceCrossChunkOnce(allocator, chunk_graph, chunk, &seen_static, &seen_ns_target, lnk, ns_target, module_count);
+                    if (nsReExportTarget(graph, src_mod, ib.imported_name)) |ns_target| {
+                        try linkNamespaceCrossChunkOnce(allocator, chunk_graph, chunk, &seen_static, &seen_ns_target, lnk, ns_target, module_count);
+                        continue;
+                    }
+                    // (#4532 증상2) preserve-modules(ESM): direct leaf `import * as ns from "./dep"`.
+                    // ns.val/ns.greet 는 registerNamespaceRewrites 가 bare 멤버로 평탄화하는데, nsReExportTarget
+                    // 은 namespace **re-export**(imported="*")만 잡아 이 direct leaf import 를 놓쳐 멤버가
+                    // cross-chunk 등록 안 됨 → 소비자 청크서 미정의 ReferenceError. dep 의 export 를 fan-out
+                    // 해 imports_from 에 넣으면 뒤이은 computeCrossChunkGlobalNames(wrap 은 전역명, non-wrap
+                    // ESM 은 자연명) + provider export + rewrite 가 발화한다. **ESM dep 전부**(wrap·non-wrap)
+                    // 등록해야 한다 — plain ESM dep(가장 흔함)도 같은 평탄화라 미등록이면 똑같이 깨진다. CJS
+                    // dep 은 cjsNs interop 별경로라 제외. seen_ns_target 로 같은 dep 반복 DFS 방지.
+                    if (chunk_graph.pm_xchunk_naming and ib.kind == .namespace) {
+                        if (graph.getModule(src_mod)) |dep| {
+                            if (dep.wrap_kind != .cjs) {
+                                const dep_chunk = chunk_graph.getModuleChunk(src_mod);
+                                if (!dep_chunk.isNone() and dep_chunk != chunk.index) {
+                                    const gop = try seen_ns_target.getOrPut(allocator, @intFromEnum(src_mod));
+                                    if (!gop.found_existing)
+                                        try fanOutModuleExports(allocator, chunk_graph, chunk, &seen_static, lnk, src_mod, module_count);
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // `export * from "./y"` (re_export_star, y 별도 청크): 위 named
