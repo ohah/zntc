@@ -597,6 +597,14 @@ pub const GenerateOptions = struct {
     manual_resolver_ctx: ?*anyopaque = null,
     /// Rollup `output.inlineDynamicImports` — dynamic import target 을 importer 의 chunk 로 흡수.
     inline_dynamic_imports: bool = false,
+    /// (#4552) run_before_main(Metro runBeforeMainModule) 모듈 경로. entry 앞에서 실행돼야 하므로
+    /// **entry 청크에 co-locate** — manual 청크로 relocate 안 함(reg_split 에서 cross-chunk RBM 는
+    /// lazy __esm+factory 스코프라 근본적으로 실행 불가). Metro 도 RBM 을 split 하지 않고 번들 최상단.
+    run_before_main: []const []const u8 = &.{},
+    /// (#4552) reg_split(iife/umd/amd) 출력 여부. RBM co-location 은 reg_split 에서만 적용한다 —
+    /// esm/cjs 는 cross-chunk RBM 이 valid ESM `import` 로 동작하므로 사용자의 manualChunks 배치를
+    /// 존중(강제 co-locate 하면 caching/split 전략을 무성 무효화).
+    reg_split: bool = false,
 };
 
 /// 너무 작은 `common` 청크를, 그 청크가 도달 가능한 모든 entry 가 항상 함께
@@ -805,6 +813,31 @@ pub fn generateChunks(
     for (entries.items) |e| {
         if (!e.is_dynamic) try user_entry_modules.put(allocator, @intFromEnum(e.module_idx), {});
     }
+    // (#4552) run_before_main **클로저**(RBM 모듈 + transitive static deps)를 manual 청크에서 제외 —
+    // entry 앞에서 실행돼야 하므로 entry 청크에 co-locate. reg_split(iife/umd/amd)은 cross-chunk RBM 를
+    // 근본적으로 못 실행한다(다른 청크의 RBM 은 lazy `__esm` 로 감싸지고 그 init 심볼이 factory 스코프
+    // 밖으로 안 나와, entry 청크가 ESM import(IIFE 서 SyntaxError)·미접근 init 호출로 깨짐). Metro 도
+    // RBM 을 split 하지 않는다.
+    // ⚠️ **reg_split 한정** — esm/cjs 는 cross-chunk RBM 이 valid ESM import 로 동작하므로 사용자
+    // manualChunks 배치를 존중(강제 co-locate 금지). ⚠️ **최상위 RBM 만이 아니라 클로저 전체** — RBM 이
+    // import 한 모듈이 manual 로 빠지면 entry prelude(emitter collectRunBeforeMainClosure)가 그걸
+    // cross-chunk 참조해 똑같이 깨진다. manual 미설정이면 스캔 자체를 skip(불필요 작업 회피).
+    var rbm_modules: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer rbm_modules.deinit(allocator);
+    if (options.reg_split and (manual_resolver != null or manual_chunks.len > 0)) {
+        var rbm_stack: std.ArrayList(ModuleIndex) = .empty;
+        defer rbm_stack.deinit(allocator);
+        for (options.run_before_main) |rbm_path| {
+            const m = graph.findModuleByPath(rbm_path) orelse continue;
+            try rbm_stack.append(allocator, m.index);
+        }
+        while (rbm_stack.pop()) |idx| {
+            const gop = try rbm_modules.getOrPut(allocator, @intFromEnum(idx));
+            if (gop.found_existing) continue;
+            const m = graph.getModule(idx) orelse continue;
+            for (m.dependencies.items) |dep| try rbm_stack.append(allocator, dep);
+        }
+    }
     // 같은 entry 를 resolver·record 양쪽이 매칭해도 warn 은 entry 당 1회만 (이중 emit 방지).
     var warned_manual_entries: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer warned_manual_entries.deinit(allocator);
@@ -830,6 +863,8 @@ pub fn generateChunks(
                     try warnManualChunksEntry(&warned_manual_entries, allocator, @intCast(mi), m.path, chunk_name);
                     continue;
                 }
+                // (#4552) RBM 은 entry 와 co-locate — 배정 무시(dynamic 대상처럼 silent).
+                if (rbm_modules.contains(@intCast(mi))) continue;
                 ra[mi] = try ensureNameSlot(&name_to_slot, &effective_names, allocator, chunk_name);
             }
         }
@@ -946,6 +981,7 @@ pub fn generateChunks(
             if (m.is_external) continue;
             // dynamic import target 은 정책상 manual 청크 제외 (#1848/#1849, 근본수정 #1850)
             if (dynamic_entry_modules.contains(@intCast(mi))) continue;
+            if (rbm_modules.contains(@intCast(mi))) continue; // (#4552) RBM 은 entry 와 co-locate
             if (resolver_assignments) |ra| {
                 if (ra[mi]) |slot| {
                     try manual_seeds[slot].append(allocator, ModuleIndex.fromUsize(mi));
@@ -1058,6 +1094,7 @@ pub fn generateChunks(
                 // transitive dep 로 도달) 여기서 막아 entry 가 manual 청크로 빨려가지 않게 한다. entry 를
                 // 통해 dep 로 전파도 중단(entry 의 exclusive dep 는 entry 청크에 남음).
                 if (user_entry_modules.contains(@intCast(mi))) continue;
+                if (rbm_modules.contains(@intCast(mi))) continue; // (#4552) RBM 은 manual bit 안 받음
                 // 다른 slot 의 seed 면 skip — 그쪽에서 처리됨
                 if (module_primary_slot[mi]) |other| {
                     if (other != i) continue;
