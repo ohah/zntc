@@ -331,6 +331,98 @@ export const rgba = (r) => {
     }
   }, 120000);
 
+  test('#4566(A) splitting: 싱글톤이 다른 청크여도 소비자 함수-로컬 shadow 를 해소한다', async () => {
+    // #4563 은 싱글톤과 소비자가 **같은 청크**(target-rename)였다면, #4566(A) 는 싱글톤이 공유돼
+    // **다른 청크**로 hoist 된 cross-chunk 케이스다. target(싱글톤)의 canonical 은 이 청크서 못
+    // 건드리므로(cross-chunk 전역명 공유) 대신 **소비자의 함수-로컬**을 리네임해야 self-TDZ 를 피한다.
+    //   수정 전: `import { c } from './shared'` + `const c = c.set(...)` → ReferenceError.
+    const files: Record<string, string> = {
+      's.js': `class C { constructor(v){ this.v = v; } set(x){ this.v = x; return this; } }
+const c = new C({ r: 0 });
+export default c;
+`,
+      'u.js': `import _c from "./s.js";
+export const f = (r) => { const c = _c.set({ r: r * 3 }); return "f:" + c.v.r; };
+`,
+      // diag1: u 사용(u 는 diag1 전용 leaf). diag2: s 직접 사용 → s 를 공통 청크로 분리(cross-chunk).
+      'diag1.js': `import { f } from "./u.js";\nexport const d1 = () => f(2);\n`,
+      'diag2.js': `import s from "./s.js";\nexport const d2 = () => s.v.r;\n`,
+      'entry.js': `Promise.all([import("./diag1.js"), import("./diag2.js")]).then(([a, b]) => { console.log(a.d1() + " / " + b.d2()); });\n`,
+    };
+    const { dir, cleanup } = await createFixture(files);
+    try {
+      const outDir = join(dir, 'out');
+      const build = await runZntc([
+        '--bundle',
+        join(dir, 'entry.js'),
+        '--splitting',
+        '--outdir',
+        outDir,
+        '--format=esm',
+      ]);
+      expect(build.exitCode).toBe(0);
+      writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
+      // s.js 의 c 가 u.js(diag1) 와 다른 청크여야 이 fix 가 발화(구조 검증).
+      const allChunks = readdirSync(outDir).filter((f) => f.endsWith('.js') && f !== 'entry.js');
+      const fChunk = allChunks.find((f) =>
+        /\bf\s*=|\bd1\b/.test(readFileSync(join(outDir, f), 'utf-8')),
+      );
+      const cChunk = allChunks.find((f) =>
+        readFileSync(join(outDir, f), 'utf-8').includes('new C('),
+      );
+      expect(fChunk, 'f/d1 청크 없음').toBeTruthy(); // fChunk undefined 면 아래 not.toBe 가 vacuous 통과
+      expect(cChunk, 'C 정의 청크 없음').toBeTruthy();
+      expect(cChunk, '싱글톤이 소비자 청크에 인라인 — cross-chunk 아님').not.toBe(fChunk);
+      const r = runNode(join(outDir, 'entry.js'));
+      expect(r.err, `모듈 평가 실패:\n${r.err}`).toBe('');
+      expect(r.out).toBe('f:6 / 6');
+    } finally {
+      await cleanup();
+    }
+  }, 120000);
+
+  test('#4566(B) preserve-modules: import 로컬이 함수-로컬을 shadow 하면 함수-로컬을 리네임한다', async () => {
+    // preserve-modules 는 import 를 문(statement)으로 보존하며 로컬명을 export 명으로 리네임한다:
+    // `import { default as c } from './s.js'`. 함수-로컬 `const c` 가 이 import 로컬 `c` 를 shadow →
+    // `const c = c.set(...)` self-TDZ. target(별도 출력 파일)은 못 건드리므로 함수-로컬을 리네임.
+    const files: Record<string, string> = {
+      's.js': `class C { constructor(v){ this.v = v; } set(x){ this.v = x; return this; } }
+const c = new C({ r: 0 });
+export default c;
+`,
+      'u.js': `import _c from "./s.js";
+export const f = (r) => { const c = _c.set({ r: r * 3 }); return "f:" + c.v.r; };
+`,
+      'entry.js': `import { f } from "./u.js";\nconsole.log(f(2));\n`,
+    };
+    const { dir, cleanup } = await createFixture(files);
+    try {
+      const outDir = join(dir, 'out');
+      const build = await runZntc([
+        '--bundle',
+        join(dir, 'entry.js'),
+        '--preserve-modules',
+        '--outdir',
+        outDir,
+        '--format=esm',
+      ]);
+      expect(build.exitCode).toBe(0);
+      writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
+      // u.js 에 self-referencing const(`const c = c.…`) 가 없어야 한다.
+      const files2 = readdirSync(outDir).filter((f) => f.endsWith('.js'));
+      for (const f of files2) {
+        const src = readFileSync(join(outDir, f), 'utf-8');
+        const selfRef = /const (\w+)\s*=\s*\1[.[]/.exec(src);
+        expect(selfRef, `self-referencing const in ${f}: ${selfRef?.[0]}`).toBeNull();
+      }
+      const r = runNode(join(outDir, 'entry.js'));
+      expect(r.err, `모듈 평가 실패:\n${r.err}`).toBe('');
+      expect(r.out).toBe('f:6');
+    } finally {
+      await cleanup();
+    }
+  }, 120000);
+
   test('#4502 splitting: materialize 된 ns 객체 getter 가 같은 청크의 chunk-local 이름을 쓴다', async () => {
     // 네 번째 표면 — ns 를 **값으로** 쓰면(`const o = ns`) 정적 멤버 재작성이 불가능해
     // 객체가 materialize 된다: `var ns_ns = {get second(){return <name>}, ...}`.
