@@ -2632,6 +2632,16 @@ pub const Linker = struct {
         return self.resolveExportChainInner(module_idx, name, depth, true);
     }
 
+    /// resolveExportChain 의 **캐시 우회** 변형 (#4564). 캐싱 wrapper 는 depth==0 에서 chain_cache
+    /// 를 락 없이 `@constCast` put/get 한다 — 병렬 emit 스레드(buildMetadataForAst)에서 **cold key**
+    /// 로 호출하면 concurrent put/get 데이터 레이스(rehash-during-read → segfault, ReleaseFast-only,
+    /// 비결정적)가 난다. `resolveExportChainInner` 는 chain_cache 를 안 건드리므로(재귀도
+    /// resolveOrCjsFallback→Inner 로 cache-free) 직접 호출해 레이스를 원천 차단. namespace 멤버
+    /// canonical 해석은 상위 ns_export_cache 가 이미 메모이즈해 캐시 손실 영향도 없다.
+    pub fn resolveExportChainUncached(self: *const Linker, module_idx: ModuleIndex, name: []const u8) ?SymbolRef {
+        return self.resolveExportChainInner(module_idx, name, 0, true);
+    }
+
     /// resolveExportChain 내부 구현 (캐시 없이).
     /// `allow_synthetic`: synthetic_named_exports fallback(#3664 P2)을 적용할지. 직접 named import·
     /// named re-export forwarding 경로는 true, `export *`(re_export_all)는 false — Rollup 은 synthetic
