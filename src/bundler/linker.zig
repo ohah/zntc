@@ -1016,7 +1016,7 @@ pub const Linker = struct {
         // 3. import binding의 canonical name이 해당 모듈의 중첩 스코프와 충돌하는지 확인.
         // 충돌하면 target module의 canonical name을 한 단계 더 rename.
         // 예: d3-color의 cubehelix와 d3-interpolate 내부의 function cubehelix 충돌.
-        try self.resolveNestedShadowConflicts(&name_to_owners);
+        try self.resolveNestedShadowConflicts(&name_to_owners, null);
 
         // 4. 주입된 래퍼 참조(require_x())가 소비자의 스코프 바인딩에 가려지는 것 방지 (#4533).
         try self.resolveWrapperConsumerShadows(&name_to_owners, null);
@@ -1484,30 +1484,47 @@ pub const Linker = struct {
     /// rename 하면 매 호출이 canonical_name 을 덮어써 최종 하나만 유효, 나머지
     /// `__extends$1`, `$2` ... 호출은 ReferenceError (미선언). helper module 은 rename
     /// 대상에서 제외 — 충돌은 consumer 측 nested binding 을 mangling 단계가 처리한다.
-    fn resolveNestedShadowConflicts(self: *Linker, name_to_owners: *const NameToOwnersMap) !void {
+    /// `only` non-null(#4563 per-chunk 경로): 그 모듈들의 import binding 만 검사하고, target(정의)이
+    /// **같은 청크**일 때만 rename 한다 — 다른 청크면 cross-chunk 네이밍이 담당(여기서 그 청크의
+    /// canonical 을 건드리면 그 청크 per-chunk rename 과 충돌). null(global computeRenames, 비-splitting)
+    /// 은 전 모듈·청크 무관(기존 동작).
+    fn resolveNestedShadowConflicts(self: *Linker, name_to_owners: *const NameToOwnersMap, only: ?[]const ModuleIndex) !void {
+        if (only) |mods| {
+            for (mods) |mi| try self.resolveNestedShadowForModule(mi.toU32(), name_to_owners, true);
+        } else {
+            for (0..self.graph.moduleCount()) |mod_i| try self.resolveNestedShadowForModule(@intCast(mod_i), name_to_owners, false);
+        }
+    }
+
+    fn resolveNestedShadowForModule(self: *Linker, mod_i: u32, name_to_owners: *const NameToOwnersMap, same_chunk_only: bool) !void {
         const helper_modules = @import("../runtime_helper_modules.zig");
-        for (0..self.graph.moduleCount()) |mod_i| {
-            const m = self.getModule(@intCast(mod_i)) orelse continue;
-            for (m.import_bindings) |ib| {
-                if (ib.kind == .namespace) continue;
-                const resolved = self.getResolvedBinding(@intCast(mod_i), ib.local_span) orelse continue;
-                const target_name = self.resolveToLocalName(resolved.canonical);
+        const m = self.getModule(mod_i) orelse return;
+        for (m.import_bindings) |ib| {
+            if (ib.kind == .namespace) continue;
+            const resolved = self.getResolvedBinding(mod_i, ib.local_span) orelse continue;
+            const target_name = self.resolveToLocalName(resolved.canonical);
 
-                // target_name이 이 모듈의 중첩 스코프에 있고, local_name과 다르면 충돌
-                if (!std.mem.eql(u8, ib.local_name, target_name) and
-                    self.hasNestedBinding(@intCast(mod_i), target_name))
-                {
-                    // target module의 canonical name을 한 단계 더 rename
-                    const cmod: u32 = @intCast(@intFromEnum(resolved.canonical.module_index));
-                    const target_module = self.getModule(cmod) orelse continue;
-                    if (helper_modules.isVirtualId(target_module.path)) continue;
-                    const export_local = self.getExportLocalName(cmod, resolved.canonical.export_name) orelse resolved.canonical.export_name;
-
-                    // 새 이름: target_name$N (기존 이름 충돌 없는 것)
-                    var suffix: u32 = 1;
-                    const candidate = try self.findAvailableCandidate(target_name, cmod, &suffix, name_to_owners);
-                    try self.putCanonicalName(cmod, export_local, candidate);
+            // target_name이 이 모듈의 중첩 스코프에 있고, local_name과 다르면 충돌
+            if (!std.mem.eql(u8, ib.local_name, target_name) and
+                self.hasNestedBinding(mod_i, target_name))
+            {
+                // target module의 canonical name을 한 단계 더 rename
+                const cmod: u32 = @intCast(@intFromEnum(resolved.canonical.module_index));
+                // (#4563) per-chunk: target 이 consumer 와 다른 청크(또는 어느 쪽이든 미배정 .none)면 skip
+                // — cross-chunk/미배정은 이 청크서 canonical 을 못 건드린다. isCrossChunkConsumer 와 동형.
+                if (same_chunk_only) {
+                    const cc = self.chunkOfModule(mod_i);
+                    const pc = self.chunkOfModule(cmod);
+                    if (cc.isNone() or pc.isNone() or cc != pc) continue;
                 }
+                const target_module = self.getModule(cmod) orelse continue;
+                if (helper_modules.isVirtualId(target_module.path)) continue;
+                const export_local = self.getExportLocalName(cmod, resolved.canonical.export_name) orelse resolved.canonical.export_name;
+
+                // 새 이름: target_name$N (기존 이름 충돌 없는 것)
+                var suffix: u32 = 1;
+                const candidate = try self.findAvailableCandidate(target_name, cmod, &suffix, name_to_owners);
+                try self.putCanonicalName(cmod, export_local, candidate);
             }
         }
     }
@@ -3772,8 +3789,28 @@ pub const Linker = struct {
             try self.collectModuleNames(m.*, mod_idx.toU32(), &name_to_owners);
         }
 
+        // (#4563) nested-binding 캐시 — calculateRenames/resolveNestedShadowConflicts/
+        // resolveWrapperConsumerShadows 3 소비처 공용(글로벌 computeRenames 와 동일 위치). hasNestedBinding
+        // O(1). defer 로 에러 경로에서도 해제(code-review: non-defer clear 는 에러 시 populated 잔존).
+        try self.buildNestedBindingCache(&name_to_owners);
+        defer self.clearNestedBindingCache();
+
         // 2. 충돌하는 이름에 대해 리네임 계산 (cross-chunk 점유 마커는 skip)
         try self.calculateRenames(&name_to_owners, true);
+
+        // 2.05 (#4563) import binding 의 canonical(hoisted module-level)이 그 모듈의 nested 스코프
+        // 바인딩과 충돌하면 target canonical 을 rename. function-local `const x` 가 module-level
+        // `const x`(import 가 해석되는 대상)를 shadow 하면 초기화식이 self-TDZ 가 된다
+        // (`const channels = channels.set(...)` = khroma rgba). 전역 computeRenames(비-splitting)는
+        // resolveNestedShadowConflicts 로 하는데 이 per-chunk 경로엔 빠져 splitting 서만 깨졌다.
+        // ⚠️ **실제 splitting(module_to_chunk 세팅)만** — preserve-modules 는 module_to_chunk 가 null 이라
+        // chunkOfModule 이 전부 .none → same-chunk 가드가 `.none != .none`=false 로 **fail-open** 해
+        // cross-module target 을 over-rename(별도 출력 파일이 여전히 원명 export → ReferenceError,
+        // code-review). preserve-modules 는 import 를 hoisting 안 해(import 문 보존) shadow 자체가 없다.
+        // target 이 같은 청크일 때만 rename(cross-chunk 토폴로지는 별도 gap — 후속).
+        if (self.module_to_chunk != null) {
+            try self.resolveNestedShadowConflicts(&name_to_owners, module_indices);
+        }
 
         // 2.1 주입된 래퍼 참조가 소비자 스코프 바인딩에 가려지는 것 방지 (#4533). code-splitting 은
         // 이 per-chunk 경로만 타므로 여기서도 불러야 한다(전역 computeRenames 는 안 탄다). 소비자

@@ -274,6 +274,63 @@ export const d2 = () => _.max([9, 2, 7]) + "|" + _.pick("d2");
     }
   }, 120000);
 
+  test('#4563 splitting: import canonical 이 nested 로컬을 shadow 하면 self-TDZ 안 나게 리네임된다', async () => {
+    // function-local `const x` 가 module-level `const x`(import 가 해석되는 정의)를 shadow 하면,
+    // 그 로컬의 **초기화식**이 로컬 자신을 참조(TDZ)한다: `const channels = channels.set(...)`.
+    // khroma rgba 실제 위상 — reusable.js 가 싱글톤 `const channels = new Channels(...)` 를 export,
+    // rgba.js 가 `_channels` 로 import 하고 로컬 `const channels = _channels.set(...)` 를 둔다. zntc 가
+    // import 참조 `_channels` 를 싱글톤 canonical `channels` 로 해석하면 로컬 `channels` 와 충돌.
+    //   수정 전(splitting): `const channels = new Channels(...)` + `const channels = channels.set(...)`
+    //     → `ReferenceError: Cannot access 'channels' before initialization`.
+    // 비-splitting(글로벌 computeRenames)은 resolveNestedShadowConflicts 로 싱글톤을 `channels$1` 로
+    // 리네임하는데, per-chunk 리네이머(splitting)엔 그 패스가 빠져 splitting 서만 깨졌다. mermaid 를
+    // `--format=esm`(minify 없이) 로 빌드할 때 khroma 가 이 위상으로 인라인돼 render() 가 크래시했다.
+    const files: Record<string, string> = {
+      'reusable.js': `class Channels { constructor(v){ this.v = v; } set(x){ this.v = x; return this; } }
+const channels = new Channels({ r: 0 });
+export default channels;
+`,
+      'rgba.js': `import _channels from "./reusable.js";
+export const rgba = (r) => {
+  const channels = _channels.set({ r: r * 2 });   // 로컬 channels 가 싱글톤 channels 를 shadow
+  return "rgba:" + channels.v.r;
+};
+`,
+      'diag.js': `import { rgba } from "./rgba.js";\nexport const run = () => rgba(5);\n`,
+      'entry.js': `import("./diag.js").then((m) => { console.log(m.run()); });\n`,
+    };
+
+    const { dir, cleanup } = await createFixture(files);
+    try {
+      const outDir = join(dir, 'out');
+      const build = await runZntc([
+        '--bundle',
+        join(dir, 'entry.js'),
+        '--splitting',
+        '--outdir',
+        outDir,
+        '--format=esm', // minify 없이 — non-minify 경로가 실 깨짐(#4563)
+      ]);
+      expect(build.exitCode).toBe(0);
+      writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
+
+      // self-referencing const(`const X = X.…`) 가 산출물에 없어야 한다 (구조 검증).
+      const chunkFiles = readdirSync(outDir).filter((f) => f.endsWith('.js') && f !== 'entry.js');
+      for (const f of chunkFiles) {
+        const src = readFileSync(join(outDir, f), 'utf-8');
+        const selfRef = /const (\w+)\s*=\s*\1[.[]/.exec(src);
+        expect(selfRef, `self-referencing const in ${f}: ${selfRef?.[0]}`).toBeNull();
+      }
+
+      const r = runNode(join(outDir, 'entry.js'));
+      // 수정 전: `ReferenceError: Cannot access 'channels' before initialization`
+      expect(r.err, `모듈 평가 실패:\n${r.err}`).toBe('');
+      expect(r.out).toBe('rgba:10');
+    } finally {
+      await cleanup();
+    }
+  }, 120000);
+
   test('#4502 splitting: materialize 된 ns 객체 getter 가 같은 청크의 chunk-local 이름을 쓴다', async () => {
     // 네 번째 표면 — ns 를 **값으로** 쓰면(`const o = ns`) 정적 멤버 재작성이 불가능해
     // 객체가 materialize 된다: `var ns_ns = {get second(){return <name>}, ...}`.
