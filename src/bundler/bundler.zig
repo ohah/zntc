@@ -1583,7 +1583,13 @@ pub const Bundler = struct {
             const did_compute_renames = !self.options.code_splitting and !can_reuse;
             try l.finalize(.{
                 .compute_renames = did_compute_renames,
-                .compute_mangling = self.options.minify_identifiers and !will_tree_shake,
+                // (#4532 증상1 minify) preserve-modules 는 per-chunk computeChunkMangling(모든
+                // 모듈이 자기 청크)이 mangle 을 전담하므로 finalize 의 전역 mangle 은 중복
+                // (rename_table 을 청크마다 clear·재계산). code_splitting 이 did_compute_renames
+                // 로 전역 pass 를 통째로 건너뛰는 것과 같은 이유 — 여기선 computeRenames 는 유지하고
+                // (일부 populate* 가 canonical 을 참조) 낭비되는 mangle 만 끈다.
+                .compute_mangling = self.options.minify_identifiers and !will_tree_shake and
+                    !self.options.preserve_modules,
                 // reuse-hit 만 ref_count populate skip. splitting(can_reuse=false)은 per-chunk
                 // mangling 이 ref_count 를 소비하므로 반드시 populate(byte-identical 보존).
                 .skip_ref_counts = can_reuse,
@@ -1925,19 +1931,18 @@ pub const Bundler = struct {
                 chunk_mod.mergeSmallChunks(&chunk_graph, graph, self.options.min_chunk_size);
             }
 
-            // (#4532) preserve_modules(ESM/CJS·non-minify 출력)의 cross-file 심볼 네이밍 게이트.
+            // (#4532) preserve_modules(ESM/CJS 출력)의 cross-file 심볼 네이밍 게이트.
             // ESM 은 `import { X as global }` 로, CJS 는 forwarding 썽크(`let global; global =
             // m.global`, chunks.zig)로 전역명을 materialize 한다 — 소비자 본문·forwarding·provider
             // export 셋이 같은 전역명에 합의(증상1 동명 붕괴 `BB` 해소). CJS forwarding read 도
             // provider export 키(전역명 orelse export명)로 읽어야 provider 방출과 일치한다(chunks.zig).
-            // minify 는 identifier mangler 가 전역명 미예약(computeChunkMangling 은 code_splitting
-            // 게이트라 preserve-modules 서 skip)이라 mangled local↔전역명 충돌 위험 → `!minify_
-            // identifiers` 로 후속. splitting(code_splitting and !preserve_modules)은 별개 항 유지.
+            // minify 도 포함(증상1 minify): computeChunkMangling 을 preserve-modules 에도 열어
+            // (linker.zig) per-chunk mangle 이 occupied_names(전역명)를 예약하므로, mangled nested
+            // 로컬이 소비 전역명을 shadow 하지 않는다 — splitting 과 동일 메커니즘으로 통일.
             // ⚠️ `!dev_mode` 도 필수: dev 는 namespace member rewrite 가 wrapped local(`(init(),
             // exp.local)`)을 쓰고 negotiated 전역명 경로를 안 타 동명 멤버가 붕괴한다(code-review).
             const pm_xchunk_naming = self.options.preserve_modules and
                 (self.options.format == .esm or self.options.format == .cjs) and
-                !self.options.minify_identifiers and
                 !self.options.dev_mode;
             // (#4532 증상2) computeCrossChunkLinks 의 direct `import * as ns`(leaf ESM-wrap dep) fan-out
             // 을 이 게이트로 한정 — dep export 를 소비자 imports_from 에 등록해 아래 네이밍/provider

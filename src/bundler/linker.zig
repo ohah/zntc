@@ -1735,6 +1735,11 @@ pub const Linker = struct {
                                 .cjs_exports, .cjs_require, .esm_init => {},
                                 else => continue,
                             }
+                            // (#4532 증상1 minify) preserve-modules 는 래퍼 심볼을 canonical 로 emit
+                            // (preserveModulesWrapperChunk) 하므로 mangle 후보에서 제외 — wrapped
+                            // 헬퍼 virtual module 도 자기 chunk 라 동일 규칙. 아래 line 1832 의 일반
+                            // synthetic 루프 가드와 대칭.
+                            if (self.graph.preserve_modules) continue;
                             // RFC #3940 L.4c: dedup key 도 build-scope rename_table 경유. miss → synthetic_name.
                             const key = self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(mi)), si)) orelse sym.synthetic_name;
                             if (key.len <= 1) continue;
@@ -1821,6 +1826,15 @@ pub const Linker = struct {
                         // ref=0 이면 어디서도 import 하지 않아 codegen 이 binding 을 emit
                         // 하지 않는다. 그런 candidate 는 mangle 풀에서 제외.
                         if (sk == .default_export and sym.reference_count == 0) continue;
+                        // (#4532 증상1 minify) preserve-modules 는 래퍼 심볼(exports_X/init_X/
+                        // require_X)을 **canonical(미-mangle) 이름**으로 emit 한다 —
+                        // `preserveModulesWrapperChunk`(chunks.zig #4528)가 wrapper export/declaration
+                        // 을 `wrapperNamesFor(em, null)`(rename_table 미사용)로 직접 찍는다. mangle
+                        // 하면 본문(codegen rename)은 `var n={}`·`__export(n,…)` 인데 wrapper export
+                        // 는 canonical `exports_b` 라 undefined → ReferenceError. splitting 은 wrapper
+                        // 를 rename_table 경유로 브리지하므로 mangle 해도 일관돼 제외하지 않는다.
+                        // default_export 는 canonical wrapper 경로가 아니라 일반 export 브리지라 제외 안 함.
+                        if (self.graph.preserve_modules and sk != .default_export) continue;
                         // RFC #3940 L.4c: dedup key 를 build-scope rename_table 경유 (parity 로 동치).
                         const key = self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(mi)), si)) orelse sym.synthetic_name;
                         if (key.len <= 1) continue;
@@ -3888,7 +3902,15 @@ pub const Linker = struct {
         // cross-module 충돌 등 mangleAll 이 skip 하는 케이스가 먼저 해소된다.
         // cross-chunk export 이름은 emit 의 `export { local as public }` 브리지가
         // 보존하므로 별도 예약 불필요. import 경계 이름만 occupied_names 로 보호.
-        if (self.graph.minify_identifiers and self.graph.code_splitting) {
+        //
+        // (#4532 증상1 minify) preserve-modules 도 포함한다. preserve-modules 는 각 모듈이
+        // 별도 청크(파일)라, 전역명은 mangle **이후** chunk phase 에 negotiate 된다. 여기서
+        // per-chunk mangle 을 돌리면 occupied_names(= imports_from 의 crossChunkBindingName =
+        // 전역명 + 별칭)가 예약돼, mangled nested 로컬이 소비 전역명(예 `te`)을 shadow 하지
+        // 않는다(splitting 과 동일 메커니즘으로 통일). provider 는 `export { local as global }`
+        // (ESM)·forwarding read(CJS)로 브리지하므로 top-level 을 mangle 해도 파일 경계 참조가
+        // 유지된다. splitting+preserve 조합도 code_splitting 항으로 이미 포함됐다.
+        if (self.graph.minify_identifiers and (self.graph.code_splitting or self.graph.preserve_modules)) {
             try self.computeChunkMangling(module_indices, occupied_names);
         }
     }
