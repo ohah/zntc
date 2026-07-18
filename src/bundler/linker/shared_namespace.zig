@@ -42,6 +42,53 @@ pub fn nsRewriteDisabled() bool {
 /// 강제 inline 신호. shadow 충돌은 함수 안에서 자체 감지하여 ns_inline_list 를 활성화.
 /// `force_target_init`: caller preamble 이 target namespace 모듈 init 을 보장하지 못하는
 /// named-import-of-namespace-export 경로에서 member rewrite 값에 target init 을 붙인다.
+///
+/// (#4564) namespace 멤버 `ns.<exported>` 가 cross-chunk 로 노출될 때 소비자 본문/getter/inline 이
+/// 참조해야 하는 **전역 공개명**을 해석한다. re-export 배럴(`source_mod`)은 멤버를 재-export만 하므로
+/// 전역명은 배럴이 아니라 **정의 모듈(canonical)** 키로 등록·소비된다. 그래서:
+///   1. `source_mod` 가 직접 정의·cross-chunk 면 그 키로 조회(direct namespace).
+///   2. miss 면 `resolveExportChain` 으로 canonical(정의 모듈)을 해석해 **그 키**로 조회.
+/// 게이트는 **각 키의 정의 모듈** 기준 `isCrossChunkConsumer` 다 — 배럴이 소비자와 같은 청크여도
+/// 정의 모듈이 다른 청크로 split 되면 전역명이 필요하기 때문(code-review; import rename 경로
+/// metadata.zig 와 canonical 기준으로 일치). synthetic_named_exports 는 canonical 이 컨테이너
+/// export 를 가리키고 실제 멤버는 `synthetic_member` 라 `<global>.<member>` 로 접근(축약 금지).
+/// 반환 null = cross-chunk 전역명 없음(caller 가 `exp.local` fallback). synthetic 표현식은
+/// `owned_values` 로 소유권 이전(caller 가 metadata deinit 에서 해제).
+///
+/// ⚠️ named-import rename 경로 `metadata.zig` 의 `effective_target`(+`synth_member`)이 **같은
+/// canonical→cross-chunk-global 매핑**을 한다(이미 resolved 된 `rb.canonical` 로 시작하는 점만 다름).
+/// 게이트/전역명 키/synthetic 형식을 바꾸면 **양쪽 같이** 고쳐야 namespace-멤버와 named-import 가
+/// 어긋나지 않는다(#4101/#4492/#4502 계열 드리프트). 통합 헬퍼화는 후속.
+fn crossChunkNsMemberName(
+    self: *const Linker,
+    consumer_mod: u32,
+    source_mod: u32,
+    exported: []const u8,
+    owned_values: *std.ArrayListUnmanaged([]const u8),
+) std.mem.Allocator.Error!?[]const u8 {
+    // 청크 컨텍스트 없음(단일 번들 / preserve_modules) → cross-chunk 전역명 자체가 없다. 아래
+    // resolveExportChain(대형 배럴서 export 당 chain walk)를 통째로 skip (code-review: non-splitting perf).
+    if (self.module_to_chunk == null) return null;
+    // 1. source 가 직접 이 export 를 정의·cross-chunk 로 노출 (direct namespace target).
+    if (self.isCrossChunkConsumer(consumer_mod, source_mod)) {
+        if (self.getCrossChunkGlobalName(source_mod, exported)) |g| return g;
+    }
+    // 2. canonical(정의 모듈) 해석 후 그 키로 — 배럴 재-export / renamed re-export(`as`) 커버.
+    // **Uncached**: 병렬 emit 스레드서 cold key 로 캐싱 resolveExportChain 을 부르면 chain_cache
+    // 데이터 레이스(위 wrapper 락 없음). resolveExportChainUncached 로 우회.
+    const canon = self.resolveExportChainUncached(@enumFromInt(source_mod), exported) orelse return null;
+    const canon_mod = @intFromEnum(canon.module_index);
+    if (!self.isCrossChunkConsumer(consumer_mod, canon_mod)) return null;
+    const g = self.getCrossChunkGlobalName(canon_mod, canon.export_name) orelse return null;
+    if (canon.synthetic_member) |member| {
+        const expr = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ g, member });
+        errdefer self.allocator.free(expr);
+        try owned_values.append(self.allocator, expr);
+        return expr;
+    }
+    return g;
+}
+
 pub fn registerNamespaceRewrites(
     self: *const Linker,
     ns_rewrite_list: *std.ArrayList(LinkingMetadata.NsMemberRewrites.Entry),
@@ -246,7 +293,13 @@ pub fn registerNamespaceRewrites(
             try inner_map.put(self.allocator, exp.exported, ns_var);
             continue;
         }
-        if (try allocNamespaceMemberRewriteValue(self, target_init, target_mod_idx, exp, &source_init_cache)) |rewrite_value| {
+        // #4101 ns collision: target inner const 가 다른 ns 의 동명 const 와 deconflict(`k`/`k$1`)
+        // 되면 이 멤버 재작성(`ns.k`→local)이 잘못된 const 를 가리킨다. cross-chunk 전역명(emit 前
+        // 글로벌 패스로 확정)을 써 provider·consumer 양쪽 일치. 배럴 재-export·renamed re-export·
+        // synthetic 는 crossChunkNsMemberName 이 canonical 해석으로 커버. 없으면 exp.local (#4564).
+        const member_name = (try crossChunkNsMemberName(self, importer_mod_idx, target_mod_idx, exp.exported, owned_rewrite_values)) orelse exp.local;
+        // init 식이 필요한 경로(dev/force_target_init/ESM source)는 그 식에 member_name 을 embed.
+        if (try allocNamespaceMemberRewriteValue(self, target_init, target_mod_idx, exp, member_name, &source_init_cache)) |rewrite_value| {
             var owned_by_list = false;
             errdefer if (!owned_by_list) self.allocator.free(rewrite_value);
             // ns_member_rewrites map 은 포인터만 빌리고, 실제 소유권은
@@ -256,21 +309,6 @@ pub fn registerNamespaceRewrites(
             try inner_map.put(self.allocator, exp.exported, rewrite_value);
             continue;
         }
-        // #4101 ns collision: target 의 inner const 가 다른 ns 의 동명 const 와 deconflict
-        // 되면(`k`/`k$1`), 이 멤버 재작성(`ns.k`→local)이 잘못된 const 를 가리킨다. inner
-        // const 의 chunk-local rename 은 이 시점(buildMetadataForAst)에 rename_table 에 아직
-        // 없으나, cross-chunk 전역명(emit 前 글로벌 패스)은 이미 확정 — 게다가 그 전역명이 곧
-        // provider 청크의 local 명이자 consumer import 명이라 양쪽 일치. cross-chunk 미해당
-        // (intra-chunk/non-shared)이면 fallback=exp.local(기존).
-        // **importer 가 target 과 다른 청크일 때만** 전역 공개명을 쓴다 (#4492). 전역명은
-        // `(모듈, export)` 키라 "다른 어떤 청크가 이 심볼을 소비하는가" 만 말해주고 **누가
-        // 묻는지는 모른다** — 게이트 없이 쓰면 같은 청크 importer 도 그 청크 바깥에서만
-        // 존재하는 공개명을 받아 자유 변수가 된다 (mangle 로 local != global 이 되는 순간 폭발).
-        const use_global = self.isCrossChunkConsumer(importer_mod_idx, target_mod_idx);
-        const member_name = if (use_global)
-            (self.getCrossChunkGlobalName(target_mod_idx, exp.exported) orelse exp.local)
-        else
-            exp.local;
         try inner_map.put(self.allocator, exp.exported, member_name);
     }
     try ns_rewrite_list.append(self.allocator, .{
@@ -859,6 +897,13 @@ pub fn buildInlineObjectStr(
     // circular dep에서 init 시점에 아직 undefined인 변수도 사용 시점에 올바르게 참조.
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(self.allocator);
+    // (#4564) crossChunkNsMemberName 이 synthetic member 접근식(`<global>.<member>`)을 owned 로 낼
+    // 수 있다. getter 본문은 buf 로 복사되므로 이 함수 종료 시 일괄 해제(borrow-then-copy).
+    var owned_member_exprs: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (owned_member_exprs.items) |e| self.allocator.free(e);
+        owned_member_exprs.deinit(self.allocator);
+    }
     // minify_whitespace 모드 토큰 — getter 패턴의 ` ` 와 `; ` 를 제거.
     // `get foo() { return bar; }` (30c) → `get foo(){return bar}` (24c).
     // 1699 getter 가 있는 effect 번들에서 ~10KB 절감.
@@ -926,24 +971,23 @@ pub fn buildInlineObjectStr(
                 try buf.appendSlice(self.allocator, exp.exported);
             }
             try buf.appendSlice(self.allocator, get_open);
-            if (try allocNamespaceGetterValue(self, exp)) |value| {
+            // getter 본문 이름은 **이 리터럴을 담는 청크(emitter)** 기준으로 해석한다.
+            //  - 선언이 다른 청크(#4101): 그 청크가 import 해 오는 cross-chunk 전역 공개명(provider
+            //    public == consumer import 명이라 양쪽 일치). 배럴 재-export·renamed re-export·synthetic
+            //    은 crossChunkNsMemberName 이 canonical 해석으로 커버 (#4564).
+            //  - 선언이 같은 청크(#4502): 그 청크의 **확정된 chunk-local 이름**(=exp.local). 전역 공개명을
+            //    쓰면 이 청크엔 그 이름의 선언이 없어 자유 변수 → ReferenceError. exp.local 이 확정 이름
+            //    이려면 이 호출이 **per-chunk rename 이후**여야 한다(공유 ns preamble 을 emit 루프
+            //    computeRenamesForModules 뒤로 옮긴 이유).
+            // source 는 **namespace 소스(target_mod_idx = 배럴)** — decl_mod_idx(=exp.init_mod, 정의
+            // 모듈)로 뿌리내리면 renamed re-export(`max as maximum`)에서 canonical 이 outer 명(`maximum`)
+            // 을 못 따라간다(code-review). main 평탄화 경로와 동일하게 target 에서 chain 해석.
+            const gmember = (try crossChunkNsMemberName(self, emitter_mod_idx, target_mod_idx, exp.exported, &owned_member_exprs)) orelse exp.local;
+            if (try allocNamespaceGetterValue(self, exp, gmember)) |value| {
                 defer self.allocator.free(value);
                 try buf.appendSlice(self.allocator, value);
             } else {
-                // getter 본문 이름은 **이 리터럴을 담는 청크(emitter)** 기준으로 해석한다.
-                //  - 선언이 다른 청크(#4101): 그 청크가 import 해 오는 cross-chunk 전역 공개명.
-                //    전역명은 provider 청크의 public 이름이자 consumer import 명이라 양쪽 일치.
-                //  - 선언이 같은 청크(#4502): 그 청크의 **확정된 chunk-local 이름**(=exp.local).
-                //    전역 공개명을 쓰면 이 청크엔 그 이름의 선언이 없어 자유 변수 → ReferenceError.
-                // exp.local 이 확정 이름이려면 이 호출이 **해당 청크의 per-chunk rename 이후**여야
-                // 한다 (collectExportsRecursive 가 rename_table 을 읽어 local 을 해석). 그래서
-                // 공유 ns preamble 생성이 emit 루프의 computeRenamesForModules *뒤* 로 옮겨졌다.
-                const use_global = self.isCrossChunkConsumer(emitter_mod_idx, decl_mod_idx);
-                const member_name = if (use_global)
-                    (self.getCrossChunkGlobalName(decl_mod_idx, exp.exported) orelse exp.local)
-                else
-                    exp.local;
-                try buf.appendSlice(self.allocator, member_name);
+                try buf.appendSlice(self.allocator, gmember);
             }
             try buf.appendSlice(self.allocator, get_close);
         }
@@ -967,7 +1011,7 @@ pub fn buildInlineObjectStr(
     return try self.allocator.dupe(u8, result);
 }
 
-fn allocNamespaceGetterValue(self: *const Linker, exp: NsExportPair) std.mem.Allocator.Error!?[]const u8 {
+fn allocNamespaceGetterValue(self: *const Linker, exp: NsExportPair, member_name: []const u8) std.mem.Allocator.Error!?[]const u8 {
     const init_mod_idx = exp.init_mod orelse return null;
     const init_mod = self.graph.getModule(@enumFromInt(init_mod_idx)) orelse return null;
     if (init_mod.wrap_kind != .esm) return null;
@@ -975,7 +1019,8 @@ fn allocNamespaceGetterValue(self: *const Linker, exp: NsExportPair) std.mem.All
     const init_expr = try allocEsmInitExpr(self, init_mod);
     defer self.allocator.free(init_expr);
     const sep = if (self.minify_whitespace) "," else ", ";
-    return try std.fmt.allocPrint(self.allocator, "({s}{s}{s})", .{ init_expr, sep, exp.local });
+    // (#4564) member_name = caller 가 crossChunkNsMemberName 으로 해석한 cross-chunk 전역명(또는 exp.local).
+    return try std.fmt.allocPrint(self.allocator, "({s}{s}{s})", .{ init_expr, sep, member_name });
 }
 
 /// `target_init` 은 호출자가 미리 1회 계산한 target 모듈의 init 식 (예: `init_X()` 또는
@@ -989,6 +1034,9 @@ fn allocNamespaceMemberRewriteValue(
     target_init: ?[]const u8,
     target_mod_idx: u32,
     exp: NsExportPair,
+    // (#4564) 참조할 멤버명 — caller 가 crossChunkNsMemberName 으로 해석한 cross-chunk 전역명
+    // (또는 exp.local). init 식 뒤 comma-expr 의 값 자리에 embed 된다.
+    member_name: []const u8,
     source_init_cache: *std.AutoHashMapUnmanaged(u32, ?[]const u8),
 ) std.mem.Allocator.Error!?[]const u8 {
     const source_init: ?[]const u8 = if (exp.init_mod) |source_mod_idx| blk: {
@@ -1006,12 +1054,12 @@ fn allocNamespaceMemberRewriteValue(
     const sep = if (self.minify_whitespace) "," else ", ";
     if (target_init) |target_expr| {
         if (source_init) |source_expr| {
-            return try std.fmt.allocPrint(self.allocator, "({s}{s}{s}{s}{s})", .{ target_expr, sep, source_expr, sep, exp.local });
+            return try std.fmt.allocPrint(self.allocator, "({s}{s}{s}{s}{s})", .{ target_expr, sep, source_expr, sep, member_name });
         }
-        return try std.fmt.allocPrint(self.allocator, "({s}{s}{s})", .{ target_expr, sep, exp.local });
+        return try std.fmt.allocPrint(self.allocator, "({s}{s}{s})", .{ target_expr, sep, member_name });
     }
     if (source_init) |source_expr| {
-        return try std.fmt.allocPrint(self.allocator, "({s}{s}{s})", .{ source_expr, sep, exp.local });
+        return try std.fmt.allocPrint(self.allocator, "({s}{s}{s})", .{ source_expr, sep, member_name });
     }
     return null;
 }

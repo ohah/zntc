@@ -199,6 +199,81 @@ export const d2 = () => "d2:" + fade({ b: 3, g: 4 });
     }
   }, 120000);
 
+  test('#4564 splitting: 재-export 배럴 경유 `import * as ns` 멤버가 canonical 전역명으로 재작성된다', async () => {
+    // #4560 은 namespace 멤버가 **미등록**이었다면, #4564 는 등록은 됐는데(cross-chunk import 가
+    // canonical 전역명 `max$1` 노출) **본문 재작성이 배럴 키로 조회해 miss** → bare `max` 로 남는
+    // 케이스다. mermaid: dagre 가 `import * as _ from "lodash-es"; _.max(...)` 하는데 lodash-es 는
+    // max 를 재-export만 하고, max 는 다른 lib 의 max 와 전역 충돌해 `max$1` 로 deconflict 된다.
+    //
+    //   diagram: import * as _ from "./barrel";  _.max([..])   // 배럴은 libA.max 를 re-export
+    //   → registerNamespaceRewrites 가 `_.max`→bare 로 평탄화하며 전역명을 배럴(target) 키로 조회.
+    //     배럴은 max 를 **정의하지 않고 재-export만** 하므로 전역명 맵에 (배럴, max) 키 없음 → miss →
+    //     exp.local(`max`) fallback. 하지만 cross-chunk import 는 canonical(libA) 기준 `max$1` 노출.
+    //   수정 전: `import { max$1 } from "./chunk"; ()=>max([..])` → `ReferenceError: max is not defined`.
+    //   처방: 배럴 키 miss 시 resolveExportChain 으로 canonical(libA) 해석해 그 키로 전역명 재조회.
+    //
+    // 전역 충돌 유발: libB 도 max 를 export 하고 다른 diagram 이 소비 → (libA.max, libB.max) 가
+    // `max`/`max$1` 로 deconflict. 배럴/libA 는 두 namespace diagram 이 공유해 공통 청크로 분리.
+    const files: Record<string, string> = {
+      'libA.js': `export const pick = (x) => "A:" + x;
+export const max = (arr) => { let m = arr[0]; for (const v of arr) if (v > m) m = v; return m; };
+`,
+      'libB.js': `export const max = (arr) => { let m = arr[0]; for (const v of arr) if (v < m) m = v; return m; };\n`,
+      'barrel.js': `export * from "./libA.js";\n`, // 재-export만 (lodash-es 배럴 위상)
+      'diagram1.js': `import * as _ from "./barrel.js";
+export const d1 = () => _.max([3, 1, 4, 1, 5]) + "|" + _.pick("d1");
+`,
+      'diagram2.js': `import * as _ from "./barrel.js";
+export const d2 = () => _.max([9, 2, 7]) + "|" + _.pick("d2");
+`,
+      'diagram3.js': `import { max } from "./libB.js";\nexport const d3 = () => max([9, 2, 7]);\n`,
+      'diagram4.js': `import { max } from "./libB.js";\nexport const d4 = () => max([3, 8, 1]);\n`,
+      'entry.js': `Promise.all([import("./diagram1.js"), import("./diagram2.js"), import("./diagram3.js"), import("./diagram4.js")]).then(([a, b, c, d]) => {
+  console.log(a.d1() + " / " + b.d2() + " / " + c.d3() + " / " + d.d4());
+});
+`,
+    };
+
+    const { dir, cleanup } = await createFixture(files);
+    try {
+      const outDir = join(dir, 'out');
+      const build = await runZntc([
+        '--bundle',
+        join(dir, 'entry.js'),
+        '--splitting',
+        '--outdir',
+        outDir,
+        '--minify',
+        '--format=esm',
+      ]);
+      expect(build.exitCode).toBe(0);
+      writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
+
+      // cross-chunk 경계를 **의미론적으로** 검증한다 (import 문자열/청크명/전역명 형태에 의존하지
+      // 않게 — codegen·minify 변화에 brittle 하지 않도록). libA(max·pick 정의)가 diagram1 을 담은
+      // 청크와 **다른 청크**여야 이 fix 가 실제로 발화한다(같은 청크 인라인이면 버그가 안 나 무의미).
+      // 마커 = pick 의 문자열 리터럴 `"A:"` (문자열은 mangle 안 되어 minify 에서도 안정). max·pick 은
+      // 둘 다 libA 라 libA 가 cross-chunk 면 max 도 cross-chunk.
+      const allChunks = readdirSync(outDir).filter((f) => f.endsWith('.js') && f !== 'entry.js');
+      const d1Chunk = allChunks.find((f) => /\bd1\b/.test(readFileSync(join(outDir, f), 'utf-8')));
+      const libAChunk = allChunks.find((f) =>
+        readFileSync(join(outDir, f), 'utf-8').includes('"A:"'),
+      );
+      expect(d1Chunk, 'd1 청크 없음').toBeTruthy();
+      expect(libAChunk, 'libA 정의 청크(마커 "A:") 없음').toBeTruthy();
+      expect(libAChunk, 'libA 가 diagram1 청크에 인라인됨 — cross-chunk 구조 무효').not.toBe(
+        d1Chunk,
+      );
+
+      const r = runNode(join(outDir, 'entry.js'));
+      // 수정 전: `ReferenceError: max is not defined` (본문 bare max vs import max$1)
+      expect(r.err, `모듈 평가 실패:\n${r.err}`).toBe('');
+      expect(r.out).toBe('5|A:d1 / 9|A:d2 / 2 / 1');
+    } finally {
+      await cleanup();
+    }
+  }, 120000);
+
   test('#4502 splitting: materialize 된 ns 객체 getter 가 같은 청크의 chunk-local 이름을 쓴다', async () => {
     // 네 번째 표면 — ns 를 **값으로** 쓰면(`const o = ns`) 정적 멤버 재작성이 불가능해
     // 객체가 materialize 된다: `var ns_ns = {get second(){return <name>}, ...}`.
