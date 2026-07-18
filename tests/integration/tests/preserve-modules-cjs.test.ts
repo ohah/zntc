@@ -376,6 +376,73 @@ describe('#4524: --preserve-modules × CJS', () => {
     }
   });
 
+  // ─── #4532 증상1: 동명 export 심볼 붕괴 (BB → BC) ───
+
+  for (const format of ['esm', 'cjs'] as const) {
+    test(`#4532 증상1 ${format}: 서로 다른 wrap dep 의 동명 export 가 붕괴하지 않는다`, async () => {
+      // b.js·c.js 가 **둘 다** `export function tag()` 을 내고 entry 가 둘 다 import 하면, 소비자
+      // 본문 참조가 canonical 로컬명(`tag`) 하나로 붕괴한다(`tag()+tag()`) → node canonical `BC`
+      // 대신 `BB`(에러 없는 조용한 오컴파일). ESM 은 `import { tag as tag$1 }` 로, CJS 는 forwarding
+      // 썽크(`let tag$1; tag$1 = m.tag$1`)로 전역명을 materialize 해 본문·forwarding·provider export
+      // 셋이 `tag$1` 에 합의해야 한다. a.cjs 가 b·c 를 require 해 **ESM-wrap 강제**(fix 코드는
+      // ESM-wrap owner 한정 — natural-ESM fallback 이 아니라 네이밍 경로를 타야 한다).
+      const { outDir, cleanup } = await buildPm(
+        {
+          'b.js': 'export function tag(){ return "B"; }',
+          'c.js': 'export function tag(){ return "C"; }',
+          'a.cjs': 'module.exports = require("./b.js");\nrequire("./c.js");', // b·c 를 ESM-wrap 강제
+          'entry.js':
+            'import { tag } from "./b.js";\n' +
+            'import { tag as tag2 } from "./c.js";\n' +
+            'import "./a.cjs";\n' +
+            'console.log(tag() + tag2());',
+        },
+        'entry.js',
+        format,
+      );
+      try {
+        const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+        expect(stderr).not.toContain('Error');
+        expect(stdout.trim()).toBe('BC'); // 수정 전: BB
+        // 네이밍 경로 pin: 전역명 `tag$1` 이 방출돼야 fix 코드가 탄 것(단순 자연명 fallback 이면
+        // 두 참조가 같은 `tag` 라 BB 인데도 우연히 통과할 여지를 차단). 본문에 두 번째 참조가
+        // deconflict 됐는지 확인.
+        const entryOut = readFileSync(join(outDir, 'entry.js'), 'utf8');
+        expect(entryOut).toContain('tag$1');
+        expect(entryOut).not.toContain('tag() + tag()');
+      } finally {
+        await cleanup();
+      }
+    });
+  }
+
+  // reserved-name(`default`) forwarding read 회귀 가드. 증상1 수정에서 CJS forwarding 썽크의 read
+  // 를 전역명으로 정렬할 때, `crossChunkBindingName` 은 **reserved-name(`default`)이 전역명 없을 때
+  // provider 로컬(`foo`)을 반환**한다 → provider 는 `exports.default` 를 내는데 `m.foo`(undefined)
+  // 를 읽어 `TypeError`. 전역명이 꺼지는 **minify** 에서만 드러나므로 minify 도 함께 돈다. 올바른
+  // read = `전역명 orelse export 명`(= `m.default`). (`/code-review max` 적발.)
+  for (const minify of [false, true] as const) {
+    test(`#4532 증상1 CJS${minify ? ' --minify' : ''}: default(reserved) named import forwarding read`, async () => {
+      const { outDir, cleanup } = await buildPm(
+        {
+          'b.js': 'export default function foo(){ return "B"; }',
+          'a.cjs': 'module.exports = require("./b.js");', // b 를 ESM-wrap 강제
+          'entry.js': 'import foo from "./b.js";\nimport "./a.cjs";\nconsole.log(foo());',
+        },
+        'entry.js',
+        'cjs',
+        minify,
+      );
+      try {
+        const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+        expect(stderr).not.toContain('TypeError'); // 수정 전(minify): foo is not a function
+        expect(stdout.trim()).toBe('B');
+      } finally {
+        await cleanup();
+      }
+    });
+  }
+
   // ─── #4528: wrap 된 모듈의 남은 구멍 3건 ───
 
   const WRAPPED = {

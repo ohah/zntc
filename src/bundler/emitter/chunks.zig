@@ -687,10 +687,15 @@ pub fn emitChunks(
                         for (pm_locals.items) |x| allocator.free(x);
                         pm_locals.deinit(allocator);
                     }
+                    // pm_locals 와 인덱스 병행: 각 sym 의 forwarding **read**(provider export 키).
+                    // 항목은 borrowed(전역명 맵 slice 또는 sym.name — 둘 다 emit 수명) → list 만 deinit.
+                    var pm_reads: std.ArrayListUnmanaged([]const u8) = .empty;
+                    defer pm_reads.deinit(allocator);
                     if (pm_esm_wrap_dep_syms) |syms| {
                         for (syms) |sym| {
                             const bind = crossChunkBindingName(linker, sym);
-                            const has_g = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null else false;
+                            const global_name: ?[]const u8 = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) else null;
+                            const has_g = global_name != null;
                             const total = name_total_count.get(sym.name) orelse 1;
                             const seen_gop = try name_seen_count.getOrPut(allocator, sym.name);
                             if (!seen_gop.found_existing) seen_gop.value_ptr.* = 0;
@@ -701,6 +706,10 @@ pub fn emitChunks(
                             else
                                 try allocator.dupe(u8, bind);
                             try pm_locals.append(allocator, local);
+                            // read = 전역명(있으면 provider 가 `exports.<global>`) 아니면 export 명(sym.name,
+                            // provider 가 `exports.<export명>`). crossChunkBindingName 은 reserved-name 이
+                            // 전역명 없을 때 로컬을 반환하므로 read 로는 부적합.
+                            try pm_reads.append(allocator, global_name orelse sym.name);
                         }
                         try chunk_output.appendSlice(allocator, "let ");
                         for (pm_locals.items, 0..) |local, si| {
@@ -733,11 +742,17 @@ pub fn emitChunks(
                         try chunk_output.appendSlice(allocator, if (min) "const r=m." else "\t\tconst r = m.");
                         try chunk_output.appendSlice(allocator, names.a);
                         try chunk_output.appendSlice(allocator, if (min) ".apply(this,arguments);" else ".apply(this, arguments);\n");
-                        for (syms, 0..) |sym, si| {
+                        for (0..syms.len) |si| {
                             try chunk_output.appendSlice(allocator, if (min) "" else "\t\t");
                             try chunk_output.appendSlice(allocator, pm_locals.items[si]);
                             try chunk_output.appendSlice(allocator, if (min) "=m." else " = m.");
-                            try chunk_output.appendSlice(allocator, sym.name);
+                            // (#4532 증상1) read 는 **provider 의 export 키**여야 한다: 전역명이 배정됐으면
+                            // provider(`pm_wrapped_esm_provider`, #4528)가 `exports.tag$1` 을 내므로 전역명,
+                            // 아니면(minify/dev 로 전역명 off) `exports.<export명>` 이라 sym.name. 첫 루프에서
+                            // `global_name orelse sym.name` 로 캡처(pm_reads). ⚠️ crossChunkBindingName 은
+                            // reserved-name(`default`)이 전역명 없을 때 provider 로컬(`foo`)을 반환해 export
+                            // 키(`default`)와 어긋난다 — 그걸 read 로 쓰면 `m.foo` undefined → TypeError.
+                            try chunk_output.appendSlice(allocator, pm_reads.items[si]);
                             try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
                         }
                         try chunk_output.appendSlice(allocator, if (min) "return r};" else "\t\treturn r;\n\t};\n");
