@@ -499,6 +499,8 @@ pub fn emitChunks(
         // 여러 청크에서 같은 이름의 심볼을 import할 때 충돌 방지.
         // 1단계: 모든 청크로부터의 import 이름 출현 횟수 카운트
         // 2단계: 중복 이름은 `import { x as x$2 }` 형태로 alias 부여
+        // (#4572) 이 청크 소비자-로컬 import 이름 오버라이드 맵을 리셋(직전 청크 잔재 제거).
+        if (linker) |l| l.clearConsumerImportLocal();
         var name_total_count: std.StringHashMapUnmanaged(u32) = .empty;
         defer name_total_count.deinit(allocator);
         for (chunk.cross_chunk_imports.items) |dep_chunk_idx| {
@@ -865,6 +867,9 @@ pub fn emitChunks(
                         // key != binding(예약어 export 키 `default` → 소비자 local `_default`).
                         // 좌변=dep 노출 키(문자열이라 예약어 OK), 우변=소비자 참조 식별자.
                         // 축약 `{ default }` 면 예약어를 바인딩으로 써 SyntaxError → alias 가 방지.
+                        // ⚠️ (#4576) binding(소비자 로컬)이 동명 다른 dep 와 충돌하는 케이스(동명
+                        // `export default`·`export { foo as tag }`)는 여기서 deconflict 안 한다 —
+                        // 여러 sub-issue(cjs/minify/aliased)가 얽혀 별도 후속.
                         try chunk_output.appendSlice(allocator, key);
                         try chunk_output.appendSlice(allocator, if (reg_like) ": " else " as ");
                         try chunk_output.appendSlice(allocator, binding);
@@ -885,6 +890,12 @@ pub fn emitChunks(
                             try chunk_output.appendSlice(allocator, key);
                             try chunk_output.appendSlice(allocator, if (reg_like) ": " else " as ");
                             try chunk_output.appendSlice(allocator, alias);
+                            // (#4572) 소비자-로컬 deconflict 이름(`tag$3`)을 맵에 적어, 뒤이어 도는
+                            // buildMetadataForAst 의 effective_target 이 body 참조를 같은 이름으로
+                            // 맞추게 한다(안 하면 body 는 crossChunkBindingName=`tag` 로 붕괴). provider
+                            // public 명은 그대로 — 이건 소비자 청크 로컬명일 뿐이다. preserve-modules 한정
+                            // (splitting 은 전역명이 있어 이 `$N` 브랜치 자체를 안 탄다 — 명시 게이트).
+                            if (options.preserve_modules) if (linker) |l| try l.putConsumerImportLocal(sym.canonical_module, sym.name, alias);
                         } else {
                             try chunk_output.appendSlice(allocator, key);
                         }
