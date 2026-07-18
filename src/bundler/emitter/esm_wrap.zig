@@ -67,6 +67,13 @@ inline fn cjsInteropMode(options: *const EmitOptions, importer: *const Module) t
     return if (importer.def_format.isEsm()) .node else .babel;
 }
 
+/// synthetic default(`_default`)의 확정 이름. 충돌 시 linker/mangler 가 `_default$1` 등으로
+/// 바꾼 것을 metadata 가 들고 있다(없으면 fallback `_default`). 값은 metadata 소유(borrow) —
+/// hoisted_var_names 수집 시 dupe 불요(emitEsmWrappedModule 의 여러 site 가 이미 그렇게 쓴다).
+fn defaultExportName(metadata: ?*const LinkingMetadata) []const u8 {
+    return if (metadata) |md| md.default_export_name else "_default";
+}
+
 /// re_export_alias에 linker가 주입한 canonical_name을 반환. null이면
 /// alias 심볼이 아니거나 linker가 resolve하지 못한 경우.
 /// re-export 의 source 모듈을 resolve. resolved + non-self-cycle 인 정상 record 만 반환,
@@ -251,6 +258,12 @@ pub fn emitEsmWrappedModule(
                             const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(fn_name_idx), raw_name));
                             try hoisted_var_names.append(allocator, resolved);
                         }
+                    } else if (stmt_node.tag == .export_default_declaration) {
+                        // (#4573) 익명 `export default function(){}` — 함수명이 없어 위 분기가
+                        // hoist 를 못 한다. strict 경로는 codegen 이 `_default = function(){}` 로
+                        // 할당하므로(익명 class 와 동일), synthetic `_default` 를 hoist 하지 않으면
+                        // `export { _default }` 가 미선언 참조(SyntaxError). RN 프리셋에서만 strict.
+                        try hoisted_var_names.append(allocator, defaultExportName(metadata));
                     }
                     // body_func_stmts: factory body 최상단에 배치 → forward reference 보존
                     try body_func_stmts.append(allocator, raw_idx);
@@ -276,6 +289,14 @@ pub fn emitEsmWrappedModule(
                         const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(class_name_idx), raw_name));
                         try hoisted_var_names.append(allocator, resolved);
                     }
+                } else if (stmt_node.tag == .export_default_declaration) {
+                    // (#4573) 익명 `export default class {}` — 클래스 이름이 없어 위 분기가
+                    // hoist 를 못 한다. codegen 은 body(`__esm` 클로저) 안에서 synthetic
+                    // `_default = class {…}` 로 할당하므로, 그 `var _default;` 를 top-level 로
+                    // hoist 하지 않으면 `export { _default }` 가 미선언 참조(SyntaxError)가 된다.
+                    // value/arrow default 는 else 분기(effective_tag ∉ decl)가 이미 hoist 한다.
+                    const def_name = defaultExportName(metadata);
+                    try hoisted_var_names.append(allocator, def_name);
                 }
                 try body_stmts.append(allocator, raw_idx);
             },
@@ -343,7 +364,7 @@ pub fn emitEsmWrappedModule(
                 // effective_tag는 내부 노드의 태그이므로 export_default_declaration은
                 // 이 분기에 도달한다. stmt_node.tag로 원본 태그를 확인하여 호이스팅.
                 if (stmt_node.tag == .export_default_declaration) {
-                    const def_name = if (metadata) |md| md.default_export_name else "_default";
+                    const def_name = defaultExportName(metadata);
                     try hoisted_var_names.append(allocator, def_name);
                 }
                 try body_stmts.append(allocator, raw_idx);
@@ -358,7 +379,7 @@ pub fn emitEsmWrappedModule(
         for (module.export_bindings) |eb| {
             if (eb.kind == .re_export and eb.hasSyntheticDefault(module.semanticSymbols())) {
                 if (!shouldEmitSyntheticDefaultReExport(linker, module, eb)) continue;
-                const def_name = if (metadata) |md| md.default_export_name else "_default";
+                const def_name = defaultExportName(metadata);
                 try hoisted_var_names.append(allocator, def_name);
                 break;
             }
@@ -583,7 +604,7 @@ pub fn emitEsmWrappedModule(
                         // 표현 → linker가 canonical_name을 채운다. barrel `export { X }`같은
                         // kind 오분류에도 영향받지 않음 (#1321 방어).
                         if (isSyntheticDefault(eb.symbol, module)) {
-                            break :blk if (metadata) |md| md.default_export_name else "_default";
+                            break :blk defaultExportName(metadata);
                         }
                         // direct re-export는 현재 모듈에 로컬 변수가 선언되지 않으므로
                         // source module의 getter/value를 직접 참조해야 한다 (#1425).
@@ -821,7 +842,7 @@ pub fn emitEsmWrappedModule(
         // 자기 자신을 re-export하는 경우 skip (자기참조 init 호출 방지)
         if (source_mod_idx == module.index) continue;
 
-        const def_name = if (metadata) |md| md.default_export_name else "_default";
+        const def_name = defaultExportName(metadata);
         const source_mod_i = @intFromEnum(source_mod_idx);
 
         if (linker) |l| {
