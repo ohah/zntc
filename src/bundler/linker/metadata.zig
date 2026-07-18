@@ -941,6 +941,32 @@ pub fn buildMetadataForAst(
                 // import binding은 아래의 rename 경로로 처리 (continue하지 않음)
             }
 
+            // (#4532 증상3) 직접 import 대상(canonical_m_opt)이 **배럴**(non-wrap)이라 위 ESM 게이트를
+            // 못 탔지만, re-export 체인 끝(resolved.canonical)이 **ESM-wrap** 이면 그 wrap dep 의 init_X()
+            // 를 소비자 preamble 에 주입한다. 안 하면 forwarding 썽크(`let X; const init_X = ...`)가 호출
+            // 안 돼 소비자가 undefined X 를 참조(`X is not a function`) — 배럴이 wrap dep 을 re-export 하는
+            // 흔한 위상. canon 이 wrap 인 케이스는 위 블록이 이미 처리하므로 여기선 non-wrap 만.
+            // ⚠️ **preserve-modules 한정**: 각 모듈이 별도 파일이라 forwarding 썽크(init_X)가 소비자
+            // 파일에 로컬 정의된다. splitting 은 init_X 가 cross-chunk 라 이 청크서 undefined 일 수 있어
+            // (그쪽은 cross-chunk 네이밍이 별도 처리) 여기선 제외 (code-review).
+            if (self.graph.preserve_modules and
+                !(canonical_m_opt != null and canonical_m_opt.?.wrap_kind == .esm))
+            {
+                if (resolved) |rb| {
+                    const rb_idx: u32 = @intCast(@intFromEnum(rb.canonical.module_index));
+                    if (rb_idx != canonical_mod) {
+                        if (self.graph.getModule(rb.canonical.module_index)) |rw| {
+                            if (rw.wrap_kind == .esm and !(self.tree_shaker_active and !rw.is_included) and
+                                !esm_init_set.contains(rb_idx))
+                            {
+                                try esm_init_set.put(self.allocator, rb_idx, {});
+                                try appendEsmInitCall(self, &preamble, rw);
+                            }
+                        }
+                    }
+                }
+            }
+
             // namespace import: esbuild 방식 — ns.prop → canonical_name 직접 치환.
             // __esm 타겟도 동일: rolldown 방식으로 변수가 래퍼 밖에 호이스팅되므로
             // canonical name으로 직접 치환 가능. exports_xxx rename은 변수 덮어쓰기 버그 유발.
