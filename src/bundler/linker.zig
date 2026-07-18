@@ -236,6 +236,15 @@ pub const Linker = struct {
     /// **Inc-1: 채우기만(비활성 read)** — 동작 변경 0, 후속 increment 가 wire.
     cross_chunk_global_names: std.AutoHashMapUnmanaged(u32, std.StringHashMapUnmanaged([]const u8)) = .empty,
 
+    /// (#4572) **per-chunk transient**. non-wrap ESM 동명 provider 는 전역명이 없어(#4559 owner
+    /// 한정) 소비자 import 블록(chunks.zig)이 `import { tag as tag$3 }` 로 소비자-로컬 deconflict
+    /// 하는데, provider public 명(`export { tag }`)은 유지된다(external API 계약). import 블록은
+    /// body codegen(effective_target) 보다 **먼저** 방출되므로, 그때 정한 소비자-로컬명을 여기
+    /// (`canonical module → export명 → 소비자 로컬명`)에 적어 두면 buildMetadataForAst 의
+    /// effective_target 이 읽어 body 참조를 같은 이름(`tag$3`)으로 맞춘다. 값은 이 맵 소유(dupe).
+    /// 청크마다 `clearConsumerImportLocal` 로 리셋(다른 소비자는 다른 deconflict).
+    consumer_import_local: std.AutoHashMapUnmanaged(u32, std.StringHashMapUnmanaged([]const u8)) = .empty,
+
     /// computeRenames 동안만 사는 메모이즈: `module_index → 그 모듈의 nested scope(scope 0 제외)
     /// 바인딩 이름 union set`. `hasNestedBinding` 이 후보(`name$N`)마다 모듈의 모든 scope_maps 를
     /// 재스캔하던 것(rename당 O(scopes), cold lRen 의 ~83%)을 O(1) 멤버십으로 바꾼다. 키는 borrow
@@ -500,6 +509,9 @@ pub const Linker = struct {
         // cross-chunk 전역 이름(#4101): owned value 해제 + inner/outer 맵 deinit.
         self.clearCrossChunkGlobalNames();
         self.cross_chunk_global_names.deinit(self.allocator);
+        // (#4572) per-chunk consumer-local import 이름 맵.
+        self.clearConsumerImportLocal();
+        self.consumer_import_local.deinit(self.allocator);
         // chain_cache: 키는 allocator로 dupe됨
         var cc_it = self.chain_cache.keyIterator();
         while (cc_it.next()) |key| self.allocator.free(key.*);
@@ -2102,6 +2114,35 @@ pub const Linker = struct {
     pub fn getCrossChunkGlobalName(self: *const Linker, module_index: u32, export_name: []const u8) ?[]const u8 {
         const inner = self.cross_chunk_global_names.get(module_index) orelse return null;
         return inner.get(export_name);
+    }
+
+    /// (#4572) per-chunk consumer-local import 이름 등록. `local_name` 을 맵이 dupe 소유.
+    /// key 는 `(canonical_module, export_name)` — import 블록이 그 sym 을 소비자-로컬로 deconflict
+    /// 한 이름(예 `tag$3`). `export_name` 키는 borrow(sym.name, bundle 수명).
+    pub fn putConsumerImportLocal(self: *Linker, module_index: u32, export_name: []const u8, local_name: []const u8) !void {
+        const gop = try self.consumer_import_local.getOrPut(self.allocator, module_index);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        const dup = try self.allocator.dupe(u8, local_name);
+        if (try gop.value_ptr.fetchPut(self.allocator, export_name, dup)) |old| {
+            self.allocator.free(old.value);
+        }
+    }
+
+    /// (#4572) consumer-local import 이름 조회. 없으면 null.
+    pub fn getConsumerImportLocal(self: *const Linker, module_index: u32, export_name: []const u8) ?[]const u8 {
+        const inner = self.consumer_import_local.get(module_index) orelse return null;
+        return inner.get(export_name);
+    }
+
+    /// (#4572) per-chunk 리셋 — 다음 청크 import 블록 전에 owned value 해제.
+    pub fn clearConsumerImportLocal(self: *Linker) void {
+        var it = self.consumer_import_local.valueIterator();
+        while (it.next()) |inner| {
+            var vit = inner.valueIterator();
+            while (vit.next()) |v| self.allocator.free(v.*);
+            inner.deinit(self.allocator);
+        }
+        self.consumer_import_local.clearRetainingCapacity();
     }
 
     /// (#4120) consumer 모듈과 canonical 모듈이 *다른* 청크에 있는지. `module_to_chunk` 가

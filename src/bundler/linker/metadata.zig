@@ -1163,7 +1163,18 @@ pub fn buildMetadataForAst(
             const effective_target = if (resolved) |rb| blk_eff: {
                 const canon_mi = @intFromEnum(rb.canonical.module_index);
                 if (!self.isCrossChunkConsumer(module_index, canon_mi)) break :blk_eff target_name;
-                break :blk_eff self.getCrossChunkGlobalName(canon_mi, rb.canonical.export_name) orelse target_name;
+                if (self.getCrossChunkGlobalName(canon_mi, rb.canonical.export_name)) |g| break :blk_eff g;
+                // (#4572) non-wrap ESM 동명 provider: 전역명이 없어(#4559 owner 한정) crossChunkBindingName
+                // = `tag`(m1 과 충돌)로 붕괴한다. import 블록(먼저 방출)이 소비자-로컬로 deconflict 한
+                // 이름(`import { tag as tag$3 }`)을 consumer_import_local 에 적어 뒀으면, body 참조도 그
+                // 이름을 써서 import 문과 일치한다. provider public 명(`export { tag }`)은 그대로 유지.
+                // preserve-modules 한정(splitting 은 전역명이 있어 map 미populate) — 명시 게이트.
+                // ⚠️ canonical 이 non-wrap(.none)일 때만 map 이 채워지므로 `loc` 은 esm-wrap canonical
+                // 전용인 export_getter_overrides(아래 1193) 경로에 절대 안 흘러간다(borrowed loc UAF 회피).
+                if (self.graph.preserve_modules) {
+                    if (self.getConsumerImportLocal(canon_mi, rb.canonical.export_name)) |loc| break :blk_eff loc;
+                }
+                break :blk_eff target_name;
             } else target_name;
             if (!isReservedName(effective_target) and effective_target.len > 0 and isValidIdentStartByte(effective_target[0])) {
                 if (ib.local_symbol.semanticIndex()) |sym_idx| {
