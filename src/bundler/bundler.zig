@@ -1925,14 +1925,18 @@ pub const Bundler = struct {
                 chunk_mod.mergeSmallChunks(&chunk_graph, graph, self.options.min_chunk_size);
             }
 
-            // (#4532) preserve_modules(ESM·non-minify 출력)의 cross-file 심볼 네이밍 게이트. CJS
-            // 출력은 소비자가 bare 전역명 bind 불가(materialize 필요), minify 는 identifier mangler 가
-            // 전역명 미예약(computeChunkMangling 은 code_splitting 게이트라 preserve-modules 서 skip)
-            // 충돌 위험 → 둘 다 후속. splitting(code_splitting and !preserve_modules)은 별개 항 유지.
+            // (#4532) preserve_modules(ESM/CJS·non-minify 출력)의 cross-file 심볼 네이밍 게이트.
+            // ESM 은 `import { X as global }` 로, CJS 는 forwarding 썽크(`let global; global =
+            // m.global`, chunks.zig)로 전역명을 materialize 한다 — 소비자 본문·forwarding·provider
+            // export 셋이 같은 전역명에 합의(증상1 동명 붕괴 `BB` 해소). CJS forwarding read 도
+            // provider export 키(전역명 orelse export명)로 읽어야 provider 방출과 일치한다(chunks.zig).
+            // minify 는 identifier mangler 가 전역명 미예약(computeChunkMangling 은 code_splitting
+            // 게이트라 preserve-modules 서 skip)이라 mangled local↔전역명 충돌 위험 → `!minify_
+            // identifiers` 로 후속. splitting(code_splitting and !preserve_modules)은 별개 항 유지.
             // ⚠️ `!dev_mode` 도 필수: dev 는 namespace member rewrite 가 wrapped local(`(init(),
             // exp.local)`)을 쓰고 negotiated 전역명 경로를 안 타 동명 멤버가 붕괴한다(code-review).
             const pm_xchunk_naming = self.options.preserve_modules and
-                self.options.format == .esm and
+                (self.options.format == .esm or self.options.format == .cjs) and
                 !self.options.minify_identifiers and
                 !self.options.dev_mode;
             // (#4532 증상2) computeCrossChunkLinks 의 direct `import * as ns`(leaf ESM-wrap dep) fan-out

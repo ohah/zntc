@@ -347,9 +347,10 @@ pub const ChunkGraph = struct {
     /// 이름을 소비자가 `import { default as … }` 로 가져와 링크 에러가 난다.
     preserve_modules: bool = false,
 
-    /// (#4532) preserve-modules(ESM·non-minify) cross-file 심볼 네이밍이 켜졌는지. bundler.zig 가
-    /// computeCrossChunkLinks 전에 세팅. direct `import * as ns`(ESM-wrap dep) fan-out(증상2)을
-    /// 이 게이트 + dep `wrap_kind==.esm` 로 한정해, 네이밍이 켜진 경우에만 imports_from 에 등록한다.
+    /// (#4532) preserve-modules(ESM/CJS·non-minify·non-dev) cross-file 심볼 네이밍이 켜졌는지.
+    /// bundler.zig 가 computeCrossChunkLinks 전에 세팅. direct `import * as ns`(ESM-wrap dep)
+    /// fan-out(증상2)을 이 게이트 + dep `wrap_kind==.esm` 로 한정해, 네이밍이 켜진 경우에만
+    /// imports_from 에 등록한다. CJS 출력도 forwarding 썽크로 전역명을 materialize 하므로 포함(증상1).
     pm_xchunk_naming: bool = false,
 
     /// module_count 크기의 빈 ChunkGraph를 생성한다.
@@ -2077,7 +2078,7 @@ pub fn computeCrossChunkLinks(
                     //     가 lazy 다이어그램 청크서 bare `channel` → render() ReferenceError 였다. dev 는
                     //     member rewrite 가 wrapped local 을 써 전역명 경로를 안 타므로 preserve-modules 와
                     //     동일하게 제외한다.
-                    //   - **preserve-modules**(#4532): pm_xchunk_naming(ESM·non-minify·non-dev) 한정.
+                    //   - **preserve-modules**(#4532): pm_xchunk_naming(ESM/CJS·non-minify·non-dev) 한정.
                     const ns_fanout_ok = if (chunk_graph.preserve_modules) chunk_graph.pm_xchunk_naming else !graph.dev_mode;
                     if (ns_fanout_ok and ib.kind == .namespace) {
                         if (graph.getModule(src_mod)) |dep| {
