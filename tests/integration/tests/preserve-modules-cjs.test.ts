@@ -350,6 +350,32 @@ describe('#4524: --preserve-modules × CJS', () => {
       await cleanup();
     }
   });
+  test('#4532 증상3: re-export 배럴이 ESM-wrap dep 을 re-export 해도 소비자가 undefined 를 안 잡는다', async () => {
+    // r.js 가 `export { CONST, fn } from "./b.js"`(b 는 ESM-wrap) 하면, CJS 배럴 r.js 는 `let CONST,
+    // fn` + init_b forwarding 썽크를 깔지만 자기 `exports.X = X` 스냅샷 전에 init_b 를 안 불러
+    // undefined 를 박제한다. (b) ESM 소비자가 배럴 경유로 import 하면 re-export 체인이 b 로 직접
+    // 해석돼 소비자 preamble 이 init_b() 를 주입해야 하는데 게이트가 배럴(non-wrap)을 봐서 놓친다.
+    // 버그 시 `TypeError: fn is not a function`.
+    const { outDir, cleanup } = await buildPm(
+      {
+        'b.js': 'export const CONST = 42;\nexport function fn(){ return "F"; }',
+        'a.cjs': 'module.exports = require("./b.js");', // b 를 ESM-wrap 강제
+        'r.js': 'export { CONST, fn } from "./b.js";', // 배럴
+        'entry.js':
+          'import { CONST, fn } from "./r.js";\nimport "./a.cjs";\nconsole.log(CONST + "|" + fn());',
+      },
+      'entry.js',
+      'cjs',
+    );
+    try {
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      expect(stderr).not.toContain('TypeError'); // 수정 전: fn is not a function
+      expect(stdout.trim()).toBe('42|F');
+    } finally {
+      await cleanup();
+    }
+  });
+
   // ─── #4528: wrap 된 모듈의 남은 구멍 3건 ───
 
   const WRAPPED = {
