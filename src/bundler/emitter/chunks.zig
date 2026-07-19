@@ -112,6 +112,32 @@ fn mintConsumerLocal(
     }
 }
 
+/// (#4580) preserve-modules 단일-모듈 dep 청크의 export shape 가 **default-only** — 즉 provider 가
+/// `module.exports = <default>`(default = exports 전체) 를 방출하는지. 이 경우 소비자는 `require()`
+/// 결과 **전체**를 default 로 바인딩해야 한다: `const x = require(...)`. `{ default: x }` 구조분해는
+/// `.default`=undefined → TypeError(#4580). `export *`(ESM 스펙상 default 제외, named 확장) 가 있으면
+/// named 가 섞일 수 있어 보수적으로 false(구조분해 유지 — 현행 동작, 회귀 아님). `.named` OutputExports
+/// 는 `exports.default` 를 내므로 호출부에서 auto/default_ 로 게이트한다.
+fn cjsDepDefaultOnly(graph: *const ModuleGraph, dep_chunk: *const Chunk) bool {
+    const mod_idx = switch (dep_chunk.kind) {
+        .entry_point => |ep| if (ep.is_import_call) return false else ep.module,
+        else => return false,
+    };
+    const m = graph.getModule(mod_idx) orelse return false;
+    var has_default = false;
+    var has_named = false;
+    for (m.export_bindings) |eb| {
+        if (eb.kind == .re_export_star) {
+            has_named = true; // `export *` → 확장 named (default 은 미포함)
+        } else if (std.mem.eql(u8, eb.exported_name, "default")) {
+            has_default = true;
+        } else {
+            has_named = true;
+        }
+    }
+    return has_default and !has_named;
+}
+
 /// cross-chunk export 의 **provider 측 로컬명**(이 청크에 선언된 실제 식별자, 전역 public 의
 /// RHS). owner 모듈 `mi` 가 export `name` 을 어떤 로컬로 들고 있는지 해석한다.
 /// - namespace re-export(`export * as X`)는 로컬 심볼이 elided 라 canonical 이 빗나간다 → 청크에
@@ -863,7 +889,33 @@ pub fn emitChunks(
                 }
             }
 
-            if (!pm_cjs_dep and pm_esm_wrap_dep_syms == null and symbols != null and symbols.?.items.len > 0) {
+            // (#4580) default-only provider(`module.exports = X`)에서 default 단일 import → require()
+            // 결과 **전체**가 default 다. `{ default: x }` 구조분해는 `.default`=undefined(TypeError)
+            // 이므로 `const <local> = require("...")` 로 전체를 바인딩한다. dep 이 완전 unwrapped(래퍼
+            // 경로 아님)이고 default-only(cjsDepDefaultOnly)이며 auto/default_ 모드일 때만.
+            const bind_whole_default = pm_cjs and !pm_cjs_dep and pm_esm_wrap_dep_syms == null and
+                pm_wrapper_dep == null and symbols != null and symbols.?.items.len == 1 and
+                std.mem.eql(u8, symbols.?.items[0].name, "default") and
+                (options.output_exports == .auto or options.output_exports == .default_) and
+                cjsDepDefaultOnly(graph, dep_chunk);
+            if (bind_whole_default) {
+                const sym = symbols.?.items[0];
+                const binding = crossChunkBindingName(linker, sym);
+                const has_global = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null else false;
+                const lazy_local_keys = graph.lazy_compilation and (reg_split or cjs_split);
+                const local = if (lazy_local_keys or has_global)
+                    binding
+                else
+                    try mintConsumerLocal(allocator, binding, &used_locals, &natural_bindings, &alias_strs);
+                if (!std.mem.eql(u8, local, binding)) {
+                    if (options.preserve_modules) if (linker) |l| try l.putConsumerImportLocal(sym.canonical_module, sym.name, local);
+                }
+                try chunk_output.appendSlice(allocator, "const ");
+                try chunk_output.appendSlice(allocator, local);
+                try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "=require(\"" else " = require(\"");
+                try chunk_output.appendSlice(allocator, bind_arg);
+                try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "\");" else "\");\n");
+            } else if (!pm_cjs_dep and pm_esm_wrap_dep_syms == null and symbols != null and symbols.?.items.len > 0) {
                 // 심볼 수준 import: import { a, b } from './chunk-xxx.js';
                 if (!options.minify_whitespace) {
                     try chunk_output.appendSlice(allocator, if (reg_like) "const { " else "import { ");
