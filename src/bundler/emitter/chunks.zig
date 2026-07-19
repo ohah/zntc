@@ -641,6 +641,7 @@ pub fn emitChunks(
                 chunk_graph,
                 options,
                 ext,
+                reg_ids,
             );
         }
 
@@ -2153,7 +2154,17 @@ fn emitRunBeforeMainCrossImports(
     chunk_graph: *const ChunkGraph,
     options: *const EmitOptions,
     ext: []const u8,
+    /// reg_split(iife/umd/amd) 일 때 dep 청크의 레지스트리 id 조회용. reg_split 아니면 미사용.
+    reg_ids: []const []const u8,
 ) !void {
+    // (#4555) 공유 RBM 이 common 청크로 가면 cross-chunk 로 그 init 을 가져와야 한다. 결합 형태는
+    // 포맷별로 달라야 유효하다(메인 import 블록과 동일):
+    //   · reg_split(iife/umd/amd) → `const { init_X } = __zntc_require("<reg_id>");` (ESM import 는
+    //     factory 함수 안이라 SyntaxError 였다 — #4555)
+    //   · cjs → `const { init_X } = require("<path>");` (cjs 에 ESM import 는 무효)
+    //   · esm → `import { init_X } from "<path>";` (기존)
+    const reg_split = options.format.isWrappedFormat() and !options.preserve_modules;
+    const min = options.minify_whitespace;
     var dep_buf: std.ArrayListUnmanaged(u8) = .empty;
     defer dep_buf.deinit(allocator);
     // src_dir 는 importer chunk 의 *최종 stem* (baked-in slash 포함) 의 dirname.
@@ -2162,33 +2173,44 @@ fn emitRunBeforeMainCrossImports(
     try chunkPlaceholderStem(current_chunk, &importer_buf, allocator, options);
     const importer_dir = std.fs.path.dirname(importer_buf.items) orelse "";
     for (imports) |imp| {
-        const dep_chunk = chunk_graph.getChunk(imp.source_chunk);
-        try chunkPlaceholderStem(dep_chunk, &dep_buf, allocator, options);
-        const dep_stem = dep_buf.items;
-        const resolved_path = if (options.preserve_modules) blk: {
-            const src_path = current_chunk.rel_dir orelse "./";
-            const dep_path = dep_chunk.rel_dir orelse "./";
-            break :blk try computeRelativeImportPath(allocator, src_path, dep_path, ext, options.preserve_modules_root);
-        } else if (dep_chunk.explicit_file_name) |efn|
-            try computeRelativePath(allocator, importer_dir, efn, "")
-        else blk: {
-            break :blk try computeRelativePath(allocator, importer_dir, dep_stem, ext);
+        // reg_split 은 레지스트리 id, 그 외는 상대 경로.
+        const bind_arg: []const u8 = if (reg_split)
+            reg_ids[@intFromEnum(imp.source_chunk)]
+        else blk_path: {
+            const dep_chunk = chunk_graph.getChunk(imp.source_chunk);
+            try chunkPlaceholderStem(dep_chunk, &dep_buf, allocator, options);
+            const dep_stem = dep_buf.items;
+            break :blk_path if (options.preserve_modules) blk: {
+                const src_path = current_chunk.rel_dir orelse "./";
+                const dep_path = dep_chunk.rel_dir orelse "./";
+                break :blk try computeRelativeImportPath(allocator, src_path, dep_path, ext, options.preserve_modules_root);
+            } else if (dep_chunk.explicit_file_name) |efn|
+                try computeRelativePath(allocator, importer_dir, efn, "")
+            else
+                try computeRelativePath(allocator, importer_dir, dep_stem, ext);
         };
-        defer allocator.free(resolved_path);
+        defer if (!reg_split) allocator.free(bind_arg);
 
-        if (!options.minify_whitespace) {
-            try output.appendSlice(allocator, "import { ");
-            try output.appendSlice(allocator, imp.name);
-            try output.appendSlice(allocator, " } from \"");
-            try output.appendSlice(allocator, resolved_path);
-            try output.appendSlice(allocator, "\";\n");
-        } else {
-            try output.appendSlice(allocator, "import{");
-            try output.appendSlice(allocator, imp.name);
-            try output.appendSlice(allocator, "}from\"");
-            try output.appendSlice(allocator, resolved_path);
-            try output.appendSlice(allocator, "\";");
-        }
+        const open = if (reg_split or options.format == .cjs)
+            (if (min) "const{" else "const { ")
+        else
+            (if (min) "import{" else "import { ");
+        const mid = if (reg_split)
+            (if (min) "}=__zntc_require(\"" else " } = __zntc_require(\"")
+        else if (options.format == .cjs)
+            (if (min) "}=require(\"" else " } = require(\"")
+        else
+            (if (min) "}from\"" else " } from \"");
+        const close = if (reg_split or options.format == .cjs)
+            (if (min) "\");" else "\");\n")
+        else
+            (if (min) "\";" else "\";\n");
+
+        try output.appendSlice(allocator, open);
+        try output.appendSlice(allocator, imp.name);
+        try output.appendSlice(allocator, mid);
+        try output.appendSlice(allocator, bind_arg);
+        try output.appendSlice(allocator, close);
     }
 }
 
