@@ -943,6 +943,17 @@ pub const Linker = struct {
         if (m.wrapper_name_synthetic) |n| try self.reserved_globals.put(self.allocator, n, {});
     }
 
+    /// (#4586) 모듈이 run_before_main(Metro runBeforeMainModule) 대상인지. RBM 은 entry 청크가 그
+    /// 래퍼 init/require 를 cross-chunk 로 참조하므로 mangle 제외 판정에 쓴다.
+    fn isRunBeforeMainModule(self: *const Linker, m: *const Module) bool {
+        for (self.graph.run_before_main_files) |p| {
+            if (self.graph.findModuleByPath(p)) |rbm| {
+                if (rbm.index == m.index) return true;
+            }
+        }
+        return false;
+    }
+
     /// 소비자 `m` 이 참조하는 **wrapped 대상 모듈**(일반 import + require.context 매치)을 하나씩
     /// `cb(ctx, w, via_context)` 로 yield 한다. cb 가 true 를 반환하면 순회를 중단한다.
     /// `via_context` = require.context 로 도달(주입 헬퍼가 다름 — `deconflictConsumerShadows` 참조).
@@ -1847,6 +1858,12 @@ pub const Linker = struct {
                         // 를 rename_table 경유로 브리지하므로 mangle 해도 일관돼 제외하지 않는다.
                         // default_export 는 canonical wrapper 경로가 아니라 일반 export 브리지라 제외 안 함.
                         if (self.graph.preserve_modules and sk != .default_export) continue;
+                        // (#4586) run_before_main 모듈의 래퍼 init/require 는 entry 청크가 **cross-chunk**
+                        // 로 참조(emitRunBeforeMainCrossImports)하는데 per-chunk mangle 은 그걸 모른다.
+                        // mangle 하면 common 청크는 `exports.n`(mangled)인데 entry 는 canonical `init_X`
+                        // 를 참조 → `init_X is not a function`(#4579 계열 rename_table 타이밍). RBM 은
+                        // 드물어(RN) canonical 유지의 size 비용 무시 가능 → mangle 후보서 제외.
+                        if ((sk == .esm_init or sk == .cjs_require) and self.isRunBeforeMainModule(m)) continue;
                         // RFC #3940 L.4c: dedup key 를 build-scope rename_table 경유 (parity 로 동치).
                         const key = self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(mi)), si)) orelse sym.synthetic_name;
                         if (key.len <= 1) continue;
