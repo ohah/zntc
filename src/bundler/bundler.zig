@@ -1441,6 +1441,12 @@ pub const Bundler = struct {
                 self.allocator.free(current_rbm);
             }
             self.options.run_before_main = merged;
+            // (#4586) graph.run_before_main_files 미러도 merged 로 갱신 — 위 1323 스냅샷은
+            // 폴리필 merge *전* 값이라 stale. emitter/linker(appendRunBeforeMainCalls·
+            // collectUnifiedInput 의 mangle 제외)는 이 미러를 authoritative 로 읽으므로,
+            // 갱신하지 않으면 폴리필 RBM 의 래퍼 require/init 이 common 청크서 mangle 되고
+            // entry 는 canonical 을 참조 → `require_core_js_... is not a function`.
+            graph.run_before_main_files = merged;
         }
 
         // Worker 별도 빌드: new Worker(new URL(...)) 패턴에서 수집된 worker 경로를 독립 IIFE로 빌드

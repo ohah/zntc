@@ -943,17 +943,6 @@ pub const Linker = struct {
         if (m.wrapper_name_synthetic) |n| try self.reserved_globals.put(self.allocator, n, {});
     }
 
-    /// (#4586) 모듈이 run_before_main(Metro runBeforeMainModule) 대상인지. RBM 은 entry 청크가 그
-    /// 래퍼 init/require 를 cross-chunk 로 참조하므로 mangle 제외 판정에 쓴다.
-    fn isRunBeforeMainModule(self: *const Linker, m: *const Module) bool {
-        for (self.graph.run_before_main_files) |p| {
-            if (self.graph.findModuleByPath(p)) |rbm| {
-                if (rbm.index == m.index) return true;
-            }
-        }
-        return false;
-    }
-
     /// 소비자 `m` 이 참조하는 **wrapped 대상 모듈**(일반 import + require.context 매치)을 하나씩
     /// `cb(ctx, w, via_context)` 로 yield 한다. cb 가 true 를 반환하면 순회를 중단한다.
     /// `via_context` = require.context 로 도달(주입 헬퍼가 다름 — `deconflictConsumerShadows` 참조).
@@ -1715,6 +1704,19 @@ pub const Linker = struct {
         }
 
         const helper_modules = @import("../runtime_helper_modules.zig");
+
+        // (#4586) run_before_main 모듈 인덱스를 **루프 전 1회** 수집. 아래 per-symbol mangle
+        // 제외 판정이 매번 findModuleByPath(O(N))를 재계산하면 O(mod×sym×rbm×N)이 되므로
+        // (RN 번들에서 수백만 비교) 집합으로 O(1) 조회한다. run_before_main_files 는 폴리필
+        // merge(bundler.zig)까지 반영된 authoritative 리스트.
+        var rbm_module_indices: std.AutoHashMapUnmanaged(ModuleIndex, void) = .empty;
+        defer rbm_module_indices.deinit(self.allocator);
+        for (self.graph.run_before_main_files) |p| {
+            if (self.graph.findModuleByPath(p)) |rbm| {
+                try rbm_module_indices.put(self.allocator, rbm.index, {});
+            }
+        }
+
         for (0..mod_count) |mi| {
             const m = self.getModule(@intCast(mi)).?;
             const sem_opt = m.semantic;
@@ -1863,7 +1865,7 @@ pub const Linker = struct {
                         // mangle 하면 common 청크는 `exports.n`(mangled)인데 entry 는 canonical `init_X`
                         // 를 참조 → `init_X is not a function`(#4579 계열 rename_table 타이밍). RBM 은
                         // 드물어(RN) canonical 유지의 size 비용 무시 가능 → mangle 후보서 제외.
-                        if ((sk == .esm_init or sk == .cjs_require) and self.isRunBeforeMainModule(m)) continue;
+                        if ((sk == .esm_init or sk == .cjs_require) and rbm_module_indices.contains(m.index)) continue;
                         // RFC #3940 L.4c: dedup key 를 build-scope rename_table 경유 (parity 로 동치).
                         const key = self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(mi)), si)) orelse sym.synthetic_name;
                         if (key.len <= 1) continue;
