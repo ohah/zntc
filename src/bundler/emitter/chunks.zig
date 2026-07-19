@@ -112,12 +112,15 @@ fn mintConsumerLocal(
     }
 }
 
-/// (#4572/#4576/#4580) 소비자 청크에서 `sym` 의 로컬명을 발급하고 body 참조를 정합시킨다.
+/// (#4572/#4576/#4580/#4579) 소비자 청크에서 `sym` 의 로컬명을 발급하고 body 참조를 정합시킨다.
 /// `fixed`(has_global/lazy → 이름 고정)면 binding 그대로, 아니면 mintConsumerLocal 로 유일 발급.
-/// 발급이 binding 과 다르면(=deconflict) `consumer_import_local` 에 적어 뒤이어 도는 buildMetadataForAst
-/// 의 effective_target 이 body 를 같은 이름으로 맞추게 한다(안 하면 crossChunkBindingName=binding 으로
-/// 붕괴). 기록의 read 는 preserve-modules 게이트라(metadata.zig) splitting 에선 무해(write 만).
-/// symbol-level import 블록과 #4580 default 전체바인딩 두 site 공용 — 정책 발산 방지.
+/// 발급한 로컬을 **항상** `consumer_import_local` 에 적어, 뒤이어 도는 buildMetadataForAst 의
+/// effective_target 이 body 참조를 그 로컬로 맞추게 한다. import 문(여기)이 body 참조의 유일 권위다.
+/// ⚠️ (#4579) deconflict 됐을 때만 적으면, minify-identifiers 서 body 의 fallback(target_name)이
+/// provider **원본** 로컬명을, import 문은 crossChunkBindingName=provider **mangled** 로컬명을 써 발산
+/// (`const t=require();foo()` → foo undefined). default 는 public 명이 없어(=`module.exports=X`) 특히
+/// 그렇다. 항상 기록으로 둘을 강제 일치시킨다. read 는 preserve-modules 게이트라(metadata.zig)
+/// splitting 무해(write 만). symbol-level import 블록과 #4580 default 전체바인딩 두 site 공용.
 fn deconflictedConsumerLocal(
     linker: ?*Linker,
     sym: chunk_mod.CrossChunkSym,
@@ -132,9 +135,7 @@ fn deconflictedConsumerLocal(
         binding
     else
         try mintConsumerLocal(allocator, binding, used_locals, natural_bindings, alias_strs);
-    if (!std.mem.eql(u8, local, binding)) {
-        if (linker) |l| try l.putConsumerImportLocal(sym.canonical_module, sym.name, local);
-    }
+    if (linker) |l| try l.putConsumerImportLocal(sym.canonical_module, sym.name, local);
     return local;
 }
 
