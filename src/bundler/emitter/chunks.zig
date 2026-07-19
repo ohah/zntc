@@ -112,30 +112,83 @@ fn mintConsumerLocal(
     }
 }
 
+/// (#4572/#4576/#4580) 소비자 청크에서 `sym` 의 로컬명을 발급하고 body 참조를 정합시킨다.
+/// `fixed`(has_global/lazy → 이름 고정)면 binding 그대로, 아니면 mintConsumerLocal 로 유일 발급.
+/// 발급이 binding 과 다르면(=deconflict) `consumer_import_local` 에 적어 뒤이어 도는 buildMetadataForAst
+/// 의 effective_target 이 body 를 같은 이름으로 맞추게 한다(안 하면 crossChunkBindingName=binding 으로
+/// 붕괴). 기록의 read 는 preserve-modules 게이트라(metadata.zig) splitting 에선 무해(write 만).
+/// symbol-level import 블록과 #4580 default 전체바인딩 두 site 공용 — 정책 발산 방지.
+fn deconflictedConsumerLocal(
+    linker: ?*Linker,
+    sym: chunk_mod.CrossChunkSym,
+    binding: []const u8,
+    fixed: bool,
+    allocator: std.mem.Allocator,
+    used_locals: *std.StringHashMapUnmanaged(void),
+    natural_bindings: *const std.StringHashMapUnmanaged(void),
+    alias_strs: *std.ArrayList([]const u8),
+) ![]const u8 {
+    const local = if (fixed)
+        binding
+    else
+        try mintConsumerLocal(allocator, binding, used_locals, natural_bindings, alias_strs);
+    if (!std.mem.eql(u8, local, binding)) {
+        if (linker) |l| try l.putConsumerImportLocal(sym.canonical_module, sym.name, local);
+    }
+    return local;
+}
+
+/// (#4580) 모듈이 default 외 **named** export 를 하나라도 내는가 — `export *`(ESM 스펙상 default
+/// 제외, named 확장)를 소스로 **재귀 flatten** 한다. provider 는 `collectExportsRecursive` 로 star 를
+/// 펼쳐 named 유무를 판정하므로 소비자도 같아야 한다(안 그러면 star 가 named 0 개일 때 provider 는
+/// `module.exports = X` 인데 소비자는 구조분해 → TypeError 잔존, #4580 리뷰 [0]). 미해결/external star
+/// 는 provider 도 flatten 불가라 보수적으로 true(구조분해 유지).
+fn moduleHasAnyNamedExport(
+    allocator: std.mem.Allocator,
+    graph: *const ModuleGraph,
+    m: *const Module,
+    seen: *std.AutoHashMapUnmanaged(u32, void),
+) bool {
+    for (m.export_bindings) |eb| {
+        if (eb.kind == .re_export_star) {
+            const rec_idx = eb.import_record_index orelse return true;
+            if (rec_idx >= m.import_records.len) return true;
+            const src_idx = m.import_records[rec_idx].resolved;
+            if (src_idx.isNone()) return true; // external → flatten 불가, 보수적 named
+            const gop = seen.getOrPut(allocator, @intFromEnum(src_idx)) catch return true;
+            if (gop.found_existing) continue; // 순환 방지
+            const src = graph.getModule(src_idx) orelse return true;
+            if (moduleHasAnyNamedExport(allocator, graph, src, seen)) return true;
+        } else if (!std.mem.eql(u8, eb.exported_name, "default")) {
+            return true; // 직접 named (re_export / re_export_namespace 포함)
+        }
+    }
+    return false;
+}
+
 /// (#4580) preserve-modules 단일-모듈 dep 청크의 export shape 가 **default-only** — 즉 provider 가
 /// `module.exports = <default>`(default = exports 전체) 를 방출하는지. 이 경우 소비자는 `require()`
 /// 결과 **전체**를 default 로 바인딩해야 한다: `const x = require(...)`. `{ default: x }` 구조분해는
-/// `.default`=undefined → TypeError(#4580). `export *`(ESM 스펙상 default 제외, named 확장) 가 있으면
-/// named 가 섞일 수 있어 보수적으로 false(구조분해 유지 — 현행 동작, 회귀 아님). `.named` OutputExports
-/// 는 `exports.default` 를 내므로 호출부에서 auto/default_ 로 게이트한다.
-fn cjsDepDefaultOnly(graph: *const ModuleGraph, dep_chunk: *const Chunk) bool {
+/// `.default`=undefined → TypeError(#4580). `.named` OutputExports 는 `exports.default` 를 내므로
+/// 호출부에서 auto/default_ 로 게이트한다.
+fn cjsDepDefaultOnly(allocator: std.mem.Allocator, graph: *const ModuleGraph, dep_chunk: *const Chunk) bool {
     const mod_idx = switch (dep_chunk.kind) {
         .entry_point => |ep| if (ep.is_import_call) return false else ep.module,
         else => return false,
     };
     const m = graph.getModule(mod_idx) orelse return false;
     var has_default = false;
-    var has_named = false;
     for (m.export_bindings) |eb| {
-        if (eb.kind == .re_export_star) {
-            has_named = true; // `export *` → 확장 named (default 은 미포함)
-        } else if (std.mem.eql(u8, eb.exported_name, "default")) {
+        if (eb.kind != .re_export_star and std.mem.eql(u8, eb.exported_name, "default")) {
             has_default = true;
-        } else {
-            has_named = true;
+            break;
         }
     }
-    return has_default and !has_named;
+    if (!has_default) return false;
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(allocator);
+    seen.put(allocator, @intFromEnum(mod_idx), {}) catch return false;
+    return !moduleHasAnyNamedExport(allocator, graph, m, &seen);
 }
 
 /// cross-chunk export 의 **provider 측 로컬명**(이 청크에 선언된 실제 식별자, 전역 public 의
@@ -897,19 +950,13 @@ pub fn emitChunks(
                 pm_wrapper_dep == null and symbols != null and symbols.?.items.len == 1 and
                 std.mem.eql(u8, symbols.?.items[0].name, "default") and
                 (options.output_exports == .auto or options.output_exports == .default_) and
-                cjsDepDefaultOnly(graph, dep_chunk);
+                cjsDepDefaultOnly(allocator, graph, dep_chunk);
             if (bind_whole_default) {
                 const sym = symbols.?.items[0];
                 const binding = crossChunkBindingName(linker, sym);
+                // pm_cjs 라 lazy(reg_split/cjs_split=!preserve_modules)는 여기 안 옴 → has_global 만 고정.
                 const has_global = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null else false;
-                const lazy_local_keys = graph.lazy_compilation and (reg_split or cjs_split);
-                const local = if (lazy_local_keys or has_global)
-                    binding
-                else
-                    try mintConsumerLocal(allocator, binding, &used_locals, &natural_bindings, &alias_strs);
-                if (!std.mem.eql(u8, local, binding)) {
-                    if (options.preserve_modules) if (linker) |l| try l.putConsumerImportLocal(sym.canonical_module, sym.name, local);
-                }
+                const local = try deconflictedConsumerLocal(linker, sym, binding, has_global, allocator, &used_locals, &natural_bindings, &alias_strs);
                 try chunk_output.appendSlice(allocator, "const ");
                 try chunk_output.appendSlice(allocator, local);
                 try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "=require(\"" else " = require(\"");
@@ -948,20 +995,9 @@ pub fn emitChunks(
                     const has_global = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null else false;
                     const key = if (lazy_local_keys or has_global) binding else name;
 
-                    // (#4572/#4576) 선언되는 소비자-로컬은 항상 binding. has_global/lazy 는 이름이 고정
-                    // (전역명·lazy export 키)이라 그대로 쓰고 pre-pass 에서 이미 예약됨. 그 외는
-                    // mintConsumerLocal 로 유일 이름 발급 — 이미 쓰였으면 `binding$N`(집합 판정).
-                    const local = if (lazy_local_keys or has_global)
-                        binding
-                    else
-                        try mintConsumerLocal(allocator, binding, &used_locals, &natural_bindings, &alias_strs);
-                    // 발급이 binding 과 다르면(=deconflict) consumer_import_local 맵에 적어 body 참조
-                    // (effective_target)를 맞춘다 — 안 하면 crossChunkBindingName=binding 으로 붕괴. provider
-                    // public 명은 그대로(소비자 청크 로컬명일 뿐). preserve-modules 한정(splitting 은
-                    // has_global 이라 여기 안 옴).
-                    if (!std.mem.eql(u8, local, binding)) {
-                        if (options.preserve_modules) if (linker) |l| try l.putConsumerImportLocal(sym.canonical_module, sym.name, local);
-                    }
+                    // (#4572/#4576) 선언 로컬은 항상 binding. has_global/lazy 는 고정, 그 외 유일 발급 +
+                    // deconflict 시 body 정합(deconflictedConsumerLocal, #4580 전체바인딩 site 와 공용).
+                    const local = try deconflictedConsumerLocal(linker, sym, binding, lazy_local_keys or has_global, allocator, &used_locals, &natural_bindings, &alias_strs);
 
                     if (!std.mem.eql(u8, key, local)) {
                         // key != local → `key: local` / `key as local`. key!=binding(예약어 export 키

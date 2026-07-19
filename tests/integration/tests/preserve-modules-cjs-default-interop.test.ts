@@ -120,6 +120,38 @@ describe('#4580: preserve-modules cjs default interop', () => {
     }
   });
 
+  test('[리뷰 0] export default + export *(소스 named 0) → 전체 바인딩', async () => {
+    // provider 는 star 를 flatten 해 named 0 → `module.exports = X`(default-only). 소비자도
+    // star 를 재귀 flatten 해 default-only 로 판정하고 전체 바인딩해야 한다(구조분해면 TypeError).
+    const { outDir, cleanup } = await buildPmCjs({
+      'consts.js': 'export default 99;', // star 는 default 를 재-export 안 함 → named 0
+      'm1.js': 'export default function foo(){ return "D1"; }\nexport * from "./consts.js";',
+      'entry.js': 'import a from "./m1.js";\nconsole.log(a());',
+    });
+    try {
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      expect(stderr).not.toContain('TypeError');
+      expect(stdout.trim()).toBe('D1');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('export default + export *(소스 named 有) → 구조분해 유지', async () => {
+    const { outDir, cleanup } = await buildPmCjs({
+      'consts.js': 'export const z = "Z";',
+      'm1.js': 'export default function foo(){ return "D1"; }\nexport * from "./consts.js";',
+      'entry.js': 'import a, { z } from "./m1.js";\nconsole.log(a() + z);',
+    });
+    try {
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      expect(stderr).not.toContain('TypeError');
+      expect(stdout.trim()).toBe('D1Z');
+    } finally {
+      await cleanup();
+    }
+  });
+
   test('named-only 모듈은 영향 없음', async () => {
     const { outDir, cleanup } = await buildPmCjs({
       'm1.js': 'export const a = "A";\nexport const b = "B";',
