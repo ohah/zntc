@@ -21,11 +21,16 @@ default 는 안정된 public export 명이 없어(`module.exports = X`) provider
 
 ## 수정
 
-import 블록은 rename_table 이 유효한 시점에 이미 올바른 provider-mangled 로컬(`t`)을 구한다. 이를 `deconflictedConsumerLocal` 에서 **항상** `consumer_import_local`(#4576) 에 기록하도록 바꿔(기존엔 deconflict `local != binding` 일 때만), body 의 effective_target 이 그 값을 읽어 정합시킨다. import 문이 body 참조의 유일 권위.
+import 블록은 rename_table 이 유효한 시점에 이미 올바른 provider-mangled 로컬(`t`)을 구한다. 이를 `deconflictedConsumerLocal` 에서 **무조건** `consumer_import_local`(#4576) 에 기록하도록 바꿔(기존엔 deconflict `local != binding` 일 때만), body 의 effective_target 이 그 값을 읽어 정합시킨다. import 문이 body 참조의 유일 권위. write 는 read(metadata.zig)와 같은 `preserve_modules` 게이트라 splitting 은 생략(낭비 방지).
 
 이 fix 로 #4576(동명 default)·#4580(default interop) 의 `--minify` 도 함께 풀린다(그 PR 들이 남긴 minify 한계 해소).
 
 ## 검증
 
-- 회귀 스위트 `preserve-modules-minify-default-ref.test.ts` 8종: 단일 default·동명 default 2개·default+named·default class × esm/cjs, 전부 `--minify` 로 정확한 출력.
-- preserve-modules·cross-chunk·splitting·wrapper 통합 310 + zig 전체 무회귀.
+- 회귀 스위트 `preserve-modules-minify-default-ref.test.ts` **16종**: 단일 default·동명 default 2개·default+named·default class × esm/cjs × **minify/non-minify**(always-write 가 non-minify 도 건드리므로 양쪽 가드).
+- preserve-modules·cross-chunk·splitting·wrapper 통합 326 + zig 전체 무회귀.
+
+## `/code-review max` 반영
+
+- **[3]** 무조건 write 를 `preserve_modules` 게이트로(splitting 은 read 가 gated 라 write 도 낭비 → 생략).
+- **[0]** 테스트에 non-minify 케이스 추가. **[1]** dead stderr 단언 제거(runNode 가 non-zero exit 시 throw → stdout 단언+throw 가 실제 가드). **[2]** 실패 경로 temp-dir 누수 → try/finally.
