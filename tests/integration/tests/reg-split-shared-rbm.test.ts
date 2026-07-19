@@ -22,6 +22,16 @@ async function parseValid(file: string): Promise<boolean> {
   return p.exitCode === 0;
 }
 
+// splitting 이 방출한 common(chunk-*) 파일 이름. 없으면 명확히 실패시킨다(`!` 로 undefined 를
+// 삼키면 아래 join 이 `path must be string` 로 뭉개져 회귀 원인이 가려진다).
+function findChunk(outDir: string): string {
+  const chunk = readdirSync(outDir).find((f) => f.startsWith('chunk-'));
+  if (!chunk) {
+    throw new Error(`chunk-* 파일 없음 (splitting 미방출?): ${readdirSync(outDir).join(', ')}`);
+  }
+  return chunk;
+}
+
 async function build(
   format: 'iife' | 'umd' | 'amd' | 'cjs' | 'esm',
   files: Record<string, string>,
@@ -78,7 +88,7 @@ describe('#4555: reg_split/cjs multi-entry 공유 run-before-main', () => {
     test(`${format}: 청크 로드 순서대로면 RBM 실행 (브라우저 script 순서)`, async () => {
       const { dir, outDir, cleanup } = await build(format, ESM_SETUP, 'setup.js');
       try {
-        const chunk = readdirSync(outDir).find((f) => f.startsWith('chunk-'))!;
+        const chunk = findChunk(outDir);
         writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'commonjs' }));
         const harness = join(dir, 'harness.js');
         writeFileSync(
@@ -123,23 +133,26 @@ describe('#4555: reg_split/cjs multi-entry 공유 run-before-main', () => {
     }
   });
 
-  // (#4586) iife --minify: 청크 로드 순서대로면 RBM 이 실행. wrapper init 이 canonical 유지돼야 정합.
-  test('iife --minify: 청크 로드 순서대로면 RBM 실행', async () => {
-    const { dir, outDir, cleanup } = await build('iife', ESM_SETUP, 'setup.js', true);
-    try {
-      const chunk = readdirSync(outDir).find((f) => f.startsWith('chunk-'))!;
-      writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'commonjs' }));
-      const harness = join(dir, 'harness.js');
-      writeFileSync(
-        harness,
-        `globalThis.__zntc_public_path="";\nrequire(${JSON.stringify(join(outDir, chunk))});\nrequire(${JSON.stringify(join(outDir, 'a.js'))});\n`,
-      );
-      const { stdout } = await runNode(harness);
-      expect(stdout.trim()).toBe('a:SETUP_DONE');
-    } finally {
-      await cleanup();
-    }
-  });
+  // (#4586) iife/umd --minify: 청크 로드 순서대로면 RBM 이 실행. wrapper init 이 canonical
+  // 유지돼야 정합 — parse-only 로는 mangled 출력도 유효 파싱이라 이 발산을 못 잡으므로 런타임 실행.
+  for (const format of ['iife', 'umd'] as const) {
+    test(`${format} --minify: 청크 로드 순서대로면 RBM 실행`, async () => {
+      const { dir, outDir, cleanup } = await build(format, ESM_SETUP, 'setup.js', true);
+      try {
+        const chunk = findChunk(outDir);
+        writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'commonjs' }));
+        const harness = join(dir, 'harness.js');
+        writeFileSync(
+          harness,
+          `globalThis.__zntc_public_path="";\nrequire(${JSON.stringify(join(outDir, chunk))});\nrequire(${JSON.stringify(join(outDir, 'a.js'))});\n`,
+        );
+        const { stdout } = await runNode(harness);
+        expect(stdout.trim()).toBe('a:SETUP_DONE');
+      } finally {
+        await cleanup();
+      }
+    });
+  }
 
   // esm: 회귀 방지.
   test('esm: 공유 RBM 정상 (회귀 방지)', async () => {
