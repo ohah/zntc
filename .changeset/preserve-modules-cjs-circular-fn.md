@@ -27,6 +27,11 @@ unwrapped preserve-modules cjs 모듈의 **named function 선언 export** 를 `e
 - 회귀 스위트 `preserve-modules-cjs-circular-fn.test.ts` 6종: 다중-entry 순환 function 호출(esm/cjs × plain/minify)·default 병존 named 순환·non-circular(hoist 무해).
 - preserve-modules 189·cross-chunk/splitting/wrapper 186 통합 + zig 전체 무회귀.
 
+## `/code-review max` 반영
+
+- **[0]** hoist 게이트가 `output_exports` 를 안 봐 `--output-exports=none`/`default_` 에서도 `exports.fn=fn` 이 새던 것 → `.auto`/`.named` 로 게이트(hoist·skip 양쪽).
+- **[1][2]** `exports.X=X` 방출을 `appendCjsExportBinding(live=false, min=false)` 재사용으로 단일화 — 같은-파일 bottom(emitCjsEntryExports, minify 무시 ` = `/`;\n`)과 형식 일치.
+
 ## 한계 (별개, 이 fix 범위 밖)
 
 - **소비자 자신의 import 가 TDZ**: 순환 중 paused 모듈의 `const { b } = require(...)` 는 아직 미초기화라, 그 모듈의 함수가 자기 import 를 참조하면 TDZ. 소비자-측 lazy 참조 필요(별개 층).

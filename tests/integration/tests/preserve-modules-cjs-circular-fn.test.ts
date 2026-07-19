@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { join } from 'node:path';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readFileSync } from 'node:fs';
 import { createFixture, runNode, runZntc } from './helpers';
 
 /**
@@ -92,6 +92,34 @@ describe('#4532 증상4: preserve-modules cjs 순환 function export live-bindin
       const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
       expect(stderr).not.toContain('TypeError');
       expect(stdout.trim()).toBe('A');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  // 리뷰 [0]: --output-exports=none 은 export 를 억제하므로 hoist 도 하면 안 된다.
+  test('--output-exports=none 은 function export 를 hoist 하지 않는다', async () => {
+    const { dir, cleanup } = await createFixture({
+      'e1.js':
+        'import { b } from "./e2.js";\nexport function a(){ return "A"; }\nconsole.log(typeof b);',
+      'e2.js': 'import { a } from "./e1.js";\nexport function b(){}',
+    });
+    const outDir = join(dir, 'dist');
+    try {
+      const res = await runZntc([
+        '--bundle',
+        join(dir, 'e1.js'),
+        join(dir, 'e2.js'),
+        '--preserve-modules',
+        `--preserve-modules-root=${dir}`,
+        '--outdir',
+        outDir,
+        '--format=cjs',
+        '--output-exports=none',
+      ]);
+      expect(res.exitCode).toBe(0);
+      const e1 = readFileSync(join(outDir, 'e1.js'), 'utf8');
+      expect(e1).not.toContain('exports.a'); // none 이면 어떤 export 도 없어야
     } finally {
       await cleanup();
     }

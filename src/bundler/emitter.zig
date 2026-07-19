@@ -2253,7 +2253,9 @@ pub fn emitModule(
             // (chunks.zig)하므로 여기 bottom 방출에서 제외(중복 방지). 같은 predicate 공유.
             var hoisted_fn_names: std.StringHashMapUnmanaged(void) = .empty;
             defer hoisted_fn_names.deinit(allocator);
-            if (options.preserve_modules and options.format == .cjs and module.wrap_kind == .none) {
+            if (options.preserve_modules and options.format == .cjs and module.wrap_kind == .none and
+                (options.output_exports == .auto or options.output_exports == .named))
+            {
                 for (module.export_bindings) |eb| {
                     if (chunks.exportBindingIsHoistableFn(module, eb)) {
                         try hoisted_fn_names.put(allocator, eb.exported_name, {});
