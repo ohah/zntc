@@ -2249,8 +2249,19 @@ pub fn emitModule(
             break :blk @as(?[]const u8, null);
         }
         if (options.format == .cjs or options.iife_split_factory) {
+            // (#4532 증상4) unwrapped pm-cjs 는 function-decl named export 를 require 앞에 hoist
+            // (chunks.zig)하므로 여기 bottom 방출에서 제외(중복 방지). 같은 predicate 공유.
+            var hoisted_fn_names: std.StringHashMapUnmanaged(void) = .empty;
+            defer hoisted_fn_names.deinit(allocator);
+            if (options.preserve_modules and options.format == .cjs and module.wrap_kind == .none) {
+                for (module.export_bindings) |eb| {
+                    if (chunks.exportBindingIsHoistableFn(module, eb)) {
+                        try hoisted_fn_names.put(allocator, eb.exported_name, {});
+                    }
+                }
+            }
             // mode (auto/named/default_/none) 별 emit 분기는 emitCjsEntryExports 에서 결정.
-            final_exports_buf = emitCjsEntryExports(allocator, entries, options.output_exports) catch |err| switch (err) {
+            final_exports_buf = emitCjsEntryExports(allocator, entries, options.output_exports, &hoisted_fn_names) catch |err| switch (err) {
                 error.OutputExportsDefaultRequiresSingleDefault => {
                     // default mode 인데 named 섞임 — Rollup 도 동일 케이스 throw.
                     // graph diagnostic 으로 emit (result.errors 노출, 사용자 fail-fast).
