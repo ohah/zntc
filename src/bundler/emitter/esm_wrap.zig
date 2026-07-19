@@ -204,20 +204,27 @@ pub fn emitEsmWrappedModule(
 
     // (#4574) preserve-modules × RN downlevel: 런타임 헬퍼(`__classCallCheck` 등)를 transform 이
     // `var __classCallCheck = function(){…}` 로 인라인한 뒤, 링커가 헬퍼 모듈에서 `import
-    // { __classCallCheck }` 로도 가져온다. 인라인 initializer 는 elide 되지만 variable_declaration
-    // 로 hoisting 된 **이름**이 import 와 이중 선언(SyntaxError)이 된다. helper-module import 로컬명은
-    // hoisted var 에서 제외한다 — import 문이 그 바인딩을 선언하므로(진짜 소스).
+    // { __classCallCheck }` 로도 가져온다. 인라인 initializer 는 elide 되지만 hoisting 된 **이름**이
+    // import 와 이중 선언(SyntaxError)이 된다. **preserve-modules 한정**으로 helper-module import
+    // 로컬명을 hoisted var 에서 제외 — import 문이 그 바인딩을 선언한다(진짜 소스).
+    // ⚠️ **non-preserve** 에선 helper import 가 skip 되고 assign-only preamble(`__extends = …`)로
+    // 치환돼 top-level `var __extends;`(is_helper hoist)가 **필요**하므로 제외하면 안 된다(#1209 회귀).
+    // 키는 `getCanonicalByRef`(rename 반영) — hoisted_var_names 가 resolveNodeName 이라 raw 로 매칭하면
+    // minify/deconflict 시 놓친다(is_helper hoist 도 line 아래에서 같은 getCanonicalByRef 를 쓴다).
     var helper_import_locals: std.StringHashMapUnmanaged(void) = .empty;
     defer helper_import_locals.deinit(allocator);
-    if (linker) |l| {
-        const helper_modules = @import("../../runtime_helper_modules.zig");
-        for (module.import_bindings) |ib| {
-            if (ib.import_record_index >= module.import_records.len) continue;
-            const tgt = module.import_records[ib.import_record_index].resolved;
-            if (tgt.isNone()) continue;
-            const tm = l.graph.getModule(tgt) orelse continue;
-            if (!helper_modules.isVirtualId(tm.path)) continue;
-            try helper_import_locals.put(allocator, module.importBindingLocalName(ib), {});
+    if (options.preserve_modules) {
+        if (linker) |l| {
+            const helper_modules = @import("../../runtime_helper_modules.zig");
+            for (module.import_bindings) |ib| {
+                if (ib.import_record_index >= module.import_records.len) continue;
+                const tgt = module.import_records[ib.import_record_index].resolved;
+                if (tgt.isNone()) continue;
+                const tm = l.graph.getModule(tgt) orelse continue;
+                if (!helper_modules.isVirtualId(tm.path)) continue;
+                const local = l.getCanonicalByRef(ib.local_symbol) orelse module.importBindingLocalName(ib);
+                try helper_import_locals.put(allocator, local, {});
+            }
         }
     }
 
@@ -454,12 +461,17 @@ pub fn emitEsmWrappedModule(
         }
         hoisted_var_names.shrinkRetainingCapacity(dedup_count);
 
-        try wrapped.appendSlice(allocator, "var ");
-        for (hoisted_var_names.items, 0..) |name, i| {
-            if (i > 0) try wrapped.appendSlice(allocator, ", ");
-            try wrapped.appendSlice(allocator, name);
+        // (#4574) 필터(helper_import_locals) 후 남은 이름이 하나도 없으면 `var ;`(SyntaxError)가
+        // 되므로 emit 자체를 건너뛴다. 모든 hoisted 이름이 helper-module import 인 모듈(예: class
+        // side-effect 만 있는 wrap 모듈)에서 발생.
+        if (hoisted_var_names.items.len > 0) {
+            try wrapped.appendSlice(allocator, "var ");
+            for (hoisted_var_names.items, 0..) |name, i| {
+                if (i > 0) try wrapped.appendSlice(allocator, ", ");
+                try wrapped.appendSlice(allocator, name);
+            }
+            try wrapped.appendSlice(allocator, ";\n");
         }
-        try wrapped.appendSlice(allocator, ";\n");
     }
 
     // 3. 호이스팅된 function 선언 (rolldown 방식: canonical 변수 직접 참조)

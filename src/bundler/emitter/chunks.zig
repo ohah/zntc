@@ -3797,13 +3797,17 @@ fn computeRelativeImportPath(
             const rel = try computeRelativePath(allocator, src_dir, dep_rel_no_ext, ext);
             return rel;
         }
-        // (#4574) src 는 root 아래인데 dep 이 root 밖 **bare id**(virtual runtime helper 의
-        // sanitize 된 rel_dir, 예 `runtime-class-call-check`)면, 헬퍼는 outdir **최상위**에 놓이므로
-        // root-level 파일로 취급해 src_dir(root 기준) 에서 상대 계산한다. 이 가드가 없으면 절대경로
-        // fallback 이 src 의 원본 절대 dir(`/tmp/x`)에서 bare id 로 올라가 `../../../../helper` 가 된다.
-        if (src_rel != null and std.mem.indexOfScalar(u8, dep_abs, '/') == null) {
-            const src_dir = std.fs.path.dirname(src_rel.?) orelse "";
+        // (#4574) dep 이 root 밖 **bare id**(virtual runtime helper 의 sanitize 된 rel_dir, 예
+        // `runtime-class-call-check`)면 헬퍼는 outdir **최상위**에 놓인다(computePreserveModulesPath).
+        // src 의 **출력 위치** 기준으로 상대 계산해야 한다:
+        //  · src 가 root 아래  → src_rel dir 에서 root-level 헬퍼로 상대 (`../helper` 또는 `./helper`).
+        //  · src 도 root 밖    → computePreserveModulesPath 가 stem-only 로 outdir 최상위에 놓으므로
+        //                        헬퍼와 형제 → `./helper` (src_dir="" 로 계산).
+        // 이 가드가 없으면 절대경로 fallback 이 src 의 원본 절대 dir(`/tmp/x`)에서 올라가 `../../helper`.
+        // 실제 모듈의 dep_abs 는 항상 절대경로('/'), virtual helper 만 bare 라 slash-부재로 판별 안전.
+        if (std.mem.indexOfScalar(u8, dep_abs, '/') == null) {
             const dep_no_ext = dep_abs[0 .. dep_abs.len - std.fs.path.extension(dep_abs).len];
+            const src_dir = if (src_rel) |sr| (std.fs.path.dirname(sr) orelse "") else "";
             return try computeRelativePath(allocator, src_dir, dep_no_ext, ext);
         }
     }
