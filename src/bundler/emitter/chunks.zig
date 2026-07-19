@@ -189,23 +189,20 @@ pub fn exportBindingIsHoistableFn(m: *const Module, eb: ExportBinding) bool {
 
 /// (#4532 증상4) unwrapped pm-cjs 모듈의 function-decl named export 를 `exports.<X> = <local>;` 로
 /// `out` 에 append. 호출부가 require 블록 **앞**에 insert 한다(function 은 hoisted 라 참조 가능).
+/// `appendCjsExportBinding(live=false, min=false)` 재사용 — 같은-파일 bottom(emitCjsEntryExports)이
+/// minify 무시하고 ` = `/`;\n` 로 내므로 형식 일치(min=false) + export-line 방출 로직 단일화.
 fn emitHoistedFnExports(
     l: *Linker,
     graph: *const ModuleGraph,
     mod_idx: u32,
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
-    min: bool,
 ) !void {
     const m = graph.getModule(@enumFromInt(mod_idx)) orelse return;
     for (m.export_bindings) |eb| {
         if (!exportBindingIsHoistableFn(m, eb)) continue;
         const local = l.getCanonicalForExport(eb, mod_idx);
-        try out.appendSlice(allocator, "exports.");
-        try out.appendSlice(allocator, eb.exported_name);
-        try out.appendSlice(allocator, if (min) "=" else " = ");
-        try out.appendSlice(allocator, local);
-        try out.appendSlice(allocator, if (min) ";" else ";\n");
+        try appendCjsExportBinding(allocator, out, eb.exported_name, local, false, false);
     }
 }
 
@@ -707,8 +704,12 @@ pub fn emitChunks(
 
         // (#4532 증상4) unwrapped pm-cjs 순환에서 function-decl export 를 require 블록 **앞**에 hoist 할
         // 위치·대상 모듈. require 뒤(모듈 본문 끝)에 두면 순환 소비자가 로드 중 undefined 를 집는다.
-        // pm-cjs & 비-wrap & entry 청크만. 실제 삽입은 computeRenamesForModules 후(리네임명 확정).
-        const fn_hoist_entry: ?u32 = if (pm_cjs and preserveModulesWrapperChunk(chunk, graph, options) == null)
+        // pm-cjs & 비-wrap & entry 청크 & **named export 를 내는 모드(auto/named)** 만 — output_exports
+        // `.none`(export 억제)/`.default_`(default 만)에선 hoist 하면 안 된다(#4532 증상4 리뷰 [0]).
+        // 실제 삽입은 computeRenamesForModules 후(리네임명 확정).
+        const fn_hoist_entry: ?u32 = if (pm_cjs and
+            (options.output_exports == .auto or options.output_exports == .named) and
+            preserveModulesWrapperChunk(chunk, graph, options) == null)
             (switch (chunk.kind) {
                 .entry_point => |info| @intFromEnum(info.module),
                 .common, .manual => null,
@@ -1189,7 +1190,7 @@ pub fn emitChunks(
         if (fn_hoist_pos) |pos| if (fn_hoist_entry) |emi| if (linker) |l| {
             var fn_exports: std.ArrayList(u8) = .empty;
             defer fn_exports.deinit(allocator);
-            try emitHoistedFnExports(l, graph, emi, &fn_exports, allocator, options.minify_whitespace);
+            try emitHoistedFnExports(l, graph, emi, &fn_exports, allocator);
             if (fn_exports.items.len > 0) {
                 try chunk_output.insertSlice(allocator, pos, fn_exports.items);
             }
