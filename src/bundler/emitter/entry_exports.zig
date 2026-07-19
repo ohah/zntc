@@ -126,9 +126,18 @@ pub fn emitCjsEntryExports(
     allocator: std.mem.Allocator,
     entries: []const FinalExportEntry,
     mode: OutputExports,
+    /// (#4532 증상4) require 앞에 hoist 된 function-decl export 명 집합 — bottom 방출서 제외(중복 방지).
+    /// null 이면 제외 없음.
+    skip_hoisted: ?*const std.StringHashMapUnmanaged(void),
 ) ![]const u8 {
     if (mode == .none) return try allocator.dupe(u8, "");
     if (entries.len == 0) return try allocator.dupe(u8, "");
+
+    const skip = struct {
+        fn f(s: ?*const std.StringHashMapUnmanaged(void), e: FinalExportEntry) bool {
+            return if (s) |set| (!e.isDefault() and set.contains(e.exported)) else false;
+        }
+    }.f;
 
     // default / named 분리
     var default_local: ?[]const u8 = null;
@@ -156,6 +165,7 @@ pub fn emitCjsEntryExports(
         },
         .named => {
             for (entries) |e| {
+                if (skip(skip_hoisted, e)) continue;
                 try out.print(allocator, "exports.{s} = {s};\n", .{ e.exported, e.local });
             }
             if (default_local != null) {
@@ -170,6 +180,7 @@ pub fn emitCjsEntryExports(
                 } else {
                     // mixed — named 형태 + esModule flag
                     for (entries) |e| {
+                        if (skip(skip_hoisted, e)) continue;
                         try out.print(allocator, "exports.{s} = {s};\n", .{ e.exported, e.local });
                     }
                     try out.appendSlice(allocator, "Object.defineProperty(exports, \"__esModule\", {value: true});\n");
@@ -177,6 +188,7 @@ pub fn emitCjsEntryExports(
             } else {
                 // named-only — esModule flag 없음 (Rollup 기본 auto 동작)
                 for (entries) |e| {
+                    if (skip(skip_hoisted, e)) continue;
                     try out.print(allocator, "exports.{s} = {s};\n", .{ e.exported, e.local });
                 }
             }
@@ -188,7 +200,7 @@ pub fn emitCjsEntryExports(
 
 test "emitCjsEntryExports: auto mode default-only → module.exports" {
     const entries = &.{FinalExportEntry{ .local = "x", .exported = "default" }};
-    const out = try emitCjsEntryExports(std.testing.allocator, entries, .auto);
+    const out = try emitCjsEntryExports(std.testing.allocator, entries, .auto, null);
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("module.exports = x;\n", out);
 }
@@ -198,7 +210,7 @@ test "emitCjsEntryExports: auto mode named-only → exports.X (no esModule)" {
         FinalExportEntry{ .local = "a", .exported = "a" },
         FinalExportEntry{ .local = "b", .exported = "b" },
     };
-    const out = try emitCjsEntryExports(std.testing.allocator, entries, .auto);
+    const out = try emitCjsEntryExports(std.testing.allocator, entries, .auto, null);
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("exports.a = a;\nexports.b = b;\n", out);
 }
@@ -208,7 +220,7 @@ test "emitCjsEntryExports: auto mode mixed → exports.X + esModule" {
         FinalExportEntry{ .local = "a", .exported = "a" },
         FinalExportEntry{ .local = "b", .exported = "default" },
     };
-    const out = try emitCjsEntryExports(std.testing.allocator, entries, .auto);
+    const out = try emitCjsEntryExports(std.testing.allocator, entries, .auto, null);
     defer std.testing.allocator.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "exports.a = a;") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "exports.default = b;") != null);
@@ -217,7 +229,7 @@ test "emitCjsEntryExports: auto mode mixed → exports.X + esModule" {
 
 test "emitCjsEntryExports: named mode → 항상 named + esModule (default 있으면)" {
     const entries = &.{FinalExportEntry{ .local = "x", .exported = "default" }};
-    const out = try emitCjsEntryExports(std.testing.allocator, entries, .named);
+    const out = try emitCjsEntryExports(std.testing.allocator, entries, .named, null);
     defer std.testing.allocator.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "exports.default = x;") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "__esModule") != null);
@@ -225,7 +237,7 @@ test "emitCjsEntryExports: named mode → 항상 named + esModule (default 있�
 
 test "emitCjsEntryExports: default_ mode default-only → module.exports" {
     const entries = &.{FinalExportEntry{ .local = "x", .exported = "default" }};
-    const out = try emitCjsEntryExports(std.testing.allocator, entries, .default_);
+    const out = try emitCjsEntryExports(std.testing.allocator, entries, .default_, null);
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("module.exports = x;\n", out);
 }
@@ -235,7 +247,7 @@ test "emitCjsEntryExports: default_ mode named 섞이면 error" {
         FinalExportEntry{ .local = "a", .exported = "a" },
         FinalExportEntry{ .local = "b", .exported = "default" },
     };
-    const result = emitCjsEntryExports(std.testing.allocator, entries, .default_);
+    const result = emitCjsEntryExports(std.testing.allocator, entries, .default_, null);
     try std.testing.expectError(error.OutputExportsDefaultRequiresSingleDefault, result);
 }
 
@@ -244,7 +256,7 @@ test "emitCjsEntryExports: none mode → 빈 string" {
         FinalExportEntry{ .local = "a", .exported = "a" },
         FinalExportEntry{ .local = "b", .exported = "b" },
     };
-    const out = try emitCjsEntryExports(std.testing.allocator, entries, .none);
+    const out = try emitCjsEntryExports(std.testing.allocator, entries, .none, null);
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("", out);
 }

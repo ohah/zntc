@@ -171,6 +171,44 @@ fn moduleHasAnyNamedExport(
     return false;
 }
 
+/// (#4532 증상4) export 가 **직접 선언한 function 선언**(hoistable)인지. 순환 import 서 소비자가 그
+/// export 를 로드 중 접근하면 provider 의 `exports.X = X`(모듈 본문 끝)가 아직 실행 전이라 undefined 다.
+/// ESM 은 function 선언이 hoisting 돼 live-binding 으로 항상 함수 → cjs 도 `exports.X=X` 를 require 전에
+/// hoist 해 맞춘다. function 선언만 대상(const/let/class 는 hoisting 불가·ESM 도 순환서 TDZ). re-export 는
+/// 소스 모듈이 자기 것 hoist 하므로 `.local` 만.
+pub fn exportBindingIsHoistableFn(m: *const Module, eb: ExportBinding) bool {
+    if (eb.kind != .local) return false;
+    // default 는 제외 — `module.exports = X`(default-only) / `exports.default`(mixed) 모드 로직이
+    // 별도 처리(hoist 하면 그 로직과 충돌). named function export 만 대상.
+    if (std.mem.eql(u8, eb.exported_name, "default")) return false;
+    const idx = eb.symbol.semanticIndex() orelse return false;
+    const sem = m.semantic orelse return false;
+    if (idx >= sem.symbols.items.len) return false;
+    return sem.symbols.items[idx].decl_flags.is_function;
+}
+
+/// (#4532 증상4) unwrapped pm-cjs 모듈의 function-decl named export 를 `exports.<X> = <local>;` 로
+/// `out` 에 append. 호출부가 require 블록 **앞**에 insert 한다(function 은 hoisted 라 참조 가능).
+fn emitHoistedFnExports(
+    l: *Linker,
+    graph: *const ModuleGraph,
+    mod_idx: u32,
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    min: bool,
+) !void {
+    const m = graph.getModule(@enumFromInt(mod_idx)) orelse return;
+    for (m.export_bindings) |eb| {
+        if (!exportBindingIsHoistableFn(m, eb)) continue;
+        const local = l.getCanonicalForExport(eb, mod_idx);
+        try out.appendSlice(allocator, "exports.");
+        try out.appendSlice(allocator, eb.exported_name);
+        try out.appendSlice(allocator, if (min) "=" else " = ");
+        try out.appendSlice(allocator, local);
+        try out.appendSlice(allocator, if (min) ";" else ";\n");
+    }
+}
+
 /// (#4580) preserve-modules 단일-모듈 dep 청크의 export shape 가 **default-only** — 즉 provider 가
 /// `module.exports = <default>`(default = exports 전체) 를 방출하는지. 이 경우 소비자는 `require()`
 /// 결과 **전체**를 default 로 바인딩해야 한다: `const x = require(...)`. `{ default: x }` 구조분해는
@@ -667,6 +705,18 @@ pub fn emitChunks(
         try chunkPlaceholderStem(chunk, &importer_buf, allocator, options);
         const importer_dir = std.fs.path.dirname(importer_buf.items) orelse "";
 
+        // (#4532 증상4) unwrapped pm-cjs 순환에서 function-decl export 를 require 블록 **앞**에 hoist 할
+        // 위치·대상 모듈. require 뒤(모듈 본문 끝)에 두면 순환 소비자가 로드 중 undefined 를 집는다.
+        // pm-cjs & 비-wrap & entry 청크만. 실제 삽입은 computeRenamesForModules 후(리네임명 확정).
+        const fn_hoist_entry: ?u32 = if (pm_cjs and preserveModulesWrapperChunk(chunk, graph, options) == null)
+            (switch (chunk.kind) {
+                .entry_point => |info| @intFromEnum(info.module),
+                .common, .manual => null,
+            })
+        else
+            null;
+        const fn_hoist_pos: ?usize = if (fn_hoist_entry != null) chunk_output.items.len else null;
+
         for (chunk.cross_chunk_imports.items) |dep_chunk_idx| {
             const dep_chunk = chunk_graph.getChunk(dep_chunk_idx);
             try chunkPlaceholderStem(dep_chunk, &dep_buf, allocator, options);
@@ -1132,6 +1182,18 @@ pub fn emitChunks(
         if (linker) |l| {
             try l.computeRenamesForModules(sorted_mods, occupied.items);
         }
+
+        // (#4532 증상4) 리네임 확정 후 function-decl export 를 require 블록 앞에 insert.
+        // ns_preamble insert(아래)보다 **먼저** — ns_preamble_pos(더 앞) 을 먼저 넣으면 fn_hoist_pos 가
+        // 밀린다. 여기서 넣고 나서 ns_preamble 을 더 앞에 넣으면 순서/위치 모두 정확.
+        if (fn_hoist_pos) |pos| if (fn_hoist_entry) |emi| if (linker) |l| {
+            var fn_exports: std.ArrayList(u8) = .empty;
+            defer fn_exports.deinit(allocator);
+            try emitHoistedFnExports(l, graph, emi, &fn_exports, allocator, options.minify_whitespace);
+            if (fn_exports.items.len > 0) {
+                try chunk_output.insertSlice(allocator, pos, fn_exports.items);
+            }
+        };
 
         // (#4502) 이제 이 청크의 chunk-local 이름이 확정됐다 — 공유 namespace preamble 을
         // 생성해 위에서 잡아 둔 자리에 삽입. getter 본문이 (같은 청크 선언 → 확정 local 명 /
