@@ -202,6 +202,25 @@ pub fn emitEsmWrappedModule(
     var hoisted_var_names: std.ArrayList([]const u8) = .empty;
     defer hoisted_var_names.deinit(allocator);
 
+    // (#4574) preserve-modules × RN downlevel: 런타임 헬퍼(`__classCallCheck` 등)를 transform 이
+    // `var __classCallCheck = function(){…}` 로 인라인한 뒤, 링커가 헬퍼 모듈에서 `import
+    // { __classCallCheck }` 로도 가져온다. 인라인 initializer 는 elide 되지만 variable_declaration
+    // 로 hoisting 된 **이름**이 import 와 이중 선언(SyntaxError)이 된다. helper-module import 로컬명은
+    // hoisted var 에서 제외한다 — import 문이 그 바인딩을 선언하므로(진짜 소스).
+    var helper_import_locals: std.StringHashMapUnmanaged(void) = .empty;
+    defer helper_import_locals.deinit(allocator);
+    if (linker) |l| {
+        const helper_modules = @import("../../runtime_helper_modules.zig");
+        for (module.import_bindings) |ib| {
+            if (ib.import_record_index >= module.import_records.len) continue;
+            const tgt = module.import_records[ib.import_record_index].resolved;
+            if (tgt.isNone()) continue;
+            const tm = l.graph.getModule(tgt) orelse continue;
+            if (!helper_modules.isVirtualId(tm.path)) continue;
+            try helper_import_locals.put(allocator, module.importBindingLocalName(ib), {});
+        }
+    }
+
     for (all_stmts) |raw_idx| {
         const ni: NodeIndex = @enumFromInt(raw_idx);
         if (ni.isNone()) continue;
@@ -428,7 +447,8 @@ pub fn emitEsmWrappedModule(
             const is_dup = for (hoisted_var_names.items[0..dedup_count]) |prev| {
                 if (std.mem.eql(u8, prev, name)) break true;
             } else false;
-            if (is_dup) continue;
+            // (#4574) helper-module import 로컬명은 import 문이 선언 → hoisted var 중복 제거.
+            if (is_dup or helper_import_locals.contains(name)) continue;
             hoisted_var_names.items[dedup_count] = name;
             dedup_count += 1;
         }
