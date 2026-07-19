@@ -124,11 +124,12 @@ describe('#4576: preserve-modules 동명 export default deconflict (esm)', () =>
 });
 
 /**
- * cjs — #4576 fix 는 **중복 선언 자체를 제거**한다(로컬 `foo`/`foo$2`). 런타임은 별개의 cjs
- * default interop 선행 버그로 실패하므로 여기선 emit 에 동일 로컬 이중 선언이 없음만 확인한다.
+ * cjs — #4576 deconflict(로컬 `foo`/`foo$2`) + #4580 default interop(default-only 는 `const x =
+ * require(...)` 전체 바인딩)이 협업해 **실제로 실행**된다. (#4576 단독 시절엔 중복선언은 제거되나
+ * #4580 interop 버그로 런타임 실패라 emit 만 검증했다 — #4580 머지로 런타임 검증으로 승격.)
  */
-describe('#4576: cjs 동명 default 는 중복 로컬 선언을 만들지 않는다', () => {
-  test('두 default → 서로 다른 로컬 (const 중복 없음)', async () => {
+describe('#4576+#4580: cjs 동명 default 는 deconflict + 전체바인딩으로 실행된다', () => {
+  test('두 default → const foo / const foo$2 = require, 실행 D1D2', async () => {
     const { dir, cleanup } = await createFixture({
       'm1.js': 'export default function foo(){ return "D1"; }',
       'm2.js': 'export default function foo(){ return "D2"; }',
@@ -146,13 +147,15 @@ describe('#4576: cjs 동명 default 는 중복 로컬 선언을 만들지 않는
         '--format=cjs',
       ]);
       expect(res.exitCode).toBe(0);
+      writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'commonjs' }));
       const entry = readFileSync(join(outDir, 'entry.js'), 'utf8');
-      // 같은 로컬명 `foo` 를 두 번 선언하면 SyntaxError. deconflict 되면 `foo` 는 정확히 1회,
-      // 두 번째는 `foo$2`. 두 조건 모두 단언(음성 vacuous 방지 — 출력이 사라져도 통과하면 안 됨).
-      const bareFoo = entry.match(/default:\s*foo(?![\w$])/g) ?? []; // 정확히 `foo`
-      const deconflicted = entry.match(/default:\s*foo\$\d+/g) ?? []; // `foo$2` 등
-      expect(bareFoo.length).toBe(1); // 정확히 1회 (0 이면 출력 소실, 2 면 중복)
-      expect(deconflicted.length).toBe(1); // 두 번째는 deconflict
+      // #4580: default-only 는 전체 바인딩. #4576: 2번째는 deconflict.
+      expect(entry).toMatch(/const foo = require\("\.\/m1\.js"\)/);
+      expect(entry).toMatch(/const foo\$2 = require\("\.\/m2\.js"\)/);
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stderr).not.toContain('TypeError');
+      expect(stdout.trim()).toBe('D1D2');
     } finally {
       await cleanup();
     }
