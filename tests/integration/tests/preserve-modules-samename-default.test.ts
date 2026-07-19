@@ -90,6 +90,19 @@ const CASES: Array<{ name: string; files: Record<string, string>; expect: string
     },
     expect: '123',
   },
+  {
+    // 리뷰 [0]: dedup 이름(`foo$2`)이 **다른 심볼의 자연명** `foo$2` 와 충돌하면 안 됨.
+    // per-binding 카운터는 여기서 둘 다 `foo$2` 를 내 SyntaxError. used_locals 는 `foo$3` 로 회피.
+    name: 'dedup 이름이 자연 foo$2 심볼과 충돌 회피',
+    files: {
+      'm1.js': 'export default function foo(){ return "1"; }',
+      'm2.js': 'export default function foo(){ return "2"; }',
+      'm3.js': 'export function foo$2(){ return "3"; }',
+      'entry.js':
+        'import a from "./m1.js";\nimport b from "./m2.js";\nimport { foo$2 } from "./m3.js";\nconsole.log(a() + b() + foo$2());',
+    },
+    expect: '123',
+  },
 ];
 
 describe('#4576: preserve-modules 동명 export default deconflict (esm)', () => {
@@ -134,12 +147,53 @@ describe('#4576: cjs 동명 default 는 중복 로컬 선언을 만들지 않는
       ]);
       expect(res.exitCode).toBe(0);
       const entry = readFileSync(join(outDir, 'entry.js'), 'utf8');
-      // 같은 로컬명 `foo` 를 두 번 선언하면 SyntaxError. deconflict 되면 `foo` 는 1회,
-      // 나머지는 `foo$2`. `foo` 정확 매칭(뒤에 `$`/word 없음)이 2 이상이면 중복.
-      const fooDecls = entry.match(/default:\s*foo(?![\w$])/g) ?? [];
-      expect(fooDecls.length).toBeLessThanOrEqual(1);
+      // 같은 로컬명 `foo` 를 두 번 선언하면 SyntaxError. deconflict 되면 `foo` 는 정확히 1회,
+      // 두 번째는 `foo$2`. 두 조건 모두 단언(음성 vacuous 방지 — 출력이 사라져도 통과하면 안 됨).
+      const bareFoo = entry.match(/default:\s*foo(?![\w$])/g) ?? []; // 정확히 `foo`
+      const deconflicted = entry.match(/default:\s*foo\$\d+/g) ?? []; // `foo$2` 등
+      expect(bareFoo.length).toBe(1); // 정확히 1회 (0 이면 출력 소실, 2 면 중복)
+      expect(deconflicted.length).toBe(1); // 두 번째는 deconflict
     } finally {
       await cleanup();
     }
   });
+});
+
+/**
+ * 리뷰 [1]: ESM-wrap(전역명 고정) default 와 plain default 가 동명이면, wrap 쪽은 이름을 못 바꾸므로
+ * plain 쪽이 deconflict 돼야 한다. import 순서와 무관하게 성립해야 함(pre-pass 로 전역명 예약).
+ */
+describe('#4576: 전역명 고정 default + plain default 동명 (순서 무관)', () => {
+  for (const wrapFirst of [false, true]) {
+    test(`plain deconflict [wrap ${wrapFirst ? '먼저' : '나중'}]`, async () => {
+      const imports = wrapFirst
+        ? 'import w from "./wrap.js";\nimport p from "./plain.js";'
+        : 'import p from "./plain.js";\nimport w from "./wrap.js";';
+      const { dir, cleanup } = await createFixture({
+        'plain.js': 'export default function foo(){ return "P"; }',
+        'wrap.js': 'export default function foo(){ return "W"; }',
+        'a.cjs': 'module.exports = require("./wrap.js");', // wrap 을 ESM-wrap 강제(전역명 부여)
+        'entry.js': `${imports}\nimport "./a.cjs";\nconsole.log(p() + w());`,
+      });
+      const outDir = join(dir, 'dist');
+      try {
+        const res = await runZntc([
+          '--bundle',
+          join(dir, 'entry.js'),
+          '--preserve-modules',
+          `--preserve-modules-root=${dir}`,
+          '--outdir',
+          outDir,
+          '--format=esm',
+        ]);
+        expect(res.exitCode).toBe(0);
+        writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
+        const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+        expect(stderr).not.toContain('SyntaxError');
+        expect(stdout.trim()).toBe('PW');
+      } finally {
+        await cleanup();
+      }
+    });
+  }
 });

@@ -82,6 +82,36 @@ fn crossChunkBindingName(linker: ?*Linker, sym: chunk_mod.CrossChunkSym) []const
     return sym.name;
 }
 
+/// (#4576) 소비자 청크에서 `binding` 에 대한 **유일** 로컬명을 발급한다. 아직 안 쓰였으면 binding
+/// 그대로, 이미 쓰였으면 `binding$N`(N=2,3,…) 중 `used_locals`(선언됨)·`natural_bindings`(다른 binding
+/// 의 자연명)에 없는 첫 이름. per-binding 카운터로는 다른 그룹의 자연 `$N`(또는 사용자 `foo$2`)과
+/// 충돌하므로(#4576 리뷰 [0]) 반드시 집합으로 유일성을 판정한다.
+/// 반환은 borrowed(binding, 안정 slice) 또는 `alias_strs` 소유 slice(둘 다 청크 수명) — used_locals 는
+/// 둘 다 borrow 만 하고 테이블만 deinit. has_global/lazy 로 이름이 고정된 심볼은 호출 전에 예약해 둔다.
+fn mintConsumerLocal(
+    allocator: std.mem.Allocator,
+    binding: []const u8,
+    used_locals: *std.StringHashMapUnmanaged(void),
+    natural_bindings: *const std.StringHashMapUnmanaged(void),
+    alias_strs: *std.ArrayList([]const u8),
+) ![]const u8 {
+    if (!used_locals.contains(binding)) {
+        try used_locals.put(allocator, binding, {});
+        return binding;
+    }
+    var n: u32 = 2;
+    while (true) : (n += 1) {
+        const cand = try std.fmt.allocPrint(allocator, "{s}${d}", .{ binding, n });
+        if (used_locals.contains(cand) or natural_bindings.contains(cand)) {
+            allocator.free(cand);
+            continue;
+        }
+        try alias_strs.append(allocator, cand);
+        try used_locals.put(allocator, cand, {});
+        return cand;
+    }
+}
+
 /// cross-chunk export 의 **provider 측 로컬명**(이 청크에 선언된 실제 식별자, 전역 public 의
 /// RHS). owner 모듈 `mi` 가 export `name` 을 어떤 로컬로 들고 있는지 해석한다.
 /// - namespace re-export(`export * as X`)는 로컬 심볼이 elided 라 canonical 이 빗나간다 → 청크에
@@ -502,26 +532,28 @@ pub fn emitChunks(
         // (#4572) 이 청크 소비자-로컬 import 이름 오버라이드 맵을 리셋(직전 청크 잔재 제거).
         if (linker) |l| l.clearConsumerImportLocal();
         // (#4576) 선언되는 소비자-로컬은 항상 **binding**(crossChunkBindingName)이다 — export 명이
-        // 아니라. 동명 `export default`(key=`default`, binding=`foo`/`_default`)처럼 export 명과
-        // 로컬명이 다르면 name-keyed 로 세면 충돌을 놓친다(→ `import { default as foo }` 이중선언
-        // SyntaxError). binding-keyed 로 통일해 두 분기(`key==binding` 축약 / `key!=binding` alias)
-        // 모두에서 로컬 충돌을 deconflict 한다.
-        var binding_total_count: std.StringHashMapUnmanaged(u32) = .empty;
-        defer binding_total_count.deinit(allocator);
+        // 아니라. 동명 export(특히 `export default`, key=`default`≠binding)면 여러 dep 이 같은 로컬을
+        // 선언해 SyntaxError. 올바른 해소는 esbuild/rollup 리네이머처럼 **이미 쓰인 이름 집합**으로
+        // 유일 이름을 발급하는 것 — per-binding 카운터는 다른 binding 의 자연 `$N` 이름(또는 사용자
+        // 심볼 `foo$2`)과 충돌해 전역 유일성을 못 지킨다(#4576 리뷰 [0][1]).
+        //   · natural_bindings: imports_from 의 모든 binding 이름 집합. dedup 이름 발급 시 다른 binding
+        //     의 자연명을 침범하지 않도록 skip 판정에 쓴다([0]).
+        //   · used_locals: 이 청크에 실제 선언된 로컬명. has_global(전역명 고정)/lazy 는 이름을 못 바꾸니
+        //     **먼저** 예약해, 비-global 로컬이 그 이름과 충돌하면 deconflict 되게 한다([1] 순서-의존).
+        var natural_bindings: std.StringHashMapUnmanaged(void) = .empty;
+        defer natural_bindings.deinit(allocator);
+        var used_locals: std.StringHashMapUnmanaged(void) = .empty;
+        defer used_locals.deinit(allocator);
         for (chunk.cross_chunk_imports.items) |dep_chunk_idx| {
             const dep_ci = @intFromEnum(dep_chunk_idx);
-            if (chunk.imports_from.get(dep_ci)) |syms| {
-                for (syms.items) |sym| {
-                    const gop = try binding_total_count.getOrPut(allocator, crossChunkBindingName(linker, sym));
-                    if (!gop.found_existing) gop.value_ptr.* = 0;
-                    gop.value_ptr.* += 1;
-                }
+            const syms = chunk.imports_from.get(dep_ci) orelse continue;
+            for (syms.items) |sym| {
+                const b = crossChunkBindingName(linker, sym);
+                try natural_bindings.put(allocator, b, {});
+                const hg = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null else false;
+                if (hg) try used_locals.put(allocator, b, {});
             }
         }
-
-        // 2단계: import 문 생성 (중복 로컬명은 alias 부여)
-        var binding_seen_count: std.StringHashMapUnmanaged(u32) = .empty;
-        defer binding_seen_count.deinit(allocator);
 
         // alias 문자열을 임시 저장 (defer free)
         var alias_strs: std.ArrayList([]const u8) = .empty;
@@ -703,17 +735,11 @@ pub fn emitChunks(
                             const bind = crossChunkBindingName(linker, sym);
                             const global_name: ?[]const u8 = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) else null;
                             const has_g = global_name != null;
-                            // (#4576) import 블록과 **같은** binding-keyed count 를 써야 `$N` 이
-                            // 일치한다(esm=import 블록 / cjs ESM-wrap=여기, dep 단위 상호배타·count 공유).
-                            const total = binding_total_count.get(bind) orelse 1;
-                            const seen_gop = try binding_seen_count.getOrPut(allocator, bind);
-                            if (!seen_gop.found_existing) seen_gop.value_ptr.* = 0;
-                            seen_gop.value_ptr.* += 1;
-                            const seen = seen_gop.value_ptr.*;
-                            const local = if (total > 1 and seen > 1 and !has_g)
-                                try std.fmt.allocPrint(allocator, "{s}${d}", .{ bind, seen })
-                            else
-                                try allocator.dupe(u8, bind);
+                            // (#4576) import 블록과 **같은** used_locals 로 유일 로컬 발급(esm=import 블록 /
+                            // cjs ESM-wrap=여기, dep 단위 상호배타·집합 공유). has_g 는 전역명 고정(pre-pass
+                            // 예약). 발급은 청크 수명 slice → pm_locals 는 항목을 free 하므로 owned 복사.
+                            const mint = if (has_g) bind else try mintConsumerLocal(allocator, bind, &used_locals, &natural_bindings, &alias_strs);
+                            const local = try allocator.dupe(u8, mint);
                             try pm_locals.append(allocator, local);
                             // read = 전역명(있으면 provider 가 `exports.<global>`) 아니면 export 명(sym.name,
                             // provider 가 `exports.<export명>`). crossChunkBindingName 은 reserved-name 이
@@ -870,42 +896,29 @@ pub fn emitChunks(
                     const has_global = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null else false;
                     const key = if (lazy_local_keys or has_global) binding else name;
 
-                    // (#4572/#4576) 선언되는 소비자-로컬은 항상 **binding**. 같은 binding 이 여러 dep
-                    // 에서 오면(동명 named export=#4572, 동명 `export default`=#4576, 두 분기 혼합) 2번째
-                    // 부터 `binding$N` 로 deconflict. 전역 네이밍(has_global)/lazy 는 binding 이 이미 전역
-                    // deconflict(`v`/`v$1`)라 `$N` 불필요(이중 deconflict 로 소비자 참조와 어긋남).
-                    const total = binding_total_count.get(binding) orelse 1;
-                    const seen_gop = try binding_seen_count.getOrPut(allocator, binding);
-                    if (!seen_gop.found_existing) seen_gop.value_ptr.* = 0;
-                    seen_gop.value_ptr.* += 1;
-                    const seen = seen_gop.value_ptr.*;
-                    const need_dedup = total > 1 and seen > 1 and !lazy_local_keys and !has_global;
-                    const local = if (need_dedup) blk: {
-                        const alias = try std.fmt.allocPrint(allocator, "{s}${d}", .{ binding, seen });
-                        try alias_strs.append(allocator, alias);
-                        // 소비자-로컬 deconflict 이름을 맵에 적어, 뒤이어 도는 buildMetadataForAst 의
-                        // effective_target 이 body 참조를 같은 이름으로 맞추게 한다(안 하면 body 는
-                        // crossChunkBindingName=`binding` 으로 붕괴). provider public 명은 그대로 — 이건
-                        // 소비자 청크 로컬명일 뿐이다. preserve-modules 한정(splitting 은 has_global 이라
-                        // need_dedup 가 애초에 false).
-                        if (options.preserve_modules) if (linker) |l| try l.putConsumerImportLocal(sym.canonical_module, sym.name, alias);
-                        break :blk alias;
-                    } else binding;
+                    // (#4572/#4576) 선언되는 소비자-로컬은 항상 binding. has_global/lazy 는 이름이 고정
+                    // (전역명·lazy export 키)이라 그대로 쓰고 pre-pass 에서 이미 예약됨. 그 외는
+                    // mintConsumerLocal 로 유일 이름 발급 — 이미 쓰였으면 `binding$N`(집합 판정).
+                    const local = if (lazy_local_keys or has_global)
+                        binding
+                    else
+                        try mintConsumerLocal(allocator, binding, &used_locals, &natural_bindings, &alias_strs);
+                    // 발급이 binding 과 다르면(=deconflict) consumer_import_local 맵에 적어 body 참조
+                    // (effective_target)를 맞춘다 — 안 하면 crossChunkBindingName=binding 으로 붕괴. provider
+                    // public 명은 그대로(소비자 청크 로컬명일 뿐). preserve-modules 한정(splitting 은
+                    // has_global 이라 여기 안 옴).
+                    if (!std.mem.eql(u8, local, binding)) {
+                        if (options.preserve_modules) if (linker) |l| try l.putConsumerImportLocal(sym.canonical_module, sym.name, local);
+                    }
 
-                    if (!std.mem.eql(u8, key, binding)) {
-                        // key != binding(예약어 export 키 `default` → 소비자 local `_default`/`foo`).
-                        // 좌변=dep 노출 키(문자열이라 예약어 OK), 우변=소비자 참조 식별자(deconflict 반영).
-                        // 축약 `{ default }` 면 예약어를 바인딩으로 써 SyntaxError → alias 가 방지.
-                        try chunk_output.appendSlice(allocator, key);
-                        try chunk_output.appendSlice(allocator, if (reg_like) ": " else " as ");
-                        try chunk_output.appendSlice(allocator, local);
-                    } else if (need_dedup) {
-                        // key == binding 이지만 로컬 충돌 → `key: key$N` / `key as key$N`.
+                    if (!std.mem.eql(u8, key, local)) {
+                        // key != local → `key: local` / `key as local`. key!=binding(예약어 export 키
+                        // `default`→소비자 local) 또는 deconflict(`binding$N`) 모두 alias 로 방출.
                         try chunk_output.appendSlice(allocator, key);
                         try chunk_output.appendSlice(allocator, if (reg_like) ": " else " as ");
                         try chunk_output.appendSlice(allocator, local);
                     } else {
-                        // key == binding, 충돌 없음 → 축약 `{ key }`.
+                        // key == local → 축약 `{ key }`.
                         try chunk_output.appendSlice(allocator, key);
                     }
                     if (si + 1 < symbols.?.items.len) {
