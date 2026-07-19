@@ -3797,6 +3797,15 @@ fn computeRelativeImportPath(
             const rel = try computeRelativePath(allocator, src_dir, dep_rel_no_ext, ext);
             return rel;
         }
+        // (#4574) src 는 root 아래인데 dep 이 root 밖 **bare id**(virtual runtime helper 의
+        // sanitize 된 rel_dir, 예 `runtime-class-call-check`)면, 헬퍼는 outdir **최상위**에 놓이므로
+        // root-level 파일로 취급해 src_dir(root 기준) 에서 상대 계산한다. 이 가드가 없으면 절대경로
+        // fallback 이 src 의 원본 절대 dir(`/tmp/x`)에서 bare id 로 올라가 `../../../../helper` 가 된다.
+        if (src_rel != null and std.mem.indexOfScalar(u8, dep_abs, '/') == null) {
+            const src_dir = std.fs.path.dirname(src_rel.?) orelse "";
+            const dep_no_ext = dep_abs[0 .. dep_abs.len - std.fs.path.extension(dep_abs).len];
+            return try computeRelativePath(allocator, src_dir, dep_no_ext, ext);
+        }
     }
 
     // root 없거나 매칭 실패 → 절대 경로 기준으로 computeRelativePath에 위임
