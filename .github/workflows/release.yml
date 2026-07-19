@@ -386,5 +386,8 @@ jobs:
           publish 직후 @zntc/core-*@${VERSION} 이 npm 에서 해석 가능해지면서 lockfile 에
           추가된다. 이걸 되돌리지 않으면 이후 모든 PR 의 bun install --frozen-lockfile 이
           실패한다. release.yml 의 sync-lockfile 잡이 자동 생성한 커밋."
-          git push origin main
+          # --no-verify: 이 runner 엔 zig 가 없어 .githooks/pre-push 의 `zig fmt --check`
+          # 가 "zig: not found" 로 실패해 push 가 막힌다(v0.1.4 때 이 동기화 커밋이 유실됨).
+          # bun.lock 만 바꾸는 봇 커밋이라 훅 검증이 불필요.
+          git push --no-verify origin main
           echo "✓ bun.lock 동기화 커밋 push 완료"
