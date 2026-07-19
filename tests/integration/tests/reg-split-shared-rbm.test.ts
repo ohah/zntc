@@ -108,16 +108,34 @@ describe('#4555: reg_split/cjs multi-entry 공유 run-before-main', () => {
     }
   });
 
-  // cjs --minify: min-branch 문자열(`}=require("`)이 유효 JS 인지(파싱)만 검증. 런타임은 별개 선행
-  // mangler 발산(#4579 계열: common 청크가 wrapper 명 init_X 를 mangle 하는데 entry 는 미mangle 참조)
-  // 으로 실패 — 이 fix 범위 밖(한계 문서화).
-  test('cjs --minify: min-branch 결합이 파싱 유효', async () => {
+  // cjs --minify: 직접 실행 동작. (#4586 이전엔 common 청크가 wrapper 명 init_X 를 mangle 하는데
+  // entry 는 canonical 참조 → TypeError 라 파싱만 검증했으나, #4586 이 RBM init 을 mangle 제외해 해소.)
+  test('cjs --minify: 공유 RBM 이 직접 실행에서 동작', async () => {
     const { outDir, cleanup } = await build('cjs', ESM_SETUP, 'setup.js', true);
     try {
+      writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'commonjs' }));
       const a = readFileSync(join(outDir, 'a.js'), 'utf8');
       expect(a).not.toMatch(/import\s*\{\s*init_/);
       expect(a).toContain('=require(');
-      expect(await parseValid(join(outDir, 'a.js'))).toBe(true);
+      expect((await runNode(join(outDir, 'a.js'))).stdout.trim()).toBe('a:SETUP_DONE');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  // (#4586) iife --minify: 청크 로드 순서대로면 RBM 이 실행. wrapper init 이 canonical 유지돼야 정합.
+  test('iife --minify: 청크 로드 순서대로면 RBM 실행', async () => {
+    const { dir, outDir, cleanup } = await build('iife', ESM_SETUP, 'setup.js', true);
+    try {
+      const chunk = readdirSync(outDir).find((f) => f.startsWith('chunk-'))!;
+      writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'commonjs' }));
+      const harness = join(dir, 'harness.js');
+      writeFileSync(
+        harness,
+        `globalThis.__zntc_public_path="";\nrequire(${JSON.stringify(join(outDir, chunk))});\nrequire(${JSON.stringify(join(outDir, 'a.js'))});\n`,
+      );
+      const { stdout } = await runNode(harness);
+      expect(stdout.trim()).toBe('a:SETUP_DONE');
     } finally {
       await cleanup();
     }
