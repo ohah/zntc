@@ -774,6 +774,57 @@ pub const Module = struct {
         return self.refName(eb.symbol) orelse eb.local_name;
     }
 
+    /// (#4587 target a) preserve-modules CJS "exports-as-storage" 적격 판정.
+    /// 재할당되는(`write_count > 0`) `.local` export 바인딩을 로컬 `var`/`let` 대신
+    /// `exports.<name>` 를 저장소로 낮춘다: provider 는 `exports.A = ...` 로 저장하고,
+    /// 소비자는 `require(...).A` 로 라이브 읽기. 이 술어는 provider rename 등록(metadata),
+    /// 끝-할당 skip(emitter), 소비자 ns-access(chunks) 4곳이 **완전히 동일하게** 공유해야
+    /// 정합이 유지된다.
+    ///
+    /// v1 스코프(엄격): `.local` + identity(`local_name == exported_name`) + `write_count > 0`
+    /// + `!is_const && !is_function && !is_class` + 단순 `binding_identifier` 선언(destructuring
+    /// 제외 — `exports.A` 를 pattern 안 식별자에 적용하면 `let {A: exports.A}` = SyntaxError).
+    /// const/class/function 은 현행·#4584 로직을 그대로 유지하므로 절대 대상이 아니다.
+    pub fn exportBindingIsCjsStorage(self: *const Module, eb: ExportBinding) bool {
+        // 래핑 모듈(__commonJS/__esm)은 본문이 클로저 안이라 codegen 의 storage 선언 변환
+        // (bindings.zig, wrap_kind==.none 게이트)이 안 돈다 — 여기서 storage 로 표시하면
+        // `let exports.A`(SyntaxError)가 되므로 **반드시** 함께 제외해 4곳 술어를 정합시킨다.
+        if (self.wrap_kind != .none) return false;
+        if (eb.kind != .local) return false;
+        // v1: identity export 만. aliased(`export { A as B }`)는 provider 가 storage 를 안 해
+        // 소비자 ns-access 와 어긋나므로 제외.
+        const local = self.exportBindingLocalName(eb);
+        if (!std.mem.eql(u8, local, eb.exported_name)) return false;
+        const sem = self.semantic orelse return false;
+        if (sem.scope_maps.len == 0) return false;
+        const sym_idx = sem.scope_maps[0].get(local) orelse return false;
+        if (sym_idx >= sem.symbols.items.len) return false;
+        const sym = sem.symbols.items[sym_idx];
+        if (sym.write_count == 0) return false;
+        if (sym.decl_flags.is_const or sym.decl_flags.is_function or sym.decl_flags.is_class) return false;
+        // v1: destructuring 선언(`export let { A } = obj`)은 제외. renames[sid]="exports.A" 를
+        // pattern 안 식별자에 적용하면 SyntaxError 이므로 rename 자체를 등록하면 안 된다.
+        if (self.exportLocalDeclaredViaPattern(eb.local_span)) return false;
+        return true;
+    }
+
+    /// export 로컬 심볼의 선언이 destructuring pattern 안에 있는지 (v1 storage 제외용).
+    /// `local_span` 은 바인딩 식별자의 소스 span 이라, 그 span 을 **텍스트로 감싸는**
+    /// object/array pattern 이 있으면 pattern 선언이다. span 은 byte offset 이므로 서로 다른
+    /// 소스 위치의 pattern(함수 파라미터·대입 destructuring 등)에는 false-match 하지 않는다.
+    fn exportLocalDeclaredViaPattern(self: *const Module, local_span: Span) bool {
+        const ast = self.ast orelse return false;
+        for (ast.nodes.items) |node| {
+            switch (node.tag) {
+                .object_pattern, .array_pattern => {
+                    if (node.span.start <= local_span.start and local_span.end <= node.span.end) return true;
+                },
+                else => {},
+            }
+        }
+        return false;
+    }
+
     /// exported_name에 해당하는 SymbolRef 반환. 없으면 invalid.
     /// #1338 Phase 4c-1: 문자열 기반 lookup을 SymbolRef로 승격하기 위한 진입점.
     pub fn findExportSymbol(self: *const Module, exported_name: []const u8) symbol_mod.SymbolRef {

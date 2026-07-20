@@ -943,6 +943,12 @@ pub fn makeExportsVarName(allocator: std.mem.Allocator, path: []const u8) ![]con
     return makeVarNameWithPrefix(allocator, path, "exports_");
 }
 
+/// (#4587 target a) preserve-modules CJS 라이브 바인딩 소비자의 namespace holder 변수명
+/// (`const ns_foo = require("./foo.js")`). "lib/foo-bar.mjs" → "ns_foo_bar".
+pub fn makeNsVarName(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    return makeVarNameWithPrefix(allocator, path, "ns_");
+}
+
 /// dev mode: `(__zntc_modules["<dev_id>"].fn(), __toCommonJS(__zntc_modules["<dev_id>"].exports))`
 /// HMR에서 new Function()이 번들 스코프 밖에서 실행되므로 레지스트리 동적 lookup 사용.
 /// require_rewrites(metadata.zig) 및 default re-export(esm_wrap.zig)에서 공유.

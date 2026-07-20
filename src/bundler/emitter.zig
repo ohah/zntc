@@ -2077,6 +2077,10 @@ pub fn emitModule(
         // 변환 path (`esm_var_assign_only`, `use_var_for_imports`) 가 동일 효과를
         // 만들어주므로 이중 처리 → 호이스팅 충돌 회피하기 위해 .none 만 대상.
         .force_var_for_cycle = module.cycle_group != 0 and module.wrap_kind == .none,
+        // (#4587 target a) preserve-modules + CJS unwrapped: 재할당 export 선언을 `exports.X = init;`
+        // 저장소로 낮춘다(bindings.zig). renames 는 metadata 가 pm-cjs 게이트로만 등록하므로 여기
+        // 게이트와 정확히 일치해야 storage rename 이 선언 변환과 짝을 이룬다.
+        .pm_cjs_storage = options.preserve_modules and options.format == .cjs and module.wrap_kind == .none,
         .linking_metadata = if (metadata) |*m| m else null,
         // 번들 모드에서 ESM이 아니면 import.meta → {} 치환 (esbuild 호환)
         // Node.js는 import.meta를 보면 ESM으로 재파싱하려 해서 에러 발생
@@ -2258,6 +2262,12 @@ pub fn emitModule(
             {
                 for (module.export_bindings) |eb| {
                     if (chunks.exportBindingIsHoistableFn(module, eb)) {
+                        try hoisted_fn_names.put(allocator, eb.exported_name, {});
+                    }
+                    // (#4587 target a) storage export 는 본문에서 이미 `exports.X = ...` 로 저장했으므로
+                    // bottom 방출(`exports.X = X`)을 skip — 안 하면 `exports.X = X` 우변 X 가 미정의다.
+                    // provider rename(metadata) 과 **같은 술어**라 정합.
+                    if (module.exportBindingIsCjsStorage(eb)) {
                         try hoisted_fn_names.put(allocator, eb.exported_name, {});
                     }
                 }
