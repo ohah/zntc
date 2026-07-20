@@ -1357,6 +1357,25 @@ pub fn buildMetadataForAst(
             defer mb_scope.end();
             mergeUnifiedPhaseB(self, module_index, &renames, &owned_nested_renames) catch {};
         }
+
+        // (#4587 target a) preserve-modules CJS "exports-as-storage": 재할당되는 export
+        // 바인딩(`export let A = 0; A = 100`)의 로컬 심볼을 `exports.<name>` 로 rename 한다.
+        // codegen 의 identifier dispatch(node_dispatch.zig:226)가 tag-비게이트라 read(`A`)·
+        // write(`A = v`)·compound(`A += 1`)·update(`A++`)·shorthand(`{A}`)를 전부 `exports.A`
+        // 로 자동 처리 — 유일한 예외인 **선언 위치**(`let exports.A` = SyntaxError)만 codegen
+        // bindings.zig 가 `exports.A = init;` 할당으로 별도 변환한다. 섹션4의 mangled rename 을
+        // **덮어써야** 하므로 모든 name-based rename 이 끝난 이 지점에 둔다. const/class/function
+        // 은 exportBindingIsCjsStorage 술어가 제외(현행·#4584 유지).
+        if (self.graph.preserve_modules and format == .cjs) {
+            for (m.export_bindings) |eb| {
+                if (!m.exportBindingIsCjsStorage(eb)) continue;
+                const local = m.exportBindingLocalName(eb);
+                const sym_idx = module_scope.get(local) orelse continue;
+                const storage = try std.fmt.allocPrint(self.allocator, "exports.{s}", .{eb.exported_name});
+                defer self.allocator.free(storage);
+                try putOwnedRename(self, &renames, &owned_nested_renames, @intCast(sym_idx), storage);
+            }
+        }
     }
 
     // Side-effect-only import has no ImportBinding, so scope-hoisted modules that

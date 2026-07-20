@@ -143,6 +143,77 @@ fn deconflictedConsumerLocal(
     return local;
 }
 
+/// (#4587 target a) preserve-modules CJS 라이브 바인딩 소비자 import 방출.
+/// dep 의 재할당(storage) export 를 구조분해로 잡으면 순환에서 로드 시점 undefined 를 박제하므로:
+///   1. `const <ns> = require("<bind_arg>");` holder 를 발급하고
+///   2. 재할당 심볼 → body 참조를 `<ns>.<key>` 로(consumer_import_local, 선언 없음 = 라이브 읽기)
+///   3. 비재할당 심볼 → holder 에서 구조분해 `const { k: local, ... } = <ns>;` (현행 스냅샷 유지)
+/// 로 낸다. key/local 규칙은 현행 구조분해 site 와 동일(crossChunkBindingName/deconflictedConsumerLocal).
+fn emitPmCjsLiveImport(
+    allocator: std.mem.Allocator,
+    chunk_output: *std.ArrayListUnmanaged(u8),
+    linker: ?*Linker,
+    graph: *const ModuleGraph,
+    dep_module: ModuleIndex,
+    syms: []const chunk_mod.CrossChunkSym,
+    bind_arg: []const u8,
+    lazy_local_keys: bool,
+    min: bool,
+    used_locals: *std.StringHashMapUnmanaged(void),
+    natural_bindings: *const std.StringHashMapUnmanaged(void),
+    alias_strs: *std.ArrayList([]const u8),
+) !void {
+    // ns holder: `const ns_x = require("<bind_arg>");`
+    const dep_mod = graph.getModule(dep_module) orelse return;
+    const ns_base = try types.makeNsVarName(allocator, dep_mod.path);
+    // 소유권을 청크-스코프 alias_strs 로 이전한다. mintConsumerLocal 이 ns_base 를 used_locals
+    // 키(borrow)로 넣을 수 있어(기존 caller 는 안정 slice 를 넘김) `defer free` 하면 UAF 다.
+    try alias_strs.append(allocator, ns_base);
+    const ns_local = try mintConsumerLocal(allocator, ns_base, used_locals, natural_bindings, alias_strs);
+    try chunk_output.appendSlice(allocator, "const ");
+    try chunk_output.appendSlice(allocator, ns_local);
+    try chunk_output.appendSlice(allocator, if (min) "=require(\"" else " = require(\"");
+    try chunk_output.appendSlice(allocator, bind_arg);
+    try chunk_output.appendSlice(allocator, if (min) "\");" else "\");\n");
+
+    var destructure_open = false;
+    for (syms) |sym| {
+        const binding = crossChunkBindingName(linker, sym);
+        const has_global = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null else false;
+        const key = if (lazy_local_keys or has_global) binding else sym.name;
+        if (isExportReassigned(graph, dep_module, sym.name)) {
+            // 재할당 심볼: body 참조 → `<ns>.<key>` (선언 없음, 라이브). consumer_import_local 을
+            // metadata 의 effective_target 이 renames 로 흘린다 (synthetic_member 와 동일 경로).
+            if (linker) |l| {
+                const member = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ns_local, key });
+                defer allocator.free(member);
+                try l.putConsumerImportLocal(sym.canonical_module, sym.name, member);
+            }
+            continue;
+        }
+        // 비재할당 심볼: holder 에서 구조분해.
+        if (!destructure_open) {
+            try chunk_output.appendSlice(allocator, if (min) "const{" else "const { ");
+            destructure_open = true;
+        } else {
+            try chunk_output.appendSlice(allocator, if (min) "," else ", ");
+        }
+        const local = try deconflictedConsumerLocal(linker, sym, binding, lazy_local_keys or has_global, allocator, used_locals, natural_bindings, alias_strs);
+        if (!std.mem.eql(u8, key, local)) {
+            try chunk_output.appendSlice(allocator, key);
+            try chunk_output.appendSlice(allocator, if (min) ":" else ": ");
+            try chunk_output.appendSlice(allocator, local);
+        } else {
+            try chunk_output.appendSlice(allocator, key);
+        }
+    }
+    if (destructure_open) {
+        try chunk_output.appendSlice(allocator, if (min) "}=" else " } = ");
+        try chunk_output.appendSlice(allocator, ns_local);
+        try chunk_output.appendSlice(allocator, if (min) ";" else ";\n");
+    }
+}
+
 /// (#4580) 모듈이 default 외 **named** export 를 하나라도 내는가 — `export *`(ESM 스펙상 default
 /// 제외, named 확장)를 소스로 **재귀 flatten** 한다. provider 는 `collectExportsRecursive` 로 star 를
 /// 펼쳐 named 유무를 판정하므로 소비자도 같아야 한다(안 그러면 star 가 named 0 개일 때 provider 는
@@ -169,6 +240,25 @@ fn moduleHasAnyNamedExport(
         }
     }
     return false;
+}
+
+/// (#4587 target a) dep 청크가 나타내는 단일 모듈 인덱스 (preserve-modules: 1 청크 = 1 모듈).
+/// entry_point(비-import-call) 만 — common/manual/dynamic 은 null.
+fn depChunkModuleIndex(dep_chunk: *const Chunk) ?ModuleIndex {
+    return switch (dep_chunk.kind) {
+        .entry_point => |ep| if (ep.is_import_call) null else ep.module,
+        else => null,
+    };
+}
+
+/// (#4587 target a) `dep_module` 의 export `export_name` 이 재할당되는 storage 바인딩인지.
+/// **require 타겟(dep) 모듈**을 본다 — re-export 체인일 땐 dep 이 그 이름을 `.local` 로 소유하지
+/// 않아(kind=.re_export) false → 소비자가 구조분해(스냅샷) 유지(라이브 전파는 v1 스코프 밖).
+/// provider rename(metadata)·끝-할당 skip(emitter) 과 **동일 술어**(exportBindingIsCjsStorage).
+fn isExportReassigned(graph: *const ModuleGraph, dep_module: ModuleIndex, export_name: []const u8) bool {
+    const m = graph.getModule(dep_module) orelse return false;
+    const eb = m.findExportBinding(export_name) orelse return false;
+    return m.exportBindingIsCjsStorage(eb.*);
 }
 
 /// (#4532 증상4) export 가 **직접 선언한 function 선언**(hoistable)인지. 순환 import 서 소비자가 그
@@ -1021,11 +1111,6 @@ pub fn emitChunks(
                 try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "\");" else "\");\n");
             } else if (!pm_cjs_dep and pm_esm_wrap_dep_syms == null and symbols != null and symbols.?.items.len > 0) {
                 // 심볼 수준 import: import { a, b } from './chunk-xxx.js';
-                if (!options.minify_whitespace) {
-                    try chunk_output.appendSlice(allocator, if (reg_like) "const { " else "import { ");
-                } else {
-                    try chunk_output.appendSlice(allocator, if (reg_like) "const{" else "import{");
-                }
                 // 결정론적 출력을 위해 심볼명(export 키) 정렬
                 const SymSort = struct {
                     fn lessThan(_: void, a: chunk_mod.CrossChunkSym, b: chunk_mod.CrossChunkSym) bool {
@@ -1041,6 +1126,44 @@ pub fn emitChunks(
                 // lazy`)과 정확히 일치해야 한다 — reg_split(iife/umd/amd) 뿐 아니라 cjs_split
                 // 도 emitLazyEntryExportAll 로 local 명 키를 노출하므로 둘 다 포함.
                 const lazy_local_keys = graph.lazy_compilation and (reg_split or cjs_split);
+
+                // (#4587 target a) preserve-modules CJS 라이브 바인딩: dep 의 재할당(storage)
+                // export 를 구조분해(로드 시점 스냅샷)로 잡으면 순환에서 undefined 를 박제한다.
+                // 재할당 심볼은 ns holder(`const ns=require()`) + body 참조 `ns.<key>`
+                // (consumer_import_local → metadata effective_target), 비재할당은 현행 구조분해.
+                const dep_mod_idx: ?ModuleIndex = if (pm_cjs) depChunkModuleIndex(dep_chunk) else null;
+                var has_reassigned = false;
+                if (dep_mod_idx) |dmi| {
+                    for (symbols.?.items) |sym| {
+                        if (isExportReassigned(graph, dmi, sym.name)) {
+                            has_reassigned = true;
+                            break;
+                        }
+                    }
+                }
+                if (has_reassigned) {
+                    try emitPmCjsLiveImport(
+                        allocator,
+                        &chunk_output,
+                        linker,
+                        graph,
+                        dep_mod_idx.?,
+                        symbols.?.items,
+                        bind_arg,
+                        lazy_local_keys,
+                        options.minify_whitespace,
+                        &used_locals,
+                        &natural_bindings,
+                        &alias_strs,
+                    );
+                    continue;
+                }
+
+                if (!options.minify_whitespace) {
+                    try chunk_output.appendSlice(allocator, if (reg_like) "const { " else "import { ");
+                } else {
+                    try chunk_output.appendSlice(allocator, if (reg_like) "const{" else "import{");
+                }
                 for (symbols.?.items, 0..) |sym, si| {
                     const name = sym.name;
                     const binding = crossChunkBindingName(linker, sym);

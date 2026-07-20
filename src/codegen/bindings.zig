@@ -1,5 +1,6 @@
 //! Codegen helpers for binding patterns and variable declarations.
 
+const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
@@ -105,6 +106,16 @@ pub fn emitVariableDeclaration(self: anytype, node: Node) !void {
     const list_start = extras[1];
     const list_len = extras[2];
 
+    // (#4587 target a) preserve-modules CJS exports-as-storage: 재할당되는 export 바인딩이
+    // `exports.<name>` 로 rename 됐으면(linking_metadata.renames), 그 선언을 `exports.A = init;`
+    // 할당으로 낮춘다(`let exports.A` 회피). cheap 게이트(pm_cjs_storage + top-level)로 감싸
+    // 흔한 경로엔 renames 조회 비용이 안 간다.
+    if (self.options.pm_cjs_storage and self.indent_level == 0 and !self.in_for_init) {
+        if (self.options.linking_metadata != null) {
+            if (try emitPmCjsStorageDeclaration(self, list_start, list_len, kind)) return;
+        }
+    }
+
     // __esm 호이스팅: top-level 변수 선언은 래퍼 밖 `var`에 대응하는 할당문으로 변환.
     // indent_level == 0: factory body의 top-level에서만 적용.
     // 함수 안의 const/let/var는 그대로 유지해야 함.
@@ -158,6 +169,86 @@ pub fn emitVariableDeclaration(self: anytype, node: Node) !void {
     if (!self.in_for_init) {
         try self.writeByte(';');
     }
+}
+
+/// (#4587 target a) preserve-modules CJS exports-as-storage 선언 변환.
+/// 선언 안에 storage declarator(단순 binding_identifier 이면서 renames 가 `"exports."` prefix)
+/// 가 하나라도 있으면 declarator 를 partition 하여:
+///   - storage: `exports.<name> = <init>;` (name 이 renames 로 `exports.X` 를 찍음, no-init 는 skip)
+///   - 비-storage: 각각 `let/const/var <declarator>;` (소스 순서 보존)
+/// 로 emit 하고 `true` 를 반환한다. storage 가 없으면 아무것도 안 쓰고 `false`(현행 경로).
+/// destructuring declarator 는 storage 후보가 아니다(provider 술어 exportBindingIsCjsStorage 가
+/// pattern 을 제외 → 그 안 식별자에 `exports.` rename 이 안 붙음) — 항상 비-storage 로 emit.
+fn emitPmCjsStorageDeclaration(self: anytype, list_start: u32, list_len: u32, kind: anytype) !bool {
+    const md = self.options.linking_metadata.?;
+    const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
+
+    const isStorage = struct {
+        fn f(cg: anytype, meta: anytype, n_idx: NodeIndex) bool {
+            if (n_idx.isNone()) return false;
+            const name_node = cg.ast.nodes.items[@intFromEnum(n_idx)];
+            if (name_node.tag == .object_pattern or name_node.tag == .array_pattern) return false;
+            const sid = cg.resolveSymbolId(n_idx, meta) orelse return false;
+            const r = meta.renames.get(sid) orelse return false;
+            return std.mem.startsWith(u8, r, "exports.");
+        }
+    }.f;
+
+    // 1st pass: storage declarator 유무 확인 (없으면 현행 경로로 넘김 — 부작용 0).
+    var has_storage = false;
+    for (declarators) |raw| {
+        const decl_node = self.ast.nodes.items[raw];
+        const de = self.ast.extra_data.items[decl_node.data.extra .. decl_node.data.extra + 3];
+        const n_idx: NodeIndex = @enumFromInt(de[0]);
+        if (isStorage(self, md, n_idx)) {
+            has_storage = true;
+            break;
+        }
+    }
+    if (!has_storage) return false;
+
+    // 비-storage declarator 용 keyword. cycle 강등(force_var_for_cycle)·const→let(minify_syntax)
+    // 은 현행 경로와 동일 규칙.
+    const demote_to_var = self.options.force_var_for_cycle and (kind == .@"const" or kind == .let);
+    const keyword = if (demote_to_var) "var " else switch (kind) {
+        .@"var" => "var ",
+        .let => "let ",
+        .@"const" => if (self.options.minify_syntax) "let " else "const ",
+        .using => "using ",
+        .await_using => "await using ",
+    };
+
+    // 2nd pass: 소스 순서대로 emit.
+    var has_output = false;
+    for (declarators) |raw| {
+        const decl_node = self.ast.nodes.items[raw];
+        const de = self.ast.extra_data.items[decl_node.data.extra .. decl_node.data.extra + 3];
+        const n_idx: NodeIndex = @enumFromInt(de[0]);
+        const init_idx: NodeIndex = @enumFromInt(de[2]);
+        if (n_idx.isNone()) continue;
+
+        if (isStorage(self, md, n_idx)) {
+            // storage 는 이미 `exports.X` 슬롯이라 init 없으면 방출할 게 없다(undefined 시작).
+            if (init_idx.isNone()) continue;
+            if (has_output) try writeNewline(self);
+            try self.emitNode(n_idx); // renames → `exports.X`
+            try writeSpace(self);
+            try self.writeByte('=');
+            try writeSpace(self);
+            try self.emitNode(init_idx);
+            try self.writeByte(';');
+            has_output = true;
+        } else {
+            // 비-storage: 각각 자체 `keyword <declarator>;` 문으로. declarator emit 이
+            // `name = init` (또는 name-only)를 낸다.
+            if (has_output) try writeNewline(self);
+            try self.write(keyword);
+            try self.emitNode(@enumFromInt(raw));
+            try self.writeByte(';');
+            has_output = true;
+        }
+    }
+    return true;
 }
 
 pub fn emitVariableDeclarator(self: anytype, node: Node) !void {

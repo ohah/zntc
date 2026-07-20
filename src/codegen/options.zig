@@ -135,6 +135,12 @@ pub const CodegenOptions = struct {
     /// __esm 호이스팅 모드: variable_declaration을 할당문으로 변환 (키워드 제거).
     /// emitter가 var 선언을 래퍼 밖에 별도 배치.
     esm_var_assign_only: bool = false,
+    /// (#4587 target a) preserve-modules + CJS unwrapped 모듈: 재할당되는 export 바인딩이
+    /// `exports.<name>` 로 rename 됐을 때(linking_metadata.renames 가 `"exports."` prefix),
+    /// 그 선언(`let A = init`)을 `exports.A = init;` 할당으로 낮춘다(`let exports.A` = SyntaxError
+    /// 회피). 이 flag 는 top-level 선언 emit 의 renames 조회를 흔한 ESM 경로에서 건너뛰게 하는
+    /// cheap 게이트 — pm-cjs 아닌 경로엔 오버헤드 0.
+    pm_cjs_storage: bool = false,
     /// circular 모듈 (cycle_group > 0) 의 top-level `const`/`let` 을 `var` 로 강등 (#2198).
     /// 같은 IIFE/scope 안에 hoisted IL 이 그대로 emit 되면 cycle 모듈끼리 정의 전 참조가
     /// 발생해 TDZ ReferenceError 가 throw됨 (esbuild 와 동일 패턴 - var 호이스팅으로
