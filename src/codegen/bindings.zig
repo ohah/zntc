@@ -194,16 +194,19 @@ fn emitPmCjsStorageDeclaration(self: anytype, list_start: u32, list_len: u32, ki
         }
     }.f;
 
-    // 1st pass: storage declarator 유무 확인 (없으면 현행 경로로 넘김 — 부작용 0).
+    // (#4587 [6]) declarator 당 isStorage 를 **1회** 평가해 캐시(heap bool 배열). 예전엔
+    // detection·emit 2회 평가. cap 없이(>N fallback 이 normal 경로로 새면 storage declarator 가
+    // `let exports.A` = SyntaxError 이므로 반드시 전 declarator 를 여기서 처리).
+    if (list_len == 0) return false;
+    const storage_flags = try self.allocator.alloc(bool, declarators.len);
+    defer self.allocator.free(storage_flags);
     var has_storage = false;
-    for (declarators) |raw| {
+    for (declarators, 0..) |raw, i| {
         const decl_node = self.ast.nodes.items[raw];
         const de = self.ast.extra_data.items[decl_node.data.extra .. decl_node.data.extra + 3];
         const n_idx: NodeIndex = @enumFromInt(de[0]);
-        if (isStorage(self, md, n_idx)) {
-            has_storage = true;
-            break;
-        }
+        storage_flags[i] = isStorage(self, md, n_idx);
+        if (storage_flags[i]) has_storage = true;
     }
     if (!has_storage) return false;
 
@@ -218,16 +221,16 @@ fn emitPmCjsStorageDeclaration(self: anytype, list_start: u32, list_len: u32, ki
         .await_using => "await using ",
     };
 
-    // 2nd pass: 소스 순서대로 emit.
+    // 2nd pass: 소스 순서대로 emit (isStorage 는 캐시된 storage_flags 재사용).
     var has_output = false;
-    for (declarators) |raw| {
+    for (declarators, 0..) |raw, i| {
         const decl_node = self.ast.nodes.items[raw];
         const de = self.ast.extra_data.items[decl_node.data.extra .. decl_node.data.extra + 3];
         const n_idx: NodeIndex = @enumFromInt(de[0]);
         const init_idx: NodeIndex = @enumFromInt(de[2]);
         if (n_idx.isNone()) continue;
 
-        if (isStorage(self, md, n_idx)) {
+        if (storage_flags[i]) {
             // storage 는 이미 `exports.X` 슬롯이라 init 없으면 방출할 게 없다(undefined 시작).
             if (init_idx.isNone()) continue;
             if (has_output) try writeNewline(self);
@@ -235,7 +238,10 @@ fn emitPmCjsStorageDeclaration(self: anytype, list_start: u32, list_len: u32, ki
             try writeSpace(self);
             try self.writeByte('=');
             try writeSpace(self);
-            try self.emitNode(init_idx);
+            // (#4587 [2]) init level = .comma (정상 declarator 경로 emitVariableDeclarator 와 동일):
+            // 최상위 sequence(`exports.x = (setup(), 42)`)가 `=` 우변에서 괄호로 감싸져
+            // `exports.x = setup(), 42`(오결합 → exports.x = setup())가 되지 않게 한다.
+            try self.emitExpr(init_idx, .comma, .{});
             try self.writeByte(';');
             has_output = true;
         } else {

@@ -146,9 +146,11 @@ fn deconflictedConsumerLocal(
 /// (#4587 target a) preserve-modules CJS 라이브 바인딩 소비자 import 방출.
 /// dep 의 재할당(storage) export 를 구조분해로 잡으면 순환에서 로드 시점 undefined 를 박제하므로:
 ///   1. `const <ns> = require("<bind_arg>");` holder 를 발급하고
-///   2. 재할당 심볼 → body 참조를 `<ns>.<key>` 로(consumer_import_local, 선언 없음 = 라이브 읽기)
-///   3. 비재할당 심볼 → holder 에서 구조분해 `const { k: local, ... } = <ns>;` (현행 스냅샷 유지)
-/// 로 낸다. key/local 규칙은 현행 구조분해 site 와 동일(crossChunkBindingName/deconflictedConsumerLocal).
+///   2. **모든** 심볼을 holder 에서 구조분해해 렉시컬 바인딩을 낸다(#4587 [1]: ns-member/re-export
+///      의 bare export-local 참조가 선언되게 — 안 내면 `ReferenceError`).
+///   3. 재할당 심볼은 추가로 body 의 **named** 참조를 `<ns>.<key>`(consumer_import_local)로 라이브화
+///      한다 — named=live, ns/re-export=snapshot 공존(문서화된 한계).
+/// key/local 규칙은 현행 구조분해 site 와 동일(crossChunkBindingName/deconflictedConsumerLocal).
 fn emitPmCjsLiveImport(
     allocator: std.mem.Allocator,
     chunk_output: *std.ArrayListUnmanaged(u8),
@@ -181,30 +183,44 @@ fn emitPmCjsLiveImport(
         const binding = crossChunkBindingName(linker, sym);
         const has_global = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null else false;
         const key = if (lazy_local_keys or has_global) binding else sym.name;
-        if (isExportReassigned(graph, dep_module, sym.name)) {
-            // 재할당 심볼: body 참조 → `<ns>.<key>` (선언 없음, 라이브). consumer_import_local 을
-            // metadata 의 effective_target 이 renames 로 흘린다 (synthetic_member 와 동일 경로).
-            if (linker) |l| {
-                const member = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ns_local, key });
-                defer allocator.free(member);
-                try l.putConsumerImportLocal(sym.canonical_module, sym.name, member);
-            }
-            continue;
-        }
-        // 비재할당 심볼: holder 에서 구조분해.
+        const reassigned = isExportReassigned(graph, dep_module, sym.name);
+
+        // (#4587 [1] 회귀 수정) 렉시컬 바인딩은 재할당 여부와 무관하게 **항상** 낸다.
+        // 예전엔 재할당 심볼을 holder 만 내고 `continue` 해 심볼의 로컬 선언이 없었다 →
+        // ns-member 재작성(`ns.A`→`A`)·re-export bottom(`exports.A = A`)이 bare export-local
+        // 명(`A`)을 참조하는데 미선언 → `ReferenceError: A is not defined`.
         if (!destructure_open) {
             try chunk_output.appendSlice(allocator, if (min) "const{" else "const { ");
             destructure_open = true;
         } else {
             try chunk_output.appendSlice(allocator, if (min) "," else ", ");
         }
-        const local = try deconflictedConsumerLocal(linker, sym, binding, lazy_local_keys or has_global, allocator, used_locals, natural_bindings, alias_strs);
-        if (!std.mem.eql(u8, key, local)) {
+
+        if (reassigned) {
+            // 재할당 심볼: bare key 로 구조분해(스냅샷 바인딩)해 bare 참조(ns-member/re-export)가
+            // 선언되게 하고, **named body 참조**는 consumer_import_local(`<ns>.<key>`)로 라이브
+            // 유지(effective_target 이 renames 로 흘림, synthetic_member 와 동일 경로). 즉 named=live,
+            // ns/re-export=snapshot 이 공존(문서화된 한계). deconflict 없이 key 그대로 — bare 참조가
+            // deconflict 안 된 export-local 명을 쓰고, preserve-modules 는 1 모듈=1 청크라 동명
+            // top-level 충돌이 없다(같은 이름 import+local 은 소스 단계 SyntaxError). linker 가
+            // null 이면(단위 테스트) 라이브 rename 은 못 걸어도 바인딩은 나므로 무크래시(방어적).
+            if (!used_locals.contains(key)) try used_locals.put(allocator, key, {});
             try chunk_output.appendSlice(allocator, key);
-            try chunk_output.appendSlice(allocator, if (min) ":" else ": ");
-            try chunk_output.appendSlice(allocator, local);
+            if (linker) |l| {
+                const member = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ns_local, key });
+                defer allocator.free(member);
+                try l.putConsumerImportLocal(sym.canonical_module, sym.name, member);
+            }
         } else {
-            try chunk_output.appendSlice(allocator, key);
+            // 비재할당 심볼: 현행 스냅샷 구조분해.
+            const local = try deconflictedConsumerLocal(linker, sym, binding, lazy_local_keys or has_global, allocator, used_locals, natural_bindings, alias_strs);
+            if (!std.mem.eql(u8, key, local)) {
+                try chunk_output.appendSlice(allocator, key);
+                try chunk_output.appendSlice(allocator, if (min) ":" else ": ");
+                try chunk_output.appendSlice(allocator, local);
+            } else {
+                try chunk_output.appendSlice(allocator, key);
+            }
         }
     }
     if (destructure_open) {
@@ -302,10 +318,8 @@ fn emitHoistedFnExports(
 /// `.default`=undefined → TypeError(#4580). `.named` OutputExports 는 `exports.default` 를 내므로
 /// 호출부에서 auto/default_ 로 게이트한다.
 fn cjsDepDefaultOnly(allocator: std.mem.Allocator, graph: *const ModuleGraph, dep_chunk: *const Chunk) bool {
-    const mod_idx = switch (dep_chunk.kind) {
-        .entry_point => |ep| if (ep.is_import_call) return false else ep.module,
-        else => return false,
-    };
+    // (#4587 [6]) entry_point(비-import-call) 판정은 depChunkModuleIndex 로 단일화.
+    const mod_idx = depChunkModuleIndex(dep_chunk) orelse return false;
     const m = graph.getModule(mod_idx) orelse return false;
     var has_default = false;
     for (m.export_bindings) |eb| {
@@ -1131,7 +1145,11 @@ pub fn emitChunks(
                 // export 를 구조분해(로드 시점 스냅샷)로 잡으면 순환에서 undefined 를 박제한다.
                 // 재할당 심볼은 ns holder(`const ns=require()`) + body 참조 `ns.<key>`
                 // (consumer_import_local → metadata effective_target), 비재할당은 현행 구조분해.
-                const dep_mod_idx: ?ModuleIndex = if (pm_cjs) depChunkModuleIndex(dep_chunk) else null;
+                // output.exports 게이트(#4587 [3]): provider 가 storage(exports.X) 를 안 내는
+                // none/default_ 에서는 소비자도 ns-access 를 하면 안 된다(provider·metadata·codegen
+                // 게이트와 동일 값이어야 정합).
+                const storage_output_gate = options.output_exports == .auto or options.output_exports == .named;
+                const dep_mod_idx: ?ModuleIndex = if (pm_cjs and storage_output_gate) depChunkModuleIndex(dep_chunk) else null;
                 var has_reassigned = false;
                 if (dep_mod_idx) |dmi| {
                     for (symbols.?.items) |sym| {

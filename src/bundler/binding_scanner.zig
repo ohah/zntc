@@ -93,6 +93,19 @@ pub const ExportBinding = struct {
     /// 위해 영구 병존 — 제거 대상 아님.
     symbol: symbol_mod.SymbolRef = symbol_mod.SymbolRef.invalid,
 
+    /// (#4587 target a) 이 `.local` export 의 선언이 destructuring pattern
+    /// (`export let { A } = obj`) 안에 있는지 — scan 시 declarator 구조에서 기록한다.
+    /// `exportBindingIsCjsStorage` 가 storage 대상에서 pattern 을 제외하는 데 쓴다
+    /// (`renames[sid]="exports.A"` 를 pattern 안 식별자에 적용하면 `let {A: exports.A}`
+    /// = SyntaxError). scan 시점 기록이라 byte-span AST 재스캔이 불필요·정확.
+    declared_via_pattern: bool = false,
+
+    /// (#4587 target a) 이 `.local` export 의 declarator 초기값이 함수/화살표/클래스
+    /// 표현식인지 — scan 시 기록. `exportBindingIsCjsStorage` 가 storage 에서 제외하는 데
+    /// 쓴다: `export let f = () => 0` 를 `exports.f = () => 0` 로 낮추면 NamedEvaluation
+    /// 이 member target 이라 안 걸려 `f.name` 이 유실된다. 제외 시 현행 로컬 유지(무손실).
+    init_is_fn_or_class: bool = false,
+
     pub const Kind = enum {
         /// 현재 모듈에서 직접 선언/할당된 export.
         local,
@@ -331,6 +344,8 @@ pub fn extractExportBindings(
                             .local_name = name_info.name,
                             .local_span = name_info.span,
                             .kind = .local,
+                            .declared_via_pattern = name_info.via_pattern,
+                            .init_is_fn_or_class = name_info.init_fn_class,
                         });
                     }
                     continue;
@@ -477,7 +492,22 @@ pub fn extractExportBindings(
     return bindings.toOwnedSlice(allocator);
 }
 
-const NameInfo = struct { name: []const u8, span: Span };
+const NameInfo = struct {
+    name: []const u8,
+    span: Span,
+    /// (#4587) declarator 이름이 destructuring pattern 안인지.
+    via_pattern: bool = false,
+    /// (#4587) declarator 초기값이 함수/화살표/클래스 표현식인지.
+    init_fn_class: bool = false,
+};
+
+/// (#4587) declarator 초기값 노드 tag 가 NamedEvaluation 대상(함수/화살표/클래스 표현식)인지.
+fn initTagIsFnOrClass(tag: Node.Tag) bool {
+    return switch (tag) {
+        .function_expression, .function, .arrow_function_expression, .class_expression => true,
+        else => false,
+    };
+}
 
 /// export 선언에서 이름들을 추출. export const x, y / export function f / export class C
 fn extractDeclExportNames(allocator: std.mem.Allocator, ast: *const Ast, decl: Node) ![]NameInfo {
@@ -510,7 +540,18 @@ fn extractDeclExportNames(allocator: std.mem.Allocator, ast: *const Ast, decl: N
                 if (name_idx.isNone()) continue;
                 if (@intFromEnum(name_idx) >= ast.nodes.items.len) continue;
 
-                try extractBindingPatternNames(&names, allocator, ast, name_idx);
+                // (#4587) declarator shape 를 scan 시 기록: pattern 여부·init 이 fn/class 표현식인지.
+                const name_node = ast.getNode(name_idx);
+                const via_pattern = name_node.tag == .object_pattern or name_node.tag == .array_pattern;
+                var init_fn_class = false;
+                if (!via_pattern and de + 2 < ast.extra_data.items.len) {
+                    const init_idx: NodeIndex = @enumFromInt(ast.extra_data.items[de + 2]);
+                    if (!init_idx.isNone() and @intFromEnum(init_idx) < ast.nodes.items.len) {
+                        init_fn_class = initTagIsFnOrClass(ast.getNode(init_idx).tag);
+                    }
+                }
+
+                try extractBindingPatternNames(&names, allocator, ast, name_idx, via_pattern, init_fn_class);
             }
         },
         // 모두 extra[0] 이 이름 노드 (function: [name, ...], class: [name, ...],
@@ -540,6 +581,8 @@ fn extractBindingPatternNames(
     allocator: std.mem.Allocator,
     ast: *const Ast,
     pattern_idx: NodeIndex,
+    via_pattern: bool,
+    init_fn_class: bool,
 ) !void {
     var w = try ast_walk.bindingIdentifiers(allocator, ast, pattern_idx, .{});
     defer w.deinit();
@@ -548,6 +591,8 @@ fn extractBindingPatternNames(
         try names.append(allocator, .{
             .name = ast.getText(name_node.span),
             .span = name_node.span,
+            .via_pattern = via_pattern,
+            .init_fn_class = init_fn_class,
         });
     }
 }

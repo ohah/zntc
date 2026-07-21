@@ -1707,6 +1707,9 @@ pub fn emitModule(
             is_entry,
             override_syms,
             l.format,
+            // (#4587 [3]) storage rename 은 output.exports 가 named 모드일 때만 — codegen
+            // `.pm_cjs_storage`·끝-skip·소비자 게이트와 동일 값.
+            options.output_exports == .auto or options.output_exports == .named,
         );
         // transformer가 전파한 symbol_ids를 메타데이터에 설정
         if (override_syms) |syms| {
@@ -2079,8 +2082,11 @@ pub fn emitModule(
         .force_var_for_cycle = module.cycle_group != 0 and module.wrap_kind == .none,
         // (#4587 target a) preserve-modules + CJS unwrapped: 재할당 export 선언을 `exports.X = init;`
         // 저장소로 낮춘다(bindings.zig). renames 는 metadata 가 pm-cjs 게이트로만 등록하므로 여기
-        // 게이트와 정확히 일치해야 storage rename 이 선언 변환과 짝을 이룬다.
-        .pm_cjs_storage = options.preserve_modules and options.format == .cjs and module.wrap_kind == .none,
+        // 게이트와 정확히 일치해야 storage rename 이 선언 변환과 짝을 이룬다. output_exports 가
+        // named export 를 내는 모드(auto/named)일 때만 — 끝-skip(아래)·metadata rename·fn-hoist 와
+        // 동일 게이트라 `none`/`default_` 에서 `exports.X` 누출을 막는다(#4587 [3]).
+        .pm_cjs_storage = options.preserve_modules and options.format == .cjs and module.wrap_kind == .none and
+            (options.output_exports == .auto or options.output_exports == .named),
         .linking_metadata = if (metadata) |*m| m else null,
         // 번들 모드에서 ESM이 아니면 import.meta → {} 치환 (esbuild 호환)
         // Node.js는 import.meta를 보면 ESM으로 재파싱하려 해서 에러 발생
