@@ -55,6 +55,10 @@ pub const PersistentModuleStore = struct {
         module: Module,
         /// import specifier 목록 (store allocator 소유). import 변경 감지용.
         import_specifiers: []const []const u8,
+        /// (#4557 B-precise) 이 모듈이 bake 한 cross-module const 의 provider 경로 목록
+        /// (store allocator 소유 — import_specifiers 미러). 비어있으면(non-baked) warm
+        /// invalidation 대상이 아니다. 채워져 있으면 warm 시작 시 provider 변경 감지로 evict.
+        const_providers: []const []const u8,
     };
 
     pub fn init(allocator: std.mem.Allocator) PersistentModuleStore {
@@ -100,6 +104,9 @@ pub const PersistentModuleStore = struct {
         // import_specifiers 해제
         for (cached.import_specifiers) |s| self.allocator.free(s);
         self.allocator.free(cached.import_specifiers);
+        // (#4557) const_providers 해제 (import_specifiers 미러)
+        for (cached.const_providers) |s| self.allocator.free(s);
+        self.allocator.free(cached.const_providers);
     }
 
     /// 캐시에서 모듈을 조회. mtime이 일치하면 캐시 히트.
@@ -119,11 +126,101 @@ pub const PersistentModuleStore = struct {
         self.freeCachedModule(&cached);
     }
 
+    /// (#4557 B-precise) warm 빌드 시작 시 baked 소비자 정밀 무효화.
+    /// `changed_files` (watcher 보고 절대경로 set) 로 시작해 전이적 fixpoint 로 baked 소비자를
+    /// evict 한다: 어떤 cached module C 의 `const_providers` 중 하나라도 dirty 에 있으면 evict 하고
+    /// C.path 를 dirty 에 추가(전이 — a→b→c 체인에서 a 변경이 b, 그 다음 c 를 evict). provider 가
+    /// 안 바뀐 baked 소비자는 store 에 남아 cache-hit(reparse 0) → crude-b(#4544 무조건 evict)의 perf
+    /// 회귀를 해소.
+    ///
+    /// `changed_files == null`(변경 정보 없음: initial-after-warm / CLI)이면 어떤 provider 가
+    /// 바뀌었는지 알 수 없으므로 모든 baked 소비자(const_providers.len>0)를 evict = crude-b 와
+    /// 동일한 보수적 correctness (절대 stale 안 남김, perf 는 non-null 경로에서만 회복).
+    ///
+    /// **순회 안전(HashMap 수정)**: evict 대상 path 를 먼저 수집 후 일괄 evict — iterator 무효화
+    /// 회피. evict 가 store key(및 provider 경로 backing)를 free 하므로, 전이 확장용 dirty 에는
+    /// evict *전에* path 를 dupe 해 넣는다(dangling 방지). dirty/dupe 는 self.allocator 소유, 종료 시 해제.
+    pub fn evictConstConsumers(self: *PersistentModuleStore, changed_files: ?*const std.StringHashMapUnmanaged(void)) void {
+        // fast path: baked 소비자가 하나도 없으면 즉시 반환(비-tree-shake/dev 빌드 = 대부분).
+        var any_baked = false;
+        {
+            var it = self.modules.valueIterator();
+            while (it.next()) |cm| {
+                if (cm.const_providers.len > 0) {
+                    any_baked = true;
+                    break;
+                }
+            }
+        }
+        if (!any_baked) return;
+
+        const cf = changed_files orelse {
+            // 보수적 폴백: 모든 baked 소비자 evict (crude-b 동형).
+            var targets: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer targets.deinit(self.allocator);
+            var it = self.modules.iterator();
+            while (it.next()) |e| {
+                if (e.value_ptr.const_providers.len > 0) targets.append(self.allocator, e.key_ptr.*) catch {};
+            }
+            for (targets.items) |p| self.evict(p);
+            return;
+        };
+
+        // dirty set: changed_files 키(borrowed, 이 호출 동안 유효) + evict 된 path 의 dupe(self 소유).
+        var dirty: std.StringHashMapUnmanaged(void) = .empty;
+        var owned: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer {
+            dirty.deinit(self.allocator);
+            for (owned.items) |s| self.allocator.free(s);
+            owned.deinit(self.allocator);
+        }
+        {
+            var cit = cf.iterator();
+            while (cit.next()) |e| dirty.put(self.allocator, e.key_ptr.*, {}) catch {};
+        }
+
+        // 전이 fixpoint: 매 pass 마다 provider 가 dirty 에 있는 baked 소비자를 수집→일괄 evict.
+        // evict 된 소비자 path 를 dirty 에 추가해 다음 pass 가 그 소비자를 provider 로 삼는 모듈을
+        // 잡게 한다. 생산적 pass 마다 map 이 줄어 유한 종료.
+        var changed_any = true;
+        while (changed_any) {
+            changed_any = false;
+            var targets: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer targets.deinit(self.allocator);
+            var it = self.modules.iterator();
+            while (it.next()) |e| {
+                const cm = e.value_ptr;
+                if (cm.const_providers.len == 0) continue;
+                for (cm.const_providers) |p| {
+                    if (dirty.contains(p)) {
+                        targets.append(self.allocator, e.key_ptr.*) catch {};
+                        break;
+                    }
+                }
+            }
+            for (targets.items) |path| {
+                // evict 전에 path 를 dupe 해 dirty 에 추가(evict 가 key backing 을 free 하므로).
+                if (self.allocator.dupe(u8, path)) |dup| {
+                    owned.append(self.allocator, dup) catch {};
+                    dirty.put(self.allocator, dup, {}) catch {};
+                } else |_| {}
+                self.evict(path);
+                changed_any = true;
+            }
+        }
+    }
+
     /// 빌드 완료 후 모듈을 캐시에 저장.
     /// Module의 parse_arena 소유권을 store로 이전 (Module.parse_arena = null 설정).
     pub fn putModule(self: *PersistentModuleStore, path: []const u8, module: *Module, mtime: i128) void {
         // import specifiers 복제 (store allocator 소유)
         const specs = self.extractImportSpecifiers(module) catch return;
+        // (#4557) const_providers 복제 (store allocator 소유). 실패 시 specs 누수 차단 후 return.
+        const providers = self.extractConstProviders(module) catch {
+            for (specs) |s| self.allocator.free(s);
+            self.allocator.free(specs);
+            return;
+        };
 
         // 기존 캐시가 있으면 제거. (#3755 sweep) freeCachedModule 가 contents 만 free
         // 하므로 entry 자체는 그대로 — 다음 단계에서 map.put 으로 *값* 만 update.
@@ -167,14 +264,14 @@ pub const PersistentModuleStore = struct {
         for (cached_module.resolved_deps.items, 0..) |*dep, i| {
             const new_path = clonePathRefIfNeeded(self.allocator, dep.path) catch {
                 rollbackOomCloned(cached_module.resolved_deps.items[0..i], self.allocator);
-                self.abortPutModule(path, had_existing, specs);
+                self.abortPutModule(path, had_existing, specs, providers);
                 return;
             };
             const new_rd = if (dep.resolve_dir) |rd|
                 clonePathRefIfNeeded(self.allocator, rd) catch {
                     new_path.deinit(self.allocator);
                     rollbackOomCloned(cached_module.resolved_deps.items[0..i], self.allocator);
-                    self.abortPutModule(path, had_existing, specs);
+                    self.abortPutModule(path, had_existing, specs, providers);
                     return;
                 }
             else
@@ -213,13 +310,14 @@ pub const PersistentModuleStore = struct {
                 .mtime = mtime,
                 .module = cached_module,
                 .import_specifiers = specs,
+                .const_providers = providers,
             }) catch {
-                var orphan: CachedModule = .{ .mtime = mtime, .module = cached_module, .import_specifiers = specs };
+                var orphan: CachedModule = .{ .mtime = mtime, .module = cached_module, .import_specifiers = specs, .const_providers = providers };
                 self.freeCachedModule(&orphan);
             };
         } else {
             const key = self.allocator.dupe(u8, path) catch {
-                var orphan: CachedModule = .{ .mtime = mtime, .module = cached_module, .import_specifiers = specs };
+                var orphan: CachedModule = .{ .mtime = mtime, .module = cached_module, .import_specifiers = specs, .const_providers = providers };
                 self.freeCachedModule(&orphan);
                 return;
             };
@@ -228,9 +326,10 @@ pub const PersistentModuleStore = struct {
                 .mtime = mtime,
                 .module = cached_module,
                 .import_specifiers = specs,
+                .const_providers = providers,
             }) catch {
                 self.allocator.free(key);
-                var orphan: CachedModule = .{ .mtime = mtime, .module = cached_module, .import_specifiers = specs };
+                var orphan: CachedModule = .{ .mtime = mtime, .module = cached_module, .import_specifiers = specs, .const_providers = providers };
                 self.freeCachedModule(&orphan);
             };
         }
@@ -241,8 +340,8 @@ pub const PersistentModuleStore = struct {
     ///    dangling CachedModule entry — 다음 getIfFresh UAF + 다음 putModule 의 freeCachedModule 가
     ///    이미 freed 메모리 또 free → double-free. fetchRemove 로 key 까지 회수.
     /// 2) specs (extractImportSpecifiers 결과) 가 N dupe + 1 slice alloc 인데 rollback
-    ///    early return 으로 free 안 됨 → 매 OOM 마다 누적 leak.
-    fn abortPutModule(self: *PersistentModuleStore, path: []const u8, had_existing: bool, specs: []const []const u8) void {
+    ///    early return 으로 free 안 됨 → 매 OOM 마다 누적 leak. (#4557) providers 도 동형.
+    fn abortPutModule(self: *PersistentModuleStore, path: []const u8, had_existing: bool, specs: []const []const u8, providers: []const []const u8) void {
         if (had_existing) {
             if (self.modules.fetchRemove(path)) |kv| {
                 self.allocator.free(kv.key);
@@ -250,6 +349,8 @@ pub const PersistentModuleStore = struct {
         }
         for (specs) |s| self.allocator.free(s);
         self.allocator.free(specs);
+        for (providers) |s| self.allocator.free(s);
+        self.allocator.free(providers);
     }
 
     fn extractImportSpecifiers(self: *PersistentModuleStore, module: *const Module) ![]const []const u8 {
@@ -260,6 +361,22 @@ pub const PersistentModuleStore = struct {
         }
         for (module.import_records) |rec| {
             const dupe = try self.allocator.dupe(u8, rec.specifier);
+            try list.append(self.allocator, dupe);
+        }
+        return try list.toOwnedSlice(self.allocator);
+    }
+
+    /// (#4557 B-precise) module.const_providers(parse_arena 소유)를 store allocator 로 dupe.
+    /// extractImportSpecifiers 미러 — parse_arena 가 store 로 양도된 후에도 evictConstConsumers
+    /// 가 provider 경로를 안전히 참조하도록 store-owned 사본을 둔다. non-baked 모듈은 빈 슬라이스.
+    fn extractConstProviders(self: *PersistentModuleStore, module: *const Module) ![]const []const u8 {
+        var list: std.ArrayListUnmanaged([]const u8) = .empty;
+        errdefer {
+            for (list.items) |s| self.allocator.free(s);
+            list.deinit(self.allocator);
+        }
+        for (module.const_providers) |p| {
+            const dupe = try self.allocator.dupe(u8, p);
             try list.append(self.allocator, dupe);
         }
         return try list.toOwnedSlice(self.allocator);
@@ -422,6 +539,59 @@ test "PersistentModuleStore: evict 완전 저장 엔트리 + parse_arena=null da
     store.evict("\x00zntc:evict/dangling"); // null arena → freeCachedModule 이 arena free 안 함
     try testing.expect(!store.modules.contains("\x00zntc:evict/dangling"));
     Module_mod.destroyParseArena(allocator, arena); // graph 가 소유하므로 여기서 해제
+}
+
+// (#4557 B-precise) evictConstConsumers: provider 변경 시에만(전이 fixpoint) baked 소비자 evict.
+// helper 로직을 full bundler 없이 직접 계측 — (1) provider 불변 no-op, (2) a→b→c fixpoint,
+// (3) null 보수적 전량 evict. store-owned const_providers dupe/free 왕복도 GPA 로 검증(leak 0).
+test "PersistentModuleStore: evictConstConsumers 전이 fixpoint + 불변 no-op + null 보수 (#4557)" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var store = PersistentModuleStore.init(allocator);
+    defer store.deinit();
+
+    const putBaked = struct {
+        fn call(s: *PersistentModuleStore, a: std.mem.Allocator, path: []const u8, providers: []const []const u8) void {
+            var m = Module.init(@enumFromInt(0), path);
+            m.const_providers = providers; // borrowed — putModule 이 store allocator 로 dupe.
+            s.putModule(path, &m, 1);
+            m.deinit(a); // graph 쪽 잔여 해제 (const_providers 는 borrowed 라 free 안 함).
+        }
+    }.call;
+
+    putBaked(&store, allocator, "/a.js", &.{}); // non-baked provider (const_providers 빈)
+    putBaked(&store, allocator, "/b.js", &.{"/a.js"}); // baked: provider a
+    putBaked(&store, allocator, "/c.js", &.{"/b.js"}); // baked: provider b (전이)
+    putBaked(&store, allocator, "/noise.js", &.{"/other.js"}); // baked: 무관 provider
+
+    // (1) provider 불변(무관 파일만 dirty) → 아무것도 evict 안 함(핵심 perf 경로).
+    {
+        var dirty: std.StringHashMapUnmanaged(void) = .empty;
+        defer dirty.deinit(allocator);
+        try dirty.put(allocator, "/unrelated.js", {});
+        store.evictConstConsumers(&dirty);
+        try testing.expect(store.modules.contains("/b.js"));
+        try testing.expect(store.modules.contains("/c.js"));
+        try testing.expect(store.modules.contains("/noise.js"));
+    }
+
+    // (2) a 변경 → b(provider a) evict → dirty 확장 {a,b} → c(provider b) evict(fixpoint). noise 유지.
+    {
+        var dirty: std.StringHashMapUnmanaged(void) = .empty;
+        defer dirty.deinit(allocator);
+        try dirty.put(allocator, "/a.js", {});
+        store.evictConstConsumers(&dirty);
+        try testing.expect(!store.modules.contains("/b.js"));
+        try testing.expect(!store.modules.contains("/c.js"));
+        try testing.expect(store.modules.contains("/noise.js")); // provider 무관 → 유지
+        try testing.expect(store.modules.contains("/a.js")); // 이 헬퍼는 provider 자신 evict 안 함(mtime 경로 담당)
+    }
+
+    // (3) null(변경 정보 없음) → 남은 baked 소비자(noise) 보수적 전량 evict. non-baked(a)는 유지.
+    store.evictConstConsumers(null);
+    try testing.expect(!store.modules.contains("/noise.js"));
+    try testing.expect(store.modules.contains("/a.js"));
 }
 
 // Regression #3755: putModule OOM rollback 시 cached_module = module.* shallow copy 의

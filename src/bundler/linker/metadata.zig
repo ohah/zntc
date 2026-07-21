@@ -1719,14 +1719,20 @@ pub fn buildCrossModuleConstValues(
     m: *const Module,
     sem: @import("../module.zig").ModuleSemanticData,
 ) !std.AutoHashMapUnmanaged(u32, semantic_symbol.ConstValue) {
-    return buildCrossModuleConstValuesProfiled(self, m, sem, .{});
+    return buildCrossModuleConstValuesProfiled(self, m, sem, .{}, null);
 }
 
+/// `providers` (#4557 B-precise): non-null 이면, const 값이 확정되는 각 import binding 의
+/// **provider 모듈 경로**({직접 import 대상, canonical} 둘 다)를 이 집합에 채운다. key 는
+/// provider module.path 를 borrow(이 함수 스코프 내 transient — caller 가 dupe 해 소유). warm
+/// invalidation 이 baked 소비자의 의존 provider 를 알아내는 데 쓴다. re-export 다단 체인은 v1
+/// 범위 밖 — 직접+canonical 만.
 pub fn buildCrossModuleConstValuesProfiled(
     self: *const Linker,
     m: *const Module,
     _: @import("../module.zig").ModuleSemanticData,
     profile_cats: ConstValuesProfile,
+    providers: ?*std.StringHashMapUnmanaged(void),
 ) !std.AutoHashMapUnmanaged(u32, semantic_symbol.ConstValue) {
     var const_values: std.AutoHashMapUnmanaged(u32, semantic_symbol.ConstValue) = .empty;
     if (m.import_bindings.len == 0) return const_values;
@@ -1791,6 +1797,13 @@ pub fn buildCrossModuleConstValuesProfiled(
         // import binding의 local symbol에 매핑
         if (ib.local_symbol.semanticIndex()) |local_sym| {
             try const_values.put(self.allocator, local_sym, cv);
+            // (#4557 B-precise) 이 const 값이 의존하는 provider 경로 수집: canonical provider
+            // (canon.module_index) + 직접 import 대상(rec.resolved) 둘 다. re-export 다단 체인은
+            // v1 범위 밖(직접·canonical 만). key 는 module.path borrow — caller 가 dupe 소유.
+            if (providers) |p| {
+                if (self.graph.getModule(canon.module_index)) |pm| try p.put(self.allocator, pm.path, {});
+                if (self.graph.getModule(rec.resolved)) |dm| try p.put(self.allocator, dm.path, {});
+            }
         }
     }
     return const_values;

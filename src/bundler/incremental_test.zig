@@ -3439,6 +3439,195 @@ test "reuse #4544: sensitive + dead-branch consumer warm==cold" {
     }, "index.js", "flags.js", "export const N = 2;\nexport const FLAG = 1;\n");
 }
 
+// (#4557 B-precise) reparsed_paths(=cache-miss 모듈)로 reparse 여부를 직접 계측하는 헬퍼.
+fn reparsedContains(paths: ?[]const []const u8, needle: []const u8) bool {
+    const ps = paths orelse return false;
+    for (ps) |p| {
+        if (std.mem.endsWith(u8, p, needle)) return true;
+    }
+    return false;
+}
+
+// #4557 (B-precise) perf 핵심: provider **불변** warm 빌드면 baked 소비자가 store cache-hit(reparse 0).
+// crude-b(#4544)는 baked 소비자를 매 warm 무조건 evict→reparse 했다(date-fns 38/304 회귀). B-precise 는
+// const_providers 로 provider 가 실제 바뀔 때만 evict. index(baked, `console.log(P+1)`)가 provider.js 의
+// P 를 bake — helper.js(무관)만 바꾼 warm2 는 index cache-hit, provider.js 를 바꾼 warm3 는 index evict/reparse.
+test "reuse #4557: provider 불변 warm → baked 소비자 cache-hit (reparse 0), provider 변경 시에만 evict" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "provider.js", "export const P = 10;\n");
+    try writeFile(tmp.dir, "helper.js", "export function fn(){ console.log('h'); }\n");
+    try writeFile(tmp.dir, "index.js",
+        \\import { P } from './provider.js';
+        \\import { fn } from './helper.js';
+        \\console.log(P + 1);
+        \\fn();
+        \\
+    );
+    const entry = try absPath(&tmp, "index.js");
+    defer alloc.free(entry);
+    const provider_abs = try absPath(&tmp, "provider.js");
+    defer alloc.free(provider_abs);
+    const helper_abs = try absPath(&tmp, "helper.js");
+    defer alloc.free(helper_abs);
+
+    var store = module_store.PersistentModuleStore.init(alloc);
+    defer store.deinit();
+    var cc = CompiledOutputCache.init(alloc);
+    defer cc.deinit();
+    const base_opts = @as(@import("bundler.zig").BundleOptions, .{
+        .entry_points = &.{entry},
+        .dev_mode = false,
+        .module_store = &store,
+        .compiled_cache = &cc,
+    });
+
+    // build 1 (cold): store seed. B-precise 는 baked 소비자(index)를 evict 하지 않고 const_providers 와
+    // 함께 저장한다(crude-b 는 여기서 evict 했음). change 1~4 배선을 store 내용으로 직접 검증.
+    {
+        var b = Bundler.init(alloc, base_opts);
+        var r = try b.bundle(std.testing.io);
+        try std.testing.expect(!r.hasErrors());
+        r.deinit(alloc);
+        b.deinit();
+    }
+    {
+        var found_index = false;
+        var it = store.modules.iterator();
+        while (it.next()) |e| {
+            if (std.mem.endsWith(u8, e.key_ptr.*, "index.js")) {
+                found_index = true;
+                // baked 소비자가 provider 경로와 함께 store 에 남아있어야 한다.
+                try std.testing.expect(e.value_ptr.const_providers.len > 0);
+                var saw_provider = false;
+                for (e.value_ptr.const_providers) |pp| {
+                    if (std.mem.endsWith(u8, pp, "provider.js")) saw_provider = true;
+                }
+                try std.testing.expect(saw_provider);
+            }
+        }
+        try std.testing.expect(found_index);
+    }
+
+    // warm 2: provider 와 무관한 helper.js 만 변경. index(baked)는 cache-hit — reparse 안 됨.
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "helper.js", "export function fn(){ console.log('h2'); }\n");
+    var touched2: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched2.deinit(alloc);
+    try touched2.put(alloc, helper_abs, {});
+    var warm2_opts = base_opts;
+    warm2_opts.changed_files = &touched2;
+    {
+        var b = Bundler.init(alloc, warm2_opts);
+        var r = try b.bundle(std.testing.io);
+        defer r.deinit(alloc);
+        defer b.deinit();
+        try std.testing.expect(!r.hasErrors());
+        // 핵심(B-precise vs crude-b): provider 불변 → index reparse 안 됨. crude-b 면 여기서 index reparse.
+        try std.testing.expect(!reparsedContains(r.reparsed_paths, "index.js"));
+        // helper 는 자기 변경으로 reparse (계측이 non-vacuous 임을 보장).
+        try std.testing.expect(reparsedContains(r.reparsed_paths, "helper.js"));
+    }
+
+    // warm 3: provider.js 의 const 값 변경 → index(baked)는 evict/reparse 되고 새 값 반영.
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "provider.js", "export const P = 20;\n");
+    var touched3: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched3.deinit(alloc);
+    try touched3.put(alloc, provider_abs, {});
+    var warm3_opts = base_opts;
+    warm3_opts.changed_files = &touched3;
+    var warm3 = Bundler.init(alloc, warm3_opts);
+    var warm3_r = try warm3.bundle(std.testing.io);
+    defer warm3_r.deinit(alloc);
+    defer warm3.deinit();
+    try std.testing.expect(!warm3_r.hasErrors());
+    // 핵심: provider 변경 → baked 소비자 evict → reparse.
+    try std.testing.expect(reparsedContains(warm3_r.reparsed_paths, "index.js"));
+    // 정확성: 새 P(20) 재-materialize == cold.
+    var cold = Bundler.init(alloc, .{ .entry_points = &.{entry}, .dev_mode = false });
+    var cold_r = try cold.bundle(std.testing.io);
+    defer cold_r.deinit(alloc);
+    defer cold.deinit();
+    try std.testing.expect(!cold_r.hasErrors());
+    try std.testing.expectEqualStrings(cold_r.output, warm3_r.output);
+}
+
+// #4557 전이 체인: a(const)→b(baked, `B=A+10`)→c(baked, `C=B+100`). a.js 변경 warm 이 b 를 evict 하고,
+// b 가 dirty 로 확장돼 c 까지 evict(fixpoint)해야 한다. 직접({a})만 봤다면 c 는 stale B 를 박제.
+test "reuse #4557: 전이 provider 체인 a→b→c fixpoint evict + warm==cold" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.js", "export const A = 1;\n");
+    try writeFile(tmp.dir, "b.js", "import { A } from './a.js';\nexport const B = A + 10;\n");
+    try writeFile(tmp.dir, "c.js", "import { B } from './b.js';\nexport const C = B + 100;\n");
+    try writeFile(tmp.dir, "index.js",
+        \\import { C } from './c.js';
+        \\console.log(C);
+        \\
+    );
+    const entry = try absPath(&tmp, "index.js");
+    defer alloc.free(entry);
+    const a_abs = try absPath(&tmp, "a.js");
+    defer alloc.free(a_abs);
+
+    var store = module_store.PersistentModuleStore.init(alloc);
+    defer store.deinit();
+    var cc = CompiledOutputCache.init(alloc);
+    defer cc.deinit();
+    const base_opts = @as(@import("bundler.zig").BundleOptions, .{
+        .entry_points = &.{entry},
+        .dev_mode = false,
+        .module_store = &store,
+        .compiled_cache = &cc,
+    });
+    {
+        var b = Bundler.init(alloc, base_opts);
+        var r = try b.bundle(std.testing.io);
+        try std.testing.expect(!r.hasErrors());
+        r.deinit(alloc);
+        b.deinit();
+    }
+    // b, c 둘 다 baked (const_providers 기록) — 전이 체인 전제.
+    {
+        var saw_b = false;
+        var saw_c = false;
+        var it = store.modules.iterator();
+        while (it.next()) |e| {
+            if (std.mem.endsWith(u8, e.key_ptr.*, "b.js")) saw_b = e.value_ptr.const_providers.len > 0;
+            if (std.mem.endsWith(u8, e.key_ptr.*, "c.js")) saw_c = e.value_ptr.const_providers.len > 0;
+        }
+        try std.testing.expect(saw_b);
+        try std.testing.expect(saw_c);
+    }
+
+    // a.js 변경 → fixpoint: {a} → b evict(provider a) → {a,b} → c evict(provider b).
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "a.js", "export const A = 2;\n");
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(alloc);
+    try touched.put(alloc, a_abs, {});
+    var warm_opts = base_opts;
+    warm_opts.changed_files = &touched;
+    var warm = Bundler.init(alloc, warm_opts);
+    var warm_r = try warm.bundle(std.testing.io);
+    defer warm_r.deinit(alloc);
+    defer warm.deinit();
+    try std.testing.expect(!warm_r.hasErrors());
+    // 전이 evict 검증: b(직접 provider a) + c(provider b, fixpoint) 모두 reparse.
+    try std.testing.expect(reparsedContains(warm_r.reparsed_paths, "b.js"));
+    try std.testing.expect(reparsedContains(warm_r.reparsed_paths, "c.js"));
+    // 정확성: C = (2+10)+100 = 112 == cold (c 가 stale 11 을 박제하지 않음).
+    var cold = Bundler.init(alloc, .{ .entry_points = &.{entry}, .dev_mode = false });
+    var cold_r = try cold.bundle(std.testing.io);
+    defer cold_r.deinit(alloc);
+    defer cold.deinit();
+    try std.testing.expect(!cold_r.hasErrors());
+    try std.testing.expectEqualStrings(cold_r.output, warm_r.output);
+}
+
 // #4535 [0]: transitive re-export barrel. origin(q.js)이 심볼을 rename 하면 barrel(barrel.js)의
 // emitFingerprint 가 origin canonical 을 chain-resolve 해 바뀌어야, barrel 통해 import 하는
 // main.js 가 miss 된다(안 그러면 옛 심볼명 참조 → ReferenceError). compiled_cache ON + dev OFF.
