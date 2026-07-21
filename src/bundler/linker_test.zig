@@ -2182,43 +2182,74 @@ test "reuse: #4538 shadow 이름이 scope-0↔nested 이동해도 fingerprint �
 // #4545 hole 2: CJS provider 의 interop 모드(node `__toESM(...,1)` vs babel `__toESM(...)`)는
 // provider 의 **첫 importer def_format**(cjsInteropIsNode)으로 정해진다. 이 importer-방향 입력이
 // flip 되면 provider 를 소비하는 **다른** 소비자 emit 이 바뀌므로 provider 의 emitFingerprint 가
-// 반응해야(deep-fold → 소비자 invalidation). 게이트는 emit(cjsInteropAccessExpr, wrap_kind==.cjs)와
-// 동일 → 비-cjs 모듈엔 interop 항이 안 붙어 over-invalidation 없음(main 가드로 확인).
-test "reuse #4545 hole 2: cjs provider interop 모드 flip → emitFingerprint 변화 (비-cjs 는 불변)" {
+// 반응해야(deep-fold → 소비자 invalidation). 무관 모듈(other)은 그 flip 에 안 바뀌어야(targeted).
+test "reuse #4545 hole 2: cjs provider interop 모드 flip → provider emitFingerprint 변화 (무관 모듈 불변)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "p.cjs", "module.exports.x = 1;\n");
-    try writeFile(tmp.dir, "main.mjs", "import { x } from './p.cjs';\nconsole.log(x);\n");
+    try writeFile(tmp.dir, "other.mjs", "export const o = 1;\n");
+    try writeFile(tmp.dir, "main.mjs",
+        \\import { x } from './p.cjs';
+        \\import { o } from './other.mjs';
+        \\console.log(x, o);
+        \\
+    );
     var r = try buildAndLink(std.testing.allocator, &tmp, "main.mjs");
     defer r.linker.deinit();
     defer r.destroyGraph();
     defer r.cache.deinit();
 
-    const p_idx = findModuleIdx(r.graph, "p.cjs").?;
-    const p = r.graph.getModule(p_idx).?;
+    const p = r.graph.getModule(findModuleIdx(r.graph, "p.cjs").?).?;
     // 전제: p 는 CJS-wrap 이어야 interop 게이트에 걸린다.
     try std.testing.expectEqual(types.WrapKind.cjs, p.wrap_kind);
-    const main_idx = findModuleIdx(r.graph, "main.mjs").?;
-    const main_mut = r.graph.moduleAtMut(main_idx).?;
-    const main_ro = r.graph.getModule(main_idx).?;
+    const other = r.graph.getModule(findModuleIdx(r.graph, "other.mjs").?).?;
+    const main_mut = r.graph.moduleAtMut(findModuleIdx(r.graph, "main.mjs").?).?;
     // 첫 importer(main) def_format esm → node interop.
     main_mut.def_format = .esm_mjs;
     const fp_p_node = r.linker.emitFingerprint(p);
-    const fp_main_esm = r.linker.emitFingerprint(main_ro);
+    const fp_other_a = r.linker.emitFingerprint(other);
     // 첫 importer def_format cjs → babel interop.
     main_mut.def_format = .cjs;
     const fp_p_babel = r.linker.emitFingerprint(p);
-    const fp_main_cjs = r.linker.emitFingerprint(main_ro);
-    // 핵심: CJS provider 의 fp 는 interop 모드에 반응한다(fix 전엔 불변 → stale).
+    const fp_other_b = r.linker.emitFingerprint(other);
+    // 핵심: CJS provider 의 fp 는 첫-importer interop 모드에 반응한다(cjsInteropIsNode; fix 전엔 불변→stale).
     try std.testing.expect(fp_p_node != fp_p_babel);
-    // 게이트 가드: main(ESM, wrap_kind != .cjs)은 def_format flip 에도 fp 불변 → over-invalidation 없음.
-    try std.testing.expectEqual(fp_main_esm, fp_main_cjs);
+    // targeted: main 의 def_format flip 은 무관 ESM 모듈 other 의 fp 를 안 바꾼다(spurious invalidation 없음).
+    try std.testing.expectEqual(fp_other_a, fp_other_b);
+}
+
+// #4545 code-review [1]: 소비자 **자기** def_format(=`.js` 는 package.json "type" 파생)이 flip 되면
+// CJS interop 모드(`cjsInteropMode`, `__toESM(require_pd(),1).default`↔`__toESM(require_pd()).default`)가
+// 바뀌어 per-module preamble emit 이 달라진다. source/mtime 불변이라 emitFingerprint 가 자기
+// def_format 을 접어야 own-index fold 로 소비자를 re-emit 한다.
+test "reuse #4545 [1]: 소비자 자기 def_format flip → emitFingerprint 변화" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "pd.cjs", "module.exports = function(){ return 7; };\n");
+    try writeFile(tmp.dir, "cons.mjs", "import pd from './pd.cjs';\nexport const cv = pd();\n");
+    try writeFile(tmp.dir, "main.mjs", "import { cv } from './cons.mjs';\nconsole.log(cv);\n");
+    var r = try buildAndLink(std.testing.allocator, &tmp, "main.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const cons_idx = findModuleIdx(r.graph, "cons.mjs").?;
+    const cons = r.graph.getModule(cons_idx).?;
+    const cons_mut = r.graph.moduleAtMut(cons_idx).?;
+    // node interop: def_format esm(package.json "type":"module").
+    cons_mut.def_format = .esm_package_json;
+    const fp_esm = r.linker.emitFingerprint(cons);
+    // babel interop: def_format commonjs(package.json "type":"commonjs").
+    cons_mut.def_format = .cjs_package_json;
+    const fp_cjs = r.linker.emitFingerprint(cons);
+    // 핵심: 소비자 자기 def_format 이 바뀌면 fp 도 바뀐다(fix 전엔 불변 → interop stale-hit).
+    try std.testing.expect(fp_esm != fp_cjs);
 }
 
 // #4545 hole 3: `import * as ns from './t'` 의 합성 shared-ns var 이름(`t_ns`/`t_ns_2` …)은
-// 전-모듈 동명-base 충돌 rank 로 결정된다(sharedNsVarNameHash=base+rank). 이는 dep 방향이 아니라
-// 전역 collision 구성에 의존해 deep-fold 가 못 잡으므로 target(ns 주인) 모듈의 emitFingerprint 에
-// 접었다. 동명-base 모듈을 추가해 t 의 rank 가 0→1 로 바뀌면 emitFingerprint(t) 가 달라져야 한다.
+// 전-모듈 동명-base 충돌 rank 로 결정된다(sharedNsRankHash=rank-only, ns-target 게이트). 이는 dep
+// 방향이 아니라 전역 collision 구성에 의존해 deep-fold 가 못 잡으므로 target(ns 주인) 모듈의
+// emitFingerprint 에 접었다. 동명-base 모듈을 추가해 t 의 rank 가 0→1 로 바뀌면 fp 가 달라져야 한다.
 test "reuse #4545 hole 3: shared-ns var 충돌 rank 변화 → target emitFingerprint 변화" {
     const alloc = std.testing.allocator;
     // 시나리오 A: base "t" 모듈이 t.ts 하나뿐 → rank 0.
@@ -2264,4 +2295,88 @@ test "reuse #4545 hole 3: shared-ns var 충돌 rank 변화 → target emitFinger
     };
     // 핵심: collision 구성 변화로 t 의 ns var 이름(rank)이 바뀌면 fp 도 바뀐다(fix 전엔 불변 → stale).
     try std.testing.expect(fp_a != fp_b);
+}
+
+// #4545 code-review [4]: rank 접기는 **ns-target 모듈만** 게이트되어야 한다. 동명-base 지만
+// `import * as ns` 대상이 아닌 모듈(흔한 `util.ts`/`index.ts` 무리)은 소비자가 그 shared-ns var 을
+// 참조하지 않으므로, collision 구성이 바뀌어 rank 가 변해도 emitFingerprint 가 불변이어야
+// (spurious 재emit 방지). ns-target 아닌 util.ts 의 rank 를 0→1 로 바꿔도 fp 불변을 확인
+// (게이트 없으면 rank 접기로 fp 가 바뀌어 이 테스트 실패).
+test "reuse #4545 [4]: 비-ns-target 동명-base 모듈은 rank 변화에도 fp 불변 (게이트)" {
+    const alloc = std.testing.allocator;
+    // A: util.ts 하나 (rank 0), 전부 named import → ns-target 아님.
+    const fp_a = blk: {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "util.ts", "export const a = 1;\n");
+        try writeFile(tmp.dir, "main.ts", "import { a } from './util';\nconsole.log(a);\n");
+        var r = try buildAndLink(alloc, &tmp, "main.ts");
+        defer r.linker.deinit();
+        defer r.destroyGraph();
+        defer r.cache.deinit();
+        const u = r.graph.getModule(findModuleIdx(r.graph, "util.ts").?).?;
+        break :blk r.linker.emitFingerprint(u);
+    };
+    // B: sub/util.ts 추가 → util.ts rank 0→1. 그래도 named import 라 ns-target 아님.
+    const fp_b = blk: {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "util.ts", "export const a = 1;\n");
+        try writeFile(tmp.dir, "sub/util.ts", "export const z = 9;\n");
+        try writeFile(tmp.dir, "main.ts",
+            \\import { z } from './sub/util';
+            \\import { a } from './util';
+            \\console.log(z, a);
+            \\
+        );
+        var r = try buildAndLink(alloc, &tmp, "main.ts");
+        defer r.linker.deinit();
+        defer r.destroyGraph();
+        defer r.cache.deinit();
+        var u_idx: ?ModuleIndex = null;
+        var it = r.graph.modulesIterator();
+        while (it.next()) |m| {
+            if (std.mem.endsWith(u8, m.path, "/util.ts") and !std.mem.endsWith(u8, m.path, "/sub/util.ts")) {
+                u_idx = m.index;
+                break;
+            }
+        }
+        break :blk r.linker.emitFingerprint(r.graph.getModule(u_idx.?).?);
+    };
+    // 게이트: 비-ns-target 은 rank 를 안 접으므로 rank 0→1 변화에도 fp 불변.
+    try std.testing.expectEqual(fp_a, fp_b);
+}
+
+// #4545 code-review [2]: ensureNsBaseRank 가 loop 중 OOM 나면 `ns_base_rank_built` 가 **false 로**
+// 남아야(잘린 partial rank map 을 latch 하지 않음). 이전 코드(built=true 를 loop 前 set)는 중간
+// OOM 시 corrupt map 을 latch → 이후 emit 이 잘못된 rank(collision 오해소, `util_ns` 중복) 재사용.
+// sharedNsRankHash 가 이 OOM 을 삼키므로(fp 는 보수적) built-flag 순서가 유일한 방어선.
+test "reuse #4545 [2]: ensureNsBaseRank OOM → built latch 안 됨 (재시도 정상 rank)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 동명-base(util) 충돌 → ns_base_rank 에 rank>0 엔트리 생성 대상.
+    try writeFile(tmp.dir, "util.ts", "export const a = 1;");
+    try writeFile(tmp.dir, "sub/util.ts", "export const b = 2;");
+    try writeFile(tmp.dir, "main.ts",
+        \\import { a } from './util';
+        \\import { b } from './sub/util';
+        \\console.log(a, b);
+    );
+    var r = try buildAndLink(std.testing.allocator, &tmp, "main.ts");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    // 1) loop 첫 alloc(makeSharedNamespaceBaseName)에서 OOM 유도.
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    r.linker.allocator = failing.allocator();
+    try std.testing.expectError(error.OutOfMemory, r.linker.ensureNsBaseRank());
+    // 핵심: OOM 이 built 를 latch 하지 않아야(fix 전엔 true → corrupt map 재사용).
+    try std.testing.expect(!r.linker.ns_base_rank_built);
+
+    // 2) 정상 allocator 로 재시도 → 성공 + 올바른 rank(util 충돌 1건 → rank>0 엔트리 ≥1).
+    r.linker.allocator = std.testing.allocator;
+    try r.linker.ensureNsBaseRank();
+    try std.testing.expect(r.linker.ns_base_rank_built);
+    try std.testing.expect(r.linker.ns_base_rank.count() >= 1);
 }

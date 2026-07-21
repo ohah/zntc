@@ -380,6 +380,12 @@ pub const Linker = struct {
     /// 이름 claim 이 `core_ns`/`core_ns_2` 를 run 마다 뒤바꾸던 비결정 제거.
     ns_base_rank: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     ns_base_rank_built: bool = false,
+    /// (#4545 hole 3) `import * as ns` 로 실제 namespace-import 되는 **target 모듈** 집합.
+    /// 이 모듈만 소비자 body 에 `{base}_ns` var 이 참조되므로, emitFingerprint 의 shared-ns
+    /// rank 접기(sharedNsRankHash)를 이 집합으로 게이트해 동명-base 지만 ns-target 아닌 모듈
+    /// (흔한 `index.ts` 무리)의 spurious 재emit 을 막는다. lazy 1회 build(ensureNsTargetSet).
+    ns_target_set: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    ns_target_set_built: bool = false,
     /// computeCrossChunkLinks(메타데이터 前 실행, chunk graph 보유)가 채우는
     /// "정의자 청크가 다른" namespace re-export target 집합. registerNamespace
     /// Rewrites 는 metadata 시점에 chunk 정보가 없으므로 이 집합으로 shared
@@ -532,6 +538,7 @@ pub const Linker = struct {
         self.ns_shared_inline_order.deinit(self.allocator);
         self.ns_shared_var_names.deinit(self.allocator);
         self.ns_base_rank.deinit(self.allocator);
+        self.ns_target_set.deinit(self.allocator);
         self.ns_cross_chunk_targets.deinit(self.allocator);
         // #1791 fatal diag message 해제 (allocPrint owned)
         for (self.fatal_diagnostics.items) |d| self.allocator.free(d.message);
@@ -2403,6 +2410,13 @@ pub const Linker = struct {
         if (m.wrap_kind == .cjs) {
             h = h *% 31 +% @as(u64, @intFromBool(self.cjsInteropIsNode(m)));
         }
+        // #4545 code-review [1]: 소비자 **자기** def_format 기반 interop(`cjsInteropMode`, metadata.zig
+        // — `__toESM(require_P(),1)`↔`__toESM(require_P())`)는 per-module preamble 에 박혀 compiled_cache
+        // 로 캐시된다. `.js` 소비자의 def_format 은 package.json "type" 에서 파생되므로 source/mtime 이
+        // 불변인 채 "type"(module↔commonjs)만 바뀌면 interop 모드가 flip → default import 오바인딩
+        // (`module.exports` 전체 vs `.default`). def_format 을 자기 fp 에 접어 own-index fold 로 re-emit.
+        // (provider-side cjsInteropIsNode 는 cross-chunk/entry 경로용으로 위에서 별도 접음.) 단조 안전.
+        h = h *% 31 +% @as(u64, @intFromEnum(m.def_format));
         // 2. 래퍼명(cross-chunk deconflict 결과 — 소비자 preamble 이 이 이름을 호출/참조).
         if (m.getRequireName(&self.rename_table)) |n| h ^= std.hash.Wyhash.hash(0x11, n);
         if (m.getInitName(&self.rename_table)) |n| h ^= std.hash.Wyhash.hash(0x12, n);
@@ -2439,9 +2453,9 @@ pub const Linker = struct {
         // (`t_ns`/`t_ns_2` …)이 소비자 body 의 `ns.member` 재작성에 박힌다. 그 이름은 전-모듈
         // 동명-base 충돌 rank 로 결정되는데(makeUniqueSharedNsVarNameLocked) 이는 dep 방향이
         // 아니라 **전역 collision 구성**(다른 모듈 추가/삭제)에 의존해 deep-fold 가 못 잡는다.
-        // 이름 결정 입력(base name + rank)을 target 의 local fp 에 접어 deep-fold 로 소비자
-        // invalidation. 상세·단조안전 근거는 `shared_namespace.sharedNsVarNameHash` 참조.
-        h = h *% 31 +% shared_namespace.sharedNsVarNameHash(self, mi);
+        // build-variable 입력(rank)만 target 의 local fp 에 접어 deep-fold 로 소비자 invalidation.
+        // ns-target 게이트·rank-only·단조안전 근거는 `shared_namespace.sharedNsRankHash` 참조.
+        h = h *% 31 +% shared_namespace.sharedNsRankHash(self, mi);
         return h;
     }
 
@@ -3391,6 +3405,8 @@ pub const Linker = struct {
 
     pub const registerNamespaceRewrites = shared_namespace.registerNamespaceRewrites;
     pub const ensureSharedNsVar = shared_namespace.ensureSharedNsVar;
+    /// #4545 code-review [2]: OOM-latch 회귀 유닛(linker_test.zig) 전용 노출.
+    pub const ensureNsBaseRank = shared_namespace.ensureNsBaseRank;
     /// (#3975) namespace 객체의 ESM-local getter literal 생성 (CJS star/inner 혼합 케이스의
     /// per-module 런타임 구성에서 사용). buildInlineObjectStr 노출.
     pub const buildNamespaceInlineObject = shared_namespace.buildInlineObjectStr;
