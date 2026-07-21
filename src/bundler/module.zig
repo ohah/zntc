@@ -293,11 +293,17 @@ pub const Module = struct {
     /// 안 함): cache-miss 재파스마다 false 로 초기화되고, cross-module bake 발생 시에만 set.
     const_baked: bool = false,
 
-    /// (#4557 B-precise) `const_baked` 모듈이 bake 한 값이 의존하는 **provider 모듈 경로** 집합.
-    /// const-materialize 가 소비자에 인라인한 cross-module const 의 {직접 import 대상, canonical}
-    /// provider path 를 기록한다(re-export 다단 체인은 v1 범위 밖). warm(증분) 빌드가 이 집합으로
-    /// **provider 가 실제 바뀔 때만** baked 소비자를 evict(전이 fixpoint) — provider 불변이면 캐시
-    /// hit(reparse 0). crude-b(#4544)의 무조건 evict 를 대체.
+    /// (#4557 B-precise) `const_baked` 모듈이 bake 한 값이 의존하는 **provider 모듈 경로**(diskPath,
+    /// query strip) 집합. const-materialize 가 소비자에 인라인한 cross-module const 의 re-export 체인
+    /// 전체(소비자→직접 import 대상→중간 barrel→canonical origin)를 기록한다([1]). warm(증분) 빌드가
+    /// 이 집합으로 **provider 가 실제 바뀔 때만** baked 소비자를 evict(전이 fixpoint) — provider
+    /// 불변이면 캐시 hit(reparse 0). crude-b(#4544)의 무조건 evict 를 대체.
+    ///
+    /// **diskPath 도메인([2])**: changed_files/dirty 와 매칭하려면 query 없는 diskPath 여야 한다.
+    ///
+    /// **빈 채로 남으면 = crude-b 폴백([3])**: `const_baked=true` 인데 이 집합이 비면(다단 체인 미추적/
+    /// dupe OOM/parse_arena 없음) provider 를 정밀히 모른다는 뜻 → `transferModulesToStore` 가 그 모듈을
+    /// 캐시에서 제외(무조건 evict)해 다음 warm 이 clean reparse 하게 강제한다(staleness 원천 차단).
     ///
     /// **소유권**: `parse_arena` 에서 alloc (materialize 시 dupe). arena.deinit 가 일괄 해제하므로
     /// 개별 free 금지(#1287). module_store 로 round-trip 시엔 CachedModule.const_providers 가 store

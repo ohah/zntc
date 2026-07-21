@@ -2527,6 +2527,7 @@ pub const Linker = struct {
     pub const buildRequireRewrites = metadata_mod.buildRequireRewrites;
     pub const buildFinalExports = metadata_mod.buildFinalExports;
     pub const ConstValuesProfile = metadata_mod.ConstValuesProfile;
+    pub const ConstProviderCollector = metadata_mod.ConstProviderCollector;
     pub const buildCrossModuleConstValues = metadata_mod.buildCrossModuleConstValues;
     pub const buildCrossModuleConstValuesProfiled = metadata_mod.buildCrossModuleConstValuesProfiled;
     pub const finalizeNamespaceData = metadata_mod.finalizeNamespaceData;
