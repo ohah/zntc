@@ -3628,6 +3628,151 @@ test "reuse #4557: 전이 provider 체인 a→b→c fixpoint evict + warm==cold"
     try std.testing.expectEqualStrings(cold_r.output, warm_r.output);
 }
 
+// #4557 [1] 다단 re-export 체인 provider: index→barrel1→barrel2→origin 로 const V(100) bake. barrel2
+// 가 재-export 대상을 origin(V=100)→origin2(W as V=200)로 바꾸면 index 의 baked 값이 100→200 이 돼야
+// 한다. const_providers 가 **중간 barrel2** 를 포함(체인 전체 수집)해야 barrel2 편집 warm 에서 index 가
+// evict/reparse 된다. {직접,canonical}만 기록하던 버그면 barrel2 누락 → index cache-hit stale(101).
+test "reuse #4557 [1]: 다단 barrel 편집 → baked 소비자 evict/reparse + warm==cold" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "origin.js", "export const V = 100;\n");
+    try writeFile(tmp.dir, "origin2.js", "export const W = 200;\n");
+    try writeFile(tmp.dir, "barrel2.js", "export { V } from './origin.js';\n");
+    try writeFile(tmp.dir, "barrel1.js", "export { V } from './barrel2.js';\n");
+    try writeFile(tmp.dir, "index.js",
+        \\import { V } from './barrel1.js';
+        \\console.log(V + 1);
+        \\
+    );
+    const entry = try absPath(&tmp, "index.js");
+    defer alloc.free(entry);
+    const barrel2_abs = try absPath(&tmp, "barrel2.js");
+    defer alloc.free(barrel2_abs);
+
+    var store = module_store.PersistentModuleStore.init(alloc);
+    defer store.deinit();
+    var cc = CompiledOutputCache.init(alloc);
+    defer cc.deinit();
+    const base_opts = @as(@import("bundler.zig").BundleOptions, .{
+        .entry_points = &.{entry},
+        .dev_mode = false,
+        .module_store = &store,
+        .compiled_cache = &cc,
+    });
+    {
+        var b = Bundler.init(alloc, base_opts);
+        var r = try b.bundle(std.testing.io);
+        try std.testing.expect(!r.hasErrors());
+        r.deinit(alloc);
+        b.deinit();
+    }
+    // index 의 const_providers 가 중간 barrel2 를 포함해야 한다(체인 전체 수집 — [1] 핵심).
+    {
+        var saw_barrel2 = false;
+        var it = store.modules.iterator();
+        while (it.next()) |e| {
+            if (std.mem.endsWith(u8, e.key_ptr.*, "index.js")) {
+                for (e.value_ptr.const_providers) |pp| {
+                    if (std.mem.endsWith(u8, pp, "barrel2.js")) saw_barrel2 = true;
+                }
+            }
+        }
+        try std.testing.expect(saw_barrel2);
+    }
+    // barrel2 만 편집: 재-export 대상을 origin2(W as V=200)로. index 소스는 불변.
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "barrel2.js", "export { W as V } from './origin2.js';\n");
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(alloc);
+    try touched.put(alloc, barrel2_abs, {});
+    var warm_opts = base_opts;
+    warm_opts.changed_files = &touched;
+    var warm = Bundler.init(alloc, warm_opts);
+    var warm_r = try warm.bundle(std.testing.io);
+    defer warm_r.deinit(alloc);
+    defer warm.deinit();
+    try std.testing.expect(!warm_r.hasErrors());
+    // 중간 barrel2 편집이 index 를 evict/reparse 해야 한다(체인 전체 추적).
+    try std.testing.expect(reparsedContains(warm_r.reparsed_paths, "index.js"));
+    // 정확성: V 가 200 으로 재해석 → console.log(201) == cold (stale 101 아님).
+    var cold = Bundler.init(alloc, .{ .entry_points = &.{entry}, .dev_mode = false });
+    var cold_r = try cold.bundle(std.testing.io);
+    defer cold_r.deinit(alloc);
+    defer cold.deinit();
+    try std.testing.expect(!cold_r.hasErrors());
+    try std.testing.expectEqualStrings(cold_r.output, warm_r.output);
+}
+
+// #4557 [3] 정밀 추적 불가(star re-export) → crude-b 폴백: `export *` 경유 const 는 chain walk 가
+// bail(export_map 에 named 엔트리 없음) → collector.incomplete → const_providers 빈 채. baked 지만
+// transferModulesToStore 가 그 소비자를 캐시에서 제외(무조건 evict)해 store 에 안 남긴다 → 매 warm
+// clean reparse. (버그: 빈 providers 를 그냥 캐시하면 evictConstConsumers 게이트(len>0)가 skip →
+// 영영 cache-hit stale, crude-b 보다 나빠짐.)
+test "reuse #4557 [3]: star re-export 경유 baked 소비자는 crude-b(캐시 제외) + warm==cold" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "origin.js", "export const W = 5;\n");
+    try writeFile(tmp.dir, "barrel.js", "export * from './origin.js';\n");
+    try writeFile(tmp.dir, "index.js",
+        \\import { W } from './barrel.js';
+        \\console.log(W + 1);
+        \\
+    );
+    const entry = try absPath(&tmp, "index.js");
+    defer alloc.free(entry);
+    const origin_abs = try absPath(&tmp, "origin.js");
+    defer alloc.free(origin_abs);
+
+    var store = module_store.PersistentModuleStore.init(alloc);
+    defer store.deinit();
+    var cc = CompiledOutputCache.init(alloc);
+    defer cc.deinit();
+    const base_opts = @as(@import("bundler.zig").BundleOptions, .{
+        .entry_points = &.{entry},
+        .dev_mode = false,
+        .module_store = &store,
+        .compiled_cache = &cc,
+    });
+    {
+        var b = Bundler.init(alloc, base_opts);
+        var r = try b.bundle(std.testing.io);
+        try std.testing.expect(!r.hasErrors());
+        r.deinit(alloc);
+        b.deinit();
+    }
+    // crude-b 폴백: index 는 baked(incomplete providers)라 store 에 캐시되지 않아야 한다([3]).
+    {
+        var cached_index = false;
+        var it = store.modules.iterator();
+        while (it.next()) |e| {
+            if (std.mem.endsWith(u8, e.key_ptr.*, "index.js")) cached_index = true;
+        }
+        try std.testing.expect(!cached_index);
+    }
+    // origin 편집(W=9) → index 는 (캐시 안 됐으니) reparse → console.log(10). warm==cold.
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "origin.js", "export const W = 9;\n");
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(alloc);
+    try touched.put(alloc, origin_abs, {});
+    var warm_opts = base_opts;
+    warm_opts.changed_files = &touched;
+    var warm = Bundler.init(alloc, warm_opts);
+    var warm_r = try warm.bundle(std.testing.io);
+    defer warm_r.deinit(alloc);
+    defer warm.deinit();
+    try std.testing.expect(!warm_r.hasErrors());
+    try std.testing.expect(reparsedContains(warm_r.reparsed_paths, "index.js"));
+    var cold = Bundler.init(alloc, .{ .entry_points = &.{entry}, .dev_mode = false });
+    var cold_r = try cold.bundle(std.testing.io);
+    defer cold_r.deinit(alloc);
+    defer cold.deinit();
+    try std.testing.expect(!cold_r.hasErrors());
+    try std.testing.expectEqualStrings(cold_r.output, warm_r.output);
+}
+
 // #4535 [0]: transitive re-export barrel. origin(q.js)이 심볼을 rename 하면 barrel(barrel.js)의
 // emitFingerprint 가 origin canonical 을 chain-resolve 해 바뀌어야, barrel 통해 import 하는
 // main.js 가 miss 된다(안 그러면 옛 심볼명 참조 → ReferenceError). compiled_cache ON + dev OFF.

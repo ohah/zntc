@@ -1714,6 +1714,17 @@ pub const ConstValuesProfile = struct {
     lookup: ?profile.Category = null,
 };
 
+/// (#4557 B-precise) const provider 경로 수집기. `paths` 는 **diskPath 정규화**된 provider 경로들
+/// (changed_files 도메인과 일치 — query strip, [2]). `incomplete` 는 어떤 const 라도 정밀 추적
+/// 불가(다단 re-export 체인의 중간 barrel 을 clean named `.re_export` 로 끝까지 못 따라감 — star/
+/// synthetic/.local 위장/cjs/깊이초과, [1])일 때 set. **all-or-nothing**: incomplete 면 caller 가
+/// paths 를 버리고 소비자 `const_providers` 를 비워 두어 transferModulesToStore 가 crude-b(무조건
+/// evict)로 폴백한다 → staleness 원천 차단([3]).
+pub const ConstProviderCollector = struct {
+    paths: std.StringHashMapUnmanaged(void) = .empty,
+    incomplete: bool = false,
+};
+
 pub fn buildCrossModuleConstValues(
     self: *const Linker,
     m: *const Module,
@@ -1722,17 +1733,18 @@ pub fn buildCrossModuleConstValues(
     return buildCrossModuleConstValuesProfiled(self, m, sem, .{}, null);
 }
 
-/// `providers` (#4557 B-precise): non-null 이면, const 값이 확정되는 각 import binding 의
-/// **provider 모듈 경로**({직접 import 대상, canonical} 둘 다)를 이 집합에 채운다. key 는
-/// provider module.path 를 borrow(이 함수 스코프 내 transient — caller 가 dupe 해 소유). warm
-/// invalidation 이 baked 소비자의 의존 provider 를 알아내는 데 쓴다. re-export 다단 체인은 v1
-/// 범위 밖 — 직접+canonical 만.
+/// `collector` (#4557 B-precise): non-null 이면, const 값이 확정되는 각 import binding 에 대해
+/// **소비자→직접 import 대상→…→canonical origin** 의 re-export 체인 전체(중간 barrel 포함)를
+/// clean named `.re_export` 로 따라가며 방문 모듈의 **diskPath** 를 `collector.paths` 에 넣는다
+/// ([1][2]). 체인을 canon 까지 확실히 못 따라가면(star/synthetic/.local 위장/깊이초과) 그 소비자를
+/// `collector.incomplete=true` 로 표시 → caller 가 crude-b 폴백. paths 키는 module.path 를 borrow
+/// (이 함수 스코프 transient — caller 가 dupe 해 소유).
 pub fn buildCrossModuleConstValuesProfiled(
     self: *const Linker,
     m: *const Module,
     _: @import("../module.zig").ModuleSemanticData,
     profile_cats: ConstValuesProfile,
-    providers: ?*std.StringHashMapUnmanaged(void),
+    collector: ?*ConstProviderCollector,
 ) !std.AutoHashMapUnmanaged(u32, semantic_symbol.ConstValue) {
     var const_values: std.AutoHashMapUnmanaged(u32, semantic_symbol.ConstValue) = .empty;
     if (m.import_bindings.len == 0) return const_values;
@@ -1797,16 +1809,49 @@ pub fn buildCrossModuleConstValuesProfiled(
         // import binding의 local symbol에 매핑
         if (ib.local_symbol.semanticIndex()) |local_sym| {
             try const_values.put(self.allocator, local_sym, cv);
-            // (#4557 B-precise) 이 const 값이 의존하는 provider 경로 수집: canonical provider
-            // (canon.module_index) + 직접 import 대상(rec.resolved) 둘 다. re-export 다단 체인은
-            // v1 범위 밖(직접·canonical 만). key 는 module.path borrow — caller 가 dupe 소유.
-            if (providers) |p| {
-                if (self.graph.getModule(canon.module_index)) |pm| try p.put(self.allocator, pm.path, {});
-                if (self.graph.getModule(rec.resolved)) |dm| try p.put(self.allocator, dm.path, {});
+            // (#4557 B-precise, [1][2]) 이 const 의 re-export 체인 전체(중간 barrel 포함)를 diskPath 로
+            // 수집. canon 까지 clean named `.re_export` 로 못 따라가면 incomplete → 소비자 crude-b 폴백.
+            if (collector) |c| {
+                const complete = collectConstProviderChain(self, rec.resolved, ib.imported_name, canon.module_index, &c.paths) catch false;
+                if (!complete) c.incomplete = true;
             }
         }
     }
     return const_values;
+}
+
+/// (#4557 B-precise, [1][2]) 소비자가 import 하는 const 의 re-export 체인을 `start`(직접 import
+/// 대상)에서 `canon_mi`(canonical origin)까지 따라가며 **방문 모든 모듈의 diskPath**(query strip,
+/// changed_files 도메인 일치)를 `out` 에 넣는다. clean named `.re_export` forwarding 만 따라간다.
+/// canon 에 확실히 도달하면 `true`(체인 전체 정확 수집). star/namespace re-export·.local 위장·cjs·
+/// 깊이초과 등 정밀 추적 불가 시 `false` → caller 가 소비자를 crude-b(무조건 evict) 폴백.
+/// **불변식**: `true` 를 반환하면 `out` 에 canon 을 포함한 체인 전체가 누락 없이 들어있다(over-
+/// collect 도 wrong-complete 도 아님 — 실제 resolver 와 동일 edge 만 따라가고 canon 도달을 확인).
+fn collectConstProviderChain(
+    self: *const Linker,
+    start: ModuleIndex,
+    name: []const u8,
+    canon_mi: ModuleIndex,
+    out: *std.StringHashMapUnmanaged(void),
+) !bool {
+    var cur = start;
+    var cur_name = name;
+    var depth: u32 = 0;
+    while (depth <= 100) : (depth += 1) { // linker max_chain_depth 와 동형 상한
+        const cm = self.graph.getModule(cur) orelse return false;
+        try out.put(self.allocator, cm.diskPath(), {});
+        if (@intFromEnum(cur) == @intFromEnum(canon_mi)) return true; // origin 도달 → 완전
+        const entry = self.export_map.get(.{ .module_index = @intCast(@intFromEnum(cur)), .name = cur_name }) orelse return false;
+        if (entry.binding.kind != .re_export) return false; // .local(위장 re-export 포함)/star/ns → 추적 불가
+        const rec_idx = entry.binding.import_record_index orelse return false;
+        if (std.mem.eql(u8, entry.binding.local_name, "*")) return false; // namespace re-export
+        if (rec_idx >= cm.import_records.len) return false;
+        const next = cm.import_records[rec_idx].resolved;
+        if (next.isNone()) return false;
+        cur = next;
+        cur_name = entry.binding.local_name;
+    }
+    return false; // 깊이 초과 → 폴백
 }
 
 /// namespace 리스트의 소유권을 이동하고, namespace preamble을 CJS preamble과 합친다.

@@ -137,36 +137,56 @@ pub const PersistentModuleStore = struct {
     /// 바뀌었는지 알 수 없으므로 모든 baked 소비자(const_providers.len>0)를 evict = crude-b 와
     /// 동일한 보수적 correctness (절대 stale 안 남김, perf 는 non-null 경로에서만 회복).
     ///
-    /// **순회 안전(HashMap 수정)**: evict 대상 path 를 먼저 수집 후 일괄 evict — iterator 무효화
-    /// 회피. evict 가 store key(및 provider 경로 backing)를 free 하므로, 전이 확장용 dirty 에는
-    /// evict *전에* path 를 dupe 해 넣는다(dangling 방지). dirty/dupe 는 self.allocator 소유, 종료 시 해제.
+    /// **도메인 정합(#4557 [2])**: `const_providers` 와 dirty 는 모두 **diskPath**(query strip)
+    /// 도메인이다 — changed_files 는 build_flow 가 `diskPath()` 로 매칭하고, const_providers 는
+    /// materialize 가 `diskPath()` 로 수집한다. 전이 확장(dirty += 소비자)도 소비자의 **diskPath**
+    /// (`cm.module.diskPath()`)를 넣어 도메인을 맞춘다. evict 자체는 store key(=m.path, query 포함)로.
+    ///
+    /// **순회 안전(HashMap 수정)**: evict 대상을 먼저 수집 후 일괄 evict — iterator 무효화 회피.
+    /// **OOM 견고성(#4557 [4])**: 정밀 경로가 alloc 실패하면 under-evict(stale) 대신 보수적 전량
+    /// evict(alloc-free)로 폴백. null(변경 정보 없음)도 동일 전량 evict.
     pub fn evictConstConsumers(self: *PersistentModuleStore, changed_files: ?*const std.StringHashMapUnmanaged(void)) void {
         // fast path: baked 소비자가 하나도 없으면 즉시 반환(비-tree-shake/dev 빌드 = 대부분).
-        var any_baked = false;
-        {
-            var it = self.modules.valueIterator();
-            while (it.next()) |cm| {
-                if (cm.const_providers.len > 0) {
-                    any_baked = true;
+        // (O(M) 스캔 — store-level baked_count 로 O(1) 화는 [7] deferred, 절대비용 무시가능.)
+        if (!self.hasBakedConsumer()) return;
+
+        if (changed_files) |cf| {
+            // 정밀 전이 evict. OOM 이면 보수적 전량 evict 로 폴백([4]) — 절대 under-evict(stale) 금지.
+            self.evictConstConsumersPrecise(cf) catch self.evictAllBakedConsumers();
+        } else {
+            // 변경 정보 없음(initial-after-warm / CLI) → 보수적 전량 evict (crude-b 동형).
+            self.evictAllBakedConsumers();
+        }
+    }
+
+    fn hasBakedConsumer(self: *PersistentModuleStore) bool {
+        var it = self.modules.valueIterator();
+        while (it.next()) |cm| {
+            if (cm.const_providers.len > 0) return true;
+        }
+        return false;
+    }
+
+    /// alloc-free 전량 evict: baked 소비자(const_providers.len>0)를 스캔-후-evict 반복. null 경로 +
+    /// 정밀 경로 OOM 폴백 공용. O(baked²) 지만 **alloc 0** 이라 OOM 상황에서도 안전(추가 실패 없음).
+    fn evictAllBakedConsumers(self: *PersistentModuleStore) void {
+        while (true) {
+            var victim: ?[]const u8 = null;
+            var it = self.modules.iterator();
+            while (it.next()) |e| {
+                if (e.value_ptr.const_providers.len > 0) {
+                    victim = e.key_ptr.*;
                     break;
                 }
             }
+            const v = victim orelse break;
+            self.evict(v); // v 는 삭제될 key 를 alias — fetchRemove 가 값 읽은 뒤 free, 이후 미사용.
         }
-        if (!any_baked) return;
+    }
 
-        const cf = changed_files orelse {
-            // 보수적 폴백: 모든 baked 소비자 evict (crude-b 동형).
-            var targets: std.ArrayListUnmanaged([]const u8) = .empty;
-            defer targets.deinit(self.allocator);
-            var it = self.modules.iterator();
-            while (it.next()) |e| {
-                if (e.value_ptr.const_providers.len > 0) targets.append(self.allocator, e.key_ptr.*) catch {};
-            }
-            for (targets.items) |p| self.evict(p);
-            return;
-        };
-
-        // dirty set: changed_files 키(borrowed, 이 호출 동안 유효) + evict 된 path 의 dupe(self 소유).
+    /// 정밀 전이 fixpoint evict. 모든 alloc 은 `try` — 실패 시 error 전파해 caller 가 전량 폴백.
+    fn evictConstConsumersPrecise(self: *PersistentModuleStore, cf: *const std.StringHashMapUnmanaged(void)) !void {
+        // dirty(diskPath 도메인): changed_files 키(borrowed) + evict 된 소비자 diskPath(dupe, self 소유).
         var dirty: std.StringHashMapUnmanaged(void) = .empty;
         var owned: std.ArrayListUnmanaged([]const u8) = .empty;
         defer {
@@ -174,18 +194,17 @@ pub const PersistentModuleStore = struct {
             for (owned.items) |s| self.allocator.free(s);
             owned.deinit(self.allocator);
         }
-        {
-            var cit = cf.iterator();
-            while (cit.next()) |e| dirty.put(self.allocator, e.key_ptr.*, {}) catch {};
-        }
+        var cit = cf.iterator();
+        while (cit.next()) |e| try dirty.put(self.allocator, e.key_ptr.*, {});
 
         // 전이 fixpoint: 매 pass 마다 provider 가 dirty 에 있는 baked 소비자를 수집→일괄 evict.
-        // evict 된 소비자 path 를 dirty 에 추가해 다음 pass 가 그 소비자를 provider 로 삼는 모듈을
-        // 잡게 한다. 생산적 pass 마다 map 이 줄어 유한 종료.
+        // evict 된 소비자의 diskPath 를 dirty 에 추가해 다음 pass 가 그 소비자를 provider 로 삼는
+        // 모듈까지 잡게 한다(a→b→c). 생산적 pass 마다 map 이 줄어 유한 종료.
+        const Target = struct { key: []const u8, disk: []const u8 };
         var changed_any = true;
         while (changed_any) {
             changed_any = false;
-            var targets: std.ArrayListUnmanaged([]const u8) = .empty;
+            var targets: std.ArrayListUnmanaged(Target) = .empty;
             defer targets.deinit(self.allocator);
             var it = self.modules.iterator();
             while (it.next()) |e| {
@@ -193,18 +212,18 @@ pub const PersistentModuleStore = struct {
                 if (cm.const_providers.len == 0) continue;
                 for (cm.const_providers) |p| {
                     if (dirty.contains(p)) {
-                        targets.append(self.allocator, e.key_ptr.*) catch {};
+                        // key(evict 용) + diskPath(dirty 확장용, 도메인 일치 [2]) 동시 캡처.
+                        try targets.append(self.allocator, .{ .key = e.key_ptr.*, .disk = cm.module.diskPath() });
                         break;
                     }
                 }
             }
-            for (targets.items) |path| {
-                // evict 전에 path 를 dupe 해 dirty 에 추가(evict 가 key backing 을 free 하므로).
-                if (self.allocator.dupe(u8, path)) |dup| {
-                    owned.append(self.allocator, dup) catch {};
-                    dirty.put(self.allocator, dup, {}) catch {};
-                } else |_| {}
-                self.evict(path);
+            for (targets.items) |t| {
+                // evict 전에 diskPath 를 dupe 해 dirty 에 추가(evict 가 module/key backing 을 free 하므로).
+                const dup = try self.allocator.dupe(u8, t.disk);
+                try owned.append(self.allocator, dup);
+                try dirty.put(self.allocator, dup, {});
+                self.evict(t.key);
                 changed_any = true;
             }
         }
@@ -353,33 +372,36 @@ pub const PersistentModuleStore = struct {
         self.allocator.free(providers);
     }
 
-    fn extractImportSpecifiers(self: *PersistentModuleStore, module: *const Module) ![]const []const u8 {
+    /// (#4557 cleanup [5]) 문자열 슬라이스 각 원소를 store allocator 로 dupe 해 owned 슬라이스 반환.
+    /// import_specifiers / const_providers 복제 공용. OOM 시 부분 dupe 를 errdefer 로 회수.
+    fn dupeStringSlice(self: *PersistentModuleStore, src: []const []const u8) ![]const []const u8 {
         var list: std.ArrayListUnmanaged([]const u8) = .empty;
         errdefer {
             for (list.items) |s| self.allocator.free(s);
             list.deinit(self.allocator);
         }
-        for (module.import_records) |rec| {
-            const dupe = try self.allocator.dupe(u8, rec.specifier);
-            try list.append(self.allocator, dupe);
-        }
+        try list.ensureTotalCapacityPrecise(self.allocator, src.len);
+        for (src) |s| list.appendAssumeCapacity(try self.allocator.dupe(u8, s));
         return try list.toOwnedSlice(self.allocator);
     }
 
-    /// (#4557 B-precise) module.const_providers(parse_arena 소유)를 store allocator 로 dupe.
-    /// extractImportSpecifiers 미러 — parse_arena 가 store 로 양도된 후에도 evictConstConsumers
-    /// 가 provider 경로를 안전히 참조하도록 store-owned 사본을 둔다. non-baked 모듈은 빈 슬라이스.
-    fn extractConstProviders(self: *PersistentModuleStore, module: *const Module) ![]const []const u8 {
+    fn extractImportSpecifiers(self: *PersistentModuleStore, module: *const Module) ![]const []const u8 {
+        // import_records 의 specifier 만 뽑아 store-owned dupe. (record 구조를 순회하므로 별도 loop.)
         var list: std.ArrayListUnmanaged([]const u8) = .empty;
         errdefer {
             for (list.items) |s| self.allocator.free(s);
             list.deinit(self.allocator);
         }
-        for (module.const_providers) |p| {
-            const dupe = try self.allocator.dupe(u8, p);
-            try list.append(self.allocator, dupe);
-        }
+        try list.ensureTotalCapacityPrecise(self.allocator, module.import_records.len);
+        for (module.import_records) |rec| list.appendAssumeCapacity(try self.allocator.dupe(u8, rec.specifier));
         return try list.toOwnedSlice(self.allocator);
+    }
+
+    /// (#4557 B-precise) module.const_providers(parse_arena 소유, diskPath)를 store allocator 로 dupe.
+    /// parse_arena 가 store 로 양도된 후에도 evictConstConsumers 가 provider 경로를 안전히 참조하도록
+    /// store-owned 사본을 둔다. non-baked(또는 crude-b 폴백) 모듈은 빈 슬라이스.
+    fn extractConstProviders(self: *PersistentModuleStore, module: *const Module) ![]const []const u8 {
+        return self.dupeStringSlice(module.const_providers);
     }
 
     /// 캐시된 모듈의 import specifiers가 새 모듈과 동일한지 확인.
@@ -592,6 +614,77 @@ test "PersistentModuleStore: evictConstConsumers 전이 fixpoint + 불변 no-op 
     store.evictConstConsumers(null);
     try testing.expect(!store.modules.contains("/noise.js"));
     try testing.expect(store.modules.contains("/a.js"));
+}
+
+// #4557 [2] query-suffix 도메인 정합: store key 는 m.path(query 포함)지만 const_providers/dirty 는
+// diskPath(query strip). 전이 확장이 evict 된 소비자의 **diskPath** 를 dirty 에 넣어야, 그 소비자를
+// provider 로 삼는 하위 모듈이 매칭돼 evict 된다. store key(query 포함)를 넣던 도메인 불일치면 매칭
+// 실패 → 하위 소비자 stale.
+test "PersistentModuleStore: evictConstConsumers query-suffix 전이 도메인 정합 (#4557 [2])" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    var store = PersistentModuleStore.init(allocator);
+    defer store.deinit();
+
+    const putBaked = struct {
+        fn call(s: *PersistentModuleStore, a: std.mem.Allocator, path: []const u8, providers: []const []const u8) void {
+            var m = Module.init(@enumFromInt(0), path);
+            m.const_providers = providers;
+            s.putModule(path, &m, 1);
+            m.deinit(a);
+        }
+    }.call;
+
+    // b 의 store key 는 "/b.js?raw"(query) 지만 diskPath 는 "/b.js". c 는 provider 로 diskPath "/b.js" 를 본다.
+    putBaked(&store, allocator, "/b.js?raw", &.{"/a.js"});
+    putBaked(&store, allocator, "/c.js", &.{"/b.js"});
+
+    var dirty: std.StringHashMapUnmanaged(void) = .empty;
+    defer dirty.deinit(allocator);
+    try dirty.put(allocator, "/a.js", {}); // diskPath 도메인
+
+    store.evictConstConsumers(&dirty);
+    // a 변경 → b(provider a) evict → 전이 dirty += diskPath(b)="/b.js" → c(provider "/b.js") evict.
+    // 버그(store key "/b.js?raw" 를 dirty 에 넣음)면 c.provider "/b.js" 와 불일치 → c 잔존(stale).
+    try testing.expect(!store.modules.contains("/b.js?raw"));
+    try testing.expect(!store.modules.contains("/c.js"));
+}
+
+// #4557 [4] OOM 견고성: 정밀 evict 경로가 alloc 실패하면 under-evict(stale) 대신 보수적 전량 evict.
+// FailingAllocator 로 dirty seed alloc 을 실패시키면 fallback(evictAllBakedConsumers, alloc-free)이
+// 모든 baked 소비자를 evict 해야 한다. changed_files 는 무관 경로라 정밀 경로가 정상 실행되면 0 evict —
+// 따라서 b/c 가 모두 사라지면 fallback 이 동작했다는 증거.
+test "PersistentModuleStore: evictConstConsumers OOM → 전량 evict 폴백 (#4557 [4])" {
+    const testing = std.testing;
+    var store = PersistentModuleStore.init(testing.allocator);
+    defer store.deinit();
+
+    const putBaked = struct {
+        fn call(s: *PersistentModuleStore, a: std.mem.Allocator, path: []const u8, providers: []const []const u8) void {
+            var m = Module.init(@enumFromInt(0), path);
+            m.const_providers = providers;
+            s.putModule(path, &m, 1);
+            m.deinit(a);
+        }
+    }.call;
+    putBaked(&store, testing.allocator, "/b.js", &.{"/a.js"});
+    putBaked(&store, testing.allocator, "/c.js", &.{"/b.js"});
+
+    var dirty: std.StringHashMapUnmanaged(void) = .empty;
+    defer dirty.deinit(testing.allocator);
+    try dirty.put(testing.allocator, "/unrelated.js", {}); // 어떤 provider 와도 무관.
+
+    // FailingAllocator 는 alloc 만 fail injection, free 는 underlying(testing.allocator) passthrough.
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    const orig = store.allocator;
+    store.allocator = failing.allocator();
+    // precise 경로의 첫 alloc(dirty seed put)이 OOM → catch → evictAllBakedConsumers(alloc-free).
+    store.evictConstConsumers(&dirty);
+    store.allocator = orig; // deinit 은 원 allocator 로 일관.
+
+    // fallback 이 전량 evict: b, c 모두 제거. (정밀 경로만 돌았다면 "/unrelated" 무관이라 0 evict.)
+    try testing.expect(!store.modules.contains("/b.js"));
+    try testing.expect(!store.modules.contains("/c.js"));
 }
 
 // Regression #3755: putModule OOM rollback 시 cached_module = module.* shallow copy 의

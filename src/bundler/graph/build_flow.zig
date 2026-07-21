@@ -1709,8 +1709,17 @@ pub fn transferModulesToStore(self: *ModuleGraph, io: std.Io, store: *module_sto
     for (0..self.moduleCount()) |i| {
         const m = self.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         if (m.parse_arena == null) continue; // disabled 등 arena 없는 모듈 스킵
-        // (#4557 B-precise) cross-module const 를 bake 한 모듈(m.const_baked)도 이제 캐시한다.
-        // putModule 이 m.const_providers 를 store-owned 로 복제해 저장 → 다음 warm 빌드 시작 시
+        // (#4557 B-precise, [3]) baked 인데 provider 를 정밀 추적 못한 모듈(다단 re-export 체인
+        // 미추적 / dupe OOM / parse_arena 없음 → const_providers 비어있음)은 **crude-b 폴백**:
+        // 캐시에서 제외(+과거 엔트리 evict)해 다음 warm 이 무조건 clean reparse 하도록 강제한다.
+        // evictConstConsumers 는 `const_providers.len>0` 게이트라 이런 baked-empty 를 못 잡으므로
+        // (그냥 캐시하면 영영 cache-hit stale — crude-b 보다 나빠짐), 여기서 원천 차단.
+        if (m.const_baked and m.const_providers.len == 0) {
+            store.evict(m.path);
+            continue;
+        }
+        // (#4557 B-precise) provider 를 정밀 추적한 baked 모듈(const_providers.len>0)은 그대로 캐시한다.
+        // putModule 이 m.const_providers 를 store-owned 로 복제 저장 → 다음 warm 시작 시
         // `evictConstConsumers(changed_files)` 가 provider 가 **실제 바뀐** 소비자만 전이 evict
         // (crude-b(#4544)의 무조건 evict → 매 warm reparse 회귀 해소). provider 불변이면 cache-hit.
         // mtime 은 buildIncremental / build 가 이미 module.mtime 에 기록.
