@@ -751,9 +751,14 @@ fn makeSharedNamespaceBaseName(self: *const Linker, target_mod_idx: u32) std.mem
 /// 결정적. rank>0 (충돌) 인 모듈만 map 에 저장 — 부재 시 rank 0.
 /// 호출처(getOrCreateSharedNamespaceVar)가 `ns_cache_mutex` 를 보유한 상태에서
 /// 부르므로 별도 락 불필요.
-fn ensureNsBaseRank(self: *Linker) std.mem.Allocator.Error!void {
+/// ⚠️ (#4545 code-review [2]) `ns_base_rank_built=true` 는 **loop 성공 완료 후에만** set 한다.
+/// loop 중간 OOM 이면 built 를 false 로 남겨 잘린 map(partial rank)이 latch 되지 않게 한다 —
+/// 안 그러면 다음 `ensureNsBaseRank` 호출이 built=true 로 즉시 반환해 corrupt rank 를 재사용
+/// (collision 오해소 → ReferenceError). false 로 남기면 다음 호출이 재시도(멱등: put 이 같은 idx
+/// 를 같은 rank 로 덮어씀)하거나, 재-OOM 시 error 를 전파해 abort(fail-safe)한다.
+/// pub: linker_test.zig 가 OOM-latch 회귀를 직접 계측(FailingAllocator).
+pub fn ensureNsBaseRank(self: *Linker) std.mem.Allocator.Error!void {
     if (self.ns_base_rank_built) return;
-    self.ns_base_rank_built = true;
 
     var counts: std.StringHashMapUnmanaged(u32) = .empty;
     defer {
@@ -778,36 +783,65 @@ fn ensureNsBaseRank(self: *Linker) std.mem.Allocator.Error!void {
             try self.ns_base_rank.put(self.allocator, idx, rank);
         }
     }
+    self.ns_base_rank_built = true; // 성공 완료 후에만 latch (partial-map 재사용 방지).
 }
 
-/// (#4545 hole 3) `import * as ns` 의 합성 shared-ns var 이름을 결정하는 입력
-/// (sanitized base name + 전-모듈 동명-base 충돌 rank)을 해시한다. 이 이름이 collision
-/// 구성 변화(동명 base 모듈 추가/삭제)로 `t_ns`→`t_ns_2` 처럼 바뀌면 이 해시가 바뀌고,
-/// 그 값이 target(namespace 주인) 모듈의 `emitFingerprint` 에 접혀 deep-fold 로 `ns.member`
-/// 참조 소비자를 invalidation 한다(증분 emit stale 방지 — hole 3).
+/// (#4545 hole 3, code-review [4]) `import * as ns` 로 실제 namespace-import 되는 target
+/// 모듈 집합을 1회 계산해 캐싱. 소비자 body 가 `{base}_ns` var 을 참조하는 건 오직 이 집합의
+/// 모듈뿐이라, `sharedNsRankHash` 의 rank 접기를 이 집합으로 게이트해 동명-base 지만 ns-target
+/// 아닌 모듈(흔한 `index.ts` 무리)의 spurious 재emit 을 없앤다. built-flag 는 [2] 와 동일하게
+/// **성공 완료 후에만** set(중간 OOM → false 유지 → 재시도/전파).
+fn ensureNsTargetSet(self: *Linker) std.mem.Allocator.Error!void {
+    if (self.ns_target_set_built) return;
+    const n: u32 = @intCast(self.graph.moduleCount());
+    var idx: u32 = 0;
+    while (idx < n) : (idx += 1) {
+        const m = self.getModule(idx) orelse continue;
+        for (m.import_bindings) |ib| {
+            if (ib.kind != .namespace) continue;
+            if (ib.import_record_index >= m.import_records.len) continue;
+            const rec = m.import_records[ib.import_record_index];
+            if (rec.resolved.isNone()) continue;
+            try self.ns_target_set.put(self.allocator, @intFromEnum(rec.resolved), {});
+        }
+    }
+    self.ns_target_set_built = true;
+}
+
+/// (#4545 hole 3) `import * as ns` target 모듈의 합성 shared-ns var 이름을 결정하는 **build-variable
+/// 입력** = 전-모듈 동명-base 충돌 rank 를 해시한다. 이름(`t_ns`→`t_ns_2`)이 collision 구성 변화
+/// (동명 base 모듈 추가/삭제)로 바뀌면 이 값이 바뀌어 target 의 `emitFingerprint`→deep-fold 로
+/// `ns.member` 참조 소비자를 invalidation 한다(증분 emit stale 방지).
 ///
-/// base+rank 는 단일번들·splitting 공통으로 결정적이다 — 두 경로 모두 실제 이름을
-/// `makeUniqueSharedNsVarNameLocked` 의 `base`+`rank` 로 만든다. module-set 변화가 곧 rank
-/// 변화이므로 "동명-base 모듈 추가/삭제" 시나리오를 완전 포착한다. 잔여 bump 원인
-/// (`ns_shared_var_names`/`seen_exports` 재충돌)은 (a) module-set 변화 시 rank 로,
-/// (b) target 자기 export 와의 충돌 시 emitFingerprint 의 export_bindings 해시로 이미 흡수된다.
-/// ⚠️ 단조 안전 — fp 입력 추가는 항상 "더 많이 감지"(deterministic → 새 false-hit 불가).
+/// - **rank 만** 접는다(code-review [5]): 이름은 `{base}_{rank}` 인데 base 는 모듈 path(identity)
+///   에서 파생돼 build 간 불변 — base 변화는 곧 다른 모듈(다른 cache 키)이고 소비자의 import-record
+///   resolved-path 접기(computeInputHash)가 이미 잡는다. rank 만 module-set 에 따라 변한다.
+/// - **ns-target 게이트**(code-review [4]): target 아닌 동명-base 모듈은 소비자가 그 ns var 을
+///   참조하지 않으므로 rank 를 접을 필요가 없다(접으면 흔한 `index.ts` 무리가 spurious 재emit).
+///   ⚠️ 게이트가 target 을 **누락하면 under-invalidation** 이라, 집합 build OOM 시엔 보수적으로
+///   게이트를 끄고 무조건 접는다(fail → 더 많이 감지, 단조 안전 유지).
+/// - rank build(ensureNsBaseRank) OOM 시엔 rank 를 못 구하므로 접지 않고(=이 build 에선 미반영),
+///   실제 이름을 정하는 emit 경로가 같은 OOM 이면 abort(fail-safe, [2]). 단조 안전.
 ///
-/// fp 는 병렬 emit 진입 *전* 단일 스레드(emitter.zig 의 emitDeepFingerprint 루프)에서만
-/// 계산되지만, `ensureNsBaseRank` 의 "ns_cache_mutex 보유" 불변식을 지키려 락을 잡는다
-/// (무경쟁이라 저비용; emitFingerprint 호출 경로 중 이 락 보유자가 없어 deadlock 없음).
-/// `use_shared_ns_preamble` 가 이 시점엔 false 라 `ns_shared_inline_cache` 는 단일번들에서
-/// 아직 비어 저장된 이름 조회는 불가 — 그래서 base+rank 를 재현한다.
-pub fn sharedNsVarNameHash(self: *const Linker, target_mod_idx: u32) u64 {
-    const base = makeSharedNamespaceBaseName(self, target_mod_idx) catch return 0;
-    defer self.allocator.free(base);
-    const h = std.hash.Wyhash.hash(0x4545_3, base);
+/// fp 는 병렬 emit 진입 *전* 단일 스레드(emitter.zig 의 emitDeepFingerprint 루프)에서만 계산되므로
+/// (`use_shared_ns_preamble`=false 라 emit 경로 미개시) 별도 락 없이 lazy build 안전 — emit 경로의
+/// `ensureNsBaseRank`(락 하) 는 built=true 를 보고 즉시 반환(무변이 read)한다.
+pub fn sharedNsRankHash(self: *const Linker, target_mod_idx: u32) u64 {
     const mutable_self = @constCast(self);
-    mutable_self.ns_cache_mutex.lock();
-    defer mutable_self.ns_cache_mutex.unlock();
-    ensureNsBaseRank(mutable_self) catch return h; // OOM: base 만 반영(비-회귀).
+    // ns-target 게이트: build 성공 시 non-target 은 접지 않음. OOM 시 보수적(게이트 off → 접음).
+    ensureNsTargetSet(mutable_self) catch {
+        return rankFold(self, target_mod_idx);
+    };
+    if (!self.ns_target_set.contains(target_mod_idx)) return 0;
+    return rankFold(self, target_mod_idx);
+}
+
+fn rankFold(self: *const Linker, target_mod_idx: u32) u64 {
+    const mutable_self = @constCast(self);
+    ensureNsBaseRank(mutable_self) catch return 0; // OOM: 미반영(emit 경로가 같은 OOM 이면 abort).
     const rank = self.ns_base_rank.get(target_mod_idx) orelse 0;
-    return h *% 31 +% @as(u64, rank);
+    if (rank == 0) return 0;
+    return @as(u64, rank) *% 0x9e3779b1;
 }
 
 /// rank 0 → `{base}_ns`, rank N>0 → `{base}_ns_{N+1}` (예: `core_ns`, `core_ns_2`).

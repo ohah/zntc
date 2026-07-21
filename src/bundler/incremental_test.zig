@@ -4007,6 +4007,11 @@ test "reuse #4545 hole 3: shared-ns 충돌 rank 변화 후 소비자 warm==cold"
     defer cold_r.deinit(alloc);
     defer cold.deinit();
     try std.testing.expect(!cold_r.hasErrors());
+    // (code-review [3]) mechanism-presence 가드: rank-flip 결과인 `t_ns_2`(rank 1) 가 실제 소비자
+    // 출력에 등장함을 확인 — inline ns object 등으로 바뀌어 shared-ns var 이 사라지면 이 warm==cold
+    // 가 vacuous 로 통과하는 것을 막는다.
+    try std.testing.expect(std.mem.indexOf(u8, cold_r.output, "t_ns_2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, warm_r.output, "t_ns_2") != null);
     try std.testing.expectEqualStrings(cold_r.output, warm_r.output);
 }
 
