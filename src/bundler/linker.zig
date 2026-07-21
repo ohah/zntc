@@ -2392,6 +2392,17 @@ pub const Linker = struct {
         // 가 이미 해시) + path-set clear(incremental.zig)로 커버된다.
         h = h *% 31 +% @as(u64, @intFromBool(m.uses_top_level_await));
         h = h *% 31 +% @as(u64, @intFromBool(m.isInCycle()));
+        // #4545 (hole 2): CJS provider 의 interop 모드(node `__toESM(...,1)` vs babel `__toESM(...)`)는
+        // `cjsInteropIsNode` = provider 의 **첫 importer def_format** 로 정해진다. 이건 **importer 방향**
+        // 의존이라 dep-방향 Merkle deep-fold 가 못 잡는다: 첫 importer 의 def_format(esm↔cjs) 이 flip
+        // 되면 이 CJS provider 를 소비하는 **다른 소비자**의 interop 식이 바뀌는데 그 소비자 source/fp 는
+        // 그대로라 stale-hit. provider 의 local fp 에 접으면 own-index fold 가 provider 자기 청크의
+        // materialize(writeCjsInteropMaterialize)를, per-record/deep fold 가 소비자를 invalidation 한다.
+        // ⚠️ 게이트/술어는 emit 이 실제 쓰는 `cjsInteropAccessExpr`(wrap_kind==.cjs 인 provider 에만
+        // 호출) + 동일 `cjsInteropIsNode` 라 over/under 없음. importers 는 emit 前 확정이라 fp 시점 호출 안전.
+        if (m.wrap_kind == .cjs) {
+            h = h *% 31 +% @as(u64, @intFromBool(self.cjsInteropIsNode(m)));
+        }
         // 2. 래퍼명(cross-chunk deconflict 결과 — 소비자 preamble 이 이 이름을 호출/참조).
         if (m.getRequireName(&self.rename_table)) |n| h ^= std.hash.Wyhash.hash(0x11, n);
         if (m.getInitName(&self.rename_table)) |n| h ^= std.hash.Wyhash.hash(0x12, n);
@@ -2424,6 +2435,13 @@ pub const Linker = struct {
             }
             h = h *% 31 +% eh;
         }
+        // #4545 (hole 3): 이 모듈이 `import * as ns` 의 target 이면 합성 shared-ns var 이름
+        // (`t_ns`/`t_ns_2` …)이 소비자 body 의 `ns.member` 재작성에 박힌다. 그 이름은 전-모듈
+        // 동명-base 충돌 rank 로 결정되는데(makeUniqueSharedNsVarNameLocked) 이는 dep 방향이
+        // 아니라 **전역 collision 구성**(다른 모듈 추가/삭제)에 의존해 deep-fold 가 못 잡는다.
+        // 이름 결정 입력(base name + rank)을 target 의 local fp 에 접어 deep-fold 로 소비자
+        // invalidation. 상세·단조안전 근거는 `shared_namespace.sharedNsVarNameHash` 참조.
+        h = h *% 31 +% shared_namespace.sharedNsVarNameHash(self, mi);
         return h;
     }
 
