@@ -780,6 +780,36 @@ fn ensureNsBaseRank(self: *Linker) std.mem.Allocator.Error!void {
     }
 }
 
+/// (#4545 hole 3) `import * as ns` 의 합성 shared-ns var 이름을 결정하는 입력
+/// (sanitized base name + 전-모듈 동명-base 충돌 rank)을 해시한다. 이 이름이 collision
+/// 구성 변화(동명 base 모듈 추가/삭제)로 `t_ns`→`t_ns_2` 처럼 바뀌면 이 해시가 바뀌고,
+/// 그 값이 target(namespace 주인) 모듈의 `emitFingerprint` 에 접혀 deep-fold 로 `ns.member`
+/// 참조 소비자를 invalidation 한다(증분 emit stale 방지 — hole 3).
+///
+/// base+rank 는 단일번들·splitting 공통으로 결정적이다 — 두 경로 모두 실제 이름을
+/// `makeUniqueSharedNsVarNameLocked` 의 `base`+`rank` 로 만든다. module-set 변화가 곧 rank
+/// 변화이므로 "동명-base 모듈 추가/삭제" 시나리오를 완전 포착한다. 잔여 bump 원인
+/// (`ns_shared_var_names`/`seen_exports` 재충돌)은 (a) module-set 변화 시 rank 로,
+/// (b) target 자기 export 와의 충돌 시 emitFingerprint 의 export_bindings 해시로 이미 흡수된다.
+/// ⚠️ 단조 안전 — fp 입력 추가는 항상 "더 많이 감지"(deterministic → 새 false-hit 불가).
+///
+/// fp 는 병렬 emit 진입 *전* 단일 스레드(emitter.zig 의 emitDeepFingerprint 루프)에서만
+/// 계산되지만, `ensureNsBaseRank` 의 "ns_cache_mutex 보유" 불변식을 지키려 락을 잡는다
+/// (무경쟁이라 저비용; emitFingerprint 호출 경로 중 이 락 보유자가 없어 deadlock 없음).
+/// `use_shared_ns_preamble` 가 이 시점엔 false 라 `ns_shared_inline_cache` 는 단일번들에서
+/// 아직 비어 저장된 이름 조회는 불가 — 그래서 base+rank 를 재현한다.
+pub fn sharedNsVarNameHash(self: *const Linker, target_mod_idx: u32) u64 {
+    const base = makeSharedNamespaceBaseName(self, target_mod_idx) catch return 0;
+    defer self.allocator.free(base);
+    const h = std.hash.Wyhash.hash(0x4545_3, base);
+    const mutable_self = @constCast(self);
+    mutable_self.ns_cache_mutex.lock();
+    defer mutable_self.ns_cache_mutex.unlock();
+    ensureNsBaseRank(mutable_self) catch return h; // OOM: base 만 반영(비-회귀).
+    const rank = self.ns_base_rank.get(target_mod_idx) orelse 0;
+    return h *% 31 +% @as(u64, rank);
+}
+
 /// rank 0 → `{base}_ns`, rank N>0 → `{base}_ns_{N+1}` (예: `core_ns`, `core_ns_2`).
 /// rank 가 target 의 module_index 로 결정되므로 병렬 materialize 순서와 무관 (#3966).
 /// 잔여 충돌(target 자체 export 와 동명 등 희소 케이스)은 결정적으로 증가.

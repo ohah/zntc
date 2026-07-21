@@ -3882,6 +3882,134 @@ test "reuse #4535: export reorder warm==cold" {
     try std.testing.expectEqualStrings(cold_r.output, warm_r.output);
 }
 
+// #4545 hole 2 warm==cold(byte-identity 가드): CJS provider(pd.cjs)를 default-import 하는
+// interop 소비자(cons.mjs → `__toESM(require_pd(), 1).default`)가 있고, 무관 모듈(other.mjs)만
+// body-only 편집해 warm rebuild 하면 interop-bearing 소비자가 compiled_cache 재사용되며 warm==cold.
+// (⚠️ hole 2 의 first-importer interop 결정은 cross-chunk materialize=emitChunks(비-cache) 또는
+//  entry finalExports=entry 가 곧 자기 first-importer 라, compiled_cache emit-byte 로는 재현 불가.
+//  before/after 는 fp-unit `reuse #4545 hole 2`(linker_test.zig)가 담당 — 여긴 interop 소비자가
+//  새 fp 입력으로 spurious 하게 달라지지 않는지 보장하는 회귀 가드.)
+test "reuse #4545 hole 2: CJS default-interop 소비자 warm==cold (byte-identity)" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "pd.cjs", "module.exports = function(){ return 7; };\n");
+    try writeFile(tmp.dir, "cons.mjs", "import pd from './pd.cjs';\nexport const cv = pd();\n");
+    try writeFile(tmp.dir, "other.mjs", "export const o = 1;\n");
+    try writeFile(tmp.dir, "index.mjs",
+        \\import { cv } from './cons.mjs';
+        \\import { o } from './other.mjs';
+        \\console.log(cv, o);
+        \\
+    );
+    const entry = try absPath(&tmp, "index.mjs");
+    defer alloc.free(entry);
+    var store = module_store.PersistentModuleStore.init(alloc);
+    defer store.deinit();
+    var cc = CompiledOutputCache.init(alloc);
+    defer cc.deinit();
+    const base_opts = @as(@import("bundler.zig").BundleOptions, .{
+        .entry_points = &.{entry},
+        .dev_mode = false,
+        .module_store = &store,
+        .compiled_cache = &cc,
+    });
+    for (0..2) |_| {
+        var b = Bundler.init(alloc, base_opts);
+        var r = try b.bundle(std.testing.io);
+        try std.testing.expect(!r.hasErrors());
+        r.deinit(alloc);
+        b.deinit();
+    }
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    // other.mjs 만 body-only 편집 → cons.mjs(interop-bearing)는 재사용. warm==cold.
+    try writeFile(tmp.dir, "other.mjs", "export const o = 2;\n");
+    const other_abs = try absPath(&tmp, "other.mjs");
+    defer alloc.free(other_abs);
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(alloc);
+    try touched.put(alloc, other_abs, {});
+    var warm_opts = base_opts;
+    warm_opts.changed_files = &touched;
+    var warm = Bundler.init(alloc, warm_opts);
+    var warm_r = try warm.bundle(std.testing.io);
+    defer warm_r.deinit(alloc);
+    defer warm.deinit();
+    try std.testing.expect(!warm_r.hasErrors());
+    // interop 형태가 실제로 emit 됐는지 확인(가드가 빈 케이스를 지키지 않도록).
+    try std.testing.expect(std.mem.indexOf(u8, warm_r.output, "__toESM(require_pd(), 1)") != null);
+    var cold = Bundler.init(alloc, .{ .entry_points = &.{entry}, .dev_mode = false });
+    var cold_r = try cold.bundle(std.testing.io);
+    defer cold_r.deinit(alloc);
+    defer cold.deinit();
+    try std.testing.expect(!cold_r.hasErrors());
+    try std.testing.expectEqualStrings(cold_r.output, warm_r.output);
+}
+
+// #4545 hole 3 warm==cold: `import * as ns` 소비자(c.ts, ns 를 값으로 사용 → shared ns var `t_ns`)가
+// 있고, warm 에서 동명-base 모듈(sub/t.ts)을 추가하면 t 의 shared ns var 이름이 전-모듈 collision
+// rank 로 `t_ns`→`t_ns_2` 로 바뀐다. c.ts 는 불변이라 이 이름 변화를 fp 로 못 잡으면 stale(옛 `t_ns`
+// 참조 → 새 preamble `t_ns_2` 와 불일치). sharedNsVarNameHash 가 t.local fp→deep fold→c invalidation.
+test "reuse #4545 hole 3: shared-ns 충돌 rank 변화 후 소비자 warm==cold" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "t.ts", "export function a(){ return 'A'; }\n");
+    try writeFile(tmp.dir, "c.ts",
+        \\import * as ns from './t';
+        \\export const keys = Object.keys(ns).join(',');
+        \\
+    );
+    try writeFile(tmp.dir, "index.ts", "import { keys } from './c';\nconsole.log(keys);\n");
+    // sub/t.ts(base "t") 는 warm 편집에서 import 되어 collision 을 만든다.
+    try writeFile(tmp.dir, "sub/t.ts", "export const z = 9;\n");
+    const entry = try absPath(&tmp, "index.ts");
+    defer alloc.free(entry);
+    var store = module_store.PersistentModuleStore.init(alloc);
+    defer store.deinit();
+    var cc = CompiledOutputCache.init(alloc);
+    defer cc.deinit();
+    const base_opts = @as(@import("bundler.zig").BundleOptions, .{
+        .entry_points = &.{entry},
+        .dev_mode = false,
+        .module_store = &store,
+        .compiled_cache = &cc,
+    });
+    for (0..2) |_| {
+        var b = Bundler.init(alloc, base_opts);
+        var r = try b.bundle(std.testing.io);
+        try std.testing.expect(!r.hasErrors());
+        r.deinit(alloc);
+        b.deinit();
+    }
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    // index.ts 만 편집: sub/t.ts import 추가 → 동명-base collision → t 의 ns var 이름 flip. c.ts 불변.
+    try writeFile(tmp.dir, "index.ts",
+        \\import { keys } from './c';
+        \\import { z } from './sub/t';
+        \\console.log(keys, z);
+        \\
+    );
+    const idx_abs = try absPath(&tmp, "index.ts");
+    defer alloc.free(idx_abs);
+    var touched: std.StringHashMapUnmanaged(void) = .empty;
+    defer touched.deinit(alloc);
+    try touched.put(alloc, idx_abs, {});
+    var warm_opts = base_opts;
+    warm_opts.changed_files = &touched;
+    var warm = Bundler.init(alloc, warm_opts);
+    var warm_r = try warm.bundle(std.testing.io);
+    defer warm_r.deinit(alloc);
+    defer warm.deinit();
+    try std.testing.expect(!warm_r.hasErrors());
+    var cold = Bundler.init(alloc, .{ .entry_points = &.{entry}, .dev_mode = false });
+    var cold_r = try cold.bundle(std.testing.io);
+    defer cold_r.deinit(alloc);
+    defer cold.deinit();
+    try std.testing.expect(!cold_r.hasErrors());
+    try std.testing.expectEqualStrings(cold_r.output, warm_r.output);
+}
+
 // #4535 [Merkle]: star re-export barrel(`export *`). origin(x.js)이 심볼 rename 하면 deep-fold 가
 // barrel 의 deep fp 에 x 의 local fp 를 접어 barrel/main 을 miss 시킨다(single-hop 은 export*=chain
 // null 이라 못 잡아 ReferenceError 였음). compiled_cache ON + dev OFF.
