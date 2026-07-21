@@ -335,6 +335,10 @@ fn materializeCrossModuleConstFactsForIndex(
     if (m.import_bindings.len == 0) return false;
     const sem = m.semantic orelse return false;
     const ast = &(m.ast orelse return false);
+    // (#4557 B-precise) provider 경로 수집 집합. GPA(self.allocator)로 만들고 함수 끝 deinit.
+    // buildCrossModuleConstValuesProfiled 가 채운 뒤, bake 확정 시 parse_arena 로 dupe 해 module 에 기록.
+    var providers_set: std.StringHashMapUnmanaged(void) = .empty;
+    defer providers_set.deinit(self.allocator);
     var const_values = blk: {
         var build_scope = profile.beginMaybe(const_profile.build_facts);
         defer build_scope.end();
@@ -345,7 +349,7 @@ fn materializeCrossModuleConstFactsForIndex(
             }
         else
             Linker.ConstValuesProfile{};
-        break :blk try self.linker.buildCrossModuleConstValuesProfiled(m, sem, build_profile);
+        break :blk try self.linker.buildCrossModuleConstValuesProfiled(m, sem, build_profile, &providers_set);
     };
     const should_materialize = blk: {
         var gate_scope = profile.beginMaybe(const_profile.candidate_gate);
@@ -379,8 +383,33 @@ fn materializeCrossModuleConstFactsForIndex(
     if (!materialized.changed) return false;
 
     // (#4544) 이 모듈 AST 에 cross-module const 를 bake 함 → module_store 캐시에서 제외되도록 표시.
-    // baked 값은 provider const 에 의존하므로 소비자 mtime 캐시로 재사용하면 stale (transferModulesToStore 가 evict).
+    // baked 값은 provider const 에 의존하므로 소비자 mtime 캐시로 재사용하면 stale.
     m.const_baked = true;
+
+    // (#4557 B-precise) 이 bake 가 의존하는 provider 경로를 parse_arena 로 dupe 해 module 에 기록한다.
+    // arena 소유(arena.deinit 가 일괄 해제 — #1287, 수동 free 금지). warm invalidation 이 이 집합으로
+    // provider 변경 시에만 baked 소비자를 evict(전이 fixpoint). parse_arena 없으면(virtual 등) 애초에
+    // module_store 캐시 대상이 아니라 skip 해도 무방. providers_set 이 비면(edge: getModule 실패 등)
+    // const_providers 는 &.{} 로 남아 crude-b 처럼 무조건 evict 로 폴백(보수적 correctness 유지).
+    if (m.parse_arena) |arena| {
+        const aa = arena.allocator();
+        const n = providers_set.count();
+        if (n > 0) {
+            if (aa.alloc([]const u8, n)) |slice| {
+                var it = providers_set.keyIterator();
+                var i: usize = 0;
+                var ok = true;
+                while (it.next()) |k| : (i += 1) {
+                    slice[i] = aa.dupe(u8, k.*) catch {
+                        // dupe OOM: 부분 기록보다 전량 폴백(빈 채로 두면 conservative evict).
+                        ok = false;
+                        break;
+                    };
+                }
+                if (ok) m.const_providers = slice;
+            } else |_| {}
+        }
+    }
 
     const skip_minify = const_profile.policy.skipMinifyIfSafe() and !materialized.needs_minify;
     minifyAndResyncModule(self, m, sem, ast, const_profile, skip_minify);

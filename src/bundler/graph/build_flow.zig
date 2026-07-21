@@ -987,6 +987,12 @@ pub fn buildIncremental(
     var cache_hit_modules: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer cache_hit_modules.deinit(self.allocator);
 
+    // (#4557 B-precise) store 소비(getIfFresh) 전에 baked 소비자 정밀 무효화. changed_files 로
+    // 시작해 전이 fixpoint 로 provider 가 실제 바뀐 baked 소비자만 evict → 그 소비자는 이어지는
+    // 캐시 조회에서 miss → clean reparse+fresh 재-materialize. provider 불변이면 store 에 남아
+    // cache-hit(reparse 0). changed_files==null 이면 보수적으로 전량 evict(crude-b 동형).
+    store.evictConstConsumers(changed_files);
+
     var discover_scope = profile.begin(.graph_discover);
 
     // 순차 처리 — 증분 빌드는 캐시 히트가 대부분이므로 스레드 풀 오버헤드보다 효율적.
@@ -1224,6 +1230,12 @@ pub fn buildIncrementalPreserved(
     // 가 남아 emit 이 A 외 전 모듈을 unchanged 오판→peek stale.
     if (self.changed_emit_paths) |*s| s.deinit(self.allocator);
     self.changed_emit_paths = null;
+
+    // (#4557 B-precise) store 소비 전에 baked 소비자 정밀 무효화(buildIncremental 와 동형). 보존
+    // 모드는 tree-shake OFF(dev) 라 baked 모듈이 없어 통상 fast-path no-op 이지만, fallbackFullRebuild
+    // → transferModulesToStore(예외적 1회) 후 buildIncremental 이 다시 무효화하는 경로와 정합. store
+    // 가 비었거나 baked 소비자 0 이면 즉시 반환(무비용).
+    store.evictConstConsumers(changed_files);
 
     // cold / 첫 빌드 / 직전 fallback 으로 graph 가 비워진 경우 → full discovery.
     // 보존 모드는 store 를 안 채워(transferModulesToStore 비활성) cold 빌드가 전량 cache-miss 다.
@@ -1697,14 +1709,10 @@ pub fn transferModulesToStore(self: *ModuleGraph, io: std.Io, store: *module_sto
     for (0..self.moduleCount()) |i| {
         const m = self.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         if (m.parse_arena == null) continue; // disabled 등 arena 없는 모듈 스킵
-        // (#4544) cross-module const 를 AST 에 bake 한 모듈은 캐시하지 않는다. baked 리터럴은
-        // provider const 에 의존하는 graph-derived 산출물이라, 소비자 자기 mtime 키로 캐시하면
-        // provider 변경 시 stale (#4535 2번째 층). store 에서 제외 → 다음 warm 빌드가 clean
-        // reparse 후 현재 provider 값으로 fresh 재-materialize. 과거 non-baked 시절 엔트리도 evict.
-        if (m.const_baked) {
-            store.evict(m.path);
-            continue;
-        }
+        // (#4557 B-precise) cross-module const 를 bake 한 모듈(m.const_baked)도 이제 캐시한다.
+        // putModule 이 m.const_providers 를 store-owned 로 복제해 저장 → 다음 warm 빌드 시작 시
+        // `evictConstConsumers(changed_files)` 가 provider 가 **실제 바뀐** 소비자만 전이 evict
+        // (crude-b(#4544)의 무조건 evict → 매 warm reparse 회귀 해소). provider 불변이면 cache-hit.
         // mtime 은 buildIncremental / build 가 이미 module.mtime 에 기록.
         // 여기서 재-stat 하면 watcher-driven mtime cache 효과가 half-revert
         // 됨 (Issue #1727 §3). 0 이면 초기 경로에서 실패했던 모듈 —

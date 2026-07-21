@@ -293,6 +293,18 @@ pub const Module = struct {
     /// 안 함): cache-miss 재파스마다 false 로 초기화되고, cross-module bake 발생 시에만 set.
     const_baked: bool = false,
 
+    /// (#4557 B-precise) `const_baked` 모듈이 bake 한 값이 의존하는 **provider 모듈 경로** 집합.
+    /// const-materialize 가 소비자에 인라인한 cross-module const 의 {직접 import 대상, canonical}
+    /// provider path 를 기록한다(re-export 다단 체인은 v1 범위 밖). warm(증분) 빌드가 이 집합으로
+    /// **provider 가 실제 바뀔 때만** baked 소비자를 evict(전이 fixpoint) — provider 불변이면 캐시
+    /// hit(reparse 0). crude-b(#4544)의 무조건 evict 를 대체.
+    ///
+    /// **소유권**: `parse_arena` 에서 alloc (materialize 시 dupe). arena.deinit 가 일괄 해제하므로
+    /// 개별 free 금지(#1287). module_store 로 round-trip 시엔 CachedModule.const_providers 가 store
+    /// allocator 로 별도 dupe/free 해 보관(import_specifiers 미러). 이 build-scope 필드는 cache-miss
+    /// 재파스마다 `&.{}` 로 초기화되고 bake 발생 시에만 채워진다.
+    const_providers: []const []const u8 = &.{},
+
     /// wrap_kind != .none 모듈의 `init_<path>` 함수 심볼 id (semantic 공간).
     /// null = 미래핑 또는 semantic 없음 (fallback: makeInitVarName 재할당).
     init_symbol: ?SemanticSymbolId = null,
