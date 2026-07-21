@@ -390,6 +390,10 @@ pub fn buildMetadataForAst(
     is_entry: bool,
     override_symbol_ids: ?[]const ?u32,
     format: types.Format,
+    /// (#4587 [3]) output.exports 가 named export 를 내는 모드(auto/named)인지. `none`/`default_`
+    /// 면 preserve-modules CJS exports-as-storage rename 을 억제해 `exports.X` 누출을 막는다.
+    /// codegen `.pm_cjs_storage`·끝-skip·소비자 ns-access 게이트와 **동일** 값이어야 정합.
+    output_produces_named: bool,
 ) !LinkingMetadata {
     var scope = @import("../../profile.zig").begin(.metadata);
     defer scope.end();
@@ -1366,7 +1370,7 @@ pub fn buildMetadataForAst(
         // bindings.zig 가 `exports.A = init;` 할당으로 별도 변환한다. 섹션4의 mangled rename 을
         // **덮어써야** 하므로 모든 name-based rename 이 끝난 이 지점에 둔다. const/class/function
         // 은 exportBindingIsCjsStorage 술어가 제외(현행·#4584 유지).
-        if (self.graph.preserve_modules and format == .cjs) {
+        if (self.graph.preserve_modules and format == .cjs and output_produces_named) {
             for (m.export_bindings) |eb| {
                 if (!m.exportBindingIsCjsStorage(eb)) continue;
                 const local = m.exportBindingLocalName(eb);

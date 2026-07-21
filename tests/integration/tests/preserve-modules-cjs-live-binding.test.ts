@@ -127,4 +127,100 @@ describe('#4587(a): preserve-modules cjs 재할당 export live-binding', () => {
       await cleanup();
     }
   });
+
+  // (code-review [1]) 재할당 export 를 `import * as ns` 로 소비 — bare 미선언 참조로 ReferenceError
+  // 나던 회귀(소비자가 holder 만 내고 심볼 바인딩 미방출). 렉시컬 바인딩 fallback 으로 무크래시.
+  test('재할당 export 를 import * as ns 로 소비 (무크래시)', async () => {
+    const { outDir, cleanup } = await build(
+      {
+        'p.mjs': 'export let A = 0;\nA = 1;',
+        'e.mjs': 'import * as ns from "./p.mjs";\nconsole.log("R:" + ns.A);',
+      },
+      ['e.mjs'],
+    );
+    try {
+      const r = await runNode(join(outDir, 'e.js'));
+      expect(r.stderr).not.toContain('ReferenceError');
+      expect(r.stdout.trim()).toBe('R:1');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  // (code-review [1]) 재할당 export 를 re-export 배럴로 소비 — `exports.A = A` bare 미선언 회귀.
+  test('재할당 export 를 re-export 배럴로 소비 (무크래시)', async () => {
+    const { outDir, cleanup } = await build(
+      {
+        'p.mjs': 'export let A = 0;\nA = 1;',
+        'bar.mjs': 'export { A } from "./p.mjs";',
+        'e.mjs': 'import { A } from "./bar.mjs";\nconsole.log("R:" + A);',
+      },
+      ['e.mjs'],
+    );
+    try {
+      const r = await runNode(join(outDir, 'e.js'));
+      expect(r.stderr).not.toContain('ReferenceError');
+      expect(r.stdout.trim()).toBe('R:1');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  // (code-review [2]) 콤마 연산자 초기값이 괄호 유실로 오결합되던 것 — exports.x = (setup(), 42).
+  test('콤마 연산자 초기값 (괄호 보존)', async () => {
+    const { outDir, cleanup } = await build(
+      {
+        'm.mjs': 'export let x = (globalThis.__S = 1, 42);\nexport function bump() { x++; }',
+        'e.mjs': 'import { x } from "./m.mjs";\nconsole.log("R:" + x);',
+      },
+      ['e.mjs'],
+    );
+    try {
+      expect((await runNode(join(outDir, 'e.js'))).stdout.trim()).toBe('R:42');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  // (code-review [4]) 재할당된 함수/화살표 export 는 NamedEvaluation 을 잃으면 안 됨 — 저장소화 제외.
+  test('재할당 함수 export 의 .name 보존 (저장소화 제외)', async () => {
+    const { outDir, cleanup } = await build(
+      {
+        'm.mjs': 'export let f = () => 0;\nf = f;',
+        'e.cjs': 'const m = require("./m.js");\nconsole.log("R:" + m.f.name);',
+      },
+      ['m.mjs'],
+    );
+    try {
+      // e.cjs 를 dist 에 복사해 실행(엔트리 아님)
+      const { writeFileSync: wf } = await import('node:fs');
+      wf(join(outDir, 'e.cjs'), 'const m = require("./m.js");\nconsole.log("R:" + m.f.name);');
+      expect((await runNode(join(outDir, 'e.cjs'))).stdout.trim()).toBe('R:f');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  // (code-review [3]) --output-exports=none 은 재할당 export 도 누출하면 안 됨.
+  test('output-exports=none 은 재할당 export 누출 안 함', async () => {
+    const { dir, cleanup } = await createFixture({ 'a.mjs': 'export let A = 0;\nA = 1;' });
+    try {
+      const outDir = join(dir, 'dist');
+      const res = await runZntc([
+        '--bundle',
+        join(dir, 'a.mjs'),
+        '--preserve-modules',
+        `--preserve-modules-root=${dir}`,
+        '--outdir',
+        outDir,
+        '--format=cjs',
+        '--output-exports=none',
+      ]);
+      expect(res.exitCode).toBe(0);
+      const a = readFileSync(join(outDir, 'a.js'), 'utf8');
+      expect(a).not.toMatch(/exports\.A/);
+    } finally {
+      await cleanup();
+    }
+  });
 });

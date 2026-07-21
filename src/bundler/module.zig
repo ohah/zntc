@@ -804,25 +804,13 @@ pub const Module = struct {
         if (sym.decl_flags.is_const or sym.decl_flags.is_function or sym.decl_flags.is_class) return false;
         // v1: destructuring 선언(`export let { A } = obj`)은 제외. renames[sid]="exports.A" 를
         // pattern 안 식별자에 적용하면 SyntaxError 이므로 rename 자체를 등록하면 안 된다.
-        if (self.exportLocalDeclaredViaPattern(eb.local_span)) return false;
+        // scan 시 declarator 구조에서 기록(binding_scanner/parser) — byte-span AST 재스캔 불요.
+        if (eb.declared_via_pattern) return false;
+        // (#4587 [4]) 초기값이 함수/화살표/클래스 표현식이면 제외 — `exports.f = () => 0` 로
+        // 낮추면 NamedEvaluation 이 member target 이라 안 걸려 `f.name` 이 유실된다.
+        // 제외 시 현행 로컬(`let f = () => 0` + 끝-할당) 유지 = `.name` 보존(무손실).
+        if (eb.init_is_fn_or_class) return false;
         return true;
-    }
-
-    /// export 로컬 심볼의 선언이 destructuring pattern 안에 있는지 (v1 storage 제외용).
-    /// `local_span` 은 바인딩 식별자의 소스 span 이라, 그 span 을 **텍스트로 감싸는**
-    /// object/array pattern 이 있으면 pattern 선언이다. span 은 byte offset 이므로 서로 다른
-    /// 소스 위치의 pattern(함수 파라미터·대입 destructuring 등)에는 false-match 하지 않는다.
-    fn exportLocalDeclaredViaPattern(self: *const Module, local_span: Span) bool {
-        const ast = self.ast orelse return false;
-        for (ast.nodes.items) |node| {
-            switch (node.tag) {
-                .object_pattern, .array_pattern => {
-                    if (node.span.start <= local_span.start and local_span.end <= node.span.end) return true;
-                },
-                else => {},
-            }
-        }
-        return false;
     }
 
     /// exported_name에 해당하는 SymbolRef 반환. 없으면 invalid.
@@ -979,4 +967,51 @@ test "Module.exportBindingLocalName keeps scanner local_name without semantic re
     };
 
     try std.testing.expectEqualStrings("Red", module.exportBindingLocalName(eb));
+}
+
+test "Module.exportBindingIsCjsStorage excludes non-eligible bindings (#4587)" {
+    var module = Module.init(@enumFromInt(0), "m.mjs");
+    defer module.deinit(std.testing.allocator);
+    // wrap_kind == .none (기본), semantic == null.
+
+    const base = ExportBinding{
+        .exported_name = "A",
+        .local_name = "A",
+        .local_span = Span.EMPTY,
+        .kind = .local,
+    };
+
+    // re-export → storage 대상 아님
+    {
+        var eb = base;
+        eb.kind = .re_export;
+        try std.testing.expect(!module.exportBindingIsCjsStorage(eb));
+    }
+    // non-identity (export { A as B }) → 제외
+    {
+        var eb = base;
+        eb.exported_name = "B";
+        try std.testing.expect(!module.exportBindingIsCjsStorage(eb));
+    }
+    // destructuring 선언 (export let { A } = obj) → 제외(#5, SyntaxError 방지)
+    {
+        var eb = base;
+        eb.declared_via_pattern = true;
+        try std.testing.expect(!module.exportBindingIsCjsStorage(eb));
+    }
+    // 함수/화살표/클래스 초기값 → 제외(#4, NamedEvaluation 보존)
+    {
+        var eb = base;
+        eb.init_is_fn_or_class = true;
+        try std.testing.expect(!module.exportBindingIsCjsStorage(eb));
+    }
+    // 래핑 모듈(wrap_kind != .none) → 제외(codegen storage 변환이 안 돌아 SyntaxError 방지)
+    {
+        module.wrap_kind = .cjs;
+        try std.testing.expect(!module.exportBindingIsCjsStorage(base));
+        module.wrap_kind = .none;
+    }
+    // 위 가드를 모두 통과하는 shape 라도 semantic 이 없으면 false (write_count 판정 불가) —
+    // 적격 판정은 semantic(write_count>0·비 const/fn/class)이 있어야 성립함을 확인.
+    try std.testing.expect(!module.exportBindingIsCjsStorage(base));
 }

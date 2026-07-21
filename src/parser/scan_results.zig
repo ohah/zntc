@@ -112,6 +112,10 @@ pub const ScanExportBinding = struct {
     kind: ExportBindingKind,
     /// re-export 시 소스 모듈의 scan_import_records 인덱스
     import_record_index: ?u32 = null,
+    /// (#4587) 선언이 destructuring pattern 안인지 (bundler ExportBinding 로 전파).
+    declared_via_pattern: bool = false,
+    /// (#4587) declarator 초기값이 함수/화살표/클래스 표현식인지 (bundler ExportBinding 로 전파).
+    init_is_fn_or_class: bool = false,
 };
 
 /// CJS/ESM 감지 결과.

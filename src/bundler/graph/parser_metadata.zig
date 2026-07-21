@@ -79,6 +79,8 @@ pub fn materialize(
                     .local_span = sb.local_span,
                     .kind = eb_kind,
                     .import_record_index = sb.import_record_index,
+                    .declared_via_pattern = sb.declared_via_pattern,
+                    .init_is_fn_or_class = sb.init_is_fn_or_class,
                 };
             }
             module.export_bindings = ebindings;

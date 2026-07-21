@@ -1314,8 +1314,19 @@ fn collectDeclExportBindings(self: *Parser, decl_idx: NodeIndex) void {
                 if (@intFromEnum(name_idx) >= self.ast.nodes.items.len) continue;
                 const name_node = self.ast.getNode(name_idx);
 
-                _ = name_node;
-                collectPatternExportBindings(self, name_idx);
+                // (#4587) declarator shape 를 scan 시 기록: pattern 여부·init 이 fn/class 표현식인지.
+                const via_pattern = name_node.tag == .object_pattern or name_node.tag == .array_pattern;
+                var init_fn_class = false;
+                if (!via_pattern and de + 2 < self.ast.extra_data.items.len) {
+                    const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[de + 2]);
+                    if (!init_idx.isNone() and @intFromEnum(init_idx) < self.ast.nodes.items.len) {
+                        init_fn_class = switch (self.ast.getNode(init_idx).tag) {
+                            .function_expression, .function, .arrow_function_expression, .class_expression => true,
+                            else => false,
+                        };
+                    }
+                }
+                collectPatternExportBindings(self, name_idx, via_pattern, init_fn_class);
             }
         },
         .function_declaration, .class_declaration => {
@@ -1337,7 +1348,7 @@ fn collectDeclExportBindings(self: *Parser, decl_idx: NodeIndex) void {
 }
 
 /// declaration binding pattern의 BoundNames를 export binding으로 수집한다.
-fn collectPatternExportBindings(self: *Parser, pattern_idx: NodeIndex) void {
+fn collectPatternExportBindings(self: *Parser, pattern_idx: NodeIndex, via_pattern: bool, init_fn_class: bool) void {
     var w = ast_walk.bindingIdentifiers(self.allocator, &self.ast, pattern_idx, .{}) catch return;
     defer w.deinit();
     while (w.next() catch null) |name_idx| {
@@ -1348,6 +1359,8 @@ fn collectPatternExportBindings(self: *Parser, pattern_idx: NodeIndex) void {
             .local_name = name,
             .local_span = name_node.span,
             .kind = .local,
+            .declared_via_pattern = via_pattern,
+            .init_is_fn_or_class = init_fn_class,
         }) catch {};
     }
 }
