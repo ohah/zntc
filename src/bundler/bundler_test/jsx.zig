@@ -47,7 +47,9 @@ fn identAfter(s: []const u8, start: usize) ?[]const u8 {
         }
     }.f;
     var i = start;
-    while (i < s.len and (s[i] == ' ' or s[i] == '\n')) i += 1;
+    // 공백류 전부 skip — codegen 은 탭으로 들여쓰고 긴 호출을 줄바꿈할 수 있다. 탭을 빼먹으면
+    // callee 추출이 null 로 떨어지고 호출자가 `orelse continue` 로 넘겨 검사가 조용히 무력화된다.
+    while (i < s.len and (s[i] == ' ' or s[i] == '\n' or s[i] == '\t' or s[i] == '\r')) i += 1;
     if (i >= s.len) return null;
     const c0 = s[i];
     if ((c0 >= '0' and c0 <= '9') or !isPart(c0)) return null;
@@ -56,7 +58,19 @@ fn identAfter(s: []const u8, start: usize) ?[]const u8 {
     return s[i..j];
 }
 
-/// `output` 안에 `name` 의 *선언* 이 있는지. 이름 뒤가 식별자 문자면 다른 이름의 접두사이므로 제외.
+fn isIdentChar(c: u8) bool {
+    return (c >= 'A' and c <= 'Z') or (c >= 'a' and c <= 'z') or
+        (c >= '0' and c <= '9') or c == '_' or c == '$';
+}
+
+/// `output` 안에 `name` 의 *선언* 이 있는지.
+///
+/// 두 형태를 인정한다:
+///  1. 키워드 직후 — `function Root(`, `var Root`, `let/const/class Root`
+///  2. 병합 선언자 — `var a = 1, Root = 2;` (decl coalescing #3417 / `--minify-syntax`).
+///     `, Root` 만 보면 `f(a, Root)` 같은 호출 인자도 선언으로 오인하므로, 같은 줄에서 콤마보다
+///     **앞에** var/let/const 가 있는지 역방향으로 확인한다. 이 구분이 없으면 가드가 약해지고,
+///     반대로 2번을 빼면 정상 번들에서 "dangling" 오탐이 나 없는 버그를 쫓게 된다.
 fn declaresName(output: []const u8, name: []const u8, buf: []u8) bool {
     const kws = [_][]const u8{ "function ", "var ", "let ", "const ", "class " };
     for (kws) |kw| {
@@ -64,13 +78,27 @@ fn declaresName(output: []const u8, name: []const u8, buf: []u8) bool {
         var from: usize = 0;
         while (std.mem.indexOfPos(u8, output, from, pat)) |idx| {
             const after = idx + pat.len;
-            if (after >= output.len) return true;
-            const d = output[after];
-            const ident_char = (d >= 'A' and d <= 'Z') or (d >= 'a' and d <= 'z') or
-                (d >= '0' and d <= '9') or d == '_' or d == '$';
-            if (!ident_char) return true;
+            if (after >= output.len or !isIdentChar(output[after])) return true;
             from = idx + 1;
         }
+    }
+
+    // 병합 선언자: `name` 을 온전한 단어로 찾고, 바로 앞이 (공백 무시) 콤마이며 같은 줄에서
+    // 그보다 앞에 선언 키워드가 있으면 선언으로 인정. `, Root` / `,Root` 양쪽 표기 모두 커버.
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, output, from, name)) |idx| {
+        from = idx + 1;
+        const after = idx + name.len;
+        if (after < output.len and isIdentChar(output[after])) continue;
+        if (idx == 0) continue;
+        var b = idx;
+        while (b > 0 and (output[b - 1] == ' ' or output[b - 1] == '\t')) b -= 1;
+        if (b == 0 or output[b - 1] != ',') continue;
+        const line_start = if (std.mem.lastIndexOfScalar(u8, output[0..b], '\n')) |nl| nl + 1 else 0;
+        const line_head = output[line_start .. b - 1];
+        if (std.mem.indexOf(u8, line_head, "var ") != null or
+            std.mem.indexOf(u8, line_head, "let ") != null or
+            std.mem.indexOf(u8, line_head, "const ") != null) return true;
     }
     return false;
 }
@@ -1029,19 +1057,46 @@ test "JSX: @jsx pragma + automatic runtime → warning diagnostic (D026)" {
     try std.testing.expect(has_pragma_warning);
 }
 
+/// preserve 출력의 JSX 태그 root 가 모두 선언돼 있는지. `<NS.Root>` / `<NS>` 형태를 훑는다.
+/// preserve 경로엔 `_jsx(` 가 아예 없으므로 `allJsxCalleesDeclared` 로는 검사되지 않는다 —
+/// 이 검사가 없으면 "태그는 남고 선언은 없는" #4596 회귀가 마커 단언만으로 green 하게 통과한다.
+fn allJsxTagRootsDeclared(output: []const u8, buf: []u8) bool {
+    var from: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, output, from, '<')) |lt| {
+        from = lt + 1;
+        if (lt + 1 >= output.len) break;
+        const name = identAfter(output, lt + 1) orelse continue;
+        // 소문자 시작 = intrinsic element (`<div>`) — 값 참조가 아니다.
+        if (name[0] >= 'a' and name[0] <= 'z') continue;
+        if (!declaresName(output, name, buf)) {
+            std.debug.print("\n[dangling] JSX 태그 root `{s}` 선언 없음\n", .{name});
+            return false;
+        }
+    }
+    return true;
+}
+
 // (#4596) `jsx_runtime = .preserve` — JSX 가 link 시점까지 원형으로 남는 유일한 경로.
 // 여기선 `NamespaceAccessIndex` 의 JSX 색인이 tree-shake 판단의 유일한 근거다(lowering 이 없어
-// static_member 로 회수될 기회가 없음). 멤버로만 쓴 export 는 살고, 안 쓴 export 는 제거돼야 한다.
+// static_member 로 회수될 기회가 없음). 세 가지를 함께 단언한다:
+//   1. 멤버로 쓴 export 는 살아야 한다
+//   2. 안 쓴 export 는 제거돼야 한다 (정밀도)
+//   3. **남은 JSX 태그 root 가 선언돼 있어야 한다** — codegen 은 preserve JSX 의 멤버를
+//      재작성하지 않으므로 namespace 객체가 실체화돼야 한다. 이 단언이 없으면
+//      `isNamespaceUsedAsValue` 에 JSX arm 을 넣어 force_inline 을 켜는 순간
+//      `<NS.Root>` 만 남고 `NS` 선언이 사라지는 회귀가 green 하게 통과한다.
 test "JSX: preserve runtime — namespace member drives tree-shaking precisely (#4596)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "app.tsx",
         \\import * as NS from './ns';
         \\export function App() { return <NS.Root>hi</NS.Root>; }
+        \\console.log(NS.helper());
         \\console.log(App);
     );
     try writeFile(tmp.dir, "ns.tsx",
         \\export function Root(p: any) { return "NS_ROOT_MARKER_" + p.children; }
+        \\export function helper() { return "NS_HELPER_MARKER_"; }
         \\export function Unused(p: any) { return "NS_UNUSED_MARKER_" + p.children; }
     );
 
@@ -1054,36 +1109,18 @@ test "JSX: preserve runtime — namespace member drives tree-shaking precisely (
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_ROOT_MARKER_") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_HELPER_MARKER_") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_UNUSED_MARKER_") == null);
+    // JSX 가 원형으로 남았음을 확인한 뒤(전제 검증) 태그 root 선언을 단언.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "<") != null);
+    var buf: [128]u8 = undefined;
+    try std.testing.expect(allJsxTagRootsDeclared(result.output, &buf));
 }
 
-// (#4596) namespace 자체를 JSX *값* 위치에 쓰면(`<NS/>` — 객체째 factory 로 전달) escape 다.
-// 멤버 사용(`<NS.Root/>`)만 보고 member_only 로 좁히면 `<NS/>` 는 멤버가 사라진 객체를 받아
-// undefined 컴포넌트가 된다. escape 감지가 살아 있어야 전체가 보존된다.
-test "JSX: bare namespace tag (`<NS/>`) is an escape — namespace fully retained (#4596)" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try writeFile(tmp.dir, "app.tsx",
-        \\import * as NS from './ns';
-        \\const Both: any = NS;
-        \\export function App() { return <Both.Root>hi</Both.Root>; }
-        \\export function Raw() { return <NS>x</NS>; }
-        \\console.log(App, Raw);
-    );
-    try writeFile(tmp.dir, "ns.tsx",
-        \\export function Root(p: any) { return "NS_ROOT_MARKER_" + p.children; }
-        \\export function Other(p: any) { return "NS_OTHER_MARKER_" + p.children; }
-    );
-
-    const entry = try absPath(&tmp, "app.tsx");
-    defer std.testing.allocator.free(entry);
-    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .jsx_runtime = .preserve });
-    defer b.deinit();
-    const result = try b.bundle(std.testing.io);
-    defer result.deinit(std.testing.allocator);
-
-    try std.testing.expect(!result.hasErrors());
-    // escape 이므로 멤버 집합으로 좁히지 못하고 두 export 모두 보존돼야 한다.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_ROOT_MARKER_") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_OTHER_MARKER_") != null);
-}
+// (#4596) bare `<NS/>` (namespace 자체를 JSX 값 위치에 전달) 의 escape 감지는 **번들 레벨에서
+// 가드할 수 없다** — 대문자로 시작하는 namespace local 이면 linker 의 symbol-aware 경로가
+// `prop_by_obj` 에 없는 태그 root 를 보고 독립적으로 opaque 를 반환해 전체를 보존하기 때문이다.
+// 실측: `NamespaceAccessIndex` 의 `jsx_element` escape 브랜치를 무력화해도 번들 출력이 동일했다.
+// 따라서 이 브랜치의 가드는 text-only 경로를 직접 찌르는 유닛 테스트가 담당한다 —
+// `linker/namespace_access_test.zig` 의 "bare JSX namespace tag (`<NS/>`) is an escape → opaque".
+// (여기에 번들 테스트를 두면 브랜치를 지워도 green 인 공허한 가드가 된다.)
