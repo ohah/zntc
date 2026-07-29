@@ -450,6 +450,42 @@ test "DynamicImport: external dynamic import preserved" {
     try std.testing.expect(!result.hasErrors());
 }
 
+// (#4595) 단일 번들(splitting/preserve-modules 모두 false)에서 dynamic import 가 인라인되지
+// 않고 원문 `import("./dep")` 그대로 새어나가던 회귀 가드. 이 조합에서는 청크로 분리할 수단이
+// 없으므로 인라인만이 유일한 처리다. Bundler.init 이 진입점 무관하게 불변식을 강제한다(#4595
+// 이전엔 CLI 프론트엔드만 승격 → NAPI/app 경로 누락). esbuild(splitting:false)·rolldown
+// (codeSplitting:false) 동작과 동일. 기존 "static path" 테스트는 target 코드 존재만 봤는데,
+// side-effect 있는 모듈은 미인라인 깨진 번들에서도 문자열이 남아 통과했다 — 여기선 호출
+// 재작성까지 단언한다(side-effect 없는 순수 export 라 미인라인이면 tree-shake 로 사라짐).
+test "DynamicImport: single-bundle inlines dynamic import — no raw import() leaks (#4595)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export async function run() {
+        \\  const m = await import('./dep');
+        \\  return m.value;
+        \\}
+    );
+    try writeFile(tmp.dir, "dep.ts", "export const value = 'LOADED-4595';");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    // splitting/preserve-modules 미지정(기본 false) = 이슈 #4595 의 정확한 조합.
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // (1) dynamic target 코드가 번들에 인라인되어 있어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "LOADED-4595") != null);
+    // (2) 원문 dynamic import 호출이 재작성되어 남아있으면 안 된다(런타임 깨짐 방지).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "import(\"./dep\")") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "import('./dep')") == null);
+    // (3) __esm 래퍼 init/exports lazy 호출로 인라인(esbuild/rolldown splitting:false 형태).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Promise.resolve().then") != null);
+}
+
 test "DynamicImport: combined with static import" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
