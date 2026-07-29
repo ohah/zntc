@@ -29,15 +29,18 @@ pub fn isNamespaceUsedAsValue(allocator: std.mem.Allocator, ast: *const Ast, sym
                 const obj_idx = ast.readExtra(e, 0);
                 if (obj_idx < node_count) safe.set(obj_idx);
             }
-        } else if (node.tag == .jsx_member_expression) {
-            // (#4596) `<NS.Root>` 의 `NS` 도 멤버 접근의 object 위치다 — lowering 전 AST
-            // (`jsx_runtime = .preserve`, link 시점까지 JSX 유지) 에서 이걸 안 세면
-            // `NamespaceAccessIndex` 는 member_only 로 보는데 이 술어만 "값으로 escape" 라고
-            // 답해, 같은 파일 안 두 분석기가 동일 입력에 불일치한다 (모듈 doc 불변식 위반).
-            // `jsx_member_expression` 은 data.binary { left=object, right=property }.
-            const obj_idx: u32 = @intFromEnum(node.data.binary.left);
-            if (obj_idx < node_count) safe.set(obj_idx);
         }
+        // (#4596) ⚠️ `jsx_member_expression` 의 object 는 **의도적으로 safe 로 세지 않는다**.
+        // 이 술어의 실제 질문은 "namespace 객체 생성을 생략하고 멤버를 직접 치환할 수 있나" 다
+        // (`linker/metadata.zig` 의 force_inline). 그런데 `codegen/jsx.zig::emitJsxMemberExpression`
+        // 은 `meta.ns_member_rewrites` 를 보지 않으므로, JSX 가 원형으로 남는 경로
+        // (`jsx_runtime = .preserve`) 에서는 `<NS.Root>` 의 `NS` 를 치환하지 못한다. 여기서 safe
+        // 로 세면 force_inline 이 켜져 namespace 객체가 생성되지 않는데 출력엔 `<NS.Root>` 가
+        // 그대로 남아 **선언 없는 참조**가 된다(`NS.helper()` 같은 static member 만 재작성되는
+        // 반쪽 상태). `NamespaceAccessIndex` 가 JSX 멤버를 색인하는 것과 이 술어가 JSX 를
+        // escape 로 보는 것은 모순이 아니다 — 전자는 "어떤 export 가 살아야 하나"(tree-shake),
+        // 후자는 "객체를 생략해도 되나"(codegen 능력) 라는 서로 다른 질문에 답한다.
+        // codegen 이 preserve JSX 멤버 재작성을 지원하게 되면 그때 이 arm 을 추가해야 한다.
     }
 
     for (symbol_ids, 0..) |maybe_sid, node_i| {
@@ -74,7 +77,10 @@ pub const NamespaceAccess = struct {
 /// `analyzeNamespaceAccess` 의 ns_sym_id-독립 인덱스.
 /// 같은 AST 를 여러 namespace import 로 분석할 때 공유해 AST 전체 순회를 줄인다 (#1735).
 pub const NamespaceAccessIndex = struct {
-    /// obj_node_idx → prop_node_idx 매핑 (static/private member expression).
+    /// obj_node_idx → prop_node_idx 매핑.
+    /// 대상: `static_member_expression` / `private_field_expression` / (#4596)
+    /// `jsx_member_expression`. **key/value 노드가 `identifier_reference` 라고 가정하지 말 것** —
+    /// JSX 항목은 `jsx_identifier` 이고 symbol_id 가 안 붙어 있을 수 있다.
     prop_by_obj: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// import declaration span 범위 — 이 안의 identifier_reference 는 선언이므로 skip.
     decl_ranges: std.ArrayListUnmanaged(DeclRange) = .empty,
@@ -86,9 +92,13 @@ pub const NamespaceAccessIndex = struct {
     /// 즉 build → analyze 동안 ast 가 mutate (transformer 의 addString 등) 되면 invalidate. 단일 단계 사용 강제.
     accesses_by_obj_text: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(IdentAccess)) = .empty,
 
-    /// escape 색인 (F1 fix): 모든 identifier_reference 의 `text → [(node_idx, span_start)...]`.
+    /// escape 색인 (F1 fix): `text → [(node_idx, span_start)...]`.
+    /// 대상: 모든 `identifier_reference` + (#4596) JSX 태그 root 인 `jsx_identifier`
+    /// (bare `<NS/>` = 값 위치. 소문자 시작 intrinsic 태그는 제외).
     /// text fallback 진입 시 `idents_by_text[local_name]` 의 각 node_idx 가 `prop_by_obj` 에
     /// 있으면 member-obj, 없으면 escape (value position) — opaque return 으로 over-prune 회피.
+    /// **node_idx 가 `identifier_reference` 라고 가정하지 말 것** — `jsx_identifier` 항목이 섞여
+    /// 있고 symbol_ids/rename 테이블에 그대로 넘기면 symbol 이 null 이라 판정이 뒤집힌다.
     idents_by_text: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(IdentRef)) = .empty,
     /// computed_member_expression 의 obj 가 identifier_reference 인 경우 `text → [...]`.
     /// `M[dyn]` 같은 dynamic access — text-only mode 의 escape 감지에 사용 (binding_scanner 동치).

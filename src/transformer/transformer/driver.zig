@@ -4,6 +4,34 @@ const es2015_params = @import("../es2015_params.zig");
 
 const NodeIndex = ast_mod.NodeIndex;
 const Error = std.mem.Allocator.Error;
+const Span = @import("../../lexer/token.zig").Span;
+
+/// (#4596) **program 앞에 prepend 되는 합성 top-level 문장의 span 불변식**:
+/// 대응하는 원본 소스 텍스트가 없으므로 span 은 *위치 anchor* 로만 쓰고 길이는 0 이어야 한다.
+///
+/// 여기서 prepend 하는 문장들의 span 후보로 손에 잡히는 것은 program root span(= 파일 전체)
+/// 또는 변환을 유발한 원본 식(파일 중간) 인데, 둘 다 실제 소스 범위가 아니다. 그대로 달면:
+///   - 파일 전체 범위: span 포함 관계로 "이 참조가 선언 안에 있나" 를 보는 소비자
+///     (`NamespaceAccessIndex.decl_ranges` → `isInDecl`) 에게 모듈 전체를 덮는 선언 범위로
+///     보여 그 모듈의 모든 참조가 skip 된다 → namespace 멤버 사용 0건 → tree-shaker 가
+///     살아있는 export 제거 → dangling ReferenceError (#4596 의 루트커즈)
+///   - 파일 중간 범위: prepend 로 문장 순서상 맨 앞에 오는데 span.start 는 뒤쪽이라
+///     "top-level stmt span 은 소스 순서·비중첩" 을 가정하는 `stmt_info.findStmtForPos` /
+///     `findContainingStmt` 의 이분 탐색 전제가 깨진다
+///
+/// zero-length anchor 는 두 소비자 모두에게 안전하다 — 아무 위치도 "포함" 하지 않고,
+/// 정렬 기준으로도 program 시작이라 prepend 순서와 일치한다.
+///
+/// 강제 지점은 둘: (1) 여기 — 직접 prepend 하는 문장, (2) 주입 import 를 만드는
+/// `jsx_runtime_imports.zig` / `runtime_helper_imports.zig` (자기가 만드는 하위 노드까지 접음).
+fn anchorSyntheticTopLevel(self: anytype, stmts: []const NodeIndex, anchor_start: u32) void {
+    for (stmts) |stmt| {
+        if (stmt == .none) continue;
+        const i: usize = @intFromEnum(stmt);
+        if (i >= self.ast.nodes.items.len) continue;
+        self.ast.nodes.items[i].span = .{ .start = anchor_start, .end = anchor_start };
+    }
+}
 
 pub fn transform(self: anytype) Error!NodeIndex {
     const profile = @import("../../profile.zig");
@@ -55,13 +83,24 @@ pub fn transform(self: anytype) Error!NodeIndex {
     var finalize_scope = profile.begin(.transform_finalize);
     defer finalize_scope.end();
 
+    // 합성 top-level prepend 의 span anchor — `anchorSyntheticTopLevel` 의 doc 참고 (#4596).
+    const synthetic_anchor: Span = blk: {
+        const s = self.ast.getNode(root_idx).span.start;
+        break :blk .{ .start = s, .end = s };
+    };
+
     // top-level 임시 변수 호이스팅: var _a, _b, ... 선언을 program 앞에 삽입
     if (self.temp_var_counter > saved_temp_counter and !root.isNone()) {
-        root = try self.hoistTempVars(root, saved_temp_counter, self.ast.getNode(root_idx).span);
+        // program root span (파일 전체) 대신 zero-length anchor — 생성되는 var_declaration /
+        // variable_declarator 가 모듈 전체를 덮는 범위를 갖지 않도록 (#4596).
+        root = try self.hoistTempVars(root, saved_temp_counter, synthetic_anchor);
     }
 
     // ES2015 tagged template: _templateObject 캐싱 함수를 program 맨 앞에 호이스팅
     if (self.tagged_template_fns.items.len > 0 and !root.isNone()) {
+        // 이 함수 노드의 span 은 변환을 유발한 템플릿 식(파일 중간) 이라, prepend 후 stmt span
+        // 정렬 전제를 깨뜨린다 → anchor 로 접는다 (#4596).
+        anchorSyntheticTopLevel(self, self.tagged_template_fns.items, synthetic_anchor.start);
         root = try self.prependStatementsToBody(root, self.tagged_template_fns.items);
     }
 

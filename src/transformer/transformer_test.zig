@@ -3405,6 +3405,48 @@ test "initFromOwnedAst: deinit 이 caller 의 ast 를 건드리지 않는다" {
 // arena allocator 사용: JSX lowering 의 임시 버퍼(quoteString/processJSXText)는 개별 free 하지
 // 않는 arena 전제 코드다 (production 은 transpile.zig / emitter.zig / transform_prepass.zig 모두
 // arena_alloc 전달). GPA 로 돌리면 그 임시 버퍼가 leak 으로 잡힌다.
+/// 합성(transformer 생성) import 판별 — 소스 specifier 리터럴의 span 이 string_table 참조면
+/// transformer 가 `ast.addString` 으로 만든 노드다. 원본 import 의 specifier 는 실제 소스 범위다.
+/// specifier **텍스트**로 나누면(`"jsx-runtime"` 포함 여부 등) runtime helper import 가 원본으로
+/// 오분류돼, 정작 같이 고친 injector 가 무검증으로 남고 반대 단언에 걸린다.
+fn isSyntheticImport(source_span_start: u32) bool {
+    return (source_span_start & Ast.STRING_TABLE_BIT) != 0;
+}
+
+/// 주입 import 의 span 불변식 검사 — `(합성 건수, 원본 건수)` 반환.
+fn checkInjectedImportSpans(ast: *Ast) !struct { synthetic: usize, original: usize } {
+    const module_mod = @import("../parser/module.zig");
+    var synthetic: usize = 0;
+    var original: usize = 0;
+    for (ast.nodes.items) |node| {
+        if (node.tag != .import_declaration) continue;
+        const extras = module_mod.readImportDeclExtras(ast, node.data.extra);
+        const source_node = ast.getNode(extras.source);
+        if (isSyntheticImport(source_node.span.start)) {
+            synthetic += 1;
+            // 합성 노드: zero-length anchor 여야 한다.
+            try std.testing.expectEqual(node.span.start, node.span.end);
+        } else {
+            original += 1;
+            // 원본 import 는 실제 소스 범위를 유지해야 한다 (전부 접어버리는 회귀 방지).
+            try std.testing.expect(node.span.end > node.span.start);
+        }
+    }
+    return .{ .synthetic = synthetic, .original = original };
+}
+
+// transformer 가 주입하는 import_declaration (JSX automatic runtime / runtime helper) 은
+// 대응하는 원본 소스 텍스트가 없다. 그런데 호출자(`driver.zig`)는 prepend 대상인 program root
+// 의 span = **파일 전체 범위** 를 넘긴다. 이를 노드 span 으로 그대로 쓰면, span 포함 관계로
+// "이 참조가 선언 안에 있나" 를 판정하는 소비자에게 이 import 가 *모듈 전체를 덮는 선언 범위*
+// 로 보인다 (`NamespaceAccessIndex.decl_ranges` → `isInDecl`). 그러면 그 모듈의 모든 namespace
+// 참조가 "선언 내부라 참조 아님" 으로 skip 되어 멤버 사용이 0건으로 집계되고, tree-shaker 가
+// 살아있는 export 를 제거한다 → 출력엔 `_jsx(Root)` 참조만 남는 dangling ReferenceError (#4596).
+// 그래서 합성 노드 span 은 zero-length anchor 여야 한다.
+//
+// arena allocator 사용: JSX lowering 의 임시 버퍼(quoteString/processJSXText)는 개별 free 하지
+// 않는 arena 전제 코드다 (production 은 transpile.zig / emitter.zig / transform_prepass.zig 모두
+// arena_alloc 전달). GPA 로 돌리면 그 임시 버퍼가 leak 으로 잡힌다.
 test "Transformer: injected jsx runtime import span must not span the module (#4596)" {
     const src =
         \\import * as NS from "./ns";
@@ -3427,26 +3469,93 @@ test "Transformer: injected jsx runtime import span must not span the module (#4
     });
     _ = try t.transform();
 
-    const module_mod = @import("../parser/module.zig");
-    var injected: usize = 0;
-    var original: usize = 0;
-    for (t.ast.nodes.items) |node| {
-        if (node.tag != .import_declaration) continue;
-        const extras = module_mod.readImportDeclExtras(t.ast, node.data.extra);
-        const source_node = t.ast.getNode(extras.source);
-        const spec_text = t.ast.getText(source_node.span);
-        if (std.mem.indexOf(u8, spec_text, "jsx-runtime") != null) {
-            injected += 1;
-            // 합성 노드: zero-length anchor.
-            try std.testing.expectEqual(node.span.start, node.span.end);
-        } else {
-            original += 1;
-            // 원본 import 는 실제 소스 범위를 유지해야 한다 (전부 접어버리는 회귀 방지).
-            try std.testing.expect(node.span.end > node.span.start);
-        }
-    }
+    const counts = try checkInjectedImportSpans(t.ast);
     // 주입/원본이 실제로 관측돼야 위 단언이 공허하지 않다. transformer 는 노드를 새로 만들고
     // 옛 노드를 배열에 남기므로(orphan) 개수는 1 이상으로만 단언한다.
-    try std.testing.expect(injected >= 1);
-    try std.testing.expect(original >= 1);
+    try std.testing.expect(counts.synthetic >= 1);
+    try std.testing.expect(counts.original >= 1);
+}
+
+// (#4596) 같은 불변식을 **runtime helper import** injector 로도 검증한다. 위 테스트만 있으면
+// `runtime_helper_imports.zig` 의 동일 수정은 커버되지 않는다(그 specifier 는 helper module id
+// 라서 JSX 픽스처에서는 한 건도 안 나온다) — 되돌려도 테스트가 green 하게 남는다.
+test "Transformer: injected runtime helper import span must not span the module (#4596)" {
+    // generator 다운레벨 → `__generator` helper import 주입.
+    const src =
+        \\export function* gen() { yield 1; }
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var scanner = try Scanner.init(alloc, src);
+    var parser = Parser.init(alloc, &scanner);
+    parser.is_module = true;
+    _ = try parser.parse();
+
+    var t = try Transformer.init(alloc, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = true,
+    });
+    _ = try t.transform();
+
+    const counts = try checkInjectedImportSpans(t.ast);
+    // helper import 가 실제로 주입됐는지 (안 됐으면 단언이 공허 — 위 테스트의 실패 원인이었다).
+    try std.testing.expect(counts.synthetic >= 1);
+}
+
+// (#4596) 합성 top-level prepend 의 span 불변식 — 주입 import 뿐 아니라 hoistTempVars 의
+// `var _a;` 와 tagged-template `_templateObject` 함수도 같은 규칙을 지켜야 한다.
+// (`driver.zig::anchorSyntheticTopLevel` 의 doc 참고: 파일 전체 범위는 `isInDecl` 을,
+// 파일 중간 범위는 `findStmtForPos` 의 정렬 전제를 깨뜨린다.)
+//
+// 문장 span 이 program 순서로 비내림차순인지 검사한다 — prepend 된 합성 문장이 원본 span 을
+// 들고 맨 앞에 오면 이 단언이 깨진다. 실측으로 사용자 가시 파손을 재현하진 못했지만
+// (출력은 적용 전후 바이트 동일), 불변식을 절반만 적용해 두면 다시 드리프트한다.
+test "Transformer: prepended synthetic top-level stmts keep stmt-span ordering (#4596)" {
+    const Case = struct { src: []const u8, opts: TransformOptions };
+    const cases = [_]Case{
+        // optional chaining 다운레벨 → hoistTempVars 가 `var _a;` prepend
+        .{
+            .src = "export const v = globalThis?.a?.b;\nexport const w = 1;\n",
+            .opts = .{ .unsupported = TransformOptions.compat.fromESTarget(.es2019) },
+        },
+        // tagged template 다운레벨 → `_templateObject` 함수 prepend
+        .{
+            .src = "const tag = (s) => s;\nexport const t = tag`aaa${1}bbb`;\n",
+            .opts = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) },
+        },
+    };
+    for (cases) |c| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        var scanner = try Scanner.init(alloc, c.src);
+        var parser = Parser.init(alloc, &scanner);
+        parser.is_module = true;
+        _ = try parser.parse();
+
+        var t = try Transformer.init(alloc, &parser.ast, c.opts);
+        const root = try t.transform();
+
+        const prog = t.ast.getNode(root);
+        try std.testing.expectEqual(Tag.program, prog.tag);
+        const list = prog.data.list;
+        try std.testing.expect(list.len >= 2); // 합성 문장 + 원본 문장이 실제로 있어야 의미 있음
+
+        var prev_start: u32 = 0;
+        var saw_synthetic_anchor = false;
+        for (0..list.len) |i| {
+            const stmt_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[list.start + i]);
+            const span = t.ast.getNode(stmt_idx).span;
+            // string_table 참조 span 은 소스 좌표가 아니므로 순서 비교 대상이 아니다.
+            if ((span.start & Ast.STRING_TABLE_BIT) != 0) continue;
+            if (span.end == span.start) saw_synthetic_anchor = true;
+            try std.testing.expect(span.start >= prev_start);
+            prev_start = span.start;
+        }
+        // prepend 된 합성 문장이 zero-length anchor 로 접혔는지 (안 접혔으면 위 단언이 공허).
+        try std.testing.expect(saw_synthetic_anchor);
+    }
 }
