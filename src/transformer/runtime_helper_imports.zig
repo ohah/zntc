@@ -145,6 +145,13 @@ fn emitOne(
     span: Span,
     out: *std.ArrayList(NodeIndex),
 ) !void {
+    // (#4596) 합성 노드 span 은 *위치 anchor* 로만 쓰고 길이 0 으로 접는다 — 자세한 근거는
+    // `jsx_runtime_imports.zig::emitImportDeclaration` 의 동일 주석. 요약: 호출자가 넘기는
+    // program root span (파일 전체) 을 노드 span 으로 쓰면 span 포함 관계 소비자
+    // (`NamespaceAccessIndex.decl_ranges` → `isInDecl`) 에게 이 import 가 파일 전체를 덮는
+    // 선언 범위로 보여, 그 모듈의 모든 참조가 "선언 내부" 로 skip 된다.
+    const anchor: Span = .{ .start = span.start, .end = span.start };
+
     // bases[0] 이 module 안의 한 helper. moduleShortFor 가 module short 를 반환.
     const id = (try helper_modules.idForBase(self.allocator, bases[0])) orelse return;
     defer self.allocator.free(id);
@@ -191,7 +198,7 @@ fn emitOne(
 
         const spec = try self.ast.addNode(.{
             .tag = .import_specifier,
-            .span = span,
+            .span = anchor,
             .data = .{ .binary = .{ .left = imported_node, .right = local_node, .flags = 0 } },
         });
         try self.scratch.append(self.allocator, spec);
@@ -208,7 +215,7 @@ fn emitOne(
     });
     const decl = try self.ast.addNode(.{
         .tag = .import_declaration,
-        .span = span,
+        .span = anchor,
         .data = .{ .extra = extra_start },
     });
     try out.append(self.allocator, decl);

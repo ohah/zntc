@@ -29,6 +29,14 @@ pub fn isNamespaceUsedAsValue(allocator: std.mem.Allocator, ast: *const Ast, sym
                 const obj_idx = ast.readExtra(e, 0);
                 if (obj_idx < node_count) safe.set(obj_idx);
             }
+        } else if (node.tag == .jsx_member_expression) {
+            // (#4596) `<NS.Root>` 의 `NS` 도 멤버 접근의 object 위치다 — lowering 전 AST
+            // (`jsx_runtime = .preserve`, link 시점까지 JSX 유지) 에서 이걸 안 세면
+            // `NamespaceAccessIndex` 는 member_only 로 보는데 이 술어만 "값으로 escape" 라고
+            // 답해, 같은 파일 안 두 분석기가 동일 입력에 불일치한다 (모듈 doc 불변식 위반).
+            // `jsx_member_expression` 은 data.binary { left=object, right=property }.
+            const obj_idx: u32 = @intFromEnum(node.data.binary.left);
+            if (obj_idx < node_count) safe.set(obj_idx);
         }
     }
 
@@ -177,6 +185,68 @@ pub const NamespaceAccessIndex = struct {
                 try gop.value_ptr.append(allocator, .{
                     .prop_node_idx = prop_idx,
                     .obj_span_start = obj_node.span.start,
+                });
+            } else if (node.tag == .jsx_member_expression) {
+                // (#4596) JSX 엘리먼트 이름의 namespace 멤버 접근(`<NS.Root>`)도 static_member_expression
+                // 과 동일하게 색인한다. `jsx_member_expression` 은 data.binary { left=object, right=property }.
+                //
+                // 이 index 가 구축되는 시점은 두 번이다: parse 직후 (parser_metadata.zig — JSX 원본
+                // 그대로) 와 transform pre-pass 후 (transform_prepass.zig — 덮어씀, linker 가 읽는 쪽).
+                // 후자 AST 에서 classic/automatic JSX 는 이미 `static_member_expression` 으로 lowered 라
+                // 위 브랜치가 잡는다. 이 JSX 브랜치가 실제로 유일한 근거가 되는 경우:
+                //   - `jsx_runtime = .preserve` — JSX 가 link 시점까지 원형 유지
+                //   - parse 직후 1차 pass — 그 결과(`namespace_used_properties`)는 2차 결과와 union
+                //     되므로(transform_prepass.zig, counter$4 fix), 2차가 놓쳐도 1차가 보강한다
+                // 안 잡으면 "JSX 로만 쓰인 export" 가 미사용으로 판정돼 제거되고, 출력엔 `_jsx(Root)`
+                // 참조만 남아 dangling ReferenceError 가 된다.
+                const obj_idx: u32 = @intFromEnum(node.data.binary.left);
+                const prop_idx: u32 = @intFromEnum(node.data.binary.right);
+                if (obj_idx >= node_count or prop_idx >= node_count) continue;
+                try self.prop_by_obj.put(allocator, obj_idx, prop_idx);
+                // text fallback 색인: object 가 root 식별자(jsx_identifier)인 경우만. 중첩
+                // `<NS.A.B>` 의 바깥 노드는 object 가 다시 jsx_member 라 skip — 안쪽 노드가 NS→A 를
+                // 이미 기록한다(static_member 의 non-identifier obj skip 과 동일 규칙).
+                const obj_node = ast.nodes.items[obj_idx];
+                if (obj_node.tag != .jsx_identifier) continue;
+                const obj_text = ast.getText(obj_node.span);
+                if (obj_text.len == 0) continue;
+                if (interest_text_set) |s| if (!s.contains(obj_text)) continue;
+                const gop = try self.accesses_by_obj_text.getOrPut(allocator, obj_text);
+                if (!gop.found_existing) gop.value_ptr.* = .empty;
+                try gop.value_ptr.append(allocator, .{
+                    .prop_node_idx = prop_idx,
+                    .obj_span_start = obj_node.span.start,
+                });
+            } else if (node.tag == .jsx_element) {
+                // (#4596) `<NS/>` — namespace 자체가 JSX 태그 = *값* 위치 사용(factory 에 객체째
+                // 전달)이다. escape 색인(`idents_by_text`) 은 `identifier_reference` 만 담으므로
+                // JSX 태그 root (`jsx_identifier`) 는 보이지 않는다. 위 JSX 멤버 브랜치로 멤버
+                // 집합이 non-empty 가 된 뒤에도 이 escape 를 못 보면, `<NS.Root/>` 하나 때문에
+                // member_only{Root} 로 좁혀지고 `<NS/>` 는 멤버가 사라진 객체를 받아 undefined
+                // 컴포넌트가 된다. 그래서 태그 root 를 escape 후보로 색인한다 — 멤버 접근의
+                // object 였다면 `prop_by_obj` 에 있어 escape 로 세지 않는다(검사 로직 그대로).
+                //
+                // `jsx_element` extras[0] = tag_name. tag_name 이 `jsx_member_expression` 이면
+                // 위 브랜치가 이미 처리하므로 여기선 bare `jsx_identifier` 만 본다.
+                // `hasExtra(base, max_offset)` 는 `base + max_offset < len` — jsx_element 는
+                // 5 슬롯(offset 0..4)이므로 최대 offset 은 4.
+                const e = node.data.extra;
+                if (!ast.hasExtra(e, 4)) continue;
+                const name_idx = ast.readExtra(e, 0);
+                if (name_idx >= node_count) continue;
+                const name_node = ast.nodes.items[name_idx];
+                if (name_node.tag != .jsx_identifier) continue;
+                const name_text = ast.getText(name_node.span);
+                if (name_text.len == 0) continue;
+                // 소문자 시작 = intrinsic element (`<div>`) — jsx_lowering 이 string literal 로
+                // 낮추므로 값 참조가 아니다 (lowerTagName 의 판정 규칙과 동일하게 유지).
+                if (name_text[0] >= 'a' and name_text[0] <= 'z') continue;
+                if (interest_text_set) |s| if (!s.contains(name_text)) continue;
+                const gop = try self.idents_by_text.getOrPut(allocator, name_text);
+                if (!gop.found_existing) gop.value_ptr.* = .empty;
+                try gop.value_ptr.append(allocator, .{
+                    .node_idx = name_idx,
+                    .span_start = name_node.span.start,
                 });
             } else if (node.tag == .computed_member_expression) {
                 // dynamic access — text-only mode 의 escape 감지에 활용.
