@@ -810,6 +810,33 @@ pub const Bundler = struct {
             // --rn-version 이 있으면 버전별 정밀 매트릭스, 없으면 기존 blunt 프리셋.
             opts.unsupported = opts.rn_version_matrix orelse compat.fromHermesPreset();
         }
+
+        // (#4595) production 단일 번들 경로(!code_splitting && !preserve_modules && !dev_mode)
+        // 에서는 dynamic import 를 처리할 방법이 인라인밖에 없다 — 청크로 분리할 chunk graph 가
+        // 애초에 없다. inline_dynamic_imports 를 켜지 않으면 emitter(rewriteDynamicImportsSingleFile)
+        // 가 `import("./x")` 를 원문 그대로 흘려보내 청크 분리·경로 재작성·진단이 셋 다 빠진 채
+        // 런타임에 반드시 깨진다(빌드는 성공 보고 → 무증상 실패). esbuild(splitting:false)·
+        // rolldown(codeSplitting:false) 모두 이 경우 dynamic import 를 인라인한다.
+        //
+        // 이 승격은 그동안 CLI(cli/options.zig) 프론트엔드에만 있어 NAPI/app 빌더 경로에서
+        // 누락됐다(프론트엔드별 발산 → #4595). 모든 진입점(init/initWithResolveCache/
+        // initWithGraph)이 통과하는 여기를 **단일 권위 지점**으로 삼아 드리프트를 원천 차단한다.
+        // (CLI 의 중복 승격은 제거했고, `--no-inline-dynamic-imports` 명시 에러만 남겼다.)
+        //
+        // 게이트 근거:
+        //  - code_splitting / preserve_modules: 각자 chunk 재작성 경로가 있어 건드리지 않는다.
+        //  - dev_mode: dev 단일 번들은 HMR 레지스트리(__zntc_modules)를 쓰는 별도 lowering 이
+        //    있어 인라인과 상호작용이 다르다. 현재 dev 의 dynamic import 처리는 이 fix 범위 밖
+        //    (#4595 는 production build() 이슈) — dev 는 기존 동작을 그대로 보존한다.
+        //  - external dynamic import 는 resolved==.none 이라 인라인 대상에서 자연히 제외된다.
+        //
+        // 참고: 단일 번들에서 inline_dynamic_imports=false 는 "처리 불가능한 상태"이지 존중할
+        // preference 가 아니다(어떤 번들러도 청크 없이 raw import 를 유지하지 못한다). 따라서
+        // 여기서 true 로 정규화하는 것은 옵션을 override 하는 게 아니라 invalid 조합을 유일한
+        // 유효값으로 normalize 하는 것이다. CLI 는 이 조합에 친절한 에러를 추가로 낸다.
+        if (!opts.code_splitting and !opts.preserve_modules and !opts.dev_mode) {
+            opts.inline_dynamic_imports = true;
+        }
     }
 
     pub fn initResolveCacheFromOptions(allocator: std.mem.Allocator, options: BundleOptions) ResolveCache {

@@ -1110,19 +1110,16 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator,
         opts.bundle_format = .iife;
     }
 
-    // #2209: single-file output 모드에서 dynamic import 가 있으면 자동으로 entry chunk
-    // 에 인라인 (esbuild 호환). graph.zig::promoteExportsKinds Pass 4 가 dynamic
-    // target 을 `wrap_kind = .esm` 으로 promote → emitter 가 `import("./x")` 호출을
-    // `init_x()` + `x_exports` 로 재작성. 이렇게 안 하면 default 모드에서 dynamic
-    // target 이 inline 됐는데 호출은 외부 path 그대로 남아 `Cannot find module` 에러.
-    if (opts.is_bundle and !opts.splitting and !opts.preserve_modules) {
-        if (!opts.inline_dynamic_imports_explicit) {
-            // 명시 안 함 — 자동 승격 (esbuild 호환).
-            opts.inline_dynamic_imports = true;
-        } else if (!opts.inline_dynamic_imports) {
-            // 명시 false + single-file 은 논리 모순 (어떤 번들러도 처리 안 함).
-            // 자동 승격 대신 명확한 에러로 분리 정책 (--splitting / --preserve-modules)
-            // 선택을 요구.
+    // #2209/#4595: single-file output 모드에서 dynamic import 는 인라인만이 유일한 처리다
+    // (청크로 분리할 chunk graph 가 없다). 자동 승격 자체는 **Bundler.init(bundler.zig
+    // applyPlatformPreset)이 단일 권위 지점**으로 수행한다 — CLI/NAPI/app 어느 프론트엔드로
+    // 들어와도 동일하게 강제되도록 여기서 중복 승격하지 않는다(예전엔 CLI 만 승격해 NAPI 가
+    // 누락됐던 #4595 의 원인). 여기서는 명시 `--no-inline-dynamic-imports` 만 조기 차단한다:
+    // single-file + 명시 false 는 논리 모순(어떤 번들러도 처리 못 함)이라 친절한 에러로 분리
+    // 정책(--splitting / --preserve-modules) 선택을 요구한다. dev/serve/watch(dev_mode)는
+    // Bundler 가 승격 대상에서 제외하므로 여기 조건도 그와 어긋나지 않게 둔다.
+    if (opts.is_bundle and !opts.splitting and !opts.preserve_modules and !opts.dev) {
+        if (opts.inline_dynamic_imports_explicit and !opts.inline_dynamic_imports) {
             try stderr.print(
                 "error: --no-inline-dynamic-imports requires --splitting or --preserve-modules in bundle mode\n",
                 .{},
