@@ -87,6 +87,17 @@ fn emitImportDeclaration(
     span: Span,
     out: *std.ArrayList(NodeIndex),
 ) !void {
+    // (#4596) 합성 노드 span 은 *위치 anchor* 로만 쓰고 길이 0 으로 접는다.
+    // 호출자(`driver.zig`)는 prepend 대상인 program root 의 span 을 넘긴다 = 파일 전체 범위.
+    // 그걸 그대로 노드 span 으로 쓰면, span 포함 관계로 "이 참조가 선언 안에 있나" 를 판정하는
+    // 소비자에게 이 import_declaration 이 *파일 전체를 덮는 선언 범위* 로 보인다
+    // (`NamespaceAccessIndex.decl_ranges` → `isInDecl`). 그러면 그 모듈의 모든 namespace
+    // 참조가 "import 선언 내부라 참조 아님" 으로 skip 돼 멤버 사용이 0건으로 집계되고,
+    // tree-shaker 가 실제로 살아있는 export 를 제거한다 → 출력엔 `_jsx(Root)` 참조만 남고
+    // 선언이 없는 dangling ReferenceError (#4596: `import * as NS` + `<NS.Root>`).
+    // 합성 import 는 대응하는 원본 소스 텍스트가 없으므로 zero-length 가 정확한 표현이다.
+    const anchor: Span = .{ .start = span.start, .end = span.start };
+
     // source string_literal — codegen 이 raw span text 그대로 출력하므로 quote 포함 저장.
     const quoted = try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{source_specifier});
     defer self.allocator.free(quoted);
@@ -118,7 +129,7 @@ fn emitImportDeclaration(
 
         const spec = try self.ast.addNode(.{
             .tag = .import_specifier,
-            .span = span,
+            .span = anchor,
             .data = .{ .binary = .{ .left = imported_node, .right = local_node, .flags = 0 } },
         });
         try self.scratch.append(self.allocator, spec);
@@ -135,7 +146,7 @@ fn emitImportDeclaration(
     });
     const decl = try self.ast.addNode(.{
         .tag = .import_declaration,
-        .span = span,
+        .span = anchor,
         .data = .{ .extra = extra_start },
     });
     try out.append(self.allocator, decl);

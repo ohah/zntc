@@ -3388,3 +3388,65 @@ test "initFromOwnedAst: deinit 이 caller 의 ast 를 건드리지 않는다" {
     const root_node = src_ast.getNode(@enumFromInt(src_ast.nodes.items.len - 1));
     try std.testing.expectEqual(Tag.program, root_node.tag);
 }
+
+// ============================================================
+// (#4596) 합성(주입) import 노드의 span 불변식
+// ============================================================
+
+// transformer 가 주입하는 import_declaration (JSX automatic runtime / runtime helper) 은
+// 대응하는 원본 소스 텍스트가 없다. 그런데 호출자(`driver.zig`)는 prepend 대상인 program root
+// 의 span = **파일 전체 범위** 를 넘긴다. 이를 노드 span 으로 그대로 쓰면, span 포함 관계로
+// "이 참조가 선언 안에 있나" 를 판정하는 소비자에게 이 import 가 *모듈 전체를 덮는 선언 범위*
+// 로 보인다 (`NamespaceAccessIndex.decl_ranges` → `isInDecl`). 그러면 그 모듈의 모든 namespace
+// 참조가 "선언 내부라 참조 아님" 으로 skip 되어 멤버 사용이 0건으로 집계되고, tree-shaker 가
+// 살아있는 export 를 제거한다 → 출력엔 `_jsx(Root)` 참조만 남는 dangling ReferenceError (#4596).
+// 그래서 합성 노드 span 은 zero-length anchor 여야 한다.
+//
+// arena allocator 사용: JSX lowering 의 임시 버퍼(quoteString/processJSXText)는 개별 free 하지
+// 않는 arena 전제 코드다 (production 은 transpile.zig / emitter.zig / transform_prepass.zig 모두
+// arena_alloc 전달). GPA 로 돌리면 그 임시 버퍼가 leak 으로 잡힌다.
+test "Transformer: injected jsx runtime import span must not span the module (#4596)" {
+    const src =
+        \\import * as NS from "./ns";
+        \\export const App = () => <NS.Root>hi</NS.Root>;
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var scanner = try Scanner.init(alloc, src);
+    var parser = Parser.init(alloc, &scanner);
+    parser.is_module = true;
+    parser.is_jsx = true;
+    _ = try parser.parse();
+
+    var t = try Transformer.init(alloc, &parser.ast, .{
+        .jsx_transform = true,
+        .jsx_runtime = .automatic,
+        .emit_runtime_helper_imports = true,
+    });
+    _ = try t.transform();
+
+    const module_mod = @import("../parser/module.zig");
+    var injected: usize = 0;
+    var original: usize = 0;
+    for (t.ast.nodes.items) |node| {
+        if (node.tag != .import_declaration) continue;
+        const extras = module_mod.readImportDeclExtras(t.ast, node.data.extra);
+        const source_node = t.ast.getNode(extras.source);
+        const spec_text = t.ast.getText(source_node.span);
+        if (std.mem.indexOf(u8, spec_text, "jsx-runtime") != null) {
+            injected += 1;
+            // 합성 노드: zero-length anchor.
+            try std.testing.expectEqual(node.span.start, node.span.end);
+        } else {
+            original += 1;
+            // 원본 import 는 실제 소스 범위를 유지해야 한다 (전부 접어버리는 회귀 방지).
+            try std.testing.expect(node.span.end > node.span.start);
+        }
+    }
+    // 주입/원본이 실제로 관측돼야 위 단언이 공허하지 않다. transformer 는 노드를 새로 만들고
+    // 옛 노드를 배열에 남기므로(orphan) 개수는 1 이상으로만 단언한다.
+    try std.testing.expect(injected >= 1);
+    try std.testing.expect(original >= 1);
+}

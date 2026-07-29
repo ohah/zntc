@@ -37,6 +37,149 @@ test "JSX: component composition" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "<div>") == null);
 }
 
+/// `s[start..]` 앞쪽 공백을 건너뛰고 식별자 하나를 잘라 반환. 식별자로 시작하지 않으면 null
+/// (JSX intrinsic 태그는 `_jsx("div", ...)` 처럼 문자열 리터럴이라 여기서 걸러진다).
+fn identAfter(s: []const u8, start: usize) ?[]const u8 {
+    const isPart = struct {
+        fn f(c: u8) bool {
+            return (c >= 'A' and c <= 'Z') or (c >= 'a' and c <= 'z') or
+                (c >= '0' and c <= '9') or c == '_' or c == '$';
+        }
+    }.f;
+    var i = start;
+    while (i < s.len and (s[i] == ' ' or s[i] == '\n')) i += 1;
+    if (i >= s.len) return null;
+    const c0 = s[i];
+    if ((c0 >= '0' and c0 <= '9') or !isPart(c0)) return null;
+    var j = i;
+    while (j < s.len and isPart(s[j])) j += 1;
+    return s[i..j];
+}
+
+/// `output` 안에 `name` 의 *선언* 이 있는지. 이름 뒤가 식별자 문자면 다른 이름의 접두사이므로 제외.
+fn declaresName(output: []const u8, name: []const u8, buf: []u8) bool {
+    const kws = [_][]const u8{ "function ", "var ", "let ", "const ", "class " };
+    for (kws) |kw| {
+        const pat = std.fmt.bufPrint(buf, "{s}{s}", .{ kw, name }) catch continue;
+        var from: usize = 0;
+        while (std.mem.indexOfPos(u8, output, from, pat)) |idx| {
+            const after = idx + pat.len;
+            if (after >= output.len) return true;
+            const d = output[after];
+            const ident_char = (d >= 'A' and d <= 'Z') or (d >= 'a' and d <= 'z') or
+                (d >= '0' and d <= '9') or d == '_' or d == '$';
+            if (!ident_char) return true;
+            from = idx + 1;
+        }
+    }
+    return false;
+}
+
+/// 모든 `_jsx(IDENT` / `_jsxs(IDENT` / `_jsxDEV(IDENT` 호출의 callee 가 선언돼 있는지.
+/// provider 쪽 마커 grep 만으로는 "모듈은 살았지만 consumer 참조가 dangling" (#4560/#4564/#4566 류)
+/// 을 못 잡으므로, 참조된 식별자마다 선언 존재를 확인한다.
+fn allJsxCalleesDeclared(output: []const u8, buf: []u8) bool {
+    const calls = [_][]const u8{ "_jsx(", "_jsxs(", "_jsxDEV(" };
+    for (calls) |call| {
+        var from: usize = 0;
+        while (std.mem.indexOfPos(u8, output, from, call)) |idx| {
+            from = idx + call.len;
+            const name = identAfter(output, from) orelse continue;
+            if (!declaresName(output, name, buf)) {
+                std.debug.print("\n[dangling] _jsx callee `{s}` 선언 없음\n", .{name});
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// (#4596) `import * as NS` 후 `NS.Root` 를 JSX 엘리먼트 이름으로만 쓰면 Root/Button export 가
+// tree-shake 되고 출력엔 `_jsx(Root)` dangling 참조만 남아 ReferenceError 였다(named import 은 정상).
+//
+// 두 결함의 합이었다:
+//  1. 합성 JSX runtime import 노드의 span 이 program root span (파일 전체) → `decl_ranges` 를
+//     오염시켜 그 모듈의 모든 namespace 접근이 "import 선언 내부" 로 skip
+//  2. `NamespaceAccessIndex` 가 `jsx_member_expression` 을 색인하지 않아 lowering 전 AST 에서
+//     JSX 멤버 사용이 안 보임
+//
+// **`jsx_runtime` 이 `.classic` 이면 (1) 의 주입 자체가 없어 재현되지 않는다** — 이슈와 동일한
+// `.automatic` 으로 고정해야 실제 가드가 된다(실측: classic 은 수정 전에도 통과).
+test "JSX: namespace member (`<NS.X>`) keeps target export from tree-shaking (#4596)" {
+    const cases = [_]struct { name: []const u8, rt: @import("../../codegen/codegen.zig").JsxRuntime, ext: []const u8 }{
+        .{ .name = "automatic", .rt = .automatic, .ext = "react/jsx-runtime" },
+        .{ .name = "automatic_dev", .rt = .automatic_dev, .ext = "react/jsx-dev-runtime" },
+    };
+    for (cases) |c| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "app.tsx",
+            \\import * as NS from './ns';
+            \\export function App() { return <NS.Root><NS.Button>hi</NS.Button></NS.Root>; }
+            \\console.log(App);
+        );
+        try writeFile(tmp.dir, "ns.tsx",
+            \\export function Root(p: any) { return "NS_ROOT_MARKER_" + p.children; }
+            \\export function Button(p: any) { return "NS_BTN_MARKER_" + p.children; }
+            \\export function Unused(p: any) { return "NS_UNUSED_MARKER_" + p.children; }
+        );
+
+        const entry = try absPath(&tmp, "app.tsx");
+        defer std.testing.allocator.free(entry);
+        var b = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .jsx_runtime = c.rt,
+            .external = &.{c.ext},
+        });
+        defer b.deinit();
+        const result = try b.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+
+        try std.testing.expect(!result.hasErrors());
+        // 1) 두 컴포넌트 body 가 살아야 한다 (provider 쪽).
+        try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_ROOT_MARKER_") != null);
+        try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_BTN_MARKER_") != null);
+        // 2) consumer 쪽 `_jsx(...)` callee 가 전부 선언돼 있어야 한다 (dangling 참조 금지).
+        var buf: [128]u8 = undefined;
+        try std.testing.expect(allJsxCalleesDeclared(result.output, &buf));
+        // 3) 과보존 회귀 방지 — 안 쓴 export 는 여전히 제거돼야 한다.
+        try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_UNUSED_MARKER_") == null);
+    }
+}
+
+// (#4596) 중첩 멤버 체인 `<NS.Grp.Item>` — 바깥 jsx_member 의 object 는 다시 jsx_member 라
+// skip 되고 안쪽 노드가 NS→Grp 를 기록해야 한다. 이 규칙이 뒤집히면 `Item`(Grp 의 프로퍼티)을
+// NS 의 export 로 잘못 기록하거나 아무것도 기록하지 않아, `<Icons.Group.Item/>` 같은 흔한 형태가
+// dangling 이 된다.
+test "JSX: nested namespace member chain (`<NS.A.B>`) keeps target export (#4596)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\import * as NS from './ns';
+        \\export function App() { return <NS.Grp.Item>hi</NS.Grp.Item>; }
+        \\console.log(App);
+    );
+    try writeFile(tmp.dir, "ns.tsx",
+        \\export const Grp = { Item: (p: any) => "NS_GRP_ITEM_MARKER_" + p.children };
+        \\export function Unused(p: any) { return "NS_UNUSED_MARKER_" + p.children; }
+    );
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic,
+        .external = &.{"react/jsx-runtime"},
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_GRP_ITEM_MARKER_") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_UNUSED_MARKER_") == null);
+}
+
 test "JSX: RN dev default component import from directory index keeps target module" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -884,4 +1027,63 @@ test "JSX: @jsx pragma + automatic runtime → warning diagnostic (D026)" {
         }
     }
     try std.testing.expect(has_pragma_warning);
+}
+
+// (#4596) `jsx_runtime = .preserve` — JSX 가 link 시점까지 원형으로 남는 유일한 경로.
+// 여기선 `NamespaceAccessIndex` 의 JSX 색인이 tree-shake 판단의 유일한 근거다(lowering 이 없어
+// static_member 로 회수될 기회가 없음). 멤버로만 쓴 export 는 살고, 안 쓴 export 는 제거돼야 한다.
+test "JSX: preserve runtime — namespace member drives tree-shaking precisely (#4596)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\import * as NS from './ns';
+        \\export function App() { return <NS.Root>hi</NS.Root>; }
+        \\console.log(App);
+    );
+    try writeFile(tmp.dir, "ns.tsx",
+        \\export function Root(p: any) { return "NS_ROOT_MARKER_" + p.children; }
+        \\export function Unused(p: any) { return "NS_UNUSED_MARKER_" + p.children; }
+    );
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .jsx_runtime = .preserve });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_ROOT_MARKER_") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_UNUSED_MARKER_") == null);
+}
+
+// (#4596) namespace 자체를 JSX *값* 위치에 쓰면(`<NS/>` — 객체째 factory 로 전달) escape 다.
+// 멤버 사용(`<NS.Root/>`)만 보고 member_only 로 좁히면 `<NS/>` 는 멤버가 사라진 객체를 받아
+// undefined 컴포넌트가 된다. escape 감지가 살아 있어야 전체가 보존된다.
+test "JSX: bare namespace tag (`<NS/>`) is an escape — namespace fully retained (#4596)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\import * as NS from './ns';
+        \\const Both: any = NS;
+        \\export function App() { return <Both.Root>hi</Both.Root>; }
+        \\export function Raw() { return <NS>x</NS>; }
+        \\console.log(App, Raw);
+    );
+    try writeFile(tmp.dir, "ns.tsx",
+        \\export function Root(p: any) { return "NS_ROOT_MARKER_" + p.children; }
+        \\export function Other(p: any) { return "NS_OTHER_MARKER_" + p.children; }
+    );
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .jsx_runtime = .preserve });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // escape 이므로 멤버 집합으로 좁히지 못하고 두 export 모두 보존돼야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_ROOT_MARKER_") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_OTHER_MARKER_") != null);
 }
