@@ -539,6 +539,13 @@ pub fn main(init: std.process.Init) !void {
                 try stderr.print("zntc: warning: tsconfig paths resolution failed: {}\n", .{err});
                 break :blk lib.config.ResolvedPaths{ .entries = &.{}, .owned_strings = &.{} };
             };
+            // 상대 키는 매칭될 수 없어 무시된다 — 빌드당 한 번만 알린다.
+            if (resolved_paths.dropped_relative_keys > 0) {
+                try stderr.print(
+                    "zntc: warning: tsconfig paths — {d} relative key(s) ignored (paths apply to non-relative specifiers only)\n",
+                    .{resolved_paths.dropped_relative_keys},
+                );
+            }
         }
     }
 

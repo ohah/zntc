@@ -328,7 +328,11 @@ pub const ResolveCache = struct {
         /// Metro `resolver.disableHierarchicalLookup` 호환 — parent dir walk-up 차단.
         disable_hierarchical_lookup: bool = false,
         alias: []const resolver_mod.AliasEntry = &.{},
-        /// tsconfig `paths` (절대 경로로 정규화됨). alias 보다 먼저 매칭, 다중 후보 순차 시도.
+        /// tsconfig `paths` (절대 경로로 정규화됨).
+        /// ⚠️ **alias 가 먼저**다 — `--alias` 가 치환하면 이 블록은 통째로 건너뛴다.
+        /// 매칭되는 엔트리 중 **가장 구체적인 것 하나**만 쓰고(exact > 최장 prefix > 최장 suffix),
+        /// 그 엔트리의 targets 만 순서대로 시도한다. 덜 구체적인 엔트리가 구제하지 않는다.
+        /// 상대 specifier 와 의존 패키지 안의 importer 에는 적용되지 않는다.
         ts_paths: []const @import("../config.zig").TsConfig.PathEntry = &.{},
         /// webpack resolve.fallback / Metro extraNodeModules 호환.
         fallback: []const resolver_mod.FallbackEntry = &.{},
@@ -514,6 +518,9 @@ pub const ResolveCache = struct {
             var external_scope = profile.begin(.resolve_external);
             defer external_scope.end();
             if (self.isExternalForKind(specifier, kind)) return null;
+            // external 패턴은 **alias 치환 전** 이름으로만 검사한다 — 치환 후 이름으로
+            // external 을 판정하려면 emit 이 그 이름을 써야 하는데 지금은 record 의 원문
+            // specifier 를 쓴다. alias × external 조합은 #4605 에서 다룬다.
         }
 
         // 스택 버퍼로 캐시 키 생성 (alloc/free 제거)
@@ -607,7 +614,10 @@ pub const ResolveCache = struct {
         local_resolver.realpath_cache = &self.realpath_cache;
         local_resolver.pkg_json_cache = &self.pkg_json_cache;
         if (!thread_safe) {
-            // 단일 스레드: self.resolver의 conditions를 직접 교체 후 복원
+            // 단일 스레드: self.resolver의 conditions를 직접 교체 후 복원.
+            // ⚠️ dir_cache/pkg_json_cache 는 주입하지 않는다 — 이 경로(link 단계 재해석)가
+            // 유일하게 남은 fresh-stat 경로다. 붙이면 watch 재빌드가 무효화 API 없는
+            // 이전 빌드 스냅샷을 보고 새로 만든 파일을 "없다" 고 답한다.
             self.resolver.conditions = local_resolver.conditions;
         }
         const resolve_ptr = if (thread_safe) &local_resolver else &self.resolver;

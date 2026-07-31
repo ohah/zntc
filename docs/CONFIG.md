@@ -293,7 +293,16 @@ console.log(import.meta.env.BASE_URL); // --base / publicPath 기반 URL
 ## tsconfig 통합
 
 - `compilerOptions.target/jsx/jsxFactory/jsxFragment/jsxImportSource/experimentalDecorators/useDefineForClassFields/verbatimModuleSyntax/sourceMap` — config 미지정 시 tsconfig 값 사용.
-- `compilerOptions.paths` / `baseUrl` — alias 로 변환되어 resolver 에 주입. CLI `--alias:` 가 같은 키를 override.
+- `compilerOptions.paths` / `baseUrl` — resolver 에 주입. CLI `--alias:` 가 같은 키를 override.
+  `paths` 는 **상대가 아닌 specifier** (`@app/x`, `lib`, `/@/x`) 에만 적용된다. `./x` · `../x` 는
+  언제나 파일 기준 상대 해석이며 `paths` 를 타지 않는다 (tsc·esbuild 동일).
+  ⚠️ 그래서 상대 키(`"./legacy"`)는 **매칭될 수 없고 조용히 무시된다** — 진단이 나가지 않으므로,
+  그런 키가 있으면 의도한 재지정이 적용되지 않는다는 점을 직접 확인해야 한다.
+  ⚠️ 현재 `paths` 는 **모든 importer** 에 적용된다 — `node_modules` 안의 의존 패키지 소스도
+  포함이다. catch-all(`"*"`) 매핑을 쓰면 의존 패키지의 bare import 가 앱 소스로 해석될 수 있다
+  (tsc·esbuild 는 그 tsconfig 의 program 밖 파일에 적용하지 않는다). 범위 제한은 #4607 참고.
+  키가 여럿 매칭되면 **가장 구체적인 것 하나**만 쓴다: exact 키 > 최장 `*` 앞 prefix > 최장 suffix.
+  선언 순서는 영향을 주지 않는다.
 - `--tsconfig-raw=<json>` 이 있으면 파일 기반 `-p path` / `--project=path` 및 자동 탐색보다 우선한다.
 - `-p path` / `--project=path` 로 명시 지정. 미지정 시 entry 부모 디렉토리부터 cwd 까지 탐색.
 
@@ -463,7 +472,36 @@ Array 형태는 host runtime 의 RegExp 매칭에 위임하므로 sync 경로(`b
 | `alias`    | resolve **전 항상**| exact + prefix | ❌ — alias 우선   | ❌ (빈 모듈 → blockList 사용)|
 | `fallback` | resolve **실패 시**| exact only   | ✅ — 실패 시에만  | ✅ (`=false`)             |
 
-자동 polyfill 한 줄 매핑 (`node-polyfill-webpack-plugin` 류) 은 ZNTC 가 제공하지 않는다 — esbuild 정책과 동일하게 사용자가 명시 매핑하거나 plugin 으로 처리.
+#### ⚠️ target 이 상대 경로일 때의 기준
+
+`alias` / `fallback` 의 **target** 이 `./x` 처럼 상대 경로면, 그 **import 를 한 파일** 기준으로
+해석된다 (webpack `resolve.alias` / rolldown `resolve.alias` 와 동일). 즉 같은 매핑이라도
+어느 파일이 import 했느냐에 따라 다른 파일로 가거나 해석에 실패한다:
+
+```
+src/index.ts         + './shims/x.js' → src/shims/x.js               ✅
+src/deep/util.ts     + './shims/x.js' → src/deep/shims/x.js          ❌ 없음
+node_modules/d/a.js  + './shims/x.js' → node_modules/d/shims/x.js    ❌ 없음
+```
+
+`fallback` 은 주로 **의존 패키지 깊은 곳**의 `require('crypto')` 를 잡으려고 쓰므로, 상대 경로
+target 은 사실상 쓸 수 없다. **절대 경로나 패키지 이름을 쓰는 것을 권장한다** (webpack 예제가
+언제나 `path.resolve(__dirname, ...)` 를 쓰는 이유와 같다):
+
+```ts
+import { fileURLToPath } from 'node:url';
+
+fallback: {
+  crypto: 'crypto-browserify',                          // ✅ 패키지 이름
+  buffer: fileURLToPath(new URL('./shims/buffer.js', import.meta.url)),  // ✅ 절대 경로
+  stream: './shims/stream.js',                          // ⚠️ importer 기준 — 권장하지 않음
+}
+```
+
+⚠️ **지정한 target 이 해석되지 않아도 진단이 안 나갈 수 있다.** `platform: 'browser'` 에서 Node
+빌트인 이름(`crypto`·`stream` 등)은 해석 실패 시 빈 모듈로 대체되는데, `fallback` 의 주 용도가
+바로 그 빌트인이라 shim 이 없어도 `exit 0` 으로 나가고 런타임에 undefined 로 죽는다.
+target 오타·미설치를 빌드 타임에 잡고 싶다면 지금은 산출물을 직접 확인해야 한다 — #4606.
 
 ## Monorepo — `source` exports condition
 
@@ -507,12 +545,13 @@ consumer 의 빌드 명령에 `--conditions=source` 추가:
 
 ```
 1. alias (--alias / build({ alias })) — 명시 override, 항상 우선
-2. tsconfig paths
+2. tsconfig paths — 상대가 아닌 specifier + tsconfig 가 커버하는 파일에만
 3. package.json exports (--conditions=source 면 source 먼저 매치)
 4. exports.import / main (default)
 ```
 
 esbuild / Vite / Rollup 과 동일 순서. `alias` 는 fork / vendor escape hatch 로만 권장.
+2 의 적용 조건은 위 "tsconfig 통합" 절 참조 — `./x` 같은 상대 import 는 이 단계를 건너뛴다.
 
 ### IDE / TS 체커는 여전히 dist 를 본다
 
