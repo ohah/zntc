@@ -1203,3 +1203,266 @@ test "TypeScript: external + named mixed → type-only 만 elide, value-used 유
     try std.testing.expect(std.mem.indexOf(u8, result.output, "TypeX") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "TypeZ") == null);
 }
+
+/// tsconfig `paths` 회귀 테스트 공통 스캐폴드 — `<key_prefix>*` 를 `<root>/src/*` 한 벌로 매핑하고
+/// entry 를 번들해 산출물 복사본을 돌려준다. 호출자에는 픽스처 작성과 단언만 남는다.
+/// 스캐폴드를 테스트마다 복붙하면 `Bundler.init` 옵션이나 `PathEntry` 모양이 바뀔 때 한 벌만
+/// 고쳐도 나머지가 조용히 약한 가드로 남는다.
+const TsPathsBundle = struct {
+    output: []u8,
+    has_errors: bool,
+
+    fn deinit(self: TsPathsBundle) void {
+        std.testing.allocator.free(self.output);
+    }
+    fn has(self: TsPathsBundle, needle: []const u8) bool {
+        return std.mem.indexOf(u8, self.output, needle) != null;
+    }
+};
+
+fn bundleWithTsPaths(tmp: *std.testing.TmpDir, entry_rel: []const u8, key_prefix: []const u8) !TsPathsBundle {
+    const root = try absPath(tmp, ".");
+    defer std.testing.allocator.free(root);
+    const src_prefix = try std.fmt.allocPrint(std.testing.allocator, "{s}/src/", .{root});
+    defer std.testing.allocator.free(src_prefix);
+
+    const targets = [_]@import("../../config.zig").TsConfig.PathEntry.Target{
+        .{ .prefix = src_prefix, .suffix = "" },
+    };
+    const paths = [_]@import("../../config.zig").TsConfig.PathEntry{
+        .{ .key_prefix = key_prefix, .key_suffix = "", .has_wildcard = true, .targets = &targets },
+    };
+
+    const entry = try absPath(tmp, entry_rel);
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .ts_paths = &paths,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    return .{
+        .output = try std.testing.allocator.dupe(u8, result.output),
+        .has_errors = result.hasErrors(),
+    };
+}
+
+// (#4603) tsconfig `paths` 는 **non-relative specifier 에만** 적용된다. 가드가 없으면 catch-all
+// 매핑(`"paths": { "*": ["src/*"] }` — 실사용 패턴) 이 형제 파일 import 까지 가로채, 사용자가
+// 의도한 모듈 대신 **다른 모듈이 조용히 번들된다**(export 가 없으면 런타임 TypeError).
+test "tsconfig paths: catch-all 매핑이 상대 import 를 가로채지 않는다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "src/config.ts", "export const cfg = () => \"TS_PATHS_ROOT_MARKER\";");
+    try writeFile(tmp.dir, "src/workers/config.ts", "export const cfg = () => \"TS_PATHS_SIBLING_MARKER\";");
+    try writeFile(tmp.dir, "src/workers/main.ts",
+        \\import { cfg } from './config';
+        \\console.log(cfg());
+    );
+
+    const result = try bundleWithTsPaths(&tmp, "src/workers/main.ts", "");
+    defer result.deinit();
+
+    try std.testing.expect(!result.has_errors);
+    // 형제 파일이 해석돼야 한다.
+    try std.testing.expect(result.has("TS_PATHS_SIBLING_MARKER"));
+    try std.testing.expect(!result.has("TS_PATHS_ROOT_MARKER"));
+}
+
+// 기능 보존 — 비-relative specifier 에는 paths 가 그대로 적용돼야 한다.
+test "tsconfig paths: 비-relative specifier 는 계속 매핑된다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "src/config.ts", "export const cfg = () => \"TS_PATHS_ROOT_MARKER\";");
+    try writeFile(tmp.dir, "src/workers/main.ts",
+        \\import { cfg } from '@/config';
+        \\console.log(cfg());
+    );
+
+    const result = try bundleWithTsPaths(&tmp, "src/workers/main.ts", "@/");
+    defer result.deinit();
+
+    try std.testing.expect(!result.has_errors);
+    try std.testing.expect(result.has("TS_PATHS_ROOT_MARKER"));
+}
+
+// (#4603) rooted specifier(`/@/*`) 매핑은 실사용 패턴이므로 계속 동작해야 한다. relative 판정에
+// `/` 까지 묶으면 그런 프로젝트가 전면 빌드 실패한다.
+//
+// 술어를 `isRelativeOrAbsolute`(= `/` 도 배제)로 되돌리면 이 테스트가 실패한다 — A/B 확인.
+test "tsconfig paths: rooted specifier(/@/*) 매핑은 계속 동작한다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "src/utils.ts", "export const u = () => \"TS_PATHS_ROOTED_MARKER\";");
+    try writeFile(tmp.dir, "src/main.ts",
+        \\import { u } from '/@/utils';
+        \\console.log(u());
+    );
+
+    const result = try bundleWithTsPaths(&tmp, "src/main.ts", "/@/");
+    defer result.deinit();
+
+    try std.testing.expect(!result.has_errors);
+    try std.testing.expect(result.has("TS_PATHS_ROOTED_MARKER"));
+}
+
+// (#4603) 상대 specifier 에는 paths 를 **적용하지 않는다** — 형제 파일이 없으면 폴백 없이
+// 해석 실패다. "실패하면 paths 로 구제" 를 두면 상대 키가 죽은 설정이 됐다는 사실이 영원히
+// 감춰지고, 어느 참조 구현에도 없는 zntc 만의 세 번째 의미가 된다.
+test "tsconfig paths: 형제 파일이 없는 상대 import 는 paths 로 구제되지 않는다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // 형제 `src/workers/config.ts` 는 **일부러 만들지 않는다** — catch-all 이 구제하면 안 된다.
+    try writeFile(tmp.dir, "src/config.ts", "export const cfg = () => \"TS_PATHS_NO_FALLBACK_MARKER\";");
+    try writeFile(tmp.dir, "src/workers/main.ts",
+        \\import { cfg } from './config';
+        \\console.log(cfg());
+    );
+
+    const result = try bundleWithTsPaths(&tmp, "src/workers/main.ts", "");
+    defer result.deinit();
+
+    // 해석 실패가 진단으로 드러나야 하고, 엉뚱한 모듈이 번들되면 안 된다.
+    try std.testing.expect(result.has_errors);
+    try std.testing.expect(!result.has("TS_PATHS_NO_FALLBACK_MARKER"));
+}
+
+// (#4603) 동적 import 는 해석 실패가 **warning** 이라 실패해도 빌드가 green 이고 원문이 그대로
+// 나간다(런타임 404). 그래서 정적 import 테스트만으로는 catch-all hijack 회귀를 못 잡는다 —
+// 이 kind 로도 "형제 우선" 을 고정한다.
+test "tsconfig paths: catch-all 이 동적 import 의 상대 지정자도 가로채지 않는다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "src/analytics.ts", "export const a = () => \"TS_PATHS_DYN_ROOT\";");
+    try writeFile(tmp.dir, "src/pages/analytics.ts", "export const a = () => \"TS_PATHS_DYN_SIBLING\";");
+    try writeFile(tmp.dir, "src/pages/home.ts",
+        \\export async function load() {
+        \\  const m = await import('./analytics');
+        \\  return m.a();
+        \\}
+        \\console.log(load);
+    );
+
+    const result = try bundleWithTsPaths(&tmp, "src/pages/home.ts", "");
+    defer result.deinit();
+
+    try std.testing.expect(!result.has_errors);
+    // 형제가 인라인돼야 한다 — root 쪽이 들어오면 hijack 회귀.
+    try std.testing.expect(result.has("TS_PATHS_DYN_SIBLING"));
+    try std.testing.expect(!result.has("TS_PATHS_DYN_ROOT"));
+}
+
+// (#4603) 엔트리 선택은 TS/esbuild 의 specificity 규칙 — exact 키가 wildcard 를 이기고,
+// wildcard 끼리는 최장 prefix 가 이긴다. 선언 순서(JSON 키 순서)에 의존하면 안 된다:
+// 같은 소스·같은 매핑인데 키 순서만 바꾸면 다른 모듈이 번들되던 상태였다.
+test "tsconfig paths: exact 키가 catch-all 을 이기고 선언 순서에 의존하지 않는다" {
+    for ([_]bool{ false, true }) |catch_all_first| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+
+        try writeFile(tmp.dir, "src/shim.ts", "export const s = () => \"TS_PATHS_CATCHALL_TARGET\";");
+        try writeFile(tmp.dir, "lib/real-shim.ts", "export const s = () => \"TS_PATHS_EXACT_TARGET\";");
+        try writeFile(tmp.dir, "src/main.ts",
+            \\import { s } from 'shim';
+            \\console.log(s());
+        );
+
+        const root = try absPath(&tmp, ".");
+        defer std.testing.allocator.free(root);
+        const src_prefix = try std.fmt.allocPrint(std.testing.allocator, "{s}/src/", .{root});
+        defer std.testing.allocator.free(src_prefix);
+        const exact_target = try std.fmt.allocPrint(std.testing.allocator, "{s}/lib/real-shim.ts", .{root});
+        defer std.testing.allocator.free(exact_target);
+
+        const catch_targets = [_]@import("../../config.zig").TsConfig.PathEntry.Target{
+            .{ .prefix = src_prefix, .suffix = "" },
+        };
+        const exact_targets = [_]@import("../../config.zig").TsConfig.PathEntry.Target{
+            .{ .prefix = exact_target, .suffix = "" },
+        };
+        const catch_entry = @import("../../config.zig").TsConfig.PathEntry{
+            .key_prefix = "",
+            .key_suffix = "",
+            .has_wildcard = true,
+            .targets = &catch_targets,
+        };
+        const exact_entry = @import("../../config.zig").TsConfig.PathEntry{
+            .key_prefix = "shim",
+            .key_suffix = "",
+            .has_wildcard = false,
+            .targets = &exact_targets,
+        };
+        const paths = if (catch_all_first)
+            [_]@import("../../config.zig").TsConfig.PathEntry{ catch_entry, exact_entry }
+        else
+            [_]@import("../../config.zig").TsConfig.PathEntry{ exact_entry, catch_entry };
+
+        const entry = try absPath(&tmp, "src/main.ts");
+        defer std.testing.allocator.free(entry);
+
+        var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .ts_paths = &paths });
+        defer b.deinit();
+        const result = try b.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+
+        try std.testing.expect(!result.hasErrors());
+        // 선언 순서와 무관하게 exact 키가 이겨야 한다.
+        try std.testing.expect(std.mem.indexOf(u8, result.output, "TS_PATHS_EXACT_TARGET") != null);
+        try std.testing.expect(std.mem.indexOf(u8, result.output, "TS_PATHS_CATCHALL_TARGET") == null);
+    }
+}
+
+// (#4603) 엔트리 선택은 **하나**다 — 더 구체적인 키가 매칭됐는데 그 targets 가 디스크에 없으면
+// 덜 구체적인 키가 구제하지 않는다(tsc 동일). 이 계약은 previously-green 을 hard-fail 로 바꿀 수
+// 있는 유일한 변경인데 테스트가 없었다: `for (ts_paths) |entry| { for (entry.targets) }` 식
+// fall-through 를 되살려도 스위트가 전부 통과했다.
+test "tsconfig paths: 구체적 키가 매칭되면 catch-all 이 구제하지 않는다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // catch-all 로는 해석되지만, 더 구체적인 `shim` 키의 target 은 존재하지 않는다.
+    try writeFile(tmp.dir, "src/shim.ts", "export const s = () => \"CATCHALL_RESCUE\";");
+    try writeFile(tmp.dir, "src/main.ts",
+        \\import { s } from 'shim';
+        \\console.log(s());
+    );
+
+    const root = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(root);
+    const src_prefix = try std.fmt.allocPrint(std.testing.allocator, "{s}/src/", .{root});
+    defer std.testing.allocator.free(src_prefix);
+    const missing = try std.fmt.allocPrint(std.testing.allocator, "{s}/nowhere/gone.ts", .{root});
+    defer std.testing.allocator.free(missing);
+
+    const catchall_targets = [_]@import("../../config.zig").TsConfig.PathEntry.Target{
+        .{ .prefix = src_prefix, .suffix = "" },
+    };
+    const exact_targets = [_]@import("../../config.zig").TsConfig.PathEntry.Target{
+        .{ .prefix = missing, .suffix = "" },
+    };
+    const paths = [_]@import("../../config.zig").TsConfig.PathEntry{
+        .{ .key_prefix = "", .key_suffix = "", .has_wildcard = true, .targets = &catchall_targets },
+        .{ .key_prefix = "shim", .key_suffix = "", .has_wildcard = false, .targets = &exact_targets },
+    };
+
+    const entry = try absPath(&tmp, "src/main.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .ts_paths = &paths });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    // exact 키가 이겼고, 그 target 이 없으므로 해석 실패여야 한다.
+    try std.testing.expect(result.hasErrors());
+    // catch-all 이 구제해서 다른 모듈이 조용히 들어오면 안 된다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "CATCHALL_RESCUE") == null);
+}

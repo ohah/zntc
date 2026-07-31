@@ -18,6 +18,12 @@ test "isRelativeOrAbsolute" {
     try std.testing.expect(!isRelativeOrAbsolute("react"));
     try std.testing.expect(!isRelativeOrAbsolute("@mui/material"));
     try std.testing.expect(!isRelativeOrAbsolute(""));
+    // (#4603) relative 판정은 `Resolver.isRelativePath` 와 **같은 술어**여야 한다 —
+    // 어긋나면 그 사이 지정자가 ts_paths 도 못 타고 source_dir 결합도 못 받아 bare 패키지로 오인된다.
+    try std.testing.expect(isRelativeOrAbsolute(".\\foo"));
+    try std.testing.expect(isRelativeOrAbsolute("..\\foo"));
+    try std.testing.expect(!isRelativeOrAbsolute("..foo"));
+    try std.testing.expect(!isRelativeOrAbsolute("...foo"));
 }
 
 /// 테스트용 헬퍼: tmpDir에 파일 생성 (부모 디렉토리 자동 생성)

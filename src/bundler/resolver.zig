@@ -26,6 +26,7 @@ const fs = @import("fs.zig");
 const PackageJson = pkg_json.PackageJson;
 const resolve_cache = @import("resolve_cache.zig");
 const profile = @import("../profile.zig");
+const module_specifier = @import("../module_specifier.zig");
 const debug_log = @import("../debug_log.zig");
 
 pub const ResolveResult = struct {
@@ -105,7 +106,6 @@ pub const DirEntryCache = struct {
     allocator: std.mem.Allocator,
     /// 0.16: listDir 가 io 를 요구. Resolver.resolve 진입 시 주입 (per-instance).
     io: std.Io = undefined,
-
     const EntrySet = struct {
         files: std.StringHashMapUnmanaged(void) = .empty,
         dirs: std.StringHashMapUnmanaged(void) = .empty,
@@ -296,19 +296,23 @@ pub const RealpathCache = struct {
 
     /// path 의 realpath 를 owned slice 로 반환.
     /// dir-level 캐시 적중 시 syscall 0. 캐시 miss 면 dir 만 realpath 후 cache + join.
+    ///
     pub fn resolve(self: *RealpathCache, path: []const u8) error{OutOfMemory}![]const u8 {
         const dir = std.fs.path.dirname(path) orelse {
             // dirname 없음 (root path "/"). 그대로 dupe.
             return self.allocator.dupe(u8, path);
         };
         const basename = std.fs.path.basename(path);
+        // 조회 실패든 아니든 **같은 값**을 쓴다 — 한 빌드 안에서 같은 디렉토리가 호출마다 다른
+        // 답을 주면 module identity 가 갈라져 같은 파일이 두 경로로 중복 번들된다.
         const shard = self.shardFor(dir);
-
         shard.mutex.lock();
         const cached_dir: ?[]const u8 = if (shard.cache.get(dir)) |v| v else null;
         shard.mutex.unlock();
 
         const resolved_dir = cached_dir orelse blk: {
+            // realpath 실패는 논리 경로로 대신한다 — 이 값은 module identity 로 쓰이므로
+            // 한 빌드 안에서 같은 디렉토리가 항상 같은 답을 줘야 한다.
             const new_dir = fs.realpath(self.io, self.allocator, dir) catch
                 self.allocator.dupe(u8, dir) catch return error.OutOfMemory;
 
@@ -330,7 +334,6 @@ pub const RealpathCache = struct {
             };
             break :blk new_dir;
         };
-
         // resolved_dir + "/" + basename
         return std.fs.path.join(self.allocator, &.{ resolved_dir, basename });
     }
@@ -420,6 +423,12 @@ pub const Resolver = struct {
     /// Fallback 엔트리 (webpack `resolve.fallback` / Metro `extraNodeModules` 호환).
     /// alias와 달리 일반 해석이 **실패했을 때만** 적용. 정확 매칭만 지원 (webpack과 동일).
     /// `to == null`이면 빈 모듈(disabled result)로 대체.
+    ///
+    /// ⚠️ `to` 가 상대 경로면 **import 를 한 파일** 기준으로 해석된다(alias 도 동일). 전역
+    /// 옵션인데 기준이 importer 마다 달라지므로, 특히 의존 패키지 깊은 곳의 `require('crypto')`
+    /// 를 잡는 용도에선 상대 경로가 사실상 동작하지 않는다 — 절대 경로나 패키지 이름 권장.
+    /// 지정한 `to` 가 해석되지 않으면 그 이름은 해석 실패로 남는다 — browser 플랫폼에서
+    /// Node 빌트인 이름이면 조용히 빈 모듈로 대체되는 문제가 있다 (#4606).
     fallback: []const FallbackEntry = &.{},
     /// blockList — Metro resolver.blockList 호환. 매칭되는 절대 경로는 ModuleNotFound 처리.
     /// 패턴 구문은 `block_list.zig` 참조 (regex 최소 서브셋).
@@ -459,11 +468,23 @@ pub const Resolver = struct {
     /// 접두사 매칭: specifier가 entry.from + "/" 로 시작 → entry.to + 나머지
     /// 매칭 없으면 null 반환. 반환값은 allocator 소유 (호출자가 해제).
     pub fn applyAlias(allocator: std.mem.Allocator, alias_entries: []const AliasEntry, specifier: []const u8) error{OutOfMemory}!?[]const u8 {
-        for (alias_entries) |entry| {
+        const m = matchAlias(alias_entries, specifier) orelse return null;
+        if (m.suffix.len == 0) return try allocator.dupe(u8, m.entry.to);
+        var result = try allocator.alloc(u8, m.entry.to.len + m.suffix.len);
+        @memcpy(result[0..m.entry.to.len], m.entry.to);
+        @memcpy(result[m.entry.to.len..], m.suffix);
+        return result;
+    }
+
+    pub const AliasMatch = struct { entry: *const AliasEntry, suffix: []const u8 };
+
+    /// alias 매칭 판별 (치환·할당 없음). `applyAlias` 와 **같은 규칙**을 써야 하므로 양쪽이
+    /// 이 함수를 공유한다 — 규칙이 갈라지면 "매핑됐다고 판정했는데 치환은 안 되는"(또는 그 반대)
+    /// 상태가 생긴다.
+    pub fn matchAlias(alias_entries: []const AliasEntry, specifier: []const u8) ?AliasMatch {
+        for (alias_entries) |*entry| {
             // 정확 매칭
-            if (std.mem.eql(u8, specifier, entry.from)) {
-                return try allocator.dupe(u8, entry.to);
-            }
+            if (std.mem.eql(u8, specifier, entry.from)) return .{ .entry = entry, .suffix = "" };
             // `exact = true` 인 entry 는 prefix 매칭 skip — `to` 가 단일 파일이면 subpath
             // import 가 깨지므로 명시적 opt-in 한 경우에만 prefix 도 허용.
             if (entry.exact) continue;
@@ -472,11 +493,7 @@ pub const Resolver = struct {
                 std.mem.startsWith(u8, specifier, entry.from) and
                 specifier[entry.from.len] == '/')
             {
-                const suffix = specifier[entry.from.len..]; // "/hooks" 등
-                var result = try allocator.alloc(u8, entry.to.len + suffix.len);
-                @memcpy(result[0..entry.to.len], entry.to);
-                @memcpy(result[entry.to.len..], suffix);
-                return result;
+                return .{ .entry = entry, .suffix = specifier[entry.from.len..] }; // "/hooks" 등
             }
         }
         return null;
@@ -502,26 +519,92 @@ pub const Resolver = struct {
         return null;
     }
 
-    /// tsconfig `paths` 패턴 매칭 + 순차 candidate resolve.
-    /// TS 스펙에 따라:
-    /// 1. 각 paths entry 에 대해 key 패턴 매칭 (exact 또는 prefix + suffix with captured middle)
-    /// 2. 매칭된 entry 의 targets 를 순서대로 시도 — 파일 존재 확인까지 포함
-    /// 3. 첫 resolvable target 의 ResolveResult 반환
-    /// 모든 entry 매칭/resolve 실패 시 null → caller 가 일반 resolve 경로로 fall-through.
+    /// tsconfig `paths` 적용.
+    ///
+    /// 1. 매칭되는 엔트리 중 **가장 구체적인 것 하나**를 고른다 (`isMoreSpecificPathEntry`).
+    /// 2. 그 엔트리의 targets 만 선언 순서대로 시도 — 파일 존재 확인까지 포함.
+    /// 3. 첫 resolvable target 의 ResolveResult 반환. 없으면 null → caller 가 일반 경로로 진행.
+    ///
+    /// ⚠️ 2 는 **선택된 엔트리 안에서만** 이다. 덜 구체적인 다른 엔트리가 구제하지 않는다 —
+    /// `{"shim": ["./missing.ts"], "*": ["src/*"]}` 에서 `shim` 은 catch-all 로 넘어가지 않고
+    /// 그대로 해석 실패한다.
+    ///
+    /// 이전엔 선언 순서대로 훑어 **첫 매칭**을 썼다. 그래서 catch-all(`"*"`) 이 더 구체적인 키를
+    /// 이겼고, 결과가 **JSON 키 작성 순서에 의존**했다 — 같은 소스·같은 매핑인데 키 순서만 바꾸면
+    /// 다른 모듈이 번들된다(실측).
     fn tryTsPaths(self: *Resolver, specifier: []const u8) ResolveError!?ResolveResult {
+        // (importer 범위) 의존 패키지 안의 파일에는 프로젝트 tsconfig 의 paths 를 적용하지 않는다.
+        // `paths` 는 **그 tsconfig 가 커버하는 파일**에만 적용돼야 하는데 zntc 는
+        // 전역 1벌을 모든 파일에 적용해서, 의존 패키지 내부의 bare import 까지 앱 소스가 가로챘다:
+        // `node_modules/mypkg/index.js` 의 `require('helper')` 가 실제 의존성 대신 `src/helper.ts`
+        // 로 해석돼 **다른 모듈이 조용히 번들된다**(그 파일에 해당 export 가 없으면 런타임 TypeError).
+        var best: ?PathEntry = null;
+        var best_captured: []const u8 = "";
         for (self.ts_paths) |entry| {
             const captured = matchTsPathEntry(entry, specifier) orelse continue;
-            for (entry.targets) |t| {
-                // target.prefix 는 tsconfig_dir 기준 절대 경로로 join 만 되어 있음.
-                // capture 와 concat 후 `path.resolve` 로 한꺼번에 normalize (`./././` 등 정리).
-                const raw = try std.mem.concat(self.allocator, u8, &.{ t.prefix, captured, t.suffix });
-                defer self.allocator.free(raw);
-                const candidate = try std.fs.path.resolve(self.allocator, &.{raw});
-                defer self.allocator.free(candidate);
-                if (try self.tryResolvePathLike(candidate)) |r| return r;
-            }
+            if (best) |b| if (!isMoreSpecificPathEntry(entry, b)) continue;
+            best = entry;
+            best_captured = captured;
+        }
+        const entry = best orelse return null;
+        // 게이트는 **매칭이 성립한 뒤에만** 판정한다 — 어떤 키에도 안 걸리는 지정자는 게이트를
+        // 칠 이유가 없다. 다만 catch-all(`"*"`)이 있으면 모든 non-relative 지정자가 매칭되므로
+        // 이 순서만으로는 비용이 줄지 않는다(그 구성에선 게이트가 원래 필요한 지점이기도 하다).
+        for (entry.targets) |t| {
+            // target.prefix 는 tsconfig_dir 기준 절대 경로로 join 만 되어 있음.
+            // capture 와 concat 후 `path.resolve` 로 한꺼번에 normalize (`./././` 등 정리).
+            const raw = try std.mem.concat(self.allocator, u8, &.{ t.prefix, best_captured, t.suffix });
+            defer self.allocator.free(raw);
+            const candidate = try std.fs.path.resolve(self.allocator, &.{raw});
+            defer self.allocator.free(candidate);
+            if (try self.tryResolvePathLike(candidate)) |r| return r;
         }
         return null;
+    }
+
+    const PathEntry = @import("../config.zig").TsConfig.PathEntry;
+
+    /// 두 매칭 엔트리 중 `a` 가 더 구체적인가 (동률이면 false → 먼저 선언된 것 유지, 결정성).
+    ///   1. exact(비-wildcard) 키가 wildcard 키를 이긴다
+    ///   2. wildcard 끼리는 `key_prefix` 가 가장 긴 것
+    ///   3. prefix 까지 같으면 `key_suffix` 가 가장 긴 것 — `{"@app/*", "@app/*.js"}` 처럼
+    ///      prefix 가 동률인 쌍이 실재한다. 이 단계가 없으면 그런 쌍은 다시 **선언 순서**로
+    ///      갈려서, 이 함수가 없애려는 순서 의존이 그대로 남는다.
+    fn isMoreSpecificPathEntry(a: PathEntry, b: PathEntry) bool {
+        const a_exact = !a.has_wildcard;
+        const b_exact = !b.has_wildcard;
+        if (a_exact != b_exact) return a_exact;
+        if (a.key_prefix.len != b.key_prefix.len) return a.key_prefix.len > b.key_prefix.len;
+        return a.key_suffix.len > b.key_suffix.len;
+    }
+
+    test isMoreSpecificPathEntry {
+        const wild = struct {
+            fn e(prefix: []const u8, suffix: []const u8) PathEntry {
+                return .{ .key_prefix = prefix, .key_suffix = suffix, .has_wildcard = true, .targets = &.{} };
+            }
+        }.e;
+        const exact = struct {
+            fn e(key: []const u8) PathEntry {
+                return .{ .key_prefix = key, .key_suffix = "", .has_wildcard = false, .targets = &.{} };
+            }
+        }.e;
+
+        // exact 가 wildcard 를 이긴다 — prefix 가 짧아도.
+        try std.testing.expect(isMoreSpecificPathEntry(exact("lib"), wild("", "")));
+        try std.testing.expect(!isMoreSpecificPathEntry(wild("", ""), exact("lib")));
+        // wildcard 끼리는 최장 prefix.
+        try std.testing.expect(isMoreSpecificPathEntry(wild("@app/ui/", ""), wild("@app/", "")));
+        try std.testing.expect(!isMoreSpecificPathEntry(wild("@app/", ""), wild("@app/ui/", "")));
+        // prefix 동률이면 최장 suffix.
+        try std.testing.expect(isMoreSpecificPathEntry(wild("@app/", ".js"), wild("@app/", "")));
+        try std.testing.expect(!isMoreSpecificPathEntry(wild("@app/", ""), wild("@app/", ".js")));
+        // 완전 동률 → false (먼저 선언된 것 유지).
+        try std.testing.expect(!isMoreSpecificPathEntry(wild("@app/", ".js"), wild("@app/", ".js")));
+    }
+
+    fn isPathSepChar(c: u8) bool {
+        return c == '/' or c == '\\';
     }
 
     /// 절대 경로 1 개에 대해 `resolveInner` 의 pass #1–#4 와 동일 로직으로 resolve 시도.
@@ -668,9 +751,28 @@ pub const Resolver = struct {
         defer if (self.alias.len > 0 and effective_specifier.ptr != specifier.ptr)
             self.allocator.free(effective_specifier);
 
-        // tsconfig paths — alias 미적용 specifier 에 대해서만 의미 있음. alias 가 이미 치환했다면
-        // 일반 경로로 continue. (alias 는 보통 절대/상대 경로 리턴이라 ts_paths 와 겹치지 않음)
-        if (self.ts_paths.len > 0 and effective_specifier.ptr == specifier.ptr) {
+        // tsconfig paths 적용 시점.
+        //
+        // **상대 specifier(`./`, `../`) 에는 paths 를 적용하지 않는다** — 폴백도 없이 완전 배제.
+        // 이전엔 무조건 먼저 적용해서 catch-all 매핑(`"paths": { "*": ["src/*"] }` — 실사용
+        // 패턴)이 형제 파일 import 까지 가로챘다: `src/workers/main.ts` 의 `import './config'`
+        // 가 형제 `src/workers/config.ts` 대신 `src/config.ts` 로 해석돼 **다른 모듈이 조용히
+        // 번들된다**(export 가 없으면 TypeError).
+        //
+        // "일반 해석 먼저, 실패 시 paths 폴백" 안도 검토했지만 채택하지 않았다. 그 의미론은
+        // 어느 참조 구현에도 없어 영구 divergence 를 남기고, 무엇보다 **상대 키가 죽은 설정이
+        // 됐다는 사실을 영원히 감춘다**(아래 검증 참고).
+        //
+        // ⚠️ 술어는 `isRelativeOrAbsolute` 가 아니라 **relative 만**이다. `/@/*` 같은 rooted
+        // 매핑은 실사용 패턴이라 `/` 까지 배제하면 그런 프로젝트가 전면 빌드 실패한다.
+        //
+        // alias 미적용 조건: alias 가 이미 치환했다면 일반 경로로 continue.
+        // 치환 후 이름으로 paths 를 태워 봤지만 되돌렸다 — catch-all(`"*"`) 이 alias target 을
+        // 가로채 `--alias:oldname=realpkg` 가 설치된 패키지 대신 동명의 앱 파일을 조용히
+        // 번들했다(실측). alias target 을 paths 로 표현하는 조합은 #4606 에서 따로 다룬다.
+        if (self.ts_paths.len > 0 and effective_specifier.ptr == specifier.ptr and
+            !isRelativePath(specifier))
+        {
             if (try self.tryTsPaths(specifier)) |r| return r;
         }
 
@@ -712,6 +814,11 @@ pub const Resolver = struct {
 
         return error.ModuleNotFound;
     }
+
+    /// 상대 specifier 판별. 정의와 테스트는 `src/module_specifier.zig` 가 단일 권위 —
+    /// tsconfig 를 파싱하는 config 쪽도 같은 술어를 써야 "config 는 등록했는데 resolver 는
+    /// 영원히 매칭 안 하는" 죽은 매핑이 안 생긴다.
+    pub const isRelativePath = module_specifier.isRelative;
 
     /// 확장자를 하나씩 붙여서 존재하는 파일을 찾는다.
     /// custom_extensions가 설정되어 있으면 그것을 사용, 아니면 default_extensions.
@@ -1214,19 +1321,45 @@ pub const Resolver = struct {
     }
 };
 
-/// specifier가 상대 경로(`./`, `../`) 또는 절대 경로(`/`)인지 판별.
+/// specifier가 상대 경로(`./`, `../`) 또는 절대 경로인지 판별.
 pub fn isRelativeOrAbsolute(specifier: []const u8) bool {
     if (specifier.len == 0) return false;
+    if (isAbsoluteSpecifier(specifier)) return true;
+    // relative 판정은 `Resolver.isRelativePath` 와 **같은 술어**여야 한다.
+    // 두 술어가 어긋나면 그 사이에 낀 지정자(예: Windows 표기 `.\x`)가 ts_paths 도 못 타고
+    // source_dir 결합도 못 받아 **bare 패키지 이름으로 취급**돼 엉뚱하게 해석된다.
+    return Resolver.isRelativePath(specifier);
+}
+
+/// 절대 경로 지정자인지. POSIX `/…` 에 더해 **Windows 드라이브 경로**(`C:\…`, `C:/…`) 와
+/// UNC(`\\server\share`) 도 포함한다.
+///
+/// `/` 만 보면 `--alias`/`--fallback` 의 target 으로 넘어온 `C:\proj\shim.js` 가 bare 패키지
+/// 이름으로 분류돼 `node_modules\C:\…` 를 뒤진다 — 문서가 "절대 경로를 쓰라" 고 권장하는
+/// 바로 그 입력이 Windows 에서만 실패한다.
+pub fn isAbsoluteSpecifier(specifier: []const u8) bool {
+    if (specifier.len == 0) return false;
     if (specifier[0] == '/') return true;
-    if (specifier.len == 1 and specifier[0] == '.') return true;
-    // "./" — 현재 디렉토리 상대
-    if (specifier.len >= 2 and specifier[0] == '.' and specifier[1] == '/') return true;
-    // "../" — 상위 디렉토리 상대. ".." 뒤에 / 또는 끝이어야 함 ("..foo"는 bare specifier)
-    if (specifier.len >= 2 and specifier[0] == '.' and specifier[1] == '.') {
-        if (specifier.len == 2) return true; // ".." 그 자체
-        if (specifier[2] == '/') return true; // "../..."
+    // ⚠️ **타겟 OS 기준**이어야 한다. `isAbsoluteWindows` 를 무조건 쓰면 POSIX 빌드에서도
+    // `\assets\logo.png` 같은 Windows 표기가 절대 경로로 분류돼, URL 상대 참조로 처리되던
+    // CSS/worker 지정자가 드라이브 루트 기준으로 해석되며 자산이 방출되지 않는다.
+    return std.fs.path.isAbsolute(specifier);
+}
+
+test isAbsoluteSpecifier {
+    // POSIX 절대는 어디서나 절대.
+    for ([_][]const u8{ "/x", "/" }) |sp| try std.testing.expect(isAbsoluteSpecifier(sp));
+    // 구분자가 없거나 스킴이면 절대가 아니다 (패키지 이름일 수 있다).
+    // ⚠️ URL 형태(`https://…`)가 드라이브로 오인되지 않는지 고정한다.
+    for ([_][]const u8{ "", "x", "./x", "C:", "C:x", "@scope/pkg", "node:fs", "https://cdn/x.js", "data:text/js," }) |sp| {
+        try std.testing.expect(!isAbsoluteSpecifier(sp));
     }
-    return false;
+    // Windows 표기는 **Windows 타겟에서만** 절대다. POSIX 빌드에서 절대로 보면
+    // `\assets\logo.png` 같은 CSS/worker 지정자가 URL 상대 처리를 잃는다.
+    const win = @import("builtin").os.tag == .windows;
+    for ([_][]const u8{ "C:\\proj\\shim.js", "c:/proj/shim.js", "\\\\srv\\share\\a", "\\proj\\x" }) |sp| {
+        try std.testing.expectEqual(win, isAbsoluteSpecifier(sp));
+    }
 }
 
 /// bare specifier를 패키지 이름과 서브패스로 분리한다.

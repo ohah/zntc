@@ -335,6 +335,10 @@ pub fn applyResolveResult(
     }
     if (is_error) {
         // Worker resolve 실패 → 경고만 (메인 빌드 중단하지 않음)
+        // Worker resolve 실패 → 경고만 (메인 빌드 중단하지 않음).
+        // ⚠️ `resolve_failed` 를 세우지 않는다 — 세우면 `resolveModuleImports` 가 이 record 를
+        // 건너뛰어, 스캔 단계에서 실패한 worker(플러그인 resolveId 실패 등)를 본 패스에서
+        // 다시 해석할 기회가 사라진다. 중복 경고보다 재시도 소실이 나쁘다.
         if (record.kind == .worker) {
             self.addDiag(.unresolved_import, .warning, self.modules.at(mod_idx).path, record.span, .resolve, "Cannot resolve worker module", record.specifier);
             return;

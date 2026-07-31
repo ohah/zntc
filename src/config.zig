@@ -10,6 +10,7 @@
 //! - std.json.parseFromSlice: Zig 0.14 JSON 파싱 API
 
 const std = @import("std");
+const module_specifier = @import("module_specifier.zig");
 
 /// tsconfig.json에서 파싱한 컴파일러 옵션을 담는 구조체.
 ///
@@ -412,6 +413,11 @@ fn warnToStderr(comptime fmt: []const u8, args: anytype) void {
 pub const ResolvedPaths = struct {
     entries: []const TsConfig.PathEntry,
     owned_strings: [][]const u8,
+    /// 상대 키(`"./legacy/*"`)라서 버려진 항목 수. `paths` 는 상대가 아닌 specifier 에만
+    /// 적용되므로 이런 키는 매칭될 수 없다 — **조용히 버리면 사용자는 매핑이 살아 있다고 믿는다**.
+    /// 호출자가 빌드당 **한 번** 경고한다(파싱 자체는 단일 파일 transpile 마다 돌아서
+    /// 그 안에서 경고하면 rebuild 마다 같은 줄이 수백 번 찍힌다).
+    dropped_relative_keys: usize = 0,
 
     pub fn deinit(self: *ResolvedPaths, allocator: std.mem.Allocator) void {
         for (self.entries) |e| if (e.targets.len > 0) allocator.free(e.targets);
@@ -432,6 +438,7 @@ pub fn resolveTsPaths(
 ) error{OutOfMemory}!ResolvedPaths {
     var out_entries: std.ArrayList(TsConfig.PathEntry) = .empty;
     errdefer out_entries.deinit(allocator);
+    var dropped_relative: usize = 0;
     var owned: std.ArrayList([]const u8) = .empty;
     errdefer {
         for (owned.items) |s| allocator.free(s);
@@ -439,6 +446,15 @@ pub fn resolveTsPaths(
     }
 
     for (tsconfig.paths) |p| {
+        // `paths` 는 **상대가 아닌** specifier 에만 적용되므로(tsc·esbuild 동일) 상대 키는
+        // 매칭될 일이 없다. 파싱은 파일에 충실하게 두고 여기서 걸러 세어, 호출자가 빌드당
+        // 한 번 경고한다 — 조용히 버리면 사용자는 매핑이 살아 있다고 믿는다.
+        if (p.has_wildcard or p.key_suffix.len == 0) {
+            if (module_specifier.isRelative(p.key_prefix)) {
+                dropped_relative += 1;
+                continue;
+            }
+        }
         var targets: std.ArrayList(TsConfig.PathEntry.Target) = .empty;
         errdefer targets.deinit(allocator);
 
@@ -472,6 +488,7 @@ pub fn resolveTsPaths(
     }
 
     return .{
+        .dropped_relative_keys = dropped_relative,
         .entries = try out_entries.toOwnedSlice(allocator),
         .owned_strings = try owned.toOwnedSlice(allocator),
     };

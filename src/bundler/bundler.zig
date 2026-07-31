@@ -1026,6 +1026,11 @@ pub const Bundler = struct {
         const arena_alloc = arena.allocator();
 
         // worker용 resolve cache (부모와 공유하지 않음)
+        //
+        // worker용 resolve cache (부모와 공유하지 않음).
+        // ⚠️ 옵션 상속은 열지 않는다 — alias/fallback/ts_paths 를 넘겨 봤지만, worker 는
+        // external/preserve_symlinks 등을 함께 물려받지 않아 부모와 게이트 판정이 갈리고,
+        // worker 진단은 버려지므로 그 어긋남이 **조용한 오번들**로 나간다 (#4603).
         var worker_resolve_cache = ResolveCache.init(arena_alloc, .{ .platform = self.getResolveCache().platform });
 
         var worker_graph = ModuleGraph.init(arena_alloc, &worker_resolve_cache);
