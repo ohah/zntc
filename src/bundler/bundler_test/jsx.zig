@@ -1124,3 +1124,63 @@ test "JSX: preserve runtime — namespace member drives tree-shaking precisely (
 // 따라서 이 브랜치의 가드는 text-only 경로를 직접 찌르는 유닛 테스트가 담당한다 —
 // `linker/namespace_access_test.zig` 의 "bare JSX namespace tag (`<NS/>`) is an escape → opaque".
 // (여기에 번들 테스트를 두면 브랜치를 지워도 green 인 공허한 가드가 된다.)
+
+// (#4599) `jsx: preserve` 에서 실체화된 namespace 변수가 **JSX 태그 자리**에 그대로 남는데,
+// 이름이 소문자로 시작하면 downstream 툴이 **intrinsic 태그**(문자열)로 바꾼다:
+// `<ns_ns>` → `jsx("ns_ns", …)`. 컴포넌트가 실행되지 않고 알 수 없는 DOM 엘리먼트가 마운트되며
+// 에러도 나지 않는다. esbuild 로 실측 확인 — 수정 전 `jsx("ns_ns", …)`, 수정 후 `jsx(Ns_ns, …)`.
+//
+// base 는 모듈 파일명에서 오므로(`ns.tsx` → `ns`) 소문자 모듈명이면 항상 걸린다.
+test "JSX: preserve — 실체화된 namespace 변수는 컴포넌트로 해석되는 이름이어야 (#4599)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\import * as NS from './ns';
+        \\export function Raw() { return <NS>x</NS>; }
+        \\export function Member() { return <NS.Root/>; }
+    );
+    try writeFile(tmp.dir, "ns.tsx",
+        \\export const Root = () => null;
+        \\export const Other = () => null;
+    );
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .jsx_runtime = .preserve });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 전제 검증 — JSX 가 원형으로 남았고 namespace 가 실체화됐는지 먼저 확인한다.
+    // 이게 없으면 (실체화가 아예 안 되는 회귀에서도) 아래 단언이 공허하게 통과한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_ns = {get Root()") != null);
+
+    // 소문자로 시작하는 태그가 남아 있으면 안 된다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "<ns_ns>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Ns_ns") != null);
+}
+
+// 대조군 — preserve 가 아니면 이름을 건드리지 않는다. 변수는 식별자 표현식으로만 쓰여
+// 대소문자가 무의미한데, 전역으로 바꾸면 기존 출력의 변수명이 통째로 흔들린다.
+// 이 테스트가 없으면 "항상 대문자화" 로 바꿔도 위 테스트가 통과해 범위 가드가 사라진다.
+test "JSX: classic 런타임에서는 namespace 변수명을 바꾸지 않는다 (#4599 범위 가드)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\import * as NS from './ns';
+        \\export const v = NS;
+    );
+    try writeFile(tmp.dir, "ns.tsx", "export const Root = () => null;\n");
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .jsx_runtime = .classic });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ns_ns") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Ns_ns") == null);
+}

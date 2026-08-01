@@ -844,6 +844,24 @@ fn rankFold(self: *const Linker, target_mod_idx: u32) u64 {
     return @as(u64, rank) *% 0x9e3779b1;
 }
 
+/// (#4599) `jsx: preserve` 에서 namespace 변수가 **JSX 태그 자리**에 그대로 남을 때,
+/// 소문자로 시작하면 downstream 툴(babel/tsc/vite)이 **intrinsic 태그**(문자열)로 바꿔 버린다:
+/// `<ns_ns>` → `_jsx("ns_ns", …)`. 컴포넌트가 실행되지 않고 알 수 없는 DOM 엘리먼트가 마운트되며
+/// 에러도 나지 않는다. 판별 규칙은 `/^[a-z]/` 이므로 **첫 글자만 대문자면** 충분하다.
+///
+/// preserve 가 아닐 때는 이름이 항상 식별자 표현식으로만 쓰여 대소문자가 무의미하므로 건드리지
+/// 않는다 — 전역으로 바꾸면 기존 출력의 변수명이 통째로 흔들린다.
+///
+/// 멤버 태그(`<ns_ns.Root/>`)는 대소문자와 무관하게 컴포넌트로 해석되므로 원래 문제가 없다.
+fn jsxSafeNsBase(self: *const Linker, base: []const u8) std.mem.Allocator.Error![]const u8 {
+    if (self.graph.jsx_runtime != .preserve) return base;
+    if (base.len == 0 or !std.ascii.isLower(base[0])) return base;
+    const owned = try self.allocator.alloc(u8, base.len);
+    @memcpy(owned, base);
+    owned[0] = std.ascii.toUpper(owned[0]);
+    return owned;
+}
+
 /// rank 0 → `{base}_ns`, rank N>0 → `{base}_ns_{N+1}` (예: `core_ns`, `core_ns_2`).
 /// rank 가 target 의 module_index 로 결정되므로 병렬 materialize 순서와 무관 (#3966).
 /// 잔여 충돌(target 자체 export 와 동명 등 희소 케이스)은 결정적으로 증가.
@@ -853,16 +871,20 @@ fn makeUniqueSharedNsVarNameLocked(
     rank: u32,
     seen_exports: *std.StringHashMapUnmanaged(void),
 ) std.mem.Allocator.Error![]const u8 {
+    // JSX preserve 에서 태그 자리에 남을 수 있으므로 컴포넌트로 해석되는 형태로 정규화.
+    const jsx_base = try jsxSafeNsBase(self, base);
+    defer if (jsx_base.ptr != base.ptr) self.allocator.free(jsx_base);
+
     var candidate = if (rank == 0)
-        try std.fmt.allocPrint(self.allocator, "{s}_ns", .{base})
+        try std.fmt.allocPrint(self.allocator, "{s}_ns", .{jsx_base})
     else
-        try std.fmt.allocPrint(self.allocator, "{s}_ns_{d}", .{ base, rank + 1 });
+        try std.fmt.allocPrint(self.allocator, "{s}_ns_{d}", .{ jsx_base, rank + 1 });
     if (!seen_exports.contains(candidate) and !self.ns_shared_var_names.contains(candidate)) return candidate;
 
     var i: usize = if (rank == 0) 2 else rank + 2;
     while (true) : (i += 1) {
         self.allocator.free(candidate);
-        candidate = try std.fmt.allocPrint(self.allocator, "{s}_ns_{d}", .{ base, i });
+        candidate = try std.fmt.allocPrint(self.allocator, "{s}_ns_{d}", .{ jsx_base, i });
         if (!seen_exports.contains(candidate) and !self.ns_shared_var_names.contains(candidate)) return candidate;
     }
 }
@@ -870,8 +892,12 @@ fn makeUniqueSharedNsVarNameLocked(
 /// namespace preamble 변수명을 export 이름과 충돌하지 않도록 생성.
 /// "z" → "z_ns", 충돌 시 "z_ns2", "z_ns3", ...
 fn makeUniqueNsVarName(self: *const Linker, base: []const u8, exports: *const std.StringHashMapUnmanaged(void)) std.mem.Allocator.Error![]const u8 {
+    // JSX preserve 에서 태그 자리에 남을 수 있으므로 컴포넌트로 해석되는 형태로 정규화.
+    const jsx_base = try jsxSafeNsBase(self, base);
+    defer if (jsx_base.ptr != base.ptr) self.allocator.free(jsx_base);
+
     // 첫 시도: base_ns
-    const first = try std.mem.concat(self.allocator, u8, &.{ base, "_ns" });
+    const first = try std.mem.concat(self.allocator, u8, &.{ jsx_base, "_ns" });
     if (!exports.contains(first)) return first;
     self.allocator.free(first);
 
@@ -881,7 +907,7 @@ fn makeUniqueNsVarName(self: *const Linker, base: []const u8, exports: *const st
     while (true) : (suffix += 1) {
         var buf: [16]u8 = undefined;
         const num_str = std.fmt.bufPrint(&buf, "{d}", .{suffix}) catch unreachable;
-        const candidate = try std.mem.concat(self.allocator, u8, &.{ base, "_ns", num_str });
+        const candidate = try std.mem.concat(self.allocator, u8, &.{ jsx_base, "_ns", num_str });
         if (!exports.contains(candidate)) return candidate;
         self.allocator.free(candidate);
     }
