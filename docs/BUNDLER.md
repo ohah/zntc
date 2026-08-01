@@ -162,31 +162,68 @@ url("./hero-a1b2c3d4.png")   ← span 구간만 치환, 나머지 바이트는 �
   유효할 수 있고(서버가 따로 서빙 / 배포 스크립트가 나중에 복사), 여기서 실패시키면 지금까지
   멀쩡히 빌드되던 프로젝트가 업그레이드하자마자 깨진다.
 
-### bare 지정자 해석 순서 — 패키지 우선 + 상대 폴백 (#4485)
+### bare 지정자 해석 순서 — alias > 형제 > paths > 패키지 (#4604)
 
 CSS 스펙상 `url()` 의 상대 참조는 **스타일시트 자신의 URL** 이 base 다 → `url(logo.png)` 와
-`url(./logo.png)` 는 같은 파일이어야 한다. 그런데 resolver 는 `./` 없는 지정자를 npm 패키지
-이름으로 보므로, bare 는 node_modules 를 뒤지다 실패해 원문 emit → 404 였다.
+`url(./logo.png)` 는 같은 파일이어야 한다. `new URL(spec, import.meta.url)` 도 같다.
+그런데 resolver 는 `./` 없는 지정자를 npm 패키지 이름으로 보므로, bare 는 node_modules 를
+뒤지다 실패해 원문 emit → 404 였다.
 
-`ResolveCache.resolveNormalized` 가 `.css_url`(과 `.worker`) kind 에 대해 이렇게 처리한다:
+`ResolveCache` 가 kind 와 철자를 보고(`urlRelativeFor`) `Resolver.url_relative` 를 켜면
+`Resolver.resolveInner` 가:
 
-1. **원문 그대로 먼저 해석**한다 → `url(imgpkg/pic.png)` 같은 **패키지 경로 자산**은 예전처럼
-   node_modules 로 해석된다 (기존 동작 보존).
-2. `error.ModuleNotFound` 일 때만 `"./" ++ specifier` 로 **한 번 더** 해석한다 → 형제 파일
-   `url(logo.png)` 가 잡힌다.
+1. `--alias` 를 **원문 철자**에 먼저 적용한다 (사용자가 명시한 강제 재작성).
+2. alias 가 안 걸렸으면 `source_dir + specifier` 가 **정확히 그 이름의 파일**인지 본다 (`trySiblingExact`).
+3. 없으면 tsconfig `paths` → node_modules 순으로 폴백한다.
 
-**이 순서가 계약이다.** 정규화를 먼저 하면 동명의 형제 디렉토리가 node_modules 패키지를 조용히
-가려 지금 잘 동작하는 CSS 가 다른 자산을 가리키게 된다(회귀). 반대급부로 동명의 패키지가 있으면
-형제 파일이 가려지는데, 그건 이미 그렇게 동작하던 것이라 회귀가 아니다.
+**형제가 `paths` 와 패키지보다 앞선다**는 것이 이 수정의 전부다. URL 의 base 가 파일 자신이므로
+형제가 곧 그 URL 의 대상이고, 나머지는 형제가 없을 때의 폴백이다. esbuild 실측과 같은 순서다.
 
-- 정규화 대상은 bare 뿐 — `./`·`../`·`/abs`·scheme(`https:`/`data:`/`blob:`)·protocol-relative 는
-  제외한다 (`isBareUrlRelativeSpecifier`). `?query`/`#fragment` 는 css_scanner 가 미리 suffix 로
+> ⚠️ **`paths` 를 배제하지는 않는다.** #4604 의 2차 시도는 URL 참조에서 `paths` 를 통째로
+> 껐는데, esbuild 는 `url(@/assets/logo.png)` 를 `paths` 로 정상 해석한다(실측). 배제하면
+> `"@/*": ["src/*"]` 같은 가장 흔한 prefix 매핑이 URL 참조에서만 깨져 자산 404 가 되고,
+> CLI 기본 IIFE 포맷에선 `new URL("@/w.ts", "")` 가 TypeError 로 번들 전체를 죽인다.
+
+> ⚠️ **지정자를 재작성하는 방식으로 구현하면 안 된다.** #4604 의 1차 시도는 `"./" ++ spec` 을
+> 만들어 resolve 를 한 번 더 돌렸는데, 그러면 alias·`--fallback`·패키지 `browser` 필드·external
+> 패턴·캐시 키가 전부 **다른 철자**를 보게 돼 각각 어긋났다. 철자는 그대로 두고 **탐색 순서만**
+> 바꾼다.
+
+> #4485 는 패키지가 형제보다 앞이었다. 형제가 패키지를 가리는 것을 회귀로 봤기 때문인데,
+> 그 전제가 참조 번들러와 어긋나 있었다. 부작용으로 catch-all `paths` 매핑이 bare url() 을
+> 가로채, 형제가 있는데도 `url(logo.png)` 와 `url(./logo.png)` 가 **서로 다른 파일**로 갈렸다.
+
+- 형제 우선 대상은 bare 뿐 — `./`·`../`·`/abs`·scheme(`https:`/`data:`/`blob:`)·protocol-relative
+  는 제외한다 (`isBareUrlRelativeSpecifier`). `?query`/`#fragment` 는 css_scanner 가 미리 suffix 로
   떼어내므로 bare + suffix(`url(f.eot?#iefix)`) 도 정상 재작성된다.
-- 정규화된 문자열은 **resolve 레이어 밖으로 나가지 않는다.** `record.specifier` 는 원문 그대로다 —
-  css_emitter 가 원문 span 구간을 치환하는 구조라 스캔 시점에 고치면 lookup 이 어긋난다.
-- **알려진 한계**: `--packages=external` 은 "bare = npm 패키지" 규칙을 css_url 에도 그대로
-  적용한다(worker 는 #4483 이 제외). 이 플래그를 켜면 bare url() 이 external 로 빠져 원문
-  방출된다 — `url(./logo.png)` 로 쓰면 정상 재작성된다.
+- `record.specifier` 는 **원문 그대로다** — css_emitter 가 원문 span 구간을 치환하고 bundler 의
+  worker_map 키도 소스 원문이라, 스캔 시점에 고치면 lookup 이 어긋나 다시 원문 emit(= 404)이 된다.
+- **정확히 그 이름의 파일일 때만** 이긴다. 일반 경로 해석 사다리(`tryResolvePathLike`)를 태우면
+  확장자 붙이기·`.js`→`.ts` 매핑·RN `@2x` variant·디렉토리 인덱스까지 걸려, 동명 형제가 없는데도
+  패키지·paths 대상이 조용히 가려진다. URL 은 실제 파일명을 그대로 쓰므로 확장자 추론이 애초에
+  URL 의미론에 없다.
+- `--alias` 대상이 없으면 **그대로 실패**한다. 원문 철자의 형제로 폴백해 봤지만 되돌렸다 —
+  alias 대상이 단지 그 subpath 만 없는 경우까지 터져서, 사용자가 의도한 패키지 대신 무관한 앱
+  로컬 파일이 조용히 번들됐다. 실패는 warning 으로 눈에 보이지만 잘못된 파일은 안 보인다.
+- 패키지 `browser` 필드가 remap 한 지정자는 형제 우선을 **끈다**. remap 된 철자는 사용자가 쓴 적
+  없는 이름이고, `--alias` 와 마찬가지로 명시적 재작성이라 동명 형제로 뒤집히면 안 된다.
+- `--fallback:K=false` 로 끈 지정자도 형제 우선을 끈다. 형제가 있으면 정상 해석이 되어
+  `applyFallback` 에 도달하지 못해, 라이선스·용량 때문에 일부러 뺀 자산이 그대로 방출된다.
+- `block_list` 에 걸리는 형제 후보는 없는 것으로 친다. 그냥 돌려주면 상위 `resolve()` 가 차단 후
+  `ModuleNotFound` 로 끝내 버려, 원래 이기던 paths·node_modules 대상에 도달하지 못한다.
+- `--fallback` 대상을 재해석할 때는 `url_relative` 를 **끈다**. 대상은 사용자가 옵션에 쓴 평범한
+  모듈 지정자지 URL 상대 참조가 아니다 — 켠 채로 재진입하면 대상이 동명 형제에 가려진다.
+- `--fallback:K=V`(재작성 형태)는 **형제가 없을 때만** 걸린다. `--fallback` 이 "정상 해석 실패
+  시" 계약이고 형제는 정상 해석이므로 일관된 동작이다. NODE_PATH 와 symlink-sibling 복구도 같다.
+- ⚠️ CSS `@import` 은 아직 이 순서가 아니다 — 레코드 kind 가 `.side_effect` 라 JS 의
+  `import 'normalize.css'` 와 구분되지 않아 kind 로 편입할 수 없다. #4611 에서 다룬다.
+- `--packages=external` 의 "bare = npm 패키지" 자동 규칙은 `.css_url` 에 **그대로 적용된다**
+  (#4485 알려진 한계, worker 는 #4483 이 제외). #4604 에서 빼 봤더니 의존성을 미해석 상태로
+  두려는 라이브러리 빌드가 의존성 자산 **사본**을 dist 에 싣게 돼 되돌렸다.
+- ⚠️ **알려진 한계 (선행 이슈)**: `ResolveCache` 는 무효화 API 가 없어, watch 세션 중에 새로
+  만든 파일이 기존 해석을 가려야 하는 경우 warm 재빌드가 이전 결과를 그대로 쓴다. 이 변경과
+  무관한 기존 축이다 — `url(logo.png)` 가 처음엔 없어서 경고났다가 나중에 파일을 만들어도
+  warm 은 계속 경고를 내고 cold 만 자산을 방출한다(main 에서도 동일 재현).
 
 ### 기본 asset 로더 + inline limit
 

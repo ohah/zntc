@@ -452,6 +452,17 @@ pub const Resolver = struct {
     /// React Native asset resolver 호환: `name.ext` base 파일이 없어도
     /// `name@2x.ext` / `name@3x.ext` 같은 scale variant가 있으면 그 파일로 해석한다.
     react_native_asset_scale_fallback: bool = false,
+    /// 이 resolve 의 지정자가 **모듈 지정자가 아니라 URL 상대 참조**인지 (#4604).
+    /// CSS `url(spec)` 과 `new URL(spec, import.meta.url)` — 둘 다 base 가 참조하는 파일
+    /// 자신의 URL 이라 `"x.png"` 와 `"./x.png"` 가 같은 파일을 가리켜야 한다.
+    ///
+    /// 호출자(`ResolveCache`)가 kind 를 보고 `conditions` 와 같은 방식으로 매 resolve 마다
+    /// 지정한다. 켜지면 `resolveInner` 가 tsconfig `paths` 를 건너뛰고 형제 파일을 먼저 찾는다.
+    ///
+    /// ⚠️ **지정자를 재작성하는 방식으로 구현하면 안 된다.** `"./" ++ spec` 을 만들어 다시
+    /// 태우면 alias·`--fallback`·패키지 `browser` 필드·external 패턴·캐시 키가 전부 **다른
+    /// 철자**를 보게 돼 각각 어긋난다. 그래서 철자는 그대로 두고 탐색 순서만 바꾼다.
+    url_relative: bool = false,
     /// 0.16: fs 연산이 io 를 요구한다. Resolver 는 fs 프로빙이 25+ 메서드에 깊게
     /// 퍼진 stateful 서브시스템이라, public 진입점 `resolve()` 에서 1회 저장한
     /// per-instance io 를 내부 메서드가 self.io 로 읽는다 (전역 아님 — resolve_cache
@@ -510,6 +521,12 @@ pub const Resolver = struct {
                 const saved = self.fallback;
                 self.fallback = &.{};
                 defer self.fallback = saved;
+                // `url_relative` 도 함께 끈다 (#4604). fallback **대상**은 사용자가 옵션에 쓴
+                // 평범한 모듈 지정자지, URL 상대 참조가 아니다. 켠 채로 재진입하면 대상이
+                // 형제 우선으로 해석돼 `--fallback:logo.png=somepkg` 가 동명 형제에 가려진다.
+                const saved_url_relative = self.url_relative;
+                self.url_relative = false;
+                defer self.url_relative = saved_url_relative;
                 return try self.resolve(self.io, source_dir, target);
             }
             // target=null → 빈 모듈 (webpack `false`)
@@ -748,8 +765,36 @@ pub const Resolver = struct {
             (applyAlias(self.allocator, self.alias, specifier) catch return error.OutOfMemory) orelse specifier
         else
             specifier;
-        defer if (self.alias.len > 0 and effective_specifier.ptr != specifier.ptr)
-            self.allocator.free(effective_specifier);
+        const alias_applied = effective_specifier.ptr != specifier.ptr;
+        defer if (alias_applied) self.allocator.free(effective_specifier);
+
+        return self.resolveResolved(source_dir, specifier, effective_specifier, alias_applied) catch |err| {
+            if (err != error.ModuleNotFound or !self.url_relative) return err;
+            // **마지막 수단** — 원문 철자로 전체 경로 사다리를 태운다 (확장자 추론·`.js`→`.ts`
+            // 매핑·디렉토리 인덱스·RN `@2x`).
+            //
+            // 앞의 `trySiblingExact` 는 "형제가 paths·패키지를 이긴다" 만 담당하고 추론은 하지
+            // 않는다. 추론까지 앞세우면 동명 형제가 없는데도 패키지가 조용히 가려지기 때문이다.
+            // 하지만 추론 자체를 없애면 `new URL("worker.js")` + 디스크의 `worker.ts`
+            // (moduleResolution NodeNext 가 요구하는 철자) 같은 게 **해석 자체를 못 해**
+            // warning 만 남기고 원문이 방출된다 → 404. 그래서 아무것도 해석되지 않았을 때만
+            // 여기서 돌린다.
+            //
+            // main 의 `"./" ++ spec` 재시도와 같은 위치·같은 효과다. 다만 **철자를 바꾸지
+            // 않으므로** alias·`--fallback`·`browser` 필드·external 패턴·캐시 키가 어긋나지
+            // 않는다. alias 대상이 없을 때 원문 형제로 구제되는 것도 이 경로다 (main 동일).
+            if (try self.tryJoinedPath(source_dir, specifier)) |r| return r;
+            return err;
+        };
+    }
+
+    fn resolveResolved(
+        self: *Resolver,
+        source_dir: []const u8,
+        specifier: []const u8,
+        effective_specifier: []const u8,
+        alias_applied: bool,
+    ) ResolveError!ResolveResult {
 
         // tsconfig paths 적용 시점.
         //
@@ -770,9 +815,24 @@ pub const Resolver = struct {
         // 치환 후 이름으로 paths 를 태워 봤지만 되돌렸다 — catch-all(`"*"`) 이 alias target 을
         // 가로채 `--alias:oldname=realpkg` 가 설치된 패키지 대신 동명의 앱 파일을 조용히
         // 번들했다(실측). alias target 을 paths 로 표현하는 조합은 #4606 에서 따로 다룬다.
-        if (self.ts_paths.len > 0 and effective_specifier.ptr == specifier.ptr and
-            !isRelativePath(specifier))
-        {
+
+        // URL 상대 참조(`.css_url` / `.worker`)의 bare 지정자는 **형제 파일을 먼저** 본다
+        // (#4604). base 가 파일 자신의 URL 이므로 형제가 곧 그 URL 의 대상이고, paths·패키지
+        // 해석은 형제가 없을 때의 폴백이다. esbuild 실측과 같은 순서다.
+        //
+        // ⚠️ `paths` 를 **배제하지는 않는다.** esbuild 는 `url(@/assets/logo.png)` 를 tsconfig
+        // `paths` 로 정상 해석한다 — 배제하면 `"@/*": ["src/*"]` 같은 가장 흔한 prefix alias 가
+        // URL 참조에서만 통째로 깨진다. 필요한 건 배제가 아니라 **형제가 앞서는 것**이다.
+        //
+        // ⚠️ **정확히 그 이름의 파일이 있을 때만** 이긴다 (`trySiblingExact`). 일반 경로 해석
+        // 사다리(`tryResolvePathLike`)를 태우면 확장자 붙이기·`.js`→`.ts` 매핑·RN `@2x`
+        // variant·디렉토리 인덱스까지 걸려, 동명 형제가 없는데도 패키지가 조용히 가려진다.
+        // URL 은 실제 파일명을 그대로 쓰므로 확장자 추론이 애초에 URL 의미론이 아니다.
+        if (self.url_relative and !alias_applied and !isRelativeOrAbsolute(specifier)) {
+            if (try self.trySiblingExact(source_dir, specifier)) |r| return r;
+        }
+
+        if (self.ts_paths.len > 0 and !alias_applied and !isRelativePath(specifier)) {
             if (try self.tryTsPaths(specifier)) |r| return r;
         }
 
@@ -802,17 +862,57 @@ pub const Resolver = struct {
         }
 
         // 경로 조합
+        if (try self.tryJoinedPath(source_dir, effective_specifier)) |result| return result;
+
+        return error.ModuleNotFound;
+    }
+
+    /// URL 상대 참조의 형제 우선 탐색 (#4604) — `source_dir/specifier` 가 **정확히 그 이름의
+    /// 파일**로 존재할 때만 결과를 돌려준다. 없으면 null 이라 호출자가 paths·node_modules 로
+    /// 계속 간다.
+    ///
+    /// 일반 경로 해석(`tryResolvePathLike`)과 달리 확장자 붙이기·TS 확장자 매핑·RN scale
+    /// variant·디렉토리 인덱스를 **타지 않는다**. URL 은 실제 파일명을 그대로 쓰므로 추론이
+    /// 의미론에 없고, 태우면 동명 형제가 없는데도 패키지·paths 대상이 조용히 가려진다.
+    ///
+    /// `block_list` 에 걸리는 후보는 없는 것으로 친다. 여기서 그냥 돌려주면 상위 `resolve()`
+    /// 가 차단 후 `ModuleNotFound` 로 끝내 버려, 원래 이기던 paths·node_modules 대상까지
+    /// 도달하지 못한다.
+    fn trySiblingExact(self: *Resolver, source_dir: []const u8, specifier: []const u8) ResolveError!?ResolveResult {
+        const joined = std.fs.path.resolve(self.allocator, &.{ source_dir, specifier }) catch
+            return error.OutOfMemory;
+        defer self.allocator.free(joined);
+
+        if (!self.fileExists(joined)) return null;
+
+        const result = (try self.makeResult(joined)) orelse return null;
+        // ⚠️ 검사는 **`makeResult` 뒤**(= realpath 적용 후) 여야 한다. 상위 `resolve()` 의
+        // block_list 가드가 realpath 기준이라, 여기서 joined(심볼릭 링크 해석 전) 로 보면
+        // canonical 경로가 차단 대상인 형제가 이 검사를 통과해 반환된 뒤 상위에서 hard-block
+        // 되고, 그 시점엔 paths·node_modules 를 이미 건너뛴 뒤라 폴백에 도달하지 못한다.
+        if (self.block_list.len > 0) {
+            const bl = @import("block_list.zig");
+            for (self.block_list) |pat| {
+                if (!bl.matches(pat, result.path)) continue;
+                self.allocator.free(result.path);
+                if (result.resolve_dir) |dir| self.allocator.free(dir);
+                return null;
+            }
+        }
+        return result;
+    }
+
+    /// `source_dir` 기준으로 지정자를 이어붙여 파일을 찾는다. 못 찾으면 null.
+    fn tryJoinedPath(self: *Resolver, source_dir: []const u8, specifier: []const u8) ResolveError!?ResolveResult {
         const joined = blk: {
             var path_scope = profile.begin(.resolve_path);
             defer path_scope.end();
-            break :blk std.fs.path.resolve(self.allocator, &.{ source_dir, effective_specifier }) catch
+            break :blk std.fs.path.resolve(self.allocator, &.{ source_dir, specifier }) catch
                 return error.OutOfMemory;
         };
         defer self.allocator.free(joined);
 
-        if (try self.tryResolvePathLike(joined)) |result| return result;
-
-        return error.ModuleNotFound;
+        return self.tryResolvePathLike(joined);
     }
 
     /// 상대 specifier 판별. 정의와 테스트는 `src/module_specifier.zig` 가 단일 권위 —
