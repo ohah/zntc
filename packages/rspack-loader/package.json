@@ -50,7 +50,7 @@
     }
   },
   "scripts": {
-    "build:bundle": "node ../core/bin/zntc.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --conditions=source --external @zntc/core && node ../core/bin/zntc.mjs --bundle src/index.ts --outfile dist/index.cjs --format=cjs --target=node --conditions=source --external @zntc/core",
+    "build:bundle": "node ../core/bin/zntc.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --conditions=source --external @zntc/core && node ../core/bin/zntc.mjs --bundle src/index.ts --outfile dist/index.cjs --format=cjs --conditions=source --external @zntc/core",
     "build:dts": "bun x tsc -b && cp dist/index.d.ts dist/index.d.cts",
     "build": "bun run build:bundle && bun run build:dts",
     "test": "bun test",

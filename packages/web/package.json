@@ -42,7 +42,7 @@
     }
   },
   "scripts": {
-    "build:bundle": "node ../core/bin/zntc.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --conditions=source --external @zntc/core --external postcss --external postcss-load-config --external sass && node ../core/bin/zntc.mjs --bundle src/css/index.ts --outfile dist/css/index.js --format=esm --target=node --conditions=source --external @zntc/core --external postcss --external postcss-load-config --external sass && node -e \"require('node:fs').copyFileSync('runtime/dev-overlay-client.raw.js','dist/dev-overlay-client.raw.js')\"",
+    "build:bundle": "node ../core/bin/zntc.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --conditions=source --external @zntc/core --external postcss --external postcss-load-config --external sass && node ../core/bin/zntc.mjs --bundle src/css/index.ts --outfile dist/css/index.js --format=esm --conditions=source --external @zntc/core --external postcss --external postcss-load-config --external sass && node -e \"require('node:fs').copyFileSync('runtime/dev-overlay-client.raw.js','dist/dev-overlay-client.raw.js')\"",
     "build:dts": "bun x tsc -b",
     "build": "bun run build:bundle && bun run build:dts",
     "test": "bun test --timeout 10000",

@@ -315,6 +315,24 @@ Options:
 
 - `--target=es5` ~ `es2025` / `esnext` 지원
 - 엔진 타겟(`--target=chrome80,safari14,node16` 등)은 compat-table 기반 feature-level 다운레벨링
+  — **CLI 와 JS API(`build`/`buildSync`/`transpile`)가 동일**하게 처리한다. `safari11` 처럼 공백
+  없는 형태, `safari 11`(browserslist 표기), `chrome >= 87`(operator) 도 같은 파서를 쓴다
+- 해석 불가한 target(`es2099`, `safari-11` 같은 오타)은 **에러**다 — 조용히 무시하지 않는다.
+  CLI 는 `zntc: unknown target '...'` 로 종료하고, JS API 는 같은 메시지로 throw 한다
+- ⚠️ **버전 없는 엔진 이름은 target 이 아니다.** `--target=node` / `target: 'node'` 는 `platform`
+  과 혼동한 것이다. Zig CLI 는 **원래 에러**였지만 JS API·`bin/zntc.mjs` 는 조용히 무시했고,
+  그래서 이 잘못된 형태가 널리 쓰였다(우리 README·패키지 빌드 스크립트에도 있었다).
+  이제 양쪽 다 에러이며, 메시지가 바꿔야 할 옵션을 직접 알려준다:
+
+  ```
+  zntc: unknown target 'node' — did you mean --platform=node? --target is an ES version (es2020)
+  or an engine version (node16, safari14)
+  ```
+
+  **마이그레이션** — 의도에 따라 둘 중 하나로 바꾼다:
+  - 실행 환경을 지정하려던 것이면 → `--platform=node` / `platform: 'node'`
+  - 특정 런타임 버전으로 다운레벨하려던 것이면 → `--target=node16` 처럼 **버전을 붙인다**
+  - 다운레벨이 필요 없었다면(예전에 무시되던 상태를 유지) → **그냥 지운다**
 - ES2023: hashbang(`#!`) strip
 - ES2025: `using` / `await using` 다운레벨, duplicate named capture group (`/(?<y>..)|(?<y>..)/`) — es2018~es2024 타겟에서도 strip+`__wrapRegExp` 로 다운레벨 (#4199)
 

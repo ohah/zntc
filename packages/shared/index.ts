@@ -256,7 +256,11 @@ export function buildOptionsJson(
   // target 미지정 시 payload 에 강제하지 않는다 — native 가 tsconfig autodiscover / 기본값으로
   // 결정하도록 위임한다 (esnext 강제는 tsconfig target 다운레벨을 덮어쓰는 회귀였음). hashbang 등
   // 'strip 하면 안 되는' 기능은 codegen 이 target 무관 항상 보존하므로 esnext 명시가 불필요.
-  if (opts.target) payload.target = opts.target;
+  // ⚠️ native DTO 의 `target` 은 **ES 버전 enum** 이다. 엔진 이름 타겟(`safari11`,
+  // `chrome80,safari14`)을 그대로 실으면 JSON 파싱 자체가 실패해 `invalid options JSON` 으로
+  // 죽는다(#4602). 엔진 정보는 호출자가 `unsupportedOverride` 로 이미 환산해 넘기므로
+  // 여기서는 ES 버전일 때만 싣는다.
+  if (opts.target && ES_TARGET_BITS[opts.target] !== undefined) payload.target = opts.target;
   if (unsupportedOverride !== undefined && unsupportedOverride !== 0)
     payload.unsupported = unsupportedOverride;
   if (opts.flow) payload.flow = true;

@@ -188,6 +188,13 @@ interface NativeModule {
   ): void;
   profileReport(format?: 'table' | 'tree' | 'json' | 'csv'): string;
   createTsconfigCache(): NativeTsconfigCacheHandle;
+  /**
+   * target 문자열(`'es2020'` 또는 `'chrome80,safari14'`) → `unsupported` 비트마스크.
+   * 규칙은 네이티브(`transformer/compat.zig`)에 한 벌만 두고 여기서 호출한다 — TS 에 파서를
+   * 복제하면 공백 없는 `safari11`·operator·Opera→Chromium 같은 형태에서 바로 갈라진다.
+   * 해석 불가면 throw.
+   */
+  targetToUnsupported(spec: string): number;
   buildSync(options: Record<string, unknown>): NativeBuildResult;
   buildAppSync(options: Record<string, unknown>): NativeBuildResult & { outputCount?: number };
   prepareAppDevSync(options: Record<string, unknown>): { entryPath: string; outputCount?: number };
@@ -462,7 +469,13 @@ function resolveUnsupported(options: TranspileOptions): number {
     }
     return browserslistToUnsupported(bl(options.browserslist));
   }
-  return options.target ? (ES_TARGET_BITS[options.target] ?? 0) : 0;
+  if (!options.target) return 0;
+  const esBits = ES_TARGET_BITS[options.target];
+  if (esBits !== undefined) return esBits;
+  // 엔진 이름 타겟(`safari11`, `chrome60,node16`) — CLI 와 동일하게 네이티브 파서에 위임한다.
+  // 예전엔 `?? 0` 으로 떨어져 **다운레벨이 아예 일어나지 않았다**(#4602): `?? 0` 은 esnext 와
+  // 같은 값이라 "미지원 타겟" 과 "최신 타겟" 이 구분되지 않았다.
+  return ensureNative().targetToUnsupported(options.target);
 }
 
 /**
@@ -2710,7 +2723,13 @@ function prepareNapiOptions(options: BuildOptions): {
     napiOptions.unsupported = resolveUnsupported({ browserslist: options.browserslist });
     delete napiOptions.browserslist;
   }
+  // 엔진 이름 타겟(`safari11`)은 NAPI 의 `target` 이 ES 버전만 받으므로 비트마스크로 환산해
+  // 넘긴다. 예전엔 그냥 지워서 **다운레벨이 조용히 사라졌다**(#4602).
+  // `browserslist` 가 이미 `unsupported` 를 채웠으면 그쪽이 우선 — 명시가 더 구체적이다.
   if (options.target && !isEsTarget(options.target)) {
+    if (napiOptions.unsupported === undefined) {
+      napiOptions.unsupported = ensureNative().targetToUnsupported(options.target);
+    }
     delete napiOptions.target;
   }
   // compiler.styledComponents / compiler.emotion → flat NAPI fields.
