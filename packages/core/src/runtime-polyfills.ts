@@ -645,6 +645,9 @@ export function applyRuntimePolyfillsToNapiOptions(
   delete napiOptions.runtimePolyfills;
   delete napiOptions.coreJs;
 
+  // 엔진 이름 타겟은 `resolveUnsupported`/`build()` 가 이미 `unsupported` 로 환산해 뒀다.
+  // 여기서는 NAPI 의 `target`(ES 전용) 에서 제거만 한다 — 환산 없이 지우면 다운레벨이
+  // 조용히 사라진다(#4602).
   if (options.target && !isEsTarget(options.target)) delete napiOptions.target;
 
   const runtime = normalizeRuntimePolyfillOptions(options);

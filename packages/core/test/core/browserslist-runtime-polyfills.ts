@@ -6,3 +6,4 @@ import './browserslist-runtime-polyfills/runtime-auto';
 import './browserslist-runtime-polyfills/runtime-selection';
 import './browserslist-runtime-polyfills/tsconfig-path';
 import './browserslist-runtime-polyfills/profile-options';
+import './browserslist-runtime-polyfills/engine-name-target';

@@ -46,7 +46,6 @@ describe('export * re-export ESM emit (#2576)', () => {
       entryPoints: [join(fixture.dir, 'src/index.ts')],
       outfile: join(fixture.dir, 'dist/index.js'),
       format: 'esm',
-      target: 'node',
       write: true,
     });
     expect(result.errors.length).toBe(0);
@@ -69,7 +68,6 @@ describe('export * re-export ESM emit (#2576)', () => {
       entryPoints: [join(fixture.dir, 'src/index.ts')],
       outfile: join(fixture.dir, 'dist/index.js'),
       format: 'esm',
-      target: 'node',
       write: true,
     });
     expect(result.errors.length).toBe(0);
@@ -90,7 +88,6 @@ describe('export * re-export ESM emit (#2576)', () => {
       entryPoints: [join(fixture.dir, 'src/index.ts')],
       outfile: join(fixture.dir, 'dist/index.js'),
       format: 'esm',
-      target: 'node',
       write: true,
     });
     expect(result.errors.length).toBe(0);
@@ -112,7 +109,6 @@ describe('export * re-export ESM emit (#2576)', () => {
       entryPoints: [join(fixture.dir, 'src/index.ts')],
       outfile: join(fixture.dir, 'dist/index.js'),
       format: 'esm',
-      target: 'node',
       write: true,
     });
     expect(result.errors.length).toBe(0);
@@ -142,7 +138,6 @@ describe('export * re-export ESM emit (#2576)', () => {
       entryPoints: [join(fixture.dir, 'src/index.ts')],
       outfile: join(fixture.dir, 'dist/index.js'),
       format: 'esm',
-      target: 'node',
       write: true,
     });
     expect(result.errors.length).toBe(0);
@@ -167,7 +162,6 @@ describe('export * re-export ESM emit (#2576)', () => {
       entryPoints: [join(fixture.dir, 'src/index.ts')],
       outfile: join(fixture.dir, 'dist/index.js'),
       format: 'esm',
-      target: 'node',
       write: true,
     });
     expect(result.errors.length).toBe(0);
@@ -189,7 +183,6 @@ describe('export * re-export ESM emit (#2576)', () => {
       entryPoints: [join(fixture.dir, 'src/index.ts')],
       outfile: join(fixture.dir, 'dist/index.js'),
       format: 'esm',
-      target: 'node',
       write: true,
     });
     expect(result.errors.length).toBe(0);

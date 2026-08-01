@@ -37,7 +37,7 @@ bun add -D browserslist core-js core-js-compat lightningcss
 bunx zntc src/index.ts --outfile out.js
 
 # Bundle (multi-entry)
-bunx zntc --bundle src/index.ts --outfile dist/bundle.js --format=esm --target=node
+bunx zntc --bundle src/index.ts --outfile dist/bundle.js --format=esm --platform=node
 ```
 
 See `bunx zntc --help` for the full list of options.

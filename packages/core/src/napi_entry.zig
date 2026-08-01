@@ -32,6 +32,7 @@ const watch_mod = @import("napi/watch.zig");
 const napiWatch = watch_mod.napiWatch;
 
 const tls_smoke = @import("napi/tls_smoke.zig");
+const target_compat_mod = @import("napi/target_compat.zig");
 const serve_entry = @import("napi/serve_entry.zig");
 
 // ─── 모듈 등록 ───
@@ -114,6 +115,12 @@ export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi
     var tls_self_check_fn: c.napi_value = undefined;
     _ = c.napi_create_function(env, "tlsSelfCheck", "tlsSelfCheck".len, tls_smoke.napiTlsSelfCheck, null, &tls_self_check_fn);
     _ = c.napi_set_named_property(env, exports, "tlsSelfCheck", tls_self_check_fn);
+
+    // #4602 — target 문자열 → unsupported 비트마스크. 규칙은 Zig 한 곳에만 두고 JS 가 호출한다
+    // (TS 에 파서를 복제하면 `safari11` 같은 형태에서 바로 갈라진다).
+    var target_to_unsupported_fn: c.napi_value = undefined;
+    _ = c.napi_create_function(env, "targetToUnsupported", "targetToUnsupported".len, target_compat_mod.napiTargetToUnsupported, null, &target_to_unsupported_fn);
+    _ = c.napi_set_named_property(env, exports, "targetToUnsupported", target_to_unsupported_fn);
 
     var start_dev_server_fn: c.napi_value = undefined;
     _ = c.napi_create_function(env, "startDevServer", "startDevServer".len, serve_entry.napiStartDevServer, null, &start_dev_server_fn);

@@ -501,6 +501,16 @@ fn dedupKeepLast(list: anytype, comptime key_field: []const u8) void {
 
 /// CLI 인자를 파싱하여 CliOptions를 반환한다.
 /// --help 출력이나 파싱 에러로 프로그램을 종료해야 하면 null을 반환한다.
+/// 버전 없는 플랫폼/런타임 이름인지 — `--target` 과 `--platform` 을 혼동한 전형적인 입력.
+/// NAPI 쪽(`packages/core/src/napi/target_compat.zig`)과 **같은 목록**이어야 두 표면의 안내가
+/// 갈리지 않는다.
+fn isPlatformNameConfusion(val: []const u8) bool {
+    for ([_][]const u8{ "node", "browser", "neutral", "react-native", "deno", "bun" }) |name| {
+        if (std.ascii.eqlIgnoreCase(val, name)) return true;
+    }
+    return false;
+}
+
 pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !?CliOptions {
     // 0.16: deprecatedWriter 제거. length-0 buffer = unbuffered (exit 전 flush 불필요).
     var stdout_state = std.Io.File.stdout().writer(io, &.{});
@@ -859,7 +869,16 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator,
             } else {
                 // 엔진 버전 파싱 (chrome80,safari14,node16) — browserslist 쿼리 superset.
                 opts.unsupported = compat.browserslistToUnsupported(val) orelse {
-                    try stderr.print("zntc: unknown target '{s}'\n", .{val});
+                    // `--target=node` 는 `--platform` 과 혼동한 사용이 압도적이다 (우리 README·
+                    // 패키지 빌드 스크립트에도 있었다). 무엇으로 바꿔야 하는지 짚어 준다.
+                    if (isPlatformNameConfusion(val)) {
+                        try stderr.print(
+                            "zntc: unknown target '{s}' — did you mean --platform={s}? --target is an ES version (es2020) or an engine version (node16, safari14)\n",
+                            .{ val, val },
+                        );
+                    } else {
+                        try stderr.print("zntc: unknown target '{s}'\n", .{val});
+                    }
                     std.process.exit(1);
                 };
             }

@@ -3,6 +3,7 @@
 const std = @import("std");
 const zntc_lib = @import("zntc_lib");
 const common = @import("common.zig");
+const target_compat = @import("target_compat.zig");
 const c = common.c;
 
 const bundler_mod = zntc_lib.bundler;
@@ -592,7 +593,20 @@ pub fn parseBuildOptions(
     else if (unsupported_override != 0)
         @bitCast(unsupported_override)
     else if (target_str) |s|
-        if (std.meta.stringToEnum(compat.ESTarget, s)) |t| compat.fromESTarget(t) else .{}
+        // ES 버전이 아니면 엔진 매트릭스(`chrome80,safari14`)로 해석한다 — CLI 의 `--target=`
+        // 과 같은 순서·같은 파서다. 예전엔 여기서 `.{}`(= esnext) 로 **조용히** 떨어져,
+        // 엔진 이름 타겟을 준 빌드가 다운레벨 없이 나갔다 (#4602).
+        // 해석 불가는 아래에서 throw — 조용한 esnext 는 그 자체가 원래 버그다.
+        target_compat.unsupportedFromTargetSpec(s) orelse {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrintZ(
+                &buf,
+                "unknown target '{s}' (expected an ES version like es2020, or an engine matrix like chrome80,safari14,node16)",
+                .{s[0..@min(s.len, 120)]},
+            ) catch "unknown target";
+            _ = common.throwError(env, msg);
+            return null;
+        }
     else
         .{};
 
