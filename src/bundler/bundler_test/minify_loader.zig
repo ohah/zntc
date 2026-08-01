@@ -3911,10 +3911,12 @@ test "#4485 CSS url(): ./ 없는 bare 도 자산으로 재작성된다" {
     try std.testing.expectEqual(@as(usize, 1), png_count);
 }
 
-test "#4485 CSS url(): 패키지로 해석되던 bare 는 그대로 패키지가 이긴다" {
-    // 순서가 핵심 — 기존 해석을 **먼저** 시도하고 ModuleNotFound 일 때만 `./` 폴백.
-    // `./` 를 먼저 붙였다면 아래 형제 디렉토리(`imgpkg/pic.png`)가 node_modules 패키지를
-    // 조용히 가려서, 지금 잘 동작하던 사용자의 CSS 가 다른 자산을 가리키게 된다.
+test "#4604 CSS url(): 형제 파일이 동명 패키지를 이긴다" {
+    // #4485 는 반대(패키지 우선)로 뒀었다. esbuild 와 rspack 을 같은 픽스처로 실측한 결과
+    // **둘 다 형제가 이긴다** — CSS 의 url() base 는 스타일시트 자신의 URL 이므로 형제가
+    // 곧 그 URL 의 대상이고, node_modules 해석은 생태계 편의로 얹은 폴백이다.
+    // 폴백이 살아 있다는 것은 바로 아래 "형제가 없으면 패키지로 폴백" 테스트가 지킨다 —
+    // 그게 없으면 패키지 해석을 통째로 꺼도 이 테스트가 통과해 가드가 공허해진다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import './style.css';");
@@ -3923,11 +3925,10 @@ test "#4485 CSS url(): 패키지로 해석되던 bare 는 그대로 패키지가
         \\{"name":"imgpkg"}
     );
     const pkg_img = [_]u8{0xAA} ** 5000;
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "node_modules/imgpkg/pic.png", .data = &pkg_img });
+    try writeFile(tmp.dir, "node_modules/imgpkg/pic.png", &pkg_img);
     // 동명의 형제 디렉토리 (내용이 달라야 어느 쪽이 이겼는지 구분된다).
     const sibling_img = [_]u8{0xBB} ** 5000;
-    try writeFile(tmp.dir, "imgpkg/.keep", "");
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "imgpkg/pic.png", .data = &sibling_img });
+    try writeFile(tmp.dir, "imgpkg/pic.png", &sibling_img);
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
@@ -3939,13 +3940,233 @@ test "#4485 CSS url(): 패키지로 해석되던 bare 는 그대로 패키지가
 
     try std.testing.expect(!result.hasErrors());
     const outs = result.asset_outputs orelse return error.ExpectedAssetOutput;
-    var found_pkg = false;
+    var found = false;
     for (outs) |o| {
         if (!std.mem.endsWith(u8, o.path, ".png")) continue;
-        try std.testing.expectEqualSlices(u8, &pkg_img, o.contents); // 패키지 쪽 내용
-        found_pkg = true;
+        try std.testing.expectEqualSlices(u8, &sibling_img, o.contents); // 형제 쪽 내용
+        found = true;
     }
-    try std.testing.expect(found_pkg);
+    try std.testing.expect(found);
+}
+
+test "#4604 CSS url(): 형제가 없으면 여전히 패키지로 폴백한다" {
+    // 위 테스트의 비공허성 대조군. `url(pkg/x.png)` 가 node_modules 자산을 가리키는 것은
+    // esbuild·rspack 도 그대로 지원하는 동작이라, "형제 우선" 이 패키지 해석을 없애는
+    // 것으로 번지면 안 된다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import './style.css';");
+    try writeFile(tmp.dir, "style.css", ".c { background: url(imgpkg/pic.png); }");
+    try writeFile(tmp.dir, "node_modules/imgpkg/package.json",
+        \\{"name":"imgpkg"}
+    );
+    const pkg_img = [_]u8{0xAA} ** 5000;
+    try writeFile(tmp.dir, "node_modules/imgpkg/pic.png", &pkg_img);
+    // 형제 디렉토리는 **두지 않는다** — 이 픽스처의 위험 조건이 "형제 부재" 다.
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.asset_outputs orelse return error.ExpectedAssetOutput;
+    var found = false;
+    for (outs) |o| {
+        if (!std.mem.endsWith(u8, o.path, ".png")) continue;
+        try std.testing.expectEqualSlices(u8, &pkg_img, o.contents);
+        found = true;
+    }
+    try std.testing.expect(found);
+}
+
+/// #4604 재현 픽스처 — catch-all `"*": ["src/*"]` 와 두 철자의 같은 url().
+/// `sibling` 이 true 면 스타일시트 형제 자산을 함께 둔다.
+const CatchAllPathsCss = struct {
+    css: []u8,
+    diag_count: usize,
+    png_paths: [][]u8,
+    png_is_sibling: []bool,
+
+    fn deinit(self: CatchAllPathsCss) void {
+        std.testing.allocator.free(self.css);
+        for (self.png_paths) |p| std.testing.allocator.free(p);
+        std.testing.allocator.free(self.png_paths);
+        std.testing.allocator.free(self.png_is_sibling);
+    }
+};
+
+fn bundleCatchAllPathsCss(tmp: *std.testing.TmpDir, sibling: bool) !CatchAllPathsCss {
+    const root_img = [_]u8{0xC1} ** 5000;
+    const sibling_img = [_]u8{0xC2} ** 5000;
+    try writeFile(tmp.dir, "src/assets/logo.png", &root_img);
+    if (sibling) try writeFile(tmp.dir, "src/components/assets/logo.png", &sibling_img);
+    try writeFile(tmp.dir, "src/components/card.css", ".card { background: url(assets/logo.png); }");
+    try writeFile(tmp.dir, "src/components/panel.css", ".panel { background: url(./assets/logo.png); }");
+    try writeFile(tmp.dir, "src/main.ts",
+        \\import './components/card.css';
+        \\import './components/panel.css';
+    );
+
+    const root = try absPath(tmp, ".");
+    defer std.testing.allocator.free(root);
+    const src_prefix = try std.fmt.allocPrint(std.testing.allocator, "{s}/src/", .{root});
+    defer std.testing.allocator.free(src_prefix);
+    const targets = [_]@import("../../config.zig").TsConfig.PathEntry.Target{
+        .{ .prefix = src_prefix, .suffix = "" },
+    };
+    // catch-all `"*": ["src/*"]` — 실사용 패턴.
+    const paths = [_]@import("../../config.zig").TsConfig.PathEntry{
+        .{ .key_prefix = "", .key_suffix = "", .has_wildcard = true, .targets = &targets },
+    };
+
+    const entry = try absPath(tmp, "src/main.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .ts_paths = &paths,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    const css = findCssOutput(result) orelse return error.ExpectedCssOutput;
+    var paths_list: std.ArrayList([]u8) = .empty;
+    // 실패 경로에서 **복제한 문자열까지** 해제한다 — 버퍼만 비우면 이미 소유권을 넘긴
+    // slice 들이 샌다.
+    errdefer {
+        for (paths_list.items) |it| std.testing.allocator.free(it);
+        paths_list.deinit(std.testing.allocator);
+    }
+    var is_sib: std.ArrayList(bool) = .empty;
+    errdefer is_sib.deinit(std.testing.allocator);
+    if (result.asset_outputs) |outs| {
+        for (outs) |o| {
+            if (!std.mem.endsWith(u8, o.path, ".png")) continue;
+            try paths_list.append(std.testing.allocator, try std.testing.allocator.dupe(u8, o.path));
+            try is_sib.append(std.testing.allocator, std.mem.eql(u8, o.contents, &sibling_img));
+        }
+    }
+    return .{
+        .css = try std.testing.allocator.dupe(u8, css),
+        .diag_count = result.getDiagnostics().len,
+        .png_paths = try paths_list.toOwnedSlice(std.testing.allocator),
+        .png_is_sibling = try is_sib.toOwnedSlice(std.testing.allocator),
+    };
+}
+
+test "#4604 CSS url(): catch-all tsconfig paths 가 bare url() 을 가로채지 않는다 (형제 있음)" {
+    // 신고된 재현 그대로. `"paths": { "*": ["src/*"] }` 하에서 `url(assets/logo.png)` 가
+    // paths 에 걸려 `src/assets/logo.png` 로, `url(./assets/logo.png)` 는 형제로 가서
+    // **같은 URL 을 쓴 두 표기가 서로 다른 파일**이 됐다 (진단 0건, 자산 2개).
+    //
+    // tsconfig `paths` 는 TypeScript 의 **모듈 해석** 기능이다. CSS 의 url() 은 TS 가 보지도
+    // 않는 URL 참조라 애초에 적용 대상이 아니다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const r = try bundleCatchAllPathsCss(&tmp, true);
+    defer r.deinit();
+
+    // 자산은 정확히 1개, 내용은 형제 쪽.
+    try std.testing.expectEqual(@as(usize, 1), r.png_paths.len);
+    try std.testing.expect(r.png_is_sibling[0]);
+
+    // ⚠️ 자산 개수만 세면 **bare url() 해석이 통째로 깨져도** 통과한다 (해석 실패는 error 가
+    // 아니라 warning 이고, 그러면 `./` 쪽 자산 1개만 남는다). 그래서 최종 CSS 를 직접 본다:
+    // 두 규칙이 **같은 해시 자산**을 가리켜야 하고, 원문 철자는 남아 있으면 안 된다.
+    const hashed = r.png_paths[0];
+    var occurrences: usize = 0;
+    var idx: usize = 0;
+    while (std.mem.indexOfPos(u8, r.css, idx, hashed)) |at| {
+        occurrences += 1;
+        idx = at + hashed.len;
+    }
+    try std.testing.expectEqual(@as(usize, 2), occurrences);
+    try std.testing.expect(std.mem.indexOf(u8, r.css, "url(assets/logo.png)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.css, "url(./assets/logo.png)") == null);
+    // 해석이 다 됐으므로 경고도 없어야 한다.
+    try std.testing.expectEqual(@as(usize, 0), r.diag_count);
+}
+
+test "#4604 CSS url(): 형제가 없으면 bare 는 tsconfig paths 로 폴백한다" {
+    // 위 테스트의 비공허성 대조군 **이자** 계약 자체. `paths` 를 URL 참조에서 통째로 배제하면
+    // `"@/*": ["src/*"]` 같은 가장 흔한 prefix alias 가 url() 에서만 깨진다 — esbuild 는
+    // `url(@/assets/logo.png)` 를 paths 로 정상 해석한다(실측). 필요한 건 배제가 아니라
+    // **형제가 paths 보다 앞서는 것**이다.
+    //
+    // 그래서 형제가 없으면 bare 는 paths 대상으로 가고, 명시적 상대인 `./` 쪽만 실패한다.
+    // esbuild 도 같은 픽스처에서 `./assets/logo.png` 만 에러를 낸다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const r = try bundleCatchAllPathsCss(&tmp, false);
+    defer r.deinit();
+
+    // bare 는 paths 로 해석돼 자산 1개 (형제가 아니라 루트 쪽 내용).
+    try std.testing.expectEqual(@as(usize, 1), r.png_paths.len);
+    try std.testing.expect(!r.png_is_sibling[0]);
+    // 명시적 상대 경로는 실패 → 경고 + 원문 유지 (Vite parity).
+    try std.testing.expect(std.mem.indexOf(u8, r.css, "url(./assets/logo.png)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.css, "url(assets/logo.png)") == null);
+}
+
+test "#4604 CSS url(): prefix paths 매핑(@/*)이 url() 에서 계속 동작한다" {
+    // #4604 1차 정공법 시도가 URL 참조에서 `paths` 를 통째로 배제했다가 이걸 깼다 —
+    // `@/*` 는 TS 프로젝트에서 가장 흔한 매핑이고, `url(@/assets/logo.png)` 는 형제로는
+    // 절대 해석될 수 없어 paths 가 유일한 경로다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const img = [_]u8{0xD5} ** 5000;
+    try writeFile(tmp.dir, "src/assets/logo.png", &img);
+    try writeFile(tmp.dir, "src/components/card.css", ".card { background: url(@/assets/logo.png); }");
+    try writeFile(tmp.dir, "src/main.ts", "import './components/card.css';");
+
+    const root = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(root);
+    const src_prefix = try std.fmt.allocPrint(std.testing.allocator, "{s}/src/", .{root});
+    defer std.testing.allocator.free(src_prefix);
+    const targets = [_]@import("../../config.zig").TsConfig.PathEntry.Target{
+        .{ .prefix = src_prefix, .suffix = "" },
+    };
+    // `"@/*": ["src/*"]` — prefix 매핑.
+    const paths = [_]@import("../../config.zig").TsConfig.PathEntry{
+        .{ .key_prefix = "@/", .key_suffix = "", .has_wildcard = true, .targets = &targets },
+    };
+
+    const entry = try absPath(&tmp, "src/main.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .ts_paths = &paths,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 해석 실패는 warning 이라 자산/CSS 를 직접 봐야 한다.
+    for (result.getDiagnostics()) |d| {
+        try std.testing.expect(std.mem.indexOf(u8, d.message, "Cannot resolve CSS url()") == null);
+    }
+    const outs = result.asset_outputs orelse return error.ExpectedAssetOutput;
+    var found = false;
+    for (outs) |o| {
+        if (!std.mem.endsWith(u8, o.path, ".png")) continue;
+        try std.testing.expectEqualSlices(u8, &img, o.contents);
+        found = true;
+    }
+    try std.testing.expect(found);
+    const css = findCssOutput(result) orelse return error.ExpectedCssOutput;
+    try std.testing.expect(std.mem.indexOf(u8, css, "url(@/assets/logo.png)") == null);
 }
 
 test "#4485 CSS url(): scheme / data / root-absolute 는 여전히 무변경" {
@@ -4475,9 +4696,8 @@ test "#4482 bundle: emit 시점 fold 로 살아남는 분기의 부호 토큰 �
 // npm 패키지 이름으로 보고 node_modules 를 뒤져 ModuleNotFound → 경고만 남기고 원문
 // 방출 → 런타임 404. (#4483 의 worker 와 같은 루트커즈.)
 //
-// 처방도 같다 — **기존 해석을 먼저 시도하고 실패했을 때만** `./` 를 붙인다.
-// 순서가 핵심: `url(pkg/img.png)` 처럼 지금 node_modules 로 해석되는 bare url() 이
-// 그대로 살아남는다 (Vite 도 "패키지 우선 + 상대 폴백").
+// 처방도 같다 — resolver 가 kind 를 보고 **형제 파일을 먼저** 찾는다 (#4604).
+// 형제가 없으면 node_modules 로 폴백하므로 `url(pkg/img.png)` 도 그대로 살아남는다.
 
 test "#4485 CSS url(): `./` 없는 bare 상대 지정자도 자산으로 재작성된다" {
     var tmp = std.testing.tmpDir(.{});

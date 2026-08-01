@@ -391,15 +391,16 @@ describe('CSS Bundling', () => {
     expect(emitted).toHaveLength(2);
   });
 
-  it('#4485 CSS url() bare 는 node_modules 패키지 자산으로 먼저 해석된다 (기존 동작 보존)', async () => {
-    // 순서가 핵심 — 기존 해석을 **먼저** 시도하고 ModuleNotFound 일 때만 `./` 폴백.
-    // `./` 를 먼저 붙였다면 동명의 형제 디렉토리가 패키지를 조용히 가려 회귀가 된다.
+  it('#4604 CSS url() bare 는 형제 파일이 동명 패키지를 이긴다', async () => {
+    // #4485 는 반대(패키지 우선)로 뒀었다. esbuild·rspack 을 같은 픽스처로 실측한 결과
+    // 둘 다 형제를 우선한다 — url() 의 base 는 스타일시트 자신의 URL 이라 형제가 그 대상이고,
+    // node_modules 해석은 형제가 없을 때의 폴백이다.
     const fixture = await createFixture({
       'index.ts': `import './style.css';`,
       'style.css': `.c { background: url(imgpkg/pic.png); }`,
       'node_modules/imgpkg/package.json': `{"name":"imgpkg"}`,
       'node_modules/imgpkg/pic.png': 'P'.repeat(5000), // 패키지 쪽
-      'imgpkg/pic.png': 'S'.repeat(5000), // 동명의 형제 디렉토리 (가리면 안 됨)
+      'imgpkg/pic.png': 'S'.repeat(5000), // 동명의 형제 디렉토리 — 이게 이겨야 한다
     });
     cleanup = fixture.cleanup;
 
@@ -410,7 +411,67 @@ describe('CSS Bundling', () => {
     const emitted = (await readdir(fixture.dir)).filter((f) => /^pic-[0-9a-f]{8}\.png$/.test(f));
     expect(emitted).toHaveLength(1);
     const asset = await readFile(join(fixture.dir, emitted[0]!), 'utf-8');
-    expect(asset).toBe('P'.repeat(5000)); // 패키지가 이긴다 (형제 파일 'S' 가 아니라)
+    expect(asset).toBe('S'.repeat(5000)); // 형제가 이긴다
+  });
+
+  it('#4604 CSS url() bare 는 형제가 없으면 여전히 패키지로 폴백한다', async () => {
+    // 위 테스트의 비공허성 대조군 — 형제 우선이 패키지 해석 자체를 없애는 것으로 번지면
+    // 안 된다 (esbuild·rspack 도 이 경우 패키지 자산을 쓴다).
+    const fixture = await createFixture({
+      'index.ts': `import './style.css';`,
+      'style.css': `.c { background: url(imgpkg/pic.png); }`,
+      'node_modules/imgpkg/package.json': `{"name":"imgpkg"}`,
+      'node_modules/imgpkg/pic.png': 'P'.repeat(5000),
+      // 형제 디렉토리는 두지 않는다 — 이 픽스처의 위험 조건이 '형제 부재' 다.
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outJs]);
+    expect(result.exitCode).toBe(0);
+
+    const emitted = (await readdir(fixture.dir)).filter((f) => /^pic-[0-9a-f]{8}\.png$/.test(f));
+    expect(emitted).toHaveLength(1);
+    const asset = await readFile(join(fixture.dir, emitted[0]!), 'utf-8');
+    expect(asset).toBe('P'.repeat(5000));
+  });
+
+  // #4604 — 유닛 테스트는 `ts_paths` 를 Bundler 옵션으로 직접 주입하므로 tsconfig **파일**
+  // 파싱부터 resolver 까지의 사슬은 안 덮인다. 여기서 진짜 tsconfig.json 으로 종단 검증한다.
+  it('#4604 실제 tsconfig.json 에서 형제 파일이 catch-all paths 를 이긴다', async () => {
+    const fixture = await createFixture({
+      'tsconfig.json': `{ "compilerOptions": { "baseUrl": ".", "paths": { "*": ["src/*"] } } }`,
+      'src/assets/logo.png': 'R'.repeat(5000), // 형제가 없을 때만 쓰이는 paths 대상
+      'src/components/assets/logo.png': 'S'.repeat(5000), // 스타일시트 형제 — 형제가 이긴다
+      'src/components/card.css': `.card { background: url(assets/logo.png); }`,
+      'src/components/panel.css': `.panel { background: url(./assets/logo.png); }`,
+      'src/main.ts': `import './components/card.css';\nimport './components/panel.css';`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, 'out.js');
+    const result = await runZntc([
+      '--bundle',
+      join(fixture.dir, 'src/main.ts'),
+      '-o',
+      outJs,
+      '-p',
+      join(fixture.dir, 'tsconfig.json'),
+    ]);
+    expect(result.exitCode).toBe(0);
+
+    // 두 철자가 같은 파일로 수렴 → 자산 1개, 내용은 형제 쪽.
+    const emitted = (await readdir(fixture.dir)).filter((f) => /^logo-[0-9a-f]{8}\.png$/.test(f));
+    expect(emitted).toHaveLength(1);
+    expect(await readFile(join(fixture.dir, emitted[0]!), 'utf-8')).toBe('S'.repeat(5000));
+
+    // 자산 개수만 보면 bare 해석이 통째로 깨져도 통과한다(실패는 warning). 최종 CSS 에서
+    // 두 규칙이 같은 해시 자산을 가리키는지 직접 확인한다.
+    const css = await readFile(join(fixture.dir, 'main.css'), 'utf-8');
+    const hits = css.split(emitted[0]!).length - 1;
+    expect(hits).toBe(2);
+    expect(css).not.toContain('url(assets/logo.png)');
+    expect(css).not.toContain('url(./assets/logo.png)');
   });
 
   it('CSS imported from dynamically imported module', async () => {

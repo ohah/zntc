@@ -5087,8 +5087,9 @@ test "#4483 Worker: alias 로 매핑되는 worker 지정자가 형제 파일에 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    // `./` 를 **먼저** 시도하면 alias/tsconfig paths 로 매핑되던 worker 가 같은 이름의
-    // 형제 파일에 조용히 가려진다. 기존 해석을 먼저 시도하고 실패했을 때만 `./` 를 붙인다.
+    // #4604 에서 형제 우선으로 바꾼 뒤에도 **alias 는 형제보다 앞**이다. `--alias` 는 사용자가
+    // 명시한 강제 재작성이라 동명 형제 파일의 존재 여부로 뒤집히면 안 된다 (esbuild 동일).
+    // resolver 가 alias 를 형제 탐색보다 먼저 적용하므로 성립한다.
     try writeFile(tmp.dir, "entry.ts",
         \\const w = new Worker(new URL("shared/task.ts", import.meta.url));
         \\w.postMessage(1);
@@ -5116,6 +5117,135 @@ test "#4483 Worker: alias 로 매핑되는 worker 지정자가 형제 파일에 
         try std.testing.expect(std.mem.indexOf(u8, a.contents, "SIBLING") == null);
     }
     try std.testing.expect(found_aliased);
+}
+
+test "#4604 Worker: catch-all tsconfig paths 가 bare worker 지정자를 가로채지 않는다" {
+    // CSS url() 과 같은 루트커즈의 worker 쪽 표면. `"paths": { "*": ["src/*"] }` 하에서
+    // `new URL('w.ts', …)` 는 paths 에 걸려 `src/w.ts` 로, `new URL('./w.ts', …)` 는 형제로
+    // 가서 **worker 청크가 2개** 만들어졌다 (한쪽은 잘못된 소스). 같은 URL 이므로 1개여야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "src/w.ts", "self.postMessage('ROOT_WORKER');");
+    try writeFile(tmp.dir, "src/feature/w.ts", "self.postMessage('SIBLING_WORKER');");
+    try writeFile(tmp.dir, "src/feature/entry.ts",
+        \\const a = new Worker(new URL("w.ts", import.meta.url));
+        \\const b = new Worker(new URL("./w.ts", import.meta.url));
+        \\a.postMessage(1); b.postMessage(2);
+    );
+
+    const root = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(root);
+    const src_prefix = try std.fmt.allocPrint(std.testing.allocator, "{s}/src/", .{root});
+    defer std.testing.allocator.free(src_prefix);
+    const targets = [_]@import("../../config.zig").TsConfig.PathEntry.Target{
+        .{ .prefix = src_prefix, .suffix = "" },
+    };
+    const paths = [_]@import("../../config.zig").TsConfig.PathEntry{
+        .{ .key_prefix = "", .key_suffix = "", .has_wildcard = true, .targets = &targets },
+    };
+
+    const entry = try absPath(&tmp, "src/feature/entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .ts_paths = &paths });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    const assets = result.asset_outputs orelse return error.TestUnexpectedResult;
+    var worker_chunks: usize = 0;
+    var chunk_name: []const u8 = "";
+    for (assets) |a| {
+        if (std.mem.indexOf(u8, a.contents, "_WORKER") == null) continue;
+        worker_chunks += 1;
+        chunk_name = a.path;
+        // paths 가 가로챈 루트 파일은 어느 청크에도 들어가면 안 된다.
+        try std.testing.expect(std.mem.indexOf(u8, a.contents, "ROOT_WORKER") == null);
+    }
+    try std.testing.expectEqual(@as(usize, 1), worker_chunks);
+
+    // ⚠️ 청크 개수만 세면 **bare 철자가 아예 해석을 멈춰도** 통과한다 (worker resolve 실패는
+    // warning 이라 `./w.ts` 쪽 청크 1개만 남는다). 그래서 두 호출부가 **모두** 그 청크로
+    // 재작성됐는지 직접 본다 — 원문 `"w.ts"` 가 남아 있으면 런타임 404 다.
+    const needle = try std.fmt.allocPrint(std.testing.allocator, "new URL(\"./{s}\", import.meta.url)", .{chunk_name});
+    defer std.testing.allocator.free(needle);
+    const first = std.mem.indexOf(u8, result.output, needle) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOfPos(u8, result.output, first + needle.len, needle) != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"w.ts\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"./w.ts\"") == null);
+}
+
+test "#4604 Worker: 형제가 동명 패키지를 이기고, 없으면 패키지로 폴백한다" {
+    // 우선순위 반전은 `.css_url` 뿐 아니라 `.worker` 에도 적용된다. worker 쪽은 청크가
+    // 만들어지므로 자산 내용으로 어느 쪽이 이겼는지 직접 구분한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "node_modules/wpkg/package.json",
+        \\{"name":"wpkg"}
+    );
+    try writeFile(tmp.dir, "node_modules/wpkg/w.js", "self.postMessage('PKG_WORKER');");
+    try writeFile(tmp.dir, "wpkg/w.js", "self.postMessage('SIBLING_WORKER');");
+    try writeFile(tmp.dir, "entry.ts",
+        \\const a = new Worker(new URL("wpkg/w.js", import.meta.url));
+        \\a.postMessage(1);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const assets = result.asset_outputs orelse return error.TestUnexpectedResult;
+    var found = false;
+    for (assets) |a| {
+        if (std.mem.indexOf(u8, a.contents, "_WORKER") == null) continue;
+        try std.testing.expect(std.mem.indexOf(u8, a.contents, "SIBLING_WORKER") != null);
+        found = true;
+    }
+    try std.testing.expect(found);
+    // 원문이 남아 있으면 런타임 404 — 재작성됐는지 함께 본다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"wpkg/w.js\"") == null);
+}
+
+test "#4604 Worker: 형제가 없으면 bare 는 node_modules 패키지로 폴백한다" {
+    // 위 테스트의 비공허성 대조군 — 형제 우선이 패키지 해석을 없애는 것으로 번지면 안 된다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "node_modules/wpkg/package.json",
+        \\{"name":"wpkg"}
+    );
+    try writeFile(tmp.dir, "node_modules/wpkg/w.js", "self.postMessage('PKG_WORKER');");
+    // 형제 `wpkg/` 는 두지 않는다.
+    try writeFile(tmp.dir, "entry.ts",
+        \\const a = new Worker(new URL("wpkg/w.js", import.meta.url));
+        \\a.postMessage(1);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const assets = result.asset_outputs orelse return error.TestUnexpectedResult;
+    var found = false;
+    for (assets) |a| {
+        if (std.mem.indexOf(u8, a.contents, "PKG_WORKER") == null) continue;
+        found = true;
+    }
+    try std.testing.expect(found);
 }
 
 test "#4483 Worker: external worker 는 UMD/AMD 의존성 배열에 들어가지 않는다" {

@@ -422,7 +422,11 @@ pub const ResolveCache = struct {
         var bd_it = self.browser_overrides_cache.iterator();
         while (bd_it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
-            if (entry.value_ptr.*) |*overrides| overrides.deinit(self.allocator);
+            // ⚠️ 슬롯을 **직접** 가리켜야 한다. `if (entry.value_ptr.*) |*overrides|` 형태로
+            // 두면 browser map 을 가진 패키지마다 3 allocation 이 샌다 (zig 0.16.0 에서 A/B
+            // 측정 — 이 줄만 되돌리면 GPA 가 leak 을 잡는다). 원인은 언어 의미론이 아니라
+            // 이 자리에서 관측된 사실로만 적는다.
+            if (entry.value_ptr.* != null) entry.value_ptr.*.?.deinit(self.allocator);
         }
         self.browser_overrides_cache.deinit(self.allocator);
         if (self.conditions_allocated) {
@@ -441,7 +445,7 @@ pub const ResolveCache = struct {
         specifier: []const u8,
         kind: ImportKind,
     ) ResolveError!?ResolvedModule {
-        return self.resolveNormalized(false, io, source_dir, specifier, kind);
+        return self.resolveInner(false, io, source_dir, specifier, kind);
     }
 
     /// 스레드 안전 resolve. 병렬 resolve 의 union 직접 사용.
@@ -452,57 +456,20 @@ pub const ResolveCache = struct {
         specifier: []const u8,
         kind: ImportKind,
     ) ResolveError!?ResolvedModule {
-        return self.resolveNormalized(true, io, source_dir, specifier, kind);
-    }
-
-    /// URL 상대 참조(worker #4483 / CSS `url()` #4485) 를 URL 의미론까지 고려해 resolve.
-    ///
-    /// 두 지정자 모두 base 가 **참조하는 파일 자신의 URL** 이다:
-    /// - `new URL(spec, import.meta.url)` — base = 모듈 자신의 URL
-    /// - CSS `url(spec)` — base = 스타일시트 자신의 URL (CSS 스펙)
-    ///
-    /// 그래서 `"x.png"` 와 `"./x.png"` 는 **같은 파일**을 가리켜야 한다. 그런데 resolver 는
-    /// `./` 없는 지정자를 npm 패키지 이름으로 보고 node_modules 를 뒤져 ModuleNotFound 를
-    /// 냈고, worker/css_url 의 resolve 실패는 warning 으로만 삼켜져 원문이 그대로 방출됐다
-    /// → 해시된 산출물 이름과 어긋나 런타임 404.
-    ///
-    /// **기존 해석을 먼저 시도하고, 못 찾았을 때만 `./` 를 붙여 재시도한다.** 순서가 중요하다 —
-    /// `./` 를 먼저 시도하면
-    /// - `--alias` / tsconfig `paths` 로 매핑되던 worker 지정자가 같은 이름의 형제 파일에
-    ///   조용히 가려지고,
-    /// - 지금 node_modules 패키지로 해석되고 있는 `url(imgpkg/pic.png)` 가 형제 디렉토리에
-    ///   가려진다 (#4485 이전부터 동작하던 것 → 회귀).
-    ///
-    /// 이 순서면 기존에 resolve 되던 것은 **하나도 바뀌지 않고**, 지금까지 실패하던 bare
-    /// 형제 파일만 새로 해석된다 (= "패키지 우선 + 상대 폴백"). 대가로 동명의 패키지가 있으면
-    /// 형제 파일이 가려지지만, 그건 **지금도 그렇게 동작하는 것**이라 회귀가 아니다.
-    ///
-    /// import record 의 원문 specifier 는 **절대 건드리지 않는다**: bundler 의 worker_map 키와
-    /// codegen 의 조회 키가 둘 다 소스 원문이라, 스캔 시점에 고쳐 놓으면 lookup 이 어긋나
-    /// 다시 원문 emit (= 같은 버그) 으로 돌아간다. CSS 도 같다 — css_emitter 는 record 의
-    /// span/suffix 로 원문 구간을 치환하므로 정규화가 resolve 레이어 밖으로 새면 안 된다.
-    fn resolveNormalized(
-        self: *ResolveCache,
-        comptime thread_safe: bool,
-        io: std.Io,
-        source_dir: []const u8,
-        specifier: []const u8,
-        kind: ImportKind,
-    ) ResolveError!?ResolvedModule {
-        if (self.resolveInner(thread_safe, io, source_dir, specifier, kind)) |resolved| {
-            return resolved; // null(external) 포함 — 기존 동작 그대로.
-        } else |err| switch (err) {
-            error.ModuleNotFound => {},
-            else => return err,
-        }
-        // 여기까지 왔다 = 기존 해석으로는 못 찾음.
-        // worker / css_url 의 bare 상대 참조면 URL 의미론으로 재시도.
-        var buf: [MAX_URL_RELATIVE_SPEC_BYTES]u8 = undefined;
-        const normalized = normalizeUrlRelativeSpecifier(kind, specifier, &buf) orelse return error.ModuleNotFound;
-        return self.resolveInner(thread_safe, io, source_dir, normalized, kind);
+        return self.resolveInner(true, io, source_dir, specifier, kind);
     }
 
     /// resolve 공통 구현. thread_safe=true이면 mutex로 캐시 접근 보호 + resolver 스택 복사.
+    ///
+    /// URL 상대 참조(worker #4483 / CSS `url()` #4485)는 지정자 철자를 **바꾸지 않고**
+    /// `Resolver.url_relative` 플래그로 처리한다 (#4604). 이전엔 `"./" ++ spec` 을 만들어
+    /// resolve 를 한 번 더 돌렸는데, 그러면 alias·`--fallback`·패키지 `browser` 필드·external
+    /// 패턴·캐시 키가 전부 다른 철자를 보게 돼 각각 어긋났다.
+    ///
+    /// import record 의 원문 specifier 도 **절대 건드리지 않는다**: bundler 의 worker_map 키와
+    /// codegen 의 조회 키가 둘 다 소스 원문이라, 스캔 시점에 고쳐 놓으면 lookup 이 어긋나
+    /// 원문 emit (= 404) 으로 돌아간다. CSS 도 같다 — css_emitter 는 record 의 span/suffix 로
+    /// 원문 구간을 치환한다.
     fn resolveInner(
         self: *ResolveCache,
         comptime thread_safe: bool,
@@ -610,6 +577,17 @@ pub const ResolveCache = struct {
         // 실제 resolve — thread_safe 모드에서는 resolver를 스택 복사하여 conditions 수정 방지
         var local_resolver = self.resolver;
         local_resolver.conditions = self.conditionsFor(kind);
+        // 지정자가 모듈 이름이 아니라 URL 상대 참조인지 (#4604) — resolver 가 형제 파일을
+        // paths·node_modules 보다 먼저 보게 한다.
+        //
+        // ⚠️ **원문 철자와 넘기는 철자가 같을 때만** 켠다. 위 루프에서 패키지 `browser` 필드가
+        // remap 했다면 `effective_spec` 은 사용자가 쓴 적 없는 이름이고, 그건 `--alias` 와
+        // 마찬가지로 **명시적 재작성**이라 동명 형제로 뒤집히면 안 된다 (resolver 쪽 alias
+        // carve-out 과 같은 이유). 켜 두면 remap 대상 패키지가 패키지 내부의 동명 디렉토리에
+        // 가려져 엉뚱한 자산이 방출된다.
+        local_resolver.url_relative = std.mem.eql(u8, effective_spec, specifier) and
+            urlRelativeFor(kind, specifier) and
+            !self.hasFallbackDisable(specifier);
         local_resolver.dir_cache = &self.dir_cache;
         local_resolver.realpath_cache = &self.realpath_cache;
         local_resolver.pkg_json_cache = &self.pkg_json_cache;
@@ -619,6 +597,7 @@ pub const ResolveCache = struct {
             // 유일하게 남은 fresh-stat 경로다. 붙이면 watch 재빌드가 무효화 API 없는
             // 이전 빌드 스냅샷을 보고 새로 만든 파일을 "없다" 고 답한다.
             self.resolver.conditions = local_resolver.conditions;
+            self.resolver.url_relative = local_resolver.url_relative;
         }
         const resolve_ptr = if (thread_safe) &local_resolver else &self.resolver;
 
@@ -1109,8 +1088,9 @@ pub const ResolveCache = struct {
         // `.css_url` 은 **일부러 제외하지 않는다** (#4485 알려진 한계). worker 와 달리 CSS 의
         // bare url() 은 이 플래그 하에서 지금도 external 로 빠져 원문 방출되고 있고
         // (`url(imgpkg/pic.png)`), 여기서 carve-out 하면 그게 갑자기 node_modules 자산으로
-        // **해석·방출**돼 `--packages=external` 사용자의 산출물이 바뀐다. 그 정책 변경은
-        // 이 수정의 범위가 아니다.
+        // **해석·방출**된다 — `--packages=external` 로 의존성을 미해석 상태로 두려는 라이브러리
+        // 빌드가 의존성 자산 **사본**을 dist 에 싣게 되고, 소비자 쪽 사본이 안 쓰여 버전 간
+        // 발산한다 (#4604 에서 실제로 그렇게 만들었다가 되돌렸다).
         // 그래서 `--packages=external` + `url(logo.png)` 는 여전히 external 로 빠져
         // 원문 그대로 방출된다 (재작성하려면 `url(./logo.png)` 로 쓴다).
         if (self.packages_external and !is_path and kind != .worker) return true;
@@ -1118,6 +1098,22 @@ pub const ResolveCache = struct {
         for (self.external_patterns) |pattern| {
             if (matchGlob(pattern, specifier)) return true;
             if (matchPackageSubPath(pattern, specifier)) return true;
+        }
+        return false;
+    }
+
+    /// `--fallback:K=false` (webpack `resolve.fallback` 의 `false`) 로 **비활성화**된 지정자인지.
+    ///
+    /// 그런 지정자는 형제 우선 탐색을 끈다 (#4604). 형제가 있으면 정상 해석이 되어
+    /// `applyFallback` 에 도달하지 못하고, 사용자가 라이선스·용량·별도 파이프라인 때문에
+    /// 일부러 뺀 자산이 그대로 번들·방출된다. `=false` 는 "이 이름은 쓰지 마라" 는 명시적
+    /// 지시라 파일 존재 여부로 뒤집히면 안 된다.
+    ///
+    /// 재작성 형태(`=V`)는 여기서 보지 않는다 — 그건 "정상 해석 실패 시" 계약이고 형제는
+    /// 정상 해석이다.
+    fn hasFallbackDisable(self: *const ResolveCache, specifier: []const u8) bool {
+        for (self.resolver.fallback) |entry| {
+            if (entry.to == null and std.mem.eql(u8, specifier, entry.from)) return true;
         }
         return false;
     }
@@ -1147,10 +1143,22 @@ pub fn findPackageDirPath(path: []const u8) ?[]const u8 {
     return path[0 .. nm_pos + nm.len + pkg_end];
 }
 
-/// URL 상대 참조 정규화 버퍼 크기 (`"./"` + specifier). 소스에 리터럴로 박히는
-/// 지정자라 이 상한이면 충분하다. 초과하면 정규화를 건너뛴다(= 기존 동작).
-/// `std.fs.max_path_bytes` 를 쓰면 Windows 에서 96KB 스택 프레임이 되므로 고정값을 쓴다.
-const MAX_URL_RELATIVE_SPEC_BYTES: usize = 1024;
+/// resolver 의 형제-우선 탐색을 켤지 — kind 와 지정자 철자를 함께 본다 (#4604).
+/// 테스트도 이 함수를 그대로 써야 프로덕션 게이트가 바뀔 때 같이 깨진다.
+pub fn urlRelativeFor(kind: ImportKind, specifier: []const u8) bool {
+    return isUrlRelativeKind(kind) and isBareUrlRelativeSpecifier(specifier);
+}
+
+/// 지정자가 모듈 이름이 아니라 **URL 상대 참조**인 kind 인지.
+/// `new URL(spec, import.meta.url)` (#4483) 과 CSS `url(spec)` (#4485) — 둘 다 base 가
+/// 참조하는 파일 자신의 URL 이다. `.static_import`/`.require`/`.dynamic_import` 의 bare 는
+/// 진짜 npm 패키지 이름이라 해당하지 않는다 (`import "react"` 가 형제로 가면 안 된다).
+fn isUrlRelativeKind(kind: ImportKind) bool {
+    return switch (kind) {
+        .worker, .css_url => true,
+        else => false,
+    };
+}
 
 /// specifier 가 `./` 가 생략된 bare 상대 참조인지 (#4483 worker / #4485 CSS url).
 ///
@@ -1167,10 +1175,10 @@ const MAX_URL_RELATIVE_SPEC_BYTES: usize = 1024;
 fn isBareUrlRelativeSpecifier(specifier: []const u8) bool {
     if (specifier.len == 0) return false;
     // query/fragment 가 붙은 지정자는 건드리지 않는다.
-    // - `?worker`/`?sharedworker` 같은 알려진 쿼리를 정규화하면 resolver 가 형제 파일로
-    //   해석해 **WorkerWrapper 팩토리** 청크를 만든다 (worker 본문이 아니라).
+    // - `?worker`/`?sharedworker` 같은 알려진 쿼리를 형제로 해석하면 **WorkerWrapper 팩토리**
+    //   청크가 잡힌다 (worker 본문이 아니라).
     // - `?v=1` 같은 미지의 쿼리는 resolver 가 벗기지 못해 어차피 못 연다.
-    // 둘 다 지금(= `./` 를 붙인 형태)과 동작이 같아야 하므로 정규화 대상에서 뺀다.
+    // 둘 다 명시적 상대 경로(`./x?worker`)와 동작이 같아야 하므로 형제 우선에서 뺀다.
     // (`.css_url` 은 css_scanner 가 `?query`/`#fragment` 를 `css_url_suffix` 로 미리
     //  떼어 두므로 여기 도달하는 specifier 에 `?#` 가 없다 — 이 가드는 worker 용이다.)
     if (std.mem.indexOfAny(u8, specifier, "?#") != null) return false;
@@ -1180,35 +1188,6 @@ fn isBareUrlRelativeSpecifier(specifier: []const u8) bool {
     // `https:` / `data:` / `blob:` … (Windows 드라이브 `C:` 는 scheme 으로 안 침).
     if (css_scanner.hasUriScheme(specifier)) return false;
     return true;
-}
-
-/// URL 상대 참조 지정자를 URL 의미론에 맞춰 정규화 (#4483 worker / #4485 CSS url).
-///
-/// bare 상대 참조면 `buf` 에 `"./" ++ specifier` 를 써서 그 slice 를 반환한다.
-/// 반환 slice 는 `buf` 를 빌리므로 buf 의 수명 안에서만 유효.
-///
-/// null = 정규화 대상 아님 (worker/css_url 이 아닌 kind / 이미 상대 경로 / 절대 URL /
-/// `"./" ++ specifier` 가 buf 를 넘김) → caller 는 원문 그대로 resolve.
-///
-/// **`resolveNormalized` 의 폴백 경로에서만 쓴다.** 정규화된 문자열이 resolve 레이어
-/// 밖으로 새면 (record.specifier 를 고치는 등) emitter/codegen 의 조회 키와 어긋난다.
-///
-/// `.static_import` / `.require` / `.dynamic_import` 의 bare 는 진짜 npm 패키지 이름이라
-/// 정규화 대상이 아니다 — `import "react"` 가 `./react` 로 바뀌면 resolution 이 깨진다.
-pub fn normalizeUrlRelativeSpecifier(kind: ImportKind, specifier: []const u8, buf: []u8) ?[]const u8 {
-    switch (kind) {
-        // `new URL(spec, import.meta.url)` — base 는 모듈 자신의 URL (#4483).
-        // CSS `url(spec)` — base 는 스타일시트 자신의 URL (#4485).
-        .worker, .css_url => {},
-        else => return null,
-    }
-    if (!isBareUrlRelativeSpecifier(specifier)) return null;
-    // 버퍼 초과 — 이만큼 긴 경로는 어차피 파일 시스템에서 안 열린다. 원문으로 진행.
-    if (specifier.len + 2 > buf.len) return null;
-    buf[0] = '.';
-    buf[1] = '/';
-    @memcpy(buf[2 .. 2 + specifier.len], specifier);
-    return buf[0 .. specifier.len + 2];
 }
 
 /// specifier가 Node.js 빌트인 모듈인지 판별.

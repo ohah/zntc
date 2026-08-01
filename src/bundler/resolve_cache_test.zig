@@ -4,7 +4,6 @@ const ResolveCache = resolve_cache.ResolveCache;
 const matchGlob = resolve_cache.matchGlob;
 const matchPackageSubPath = resolve_cache.matchPackageSubPath;
 const isNodeBuiltin = resolve_cache.isNodeBuiltin;
-const normalizeUrlRelativeSpecifier = resolve_cache.normalizeUrlRelativeSpecifier;
 const profile = @import("../profile.zig");
 const ResolvedModule = @import("plugin.zig").ResolvedModule;
 
@@ -711,74 +710,64 @@ test "internResolvedModule: .dataurl mime OOM 시 errdefer 가 mime + data 둘 �
 // #4483 — worker specifier 는 URL 상대 참조 (`./` 생략 가능)
 // ============================================================
 
-/// 테스트 헬퍼 — worker kind 정규화 결과. null = 정규화 대상 아님(원문 사용).
-fn normWorker(buf: []u8, specifier: []const u8) ?[]const u8 {
-    return normalizeUrlRelativeSpecifier(.worker, specifier, buf);
-}
+/// resolver 의 `url_relative` 플래그가 켜지는 조건 (#4604).
+/// ⚠️ 술어를 여기서 재구현하면 프로덕션 게이트가 바뀌어도 아래 테스트가 안 깨진다 —
+/// `ResolveCache` 가 실제로 부르는 것과 **같은 함수**를 쓴다.
+const urlRelative = resolve_cache.urlRelativeFor;
 
-/// 테스트 헬퍼 — CSS `url()` kind 정규화 결과 (#4485).
-fn normCssUrl(buf: []u8, specifier: []const u8) ?[]const u8 {
-    return normalizeUrlRelativeSpecifier(.css_url, specifier, buf);
-}
-
-test "#4483 normalizeUrlRelativeSpecifier: bare 상대 지정자에 ./ 를 붙인다" {
-    var buf: [1024]u8 = undefined;
-    // `new URL("x.worker.js", import.meta.url)` 의 base 는 모듈 자신의 URL →
-    // `./x.worker.js` 와 같은 파일. resolver 가 npm 패키지로 오인하지 않게 정규화.
-    try std.testing.expectEqualStrings("./x.worker.js", normWorker(&buf, "x.worker.js").?);
-    try std.testing.expectEqualStrings("./sub/dir/w.js", normWorker(&buf, "sub/dir/w.js").?);
+test "#4604 url_relative: bare 상대 지정자에 켜진다" {
+    // `new URL("x.worker.js", import.meta.url)` 의 base 는 모듈 자신의 URL → `./x.worker.js`
+    // 와 같은 파일. resolver 가 npm 패키지로 오인하지 않게 형제를 먼저 보게 한다.
+    try std.testing.expect(urlRelative(.worker, "x.worker.js"));
+    try std.testing.expect(urlRelative(.worker, "sub/dir/w.js"));
     // monaco-editor 의 실제 형태 (cssMode.js → css.worker.js).
-    try std.testing.expectEqualStrings("./css.worker.js", normWorker(&buf, "css.worker.js").?);
-    // `..foo` 는 상대 경로가 아니라 그냥 파일명 — `./..foo` 가 맞다.
-    try std.testing.expectEqualStrings("./..foo.js", normWorker(&buf, "..foo.js").?);
+    try std.testing.expect(urlRelative(.worker, "css.worker.js"));
+    // `..foo` 는 상대 경로가 아니라 그냥 파일명.
+    try std.testing.expect(urlRelative(.worker, "..foo.js"));
+    // CSS url() 도 같다 (#4485).
+    try std.testing.expect(urlRelative(.css_url, "logo.png"));
+    try std.testing.expect(urlRelative(.css_url, "img/hero.png"));
 }
 
-test "#4483 normalizeUrlRelativeSpecifier: 이미 상대 경로면 정규화 안 함" {
-    var buf: [1024]u8 = undefined;
-    try std.testing.expect(normWorker(&buf, "./w.js") == null);
-    try std.testing.expect(normWorker(&buf, "../w.js") == null);
-    try std.testing.expect(normWorker(&buf, "../../a/w.js") == null);
+test "#4604 url_relative: 이미 상대 경로면 꺼진다 (일반 경로 조합이 처리)" {
+    try std.testing.expect(!urlRelative(.worker, "./w.js"));
+    try std.testing.expect(!urlRelative(.worker, "../w.js"));
+    try std.testing.expect(!urlRelative(.worker, "../../a/w.js"));
+    try std.testing.expect(!urlRelative(.css_url, "./logo.png"));
 }
 
-test "#4483 normalizeUrlRelativeSpecifier: scheme/root-absolute/protocol-relative 는 건드리지 않는다" {
-    var buf: [1024]u8 = undefined;
+test "#4604 url_relative: scheme/root-absolute/protocol-relative 는 건드리지 않는다" {
     // scheme 있는 절대 URL — base 를 무시하는 valid worker 소스.
-    try std.testing.expect(normWorker(&buf, "https://cdn.example.com/w.js") == null);
-    try std.testing.expect(normWorker(&buf, "http://a/w.js") == null);
-    try std.testing.expect(normWorker(&buf, "data:text/javascript,1") == null);
-    try std.testing.expect(normWorker(&buf, "blob:abc") == null);
-    try std.testing.expect(normWorker(&buf, "chrome-extension://id/w.js") == null);
+    try std.testing.expect(!urlRelative(.worker, "https://cdn.example.com/w.js"));
+    try std.testing.expect(!urlRelative(.worker, "http://a/w.js"));
+    try std.testing.expect(!urlRelative(.worker, "data:text/javascript,1"));
+    try std.testing.expect(!urlRelative(.worker, "blob:abc"));
+    try std.testing.expect(!urlRelative(.worker, "chrome-extension://id/w.js"));
     // root-absolute + protocol-relative — origin 기준이라 파일 시스템 상대가 아니다.
-    try std.testing.expect(normWorker(&buf, "/abs/w.js") == null);
-    try std.testing.expect(normWorker(&buf, "//cdn.example.com/w.js") == null);
+    try std.testing.expect(!urlRelative(.worker, "/abs/w.js"));
+    try std.testing.expect(!urlRelative(.worker, "//cdn.example.com/w.js"));
     // query/fragment 가 붙은 지정자는 전부 제외.
-    // - `?worker`/`?sharedworker` 를 정규화하면 resolver 가 형제 파일로 해석해
-    //   **WorkerWrapper 팩토리** 청크를 만든다 (worker 본문이 아니라) → 워커가 응답 안 함.
-    // - `?v=1` 같은 미지의 쿼리는 resolver 가 벗기지 못해 어차피 못 연다 (`./` 를 붙여도 동일).
-    try std.testing.expect(normWorker(&buf, "w.js?worker") == null);
-    try std.testing.expect(normWorker(&buf, "w.js?v=1") == null);
-    try std.testing.expect(normWorker(&buf, "w.js#frag") == null);
-    try std.testing.expect(normWorker(&buf, "?v=1") == null);
-    try std.testing.expect(normWorker(&buf, "#frag") == null);
-    try std.testing.expect(normWorker(&buf, "") == null);
+    // - `?worker`/`?sharedworker` 를 형제로 해석하면 **WorkerWrapper 팩토리** 청크가 잡힌다
+    //   (worker 본문이 아니라) → 워커가 응답 안 함.
+    // - `?v=1` 같은 미지의 쿼리는 resolver 가 벗기지 못해 어차피 못 연다.
+    try std.testing.expect(!urlRelative(.worker, "w.js?worker"));
+    try std.testing.expect(!urlRelative(.worker, "w.js?v=1"));
+    try std.testing.expect(!urlRelative(.worker, "w.js#frag"));
+    try std.testing.expect(!urlRelative(.worker, "?v=1"));
+    try std.testing.expect(!urlRelative(.worker, "#frag"));
+    try std.testing.expect(!urlRelative(.worker, ""));
+    try std.testing.expect(!urlRelative(.css_url, "https://cdn/a.png"));
+    try std.testing.expect(!urlRelative(.css_url, "/abs.png"));
 }
 
-test "#4483 normalizeUrlRelativeSpecifier: import/require kind 는 bare 를 그대로 (npm 패키지)" {
-    var buf: [1024]u8 = undefined;
-    // import/require 의 bare 는 npm 패키지 — 정규화하면 resolution 이 깨진다.
-    try std.testing.expect(normalizeUrlRelativeSpecifier(.static_import, "react", &buf) == null);
-    try std.testing.expect(normalizeUrlRelativeSpecifier(.dynamic_import, "react-dom/client", &buf) == null);
-    try std.testing.expect(normalizeUrlRelativeSpecifier(.require, "lodash", &buf) == null);
-    try std.testing.expect(normalizeUrlRelativeSpecifier(.side_effect, "normalize.css", &buf) == null);
-}
-
-test "#4483 normalizeUrlRelativeSpecifier: 버퍼보다 긴 specifier 는 정규화 생략 (fallback)" {
-    var small: [8]u8 = undefined;
-    // `"./" + spec` 이 버퍼에 안 들어가면 정규화를 포기 → caller 가 원문으로 resolve (기존 동작).
-    try std.testing.expect(normWorker(&small, "verylongspecifier.js") == null);
-    // 경계: len + 2 == buf.len 은 정규화 성공.
-    var exact: [8]u8 = undefined;
-    try std.testing.expectEqualStrings("./abcdef", normWorker(&exact, "abcdef").?);
+test "#4604 url_relative: import/require kind 는 bare 를 그대로 (npm 패키지)" {
+    // import/require 의 bare 는 npm 패키지 — 형제로 가면 resolution 이 깨진다.
+    try std.testing.expect(!urlRelative(.static_import, "react"));
+    try std.testing.expect(!urlRelative(.dynamic_import, "react-dom/client"));
+    try std.testing.expect(!urlRelative(.require, "lodash"));
+    try std.testing.expect(!urlRelative(.side_effect, "normalize.css"));
+    // 같은 철자라도 kind 가 URL 이면 켜진다 — 갈리는 축이 kind 라는 것 자체를 박제한다.
+    try std.testing.expect(urlRelative(.css_url, "normalize.css"));
 }
 
 test "#4483 isExternal: --packages=external 의 \"bare = 패키지\" 자동 규칙은 worker 에 적용 안 함" {
@@ -888,35 +877,32 @@ test "#4483 resolve: 사용자 external 패턴은 원문 철자로도 계속 먹
 //
 // CSS 스펙상 `url()` 의 base 는 **스타일시트 자신의 URL** 이라
 // `url(logo.png)` 와 `url(./logo.png)` 는 같은 파일을 가리켜야 한다.
-// #4483 이 worker 에 쓴 "기존 해석 우선 + `./` 폴백" 구조를 그대로 확장한 것.
+// #4483 이 worker 에 쓴 구조를 그대로 확장한 것 — 해석 순서는 #4604 에서
+// `--alias` > 형제 > 패키지 로 정리했다 (esbuild·rspack 실측).
 // ============================================================
 
-test "#4485 normalizeUrlRelativeSpecifier: css_url 의 bare 에도 ./ 를 붙인다" {
-    var buf: [1024]u8 = undefined;
-    // #4483 은 css_url 을 일부러 정규화 대상에서 뺐다 (bare 가 패키지로도 해석돼
-    // 우선순위 결정이 필요했다). #4485 에서 "기존 해석 우선 + `./` 폴백" 순서로
-    // 회귀 없이 확장 가능함이 확인돼 전제가 바뀌었다.
-    try std.testing.expectEqualStrings("./logo.png", normCssUrl(&buf, "logo.png").?);
-    try std.testing.expectEqualStrings("./img/logo.png", normCssUrl(&buf, "img/logo.png").?);
-    try std.testing.expectEqualStrings("./fonts/x.woff2", normCssUrl(&buf, "fonts/x.woff2").?);
-    // 패키지 경로처럼 보이는 것도 **정규화 자체는** 한다 — 다만 resolveNormalized 가
-    // 원문 해석을 먼저 시도하므로 실재하는 패키지는 이 폴백까지 오지 않는다.
-    try std.testing.expectEqualStrings("./imgpkg/pic.png", normCssUrl(&buf, "imgpkg/pic.png").?);
+test "#4604 url_relative: css_url 의 bare 도 형제 우선 대상" {
+    // #4483 은 css_url 을 일부러 뺐고(bare 가 패키지로도 해석돼 우선순위 결정이 필요했다),
+    // #4485 가 "패키지 우선 + `./` 폴백" 으로 넣었다가, #4604 에서 esbuild·rspack 실측에
+    // 맞춰 형제 우선으로 정리했다.
+    try std.testing.expect(urlRelative(.css_url, "logo.png"));
+    try std.testing.expect(urlRelative(.css_url, "img/logo.png"));
+    try std.testing.expect(urlRelative(.css_url, "fonts/x.woff2"));
+    // 패키지 경로처럼 보이는 것도 대상이다 — 형제가 없으면 아래 node_modules 로 폴백한다.
+    try std.testing.expect(urlRelative(.css_url, "imgpkg/pic.png"));
 }
 
-test "#4485 normalizeUrlRelativeSpecifier: css_url 의 상대/절대/scheme 은 건드리지 않는다" {
-    var buf: [1024]u8 = undefined;
-    // 이미 명시적 상대 경로.
-    try std.testing.expect(normCssUrl(&buf, "./logo.png") == null);
-    try std.testing.expect(normCssUrl(&buf, "../assets/logo.png") == null);
+test "#4604 url_relative: css_url 의 상대/절대/scheme 은 건드리지 않는다" {
+    // 이미 명시적 상대 경로 — 일반 경로 조합이 그대로 처리한다.
+    try std.testing.expect(!urlRelative(.css_url, "./logo.png"));
+    try std.testing.expect(!urlRelative(.css_url, "../assets/logo.png"));
     // root-absolute — public 디렉토리 규약 (loaders 가 애초에 record 도 안 만든다).
-    try std.testing.expect(normCssUrl(&buf, "/logo.png") == null);
-    try std.testing.expect(normCssUrl(&buf, "//cdn.example.com/logo.png") == null);
+    try std.testing.expect(!urlRelative(.css_url, "/logo.png"));
+    try std.testing.expect(!urlRelative(.css_url, "//cdn.example.com/logo.png"));
     // scheme 있는 절대 URL — 그대로 방출돼야 한다.
-    try std.testing.expect(normCssUrl(&buf, "https://cdn.example.com/z.png") == null);
-    try std.testing.expect(normCssUrl(&buf, "data:image/png;base64,iVBOR") == null);
-    try std.testing.expect(normCssUrl(&buf, "blob:abc") == null);
-    try std.testing.expect(normCssUrl(&buf, "") == null);
+    try std.testing.expect(!urlRelative(.css_url, "https://cdn.example.com/z.png"));
+    try std.testing.expect(!urlRelative(.css_url, "data:image/png;base64,iVBOR"));
+    try std.testing.expect(!urlRelative(.css_url, "blob:abc"));
 }
 
 test "#4485 resolve: bare css url() 이 스타일시트 형제 파일로 해석된다" {
@@ -946,20 +932,302 @@ test "#4485 resolve: bare css url() 이 스타일시트 형제 파일로 해석�
     );
 }
 
-test "#4485 resolve: 패키지로 해석되던 bare css url() 은 그대로 패키지가 이긴다" {
+test "#4604 resolve: bare css url() 은 형제가 동명 패키지를 이긴다" {
+    // #4485 는 패키지 우선으로 뒀었다 (형제가 패키지를 가리는 것을 회귀로 봤다).
+    // esbuild·rspack 을 같은 픽스처로 실측한 결과 둘 다 형제를 우선한다 — URL 의 base 가
+    // 스타일시트 자신이라 형제가 그 URL 의 대상이고, node_modules 해석은 형제가 없을 때의
+    // 폴백이다. 폴백이 살아 있다는 것은 바로 아래 테스트가 지킨다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    // node_modules/imgpkg/pic.png — 현재도 정상 해석되는 형태 (data URL 로 인라인됨).
     try tmp.dir.createDir(std.testing.io, "node_modules", .default_dir);
     try tmp.dir.createDir(std.testing.io, "node_modules/imgpkg", .default_dir);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "node_modules/imgpkg/package.json", .data = "{\"name\":\"imgpkg\"}" });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "node_modules/imgpkg/pic.png", .data = "PKG" });
 
-    // 같은 이름의 형제 디렉토리도 함께 둔다 — 정규화를 **먼저** 시도했다면 이게 이겨서
-    // 기존 사용자의 패키지 자산이 조용히 바뀐다 (= 회귀). 순서가 이걸 막는다.
+    // 동명의 형제 디렉토리 — 이게 이겨야 한다.
     try tmp.dir.createDir(std.testing.io, "imgpkg", .default_dir);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "imgpkg/pic.png", .data = "SIBLING" });
+
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir_path);
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+
+    const resolved = try cache.resolve(std.testing.io, dir_path, "imgpkg/pic.png", .css_url);
+    try std.testing.expect(resolved != null);
+    try std.testing.expect(std.mem.indexOf(u8, resolved.?.file.path, "node_modules") == null);
+
+    // `url(./imgpkg/pic.png)` 와 **같은 파일**이어야 한다 — 이게 #4604 의 본질이다.
+    const dotted = try cache.resolve(std.testing.io, dir_path, "./imgpkg/pic.png", .css_url);
+    try std.testing.expectEqualStrings(resolved.?.file.path, dotted.?.file.path);
+
+    // 대조군 — `.static_import` 는 진짜 모듈 지정자라 **패키지**로 가야 한다.
+    // 이게 없으면 "모든 kind 에서 형제 우선" 으로 바꿔도 위 단언이 전부 통과한다.
+    const as_module = try cache.resolve(std.testing.io, dir_path, "imgpkg/pic.png", .static_import);
+    try std.testing.expect(as_module != null);
+    try std.testing.expect(std.mem.indexOf(u8, as_module.?.file.path, "node_modules") != null);
+}
+
+test "#4604 resolve: alias 대상이 bare 여도 동명 형제가 alias 를 가리지 않는다" {
+    // 형제 프로브가 **alias 치환 후** 철자로 돌면 alias 대상 패키지가 동명 형제 디렉토리에
+    // 가려진다. `--alias:x=somepkg` 는 사용자가 그 패키지를 강제한 것이라 파일 존재 여부로
+    // 뒤집히면 안 된다. (alias 대상이 절대경로면 이 분기를 안 타므로 bare 대상이 핵심.)
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(std.testing.io, "node_modules", .default_dir);
+    try tmp.dir.createDir(std.testing.io, "node_modules/imgpkg", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "node_modules/imgpkg/package.json", .data = "{\"name\":\"imgpkg\"}" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "node_modules/imgpkg/pic.png", .data = "PKG" });
+    // alias 대상과 동명인 형제 디렉토리.
+    try tmp.dir.createDir(std.testing.io, "imgpkg", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "imgpkg/pic.png", .data = "SIBLING" });
+
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir_path);
+
+    const aliases = [_]@import("resolver.zig").AliasEntry{
+        .{ .from = "alias-name", .to = "imgpkg" }, // 대상이 **bare**
+    };
+    var cache = ResolveCache.init(std.testing.allocator, .{ .alias = &aliases });
+    defer cache.deinit();
+
+    const resolved = try cache.resolve(std.testing.io, dir_path, "alias-name/pic.png", .css_url);
+    try std.testing.expect(resolved != null);
+    try std.testing.expect(std.mem.indexOf(u8, resolved.?.file.path, "node_modules") != null);
+
+    // 대조군 — alias 가 안 걸리는 이름은 형제가 이긴다 (alias 분기가 형제 우선을 통째로
+    // 꺼 버린 게 아님을 보인다).
+    const plain = try cache.resolve(std.testing.io, dir_path, "imgpkg/pic.png", .css_url);
+    try std.testing.expect(plain != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.?.file.path, "node_modules") == null);
+}
+
+test "#4604 resolve: --fallback 대상은 URL 의미론으로 해석되지 않는다" {
+    // `url_relative` 는 Resolver 인스턴스 상태라, `applyFallback` 이 수행하는 **재진입**
+    // resolve 에서 끄지 않으면 fallback 대상까지 형제 우선으로 해석된다. 대상은 사용자가
+    // 옵션에 쓴 평범한 모듈 지정자지 URL 상대 참조가 아니다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(std.testing.io, "node_modules", .default_dir);
+    try tmp.dir.createDir(std.testing.io, "node_modules/imgpkg", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "node_modules/imgpkg/package.json", .data = "{\"name\":\"imgpkg\"}" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "node_modules/imgpkg/pic.png", .data = "PKG" });
+    // fallback 대상과 동명인 형제 디렉토리 — 재진입 resolve 가 URL 의미론이면 이게 이긴다.
+    try tmp.dir.createDir(std.testing.io, "imgpkg", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "imgpkg/pic.png", .data = "SIBLING" });
+
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir_path);
+
+    // `logo.png` 는 형제로도 패키지로도 없으므로 fallback 이 걸린다.
+    const fallbacks = [_]@import("resolver.zig").FallbackEntry{
+        .{ .from = "logo.png", .to = "imgpkg/pic.png" },
+    };
+    var cache = ResolveCache.init(std.testing.allocator, .{ .fallback = &fallbacks });
+    defer cache.deinit();
+
+    const resolved = try cache.resolve(std.testing.io, dir_path, "logo.png", .css_url);
+    try std.testing.expect(resolved != null);
+    try std.testing.expect(std.mem.indexOf(u8, resolved.?.file.path, "node_modules") != null);
+
+    // 대조군 — 같은 지정자를 **직접** URL 참조로 쓰면 형제가 이긴다. 이게 없으면
+    // "형제 우선 자체가 꺼졌다" 는 회귀에서도 위 단언이 통과한다.
+    const direct = try cache.resolve(std.testing.io, dir_path, "imgpkg/pic.png", .css_url);
+    try std.testing.expect(direct != null);
+    try std.testing.expect(std.mem.indexOf(u8, direct.?.file.path, "node_modules") == null);
+}
+
+test "#4604 resolve: alias 대상이 없으면 마지막 수단으로 원문 형제를 본다" {
+    // alias 가 걸리면 exact 형제 프로브는 건너뛰지만, 아무것도 해석되지 않으면 마지막에
+    // 원문 철자로 전체 경로 사다리를 태운다 (main 의 `"./" ++ spec` 재시도와 같은 자리).
+    // 없애 봤더니 alias 대상이 깨진 프로젝트에서 지금까지 방출되던 자산이 조용히 사라졌다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "logo.png", .data = "SIBLING" });
+
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir_path);
+
+    const aliases = [_]@import("resolver.zig").AliasEntry{
+        .{ .from = "logo.png", .to = "no-such-package-anywhere" },
+    };
+    var cache = ResolveCache.init(std.testing.allocator, .{ .alias = &aliases });
+    defer cache.deinit();
+
+    const resolved = try cache.resolve(std.testing.io, dir_path, "logo.png", .css_url);
+    try std.testing.expect(resolved != null);
+    try std.testing.expect(std.mem.endsWith(u8, resolved.?.file.path, "logo.png"));
+
+    // 대조군 — URL kind 가 아니면 이 마지막 수단은 없다 (진짜 모듈 import 는 alias 실패 = 실패).
+    try std.testing.expectError(
+        error.ModuleNotFound,
+        cache.resolve(std.testing.io, dir_path, "logo.png", .static_import),
+    );
+}
+
+test "#4604 resolve: bare 지정자도 마지막 수단에서 확장자 추론이 살아 있다" {
+    // exact 프로브만 남기고 마지막 수단을 지웠더니, `new URL("worker.js")` + 디스크의
+    // `worker.ts`(moduleResolution NodeNext 가 요구하는 철자)가 **해석 자체를 못 해**
+    // warning 만 남기고 원문이 방출됐다 → 404. 추론은 아무것도 해석 안 됐을 때만 돈다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "worker.ts", .data = "self.postMessage(1);" });
+
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir_path);
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+
+    const resolved = try cache.resolve(std.testing.io, dir_path, "worker.js", .worker);
+    try std.testing.expect(resolved != null);
+    try std.testing.expect(std.mem.endsWith(u8, resolved.?.file.path, "worker.ts"));
+
+    // 대조군 — 추론이 **패키지보다 앞서면** 안 된다. 아래 테스트가 그걸 지킨다.
+}
+
+test "#4604 resolve: 형제 우선은 정확한 파일명일 때만 (확장자 추론 없음)" {
+    // 프로브가 일반 경로 해석 사다리를 타면 확장자 붙이기·`.js`→`.ts` 매핑·RN @2x·디렉토리
+    // 인덱스까지 걸려, **동명 형제가 없는데도** 패키지가 조용히 가려진다. URL 은 실제
+    // 파일명을 그대로 쓰므로 추론이 애초에 URL 의미론에 없다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(std.testing.io, "node_modules", .default_dir);
+    try tmp.dir.createDir(std.testing.io, "node_modules/wpkg", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "node_modules/wpkg/package.json", .data = "{\"name\":\"wpkg\"}" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "node_modules/wpkg/w.js", .data = "PKG" });
+    // 로컬엔 `w.ts` 만 있다 — `w.js` 라는 이름의 형제는 **없다**.
+    try tmp.dir.createDir(std.testing.io, "wpkg", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "wpkg/w.ts", .data = "LOCAL_TS" });
+
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir_path);
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+
+    const resolved = try cache.resolve(std.testing.io, dir_path, "wpkg/w.js", .worker);
+    try std.testing.expect(resolved != null);
+    try std.testing.expect(std.mem.indexOf(u8, resolved.?.file.path, "node_modules") != null);
+
+    // 대조군 — 정확히 그 이름의 형제가 있으면 이긴다. `ResolveCache` 는 무효화 API 가
+    // 없으므로(같은 키 = 위 결과 재사용) **새 캐시**로 재본다.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "wpkg/w.js", .data = "LOCAL_JS" });
+    var fresh = ResolveCache.init(std.testing.allocator, .{});
+    defer fresh.deinit();
+    const exact = try fresh.resolve(std.testing.io, dir_path, "wpkg/w.js", .worker);
+    try std.testing.expect(exact != null);
+    try std.testing.expect(std.mem.indexOf(u8, exact.?.file.path, "node_modules") == null);
+}
+
+test "#4604 resolve: --fallback:K=false 로 끈 지정자는 형제가 있어도 비활성 유지" {
+    // 형제 우선이 `applyFallback` 보다 앞서므로, 그냥 두면 사용자가 일부러 뺀 자산이
+    // 형제로 해석돼 번들·방출된다. `=false` 는 "이 이름은 쓰지 마라" 는 명시적 지시다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "logo.png", .data = "SIBLING" });
+
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir_path);
+
+    const fallbacks = [_]@import("resolver.zig").FallbackEntry{
+        .{ .from = "logo.png", .to = null },
+    };
+    var cache = ResolveCache.init(std.testing.allocator, .{ .fallback = &fallbacks });
+    defer cache.deinit();
+
+    const resolved = try cache.resolve(std.testing.io, dir_path, "logo.png", .css_url);
+    try std.testing.expect(resolved != null);
+    try std.testing.expect(resolved.? == .disabled); // 빈 모듈 — 자산으로 방출되지 않는다
+
+    // 대조군 — 끄지 않은 이름은 형제로 정상 해석된다.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "keep.png", .data = "SIBLING2" });
+    const kept = try cache.resolve(std.testing.io, dir_path, "keep.png", .css_url);
+    try std.testing.expect(kept != null);
+    try std.testing.expect(kept.? == .file);
+}
+
+test "#4604 resolve: block_list 에 막힌 형제가 패키지 폴백을 막지 않는다" {
+    // 형제 히트를 그대로 돌려주면 상위 `resolve()` 가 차단 후 ModuleNotFound 로 끝내 버려,
+    // 원래 이기던 node_modules 대상까지 도달하지 못한다 → 원문 방출 404.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(std.testing.io, "node_modules", .default_dir);
+    try tmp.dir.createDir(std.testing.io, "node_modules/legacy", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "node_modules/legacy/package.json", .data = "{\"name\":\"legacy\"}" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "node_modules/legacy/logo.png", .data = "PKG" });
+    try tmp.dir.createDir(std.testing.io, "legacy", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "legacy/logo.png", .data = "BLOCKED" });
+
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir_path);
+    const blocked = try std.fmt.allocPrint(std.testing.allocator, "{s}/legacy/.*", .{dir_path});
+    defer std.testing.allocator.free(blocked);
+
+    const block_list = [_][]const u8{blocked};
+    var cache = ResolveCache.init(std.testing.allocator, .{ .block_list = &block_list });
+    defer cache.deinit();
+
+    const resolved = try cache.resolve(std.testing.io, dir_path, "legacy/logo.png", .css_url);
+    try std.testing.expect(resolved != null);
+    try std.testing.expect(std.mem.indexOf(u8, resolved.?.file.path, "node_modules") != null);
+}
+
+test "#4604 resolve: 패키지 browser 필드 remap 이 동명 형제에 가리지 않는다" {
+    // `url_relative` 판정은 원문 철자로 하는데 resolver 에는 remap 된 철자를 넘긴다.
+    // 켠 채로 넘기면 browser 필드가 가리킨 대상이 **패키지 내부의 동명 디렉토리**에 가려져
+    // 엉뚱한 자산이 방출된다. browser 필드도 `--alias` 와 같은 명시적 재작성이다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(std.testing.io, "node_modules", .default_dir);
+    try tmp.dir.createDir(std.testing.io, "node_modules/pkg", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "node_modules/pkg/package.json",
+        .data = "{\"name\":\"pkg\",\"browser\":{\"icons/a.png\":\"shared-icons/a.png\"}}",
+    });
+    try tmp.dir.createDir(std.testing.io, "node_modules/pkg/icons", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "node_modules/pkg/icons/a.png", .data = "ORIG" });
+    // remap 대상과 동명인 **패키지 내부** 디렉토리 — 형제 우선이 켜져 있으면 이게 이긴다.
+    try tmp.dir.createDir(std.testing.io, "node_modules/pkg/shared-icons", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "node_modules/pkg/shared-icons/a.png", .data = "STRAY" });
+    // browser 필드가 실제로 가리키는 패키지.
+    try tmp.dir.createDir(std.testing.io, "node_modules/shared-icons", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "node_modules/shared-icons/package.json", .data = "{\"name\":\"shared-icons\"}" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "node_modules/shared-icons/a.png", .data = "REMAP_TARGET" });
+
+    const pkg_dir = try tmp.dir.realPathFileAlloc(std.testing.io, "node_modules/pkg", std.testing.allocator);
+    defer std.testing.allocator.free(pkg_dir);
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+
+    const resolved = try cache.resolve(std.testing.io, pkg_dir, "icons/a.png", .css_url);
+    try std.testing.expect(resolved != null);
+    // remap 대상 패키지여야 한다 — `node_modules/pkg/shared-icons/` 가 아니라.
+    try std.testing.expect(std.mem.indexOf(u8, resolved.?.file.path, "node_modules/shared-icons") != null);
+}
+
+test "#4604 resolve: 형제가 없으면 bare css url() 은 여전히 패키지로 폴백한다" {
+    // 위 테스트의 비공허성 대조군 — 형제 우선이 패키지 해석 자체를 없애는 것으로 번지면
+    // 안 된다 (esbuild·rspack 도 이 경우 패키지 자산을 쓴다).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(std.testing.io, "node_modules", .default_dir);
+    try tmp.dir.createDir(std.testing.io, "node_modules/imgpkg", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "node_modules/imgpkg/package.json", .data = "{\"name\":\"imgpkg\"}" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "node_modules/imgpkg/pic.png", .data = "PKG" });
+    // 형제 디렉토리는 두지 않는다 — 이 픽스처의 위험 조건이 "형제 부재" 다.
 
     const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
@@ -998,9 +1266,8 @@ test "#4485 isExternal: --packages=external 의 bare 규칙은 css_url 에 그�
 
     // worker 는 #4483 이 이 규칙에서 뺐다.
     try std.testing.expect(!cache.isExternalForKind("logo.png", .worker));
-    // css_url 은 **일부러 빼지 않는다** — 이 플래그 하에서 bare url() 은 지금도 external 로
-    // 빠져 원문 방출된다. carve-out 하면 그게 갑자기 node_modules 자산으로 해석·방출돼
-    // `--packages=external` 사용자의 산출물이 바뀐다 (이 수정의 범위 밖).
+    // css_url 은 **일부러 빼지 않는다** — #4604 에서 빼 봤더니 `--packages=external` 로 의존성을
+    // 미해석 상태로 두려는 라이브러리 빌드가 의존성 자산 사본을 dist 에 싣게 됐다(실측).
     // 재작성이 필요하면 `url(./logo.png)` 로 쓴다.
     try std.testing.expect(cache.isExternalForKind("logo.png", .css_url));
     // 명시적 상대 경로는 이 규칙과 무관 (is_path).
