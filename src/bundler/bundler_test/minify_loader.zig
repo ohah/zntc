@@ -4233,6 +4233,88 @@ test "#4611 JS 의 bare CSS import 는 여전히 npm 패키지로 간다" {
     try std.testing.expect(std.mem.indexOf(u8, css, "APP_SIBLING") == null);
 }
 
+/// #4607 — tsconfig `paths` 의 적용 범위. `from_dep_package` 는 import 가 앱 소스에서
+/// 나가는지 **의존 패키지 안에서** 나가는지를 고른다.
+fn bundleTsPathsScope(tmp: *std.testing.TmpDir, from_dep_package: bool) ![]const u8 {
+    try writeFile(tmp.dir, "node_modules/helper/package.json", "{\"name\":\"helper\",\"main\":\"index.js\"}");
+    try writeFile(tmp.dir, "node_modules/helper/index.js", "export const h = 'REAL_DEP';");
+    try writeFile(tmp.dir, "src/helper.ts", "export const h = 'APP_SOURCE';");
+
+    if (from_dep_package) {
+        try writeFile(tmp.dir, "node_modules/mypkg/package.json", "{\"name\":\"mypkg\",\"main\":\"index.js\"}");
+        try writeFile(tmp.dir, "node_modules/mypkg/index.js", "import { h } from 'helper';\nexport const v = h;");
+        try writeFile(tmp.dir, "src/main.ts", "import { v } from 'mypkg';\nconsole.log(v);");
+    } else {
+        // ⚠️ **진입점이 아니라 한 단계 안쪽**에서 부른다. 진입점만 태우면 범위 규칙이
+        // 과하게 잡혀도 통과해 공허해질 수 있다.
+        try writeFile(tmp.dir, "src/app.ts", "import { h } from 'helper';\nexport const a = h;");
+        try writeFile(tmp.dir, "src/main.ts", "import { a } from './app';\nconsole.log(a);");
+    }
+
+    const entry = try absPath(tmp, "src/main.ts");
+    defer std.testing.allocator.free(entry);
+    const root = try absPath(tmp, ".");
+    defer std.testing.allocator.free(root);
+    const src_prefix = try std.fmt.allocPrint(std.testing.allocator, "{s}/src/", .{root});
+    defer std.testing.allocator.free(src_prefix);
+    const targets = [_]@import("../../config.zig").TsConfig.PathEntry.Target{
+        .{ .prefix = src_prefix, .suffix = "" },
+    };
+    const paths = [_]@import("../../config.zig").TsConfig.PathEntry{
+        .{ .key_prefix = "", .key_suffix = "", .has_wildcard = true, .targets = &targets },
+    };
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .ts_paths = &paths,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    return std.testing.allocator.dupe(u8, result.output);
+}
+
+test "#4607 tsconfig paths 는 node_modules 안에서 나가는 import 에 적용되지 않는다" {
+    // catch-all `"*": ["src/*"]` 에서 의존 패키지가 자기 의존성 대신 앱 소스를 먹던 문제.
+    // esbuild·rolldown 실측 일치 (REAL_DEP).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const js = try bundleTsPathsScope(&tmp, true);
+    defer std.testing.allocator.free(js);
+
+    try std.testing.expect(std.mem.indexOf(u8, js, "REAL_DEP") != null);
+    try std.testing.expect(std.mem.indexOf(u8, js, "APP_SOURCE") == null);
+}
+
+test "#4607 tsconfig paths 는 앱 소스의 import 에는 그대로 적용된다" {
+    // **범위 규칙이 과하면 여기서 깨진다.** 이 축의 두 선행 시도가 철수한 이유가 전부
+    // "규칙이 닿지 않는/과하게 닿는 표면이 조용히 paths 를 잃는" 형태였다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const js = try bundleTsPathsScope(&tmp, false);
+    defer std.testing.allocator.free(js);
+
+    try std.testing.expect(std.mem.indexOf(u8, js, "APP_SOURCE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, js, "REAL_DEP") == null);
+}
+
+test "#4607 isUnderNodeModules 는 세그먼트 단위로 본다" {
+    const f = @import("../resolver.zig").isUnderNodeModulesForTest;
+    try std.testing.expect(f("/a/node_modules/pkg"));
+    try std.testing.expect(f("/a/node_modules"));
+    try std.testing.expect(f("/node_modules/x/y"));
+    // ⚠️ 부분 문자열에 걸리면 안 된다 — 이런 디렉토리명은 실제로 존재한다.
+    try std.testing.expect(!f("/a/my-node_modules-thing/src"));
+    try std.testing.expect(!f("/a/node_modules_backup/src"));
+    try std.testing.expect(!f("/a/xnode_modules/src"));
+    try std.testing.expect(!f("/a/src"));
+    try std.testing.expect(!f(""));
+}
+
 test "#4604 CSS url(): catch-all tsconfig paths 가 bare url() 을 가로채지 않는다 (형제 있음)" {
     // 신고된 재현 그대로. `"paths": { "*": ["src/*"] }` 하에서 `url(assets/logo.png)` 가
     // paths 에 걸려 `src/assets/logo.png` 로, `url(./assets/logo.png)` 는 형제로 가서

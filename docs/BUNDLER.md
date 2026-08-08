@@ -162,6 +162,24 @@ url("./hero-a1b2c3d4.png")   ← span 구간만 치환, 나머지 바이트는 �
   유효할 수 있고(서버가 따로 서빙 / 배포 스크립트가 나중에 복사), 여기서 실패시키면 지금까지
   멀쩡히 빌드되던 프로젝트가 업그레이드하자마자 깨진다.
 
+### tsconfig `paths` 의 적용 범위 (#4607)
+
+`paths` 는 **importer 디렉토리가 `node_modules` 세그먼트 아래면 적용하지 않는다.** tsc 는
+`paths` 를 그 tsconfig 의 program 에 속한 파일에만 적용하고 program 의 기본 `exclude` 가
+node_modules 다. esbuild·rolldown 실측도 동일하다. 없으면 catch-all `"*": ["src/*"]` 에서
+의존 패키지가 자기 의존성 대신 앱 소스를 먹는다.
+
+- 판정은 **순수 함수**(경로 텍스트)다. 모듈에 "program 소속" 을 **부여**하는 방식은 이 축에서
+  세 번 시도해 세 번 다 철수했다 — 부여식은 ①그래프 입구마다(진입점·`--inject`·
+  `--run-before-main`·폴리필·플러그인·`emitFile`) 값을 매겨야 하고 ②모듈당 값이 하나뿐인데
+  여러 경로로 도달 가능하며 ③그래서 discovery 순서·cold/warm 에 따라 갈렸다.
+- **realpath 를 부르지 않는다.** `preserve_symlinks=false`(기본)에서 `makeResult` 가 이미
+  canonical 로 만들어 둔다. 워크스페이스 패키지가 node_modules 에 심링크만 걸린 경우 실제
+  경로가 밖이라 종전대로 `paths` 를 받는 것도 이 덕분이다 (esbuild 동일).
+- ⚠️ 세그먼트 단위로 본다 — `my-node_modules-thing/` 같은 디렉토리명에 걸리면 안 된다.
+- ⚠️ 앱 자체가 `node_modules/@co/app` 에 체크아웃되면 그 프로젝트의 `paths` 가 죽는다.
+  **esbuild·rolldown 도 동일하게 실패한다**(실측) — 생태계 표준 동작이라 그대로 뒀다.
+
 ### bare 지정자 해석 순서 — alias > 형제 > paths > 패키지 (#4604)
 
 CSS 스펙상 `url()` 의 상대 참조는 **스타일시트 자신의 URL** 이 base 다 → `url(logo.png)` 와
