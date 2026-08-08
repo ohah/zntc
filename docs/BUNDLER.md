@@ -227,8 +227,10 @@ CSS 스펙상 `url()` 의 상대 참조는 **스타일시트 자신의 URL** 이
   모듈 지정자지 URL 상대 참조가 아니다 — 켠 채로 재진입하면 대상이 동명 형제에 가려진다.
 - `--fallback:K=V`(재작성 형태)는 **형제가 없을 때만** 걸린다. `--fallback` 이 "정상 해석 실패
   시" 계약이고 형제는 정상 해석이므로 일관된 동작이다. NODE_PATH 와 symlink-sibling 복구도 같다.
-- ⚠️ CSS `@import` 은 아직 이 순서가 아니다 — 레코드 kind 가 `.side_effect` 라 JS 의
-  `import 'normalize.css'` 와 구분되지 않아 kind 로 편입할 수 없다. #4611 에서 다룬다.
+- CSS `@import` 도 같은 순서다 (#4611). 전용 kind `.css_import` 를 써서 편입했다.
+  ⚠️ JS 의 `import 'normalize.css'`(`.side_effect`)는 **들어오면 안 된다** — 진짜 패키지
+  지정자라 앱 로컬 동명 파일에 가려지면 안 된다. 그래서 kind 를 나눴다. 나머지 동작(평가
+  순서·tree-shaking·external 그룹핑)은 `.side_effect` 와 같다.
 - `--packages=external` 의 "bare = npm 패키지" 자동 규칙은 `.css_url` 에 **그대로 적용된다**
   (#4485 알려진 한계, worker 는 #4483 이 제외). #4604 에서 빼 봤더니 의존성을 미해석 상태로
   두려는 라이브러리 빌드가 의존성 자산 **사본**을 dist 에 싣게 돼 되돌렸다.

@@ -4179,6 +4179,60 @@ test "#4612 CSS url(): 파일 symlink 는 두 철자 모두 그대로 이긴다"
     }
 }
 
+/// #4611 — 같은 지정자를 CSS `@import` 와 JS `import` 로 각각 태워 **kind 로 갈리는지** 본다.
+/// 형제 파일과 동명 패키지를 **둘 다** 두는 게 핵심이다. 한쪽만 두면 어느 규칙이 이겼는지
+/// 구분이 안 돼 테스트가 공허해진다.
+fn bundleBareCssSpecifier(tmp: *std.testing.TmpDir, via_css_import: bool) ![]const u8 {
+    try writeFile(tmp.dir, "node_modules/normalize.css/package.json", "{\"name\":\"normalize.css\",\"main\":\"normalize.css\"}");
+    try writeFile(tmp.dir, "node_modules/normalize.css/normalize.css", "body{--src:FROM_PKG}");
+    try writeFile(tmp.dir, "src/normalize.css", "body{--src:APP_SIBLING}");
+
+    if (via_css_import) {
+        try writeFile(tmp.dir, "src/card.css", "@import \"normalize.css\";\n.a{color:red}");
+        try writeFile(tmp.dir, "src/main.ts", "import './card.css';");
+    } else {
+        try writeFile(tmp.dir, "src/main.ts", "import 'normalize.css';");
+    }
+
+    const entry = try absPath(tmp, "src/main.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const css = findCssOutput(result) orelse return error.ExpectedCssOutput;
+    return std.testing.allocator.dupe(u8, css);
+}
+
+test "#4611 CSS @import 의 bare 지정자는 형제 스타일시트로 간다" {
+    // `@import` 의 base 는 스타일시트 자신의 URL 이라 `url()` 과 같은 축이다.
+    // esbuild 실측 일치.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const css = try bundleBareCssSpecifier(&tmp, true);
+    defer std.testing.allocator.free(css);
+
+    try std.testing.expect(std.mem.indexOf(u8, css, "APP_SIBLING") != null);
+    try std.testing.expect(std.mem.indexOf(u8, css, "FROM_PKG") == null);
+}
+
+test "#4611 JS 의 bare CSS import 는 여전히 npm 패키지로 간다" {
+    // **kind 를 나눈 이유가 이것이다.** `.side_effect` 를 그대로 URL 축에 넣었으면
+    // `import 'normalize.css'` 가 앱 로컬 동명 파일에 가려졌을 것이다. esbuild 실측 일치.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const css = try bundleBareCssSpecifier(&tmp, false);
+    defer std.testing.allocator.free(css);
+
+    try std.testing.expect(std.mem.indexOf(u8, css, "FROM_PKG") != null);
+    try std.testing.expect(std.mem.indexOf(u8, css, "APP_SIBLING") == null);
+}
+
 test "#4604 CSS url(): catch-all tsconfig paths 가 bare url() 을 가로채지 않는다 (형제 있음)" {
     // 신고된 재현 그대로. `"paths": { "*": ["src/*"] }` 하에서 `url(assets/logo.png)` 가
     // paths 에 걸려 `src/assets/logo.png` 로, `url(./assets/logo.png)` 는 형제로 가서

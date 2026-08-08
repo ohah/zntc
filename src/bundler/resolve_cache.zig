@@ -1170,7 +1170,10 @@ pub fn urlRelativeFor(kind: ImportKind, specifier: []const u8) bool {
 /// 진짜 npm 패키지 이름이라 해당하지 않는다 (`import "react"` 가 형제로 가면 안 된다).
 fn isUrlRelativeKind(kind: ImportKind) bool {
     return switch (kind) {
-        .worker, .css_url => true,
+        // `.css_import` = CSS 의 `@import` (#4611). base 가 스타일시트 자신의 URL 이라
+        // `url()` 과 같은 축이다. JS 의 `import "normalize.css"`(`.side_effect`)는 진짜
+        // 패키지 지정자라 여기 들어오면 안 된다 — 그래서 kind 를 나눴다.
+        .worker, .css_url, .css_import => true,
         else => false,
     };
 }

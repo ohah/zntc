@@ -92,7 +92,10 @@ pub fn parseCssModule(self: *ModuleGraph, io: std.Io, module: *Module) void {
         for (raw_imports, 0..) |imp, i| {
             records[i] = .{
                 .specifier = imp.specifier,
-                .kind = .side_effect,
+                // CSS `@import` 전용 kind (#4611). JS 의 `import "normalize.css"` 와 같은
+                // `.side_effect` 를 쓰면 해석 규칙을 구분할 수 없다 — `@import` 의 base 는
+                // 스타일시트 자신의 URL 이라 `url()` 과 같은 URL 참조다.
+                .kind = .css_import,
                 .span = imp.span,
                 // External URL (`http:`/`https:`/`//`/`data:`) — resolver 가 skip
                 // 하고 emitter 가 출력 CSS 상단에 보존 (esbuild parity, #3321 P0-3).
