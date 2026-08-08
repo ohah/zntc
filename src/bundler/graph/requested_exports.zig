@@ -151,7 +151,7 @@ pub fn shouldLinkResolvedRecordForModule(self: anytype, mod_idx: usize, rec_i: u
     switch (record.kind) {
         // .css_url: asset 을 찾으려면 resolve 는 반드시 돌아야 한다. JS 의존성
         // 엣지를 만들지 않는 것은 recordResolvedDep 이 따로 처리 (#4466).
-        .side_effect, .require, .dynamic_import, .worker, .glob, .require_context, .css_url => return true,
+        .side_effect, .css_import, .require, .dynamic_import, .worker, .glob, .require_context, .css_url => return true,
         .static_import, .re_export => {},
     }
 
@@ -380,7 +380,7 @@ pub fn requestDependencyExports(
             defer s.end();
             return requestedExportsForReExportRecord(self, importer, rec_i, dep_idx);
         },
-        .side_effect, .require, .dynamic_import, .worker, .glob, .require_context => {
+        .side_effect, .css_import, .require, .dynamic_import, .worker, .glob, .require_context => {
             var s = profile.begin(.graph_discover_incr_req_simple);
             defer s.end();
             return requestAll(self, dep_idx);

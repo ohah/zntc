@@ -300,11 +300,23 @@ pub const ImportKind = enum {
     /// `__commonJS` 래퍼로 번들에 실린다.
     css_url,
 
+    /// CSS 의 `@import "./base.css"` (#4611).
+    ///
+    /// JS 의 `import "./x.css"` / `import "normalize.css"` 와 **kind 를 나눈다.** 둘 다
+    /// 예전엔 `.side_effect` 였는데, 그러면 해석 규칙을 구분할 수 없다 — CSS `@import` 의
+    /// base 는 스타일시트 자신의 URL 이라 `url()` 과 같은 URL 참조인 반면, JS 의 bare
+    /// `import "normalize.css"` 는 진짜 npm 패키지 지정자다.
+    ///
+    /// 평가 순서·tree-shaking·external 그룹핑 등 **나머지 동작은 `.side_effect` 와 같다.**
+    /// 갈라지는 건 resolve 순서 하나뿐이다 (`isUrlRelativeKind`).
+    css_import,
+
     /// importer 본문보다 먼저 평가 효과가 발생해야 하는 정적 ESM 의존성 종류.
     /// `export { x } from`/`export * from`(re_export)도 source 모듈의 side effect 를
     /// eager 초기화해야 하므로 포함한다.
     pub fn isEagerEvalDependency(self: ImportKind) bool {
-        return self == .static_import or self == .side_effect or self == .re_export;
+        return self == .static_import or self == .side_effect or self == .re_export or
+            self == .css_import;
     }
 };
 
