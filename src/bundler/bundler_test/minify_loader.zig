@@ -4410,6 +4410,48 @@ test "#4616 --external-alias 없으면 원문 그대로 (대조군)" {
     try std.testing.expect(std.mem.indexOf(u8, js, "crypto") != null);
 }
 
+test "#4616 동적 import 도 같은 이름으로 방출된다" {
+    // ⚠️ external 은 `resolved == .none` 이라 동적 import 재작성 루프가 통째로 건너뛴다.
+    // 안 고치면 정적은 새 이름·동적은 옛 이름이 나가 **한 번들에 두 철자가 섞인다**.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "src/main.ts", "import { x } from 'crypto';\nconst d = await import('crypto');\nconsole.log(x, d);");
+    const entry = try absPath(&tmp, "src/main.ts");
+    defer std.testing.allocator.free(entry);
+
+    const ext = [_][]const u8{"crypto"};
+    const ext_alias = [_]@import("../types.zig").AliasEntry{.{ .from = "crypto", .to = "crypto-browserify" }};
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .external = &ext,
+        .external_alias = &ext_alias,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "import(\"crypto-browserify\")") != null);
+    // 옛 철자가 어디에도 남으면 안 된다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "import(\"crypto\")") == null);
+}
+
+test "#4616 대체 지정자 검증 — 빈 값·따옴표·백슬래시 거부" {
+    // 이 값은 방출되는 문자열 리터럴 **안에 그대로** 들어간다. 검증 없으면 번들이
+    // SyntaxError 가 되거나(따옴표) 엉뚱한 모듈을 요청한다(백슬래시 escape).
+    const f = @import("../types.zig").isValidExternalAliasTarget;
+    try std.testing.expect(f("crypto-browserify"));
+    try std.testing.expect(f("./shims/crypto.js"));
+    try std.testing.expect(f("@scope/pkg"));
+    try std.testing.expect(!f(""));
+    try std.testing.expect(!f("a\"b"));
+    try std.testing.expect(!f("crypto\\shim"));
+    try std.testing.expect(!f("a\nb"));
+}
+
 test "#4616 --globals 는 원문 지정자 기준 (external-alias 와 축이 다르다)" {
     // ⚠️ rolldown 실측: `output.paths` 로 방출 이름을 바꿔도 `output.globals` 키는 **원래 id** 다.
     // 방출 이름으로 조회하면 `--external-alias` 와 `--globals` 를 같이 쓴 사용자가 매칭에

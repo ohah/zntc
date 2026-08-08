@@ -131,6 +131,23 @@ pub const ModuleIndex = enum(u32) {
 /// `exact = true` 인 entry 는 prefix 매칭을 건너뛴다 — `from` 과 specifier 가 완전
 /// 일치할 때만 적용. `to` 가 디렉토리가 아닌 단일 파일인 경우 prefix 매칭이
 /// `from/subpath` → `file.js/subpath` (디렉토리 취급) 으로 깨지므로 명시적 opt-in.
+/// `--external-alias` 의 **대체 지정자** 가 방출 가능한 값인지 (#4616).
+///
+/// 이 값은 `import ... from "<여기>"` / `require("<여기>")` 의 **큰따옴표 문자열 안에 그대로**
+/// 들어간다. 원문 `specifier` 는 파서가 이미 받아들인 리터럴에서 왔지만 이건 사용자가 옵션에
+/// 직접 쓴 문자열이라, 검증하지 않으면 산출물이 파싱 불가가 되거나 엉뚱한 모듈을 요청한다:
+/// - 빈 값 → `import ... from ""` (런타임 `Invalid module specifier`)
+/// - `"` 포함 → 문자열 리터럴이 조기 종료돼 **번들 전체가 SyntaxError**
+/// - `\` 포함 → `\s` 같은 escape 로 조용히 먹혀 다른 경로를 요청
+/// - 개행 → 리터럴 안에서 불법
+pub fn isValidExternalAliasTarget(v: []const u8) bool {
+    if (v.len == 0) return false;
+    for (v) |c| {
+        if (c == '"' or c == '\\' or c == '\n' or c == '\r') return false;
+    }
+    return true;
+}
+
 pub const AliasEntry = struct {
     from: []const u8,
     to: []const u8,

@@ -151,6 +151,8 @@ pub const ConfigOptionsDto = struct {
     // JSON 에서는 record form (`[{name, patterns}]`) 만 지원.
     external: ?[]const []const u8 = null,
     alias: ?[]const AliasDto = null,
+    /// #4616 external 방출 지정자 매핑 (rollup output.paths 대응).
+    externalAlias: ?[]const AliasDto = null,
     loader: ?[]const LoaderDto = null,
     conditions: ?[]const []const u8 = null,
     resolveExtensions: ?[]const []const u8 = null,

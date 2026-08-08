@@ -1532,6 +1532,13 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module, format: types
                     const owned = try std.fmt.allocPrint(self.allocator, "({s})", .{param});
                     try require_rewrites.put(self.allocator, rec.specifier, owned);
                 }
+            } else if (rec.external_specifier) |ext_name| {
+                // #4616: 소스의 `require('K')` 를 `require("V")` 로. 위 분기(UMD/AMD/IIFE
+                // 매개변수 주입)가 안 걸리는 cjs/esm 출력에서 alias 가 통째로 누락됐다.
+                if (!require_rewrites.contains(rec.specifier)) {
+                    const owned = try std.fmt.allocPrint(self.allocator, "require(\"{s}\")", .{ext_name});
+                    try require_rewrites.put(self.allocator, rec.specifier, owned);
+                }
             }
             continue;
         }

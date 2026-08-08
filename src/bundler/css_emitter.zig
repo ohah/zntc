@@ -291,7 +291,10 @@ const ExternalImportCollector = struct {
             if (rec.kind == .css_url) continue;
             if (!rec.is_external) continue;
             if (rec.specifier.len == 0) continue;
-            const composite_key = try std.fmt.allocPrint(allocator, "{s}\x00{s}", .{ rec.specifier, rec.css_condition_tail });
+            // #4616: 방출·dedupe 모두 대체 지정자 기준. 원문만 쓰면 JS 쪽은 새 이름,
+            // CSS 쪽은 옛 이름이 나가 한 빌드에서 두 철자가 섞인다.
+            const emit_spec = rec.externalName();
+            const composite_key = try std.fmt.allocPrint(allocator, "{s}\x00{s}", .{ emit_spec, rec.css_condition_tail });
             errdefer allocator.free(composite_key);
             const gop = try self.seen.getOrPut(allocator, composite_key);
             if (gop.found_existing) {
@@ -300,7 +303,7 @@ const ExternalImportCollector = struct {
             }
             // append 실패하면 errdefer 가 key 회수 + getOrPut 한 entry 도 제거.
             self.list.append(allocator, .{
-                .specifier = rec.specifier,
+                .specifier = emit_spec, // #4616
                 .condition_tail = rec.css_condition_tail,
             }) catch |e| {
                 _ = self.seen.remove(composite_key);
