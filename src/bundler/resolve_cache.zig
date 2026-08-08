@@ -585,6 +585,9 @@ pub const ResolveCache = struct {
         // 마찬가지로 **명시적 재작성**이라 동명 형제로 뒤집히면 안 된다 (resolver 쪽 alias
         // carve-out 과 같은 이유). 켜 두면 remap 대상 패키지가 패키지 내부의 동명 디렉토리에
         // 가려져 엉뚱한 자산이 방출된다.
+        // `url_kind` 는 **철자와 무관하게 kind 만** 본다 — `url(./x)` 도 URL 참조라
+        // 디렉토리가 대상이 될 수 없다. `url_relative`(탐색 순서) 와 축이 다르다.
+        local_resolver.url_kind = isUrlRelativeKind(kind);
         local_resolver.url_relative = std.mem.eql(u8, effective_spec, specifier) and
             urlRelativeFor(kind, specifier) and
             !self.hasFallbackDisable(specifier);
@@ -598,7 +601,19 @@ pub const ResolveCache = struct {
             // 이전 빌드 스냅샷을 보고 새로 만든 파일을 "없다" 고 답한다.
             self.resolver.conditions = local_resolver.conditions;
             self.resolver.url_relative = local_resolver.url_relative;
+            self.resolver.url_kind = local_resolver.url_kind;
         }
+        // `url_relative` 는 **per-resolve** 상태라 공유 인스턴스에 남기지 않는다 (#4612).
+        // 매 resolve 직전에 항상 대입되므로 현재 오동작은 없지만, 같은 필드를
+        // save/clear/restore 하는 `Resolver.applyFallback` 과 비대칭이면 다음에 이 필드를
+        // 읽는 코드가 생겼을 때 조용히 이전 호출의 값을 본다.
+        //
+        // `conditions` 는 여기서 건드리지 않는다 — 복원 대상이 아니라 kind 별로 갈아끼우는
+        // 기존 계약이고, 이 변경의 범위 밖이다.
+        defer if (!thread_safe) {
+            self.resolver.url_relative = false;
+            self.resolver.url_kind = false;
+        };
         const resolve_ptr = if (thread_safe) &local_resolver else &self.resolver;
 
         const result = blk: {
@@ -1174,13 +1189,19 @@ fn isUrlRelativeKind(kind: ImportKind) bool {
 /// - `?query` / `#fragment` 만 있는 참조 — 대상 파일이 자기 자신이다
 fn isBareUrlRelativeSpecifier(specifier: []const u8) bool {
     if (specifier.len == 0) return false;
-    // query/fragment 가 붙은 지정자는 건드리지 않는다.
-    // - `?worker`/`?sharedworker` 같은 알려진 쿼리를 형제로 해석하면 **WorkerWrapper 팩토리**
-    //   청크가 잡힌다 (worker 본문이 아니라).
+    // query/fragment 가 붙은 지정자는 형제 우선에서 뺀다.
+    // - `?worker`/`?sharedworker` 같은 알려진 쿼리를 형제로 해석하면 worker 본문이 아니라
+    //   **WorkerWrapper 팩토리** 청크가 잡힌다.
     // - `?v=1` 같은 미지의 쿼리는 resolver 가 벗기지 못해 어차피 못 연다.
-    // 둘 다 명시적 상대 경로(`./x?worker`)와 동작이 같아야 하므로 형제 우선에서 뺀다.
-    // (`.css_url` 은 css_scanner 가 `?query`/`#fragment` 를 `css_url_suffix` 로 미리
-    //  떼어 두므로 여기 도달하는 specifier 에 `?#` 가 없다 — 이 가드는 worker 용이다.)
+    //
+    // ⚠️ 근거는 위 두 줄이 전부다. 예전 주석은 "`./x?worker` 와 동작이 같아야 하므로" 라고
+    // 적었는데 **그 등가성은 성립하지 않는다** — `./x?worker` 는 상대 경로로 정상 해석되고
+    // bare `x?worker` 는 여기서 걸러져 paths·node_modules 로 간다. 즉 #4604 가 없앤 종류의
+    // 발산이 `?query` 축에는 남아 있으며, 팩토리 청크를 잡는 것보다는 낫다고 보고 의도적으로
+    // 둔 것이다. 근거를 등가성으로 적어 두면 다음 사람이 "등가니까 켜도 된다" 로 뒤집는다.
+    //
+    // (`.css_url` 은 css_scanner 가 `?query`/`#fragment` 를 `css_url_suffix` 로 미리 떼어
+    //  두므로 여기 도달하는 specifier 에 `?#` 가 없다 — 이 가드는 worker 용이다.)
     if (std.mem.indexOfAny(u8, specifier, "?#") != null) return false;
     // `./` `../` 명시적 상대 + `/abs.js` root-absolute + `//cdn/w.js` protocol-relative
     // (셋 다 isRelativeOrAbsolute 가 true).

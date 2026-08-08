@@ -209,6 +209,18 @@ CSS 스펙상 `url()` 의 상대 참조는 **스타일시트 자신의 URL** 이
   없는 이름이고, `--alias` 와 마찬가지로 명시적 재작성이라 동명 형제로 뒤집히면 안 된다.
 - `--fallback:K=false` 로 끈 지정자도 형제 우선을 끈다. 형제가 있으면 정상 해석이 되어
   `applyFallback` 에 도달하지 못해, 라이선스·용량 때문에 일부러 뺀 자산이 그대로 방출된다.
+- **디렉토리는 대상이 될 수 없다.** URL 은 파일을 가리키는 참조라 디렉토리 인덱스로 해석되면
+  안 된다. 그런데 `DirEntryCache` 는 readdir 만으로 symlink 대상을 알 수 없어 files·dirs 양쪽에
+  등록하므로, 디렉토리 symlink 가 `fileExists` 에 걸려 파일로 넘어가고 읽기 단계에서
+  `ZNTC0200` 으로 **빌드 전체가 죽는다**. 그래서 `.css_url`/`.worker` 는 `Resolver.url_kind` 로
+  디렉토리 후보를 거부한다.
+  - ⚠️ 이 판정은 **kind** 에 걸어야 한다. bare 철자 경로(`trySiblingExact`)에만 넣으면
+    `url(logo.png)` 는 살고 `url(./logo.png)` 는 죽는다 (#4612 리뷰 실측).
+  - ⚠️ `dirExists` 만으로 자르면 **파일 symlink 까지 죽는다**(양쪽 등록). dir 로도 등록된
+    후보만 `statFile` 로 확정한다.
+  - ⚠️ stat 실패는 디렉토리가 **아닌** 것으로 친다. 후보를 버리면 깨진 symlink 나 일시적
+    EMFILE 이 조용히 "동명 패키지로 폴백" 이 되어, 파일 이름을 짚어 주던 `ZNTC0200` 이
+    사라지고 전혀 다른 자산이 실린다.
 - `block_list` 에 걸리는 형제 후보는 없는 것으로 친다. 그냥 돌려주면 상위 `resolve()` 가 차단 후
   `ModuleNotFound` 로 끝내 버려, 원래 이기던 paths·node_modules 대상에 도달하지 못한다.
 - `--fallback` 대상을 재해석할 때는 `url_relative` 를 **끈다**. 대상은 사용자가 옵션에 쓴 평범한

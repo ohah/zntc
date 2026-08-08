@@ -4054,12 +4054,129 @@ fn bundleCatchAllPathsCss(tmp: *std.testing.TmpDir, sibling: bool) !CatchAllPath
             try is_sib.append(std.testing.allocator, std.mem.eql(u8, o.contents, &sibling_img));
         }
     }
+    // ⚠️ 구조체 리터럴 안에서 바로 `toOwnedSlice` 하면 안 된다 (#4612). 필드는 순서대로
+    // 평가되는데, 소유권이 넘어간 뒤 **뒤 필드가 실패하면** 위 errdefer 들은 이미 비워진
+    // 리스트를 보고 아무것도 해제하지 않아 넘긴 슬라이스와 duped CSS 가 샌다.
+    // 하나씩 지역 변수로 받고 각자 errdefer 를 건다.
+    const css_owned = try std.testing.allocator.dupe(u8, css);
+    errdefer std.testing.allocator.free(css_owned);
+
+    const png_paths = try paths_list.toOwnedSlice(std.testing.allocator);
+    errdefer {
+        for (png_paths) |it| std.testing.allocator.free(it);
+        std.testing.allocator.free(png_paths);
+    }
+
+    const png_is_sibling = try is_sib.toOwnedSlice(std.testing.allocator);
+
     return .{
-        .css = try std.testing.allocator.dupe(u8, css),
+        .css = css_owned,
         .diag_count = result.getDiagnostics().len,
-        .png_paths = try paths_list.toOwnedSlice(std.testing.allocator),
-        .png_is_sibling = try is_sib.toOwnedSlice(std.testing.allocator),
+        .png_paths = png_paths,
+        .png_is_sibling = png_is_sibling,
     };
+}
+
+/// #4612 symlink 케이스 — 형제 자리에 symlink 를 두고 `url(logo.png)` 를 번들한다.
+///
+/// ⚠️ **번들러 경로여야 재현된다.** `ResolveCache` 를 직접 부르는 유닛 테스트는 `dir_cache`
+/// 가 null 이라 `fileExists` 가 `statFile` 로 떨어져 디렉토리를 알아서 걸러낸다. 버그는
+/// `DirEntryCache` 가 살아 있을 때만 난다 — readdir 만으로 symlink 대상을 알 수 없어
+/// files·dirs 양쪽에 등록하기 때문이다.
+///
+/// ⚠️ `with_package` 를 **반드시 양쪽으로** 돌린다. 처음엔 패키지를 심어 둔 픽스처만 있었는데,
+/// 그러면 폴백이 실패를 흡수해 버려 "동명 패키지가 없는" 흔한 위상(= 빌드가 죽는 진짜 조건)을
+/// 한 번도 밟지 않는다. 리뷰가 이걸 잡았다.
+///
+/// ⚠️ `bare_spelling` 도 양쪽으로 돌린다. 수정을 bare 철자 경로에만 넣으면 `url(./logo.png)`
+/// 는 그대로 죽는다 — 성질이 철자가 아니라 kind 에 속한다.
+fn bundleSiblingSymlink(
+    tmp: *std.testing.TmpDir,
+    dir_symlink: bool,
+    with_package: bool,
+    bare_spelling: bool,
+) !struct {
+    has_errors: bool,
+    from_pkg: bool,
+} {
+    // ⚠️ 자산은 인라인 임계값보다 커야 한다 — 작으면 data URI 로 인라인돼 `asset_outputs`
+    // 가 비고, 어느 쪽이 이겼는지 구분 자체가 안 된다 (테스트가 공허해진다).
+    const pkg_img = [_]u8{0xC3} ** 5000;
+    const file_img = [_]u8{0xC4} ** 5000;
+
+    const css = if (bare_spelling)
+        ".card { background: url(logo.png); }"
+    else
+        ".card { background: url(./logo.png); }";
+    try writeFile(tmp.dir, "src/card.css", css);
+    try writeFile(tmp.dir, "src/main.ts", "import './card.css';");
+
+    if (with_package) {
+        try writeFile(tmp.dir, "node_modules/logo.png/package.json", "{\"name\":\"logo.png\",\"main\":\"a.png\"}");
+        try writeFile(tmp.dir, "node_modules/logo.png/a.png", &pkg_img);
+    }
+
+    if (dir_symlink) {
+        // 인덱스 파일이 **없는** 디렉토리 — `tryDirectoryIndex` 가 흡수하지 못한다.
+        try writeFile(tmp.dir, "real_dir/unrelated.txt", "x");
+        try tmp.dir.symLink(std.testing.io, "../real_dir", "src/logo.png", .{ .is_directory = true });
+    } else {
+        try writeFile(tmp.dir, "real_file.png", &file_img);
+        try tmp.dir.symLink(std.testing.io, "../real_file.png", "src/logo.png", .{});
+    }
+
+    const entry = try absPath(tmp, "src/main.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    var from_pkg = false;
+    if (result.asset_outputs) |outs| {
+        for (outs) |o| {
+            if (std.mem.eql(u8, o.contents, &pkg_img)) from_pkg = true;
+        }
+    }
+    return .{ .has_errors = result.hasErrors(), .from_pkg = from_pkg };
+}
+
+test "#4612 CSS url(): 디렉토리 symlink 는 동명 패키지가 없어도 빌드를 죽이지 않는다" {
+    // **핵심 위상** — 폴백이 흡수해 주지 않는 경우. 잡으면 읽기 단계에서 ZNTC0200 으로
+    // 빌드 전체가 죽는다 (해석 실패는 warning + 원문 유지가 맞는 동작이다).
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    for ([_]bool{ true, false }) |bare| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const r = try bundleSiblingSymlink(&tmp, true, false, bare);
+        try std.testing.expect(!r.has_errors);
+    }
+}
+
+test "#4612 CSS url(): 디렉토리 symlink 면 동명 패키지로 폴백한다" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const r = try bundleSiblingSymlink(&tmp, true, true, true);
+    try std.testing.expect(!r.has_errors);
+    try std.testing.expect(r.from_pkg);
+}
+
+test "#4612 CSS url(): 파일 symlink 는 두 철자 모두 그대로 이긴다" {
+    // 가드를 `dirExists` 만으로 넓게 잡으면 이게 깨진다 — DirEntryCache 가 양쪽에 등록하므로
+    // 파일 symlink 도 dirExists 가 true 다. stat 으로 확정해야 한다.
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    for ([_]bool{ true, false }) |bare| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const r = try bundleSiblingSymlink(&tmp, false, true, bare);
+        try std.testing.expect(!r.has_errors);
+        try std.testing.expect(!r.from_pkg); // 형제(symlink 대상)가 이긴다
+    }
 }
 
 test "#4604 CSS url(): catch-all tsconfig paths 가 bare url() 을 가로채지 않는다 (형제 있음)" {
