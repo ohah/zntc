@@ -491,7 +491,10 @@ pub fn emitWithTreeShaking(
                 // 분류돼도 UMD/AMD 의존성 배열에 넣으면 AMD 로더가 그 URL 을 메인 번들의
                 // 모듈 의존성으로 fetch·실행하려 들어 페이지가 부팅에 실패한다 (#4483).
                 if (rec.kind == .worker or rec.kind == .css_url) continue;
-                const mapped = types.GlobalEntry.lookup(options.globals, ext_name);
+                // ⚠️ `--globals` 는 **원문 지정자** 기준이다 (rolldown 실측: `paths` 로 이름을
+                // 바꿔도 `globals` 키는 원래 id). 방출 이름으로 조회하면 `--external-alias` 와
+                // `--globals` 를 같이 쓴 사용자가 매칭에 실패해 external 이 통째로 빠진다.
+                const mapped = types.GlobalEntry.lookup(options.globals, rec.specifier);
                 if (requires_globals_mapping and mapped == null) continue;
                 const param = if (mapped) |gname|
                     try allocator.dupe(u8, gname)

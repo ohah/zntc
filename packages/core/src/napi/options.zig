@@ -249,6 +249,7 @@ pub fn freeOptionsTypedSlices(opts: *const BundleOptions) void {
     if (opts.define.len > 0) native_alloc.free(opts.define);
     if (opts.module_specifier_map.len > 0) native_alloc.free(opts.module_specifier_map);
     if (opts.alias.len > 0) native_alloc.free(opts.alias);
+    if (opts.external_alias.len > 0) native_alloc.free(opts.external_alias);
     if (opts.ts_paths.len > 0) {
         for (opts.ts_paths) |entry| {
             if (entry.targets.len > 0) native_alloc.free(entry.targets);
@@ -671,6 +672,11 @@ pub fn parseBuildOptions(
     const jsx_import_source_eff = merged_tsconfig.jsx_import_source;
 
     const alias_entries: []const bundler_mod.types.AliasEntry = alias_list.toOwnedSlice(native_alloc) catch return null;
+    // #4616: `alias` 와 **같은 소유권 계약**을 쓴다 — `toOwnedSlice` 로 넘기고
+    // `freeOptionsTypedSlices` 가 해제한다. `.items` 를 그대로 넘기면 지역 ArrayList 의
+    // 버퍼가 아무도 해제하지 않아 빌드 호출마다 샌다.
+    const external_alias_entries: []const bundler_mod.types.AliasEntry =
+        ext_alias_list.toOwnedSlice(native_alloc) catch return null;
 
     // tsconfig paths → resolver 의 ts_paths 로 전달 (alias 와 독립 경로).
     // TS 스펙대로 wildcard anywhere + 다중 후보 순차 시도를 resolver 가 담당.
@@ -826,7 +832,7 @@ pub fn parseBuildOptions(
         .debug = debug_categories orelse &.{},
         .define = define_entries,
         .alias = alias_entries,
-        .external_alias = ext_alias_list.items,
+        .external_alias = external_alias_entries,
         .ts_paths = ts_path_entries,
         .fallback = fallback_entries,
         .block_list = blk: {
