@@ -367,6 +367,7 @@ Options:
   - **`./` 없는 bare 도 재작성** (#4485, 순서는 #4604) — CSS 스펙상 `url()` 의 base 는 스타일시트
     자신의 URL 이라 `url(logo.png)` 와 `url(./logo.png)` 는 같은 파일이다. 해석 순서는
     **`--alias` > 형제 파일 > tsconfig `paths` > node_modules 패키지** (esbuild 동일) —
+- `--external-alias:K=V` — external 지정자 `K` 를 `V` 라는 이름으로 **방출**한다 (rollup `output.paths` 대응). `--alias` 와 달리 해석에는 관여하지 않는다. JS API 는 `externalAlias: { K: 'V' }`.
     `url(logo.png)` 는 **정확히 그 이름의** 형제 파일이 있으면 그걸로 가고, 없으면 `paths` 매핑
     (`url(@/assets/logo.png)`) 이나 패키지 자산(`url(imgpkg/pic.png)`)으로 해석된다
     (확장자 추론으로는 형제가 이기지 않는다). CSS `@import` 는 아직 이 순서가 아니다 (#4611).

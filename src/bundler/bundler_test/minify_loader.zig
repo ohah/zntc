@@ -4366,6 +4366,60 @@ test "#4607 isUnderNodeModules 는 세그먼트 단위로 본다" {
     try std.testing.expect(f("/a/xnode_modules/node_modules/pkg"));
 }
 
+fn bundleExternalAlias(tmp: *std.testing.TmpDir, with_alias: bool, fmt: @import("../emitter.zig").EmitOptions.Format) ![]const u8 {
+    try writeFile(tmp.dir, "src/main.ts", "import { x } from 'crypto';\nconsole.log(x);");
+    const entry = try absPath(tmp, "src/main.ts");
+    defer std.testing.allocator.free(entry);
+
+    const ext = [_][]const u8{"crypto"};
+    const ext_alias = [_]@import("../types.zig").AliasEntry{.{ .from = "crypto", .to = "crypto-browserify" }};
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = fmt,
+        .external = &ext,
+        .external_alias = if (with_alias) &ext_alias else &.{},
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    return std.testing.allocator.dupe(u8, result.output);
+}
+
+test "#4616 --external-alias 가 external 지정자를 다른 이름으로 방출한다 (esm)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const js = try bundleExternalAlias(&tmp, true, .esm);
+    defer std.testing.allocator.free(js);
+
+    try std.testing.expect(std.mem.indexOf(u8, js, "\"crypto-browserify\"") != null);
+    // 원문이 남으면 브라우저에서 Node 빌트인을 로드하려 해 실패한다.
+    try std.testing.expect(std.mem.indexOf(u8, js, "from \"crypto\"") == null);
+}
+
+test "#4616 --external-alias 없으면 원문 그대로 (대조군)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const js = try bundleExternalAlias(&tmp, false, .esm);
+    defer std.testing.allocator.free(js);
+
+    try std.testing.expect(std.mem.indexOf(u8, js, "crypto-browserify") == null);
+    try std.testing.expect(std.mem.indexOf(u8, js, "crypto") != null);
+}
+
+test "#4616 --external-alias 가 cjs require 방출에도 적용된다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const js = try bundleExternalAlias(&tmp, true, .cjs);
+    defer std.testing.allocator.free(js);
+
+    try std.testing.expect(std.mem.indexOf(u8, js, "crypto-browserify") != null);
+}
+
 test "#4604 CSS url(): catch-all tsconfig paths 가 bare url() 을 가로채지 않는다 (형제 있음)" {
     // 신고된 재현 그대로. `"paths": { "*": ["src/*"] }` 하에서 `url(assets/logo.png)` 가
     // paths 에 걸려 `src/assets/logo.png` 로, `url(./assets/logo.png)` 는 형제로 가서

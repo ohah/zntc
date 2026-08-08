@@ -80,6 +80,7 @@ pub fn printUsage(writer: anytype) !void {
         \\  --globals=SPEC=GLOBAL[,...]      Same, comma-separated form
         \\  --global-name=<name>             IIFE/UMD container global identifier
         \\  --alias:K=V                      Force-rewrite import specifier K → V (resolve전)
+        \\  --external-alias:K=V             Emit external K as V (rollup output.paths)
         \\  --fallback:K=V                   Map K → V only when normal resolve fails (`=false` → empty)
         \\                                   For both: V is a package name or absolute path. A relative
         \\                                   V resolves against the *importing file*, so prefer absolute.

@@ -1046,6 +1046,16 @@ interface BuildOptionsCommon {
    * `fallback` instead (applied only on failure). The array form is also
    * supported in buildSync(), which uses only sync hooks. */
   alias?: Record<string, string> | Array<{ find: string | RegExp; replacement: string }>;
+  /**
+   * external 로 남는 지정자를 **다른 이름으로 방출** (rollup `output.paths` /
+   * webpack object-form `externals` 대응).
+   *
+   * `alias` 와 달리 **해석에는 관여하지 않는다** — 이미 external 로 확정된 지정자를
+   * 출력에 쓸 때만 이름을 바꾼다. 브라우저용 shim 을 번들하지 않고 이름만 갈아끼울 때 쓴다.
+   *
+   * @example { crypto: 'crypto-browserify' }  // import ... from "crypto-browserify"
+   */
+  externalAlias?: Record<string, string>;
   /** alias 의 prefix matching 을 끄는 from 목록 — exact 매칭만 허용.
    *
    * `alias` object form 의 기본 동작은 esbuild 처럼 정확/접두사 둘 다 매칭이라

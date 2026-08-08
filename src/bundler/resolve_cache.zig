@@ -172,6 +172,8 @@ pub const ResolveCache = struct {
     dataurl_arena: std.heap.ArenaAllocator,
     dataurl_arena_mutex: spin.SpinLock = .{},
     external_patterns: []const []const u8,
+    /// external 방출 시 지정자를 바꾸는 매핑 (#4616). 해석에는 관여하지 않는다.
+    external_alias: []const resolver_mod.AliasEntry = &.{},
     platform: Platform,
     packages_external: bool = false,
 
@@ -321,6 +323,7 @@ pub const ResolveCache = struct {
     pub const InitOptions = struct {
         platform: Platform = .browser,
         external_patterns: []const []const u8 = &.{},
+        external_alias: []const resolver_mod.AliasEntry = &.{},
         custom_conditions: []const []const u8 = &.{},
         preserve_symlinks: bool = false,
         /// 일반 node_modules 탐색 실패 시 source_dir 의 realpath 디렉토리로 한 번 더 탐색.
@@ -386,6 +389,7 @@ pub const ResolveCache = struct {
             .path_pool = PathInternPool.init(allocator),
             .dataurl_arena = std.heap.ArenaAllocator.init(allocator),
             .external_patterns = external_patterns,
+            .external_alias = options.external_alias,
             .platform = platform,
             .packages_external = options.packages_external,
             .dir_cache = resolver_mod.DirEntryCache.init(allocator),
@@ -1074,6 +1078,18 @@ pub const ResolveCache = struct {
     }
 
     /// `kind` 를 모르는 호출자용 (기존 API 유지 — 테스트/도구).
+    /// external 로 방출할 때 쓸 대체 지정자 (#4616). 없으면 null.
+    ///
+    /// ⚠️ **정확 일치만** 본다. `--alias` 는 prefix 치환이지만 이건 rollup `output.paths` /
+    /// webpack object-form `externals` 대응이라 키가 지정자 전체다. prefix 로 하면
+    /// `react` 매핑이 `react-dom` 까지 잡는다.
+    pub fn externalAliasFor(self: *const ResolveCache, specifier: []const u8) ?[]const u8 {
+        for (self.external_alias) |e| {
+            if (std.mem.eql(u8, specifier, e.from)) return e.to;
+        }
+        return null;
+    }
+
     pub fn isExternal(self: *const ResolveCache, specifier: []const u8) bool {
         return self.isExternalForKind(specifier, .static_import);
     }

@@ -502,6 +502,19 @@ pub fn parseBuildOptions(
         }
     }
 
+    // externalAlias: { "crypto": "crypto-browserify" } → []AliasEntry (#4616).
+    // 해석에는 관여하지 않고 external 방출 시 지정자만 바꾼다 (rollup output.paths 대응).
+    const ext_alias_pairs = getObjectKeyValuePairs(env, opts_obj, "externalAlias", native_alloc);
+    var ext_alias_list: std.ArrayList(bundler_mod.types.AliasEntry) = .empty;
+    if (ext_alias_pairs) |pairs| {
+        defer native_alloc.free(pairs);
+        for (pairs) |pair| {
+            if (!trackStr(owned_strings, pair[0])) return null;
+            if (!trackStr(owned_strings, pair[1])) return null;
+            ext_alias_list.append(native_alloc, .{ .from = pair[0], .to = pair[1] }) catch return null;
+        }
+    }
+
     // fallback: { "crypto": "crypto-browserify", "fs": false } → []FallbackEntry
     // 값이 `false`면 빈 모듈, 문자열이면 해당 specifier로 재해석.
     const fallback_pairs = getObjectKeyValuePairsWithNullable(env, opts_obj, "fallback", native_alloc);
@@ -813,6 +826,7 @@ pub fn parseBuildOptions(
         .debug = debug_categories orelse &.{},
         .define = define_entries,
         .alias = alias_entries,
+        .external_alias = ext_alias_list.items,
         .ts_paths = ts_path_entries,
         .fallback = fallback_entries,
         .block_list = blk: {

@@ -138,6 +138,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // ─── 모듈 / Resolve ───
   'external',
   'alias',
+  'externalAlias',
   // alias 의 exact-match 변형 (프로그램틱/config 전용 — `--alias` 만 CLI 노출).
   'aliasExact',
   'define',

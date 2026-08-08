@@ -105,7 +105,7 @@ inline fn mappedExternalParam(
     allocator: std.mem.Allocator,
 ) std.mem.Allocator.Error!?[]const u8 {
     if (!rec.is_external) return null;
-    const mapped = types.GlobalEntry.lookup(globals, rec.specifier);
+    const mapped = types.GlobalEntry.lookup(globals, rec.externalName()); // #4616
     switch (format) {
         .iife => {
             const gname = mapped orelse return null;
@@ -113,7 +113,7 @@ inline fn mappedExternalParam(
         },
         .umd, .amd => {
             if (mapped) |gname| return try allocator.dupe(u8, gname);
-            return try types.specifierToParamName(allocator, rec.specifier);
+            return try types.specifierToParamName(allocator, rec.externalName()); // #4616
         },
         else => return null,
     }
@@ -727,9 +727,9 @@ pub fn buildMetadataForAst(
                     } else {
                         // CJS / ESM-wrapped + helper / 그 외: require() preamble 생성.
                         if (is_helper_esm) {
-                            try preamble.writeUnresolvedRequireAssignOnly(preamble_name, rec.specifier, ib.imported_name, ib.kind == .namespace);
+                            try preamble.writeUnresolvedRequireAssignOnly(preamble_name, rec.externalName(), ib.imported_name, ib.kind == .namespace);
                         } else {
-                            try preamble.writeUnresolvedRequire(preamble_name, rec.specifier, ib.imported_name, ib.kind == .namespace);
+                            try preamble.writeUnresolvedRequire(preamble_name, rec.externalName(), ib.imported_name, ib.kind == .namespace);
                         }
                     }
                 }

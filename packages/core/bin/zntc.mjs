@@ -296,6 +296,7 @@ function parseArgs(argv) {
     packagesExternal: false,
     define: {},
     alias: {},
+    externalAlias: {},
     banner: undefined,
     footer: undefined,
     globalName: undefined,
@@ -1477,7 +1478,7 @@ function mergeConfigIntoOpts(opts, config) {
     }
   }
 
-  for (const key of ['define', 'alias', 'loader', 'globals', 'fallback']) {
+  for (const key of ['define', 'alias', 'externalAlias', 'loader', 'globals', 'fallback']) {
     if (config[key] && typeof config[key] === 'object') {
       opts[key] = { ...config[key], ...opts[key] };
     }
@@ -1561,6 +1562,9 @@ async function buildBundleOptions(opts, config, { filterCallerPreWarmCss = false
     packagesExternal: opts.packagesExternal,
     // `--alias:K=V` 플래그 (webpack/rollup 스타일) — JS 옵션이 tsconfig paths 보다 우선 적용됨.
     alias: Object.keys(opts.alias).length > 0 ? opts.alias : undefined,
+    // #4616 external 지정자를 다른 이름으로 방출 (rollup output.paths 대응).
+    externalAlias:
+      Object.keys(opts.externalAlias ?? {}).length > 0 ? opts.externalAlias : undefined,
     define: Object.keys(opts.define).length > 0 ? opts.define : undefined,
     loader: Object.keys(opts.loader).length > 0 ? opts.loader : undefined,
     minify: opts.minify,

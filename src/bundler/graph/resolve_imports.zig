@@ -104,6 +104,8 @@ pub fn replayCachedResolvedDeps(self: *ModuleGraph, io: std.Io, mod_idx: usize) 
                 if (dep.record_index) |rec_idx| {
                     if (rec_idx < mod_ptr.import_records.len) {
                         mod_ptr.import_records[rec_idx].is_external = true;
+                        mod_ptr.import_records[rec_idx].external_specifier =
+                            self.resolve_cache.externalAliasFor(mod_ptr.import_records[rec_idx].specifier);
                         var s_re = profile.begin(.graph_discover_incr_replay_request_exports);
                         _ = try graph_requested_exports.requestDependencyExports(self, mod_idx, rec_idx, mod_ptr.import_records[rec_idx], ext_idx);
                         s_re.end();
@@ -537,6 +539,10 @@ pub fn applyResolveResult(
         const src_mod = self.modules.at(mod_idx);
         src_mod.import_records[rec_i].is_external = true;
         src_mod.import_records[rec_i].is_lazy_resolved = false;
+        // #4616: 방출 지정자만 바꾼다. 원문 `specifier` 와 그래프 identity 는 그대로 —
+        // 원문은 worker_map 키·CSS span 조회 키라 고치면 lookup 이 어긋난다.
+        src_mod.import_records[rec_i].external_specifier =
+            self.resolve_cache.externalAliasFor(record.specifier);
         _ = try graph_requested_exports.requestDependencyExports(self, mod_idx, rec_i, record, ext_idx);
         try appendResolvedDep(self, mod_idx, .{
             .record_index = @intCast(rec_i),

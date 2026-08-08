@@ -99,7 +99,8 @@ pub fn emitChunkExternalImports(
             else
                 m.importBindingLocalName(ib);
 
-            const gop = try per_spec.getOrPut(allocator, rec.specifier);
+            // #4616: 그룹핑·방출 모두 대체 지정자 기준 (없으면 원문).
+            const gop = try per_spec.getOrPut(allocator, rec.externalName());
             if (!gop.found_existing) gop.value_ptr.* = .{};
             try addBinding(gop.value_ptr, allocator, ib.kind, ib.imported_name, local_name);
         }
@@ -108,7 +109,8 @@ pub fn emitChunkExternalImports(
         for (m.import_records) |rec| {
             if (!rec.is_external) continue;
             if (rec.kind != .side_effect) continue;
-            const gop = try per_spec.getOrPut(allocator, rec.specifier);
+            // #4616: 그룹핑·방출 모두 대체 지정자 기준 (없으면 원문).
+            const gop = try per_spec.getOrPut(allocator, rec.externalName());
             if (!gop.found_existing) {
                 gop.value_ptr.* = .{ .side_effect_only = true };
             }

@@ -272,6 +272,10 @@ pub const BundleOptions = struct {
     disable_hierarchical_lookup: bool = false,
     /// import 경로 별칭 (--alias:K=V). resolve 시 specifier 앞부분을 치환.
     alias: []const types.AliasEntry = &.{},
+    /// external 지정자를 **다른 이름으로 방출** (--external-alias:K=V, #4616).
+    /// rollup `output.paths` / webpack object-form `externals` 대응. 해석은 건드리지 않고
+    /// emit 시점의 지정자만 바꾼다.
+    external_alias: []const types.AliasEntry = &.{},
     /// tsconfig `paths` (절대 경로로 정규화된 형태). `*` wildcard + 다중 후보 순차 시도.
     /// alias 보다 먼저 매칭되며, resolver 가 파일 존재 확인까지 수행.
     ts_paths: []const @import("../config.zig").TsConfig.PathEntry = &.{},
@@ -843,6 +847,7 @@ pub const Bundler = struct {
         return ResolveCache.init(allocator, .{
             .platform = options.platform,
             .external_patterns = options.external,
+            .external_alias = options.external_alias,
             .custom_conditions = options.conditions,
             .preserve_symlinks = options.preserve_symlinks,
             .resolve_symlink_siblings = options.resolve_symlink_siblings,

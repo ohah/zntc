@@ -740,6 +740,11 @@ pub const LoaderOverride = struct {
 /// AST에서 추출한 단일 import/export 정보.
 /// import_scanner가 AST 순회로 수집하고, 모듈 그래프가 resolve에 사용.
 pub const ImportRecord = struct {
+    /// external emit 에 쓸 지정자 — `--external-alias` 대상이면 그 이름, 아니면 원문 (#4616).
+    pub fn externalName(self: *const @This()) []const u8 {
+        return self.external_specifier orelse self.specifier;
+    }
+
     /// 원본 import 경로 (예: "./foo", "react", "../utils")
     specifier: []const u8,
     /// import 종류
@@ -756,6 +761,15 @@ pub const ImportRecord = struct {
     is_lazy_resolved: bool = false,
     /// --external로 명시적으로 제외된 모듈 (resolve 실패와 구분)
     is_external: bool = false,
+    /// external 로 방출할 때 쓸 **대체 지정자** (`--external-alias:K=V`, #4616).
+    ///
+    /// rollup `output.paths` / webpack object-form `externals` 대응. null 이면 원문을 쓴다.
+    ///
+    /// ⚠️ 원문 `specifier` 를 덮어쓰지 않고 **별도 필드**로 둔다. 원문은 worker_map 키와
+    /// CSS span 치환의 조회 키라, 고치면 lookup 이 어긋나 원문이 그대로 방출된다(= 404).
+    /// #4604 1차 시도가 정확히 이걸로 깨졌다. 그래프 identity 도 원문 기준을 유지한다
+    /// (rollup 도 `output.paths` 는 emit 만 바꾸고 module id 는 그대로다).
+    external_specifier: ?[]const u8 = null,
     /// resolve 가 hard-error 로 확정 실패한 record. 성공(resolved 설정)·external·
     /// lazy 와 마찬가지로 "재resolve 불필요" 상태 마커. 이게 없으면
     /// shouldResolveRecordForModule / resolveModuleImports 가 resolved==.none 만 보고
