@@ -463,6 +463,19 @@ pub const Resolver = struct {
     /// 태우면 alias·`--fallback`·패키지 `browser` 필드·external 패턴·캐시 키가 전부 **다른
     /// 철자**를 보게 돼 각각 어긋난다. 그래서 철자는 그대로 두고 탐색 순서만 바꾼다.
     url_relative: bool = false,
+
+    /// 이 resolve 가 **URL 참조**인지 (`.css_url` / `.worker`). `url_relative` 와 달리
+    /// 철자와 무관하게 **kind 만** 본다.
+    ///
+    /// URL 은 파일을 가리키는 참조라 디렉토리는 결코 유효한 대상이 아니다. 그런데
+    /// `DirEntryCache` 는 readdir 만으로 symlink 대상을 알 수 없어 files·dirs 양쪽에
+    /// 등록하므로, 디렉토리 symlink 가 `fileExists` 에 걸려 파일로 넘어가고 나중에 읽기
+    /// 단계에서 `ZNTC0200` 으로 **빌드 전체가 죽는다**.
+    ///
+    /// ⚠️ 이 판정을 `url_relative`(bare 철자 전용)에 얹으면 안 된다 — `url(logo.png)` 는
+    /// 살고 `url(./logo.png)` 는 죽어서, #4604 가 없애려던 바로 그 "두 철자가 갈린다" 가
+    /// 다시 생긴다. 성질이 철자가 아니라 kind 에 속하므로 플래그도 kind 로 둔다.
+    url_kind: bool = false,
     /// 0.16: fs 연산이 io 를 요구한다. Resolver 는 fs 프로빙이 25+ 메서드에 깊게
     /// 퍼진 stateful 서브시스템이라, public 진입점 `resolve()` 에서 1회 저장한
     /// per-instance io 를 내부 메서드가 self.io 로 읽는다 (전역 아님 — resolve_cache
@@ -629,22 +642,39 @@ pub const Resolver = struct {
     /// `tryDirectoryIndex` 를 먼저 시도해 package entry(index/main/exports) 로 간다.
     fn tryResolvePathLike(self: *Resolver, abs_path: []const u8) ResolveError!?ResolveResult {
         const maybe_dir = self.dirExists(abs_path);
-        if (maybe_dir) {
+        if (maybe_dir and !self.url_kind) {
             // DirEntryCache 는 symlink target 을 readdir 만으로 알 수 없어 file+dir
             // 양쪽에 등록한다. pnpm package symlink root 를 alias 로 직접 가리키면
             // fileExists 가 먼저 true 가 되어 package entry(index/main/exports)를 건너뛰므로,
             // ambiguous directory 후보는 package/directory resolve 를 먼저 시도한다.
+            //
+            // URL kind 는 제외 — `url(x)` 가 디렉토리 인덱스로 해석되면 안 된다.
             if (try self.tryDirectoryIndex(abs_path)) |result| return result;
         }
 
-        if (self.fileExists(abs_path)) return try self.makeResult(abs_path);
+        if (self.fileExists(abs_path) and self.confirmNotDirectory(abs_path, maybe_dir))
+            return try self.makeResult(abs_path);
         if (try self.tryReactNativeScaleAssetFallback(abs_path)) |result| return result;
         if (try self.tryExtensions(abs_path)) |result| return result;
         if (try self.tryTsExtensionMapping(abs_path)) |result| return result;
-        if (!maybe_dir) {
+        if (!maybe_dir and !self.url_kind) {
             if (try self.tryDirectoryIndex(abs_path)) |result| return result;
         }
         return null;
+    }
+
+    /// URL kind 에서 `fileExists` 히트가 **정말 파일인지** 확인한다. dir 로도 등록된
+    /// (= symlink 라 대상을 모르는) 후보만 stat 으로 확정하므로, 순수 파일인 흔한 경우는
+    /// 추가 syscall 이 없다.
+    ///
+    /// ⚠️ stat 실패는 **디렉토리가 아닌 것으로 친다.** 여기서 후보를 버리면 깨진 symlink 나
+    /// 일시적 EMFILE 이 조용히 "동명 패키지로 폴백" 으로 바뀌어, 원래 파일 이름을 짚어 주던
+    /// `ZNTC0200` 이 사라지고 전혀 다른 자산이 실린다 (같은 빌드가 실행마다 다른 결과를
+    /// 낼 수도 있다). 못 읽는 건 못 읽는다고 시끄럽게 실패하는 편이 낫다.
+    fn confirmNotDirectory(self: *Resolver, abs_path: []const u8, maybe_dir: bool) bool {
+        if (!self.url_kind or !maybe_dir) return true;
+        const st = fs.statFile(self.io, abs_path) catch return true;
+        return !st.is_dir;
     }
 
     fn isReactNativeScaleAssetExt(ext: []const u8) bool {
@@ -884,6 +914,9 @@ pub const Resolver = struct {
         defer self.allocator.free(joined);
 
         if (!self.fileExists(joined)) return null;
+        // 디렉토리 symlink 배제는 `tryResolvePathLike` 와 **같은 헬퍼**를 쓴다. 여기서만
+        // 막으면 bare 철자는 살고 `./` 철자는 죽는다 (#4612 리뷰에서 실측).
+        if (!self.confirmNotDirectory(joined, self.dirExists(joined))) return null;
 
         const result = (try self.makeResult(joined)) orelse return null;
         // ⚠️ 검사는 **`makeResult` 뒤**(= realpath 적용 후) 여야 한다. 상위 `resolve()` 의
