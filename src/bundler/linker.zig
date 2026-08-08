@@ -3378,7 +3378,22 @@ pub const Linker = struct {
                 // 1차 결과 (non-empty) 를 덮어쓰면 → tree-shake namespace import seed 0회 →
                 // namespace getter dangling (effect-ts `counter$4 is not defined`).
                 // 따라서 empty result 면 binding_scanner 결과 유지.
-                const count = access.members.count();
+                // #4600: **부분** 집합이 union 을 덮어쓰지 않게 기존 결과와 합친다.
+                //
+                // `count == 0` 만 막던 예전 가드는 "전부 놓친 경우" 만 막았다. symbol-aware
+                // 분석이 일부만 잡으면(예: `["other"]` 인데 `"counter"` 누락) union 에만 있던
+                // 멤버의 export 가 tree-shake 돼 dangling 이 된다 — `counter$4` 와 같은 증상이
+                // 부분 케이스에서 재발한다.
+                var merged = std.StringArrayHashMapUnmanaged(void).empty;
+                defer merged.deinit(self.allocator);
+                {
+                    var mit = access.members.iterator();
+                    while (mit.next()) |e| merged.put(self.allocator, e.key_ptr.*, {}) catch {};
+                    if (ib.namespace_used_properties) |prev| {
+                        for (prev) |name| merged.put(self.allocator, name, {}) catch {};
+                    }
+                }
+                const count = merged.count();
                 if (count == 0) continue;
                 const props = arena.alloc([]const u8, count) catch continue;
                 const prop_stmts: ?[][]const u32 = if (stmt_spans_opt != null)
@@ -3387,11 +3402,14 @@ pub const Linker = struct {
                     null;
 
                 var prop_i: usize = 0;
-                var it = access.members.iterator();
+                var it = merged.iterator();
                 while (it.next()) |entry| : (prop_i += 1) {
                     props[prop_i] = entry.key_ptr.*;
                     if (prop_stmts) |ps| {
-                        const src = entry.value_ptr.items;
+                        // stmt span 은 symbol-aware 결과에만 있다. union 에서만 온 멤버는
+                        // span 이 없으므로 빈 슬라이스 — 소비자가 "이 멤버의 문장을 특정할 수
+                        // 없다" 로 보수적으로 처리한다.
+                        const src: []const u32 = if (access.members.get(entry.key_ptr.*)) |v| v.items else &.{};
                         const dst = arena.alloc(u32, src.len) catch continue;
                         @memcpy(dst, src);
                         ps[prop_i] = dst;
