@@ -397,6 +397,9 @@ pub const Resolver = struct {
     /// package 가 app/node_modules 와 peer package node_modules 양쪽에서 들어와 두 번
     /// evaluate 되는 RN 회귀를 막기 위함이다.
     preserve_symlinks: bool = false,
+
+    /// `--fallback` 대상 재해석 중인지 — `paths` 범위 게이트를 우회한다 (#4607).
+    paths_scope_bypass: bool = false,
     /// `preserve_symlinks` 로 logical path 를 module identity 로 보존한 상태에서,
     /// logical node_modules 탐색이 실패한 bare specifier 를 realpath 디렉토리 기준으로
     /// 한 번 더 찾는다.
@@ -540,6 +543,13 @@ pub const Resolver = struct {
                 const saved_url_relative = self.url_relative;
                 self.url_relative = false;
                 defer self.url_relative = saved_url_relative;
+                // `paths` 범위 게이트도 끈다 (#4607). fallback **대상**은 사용자가 옵션에 쓴
+                // 지정자지 importer 의 코드가 아니다. importer 가 node_modules 안이라고
+                // 막으면 `--fallback:missingmod=@shims/x` 가 의존 패키지에서만 안 먹는데,
+                // 의존 패키지를 shim 하는 게 `--fallback` 의 주 용도다.
+                const saved_scope = self.paths_scope_bypass;
+                self.paths_scope_bypass = true;
+                defer self.paths_scope_bypass = saved_scope;
                 return try self.resolve(self.io, source_dir, target);
             }
             // target=null → 빈 모듈 (webpack `false`)
@@ -562,6 +572,20 @@ pub const Resolver = struct {
     /// 이전엔 선언 순서대로 훑어 **첫 매칭**을 썼다. 그래서 catch-all(`"*"`) 이 더 구체적인 키를
     /// 이겼고, 결과가 **JSON 키 작성 순서에 의존**했다 — 같은 소스·같은 매핑인데 키 순서만 바꾸면
     /// 다른 모듈이 번들된다(실측).
+    /// `paths` 적용에서 제외할 importer 인지 (#4607).
+    ///
+    /// ⚠️ `preserve_symlinks` 에서는 **끄고 간다(fail-open)**. 그 모드는 경로를 canonical 로
+    /// 만들지 않는 게 목적이라 `source_dir` 이 논리 경로다 — 워크스페이스 패키지가
+    /// `apps/app/node_modules/@scope/pkg/...` 로 남아, 실제 소스가 node_modules 밖인데도 텍스트
+    /// 규칙이 걸어 버린다. RN 프리셋이 이 옵션을 켜므로 그대로 두면 모노레포 빌드가 `paths` 를
+    /// 잃고 **하드 에러**가 난다. 여기서 realpath 를 부르는 건 이 축에서 이미 무너진 길이다
+    /// (#4607 시도1) — 그래서 판정을 포기하고 종전 동작을 유지한다.
+    fn pathsScopeExcluded(self: *const Resolver, source_dir: []const u8) bool {
+        if (self.paths_scope_bypass) return false;
+        if (self.preserve_symlinks) return false;
+        return isUnderNodeModules(source_dir);
+    }
+
     fn tryTsPaths(self: *Resolver, specifier: []const u8) ResolveError!?ResolveResult {
         // (importer 범위) 의존 패키지 안의 파일에는 프로젝트 tsconfig 의 paths 를 적용하지 않는다.
         // `paths` 는 **그 tsconfig 가 커버하는 파일**에만 적용돼야 하는데 zntc 는
@@ -866,7 +890,7 @@ pub const Resolver = struct {
         // tsc 는 `paths` 를 그 tsconfig 의 program 에 속한 파일에만 적용하고 program 의 기본
         // `exclude` 는 node_modules 다. esbuild·rolldown 실측도 동일.
         if (self.ts_paths.len > 0 and !alias_applied and !isRelativePath(specifier) and
-            !isUnderNodeModules(source_dir))
+            !self.pathsScopeExcluded(source_dir))
         {
             if (try self.tryTsPaths(specifier)) |r| return r;
         }
@@ -1477,13 +1501,23 @@ pub const Resolver = struct {
 /// 세그먼트 단위로 본다 — `my-node_modules-thing/` 같은 이름에 걸리면 안 된다.
 fn isUnderNodeModules(path: []const u8) bool {
     const nm = "node_modules";
-    var rest = path;
-    while (std.mem.indexOf(u8, rest, nm)) |pos| {
-        const before_ok = pos == 0 or rest[pos - 1] == std.fs.path.sep or rest[pos - 1] == '/';
+    const isSep = struct {
+        fn f(c: u8) bool {
+            return c == std.fs.path.sep or c == '/';
+        }
+    }.f;
+    // ⚠️ 원본 인덱스로 스캔한다. 실패한 매치 뒤를 **재슬라이스하면 앞 글자 문맥을 잃어**,
+    // 새 슬라이스의 0번 위치가 경계로 오인된다 — `vendornode_modulesnode_modules/` 가
+    // true 로 나온다(실측). 한 글자만 전진시켜 원본 기준을 유지한다.
+    var start: usize = 0;
+    while (start < path.len) {
+        const rel = std.mem.indexOf(u8, path[start..], nm) orelse return false;
+        const pos = start + rel;
+        const before_ok = pos == 0 or isSep(path[pos - 1]);
         const after = pos + nm.len;
-        const after_ok = after == rest.len or rest[after] == std.fs.path.sep or rest[after] == '/';
+        const after_ok = after == path.len or isSep(path[after]);
         if (before_ok and after_ok) return true;
-        rest = rest[after..];
+        start = pos + 1;
     }
     return false;
 }
