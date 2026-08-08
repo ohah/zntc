@@ -4387,6 +4387,70 @@ fn bundleExternalAlias(tmp: *std.testing.TmpDir, with_alias: bool, fmt: @import(
     return std.testing.allocator.dupe(u8, result.output);
 }
 
+fn bundleExternalReexport(tmp: *std.testing.TmpDir, src: []const u8) ![]const u8 {
+    try writeFile(tmp.dir, "src/main.ts", src);
+    const entry = try absPath(tmp, "src/main.ts");
+    defer std.testing.allocator.free(entry);
+    const ext = [_][]const u8{"extdep"};
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .external = &ext,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    return std.testing.allocator.dupe(u8, result.output);
+}
+
+test "#4621 external named re-export 는 import 를 동반한다" {
+    // 예전엔 `export { x };` 만 방출돼 **바인딩 없는 export → SyntaxError** 였다.
+    // esbuild·rolldown 실측: `import { x } from "…"; export { x };`
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const js = try bundleExternalReexport(&tmp, "export { x } from 'extdep';");
+    defer std.testing.allocator.free(js);
+
+    try std.testing.expect(std.mem.indexOf(u8, js, "import { x } from \"extdep\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, js, "export { x }") != null);
+}
+
+test "#4621 external re-export alias 는 export 절이 참조하는 이름으로 import 한다" {
+    // ⚠️ import 로컬명을 `exported_name`(y) 으로 잡으면 로컬은 y 인데 export 절은 x 를
+    // 참조해 여전히 바인딩이 없다 — 실측으로 잡은 함정.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const js = try bundleExternalReexport(&tmp, "export { x as y } from 'extdep';");
+    defer std.testing.allocator.free(js);
+
+    try std.testing.expect(std.mem.indexOf(u8, js, "import { x } from \"extdep\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, js, "export { x as y }") != null);
+}
+
+test "#4621 external export * 는 그대로 통과한다" {
+    // 예전엔 재export 가 **통째로 사라졌다**. ESM 이 정적으로 표현 가능하므로 그대로 낸다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const js = try bundleExternalReexport(&tmp, "export * from 'extdep';");
+    defer std.testing.allocator.free(js);
+
+    try std.testing.expect(std.mem.indexOf(u8, js, "export*from\"extdep\"") != null);
+}
+
+test "#4621 external export * as ns 는 namespace import + export 로 편다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const js = try bundleExternalReexport(&tmp, "export * as ns from 'extdep';");
+    defer std.testing.allocator.free(js);
+
+    try std.testing.expect(std.mem.indexOf(u8, js, "import * as ns from \"extdep\"") != null);
+}
+
 test "#4616 --external-alias 가 external 지정자를 다른 이름으로 방출한다 (esm)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

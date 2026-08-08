@@ -38,6 +38,8 @@ const SpecifierGroup = struct {
     namespace_local: ?[]const u8 = null,
     named: std.ArrayListUnmanaged(NamedBinding) = .empty,
     side_effect_only: bool = false,
+    /// `export * from '<external>'` — ESM 이 정적으로 표현 가능해 그대로 통과시킨다 (#4621).
+    star_reexport: bool = false,
     aliases: std.ArrayListUnmanaged(AliasBinding) = .empty,
 
     fn deinit(self: *SpecifierGroup, allocator: std.mem.Allocator) void {
@@ -103,6 +105,40 @@ pub fn emitChunkExternalImports(
             const gop = try per_spec.getOrPut(allocator, rec.externalName());
             if (!gop.found_existing) gop.value_ptr.* = .{};
             try addBinding(gop.value_ptr, allocator, ib.kind, ib.imported_name, local_name);
+        }
+
+        // (2.5) **external re-export** (#4621). `export { x } from '<external>'` 은
+        // ImportBinding 을 만들지 않고 ExportBinding 만 만들어서, 위 (1) 루프는 이걸 볼 수
+        // 없다. 그래서 예전엔 import 가 생성되지 않고 export 절만 방출돼
+        // `export { x };` 가 바인딩 없이 남아 **SyntaxError** 였고, `export *` 는 통째로
+        // 사라졌다. (esbuild·rolldown 실측 일치: named 는 import+export, star 는 그대로 통과)
+        for (m.export_bindings) |eb| {
+            const rec_idx = eb.import_record_index orelse continue;
+            if (rec_idx >= m.import_records.len) continue;
+            const rec = m.import_records[rec_idx];
+            if (!rec.is_external) continue;
+            if (rec.kind != .re_export) continue;
+
+            const gop = try per_spec.getOrPut(allocator, rec.externalName());
+            if (!gop.found_existing) gop.value_ptr.* = .{};
+
+            if (eb.kind == .re_export_star) {
+                // `export * from '…'` — 이름 목록을 정적으로 알 수 없으므로 그대로 내보낸다.
+                gop.value_ptr.star_reexport = true;
+                continue;
+            }
+            if (eb.kind == .re_export_namespace) {
+                // `export * as ns from '…'` → `import * as ns from '…'; export { ns };`
+                try addBinding(gop.value_ptr, allocator, .namespace, "*", eb.exported_name);
+                continue;
+            }
+            if (eb.kind != .re_export) continue;
+            // `export { a as b } from '…'` → `import { a } from '…'; export { a as b };`
+            //
+            // ⚠️ import 로컬명은 **export 절이 참조하는 이름**(`local_name`)이어야 한다.
+            // `exported_name` 으로 잡으면 `import { a as b }` 가 되어 로컬은 `b` 인데
+            // export 절은 `a` 를 참조해 여전히 바인딩이 없다 (실측으로 잡음).
+            try addBinding(gop.value_ptr, allocator, .named, eb.local_name, eb.local_name);
         }
 
         // (2) side-effect import (specs 0개) — import_records 에서 직접 감지.
@@ -207,6 +243,16 @@ fn emitOneImport(
     const has_default_or_named = group.default_local != null or group.named.items.len > 0;
     const has_any = has_default_or_named or group.namespace_local != null;
 
+    // `export * from "spec";` (#4621) — 이름 목록을 정적으로 알 수 없어 그대로 통과시킨다.
+    // import 구문보다 **먼저** 내보낸다: 같은 specifier 에 named re-export 가 섞여 있어도
+    // 두 구문이 각각 유효하고, side-effect import 는 이걸로 이미 보장된다.
+    if (group.star_reexport) {
+        try output.appendSlice(allocator, "export*from\"");
+        try output.appendSlice(allocator, spec);
+        try output.appendSlice(allocator, "\";");
+        try output.appendSlice(allocator, eol);
+    }
+
     // side-effect only: `import "spec";`
     if (!has_any and group.side_effect_only) {
         try output.appendSlice(allocator, "import\"");
@@ -215,7 +261,7 @@ fn emitOneImport(
         try output.appendSlice(allocator, eol);
         return;
     }
-    if (!has_any) return;
+    if (!has_any) return; // star 는 위에서 이미 방출됨
 
     // (1) default + named — 한 줄. rolldown 의 `create_import_declaration` 동일.
     //     ESM spec 상 `import D, { x } from "spec"` 합법. namespace 는 같이 못 묶음.
