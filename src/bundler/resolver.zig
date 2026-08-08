@@ -862,7 +862,12 @@ pub const Resolver = struct {
             if (try self.trySiblingExact(source_dir, specifier)) |r| return r;
         }
 
-        if (self.ts_paths.len > 0 and !alias_applied and !isRelativePath(specifier)) {
+        // tsconfig `paths` 는 **node_modules 안에서 온 import 에는 적용하지 않는다** (#4607).
+        // tsc 는 `paths` 를 그 tsconfig 의 program 에 속한 파일에만 적용하고 program 의 기본
+        // `exclude` 는 node_modules 다. esbuild·rolldown 실측도 동일.
+        if (self.ts_paths.len > 0 and !alias_applied and !isRelativePath(specifier) and
+            !isUnderNodeModules(source_dir))
+        {
             if (try self.tryTsPaths(specifier)) |r| return r;
         }
 
@@ -1453,6 +1458,40 @@ pub const Resolver = struct {
         return stat.is_dir;
     }
 };
+
+/// 경로가 `node_modules` **세그먼트** 아래인지 (#4607).
+///
+/// tsconfig `paths` 의 적용 범위를 정하는 데 쓴다. 판정 대상은 importer 의 디렉토리다.
+///
+/// ⚠️ **이건 순수 함수다 — 부여가 아니라 판정.** 이전 시도는 모듈마다 "program 소속" 을
+/// 부여하려 했는데, 그러면 ①모듈이 그래프에 들어오는 모든 입구(진입점·`--inject`·
+/// `--run-before-main`·폴리필·플러그인·`emitFile`)마다 부여해야 하고 ②그래프는 모듈당 값을
+/// 하나만 들 수 있는데 여러 경로로 도달 가능한 모듈이 있으며 ③그래서 discovery 순서와
+/// cold/warm 에 따라 값이 갈렸다. 순수 함수는 이 셋을 전부 비껴간다.
+///
+/// ⚠️ **여기서 realpath 를 부르지 않는다.** `preserve_symlinks=false`(기본)에서 `makeResult`
+/// 가 이미 결과를 canonical 로 만들어 두므로 이 경로는 정규화돼 있다. 시도1 이 무너진 건
+/// 규칙이 아니라 그 주변에 쌓은 realpath 캐시·실패 래치·fail-open·캐시 주입 기계였다.
+/// 여기엔 syscall 도 캐시도 실패 모드도 없다.
+///
+/// 세그먼트 단위로 본다 — `my-node_modules-thing/` 같은 이름에 걸리면 안 된다.
+fn isUnderNodeModules(path: []const u8) bool {
+    const nm = "node_modules";
+    var rest = path;
+    while (std.mem.indexOf(u8, rest, nm)) |pos| {
+        const before_ok = pos == 0 or rest[pos - 1] == std.fs.path.sep or rest[pos - 1] == '/';
+        const after = pos + nm.len;
+        const after_ok = after == rest.len or rest[after] == std.fs.path.sep or rest[after] == '/';
+        if (before_ok and after_ok) return true;
+        rest = rest[after..];
+    }
+    return false;
+}
+
+/// 테스트 전용 노출 — 세그먼트 판정은 부분 문자열 오탐이 실제 위험이라 직접 단언한다.
+pub fn isUnderNodeModulesForTest(path: []const u8) bool {
+    return isUnderNodeModules(path);
+}
 
 /// specifier가 상대 경로(`./`, `../`) 또는 절대 경로인지 판별.
 pub fn isRelativeOrAbsolute(specifier: []const u8) bool {
