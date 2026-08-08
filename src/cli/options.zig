@@ -384,6 +384,12 @@ fn applyZntcConfigJson(opts: *CliOptions, io: std.Io, allocator: std.mem.Allocat
             .to = try allocator.dupe(u8, a.to),
         });
     };
+    if (dto.externalAlias) |list| for (list) |a| {
+        try opts.external_alias_list.append(allocator, .{
+            .from = try allocator.dupe(u8, a.from),
+            .to = try allocator.dupe(u8, a.to),
+        });
+    };
     if (dto.define) |list| for (list) |d| {
         try opts.define_list.append(allocator, .{
             .key = try allocator.dupe(u8, d.key),
@@ -920,9 +926,17 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator,
             // **방출할 때만** 다른 이름으로 쓴다.
             const kv = arg["--external-alias:".len..];
             if (std.mem.indexOf(u8, kv, "=")) |eq_pos| {
+                const to = kv[eq_pos + 1 ..];
+                if (!lib.bundler.types.isValidExternalAliasTarget(to)) {
+                    try stderr.print(
+                        "zntc: --external-alias target must be a non-empty specifier without quotes/backslashes: {s}\n",
+                        .{arg},
+                    );
+                    std.process.exit(1);
+                }
                 try opts.external_alias_list.append(allocator, .{
                     .from = kv[0..eq_pos],
-                    .to = kv[eq_pos + 1 ..],
+                    .to = to,
                 });
             } else {
                 try stderr.print("zntc: --external-alias requires FROM=TO format: {s}\n", .{arg});

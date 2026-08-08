@@ -512,6 +512,8 @@ pub fn parseBuildOptions(
         for (pairs) |pair| {
             if (!trackStr(owned_strings, pair[0])) return null;
             if (!trackStr(owned_strings, pair[1])) return null;
+            // #4616: 방출 문자열 리터럴에 그대로 들어가므로 검증 (빈 값·따옴표·백슬래시·개행).
+            if (!bundler_mod.types.isValidExternalAliasTarget(pair[1])) continue;
             ext_alias_list.append(native_alloc, .{ .from = pair[0], .to = pair[1] }) catch return null;
         }
     }

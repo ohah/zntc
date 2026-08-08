@@ -2611,6 +2611,12 @@ fn rewriteDynamicImports(
     // 리라이트할 레코드가 있는지 먼저 확인 (불필요한 할당 방지)
     var has_dynamic = false;
     for (module.import_records) |rec| {
+        // #4616: external 동적 import 는 `resolved == .none` 이라 아래 판정에 안 걸린다.
+        // `--external-alias` 대상이면 지정자를 바꿔야 하므로 여기서도 켠다.
+        if (rec.kind == .dynamic_import and rec.resolved == .none and rec.external_specifier != null) {
+            has_dynamic = true;
+            break;
+        }
         if (rec.kind == .dynamic_import and rec.resolved != .none) {
             const target_chunk = chunk_graph.getModuleChunk(rec.resolved);
             if (target_chunk != .none) {
@@ -2633,7 +2639,18 @@ fn rewriteDynamicImports(
 
     for (module.import_records) |rec| {
         if (rec.kind != .dynamic_import) continue;
-        if (rec.resolved == .none) continue;
+        if (rec.resolved == .none) {
+            // external: 청크가 없으므로 호출 전체를 바꾸지 않고 **지정자 문자열만** 바꾼다.
+            // 안 하면 정적 import 는 새 이름, 동적 import 는 옛 이름이 나가 한 번들에 두
+            // 철자가 섞인다 (#4616).
+            if (rec.external_specifier) |ext_name| {
+                if (try rewriteImportCallSpecifier(allocator, result, rec.specifier, ext_name)) |nr| {
+                    allocator.free(result);
+                    result = nr;
+                }
+            }
+            continue;
+        }
 
         const target_chunk_idx = chunk_graph.getModuleChunk(rec.resolved);
         if (target_chunk_idx == .none) continue;
@@ -2899,7 +2916,9 @@ pub fn rewriteDynamicImportsSingleFile(
 
     var has_dynamic = false;
     for (module.import_records) |rec| {
-        if (rec.kind == .dynamic_import and (rec.resolved != .none or lower_unresolved_dynamic_imports)) {
+        if (rec.kind != .dynamic_import) continue;
+        // #4616: external alias 대상도 켠다 — `resolved == .none` 이라 아래 조건에 안 걸린다.
+        if (rec.resolved != .none or lower_unresolved_dynamic_imports or rec.external_specifier != null) {
             has_dynamic = true;
             break;
         }
@@ -2912,6 +2931,14 @@ pub fn rewriteDynamicImportsSingleFile(
     for (module.import_records) |rec| {
         if (rec.kind != .dynamic_import) continue;
         if (rec.resolved == .none) {
+            // #4616: external alias — 호출 전체가 아니라 지정자 문자열만 바꾼다.
+            if (rec.external_specifier) |ext_name| {
+                if (try rewriteImportCallSpecifier(allocator, result, rec.specifier, ext_name)) |nr| {
+                    allocator.free(result);
+                    result = nr;
+                }
+                continue;
+            }
             if (!lower_unresolved_dynamic_imports) continue;
 
             // RN 릴리즈 번들은 Hermes가 전체 파일을 먼저 파싱한다. 실제로 실행되지
@@ -3170,6 +3197,44 @@ fn rewriteImportCallToWrapper(
     const spec_pos = std.mem.indexOf(u8, code, specifier) orelse return null;
     const span = importCallSpanAt(code, spec_pos, specifier.len) orelse return null;
     return try std.mem.concat(allocator, u8, &.{ code[0..span.call_start], replacement, code[span.call_end..] });
+}
+
+/// `import("K")` 의 **지정자 문자열만** `V` 로 바꾼다 (#4616 external alias).
+///
+/// `rewriteImportCallToWrapper` 와 달리 호출 전체를 치환하지 않는다 — external 은 청크가 없어
+/// 바꿀 표현식이 없고 지정자만 갈아끼우면 된다.
+///
+/// ⚠️ 모든 등장을 훑되 **치환 결과 뒤에서 이어 찾는다.** 새 이름이 옛 이름을 부분 문자열로
+/// 포함하면(`crypto` → `crypto-browserify`) 방금 쓴 자리를 다시 찾아 무한 반복이 된다.
+fn rewriteImportCallSpecifier(
+    allocator: std.mem.Allocator,
+    code: []const u8,
+    specifier: []const u8,
+    new_spec: []const u8,
+) !?[]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var scan: usize = 0;
+    var hit = false;
+    while (scan < code.len) {
+        const rel = std.mem.indexOf(u8, code[scan..], specifier) orelse break;
+        const pos = scan + rel;
+        if (importSpecifierCloseAt(code, pos, specifier.len) != null) {
+            try out.appendSlice(allocator, code[scan..pos]);
+            try out.appendSlice(allocator, new_spec);
+            scan = pos + specifier.len;
+            hit = true;
+        } else {
+            try out.appendSlice(allocator, code[scan .. pos + specifier.len]);
+            scan = pos + specifier.len;
+        }
+    }
+    if (!hit) {
+        out.deinit(allocator);
+        return null;
+    }
+    try out.appendSlice(allocator, code[scan..]);
+    return try out.toOwnedSlice(allocator);
 }
 
 const ImportCallSpan = struct { call_start: usize, call_end: usize };
