@@ -41,6 +41,7 @@ const bundler_only_fields = [_][]const u8{
     "external",
     "alias",
     "aliasExact",
+    "externalAlias",
     "loader",
     "conditions",
     "resolveExtensions",

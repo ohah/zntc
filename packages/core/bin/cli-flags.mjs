@@ -239,6 +239,7 @@ export const FLAG_REGISTRY = [
   // ─── kind=key-value — `--key:K=V` → opts[target][K]=V ───
   { kind: 'key-value', flag: '--define', target: 'define' },
   { kind: 'key-value', flag: '--alias', target: 'alias' },
+  { kind: 'key-value', flag: '--external-alias', target: 'externalAlias' },
   // Fallback resolution — 해석 실패 시에만 적용 (webpack resolve.fallback /
   // Metro extraNodeModules 호환). `--fallback:crypto=crypto-browserify`.
   // 값 "false" → 빈-모듈 강제 + specifier 제약은 normalizeFallback 참조.

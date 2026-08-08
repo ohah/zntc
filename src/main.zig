@@ -754,6 +754,7 @@ pub fn main(init: std.process.Init) !void {
             .resolve_symlink_siblings = opts.resolve_symlink_siblings,
             .disable_hierarchical_lookup = opts.disable_hierarchical_lookup,
             .alias = opts.alias_list.items,
+            .external_alias = opts.external_alias_list.items,
             .ts_paths = resolved_paths.entries,
             .fallback = opts.fallback_list.items,
             .manual_chunks = opts.manual_chunks_list.items,

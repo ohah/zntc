@@ -108,6 +108,7 @@ pub const CliOptions = struct {
     /// Metro `resolver.disableHierarchicalLookup` 호환 — parent dir walk-up 차단.
     disable_hierarchical_lookup: bool = false,
     alias_list: std.ArrayList(AliasEntry) = .empty,
+    external_alias_list: std.ArrayList(AliasEntry) = .empty,
     /// --fallback:NAME=PATH (webpack resolve.fallback). 일반 해석 실패 시에만 적용.
     /// PATH 대신 "false"로 쓰면 빈 모듈로 대체.
     fallback_list: std.ArrayList(FallbackEntry) = .empty,
@@ -290,6 +291,7 @@ pub const CliOptions = struct {
         self.define_list.deinit(alloc);
         self.conditions_list.deinit(alloc);
         self.alias_list.deinit(alloc);
+        self.external_alias_list.deinit(alloc);
         self.fallback_list.deinit(alloc);
         self.manual_chunks_list.deinit(alloc);
         self.block_list.deinit(alloc);
@@ -911,6 +913,21 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator,
                 try stderr.print("zntc: --alias requires FROM=TO format: {s}\n", .{arg});
                 std.process.exit(1);
             }
+        } else if (std.mem.startsWith(u8, arg, "--external-alias:")) {
+            // --external-alias:crypto=crypto-browserify (#4616)
+            // rollup `output.paths` / webpack object-form `externals` 대응.
+            // ⚠️ `--alias` 와 달리 해석은 건드리지 않는다 — external 로 확정된 지정자를
+            // **방출할 때만** 다른 이름으로 쓴다.
+            const kv = arg["--external-alias:".len..];
+            if (std.mem.indexOf(u8, kv, "=")) |eq_pos| {
+                try opts.external_alias_list.append(allocator, .{
+                    .from = kv[0..eq_pos],
+                    .to = kv[eq_pos + 1 ..],
+                });
+            } else {
+                try stderr.print("zntc: --external-alias requires FROM=TO format: {s}\n", .{arg});
+                std.process.exit(1);
+            }
         } else if (std.mem.startsWith(u8, arg, "--block-list=")) {
             try opts.block_list.append(allocator, arg["--block-list=".len..]);
         } else if (std.mem.startsWith(u8, arg, "--fallback:")) {
@@ -1185,6 +1202,7 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator,
     // 객체 옵션: 키 기준 last-wins — config(앞) 항목을 동일 키의 CLI(뒤) 항목이 override.
     dedupKeepLast(&opts.define_list, "key");
     dedupKeepLast(&opts.alias_list, "from");
+    dedupKeepLast(&opts.external_alias_list, "from");
     dedupKeepLast(&opts.loader_list, "ext");
 
     return opts;
