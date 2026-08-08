@@ -4302,6 +4302,51 @@ test "#4607 tsconfig paths 는 앱 소스의 import 에는 그대로 적용된�
     try std.testing.expect(std.mem.indexOf(u8, js, "REAL_DEP") == null);
 }
 
+test "#4607 preserve_symlinks 에서는 워크스페이스 패키지가 paths 를 유지한다" {
+    // ⚠️ `preserve_symlinks` 는 경로를 canonical 로 만들지 않는 게 목적이라 `source_dir` 이
+    // 논리 경로다 — 워크스페이스 패키지가 `.../node_modules/@scope/pkg/...` 로 남아, 실제
+    // 소스가 밖인데도 텍스트 규칙이 걸어 버린다. RN 프리셋이 이 옵션을 켜므로 그대로 두면
+    // 모노레포 빌드가 paths 를 잃고 **하드 에러**가 난다. 그래서 그 모드에선 게이트를 끈다.
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "packages/ui/package.json", "{\"name\":\"@app/ui\",\"main\":\"src/index.ts\"}");
+    try writeFile(tmp.dir, "packages/ui/src/index.ts", "import { t } from 'shared';\nexport const ui = t;");
+    try writeFile(tmp.dir, "app/src/shared.ts", "export const t = 'APP_SRC_SHARED';");
+    try writeFile(tmp.dir, "app/src/main.ts", "import { ui } from '@app/ui';\nconsole.log(ui);");
+    try tmp.dir.createDir(std.testing.io, "app/node_modules", .default_dir);
+    try tmp.dir.createDir(std.testing.io, "app/node_modules/@app", .default_dir);
+    try tmp.dir.symLink(std.testing.io, "../../../packages/ui", "app/node_modules/@app/ui", .{ .is_directory = true });
+
+    const entry = try absPath(&tmp, "app/src/main.ts");
+    defer std.testing.allocator.free(entry);
+    const app_root = try absPath(&tmp, "app");
+    defer std.testing.allocator.free(app_root);
+    const src_prefix = try std.fmt.allocPrint(std.testing.allocator, "{s}/src/", .{app_root});
+    defer std.testing.allocator.free(src_prefix);
+    const targets = [_]@import("../../config.zig").TsConfig.PathEntry.Target{
+        .{ .prefix = src_prefix, .suffix = "" },
+    };
+    const paths = [_]@import("../../config.zig").TsConfig.PathEntry{
+        .{ .key_prefix = "", .key_suffix = "", .has_wildcard = true, .targets = &targets },
+    };
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .ts_paths = &paths,
+        .preserve_symlinks = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "APP_SRC_SHARED") != null);
+}
+
 test "#4607 isUnderNodeModules 는 세그먼트 단위로 본다" {
     const f = @import("../resolver.zig").isUnderNodeModulesForTest;
     try std.testing.expect(f("/a/node_modules/pkg"));
@@ -4313,6 +4358,12 @@ test "#4607 isUnderNodeModules 는 세그먼트 단위로 본다" {
     try std.testing.expect(!f("/a/xnode_modules/src"));
     try std.testing.expect(!f("/a/src"));
     try std.testing.expect(!f(""));
+    // ⚠️ 실패한 매치 뒤를 **재슬라이스하면 앞 글자 문맥을 잃어** 새 슬라이스의 0번이 경계로
+    // 오인된다. 아래 두 개가 그 분기를 태운다 — 처음 테스트는 단일 등장만 봐서 못 잡았다.
+    try std.testing.expect(!f("/a/vendornode_modulesnode_modules/src"));
+    try std.testing.expect(!f("/a/xnode_modulesnode_modules/y"));
+    // 진짜 경계가 뒤에 오면 잡아야 한다.
+    try std.testing.expect(f("/a/xnode_modules/node_modules/pkg"));
 }
 
 test "#4604 CSS url(): catch-all tsconfig paths 가 bare url() 을 가로채지 않는다 (형제 있음)" {

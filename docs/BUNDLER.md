@@ -177,6 +177,15 @@ node_modules 다. esbuild·rolldown 실측도 동일하다. 없으면 catch-all 
   canonical 로 만들어 둔다. 워크스페이스 패키지가 node_modules 에 심링크만 걸린 경우 실제
   경로가 밖이라 종전대로 `paths` 를 받는 것도 이 덕분이다 (esbuild 동일).
 - ⚠️ 세그먼트 단위로 본다 — `my-node_modules-thing/` 같은 디렉토리명에 걸리면 안 된다.
+- ⚠️ `preserve_symlinks`(RN 프리셋 기본)에서는 **게이트를 끈다**. 그 모드는 경로를 canonical 로
+  만들지 않는 게 목적이라 워크스페이스 패키지가 논리 경로 `.../node_modules/@scope/pkg/...` 로
+  남는다 — 걸어 버리면 모노레포 빌드가 `paths` 를 잃고 하드 에러가 난다. 그 모드에서 판정하려면
+  realpath 가 필요한데 그건 이 축에서 이미 무너진 길이라, 판정을 포기하고 종전 동작을 유지한다.
+- ⚠️ `--fallback` **대상** 재해석 중에는 게이트를 우회한다. 대상은 사용자가 옵션에 쓴 지정자지
+  importer 의 코드가 아니다 — 의존 패키지를 shim 하는 게 `--fallback` 의 주 용도인데, importer
+  가 node_modules 안이라고 막으면 그 용도가 통째로 죽는다.
+- ⚠️ NODE_PATH·`--node-paths` 로 들어온 vendor 디렉토리는 텍스트 규칙이 못 걸러 종전대로
+  `paths` 가 적용된다 (알려진 한계, esbuild 도 동일한 형태).
 - ⚠️ 앱 자체가 `node_modules/@co/app` 에 체크아웃되면 그 프로젝트의 `paths` 가 죽는다.
   **esbuild·rolldown 도 동일하게 실패한다**(실측) — 생태계 표준 동작이라 그대로 뒀다.
 
