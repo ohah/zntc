@@ -1161,6 +1161,56 @@ test "JSX: preserve — 실체화된 namespace 변수는 컴포넌트로 해석�
     try std.testing.expect(std.mem.indexOf(u8, result.output, "Ns_ns") != null);
 }
 
+test "JSX: 소문자로 시작하지 않는 bare 태그는 변수 참조로 잡힌다 (#4599 잔여)" {
+    // `<_ns/>` 처럼 밑줄/달러로 시작하는 태그는 intrinsic 이 아니라 **식별자**다
+    // (babel·tsc·esbuild 공통 관례). analyzer 가 `isUpper` 로만 resolve 하면 이 참조가
+    // 안 잡혀 대상 import 가 통째로 tree-shake 되고, **선언 없는 `<_ns/>` 가 방출**된다.
+    // esbuild 실측: namespace 를 살려 `<Ns_exports />` 로 재작성한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\import * as _ns from './ns';
+        \\export function Raw() { return <_ns/>; }
+    );
+    try writeFile(tmp.dir, "ns.tsx",
+        \\export const Root = () => null;
+        \\export const Other = "NS_OTHER_MARKER";
+    );
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .jsx_runtime = .preserve });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 대상 모듈이 살아 있어야 한다 (tree-shake 되면 이 마커가 사라진다).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_OTHER_MARKER") != null);
+    // 실체화된 이름은 컴포넌트로 해석되도록 대문자 시작.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Ns_ns") != null);
+}
+
+test "JSX: 소문자 시작 태그는 intrinsic 으로 남는다 (#4599 범위 가드)" {
+    // 위 수정이 과하면(모든 bare 태그를 resolve) `<div>` 가 변수 참조가 돼
+    // 없는 심볼을 찾거나 동명 로컬에 잘못 묶인다. 이 대조군이 그걸 막는다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\export function A() { return <div>hi</div>; }
+    );
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .jsx_runtime = .preserve });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "<div>hi</div>") != null);
+}
+
 // 대조군 — preserve 가 아니면 이름을 건드리지 않는다. 변수는 식별자 표현식으로만 쓰여
 // 대소문자가 무의미한데, 전역으로 바꾸면 기존 출력의 변수명이 통째로 흔들린다.
 // 이 테스트가 없으면 "항상 대문자화" 로 바꿔도 위 테스트가 통과해 범위 가드가 사라진다.

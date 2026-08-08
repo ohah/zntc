@@ -1596,10 +1596,16 @@ pub const SemanticAnalyzer = struct {
                 self.resolveIdentifier(name, idx, flags);
             },
 
-            // JSX tag name이 대문자로 시작하면 컴포넌트 참조 (e.g. <Header />)
+            // 단독 JSX 태그가 **intrinsic 문자열이 아니면** 변수 참조다 (e.g. `<Header />`).
+            //
+            // ⚠️ 판정은 "대문자로 시작" 이 아니라 "**소문자로 시작하지 않음**" 이다 (#4599).
+            // JSX 관례(babel·tsc·esbuild 공통)에서 intrinsic 은 소문자로 시작하는 태그뿐이고,
+            // `_ns` / `$x` 처럼 밑줄·달러로 시작하는 태그는 식별자다. `isUpper` 로만 보면
+            // 그런 태그의 참조가 안 잡혀 대상 import 가 통째로 tree-shake 되고, 선언 없는
+            // `<_ns/>` 가 방출된다 (esbuild 는 살려서 `<Ns_exports />` 로 재작성).
             .jsx_identifier => {
                 const name = self.ast.getSourceText(node.span);
-                if (name.len > 0 and std.ascii.isUpper(name[0])) {
+                if (name.len > 0 and !std.ascii.isLower(name[0])) {
                     self.resolveIdentifier(name, idx, .{ .read = true });
                 }
             },
