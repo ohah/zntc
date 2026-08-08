@@ -4410,6 +4410,38 @@ test "#4616 --external-alias 없으면 원문 그대로 (대조군)" {
     try std.testing.expect(std.mem.indexOf(u8, js, "crypto") != null);
 }
 
+test "#4616 --globals 는 원문 지정자 기준 (external-alias 와 축이 다르다)" {
+    // ⚠️ rolldown 실측: `output.paths` 로 방출 이름을 바꿔도 `output.globals` 키는 **원래 id** 다.
+    // 방출 이름으로 조회하면 `--external-alias` 와 `--globals` 를 같이 쓴 사용자가 매칭에
+    // 실패해 external 이 IIFE 에서 통째로 빠진다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "src/main.ts", "import { x } from 'crypto';\nconsole.log(x);");
+    const entry = try absPath(&tmp, "src/main.ts");
+    defer std.testing.allocator.free(entry);
+
+    const ext = [_][]const u8{"crypto"};
+    const ext_alias = [_]@import("../types.zig").AliasEntry{.{ .from = "crypto", .to = "crypto-browserify" }};
+    const globals = [_]@import("../types.zig").GlobalEntry{.{ .specifier = "crypto", .global_name = "CryptoGlobal" }};
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .iife,
+        .global_name = "App",
+        .external = &ext,
+        .external_alias = &ext_alias,
+        .globals = &globals,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+
+    // 원문 키로 매칭돼 전역이 주입돼야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "CryptoGlobal") != null);
+}
+
 test "#4616 --external-alias 가 cjs require 방출에도 적용된다" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

@@ -105,7 +105,8 @@ inline fn mappedExternalParam(
     allocator: std.mem.Allocator,
 ) std.mem.Allocator.Error!?[]const u8 {
     if (!rec.is_external) return null;
-    const mapped = types.GlobalEntry.lookup(globals, rec.externalName()); // #4616
+    // `--globals` 는 원문 지정자 기준 (rolldown 실측) — #4616 방출 이름과 축이 다르다.
+    const mapped = types.GlobalEntry.lookup(globals, rec.specifier);
     switch (format) {
         .iife => {
             const gname = mapped orelse return null;
