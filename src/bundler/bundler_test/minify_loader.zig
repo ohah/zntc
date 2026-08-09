@@ -4693,6 +4693,166 @@ test "#4598 code splitting 청크는 위임하지 않는다 — bare await 가 n
     try std.testing.expect(saw_dep);
 }
 
+fn bundleTlaDownlevel(tmp: *std.testing.TmpDir, dep_src: []const u8, main_src: []const u8) ![]const u8 {
+    try writeFile(tmp.dir, "dep.ts", dep_src);
+    try writeFile(tmp.dir, "main.ts", main_src);
+    const entry = try absPath(tmp, "main.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        // es2017 상당: TLA 미지원, async/await 는 지원.
+        .unsupported = .{ .top_level_await = true },
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    return std.testing.allocator.dupe(u8, result.output);
+}
+
+test "#4598 다운레벨 ESM: export 선언 안의 TLA 가 최상위 await 를 남기지 않는다" {
+    // `--target < es2022` 는 "이 엔진은 top-level await 를 못 쓴다" 는 선언이다. 그런데
+    // `lowerProgram` 이 export 선언을 건너뛰어 await 가 최상위에 남았고, 그 산물은 타겟
+    // 엔진에서 **파싱조차 안 됐다**(RN 은 Hermes 가 거부해 앱이 아예 안 떴다).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const js = try bundleTlaDownlevel(
+        &tmp,
+        "export const v = await Promise.resolve(41);\nexport const val = v + 1;",
+        "import { val } from './dep';\nconsole.log(val);",
+    );
+    defer std.testing.allocator.free(js);
+
+    // 판별식: 최상위(들여쓰기 0) 에 `await` 가 있는 줄이 없어야 한다.
+    var it = std.mem.splitScalar(u8, js, '\n');
+    while (it.next()) |line| {
+        if (line.len == 0 or line[0] == ' ' or line[0] == '\t') continue;
+        try std.testing.expect(std.mem.indexOf(u8, line, "await ") == null);
+    }
+    // 소비자가 기다릴 수 있도록 모듈이 래핑돼야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, js, "__esm({") != null);
+    try std.testing.expect(std.mem.indexOf(u8, js, "await init_dep()") != null);
+}
+
+test "#4598 다운레벨 ESM: async IIFE 는 정확히 한 번만 방출된다 (side-effect 2회 실행 가드)" {
+    // ⚠️ 문장을 쪼개 `generateStatements` 를 여러 번 부르면 codegen 이 내부 버퍼에
+    //    **누적**해 앞 내용이 다시 붙는다 — async IIFE 가 두 개 방출돼 모듈 side-effect 가
+    //    2회 실행됐다. 픽스처 값 비교로는 안 잡혔고(값이 우연히 같음) 이 단언이 잡았다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const js = try bundleTlaDownlevel(
+        &tmp,
+        "export const v = await Promise.resolve(41);\nexport const val = v + 1;",
+        "import { val } from './dep';\nconsole.log(val);",
+    );
+    defer std.testing.allocator.free(js);
+
+    var n: usize = 0;
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, js, pos, "(async () =>")) |at| {
+        n += 1;
+        pos = at + 12;
+    }
+    try std.testing.expectEqual(@as(usize, 1), n);
+}
+
+test "#4598 다운레벨 ESM: minify 에서도 promise 변수 참조가 맞는다 (회귀 가드)" {
+    // ⚠️ `return <이름>;` 을 AST **원본** 이름으로 붙이면 minify 시 실제 방출명과 어긋나
+    //    `ReferenceError` 다. hoist 수집 시점의 **리네임 반영 이름**을 써야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.ts", "export const v = await Promise.resolve(41);\nexport const val = v + 1;");
+    try writeFile(tmp.dir, "main.ts", "import { val } from './dep';\nconsole.log(val);");
+    const entry = try absPath(&tmp, "main.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .unsupported = .{ .top_level_await = true },
+        .minify_identifiers = true,
+        .minify_whitespace = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    const js = result.output;
+    // TLA promise 변수는 `X=(async` 로 대입된다. 그 **같은 이름**으로 `return X` 가
+    // 있어야 한다 — 원본 이름을 쓰면 여기서 어긋나 `ReferenceError` 가 된다.
+    const marker = "=(async";
+    const at = std.mem.indexOf(u8, js, marker) orelse return error.MissingTlaAssign;
+    var start = at;
+    while (start > 0) : (start -= 1) {
+        const c = js[start - 1];
+        const ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or c == '_' or c == '$';
+        if (!ok) break;
+    }
+    const name = js[start..at];
+    try std.testing.expect(name.len > 0);
+    const ret = try std.fmt.allocPrint(std.testing.allocator, "return {s}", .{name});
+    defer std.testing.allocator.free(ret);
+    try std.testing.expect(std.mem.indexOf(u8, js, ret) != null);
+}
+
+test "#4598 다운레벨 ESM: promise 임시변수가 사용자 심볼을 덮지 않는다" {
+    // ⚠️ 이름을 직접 발명하면(`__zntc_tla`) 사용자가 같은 이름을 쓸 때 값을 덮어쓰고,
+    //    접미사로 피하면 이번엔 리네이머가 사용자 심볼을 건드린다(적대적 검증이 둘 다 잡음).
+    //    기존 임시변수 기계(`makeTempVarSpan`, #4220 충돌 회피)를 써야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const js = try bundleTlaDownlevel(
+        &tmp,
+        "const __zntc_tla = 'user';\nawait Promise.resolve();\nexport const got = 1;",
+        "import { got } from './dep';\nconsole.log(got);",
+    );
+    defer std.testing.allocator.free(js);
+    // 합성 promise 변수가 사용자 이름을 쓰면 안 된다.
+    try std.testing.expect(std.mem.indexOf(u8, js, "__zntc_tla = (async") == null);
+}
+
+test "#4598 다운레벨 ESM: await 와 무관한 export 는 지연하지 않는다 (회귀 가드)" {
+    // ⚠️ "exported 선언 전부" 를 IIFE 로 옮기면 `await …;` **뒤**의 `export const NAME`
+    //    까지 지연돼 소비자가 `undefined` 를 읽는다. 폐기된 시도가 정확히 그랬고, 그때는
+    //    45칸 매트릭스가 이 위상을 인코딩하지 않아 "회귀 0" 으로 오판했다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const js = try bundleTlaDownlevel(
+        &tmp,
+        "await Promise.resolve();\nexport const NAME = 'hello';",
+        "import { NAME } from './dep';\nconsole.log(NAME);",
+    );
+    defer std.testing.allocator.free(js);
+
+    // `NAME` 은 IIFE 밖에서 **동기 초기화**돼야 한다 — 할당(`NAME = `)이 아니라 선언 형태.
+    const has_sync_decl = std.mem.indexOf(u8, js, "NAME = \"hello\"") != null;
+    try std.testing.expect(has_sync_decl);
+    // 지연 산물(할당만 남고 선언은 `var NAME;`)이면 안 된다.
+    try std.testing.expect(std.mem.indexOf(u8, js, "var NAME;") == null);
+}
+
+test "#4598 다운레벨 ESM: 라이브러리 entry 의 export 는 보존된다 (회귀 가드)" {
+    // ⚠️ entry 를 래핑하면 `export { ... }` 가 래퍼 심볼로 바뀌어 **공개 API 가 통째로
+    //    사라진다**(폐기된 시도 실측). export 가 있는 entry 는 승격 대상에서 뺀다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "lib.ts", "export const A = 1;\nexport const V = await Promise.resolve(41);");
+    const entry = try absPath(&tmp, "lib.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .unsupported = .{ .top_level_await = true },
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "export {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "A") != null);
+}
+
 test "#4604 CSS url(): catch-all tsconfig paths 가 bare url() 을 가로채지 않는다 (형제 있음)" {
     // 신고된 재현 그대로. `"paths": { "*": ["src/*"] }` 하에서 `url(assets/logo.png)` 가
     // paths 에 걸려 `src/assets/logo.png` 로, `url(./assets/logo.png)` 는 형제로 가서

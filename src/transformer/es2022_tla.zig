@@ -29,6 +29,9 @@
 //! - oxc: 미구현 (TLA 는 ES2022 이상 타겟에서만 사용한다는 전제).
 
 const std = @import("std");
+
+/// #4598: TLA IIFE 의 promise 를 담는 변수명. emitter 가 `return <이 이름>;` 으로 돌려준다.
+pub const TLA_PROMISE_VAR = "__zntc_tla";
 const ast_mod = @import("../parser/ast.zig");
 const ast_walk = @import("../parser/ast_walk.zig");
 const es_helpers = @import("es_helpers.zig");
@@ -202,6 +205,10 @@ fn drainPendingAround(
 /// 반환: wrap 된 program 노드 index (TLA 가 없으면 null — caller 가 기본 visit 수행).
 pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) Transformer.Error!?NodeIndex {
     std.debug.assert(node.tag == .program);
+    // ⚠️ 멱등성: 같은 program 에 두 번 적용되면 async IIFE 가 **두 개** 방출돼
+    // side-effect 가 2회 실행된다(유닛 테스트가 잡음). 플래그는 **AST** 에 둬야 한다 —
+    // prepass/emit 이 각각 새 Transformer 를 만들기 때문.
+    if (self.ast.tla_lowered) return null;
     const list = node.data.list;
 
     // 1. wrap 대상 TLA 존재 여부 검사.
@@ -355,14 +362,34 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
 
     // (arrow)() — 호출 (arrow 는 call-target 위치에서 codegen 이 자동 wrap)
     const call = try es_helpers.makeCallExpr(self, arrow, &.{}, node.span);
-    const iife_stmt = try es_helpers.makeExprStmt(self, call, node.span);
+    // #4598: 표현식 문장이 아니라 **변수 선언**으로 만든다 — `var __zntc_tla = (…)();`.
+    // emitter 가 `__esm` factory 끝에 `return __zntc_tla;` 만 덧붙이면 `init_X()` 가
+    // 초기화 완료 promise 를 돌려준다. 문장을 쪼개 재조립하는 방식은 codegen 이 내부
+    // 버퍼에 **누적**해서 IIFE 가 두 번 방출됐다(유닛 테스트가 잡음).
+    // ⚠️ 이름을 직접 발명하면 안 된다. 사용자가 같은 이름을 쓰면 값을 덮어쓰고,
+    //    접미사를 붙여 피해도 이번엔 리네이머가 사용자 심볼을 건드려 참조가 끊긴다
+    //    (적대적 검증이 둘 다 잡음). 기존 임시변수 기계는 `collidesWithUserSymbol`
+    //    (#4220) 로 충돌 회피가 이미 들어가 있고 리네이머와도 정합적이다.
+    const tla_name = try es_helpers.makeTempVarSpan(self);
+    const tla_binding = try es_helpers.makeBindingIdentifier(self, tla_name);
+    const tla_declarator = try es_helpers.makeDeclarator(self, tla_binding, call, node.span);
+    const iife_stmt = try es_helpers.makeVarDeclaration(self, &.{tla_declarator}, .@"var", node.span);
 
     // async/await lowering 이 이 arrow 에 적용되어야 하므로 재방문이 필요한 경우가 있지만,
     // `visitNode` 는 자식 재방문을 내부적으로 처리한다. 우리는 arrow 를 top-down dispatch 에
     // 다시 넣기 위해 expression_statement 를 visit.
+    const iife_pt = self.pending_nodes.items.len;
+    const iife_tt = self.trailing_nodes.items.len;
     const visited_iife = try self.visitNode(iife_stmt);
+    // ⚠️ 여기서 배수하지 않으면 아래 exports 패스의 배수가 이 pending 을 주워 담아
+    //    **IIFE 가 두 번** 방출된다 → side-effect 2회 실행(유닛 테스트가 잡음).
+    self.pending_nodes.shrinkRetainingCapacity(iife_pt);
+    self.trailing_nodes.shrinkRetainingCapacity(iife_tt);
     // #4598: emitter 가 `__esm` factory 안에서 이 문장을 `return <expr>;` 로 방출한다.
-    if (!visited_iife.isNone()) self.tla_iife_stmt = visited_iife;
+    if (!visited_iife.isNone()) {
+        self.tla_iife_stmt = visited_iife;
+        self.ast.tla_lowered = true;
+    }
 
     // 최종 program list: [imports...] + [visited_iife] + [exports...]
     // 현재 scratch 에는 [imports_end..body_stmts_end] 까지 wrap 대상이 있으므로

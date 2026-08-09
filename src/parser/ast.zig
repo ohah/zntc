@@ -1131,6 +1131,13 @@ pub const Ast = struct {
     /// `assertInvariants` 가 탐지. D1b (in-place) 전환 시 shared module 재진입
     /// 탐지/차단 용도로 확장 예정.
     transformed_root: ?NodeIndex = null,
+    /// #4598: `es2022_tla.lowerProgram` 이 이 program 을 async IIFE 로 이미 감쌌는지.
+    ///
+    /// ⚠️ Transformer **인스턴스** 필드로는 안 된다. graph prepass 와 emit 이 각각 새
+    /// Transformer 를 만들고, `transform_cache` 가 없는 모듈은 emit 에서 transform 이
+    /// 다시 돌아 **이미 감싼 body 를 또 감싼다** → async IIFE 가 두 개 방출돼 side-effect
+    /// 가 2회 실행된다(유닛 테스트가 잡음). AST 는 두 인스턴스가 공유하므로 여기 둔다.
+    tla_lowered: bool = false,
 
     /// top-level `declare class/function/var/let/const/enum/namespace/import =` 의
     /// binding name 사이드테이블. parser 가 declare 노드를 `NodeIndex.none` 으로 strip

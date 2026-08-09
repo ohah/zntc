@@ -193,6 +193,8 @@ pub fn emitEsmWrappedModule(
 
     var hoisted_stmts: std.ArrayList(u32) = .empty;
     defer hoisted_stmts.deinit(allocator);
+    // #4598: TLA promise 임시변수의 리네임 반영된 이름 (없으면 null).
+    var tla_var_name: ?[]const u8 = null;
     var body_stmts: std.ArrayList(u32) = .empty;
     defer body_stmts.deinit(allocator);
     // strict execution order: 함수 선언을 factory body 최상단에 배치.
@@ -352,6 +354,12 @@ pub fn emitEsmWrappedModule(
                     if (name_node.tag == .binding_identifier) {
                         const raw_name = try arena_alloc.dupe(u8, esm_ast.getText(name_node.data.string_ref));
                         const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(name_raw), raw_name));
+                        // #4598: TLA promise 임시변수의 **리네임된** 이름을 포착한다.
+                        // ⚠️ AST 원본 이름(`_a`)을 쓰면 minify 시 실제 방출명(`c`)과 어긋나
+                        //    `ReferenceError` 다(적대적 검증이 잡음).
+                        if (module.tla_iife_stmt) |tix| {
+                            if (raw_idx == tix) tla_var_name = resolved;
+                        }
                         try hoisted_var_names.append(allocator, resolved);
                     } else {
                         var it = try ast_walk.bindingIdentifiers(allocator, esm_ast, name_raw, .{});
@@ -831,41 +839,15 @@ pub fn emitEsmWrappedModule(
             func_names = sm.names.items;
         }
     }
-    // #4598: TLA IIFE 문장을 `return <expr>;` 로 바꿔 `init_X()` 가 **초기화 완료
-    // promise** 를 돌려주게 한다. 그래야 소비자가 기다릴 대상이 생긴다.
-    //   es2017+ : factory 가 `async` 라 반환 promise 가 그대로 완료 신호가 된다.
-    //   es5     : IIFE 가 이미 `__async(...)` 라 그 promise 를 그대로 돌려준다.
-    // ⚠️ 구조적 추측(마지막 문장이 IIFE 인가) 대신 `lowerProgram` 이 알려 준 인덱스만 본다.
-    var body_code = if (module.tla_iife_stmt) |tla_ix| blk: {
-        var pre: std.ArrayList(u32) = .empty;
-        defer pre.deinit(allocator);
-        var post: std.ArrayList(u32) = .empty;
-        defer post.deinit(allocator);
-        var target: ?u32 = null;
-        for (body_stmts.items) |ix| {
-            if (ix == tla_ix and target == null) {
-                target = ix;
-                continue;
-            }
-            if (target == null) try pre.append(allocator, ix) else try post.append(allocator, ix);
-        }
-        const t = target orelse break :blk try body_cg.generateStatements(root, body_stmts.items);
-        const a = try body_cg.generateStatements(root, pre.items);
-        const mid = try body_cg.generateStatements(root, &.{t});
-        const b = try body_cg.generateStatements(root, post.items);
-        const mid_t = std.mem.trimStart(u8, mid, " \t");
-        // ⚠️ IIFE 뒤에 문장이 남아 있으면 `return` 을 바로 붙이면 **그 뒤가 실행되지 않는다**
-        //    (픽스처 01 이 즉시 잡았다: `await …;` 뒤의 `export const NAME` 이 사라짐).
-        //    그 경우 promise 를 임시 변수에 담아 두고 맨 끝에서 돌려준다.
-        if (std.mem.trim(u8, b, " \t\n\r").len == 0) {
-            break :blk try std.fmt.allocPrint(arena_alloc, "{s}\treturn {s}", .{ a, mid_t });
-        }
-        break :blk try std.fmt.allocPrint(
-            arena_alloc,
-            "{s}\tvar __zntc_tla = {s}{s}\treturn __zntc_tla;\n",
-            .{ a, mid_t, b },
-        );
-    } else try body_cg.generateStatements(root, body_stmts.items);
+    // #4598: `lowerProgram` 이 `var __zntc_tla = (async () => {…})();` 를 만들어 두었으면
+    // factory 끝에 `return __zntc_tla;` 를 덧붙여 `init_X()` 가 **초기화 완료 promise** 를
+    // 돌려주게 한다 — 그래야 소비자가 기다릴 대상이 생긴다.
+    // ⚠️ 문장을 쪼개 `generateStatements` 를 여러 번 부르면 안 된다. codegen 이 내부
+    //    버퍼에 누적해서 앞 내용이 다시 붙는다(IIFE 2회 방출 — 유닛 테스트가 잡음).
+    var body_code = try body_cg.generateStatements(root, body_stmts.items);
+    if (tla_var_name) |tla_var| {
+        body_code = try std.fmt.allocPrint(arena_alloc, "{s}\treturn {s};\n", .{ body_code, tla_var });
+    }
 
     // 5.1. Hermes 호환: hoisted var와 같은 이름의 named function expression 이름 제거.
     // Hermes는 "X = function X() {...}" 에서 named function expression의 이름 X가
