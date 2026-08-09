@@ -92,6 +92,110 @@ pub fn hasTopLevelAwait(ast: *const ast_mod.Ast, idx: NodeIndex) std.mem.Allocat
     return c.found;
 }
 
+/// `export <var-decl>` 이면 내부 `variable_declaration` 인덱스. 그 외 null.
+///
+/// ⚠️ `export_named_declaration` extra 는 **6슬롯**:
+///    `[decl(0), specs_start(1), specs_len(2), source(3), attrs_start(4), attrs_len(5)]`.
+///    4슬롯으로 읽으면 인접 extra_data 를 attrs 로 오독한다.
+fn exportedVarDeclIdx(self: anytype, export_node: Node) ?NodeIndex {
+    if (export_node.tag != .export_named_declaration) return null;
+    const decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[export_node.data.extra]);
+    if (decl_idx.isNone()) return null;
+    if (self.ast.getNode(decl_idx).tag != .variable_declaration) return null;
+    return decl_idx;
+}
+
+/// 모든 declarator 가 **단순 식별자**인지.
+///
+/// ⚠️ 구조분해 패턴은 대상에서 뺀다 — 초기화식 없는 `var {a,b};` 는 문법 오류이고,
+///    폐기된 시도가 정확히 그걸로 번들 전체를 파싱 불가로 만들었다.
+fn allDeclaratorsAreIdentifiers(self: anytype, decl_idx: NodeIndex) bool {
+    const decl = self.ast.getNode(decl_idx);
+    const dlist = self.ast.extra_data.items[decl.data.extra + 1];
+    const dlen = self.ast.extra_data.items[decl.data.extra + 2];
+    if (dlen == 0) return false;
+    var k: u32 = 0;
+    while (k < dlen) : (k += 1) {
+        const dcl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[dlist + k]);
+        const dcl = self.ast.getNode(dcl_idx);
+        const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[dcl.data.extra]);
+        if (name_idx.isNone()) return false;
+        if (self.ast.getNode(name_idx).tag != .binding_identifier) return false;
+    }
+    return true;
+}
+
+const RefScanCtx = struct {
+    names: *const std.StringHashMapUnmanaged(void),
+    ast: *const ast_mod.Ast,
+    found: bool,
+};
+
+fn refScanVisit(ctx: *RefScanCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
+    _ = idx;
+    if (node.tag == .identifier_reference) {
+        if (ctx.names.contains(ctx.ast.getText(node.data.string_ref))) {
+            ctx.found = true;
+            return .stop;
+        }
+    }
+    return .descend;
+}
+
+/// 서브트리가 `names` 중 하나를 참조하는지 (IIFE 로 지연된 바인딩 의존 판정).
+fn referencesAny(self: anytype, idx: NodeIndex, names: *const std.StringHashMapUnmanaged(void)) bool {
+    if (names.count() == 0) return false;
+    var c = RefScanCtx{ .names = names, .ast = self.ast, .found = false };
+    ast_walk.walkPreorderIterative(self.ast.allocator, self.ast, idx, &c, refScanVisit) catch return false;
+    return c.found;
+}
+
+/// declarator 들의 초기화식을 떼어 `var a, b;` 로 만든다 (선언은 밖에 남아 export 보존).
+/// 호출 전에 `allDeclaratorsAreIdentifiers` 가 참임이 보장돼야 한다.
+fn stripVarInitializers(comptime Transformer: type, self: *Transformer, decl_idx: NodeIndex) Transformer.Error!NodeIndex {
+    const decl = self.ast.getNode(decl_idx);
+    const dl = self.ast.extra_data.items[decl.data.extra + 1];
+    const dn = self.ast.extra_data.items[decl.data.extra + 2];
+    const top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(top);
+    var k: u32 = 0;
+    while (k < dn) : (k += 1) {
+        const dcl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[dl + k]);
+        const dcl = self.ast.getNode(dcl_idx);
+        const nm: NodeIndex = @enumFromInt(self.ast.extra_data.items[dcl.data.extra]);
+        const ty: NodeIndex = @enumFromInt(self.ast.extra_data.items[dcl.data.extra + 1]);
+        const ne = try self.ast.addExtras(&.{ @intFromEnum(nm), @intFromEnum(ty), @intFromEnum(NodeIndex.none) });
+        const nd = try self.ast.addNode(.{ .tag = .variable_declarator, .span = dcl.span, .data = .{ .extra = ne } });
+        try self.scratch.append(self.allocator, nd);
+    }
+    const nl = try self.ast.addNodeList(self.scratch.items[top..]);
+    const de = try self.ast.addExtras(&.{ @intFromEnum(ast_mod.VariableDeclarationKind.@"var"), nl.start, nl.len });
+    return try self.ast.addNode(.{ .tag = .variable_declaration, .span = decl.span, .data = .{ .extra = de } });
+}
+
+/// `visitNode` 가 쌓은 `pending_nodes`(앞) / `trailing_nodes`(뒤) 를 scratch 로 옮긴다.
+///
+/// ⚠️ `lowerProgram` 은 `visitExtraList` 를 안 쓰고 직접 리스트를 조립하므로 이 배수를
+///    스스로 해야 한다. 빠뜨리면 데코레이터/다운레벨 class 의 호이스팅된 선언이 통째로
+///    사라져 `Export 'C' is not defined` 가 된다(폐기된 시도가 정확히 그랬다).
+fn drainPendingAround(
+    comptime Transformer: type,
+    self: *Transformer,
+    pending_top: usize,
+    trailing_top: usize,
+    visited: NodeIndex,
+) Transformer.Error!void {
+    if (self.pending_nodes.items.len > pending_top) {
+        try self.scratch.appendSlice(self.allocator, self.pending_nodes.items[pending_top..]);
+        self.pending_nodes.shrinkRetainingCapacity(pending_top);
+    }
+    if (!visited.isNone()) try self.scratch.append(self.allocator, visited);
+    if (self.trailing_nodes.items.len > trailing_top) {
+        try self.scratch.appendSlice(self.allocator, self.trailing_nodes.items[trailing_top..]);
+        self.trailing_nodes.shrinkRetainingCapacity(trailing_top);
+    }
+}
+
 /// program 의 top-level 에 TLA 가 있으면 async IIFE 로 wrap.
 /// `self` 는 Transformer. options.unsupported.top_level_await 가 true 일 때만 호출.
 ///
@@ -107,13 +211,59 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     while (i < list.len) : (i += 1) {
         const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
         const child_node = self.ast.getNode(child);
-        if (isModuleDeclaration(child_node.tag)) continue;
+        if (isModuleDeclaration(child_node.tag)) {
+            // `export const x = await f()` 도 대상. 예전엔 건너뛰어서 await 가 최상위에
+            // 남고, es2017 낮추기가 그걸 `yield` 로 바꿔 **generator 가 아닌 `__esm`
+            // factory 안의 bare yield** 가 됐다 (Hermes/acorn 모두 SyntaxError).
+            const d = exportedVarDeclIdx(self, child_node) orelse continue;
+            if (!allDeclaratorsAreIdentifiers(self, d)) continue; // 구조분해는 제외
+            if (try hasTopLevelAwait(self.ast, d)) {
+                has_tla = true;
+                break;
+            }
+            continue;
+        }
         if (try hasTopLevelAwait(self.ast, child)) {
             has_tla = true;
             break;
         }
     }
     if (!has_tla) return null;
+
+    // 어떤 export 선언을 IIFE 로 옮길지 **미리** 정한다.
+    //
+    // 규칙: ① await 를 포함한 선언, ② 그리고 ①에서 지연된 바인딩을 참조하는 후속 선언.
+    // ⚠️ "exported 선언 전부" 로 넓히면 안 된다 — `await …;` 뒤의 `export const NAME='hello'`
+    //    처럼 **await 와 무관한** export 까지 지연돼 소비자가 `undefined` 를 읽는다(실측 회귀).
+    var deferred_names: std.StringHashMapUnmanaged(void) = .empty;
+    defer deferred_names.deinit(self.allocator);
+    var move_set: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer move_set.deinit(self.allocator);
+    {
+        var j: u32 = 0;
+        while (j < list.len) : (j += 1) {
+            const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + j]);
+            const child_node = self.ast.getNode(child);
+            if (!isModuleDeclaration(child_node.tag)) continue;
+            const d = exportedVarDeclIdx(self, child_node) orelse continue;
+            if (!allDeclaratorsAreIdentifiers(self, d)) continue;
+            const has_await = try hasTopLevelAwait(self.ast, d);
+            const dep = referencesAny(self, d, &deferred_names);
+            if (!has_await and !dep) continue;
+            try move_set.put(self.allocator, @intFromEnum(child), {});
+            // 이 선언의 바인딩들을 "지연됨" 으로 기록 → 뒤따르는 의존 선언도 함께 옮긴다.
+            const decl = self.ast.getNode(d);
+            const dl = self.ast.extra_data.items[decl.data.extra + 1];
+            const dn = self.ast.extra_data.items[decl.data.extra + 2];
+            var k: u32 = 0;
+            while (k < dn) : (k += 1) {
+                const dcl = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[dl + k]));
+                const nm: NodeIndex = @enumFromInt(self.ast.extra_data.items[dcl.data.extra]);
+                if (nm.isNone()) continue;
+                try deferred_names.put(self.allocator, self.ast.getText(self.ast.getNode(nm).data.string_ref), {});
+            }
+        }
+    }
 
     // 2. 자식을 두 그룹으로 분리.
     //    - 그대로 유지: import/export 문
@@ -137,8 +287,10 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
         const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
         const child_node = self.ast.getNode(child);
         if (child_node.tag == .import_declaration or child_node.tag == .ts_import_equals_declaration) {
+            const pt = self.pending_nodes.items.len;
+            const tt = self.trailing_nodes.items.len;
             const visited = try self.visitNode(child);
-            if (!visited.isNone()) try self.scratch.append(self.allocator, visited);
+            try drainPendingAround(Transformer, self, pt, tt, visited);
         }
     }
     const imports_end = self.scratch.items.len;
@@ -150,9 +302,31 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
         const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
         const child_node = self.ast.getNode(child);
         if (child_node.tag == .import_declaration or child_node.tag == .ts_import_equals_declaration) continue;
-        if (isModuleDeclaration(child_node.tag)) continue; // 아래 exports 패스에서 처리
+        if (isModuleDeclaration(child_node.tag)) {
+            // move_set 인 export 선언: `v = <init>;` 만 IIFE 안으로. 선언 자체는 아래
+            // exports 패스가 초기화식을 뗀 `var v;` 로 밖에 남겨 export 를 보존한다.
+            if (!move_set.contains(@intFromEnum(child))) continue;
+            const d = exportedVarDeclIdx(self, child_node).?;
+            const decl = self.ast.getNode(d);
+            const dl = self.ast.extra_data.items[decl.data.extra + 1];
+            const dn = self.ast.extra_data.items[decl.data.extra + 2];
+            var k2: u32 = 0;
+            while (k2 < dn) : (k2 += 1) {
+                const dcl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[dl + k2]);
+                const dcl = self.ast.getNode(dcl_idx);
+                const nm: NodeIndex = @enumFromInt(self.ast.extra_data.items[dcl.data.extra]);
+                const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[dcl.data.extra + 2]);
+                if (nm.isNone() or init_idx.isNone()) continue;
+                const assign = try es_helpers.makeAssignStmt(self, nm, init_idx, dcl.span, 0);
+                const av = try self.visitNode(assign);
+                if (!av.isNone()) try self.scratch.append(self.allocator, av);
+            }
+            continue;
+        }
+        const pt = self.pending_nodes.items.len;
+        const tt = self.trailing_nodes.items.len;
         const visited = try self.visitNode(child);
-        if (!visited.isNone()) try self.scratch.append(self.allocator, visited);
+        try drainPendingAround(Transformer, self, pt, tt, visited);
     }
     const body_stmts_end = self.scratch.items.len;
 
@@ -203,8 +377,33 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
         const child_node = self.ast.getNode(child);
         if (child_node.tag == .import_declaration or child_node.tag == .ts_import_equals_declaration) continue;
         if (!isModuleDeclaration(child_node.tag)) continue;
+        if (move_set.contains(@intFromEnum(child))) {
+            // 초기화식은 위 wrap 패스가 이미 IIFE 안에 넣었다. 여기선 선언만 남긴다.
+            // ⚠️ `let` 이면 IIFE 안 할당이 선언보다 먼저 실행돼 **TDZ**. `var` 는 호이스팅
+            //    되므로 순서에 안전하다. `const` 는 초기화식 없는 선언 자체가 문법 오류.
+            const d = exportedVarDeclIdx(self, child_node).?;
+            const stripped = try stripVarInitializers(Transformer, self, d);
+            const ex = child_node.data.extra;
+            const new_ex = try self.ast.addExtras(&.{
+                @intFromEnum(stripped),
+                self.ast.extra_data.items[ex + 1],
+                self.ast.extra_data.items[ex + 2],
+                self.ast.extra_data.items[ex + 3],
+                self.ast.extra_data.items[ex + 4],
+                self.ast.extra_data.items[ex + 5],
+            });
+            const new_export = try self.ast.addNode(.{
+                .tag = .export_named_declaration,
+                .span = child_node.span,
+                .data = .{ .extra = new_ex },
+            });
+            try self.scratch.append(self.allocator, new_export);
+            continue;
+        }
+        const pt = self.pending_nodes.items.len;
+        const tt = self.trailing_nodes.items.len;
         const visited = try self.visitNode(child);
-        if (!visited.isNone()) try self.scratch.append(self.allocator, visited);
+        try drainPendingAround(Transformer, self, pt, tt, visited);
     }
 
     const new_list = try self.ast.addNodeList(self.scratch.items[imports_top..]);
