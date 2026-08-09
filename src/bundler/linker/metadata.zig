@@ -217,10 +217,21 @@ fn allocLazyEsmImportExpr(self: *const Linker, import_mod: *const Module, value_
     return try std.fmt.allocPrint(self.allocator, "({s}{s}{s}{s}{s})", .{ import_init, sep, value_init, sep, target_name });
 }
 
-fn appendEsmInitCall(self: *const Linker, preamble: anytype, target_mod: *const Module) !void {
-    const is_tla = target_mod.uses_top_level_await;
+/// #4598 3b: `await init_X()` 는 **양쪽 조건**이 맞을 때만 낸다.
+///   ① target 이 기다릴 대상을 준다 (TLA 이거나 async cone 안)
+///   ② importer 의 factory 가 async 다 — 아니면 non-async 함수 본문에 `await` 가 떨어져
+///      **번들 전체가 SyntaxError** (폐기된 `ba943dec` 에서 리뷰가 잡은 구멍).
+/// 예전엔 target 만 봤다.
+fn appendEsmInitCall(
+    self: *const Linker,
+    preamble: anytype,
+    target_mod: *const Module,
+    importer: *const Module,
+) !void {
+    const target_needs_await = target_mod.uses_top_level_await or target_mod.in_async_cone;
+    const importer_is_async = importer.uses_top_level_await or importer.in_async_cone;
     const guard = target_mod.shouldGuard(self.entry_error_guard);
-    if (is_tla) try preamble.write("await ");
+    if (target_needs_await and importer_is_async) try preamble.write("await ");
     try writeEsmInitExprBody(self, preamble, target_mod, guard);
     try preamble.write(if (guard) rt.GUARD_LAMBDA_CLOSE else rt.INIT_CALL_END);
 }
@@ -595,7 +606,7 @@ pub fn buildMetadataForAst(
                     .esm => {
                         if (esm_init_set.contains(target_idx)) continue;
                         try esm_init_set.put(self.allocator, target_idx, {});
-                        try appendEsmInitCall(self, &preamble, target_mod);
+                        try appendEsmInitCall(self, &preamble, target_mod, &m);
                     },
                 }
             }
@@ -937,11 +948,11 @@ pub fn buildMetadataForAst(
                 }
                 if (!lazy_esm_import and !esm_init_set.contains(@intCast(canonical_mod))) {
                     try esm_init_set.put(self.allocator, @intCast(canonical_mod), {});
-                    try appendEsmInitCall(self, &preamble, target_mod);
+                    try appendEsmInitCall(self, &preamble, target_mod, &m);
                 }
                 if (!lazy_esm_import and value_init_mod_idx != canonical_mod and !esm_init_set.contains(@intCast(value_init_mod_idx))) {
                     try esm_init_set.put(self.allocator, @intCast(value_init_mod_idx), {});
-                    try appendEsmInitCall(self, &preamble, value_init_mod);
+                    try appendEsmInitCall(self, &preamble, value_init_mod, &m);
                 }
                 // import binding은 아래의 rename 경로로 처리 (continue하지 않음)
             }
@@ -965,7 +976,7 @@ pub fn buildMetadataForAst(
                                 !esm_init_set.contains(rb_idx))
                             {
                                 try esm_init_set.put(self.allocator, rb_idx, {});
-                                try appendEsmInitCall(self, &preamble, rw);
+                                try appendEsmInitCall(self, &preamble, rw, &m);
                             }
                         }
                     }
