@@ -142,8 +142,12 @@ comptime {
     // SelectiveOptions ↔ TransformOptions 동기화 강제(정밀 전략 안전망). TransformOptions 에
     // 필드가 추가되면 컴파일 에러 → 그 필드가 parse/semantic(pre-pass) 결과에 영향을 주는지
     // 판정해서, 주면 SelectiveOptions 에 반영하고 이 수를 갱신할 것(누락=silent miscompile).
+    //
+    // 분류 (#4598): `tla_chunk_wrapped` 는 **transform-only**. 정밀 전략은 pre-transform 캐시
+    // 전용이고(파일 상단) parse/semantic 은 이 값을 읽지 않는다. ⚠️ post-transform 캐시로
+    // 확장하면 편입 필수 — 값에 따라 TLA 래핑 여부가 갈려 같은 소스가 다른 AST 를 낸다.
     const tf_fields = @typeInfo(@import("../transformer/options.zig").TransformOptions).@"struct".fields.len;
-    if (tf_fields != 45)
+    if (tf_fields != 46)
         @compileError("TransformOptions 필드 수 변경 — 새 필드의 parse-영향 여부 판정 후 SelectiveOptions 갱신 + 이 수 갱신 필요.");
 }
 
