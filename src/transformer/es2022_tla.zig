@@ -187,6 +187,8 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     // `visitNode` 는 자식 재방문을 내부적으로 처리한다. 우리는 arrow 를 top-down dispatch 에
     // 다시 넣기 위해 expression_statement 를 visit.
     const visited_iife = try self.visitNode(iife_stmt);
+    // #4598: emitter 가 `__esm` factory 안에서 이 문장을 `return <expr>;` 로 방출한다.
+    if (!visited_iife.isNone()) self.tla_iife_stmt = visited_iife;
 
     // 최종 program list: [imports...] + [visited_iife] + [exports...]
     // 현재 scratch 에는 [imports_end..body_stmts_end] 까지 wrap 대상이 있으므로

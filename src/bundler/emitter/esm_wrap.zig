@@ -831,7 +831,41 @@ pub fn emitEsmWrappedModule(
             func_names = sm.names.items;
         }
     }
-    var body_code = try body_cg.generateStatements(root, body_stmts.items);
+    // #4598: TLA IIFE 문장을 `return <expr>;` 로 바꿔 `init_X()` 가 **초기화 완료
+    // promise** 를 돌려주게 한다. 그래야 소비자가 기다릴 대상이 생긴다.
+    //   es2017+ : factory 가 `async` 라 반환 promise 가 그대로 완료 신호가 된다.
+    //   es5     : IIFE 가 이미 `__async(...)` 라 그 promise 를 그대로 돌려준다.
+    // ⚠️ 구조적 추측(마지막 문장이 IIFE 인가) 대신 `lowerProgram` 이 알려 준 인덱스만 본다.
+    var body_code = if (module.tla_iife_stmt) |tla_ix| blk: {
+        var pre: std.ArrayList(u32) = .empty;
+        defer pre.deinit(allocator);
+        var post: std.ArrayList(u32) = .empty;
+        defer post.deinit(allocator);
+        var target: ?u32 = null;
+        for (body_stmts.items) |ix| {
+            if (ix == tla_ix and target == null) {
+                target = ix;
+                continue;
+            }
+            if (target == null) try pre.append(allocator, ix) else try post.append(allocator, ix);
+        }
+        const t = target orelse break :blk try body_cg.generateStatements(root, body_stmts.items);
+        const a = try body_cg.generateStatements(root, pre.items);
+        const mid = try body_cg.generateStatements(root, &.{t});
+        const b = try body_cg.generateStatements(root, post.items);
+        const mid_t = std.mem.trimStart(u8, mid, " \t");
+        // ⚠️ IIFE 뒤에 문장이 남아 있으면 `return` 을 바로 붙이면 **그 뒤가 실행되지 않는다**
+        //    (픽스처 01 이 즉시 잡았다: `await …;` 뒤의 `export const NAME` 이 사라짐).
+        //    그 경우 promise 를 임시 변수에 담아 두고 맨 끝에서 돌려준다.
+        if (std.mem.trim(u8, b, " \t\n\r").len == 0) {
+            break :blk try std.fmt.allocPrint(arena_alloc, "{s}\treturn {s}", .{ a, mid_t });
+        }
+        break :blk try std.fmt.allocPrint(
+            arena_alloc,
+            "{s}\tvar __zntc_tla = {s}{s}\treturn __zntc_tla;\n",
+            .{ a, mid_t, b },
+        );
+    } else try body_cg.generateStatements(root, body_stmts.items);
 
     // 5.1. Hermes 호환: hoisted var와 같은 이름의 named function expression 이름 제거.
     // Hermes는 "X = function X() {...}" 에서 named function expression의 이름 X가

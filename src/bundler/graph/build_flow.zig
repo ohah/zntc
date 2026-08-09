@@ -745,6 +745,8 @@ fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
     graph_finalize.promoteRunBeforeMainModules(self);
     graph_finalize.registerWrapperSymbols(self);
     graph_finalize.propagateTopLevelAwait(self);
+    // #4598: 판정 전용 async cone (require 엣지 포함).
+    graph_finalize.computeAsyncCone(self);
     checkSelfReExport(self);
 }
 

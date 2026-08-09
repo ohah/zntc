@@ -132,6 +132,11 @@ pub const Transformer = struct {
     /// ES 다운레벨링 임시 변수 카운터.
     /// `foo() ?? bar` → `(_a = foo()) != null ? _a : bar`에서 _a, _b, _c, ... 생성에 사용.
     temp_var_counter: u32 = 0,
+    /// #4598: `es2022_tla.lowerProgram` 이 만든 async IIFE **statement** 의 인덱스.
+    /// emitter 가 `__esm` factory 본문에서 이 문장을 `return <expr>;` 로 방출해
+    /// `init_X()` 가 **초기화 완료 promise** 를 돌려주게 한다(소비자가 기다릴 대상).
+    /// 구조적 추측(마지막 문장이 IIFE 인가) 대신 생성자가 직접 알려 주는 채널이다.
+    tla_iife_stmt: ?ast_mod.NodeIndex = null,
 
     /// ES2022 static block: `this` → 클래스 이름 치환을 위한 컨텍스트.
     /// static block body를 visit하는 동안만 설정된다.
