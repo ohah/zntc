@@ -4646,15 +4646,51 @@ test "#4598 worker 서브빌드는 부모 format 이 아니라 자기 방출 for
         // 깨진 산물에도 **모듈 단위** async 래퍼가 있고 선언은 그 뒤에 온다. 판별식은
         // **청크 factory 자체가 async 인가**다.
         const m = "var App = ";
-        const pos = std.mem.indexOf(u8, js, m).? + m.len;
+        const pos = (std.mem.indexOf(u8, js, m) orelse return error.MissingIifeFactory) + m.len;
         try std.testing.expect(std.mem.startsWith(u8, js[pos..], "(async"));
         // 선언·await 가 한 스코프에 남아야 한다.
         try std.testing.expect(std.mem.indexOf(u8, js, "const v = await") != null);
         try std.testing.expect(std.mem.indexOf(u8, js, "const val = v + 1") != null);
         // 모듈 단위 래퍼가 **추가로** 있으면 안 된다 (factory 말고 두 번째 async 화살표).
-        const first = std.mem.indexOf(u8, js, "(async").?;
+        const first = std.mem.indexOf(u8, js, "(async") orelse return error.MissingAsyncFactory;
         try std.testing.expect(std.mem.indexOfPos(u8, js, first + 6, "(async") == null);
     }
+}
+
+test "#4598 code splitting 청크는 위임하지 않는다 — bare await 가 non-async function 에 떨어지면 SyntaxError" {
+    // splitting 의 IIFE 청크는 async factory 가 아니라
+    // `__zntc_register({"m.js": function(exports, module, require) {...}})` — plain function.
+    // 위임하면 `const v = await ...` 가 그 안에 그대로 들어가 **청크 전체가 파싱조차 안 된다**.
+    // 모듈 단위 래핑은 #4598 로 여전히 깨져 있지만(ReferenceError) 적어도 파싱은 된다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.ts", "const v = await Promise.resolve(41);\nexport const val = v + 1;");
+    try writeFile(tmp.dir, "index.ts", "import { val } from './dep';\nconsole.log(val);\nimport('./dep').then((m) => console.log(m.val));");
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .iife,
+        .global_name = "App",
+        .code_splitting = true,
+        .unsupported = .{ .top_level_await = true },
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+    var saw_dep = false;
+    for (outs) |o| {
+        const aw = std.mem.indexOf(u8, o.contents, "await ") orelse continue;
+        saw_dep = true;
+        // `await` 보다 **앞에** async 래퍼가 있어야 한다 = await 가 async 문맥 안이다.
+        const wrap = std.mem.indexOf(u8, o.contents, "(async") orelse return error.BareAwaitInNonAsyncChunk;
+        try std.testing.expect(wrap < aw);
+    }
+    try std.testing.expect(saw_dep);
 }
 
 test "#4604 CSS url(): catch-all tsconfig paths 가 bare url() 을 가로채지 않는다 (형제 있음)" {
