@@ -1604,7 +1604,25 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module, format: types
                 defer self.allocator.free(exports_name);
                 // #1621: minify 시 __toCommonJS → $tC 축약.
                 const to_cjs_name: []const u8 = if (self.minify_whitespace) rt.NAMES.TOCOMMONJS_MIN else "__toCommonJS";
-                const call_expr = try std.fmt.allocPrint(self.allocator, "({s}(), {s}({s}))", .{ init_name, to_cjs_name, exports_name });
+                // #4598 3b-4: 소비자가 **초기화 완료를 기다려야** 값을 본다.
+                //   ① target 이 기다릴 대상을 준다 (TLA 이거나 async cone 안)
+                //   ② importer(`m`) 의 factory 가 async 다 — 아니면 non-async 본문에
+                //      `await` 가 떨어져 SyntaxError (폐기된 ba943dec 의 구멍).
+                // 없으면 `init_X()` 가 promise 를 돌려주는데 그걸 버리고 exports 를 즉시
+                // 읽어 `undefined` 가 된다.
+                // ⚠️ importer 가 `await` 를 **담을 수 있어야** 한다:
+                //   - `__commonJS` 래퍼는 async 로 안 만든다(그 헬퍼가 반환값을 버려 promise
+                //     전파가 불가 — 별도 진단 대상). 거기에 await 를 넣으면 SyntaxError(실측).
+                //   - async 문법이 없는 타겟(es5)도 제외 — 상태머신 낮추기가 선행돼야 한다.
+                const importer_can_await = m.wrap_kind == .esm and
+                    (m.uses_top_level_await or m.in_async_cone) and
+                    !self.graph.transform_options_base.unsupported.async_await;
+                const needs_await = (target_mod.uses_top_level_await or target_mod.in_async_cone) and
+                    importer_can_await;
+                const call_expr = if (needs_await)
+                    try std.fmt.allocPrint(self.allocator, "(await {s}(), {s}({s}))", .{ init_name, to_cjs_name, exports_name })
+                else
+                    try std.fmt.allocPrint(self.allocator, "({s}(), {s}({s}))", .{ init_name, to_cjs_name, exports_name });
                 try require_rewrites.put(self.allocator, rec.specifier, call_expr);
             }
         }
