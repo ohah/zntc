@@ -103,6 +103,70 @@ fn hasTopLevelAwait(ast: *const ast_mod.Ast, idx: NodeIndex) std.mem.Allocator.E
 ///
 /// 반환: 밖에 둘 `export var …;` 노드. 분해할 수 없으면(구조분해 바인딩 등) null —
 /// 호출자가 종전대로 pass-through 한다.
+/// `export function f(){}` / `export class C{}` 를 `export var f;`(밖) + `f = function f(){…};` 로
+/// 분해한다 (#4598 2단계).
+///
+/// ⚠️ **리네임하지 않는다.** 선언을 named function expression 대입으로 바꾸면 안쪽 바인딩이
+/// 사라져 섀도잉이 없어지고, 자기참조는 named FE 의 이름이 처리한다. 스코프 인식 리네임 패스
+/// 라는 큰 위험을 통째로 없앤다. (상호재귀·재대입·`f.name` 까지 원본과 등가임을 실측 확인)
+///
+/// ⚠️ 함수는 대입을 래퍼 본문 **맨 위**에 둔다 — 선언 호이스팅과 등가다(`typeof f` 가 선언
+/// 앞에서 `"function"`, 초기화 전 호출은 TDZ `ReferenceError` 로 원본과 일치). 클래스는 원래
+/// TDZ 라 원위치에 둔다.
+fn splitExportedFnOrClass(
+    comptime Transformer: type,
+    self: *Transformer,
+    export_node: Node,
+    hoisted: *std.ArrayListUnmanaged(NodeIndex),
+    assigns: *std.ArrayListUnmanaged(NodeIndex),
+) Transformer.Error!?NodeIndex {
+    const e = export_node.data.extra;
+    if (e + 3 >= self.ast.extra_data.items.len) return null;
+    const decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+    const specs_start = self.ast.extra_data.items[e + 1];
+    const specs_len = self.ast.extra_data.items[e + 2];
+    const source_raw = self.ast.extra_data.items[e + 3];
+    if (!@as(NodeIndex, @enumFromInt(source_raw)).isNone()) return null;
+    if (decl_idx.isNone()) return null;
+
+    const decl = self.ast.getNode(decl_idx);
+    const is_fn = decl.tag == .function_declaration;
+    const is_class = decl.tag == .class_declaration;
+    if (!is_fn and !is_class) return null;
+
+    // extras[0] = 이름. 익명(`export default function(){}`)은 여기 오지 않는다.
+    const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[decl.data.extra]);
+    if (name_idx.isNone()) return null;
+    const name_span = self.ast.getNode(name_idx).span;
+
+    // 선언 → 표현식: 같은 extras 를 공유하고 tag 만 바꾼다 (codegen 이 같은 emit 경로).
+    const visited_decl = try self.visitNode(decl_idx);
+    if (visited_decl.isNone()) return null;
+    const vd = self.ast.getNode(visited_decl);
+    const expr = try self.ast.addNode(.{
+        .tag = if (is_fn) .function_expression else .class_expression,
+        .span = vd.span,
+        .data = vd.data,
+    });
+
+    const target = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
+    const assign = try es_helpers.makeAssignExpr(self, target, expr, decl.span, 0);
+    const stmt = try es_helpers.makeExprStmt(self, assign, decl.span);
+    if (is_fn) try hoisted.append(self.allocator, stmt) else try assigns.append(self.allocator, stmt);
+
+    const bare_binding = try es_helpers.makeBindingIdentifier(self, name_span);
+    const bare_dtor = try es_helpers.makeDeclarator(self, bare_binding, NodeIndex.none, decl.span);
+    const new_decl = try es_helpers.makeVarDeclaration(self, &.{bare_dtor}, .@"var", decl.span);
+    const new_extra = try self.ast.addExtras(&.{
+        @intFromEnum(new_decl), specs_start, specs_len, source_raw,
+    });
+    return try self.ast.addNode(.{
+        .tag = .export_named_declaration,
+        .span = export_node.span,
+        .data = .{ .extra = new_extra },
+    });
+}
+
 fn splitExportedVarDecl(
     comptime Transformer: type,
     self: *Transformer,
@@ -234,6 +298,9 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     defer split_assign_off.deinit(self.allocator);
     var split_assigns: std.ArrayListUnmanaged(NodeIndex) = .empty;
     defer split_assigns.deinit(self.allocator);
+    // 함수 선언 대입은 래퍼 본문 **맨 위**로 (호이스팅 등가).
+    var hoisted_assigns: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer hoisted_assigns.deinit(self.allocator);
     {
         var ei: u32 = 0;
         while (ei < list.len) : (ei += 1) {
@@ -241,7 +308,9 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
             const child_node = self.ast.getNode(child);
             if (child_node.tag != .export_named_declaration) continue;
             const before: u32 = @intCast(split_assigns.items.len);
-            const split = try splitExportedVarDecl(Transformer, self, child_node, &split_assigns) orelse continue;
+            const split = (try splitExportedVarDecl(Transformer, self, child_node, &split_assigns)) orelse
+                (try splitExportedFnOrClass(Transformer, self, child_node, &hoisted_assigns, &split_assigns)) orelse
+                continue;
             try split_src.append(self.allocator, child);
             try split_export.append(self.allocator, split);
             try split_assign_off.append(self.allocator, before);
@@ -251,6 +320,8 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
 
     // wrap target 수집 (visit 하여 기본 변환 적용)
     const body_stmts_top = self.scratch.items.len;
+    // 함수 대입을 먼저 — 선언 호이스팅과 등가가 되도록 본문 맨 위에 둔다.
+    for (hoisted_assigns.items) |h| try self.scratch.append(self.allocator, h);
     i = 0;
     while (i < list.len) : (i += 1) {
         const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);

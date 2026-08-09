@@ -2328,6 +2328,45 @@ test "TLA: 분해된 대입은 원래 문장 순서를 지킨다 (#4598)" {
     try std.testing.expect(assign < use);
 }
 
+test "TLA: export function 은 named FE 대입 + 맨 위 배치로 호이스팅을 지킨다 (#4598)" {
+    // ⚠️ 리네임하지 않는다 — 선언을 named function expression 대입으로 바꾸면 안쪽 바인딩이
+    // 사라져 섀도잉이 없어지고 자기참조는 FE 이름이 처리한다. 대입을 본문 맨 위에 두면
+    // 선언 호이스팅과 등가다(`typeof f` 가 선언 앞에서 "function").
+    const source = "const items = [1]; await foo(); export function f() { return items; }";
+    var r = try parseAsModuleAndTransform(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .top_level_await = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+
+    try std.testing.expect(std.mem.indexOf(u8, code, "var f") != null);
+    const assign = std.mem.indexOf(u8, code, "f = function f").?;
+    const await_pos = std.mem.indexOf(u8, code, "await foo()").?;
+    // 대입이 await 보다 앞 = 본문 맨 위 (호이스팅 등가)
+    try std.testing.expect(assign < await_pos);
+}
+
+test "TLA: export class 는 원위치 대입 (클래스는 원래 TDZ) (#4598)" {
+    const source = "const items = [1]; await foo(); export class C { m() { return items; } }";
+    var r = try parseAsModuleAndTransform(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .top_level_await = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+
+    try std.testing.expect(std.mem.indexOf(u8, code, "var C") != null);
+    const assign = std.mem.indexOf(u8, code, "C = class").?;
+    const await_pos = std.mem.indexOf(u8, code, "await foo()").?;
+    // 함수와 달리 원위치 — await 뒤에 온다.
+    try std.testing.expect(assign > await_pos);
+}
+
 test "TLA: 구조분해 export 는 분해하지 않고 종전 동작 유지 (#4598 범위 가드)" {
     // 바인딩이 단순 식별자가 아니면 분해 규칙이 달라진다 — 건드리지 않는다.
     // 이 가드가 없으면 "전부 분해" 로 넓혀도 위 테스트들이 통과해 범위가 사라진다.
