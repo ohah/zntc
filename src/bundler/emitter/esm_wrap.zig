@@ -1024,7 +1024,7 @@ pub fn emitEsmWrappedModule(
             re_export_inited.put(allocator, src_i, {}) catch {};
             if (shouldLazyReExportInit(options, src_mod_ptr)) continue;
 
-            try appendWrappedInitCall(&star_init_buf, allocator, src_mod_ptr, options, rename_tbl);
+            try appendWrappedInitCall(&star_init_buf, allocator, src_mod_ptr, module, options, rename_tbl);
         }
 
         // Side-effect-only import (`import './x';`) → target이 ESM 래핑일 때만
@@ -1042,7 +1042,7 @@ pub fn emitEsmWrappedModule(
             if (src_mod.wrap_kind != .esm) continue;
             re_export_inited.put(allocator, src_i, {}) catch {};
 
-            try appendWrappedInitCall(&star_init_buf, allocator, src_mod, options, rename_tbl);
+            try appendWrappedInitCall(&star_init_buf, allocator, src_mod, module, options, rename_tbl);
         }
     }
 
@@ -1298,10 +1298,15 @@ fn appendWrappedInitCall(
     buf: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     src_mod: *const Module,
+    /// #4598 3b: 이 호출이 들어갈 **소비자(래핑 중인 모듈)**. `await` 는 소비자의 factory
+    /// 가 async 일 때만 낼 수 있다 — 아니면 non-async 함수 본문에 await 가 떨어진다.
+    importer: *const Module,
     options: *const EmitOptions,
     rename_tbl: ?*const RenameTable,
 ) !void {
-    const is_tla = src_mod.wrap_kind == .esm and src_mod.uses_top_level_await;
+    const target_needs_await = src_mod.uses_top_level_await or src_mod.in_async_cone;
+    const importer_is_async = importer.uses_top_level_await or importer.in_async_cone;
+    const is_tla = src_mod.wrap_kind == .esm and target_needs_await and importer_is_async;
     const guard = src_mod.shouldGuard(options.entry_error_guard);
     switch (src_mod.wrap_kind) {
         .esm => {
