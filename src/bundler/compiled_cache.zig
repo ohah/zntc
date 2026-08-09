@@ -241,6 +241,10 @@ pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
     h.addBool(options.transform_options_base.verbatim_module_syntax);
     h.addBool(options.transform_options_base.keep_names);
     h.addU32(@bitCast(options.transform_options_base.unsupported));
+    // #4598 `tla_chunk_wrapped` 는 여기 따로 안 넣는다 — `format`·`code_splitting`·
+    // `unsupported` 로 **완전히 결정되는 파생값**이고 셋 다 이미 위에서 해싱된다.
+    // ⚠️ 게이트에 위 셋이 아닌 입력(예: `options.output.len`)을 추가하면 그 입력을
+    //    반드시 여기 함께 넣어야 한다. 안 그러면 두 빌드가 같은 키를 공유한다.
 
     // worker_map_per_module: HashMap iteration 순서 무관하게 결정적 hash. entry 별 sub-hash
     // 를 XOR aggregate. outer key (module 절대 경로) 가 entry 마다 unique 라 XOR 충돌 가능성

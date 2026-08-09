@@ -918,15 +918,20 @@ pub const Bundler = struct {
         if (self.owned_disk_cache) |*s| s.deinit();
     }
 
-    /// #4598: TLA 다운레벨을 청크 async factory 에 위임할지. **방출 format 이 인자**다 —
-    /// `self.options.format` 을 직접 보면 안 된다. worker 서브빌드는 부모가 esm/cjs 여도
-    /// 자기 자신은 `workerFormat()` (= 거의 항상 iife) 으로 방출하므로, 부모 format 으로
-    /// 판정하면 청크가 async factory 인데 모듈은 래핑된 채로 남는 불일치가 생긴다.
+    /// #4598: TLA 다운레벨을 청크 async factory 에 위임할지. **모듈이 변환될 때 기준이 되는
+    /// format 이 인자**다 — `self.options.format` 을 직접 보면 안 된다. worker 서브빌드는
+    /// 부모가 esm/cjs 여도 자기 자신은 `workerFormat()` (= 거의 항상 iife) 으로 방출하므로,
+    /// 부모 format 으로 판정하면 청크가 async factory 인데 모듈은 래핑된 채로 남는다.
+    ///
+    /// 위임의 전제는 "이 모듈의 await 를 감싸 줄 **async factory 가 실제로 생긴다**" 이다.
+    /// 전제가 깨지는 위상은 아래처럼 명시적으로 뺀다 — 빼면 모듈 단위 래핑(여전히 #4598 로
+    /// 깨져 있음)으로 돌아가지만, 적어도 **파싱은 되는** 산물이 나온다.
     fn tlaChunkWrapped(self: *const Bundler, format: EmitOptions.Format) bool {
-        // multi-format 은 **하나의 그래프를 여러 format 으로** 방출한다. 위임은 "이 모듈의
-        // await 를 감싸 줄 async factory 가 실제로 생긴다" 는 약속이라 방출 format 이
-        // 하나로 확정될 때만 성립 — 확정 못 하면 위임하지 않고 모듈 단위 래핑에 맡긴다.
-        if (self.options.output.len > 1) return false;
+        // code splitting 의 IIFE 청크는 async factory 가 아니라
+        // `__zntc_register({"m.js": function(exports, module, require) {...}})` — plain
+        // function 이다. 위임하면 bare `await` 가 non-async function 안에 떨어져
+        // **청크 전체가 SyntaxError** 로 파싱조차 안 된다 (#4625 회귀).
+        if (self.options.code_splitting) return false;
         return format == .iife and !self.options.unsupported.async_await;
     }
 
@@ -967,9 +972,11 @@ pub const Bundler = struct {
     /// BundleOptions → EmitOptions 변환. 3개 경로(단일/splitting/dev)에서 공용.
     /// transformer 옵션 mirror 필드는 모두 `transform_options_base` 에서 derived —
     /// `self.options` 와 `base` 양쪽이 single source 두 곳이 되는 drift 위험 제거 (#1961 후속).
-    /// `format` 은 이 EmitOptions 로 방출할 format. 호출 후 `emit_opts.format` 을 덮어쓰면
-    /// `transform_options_base` 의 #4598 게이트가 옛 format 으로 남아 어긋나므로 금지 —
-    /// 반드시 인자로 넘긴다.
+    /// `format` 은 **모듈이 변환된 기준 format** (= 그래프의 `transform_options_base` 를
+    /// 만들 때 쓴 값). 보통 방출 format 과 같지만 multi-format 은 하나의 그래프를 여러
+    /// format 으로 방출하므로 다르다 — 그 경우 이 인자는 그래프 기준값을 그대로 넘기고
+    /// `emit_opts.format` 만 덮어쓴다. #4598 게이트가 그래프의 변환 결과를 따라가야 하기
+    /// 때문이다 (emit 만 다른 값으로 계산하면 변환된 모듈과 어긋난다).
     fn makeEmitOptions(self: *const Bundler, format: EmitOptions.Format) EmitOptions {
         const base = self.buildTransformOptionsBase(format);
         return .{
@@ -2210,7 +2217,10 @@ pub const Bundler = struct {
                     });
                     l.resetEmitTransients();
                 }
-                var emit_opts = self.makeEmitOptions(cfg.format);
+                // 그래프는 `self.options.format` 기준으로 **한 번** 변환됐다. 게이트는 그
+                // 변환을 따라가야 하므로 인자는 그래프 기준값, 방출 format 만 덮어쓴다.
+                var emit_opts = self.makeEmitOptions(self.options.format);
+                emit_opts.format = cfg.format;
                 emit_opts.polyfills = polyfill_entries.items;
                 emit_opts.worker_map_per_module = &worker_map_per_module;
                 if (self.options.sourcemap.enable) emit_opts.sourcemap.enable = true;
