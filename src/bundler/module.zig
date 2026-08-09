@@ -441,6 +441,17 @@ pub const Module = struct {
     /// (`await init_X()`)·`ZNTC0002` 경고 등 여러 경로가 읽어서, 값을 넓히면 의도치 않은
     /// 곳이 함께 바뀐다(4차 시도가 이걸로 회귀했다). 위임 사실만 담는 전용 필드로 둔다.
     tla_delegated_to_chunk: bool = false,
+
+    /// #4598: 이 모듈이 **async cone** 안에 있는지 — top-level await 를 쓰는 모듈이거나,
+    /// 그런 모듈을 **static import 또는 require 로** 소비하는 모듈.
+    ///
+    /// ⚠️ `uses_top_level_await` 와 별개 필드다. 그 플래그는 `appendModuleCall`
+    /// (`await init_X()`) 등 여러 방출 경로가 읽어서, 전파 범위를 넓히면 의도치 않은 곳이
+    /// 함께 바뀐다(#4598 4차 시도가 이걸로 회귀). cone 은 **판정 전용**이다.
+    ///
+    /// `uses_top_level_await` 와 달리 **require 엣지도 탄다** — CJS 모듈이 TLA 모듈을
+    /// 동기 소비하는 위상을 잡아내야 하기 때문이다(Node 도 `ERR_REQUIRE_ASYNC_MODULE` 로 거부).
+    in_async_cone: bool = false,
     /// Module Federation 연합 경계 모듈 (#3318 P1-1). `mf.exposes` 타겟 ∪
     /// `mf.shared` ∪ shared 전방-의존 폐포. P1-1 은 **표시·안정 ID 계산만**
     /// (분석) — 스코프 호이스팅 소거 제외 *enforcement*·container/manifest

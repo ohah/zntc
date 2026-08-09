@@ -912,6 +912,10 @@ pub const BundlerDiagnostic = struct {
         plugin_error,
         /// `output.exports = "default"` 모드 + named export 섞임. Rollup 도 동일 케이스 throw. #2159
         output_exports_conflict,
+        /// CJS 모듈이 top-level await 를 쓰는 모듈을 **동기 require** 로 소비 (#4598).
+        /// Node 도 같은 위상을 `ERR_REQUIRE_ASYNC_MODULE` 로 거부한다 — 동기 require 는
+        /// 비동기 초기화를 기다릴 수단이 없어 초기화 전 exports 를 읽는다.
+        require_async_module,
         /// `@jsx` / `@jsxFrag` pragma 가 있는데 effective JSX runtime 이 automatic — classic
         /// factory 가 무시됨 (D026). warning severity.
         jsx_pragma_ignored,

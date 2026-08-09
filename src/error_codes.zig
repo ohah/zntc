@@ -52,6 +52,7 @@ pub const Code = enum(u16) {
     circular_reexport = 104,
     ambiguous_export = 105,
     output_exports_conflict = 106,
+    require_async_module = 107,
 
     // ═══════════════════════════════════════════════════════
     // 0200-0299: 번들러 — 파일/로더
@@ -340,6 +341,7 @@ pub const Code = enum(u16) {
             .circular_reexport => "Re-export references the module itself (self-cycle)",
             .ambiguous_export => "Ambiguous import: a name is exported by multiple modules via 'export *'",
             .output_exports_conflict => "Output exports conflict with the selected module format",
+            .require_async_module => "require() cannot be used on a module graph with top-level await",
             .read_error => "Failed to read file",
             .json_parse_error => "Failed to parse JSON",
             .no_loader => "No loader is configured for this file type",

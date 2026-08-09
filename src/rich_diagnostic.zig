@@ -154,6 +154,7 @@ pub fn bundlerErrorCode(code: BundlerDiagnostic.ErrorCode) ?error_codes.Code {
         .assign_to_import => .assign_to_import,
         .ambiguous_export => .ambiguous_export,
         .output_exports_conflict => .output_exports_conflict,
+        .require_async_module => .require_async_module,
         .require_context_invalid => .require_context_invalid,
         .require_context_no_handler => .require_context_no_handler,
         .plugin_error => .plugin_error,
