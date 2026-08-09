@@ -1050,7 +1050,13 @@ pub fn emitEsmWrappedModule(
     //    호이스팅된 함수가 호출되기 전에 의존 모듈이 초기화되도록 보장한다.
     const preamble_code = if (metadata) |md| md.cjs_import_preamble else null;
 
-    const is_async = module.uses_top_level_await;
+    // #4598 3a: cone 안(= TLA 를 동기 소비하는) 모듈의 factory 도 async 로 만든다.
+    // 그래야 3b 에서 그 본문에 `await init_X()` 를 놓을 자리가 생긴다.
+    // ⚠️ async 문법이 없는 타겟(es5)은 제외 — 상태머신 낮추기가 선행돼야 한다(3d).
+    // 이 단계만으로는 동작이 바뀌면 안 된다: `init_X()` 반환이 undefined → promise 로
+    // 바뀌지만 소비자는 아직 `(init_X(), exports_X)` 로 무시한다.
+    const is_async = module.uses_top_level_await or
+        (module.in_async_cone and !options.transform_options_base.unsupported.async_await);
 
     // entry dependency chain은 entry factory 안의 nested require로 남긴다.
     // dependency를 top-level 개별 guard로 풀면 ErrorUtils 설치 후 throw가 swallow되어
