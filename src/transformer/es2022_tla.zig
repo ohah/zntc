@@ -89,6 +89,93 @@ fn hasTopLevelAwait(ast: *const ast_mod.Ast, idx: NodeIndex) std.mem.Allocator.E
 /// `self` 는 Transformer. options.unsupported.top_level_await 가 true 일 때만 호출.
 ///
 /// 반환: wrap 된 program 노드 index (TLA 가 없으면 null — caller 가 기본 visit 수행).
+/// `export const X = init;` 을 **`export var X;`(래퍼 밖) + `X = init;`(래퍼 안)** 으로 분해한다 (#4598).
+///
+/// TLA 래퍼는 최상위 문장을 `(async () => {…})()` 안으로 넣는데, export 선언은 ESM 상 최상위에만
+/// 올 수 있어 밖에 남는다. 그러면 **선언은 안 / 사용은 밖** 으로 스코프가 갈려
+/// `ReferenceError` 가 난다 (#4598 재현). 바인딩만 밖으로 올리고 초기화는 원래 자리(래퍼 안)에
+/// 남기면, ESM live binding 으로 밖에서도 보인다 — rspack 이 export 를 getter 로 선등록하는 것의
+/// ESM 등가 형태다.
+///
+/// ⚠️ **참조 분석을 하지 않는다.** "이 export 가 래퍼 로컬을 참조하는가" 로 좁히려 했다가 계속
+/// 경계를 놓쳤다(`export default`·`export {X}`·중첩 블록). 전부 균일하게 분해하면 그 판정이
+/// 필요 없다.
+///
+/// 반환: 밖에 둘 `export var …;` 노드. 분해할 수 없으면(구조분해 바인딩 등) null —
+/// 호출자가 종전대로 pass-through 한다.
+fn splitExportedVarDecl(
+    comptime Transformer: type,
+    self: *Transformer,
+    export_node: Node,
+    assigns: *std.ArrayListUnmanaged(NodeIndex),
+) Transformer.Error!?NodeIndex {
+    const e = export_node.data.extra;
+    if (e + 3 >= self.ast.extra_data.items.len) return null;
+    const decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+    const specs_start = self.ast.extra_data.items[e + 1];
+    const specs_len = self.ast.extra_data.items[e + 2];
+    const source_raw = self.ast.extra_data.items[e + 3];
+    // `export { x } from '…'` 은 대상이 다른 모듈이라 분해 대상이 아니다.
+    if (!@as(NodeIndex, @enumFromInt(source_raw)).isNone()) return null;
+    if (decl_idx.isNone()) return null;
+
+    const decl_node = self.ast.getNode(decl_idx);
+    if (decl_node.tag != .variable_declaration) return null;
+
+    const ve = decl_node.data.extra;
+    if (ve + 2 >= self.ast.extra_data.items.len) return null;
+    const decls_start = self.ast.extra_data.items[ve + 1];
+    const decls_len = self.ast.extra_data.items[ve + 2];
+
+    const scratch_top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+    var di: u32 = 0;
+    while (di < decls_len) : (di += 1) {
+        const dtor_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[decls_start + di]);
+        const dtor = self.ast.getNode(dtor_idx);
+        if (dtor.tag != .variable_declarator) return null;
+        const de = dtor.data.extra;
+        if (de + 2 >= self.ast.extra_data.items.len) return null;
+        const binding_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[de]);
+        const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[de + 2]);
+        const binding = self.ast.getNode(binding_idx);
+        // 구조분해(`export const { a } = o`)는 바인딩이 단순 식별자가 아니라 분해 규칙이
+        // 달라진다 — 종전 동작을 유지하고 여기서 빠진다.
+        if (binding.tag != .binding_identifier) return null;
+
+        // 밖: `var X;` (init 제거)
+        const bare_binding = try es_helpers.makeBindingIdentifier(self, binding.span);
+        const bare_dtor = try es_helpers.makeDeclarator(self, bare_binding, NodeIndex.none, dtor.span);
+        try self.scratch.append(self.allocator, bare_dtor);
+
+        // 안: `X = init;` (init 이 없으면 대입도 없다 — `export let x;`)
+        if (!init_idx.isNone()) {
+            const target = try es_helpers.makeIdentifierRefFromSpan(self, binding.span);
+            const visited_init = try self.visitNode(init_idx);
+            if (visited_init.isNone()) return null;
+            const assign = try es_helpers.makeAssignExpr(self, target, visited_init, dtor.span, 0);
+            try assigns.append(self.allocator, try es_helpers.makeExprStmt(self, assign, dtor.span));
+        }
+    }
+
+    // `var` 로 강등한다 — 래퍼 안 대입이 TDZ 에 걸리지 않아야 한다.
+    const new_decl = try es_helpers.makeVarDeclaration(
+        self,
+        self.scratch.items[scratch_top..],
+        .@"var",
+        decl_node.span,
+    );
+    const new_extra = try self.ast.addExtras(&.{
+        @intFromEnum(new_decl), specs_start, specs_len, source_raw,
+    });
+    return try self.ast.addNode(.{
+        .tag = .export_named_declaration,
+        .span = export_node.span,
+        .data = .{ .extra = new_extra },
+    });
+}
+
 pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) Transformer.Error!?NodeIndex {
     std.debug.assert(node.tag == .program);
     const list = node.data.list;
@@ -136,6 +223,32 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     }
     const imports_end = self.scratch.items.len;
 
+    // #4598: export 선언을 미리 분해해 둔다 — `export var X;`(밖) + `X = init;`(안).
+    // ⚠️ 대입문은 **원래 문장 순서 그대로** 래퍼 본문에 끼워 넣어야 한다. 끝에 몰아넣으면
+    // 그 export 를 앞에서 읽는 코드가 `undefined` 를 본다 (실측으로 잡음).
+    var split_src: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer split_src.deinit(self.allocator);
+    var split_export: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer split_export.deinit(self.allocator);
+    var split_assign_off: std.ArrayListUnmanaged(u32) = .empty;
+    defer split_assign_off.deinit(self.allocator);
+    var split_assigns: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer split_assigns.deinit(self.allocator);
+    {
+        var ei: u32 = 0;
+        while (ei < list.len) : (ei += 1) {
+            const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + ei]);
+            const child_node = self.ast.getNode(child);
+            if (child_node.tag != .export_named_declaration) continue;
+            const before: u32 = @intCast(split_assigns.items.len);
+            const split = try splitExportedVarDecl(Transformer, self, child_node, &split_assigns) orelse continue;
+            try split_src.append(self.allocator, child);
+            try split_export.append(self.allocator, split);
+            try split_assign_off.append(self.allocator, before);
+        }
+        try split_assign_off.append(self.allocator, @intCast(split_assigns.items.len));
+    }
+
     // wrap target 수집 (visit 하여 기본 변환 적용)
     const body_stmts_top = self.scratch.items.len;
     i = 0;
@@ -143,7 +256,17 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
         const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
         const child_node = self.ast.getNode(child);
         if (child_node.tag == .import_declaration or child_node.tag == .ts_import_equals_declaration) continue;
-        if (isModuleDeclaration(child_node.tag)) continue; // 아래 exports 패스에서 처리
+        if (isModuleDeclaration(child_node.tag)) {
+            // 분해된 export 라면 **이 자리에** 대입문을 넣는다.
+            for (split_src.items, 0..) |sc, si| {
+                if (sc != child) continue;
+                const from = split_assign_off.items[si];
+                const to = split_assign_off.items[si + 1];
+                for (split_assigns.items[from..to]) |a| try self.scratch.append(self.allocator, a);
+                break;
+            }
+            continue;
+        }
         const visited = try self.visitNode(child);
         if (!visited.isNone()) try self.scratch.append(self.allocator, visited);
     }
@@ -194,6 +317,15 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
         const child_node = self.ast.getNode(child);
         if (child_node.tag == .import_declaration or child_node.tag == .ts_import_equals_declaration) continue;
         if (!isModuleDeclaration(child_node.tag)) continue;
+        // 분해된 export 는 원본 대신 `export var X;` 를 내보낸다 (초기화는 래퍼 안).
+        var replaced = false;
+        for (split_src.items, 0..) |sc, si| {
+            if (sc != child) continue;
+            try self.scratch.append(self.allocator, split_export.items[si]);
+            replaced = true;
+            break;
+        }
+        if (replaced) continue;
         const visited = try self.visitNode(child);
         if (!visited.isNone()) try self.scratch.append(self.allocator, visited);
     }

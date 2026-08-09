@@ -2286,6 +2286,65 @@ fn parseAsModuleAndTransform(allocator: std.mem.Allocator, source: []const u8, o
     return .{ .ast = moved_ast, .root = root, .scanner = scanner_ptr, .parser = parser_ptr, .allocator = allocator };
 }
 
+test "TLA: export const 는 바인딩만 밖으로, 초기화는 래퍼 안에 남는다 (#4598)" {
+    // 예전엔 `export const OUT = {items}` 가 통째로 래퍼 **밖**으로 나가고 `items` 는 안에
+    // 남아 스코프가 갈렸다 → `ReferenceError: items is not defined`.
+    // 이제 `var OUT;`(밖) + `OUT = {items};`(안) 으로 분해한다 — ESM live binding.
+    const source = "const items = [1]; await foo(); export const OUT = { items };";
+    var r = try parseAsModuleAndTransform(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .top_level_await = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+
+    // 선언과 초기화가 **같은 스코프**(래퍼 안)에 있어야 한다.
+    const wrap = std.mem.indexOf(u8, code, "async").?;
+    const items_decl = std.mem.indexOf(u8, code, "items = [1]").?;
+    const out_assign = std.mem.indexOf(u8, code, "OUT = {").?;
+    try std.testing.expect(items_decl > wrap);
+    try std.testing.expect(out_assign > wrap);
+    // 바인딩만 밖으로.
+    try std.testing.expect(std.mem.indexOf(u8, code, "var OUT") != null);
+}
+
+test "TLA: 분해된 대입은 원래 문장 순서를 지킨다 (#4598)" {
+    // ⚠️ 대입을 래퍼 끝에 몰아넣으면 그 export 를 앞에서 읽는 코드가 `undefined` 를 본다.
+    // 실측으로 잡은 함정 — 순서 가드가 없으면 재발한다.
+    const source = "await foo(); export const A = 1; use(A);";
+    var r = try parseAsModuleAndTransform(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .top_level_await = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+
+    const assign = std.mem.indexOf(u8, code, "A = 1").?;
+    const use = std.mem.indexOf(u8, code, "use(A)").?;
+    try std.testing.expect(assign < use);
+}
+
+test "TLA: 구조분해 export 는 분해하지 않고 종전 동작 유지 (#4598 범위 가드)" {
+    // 바인딩이 단순 식별자가 아니면 분해 규칙이 달라진다 — 건드리지 않는다.
+    // 이 가드가 없으면 "전부 분해" 로 넓혀도 위 테스트들이 통과해 범위가 사라진다.
+    const source = "const o = {a:1}; await foo(); export const { a } = o;";
+    var r = try parseAsModuleAndTransform(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .top_level_await = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // 원형 유지 — `var { a }` 같은 분해 산물이 나오면 안 된다.
+    try std.testing.expect(std.mem.indexOf(u8, code, "export const {") != null or
+        std.mem.indexOf(u8, code, "export const{") != null);
+}
+
 test "TLA: es2022+ no-op (top_level_await supported)" {
     // TLA 가 지원되는 타겟에서는 await 가 그대로 유지된다.
     const source = "await foo();";
