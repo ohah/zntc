@@ -4607,6 +4607,56 @@ test "#4598 IIFE: async 미지원 타겟은 위임하지 않는다 (회귀 가�
     try std.testing.expect(!std.mem.startsWith(u8, js[pos..], "__async"));
 }
 
+/// worker 서브빌드 산출물(별도 청크)의 본문을 돌려준다.
+fn bundleTlaWorker(tmp: *std.testing.TmpDir, parent_format: @import("../emitter.zig").EmitOptions.Format) ![]const u8 {
+    try writeFile(tmp.dir, "w.ts", "const v = await Promise.resolve(41);\nexport const val = v + 1;\nconsole.log(val);");
+    try writeFile(tmp.dir, "main.ts", "const w = new Worker(new URL('./w.ts', import.meta.url), { type: 'module' });\nconsole.log(w);");
+    const entry = try absPath(tmp, "main.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = parent_format,
+        .global_name = "App",
+        .unsupported = .{ .top_level_await = true },
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+
+    const outs = result.asset_outputs orelse return error.ExpectedAssetOutput;
+    for (outs) |o| {
+        if (std.mem.indexOf(u8, o.path, "w-") != null) return std.testing.allocator.dupe(u8, o.contents);
+    }
+    return error.ExpectedWorkerChunk;
+}
+
+test "#4598 worker 서브빌드는 부모 format 이 아니라 자기 방출 format 으로 판정한다" {
+    // worker 는 부모가 esm/cjs 여도 자신은 `workerFormat()` = iife 로 방출된다. 게이트를
+    // 부모 format 으로 계산하면 부모가 esm 일 때만 위임이 꺼져, **같은 worker 파일이 부모
+    // format 에 따라 깨졌다 안 깨졌다** 했다 (`const val = v + 1` 이 async 래퍼 밖으로
+    // 밀려나 `v` 가 ReferenceError).
+    for ([_]@import("../emitter.zig").EmitOptions.Format{ .esm, .iife }) |pf| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const js = try bundleTlaWorker(&tmp, pf);
+        defer std.testing.allocator.free(js);
+
+        // ⚠️ "async 래퍼가 있다" 나 "선언이 래퍼보다 뒤에 온다" 로는 판별이 안 된다 —
+        // 깨진 산물에도 **모듈 단위** async 래퍼가 있고 선언은 그 뒤에 온다. 판별식은
+        // **청크 factory 자체가 async 인가**다.
+        const m = "var App = ";
+        const pos = std.mem.indexOf(u8, js, m).? + m.len;
+        try std.testing.expect(std.mem.startsWith(u8, js[pos..], "(async"));
+        // 선언·await 가 한 스코프에 남아야 한다.
+        try std.testing.expect(std.mem.indexOf(u8, js, "const v = await") != null);
+        try std.testing.expect(std.mem.indexOf(u8, js, "const val = v + 1") != null);
+        // 모듈 단위 래퍼가 **추가로** 있으면 안 된다 (factory 말고 두 번째 async 화살표).
+        const first = std.mem.indexOf(u8, js, "(async").?;
+        try std.testing.expect(std.mem.indexOfPos(u8, js, first + 6, "(async") == null);
+    }
+}
+
 test "#4604 CSS url(): catch-all tsconfig paths 가 bare url() 을 가로채지 않는다 (형제 있음)" {
     // 신고된 재현 그대로. `"paths": { "*": ["src/*"] }` 하에서 `url(assets/logo.png)` 가
     // paths 에 걸려 `src/assets/logo.png` 로, `url(./assets/logo.png)` 는 형제로 가서

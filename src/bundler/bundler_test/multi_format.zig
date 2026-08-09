@@ -220,3 +220,33 @@ test "multi-format: CSS import yields shared CSS output across formats" {
         return error.NoCssOutput;
     }
 }
+
+test "#4598 multi-format 은 TLA 위임을 끈다 (그래프 하나를 여러 format 으로 방출)" {
+    // 위임은 "이 모듈의 await 를 감싸 줄 청크 async factory 가 실제로 생긴다" 는 약속이다.
+    // multi-format 은 **같은 그래프**를 iife 로도 esm 으로도 방출하는데 esm 청크에는 그런
+    // factory 가 없다. format 이 하나로 확정되지 않으면 위임하지 않고 모듈 단위 래핑에 맡긴다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const v = await Promise.resolve(41);\nexport const val = v + 1;\nconsole.log(val);");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .global_name = "App",
+        .format = .iife, // 단일이면 위임이 켜지는 조건
+        .unsupported = .{ .top_level_await = true },
+        .output = &.{ .{ .format = .iife }, .{ .format = .esm } },
+    });
+    defer b.deinit();
+
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+
+    // iife 청크 factory 가 async 가 **아니어야** 한다 — 위임이 꺼졌다는 뜻.
+    const m = "var App = ";
+    const pos = std.mem.indexOf(u8, result.output, m).? + m.len;
+    try std.testing.expect(!std.mem.startsWith(u8, result.output[pos..], "(async"));
+}
