@@ -918,14 +918,29 @@ pub const Bundler = struct {
         if (self.owned_disk_cache) |*s| s.deinit();
     }
 
+    /// #4598: TLA 다운레벨을 청크 async factory 에 위임할지. **방출 format 이 인자**다 —
+    /// `self.options.format` 을 직접 보면 안 된다. worker 서브빌드는 부모가 esm/cjs 여도
+    /// 자기 자신은 `workerFormat()` (= 거의 항상 iife) 으로 방출하므로, 부모 format 으로
+    /// 판정하면 청크가 async factory 인데 모듈은 래핑된 채로 남는 불일치가 생긴다.
+    fn tlaChunkWrapped(self: *const Bundler, format: EmitOptions.Format) bool {
+        // multi-format 은 **하나의 그래프를 여러 format 으로** 방출한다. 위임은 "이 모듈의
+        // await 를 감싸 줄 async factory 가 실제로 생긴다" 는 약속이라 방출 format 이
+        // 하나로 확정될 때만 성립 — 확정 못 하면 위임하지 않고 모듈 단위 래핑에 맡긴다.
+        if (self.options.output.len > 1) return false;
+        return format == .iife and !self.options.unsupported.async_await;
+    }
+
     /// BundleOptions → TransformOptions base 변환 (#1961 PR 1f). graph 와 emitter
     /// 양쪽이 동일 base 를 시작점으로 transformer.init 호출 — drift hot spot 단일화.
     /// per-module override (react_refresh / plugins / jsx_transform / jsx_filename /
     /// emit_runtime_helper_imports / borrow_source_ast) 만 caller 가 추가.
-    fn buildTransformOptionsBase(self: *const Bundler) @import("../transformer/transformer.zig").TransformOptions {
+    ///
+    /// `format` 은 **이 base 로 변환한 모듈이 실제로 방출될 format**. 대부분
+    /// `self.options.format` 이지만 worker 서브빌드는 다르다 (위 `tlaChunkWrapped` 주석).
+    fn buildTransformOptionsBase(self: *const Bundler, format: EmitOptions.Format) @import("../transformer/transformer.zig").TransformOptions {
         return .{
             // #4598: IIFE + async 지원 타겟만 (근거는 TransformOptions 필드 주석).
-            .tla_chunk_wrapped = self.options.format == .iife and !self.options.unsupported.async_await,
+            .tla_chunk_wrapped = self.tlaChunkWrapped(format),
             .define = self.options.define,
             .experimental_decorators = self.options.experimental_decorators,
             .emit_decorator_metadata = self.options.emit_decorator_metadata,
@@ -952,11 +967,14 @@ pub const Bundler = struct {
     /// BundleOptions → EmitOptions 변환. 3개 경로(단일/splitting/dev)에서 공용.
     /// transformer 옵션 mirror 필드는 모두 `transform_options_base` 에서 derived —
     /// `self.options` 와 `base` 양쪽이 single source 두 곳이 되는 drift 위험 제거 (#1961 후속).
-    fn makeEmitOptions(self: *const Bundler) EmitOptions {
-        const base = self.buildTransformOptionsBase();
+    /// `format` 은 이 EmitOptions 로 방출할 format. 호출 후 `emit_opts.format` 을 덮어쓰면
+    /// `transform_options_base` 의 #4598 게이트가 옛 format 으로 남아 어긋나므로 금지 —
+    /// 반드시 인자로 넘긴다.
+    fn makeEmitOptions(self: *const Bundler, format: EmitOptions.Format) EmitOptions {
+        const base = self.buildTransformOptionsBase(format);
         return .{
             .transform_options_base = base,
-            .format = self.options.format,
+            .format = format,
             // transformer-mirror 필드는 base 에서 derived (single source).
             .minify_whitespace = base.minify_whitespace,
             .minify_syntax = base.minify_syntax,
@@ -1081,7 +1099,8 @@ pub const Bundler = struct {
         worker_graph.code_splitting = self.options.code_splitting;
         worker_graph.preserve_modules = self.options.preserve_modules;
         worker_graph.minify_identifiers = self.options.minify_identifiers;
-        worker_graph.transform_options_base = self.buildTransformOptionsBase();
+        // #4598: worker 는 자기 자신의 방출 format(`workerFormat()`) 으로 판정해야 한다.
+        worker_graph.transform_options_base = self.buildTransformOptionsBase(self.workerFormat());
         defer worker_graph.deinit();
 
         const entry_path = try arena_alloc.dupe(u8, worker_path);
@@ -1105,8 +1124,7 @@ pub const Bundler = struct {
         defer worker_linker.deinit();
 
         // emit
-        var emit_opts = self.makeEmitOptions();
-        emit_opts.format = format;
+        var emit_opts = self.makeEmitOptions(format);
         const worker_result = try emitter.emitWithTreeShaking(
             io,
             arena_alloc,
@@ -1338,7 +1356,7 @@ pub const Bundler = struct {
         };
         if (disk_cache_ptr) |dc| {
             graph.disk_cache = dc;
-            const eo = self.makeEmitOptions();
+            const eo = self.makeEmitOptions(self.options.format);
             graph.disk_options_hash = @import("compiled_cache.zig").computeDiskOptionsHash(&eo);
             graph.disk_compiler_build_id = @import("../build_id.zig").current();
             // load hit 게이트: effective legal_comments 가 load-안전(inline/none)일 때만 load 활성.
@@ -1398,7 +1416,7 @@ pub const Bundler = struct {
         // PR-3a: dev lazy compilation — discovery 가 동적 import 경계 정지(seed 등록).
         graph.lazy_compilation = self.options.lazy_compilation;
         graph.lazy_force_parse = self.options.lazy_force_parse;
-        graph.transform_options_base = self.buildTransformOptionsBase();
+        graph.transform_options_base = self.buildTransformOptionsBase(self.options.format);
         // RFC #3933 Sub-PR-B.2: external_graph 면 deinit skip (caller 보존).
         defer if (!has_external_graph) graph.deinit();
 
@@ -1907,7 +1925,7 @@ pub const Bundler = struct {
         const dev_split = self.options.dev_mode and self.options.code_splitting and self.options.lazy_compilation;
         if (self.options.dev_mode and !dev_split) {
             // Dev mode: 프로덕션 파이프라인 재사용 (__commonJS/__esm 래핑 + HMR 런타임).
-            var dev_emit_opts = self.makeEmitOptions();
+            var dev_emit_opts = self.makeEmitOptions(self.options.format);
             dev_emit_opts.sourcemap.enable = true;
             dev_emit_opts.dev_mode = true;
             // 단일번들 dev 는 code_splitting=false 라 useDevModuleRegistry 가 lazy 와 무관히 true 지만,
@@ -2023,7 +2041,7 @@ pub const Bundler = struct {
                     try chunk_mod.computeCrossChunkGlobalNames(self.allocator, &chunk_graph, l);
             }
 
-            var emit_opts = self.makeEmitOptions();
+            var emit_opts = self.makeEmitOptions(self.options.format);
             emit_opts.preserve_modules = self.options.preserve_modules;
             emit_opts.preserve_modules_root = self.options.preserve_modules_root;
             emit_opts.worker_map_per_module = &worker_map_per_module;
@@ -2192,8 +2210,7 @@ pub const Bundler = struct {
                     });
                     l.resetEmitTransients();
                 }
-                var emit_opts = self.makeEmitOptions();
-                emit_opts.format = cfg.format;
+                var emit_opts = self.makeEmitOptions(cfg.format);
                 emit_opts.polyfills = polyfill_entries.items;
                 emit_opts.worker_map_per_module = &worker_map_per_module;
                 if (self.options.sourcemap.enable) emit_opts.sourcemap.enable = true;
@@ -2225,7 +2242,7 @@ pub const Bundler = struct {
             outputs_by_format = by;
         } else {
             // 단일 파일 경로 (tree shaking + 소스맵 지원)
-            var emit_opts = self.makeEmitOptions();
+            var emit_opts = self.makeEmitOptions(self.options.format);
             emit_opts.polyfills = polyfill_entries.items;
             emit_opts.worker_map_per_module = &worker_map_per_module;
             if (self.options.sourcemap.enable) emit_opts.sourcemap.enable = true;
