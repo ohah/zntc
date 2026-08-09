@@ -452,6 +452,11 @@ pub const Module = struct {
     /// `uses_top_level_await` 와 달리 **require 엣지도 탄다** — CJS 모듈이 TLA 모듈을
     /// 동기 소비하는 위상을 잡아내야 하기 때문이다(Node 도 `ERR_REQUIRE_ASYNC_MODULE` 로 거부).
     in_async_cone: bool = false,
+
+    /// #4598: `lowerProgram` 이 만든 async IIFE statement 의 AST 인덱스.
+    /// `__esm` factory 방출 시 이 문장만 `return <expr>;` 로 바꿔 `init_X()` 가
+    /// 초기화 완료 promise 를 돌려주게 한다. null 이면 해당 없음.
+    tla_iife_stmt: ?u32 = null,
     /// Module Federation 연합 경계 모듈 (#3318 P1-1). `mf.exposes` 타겟 ∪
     /// `mf.shared` ∪ shared 전방-의존 폐포. P1-1 은 **표시·안정 ID 계산만**
     /// (분석) — 스코프 호이스팅 소거 제외 *enforcement*·container/manifest

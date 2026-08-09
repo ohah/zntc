@@ -149,6 +149,9 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     }
 
     const root = transformer.transform() catch return;
+    // #4598: `lowerProgram` 이 만든 async IIFE statement 를 module 로 넘긴다 —
+    // emitter 가 `__esm` factory 안에서 그 문장만 `return <expr>;` 로 방출한다.
+    if (transformer.tla_iife_stmt) |ix| module.tla_iife_stmt = @intFromEnum(ix);
     // #4210: 다운레벨 못한 ES2025 inline modifier 가 출력에 보존됨 → loud 진단
     // (transform-driven — 실제 fold bail 반영). transpile path 와 동일 메시지.
     if (transformer.used_unsupported_modifier) {

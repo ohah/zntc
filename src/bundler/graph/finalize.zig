@@ -443,3 +443,69 @@ pub fn propagateTopLevelAwait(self: *ModuleGraph) void {
         }
     }
 }
+
+/// #4598: **async cone** 계산 — TLA 모듈과, 그것을 동기 소비하는 모든 모듈.
+///
+/// `propagateTopLevelAwait` 와 두 가지가 다르다:
+/// 1. **`require` 엣지도 탄다.** CJS 모듈이 TLA 모듈을 동기 require 하는 위상을 잡아야
+///    한다 — Node 도 그 조합을 `ERR_REQUIRE_ASYNC_MODULE` 로 거부한다.
+/// 2. **판정 전용 필드**(`in_async_cone`)에만 쓴다. `uses_top_level_await` 를 넓히면
+///    `appendModuleCall`(`await init_X()`) 등이 함께 바뀐다(#4598 4차 회귀 원인).
+///
+/// dynamic import 는 이미 promise 경계라 전파하지 않는다.
+pub fn computeAsyncCone(self: *ModuleGraph) void {
+    const count = self.modules.count();
+    if (count == 0) return;
+
+    var seed = false;
+    {
+        var it = self.modules.iterator(0);
+        while (it.next()) |m| {
+            m.in_async_cone = m.self_uses_top_level_await;
+            if (m.in_async_cone) seed = true;
+        }
+    }
+    if (!seed) return;
+
+    // 역의존성 맵: static import 계열 + require.
+    var rdeps = self.allocator.alloc(std.ArrayListUnmanaged(u32), count) catch return;
+    defer {
+        for (rdeps) |*l| l.deinit(self.allocator);
+        self.allocator.free(rdeps);
+    }
+    for (rdeps) |*l| l.* = .empty;
+    {
+        var it = self.modules.iterator(0);
+        var src: usize = 0;
+        while (it.next()) |m| : (src += 1) {
+            for (m.import_records) |rec| {
+                if (rec.resolved.isNone()) continue;
+                const eager = rec.kind.isEagerEvalDependency() or rec.kind == .require;
+                if (!eager) continue;
+                const t = @intFromEnum(rec.resolved);
+                if (t >= count) continue;
+                rdeps[t].append(self.allocator, @intCast(src)) catch return;
+            }
+        }
+    }
+
+    var queue: std.ArrayListUnmanaged(u32) = .empty;
+    defer queue.deinit(self.allocator);
+    {
+        var it = self.modules.iterator(0);
+        var i: usize = 0;
+        while (it.next()) |m| : (i += 1) {
+            if (m.in_async_cone) queue.append(self.allocator, @intCast(i)) catch return;
+        }
+    }
+    var head: usize = 0;
+    while (head < queue.items.len) : (head += 1) {
+        const cur = queue.items[head];
+        for (rdeps[cur].items) |imp| {
+            const m = self.modules.at(imp);
+            if (m.in_async_cone) continue;
+            m.in_async_cone = true;
+            queue.append(self.allocator, imp) catch return;
+        }
+    }
+}
