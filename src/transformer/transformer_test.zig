@@ -2286,6 +2286,73 @@ fn parseAsModuleAndTransform(allocator: std.mem.Allocator, source: []const u8, o
     return .{ .ast = moved_ast, .root = root, .scanner = scanner_ptr, .parser = parser_ptr, .allocator = allocator };
 }
 
+test "TLA: 래퍼 로컬을 참조하는 export 만 분해한다 (#4598)" {
+    // export 선언이 래퍼 안 바인딩을 참조하면 스코프가 갈려 ReferenceError 가 났다.
+    const source = "const items = [1]; await foo(); export const OUT = { items };";
+    var r = try parseAsModuleAndTransform(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .top_level_await = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+
+    try std.testing.expect(std.mem.indexOf(u8, code, "var OUT") != null);
+    const wrap = std.mem.indexOf(u8, code, "async").?;
+    try std.testing.expect(std.mem.indexOf(u8, code, "OUT = {").? > wrap);
+}
+
+test "TLA: 래퍼 로컬을 참조하지 않는 export 는 건드리지 않는다 (#4598 회귀 가드)" {
+    // ⚠️ 무조건 분해하면 이 export 가 지연돼 **import 시점에 읽는 소비자가 undefined** 를 본다.
+    // 2차 시도가 정확히 이걸로 폐기됐다 — 이 가드가 없으면 재발한다.
+    const source = "await foo(); export const VERSION = \"1.0\";";
+    var r = try parseAsModuleAndTransform(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .top_level_await = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+
+    // 원형 유지 — 분해 산물(`var VERSION;` + 래퍼 안 대입)이 나오면 안 된다.
+    try std.testing.expect(std.mem.indexOf(u8, code, "VERSION = \"1.0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "var VERSION;") == null);
+}
+
+test "TLA: CJS 출력에서는 분해하지 않는다 (#4598 회귀 가드)" {
+    // ⚠️ CJS codegen 은 선언 시점에 `exports.X` 로 스냅샷하므로 래퍼 안 대입이 도달하지 않는다.
+    // 분해하면 시끄러운 ReferenceError 가 **조용한 undefined** 로 바뀐다 — 최악의 결과.
+    const source = "const items = [1]; await foo(); export const OUT = { items };";
+    var r = try parseAsModuleAndTransform(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .top_level_await = true }, .output_is_esm = false },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+
+    try std.testing.expect(std.mem.indexOf(u8, code, "var OUT;") == null);
+}
+
+test "TLA: export function / class 는 분해하지 않는다 (#4598 회귀 가드)" {
+    // ⚠️ 함수는 **모듈 instantiation 시점** 초기화라 래퍼로 옮기면 순환 import 가 깨지고,
+    // named FE 자기바인딩은 불변이라 본문 내 자기재대입이 throw 한다. 둘 다 실측 확인.
+    const source = "const items = [1]; await foo(); export function f() { return items; }";
+    var r = try parseAsModuleAndTransform(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .top_level_await = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+
+    try std.testing.expect(std.mem.indexOf(u8, code, "f = function") == null);
+}
+
 test "TLA: es2022+ no-op (top_level_await supported)" {
     // TLA 가 지원되는 타겟에서는 await 가 그대로 유지된다.
     const source = "await foo();";

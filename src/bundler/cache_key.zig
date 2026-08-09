@@ -138,12 +138,19 @@ pub const SelectiveOptions = struct {
     unsupported_hash: u64 = 0,
 };
 
+// 분류 메모 (#4598): `TransformOptions.output_is_esm` 은 **emit-only** 라 여기 넣지 않는다.
+// parse/semantic 은 이 값을 읽지 않으므로(analyzer 로 전달되지 않음) 정밀 전략의
+// pre-transform 캐시에서는 구조적으로 무관하다. 대조: `unsupported`/`es_target` 은
+// analyzer 로 넘어가므로 `unsupported_hash` 로 포함돼 있다.
+// ⚠️ 정밀 전략을 **post-transform 캐시로 확장**할 때는 이 필드도 반드시 편입해야 한다 —
+// TLA export 분해 여부가 갈려 같은 소스가 다른 바이트를 낸다.
+
 comptime {
     // SelectiveOptions ↔ TransformOptions 동기화 강제(정밀 전략 안전망). TransformOptions 에
     // 필드가 추가되면 컴파일 에러 → 그 필드가 parse/semantic(pre-pass) 결과에 영향을 주는지
     // 판정해서, 주면 SelectiveOptions 에 반영하고 이 수를 갱신할 것(누락=silent miscompile).
     const tf_fields = @typeInfo(@import("../transformer/options.zig").TransformOptions).@"struct".fields.len;
-    if (tf_fields != 45)
+    if (tf_fields != 46)
         @compileError("TransformOptions 필드 수 변경 — 새 필드의 parse-영향 여부 판정 후 SelectiveOptions 갱신 + 이 수 갱신 필요.");
 }
 

@@ -924,6 +924,8 @@ pub const Bundler = struct {
     /// emit_runtime_helper_imports / borrow_source_ast) 만 caller 가 추가.
     fn buildTransformOptionsBase(self: *const Bundler) @import("../transformer/transformer.zig").TransformOptions {
         return .{
+            // #4598: TLA export 분해는 ESM live binding 에만 유효하다.
+            .output_is_esm = self.options.format == .esm,
             .define = self.options.define,
             .experimental_decorators = self.options.experimental_decorators,
             .emit_decorator_metadata = self.options.emit_decorator_metadata,

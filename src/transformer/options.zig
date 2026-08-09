@@ -60,6 +60,16 @@ pub const AutoLabelMode = enum {
 
 /// Transformer 설정.
 pub const TransformOptions = struct {
+    /// 이 번들의 **출력 포맷이 ESM 인지** (#4598).
+    ///
+    /// TLA 다운레벨이 export 를 래퍼 밖 바인딩 + 래퍼 안 대입으로 분해할 때, 그 노출은
+    /// **ESM live binding** 에 전적으로 의존한다. CJS/UMD/IIFE codegen 은 선언 시점에
+    /// `exports.X` 로 값을 스냅샷하므로 래퍼 안 대입이 영영 도달하지 않는다 — 시끄러운
+    /// `ReferenceError` 가 조용한 `undefined` 로 바뀐다.
+    ///
+    /// 기본값 `true` 는 단일 파일 transpile 경로(항상 ESM 의미론)를 위한 것이고, 번들 경로는
+    /// `buildTransformOptionsBase` 가 실제 포맷으로 덮어쓴다.
+    output_is_esm: bool = true,
     /// TS 타입 스트리핑 활성화 (기본: true)
     strip_types: bool = true,
     /// console.* 호출 제거 (--drop=console)
