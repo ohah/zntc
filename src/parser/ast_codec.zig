@@ -49,7 +49,10 @@ comptime {
     // 류)나 deserialize 정확성에 영향을 주는 필드면 — 직렬화 누락 시 cache-hit 후 stale 출력이
     // 된다. 다른 codec(semantic/module/cache_key)처럼 필드 수를 못박아, 변경 시 새 필드를
     // "직렬화 / 빈값복원" 중 어디로 분류할지 재검토를 컴파일 에러로 강제한다.
-    if (@typeInfo(Ast).@"struct".fields.len != 24)
+    // #4598 `tla_lowered`: **직렬화 불필요**. 이 플래그는 "이 Ast 를 이미 TLA lowering 했다"
+    // 는 **한 빌드 안의 멱등성** 표식이다. 디스크 캐시에서 복원되는 Ast 는 lowering 이 끝난
+    // 산물이 아니라 parse 결과이므로 false 로 복원되는 것이 맞다.
+    if (@typeInfo(Ast).@"struct".fields.len != 25)
         @compileError("Ast 필드 수가 바뀜 — 새 필드의 직렬화 필요 여부를 판정해 ast_codec 갱신 후 이 수를 갱신할 것.");
 }
 
