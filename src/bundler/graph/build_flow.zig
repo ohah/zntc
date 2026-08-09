@@ -743,10 +743,13 @@ fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
 
     graph_finalize.promoteExportsKinds(self);
     graph_finalize.promoteRunBeforeMainModules(self);
-    graph_finalize.registerWrapperSymbols(self);
+    // #4598: cone 계산 → 승격 → 심볼 등록 순서여야 한다. `registerWrapperSymbols` 가
+    // `wrap_kind != .none` 인 모듈에만 `init_X`/`exports_X` 를 등록하므로, 승격이 그보다
+    // 뒤면 승격된 모듈이 심볼 없이 남는다.
     graph_finalize.propagateTopLevelAwait(self);
-    // #4598: 판정 전용 async cone (require 엣지 포함).
     graph_finalize.computeAsyncCone(self);
+    graph_finalize.promoteAsyncConeToEsmWrap(self);
+    graph_finalize.registerWrapperSymbols(self);
     checkSelfReExport(self);
 }
 

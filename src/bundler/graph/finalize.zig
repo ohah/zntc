@@ -461,7 +461,11 @@ pub fn computeAsyncCone(self: *ModuleGraph) void {
     {
         var it = self.modules.iterator(0);
         while (it.next()) |m| {
-            m.in_async_cone = m.self_uses_top_level_await;
+            // ⚠️ `self_uses_top_level_await` 만으로는 부족하다. 그 값은 **변환 뒤** analyzer
+            // 가 세우는데, TLA lowering 이 await 를 async IIFE 안으로 옮기면
+            // `isInsideFunctionScope()` 가 true 라 false 가 된다. lowering 이 IIFE 를
+            // 만들었다는 사실(`tla_iife_stmt`)이 정확한 신호다.
+            m.in_async_cone = m.self_uses_top_level_await or m.tla_iife_stmt != null;
             if (m.in_async_cone) seed = true;
         }
     }
@@ -507,5 +511,40 @@ pub fn computeAsyncCone(self: *ModuleGraph) void {
             m.in_async_cone = true;
             queue.append(self.allocator, imp) catch return;
         }
+    }
+}
+
+/// #4598: async cone 모듈을 `__esm` 래퍼로 승격.
+///
+/// 래핑돼야 소비자가 `await init_X()` 로 **기다릴 대상**을 갖는다. scope-hoist 된 채로는
+/// 기다릴 것이 없어 최상위 await(=타겟 위반) 말고는 방법이 없다.
+///
+/// ⚠️ 폐기된 시도(`ba943dec`)가 깨진 원인을 전부 가드로 막는다:
+/// - **entry 는 export 가 없을 때만** 승격. export 가 있는 라이브러리 entry 를 래핑하면
+///   `export { ... }` 가 래퍼 심볼로 바뀌어 **공개 API 가 통째로 사라진다**(실측).
+/// - `.cjs` 래퍼는 제외 — `__commonJS` 는 factory 반환값을 버려 promise 를 못 흘린다.
+///   그 위상은 별도 진단 대상이다(Node 도 `ERR_REQUIRE_ASYNC_MODULE` 로 거부).
+/// - splitting / preserve-modules / multi-format 제외 — 각각 진입·청크 계약이 달라
+///   폐기본에서 개별 결함이 났다.
+/// - async 문법이 없는 타겟(es5)은 상태머신 낮추기가 선행돼야 한다.
+///
+/// `computeAsyncCone` **뒤에**, `registerWrapperSymbols` **앞에** 불러야 한다.
+pub fn promoteAsyncConeToEsmWrap(self: *ModuleGraph) void {
+    const base = &self.transform_options_base;
+    if (!base.unsupported.top_level_await) return; // 타겟이 TLA 지원 → 손대지 않음
+    if (base.unsupported.async_await) return; // es5 는 아직 대상 아님
+    if (self.code_splitting or self.preserve_modules) return;
+    // 청크 위임(#4625)이 이 청크를 async factory 로 감싸면 모듈을 또 래핑하지 않는다.
+    // 위임 산물이 scope-hoist 라 더 작고 이미 검증돼 있다 — 겹치면 커지기만 한다.
+    if (base.tla_chunk_wrapped) return;
+
+    var it = self.modules.iterator(0);
+    while (it.next()) |m| {
+        if (!m.in_async_cone) continue;
+        if (!m.module_type.isJavaScriptLike()) continue;
+        if (m.wrap_kind != .none) continue; // 이미 래핑(cjs 포함) → 그 기계에 맡긴다
+        if (m.is_entry_point and m.export_bindings.len > 0) continue; // 라이브러리 entry 보호
+        if (m.exports_kind == .none) m.exports_kind = .esm;
+        if (m.exports_kind.isEsm()) m.wrap_kind = .esm;
     }
 }
