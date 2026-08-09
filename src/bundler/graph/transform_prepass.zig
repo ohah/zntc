@@ -137,6 +137,17 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     }
     transformer.line_offsets = module.line_offsets;
 
+    // #4598: 청크에 위임한 경우, **변환 전** AST 에서 TLA 유무를 확인해 전용 필드에 남긴다.
+    // 변환 뒤에 도는 analyzer 로는 알 수 없고(그 변환이 await 를 없앤다), 전역
+    // `uses_top_level_await` 를 넓히면 다른 경로가 함께 바뀐다(4차 회귀 원인).
+    if (opts.tla_chunk_wrapped and opts.unsupported.top_level_await) {
+        const es2022_tla_mod = @import("../../transformer/es2022_tla.zig");
+        if (ast_ptr.nodes.items.len > 0) {
+            const root_idx: @import("../../parser/ast.zig").NodeIndex = @enumFromInt(ast_ptr.nodes.items.len - 1);
+            module.tla_delegated_to_chunk = es2022_tla_mod.hasTopLevelAwait(ast_ptr, root_idx) catch false;
+        }
+    }
+
     const root = transformer.transform() catch return;
     // #4210: 다운레벨 못한 ES2025 inline modifier 가 출력에 보존됨 → loud 진단
     // (transform-driven — 실제 fold bail 반영). transpile path 와 동일 메시지.

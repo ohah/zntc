@@ -451,13 +451,6 @@ pub fn emitWithTreeShaking(
         try output.append(allocator, '\n');
     }
 
-    // TLA 포함 여부: 래핑 포맷에서 async로 감싸야 하는지 결정
-    const has_tla = blk: {
-        for (sorted.items) |m| {
-            if (m.uses_top_level_await) break :blk true;
-        }
-        break :blk false;
-    };
     // IIFE 래퍼는 내부에 `this`/`arguments`/`new.target`을 노출하지 않으므로
     // arrow 전환이 시맨틱을 바꾸지 않는다. ES5 타겟처럼 arrow 미지원 환경에서만
     // 기존 `function` 형태를 유지 (#1580, esbuild 관행과 동일).
@@ -512,13 +505,29 @@ pub fn emitWithTreeShaking(
 
     // IIFE + externals 가 있으면 factory_fn 을 param 포함 형태로 조립 (#1824).
     // 예: `(function(React, ReactDom) {\n`. 그 외에는 정적 문자열 사용.
-    const factory_fn_static = if (has_tla)
+    // 네이티브 TLA 가 남아 있는 경우(es2022+) — factory 가 async 여야 문법이 성립한다.
+    const has_native_tla = blk: {
+        for (sorted.items) |m| {
+            if (m.uses_top_level_await) break :blk true;
+        }
+        break :blk false;
+    };
+    // #4598: 청크 async factory 는 **위임된 경우에만** 켠다. `has_tla` 만 보면 모듈 단위
+    // 래핑이 이미 처리한 경우(es5 등)까지 async 로 만들어 미지원 타겟에 `async` 가 나간다.
+    const tla_delegated = blk_d: {
+        for (sorted.items) |m| {
+            if (m.tla_delegated_to_chunk) break :blk_d true;
+        }
+        break :blk_d false;
+    };
+    const factory_async = has_native_tla or tla_delegated;
+    const factory_fn_static = if (factory_async)
         (if (use_arrow) "(async () => {\n" else "(async function() {\n")
     else
         (if (use_arrow) "(() => {\n" else "(function() {\n");
     const factory_fn_owned: ?[]const u8 = blk: {
         if (options.format != .iife or ext_param_names.len == 0) break :blk null;
-        const prefix = if (has_tla)
+        const prefix = if (factory_async)
             (if (use_arrow) "(async (" else "(async function(")
         else
             (if (use_arrow) "((" else "(function(");

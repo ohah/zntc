@@ -68,6 +68,13 @@ fn topLevelAwaitVisit(ctx: *TopLevelAwaitCtx, idx: NodeIndex, node: Node) ast_wa
         .class_declaration,
         .class_expression,
         => return .skip_children,
+        // `for await (… of …)` 도 top-level await 다 — 다운레벨 시 내부에 `await` 를
+        // 남기므로 감지 대상이다. 놓치면 변환만 건너뛰고 청크 factory 는 async 가 아닌
+        // 상태가 돼 네이티브 await 가 누출된다 (#4598).
+        .for_await_of_statement => {
+            ctx.found = true;
+            return .stop;
+        },
         .await_expression => {
             ctx.found = true;
             return .stop;
@@ -76,7 +83,7 @@ fn topLevelAwaitVisit(ctx: *TopLevelAwaitCtx, idx: NodeIndex, node: Node) ast_wa
     }
 }
 
-fn hasTopLevelAwait(ast: *const ast_mod.Ast, idx: NodeIndex) std.mem.Allocator.Error!bool {
+pub fn hasTopLevelAwait(ast: *const ast_mod.Ast, idx: NodeIndex) std.mem.Allocator.Error!bool {
     // 반복 순회(#4123): top-level 깊은 좌결합 체인에서 재귀 시 스택 오버플로우. OOM 은
     // 호출자(lowerProgram=Error!)로 전파한다 — true/false 어느 기본값도 안전하지 않으므로
     // (false=미지원 타깃에 unwrapped await / true=불필요 IIFE wrap) 추측 대신 에러 전파.

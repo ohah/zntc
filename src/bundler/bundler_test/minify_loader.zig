@@ -4558,6 +4558,55 @@ test "#4616 --external-alias 가 cjs require 방출에도 적용된다" {
     try std.testing.expect(std.mem.indexOf(u8, js, "crypto-browserify") != null);
 }
 
+fn bundleTlaIife(tmp: *std.testing.TmpDir, unsup: @import("../../transformer/transformer.zig").TransformOptions.compat.UnsupportedFeatures) ![]const u8 {
+    try writeFile(tmp.dir, "src/tla.ts", "const items = [1];\nawait Promise.resolve();\nexport const OUT = { items };");
+    try writeFile(tmp.dir, "src/main.ts", "import { OUT } from './tla';\nconsole.log(JSON.stringify(OUT));");
+    const entry = try absPath(tmp, "src/main.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .iife,
+        .global_name = "App",
+        .unsupported = unsup,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    return std.testing.allocator.dupe(u8, result.output);
+}
+
+test "#4598 IIFE: TLA 를 청크 async factory 에 위임한다" {
+    // 모듈 단위 래핑은 `export` 를 래퍼 밖에 남겨 스코프를 가르고, 같은 번들 소비자도 래퍼
+    // 밖 최상위에 놓여 값을 못 본다(scope-hoisted 라 live binding 이 없다). 청크 전체를
+    // 감싸면 선언·소비자가 한 스코프에 올바른 순서로 놓인다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const js = try bundleTlaIife(&tmp, .{ .top_level_await = true });
+    defer std.testing.allocator.free(js);
+
+    // factory 가 async — `var App = ` 바로 뒤를 본다(모듈 단위 산물과 구분).
+    const m = "var App = ";
+    const pos = std.mem.indexOf(u8, js, m).? + m.len;
+    try std.testing.expect(std.mem.startsWith(u8, js[pos..], "(async"));
+    // 모듈 단위 래핑 산물(`export` 밖 분리)이 없어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, js, "const OUT = { items }") != null);
+}
+
+test "#4598 IIFE: async 미지원 타겟은 위임하지 않는다 (회귀 가드)" {
+    // ⚠️ es5 는 factory 가 generator 여야 하는데 `for await` 다운레벨이 내부에 `await` 를
+    // 그대로 내보내 generator 안에서 SyntaxError 가 된다. 4차에서 실제로 회귀했다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const js = try bundleTlaIife(&tmp, .{ .top_level_await = true, .async_await = true });
+    defer std.testing.allocator.free(js);
+
+    const m = "var App = ";
+    const pos = std.mem.indexOf(u8, js, m).? + m.len;
+    try std.testing.expect(!std.mem.startsWith(u8, js[pos..], "(async"));
+    try std.testing.expect(!std.mem.startsWith(u8, js[pos..], "__async"));
+}
+
 test "#4604 CSS url(): catch-all tsconfig paths 가 bare url() 을 가로채지 않는다 (형제 있음)" {
     // 신고된 재현 그대로. `"paths": { "*": ["src/*"] }` 하에서 `url(assets/logo.png)` 가
     // paths 에 걸려 `src/assets/logo.png` 로, `url(./assets/logo.png)` 는 형제로 가서

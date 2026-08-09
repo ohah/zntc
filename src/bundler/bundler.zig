@@ -924,6 +924,8 @@ pub const Bundler = struct {
     /// emit_runtime_helper_imports / borrow_source_ast) 만 caller 가 추가.
     fn buildTransformOptionsBase(self: *const Bundler) @import("../transformer/transformer.zig").TransformOptions {
         return .{
+            // #4598: IIFE + async 지원 타겟만 (근거는 TransformOptions 필드 주석).
+            .tla_chunk_wrapped = self.options.format == .iife and !self.options.unsupported.async_await,
             .define = self.options.define,
             .experimental_decorators = self.options.experimental_decorators,
             .emit_decorator_metadata = self.options.emit_decorator_metadata,

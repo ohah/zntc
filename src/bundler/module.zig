@@ -435,6 +435,12 @@ pub const Module = struct {
     /// esbuild의 entryPointKind과 동일 — 정렬 순서나 exec_index와 무관하게
     /// 엔트리를 100% 정확히 식별한다.
     is_entry_point: bool = false,
+    /// 이 모듈의 top-level await 를 **청크 레벨 async factory 에 위임**했는지 (#4598).
+    ///
+    /// ⚠️ `uses_top_level_await` 를 재활용하면 안 된다. 그 플래그는 `appendModuleCall`
+    /// (`await init_X()`)·`ZNTC0002` 경고 등 여러 경로가 읽어서, 값을 넓히면 의도치 않은
+    /// 곳이 함께 바뀐다(4차 시도가 이걸로 회귀했다). 위임 사실만 담는 전용 필드로 둔다.
+    tla_delegated_to_chunk: bool = false,
     /// Module Federation 연합 경계 모듈 (#3318 P1-1). `mf.exposes` 타겟 ∪
     /// `mf.shared` ∪ shared 전방-의존 폐포. P1-1 은 **표시·안정 ID 계산만**
     /// (분석) — 스코프 호이스팅 소거 제외 *enforcement*·container/manifest

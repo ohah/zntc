@@ -60,6 +60,16 @@ pub const AutoLabelMode = enum {
 
 /// Transformer 설정.
 pub const TransformOptions = struct {
+    /// 청크 레벨 async factory 가 top-level await 를 대신 처리하는지 (#4598).
+    ///
+    /// IIFE + async 지원 타겟에서만 켠다. 그 조합에서는 모듈 단위 래핑이 해롭다 —
+    /// `export` 가 래퍼 밖에 남아 스코프가 갈리고, 같은 번들 소비자도 래퍼 밖 최상위에
+    /// 놓여 값을 못 본다(scope-hoisted 출력이라 live binding 이 없다).
+    ///
+    /// ⚠️ UMD/AMD/CJS 로 넓히면 안 된다 — async factory 를 만들지 않아 감쌀 것이 없어진다.
+    /// ⚠️ async 미지원 타겟(es5)도 안 된다 — factory 가 generator 여야 하는데 `for await`
+    /// 다운레벨이 내부에 `await` 를 그대로 내보내 generator 안에서 SyntaxError 가 된다.
+    tla_chunk_wrapped: bool = false,
     /// TS 타입 스트리핑 활성화 (기본: true)
     strip_types: bool = true,
     /// console.* 호출 제거 (--drop=console)

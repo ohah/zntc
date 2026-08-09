@@ -83,7 +83,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             // 여기서 early-return 해 TLA+styled-components(css-prop) 동시 사용 시 추출된
             // module-level decl 이 hoist 되지 않고 소실됐다.
             const result = blk: {
-                if (self.options.unsupported.top_level_await) {
+                if (self.options.unsupported.top_level_await and !self.options.tla_chunk_wrapped) {
                     if (try es2022_tla.lowerProgram(Transformer, self, node)) |wrapped| break :blk wrapped;
                 }
                 break :blk try self.visitListNode(idx);
