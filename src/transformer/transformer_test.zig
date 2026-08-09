@@ -2367,6 +2367,43 @@ test "TLA: export class 는 원위치 대입 (클래스는 원래 TDZ) (#4598)" 
     try std.testing.expect(assign > await_pos);
 }
 
+test "TLA: export default 는 live binding 으로 분해된다 (#4598)" {
+    // ⚠️ `export default _t;` 로는 안 된다 — `export default <expr>` 는 평가 시점 **값 스냅샷**
+    // 이라 래퍼가 대입하기 전의 `undefined` 가 고정된다. `export { _t as default }` 여야 한다.
+    const source = "const items = [1]; await foo(); export default { items };";
+    var r = try parseAsModuleAndTransform(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .top_level_await = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+
+    try std.testing.expect(std.mem.indexOf(u8, code, "as default") != null);
+    // 스냅샷 형태(`export default <ident>;`)가 남으면 안 된다.
+    try std.testing.expect(std.mem.indexOf(u8, code, "export default") == null);
+}
+
+test "TLA: specifier-only export 의 선언도 바인딩을 밖으로 올린다 (#4598)" {
+    // `const X = …; export { X };` 는 선언이 래퍼 안으로 들어가 export 절과 끊긴다.
+    // 게다가 const-bake 가 래퍼 안에서 참조를 못 봐(export 절이 밖) 선언을 통째로 elide 한다.
+    const source = "const items = [1]; await foo(); const OUT = { items }; export { OUT }; use(OUT);";
+    var r = try parseAsModuleAndTransform(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .top_level_await = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+
+    try std.testing.expect(std.mem.indexOf(u8, code, "var OUT") != null);
+    const assign = std.mem.indexOf(u8, code, "OUT = {").?;
+    const await_pos = std.mem.indexOf(u8, code, "await foo()").?;
+    try std.testing.expect(assign > await_pos); // 원위치(래퍼 안)
+}
+
 test "TLA: 구조분해 export 는 분해하지 않고 종전 동작 유지 (#4598 범위 가드)" {
     // 바인딩이 단순 식별자가 아니면 분해 규칙이 달라진다 — 건드리지 않는다.
     // 이 가드가 없으면 "전부 분해" 로 넓혀도 위 테스트들이 통과해 범위가 사라진다.
