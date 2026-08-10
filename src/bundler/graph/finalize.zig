@@ -549,7 +549,37 @@ pub fn promoteAsyncConeToEsmWrap(self: *ModuleGraph) void {
         //    안 그러면 `lowerProgram` 이 옮긴 초기화식을 아무도 기다리지 않아 export 값이
         //    조용히 `undefined` 가 된다(리뷰 실측: main `V= 41` → `V= undefined`).
         if (m.is_entry_point and m.export_bindings.len > 0) continue;
+        // ⚠️ **순수 re-export entry**(`export { v } from './dep'`)가 소비자면 승격하면 안 된다.
+        //    그 위상엔 `init_X()` 를 부르는 경로가 아예 없어(import 바인딩도 wrap 도 없음)
+        //    factory 가 정의만 되고 호출되지 않는다 → export 값이 영구히 `undefined`
+        //    (리뷰 실측: main `v= 41` → `v= undefined`). 승격 안 하면 scope-hoist 로
+        //    남아 emitter 의 최상위 await fallback 이 처리한다.
+        if (hasOnlyReExportImporters(self, m)) continue;
         if (m.exports_kind == .none) m.exports_kind = .esm;
         if (m.exports_kind.isEsm()) m.wrap_kind = .esm;
     }
+}
+
+/// #4598: 이 모듈을 소비하는 importer 가 **전부 re-export 뿐**인지.
+/// 그 위상엔 `init_X()` 호출 경로가 없어 승격하면 factory 가 영영 안 돈다.
+fn hasOnlyReExportImporters(self: *ModuleGraph, target: *const Module) bool {
+    const t_idx = blk: {
+        var it = self.modules.iterator(0);
+        var i: u32 = 0;
+        while (it.next()) |m| : (i += 1) {
+            if (m == target) break :blk i;
+        }
+        return false;
+    };
+    var saw_any = false;
+    var it = self.modules.iterator(0);
+    while (it.next()) |m| {
+        for (m.import_records) |rec| {
+            if (rec.resolved.isNone()) continue;
+            if (@intFromEnum(rec.resolved) != t_idx) continue;
+            saw_any = true;
+            if (rec.kind != .re_export) return false;
+        }
+    }
+    return saw_any;
 }

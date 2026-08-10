@@ -1422,10 +1422,33 @@ pub fn needsPropertyQuote(name: []const u8) bool {
 /// `lowerProgram` 이 만든 형태는 `<name> = (async () => {` 또는 `<name>=(async()=>{`.
 /// ⚠️ 이름은 리네임/mangle 을 거치므로 하드코딩할 수 없다 — 방출된 텍스트에서 읽는다.
 fn findTlaTempName(code: []const u8) ?[]const u8 {
-    const marker = "= (async () =>";
-    const marker_min = "=(async()=>";
-    const at = std.mem.indexOf(u8, code, marker) orelse
-        std.mem.indexOf(u8, code, marker_min) orelse return null;
+    // ⚠️ codegen 철자를 리터럴로 못 박으면 minify 형태(`=(async ()=>`)를 놓쳐 최상위
+    //    await 가 조용히 빠진다 → export 값이 `undefined`(리뷰 실측). `=` 뒤 공백과
+    //    `async` 뒤 공백을 모두 허용해 스캔한다.
+    const at = blk: {
+        var i: usize = 0;
+        while (std.mem.indexOfPos(u8, code, i, "async")) |a| {
+            i = a + 5;
+            // `async` 앞으로 `=`(공백 허용)가 있어야 한다.
+            var b = a;
+            while (b > 0 and (code[b - 1] == ' ' or code[b - 1] == '\t')) b -= 1;
+            // IIFE 여는 괄호 `(` 허용: `= (async () => …)()` / `=(async ()=>…)()`
+            if (b > 0 and code[b - 1] == '(') {
+                b -= 1;
+                while (b > 0 and (code[b - 1] == ' ' or code[b - 1] == '\t')) b -= 1;
+            }
+            if (b == 0 or code[b - 1] != '=') continue;
+            // `async` 뒤로 `()` 그리고 `=>` 가 와야 한다(공백 허용).
+            var c = a + 5;
+            while (c < code.len and (code[c] == ' ' or code[c] == '\t')) c += 1;
+            if (c + 1 >= code.len or code[c] != '(' or code[c + 1] != ')') continue;
+            var d = c + 2;
+            while (d < code.len and (code[d] == ' ' or code[d] == '\t')) d += 1;
+            if (d + 1 >= code.len or code[d] != '=' or code[d + 1] != '>') continue;
+            break :blk b - 1; // `=` 위치
+        }
+        return null;
+    };
     var end = at;
     while (end > 0 and (code[end - 1] == ' ' or code[end - 1] == '\t')) end -= 1;
     var start = end;
