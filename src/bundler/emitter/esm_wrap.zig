@@ -847,6 +847,35 @@ pub fn emitEsmWrappedModule(
     var body_code = try body_cg.generateStatements(root, body_stmts.items);
     if (tla_var_name) |tla_var| {
         body_code = try std.fmt.allocPrint(arena_alloc, "{s}\treturn {s};\n", .{ body_code, tla_var });
+    } else if (module.in_async_cone and options.transform_options_base.unsupported.async_await) {
+        // #4598 es5: factory 를 async 로 못 만드니 **promise 체이닝**으로 기다린다.
+        //   `"m.ts"() { return init_dep().then(function(){ …body… }); }`
+        // `init_X()` 는 memoize 돼 있어 body 안의 재호출은 비용이 없다. Hermes 는 Promise 를
+        // 제공하므로 상태머신 낮추기 없이 순수 ES5 문법으로 성립한다(PoC 확인).
+        if (linker) |l| {
+            var deps: std.ArrayList(u8) = .empty;
+            defer deps.deinit(allocator);
+            var n: usize = 0;
+            for (module.import_records) |rec| {
+                if (rec.resolved.isNone()) continue;
+                if (!rec.kind.isEagerEvalDependency() and rec.kind != .require) continue;
+                const dep = l.graph.getModule(rec.resolved) orelse continue;
+                if (dep.wrap_kind != .esm or !dep.in_async_cone) continue;
+                const nm = try dep.allocInitName(allocator, rename_tbl);
+                defer allocator.free(nm);
+                if (n > 0) try deps.appendSlice(allocator, ",");
+                try deps.appendSlice(allocator, nm);
+                try deps.appendSlice(allocator, "()");
+                n += 1;
+            }
+            if (n > 0) {
+                body_code = try std.fmt.allocPrint(
+                    arena_alloc,
+                    "\treturn Promise.all([{s}]).then(function() {{\n{s}\t}});\n",
+                    .{ deps.items, body_code },
+                );
+            }
+        }
     }
 
     // 5.1. Hermes 호환: hoisted var와 같은 이름의 named function expression 이름 제거.
