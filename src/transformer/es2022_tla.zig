@@ -219,6 +219,7 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
         const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
         const child_node = self.ast.getNode(child);
         if (isModuleDeclaration(child_node.tag)) {
+            if (!self.options.tla_export_decl_deferrable) continue;
             // `export const x = await f()` 도 대상. 예전엔 건너뛰어서 await 가 최상위에
             // 남고, es2017 낮추기가 그걸 `yield` 로 바꿔 **generator 가 아닌 `__esm`
             // factory 안의 bare yield** 가 됐다 (Hermes/acorn 모두 SyntaxError).
@@ -252,6 +253,7 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
             const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + j]);
             const child_node = self.ast.getNode(child);
             if (!isModuleDeclaration(child_node.tag)) continue;
+            if (!self.options.tla_export_decl_deferrable) continue;
             const d = exportedVarDeclIdx(self, child_node) orelse continue;
             if (!allDeclaratorsAreIdentifiers(self, d)) continue;
             const has_await = try hasTopLevelAwait(self.ast, d);

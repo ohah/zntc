@@ -946,6 +946,13 @@ pub const Bundler = struct {
         return .{
             // #4598: IIFE + async 지원 타겟만 (근거는 TransformOptions 필드 주석).
             .tla_chunk_wrapped = self.tlaChunkWrapped(format),
+            // #4598: 기다려 줄 기계가 있는 위상에서만 export 초기화식을 옮긴다.
+            // ⚠️ `promoteAsyncConeToEsmWrap` 의 빌드-단위 조건과 **정확히 같아야** 한다.
+            .tla_export_decl_deferrable = self.options.unsupported.top_level_await and
+                !self.options.unsupported.async_await and
+                !self.options.code_splitting and
+                !self.options.preserve_modules and
+                format == .esm,
             .define = self.options.define,
             .experimental_decorators = self.options.experimental_decorators,
             .emit_decorator_metadata = self.options.emit_decorator_metadata,

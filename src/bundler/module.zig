@@ -187,11 +187,21 @@ pub fn isAwaitableInit(
     importer: *const Module,
     unsupported: @import("../transformer/transformer.zig").TransformOptions.compat.UnsupportedFeatures,
 ) bool {
-    if (unsupported.async_await) return false;
-    // ① target
+    // ① target 이 기다릴 대상(초기화 완료 promise)을 주는가.
+    //    `__commonJS` 는 factory 반환값을 버려 promise 를 못 흘린다.
     if (target.wrap_kind != .esm) return false;
     if (!(target.uses_top_level_await or target.in_async_cone)) return false;
-    // ② importer
+
+    // ② importer 가 그 await 를 담을 수 있는가.
+    //
+    // ⚠️ **네이티브 TLA 를 쓰는 타겟(es2022+)에서는 importer 를 따지면 안 된다.** 거기선
+    //    모듈 최상위 await 가 합법이라 scope-hoist importer 도 그냥 쓸 수 있다. importer
+    //    조건을 걸었더니 es2022 에서 `await init_X()` 가 사라져 값이 `undefined` 가 됐다
+    //    (리뷰 실측: main `41` → `undefined`). 다운레벨 타겟에서만 문맥을 따진다.
+    if (!unsupported.top_level_await) return true;
+
+    // 다운레벨: async 문법이 없으면 factory 를 async 로 못 만든다.
+    if (unsupported.async_await) return false;
     if (importer.wrap_kind != .esm) return false;
     if (!(importer.uses_top_level_await or importer.in_async_cone)) return false;
     return true;

@@ -147,7 +147,9 @@ comptime {
     // 전용이고(파일 상단) parse/semantic 은 이 값을 읽지 않는다. ⚠️ post-transform 캐시로
     // 확장하면 편입 필수 — 값에 따라 TLA 래핑 여부가 갈려 같은 소스가 다른 AST 를 낸다.
     const tf_fields = @typeInfo(@import("../transformer/options.zig").TransformOptions).@"struct".fields.len;
-    if (tf_fields != 46)
+    // #4598 `tla_export_decl_deferrable`: transform 전용(파싱에 영향 없음) — SelectiveOptions
+    // 미편입. ⚠️ post-transform 캐시로 확장하면 편입 필수(값에 따라 AST 가 갈린다).
+    if (tf_fields != 47)
         @compileError("TransformOptions 필드 수 변경 — 새 필드의 parse-영향 여부 판정 후 SelectiveOptions 갱신 + 이 수 갱신 필요.");
 }
 
