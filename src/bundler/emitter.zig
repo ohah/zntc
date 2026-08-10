@@ -982,6 +982,19 @@ pub fn emitWithTreeShaking(
                 try module_output.appendSlice(allocator, code_to_append);
             }
             prev_was_cjs_var_minify = is_cjs_var_minify;
+            // #4598: 래핑되지 않은(scope-hoist) TLA 모듈은 `lowerProgram` 이 만든
+            // `var <temp> = (async () => {…})();` 를 **아무도 기다리지 않는다** → export 값이
+            // 조용히 `undefined` 가 된다(리뷰 실측: main `V= 41` → `V= undefined`).
+            // 최상위에서 기다린다. ESM 출력에선 문법적으로 합법이고, main 도 같은 위상에서
+            // 최상위 await 를 내므로 회귀가 아니다.
+            if (m.tla_iife_stmt != null and m.wrap_kind == .none and options.format == .esm) {
+                if (findTlaTempName(code_to_append)) |tmp_name| {
+                    try module_output.appendSlice(allocator, "await ");
+                    try module_output.appendSlice(allocator, tmp_name);
+                    try module_output.appendSlice(allocator, ";\n");
+                    module_line += 1;
+                }
+            }
             module_line += @intCast(std.mem.count(u8, code_to_append, "\n"));
             if (!options.minify_whitespace) {
                 try module_output.appendSlice(allocator, "//#endregion\n");
@@ -1405,6 +1418,27 @@ pub fn needsPropertyQuote(name: []const u8) bool {
 }
 
 /// 들여쓰기를 적용하여 텍스트를 ArrayList에 추가. 줄바꿈 뒤에 탭을 삽입.
+/// #4598: 방출된 모듈 코드에서 TLA promise 임시변수명을 찾는다.
+/// `lowerProgram` 이 만든 형태는 `<name> = (async () => {` 또는 `<name>=(async()=>{`.
+/// ⚠️ 이름은 리네임/mangle 을 거치므로 하드코딩할 수 없다 — 방출된 텍스트에서 읽는다.
+fn findTlaTempName(code: []const u8) ?[]const u8 {
+    const marker = "= (async () =>";
+    const marker_min = "=(async()=>";
+    const at = std.mem.indexOf(u8, code, marker) orelse
+        std.mem.indexOf(u8, code, marker_min) orelse return null;
+    var end = at;
+    while (end > 0 and (code[end - 1] == ' ' or code[end - 1] == '\t')) end -= 1;
+    var start = end;
+    while (start > 0) : (start -= 1) {
+        const c = code[start - 1];
+        const ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or c == '_' or c == '$';
+        if (!ok) break;
+    }
+    if (start == end) return null;
+    return code[start..end];
+}
+
 pub fn appendIndented(wrapped: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []const u8) !void {
     for (text) |c| {
         try wrapped.append(allocator, c);

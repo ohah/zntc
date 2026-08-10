@@ -1286,9 +1286,7 @@ fn appendWrappedInitCall(
     options: *const EmitOptions,
     rename_tbl: ?*const RenameTable,
 ) !void {
-    const target_needs_await = src_mod.uses_top_level_await or src_mod.in_async_cone;
-    const importer_is_async = importer.uses_top_level_await or importer.in_async_cone;
-    const is_tla = src_mod.wrap_kind == .esm and target_needs_await and importer_is_async;
+    const is_tla = @import("../module.zig").isAwaitableInit(src_mod, importer, options.transform_options_base.unsupported);
     const guard = src_mod.shouldGuard(options.entry_error_guard);
     switch (src_mod.wrap_kind) {
         .esm => {

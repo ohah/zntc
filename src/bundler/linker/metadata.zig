@@ -228,10 +228,9 @@ fn appendEsmInitCall(
     target_mod: *const Module,
     importer: *const Module,
 ) !void {
-    const target_needs_await = target_mod.uses_top_level_await or target_mod.in_async_cone;
-    const importer_is_async = importer.uses_top_level_await or importer.in_async_cone;
+    const needs_await = @import("../module.zig").isAwaitableInit(target_mod, importer, self.graph.transform_options_base.unsupported);
     const guard = target_mod.shouldGuard(self.entry_error_guard);
-    if (target_needs_await and importer_is_async) try preamble.write("await ");
+    if (needs_await) try preamble.write("await ");
     try writeEsmInitExprBody(self, preamble, target_mod, guard);
     try preamble.write(if (guard) rt.GUARD_LAMBDA_CLOSE else rt.INIT_CALL_END);
 }
@@ -1604,25 +1603,12 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module, format: types
                 defer self.allocator.free(exports_name);
                 // #1621: minify 시 __toCommonJS → $tC 축약.
                 const to_cjs_name: []const u8 = if (self.minify_whitespace) rt.NAMES.TOCOMMONJS_MIN else "__toCommonJS";
-                // #4598 3b-4: 소비자가 **초기화 완료를 기다려야** 값을 본다.
-                //   ① target 이 기다릴 대상을 준다 (TLA 이거나 async cone 안)
-                //   ② importer(`m`) 의 factory 가 async 다 — 아니면 non-async 본문에
-                //      `await` 가 떨어져 SyntaxError (폐기된 ba943dec 의 구멍).
-                // 없으면 `init_X()` 가 promise 를 돌려주는데 그걸 버리고 exports 를 즉시
-                // 읽어 `undefined` 가 된다.
-                // ⚠️ importer 가 `await` 를 **담을 수 있어야** 한다:
-                //   - `__commonJS` 래퍼는 async 로 안 만든다(그 헬퍼가 반환값을 버려 promise
-                //     전파가 불가 — 별도 진단 대상). 거기에 await 를 넣으면 SyntaxError(실측).
-                //   - async 문법이 없는 타겟(es5)도 제외 — 상태머신 낮추기가 선행돼야 한다.
-                const importer_can_await = m.wrap_kind == .esm and
-                    (m.uses_top_level_await or m.in_async_cone) and
-                    !self.graph.transform_options_base.unsupported.async_await;
-                const needs_await = (target_mod.uses_top_level_await or target_mod.in_async_cone) and
-                    importer_can_await;
-                const call_expr = if (needs_await)
-                    try std.fmt.allocPrint(self.allocator, "(await {s}(), {s}({s}))", .{ init_name, to_cjs_name, exports_name })
-                else
-                    try std.fmt.allocPrint(self.allocator, "({s}(), {s}({s}))", .{ init_name, to_cjs_name, exports_name });
+                // ⚠️ #4598: 여기엔 `await` 를 넣지 않는다. 이 문자열은 모듈 안 **모든**
+                //    `require(spec)` 지점에 치환되는데, RN `inline_requires` 처럼 중첩
+                //    함수 본문에 있는 require 까지 포함된다 — non-async 함수 안에 await 가
+                //    들어가 번들 전체가 파싱 불가가 된다(리뷰 실측). 초기화 순서는
+                //    preamble 의 `appendEsmInitCall` 이 담당한다.
+                const call_expr = try std.fmt.allocPrint(self.allocator, "({s}(), {s}({s}))", .{ init_name, to_cjs_name, exports_name });
                 try require_rewrites.put(self.allocator, rec.specifier, call_expr);
             }
         }

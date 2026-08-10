@@ -169,6 +169,34 @@ pub fn destroyParseArena(allocator: std.mem.Allocator, arena: *std.heap.ArenaAll
     allocator.destroy(arena);
 }
 
+/// #4598: `await init_X()` 를 낼 수 있는가 — **이 질문의 유일한 답변자**.
+///
+/// 예전엔 같은 판정이 5곳(`appendEsmInitCall` · `appendWrappedInitCall` ·
+/// `buildRequireRewrites` · lazy ESM import · default re-export)에 **서로 다른 조건**으로
+/// 흩어져 있었다. 그래서 어떤 곳은 non-async 문맥에 `await` 를 넣어 번들을 파싱 불가로
+/// 만들고, 어떤 곳은 async 인데 `await` 를 빼먹어 **조용한 `undefined`** 를 만들었다.
+/// 새 호출부가 생기면 반드시 이 함수를 쓸 것 — 조건을 손으로 다시 적지 말 것.
+///
+/// 두 축을 모두 만족해야 한다:
+///   ① **target 이 기다릴 대상을 준다** — 초기화 완료 promise 를 돌려주는 `__esm` 래퍼.
+///      `__commonJS` 는 factory 반환값을 버리므로 promise 를 못 흘린다.
+///   ② **importer 가 그 await 를 담을 수 있다** — 자기 factory 가 async 인 `__esm` 래퍼.
+///      async 문법이 없는 타겟(es5)은 factory 를 async 로 못 만든다.
+pub fn isAwaitableInit(
+    target: *const Module,
+    importer: *const Module,
+    unsupported: @import("../transformer/transformer.zig").TransformOptions.compat.UnsupportedFeatures,
+) bool {
+    if (unsupported.async_await) return false;
+    // ① target
+    if (target.wrap_kind != .esm) return false;
+    if (!(target.uses_top_level_await or target.in_async_cone)) return false;
+    // ② importer
+    if (importer.wrap_kind != .esm) return false;
+    if (!(importer.uses_top_level_await or importer.in_async_cone)) return false;
+    return true;
+}
+
 pub const Module = struct {
     index: ModuleIndex,
     /// 절대 파일 경로. graph의 path_to_module 키와 동일한 메모리를 참조 (빌림).

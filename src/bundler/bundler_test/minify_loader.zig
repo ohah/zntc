@@ -4825,11 +4825,14 @@ test "#4598 다운레벨 ESM: await 와 무관한 export 는 지연하지 않는
     );
     defer std.testing.allocator.free(js);
 
-    // `NAME` 은 IIFE 밖에서 **동기 초기화**돼야 한다 — 할당(`NAME = `)이 아니라 선언 형태.
-    const has_sync_decl = std.mem.indexOf(u8, js, "NAME = \"hello\"") != null;
-    try std.testing.expect(has_sync_decl);
-    // 지연 산물(할당만 남고 선언은 `var NAME;`)이면 안 된다.
-    try std.testing.expect(std.mem.indexOf(u8, js, "var NAME;") == null);
+    // ⚠️ 문자열 존재만 보면 공허하다. `NAME` 대입이 async IIFE **밖**에 있어야 한다 —
+    //    안으로 들어가면 소비자가 `undefined` 를 읽는다(폐기된 시도의 회귀).
+    const assign_at = std.mem.indexOf(u8, js, "NAME = \"hello\"") orelse return error.MissingNameAssign;
+    if (std.mem.indexOf(u8, js, "= (async () =>")) |iife_at| {
+        const close_at = std.mem.indexOfPos(u8, js, iife_at, "})()") orelse return error.MissingIifeClose;
+        // 대입이 IIFE 본문 구간(iife_at..close_at) 안에 있으면 지연된 것 = 회귀.
+        try std.testing.expect(!(assign_at > iife_at and assign_at < close_at));
+    }
 }
 
 test "#4598 다운레벨 ESM: 라이브러리 entry 의 export 는 보존된다 (회귀 가드)" {
@@ -4849,8 +4852,20 @@ test "#4598 다운레벨 ESM: 라이브러리 entry 의 export 는 보존된다 
     const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "export {") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "A") != null);
+    const js = result.output;
+    // ⚠️ export **이름**만 확인하면 공허하다 — 리뷰가 잡은 회귀(값이 `undefined`)를
+    //    이 단언은 통과시켰다. 값이 실제로 채워지는지 구조로 확인한다.
+    try std.testing.expect(std.mem.indexOf(u8, js, "export {") != null);
+    // `V` 초기화가 async IIFE 로 옮겨졌다면 **최상위에서 기다려야** 한다.
+    if (std.mem.indexOf(u8, js, "= (async () =>")) |_| {
+        var has_top_await = false;
+        var it = std.mem.splitScalar(u8, js, '\n');
+        while (it.next()) |line| {
+            if (line.len == 0 or line[0] == ' ' or line[0] == '\t') continue;
+            if (std.mem.startsWith(u8, line, "await ")) has_top_await = true;
+        }
+        try std.testing.expect(has_top_await);
+    }
 }
 
 test "#4604 CSS url(): catch-all tsconfig paths 가 bare url() 을 가로채지 않는다 (형제 있음)" {

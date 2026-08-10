@@ -543,7 +543,12 @@ pub fn promoteAsyncConeToEsmWrap(self: *ModuleGraph) void {
         if (!m.in_async_cone) continue;
         if (!m.module_type.isJavaScriptLike()) continue;
         if (m.wrap_kind != .none) continue; // 이미 래핑(cjs 포함) → 그 기계에 맡긴다
-        if (m.is_entry_point and m.export_bindings.len > 0) continue; // 라이브러리 entry 보호
+        // 라이브러리 entry(= export 가 있는 entry)는 승격하지 않는다 — 래핑하면
+        // `export { … }` 가 래퍼 심볼로 바뀌어 **공개 API 가 사라진다**(실측).
+        // ⚠️ 대신 emitter 가 승격 안 된 TLA 모듈에 최상위 `await <temp>;` 를 낸다.
+        //    안 그러면 `lowerProgram` 이 옮긴 초기화식을 아무도 기다리지 않아 export 값이
+        //    조용히 `undefined` 가 된다(리뷰 실측: main `V= 41` → `V= undefined`).
+        if (m.is_entry_point and m.export_bindings.len > 0) continue;
         if (m.exports_kind == .none) m.exports_kind = .esm;
         if (m.exports_kind.isEsm()) m.wrap_kind = .esm;
     }
