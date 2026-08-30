@@ -6,6 +6,7 @@ const e2eJSX = helpers.e2eJSX;
 const e2eFull = helpers.e2eFull;
 const e2eWithOptions = helpers.e2eWithOptions;
 const e2eSourceMap = helpers.e2eSourceMap;
+const e2eSourceMapWithComments = helpers.e2eSourceMapWithComments;
 const TransformOptions = helpers.TransformOptions;
 const CodegenOptions = helpers.CodegenOptions;
 const SourceMapTestResult = helpers.SourceMapTestResult;
@@ -466,4 +467,38 @@ test "#4481 minify: 폴딩된 return 은 test 가 괄호로 시작하면 공백�
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "return(m=g())?1:2") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "return!c?1:2") != null);
+}
+
+// ============================================================
+// 한 줄 블록 안 주석 뒤 줄 밀림
+// ============================================================
+
+test "source map: 한 줄 블록 안 주석 뒤 매핑이 안 밀린다" {
+    // `if (v) { /* 주석 */ }` 는 세 줄로 펴진다. 그때 블록 닫기 직전에
+    // 주석이 남긴 줄바꿈을 버퍼에서 되감는데, 예전에는 gen_line 을 안
+    // 되돌려 그 뒤 매핑이 통째로 한 줄씩 밀렸다.
+    const source =
+        \\export function f(v: number): number {
+        \\  let g = v;
+        \\  if (v) { /* 주석 */ }
+        \\  return g;
+        \\}
+    ;
+    var r = try e2eSourceMapWithComments(std.testing.allocator, source);
+    defer r.deinit();
+    try r.expectMappingAt("let g", 1, 2);
+    try r.expectMappingAt("return g", 3, 2);
+}
+
+test "source map: catch 블록 안 주석 뒤 매핑이 안 밀린다" {
+    const source =
+        \\export function f(v: number): number {
+        \\  let g = v;
+        \\  try { g = v + 1; } catch { /* 무시 */ }
+        \\  return g;
+        \\}
+    ;
+    var r = try e2eSourceMapWithComments(std.testing.allocator, source);
+    defer r.deinit();
+    try r.expectMappingAt("return g", 3, 2);
 }

@@ -337,14 +337,32 @@ fn blockHasPendingCommentBefore(self: anytype, end: u32) bool {
 /// emitComments 가 마지막 주석 뒤에 남긴 newline + indent 를 되감는다.
 /// 호출자가 곧바로 `}` 앞의 newline/indent 를 다시 쓰기 때문에, 그대로 두면
 /// 빈 줄이 하나 생긴다.
+///
+/// 버퍼를 직접 되감으므로 소스맵의 줄·열 셈(`gen_line`/`gen_col`)도 함께
+/// 되돌려야 한다. 안 그러면 지운 줄바꿈만큼 셈이 앞서 있어, 이 블록 뒤의
+/// 매핑이 전부 한 줄씩 밀린다 — `catch { /* 주석 */ }` 처럼 한 줄짜리 블록이
+/// 여러 줄로 펴진 파일에서 그 뒤 매핑이 통째로 어긋났다.
 fn trimTrailingBlankForBlockClose(self: anytype) void {
     if (self.options.minify_whitespace) return;
     while (self.buf.items.len > 0) {
         const last = self.buf.items[self.buf.items.len - 1];
         if (last == ' ' or last == '\t' or last == '\n' or last == '\r') {
+            if (last == '\n' and self.gen_line > 0) self.gen_line -= 1;
             self.buf.items.len -= 1;
         } else break;
     }
+    self.gen_col = trailingColumn(self.buf.items);
+}
+
+/// 버퍼의 마지막 줄바꿈 뒤 바이트 수 — 되감은 뒤의 출력 열이다.
+fn trailingColumn(buf: []const u8) u32 {
+    var i = buf.len;
+    var col: u32 = 0;
+    while (i > 0) : (i -= 1) {
+        if (buf[i - 1] == '\n') break;
+        col += 1;
+    }
+    return col;
 }
 
 pub fn emitBracedList(self: anytype, node: Node) !void {
