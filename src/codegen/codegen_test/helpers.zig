@@ -97,6 +97,42 @@ pub fn e2eSourceMap(backing_allocator: std.mem.Allocator, source: []const u8) !S
     };
 }
 
+/// 주석까지 넘긴 소스맵 e2e — transpile 경로(`cg.comments = scanner.comments`)와
+/// 같은 조건이다. 주석 출력이 줄 셈에 끼어드는 회귀를 잡는 데 쓴다.
+pub fn e2eSourceMapWithComments(backing_allocator: std.mem.Allocator, source: []const u8) !SourceMapTestResult {
+    var arena = std.heap.ArenaAllocator.init(backing_allocator);
+    errdefer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+
+    var t = try Transformer.init(allocator, &parser.ast, .{});
+    const root = try t.transform();
+
+    var cg = Codegen.initWithOptions(allocator, t.ast, .{ .sourcemap = true });
+    cg.line_offsets = scanner.line_offsets.items;
+    cg.comments = scanner.comments.items;
+    try cg.addSourceFile("input.ts");
+    const output = try cg.generate(root);
+    const json = try cg.generateSourceMap("output.js") orelse "";
+    const json_copy = try allocator.dupe(u8, json);
+
+    const mappings = if (cg.sm_builder) |*sm|
+        try allocator.dupe(Mapping, sm.mappings.items)
+    else
+        &[_]Mapping{};
+
+    return .{
+        .output = output,
+        .mappings = mappings,
+        .source_map_json = json_copy,
+        .arena = arena,
+    };
+}
+
 /// 기본 e2e: minify 모드 (기존 테스트 호환)
 pub fn e2e(allocator: std.mem.Allocator, source: []const u8) !TestResult {
     return e2eWithOptions(allocator, source, .{ .minify_whitespace = true });
