@@ -3149,6 +3149,8 @@
 
     "@zntc/core-win32-ia32-msvc": ["@zntc/core-win32-ia32-msvc@0.1.6", "", { "os": "win32", "cpu": "ia32" }, "sha512-xe7IA7Gi9n3maVnXFWOwGLO6pakO/ApNSUCINDUNYbUSzPPR0LA051YX2S3EX/yiN/M/73G00nZrzcWWHAcRuQ=="],
 
+    "@zntc/core-win32-x64-msvc": ["@zntc/core-win32-x64-msvc@0.1.6", "", { "os": "win32", "cpu": "x64" }, "sha512-tmC+sJXXCthNDq0NCmRWPW7WlpFx2CffqwLBkPmt8uCsJ1zDsEqCGHzHqovjVFdk7IZU/4WeSRPCkRhcc9bASw=="],
+
     "@zntc/e2e": ["@zntc/e2e@workspace:tests/e2e"],
 
     "@zntc/example-module-federation": ["@zntc/example-module-federation@workspace:examples/module-federation"],
