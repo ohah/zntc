@@ -42,7 +42,7 @@
     "release:dry-run": "bun scripts/release.ts",
     "release:publish": "bun scripts/release.ts --publish",
     "changeset": "changeset",
-    "changeset:version": "changeset version && bun run sync-versions && bun install --no-frozen-lockfile",
+    "changeset:version": "changeset version && bunx oxfmt format packages/*/CHANGELOG.md CHANGELOG.md && bun run sync-versions && bun install --no-frozen-lockfile",
     "changeset:status": "changeset status --verbose",
     "build:dts:all": "bun x tsc -b",
     "type-check": "bun x tsc -b --dry",
