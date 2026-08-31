@@ -412,6 +412,11 @@ jobs:
 
           release.yml 의 sync-lockfile 잡이 연 PR 이다."; then
             echo "✓ PR 생성 완료"
+            # 검사가 끝나면 알아서 들어가게 둔다 — lockfile 한 줄짜리 봇 PR 이라
+            # 사람이 손댈 것이 없다.
+            gh pr merge "$BRANCH" --rebase --auto \
+              && echo "✓ 오토머지 걸어 둠" \
+              || echo "::warning::오토머지를 걸지 못했다 — PR 은 열려 있으니 손으로 머지하면 된다."
           else
             echo "::warning::PR 을 자동으로 열지 못했다(저장소 설정에서 Actions 의 PR 생성이 꺼져 있을 수 있다). 가지는 밀어 두었으니 아래에서 열면 된다."
             echo "  https://github.com/${GITHUB_REPOSITORY}/compare/main...${BRANCH}?expand=1"
