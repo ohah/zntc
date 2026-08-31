@@ -58,7 +58,6 @@
   원문 기준이라 매칭되지 않고 그냥 번들됐다.
 
 - 7b7afd9: external 모듈에서 re-export 하면 산출물이 파싱 불가가 되거나 재export 가 사라지던 문제를 고쳤다 (#4621).
-
   - `export { x } from '<external>'` → 예전엔 바인딩 없는 `export { x };` 만 나가 **SyntaxError**.
     이제 `import { x } from "…"; export { x };`
   - `export * from '<external>'` → 예전엔 **통째로 사라짐**. 이제 그대로 통과.
@@ -117,7 +116,6 @@
   ## 수정 (rollup parity)
 
   재할당 바인딩(`write_count > 0` · `let`/`var` · 비 const/class/function · identity export · 단순 선언)을 **`exports.A` 저장소**로 낮춘다:
-
   - provider: 선언 `let A = 0` → `exports.A = 0`, 읽기/쓰기/compound/update/shorthand 를 `exports.A` 로 rewrite(codegen renames 재사용), 모듈 끝 `exports.A = A` skip.
   - consumer: 재할당 심볼은 `const ns = require(...); ns.A`(라이브 접근), 비재할당은 현행 구조분해 유지.
 
@@ -161,7 +159,6 @@
   ```
 
   DevTools 는 한글 문자열 한가운데를 짚었고, 열 기반 도구(Sentry 등)도 어긋났다.
-
   - 출력 열: `writer.write`/`writeByte` 가 바이트 대신 UTF-16 단위를 더한다.
   - 원본 열: 줄 머리부터 같은 셈으로 훑는다. 한 줄에 매핑이 여럿이라 마지막으로
     센 자리를 기억해 이어 세므로, 줄마다 앞부분을 다시 훑지 않는다.
@@ -258,7 +255,6 @@
 ### Patch Changes
 
 - 4cd691e: CJS interop 잔여 결함 3건 수정 (#4510). #4494(크로스-청크 CJS 의 **직접** named/default import)가 못 덮은 표면들로, 셋 다 별개 루트커즈다.
-
   1. **크로스-청크 `import * as ns from './x.cjs'`** — namespace 합성 경로는 #4494 의 크로스-청크 심볼 등록 기계를 타지 않아 소비자 청크에서 `require_X` 썽크가 undefined 였다. 합성 ns 도 provider 청크의 썽크를 크로스-청크 심볼로 등록한다.
 
   2. **비-식별자 멤버명** — `import { 'foo-bar' as x } from './x.cjs'` 가 `require_x()."foo-bar"` 로 방출돼 **문법 오류**였다. splitting 없이도 실패하는 preamble-writer 버그로, bracket 표기(`["foo-bar"]`)로 수정.
@@ -268,7 +264,6 @@
   전부 빌드 exit 0 · 파싱 통과 · **실행만** 실패하는 계열이라 실행 스모크로 가드했다.
 
   추가(코드리뷰): 2번(비-식별자 멤버명) 수정으로 quoted 이름이 CJS interop 배선을 타게 되면서 **새 구멍**이 드러났다.
-
   - `import { "default" as d } from './x.cjs'` — ES2022 arbitrary module namespace name. binding_scanner 는 이름을 **따옴표째** 저장하는데(`"\"default\""`) default 판정 3곳이 bare `"default"` 와만 비교해서, 이 형태가 default-interop 을 통째로 비껴가 `require_x()["default"]` = **undefined** 가 됐다. 수정 전에는 `require_x()."default"` 라는 **문법 오류**(loud)였는데 2번 수정이 그걸 valid-but-wrong 으로 바꿨다. 판정을 `preamble_writer.isDefaultExportName` 단일 소스로 묶었다 (node/esbuild 는 `import d from` 과 동일 취급).
   - cross-chunk 공개명 sanitize 가 **CJS owner 분기에만** 걸려 있었다. ESM 재-export 로 로컬명이 없으면 quoted export 명이 그대로 전역 이름이 되어 `var "a-b"` — 파싱 불가. 비-CJS 분기에도 적용했다.
   - 새 `preamble_writer_test.zig` 가 **어디서도 import 되지 않아** Zig 테스트 discovery 에 안 잡혔다(회귀 가드 5건이 CI 에서 아예 안 돌고 있었다). `bundler/mod.zig` 에 등록.
@@ -293,7 +288,6 @@
   폴리필 merge 지점에서 **미러를 merged 리스트로 동기화**해 근본 해소. 제외 판정은 RBM 인덱스 집합을 **루프 전 1회** 구축해 O(1) 조회(findModuleByPath 를 per-symbol 재계산하던 O(mod×sym×rbm×N) 제거).
 
   ## 검증
-
   - `reg-split-shared-rbm.test.ts`: cjs/umd/iife `--minify` 직접·로드-순서 실행이 `SETUP_DONE`(이전엔 파싱만 검증).
   - 폴리필 RBM: 2-entry `--splitting --format=cjs --minify --runtime-polyfills=auto --runtime-target='safari 5'` 직접 실행(수정 전 `require_core_js_... is not a function` → 수정 후 정상).
   - splitting(cjs/iife/umd/amd)·polyfill-rbm·preserve-modules-minify·manual-chunks 통합 + zig 전체 무회귀.
@@ -323,7 +317,6 @@
   **원인** — 직접 CJS import 가 cross-chunk 심볼로 등록되지 않았다. CJS 는 정적 export 가 없어 `resolveExportChain` 이 null → resolved binding 이 없고, `computeCrossChunkLinks` 가 그 바인딩을 통째로 skip 했다. 그래서 provider 는 interop 값을 export 하지 않았고 #4120 의 "cross-chunk CJS-interop 소비 억제" 게이트도 전역 공개명을 못 찾아 발화하지 않았다(re-export 경유 `export {default} from './a.cjs'` 만 등록돼 정상 동작). 이제 직접 import 도 canonical(CJS)+export 명으로 등록해, provider 청크가 interop 값을 materialize/export 하고 소비자는 일반 cross-chunk import 로 받는다.
 
   같이 고친 것 (멤버명이 cross-chunk 공개명이 되면서 드러난 인접 결함들):
-
   - **CJS 공개명을 합성명으로** (`default$single` / `named$second`). 예전엔 멤버명을 그대로 청크 top-level 식별자로 썼는데, 그러면 `exports.Buffer` 같은 멤버가 청크 안의 진짜 전역 `Buffer` 를 가리고(`Buffer.from is not a function`), 동명 청크 로컬(`const named`)과 `var`↔`const` 재선언 SyntaxError 를 냈다.
   - **CJS owner 는 항상 materialize**. 예전엔 "동명 로컬이 있으면 interop 불요" 로 판단했는데, 그 로컬은 `__commonJS` 클로저 _안_ 심볼이었다 — minify 시 `export { o as tag }` 로 클로저 스코프 이름을 노출해 `SyntaxError: Export 'o' is not defined`. (#4120 re-export 경로에도 있던 선재 버그.)
   - dev/lazy 의 cross-chunk 전역명 override 가 CJS 클로저 내부 심볼을 개명하던 문제.
@@ -357,7 +350,6 @@
   ## 수정
 
   esbuild/rolldown 동형 — provider 가 썽크를 **export**, 소비자가 **import** 후 `require_X()`. raw `require` 는 **lazy**(호출 시점 평가)라 import-path 의 eager materialize(`default$X=require_X()`)를 재사용하지 않고 썽크 자체를 넘긴다.
-
   - `Chunk.wrapper_cross_exports`/`wrapper_cross_imports` 필드 추가 — import-path 의 exports_to/imports_from(export명 키) 기계와 분리(래퍼는 export명이 없음).
   - `computeCrossChunkLinks` 에 raw-require 루프: `kind==.require` + CJS 타겟 + 다른 청크면 provider 에 export 표시·소비자에 import 표시.
   - provider emit: `export { <로컬> as require_X }`(esm) / `exports.require_X = <로컬>`(cjs). ⚠️ `--minify` 는 provider 본문 선언을 mangle(`r`)하나 소비자는 canonical `require_X` 로 import·호출 → **로컬(mangled)→공개(canonical) aliasing** 으로 3자 일치.
@@ -373,7 +365,6 @@
   Closes #4541
 
   ## code-review 반영
-
   - **[r0] cjs 순환 lazy forwarding**: cjs 소비자가 `const{require_X}=require(...)` 로 로드 시점 구조분해하면 CJS↔CJS cross-chunk 순환에서 provider 의 `exports.require_X` 미할당 시점을 스냅샷 → TypeError(#4526 계열). require_X 는 함수라 `const require_X = function(){ return require("...").require_X.apply(this,arguments); }` **호출 시점 조회**로 지연 복원. esm 은 live binding 이라 named import 유지. 순환 가드 추가.
   - **[r1] reset 멱등**: `computeCrossChunkLinks` reset 루프에 새 `wrapper_cross_exports`/`wrapper_cross_imports` clear 추가(재실행/HMR re-link 시 stale export 방지).
 
@@ -391,7 +382,6 @@
   ```
 
   #4483(worker 지정자)과 같은 루트커즈이며, 같은 처방을 `url()` 에 확장했다. resolve 레이어에서 **기존 해석을 먼저 시도하고, 못 찾았을 때만** `./` 를 붙여 재시도한다.
-
   - `url(imgpkg/pic.png)` 처럼 지금 `node_modules` 패키지로 해석되던 bare url() 은 **그대로 패키지가 이긴다** (기존 동작 보존 — "패키지 우선 + 상대 폴백").
   - `--platform=node` 에서 `url(path/logo.png)` / `url(url/x.png)` 처럼 첫 세그먼트가 Node 빌트인 이름과 겹치던 자산 디렉토리가 external 로 빠져 원문 방출되던 것도 함께 고쳤다 — CSS 의 `url()` 은 파일 참조지 모듈 지정자가 아니다 (worker 도 동일).
   - scheme 있는 절대 URL(`https:` / `data:` / `blob:`), protocol-relative(`//cdn/x.png`), root-absolute(`/logo.png`), `url(#blur)` 는 그대로 둔다.
@@ -401,27 +391,25 @@
 - 5886863: `--minify` 의 **dead-store 제거가 살아 있는 대입문을 삭제**하던 무성 오컴파일 수정 (#4503).
 
   ```js
-  let buf = "";
+  let buf = '';
   function flush() {
     out.push(buf);
   } // ← buf 를 클로저로 읽는다
   function emit(t) {
     buf = t; // ← dead 가 아니다. 사이의 flush() 가 읽는다.
     flush();
-    buf = "";
+    buf = '';
   }
   ```
 
   `buf = t` 가 통째로 삭제됐다. **빌드 exit 0 · 산출물 파싱 통과 · 런타임 에러 0 · 값만 틀림** — 기존 게이트를 전부 통과하는 계열이다. `highlight.js@11` 코어의 `emitMultiClass` 가 정확히 이 패턴이라, 하이라이팅 결과가 `functionfunction f f(a)` 처럼 깨져 나왔다.
 
   **원인.** DSE 는 두 store 사이에 read 가 있는지를 `Reference` 배열의 위치, 즉 **소스 순서**로 판정한다. 그런데 소스 순서가 실행 순서와 같은 것은 *한 함수의 한 활성화 안에서 straight-line 으로 흐를 때뿐*이다. 이 가정이 깨지는 세 경우를 모두 놓치고 있었다:
-
   1. **클로저 읽기** — 클로저 안의 read 는 소스 위치가 두 store 밖이라 안 보이지만, 실제로는 사이의 호출 시점에 일어난다.
   2. **재진입** — read/write 가 같은 함수 안이어도 변수가 함수 **밖** 에 선언됐으면 호출이 겹칠 때 바인딩을 공유한다. 사이의 호출이 재귀하거나 `await` 로 인터리빙되면 _다른 활성화_ 가 앞 store 의 값을 읽는다.
   3. **abrupt completion** — `x = 1; if (c) break lbl; x = 2;` 처럼 사이에서 흐름이 끊기면 뒤 store 가 실행되지 않아 앞 store 가 살아남는다.
 
   **처방.** 판정이 불확실하면 항상 "유지"(보수적)로 간다.
-
   - read 가 write 와 **다른 실행 단위**(함수/클래스 본문)에 하나라도 있으면 제거 금지.
   - 변수의 **선언 실행 단위 ≠ write 실행 단위** 면 제거 금지 (재진입 차단).
   - 두 store 사이 statement 가 **바깥 흐름을 끊으면** 제거 금지. 단, 그 사이에 _완전히 포함된_ loop/switch 에 묶이는 라벨 없는 `break`/`continue` 와 중첩 함수·메서드의 `return` 은 바깥 흐름과 무관하므로 계속 제거 대상이다.
@@ -448,7 +436,6 @@
   진짜 dead store(부수효과 없는 리터럴·지역 식별자·순수 연산)는 계속 제거된다. 대표 라이브러리 12종 `--minify` 산출물은 **byte-identical**(size 영향 0).
 
   추가(코드리뷰): 통합한 술어를 **쓰지 않던 두 호출부**가 남아 있었다. `isStmtRemovable(operand)` 은 "이 표현식의 **평가**를 없애도 되는가" 를 답하는데, 강제 변환 연산에서는 operand 의 **값이 관측**된다 — 술어를 잘못된 질문에 쓴 것이다.
-
   - `rewriteBinaryUnused` 가 `+`/`==`/`<`/`in`/`instanceof` 까지 "양쪽 operand 가 removable 이면 전체 removable" 로 봤다. `({valueOf(){…}}) + 1;` 이 통째로 삭제돼 **valueOf 가 안 불린다**. 강제 변환이 전혀 없는 `===`/`!==` 만 손대도록 좁혔다 (esbuild 도 `1 < foo()` 를 건드리지 않는다).
   - `rewriteObjectUnused` 가 computed key 표현식을 drop 했다. key 는 평가만 되는 게 아니라 그 **값에 ToPropertyKey** 가 걸려 `toString` 이 불린다. computed key 가 있으면 객체를 통째로 유지한다 (esbuild 는 `foo() + ""` 로 강제 변환을 보존한 채 추출한다 — zntc 는 그 합성 대신 보존을 택했다).
 
@@ -477,7 +464,6 @@
   선언형(`let {x = 1} = o`)이 아니라 **할당형**(`({x = 1} = o)`)이기만 하면 중첩 여부와 무관하게(최상위 포함) 샜다. `chart.js@4` 의 `buildStacks` 가 정확히 이 패턴을 써서 차트를 렌더할 때 죽었다.
 
   같은 리네임 누락이 두 곳 더 있어 함께 고쳤다.
-
   - **es5 다운레벨**: es5 에서는 codegen 이 아니라 transformer 가 구조분해를 풀어낸다. 이때 합성한 대입 타겟 노드에 symbol_id 를 물려주지 않아, 같은 버그가 다른 emit 경로로 재현됐다.
   - **TS namespace**: `namespace N { export let x; ({x = 1} = o); }` 가 `({x:x=1}=o)` 로 방출돼 `N.x` 가 아니라 자유 변수(전역)에 대입됐다 — `--minify` 와 무관하게 값이 조용히 틀리던 표면이다.
 
@@ -489,12 +475,12 @@
   // legacy.cjs
   module.exports = {
     foo() {
-      return "FOO";
+      return 'FOO';
     },
     bar: 42,
   };
 
-  const m = await import("./legacy.cjs");
+  const m = await import('./legacy.cjs');
   m.foo();
   ```
 
@@ -513,7 +499,6 @@
   함께 수정: 동적 entry 청크의 `__toESM` 헬퍼 주입 조건에서 `can_skip_cjs_default_interop` 예외를 제거했다. 그 예외는 "`default` 값 하나만 내보내던" 시절의 것으로, namespace 를 보내는 지금은 shape 와 무관하게 항상 헬퍼가 필요하다(안 그러면 `ReferenceError: __toESM is not defined`).
 
   추가(코드리뷰): 첫 수정이 **하드 회귀 4건**을 만들었고 전부 잡았다.
-
   - 소비자 재작성을 `rewriteImportCallToWrapper`(첫 `indexOf` 1회 + import attributes 미지원)로 바꾼 탓에, **앞선 문자열 리터럴 occurrence** 나 `import("./x.cjs", { with: {} })` 에서 specifier 가 통째로 미치환 → `ERR_MODULE_NOT_FOUND`. #4295 가 고쳤던 바로 그 miscompile 이다. 같은 positional walk 를 쓰되 호출 끝을 **괄호 균형**으로 찾는 재작성기로 다시 썼다.
   - provider 는 `linker orelse break` 로 bail 하는데 consumer 는 `linker` 를 안 봐서, `scopeHoist: false`(linker null)에서 export 가 없는 값을 `.default` 로 벗겨 **TypeError**. provider/consumer/헬퍼 3곳의 복붙 술어를 `dynamicCjsNamespaceEntry` 단일 소스로 합쳤다.
   - federation expose / plugin `emitFile({type:'chunk'})` 도 **같은 dynamic entry 모양**이라 provider 만 바뀌고 그쪽 소비자(container factory / 사용자 코드)는 안 벗긴다 → `default` 슬롯 의미가 조용히 바뀐다. entry 에 `is_import_call` 을 달아 **진짜 `import()` 대상만** namespace 로 가고, 그 둘은 기존 계약을 그대로 유지한다.
@@ -560,7 +545,6 @@
   ```
 
   그 출력 청크 안에서 `is_entry_point` 인 모듈(build_flow 가 user/emitted entry 에만 설정, **dynamic-import 대상은 false**)을 호출한다. 이렇게 하면:
-
   - **relocate 된 entry**(`.manual`) → 호출 ✓ (#4542)
   - **dynamic-import 대상 / plugin `emitFile` on-demand 청크**(dynamic `.entry_point`) → 제외 ✓
   - **common 청크** → 제외 ✓ (user entry 는 애초에 안 남음)
@@ -571,7 +555,6 @@
   ## 범위 / 후속
 
   이 PR 은 **esm/cjs 경로만** 일반화한다. `/code-review max` 에서 같은 `chunk_is_user_entry` 프록시가 다른 emit site 에도 쓰임이 드러났고, 각자 별도 기계에 묶여 별도 수정이 필요하므로 형제 이슈로 분리:
-
   - **#4548 (reg_split)**: iife/umd/amd 의 invoke(1644)+bootstrap(1676) 도 같은 프록시 게이트 — relocate entry 무출력. factory registry(reg_ids)·federation bootstrapSpan 강결합 동반.
   - **#4549 (run_before_main)**: RBM polyfill(477/1021/1093) 도 같은 프록시 — relocate entry 가 polyfill 없이 실행. cross-chunk RBM import·closure 이관 필요. RN/Metro 전용·극드문 조합(#4542 이전엔 entry 미실행이라 가려져 있었음).
 
@@ -586,14 +569,12 @@
   `&&` 는 `=` 보다 우선순위가 높아 `c && {a} = o` 는 `(c && {a}) = o` 로 파싱된다 — `SyntaxError: Invalid left-hand side in assignment`. 빌드는 exit 0 인데 산출물이 파싱조차 되지 않았다 (monaco-editor `ts.worker`, codemirror).
 
   원인은 `if` → `&&`/`?:` 폴딩 경로가 피연산자를 `emitNode`(= precedence level `.lowest`)로 방출해, 방출 단계의 공통 괄호 로직(`exprNeedsParens`)을 우회한 것이다. 폴딩된 피연산자를 실제 자리의 level(`&&` 의 좌/우, `?:` 의 test/분기)로 방출하도록 바꿔 필요한 괄호가 재유도되게 했다. 같은 뿌리의 아래 케이스도 함께 고쳐진다.
-
   - `if ((m = f())) g(m)` → `m=f()&&g(m)` (파싱은 되지만 `m = (f() && g(m))` 로 **의미가 바뀌던** silent miscompile) → `(m=f())&&g(m)`
   - `if (c) (a(), b()); else d()` → `c?a(),b():d()` (SyntaxError) → `c?(a(),b()):d()`
   - `if ({}.x) g()` → `{}.x&&g()` (SyntaxError) → `({}).x&&g()`
   - `if ((m = f())) return A; return B;` → `return m=f()?A:B` (의미 변경) → `return (m=f())?A:B`
 
   아래 두 건은 같은 뿌리(#4042 괄호 투명화)에서 온 것으로 code-review 에서 확인돼 함께 고쳤다.
-
   - `return ( /* c */ g() )` 가 `return /* c */⏎ g()` 로 방출돼 **ASI 로 undefined 를 반환**하던 버그 (`throw` 는 `Illegal newline after throw`). minify 없이도 발생.
   - `if (let[0]) g()` (sloppy `var let`) 를 `let[0] && g()` 로 접으면 statement 가 `let [` 로 시작해 lexical 선언으로 오파싱 → SyntaxError. 이 경우 폴딩을 포기한다.
 
@@ -603,18 +584,17 @@
   f(-(--t)); // 버그: f(---t)        → SyntaxError
   f(-(-t))(
     // 버그: f(--t)         → t 를 감소시키는 silent miscompile
-    -a
+    -a,
   ) **
     b(
       // 버그: -2**2          → SyntaxError
-      -a
+      -a,
     ).toString(); // 버그: -2 .toString() → 문자열 "-2" 가 아니라 숫자 -2 (silent)
   true.toString(); // 버그: !0.toString()  → SyntaxError
   undefined ** 2; // 버그: void 0**2      → SyntaxError
   ```
 
   원인은 둘이다.
-
   1. 단항 `-`/`+` 의 **피연산자 슬롯에 토큰 병합 방지 공백 가드가 없었다**. 이항 RHS 슬롯에는 있었지만 단항에는 대응물이 없어 `-` + `--t` 가 `---t` 로 붙었다. minify 와 무관하게 발생한다.
   2. `binaryChildLevels` 가 `**` 좌변의 level 을 올려도, `exprNeedsParens` 에 `numeric_literal`/`boolean_literal` case 가 없어 그 level 이 그냥 버려졌다. 미니파이어가 `-a` 를 `numeric_literal("-2")` 로, `true` 를 `!0` 으로 바꾸는 순간 `.unary_expression` 매칭을 빠져나간다.
 
@@ -627,7 +607,7 @@
   U **
     (2(
       // 버그: void 0**2      → SyntaxError
-      ON && -1
+      ON && -1,
     ) **
       k); // 버그: -1 ** k        → SyntaxError
   x -
@@ -646,7 +626,7 @@
   ```js
   // s.js:  const c = new C(); export default c;   // 싱글톤
   // u.js:
-  import _c from "./s.js";
+  import _c from './s.js';
   export const f = (r) => {
     const c = _c.set(r);
     return c;
@@ -661,14 +641,12 @@
   `resolveNestedShadowForModule` 을 분기: target 이 소비자와 **같은 청크 & cross-chunk-export 아님**이면 target canonical 을 rename(#4563), 아니면(다른 청크 / 파일경계 / cross-chunk-export) target 을 못/안 건드리므로 **소비자의 nested(scope 1+) 바인딩**을 rename. 소비자 로컬은 토폴로지 무관하게 항상 rename 가능하므로 세 케이스를 통합 해소한다.
 
   ### `/code-review max` 반영
-
   - **참조 이름은 same-chunk 면 canonical local, cross-chunk 면 전역 공개명**: same-chunk 소비자는 로컬명으로 참조하므로 전역명으로 shadow 를 찾으면(local!=global) 놓쳐 #4563 이 회귀. `target_same_chunk` 판정 후 ref_name 결정.
   - **eval/`with` 가드**: consumer-rename 는 `resolveWrapperConsumerShadows` 와 동일하게 `blocksMangling()` 모듈 skip(동적 이름 참조 → 리네임 시 ReferenceError). minify 도 skip(mangler 담당).
   - **공유 헬퍼 `renameConsumerScopeBindings`**: consumer-nested-rename 루프를 `deconflictConsumerShadows`(#4533)와 공유 — 드리프트 제거(가드/scope 처리 단일 출처).
   - 회귀 가드 cross-chunk 구조 검증에 `fChunk` 정의 확인 추가(undefined 시 vacuous 통과 방지).
 
   ## 검증
-
   - (A) cross-chunk splitting: `import { c }` + `const c$1 = c.set(...)`, 실행 `f:6 / 6`.
   - (B) preserve-modules: `import { default as c }` + `const c$1 = c.set(...)`, 실행 `f:6`.
   - (#4563) same-chunk(non-cross-export): `channels$1`(target rename) 유지, `rgba:10`.
@@ -689,15 +667,14 @@
   세 번째로, TS 타입 래퍼가 argless-new head 를 가려 SyntaxError 를 놓치던 accept-invalid 도 고쳤다 — `new a\`x\`!?.b`는 타입 소거 후`new a\`x\`?.b`와 같은 SyntaxError 인데`!`/`as T`/`<T>x`래퍼를 walk 가 안 넘어가 exit 0 으로 수용했다(ZNTC0623 정상 발생). Flow 의`(x: T)`cast 는 **괄호 자체**라 통과시키면 안 된다(유효한`(new a: any)?.b`오거부) —`isParenFreeTypeWrapper` 로 분리했다.
 
   "tagged template 이 new 의 callee" 라는 AST 모양이 처음 생기면서 그 모양을 못 다루던 하류 3곳도 함께 고쳤다:
-
-  - **codegen**: callee 안의 call 에 괄호를 안 붙여 `` new (f())`x` `` → `` new f()`x`() `` (f 가 *생성*되고 template 결과가 *호출*됨). member 의 object 처럼 tagged template 의 tag 에도 `forbid_call` 을 전파.
+  - **codegen**: callee 안의 call 에 괄호를 안 붙여 `` new (f())`x` `` → ``new f()`x`()`` (f 가 *생성*되고 template 결과가 *호출*됨). member 의 object 처럼 tagged template 의 tag 에도 `forbid_call` 을 전파.
   - **es5/es2015 다운레벨**: `lowerSpreadNew` 가 callee 를 identifier 로 가정해 `new a.b(...args)` 가 **컴파일러 crash** 였다(기존 버그). temp 캡처로 callee 를 1회만 평가하도록 수정 — `new ((_a = a.b).bind.apply(_a, ...))()` (tsc 동형).
   - **minify**: `` (0, o.tag)`x` `` 의 sequence 를 풀어 tag 가 `this=o` 로 호출되던 것 방지.
 
 - 4cd691e: TS 접미사(`!` non-null / `<T>` 타입인자)가 `new` 의 callee **밖으로 새던** 무성 오컴파일 수정 (#4505).
 
   ```ts
-  const b = new tag<number>`${"hello"} ${"world"}`(100, 200);
+  const b = new tag<number>`${'hello'} ${'world'}`(100, 200);
   // 방출(버그): new tag()`${"hello"} ${"world"}`(100, 200)
   //             → tag 를 *생성*한 뒤 그 인스턴스를 태그 호출 (완전히 다른 프로그램)
   // 방출(정상): new tag`${"hello"} ${"world"}`(100, 200)   ← tsc 동일
@@ -724,7 +701,6 @@
   ## 수정 — entry 는 옮기지 않는다
 
   chunk.zig 의 manual 청크 배정에서 **user(비-dynamic) entry 를 제외**한다 — dynamic import 대상(#1848/#1849)이 이미 제외되는 것과 정확히 같은 방식:
-
   - **manual seed 수집**(resolver·record 경로): user entry 는 seed 로 안 넣는다. resolver 함수는 **여전히 호출**해 `getModuleInfo` 등 inspection hook 부작용은 보존하되, entry 의 배정 결과만 무시한다.
   - **Phase 2.5 BFS 전파**: user entry 에는 manual bit 를 안 세운다(vendor seed 의 transitive dep 로 도달해도 차단, entry 를 통한 dep 전파도 중단).
   - **Phase 4 강제 이동**: user entry 는 위 seed/전파에서 manual bit 를 못 받으므로 애초에 manual 청크에 배정되지 않는다 → Phase 4 에서 자기 entry_point 청크로 이동. (Phase 4 의 "manual 이면 그대로 유지" 예외는 **유지** — 이제 그건 dynamic import 대상이 manual seed 의 static dep 로 전파돼 흡수된 경우만 보호. 그걸 도로 빼내면 cross-chunk ReferenceError.)
@@ -733,7 +709,6 @@
   matched 된 **non-entry** 모듈은 종전대로 manual 청크로 간다. entry 만 매칭한 manual 청크는 비어서 생성되지 않는다.
 
   ## 효과
-
   - `--format esm|cjs|iife|umd|amd --splitting` + `manualChunks` 가 entry 를 매칭해도 entry 는 표준 경로로 정상 실행(무출력/SyntaxError 없음).
   - #4542(esm/cjs relocate 미실행), #4548(reg_split relocate 미실행), #4549(RBM 미emit), #4551(umd export 값) 이 **전부 해소** — entry 가 안 움직이니 인프라가 흩어질 일이 없다. #4552(reg_split RBM cross-chunk ESM import)는 relocate 와 무관한 pre-existing 이라 별도.
   - #4542 가 도입했던 emit-side 일반화(`chunk_is_entry_output` +manual 스캔)는 이제 불필요 → `chunk_is_user_entry` 로 원복(both-case 처리 위한 is_entry_point 스캔만 유지).
@@ -761,8 +736,8 @@
 
   ```js
   // 공유 청크 — 선언은 여기 있다
-  let n = { label: "second" },
-    r = { label: "other" };
+  let n = { label: 'second' },
+    r = { label: 'other' };
   var ns_ns = {
     get second() {
       return second;
@@ -829,18 +804,15 @@
   ## 수정
 
   익명이고 `export default` 면 `default_export_name`(`_default`)을 hoist 한다:
-
   - `.class_declaration` 분기(`class_name_idx.isNone()`) — 익명 default class.
   - `.function_declaration` strict_execution_order 분기(`fn_name_idx.isNone()`) — 익명 default function. `/code-review max` 적발: RN 프리셋(strict)에서 codegen 이 `_default = function(){}` 로 할당해 class 와 동일 버그. 5곳으로 중복돼 있던 default 이름 파생을 `defaultExportName` 헬퍼로 통합.
 
   ## 검증
-
   - 회귀 스위트 `preserve-modules-default-export.test.ts`: default 형태(익명 class/function/arrow/extends, named class/function, value) × esm/cjs × plain/minify + **익명 function RN(strict)** — 전부 통과(익명 class ESM·익명 function RN 이 수정 전 실패).
   - 방출: `var _default;` top-level 선언 + 클로저 안 `_default = class {…}`/`_default = function(){}` + `export { _default }` 일관.
   - zig 전체 test, 통합 스위트 무회귀.
 
   ## 별개 잔여 (이 PR 범위 밖)
-
   - **RN downlevel class 헬퍼 중복**(#4574): `--preserve-modules --platform=react-native` 에서 class 를 export 하면 다운레벨 헬퍼(`__classCallCheck`/`__extends`)가 import + hoisted var 로 이중 선언 → SyntaxError. 익명·named·default 무관(class 다운레벨 특정).
 
   Refs #4573
@@ -859,24 +831,20 @@
   ## 수정
 
   unwrapped preserve-modules cjs 모듈의 **named function 선언 export** 를 `exports.<fn> = <local>;` 로 require 블록 **앞**에 hoist(function 은 스코프 상단으로 hoisting 되므로 참조 가능) + bottom 방출에서 제외(중복 방지).
-
   - 판정 `exportBindingIsHoistableFn`: 직접 `.local` 선언 + semantic `decl_flags.is_function`. re-export 는 소스가 자기 것 hoist 하므로 제외. default 는 `module.exports`/`exports.default` 모드 로직과 충돌해 제외.
   - 삽입은 `computeRenamesForModules` 후(리네임명 확정), `ns_preamble` insert 앞(위치 shift 방지). `ns_preamble_pos`/insertSlice 선례를 따름.
   - bottom 제외는 `emitCjsEntryExports` 에 hoisted-이름 집합 전달(같은 predicate 공유 → 발산 없음).
   - live getter(#4532 증상3 서 엣지 다수로 드롭)를 피하고 값 hoist 로 처리.
 
   ## 검증
-
   - 회귀 스위트 `preserve-modules-cjs-circular-fn.test.ts` 6종: 다중-entry 순환 function 호출(esm/cjs × plain/minify)·default 병존 named 순환·non-circular(hoist 무해).
   - preserve-modules 189·cross-chunk/splitting/wrapper 186 통합 + zig 전체 무회귀.
 
   ## `/code-review max` 반영
-
   - **[0]** hoist 게이트가 `output_exports` 를 안 봐 `--output-exports=none`/`default_` 에서도 `exports.fn=fn` 이 새던 것 → `.auto`/`.named` 로 게이트(hoist·skip 양쪽).
   - **[1][2]** `exports.X=X` 방출을 `appendCjsExportBinding(live=false, min=false)` 재사용으로 단일화 — 같은-파일 bottom(emitCjsEntryExports, minify 무시 `=`/`;\n`)과 형식 일치.
 
   ## 한계 (별개, 이 fix 범위 밖)
-
   - **소비자 자신의 import 가 TDZ**: 순환 중 paused 모듈의 `const { b } = require(...)` 는 아직 미초기화라, 그 모듈의 함수가 자기 import 를 참조하면 TDZ. 소비자-측 lazy 참조 필요(별개 층).
   - **const/let/class export** 는 hoisting 불가·ESM 도 순환서 TDZ 라 대상 아님.
   - **default 의 순환 접근** 은 `module.exports` bind-whole + partial 로 별개.
@@ -885,14 +853,14 @@
 
   ```js
   // a.cjs
-  const b = require("./b.cjs");
+  const b = require('./b.cjs');
   exports.a = function a() {
-    return "A+" + b.b();
+    return 'A+' + b.b();
   };
   // b.cjs
-  const a = require("./a.cjs");
+  const a = require('./a.cjs');
   exports.b = function b() {
-    return "B";
+    return 'B';
   };
   ```
 
@@ -901,7 +869,7 @@
   근본 원인: cjs 소비자가 래퍼 심볼을 **구조분해**했다.
 
   ```js
-  const { require_b } = require("./b.js"); // ← 로드 시점에 값을 **복사**
+  const { require_b } = require('./b.js'); // ← 로드 시점에 값을 **복사**
   ```
 
   순환에서 b.js 가 **아직 평가 중인** a.js 를 require 하면 `exports.require_a` 가 미할당이라 **undefined 를 박제**한다. ESM 은 live binding 이라 나중에 할당된 값을 보고, node 자신은 `require()` 가 partial exports **객체**를 돌려주고 그걸 참조로 들고 있으므로 무사하다 — 구조분해가 그 지연을 깨뜨린다.
@@ -909,9 +877,9 @@
   처방: 래퍼 심볼(`require_X` / `init_X`)은 **함수**라 호출 시점에 조회하도록 lazy forwarding 으로 바인딩한다.
 
   ```js
-  require("./b.js"); // side-effect: 실행/등록 순서 보장
+  require('./b.js'); // side-effect: 실행/등록 순서 보장
   const require_b = function () {
-    return require("./b.js").require_b.apply(this, arguments);
+    return require('./b.js').require_b.apply(this, arguments);
   };
   ```
 
@@ -937,25 +905,21 @@
   ## 수정
 
   소비자가 dep 이 **default-only**(→ provider 가 `module.exports = X` 방출) 이고 default 단일 import 면, `require()` 결과 **전체**를 바인딩한다: `const foo = require("./m1.js")`. rollup/esbuild 의 런타임 interop 헬퍼(`getDefaultExportFromCjs`/`__toESM`) 대신, preserve-modules 는 provider shape 를 정적으로 알 수 있어 헬퍼 없이 형태를 맞춘다(더 깨끗).
-
   - default-only 판정 `cjsDepDefaultOnly`: dep 청크 모듈에 default 있고 named 없음. `export *`(ESM 스펙상 default 제외, named 확장) 는 **소스로 재귀 flatten**(`moduleHasAnyNamedExport`)해 provider 의 `collectExportsRecursive` 와 판정을 맞춘다 — star 가 named 0 개면 provider 는 `module.exports = X` 이므로 소비자도 전체 바인딩해야 한다. 미해결/external star 는 보수적으로 구조분해.
   - `.auto`/`.default_` OutputExports 게이트(`.named` 은 `exports.default` 라 구조분해가 맞음). dep 이 완전 unwrapped(래퍼 경로 아님)일 때만.
   - deconflict/전역명/lazy 로컬 처리는 심볼 블록과 동일 경로 재사용(#4576 `mintConsumerLocal`).
 
   ## 검증
-
   - 회귀 스위트 `preserve-modules-cjs-default-interop.test.ts` 6종: default-only(전체 바인딩)·default+named(구조분해 유지)·re-export 배럴·mixed 배럴·**동명 default 2개(#4576 deconflict + #4580 interop 협업 → 실행 `12`)**·named-only(무영향).
   - #4576 cjs 동명 default 테스트를 emit-only → **런타임 검증**으로 승격(이 fix 로 실제 실행됨).
   - preserve-modules 171·cross-chunk/splitting/wrapper 137 통합 + zig 전체 무회귀.
 
   ## `/code-review max` 반영
-
   - **[0]** `cjsDepDefaultOnly` 가 `export *` 를 무조건 named 로 봐, provider 가 star flatten 후 named 0 → `module.exports = X` 인데 소비자는 구조분해 → TypeError 잔존(재현). → star 를 재귀 flatten(`moduleHasAnyNamedExport`)해 provider 와 일치.
   - **[2]** bind_whole 의 dead `lazy_local_keys`(pm_cjs 라 항상 false) 제거 + 불필요한 `if (preserve_modules)` 가드 제거.
   - **[1]** symbol-level·bind_whole 의 로컬 발급+정합 로직을 `deconflictedConsumerLocal` 헬퍼로 통합(정책 발산 방지).
 
   ## 한계
-
   - `--minify-identifiers`(따라서 `--minify`)는 별개 선행 mangler 버그(#4579 계열)로 소비자 default import 로컬과 body 참조가 발산해 실패한다 — 이 fix·구조분해/전체바인딩 무관하며 main 도 동일(단일 default 포함 광범위). #4579 에서 처리.
 
 - 33fcbb0: `--preserve-modules`(CJS/ESM)에서 **소비자가 re-export 배럴 경유로 ESM-wrap dep 을 import** 하면 `undefined` 를 잡아 `TypeError: X is not a function` 나던 것 수정 (#4532 증상3).
@@ -977,18 +941,15 @@
   소비자 init 주입에서, 직접 대상이 non-wrap 이어도 **`resolved.canonical`(re-export 체인 끝)이 ESM-wrap 이면 그 wrap dep 의 `init_X()` 를 소비자 preamble 에 주입**한다. `esm_init_set` 로 중복 방지, tree-shake 가드 유지.
 
   `/code-review max` 반영:
-
   - **preserve-modules 한정**: 각 모듈이 별도 파일이라 forwarding 썽크(init_X)가 소비자 파일에 로컬 정의된다. splitting 은 init_X 가 cross-chunk 라 이 청크서 undefined 일 수 있어(그쪽은 cross-chunk 네이밍이 별도 처리) 제외.
 
   ## 검증
-
   - CJS/ESM × plain/minify **전부** `42|F` (수정 전 CJS/minify 는 `TypeError`).
   - splitting(비-preserve-modules)은 게이트로 미적용 — 자체 경로로 정상(`42|F`), 무회귀.
   - 회귀 가드: `preserve-modules-cjs.test.ts` 에 증상3 실행 가드(node 실제 실행).
   - zig 전체 test + 통합 스위트 무회귀.
 
   ## 잔여 (#4532 epic)
-
   - 배럴 **자체** exports 를 CJS 로 직접 `require("./r.js").X` 하는 경로는 별도(live getter 필요 — `__export`/minify 이름·default·wrapped 포맷·accessor 시맨틱 엣지 다수라 별도 설계). 증상 1(동명 붕괴 `BB`) CJS, 증상 4(순환) 도 별개 근본. 후속.
 
 - c06a4e9: `--preserve-modules`(CJS)에서 **서로 다른 wrap dep 이 동명 export 를 내고 한 소비자가 둘 다 import** 하면, 소비자 본문이 한 이름으로 붕괴해 잘못된 값을 조용히 방출하던 것 수정 (#4532 증상1).
@@ -1006,33 +967,28 @@
   ## 근본 원인
 
   동명 심볼을 파일 경계 너머로 구분하는 cross-file 네이밍(`computeCrossChunkGlobalNames`)이 preserve-modules 에서 **ESM 출력만** 켜져 있었다(`pm_xchunk_naming` 게이트에 `format == .esm`). CJS 출력에선:
-
   - **forwarding 썽크**(emitter, chunks.zig)는 `name_seen_count` 로컬 dedup 으로 `let tag$1` 을 만드는데,
   - **본문 참조**(linker, metadata.zig)는 `resolveToLocalName(canonical)` = `tag` 로 rename 한다.
 
   두 경로가 **공유 맵 없이 독립 계산**해 발산 → forwarding var `tag$1` 은 죽고 본문은 `tag`(b 의 canonical) 를 두 번 참조 → `BB`. ESM 은 전역명 맵을 provider·consumer·본문 셋이 공유해 일치한다.
 
   ## 수정
-
   1. `pm_xchunk_naming` 게이트를 **CJS 출력에도** 오픈(`format == .esm or format == .cjs`). 전역명 맵이 채워져 본문 참조·forwarding var 가 같은 `tag$1` 에 합의한다.
   2. CJS forwarding 썽크의 **read** 를 전역명으로 정렬(chunks.zig): provider(ESM-wrap)는 `pm_wrapped_esm_provider`(#4528)로 `exports.tag$1` 을 내므로, `let tag$1; tag$1 = m.tag$1` 이 되도록 read 도 `crossChunkBindingName`(=provider export 키)로 읽는다. 예전 `m.tag`(자연명)는 undefined → `tag$1 is not a function`.
 
   `pm_esm_wrap_dep_syms`(chunks.zig)는 **preserve-modules × CJS 출력 × ESM-wrap dep** 에서만 채워지므로 read 변경은 이 경로에 정밀 스코프된다.
 
   `/code-review max` 반영:
-
   - **reserved-name(`default`) read 회귀 수정**: read 를 `crossChunkBindingName` 으로 쓰면 reserved-name 이 전역명 없을 때(minify/dev) provider **로컬**(`foo`)을 반환해 `exports.default` 과 어긋난다(`m.foo` undefined → TypeError). read = **`전역명 orelse export명`**(provider export 키)으로 정정하고, 첫 루프에서 `pm_reads` 배열에 캡처해 재계산도 제거.
   - **stale 주석 갱신**(chunk.zig): `pm_xchunk_naming` 이 CJS 를 포함하게 됐으므로 `import * as ns` fan-out(증상2) 게이트 주석을 `ESM/CJS` 로 갱신. CJS non-minify `import * as ns` 도 이제 동작(`1|hi`) — 부수 개선.
 
   ## 검증
-
   - 증상1: CJS `BC`(수정 전 `BB`), ESM `BC`(무회귀).
   - splitting+preserve+cjs `BC`, 증상3 배럴 `42|F`(CJS/ESM×plain/minify), pure-CJS 동명 `BC` — 무회귀.
   - 회귀 가드: `preserve-modules-cjs.test.ts` 증상1 실행 가드(esm+cjs, node 실행 + 전역명 `tag$1` 방출 pin — 자연명 fallback 과 구분).
   - preserve-modules(-cjs) 39+ pass, splitting 77 pass, zig 전체 test 통과.
 
   ## 잔여 (#4532 epic)
-
   - **minify 증상1**: `!minify_identifiers` 로 제외 유지 — identifier mangler(`computeChunkMangling`)가 preserve-modules 서 skip 이라 전역명 미예약 → mangled local ↔ 전역명 충돌 위험. mangler 전역명 예약 후속(ESM-minify 도 동일하게 BB 인 기존 잔여).
   - 증상4(multi-entry 순환), 배럴 자체 exports CJS 직접 `require("./r.js").X`(live getter) 도 별개 근본.
 
@@ -1042,14 +998,14 @@
   // legacy.cjs
   module.exports = {
     foo() {
-      return "FOO";
+      return 'FOO';
     },
     bar: 42,
   };
 
   // entry.js
-  import d, { foo } from "./legacy.cjs"; // ReferenceError: require_legacy is not defined
-  const m = await import("./legacy.cjs"); // keys: []  (빈 namespace)
+  import d, { foo } from './legacy.cjs'; // ReferenceError: require_legacy is not defined
+  const m = await import('./legacy.cjs'); // keys: []  (빈 namespace)
   ```
 
   근본 원인: **CJS 는 정적 export 가 없어 파일 경계를 넘을 수단이 `require_X` 썽크뿐인데**, preserve-modules 가 그걸 export 하지 않았다. 소비자는 그 썽크를 **렉시컬 참조**했는데 그건 다른 파일의 지역변수다. 즉 preserve-modules 는 CJS 상호작용 **배선 자체가 없었다** — 정적 import 조차 못 썼다.
@@ -1065,7 +1021,6 @@
   추가: provider(export emit)에만 `format == .esm` 조건이 있어 **`--format=cjs` 에서 어긋났다** — 소비자는 `const { require_X } = require("./x.js")` 를 내는데 provider 는 아무것도 안 깔아 `require_X is not a function`. 두 곳이 `preserveModulesCjsThunkChunk` 단일 술어를 보게 하고, cjs 형식은 `exports.require_X = require_X` 로 깐다.
 
   추가(코드리뷰): 첫 수정은 `require_X` **절반만** 배선했고 회귀도 하나 만들었다.
-
   - **CJS 가 ESM 형제를 `require()`** 하면 여전히 깨졌다 — 소비자가 `init_b`/`exports_b`/`__toCommonJS` 를 렉시컬 참조. 가장 흔한 레거시 interop 모양이다. 래퍼 심볼 전반(ESM-wrap 포함)으로 일반화했다.
   - **`export default require_X();` 로 래퍼를 호출하면 안 된다.** CJS 본문이 provider 파일 **평가 시점**에 실행돼 (a) CJS↔CJS 순환이 `TypeError: require_a is not a function` 으로 죽고 (b) 조건부 `require` 의 부수효과가 무조건 시작 시 실행된다. node 는 require 가 lazy 라 순환을 정상 처리한다. 래퍼 **선언만** 내보내 호출 시점을 소비자에게 남겼다(rolldown 은 eager 호출이라 같은 순환 위험을 안는다).
   - **CJS 로부터의 named re-export** 가 `SyntaxError: Identifier 'foo' has already been declared` 였다 — `imports_from` 에 등록된 export 명을 심볼 분기가 먼저 가져갔다. 래퍼 분기를 **먼저** 보게 했다.
@@ -1079,8 +1034,8 @@
   // b.js (a.cjs 가 require 해 ESM-wrap): export function tag(){ return "B"; }
   // c.js (동일):                          export function tag(){ return "C"; }
   // entry.js:
-  import { tag } from "./b.js";
-  import { tag as tag2 } from "./c.js";
+  import { tag } from './b.js';
+  import { tag as tag2 } from './c.js';
   console.log(tag() + tag2());
   ```
 
@@ -1093,12 +1048,10 @@
   ## 수정
 
   두 게이트를 preserve-modules(ESM 출력)에도 연다:
-
   - **`module_to_chunk` 대여**(`isCrossChunkConsumer` 의 숨은 스위치) — 없으면 소비자 본문 rewrite 가 죽는다.
   - **`computeCrossChunkGlobalNames`** — 단 **ESM-wrap owner 로 한정**. non-wrap ESM 은 자연명 export, CJS owner 는 re-export barrel 배선(증상3)이 아직 없어, 전역명을 붙이면 provider/consumer 가 어긋난다. ESM-wrap owner 만 provider emit(`pm_wrapped_esm_provider`, #4528)이 전역명을 노출해 양측이 합의된다.
 
   ## 범위
-
   - **ESM 출력 + non-minify 한정**:
     - CJS 출력은 소비자가 bare 전역명을 bind 못 해(`require` 라 `var tag$1 = require_c().tag$1` materialize 필요) → 후속.
     - minify 는 identifier mangler 가 전역명을 예약하지 않아(`computeChunkMangling` 은 `code_splitting` 게이트라 preserve-modules 서 skip) 대형 빌드서 mangled local 과 충돌 위험 → 후속.
@@ -1117,7 +1070,6 @@
   ## 근본 (per-chunk rename_table 타이밍)
 
   import 문 로컬명과 body 참조 둘 다 `resolveToLocalName(provider,"default")` → `rename_table` 을 읽는다. 그런데 `computeRenamesForModules` 는 **청크마다** 맨 처음 `clearCanonicalNames()` 로 `rename_table` 을 비우고 현재 청크만 다시 mangle 한다.
-
   - **import 블록**은 그 clear **전**에 방출돼 provider(m1) 청크의 mangle `foo→t` 를 본다 → `t`.
   - **body 참조**(effective_target)는 소비자 청크 emit 중(clear **후**)에 계산돼 m1 의 mangle 이 wipe된 stale `rename_table` 을 읽는다 → 원본 `foo`.
 
@@ -1130,12 +1082,10 @@
   이 fix 로 #4576(동명 default)·#4580(default interop) 의 `--minify` 도 함께 풀린다(그 PR 들이 남긴 minify 한계 해소).
 
   ## 검증
-
   - 회귀 스위트 `preserve-modules-minify-default-ref.test.ts` **16종**: 단일 default·동명 default 2개·default+named·default class × esm/cjs × **minify/non-minify**(always-write 가 non-minify 도 건드리므로 양쪽 가드).
   - preserve-modules·cross-chunk·splitting·wrapper 통합 326 + zig 전체 무회귀.
 
   ## `/code-review max` 반영
-
   - **[3]** 무조건 write 를 `preserve_modules` 게이트로(splitting 은 read 가 gated 라 write 도 낭비 → 생략).
   - **[0]** 테스트에 non-minify 케이스 추가. **[1]** dead stderr 단언 제거(runNode 가 non-zero exit 시 throw → stdout 단언+throw 가 실제 가드). **[2]** 실패 경로 temp-dir 누수 → try/finally.
 
@@ -1156,29 +1106,24 @@
   증상1(#4570)이 non-minify 만 고쳤다. minify 는 cross-file 네이밍 게이트(`pm_xchunk_naming`)가 `!minify_identifiers` 로 닫혀 여전히 `BB`. 게이트를 그냥 열면(band-aid) 소비자 함수의 mangled nested 로컬이 전역명(예 aliased import 의 `te`)과 충돌해 shadow → `te is not a function`(silent miscompile, `/code-review max` CONFIRMED). preserve-modules 는 mangle 를 finalize 에서 먼저 하고 전역명은 chunk phase(mangle 이후)에 negotiate 하는데, mangler 가 전역명을 미리 알 방법이 없기 때문.
 
   ## 수정 (Approach 3 — splitting 과 메커니즘 통일)
-
   1. **`computeChunkMangling` 을 preserve-modules 에도 오픈**(linker.zig): splitting 처럼 chunk phase(전역명 negotiate **후**)에 per-chunk mangle 을 돌린다. `occupied_names`(= imports_from 의 `crossChunkBindingName` = 전역명 + 별칭)를 예약하므로 mangled nested 로컬이 소비 전역명을 shadow 하지 않는다.
   2. **`pm_xchunk_naming` 을 minify 에도 오픈**(bundler.zig, `!minify_identifiers` 제거): 전역명 브리지가 mangled 이름을 파일 경계 너머로 조율한다. provider 는 `export { mangled_local as public }`(ESM)·forwarding read(CJS)로 브리지 → top-level 을 mangle 해도 소비자는 공개명으로 import 한다(공개 API 계약 유지).
   3. **래퍼 심볼(`exports_X`/`init_X`/`require_X`)을 preserve-modules mangle 후보에서 제외**(linker.zig `collectUnifiedInput`): preserve-modules 는 `preserveModulesWrapperChunk`(#4528)가 wrapper export/declaration 을 **canonical(미-mangle)** 로 직접 찍는다. mangle 하면 본문(codegen rename)은 `var n={}`·`__export(n,…)` 인데 wrapper export 는 canonical `exports_b` 라 undefined. splitting 은 wrapper 를 rename_table 경유 브리지라 mangle 해도 일관돼 제외하지 않는다.
 
   추가로 `/code-review max` 반영:
-
   - **이중 mangle 제거**(bundler.zig): preserve-modules 는 per-chunk mangle(모든 모듈이 자기 청크)이 전담하므로 finalize 의 전역 mangle 은 중복 — `compute_mangling` 에 `!preserve_modules` 를 걸어 낭비되는 full-graph mangle 을 끈다(computeRenames 는 유지).
   - **helper virtual module 래퍼도 제외**(linker.zig `is_helper_module` 브랜치): 수정 3 의 가드가 main synthetic 루프에만 있어, wrapped 헬퍼 모듈이 자기 청크가 되면 래퍼가 mangle 되던 갭을 대칭으로 닫음.
 
   ## 결과
-
   - preserve-modules minify 도 이제 **top-level 을 mangle**(rollup+terser 모델과 동일) — 공개 export 명은 브리지로 보존, 내부 로컬만 축약. 부수적 size 이점.
   - **ESM-wrap dep 의 동명 export**(a.cjs 가 require 로 wrap 강제) 붕괴·aliased 충돌·reserved default named import·배럴·ns 가 minify 에서 정상.
 
   ## 검증
-
   - 새 회귀 스위트 `preserve-modules-minify.test.ts` 38종(esm/cjs × plain/minify): 동명 붕괴 BC, aliased-import 충돌 가드(70 로컬→`te` mangle 강제), reserved default, 배럴, 4-way, cross-file 참조, ns, default 값, CJS require_X 래퍼 — 전부 통과.
   - 충돌 repro: 수정 전 `TypeError` → 후 정상.
   - zig 전체 test 통과, 통합 스위트 무회귀. splitting 무회귀(모든 변경 preserve_modules 게이트).
 
   ## 잔여 (#4532 epic — 이 PR 범위 밖, non-minify 에도 존재하는 별개 근본)
-
   - **비-ESM-wrap 동명 export 붕괴**: 동명 provider 가 CJS-flatten(a.cjs) 을 안 거치고 entry 만 import 하면(즉 ESM-wrap 이 아니면) 전역명이 안 붙어 여전히 붕괴(`T1T2T1`). 전역명이 ESM-wrap owner 로 한정돼 있어(chunk.zig, #4559 의도) 비-wrap owner 는 별도. minify·non-minify 동일.
   - **익명 `export default class{}`/`function(){}`** in ESM-wrap 모듈: 선언이 top-level 이 아니라 `__esm` 클로저 안에 assign → `export{X}` 가 미선언 참조(SyntaxError). codegen 문제로 minify·non-minify 동일. 별개 근본.
   - 증상4(multi-entry 순환), 배럴 자체 exports CJS 직접 `require("./r.js").X`(live getter).
@@ -1202,23 +1147,19 @@
   ## 수정 (rollup 식 — provider public 명 보존)
 
   전역명을 non-wrap 에 확장하면 provider public export 가 리네임돼 external consumer 가 깨진다(preserve-modules 계약 위반). 대신 **소비자-로컬 deconflict 를 body 와 공유**한다:
-
   - import 블록이 body codegen(`buildMetadataForAst`)보다 **먼저** 방출되므로, `$N` deconflict 로 정한 소비자-로컬명(`tag$3`)을 `consumer_import_local`(per-chunk transient, `canonical module → export명 → 로컬명`)에 적어 둔다(linker.zig).
   - `effective_target` 가 전역명이 없는 cross-chunk 참조에서 이 맵을 읽어 body 를 같은 이름(`tag$3`)으로 맞춘다. import 문·body 가 일치하고 provider 는 `export { tag }` 그대로다.
 
   `/code-review max` 반영:
-
   - **explicit preserve-modules 게이트**: `consumer_import_local` 의 write(chunks.zig)·read(effective_target)를 `preserve_modules` 로 명시 게이트(암묵적 `!has_global` 대신). splitting 은 전역명이 있어 이 경로를 안 타므로 무영향이 코드에 드러난다.
   - **borrowed `loc` UAF 회피 명시**: map 은 non-wrap(.none) canonical 에서만 채워지므로, per-chunk 수명 borrowed `loc` 이 esm-wrap 전용 `export_getter_overrides` 경로로 안 흘러감을 주석에 못박음(renames 경로는 이미 dupe).
 
   ## 검증
-
   - 회귀 스위트 `preserve-modules-nonwrap-samename.test.ts` 24종(esm/cjs × plain/minify): 혼합(wrap+non-wrap), 순수 non-wrap, 동명 const, re-export 배럴, 다단계 re-export 체인, 2-consumer — 전부 통과(수정 전 전부 붕괴).
   - provider public 명(`export { tag }`)·entry 자체 export 자연명 유지 확인.
   - zig 전체 test, 통합 스위트 무회귀. splitting·단일 번들 무영향(write/read 모두 preserve_modules 게이트).
 
   ## 잔여 (별개 근본 — #4576)
-
   - **동명 `export default` / `export { foo as tag }`**(export 명 ≠ 소비자 로컬명): import 블록의 `key != binding` 분기가 `$N` deconflict·map 기록을 안 해 로컬명 중복(default esm=SyntaxError·minify=silent ND1ND1·cjs 별도). binding-keyed deconflict + cjs/minify emit 경로별 처리 필요. #4572 인프라(`consumer_import_local`)를 확장하는 후속.
 
 - de1e03c: `--preserve-modules`(ESM 출력)에서 `import * as ns` (ESM-wrap dep) 의 멤버 접근이 `ReferenceError` 나던 것 수정 (#4532 증상2).
@@ -1227,9 +1168,9 @@
   // dep.js:  export const val = 42; export function greet(){ return "G"; }
   // wrap.cjs: module.exports = require("./dep.js");   // dep 를 ESM-wrap 강제
   // entry.js:
-  import * as ns from "./dep.js";
-  import "./wrap.cjs";
-  console.log(ns.val + "|" + ns.greet()); // 버그: ReferenceError: val is not defined
+  import * as ns from './dep.js';
+  import './wrap.cjs';
+  console.log(ns.val + '|' + ns.greet()); // 버그: ReferenceError: val is not defined
   ```
 
   ## 근본 원인
@@ -1241,7 +1182,6 @@
   `computeCrossChunkLinks` 의 consumer-side namespace 루프에 **direct leaf namespace import 브랜치**를 추가: `nsReExportTarget`(namespace re-export)이 null 인 direct `import * as ns` 이고 dep 가 다른 청크면 `fanOutModuleExports(chunk, dep)` 로 dep 의 export 를 `imports_from`/`exports_to` 에 등록한다. 그러면 증상1이 켠 인프라가 그대로 발화 — `computeCrossChunkGlobalNames`(wrap 은 전역명, non-wrap ESM 은 자연명), provider export, 소비자 import·바인딩, 평탄화 rewrite. member-only(`ns.val`)·value-use(`Object.keys(ns)`) 둘 다 커버(후자는 소비자가 imported 멤버로 ns 객체 합성).
 
   ## 범위 (code-review 반영)
-
   - 게이트 = 증상1 공유(`chunk_graph.pm_xchunk_naming` = preserve-modules + ESM + non-minify **+ non-dev**) + dep `wrap_kind != .cjs`.
     - **non-wrap ESM(.none)도 등록**: plain ESM dep(가장 흔함)도 같은 평탄화라 wrap-only 게이트면 똑같이 깨진다. CJS dep 은 cjsNs interop 별경로라 제외.
     - **`!dev_mode` 추가**: dev 는 namespace member rewrite 가 wrapped local 을 써 negotiated 전역명 경로를 안 탄다.
@@ -1264,7 +1204,6 @@
   transform 이 헬퍼를 `var __classCallCheck = function(){…}` 로 인라인한다. 링커가 그 헬퍼를 별도 모듈에서 `import { __classCallCheck }` 로도 가져오면, 인라인 initializer 는 elide 되지만 ESM-wrap hoisting 이 수집한 **이름**이 import 와 이중 선언(`var __classCallCheck` + `import { __classCallCheck }` → `Identifier '__classCallCheck' has already been declared`).
 
   **수정**: `emitEsmWrappedModule`(esm_wrap.zig)에서 **helper-module import 로컬명을 hoisted var 에서 제외** — import 문이 그 바인딩을 선언하므로 진짜 소스. 단:
-
   - **`preserve_modules` 로 게이트** — non-preserve 는 헬퍼를 별도 모듈에서 import 하지 않고 **inline** 하며(is_helper hoist 의 `var __extends; __extends = …` assign-only preamble, #1209), 그 var 는 필요하다. 제외 필터를 non-preserve 에 걸면 회귀하므로 preserve-modules 로 한정.
   - **키는 `getCanonicalByRef`**(rename 반영) — hoisted 이름이 resolveNodeName 이라 raw 로 매칭하면 minify/deconflict 시 놓친다.
   - **필터 후 남은 이름이 0 이면 `var` emit 자체를 건너뜀** — 모든 hoisted 이름이 helper import 인 모듈에서 `var ;`(SyntaxError)가 되던 것 방지.
@@ -1276,7 +1215,6 @@
   **수정**: dep 이 bare id(virtual helper)면 outdir 최상위 파일로 취급해 상대 계산. src 가 root 아래면 src_rel dir 에서, **src 도 root 밖이면**(RN 모노레포 hoisted dep) stem-only 로 최상위에 놓이므로 형제 `./runtime-…` 로.
 
   ## 검증
-
   - 회귀 스위트 `preserve-modules-rn-class.test.ts` 8종:
     - 4종(esm/cjs × plain/minify): named/익명 default/`extends`/plain function class + 헬퍼 import → `NDPE-B` (수정 전 SyntaxError·ERR_MODULE_NOT_FOUND).
     - `[0]` 2종: non-preserve ESM-wrap × RN downlevel 이 헬퍼 var 를 보존하며 정상 실행(`E-B`).
@@ -1284,7 +1222,6 @@
   - zig 전체 test, preserve/wrapper/cross-chunk 통합 스위트 무회귀.
 
   ## 한계
-
   - `--preserve-modules-root` 미지정 시 virtual helper 경로 계산은 출력 base 추론과 어긋나 여전히 부정확(RN/Metro 는 project root 를 주므로 실사용 영향 없음). 별도 base-추론 이슈로 후속.
   - out-of-root **non-helper 모듈**의 entry→module 지정자(같은 dir 이 아닐 때)는 이 PR 범위 밖의 일반 base-추론 문제로 남는다.
 
@@ -1309,20 +1246,17 @@
   핵심은 **per-binding 카운터가 아니라 집합 기반 유일성**이다 — 카운터는 한 그룹의 `foo$2` 가 다른 심볼의 자연명 `foo$2`(또는 사용자 심볼)와 충돌할 수 있다(아래 검증 [0]). 이름이 고정된 심볼(전역명 `has_global`·lazy)은 pre-pass 로 `used_locals` 에 먼저 예약해, 동명 plain 로컬이 그 이름과 충돌하면 순서와 무관하게 deconflict 된다(아래 [1]). `export const foo` + `export default function foo` 같은 cross-branch 충돌도 같은 집합으로 해소된다.
 
   ## 검증
-
   - 회귀 스위트 `preserve-modules-samename-default.test.ts`: named/익명 default·cross-branch·3-way + **[0]** dedup 이름이 자연 `foo$2` 심볼과 충돌 회피(→`foo$3`)·**[1]** 전역명 고정 default + plain 동명(import 순서 무관 `PW`) — esm plain/whitespace/syntax minify. cjs 는 중복 로컬 선언이 없고 deconflict 됨을 emit 으로 확인.
   - preserve-modules 160·cross-chunk/splitting/wrapper 186 통합 + zig 전체 test 무회귀.
 
   ## `/code-review max` 반영
 
   max 리뷰가 초기 커밋(per-binding 카운터)에서 두 correctness 회귀를 짚어 집합 기반(`used_locals`)으로 재설계했다:
-
   - **[0]** dedup `binding$N` 이 다른 binding 의 자연 `$N` 명과 충돌(재현) → `used_locals`+자연명 집합으로 유일성 판정.
   - **[1]** `!has_global` 게이트가 전역명 default 를 dedup 에서 제외해 순서-의존 중복(재현) → 고정명 pre-pass 예약.
   - **[2]** 중복 alias 분기 → `key != local` 단일 분기로 병합. **[3]** cjs 테스트 vacuous → positive 단언 추가.
 
   ## 별개 선행 버그(별도 후속)
-
   - **`--minify-identifiers`**: mangler 가 소비자 default import 의 로컬은 개명하는데 body 참조는 다른 심볼로 취급해 발산(silent). 이 fix 유무와 무관하게 main 도 동일 — mangler 심볼-정체성 문제로 별도.
   - **cjs default interop**: `module.exports = foo` provider 를 소비자가 `{ default: foo }` 로 구조분해해 `foo is not a function`. 단일 default 도 실패(중복과 무관). 이 fix 로 중복선언 SyntaxError 는 제거되지만 interop 오류는 별도.
 
@@ -1338,7 +1272,6 @@
   ```
 
   **wrap 종류마다 규칙이 다르다** — 이걸 놓쳤다.
-
   - **CJS**: 본문 **전체**가 `__commonJS` 클로저 안 → 파일 top-level 에 export 명이 없다(래퍼뿐). 그래서 심볼을 import 하면 provider 가 내지도 않는 이름을 가져와 SyntaxError.
   - **ESM-wrap**: 클로저에 들어가는 건 **부수효과 문장뿐**이고 `function tag(){}` 같은 **선언은 파일 top-level 에 남는다**. 소비자도 bare 로 참조한다(단일 번들과 동일).
 
@@ -1361,14 +1294,12 @@
   ⚠️ preserve-modules 는 **모든 모듈이 자기 `entry_point` 청크**라 청크 종류로는 진입점을 못 가른다 — 모듈의 `is_entry_point` 플래그를 봐야 한다.
 
   추가(코드리뷰): 첫 수정이 **회귀 4건**을 만들었다.
-
   - **`module.exports = require_X()` 가 exports 객체를 교체**해, 바로 위에서 깐 `exports.require_X` 를 지웠다 → 이 entry 를 import 하는 다른 파일의 forwarding 썽크가 `undefined.apply` 로 죽는다. 교체 뒤 **재부착**.
   - **`pm_entry_call` 이 `.cjs` 만 봐서** ESM-wrap user entry 는 여전히 본문 미실행이었다(같은 결함의 절반). `isWrapped()` 로 넓혔다.
   - **cjs 의 `exports.X = X` 는 값 스냅샷**인데 ESM-wrap 모듈의 `const`/`class` 는 `__esm` 클로저(=`init_X()`) 안에서 **늦게 대입**된다 → 파일 top-level 스냅샷은 **undefined**(함수 선언만 hoisting 으로 우연히 살아남아 버그가 가려졌다). provider 는 **getter** 로 노출, 소비자는 **init 시점 갱신**. ⚠️ 선-init 은 답이 아니다 — ESM-wrap 끼리 순환하면 아직 미평가인 상대의 `init_Y`(undefined)를 부른다.
   - **회귀 가드가 무력했다** — `buildPm` 에 `minify` 파라미터를 넣는 편집이 조용히 실패해 `--minify` 테스트가 minify 없이 돌고 있었다. 이제 esm/cjs × plain/minify 매트릭스를 실제로 돈다.
 
   추가(코드리뷰 3차): 앞선 수정이 **실제로는 동작하지 않았다.**
-
   - **소비자 forwarding 이 심볼 갱신을 `init_X()` 호출 _전에_** 했다 → 값이 `__esm` 클로저 안에서 대입되므로 **여전히 undefined** 였다(init 은 memoize 라 재갱신 기회도 없다). **함수 선언만 hoisting 으로 살아남아** 테스트가 통과했고, 그 테스트는 **import 순서 덕에 provider 의 init 이 먼저 돌아** 버그를 가리고 있었다 — 내가 "제거했다" 고 주장한 바로 그 은폐 패턴이다. init 을 먼저 돌리고 그 다음 갱신하도록 고쳤다.
   - **동명 심볼을 내는 wrap 된 dep 이 둘이면 `let tag;` 가 중복 선언**돼 파싱 불가였다. 심볼 분기와 같은 `$N` deconflict 를 적용했다.
 
@@ -1383,7 +1314,6 @@
   `compiled_cache.computeInputHash` 는 소비자 자신의 상태(mtime/source/options/used_exports/import path)만 해시하고, **provider(및 그 전이 dep)의 post-link emit-영향 상태**(wrap_kind·exports_kind·canonical 이름·래퍼명·상수값·export 순서 등)는 안 본다. import record 는 "어디로 resolve 됐나(path)"만 보고 "그 대상이 어떤 wrap/export 인가"는 안 본다.
 
   ## 수정 — Merkle deep-fold
-
   - `Linker.emitFingerprint(m)` = 모듈의 **local** emit-영향 상태 해시: Module 필드(wrap*kind·exports_kind·has_cjs_export_signal·can_skip_cjs_default_interop·uses_top_level_await·isInCycle) + 래퍼명(require*/init*/exports*/synthetic) + export 별(exported_name·자기 canonical·자기 const 값), **order-dependent**(export 순서가 소비자 inline namespace object 순서를 바꾸므로).
   - `Linker.emitDeepFingerprint(M)` = `local(M) *31 +% Σ deep(dep)` (Merkle) — `import_records` 재귀(require.context 대상은 `rec.context_resolved_paths`→`path_to_module` 로 해석). **re-export barrel 을 통한 origin 의 전이 상태(이름·wrap·star `export *`)를 자동 흡수**한다.
   - `computeInputHash` 가 각 resolved import 대상(+ 모듈 **자신**)의 **deep** fingerprint 를 키에 접어 provider 변경 시 소비자 cache miss 를 유발.
@@ -1393,7 +1323,6 @@
   - `is_included`(tree-shaking)는 증분 경로에서 빌드 간 비결정적이라 fingerprint 제외(provider dead/alive 는 used_export_names + path-set clear 로 커버).
 
   ## 범위 / 분리 (별도 이슈)
-
   - **커버**: wrap_kind flip · exports_kind · canonical/래퍼 이름 · export 재정렬 · **named/star re-export barrel 통한 origin rename**. warm≡cold 회귀 가드 4종(wrap_kind flip · named barrel rename · export reorder · star barrel rename).
   - **require.context 확장 대상**: `context_resolved_paths`→`path_to_module` 로 fold(구조적 커버). ⚠️ live warm≡cold 가드는 플러그인이 context_resolved_paths 를 채워야 가능해 유닛으로는 미검증(#4538 과 동일 제약) — emitter/forEachWrapperImportTarget 와 동일 해석 경로라 구조적 정확.
   - (provider const 값도 local fp 에 접히나, 상수 인라이닝의 실제 stale 는 대개 #4544 AST-mutation 층이 지배 — 그쪽에서 종결.)
@@ -1412,7 +1341,6 @@
   ## 근본
 
   `emitRunBeforeMainCrossImports` 가 **포맷 무관하게 ESM `import { init_setup } from "chunk"`** 를 냈다:
-
   - iife/umd/amd: 그 import 가 factory 함수 **안**이라 `SyntaxError`.
   - cjs: CommonJS 출력에 ESM import → 로드 불가.
   - esm 만 top-level import 라 유일하게 정상이었다.
@@ -1422,7 +1350,6 @@
   ## 수정
 
   `emitRunBeforeMainCrossImports` 를 **포맷-aware** 로 — 메인 import 블록과 동일한 결합:
-
   - reg_split → `const { init_setup } = __zntc_require("<reg_id>");` (레지스트리)
   - cjs → `const { init_setup } = require("<path>");`
   - esm → `import { init_setup } from "<path>";` (기존)
@@ -1430,7 +1357,6 @@
   `reg_ids` 를 호출부에서 넘겨 dep 청크의 레지스트리 id 를 조회한다.
 
   ## `/code-review max` 반영
-
   - **[3]** cjs-wrap RBM 이 청크에서 raw-require 되면 메인 cross-chunk 블록(#4541)이 `const require_X =
 function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또 `const {require_X}=require()` 를
     내면 **이중 선언 SyntaxError**(재현). 청크가 raw-require 하면 cross-import skip(메인 바인딩 재사용),
@@ -1440,13 +1366,11 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
     `node --check` 파싱 검증·umd 런타임·cjs-wrap 두 케이스 추가.
 
   ## 검증
-
   - 회귀 스위트 `reg-split-shared-rbm.test.ts` 13종: iife/umd/amd(ESM import 없음+파싱 유효, minify 포함)·
     iife/umd 로드-순서 실행·cjs 직접 실행(`SETUP_DONE`)·esm 회귀·cjs-wrap RBM(import함/안함)·cjs minify 파싱.
   - polyfill-rbm 8·splitting·preserve-modules-cjs·manual-chunks 175 통합 + zig 전체 무회귀.
 
   ## 한계
-
   - **cjs `--minify` RBM**: common 청크가 wrapper 명 `init_X` 를 mangle(`n`)하는데 entry 는 미mangle
     `init_setup` 참조 → `init_setup is not a function`. #4579 계열 per-chunk rename_table 발산으로 이 fix
     범위 밖(non-minify·reg_split 은 정상). RBM 이 wrapper init 을 **명시 호출·cross-chunk 바인딩**하는
@@ -1467,13 +1391,11 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   ## 수정 — RBM co-location (reg_split 한정)
 
   chunk.zig 의 manual 청크 배정에서 **run_before_main 클로저를 제외**한다 — dynamic import 대상(#1848/#1849)·user entry(#4553)가 이미 제외되는 것과 같은 방식. `GenerateOptions.run_before_main` + `reg_split` 로 받아 `rbm_modules` set 을 만들고, manual seed 수집(resolver·record)·Phase 2.5 BFS 전파에서 skip. RBM 은 entry 의 dep 로 링크돼 있어(build_flow linkExecutionRoots) 제외되면 entry 청크에 자연히 co-locate 된다. 매칭된 **non-RBM** 모듈은 종전대로 manual 로.
-
   - **reg_split 한정**(iife/umd/amd): esm/cjs 는 cross-chunk RBM 이 valid ESM `import` 로 동작하므로 사용자의 manualChunks 배치를 **존중**(강제 co-locate 안 함). reg_split 아닐 땐 `rbm_modules` 가 비어 exclusion no-op.
   - **최상위 RBM 만이 아니라 클로저 전체**: RBM 이 import 한 모듈(transitive static dep)이 manual 로 빠지면 entry prelude(emitter `collectRunBeforeMainClosure`)가 그걸 cross-chunk 참조해 똑같이 깨진다 → RBM 클로저 전체를 제외.
   - manual 미설정이면 스캔 자체를 skip.
 
   ## 범위 / 후속
-
   - **단일 entry**(RN 전형, RBM 의 실사용): 완전 해결(공유 없음 → RBM 은 entry 청크에만).
   - **여러 entry 가 같은 RBM 공유**: RBM 이 `common` 청크로 가는데, zntc 는 1 모듈 = 1 청크라 각 entry 청크로 **복제(co-locate)가 불가** → registry-native(common 청크 eager-run) 필요 → **#4555 후속**. main 에서도 pre-existing(이 수정이 회귀 아님).
   - **degenerate 조합**(같은 co-location 한계, #4555 영역): (a) manual 청크의 라이브러리가 app 의 RBM 을 import(entry 스코프 init 심볼 미도달), (b) RBM 이 동시에 `import()` 대상/federation-expose 라 Phase 1b 에서 자기 dynamic 청크가 됨. 둘 다 reg_split 에서 cross-chunk 참조 → 실사용 거의 없음.
@@ -1481,7 +1403,6 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   참조: Metro `getModulesRunBeforeMainModule` = 번들별 최상단 co-locate(split 안 함). rollup/esbuild 는 run_before_main 개념 없음.
 
   ## code-review 반영
-
   - **[reg_split 게이트]**: RBM co-location 은 **reg_split 한정** — esm/cjs 는 cross-chunk RBM 이 valid ESM import 로 동작(테스트가 `node` 실행으로 확인). 처음엔 무조건 제외라 esm/cjs 의 사용자 manualChunks 배치를 무성 무효화했다.
   - **[클로저]**: 최상위 RBM 만이 아니라 **transitive static 클로저** 를 제외(emitter `collectRunBeforeMainClosure` 가 prelude 로 끌어오는 것과 일치) — RBM 이 import 한 모듈이 manual 로 빠지면 여전히 cross-chunk break.
   - **[DRY]**: `reg_split = (iife|umd|amd) and !preserve_modules` 를 하드코딩하던 4곳(bundler + emitter 3)을 기존 미사용 헬퍼 `Format.isWrappedFormat()` 로 통일 — 청커 게이트와 방출부가 어긋나 초록 빌드로 버그 재발하는 드리프트 차단.
@@ -1508,14 +1429,12 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   `resolveWrapperConsumerShadows`(#4533)는 CJS 소비자의 scope 0(클로저 지역)도 개명하는데, `moduleFingerprint`(G2)는 CJS scope-0 사용자 로컬을 제외한다 → warm 재빌드에서 scope-0 shadow 바인딩이 새로 생겨도 fingerprint 불변 → stale snapshot 재사용 → shadow 재출현. CJS scope-0 이름을 fingerprint(G5)에 접어 넣어 그 변화를 잡는다.
 
   ## 범위
-
   - 커버: 위 3종(전부 code-review max CONFIRMED). ESM scope-0 헬퍼는 통합 가드, fingerprint 는 renameReuseGuard 단위 가드(둘 다 비-공허 확인).
   - **미해결(장기)**: HMR rename-reuse 스냅샷이 nested rename 시 통째 폐기돼 warm 이 full 재계산으로 떨어지는 **perf** 저하(정확성 유지). 근본 처방=non-minify 에도 mangler급 scope-aware 리네이머(#4538 원 이슈에 기록).
 
   검증: zig build test 6226/6226 · effect/zod/three --minify byte-identical(size 0).
 
   ## code-review 반영 (2차)
-
   - **[0] fingerprint 상쇄 버그**: CJS scope-0 fold 를 nested(0xc0)와 **다른 seed(0xc1)** 로 — 같은 seed·같은 누산기면 이름이 scope-0↔nested 로 **이동**할 때 상쇄돼 fingerprint 불변(stale reuse). unit 가드 추가(비-공허 확인).
   - **[3] fold 과잉무효화**: `moduleImportsWrapped` 게이트 추가 — wrapped import 가 있는 CJS 모듈만 scope-0 을 fold(안 그러면 shadow 불가능한 CJS 편집마다 warm reuse 상실).
   - **[1] require.context per-chunk 예약**: computeRenamesForModules 의 참조측 예약이 `require_context` 레코드(rec.resolved=none)를 빠뜨려 pickConsumerShadowName 후보가 형제 래퍼와 겹칠 수 있던 것 — context_resolved_paths 도 reserveWrapperNames.
@@ -1525,12 +1444,10 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   ⚠️ require.context 경로는 **플러그인이 매치를 해석**(context_resolved_paths)해야 채워져 플러그인 없는 통합 테스트로는 라이브 검증 불가. fix 는 emitter.zig 의 주입 경로와 **대칭**(동일 context_resolved_paths→path_to_module→getModule)이라 정확성은 구조적으로 보장.
 
   ## code-review 반영 (3차)
-
   - **[0] require.context `__toCommonJS` shadow**: dev 단일번들 require.context codegen 은 대상 wrap_kind 무관하게 매치마다 `(__zntc_modules[id].fn(), __toCommonJS(__zntc_modules[id].exports))` 를 찍어 `__toCommonJS` 를 **항상** 주입한다. names 배열은 `__toCommonJS` 를 esm 에만 넣어 CJS require.context 대상의 `__toCommonJS` shadow 를 놓쳤다 → `via_context` 플래그로 context 자리엔 `__toCommonJS` 항상(·`__toESM` 제외).
   - **[1] 중복 walk 통합**: require.context 대상 열거가 fingerprint 게이트·shadow rename·per-chunk 예약 3곳에 복붙돼 있던 것을 `forEachWrapperImportTarget` **단일 iterator** 로 묶음(드리프트 방지 — 이 레포 단골 루트커즈).
 
   ## code-review 반영 (4차, 최종)
-
   - **죽은 방어 가드 제거**: `deconflictConsumerShadows` 진입부의 `.none && synthetic==null` 재검사는 유일 호출 경로인 `forEachWrapperImportTarget`(위 [1] iterator)가 이미 pre-filter 하므로 항상 false → 제거하고 `.none` 판단을 iterator 한 곳으로 통일(통합 목적과 정합). 동작 무변경.
 
 - 4cd691e: 구조분해/객체리터럴 shorthand 의 값 치환이 **프로퍼티 이름까지 바꾸던** 버그와 `undefined` peephole 의 섀도잉 오적용 수정 (#4515).
@@ -1545,7 +1462,6 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   치환이 일어날 자리면 longhand(`이름: 값`)로 펼치도록 했다. 자리(값 / 대입대상)는 호출자가 `ShorthandSlot` 으로 알려준다 — 파서에서 태그를 바꾸면 `makeRestExcludeKey` 같은 태그 스위치 소비자들이 조용히 깨진다.
 
   함께 수정:
-
   - **패턴 프로퍼티의 computed key 를 semantic 이 방문하지 않았다** — `({[k]: t = d} = o)` 의 `k` 가 읽기 참조로 안 잡혀 rename/DCE 에서 누락됐다.
   - **`undefined` → `void 0` peephole 이 섀도잉된 지역 바인딩에도 발동**했다. 가드가 `sym_id == null` 하나였는데 `sym_id` 는 linking metadata(= 번들 모드)가 있을 때만 채워진다 — transpile 모드엔 metadata 가 없어 **항상 null** 이라 "unbound global" 판정이 무조건 참이었다.
 
@@ -1572,7 +1488,6 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   ## 루트커즈
 
   wrapped entry 호출 emit 이 세 경로의 게이트에 전부 걸려 표준 splitting 에서 어디서도 안 나왔다:
-
   - `dev_split_chunk` — `reg_split`(iife/umd/amd) 한정 + entry 자신은 skip
   - `preserveModulesWrapperChunk` — `preserve_modules` 한정
   - `reg_split` bootstrap(`__zntc_require`) — iife/umd/amd 한정
@@ -1588,21 +1503,18 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   검증: zig 6227/6227 · split-cjs-cross-chunk 19 pass(esm/cjs 가드 2종 추가, 빈 dist 실행 non-vacuous) · 인접 splitting/wrap 145 pass · effect/zod/three --minify byte-identical.
 
   ## code-review 반영
-
   - **[3] --minify 변형 추가**: 회귀 가드에 esm/cjs × plain/minify 4종. 호출은 `appendModuleCall` 이 rename_table 로 이름을 풀어 선언측과 일치(minify 래퍼명 `require_entry`→`$c` 축약도 실측 정상). 파일 규약(minify-only 회귀 방지).
   - **[4] TLA 가드 통합**: `wrap_kind==.esm and uses_top_level_await` 술어가 세 entry-invoke 지점(dev_split·reg_split·표준 splitting)에 복붙돼 있던 것을 `isTlaEsmModule` helper 로 단일화(각 지점의 컨텍스트별 await-합법성 게이트는 유지).
   - **[0] known limitation (범위 밖·무회귀)**: wrapped-CJS entry 를 외부에서 `require()` 로 소비하면 exports 가 청크 module.exports 에 노출되지 않는다(호출 반환값 discard). **단일번들 `--format=cjs` 도 동일**(실측 `result=undefined`) — zntc "wrap entry+호출" 모델의 선재 한계이지 이 수정의 회귀가 아니다. `module.exports=require_X()` 확장은 pm 블록이 경고한 손상 위험이 있어 별도 이슈 #4542.
   - **[2] known limitation (범위 밖·무회귀)**: CJS-format + ESM-wrap + top-level await entry 는 top-level await 불가로 침묵 미실행(additive 라 pre-fix 대비 무회귀). esbuild식 async-IIFE 래핑은 별도 기능.
 
   ## code-review 반영 (2차)
-
   - **[3] non-vacuity 가드 강화**: `toMatch(/__commonJS|\$c/)` 는 helper 정의·형제 `require_legacy` 래퍼와도 매칭돼 scope-hoist entry 를 진공 통과시켰다. plain 변형에서 entry **자기** 래퍼 `var require_entry =` **선언 + `require_entry();` 호출**을 직접 확인(회귀 시 실패)으로 교체.
   - **[4] multi-chunk 가드**: `.js` 파일 >1 assert 추가(청킹 붕괴 시 진공 방지).
   - **[1] 별도 선재 버그 발견(범위 밖)**: entry(또는 임의 청크)가 raw `require("./x.cjs")` 하고 그 CJS 가 common chunk 에 안착하면, 소비자 청크가 common chunk 를 side-effect import 만 하고 `require_X` 를 **import 도 export 도 안 해** `ReferenceError: require_X is not defined`. **entry 를 미-wrap 시켜 이 수정을 끈 상태에서도 동적 import 된 비-entry 청크가 동일 크래시** → 내 수정과 독립인 #4494/#4522 계열 raw-require 변종. 별도 이슈 #4541.
   - **[2] manualChunks 로 relocate 된 entry(범위 밖)**: entry 모듈을 manual 청크로 옮기면 `chunk_is_user_entry`=false 라 미호출(선재 #4537 하위케이스, 회귀 아님). 리뷰의 "선언/호출 분리 → ReferenceError"는 재현 안 됨(entry 청크 자체가 없어짐). 별도 이슈.
 
   ## code-review 반영 (3차, 최종)
-
   - **entry_error_guard parity**: 표준 splitting entry 호출을 `appendModuleCall`→`appendGuardedModuleCall` 로 교체 — 단일번들과 동일하게 `entry_error_guard`(RN/Metro) 활성 시 `__zntc_guarded(require_X)` 로 wrap. guard 비활성(기본)엔 `shouldGuard`=false 라 `appendModuleCall` 로 fallback → **출력 byte-identical**(repro 확인). reg_split/dev_split 은 factory/bootstrap 자체 error 처리라 그대로.
   - **테스트 주석 정정**: minify rename 회귀는 `runNode` 가 non-zero exit 시 throw 하므로 "빈 stdout"이 아니라 thrown error 로 드러남.
     검증: zig 6227/6227 · split/iife/umd/pm/dev/RN(es5-rn) 인접 127 pass · guard-off byte-identical.
@@ -1614,7 +1526,6 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   ```
 
   크로스-청크 export/import 목록(`chunk.exports_to` / `chunk.imports_from`)은 **스캐너 시점 메타데이터**(`import_bindings` / `export_bindings`)만 보고 만들어졌다. 그런데 그 뒤에 tree-shaker 가 선언을 지우는 경로가 두 가지 있다.
-
   - **크로스-모듈 const-inline**: `export const extra = 1` 은 소비자 AST 에 리터럴 `1` 로 박히므로 참조가 0 → 선언 statement 가 DCE.
   - **미사용 named import**: `import { unused } from "./barrel"` 를 실제로 안 쓰면 참조가 애초에 0 → 마찬가지로 DCE.
 
@@ -1629,7 +1540,7 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   ```js
   // reusable.js:  const channels = new Channels(...); export default channels;   // 싱글톤
   // rgba.js:
-  import _channels from "./reusable.js";
+  import _channels from './reusable.js';
   const rgba = (r) => {
     const channels = _channels.set({ r }); // 로컬 channels 가 싱글톤 channels 를 shadow
     return channels;
@@ -1648,7 +1559,6 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   `computeRenamesForModules`(per-chunk)에 `resolveNestedShadowConflicts` 를 추가한다(글로벌 경로와 동일 위치). `only: ?[]const ModuleIndex` 파라미터로 청크 모듈 한정, **target(정의)이 consumer 와 같은 청크일 때만** 리네임.
 
   `/code-review max` 반영:
-
   - **preserve-modules(module_to_chunk==null) 제외**: null 이면 `chunkOfModule` 이 전부 `.none` → same-chunk 가드가 `.none != .none`=false 로 fail-open 해 cross-module target 을 over-rename(별도 출력 파일이 원명 export → ReferenceError). preserve-modules 는 import 를 hoisting 안 해 이 shadow 자체가 없으므로 `if (module_to_chunk != null)` 로 skip. same-chunk 가드도 `.none` 이면 skip(isCrossChunkConsumer 와 동형).
   - **nested-binding 캐시를 `calculateRenames` 전 + `defer clearNestedBindingCache()`**: 3 소비처(calculateRenames/resolveNestedShadowConflicts/resolveWrapperConsumerShadows) 공용 O(1), 에러 경로 해제.
 
@@ -1657,7 +1567,6 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   **same-chunk splitting** 한정(mermaid khroma 는 same-chunk 인라인이라 커버). 같은 클래스의 잔여 토폴로지 — (A) cross-chunk splitting(싱글톤이 다른 청크), (B) preserve-modules(import 로컬명 shadow), (C) dev-split override revert — 는 근본이 **cross-chunk/파일경계 네이밍이 소비자 nested binding 미회피**로 별개 처방 필요. 셋 다 #4563 이전부터 있던 pre-existing gap(이 PR 이 회귀시키지 않음) → **#4566** 로 추적.
 
   ## 검증
-
   - 실제 mermaid `--format=esm`(non-minify): flowchart/sequence/gantt/class/state/pie/er/journey/git **9종 전부 headless 브라우저 렌더 성공**. 산출물 self-referencing const 0. (minify 경로도 여전히 9종 렌더 — #4560/#4564.)
   - 회귀 가드: `split-runtime-smoke.test.ts` `#4563` — reusable 싱글톤 + import alias + 함수-로컬 동명 구조를 splitting 으로 node 실행(`rgba:10`), self-referencing const 부재 확인. 수정 전 self-TDZ `ReferenceError` 재현.
   - zig 전체 test + 통합 스위트(4268) 무회귀 — per-chunk 리네이머는 모든 splitting 빌드가 타는 코어 경로라 전량 검증.
@@ -1668,7 +1577,7 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   // libA.js:  export const max = (arr) => ...;   // 다른 lib 의 max 와 전역 충돌 → max$1
   // barrel.js: export * from "./libA.js";         // 재-export만 (lodash-es 배럴 위상)
   // diagram.js (lazy):
-  import * as _ from "./barrel.js";
+  import * as _ from './barrel.js';
   export const d = () => _.max([3, 1, 4]); // 버그: ReferenceError: max is not defined
   ```
 
@@ -1681,13 +1590,11 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   ## 수정
 
   namespace 멤버 전역명 해석을 `crossChunkNsMemberName` 헬퍼로 통합:
-
   1. **canonical 기준 게이트+조회**: source(배럴) 키 조회가 miss 면 `resolveExportChain(source, member)` 으로 canonical(정의 모듈)을 해석해 **그 키**로 재조회한다(체인 끝 = import 등록과 동일 키). `isCrossChunkConsumer` 게이트도 **각 키의 정의 모듈** 기준 — 배럴이 소비자와 같은 청크여도 정의 모듈이 다른 청크로 split 되면 전역명이 필요하기 때문(import rename 경로 `metadata.zig` 와 canonical 기준으로 일치).
   2. **네 개의 형제 사이트에 모두 적용** (code-review max 반영): main 평탄화 / `allocNamespaceMemberRewriteValue`(init-식 `(init(), member)`) / `buildInlineObjectStr` getter(value-namespace) / `allocNamespaceGetterValue`. 모두 같은 canonical 해석을 쓴다.
   3. **synthetic_named_exports**: canonical 이 컨테이너 export 를 가리키고 실제 멤버는 `synthetic_member` 면 `<global>.<member>` 로 접근(전체 축약 금지).
 
   ## 검증
-
   - 실제 mermaid: flowchart/sequence/gantt/class/state/pie/er/journey/git **9종 전부 headless 브라우저 렌더 성공**(`--splitting --minify --format=esm`). 산출물에 bare `max` 잔여 0.
   - 회귀 가드: `split-runtime-smoke.test.ts` 에 `#4564` 실행 가드 — 재-export 배럴 경유 namespace 멤버 + 전역 충돌을 dynamic import 로 node 실행(`5|A:d1 / 9|A:d2 / 2 / 1`) + cross-chunk 구조를 minify-robust 마커(문자열 `"A:"`)로 확인. 수정 전 bare `max` → `ReferenceError` 재현 확인.
   - zig 전체 test + 통합 스위트(4267) 무회귀.
@@ -1697,9 +1604,9 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   ```js
   // pkg/channel.js:  export const channel = (c, ch) => ...;   // 공통 청크로 분리
   // diagram1.js (lazy):
-  import * as k from "./pkg/channel.js";
+  import * as k from './pkg/channel.js';
   function fade(c) {
-    return k.channel(c, "r");
+    return k.channel(c, 'r');
   } // 각 다이어그램이 자체 정의(중복)
   export const d1 = () => fade({ r: 1 });
   // entry.js:  Promise.all([import("./diagram1.js"), import("./diagram2.js")])
@@ -1719,13 +1626,11 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   `computeCrossChunkLinks` 의 consumer-side namespace 루프 — #4532 증상2 에서 preserve-modules 용으로 넣은 **direct leaf namespace fan-out 브랜치**를 splitting 에도 발화시킨다. `nsReExportTarget` 이 null 인 direct `import * as ns` 이고 dep 가 다른 청크면 `fanOutModuleExports(chunk, dep)` 로 dep 의 export 를 `imports_from`/`exports_to` 에 등록 → 뒤이은 `computeCrossChunkGlobalNames` + provider export + 소비자 import·평탄화 rewrite 가 발화한다.
 
   게이트: `const ns_fanout_ok = if (preserve_modules) pm_xchunk_naming else true;`
-
   - **splitting**: 항상 (이 수정).
   - **preserve-modules**: `pm_xchunk_naming`(ESM·non-minify·non-dev) 한정 — #4532 와 동일.
   - CJS dep 은 cjsNs interop 별경로라 제외, `seen_ns_target` 로 같은 dep 반복 DFS dedup.
 
   ## 범위 / 한계 (code-review max 반영)
-
   - **dedup 도메인 분리**: fan-out 은 `fanOutModuleExports` 만 하는 **부분 작업**이라, 풀 작업(`markNsCrossChunk`+`ensureSharedNsVar`+ns-객체 등록)을 하는 `linkNamespaceCrossChunk` 와 dedup set(`seen_ns_target`)을 공유하면 안 된다 — 공유 시 fan-out 이 먼저 dep 를 넣어 같은 청크의 뒤이은 `export * as ns`(re-export)·값-사용용 `linkNamespaceCrossChunkOnce` 를 조기 return 시켜 ns 객체 합성이 누락된다. **별도 `seen_ns_fanout` set** 으로 격리(fanOut 은 `seen_static` 으로 멱등이라 이중 호출 안전).
   - **`!dev_mode` 게이트**: splitting 항도 dev 제외(`else !graph.dev_mode`). dev 는 namespace member rewrite 가 wrapped local 을 써 negotiated 전역명 경로를 안 타므로 preserve-modules 게이트(`pm_xchunk_naming` 이 이미 `!dev_mode`)와 동일하게 제외.
   - **과등록(correctness-neutral)**: `linkReExportName` 이 `crossChunkExportIsShaken` 으로 **전역 dead export** 는 거르지만 "이 소비자가 실제 쓰는 멤버" 까지 추리진 않아 dep 의 live export 를 통째로 등록한다 → rolldown 의 per-usage canonical-ref 보다 약간 과등록(mermaid 실측 **~0.08% dead import**, 무해). per-consumer 정밀 등록은 후속.
@@ -1742,26 +1647,23 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   `new URL(spec, import.meta.url)` 의 `spec` 은 **URL 상대 참조**다. base 가 모듈 자신의 URL 이므로 `"x.worker.js"` 와 `"./x.worker.js"` 는 같은 파일을 가리킨다. 그런데 지금까지 zntc 는 `./` 가 붙은 것만 재작성하고, `./` 없는 bare 형태는 npm 패키지 이름으로 보고 `node_modules` 를 뒤졌다 → resolve 실패 → 경고만 남기고 원문 그대로 방출 → 해시된 산출물 이름과 어긋나 **런타임 404**.
 
   ```js
-  new Worker(new URL("./dbl.worker.js", import.meta.url)); // → new URL("./dbl.worker-1c4d8b20.js", …) ✅
-  new Worker(new URL("dbl.worker.js", import.meta.url)); // → new URL("dbl.worker.js", …) ❌ 404
+  new Worker(new URL('./dbl.worker.js', import.meta.url)); // → new URL("./dbl.worker-1c4d8b20.js", …) ✅
+  new Worker(new URL('dbl.worker.js', import.meta.url)); // → new URL("dbl.worker.js", …) ❌ 404
   ```
 
   `monaco-editor` 의 `cssMode.js` / `tsMode.js` 등이 정확히 이 형태(`new Worker(new URL("css.worker.js", import.meta.url), { type: "module" })`)를 써서, Monaco 기본 워커 해석에 의존하는 앱이 그대로 깨졌다.
 
   resolve 레이어에서 worker 지정자가 bare 상대 참조면 `./` 를 붙여 해석한다. `--packages=external` 이 bare worker 지정자를 external **패키지**로 오인하던 부수 버그도 함께 해소된다.
-
   - 스킴이 있는 절대 URL(`https:` / `data:` / `blob:` / `chrome-extension:`), protocol-relative(`//cdn/w.js`), root-absolute(`/abs.js`) 는 그대로 둔다 — origin 기준 참조라 `./` 를 붙이면 의미가 깨진다.
   - 형제 파일이 없으면 원문 그대로 한 번 더 해석한다 — `new Worker(new URL("monaco-editor/esm/vs/editor/editor.worker.js", import.meta.url))` 같은 **패키지 경로 worker** 가 예전처럼 `node_modules` 로 해석된다 (Vite 도 양쪽을 지원).
   - `--external:x.worker.js` 처럼 사용자가 원문 철자로 건 external 패턴도 그대로 존중한다.
 
   `/code-review max` 가 첫 구현의 회귀 3건을 잡아내 설계를 바로잡았다.
-
   - **정규화를 먼저 시도한 게 잘못이었다.** `--alias` / tsconfig `paths` 로 매핑되던 worker 지정자가 같은 이름의 형제 파일에 조용히 가려졌다. → **기존 해석을 먼저 시도하고, 못 찾았을 때만 `./` 를 붙인다.** 기존에 resolve 되던 것은 하나도 바뀌지 않는다.
   - `?worker` 등 query 가 붙은 bare 지정자를 정규화하면 worker 본문이 아니라 **WorkerWrapper 팩토리** 청크가 만들어져 워커가 영영 응답하지 않았다. → query/fragment 가 붙은 지정자는 정규화 대상에서 제외.
   - codegen 이 `new URL(spec, base)` 의 **base 인자를 확인하지 않아**, 같은 문자열을 다른 base 로 쓴 무관한 `new URL("x.worker.js", "https://cdn/")` 까지 worker 청크로 재작성됐다 (scan 단계는 base 를 검사한다). → codegen 도 `import.meta.url` 인지 확인.
 
   함께 고친 것:
-
   - `--packages=external` 의 "bare = npm 패키지" 자동 규칙을 worker 에는 적용하지 않는다 (사용자가 명시한 `--external:` 패턴은 그대로 존중).
   - external 로 분류된 worker 가 UMD/AMD **의존성 배열**에 딸려 들어가 AMD 로더가 워커 스크립트를 메인 번들의 모듈 의존성으로 실행하려 들던 문제 (`.css_url` 과 같은 carve-out 적용).
 
@@ -1770,9 +1672,9 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   ```js
   function load() {
     function require_legacy() {
-      return "SHADOW";
+      return 'SHADOW';
     } // 소비자의 바인딩
-    return require("./legacy.cjs").foo(); // → require_legacy().foo() → 가려짐
+    return require('./legacy.cjs').foo(); // → require_legacy().foo() → 가려짐
   }
   ```
 
@@ -1781,44 +1683,37 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   ## 처방 (esbuild/rolldown 방식)
 
   **가리는 사용자 바인딩을 리네임**한다 — 래퍼 이름은 절대 안 건드린다. 래퍼 이름은 cross-chunk 전역명·preserve-modules 공개 export·mangler 등 **여러 서브시스템이 공유**하는 값이라 그걸 바꾸면 파급이 크다(래퍼를 리네임하는 접근은 cross-chunk desync / preserve-modules export 불일치 / mangler 무효화를 연쇄로 낳았다). 소비자의 지역 바인딩은 그 모듈 안에서만 참조되므로 리네임이 **로컬**하다.
-
   - `Linker.resolveWrapperConsumerShadows` — 각 소비자의 `import_records` 로 참조하는 래퍼 이름을 모아, 소비자 스코프(중첩; CJS 소비자는 클로저 안이라 scope 0 포함)에서 동명 바인딩을 찾아 `rename_table` 로 개명(`require_legacy$1`). `findAvailableCandidate` 로 owner/reserved/canonical/기존 중첩바인딩과 안 겹치는 이름 선택.
   - `buildMetadataForAst` 에 nested(scope 1+) rename 반영 추가 — module-scope self-rename 루프는 `scope_maps[0]` 만 봤다. **non-minify 전용**: minify 는 mangler(Phase B)가 nested 를 담당하고 scope-aware 라 shadow 를 자연히 피한다.
   - 단일 번들 / code-splitting(`computeRenamesForModules`) 양 경로에 배선.
 
   ## 곁다리로 닫히는 것
-
   - **#4530**(래퍼 vs 사용자 **top-level** 심볼): main 의 `reserved_globals` 예약이 그대로 담당(이 PR 은 안 건드림).
   - **#4536**(asset/disabled 래퍼): 리네임 대상이 래퍼가 아니라 **소비자 바인딩**이라 래퍼에 심볼 테이블이 없어도 커버된다 — `wrapper_name_synthetic` 도 매칭 대상에 포함.
 
   정본 대조: node / esbuild / rspack / **rolldown** 전부 이 방식(소비자 바인딩 리네임). effect/zod/three `--minify` byte-identical(size 0).
 
   ## code-review 반영 (2차)
-
   - 개명 후보가 CJS 소비자의 **scope-0(클로저 지역) 바인딩**과도 안 겹치게 `pickConsumerShadowName` 추가(`findAvailableCandidate` 는 scope 1+ 만 봄 → `require_legacy$1` 이 이미 있으면 거기 개명하던 재선언 결함).
   - 주입 이름 집합에 런타임 헬퍼 `__toCommonJS`/`__toESM` 포함(ESM-wrap interop `(init_x(), __toCommonJS(exports_x))`).
   - **minify 는 pass 전체 skip** — mangler 가 모든 바인딩을 유일명으로 개명해 섀도가 원천 불가(검증됨). non-minify 만 metadata nested 스캔.
   - `captureRenamesToPending` 에 nested(scope 1+) rename 의 `declaration_span` 재매칭 추가 — AST 변형(const-materialize) 후에도 소비자 shadow-rename 이 살아남게(방어적: module-scope rename 도 있는 소비자가 변형될 때만 발동).
 
   ## code-review 반영 (3차) + 범위
-
   - **[3] splitting**: per-chunk 경로(`computeRenamesForModules`)의 `reserved_globals` 가 wrapper 이름·global_identifiers 를 안 예약해 형제 래퍼(`require_x$1`)와 겹치는 후보를 고르던 것 수정 — collectReservedGlobals 와 동일 예약.
   - **[2] incremental carryover**: `captureRenamesToPending` 이 scope 0/nested 동명 시 nested rename 을 scope-0 심볼에 오귀속하던 것 수정(old 심볼이 실제 module-scope 일 때만 그 경로).
 
   ⚠️ **범위(#4538 epic 로 분리)**: 아래 **드문 edge** 는 이 PR 범위 밖 — cold 공통 케이스는 유지되고 main 대비 regression 아님.
-
   - 런타임 헬퍼(`__toESM`/`__toCommonJS`, `--minify-whitespace` 의 `$tE`/`$tC`)를 지역 변수로 shadow (사용자가 그렇게 이름 짓는 건 사실상 없음).
   - `require.context` 로 도달하는 래퍼.
   - HMR/incremental warm 재빌드에서 CJS scope-0 shadow 를 **나중에** 추가할 때 stale reuse (dev-only).
 
   ## code-review 반영 (4차, 수렴)
-
   - **[0] eval/`with` 가드**: 소비자 스코프에 direct `eval`/`with` 가 있으면(=`blocksMangling()`) 개명하지 않는다 — 그 안의 동적 조회가 바인딩을 **이름 문자열**로 참조할 수 있어 리네임이 그걸 깬다. zntc mangler 도 같은 이유로 그런 모듈을 skip(#1258), esbuild 도 direct-eval 스코프를 deopt. (⚠️ eval+shadow 동시 케이스의 잔여 shadow 는 근본적으로 해결 불가한 엣지 — esbuild 도 동일하게 둔다.)
   - **[1] per-chunk 예약 축소**: 전 모듈 래퍼를 예약하던 것을 **이 청크가 실제 import 하는 래퍼**만으로 좁힘 — 무관한 다른 청크의 동명 사용자 심볼이 불필요하게 리네임돼 content-hash 파일명이 흔들리던 것 방지.
   - **[perf]** metadata nested 스캔을 `has_nonminify_nested_shadow`(scope 1+ 개명이 실제로 있을 때만 true)로 게이트 — 섀도 없는 절대다수 빌드에서 O(전 모듈 nested 바인딩) 스캔 제거.
 
   ## code-review 반영 (5차, 수렴)
-
   - **[2] splitting 선언측 #4530**: per-chunk reserved 를 참조측(import 하는 래퍼)뿐 아니라 **선언측**(이 청크에 놓이는 wrapped 모듈 자신의 래퍼)까지 예약 — 래퍼 선언(`var require_X=__commonJS`)과 동명인 co-chunk 사용자 top-level 이 중복 선언되던 것(main 의 splitting #4530 갭) 수정.
   - **[perf]** metadata nested 스캔 게이트를 전역 bool → **개명된 모듈 index 집합**으로 — 스캔이 영향 모듈에만 비례.
   - **[cleanup]** 래퍼 예약을 `reserveWrapperNames(module)` 단일 헬퍼로(collectReservedGlobals + per-chunk 공유). 코드 주석의 외부 출처 표기 제거(컨벤션).
@@ -1826,7 +1721,6 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   ⚠️ **알려진 HMR perf**(#4538): nested shadow-rename 이 있으면 HMR rename-reuse 스냅샷이 폐기돼 warm 재빌드가 full 재계산으로 떨어진다(정확성 유지, shadow 있는 프로젝트만). symbolLocalName 이 nested SymbolID 를 못 역매핑하기 때문 — reuse 를 nested rename 까지 확장하는 건 #4538.
 
   ## code-review 반영 (6차, 수렴 — correctness 잔여 0)
-
   - **[0] --minify-whitespace 헬퍼명**: interop 헬퍼 shadow 매칭에 축약명(`$tE`/`$tC`, NAMES.TOESM_MIN/TOCOMMONJS_MIN)도 추가 — emit 은 `--minify-whitespace` 에서 축약명을 쓰는데 full 이름만 매칭해 그 조합에서만 nested 헬퍼 shadow 를 놓치던 것 수정. names 배열↔reserveWrapperNames 동기화 주석 추가.
 
 - 07dd074: 생성된 **래퍼 심볼**이 사용자 top-level 심볼과 deconflict 되지 않아 **파싱 불가** 산출물이 나오던 것 수정 (#4530).
@@ -1834,9 +1728,9 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   ```js
   // entry.js
   function require_legacy() {
-    return "USER";
+    return 'USER';
   } // ← 사용자 심볼
-  import d from "./legacy.cjs";
+  import d from './legacy.cjs';
   ```
 
   방출:
@@ -1854,7 +1748,6 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   처방: 래퍼 이름을 linker 의 **`reserved_globals` 에 예약**한다 → 충돌하는 **사용자 심볼**이 리네임된다.
 
   ⚠️ **래퍼 쪽 이름을 바꾸는 방식으로 풀면 안 된다.** graph finalize 의 `used_names` 와 linker 의 `$N` 할당기는 **서로를 못 보는 두 개의 독립 풀**이라, 한 단계 위에서 다시 충돌한다(양쪽이 각각 `require_legacy$2` 를 발급). 예약해서 사용자 심볼을 리네임시키면 할당기가 **하나로 모인다**. 부수 효과로:
-
   - 래퍼가 자연스러운 이름을 유지 → size 회귀 0 (effect/zod/three `--minify` byte-identical).
   - `computeRenames` 는 **매 빌드 실행**되므로 **watch/incremental 재빌드**도 커버된다 (래퍼 이름은 한 번 정해지면 캐시되므로, finalize 쪽 seed 는 warm 에서 아예 발동하지 않았다).
 
@@ -1865,8 +1758,8 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
 - c608d1b: 동명 basename 자산의 `require_X` 래퍼 이름이 충돌해 **다른 자산의 URL 을 돌려주던** 버그 수정 (#4475).
 
   ```js
-  import x from "./a/logo.png"; // 내용이 서로 다른 파일
-  import y from "./b/logo.png";
+  import x from './a/logo.png'; // 내용이 서로 다른 파일
+  import y from './b/logo.png';
   console.log(x, y);
   // 전: ./logo-efdc71e4.png ./logo-efdc71e4.png   ← 둘 다 같은 URL
   // 후: ./logo-22fcfd0d.png ./logo-efdc71e4.png
@@ -1883,7 +1776,6 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   `emitStaticBlock` 이 non-minify 경로에서 `writeNodeSpan` 으로 **소스 바이트를 그대로 복사**하고 있었다. 그래서 static block 안에서만 AST 에 가해진 변형이 통째로 유실됐다 — 조용한 오컴파일.
 
   ### 유실되던 것들
-
   - **deconflict rename**: `class Node` 가 `Node$1` 로 rename 돼도 블록 안의 자기참조 `new Node(...)` 는 옛 이름으로 남았다. 번들에 `Node` 선언이 없으니 그 참조는 **전역 바인딩을 탈취**한다 — 브라우저에서 `new Node()` 는 DOM `Node` 를 잡아 `TypeError: Illegal constructor` 로 죽는다. `monaco-editor` 의 `vs/base/common/linkedList.js` 가 정확히 이 패턴이라, `zntc build` 로 번들한 monaco 는 **에디터가 아예 뜨지 않았다**.
   - **TypeScript strip**: `static { getX = (obj: C) => obj.#x; }` 의 타입 주석 `: C` 가 그대로 남아 **문법적으로 깨진 JS** 가 나왔다.
   - **`--define` 치환**: `static { this.mode = __MODE__; }` 의 `__MODE__` 가 그대로 남아 런타임 `ReferenceError`.
@@ -1916,7 +1808,6 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   지금까지 CSS 본문의 `url(./font.ttf)` 는 완전히 무시됐다 — 자산이 `dist` 에 나오지 않고 CSS 는 원문 경로를 그대로 들고 있어 런타임 404 였다 (dangling 참조). `monaco-editor` 를 번들하면 `codicon.ttf` 가 빠져 에디터 아이콘이 전부 깨지는 식이다.
 
   이제 `url()` / `image-set()` 참조를 JS `import` 자산과 동일하게 해시 방출 + url 재작성한다.
-
   - **적용 대상**: `@font-face { src: url(...) }`, `background`/`background-image`, `border-image`, `cursor`, `mask-image`, `list-style-image`, CSS 커스텀 속성, `image-set()` / `-webkit-image-set()`.
   - **suffix 보존**: `url(./f.eot?#iefix)` → `url("./f-a1b2c3d4.eot?#iefix")` (IE9 훅), `url(./i.svg#icon)` 의 fragment 유지.
   - **손대지 않는 것**: `url(#gradient)` (SVG filter/gradient 참조 — 파일이 아니다), `url(/abs.png)` (public 디렉토리 규약), `url(https://…)` / `url(//cdn…)` / `url(data:…)` / `url(blob:…)`.
@@ -1929,7 +1820,6 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   ### 기본 asset 로더
 
   폰트/이미지/미디어 확장자에 기본 `.file` 로더가 붙는다 — 예전엔 전부 `No loader is configured` 에러였다 (Vite/rspack parity).
-
   - 이미지 `.png .jpg .jpeg .jfif .pjpeg .pjp .gif .svg .ico .webp .avif .bmp`
   - 폰트 `.woff .woff2 .eot .ttf .otf`
   - 미디어 `.mp4 .webm .ogg .mp3 .wav .flac .aac .opus .mov .m4a .vtt`
@@ -1944,7 +1834,6 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   확장자 기본 테이블로 `.file` 이 된 자산에만 적용된다 — `--loader:.png=file` 처럼 **명시** 지정한 로더, `copy` 로더, RN asset-registry 모드는 인라인하지 않는다.
 
   ### 동작 변화 (기존 사용자와 호환)
-
   - 알려진 이미지/폰트/미디어 확장자를 `--loader` 없이 import 하면, 예전엔 **빌드 에러**였지만 이제 성공한다 (4KB 이하는 data URL, 초과는 해시 파일). 에러가 성공으로 바뀌는 것이라 깨질 코드가 없다.
   - `--loader:.png=file` 처럼 로더를 **명시**한 설정은 인라인 대상에서 제외돼 기존 출력이 그대로 유지된다.
   - CSS `url()` 의 상대 경로가 재작성된다. 이전엔 자산이 방출되지 않아 런타임 404 였으므로 그 출력에 의존하던 동작은 존재할 수 없었다. 다만 출력 CSS 의 `url()` 을 문자열로 비교하는 스냅샷 테스트가 있다면 갱신이 필요하다.
@@ -1958,7 +1847,7 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   **1. 번들 deconflict rename 누수 → `ReferenceError`**
 
   ```jsx
-  import { Widget as A } from "./a.jsx";
+  import { Widget as A } from './a.jsx';
   export const q = <A.Panel />;
   ```
 
@@ -1977,7 +1866,6 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   transformer 가 element/fragment 는 `shouldLowerJsx()`(preserve 존중)로, 자식(expression container / text / spread)은 `jsx_transform` 으로 게이트해서 **preserve 모드인데 자식만 lowering** 됐다. 그 결과 `<div>{x}</div>` 가 `<div>"..."x</div>` 처럼 텍스트에 따옴표가 붙고 중괄호가 사라진 채로 나갔다. 두 게이트를 통일했다.
 
   ### 안전 장치
-
   - **속성 이름은 절대 rename 되지 않는다.** semantic analyzer 가 `jsx_attribute` 의 value 만 방문하고 name 은 방문하지 않으므로 심볼이 붙을 수 없고, codegen 도 name 을 원문 경로로 낸다.
   - **원본 소스의 attribute string 은 원문 보존.** JSX attribute string 은 JS string 과 escaping 규칙이 다르다(backslash escape 없음, HTML entity 사용) — `c="a&amp;b"` 가 그대로 나간다.
   - **합성된 string 은 `{}` 로 감싼다.** `--define` 치환 결과처럼 따옴표가 든 값을 attribute string 자리에 그대로 내면 `d="a\"b"` 가 되는데 JSX 는 그 백슬래시를 escape 로 읽지 않는다. `d={"a\"b"}` 로 낸다.
@@ -2015,10 +1903,10 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
   | `?sharedworker` | SharedWorker 생성 함수를 default export                                                                                                                    |
 
   ```js
-  import txt from "./data.txt?raw"; // "hello raw content"
-  import u from "./icon.png?url"; // "./icon-a1b2c3d4.png"
-  import i from "./icon.png?inline"; // "data:image/png;base64,..."
-  import W from "./x.worker.js?worker";
+  import txt from './data.txt?raw'; // "hello raw content"
+  import u from './icon.png?url'; // "./icon-a1b2c3d4.png"
+  import i from './icon.png?inline'; // "data:image/png;base64,..."
+  import W from './x.worker.js?worker';
   const w = new W();
   ```
 
@@ -2028,7 +1916,7 @@ function(){…}` forwarding 으로 이미 바인딩 → RBM cross-import 가 또
 
   ```js
   export default function WorkerWrapper(options) {
-    return new Worker(new URL("./x.worker.js", import.meta.url), options);
+    return new Worker(new URL('./x.worker.js', import.meta.url), options);
   }
   ```
 
