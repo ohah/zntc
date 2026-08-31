@@ -5,6 +5,7 @@ const ast_mod = @import("../parser/ast.zig");
 const NodeIndex = ast_mod.NodeIndex;
 const Ast = ast_mod.Ast;
 const Span = @import("../lexer/token.zig").Span;
+const writer_mod = @import("writer.zig");
 
 pub fn addSourceFile(self: anytype, source_name: []const u8) !void {
     if (self.sm_builder) |*sm| {
@@ -92,8 +93,30 @@ fn getOriginalLineColumn(self: anytype, offset: u32) struct { line: u32, column:
     const line_idx = if (lo > 0) lo - 1 else 0;
     return .{
         .line = line_idx,
-        .column = offset - offsets[line_idx],
+        .column = originalColumn(self, line_idx, offsets[line_idx], offset),
     };
+}
+
+/// 줄 머리부터 offset 까지의 UTF-16 열. 소스맵 v3 의 열 단위다 — 바이트로
+/// 세면 한글·이모지가 앞에 있는 줄에서 열이 부풀어 엉뚱한 칸을 짚는다.
+///
+/// 같은 줄을 앞에서 뒤로 훑는 일이 잦아(한 줄에 매핑이 여럿) 마지막으로 센
+/// 자리를 기억해 두고 거기서부터 이어 센다. 줄이 바뀌거나 뒤로 가면 다시 센다.
+fn originalColumn(self: anytype, line_idx: u32, line_start: u32, offset: u32) u32 {
+    const src = self.ast.source;
+    const end = @min(offset, @as(u32, @intCast(src.len)));
+    if (end <= line_start) return 0;
+    var from = line_start;
+    var col: u32 = 0;
+    if (self.sm_col_line == line_idx and self.sm_col_off <= end) {
+        from = self.sm_col_off;
+        col = self.sm_col_val;
+    }
+    for (src[from..end]) |c| col += writer_mod.utf16Units(c);
+    self.sm_col_line = line_idx;
+    self.sm_col_off = end;
+    self.sm_col_val = col;
+    return col;
 }
 
 pub fn fnMapEnter(self: anytype, name: []const u8) !void {

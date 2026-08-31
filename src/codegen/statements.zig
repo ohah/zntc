@@ -351,18 +351,7 @@ fn trimTrailingBlankForBlockClose(self: anytype) void {
             self.buf.items.len -= 1;
         } else break;
     }
-    self.gen_col = trailingColumn(self.buf.items);
-}
-
-/// 버퍼의 마지막 줄바꿈 뒤 바이트 수 — 되감은 뒤의 출력 열이다.
-fn trailingColumn(buf: []const u8) u32 {
-    var i = buf.len;
-    var col: u32 = 0;
-    while (i > 0) : (i -= 1) {
-        if (buf[i - 1] == '\n') break;
-        col += 1;
-    }
-    return col;
+    self.gen_col = writer.trailingColumn(self.buf.items);
 }
 
 pub fn emitBracedList(self: anytype, node: Node) !void {

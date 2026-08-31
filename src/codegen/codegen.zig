@@ -47,6 +47,10 @@ pub const Codegen = struct {
     /// 출력의 현재 줄/열 (소스맵 매핑용)
     gen_line: u32 = 0,
     gen_col: u32 = 0,
+    /// 원본 열(UTF-16)을 이어 세기 위한 메모 — 마지막으로 센 줄/바이트/열
+    sm_col_line: u32 = std.math.maxInt(u32),
+    sm_col_off: u32 = 0,
+    sm_col_val: u32 = 0,
     /// 소스에서 수집한 주석 리스트 (소스 순서, scanner.comments.items)
     comments: []const Comment = &.{},
     /// 다음으로 출력할 주석의 인덱스

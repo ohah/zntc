@@ -7,6 +7,26 @@ const Ast = ast_mod.Ast;
 const ConstValue = @import("../semantic/symbol.zig").ConstValue;
 const Kind = @import("../lexer/token.zig").Kind;
 
+/// UTF-8 바이트 하나가 더하는 UTF-16 단위 수.
+///
+/// 소스맵 v3 의 열은 바이트가 아니라 **UTF-16 단위**다. 바이트로 세면 한글
+/// 한 글자가 3, 이모지가 4로 세어져 그 줄 매핑이 통째로 오른쪽으로 밀린다 —
+/// 줄 길이를 넘는 열이 나오기도 한다. 이어지는 바이트(10xxxxxx)는 0,
+/// 4바이트 글자의 첫 바이트는 서로게이트 쌍이라 2, 나머지는 1이다.
+pub inline fn utf16Units(c: u8) u32 {
+    if (c & 0xC0 == 0x80) return 0;
+    return if (c >= 0xF0) 2 else 1;
+}
+
+/// 버퍼의 마지막 줄바꿈 뒤 UTF-16 열. 버퍼를 되감은 뒤 열을 다시 셀 때 쓴다.
+pub fn trailingColumn(buf: []const u8) u32 {
+    var start = buf.len;
+    while (start > 0 and buf[start - 1] != '\n') start -= 1;
+    var col: u32 = 0;
+    for (buf[start..]) |c| col += utf16Units(c);
+    return col;
+}
+
 pub fn write(self: anytype, s: []const u8) !void {
     try self.buf.appendSlice(self.allocator, s);
     for (s) |c| {
@@ -14,7 +34,7 @@ pub fn write(self: anytype, s: []const u8) !void {
             self.gen_line += 1;
             self.gen_col = 0;
         } else {
-            self.gen_col += 1;
+            self.gen_col += utf16Units(c);
         }
     }
 }
@@ -25,7 +45,7 @@ pub fn writeByte(self: anytype, b: u8) !void {
         self.gen_line += 1;
         self.gen_col = 0;
     } else {
-        self.gen_col += 1;
+        self.gen_col += utf16Units(b);
     }
 }
 
