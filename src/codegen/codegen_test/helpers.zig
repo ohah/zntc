@@ -43,7 +43,8 @@ pub const SourceMapTestResult = struct {
                 gen_line += 1;
                 gen_col = 0;
             } else {
-                gen_col += 1;
+                // 열은 UTF-16 단위다 — codegen 이 세는 것과 같은 셈이어야 한다
+                gen_col += @import("../writer.zig").utf16Units(c);
             }
         }
         // 해당 출력 위치에 가장 가까운 매핑 찾기

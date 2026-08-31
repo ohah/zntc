@@ -502,3 +502,35 @@ test "source map: catch 블록 안 주석 뒤 매핑이 안 밀린다" {
     defer r.deinit();
     try r.expectMappingAt("return g", 3, 2);
 }
+
+// ============================================================
+// 열은 UTF-16 단위 (한글·이모지)
+// ============================================================
+
+test "source map: 한글이 앞에 있는 줄의 열" {
+    // 소스맵 v3 의 열은 UTF-16 단위다. 바이트로 세면 한글 한 글자가 3으로
+    // 세어져 열이 부풀고, 줄 길이를 넘는 열까지 나온다.
+    const source =
+        \\export function f(e: unknown): string {
+        \\  const msg = `확인하지 못했습니다: ${String(e)}`;
+        \\  return msg;
+        \\}
+    ;
+    var r = try e2eSourceMapWithComments(std.testing.allocator, source);
+    defer r.deinit();
+    // "String" 은 둘째 줄의 29열(UTF-16)에서 시작한다
+    try r.expectMappingAt("String", 1, 29);
+}
+
+test "source map: 이모지가 앞에 있는 줄의 열 (서로게이트 쌍)" {
+    // 이모지는 UTF-8 로 4바이트지만 UTF-16 으로는 2단위다.
+    const source =
+        \\export function f(e: unknown): string {
+        \\  const emoji = "🍰🍰🍰" + String(e);
+        \\  return emoji;
+        \\}
+    ;
+    var r = try e2eSourceMapWithComments(std.testing.allocator, source);
+    defer r.deinit();
+    try r.expectMappingAt("String", 1, 27);
+}
