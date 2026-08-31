@@ -17,7 +17,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { resolve, dirname, basename, extname, join, sep } from 'node:path';
+import { resolve, dirname, basename, extname, join, sep, relative, isAbsolute } from 'node:path';
 import { createServer } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import { createRequire } from 'node:module';
@@ -1229,12 +1229,17 @@ async function runTranspile(opts) {
 
   if (opts.outfile || opts.outdir) {
     const name = basename(opts.entryPoints[0]).replace(/\.[^.]+$/, '.js');
+    // 맵이 놓일 자리 — sources 를 그 자리 기준으로 적어야 브라우저가 원본을 찾는다.
+    const outPath = opts.outfile ? resolve(opts.outfile) : join(resolve(opts.outdir), name);
+    const { code, map } = finishTranspileSourcemap(result, outPath, opts.sourcemapMode);
     // transpile result.code / result.map 은 string — writeOutputFiles 는 contents
     // (Uint8Array) 를 받으므로 `Buffer.from` 으로 한 번 변환. 같은 메모리 backing 의
     // utf-8 byte view 라 추가 copy 없음.
-    const outputFiles = [{ path: name, contents: Buffer.from(result.code) }];
-    if (opts.outfile && result.map) {
-      outputFiles.push({ path: name + '.map', contents: Buffer.from(result.map) });
+    const outputFiles = [{ path: name, contents: Buffer.from(code) }];
+    // outdir 로 낼 때도 맵을 함께 낸다 — 예전엔 outfile 일 때만 내서
+    // `--outdir --sourcemap` 이 조용히 맵 없이 끝났다.
+    if (map) {
+      outputFiles.push({ path: name + '.map', contents: Buffer.from(map) });
     }
     writeOutputFiles(outputFiles, opts.outfile, opts.outdir, opts.entryPoints, opts.allowOverwrite);
   } else {
@@ -1244,6 +1249,52 @@ async function runTranspile(opts) {
   if (opts.profile.length > 0) {
     process.stderr.write(profileReport(opts.profileFormat ?? 'table'));
   }
+}
+
+/**
+ * transpile 결과의 소스맵을 출력 자리에 맞게 마무리한다.
+ *
+ * 셋 다 CLI 만 아는 것이라 여기서 한다 — 라이브러리 호출자는 출력 경로를
+ * 스스로 정하므로 그쪽이 맡는다.
+ *
+ *  1. `sources` 를 **맵이 놓일 자리 기준**으로 고친다. 엔진은 넘겨받은 파일
+ *     이름(대개 CWD 기준)을 그대로 적어서, `-o dist/x.js` 로 내면 브라우저가
+ *     `dist/src/x.ts` 를 찾다 못 찾는다. tsc·esbuild 도 출력 기준으로 적는다.
+ *  2. `file` 에 생성 파일 이름을 채운다 — 소스맵 v3 의 `file` 은 *생성된* 파일이다.
+ *  3. 모드대로 마무리한다. linked(기본)는 `//# sourceMappingURL=` 주석을 붙이고,
+ *     external 은 맵만 내고 주석은 안 붙이며, inline 은 맵을 파일로 내지 않고
+ *     data URL 로 코드에 심는다. 예전에는 어느 모드든 주석이 안 붙어, 맵을 내고도
+ *     브라우저가 찾지 못했다(inline 인데 .map 파일이 따로 나오기도 했다).
+ */
+function finishTranspileSourcemap(result, outPath, mode) {
+  if (!result.map) return { code: result.code, map: null };
+  let json;
+  try {
+    json = JSON.parse(result.map);
+  } catch {
+    return { code: result.code, map: result.map }; // 못 읽으면 손대지 않는다
+  }
+  json.file = basename(outPath);
+  const outDirAbs = dirname(outPath);
+  json.sources = (json.sources ?? []).map((src) => {
+    if (!src || src.startsWith('data:')) return src;
+    const abs = isAbsolute(src) ? src : resolve(src);
+    const rel = relative(outDirAbs, abs).split(sep).join('/');
+    return rel.startsWith('.') ? rel : './' + rel;
+  });
+  const text = JSON.stringify(json);
+
+  if (mode === 'inline') {
+    const url = 'data:application/json;base64,' + Buffer.from(text).toString('base64');
+    return { code: appendSourceMappingURL(result.code, url), map: null };
+  }
+  if (mode === 'external') return { code: result.code, map: text };
+  return { code: appendSourceMappingURL(result.code, basename(outPath) + '.map'), map: text };
+}
+
+function appendSourceMappingURL(code, url) {
+  if (code.includes('//# sourceMappingURL=')) return code;
+  return code.replace(/\n*$/, '\n') + '//# sourceMappingURL=' + url + '\n';
 }
 
 // ─── Bundle 모드 ───
