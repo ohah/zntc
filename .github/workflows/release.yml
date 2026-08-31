@@ -341,6 +341,11 @@ jobs:
     needs: publish-npm
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    # main 은 보호 가지라 직접 push 가 막힌다(GH006: Changes must be made through
+    # a pull request). 그래서 가지로 밀고 PR 을 연다 — PR 을 여는 데 필요한 권한.
+    permissions:
+      contents: write
+      pull-requests: write
 
     steps:
       - uses: actions/checkout@v4
@@ -371,23 +376,43 @@ jobs:
       - name: Resolve newly published platform packages into bun.lock
         run: bun install --no-frozen-lockfile
 
-      - name: Commit if changed
+      # 가지로 밀고 PR 을 연다. main 직접 push 는 보호 규칙이 막는다
+      # (v0.1.5 때 GH006 으로 이 잡이 실패했다 — publish 는 정상이었다).
+      #
+      # PR 생성은 저장소 설정 "Allow GitHub Actions to create and approve pull
+      # requests" 가 켜져 있어야 된다. 꺼져 있으면 가지만 남기고 링크를 찍은 뒤
+      # 성공으로 끝낸다 — 배포 전체를 빨갛게 만들 일은 아니고, 사람이 그 링크로
+      # PR 을 열면 된다.
+      - name: Open a PR with the lockfile change
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if git diff --quiet bun.lock; then
             echo "bun.lock 변경 없음 — 할 일 없음."
             exit 0
           fi
           VERSION="$(node -p "require('./packages/core/package.json').version")"
+          BRANCH="chore/bunlock-v${VERSION}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
           git add bun.lock
           git commit -m "chore: bun.lock post-publish sync — v${VERSION} platform 바이너리 npm refs
 
           publish 직후 @zntc/core-*@${VERSION} 이 npm 에서 해석 가능해지면서 lockfile 에
-          추가된다. 이걸 되돌리지 않으면 이후 모든 PR 의 bun install --frozen-lockfile 이
+          추가된다. 이걸 담아 두지 않으면 이후 모든 PR 의 bun install --frozen-lockfile 이
           실패한다. release.yml 의 sync-lockfile 잡이 자동 생성한 커밋."
           # --no-verify: 이 runner 엔 zig 가 없어 .githooks/pre-push 의 `zig fmt --check`
           # 가 "zig: not found" 로 실패해 push 가 막힌다(v0.1.4 때 이 동기화 커밋이 유실됨).
           # bun.lock 만 바꾸는 봇 커밋이라 훅 검증이 불필요.
-          git push --no-verify origin main
-          echo "✓ bun.lock 동기화 커밋 push 완료"
+          git push --no-verify -u origin "$BRANCH"
+          if gh pr create --base main --head "$BRANCH" \
+              --title "chore: bun.lock post-publish 동기화 (v${VERSION})" \
+              --body "\`v${VERSION}\` publish 직후 \`@zntc/core-*@${VERSION}\` 이 npm 에서 해석되면서 lockfile 에 플랫폼 9개 항목이 붙는다. 담아 두지 않으면 이후 모든 PR 의 \`bun install --frozen-lockfile\` 이 깨진다.
+
+          release.yml 의 sync-lockfile 잡이 연 PR 이다."; then
+            echo "✓ PR 생성 완료"
+          else
+            echo "::warning::PR 을 자동으로 열지 못했다(저장소 설정에서 Actions 의 PR 생성이 꺼져 있을 수 있다). 가지는 밀어 두었으니 아래에서 열면 된다."
+            echo "  https://github.com/${GITHUB_REPOSITORY}/compare/main...${BRANCH}?expand=1"
+          fi
