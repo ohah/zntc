@@ -9,7 +9,9 @@ zig-cache/
 .zig-cache-napi-win/
 
 # Node/Bun
-node_modules/
+# 끝에 / 를 붙이면 디렉터리만 걸러진다 — node_modules 라는 이름의 심볼릭 링크는
+# 그대로 통과해 커밋될 수 있다(실제로 한 번 들어갔다). 이름 자체로 거른다.
+node_modules
 # 단, fixture에 영구 추가된 stub 패키지는 commit (RSC TanStack 등이 의존)
 !tests/integration/tests/fixtures/**/node_modules/**
 
