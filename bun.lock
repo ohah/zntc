@@ -3133,6 +3133,22 @@
 
     "@zntc/core": ["@zntc/core@workspace:packages/core"],
 
+    "@zntc/core-darwin-arm64": ["@zntc/core-darwin-arm64@0.1.6", "", { "os": "darwin", "cpu": "arm64" }, "sha512-1TUFxbvxgFYv7o9dNHmSdFsQTxNiUR8Q5co1phAqCIKCGKqxGQ6WcStwROy0WeqI1JKUcLSCo6tYSZO0O1BR4w=="],
+
+    "@zntc/core-darwin-x64": ["@zntc/core-darwin-x64@0.1.6", "", { "os": "darwin", "cpu": "x64" }, "sha512-Qc9ekszPVEA4jYZ2qH1/vSW1YkM43rh3IJ8HPsb1JRw7/Xx/CkJG6MIXvElkyGJUo7Id6ag7VIcJK0NeXiF3Vw=="],
+
+    "@zntc/core-linux-arm64-gnu": ["@zntc/core-linux-arm64-gnu@0.1.6", "", { "os": "linux", "cpu": "arm64" }, "sha512-uNov0jNiQSMsU+eGH4uzFXThj7ftixsFfUnDCqtnz5ZWmasmuOjGyb9aMMLudFHtpORQiUWP6tekFpSoFFxkAQ=="],
+
+    "@zntc/core-linux-arm64-musl": ["@zntc/core-linux-arm64-musl@0.1.6", "", { "os": "linux", "cpu": "arm64" }, "sha512-03EV7v6OqKSgVrPSBQ7AjAtPAtz7+Td40xDI5hADfcWXJyn/8k9pcVsZkGibEepoz5jK4vJ6Vxxg6lJ34/EJxQ=="],
+
+    "@zntc/core-linux-x64-gnu": ["@zntc/core-linux-x64-gnu@0.1.6", "", { "os": "linux", "cpu": "x64" }, "sha512-N3uNjbsezQHuZgpgGjZdMYJfT6aGLgThDU7kMsoG6o1PPfFOPYuqYE3yrysUDvDd6DMADhjj0RY/WaFn650Q/Q=="],
+
+    "@zntc/core-linux-x64-musl": ["@zntc/core-linux-x64-musl@0.1.6", "", { "os": "linux", "cpu": "x64" }, "sha512-+l7OUS/yDGSYfnZOatZu4pHIwEiF2Yl5c6PZXAZHmaSHKK5/I6Lyi+Tdsc1Q3Y83eOw/1ZoLfyiOsHM9nH6QOg=="],
+
+    "@zntc/core-win32-arm64-msvc": ["@zntc/core-win32-arm64-msvc@0.1.6", "", { "os": "win32", "cpu": "arm64" }, "sha512-sDNpl10x4v/Xg0hCVOEp2YEWVpjNb7u0w8EttJSsISdMSxqgbVZHdCO+7MVclxhFgst01lIDjiPD9Kfz7XZOaQ=="],
+
+    "@zntc/core-win32-ia32-msvc": ["@zntc/core-win32-ia32-msvc@0.1.6", "", { "os": "win32", "cpu": "ia32" }, "sha512-xe7IA7Gi9n3maVnXFWOwGLO6pakO/ApNSUCINDUNYbUSzPPR0LA051YX2S3EX/yiN/M/73G00nZrzcWWHAcRuQ=="],
+
     "@zntc/e2e": ["@zntc/e2e@workspace:tests/e2e"],
 
     "@zntc/example-module-federation": ["@zntc/example-module-federation@workspace:examples/module-federation"],
