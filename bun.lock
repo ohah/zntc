@@ -3133,6 +3133,24 @@
 
     "@zntc/core": ["@zntc/core@workspace:packages/core"],
 
+    "@zntc/core-darwin-arm64": ["@zntc/core-darwin-arm64@0.1.5", "", { "os": "darwin", "cpu": "arm64" }, "sha512-Fth9jWqcmtmeKlsQTmub7+t4bBqLmeHeWQg4sHqB8qQbr7mS+5gB/cV6iWYiJdu4r0YiJgwKThN53VL+GSz9Dw=="],
+
+    "@zntc/core-darwin-x64": ["@zntc/core-darwin-x64@0.1.5", "", { "os": "darwin", "cpu": "x64" }, "sha512-wVg+J++feA+oI/1Ze9vVxqOc59wIeKRRpwPmQVBtSAGOwVy65O/qP1kCh5PZLH3KDwrw54vLqzkhe9tSGugtfA=="],
+
+    "@zntc/core-linux-arm64-gnu": ["@zntc/core-linux-arm64-gnu@0.1.5", "", { "os": "linux", "cpu": "arm64" }, "sha512-9kyhKAl9NhMbdceZaQ89/KODOc0S3NgapfBfmEzmgF104otFA+jYnSiVIZ4MQ1mxa4rNONJ6/FrzLgcOkb8Lzg=="],
+
+    "@zntc/core-linux-arm64-musl": ["@zntc/core-linux-arm64-musl@0.1.5", "", { "os": "linux", "cpu": "arm64" }, "sha512-oBS+n8SbnnCTwb7SiNkJre4DzklByqY6Eem02iV4fIfmNfTBR2JdnpuQnvRUsKAdSycEE3c4AK2kOHIxPCTs9A=="],
+
+    "@zntc/core-linux-x64-gnu": ["@zntc/core-linux-x64-gnu@0.1.5", "", { "os": "linux", "cpu": "x64" }, "sha512-VFdZgpQC+69jHwO53JA1gBSre1+Nji9Moh3cLTpCCSqcD9kL1VQBPR0WGCxR+OtmBht+6+RTWlToiTQVLklCaw=="],
+
+    "@zntc/core-linux-x64-musl": ["@zntc/core-linux-x64-musl@0.1.5", "", { "os": "linux", "cpu": "x64" }, "sha512-4qaTW1RfvsHgJr1wVFOMcvqWCcrBhEFtepNfe1lbOCrZDsbyjNULQ0Lo2vBZv8ow8VHYbrVZdju8Srugo12HRg=="],
+
+    "@zntc/core-win32-arm64-msvc": ["@zntc/core-win32-arm64-msvc@0.1.5", "", { "os": "win32", "cpu": "arm64" }, "sha512-EQ1eDBdTASBzC1EijwSBlhUNmiB3EZaJPb5Ti+Yh531M1PZwhAc/VPMm1c5Byt8I4hoVN0oVn9trGlCdC65kKQ=="],
+
+    "@zntc/core-win32-ia32-msvc": ["@zntc/core-win32-ia32-msvc@0.1.5", "", { "os": "win32", "cpu": "ia32" }, "sha512-TvopxmrEQj0J7sUHxgWpOFNGWjoim/n5O99R3LZ8A6TN7JFrYsqLZCYtdd9ZFSSyNiVnycT3BawVvH2BraxyMw=="],
+
+    "@zntc/core-win32-x64-msvc": ["@zntc/core-win32-x64-msvc@0.1.5", "", { "os": "win32", "cpu": "x64" }, "sha512-7Dg/32nLZUfAk2289mOgS+T3k5Kno7baPxWrbd8mtZhXHAUK3ei9AKGJUubSWPjz/cIO8Jin1dY9ha8/yYJaEQ=="],
+
     "@zntc/e2e": ["@zntc/e2e@workspace:tests/e2e"],
 
     "@zntc/example-module-federation": ["@zntc/example-module-federation@workspace:examples/module-federation"],
