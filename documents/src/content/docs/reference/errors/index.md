@@ -27,6 +27,7 @@ ZNTC는 모든 에러에 고유 코드를 부여합니다. 에러 코드를 클�
 | [`ZNTC0104`](/zntc/reference/errors/zntc0104) | Re-export references the module itself (self-cycle) |
 | [`ZNTC0105`](/zntc/reference/errors/zntc0105) | Ambiguous import: a name is exported by multiple modules via 'export *' |
 | [`ZNTC0106`](/zntc/reference/errors/zntc0106) | Output exports conflict with the selected module format |
+| [`ZNTC0107`](/zntc/reference/errors/zntc0107) | require() cannot be used on a module graph with top-level await |
 
 ## 번들러: 파일/로더
 

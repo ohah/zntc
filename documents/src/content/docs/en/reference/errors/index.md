@@ -27,6 +27,7 @@ ZNTC assigns a unique code to every diagnostic. Click a code for details and a r
 | [`ZNTC0104`](/zntc/en/reference/errors/zntc0104) | Re-export references the module itself (self-cycle) |
 | [`ZNTC0105`](/zntc/en/reference/errors/zntc0105) | Ambiguous import: a name is exported by multiple modules via 'export *' |
 | [`ZNTC0106`](/zntc/en/reference/errors/zntc0106) | Output exports conflict with the selected module format |
+| [`ZNTC0107`](/zntc/en/reference/errors/zntc0107) | require() cannot be used on a module graph with top-level await |
 
 ## Bundler: File/Loader
 
