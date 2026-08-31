@@ -1,5 +1,27 @@
 # @zntc/server
 
+## 0.1.5
+
+### Patch Changes
+
+- Updated dependencies [5593c0e]
+- Updated dependencies [413e86b]
+- Updated dependencies [69dcc34]
+- Updated dependencies [7b7afd9]
+- Updated dependencies [3efda7c]
+- Updated dependencies [43ad307]
+- Updated dependencies [9274e02]
+- Updated dependencies [2686be2]
+- Updated dependencies [040b4be]
+- Updated dependencies [19f9445]
+- Updated dependencies [bd2fcaf]
+- Updated dependencies [5e3bcbf]
+- Updated dependencies [cc1f6de]
+- Updated dependencies [593f4fe]
+- Updated dependencies [2b6eaa6]
+- Updated dependencies [ba6790e]
+  - @zntc/core@0.1.5
+
 ## 0.1.4
 
 ### Patch Changes
