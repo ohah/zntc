@@ -4711,6 +4711,41 @@ fn bundleTlaDownlevel(tmp: *std.testing.TmpDir, dep_src: []const u8, main_src: [
     return std.testing.allocator.dupe(u8, result.output);
 }
 
+test "#4598 es5(RN): TLA 소비자가 promise 체이닝으로 기다린다" {
+    // es5(Hermes preset)는 factory 를 async 로 못 만든다. 대신 `init_X()` 가 돌려주는
+    // 이미 낮춰진 `__async(...)` promise 를 `.then` 으로 기다린다 — 상태머신 불필요.
+    //
+    // ⚠️ 이 경로가 꺼지면 `v = yield …` 가 generator 아닌 factory 에 남아 **Hermes 가
+    //    번들을 거부**한다(RN 앱이 아예 안 뜸). 게이트에 `async_await` 조건을 걸었다가
+    //    실제로 그렇게 됐다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.ts", "export const v = await Promise.resolve(41);\nexport const val = v + 1;");
+    try writeFile(tmp.dir, "main.ts", "import { val } from './dep';\nconsole.log(val);");
+    const entry = try absPath(&tmp, "main.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    const js = result.output;
+
+    // 소비자가 체이닝으로 기다려야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, js, "Promise.all([") != null);
+    try std.testing.expect(std.mem.indexOf(u8, js, "]).then(function()") != null);
+    // ⚠️ 판별식: `yield` 는 반드시 `__generator` 상태머신 **안**에만 있어야 한다.
+    //    generator 가 아닌 factory 안의 bare yield 가 Hermes 거부의 원인이었다.
+    if (std.mem.indexOf(u8, js, "yield ")) |y| {
+        const g = std.mem.indexOf(u8, js, "__generator(") orelse return error.MissingGenerator;
+        try std.testing.expect(g < y);
+    }
+}
+
 test "#4598 다운레벨 ESM: export 선언 안의 TLA 가 최상위 await 를 남기지 않는다" {
     // `--target < es2022` 는 "이 엔진은 top-level await 를 못 쓴다" 는 선언이다. 그런데
     // `lowerProgram` 이 export 선언을 건너뛰어 await 가 최상위에 남았고, 그 산물은 타겟
