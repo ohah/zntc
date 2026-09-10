@@ -668,22 +668,31 @@ pub const Resolver = struct {
     /// `tryDirectoryIndex` 를 먼저 시도해 package entry(index/main/exports) 로 간다.
     fn tryResolvePathLike(self: *Resolver, abs_path: []const u8) ResolveError!?ResolveResult {
         const maybe_dir = self.dirExists(abs_path);
-        if (maybe_dir and !self.url_kind) {
-            // DirEntryCache 는 symlink target 을 readdir 만으로 알 수 없어 file+dir
-            // 양쪽에 등록한다. pnpm package symlink root 를 alias 로 직접 가리키면
-            // fileExists 가 먼저 true 가 되어 package entry(index/main/exports)를 건너뛰므로,
-            // ambiguous directory 후보는 package/directory resolve 를 먼저 시도한다.
-            //
-            // URL kind 는 제외 — `url(x)` 가 디렉토리 인덱스로 해석되면 안 된다.
+        const maybe_file = self.fileExists(abs_path);
+
+        // DirEntryCache 는 symlink target 을 readdir 만으로 알 수 없어 file+dir
+        // 양쪽에 등록한다. pnpm package symlink root 를 alias 로 직접 가리키면
+        // fileExists 가 먼저 true 가 되어 package entry(index/main/exports)를 건너뛰므로,
+        // **양쪽에 등록된(ambiguous)** 후보만 package/directory resolve 를 먼저 시도한다.
+        //
+        // ⚠️ 이 조건을 `maybe_dir` 만으로 넓히면 안 된다. 순수 디렉토리까지 걸려서
+        // `./util` 이 형제 파일 `util.ts` 를 제치고 `util/index.ts` 로 간다 — Node/TS 는
+        // 물론 esbuild·rolldown 도 전부 파일 우선이다 (3사 실측).
+        //
+        // URL kind 는 제외 — `url(x)` 가 디렉토리 인덱스로 해석되면 안 된다.
+        if (maybe_dir and maybe_file and !self.url_kind) {
             if (try self.tryDirectoryIndex(abs_path)) |result| return result;
         }
 
-        if (self.fileExists(abs_path) and self.confirmNotDirectory(abs_path, maybe_dir))
+        if (maybe_file and self.confirmNotDirectory(abs_path, maybe_dir))
             return try self.makeResult(abs_path);
         if (try self.tryReactNativeScaleAssetFallback(abs_path)) |result| return result;
         if (try self.tryExtensions(abs_path)) |result| return result;
         if (try self.tryTsExtensionMapping(abs_path)) |result| return result;
-        if (!maybe_dir and !self.url_kind) {
+        // 순수 디렉토리는 확장자 후보를 **전부 본 뒤에** index 로 간다.
+        // (이 자리는 이전에 `!maybe_dir` 조건이었는데, tryDirectoryIndex 자신이 dirExists
+        // 가드로 시작하므로 항상 null 이 되는 죽은 코드였다.)
+        if (maybe_dir and !maybe_file and !self.url_kind) {
             if (try self.tryDirectoryIndex(abs_path)) |result| return result;
         }
         return null;

@@ -848,6 +848,62 @@ test "resolve.alias — symlink package root resolves package entry" {
     try std.testing.expect(!pathEndsWith(result.path, "apps/app/node_modules/react"));
 }
 
+test "resolve: 형제 파일이 동명 디렉토리 index 를 이긴다 (`./util` → util.ts)" {
+    // `util.ts` 와 `util/index.ts` 가 함께 있으면 Node/TS 도, esbuild/rolldown 도
+    // 파일을 먼저 고른다. 예전엔 `dirExists` 만 보고 디렉토리 index 를 먼저 시도해서
+    // `util/index.ts` 가 이겼다 (pnpm symlink 용 carve-out 조건이 너무 넓었다).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try createFile(tmp.dir, "src/i.ts");
+    try createFile(tmp.dir, "src/util.ts");
+    try createFile(tmp.dir, "src/util/index.ts");
+
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const source_dir = try std.fs.path.join(std.testing.allocator, &.{ root, "src" });
+    defer std.testing.allocator.free(source_dir);
+
+    var cache = DirEntryCache.init(std.testing.allocator);
+    cache.io = std.testing.io;
+    defer cache.deinit();
+
+    var resolver = Resolver.init(std.testing.allocator);
+    resolver.dir_cache = &cache;
+
+    const result = try resolver.resolve(std.testing.io, source_dir, "./util");
+    defer std.testing.allocator.free(result.path);
+
+    try std.testing.expect(pathEndsWith(result.path, "src/util.ts"));
+    try std.testing.expect(!pathEndsWith(result.path, "src/util/index.ts"));
+}
+
+test "resolve: 형제 파일이 없으면 디렉토리 index 로 간다 (`./util` → util/index.ts)" {
+    // 위 테스트의 대조군 — 순서를 바꾼 변경이 디렉토리 index 자체를 죽이지 않았는지.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try createFile(tmp.dir, "src/i.ts");
+    try createFile(tmp.dir, "src/util/index.ts");
+
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const source_dir = try std.fs.path.join(std.testing.allocator, &.{ root, "src" });
+    defer std.testing.allocator.free(source_dir);
+
+    var cache = DirEntryCache.init(std.testing.allocator);
+    cache.io = std.testing.io;
+    defer cache.deinit();
+
+    var resolver = Resolver.init(std.testing.allocator);
+    resolver.dir_cache = &cache;
+
+    const result = try resolver.resolve(std.testing.io, source_dir, "./util");
+    defer std.testing.allocator.free(result.path);
+
+    try std.testing.expect(pathEndsWith(result.path, "src/util/index.ts"));
+}
+
 // ============================================================
 // DirEntryCache
 // ============================================================

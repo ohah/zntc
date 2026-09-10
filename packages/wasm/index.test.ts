@@ -508,6 +508,21 @@ describe('Bundler (minimal)', () => {
     expect(build('/ext/entry.ts')?.code).toContain('const e = 5;');
   });
 
+  test('build: 형제 파일이 동명 디렉토리 index 를 이긴다 (esbuild/rolldown 일치)', () => {
+    bundlerFixtureVfs.set('/order/util.ts', 'export const pick = "file";');
+    bundlerFixtureVfs.set('/order/util/index.ts', 'export const pick = "dir";');
+    bundlerFixtureVfs.set('/order/entry.ts', `export { pick } from './util';`);
+    const code = build('/order/entry.ts')?.code ?? '';
+    expect(code).toContain('"file"');
+    expect(code).not.toContain('"dir"');
+  });
+
+  test('build: 형제 파일이 없으면 디렉토리 index 로 (대조군)', () => {
+    bundlerFixtureVfs.set('/order2/util/index.ts', 'export const pick = "dir";');
+    bundlerFixtureVfs.set('/order2/entry.ts', `export { pick } from './util';`);
+    expect(build('/order2/entry.ts')?.code ?? '').toContain('"dir"');
+  });
+
   test('build: 해석 불가 import → null + ZNTC0100 (부분 출력 미공개)', () => {
     bundlerFixtureVfs.set('/missing/entry.ts', `export { nope } from './does-not-exist';`);
     const result = build('/missing/entry.ts');
