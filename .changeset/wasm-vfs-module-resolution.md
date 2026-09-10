@@ -1,4 +1,5 @@
 ---
+"@zntc/core": patch
 "@zntc/wasm": patch
 ---
 
@@ -13,3 +14,9 @@ WASM VFS 번들러가 entry 의 import 를 해석하지 못해 multi-file 번들
 
 `build()` / `buildChunks()` 는 에러 진단이 있으면 부분 출력 대신 `null` 을 반환한다
 (CLI 의 "에러 있으면 출력 생략 + exit 1" 과 같은 계약). bundler ABI v6 → v7.
+
+또한 `./util` 처럼 **형제 파일과 동명 디렉토리가 함께 있을 때** 해석 순서를 고쳤다. 이전엔
+디렉토리 index(`util/index.ts`)가 형제 파일(`util.ts`)을 이겼는데, Node/TypeScript 는 물론
+esbuild·rolldown 도 전부 파일이 먼저다. pnpm package symlink root 를 위한 "디렉토리 먼저"
+carve-out 은 **양쪽(file+dir)에 등록된 ambiguous 후보** 로만 좁혔다 — symlink 케이스는 그대로
+동작한다. native(`@zntc/core`)와 WASM 양쪽에 적용된다.
