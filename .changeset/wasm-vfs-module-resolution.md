@@ -1,6 +1,6 @@
 ---
-"@zntc/core": patch
-"@zntc/wasm": patch
+'@zntc/core': patch
+'@zntc/wasm': patch
 ---
 
 WASM VFS 번들러가 entry 의 import 를 해석하지 못해 multi-file 번들이 entry 만 담긴

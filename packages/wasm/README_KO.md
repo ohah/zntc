@@ -48,12 +48,7 @@ const result = transpile('const x: number = 1;', { filename: 'input.ts' });
 ### Bundler 빌드
 
 ```ts
-import {
-  build,
-  initBundler,
-  bundlerLastErrorMessage,
-  VirtualFileSystem,
-} from '@zntc/wasm';
+import { build, initBundler, bundlerLastErrorMessage, VirtualFileSystem } from '@zntc/wasm';
 import wasmUrl from '@zntc/wasm/zntc-bundler.wasm?url';
 
 // 번들러는 실제 파일 시스템 대신 VFS 를 봅니다. entry 의 import 는 여기 등록된
