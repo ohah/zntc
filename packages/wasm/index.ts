@@ -289,6 +289,26 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
 // 별도 wasm instance (zntc-bundler.wasm, wasm32-wasi + threads). transpile-only
 // (zntc.wasm) 와 격리 — bundler 는 SharedArrayBuffer 필요 (COOP/COEP 헤더).
 
+/// `zntc_fs.listDir` ABI 의 kind 코드 (fs.zig 의 EntryKind 와 동기).
+const VFS_KIND_FILE = 0;
+const VFS_KIND_DIRECTORY = 1;
+
+/// `listDir` 한 항목. name 은 디렉토리 바로 아래 이름 (경로 아님).
+export interface VfsDirEntry {
+  name: string;
+  kind: number;
+}
+
+/// 디렉토리 경로 → 자식 경로가 가져야 할 접두사. 루트(`/`) 와 cwd 표기(`.`, ``) 는
+/// 접두사가 각각 `/` 와 빈 문자열이라 별도 처리한다.
+function dirPrefix(dir: string): string {
+  if (dir === '' || dir === '.') return '';
+  const trimmed = dir.endsWith('/') && dir.length > 1 ? dir.slice(0, -1) : dir;
+  if (trimmed === '/') return '/';
+  if (trimmed === '.') return '';
+  return `${trimmed}/`;
+}
+
 /// Host 가 제공하는 in-memory file system. bundler 가 fs syscall 시 host JS callback
 /// 으로 위임 (zntc_fs imports). path → bytes 매핑.
 export class VirtualFileSystem {
@@ -313,6 +333,41 @@ export class VirtualFileSystem {
 
   paths(): IterableIterator<string> {
     return this.files.keys();
+  }
+
+  /// `dir` 이 (등록된 경로들이 함의하는) 디렉토리인지. VFS 는 파일만 등록하므로
+  /// 디렉토리는 경로 접두사로만 존재한다 — `access` / `statFile` / `realpath` 가
+  /// 디렉토리를 "없음" 으로 답하지 않게 하는 판정 (#4645).
+  isDir(dir: string): boolean {
+    const prefix = dirPrefix(dir);
+    if (prefix.length === 0) return true; // cwd 표기 (`.` / ``) 는 항상 존재
+    for (const path of this.paths()) {
+      if (path.startsWith(prefix)) return true;
+    }
+    return false;
+  }
+
+  /// `dir` 바로 아래 항목 목록. bundler 의 모듈 해석이 이 결과만 보고 후보 파일의
+  /// 존재를 판정하므로 (`zntc_fs.listDir` → resolver 의 DirEntryCache), 등록된 경로에서
+  /// 중간 디렉토리를 합성해 돌려준다. 존재하지 않는 디렉토리는 `null` (#4645).
+  ///
+  /// lazy VFS (네트워크/IndexedDB 등) 를 쓰려면 이 메서드를 override 하면 된다.
+  listDir(dir: string): VfsDirEntry[] | null {
+    const prefix = dirPrefix(dir);
+    const files: string[] = [];
+    const dirs = new Set<string>();
+    for (const path of this.paths()) {
+      if (prefix.length > 0 && !path.startsWith(prefix)) continue;
+      const rest = path.slice(prefix.length);
+      if (rest.length === 0) continue;
+      const slash = rest.indexOf('/');
+      if (slash === -1) files.push(rest);
+      else if (slash > 0) dirs.add(rest.slice(0, slash));
+    }
+    if (files.length === 0 && dirs.size === 0) return null;
+    const entries: VfsDirEntry[] = files.map((name) => ({ name, kind: VFS_KIND_FILE }));
+    for (const name of dirs) entries.push({ name, kind: VFS_KIND_DIRECTORY });
+    return entries;
   }
 
   size(): number {
@@ -392,10 +447,15 @@ function createBundlerImports(memory: () => WebAssembly.Memory) {
       ): number {
         const path = readBundlerString(pathPtr, pathLen);
         const data = bundlerVfs?.get(path);
-        if (!data) return 1; // NotFound
+        // 파일이 아니면 디렉토리 여부까지 본다 — resolver 의 dirExists 가 stat 로
+        // 내려오는 경로 (dir_cache 미주입) 에서 디렉토리가 사라지지 않도록.
+        const isDir = !data && (bundlerVfs?.isDir(path) ?? false);
+        if (!data && !isDir) return 1; // NotFound
         const view = new DataView(bundlerMemory!.buffer);
-        view.setBigUint64(outSize, BigInt(data.length), true);
-        new Uint8Array(bundlerMemory!.buffer, outKind, 1)[0] = 0; // file
+        view.setBigUint64(outSize, BigInt(data?.length ?? 0), true);
+        new Uint8Array(bundlerMemory!.buffer, outKind, 1)[0] = isDir
+          ? VFS_KIND_DIRECTORY
+          : VFS_KIND_FILE;
         view.setBigUint64(outMtimeLo, 0n, true);
         view.setBigUint64(outMtimeHi, 0n, true);
         return 0; // ok
@@ -403,19 +463,24 @@ function createBundlerImports(memory: () => WebAssembly.Memory) {
 
       access(pathPtr: number, pathLen: number): number {
         const path = readBundlerString(pathPtr, pathLen);
-        return bundlerVfs?.has(path) ? 0 : 1;
+        if (!bundlerVfs) return 1;
+        return bundlerVfs.has(path) || bundlerVfs.isDir(path) ? 0 : 1;
       },
 
       realpath(pathPtr: number, pathLen: number): bigint {
         const path = readBundlerString(pathPtr, pathLen);
-        if (!bundlerVfs?.has(path)) return 0n;
+        if (!bundlerVfs) return 0n;
+        if (!bundlerVfs.has(path) && !bundlerVfs.isDir(path)) return 0n;
         // VFS 는 symlink 없음 — identity.
         return packBytes(encoder.encode(path));
       },
 
-      listDir(_pathPtr: number, _pathLen: number): bigint {
-        // PR 6-2c 후속 — Phase 2 minimal use case 에선 미사용.
-        return 0n;
+      listDir(pathPtr: number, pathLen: number): bigint {
+        const path = readBundlerString(pathPtr, pathLen);
+        const entries = bundlerVfs?.listDir(path);
+        // 0 = 디렉토리 없음. Zig 쪽은 NotFound 로 받아 negative 캐시한다.
+        if (!entries || entries.length === 0) return 0n;
+        return packBytes(encoder.encode(JSON.stringify(entries)));
       },
 
       hostFreeBytes(ptr: number, len: number): void {

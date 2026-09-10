@@ -465,8 +465,6 @@ fn readPackedBytes(allocator: std.mem.Allocator, packed_val: u64) FsError![]u8 {
 }
 
 /// WASM 빌드의 fs 구현. host JS callback (zntc_fs namespace) 위임.
-/// listDir 는 후속 PR — Phase 2 의 minimal use case (단일 entry + 명시 imports) 는
-/// require.context 미사용이라 제외.
 pub const VirtualFS = struct {
     pub fn init() VirtualFS {
         return .{};
@@ -515,11 +513,44 @@ pub const VirtualFS = struct {
         return readPackedBytes(allocator, packed_result);
     }
 
-    pub fn listDir(_: VirtualFS, _: std.Io, _: std.mem.Allocator, _: []const u8) FsError![]DirEntry {
-        // Phase 2 minimal — require.context / glob import 미사용 가정. 빈 slice 반환으로
-        // 호출처 (graph.expandRequireContextRecords 등) 가 silent fallback.
-        // 후속 PR 에서 host JSON ABI 추가 시 실 구현.
-        return &.{};
+    /// host 의 `zntc_fs.listDir` JSON (`[{"name":"a","kind":0}, ...]`) 을 DirEntry 로.
+    ///
+    /// ⚠️ 여기서 빈 slice 를 반환하면 **모듈 해석 전체가 조용히 죽는다** (#4645).
+    /// resolver 의 `fileExists`/`dirExists` 는 `DirEntryCache` 를 거치는데, 이 캐시는
+    /// 오직 `listDir` 결과로만 채워진다 — 후보 경로마다 `access`/`statFile` 을 부르지
+    /// 않는다. 그래서 listDir 이 항상 빈 목록이면 relative import 후보가 하나도 존재하지
+    /// 않는 것으로 판정돼 entry 만 담긴 번들이 나온다.
+    pub fn listDir(_: VirtualFS, _: std.Io, allocator: std.mem.Allocator, path: []const u8) FsError![]DirEntry {
+        const packed_result = wasm_imports.listDir(@intCast(@intFromPtr(path.ptr)), @intCast(path.len));
+        // host 0 = 디렉토리 없음. RealFS 의 openDir 실패와 같은 NotFound 로 맞춘다.
+        const json = try readPackedBytes(allocator, packed_result);
+        defer allocator.free(json);
+
+        const HostEntry = struct { name: []const u8, kind: u8 };
+        const parsed = std.json.parseFromSlice(
+            []const HostEntry,
+            allocator,
+            json,
+            .{ .ignore_unknown_fields = true },
+        ) catch return FsError.IoError;
+        defer parsed.deinit();
+
+        var list: std.ArrayList(DirEntry) = .empty;
+        errdefer {
+            for (list.items) |item| allocator.free(item.name);
+            list.deinit(allocator);
+        }
+
+        for (parsed.value) |entry| {
+            if (entry.name.len == 0) continue;
+            const name_copy = allocator.dupe(u8, entry.name) catch return FsError.OutOfMemory;
+            errdefer allocator.free(name_copy);
+            list.append(allocator, .{
+                .name = name_copy,
+                .kind = mapStatusKind(entry.kind),
+            }) catch return FsError.OutOfMemory;
+        }
+        return list.toOwnedSlice(allocator) catch FsError.OutOfMemory;
     }
 };
 
