@@ -1,6 +1,6 @@
 {
   "name": "@zntc/core-darwin-x64",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "macOS x64 native binary for @zntc/core",
   "keywords": [
     "compiler",
