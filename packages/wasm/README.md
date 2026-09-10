@@ -48,12 +48,7 @@ const result = transpile('const x: number = 1;', { filename: 'input.ts' });
 ### Bundler build
 
 ```ts
-import {
-  build,
-  initBundler,
-  bundlerLastErrorMessage,
-  VirtualFileSystem,
-} from '@zntc/wasm';
+import { build, initBundler, bundlerLastErrorMessage, VirtualFileSystem } from '@zntc/wasm';
 import wasmUrl from '@zntc/wasm/zntc-bundler.wasm?url';
 
 // The bundler reads a VFS instead of a real file system. Imports in the entry are
