@@ -48,15 +48,28 @@ const result = transpile('const x: number = 1;', { filename: 'input.ts' });
 ### Bundler build
 
 ```ts
-import { build, initBundler, bundlerLastErrorMessage } from '@zntc/wasm';
+import {
+  build,
+  initBundler,
+  bundlerLastErrorMessage,
+  VirtualFileSystem,
+} from '@zntc/wasm';
 import wasmUrl from '@zntc/wasm/zntc-bundler.wasm?url';
 
-await initBundler(wasmUrl); // separate from init() used for transpile
-const out = build('/main.ts', { format: 'esm', target: 'es2020' });
+// The bundler reads a VFS instead of a real file system. Imports in the entry are
+// resolved recursively against the paths registered here.
+const vfs = new VirtualFileSystem();
+vfs.set('/src/util.ts', 'export const scale = (n: number) => n * 2;');
+vfs.set('/src/main.ts', `import { scale } from './util'; export const x = scale(21);`);
+
+await initBundler(vfs, wasmUrl); // separate from init() used for transpile
+const out = build('/src/main.ts', { format: 'esm', target: 'es2020' });
 if (out === null) throw new Error(bundlerLastErrorMessage());
 ```
 
-`build` is synchronous and returns `null` on failure — call `bundlerLastErrorMessage()` to read the last error.
+`build` is synchronous and returns `null` on failure — call `bundlerLastErrorMessage()` to read the last error. When the build produces error diagnostics (an unresolvable import, for example) it returns `null` rather than partial output — the same contract as the CLI ("skip output and exit 1 on errors").
+
+A VFS holds files only; directories exist as path prefixes. To back it with a lazy source (network, IndexedDB), subclass `VirtualFileSystem` and override `get` / `has` / `paths` (and `listDir` / `isDir` if needed).
 
 ## `@zntc/core` vs `@zntc/wasm`
 

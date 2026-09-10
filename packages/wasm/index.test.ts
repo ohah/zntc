@@ -268,22 +268,87 @@ describe('VirtualFileSystem', () => {
     expect(new TextDecoder().decode(vfs.get('/x')!)).toBe('second');
     expect(vfs.size()).toBe(1);
   });
+
+  // #4645 — 모듈 해석은 resolver 의 DirEntryCache 를 거치고, 그 캐시는 오직 listDir
+  // 결과로만 채워진다. 여기가 비면 relative import 후보가 전부 "없음" 이 된다.
+  test('listDir: 바로 아래 파일 + 합성된 하위 디렉토리', () => {
+    const vfs = new VirtualFileSystem();
+    vfs.set('/src/index.ts', '');
+    vfs.set('/src/a.ts', '');
+    vfs.set('/src/util/scale.ts', '');
+
+    const entries = vfs.listDir('/src')!;
+    expect(entries).not.toBeNull();
+    const files = entries
+      .filter((e) => e.kind === 0)
+      .map((e) => e.name)
+      .sort();
+    const dirs = entries.filter((e) => e.kind === 1).map((e) => e.name);
+    expect(files).toEqual(['a.ts', 'index.ts']);
+    // util 은 등록된 적 없는 "합성" 디렉토리 — 경로 접두사로만 존재한다.
+    expect(dirs).toEqual(['util']);
+  });
+
+  test('listDir: 루트 / 는 최상위 디렉토리를 합성', () => {
+    const vfs = new VirtualFileSystem();
+    vfs.set('/src/index.ts', '');
+    expect(vfs.listDir('/')).toEqual([{ name: 'src', kind: 1 }]);
+  });
+
+  test('listDir: cwd 표기 (`.`) 는 선행 / 없는 경로를 본다', () => {
+    const vfs = new VirtualFileSystem();
+    vfs.set('index.ts', '');
+    vfs.set('a.ts', '');
+    const names = vfs
+      .listDir('.')!
+      .map((e) => e.name)
+      .sort();
+    expect(names).toEqual(['a.ts', 'index.ts']);
+  });
+
+  test('listDir: 존재하지 않는 디렉토리는 null (파일 경로도 null)', () => {
+    const vfs = new VirtualFileSystem();
+    vfs.set('/src/index.ts', '');
+    expect(vfs.listDir('/nope')).toBeNull();
+    expect(vfs.listDir('/src/index.ts')).toBeNull();
+  });
+
+  test('isDir: 등록된 경로가 함의하는 디렉토리만 true', () => {
+    const vfs = new VirtualFileSystem();
+    vfs.set('/src/util/scale.ts', '');
+    expect(vfs.isDir('/src')).toBe(true);
+    expect(vfs.isDir('/src/util')).toBe(true);
+    expect(vfs.isDir('/')).toBe(true);
+    // 파일 자신은 디렉토리가 아니다 — 접두사 오탐(`/src/util/scale.ts` startsWith) 방지.
+    expect(vfs.isDir('/src/util/scale.ts')).toBe(false);
+    expect(vfs.isDir('/nope')).toBe(false);
+  });
+
+  test('isDir: 이름이 겹치는 형제를 디렉토리로 오인하지 않는다', () => {
+    const vfs = new VirtualFileSystem();
+    vfs.set('/src/util.ts', '');
+    // `/src/util` 로 시작하는 경로는 있지만 `/src/util/` 아래엔 아무것도 없다.
+    expect(vfs.isDir('/src/util')).toBe(false);
+  });
 });
 
 // PR 6-2c-2c — bundler.Bundler.init + bundle() 실 호출 + VFS round-trip.
 // esm/browser 단일 entry. 출력은 단일 파일 모드 (result.output) — 모듈 wrap + TS strip.
+// initBundler 는 첫 호출의 VFS 를 그대로 붙들기 때문에 (instance 당 1회) fixture 를
+// 모듈 스코프에 둔다 — 이후 테스트가 파일을 추가해도 같은 VFS 를 본다.
+const bundlerFixtureVfs = new VirtualFileSystem();
+
 describe('Bundler (minimal)', () => {
   beforeAll(async () => {
     const wasmPath = join(import.meta.dir, '../../zig-out/bin/zntc-bundler.wasm');
     const wasmBytes = readFileSync(wasmPath);
-    const vfs = new VirtualFileSystem();
-    vfs.set('/index.ts', 'export const x = 42;');
-    vfs.set('/utils.ts', 'export const greet = (n: string) => `hi ${n}`;');
-    await initBundler(vfs, wasmBytes);
+    bundlerFixtureVfs.set('/index.ts', 'export const x = 42;');
+    bundlerFixtureVfs.set('/utils.ts', 'export const greet = (n: string) => `hi ${n}`;');
+    await initBundler(bundlerFixtureVfs, wasmBytes);
   });
 
-  test('bundlerVersion = ABI v6 (ZNTC 표준 진단 형식)', () => {
-    expect(bundlerVersion()).toBe(6);
+  test('bundlerVersion = ABI v7 (에러 진단 시 부분 출력 미공개)', () => {
+    expect(bundlerVersion()).toBe(7);
   });
 
   test('build: 단일 entry → bundle 코드 (TS 어노테이션 strip + 모듈 wrap)', () => {
@@ -397,6 +462,75 @@ describe('Bundler (minimal)', () => {
     expect(baseline?.code).toContain('=>');
     expect(downleveled?.code).not.toContain('=>');
     expect(downleveled?.code).toContain('function');
+  });
+
+  // #4645 — multi-file. 이전엔 entry 만 읽고 의존 모듈 해석 시도조차 없었다.
+  test('build: 상대 import 를 재귀 해석해 의존 모듈을 번들에 포함', () => {
+    bundlerFixtureVfs.set('/multi/dep.ts', 'export const foo = 42;');
+    bundlerFixtureVfs.set('/multi/entry.ts', `export { foo } from './dep';`);
+    const result = build('/multi/entry.ts');
+    expect(result).not.toBeNull();
+    // 값이 실제로 들어와야 한다 — export 이름만 남는 빈 껍데기가 아니라.
+    expect(result?.code).toContain('const foo = 42;');
+    expect(result?.code).toContain('export { foo }');
+    expect(bundlerLastErrorMessage()).toBe('');
+  });
+
+  test('build: import + 재export 형태도 동일하게 해석', () => {
+    bundlerFixtureVfs.set('/multi2/dep.ts', 'export const bar = 7;');
+    bundlerFixtureVfs.set('/multi2/entry.ts', `import { bar } from './dep'; export { bar };`);
+    const result = build('/multi2/entry.ts');
+    expect(result?.code).toContain('const bar = 7;');
+  });
+
+  test('build: 하위 디렉토리 체인 (entry → 컴포넌트 → util) 전부 포함', () => {
+    bundlerFixtureVfs.set('/chain/util/scale.ts', 'export const scale = (n: number) => n * 2;');
+    bundlerFixtureVfs.set(
+      '/chain/Button.tsx',
+      `import { scale } from './util/scale';\nexport const Button = () => scale(21);`,
+    );
+    bundlerFixtureVfs.set('/chain/index.ts', `export { Button } from './Button';`);
+    const result = build('/chain/index.ts');
+    expect(result?.code).toContain('n * 2');
+    expect(result?.code).toContain('scale(21)');
+  });
+
+  test('build: 디렉토리 import 는 index 파일로 해석', () => {
+    bundlerFixtureVfs.set('/dirindex/lib/index.ts', 'export const q = 9;');
+    bundlerFixtureVfs.set('/dirindex/entry.ts', `export { q } from './lib';`);
+    const result = build('/dirindex/entry.ts');
+    expect(result?.code).toContain('const q = 9;');
+  });
+
+  test('build: 확장자를 명시한 상대 import 도 해석', () => {
+    bundlerFixtureVfs.set('/ext/dep.ts', 'export const e = 5;');
+    bundlerFixtureVfs.set('/ext/entry.ts', `export { e } from './dep.ts';`);
+    expect(build('/ext/entry.ts')?.code).toContain('const e = 5;');
+  });
+
+  test('build: 해석 불가 import → null + ZNTC0100 (부분 출력 미공개)', () => {
+    bundlerFixtureVfs.set('/missing/entry.ts', `export { nope } from './does-not-exist';`);
+    const result = build('/missing/entry.ts');
+    // 부분 번들을 성공처럼 돌려주면 호출부가 실패를 감지할 수 없다.
+    expect(result).toBeNull();
+    const msg = bundlerLastErrorMessage();
+    expect(msg).toContain('ZNTC0100');
+    expect(msg).toContain('./does-not-exist');
+  });
+
+  test('buildChunks: 해석 불가 import → null (build 와 같은 계약)', () => {
+    bundlerFixtureVfs.set('/missing2/entry.ts', `export { nope } from './gone';`);
+    expect(buildChunks('/missing2/entry.ts')).toBeNull();
+    expect(bundlerLastErrorMessage()).toContain('ZNTC0100');
+  });
+
+  test('buildChunks: codeSplitting → 동적 import 가 별도 chunk 로 분리', () => {
+    bundlerFixtureVfs.set('/split/lazy.ts', 'export const lazy = 7;');
+    bundlerFixtureVfs.set('/split/entry.ts', `export const go = () => import('./lazy');`);
+    const chunks = buildChunks('/split/entry.ts', { codeSplitting: true });
+    expect(chunks).not.toBeNull();
+    expect(chunks!.length).toBe(2);
+    expect(chunks!.some((c) => c.code.includes('const lazy = 7;'))).toBe(true);
   });
 
   test('build: jsxFactory 커스텀 옵션 적용', () => {

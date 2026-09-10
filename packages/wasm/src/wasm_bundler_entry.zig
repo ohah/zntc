@@ -33,11 +33,13 @@ fn wasmIo() std.Io {
 pub fn main() void {}
 
 /// Bundler ABI version. host 가 호환성 체크용.
+/// v7 — 에러 진단이 있으면 build / build_chunks 가 부분 출력 대신 0 을 반환 (#4645).
+///      CLI 의 "에러 진단이 있으면 출력 생략 + exit 1" 과 같은 계약. 시그니처는 v6 동일.
 /// v6 — last_error_message_get 출력이 ZNTC 표준 진단 형식 (`× <message> [ZNTC####]
 /// + hint`). 새 ZNTC 에러 코드: splitting_requires_esm_format,
 /// preserve_modules_requires_esm_format, invalid_entry_path.
 export fn bundler_version() u32 {
-    return 6;
+    return 7;
 }
 
 /// JS 측이 entry path 등 입력 메모리 확보용.
@@ -338,6 +340,10 @@ export fn build(
     // diagnostics 가 있으면 fatal 메시지 캡처 (출력은 있어도 의미 있는 에러 노출).
     captureDiagnostic(&result);
 
+    // 에러 진단 = 실패. 부분 출력을 성공처럼 돌려주면 호출부가 실패를 감지할 수 없다 (#4645).
+    // CLI 의 "에러 진단이 있으면 출력 생략 + exit 1" (main.zig) 과 같은 계약.
+    if (result.hasErrors()) return 0;
+
     // 단일 entry / 비-splitting 경로: result.output 사용 (outputs 는 code-splitting 시).
     const code = result.output;
     if (code.len == 0) {
@@ -408,6 +414,9 @@ export fn build_chunks(
     };
 
     captureDiagnostic(&result);
+
+    // build() 와 같은 계약 — 에러 진단이면 부분 chunk 를 공개하지 않는다 (#4645).
+    if (result.hasErrors()) return 0;
 
     // 단일 파일 모드 / 비-splitting 시엔 result.output 한 개를 wrap. code splitting /
     // preserve modules 시엔 result.outputs 의 모든 chunk.

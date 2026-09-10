@@ -48,15 +48,28 @@ const result = transpile('const x: number = 1;', { filename: 'input.ts' });
 ### Bundler 빌드
 
 ```ts
-import { build, initBundler, bundlerLastErrorMessage } from '@zntc/wasm';
+import {
+  build,
+  initBundler,
+  bundlerLastErrorMessage,
+  VirtualFileSystem,
+} from '@zntc/wasm';
 import wasmUrl from '@zntc/wasm/zntc-bundler.wasm?url';
 
-await initBundler(wasmUrl); // transpile 용 init() 와 별도
-const out = build('/main.ts', { format: 'esm', target: 'es2020' });
+// 번들러는 실제 파일 시스템 대신 VFS 를 봅니다. entry 의 import 는 여기 등록된
+// 경로에서 재귀적으로 해석됩니다.
+const vfs = new VirtualFileSystem();
+vfs.set('/src/util.ts', 'export const scale = (n: number) => n * 2;');
+vfs.set('/src/main.ts', `import { scale } from './util'; export const x = scale(21);`);
+
+await initBundler(vfs, wasmUrl); // transpile 용 init() 와 별도
+const out = build('/src/main.ts', { format: 'esm', target: 'es2020' });
 if (out === null) throw new Error(bundlerLastErrorMessage());
 ```
 
-`build` 는 동기 함수이며 실패 시 `null` 을 반환합니다 — `bundlerLastErrorMessage()` 로 마지막 에러를 조회하세요.
+`build` 는 동기 함수이며 실패 시 `null` 을 반환합니다 — `bundlerLastErrorMessage()` 로 마지막 에러를 조회하세요. 해석할 수 없는 import 처럼 에러 진단이 있으면 부분 출력을 돌려주지 않고 `null` 입니다 (CLI 의 "에러 있으면 출력 생략 + exit 1" 과 같은 계약).
+
+VFS 는 파일만 등록하고 디렉토리는 경로 접두사로 존재합니다. 네트워크·IndexedDB 같은 lazy 백엔드를 쓰려면 `VirtualFileSystem` 을 상속해 `get` / `has` / `paths` (그리고 필요하면 `listDir` / `isDir`) 를 override 하세요.
 
 ## `@zntc/core` 와 차이
 

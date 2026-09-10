@@ -151,8 +151,10 @@ pub const DirEntryCache = struct {
 
     /// 디렉토리 자체가 존재하는지 확인.
     pub fn dirExists(self: *DirEntryCache, path: []const u8) bool {
-        // 부모 디렉토리의 캐시에서 이 디렉토리 이름을 찾기
-        const parent = std.fs.path.dirname(path) orelse return false;
+        // 부모 디렉토리의 캐시에서 이 디렉토리 이름을 찾기.
+        // dirname 이 없는 경로 (= 디렉토리 성분 없는 `sub`) 는 cwd 기준으로 본다 (#4645) —
+        // VFS 처럼 cwd 가 없어 path.resolve 가 절대경로를 못 만드는 환경에서만 발생한다.
+        const parent = std.fs.path.dirname(path) orelse ".";
         const name = std.fs.path.basename(path);
         if (name.len == 0) return false;
         return self.hasDir(parent, name);
@@ -991,8 +993,11 @@ pub const Resolver = struct {
         const extensions = if (self.custom_extensions.len > 0) self.custom_extensions else default_extensions;
         // dir_cache 멤버십 체크는 (dir, name) 으로 한다 — 후보마다 full path 를 alloc 하지 않고
         // basename 만 stack 버퍼에서 조립해 확인, hit 일 때만 full path 를 1회 alloc.
-        const dir = std.fs.path.dirname(base) orelse return null;
+        // dirname 없음 = 디렉토리 성분 없는 경로 (`a`) → cwd 기준 (#4645).
+        const dir = std.fs.path.dirname(base) orelse ".";
         const stem = std.fs.path.basename(base);
+        // stem 이 비면 후보가 확장자뿐(`.ts`)이 되어 의도치 않은 매칭이 된다.
+        if (stem.len == 0) return null;
         var name_buf: [std.fs.max_name_bytes]u8 = undefined;
         for (extensions) |ext| {
             if (stem.len + ext.len > name_buf.len) continue; // NAME_MAX 초과 — 실존 불가
@@ -1449,7 +1454,7 @@ pub const Resolver = struct {
     }
 
     fn fileExists(self: *const Resolver, path: []const u8) bool {
-        const dir_path = std.fs.path.dirname(path) orelse return false;
+        const dir_path = std.fs.path.dirname(path) orelse ".";
         const file_name = std.fs.path.basename(path);
         return self.fileExistsIn(dir_path, file_name);
     }
