@@ -300,6 +300,25 @@ fn walkAndTranspile(
     if (had_errors) return error.WalkFailed;
 }
 
+/// 산출물 방출을 막아야 하는 에러인지.
+///
+/// `unresolved_import` 는 막지 않는다 — 해석 못 한 지정자는 번들 바깥에 있는 것으로 취급돼
+/// 포맷에 맞는 external import 로 남으므로 산출물 자체는 유효하고, 없는 패키지는 런타임에
+/// 제 이름으로 실패한다 (rolldown·rspack 도 이 경우 산출물을 낸다). 나머지(export 충돌·
+/// 모호·누락)는 번들이 내부적으로 앞뒤가 안 맞아 부분 산출물이 위험하다.
+///
+/// ⚠️ 방출 여부와 exit code 는 별개다 — 어느 쪽이든 에러가 있으면 exit 1.
+/// `bin/zntc.mjs` · `packages/wasm/src/wasm_bundler_entry.zig` 의 동명 함수와 같은 규칙.
+fn hasPublishBlockingError(result: anytype) bool {
+    const diags = result.diagnostics orelse return false;
+    for (diags) |d| {
+        if (d.severity != .@"error") continue;
+        if (d.code == .unresolved_import) continue;
+        return true;
+    }
+    return false;
+}
+
 pub fn main(init: std.process.Init) !void {
     // Zig 0.16: juicy main — io / args / environ 을 Init 에서 받는다 (libc-free,
     // Zig start 가 채움). args 는 argsAlloc 제거로 Init.minimal.args 이터레이터
@@ -896,11 +915,18 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        // 에러 진단이 있으면 출력 생략 + exit 1 (watch 모드는 다음 변경 대기).
-        // esbuild/rolldown 동작과 동일하게 빌드 실패를 exit code로 신호.
-        if (result.hasErrors() and !opts.watch and !opts.is_serve) {
-            std.process.exit(1);
-        }
+        // 에러 진단이 있으면 exit 1 (watch 모드는 다음 변경 대기).
+        //
+        // 다만 **출력 생략은 `unresolved_import` 를 제외한 에러에 대해서만** 한다.
+        // 해석 못 한 지정자는 번들 바깥에 있는 것으로 취급돼 포맷에 맞는 external import 로
+        // 남으므로 산출물 자체는 유효하고, 없는 패키지는 런타임에 제 이름으로 실패한다 —
+        // rolldown·rspack 도 이 경우 산출물을 낸다. 나머지(export 충돌·모호·누락)는 번들이
+        // 내부적으로 앞뒤가 안 맞아 부분 산출물이 위험하다.
+        //
+        // JS CLI(`bin/zntc.mjs`)의 `hasPublishBlockingError` · WASM 진입점의 동명 함수와
+        // **같은 규칙**이다. 표면마다 답이 갈리지 않게 한 곳의 판정을 세 곳이 공유한다.
+        const fail_after_output = result.hasErrors() and !opts.watch and !opts.is_serve;
+        if (fail_after_output and hasPublishBlockingError(&result)) std.process.exit(1);
 
         if (opts.output_file) |out_path| {
             try checkAllowOverwrite(allocator, io, stderr, opts.allow_overwrite, abs_entry, out_path);
@@ -979,6 +1005,9 @@ pub fn main(init: std.process.Init) !void {
                 try stderr.print("\n{s}", .{mf});
             }
         }
+
+        // 산출물은 냈지만 에러 진단이 있었다 → exit 1 (위 게이트를 통과한 경우).
+        if (fail_after_output) std.process.exit(1);
 
         // --watch: 파일 변경 감지 후 재번들
         if (opts.watch) {

@@ -548,6 +548,21 @@ function safeRealpath(p) {
 }
 
 /**
+ * 산출물 방출을 막아야 하는 에러인지.
+ *
+ * `unresolved_import` 는 **막지 않는다.** 해석 못 한 지정자는 번들 바깥에 있는 것으로
+ * 취급돼 포맷에 맞는 external import 로 남고(그래서 산출물 자체는 유효하다), 없는 패키지는
+ * 런타임에 제 이름으로 실패한다 — rolldown·rspack 도 이 경우 산출물을 낸다. 나머지
+ * (export 충돌·모호·누락)는 번들이 내부적으로 앞뒤가 안 맞는 상태라 부분 산출물이 위험하다.
+ *
+ * ⚠️ 방출 여부와 **exit code 는 별개다.** 어느 쪽이든 에러가 있으면 exit 1 이다.
+ * WASM 의 `hasPublishBlockingError` 와 같은 규칙 — 표면마다 답이 갈리지 않게 한다.
+ */
+function hasPublishBlockingError(errors) {
+  return (errors ?? []).some((e) => e.code !== 'unresolved_import');
+}
+
+/**
  * BuildResult / NAPI diag 의 errors / warnings 를 stderr 로 출력.
  * `logLevel === 'silent'` 면 출력 안 함, `'error'` 면 errors 만.
  * `err.specifier` 는 NAPI 가 diag suggestion 으로 노출하는 import specifier.
@@ -1731,23 +1746,25 @@ async function runBundle(opts, config) {
 
   printResultDiagnostics(result, opts.logLevel);
 
-  // 출력
+  // 출력 — 파일/stdout 양쪽 **같은 게이트**. 번들이 내부적으로 앞뒤가 안 맞을 때만
+  // (export 충돌·모호·누락) 산출물을 내지 않는다. 해석 불가 import 는 막지 않는다.
+  // exit code 는 이와 별개로 에러가 있으면 1 이다 (dispatchBuild → main).
+  const blocked = hasPublishBlockingError(result.errors);
   if (opts.outfile || opts.outdir) {
     if (opts.clean && opts.outdir) {
       rmSync(resolve(opts.outdir), { recursive: true, force: true });
     }
-    writeOutputFiles(
-      result.outputFiles,
-      opts.outfile,
-      opts.outdir,
-      opts.entryPoints,
-      opts.allowOverwrite,
-    );
-  } else {
-    // stdout
-    if (result.outputFiles.length > 0) {
-      process.stdout.write(result.outputFiles[0].text);
+    if (!blocked) {
+      writeOutputFiles(
+        result.outputFiles,
+        opts.outfile,
+        opts.outdir,
+        opts.entryPoints,
+        opts.allowOverwrite,
+      );
     }
+  } else if (!blocked && result.outputFiles.length > 0) {
+    process.stdout.write(result.outputFiles[0].text);
   }
 
   // metafile
