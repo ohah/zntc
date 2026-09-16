@@ -32,6 +32,9 @@ pub const AppBuildOptions = struct {
     env_dir: ?[]const u8 = null,
     env_prefixes: []const []const u8 = &.{ "VITE_", "ZNTC_" },
     define: []const DefineEntry = &.{},
+    /// import 경로 별칭 (#4649). `zntc.config` 의 `alias` 가 app 파이프라인까지
+    /// 내려오도록 — 예전엔 이 필드가 없어 config 의 alias 가 조용히 사라졌다.
+    alias: []const bundler_types.AliasEntry = &.{},
     minify: bool = false,
     sourcemap: bool = false,
     splitting: bool = true,
@@ -160,6 +163,7 @@ pub fn buildApp(allocator: std.mem.Allocator, io: std.Io, opts: AppBuildOptions)
         .format = .esm,
         .platform = .browser,
         .define = merged_defines,
+        .alias = opts.alias,
         .minify_whitespace = opts.minify,
         .minify_identifiers = opts.minify,
         .minify_syntax = opts.minify,

@@ -22,65 +22,65 @@ CLI > config > `--tsconfig-raw` > tsconfig file > defaults. 같은 옵션이 여
 
 ## 옵션별 source 매핑
 
-| 옵션                                         |              CLI flag              |           zntc.config           |         tsconfig          | 비고                                                               |
-| -------------------------------------------- | :--------------------------------: | :----------------------------: | :-----------------------: | ------------------------------------------------------------------ |
-| `entryPoints`                                |             positional             |               ✅               |            ❌             | CLI 가 비어있으면 config 사용                                      |
-| `outdir` / `outfile`                         |          `--outdir` `-o`           |               ✅               |            ❌             | scalar override                                                    |
-| `allowOverwrite`                             |        `--allow-overwrite`         |               ✅               |            ❌             | 기본 false; 입력=출력 덮어쓰기 명시 허용                           |
-| `format`                                     |           `--format=esm`           |               ✅               |            ❌             | esm/cjs/iife/umd/amd                                               |
-| `platform`                                   |         `--platform=node`          |               ✅               |            ❌             | node/browser/react-native                                          |
-| `rnVersion`                                  |        `--rn-version=0.80`         |               ✅               |            ❌             | RN 버전 타겟. `platform: "react-native"` 함의 + RN 문서 기준 버전별 다운레벨(blunt 프리셋 대신). `"0.80"`/`">=0.74"`/`"<=0.84"`/`"==0.76"`. `node`/`neutral` 과 충돌. 자세히는 [USAGE](./USAGE.md#플랫폼-프리셋) |
-| `target`                                     |         `--target=es2020`          |               ✅               |         `target`          | tsconfig fallback. ES 버전 외 엔진 매트릭스(`chrome80,safari14`)도 CLI·JS API 동일 처리 — 해석 불가 값은 에러 |
-| `browserslist`                               |               (없음)               |               ✅               |            ❌             | string / string[] Browserslist 쿼리. 지정 시 `target` 보다 우선. `platform: "react-native"` 에서는 사용 불가 (Hermes 매트릭스 강제) |
-| `runtimePolyfills`                           |        `--runtime-polyfills`       |               ✅               |            ❌             | core-js 런타임 API 폴리필. 타겟은 Rspack/SWC식 Browserslist query  |
-| `coreJs`                                     |          `--core-js=3.49`          |               ✅               |            ❌             | core-js-compat 계산에 사용할 core-js 버전                          |
-| `jsx`                                        |         `--jsx=automatic`          |               ✅               |           `jsx`           | preserve/transform/automatic                                       |
-| `jsxFactory` / `jsxFragment`                 |                flag                |               ✅               |      `jsxFactory` 등      | tsconfig fallback                                                  |
-| `external`                                   |          `--external:lib`          |               ✅               |            ❌             | 배열 — CLI 비어있으면 config                                       |
-| `packagesExternal`                           |       `--packages=external`        |               ✅               |            ❌             | bare package import 전체 external, relative/absolute는 번들        |
-| `alias`                                      |           `--alias:K=V`            |               ✅               |     tsconfig `paths`      | Object/Array 두 형태. Object 는 키 단위 CLI 머지, Array 는 build() 만 (RegExp). resolve **전** 무조건 치환 |
-| `fallback`                                   | `--fallback:K=V` / `--fallback:K=false` |          ✅               |            ❌             | resolve **실패 시에만** 적용. webpack `resolve.fallback` 호환. `=false` 면 빈 모듈 |
-| `define`                                     |           `--define:K=V`           |               ✅               |            ❌             | 객체 머지: 키 단위 CLI override                                    |
-| `loader`                                     |        `--loader:.ext=type`        |               ✅               |            ❌             | 객체 머지                                                          |
-| `minify` / `minifyWhitespace` 등             |           `--minify` 등            |               ✅               |            ❌             | boolean — CLI default(false) 시 config=true 만 적용                |
-| `sourcemap`                                  |           `--sourcemap`            |               ✅               |        `sourceMap`        | tsconfig fallback                                                  |
-| `sourcesContent`                             |     `--sources-content=false`      |               ✅               |            ❌             | default=true; CLI true 시 config=false 만 적용                     |
-| `treeShaking`                                |               (없음)               |               ✅               |            ❌             | default=true                                                       |
-| `experimentalDecorators`                     |                flag                |               ✅               | `experimentalDecorators`  | tsconfig fallback                                                  |
-| `useDefineForClassFields`                    |                flag                |               ✅               | `useDefineForClassFields` | default=true                                                       |
-| `verbatimModuleSyntax`                       |     `--verbatim-module-syntax`     |               ✅               |  `verbatimModuleSyntax`   | tsconfig fallback                                                  |
-| `tsconfigPath`                               |     `-p path` `--project=path`     |               ❌               |        (자기 자신)        | tsconfig 위치 명시                                                 |
-| `tsconfigRaw`                                |      `--tsconfig-raw=<json>`       |               ✅               |        inline JSON        | 파일 기반 tsconfig보다 우선                                        |
-| `plugins`                                    |  `--plugin path` (plugins 배열만)  |               ✅               |            ❌             | concat — config plugins + `--plugin` plugins                       |
-| `banner` / `footer`                          |         `--banner:js=` 등          |               ✅               |            ❌             | scalar                                                             |
-| `intro` / `outro`                            |      `--intro=` / `--outro=`       |               ✅               |            ❌             | 포맷 wrapper 내부 코드 삽입                                        |
-| `entryNames` / `chunkNames` / `assetNames` / `cssNames` |       flag         |               ✅               |            ❌             | scalar. `entryNames` / `cssNames` default `[dir]/[name]` (sub-2 부터, breaking) |
-| `assetInlineLimit`                           |      `--asset-inline-limit=`       |               ✅               |            ❌             | number. default `4096` — 이하 크기 asset 은 data URL 인라인, `0` = 끔 |
-| `globalName`                                 |          `--global-name=`          |               ✅               |            ❌             | iife/umd 시 사용                                                   |
-| `globals`                                    |        `--global:SPEC=NAME`        |               ✅               |            ❌             | external specifier → IIFE/UMD global                               |
-| `publicPath`                                 |          `--public-path=`          |               ✅               |            ❌             | asset URL prefix                                                   |
-| `inject`                                     |          `--inject=path`           |               ✅               |            ❌             | 배열                                                               |
-| `drop`                                       |        `--drop=console` 등         |               ✅               |            ❌             | 배열                                                               |
-| `dropLabels`                                 |      `--drop-labels=DEV,TEST`      |               ✅               |            ❌             | 배열, CLI 값은 쉼표로 분리                                         |
-| `pure`                                       |          `--pure:callee`           |               ✅               |            ❌             | 배열, 반복 지정                                                    |
-| `keepNames`                                  |           `--keep-names`           |               ✅               |            ❌             | boolean                                                            |
-| `shimMissingExports`                         |      `--shim-missing-exports`      |               ✅               |            ❌             | boolean                                                            |
-| `flow`                                       |              `--flow`              |               ✅               |            ❌             | Flow 타입 스트리핑                                                 |
-| `quotes`                                     |         `--quotes=double`          |               ✅               |            ❌             | single/double                                                      |
-| `splitting`                                  |           `--splitting`            |               ✅               |            ❌             | code splitting                                                     |
-| `preserveModules` / `preserveModulesRoot`    |                flag                |               ✅               |            ❌             | Rollup 호환                                                        |
-| `legalComments`                              |        `--legal-comments=`         |               ✅               |            ❌             | none/inline/eof                                                    |
-| `metafile`                                   |            `--metafile`            |               ✅               |            ❌             | esbuild 호환                                                       |
-| `resolveExtensions`                          |      `--resolve-extensions=`       |               ✅               |          (간접)           | tsconfig 의 paths 와 별개                                          |
-| `mainFields`                                 |          `--main-fields=`          |               ✅               |            ❌             | package.json field 우선순위                                        |
-| `conditions`                                 |          `--conditions=`           |               ✅               |            ❌             | package exports 사용자 조건. monorepo internal src 직접 inline 은 [Monorepo](#monorepo--source-exports-condition) 참조 |
-| `nodePaths`                                  |          `--node-paths=`           |               ✅               |            ❌             | bare specifier 추가 탐색 경로                                      |
-| `profile` / `profileLevel` / `profileFormat` |            `--profile*`            |               ✅               |            ❌             | 디버그/성능 측정                                                   |
-| `ignoreAnnotations`                          |       `--ignore-annotations`       |               ✅               |            ❌             | pure/sideEffects annotation 무시                                   |
-| `jsxSideEffects`                             |        `--jsx-side-effects`        |               ✅               |            ❌             | unused JSX expression 보존                                         |
-| `manualChunks`                               |               (없음)               |     ✅ (record / function)     |            ❌             | Rollup 호환. function form 은 zntc.config.{ts,js} 만                |
-| `inlineDynamicImports`                       |     `--inline-dynamic-imports`     |               ✅               |            ❌             | Rollup 호환                                                        |
-| `import.meta.env.*`                          | `--define:import.meta.env.X="..."` | (없음 — `.env` 파일 자동 로드) |            ❌             | `.env`/`.env.local`/`.env.${mode}`/`.env.${mode}.local` 4단계 머지 |
+| 옵션                                                    |                CLI flag                 |          zntc.config           |         tsconfig          | 비고                                                                                                                                                                                                             |
+| ------------------------------------------------------- | :-------------------------------------: | :----------------------------: | :-----------------------: | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `entryPoints`                                           |               positional                |               ✅               |            ❌             | CLI 가 비어있으면 config 사용                                                                                                                                                                                    |
+| `outdir` / `outfile`                                    |             `--outdir` `-o`             |               ✅               |            ❌             | scalar override                                                                                                                                                                                                  |
+| `allowOverwrite`                                        |           `--allow-overwrite`           |               ✅               |            ❌             | 기본 false; 입력=출력 덮어쓰기 명시 허용                                                                                                                                                                         |
+| `format`                                                |             `--format=esm`              |               ✅               |            ❌             | esm/cjs/iife/umd/amd                                                                                                                                                                                             |
+| `platform`                                              |            `--platform=node`            |               ✅               |            ❌             | node/browser/react-native                                                                                                                                                                                        |
+| `rnVersion`                                             |           `--rn-version=0.80`           |               ✅               |            ❌             | RN 버전 타겟. `platform: "react-native"` 함의 + RN 문서 기준 버전별 다운레벨(blunt 프리셋 대신). `"0.80"`/`">=0.74"`/`"<=0.84"`/`"==0.76"`. `node`/`neutral` 과 충돌. 자세히는 [USAGE](./USAGE.md#플랫폼-프리셋) |
+| `target`                                                |            `--target=es2020`            |               ✅               |         `target`          | tsconfig fallback. ES 버전 외 엔진 매트릭스(`chrome80,safari14`)도 CLI·JS API 동일 처리 — 해석 불가 값은 에러                                                                                                    |
+| `browserslist`                                          |                 (없음)                  |               ✅               |            ❌             | string / string[] Browserslist 쿼리. 지정 시 `target` 보다 우선. `platform: "react-native"` 에서는 사용 불가 (Hermes 매트릭스 강제)                                                                              |
+| `runtimePolyfills`                                      |          `--runtime-polyfills`          |               ✅               |            ❌             | core-js 런타임 API 폴리필. 타겟은 Rspack/SWC식 Browserslist query                                                                                                                                                |
+| `coreJs`                                                |            `--core-js=3.49`             |               ✅               |            ❌             | core-js-compat 계산에 사용할 core-js 버전                                                                                                                                                                        |
+| `jsx`                                                   |            `--jsx=automatic`            |               ✅               |           `jsx`           | preserve/transform/automatic                                                                                                                                                                                     |
+| `jsxFactory` / `jsxFragment`                            |                  flag                   |               ✅               |      `jsxFactory` 등      | tsconfig fallback                                                                                                                                                                                                |
+| `external`                                              |            `--external:lib`             |               ✅               |            ❌             | 배열 — CLI 비어있으면 config                                                                                                                                                                                     |
+| `packagesExternal`                                      |          `--packages=external`          |               ✅               |            ❌             | bare package import 전체 external, relative/absolute는 번들                                                                                                                                                      |
+| `alias`                                                 |              `--alias:K=V`              |               ✅               |     tsconfig `paths`      | Object/Array 두 형태. Object 는 키 단위 CLI 머지, Array 는 build() 만 (RegExp). resolve **전** 무조건 치환                                                                                                       |
+| `fallback`                                              | `--fallback:K=V` / `--fallback:K=false` |               ✅               |            ❌             | resolve **실패 시에만** 적용. webpack `resolve.fallback` 호환. `=false` 면 빈 모듈                                                                                                                               |
+| `define`                                                |             `--define:K=V`              |               ✅               |            ❌             | 객체 머지: 키 단위 CLI override                                                                                                                                                                                  |
+| `loader`                                                |          `--loader:.ext=type`           |               ✅               |            ❌             | 객체 머지                                                                                                                                                                                                        |
+| `minify` / `minifyWhitespace` 등                        |              `--minify` 등              |               ✅               |            ❌             | boolean — CLI default(false) 시 config=true 만 적용                                                                                                                                                              |
+| `sourcemap`                                             |              `--sourcemap`              |               ✅               |        `sourceMap`        | tsconfig fallback                                                                                                                                                                                                |
+| `sourcesContent`                                        |        `--sources-content=false`        |               ✅               |            ❌             | default=true; CLI true 시 config=false 만 적용                                                                                                                                                                   |
+| `treeShaking`                                           |                 (없음)                  |               ✅               |            ❌             | default=true                                                                                                                                                                                                     |
+| `experimentalDecorators`                                |                  flag                   |               ✅               | `experimentalDecorators`  | tsconfig fallback                                                                                                                                                                                                |
+| `useDefineForClassFields`                               |                  flag                   |               ✅               | `useDefineForClassFields` | default=true                                                                                                                                                                                                     |
+| `verbatimModuleSyntax`                                  |       `--verbatim-module-syntax`        |               ✅               |  `verbatimModuleSyntax`   | tsconfig fallback                                                                                                                                                                                                |
+| `tsconfigPath`                                          |       `-p path` `--project=path`        |               ❌               |        (자기 자신)        | tsconfig 위치 명시                                                                                                                                                                                               |
+| `tsconfigRaw`                                           |         `--tsconfig-raw=<json>`         |               ✅               |        inline JSON        | 파일 기반 tsconfig보다 우선                                                                                                                                                                                      |
+| `plugins`                                               |    `--plugin path` (plugins 배열만)     |               ✅               |            ❌             | concat — config plugins + `--plugin` plugins                                                                                                                                                                     |
+| `banner` / `footer`                                     |            `--banner:js=` 등            |               ✅               |            ❌             | scalar                                                                                                                                                                                                           |
+| `intro` / `outro`                                       |         `--intro=` / `--outro=`         |               ✅               |            ❌             | 포맷 wrapper 내부 코드 삽입                                                                                                                                                                                      |
+| `entryNames` / `chunkNames` / `assetNames` / `cssNames` |                  flag                   |               ✅               |            ❌             | scalar. `entryNames` / `cssNames` default `[dir]/[name]` (sub-2 부터, breaking)                                                                                                                                  |
+| `assetInlineLimit`                                      |         `--asset-inline-limit=`         |               ✅               |            ❌             | number. default `4096` — 이하 크기 asset 은 data URL 인라인, `0` = 끔                                                                                                                                            |
+| `globalName`                                            |            `--global-name=`             |               ✅               |            ❌             | iife/umd 시 사용                                                                                                                                                                                                 |
+| `globals`                                               |          `--global:SPEC=NAME`           |               ✅               |            ❌             | external specifier → IIFE/UMD global                                                                                                                                                                             |
+| `publicPath`                                            |            `--public-path=`             |               ✅               |            ❌             | asset URL prefix                                                                                                                                                                                                 |
+| `inject`                                                |             `--inject=path`             |               ✅               |            ❌             | 배열                                                                                                                                                                                                             |
+| `drop`                                                  |           `--drop=console` 등           |               ✅               |            ❌             | 배열                                                                                                                                                                                                             |
+| `dropLabels`                                            |        `--drop-labels=DEV,TEST`         |               ✅               |            ❌             | 배열, CLI 값은 쉼표로 분리                                                                                                                                                                                       |
+| `pure`                                                  |             `--pure:callee`             |               ✅               |            ❌             | 배열, 반복 지정                                                                                                                                                                                                  |
+| `keepNames`                                             |             `--keep-names`              |               ✅               |            ❌             | boolean                                                                                                                                                                                                          |
+| `shimMissingExports`                                    |        `--shim-missing-exports`         |               ✅               |            ❌             | boolean                                                                                                                                                                                                          |
+| `flow`                                                  |                `--flow`                 |               ✅               |            ❌             | Flow 타입 스트리핑                                                                                                                                                                                               |
+| `quotes`                                                |            `--quotes=double`            |               ✅               |            ❌             | single/double                                                                                                                                                                                                    |
+| `splitting`                                             |              `--splitting`              |               ✅               |            ❌             | code splitting                                                                                                                                                                                                   |
+| `preserveModules` / `preserveModulesRoot`               |                  flag                   |               ✅               |            ❌             | Rollup 호환                                                                                                                                                                                                      |
+| `legalComments`                                         |           `--legal-comments=`           |               ✅               |            ❌             | none/inline/eof                                                                                                                                                                                                  |
+| `metafile`                                              |              `--metafile`               |               ✅               |            ❌             | esbuild 호환                                                                                                                                                                                                     |
+| `resolveExtensions`                                     |         `--resolve-extensions=`         |               ✅               |          (간접)           | tsconfig 의 paths 와 별개                                                                                                                                                                                        |
+| `mainFields`                                            |            `--main-fields=`             |               ✅               |            ❌             | package.json field 우선순위                                                                                                                                                                                      |
+| `conditions`                                            |             `--conditions=`             |               ✅               |            ❌             | package exports 사용자 조건. monorepo internal src 직접 inline 은 [Monorepo](#monorepo--source-exports-condition) 참조                                                                                           |
+| `nodePaths`                                             |             `--node-paths=`             |               ✅               |            ❌             | bare specifier 추가 탐색 경로                                                                                                                                                                                    |
+| `profile` / `profileLevel` / `profileFormat`            |              `--profile*`               |               ✅               |            ❌             | 디버그/성능 측정                                                                                                                                                                                                 |
+| `ignoreAnnotations`                                     |         `--ignore-annotations`          |               ✅               |            ❌             | pure/sideEffects annotation 무시                                                                                                                                                                                 |
+| `jsxSideEffects`                                        |          `--jsx-side-effects`           |               ✅               |            ❌             | unused JSX expression 보존                                                                                                                                                                                       |
+| `manualChunks`                                          |                 (없음)                  |     ✅ (record / function)     |            ❌             | Rollup 호환. function form 은 zntc.config.{ts,js} 만                                                                                                                                                             |
+| `inlineDynamicImports`                                  |       `--inline-dynamic-imports`        |               ✅               |            ❌             | Rollup 호환                                                                                                                                                                                                      |
+| `import.meta.env.*`                                     |   `--define:import.meta.env.X="..."`    | (없음 — `.env` 파일 자동 로드) |            ❌             | `.env`/`.env.local`/`.env.${mode}`/`.env.${mode}.local` 4단계 머지                                                                                                                                               |
 
 ## 함수형 config 의 ConfigEnv
 
@@ -91,11 +91,11 @@ defineConfig(({ command, mode, env }) => ({
 }));
 ```
 
-| 필드      | 결정 규칙                                                                                                      |
-| --------- | -------------------------------------------------------------------------------------------------------------- |
+| 필드      | 결정 규칙                                                                                                         |
+| --------- | ----------------------------------------------------------------------------------------------------------------- |
 | `command` | `zntc dev` / `zntc preview` / `--serve` → `"serve"`, `--watch` → `"watch"`, 그 외(`zntc build` 포함) → `"bundle"` |
-| `mode`    | `--mode <name>` 명시값. 미지정 시 command 기본 (`serve`/`watch` → `"development"`, 그 외 → `"production"`)     |
-| `env`     | `process.env` + `.env*` 머지 (shell env 가 `.env` 를 override — Vite/dotenv 16+ 일치)                          |
+| `mode`    | `--mode <name>` 명시값. 미지정 시 command 기본 (`serve`/`watch` → `"development"`, 그 외 → `"production"`)        |
+| `env`     | `process.env` + `.env*` 머지 (shell env 가 `.env` 를 override — Vite/dotenv 16+ 일치)                             |
 
 ## `defineConfig` 예제
 
@@ -363,6 +363,7 @@ zntc --bundle --external=react entry.ts             # → ["react"] (CLI 가 비
 ```
 
 위 "CLI 비어있지 않으면 CLI 만 사용(replace)" 정책은 실사용 진입점인 **npm CLI(`packages/core/bin/zntc.mjs`, ARRAY_KEYS 머지)** 기준이다.
+
 > **알려진 불일치 (2026-06-15)**: Zig 독립 바이너리(`zig-out/bin/zntc`)의 `applyZntcConfigJson` 은 config 의 `external`/`alias` 배열을 먼저 `external_list` 에 append 한 뒤 CLI flag 도 같은 리스트에 append 하므로 **concat** 으로 동작한다 (위 예시는 `["node:fs", "node:path", "react"]`). 실사용자는 npm CLI 를 쓰므로 영향은 제한적이지만, Zig CLI 를 직접 쓰는 경우 동작이 다르다.
 
 `packagesExternal`은 esbuild 호환 `--packages=external`과 동일하게 모든 bare package import를 external 처리한다. `./local`, `../local`, `/abs/local` 같은 relative/absolute import는 계속 번들 대상이다.
@@ -421,8 +422,8 @@ export default defineConfig({
   },
   fallback: {
     // 일반 해석이 **실패할 때만** 적용. 실제 패키지가 있으면 그쪽 우선.
-    fs: false,                    // → 빈 모듈
-    crypto: 'crypto-browserify',  // → npm 패키지로 polyfill
+    fs: false, // → 빈 모듈
+    crypto: 'crypto-browserify', // → npm 패키지로 polyfill
     stream: 'stream-browserify',
   },
 });
@@ -442,35 +443,72 @@ zntc build entry.ts --platform=browser \
 `alias` 는 esbuild / Vite 호환을 위해 두 형태를 허용한다 — `Record<string, string>` 또는 `Array<{ find: string | RegExp; replacement: string }>`.
 
 ```ts
+import path from 'node:path';
+
 // 1. Object 형태 (esbuild 호환): exact + prefix 매칭. 정해진 specifier 만 치환.
-//    `react` 또는 `react/hooks` → `preact/compat[/hooks]`
+//    패키지 → 패키지 매핑은 지정자 그대로 쓴다 (`react/hooks` → `preact/compat/hooks`).
 defineConfig({
   alias: { react: 'preact/compat' },
+});
+
+// 디렉토리를 가리킬 때는 **절대경로**를 쓴다 (아래 권장 사항 참고).
+defineConfig({
+  alias: { '@': path.resolve('src') },
 });
 
 // 2. Array 형태 (Vite `resolve.alias`): RegExp find 지원. 매칭 순서대로 첫 번째 적용.
 //    `find` 가 string 이면 prefix, RegExp 이면 host runtime 매칭 + `replacement` 치환.
 defineConfig({
   alias: [
-    { find: /^@\/(.*)$/, replacement: './src/$1' },
-    { find: '~components', replacement: './src/components' },
+    { find: /^@\//, replacement: `${path.resolve('src')}/` },
+    { find: '~components', replacement: path.resolve('src/components') },
   ],
 });
 ```
 
-| 형태 | 매칭 | RegExp | `buildSync` | `zntc.config.json` |
-| ---- | ---- | :----: | :---------: | :---------------: |
-| Object (`Record<string, string>`) | exact + prefix | ❌ | ✅ | ✅ |
-| Array (`{ find, replacement }[]`) | string=prefix / RegExp=host runtime | ✅ | ❌ — `build()` 만 | ❌ (JSON 은 RegExp 직렬화 불가) |
+#### 권장 — 디렉토리 alias 의 target 은 절대경로로
 
-Array 형태는 host runtime 의 RegExp 매칭에 위임하므로 sync 경로(`buildSync`)에서는 throw 한다 — async `build()` / `watch()` 만 사용 가능. JSON config 도 RegExp 직렬화가 없으므로 `zntc.config.{ts,js}` 에서만 의미 있음.
+`alias` 의 target 이 디렉토리를 가리킬 때는 **절대경로를 쓴다.** 주요 번들러가 모두 같은
+관례이고, 상대경로의 기준점 차이에서 오는 모호함이 사라진다.
+
+|                                 | 표준 예제                                          |
+| ------------------------------- | -------------------------------------------------- |
+| Vite                            | `fileURLToPath(new URL('./src', import.meta.url))` |
+| webpack                         | `path.resolve(__dirname, 'src')`                   |
+| esbuild                         | `path.resolve(process.cwd(), 'src')`               |
+| Rollup (`@rollup/plugin-alias`) | `path.resolve(dirname, 'src')`                     |
+| **ZNTC**                        | `path.resolve('src')`                              |
+
+번들러 alias 만 맞추면 IDE·타입 검사가 모듈을 못 찾으므로 `tsconfig.json` 도 함께 맞춘다.
+
+```json
+{ "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["src/*"] } } }
+```
+
+| 형태                              | 매칭                                | RegExp |      `buildSync`       |       `zntc.config.json`        |
+| --------------------------------- | ----------------------------------- | :----: | :--------------------: | :-----------------------------: |
+| Object (`Record<string, string>`) | exact + prefix                      |   ❌   |           ✅           |               ✅                |
+| Array (`{ find, replacement }[]`) | string=prefix / RegExp=host runtime |   ✅   | △ — 완전한 파일 경로만 | ❌ (JSON 은 RegExp 직렬화 불가) |
+
+Array 형태는 host runtime 의 RegExp 매칭에 위임한다. `replacement` 가 **디렉토리**를 가리키면
+치환 뒤 확장자·index 해석이 한 번 더 필요한데(`@rollup/plugin-alias` 가 `this.resolve()` 로
+하는 것과 같다), 그 native resolver 는 **async hook 컨텍스트에만 주입**된다. 따라서
+
+- 디렉토리 target → async `build()` / `watch()` 와 CLI 의 `--bundle` 경로에서 동작한다.
+- `replacement` 가 확장자까지 포함한 **완전한 파일 경로**면 `buildSync` / app 빌드에서도 동작한다.
+
+JSON config 는 RegExp 직렬화가 없으므로 Array 형태는 `zntc.config.{ts,js}` 에서만 의미 있다.
+
+> **app 빌드(`zntc build .` / `zntc dev .`)의 `alias`** 는 #4649 에서 배선됐다. 그 전에는
+> `AppBuildOptions` 에 `alias` 필드 자체가 없어 config 의 alias 가 조용히 사라졌다.
+> app 빌드는 sync 파이프라인이라 **Object 형태**(또는 완전한 파일 경로를 쓰는 Array)를 권장한다.
 
 차이 요약:
 
-| 옵션       | 적용 시점          | 매칭         | 실제 패키지 우선? | 빈 모듈 처리             |
-| ---------- | ------------------ | ------------ | ----------------- | ------------------------ |
-| `alias`    | resolve **전 항상**| exact + prefix | ❌ — alias 우선   | ❌ (빈 모듈 → blockList 사용)|
-| `fallback` | resolve **실패 시**| exact only   | ✅ — 실패 시에만  | ✅ (`=false`)             |
+| 옵션       | 적용 시점           | 매칭           | 실제 패키지 우선? | 빈 모듈 처리                  |
+| ---------- | ------------------- | -------------- | ----------------- | ----------------------------- |
+| `alias`    | resolve **전 항상** | exact + prefix | ❌ — alias 우선   | ❌ (빈 모듈 → blockList 사용) |
+| `fallback` | resolve **실패 시** | exact only     | ✅ — 실패 시에만  | ✅ (`=false`)                 |
 
 #### ⚠️ target 이 상대 경로일 때의 기준
 
@@ -522,9 +560,9 @@ producer package 가 자기 src 위치를 선언:
     ".": {
       "source": "./src/index.ts",
       "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    }
-  }
+      "types": "./dist/index.d.ts",
+    },
+  },
 }
 ```
 
@@ -559,14 +597,14 @@ bundler 가 src 를 inline 해도 TS `tsc` 와 IDE 는 producer 의 `dist/*.d.ts
 
 ### 다른 번들러 비교
 
-| 번들러   | 방식                          | 빌드 순서 필요? | stale 위험      |
-| -------- | ----------------------------- | --------------- | --------------- |
-| esbuild  | dist (또는 monorepo 미사용)   | yes             | 있음            |
-| swc/oxc  | turbo + dist                  | yes             | turbo cache 완화|
-| Rollup   | `@rollup/plugin-alias` → src  | no              | 없음            |
-| Vite     | `resolve.alias` → src         | no              | 없음            |
-| Parcel   | `source` exports condition    | no              | 없음            |
-| **ZNTC** | `source` exports condition    | **no**          | **없음**        |
+| 번들러   | 방식                         | 빌드 순서 필요? | stale 위험       |
+| -------- | ---------------------------- | --------------- | ---------------- |
+| esbuild  | dist (또는 monorepo 미사용)  | yes             | 있음             |
+| swc/oxc  | turbo + dist                 | yes             | turbo cache 완화 |
+| Rollup   | `@rollup/plugin-alias` → src | no              | 없음             |
+| Vite     | `resolve.alias` → src        | no              | 없음             |
+| Parcel   | `source` exports condition   | no              | 없음             |
+| **ZNTC** | `source` exports condition   | **no**          | **없음**         |
 
 ## package.json field / exports condition 우선순위
 
@@ -601,6 +639,7 @@ esbuild `--platform=node` 는 `main_fields=main,module` + `conditions=node,requi
 **효과**: fp-ts (2.16.x), lodash-es, effect 등 dual-package 라이브러리에서 ESM (`es6/`, `esm/`) 경로로 진입 → cross-module dead code elimination 이 깊게 들어가 esbuild 대비 번들 크기가 크게 줄어든다.
 
 예) fp-ts `pipe(some(1), map(n => n + 1), getOrElse(() => 0))`:
+
 - esbuild `--platform=node`: `lib/Option.js` (CJS) → 17개 typeclass 모듈 keep → 70KB
 - ZNTC `--platform=node`: `es6/Option.js` (ESM) → 4개 모듈만 keep → 2.4KB
 

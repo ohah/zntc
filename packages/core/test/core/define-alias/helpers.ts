@@ -6,6 +6,7 @@ export {
   buildSync,
   mkdtempSync,
   writeFileSync,
+  mkdirSync,
   rmSync,
   join,
   tmpdir,
