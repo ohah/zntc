@@ -1281,9 +1281,10 @@ test "preamble: CJS module import — namespace import generates __toESM without
     try std.testing.expect(std.mem.indexOf(u8, preamble, ".default") == null);
 }
 
-test "preamble: unresolved import generates require()" {
-    // external/unresolved import는 require("specifier") 형태 preamble 생성
-    // 존재하지 않는 상대 경로를 사용하여 resolve 실패를 유도
+test "preamble: ESM 에서 unresolved import 는 require() 를 만들지 않는다" {
+    // 해석 못 한 지정자는 external 로 취급되고, ESM 출력에서는 chunk 상단의 `import`
+    // 구문이 바인딩을 제공한다 — 모듈 preamble 에 `require(` 를 두면 ESM 스코프에
+    // 존재하지 않는 함수를 부르는 코드가 되어 `require is not defined` 로 죽는다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import { readFile } from './nonexistent';\nconsole.log(readFile);");
@@ -1296,12 +1297,21 @@ test "preamble: unresolved import generates require()" {
     var md = try buildMetadataForModule(&r, 0, true);
     defer md.deinit();
 
-    try std.testing.expect(md.cjs_import_preamble != null);
-    const preamble = md.cjs_import_preamble.?;
-    // require("./nonexistent") 형태
-    try std.testing.expect(std.mem.indexOf(u8, preamble, "require(") != null);
-    // named import이므로 .readFile 접근
-    try std.testing.expect(std.mem.indexOf(u8, preamble, ".readFile") != null);
+    // preamble 이 아예 없거나(흔함), 있더라도 이 지정자에 대한 require 가 없어야 한다.
+    if (md.cjs_import_preamble) |preamble| {
+        try std.testing.expect(std.mem.indexOf(u8, preamble, "require(\"./nonexistent\")") == null);
+    }
+
+    // 해석 실패 record 는 external 로 표시돼 external import 방출 경로를 탄다.
+    const m = r.linker.graph.getModule(ModuleIndex.fromUsize(0)).?;
+    var saw_external = false;
+    for (m.import_records) |rec| {
+        if (std.mem.indexOf(u8, rec.specifier, "nonexistent") == null) continue;
+        try std.testing.expect(rec.resolve_failed);
+        try std.testing.expect(rec.is_external);
+        saw_external = true;
+    }
+    try std.testing.expect(saw_external);
 }
 
 test "preamble: dev mode — named import uses namespace access pattern" {
