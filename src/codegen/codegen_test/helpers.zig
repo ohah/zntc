@@ -227,6 +227,43 @@ pub fn e2eWithOptions(allocator: std.mem.Allocator, source: []const u8, cg_optio
     return e2eFull(allocator, source, .{}, cg_options, ".ts");
 }
 
+/// `e2eWithOptions` 와 같지만 **scanner 가 모은 주석을 codegen 에 넘긴다.**
+///
+/// ⚠️ `e2eFull` 은 `cg.comments` 를 채우지 않는다 — 주석 관련 테스트를 그쪽으로 쓰면
+/// codegen 이 주석을 아예 못 봐서, 버그 조건을 만들지 못한 채 통과한다(false pass).
+pub fn e2eWithComments(
+    backing_allocator: std.mem.Allocator,
+    source: []const u8,
+    cg_options: CodegenOptions,
+    ext: []const u8,
+) !TestResult {
+    var arena = std.heap.ArenaAllocator.init(backing_allocator);
+    errdefer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(ext);
+    _ = try parser.parse();
+    if (parser.hasErrors()) {
+        std.debug.print("\nparser error in e2eWithComments: {s}\n  source: {s}\n", .{ parser.errors.items[0].message, source });
+        return error.ParserDiagnosticsPresent;
+    }
+
+    var t = try Transformer.init(allocator, &parser.ast, .{});
+    t.line_offsets = scanner.line_offsets.items;
+    const root = try t.transform();
+
+    var cg = Codegen.initWithOptions(allocator, t.ast, cg_options);
+    cg.comments = scanner.comments.items;
+    const output = try cg.generate(root);
+
+    // e2eFull 과 같은 재파싱 게이트 — 주석 때문에 뒤가 먹힌 출력은 여기서 걸린다.
+    try expectReparses(allocator, output, ext, source);
+
+    return .{ .output = output, .arena = arena };
+}
+
 // --- ES downlevel helpers ---
 
 pub fn e2eTarget(allocator: std.mem.Allocator, source: []const u8, target: TransformOptions.compat.ESTarget) !TestResult {

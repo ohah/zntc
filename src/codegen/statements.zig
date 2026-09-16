@@ -16,6 +16,25 @@ const writeIndent = writer.writeIndent;
 const writeSpace = writer.writeSpace;
 const trimTrailingSemicolonBeforeMinifyBoundary = writer.trimTrailingSemicolonBeforeMinifyBoundary;
 
+/// 주석 원문이 줄 주석(`//`)인지.
+fn isLineComment(src: []const u8) bool {
+    return src.len >= 2 and src[0] == '/' and src[1] == '/';
+}
+
+/// 주석 하나를 방출하고 뒤처리. **줄 주석 뒤에는 minify 여부와 무관하게 실제 개행을
+/// 쓴다** — `writeNewline` 은 minify 에서 no-op 이라, 그대로 두면 `//` 뒤의 코드가
+/// 전부 주석에 먹혀 번들이 깨진다 (`// @license` 같은 legal 주석은 minify 에서도
+/// 살아남으므로 실제로 발생한다).
+fn writeCommentAndTerminator(self: anytype, src: []const u8) !void {
+    try self.write(src);
+    if (self.options.minify_whitespace and isLineComment(src)) {
+        try self.write(self.options.newline);
+        return;
+    }
+    try writeNewline(self);
+    try writeIndent(self);
+}
+
 /// 주석 출력. pos가 null이면 남은 모든 주석 출력 (trailing).
 /// minify 모드에서는 legal comment (@license, @preserve, /*!)만 보존 (D022).
 pub fn emitComments(self: anytype, pos: ?u32) !void {
@@ -30,10 +49,8 @@ pub fn emitComments(self: anytype, pos: ?u32) !void {
             continue;
         }
         // 주석은 lexer가 직접 수집한 원문 span — 합성 노드 아님 (#1407 safe).
-        try self.write(self.ast.source[comment.start..comment.end]);
-        try writeNewline(self);
         // writeNewline 이 indent 를 먹으므로 후속 content 위해 복원 (#1508).
-        try writeIndent(self);
+        try writeCommentAndTerminator(self, self.ast.source[comment.start..comment.end]);
         self.next_comment_idx += 1;
     }
 }
@@ -381,6 +398,16 @@ pub fn emitBracedList(self: anytype, node: Node) !void {
             }
             try self.emitNode(idx);
         }
+        // 마지막 statement 뒤, `}` 앞에 남은 주석 (#4468 의 비어-있지-않은 블록 짝).
+        // 주석은 statement 앞에서 flush 되므로 마지막 statement 뒤의 주석은 flush
+        // 지점이 없어 프로그램 끝까지 밀려 나간다 — 함수 본문 안에 쓴 주석이 함수
+        // *밖* 으로 나가는 게 그 증상이다. swc·babel·oxc 는 전부 제자리에 둔다.
+        if (blockHasPendingCommentBefore(self, node.span.end)) {
+            try writeNewline(self);
+            try writeIndent(self);
+            try emitComments(self, node.span.end);
+            trimTrailingBlankForBlockClose(self);
+        }
         self.indent_level -= 1;
     } else if (blockHasPendingCommentBefore(self, node.span.end)) {
         // 빈 블록 안의 주석 (#4468).
@@ -530,16 +557,76 @@ fn operandStartsIdentifierLikeDepth(self: anytype, idx: ast_mod.NodeIndex, depth
 /// newline + indent 와 함께 출력 → `return` 은 ASI 로 끝나 undefined 반환(silent),
 /// `throw` 는 `Illegal newline after throw`. 안쪽 노드 위치로 flush 하면 바깥 주석까지
 /// 함께 소비된다(위치가 더 뒤이므로).
-fn emitNoLineTerminatorOperand(self: anytype, operand: NodeIndex, level: Level) !void {
+/// 출력에서 **가장 먼저 나오는 토큰**의 소스 위치.
+///
+/// `skipWrappers` 는 paren/chain/type-wrapper 만 벗기므로 `return ( /* c */ x ).y` 처럼
+/// 괄호가 **멤버 접근의 대상**이면 span 시작이 `(` 가 되어 그 안쪽 주석을 못 본다. 그러면
+/// 주석이 나중에 개행과 함께 나가 `return` 이 ASI 로 끝난다(조용히 undefined 반환).
+/// `operandStartsIdentifierLikeDepth` 와 **같은 하강**을 쓴다 — 두 술어가 어긋나면
+/// "출력 시작 토큰" 의 정의가 갈린다.
+fn leftmostTokenStartDepth(self: anytype, idx: NodeIndex, depth: u32) ?u32 {
+    if (depth > 32 or idx.isNone()) return null;
+    if (@intFromEnum(idx) >= self.ast.nodes.items.len) return null;
+    const n = self.ast.getNode(idx);
+    if (ast_mod.Node.Tag.isTransparentTypeWrapper(n.tag)) {
+        return leftmostTokenStartDepth(self, n.data.unary.operand, depth + 1);
+    }
+    const child: ?NodeIndex = switch (n.tag) {
+        .parenthesized_expression, .chain_expression => n.data.unary.operand,
+        .binary_expression, .logical_expression, .assignment_expression => n.data.binary.left,
+        .conditional_expression => n.data.ternary.a,
+        .static_member_expression,
+        .computed_member_expression,
+        .private_field_expression,
+        .call_expression,
+        => blk: {
+            const ex = n.data.extra;
+            if (ex >= self.ast.extra_data.items.len) break :blk null;
+            break :blk @as(NodeIndex, @enumFromInt(self.ast.extra_data.items[ex]));
+        },
+        .sequence_expression => blk: {
+            const list = n.data.list;
+            if (list.len == 0) break :blk null;
+            break :blk @as(NodeIndex, @enumFromInt(self.ast.extra_data.items[list.start]));
+        },
+        else => null,
+    };
+    if (child) |c| {
+        if (leftmostTokenStartDepth(self, c, depth + 1)) |p| return p;
+    }
+    const has_real_span = n.span.start != n.span.end and
+        (n.span.start & ast_mod.Ast.STRING_TABLE_BIT) == 0;
+    return if (has_real_span) n.span.start else null;
+}
+
+pub fn emitNoLineTerminatorOperand(self: anytype, operand: NodeIndex, level: Level) !void {
     if (operand.isNone()) return;
-    const first_token_node = call_emit.skipWrappers(self, operand, true);
-    if (!first_token_node.isNone()) {
-        const n = self.ast.getNode(first_token_node);
-        const has_real_span = n.span.start != n.span.end and
-            (n.span.start & ast_mod.Ast.STRING_TABLE_BIT) == 0;
-        if (has_real_span) try emitLeadingCommentsInline(self, n.span.start);
+    if (leftmostTokenStartDepth(self, operand, 0)) |leftmost_start| {
+        // 줄 주석은 인라인으로 붙일 수 없다 — 뒤가 전부 주석에 먹힌다. 괄호로 감싸면
+        // 줄바꿈이 안전해져 주석도 살고 ASI 도 안 끊긴다 (swc / babel 과 동형).
+        if (hasPendingLineComment(self, leftmost_start)) {
+            try self.writeByte('(');
+            try emitComments(self, leftmost_start);
+            try self.emitExpr(operand, .lowest, .{});
+            try self.writeByte(')');
+            return;
+        }
+        try emitLeadingCommentsInline(self, leftmost_start);
     }
     try self.emitExpr(operand, level, .{});
+}
+
+/// `pos` 까지의 미소비 leading 주석 중 줄 주석(`//`)이 있는지.
+fn hasPendingLineComment(self: anytype, pos: u32) bool {
+    var i = self.next_comment_idx;
+    while (i < self.comments.len) : (i += 1) {
+        const c = self.comments[i];
+        if (c.start > pos) break;
+        if (self.options.minify_whitespace and !c.is_legal) continue;
+        const src = self.ast.source[c.start..c.end];
+        if (src.len >= 2 and src[0] == '/' and src[1] == '/') return true;
+    }
+    return false;
 }
 
 /// `emitNoLineTerminatorOperand` 의 leading-comment 소비 — `emitComments` 와
@@ -552,8 +639,11 @@ fn emitLeadingCommentsInline(self: anytype, pos: u32) !void {
             self.next_comment_idx += 1;
             continue;
         }
-        try self.write(self.ast.source[comment.start..comment.end]);
-        try self.writeByte(' ');
+        const src = self.ast.source[comment.start..comment.end];
+        try self.write(src);
+        // 줄 주석이 여기까지 오면 뒤가 전부 먹힌다 — 호출부가 괄호 경로로 보내므로
+        // 정상 흐름에선 도달하지 않지만, 도달하면 개행으로 끊어 깨진 출력을 막는다.
+        if (isLineComment(src)) try self.write(self.options.newline) else try self.writeByte(' ');
         self.next_comment_idx += 1;
     }
 }
