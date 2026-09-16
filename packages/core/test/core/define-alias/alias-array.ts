@@ -130,6 +130,60 @@ describe('@zntc/core define/alias > alias array', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  // #4649 적대 검증에서 나온 축 — buildSync 도 디렉토리 target 을 해석해야 한다.
+  // 예전엔 `NapiSyncPlugin` 이 hook 컨텍스트를 안 넘겨 `this.resolve` 가 없었고,
+  // 확장자 없는 경로에서 `No loader is configured` 로 죽었다.
+  test('alias array: buildSync + 디렉토리 target', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-alias-array-syncdir-'));
+    mkdirSync(join(dir, 'src', 'lib'), { recursive: true });
+    writeFileSync(join(dir, 'src', 'lib', 'value.ts'), 'export const v = "ALIAS_SYNC_DIR";');
+    writeFileSync(join(dir, 'index.ts'), 'import { v } from "@/lib/value";\nconsole.log(v);');
+
+    const result = buildSync({
+      entryPoints: [join(dir, 'index.ts')],
+      alias: [{ find: '@', replacement: join(dir, 'src') }],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain('ALIAS_SYNC_DIR');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('alias array: 매칭 순서 — 첫 번째 항목이 이긴다', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-alias-array-order-'));
+    mkdirSync(join(dir, 'a'), { recursive: true });
+    mkdirSync(join(dir, 'b'), { recursive: true });
+    writeFileSync(join(dir, 'a', 'v.ts'), 'export const v = "ALIAS_ORDER_FIRST";');
+    writeFileSync(join(dir, 'b', 'v.ts'), 'export const v = "ALIAS_ORDER_SECOND";');
+    writeFileSync(join(dir, 'index.ts'), 'import { v } from "@/v";\nconsole.log(v);');
+
+    const result = await build({
+      entryPoints: [join(dir, 'index.ts')],
+      alias: [
+        { find: '@', replacement: join(dir, 'a') },
+        { find: '@', replacement: join(dir, 'b') },
+      ],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain('ALIAS_ORDER_FIRST');
+    expect(result.outputFiles[0].text).not.toContain('ALIAS_ORDER_SECOND');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('alias array: 매칭 안 되면 통과시킨다 (anti-regression)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-alias-array-pass-'));
+    mkdirSync(join(dir, 'lib'), { recursive: true });
+    writeFileSync(join(dir, 'lib', 'v.ts'), 'export const v = "ALIAS_PASSTHROUGH";');
+    writeFileSync(join(dir, 'index.ts'), 'import { v } from "./lib/v";\nconsole.log(v);');
+
+    const result = await build({
+      entryPoints: [join(dir, 'index.ts')],
+      alias: [{ find: '@', replacement: join(dir, 'nowhere') }],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain('ALIAS_PASSTHROUGH');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   test('alias array: buildSync 에서 sync dispatcher로 동작', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-alias-array-sync-'));
     writeFileSync(join(dir, 'index.ts'), 'import { msg } from "@/aliased";\nconsole.log(msg);');

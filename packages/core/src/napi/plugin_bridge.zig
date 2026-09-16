@@ -980,9 +980,8 @@ pub const NapiSyncPlugin = struct {
         resolve_cache: ?*anyopaque,
         emit_store: ?*anyopaque,
     ) ?NapiPlugin.PluginResponse {
-        // buildSync 는 this.getModuleInfo/this.resolve/this.emitFile 미지원 — async build() 만 PR3/4/5 지원.
+        // buildSync 는 this.getModuleInfo/this.emitFile 미지원 — async build() 만 PR3/5 지원.
         _ = current_module;
-        _ = resolve_cache;
         _ = emit_store;
         var js_callback: c.napi_value = undefined;
         if (c.napi_get_reference_value(self.env, self.callback_ref, &js_callback) != c.napi_ok) {
@@ -1016,11 +1015,24 @@ pub const NapiSyncPlugin = struct {
             _ = c.napi_get_null(self.env, &js_arg2);
         }
 
-        var js_result: c.napi_value = undefined;
-        const args = [_]c.napi_value{ hook_str, js_arg1, js_arg2 };
         var js_undefined: c.napi_value = undefined;
         _ = c.napi_get_undefined(self.env, &js_undefined);
-        if (c.napi_call_function(self.env, js_undefined, js_callback, 3, &args, &js_result) != c.napi_ok) {
+
+        // this.resolve (#4649): sync 경로에도 native resolver 를 넘긴다. 배열형 alias 는
+        // onResolve plugin 으로 구현돼 있고, 치환 결과를 한 번 더 해석해야 디렉토리 target
+        // (`{'@': '<abs>/src'}`) 에 확장자·index 가 붙는다. 없으면 `<abs>/src/lib/value` 에서
+        // 멈춰 "No loader is configured" 로 죽는다. async 경로(`callHookFull`)와 같은 형태 —
+        // 4번째(getModuleInfo)는 미지원이라 undefined 를 채우고 5번째에 resolve 를 둔다.
+        var js_resolve: c.napi_value = js_undefined;
+        var argc: usize = 3;
+        if (resolve_cache) |rc| {
+            _ = c.napi_create_function(self.env, "resolve", "resolve".len, NapiPlugin.resolveIdCallback, rc, &js_resolve);
+            argc = 5;
+        }
+
+        var js_result: c.napi_value = undefined;
+        const args = [_]c.napi_value{ hook_str, js_arg1, js_arg2, js_undefined, js_resolve };
+        if (c.napi_call_function(self.env, js_undefined, js_callback, argc, &args, &js_result) != c.napi_ok) {
             clearPendingException(self.env);
             return makeFailure(self.name, hook_name, "Plugin hook failed", arg2);
         }

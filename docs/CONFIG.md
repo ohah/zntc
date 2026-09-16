@@ -485,23 +485,20 @@ defineConfig({
 { "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["src/*"] } } }
 ```
 
-| 형태                              | 매칭                                | RegExp |      `buildSync`       |       `zntc.config.json`        |
-| --------------------------------- | ----------------------------------- | :----: | :--------------------: | :-----------------------------: |
-| Object (`Record<string, string>`) | exact + prefix                      |   ❌   |           ✅           |               ✅                |
-| Array (`{ find, replacement }[]`) | string=prefix / RegExp=host runtime |   ✅   | △ — 완전한 파일 경로만 | ❌ (JSON 은 RegExp 직렬화 불가) |
+| 형태                              | 매칭                                | RegExp | `buildSync` |       `zntc.config.json`        |
+| --------------------------------- | ----------------------------------- | :----: | :---------: | :-----------------------------: |
+| Object (`Record<string, string>`) | exact + prefix                      |   ❌   |     ✅      |               ✅                |
+| Array (`{ find, replacement }[]`) | string=prefix / RegExp=host runtime |   ✅   |     ✅      | ❌ (JSON 은 RegExp 직렬화 불가) |
 
 Array 형태는 host runtime 의 RegExp 매칭에 위임한다. `replacement` 가 **디렉토리**를 가리키면
 치환 뒤 확장자·index 해석이 한 번 더 필요한데(`@rollup/plugin-alias` 가 `this.resolve()` 로
-하는 것과 같다), 그 native resolver 는 **async hook 컨텍스트에만 주입**된다. 따라서
-
-- 디렉토리 target → async `build()` / `watch()` 와 CLI 의 `--bundle` 경로에서 동작한다.
-- `replacement` 가 확장자까지 포함한 **완전한 파일 경로**면 `buildSync` / app 빌드에서도 동작한다.
+하는 것과 같다), #4649 에서 sync 경로에도 그 native resolver 를 주입해 `build()` · `buildSync()` ·
+app 빌드(`zntc build .` / `zntc dev .`) 모두에서 동작한다.
 
 JSON config 는 RegExp 직렬화가 없으므로 Array 형태는 `zntc.config.{ts,js}` 에서만 의미 있다.
 
-> **app 빌드(`zntc build .` / `zntc dev .`)의 `alias`** 는 #4649 에서 배선됐다. 그 전에는
-> `AppBuildOptions` 에 `alias` 필드 자체가 없어 config 의 alias 가 조용히 사라졌다.
-> app 빌드는 sync 파이프라인이라 **Object 형태**(또는 완전한 파일 경로를 쓰는 Array)를 권장한다.
+> **app 빌드의 `alias`** 는 #4649 에서 배선됐다. 그 전에는 `AppBuildOptions` 에 `alias` 필드
+> 자체가 없어 config 의 alias 가 조용히 사라졌다.
 
 차이 요약:
 
