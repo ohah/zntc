@@ -456,8 +456,9 @@ pub fn emitYield(self: anytype, node: Node, level: Level, flags: ExprFlags) !voi
     if (node.data.unary.flags & 1 != 0) try self.writeByte('*');
     if (!node.data.unary.operand.isNone()) {
         try self.writeByte(' ');
+        // `yield [no LineTerminator] expr` — return/throw 와 같은 제한이라 같은 헬퍼를 탄다.
         // value level = .yield (esbuild EYield value = LYield)
-        try self.emitExpr(node.data.unary.operand, .yield, .{});
+        try @import("statements.zig").emitNoLineTerminatorOperand(self, node.data.unary.operand, .yield);
     }
 }
 

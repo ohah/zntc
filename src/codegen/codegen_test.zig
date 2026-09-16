@@ -29,5 +29,6 @@ comptime {
     _ = @import("codegen_test/import_attributes.zig");
     _ = @import("codegen_test/class_expr_anonymize.zig");
     _ = @import("codegen_test/load_bearing_paren.zig");
+    _ = @import("codegen_test/line_comment_asi.zig");
     _ = @import("codegen_test/new_callee_chain.zig");
 }
