@@ -149,6 +149,22 @@ pub fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c
     }
     defer if (define_entries.len > 0) native_alloc.free(define_entries);
 
+    // #4649 — app 파이프라인도 `alias` 를 받는다. `define` 과 같은 key-value 형태.
+    // 예전엔 여기서 안 읽어 config 의 alias 가 native 까지 도달하지 못했다.
+    const alias_pairs = getObjectKeyValuePairs(env, opts_obj, "alias", native_alloc);
+    var alias_entries: []const bundler_mod.types.AliasEntry = &.{};
+    if (alias_pairs) |pairs| {
+        const items = native_alloc.alloc(bundler_mod.types.AliasEntry, pairs.len) catch return throwError(env, "OutOfMemory");
+        for (pairs, 0..) |pair, i| {
+            owned_strings.append(native_alloc, pair[0]) catch return throwError(env, "OutOfMemory");
+            owned_strings.append(native_alloc, pair[1]) catch return throwError(env, "OutOfMemory");
+            items[i] = .{ .from = pair[0], .to = pair[1] };
+        }
+        native_alloc.free(pairs);
+        alias_entries = items;
+    }
+    defer if (alias_entries.len > 0) native_alloc.free(alias_entries);
+
     const emotion_extra_css = getObjectStringArray(env, opts_obj, "emotionExtraCssSources", native_alloc);
     if (emotion_extra_css) |arr| {
         for (arr) |s| owned_strings.append(native_alloc, s) catch return throwError(env, "OutOfMemory");
@@ -223,6 +239,7 @@ pub fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c
         .env_dir = env_dir,
         .env_prefixes = env_prefixes orelse &.{ "VITE_", "ZNTC_" },
         .define = define_entries,
+        .alias = alias_entries,
         .minify = getObjectBool(env, opts_obj, "minify", false),
         .sourcemap = getObjectBool(env, opts_obj, "sourcemap", false),
         .splitting = getObjectBool(env, opts_obj, "splitting", true),

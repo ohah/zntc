@@ -862,6 +862,10 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
       envDir: opts.envDir ? resolve(opts.envDir) : (pipelineRoot ?? root),
       envPrefixes: opts.envPrefixes,
       define: Object.keys(opts.define).length > 0 ? opts.define : undefined,
+      // #4649 — app 파이프라인이 config 의 alias 를 resolver 로 전달하지 않았다.
+      // `buildAppSync` 는 나머지 옵션을 그대로 native 로 흘리므로, 여기서 빠지면
+      // alias 가 조용히 사라진다.
+      alias: opts.alias && Object.keys(opts.alias).length > 0 ? opts.alias : undefined,
       minify: opts.minify || opts.minifyWhitespace || opts.minifyIdentifiers || opts.minifySyntax,
       sourcemap: opts.sourcemap,
       splitting: opts.splitting || undefined,
@@ -1545,9 +1549,19 @@ function mergeConfigIntoOpts(opts, config) {
   }
 
   for (const key of ['define', 'alias', 'externalAlias', 'loader', 'globals', 'fallback']) {
-    if (config[key] && typeof config[key] === 'object') {
-      opts[key] = { ...config[key], ...opts[key] };
+    if (!config[key] || typeof config[key] !== 'object') continue;
+    // `alias` 는 객체형(`Record<string,string>`) 외에 배열형(`Array<{find,replacement}>`,
+    // Vite `resolve.alias`)도 받는다. 배열에 객체 스프레드를 하면 `{"0":{...}}` 같은 숫자
+    // 키 객체가 되어 형태 자체가 깨진다 — 키 단위 머지는 객체형에만 의미가 있다.
+    // 배열형은 순서가 곧 우선순위라 부분 머지 개념이 없으므로, CLI flag 가 없으면 config
+    // 값을 그대로 쓰고 있으면 CLI 를 그대로 쓴다.
+    if (Array.isArray(config[key])) {
+      const cliHasEntries =
+        opts[key] && typeof opts[key] === 'object' && Object.keys(opts[key]).length > 0;
+      if (!cliHasEntries) opts[key] = [...config[key]];
+      continue;
     }
+    opts[key] = { ...config[key], ...opts[key] };
   }
   mergeServerConfigIntoOpts(opts, config);
 
@@ -1741,8 +1755,13 @@ async function buildBundleOptions(opts, config, { filterCallerPreWarmCss = false
 
 async function runBundle(opts, config) {
   const buildOpts = await buildBundleOptions(opts, config);
-  const hasPlugins = Array.isArray(buildOpts.plugins) && buildOpts.plugins.length > 0;
-  const result = hasPlugins ? await build(buildOpts) : buildSync(buildOpts);
+  // 배열형 alias 는 onResolve plugin 으로 구현돼 있고, 치환 결과를 native resolver 로 다시
+  // 해석해야 확장자·index 가 붙는다. 그 `this.resolve` 는 **async build() 에서만** 주입되므로
+  // (`NapiSyncPlugin.callHookFull` 의 의도된 제약) 배열 alias 가 있으면 async 경로로 보낸다.
+  const needsAsync =
+    (Array.isArray(buildOpts.plugins) && buildOpts.plugins.length > 0) ||
+    Array.isArray(buildOpts.alias);
+  const result = needsAsync ? await build(buildOpts) : buildSync(buildOpts);
 
   printResultDiagnostics(result, opts.logLevel);
 

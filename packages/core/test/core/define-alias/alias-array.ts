@@ -6,6 +6,7 @@ import {
   buildSync,
   mkdtempSync,
   writeFileSync,
+  mkdirSync,
   rmSync,
   join,
   tmpdir,
@@ -78,6 +79,54 @@ describe('@zntc/core define/alias > alias array', () => {
     expect(result.errors.length).toBe(0);
     expect(result.outputFiles[0].text).toContain('ALIAS_GFLAG_A');
     expect(result.outputFiles[0].text).toContain('ALIAS_GFLAG_B');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // #4649 — 기존 테스트는 replacement 에 확장자까지 넣어서 확장자 해석이 필요 없었다.
+  // 실사용은 디렉토리를 가리키므로(`{'@': path.resolve('src')}`) 치환 뒤 한 번 더 해석해야
+  // 한다. 그게 빠져 있어 `No loader is configured` 로 죽었다.
+  test('alias array: 디렉토리 target — 치환 후 확장자 해석까지 이어진다', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-alias-array-dir-'));
+    mkdirSync(join(dir, 'src', 'lib'), { recursive: true });
+    writeFileSync(join(dir, 'src', 'lib', 'value.ts'), 'export const v = "ALIAS_DIR_TARGET";');
+    writeFileSync(join(dir, 'index.ts'), 'import { v } from "@/lib/value";\nconsole.log(v);');
+
+    const result = await build({
+      entryPoints: [join(dir, 'index.ts')],
+      alias: [{ find: '@', replacement: join(dir, 'src') }],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain('ALIAS_DIR_TARGET');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('alias array: RegExp + 디렉토리 target', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-alias-array-dir-re-'));
+    mkdirSync(join(dir, 'src', 'lib'), { recursive: true });
+    writeFileSync(join(dir, 'src', 'lib', 'value.ts'), 'export const v = "ALIAS_DIR_REGEX";');
+    writeFileSync(join(dir, 'index.ts'), 'import { v } from "@/lib/value";\nconsole.log(v);');
+
+    const result = await build({
+      entryPoints: [join(dir, 'index.ts')],
+      alias: [{ find: /^@\//, replacement: `${join(dir, 'src')}/` }],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain('ALIAS_DIR_REGEX');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('alias array: 디렉토리 index 도 해석된다', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-alias-array-index-'));
+    mkdirSync(join(dir, 'src', 'lib'), { recursive: true });
+    writeFileSync(join(dir, 'src', 'lib', 'index.ts'), 'export const v = "ALIAS_DIR_INDEX";');
+    writeFileSync(join(dir, 'index.ts'), 'import { v } from "@/lib";\nconsole.log(v);');
+
+    const result = await build({
+      entryPoints: [join(dir, 'index.ts')],
+      alias: [{ find: '@', replacement: join(dir, 'src') }],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain('ALIAS_DIR_INDEX');
     rmSync(dir, { recursive: true, force: true });
   });
 

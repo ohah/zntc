@@ -1779,6 +1779,14 @@ export interface AppBuildOptions {
   envPrefixes?: string[];
   /** Additional compile-time defines merged into the underlying bundle build. */
   define?: Record<string, string>;
+  /**
+   * Import path aliases for the underlying bundle build (`BuildOptions.alias` 와 같은 의미).
+   *
+   * ⚠️ app 빌드는 **Object 형태만** 지원한다. Array 형태(`[{ find, replacement }]`)는 치환
+   * 결과를 native resolver 로 다시 해석해야 하는데 그 `this.resolve` 는 async `build()`
+   * 에서만 주입되고, app 파이프라인은 `buildAppSync` 뿐이다.
+   */
+  alias?: Record<string, string>;
   /** Minify emitted JavaScript and CSS when supported by the underlying builder. */
   minify?: boolean;
   /** Emit sourcemaps for bundled application assets. */
@@ -2044,7 +2052,15 @@ type PluginDispatcher = ((
   getFileName?: NativeGetFileNameFn,
 ) => Promise<unknown>) &
   PluginDispatcherLifecycle;
-type SyncPluginDispatcher = ((hookName: string, arg1: unknown, arg2: string | null) => unknown) &
+type SyncPluginDispatcher = ((
+  hookName: string,
+  arg1: unknown,
+  arg2: string | null,
+  getModuleInfo?: (id: string) => ManualChunksModuleInfo | null,
+  resolve?: NativeResolveFn,
+  emitFile?: NativeEmitFileFn,
+  getFileName?: NativeGetFileNameFn,
+) => unknown) &
   PluginDispatcherLifecycle;
 
 type PluginRegistry = {
@@ -2575,8 +2591,22 @@ function createPluginDispatcher(plugins: ZntcPlugin[]): PluginDispatcher {
  */
 function createSyncPluginDispatcher(plugins: ZntcPlugin[]): SyncPluginDispatcher {
   const reg = collectPluginRegistry(plugins);
-  const dispatcher = function dispatcher(hookName: string, arg1: unknown, arg2: string | null) {
-    return driveDispatchSync(dispatchHook(reg, hookName, arg1, arg2));
+  // native 는 hook 호출 시 getModuleInfo / resolve / emitFile / getFileName 을 4~7번째
+  // 인자로 넘긴다 (plugin_bridge.zig 의 callHookFull). 예전엔 sync dispatcher 가 이 넷을
+  // 받지도 전달하지도 않아, buildSync 경로의 plugin 은 `this.resolve()` 가 없었다 —
+  // 배열형 alias 가 치환 결과를 다시 해석하지 못해 확장자 없는 경로에서 멈췄다.
+  const dispatcher = function dispatcher(
+    hookName: string,
+    arg1: unknown,
+    arg2: string | null,
+    getModuleInfo?: (id: string) => ManualChunksModuleInfo | null,
+    resolve?: NativeResolveFn,
+    emitFile?: NativeEmitFileFn,
+    getFileName?: NativeGetFileNameFn,
+  ) {
+    return driveDispatchSync(
+      dispatchHook(reg, hookName, arg1, arg2, getModuleInfo, resolve, emitFile, getFileName),
+    );
   } as SyncPluginDispatcher;
   dispatcher.takeLifecycleFailures = () => reg.lifecycleFailures.splice(0);
   dispatcher.takePluginWarnings = () => reg.pluginWarnings.splice(0);
@@ -2603,17 +2633,37 @@ function arrayAliasToPlugin(
   return {
     name: 'zntc:array-alias',
     setup(build) {
-      build.onResolve({ filter: /.*/ }, (args) => {
+      build.onResolve({ filter: /.*/ }, function (this: unknown, args) {
         for (const { find, replacement } of aliasArray) {
+          let rewritten: string | null = null;
           if (find instanceof RegExp) {
             // `String.search` 는 RegExp.test 와 달리 `g`/`y` flag 의 lastIndex 를
             // mutate 하지 않는다 — 같은 alias entry 가 여러 import 에 반복 적용돼도 안전.
-            if (args.path.search(find) !== -1) {
-              return { path: args.path.replace(find, replacement) };
-            }
+            if (args.path.search(find) !== -1) rewritten = args.path.replace(find, replacement);
           } else if (args.path === find || args.path.startsWith(find + '/')) {
-            return { path: args.path.replace(find, replacement) };
+            rewritten = args.path.replace(find, replacement);
           }
+          if (rewritten === null) continue;
+
+          // ⚠️ 치환 결과는 **아직 지정자다** — 확장자도 index 도 안 붙었다.
+          // `{ path }` 를 그대로 돌려주면 native 가 "해석 완료된 최종 경로" 로 받아들여
+          // `@/lib/value` → `<src>/lib/value` 에서 멈춘다 (확장자가 없으니
+          // "No loader is configured for this file type"). object 형 alias 는 native
+          // 안에서 치환 후 일반 해석을 이어가므로 이 문제가 없었다.
+          //
+          // native 해석기를 한 번 더 태운다 — `@rollup/plugin-alias` 가 `this.resolve()`
+          // 로 하는 것과 같은 패턴이다. hook 컨텍스트에 주입되는 `__resolve` 는 순수 path
+          // resolution 이라 plugin resolveId 를 다시 타지 않는다 (무한 재귀 없음).
+          const nativeResolve = (this as { __resolve?: NativeResolveFn } | undefined)?.__resolve;
+          if (typeof nativeResolve === 'function') {
+            const resolved = nativeResolve(rewritten, args.importer ?? null);
+            if (resolved?.id) return { path: resolved.id, external: resolved.external };
+          }
+          // 주입이 없는 경로(`buildSync` / app 빌드 — `NapiSyncPlugin` 이 hook 컨텍스트를
+          // 넘기지 않는 의도된 제약) 에서는 치환만 적용한다. `replacement` 가 확장자까지
+          // 포함한 완전한 경로면 이대로 맞고, 디렉토리를 가리키면 확장자 해석이 필요해
+          // 실패한다 — 그래서 디렉토리 alias 는 절대경로 + async 경로를 권장한다.
+          return { path: rewritten };
         }
         return null;
       });
@@ -3121,6 +3171,7 @@ async function buildMultiFormat(options: BuildOptions): Promise<BuildResult> {
 
 export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
   const n = ensureNative();
+
   // plugins 는 JS-only — napi 로 spread 시 closure marshalling 비용/타입 mismatch
   // 잠재. 명시 strip (prepareNapiOptions 와 동일 정책).
   const { publicDir, compiler, plugins: _plugins, ...rest } = options;
