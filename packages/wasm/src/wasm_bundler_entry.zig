@@ -290,6 +290,26 @@ fn captureDiagnostic(result: *const BundleResult) void {
     }
 }
 
+/// publish 를 막을 만큼 치명적인 진단인지.
+///
+/// `unresolved_import` 는 **제외한다.** VFS/플레이그라운드에서 `react` 같은 bare import 는
+/// 애초에 VFS 밖에 있는 게 정상이고 (jsx:automatic 이 런타임 import 를 주입하면 항상 발생),
+/// 참조 번들러 3사 중 2사가 이 경우 출력을 낸다 — rolldown 은 external 로 취급해 warning,
+/// rspack 은 error 를 내면서도 emit. 출력을 막는 건 esbuild 뿐이다. 진단 자체는 그대로
+/// `last_error_message_get` 으로 나가므로 호출부는 여전히 실패를 감지할 수 있다.
+///
+/// 나머지(export 충돌/모호/누락)는 번들이 내부적으로 앞뒤가 안 맞는 상태라 부분 출력이
+/// 위험하므로 계속 막는다.
+fn hasPublishBlockingError(result: *const BundleResult) bool {
+    const diags = result.diagnostics orelse return false;
+    for (diags) |d| {
+        if (d.severity != .@"error") continue;
+        if (d.code == .unresolved_import) continue;
+        return true;
+    }
+    return false;
+}
+
 /// build() — VFS entry path + 옵션 JSON 으로 bundler.bundle() 호출.
 /// options_json_ptr=0 이면 기본 옵션 (esm/browser).
 ///
@@ -340,9 +360,8 @@ export fn build(
     // diagnostics 가 있으면 fatal 메시지 캡처 (출력은 있어도 의미 있는 에러 노출).
     captureDiagnostic(&result);
 
-    // 에러 진단 = 실패. 부분 출력을 성공처럼 돌려주면 호출부가 실패를 감지할 수 없다 (#4645).
-    // CLI 의 "에러 진단이 있으면 출력 생략 + exit 1" (main.zig) 과 같은 계약.
-    if (result.hasErrors()) return 0;
+    // 앞뒤가 안 맞는 번들은 부분 출력을 성공처럼 돌려주지 않는다 (#4645).
+    if (hasPublishBlockingError(&result)) return 0;
 
     // 단일 entry / 비-splitting 경로: result.output 사용 (outputs 는 code-splitting 시).
     const code = result.output;
@@ -415,8 +434,8 @@ export fn build_chunks(
 
     captureDiagnostic(&result);
 
-    // build() 와 같은 계약 — 에러 진단이면 부분 chunk 를 공개하지 않는다 (#4645).
-    if (result.hasErrors()) return 0;
+    // build() 와 같은 계약.
+    if (hasPublishBlockingError(&result)) return 0;
 
     // 단일 파일 모드 / 비-splitting 시엔 result.output 한 개를 wrap. code splitting /
     // preserve modules 시엔 result.outputs 의 모든 chunk.

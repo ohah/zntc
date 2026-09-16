@@ -595,8 +595,11 @@ function encodeBundleOptions(options?: BundleOptionsInput): { ptr: number; len: 
   return { ptr, len: optsBytes.length };
 }
 
-/// 직전 build / buildChunks 호출이 실패해 null 을 반환했을 때 의미 있는 에러
-/// 메시지를 가져온다. 호출이 성공했거나 메시지가 없으면 빈 문자열.
+/// 직전 build / buildChunks 호출의 진단을 가져온다. 없으면 빈 문자열.
+///
+/// ⚠️ **`null` 이 아니어도 확인해야 한다.** 해석 불가 import 처럼 번들 자체는 만들어지지만
+/// 에러 진단이 있는 경우가 있다 (그 지정자는 external 로 취급돼 출력에 남는다). 출력을
+/// 아예 내지 않는 건 번들이 내부적으로 앞뒤가 안 맞을 때뿐이다 (export 충돌/모호/누락).
 export function bundlerLastErrorMessage(): string {
   if (!bundler || !bundlerMemory) return '';
   const packed = bundler.last_error_message_get();
@@ -609,8 +612,8 @@ export function bundlerLastErrorMessage(): string {
 }
 
 /// VFS entry path + 옵션으로 bundler 호출 후 단일 파일 번들 코드 반환.
-/// 옵션 미전달 시 esm/browser 기본. 빈 출력 또는 실패 시 null —
-/// 자세한 에러는 `bundlerLastErrorMessage()` 로 조회.
+/// 옵션 미전달 시 esm/browser 기본. 빈 출력 또는 실패 시 null.
+/// 성공했더라도 진단이 있을 수 있으니 `bundlerLastErrorMessage()` 를 함께 확인할 것.
 export function build(entryPath: string, options?: BundleOptionsInput): BundleResult | null {
   if (!bundler || !bundlerMemory) {
     throw new Error('zntc-wasm: bundler not initialized. Call initBundler() first.');

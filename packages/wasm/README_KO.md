@@ -62,7 +62,9 @@ const out = build('/src/main.ts', { format: 'esm', target: 'es2020' });
 if (out === null) throw new Error(bundlerLastErrorMessage());
 ```
 
-`build` 는 동기 함수이며 실패 시 `null` 을 반환합니다 — `bundlerLastErrorMessage()` 로 마지막 에러를 조회하세요. 해석할 수 없는 import 처럼 에러 진단이 있으면 부분 출력을 돌려주지 않고 `null` 입니다 (CLI 의 "에러 있으면 출력 생략 + exit 1" 과 같은 계약).
+`build` 는 동기 함수이며 실패 시 `null` 을 반환합니다 — `bundlerLastErrorMessage()` 로 진단을 조회하세요.
+
+`null` 이 아니어도 진단을 확인해야 합니다. 해석할 수 없는 import 는 **번들 바깥에 있는 것으로 취급**되어 출력은 만들어지고(그 지정자는 external 로 남습니다) 진단만 남습니다 — VFS 에 `react` 를 올리지 않는 게 정상인 상황에서 `jsx: 'automatic'` 을 쓸 수 있어야 하기 때문입니다. 출력을 아예 내지 않는 건 번들이 내부적으로 앞뒤가 안 맞을 때(export 충돌·모호·누락)뿐입니다.
 
 VFS 는 파일만 등록하고 디렉토리는 경로 접두사로 존재합니다. 네트워크·IndexedDB 같은 lazy 백엔드를 쓰려면 `VirtualFileSystem` 을 상속해 `get` / `has` / `paths` (그리고 필요하면 `listDir` / `isDir`) 를 override 하세요.
 

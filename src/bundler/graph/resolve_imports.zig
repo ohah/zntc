@@ -417,7 +417,23 @@ pub fn applyResolveResult(
         // 실패 확정 마킹 — 성공(recordResolvedDep 가 resolved 설정)·external 과 동일하게
         // "재resolve 불필요" 상태로 둬야 shouldResolveRecordForModule/resolveModuleImports
         // 가 이 record 를 다시 resolve(+ 중복 진단)하지 않는다.
-        self.modules.at(mod_idx).import_records[rec_i].resolve_failed = true;
+        const failed_rec = &self.modules.at(mod_idx).import_records[rec_i];
+        failed_rec.resolve_failed = true;
+        // 해석 못 한 지정자는 **번들 바깥에 있는 것으로 취급**한다 (rolldown 의 "Module not
+        // found, treating it as an external dependency" 와 같은 처리).
+        //
+        // 이걸 안 하면 emitter 가 external 전용 포맷 인지 경로를 타지 못하고 `writeUnresolvedRequire`
+        // 폴백으로 내려가, **출력 포맷과 무관하게** `require(...)` 를 방출한다. ESM/IIFE 출력이나
+        // 브라우저 타겟에는 `require` 가 없으므로 그 번들은 문법적으로 성립하지 않고, 런타임에
+        // `require is not defined` 로 죽는다 — 정작 원인인 "패키지가 없다" 는 사라진다.
+        // external 로 표시하면 ESM 은 `import`, CJS 는 `require`, IIFE 는 기존 "IIFE 로는 방출
+        // 불가" 진단으로 각각 제 경로를 타고, 런타임 메시지도 없는 패키지를 지목하게 된다.
+        //
+        // ⚠️ 진단 등급은 그대로다. external 로 *방출* 한다는 것이지 오탈자를 눈감아 준다는
+        // 뜻이 아니다 — `Cannot resolve module` 은 계속 error 로 나간다 (rspack 과 동형).
+        // ⚠️ `.css_url` 은 제외. CSS `url()` 대상은 모듈이 아니라 파일이고, 해석 실패 시
+        // emitter 가 원문을 그대로 흘려보내는 별도 경로를 탄다 (#4466).
+        if (record.kind != .css_url) failed_rec.is_external = true;
         return;
     }
 

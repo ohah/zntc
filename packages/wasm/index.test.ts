@@ -523,19 +523,31 @@ describe('Bundler (minimal)', () => {
     expect(build('/order2/entry.ts')?.code ?? '').toContain('"dir"');
   });
 
-  test('build: 해석 불가 import → null + ZNTC0100 (부분 출력 미공개)', () => {
+  // 해석 불가 지정자는 **번들 바깥에 있는 것으로 취급**해 출력을 낸다 (rolldown/rspack 과
+  // 동형). VFS 에 react 를 올리지 않는 게 정상인 플레이그라운드에서 jsx:automatic 이
+  // 주입하는 런타임 import 를 실패로 처리하면 JSX 자체를 쓸 수 없기 때문이다.
+  // 진단은 그대로 error 로 나가므로 호출부는 lastError 로 감지한다.
+  test('build: 해석 불가 import → 출력 + ZNTC0100 진단', () => {
     bundlerFixtureVfs.set('/missing/entry.ts', `export { nope } from './does-not-exist';`);
     const result = build('/missing/entry.ts');
-    // 부분 번들을 성공처럼 돌려주면 호출부가 실패를 감지할 수 없다.
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
     const msg = bundlerLastErrorMessage();
     expect(msg).toContain('ZNTC0100');
     expect(msg).toContain('./does-not-exist');
   });
 
-  test('buildChunks: 해석 불가 import → null (build 와 같은 계약)', () => {
+  test('build: 해석 불가 import 가 ESM 출력에 require() 로 나가지 않는다', () => {
+    // require 는 ESM 스코프에 없다 — 여기서 require() 를 내면 번들이 로드 시점에
+    // `require is not defined` 로 죽고, 정작 원인인 "패키지가 없다" 는 사라진다.
+    bundlerFixtureVfs.set('/extfmt/entry.ts', `export { x } from 'some-missing-pkg';`);
+    const code = build('/extfmt/entry.ts', { format: 'esm' })?.code ?? '';
+    expect(code).not.toContain('require(');
+    expect(code).toContain('some-missing-pkg');
+  });
+
+  test('buildChunks: 해석 불가 import → 출력 + 진단 (build 와 같은 계약)', () => {
     bundlerFixtureVfs.set('/missing2/entry.ts', `export { nope } from './gone';`);
-    expect(buildChunks('/missing2/entry.ts')).toBeNull();
+    expect(buildChunks('/missing2/entry.ts')).not.toBeNull();
     expect(bundlerLastErrorMessage()).toContain('ZNTC0100');
   });
 

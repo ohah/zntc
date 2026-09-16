@@ -62,7 +62,9 @@ const out = build('/src/main.ts', { format: 'esm', target: 'es2020' });
 if (out === null) throw new Error(bundlerLastErrorMessage());
 ```
 
-`build` is synchronous and returns `null` on failure — call `bundlerLastErrorMessage()` to read the last error. When the build produces error diagnostics (an unresolvable import, for example) it returns `null` rather than partial output — the same contract as the CLI ("skip output and exit 1 on errors").
+`build` is synchronous and returns `null` on failure — call `bundlerLastErrorMessage()` to read diagnostics.
+
+Check diagnostics even when the result is not `null`. An unresolvable import is **treated as living outside the bundle**: output is still produced (the specifier stays as an external import) and only a diagnostic is reported — otherwise `jsx: 'automatic'` would be unusable whenever `react` is not in the VFS, which is the normal case. Output is withheld only when the bundle is internally inconsistent (conflicting, ambiguous, or missing exports).
 
 A VFS holds files only; directories exist as path prefixes. To back it with a lazy source (network, IndexedDB), subclass `VirtualFileSystem` and override `get` / `has` / `paths` (and `listDir` / `isDir` if needed).
 
