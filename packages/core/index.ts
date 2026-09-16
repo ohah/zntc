@@ -1781,12 +1781,9 @@ export interface AppBuildOptions {
   define?: Record<string, string>;
   /**
    * Import path aliases for the underlying bundle build (`BuildOptions.alias` 와 같은 의미).
-   *
-   * ⚠️ app 빌드는 **Object 형태만** 지원한다. Array 형태(`[{ find, replacement }]`)는 치환
-   * 결과를 native resolver 로 다시 해석해야 하는데 그 `this.resolve` 는 async `build()`
-   * 에서만 주입되고, app 파이프라인은 `buildAppSync` 뿐이다.
+   * Object / Array 두 형태 모두 지원한다 (#4649).
    */
-  alias?: Record<string, string>;
+  alias?: Record<string, string> | Array<{ find: string | RegExp; replacement: string }>;
   /** Minify emitted JavaScript and CSS when supported by the underlying builder. */
   minify?: boolean;
   /** Emit sourcemaps for bundled application assets. */
@@ -2659,10 +2656,8 @@ function arrayAliasToPlugin(
             const resolved = nativeResolve(rewritten, args.importer ?? null);
             if (resolved?.id) return { path: resolved.id, external: resolved.external };
           }
-          // 주입이 없는 경로(`buildSync` / app 빌드 — `NapiSyncPlugin` 이 hook 컨텍스트를
-          // 넘기지 않는 의도된 제약) 에서는 치환만 적용한다. `replacement` 가 확장자까지
-          // 포함한 완전한 경로면 이대로 맞고, 디렉토리를 가리키면 확장자 해석이 필요해
-          // 실패한다 — 그래서 디렉토리 alias 는 절대경로 + async 경로를 권장한다.
+          // resolver 주입이 없는 경로 (lifecycle hook 등) 에서는 치환만 적용한다.
+          // `replacement` 가 확장자까지 포함한 완전한 경로면 이대로도 맞는다.
           return { path: rewritten };
         }
         return null;

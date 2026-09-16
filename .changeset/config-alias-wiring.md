@@ -12,5 +12,9 @@
 `this.resolve()` 로 하는 것과 같이 한 번 더 해석한다. 아울러 CLI 의 config 병합이 배열에
 객체 스프레드를 해서 `{"0": {...}}` 로 형태를 깨뜨리던 것도 고쳤다.
 
+아울러 `buildSync` / app 빌드의 plugin hook 에도 native resolver 를 주입했다 — 예전엔
+`NapiSyncPlugin` 이 hook 컨텍스트를 넘기지 않아 sync 경로의 plugin 은 `this.resolve()` 를 쓸 수
+없었다. 이제 Object / Array 두 형태 모두 `build()` · `buildSync()` · app 빌드에서 동작한다.
+
 문서는 디렉토리 alias 의 target 에 **절대경로**를 쓰도록 표준 예제를 정리했다 (Vite · webpack ·
 esbuild · Rollup 모두 같은 관례).
