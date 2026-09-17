@@ -141,14 +141,14 @@ exports[`TSC: es6/arrowFunction emitArrowFunctionWhenUsingArguments01_ES6 1`] = 
 "// @strict: false
 var a = () => {
 	var arg = arguments[0];
+	// error
 };
-// error
 var b = function() {
 	var a = () => {
 		var arg = arguments[0];
+		// error
 	};
 };
-// error
 function baz() {
 	() => {
 		var arg = arguments[0];
@@ -158,18 +158,18 @@ function foo(inputFunc) {
 }
 foo(() => {
 	var arg = arguments[0];
+	// error
 });
-// error
 function bar() {
 	var arg = arguments[0];
+	// no error
 }
-// no error
 () => {
 	function foo() {
 		var arg = arguments[0];
+		// no error
 	}
 };
-// no error
 "
 `;
 
@@ -177,14 +177,14 @@ exports[`TSC: es6/arrowFunction emitArrowFunctionWhenUsingArguments01 1`] = `
 "// @strict: false
 var a = () => {
 	var arg = arguments[0];
+	// error
 };
-// error
 var b = function() {
 	var a = () => {
 		var arg = arguments[0];
+		// error
 	};
 };
-// error
 function baz() {
 	() => {
 		var arg = arguments[0];
@@ -194,18 +194,18 @@ function foo(inputFunc) {
 }
 foo(() => {
 	var arg = arguments[0];
+	// error
 });
-// error
 function bar() {
 	var arg = arguments[0];
+	// no error
 }
-// no error
 () => {
 	function foo() {
 		var arg = arguments[0];
+		// no error
 	}
 };
-// no error
 "
 `;
 
@@ -287,9 +287,9 @@ function f() {
 			var capture = () => arguments;
 			// Should trigger an '_arguments' capture into function 'h'
 			foo(_arguments);
+			// Error as this does not resolve to the user defined '_arguments'
 		}
 	}
-	// Error as this does not resolve to the user defined '_arguments'
 	function foo(x) {
 		return 100;
 	}
@@ -307,9 +307,9 @@ function f() {
 			var capture = () => arguments;
 			// Should trigger an '_arguments' capture into function 'h'
 			foo(_arguments);
+			// Error as this does not resolve to the user defined '_arguments'
 		}
 	}
-	// Error as this does not resolve to the user defined '_arguments'
 	function foo(x) {
 		return 100;
 	}

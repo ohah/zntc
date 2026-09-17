@@ -41,15 +41,15 @@ async function asyncfn() {
 	for await (_ of g4);
 	// error
 	for await (_ of g5);
+	// ok
 }
-// ok
 function* f1() {
 	// yield* over iterable
 	yield* g1;
 	// error
 	yield* g3;
+	// ok
 }
-// ok
 async function* f2() {
 	// yield* over iterable
 	yield* g1;
@@ -60,8 +60,8 @@ async function* f2() {
 	yield* g4;
 	// error
 	yield* g6;
+	// ok
 }
-// ok
 async function f3() {
 	const syncGenerator = function*() {
 		yield 1;
@@ -83,8 +83,8 @@ exports[`TSC: generators generatorExplicitReturnType 1`] = `
 	const x = yield 1;
 	// error
 	return 10;
+	// error
 }
-// error
 function* g2() {
 	const x = yield 1;
 	return true;
@@ -107,12 +107,12 @@ exports[`TSC: generators generatorImplicitAny 1`] = `
 // https://github.com/microsoft/TypeScript/issues/35105
 function* g2() {
 	const value = yield;
+	// error: implicit any
 }
-// error: implicit any
 function* g3() {
 	const value = yield;
+	// ok, contextually typed by \`value\`.
 }
-// ok, contextually typed by \`value\`.
 function* g4() {
 	yield;
 	// ok, result is unused
@@ -127,16 +127,16 @@ function* g4() {
 	for (yield; false; yield);
 	// ok, results are unused
 	void (yield);
+	// ok, results are unused
 }
-// ok, results are unused
 function* g5() {
 	f(yield);
+	// error: implicit any
 }
-// error: implicit any
 function* g6() {
 	f(yield);
+	// ok, contextually typed by f<string>
 }
-// ok, contextually typed by f<string>
 "
 `;
 
@@ -163,13 +163,13 @@ async function* g3() {
 async function* f4() {
 	const ret = { x: "x" };
 	return Promise.resolve(ret);
+	// Error
 }
-// Error
 async function* g4() {
 	const ret = { x: "x" };
 	return Promise.resolve(ret);
+	// Error
 }
-// Error
 "
 `;
 
@@ -517,44 +517,44 @@ function* mergeStringLists(...strings) {
 
 exports[`TSC: generators yieldStatementNoAsiAfterTransform 1`] = `
 "function* t1() {
-	yield // comment
-	a;
+	yield (// comment
+	a);
 }
 function* t2() {
-	yield // comment
-	a + 1;
+	yield (// comment
+	a + 1);
 }
 function* t3() {
-	yield // comment
-	a ? 0 : 1;
+	yield (// comment
+	a ? 0 : 1);
 }
 function* t4() {
-	yield // comment
-	a.b;
+	yield (// comment
+	a.b);
 }
 function* t5() {
-	yield // comment
-	a[a];
+	yield (// comment
+	a[a]);
 }
 function* t6() {
-	yield // comment
-	a();
+	yield (// comment
+	a());
 }
 function* t7() {
 	yield // comment
 	a\`\`;
 }
 function* t8() {
-	yield // comment
-	a;
+	yield (// comment
+	a);
 }
 function* t9() {
-	yield // comment
-	a;
+	yield (// comment
+	a);
 }
 function* t10() {
-	yield // comment
-	a;
+	yield (// comment
+	a);
 }
 "
 `;

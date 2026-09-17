@@ -77,8 +77,8 @@ function f8() {
 	var [a, b, c] = [];
 	// Error, [] is an empty tuple
 	var [d, e, f] = [1];
+	// Error, [1] is a tuple
 }
-// Error, [1] is a tuple
 function f9() {
 	var [a, b] = {};
 	// Error, not array type
@@ -90,8 +90,8 @@ function f10() {
 	var { a:a, b:b } = {};
 	// Error
 	var { a:a, b:b } = [];
+	// Error
 }
-// Error
 function f11() {
 	var { x:a, y:b } = { x: 10, y: "hello" };
 	var { 0:a, 1:b } = { 0: 10, 1: "hello" };
@@ -482,9 +482,9 @@ exports[`TSC: es6/destructuring destructuringControlFlow 1`] = `
 		let a1 = obj["a"];
 		// string | undefined
 		let a2 = obj.a;
+		// string | undefined
 	}
 }
-// string | undefined
 function f2(obj) {
 	let a0 = obj[0];
 	// number | null
@@ -515,8 +515,8 @@ function f4() {
 	({ ["x"]:x } = 0);
 	// Error
 	({ ["x" + ""]:x } = 0);
+	// Errpr
 }
-// Errpr
 // Repro from #31770
 let [key, value] = ["foo"];
 value.toUpperCase();
@@ -701,15 +701,15 @@ function f4() {
 exports[`TSC: es6/destructuring destructuringParameterDeclaration10 1`] = `
 "export function prepareConfig({ additionalFiles:{ json:json=[] }={} }={}) {
 	json;
+	// string[]
 }
-// string[]
 export function prepareConfigWithoutAnnotation({ additionalFiles:{ json:json=[] }={} }={}) {
 	json;
 }
 export const prepareConfigWithContextualSignature = ({ additionalFiles:{ json:json=[] }={} }={}) => {
 	json;
+	// string[]
 };
-// string[]
 "
 `;
 
@@ -1201,8 +1201,8 @@ exports[`TSC: es6/destructuring destructuringParameterDeclaration9 1`] = `
  */
 export function prepareConfig({ additionalFiles:{ json:json=[] }={} }={}) {
 	json;
+	// string[]
 }
-// string[]
 export function prepareConfigWithoutAnnotation({ additionalFiles:{ json:json=[] }={} }={}) {
 	json;
 }
@@ -1211,8 +1211,8 @@ export function prepareConfigWithoutAnnotation({ additionalFiles:{ json:json=[] 
 }) => void} */
 export const prepareConfigWithContextualSignature = ({ additionalFiles:{ json:json=[] }={} }={}) => {
 	json;
+	// string[]
 };
-// string[]
 // Additional repros from https://github.com/microsoft/TypeScript/issues/59936
 /**
  * @param {{ a?: { json?: string[] }}} [config]

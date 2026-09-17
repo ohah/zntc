@@ -217,8 +217,8 @@ var AA = BB;
 new AA();
 function constructB(Factory) {
 	new Factory();
+	// error -- Factory is of type typeof B.
 }
-// error -- Factory is of type typeof B.
 var BB = B;
 new BB();
 // error -- BB is of type typeof B.
@@ -244,9 +244,9 @@ class F extends B {
 }
 class G {
 	y;
+	// error -- declarations must be adjacent
+	// error -- use of modifier abstract must match on all overloads.
 }
-// error -- declarations must be adjacent
-// error -- use of modifier abstract must match on all overloads.
 class H {
 	// error -- not declared abstract
 }
@@ -755,12 +755,12 @@ exports[`TSC: classes classIsSubtypeOfBaseType 1`] = `
 }
 class Derived extends Base {
 	foo;
+	// ok
 }
-// ok
 class Derived2 extends Base {
 	foo;
+	// error
 }
-// error
 "
 `;
 
@@ -1327,9 +1327,9 @@ class B {
 		const x = friendA.getX(a);
 		// ok
 		friendA.setX(a, x + 1);
+		// ok
 	}
 }
-// ok
 ;
 const a = new A(41);
 const b = new B(a);
@@ -1550,8 +1550,8 @@ exports[`TSC: classes classStaticBlockUseBeforeDef3 1`] = `
 "class A {
 	static {
 		A.doSomething();
+		// should not error
 	}
-	// should not error
 	static doSomething() {
 		console.log("gotcha!");
 	}
@@ -1559,31 +1559,31 @@ exports[`TSC: classes classStaticBlockUseBeforeDef3 1`] = `
 class Baz {
 	static {
 		console.log(FOO);
+		// should error
 	}
 }
-// should error
 const FOO = "FOO";
 class Bar {
 	static {
 		console.log(FOO);
+		// should not error
 	}
 }
-// should not error
 let u = "FOO";
 class CFA {
 	static {
 		u = "BAR";
 		u;
+		// should be "BAR"
 	}
-	// should be "BAR"
 	static t = 1;
 	static doSomething() {
 	}
 	static {
 		u;
+		// should be "BAR"
 	}
 }
-// should be "BAR"
 u;
 // should be "BAR"
 "
@@ -1845,8 +1845,8 @@ class DerivedB extends BaseB {
 	static staticBaseInstance() {
 		new BaseB(9);
 	}
+	// ok
 }
-// ok
 class DerivedC extends BaseC {
 	// error
 	constructor(x) {
@@ -1863,8 +1863,8 @@ class DerivedC extends BaseC {
 	static staticBaseInstance() {
 		new BaseC(11);
 	}
+	// error
 }
-// error
 var ba = new BaseA(1);
 var bb = new BaseB(1);
 // error
@@ -1926,9 +1926,9 @@ exports[`TSC: classes classConstructorAccessibility4 1`] = `
 		class B {
 			method() {
 				new A();
+				// OK
 			}
 		}
-		// OK
 		class C extends A {
 			// OK
 		}
@@ -1941,9 +1941,9 @@ class D {
 		class E {
 			method() {
 				new D();
+				// OK
 			}
 		}
-		// OK
 		class F extends D {
 			// OK
 		}
@@ -1961,14 +1961,14 @@ class Derived extends Base {
 	static make() {
 		new Base();
 	}
+	// ok
 }
-// ok
 class Unrelated {
 	static fake() {
 		new Base();
 	}
+	// error
 }
-// error
 "
 `;
 
@@ -2021,9 +2021,9 @@ class Derived extends C3 {
 	constructor(p) {
 		super(p);
 		this.p;
+		// OK
 	}
 }
-// OK
 "
 `;
 
@@ -2053,9 +2053,9 @@ class Derived extends C3 {
 	constructor(p) {
 		super(p);
 		this.p;
+		// OK
 	}
 }
-// OK
 "
 `;
 
@@ -2070,9 +2070,9 @@ class Derived extends Base {
 		super(p);
 		this.p = p;
 		this.p;
+		// OK
 	}
 }
-// OK
 var d;
 d.p;
 // public, OK
@@ -2086,16 +2086,16 @@ exports[`TSC: classes classWithTwoConstructorDefinitions 1`] = `
 	// error
 	constructor(x) {
 	}
+	// error
 }
-// error
 class D {
 	constructor(x) {
 	}
 	// error
 	constructor(x,y) {
 	}
+	// error
 }
-// error
 "
 `;
 
@@ -2230,24 +2230,24 @@ exports[`TSC: classes constructorParameterProperties2 1`] = `
 	y;
 	constructor(y) {
 	}
+	// ok
 }
-// ok
 var r = c.y;
 class D {
 	y;
 	constructor(y) {
 		this.y = y;
 	}
+	// error
 }
-// error
 var r2 = d.y;
 class E {
 	y;
 	constructor(y) {
 		this.y = y;
 	}
+	// error
 }
-// error
 var r3 = e.y;
 // error
 class F {
@@ -2255,8 +2255,8 @@ class F {
 	constructor(y) {
 		this.y = y;
 	}
+	// error
 }
-// error
 var r4 = f.y;
 // error
 "
@@ -2356,9 +2356,9 @@ class D {
 	x;
 	constructor() {
 		return 1;
+		// error
 	}
 }
-// error
 class E {
 	x;
 	constructor() {
@@ -2369,9 +2369,9 @@ class F {
 	x;
 	constructor() {
 		return { x: 1 };
+		// error
 	}
 }
-// error
 class G {
 	x;
 	constructor() {
@@ -2538,32 +2538,32 @@ exports[`TSC: classes derivedClassSuperCallsWithThisArg 1`] = `
 class Derived extends Base {
 	constructor() {
 		super(this);
+		// ok
 	}
 }
-// ok
 class Derived2 extends Base {
 	constructor(a) {
 		super(this);
 		this.a = a;
+		// error
 	}
 }
-// error
 class Derived3 extends Base {
 	constructor(a) {
 		super(() => this);
 		this.a = a;
+		// error
 	}
 }
-// error
 class Derived4 extends Base {
 	constructor(a) {
 		super(function() {
 			return this;
 		});
 		this.a = a;
+		// ok
 	}
 }
-// ok
 "
 `;
 
@@ -3058,10 +3058,10 @@ class DerivedComments extends Object {
 		// c4
 		// c5
 		this.x = null;
+		// c6
+		// c7
 	}
 }
-// c6
-// c7
 class DerivedCommentsInvalidThis extends Object {
 	x;
 	constructor() {
@@ -3075,10 +3075,10 @@ class DerivedCommentsInvalidThis extends Object {
 		// c4
 		// c5
 		this.x = null;
+		// c6
+		// c7
 	}
 }
-// c6
-// c7
 class DerivedInConditional extends Object {
 	prop = 1;
 	constructor() {
@@ -3440,17 +3440,17 @@ exports[`TSC: classes privateProtectedMembersAreNotAccessibleDestructuring 1`] =
 		let { priv:a, prot:b } = this;
 		// ok
 		let { priv:priv, prot:prot } = new K();
+		// ok
 	}
 }
-// ok
 class C extends K {
 	m2() {
 		let { priv:a } = this;
 		// error
 		let { prot:b } = this;
+		// ok
 	}
 }
-// ok
 let k = new K();
 let { priv:priv } = k;
 // error
@@ -3473,8 +3473,8 @@ class Derived extends Base {
 	static bar = Base.foo;
 	// error
 	bing = () => Base.foo;
+	// error
 }
-// error
 "
 `;
 
@@ -3686,11 +3686,11 @@ exports[`TSC: classes protectedClassPropertyAccessibleWithinNestedSubclass1 1`] 
 				d3.x;
 				// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
 				d4.x;
+				// OK, accessed within their declaring class
 			}
 		}
 	}
 }
-// OK, accessed within their declaring class
 class Derived1 extends Base {
 	method1() {
 		class B {
@@ -3709,11 +3709,11 @@ class Derived1 extends Base {
 				d3.x;
 				// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
 				d4.x;
+				// Error, isn't accessed through an instance of the enclosing class
 			}
 		}
 	}
 }
-// Error, isn't accessed through an instance of the enclosing class
 class Derived2 extends Base {
 	method2() {
 		class C {
@@ -3732,11 +3732,11 @@ class Derived2 extends Base {
 				d3.x;
 				// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
 				d4.x;
+				// OK, accessed within a class derived from their declaring class, and through an instance of the enclosing class or one of its subclasses
 			}
 		}
 	}
 }
-// OK, accessed within a class derived from their declaring class, and through an instance of the enclosing class or one of its subclasses
 class Derived3 extends Derived1 {
 	x;
 	method3() {
@@ -3756,11 +3756,11 @@ class Derived3 extends Derived1 {
 				d3.x;
 				// OK, accessed within their declaring class
 				d4.x;
+				// Error, isn't accessed through an instance of the enclosing class
 			}
 		}
 	}
 }
-// Error, isn't accessed through an instance of the enclosing class
 class Derived4 extends Derived2 {
 	method4() {
 		class E {
@@ -3779,11 +3779,11 @@ class Derived4 extends Derived2 {
 				d3.x;
 				// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
 				d4.x;
+				// OK, accessed within a class derived from their declaring class, and through an instance of the enclosing class
 			}
 		}
 	}
 }
-// OK, accessed within a class derived from their declaring class, and through an instance of the enclosing class
 var b = undefined;
 var d1 = undefined;
 var d2 = undefined;
@@ -3855,9 +3855,9 @@ exports[`TSC: classes protectedClassPropertyAccessibleWithinSubclass2 1`] = `
 		d3.x;
 		// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
 		d4.x;
+		// OK, accessed within their declaring class
 	}
 }
-// OK, accessed within their declaring class
 class Derived1 extends Base {
 	method1() {
 		var b = undefined;
@@ -3874,9 +3874,9 @@ class Derived1 extends Base {
 		d3.x;
 		// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
 		d4.x;
+		// Error, isn't accessed through an instance of the enclosing class
 	}
 }
-// Error, isn't accessed through an instance of the enclosing class
 class Derived2 extends Base {
 	method2() {
 		var b = undefined;
@@ -3893,9 +3893,9 @@ class Derived2 extends Base {
 		d3.x;
 		// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
 		d4.x;
+		// OK, accessed within a class derived from their declaring class, and through an instance of the enclosing class or one of its subclasses
 	}
 }
-// OK, accessed within a class derived from their declaring class, and through an instance of the enclosing class or one of its subclasses
 class Derived3 extends Derived1 {
 	x;
 	method3() {
@@ -3913,9 +3913,9 @@ class Derived3 extends Derived1 {
 		d3.x;
 		// OK, accessed within their declaring class
 		d4.x;
+		// Error, isn't accessed through an instance of the enclosing class
 	}
 }
-// Error, isn't accessed through an instance of the enclosing class
 class Derived4 extends Derived2 {
 	method4() {
 		var b = undefined;
@@ -3932,9 +3932,9 @@ class Derived4 extends Derived2 {
 		d3.x;
 		// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
 		d4.x;
+		// OK, accessed within a class derived from their declaring class, and through an instance of the enclosing class
 	}
 }
-// OK, accessed within a class derived from their declaring class, and through an instance of the enclosing class
 var b = undefined;
 var d1 = undefined;
 var d2 = undefined;
@@ -3958,17 +3958,17 @@ exports[`TSC: classes protectedClassPropertyAccessibleWithinSubclass3 1`] = `
 	x;
 	method() {
 		this.x;
+		// OK, accessed within their declaring class
 	}
 }
-// OK, accessed within their declaring class
 class Derived extends Base {
 	method1() {
 		this.x;
 		// OK, accessed within a subclass of the declaring class
 		super.x;
+		// Error, x is not public
 	}
 }
-// Error, x is not public
 "
 `;
 
@@ -4017,9 +4017,9 @@ class B extends A {
 		var c3 = c.y;
 		// error
 		var c4 = c.z;
+		// error
 	}
 }
-// error
 class C extends A {
 	z;
 }
@@ -4037,9 +4037,9 @@ exports[`TSC: classes protectedStaticClassPropertyAccessibleWithinSubclass 1`] =
 		Derived2.x;
 		// OK, accessed within their declaring class
 		Derived3.x;
+		// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
 	}
 }
-// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
 class Derived1 extends Base {
 	static staticMethod1() {
 		Base.x;
@@ -4049,9 +4049,9 @@ class Derived1 extends Base {
 		Derived2.x;
 		// OK, accessed within a class derived from their declaring class
 		Derived3.x;
+		// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
 	}
 }
-// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
 class Derived2 extends Base {
 	static staticMethod2() {
 		Base.x;
@@ -4061,9 +4061,9 @@ class Derived2 extends Base {
 		Derived2.x;
 		// OK, accessed within a class derived from their declaring class
 		Derived3.x;
+		// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
 	}
 }
-// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
 class Derived3 extends Derived1 {
 	static x;
 	static staticMethod3() {
@@ -4074,9 +4074,9 @@ class Derived3 extends Derived1 {
 		Derived2.x;
 		// OK, accessed within a class derived from their declaring class
 		Derived3.x;
+		// OK, accessed within their declaring class
 	}
 }
-// OK, accessed within their declaring class
 Base.x;
 // Error, neither within their declaring class nor classes derived from their declaring class
 Derived1.x;
@@ -4093,26 +4093,26 @@ exports[`TSC: classes protectedStaticClassPropertyAccessibleWithinSubclass2 1`] 
 	static x;
 	static staticMethod() {
 		this.x;
+		// OK, accessed within their declaring class
 	}
 }
-// OK, accessed within their declaring class
 class Derived1 extends Base {
 	static staticMethod1() {
 		this.x;
 		// OK, accessed within a class derived from their declaring class
 		super.x;
+		// Error, x is not public
 	}
 }
-// Error, x is not public
 class Derived2 extends Derived1 {
 	static x;
 	static staticMethod3() {
 		this.x;
 		// OK, accessed within a class derived from their declaring class
 		super.x;
+		// Error, x is not public
 	}
 }
-// Error, x is not public
 "
 `;
 
@@ -4275,8 +4275,8 @@ exports[`TSC: classes staticPropertyNotInClassType 1`] = `
 		this.b = b;
 	}
 	static foo;
-}let C;((C) => {C.bar=// not reflected in class type
-"";})(C = NonGeneric.C || (NonGeneric.C = {}));// not reflected in class type
+	// not reflected in class type
+}let C;((C) => {C.bar="";})(C = NonGeneric.C || (NonGeneric.C = {}));// not reflected in class type
 var c = new C(1, 2);var r = c.fn();var r4 = c.foo;// error
 var r5 = c.bar;// error
 var r6 = c.x;})(NonGeneric || (NonGeneric = {}));
@@ -4295,8 +4295,8 @@ var Generic;((Generic) => {class C {
 		this.b = b;
 	}
 	static foo;
-}((C) => {C.bar=// not reflected in class type
-"";})(C = Generic.C || (Generic.C = {}));// not reflected in class type
+	// not reflected in class type
+}((C) => {C.bar="";})(C = Generic.C || (Generic.C = {}));// not reflected in class type
 var c = new C(1, "");var r = c.fn();var r4 = c.foo;// error
 var r5 = c.bar;// error
 var r6 = c.x;})(Generic || (Generic = {}));
@@ -4528,15 +4528,15 @@ exports[`TSC: classes derivedClassOverridesPrivates 1`] = `
 }
 class Derived extends Base {
 	x;
+	// error
 }
-// error
 class Base2 {
 	static y;
 }
 class Derived2 extends Base2 {
 	static y;
+	// error
 }
-// error
 "
 `;
 
@@ -4770,8 +4770,8 @@ class Derived1 extends Base {
 }
 class Derived2 extends Derived1 {
 	a;
+	// Error, parent was public
 }
-// Error, parent was public
 "
 `;
 
@@ -4869,13 +4869,13 @@ class C {
 class D extends C {
 	foo() {
 	}
+	// ok to drop parameters
 }
-// ok to drop parameters
 class E extends D {
 	foo(x) {
 	}
+	// ok to add optional parameters
 }
-// ok to add optional parameters
 c = e;
 var r = c.foo(1);
 var r2 = e.foo("");
@@ -4891,13 +4891,13 @@ class C {
 class D extends C {
 	foo(x) {
 	}
+	// ok to drop parameters
 }
-// ok to drop parameters
 class E extends D {
 	foo(x,y) {
 	}
+	// ok to add optional parameters
 }
-// ok to add optional parameters
 c = e;
 var r = c.foo(1, 1);
 var r2 = e.foo(1, "");
@@ -4913,13 +4913,13 @@ class C {
 class D extends C {
 	foo(x) {
 	}
+	// ok to drop parameters
 }
-// ok to drop parameters
 class E extends D {
 	foo(x,y) {
 	}
+	// ok to add optional parameters
 }
-// ok to add optional parameters
 c = e;
 var r = c.foo("", "");
 var r2 = e.foo("", 1);
@@ -4935,13 +4935,13 @@ class C {
 class D extends C {
 	foo() {
 	}
+	// ok to drop parameters
 }
-// ok to drop parameters
 class E extends D {
 	foo(x) {
 	}
+	// ok to add optional parameters
 }
-// ok to add optional parameters
 c = e;
 var r = c.foo(1);
 var r2 = e.foo("");
@@ -5181,9 +5181,9 @@ class E extends D {
 	// error
 	foo() {
 		return "";
+		// error
 	}
 }
-// error
 c = d;
 c = e;
 var r = c.foo();
@@ -5388,9 +5388,9 @@ class SomeClass2 {
 			this.state.data;
 		}
 		let n = this.state?.data;
+		// This should be an error
 	}
 }
-// This should be an error
 "
 `;
 
@@ -5706,12 +5706,12 @@ exports[`TSC: classes typeOfThisInStaticMembers13 1`] = `
 exports[`TSC: classes typeOfThisInStaticMembers2 1`] = `
 "class C {
 	static foo = this;
+	// ok
 }
-// ok
 class C2 {
 	static foo = this;
+	// ok
 }
-// ok
 "
 `;
 
@@ -5830,8 +5830,8 @@ new A2().#prop;
 // Error
 function foo() {
 	new A2().#prop;
+	// Error
 }
-// Error
 class B2 {
 	m() {
 		new A2().#prop;
@@ -5937,9 +5937,9 @@ exports[`TSC: classes privateNameAndIndexSignature 1`] = `
 		this.#f = 3;
 		// Error (index signatures do not implicitly declare private names)
 		this["#foo"] = 3;
+		// Okay (type has index signature and "#foo" does not collide with private identifier #foo)
 	}
 }
-// Okay (type has index signature and "#foo" does not collide with private identifier #foo)
 "
 `;
 
@@ -5989,9 +5989,9 @@ class C {
 		exports.#bar = 6;
 		// Error
 		this.#foo = 3;
+		// Error (undeclared)
 	}
 }
-// Error (undeclared)
 "
 `;
 
@@ -6028,8 +6028,8 @@ exports[`TSC: classes privateNameCircularReference 1`] = `
 	#foo = this.#bar;
 	#bar = this.#foo;
 	["#baz"] = this["#baz"];
+	// Error (should *not* be private name error)
 }
-// Error (should *not* be private name error)
 "
 `;
 
@@ -6165,9 +6165,9 @@ class C {
 		// OK
 		const d = new C();
 		d.#x;
+		// Error
 	}
 }
-// Error
 "
 `;
 
@@ -6998,9 +6998,9 @@ class C {
 	#bar = 6;
 	constructor() {
 		this.#foo = 3;
+		// Error (undeclared)
 	}
 }
-// Error (undeclared)
 "
 `;
 
@@ -7040,9 +7040,9 @@ exports[`TSC: classes privateNameMethod 1`] = `
 		this.#method(1);
 		// Error
 		this.#method();
+		// Error
 	}
 }
-// Error 
 "
 `;
 
@@ -7064,8 +7064,8 @@ new A2().#method();
 // Error
 function foo() {
 	new A2().#method();
+	// Error
 }
-// Error
 class B2 {
 	m() {
 		new A2().#method();
@@ -7093,9 +7093,9 @@ exports[`TSC: classes privateNameMethodAssignment 1`] = `
 		//Error, not writable 
 		let x = this.#method;
 		b.#method++;
+		//Error, not writable
 	}
 }
-//Error, not writable 
 "
 `;
 
@@ -7295,11 +7295,11 @@ exports[`TSC: classes privateNameNestedMethodAccess 1`] = `
 				x.#foo;
 				x.#bar;
 				x.#unknown;
+				// Error
 			}
 		};
 	}
 }
-// Error
 "
 `;
 
@@ -7531,9 +7531,9 @@ exports[`TSC: classes privateNamesAndStaticFields 1`] = `
 		B.#foo;
 		// Error
 		B.#bar;
+		// Error
 	}
 }
-// Error
 class B extends A {
 	static #foo;
 	constructor() {
@@ -7618,15 +7618,15 @@ exports[`TSC: classes privateNamesConstructorChain-1 1`] = `
 		new Child().#foo;
 		// OK (\`#foo\` was added when \`Parent\`'s constructor was called on \`child\`)
 		Child.#bar;
+		// Error: not found
 	}
 }
-// Error: not found
 class Child extends Parent {
 	#foo = "foo";
 	// OK (Child's #foo does not conflict, as \`Parent\`'s \`#foo\` is not accessible)
 	#bar = "bar";
+	// OK
 }
-// OK
 "
 `;
 
@@ -7638,15 +7638,15 @@ exports[`TSC: classes privateNamesConstructorChain-2 1`] = `
 		new Child().#foo;
 		// OK (\`#foo\` was added when \`Parent\`'s constructor was called on \`child\`)
 		Child.#bar;
+		// Error: not found
 	}
 }
-// Error: not found
 class Child extends Parent {
 	#foo = "foo";
 	// OK (Child's #foo does not conflict, as \`Parent\`'s \`#foo\` is not accessible)
 	#bar = "bar";
+	// OK
 }
-// OK
 new Parent().accessChildProps();
 "
 `;
@@ -7658,9 +7658,9 @@ exports[`TSC: classes privateNameSetterExprReturnValue 1`] = `
 	bar() {
 		let x = this.#foo = 42 * 2;
 		console.log(x);
+		// 84
 	}
 }
-// 84
 new C().bar();
 "
 `;
@@ -7671,9 +7671,9 @@ exports[`TSC: classes privateNameSetterNoGetter 1`] = `
 	}
 	m() {
 		this.#x += 2;
+		// Error
 	}
 };
-// Error
 console.log(new C().m());
 "
 `;
@@ -7794,8 +7794,8 @@ exports[`TSC: classes privateNamesInGenericClasses 1`] = `
 	quux3(x) {
 		return x.#prop;
 	}
+	// OK
 }
-// OK
 a.#foo;
 // Error
 a.#method;
@@ -7818,17 +7818,17 @@ exports[`TSC: classes privateNamesInNestedClasses-1 1`] = `
 			#foo = "B's #foo";
 			bar(a) {
 				a.#foo;
+				// OK, no compile-time error, don't know what \`a\` is
 			}
-			// OK, no compile-time error, don't know what \`a\` is
 			baz(a) {
 				a.#foo;
+				// compile-time error, shadowed
 			}
-			// compile-time error, shadowed
 			quux(b) {
 				b.#foo;
+				// OK
 			}
 		}
-		// OK
 		const a = new A();
 		new B().bar(a);
 		new B().baz(a);
@@ -7850,13 +7850,13 @@ exports[`TSC: classes privateNamesInNestedClasses-2 1`] = `
 				class C {
 					constructor() {
 						A.#x;
+						// error
 					}
 				}
 			}
 		}
 	}
 }
-// error
 "
 `;
 
@@ -7914,8 +7914,8 @@ A2.#prop;
 // Error
 function foo() {
 	A2.#prop;
+	// Error
 }
-// Error
 class B2 {
 	m() {
 		A2.#prop;
@@ -8000,9 +8000,9 @@ exports[`TSC: classes privateNameStaticFieldAccess 1`] = `
 		console.log(A.#myField);
 		//Ok
 		console.log(this.#myField);
+		//Error
 	}
 }
-//Error
 "
 `;
 
@@ -8107,9 +8107,9 @@ class Derived extends Base {
 	static method(x) {
 		Derived.#derivedProp;
 		Base.#prop = 10;
+		// error
 	}
 }
-// error
 "
 `;
 
@@ -8206,9 +8206,9 @@ exports[`TSC: classes privateNameStaticMethod 1`] = `
 		A1.#method(1);
 		// Error
 		A1.#method();
+		// Error
 	}
 }
-// Error 
 "
 `;
 
@@ -8231,9 +8231,9 @@ exports[`TSC: classes privateNameStaticMethodAssignment 1`] = `
 		//Error, not writable 
 		let x = A3.#method;
 		b.#method++;
+		//Error, not writable
 	}
 }
-//Error, not writable 
 "
 `;
 
@@ -8351,18 +8351,18 @@ exports[`TSC: classes privateNamesUnique-3 1`] = `
 "class A {
 	#foo = 1;
 	static #foo = true;
+	// error (duplicate)
+	// because static and instance private names
+	// share the same lexical scope
+	// https://tc39.es/proposal-class-fields/#prod-ClassBody
 }
-// error (duplicate)
-// because static and instance private names
-// share the same lexical scope
-// https://tc39.es/proposal-class-fields/#prod-ClassBody
 class B {
 	static #foo = true;
 	test(x) {
 		x.#foo;
+		// error (#foo is a static property on B, not an instance property)
 	}
 }
-// error (#foo is a static property on B, not an instance property)
 "
 `;
 
@@ -8471,28 +8471,28 @@ exports[`TSC: classes privateNameWhenNotUseDefineForClassFieldsInEsNext 1`] = `
 		#foo = 10;
 		m() {
 			new TestWithStatics().#prop;
+			// OK
 		}
-		// OK
 		static C = class InnerInner {
 			m() {
 				new TestWithStatics().#prop;
 				// OK
 				new Inner().#foo;
+				// OK
 			}
 		};
-		// OK
 		static M() {
 			return class {
 				m() {
 					new TestWithStatics().#prop;
 					// OK
 					new Inner().#foo;
+					// OK
 				}
 			};
 		}
 	};
 }
-// OK
 class TestNonStatics {
 	#prop = 0;
 	dd = new TestNonStatics().#prop;
@@ -8501,28 +8501,28 @@ class TestNonStatics {
 		#foo = 10;
 		m() {
 			new TestNonStatics().#prop;
+			// Ok
 		}
-		// Ok
 		C = class InnerInner {
 			m() {
 				new TestNonStatics().#prop;
 				// Ok
 				new Inner().#foo;
+				// Ok
 			}
 		};
-		// Ok
 		static M() {
 			return class {
 				m() {
 					new TestNonStatics().#prop;
 					// OK
 					new Inner().#foo;
+					// OK
 				}
 			};
 		}
 	};
 }
-// OK
 "
 `;
 
@@ -8727,28 +8727,28 @@ class Public2 {
 }
 function f1(x) {
 	x.p;
+	// Error, private constituent makes property inaccessible
 }
-// Error, private constituent makes property inaccessible
 function f2(x) {
 	x.p;
+	// Error, private constituent makes property inaccessible
 }
-// Error, private constituent makes property inaccessible
 function f3(x) {
 	x.p;
+	// Error, private constituent makes property inaccessible
 }
-// Error, private constituent makes property inaccessible
 function f4(x) {
 	x.p;
+	// Error, protected when all constituents are protected
 }
-// Error, protected when all constituents are protected
 function f5(x) {
 	x.p;
+	// Ok, public if any constituent is public
 }
-// Ok, public if any constituent is public
 function f6(x) {
 	x.p;
+	// Ok, public if any constituent is public
 }
-// Ok, public if any constituent is public
 // Can't derive from type with inaccessible properties
 class C1 extends Mix(Private, Private2) {
 }
@@ -8812,20 +8812,20 @@ function f7(x) {
 	x.privateMethod();
 	// Error, private constituent makes method inaccessible
 	x.protectedMethod();
+	// Error, protected when all constituents are protected
 }
-// Error, protected when all constituents are protected
 function f8(x) {
 	x.privateMethod();
 	// Error, private constituent makes method inaccessible
 	x.protectedMethod();
+	// Error, protected when all constituents are protected
 }
-// Error, protected when all constituents are protected
 function f9(x) {
 	x.privateMethod();
 	// Error, private constituent makes method inaccessible
 	x.protectedMethod();
+	// Error, protected when all constituents are protected
 }
-// Error, protected when all constituents are protected
 "
 `;
 
@@ -9220,8 +9220,8 @@ class B extends A {
 	get p() {
 		return "oh no";
 	}
+	// error
 }
-// error
 class C {
 	p = 101;
 }
@@ -9234,8 +9234,8 @@ class D extends C {
 	set p(value) {
 		this._secret = value;
 	}
+	// error
 }
-// error
 "
 `;
 
@@ -9321,8 +9321,8 @@ class B extends A {
 	get p() {
 		return "oh no";
 	}
+	// error
 }
-// error
 class C {
 	p = 101;
 }
@@ -9335,8 +9335,8 @@ class D extends C {
 	set p(value) {
 		this._secret = value;
 	}
+	// error
 }
-// error
 "
 `;
 
@@ -9347,8 +9347,8 @@ class B extends A {
 	get p() {
 		return "oh no";
 	}
+	// error
 }
-// error
 "
 `;
 
@@ -9418,8 +9418,8 @@ exports[`TSC: classes assignParameterPropertyToPropertyDeclarationES2022 1`] = `
 	// should error
 	m1() {
 		this.foo;
+		// ok
 	}
-	// ok
 	m3 = function() {
 	};
 	constructor(foo) {
@@ -9433,13 +9433,13 @@ exports[`TSC: classes assignParameterPropertyToPropertyDeclarationES2022 1`] = `
 	// ok
 	m2() {
 		this.foo;
+		// ok
 	}
 }
-// ok
 class D extends C {
 	quill = this.foo;
+	// ok
 }
-// ok
 class E {
 	bar = () => this.foo1 + this.foo2;
 	// both ok
@@ -9488,8 +9488,8 @@ exports[`TSC: classes assignParameterPropertyToPropertyDeclarationESNext 1`] = `
 	// should error
 	m1() {
 		this.foo;
+		// ok
 	}
-	// ok
 	m3 = function() {
 	};
 	constructor(foo) {
@@ -9503,13 +9503,13 @@ exports[`TSC: classes assignParameterPropertyToPropertyDeclarationESNext 1`] = `
 	// ok
 	m2() {
 		this.foo;
+		// ok
 	}
 }
-// ok
 class D extends C {
 	quill = this.foo;
+	// ok
 }
-// ok
 class E {
 	bar = () => this.foo1 + this.foo2;
 	// both ok
@@ -9940,9 +9940,9 @@ class C {
 	// error, evaluated in scope of constructor, cannot reference x
 	constructor(x) {
 		x = 2;
+		// error, x is string
 	}
 }
-// error, x is string
 var y = 1;
 class D {
 	b = y;
@@ -10026,8 +10026,8 @@ exports[`TSC: classes derivedUninitializedPropertyDeclaration 1`] = `
 }
 class B extends A {
 	property;
+	// error
 }
-// error
 class BD extends A {
 	// ok because it's implicitly initialised
 }
@@ -10038,10 +10038,10 @@ class BOther extends A {
 	m() {
 		return 2;
 	}
+	// not allowed on methods
+	// ok, even though it's not in the base
+	// initialiser not allowed with declare
 }
-// not allowed on methods
-// ok, even though it's not in the base
-// initialiser not allowed with declare
 class U {
 	// ok, even though there's no base
 }
@@ -10050,8 +10050,8 @@ class C {
 }
 class D extends C {
 	p;
+	// error
 }
-// error
 class DD extends C {
 	// ok
 }
@@ -10074,8 +10074,8 @@ class K extends J {
 	q;
 	// ok, extends a property from an interface
 	r;
+	// error, from class
 }
-// error, from class
 // #35327
 class L {
 	a;
@@ -10087,9 +10087,9 @@ class M extends L {
 	constructor(arg) {
 		super(arg);
 		console.log(this.a);
+		// should be OK, M.a is ambient
 	}
 }
-// should be OK, M.a is ambient
 "
 `;
 
@@ -10342,9 +10342,9 @@ class Derived extends Base {
 		var r2 = super.foo({ a: 1, b: 2 });
 		// { a: number }
 		var r3 = this.foo({ a: 1, b: 2 });
+		// { a: number; b: number; }
 	}
 }
-// { a: number; b: number; }
 "
 `;
 
@@ -10598,8 +10598,8 @@ class D {
 	x;
 	set x(v) {
 	}
+	// error
 }
-// error
 class E {
 	x;
 	get x() {
@@ -10624,8 +10624,8 @@ class D {
 	x;
 	x(v) {
 	}
+	// error
 }
-// error
 "
 `;
 
@@ -10637,8 +10637,8 @@ exports[`TSC: classes propertyOverridesAccessors 1`] = `
 }
 class B extends A {
 	p = "yep";
+	// error
 }
-// error
 class C {
 	_secret = 11;
 	get p() {
@@ -10650,8 +10650,8 @@ class C {
 }
 class D extends C {
 	p = 101;
+	// error
 }
-// error
 "
 `;
 
@@ -10682,8 +10682,8 @@ exports[`TSC: classes propertyOverridesAccessors3 1`] = `
 	}
 	set sound(val) {
 		this._sound = val;
+		/* some important code here, perhaps tracking known sounds, etc */
 	}
-	/* some important code here, perhaps tracking known sounds, etc */
 	makeSound() {
 		console.log(this._sound);
 	}
@@ -10693,8 +10693,8 @@ a.makeSound();
 // 'rustling noise in the bushes'
 class Lion extends Animal {
 	sound = "RAWR!";
+	// error here
 }
-// error here
 const lion = new Lion();
 lion.makeSound();
 // with [[Define]]: Expected "RAWR!" but got "rustling noise in the bushes"
@@ -10704,8 +10704,8 @@ lion.makeSound();
 exports[`TSC: classes propertyOverridesAccessors4 1`] = `
 "class Lion extends Animal {
 	sound = "RAWR!";
+	// error here
 }
-// error here
 "
 `;
 
@@ -11085,15 +11085,15 @@ exports[`TSC: classes twoAccessorsWithSameName 1`] = `
 	get x() {
 		return 1;
 	}
+	// error
 }
-// error
 class D {
 	set x(v) {
 	}
 	set x(v) {
 	}
+	// error
 }
-// error
 class E {
 	get x() {
 		return 1;
@@ -11122,15 +11122,15 @@ exports[`TSC: classes twoAccessorsWithSameName2 1`] = `
 	static get x() {
 		return 1;
 	}
+	// error
 }
-// error
 class D {
 	static set x(v) {
 	}
 	static set x(v) {
 	}
+	// error
 }
-// error
 class E {
 	static get x() {
 		return 1;
@@ -11238,12 +11238,12 @@ c.foo(1);
 exports[`TSC: classes staticIndexSignature7 1`] = `
 "class X {
 	static x = 12;
+	// Should error, incompatible with index signature
 }
-// Should error, incompatible with index signature
 class Y {
 	static foo() {
 	}
+	// should error, incompatible with index signature
 }
-// should error, incompatible with index signature
 "
 `;

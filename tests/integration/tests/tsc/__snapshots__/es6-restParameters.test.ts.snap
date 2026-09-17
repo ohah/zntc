@@ -127,7 +127,7 @@ function f2(...args) {
 }
 function f4(...args) {
 	args[0] = "abc";
+	// Error
 }
-// Error
 "
 `;

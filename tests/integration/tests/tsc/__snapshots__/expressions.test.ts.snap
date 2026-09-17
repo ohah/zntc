@@ -320,8 +320,8 @@ x;
 let a;
 for (x of a) {
 	x;
+	// string
 }
-// string
 // Repro from #26405
 const arr = [{ x: "ok" }];
 // weak type
@@ -556,8 +556,8 @@ exports[`TSC: expressions additionOperatorWithConstrainedTypeParameter 1`] = `
 function sum(n,v,k) {
 	n = n + v[k];
 	n += v[k];
+	// += should work the same way
 }
-// += should work the same way
 function realSum(n,vs,k) {
 	for (const v of vs) {
 		n = n + v[k];
@@ -5481,12 +5481,12 @@ lhs4 instanceof Rhs12 && lhs4;
 // <- tests whether 'U' is 'any'
 if (obj instanceof A) {
 	obj;
+	// A
 }
-// A
 if (obj instanceof B) {
 	obj;
+	// B
 }
-// B
 // intersections
 // https://github.com/microsoft/TypeScript/issues/56536
 lhs0 instanceof rhs14 && lhs0;
@@ -5960,8 +5960,8 @@ t,u,v) {
 	var r4 = u || u;
 	var r5 = u || v;
 	var r6 = u || v;
+	//var r7: T = u || v;
 }
-//var r7: T = u || v;
 function fn3(t,u) {
 	var r1 = t || u;
 	var r2 = t || u;
@@ -5995,8 +5995,8 @@ function foo1() {
 	var x;
 	var y;
 	var result = (x,y);
+	//error here
 }
-//error here
 "
 `;
 
@@ -6705,9 +6705,9 @@ class C {
 		var k = (j, k) => {
 			return [j, k];
 		};
+		// Per spec, no contextual signature can be extracted in this case.
 	}
 }
-// Per spec, no contextual signature can be extracted in this case.
 "
 `;
 
@@ -7995,8 +7995,8 @@ class C {
 	}
 	get X() {
 		return "string";
+		// Error; get contextual type by set accessor parameter type annotation
 	}
-	// Error; get contextual type by set accessor parameter type annotation
 	set Y(y) {
 	}
 	get Y() {
@@ -10493,9 +10493,9 @@ exports[`TSC: expressions privateIdentifierChain.1 1`] = `
 		this?.a.#b;
 		// Error
 		this?.getA().#b;
+		// Error
 	}
 }
-// Error
 "
 `;
 
@@ -10660,8 +10660,8 @@ function foo(options) {
 	(options || {}).a = 1;
 	// Object type widened, error
 	(options || {})["a"] = 1;
+	// Object type widened, error
 }
-// Object type widened, error
 "
 `;
 
@@ -10848,17 +10848,17 @@ class ClassWithNoInitializer extends BaseErrClass {
 	//'this' in optional super call
 	constructor() {
 		super(this);
+		// Error
 	}
 }
-// Error
 class ClassWithInitializer extends BaseErrClass {
 	t = 4;
 	//'this' in required super call
 	constructor() {
 		super(this);
+		// Error
 	}
 }
-// Error
 var M;((M) => {//'this' in module variable
 var x = this;})(M || (M = {}));
 // Error
@@ -10888,17 +10888,17 @@ class ClassWithNoInitializer extends BaseErrClass {
 	//'this' in optional super call
 	constructor() {
 		super(this);
+		// error: "super" has to be called before "this" accessing
 	}
 }
-// error: "super" has to be called before "this" accessing
 class ClassWithInitializer extends BaseErrClass {
 	t = 4;
 	//'this' in required super call
 	constructor() {
 		super(this);
+		// Error
 	}
 }
-// Error
 var M;((M) => {//'this' in module variable
 var x = this;})(M || (M = {}));
 // Error
@@ -11230,18 +11230,18 @@ var V = /* @__PURE__ */ ((V) => {return V;})(V || {});
 let x;
 if (typeof x === "number") {
 	x;
-} else // number|E|V
-{
+	// number|E|V
+} else {
 	x;
+	// string
 }
-// string
 if (typeof x !== "number") {
 	x;
-} else // string
-{
+	// string
+} else {
 	x;
+	// number|E|V
 }
-// number|E|V
 "
 `;
 
@@ -11555,15 +11555,15 @@ function identifyBeast(beast) {
 function beastFoo(beast) {
 	if (hasWings(beast) && hasLegs(beast)) {
 		beast;
-	} else // Winged & Legged
-	{
+		// Winged & Legged
+	} else {
 		beast;
 	}
 	if (hasLegs(beast) && hasWings(beast)) {
 		beast;
+		// Legged & Winged
 	}
 }
-// Legged & Winged
 "
 `;
 
@@ -11639,26 +11639,26 @@ var strOrNumOrBoolOrC;
 // (typeguard1 && typeguard2)
 if (typeof strOrNumOrBool !== "string" && typeof strOrNumOrBool !== "number") {
 	bool = strOrNumOrBool;
-} else // boolean
-{
+	// boolean
+} else {
 	strOrNum = strOrNumOrBool;
+	// string | number
 }
-// string | number
 // (typeguard1 && typeguard2 && typeguard3)
 if (typeof strOrNumOrBoolOrC !== "string" && typeof strOrNumOrBoolOrC !== "number" && typeof strOrNumOrBoolOrC !== "boolean") {
 	c = strOrNumOrBoolOrC;
-} else // C
-{
+	// C
+} else {
 	strOrNumOrBool = strOrNumOrBoolOrC;
+	// string | number | boolean
 }
-// string | number | boolean
 // (typeguard1 && typeguard2 && typeguard11(onAnotherType))
 if (typeof strOrNumOrBoolOrC !== "string" && typeof strOrNumOrBoolOrC !== "number" && typeof strOrNumOrBool === "boolean") {
 	cOrBool = strOrNumOrBoolOrC;
 	// C | boolean
 	bool = strOrNumOrBool;
-} else // boolean
-{
+	// boolean
+} else {
 	var r1 = strOrNumOrBoolOrC;
 	// string | number | boolean | C
 	var r2 = strOrNumOrBool;
@@ -11666,11 +11666,11 @@ if (typeof strOrNumOrBoolOrC !== "string" && typeof strOrNumOrBoolOrC !== "numbe
 // (typeguard1) && simpleExpr
 if (typeof strOrNumOrBool !== "string" && numOrBool !== strOrNumOrBool) {
 	numOrBool = strOrNumOrBool;
-} else // number | boolean
-{
+	// number | boolean
+} else {
 	var r3 = strOrNumOrBool;
+	// string | number | boolean
 }
-// string | number | boolean
 "
 `;
 
@@ -11694,19 +11694,19 @@ var strOrNumOrBoolOrC;
 // (typeguard1 || typeguard2)
 if (typeof strOrNumOrBool === "string" || typeof strOrNumOrBool === "number") {
 	strOrNum = strOrNumOrBool;
-} else // string | number
-{
+	// string | number
+} else {
 	bool = strOrNumOrBool;
+	// boolean
 }
-// boolean
 // (typeguard1 || typeguard2 || typeguard3)
 if (typeof strOrNumOrBoolOrC === "string" || typeof strOrNumOrBoolOrC === "number" || typeof strOrNumOrBoolOrC === "boolean") {
 	strOrNumOrBool = strOrNumOrBoolOrC;
-} else // string | number | boolean
-{
+	// string | number | boolean
+} else {
 	c = strOrNumOrBoolOrC;
+	// C
 }
-// C
 // (typeguard1 || typeguard2 || typeguard11(onAnotherType))
 if (typeof strOrNumOrBoolOrC === "string" || typeof strOrNumOrBoolOrC === "number" || typeof strOrNumOrBool !== "boolean") {
 	var r1 = strOrNumOrBoolOrC;
@@ -11716,16 +11716,16 @@ if (typeof strOrNumOrBoolOrC === "string" || typeof strOrNumOrBoolOrC === "numbe
 	cOrBool = strOrNumOrBoolOrC;
 	// C | boolean
 	bool = strOrNumOrBool;
+	// boolean
 }
-// boolean
 // (typeguard1) || simpleExpr
 if (typeof strOrNumOrBool === "string" || numOrBool !== strOrNumOrBool) {
 	var r3 = strOrNumOrBool;
-} else // string | number | boolean
-{
+	// string | number | boolean
+} else {
 	numOrBool = strOrNumOrBool;
+	// number | boolean
 }
-// number | boolean
 "
 `;
 
@@ -11783,36 +11783,36 @@ var r2 = ctor2 instanceof C1 && ctor2;
 var ctor3;
 if (ctor3 instanceof C1) {
 	ctor3.p1;
-} else // C1
-{
+	// C1
+} else {
 	ctor3.p2;
+	// C2
 }
-// C2
 var ctor4;
 if (ctor4 instanceof C1) {
 	ctor4.p1;
-} else // C1
-if (ctor4 instanceof C2) {
+	// C1
+} else if (ctor4 instanceof C2) {
 	ctor4.p2;
-} else // C2
-{
+	// C2
+} else {
 	ctor4.p4;
+	// C3
 }
-// C3
 var ctor5;
 if (ctor5 instanceof C1) {
 	ctor5.p1;
-} else // C1
-{
+	// C1
+} else {
 	ctor5.p2;
+	// C2
 }
-// C2
 var ctor6;
 if (ctor6 instanceof C1 || ctor6 instanceof C2) {
 } else {
 	ctor6.p4;
+	// C3
 }
-// C3
 "
 `;
 
@@ -11942,51 +11942,51 @@ var numOrBool;
 // !typeguard1
 if (!(typeof strOrNum === "string")) {
 	num === strOrNum;
-} else // number
-{
+	// number
+} else {
 	str = strOrNum;
+	// string
 }
-// string
 // !(typeguard1 || typeguard2)
 if (!(typeof strOrNumOrBool === "string" || typeof strOrNumOrBool === "number")) {
 	bool = strOrNumOrBool;
-} else // boolean
-{
+	// boolean
+} else {
 	strOrNum = strOrNumOrBool;
+	// string | number
 }
-// string | number
 // !(typeguard1) || !(typeguard2)
 if (!(typeof strOrNumOrBool !== "string") || !(typeof strOrNumOrBool !== "number")) {
 	strOrNum = strOrNumOrBool;
-} else // string | number
-{
+	// string | number
+} else {
 	bool = strOrNumOrBool;
+	// boolean
 }
-// boolean
 // !(typeguard1 && typeguard2)
 if (!(typeof strOrNumOrBool !== "string" && typeof strOrNumOrBool !== "number")) {
 	strOrNum = strOrNumOrBool;
-} else // string | number
-{
+	// string | number
+} else {
 	bool = strOrNumOrBool;
+	// boolean
 }
-// boolean
 // !(typeguard1) && !(typeguard2)
 if (!(typeof strOrNumOrBool === "string") && !(typeof strOrNumOrBool === "number")) {
 	bool = strOrNumOrBool;
-} else // boolean
-{
+	// boolean
+} else {
 	strOrNum = strOrNumOrBool;
+	// string | number
 }
-// string | number
 // !(typeguard1) && simpleExpr
 if (!(typeof strOrNumOrBool === "string") && numOrBool !== strOrNumOrBool) {
 	numOrBool = strOrNumOrBool;
-} else // number | boolean
-{
+	// number | boolean
+} else {
 	var r1 = strOrNumOrBool;
+	// string | number | boolean
 }
-// string | number | boolean
 "
 `;
 
@@ -12012,77 +12012,77 @@ var c;
 //  - when false, removes the primitive type from the type of x.
 if (typeof strOrBool === "boolean") {
 	bool = strOrBool;
-} else // boolean
-{
+	// boolean
+} else {
 	str = strOrBool;
+	// string
 }
-// string
 if (typeof numOrBool === "boolean") {
 	bool = numOrBool;
-} else // boolean
-{
+	// boolean
+} else {
 	num = numOrBool;
+	// number
 }
-// number
 if (typeof strOrNumOrBool === "boolean") {
 	bool = strOrNumOrBool;
-} else // boolean
-{
+	// boolean
+} else {
 	strOrNum = strOrNumOrBool;
+	// string | number
 }
-// string | number
 if (typeof boolOrC === "boolean") {
 	bool = boolOrC;
-} else // boolean
-{
+	// boolean
+} else {
 	c = boolOrC;
+	// C
 }
-// C
 if (typeof strOrNum === "boolean") {
 	let z1 = strOrNum;
-} else // {}
-{
+	// {}
+} else {
 	let z2 = strOrNum;
+	// string | number
 }
-// string | number
 // A type guard of the form typeof x !== s, where s is a string literal,
 //  - when true, narrows the type of x by typeof x === s when false, or
 //  - when false, narrows the type of x by typeof x === s when true.
 if (typeof strOrBool !== "boolean") {
 	str = strOrBool;
-} else // string
-{
+	// string
+} else {
 	bool = strOrBool;
+	// boolean
 }
-// boolean
 if (typeof numOrBool !== "boolean") {
 	num = numOrBool;
-} else // number
-{
+	// number
+} else {
 	bool = numOrBool;
+	// boolean
 }
-// boolean
 if (typeof strOrNumOrBool !== "boolean") {
 	strOrNum = strOrNumOrBool;
-} else // string | number
-{
+	// string | number
+} else {
 	bool = strOrNumOrBool;
+	// boolean
 }
-// boolean
 if (typeof boolOrC !== "boolean") {
 	c = boolOrC;
-} else // C
-{
+	// C
+} else {
 	bool = boolOrC;
+	// boolean
 }
-// boolean
 if (typeof strOrNum !== "boolean") {
 	let z1 = strOrNum;
-} else // string | number
-{
+	// string | number
+} else {
 	let z2 = strOrNum;
+	// {}
 }
-// {}
 "
 `;
 
@@ -12094,32 +12094,32 @@ exports[`TSC: expressions typeGuardOfFormTypeOfEqualEqualHasNoEffect 1`] = `
 // typeof x == s has not effect on typeguard
 if (typeof strOrNum == "string") {
 	var r1 = strOrNum;
-} else // string | number
-{
+	// string | number
+} else {
 	var r1 = strOrNum;
+	// string | number
 }
-// string | number
 if (typeof strOrBool == "boolean") {
 	var r2 = strOrBool;
-} else // string | boolean
-{
+	// string | boolean
+} else {
 	var r2 = strOrBool;
+	// string | boolean
 }
-// string | boolean
 if (typeof numOrBool == "number") {
 	var r3 = numOrBool;
-} else // number | boolean
-{
+	// number | boolean
+} else {
 	var r3 = numOrBool;
+	// number | boolean
 }
-// number | boolean
 if (typeof strOrC == "Object") {
 	var r4 = strOrC;
-} else // string | C
-{
+	// string | C
+} else {
 	var r4 = strOrC;
+	// string | C
 }
-// string | C
 "
 `;
 
@@ -12127,66 +12127,66 @@ exports[`TSC: expressions typeGuardOfFormTypeOfFunction 1`] = `
 "function f1(x) {
 	if (typeof x === "function") {
 		x;
+		// any
 	}
 }
-// any
 function f2(x) {
 	if (typeof x === "function") {
 		x;
+		// Function
 	}
 }
-// Function
 function f3(x) {
 	if (typeof x === "function") {
 		x;
+		// Function
 	}
 }
-// Function
 function f4(x) {
 	if (typeof x === "function") {
 		x;
+		// T & Function
 	}
 }
-// T & Function
 function f5(x) {
 	if (typeof x === "function") {
 		x;
+		// never
 	}
 }
-// never
 function f6(x) {
 	if (typeof x === "function") {
 		x;
+		// () => string
 	}
 }
-// () => string
 function f10(x) {
 	if (typeof x === "function") {
 		x;
-	} else // () => string
-	{
+		// () => string
+	} else {
 		x;
+		// string
 	}
 }
-// string
 function f11(x) {
 	if (typeof x === "function") {
 		x;
-	} else // () => string
-	{
+		// () => string
+	} else {
 		x;
+		// { s: string }
 	}
 }
-// { s: string }
 function f12(x) {
 	if (typeof x === "function") {
 		x;
-	} else // never
-	{
+		// never
+	} else {
 		x;
+		// { s: string } | { n: number }
 	}
 }
-// { s: string } | { n: number }
 // Repro from #18238
 function f100(obj,keys) {
 	for (const k of keys) {
@@ -12247,32 +12247,32 @@ exports[`TSC: expressions typeGuardOfFormTypeOfNotEqualHasNoEffect 1`] = `
 // typeof x != s has not effect on typeguard
 if (typeof strOrNum != "string") {
 	var r1 = strOrNum;
-} else // string | number
-{
+	// string | number
+} else {
 	var r1 = strOrNum;
+	// string | number
 }
-// string | number
 if (typeof strOrBool != "boolean") {
 	var r2 = strOrBool;
-} else // string | boolean
-{
+	// string | boolean
+} else {
 	var r2 = strOrBool;
+	// string | boolean
 }
-// string | boolean
 if (typeof numOrBool != "number") {
 	var r3 = numOrBool;
-} else // number | boolean
-{
+	// number | boolean
+} else {
 	var r3 = numOrBool;
+	// number | boolean
 }
-// number | boolean
 if (typeof strOrC != "Object") {
 	var r4 = strOrC;
-} else // string | C
-{
+	// string | C
+} else {
 	var r4 = strOrC;
+	// string | C
 }
-// string | C
 "
 `;
 
@@ -12298,77 +12298,77 @@ var c;
 //  - when false, removes the primitive type from the type of x.
 if (typeof strOrNum === "number") {
 	num = strOrNum;
-} else // number
-{
+	// number
+} else {
 	str === strOrNum;
+	// string
 }
-// string
 if (typeof numOrBool === "number") {
 	num = numOrBool;
-} else // number
-{
+	// number
+} else {
 	var x = numOrBool;
+	// number | boolean
 }
-// number | boolean
 if (typeof strOrNumOrBool === "number") {
 	num = strOrNumOrBool;
-} else // number
-{
+	// number
+} else {
 	strOrBool = strOrNumOrBool;
+	// string | boolean
 }
-// string | boolean
 if (typeof numOrC === "number") {
 	num = numOrC;
-} else // number
-{
+	// number
+} else {
 	c = numOrC;
+	// C
 }
-// C
 if (typeof strOrBool === "number") {
 	let y1 = strOrBool;
-} else // {}
-{
+	// {}
+} else {
 	let y2 = strOrBool;
+	// string | boolean
 }
-// string | boolean
 // A type guard of the form typeof x !== s, where s is a string literal,
 //  - when true, narrows the type of x by typeof x === s when false, or
 //  - when false, narrows the type of x by typeof x === s when true.
 if (typeof strOrNum !== "number") {
 	str === strOrNum;
-} else // string
-{
+	// string
+} else {
 	num = strOrNum;
+	// number
 }
-// number
 if (typeof numOrBool !== "number") {
 	var x = numOrBool;
-} else // number | boolean
-{
+	// number | boolean
+} else {
 	num = numOrBool;
+	// number
 }
-// number
 if (typeof strOrNumOrBool !== "number") {
 	strOrBool = strOrNumOrBool;
-} else // string | boolean
-{
+	// string | boolean
+} else {
 	num = strOrNumOrBool;
+	// number
 }
-// number
 if (typeof numOrC !== "number") {
 	c = numOrC;
-} else // C
-{
+	// C
+} else {
 	num = numOrC;
+	// number
 }
-// number
 if (typeof strOrBool !== "number") {
 	let y1 = strOrBool;
-} else // string | boolean
-{
+	// string | boolean
+} else {
 	let y2 = strOrBool;
+	// {}
 }
-// {}
 "
 `;
 
@@ -12392,71 +12392,71 @@ var c;
 //  - when false, has no effect on the type of x.
 if (typeof strOrC === "Object") {
 	c = strOrC;
-} else // C
-{
+	// C
+} else {
 	var r2 = strOrC;
+	// string
 }
-// string
 if (typeof numOrC === "Object") {
 	c = numOrC;
-} else // C
-{
+	// C
+} else {
 	var r3 = numOrC;
+	// number
 }
-// number
 if (typeof boolOrC === "Object") {
 	c = boolOrC;
-} else // C
-{
+	// C
+} else {
 	var r4 = boolOrC;
+	// boolean
 }
-// boolean
 if (typeof strOrC === "Object") {
 	// comparison is OK with cast
 	c = strOrC;
-} else // error: but no narrowing to C
-{
+	// error: but no narrowing to C
+} else {
 	var r5 = strOrC;
+	// error: no narrowing to string
 }
-// error: no narrowing to string
 if (typeof strOrNumOrBool === "Object") {
 	let q1 = strOrNumOrBool;
-} else // {}
-{
+	// {}
+} else {
 	let q2 = strOrNumOrBool;
+	// string | number | boolean
 }
-// string | number | boolean
 // A type guard of the form typeof x !== s, where s is a string literal,
 //  - when true, narrows the type of x by typeof x === s when false, or
 //  - when false, narrows the type of x by typeof x === s when true.
 if (typeof strOrC !== "Object") {
 	var r2 = strOrC;
-} else // string
-{
+	// string
+} else {
 	c = strOrC;
+	// C
 }
-// C
 if (typeof numOrC !== "Object") {
 	var r3 = numOrC;
-} else // number
-{
+	// number
+} else {
 	c = numOrC;
+	// C
 }
-// C
 if (typeof boolOrC !== "Object") {
 	var r4 = boolOrC;
-} else // boolean
-{
+	// boolean
+} else {
 	c = boolOrC;
+	// C
 }
-// C
 if (typeof strOrNumOrBool !== "Object") {
 	let q1 = strOrNumOrBool;
-} else // string | number | boolean
-{
+	// string | number | boolean
+} else {
 	let q2 = strOrNumOrBool;
+	// {}
 }
-// {}
 "
 `;
 
@@ -12506,77 +12506,77 @@ var c;
 //  - when false, removes the primitive type from the type of x.
 if (typeof strOrNum === "string") {
 	str = strOrNum;
-} else // string
-{
+	// string
+} else {
 	num === strOrNum;
+	// number
 }
-// number
 if (typeof strOrBool === "string") {
 	str = strOrBool;
-} else // string
-{
+	// string
+} else {
 	bool = strOrBool;
+	// boolean
 }
-// boolean
 if (typeof strOrNumOrBool === "string") {
 	str = strOrNumOrBool;
-} else // string
-{
+	// string
+} else {
 	numOrBool = strOrNumOrBool;
+	// number | boolean
 }
-// number | boolean
 if (typeof strOrC === "string") {
 	str = strOrC;
-} else // string
-{
+	// string
+} else {
 	c = strOrC;
+	// C
 }
-// C
 if (typeof numOrBool === "string") {
 	let x1 = numOrBool;
-} else // {}
-{
+	// {}
+} else {
 	let x2 = numOrBool;
+	// number | boolean
 }
-// number | boolean
 // A type guard of the form typeof x !== s, where s is a string literal,
 //  - when true, narrows the type of x by typeof x === s when false, or
 //  - when false, narrows the type of x by typeof x === s when true.
 if (typeof strOrNum !== "string") {
 	num === strOrNum;
-} else // number
-{
+	// number
+} else {
 	str = strOrNum;
+	// string
 }
-// string
 if (typeof strOrBool !== "string") {
 	bool = strOrBool;
-} else // boolean
-{
+	// boolean
+} else {
 	str = strOrBool;
+	// string
 }
-// string
 if (typeof strOrNumOrBool !== "string") {
 	numOrBool = strOrNumOrBool;
-} else // number | boolean
-{
+	// number | boolean
+} else {
 	str = strOrNumOrBool;
+	// string
 }
-// string
 if (typeof strOrC !== "string") {
 	c = strOrC;
-} else // C
-{
+	// C
+} else {
 	str = strOrC;
+	// string
 }
-// string
 if (typeof numOrBool !== "string") {
 	let x1 = numOrBool;
-} else // number | boolean
-{
+	// number | boolean
+} else {
 	let x2 = numOrBool;
+	// {}
 }
-// {}
 "
 `;
 
@@ -12703,17 +12703,17 @@ function foo(x) {
 	if (typeof x === "string") {
 		f();
 		return x.length;
-	} else // string
-	{
+		// string
+	} else {
 		return x++;
+		// number
 	}
 }
-// number
 function foo2(x) {
 	if (typeof x === "string") {
 		return x.length;
-	} else // string
-	{
+		// string
+	} else {
 		var f = function() {
 			return x * x;
 		};
@@ -12724,8 +12724,8 @@ function foo2(x) {
 function foo3(x) {
 	if (typeof x === "string") {
 		return x.length;
-	} else // string
-	{
+		// string
+	} else {
 		var f = () => x * x;
 	}
 	x = "hello";
@@ -12764,8 +12764,8 @@ class ClassWithAccessors {
 		// variables in function declaration
 		var var2;
 		num = typeof var2 === "string" && var2.length;
+		// string
 	}
-	// string
 	// Inside private accessor getter
 	get pp1() {
 		// global vars in function declaration
@@ -12788,8 +12788,8 @@ class ClassWithAccessors {
 		// variables in function declaration
 		var var2;
 		num = typeof var2 === "string" && var2.length;
+		// string
 	}
-	// string
 	// Inside static accessor getter
 	static get s1() {
 		// global vars in function declaration
@@ -12812,8 +12812,8 @@ class ClassWithAccessors {
 		// variables in function declaration
 		var var2;
 		num = typeof var2 === "string" && var2.length;
+		// string
 	}
-	// string
 	// Inside private static accessor getter
 	static get ss1() {
 		// global vars in function declaration
@@ -12836,9 +12836,9 @@ class ClassWithAccessors {
 		// variables in function declaration
 		var var2;
 		num = typeof var2 === "string" && var2.length;
+		// string
 	}
 }
-// string
 "
 `;
 
@@ -12859,8 +12859,8 @@ class C1 {
 		// string
 		// parameters in function declaration
 		num = typeof param === "string" && param.length;
+		// string
 	}
-	// string
 	// Inside function declaration
 	p1(param) {
 		// global vars in function declaration
@@ -12872,8 +12872,8 @@ class C1 {
 		// string
 		// parameters in function declaration
 		num = typeof param === "string" && param.length;
+		// string
 	}
-	// string
 	// Inside function declaration
 	p2(param) {
 		// global vars in function declaration
@@ -12885,8 +12885,8 @@ class C1 {
 		// string
 		// parameters in function declaration
 		num = typeof param === "string" && param.length;
+		// string
 	}
-	// string
 	// Inside function declaration
 	static s1(param) {
 		// global vars in function declaration
@@ -12898,8 +12898,8 @@ class C1 {
 		// string
 		// parameters in function declaration
 		num = typeof param === "string" && param.length;
+		// string
 	}
-	// string
 	// Inside function declaration
 	static s2(param) {
 		// global vars in function declaration
@@ -12911,9 +12911,9 @@ class C1 {
 		// string
 		// parameters in function declaration
 		num = typeof param === "string" && param.length;
+		// string
 	}
 }
-// string
 "
 `;
 
@@ -12927,62 +12927,62 @@ exports[`TSC: expressions typeGuardsInConditionalExpression 1`] = `
 function foo(x) {
 	return typeof x === "string" ? x.length : // string
 	x++;
+	// number
 }
-// number
 function foo2(x) {
 	return typeof x === "string" ? (x = "hello") && x : // string
 	x;
+	// number
 }
-// number
 function foo3(x) {
 	return typeof x === "string" ? (x = 10) && x : // number
 	x;
+	// number
 }
-// number
 function foo4(x) {
 	return typeof x === "string" ? x : // string
 	(x = 10) && x;
+	// number
 }
-// number
 function foo5(x) {
 	return typeof x === "string" ? x : // string
 	(x = "hello") && x;
+	// string
 }
-// string
 function foo6(x) {
 	// Modify in both branches
 	return typeof x === "string" ? (x = 10) && x : // number
 	(x = "hello") && x;
+	// string
 }
-// string
 function foo7(x) {
 	return typeof x === "string" ? x === "hello" : // boolean
 	typeof x === "boolean" ? x : // boolean
 	x == 10;
+	// boolean
 }
-// boolean
 function foo8(x) {
 	var b;
 	return typeof x === "string" ? x === "hello" : (b = x) && //  number | boolean
 	(typeof x === "boolean" ? x : // boolean
 	x == 10);
+	// boolean
 }
-// boolean
 function foo9(x) {
 	var y = 10;
 	// usage of x or assignment to separate variable shouldn't cause narrowing of type to stop
 	return typeof x === "string" ? (y = x.length) && x === "hello" : // boolean
 	x === 10;
+	// boolean
 }
-// boolean
 function foo10(x) {
 	// Mixing typeguards
 	var b;
 	return typeof x === "string" ? x : // string
 	(b = x) && // x is number | boolean
 	typeof x === "number" && x.toString();
+	// x is number
 }
-// x is number
 function foo11(x) {
 	// Mixing typeguards
 	var b;
@@ -12990,16 +12990,16 @@ function foo11(x) {
 	(b = x) && // x is number | boolean
 	typeof x === "number" && (x = 10) && // assignment to x
 	x;
+	// x is number
 }
-// x is number
 function foo12(x) {
 	// Mixing typeguards
 	var b;
 	return typeof x === "string" ? (x = 10) && x.toString().length : // number
 	(b = x) && // x is number | boolean
 	typeof x === "number" && x;
+	// x is number
 }
-// x is number
 "
 `;
 
@@ -13013,8 +13013,8 @@ function a(x) {
 		x = undefined;
 	} while (typeof x === "string");
 	x;
+	// number | boolean
 }
-// number | boolean
 function b(x) {
 	x = true;
 	do {
@@ -13024,8 +13024,8 @@ function b(x) {
 		x = undefined;
 	} while (typeof x === "string");
 	x;
+	// number | boolean
 }
-// number | boolean
 function c(x) {
 	x = "";
 	do {
@@ -13035,8 +13035,8 @@ function c(x) {
 		x = undefined;
 	} while (typeof x === "string");
 	x;
+	// string | number
 }
-// string | number
 "
 `;
 
@@ -13048,22 +13048,22 @@ var num;
 var var1;
 if (typeof var1 === "string") {
 	num = var1.length;
-} else // string
-{
+	// string
+} else {
 	num = var1;
+	// number
 }
-// number
 // exported variable in external module
 var strOrNum;
 export var var2;
 if (typeof var2 === "string") {
 	// export makes the var property and not variable
 	strOrNum = var2;
-} else // string | number
-{
+	// string | number
+} else {
 	strOrNum = var2;
+	// number | string
 }
-// number | string
 "
 `;
 
@@ -13072,11 +13072,11 @@ exports[`TSC: expressions typeGuardsInForStatement 1`] = `
 function a(x) {
 	for (x = undefined; typeof x !== "number"; x = undefined) {
 		x;
+		// string
 	}
-	// string
 	x;
+	// number
 }
-// number
 function b(x) {
 	for (x = undefined; typeof x !== "number"; x = undefined) {
 		x;
@@ -13084,8 +13084,8 @@ function b(x) {
 		if (cond)continue;
 	}
 	x;
+	// number
 }
-// number
 function c(x) {
 	for (x = undefined; typeof x !== "number"; x = undefined) {
 		x;
@@ -13093,8 +13093,8 @@ function c(x) {
 		if (cond)break;
 	}
 	x;
+	// string | number
 }
-// string | number
 "
 `;
 
@@ -13115,8 +13115,8 @@ function f(param) {
 	// string
 	// parameters in function declaration
 	num = typeof param === "string" && param.length;
+	// string
 }
-// string
 // local function declaration
 function f1(param) {
 	var var2;
@@ -13135,9 +13135,9 @@ function f1(param) {
 		num = typeof var3 === "string" && var3.length;
 		// string
 		num = typeof param1 === "string" && param1.length;
+		// string
 	}
 }
-// string
 // Function expression
 function f2(param) {
 	// variables in function declaration
@@ -13158,8 +13158,8 @@ function f2(param) {
 		num = typeof var3 === "string" && var3.length;
 		// string
 		num = typeof param1 === "string" && param1.length;
-	})(// string
-	param);
+		// string
+	})(param);
 }
 // Arrow expression
 function f3(param) {
@@ -13181,8 +13181,8 @@ function f3(param) {
 		num = typeof var3 === "string" && var3.length;
 		// string
 		num = typeof param1 === "string" && param1.length;
-	})(// string
-	param);
+		// string
+	})(param);
 }
 // Return type of function
 // Inside function declaration
@@ -13204,38 +13204,38 @@ function foo(x) {
 		// number | boolean
 		return typeof x === "boolean" ? x.toString() : // boolean
 		x.toString();
+		// number
 	})();
 }
-// number
 function foo2(x) {
 	return typeof x === "string" ? x : (function f(a) {
 		var b = x;
 		// new scope - number | boolean
 		return typeof x === "boolean" ? x.toString() : // boolean
 		x.toString();
-	})(// number
-	x);
+		// number
+	})(x);
+	// x here is narrowed to number | boolean
 }
-// x here is narrowed to number | boolean
 function foo3(x) {
 	return typeof x === "string" ? x : (() => {
 		var b = x;
 		// new scope - number | boolean
 		return typeof x === "boolean" ? x.toString() : // boolean
 		x.toString();
+		// number
 	})();
 }
-// number
 function foo4(x) {
 	return typeof x === "string" ? x : ((a) => {
 		var b = x;
 		// new scope - number | boolean
 		return typeof x === "boolean" ? x.toString() : // boolean
 		x.toString();
-	})(// number
-	x);
+		// number
+	})(x);
+	// x here is narrowed to number | boolean
 }
-// x here is narrowed to number | boolean
 // Type guards do not affect nested function declarations
 function foo5(x) {
 	if (typeof x === "string") {
@@ -13243,28 +13243,28 @@ function foo5(x) {
 		// string;
 		function foo() {
 			var z = x;
+			// string
 		}
 	}
 }
-// string
 var m;((m) => {var x;let m2;((m2) => {var b = x;// new scope - number | boolean | string
 var y;if (typeof x === "string") {
 	y = x;
-} else // string;
-{
+	// string;
+} else {
 	y = typeof x === "boolean" ? x.toString() : // boolean
 	x.toString();
+	// number
 }})(m2 = m.m2 || (m.m2 = {}));})(m || (m = {}));
-// number
 var m1;((m1) => {var x;let m2;((m2) => {let m3;((m3) => {var b = x;// new scope - number | boolean | string
 var y;if (typeof x === "string") {
 	y = x;
-} else // string;
-{
+	// string;
+} else {
 	y = typeof x === "boolean" ? x.toString() : // boolean
 	x.toString();
+	// number
 }})(m3 = m2.m3 || (m2.m3 = {}));})(m2 = m1.m2 || (m1.m2 = {}));})(m1 || (m1 = {}));
-// number
 "
 `;
 
@@ -13276,11 +13276,11 @@ var num;
 var var1;
 if (typeof var1 === "string") {
 	num = var1.length;
-} else // string
-{
+	// string
+} else {
 	num = var1;
+	// number
 }
-// number
 "
 `;
 
@@ -13292,124 +13292,124 @@ exports[`TSC: expressions typeGuardsInIfStatement 1`] = `
 function foo(x) {
 	if (typeof x === "string") {
 		return x.length;
-	} else // string
-	{
+		// string
+	} else {
 		return x++;
+		// number
 	}
 }
-// number
 function foo2(x) {
 	if (typeof x === "string") {
 		x = 10;
 		return x;
-	} else // number
-	{
+		// number
+	} else {
 		return x;
+		// number
 	}
 }
-// number
 function foo3(x) {
 	if (typeof x === "string") {
 		x = "Hello";
 		return x;
-	} else // string
-	{
+		// string
+	} else {
 		return x;
+		// number
 	}
 }
-// number
 function foo4(x) {
 	if (typeof x === "string") {
 		return x;
-	} else // string
-	{
+		// string
+	} else {
 		x = 10;
 		return x;
+		// number
 	}
 }
-// number
 function foo5(x) {
 	if (typeof x === "string") {
 		return x;
-	} else // string
-	{
+		// string
+	} else {
 		x = "hello";
 		return x;
+		// string
 	}
 }
-// string
 function foo6(x) {
 	if (typeof x === "string") {
 		x = 10;
 		return x;
-	} else // number
-	{
+		// number
+	} else {
 		x = "hello";
 		return x;
+		// string
 	}
 }
-// string
 function foo7(x) {
 	if (typeof x === "string") {
 		return x === "hello";
-	} else // string
-	if (typeof x === "boolean") {
+		// string
+	} else if (typeof x === "boolean") {
 		return x;
-	} else // boolean
-	{
+		// boolean
+	} else {
 		return x == 10;
+		// number
 	}
 }
-// number
 function foo8(x) {
 	if (typeof x === "string") {
 		return x === "hello";
-	} else // string
-	{
+		// string
+	} else {
 		var b = x;
 		//  number | boolean
 		if (typeof x === "boolean") {
 			return x;
-		} else // boolean
-		{
+			// boolean
+		} else {
 			return x == 10;
+			// number
 		}
 	}
 }
-// number
 function foo9(x) {
 	var y = 10;
 	if (typeof x === "string") {
 		// usage of x or assignment to separate variable shouldn't cause narrowing of type to stop
 		y = x.length;
 		return x === "hello";
-	} else // string
-	{
+		// string
+	} else {
 		return x == 10;
+		// number
 	}
 }
-// number
 function foo10(x) {
 	// Mixing typeguard narrowing in if statement with conditional expression typeguard
 	if (typeof x === "string") {
 		return x === "hello";
-	} else // string
-	{
+		// string
+	} else {
 		var y;
 		var b = x;
 		// number | boolean
 		return typeof x === "number" ? x === 10 : // number
 		x;
+		// x should be boolean
 	}
 }
-// x should be boolean
 function foo11(x) {
 	// Mixing typeguard narrowing in if statement with conditional expression typeguard
 	// Assigning value to x deep inside another guard stops narrowing of type too
 	if (typeof x === "string") {
 		return x;
-	} else // string | number | boolean - x changed in else branch
-	{
+		// string | number | boolean - x changed in else branch
+	} else {
 		var y;
 		var b = x;
 		// number | boolean | string - because below we are changing value of x in if statement
@@ -13417,24 +13417,24 @@ function foo11(x) {
 		x = 10 && x.toString() : // number | boolean | string
 		// do not change value
 		y = x && x.toString();
+		// number | boolean | string
 	}
 }
-// number | boolean | string
 function foo12(x) {
 	// Mixing typeguard narrowing in if statement with conditional expression typeguard
 	// Assigning value to x in outer guard shouldn't stop narrowing in the inner expression
 	if (typeof x === "string") {
 		return x.toString();
-	} else // string | number | boolean - x changed in else branch
-	{
+		// string | number | boolean - x changed in else branch
+	} else {
 		x = 10;
 		var b = x;
 		// number | boolean | string
 		return typeof x === "number" ? x.toString() : // number
 		x.toString();
+		// boolean | string
 	}
 }
-// boolean | string
 "
 `;
 
@@ -13451,18 +13451,18 @@ num = typeof var1 === "string" && var1.length;// string
 // variables in module declaration
 var var2;if (typeof var2 === "string") {
 	num = var2.length;
-} else // string
-{
+	// string
+} else {
 	num = var2;
-}// number
-// exported variable in the module
+	// number
+}// exported variable in the module
 if (typeof m1.var3 === "string") {
 	strOrNum = m1.var3;
-} else // string | number
-{
+	// string | number
+} else {
 	strOrNum = m1.var3;
+	// string | number
 }})(m1 || (m1 = {}));
-// string | number
 // local module
 var m2;((m2) => {var var2;let m3;((m3) => {// global vars in function declaration
 num = typeof var1 === "string" && var1.length;// string
@@ -13473,36 +13473,36 @@ strOrNum = typeof var3 === "string" && var3;// string | number
 // variables in module declaration
 var var4;if (typeof var4 === "string") {
 	num = var4.length;
-} else // string
-{
+	// string
+} else {
 	num = var4;
-}// number
-// exported variable in the module
+	// number
+}// exported variable in the module
 if (typeof m3.var5 === "string") {
 	strOrNum = m3.var5;
-} else // string | number
-{
+	// string | number
+} else {
 	strOrNum = m3.var5;
+	// string | number
 }})(m3 = m2.m3 || (m2.m3 = {}));})(m2 || (m2 = {}));
-// string | number
 // Dotted module
 var m3;((m3) => {let m4;((m4) => {// global vars in function declaration
 num = typeof var1 === "string" && var1.length;// string
 // variables in module declaration
 var var2;if (typeof var2 === "string") {
 	num = var2.length;
-} else // string
-{
+	// string
+} else {
 	num = var2;
-}// number
-// exported variable in the module
+	// number
+}// exported variable in the module
 if (typeof m4.var3 === "string") {
 	strOrNum = m4.var3;
-} else // string | number
-{
+	// string | number
+} else {
 	strOrNum = m4.var3;
+	// string | number
 }})(m4 = m3.m4 || (m3.m4 = {}));})(m3 || (m3 = {}));
-// string | number
 "
 `;
 
@@ -13524,9 +13524,9 @@ class C1 {
 		strOrNum = typeof this.pp2 === "string" && this.pp2;
 		// string | number
 		strOrNum = typeof this.pp3 === "string" && this.pp3;
+		// string | number
 	}
 }
-// string | number
 var c1;
 strOrNum = typeof c1.pp2 === "string" && c1.pp2;
 // string | number
@@ -13543,40 +13543,40 @@ exports[`TSC: expressions typeGuardsInRightOperandOfAndAndOperator 1`] = `
 // the type of a variable or parameter is narrowed by any type guard in the left operand when true.
 function foo(x) {
 	return typeof x === "string" && x.length === 10;
+	// string
 }
-// string
 function foo2(x) {
 	// modify x in right hand operand
 	return typeof x === "string" && ((x = 10) && x);
+	// string | number
 }
-// string | number
 function foo3(x) {
 	// modify x in right hand operand with string type itself
 	return typeof x === "string" && ((x = "hello") && x);
+	// string | number
 }
-// string | number
 function foo4(x) {
 	return typeof x !== "string" && // string | number | boolean
 	typeof x !== "number" && // number | boolean
 	x;
+	// boolean
 }
-// boolean
 function foo5(x) {
 	// usage of x or assignment to separate variable shouldn't cause narrowing of type to stop
 	var b;
 	return typeof x !== "string" && // string | number | boolean
 	((b = x) && (typeof x !== "number" && // number | boolean
 	x));
+	// boolean
 }
-// boolean
 function foo6(x) {
 	// Mixing typeguard narrowing in if statement with conditional expression typeguard
 	return typeof x !== "string" && // string | number | boolean
 	(typeof x !== "number" ? // number | boolean
 	x : // boolean
 	x === 10);
+	// number
 }
-// number 
 function foo7(x) {
 	var y;
 	var z;
@@ -13586,8 +13586,8 @@ function foo7(x) {
 	(x = 10) && x.toString() : // x is number
 	// do not change value
 	(y = x) && x.toString()));
+	// x is boolean
 }
-// x is boolean
 "
 `;
 
@@ -13597,40 +13597,40 @@ exports[`TSC: expressions typeGuardsInRightOperandOfOrOrOperator 1`] = `
 // provided the right operand contains no assignments to the variable or parameter.
 function foo(x) {
 	return typeof x !== "string" || x.length === 10;
+	// string
 }
-// string
 function foo2(x) {
 	// modify x in right hand operand
 	return typeof x !== "string" || ((x = 10) || x);
+	// string | number
 }
-// string | number
 function foo3(x) {
 	// modify x in right hand operand with string type itself
 	return typeof x !== "string" || ((x = "hello") || x);
+	// string | number
 }
-// string | number
 function foo4(x) {
 	return typeof x === "string" || // string | number | boolean
 	typeof x === "number" || // number | boolean
 	x;
+	// boolean
 }
-// boolean
 function foo5(x) {
 	// usage of x or assignment to separate variable shouldn't cause narrowing of type to stop
 	var b;
 	return typeof x === "string" || // string | number | boolean
 	((b = x) || (typeof x === "number" || // number | boolean
 	x));
+	// boolean
 }
-// boolean
 function foo6(x) {
 	// Mixing typeguard
 	return typeof x === "string" || // string | number | boolean
 	(typeof x !== "number" ? // number | boolean
 	x : // boolean
 	x === 10);
+	// number
 }
-// number 
 function foo7(x) {
 	var y;
 	var z;
@@ -13640,8 +13640,8 @@ function foo7(x) {
 	(x = 10) && x.toString() : // number | boolean | string
 	// do not change value
 	(y = x) && x.toString()));
+	// number | boolean | string
 }
-// number | boolean | string
 "
 `;
 
@@ -13654,8 +13654,8 @@ function a(x) {
 		x = undefined;
 	}
 	x;
+	// number
 }
-// number
 function b(x) {
 	while (typeof x === "string") {
 		if (cond)continue;
@@ -13664,8 +13664,8 @@ function b(x) {
 		x = undefined;
 	}
 	x;
+	// number
 }
-// number
 function c(x) {
 	while (typeof x === "string") {
 		if (cond)break;
@@ -13674,8 +13674,8 @@ function c(x) {
 		x = undefined;
 	}
 	x;
+	// string | number
 }
-// string | number
 "
 `;
 
@@ -13718,8 +13718,8 @@ method(param) {
 	// string
 	// parameters in function declaration
 	num = typeof param === "string" && param.length;
+	// string
 } };
-// string
 // return expression of the method
 strOrNum = typeof obj1.method(strOrNum) === "string" && obj1.method(strOrNum);
 // accessing getter property
@@ -13756,39 +13756,39 @@ exports[`TSC: expressions typeGuardsWithAny 1`] = `
 "var x = { p: 0 };
 if (x instanceof Object) {
 	x.p;
-} else // No error, type any unaffected by instanceof type guard
-{
+	// No error, type any unaffected by instanceof type guard
+} else {
 	x.p;
+	// No error, type any unaffected by instanceof type guard
 }
-// No error, type any unaffected by instanceof type guard
 if (typeof x === "string") {
 	x.p;
-} else // Error, type any narrowed by primitive type check
-{
+	// Error, type any narrowed by primitive type check
+} else {
 	x.p;
+	// No error, type unaffected in this branch
 }
-// No error, type unaffected in this branch
 if (typeof x === "number") {
 	x.p;
-} else // Error, type any narrowed by primitive type check
-{
+	// Error, type any narrowed by primitive type check
+} else {
 	x.p;
+	// No error, type unaffected in this branch
 }
-// No error, type unaffected in this branch
 if (typeof x === "boolean") {
 	x.p;
-} else // Error, type any narrowed by primitive type check
-{
+	// Error, type any narrowed by primitive type check
+} else {
 	x.p;
+	// No error, type unaffected in this branch
 }
-// No error, type unaffected in this branch
 if (typeof x === "object") {
 	x.p;
-} else // No error, type any only affected by primitive type check
-{
+	// No error, type any only affected by primitive type check
+} else {
 	x.p;
+	// No error, type unaffected in this branch
 }
-// No error, type unaffected in this branch
 "
 `;
 
@@ -13810,8 +13810,8 @@ function foo() {
 	let v = null;
 	if (v instanceof C) {
 		v;
+		// Validator & Partial<OnChanges> & C
 	}
-	// Validator & Partial<OnChanges> & C
 	v;
 	// Validator & Partial<OnChanges> via subtype reduction
 	// In 4.1, we introduced a change which _fixed_ a bug with CFA
@@ -14204,9 +14204,9 @@ exports[`TSC: expressions TypeGuardWithArrayUnion 1`] = `
 function saySize(message) {
 	if (message instanceof Array) {
 		return message.length;
+		// Should have type Message[] here
 	}
 }
-// Should have type Message[] here
 "
 `;
 
@@ -15841,8 +15841,8 @@ v = null;
 // OK
 function fn2(p) {
 	p = null;
+	// OK
 }
-// OK
 I = null;
 // Error
 "
@@ -15922,8 +15922,8 @@ function fn2(x,y) {
 	y["t"] = "";
 	// Error
 	y["t"] = "";
+	// Error
 }
-// Error
 var E = /* @__PURE__ */ ((E) => {E[E["A"]=0]="A";return E;})(E || {});
 E = undefined;
 // Error
