@@ -720,6 +720,13 @@ fn NapiPluginAdapter(comptime Self: type) type {
             } };
         }
 
+        fn buildOwnedExternal(alloc: std.mem.Allocator, path: []const u8) PluginError!plugin_mod.ResolvedModule {
+            return .{ .external = .{
+                .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
+                .owner = .owned,
+            } };
+        }
+
         fn buildOwnedDisabled(alloc: std.mem.Allocator, path: []const u8) PluginError!plugin_mod.ResolvedModule {
             return .{ .disabled = .{
                 .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
@@ -745,6 +752,13 @@ fn NapiPluginAdapter(comptime Self: type) type {
             // Metro `{ type: 'empty' }` 매핑, webpack `resolve.fallback: false`와 동등.
             if (resp.is_disabled) {
                 return try buildOwnedDisabled(alloc, resp.resolved_path orelse specifier);
+            }
+
+            // external: import 문을 그대로 두고 런타임에 맡긴다 (esbuild `{ external: true }`).
+            // `PluginBuild.onResolve` 타입에 문서화된 필드인데, 예전엔 `is_external` 을 파싱만
+            // 하고 여기서 쓰지 않아 일반 파일로 취급됐다 → `No loader is configured`.
+            if (resp.is_external) {
+                return try buildOwnedExternal(alloc, resp.resolved_path orelse specifier);
             }
 
             if (resp.resolved_path) |path| {
