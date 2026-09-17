@@ -1755,6 +1755,10 @@ async function buildBundleOptions(opts, config, { filterCallerPreWarmCss = false
 
 async function runBundle(opts, config) {
   const buildOpts = await buildBundleOptions(opts, config);
+  // 디스크 기록은 **JS 한 곳**(아래 writeOutputFiles)에서만 한다. 네이티브 기본값이
+  // `write: true` 라 그대로 두면 아래의 "발행 차단 에러면 산출물 보류" 게이트를 건너뛰고
+  // 네이티브가 먼저 파일을 써 버린다(stdout 경로는 보류, --outfile 만 기록되는 불일치).
+  buildOpts.write = false;
   // 배열형 alias 는 onResolve plugin 으로 구현돼 있고, 치환 결과를 native resolver 로 다시
   // 해석해야 확장자·index 가 붙는다. 그 `this.resolve` 는 **async build() 에서만** 주입되므로
   // (`NapiSyncPlugin.callHookFull` 의 의도된 제약) 배열 alias 가 있으면 async 경로로 보낸다.
