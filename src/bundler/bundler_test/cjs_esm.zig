@@ -2981,3 +2981,137 @@ test "CJS convention: `.cts` 는 ESM 구문 허용 (TS 가 module.exports 로 tr
 
     try std.testing.expect(!result.hasErrors());
 }
+
+// ============================================================
+// #4659 — package.json `"module"` 필드 해석분의 CJS interop 모드
+// ============================================================
+//
+// (Zig 초보자 설명) CJS 모듈을 ESM 에서 `import d from 'cjs'` 로 가져올 때 `d` 가 무엇이
+// 되어야 하는지는 **importer 가 어떤 형식인가**에 달려 있다.
+//
+//   - Node 의 ESM(`.mjs` / `"type":"module"`) → `d = module.exports` (네임스페이스 전체).
+//     `__toESM(require_x(), 1)` 의 두 번째 인자가 이 모드를 켠다.
+//   - 그 밖 → `__esModule` 플래그를 존중해 `d = exports.default`.
+//     `__toESM(require_x())` — 인자 하나.
+//
+// package.json 의 `"module"` 필드는 **번들러 관례**일 뿐 Node 는 읽지 않는다. 따라서
+// `"module"` 로 가리켜진 ESM 빌드는 Node 기준으로는 여전히 CJS 이고, Babel 형식 CJS
+// (`__esModule` + `exports.default = fn`)를 default import 하면 **함수**를 받아야 한다.
+// 예전엔 `is_module_field` 가 `"type":"module"` 과 같은 `def_format` 으로 접혀 Node 모드가
+// 켜졌고, `@mui/material` 이 `createStyled` 대신 네임스페이스 객체를 받아
+// `TypeError: createStyled is not a function` 으로 죽었다.
+
+// `"module"` 필드로 해석된 ESM 빌드 → Babel interop(`__toESM(x)`).
+test "#4659 interop: \"module\" 필드 해석분은 Babel 모드 — __toESM 인자 1개" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{\"name\":\"app\"}");
+    // pkg: "module" 로 ESM 빌드를 노출하되 "type":"module" 은 **없다** (@mui/material 형태).
+    try writeFile(tmp.dir, "node_modules/pkg/package.json",
+        \\{ "name": "pkg", "main": "./cjs/index.js", "module": "./esm/index.js" }
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/esm/index.js",
+        \\import makeThing from 'dep/makeThing';
+        \\export const thing = makeThing();
+        \\
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/cjs/index.js",
+        \\exports.thing = require('dep/makeThing').default();
+        \\
+    );
+    // dep: Babel 형식 CJS.
+    try writeFile(tmp.dir, "node_modules/dep/package.json", "{\"name\":\"dep\",\"main\":\"./index.js\"}");
+    try writeFile(tmp.dir, "node_modules/dep/index.js", "module.exports = {};\n");
+    try writeFile(tmp.dir, "node_modules/dep/makeThing.js",
+        \\Object.defineProperty(exports, '__esModule', { value: true });
+        \\exports.default = function makeThing() { return 'MADE'; };
+        \\
+    );
+    try writeFile(tmp.dir, "entry.mjs",
+        \\import { thing } from 'pkg';
+        \\console.log(thing);
+        \\
+    );
+
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 핵심: Node 모드(`, 1`)가 아니라 Babel 모드여야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep_makeThing())") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep_makeThing(), 1)") == null);
+}
+
+// 대조군 — `.mjs` importer 는 진짜 Node ESM 이므로 Node 모드(`, 1`)가 유지돼야 한다.
+// 이게 없으면 위 테스트는 "`, 1` 을 아예 안 낸다" 로도 통과해 공허해진다.
+test "#4659 interop 대조군: .mjs importer 는 Node 모드 유지 — __toESM 인자 2개" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{\"name\":\"app\"}");
+    try writeFile(tmp.dir, "dep.cjs",
+        \\Object.defineProperty(exports, '__esModule', { value: true });
+        \\exports.default = function makeThing() { return 'MADE'; };
+        \\
+    );
+    try writeFile(tmp.dir, "entry.mjs",
+        \\import d from './dep.cjs';
+        \\console.log(d);
+        \\
+    );
+
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep(), 1)") != null);
+}
+
+// `"module"` 과 `"type":"module"` 이 **둘 다** 있으면 Node 모드가 이긴다.
+// `parser_setup` 이 `"type"` 검사를 먼저 하도록 되어 있는지 고정한다.
+test "#4659 interop: \"module\" + \"type\":\"module\" 동시 → Node 모드가 우선" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{\"name\":\"app\"}");
+    try writeFile(tmp.dir, "node_modules/pkg/package.json",
+        \\{ "name": "pkg", "type": "module", "main": "./cjs/index.js", "module": "./esm/index.js" }
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/esm/index.js",
+        \\import makeThing from 'dep/makeThing';
+        \\export const thing = makeThing;
+        \\
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/cjs/index.js", "exports.thing = 1;\n");
+    try writeFile(tmp.dir, "node_modules/dep/package.json", "{\"name\":\"dep\",\"main\":\"./index.js\"}");
+    try writeFile(tmp.dir, "node_modules/dep/index.js", "module.exports = {};\n");
+    try writeFile(tmp.dir, "node_modules/dep/makeThing.js",
+        \\Object.defineProperty(exports, '__esModule', { value: true });
+        \\exports.default = function makeThing() { return 'MADE'; };
+        \\
+    );
+    try writeFile(tmp.dir, "entry.mjs",
+        \\import { thing } from 'pkg';
+        \\console.log(thing);
+        \\
+    );
+
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep_makeThing(), 1)") != null);
+}

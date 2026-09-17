@@ -35,9 +35,11 @@ const allocEsmInitExpr = shared_ns.allocEsmInitExpr;
 const writeEsmInitExprBody = shared_ns.writeEsmInitExprBody;
 const isMetroNonInlinedRequireSpecifier = linker_mod.isMetroNonInlinedRequireSpecifier;
 
+/// CJS default import 의 interop 모드. **`isNodeEsm`** 을 쓴다 — `isEsm` 이 아니다.
+/// `"module"` 필드로 해석된 ESM 빌드는 Node 기준 CJS 라 Babel 모드가 맞다 (#4659).
 inline fn cjsInteropMode(self: *const Linker, importer: *const Module) types.Interop {
     if (self.graph.resolve_cache.platform == .react_native) return .babel;
-    return if (importer.def_format.isEsm()) .node else .babel;
+    return if (importer.def_format.isNodeEsm()) .node else .babel;
 }
 
 fn canDeferStaticImportForInlineRequires(

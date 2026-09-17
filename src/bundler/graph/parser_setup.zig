@@ -61,13 +61,17 @@ pub fn init(
         .cjs
     else if (std.mem.eql(u8, ext, ".cts"))
         .cts
-    else if (module.is_module_field or graph_package_info.isPackageTypeModule(self, io, module.path))
+    else if (graph_package_info.isPackageTypeModule(self, io, module.path))
         .esm_package_json
+        // `"module"` 필드 해석분은 ESM 으로 파싱하되 Node interop 은 적용하지 않는다 (#4659).
+        // `"type":"module"` 검사를 **먼저** 해야 둘 다 해당하는 패키지가 node 로 남는다.
+    else if (module.is_module_field)
+        .esm_module_field
     else
         .unknown;
 
     // def_format 기반 module/script 결정:
-    //   .esm_mjs / .esm_mts / .esm_package_json → 확정 module
+    //   .esm_mjs / .esm_mts / .esm_package_json / .esm_module_field → 확정 module
     //   .cjs → script (Node CommonJS — `import`/`export` 거부, top-level await 거부).
     //   .cts → module 유지 (TypeScript CJS — ESM 구문을 TS 가 module.exports 로 transpile.
     //          tsc 와 동일한 정책. configureForBundlerKind 가 이미 is_module=true 로 set).
