@@ -349,7 +349,7 @@ fn isImplicitCjs(module: *const Module) bool {
     // def_format이 파싱 시점에 이미 결정됨 — 디스크 I/O 불필요
     return switch (module.def_format) {
         .cjs, .cts, .cjs_package_json => true,
-        .esm_mjs, .esm_mts, .esm_package_json => false,
+        .esm_mjs, .esm_mts, .esm_package_json, .esm_module_field => false,
         .unknown => true, // node_modules 내 .js는 기본 CJS
     };
 }

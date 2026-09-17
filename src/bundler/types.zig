@@ -398,8 +398,10 @@ pub const Interop = enum {
 };
 
 /// 모듈 정의 형식 (Rolldown ModuleDefFormat).
-/// 파일 확장자 또는 package.json "type" 필드로 결정.
-/// CJS → ESM interop 시 Node 모드 활성화 여부에 사용.
+/// 파일 확장자 · package.json `"type"` · package.json `"module"` 필드로 결정.
+/// 두 가지 서로 다른 질문에 답한다 — 섞어 쓰면 #4659 가 재발한다:
+///   - `isEsm()`     : 이 파일을 ESM 구문으로 파싱/취급할까?
+///   - `isNodeEsm()` : Node 가 이 파일을 ESM 으로 볼까? (CJS interop 모드 판정)
 pub const ModuleDefFormat = enum {
     /// 형식 미확정
     unknown,
@@ -415,8 +417,26 @@ pub const ModuleDefFormat = enum {
     esm_mts,
     /// package.json "type": "module"
     esm_package_json,
+    /// package.json `"module"` 필드를 통해 해석된 ESM 빌드.
+    ///
+    /// ⚠️ `"module"` 은 **번들러 관례**("여기 ESM 빌드가 있다")이지 Node 의 `"type": "module"`
+    /// 이 아니다. Node 는 `"module"` 필드를 읽지 않으므로, 이 파일은 Node 기준으로는 여전히
+    /// CJS 다. 따라서 **ESM 으로 파싱**은 하되(`isEsm`), CJS default import 의 Node interop
+    /// 의미(`import d from 'cjs'` → `d = module.exports`)는 **적용하지 않는다**(`isNodeEsm`).
+    /// 이 구분이 없으면 `@mui/material` 처럼 `"module"` 로 ESM 빌드를 노출하는 패키지가
+    /// Babel 형식 CJS(`__esModule` + `exports.default`)를 default import 할 때 함수 대신
+    /// 네임스페이스 객체를 받는다 (#4659).
+    esm_module_field,
 
+    /// ESM 구문으로 **파싱/취급**할 형식인가. `"module"` 필드 해석분도 포함한다.
     pub fn isEsm(self: ModuleDefFormat) bool {
+        return self == .esm_mjs or self == .esm_mts or self == .esm_package_json or
+            self == .esm_module_field;
+    }
+
+    /// **Node 가** ESM 으로 보는 형식인가. CJS interop 모드(`__toESM(x, 1)`) 판정 전용 —
+    /// `"module"` 필드는 Node 가 읽지 않으므로 제외한다. `isEsm` 과 헷갈리지 말 것.
+    pub fn isNodeEsm(self: ModuleDefFormat) bool {
         return self == .esm_mjs or self == .esm_mts or self == .esm_package_json;
     }
 

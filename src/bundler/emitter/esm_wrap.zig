@@ -62,9 +62,10 @@ fn isSyntheticDefault(ref: SymbolRef, mod: *const Module) bool {
     };
 }
 
+/// metadata.zig 의 동명 함수와 같은 규칙 — **`isNodeEsm`** (`isEsm` 아님, #4659).
 inline fn cjsInteropMode(options: *const EmitOptions, importer: *const Module) types.Interop {
     if (options.platform == .react_native) return .babel;
-    return if (importer.def_format.isEsm()) .node else .babel;
+    return if (importer.def_format.isNodeEsm()) .node else .babel;
 }
 
 /// synthetic default(`_default`)의 확정 이름. 충돌 시 linker/mangler 가 `_default$1` 등으로

@@ -3532,11 +3532,12 @@ pub const Linker = struct {
 
     /// (#4120) CJS interop default 의 `__toESM` 2번째 인자(node 모드) 여부. consumer 의
     /// cjsInteropMode 와 동형 — CJS 모듈 첫 importer 의 def_format(없으면 babel). RN 은 항상 babel.
+    /// 판정은 **`isNodeEsm`** — `"module"` 필드 해석분은 Node 기준 CJS 다 (#4659).
     fn cjsInteropIsNode(self: *const Linker, cjs_mod: *const Module) bool {
         if (self.graph.resolve_cache.platform == .react_native) return false;
         for (cjs_mod.importers.items) |imp| {
             const im = self.graph.getModule(imp) orelse continue;
-            return im.def_format.isEsm();
+            return im.def_format.isNodeEsm();
         }
         return false;
     }
