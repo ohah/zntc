@@ -1,5 +1,107 @@
 # @zntc/core
 
+## 0.1.8
+
+### Patch Changes
+
+- c6885f6: npm CLI 에서 `--outfile` / `--outdir` 만 **산출물 보류 게이트를 건너뛰던 것**을 고쳤다.
+
+  `missing_export` · `ambiguous_export` 처럼 번들이 내부적으로 앞뒤가 안 맞는 에러에서는 세
+  표면(stdout · `--outfile` · Zig CLI)이 모두 산출물을 내지 않아야 하는데, `--outfile` 경로만
+  파일을 쓰고 있었다. 게이트 자체는 맞았지만 **디스크에 쓰는 주체가 둘**이었던 게 원인이다 —
+  네이티브 `build()` 의 기본값이 `write: true` 라, JS 가 게이트를 평가하기 _전에_ 네이티브가
+  이미 파일을 써 버렸다. 성공 경로에서는 네이티브와 JS 가 같은 파일을 두 번 쓰고 있었다.
+
+  이제 `runBundle` 이 `write: false` 를 강제해 디스크 기록 주체를 JS 한 곳으로 모은다. 성공
+  경로 산출물은 바이트 단위로 동일하다(outfile / outfile+map / outdir / splitting /
+  splitting+map / minify+map 6구성 대조).
+
+- f1c7dff: `zntc.config` 의 `alias` 가 app 모드(`zntc build .` / `zntc dev .`)에서 무시되던 문제를 고쳤다.
+  `AppBuildOptions` 에 `alias` 필드 자체가 없어 config 의 alias 가 조용히 사라졌다 — 타입 · CLI
+  전달 · NAPI 파싱 · app 빌드 옵션 구조체 네 표면에 배선했다.
+
+  배열 형태 alias (`[{ find, replacement }]`) 도 고쳤다. 치환 결과를 native resolver 로 다시
+  해석하지 않아 `{'@': '<abs>/src'}` 처럼 **디렉토리**를 가리키면 확장자가 안 붙어
+  `No loader is configured for this file type` 로 죽었다. `@rollup/plugin-alias` 가
+  `this.resolve()` 로 하는 것과 같이 한 번 더 해석한다. 아울러 CLI 의 config 병합이 배열에
+  객체 스프레드를 해서 `{"0": {...}}` 로 형태를 깨뜨리던 것도 고쳤다.
+
+  아울러 `buildSync` / app 빌드의 plugin hook 에도 native resolver 를 주입했다 — 예전엔
+  `NapiSyncPlugin` 이 hook 컨텍스트를 넘기지 않아 sync 경로의 plugin 은 `this.resolve()` 를 쓸 수
+  없었다. 이제 Object / Array 두 형태 모두 `build()` · `buildSync()` · app 빌드에서 동작한다.
+
+  문서는 디렉토리 alias 의 target 에 **절대경로**를 쓰도록 표준 예제를 정리했다 (Vite · webpack ·
+  esbuild · Rollup 모두 같은 관례).
+
+- b3b8752: ESM-wrap 된 모듈에서 `function foo(){}; export default foo` 형태가 `var foo;` 와
+  `function foo(){}` 를 동시에 top-level 로 내보내 브라우저 파싱이 `SyntaxError:
+Identifier 'foo' has already been declared` 로 중단되던 문제를 고쳤다.
+
+  `@mui/material` 의 `createTheme` 이 끌어오는 `@mui/utils/esm/clamp/clamp.js` 가 정확히
+  이 형태라, MUI 를 쓰는 앱에서 번들은 성공하지만 브라우저가 로드하지 못했다. 진단도 없었다.
+
+  두 경로가 같은 이름을 낸다 — 함수 선언은 `hoisted_stmts` 로, `export default` 는
+  `hoisted_var_names` 로. 중복 제거가 `hoisted_var_names` **내부만** 봐서 둘 사이 충돌을
+  못 잡았다. 호이스팅된 함수 이름을 함께 모아 같은 필터에서 걸러낸다 (#4574 가
+  `helper_import_locals` 로 거른 것과 같은 자리).
+
+- 9c531f6: `export default Math` 처럼 **전역을 default 로 내보내는** 모듈이 splitting 으로 별도 청크가
+  되면 `export { Math as default };` 를 방출해 `SyntaxError: Export 'Math' is not defined in
+module` 로 파싱이 실패하던 문제를 고쳤다. ESM 의 export specifier 자리는 **그 모듈에 선언된
+  바인딩**만 받는다.
+
+  전역 참조는 `unresolved_references` 로 판정해 `var <syn> = <global>;` 를 깔고 그 식별자를
+  내보낸다 — CJS interop 이 쓰던 `materialize` 와 같은 기계다.
+
+- cdf7c85: `return` / `throw` / `yield` 피연산자 앞에 줄 주석(`//`)이 오면 그 뒤 코드가 전부 주석에
+  먹히던 문제를 고쳤다. `return`은 조용히 `undefined`를 반환하고, `throw`는 SyntaxError,
+  `yield`는 `undefined`를 yield했다. JSX와는 무관하며 숫자·문자열·호출 등 모든 식에서 발생했다.
+
+  이 세 키워드는 ECMAScript `NoLineTerminator` 제한이 있어 피연산자 앞에 줄바꿈이 오면 안 된다.
+  그래서 선두 주석을 줄바꿈 없이 인라인으로 붙여 왔는데, 그 전략은 블록 주석에만 유효하다.
+  이제 줄 주석이 선두에 있으면 **괄호로 감싼다** — 괄호가 줄바꿈을 안전하게 만들어 주석도
+  살고 ASI도 안 끊긴다 (swc·babel과 같은 전략). 블록 주석 경로와 `#4042`의 군더더기 괄호
+  제거는 그대로다.
+
+  함께 고친 것:
+  - `//` 주석 뒤에는 minify에서도 실제 개행을 쓴다. `writeNewline`이 minify에서 no-op이라
+    `// @license` 같은 legal 줄 주석이 살아남는 경우 뒤가 전부 먹혔다.
+  - 괄호가 멤버 접근의 대상일 때(`return ( /* c */ x ).y`) 안쪽 주석을 놓쳐 ASI가 나던 것도
+    고쳤다. 출력의 가장 왼쪽 토큰까지 내려가 주석을 미리 소비한다.
+  - 비어 있지 않은 블록의 마지막 statement 뒤 주석이 블록 밖으로 새던 것을 고쳤다 (`#4468`이
+    빈 블록만 고쳐 둔 것의 짝). swc·babel·oxc 모두 제자리에 둔다.
+
+- 4c18dfd: plugin 의 `onResolve` 가 `{ path, external: true }` 를 반환해도 무시되던 문제를 고쳤다.
+  `PluginBuild.onResolve` 타입에 문서화된 필드인데 native 가 `is_external` 을 파싱만 하고
+  쓰지 않아 일반 파일로 취급됐고, `No loader is configured for this file type` 로 죽었다.
+
+  graph 쪽도 함께 배선했다 — plugin 이 반환한 `.external` 변종이 "미설계" 로 남아 있어
+  넘기면 panic 에 걸렸다. 기존 phantom external 경로와 같은 기계를 쓰며, plugin 이 정한
+  경로가 원문과 다르면 방출 지정자로 둔다.
+
+  덕분에 배열 형태 alias 의 치환 결과가 external 로 판정되는 조합
+  (`alias: [{find:'a', replacement:'b'}]` + `external: ['b']`)도 동작한다.
+
+- 19944ac: 해석하지 못한 import 를 **번들 바깥에 있는 것으로 취급**하도록 고쳤다. 이전에는 출력 포맷과
+  무관하게 `require(...)` 폴백을 방출해서, ESM/IIFE 출력이나 브라우저 타겟에서는 문법적으로
+  성립하지 않는 번들이 나왔다. 그 번들은 로드 시점에 `require is not defined` 로 죽는데, 정작
+  원인인 "패키지가 없다" 는 메시지에서 사라졌다.
+
+  이제 ESM 은 `import`, CJS 는 `require`, IIFE 는 기존 "IIFE 포맷으로는 방출 불가" 진단으로
+  각각 제 경로를 탄다. 런타임 메시지도 없는 패키지를 지목한다. 진단 등급은 그대로 error 다 —
+  external 로 _방출_ 한다는 뜻이지 오탈자를 눈감아 준다는 뜻이 아니다.
+
+  WASM `build()` / `buildChunks()` 는 해석 불가 import 가 있어도 출력을 반환한다. VFS 에
+  `react` 를 올리지 않는 게 정상인 플레이그라운드에서 `jsx: "automatic"` 이 주입하는 런타임
+  import 를 실패로 처리하면 JSX 자체를 쓸 수 없기 때문이다. 출력을 withhold 하는 건 번들이
+  내부적으로 앞뒤가 안 맞을 때(export 충돌·모호·누락)뿐이다. 0.1.7 에서 이 구분 없이 막았던
+  것을 되돌린다.
+
+  CLI 의 산출물 방출 정책도 같은 규칙으로 통일했다. 이전엔 npm CLI(`bin/zntc.mjs`)는 에러가
+  있어도 산출물을 냈고 Zig CLI(`zig build` 산출 바이너리)는 출력 전에 종료해 아무것도 내지
+  않았다. 이제 둘 다 "번들이 내부적으로 앞뒤가 안 맞을 때만 보류" 로 같은 답을 낸다. exit code
+  는 이와 별개로 에러가 있으면 1 이다.
+
 ## 0.1.7
 
 ### Patch Changes
