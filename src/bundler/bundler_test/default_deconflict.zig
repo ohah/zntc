@@ -1247,3 +1247,132 @@ test "Runtime helper: 다수의 class extends consumer 가 있어도 __extends �
         i = pos + 1;
     }
 }
+
+// ============================================================
+// #4650 — ESM-wrap 된 모듈의 named-local `export default`
+//
+// `function foo(){}; export default foo` 는 두 경로가 **같은 이름**을 top-level 에 낸다.
+//   1. `hoisted_stmts`      → `function foo(){}`   (선언 자체가 바인딩 생성)
+//   2. `hoisted_var_names`  → `var foo;`           (export_default_declaration 이면 무조건)
+// dedup 이 `hoisted_var_names` **내부만** 봐서 둘 사이 충돌을 못 잡았고, ESM 모듈
+// 스코프에서 `Identifier 'foo' has already been declared` 로 파싱이 실패했다.
+//
+// ⚠️ 판정 주의: `var foo; function foo(){}` 는 **script 모드에선 합법**이다.
+// 산출물을 `node --check x.js` 나 bun 의 `vm.SourceTextModule` 로 검사하면 통과한다 —
+// 반드시 ESM 파서로 봐야 한다. 여기서는 문자열로 "같은 이름의 var 와 function 이
+// 동시에 top-level 에 있는지" 를 직접 본다.
+// ============================================================
+
+/// 산출물 top-level 에 `var <name>;` (또는 `var <name>,`/`= `) 와 `function <name>(`
+/// 가 **동시에** 있는지. ESM 모드 중복 선언의 문자열 판정.
+fn hasVarAndFunctionOfSameName(output: []const u8, name: []const u8, alloc: std.mem.Allocator) !bool {
+    const var_decl = try std.fmt.allocPrint(alloc, "var {s};", .{name});
+    defer alloc.free(var_decl);
+    const fn_decl = try std.fmt.allocPrint(alloc, "function {s}(", .{name});
+    defer alloc.free(fn_decl);
+    return std.mem.indexOf(u8, output, var_decl) != null and
+        std.mem.indexOf(u8, output, fn_decl) != null;
+}
+
+test "#4650 named-local export default — var 와 function 이 중복 선언되지 않는다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 동적 import 로 대상 모듈을 ESM-wrap 시킨다 (@mui/utils 의 clamp 와 같은 형태).
+    try writeFile(tmp.dir, "entry.ts",
+        \\export const go = () => import('./clamp');
+    );
+    try writeFile(tmp.dir, "clamp.ts",
+        \\function clamp(val, min = 0, max = 10) {
+        \\  return Math.max(min, Math.min(val, max));
+        \\}
+        \\export default clamp;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(!try hasVarAndFunctionOfSameName(result.output, "clamp", std.testing.allocator));
+    // 함수 선언 자체는 살아 있어야 한다 (제거로 "통과" 하면 안 된다).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function clamp(") != null);
+}
+
+test "#4650 선언이 export 뒤에 와도 동일 (함수 호이스팅)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export const go = () => import('./late');
+    );
+    try writeFile(tmp.dir, "late.ts",
+        \\export default late;
+        \\function late() { return 1; }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(!try hasVarAndFunctionOfSameName(result.output, "late", std.testing.allocator));
+}
+
+test "#4650 익명 default 는 synthetic var 를 그대로 유지 (#4573 anti-regression)" {
+    // 익명 `export default function(){}` 은 참조할 이름이 없어 synthetic 바인딩이
+    // **필요하다**. #4650 수정이 이걸 같이 없애면 `export { _default }` 가 미선언 참조가 된다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export const go = () => import('./anon');
+    );
+    try writeFile(tmp.dir, "anon.ts",
+        \\export default function () { return 42; }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // synthetic binding 이 선언돼 있어야 한다 — 이름은 metadata 소관이라 존재만 본다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "42") != null);
+}
+
+test "#4650 class/const/let/import default 는 회귀 없음" {
+    // 이 넷은 각자 hoisted_var_names 에 들어가 리스트 내부 dedup 이 이미 잡는다.
+    // 수정이 이 경로를 건드리지 않았는지 확인.
+    const bodies = [_][]const u8{
+        "class Foo { m() { return 1; } }\nexport default Foo;",
+        "const foo = 1;\nexport default foo;",
+        "let foo = 1;\nexport default foo;",
+    };
+    for (bodies) |body| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.ts",
+            \\export const go = () => import('./t');
+        );
+        try writeFile(tmp.dir, "t.ts", body);
+
+        const entry = try absPath(&tmp, "entry.ts");
+        defer std.testing.allocator.free(entry);
+
+        var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+        defer b.deinit();
+        const result = try b.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+    }
+}

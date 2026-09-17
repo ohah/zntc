@@ -202,7 +202,16 @@ pub fn emitEsmWrappedModule(
     var body_func_stmts: std.ArrayList(u32) = .empty;
     defer body_func_stmts.deinit(allocator);
     var hoisted_var_names: std.ArrayList([]const u8) = .empty;
+    // (#4650) top-level 로 호이스팅된 **함수 선언**의 이름.
+    //
+    // `function foo(){}` 선언 자체가 모듈 top-level 바인딩을 만든다. 그런데 이 이름들은
+    // `hoisted_stmts` 로 가고 `hoisted_var_names` 에는 안 들어가서, 아래 dedup 이
+    // **리스트 내부만** 보는 한 둘 사이의 충돌을 못 잡는다. `function clamp(){};
+    // export default clamp` 이 `var clamp; function clamp(){}` 로 나가 ESM 모드에서
+    // `Identifier 'clamp' has already been declared` 가 됐다.
+    var hoisted_fn_names: std.ArrayList([]const u8) = .empty;
     defer hoisted_var_names.deinit(allocator);
+    defer hoisted_fn_names.deinit(allocator);
 
     // (#4574) preserve-modules × RN downlevel: 런타임 헬퍼(`__classCallCheck` 등)를 transform 이
     // `var __classCallCheck = function(){…}` 로 인라인한 뒤, 링커가 헬퍼 모듈에서 `import
@@ -299,6 +308,23 @@ pub fn emitEsmWrappedModule(
                     // strictExecutionOrder=false: function 을 __esm factory 밖으로 호이스팅 — `function foo(){}`
                     // 선언 자체가 모듈 top-level binding 을 생성하므로 별도 `var foo` 를 추가하면 ESM 모드에서
                     // 중복 선언 에러 (bun / strict 환경). export getter 는 함수명을 직접 참조 가능.
+                    //
+                    // (#4650) 그 "별도 var" 는 이 분기 밖에서도 들어온다 — `export default foo`
+                    // 의 else 분기가 `default_export_name` 을 무조건 var 로 추가한다. 이름을
+                    // 모아 두고 emit 직전에 걸러낸다.
+                    const fn_node_src = if (export_inner) |idx|
+                        esm_ast.nodes.items[@intFromEnum(idx)]
+                    else
+                        stmt_node;
+                    const hoisted_fn_name_idx: NodeIndex = @enumFromInt(esm_ast.extra_data.items[fn_node_src.data.extra]);
+                    if (!hoisted_fn_name_idx.isNone()) {
+                        const hoisted_fn_name_node = esm_ast.nodes.items[@intFromEnum(hoisted_fn_name_idx)];
+                        if (hoisted_fn_name_node.tag == .binding_identifier) {
+                            const raw_fn_name = try arena_alloc.dupe(u8, esm_ast.getText(hoisted_fn_name_node.data.string_ref));
+                            const resolved_fn_name = try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(hoisted_fn_name_idx), raw_fn_name));
+                            try hoisted_fn_names.append(allocator, resolved_fn_name);
+                        }
+                    }
                     try hoisted_stmts.append(allocator, raw_idx);
                 }
             },
@@ -463,7 +489,12 @@ pub fn emitEsmWrappedModule(
                 if (std.mem.eql(u8, prev, name)) break true;
             } else false;
             // (#4574) helper-module import 로컬명은 import 문이 선언 → hoisted var 중복 제거.
-            if (is_dup or helper_import_locals.contains(name)) continue;
+            // (#4650) top-level 로 호이스팅된 function 선언명도 같다 — 선언이 이미 바인딩을
+            // 만들므로 `var` 를 더하면 ESM 모드에서 중복 선언이다.
+            const declared_by_fn = for (hoisted_fn_names.items) |fn_name| {
+                if (std.mem.eql(u8, fn_name, name)) break true;
+            } else false;
+            if (is_dup or declared_by_fn or helper_import_locals.contains(name)) continue;
             hoisted_var_names.items[dedup_count] = name;
             dedup_count += 1;
         }
