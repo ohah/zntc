@@ -1,5 +1,18 @@
 # @zntc/rspack-loader
 
+## 0.1.8
+
+### Patch Changes
+
+- Updated dependencies [c6885f6]
+- Updated dependencies [f1c7dff]
+- Updated dependencies [b3b8752]
+- Updated dependencies [9c531f6]
+- Updated dependencies [cdf7c85]
+- Updated dependencies [4c18dfd]
+- Updated dependencies [19944ac]
+  - @zntc/core@0.1.8
+
 ## 0.1.7
 
 ### Patch Changes
