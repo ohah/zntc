@@ -199,3 +199,47 @@ describe('@zntc/core define/alias > alias array', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+// plugin 이 onResolve 에서 `{ path, external: true }` 를 반환하는 경로. 타입에 문서화돼
+// 있었지만 native 가 `is_external` 을 파싱만 하고 버려서 일반 파일로 취급했고,
+// 넘기면 graph 의 "미설계" panic 에 걸렸다. alias → external 조합이 이 경로를 탄다.
+describe('@zntc/core define/alias > alias → external', () => {
+  test('배열 alias 의 치환 결과가 external 이면 import 가 보존된다', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-alias-ext-'));
+    writeFileSync(join(dir, 'index.ts'), 'import "old-name";\nconsole.log(1);');
+
+    const result = await build({
+      entryPoints: [join(dir, 'index.ts')],
+      format: 'esm',
+      alias: [{ find: 'old-name', replacement: 'new-ext-pkg' }],
+      external: ['new-ext-pkg'],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain('new-ext-pkg');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('plugin 이 external 을 반환하면 지정자를 재작성할 수 있다', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-ext-'));
+    writeFileSync(join(dir, 'index.ts'), 'import "from-name";\nconsole.log(1);');
+
+    const result = await build({
+      entryPoints: [join(dir, 'index.ts')],
+      format: 'esm',
+      plugins: [
+        {
+          name: 'ext',
+          setup(b) {
+            b.onResolve({ filter: /.*/ }, (a) =>
+              a.path === 'from-name' ? { path: 'to-name', external: true } : null,
+            );
+          },
+        },
+      ],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain('to-name');
+    expect(result.outputFiles[0].text).not.toContain('from-name');
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

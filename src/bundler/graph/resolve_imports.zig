@@ -537,11 +537,46 @@ pub fn applyResolveResult(
                 try recordResolvedDep(self, mod_index, mod_idx, rec_i, dep_idx, record.kind);
                 if (request_changed) try resolveDeferredRequestedImportsIfReady(self, io, dep_idx);
             },
-            // (deferred 6) `.external` 은 phantom external 경로 (line 354 의 else 분기) 가
-            // 별도로 처리하지만, plugin 이 resolveId 에서 직접 `.external` 반환하는 경로는
-            // 아직 미설계. `.dataurl` / `.custom` 도 동일 — production 도달 시 별도 RFC 후
-            // 명시적 활성화. 그 전까지 release build 의 silent UB 방지 위해 explicit panic.
-            .dataurl, .external, .custom => std.debug.panic(
+            .external => |e| {
+                // plugin 이 resolveId 에서 `{ path, external: true }` 를 반환한 경로.
+                // 타입(`PluginBuild.onResolve`)에 문서화된 필드인데 예전엔 `is_external` 을
+                // 파싱만 하고 버려서 일반 파일로 취급됐고, 넘기면 이 자리의 panic 에 걸렸다.
+                //
+                // 아래 phantom external 분기(`resolved == null`)와 **같은 기계**를 쓴다.
+                // 차이는 방출 지정자뿐 — plugin 이 정한 `e.path` 가 원문과 다르면 그걸
+                // `external_specifier` 로 둔다 (#4616 이 `--external-alias` 로 쓰는 필드).
+                // 그래프 identity 는 원문 `record.specifier` 그대로 — worker_map 키·CSS span
+                // 조회 키라 고치면 lookup 이 어긋난다.
+                const ext_idx = try self.addExternalModule(record.specifier);
+                const src_mod = self.modules.at(mod_idx);
+                src_mod.import_records[rec_i].is_external = true;
+                src_mod.import_records[rec_i].is_lazy_resolved = false;
+                if (!std.mem.eql(u8, e.path, record.specifier)) {
+                    // path_arena 는 graph 수명과 함께 일괄 해제 (addExternalModule 과 동일 패턴).
+                    src_mod.import_records[rec_i].external_specifier =
+                        try self.path_arena.allocator().dupe(u8, e.path);
+                } else {
+                    src_mod.import_records[rec_i].external_specifier =
+                        self.resolve_cache.externalAliasFor(record.specifier);
+                }
+                _ = try graph_requested_exports.requestDependencyExports(self, mod_idx, rec_i, record, ext_idx);
+                try appendResolvedDep(self, mod_idx, .{
+                    .record_index = @intCast(rec_i),
+                    .kind = record.kind,
+                    .target = .external,
+                    .path = .{ .specifier = record.specifier },
+                });
+                if (record.kind == .dynamic_import) {
+                    try self.linkDynamicImport(mod_index, ext_idx);
+                } else if (record.kind == .css_url or record.kind == .worker) {
+                    // external css_url / worker 는 URL 문자열이지 import 가 아니다 (#4483).
+                } else {
+                    try self.linkDependency(mod_index, ext_idx);
+                }
+            },
+            // (deferred 6) `.dataurl` / `.custom` 은 아직 미설계 — production 도달 시 별도
+            // RFC 후 명시적 활성화. 그 전까지 release build 의 silent UB 방지 위해 explicit panic.
+            .dataurl, .custom => std.debug.panic(
                 "resolved variant not yet wired into resolve_imports — plugin returned unsupported variant for specifier '{s}' (got {s})",
                 .{ record.specifier, @tagName(m) },
             ),
