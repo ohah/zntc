@@ -1722,6 +1722,28 @@ pub fn buildFinalExports(
             try owned_strings.append(self.allocator, p.local);
             p.owned = false;
         }
+        // ESM `export { X as default }` 의 X 는 **모듈 로컬 바인딩**이어야 한다. `export default
+        // Math` 처럼 전역을 default 로 내보내면 X 가 이 모듈에 선언돼 있지 않아
+        // `SyntaxError: Export 'Math' is not defined in module` 이 된다 — splitting 으로 그
+        // 모듈이 별도 청크가 될 때 드러난다(단일 번들에선 다른 경로라 무사했다).
+        //
+        // 전역 참조는 `unresolved_references` 로 판정한다(같은 집합을 `collectReservedGlobals`
+        // 도 쓴다). 위 CJS interop 분기와 똑같이 `var <syn> = <global>;` 를 깔고 그 식별자를
+        // 내보낸다 — ESM export specifier 에 표현식을 못 쓰는 제약이 같기 때문이다.
+        if (self.format == .esm) {
+            if (self.graph.getModule(@enumFromInt(module_index))) |em| {
+                if (em.semantic) |em_sem| {
+                    if (em_sem.unresolved_references.contains(p.local)) {
+                        const syn = try std.fmt.allocPrint(self.allocator, "_default_{s}", .{p.exported});
+                        try owned_strings.append(self.allocator, syn);
+                        const stmt = try std.fmt.allocPrint(self.allocator, "var {s} = {s};\n", .{ syn, p.local });
+                        try owned_strings.append(self.allocator, stmt);
+                        entries.appendAssumeCapacity(.{ .local = syn, .exported = p.exported, .materialize = stmt });
+                        continue;
+                    }
+                }
+            }
+        }
         entries.appendAssumeCapacity(.{
             .local = p.local,
             .exported = p.exported,

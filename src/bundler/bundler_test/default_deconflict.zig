@@ -1376,3 +1376,112 @@ test "#4650 class/const/let/import default 는 회귀 없음" {
         try std.testing.expect(!result.hasErrors());
     }
 }
+
+// ============================================================
+// `export default <전역>` — ESM export specifier 는 모듈 로컬 바인딩만 받는다
+//
+// `export default Math` 처럼 전역을 default 로 내보내면 entry-export 가
+// `export { Math as default }` 를 내는데, ESM 에서 그 자리의 이름은 **이 모듈에 선언된
+// 바인딩**이어야 한다 → `SyntaxError: Export 'Math' is not defined in module`.
+// splitting 으로 그 모듈이 별도 청크가 될 때 드러난다(단일 번들은 다른 경로라 무사했다).
+//
+// 전역 참조는 `unresolved_references` 로 판정해 `var <syn> = <global>;` 를 깔고 그
+// 식별자를 내보낸다 — CJS interop 이 쓰는 `materialize` 와 같은 기계다.
+// ============================================================
+
+test "export default 전역 참조 — splitting 에서 유효한 ESM 을 낸다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export const go = () => import('./g');
+    );
+    try writeFile(tmp.dir, "g.ts",
+        \\export default Math;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .code_splitting = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    // 전역을 export specifier 자리에 그대로 두면 안 된다.
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+    var saw_materialize = false;
+    for (outs) |o| {
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "export { Math as default }") == null);
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "export{Math as default}") == null);
+        if (std.mem.indexOf(u8, o.contents, "= Math;") != null) saw_materialize = true;
+    }
+    // 값 자체는 살아 있어야 한다 — 제거로 "통과" 하면 안 된다.
+    try std.testing.expect(saw_materialize);
+}
+
+test "export default 전역 참조 — 미선언 전역도 동일" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export const go = () => import('./g');
+    );
+    try writeFile(tmp.dir, "g.ts",
+        \\export default someUndeclaredGlobal;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .code_splitting = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+    for (outs) |o| {
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "someUndeclaredGlobal as default") == null);
+    }
+}
+
+test "export default 로컬 바인딩은 materialize 하지 않는다 (anti-regression)" {
+    // 로컬 심볼은 지금처럼 그대로 export 해야 한다 — 전역 판정이 과하게 걸리면 안 된다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export const go = () => import('./g');
+    );
+    try writeFile(tmp.dir, "g.ts",
+        \\const localValue = 42;
+        \\export default localValue;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .code_splitting = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+    var saw_value = false;
+    for (outs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "42") != null) saw_value = true;
+    }
+    try std.testing.expect(saw_value);
+}
