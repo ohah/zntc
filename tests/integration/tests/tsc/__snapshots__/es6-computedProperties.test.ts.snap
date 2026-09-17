@@ -598,8 +598,8 @@ exports[`TSC: es6/computedProperties computedPropertyNames29_ES5 1`] = `
 		() => {
 			var obj = { [this.bar()]() {
 			} };
+			// needs capture
 		};
-		// needs capture
 		return 0;
 	}
 }
@@ -612,8 +612,8 @@ exports[`TSC: es6/computedProperties computedPropertyNames29_ES6 1`] = `
 		() => {
 			var obj = { [this.bar()]() {
 			} };
+			// needs capture
 		};
-		// needs capture
 		return 0;
 	}
 }
@@ -667,8 +667,8 @@ class C extends Base {
 		() => {
 			var obj = { [super.bar()]() {
 			} };
+			// needs capture
 		};
-		// needs capture
 		return 0;
 	}
 }
@@ -686,8 +686,8 @@ class C extends Base {
 		() => {
 			var obj = { [super.bar()]() {
 			} };
+			// needs capture
 		};
-		// needs capture
 		return 0;
 	}
 }

@@ -349,9 +349,9 @@ class D extends Base {
 		super(() => {
 			this._t;
 		});
+		// no error. only check when this is directly accessing in constructor
 	}
 }
-// no error. only check when this is directly accessing in constructor
 "
 `;
 
@@ -402,9 +402,9 @@ class D extends null {
 	_t;
 	constructor() {
 		this._t;
+		// No error
 	}
 }
-// No error
 "
 `;
 
@@ -449,8 +449,8 @@ class D extends Base {
 	_t;
 	constructor() {
 		let x = { k: super(undefined), j: this._t };
+		// no error
 	}
 }
-// no error
 "
 `;
