@@ -3893,7 +3893,9 @@ test "reuse #4545 hole 2: CJS default-interop 소비자 warm==cold (byte-identit
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "pd.cjs", "module.exports = function(){ return 7; };\n");
+    // ⚠️ `exports.x` 로 `can_skip_cjs_default_interop` 를 끈다 — 순수 `module.exports =`
+    // 형태는 `require_pd()` 로 축약돼 아래 interop 가드가 공허해진다.
+    try writeFile(tmp.dir, "pd.cjs", "exports.named = 1;\nmodule.exports = function(){ return 7; };\n");
     try writeFile(tmp.dir, "cons.mjs", "import pd from './pd.cjs';\nexport const cv = pd();\n");
     try writeFile(tmp.dir, "other.mjs", "export const o = 1;\n");
     try writeFile(tmp.dir, "index.mjs",
