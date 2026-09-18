@@ -3232,3 +3232,54 @@ test "#4659 re-export 대조군: 중간 모듈이 .mjs 면 Node 모드" {
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep_b(), 1)") != null);
 }
+
+// ============================================================
+// CJS default import 직접 축약 — importer 형식과 무관
+// ============================================================
+//
+// (Zig 초보자 설명) importee 가 `module.exports = <값>` 한 형태이고 `exports.x` 도
+// `__esModule` 표시도 없으면, `__toESM(require_x()).default` 는 언제나 `require_x()` 와
+// 같은 값이다. Babel 모드는 `__esModule` 이 없으니 `default = mod` 를 깔고, Node 모드는
+// 플래그와 무관하게 늘 `default = mod` 이기 때문이다. 그래서 래퍼 한 겹을 걷어낼 수 있다.
+//
+// 예전엔 importer 가 ESM 이면 이 축약을 막았는데, 그 조건은 "babel 모드인가" 의 대용이었고
+// (그 시절 interop 판정이 `isEsm()` 과 동치였다) 축약의 유효 조건은 아니었다.
+
+test "CJS 축약: .mjs importer 도 module.exports= 형태면 __toESM 없이 직접 참조" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "lib.cjs", "module.exports = function plain(){ return 'PLAIN'; };\n");
+    try writeFile(tmp.dir, "entry.mjs", "import fn from './lib.cjs';\nconsole.log(fn());\n");
+
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib()") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_lib()") != null);
+}
+
+// 대조군 — `exports.x` 가 있으면 축약 불가(named export 가 진짜 있을 수 있다).
+// 이게 없으면 위 테스트는 "`__toESM` 을 아예 안 쓴다" 로도 통과해 공허해진다.
+test "CJS 축약 대조군: exports.x 가 있으면 __toESM 유지" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "lib.cjs", "exports.named = 1;\nmodule.exports = function plain(){ return 'PLAIN'; };\n");
+    try writeFile(tmp.dir, "entry.mjs", "import fn from './lib.cjs';\nconsole.log(fn());\n");
+
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib(), 1)") != null);
+}

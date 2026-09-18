@@ -898,10 +898,23 @@ pub const Module = struct {
         return symbol_mod.SymbolRef.invalid;
     }
 
+    /// `import d from '<CJS>'` 를 `__toESM(require_x()).default` 대신 `require_x()` 로
+    /// 낮출 수 있는지.
+    ///
+    /// `can_skip_cjs_default_interop` 가 importee 를 `module.exports = <값>` 한 형태로
+    /// 좁혀 준다(`exports.x` 없음 · `__esModule` 없음). 그 shape 에서는 **두 interop 모드
+    /// 모두** `.default` 가 `module.exports` 자신이다:
+    ///   - babel: `__esModule` 이 없으므로 `__toESM` 이 `default = mod` 를 깐다
+    ///   - node : 플래그와 무관하게 언제나 `default = mod`
+    /// 따라서 importer 형식은 이 판단에 들어올 이유가 없다. 예전에는 `!isEsm()` 로 ESM
+    /// importer 를 빼고 있었는데, 그건 "babel 모드인가" 의 대용이었고(그 시절 interop 은
+    /// `isEsm()` 과 동치였다) 축약의 유효 조건은 아니었다.
+    ///
+    /// 호출처는 default import 에 한정해서 쓴다 — namespace 나 named 는 `__toESM` 이
+    /// 만들어 주는 멤버 getter 가 필요하다.
     pub fn canUseDirectCjsDefaultImport(self: *const Module, importee: *const Module) bool {
-        return importee.wrap_kind == .cjs and
-            importee.can_skip_cjs_default_interop and
-            !self.def_format.isEsm();
+        _ = self;
+        return importee.wrap_kind == .cjs and importee.can_skip_cjs_default_interop;
     }
 
     /// `module.exports = ...` shape 한정 fast path (default import 의 `__toESM` skip).

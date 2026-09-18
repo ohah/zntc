@@ -303,7 +303,10 @@ test "Interop: .mjs importer uses Node mode, .ts uses Babel mode" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.mjs", "import lib from './lib.cjs';\nconsole.log(lib);");
-    try writeFile(tmp.dir, "lib.cjs", "module.exports = { value: 42 };");
+    // ⚠️ `exports.x` 를 하나 둬서 `can_skip_cjs_default_interop` 를 끈다. 순수
+    // `module.exports = <값>` 형태면 `__toESM(...).default` 가 `require_lib()` 로 축약돼
+    // interop 모드가 출력에 **드러나지 않아** 이 테스트가 공허해진다.
+    try writeFile(tmp.dir, "lib.cjs", "exports.named = 1;\nmodule.exports = { value: 42 };");
 
     const entry = try absPath(&tmp, "entry.mjs");
     defer std.testing.allocator.free(entry);
