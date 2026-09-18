@@ -3115,3 +3115,120 @@ test "#4659 interop: \"module\" + \"type\":\"module\" 동시 → Node 모드가 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep_makeThing(), 1)") != null);
 }
+
+// ============================================================
+// #4659 파생 — re-export 체인의 CJS interop 귀속
+// ============================================================
+//
+// (Zig 초보자 설명) `export { default as x } from '<CJS>'` 로 값을 넘겨 주면, 그 `x` 가
+// 무엇인지는 **그 문장을 쓴 모듈**의 형식이 정한다. 소비자는 이미 정해진 값을 읽을 뿐이다.
+//
+// 그런데 linker 가 re-export 체인을 평탄화하면서 `ResolvedBinding` 에 체인 끝의 canonical 만
+// 남기고 중간 모듈을 버린다. 그래서 interop 판정이 **소비자** 기준으로 돌아갔고, `.mjs` entry
+// 가 `"module"` 필드 패키지의 re-export 를 소비하면 Babel 이어야 할 자리에 Node 모드가 박혔다.
+// `findCjsImportOwner` 가 re-export 간선을 따라가 import 문의 주인을 되찾는다.
+
+// 소비자(.mjs, Node 모드)와 중간 모듈("module" 필드, Babel)이 **어긋나는** 위상.
+// 판정은 중간 모듈 기준이어야 한다.
+test "#4659 re-export: 판정 주체는 소비자가 아니라 import 문을 쓴 모듈" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{\"name\":\"app\"}");
+    try writeFile(tmp.dir, "node_modules/pkg/package.json",
+        \\{ "name": "pkg", "main": "./c.js", "module": "./m.js" }
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/m.js", "export { default as thing } from 'dep/b';\n");
+    try writeFile(tmp.dir, "node_modules/pkg/c.js", "exports.thing = 1;\n");
+    try writeFile(tmp.dir, "node_modules/dep/package.json", "{\"name\":\"dep\",\"main\":\"./i.js\"}");
+    try writeFile(tmp.dir, "node_modules/dep/i.js", "module.exports = {};\n");
+    try writeFile(tmp.dir, "node_modules/dep/b.js",
+        \\Object.defineProperty(exports, '__esModule', { value: true });
+        \\exports.default = function f() { return 'FN'; };
+        \\
+    );
+    // 소비자는 `.mjs` — 소비자 기준으로 판정하면 Node 모드(`, 1`)가 된다.
+    try writeFile(tmp.dir, "entry.mjs", "import { thing } from 'pkg';\nconsole.log(thing);\n");
+
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep_b())") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep_b(), 1)") == null);
+}
+
+// 같은 CJS 를 서로 **다른 형식**이 import 하는 위상. re-export 경유분은 Babel,
+// 직접 import 분은 Node 여야 한다 — importer 만장일치 근사로는 못 맞추는 자리다.
+test "#4659 re-export: importer 형식이 갈려도 각자 제 모드" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{\"name\":\"app\"}");
+    try writeFile(tmp.dir, "node_modules/pkg/package.json",
+        \\{ "name": "pkg", "main": "./c.js", "module": "./m.js" }
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/m.js", "export { default as viaPkg } from 'dep/b';\n");
+    try writeFile(tmp.dir, "node_modules/pkg/c.js", "exports.viaPkg = 1;\n");
+    try writeFile(tmp.dir, "node_modules/dep/package.json", "{\"name\":\"dep\",\"main\":\"./i.js\"}");
+    try writeFile(tmp.dir, "node_modules/dep/i.js", "module.exports = {};\n");
+    try writeFile(tmp.dir, "node_modules/dep/b.js",
+        \\Object.defineProperty(exports, '__esModule', { value: true });
+        \\exports.default = function f() { return 'FN'; };
+        \\
+    );
+    try writeFile(tmp.dir, "entry.mjs",
+        \\import { viaPkg } from 'pkg';
+        \\import direct from 'dep/b';
+        \\console.log(viaPkg, direct);
+        \\
+    );
+
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 두 모드가 **함께** 나와야 한다 — 한쪽으로 통일되면 둘 중 하나가 틀린 것이다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep_b(), 1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep_b())") != null);
+}
+
+// 대조군 — 중간 모듈이 `.mjs` 면 Node 모드가 유지돼야 한다.
+// 없으면 위 테스트들은 "`, 1` 을 아예 안 낸다" 로도 통과해 공허해진다.
+test "#4659 re-export 대조군: 중간 모듈이 .mjs 면 Node 모드" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{\"name\":\"app\"}");
+    try writeFile(tmp.dir, "node_modules/pkg/package.json",
+        \\{ "name": "pkg", "main": "./c.js", "module": "./m.mjs" }
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/m.mjs", "export { default as thing } from 'dep/b';\n");
+    try writeFile(tmp.dir, "node_modules/pkg/c.js", "exports.thing = 1;\n");
+    try writeFile(tmp.dir, "node_modules/dep/package.json", "{\"name\":\"dep\",\"main\":\"./i.js\"}");
+    try writeFile(tmp.dir, "node_modules/dep/i.js", "module.exports = {};\n");
+    try writeFile(tmp.dir, "node_modules/dep/b.js",
+        \\Object.defineProperty(exports, '__esModule', { value: true });
+        \\exports.default = function f() { return 'FN'; };
+        \\
+    );
+    try writeFile(tmp.dir, "entry.mjs", "import { thing } from 'pkg';\nconsole.log(thing);\n");
+
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep_b(), 1)") != null);
+}

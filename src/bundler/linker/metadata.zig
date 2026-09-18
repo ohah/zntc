@@ -1078,7 +1078,22 @@ pub fn buildMetadataForAst(
                 if (cjs_mod_opt != null and cjs_mod_opt.?.wrap_kind == .cjs) {
                     const preamble_name = importBindingName(self, module_index, ib, m.importBindingLocalName(ib));
                     const req_var = try getOrCreateCjsRequireRef(self, &cjs_var_cache, cjs_mod);
-                    const interop_mode2 = cjsInteropMode(self, &m);
+                    // re-export 체인은 **소비자**가 아니라 CJS 를 직접 import 한 모듈이
+                    // interop 을 정한다 (#4659 파생). 위 직접-import 분기와 달리 여기 `m` 은
+                    // 체인 끝의 소비자라, 그대로 쓰면 중간 모듈의 형식이 무시된다.
+                    // 체인 탐색 출발점 = 소비자가 직접 import 한 모듈(배럴/패키지 entry).
+                    const chain_start: ?ModuleIndex = blk: {
+                        if (ib.import_record_index >= m.import_records.len) break :blk null;
+                        const r = m.import_records[ib.import_record_index].resolved;
+                        break :blk if (r.isNone()) null else r;
+                    };
+                    const interop_mode2: types.Interop = if (self.reexportCjsInteropIsNode(
+                        cjs_mod_opt.?,
+                        cjs_mod,
+                        &m,
+                        chain_start orelse @as(ModuleIndex, @enumFromInt(module_index)),
+                        ib.imported_name,
+                    )) .node else .babel;
                     const effective_name = rb.canonical.export_name;
                     if (std.mem.eql(u8, effective_name, "default") and m.canUseDirectCjsDefaultImport(cjs_mod_opt.?)) {
                         try preamble.writeCjsDirectDefault(preamble_name, req_var, false);

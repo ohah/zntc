@@ -3542,6 +3542,98 @@ pub const Linker = struct {
         return false;
     }
 
+    /// CJS provider 를 import 하는 모듈들의 interop 모드가 **만장일치**면 그 값, 갈리면 null.
+    ///
+    /// `cjsInteropIsNode` 는 첫 importer 만 보는데, 그건 "이 provider 의 materialize 식 하나를
+    /// 무엇으로 쓸까" 라는 질문(청크 하나에 식 하나)이라 근사로 충분하다. 반면 re-export 체인의
+    /// 소비자별 preamble 은 **누가 그 import 문을 썼는가**를 정확히 물어야 한다.
+    fn cjsInteropImportersAgree(self: *const Linker, cjs_mod: *const Module) ?bool {
+        if (self.graph.resolve_cache.platform == .react_native) return false;
+        var seen: ?bool = null;
+        for (cjs_mod.importers.items) |imp| {
+            const im = self.graph.getModule(imp) orelse continue;
+            const v = im.def_format.isNodeEsm();
+            if (seen) |s| {
+                if (s != v) return null;
+            } else {
+                seen = v;
+            }
+        }
+        return seen;
+    }
+
+    /// re-export 간선을 따라가 `cjs_mod_idx` 를 **직접 import 한 모듈**을 찾는다 (#4659 파생).
+    ///
+    /// `resolveExportChainInner` 는 체인 끝의 canonical 만 돌려주고 중간 모듈을 버린다.
+    /// 그런데 CJS interop 모드는 "그 import 문을 누가 썼는가" 가 정하므로 마지막 홉이 필요하다.
+    /// 여기서는 그 한 가지만 좁게 답한다 — 찾지 못하면 null 을 돌려 호출자가 기존 근사로
+    /// 폴백하게 한다(정확도는 올리되 새로 틀릴 여지는 만들지 않는다).
+    fn findCjsImportOwner(
+        self: *const Linker,
+        module_idx: ModuleIndex,
+        name: []const u8,
+        cjs_mod_idx: u32,
+        depth: u32,
+    ) ?*const Module {
+        if (depth > max_chain_depth) return null;
+        const m = self.graph.getModule(module_idx) orelse return null;
+        const entry = self.export_map.get(.{
+            .module_index = @intCast(@intFromEnum(module_idx)),
+            .name = name,
+        }) orelse return null;
+
+        // re-export (`export { x as y } from './src'`) — 소스가 CJS 면 이 모듈이 주인이다.
+        if (entry.binding.kind == .re_export) {
+            const rec_idx = entry.binding.import_record_index orelse return null;
+            if (rec_idx >= m.import_records.len) return null;
+            const src = m.import_records[rec_idx].resolved;
+            if (src.isNone()) return null;
+            if (@intFromEnum(src) == cjs_mod_idx) return m;
+            return self.findCjsImportOwner(src, entry.binding.local_name, cjs_mod_idx, depth + 1);
+        }
+
+        // `import x from './src'; export { x }` — binding_scanner 가 .local 로 두는 형태.
+        for (m.import_bindings) |ib| {
+            if (!std.mem.eql(u8, ib.local_name, entry.binding.local_name)) continue;
+            if (ib.import_record_index >= m.import_records.len) return null;
+            const src = m.import_records[ib.import_record_index].resolved;
+            if (src.isNone()) return null;
+            if (@intFromEnum(src) == cjs_mod_idx) return m;
+            return self.findCjsImportOwner(src, ib.imported_name, cjs_mod_idx, depth + 1);
+        }
+        return null;
+    }
+
+    /// re-export 체인을 거쳐 온 CJS 바인딩의 interop 모드 (#4659 파생).
+    ///
+    /// `export { default as x } from '<CJS>'` 의 값은 **그 문장을 쓴 모듈**의 형식이 정한다.
+    /// 소비자는 이미 정해진 값을 읽을 뿐이다. 그런데 체인이 평탄화되면서 소비자 모듈이
+    /// 판정 주체로 들어가 있었다 — `.mjs` entry 가 `"module"` 필드 패키지의 re-export 를
+    /// 소비하면 Babel 이어야 할 자리에 Node 모드가 박혔다.
+    ///
+    /// importer 들이 갈리는 경우(같은 CJS 를 서로 다른 형식이 import)는 이 자리에서 고를 근거가
+    /// 없으므로 기존대로 소비자 기준으로 둔다 — 정확도를 올리되 새 모호함은 만들지 않는다.
+    pub fn reexportCjsInteropIsNode(
+        self: *const Linker,
+        cjs_mod: *const Module,
+        cjs_mod_idx: u32,
+        consumer: *const Module,
+        /// 소비자가 **직접** import 한 모듈 — 체인 탐색의 출발점. 소비자 자신에서 시작하면
+        /// 그 이름은 소비자의 export 가 아니라 import 라 `export_map` 에서 안 잡힌다.
+        chain_start: ModuleIndex,
+        imported_name: []const u8,
+    ) bool {
+        if (self.graph.resolve_cache.platform == .react_native) return false;
+        // ① 체인을 따라가 import 문의 주인을 정확히 찾는다.
+        if (self.findCjsImportOwner(chain_start, imported_name, cjs_mod_idx, 0)) |owner| {
+            return owner.def_format.isNodeEsm();
+        }
+        // ② 못 찾으면 importer 만장일치 — provider 를 한 형식만 소비하면 그게 답이다.
+        if (self.cjsInteropImportersAgree(cjs_mod)) |agreed| return agreed;
+        // ③ 그래도 모호하면 기존 동작(소비자 기준) 유지.
+        return consumer.def_format.isNodeEsm();
+    }
+
     /// `import_records[idx].resolved` 가 valid 면 모듈 인덱스 반환, 아니면 null.
     /// `collectExportsRecursive` 의 3개 분기에서 공유.
     inline fn resolvedRecordModule(records: anytype, rec_idx_opt: ?u32) ?u32 {
