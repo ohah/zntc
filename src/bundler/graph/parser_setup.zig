@@ -52,23 +52,10 @@ pub fn init(
         parser.is_jsx = true;
     }
 
-    // 모듈 정의 형식 결정 (Rolldown ModuleDefFormat)
-    module.def_format = if (std.mem.eql(u8, ext, ".mjs"))
-        .esm_mjs
-    else if (std.mem.eql(u8, ext, ".mts"))
-        .esm_mts
-    else if (std.mem.eql(u8, ext, ".cjs"))
-        .cjs
-    else if (std.mem.eql(u8, ext, ".cts"))
-        .cts
-    else if (graph_package_info.isPackageTypeModule(self, io, module.path))
-        .esm_package_json
-        // `"module"` 필드 해석분은 ESM 으로 파싱하되 Node interop 은 적용하지 않는다 (#4659).
-        // `"type":"module"` 검사를 **먼저** 해야 둘 다 해당하는 패키지가 node 로 남는다.
-    else if (module.is_module_field)
-        .esm_module_field
-    else
-        .unknown;
+    // 모듈 정의 형식 결정 (Rolldown ModuleDefFormat).
+    // warm 재빌드의 `refreshDefFormats` 와 **같은 함수**를 쓴다 — 두 곳이 갈리면
+    // 파싱을 건너뛴 모듈만 옛 판정을 들고 있게 된다 (#4665).
+    module.def_format = graph_package_info.deriveDefFormat(self, io, module);
 
     // def_format 기반 module/script 결정:
     //   .esm_mjs / .esm_mts / .esm_package_json / .esm_module_field → 확정 module
