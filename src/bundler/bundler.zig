@@ -1453,6 +1453,9 @@ pub const Bundler = struct {
                     try graph.buildIncrementalPreserved(io, self.options.entry_points, store, self.options.changed_files)
                 else
                     try graph.buildIncremental(io, self.options.entry_points, store, self.options.changed_files);
+                // 파싱을 건너뛴 모듈의 `def_format` 을 다시 구한다 — 입력이 소스가 아니라
+                // 파일시스템 상태(package.json `"type"`)라 cache-hit 이어도 바뀔 수 있다 (#4665).
+                @import("graph/package_info.zig").refreshDefFormats(graph, io, inc_result.reparsed_indices);
                 reparsed_count = inc_result.reparsed_indices.len;
                 if (inc_result.reparsed_indices.len > 0) {
                     const list = try self.allocator.alloc([]const u8, inc_result.reparsed_indices.len);

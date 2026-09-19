@@ -4059,3 +4059,60 @@ test "reuse #4535: star re-export barrel origin rename warm==cold" {
     try std.testing.expect(!cold_r.hasErrors());
     try std.testing.expectEqualStrings(cold_r.output, warm_r.output);
 }
+
+// #4665 적대적 검증: package.json 의 `"type"` 이 바뀌면 **소스가 그대로여도** interop 이
+// 달라져야 한다. 증분 경로는 source/mtime 이 불변이면 모듈을 다시 파싱하지 않으므로,
+// `def_format` 이 persisted store 에서 stale 하게 되살아나면 출력이 틀린 채 굳는다.
+//
+// (Zig 초보자 설명) `module_store` 는 파싱 결과를, `compiled_cache` 는 방출 바이트를 빌드
+// 사이에 재사용한다. 둘 다 "입력이 안 바뀌었으면 재사용" 인데, 여기서 입력은 소스 파일만이
+// 아니다 — package.json 의 `"type"` 도 방출을 바꾸는 입력이다.
+test "#4665: package.json type 변경은 소스 불변이어도 interop 을 바꾼다 (증분)" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{\"name\":\"app\"}");
+    try writeFile(tmp.dir, "dep.cjs",
+        \\Object.defineProperty(exports, '__esModule', { value: true });
+        \\exports.default = function f() { return 'FN'; };
+        \\
+    );
+    try writeFile(tmp.dir, "index.js", "import d from './dep.cjs';\nconsole.log(d);\n");
+    const entry = try absPath(&tmp, "index.js");
+    defer alloc.free(entry);
+
+    var store = module_store.PersistentModuleStore.init(alloc);
+    defer store.deinit();
+    var cc = CompiledOutputCache.init(alloc);
+    defer cc.deinit();
+    const base_opts = @as(@import("bundler.zig").BundleOptions, .{
+        .entry_points = &.{entry},
+        .dev_mode = false,
+        .module_store = &store,
+        .compiled_cache = &cc,
+    });
+
+    // 1) type 없음 → Babel interop
+    {
+        var b = Bundler.init(alloc, base_opts);
+        defer b.deinit();
+        var r = try b.bundle(std.testing.io);
+        defer r.deinit(alloc);
+        try std.testing.expect(!r.hasErrors());
+        try std.testing.expect(std.mem.indexOf(u8, r.output, "__toESM(require_dep())") != null);
+    }
+
+    // 2) package.json 만 바꾼다 — 소스 파일은 그대로.
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "package.json", "{\"name\":\"app\",\"type\":\"module\"}");
+
+    // 3) 같은 store/cache 로 재빌드 → Node interop 이어야 한다.
+    {
+        var b = Bundler.init(alloc, base_opts);
+        defer b.deinit();
+        var r = try b.bundle(std.testing.io);
+        defer r.deinit(alloc);
+        try std.testing.expect(!r.hasErrors());
+        try std.testing.expect(std.mem.indexOf(u8, r.output, "__toESM(require_dep(), 1)") != null);
+    }
+}

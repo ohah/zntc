@@ -4,6 +4,7 @@ const std = @import("std");
 
 const Module = @import("../module.zig").Module;
 const pkg_json = @import("../package_json.zig");
+const types = @import("../types.zig");
 const resolve_cache_mod = @import("../resolve_cache.zig");
 const profile = @import("../../profile.zig");
 const graph_package_side_effects = @import("package_side_effects.zig");
@@ -105,4 +106,53 @@ fn nearestPackageTypeIsModule(self: *ModuleGraph, io: std.Io, module_path: []con
         dir_opt = parent;
     }
     return false;
+}
+
+/// 모듈의 `def_format` 을 파일 확장자 + package.json 에서 파생한다.
+///
+/// **파싱 시점과 warm 재빌드에서 같은 함수를 써야 한다.** 증분 빌드는 소스가 안 바뀐 모듈을
+/// 다시 파싱하지 않는데, `def_format` 의 입력은 소스가 아니라 **파일시스템 상태**
+/// (확장자 · package.json 의 `"type"` · `"module"` 필드 해석 여부)다. 그래서 파싱을 건너뛴
+/// 모듈도 매 빌드 다시 구해야 한다 — 안 그러면 `"type"` 을 바꿔도 출력이 옛 값으로 굳는다.
+pub fn deriveDefFormat(self: *ModuleGraph, io: std.Io, module: *const Module) types.ModuleDefFormat {
+    const ext = std.fs.path.extension(module.diskPath());
+    if (std.mem.eql(u8, ext, ".mjs")) return .esm_mjs;
+    if (std.mem.eql(u8, ext, ".mts")) return .esm_mts;
+    if (std.mem.eql(u8, ext, ".cjs")) return .cjs;
+    if (std.mem.eql(u8, ext, ".cts")) return .cts;
+    if (isPackageTypeModule(self, io, module.path)) return .esm_package_json;
+    // `"module"` 필드 해석분은 ESM 으로 파싱하되 Node interop 은 적용하지 않는다 (#4659).
+    // `"type":"module"` 검사를 **먼저** 해야 둘 다 해당하는 패키지가 node 로 남는다.
+    if (module.is_module_field) return .esm_module_field;
+    return .unknown;
+}
+
+/// warm 재빌드에서 **파싱을 건너뛴 모듈들**의 `def_format` 을 다시 구한다.
+/// package.json 의 `"type"` 이 바뀌면 소스가 그대로여도 interop 이 달라져야 한다 (#4665).
+/// 조회는 `pkg_info_cache` 를 타므로 디렉토리당 1회 — 모듈 수에 비례한 해시 조회뿐이다.
+pub fn refreshDefFormats(
+    self: *ModuleGraph,
+    io: std.Io,
+    /// 이번 빌드에서 **다시 파싱된** 모듈들. 이들은 `parser_setup` 이 방금 `def_format` 을
+    /// 채웠으므로 건너뛴다 — cold 빌드(전부 재파싱)에서는 이 함수가 사실상 무비용이다.
+    reparsed: []const types.ModuleIndex,
+) void {
+    const count = self.modules.count();
+    if (count == 0) return;
+    // 재파싱 집합이 전체면 할 일이 없다.
+    if (reparsed.len >= count) return;
+
+    var skip = std.DynamicBitSetUnmanaged.initEmpty(self.allocator, count) catch return;
+    defer skip.deinit(self.allocator);
+    for (reparsed) |idx| {
+        const i = @intFromEnum(idx);
+        if (i < count) skip.set(i);
+    }
+
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        if (skip.isSet(i)) continue;
+        const m = self.moduleAtMut(@enumFromInt(i)) orelse continue;
+        m.def_format = deriveDefFormat(self, io, m);
+    }
 }
