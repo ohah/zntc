@@ -1,5 +1,15 @@
 # @zntc/react-native
 
+## 0.1.9
+
+### Patch Changes
+
+- Updated dependencies [85922e3]
+- Updated dependencies [13c21ca]
+- Updated dependencies [7e3ea66]
+- Updated dependencies [e28ca9d]
+  - @zntc/core@0.1.9
+
 ## 0.1.8
 
 ### Patch Changes

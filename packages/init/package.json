@@ -1,6 +1,6 @@
 {
   "name": "@zntc/init",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "ZNTC project initializer and React Native CLI overlay",
   "keywords": [
     "create",
