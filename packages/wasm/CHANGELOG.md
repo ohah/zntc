@@ -1,5 +1,7 @@
 # @zntc/wasm
 
+## 0.1.9
+
 ## 0.1.8
 
 ### Patch Changes

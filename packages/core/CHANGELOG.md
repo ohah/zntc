@@ -1,5 +1,84 @@
 # @zntc/core
 
+## 0.1.9
+
+### Patch Changes
+
+- 85922e3: `module.exports = <값>` 한 형태의 CJS 를 default import 할 때 `__toESM` 래퍼 한 겹을
+  걷어내는 최적화가 **ESM importer 에서는 적용되지 않던 것**을 고쳤다.
+
+  그 shape(`exports.x` 없음 · `__esModule` 없음)에서는 Babel 모드든 Node 모드든 `.default` 가
+  `module.exports` 자신이라 `require_x()` 와 값이 같다. 그런데 importer 가 ESM 이면 축약을
+  막고 있었다 — 그 조건은 "Babel 모드인가" 의 대용이었고(예전엔 interop 판정이 `isEsm()` 과
+  동치였다) 축약의 유효 조건은 아니었다.
+
+  실제 npm 패키지 58개를 번들해 보면 29개가 작아지고(패키지당 −17~−51 바이트) 실행 결과는
+  전부 동일하다.
+
+- 13c21ca: package.json `"module"` 필드로 해석된 ESM 빌드가 Babel 형식 CJS 를 default import 할 때
+  함수 대신 네임스페이스 객체를 받던 문제를 고쳤다 (#4659).
+
+  `@mui/material` 처럼 `"module"` 로 ESM 빌드를 노출하는 패키지에서 `TypeError:
+createStyled is not a function` 으로 앱이 죽었다.
+
+  `"module"` 은 **번들러 관례**("여기 ESM 빌드가 있다")이지 Node 의 `"type": "module"` 이
+  아니다. Node 는 `"module"` 필드를 읽지 않으므로 그 파일은 Node 기준으로 여전히 CJS 이고,
+  따라서 CJS default import 에 Node interop 의미(`import d from 'cjs'` → `d = module.exports`)를
+  적용하면 안 된다. 이전엔 두 개념이 같은 `def_format` 값으로 접혀 있어 Node 모드
+  (`__toESM(x, 1)`)가 켜졌다.
+
+  이제 `ModuleDefFormat` 이 두 질문을 나눠 답한다 — `isEsm()`(ESM 구문으로 파싱할까)과
+  `isNodeEsm()`(Node 가 ESM 으로 볼까). interop 판정만 후자를 쓴다. esbuild · rolldown ·
+  rspack 셋 다와 결과가 일치한다.
+
+- 7e3ea66: re-export 체인을 거쳐 온 CJS default 바인딩의 interop 모드를 **그 `export ... from` 문을 쓴
+  모듈** 기준으로 판정하도록 고쳤다 (#4659 파생).
+
+  `export { default as x } from '<CJS>'` 의 `x` 가 무엇인지는 그 문장을 쓴 모듈의 형식이
+  정하는데, linker 가 re-export 체인을 평탄화하면서 중간 모듈을 버리고 **최종 소비자** 기준으로
+  판정하고 있었다. `.mjs` 앱이 `"module"` 필드 패키지의 re-export 를 소비하면 Babel 이어야 할
+  자리에 Node 모드가 박혀 default 가 함수 대신 네임스페이스 객체가 됐다.
+
+  같은 CJS 를 서로 다른 형식이 import 하는 경우도 각자 제 모드를 받는다 — re-export 경유분은
+  Babel, 직접 import 분은 Node. esbuild · rolldown · rspack 과 결과가 일치한다.
+
+- e28ca9d: package.json 의 `"type": "module"` 이 **사용자 프로젝트 코드에는 적용되지 않던 것**을 고쳤다.
+
+  판정이 `node_modules/` 경로에서만 동작해서, `"type": "module"` 인 앱의 `.js` · `.ts` 파일이
+  CommonJS 를 default import 할 때 Node · esbuild · rolldown · rspack · webpack 과 다른 값을
+  받고 있었다. 이제 Node 규칙대로 **가장 가까운 package.json** 이 판정을 끝낸다 — `"type"` 이
+  없으면 그 자리에서 CommonJS 로 확정하고, 상위의 `"type": "module"` 이 하위 디렉토리를 덮지
+  않는다.
+
+  ### ⚠️ 동작 변경 — `"type": "module"` 프로젝트에서 Babel 형식 CJS 의 default import
+
+  Babel 이 만든 CommonJS(`__esModule` 표시 + `exports.default`)를 default import 하면, 이제
+  `exports.default` 가 아니라 **모듈 네임스페이스 전체**를 받는다. Node 의 ESM↔CJS interop
+  명세 그대로다. 함수를 기대하고 바로 호출하던 코드는 런타임에 `... is not a function` 으로
+  실패한다.
+
+  ```js
+  // 이전 (zntc 에서만 동작 — 다른 번들러·Node 에서는 이미 실패)
+  import generate from '@babel/generator';
+  generate(ast);
+
+  // 이후
+  import pkg from '@babel/generator';
+  const generate = pkg.default ?? pkg;
+  generate(ast);
+  ```
+
+  실물 npm 패키지 58개를 조사한 결과 영향받는 것은 아래 5개다. 나머지는 값이 바뀌지 않거나
+  객체 → 객체 변화라 호출부에 영향이 없다.
+  - `@babel/code-frame`
+  - `@babel/generator`
+  - `@babel/template`
+  - `@babel/traverse`
+  - `lines-and-columns`
+
+  `.mjs` importer 와 `"type"` 없는 `.js`, package.json `"module"` 필드 경유 모듈의 동작은
+  바뀌지 않는다.
+
 ## 0.1.8
 
 ### Patch Changes
