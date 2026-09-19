@@ -3283,3 +3283,139 @@ test "CJS 축약 대조군: exports.x 가 있으면 __toESM 유지" {
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib(), 1)") != null);
 }
+
+// ============================================================
+// package.json `"type"` 는 사용자 프로젝트 코드에도 적용된다
+// ============================================================
+//
+// (Zig 초보자 설명) Node 는 `.js` 파일이 ESM 인지 CJS 인지를 **가장 가까운 package.json 의
+// `"type"` 필드**로 정한다. 위로 올라가다 처음 만난 package.json 이 판정을 끝내고, 거기에
+// `"type"` 이 없으면 그 자리에서 CJS 로 확정한다 — 더 위의 `"type":"module"` 이 하위
+// 디렉토리를 덮지 않는다.
+//
+// 그 판정은 CJS default import 의 interop 모드로 이어진다. Node ESM 이면
+// `import d from '<CJS>'` 의 `d` 가 `module.exports` 전체이고(`__toESM(x, 1)`), 아니면
+// `__esModule` 표시를 존중해 `exports.default` 다(`__toESM(x)`).
+//
+// 예전엔 `isPackageTypeModule` 이 `findPackageDirPath`(경로에 `node_modules/` 필요) 하나만
+// 써서 **사용자 프로젝트 코드에는 아예 적용되지 않았다**. 그래서 `"type":"module"` 앱의
+// `.js` 가 Node·esbuild 와 다른 값을 받았다. 이 축을 검증하는 테스트가 하나도 없어서
+// 오래 드러나지 않았다.
+
+const BABEL_CJS_DEFAULT =
+    \\Object.defineProperty(exports, '__esModule', { value: true });
+    \\exports.default = function f() { return 'FN'; };
+    \\
+;
+
+test "type:module — 사용자 프로젝트의 .js 도 Node interop 을 받는다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{\"name\":\"app\",\"type\":\"module\"}");
+    try writeFile(tmp.dir, "dep.cjs", BABEL_CJS_DEFAULT);
+    try writeFile(tmp.dir, "entry.js", "import d from './dep.cjs';\nconsole.log(d);\n");
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep(), 1)") != null);
+}
+
+test "type 없음 — 사용자 프로젝트의 .js 는 Babel interop (대조군)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // `"type"` 을 **명시적으로 비워** 둔다 — 상위 디렉토리의 package.json 에 휘둘리지 않도록
+    // 이 자리에서 판정이 끝나야 한다.
+    try writeFile(tmp.dir, "package.json", "{\"name\":\"app\"}");
+    try writeFile(tmp.dir, "dep.cjs", BABEL_CJS_DEFAULT);
+    try writeFile(tmp.dir, "entry.js", "import d from './dep.cjs';\nconsole.log(d);\n");
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep())") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep(), 1)") == null);
+}
+
+test "type:module — 중첩 package.json 에 type 이 없으면 거기서 CJS 로 끝난다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{\"name\":\"app\",\"type\":\"module\"}");
+    try writeFile(tmp.dir, "dep.cjs", BABEL_CJS_DEFAULT);
+    // sub/ 의 package.json 에는 "type" 이 없다 → sub/ 안은 Node 기준 CJS.
+    // 상위의 "type":"module" 이 여기까지 내려오면 안 된다 (Node · esbuild 동일).
+    try writeFile(tmp.dir, "sub/package.json", "{\"name\":\"sub\"}");
+    try writeFile(tmp.dir, "sub/mid.js", "import d from '../dep.cjs';\nexport const k = d;\n");
+    try writeFile(tmp.dir, "entry.mjs", "import { k } from './sub/mid.js';\nconsole.log(k);\n");
+
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep())") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep(), 1)") == null);
+}
+
+test "type:module — 중첩 package.json 의 type:commonjs 가 상위를 이긴다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{\"name\":\"app\",\"type\":\"module\"}");
+    try writeFile(tmp.dir, "dep.cjs", BABEL_CJS_DEFAULT);
+    try writeFile(tmp.dir, "deep/package.json", "{\"name\":\"deep\",\"type\":\"commonjs\"}");
+    try writeFile(tmp.dir, "deep/inner/c.js", "import d from '../../dep.cjs';\nexport const k = d;\n");
+    try writeFile(tmp.dir, "entry.mjs", "import { k } from './deep/inner/c.js';\nconsole.log(k);\n");
+
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep())") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep(), 1)") == null);
+}
+
+// 깨진 package.json 은 **"없음" 이 아니다**. 파싱에 실패해도 그 자리에 파일이 있으므로
+// 형식 판정은 거기서 끝나야 한다. "없음" 으로 치고 위로 계속 올라가면 **상위의
+// `"type":"module"` 을 잘못 집는다** — 하위 설정이 상위에 가려지는 셈이다.
+test "type:module — 깨진 하위 package.json 이 상위 설정에 가려지지 않는다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{\"name\":\"root\",\"type\":\"module\"}");
+    try writeFile(tmp.dir, "dep.cjs", BABEL_CJS_DEFAULT);
+    try writeFile(tmp.dir, "sub/package.json", "{ this is not json");
+    try writeFile(tmp.dir, "sub/mid.js", "import d from '../dep.cjs';\nexport const k = d;\n");
+    try writeFile(tmp.dir, "entry.mjs", "import { k } from './sub/mid.js';\nconsole.log(k);\n");
+
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep())") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep(), 1)") == null);
+}

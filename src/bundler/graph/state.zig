@@ -6,6 +6,10 @@ const pkg_json = @import("../package_json.zig");
 pub const PkgInfo = struct {
     is_module: bool,
     side_effects: pkg_json.PackageJson.SideEffects,
+    /// 이 디렉토리에 package.json 이 **실제로 있었는지**. `is_module=false` 하나로는
+    /// "없음" 과 "있는데 type 이 module 이 아님" 을 구분할 수 없는데, Node 의 형식 판정은
+    /// 그 둘을 다르게 다룬다 — 없으면 위로 계속 올라가고, 있으면 거기서 끝난다.
+    found: bool = false,
 };
 
 pub const WorkerEntry = struct {
