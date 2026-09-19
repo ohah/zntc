@@ -33,7 +33,13 @@ pub fn lookupPkgInfo(self: *ModuleGraph, io: std.Io, pkg_dir_path: []const u8) P
         // 소유권을 info 로 이전 — parsed.deinit() 에서 이중 free 방지.
         parsed.pkg.side_effects = .unknown;
         parsed.deinit();
-    } else |_| {}
+    } else |err| {
+        // ⚠️ **파일이 있었는지**와 **읽어낼 수 있었는지**는 다른 질문이다. 깨진 JSON 이나
+        // 읽기 실패도 package.json 은 거기 있는 것이므로 `found` 다 — 형식 판정은 그 자리에서
+        // 끝나야 한다. 이걸 "없음" 으로 치면 위로 계속 올라가 **상위의 `"type":"module"` 을
+        // 잘못 집는다**(깨진 하위 package.json 이 상위 설정에 가려짐).
+        info.found = err != error.FileNotFound;
+    }
 
     self.pkg_info_cache_mutex.lock();
     defer self.pkg_info_cache_mutex.unlock();

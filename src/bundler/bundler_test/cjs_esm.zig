@@ -3343,3 +3343,28 @@ test "type:module — 중첩 package.json 의 type:commonjs 가 상위를 이긴
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep())") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep(), 1)") == null);
 }
+
+// 깨진 package.json 은 **"없음" 이 아니다**. 파싱에 실패해도 그 자리에 파일이 있으므로
+// 형식 판정은 거기서 끝나야 한다. "없음" 으로 치고 위로 계속 올라가면 **상위의
+// `"type":"module"` 을 잘못 집는다** — 하위 설정이 상위에 가려지는 셈이다.
+test "type:module — 깨진 하위 package.json 이 상위 설정에 가려지지 않는다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{\"name\":\"root\",\"type\":\"module\"}");
+    try writeFile(tmp.dir, "dep.cjs", BABEL_CJS_DEFAULT);
+    try writeFile(tmp.dir, "sub/package.json", "{ this is not json");
+    try writeFile(tmp.dir, "sub/mid.js", "import d from '../dep.cjs';\nexport const k = d;\n");
+    try writeFile(tmp.dir, "entry.mjs", "import { k } from './sub/mid.js';\nconsole.log(k);\n");
+
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep())") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep(), 1)") == null);
+}
