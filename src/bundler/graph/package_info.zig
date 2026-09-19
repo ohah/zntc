@@ -24,9 +24,10 @@ pub fn lookupPkgInfo(self: *ModuleGraph, io: std.Io, pkg_dir_path: []const u8) P
     self.pkg_info_cache_mutex.unlock();
     if (cached) |c| return c;
 
-    var info: PkgInfo = .{ .is_module = false, .side_effects = .unknown };
+    var info: PkgInfo = .{ .is_module = false, .side_effects = .unknown, .found = false };
     if (pkg_json.parsePackageJson(self.allocator, io, pkg_dir_path)) |parsed_val| {
         var parsed = parsed_val;
+        info.found = true;
         info.is_module = parsed.pkg.isModule();
         info.side_effects = parsed.pkg.side_effects;
         // 소유권을 info 로 이전 — parsed.deinit() 에서 이중 free 방지.
@@ -44,7 +45,7 @@ pub fn lookupPkgInfo(self: *ModuleGraph, io: std.Io, pkg_dir_path: []const u8) P
     self.pkg_info_cache.put(self.allocator, pkg_dir_path, info) catch {
         // alloc 실패 시 누수 방지
         info.side_effects.deinit(self.allocator);
-        return .{ .is_module = info.is_module, .side_effects = .unknown };
+        return .{ .is_module = info.is_module, .side_effects = .unknown, .found = info.found };
     };
     return info;
 }
@@ -88,11 +89,10 @@ fn nearestPackageTypeIsModule(self: *ModuleGraph, io: std.Io, module_path: []con
     var hops: usize = 0;
     while (dir_opt) |dir| : (hops += 1) {
         if (hops >= max_hops) return false;
-        if (pkg_json.parsePackageJson(self.allocator, io, dir)) |parsed_val| {
-            var parsed = parsed_val;
-            defer parsed.deinit();
-            return parsed.pkg.isModule();
-        } else |_| {}
+        // `lookupPkgInfo` 경유 — 같은 디렉토리의 형제 파일들이 캐시를 공유한다.
+        // 직접 parse 하면 모듈 수 × 깊이만큼 같은 파일을 다시 읽는다.
+        const info = self.lookupPkgInfo(io, dir);
+        if (info.found) return info.is_module;
         const parent = std.fs.path.dirname(dir) orelse return false;
         // 루트(`/`)에서 dirname 이 자기 자신을 돌려주면 전진이 멈춘다 — 그때 종료.
         if (std.mem.eql(u8, parent, dir)) return false;
