@@ -309,3 +309,170 @@ test "FileWatcher: watch directory — file 삭제 시 event 발생 (#3858)" {
 
     try std.testing.expect(changes.len > 0);
 }
+
+// #4682 — 에디터의 원자적 저장(임시파일에 쓰고 rename)은 파일을 **교체**한다.
+//
+// kqueue 는 경로가 아니라 열린 파일(inode)을 감시하므로, 교체되면 옛 fd 가 아무도 쓰지
+// 않는 고아를 붙들게 된다. 예전에는 첫 교체에서 NOTE_DELETE 가 한 번 뜨고 **그 뒤로는
+// 그 경로의 어떤 변경도 안 보였다** — dev 서버가 재시작 전까지 영구히 멎었다.
+//
+// 여기서는 **교체를 두 번** 한다. 첫 번째만 보는 테스트는 재등록이 없어도 통과하므로
+// 결함을 못 잡는다. 두 번째 교체에서 이벤트가 오는지가 계약이다.
+test "FileWatcher: 원자적 교체(rename) 후에도 계속 감시한다 (#4682)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "atomic.txt", .data = "v0" });
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "atomic.txt", std.testing.allocator);
+    defer std.testing.allocator.free(path);
+
+    var watcher = try FileWatcher.init(std.testing.allocator, std.testing.io);
+    defer watcher.deinit();
+    try watcher.addPath(path);
+
+    const Replacer = struct {
+        fn run(io: std.Io, dir: std.Io.Dir, tmp_name: []const u8, data: []const u8) void {
+            io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+            dir.writeFile(io, .{ .sub_path = tmp_name, .data = data }) catch return;
+            dir.rename(tmp_name, dir, "atomic.txt", io) catch {};
+        }
+    };
+
+    // 1회차 교체 — 재등록이 없어도 이벤트는 온다(옛 inode 의 DELETE).
+    var t1 = try std.Thread.spawn(.{}, Replacer.run, .{ std.testing.io, tmp.dir, ".t1", "v1" });
+    const first = watcher.waitForChanges(3000) catch |e| {
+        t1.join();
+        return e;
+    };
+    t1.join();
+    try std.testing.expect(first.len > 0);
+
+    // 2회차 교체 — 재등록이 됐을 때만 이벤트가 온다. 이게 회귀 방지의 본체다.
+    var t2 = try std.Thread.spawn(.{}, Replacer.run, .{ std.testing.io, tmp.dir, ".t2", "v2" });
+    const second = watcher.waitForChanges(3000) catch |e| {
+        t2.join();
+        return e;
+    };
+    t2.join();
+    try std.testing.expect(second.len > 0);
+    // 교체는 **수정**이다 — `.deleted` 로 분류되면 소비자가 outdir 에서 파일을 지운다.
+    try std.testing.expect(second[0].kind == .modified);
+
+    // 감시 대상 수는 그대로 — 교체는 경로를 늘리거나 줄이지 않는다.
+    try std.testing.expectEqual(@as(usize, 1), watcher.watchCount());
+}
+
+// #4682 적대적 검증 — 재등록이 **진짜 삭제를 수정으로 오인하면** 안 된다.
+// `NOTE_DELETE` 를 받았을 때 같은 경로를 다시 열어 보는데, 파일이 정말 사라졌으면
+// 열리지 않아야 하고 그때는 `.deleted` 로 보고해야 한다. 여기를 놓치면 삭제된 CSS 가
+// outdir 에 영원히 남는다(#3858 의 reconcile 이 삭제를 못 본다).
+test "FileWatcher: 진짜 삭제는 여전히 .deleted 로 보고 (#4682 회귀 가드)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "gone.txt", .data = "bye" });
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "gone.txt", std.testing.allocator);
+    defer std.testing.allocator.free(path);
+
+    var watcher = try FileWatcher.init(std.testing.allocator, std.testing.io);
+    defer watcher.deinit();
+    try watcher.addPath(path);
+
+    var th = try std.Thread.spawn(.{}, struct {
+        fn run(io: std.Io, dir: std.Io.Dir) void {
+            io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+            dir.deleteFile(io, "gone.txt") catch {};
+        }
+    }.run, .{ std.testing.io, tmp.dir });
+
+    const changes = try watcher.waitForChanges(3000);
+    th.join();
+
+    try std.testing.expect(changes.len > 0);
+    var saw_deleted = false;
+    for (changes) |c| {
+        if (std.mem.eql(u8, c.path, path) and c.kind == .deleted) saw_deleted = true;
+    }
+    try std.testing.expect(saw_deleted);
+}
+
+// #4682 적대적 검증 — 삭제 후 **곧 재생성**되면 다시 감시하고, 그 사실을 알려야 한다.
+//
+// 삭제와 재생성 사이에는 파일이 없는 틈이 있다(에디터·스크립트·`git checkout`).
+// 그 틈에 재등록을 시도하면 실패하는데, 거기서 포기하면 파일이 돌아와도 영영 안 보인다.
+test "FileWatcher: 삭제 후 재생성되면 다시 감시한다 (#4682)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "revive.txt", .data = "v0" });
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "revive.txt", std.testing.allocator);
+    defer std.testing.allocator.free(path);
+
+    var watcher = try FileWatcher.init(std.testing.allocator, std.testing.io);
+    defer watcher.deinit();
+    try watcher.addPath(path);
+
+    // 삭제 — 파일이 없는 동안이라 재등록은 실패한다.
+    try tmp.dir.deleteFile(std.testing.io, "revive.txt");
+    _ = try watcher.waitForChanges(300);
+
+    // 되살린 뒤 폴 — 이 호출의 재시도가 감시를 다시 단다.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "revive.txt", .data = "v1" });
+    _ = try watcher.waitForChanges(50);
+    try std.testing.expectEqual(@as(usize, 1), watcher.watchCount());
+
+    // 그리고 이후 수정도 계속 보여야 한다.
+    var t2 = try std.Thread.spawn(.{}, struct {
+        fn run(io: std.Io, dir: std.Io.Dir) void {
+            io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+            dir.writeFile(io, .{ .sub_path = "revive.txt", .data = "v2" }) catch {};
+        }
+    }.run, .{ std.testing.io, tmp.dir });
+    const changes = watcher.waitForChanges(3000) catch |e| {
+        t2.join();
+        return e;
+    };
+    t2.join();
+    try std.testing.expect(changes.len > 0);
+}
+
+// #4682 적대적 검증 — 파일이 **오래** 없다가 돌아와도 복구돼야 한다.
+//
+// 재시도 횟수에 상한을 뒀던 판(5회)에서는 1.5초쯤 비는 틈이 경계를 넘겨 복귀가 조용히
+// 유실됐다. `git checkout`/브랜치 전환은 그 정도로 오래 비운다. 붙들고 있는 fd 를 바로
+// 놓아주므로 오래 기다려도 새는 자원이 없다.
+test "FileWatcher: 오래 비었다가 돌아온 파일도 다시 감시한다 (#4682)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "slow.txt", .data = "x" });
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "slow.txt", std.testing.allocator);
+    defer std.testing.allocator.free(path);
+
+    var watcher = try FileWatcher.init(std.testing.allocator, std.testing.io);
+    defer watcher.deinit();
+    try watcher.addPath(path);
+
+    try tmp.dir.deleteFile(std.testing.io, "slow.txt");
+    // 상한이 있었다면 여기서 이미 포기했을 만큼 많이 폴한다.
+    var i: usize = 0;
+    while (i < 20) : (i += 1) _ = try watcher.waitForChanges(5);
+
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "slow.txt", .data = "back" });
+    _ = try watcher.waitForChanges(50);
+    try std.testing.expectEqual(@as(usize, 1), watcher.watchCount());
+
+    // 재등록이 실제로 살아 있는지는 **이후 수정이 보이는지**로 확인한다.
+    var t = try std.Thread.spawn(.{}, struct {
+        fn run(io: std.Io, dir: std.Io.Dir) void {
+            io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+            dir.writeFile(io, .{ .sub_path = "slow.txt", .data = "again" }) catch {};
+        }
+    }.run, .{ std.testing.io, tmp.dir });
+    const changes = watcher.waitForChanges(3000) catch |e| {
+        t.join();
+        return e;
+    };
+    t.join();
+    try std.testing.expect(changes.len > 0);
+}

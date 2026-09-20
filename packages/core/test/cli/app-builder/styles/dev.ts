@@ -163,6 +163,79 @@ describe('CLI: Vite-style app builder > styles > dev', () => {
     }
   });
 
+  /**
+   * #4679 — `postcss.config.*` 가 있으면 dev 의 **번들 CSS**(`main.css`)가 첫 편집에
+   * PostCSS 변환을 잃고, 그 뒤로 갱신이 멈췄다.
+   *
+   * dev 에서 번들러의 입력 트리는 PostCSS temp root 다. CSS 를 고치면 temp root 에
+   * **원본**이 덮여 쓰이는데(watch 동기화), 처리 결과는 outdir 에만 쓰여 temp root 로
+   * 돌아오지 않았다 → 번들 CSS 에서 변환이 빠진다. 멈추는 쪽은 그 덮어쓰기가 파일을
+   * 교체(inode 변경)해 macOS 의 파일 감시를 끊어 버린 것이었다 (#4682).
+   *
+   * 두 편집을 연달아 보는 게 핵심이다 — 한 번만 보면 "멈춤" 을 못 잡는다.
+   */
+  test('#4679 dev bundle CSS keeps PostCSS output across repeated edits', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-app-dev-postcss-temproot-'));
+    writeFileSync(
+      join(dir, 'index.html'),
+      '<title>dev</title><div id="root"></div><script type="module" src="/main.ts"></script>',
+    );
+    writeFileSync(join(dir, 'main.ts'), "import './plain.css';\nconsole.log('ok');\n");
+    writeFileSync(join(dir, 'plain.css'), 'body{background:rgb(0, 0, 0)}');
+    // 변환이 실제로 걸렸는지 눈으로 보려는 최소 플러그인 — 외부 패키지 의존 없음.
+    writeFileSync(
+      join(dir, 'postcss.config.cjs'),
+      "module.exports = { plugins: [{ postcssPlugin: 'zntc-test-marker'," +
+        " Once(root) { root.append('.ZNTC_MARK{color:#123456}'); } }] };\n",
+    );
+
+    const port = await findFreePort();
+    const proc = spawn(RUNTIME, [CLI, 'dev', dir, `--port=${port}`], { cwd: dir });
+    await waitForServer(port);
+    // 번들 CSS 가 기대 내용을 담을 때까지 폴링. 안 오면 timeout 으로 실패 = "멈춤" 검출.
+    async function waitForBundleCss(needle: string): Promise<string> {
+      // 예산: 3회 x 7s + 서버 기동 여유 < 테스트 timeout(30s). 넘기면 harness 가
+      // 죽여 버려 어떤 단언이 실패했는지조차 안 남는다.
+      const deadline = Date.now() + 7000;
+      let last = '';
+      while (Date.now() < deadline) {
+        try {
+          // 재빌드 중에는 연결이 끊길 수 있다 — 네트워크 오류로 테스트가 죽으면
+          // 정작 잡으려던 회귀와 구분이 안 된다. 다음 폴에서 재시도한다.
+          last = await fetch(`http://localhost:${port}/main.css`).then((r) => r.text());
+        } catch {
+          last = '(fetch 실패)';
+        }
+        if (last.includes(needle)) return last;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      throw new Error(`main.css 에서 ${needle} 를 기다리다 7s 초과. 마지막 응답:\n${last}`);
+    }
+    try {
+      // cold — 변환이 걸려 있어야 한다.
+      const cold = await waitForBundleCss('rgb(0, 0, 0)');
+      expect(cold).toContain('.ZNTC_MARK');
+
+      // 1회차 편집 — 값이 바뀌고 **변환은 남아 있어야** 한다.
+      writeFileSync(join(dir, 'plain.css'), 'body{background:rgb(1, 1, 1)}');
+      const first = await waitForBundleCss('rgb(1, 1, 1)');
+      expect(first).toContain('rgb(1, 1, 1)');
+      expect(first).toContain('.ZNTC_MARK');
+
+      // 2회차 편집 — 여기서 멈추던 것이 원래 증상이다.
+      writeFileSync(join(dir, 'plain.css'), 'body{background:rgb(2, 2, 2)}');
+      const second = await waitForBundleCss('rgb(2, 2, 2)');
+      expect(second).toContain('rgb(2, 2, 2)');
+      expect(second).toContain('.ZNTC_MARK');
+    } finally {
+      proc.kill();
+      // 종료를 기다린다 — 안 기다리면 죽어 가는 dev 서버가 자기가 감시하던 트리를
+      // rmSync 하는 것과 경쟁하고, 뒤 테스트들과 겹쳐 돈다.
+      await proc.exited;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000);
+
   test('dev applies PostCSS config and serves transformed CSS', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-app-dev-postcss-'));
     mkdirSync(join(dir, 'src'), { recursive: true });
