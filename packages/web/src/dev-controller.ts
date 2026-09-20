@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { loadEnv, prepareAppDevSync } from '@zntc/core';
@@ -527,7 +527,8 @@ export interface AppDevController {
    */
   isCssLikeChange(absPath: string): boolean;
   rebuildScssIncremental(absPath: string): Promise<string | null>;
-  hrefFor(absPath: string): string;
+  /** 변경된 CSS 에 대응하는 링크 href. 어느 링크인지 단정 못 하면 `null`(=전부 갱신). */
+  hrefFor(absPath: string): string | null;
 }
 
 /**
@@ -565,6 +566,15 @@ export function createAppDevController(
   // 박탈 → full pipeline 의 transitive 재컴파일로 dependents 까지 갱신. 세션 내내 누적.
   const sassReverseDep = new Map<string, Set<string>>();
   let primaryHref: string | null = null;
+  /**
+   * (#4672) **이 컨트롤러가 실제로 주입한** stylesheet href 집합.
+   *
+   * `css-update` 는 클라이언트에서 `href` pathname 이 일치하는 `<link>` 만 교체하고, 하나도
+   * 못 맞추면 페이지를 통째로 reload 한다. 번들 CSS(`/main.css`)가 링크인데 변경 통지는
+   * 소스 미러 경로(`/styles.css`)를 가리켜 매번 전체 리로드가 됐다. 무엇을 주입했는지
+   * 기억해 두고, 변경된 소스가 그중 하나면 그 href 를, 아니면 `null`(=전부 갱신)을 준다.
+   */
+  const injectedCssHrefs = new Set<string>();
   let pipelineRoot: string | null = null;
   // F1+F2 cache (incremental prep 에서 재사용). 구조 변화 (스타일 파일 추가/삭제) 시
   // 무효화 — `prepareAppCssPipelineRoot` 가 cache miss 일 때 자체적으로 재수집한다.
@@ -748,6 +758,11 @@ export function createAppDevController(
       // 하도록 확장하거나 metafile inputs 기반 정밀 dedup 으로 follow-up.
       if (hasPipelineCss) return;
       injectAppDevBundleCssLinks(outdir, base, bundleResult);
+      for (const file of bundleResult?.outputFiles ?? []) {
+        if (file?.path && /\.css$/i.test(file.path)) {
+          injectedCssHrefs.add(joinUrl(base, basename(file.path)));
+        }
+      }
     },
     injectBundleCssLinksFromOutdir() {
       // #3813 — native watch onRebuild 의 graphChanged 분기처럼 bundleResult 가 없는 경로용.
@@ -814,7 +829,15 @@ export function createAppDevController(
       return joinUrl(base, cssRel.replaceAll(sep, '/'));
     },
     hrefFor(absPath) {
-      if (absPath.endsWith('.css')) return joinUrl(base, relative(root, absPath));
+      if (absPath.endsWith('.css')) {
+        const srcHref = joinUrl(base, relative(root, absPath).replaceAll(sep, '/'));
+        // 소스 자체가 링크된 경우(파이프라인이 미러 CSS 를 그대로 링크) — 정확히 지목.
+        if (injectedCssHrefs.has(srcHref)) return srcHref;
+        // 번들 CSS 로 합쳐진 경우 — 어느 링크인지 단정할 수 없다. `null` 을 주면
+        // 클라이언트가 **모든 stylesheet 를 갱신**한다(전체 리로드보다 훨씬 싸다).
+        if (injectedCssHrefs.size > 0) return null;
+        return srcHref;
+      }
       return primaryHref ?? joinUrl(base, 'style.css');
     },
   };

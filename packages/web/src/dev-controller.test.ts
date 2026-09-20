@@ -205,6 +205,25 @@ describe('createAppDevController', () => {
     expect(c.hrefFor(join(dir, 'main.ts'))).toBe('/style.css');
   });
 
+  /**
+   * #4672 — `css-update` 의 href 가 주입된 `<link>` 와 안 맞으면 클라이언트가 링크를 하나도
+   * 못 찾아 **페이지를 통째로 reload** 한다. 소스 CSS 가 번들 CSS(`/main.css`)로 합쳐지는
+   * 경우가 그랬다. 단정할 수 없으면 `null` 을 줘서 "모든 stylesheet 갱신" 으로 보낸다.
+   */
+  test('#4672 hrefFor — 번들 CSS 로 합쳐지면 null (전체 리로드 대신 전부 갱신)', () => {
+    const c = controller();
+    // 주입 전에는 소스 href 를 그대로 (기존 동작 유지).
+    expect(c.hrefFor(join(dir, 'style.css'))).toBe('/style.css');
+
+    // 번들 CSS 를 주입했다고 알린다 — 소스 경로와 링크 경로가 다른 상황.
+    c.injectBundleCssLinks({ outputFiles: [{ path: join(dir, 'main.css') }] } as never);
+
+    // 소스는 링크가 아니다 → 어느 링크인지 단정 불가 → null.
+    expect(c.hrefFor(join(dir, 'style.css'))).toBeNull();
+    // 링크로 주입된 CSS 자신은 정확히 지목한다.
+    expect(c.hrefFor(join(dir, 'main.css'))).toBe('/main.css');
+  });
+
   test('rebuildScssIncremental — pipelineRoot 없으면 null', async () => {
     const c = controller();
     expect(await c.rebuildScssIncremental(join(dir, 'x.scss'))).toBeNull();
