@@ -77,6 +77,62 @@ describe('CLI: Vite-style app builder > styles > dev', () => {
     }
   }, 30000);
 
+  /**
+   * #4672 — 혼합 위상(CSS Modules 로 파이프라인 CSS 가 생기고 plain CSS 도 import).
+   *
+   * 이때 링크는 생성 CSS(`/x.zntc.css`)인데 변경 통지가 소스 경로(`/plain.css`)를 가리키면,
+   * 클라이언트가 링크를 하나도 못 찾아 **페이지를 통째로 reload** 한다. 단정할 수 없을 땐
+   * `href` 를 비워 보내 "모든 stylesheet 갱신" 으로 가야 한다.
+   *
+   * 브라우저 없이 관찰 가능한 계약이라 **WebSocket 메시지**로 단언한다.
+   */
+  test('#4672 dev css-update sends null href when the link cannot be pinpointed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-app-dev-css-href-'));
+    writeFileSync(
+      join(dir, 'index.html'),
+      '<title>dev</title><div id="root"></div><script type="module" src="/main.js"></script>',
+    );
+    // CSS Module 이 파이프라인 CSS 를 만들고, plain CSS 도 함께 import 한다.
+    writeFileSync(join(dir, 's.module.css'), '.box{color:navy}');
+    writeFileSync(join(dir, 'plain.css'), 'body{background:red}');
+    writeFileSync(
+      join(dir, 'main.js'),
+      "import s from './s.module.css';\nimport './plain.css';\ndocument.body.className = s.box;\n",
+    );
+
+    const port = await findFreePort();
+    const proc = spawn(RUNTIME, [CLI, 'dev', dir, `--port=${port}`], { cwd: dir });
+    await waitForServer(port);
+    try {
+      const ws = new WebSocket(`ws://localhost:${port}/__hmr`);
+      const seen: any[] = [];
+      ws.onmessage = (e) => {
+        try {
+          seen.push(JSON.parse(String(e.data)));
+        } catch {}
+      };
+      await new Promise((r) => {
+        ws.onopen = r;
+      });
+      await new Promise((r) => setTimeout(r, 400));
+
+      writeFileSync(join(dir, 'plain.css'), 'body{background:lime}');
+      for (let i = 0; i < 60 && !seen.some((m) => m.type === 'css-update'); i++) {
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      const css = seen.find((m) => m.type === 'css-update');
+      expect(css).toBeDefined();
+      // 소스 경로를 지목하면 클라이언트가 매칭 실패 → 전체 리로드가 된다.
+      expect(css.href).toBeNull();
+      // 전체 리로드로 갈음되지 않았는지도 본다.
+      expect(seen.some((m) => m.type === 'full-reload')).toBe(false);
+      ws.close();
+    } finally {
+      proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000);
+
   test('#4660 dev auto-injects a stylesheet link for JS-imported CSS', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-app-dev-css-inject-'));
     writeFileSync(
