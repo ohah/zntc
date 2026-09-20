@@ -700,6 +700,10 @@ export function createAppDevController(
           ? mirrorPipelineCssToOutdir(pipelineRoot, outdir, pipeline.generatedCssAbsPaths)
           : pipeline.generatedCssAbsPaths.map((p) => relative(pipelineRoot ?? root, p));
         injectAppDevPipelineCssLinks(outdir, base, rels);
+        // (#4672) 파이프라인이 넣은 링크도 기억한다 — 이걸 빠뜨리면 CSS Modules / SCSS
+        // 수정 시 `hrefFor` 가 소스 경로(`/s.module.css`)를 돌려주는데 링크는 생성 CSS
+        // (`/s.module.zntc.css`)라 매칭에 실패해 전체 리로드가 된다.
+        for (const rel of rels) injectedCssHrefs.add(joinUrl(base, rel.replaceAll(sep, '/')));
       }
       return prepared;
     },
