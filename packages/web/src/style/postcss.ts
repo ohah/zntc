@@ -311,6 +311,9 @@ export async function runPostcssForAppDev(
     );
   }
   const mirrorRoot = sourceRoot ?? root;
+  // (#4679) temp root 가 실제로 따로 있는가. 아래 write-back 의 안전 가드이자,
+  // "어느 트리를 미러하나" 질문의 단일 답이다.
+  const hasTempRoot = resolve(mirrorRoot) !== resolve(root);
   const deps = new Set<string>();
   const dirDeps = new Set<string>();
   let primaryHref: string | null = null;
@@ -346,7 +349,7 @@ export async function runPostcssForAppDev(
     // #3858/#3861 — PostCSS config 없을 때도 mirror sourceRoot (또는 root) 의
     // .css 를 outdir 으로 copy. drain 의 rebuildAppDevCss 가 changedPath 명시 +
     // PostCSS no-op 시 outdir 갱신 보장 — 신규 raw .css 가 outdir 에 도달.
-    const mirrorBase = sourceRoot ?? root;
+    const mirrorBase = mirrorRoot;
     const allCssFiles = collectAppFiles(mirrorBase, { skipDir: outdir, predicate: isCssFile });
     const targets =
       changedPath && changedPath.endsWith('.css')
@@ -411,7 +414,7 @@ export async function runPostcssForAppDev(
     // mirror sourceRoot 의 changedPath (또는 전체) 를 outdir 으로 copy —
     // drain 의 신규 .css 가 outdir 도달 보장. 위 `!configPath && !postcssOverride`
     // 분기 의 mirror logic 과 동형.
-    const mirrorBase = sourceRoot ?? root;
+    const mirrorBase = mirrorRoot;
     const allCssFiles = collectAppFiles(mirrorBase, { skipDir: outdir, predicate: isCssFile });
     // changedPath 는 raw root path, p 는 mirrorBase (tempRoot or root) path.
     // 같은 rel path 비교 — mirrorBase 기준 p 의 rel == root 기준 changedPath 의 rel.
@@ -455,6 +458,22 @@ export async function runPostcssForAppDev(
       });
       writeFileSync(outputPath, result.css);
       if (result.map) writeFileSync(`${outputPath}.map`, result.map.toString());
+      // (#4679) dev 에서는 **번들러의 입력 트리가 이 temp root** 다(`prepareRoot =
+      // pipelineRoot ?? root`). CSS 를 고치면 `syncDirtyFilesIntoTempRoot` 가 원본을
+      // temp root 에 덮어쓰므로, 처리 결과를 여기 되돌려 놓지 않으면 번들 CSS
+      // (`main.css`) 에서 PostCSS 변환이 통째로 빠진다 — Tailwind 면 `@tailwind base;`
+      // 가 그대로 나간다. outdir 만 고치면 `/plain.css` 만 맞고 번들은 틀린 채 남는다.
+      // ⚠️ 경로 철자가 아니라 **해석된 경로**로 비교한다. `/app` 과 `/app/`, macOS 의
+      // `/var/...` 와 `/private/var/...` 는 같은 디렉토리인데 문자열로는 다르다 —
+      // 그대로 통과시키면 `tempPath` 가 **사용자의 원본 파일**을 가리켜 PostCSS 출력으로
+      // 덮어쓴다(비멱등 플러그인이면 저장할 때마다 불어난다).
+      if (hasTempRoot) {
+        const tempPath = join(mirrorRoot, outputRel);
+        writeFileSync(tempPath, result.css);
+        // 지도도 같이 옮긴다 — CSS 만 옮기면 번들러가 읽는 트리에서
+        // `sourceMappingURL` 이 없는 파일을 가리킨다.
+        if (result.map) writeFileSync(`${tempPath}.map`, result.map.toString());
+      }
       deps.add(resolve(file));
       collectPostcssMessages(result.messages, deps, dirDeps);
     }),

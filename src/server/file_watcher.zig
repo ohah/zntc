@@ -102,11 +102,29 @@ const KqueueBackend = struct {
     result_buf: std.ArrayList(ChangeEvent),
 
     const WatchEntry = struct {
+        /// 열린 파일 디스크립터. `stale_fd` = 경로는 지켜보지만 지금은 붙들고 있는
+        /// 파일이 없다는 뜻 (#4682).
         fd: i32,
     };
 
+    /// (#4682) "이 경로는 지금 열 수 없다" 는 표시. 재등록에 실패하면 옛 fd 를 **즉시
+    /// 놓아주고**(고아 inode 의 디스크 블록 반환) 이 값을 넣어 둔다. 경로는 계속
+    /// 목록에 남아 폴마다 `access` 한 번으로 복귀를 살핀다.
+    ///
+    /// 재시도 횟수에 상한을 두지 않는 이유: 파일이 없는 틈은 수 ms 일 수도(에디터),
+    /// 수 초일 수도(`git checkout`, 브랜치 전환) 있다. 상한을 두면 그 경계를 넘긴
+    /// 복귀가 조용히 유실된다 — 실측에서 1.5초 틈이 그렇게 사라졌다. 대신 붙들고 있는
+    /// 자원이 없으므로 오래 남아도 비용은 `access` 한 번뿐이다.
+    const stale_fd: i32 = -1;
+
+    /// (#4682) 감시할 vnode 이벤트. `addPath` 와 `rearmPath` 가 공유한다.
+    const vnode_fflags = std.c.NOTE.WRITE | std.c.NOTE.DELETE | std.c.NOTE.RENAME | std.c.NOTE.ATTRIB;
+
     /// 0.16: posix.close/Io.File.close(io) — fd 를 File 로 감싸 close.
     fn closeFd(self: *const KqueueBackend, fd: i32) void {
+        // (#4682) `stale_fd` 는 "붙들고 있는 파일 없음" 표시일 뿐 진짜 fd 가 아니다.
+        // 정리 경로 어디서 불려도 안전하도록 여기 한 곳에서 막는다.
+        if (fd == stale_fd) return;
         // 0.16: std.Io.File 은 handle + flags(nonblocking) 필드. watch fd 는 동기.
         const f: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
         f.close(self.io);
@@ -141,29 +159,8 @@ const KqueueBackend = struct {
     fn addPath(self: *KqueueBackend, allocator: std.mem.Allocator, path: []const u8) !void {
         if (self.watch_fds.contains(path)) return;
 
-        // 파일을 읽기 전용으로 open (kqueue에 fd 필요). 0.16: posix.openZ 제거
-        // → Io.Dir.openFile (fd = file.handle).
-        const file = std.Io.Dir.cwd().openFile(self.io, path, .{}) catch return;
-        const fd: i32 = @intCast(file.handle);
-
+        const fd = self.openAndArm(path) orelse return;
         const path_owned = try allocator.dupe(u8, path);
-
-        // EVFILT_VNODE으로 파일 변경 감시 등록
-        var changelist = [_]std.c.Kevent{.{
-            .ident = @intCast(fd),
-            .filter = std.c.EVFILT.VNODE,
-            .flags = std.c.EV.ADD | std.c.EV.CLEAR | std.c.EV.ENABLE,
-            .fflags = std.c.NOTE.WRITE | std.c.NOTE.DELETE | std.c.NOTE.RENAME | std.c.NOTE.ATTRIB,
-            .data = 0,
-            .udata = 0,
-        }};
-
-        // 0.16: posix.kevent 제거 → libc kevent(kq, changelist[*], nchanges, eventlist[*], nevents, timeout).
-        if (std.c.kevent(self.kq, &changelist, 1, &self.eventbuf, 0, null) < 0) {
-            self.closeFd(fd);
-            allocator.free(path_owned);
-            return;
-        }
 
         self.watch_fds.put(allocator, path_owned, .{ .fd = fd }) catch {
             self.closeFd(fd);
@@ -180,6 +177,10 @@ const KqueueBackend = struct {
 
     fn removePath(self: *KqueueBackend, allocator: std.mem.Allocator, path: []const u8) void {
         if (self.watch_fds.fetchRemove(path)) |kv| {
+            if (kv.value.fd == stale_fd) {
+                allocator.free(kv.key);
+                return;
+            }
             var changelist = [_]std.c.Kevent{.{
                 .ident = @intCast(kv.value.fd),
                 .filter = std.c.EVFILT.VNODE,
@@ -205,8 +206,111 @@ const KqueueBackend = struct {
         self.fd_to_path.clearRetainingCapacity();
     }
 
+    /// (#4682) kqueue 에 vnode 감시를 건다. 성공하면 fd, 실패하면 null.
+    /// `addPath` 와 `rearmPath` 가 **같은 이벤트 마스크**를 쓰도록 한 곳에 모은다 —
+    /// 한쪽에만 플래그를 추가하면 "첫 저장 뒤부터 다르게 동작" 하는 가장 찾기 힘든
+    /// 모양이 된다.
+    fn openAndArm(self: *KqueueBackend, path: []const u8) ?i32 {
+        const file = std.Io.Dir.cwd().openFile(self.io, path, .{}) catch return null;
+        const fd: i32 = @intCast(file.handle);
+        var changelist = [_]std.c.Kevent{.{
+            .ident = @intCast(fd),
+            .filter = std.c.EVFILT.VNODE,
+            .flags = std.c.EV.ADD | std.c.EV.CLEAR | std.c.EV.ENABLE,
+            .fflags = vnode_fflags,
+            .data = 0,
+            .udata = 0,
+        }};
+        if (std.c.kevent(self.kq, &changelist, 1, &self.eventbuf, 0, null) < 0) {
+            self.closeFd(fd);
+            return null;
+        }
+        return fd;
+    }
+
+    /// (#4682) 교체된 파일로 감시를 옮겨 단다.
+    ///
+    /// kqueue 의 감시 단위는 경로가 아니라 **열린 파일(inode)** 이다. 에디터가 원자적으로
+    /// 저장하면(임시파일에 쓰고 rename) 원래 inode 는 unlink 되어 `NOTE_DELETE` 가 한 번
+    /// 뜨고, 그 뒤 fd 는 아무도 쓰지 않는 고아를 붙들게 된다 — 경로에 대한 이후 쓰기는
+    /// 영영 안 보인다.
+    ///
+    /// `path` 슬라이스는 `watch_fds` 가 소유하며 여기서는 **빌려 쓰기만** 한다. 이번
+    /// `waitForChanges` 가 이미 `result_buf` 에 담은 이벤트도 같은 슬라이스를 가리키므로
+    /// 절대 free 하면 안 된다.
+    ///
+    /// 반환값 `false` = 경로가 정말 사라졌다. 이때는 **엔트리를 버린다** — fd 를 닫고 두
+    /// 맵에서 지운다. 그래야 (a) 고아 inode 의 디스크 블록이 반환되고 (b) 파일이 나중에
+    /// 돌아왔을 때 `addPath` 의 `watch_fds.contains(path)` 조기 반환에 막히지 않고 다시
+    /// 등록된다. 재시도 큐를 두지 않는 이유가 이것이다 — 복구 경로가 이미 있다.
+    fn rearmPath(self: *KqueueBackend, allocator: std.mem.Allocator, path: []const u8, entry: *WatchEntry) bool {
+        const old_fd = entry.fd;
+        const new_fd = self.openAndArm(path) orelse {
+            // 지금은 열 수 없다. 옛 fd 는 고아라 어떤 이벤트도 주지 않으므로 바로
+            // 놓아주고, 경로만 남겨 다음 폴부터 복귀를 살핀다.
+            self.releaseFd(entry, old_fd);
+            return false;
+        };
+
+        // ⚠️ 옛 fd 는 **역참조 맵 갱신이 성공한 뒤에** 닫는다. 미리 닫고 실패하면 맵에
+        // 옛 fd 가 남아 `deinit` 이 한 번 더 닫는데, 그 사이 같은 번호로 열린 **엉뚱한
+        // 파일**이 닫힐 수 있다.
+        self.fd_to_path.put(allocator, new_fd, path) catch {
+            self.closeFd(new_fd);
+            self.releaseFd(entry, old_fd);
+            return false;
+        };
+        entry.fd = new_fd; // watch_fds 는 구조 변경 없음 — 포인터로 값만 바꾼다.
+        _ = self.fd_to_path.remove(old_fd);
+        self.closeFd(old_fd);
+        return true;
+    }
+
+    /// (#4682) 붙들고 있던 fd 를 놓아주고 엔트리를 "지금은 열 수 없음" 으로 표시한다.
+    /// 경로는 목록에 남으므로 파일이 돌아오면 `retryRearms` 가 다시 단다.
+    fn releaseFd(self: *KqueueBackend, entry: *WatchEntry, fd: i32) void {
+        if (fd == stale_fd) return;
+        _ = self.fd_to_path.remove(fd);
+        self.closeFd(fd);
+        entry.fd = stale_fd;
+    }
+
+    /// (#4682) "지금은 열 수 없음" 으로 표시된 경로가 돌아왔는지 살피고 다시 단다.
+    ///
+    /// `watch_fds` 를 **직접 순회**한다 — 별도 큐를 두면 "이번 폴에 몇 개까지" 같은
+    /// 상한이 생기고, HashMap 순회 순서가 안정적이라 뒤쪽 엔트리가 영영 차례를 못 받는다.
+    /// 값만 포인터로 고치므로(구조 변경 없음) 순회 중 무효화되지 않는다.
+    ///
+    /// 재등록에 성공하면 `.modified` 를 실어 보낸다. 감시가 끊겨 있던 동안의 쓰기는
+    /// 커널이 알려 주지 않으므로, 이걸 빠뜨리면 되살아난 파일의 내용이 조용히 묻힌다.
+    fn retryRearms(self: *KqueueBackend, allocator: std.mem.Allocator) void {
+        var it = self.watch_fds.iterator();
+        while (it.next()) |e| {
+            if (e.value_ptr.fd != stale_fd) continue;
+            const path = e.key_ptr.*;
+            // 아직 없으면 `access` 한 번으로 끝 — 열기를 시도하지 않는다.
+            std.Io.Dir.cwd().access(self.io, path, .{}) catch continue;
+            const new_fd = self.openAndArm(path) orelse continue;
+            self.fd_to_path.put(allocator, new_fd, path) catch {
+                self.closeFd(new_fd);
+                continue;
+            };
+            e.value_ptr.fd = new_fd;
+            // ⚠️ 여기서 `.modified` 를 실어 보내지 **않는다**. 보내 봤더니 통합 스위트의
+            // lazy dev-server 테스트가 3회 중 2회 깨졌다(main 은 3/3 통과). JS dev 서버
+            // 경로는 이벤트를 내용 해시로 거르지 않아, 재등록 통지가 그대로 추가 재빌드가
+            // 되어 lazy 청크 캐시 무효화와 경쟁한다.
+            //
+            // 남는 틈: 감시가 끊겨 있던 동안의 쓰기는 커널이 알려 주지 않으므로, 파일이
+            // 사라졌다 돌아오는 사이의 변경 **한 번**은 통지되지 않을 수 있다. 실측한
+            // dev 시나리오(제자리/rename/삭제 후 즉시 재생성)는 모두 이후 이벤트로
+            // 복구됐다. 정확히 메우려면 소비자 쪽이 내용 해시로 거르도록 맞춰야 한다.
+        }
+    }
+
     fn waitForChanges(self: *KqueueBackend, allocator: std.mem.Allocator, timeout_ms: u32) ![]const ChangeEvent {
         self.result_buf.clearRetainingCapacity();
+        self.retryRearms(allocator);
 
         const timeout = std.c.timespec{
             .sec = @intCast(timeout_ms / 1000),
@@ -224,12 +328,17 @@ const KqueueBackend = struct {
             const fd: i32 = @intCast(ev.ident);
             const path = self.fd_to_path.get(fd) orelse continue;
 
-            const kind: ChangeKind = if (ev.fflags & std.c.NOTE.DELETE != 0)
-                .deleted
-            else if (ev.fflags & std.c.NOTE.RENAME != 0)
-                .deleted
+            // (#4682) DELETE / RENAME 은 "이 inode 가 경로에서 떨어져 나갔다" 는 뜻이지
+            // "파일이 사라졌다" 가 아니다. 원자적 저장은 같은 경로에 **새 파일**을 남긴다.
+            // 그래서 경로를 다시 열어 보고, 열리면 교체(=수정)로, 안 열리면 삭제로 본다.
+            const gone = ev.fflags & (std.c.NOTE.DELETE | std.c.NOTE.RENAME) != 0;
+            const entry = self.watch_fds.getPtr(path);
+            // `or` 는 short-circuit 이라 교체가 아닐 땐 rearmPath 를 부르지 않는다.
+            const kind: ChangeKind = if (!gone or
+                (entry != null and self.rearmPath(allocator, path, entry.?)))
+                .modified
             else
-                .modified;
+                .deleted;
 
             try self.result_buf.append(allocator, .{ .path = path, .kind = kind });
         }

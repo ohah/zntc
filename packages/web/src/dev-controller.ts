@@ -1,4 +1,5 @@
 import {
+  copyFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -154,7 +155,10 @@ function normalizeBase(base: string | undefined): string {
 /** 단일 파일 mirror — mkdir + cp 한 줄. dirty sync / pipeline outdir / scss fast-path 공용. */
 function mirrorFile(srcAbs: string, dstAbs: string): void {
   mkdirSync(dirname(dstAbs), { recursive: true });
-  cpSync(srcAbs, dstAbs);
+  // (#4682) `cpSync` 는 대상을 **교체**한다(inode 가 바뀐다). macOS 의 파일 감시는
+  // 경로가 아니라 inode 에 걸리므로, 그러면 우리가 우리 감시를 끊는다 — dev 가 CSS 한 번
+  // 저장하고 멎던 원인이다. `copyFileSync` 는 제자리에 덮어써 inode 를 유지한다.
+  copyFileSync(srcAbs, dstAbs);
 }
 
 /**
