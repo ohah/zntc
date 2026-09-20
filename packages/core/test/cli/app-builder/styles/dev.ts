@@ -27,6 +27,56 @@ describe('CLI: Vite-style app builder > styles > dev', () => {
    * 여기서는 `<link>` 를 **적지 않고** JS 의 `import './styles.css'` 만으로 링크가
    * 자동 주입되는지 본다.
    */
+  /**
+   * #4660 적대적 검증 — 실행 중 JS 에 CSS import 를 **추가**하는 흐름.
+   *
+   * initial 빌드만 고치면 이 경로가 남는다. native 의 `graphChanged` 는 **JS 모듈 ID
+   * 집합** 변화로만 켜지는데, CSS import 추가는 집합 크기를 바꾸지 않아 false 다.
+   * 그래서 rebuild 가 asset 을 쓰고 그 목록을 이벤트로 실어 보내야 한다.
+   *
+   * ⚠️ outdir 스캔으로 때우면 dev 서빙용으로 미러된 **소스 CSS** 까지 잡혀 `<link>` 가
+   * 중복된다 — 그래서 링크 "개수" 까지 단언한다.
+   */
+  test('#4660 dev injects the link when a CSS import is added while watching', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-app-dev-css-add-'));
+    writeFileSync(
+      join(dir, 'index.html'),
+      '<title>dev</title><div id="root"></div><script type="module" src="/main.ts"></script>',
+    );
+    // 처음엔 CSS import 가 **없다**.
+    writeFileSync(join(dir, 'main.ts'), "console.log('no css yet');\n");
+    writeFileSync(join(dir, 'styles.css'), 'body{background:red}');
+
+    const port = await findFreePort();
+    const proc = spawn(RUNTIME, [CLI, 'dev', dir, `--port=${port}`], { cwd: dir });
+    await waitForServer(port);
+    const linkCount = async () => {
+      const html = await fetch(`http://localhost:${port}/`).then((r) => r.text());
+      return [...html.matchAll(/<link[^>]+rel="stylesheet"/g)].length;
+    };
+    try {
+      expect(await linkCount()).toBe(0);
+
+      writeFileSync(join(dir, 'main.ts'), "import './styles.css';\nconsole.log('with css');\n");
+      let n = 0;
+      for (let i = 0; i < 80 && n === 0; i++) {
+        await new Promise((r) => setTimeout(r, 250));
+        n = await linkCount();
+      }
+      // 정확히 1개 — 소스 CSS 미러까지 잡히면 2개가 된다.
+      expect(n).toBe(1);
+
+      const html = await fetch(`http://localhost:${port}/`).then((r) => r.text());
+      const href = /<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/.exec(html)?.[1] ?? '';
+      const res = await fetch(`http://localhost:${port}${href}`);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain('background');
+    } finally {
+      proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000);
+
   test('#4660 dev auto-injects a stylesheet link for JS-imported CSS', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-app-dev-css-inject-'));
     writeFileSync(

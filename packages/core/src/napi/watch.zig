@@ -392,6 +392,11 @@ const WatchRebuildEvent = struct {
     /// 추가/제거된 동적 import seed 집합을 갱신(onReady 한정이던 PR-B-1 의 확장). onReady 와
     /// 동일 빌더(common.buildLazySeedsJs)라 pathHash 공식 단일 소스.
     lazy_seeds: ?[]const []const u8 = null,
+    /// (#4660) 이번 rebuild 가 낸 **asset 산출물 경로**(CSS bundle 등, outdir 상대).
+    /// dev 서버가 `<link rel="stylesheet">` 를 맞추는 데 쓴다. outdir 을 통째로 스캔하면
+    /// dev 서빙용으로 미러된 **소스 CSS** 까지 잡혀 링크가 중복되므로, 번들러가 실제로
+    /// 낸 목록을 그대로 전달한다.
+    assets: ?[]const []const u8 = null,
 
     const ModuleUpdate = struct {
         id: []const u8,
@@ -407,6 +412,10 @@ const WatchRebuildEvent = struct {
     };
 
     fn deinit(self: *WatchRebuildEvent) void {
+        if (self.assets) |as| {
+            for (as) |s| native_alloc.free(s);
+            native_alloc.free(as);
+        }
         if (self.changed) |ch| {
             for (ch) |s| native_alloc.free(s);
             native_alloc.free(ch);
@@ -541,6 +550,18 @@ fn watchRebuildTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data
             var js_gc: c.napi_value = undefined;
             _ = c.napi_get_boolean(env, true, &js_gc);
             _ = c.napi_set_named_property(env, js_event, "graphChanged", js_gc);
+        }
+
+        // (#4660) assets?: string[] — 이번 rebuild 의 asset 산출 경로(CSS bundle 등).
+        if (event.assets) |paths| {
+            var js_assets: c.napi_value = undefined;
+            _ = c.napi_create_array_with_length(env, paths.len, &js_assets);
+            for (paths, 0..) |path, i| {
+                var js_p: c.napi_value = undefined;
+                _ = c.napi_create_string_utf8(env, path.ptr, path.len, &js_p);
+                _ = c.napi_set_element(env, js_assets, @intCast(i), js_p);
+            }
+            _ = c.napi_set_named_property(env, js_event, "assets", js_assets);
         }
 
         // updates?: [{id, code}]
@@ -1457,6 +1478,8 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
 
         // 출력 파일 쓰기 + 바이트 수 계산 (#3795 — outdir 명시 시 결합).
         var output_bytes: usize = 0;
+        // (#4660) asset 산출 경로 — 아래 rebuild 이벤트에 실어 보낸다.
+        var asset_paths_copy: ?[]const []const u8 = null;
         if (rebuild_result.outputs) |outputs| {
             for (outputs) |o| output_bytes += o.contents.len;
             for (outputs) |o| {
@@ -1479,6 +1502,32 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             }
         }
 
+        // (#4660) rebuild 도 asset 산출물을 써야 한다 — initial 만 고치면 "실행 중 JS 에
+        // CSS import 를 추가" 하는 흐름에서 파일이 안 생긴다. caller 는 rebuild 후
+        // `injectBundleCssLinksFromOutdir()` 로 outdir 을 스캔해 `<link>` 를 붙이므로,
+        // 여기서 쓰지 않으면 스캔할 대상 자체가 없다.
+        if (rebuild_result.asset_outputs) |assets| {
+            for (assets) |a| output_bytes += a.contents.len;
+            for (assets) |a| {
+                writeOutputToOutdir(allocator, bundle_opts.outdir, a.path, a.contents);
+            }
+            // 이벤트로도 실어 보낸다 — caller 가 이 목록으로만 `<link>` 를 맞춘다.
+            // (이벤트 객체는 아래에서 만들어지므로 여기선 지역 변수에 모아 둔다.)
+            if (allocator.alloc([]const u8, assets.len)) |arr| {
+                var fill: usize = 0;
+                for (assets) |a| {
+                    arr[fill] = allocator.dupe(u8, a.path) catch break;
+                    fill += 1;
+                }
+                if (fill == assets.len) {
+                    asset_paths_copy = arr;
+                } else {
+                    for (arr[0..fill]) |pth| allocator.free(pth);
+                    allocator.free(arr);
+                }
+            } else |_| {}
+        }
+
         // Lazy sourcemap (Issue #1727): rebuild 산출 builder 들을 handle 로 swap.
         // 이전 rebuild 의 builder 는 `swapSourceMapCache` 내부에서 free.
         if (incremental_opts.sourcemap.lazy) {
@@ -1499,6 +1548,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             // success=true 유지 (output / module_code_cache 모두 정상). consumer 가 reportError
             // + Update broadcast 둘 다 처리.
             .errors = if (rebuild_result.hasErrors()) collectErrorsFromResult(allocator, &rebuild_result) else null,
+            .assets = asset_paths_copy,
         };
 
         // changed 파일 목록 복사
