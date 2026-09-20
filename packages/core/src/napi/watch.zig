@@ -283,8 +283,16 @@ const WatchReadyEvent = struct {
     /// onReady 이벤트가 `lazySeeds: [{pathHash, path}]` 로 노출 → JS dev 서버 lazy 라우팅의 토대.
     /// null/빈 = lazy 아님. (rebuild 시 seed 변경 갱신은 PR-B-2 범위 — onReady 만 노출.)
     lazy_seeds: ?[]const []const u8 = null,
+    /// (#4675) 모듈 그래프에 들어온 CSS 소스 경로(절대). dev 서버가 plain `.css` 에
+    /// `<link>` 를 걸 때 쓴다 — **import 된 것만** 담기므로 쓰이지 않는 CSS 가 페이지에
+    /// 적용되지 않는다. `outputs`(산출물)와 달리 이건 **입력** 목록이다.
+    css_modules: ?[]const []const u8 = null,
 
     fn deinit(self: *WatchReadyEvent, allocator: std.mem.Allocator) void {
+        if (self.css_modules) |paths| {
+            for (paths) |p| allocator.free(p);
+            allocator.free(paths);
+        }
         if (self.outputs) |paths| {
             for (paths) |p| allocator.free(p);
             allocator.free(paths);
@@ -397,6 +405,9 @@ const WatchRebuildEvent = struct {
     /// dev 서빙용으로 미러된 **소스 CSS** 까지 잡혀 링크가 중복되므로, 번들러가 실제로
     /// 낸 목록을 그대로 전달한다.
     assets: ?[]const []const u8 = null,
+    /// (#4675) ready 이벤트의 `css_modules` 와 같은 의미 — 이번 rebuild 기준 목록.
+    /// JS 가 새로 import 한 CSS 에도 링크를 걸 수 있게 매 rebuild 마다 실어 보낸다.
+    css_modules: ?[]const []const u8 = null,
 
     const ModuleUpdate = struct {
         id: []const u8,
@@ -412,6 +423,10 @@ const WatchRebuildEvent = struct {
     };
 
     fn deinit(self: *WatchRebuildEvent) void {
+        if (self.css_modules) |cm| {
+            for (cm) |s| native_alloc.free(s);
+            native_alloc.free(cm);
+        }
         if (self.assets) |as| {
             for (as) |s| native_alloc.free(s);
             native_alloc.free(as);
@@ -507,12 +522,33 @@ fn watchReadyTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data: 
         _ = c.napi_set_named_property(env, js_event, "errors", js_errors);
     }
 
+    // (#4675) cssModules: string[] — 모듈 그래프에 들어온 CSS **소스** 경로.
+    if (event.css_modules) |paths| setStringArrayProp(env, js_event, "cssModules", paths);
+
     // onReady(event) 호출
     var js_undefined: c.napi_value = undefined;
     _ = c.napi_get_undefined(env, &js_undefined);
     var js_result: c.napi_value = undefined;
     var call_args = [_]c.napi_value{js_event};
     _ = c.napi_call_function(env, js_undefined, js_func, 1, &call_args, &js_result);
+}
+
+/// (#4675) `string[]` 배열 프로퍼티를 JS 이벤트 객체에 붙인다. ready / rebuild 두 콜백이
+/// 같은 모양으로 `css_modules` 를 노출하므로 한 곳에 모은다.
+fn setStringArrayProp(
+    env: c.napi_env,
+    js_event: c.napi_value,
+    name: [:0]const u8,
+    paths: []const []const u8,
+) void {
+    var js_arr: c.napi_value = undefined;
+    if (c.napi_create_array_with_length(env, paths.len, &js_arr) != c.napi_ok) return;
+    for (paths, 0..) |p, i| {
+        var js_str: c.napi_value = undefined;
+        _ = c.napi_create_string_utf8(env, p.ptr, p.len, &js_str);
+        _ = c.napi_set_element(env, js_arr, @intCast(i), js_str);
+    }
+    _ = c.napi_set_named_property(env, js_event, name, js_arr);
 }
 
 /// onRebuild TSFN 콜백 — 메인 스레드에서 실행
@@ -562,6 +598,10 @@ fn watchRebuildTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data
                 _ = c.napi_set_element(env, js_assets, @intCast(i), js_p);
             }
             _ = c.napi_set_named_property(env, js_event, "assets", js_assets);
+        }
+        // (#4675) cssModules — ready 와 같은 의미. 새로 import 된 CSS 도 링크되도록.
+        if (event.css_modules) |paths| {
+            setStringArrayProp(env, js_event, "cssModules", paths);
         }
 
         // updates?: [{id, code}]
@@ -747,6 +787,40 @@ fn addWatchRootDirs(
         defer allocator.free(full_path);
         if (tracked.addDirPath(full_path)) count.* += 1;
     }
+}
+
+/// (#4675) 모듈 그래프에 실제로 들어온 **CSS 경로만** 추려 복사한다.
+///
+/// dev 는 SCSS / CSS Modules 를 파이프라인이 따로 링크하지만 plain `.css` 는 아무도
+/// 링크하지 않아 페이지에 도달하지 못했다. "디렉토리에서 발견한 CSS 를 전부 링크" 하면
+/// import 하지도 않은 파일까지 적용되므로(실측: 쓰이지 않는 `b.scss` 가 링크됨),
+/// **번들러가 실제로 따라간 목록**만 넘긴다.
+///
+/// partial alloc 실패 시 전부 정리하고 null — 반쪽 목록을 넘기면 소비자가 "이게 전부" 로
+/// 믿고 나머지 링크를 지운다.
+fn copyCssModulePaths(
+    allocator: std.mem.Allocator,
+    module_paths: ?[]const []const u8,
+) ?[]const []const u8 {
+    const paths = module_paths orelse return null;
+    var count: usize = 0;
+    for (paths) |p| {
+        if (std.mem.endsWith(u8, p, ".css")) count += 1;
+    }
+    if (count == 0) return null;
+    const arr = allocator.alloc([]const u8, count) catch return null;
+    var fill: usize = 0;
+    for (paths) |p| {
+        if (!std.mem.endsWith(u8, p, ".css")) continue;
+        arr[fill] = allocator.dupe(u8, p) catch break;
+        fill += 1;
+    }
+    if (fill != count) {
+        for (arr[0..fill]) |q| allocator.free(q);
+        allocator.free(arr);
+        return null;
+    }
+    return arr;
 }
 
 /// issue #3858 — dir event 수신 후 root rescan. tracked 의 file 중 root 안 path 와
@@ -1237,6 +1311,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             .bytes = initial_bytes,
             .outputs = outputs_copy,
             .lazy_seeds = lazy_seeds_copy,
+            .css_modules = copyCssModulePaths(allocator, result.module_paths),
             // #3799 root-cause — initial build 의 diagnostics 에 error 가 있으면 별도 노출.
             // success/lifecycle 영향 없음, consumer (runServe onReady) 가 reportError 처리.
             .errors = if (result.hasErrors()) collectErrorsFromResult(allocator, &result) else null,
@@ -1549,6 +1624,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             // + Update broadcast 둘 다 처리.
             .errors = if (rebuild_result.hasErrors()) collectErrorsFromResult(allocator, &rebuild_result) else null,
             .assets = asset_paths_copy,
+            .css_modules = copyCssModulePaths(native_alloc, rebuild_result.module_paths),
         };
 
         // changed 파일 목록 복사

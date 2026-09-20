@@ -89,7 +89,7 @@ describe('CLI: Vite-style app builder > styles > dev', () => {
    *
    * 브라우저 없이 관찰 가능한 계약이라 **WebSocket 메시지**로 단언한다.
    */
-  test('#4672 dev css-update sends null href when the link cannot be pinpointed', async () => {
+  test('#4672/#4675 dev css-update pinpoints the linked plain CSS', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-app-dev-css-href-'));
     writeFileSync(
       join(dir, 'index.html'),
@@ -125,10 +125,17 @@ describe('CLI: Vite-style app builder > styles > dev', () => {
       }
       const css = seen.find((m) => m.type === 'css-update');
       expect(css).toBeDefined();
-      // 소스 경로를 지목하면 클라이언트가 매칭 실패 → 전체 리로드가 된다.
-      expect(css.href).toBeNull();
+      // (#4675) plain `.css` 도 이제 개별 링크가 걸리므로 **정확히 지목**된다.
+      // #4672 가 원하던 결과다 — 지목할 수 있으면 그 링크 하나만 갱신하고, 지목할 수
+      // 없을 때만 `null`(= 전부 갱신) 로 떨어진다. 후자는
+      // `packages/web/src/dev-controller.test.ts` 의 `hrefFor` 유닛 테스트가 고정한다.
+      expect(css.href).toBe('/plain.css');
       // 전체 리로드로 갈음되지 않았는지도 본다.
       expect(seen.some((m) => m.type === 'full-reload')).toBe(false);
+      // ⚠️ 지목만으로는 부족하다 — 그 링크가 **새 내용**을 서빙해야 의미가 있다.
+      // outdir 미러 갱신이 빠지면 href 는 맞는데 내용이 낡은 채로 통과한다.
+      const served = await fetch(`http://localhost:${port}/plain.css`).then((r) => r.text());
+      expect(served).toContain('lime');
       ws.close();
     } finally {
       proc.kill();
@@ -280,6 +287,59 @@ describe('CLI: Vite-style app builder > styles > dev', () => {
       proc.kill();
       // 종료를 기다린다 — 안 기다리면 죽어 가는 dev 서버가 자기가 감시하던 트리를
       // rmSync 하는 것과 경쟁하고, 뒤 테스트들과 겹쳐 돈다.
+      await proc.exited;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  /**
+   * #4675 — CSS Module(또는 SCSS)과 plain `.css` 를 **같이** import 하면 dev 에서 plain
+   * CSS 가 전혀 적용되지 않던 결함.
+   *
+   * dev 는 SCSS / CSS Modules 의 **생성 CSS** 만 링크했다. plain `.css` 는 outdir 에
+   * 미러돼 서빙까지 되는데 `<link>` 가 없어 페이지에 도달하지 못했다.
+   *
+   * 고칠 때 "디렉토리에서 발견한 CSS 를 전부 링크" 하면 import 하지도 않은 파일까지
+   * 적용된다. 그래서 **번들러가 실제로 따라간 CSS 목록**(watch 이벤트의 `cssModules`)
+   * 으로만 링크한다 — 이 테스트는 그 둘을 한 번에 고정한다.
+   */
+  test('#4675 dev links imported plain CSS and skips unimported CSS', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-app-dev-graph-css-'));
+    writeFileSync(
+      join(dir, 'index.html'),
+      '<title>dev</title><div id="root"></div><script type="module" src="/main.js"></script>',
+    );
+    writeFileSync(join(dir, 's.module.css'), '.box{color:navy}');
+    writeFileSync(join(dir, 'plain.css'), 'body{background:red}');
+    // 아무도 import 하지 않는다 — 링크되면 안 된다.
+    writeFileSync(join(dir, 'unused.css'), 'body{outline:9px solid fuchsia}');
+    writeFileSync(
+      join(dir, 'main.js'),
+      "import s from './s.module.css';\nimport './plain.css';\ndocument.body.className = s.box;\n",
+    );
+
+    const port = await findFreePort();
+    const proc = spawn(RUNTIME, [CLI, 'dev', dir, `--port=${port}`], { cwd: dir });
+    await waitForServer(port);
+    try {
+      const html = await fetch(`http://localhost:${port}/`).then((r) => r.text());
+      const hrefs = [...html.matchAll(/<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/g)].map(
+        (m) => m[1],
+      );
+      // CSS Module 의 생성 CSS 와 import 된 plain CSS 가 둘 다 있어야 한다.
+      expect(hrefs).toContain('/s.module.zntc.css');
+      expect(hrefs).toContain('/plain.css');
+      // import 하지 않은 CSS 는 없어야 한다.
+      expect(hrefs).not.toContain('/unused.css');
+      // 번들 CSS 는 같은 내용의 합본이라 중복이다 — 그래프 링크가 덮었으면 걸지 않는다.
+      expect(hrefs).not.toContain('/main.css');
+
+      // 링크가 실제로 서빙되고 내용이 맞아야 한다 — 링크만 있고 404 면 의미 없다.
+      const plain = await fetch(`http://localhost:${port}/plain.css`);
+      expect(plain.status).toBe(200);
+      expect(await plain.text()).toContain('background');
+    } finally {
+      proc.kill();
       await proc.exited;
       rmSync(dir, { recursive: true, force: true });
     }

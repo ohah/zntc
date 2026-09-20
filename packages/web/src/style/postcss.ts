@@ -351,12 +351,15 @@ export async function runPostcssForAppDev(
     // PostCSS no-op 시 outdir 갱신 보장 — 신규 raw .css 가 outdir 에 도달.
     const mirrorBase = mirrorRoot;
     const allCssFiles = collectAppFiles(mirrorBase, { skipDir: outdir, predicate: isCssFile });
-    const targets =
-      changedPath && changedPath.endsWith('.css')
-        ? allCssFiles.filter(
-            (p) => p === changedPath || relative(root, p) === relative(root, changedPath),
-          )
-        : allCssFiles;
+    // ⚠️ `p` 는 mirrorBase(= temp root) 기준 경로, `changedPath` 는 앱 루트 기준이다.
+    // 둘 다 `root` 로 빼면 temp root 쪽이 `../../…` 가 되어 **영영 매칭되지 않는다** —
+    // 그러면 targets 가 비어 outdir 미러가 갱신되지 않는다. 아래 `!loaded` 분기와 같은
+    // 방식으로, 각자 자기 기준으로 rel 을 뽑아 비교한다. (#4675)
+    const changedRel =
+      changedPath && changedPath.endsWith('.css') ? relative(root, changedPath) : null;
+    const targets = changedRel
+      ? allCssFiles.filter((p) => p === changedPath || relative(mirrorBase, p) === changedRel)
+      : allCssFiles;
     mkdirSync(outdir, { recursive: true });
     for (const file of targets) {
       const outputRel = relative(mirrorBase, file);
