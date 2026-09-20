@@ -1115,6 +1115,10 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
                 writeOutputToOutdir(allocator, bundle_opts.outdir, o.path, o.contents);
             }
         }
+        // (#4660) CSS bundle · worker chunk · file-loader 산출물은 `outputs` 가 아니라
+        // `asset_outputs` 에 담긴다. 일반 `build()` 경로(napi/result.zig)는 이것을
+        // `outputFiles` 에 합치는데 watch 경로만 빠져 있었다 — 그래서 dev 서버가
+        // CSS 를 `<link>` 로 붙이지 못했다. 아래 ready 이벤트의 path 목록도 같이 채운다.
     } else {
         initial_bytes = result.output.len;
         // 단일 파일: output_filename으로 쓰기 (skip_initial_output 활성 시 skip).
@@ -1130,37 +1134,61 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         }
     }
 
+    // (#4660) asset 산출물 — `outputs`/`output` 과 **별도 저장소**라 위 분기 어디에도
+    // 안 걸린다. 단일파일 모드(`outputs == null`)에서도 CSS 는 여기 들어온다.
+    if (result.asset_outputs) |assets| {
+        for (assets) |a| initial_bytes += a.contents.len;
+        if (write_initial) {
+            for (assets) |a| writeOutputToOutdir(allocator, bundle_opts.outdir, a.path, a.contents);
+        }
+    }
+
     // ready 이벤트 전송
     {
         const ready_event = allocator.create(WatchReadyEvent) catch return;
         // #3796 — outputs path 목록 복사 (initial 빌드의 산출 path). single-file 경로
         // (`output_filename`) 도 same shape 으로 일관 노출 → caller (`runServe`) 가 통일 처리.
+        //
+        // (#4660) `asset_outputs`(CSS bundle 등)도 같은 목록에 넣는다. caller 가 이 목록으로
+        // dev HTML 의 `<link rel="stylesheet">` 를 주입하므로, 빠지면 CSS 가 디스크에는
+        // 있는데 페이지에 연결되지 않는다.
         var outputs_copy: ?[]const []const u8 = null;
-        if (result.outputs) |outputs| {
-            const arr = allocator.alloc([]const u8, outputs.len) catch null;
-            if (arr) |paths| {
-                var fill: usize = 0;
-                for (outputs) |o| {
-                    const dup = allocator.dupe(u8, o.path) catch break;
-                    paths[fill] = dup;
-                    fill += 1;
-                }
-                if (fill == outputs.len) {
-                    outputs_copy = paths;
-                } else {
-                    // partial alloc 실패 — cleanup
-                    for (paths[0..fill]) |p| allocator.free(p);
-                    allocator.free(paths);
-                }
-            }
-        } else if (bundle_opts.output_filename.len > 0) {
-            const arr = allocator.alloc([]const u8, 1) catch null;
-            if (arr) |paths| {
-                if (allocator.dupe(u8, bundle_opts.output_filename)) |dup| {
-                    paths[0] = dup;
-                    outputs_copy = paths;
-                } else |_| {
-                    allocator.free(paths);
+        {
+            const asset_count: usize = if (result.asset_outputs) |a| a.len else 0;
+            const base_count: usize = if (result.outputs) |o|
+                o.len
+            else if (bundle_opts.output_filename.len > 0) 1 else 0;
+            const total = base_count + asset_count;
+            if (total > 0) {
+                const arr = allocator.alloc([]const u8, total) catch null;
+                if (arr) |paths| {
+                    var fill: usize = 0;
+                    if (result.outputs) |outputs| {
+                        for (outputs) |o| {
+                            paths[fill] = allocator.dupe(u8, o.path) catch break;
+                            fill += 1;
+                        }
+                    } else if (bundle_opts.output_filename.len > 0) {
+                        if (allocator.dupe(u8, bundle_opts.output_filename)) |dup| {
+                            paths[fill] = dup;
+                            fill += 1;
+                        } else |_| {}
+                    }
+                    if (fill == base_count) {
+                        if (result.asset_outputs) |assets| {
+                            for (assets) |a| {
+                                paths[fill] = allocator.dupe(u8, a.path) catch break;
+                                fill += 1;
+                            }
+                        }
+                    }
+                    if (fill == total) {
+                        outputs_copy = paths;
+                    } else {
+                        // partial alloc 실패 — cleanup
+                        for (paths[0..fill]) |p| allocator.free(p);
+                        allocator.free(paths);
+                    }
                 }
             }
         }

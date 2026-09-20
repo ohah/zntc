@@ -16,6 +16,47 @@ import {
 } from '../helpers';
 
 describe('CLI: Vite-style app builder > styles > dev', () => {
+  /**
+   * #4660 — JS 가 import 한 plain CSS 가 dev HTML 에 연결되지 않던 회귀.
+   *
+   * 기존 테스트들은 `index.html` 에 `<link>` 를 **손으로 적어 두어서** 자동 주입 경로를
+   * 한 번도 거치지 않았다. 그래서 다음 결함이 오래 남아 있었다 — 네이티브 watch 의 ready
+   * 이벤트가 `outputs` 에 JS 만 싣고 `asset_outputs`(CSS bundle)를 빼먹어, 주입기가 붙일
+   * CSS 를 못 봤다. 파일은 디스크에 써지는데 페이지에는 연결되지 않는 상태였다.
+   *
+   * 여기서는 `<link>` 를 **적지 않고** JS 의 `import './styles.css'` 만으로 링크가
+   * 자동 주입되는지 본다.
+   */
+  test('#4660 dev auto-injects a stylesheet link for JS-imported CSS', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-app-dev-css-inject-'));
+    writeFileSync(
+      join(dir, 'index.html'),
+      '<title>dev</title><div id="root"></div><script type="module" src="/main.ts"></script>',
+    );
+    writeFileSync(join(dir, 'main.ts'), "import './styles.css';\nconsole.log('ok');\n");
+    writeFileSync(join(dir, 'styles.css'), 'body{background:red}');
+
+    const port = await findFreePort();
+    const proc = spawn(RUNTIME, [CLI, 'dev', dir, `--port=${port}`], { cwd: dir });
+    await waitForServer(port);
+    try {
+      const html = await fetch(`http://localhost:${port}/`).then((r) => r.text());
+      // 손으로 적지 않았으므로, 링크가 있다면 자동 주입된 것이다.
+      const hrefs = [...html.matchAll(/<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/g)].map(
+        (m) => m[1],
+      );
+      expect(hrefs.length).toBeGreaterThan(0);
+
+      // 주입된 href 가 실제로 서빙되고 내용이 맞아야 한다 — 링크만 있고 404 면 의미 없다.
+      const res = await fetch(`http://localhost:${port}${hrefs[0]}`);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain('background');
+    } finally {
+      proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('dev applies PostCSS config and serves transformed CSS', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-app-dev-postcss-'));
     mkdirSync(join(dir, 'src'), { recursive: true });
