@@ -1,5 +1,6 @@
 const std = @import("std");
 const FileWatcher = @import("file_watcher.zig").FileWatcher;
+const ChangeKind = @import("file_watcher.zig").ChangeKind;
 
 test "FileWatcher: init and deinit" {
     var watcher = try FileWatcher.init(std.testing.allocator, std.testing.io);
@@ -310,6 +311,23 @@ test "FileWatcher: watch directory — file 삭제 시 event 발생 (#3858)" {
     try std.testing.expect(changes.len > 0);
 }
 
+// #4682 공용 헬퍼 — 특정 경로의 이벤트가 나올 때까지 여러 번 폴한다.
+//
+// ⚠️ 한 번의 `waitForChanges` 가 우리가 보는 경로의 이벤트를 담는다고 가정하면 안 된다.
+// inotify(Linux)는 **부모 디렉토리**를 감시하므로 같은 디렉토리의 임시 파일(`.t1`) 이벤트가
+// 먼저 한 배치로 들어오고, 그 배치에는 우리 경로가 없어 빈 결과로 돌아온다. kqueue(macOS)는
+// 파일 단위라 그런 잡음이 없다 — 이 차이를 흡수하지 않으면 Linux 에서만 깨진다.
+fn waitForPath(watcher: *FileWatcher, path: []const u8, want: ChangeKind) !bool {
+    var polls: usize = 0;
+    while (polls < 30) : (polls += 1) {
+        const changes = try watcher.waitForChanges(200);
+        for (changes) |c| {
+            if (std.mem.eql(u8, c.path, path) and c.kind == want) return true;
+        }
+    }
+    return false;
+}
+
 // #4682 — 에디터의 원자적 저장(임시파일에 쓰고 rename)은 파일을 **교체**한다.
 //
 // kqueue 는 경로가 아니라 열린 파일(inode)을 감시하므로, 교체되면 옛 fd 가 아무도 쓰지
@@ -340,23 +358,22 @@ test "FileWatcher: 원자적 교체(rename) 후에도 계속 감시한다 (#4682
 
     // 1회차 교체 — 재등록이 없어도 이벤트는 온다(옛 inode 의 DELETE).
     var t1 = try std.Thread.spawn(.{}, Replacer.run, .{ std.testing.io, tmp.dir, ".t1", "v1" });
-    const first = watcher.waitForChanges(3000) catch |e| {
+    const first = waitForPath(&watcher, path, .modified) catch |e| {
         t1.join();
         return e;
     };
     t1.join();
-    try std.testing.expect(first.len > 0);
+    try std.testing.expect(first);
 
     // 2회차 교체 — 재등록이 됐을 때만 이벤트가 온다. 이게 회귀 방지의 본체다.
+    // 교체는 **수정**이다 — `.deleted` 로만 분류되면 소비자가 outdir 에서 파일을 지운다.
     var t2 = try std.Thread.spawn(.{}, Replacer.run, .{ std.testing.io, tmp.dir, ".t2", "v2" });
-    const second = watcher.waitForChanges(3000) catch |e| {
+    const second = waitForPath(&watcher, path, .modified) catch |e| {
         t2.join();
         return e;
     };
     t2.join();
-    try std.testing.expect(second.len > 0);
-    // 교체는 **수정**이다 — `.deleted` 로 분류되면 소비자가 outdir 에서 파일을 지운다.
-    try std.testing.expect(second[0].kind == .modified);
+    try std.testing.expect(second);
 
     // 감시 대상 수는 그대로 — 교체는 경로를 늘리거나 줄이지 않는다.
     try std.testing.expectEqual(@as(usize, 1), watcher.watchCount());
