@@ -13,6 +13,9 @@ import {
   RUNTIME,
   waitForServer,
   findFreePort,
+  existsSync,
+  readFileSync,
+  runCli,
 } from '../helpers';
 
 describe('CLI: Vite-style app builder > styles > dev', () => {
@@ -132,6 +135,52 @@ describe('CLI: Vite-style app builder > styles > dev', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30000);
+
+  /**
+   * #4674 — `zntc dev` 를 한 번 돌린 뒤 `zntc build` 가 실패하던 회귀.
+   *
+   * PostCSS temp root 로 프로젝트를 복사할 때는 `.zntc-dev` 를 제외하는데, CSS Module
+   * **탐색**은 `outdir` 하나만 제외해서 `.zntc-dev/x.module.css` 를 잡았다. 복사본엔 그
+   * 파일이 없으니 열다가 ENOENT 로 빌드가 죽는다 — 같은 질문("무엇이 source 인가")에
+   * 두 곳이 다르게 답한 것이다.
+   *
+   * 단위 테스트(`skipDirs`)만으로는 두 목록이 다시 갈리는 걸 못 막으므로 실제 흐름을 고정한다.
+   */
+  test('#4674 build succeeds after dev has produced .zntc-dev', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-app-dev-then-build-'));
+    writeFileSync(
+      join(dir, 'index.html'),
+      '<title>t</title><div id="root"></div><script type="module" src="/main.js"></script>',
+    );
+    writeFileSync(join(dir, 's.module.css'), '.box{color:navy}');
+    writeFileSync(join(dir, 'plain.css'), 'body{background:red}');
+    writeFileSync(
+      join(dir, 'main.js'),
+      "import s from './s.module.css';\nimport './plain.css';\ndocument.body.className = s.box;\n",
+    );
+
+    const port = await findFreePort();
+    const proc = spawn(RUNTIME, [CLI, 'dev', dir, `--port=${port}`], { cwd: dir });
+    try {
+      await waitForServer(port);
+    } finally {
+      proc.kill();
+    }
+    // dev 가 outdir 을 만들었는지 확인 — 안 만들었으면 이 테스트가 공허해진다.
+    expect(existsSync(join(dir, '.zntc-dev'))).toBe(true);
+
+    try {
+      const built = runCli(['build', dir], { cwd: dir, timeout: 60000 });
+      expect(built.stderr).not.toContain('ENOENT');
+      expect(built.exitCode).toBe(0);
+      // 산출 CSS 에 두 소스가 모두 들어가야 한다 (dev 잔재가 아니라 진짜 빌드 결과).
+      const css = readFileSync(join(dir, 'dist', 'main.css'), 'utf8');
+      expect(css).toContain('background:red');
+      expect(css).toContain('color:navy');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 90000);
 
   test('#4660 dev auto-injects a stylesheet link for JS-imported CSS', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-app-dev-css-inject-'));

@@ -104,6 +104,20 @@ describe('collectAppFiles', () => {
     expect(files).toEqual([join(dir, 'a.ts'), join(dir, 'sub/c.ts')].sort());
   });
 
+  test('#4674 skipDirs — 여러 디렉토리를 한 번에 제외한다', () => {
+    mkdirSync(join(dir, 'dist'), { recursive: true });
+    mkdirSync(join(dir, '.zntc-dev'), { recursive: true });
+    writeFileSync(join(dir, 'a.module.css'), '.a{}');
+    writeFileSync(join(dir, 'dist', 'b.module.css'), '.b{}');
+    writeFileSync(join(dir, '.zntc-dev', 'c.module.css'), '.c{}');
+
+    const files = collectAppFiles(dir, {
+      skipDirs: [join(dir, 'dist'), join(dir, '.zntc-dev')],
+      predicate: (p) => p.endsWith('.module.css'),
+    });
+    expect(files.map((f) => f.replace(dir + '/', ''))).toEqual(['a.module.css']);
+  });
+
   test('skipDir 이 일치하는 sub-tree 는 walk 안 함', () => {
     touch('a.ts');
     touch('dist/out.js');

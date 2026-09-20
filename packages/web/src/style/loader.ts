@@ -42,6 +42,14 @@ export function requireFromAppOrFallback(
 export interface CollectAppFilesOptions {
   /** 이 디렉토리 (절대 또는 상대 경로) 와 일치하는 sub-tree 는 walk 안 함. */
   skipDir?: string | null;
+  /**
+   * `skipDir` 의 복수형. 둘 다 주면 합집합.
+   *
+   * (#4674) 탐색 제외와 **복사 제외가 어긋나면** 탐색만 잡은 파일을 나중에 복사본에서
+   * 열다가 ENOENT 로 죽는다. 제외 대상이 여러 개인 호출처는 같은 목록을 그대로 넘겨
+   * 두 판정이 갈리지 않게 한다.
+   */
+  skipDirs?: readonly string[] | null;
   /** file 마다 호출, true 면 결과에 포함. default: 모든 파일 포함. */
   predicate?: (path: string) => boolean;
 }
@@ -63,7 +71,7 @@ function readEntriesOrEmpty(dir: string): Dirent[] {
 
 function walkFiles(
   dir: string,
-  skipResolved: string | null,
+  skipResolved: ReadonlySet<string>,
   predicate: (path: string) => boolean,
   out: string[],
 ): void {
@@ -71,7 +79,7 @@ function walkFiles(
     if (entry.name === 'node_modules' || entry.name === '.git') continue;
     const path = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (skipResolved && resolve(path) === skipResolved) continue;
+      if (skipResolved.has(resolve(path))) continue;
       walkFiles(path, skipResolved, predicate, out);
     } else if (entry.isFile() && predicate(path)) {
       out.push(path);
@@ -86,7 +94,9 @@ function walkFiles(
  * @returns 디렉토리가 없으면 빈 배열 (ENOENT silent). ENOTDIR/EACCES 등 다른 IO 에러는 throw.
  */
 export function collectAppFiles(dir: string, options: CollectAppFilesOptions = {}): string[] {
-  const skipResolved = options.skipDir ? resolve(options.skipDir) : null;
+  const skipResolved = new Set<string>();
+  if (options.skipDir) skipResolved.add(resolve(options.skipDir));
+  for (const d of options.skipDirs ?? []) skipResolved.add(resolve(d));
   const predicate = options.predicate ?? RETURN_TRUE;
   const files: string[] = [];
   walkFiles(dir, skipResolved, predicate, files);
