@@ -242,6 +242,26 @@ export function cleanupPostcssTempRoot(tempRoot: string): void {
  * App root 의 source 트리를 temp dir 로 cp + node_modules 는 symlink. 결과 tempRoot
  * 에서 sass / postcss / css-modules 가 mutable 하게 동작.
  */
+/**
+ * (#4674) 파이프라인이 **source 로 보지 않는** 디렉토리 — 단일 소스.
+ *
+ * 복사(`copyAppRootForPostcss`)와 탐색(`collectAppFiles`)이 **같은 목록**을 써야 한다.
+ * 예전엔 복사만 `.zntc-dev` 를 제외하고 탐색은 `outdir` 하나만 제외해서, `zntc dev` 를
+ * 한 번 돌린 프로젝트에서 `zntc build` 가 죽었다 — 탐색이 `.zntc-dev/x.module.css` 를
+ * CSS Module 로 잡는데 복사본엔 그 파일이 없어 ENOENT.
+ */
+export function postcssExcludedDirs(root: string, outdir: string, extra?: string): string[] {
+  const dirs = [
+    outdir,
+    join(root, 'node_modules'),
+    join(root, '.git'),
+    join(root, 'dist'),
+    join(root, '.zntc-dev'),
+  ];
+  if (extra) dirs.push(extra);
+  return dirs.map((d) => resolve(d));
+}
+
 function copyAppRootForPostcss(
   root: string,
   outdir: string,
@@ -250,14 +270,7 @@ function copyAppRootForPostcss(
 ): string {
   const tempRoot = mkdtempSync(join(tmpdir(), `zntc-postcss-${phase}-`));
   registerPostcssTempRoot(tempRoot);
-  const skip = new Set([
-    resolve(outdir),
-    resolve(tempRoot),
-    resolve(join(root, 'node_modules')),
-    resolve(join(root, '.git')),
-    resolve(join(root, 'dist')),
-    resolve(join(root, '.zntc-dev')),
-  ]);
+  const skip = new Set(postcssExcludedDirs(root, outdir, tempRoot));
   cpSync(root, tempRoot, {
     recursive: true,
     dereference: false,
@@ -346,7 +359,8 @@ export async function prepareAppCssPipelineRoot(
   const stylePipelineFiles =
     cache?.stylePipelineFiles ??
     collectAppFiles(root, {
-      skipDir: outdir,
+      // (#4674) 복사 제외와 **같은 목록**. 어긋나면 탐색만 잡은 파일을 복사본에서 열다 죽는다.
+      skipDirs: postcssExcludedDirs(root, outdir),
       predicate: (path) => isCssPreprocessorFile(path) || isCssModuleFile(path),
     });
   const preprocessorFiles = stylePipelineFiles.filter(isCssPreprocessorFile);
