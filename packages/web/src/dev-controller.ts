@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -153,6 +154,18 @@ function normalizeBase(base: string | undefined): string {
 }
 
 /** 단일 파일 mirror — mkdir + cp 한 줄. dirty sync / pipeline outdir / scss fast-path 공용. */
+/**
+ * (#4675) 심볼릭 링크를 푼 절대경로. 풀 수 없으면(아직 없는 파일 등) 원본 그대로.
+ * macOS 의 `/var` → `/private/var` 처럼, 같은 위치를 가리키는 두 철자를 맞추는 데 쓴다.
+ */
+function realPathOr(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
 function mirrorFile(srcAbs: string, dstAbs: string): void {
   mkdirSync(dirname(dstAbs), { recursive: true });
   // (#4682) `cpSync` 는 대상을 **교체**한다(inode 가 바뀐다). macOS 의 파일 감시는
@@ -528,6 +541,15 @@ export interface AppDevController {
   }>;
   injectBundleCssLinks(bundleResult: BundleResult): void;
   /**
+   * (#4675) 모듈 그래프에 들어온 CSS 소스(절대경로)에 `<link>` 를 건다.
+   *
+   * dev 에서 SCSS / CSS Modules 는 파이프라인이 생성 CSS 를 링크하지만 plain `.css` 는
+   * 아무도 링크하지 않아 페이지에 도달하지 못했다. "디렉토리에서 발견한 CSS 를 전부
+   * 링크" 하면 import 하지도 않은 파일까지 적용되므로, **번들러가 실제로 따라간 목록**
+   * 을 받아 그것만 건다. 이미 주입된 href 는 주입기가 건너뛴다.
+   */
+  injectGraphCssLinks(absPaths: readonly string[]): void;
+  /**
    * #3813 — outdir 의 `.css` 파일을 file system 스캔해 HTML `<link>` 주입.
    * `injectBundleCssLinks` 가 bundleResult 를 받는 것과 달리 native watch onRebuild 의
    * graphChanged 분기처럼 bundleResult 가 없는 경로용. JS 변경이 새 CSS import 추가했을 때
@@ -602,6 +624,14 @@ export function createAppDevController(
   // 둘 다 link 하면 cascade 충돌 — sass incremental 은 pipeline 만 갱신하니 stale
   // main.css 가 이김. pipeline active 일 땐 bundle CSS link 는 skip한다.
   let hasPipelineCss = false;
+  /**
+   * (#4675) 모듈 그래프 기준 CSS 링크를 실제로 건 적이 있는가.
+   *
+   * 그 목록은 entry 가 import 한 **모든** CSS(plain / SCSS 산출 / CSS Modules 산출)를
+   * 덮으므로, 번들 CSS(`main.css`)는 같은 내용의 합본이라 링크할 필요가 없다. 둘 다 걸면
+   * 같은 규칙이 두 번 실리고, 생산자가 둘이 되어 한쪽만 갱신되는 순간이 생긴다.
+   */
+  let hasGraphCss = false;
   // HTML env (ZNTC_*) cache + warning dedupe. dev 세션 내 envDir 변경은 restartTriggers
   // 가 process 를 재시작하므로 메모이즈 안전. warning 은 같은 key 로 매 rebuild 마다
   // 출력되면 노이즈 — Set 으로 1회 limit.
@@ -771,6 +801,27 @@ export function createAppDevController(
       primaryHref = result.primaryHref;
       return { ...result, deps: cssDeps, dirDeps: cssDirDeps };
     },
+    injectGraphCssLinks(absPaths) {
+      if (absPaths.length === 0) return;
+      // 경로는 번들러가 읽은 트리(= 파이프라인 temp root, 없으면 앱 루트) 기준이다.
+      // dev 서버는 outdir 의 미러본을 서빙하므로 같은 rel path 가 그대로 href 가 된다.
+      //
+      // ⚠️ 심볼릭 링크를 풀어서 비교해야 한다. macOS 의 임시 디렉토리는 `/var/…` 인데
+      // 번들러가 돌려주는 경로는 `/private/var/…` 라, 철자 그대로 빼면 `..` 로 시작하는
+      // 상대경로가 나와 **전부 걸러진다**(실측에서 plain CSS 가 하나도 안 걸렸다).
+      const graphRoot = realPathOr(pipelineRoot ?? root);
+      const rels: string[] = [];
+      for (const abs of absPaths) {
+        const rel = relative(graphRoot, realPathOr(abs));
+        // 트리 밖(node_modules 등)은 outdir 에 미러본이 없다 — 링크해도 404.
+        if (!rel || rel.startsWith('..')) continue;
+        rels.push(rel);
+      }
+      if (rels.length === 0) return;
+      injectAppDevPipelineCssLinks(outdir, base, rels);
+      for (const rel of rels) injectedCssHrefs.add(joinUrl(base, rel.replaceAll(sep, '/')));
+      hasGraphCss = true;
+    },
     injectBundleCssLinks(bundleResult: BundleResult) {
       // pipeline 이 SCSS / CSS Modules generated CSS 를 inject 한 상태면 bundler 의
       // CSS asset (entry 의 모든 CSS import 가 합본된 main.css) 은 같은 source 의
@@ -779,6 +830,9 @@ export function createAppDevController(
       // main.css 의 plain CSS 부분이 누락 — pipeline 이 plain `.css` 까지 cover
       // 하도록 확장하거나 metafile inputs 기반 정밀 dedup 으로 follow-up.
       if (hasPipelineCss) return;
+      // (#4675) 그래프 기준 링크가 이미 import 된 CSS 를 전부 덮는다 — 번들 CSS 는 같은
+      // 내용의 합본이라 중복이다.
+      if (hasGraphCss) return;
       injectAppDevBundleCssLinks(outdir, base, bundleResult);
       for (const file of bundleResult?.outputFiles ?? []) {
         if (file?.path && /\.css$/i.test(file.path)) {

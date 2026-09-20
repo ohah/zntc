@@ -2435,6 +2435,14 @@ async function runServe(opts, config, { appDev = null } = {}) {
         const mockResult = {
           outputFiles: (event && event.outputs ? event.outputs : []).map((p) => ({ path: p })),
         };
+        // (#4675) plain `.css` 는 파이프라인이 링크하지 않는다. 번들러가 실제로 따라간
+        // CSS 목록으로 링크를 건다 — import 안 한 CSS 까지 적용되는 걸 피하려면 이 목록
+        // 이어야 한다(디렉토리 스캔은 쓰이지 않는 파일도 잡는다).
+        //
+        // ⚠️ 번들 CSS 주입보다 **먼저** 불러야 한다. 이 목록이 import 된 CSS 를 전부
+        // 덮으므로 그 뒤의 번들 CSS 주입은 스스로 건너뛴다 — 순서가 뒤집히면 같은 내용이
+        // 두 번 실린다.
+        if (event.cssModules?.length) appDev.injectGraphCssLinks(event.cssModules);
         appDev.injectBundleCssLinks(mockResult);
         await appDev.afterBundle();
       } catch (err) {
@@ -2467,6 +2475,14 @@ async function runServe(opts, config, { appDev = null } = {}) {
           // diff 로 outdir 의 sass/.module/.chunk emit 영향 0.
           if (event && event.success && reconcileOutdir) {
             reconcileOutdir();
+          }
+          // (#4675) 매 rebuild 마다 갱신 — JS 가 CSS import 를 새로 추가해도 링크가 붙는다.
+          if (event && event.success && event.cssModules?.length) {
+            try {
+              appDev.injectGraphCssLinks(event.cssModules);
+            } catch (cssErr) {
+              console.error('[serve] css graph link inject failed:', cssErr);
+            }
           }
           if (event && event.success && event.graphChanged) {
             try {
@@ -2754,6 +2770,10 @@ async function runServe(opts, config, { appDev = null } = {}) {
       }
       hmr?.clearError();
       appDev.injectBundleCssLinks(bundleResult);
+      // (#4675) prepare 가 HTML 을 매번 덮어쓰므로 여기서도 다시 건다.
+      if (bundleResult.modulePaths?.length) {
+        appDev.injectGraphCssLinks(bundleResult.modulePaths.filter((p) => p.endsWith('.css')));
+      }
       await appDev.afterBundle();
       hmr?.broadcast({ type: HMR_MSG.FullReload, timestamp: Date.now() });
       if (opts.logLevel !== 'silent') console.error('[serve] rebuilt');
