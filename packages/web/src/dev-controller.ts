@@ -33,7 +33,7 @@ import {
   transformCssModules,
 } from './style/css-modules.ts';
 import { type NodeRequire } from './style/loader.ts';
-import { collectAppFiles } from './style/loader.ts';
+import { collectAppFiles, isSkippedDirName } from './style/loader.ts';
 import {
   findPostcssConfig,
   isCssFile,
@@ -290,6 +290,9 @@ function copyAppRootForPostcss(
     filter(source: string): boolean {
       const abs = resolve(source);
       if (abs === resolve(root)) return true;
+      // (#4678) 탐색(`walkFiles`)과 **같은 이름 규칙**을 쓴다. 복사만 걸러내고 탐색이
+      // 안 걸러내면 탐색만 잡은 파일을 복사본에서 열다 죽는다(#4674 가 그 사고였다).
+      if (isSkippedDirName(basename(abs))) return false;
       for (const ignored of skip) {
         if (abs === ignored || abs.startsWith(`${ignored}${sep}`)) return false;
       }
