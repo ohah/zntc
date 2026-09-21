@@ -1,6 +1,6 @@
 {
   "name": "@zntc/vite-plugin",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Use ZNTC as the TypeScript/JSX transformer in Vite (replaces esbuild)",
   "keywords": [
     "esbuild",

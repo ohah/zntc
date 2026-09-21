@@ -1,5 +1,16 @@
 # @zntc/rspack-loader
 
+## 0.1.10
+
+### Patch Changes
+
+- Updated dependencies [bfb98cf]
+- Updated dependencies [757ccd9]
+- Updated dependencies [0ab0b3e]
+- Updated dependencies [be5f0fb]
+- Updated dependencies [e113dc9]
+  - @zntc/core@0.1.10
+
 ## 0.1.9
 
 ### Patch Changes

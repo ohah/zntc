@@ -1,6 +1,6 @@
 {
   "name": "@zntc/core-linux-x64-gnu",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Linux x64 (glibc) native binary for @zntc/core",
   "keywords": [
     "compiler",
