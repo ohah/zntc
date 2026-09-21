@@ -159,7 +159,11 @@ const KqueueBackend = struct {
     fn addPath(self: *KqueueBackend, allocator: std.mem.Allocator, path: []const u8) !void {
         if (self.watch_fds.contains(path)) return;
 
-        const fd = self.openAndArm(path) orelse return;
+        // (#4683) 지금 열 수 없어도 **경로는 등록**한다. 예전에는 조용히 반환해서,
+        // 호출자는 "등록됐다" 고 믿는데 실제 감시는 없는 상태가 영구히 남았다 —
+        // 빌드가 실패한 뒤 아직 없는 모듈을 다시 등록할 때가 정확히 그 경우다.
+        // `stale_fd` 로 넣어 두면 `retryRearms` 가 파일이 생기는 즉시 달아 준다.
+        const fd = self.openAndArm(path) orelse stale_fd;
         const path_owned = try allocator.dupe(u8, path);
 
         self.watch_fds.put(allocator, path_owned, .{ .fd = fd }) catch {
@@ -167,6 +171,7 @@ const KqueueBackend = struct {
             allocator.free(path_owned);
             return;
         };
+        if (fd == stale_fd) return;
         self.fd_to_path.put(allocator, fd, path_owned) catch {
             _ = self.watch_fds.remove(path_owned);
             self.closeFd(fd);
@@ -443,8 +448,16 @@ const InotifyBackend = struct {
 
         // issue #3858 — path 가 dir 면 dir-watch (entry 변화 시 dir path emit),
         // file 이면 기존처럼 parent dir watch + watched_files 등록.
-        const stat = std.Io.Dir.cwd().statFile(self.io, path, .{}) catch return;
-        if (stat.kind == .directory) {
+        //
+        // (#4683) stat 실패(= 아직 없는 경로)는 **버리지 않고 파일로 본다**. 예전에는
+        // 조용히 반환해서, 호출자는 "등록됐다" 고 믿는데 감시는 없는 상태가 영구히
+        // 남았다 — 빌드가 실패한 뒤 아직 없는 모듈을 다시 등록할 때가 그 경우다.
+        // 부모 디렉토리를 감시해 두면 파일이 생기는 순간 `IN_CREATE` 로 잡힌다.
+        const is_dir = blk: {
+            const stat = std.Io.Dir.cwd().statFile(self.io, path, .{}) catch break :blk false;
+            break :blk stat.kind == .directory;
+        };
+        if (is_dir) {
             // dir 자체를 inotify_add_watch — IN.CREATE/IN.DELETE/IN.MOVED_* event 받음.
             if (!self.dir_wds.contains(path)) {
                 const wd = self.addWatch(allocator, path) orelse return;

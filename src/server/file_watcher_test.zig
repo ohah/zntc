@@ -493,3 +493,49 @@ test "FileWatcher: 오래 비었다가 돌아온 파일도 다시 감시한다 (
     t.join();
     try std.testing.expect(changes.len > 0);
 }
+
+// #4683 — 아직 **없는 경로**도 감시 목록에 남아야 한다.
+//
+// 예전에는 `addPath` 가 파일을 열지(또는 stat 하지) 못하면 조용히 반환했고, 호출자
+// (`TrackedFileSet`)는 그걸 성공으로 간주해 경로를 기록했다. 그래서 "감시 중" 으로
+// 기록되지만 **OS 감시는 존재하지 않는** 상태가 영구히 남았다 — 이후 재등록 시도는
+// "이미 등록됨" 에 막혀 되살아나지도 않는다.
+//
+// dev 서버에서는 이게 "모듈이 사라져 빌드가 한 번 실패하면 그 파일이 돌아와도 영영
+// 반영되지 않는다" 로 나타났다(#4683).
+//
+// ⚠️ 복구 확인은 **다른 내용**으로 써야 한다. 같은 내용으로 다시 저장하면 소비자의
+// 내용 해시가 같아 변경으로 잡히지 않아, 감시가 살아 있어도 "안 된다" 로 보인다.
+test "FileWatcher: 아직 없는 경로도 등록되고, 생긴 뒤 변경이 보인다 (#4683)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir_path);
+    const missing = try std.fs.path.join(std.testing.allocator, &.{ dir_path, "not-yet.js" });
+    defer std.testing.allocator.free(missing);
+
+    var watcher = try FileWatcher.init(std.testing.allocator, std.testing.io);
+    defer watcher.deinit();
+
+    // 없는 경로 등록 — 버려지면 안 된다.
+    try watcher.addPath(missing);
+
+    // 파일을 만든다. 이 시점의 생성 자체는 백엔드에 따라 보고될 수도, 아닐 수도 있다.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "not-yet.js", .data = "v1" });
+    _ = try watcher.waitForChanges(200);
+
+    // 계약: 이제부터의 **변경은 반드시 보여야** 한다.
+    var t = try std.Thread.spawn(.{}, struct {
+        fn run(io: std.Io, dir: std.Io.Dir) void {
+            io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+            dir.writeFile(io, .{ .sub_path = "not-yet.js", .data = "v2-different" }) catch {};
+        }
+    }.run, .{ std.testing.io, tmp.dir });
+    const seen = waitForPath(&watcher, missing, .modified) catch |e| {
+        t.join();
+        return e;
+    };
+    t.join();
+    try std.testing.expect(seen);
+}
