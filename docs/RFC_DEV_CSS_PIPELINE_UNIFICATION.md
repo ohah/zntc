@@ -296,3 +296,107 @@ audit 정량 결과 ~100 LOC 의 cosmetic refactoring 가능성만 잔존:
 - "dev-controller slim down" / "cssPlugin 부활" / "sync dispatcher 에 async hook" 류 가설 재시도 절대 금지
 - F1/F2/F3 cosmetic refactor 는 사용자 명시 요청 시만 진행 — 자동 분류 없음
 - dev-controller 의 sass + PostCSS + css-modules 통합은 D1a'' caller-pre-warm 아키텍처의 자연 도달점이며 의도된 설계
+
+## 11. 2026-09-21 측정 — 사전 패스의 비용과 D2a 선행 조건 재판정 (제안)
+
+§7 / §10 의 stale 도장은 **axis 1(sync/async) · axis 2(D2b) · axis 3(dev-controller 책임)** 에
+대한 것이고, 그 결론은 유효하다. 본 절은 그 세 축이 **프레이밍한 적 없는 네 번째 축** —
+**소스 재작성이 강제하는 전체 트리 복사의 비용** — 을 측정해 기록한다.
+
+⚠️ 본 절은 §10.5 가 금지한 세 가설("dev-controller slim down" / "cssPlugin 부활" /
+"sync dispatcher 에 async hook") 중 **어느 것도 되살리지 않는다.** 셋 다 sync dispatcher
+위에서 무언가를 하려는 시도였고, 아래 제안은 그 전제 자체를 먼저 바꾸는 순서를 따른다.
+
+### 11.1 측정된 비용 — cold 는 트리 크기에 비례, warm 은 무관
+
+동일 트리에 **CSS Module 을 한 개만** 두고 `zntc build` 를 잰 값이다.
+
+| 트리 (import 되지 않는 JS 파일) | CSS 0개 (파이프라인 미진입) | CSS 1개 (파이프라인 진입) |
+| --- | --- | --- |
+| 0개 | 66ms | — |
+| 5000개 | **76ms** | **798ms / 810ms** |
+
+CSS **한 개** 때문에 같은 트리가 **10.5배** 느려진다. CSS 120개일 때가 886ms 였으므로
+그중 CSS 처리는 ~90ms 뿐이고 **나머지 ~720ms 는 앱 루트 통째 복사·스캔**이다.
+병목은 CSS 양이 아니라 **트리 크기**다.
+
+warm 은 영향받지 않는다. `reuseRoot` + `syncDirty` 가 복사를 건너뛴다.
+
+| 트리 | warm CSS 편집 (median of 5) | temp root 재사용 |
+| --- | --- | --- |
+| JS 0개 | 54ms | 예 |
+| JS 2000개 | 48ms | 예 |
+| JS 5000개 | 49ms | 예 |
+
+⚠️ 기동 직후 **첫 CSS 편집만** 2000/5000 트리에서 20s 타임아웃이 한 번씩 났다(이후 편집은
+전부 ~50ms). 첫 dirty 에서 full prepare 가 한 번 더 도는 것으로 보이나 **미확인**.
+
+### 11.2 비용의 원인은 sync/async 가 아니라 **소스 재작성**
+
+D1a''(#3844/#3845) 머지로 async 훅은 caller-pre-warm 으로 이미 돌고 있다. 그런데도 복사는
+남아 있다. 원인은 `rewriteCssModuleReferences` (`css-modules.ts:190`) 가 **사용자 소스의
+import 문자열을 고쳐 쓰고**, 번들러가 **그 고쳐진 트리**(`prepareRoot = pipelineRoot ?? root`)
+를 읽기 때문이다. 재작성을 하는 한:
+
+1. 사용자 트리를 건드릴 수 없으므로 **temp root 전체 복사**가 필요하고
+2. import 될 수 있는 **모든 파일**이 거기 있어야 하므로 복사 범위를 좁힐 수 없다
+
+즉 이 비용은 **재작성 방식과 분리 불가**다. axis 1 이 해결돼도 남는다.
+
+### 11.3 D2a 선행 조건 재판정 — 측정 결과 **이미 충족**
+
+§6.2 는 D2a(on-demand 로더)를 *"plugin namespace infra 별도 epic 의존, future work"* 로
+닫았다. 그 판정의 근거는 `onResolve/onLoad` 가 filter-only 이고 namespace 필드가 없다는
+것이었다. 그런데 **namespace 필드는 esbuild 방식이고, rollup/vite/rolldown 은 필드 없이
+가상 id 규약으로 같은 일을 한다.** 실측:
+
+| 검증 항목 | 결과 |
+| --- | --- |
+| esbuild `{ path, namespace }` | 동작 (레퍼런스 확인) |
+| rolldown 가상 id(`\0` 접두사) | 동작 (레퍼런스 확인) |
+| **zntc `onResolve` 가 임의 경로 반환 → `onLoad` filter 매칭** | **동작** (errors 0, 디스크에 없는 경로 통과) |
+| **`onLoad({filter:/\.module\.css$/})` 가 `loader:'js'` 로 JS 반환** | **동작** — 재작성/프록시 없이 번들에 인라인 |
+| **`.scss` 를 `onLoad` 에서 컴파일 → `loader:'css'`** | **동작** — `main.css` 에 정상 방출 |
+| **`this.emitFile` 로 scoped CSS 방출** | **동작** — `outputFiles: ["bundle.js","scoped/a.module.css"]` |
+| **emit 된 asset 이 앱 `<link>` 주입기에 잡힘** | **동작** — `<link rel="stylesheet" href="/styles.css" data-zntc-css>` |
+| **watch 에서 훅 재실행 + 내용 갱신** | **동작** — `SCOPED_navy` → CSS 편집 → `SCOPED_teal` |
+| **순서 불변식(sass→postcss→css-modules)** | **한 훅 안에서 보장됨** — PostCSS 가 주입한 `.injected` 가 `.injected__s` 로 scoped |
+| on-demand 로더의 cold (5000 JS 트리, CSS 1개) | **7~8ms** (앱 파이프라인 798ms) |
+
+순서 불변식 결과가 특히 중요하다. §2 는 *"cssPlugin filter 가 module CSS 를 건너뛰므로
+Tailwind `@apply` 가 module CSS 안에서 죽는다"* 를 근거로 들었는데, 그건 **처리를 훅별로
+쪼갰을 때**의 문제다. `.module.scss` 하나에 대해 **한 훅이 세 단계를 순서대로** 수행하면
+불변식이 자연히 유지된다 (Vite `vite:css` 와 동일).
+
+### 11.4 남은 단 하나의 블로커 — 앱 빌드의 sync 경로
+
+위 프로브는 전부 `build()` / `watch()`(async) 에서 돌았다. 앱 빌드는 `buildAppSync`
+(`zntc.mjs:855`) 를 쓰고 그 경로는:
+
+- async 훅 → 즉시 실패 (실측: `Plugin "…" failed in load: buildSync() does not support async plugin hooks`)
+- `this.emitFile` **미지원** (`plugin_bridge.zig` 주석 — "async build() 만 PR3/5 지원")
+
+그리고 **async 를 금지하는 길은 막혀 있다** — Tailwind v4 는 동기 실행 불가 (실측:
+`Error: Use process(css).then(cb) to work with async plugins`). 즉 D1c 는 여전히 무효.
+
+### 11.5 제안 — 1단계만 먼저
+
+| 단계 | 내용 | 위험 |
+| --- | --- | --- |
+| **1** | **옵션 빌더 단일화** — `prepareAppNapiOptions` 공통 helper 추출. §1.6 이 v2-A 회귀의 원인 가설로 "옵션 파싱 mirror drift" 를 지목하고 해법 이름까지 적어 둔 그것 | **낮음. 단독 머지 가능하고 그 자체로 가치 있음** |
+| 2 | 앱 빌드를 `build()`(async) 로 전환 | **높음 — PR#3839 가 여기서 회귀로 닫혔다.** 1단계 없이 재시도 금지 |
+| 3 | CSS Modules/sass 를 `onLoad` 로 (§11.3 토대) | 2단계 선행 |
+| 4 | 재작성 + temp root 복사 제거 → §11.1 비용 소멸 | 3단계 선행 |
+
+**1단계만 제안한다.** 2~4 는 본 절의 측정을 근거로 별도 합의가 필요하다.
+
+### 11.6 미측정 (착수 전 확인 필요)
+
+- 위 cold 수치의 훅은 **단순 프로브**다. 실제 PostCSS config 탐색 / Tailwind 스캔 비용 미포함
+- dev 의 HMR 세부(css-update href 정합, 증분 캐시)가 로더 모델에서 어떻게 되는지
+- §11.1 의 "첫 CSS 편집만 느림" 현상의 원인
+
+### 11.7 관련 이슈
+
+- **#4678** (미제외 dev outdir 에서 CSS Module 중복 처리, +38%) — §11.1 비용의 한 증상.
+  구조 수정 전까지는 완화(마커 또는 `.zntc-dev` 깊이 무관 스킵)만 가능
