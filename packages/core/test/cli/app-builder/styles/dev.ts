@@ -345,6 +345,55 @@ describe('CLI: Vite-style app builder > styles > dev', () => {
     }
   }, 30000);
 
+  /**
+   * #4671 — CSS import 를 지워도 주입된 `<link>` 가 남아 스타일이 계속 적용되던 결함.
+   *
+   * 주입기는 추가만 하고 지우지 않았다. outdir 의 **파일** 정리는 `reconcileOutdir` 가
+   * 맡는데 HTML 의 **링크** 를 맞추는 짝이 없었다.
+   *
+   * 사용자가 `index.html` 에 손으로 적은 링크는 건드리면 안 되므로, 우리가 주입한 것만
+   * 마커로 구분해 지운다 — 이 테스트가 그 경계를 함께 고정한다.
+   */
+  test('#4671 dev removes the injected link when the CSS import goes away', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-app-dev-stale-link-'));
+    writeFileSync(
+      join(dir, 'index.html'),
+      '<title>dev</title><link rel="stylesheet" href="/hand.css">' +
+        '<div id="root"></div><script type="module" src="/main.js"></script>',
+    );
+    writeFileSync(join(dir, 'hand.css'), 'h1{color:teal}');
+    writeFileSync(join(dir, 'styles.css'), 'body{background:red}');
+    writeFileSync(join(dir, 'main.js'), "import './styles.css';\nconsole.log(1);\n");
+
+    const port = await findFreePort();
+    const proc = spawn(RUNTIME, [CLI, 'dev', dir, `--port=${port}`], { cwd: dir });
+    await waitForServer(port);
+    const hrefs = async (): Promise<string[]> => {
+      const html = await fetch(`http://localhost:${port}/`).then((r) => r.text());
+      return [...html.matchAll(/<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/g)].map((m) => m[1]!);
+    };
+    try {
+      expect(await hrefs()).toContain('/styles.css');
+
+      // import 를 지운다 → 주입된 링크가 사라져야 한다.
+      writeFileSync(join(dir, 'main.js'), 'console.log(1);\n');
+      const deadline = Date.now() + 15000;
+      let after: string[] = [];
+      while (Date.now() < deadline) {
+        after = await hrefs();
+        if (!after.includes('/styles.css')) break;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      expect(after).not.toContain('/styles.css');
+      // ⚠️ 사용자가 손으로 적은 링크는 남아야 한다 — 마커 구분이 없으면 같이 지워진다.
+      expect(after).toContain('/hand.css');
+    } finally {
+      proc.kill();
+      await proc.exited;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000);
+
   test('dev applies PostCSS config and serves transformed CSS', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-app-dev-postcss-'));
     mkdirSync(join(dir, 'src'), { recursive: true });
