@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import {
   injectAppDevBundleCssLinks,
+  pruneAppDevCssLinks,
   injectAppDevBundleCssLinksFromOutdir,
   injectAppDevHmrClient,
   injectAppDevPipelineCssLinks,
@@ -103,7 +104,9 @@ describe('injectAppDevBundleCssLinks', () => {
       outputFiles: [{ path: 'dist/styles.css' }, { path: 'dist/main.js' }],
     });
     const html = readHtml();
-    expect(html).toContain(`<link rel="stylesheet" href="/styles.css">`);
+    // (#4671) 우리가 주입한 링크에는 마커가 붙는다 — 정리할 때 사용자가 손으로 적은
+    // 링크와 구분하는 근거다.
+    expect(html).toContain(`<link rel="stylesheet" href="/styles.css" data-zntc-css>`);
     expect(html).not.toContain('main.js');
   });
 
@@ -221,5 +224,40 @@ describe('injectAppDevPipelineCssLinks', () => {
     // input 에 backslash 가 그대로 남음 — 환경 별 동작 검증은 통합 테스트로.
     const html = readHtml();
     expect(html).toMatch(/href="\/styles[\\/]a\.css"/);
+  });
+});
+
+describe('pruneAppDevCssLinks (#4671)', () => {
+  /**
+   * #4671 — 주입기는 추가만 하고 지우지 않았다. JS 에서 `import './a.css'` 를 지워도
+   * 링크가 남아 스타일이 계속 적용됐다.
+   */
+  test('keep 에 없는 **주입 링크**만 지우고 사용자 링크는 남긴다', () => {
+    writeHtml(
+      '<html><head>' +
+        '<link rel="stylesheet" href="/hand.css">' +
+        '<link rel="stylesheet" href="/gone.css" data-zntc-css>' +
+        '<link rel="stylesheet" href="/keep.css" data-zntc-css>' +
+        '</head></html>',
+    );
+    pruneAppDevCssLinks(outdir, new Set(['/keep.css']));
+    const html = readHtml();
+    // 사용자가 직접 적은 링크는 마커가 없으므로 대상이 아니다.
+    expect(html).toContain('href="/hand.css"');
+    expect(html).toContain('href="/keep.css"');
+    expect(html).not.toContain('/gone.css');
+  });
+
+  test('캐시버스트 쿼리가 붙어 있어도 맞춘다', () => {
+    writeHtml(
+      '<html><head><link rel="stylesheet" href="/keep.css?t=123" data-zntc-css></head></html>',
+    );
+    pruneAppDevCssLinks(outdir, new Set(['/keep.css']));
+    expect(readHtml()).toContain('/keep.css?t=123');
+  });
+
+  test('HTML 이 없으면 조용히 넘어간다', () => {
+    rmSync(join(outdir, 'index.html'), { force: true });
+    expect(() => pruneAppDevCssLinks(outdir, new Set())).not.toThrow();
   });
 });

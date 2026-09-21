@@ -36,6 +36,48 @@ export function injectIntoDevHtml(outdir: string, build: (html: string) => strin
   writeFileSync(htmlPath, next);
 }
 
+/**
+ * (#4671) 우리가 주입한 `<link rel="stylesheet">` 임을 표시하는 속성.
+ *
+ * 사용자가 `index.html` 에 손으로 적은 링크와 구분해야 한다 — 구분 없이 정리하면
+ * 사용자 링크까지 지운다.
+ */
+export const ZNTC_CSS_LINK_ATTR = 'data-zntc-css';
+
+/** 주입용 `<link>` 태그 한 줄. 마커가 붙는 지점을 한 곳으로 모은다. */
+function cssLinkTag(href: string): string {
+  return `<link rel="stylesheet" href="${href}" ${ZNTC_CSS_LINK_ATTR}>`;
+}
+
+/**
+ * (#4671) 우리가 주입한 CSS 링크 중 `keepHrefs` 에 없는 것을 지운다.
+ *
+ * 주입기는 추가만 하고 지우지 않았다. 그래서 JS 에서 `import './a.css'` 를 **지워도**
+ * 링크가 남아 스타일이 계속 적용됐다. outdir 의 **파일** 정리는 `reconcileOutdir` 가
+ * 맡는데 HTML 의 **링크** 를 맞추는 짝이 없었다.
+ *
+ * 마커가 붙은 링크만 대상이다 — 사용자가 직접 적은 링크는 건드리지 않는다.
+ * href 의 쿼리(`?t=…` 캐시버스트)는 떼고 비교한다.
+ */
+export function pruneAppDevCssLinks(outdir: string, keepHrefs: ReadonlySet<string>): void {
+  const htmlPath = join(outdir, 'index.html');
+  let html: string;
+  try {
+    html = readFileSync(htmlPath, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return;
+    throw err;
+  }
+  const pattern = new RegExp(`\\n?<link[^>]*${ZNTC_CSS_LINK_ATTR}[^>]*>`, 'g');
+  const next = html.replace(pattern, (tag) => {
+    const href = /href="([^"]*)"/.exec(tag)?.[1];
+    if (!href) return tag;
+    const bare = href.split('?')[0] ?? href;
+    return keepHrefs.has(bare) ? tag : '';
+  });
+  if (next !== html) writeFileSync(htmlPath, next);
+}
+
 /** `<script type="module" src="/__zntc_app_dev_hmr__"></script>` 를 head 에 1회 삽입. */
 export function injectAppDevHmrClient(outdir: string): void {
   injectIntoDevHtml(outdir, (html) => {
@@ -92,7 +134,7 @@ export function injectAppDevBundleCssLinks(
       if (!html.includes(`href="${href}"`) && !html.includes(`href='${href}'`)) cssHrefs.push(href);
     }
     if (cssHrefs.length === 0) return null;
-    return cssHrefs.map((href) => `<link rel="stylesheet" href="${href}">`).join('\n');
+    return cssHrefs.map(cssLinkTag).join('\n');
   });
 }
 
@@ -121,7 +163,7 @@ export function injectAppDevBundleCssLinksFromOutdir(
       if (!html.includes(`href="${href}"`) && !html.includes(`href='${href}'`)) cssHrefs.push(href);
     }
     if (cssHrefs.length === 0) return null;
-    return cssHrefs.map((href) => `<link rel="stylesheet" href="${href}">`).join('\n');
+    return cssHrefs.map(cssLinkTag).join('\n');
   });
 }
 
@@ -136,7 +178,7 @@ export function injectAppDevPipelineCssLinks(
     for (const rel of cssRelPaths) {
       const href = joinUrl(base, rel.replaceAll(sep, '/'));
       if (html.includes(`href="${href}"`) || html.includes(`href='${href}'`)) continue;
-      tags.push(`<link rel="stylesheet" href="${href}">`);
+      tags.push(cssLinkTag(href));
     }
     return tags.length === 0 ? null : tags.join('\n');
   });

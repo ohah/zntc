@@ -23,6 +23,7 @@ import {
   injectAppDevBundleCssLinksFromOutdir,
   injectAppDevHmrClient,
   injectAppDevPipelineCssLinks,
+  pruneAppDevCssLinks,
   injectAppDevReactRefreshPreamble,
 } from './inject.ts';
 import { buildReactRefreshPreamble } from './react-refresh-preamble.ts';
@@ -550,6 +551,14 @@ export interface AppDevController {
    */
   injectGraphCssLinks(absPaths: readonly string[]): void;
   /**
+   * (#4671) 이번 주기에 주입한 CSS 링크 집합에 맞춰 HTML 의 **남은 링크를 지운다**.
+   * 주입기는 추가만 하므로, JS 에서 `import './a.css'` 를 지워도 링크가 남아 스타일이
+   * 계속 적용됐다. 주입이 끝난 뒤 호출한다.
+   */
+  reconcileCssLinks(): void;
+  /** (#4671) 그래프 기준 CSS 링크 집합을 비운다 — CSS import 가 하나도 없을 때. */
+  clearGraphCssLinks(): void;
+  /**
    * #3813 — outdir 의 `.css` 파일을 file system 스캔해 HTML `<link>` 주입.
    * `injectBundleCssLinks` 가 bundleResult 를 받는 것과 달리 native watch onRebuild 의
    * graphChanged 분기처럼 bundleResult 가 없는 경로용. JS 변경이 새 CSS import 추가했을 때
@@ -615,6 +624,15 @@ export function createAppDevController(
    * 기억해 두고, 변경된 소스가 그중 하나면 그 href 를, 아니면 `null`(=전부 갱신)을 준다.
    */
   const injectedCssHrefs = new Set<string>();
+  /**
+   * (#4671) 주입 출처별 **이번 주기의** href 집합.
+   *
+   * `injectedCssHrefs` 는 누적만 해서 CSS import 를 지워도 그대로 남았다. 출처마다 매번
+   * 새로 채우고, `reconcileCssLinks` 가 그 합집합에 없는 링크를 HTML 에서 지운다.
+   */
+  let pipelineCssHrefs = new Set<string>();
+  let graphCssHrefs = new Set<string>();
+  let bundleCssHrefs = new Set<string>();
   let pipelineRoot: string | null = null;
   // F1+F2 cache (incremental prep 에서 재사용). 구조 변화 (스타일 파일 추가/삭제) 시
   // 무효화 — `prepareAppCssPipelineRoot` 가 cache miss 일 때 자체적으로 재수집한다.
@@ -751,7 +769,8 @@ export function createAppDevController(
         // (#4672) 파이프라인이 넣은 링크도 기억한다 — 이걸 빠뜨리면 CSS Modules / SCSS
         // 수정 시 `hrefFor` 가 소스 경로(`/s.module.css`)를 돌려주는데 링크는 생성 CSS
         // (`/s.module.zntc.css`)라 매칭에 실패해 전체 리로드가 된다.
-        for (const rel of rels) injectedCssHrefs.add(joinUrl(base, rel.replaceAll(sep, '/')));
+        pipelineCssHrefs = new Set(rels.map((rel) => joinUrl(base, rel.replaceAll(sep, '/'))));
+        for (const h of pipelineCssHrefs) injectedCssHrefs.add(h);
       }
       return prepared;
     },
@@ -801,6 +820,21 @@ export function createAppDevController(
       primaryHref = result.primaryHref;
       return { ...result, deps: cssDeps, dirDeps: cssDirDeps };
     },
+    clearGraphCssLinks() {
+      // (#4671) 마지막 CSS import 를 지우면 그래프 목록이 빈다. 직전 주기의 집합을
+      // 그대로 두면 `reconcileCssLinks` 가 옛 링크를 살려 둔다.
+      graphCssHrefs = new Set();
+    },
+    reconcileCssLinks() {
+      // (#4671) 이번 주기에 **실제로 주입한** href 만 남긴다. 사용자가 손으로 적은
+      // 링크는 마커가 없어 대상이 아니다.
+      const keep = new Set<string>([...pipelineCssHrefs, ...graphCssHrefs, ...bundleCssHrefs]);
+      pruneAppDevCssLinks(outdir, keep);
+      // `hrefFor` 가 지워진 링크를 지목하지 않도록 누적본도 맞춘다.
+      for (const h of [...injectedCssHrefs]) {
+        if (!keep.has(h)) injectedCssHrefs.delete(h);
+      }
+    },
     injectGraphCssLinks(absPaths) {
       if (absPaths.length === 0) return;
       // 경로는 번들러가 읽은 트리(= 파이프라인 temp root, 없으면 앱 루트) 기준이다.
@@ -819,7 +853,8 @@ export function createAppDevController(
       }
       if (rels.length === 0) return;
       injectAppDevPipelineCssLinks(outdir, base, rels);
-      for (const rel of rels) injectedCssHrefs.add(joinUrl(base, rel.replaceAll(sep, '/')));
+      graphCssHrefs = new Set(rels.map((rel) => joinUrl(base, rel.replaceAll(sep, '/'))));
+      for (const h of graphCssHrefs) injectedCssHrefs.add(h);
       hasGraphCss = true;
     },
     injectBundleCssLinks(bundleResult: BundleResult) {
@@ -834,9 +869,12 @@ export function createAppDevController(
       // 내용의 합본이라 중복이다.
       if (hasGraphCss) return;
       injectAppDevBundleCssLinks(outdir, base, bundleResult);
+      bundleCssHrefs = new Set();
       for (const file of bundleResult?.outputFiles ?? []) {
         if (file?.path && /\.css$/i.test(file.path)) {
-          injectedCssHrefs.add(joinUrl(base, basename(file.path)));
+          const href = joinUrl(base, basename(file.path));
+          bundleCssHrefs.add(href);
+          injectedCssHrefs.add(href);
         }
       }
     },

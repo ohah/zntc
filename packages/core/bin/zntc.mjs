@@ -2444,6 +2444,8 @@ async function runServe(opts, config, { appDev = null } = {}) {
         // 두 번 실린다.
         if (event.cssModules?.length) appDev.injectGraphCssLinks(event.cssModules);
         appDev.injectBundleCssLinks(mockResult);
+        // (#4671) 주입기는 추가만 한다 — 이번 주기에 없는 링크는 여기서 지운다.
+        appDev.reconcileCssLinks();
         await appDev.afterBundle();
       } catch (err) {
         console.error('[serve] initial appDev hooks failed:', err);
@@ -2477,11 +2479,17 @@ async function runServe(opts, config, { appDev = null } = {}) {
             reconcileOutdir();
           }
           // (#4675) 매 rebuild 마다 갱신 — JS 가 CSS import 를 새로 추가해도 링크가 붙는다.
-          if (event && event.success && event.cssModules?.length) {
+          // appDev 가 없는 순수 dev 서버 경로도 이 핸들러를 탄다 — 가드 없이 부르면
+          // 매 rebuild 마다 throw 한다(try/catch 가 삼키지만 로그만 시끄러워진다).
+          if (appDev && event && event.success) {
             try {
-              appDev.injectGraphCssLinks(event.cssModules);
+              // cssModules 가 비어 오면(= import 된 CSS 가 하나도 없음) 주입은 건너뛰되
+              // 정리는 해야 한다 — 마지막 CSS import 를 지운 경우가 정확히 그 모양이다.
+              if (event.cssModules?.length) appDev.injectGraphCssLinks(event.cssModules);
+              else appDev.clearGraphCssLinks();
+              appDev.reconcileCssLinks();
             } catch (cssErr) {
-              console.error('[serve] css graph link inject failed:', cssErr);
+              console.error('[serve] css graph link reconcile failed:', cssErr);
             }
           }
           if (event && event.success && event.graphChanged) {
@@ -2771,9 +2779,10 @@ async function runServe(opts, config, { appDev = null } = {}) {
       hmr?.clearError();
       appDev.injectBundleCssLinks(bundleResult);
       // (#4675) prepare 가 HTML 을 매번 덮어쓰므로 여기서도 다시 건다.
-      if (bundleResult.modulePaths?.length) {
-        appDev.injectGraphCssLinks(bundleResult.modulePaths.filter((p) => p.endsWith('.css')));
-      }
+      const fullCssPaths = (bundleResult.modulePaths ?? []).filter((p) => p.endsWith('.css'));
+      if (fullCssPaths.length > 0) appDev.injectGraphCssLinks(fullCssPaths);
+      else appDev.clearGraphCssLinks();
+      appDev.reconcileCssLinks();
       await appDev.afterBundle();
       hmr?.broadcast({ type: HMR_MSG.FullReload, timestamp: Date.now() });
       if (opts.logLevel !== 'silent') console.error('[serve] rebuilt');
