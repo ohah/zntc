@@ -1579,7 +1579,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
 
         // (#4660) rebuild 도 asset 산출물을 써야 한다 — initial 만 고치면 "실행 중 JS 에
         // CSS import 를 추가" 하는 흐름에서 파일이 안 생긴다. caller 는 rebuild 후
-        // `injectBundleCssLinksFromOutdir()` 로 outdir 을 스캔해 `<link>` 를 붙이므로,
+        // 소비자가 outdir 을 스캔해 `<link>` 를 붙이던 시절의 전제라,
         // 여기서 쓰지 않으면 스캔할 대상 자체가 없다.
         if (rebuild_result.asset_outputs) |assets| {
             for (assets) |a| output_bytes += a.contents.len;

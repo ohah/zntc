@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   APP_DEV_HMR_CLIENT_PATH,
   APP_DEV_HMR_WS_PATH,
@@ -216,5 +218,31 @@ describe('HmrRnMessage type 의 round-trip', () => {
       level: 'warn',
       data: ['hello', { x: 1 }],
     });
+  });
+});
+
+describe('HmrCssUpdateMessage.href (#4681)', () => {
+  /**
+   * #4681 — 타입은 `href: string` 인데 dev 서버는 `null` 을 보냈다. 보내는 쪽
+   * (`packages/core/bin/zntc.mjs`)이 순수 JS 라 어긋남이 검사에 걸리지 않았다.
+   *
+   * `null` 은 실수가 아니라 **의도된 값**이다 — "어느 링크인지 단정할 수 없으니 모든
+   * stylesheet 를 갱신하라".
+   *
+   * ⚠️ 타입 단언을 이 파일에 쓰면 **아무것도 고정하지 못한다** — tsconfig 가 테스트
+   * 파일을 exclude 해서 tsc 를 거치지 않고, 런타임엔 타입이 지워지기 때문이다.
+   * 그래서 `packages/core/types.test.ts` 와 같은 방식으로 **생성된 선언 파일**을 읽어
+   * 확인한다.
+   */
+  test('생성된 .d.ts 의 href 가 optional + null 허용', () => {
+    const dts = join(import.meta.dir, '..', 'dist', 'protocol.d.ts');
+    if (!existsSync(dts)) {
+      throw new Error(`protocol.d.ts 없음 — \`bun run --cwd packages/server build\` 필요: ${dts}`);
+    }
+    const src = readFileSync(dts, 'utf8');
+    const block = /export interface HmrCssUpdateMessage \{([\s\S]*?)\n\}/.exec(src)?.[1];
+    expect(block).toBeDefined();
+    // `href: string` 이면 dev 서버가 실제로 보내는 값과 어긋난다.
+    expect(block).toContain('href?: string | null;');
   });
 });

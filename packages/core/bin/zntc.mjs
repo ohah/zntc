@@ -2504,7 +2504,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
             // 그 플래그는 **JS 모듈 ID 집합** 변화로만 판정하는데, CSS import 추가는
             // 집합 크기를 바꾸지 않기 때문이다.
             //
-            // ⚠️ outdir 스캔(`injectBundleCssLinksFromOutdir`)으로 때우면 dev 서빙용으로
+            // ⚠️ outdir 을 통째로 스캔해 때우면 dev 서빙용으로
             // 미러된 **소스 CSS** 까지 잡혀 `<link>` 가 중복된다. native 가 실어 보낸
             // asset 산출 목록만 쓴다. 이미 있는 href 는 주입기가 건너뛴다.
             try {

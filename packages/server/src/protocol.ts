@@ -36,7 +36,15 @@ export interface HmrConnectedMessage {
 
 export interface HmrCssUpdateMessage {
   type: typeof HMR_MSG.CssUpdate;
-  href: string;
+  /**
+   * 갱신할 stylesheet 의 href. 클라이언트는 pathname 이 같은 `<link>` 만 교체한다.
+   *
+   * (#4681) **`null` / 미지정 = 모든 stylesheet 갱신.** 어느 링크가 바뀐 건지 단정할 수
+   * 없을 때(소스가 번들 CSS 로 합쳐진 경우 등) 쓰는 값이고, 전체 페이지 리로드보다 훨씬
+   * 싸다. 예전에는 타입이 `string` 이라 실제 방송값과 어긋나 있었다 — 보내는 쪽
+   * (`packages/core/bin/zntc.mjs`)이 순수 JS 라 검사에 걸리지 않았다.
+   */
+  href?: string | null;
   timestamp: number;
 }
 

@@ -20,7 +20,6 @@ import { applyHtmlEnvTokens } from './html-env.ts';
 import {
   type BundleResult,
   injectAppDevBundleCssLinks,
-  injectAppDevBundleCssLinksFromOutdir,
   injectAppDevHmrClient,
   injectAppDevPipelineCssLinks,
   pruneAppDevCssLinks,
@@ -558,13 +557,6 @@ export interface AppDevController {
   reconcileCssLinks(): void;
   /** (#4671) 그래프 기준 CSS 링크 집합을 비운다 — CSS import 가 하나도 없을 때. */
   clearGraphCssLinks(): void;
-  /**
-   * #3813 — outdir 의 `.css` 파일을 file system 스캔해 HTML `<link>` 주입.
-   * `injectBundleCssLinks` 가 bundleResult 를 받는 것과 달리 native watch onRebuild 의
-   * graphChanged 분기처럼 bundleResult 가 없는 경로용. JS 변경이 새 CSS import 추가했을 때
-   * stale `<link>` 회귀 가드.
-   */
-  injectBundleCssLinksFromOutdir(): void;
   isPostcssConfig(absPath: string): boolean;
   isCssOnlyChange(absPath: string): boolean;
   isSassOnlyChange(absPath: string): boolean;
@@ -858,12 +850,13 @@ export function createAppDevController(
       hasGraphCss = true;
     },
     injectBundleCssLinks(bundleResult: BundleResult) {
-      // pipeline 이 SCSS / CSS Modules generated CSS 를 inject 한 상태면 bundler 의
-      // CSS asset (entry 의 모든 CSS import 가 합본된 main.css) 은 같은 source 의
-      // 중복이라 cascade 마지막에서 stale 값으로 이긴다. pipeline 우선.
-      // 알려진 제약: 같은 entry 가 SCSS + plain `.css` 를 모두 import 하면 bundle
-      // main.css 의 plain CSS 부분이 누락 — pipeline 이 plain `.css` 까지 cover
-      // 하도록 확장하거나 metafile inputs 기반 정밀 dedup 으로 follow-up.
+      // pipeline 이 SCSS / CSS Modules 의 생성 CSS 를 링크한 상태면, bundler 의 CSS
+      // asset(`main.css`)은 같은 source 의 합본이라 중복이다. 생산자가 둘이 되면 한쪽만
+      // 갱신되는 순간이 생기므로 하나만 링크한다.
+      //
+      // (#4675) 예전에는 여기서 plain `.css` 가 유실됐다 — 번들 CSS 를 통째로 건너뛰는데
+      // 그 안에만 plain CSS 가 있었다. 지금은 `injectGraphCssLinks` 가 import 된 CSS 를
+      // 전부 개별 링크하므로 그 구멍이 없다.
       if (hasPipelineCss) return;
       // (#4675) 그래프 기준 링크가 이미 import 된 CSS 를 전부 덮는다 — 번들 CSS 는 같은
       // 내용의 합본이라 중복이다.
@@ -877,12 +870,6 @@ export function createAppDevController(
           injectedCssHrefs.add(href);
         }
       }
-    },
-    injectBundleCssLinksFromOutdir() {
-      // #3813 — native watch onRebuild 의 graphChanged 분기처럼 bundleResult 가 없는 경로용.
-      // pipeline CSS 우선 정책은 동일 — pipeline 이 inject 했으면 outdir scan skip.
-      if (hasPipelineCss) return;
-      injectAppDevBundleCssLinksFromOutdir(outdir, base);
     },
     isPostcssConfig(absPath) {
       return isPostcssConfigFile(absPath);
