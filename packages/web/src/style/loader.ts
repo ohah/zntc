@@ -69,6 +69,24 @@ function readEntriesOrEmpty(dir: string): Dirent[] {
   }
 }
 
+/**
+ * (#4678) 깊이에 무관하게 건너뛸 디렉토리 이름.
+ *
+ * `.zntc-dev` 는 `zntc dev` 의 기본 산출 디렉토리이고, 그 안에는 dev 서버 서빙용으로
+ * **소스 CSS 가 그대로 미러**돼 있다. 루트의 것만 제외하면 하위 앱이 dev 를 돌린
+ * `sub/.zntc-dev` 가 새어 들어와 같은 CSS Module 을 두 번 처리한다(실측 +38%).
+ *
+ * ⚠️ `--outdir` 로 이름을 바꾼 dev 산출물은 여기서 못 막는다 — `zntc build` 는 직전
+ * `zntc dev` 가 어떤 outdir 을 썼는지 알 방법이 없다. 알려진 한계이고, 원리적으로
+ * 닫으려면 생산자가 자기 산출물을 표시해야 한다(#4678).
+ */
+const SKIP_DIR_NAMES = new Set(['node_modules', '.git', '.zntc-dev']);
+
+/** (#4678) 깊이 무관 skip 대상인가. 복사·탐색 두 경로가 같은 규칙을 쓰도록 공개한다. */
+export function isSkippedDirName(name: string): boolean {
+  return SKIP_DIR_NAMES.has(name);
+}
+
 function walkFiles(
   dir: string,
   skipResolved: ReadonlySet<string>,
@@ -76,7 +94,7 @@ function walkFiles(
   out: string[],
 ): void {
   for (const entry of readEntriesOrEmpty(dir)) {
-    if (entry.name === 'node_modules' || entry.name === '.git') continue;
+    if (isSkippedDirName(entry.name)) continue;
     const path = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (skipResolved.has(resolve(path))) continue;

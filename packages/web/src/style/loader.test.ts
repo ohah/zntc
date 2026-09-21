@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { collectAppFiles, requireFromAppOrFallback } from './loader.ts';
+import { collectAppFiles, isSkippedDirName, requireFromAppOrFallback } from './loader.ts';
 
 let dir: string;
 
@@ -133,5 +133,38 @@ describe('collectAppFiles', () => {
 
   test('빈 디렉토리는 빈 배열', () => {
     expect(collectAppFiles(dir)).toEqual([]);
+  });
+});
+
+describe('isSkippedDirName / 깊이 무관 skip (#4678)', () => {
+  /**
+   * #4678 — `zntc dev` 의 산출 디렉토리에는 서빙용으로 **소스 CSS 가 그대로 미러**돼
+   * 있다. 루트의 `.zntc-dev` 만 제외하면 하위 앱이 dev 를 돌린 `sub/.zntc-dev` 가
+   * 새어 들어와 같은 CSS Module 을 두 번 처리한다(실측 +38%).
+   */
+  test('중첩된 .zntc-dev 안의 파일은 수집되지 않는다', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-skipdir-'));
+    try {
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      mkdirSync(join(dir, 'sub', '.zntc-dev', 'src'), { recursive: true });
+      writeFileSync(join(dir, 'src', 'a.module.css'), '.a{color:red}');
+      writeFileSync(join(dir, 'sub', '.zntc-dev', 'src', 'mirrored.module.css'), '.m{color:blue}');
+
+      const found = collectAppFiles(dir, { predicate: (p) => p.endsWith('.module.css') });
+      expect(found.some((p) => p.endsWith('a.module.css'))).toBe(true);
+      // 산출물 미러본은 소스가 아니다.
+      expect(found.some((p) => p.includes('mirrored'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('이름 규칙은 복사·탐색이 공유한다', () => {
+    expect(isSkippedDirName('node_modules')).toBe(true);
+    expect(isSkippedDirName('.git')).toBe(true);
+    expect(isSkippedDirName('.zntc-dev')).toBe(true);
+    // ⚠️ `--outdir` 로 이름을 바꾼 dev 산출물은 못 막는다 — 알려진 한계(#4678).
+    expect(isSkippedDirName('.mydev')).toBe(false);
+    expect(isSkippedDirName('src')).toBe(false);
   });
 });
