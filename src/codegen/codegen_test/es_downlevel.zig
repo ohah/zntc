@@ -484,6 +484,53 @@ test "ES5: async function emits __generator(this, ...) for body this access (#19
         std.mem.indexOf(u8, r.output, "__generator(this,function") != null);
 }
 
+test "es2015: async 클래스 메서드가 다운레벨된다 (#4699)" {
+    // `async` 는 ES2017 — class 가 네이티브로 남는 es2015/es2016 에선 어느 경로도
+    // 타지 않아 `async m()` 이 그대로 샜다.
+    var r = try e2eTarget(std.testing.allocator, "class C { async m() { return 1; } }", .es2015);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "async m(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "async ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__async") != null);
+}
+
+test "es5: generator 클래스 메서드가 다운레벨된다 (#4699)" {
+    // class→함수 낮추기 경로가 `is_async` 만 분기해서, generator 단독은 플래그가
+    // 보존된 채 `function*` 으로 남았다(ES5 문법 아님).
+    var r = try e2eTarget(std.testing.allocator, "class C { *m() { yield 1; } }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function*") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+}
+
+test "es2016: static async 메서드 / super 조합도 (#4699)" {
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "class B { b(){return 1;} } class D extends B { static async s() { return 1; } async m() { return super.b(); } }",
+        .es2016,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "async ") == null);
+    // 본문이 다른 함수로 옮겨지므로 raw super 가 남으면 파싱 불가.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super.b") == null);
+}
+
+test "es2017: async 메서드는 네이티브 유지 (#4699 과잉 변환 방지)" {
+    // es2017 은 async 가 네이티브 — 낮추면 불필요한 헬퍼 bloat.
+    var r = try e2eTarget(std.testing.allocator, "class C { async m() { return 1; } }", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__async") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "async m(") != null);
+}
+
+test "es2015: generator 메서드는 네이티브 유지 (#4699 과잉 변환 방지)" {
+    // generator 는 ES2015 — es2015 타겟에선 그대로 둬야 한다.
+    var r = try e2eTarget(std.testing.allocator, "class C { *m() { yield 1; } }", .es2015);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "*m(") != null);
+}
+
 test "es2017: async generator **메서드** 도 다운레벨된다 (#4628 후속)" {
     // 최상위 함수만 고치면 절반이다 — 클래스/객체 메서드는 각각 다른 경로를 탄다.
     var r = try e2eTarget(
