@@ -753,6 +753,35 @@ test "es2017: 평범한 generator 의 yield* 는 건드리지 않는다 (#4628 �
 
 // === #1910: yield* iterable — __values() wrap ===
 
+test "ES5: 라벨이 겹치는 자리의 yield 는 별칭 case 로 폴스루하지 않는다 (#4718)" {
+    // `__generator` 의 op 4(`yield`)·5(`yield*`)는 재개 라벨을 **현재 라벨 + 1** 로 잡는다.
+    // 따라서 그 op 는 자기 case 의 라벨 + 1 에서 재개돼야 한다. 그런데 라벨이 같은 자리에
+    // 두 개 생기면(예: try 영역 종료 + 라벨 스코프 종료) `case 14: case 15: return [4, v]`
+    // 가 되고, 14 로 들어오면 재개가 15 = 같은 yield → **값이 두 번 방출된다**.
+    // op 4(`yield`) 와 op 5(`yield*`) 둘 다 재개 라벨을 쓰므로 양쪽을 본다.
+    const sources = [_][]const u8{
+        "async function* g(){ B: for await (const v of [1,2]) { C: { if (v===1) break C; yield 'b'+v; } } yield 'end'; }",
+        "function* inner(){ yield 1; } function* g(){ A: { yield 'a'; break A; } yield* inner(); }",
+    };
+    const expect_op = [_][]const u8{ "return[4,", "return[5," };
+
+    for (sources, expect_op) |src, op| {
+        var r = try e2eTarget(std.testing.allocator, src, .es5);
+        defer r.deinit();
+        try std.testing.expect(std.mem.indexOf(u8, r.output, op) != null); // 공허 방지
+
+        // `case A:case B:return[4,` / `[5,` 형태가 남아 있으면 별칭 라벨이다.
+        var idx: usize = 0;
+        while (std.mem.indexOfPos(u8, r.output, idx, ":case ")) |p| {
+            idx = p + 1;
+            const colon = std.mem.indexOfPos(u8, r.output, p + 6, ":") orelse continue;
+            const rest = r.output[colon + 1 ..];
+            try std.testing.expect(!std.mem.startsWith(u8, rest, "return[4,"));
+            try std.testing.expect(!std.mem.startsWith(u8, rest, "return[5,"));
+        }
+    }
+}
+
 test "ES5: 라벨 붙은 for-await 의 continue 는 break 와 다른 곳으로 간다 (#4710)" {
     // `collectLabeledOperations` 의 `is_loop` 판정에 `.for_await_of_statement` 가 빠져
     // 있었다. 빠지면 `continue_label` 이 null 이 되고 `continue <label>` 이

@@ -2076,6 +2076,23 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         }
 
         /// 연산 리스트를 switch case로 변환.
+        /// `ops[from]` 이후 처음 나오는 실행 op 가 **재개 라벨에 민감한지**.
+        ///
+        /// `__generator` 의 op 4(`yield`)·5(`yield*`)는 실행 시 `_.label++` 로 재개 위치를
+        /// 잡는다. 따라서 그 op 는 자기 case 의 라벨 + 1 에서 재개돼야 한다 — 빈 case 가
+        /// 앞에 붙어 폴스루하면 그 관계가 깨져 같은 yield 가 두 번 실행된다. (#4718)
+        fn nextOpIsResumeSensitive(ops: []const Operation, from: usize) bool {
+            var i = from + 1;
+            while (i < ops.len) : (i += 1) {
+                switch (ops[i].code) {
+                    .nop => return false, // 다음 case 가 바로 시작 — 빈 case 가 이어진다
+                    .yield_op, .yield_star => return true,
+                    else => return false,
+                }
+            }
+            return false;
+        }
+
         fn buildSwitchFromOps(self: *Transformer, ops: []const Operation, span: Span) Transformer.Error!NodeIndex {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -2085,7 +2102,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             var current_case_stmts: std.ArrayList(NodeIndex) = .empty;
             defer current_case_stmts.deinit(self.allocator);
 
-            for (ops) |op| {
+            for (ops, 0..) |op, op_i| {
                 switch (op.code) {
                     .nop => {
                         // fall-through 방지: __generator는 label로 case를 추적하므로
@@ -2099,6 +2116,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                                 const jump = try buildInstructionReturn(self, 3, try es_helpers.makeNumericLiteral(self, next_case), span);
                                 try current_case_stmts.append(self.allocator, jump);
                             }
+                        } else if (nextOpIsResumeSensitive(ops, op_i)) {
+                            // **빈 case** 도 그냥 폴스루하면 안 된다 (#4718).
+                            // 라벨이 겹치는 자리(예: try 영역 종료 라벨 + 라벨 스코프 종료
+                            // 라벨)에 `yield` 가 오면 `case 14: case 15: return [4, v]` 가 되는데,
+                            // `__generator` 의 op 4/5 는 재개 라벨을 **현재 라벨 + 1** 로 잡는다.
+                            // 14 로 들어오면 재개가 15 = 같은 yield → **값이 두 번 방출된다**.
+                            // 다음 op 가 재개 라벨에 민감할 때만 명시 점프를 넣어 크기 영향을 막는다.
+                            const jump = try buildInstructionReturn(self, 3, try es_helpers.makeNumericLiteral(self, case_num + 1), span);
+                            try current_case_stmts.append(self.allocator, jump);
                         }
                         const case_node = try buildSwitchCase(self, case_num, current_case_stmts.items, span);
                         try self.scratch.append(self.allocator, case_node);
