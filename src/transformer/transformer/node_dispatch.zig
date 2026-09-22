@@ -928,8 +928,14 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             break :blk new_regex;
         },
         .identifier_reference => {
-            // ES2015 arrow arguments 캡처: arrow body 안의 arguments → _arguments
-            if (self.options.unsupported.arrow and self.arrow_this_depth > 0) {
+            // arguments 캡처: 본문이 **다른 함수 안으로 옮겨질 때** 필요하다.
+            // arrow 다운레벨(`arrow_this_depth`)과 async/generator 다운레벨
+            // (`in_extracted_fn_body`)이 같은 이유로 같은 처리를 쓴다 — 예전엔 arrow
+            // 조건만 있어서 async/generator 경로에서 `arguments` 가 안쪽 함수 것을
+            // 가리켰다(es2015 에서 빈 배열, es5 에선 `[object Object]`).
+            if ((self.options.unsupported.arrow and self.arrow_this_depth > 0) or
+                self.in_extracted_fn_body)
+            {
                 const text = self.ast.getText(node.data.string_ref);
                 if (std.mem.eql(u8, text, "arguments")) {
                     self.needs_arguments_var = true;

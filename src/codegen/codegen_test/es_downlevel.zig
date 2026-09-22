@@ -484,6 +484,42 @@ test "ES5: async function emits __generator(this, ...) for body this access (#19
         std.mem.indexOf(u8, r.output, "__generator(this,function") != null);
 }
 
+// === #4699: 본문이 다른 함수로 옮겨질 때 `arguments` 캡처 ===
+
+test "es2015: async 함수의 arguments 가 캡처된다 (#4699)" {
+    // body 가 `__async(function*(){…})` 안쪽으로 옮겨지면 `arguments` 는 **그 안쪽**
+    // 함수 것을 가리킨다. `this` 는 `.call(this)` 로 따로 전달되는데 `arguments` 만
+    // 빠져 있었다 — arrow 다운레벨에만 걸린 게이트였다.
+    var r = try e2eTarget(std.testing.allocator, "async function f() { return arguments; }", .es2015);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_arguments=arguments") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return _arguments") != null);
+}
+
+test "es5: generator 함수의 arguments 가 캡처된다 (#4699)" {
+    // `__generator(this, function(_state){…})` 의 안쪽 함수는 `_state` 를 받으므로
+    // 캡처가 없으면 `arguments` 가 `[_state]` 가 된다.
+    var r = try e2eTarget(std.testing.allocator, "function* g() { yield arguments; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_arguments=arguments") != null);
+}
+
+test "es2015: 클래스 async 메서드의 arguments 도 캡처된다 (#4699)" {
+    var r = try e2eTarget(std.testing.allocator, "class C { async m() { return arguments; } }", .es2015);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_arguments=arguments") != null);
+}
+
+test "es2017: async generator 는 arguments 를 인자로 넘긴다 (#4699 과잉 캡처 방지)" {
+    // `__asyncGenerator(this, arguments, fn)` 이 이미 전달하므로 캡처를 끼우면 안 된다.
+    // (끼우면 안쪽 visit 의 pushArrowEnv 가 needs_arguments_var 를 되돌려 선언이 유실된다.)
+    var r = try e2eTarget(std.testing.allocator, "async function* g() { yield arguments; }", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncGenerator(this,arguments") != null or
+        std.mem.indexOf(u8, r.output, "__asyncGenerator(this, arguments") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_arguments=arguments") == null);
+}
+
 test "es2015: async 클래스 메서드가 다운레벨된다 (#4699)" {
     // `async` 는 ES2017 — class 가 네이티브로 남는 es2015/es2016 에선 어느 경로도
     // 타지 않아 `async m()` 이 그대로 샜다.

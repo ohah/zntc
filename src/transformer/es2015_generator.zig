@@ -98,7 +98,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             const saved_temp_counter = self.temp_var_counter;
 
+            // body 가 `__generator(this, function(_state){…})` 안쪽으로 옮겨진다 →
+            // `arguments` 가 그 안쪽 함수 것(= `[_state]`)을 가리키므로 캡처가 필요하다.
+            const saved_ext = self.in_extracted_fn_body;
+            self.in_extracted_fn_body = true;
             const sm_result = try buildStateMachine(self, body_idx, span);
+            self.in_extracted_fn_body = saved_ext;
             defer self.generator_temp_var_spans.clearRetainingCapacity();
             if (sm_result.body.isNone()) return .none;
             const sm_body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span);
@@ -126,6 +131,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
+            {
+                var capture_stmts: [2]NodeIndex = undefined;
+                const count = try es_helpers.fillThisArgumentsCaptures(self, &capture_stmts, span);
+                try self.scratch.appendSlice(self.allocator, capture_stmts[0..count]);
+            }
             if (!sm_result.var_decl.isNone()) {
                 try self.scratch.append(self.allocator, sm_result.var_decl);
             }
