@@ -1203,7 +1203,19 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const catch_body_idx = catch_node.data.binary.right;
 
                 if (!catch_param.isNone()) {
-                    const new_param = try self.visitNode(catch_param);
+                    const visited_param = try self.visitNode(catch_param);
+                    // `catch (e) {…}` → `case N: e = _state.sent();` 로 접을 때, catch 의
+                    // **바인딩** 노드를 그대로 대입 좌변에 재사용하면 안 된다. 좌변은 선언이
+                    // 아니라 **참조**다. 소스에서 온 catch param 은 스코프 분석이 이미 등록해
+                    // 둬서 우연히 해석되지만, 트랜스포머가 합성한 temp(예: for-await 의 `_e`)는
+                    // 분석 이후에 만들어져 바인딩 노드가 심볼로 해석되지 않는다 → minify 때
+                    // 호이스트된 `var` 선언만 리네임되고 이 좌변은 원래 이름으로 남아
+                    // `ReferenceError: _e is not defined` (#4703).
+                    const param_node = self.ast.getNode(visited_param);
+                    const new_param = if (param_node.tag == .binding_identifier)
+                        try es_helpers.makeIdentifierRefFromSpan(self, param_node.data.string_ref)
+                    else
+                        visited_param;
                     const sent = try buildSentCall(self, stmt.span);
                     const assign = try self.ast.addNode(.{
                         .tag = .assignment_expression,

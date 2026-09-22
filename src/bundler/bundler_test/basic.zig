@@ -79,6 +79,45 @@ test "Bundler: external module excluded" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "const x = 1;") != null);
 }
 
+test "Bundler: es5 + minify — for-await 의 catch temp 가 선언과 같이 리네임된다 (#4703)" {
+    // es5 state machine 은 `catch (e) {…}` 를 `case N: e = _state.sent();` 로 접는다.
+    // 이때 catch 의 **바인딩** 노드를 대입 좌변에 재사용하면, 트랜스포머가 합성한
+    // temp(여기선 for-await 의 `_e`)는 스코프 분석 이후에 만들어져 심볼로 해석되지
+    // 않는다 → 호이스트된 `var` 선언만 리네임되고 좌변은 원래 이름으로 남아
+    // 런타임에 `ReferenceError: _e is not defined`.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(
+        tmp.dir,
+        "index.ts",
+        "export async function f() { try { for await (const v of [1]) console.log(v); } catch (e) { console.log(e); } }",
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .unsupported = compat_mod.fromESTarget(.es5),
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+
+    // 다운레벨이 실제로 일어났는지부터 — state machine 의 try 테이블은 프로퍼티라
+    // 리네임 대상이 아니다(이 단언이 없으면 테스트가 공허해진다).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".trys.push(") != null);
+    // 합성 temp 가 좌변에서만 원래 이름으로 남는 게 이 버그의 형태다.
+    for ([_][]const u8{ "_a=", "_b=", "_c=", "_d=", "_e=", "_f=" }) |pat| {
+        try std.testing.expect(std.mem.indexOf(u8, result.output, pat) == null);
+    }
+}
+
 test "Bundler: minified output" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
