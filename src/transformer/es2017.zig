@@ -207,6 +207,12 @@ pub fn ES2017(comptime Transformer: type) type {
             // `yield*` 를 먼저 푼다 — 그래야 그 안에 남은 `await` 를 아래 패스가 한 번에 정리한다.
             try rewriteYieldStarToAsyncDelegator(self, body_idx);
             try rewriteAwaitToYieldAwait(self, body_idx);
+            // ⚠️ 여기서는 `in_extracted_fn_body` 를 켜지 않는다. `__asyncGenerator(this,
+            // arguments, fn)` 이 arguments 를 **인자로** 넘기고 헬퍼가 `fn.apply(this,
+            // _arguments)` 로 적용하므로 안쪽 `function*` 의 `arguments` 가 이미 원본이다.
+            // es5 처럼 그 안쪽이 다시 `__generator` 로 낮아지는 경우는 그 낮추기가 자기
+            // wrapper 에 캡처를 선언해 해결한다. 여기서 켜면 안쪽 visit 의 pushArrowEnv 가
+            // `needs_arguments_var` 를 되돌려 선언이 유실된다(`_arguments is not defined`).
 
             // inner function*(): visitNode 거치면 ES5 target 시 자동으로 generator state machine 으로 lower.
             const inner_flags = (flags & ~@as(u32, ast_mod.FunctionFlags.is_async)) | @as(u32, ast_mod.FunctionFlags.is_generator);
@@ -295,7 +301,11 @@ pub fn ES2017(comptime Transformer: type) type {
             const flags = self.readU32(e, ast_mod.FunctionExtra.flags);
 
             const new_name = try self.visitNode(name_idx);
+            // body 가 `__async(function*(){…})` 안쪽으로 옮겨진다 → `arguments` 캡처 필요.
+            const saved_extracted = self.in_extracted_fn_body;
+            self.in_extracted_fn_body = true;
             const new_body = try self.visitBodyWorkletAware(body_idx);
+            self.in_extracted_fn_body = saved_extracted;
             // body 를 visit 하는 도중 for-await 다운레벨이 **새로 만든** await 노드는 visitor 의
             // await→yield 변환을 못 받는다 → 여기서 정리 (#4488).
             try rewriteRemainingAwaitToYield(self, new_body);
@@ -311,7 +321,15 @@ pub fn ES2017(comptime Transformer: type) type {
                 .data = .{ .unary = .{ .operand = async_call, .flags = 0 } },
             });
 
-            const body_list = try self.ast.addNodeList(&.{return_stmt});
+            const body_list = blk_cap: {
+                const scratch_top = self.scratch.items.len;
+                defer self.scratch.shrinkRetainingCapacity(scratch_top);
+                var capture_stmts: [2]NodeIndex = undefined;
+                const count = try es_helpers.fillThisArgumentsCaptures(self, &capture_stmts, node.span);
+                try self.scratch.appendSlice(self.allocator, capture_stmts[0..count]);
+                try self.scratch.append(self.allocator, return_stmt);
+                break :blk_cap try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            };
 
             const wrapper_body = try self.ast.addNode(.{
                 .tag = .block_statement,
@@ -410,7 +428,12 @@ pub fn ES2017(comptime Transformer: type) type {
             // 다시 hoist 하지 않도록 한다.
             const saved_temp_counter = self.temp_var_counter;
 
+            // body 가 안쪽 function 으로 옮겨진다 → `arguments` 캡처 필요 (arrow 경로는 제외 —
+            // arrow 의 arguments 는 바깥 함수 것이고 arrow_this_depth 가 따로 처리한다).
+            const saved_ext_sm = self.in_extracted_fn_body;
+            self.in_extracted_fn_body = true;
             var sm_result = try GenMod.buildStateMachine(self, body_idx, span);
+            self.in_extracted_fn_body = saved_ext_sm;
             defer self.generator_temp_var_spans.clearRetainingCapacity();
             if (sm_result.body.isNone()) return .none;
             sm_result.body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span);
@@ -431,11 +454,10 @@ pub fn ES2017(comptime Transformer: type) type {
             const body_list = blk: {
                 const scratch_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
-                if (self.options.unsupported.arrow) {
-                    var capture_stmts: [2]NodeIndex = undefined;
-                    const count = try es_helpers.fillThisArgumentsCaptures(self, &capture_stmts, span);
-                    try self.scratch.appendSlice(self.allocator, capture_stmts[0..count]);
-                }
+                // arrow 다운레벨 여부와 무관 — body 가 안쪽 함수로 옮겨지면 캡처가 필요하다.
+                var capture_stmts: [2]NodeIndex = undefined;
+                const count = try es_helpers.fillThisArgumentsCaptures(self, &capture_stmts, span);
+                try self.scratch.appendSlice(self.allocator, capture_stmts[0..count]);
                 if (!sm_result.var_decl.isNone()) try self.scratch.append(self.allocator, sm_result.var_decl);
                 try self.scratch.append(self.allocator, return_stmt);
                 break :blk try self.ast.addNodeList(self.scratch.items[scratch_top..]);

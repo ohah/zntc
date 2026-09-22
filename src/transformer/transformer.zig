@@ -176,6 +176,17 @@ pub const Transformer = struct {
     /// nested class body 진입 시 (visitClass) false 로 reset (inner class lexical
     /// context 는 super 키워드가 valid).
     current_super_in_extracted_fn: bool = false,
+
+    /// 본문이 **다른 함수 안으로 옮겨지는 중**인지. async/generator 다운레벨은 body 를
+    /// `__async(function*(){…})` / `__generator(this, function(_state){…})` 의 안쪽
+    /// 함수로 옮기는데, 그러면 `arguments` 가 **그 안쪽 함수의 것**을 가리킨다.
+    /// (`this` 는 `.call(this)`/첫 인자로 따로 전달되고, `super` 는
+    /// `current_super_in_extracted_fn` 이 담당 — 세 바인딩이 같은 연산에서 깨진다.)
+    /// 이 플래그가 켜져 있으면 `arguments` 를 `_arguments` 로 바꾸고, 바깥 wrapper 가
+    /// `var _arguments = arguments` 를 선언한다. 낮추기가 중첩돼도(es5 의 async
+    /// generator → 안쪽 function* 가 다시 __generator 로) **가장 바깥에서 한 번**
+    /// 치환되므로 안쪽 층은 평범한 식별자만 본다.
+    in_extracted_fn_body: bool = false,
     /// V7: object literal 안에서 visit 중인지 (nested 가능). visitMethodDefinition 이
     /// 이 flag 를 보고 method body 의 super context 를 reset 한다 — object literal method
     /// 의 super 는 home object [[Prototype]] 기준이라 outer class super 와 무관.
