@@ -7,7 +7,7 @@
   "additionalProperties": false,
   "properties": {
     "target": {"type": "string", "enum": ["es5", "es2015", "es2016", "es2017", "es2018", "es2019", "es2020", "es2021", "es2022", "es2023", "es2024", "es2025", "esnext"], "description": "ES downlevel target. Unset = esnext (no feature lowering)."},
-    "unsupported": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Direct unsupported feature bitmask (browserslist override). Takes precedence over `target`."},
+    "unsupported": {"type": "integer", "minimum": 0, "maximum": 9007199254740991, "description": "Direct unsupported feature bitmask (browserslist override). Takes precedence over `target`."},
     "flow": {"type": "boolean", "description": "Enable Flow type stripping."},
     "jsxInJs": {"type": "boolean", "description": "Allow JSX in `.js`/`.jsx` files (not just `.tsx`)."},
     "reactRefresh": {"type": "boolean"},
@@ -43,6 +43,7 @@
     "stopAfter": {"type": "string", "enum": ["scan", "parse", "semantic", "transform", "codegen"]},
     "external": {"type": "array", "items": {"type": "string"}},
     "alias": {"type": "array", "items": {"type": "object", "properties": {"from": {"type": "string"}, "to": {"type": "string"}, "exact": {"type": "boolean"}}, "additionalProperties": false}},
+    "externalAlias": {"type": "array", "items": {"type": "object", "properties": {"from": {"type": "string"}, "to": {"type": "string"}, "exact": {"type": "boolean"}}, "additionalProperties": false}},
     "loader": {"type": "array", "items": {"type": "object", "properties": {"ext": {"type": "string"}, "loader": {"type": "string"}}, "additionalProperties": false}},
     "conditions": {"type": "array", "items": {"type": "string"}},
     "resolveExtensions": {"type": "array", "items": {"type": "string"}},

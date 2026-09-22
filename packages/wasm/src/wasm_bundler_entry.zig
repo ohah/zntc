@@ -157,7 +157,8 @@ const BuildOptionsJson = struct {
     preserveModules: ?bool = null,
     /// transpile 계열 옵션 — 각 모듈 transform 단계에 적용 (Phase 3 PR D).
     /// target → unsupported bitmask. JS 측에서 packages/shared 의 targetToUnsupported() 로 변환 후 전달.
-    unsupported: ?u32 = null,
+    /// 폭은 `compat.WireBits` — JSON(JS number)을 건너므로 u64 가 아니라 JS 안전 정수 폭이다.
+    unsupported: ?zntc_lib.transformer.TransformOptions.compat.WireBits = null,
     /// "classic" | "automatic" | "automatic-dev"
     jsx: ?[]const u8 = null,
     jsxFactory: ?[]const u8 = null,
@@ -251,7 +252,8 @@ fn applyOptionsJson(
     if (o.preserveModules) |b| base.preserve_modules = b;
 
     // transpile 계열 옵션 — 각 모듈 transform 단계 적용.
-    if (o.unsupported) |bits| base.unsupported = @bitCast(bits);
+    if (o.unsupported) |bits| base.unsupported =
+        @bitCast(@as(zntc_lib.transformer.TransformOptions.compat.Bits, bits));
     if (o.jsx) |s| if (parseJsxRuntime(s)) |r| {
         base.jsx_runtime = r;
     };

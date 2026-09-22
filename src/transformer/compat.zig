@@ -55,7 +55,7 @@ pub const ESTarget = enum(u8) {
 
 // ─── Feature 인덱스 (UnsupportedFeatures 비트 위치와 1:1 대응) ───
 
-pub const Feature = enum(u5) {
+pub const Feature = enum(u6) {
     // ES2015
     arrow,
     class,
@@ -131,7 +131,29 @@ pub const Feature = enum(u5) {
 // ─── Unsupported Features bitmask ───
 // 각 비트가 true이면 해당 feature를 다운레벨링해야 함.
 
-pub const UnsupportedFeatures = packed struct(u32) {
+/// `UnsupportedFeatures` 의 정수 표현. 폭을 여기 한 곳에만 두어, feature 를 추가하다
+/// 여유 비트가 떨어져도 `@bitCast` 호출부를 전수 수정하지 않게 한다 — u32 시절엔
+/// 호출부가 폭을 `@as(u32, @bitCast(..))` 처럼 직접 적고 있어 확장이 곧 전면 수정이었다.
+/// JS 경계(`targetToUnsupported`, options.unsupported)는 이 값을 `number` 로 실어
+/// 나른다. 53비트를 넘지 않는 한 double 이 정확히 담으므로 표면 타입은 그대로다.
+pub const Bits = u64;
+
+/// JSON(`zntc.config.json`)·JS(NAPI `options.unsupported`) 경계를 건너는 표현 폭.
+/// 그 경계의 운반체는 JS `number` = IEEE double 이라 정수는 2^53-1 까지만 정확하다.
+/// 와이어 타입을 `Bits`(u64) 로 적으면 emit_schema 가 `@typeInfo` 반사로 JS 가
+/// 표현조차 못 하는 상한(2^64-1)을 스키마에 광고한다 — 폭을 따로 둔다.
+pub const WireBits = u53;
+
+comptime {
+    // feature 가 늘어 폭을 넘기는 순간 컴파일을 멈춘다 — 조용히 상위 비트를 잃는
+    // 쪽이 훨씬 나쁘다(비트가 잘린 마스크는 "그 feature 는 지원됨" 으로 읽힌다).
+    if (std.meta.fields(Feature).len > @bitSizeOf(Bits))
+        @compileError("feature 수가 Bits 폭을 넘었다 — Bits 를 넓힐 것");
+    if (std.meta.fields(Feature).len > @bitSizeOf(WireBits))
+        @compileError("feature 수가 JS 안전정수 폭(WireBits)을 넘었다 — 마스크를 둘로 쪼개거나 bigint 로 옮겨야 한다");
+}
+
+pub const UnsupportedFeatures = packed struct(Bits) {
     // ES2015
     arrow: bool = false,
     class: bool = false,
@@ -183,7 +205,9 @@ pub const UnsupportedFeatures = packed struct(u32) {
     /// 재작성(`^`→`(?<=…)`)이 가능한 타겟인지 판별. lowering 트리거 아님.
     regex_lookbehind: bool = false,
 
-    _: u1 = 0,
+    /// 나머지 비트는 예약. 새 feature 는 **끝에만** 추가한다 (Feature enum 과 비트
+    /// 위치가 1:1 이라 중간 삽입은 기존 비트 의미를 통째로 어긋나게 한다).
+    _: u33 = 0,
 
     /// regex literal lowering 이 필요한 비트가 하나라도 set 인지.
     /// node_dispatch 조기탈출/graph prepass 게이트가 공유 — 새 regex 비트는
@@ -196,7 +220,7 @@ pub const UnsupportedFeatures = packed struct(u32) {
     /// 어떤 feature flag 라도 set 됐는지 (= packed struct 가 zero 가 아닌지).
     /// `.{}` (기본값, 모든 비트 false) 와 명시적으로 어느 비트라도 set 된 상태를 구분할 때 사용.
     pub fn hasAny(self: @This()) bool {
-        return @as(u32, @bitCast(self)) != 0;
+        return @as(Bits, @bitCast(self)) != 0;
     }
 
     // Feature enum과 UnsupportedFeatures 필드 순서 1:1 대응 검증.
@@ -211,13 +235,13 @@ pub const UnsupportedFeatures = packed struct(u32) {
 
     /// ES2015 feature 중 하나라도 unsupported이면 true.
     pub fn needsAnyES2015(self: UnsupportedFeatures) bool {
-        const mask: u32 = (1 << 11) - 1; // 하위 11비트 (arrow ~ new_target)
-        return (@as(u32, @bitCast(self)) & mask) != 0;
+        const mask: Bits = (1 << 11) - 1; // 하위 11비트 (arrow ~ new_target)
+        return (@as(Bits, @bitCast(self)) & mask) != 0;
     }
 
     /// 미지원 feature를 합산 (OR). 가장 보수적인 결과.
     pub fn merge(self: UnsupportedFeatures, other: UnsupportedFeatures) UnsupportedFeatures {
-        return @bitCast(@as(u32, @bitCast(self)) | @as(u32, @bitCast(other)));
+        return @bitCast(@as(Bits, @bitCast(self)) | @as(Bits, @bitCast(other)));
     }
 
     /// class / class_private_field / class_private_method 중 하나라도 unsupported 면 true.
@@ -749,8 +773,10 @@ pub fn fromHermesPreset() UnsupportedFeatures {
 /// (특정 RN/Hermes 버전에서 수정 확인되면 버전 게이트로 완화 가능 — 현재는 증거 없어 전 버전 유지.)
 const RN_SAFETY_NET = UnsupportedFeatures{ .arrow = true, .block_scoping = true };
 
-/// padding 비트(_)를 제외한 정의된 feature 비트 마스크 (bit 0..30 = 31 features).
-const ALL_FEATURES_MASK: u32 = (1 << 31) - 1;
+/// padding 비트(`_`)를 제외한, 정의된 feature 비트만 남기는 마스크.
+/// feature 개수를 손으로 적으면 feature 를 추가할 때 반드시 어긋난다(그 순간
+/// RN 매트릭스가 새 feature 를 조용히 "지원"으로 계산한다) — enum 에서 센다.
+const ALL_FEATURES_MASK: Bits = (@as(Bits, 1) << std.meta.fields(Feature).len) - 1;
 
 /// RN 문서(reactnative.dev/docs/<ver>/javascript-environment)의 "Syntax Transformers"
 /// 목록에 있는 = "지원"(네이티브 유지, 다운레벨 안 함) 기능. set=지원.
@@ -807,7 +833,7 @@ fn rnSupportedFor(major: u16, minor: u16) UnsupportedFeatures {
 /// RN 버전(major.minor) → UnsupportedFeatures.
 /// = (문서 지원 기능의 여집합) + #1299 안전망(arrow/block_scoping 강제 다운레벨).
 pub fn fromReactNativeVersion(major: u16, minor: u16) UnsupportedFeatures {
-    const supported = @as(u32, @bitCast(rnSupportedFor(major, minor)));
+    const supported = @as(Bits, @bitCast(rnSupportedFor(major, minor)));
     const unsupported = (~supported) & ALL_FEATURES_MASK;
     return (@as(UnsupportedFeatures, @bitCast(unsupported))).merge(RN_SAFETY_NET);
 }
@@ -862,12 +888,12 @@ pub fn fromReactNativeVersionSpec(spec: []const u8) ?UnsupportedFeatures {
 /// 타겟 ES 버전보다 높은 버전에서 도입된 feature를 unsupported로 설정.
 pub fn fromESTarget(target: ESTarget) UnsupportedFeatures {
     const t = @intFromEnum(target);
-    var bits: u32 = 0;
+    var bits: Bits = 0;
     inline for (std.meta.fields(Feature)) |f| {
         const feature: Feature = @enumFromInt(f.value);
         // feature의 도입 버전이 타겟보다 높으면 다운레벨링 필요
         if (t < @intFromEnum(feature.esVersion())) {
-            bits |= (@as(u32, 1) << f.value);
+            bits |= (@as(Bits, 1) << f.value);
         }
     }
     return @bitCast(bits);
@@ -876,10 +902,10 @@ pub fn fromESTarget(target: ESTarget) UnsupportedFeatures {
 /// 엔진 버전 목록 → UnsupportedFeatures.
 /// 미지원 feature의 union: 하나라도 미지원이면 해당 feature를 다운레벨링.
 pub fn unsupportedFeatures(targets: []const EngineVersion) UnsupportedFeatures {
-    var result: u32 = 0;
+    var result: Bits = 0;
 
     for (targets) |target| {
-        var engine_unsupported: u32 = 0;
+        var engine_unsupported: Bits = 0;
 
         inline for (std.meta.fields(Feature)) |f| {
             const feature: Feature = @enumFromInt(f.value);
@@ -891,7 +917,7 @@ pub fn unsupportedFeatures(targets: []const EngineVersion) UnsupportedFeatures {
                 true; // compat table에 없으면 해당 엔진에서 미지원
 
             if (is_unsupported) {
-                engine_unsupported |= (@as(u32, 1) << f.value);
+                engine_unsupported |= (@as(Bits, 1) << f.value);
             }
         }
 
@@ -905,7 +931,7 @@ pub fn unsupportedFeatures(targets: []const EngineVersion) UnsupportedFeatures {
 
 test "fromESTarget — esnext는 모두 false" {
     const f = fromESTarget(.esnext);
-    try std.testing.expectEqual(@as(u32, 0), @as(u32, @bitCast(f)));
+    try std.testing.expectEqual(@as(Bits, 0), @as(Bits, @bitCast(f)));
 }
 
 test "fromESTarget — es5는 모든 feature true" {
@@ -1134,7 +1160,7 @@ test "unsupportedFeatures — 최신 엔진은 모두 지원" {
         // 모든 feature 지원이 아니다 (dup-named 의 17.4 와 다른 경계).
         .{ .engine = .safari, .major = 26 },
     });
-    try std.testing.expectEqual(@as(u32, 0), @as(u32, @bitCast(f)));
+    try std.testing.expectEqual(@as(Bits, 0), @as(Bits, @bitCast(f)));
 }
 
 test "unsupportedFeatures — hermes 0.7 지원/미지원 구분" {
@@ -1191,7 +1217,7 @@ test "unsupportedFeatures — 정확히 같은 버전은 지원" {
 
 test "unsupportedFeatures — 빈 타겟은 모두 지원" {
     const f = unsupportedFeatures(&.{});
-    try std.testing.expectEqual(@as(u32, 0), @as(u32, @bitCast(f)));
+    try std.testing.expectEqual(@as(Bits, 0), @as(Bits, @bitCast(f)));
 }
 
 // ─── EngineVersion.fromString 테스트 ───
@@ -1347,8 +1373,8 @@ test "RN spec — bare / >= / == 는 동일 floor 로 해석" {
     const bare = fromReactNativeVersionSpec("0.74").?;
     const gte = fromReactNativeVersionSpec(">=0.74").?;
     const eq = fromReactNativeVersionSpec("==0.74").?;
-    try std.testing.expectEqual(@as(u32, @bitCast(bare)), @as(u32, @bitCast(gte)));
-    try std.testing.expectEqual(@as(u32, @bitCast(bare)), @as(u32, @bitCast(eq)));
+    try std.testing.expectEqual(@as(Bits, @bitCast(bare)), @as(Bits, @bitCast(gte)));
+    try std.testing.expectEqual(@as(Bits, @bitCast(bare)), @as(Bits, @bitCast(eq)));
 }
 
 test "RN spec — 공백/연산자 변형 + 잘못된 입력" {
@@ -1404,26 +1430,26 @@ test "RN target — 문서에 없는 기능은 다운레벨 (listed 외 = transp
 }
 
 test "RN target — 단조성: 구버전 unsupported ⊇ 신버전 unsupported" {
-    const old = @as(u32, @bitCast(fromReactNativeVersion(0, 70)));
-    const new = @as(u32, @bitCast(fromReactNativeVersion(0, 84)));
+    const old = @as(Bits, @bitCast(fromReactNativeVersion(0, 70)));
+    const new = @as(Bits, @bitCast(fromReactNativeVersion(0, 84)));
     try std.testing.expectEqual(new, old & new); // new ⊆ old
 }
 
 test "RN target — 범위 밖 클램프" {
     // 최저(0.70) 미만 → 가장 보수적 = 0.70 과 동일
     try std.testing.expectEqual(
-        @as(u32, @bitCast(fromReactNativeVersion(0, 70))),
-        @as(u32, @bitCast(fromReactNativeVersionSpec("0.50").?)),
+        @as(Bits, @bitCast(fromReactNativeVersion(0, 70))),
+        @as(Bits, @bitCast(fromReactNativeVersionSpec("0.50").?)),
     );
     // 최신 초과 → 최신 테이블 엔트리(0.85)와 동일
     try std.testing.expectEqual(
-        @as(u32, @bitCast(fromReactNativeVersion(0, 85))),
-        @as(u32, @bitCast(fromReactNativeVersionSpec("0.999").?)),
+        @as(Bits, @bitCast(fromReactNativeVersion(0, 85))),
+        @as(Bits, @bitCast(fromReactNativeVersionSpec("0.999").?)),
     );
 }
 
 test "RN target — <= / < 는 가장 보수적(테이블 최저)" {
-    const oldest = @as(u32, @bitCast(fromReactNativeVersion(0, 70)));
-    try std.testing.expectEqual(oldest, @as(u32, @bitCast(fromReactNativeVersionSpec("<=0.84").?)));
-    try std.testing.expectEqual(oldest, @as(u32, @bitCast(fromReactNativeVersionSpec("<0.84").?)));
+    const oldest = @as(Bits, @bitCast(fromReactNativeVersion(0, 70)));
+    try std.testing.expectEqual(oldest, @as(Bits, @bitCast(fromReactNativeVersionSpec("<=0.84").?)));
+    try std.testing.expectEqual(oldest, @as(Bits, @bitCast(fromReactNativeVersionSpec("<0.84").?)));
 }
