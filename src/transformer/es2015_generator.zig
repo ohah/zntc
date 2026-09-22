@@ -607,24 +607,35 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // 로 own+상속 enumerable 키를 수집한다. `Object.keys` 는 own 만 + `Object` shadow 취약
             // 이라 for-in 의미(own+상속, shadow 무관)에 어긋났다. 수집 for-in 은 yield 없는
             // self-contained 문 → 아래에서 statement op 으로 verbatim 방출.
+            // for-of 는 **iterator 프로토콜**로 돌아야 한다. 예전에는 여기서도 `_arr[_i]` /
+            // `_arr.length` 인덱스 루프를 썼는데, `.length` 가 없는 Set·Map·generator 는 첫
+            // 비교에서 루프가 끝나 **조용히 아무것도 나오지 않았다**(배열·문자열만 우연히
+            // 동작). `__values(x)` 로 감싸 `next()/done` 으로 돈다 — `yield*` 가 이미 쓰는
+            // 것과 같은 헬퍼다. (#4709)
             const iterable_value = if (stmt.tag == .for_in_statement)
                 try self.ast.addListNode(.array_expression, span, .{ .start = 0, .len = 0 })
-            else
-                new_right;
+            else blk: {
+                self.runtime_helpers.values = true;
+                const values_ref = try es_helpers.makeRuntimeHelperRef(self, "__values");
+                break :blk try es_helpers.makeCallExpr(self, values_ref, &.{new_right}, span);
+            };
 
             // init: _i = 0, _arr = iterable (assignment)
             // __generator 콜백은 매 호출마다 새 실행 컨텍스트이므로
             // var 선언은 콜백 안에 두면 매번 undefined로 리셋됨.
             // assignment만 사용하고 var는 collectHoistedVars에서 처리.
-            const idx_ref_init = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
-            const zero = try es_helpers.makeNumericLiteral(self, 0);
-            const idx_assign = try self.ast.addNode(.{
-                .tag = .assignment_expression,
-                .span = span,
-                .data = .{ .binary = .{ .left = idx_ref_init, .right = zero, .flags = 0 } },
-            });
-            const idx_stmt = try es_helpers.makeExprStmt(self, idx_assign, span);
-            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = idx_stmt } });
+            // for-of 는 `_i` 를 step 결과 보관용으로 쓴다 — 0 으로 초기화하지 않는다.
+            if (stmt.tag == .for_in_statement) {
+                const idx_ref_init = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
+                const zero = try es_helpers.makeNumericLiteral(self, 0);
+                const idx_assign = try self.ast.addNode(.{
+                    .tag = .assignment_expression,
+                    .span = span,
+                    .data = .{ .binary = .{ .left = idx_ref_init, .right = zero, .flags = 0 } },
+                });
+                const idx_stmt = try es_helpers.makeExprStmt(self, idx_assign, span);
+                try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = idx_stmt } });
+            }
 
             const arr_ref_init = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
             const arr_assign = try self.ast.addNode(.{
@@ -665,35 +676,58 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const for_break_sent = breakSentinel(depth);
             const for_continue_sent = continueSentinel(depth);
             const for_ops_start = ops.items.len;
-            const idx_ref_test = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
-            const arr_ref_test = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
-            const length_prop = try es_helpers.makeIdentifierRef(self, "length");
-            const arr_length = try es_helpers.makeStaticMember(self, arr_ref_test, length_prop, span);
-            const test_expr = try self.ast.addNode(.{
-                .tag = .binary_expression,
-                .span = span,
-                .data = .{ .binary = .{
-                    .left = idx_ref_test,
-                    .right = arr_length,
-                    .flags = @intFromEnum(token_mod.Kind.l_angle),
-                } },
-            });
+            const test_expr = if (stmt.tag == .for_in_statement) blk: {
+                const idx_ref_test = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
+                const arr_ref_test = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
+                const length_prop = try es_helpers.makeIdentifierRef(self, "length");
+                const arr_length = try es_helpers.makeStaticMember(self, arr_ref_test, length_prop, span);
+                break :blk try self.ast.addNode(.{
+                    .tag = .binary_expression,
+                    .span = span,
+                    .data = .{ .binary = .{
+                        .left = idx_ref_test,
+                        .right = arr_length,
+                        .flags = @intFromEnum(token_mod.Kind.l_angle),
+                    } },
+                });
+            } else blk: {
+                // `!(_step = _iter.next()).done`
+                const iter_ref = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
+                const next_prop = try es_helpers.makeIdentifierRef(self, "next");
+                const next_member = try es_helpers.makeStaticMember(self, iter_ref, next_prop, span);
+                const next_call = try es_helpers.makeCallExpr(self, next_member, &.{}, span);
+                const step_lhs = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
+                const step_assign = try self.ast.addNode(.{
+                    .tag = .assignment_expression,
+                    .span = span,
+                    .data = .{ .binary = .{ .left = step_lhs, .right = next_call, .flags = 0 } },
+                });
+                const done_prop = try es_helpers.makeIdentifierRef(self, "done");
+                const done_member = try es_helpers.makeStaticMember(self, step_assign, done_prop, span);
+                break :blk try es_helpers.makeUnaryNot(self, done_member, span);
+            };
             try ops.append(self.allocator, .{
                 .code = .break_when_false,
                 .arg = .{ .label_and_node = .{ .label = for_break_sent, .node = test_expr } },
             });
 
-            // body 앞에 var x = _arr[_i] 삽입
-            const arr_ref_body = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
-            const idx_ref_body = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
-            const elem_access_extra = try self.ast.addExtras(&.{
-                @intFromEnum(arr_ref_body), @intFromEnum(idx_ref_body), 0,
-            });
-            const elem_access = try self.ast.addNode(.{
-                .tag = .computed_member_expression,
-                .span = span,
-                .data = .{ .extra = elem_access_extra },
-            });
+            // body 앞에 루프 변수 대입 삽입. for-in 은 `_arr[_i]`, for-of 는 `_step.value`.
+            const elem_access = if (stmt.tag == .for_in_statement) blk: {
+                const arr_ref_body = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
+                const idx_ref_body = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
+                const elem_access_extra = try self.ast.addExtras(&.{
+                    @intFromEnum(arr_ref_body), @intFromEnum(idx_ref_body), 0,
+                });
+                break :blk try self.ast.addNode(.{
+                    .tag = .computed_member_expression,
+                    .span = span,
+                    .data = .{ .extra = elem_access_extra },
+                });
+            } else blk: {
+                const step_ref_body = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
+                const value_prop = try es_helpers.makeIdentifierRef(self, "value");
+                break :blk try es_helpers.makeStaticMember(self, step_ref_body, value_prop, span);
+            };
 
             // loop variable assignment: x = _arr[_i]
             const left_node = self.ast.getNode(left);
@@ -745,18 +779,23 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             next_label.* += 1;
             self.generator_loop_continue_label = update_label;
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
-            const idx_ref_update = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
-            const update_extra = try self.ast.addExtras(&.{
-                @intFromEnum(idx_ref_update),
-                @intFromEnum(token_mod.Kind.plus2) | (ast_mod.UnaryFlags.postfix),
-            });
-            const update_expr = try self.ast.addNode(.{
-                .tag = .update_expression,
-                .span = span,
-                .data = .{ .extra = update_extra },
-            });
-            const update_stmt = try es_helpers.makeExprStmt(self, update_expr, span);
-            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = update_stmt } });
+            // ⚠️ for-of 에서는 `_i` 가 step 객체를 담고 있으므로 `_i++` 를 내면 안 된다
+            // (NaN 이 되어 조용히 무한루프/오동작). 전진은 조건식의 `_iter.next()` 가 한다.
+            // 라벨(=`continue` 타겟)은 그대로 둬야 하므로 nop 은 위에서 이미 방출했다.
+            if (stmt.tag == .for_in_statement) {
+                const idx_ref_update = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
+                const update_extra = try self.ast.addExtras(&.{
+                    @intFromEnum(idx_ref_update),
+                    @intFromEnum(token_mod.Kind.plus2) | (ast_mod.UnaryFlags.postfix),
+                });
+                const update_expr = try self.ast.addNode(.{
+                    .tag = .update_expression,
+                    .span = span,
+                    .data = .{ .extra = update_extra },
+                });
+                const update_stmt = try es_helpers.makeExprStmt(self, update_expr, span);
+                try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = update_stmt } });
+            }
 
             // goto cond_label
             try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = cond_label } });
