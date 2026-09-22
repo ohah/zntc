@@ -54,16 +54,16 @@ pub fn emitBundleRuntimeHelpers(
             try rt.appendRequireShim(output, allocator, options.minify_whitespace);
         }
         if (needs_cjs_runtime) {
-            try rt.appendCommonJsFactoryRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
+            try rt.appendCommonJsFactoryRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports);
         }
         // __toCommonJS는 __copyProps/__defProp 에 의존 -> ESM wrap 런타임을 emit 하면
         // 어떤 import site 도 __toESM 을 부르지 않더라도 __toESM 클러스터가 필요.
         if (needs_to_esm_runtime or needs_esm_wrap_runtime) {
-            try rt.appendToEsmRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
+            try rt.appendToEsmRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports);
         }
     }
     if (needs_esm_wrap_runtime) {
-        try rt.appendEsmWrapRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
+        try rt.appendEsmWrapRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports);
     }
     if (options.experimental_decorators) {
         try rt.appendDecoratorRuntime(output, allocator, options.minify_whitespace);
@@ -375,10 +375,10 @@ pub fn emitChunkRuntimeHelpers(
             try rt.appendRequireShim(output, allocator, options.minify_whitespace);
         }
         if (needs_cjs_runtime) {
-            try rt.appendCommonJsFactoryRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
+            try rt.appendCommonJsFactoryRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports);
         }
         if (needs_to_esm_runtime or needs_esm_wrap_runtime) {
-            try rt.appendToEsmRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
+            try rt.appendToEsmRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports);
         }
     } else if (options.preserve_modules and needs_to_esm_runtime) {
         // (#4524) preserve-modules 의 소비자 청크는 CJS 도 ESM-wrap 도 없는 **순수 ESM 파일**
@@ -389,10 +389,10 @@ pub fn emitChunkRuntimeHelpers(
         // `needsRequireShimForChunk` 가 순수 ESM 청크에서도 돌아 `import { createRequire }` 를
         // 한 번 더 깔고(모듈 자신이 이미 import 했으면 **중복 바인딩 → 파싱 불가**), 쓰지도
         // 않는 __toESM 블록(~900B)이 붙는다. 그래서 preserve-modules 로 좁히고 __toESM 만 낸다.
-        try rt.appendToEsmRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
+        try rt.appendToEsmRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports);
     }
     if (needs_esm_wrap_runtime) {
-        try rt.appendEsmWrapRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
+        try rt.appendEsmWrapRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports);
     }
     if (options.experimental_decorators) {
         try rt.appendDecoratorRuntime(output, allocator, options.minify_whitespace);

@@ -219,6 +219,8 @@ const MODULES = [_]HelperModule{
         .body = .{
             .plain = rt.TOESM_RUNTIME,
             .min = rt.TOESM_RUNTIME_MIN,
+            .es5 = rt.TOESM_RUNTIME_ES5,
+            .es5_min = rt.TOESM_RUNTIME_ES5_MIN,
             .configurable = rt.TOESM_RUNTIME_CONFIGURABLE,
             .configurable_min = rt.TOESM_RUNTIME_CONFIGURABLE_MIN,
         },
@@ -229,6 +231,8 @@ const MODULES = [_]HelperModule{
         .body = .{
             .plain = rt.TOCOMMONJS_RUNTIME,
             .min = rt.TOCOMMONJS_RUNTIME_MIN,
+            .es5 = rt.TOCOMMONJS_RUNTIME_ES5,
+            .es5_min = rt.TOCOMMONJS_RUNTIME_ES5_MIN,
             .configurable = rt.TOCOMMONJS_RUNTIME_CONFIGURABLE,
             .configurable_min = rt.TOCOMMONJS_RUNTIME_CONFIGURABLE_MIN,
         },
@@ -249,6 +253,8 @@ const MODULES = [_]HelperModule{
         .body = .{
             .plain = rt.EXPORT_RUNTIME,
             .min = rt.EXPORT_RUNTIME_MIN,
+            .es5 = rt.EXPORT_RUNTIME_ES5,
+            .es5_min = rt.EXPORT_RUNTIME_ES5_MIN,
             .configurable = rt.EXPORT_RUNTIME_CONFIGURABLE,
             .configurable_min = rt.EXPORT_RUNTIME_CONFIGURABLE_MIN,
         },

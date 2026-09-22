@@ -959,7 +959,7 @@ pub fn emitWithTreeShaking(
         // 우회하는 single-file 전용 헬퍼 사용. wrap_kind=.esm 인 dynamic target 의
         // `import("./x")` 를 `Promise.resolve().then(() => (init_x(), exports_x))`
         // 로 변환 → bundle self-contained (외부 sibling 파일 fallback 제거).
-        const rewritten = chunks.rewriteDynamicImportsSingleFile(allocator, code, m, graph, options.platform == .react_native, linker, options.minify_whitespace) catch null;
+        const rewritten = chunks.rewriteDynamicImportsSingleFile(allocator, code, m, graph, options.platform == .react_native, linker, options.minify_whitespace, !options.unsupported.arrow) catch null;
         defer if (rewritten) |r| allocator.free(r);
         const code_after_rewrite = rewritten orelse code;
 
@@ -1631,7 +1631,7 @@ pub fn emitModule(
     // Disabled 모듈 (platform=browser에서 Node 빌트인): 빈 __commonJS wrapper 출력.
     // esbuild 호환: var require_X = __commonJS({ "(disabled)"(exports, module) {} });
     if (module.is_disabled) {
-        return emitDisabledModule(allocator, module, options.minify_whitespace);
+        return emitDisabledModule(allocator, module, options.minify_whitespace, cjs_wrap.WrapperSyntax.from(options));
     }
 
     // Asset 모듈: JSON 모듈과 동일한 패턴으로 출력.
@@ -2270,11 +2270,12 @@ pub fn emitModule(
             try wrapped.appendSlice(allocator, "var ");
             try wrapped.appendSlice(allocator, var_name);
             try wrapped.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN);
-            try wrapped.appendSlice(allocator, "((");
+            // arrow 를 모르는 타겟(`--target=es5`)에선 function expression 으로 (#4630).
+            try wrapped.appendSlice(allocator, if (options.unsupported.arrow) "(function(" else "((");
             try wrapped.appendSlice(allocator, cjs_ex_name);
             try wrapped.appendSlice(allocator, ",");
             try wrapped.appendSlice(allocator, cjs_mod_name);
-            try wrapped.appendSlice(allocator, ")=>{");
+            try wrapped.appendSlice(allocator, if (options.unsupported.arrow) "){" else ")=>{");
             if (preamble_code) |p| try wrapped.appendSlice(allocator, p);
             // body 의 trailing `;` 제거 — 다음 `})` 가 block close 라 ASI 안전.
             const body_trimmed = if (code.len > 0 and code[code.len - 1] == ';') code[0 .. code.len - 1] else code;
@@ -2285,9 +2286,9 @@ pub fn emitModule(
             const basename = module.wrapperId();
             try wrapped.appendSlice(allocator, "var ");
             try wrapped.appendSlice(allocator, var_name);
-            try wrapped.appendSlice(allocator, " = __commonJS({\n\t\"");
-            try wrapped.appendSlice(allocator, basename);
-            try wrapped.appendSlice(allocator, "\"(exports, module) {\n");
+            try wrapped.appendSlice(allocator, " = __commonJS({\n\t");
+            try rt.appendWrapperMemberHeader(&wrapped, allocator, basename, "exports, module", false, !options.unsupported.object_extensions, false);
+            try wrapped.appendSlice(allocator, "\n");
             // preamble_lines: 래퍼 헤더 2줄 + preamble 내 줄바꿈 수
             if (preamble_lines_out) |out| {
                 var pl: u32 = 2; // "var ... = __commonJS({\n" + '"..."(exports, module) {\n'

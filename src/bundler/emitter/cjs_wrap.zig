@@ -10,9 +10,25 @@ const module_mod = @import("../module.zig");
 const Module = module_mod.Module;
 const EmitOptions = @import("../emitter.zig").EmitOptions;
 
+/// 래퍼 방출이 쓰는 두 문법 축 (#4630). 옵션 전체를 넘기지 않는 이유는 이 파일이
+/// minify 만 받는 자리에서도 불리기 때문 — 필요한 것만 좁혀 전달한다.
+pub const WrapperSyntax = struct {
+    /// arrow 를 쓸 수 있는가 (`!unsupported.arrow`).
+    arrow: bool = true,
+    /// 객체 단축 메서드를 쓸 수 있는가 (`!unsupported.object_extensions`).
+    shorthand: bool = true,
+
+    pub fn from(options: *const EmitOptions) WrapperSyntax {
+        return .{
+            .arrow = !options.unsupported.arrow,
+            .shorthand = !options.unsupported.object_extensions,
+        };
+    }
+};
+
 /// Disabled 모듈: platform=browser에서 Node 빌트인 모듈을 빈 __commonJS wrapper로 출력.
 /// wrapper key는 dev/HMR registry 조회와 일치해야 하므로 module.wrapperId()를 쓴다.
-pub fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, minify: bool) !?[]const u8 {
+pub fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, minify: bool, syn: WrapperSyntax) !?[]const u8 {
     // RFC #3940 L.5b: disabled/asset 모듈은 semantic 없어 syntheticName 이 즉시 fallback (rt 무관).
     const var_name = try module.allocRequireName(allocator, null);
     defer allocator.free(var_name);
@@ -25,11 +41,14 @@ pub fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, m
             try buf.appendSlice(allocator, "var ");
             try buf.appendSlice(allocator, var_name);
             // body 가 throw 만 — exports/module 참조 없음 → param 인자 0개.
-            try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "(()=>{");
+            try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "(");
+            try buf.appendSlice(allocator, if (syn.arrow) "()=>{" else "function(){");
             try appendOptionalMissingThrow(allocator, &buf, specifier, true);
             try buf.appendSlice(allocator, "});");
         } else {
-            try buf.print(allocator, "var {s} = __commonJS({{\n\t\"{s}\"(exports, module) {{\n\t\t", .{ var_name, wrapper_id });
+            try buf.print(allocator, "var {s} = __commonJS({{\n\t", .{var_name});
+            try rt.appendWrapperMemberHeader(&buf, allocator, wrapper_id, "exports, module", false, syn.shorthand, false);
+            try buf.appendSlice(allocator, "\n\t\t");
             try appendOptionalMissingThrow(allocator, &buf, specifier, false);
             try buf.appendSlice(allocator, "\t}\n});\n");
         }
@@ -40,9 +59,12 @@ pub fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, m
         try buf.appendSlice(allocator, "var ");
         try buf.appendSlice(allocator, var_name);
         // #1621: minify 시 __commonJS → $cj 축약. 빈 body — param 0개.
-        try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "(()=>{});");
+        try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "(");
+        try buf.appendSlice(allocator, if (syn.arrow) "()=>{});" else "function(){});");
     } else {
-        try buf.print(allocator, "var {s} = __commonJS({{\n\t\"{s}\"(exports, module) {{\n\t}}\n}});\n", .{ var_name, wrapper_id });
+        try buf.print(allocator, "var {s} = __commonJS({{\n\t", .{var_name});
+        try rt.appendWrapperMemberHeader(&buf, allocator, wrapper_id, "exports, module", false, syn.shorthand, false);
+        try buf.appendSlice(allocator, "\n\t}\n});\n");
     }
     return try buf.toOwnedSlice(allocator);
 }
@@ -100,12 +122,12 @@ pub fn appendJsStringLiteral(allocator: std.mem.Allocator, buf: *std.ArrayList(u
 /// linker가 `require_X()` 호출을 생성하므로, 모든 포맷에서 CJS 패턴을 사용.
 pub fn emitAssetModule(allocator: std.mem.Allocator, module: *const Module, options: *const EmitOptions) !?[]const u8 {
     if (module.source.len == 0) return null;
-    return emitCjsWrapper(allocator, module, module.source, options.minify_whitespace);
+    return emitCjsWrapper(allocator, module, module.source, options.minify_whitespace, WrapperSyntax.from(options));
 }
 
 /// `var require_X = __commonJS({ "filename"(exports, module) { module.exports = <source>; } });`
 /// 형태의 __commonJS wrapper를 생성.
-pub fn emitCjsWrapper(allocator: std.mem.Allocator, module: *const Module, source: []const u8, minify: bool) !?[]const u8 {
+pub fn emitCjsWrapper(allocator: std.mem.Allocator, module: *const Module, source: []const u8, minify: bool, syn: WrapperSyntax) !?[]const u8 {
     // RFC #3940 L.5b: disabled/asset 모듈은 semantic 없어 syntheticName 이 즉시 fallback (rt 무관).
     const var_name = try module.allocRequireName(allocator, null);
     defer allocator.free(var_name);
@@ -116,15 +138,17 @@ pub fn emitCjsWrapper(allocator: std.mem.Allocator, module: *const Module, sourc
         try buf.appendSlice(allocator, var_name);
         // #1621: minify 시 __commonJS → $cj 축약. callback parameter 는 Node/Metro
         // 호환성을 위해 `exports, module` 유지.
-        try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "((exports,module)=>{module.exports=");
+        try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "(");
+        try buf.appendSlice(allocator, if (syn.arrow) "(exports,module)=>{" else "function(exports,module){");
+        try buf.appendSlice(allocator, "module.exports=");
         try buf.appendSlice(allocator, source);
         try buf.appendSlice(allocator, "});");
     } else {
         try buf.appendSlice(allocator, "var ");
         try buf.appendSlice(allocator, var_name);
-        try buf.appendSlice(allocator, " = __commonJS({\n\t\"");
-        try buf.appendSlice(allocator, std.fs.path.basename(module.path));
-        try buf.appendSlice(allocator, "\"(exports, module) {\nmodule.exports=");
+        try buf.appendSlice(allocator, " = __commonJS({\n\t");
+        try rt.appendWrapperMemberHeader(&buf, allocator, std.fs.path.basename(module.path), "exports, module", false, syn.shorthand, false);
+        try buf.appendSlice(allocator, "\nmodule.exports=");
         try buf.appendSlice(allocator, source);
         try buf.appendSlice(allocator, ";\n\t}\n});\n");
     }
