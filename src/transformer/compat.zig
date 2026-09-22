@@ -110,6 +110,10 @@ pub const Feature = enum(u6) {
     /// (#4210 m-modifier 앵커 재작성이 lookbehind 출력에 의존). needsRegexLowering
     /// 에 넣지 않음.
     regex_lookbehind,
+    /// ES2018 async generator (`async function*`). ES2017 타겟은 async 와 generator 를
+    /// **둘 다 네이티브 지원**하므로 그 두 비트로는 잡히지 않는다 — 독립 비트가 필요하다
+    /// (#4628: 이 비트가 없어 es2017 에서만 `async function*` 이 그대로 새어나갔다).
+    async_generator,
 
     /// 이 feature가 도입된 ES 버전.
     pub fn esVersion(self: Feature) ESTarget {
@@ -117,7 +121,7 @@ pub const Feature = enum(u6) {
             .arrow, .class, .template_literal, .destructuring, .for_of, .spread, .object_extensions, .default_params, .block_scoping, .generator, .new_target, .regex_sticky, .unicode_brace_escape => .es2015,
             .exponentiation => .es2016,
             .async_await => .es2017,
-            .object_spread, .regex_dotall, .regex_named_groups, .regex_lookbehind => .es2018,
+            .object_spread, .regex_dotall, .regex_named_groups, .regex_lookbehind, .async_generator => .es2018,
             .optional_catch_binding => .es2019,
             .nullish_coalescing, .optional_chaining => .es2020,
             .logical_assignment => .es2021,
@@ -204,10 +208,13 @@ pub const UnsupportedFeatures = packed struct(Bits) {
     /// ES2018 lookbehind `(?<=…)` 미지원 (#4210). 쿼리 전용 — m-modifier 앵커
     /// 재작성(`^`→`(?<=…)`)이 가능한 타겟인지 판별. lowering 트리거 아님.
     regex_lookbehind: bool = false,
+    /// ES2018 `async function*`. `async_await`/`generator` 와 **독립** — es2017 은 그 둘이
+    /// 네이티브라 둘 중 어느 비트로도 게이트되지 않는다 (#4628).
+    async_generator: bool = false,
 
     /// 나머지 비트는 예약. 새 feature 는 **끝에만** 추가한다 (Feature enum 과 비트
     /// 위치가 1:1 이라 중간 삽입은 기존 비트 의미를 통째로 어긋나게 한다).
-    _: u33 = 0,
+    _: u32 = 0,
 
     /// regex literal lowering 이 필요한 비트가 하나라도 set 인지.
     /// node_dispatch 조기탈출/graph prepass 게이트가 공유 — 새 regex 비트는
@@ -543,6 +550,17 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .object_spread, .engine = .deno, .major = 1 },
     .{ .feature = .object_spread, .engine = .ios, .major = 11, .minor = 3 },
     .{ .feature = .object_spread, .engine = .hermes, .major = 0, .minor = 7 },
+
+    // ── ES2018: async_generator (`async function*` / `for await`) ──
+    // hermes 는 의도적으로 뺀다 — async generator 지원 근거가 없어 "표에 없으면 미지원"
+    // 규칙으로 보수적 다운레벨한다(잘못 네이티브로 두면 파싱 자체가 깨진다).
+    .{ .feature = .async_generator, .engine = .chrome, .major = 63 },
+    .{ .feature = .async_generator, .engine = .firefox, .major = 57 },
+    .{ .feature = .async_generator, .engine = .safari, .major = 12 },
+    .{ .feature = .async_generator, .engine = .edge, .major = 79 },
+    .{ .feature = .async_generator, .engine = .node, .major = 10 },
+    .{ .feature = .async_generator, .engine = .deno, .major = 1 },
+    .{ .feature = .async_generator, .engine = .ios, .major = 12 },
 
     // ── ES2019: optional_catch_binding ──
     .{ .feature = .optional_catch_binding, .engine = .chrome, .major = 66 },

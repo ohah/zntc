@@ -113,6 +113,82 @@ pub fn ES2017(comptime Transformer: type) type {
             }
         }
 
+        /// async generator body 안의 `yield* X` 를 tslib 형태로 바꾼다:
+        ///   `yield* X` → `yield __await(yield* __asyncDelegator(__asyncValues(X)))`
+        ///
+        /// 왜 필요한가 — `__asyncGenerator` 의 inner 는 **동기** generator 다. 거기에
+        /// `yield* X` 를 그대로 두면 X(async iterable)에서 `Symbol.iterator` 를 찾다
+        /// "is not iterable" 로 죽는다. `__asyncValues` 가 async iterator 를 꺼내고
+        /// `__asyncDelegator` 가 그걸 동기 `yield*` 가 이해하는 프로토콜로 감싼다.
+        ///
+        /// nested function/class 는 자기 컨텍스트라 건너뛴다 — `rewriteRemainingAwait`
+        /// 의 boundary 집합과 같다.
+        fn rewriteYieldStarToAsyncDelegator(self: *Transformer, node_idx: NodeIndex) Transformer.Error!void {
+            var stack: std.ArrayListUnmanaged(NodeIndex) = .empty;
+            defer stack.deinit(self.allocator);
+            var child_buf: std.ArrayListUnmanaged(NodeIndex) = .empty;
+            defer child_buf.deinit(self.allocator);
+
+            try stack.append(self.allocator, node_idx);
+            while (stack.pop()) |idx| {
+                if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+                const node = self.ast.getNode(idx);
+                switch (node.tag) {
+                    .function_declaration,
+                    .function_expression,
+                    .function,
+                    .arrow_function_expression,
+                    .method_definition,
+                    .class_declaration,
+                    .class_expression,
+                    => continue,
+                    else => {},
+                }
+                if (node.tag == .yield_expression and
+                    (node.data.unary.flags & ast_mod.YieldFlags.is_delegate) != 0 and
+                    !node.data.unary.operand.isNone())
+                {
+                    const span = node.span;
+                    const operand = node.data.unary.operand;
+
+                    self.runtime_helpers.async_values = true;
+                    self.runtime_helpers.async_delegator = true;
+                    self.runtime_helpers.await_helper = true;
+
+                    const values_ref = try es_helpers.makeRuntimeHelperRef(self, "__asyncValues");
+                    const values_call = try es_helpers.makeCallExpr(self, values_ref, &.{operand}, span);
+                    const deleg_ref = try es_helpers.makeRuntimeHelperRef(self, "__asyncDelegator");
+                    const deleg_call = try es_helpers.makeCallExpr(self, deleg_ref, &.{values_call}, span);
+
+                    // 안쪽 `yield* __asyncDelegator(...)` — 새 노드로 만든다. 바깥 노드를
+                    // in-place 로 재사용하면 자기 자신을 operand 로 갖게 된다.
+                    const inner_yield = try self.ast.addNode(.{
+                        .tag = .yield_expression,
+                        .span = span,
+                        .data = .{ .unary = .{ .operand = deleg_call, .flags = ast_mod.YieldFlags.is_delegate } },
+                    });
+                    const await_ref = try es_helpers.makeRuntimeHelperRef(self, "__await");
+                    const await_call = try es_helpers.makeCallExpr(self, await_ref, &.{inner_yield}, span);
+
+                    // 바깥은 delegate 가 아닌 평범한 yield — 위임 결과(반환값)를 한 번 흘린다.
+                    self.ast.replaceNode(idx, .{
+                        .tag = .yield_expression,
+                        .span = span,
+                        .data = .{ .unary = .{ .operand = await_call, .flags = 0 } },
+                    });
+                    // operand 서브트리는 아직 훑어야 한다(중첩 `yield*` 가능).
+                    try stack.append(self.allocator, operand);
+                    continue;
+                }
+                try ast_walk.collectChildrenInto(self.ast, node, &child_buf, self.allocator);
+                var i = child_buf.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    try stack.append(self.allocator, child_buf.items[i]);
+                }
+            }
+        }
+
         /// async generator (`async function*`) → `function() { return __asyncGenerator(this, arguments,
         /// function*() { /* await → yield __await */ }); }`. (#1911)
         /// generator 자체도 unsupported 면 inner function* 가 다시 ES5 generator state machine 으로 lower.
@@ -128,6 +204,8 @@ pub fn ES2017(comptime Transformer: type) type {
             const new_name = try self.visitNode(name_idx);
             const new_params = try self.visitExtraList(.{ .start = params_list.start, .len = params_list.len });
 
+            // `yield*` 를 먼저 푼다 — 그래야 그 안에 남은 `await` 를 아래 패스가 한 번에 정리한다.
+            try rewriteYieldStarToAsyncDelegator(self, body_idx);
             try rewriteAwaitToYieldAwait(self, body_idx);
 
             // inner function*(): visitNode 거치면 ES5 target 시 자동으로 generator state machine 으로 lower.

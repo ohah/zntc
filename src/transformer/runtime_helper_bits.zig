@@ -61,7 +61,9 @@ pub const RuntimeHelpers = packed struct(u32) {
     /// __wrapRegExp: named capture group downlevel (Hermes/ES5 등) 에서 RegExp
     /// 결과의 `.groups.NAME` 접근을 살리는 wrapper (#1063).
     wrap_regex: bool = false,
-    _padding: u5 = 0,
+    /// __asyncDelegator: async generator 안 `yield* X` 위임 (#4628 후속).
+    async_delegator: bool = false,
+    _padding: u4 = 0,
 
     /// 어떤 helper flag 라도 set 됐는지 - emitter 의 prepend 분기에서 빈 helper 시
     /// no-op 결정에 사용.

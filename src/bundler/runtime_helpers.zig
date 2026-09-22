@@ -798,6 +798,26 @@ pub const ASYNC_GENERATOR_RUNTIME =
     \\};
     \\
 ;
+/// __asyncDelegator: async generator 안의 `yield* X` 를 위임한다 (tslib 호환).
+/// `yield* X` 를 그대로 두면 __asyncGenerator 의 **동기** inner generator 가 async
+/// iterable 에 `Symbol.iterator` 를 찾다 "not iterable" 로 죽는다 (#4628 후속).
+/// 값을 한 번은 `__await` 로 감싸 바깥 step() 이 Promise 를 풀게 하고, 다음 번에
+/// 그대로 흘려보내는 식으로 두 프로토콜을 잇는다(`p` 토글이 그 교대다).
+pub const ASYNC_DELEGATOR_RUNTIME =
+    \\var __asyncDelegator = function(o) {
+    \\  var i, p;
+    \\  return i = {}, verb("next"), verb("throw", function(e) { throw e; }), verb("return"),
+    \\    i[Symbol.iterator] = function() { return this; }, i;
+    \\  function verb(n, f) {
+    \\    i[n] = o[n]
+    \\      ? function(v) { return (p = !p) ? { value: __await(o[n](v)), done: false } : f ? f(v) : v; }
+    \\      : f;
+    \\  }
+    \\};
+    \\
+;
+pub const ASYNC_DELEGATOR_RUNTIME_MIN = "var __asyncDelegator=function(o){var i,p;return i={},verb(\"next\"),verb(\"throw\",function(e){throw e}),verb(\"return\"),i[Symbol.iterator]=function(){return this},i;function verb(n,f){i[n]=o[n]?function(v){return(p=!p)?{value:__await(o[n](v)),done:false}:f?f(v):v}:f}};";
+
 pub const ASYNC_GENERATOR_RUNTIME_MIN = "var __asyncGenerator=function(thisArg,_arguments,generator){if(!Symbol.asyncIterator)throw new TypeError(\"Symbol.asyncIterator is not defined.\");var g=generator.apply(thisArg,_arguments||[]),q=[],i;return i={},verb(\"next\"),verb(\"throw\"),verb(\"return\"),i[Symbol.asyncIterator]=function(){return this},i;function verb(n,f){if(g[n])i[n]=function(v){return new Promise(function(a,b){q.push([n,v,a,b])>1||resume(n,v)})};if(f)i[n]=f(i[n])}function resume(n,v){try{step(g[n](v))}catch(e){settle(q[0][3],e)}}function step(r){r.value instanceof __await?Promise.resolve(r.value.v).then(fulfill,reject):settle(q[0][2],r)}function fulfill(value){resume(\"next\",value)}function reject(value){resume(\"throw\",value)}function settle(f,v){if(f(v),q.shift(),q.length)resume(q[0][0],q[0][1])}};";
 
 /// __values: iterable → iterator 변환 (ES2015 yield* / for-of helper). tslib 호환.
@@ -1507,6 +1527,10 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     }
     if (helpers.async_generator) {
         try buf.appendSlice(allocator, if (minify) ASYNC_GENERATOR_RUNTIME_MIN else ASYNC_GENERATOR_RUNTIME);
+    }
+    // __asyncDelegator 는 __await 를 부르므로 그 뒤에 온다(위 await_helper 분기가 이미 emit).
+    if (helpers.async_delegator) {
+        try buf.appendSlice(allocator, if (minify) ASYNC_DELEGATOR_RUNTIME_MIN else ASYNC_DELEGATOR_RUNTIME);
     }
     if (helpers.to_binary) {
         try buf.appendSlice(allocator, if (minify) TO_BINARY_RUNTIME_MIN else TO_BINARY_RUNTIME);
