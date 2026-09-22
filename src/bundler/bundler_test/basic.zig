@@ -2294,7 +2294,9 @@ test "Runtime helper virtual module skip preserves helper-internal names" {
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "var __await = function") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "r.value instanceof __await ?") != null);
+    // 헬퍼 **본문**이 공개 바인딩 `__await` 를 그대로 참조하는지 — 형태(`? :` vs `if`)에
+    // 의존하지 않도록 `instanceof __await` 만 본다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "instanceof __await") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__await(Promise.resolve(1))") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__await$") == null);
 }

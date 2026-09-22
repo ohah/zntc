@@ -63,7 +63,7 @@ const HelperBit = enum {
     tdz,
     read,
     wrap_regex,
-    async_delegator,
+    yield_star,
     public_field,
 };
 
@@ -109,7 +109,7 @@ const BIT_DEFS = [_]BitDef{
     .{ .bit = .async_values, .bases = &.{"__asyncValues"} },
     .{ .bit = .class_private_field_set, .bases = &.{"__classPrivateFieldSet"} },
     .{ .bit = .async_generator, .bases = &.{"__asyncGenerator"} },
-    .{ .bit = .async_delegator, .bases = &.{"__asyncDelegator"} },
+    .{ .bit = .yield_star, .bases = &.{"__yieldStar"} },
     .{ .bit = .public_field, .bases = &.{"__publicField"} },
     .{ .bit = .await_helper, .bases = &.{"__await"} },
     .{ .bit = .tdz, .bases = &.{"__tdz"} },

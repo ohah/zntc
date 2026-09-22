@@ -47,7 +47,7 @@ pub const NAMES = struct {
     pub const READ_MIN = "$rd"; // __read
     pub const ASYNC_MIN = "$aS"; // __async (async/await → generator)
     pub const ASYNC_VALUES_MIN = "$aV"; // __asyncValues (for-await-of)
-    pub const ASYNC_DELEGATOR_MIN = "$aD"; // __asyncDelegator (async generator 안 yield* 위임)
+    pub const YIELD_STAR_MIN = "$yS"; // __yieldStar (async generator 안 yield* 위임)
     /// __publicField — class field 하나마다 한 번씩 호출되므로 출현 빈도가 매우 높다.
     /// 축약이 빠져 있어 minify 산출물에서 13자 × 필드 수만큼 더 나갔다 (#4629 후속).
     pub const PUBLIC_FIELD_MIN = "$pb";
@@ -114,7 +114,7 @@ pub const PAIRS = [_]struct { base: []const u8, short: []const u8 }{
     .{ .base = "__read", .short = NAMES.READ_MIN },
     .{ .base = "__async", .short = NAMES.ASYNC_MIN },
     .{ .base = "__asyncValues", .short = NAMES.ASYNC_VALUES_MIN },
-    .{ .base = "__asyncDelegator", .short = NAMES.ASYNC_DELEGATOR_MIN },
+    .{ .base = "__yieldStar", .short = NAMES.YIELD_STAR_MIN },
     .{ .base = "__publicField", .short = NAMES.PUBLIC_FIELD_MIN },
     .{ .base = "__generator", .short = NAMES.GENERATOR_MIN },
     .{ .base = "__rest", .short = NAMES.REST_MIN },
