@@ -92,18 +92,19 @@ pub fn Methods(comptime Transformer: type) type {
             }
 
             var member = self.ast.getNode(info.member_idx);
-            // `async *m() {}` 는 여기서 일반 async 처럼 `__async(...)` 로 감싸지면 안 된다 —
-            // async generator 는 Promise 가 아니라 **async iterator** 를 돌려줘야 한다
-            // (es5 에서 `o[Symbol.iterator] is not a function` 으로 깨져 있었다).
-            // class 낮추기가 보기 전에 `m() { return __asyncGenerator(…); }` 평범한
-            // 메서드로 바꿔 두면 아래 경로가 그대로 처리한다 (#4628 후속).
-            if (self.options.unsupported.async_generator and
-                (self.readU32(member.data.extra, MethodExtra.flags) & ast_mod.MethodFlags.is_async) != 0 and
-                (self.readU32(member.data.extra, MethodExtra.flags) & ast_mod.MethodFlags.is_generator) != 0 and
+            // class 낮추기가 보기 **전에** async/generator 메서드를 평범한 메서드로 바꾼다.
+            //
+            // 아래 경로는 `is_async` 만 분기하고 그것도 일반 async 로만 다룬다. 그래서
+            //   - `async *m()` 은 `__async(...)` 로 감싸져 Promise 를 돌려줬다(async
+            //     iterator 여야 한다). es5 에서 `o[Symbol.iterator] is not a function` (#4628)
+            //   - `*m()` 단독은 아예 분기가 없어 `function*` 이 그대로 남았다 (#4699)
+            // 여기서 `m() { return __generator(…) }` 형태로 미리 풀면 아래 경로가
+            // 평범한 메서드로 처리한다.
+            const members_mod = @import("../transformer/members.zig");
+            if (members_mod.methodNeedsAsyncOrGeneratorLowering(self, self.readU32(member.data.extra, MethodExtra.flags)) and
                 !self.readNodeIdx(member.data.extra, MethodExtra.body).isNone())
             {
-                const members_mod = @import("../transformer/members.zig");
-                const lowered_method = try members_mod.lowerAsyncGeneratorMethod(self, member);
+                const lowered_method = try members_mod.lowerAsyncOrGeneratorMethod(self, member);
                 if (!lowered_method.isNone()) member = self.ast.getNode(lowered_method);
             }
             const me = member.data.extra;
