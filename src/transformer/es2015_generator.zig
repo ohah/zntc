@@ -42,6 +42,7 @@ const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
 const es2015_destructuring = @import("es2015_destructuring.zig");
 const es2015_scan = @import("es2015_generator/scan.zig");
+const es2015_block_scoping = @import("es2015_block_scoping.zig");
 
 /// 상태 머신의 개별 연산.
 const OpCode = enum {
@@ -102,9 +103,21 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // `arguments` 가 그 안쪽 함수 것(= `[_state]`)을 가리키므로 캡처가 필요하다.
             const saved_ext = self.in_extracted_fn_body;
             self.in_extracted_fn_body = true;
+            // ⚠️ 이 리스트는 **상태 기계 하나당** 쓰는 것이라 중첩 lowering 이 서로를
+            // 덮으면 안 된다. 예전에는 끝에서 통째로 clear 했는데, 바깥 상태 기계를
+            // 수집하는 도중에 안쪽 generator 가 낮아지면(#4716 의 `_loopN` 추출이 그렇다)
+            // 바깥이 쌓아 둔 temp 가 같이 지워져 선언이 사라진다. 저장 후 복원한다.
+            var saved_temp_spans: std.ArrayListUnmanaged(Span) = .empty;
+            defer saved_temp_spans.deinit(self.allocator);
+            try saved_temp_spans.appendSlice(self.allocator, self.generator_temp_var_spans.items);
+            self.generator_temp_var_spans.clearRetainingCapacity();
+
             const sm_result = try buildStateMachine(self, body_idx, span);
             self.in_extracted_fn_body = saved_ext;
-            defer self.generator_temp_var_spans.clearRetainingCapacity();
+            defer {
+                self.generator_temp_var_spans.clearRetainingCapacity();
+                self.generator_temp_var_spans.appendSlice(self.allocator, saved_temp_spans.items) catch {};
+            }
             if (sm_result.body.isNone()) return .none;
             const sm_body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span);
 
@@ -488,6 +501,112 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             fixupSentinel(ops.items[if_ops_start..], IF_END_SENTINEL, end_label);
         }
 
+        /// 상태 기계로 접히는 루프에서 `let`/`const` 의 **반복별 바인딩**을 복원한다. (#4716)
+        ///
+        /// es5 상태 기계는 지역 변수를 전부 함수 최상단 `var` 로 호이스트한다. 그러면
+        /// 반복마다 새로 만들어져야 할 `let`/`const` 바인딩이 하나로 합쳐져, 루프 안에서
+        /// 만든 클로저가 **전부 마지막 값을 캡처**한다(에러 없이 값만 틀린다).
+        ///
+        /// 일반 경로는 body 를 `var _loopN = function (x) {…}` 로 추출해 이를 복원한다.
+        /// 상태 기계 경로는 body 에 `yield`/`await` 이 있어 평범한 함수로 못 뽑는다 —
+        /// 그래서 **generator 로 뽑고 `yield*` 로 위임**한다. 상태 기계가 그 위임을
+        /// `[5, __values(_loopN(x))]` 로 접고, `yield*` 의 값이 `_loopN` 의 return 값이라
+        /// break/continue/return 신호(`call_and_check`)도 그대로 실려 온다.
+        ///
+        /// 추출이 필요 없으면 `.none` 을 돌려주고 호출부는 원래 노드를 그대로 쓴다.
+        /// 추출하면 `var _loopN = function* (x) {…}` 문을 ops 에 먼저 방출하고, body 가
+        /// 호출문으로 바뀐 **새 루프 노드**를 돌려준다.
+        fn extractPerIterationLoopBody(
+            self: *Transformer,
+            stmt: Node,
+            decl_idx: NodeIndex,
+            body_idx: NodeIndex,
+            ops: *std.ArrayList(Operation),
+            next_label: *u32,
+        ) Transformer.Error!NodeIndex {
+            if (!self.options.unsupported.block_scoping) return .none;
+            if (decl_idx.isNone() or body_idx.isNone()) return .none;
+
+            const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
+            var lexical_names = try BlockScoping.collectLexicalVarNames(self, decl_idx);
+            defer lexical_names.deinit(self.allocator);
+            if (lexical_names.items.len == 0) return .none;
+            if (!BlockScoping.hasCapturedClosure(self, body_idx, lexical_names.items)) return .none;
+
+            var flow = BlockScoping.FlowResult{};
+            defer flow.labels.deinit(self.allocator);
+            BlockScoping.analyzeControlFlow(self, body_idx, &flow, 0, 0);
+
+            // ⚠️ 라벨 붙은 break/continue 가 **바깥** 루프를 겨냥하면 추출하지 않는다.
+            // 추출된 함수는 그 라벨을 볼 수 없고, 호출부가 신호를 되살리려면 어느 라벨인지
+            // 알아야 하는데 여기(루프 수집기)에는 그 정보가 없다(라벨은 `collectLabeledOperations`
+            // 가 갖고 있다). 억지로 추출하면 라벨 점프가 통째로 사라져 **값까지 틀린다**.
+            // 이 경우는 반복별 바인딩을 못 고치고 남긴다 — 라벨×es5 는 #4710 으로 별도 추적.
+            if (flow.has_labeled_break or flow.has_labeled_continue) return .none;
+
+            const result = try BlockScoping.buildLoopClosureWithFlow(
+                self,
+                body_idx,
+                lexical_names.items,
+                &flow,
+                null,
+                stmt.span,
+                false, // is_async — 상태 기계 안에서는 await 도 yield 로 낮아진다
+                BlockScoping.hasLexicalThisReference(self, body_idx),
+                true, // is_generator
+            );
+
+            // `var _loopN = function* (x) {…}` 은 대입문으로 접히므로, 이름을 **바깥 함수**
+            // 의 var 리스트에 등록해야 한다. 상태 기계가 만들어진 뒤에 생긴 이름이라
+            // 일반 호이스팅 스캔(`collectHoistedVars`)에 안 잡힌다 — 등록을 빠뜨리면
+            // `ReferenceError: _loop is not defined`.
+            const loop_fn_node = self.ast.getNode(result.loop_fn);
+            const loop_name_span = blk: {
+                const decl_start = self.readU32(loop_fn_node.data.extra, 1);
+                const decl_raw = self.ast.extra_data.items[decl_start];
+                const declarator = self.ast.getNode(@as(NodeIndex, @enumFromInt(decl_raw)));
+                const binding = self.ast.getNode(self.readNodeIdx(declarator.data.extra, 0));
+                break :blk binding.data.string_ref;
+            };
+            // ⚠️ 등록은 **collectVarDeclWithYield 뒤**에 해야 한다. 그 안에서 `_loopN` 의
+            // generator 본문이 낮아지며 자기 상태 기계를 만드는데, 먼저 넣어 두면 그
+            // 안쪽 리스트로 들어가 `var _loop;` 이 엉뚱한 함수에 선언된다.
+            try collectVarDeclWithYield(self, loop_fn_node, ops, next_label);
+            try self.generator_temp_var_spans.append(self.allocator, loop_name_span);
+            // break/continue/return 신호를 받는 `_ret` 도 같은 이유로 등록한다.
+            if (flow.needsRetVar()) {
+                try self.generator_temp_var_spans.append(self.allocator, try self.ast.addString("_ret"));
+            }
+
+            // body 만 교체한 새 루프 노드.
+            return switch (stmt.tag) {
+                .for_statement => blk: {
+                    const e = stmt.data.extra;
+                    const new_extra = try self.ast.addExtras(&.{
+                        @intFromEnum(self.readNodeIdx(e, 0)),
+                        @intFromEnum(self.readNodeIdx(e, 1)),
+                        @intFromEnum(self.readNodeIdx(e, 2)),
+                        @intFromEnum(result.call_and_check),
+                    });
+                    break :blk try self.ast.addNode(.{
+                        .tag = .for_statement,
+                        .span = stmt.span,
+                        .data = .{ .extra = new_extra },
+                    });
+                },
+                .for_of_statement, .for_in_statement => try self.ast.addNode(.{
+                    .tag = stmt.tag,
+                    .span = stmt.span,
+                    .data = .{ .ternary = .{
+                        .a = stmt.data.ternary.a,
+                        .b = stmt.data.ternary.b,
+                        .c = result.call_and_check,
+                    } },
+                }),
+                else => .none,
+            };
+        }
+
         /// for문의 연산 수집.
         fn collectForOperations(self: *Transformer, stmt_idx: NodeIndex, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
             const e = stmt.data.extra;
@@ -503,6 +622,16 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
                 }
                 return;
+            }
+
+            // 반복별 바인딩 복원(#4716) — 필요하면 body 를 `yield* _loopN(x)` 로 바꾼 새
+            // 노드로 다시 수집한다. 이 검사는 위 early-return **뒤**라, 상태 기계로 접히는
+            // 루프에만 적용된다.
+            {
+                const rewritten = try extractPerIterationLoopBody(self, stmt, init_idx, body_idx, ops, next_label);
+                if (!rewritten.isNone()) {
+                    return collectForOperations(self, rewritten, self.ast.getNode(rewritten), ops, next_label);
+                }
             }
 
             // init: var는 호이스팅 후 assignment로 변환, expression은 그대로
@@ -592,6 +721,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const left = stmt.data.ternary.a; // loop variable
             const right = stmt.data.ternary.b; // iterable
             const body_idx = stmt.data.ternary.c; // body
+
+            // 반복별 바인딩 복원 (#4716) — 자세한 배경은 extractPerIterationLoopBody 참고.
+            {
+                const rewritten = try extractPerIterationLoopBody(self, stmt, left, body_idx, ops, next_label);
+                if (!rewritten.isNone()) {
+                    return collectForOfOperations(self, self.ast.getNode(rewritten), ops, next_label);
+                }
+            }
 
             // for-of/for-in → for 변환: _i (index), _arr (array or key snapshot)
             const idx_span = try es_helpers.makeTempVarSpan(self);
@@ -1250,11 +1387,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     // 분석 이후에 만들어져 바인딩 노드가 심볼로 해석되지 않는다 → minify 때
                     // 호이스트된 `var` 선언만 리네임되고 이 좌변은 원래 이름으로 남아
                     // `ReferenceError: _e is not defined` (#4703).
-                    const param_node = self.ast.getNode(visited_param);
-                    const new_param = if (param_node.tag == .binding_identifier)
-                        try es_helpers.makeIdentifierRefFromSpan(self, param_node.data.string_ref)
-                    else
-                        visited_param;
+                    const new_param = try bindingToAssignTarget(self, visited_param);
                     const sent = try buildSentCall(self, stmt.span);
                     const assign = try self.ast.addNode(.{
                         .tag = .assignment_expression,
@@ -1542,24 +1675,39 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
 
                     // x = _state.sent()
-                    const new_binding = try self.visitNode(binding);
+                    const new_binding = try bindingToAssignTarget(self, try self.visitNode(binding));
                     const sent_call = try buildSentCall(self, stmt.span);
                     const assign_stmt = try makeDestructuringAssignStmt(self, new_binding, sent_call, stmt.span);
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                 } else if (es2015_scan.containsYield(self, init_idx)) {
                     // var x = foo(await y) → 중첩 yield 추출 후 x = foo(_state.sent())
-                    const new_binding = try self.visitNode(binding);
+                    const new_binding = try bindingToAssignTarget(self, try self.visitNode(binding));
                     const new_init = try visitExprWithYieldExtraction(self, init_idx, ops, next_label);
                     const assign_stmt = try makeDestructuringAssignStmt(self, new_binding, new_init, stmt.span);
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                 } else {
                     // var x = expr (no yield) → x = expr
-                    const new_binding = try self.visitNode(binding);
+                    const new_binding = try bindingToAssignTarget(self, try self.visitNode(binding));
                     const new_init = try self.visitNode(init_idx);
                     const assign_stmt = try makeDestructuringAssignStmt(self, new_binding, new_init, stmt.span);
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                 }
             }
+        }
+
+        /// 선언 바인딩을 **대입 좌변**으로 쓸 수 있는 노드로 바꾼다. (#4703 · #4716)
+        ///
+        /// 상태 기계는 `var x = init` 을 `x = init` 으로 접는다. 이때 좌변은 선언이 아니라
+        /// **참조**다. 소스에서 온 이름은 스코프 분석이 이미 등록해 둬서 바인딩 노드
+        /// 그대로도 우연히 해석되지만, 트랜스포머가 합성한 이름(`_loopN`, `_ret`,
+        /// for-await 의 `_e` …)은 분석 이후에 생겨 해석되지 않는다 → minify 때 호이스트된
+        /// `var` 선언만 리네임되고 좌변만 원래 이름으로 남아 `ReferenceError`.
+        /// 구조분해 패턴은 바인딩 노드가 아니므로 그대로 둔다.
+        fn bindingToAssignTarget(self: *Transformer, binding: NodeIndex) Transformer.Error!NodeIndex {
+            if (binding.isNone()) return binding;
+            const node = self.ast.getNode(binding);
+            if (node.tag != .binding_identifier) return binding;
+            return es_helpers.makeIdentifierRefFromSpan(self, node.data.string_ref);
         }
 
         /// expression body (arrow function 등)를 state machine으로 변환.

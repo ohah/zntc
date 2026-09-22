@@ -202,6 +202,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                         span,
                         is_async,
                         preserve_this,
+                        false,
                     );
                     loop_fn_decl = result.loop_fn;
                     body_after_closure = result.call_and_check;

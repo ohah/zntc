@@ -283,6 +283,11 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             span: Span,
             is_async: bool,
             preserve_this: bool,
+            /// `_loop` 을 generator 로 만들고 호출부를 `yield* _loop(...)` 로 낸다. (#4716)
+            /// 본문에 `yield`/`await` 이 있어 평범한 함수로는 추출할 수 없을 때 쓴다 —
+            /// 상태 기계가 `[5, __values(_loop(x))]` 위임으로 접고, `yield*` 의 값이
+            /// `_loop` 의 return 값이라 break/continue/return 신호도 그대로 실려 온다.
+            is_generator: bool,
         ) Transformer.Error!struct { loop_fn: NodeIndex, call_and_check: NodeIndex } {
             // --- _loop 함수명 생성 ---
             const loop_prefix = "_loop";
@@ -325,9 +330,13 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 const formal = try self.ast.addNode(.{
                     .tag = .formal_parameter,
                     .span = param_span,
+                    // extras = [pattern, type_ann, default, flags, deco_start, deco_len].
+                    // ⚠️ deco_len 은 **0** 이어야 한다. 여기 `none`(0xFFFFFFFF)을 넣으면
+                    // 이 노드를 visit 하는 순간 `visitExtraList` 가 40억 개를 순회하려다
+                    // 죽는다 — 기존에는 이 파라미터가 다시 방문되지 않아 잠복해 있었다.
                     .data = .{ .extra = try self.ast.addExtras(&.{
                         @intFromEnum(param), @intFromEnum(NodeIndex.none), @intFromEnum(NodeIndex.none),
-                        0,                   0,                            @intFromEnum(NodeIndex.none),
+                        0,                   0,                            0,
                     }) },
                 });
                 try self.scratch.append(self.allocator, formal);
@@ -336,7 +345,8 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             const none = @intFromEnum(NodeIndex.none);
             const params_node = try self.ast.addFormalParameters(params, span);
-            const func_flags: u32 = if (is_async) ast_mod.FunctionFlags.is_async else 0;
+            const func_flags: u32 = (if (is_async) ast_mod.FunctionFlags.is_async else 0) |
+                (if (is_generator) ast_mod.FunctionFlags.is_generator else 0);
             const func_extra = try self.ast.addExtras(&.{
                 none,                           @intFromEnum(params_node),
                 @intFromEnum(transformed_body), func_flags,
@@ -370,7 +380,13 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             // is_async — `_loop(...)` 가 Promise 반환. 호출부도 `await _loop(...)` 로
             // wrap 해야 iteration 순서 보존 + needsRetVar 시 _ret 가 resolved value.
-            const call_expr: NodeIndex = if (is_async)
+            const call_expr: NodeIndex = if (is_generator)
+                try self.ast.addNode(.{
+                    .tag = .yield_expression,
+                    .span = span,
+                    .data = .{ .unary = .{ .operand = loop_call, .flags = ast_mod.YieldFlags.is_delegate } },
+                })
+            else if (is_async)
                 try es_helpers.makeAwaitExpression(self, loop_call, span)
             else
                 loop_call;
