@@ -753,6 +753,34 @@ test "es2017: 평범한 generator 의 yield* 는 건드리지 않는다 (#4628 �
 
 // === #1910: yield* iterable — __values() wrap ===
 
+test "ES5: 상태 기계 루프의 캡처된 let 은 _loop generator 로 뽑아 위임한다 (#4716)" {
+    // 상태 기계는 지역 변수를 함수 최상단 `var` 로 호이스트한다 → `let` 의 반복별
+    // 바인딩이 하나로 합쳐져 루프 안 클로저가 전부 마지막 값을 캡처한다.
+    // 본문에 `yield` 가 있어 평범한 함수로는 못 뽑으므로 **generator 로 뽑고 `yield*`**
+    // 로 위임한다. 상태 기계가 그 위임을 `[5, __values(_loop(x))]` 로 접는다.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "function* g(){ var fns=[]; for (let v of [1,2]) { fns.push(function(){return v;}); yield v; } }",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_loop") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[5,__values(") != null or
+        std.mem.indexOf(u8, r.output, "[5, __values(") != null);
+}
+
+test "ES5: 캡처가 없으면 _loop 추출을 하지 않는다 (#4716 역방향)" {
+    // 추출은 클로저가 루프 변수를 캡처할 때만 필요하다. 무조건 뽑으면 모든 루프가
+    // 중첩 generator + 위임으로 바뀌어 출력이 커지고 느려진다.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "function* g(){ for (let v of [1,2]) { yield v; } }",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_loop") == null);
+}
+
 test "ES5: generator 안 for-of 는 __values iterator 프로토콜로 돈다 (#4709)" {
     // state machine 경로는 예전에 `_arr[_i]` / `_arr.length` 인덱스 루프로 접었다.
     // `.length` 가 없는 Set·Map·generator 는 첫 비교에서 루프가 끝나 **조용히 아무것도

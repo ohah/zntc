@@ -125,6 +125,7 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
                     node.span,
                     is_async,
                     preserve_this,
+                    false,
                 );
                 const loop_node = try self.ast.addNode(.{
                     .tag = node.tag,
@@ -322,6 +323,7 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
                     node.span,
                     is_async,
                     preserve_this,
+                    false,
                 );
 
                 // var _loop = function(...) { ... };
