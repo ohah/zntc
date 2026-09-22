@@ -990,6 +990,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // goto cond_label
             try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = cond_label } });
 
+            // 바깥 labeled statement 가 `continue <label>` 타겟을 찾을 수 있게 남긴다.
+            // for-await 는 여기 while 로 낮아지므로, 그 라벨의 continue 타겟이 곧 이
+            // while 의 cond_label(= 다음 `await _iter.next()`) 이다. body 수집 **뒤**에
+            // 써야 중첩 루프가 아니라 자기 자신이 마지막에 남는다. (#4710)
+            self.generator_loop_continue_label = cond_label;
+
             // end_label을 body 처리 후에 할당 (yield로 인한 label 증가 반영)
             const end_label = next_label.*;
             next_label.* += 1;
@@ -1088,7 +1094,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 body_node.tag == .while_statement or
                 body_node.tag == .do_while_statement or
                 body_node.tag == .for_in_statement or
-                body_node.tag == .for_of_statement;
+                body_node.tag == .for_of_statement or
+                // ⚠️ for-await 가 빠져 있었다 (#4710). 빠지면 `continue <label>` 이
+                // `continue_label orelse break_label` 로 떨어져 **바깥 루프를 끊는다**.
+                body_node.tag == .for_await_of_statement;
 
             // while 을 제외한 모든 루프(for/for-of/for-in/do-while)는 `continue` 타겟
             // (증분·iterator advance·조건 평가)이 body 수집 *후*에야 정해지므로 sentinel +
