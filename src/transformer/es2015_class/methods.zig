@@ -91,7 +91,21 @@ pub fn Methods(comptime Transformer: type) type {
                 self.current_super_static_receiver = saved_receiver;
             }
 
-            const member = self.ast.getNode(info.member_idx);
+            var member = self.ast.getNode(info.member_idx);
+            // `async *m() {}` 는 여기서 일반 async 처럼 `__async(...)` 로 감싸지면 안 된다 —
+            // async generator 는 Promise 가 아니라 **async iterator** 를 돌려줘야 한다
+            // (es5 에서 `o[Symbol.iterator] is not a function` 으로 깨져 있었다).
+            // class 낮추기가 보기 전에 `m() { return __asyncGenerator(…); }` 평범한
+            // 메서드로 바꿔 두면 아래 경로가 그대로 처리한다 (#4628 후속).
+            if (self.options.unsupported.async_generator and
+                (self.readU32(member.data.extra, MethodExtra.flags) & ast_mod.MethodFlags.is_async) != 0 and
+                (self.readU32(member.data.extra, MethodExtra.flags) & ast_mod.MethodFlags.is_generator) != 0 and
+                !self.readNodeIdx(member.data.extra, MethodExtra.body).isNone())
+            {
+                const members_mod = @import("../transformer/members.zig");
+                const lowered_method = try members_mod.lowerAsyncGeneratorMethod(self, member);
+                if (!lowered_method.isNone()) member = self.ast.getNode(lowered_method);
+            }
             const me = member.data.extra;
             // 모든 읽기가 mutation(visitExtraList) 이전이므로 캐시 안전.
             const extras = self.ast.extra_data.items;

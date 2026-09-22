@@ -484,6 +484,61 @@ test "ES5: async function emits __generator(this, ...) for body this access (#19
         std.mem.indexOf(u8, r.output, "__generator(this,function") != null);
 }
 
+test "es2017: async generator **메서드** 도 다운레벨된다 (#4628 후속)" {
+    // 최상위 함수만 고치면 절반이다 — 클래스/객체 메서드는 각각 다른 경로를 탄다.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "class C { async *m() { yield 1; } } const o = { async *n() { yield 2; } };",
+        .es2017,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "async*") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "async *") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncGenerator") != null);
+}
+
+test "es2017: async generator 메서드 안 yield* 도 위임된다 (#4628 후속)" {
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "class C { async *a() { yield 1; } async *b() { yield* this.a(); } }",
+        .es2017,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncDelegator") != null);
+}
+
+test "es2017: async generator 메서드의 super 가 살아남는다 (#4628 후속)" {
+    // 본문이 plain `function*` 으로 옮겨지므로 raw `super` 는 SyntaxError 다 —
+    // 추출 컨텍스트를 켜 `__superGet(...)` 으로 낮춰야 한다.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "class B { base() { return 1; } } class D extends B { async *m() { yield super.base(); } }",
+        .es2017,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncGenerator") != null);
+    // raw super 가 남으면 산출물이 파싱조차 안 된다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super.base") == null);
+}
+
+test "es5: async generator 메서드가 async iterator 를 돌려준다 (#4628 후속)" {
+    // es5 는 class 를 함수로 낮추는 별도 경로(es2015_class)를 타는데, 거기서 async
+    // generator 를 **일반 async 처럼** `__async(...)` 로 감싸 Promise 를 돌려줬다
+    // (런타임에 `o[Symbol.iterator] is not a function`). class 낮추기가 보기 전에
+    // 평범한 메서드로 바꿔 둬야 한다.
+    var r = try e2eTarget(std.testing.allocator, "class C { async *m() { yield 1; } }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncGenerator") != null);
+}
+
+test "es2018: async generator 메서드는 네이티브 유지 (#4628 후속 과잉 변환 방지)" {
+    var r = try e2eTarget(std.testing.allocator, "class C { async *m() { yield 1; } }", .es2018);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncGenerator") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "async*m()") != null or
+        std.mem.indexOf(u8, r.output, "async *m()") != null);
+}
+
 // === #4629: public class field 는 ES2022 — `class` 비트와 독립 ===
 
 test "es2017: public class field 가 다운레벨된다 (#4629)" {
