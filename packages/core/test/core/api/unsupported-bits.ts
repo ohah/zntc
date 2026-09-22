@@ -23,12 +23,22 @@ interface UnsupportedNative {
 
 function loadNative(): UnsupportedNative {
   const here = dirname(fileURLToPath(import.meta.url));
-  // monorepo 에서 findAddon() 이 최우선으로 고르는 경로와 같다.
-  for (const up of ['../../../../../zig-out/lib/zntc.node', '../../../../zig-out/lib/zntc.node']) {
-    const p = join(here, up);
-    if (existsSync(p)) return createRequire(import.meta.url)(p) as UnsupportedNative;
+  const req = createRequire(import.meta.url);
+  // index.ts 의 findAddon() 과 같은 우선순위. CI 는 `zig build napi` 직후
+  // `cp zig-out/lib/zntc.node packages/core/zntc.node` 를 하므로 둘 다 후보다.
+  const candidates = [
+    '../../../../../zig-out/lib/zntc.node', // repo root (monorepo dev)
+    '../../../zntc.node', // packages/core/zntc.node (CI 가 복사해 두는 자리)
+  ];
+  for (const rel of candidates) {
+    const p = join(here, rel);
+    if (existsSync(p)) return req(p) as UnsupportedNative;
   }
-  throw new Error('zntc.node 를 찾지 못했다 — `zig build napi` 를 먼저 실행할 것');
+  throw new Error(
+    `zntc.node 를 찾지 못했다 — \`zig build napi\` 를 먼저 실행할 것 (찾아본 곳: ${candidates
+      .map((r) => join(here, r))
+      .join(', ')})`,
+  );
 }
 
 /** 2^31 이상을 다루므로 `>>>`/`&` 를 쓸 수 없다(int32 로 잘린다). */
