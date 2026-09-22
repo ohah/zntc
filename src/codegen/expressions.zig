@@ -453,7 +453,7 @@ pub fn emitYield(self: anytype, node: Node, level: Level, flags: ExprFlags) !voi
     _ = flags;
     try self.addSourceMapping(node.span);
     try self.write("yield");
-    if (node.data.unary.flags & 1 != 0) try self.writeByte('*');
+    if (node.data.unary.flags & ast_mod.YieldFlags.is_delegate != 0) try self.writeByte('*');
     if (!node.data.unary.operand.isNone()) {
         try self.writeByte(' ');
         // `yield [no LineTerminator] expr` — return/throw 와 같은 제한이라 같은 헬퍼를 탄다.

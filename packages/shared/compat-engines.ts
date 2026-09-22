@@ -69,6 +69,7 @@ export const FEATURES = [
   'regex_duplicate_named_groups', // ES2025
   'regex_modifiers', // ES2025
   'regex_lookbehind', // ES2018 (query-only — m-modifier 앵커 재작성 가능 여부)
+  'async_generator', // ES2018 `async function*` (#4628)
 ] as const;
 
 export type Feature = (typeof FEATURES)[number];
@@ -211,6 +212,17 @@ export const SUPPORT: Partial<Record<Feature, Partial<Record<Engine, [number, nu
     deno: [1, 0],
     ios: [11, 3],
     hermes: [0, 7],
+  },
+  // hermes 는 의도적으로 뺀다 — compat.zig 와 동일하게 "표에 없으면 미지원" 으로
+  // 보수적 다운레벨한다 (async generator 지원 근거가 없다).
+  async_generator: {
+    chrome: [63, 0],
+    firefox: [57, 0],
+    safari: [12, 0],
+    edge: [79, 0],
+    node: [10, 0],
+    deno: [1, 0],
+    ios: [12, 0],
   },
   optional_catch_binding: {
     chrome: [66, 0],

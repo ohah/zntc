@@ -538,18 +538,24 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         => {
             const e = node.data.extra;
             const flags = self.readU32(e, ast_mod.FunctionExtra.flags);
-            if (self.options.unsupported.async_await and (flags & ast_mod.FunctionFlags.is_async) != 0) {
-                // async generator (`async function*`) → __asyncGenerator wrapper. (#1911)
-                if ((flags & ast_mod.FunctionFlags.is_generator) != 0) {
-                    return es2017_mod.ES2017(Transformer).lowerAsyncGeneratorToStateMachine(self, node);
-                }
+            const is_async = (flags & ast_mod.FunctionFlags.is_async) != 0;
+            const is_generator = (flags & ast_mod.FunctionFlags.is_generator) != 0;
+            // async generator (`async function*`) → __asyncGenerator wrapper. (#1911)
+            // 자기 비트로 게이트한다. 예전엔 이 검사가 `async_await` 안에 **중첩**돼 있어
+            // async 와 generator 를 둘 다 네이티브로 갖는 es2017 이 여기 도달하지 못했고,
+            // ES2018 문법인 `async function*` 이 그대로 방출됐다 (#4628). es5/es2015/es2016
+            // 이 멀쩡했던 건 `async_await` 가 켜져 **우연히** 걸렸기 때문이다.
+            if (is_async and is_generator and self.options.unsupported.async_generator) {
+                return es2017_mod.ES2017(Transformer).lowerAsyncGeneratorToStateMachine(self, node);
+            }
+            if (self.options.unsupported.async_await and is_async) {
                 // async + generator 둘 다 unsupported → 직접 state machine 생성
                 if (self.options.unsupported.generator) {
                     return es2017_mod.ES2017(Transformer).lowerAsyncToStateMachine(self, node);
                 }
                 return es2017_mod.ES2017(Transformer).lowerAsyncFunction(self, node);
             }
-            if (self.options.unsupported.generator and (flags & ast_mod.FunctionFlags.is_generator) != 0) {
+            if (self.options.unsupported.generator and is_generator) {
                 return es2015_generator.ES2015Generator(Transformer).lowerGeneratorFunction(self, node);
             }
             return self.visitFunction(node);

@@ -180,21 +180,22 @@ export interface TranspileResult {
 //   28    ES2025 (regex_duplicate_named_groups)
 //   29    ES2025 (regex_modifiers)
 //   30    ES2018 (regex_lookbehind — query-only)
+//   31    ES2018 (async_generator — `async function*`; #4628)
 //
 // 타겟 T 에 대해 "T 이후 도입된" 모든 feature 비트를 set 한다.
 // Feature 추가 시 compat.zig 와 함께 갱신.
 export const ES_TARGET_BITS: Record<string, number> = {
-  es5: 0x7fffffff, // bits 0-30 (모든 feature)
-  es2015: 0x76fff800, // bits 11-23, 25, 26, 28, 29, 30 (ES2015/regex_sticky/unicode_brace_escape 제외)
-  es2016: 0x76fff000, // bits 12-23, 25, 26, 28, 29, 30
-  es2017: 0x76ffe000, // bits 13-23, 25, 26, 28, 29, 30
-  es2018: 0x30ffc000, // bits 14-23, 28, 29 (ES2018 features 도 제외 — lookbehind 지원)
-  es2019: 0x30ff8000, // bits 15-23, 28, 29
-  es2020: 0x30fe0000, // bits 17-23, 28, 29
-  es2021: 0x30fc0000, // bits 18-23, 28, 29
-  es2022: 0x30c00000, // bits 22-23, 28, 29 (hashbang + using + regex dup-named + modifiers)
-  es2023: 0x30800000, // bits 23, 28, 29
-  es2024: 0x30800000, // bits 23, 28, 29 (ES2024 자체 구문 변환 기능 없음)
+  es5: 0xffffffff, // 모든 feature (bits 0-31)
+  es2015: 0xf6fff800, // ES2015/regex_sticky/unicode_brace_escape 제외
+  es2016: 0xf6fff000,
+  es2017: 0xf6ffe000, // bit 31(async_generator) 포함 — ES2018 이라 es2017 에선 미지원
+  es2018: 0x30ffc000, // ES2018 features 도 제외 (lookbehind·async_generator 지원)
+  es2019: 0x30ff8000,
+  es2020: 0x30fe0000,
+  es2021: 0x30fc0000,
+  es2022: 0x30c00000, // hashbang + using + regex dup-named + modifiers
+  es2023: 0x30800000,
+  es2024: 0x30800000, // ES2024 자체 구문 변환 기능 없음
   es2025: 0x0,
   esnext: 0x0,
 };

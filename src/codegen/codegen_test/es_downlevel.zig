@@ -483,6 +483,53 @@ test "ES5: async function emits __generator(this, ...) for body this access (#19
         std.mem.indexOf(u8, r.output, "__generator(this,function") != null);
 }
 
+// === #4628: async generator (`async function*`) 는 ES2018 — 자기 비트로 게이트 ===
+
+test "es2017: async generator 가 다운레벨된다 (#4628)" {
+    // es2017 은 async 도 generator 도 네이티브라, 예전엔 그 두 비트 어느 쪽으로도
+    // 게이트되지 않아 `async function*` 이 그대로 새어나갔다 (타겟 엔진 파싱 불가).
+    var r = try e2eTarget(std.testing.allocator, "async function* g() { yield 1; }", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "async function*") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncGenerator") != null);
+}
+
+test "es2018: async generator 는 네이티브 유지 (#4628 과잉 변환 방지)" {
+    // ES2018 부터는 네이티브다 — 낮추면 불필요한 헬퍼 bloat.
+    var r = try e2eTarget(std.testing.allocator, "async function* g() { yield 1; }", .es2018);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "async function*") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncGenerator") == null);
+}
+
+test "es2017: async generator 안 yield* 는 __asyncDelegator 로 위임 (#4628)" {
+    // `yield*` 를 그대로 두면 __asyncGenerator 의 **동기** inner generator 가
+    // async iterable 에서 Symbol.iterator 를 찾다 런타임에 "not iterable" 로 죽는다.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "async function* a() { yield 1; } async function* b() { yield* a(); }",
+        .es2017,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncDelegator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncValues") != null);
+    // 바깥은 delegate 가 아닌 평범한 yield 로 감싸 위임 반환값을 흘린다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "yield __await(yield* __asyncDelegator(") != null or
+        std.mem.indexOf(u8, r.output, "yield __await(yield*__asyncDelegator(") != null);
+}
+
+test "es2017: 평범한 generator 의 yield* 는 건드리지 않는다 (#4628 과잉 변환 방지)" {
+    // async 가 아닌 generator 는 동기 프로토콜 그대로 — delegator 를 끼우면 안 된다.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "function* a() { yield 1; } function* b() { yield* a(); }",
+        .es2017,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncDelegator") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "yield* a()") != null);
+}
+
 // === #1910: yield* iterable — __values() wrap ===
 
 test "ES5: yield* string wraps with __values (#1910)" {

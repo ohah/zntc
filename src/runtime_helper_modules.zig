@@ -112,6 +112,17 @@ const MODULES = [_]HelperModule{
         .body = .{ .plain = rt.ASYNC_GENERATOR_RUNTIME, .min = rt.ASYNC_GENERATOR_RUNTIME_MIN },
     },
     .{
+        // async generator 안 `yield* X` 위임 (#4628 후속). __await 에 의존한다 —
+        // helper 모듈 경로는 각 모듈이 필요한 helper 를 스스로 import 하므로
+        // 여기선 정의만 등록하면 된다.
+        .short = "async-delegator",
+        .helpers = &.{"__asyncDelegator"},
+        .body = .{
+            .plain = rt.ASYNC_DELEGATOR_RUNTIME,
+            .min = rt.ASYNC_DELEGATOR_RUNTIME_MIN,
+        },
+    },
+    .{
         .short = "values",
         .helpers = &.{"__values"},
         .body = .{ .plain = rt.VALUES_RUNTIME, .min = rt.VALUES_RUNTIME_MIN },

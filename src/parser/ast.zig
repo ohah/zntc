@@ -1838,6 +1838,13 @@ fn decodeStringLiteralKey(
 
 /// function declaration/expression의 flags 비트.
 /// 실제 extra 레이아웃은 `FunctionExtra` 참고 (params 는 wrapper 노드 1슬롯).
+/// yield_expression 의 `data.unary.flags`. 파서·codegen·transformer 세 곳이 같은
+/// 비트를 읽으므로 매직 숫자(`flags & 1`) 대신 여기를 쓴다.
+pub const YieldFlags = struct {
+    /// `yield* x` (delegate). 없으면 평범한 `yield x`.
+    pub const is_delegate: u16 = 0x01;
+};
+
 pub const FunctionFlags = struct {
     pub const is_async: u32 = 0x01;
     pub const is_generator: u32 = 0x02;

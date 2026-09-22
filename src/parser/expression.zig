@@ -408,7 +408,7 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
         // yield* delegate — * 전에 줄바꿈이 있으면 delegate 아님
         var yield_flags: u16 = 0;
         if (!self.scanner.token.has_newline_before and try self.eat(.star)) {
-            yield_flags = 1; // delegate
+            yield_flags = ast_mod.YieldFlags.is_delegate;
         }
         var operand = NodeIndex.none;
         // yield 뒤에 줄바꿈 없이 expression이 오면 yield의 인자
