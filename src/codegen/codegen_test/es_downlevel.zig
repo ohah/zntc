@@ -769,6 +769,37 @@ test "ES5: yield* nested generator still works (#1910 regression)" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__values(") != null);
 }
 
+test "ES5: async generator 안 for-await 의 내부 await 은 __await 로 감싼다 (#4707)" {
+    // es5 에서 async generator 의 inner 는 **동기** generator 라 await 과 yield 가 같은
+    // op `[4, x]` 로 나간다. 둘을 가르는 건 `__await(…)` 포장뿐이다. for-await 다운레벨이
+    // state machine 을 만드는 **도중에** 새로 만드는 await 이 포장을 못 받으면,
+    // `__asyncGenerator` 가 그 값을 소비자에게 내보내고 `_state.sent()` 가 undefined 가
+    // 되어 다음 줄 `.done` 접근에서 TypeError 가 난다.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "async function* g() { for await (const v of [1, 2]) yield v; }",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncGenerator") != null);
+    // for-await 의 `await _iter.next()` 가 `__await(...)` 로 감싸여 있어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__await(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".next()]") == null);
+}
+
+test "ES5: 평범한 async 함수의 for-await 은 __await 로 감싸지 않는다 (#4707 역방향)" {
+    // `__async` 의 generator 프로토콜은 raw yield 를 쓴다. 여기까지 감싸면 헬퍼가
+    // 이해하지 못하는 마커가 섞인다 — 신호가 async generator 밖으로 새면 안 된다.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "async function f() { for await (const v of [1, 2]) console.log(v); }",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncGenerator") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__await(") == null);
+}
+
 // === #1911: async generator (async function*) — __asyncGenerator wrapper ===
 
 test "ES5: async generator emits __asyncGenerator wrapper call (#1911)" {

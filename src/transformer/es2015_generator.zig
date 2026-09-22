@@ -176,6 +176,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         pub fn buildStateMachine(self: *Transformer, body_idx: NodeIndex, span: Span) Transformer.Error!StateMachineResult {
             if (body_idx.isNone()) return .{ .body = .none, .var_decl = .none };
 
+            // 1회용 신호를 여기서 소비한다 — 중첩된 평범한 generator 가 물려받지 않도록. (#4707)
+            const saved_in_async_gen_sm = self.in_async_generator_sm;
+            self.in_async_generator_sm = self.pending_async_generator_sm;
+            self.pending_async_generator_sm = false;
+            defer self.in_async_generator_sm = saved_in_async_gen_sm;
+
             const body = self.ast.getNode(body_idx);
 
             // expression body (arrow function): implicit return으로 처리
@@ -390,6 +396,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     const es2018 = @import("es2018_for_await.zig");
                     const lowered = try es2018.ES2018ForAwait(Transformer).lowerForAwaitOf(self, stmt);
                     if (!lowered.isNone()) {
+                        // async generator 의 state machine 안이면, 방금 만들어진 await 들을
+                        // `yield __await(x)` 로 표시해야 한다. 안 그러면 `[4, x]` 가 사용자
+                        // yield 와 구분되지 않아 `__asyncGenerator` 가 소비자에게 내보내고,
+                        // `_state.sent()` 가 undefined 가 된다 (#4707).
+                        if (self.in_async_generator_sm) {
+                            const es2017 = @import("es2017.zig");
+                            try es2017.ES2017(Transformer).rewriteAwaitToYieldAwait(self, lowered);
+                        }
                         try collectBodyOperations(self, lowered, ops, next_label);
                     }
                 },
