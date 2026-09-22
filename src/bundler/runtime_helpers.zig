@@ -816,12 +816,12 @@ pub const WRAP_REGEXP_RUNTIME_MIN = "var " ++ NAMES.WRAP_REGEXP_MIN ++ "=functio
 /// `await x` 는 async generator body 안에서 `yield __await(x)` 로 변환되며,
 /// `__asyncGenerator` 의 step() 가 `r.value instanceof __await` 으로 인식해 Promise resolve.
 pub const AWAIT_RUNTIME =
-    \\var __await = function(v) {
-    \\  return this instanceof __await ? (this.v = v, this) : new __await(v);
+    \\var __await = function(v, s) {
+    \\  return this instanceof __await ? (this.v = v, this.s = s, this) : new __await(v, s);
     \\};
     \\
 ;
-pub const AWAIT_RUNTIME_MIN = "var __await=function(v){return this instanceof __await?(this.v=v,this):new __await(v)};";
+pub const AWAIT_RUNTIME_MIN = "var __await=function(v,s){return this instanceof __await?(this.v=v,this.s=s,this):new __await(v,s)};";
 
 /// __asyncGenerator: async generator (`async function*`) → Symbol.asyncIterator 객체 반환.
 /// tslib 호환. (#1911) `yield value` 는 그대로 yield, `await x` 는 `yield __await(x)` 로
@@ -836,23 +836,19 @@ pub const ASYNC_GENERATOR_RUNTIME =
     \\    if (g[n]) i[n] = function(v) { return new Promise(function(a, b) { q.push([n, v, a, b]) > 1 || resume(n, v); }); };
     \\    if (f) i[n] = f(i[n]);
     \\  }
-    \\  function resume(n, v) { try { step(g[n](v)); } catch (e) { settle(q[0][3], e); } }
-    \\  function step(r) {
-    \\    r.value instanceof __await
-    \\      ? Promise.resolve(r.value.v).then(fulfill, reject)
-    \\      : settle(q[0][2], r);
+    \\  function resume(n, v) { try { step(n, g[n](v)); } catch (e) { settle(q[0][3], e); } }
+    \\  function step(n, r) {
+    \\    if (!(r.value instanceof __await)) return settle(q[0][2], r);
+    \\    var m = r.value;
+    \\    Promise.resolve(m.v).then(function(y) {
+    \\      resume(n === "return" ? n : "next", m.s ? { done: y.done, value: y.value } : y);
+    \\    }, reject);
     \\  }
-    \\  function fulfill(value) { resume("next", value); }
     \\  function reject(value) { resume("throw", value); }
     \\  function settle(f, v) { if (f(v), q.shift(), q.length) resume(q[0][0], q[0][1]); }
     \\};
     \\
 ;
-/// __asyncDelegator: async generator 안의 `yield* X` 를 위임한다 (tslib 호환).
-/// `yield* X` 를 그대로 두면 __asyncGenerator 의 **동기** inner generator 가 async
-/// iterable 에 `Symbol.iterator` 를 찾다 "not iterable" 로 죽는다 (#4628 후속).
-/// 값을 한 번은 `__await` 로 감싸 바깥 step() 이 Promise 를 풀게 하고, 다음 번에
-/// 그대로 흘려보내는 식으로 두 프로토콜을 잇는다(`p` 토글이 그 교대다).
 /// __publicField: public class field 를 **define 의미론**으로 낮춘다 (#4629).
 /// `class C { n = 7 }` 은 `this.n = 7`(assign)이 아니라 `Object.defineProperty` 로
 /// own property 를 *만든다* — setter 를 가진 상위 클래스가 있으면 둘의 동작이 갈리고,
@@ -866,22 +862,49 @@ pub const PUBLIC_FIELD_RUNTIME =
 ;
 pub const PUBLIC_FIELD_RUNTIME_MIN = "var " ++ NAMES.PUBLIC_FIELD_MIN ++ "=function(obj,key,value){return Object.defineProperty(obj,typeof key===\"symbol\"?key:key+\"\",{enumerable:true,configurable:true,writable:true,value:value}),value};";
 
-pub const ASYNC_DELEGATOR_RUNTIME =
-    \\var __asyncDelegator = function(o) {
-    \\  var i, p;
-    \\  return i = {}, verb("next"), verb("throw", function(e) { throw e; }), verb("return"),
-    \\    i[Symbol.iterator] = function() { return this; }, i;
-    \\  function verb(n, f) {
-    \\    i[n] = o[n]
-    \\      ? function(v) { return (p = !p) ? { value: __await(o[n](v)), done: false } : f ? f(v) : v; }
-    \\      : f;
+/// __yieldStar: async generator 안의 `yield* X` 를 위임한다 (esbuild 호환).
+///
+/// `yield* X` 를 그대로 두면 `__asyncGenerator` 의 **동기** inner generator 가 async
+/// iterable 에 `Symbol.iterator` 를 찾다 죽는다. 이 헬퍼는 대상(동기/비동기 모두)을
+/// 동기 `yield*` 가 이해하는 iterable 로 감싸되, 비동기 대상일 땐 한 번은
+/// `__await(promise, 1)` 마커를 내보내고(바깥 step 이 Promise 를 풀도록) 다음 호출에
+/// 그 결과를 그대로 흘린다.
+///
+/// 🔑 `__await` 의 **두 번째 필드**(`s`)가 "이 await 는 `yield*` 에서 왔다" 를 나른다.
+/// 그 표시가 있으면 `__asyncGenerator` 가 resolved 값을 `{done, value}` 객체 그대로
+/// 되돌려 주므로, 위임의 **완료값**(`return(v)` 의 `v`)이 끊기지 않는다. tslib 의
+/// `__asyncDelegator` 는 이 표시가 없어 `.return(v)` 의 value 를 잃었다 (#4700).
+pub const YIELD_STAR_RUNTIME =
+    \\var __yieldStar = function(value) {
+    \\  var obj = value[Symbol.asyncIterator], isAwait = false, method, i = {};
+    \\  if (obj == null) {
+    \\    obj = value[Symbol.iterator]();
+    \\    method = function(k) { i[k] = function(x) { return obj[k](x); }; };
+    \\  } else {
+    \\    obj = obj.call(value);
+    \\    method = function(k) {
+    \\      i[k] = function(v) {
+    \\        if (isAwait) { isAwait = false; if (k === "throw") throw v; return v; }
+    \\        isAwait = true;
+    \\        return { done: false, value: __await(new Promise(function(resolve) {
+    \\          var x = obj[k](v);
+    \\          if (!(x instanceof Object)) throw new TypeError("Object expected");
+    \\          resolve(x);
+    \\        }), 1) };
+    \\      };
+    \\    };
     \\  }
+    \\  i[Symbol.iterator] = function() { return i; };
+    \\  method("next");
+    \\  if ("throw" in obj) method("throw"); else i["throw"] = function(x) { throw x; };
+    \\  if ("return" in obj) method("return");
+    \\  return i;
     \\};
     \\
 ;
-pub const ASYNC_DELEGATOR_RUNTIME_MIN = "var " ++ NAMES.ASYNC_DELEGATOR_MIN ++ "=function(o){var i,p;return i={},verb(\"next\"),verb(\"throw\",function(e){throw e}),verb(\"return\"),i[Symbol.iterator]=function(){return this},i;function verb(n,f){i[n]=o[n]?function(v){return(p=!p)?{value:__await(o[n](v)),done:false}:f?f(v):v}:f}};";
+pub const YIELD_STAR_RUNTIME_MIN = "var " ++ NAMES.YIELD_STAR_MIN ++ "=function(value){var obj=value[Symbol.asyncIterator],isAwait=false,method,i={};if(obj==null){obj=value[Symbol.iterator]();method=function(k){i[k]=function(x){return obj[k](x)}}}else{obj=obj.call(value);method=function(k){i[k]=function(v){if(isAwait){isAwait=false;if(k===\"throw\")throw v;return v}isAwait=true;return{done:false,value:__await(new Promise(function(resolve){var x=obj[k](v);if(!(x instanceof Object))throw new TypeError(\"Object expected\");resolve(x)}),1)}}}}i[Symbol.iterator]=function(){return i};method(\"next\");if(\"throw\" in obj)method(\"throw\");else i[\"throw\"]=function(x){throw x};if(\"return\" in obj)method(\"return\");return i};";
 
-pub const ASYNC_GENERATOR_RUNTIME_MIN = "var __asyncGenerator=function(thisArg,_arguments,generator){if(!Symbol.asyncIterator)throw new TypeError(\"Symbol.asyncIterator is not defined.\");var g=generator.apply(thisArg,_arguments||[]),q=[],i;return i={},verb(\"next\"),verb(\"throw\"),verb(\"return\"),i[Symbol.asyncIterator]=function(){return this},i;function verb(n,f){if(g[n])i[n]=function(v){return new Promise(function(a,b){q.push([n,v,a,b])>1||resume(n,v)})};if(f)i[n]=f(i[n])}function resume(n,v){try{step(g[n](v))}catch(e){settle(q[0][3],e)}}function step(r){r.value instanceof __await?Promise.resolve(r.value.v).then(fulfill,reject):settle(q[0][2],r)}function fulfill(value){resume(\"next\",value)}function reject(value){resume(\"throw\",value)}function settle(f,v){if(f(v),q.shift(),q.length)resume(q[0][0],q[0][1])}};";
+pub const ASYNC_GENERATOR_RUNTIME_MIN = "var __asyncGenerator=function(thisArg,_arguments,generator){if(!Symbol.asyncIterator)throw new TypeError(\"Symbol.asyncIterator is not defined.\");var g=generator.apply(thisArg,_arguments||[]),q=[],i;return i={},verb(\"next\"),verb(\"throw\"),verb(\"return\"),i[Symbol.asyncIterator]=function(){return this},i;function verb(n,f){if(g[n])i[n]=function(v){return new Promise(function(a,b){q.push([n,v,a,b])>1||resume(n,v)})};if(f)i[n]=f(i[n])}function resume(n,v){try{step(n,g[n](v))}catch(e){settle(q[0][3],e)}}function step(n,r){if(!(r.value instanceof __await))return settle(q[0][2],r);var m=r.value;Promise.resolve(m.v).then(function(y){resume(n===\"return\"?n:\"next\",m.s?{done:y.done,value:y.value}:y)},reject)}function reject(value){resume(\"throw\",value)}function settle(f,v){if(f(v),q.shift(),q.length)resume(q[0][0],q[0][1])}};";
 
 /// __values: iterable → iterator 변환 (ES2015 yield* / for-of helper). tslib 호환.
 /// `Symbol.iterator` 호출 가능하면 그 결과 반환. 없으면 `length` 기반 array-like fallback.
@@ -1591,9 +1614,9 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     if (helpers.async_generator) {
         try buf.appendSlice(allocator, if (minify) ASYNC_GENERATOR_RUNTIME_MIN else ASYNC_GENERATOR_RUNTIME);
     }
-    // __asyncDelegator 는 __await 를 부르므로 그 뒤에 온다(위 await_helper 분기가 이미 emit).
-    if (helpers.async_delegator) {
-        try buf.appendSlice(allocator, if (minify) ASYNC_DELEGATOR_RUNTIME_MIN else ASYNC_DELEGATOR_RUNTIME);
+    // __yieldStar 는 __await 를 부르므로 그 뒤에 온다(위 await_helper 분기가 이미 emit).
+    if (helpers.yield_star) {
+        try buf.appendSlice(allocator, if (minify) YIELD_STAR_RUNTIME_MIN else YIELD_STAR_RUNTIME);
     }
     if (helpers.public_field) {
         try buf.appendSlice(allocator, if (minify) PUBLIC_FIELD_RUNTIME_MIN else PUBLIC_FIELD_RUNTIME);

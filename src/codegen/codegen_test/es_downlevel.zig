@@ -587,7 +587,7 @@ test "es2017: async generator 메서드 안 yield* 도 위임된다 (#4628 후�
         .es2017,
     );
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncDelegator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__yieldStar") != null);
 }
 
 test "es2017: async generator 메서드의 super 가 살아남는다 (#4628 후속)" {
@@ -684,7 +684,32 @@ test "es2018: async generator 는 네이티브 유지 (#4628 과잉 변환 방�
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncGenerator") == null);
 }
 
-test "es2017: async generator 안 yield* 는 __asyncDelegator 로 위임 (#4628)" {
+test "es2017: yield* 위임의 완료값이 plain/min 양쪽에서 보존된다 (#4700)" {
+    // ⚠️ 헬퍼는 plain 과 MIN 두 벌이라 **한쪽만 고치면 minify 빌드만 조용히 깨진다**
+    // (실제로 밟았다). 두 변종이 같은 규칙을 갖는지 상수 수준에서 본다.
+    const rt_mod = @import("../../bundler/runtime_helpers.zig");
+    // 마커의 yield* 표시(`__await(p, 1)`)를 만드는 쪽
+    try std.testing.expect(std.mem.indexOf(u8, rt_mod.YIELD_STAR_RUNTIME, "), 1) }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rt_mod.YIELD_STAR_RUNTIME_MIN, "),1)}") != null);
+    // return 메서드를 보존하며 재개하는 쪽 — next 로 바뀌면 완료값이 사라진다.
+    try std.testing.expect(std.mem.indexOf(u8, rt_mod.ASYNC_GENERATOR_RUNTIME, "n === \"return\" ? n : \"next\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rt_mod.ASYNC_GENERATOR_RUNTIME_MIN, "n===\"return\"?n:\"next\"") != null);
+    // 마커가 2필드(`v`, `s`)여야 위 규칙이 성립한다.
+    try std.testing.expect(std.mem.indexOf(u8, rt_mod.AWAIT_RUNTIME, "this.s = s") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rt_mod.AWAIT_RUNTIME_MIN, "this.s=s") != null);
+}
+
+test "es2017: __asyncDelegator 는 더 이상 쓰이지 않는다 (#4700)" {
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "async function* a() { yield 1; } async function* b() { yield* a(); }",
+        .es2017,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncDelegator") == null);
+}
+
+test "es2017: async generator 안 yield* 는 __yieldStar 로 위임 (#4628 · #4700)" {
     // `yield*` 를 그대로 두면 __asyncGenerator 의 **동기** inner generator 가
     // async iterable 에서 Symbol.iterator 를 찾다 런타임에 "not iterable" 로 죽는다.
     var r = try e2eTarget(
@@ -693,11 +718,10 @@ test "es2017: async generator 안 yield* 는 __asyncDelegator 로 위임 (#4628)
         .es2017,
     );
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncDelegator") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncValues") != null);
-    // 바깥은 delegate 가 아닌 평범한 yield 로 감싸 위임 반환값을 흘린다.
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "yield __await(yield* __asyncDelegator(") != null or
-        std.mem.indexOf(u8, r.output, "yield __await(yield*__asyncDelegator(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__yieldStar") != null);
+    // delegate 플래그를 유지한다 — 동기 yield* 프로토콜이 그대로 돌아야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "yield*__yieldStar(") != null or
+        std.mem.indexOf(u8, r.output, "yield* __yieldStar(") != null);
 }
 
 test "es2017: 평범한 generator 의 yield* 는 건드리지 않는다 (#4628 과잉 변환 방지)" {

@@ -61,8 +61,8 @@ pub const RuntimeHelpers = packed struct(u32) {
     /// __wrapRegExp: named capture group downlevel (Hermes/ES5 등) 에서 RegExp
     /// 결과의 `.groups.NAME` 접근을 살리는 wrapper (#1063).
     wrap_regex: bool = false,
-    /// __asyncDelegator: async generator 안 `yield* X` 위임 (#4628 후속).
-    async_delegator: bool = false,
+    /// __yieldStar: async generator 안 `yield* X` 위임 (#4628 · #4700).
+    yield_star: bool = false,
     /// __publicField: define 의미론 public class field 낮추기 (#4629).
     public_field: bool = false,
     _padding: u3 = 0,

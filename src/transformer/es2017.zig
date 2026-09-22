@@ -113,17 +113,17 @@ pub fn ES2017(comptime Transformer: type) type {
             }
         }
 
-        /// async generator body 안의 `yield* X` 를 tslib 형태로 바꾼다:
-        ///   `yield* X` → `yield __await(yield* __asyncDelegator(__asyncValues(X)))`
+        /// async generator body 안의 `yield* X` 를 헬퍼 위임으로 바꾼다:
+        ///   `yield* X` → `yield* __yieldStar(X)`
         ///
         /// 왜 필요한가 — `__asyncGenerator` 의 inner 는 **동기** generator 다. 거기에
         /// `yield* X` 를 그대로 두면 X(async iterable)에서 `Symbol.iterator` 를 찾다
-        /// "is not iterable" 로 죽는다. `__asyncValues` 가 async iterator 를 꺼내고
-        /// `__asyncDelegator` 가 그걸 동기 `yield*` 가 이해하는 프로토콜로 감싼다.
+        /// "is not iterable" 로 죽는다. `__yieldStar` 가 동기/비동기 대상 모두를 동기
+        /// `yield*` 가 이해하는 iterable 로 감싼다.
         ///
         /// nested function/class 는 자기 컨텍스트라 건너뛴다 — `rewriteRemainingAwait`
         /// 의 boundary 집합과 같다.
-        fn rewriteYieldStarToAsyncDelegator(self: *Transformer, node_idx: NodeIndex) Transformer.Error!void {
+        fn rewriteYieldStarToHelper(self: *Transformer, node_idx: NodeIndex) Transformer.Error!void {
             var stack: std.ArrayListUnmanaged(NodeIndex) = .empty;
             defer stack.deinit(self.allocator);
             var child_buf: std.ArrayListUnmanaged(NodeIndex) = .empty;
@@ -151,30 +151,20 @@ pub fn ES2017(comptime Transformer: type) type {
                     const span = node.span;
                     const operand = node.data.unary.operand;
 
-                    self.runtime_helpers.async_values = true;
-                    self.runtime_helpers.async_delegator = true;
+                    self.runtime_helpers.yield_star = true;
                     self.runtime_helpers.await_helper = true;
 
-                    const values_ref = try es_helpers.makeRuntimeHelperRef(self, "__asyncValues");
-                    const values_call = try es_helpers.makeCallExpr(self, values_ref, &.{operand}, span);
-                    const deleg_ref = try es_helpers.makeRuntimeHelperRef(self, "__asyncDelegator");
-                    const deleg_call = try es_helpers.makeCallExpr(self, deleg_ref, &.{values_call}, span);
+                    // `yield* X` → `yield* __yieldStar(X)`. delegate 플래그를 **유지**하는 게
+                    // 핵심 — 동기 `yield*` 프로토콜이 그대로 돌고, 헬퍼가 비동기 대상을
+                    // `__await(p, 1)` 마커로 감싸 바깥 step 에 넘긴다. 마커의 두 번째 필드가
+                    // "yield* 에서 왔다" 를 나르므로 위임 **완료값**이 끊기지 않는다 (#4700).
+                    const star_ref = try es_helpers.makeRuntimeHelperRef(self, "__yieldStar");
+                    const star_call = try es_helpers.makeCallExpr(self, star_ref, &.{operand}, span);
 
-                    // 안쪽 `yield* __asyncDelegator(...)` — 새 노드로 만든다. 바깥 노드를
-                    // in-place 로 재사용하면 자기 자신을 operand 로 갖게 된다.
-                    const inner_yield = try self.ast.addNode(.{
-                        .tag = .yield_expression,
-                        .span = span,
-                        .data = .{ .unary = .{ .operand = deleg_call, .flags = ast_mod.YieldFlags.is_delegate } },
-                    });
-                    const await_ref = try es_helpers.makeRuntimeHelperRef(self, "__await");
-                    const await_call = try es_helpers.makeCallExpr(self, await_ref, &.{inner_yield}, span);
-
-                    // 바깥은 delegate 가 아닌 평범한 yield — 위임 결과(반환값)를 한 번 흘린다.
                     self.ast.replaceNode(idx, .{
                         .tag = .yield_expression,
                         .span = span,
-                        .data = .{ .unary = .{ .operand = await_call, .flags = 0 } },
+                        .data = .{ .unary = .{ .operand = star_call, .flags = ast_mod.YieldFlags.is_delegate } },
                     });
                     // operand 서브트리는 아직 훑어야 한다(중첩 `yield*` 가능).
                     try stack.append(self.allocator, operand);
@@ -205,7 +195,7 @@ pub fn ES2017(comptime Transformer: type) type {
             const new_params = try self.visitExtraList(.{ .start = params_list.start, .len = params_list.len });
 
             // `yield*` 를 먼저 푼다 — 그래야 그 안에 남은 `await` 를 아래 패스가 한 번에 정리한다.
-            try rewriteYieldStarToAsyncDelegator(self, body_idx);
+            try rewriteYieldStarToHelper(self, body_idx);
             try rewriteAwaitToYieldAwait(self, body_idx);
             // ⚠️ 여기서는 `in_extracted_fn_body` 를 켜지 않는다. `__asyncGenerator(this,
             // arguments, fn)` 이 arguments 를 **인자로** 넘기고 헬퍼가 `fn.apply(this,
