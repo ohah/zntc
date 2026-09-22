@@ -544,6 +544,18 @@ pub fn ES2022(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .none = 0 },
             });
+            // define 의미론이면 own property 를 정의한다 — assign 은 상위 클래스의
+            // 같은 이름 setter 를 타버린다 (#4629). class_member_helpers 의
+            // buildThisAssignment 와 같은 판단이며, private member 가 있는 클래스는
+            // 이 경로로 들어온다.
+            if (self.options.use_define_for_class_fields) {
+                self.runtime_helpers.public_field = true;
+                const key_arg = try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
+                const value = if (init_idx.isNone()) try es_helpers.makeVoidZero(self, span) else try self.visitNode(init_idx);
+                const callee = try es_helpers.makeRuntimeHelperRef(self, "__publicField");
+                const call = try es_helpers.makeCallExpr(self, callee, &.{ this_node, key_arg, value }, span);
+                return es_helpers.makeExprStmt(self, call, span);
+            }
             const member = try es_helpers.makeMemberFromKeyIdx(self, this_node, key_idx, span);
             const init = if (init_idx.isNone()) try es_helpers.makeVoidZero(self, span) else try self.visitNode(init_idx);
             const assign = try self.ast.addNode(.{

@@ -64,6 +64,7 @@ const HelperBit = enum {
     read,
     wrap_regex,
     async_delegator,
+    public_field,
 };
 
 const BitDef = struct {
@@ -109,6 +110,7 @@ const BIT_DEFS = [_]BitDef{
     .{ .bit = .class_private_field_set, .bases = &.{"__classPrivateFieldSet"} },
     .{ .bit = .async_generator, .bases = &.{"__asyncGenerator"} },
     .{ .bit = .async_delegator, .bases = &.{"__asyncDelegator"} },
+    .{ .bit = .public_field, .bases = &.{"__publicField"} },
     .{ .bit = .await_helper, .bases = &.{"__await"} },
     .{ .bit = .tdz, .bases = &.{"__tdz"} },
     .{ .bit = .read, .bases = &.{"__read"} },

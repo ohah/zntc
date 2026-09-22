@@ -181,23 +181,27 @@ export interface TranspileResult {
 //   29    ES2025 (regex_modifiers)
 //   30    ES2018 (regex_lookbehind — query-only)
 //   31    ES2018 (async_generator — `async function*`; #4628)
+//   32    ES2022 (class_field — public class field; #4629)
 //
 // 타겟 T 에 대해 "T 이후 도입된" 모든 feature 비트를 set 한다.
 // Feature 추가 시 compat.zig 와 함께 갱신.
 export const ES_TARGET_BITS: Record<string, number> = {
-  es5: 0xffffffff, // 모든 feature (bits 0-31)
-  es2015: 0xf6fff800, // ES2015/regex_sticky/unicode_brace_escape 제외
-  es2016: 0xf6fff000,
-  es2017: 0xf6ffe000, // bit 31(async_generator) 포함 — ES2018 이라 es2017 에선 미지원
-  es2018: 0x30ffc000, // ES2018 features 도 제외 (lookbehind·async_generator 지원)
-  es2019: 0x30ff8000,
-  es2020: 0x30fe0000,
-  es2021: 0x30fc0000,
-  es2022: 0x30c00000, // hashbang + using + regex dup-named + modifiers
-  es2023: 0x30800000,
-  es2024: 0x30800000, // ES2024 자체 구문 변환 기능 없음
-  es2025: 0x0,
-  esnext: 0x0,
+  // ⚠️ 비트 31 부터는 16진 표기를 쓰지 않는다 — JS 비트 연산(`|`/`<<`)이 int32 로 잘라
+  // 음수가 되므로, 값은 10진 정수 그대로 둔다. 실제 대조는 core 의 드리프트 가드
+  // 테스트(unsupported-bits.ts)가 네이티브 `targetToUnsupported` 와 전수로 한다.
+  es5: 8589934591, // 모든 feature (bits 0-32)
+  es2015: 8438937600,
+  es2016: 8438935552,
+  es2017: 8438931456, // bit 31 async_generator + bit 32 class_field 포함
+  es2018: 5117034496,
+  es2019: 5117018112,
+  es2020: 5116919808,
+  es2021: 5116788736, // class_field 는 ES2022 라 여기까지 미지원
+  es2022: 817889280,
+  es2023: 813694976,
+  es2024: 813694976, // ES2024 자체 구문 변환 기능 없음
+  es2025: 0,
+  esnext: 0,
 };
 
 export function targetToUnsupported(target?: Target): number {
