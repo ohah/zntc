@@ -753,6 +753,33 @@ test "es2017: 평범한 generator 의 yield* 는 건드리지 않는다 (#4628 �
 
 // === #1910: yield* iterable — __values() wrap ===
 
+test "ES5: 라벨 붙은 for-await 의 continue 는 break 와 다른 곳으로 간다 (#4710)" {
+    // `collectLabeledOperations` 의 `is_loop` 판정에 `.for_await_of_statement` 가 빠져
+    // 있었다. 빠지면 `continue_label` 이 null 이 되고 `continue <label>` 이
+    // `continue_label orelse break_label` 로 떨어져 **바깥 루프를 끊는다**.
+    //
+    // 라벨 번호에 의존하지 않도록, 같은 프로그램에서 `continue` 와 `break` 만 바꿔
+    // 넣었을 때 **산출물이 달라야 한다**는 차분으로 본다. 버그가 있으면 두 산출물이
+    // 바이트 단위로 같아진다.
+    const src_head = "async function* g(){ A: for await (const a of [1,2]) { for await (const b of [1,2]) { if (b===2) ";
+    const src_tail = " A; yield a; } } }";
+
+    var r_continue = try e2eTarget(std.testing.allocator, src_head ++ "continue" ++ src_tail, .es5);
+    defer r_continue.deinit();
+    var r_break = try e2eTarget(std.testing.allocator, src_head ++ "break" ++ src_tail, .es5);
+    defer r_break.deinit();
+
+    try std.testing.expect(r_continue.output.len > 0);
+    try std.testing.expect(!std.mem.eql(u8, r_continue.output, r_break.output));
+
+    // 그리고 `continue` 의 점프 대상이 **결정돼야** 한다. for-await 는 while 로 낮아지므로
+    // 그 while 이 자기 cond_label 을 `generator_loop_continue_label` 로 남겨야 하는데,
+    // 안 남기면 sentinel fixup 이 기본값 0 으로 떨어져 `[3, 0]`(함수 맨 앞으로 점프)이
+    // 방출된다 — 정상 출력에는 절대 나오지 않는 형태다.
+    try std.testing.expect(std.mem.indexOf(u8, r_continue.output, "[3,0]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r_continue.output, "[3, 0]") == null);
+}
+
 test "ES5: 상태 기계 루프의 캡처된 let 은 _loop generator 로 뽑아 위임한다 (#4716)" {
     // 상태 기계는 지역 변수를 함수 최상단 `var` 로 호이스트한다 → `let` 의 반복별
     // 바인딩이 하나로 합쳐져 루프 안 클로저가 전부 마지막 값을 캡처한다.
