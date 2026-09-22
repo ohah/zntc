@@ -160,7 +160,9 @@ export interface TranspileResult {
 
 // ─── ES Target → UnsupportedFeatures bitmask ───
 
-// compat.zig Feature enum 순서와 1:1 대응 (총 29 bits, src/transformer/compat.zig 참조):
+// compat.zig Feature enum 순서와 1:1 대응 (src/transformer/compat.zig 참조).
+// 개수는 여기 적지 않는다 — 예전엔 "총 29 bits" 라고 적혀 있었지만 실제 목록은
+// 0-30 이었다. 실제 대조는 compat-engines.test.ts 의 네이티브 대조 테스트가 한다:
 //   0-10  ES2015 (arrow, class, template_literal, destructuring, for_of, spread,
 //                  object_extensions, default_params, block_scoping, generator, new_target)
 //   11    ES2016 (exponentiation)

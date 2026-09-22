@@ -3,5 +3,6 @@ import './api/type-stripping';
 import './api/jsx';
 import './api/output-options';
 import './api/targets';
+import './api/unsupported-bits';
 import './api/lifecycle';
 import './api/lazy-auto-init';

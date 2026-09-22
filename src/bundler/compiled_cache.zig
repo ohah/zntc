@@ -240,7 +240,7 @@ pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
     h.addBool(options.transform_options_base.use_define_for_class_fields);
     h.addBool(options.transform_options_base.verbatim_module_syntax);
     h.addBool(options.transform_options_base.keep_names);
-    h.addU32(@bitCast(options.transform_options_base.unsupported));
+    h.addU64(@bitCast(options.transform_options_base.unsupported));
     // #4598 `tla_chunk_wrapped` 는 여기 따로 안 넣는다 — `format`·`code_splitting`·
     // `unsupported` 로 **완전히 결정되는 파생값**이고 셋 다 이미 위에서 해싱된다.
     // ⚠️ 게이트에 위 셋이 아닌 입력(예: `options.output.len`)을 추가하면 그 입력을

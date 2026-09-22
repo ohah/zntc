@@ -7,7 +7,11 @@
  * **주의**: compat.zig를 수정하면 이 파일도 함께 업데이트.
  * 장기적으론 scripts/compat-from-kangax.ts를 확장해 자동 생성.
  *
- * Bit 레이아웃은 packages/shared/index.ts ES_TARGET_BITS와 동일 (0-27).
+ * Bit 레이아웃은 packages/shared/index.ts ES_TARGET_BITS와 동일.
+ *
+ * ⚠️ 마스크 누산에 `1 << i` / `|=` 같은 **number 비트 연산을 쓰지 말 것** — JS 는
+ * 피연산자를 int32 로 자르므로 feature 가 31개를 넘는 순간 조용히 깨진다. BigInt 로
+ * 누산한 뒤 Number 로 환산한다.
  */
 
 export type Engine =
@@ -344,7 +348,12 @@ export type EngineVersion = { engine: Engine; major: number; minor: number };
  * 하나라도 미지원인 feature는 set (가장 보수적).
  */
 export function computeUnsupportedFromEngines(engines: EngineVersion[]): number {
-  let bits = 0;
+  // BigInt 로 누산한다. `bits |= 1 << i` 는 JS 비트 연산이 피연산자를 int32 로
+  // 자르기 때문에 i=31 에서 부호가 뒤집히고 i>=32 는 감긴다 — feature 는 계속
+  // 늘어나므로(현재 31개, 비트 0-30) 한 칸만 더해도 조용히 깨지는 코드였다.
+  // BigInt 는 폭 제한이 없어 절단이 구조적으로 불가능하고, 결과는 2^53 까지
+  // Number 로 정확히 환산된다(그 경계는 compat.zig 의 `WireBits` 와 같은 이유).
+  let bits = 0n;
   for (let i = 0; i < FEATURES.length; i++) {
     const feature = FEATURES[i];
     let anyUnsupported = false;
@@ -354,7 +363,7 @@ export function computeUnsupportedFromEngines(engines: EngineVersion[]): number 
         break;
       }
     }
-    if (anyUnsupported) bits |= 1 << i;
+    if (anyUnsupported) bits |= 1n << BigInt(i);
   }
-  return bits;
+  return Number(bits);
 }

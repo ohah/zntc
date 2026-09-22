@@ -219,6 +219,19 @@ pub fn getObjectUint32(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, d
     return result;
 }
 
+/// JS `number` 로 오는 비트마스크. `napi_get_value_uint32` 는 32비트를 넘는 비트를
+/// 조용히 잘라내므로(= 새 feature 가 무시된 채 빌드가 성립) double 로 받아 검사한다.
+/// bigint 로 바꾸면 JS 표면 타입이 number → bigint 로 바뀌어 호환이 깨진다.
+pub fn getObjectSafeInt(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, default_val: u64) u64 {
+    const val = getNamedProperty(env, obj, key) orelse return default_val;
+    var result: f64 = 0;
+    if (c.napi_get_value_double(env, val, &result) != c.napi_ok) return default_val;
+    // NaN / 음수 / 비정수 / 안전정수 초과는 비트마스크로 해석할 수 없다.
+    if (!(result >= 0) or result > 9007199254740991.0) return default_val;
+    if (@floor(result) != result) return default_val;
+    return @intFromFloat(result);
+}
+
 pub fn getObjectString(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, alloc: std.mem.Allocator) ?[]const u8 {
     const val = getNamedProperty(env, obj, key) orelse return null;
     return getStringArg(env, val, alloc);

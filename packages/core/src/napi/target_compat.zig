@@ -76,8 +76,10 @@ pub fn napiTargetToUnsupported(env: c.napi_env, info: c.napi_callback_info) call
     };
 
     var out: c.napi_value = undefined;
-    const raw: u32 = @bitCast(bits);
-    if (c.napi_create_uint32(env, raw, &out) != c.napi_ok) {
+    // u32 로 만들면 32비트를 넘는 feature 비트가 조용히 사라진다 — JS 표면 타입을
+    // number 로 유지하면서 안전정수 범위를 다 싣기 위해 double 로 보낸다.
+    const raw: compat.Bits = @bitCast(bits);
+    if (c.napi_create_double(env, @floatFromInt(raw), &out) != c.napi_ok) {
         return throwError(env, "targetToUnsupported: failed to create result");
     }
     return out;

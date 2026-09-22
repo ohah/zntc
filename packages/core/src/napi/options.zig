@@ -30,6 +30,7 @@ const getNamedProperty = common.getNamedProperty;
 const getObjectBool = common.getObjectBool;
 const getObjectBoolOptional = common.getObjectBoolOptional;
 const getObjectUint32 = common.getObjectUint32;
+const getObjectSafeInt = common.getObjectSafeInt;
 const getObjectString = common.getObjectString;
 const getObjectStringArray = common.getObjectStringArray;
 const parseStringArray = common.parseStringArray;
@@ -602,12 +603,12 @@ pub fn parseBuildOptions(
     if (target_str) |s| if (!trackStr(owned_strings, s)) return null;
     // JS side (browserslist 해석 등)에서 미리 계산한 unsupported bitmask가 있으면 우선.
     // 0이면 미설정으로 간주 — 어차피 unsupported=0은 esnext와 동일해서 target 기반 경로로 fallback해도 결과 동일.
-    const unsupported_override = getObjectUint32(env, opts_obj, "unsupported", 0);
+    const unsupported_override = getObjectSafeInt(env, opts_obj, "unsupported", 0);
     // rnVersion 매트릭스가 최우선 (있으면 target/override 무시 — react-native 매트릭스가 지배).
     const unsupported: compat.UnsupportedFeatures = if (rn_version_matrix) |m|
         m
     else if (unsupported_override != 0)
-        @bitCast(unsupported_override)
+        @bitCast(@as(compat.Bits, unsupported_override))
     else if (target_str) |s|
         // ES 버전이 아니면 엔진 매트릭스(`chrome80,safari14`)로 해석한다 — CLI 의 `--target=`
         // 과 같은 순서·같은 파서다. 예전엔 여기서 `.{}`(= esnext) 로 **조용히** 떨어져,

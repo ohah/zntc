@@ -102,7 +102,8 @@ pub const TranspileOptions = struct {
 /// `@typeInfo`로 반사해 단일 소스 보장. 필드를 바꾸면 schema도 함께 재생성.
 pub const ConfigOptionsDto = struct {
     target: ?@import("../transformer/compat.zig").ESTarget = null,
-    unsupported: ?u32 = null,
+    /// feature 비트마스크. JSON 을 건너므로 `WireBits`(JS 안전 정수 폭) 로 받는다.
+    unsupported: ?@import("../transformer/compat.zig").WireBits = null,
     flow: ?bool = null,
     jsxInJs: ?bool = null,
     reactRefresh: ?bool = null,
@@ -356,7 +357,7 @@ pub fn applyTranspileSharedFields(
             target.unsupported = compat.fromESTarget(t);
         }
     }
-    if (dto.unsupported) |u| target.unsupported = @bitCast(u);
+    if (dto.unsupported) |u| target.unsupported = @bitCast(@as(compat.Bits, u));
     if (dto.flow) |v| target.flow = v;
     if (dto.jsxInJs) |v| target.jsx_in_js = v;
     // CliOptions 미보유 — bundler 는 BuildOptionsCommon 으로 별도 surface 사용.
@@ -473,7 +474,7 @@ pub fn optionsFromJson(
         .verbatim_module_syntax = parsed.verbatimModuleSyntax,
         .sourcemap = parsed.sourcemap,
         .es_target = parsed.target,
-        .unsupported = if (parsed.unsupported) |u| @bitCast(u) else null,
+        .unsupported = if (parsed.unsupported) |u| @bitCast(@as(@import("../transformer/compat.zig").Bits, u)) else null,
         .jsx_runtime = parsed.jsx,
         .jsx_factory = parsed.jsxFactory,
         .jsx_fragment = parsed.jsxFragment,
