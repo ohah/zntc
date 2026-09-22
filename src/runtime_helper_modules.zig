@@ -123,6 +123,11 @@ const MODULES = [_]HelperModule{
         },
     },
     .{
+        .short = "public-field",
+        .helpers = &.{"__publicField"},
+        .body = .{ .plain = rt.PUBLIC_FIELD_RUNTIME, .min = rt.PUBLIC_FIELD_RUNTIME_MIN },
+    },
+    .{
         .short = "values",
         .helpers = &.{"__values"},
         .body = .{ .plain = rt.VALUES_RUNTIME, .min = rt.VALUES_RUNTIME_MIN },

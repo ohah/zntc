@@ -17,7 +17,14 @@ const es2022 = @import("../es2022.zig");
 pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
     const e = node.data.extra;
 
-    if (self.options.use_define_for_class_fields and !self.options.experimental_decorators) {
+    // 낮춰야 할 public class field 가 **실제로 있을 때만** fast path 를 벗어난다 (#4629).
+    // 필드를 constructor/정적 문장으로 옮기는 기계가 assign-semantics 경로에만 있어서인데,
+    // 옵션만 보고 무조건 벗어나면 필드 없는 클래스까지 끌려가 산출물이 깨진다.
+    const lower_public_fields = self.options.unsupported.class_field and
+        classBodyHasPublicField(self, self.readNodeIdx(e, ast_mod.ClassExtra.body));
+    if (self.options.use_define_for_class_fields and !self.options.experimental_decorators and
+        !lower_public_fields)
+    {
         const raw_name_idx = self.readNodeIdx(e, ast_mod.ClassExtra.name);
         var new_name = if (shouldDropClassExprName(self, node.tag, raw_name_idx))
             ast_mod.NodeIndex.none
@@ -368,6 +375,41 @@ pub fn classBodyHasLowerableMember(
             },
             else => {},
         }
+    }
+    return false;
+}
+
+/// body 에 **낮춰야 할 public class field** 가 하나라도 있는지 (#4629).
+///
+/// 왜 probe 가 필요한가 — `unsupported.class_field` 만 보고 fast path 를 벗어나면
+/// **필드가 없는 클래스까지** assign-semantics 경로로 끌려간다. 그 경로는 anonymous
+/// class_expression + static block 같은 위상을 fast path 와 다르게 처리해서 산출물이
+/// 깨졌다(`var x = class { static { this.y = 1 } }` → `var class{},…`). 옵션이 아니라
+/// **body 가 실제로 그 멤버를 갖는지**로 진입을 결정한다 — `classBodyHasLowerableMember`
+/// 와 같은 원칙이다.
+pub fn classBodyHasPublicField(self: *Transformer, body_idx: NodeIndex) bool {
+    if (body_idx.isNone()) return false;
+    const body_node = self.ast.getNode(body_idx);
+    if (body_node.tag != .class_body) return false;
+
+    const start = body_node.data.list.start;
+    const len = body_node.data.list.len;
+    if (start + len > self.ast.extra_data.items.len) return false;
+
+    var i: u32 = 0;
+    while (i < len) : (i += 1) {
+        const member = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[start + i]));
+        if (member.tag != .property_definition) continue;
+        const e = member.data.extra;
+        if (e + ast_mod.PropertyExtra.flags >= self.ast.extra_data.items.len) continue;
+        const key = self.readNodeIdx(e, ast_mod.PropertyExtra.key);
+        if (key.isNone()) continue;
+        if (self.ast.getNode(key).tag == .private_identifier) continue; // private 은 별도 경로
+        const flags = self.readU32(e, ast_mod.PropertyExtra.flags);
+        // `declare x: T` / `abstract x: T` 는 타입 전용이라 방출 자체가 없다.
+        if ((flags & ast_mod.PropertyFlags.is_declare) != 0) continue;
+        if ((flags & ast_mod.PropertyFlags.is_abstract) != 0) continue;
+        return true;
     }
     return false;
 }

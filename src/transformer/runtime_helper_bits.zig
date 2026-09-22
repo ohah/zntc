@@ -63,7 +63,9 @@ pub const RuntimeHelpers = packed struct(u32) {
     wrap_regex: bool = false,
     /// __asyncDelegator: async generator 안 `yield* X` 위임 (#4628 후속).
     async_delegator: bool = false,
-    _padding: u4 = 0,
+    /// __publicField: define 의미론 public class field 낮추기 (#4629).
+    public_field: bool = false,
+    _padding: u3 = 0,
 
     /// 어떤 helper flag 라도 set 됐는지 - emitter 의 prepend 분기에서 빈 helper 시
     /// no-op 결정에 사용.

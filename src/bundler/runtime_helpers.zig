@@ -803,6 +803,19 @@ pub const ASYNC_GENERATOR_RUNTIME =
 /// iterable 에 `Symbol.iterator` 를 찾다 "not iterable" 로 죽는다 (#4628 후속).
 /// 값을 한 번은 `__await` 로 감싸 바깥 step() 이 Promise 를 풀게 하고, 다음 번에
 /// 그대로 흘려보내는 식으로 두 프로토콜을 잇는다(`p` 토글이 그 교대다).
+/// __publicField: public class field 를 **define 의미론**으로 낮춘다 (#4629).
+/// `class C { n = 7 }` 은 `this.n = 7`(assign)이 아니라 `Object.defineProperty` 로
+/// own property 를 *만든다* — setter 를 가진 상위 클래스가 있으면 둘의 동작이 갈리고,
+/// 초기값 없는 `u;` 도 `'u' in c === true` 여야 한다. `useDefineForClassFields=false`
+/// 일 때는 이 헬퍼를 쓰지 않고 기존 assign 경로를 그대로 탄다.
+pub const PUBLIC_FIELD_RUNTIME =
+    \\var __publicField = function(obj, key, value) {
+    \\  return Object.defineProperty(obj, typeof key === "symbol" ? key : key + "", { enumerable: true, configurable: true, writable: true, value: value }), value;
+    \\};
+    \\
+;
+pub const PUBLIC_FIELD_RUNTIME_MIN = "var __publicField=function(obj,key,value){return Object.defineProperty(obj,typeof key===\"symbol\"?key:key+\"\",{enumerable:true,configurable:true,writable:true,value:value}),value};";
+
 pub const ASYNC_DELEGATOR_RUNTIME =
     \\var __asyncDelegator = function(o) {
     \\  var i, p;
@@ -1531,6 +1544,9 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     // __asyncDelegator 는 __await 를 부르므로 그 뒤에 온다(위 await_helper 분기가 이미 emit).
     if (helpers.async_delegator) {
         try buf.appendSlice(allocator, if (minify) ASYNC_DELEGATOR_RUNTIME_MIN else ASYNC_DELEGATOR_RUNTIME);
+    }
+    if (helpers.public_field) {
+        try buf.appendSlice(allocator, if (minify) PUBLIC_FIELD_RUNTIME_MIN else PUBLIC_FIELD_RUNTIME);
     }
     if (helpers.to_binary) {
         try buf.appendSlice(allocator, if (minify) TO_BINARY_RUNTIME_MIN else TO_BINARY_RUNTIME);

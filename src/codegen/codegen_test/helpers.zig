@@ -274,6 +274,19 @@ pub fn e2eTarget(allocator: std.mem.Allocator, source: []const u8, target: Trans
     }, ".ts");
 }
 
+/// `e2eTarget` + `useDefineForClassFields=false`. 타겟이 class field 를 몰라 낮추더라도
+/// 옵션이 assign 의미론을 요구하면 `__publicField` 를 끼우지 않아야 한다 (#4629).
+pub fn e2eTargetAssignSemantics(allocator: std.mem.Allocator, source: []const u8, target: TransformOptions.compat.ESTarget) !TestResult {
+    const unsupported = TransformOptions.compat.fromESTarget(target);
+    return e2eFull(allocator, source, .{
+        .unsupported = unsupported,
+        .use_define_for_class_fields = false,
+    }, .{
+        .minify_whitespace = true,
+        .assert_no_raw_private_syntax = unsupported.requiresPrivateDownlevel(),
+    }, ".ts");
+}
+
 pub fn expectAsyncStateMachine(output: []const u8) !void {
     try std.testing.expect(std.mem.indexOf(u8, output, "__async") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "__generator") != null);

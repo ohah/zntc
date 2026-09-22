@@ -167,6 +167,8 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
     var static_block_iifes: std.ArrayList(NodeIndex) = .empty;
     defer static_block_iifes.deinit(self.allocator);
 
+    var static_block_field_counts: std.ArrayList(u32) = .empty;
+    defer static_block_field_counts.deinit(self.allocator);
     var static_field_assignments: std.ArrayList(FieldAssignment) = .empty;
     defer static_field_assignments.deinit(self.allocator);
 
@@ -183,7 +185,11 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
         .existing_constructor = &existing_constructor,
         .existing_constructor_pos = &existing_constructor_pos,
         .static_block_iifes = if (self.options.unsupported.class_static_block) &static_block_iifes else null,
-        .static_field_assignments = if (!self.options.use_define_for_class_fields) &static_field_assignments else null,
+        .static_block_field_counts = if (self.options.unsupported.class_static_block) &static_block_field_counts else null,
+        // static field 를 class 밖으로 옮겨야 하는 조건은 instance field 와 같다 —
+        // 옵션이 assign 의미론이거나, 타겟이 class field 를 모르거나 (#4629).
+        .static_field_assignments = if (!self.options.use_define_for_class_fields or
+            self.options.unsupported.class_field) &static_field_assignments else null,
         .ctor_param_decos = &ctor_param_decos,
         .has_super = has_super,
         .ctor_params = &ctor_params,
@@ -356,13 +362,24 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
         try self.pending_nodes.append(self.allocator, class_result);
         // V_ASSIGN fix: private static descriptor 는 class 뒤, static field 할당과 IIFE 의 앞에.
         for (assign_static_descriptors.items) |desc| try self.pending_nodes.append(self.allocator, desc);
-        // static field: Foo.z = 2;
-        for (static_field_assignments.items) |field| {
-            const stmt = try self.buildStaticFieldAssignment(new_name, field);
-            try self.pending_nodes.append(self.allocator, stmt);
-        }
-        for (static_block_iifes.items) |iife| {
+        // static field 와 static block 은 **소스 순서**대로 평가돼야 한다 (#4629).
+        // `static a = …; static { … } static b = …` 에서 block 이 뒤로 밀리면
+        // block 이 보는 값이 달라진다. counts[i] = 그 block 앞에 있던 field 수.
+        var emitted_fields: u32 = 0;
+        for (static_block_iifes.items, 0..) |iife, i| {
+            const upto: u32 = if (i < static_block_field_counts.items.len)
+                static_block_field_counts.items[i]
+            else
+                @intCast(static_field_assignments.items.len);
+            while (emitted_fields < upto) : (emitted_fields += 1) {
+                const stmt = try self.buildStaticFieldAssignment(new_name, static_field_assignments.items[emitted_fields]);
+                try self.pending_nodes.append(self.allocator, stmt);
+            }
             try self.pending_nodes.append(self.allocator, iife);
+        }
+        while (emitted_fields < static_field_assignments.items.len) : (emitted_fields += 1) {
+            const stmt = try self.buildStaticFieldAssignment(new_name, static_field_assignments.items[emitted_fields]);
+            try self.pending_nodes.append(self.allocator, stmt);
         }
         return .none;
     }

@@ -114,6 +114,10 @@ pub const Feature = enum(u6) {
     /// **둘 다 네이티브 지원**하므로 그 두 비트로는 잡히지 않는다 — 독립 비트가 필요하다
     /// (#4628: 이 비트가 없어 es2017 에서만 `async function*` 이 그대로 새어나갔다).
     async_generator,
+    /// ES2022 public class field (`class C { n = 7 }`). `class` 비트(ES2015)와 **독립** —
+    /// es2015~es2021 은 class 자체는 네이티브지만 필드는 아니다. 예전엔 필드 낮추기가
+    /// class→IIFE 낮추기에만 얹혀 있어 그 7개 타겟에서 필드가 그대로 샜다 (#4629).
+    class_field,
 
     /// 이 feature가 도입된 ES 버전.
     pub fn esVersion(self: Feature) ESTarget {
@@ -125,7 +129,7 @@ pub const Feature = enum(u6) {
             .optional_catch_binding => .es2019,
             .nullish_coalescing, .optional_chaining => .es2020,
             .logical_assignment => .es2021,
-            .class_static_block, .class_private_method, .class_private_field, .top_level_await => .es2022,
+            .class_static_block, .class_private_method, .class_private_field, .top_level_await, .class_field => .es2022,
             .hashbang => .es2023,
             .using, .regex_duplicate_named_groups, .regex_modifiers => .es2025,
         };
@@ -211,10 +215,12 @@ pub const UnsupportedFeatures = packed struct(Bits) {
     /// ES2018 `async function*`. `async_await`/`generator` 와 **독립** — es2017 은 그 둘이
     /// 네이티브라 둘 중 어느 비트로도 게이트되지 않는다 (#4628).
     async_generator: bool = false,
+    /// ES2022 public class field. `class` 와 독립 (#4629).
+    class_field: bool = false,
 
     /// 나머지 비트는 예약. 새 feature 는 **끝에만** 추가한다 (Feature enum 과 비트
     /// 위치가 1:1 이라 중간 삽입은 기존 비트 의미를 통째로 어긋나게 한다).
-    _: u32 = 0,
+    _: u31 = 0,
 
     /// regex literal lowering 이 필요한 비트가 하나라도 set 인지.
     /// node_dispatch 조기탈출/graph prepass 게이트가 공유 — 새 regex 비트는
@@ -562,6 +568,16 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .async_generator, .engine = .deno, .major = 1 },
     .{ .feature = .async_generator, .engine = .ios, .major = 12 },
 
+    // ── ES2022: class_field (public instance/static field) ──
+    // hermes 는 표에 없으면 미지원 규칙으로 보수적 다운레벨한다.
+    .{ .feature = .class_field, .engine = .chrome, .major = 72 },
+    .{ .feature = .class_field, .engine = .firefox, .major = 69 },
+    .{ .feature = .class_field, .engine = .safari, .major = 14, .minor = 1 },
+    .{ .feature = .class_field, .engine = .edge, .major = 79 },
+    .{ .feature = .class_field, .engine = .node, .major = 12 },
+    .{ .feature = .class_field, .engine = .deno, .major = 1 },
+    .{ .feature = .class_field, .engine = .ios, .major = 14, .minor = 5 },
+
     // ── ES2019: optional_catch_binding ──
     .{ .feature = .optional_catch_binding, .engine = .chrome, .major = 66 },
     .{ .feature = .optional_catch_binding, .engine = .firefox, .major = 58 },
@@ -809,7 +825,8 @@ const RN_DOC_SUPPORTED = UnsupportedFeatures{
     .arrow = true, // ES2015 Arrow functions
     .block_scoping = true, // ES2015 Block scoping / Constants
     .spread = true, // ES2015 Call spread / Rest Params
-    .class = true, // ES2015 Classes (+ ES2022 public Class Fields)
+    .class = true, // ES2015 Classes
+    .class_field = true, // ES2022 public Class Fields — RN 문서가 "Classes" 항목에 포함
     .object_extensions = true, // ES2015 Computed / Concise method / Shorthand
     .destructuring = true, // ES2015 Destructuring
     .for_of = true, // ES2015 for…of

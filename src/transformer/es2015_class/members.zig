@@ -344,8 +344,10 @@ pub fn Members(comptime Transformer: type) type {
                         else
                             key;
                         try cm.static_elements.append(self.allocator, .{ .field = .{ .key = static_key, .init = init_val } });
-                    } else if (!is_static and !init_val.isNone()) {
+                    } else if (!is_static and (!init_val.isNone() or self.options.use_define_for_class_fields)) {
                         // 실제 statement build + visitNode 는 emitInstanceInits 가 매핑 set 후에 처리.
+                        // init 이 없어도 define 의미론에선 필드가 **존재해야** 한다
+                        // (`'u' in obj === true`) — `void 0` 으로 정의한다 (#4629).
                         try cm.instance_inits.append(self.allocator, .{ .public_field = .{ .key = key, .init = init_val } });
                     }
                 } else if (member.tag == .static_block) {
@@ -678,6 +680,17 @@ pub fn Members(comptime Transformer: type) type {
         /// obj.key = init 또는 obj[computedKey] = init expression_statement 생성.
         /// instance field: obj = this, static field: obj = ClassName identifier.
         fn buildFieldAssign(self: *Transformer, obj: NodeIndex, key_idx: NodeIndex, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            // define 의미론이면 own property 를 *정의*해야 한다 — 상위 클래스 setter 를
+            // 타지 않고, 초기값 없는 필드도 존재해야 한다 (#4629). static 쪽은 예전부터
+            // 같은 이유로 defineProperty 를 쓰고 있었다(buildStaticFieldDefineProperty).
+            if (self.options.use_define_for_class_fields) {
+                self.runtime_helpers.public_field = true;
+                const key_arg = try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
+                const value = if (!init_idx.isNone()) try self.visitNode(init_idx) else try es_helpers.makeVoidZero(self, span);
+                const callee = try es_helpers.makeRuntimeHelperRef(self, "__publicField");
+                const call = try es_helpers.makeCallExpr(self, callee, &.{ obj, key_arg, value }, span);
+                return es_helpers.makeExprStmt(self, call, span);
+            }
             const member = try es_helpers.makeMemberFromKeyIdx(self, obj, key_idx, span);
             const new_init = try self.visitNode(init_idx);
             const assign = try self.ast.addNode(.{

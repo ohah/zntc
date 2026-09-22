@@ -19,6 +19,8 @@ pub fn buildStaticFieldAssignment(self: anytype, class_name: NodeIndex, field: F
         .span = name_node.span,
         .data = .{ .string_ref = name_node.span },
     });
+    // 타겟이 class field 를 모르는데 define 의미론이면 헬퍼로 정의한다 (#4629).
+    if (self.options.use_define_for_class_fields) return buildPublicFieldCall(self, cls_ref, field);
     const member = if (field.is_computed) blk: {
         // computed: ClassName[key]
         const me_extra = try self.ast.addExtras(&.{
@@ -47,6 +49,20 @@ pub fn buildStaticFieldAssignment(self: anytype, class_name: NodeIndex, field: F
     });
 }
 
+/// define 의미론(`useDefineForClassFields=true`)으로 public field 를 낮출 때 쓰는 문장:
+/// `__publicField(<obj>, <key>, <value>)`.
+///
+/// 왜 assign(`obj.k = v`)이 아닌가 — ES2022 public field 는 **own property 를 정의**한다.
+/// 상위 클래스에 같은 이름의 setter 가 있으면 assign 은 그 setter 를 타지만 정의는 타지
+/// 않고, 초기값 없는 `u;` 도 `'u' in obj === true` 여야 한다. 그 차이를 헬퍼가 메운다.
+fn buildPublicFieldCall(self: anytype, obj: NodeIndex, field: FieldAssignment) Error!NodeIndex {
+    self.runtime_helpers.public_field = true;
+    const key_arg = try es_helpers.buildDefinePropertyKeyArg(self, field.key);
+    const callee = try es_helpers.makeRuntimeHelperRef(self, "__publicField");
+    const call = try es_helpers.makeCallExpr(self, callee, &.{ obj, key_arg, field.value }, field.span);
+    return es_helpers.makeExprStmt(self, call, field.span);
+}
+
 /// 단일 클래스 멤버를 분류하여 적절한 목록에 추가한다.
 /// - property_definition: assign semantics 대상이면 field_assignments에, 아니면 class_members에
 /// - method_definition: constructor면 기록, 일반 메서드면 class_members에
@@ -61,6 +77,10 @@ pub const ClassMemberContext = struct {
     existing_constructor_pos: *?usize,
     /// ES2022 다운레벨링: static block → IIFE (target < es2022 일 때 사용)
     static_block_iifes: ?*std.ArrayList(NodeIndex) = null,
+    /// `static_block_iifes[i]` 앞에 놓여야 할 static field 개수 (#4629).
+    /// static field 와 static block 은 **소스 순서대로** 평가돼야 하는데 둘이 다른
+    /// 리스트에 쌓이므로, 이 개수로 emit 때 다시 끼워 넣는다.
+    static_block_field_counts: ?*std.ArrayList(u32) = null,
     /// ES2022 static block 안의 this → 클래스 이름 치환에 사용
     class_name_span: ?Span = null,
     /// useDefineForClassFields=false: static field → class 밖 할당문
@@ -98,6 +118,10 @@ pub fn classifyClassMember(
     if (member.tag == .static_block and ctx.static_block_iifes != null) {
         const Self = @TypeOf(self.*);
         const iife = try es2022.ES2022(Self).buildStaticBlockIIFE(self, member, ctx.class_name_span);
+        if (ctx.static_block_field_counts) |counts| {
+            const before: u32 = if (ctx.static_field_assignments) |sfa| @intCast(sfa.items.len) else 0;
+            try counts.append(self.allocator, before);
+        }
         try ctx.static_block_iifes.?.append(self.allocator, iife);
         return;
     }
@@ -146,8 +170,11 @@ pub fn classifyPropertyDefinition(
         }
     }
 
-    // useDefineForClassFields=false: non-static instance field를 constructor로 이동
-    if (!self.options.use_define_for_class_fields and !is_static and !is_abstract and !is_declare) {
+    // 낮추는 조건 둘: (a) useDefineForClassFields=false — 옵션이 assign 의미론을 요구,
+    // (b) 타겟이 ES2022 public class field 를 모른다 (#4629) — 이땐 define 의미론을
+    // 유지해야 하므로 위 buildThisAssignment 가 __publicField 로 내보낸다.
+    const lower_fields = !self.options.use_define_for_class_fields or self.options.unsupported.class_field;
+    if (lower_fields and !is_static and !is_abstract and !is_declare) {
         const key_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.key);
         const init_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.init);
         const key_node_pre = self.ast.getNode(key_idx);
@@ -156,7 +183,11 @@ pub fn classifyPropertyDefinition(
             const new_key = try self.visitNode(key_idx);
             // super class가 있으면 field value의 this → _this 치환
             const saved_super_alias = self.super_call_this_alias;
-            if (ctx.has_super) self.super_call_this_alias = true;
+            // `_this` 별칭은 **class 를 함수로 낮출 때만** 존재한다(`__callSuper` 가
+            // Reflect.construct 로 새 객체를 돌려주므로). class 가 네이티브로 남는
+            // es2015~es2021 에서 켜면 정의되지 않은 `_this` 를 참조하는 산출물이
+            // 나온다 (#4629 에서 이 경로를 그 타겟들이 타게 되며 드러났다).
+            if (ctx.has_super and self.options.unsupported.class) self.super_call_this_alias = true;
             defer self.super_call_this_alias = saved_super_alias;
             const new_init = try self.visitNode(init_idx);
             const key_node = self.ast.getNode(key_idx);
@@ -190,8 +221,20 @@ pub fn classifyPropertyDefinition(
             }
             return;
         }
-        // init 이 없으면 — public field 는 elide 가능 (default void 0), private field 는 declaration
-        // 유지 필수. 그래서 private 인 경우만 그대로 emit.
+        // init 이 없을 때 — assign 의미론에선 public field 를 elide 해도 된다(TS 규칙).
+        // 하지만 define 의미론에선 필드가 **존재해야** 한다(`'u' in obj === true`) →
+        // `void 0` 으로 정의한다 (#4629).
+        if (!is_private and self.options.use_define_for_class_fields) {
+            const new_key = try self.visitNode(key_idx);
+            const key_node2 = self.ast.getNode(key_idx);
+            try field_assignments.append(self.allocator, .{
+                .key = new_key,
+                .value = try es_helpers.makeVoidZero(self, member.span),
+                .is_computed = (key_node2.tag == .computed_property_key),
+                .span = member.span,
+            });
+            return;
+        }
         if (is_private) {
             const new_member = try self.visitNode(@enumFromInt(raw_idx));
             if (!new_member.isNone()) {
@@ -201,8 +244,8 @@ pub fn classifyPropertyDefinition(
         return;
     }
 
-    // useDefineForClassFields=false + static field
-    if (!self.options.use_define_for_class_fields and is_static) {
+    // static field — 같은 두 조건.
+    if (lower_fields and is_static) {
         const key_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.key);
         const init_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.init);
         if (init_idx.isNone()) return; // 초기값 없음 → 타입 선언만, 제거
@@ -727,6 +770,10 @@ pub fn buildConstructorWithFieldAssignments(
 
 /// this.key = value; expression statement 생성
 pub fn buildThisAssignment(self: anytype, field: FieldAssignment) Error!NodeIndex {
+    if (self.options.use_define_for_class_fields) {
+        const this_for_define = try es_helpers.makeThisExpr(self, field.span);
+        return buildPublicFieldCall(self, this_for_define, field);
+    }
     const this_node = try self.ast.addNode(.{
         .tag = .this_expression,
         .span = field.span,

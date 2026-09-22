@@ -10,6 +10,7 @@ const TransformOptions = helpers.TransformOptions;
 const CodegenOptions = helpers.CodegenOptions;
 const TestResult = helpers.TestResult;
 const e2eTarget = helpers.e2eTarget;
+const e2eTargetAssignSemantics = helpers.e2eTargetAssignSemantics;
 const expectAsyncStateMachine = helpers.expectAsyncStateMachine;
 const e2eES5Async = helpers.e2eES5Async;
 const assertNoAsyncSelfLoop = helpers.assertNoAsyncSelfLoop;
@@ -481,6 +482,49 @@ test "ES5: async function emits __generator(this, ...) for body this access (#19
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator(this,function") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator(this, function") != null or
         std.mem.indexOf(u8, r.output, "__generator(this,function") != null);
+}
+
+// === #4629: public class field 는 ES2022 — `class` 비트와 독립 ===
+
+test "es2017: public class field 가 다운레벨된다 (#4629)" {
+    // class 는 네이티브인데 필드만 ES2022 — 예전엔 필드 낮추기가 class→IIFE 낮추기에만
+    // 얹혀 있어 es2015~es2021 에서 필드가 그대로 샜다(타겟 엔진 파싱 불가).
+    var r = try e2eTarget(std.testing.allocator, "class C { n = 7; }", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "class C") != null); // class 는 유지
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__publicField") != null);
+}
+
+test "es2017: 초기값 없는 public field 도 정의된다 (#4629)" {
+    // define 의미론에선 `'u' in obj === true` 여야 한다 — elide 하면 안 된다.
+    var r = try e2eTarget(std.testing.allocator, "class C { u; }", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__publicField") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0") != null);
+}
+
+test "es2017: static public field 도 class 밖으로 나온다 (#4629)" {
+    var r = try e2eTarget(std.testing.allocator, "class C { static z = 1; }", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "static z") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__publicField") != null);
+}
+
+test "es2022: public class field 는 네이티브 유지 (#4629 과잉 변환 방지)" {
+    var r = try e2eTarget(std.testing.allocator, "class C { n = 7; }", .es2022);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__publicField") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "n=7") != null); // minify_whitespace
+
+}
+
+test "es2017: useDefineForClassFields=false 면 assign 의미론 유지 (#4629)" {
+    // 옵션이 명시적으로 assign 을 요구하면 헬퍼를 끼우지 않는다.
+    var r = try e2eTargetAssignSemantics(std.testing.allocator, "class C { n = 7; }", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__publicField") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.n=7") != null); // minify_whitespace
+
 }
 
 // === #4628: async generator (`async function*`) 는 ES2018 — 자기 비트로 게이트 ===
@@ -1762,7 +1806,9 @@ test "ES2015: class with instance field" {
     var r = try e2eTarget(std.testing.allocator, "class Foo{x=1;}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function Foo()") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.x=1") != null);
+    // #4629: define 의미론(`useDefineForClassFields=true`, 기본값)이면 assign 이 아니라
+    // own property 정의다 — 바로 아래 static field 테스트가 예전부터 기대하던 것과 대칭.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__publicField(this,\"x\",1)") != null);
 }
 
 test "ES2015: class with static field" {
@@ -2513,27 +2559,31 @@ test "ES2015: static computed field uses bracket notation" {
     try std.testing.expectEqual(std.mem.indexOf(u8, r.output, "F.[k]"), null);
 }
 
-test "ES2015: instance computed field uses bracket notation" {
+test "ES2015: instance computed field uses computed key expression" {
     var r = try e2eTarget(std.testing.allocator, "var k='tag';class F{[k]='foo';}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "this[k]") != null);
+    // #4629: define 의미론에선 key 를 헬퍼 인자로 넘긴다 — computed 는 식 그대로,
+    // 식별자는 문자열. `this.[k]` 같은 잘못된 문법이 나오지 않는지도 함께 본다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__publicField(this,k,") != null);
     try std.testing.expectEqual(std.mem.indexOf(u8, r.output, "this.[k]"), null);
 }
 
 test "ES2015: class with multiple fields" {
     var r = try e2eTarget(std.testing.allocator, "class F{a=1;b='hi';c=true;}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.a=1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.b=\"hi\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.c=true") != null);
+    // #4629: define 의미론 — 순서 보존 확인도 겸한다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__publicField(this,\"a\",1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__publicField(this,\"b\",\"hi\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__publicField(this,\"c\",true)") != null);
 }
 
 test "ES2015: class constructor with super and field" {
     var r = try e2eTarget(std.testing.allocator, "class B{x=0;}class D extends B{y=1;constructor(){super();this.z=2;}}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends") != null);
-    // super()가 있으므로 instance field는 _this에 할당
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_this.y=1") != null);
+    // super()가 있으므로 instance field 의 수신자는 `this` 가 아니라 `_this` 여야 한다.
+    // #4629 로 정의 형태가 바뀌어도 그 수신자 선택은 그대로여야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__publicField(_this,\"y\",1)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__assertThisInitialized(_this).z=2") != null);
 }
 
