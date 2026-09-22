@@ -50,9 +50,79 @@ fn expandBlockRenamedShorthand(self: *Transformer, node: Node) Error!?NodeIndex 
 // method_definition: extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
 // constructor의 parameter property (public x: number) 변환도 처리.
 // abstract 메서드는 런타임에 존재하면 안 되므로 완전히 제거.
+/// `async *m() {}` 클래스 메서드를 낮춘다 — class 는 네이티브로 두고 메서드만 바꾼다.
+///
+/// 왜 별도 경로인가 — 함수 선언/식은 `node_dispatch` 가 `lowerAsyncGeneratorToStateMachine`
+/// 으로 보내고, 객체 리터럴 메서드는 `es2015_object_methods` 가 `key: function*` 으로
+/// 풀어 같은 경로를 타게 한다. 그런데 **클래스 메서드**는 class 가 함수로 낮아질 때
+/// (es5)에만 함수식이 되고, class 가 네이티브로 남는 es2015~es2017 에선 어느 경로도
+/// 타지 않아 `async *m()` 이 그대로 샜다 (#4628 후속).
+///
+/// 방식: 메서드의 params/body 로 합성 `function_expression`(async+generator)을 만들어
+/// **기존 낮추기 경로에 그대로 태운 뒤**, 그 결과의 params/body 를 메서드로 되돌린다.
+/// `yield*` → `__asyncDelegator` 재작성과 `await` → `yield __await` 도 그 경로가 이미
+/// 한다 — 로직을 복제하지 않는다.
+pub fn lowerAsyncGeneratorMethod(self: *Transformer, node: Node) Error!NodeIndex {
+    const e = node.data.extra;
+    const flags = self.readU32(e, ast_mod.MethodExtra.flags);
+    const span = node.span;
+
+    const new_key = try self.visitNode(self.readNodeIdx(e, ast_mod.MethodExtra.key));
+    const params_idx = self.readNodeIdx(e, ast_mod.MethodExtra.params);
+    const body_idx = self.readNodeIdx(e, ast_mod.MethodExtra.body);
+
+    const none = @intFromEnum(NodeIndex.none);
+    const fn_extra = try self.ast.addExtras(&.{
+        none, // anonymous
+        @intFromEnum(params_idx),
+        @intFromEnum(body_idx),
+        ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator,
+        none,
+    });
+    const synth = try self.ast.addNode(.{
+        .tag = .function_expression,
+        .span = span,
+        .data = .{ .extra = fn_extra },
+    });
+    // #3680 과 같은 이유 — 본문이 클래스의 lexical context 밖(plain `function*`)으로
+    // 옮겨지므로 raw `super` 는 SyntaxError 다. visit 동안 추출 컨텍스트를 켜
+    // `super.x` 를 `__superGet(Parent.prototype, "x", this)` 로 낮춘다.
+    const saved_in_extracted = self.current_super_in_extracted_fn;
+    const saved_super_is_static = self.current_super_is_static;
+    self.current_super_in_extracted_fn = true;
+    if ((flags & ast_mod.MethodFlags.is_static) != 0) self.current_super_is_static = true;
+    defer self.current_super_in_extracted_fn = saved_in_extracted;
+    defer self.current_super_is_static = saved_super_is_static;
+
+    const lowered = try self.visitNode(synth);
+    if (lowered.isNone()) return NodeIndex.none;
+    const ln = self.ast.getNode(lowered);
+
+    // 낮추기 결과는 `function(<params>) { return __asyncGenerator(this, arguments, function*(){…}); }`.
+    // 그 params/body 를 그대로 쓰고 메서드에서 async/generator 플래그만 뗀다 —
+    // `this`/`arguments` 는 메서드 본문 안에서 평가되므로 의미가 보존된다.
+    const new_params = self.readNodeIdx(ln.data.extra, ast_mod.FunctionExtra.params);
+    const new_body = self.readNodeIdx(ln.data.extra, ast_mod.FunctionExtra.body);
+    const cleared = flags & ~(ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_generator);
+
+    return self.addExtraNode(.method_definition, span, &.{
+        @intFromEnum(new_key),                           @intFromEnum(new_params),
+        @intFromEnum(new_body),                          cleared,
+        self.readU32(e, ast_mod.MethodExtra.deco_start), self.readU32(e, ast_mod.MethodExtra.deco_len),
+    });
+}
+
 pub fn visitMethodDefinition(self: *Transformer, node: Node) Error!NodeIndex {
     const e = node.data.extra;
     const flags = self.readU32(e, ast_mod.MethodExtra.flags);
+    // ES2018 `async *m() {}` — 자기 비트로 게이트 (#4628). getter/setter 는 해당 없음.
+    if (self.options.unsupported.async_generator and
+        (flags & ast_mod.MethodFlags.is_async) != 0 and
+        (flags & ast_mod.MethodFlags.is_generator) != 0 and
+        !self.readNodeIdx(e, ast_mod.MethodExtra.body).isNone())
+    {
+        return lowerAsyncGeneratorMethod(self, node);
+    }
     // abstract 메서드는 타입 전용이므로 완전히 스트리핑
     if (self.options.strip_types and (flags & ast_mod.MethodFlags.is_abstract) != 0) return NodeIndex.none;
     // TS method overload signature: body가 없으면 제거
