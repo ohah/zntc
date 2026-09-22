@@ -753,6 +753,36 @@ test "es2017: 평범한 generator 의 yield* 는 건드리지 않는다 (#4628 �
 
 // === #1910: yield* iterable — __values() wrap ===
 
+test "ES5: generator 안 for-of 는 __values iterator 프로토콜로 돈다 (#4709)" {
+    // state machine 경로는 예전에 `_arr[_i]` / `_arr.length` 인덱스 루프로 접었다.
+    // `.length` 가 없는 Set·Map·generator 는 첫 비교에서 루프가 끝나 **조용히 아무것도
+    // 나오지 않는다**(배열·문자열만 우연히 동작). 에러도 경고도 없어 더 위험했다.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "function* g(src) { for (const v of src) yield v; }",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__values(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".next()") != null);
+    // 인덱스 루프의 흔적이 남아 있으면 안 된다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".length") == null);
+}
+
+test "ES5: generator 안 for-in 은 그대로 키 배열 인덱스 루프다 (#4709 역방향)" {
+    // for-in 은 iterator 프로토콜이 아니라 **키 수집** 의미다. for-of 와 같이 묶어
+    // __values 로 돌리면 own+상속 enumerable 키 열거가 깨진다.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "function* g(obj) { for (const k in obj) yield k; }",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__values(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".length") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".push(") != null);
+}
+
 test "ES5: yield* string wraps with __values (#1910)" {
     var r = try e2eTarget(std.testing.allocator, "function* g() { yield* 'abc'; }", .es5);
     defer r.deinit();
