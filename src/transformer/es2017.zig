@@ -27,7 +27,7 @@ pub fn ES2017(comptime Transformer: type) type {
         /// async generator (`async function*`) body 안 await 표현을 `yield __await(value)` 로
         /// 변환. nested function/arrow scope 는 traversal 안 함 (own this/await context 가짐).
         /// (#1911)
-        fn rewriteAwaitToYieldAwait(self: *Transformer, node_idx: NodeIndex) Transformer.Error!void {
+        pub fn rewriteAwaitToYieldAwait(self: *Transformer, node_idx: NodeIndex) Transformer.Error!void {
             return rewriteRemainingAwait(self, node_idx, true);
         }
 
@@ -221,7 +221,12 @@ pub fn ES2017(comptime Transformer: type) type {
                 .data = .{ .extra = inner_extra },
             });
             // inner function 자체도 visitNode 거쳐 generator/await downlevel 적용.
+            // es5 에서는 이 visit 안에서 state machine 이 만들어진다. 그 안의 `for await`
+            // 가 새로 만드는 await 도 `__await(…)` 로 감싸야 한다고 알려 둔다 (#4707).
+            const saved_pending_sm = self.pending_async_generator_sm;
+            self.pending_async_generator_sm = true;
             const lowered_inner = try self.visitNode(inner_func);
+            self.pending_async_generator_sm = saved_pending_sm;
             // 위 rewriteAwaitToYieldAwait 는 inner visit **전** 이라, 그 visit 중 for-await
             // 다운레벨이 새로 만든 await 를 놓친다 → 한 번 더 훑는다 (#4488).
             // 주의 — visit 은 body 를 **새 노드로 교체**하므로 원래 `body_idx` 가 아니라
