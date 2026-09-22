@@ -12,6 +12,7 @@ const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
 const threadSafeArena = test_helpers.threadSafeArena;
 const compat_mod = @import("../../transformer/compat.zig");
+const rt = @import("../runtime_helpers.zig");
 
 test "Bundler: single file bundle" {
     var tmp = std.testing.tmpDir(.{});
@@ -205,6 +206,34 @@ test "Bundler: minify가 require 래퍼 합성 심볼도 짧은 이름으로 바
     try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log") != null);
+}
+
+test "Bundler: minify 시 __publicField 가 축약명을 쓴다 (#4629 후속)" {
+    // class field 하나마다 한 번씩 호출되므로 출현 빈도가 매우 높다 — 축약이 빠지면
+    // 필드 수 × 13자가 그대로 산출물에 실린다(실측 200-클래스 앱에서 8KB).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\export class C { a = 1; b = 2; }
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .unsupported = compat_mod.fromESTarget(.es2017),
+    });
+    defer b.deinit();
+
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__publicField") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, rt.NAMES.PUBLIC_FIELD_MIN) != null);
 }
 
 test "Bundler: --target=es5 산출물에 arrow/단축메서드가 남지 않는다 (#4630)" {
