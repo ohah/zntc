@@ -11,6 +11,7 @@ const test_helpers = @import("../test_helpers.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
 const threadSafeArena = test_helpers.threadSafeArena;
+const compat_mod = @import("../../transformer/compat.zig");
 
 test "Bundler: single file bundle" {
     var tmp = std.testing.tmpDir(.{});
@@ -206,6 +207,71 @@ test "Bundler: minify가 require 래퍼 합성 심볼도 짧은 이름으로 바
     try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log") != null);
 }
 
+test "Bundler: --target=es5 산출물에 arrow/단축메서드가 남지 않는다 (#4630)" {
+    // 헬퍼 상수만 ES5 로 바꿔도 래퍼 헤더(`"id"(exports, module) {`)나 동적 import
+    // 재작성이 arrow 를 내면 번들 전체가 ES5 엔진에서 파싱조차 안 된다 — 네 표면이
+    // 같은 판단을 공유해야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "cjs.cjs",
+        \\module.exports.x = 1;
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import * as ns from './cjs.cjs';
+        \\import fs from 'fs';
+        \\console.log(ns.x, fs);
+        \\export async function lazy() { return await import('./cjs.cjs'); }
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        // platform=browser 라 `fs` 는 disabled 모듈 래퍼(cjs_wrap)로, 동적 import 는
+        // 인라인 재작성 경로로 간다 — 표면 네 개를 한 픽스처로 덮는다.
+        .platform = .browser,
+        .inline_dynamic_imports = true,
+        .unsupported = compat_mod.fromESTarget(.es5),
+    });
+    defer b.deinit();
+
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // arrow 가 하나도 없어야 한다 (헬퍼 · 래퍼 · getter · 동적 import 전부).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "=>") == null);
+    // 래퍼는 단축 메서드가 아니라 값 형태여야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"(exports, module) {") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") != null);
+}
+
+test "Bundler: 기본 타겟은 arrow 헬퍼를 유지한다 (#4630 과잉 변환 방지)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "cjs.cjs",
+        \\module.exports.x = 1;
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import * as ns from './cjs.cjs';
+        \\console.log(ns.x);
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .esm });
+    defer b.deinit();
+
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS = (cb, mod) =>") != null);
+}
+
 test "Bundler: RN minified require(JSON) rewrites CJS module param" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -233,8 +299,11 @@ test "Bundler: RN minified require(JSON) rewrites CJS module param" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "$c((exports,module)=>{module.exports={") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "$c((e)=>{module.exports") == null);
+    // #4630: RN preset 은 `unsupported.arrow` 를 켜므로(Hermes 안전망, #1299) 래퍼도
+    // arrow 가 아닌 function expression 으로 나온다. 이 테스트의 관심사는 **파라미터
+    // 이름**(`exports, module` 유지)이므로 그 부분만 계속 본다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$c(function(exports,module){module.exports={") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$c(function(e){module.exports") == null);
 }
 
 test "Bundler: RN minified CJS wrapper keeps Node parameter names" {
@@ -273,7 +342,8 @@ test "Bundler: RN minified CJS wrapper keeps Node parameter names" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "$c((exports,module)=>{Object.defineProperty(exports") != null);
+    // #4630: arrow 미지원 선언 시 function expression (위 테스트 주석 참고).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$c(function(exports,module){Object.defineProperty(exports") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "$c((e)=>{Object.defineProperty(e") == null);
 }
 
@@ -2347,7 +2417,8 @@ test "Re-export resolves to canonical local (not global-identifier reserved, #13
 
     // URL.ts의 re-export getter가 canonical local name `URLSearchParams$1`을 반환해야 함.
     // (bare `URLSearchParams` 참조는 `--global-identifier` 글로벌과 충돌)
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "URLSearchParams: () => URLSearchParams$1") != null);
+    // #4630: arrow 미지원 선언 시 __export getter 도 function expression.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "URLSearchParams: function() { return URLSearchParams$1; }") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "URLSearchParams: () => URLSearchParams,") == null);
 }
 

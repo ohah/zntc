@@ -231,7 +231,8 @@ test "Default: default-import barrel getter uses local binding for wrapped CJS" 
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "return default") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "=> listenToKeyboardEvents") != null);
+    // #4630: arrow 미지원 선언 시 getter 가 function expression.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "return listenToKeyboardEvents") != null);
 }
 
 test "Default: mixed default + named imports re-exported from single source (#1321 edge)" {
@@ -268,7 +269,8 @@ test "Default: mixed default + named imports re-exported from single source (#13
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"DEFVAL\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"NAMEDVAL\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "named: () => named") != null);
+    // #4630: arrow 미지원 선언 시 getter 가 function expression.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "named: function() { return named") != null);
 }
 
 test "Default: named re-export of default literal emits safe getter" {

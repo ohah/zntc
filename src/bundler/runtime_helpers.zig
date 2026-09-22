@@ -110,6 +110,48 @@ pub const TOESM_RUNTIME_MIN =
     "target=mod!=null?" ++ NAMES.CREATE_MIN ++ "(" ++ NAMES.GET_PROTO_OF_MIN ++ "(mod)):{}," ++
     NAMES.COPY_PROPS_MIN ++ "(isNodeMode||!mod||!mod.__esModule?" ++ NAMES.DEF_PROP_MIN ++ "(target,\"default\",{value:mod,enumerable:true}):target,mod));";
 
+/// __toESM ES5 문법 변종 — **non-configurable**. `--target=es5` 처럼 arrow 를 못 쓰는
+/// 타겟용이다. `*_CONFIGURABLE` 은 arrow→function 과 `configurable: true` 를 **함께**
+/// 바꾸는데, 그 둘은 별개 축이다(문법 vs 속성 서술자 의미). configurable 은 RN 이
+/// 요구하는 의미 변경이라 아무 때나 켤 수 없으므로 빠져 있던 조합을 채운다. (#4630)
+pub const TOESM_RUNTIME_ES5 =
+    \\var __create = Object.create;
+    \\var __getProtoOf = Object.getPrototypeOf;
+    \\var __defProp = Object.defineProperty;
+    \\var __getOwnPropNames = Object.getOwnPropertyNames;
+    \\var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+    \\var __hasOwn = Object.prototype.hasOwnProperty;
+    \\var __copyProps = function(to, from, desc) {
+    \\  if (from && typeof from === "object" || typeof from === "function") {
+    \\    for (var keys = __getOwnPropNames(from), i = 0, key; i < keys.length; i++) {
+    \\      key = keys[i];
+    \\      if (!__hasOwn.call(to, key))
+    \\        __defProp(to, key, { get: (function(k) { return from[k]; }).bind(null, key), enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    \\    }
+    \\  }
+    \\  return to;
+    \\};
+    \\var __toESM = function(mod, isNodeMode, target) { return target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target, mod); };
+    \\
+;
+pub const TOESM_RUNTIME_ES5_MIN =
+    "var " ++ NAMES.CREATE_MIN ++ "=Object.create," ++
+    NAMES.GET_PROTO_OF_MIN ++ "=Object.getPrototypeOf," ++
+    NAMES.DEF_PROP_MIN ++ "=Object.defineProperty," ++
+    NAMES.GET_OWN_PROP_NAMES_MIN ++ "=Object.getOwnPropertyNames," ++
+    NAMES.GET_OWN_PROP_DESC_MIN ++ "=Object.getOwnPropertyDescriptor," ++
+    NAMES.HAS_OWN_MIN ++ "=Object.prototype.hasOwnProperty," ++
+    NAMES.COPY_PROPS_MIN ++ "=function(to,from,desc){" ++
+    "if(from&&typeof from===\"object\"||typeof from===\"function\"){" ++
+    "for(var keys=" ++ NAMES.GET_OWN_PROP_NAMES_MIN ++ "(from),i=0,key;i<keys.length;i++){" ++
+    "key=keys[i];" ++
+    "if(!" ++ NAMES.HAS_OWN_MIN ++ ".call(to,key))" ++
+    NAMES.DEF_PROP_MIN ++ "(to,key,{get:(function(k){return from[k]}).bind(null,key),enumerable:!(desc=" ++ NAMES.GET_OWN_PROP_DESC_MIN ++ "(from,key))||desc.enumerable})" ++
+    "}}return to};" ++
+    "var " ++ NAMES.TOESM_MIN ++ "=function(mod,isNodeMode,target){" ++
+    "return target=mod!=null?" ++ NAMES.CREATE_MIN ++ "(" ++ NAMES.GET_PROTO_OF_MIN ++ "(mod)):{}," ++
+    NAMES.COPY_PROPS_MIN ++ "(isNodeMode||!mod||!mod.__esModule?" ++ NAMES.DEF_PROP_MIN ++ "(target,\"default\",{value:mod,enumerable:true}):target,mod)};";
+
 /// __toESM configurable + ES5 호환: RN/Hermes용.
 /// arrow → function, configurable: true. --platform=react-native에서 자동 활성화.
 pub const TOESM_RUNTIME_CONFIGURABLE =
@@ -276,6 +318,10 @@ pub fn appendZntcResolveBrowser(buf: *std.ArrayList(u8), allocator: std.mem.Allo
 pub const EXPORT_RUNTIME = "var __export = (target, all) => {\n\tfor (var name in all)\n\t\t__defProp(target, name, { get: all[name], enumerable: true });\n};\n";
 pub const EXPORT_RUNTIME_MIN = "var " ++ NAMES.EXPORT_MIN ++ "=(target,all)=>{for(var name in all)" ++ NAMES.DEF_PROP_MIN ++ "(target,name,{get:all[name],enumerable:true})};";
 
+/// __export ES5 문법 변종 — non-configurable (#4630).
+pub const EXPORT_RUNTIME_ES5 = "var __export = function(target, all) {\n\tfor (var name in all)\n\t\t__defProp(target, name, { get: all[name], enumerable: true });\n};\n";
+pub const EXPORT_RUNTIME_ES5_MIN = "var " ++ NAMES.EXPORT_MIN ++ "=function(target,all){for(var name in all)" ++ NAMES.DEF_PROP_MIN ++ "(target,name,{get:all[name],enumerable:true})};";
+
 /// __export configurable 버전: RN/Hermes 호환.
 pub const EXPORT_RUNTIME_CONFIGURABLE = "var __export = function(target, all) {\n\tfor (var name in all)\n\t\t__defProp(target, name, { get: all[name], enumerable: true, configurable: true });\n};\n";
 pub const EXPORT_RUNTIME_CONFIGURABLE_MIN = "var " ++ NAMES.EXPORT_MIN ++ "=function(target,all){for(var name in all)" ++ NAMES.DEF_PROP_MIN ++ "(target,name,{get:all[name],enumerable:true,configurable:true})};";
@@ -288,6 +334,10 @@ pub const EXPORT_RUNTIME_CONFIGURABLE_MIN = "var " ++ NAMES.EXPORT_MIN ++ "=func
 /// __copyProps, __defProp, __hasOwn은 __toESM 런타임에 이미 정의됨.
 pub const TOCOMMONJS_RUNTIME = "var __toCommonJS = mod => __hasOwn.call(mod, 'module.exports') ? mod['module.exports'] : __copyProps(__defProp({}, '__esModule', { value: true }), mod);\n";
 pub const TOCOMMONJS_RUNTIME_MIN = "var " ++ NAMES.TOCOMMONJS_MIN ++ "=mod=>" ++ NAMES.HAS_OWN_MIN ++ ".call(mod,\"module.exports\")?mod[\"module.exports\"]:" ++ NAMES.COPY_PROPS_MIN ++ "(" ++ NAMES.DEF_PROP_MIN ++ "({},\"__esModule\",{value:true}),mod);";
+
+/// __toCommonJS ES5 문법 변종 — non-configurable (#4630).
+pub const TOCOMMONJS_RUNTIME_ES5 = "var __toCommonJS = function(mod) { return __hasOwn.call(mod, 'module.exports') ? mod['module.exports'] : __copyProps(__defProp({}, '__esModule', { value: true }), mod); };\n";
+pub const TOCOMMONJS_RUNTIME_ES5_MIN = "var " ++ NAMES.TOCOMMONJS_MIN ++ "=function(mod){return " ++ NAMES.HAS_OWN_MIN ++ ".call(mod,\"module.exports\")?mod[\"module.exports\"]:" ++ NAMES.COPY_PROPS_MIN ++ "(" ++ NAMES.DEF_PROP_MIN ++ "({},\"__esModule\",{value:true}),mod)};";
 
 /// __toCommonJS configurable 버전: RN/Hermes 호환.
 pub const TOCOMMONJS_RUNTIME_CONFIGURABLE = "var __toCommonJS = function(mod) { return __hasOwn.call(mod, 'module.exports') ? mod['module.exports'] : __copyProps(__defProp({}, '__esModule', { value: true, configurable: true }), mod); };\n";
@@ -1611,39 +1661,91 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     }
 }
 
+/// 객체 리터럴 안의 모듈 래퍼 헤더를 쓴다 — `__commonJS({ … })` / `__esm({ … })`.
+///
+/// 기본형은 ES2015 **단축 메서드**(`"id"(exports, module) {`)인데, 그 문법을 모르는
+/// 타겟(`--target=es5`)에선 산출물이 파싱되지 않는다. 그럴 땐 값 형태로 쓴다:
+/// `"id": function(exports, module) {`. 헬퍼 상수만 ES5 로 바꿔도 이 헤더가 남아 있으면
+/// 번들 전체가 여전히 파싱 불가라, 방출 지점 네 곳이 같은 판단을 공유해야 한다 (#4630).
+///
+/// `shorthand` = 타겟이 단축 메서드를 아는가 (`!unsupported.object_extensions`).
+pub fn appendWrapperMemberHeader(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    key: []const u8,
+    params: []const u8,
+    is_async: bool,
+    shorthand: bool,
+    minify: bool,
+) !void {
+    if (shorthand) {
+        if (is_async) try buf.appendSlice(allocator, "async ");
+        try buf.appendSlice(allocator, "\"");
+        try buf.appendSlice(allocator, key);
+        try buf.appendSlice(allocator, "\"(");
+        try buf.appendSlice(allocator, params);
+        try buf.appendSlice(allocator, if (minify) ") {" else ") {");
+        return;
+    }
+    try buf.appendSlice(allocator, "\"");
+    try buf.appendSlice(allocator, key);
+    try buf.appendSlice(allocator, if (minify) "\":" else "\": ");
+    if (is_async) try buf.appendSlice(allocator, "async ");
+    try buf.appendSlice(allocator, "function(");
+    try buf.appendSlice(allocator, params);
+    try buf.appendSlice(allocator, ") {");
+}
+
 /// __commonJS factory 만 주입. named-only CJS import (`require_xxx().name`) 는
 /// __toESM 클러스터가 필요 없으므로, namespace/default import 가 없을 때 호출.
-/// configurable=true(RN)이면 ES5 호환 버전 사용.
-pub fn appendCommonJsFactoryRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, configurable: bool) !void {
+///
+/// `es5_syntax` 는 **문법** 축(arrow 를 쓸 수 있는가), `configurable` 은 **의미** 축
+/// (속성 서술자에 `configurable: true` 를 넣는가)이다. `__commonJS` 는 서술자를 만들지
+/// 않으므로 문법 축만 본다 — 예전엔 `configurable` 하나로 둘을 같이 골라, RN 이 아닌
+/// `--target=es5` 사용자에게 arrow 가 그대로 나갔다 (#4630).
+pub fn appendCommonJsFactoryRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, es5_syntax: bool, configurable: bool) !void {
+    const fn_syntax = es5_syntax or configurable;
     if (minify) {
-        try buf.appendSlice(allocator, if (configurable) CJS_RUNTIME_ES5_MIN else CJS_RUNTIME_MIN);
+        try buf.appendSlice(allocator, if (fn_syntax) CJS_RUNTIME_ES5_MIN else CJS_RUNTIME_MIN);
     } else {
-        try buf.appendSlice(allocator, if (configurable) CJS_RUNTIME_ES5 else CJS_RUNTIME);
+        try buf.appendSlice(allocator, if (fn_syntax) CJS_RUNTIME_ES5 else CJS_RUNTIME);
     }
 }
 
 /// ESM namespace interop 헬퍼 (__toESM 와 __copyProps/__defProp 등 Object.* 별칭).
-pub fn appendToEsmRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, configurable: bool) !void {
-    if (minify) {
-        try buf.appendSlice(allocator, if (configurable) TOESM_RUNTIME_CONFIGURABLE_MIN else TOESM_RUNTIME_MIN);
+/// configurable(의미) 이 우선 — RN 은 그 변종이 이미 function 문법이다. 그 다음이
+/// es5_syntax(문법) (#4630).
+pub fn appendToEsmRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, es5_syntax: bool, configurable: bool) !void {
+    if (configurable) {
+        try buf.appendSlice(allocator, if (minify) TOESM_RUNTIME_CONFIGURABLE_MIN else TOESM_RUNTIME_CONFIGURABLE);
+    } else if (es5_syntax) {
+        try buf.appendSlice(allocator, if (minify) TOESM_RUNTIME_ES5_MIN else TOESM_RUNTIME_ES5);
     } else {
-        try buf.appendSlice(allocator, if (configurable) TOESM_RUNTIME_CONFIGURABLE else TOESM_RUNTIME);
+        try buf.appendSlice(allocator, if (minify) TOESM_RUNTIME_MIN else TOESM_RUNTIME);
     }
 }
 
 /// ESM wrap 런타임을 주입한다 (__esm + __export + __toCommonJS).
 /// WrapKind.esm 모듈이 하나라도 있을 때 호출.
 /// __toCommonJS는 __copyProps/__defProp에 의존하므로 __toESM 런타임 후에 주입해야 함.
-/// configurable=true(RN)이면 ES5 호환 버전 사용.
-pub fn appendEsmWrapRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, configurable: bool) !void {
-    if (minify) {
-        try buf.appendSlice(allocator, if (configurable) ESM_RUNTIME_ES5_MIN else ESM_RUNTIME_MIN);
-        try buf.appendSlice(allocator, if (configurable) EXPORT_RUNTIME_CONFIGURABLE_MIN else EXPORT_RUNTIME_MIN);
-        try buf.appendSlice(allocator, if (configurable) TOCOMMONJS_RUNTIME_CONFIGURABLE_MIN else TOCOMMONJS_RUNTIME_MIN);
+/// `es5_syntax`(문법) 와 `configurable`(의미) 은 별개 축이다 — #4630 참고.
+pub fn appendEsmWrapRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, es5_syntax: bool, configurable: bool) !void {
+    // __esm 은 서술자를 만들지 않으므로 문법 축만 본다.
+    const fn_syntax = es5_syntax or configurable;
+    try buf.appendSlice(allocator, if (minify)
+        (if (fn_syntax) ESM_RUNTIME_ES5_MIN else ESM_RUNTIME_MIN)
+    else
+        (if (fn_syntax) ESM_RUNTIME_ES5 else ESM_RUNTIME));
+
+    if (configurable) {
+        try buf.appendSlice(allocator, if (minify) EXPORT_RUNTIME_CONFIGURABLE_MIN else EXPORT_RUNTIME_CONFIGURABLE);
+        try buf.appendSlice(allocator, if (minify) TOCOMMONJS_RUNTIME_CONFIGURABLE_MIN else TOCOMMONJS_RUNTIME_CONFIGURABLE);
+    } else if (es5_syntax) {
+        try buf.appendSlice(allocator, if (minify) EXPORT_RUNTIME_ES5_MIN else EXPORT_RUNTIME_ES5);
+        try buf.appendSlice(allocator, if (minify) TOCOMMONJS_RUNTIME_ES5_MIN else TOCOMMONJS_RUNTIME_ES5);
     } else {
-        try buf.appendSlice(allocator, if (configurable) ESM_RUNTIME_ES5 else ESM_RUNTIME);
-        try buf.appendSlice(allocator, if (configurable) EXPORT_RUNTIME_CONFIGURABLE else EXPORT_RUNTIME);
-        try buf.appendSlice(allocator, if (configurable) TOCOMMONJS_RUNTIME_CONFIGURABLE else TOCOMMONJS_RUNTIME);
+        try buf.appendSlice(allocator, if (minify) EXPORT_RUNTIME_MIN else EXPORT_RUNTIME);
+        try buf.appendSlice(allocator, if (minify) TOCOMMONJS_RUNTIME_MIN else TOCOMMONJS_RUNTIME);
     }
 }
 

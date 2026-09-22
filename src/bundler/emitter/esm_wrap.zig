@@ -1093,10 +1093,7 @@ pub fn emitEsmWrappedModule(
         try wrapped.appendSlice(allocator, init_name);
         // #1621: minify 시 __esm → $e 축약.
         try wrapped.appendSlice(allocator, "=" ++ rt.NAMES.ESM_FACTORY_MIN ++ "({");
-        if (is_async) try wrapped.appendSlice(allocator, "async ");
-        try wrapped.appendSlice(allocator, "\"");
-        try wrapped.appendSlice(allocator, basename);
-        try wrapped.appendSlice(allocator, "\"(){");
+        try rt.appendWrapperMemberHeader(&wrapped, allocator, basename, "", is_async, !options.unsupported.object_extensions, true);
         if (has_refresh) {
             try wrapped.appendSlice(allocator, "var __prevRefreshReg=__zntc_g.$RefreshReg$,__prevRefreshSig=__zntc_g.$RefreshSig$;");
             try wrapped.appendSlice(allocator, "__zntc_g.$RefreshReg$=function(type,id){var rt=__zntc_g.__ReactRefresh||__zntc_resolveRefresh();if(rt)rt.register(type,\"");
@@ -1131,10 +1128,8 @@ pub fn emitEsmWrappedModule(
         try wrapped.appendSlice(allocator, "var ");
         try wrapped.appendSlice(allocator, init_name);
         try wrapped.appendSlice(allocator, " = __esm({\n\t");
-        if (is_async) try wrapped.appendSlice(allocator, "async ");
-        try wrapped.appendSlice(allocator, "\"");
-        try wrapped.appendSlice(allocator, basename);
-        try wrapped.appendSlice(allocator, "\"() {\n");
+        try rt.appendWrapperMemberHeader(&wrapped, allocator, basename, "", is_async, !options.unsupported.object_extensions, false);
+        try wrapped.appendSlice(allocator, "\n");
         if (has_refresh) {
             try wrapped.appendSlice(allocator, "\tvar __prevRefreshReg = __zntc_g.$RefreshReg$, __prevRefreshSig = __zntc_g.$RefreshSig$;\n");
             try wrapped.appendSlice(allocator, "\t__zntc_g.$RefreshReg$ = function(type, id) {\n");
@@ -1360,8 +1355,9 @@ fn appendWrappedInitCall(
 }
 
 /// __export() 내부의 "name: () => value,\n" 한 줄을 출력한다.
-/// `configurable_exports` 가 true 면 RN/Hermes 호환을 위해 arrow 대신
-/// function expression getter 사용 (this binding / inline cache 시맨틱 차이).
+/// arrow 를 쓸 수 없는 타겟(`--target=es5`)이거나 `configurable_exports`(RN/Hermes)면
+/// function expression getter 를 쓴다. 전자는 **문법** 제약이고 후자는 this binding /
+/// inline cache 시맨틱 차이인데, 예전엔 후자만 보고 있어 es5 산출물에 arrow 가 샜다 (#4630).
 fn appendExportGetter(
     buf: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
@@ -1369,7 +1365,7 @@ fn appendExportGetter(
     value: []const u8,
     options: anytype,
 ) !void {
-    const es5 = options.configurable_exports;
+    const es5 = options.unsupported.arrow or options.configurable_exports;
     const min = options.minify_whitespace;
     if (!min) try buf.appendSlice(allocator, "\t");
     if (needsPropertyQuote(name)) {

@@ -2680,14 +2680,16 @@ fn rewriteDynamicImports(
                     defer allocator.free(init_name);
                     const exports_name = try target_mod.allocExportsName(allocator, if (linker) |l| &l.rename_table else null);
                     defer allocator.free(exports_name);
-                    break :blk try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>({s}(),{s}))", .{ init_name, exports_name });
+                    const inner = try std.fmt.allocPrint(allocator, "({s}(),{s})", .{ init_name, exports_name });
+                    defer allocator.free(inner);
+                    break :blk try thenOf(allocator, inner, !emit_options.unsupported.arrow);
                 },
                 .cjs => blk: {
                     // (#4510) `import('./x.cjs')` 의 결과는 **module namespace** 라 `default` 가
                     // 있어야 한다(Node 의 CJS↔ESM 계약: default = module.exports). raw `require_x()`
                     // 를 그대로 주면 `m.default` 가 undefined. `__toESM` 은 default 를 달아 주고
                     // 멤버도 복사하므로 static import 와 같은 값 해석이 된다.
-                    break :blk try dynamicCjsNamespaceExpr(allocator, linker, target_mod, emit_options.minify_whitespace);
+                    break :blk try dynamicCjsNamespaceExpr(allocator, linker, target_mod, emit_options.minify_whitespace, !emit_options.unsupported.arrow);
                 },
                 .none => blk: {
                     // namespace 객체 합성: { <exported>: <청크-로컬 이름>, ... }
@@ -2797,7 +2799,9 @@ fn rewriteDynamicImports(
 
         const cjs_split = emit_options.format == .cjs and !emit_options.preserve_modules;
         if (cjs_split) {
-            const wrapper = try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>require(\"{s}\"){s})", .{ replacement, unwrap });
+            const inner_req = try std.fmt.allocPrint(allocator, "require(\"{s}\"){s}", .{ replacement, unwrap });
+            defer allocator.free(inner_req);
+            const wrapper = try thenOf(allocator, inner_req, !emit_options.unsupported.arrow);
             defer allocator.free(wrapper);
             if (try rewriteImportCallToWrapper(allocator, result, rec.specifier, wrapper)) |new_result| {
                 allocator.free(result);
@@ -2865,6 +2869,16 @@ fn rewriteDynamicImports(
     return result;
 }
 
+/// `import()` 대체식을 만든다: `Promise.resolve().then(<cb>)`.
+/// arrow 를 모르는 타겟(`--target=es5`)에선 function expression 으로 쓴다 — 헬퍼 상수와
+/// 래퍼를 ES5 로 바꿔도 이 재작성이 arrow 를 내면 번들이 여전히 파싱 불가다 (#4630).
+fn thenOf(allocator: std.mem.Allocator, expr: []const u8, arrow: bool) ![]const u8 {
+    return if (arrow)
+        std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>{s})", .{expr})
+    else
+        std.fmt.allocPrint(allocator, "Promise.resolve().then(function(){{return {s}}})", .{expr});
+}
+
 /// (#4510) 같은 번들/청크 안에 인라인된 **CJS 모듈의 동적 import** 를 대체할 표현식.
 /// `Promise.resolve().then(()=>__toESM(require_x()))` — `import()` 는 module namespace 를
 /// resolve 하므로 `default`(= module.exports, Node 의 CJS↔ESM 계약)가 있어야 한다. raw
@@ -2877,15 +2891,18 @@ fn dynamicCjsNamespaceExpr(
     linker: ?*const Linker,
     target_mod: *const Module,
     minify: bool,
+    arrow: bool,
 ) ![]const u8 {
     if (linker) |l| {
         const ns_expr = try l.cjsInteropAccessExpr(allocator, target_mod, linker_mod.CJS_NS_EXPORT_NAME, minify);
         defer allocator.free(ns_expr);
-        return std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>{s})", .{ns_expr});
+        return thenOf(allocator, ns_expr, arrow);
     }
     const require_name = try target_mod.allocRequireName(allocator, null);
     defer allocator.free(require_name);
-    return std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>{s}())", .{require_name});
+    const call = try std.fmt.allocPrint(allocator, "{s}()", .{require_name});
+    defer allocator.free(call);
+    return thenOf(allocator, call, arrow);
 }
 
 /// `import("specifier")` 호출 전체를 미리 만들어진 expression 으로 교체.
@@ -2909,6 +2926,7 @@ pub fn rewriteDynamicImportsSingleFile(
     lower_unresolved_dynamic_imports: bool,
     linker: ?*const Linker,
     minify: bool,
+    arrow: bool,
 ) ![]const u8 {
     const rename_tbl: ?*const RenameTable = if (linker) |l| &l.rename_table else null;
     if (module.import_records.len == 0) return try allocator.dupe(u8, code);
@@ -2961,10 +2979,12 @@ pub fn rewriteDynamicImportsSingleFile(
                 defer allocator.free(init_name);
                 const exports_name = try target_mod.allocExportsName(allocator, rename_tbl);
                 defer allocator.free(exports_name);
-                break :blk try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>({s}(),{s}))", .{ init_name, exports_name });
+                const inner2 = try std.fmt.allocPrint(allocator, "({s}(),{s})", .{ init_name, exports_name });
+                defer allocator.free(inner2);
+                break :blk try thenOf(allocator, inner2, arrow);
             },
             // (#4510) CJS 동적 import 의 namespace 는 `__toESM(require_x())` — 위 chunk 경로와 동일.
-            .cjs => try dynamicCjsNamespaceExpr(allocator, linker, target_mod, minify),
+            .cjs => try dynamicCjsNamespaceExpr(allocator, linker, target_mod, minify, arrow),
             .none => continue,
         };
         defer allocator.free(replacement_expr);
