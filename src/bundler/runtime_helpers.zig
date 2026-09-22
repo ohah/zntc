@@ -838,10 +838,12 @@ pub const ASYNC_GENERATOR_RUNTIME =
     \\  }
     \\  function resume(n, v) { try { step(n, g[n](v)); } catch (e) { settle(q[0][3], e); } }
     \\  function step(n, r) {
-    \\    if (!(r.value instanceof __await)) return settle(q[0][2], r);
+    \\    if (!(r.value instanceof __await)) {
+    \\      return Promise.resolve(r.value).then(function(v) { settle(q[0][2], { value: v, done: r.done }); }, reject);
+    \\    }
     \\    var m = r.value;
     \\    Promise.resolve(m.v).then(function(y) {
-    \\      resume(n === "return" ? n : "next", m.s ? { done: y.done, value: y.value } : y);
+    \\      resume(m.s && n === "return" ? n : "next", m.s ? { value: y.value, done: y.done } : y);
     \\    }, reject);
     \\  }
     \\  function reject(value) { resume("throw", value); }
@@ -904,7 +906,7 @@ pub const YIELD_STAR_RUNTIME =
 ;
 pub const YIELD_STAR_RUNTIME_MIN = "var " ++ NAMES.YIELD_STAR_MIN ++ "=function(value){var obj=value[Symbol.asyncIterator],isAwait=false,method,i={};if(obj==null){obj=value[Symbol.iterator]();method=function(k){i[k]=function(x){return obj[k](x)}}}else{obj=obj.call(value);method=function(k){i[k]=function(v){if(isAwait){isAwait=false;if(k===\"throw\")throw v;return v}isAwait=true;return{done:false,value:__await(new Promise(function(resolve){var x=obj[k](v);if(!(x instanceof Object))throw new TypeError(\"Object expected\");resolve(x)}),1)}}}}i[Symbol.iterator]=function(){return i};method(\"next\");if(\"throw\" in obj)method(\"throw\");else i[\"throw\"]=function(x){throw x};if(\"return\" in obj)method(\"return\");return i};";
 
-pub const ASYNC_GENERATOR_RUNTIME_MIN = "var __asyncGenerator=function(thisArg,_arguments,generator){if(!Symbol.asyncIterator)throw new TypeError(\"Symbol.asyncIterator is not defined.\");var g=generator.apply(thisArg,_arguments||[]),q=[],i;return i={},verb(\"next\"),verb(\"throw\"),verb(\"return\"),i[Symbol.asyncIterator]=function(){return this},i;function verb(n,f){if(g[n])i[n]=function(v){return new Promise(function(a,b){q.push([n,v,a,b])>1||resume(n,v)})};if(f)i[n]=f(i[n])}function resume(n,v){try{step(n,g[n](v))}catch(e){settle(q[0][3],e)}}function step(n,r){if(!(r.value instanceof __await))return settle(q[0][2],r);var m=r.value;Promise.resolve(m.v).then(function(y){resume(n===\"return\"?n:\"next\",m.s?{done:y.done,value:y.value}:y)},reject)}function reject(value){resume(\"throw\",value)}function settle(f,v){if(f(v),q.shift(),q.length)resume(q[0][0],q[0][1])}};";
+pub const ASYNC_GENERATOR_RUNTIME_MIN = "var __asyncGenerator=function(thisArg,_arguments,generator){if(!Symbol.asyncIterator)throw new TypeError(\"Symbol.asyncIterator is not defined.\");var g=generator.apply(thisArg,_arguments||[]),q=[],i;return i={},verb(\"next\"),verb(\"throw\"),verb(\"return\"),i[Symbol.asyncIterator]=function(){return this},i;function verb(n,f){if(g[n])i[n]=function(v){return new Promise(function(a,b){q.push([n,v,a,b])>1||resume(n,v)})};if(f)i[n]=f(i[n])}function resume(n,v){try{step(n,g[n](v))}catch(e){settle(q[0][3],e)}}function step(n,r){if(!(r.value instanceof __await))return Promise.resolve(r.value).then(function(v){settle(q[0][2],{value:v,done:r.done})},reject);var m=r.value;Promise.resolve(m.v).then(function(y){resume(m.s&&n===\"return\"?n:\"next\",m.s?{value:y.value,done:y.done}:y)},reject)}function reject(value){resume(\"throw\",value)}function settle(f,v){if(f(v),q.shift(),q.length)resume(q[0][0],q[0][1])}};";
 
 /// __values: iterable → iterator 변환 (ES2015 yield* / for-of helper). tslib 호환.
 /// `Symbol.iterator` 호출 가능하면 그 결과 반환. 없으면 `length` 기반 array-like fallback.

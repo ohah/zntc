@@ -692,11 +692,26 @@ test "es2017: yield* 위임의 완료값이 plain/min 양쪽에서 보존된다 
     try std.testing.expect(std.mem.indexOf(u8, rt_mod.YIELD_STAR_RUNTIME, "), 1) }") != null);
     try std.testing.expect(std.mem.indexOf(u8, rt_mod.YIELD_STAR_RUNTIME_MIN, "),1)}") != null);
     // return 메서드를 보존하며 재개하는 쪽 — next 로 바뀌면 완료값이 사라진다.
-    try std.testing.expect(std.mem.indexOf(u8, rt_mod.ASYNC_GENERATOR_RUNTIME, "n === \"return\" ? n : \"next\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rt_mod.ASYNC_GENERATOR_RUNTIME_MIN, "n===\"return\"?n:\"next\"") != null);
+    // ⚠️ `m.s &&` 게이트가 **반드시** 붙어야 한다. 빼면 위임과 무관한 평범한 `await`
+    //    까지 return 으로 재개돼 `finally` 안 await 이후가 통째로 잘린다 (#4705).
+    try std.testing.expect(std.mem.indexOf(u8, rt_mod.ASYNC_GENERATOR_RUNTIME, "m.s && n === \"return\" ? n : \"next\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rt_mod.ASYNC_GENERATOR_RUNTIME_MIN, "m.s&&n===\"return\"?n:\"next\"") != null);
     // 마커가 2필드(`v`, `s`)여야 위 규칙이 성립한다.
     try std.testing.expect(std.mem.indexOf(u8, rt_mod.AWAIT_RUNTIME, "this.s = s") != null);
     try std.testing.expect(std.mem.indexOf(u8, rt_mod.AWAIT_RUNTIME_MIN, "this.s=s") != null);
+}
+
+test "es2017: async generator 는 yield 한 값을 await 하고 결과 키 순서를 지킨다 (#4705)" {
+    // async generator 의 `yield x` 는 x 를 await 한다(스펙 AsyncGeneratorYield).
+    // 그냥 settle 로 흘려보내면 `yield Promise.resolve(1)` 이 Promise 를 그대로
+    // 내보내고, 거부되면 generator 안에서 잡을 수 없게 된다.
+    // 동시에 IteratorResult 는 `{ value, done }` 순서여야 한다(CreateIterResultObject).
+    const rt_mod = @import("../../bundler/runtime_helpers.zig");
+    try std.testing.expect(std.mem.indexOf(u8, rt_mod.ASYNC_GENERATOR_RUNTIME, "Promise.resolve(r.value).then(function(v) { settle(q[0][2], { value: v, done: r.done }); }, reject)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rt_mod.ASYNC_GENERATOR_RUNTIME_MIN, "Promise.resolve(r.value).then(function(v){settle(q[0][2],{value:v,done:r.done})},reject)") != null);
+    // 위임 재개값도 같은 키 순서.
+    try std.testing.expect(std.mem.indexOf(u8, rt_mod.ASYNC_GENERATOR_RUNTIME, "{ value: y.value, done: y.done }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rt_mod.ASYNC_GENERATOR_RUNTIME_MIN, "{value:y.value,done:y.done}") != null);
 }
 
 test "es2017: __asyncDelegator 는 더 이상 쓰이지 않는다 (#4700)" {
