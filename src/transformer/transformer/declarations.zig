@@ -81,6 +81,9 @@ pub fn visitVariableDeclaration(self: *Transformer, node: Node) Error!NodeIndex 
     }
     const e = node.data.extra;
     const orig_kind = self.ast.variableDeclarationKind(node);
+    const saved_in_const = self.in_const_declaration;
+    self.in_const_declaration = orig_kind == .@"const";
+    defer self.in_const_declaration = saved_in_const;
 
     // `const re = /.../` 추적 — String.replace 의 named group 매핑 lookup 용 (#1473).
     // const 만 추적: let/var 는 재할당 가능해 추적 결과를 신뢰할 수 없음.
@@ -139,7 +142,8 @@ pub fn visitVariableDeclaration(self: *Transformer, node: Node) Error!NodeIndex 
                 const new_decl = try self.addExtraNode(.variable_declarator, decl.span, &.{ @intFromEnum(new_name), none, init_node });
                 try self.scratch.append(self.allocator, new_decl);
             } else {
-                var new_init = try self.visitNode(init_idx);
+                // es5 경로(let/const → var)도 익명 클래스 이름 추론을 지킨다 (#4723).
+                var new_init = try self.visitNode(try nameAnonymousConstClass(self, name_idx, init_idx));
                 new_init = try postProcessVariableDeclaratorInit(self, new_name, new_init);
                 const none = @intFromEnum(NodeIndex.none);
                 const new_decl = try self.addExtraNode(.variable_declarator, decl.span, &.{ @intFromEnum(new_name), none, @intFromEnum(new_init) });
@@ -159,7 +163,8 @@ pub fn visitVariableDeclaration(self: *Transformer, node: Node) Error!NodeIndex 
 pub fn visitVariableDeclarator(self: *Transformer, node: Node) Error!NodeIndex {
     const e = node.data.extra;
     const new_name = try self.visitNode(self.readNodeIdx(e, 0));
-    var new_init = try self.visitNode(self.readNodeIdx(e, 2));
+    const init_idx = try nameAnonymousConstClass(self, self.readNodeIdx(e, 0), self.readNodeIdx(e, 2));
+    var new_init = try self.visitNode(init_idx);
     new_init = try postProcessVariableDeclaratorInit(self, new_name, new_init);
     const none = @intFromEnum(NodeIndex.none);
     return self.addExtraNode(.variable_declarator, node.span, &.{ @intFromEnum(new_name), none, @intFromEnum(new_init) });
@@ -609,4 +614,28 @@ pub fn lowerNewTarget(self: *Transformer, span: Span) Error!NodeIndex {
             });
         },
     };
+}
+
+/// `const X = class {…}` 의 익명 클래스에 `X` 라는 이름을 붙인 사본을 돌려준다 (#4723).
+///
+/// 클래스를 낮추면(static field 를 밖으로 빼며 IIFE·temp 이름을 쓰거나, computed 키를
+/// `(_a = k, class {…})` 쉼표 식으로 감싸면) **이름 추론이 깨져** `X.name` 이 `"_a"` 나
+/// `""` 가 된다. `const` 는 재할당이 불가능해 클래스 안의 `X` 가 바깥 `X` 와 항상 같은
+/// 값이므로 이름을 붙여도 의미가 같다(let/var 는 재할당될 수 있어 붙이지 않는다).
+/// 클래스를 낮추는 타겟에서만 적용해 그 외 타겟의 출력은 바꾸지 않는다.
+fn nameAnonymousConstClass(self: *Transformer, binding_idx: NodeIndex, init_idx: NodeIndex) Error!NodeIndex {
+    if (!self.in_const_declaration or init_idx.isNone() or binding_idx.isNone()) return init_idx;
+    const u = self.options.unsupported;
+    if (!(u.class or u.class_field or u.class_static_block)) return init_idx;
+    const init = self.ast.getNode(init_idx);
+    if (init.tag != .class_expression) return init_idx;
+    if (!self.readNodeIdx(init.data.extra, ast_mod.ClassExtra.name).isNone()) return init_idx;
+    const binding = self.ast.getNode(binding_idx);
+    if (binding.tag != .binding_identifier) return init_idx;
+
+    var slots: [8]u32 = undefined;
+    for (0..8) |k| slots[k] = self.ast.extra_data.items[init.data.extra + k];
+    slots[ast_mod.ClassExtra.name] = @intFromEnum(try es_helpers.makeBindingIdentifier(self, binding.data.string_ref));
+    const new_extra = try self.ast.addExtras(&slots);
+    return self.ast.addNode(.{ .tag = .class_expression, .span = init.span, .data = .{ .extra = new_extra } });
 }

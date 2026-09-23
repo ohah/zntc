@@ -753,6 +753,94 @@ test "es2017: 평범한 generator 의 yield* 는 건드리지 않는다 (#4628 �
 
 // === #1910: yield* iterable — __values() wrap ===
 
+test "ES2021: 필드를 낮추면 모든 멤버의 computed 키를 클래스 앞에서 한 번 평가한다 (#4723)" {
+    // 필드 키가 생성자로 들어가면 인스턴스마다 재평가되고, 메서드 키가 IIFE 안에 남으면
+    // 키의 yield/await 가 새 함수 안으로 들어간다. 키는 소스 순서대로 temp 로 뺀다.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "function* g(){ const C = class { [yield 'f'] = 1; static [yield 's'] = 2; get [yield 'g']() { return 3; } }; return C; }",
+        .es2021,
+    );
+    defer r.deinit();
+    // 키 식이 생성자/IIFE 에 남지 않았다
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[yield") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__publicField(this,yield") == null);
+    // 소스 순서: f → s → g
+    const f_at = std.mem.indexOf(u8, r.output, "yield \"f\"") orelse std.mem.indexOf(u8, r.output, "yield\"f\"") orelse return error.TestUnexpectedResult;
+    const s_at = std.mem.indexOf(u8, r.output, "yield \"s\"") orelse std.mem.indexOf(u8, r.output, "yield\"s\"") orelse return error.TestUnexpectedResult;
+    const g_at = std.mem.indexOf(u8, r.output, "yield \"g\"") orelse std.mem.indexOf(u8, r.output, "yield\"g\"") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(f_at < s_at and s_at < g_at);
+}
+
+test "ES2021: static 필드가 있는 익명 클래스 식이 크래시하지 않고 값으로 남는다 (#4723)" {
+    // 이름이 없어 static 할당이 `.none` 이름을 역참조해 컴파일러가 죽었다(#4629 회귀).
+    var r = try e2eTarget(std.testing.allocator, "var k='x'; f(class { static [k] = 1; });", .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "f(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__publicField(") != null);
+}
+
+test "ES2021: const 에 바인딩된 익명 클래스는 선언 이름을 받는다 (#4723)" {
+    // 낮추면서 IIFE·temp 이름·쉼표 식으로 감싸면 이름 추론이 깨진다(`X.name` 이 `_a`/`""`).
+    // const 는 재할당이 불가능해 이름을 붙여도 의미가 같다.
+    var r = try e2eTarget(std.testing.allocator, "const X = class { static y = 1; };", .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "class X") != null);
+}
+
+test "ES2017: async generator 안 클래스 computed 키의 await 도 __await 로 표시된다 (#4723)" {
+    // await rewrite 가 클래스를 통째로 건너뛰어, 키의 await 가 plain yield 가 되면
+    // __asyncGenerator 가 그 값을 소비자에게 내보내 키가 undefined 가 된다.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "async function* g(){ const C = class { [await k]() { return 1; } async m(){ await z; } }; yield C; }",
+        .es2017,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[yield __await(k)]") != null);
+    // 메서드 본문의 await 는 그 메서드 것 — 건드리면 안 된다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "await z") != null);
+}
+
+test "ES5: 객체 리터럴 메서드의 computed 키 yield 도 추출된다 (#4723)" {
+    var r = try e2eTarget(std.testing.allocator, "function* g(){ const o = { [yield 'm']() { return 1; } }; return o; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "yield") == null);
+}
+
+test "ES5: 클래스 헤더(computed 키·extends)의 yield 도 추출된다 (#4723)" {
+    // es5 는 클래스를 IIFE 로 낮추므로 키 식이 **새 함수 안**으로 들어간다. 키의 yield 를
+    // 상태 기계가 먼저 꺼내 두지 않으면 raw `yield` 가 남아 산출물이 파싱되지 않는다.
+    const cases = [_][]const u8{
+        "function* g(){ const C = class { [yield 'k']() { return 1; } }; return C; }",
+        "function* g(B){ const C = class extends (yield B) { m() {} }; return C; }",
+        "function* g(){ class C { static [yield 's']() { return 1; } } return C; }",
+    };
+    for (cases) |src| {
+        var r = try e2eTarget(std.testing.allocator, src, .es5);
+        defer r.deinit();
+        try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null); // 공허 방지
+        try std.testing.expect(std.mem.indexOf(u8, r.output, "yield") == null);
+    }
+}
+
+test "ES5: generator 안 클래스 선언은 generator 안에 남는다 (#4723)" {
+    // es5 클래스 선언은 `var C = (function(){…})()` 를 pending_nodes 로 보류하고 `.none` 을
+    // 돌려준다. 상태 기계 수집기가 그걸 비우지 않으면 **모듈 최상위로 새어** 클로저
+    // (여기선 `t`)를 잃는다. yield 가 없어도 재현된다.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "function* g(t){ class C { m(){ return t; } } yield new C().m(); }",
+        .es5,
+    );
+    defer r.deinit();
+    const gen_at = std.mem.indexOf(u8, r.output, "__generator(") orelse return error.TestUnexpectedResult;
+    const cls_at = std.mem.indexOf(u8, r.output, "C=(function") orelse
+        std.mem.indexOf(u8, r.output, "C = (function") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(cls_at > gen_at);
+}
+
 test "ES5: computed key / 멤버 대입 좌변 / for update 의 yield 도 추출된다 (#4721)" {
     // 추출되지 않은 `yield` 는 `__generator` 콜백(평범한 function) 안에 raw 로 남아
     // **산출물이 파싱조차 되지 않는다**(`SyntaxError: Unexpected strict mode reserved word`).
@@ -2610,15 +2698,18 @@ test "ES2015: class extends member expression (e.g. React.Component)" {
 test "ES2015: class expression simple" {
     var r = try e2eTarget(std.testing.allocator, "const F=class{};", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _Class()") != null);
+    // #4723: `const F = class {}` 는 이름 추론으로 `F.name === "F"` 다. 예전 기대값
+    // `function _Class()` 는 그 추론을 깨뜨린 출력(`F.name === "_Class"`)을 고정하고 있었다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function F()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_Class") == null);
 }
 
 test "ES2015: class expression with method" {
     var r = try e2eTarget(std.testing.allocator, "const F=class{m(){return 1;}};", .es5);
     defer r.deinit();
-    // IIFE 패턴
+    // IIFE 패턴. 이름은 선언 이름을 따른다(#4723 — 이름 추론 보존).
     try std.testing.expect(std.mem.indexOf(u8, r.output, "(function(") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return _Class") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return F") != null);
 }
 
 test "ES2015: class expression with extends" {
@@ -2919,9 +3010,12 @@ test "ES2015: static computed field uses bracket notation" {
 test "ES2015: instance computed field uses computed key expression" {
     var r = try e2eTarget(std.testing.allocator, "var k='tag';class F{[k]='foo';}", .es5);
     defer r.deinit();
-    // #4629: define 의미론에선 key 를 헬퍼 인자로 넘긴다 — computed 는 식 그대로,
-    // 식별자는 문자열. `this.[k]` 같은 잘못된 문법이 나오지 않는지도 함께 본다.
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "__publicField(this,k,") != null);
+    // computed 키는 **클래스 정의 시점에 한 번** 평가돼야 한다(#4723). 예전 기대값
+    // `__publicField(this,k,` 는 키를 생성자 안에서 **인스턴스마다 재평가**하는 출력을
+    // 고정하고 있었다(#4629 에서 들어간 회귀). 이제 클래스 앞에서 temp 로 평가한다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__publicField(this,k,") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=k;") != null or
+        std.mem.indexOf(u8, r.output, "=k,") != null);
     try std.testing.expectEqual(std.mem.indexOf(u8, r.output, "this.[k]"), null);
 }
 

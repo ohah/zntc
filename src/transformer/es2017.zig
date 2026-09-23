@@ -96,10 +96,31 @@ pub fn ES2017(comptime Transformer: type) type {
                     .function_expression,
                     .function,
                     .arrow_function_expression,
-                    .method_definition,
-                    .class_declaration,
-                    .class_expression,
                     => {},
+                    // ⚠️ 클래스·메서드는 **통째로** 건너뛰면 안 된다 (#4723). extends 식과 computed
+                    // 키는 둘러싼 함수 문맥에서 평가되므로 그 안의 `await` 도 이 함수의 것이다.
+                    // 건너뛰면 `class { [await k]() {} }` 의 await 가 `__await` 표시를 못 받아
+                    // async generator 가 그 값을 소비자에게 내보내 버린다(키가 undefined).
+                    // 본문(메서드 body·필드 초기화)은 여전히 별도 스코프라 내려가지 않는다.
+                    .class_declaration, .class_expression => {
+                        const ce = node.data.extra;
+                        try stack.append(self.allocator, .{ .idx = self.readNodeIdx(ce, ast_mod.ClassExtra.body), .post = false });
+                        try stack.append(self.allocator, .{ .idx = self.readNodeIdx(ce, ast_mod.ClassExtra.super), .post = false });
+                    },
+                    .class_body => {
+                        var i = node.data.list.len;
+                        while (i > 0) {
+                            i -= 1;
+                            try stack.append(self.allocator, .{ .idx = @enumFromInt(self.ast.extra_data.items[node.data.list.start + i]), .post = false });
+                        }
+                    },
+                    .method_definition, .property_definition, .accessor_property => {
+                        // key 만 — computed 일 때만 평가 문맥이 바깥이다.
+                        const key = self.readNodeIdx(node.data.extra, 0);
+                        if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key) {
+                            try stack.append(self.allocator, .{ .idx = key, .post = false });
+                        }
+                    },
                     else => {
                         // 일반 노드 — 모든 자식을 push (소스 순서 보존 위해 역순).
                         try ast_walk.collectChildrenInto(self.ast, node, &child_buf, self.allocator);
