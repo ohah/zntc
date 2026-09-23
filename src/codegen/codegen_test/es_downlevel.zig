@@ -4332,3 +4332,112 @@ test "객체 home 파라미터 이름은 사용자 식별자를 가리지 않는
     try std.testing.expect(std.mem.indexOf(u8, r16.output, "(_obj2=>_obj2={") != null);
     try std.testing.expect(std.mem.indexOf(u8, r16.output, "a:_obj,") != null);
 }
+
+test "ES5: 블록·함수 본문의 using 도 dispose 로 낮춘다 (#4730)" {
+    // es5 는 블록이 block scoping 경로로 먼저 빠져 using 낮추기를 건너뛰었다 — dispose
+    // 없이 var 가 됐다(함수 본문도 block_statement 라 같은 경로).
+    var r = try e2eTarget(std.testing.allocator, "function f(){ using a = g(); use(a); } { using b = h(); }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var a=__using(_stack") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var b=__using(_stack") != null);
+    try std.testing.expect(std.mem.count(u8, r.output, "__callDispose(_stack") == 2);
+}
+
+test "ES2024: using 낮추기마다 이름이 고유하고 에러 상태를 초기화한다 (#4730)" {
+    // 고정 이름이면 중첩 블록이 바깥 스택을 덮어쓰고, 앞 블록의 _hasError 가 남아 뒤 블록의
+    // finally 가 옛 에러를 다시 던진다.
+    var r = try e2eTarget(std.testing.allocator, "{ using a = g(); { using b = h(); } }", .es2024);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _stack=[],_error=void 0,_hasError=false;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _stack2=[],_error2=void 0,_hasError2=false;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "catch(_){_error2=_;_hasError2=true;}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callDispose(_stack2,_error2,_hasError2)") != null);
+    // 블록 안 using 은 native let/const 타겟에서 const 로 남는다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const a=__using(_stack,") != null);
+}
+
+test "ES2024: using 이름은 사용자 식별자를 피한다 (#4730)" {
+    var r = try e2eTarget(std.testing.allocator, "{ using a = g(); var _stack = 1; }", .es2024);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _stack2=[]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__using(_stack2,") != null);
+}
+
+test "ES2024: 함수 본문 using 은 본문 전체를 감싸 뒤쪽 함수 선언도 호이스팅된다 (#4730)" {
+    // 첫 using 부터만 감싸면 `g()` 가 try 밖에 남아 try 블록 안의 g 를 못 본다.
+    var r = try e2eTarget(std.testing.allocator, "function f(){ log(g()); using a = r(); function g(){ return 1; } }", .es2024);
+    defer r.deinit();
+    const try_at = std.mem.indexOf(u8, r.output, "try{") orelse return error.TestUnexpectedResult;
+    const call_at = std.mem.indexOf(u8, r.output, "log(g())") orelse return error.TestUnexpectedResult;
+    const fn_at = std.mem.indexOf(u8, r.output, "function g()") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(try_at < call_at);
+    try std.testing.expect(try_at < fn_at);
+}
+
+test "ES2024: 모듈 최상위 using 의 export 는 try 밖 export 목록으로 모은다 (#4730)" {
+    // export 는 try 안에 있을 수 없다 — 예전 출력은 문법 오류였다.
+    var r = try e2eFull(std.testing.allocator, "using a = r(); export const k = 1; export function g(){ return k; } export class C {} export default 7;", .{ .unsupported = helpers.TransformOptions.compat.fromESTarget(.es2024) }, .{ .minify_whitespace = true }, ".ts");
+    defer r.deinit();
+    const try_at = std.mem.indexOf(u8, r.output, "try{") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "export function g()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "export function g()").? < try_at);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var k=1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var C=class C") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "export {k,C,_default as default};") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "export const") == null);
+}
+
+test "ES2024: for (using x of …) 헤더는 본문 블록의 using 으로 옮겨 낮춘다 (#4730)" {
+    // 헤더의 using 은 어떤 타겟에서도 낮춰지지 않아 `using` 문법이 그대로 남았다.
+    var r = try e2eTarget(std.testing.allocator, "for (using x of xs) use(x);", .es2024);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "for(const _using of xs)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const x=__using(_stack,_using)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "using x") == null);
+}
+
+test "ES5: async 함수 안 for (await using …) 의 dispose await 도 상태 기계가 접는다 (#4730)" {
+    // await 는 낮추기가 합성해 원본에 없다 — 상태 기계가 이 루프를 일반 문장으로 보내 raw
+    // await 가 남았다(SyntaxError).
+    var r = try e2eTarget(std.testing.allocator, "async function f(){ for (await using x of xs) use(x); }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "await ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callDispose(_stack") != null);
+}
+
+test "ES2024: using 낮추기는 지시문을 목록 맨 앞에 남긴다 (#4730)" {
+    // 지시문이 try 안으로 들어가면 평범한 문자열 식이 되어 strict 모드가 풀린다.
+    var r = try e2eTarget(std.testing.allocator, "function f(){ \"use strict\"; using a = r(); }", .es2024);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function f(){\"use strict\";var _stack=[]") != null);
+}
+
+test "ES5: generator 상태 기계 안 using 도 dispose 한다 (#4730)" {
+    // 상태 기계는 yield 가 든 목록을 직접 수집해 목록 방문(using 낮추기)을 거치지 않았다.
+    // 새 이름은 상태 기계가 대입으로 바꾸므로 wrapper 최상단에 선언돼야 한다.
+    var r = try e2eTarget(std.testing.allocator, "function* g(){ using a = r(); yield 1; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function g(){var _stack,_error,_hasError,a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "a=__using(_stack,r())") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callDispose(_stack,_error,_hasError);return[7];") != null);
+}
+
+test "ES5·최상위: using 목록의 함수 선언은 try 밖 앞쪽으로 끌어올린다 (#4730)" {
+    // es5 는 블록 안 함수 선언이 표준이 아니고, 모듈 최상위는 export function 때문에 try
+    // 안에 둘 수 없다. 끌어올려도 앞쪽 문장에서 호출할 수 있다.
+    var r5 = try e2eTarget(std.testing.allocator, "function f(){ log(g()); using a = r(); function g(){ return 1; } }", .es5);
+    defer r5.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r5.output, "function g(){return 1;}var _stack=[]") != null);
+
+    var rt = try e2eTarget(std.testing.allocator, "log(g()); using a = r(); function g(){ return 1; }", .es2024);
+    defer rt.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, rt.output, "function g(){return 1;}var _stack=[]") != null);
+}
+
+test "ES5: generator 중첩 블록 using 의 새 이름도 wrapper 최상단에 선언한다 (#4730)" {
+    // 중첩 블록은 호이스팅 수집 뒤에 재구성되므로 이름을 직접 등록해야 한다 — 빠지면
+    // 선언 없는 대입(`_stack = []`)이 된다.
+    var r = try e2eTarget(std.testing.allocator, "function* g(){ { using a = r(); yield 1; } }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function g(){var a,_stack,_error,_hasError;") != null);
+}

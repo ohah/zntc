@@ -30,7 +30,7 @@ pub fn visitListNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
     if (self.options.unsupported.using) {
         const Using = es2025_using.ES2025Using(Transformer);
         if (Using.hasUsingDeclaration(self, node.data.list.start, node.data.list.len)) {
-            const new_list = try Using.lowerUsingInStatements(self, node.data.list.start, node.data.list.len);
+            const new_list = try Using.lowerUsingInStatements(self, node.data.list.start, node.data.list.len, if (node.tag == .program) .program else .body);
             return self.ast.addNode(.{
                 .tag = node.tag,
                 .span = node.span,
@@ -57,7 +57,13 @@ fn visitBlockWithScoping(self: *Transformer, node: Node) Error!NodeIndex {
 
     const saved_scope_len = self.scope_var_names.items.len;
     const renames_added = try pushBlockRenames(self, list_start, list_len);
-    const new_list = try visitExtraList(self, .{ .start = list_start, .len = list_len });
+    // es5 에선 블록(함수 본문 포함)이 이 경로로 빠진다 — using 낮추기도 여기서 해야 한다.
+    // 예전엔 visitListNode 의 using 분기에 닿지 못해 dispose 없이 var 가 됐다 (#4730).
+    const Using = es2025_using.ES2025Using(Transformer);
+    const new_list = if (self.options.unsupported.using and Using.hasUsingDeclaration(self, list_start, list_len))
+        try Using.lowerUsingInStatements(self, list_start, list_len, .body)
+    else
+        try visitExtraList(self, .{ .start = list_start, .len = list_len });
 
     // 블록 퇴장: rename 맵 + scope_var_names 모두 복원
     popBlockRenames(self, renames_added);

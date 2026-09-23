@@ -219,8 +219,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 return buildExpressionBodyStateMachine(self, body_idx, body, span);
             }
 
-            const stmts_start = body.data.list.start;
-            const stmts_len = body.data.list.len;
+            const body_list = try rewriteUsingForStateMachine(self, body.data.list);
+            const stmts_start = body_list.start;
+            const stmts_len = body_list.len;
 
             // Phase 1: 연산 수집 (yield/return/statement를 Operation으로 변환)
             var ops: std.ArrayList(Operation) = .empty;
@@ -418,6 +419,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try collectSwitchOperations(self, stmt_idx, stmt, ops, next_label);
                 },
                 .for_of_statement, .for_in_statement => {
+                    if (try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, stmt_idx))
+                        return collectOperations(self, stmt_idx, ops, next_label);
                     if (es2015_scan.hasYieldOrReturn(self, stmt_idx)) {
                         if (stmt.tag == .for_in_statement) {
                             try collectForOfOperations(self, stmt, ops, next_label, null);
@@ -436,6 +439,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     }
                 },
                 .for_await_of_statement => {
+                    if (try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, stmt_idx))
+                        return collectOperations(self, stmt_idx, ops, next_label);
                     // async_await 미지원 타겟(ES5/Hermes)에서 for-await 는 ES2018 lowering 으로
                     // while 루프 + yield 로 풀어진다. visitNode 로 변환하면 결과 block 이
                     // .statement 로 통째로 묻혀 내부 yield 가 state machine 에 안 보이므로,
@@ -2561,11 +2566,21 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         }
 
         /// block_statement이면 내부 문들을 순회, 아니면 단일 문으로 collectOperations.
+        /// 상태 기계가 직접 수집하는 문장 목록에 `using` 이 있으면 try/finally 구조로 먼저
+        /// 바꾼다 — 이 경로는 목록 방문(visitListNode)을 거치지 않아 dispose 가 빠졌다 (#4730).
+        fn rewriteUsingForStateMachine(self: *Transformer, list: ast_mod.NodeList) Transformer.Error!ast_mod.NodeList {
+            if (!self.options.unsupported.using) return list;
+            const Using = @import("es2025_using.zig").ES2025Using(Transformer);
+            if (!Using.hasUsingDeclaration(self, list.start, list.len)) return list;
+            return Using.rewriteUsingStatements(self, list.start, list.len, .body);
+        }
+
         fn collectBodyOperations(self: *Transformer, body_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
             const body_node = self.ast.getNode(body_idx);
             if (body_node.tag == .block_statement) {
-                const stmts_start = body_node.data.list.start;
-                const stmts_len = body_node.data.list.len;
+                const list = try rewriteUsingForStateMachine(self, body_node.data.list);
+                const stmts_start = list.start;
+                const stmts_len = list.len;
                 // collectOperations가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
                 var i_stmt: u32 = 0;
                 while (i_stmt < stmts_len) : (i_stmt += 1) {
