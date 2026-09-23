@@ -753,6 +753,41 @@ test "es2017: 평범한 generator 의 yield* 는 건드리지 않는다 (#4628 �
 
 // === #1910: yield* iterable — __values() wrap ===
 
+test "ES5: computed key / 멤버 대입 좌변 / for update 의 yield 도 추출된다 (#4721)" {
+    // 추출되지 않은 `yield` 는 `__generator` 콜백(평범한 function) 안에 raw 로 남아
+    // **산출물이 파싱조차 되지 않는다**(`SyntaxError: Unexpected strict mode reserved word`).
+    // es5 산출물에는 `yield` 키워드가 하나도 없어야 한다.
+    const cases = [_][]const u8{
+        // 객체 리터럴 computed key — `computed_property_key` 래퍼를 순회해야 한다
+        "function* g(){ const o = { ['k' + (yield 1)]: 2 }; return o; }",
+        // computed 멤버가 **대입 좌변** — 우변만 보던 게이트가 놓쳤다
+        "function* g(){ const o = {}; o[yield 'k'] = 1; return o; }",
+        // for 의 update 절 — 진입 검사와 추출 양쪽에 빠져 있었다
+        "function* g(){ for (let i = 0; i < 2; i += (yield 'u')) use(i); }",
+        // for 의 init 절
+        "function* g(){ for (let i = (yield 'i'); i < 2; i++) use(i); }",
+    };
+    for (cases) |src| {
+        var r = try e2eTarget(std.testing.allocator, src, .es5);
+        defer r.deinit();
+        try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null); // 공허 방지
+        try std.testing.expect(std.mem.indexOf(u8, r.output, "yield") == null);
+    }
+}
+
+test "ES5: yield 없는 for 문은 상태 기계로 접지 않는다 (#4721 역방향)" {
+    // 진입 검사를 넓히면서 모든 for 를 상태 기계로 접어 버리면 출력이 커지고 느려진다.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "function f(){ for (let i = 0; i < 2; i++) use(i); }",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "for (") != null or
+        std.mem.indexOf(u8, r.output, "for(") != null);
+}
+
 test "ES5: 라벨이 겹치는 자리의 yield 는 별칭 case 로 폴스루하지 않는다 (#4718)" {
     // `__generator` 의 op 4(`yield`)·5(`yield*`)는 재개 라벨을 **현재 라벨 + 1** 로 잡는다.
     // 따라서 그 op 는 자기 case 의 라벨 + 1 에서 재개돼야 한다. 그런데 라벨이 같은 자리에
