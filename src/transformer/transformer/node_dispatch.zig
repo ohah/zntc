@@ -386,8 +386,8 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         },
         .while_statement,
         .do_while_statement,
-        .with_statement,
-        => self.visitBinaryStatementBody(idx),
+        => @import("control_flow.zig").visitWhileLoop(self, idx),
+        .with_statement => self.visitBinaryStatementBody(idx),
 
         // JSX
         .jsx_attribute,

@@ -28,6 +28,34 @@ fn ensureStatementBody(self: *Transformer, original_idx: NodeIndex, visited_idx:
     return makeEmptyStatement(self, span);
 }
 
+/// 루프 추출 판단에 쓰는 이름들 (#4743).
+/// - `names`: 헤더 let/const + 본문에서 선언한 let/const/class — 이 중 하나라도 클로저가
+///   캡처하면 반복별 추출이 필요하다.
+/// - `var_names`: 본문의 원래 `var` — 추출하면 바깥으로 끌어올린다.
+pub const LoopCapture = struct {
+    names: std.ArrayList([]const u8) = .empty,
+    var_names: std.ArrayList([]const u8) = .empty,
+    /// 헤더가 아니라 본문 선언 때문에 추출해야 하는지(헤더 let 이 없는 루프도 추출하게 한다).
+    body_captured: bool = false,
+
+    pub fn init(self: *Transformer, head_names: []const []const u8, body: NodeIndex) Error!LoopCapture {
+        const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
+        var c: LoopCapture = .{};
+        try c.names.appendSlice(self.allocator, head_names);
+        try BlockScoping.collectLoopBodyLexicalNames(self, body, false, &c.names);
+        if (c.names.items.len > head_names.len) {
+            c.body_captured = BlockScoping.hasCapturedClosure(self, body, c.names.items[head_names.len..]);
+        }
+        try BlockScoping.collectLoopBodyVarNames(self, body, &c.var_names);
+        return c;
+    }
+
+    pub fn deinit(c: *LoopCapture, self: *Transformer) void {
+        c.names.deinit(self.allocator);
+        c.var_names.deinit(self.allocator);
+    }
+};
+
 fn collectActiveLoopHeaderNames(self: *Transformer, names: []const []const u8, out: *std.ArrayList([]const u8)) Error!void {
     for (names) |name| {
         try out.append(self.allocator, self.lookupBlockRename(name) orelse name);
@@ -75,6 +103,57 @@ pub fn visitBinaryStatementBody(self: *Transformer, idx: NodeIndex) Error!NodeIn
     });
 }
 
+/// while / do-while. es5 에서 본문 선언(let/const/class)을 클로저가 캡처하면 본문을 `_loop`
+/// 함수로 뽑아 반복마다 새 바인딩을 만든다 (#4743). 두 루프는 헤더 선언이 없어 예전엔 추출
+/// 경로 자체가 없었다 — 모든 클로저가 마지막 값을 봤다.
+pub fn visitWhileLoop(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
+    const node = self.ast.getNode(idx);
+    if (!self.options.unsupported.block_scoping) return visitBinaryStatementBody(self, idx);
+    const orig_body = node.data.binary.right;
+    var capture = try LoopCapture.init(self, &.{}, orig_body);
+    defer capture.deinit(self);
+    if (!capture.body_captured) return visitBinaryStatementBody(self, idx);
+
+    const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
+    const is_async = BlockScoping.hasAwaitExpression(self, orig_body);
+    const preserve_this = BlockScoping.hasLexicalThisReference(self, orig_body);
+    var flow = BlockScoping.FlowResult{};
+    defer flow.labels.deinit(self.allocator);
+    BlockScoping.analyzeControlFlow(self, orig_body, &flow, 0, 0);
+
+    const new_test = try self.visitNode(node.data.binary.left);
+    // 이 본문은 `_loop` 클로저로 추출된다 — 안쪽에서 바깥 라벨은 경계 너머다 (#4722).
+    try self.label_scope.append(self.allocator, null);
+    const body_temp_start = self.temp_var_counter;
+    const raw_body = try self.visitNode(orig_body);
+    _ = self.label_scope.pop();
+    const new_body = try ensureStatementBody(self, orig_body, raw_body, node.span);
+
+    const result = try BlockScoping.buildLoopClosureWithFlow(
+        self,
+        new_body,
+        &.{},
+        &flow,
+        null,
+        node.span,
+        is_async,
+        preserve_this,
+        false,
+        body_temp_start,
+        capture.var_names.items,
+    );
+    const loop_node = try self.ast.addNode(.{
+        .tag = node.tag,
+        .span = node.span,
+        .data = .{ .binary = .{ .left = new_test, .right = result.call_and_check, .flags = node.data.binary.flags } },
+    });
+    return self.ast.addNode(.{
+        .tag = .block_statement,
+        .span = node.span,
+        .data = .{ .list = try self.ast.addNodeList(&.{ result.loop_fn, loop_node }) },
+    });
+}
+
 /// for-in/for-of/for-await-of 헤더 전용 ternary visit.
 /// `a`(left) 방문 시 in_for_in_of_header 플래그를 켜서, block_scoping 다운레벨로
 /// let/const → var 변환 시 불필요한 `= void 0` init 주입을 막는다 (#1386).
@@ -83,11 +162,14 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
         const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
         var lexical_names = try BlockScoping.collectLexicalVarNames(self, node.data.ternary.a);
         defer lexical_names.deinit(self.allocator);
+        // 본문에서 선언한 let/const/class 도 반복마다 새로 생겨야 한다 — 캡처되면 추출 (#4743).
+        var capture = try LoopCapture.init(self, lexical_names.items, node.data.ternary.c);
+        defer capture.deinit(self);
 
-        if (lexical_names.items.len > 0) {
+        if (lexical_names.items.len > 0 or capture.body_captured) {
             const orig_body_idx = node.data.ternary.c;
             // 원본 AST 에서 capture 검사 — visitNode 가 closure 경계를 변환하기 전 시점.
-            const has_capture = BlockScoping.hasCapturedClosure(self, orig_body_idx, lexical_names.items);
+            const has_capture = BlockScoping.hasCapturedClosure(self, orig_body_idx, capture.names.items);
             // body 에 await 가 있으면 _loop 도 async 여야 (호출부도 await wrap).
             // for-await-of 자체는 enclosing async function 보장이지만 body 에 await
             // 가 없으면 sync _loop 으로 충분.
@@ -131,6 +213,7 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
                     preserve_this,
                     false,
                     body_temp_start,
+                    capture.var_names.items,
                 );
                 const loop_node = try self.ast.addNode(.{
                     .tag = node.tag,
@@ -290,11 +373,14 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
         const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
         var lexical_names = try BlockScoping.collectLexicalVarNames(self, init_idx);
         defer lexical_names.deinit(self.allocator);
+        // 본문에서 선언한 let/const/class 도 반복마다 새로 생겨야 한다 — 캡처되면 추출 (#4743).
+        var capture = try LoopCapture.init(self, lexical_names.items, self.readNodeIdx(e, 3));
+        defer capture.deinit(self);
 
-        if (lexical_names.items.len > 0) {
+        if (lexical_names.items.len > 0 or capture.body_captured) {
             // 원본 body에서 캡처/제어흐름 분석 (new AST에서는 extra 레이아웃이 변경됨)
             const orig_body_idx = self.readNodeIdx(e, 3);
-            const has_capture = BlockScoping.hasCapturedClosure(self, orig_body_idx, lexical_names.items);
+            const has_capture = BlockScoping.hasCapturedClosure(self, orig_body_idx, capture.names.items);
             const is_async = if (has_capture) BlockScoping.hasAwaitExpression(self, orig_body_idx) else false;
             const preserve_this = if (has_capture) BlockScoping.hasLexicalThisReference(self, orig_body_idx) else false;
 
@@ -334,6 +420,7 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
                     preserve_this,
                     false,
                     body_temp_start,
+                    capture.var_names.items,
                 );
 
                 // var _loop = function(...) { ... };

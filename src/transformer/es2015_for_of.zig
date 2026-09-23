@@ -160,12 +160,17 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             // 본문에 `yield` 가 있으면(= 상태 기계로 접힐 generator 안) 본문을 여기서 visit 하지
             // 않고 **원본 그대로** `_loop` generator 로 뽑는다 (#4722). 그 generator 는 나중에
             // 상태 기계 수집이 한 번만 visit 하며 낮춘다 — 여기서 먼저 visit 하면 이중 방문이 된다.
-            const will_extract = self.options.unsupported.block_scoping and blk: {
-                const BS = es2015_block_scoping.ES2015BlockScoping(@TypeOf(self.*));
-                var names = try BS.collectLexicalVarNames(self, left);
-                defer names.deinit(self.allocator);
-                break :blk names.items.len > 0 and BS.hasCapturedClosure(self, body, names.items);
-            };
+            // 헤더 let/const 뿐 아니라 본문에서 선언한 let/const/class 가 캡처돼도 추출한다 (#4743).
+            const LoopCapture = @import("transformer/control_flow.zig").LoopCapture;
+            var head_names: std.ArrayList([]const u8) = if (self.options.unsupported.block_scoping)
+                try es2015_block_scoping.ES2015BlockScoping(@TypeOf(self.*)).collectLexicalVarNames(self, left)
+            else
+                .empty;
+            defer head_names.deinit(self.allocator);
+            var capture: LoopCapture = if (self.options.unsupported.block_scoping) try LoopCapture.init(self, head_names.items, body) else .{};
+            defer capture.deinit(self);
+            const will_extract = self.options.unsupported.block_scoping and
+                es2015_block_scoping.ES2015BlockScoping(@TypeOf(self.*)).hasCapturedClosure(self, body, capture.names.items);
             const yield_closure = will_extract and bodyHasYield(self, body);
             // 추출될 본문 안에서는 바깥 라벨이 클로저 경계 너머다 (#4722).
             if (will_extract) try self.label_scope.append(self.allocator, null);
@@ -195,10 +200,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             var body_after_closure = new_body;
             if (self.options.unsupported.block_scoping) {
                 const BlockScoping = es2015_block_scoping.ES2015BlockScoping(@TypeOf(self.*));
-                var lexical_names = try BlockScoping.collectLexicalVarNames(self, left);
-                defer lexical_names.deinit(self.allocator);
-
-                if (lexical_names.items.len > 0 and BlockScoping.hasCapturedClosure(self, body, lexical_names.items)) {
+                if (will_extract) {
                     const is_async = BlockScoping.hasAwaitExpression(self, body);
                     const preserve_this = BlockScoping.hasLexicalThisReference(self, body);
                     var flow = BlockScoping.FlowResult{};
@@ -214,7 +216,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                     const result = try BlockScoping.buildLoopClosureWithFlow(
                         self,
                         new_body,
-                        lexical_names.items,
+                        head_names.items,
                         &flow,
                         local_label,
                         span,
@@ -222,6 +224,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                         preserve_this,
                         yield_closure,
                         if (yield_closure) null else body_temp_start,
+                        capture.var_names.items,
                     );
                     loop_fn_decl = result.loop_fn;
                     body_after_closure = result.call_and_check;

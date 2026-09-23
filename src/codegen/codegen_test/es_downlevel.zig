@@ -4528,3 +4528,72 @@ test "상태 기계: block scoping 이 native 인 조합에선 블록 바인딩�
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var x;") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "$") == null);
 }
+
+test "ES5: 루프 본문 선언을 클로저가 캡처하면 반복별로 뽑는다 (#4743)" {
+    // 헤더 let 만 추출 조건이던 때는 `var` 헤더 루프의 본문 const 가 하나로 합쳐져 모든
+    // 클로저가 마지막 값을 봤다.
+    var r = try e2eTarget(std.testing.allocator, "for (var i=0;i<2;i++){ const v=i; f.push(()=>v); }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _loop=function(){var v=i;f.push(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "for(var i=0;i<2;i++)_loop();") != null);
+}
+
+test "ES5: while / do-while 도 본문 캡처 시 반복별로 뽑는다 (#4743)" {
+    // 두 루프는 헤더 선언이 없어 추출 경로 자체가 없었다.
+    var rw = try e2eTarget(std.testing.allocator, "while (c()){ const v=n(); f.push(()=>v); }", .es5);
+    defer rw.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, rw.output, "while(c())_loop();") != null);
+
+    var rd = try e2eTarget(std.testing.allocator, "do { let v=n(); f.push(()=>v); } while (c());", .es5);
+    defer rd.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, rd.output, "do _loop();while(c());") != null);
+}
+
+test "ES5: 추출된 루프 본문의 var 는 바깥으로 끌어올린다 (#4743)" {
+    // 본문을 함수로 뽑으면 var 가 그 함수의 지역 변수가 되어 루프 밖에서 사라졌다
+    // (`ReferenceError: w is not defined`).
+    var r = try e2eTarget(std.testing.allocator, "for (let i=0;i<2;i++){ var w=i; f.push(()=>i); } use(w);", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var w,_loop=function(i){w=i;") != null);
+}
+
+test "ES5: 캡처가 없으면 루프 본문을 뽑지 않는다 (#4743)" {
+    var r = try e2eTarget(std.testing.allocator, "for (var i=0;i<2;i++){ const v=i; s+=v; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_loop") == null);
+}
+
+test "ES5 상태 기계: 루프 안 catch 파라미터를 캡처하면 반복별 generator 로 뽑는다 (#4743)" {
+    // 상태 기계는 catch 파라미터를 wrapper var 로 올리므로 캡처되면 모든 반복이 공유했다.
+    var r = try e2eTarget(std.testing.allocator, "function* g(){ for (var i=0;i<2;i++){ try { throw i; } catch (e) { yield 0; f.push(()=>e); } } }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return[5,__values(_loop())]") != null);
+}
+
+test "ES5 상태 기계: while 본문 캡처도 반복별 generator 로 뽑는다 (#4743)" {
+    var r = try e2eTarget(std.testing.allocator, "async function g(){ while (c()){ const v=n(); await 0; f.push(()=>v); } }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "if(!c())return[3,3];return[5,__values(_loop())];") != null);
+}
+
+test "ES5: for-of 본문 선언 캡처도 반복별로 뽑는다 (#4743)" {
+    // 헤더 x 가 아니라 본문 v 를 캡처 — 예전엔 헤더만 봐서 추출하지 않았다.
+    var r = try e2eTarget(std.testing.allocator, "for (const x of xs){ const v=x*2; f.push(()=>v); }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_loop=function(x){var v=x*2;") != null);
+}
+
+test "ES5: 중첩 루프 본문의 캡처는 안쪽 루프만 뽑는다 (#4743)" {
+    // 안쪽 루프의 본문 선언은 안쪽 루프가 반복마다 뽑는다 — 바깥 루프까지 뽑을 필요 없다.
+    var r = try e2eTarget(std.testing.allocator, "for (var i=0;i<2;i++){ for (var j=0;j<2;j++){ const v=j; f.push(()=>v); } }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.startsWith(u8, r.output, "for(var i=0;i<2;i++){{var _loop=function(){"));
+    try std.testing.expect(std.mem.count(u8, r.output, "_loop=function") == 1);
+}
+
+test "ES5: 추출할 때 중첩 함수 안의 var 는 끌어올리지 않는다 (#4743)" {
+    var r = try e2eTarget(std.testing.allocator, "for (let i=0;i<2;i++){ function h(){ var z=1; return z; } f.push(()=>i+h()); }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function h(){var z=1;return z;}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var z,") == null);
+}
