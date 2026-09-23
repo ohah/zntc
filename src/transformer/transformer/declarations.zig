@@ -185,6 +185,10 @@ pub fn visitFunction(self: *Transformer, node: Node) Error!NodeIndex {
     // function foo(x?: number) {}  ← 구현체 (body 있음)
     if (self.readNodeIdx(e, 2).isNone()) return NodeIndex.none;
 
+    // 함수 경계 — 바깥 함수의 라벨은 여기서 보이지 않는다 (#4722).
+    try self.label_scope.append(self.allocator, null);
+    defer _ = self.label_scope.pop();
+
     // 일반 함수는 자체 this 바인딩을 가지므로 depth 증가.
     // static block 안에서 function() { this.x } 의 this는 치환하면 안 됨.
     const in_static_block = self.static_block_class_name != null;

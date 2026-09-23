@@ -108,7 +108,10 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
             self.in_for_in_of_header = true;
             const new_a = try self.visitNode(node.data.ternary.a);
             self.in_for_in_of_header = saved;
+            // 이 본문은 `_loop` 클로저로 추출된다 — 안쪽에서 바깥 라벨은 경계 너머다 (#4722).
+            if (has_capture) try self.label_scope.append(self.allocator, null);
             const raw_c = try self.visitNode(orig_body_idx);
+            if (has_capture) _ = self.label_scope.pop();
             const new_c = try ensureStatementBody(self, orig_body_idx, raw_c, node.span);
 
             if (has_capture) {
@@ -306,7 +309,10 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
             const new_init = try self.visitNode(init_idx);
             const new_test = try self.visitNode(self.readNodeIdx(e, 1));
             const new_update = try self.visitNode(self.readNodeIdx(e, 2));
+            // 이 본문은 `_loop` 클로저로 추출된다 — 안쪽에서 바깥 라벨은 경계 너머다 (#4722).
+            if (has_capture) try self.label_scope.append(self.allocator, null);
             const raw_body = try self.visitNode(orig_body_idx);
+            if (has_capture) _ = self.label_scope.pop();
             const new_body = try ensureStatementBody(self, orig_body_idx, raw_body, node.span);
 
             if (has_capture) {

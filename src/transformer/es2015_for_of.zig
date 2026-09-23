@@ -44,6 +44,8 @@ const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
+const ast_walk = @import("../parser/ast_walk.zig");
+const std = @import("std");
 const es2015_block_scoping = @import("es2015_block_scoping.zig");
 
 pub fn ES2015ForOf(comptime Transformer: type) type {
@@ -155,7 +157,20 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             });
 
             // --- body: var x = _e.value; original_body ---
-            const new_body = try self.visitNode(body);
+            // 본문에 `yield` 가 있으면(= 상태 기계로 접힐 generator 안) 본문을 여기서 visit 하지
+            // 않고 **원본 그대로** `_loop` generator 로 뽑는다 (#4722). 그 generator 는 나중에
+            // 상태 기계 수집이 한 번만 visit 하며 낮춘다 — 여기서 먼저 visit 하면 이중 방문이 된다.
+            const will_extract = self.options.unsupported.block_scoping and blk: {
+                const BS = es2015_block_scoping.ES2015BlockScoping(@TypeOf(self.*));
+                var names = try BS.collectLexicalVarNames(self, left);
+                defer names.deinit(self.allocator);
+                break :blk names.items.len > 0 and BS.hasCapturedClosure(self, body, names.items);
+            };
+            const yield_closure = will_extract and bodyHasYield(self, body);
+            // 추출될 본문 안에서는 바깥 라벨이 클로저 경계 너머다 (#4722).
+            if (will_extract) try self.label_scope.append(self.allocator, null);
+            const new_body = if (yield_closure) body else try self.visitNode(body);
+            if (will_extract) _ = self.label_scope.pop();
 
             // _e.value
             const step_ref_body = try makeRefFromSpan(self, step_span);
@@ -193,6 +208,8 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                     else
                         self.ast.getText(self.ast.getNode(label_name_idx).span);
 
+                    // 본문에 `yield` 가 있으면 평범한 함수로 뽑을 수 없다 — raw `yield` 가 남아
+                    // 산출물이 파싱되지 않았다(#4722). generator 로 뽑고 `yield* _loop(x)` 로 위임.
                     const result = try BlockScoping.buildLoopClosureWithFlow(
                         self,
                         new_body,
@@ -200,9 +217,9 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                         &flow,
                         local_label,
                         span,
-                        is_async,
+                        if (yield_closure) false else is_async,
                         preserve_this,
-                        false,
+                        yield_closure,
                     );
                     loop_fn_decl = result.loop_fn;
                     body_after_closure = result.call_and_check;
@@ -449,4 +466,26 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
 
 test "ES2015 for-of module compiles" {
     _ = ES2015ForOf;
+}
+
+/// 함수 경계를 넘지 않고 `yield` 식이 있는지.
+fn bodyHasYield(self: anytype, root: NodeIndex) bool {
+    var stack: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    var child_buf: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer child_buf.deinit(self.allocator);
+    stack.append(self.allocator, root) catch return true;
+    while (stack.pop()) |idx| {
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .yield_expression => return true,
+            .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .class_declaration, .class_expression => continue,
+            else => {},
+        }
+        child_buf.clearRetainingCapacity();
+        ast_walk.collectChildrenInto(self.ast, node, &child_buf, self.allocator) catch return true;
+        stack.appendSlice(self.allocator, child_buf.items) catch return true;
+    }
+    return false;
 }

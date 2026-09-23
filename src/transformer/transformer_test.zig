@@ -212,7 +212,9 @@ fn parseAndTransform(allocator: std.mem.Allocator, source: []const u8) !TestResu
 
     var t = try Transformer.init(allocator, &parser_ptr.ast, .{});
     const root = try t.transform();
-    t.scratch.deinit(allocator);
+    // AST 외 트랜스포머 리소스를 모두 해제한다(`…WithOpts` 와 동일). 예전엔 scratch 만
+    // 풀어서, 다른 목록(예: label_scope — #4722)이 할당되면 누수로 잡혔다.
+    t.deinitExceptAst();
 
     return .{ .ast = t.ast, .root = root, .scanner = scanner_ptr, .parser = parser_ptr, .allocator = allocator };
 }

@@ -516,6 +516,11 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             // 바디의 `continue LABEL` 이 iteration statement를 못 찾는다.
             // label을 lowered inner while/for_statement에 직접 부여해 이를 회피.
             const child_idx = node.data.binary.right;
+            // 이 라벨은 본문 안에서 보인다 — 추출된 루프 호출부가 점프/전달을 고를 때 쓴다 (#4722).
+            if (!node.data.binary.left.isNone()) {
+                try self.label_scope.append(self.allocator, self.ast.getText(self.ast.getNode(node.data.binary.left).span));
+            } else try self.label_scope.append(self.allocator, "");
+            defer _ = self.label_scope.pop();
             if (!child_idx.isNone()) {
                 const child = self.ast.getNode(child_idx);
                 if (self.options.unsupported.needsForAwaitOfDownlevel() and child.tag == .for_await_of_statement) {
@@ -525,6 +530,26 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 if (self.options.unsupported.for_of and child.tag == .for_of_statement) {
                     const new_label = try self.visitNode(node.data.binary.left);
                     return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatementLabeled(self, child, new_label);
+                }
+            }
+            // 루프가 `_loop` 추출로 `{ var _loop = …; for (…) {…} }` 블록이 되면 라벨이 블록에
+            // 붙어 `continue L` 이 갈 곳이 없어진다(SyntaxError / 조용한 오동작). 라벨을 블록 안의
+            // 그 루프로 옮긴다 — for-of 가 위에서 하는 것과 같은 처리 (#4722).
+            if (!child_idx.isNone()) {
+                const child_tag = self.ast.getNode(child_idx).tag;
+                if (child_tag == .for_statement or child_tag == .for_in_statement or
+                    child_tag == .while_statement or child_tag == .do_while_statement)
+                {
+                    const new_label = try self.visitNode(node.data.binary.left);
+                    const new_child = try self.visitNode(child_idx);
+                    if (!new_child.isNone()) {
+                        if (try moveLabelOntoLoopInBlock(self, new_label, new_child, node.span)) |moved| return moved;
+                    }
+                    return self.ast.addNode(.{ .tag = .labeled_statement, .span = node.span, .data = .{ .binary = .{
+                        .left = new_label,
+                        .right = new_child,
+                        .flags = node.data.binary.flags,
+                    } } });
                 }
             }
             return self.visitBinaryStatementBody(idx);
@@ -1051,4 +1076,30 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .invalid => .none,
         else => self.copyNodeDirect(idx),
     };
+}
+
+/// `block` 이 `{ …; <loop> }` 꼴(루프 추출 결과)이면 마지막 루프에 라벨을 붙인 새 블록을 돌려준다.
+fn moveLabelOntoLoopInBlock(self: *Transformer, label: NodeIndex, block_idx: NodeIndex, span: @import("../../lexer/token.zig").Span) Error!?NodeIndex {
+    const block = self.ast.getNode(block_idx);
+    if (block.tag != .block_statement or block.data.list.len == 0) return null;
+    const last_pos = block.data.list.start + block.data.list.len - 1;
+    const last_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[last_pos]);
+    const last_tag = self.ast.getNode(last_idx).tag;
+    if (last_tag != .for_statement and last_tag != .for_in_statement and
+        last_tag != .while_statement and last_tag != .do_while_statement) return null;
+
+    const labeled_loop = try self.ast.addNode(.{ .tag = .labeled_statement, .span = span, .data = .{ .binary = .{
+        .left = label,
+        .right = last_idx,
+        .flags = 0,
+    } } });
+    var items: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer items.deinit(self.allocator);
+    var i: u32 = 0;
+    while (i + 1 < block.data.list.len) : (i += 1) {
+        try items.append(self.allocator, @enumFromInt(self.ast.extra_data.items[block.data.list.start + i]));
+    }
+    try items.append(self.allocator, labeled_loop);
+    const list = try self.ast.addNodeList(items.items);
+    return try self.ast.addNode(.{ .tag = .block_statement, .span = block.span, .data = .{ .list = list } });
 }
