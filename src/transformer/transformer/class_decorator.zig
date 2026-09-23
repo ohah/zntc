@@ -64,6 +64,10 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, node: Node, key_assign
     }
     defer self.current_super_class = saved_super_class;
     defer self.current_super_class_old_idx = saved_super_class_old_idx;
+    // 클래스 안의 `super` 는 이 클래스 기준 — 바깥 객체 메서드의 home 을 끊는다 (#4729).
+    const saved_super_home = self.current_super_home_object;
+    self.current_super_home_object = null;
+    defer self.current_super_home_object = saved_super_home;
     // V4 fix: es2015_class.zig (IIFE path) parity — outer is_static/static_receiver 누수 차단.
     const saved_super_is_static = self.current_super_is_static;
     const saved_super_static_receiver = self.current_super_static_receiver;

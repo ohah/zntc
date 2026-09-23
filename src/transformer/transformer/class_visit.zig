@@ -123,6 +123,10 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
         }
         defer self.current_super_class = saved_super_class;
         defer self.current_super_class_old_idx = saved_super_class_old_idx;
+        // 클래스 안의 `super` 는 이 클래스 기준 — 바깥 객체 메서드의 home 을 끊는다 (#4729).
+        const saved_super_home = self.current_super_home_object;
+        self.current_super_home_object = null;
+        defer self.current_super_home_object = saved_super_home;
         // V4 fix: es2015_class.zig (IIFE path) 와 일관성 — class 진입 시 is_static/static_receiver
         // 도 outer 의 누수 차단. 예: outer static private field init (V3 시나리오) 에서 inner class
         // 진입 시 is_static=true 가 그대로 leak 되면 inner instance method 가 static form 으로 잘못

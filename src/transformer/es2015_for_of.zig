@@ -169,6 +169,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const yield_closure = will_extract and bodyHasYield(self, body);
             // 추출될 본문 안에서는 바깥 라벨이 클로저 경계 너머다 (#4722).
             if (will_extract) try self.label_scope.append(self.allocator, null);
+            const body_temp_start = self.temp_var_counter;
             const new_body = if (yield_closure) body else try self.visitNode(body);
             if (will_extract) _ = self.label_scope.pop();
 
@@ -220,6 +221,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                         if (yield_closure) false else is_async,
                         preserve_this,
                         yield_closure,
+                        if (yield_closure) null else body_temp_start,
                     );
                     loop_fn_decl = result.loop_fn;
                     body_after_closure = result.call_and_check;

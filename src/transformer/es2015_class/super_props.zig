@@ -341,6 +341,10 @@ pub fn SuperProps(comptime Transformer: type) type {
         /// V_OPT fix: es2020.zig (optional chain super lowering) 도 이 helper 를 호출해
         /// via_proto_chain / non-derived / is_static 분기를 일관되게 처리해야 한다.
         pub fn buildSuperBaseRef(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
+            // 객체 리터럴 메서드: home object 의 프로토타입 (#4729). 클래스 진입 시 비워진다.
+            if (self.current_super_home_object) |home| {
+                return @import("../object_super.zig").buildHomeProto(self, home, span);
+            }
             const super_class_span = self.current_super_class orelse {
                 // non-derived class — fallback to spec home object [[Prototype]]
                 return buildNonDerivedSuperBase(self, span);

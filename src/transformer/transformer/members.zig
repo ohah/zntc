@@ -6,6 +6,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const es2015_shorthand = @import("../es2015_shorthand.zig");
 const es_helpers = @import("../es_helpers.zig");
+const object_super = @import("../object_super.zig");
 const styled_components_mod = @import("styled_components.zig");
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
@@ -81,6 +82,10 @@ pub fn lowerAsyncOrGeneratorMethod(self: *Transformer, node: Node) Error!NodeInd
     const span = node.span;
 
     const new_key = try self.visitNode(self.readNodeIdx(e, ast_mod.MethodExtra.key));
+    // 객체 리터럴이 이 메서드에 home 임시 변수를 배정했으면 본문의 `super` 를 그 기준으로
+    // 낮춘다 (#4729). 계산된 키는 바깥 문맥이라 키 방문 **뒤에** 켠다.
+    const home_saved = object_super.enterMethod(self, object_super.lookup(self, e));
+    defer object_super.leaveMethod(self, home_saved);
     const params_idx = self.readNodeIdx(e, ast_mod.MethodExtra.params);
     const body_idx = self.readNodeIdx(e, ast_mod.MethodExtra.body);
 
@@ -145,6 +150,11 @@ pub fn visitMethodDefinition(self: *Transformer, node: Node) Error!NodeIndex {
     // TS method overload signature: body가 없으면 제거
     if (self.readNodeIdx(e, 2).isNone()) return NodeIndex.none;
     const new_key = try self.visitNode(self.readNodeIdx(e, 0));
+    // 객체 리터럴이 이 메서드에 home 임시 변수를 배정했으면 그 기준으로 `super` 를 낮춘다.
+    // 배정이 없으면(클래스 메서드 등) 바깥 객체 메서드의 home 을 끊는다. 계산된 키의
+    // `super` 는 바깥 문맥이라 키 방문 **뒤에** 켠다 (#4729).
+    const home_saved = object_super.enterMethod(self, object_super.lookup(self, e));
+    defer object_super.leaveMethod(self, home_saved);
 
     // 파라미터 방문 — parameter property 감지
     const params_idx_old = self.readNodeIdx(e, 1);

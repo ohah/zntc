@@ -650,6 +650,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 false, // is_async — 상태 기계 안에서는 await 도 yield 로 낮아진다
                 BlockScoping.hasLexicalThisReference(self, body_idx),
                 true, // is_generator
+                null, // 본문은 아직 visit 전 — 추출된 generator 가 나중에 자기 temp 를 가진다
             );
 
             // `var _loopN = function* (x) {…}` 은 대입문으로 접히므로, 이름을 **바깥 함수**
@@ -2253,6 +2254,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (node.tag == .array_expression or node.tag == .object_expression or
                 node.tag == .sequence_expression or node.tag == .template_literal)
             {
+                // 객체 리터럴 메서드의 `super` home 배정 — 이 경로는 object_expression 방문을
+                // 거치지 않고 멤버를 직접 방문하므로 여기서도 해야 한다 (#4729).
+                const object_super = @import("object_super.zig");
+                const home_mark = self.object_super_homes.items.len;
+                defer object_super.release(self, home_mark);
+                const home = if (node.tag == .object_expression) try object_super.prepareHome(self, node) else null;
+
                 const scratch_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
                 const list_start = node.data.list.start;
@@ -2265,11 +2273,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try self.scratch.append(self.allocator, new_elem);
                 }
                 const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-                return self.ast.addNode(.{
+                const rebuilt = try self.ast.addNode(.{
                     .tag = node.tag,
                     .span = node.span,
                     .data = .{ .list = new_list },
                 });
+                if (home) |h| return object_super.wrapWithHome(self, h, rebuilt, node.span);
+                return rebuilt;
             }
 
             // object_property: binary (key: value)
