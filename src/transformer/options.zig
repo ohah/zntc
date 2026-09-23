@@ -326,6 +326,9 @@ pub const TransformOptions = struct {
                 .private_field_expression,
                 => if (u.requiresPrivateDownlevel()) return true,
                 .static_block => if (u.class_static_block) return true,
+                // class 를 낮추는 타겟은 객체 리터럴 메서드의 `super` 도 `__superGet`/`__superSet`
+                // 으로 낮춘다 — 클래스가 없는 모듈도 헬퍼 등록이 필요하다 (#4729).
+                .super_expression => if (u.class) return true,
                 .tagged_template_expression => if (u.template_literal) return true,
                 .variable_declaration => {
                     if (u.using and ast.variableDeclarationKind(node).isUsing()) return true;

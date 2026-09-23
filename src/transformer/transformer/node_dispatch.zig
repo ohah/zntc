@@ -19,6 +19,7 @@ const es2022 = @import("../es2022.zig");
 const es2015_template = @import("../es2015_template.zig");
 const es2015_computed = @import("../es2015_computed.zig");
 const es2015_object_methods = @import("../es2015_object_methods.zig");
+const object_super = @import("../object_super.zig");
 const es2015_spread = @import("../es2015_spread.zig");
 const es2015_arrow = @import("../es2015_arrow.zig");
 const es2015_for_of = @import("../es2015_for_of.zig");
@@ -169,32 +170,14 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
 
             // Plugin visitor 훅 — 기본 방문 전 선취권 (null 반환 시 default 진행)
             if (try self.dispatchVisitor(.on_object_expression, idx)) |replacement| return replacement;
-            if (self.options.unsupported.object_spread) {
-                if (es2018.ES2018(Transformer).hasSpreadProperty(self, node)) {
-                    return es2018.ES2018(Transformer).lowerObjectSpread(self, node);
-                }
-            }
-            // method shorthand → { key: function() {} } 를 먼저 처리.
-            // function_expression 내부 async/generator lowering까지 visitNode 경로로 수행한 뒤,
-            // computed key가 남아 있으면 아래 ES2015Computed가 후속 처리한다.
-            if (self.options.unsupported.needsObjectMethodDownlevel() and
-                es2015_object_methods.ES2015ObjectMethods(Transformer).needsObjectMethodLowering(self, node))
-            {
-                const lowered = try es2015_object_methods.ES2015ObjectMethods(Transformer).lowerObjectMethods(self, node);
-                const lowered_node = self.ast.getNode(lowered);
-                if (self.options.unsupported.object_extensions) {
-                    if (es2015_computed.ES2015Computed(Transformer).hasComputedProperty(self, lowered_node)) {
-                        return es2015_computed.ES2015Computed(Transformer).lowerComputedProperties(self, lowered_node);
-                    }
-                }
-                return lowered;
-            }
-            if (self.options.unsupported.object_extensions) {
-                if (es2015_computed.ES2015Computed(Transformer).hasComputedProperty(self, node)) {
-                    return es2015_computed.ES2015Computed(Transformer).lowerComputedProperties(self, node);
-                }
-            }
-            return self.visitListNode(idx);
+
+            // 객체 리터럴 메서드의 `super` 가 낮춰져야 하면 객체를 home 임시 변수에 담는다 (#4729).
+            const home_mark = self.object_super_homes.items.len;
+            defer object_super.release(self, home_mark);
+            const home = try object_super.prepareHome(self, node);
+            const lowered = try visitObjectExpressionLowering(self, idx, node);
+            if (home) |h| return object_super.wrapWithHome(self, h, lowered, node.span);
+            return lowered;
         },
 
         // JSX element/opening_element: .extra 형식 (tag, attrs, children)
@@ -1102,4 +1085,34 @@ fn moveLabelOntoLoopInBlock(self: *Transformer, label: NodeIndex, block_idx: Nod
     try items.append(self.allocator, labeled_loop);
     const list = try self.ast.addNodeList(items.items);
     return try self.ast.addNode(.{ .tag = .block_statement, .span = block.span, .data = .{ .list = list } });
+}
+
+/// object_expression 의 문법 다운레벨링: spread(ES2018) / method shorthand / computed property(ES2015).
+fn visitObjectExpressionLowering(self: *Transformer, idx: NodeIndex, node: ast_mod.Node) Error!NodeIndex {
+    if (self.options.unsupported.object_spread) {
+        if (es2018.ES2018(Transformer).hasSpreadProperty(self, node)) {
+            return es2018.ES2018(Transformer).lowerObjectSpread(self, node);
+        }
+    }
+    // method shorthand → { key: function() {} } 를 먼저 처리.
+    // function_expression 내부 async/generator lowering까지 visitNode 경로로 수행한 뒤,
+    // computed key가 남아 있으면 아래 ES2015Computed가 후속 처리한다.
+    if (self.options.unsupported.needsObjectMethodDownlevel() and
+        es2015_object_methods.ES2015ObjectMethods(Transformer).needsObjectMethodLowering(self, node))
+    {
+        const lowered = try es2015_object_methods.ES2015ObjectMethods(Transformer).lowerObjectMethods(self, node);
+        const lowered_node = self.ast.getNode(lowered);
+        if (self.options.unsupported.object_extensions) {
+            if (es2015_computed.ES2015Computed(Transformer).hasComputedProperty(self, lowered_node)) {
+                return es2015_computed.ES2015Computed(Transformer).lowerComputedProperties(self, lowered_node);
+            }
+        }
+        return lowered;
+    }
+    if (self.options.unsupported.object_extensions) {
+        if (es2015_computed.ES2015Computed(Transformer).hasComputedProperty(self, node)) {
+            return es2015_computed.ES2015Computed(Transformer).lowerComputedProperties(self, node);
+        }
+    }
+    return self.visitListNode(idx);
 }

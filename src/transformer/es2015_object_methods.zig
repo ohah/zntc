@@ -27,6 +27,7 @@ const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
+const object_super = @import("object_super.zig");
 
 pub fn ES2015ObjectMethods(comptime Transformer: type) type {
     return struct {
@@ -112,8 +113,12 @@ pub fn ES2015ObjectMethods(comptime Transformer: type) type {
                     .data = .{ .extra = fn_extra },
                 });
 
-                // 상위 visitNode를 통해 async/generator lowering 적용
+                // 상위 visitNode를 통해 async/generator lowering 적용.
+                // 함수로 바뀌어도 이 본문의 `super` 는 객체 리터럴이 home 이다 — 배정된 home
+                // 이 있으면 바깥 클래스의 super 문맥을 끊고 그 기준으로 낮춘다 (#4729).
+                const home_saved = object_super.enterMethod(self, object_super.lookup(self, me));
                 const new_fn = try self.visitNode(fn_expr);
+                object_super.leaveMethod(self, home_saved);
 
                 // key도 방문 (computed_property_key 내부 expr 등)
                 const new_key = try self.visitNode(key_idx);

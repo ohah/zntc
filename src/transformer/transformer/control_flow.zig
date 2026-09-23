@@ -110,6 +110,7 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
             self.in_for_in_of_header = saved;
             // 이 본문은 `_loop` 클로저로 추출된다 — 안쪽에서 바깥 라벨은 경계 너머다 (#4722).
             if (has_capture) try self.label_scope.append(self.allocator, null);
+            const body_temp_start = self.temp_var_counter;
             const raw_c = try self.visitNode(orig_body_idx);
             if (has_capture) _ = self.label_scope.pop();
             const new_c = try ensureStatementBody(self, orig_body_idx, raw_c, node.span);
@@ -129,6 +130,7 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
                     is_async,
                     preserve_this,
                     false,
+                    body_temp_start,
                 );
                 const loop_node = try self.ast.addNode(.{
                     .tag = node.tag,
@@ -311,6 +313,7 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
             const new_update = try self.visitNode(self.readNodeIdx(e, 2));
             // 이 본문은 `_loop` 클로저로 추출된다 — 안쪽에서 바깥 라벨은 경계 너머다 (#4722).
             if (has_capture) try self.label_scope.append(self.allocator, null);
+            const body_temp_start = self.temp_var_counter;
             const raw_body = try self.visitNode(orig_body_idx);
             if (has_capture) _ = self.label_scope.pop();
             const new_body = try ensureStatementBody(self, orig_body_idx, raw_body, node.span);
@@ -330,6 +333,7 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
                     is_async,
                     preserve_this,
                     false,
+                    body_temp_start,
                 );
 
                 // var _loop = function(...) { ... };

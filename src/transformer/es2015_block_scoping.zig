@@ -294,6 +294,11 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             /// 상태 기계가 `[5, __values(_loop(x))]` 위임으로 접고, `yield*` 의 값이
             /// `_loop` 의 return 값이라 break/continue/return 신호도 그대로 실려 온다.
             is_generator: bool,
+            /// 호출자가 본문을 visit 하기 **직전**의 `temp_var_counter`. 그 뒤에 생긴 임시
+            /// 변수는 본문 안에서만 쓰이므로 `_loop` 안에 선언한다 — 바깥 함수에 두면 모든
+            /// 반복이 한 변수를 공유해, 반복마다 만든 클로저가 마지막 값을 보게 된다 (#4729:
+            /// 루프 안 객체 리터럴의 home 임시 변수). 본문을 visit 하지 않고 넘기면 null.
+            body_temp_start: ?u32,
         ) Transformer.Error!struct { loop_fn: NodeIndex, call_and_check: NodeIndex } {
             // --- _loop 함수명 생성 ---
             const loop_prefix = "_loop";
@@ -320,6 +325,13 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         .span = body_node.span,
                         .data = .{ .list = wrapped_list },
                     });
+                }
+            }
+
+            if (body_temp_start) |start| {
+                if (self.temp_var_counter > start and !transformed_body.isNone()) {
+                    transformed_body = try self.hoistTempVars(transformed_body, start, span);
+                    self.temp_var_counter = start;
                 }
             }
 

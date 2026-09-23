@@ -4200,3 +4200,121 @@ test "#4488 ES2015: async arrow 의 for-await 도 동일" {
     defer r.deinit();
     try expectNoRawAwait(r.output);
 }
+
+test "ES5: 객체 리터럴 메서드의 super 는 그 객체의 프로토타입을 본다 (#4729)" {
+    // 예전엔 home object 를 몰라 `Object.prototype` 을 기준으로 삼았다 — `__proto__` 가 있으면
+    // 호출 즉시 TypeError. 평가마다 새 바인딩이 필요해 함수 파라미터로 home 을 잡는다.
+    var r = try e2eTarget(std.testing.allocator, "const o={__proto__:p, n(){ return super.m(); }};", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(function(_obj){return _obj={") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.getPrototypeOf(_obj).m.call(this)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.prototype.m") == null);
+}
+
+test "ES5: 클래스 메서드 안 객체 리터럴의 super 는 바깥 클래스 부모를 보지 않는다 (#4729)" {
+    // 메서드가 함수로 바뀌는 경로는 바깥 클래스의 super 문맥을 끊지 않아 `_super.prototype`
+    // 을 기준으로 삼았다(조용히 틀린 값).
+    var r = try e2eTarget(std.testing.allocator, "class B extends A{ m(){ return {n(){ return super.x(); }}; } }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.getPrototypeOf(_obj).x.call(this)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_super.prototype.x") == null);
+}
+
+test "ES2016: async 객체 메서드 본문이 generator 로 옮겨져도 super 가 home 을 본다 (#4729)" {
+    // 본문이 `function*` 로 옮겨지면 native super 는 SyntaxError 다. arrow 파라미터로 home 을
+    // 잡아 평가마다 새 바인딩을 만든다(루프 안 객체들이 서로의 프로토타입을 보지 않게).
+    var r = try e2eTarget(std.testing.allocator, "const o={__proto__:p, async n(){ return super.m(); }};", .es2016);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(_obj=>_obj={") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.getPrototypeOf(_obj).m.call(this)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super.") == null);
+}
+
+test "ES5: 객체 값 자리가 this 를 쓰면 함수로 감싸지 않고 임시 변수에 담는다 (#4729)" {
+    // 일반 함수로 감싸면 값 자리의 `this` 가 바뀐다 — 함수 단위 임시 변수로 돌아간다.
+    var r = try e2eTarget(std.testing.allocator, "function F(){ return {a:this.k, n(){ return super.m(); }}; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(function(_obj)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return _a={a:this.k,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.getPrototypeOf(_a).m.call(this)") != null);
+}
+
+test "ES2015: super 가 native 로 남는 타겟에선 객체를 감싸지 않는다 (#4729)" {
+    var r = try e2eTarget(std.testing.allocator, "const o={__proto__:p, n(){ return super.m(); }};", .es2015);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super.m()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_obj") == null);
+}
+
+test "ES5: _loop 으로 추출된 본문의 임시 변수는 _loop 안에 선언한다 (#4729)" {
+    // 바깥 함수에 두면 모든 반복이 한 변수를 공유해, 반복마다 만든 클로저가 마지막 값을 본다.
+    var r = try e2eTarget(std.testing.allocator, "for (let i=0;i<2;i++){ fns.push(()=>i); x = a.b?.c; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _loop=function(i){var _a;") != null);
+    try std.testing.expect(std.mem.startsWith(u8, r.output, "var _loop"));
+}
+
+test "ES5: 객체 메서드 안 클래스의 super 는 그 클래스 부모를 본다 (#4729)" {
+    // 클래스 진입 시 바깥 객체 메서드의 home 을 끊지 않으면, home 이 클래스 super 보다
+    // 먼저 잡혀 클래스 메서드의 `super.q()` 가 객체의 프로토타입을 본다.
+    var r = try e2eTarget(std.testing.allocator, "const o={__proto__:p, n(){ class C extends X { m(){ return super.q(); } } return super.m(); }};", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_super.prototype.q.call(this)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.getPrototypeOf(_obj).m.call(this)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.getPrototypeOf(_obj).q") == null);
+}
+
+test "ES2016: async 객체 메서드 안 native 클래스의 super 는 그대로 둔다 (#4729)" {
+    // class 가 native 인 타겟 — 바깥 home 이 새면 클래스 메서드의 super 까지 낮춰진다.
+    var r = try e2eTarget(std.testing.allocator, "const o={__proto__:p, async n(){ class C extends X { m(){ return super.q(); } } return super.m(); }};", .es2016);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super.q()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.getPrototypeOf(_obj).m.call(this)") != null);
+}
+
+test "ES5: await 가 든 객체(상태 기계 재구성)의 메서드 super 도 home 을 본다 (#4729)" {
+    // 상태 기계는 yield 가 든 객체를 object_expression 방문 없이 멤버별로 재구성한다 —
+    // 거기서 home 을 배정하지 않으면 옛 fallback(Object.prototype)이 쓰인다.
+    var r = try e2eTarget(std.testing.allocator, "async function f(){ return {w: await x, get g(){ return super.v; }}; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.getPrototypeOf(_") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.prototype") == null);
+}
+
+test "ES2016: 객체 메서드 안 클래스 필드 초기화식의 super 는 클래스 기준이다 (#4729)" {
+    // 필드 초기화식은 메서드 방문을 거치지 않으므로, 클래스 진입 시 home 을 끊지 않으면
+    // 바깥 객체의 프로토타입으로 낮춰진다.
+    var r = try e2eTarget(std.testing.allocator, "const o={__proto__:p, async n(){ class C extends X { f = super.q; } return super.m(); }};", .es2016);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"f\",super.q)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.getPrototypeOf(_obj).q") == null);
+}
+
+test "ES5: for-in/for-of 에서 _loop 으로 추출된 본문의 임시 변수도 _loop 안에 선언한다 (#4729)" {
+    var r_in = try e2eTarget(std.testing.allocator, "for (const k in o){ fns.push(()=>k); x = a.b?.c; }", .es5);
+    defer r_in.deinit();
+    try std.testing.expect(std.mem.startsWith(u8, r_in.output, "var _loop=function(k){var _a;"));
+
+    var r_of = try e2eTarget(std.testing.allocator, "for (const k of o){ fns.push(()=>k); x = a.b?.c; }", .es5);
+    defer r_of.deinit();
+    const loop_at = std.mem.indexOf(u8, r_of.output, "var _loop=function(k){var _") orelse return error.TestUnexpectedResult;
+    // 옵셔널 체인 temp 는 _loop 본문 안에서 선언·사용된다.
+    const body = r_of.output[loop_at..];
+    const decl_end = std.mem.indexOfScalar(u8, body, ';') orelse return error.TestUnexpectedResult;
+    const temp = body["var _loop=function(k){var ".len..decl_end];
+    var needle_buf: [32]u8 = undefined;
+    const needle = try std.fmt.bufPrint(&needle_buf, "x=({s}=a.b)", .{temp});
+    try std.testing.expect(std.mem.indexOf(u8, body, needle) != null);
+}
+
+test "native 필드 + async 낮추기 조합: 객체 메서드 안 클래스 필드의 super 는 클래스 기준이다 (#4729)" {
+    // 필드는 native 로 남고 async 메서드만 낮추는 조합 — 필드 초기화식이 class 방문 안에서
+    // 그대로 visit 된다. 클래스 진입 시 바깥 home 을 끊지 않으면 필드의 `super.q` 가
+    // 객체의 프로토타입으로 낮춰진다.
+    var u = helpers.TransformOptions.compat.fromESTarget(.esnext);
+    u.async_await = true;
+    var r = try e2eFull(std.testing.allocator, "const o={__proto__:p, async n(){ class C extends X { f = super.q; } return super.m(); }};", .{ .unsupported = u }, .{ .minify_whitespace = true }, ".ts");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "f=super.q;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.getPrototypeOf(_obj).m.call(this)") != null);
+}

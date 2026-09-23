@@ -112,6 +112,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
             self.current_super_is_static = false;
             self.current_super_static_receiver = null;
             self.current_super_in_extracted_fn = false;
+            // 클래스 안의 `super` 는 이 클래스 기준 — 바깥 객체 메서드의 home 을 끊는다 (#4729).
+            const saved_super_home = self.current_super_home_object;
+            self.current_super_home_object = null;
+            defer self.current_super_home_object = saved_super_home;
             defer self.current_super_class = saved_super;
             defer self.current_super_class_old_idx = saved_super_old_idx;
             defer self.current_super_is_static = saved_super_static;
@@ -355,6 +359,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
             self.current_super_is_static = false;
             self.current_super_static_receiver = null;
             self.current_super_in_extracted_fn = false;
+            // 클래스 안의 `super` 는 이 클래스 기준 — 바깥 객체 메서드의 home 을 끊는다 (#4729).
+            const saved_super_home = self.current_super_home_object;
+            self.current_super_home_object = null;
+            defer self.current_super_home_object = saved_super_home;
             defer self.current_super_class = saved_super;
             defer self.current_super_class_old_idx = saved_super_old_idx;
             defer self.current_super_is_static = saved_super_static;
