@@ -288,8 +288,14 @@ pub const TransformOptions = struct {
                 .function_expression,
                 => {
                     const flags = ast.readExtra(node.data.extra, ast_mod.FunctionExtra.flags);
-                    if (u.async_await and (flags & ast_mod.FunctionFlags.is_async) != 0) return true;
-                    if (u.generator and (flags & ast_mod.FunctionFlags.is_generator) != 0) return true;
+                    if (functionNeedsDownlevel(u, (flags & ast_mod.FunctionFlags.is_async) != 0, (flags & ast_mod.FunctionFlags.is_generator) != 0)) return true;
+                },
+                // 객체·클래스 메서드는 function 노드가 아니라 method_definition 에 비트를 둔다.
+                // 예전엔 여기를 안 봐서 `{ async m(){} }` 가 es2016 이하에서 pre-pass 를 건너뛰고
+                // `__async` 호출만 남았다(클래스는 private 게이트에 우연히 걸려 멀쩡했다). (#4727)
+                .method_definition => {
+                    const flags = ast.readExtra(node.data.extra, ast_mod.MethodExtra.flags);
+                    if (functionNeedsDownlevel(u, (flags & ast_mod.MethodFlags.is_async) != 0, (flags & ast_mod.MethodFlags.is_generator) != 0)) return true;
                 },
                 .class_declaration,
                 .class_expression,
@@ -344,6 +350,16 @@ pub const TransformOptions = struct {
                 else => {},
             }
         }
+        return false;
+    }
+
+    /// 함수·메서드의 async/generator 조합이 이 타겟에서 낮춰져야 하는지.
+    /// `async function*` 은 async·generator 와 **따로** 도입된 기능(es2018)이라, 두 비트를
+    /// 각각 보면 async 는 되고 async generator 는 안 되는 타겟(es2017·node8 등)을 놓친다.
+    fn functionNeedsDownlevel(u: compat.UnsupportedFeatures, is_async: bool, is_generator: bool) bool {
+        if (is_async and is_generator and u.async_generator) return true;
+        if (is_async and u.async_await) return true;
+        if (is_generator and u.generator) return true;
         return false;
     }
 
