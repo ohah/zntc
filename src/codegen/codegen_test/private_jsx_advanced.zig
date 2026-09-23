@@ -986,14 +986,17 @@ test "ES2025: using 다중 선언" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__callDispose(_stack,") != null);
 }
 
-test "ES2025: using 앞 문장은 try 밖에 출력" {
+test "ES2025: 모듈 최상위 using 은 목록 전체를 감싸고 let 은 var 로 모듈 스코프에 남긴다 (#4730)" {
+    // 예전엔 첫 using 부터만 감쌌다 — 그 뒤의 함수 선언이 try 블록 안으로 들어가 앞쪽
+    // 문장에서 호출할 수 없었다. 이제 전체를 감싸고, try 안의 let/const/class 는 모듈
+    // 스코프에 남도록 var 로 바꾼다(끌어올린 함수·export 가 본다).
     var r = try e2eTarget(std.testing.allocator, "let a = 1; using x = getResource(); use(x);", .es2024);
     defer r.deinit();
-    // let a=1은 try 앞에 (var _stack=[] 앞에 위치)
     const output = r.output;
-    const a_pos = std.mem.indexOf(u8, output, "let a=1") orelse return error.TestUnexpectedResult;
-    const stack_pos = std.mem.indexOf(u8, output, "var _stack=[]") orelse return error.TestUnexpectedResult;
-    try std.testing.expect(a_pos < stack_pos);
+    const stack_pos = std.mem.indexOf(u8, output, "var _stack=[],_error=void 0,_hasError=false;") orelse return error.TestUnexpectedResult;
+    const a_pos = std.mem.indexOf(u8, output, "var a=1") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(stack_pos < a_pos);
+    try std.testing.expect(std.mem.indexOf(u8, output, "let a") == null);
 }
 
 // Issue #1275: private method/field 변환 시 constructor 중복 emit 방지

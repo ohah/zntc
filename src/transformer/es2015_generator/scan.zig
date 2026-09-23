@@ -29,6 +29,10 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
         const node = self.ast.getNode(idx);
 
         if (node.tag == .yield_expression or node.tag == .await_expression) return true;
+        // `await using` 은 낮추면 finally 에 `await __callDispose(…)` 가 생긴다 — 원본엔
+        // await 가 없어도 상태 기계가 수집해야 한다(안 하면 raw await 가 남는다, #4730).
+        if (node.tag == .variable_declaration and self.options.unsupported.using and
+            self.ast.hasExtra(node.data.extra, 3) and self.ast.variableDeclarationKind(node) == .await_using) return true;
         if (node.tag == .for_await_of_statement and self.options.unsupported.needsForAwaitOfDownlevel()) return true;
         if (node.tag == .break_statement or node.tag == .continue_statement) {
             if (node.data.unary.operand.isNone()) {

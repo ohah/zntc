@@ -20,6 +20,7 @@ const es2015_template = @import("../es2015_template.zig");
 const es2015_computed = @import("../es2015_computed.zig");
 const es2015_object_methods = @import("../es2015_object_methods.zig");
 const object_super = @import("../object_super.zig");
+const es2025_using = @import("../es2025_using.zig");
 const es2015_spread = @import("../es2015_spread.zig");
 const es2015_arrow = @import("../es2015_arrow.zig");
 const es2015_for_of = @import("../es2015_for_of.zig");
@@ -471,6 +472,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .try_statement,
         => self.visitTernaryNode(node),
         .for_await_of_statement => {
+            if (try es2025_using.ES2025Using(Transformer).normalizeForOfUsingHead(self, idx)) return self.visitNode(idx);
             // for-await 키워드는 ES2018. ES2018 미만 타겟에서는 async function 자체를
             // 보존하더라도 for-await 구문만 __asyncValues + while 로 제거해야 한다.
             if (self.options.unsupported.needsForAwaitOfDownlevel()) {
@@ -479,6 +481,8 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             return self.visitForInOfTernary(node);
         },
         .for_of_statement => {
+            // `for (using x of …)` 헤더를 본문 블록의 using 으로 옮긴다 (#4730).
+            if (try es2025_using.ES2025Using(Transformer).normalizeForOfUsingHead(self, idx)) return self.visitNode(idx);
             // private field target은 그대로 두면 `for (_x.get(this) of arr)` → invalid.
             // 임시 binding + body prefix assignment 패턴으로 변환 (#1491).
             if (self.current_private_fields.len > 0) {
@@ -505,6 +509,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             } else try self.label_scope.append(self.allocator, "");
             defer _ = self.label_scope.pop();
             if (!child_idx.isNone()) {
+                _ = try es2025_using.ES2025Using(Transformer).normalizeForOfUsingHead(self, child_idx);
                 const child = self.ast.getNode(child_idx);
                 if (self.options.unsupported.needsForAwaitOfDownlevel() and child.tag == .for_await_of_statement) {
                     const new_label = try self.visitNode(node.data.binary.left);

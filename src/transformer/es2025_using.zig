@@ -20,13 +20,14 @@
 //! 출력:
 //! ```javascript
 //! {
-//!   stmt_before;
-//!   var _stack = [];
+//!   var _stack = [], _error = void 0, _hasError = false;
 //!   try {
-//!     var res = __using(_stack, getResource());
+//!     stmt_before;
+//!     const res = __using(_stack, getResource());
 //!     doSomething(res);
 //!   } catch (_) {
-//!     var _error = _, _hasError = true;
+//!     _error = _;
+//!     _hasError = true;
 //!   } finally {
 //!     __callDispose(_stack, _error, _hasError);
 //!   }
@@ -54,6 +55,7 @@ const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
 const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
+const module_parser = @import("../parser/module.zig");
 
 pub fn ES2025Using(comptime Transformer: type) type {
     return struct {
@@ -76,168 +78,319 @@ pub fn ES2025Using(comptime Transformer: type) type {
             return false;
         }
 
-        /// 문장 리스트를 변환한다: using 선언이 포함된 구간을 try-finally로 감싼다.
+        /// 낮추는 문장 목록의 종류. 모듈 최상위는 `import`/`export` 가 try 안에 들어갈 수
+        /// 없어 따로 다룬다.
+        pub const ListKind = enum { program, body };
+
+        const Names = struct { stack: Span, err: Span, has_err: Span, catch_param: Span };
+
+        /// 낮추기마다 고유한 `_stack`/`_error`/`_hasError` 이름. 고정 이름이면 중첩 블록이
+        /// 서로의 스택을 덮어쓰고, 사용자 변수 `_stack` 과도 충돌한다 (#4730).
+        fn allocNames(self: *Transformer) Transformer.Error!Names {
+            const bases = [_][]const u8{ "_stack", "_error", "_hasError" };
+            while (true) {
+                self.using_counter += 1;
+                const n = self.using_counter;
+                var bufs: [3][32]u8 = undefined;
+                var names: [3][]const u8 = undefined;
+                var collide = false;
+                for (bases, 0..) |b, k| {
+                    names[k] = if (n == 1) b else std.fmt.bufPrint(&bufs[k], "{s}{d}", .{ b, n }) catch unreachable;
+                    if (es_helpers.nameAppearsInSource(self, names[k])) collide = true;
+                }
+                if (collide) continue;
+                return .{
+                    .stack = try self.ast.addString(names[0]),
+                    .err = try self.ast.addString(names[1]),
+                    .has_err = try self.ast.addString(names[2]),
+                    .catch_param = try self.ast.addString("_"),
+                };
+            }
+        }
+
+        fn push(self: *Transformer, list: *std.ArrayList(NodeIndex), stmt: NodeIndex) Transformer.Error!void {
+            try list.append(self.allocator, stmt);
+        }
+
+        /// using 낮추기: 재구성한 목록을 방문한다.
+        pub fn lowerUsingInStatements(self: *Transformer, start: u32, len: u32, kind: ListKind) Transformer.Error!NodeList {
+            const rewritten = try rewriteUsingStatements(self, start, len, kind);
+            return self.visitExtraList(rewritten);
+        }
+
+        /// `"use strict"` 같은 지시문은 목록 맨 앞에 남아야 한다 — try 안으로 들어가면
+        /// 평범한 문자열 식이 되어 strict 모드가 풀린다.
+        fn isDirective(node: Node) bool {
+            return node.tag == .directive;
+        }
+
+        /// 문장 리스트를 try/catch/finally 로 감싼다 (esbuild 호환 형태).
         ///
-        /// 알고리즘:
-        /// 1. using 선언이 처음 나타나는 위치를 찾는다
-        /// 2. 그 이전 문장들은 그대로 방문하여 출력
-        /// 3. using 선언부터 끝까지를 try-finally로 감싼다
-        ///   - try body: using 선언을 var + __using() 호출로 변환 + 나머지 문장
-        ///   - catch: var _error = _, _hasError = true
-        ///   - finally: [await] __callDispose(_stack, _error, _hasError)
-        pub fn lowerUsingInStatements(self: *Transformer, start: u32, len: u32) Transformer.Error!NodeList {
-            const scratch_top = self.scratch.items.len;
-            defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-            // pending_nodes save/restore
-            const pending_top = self.pending_nodes.items.len;
-            defer self.pending_nodes.shrinkRetainingCapacity(pending_top);
-
-            // 1. using 선언의 첫 위치 찾기
-            var first_using_idx: u32 = len;
+        /// ```js
+        /// var _stack = [], _error = void 0, _hasError = false;
+        /// try { <문장들, using 은 __using(_stack, …)> }
+        /// catch (_) { _error = _; _hasError = true; }
+        /// finally { [await] __callDispose(_stack, _error, _hasError); }
+        /// ```
+        ///
+        /// - **목록 전체**(지시문 제외)를 감싼다. 첫 `using` 부터만 감싸면 그 뒤의 함수 선언이
+        ///   try 블록 안으로 들어가 앞쪽 문장에서 호출할 수 없게 된다 (#4730).
+        /// - `_error`/`_hasError` 는 진입마다 초기화한다. 앞 블록(또는 이전 반복)의 에러가
+        ///   남아 있으면 에러 없이 끝난 블록의 finally 가 옛 에러를 다시 던진다.
+        /// - 함수 선언은 try 밖 앞쪽으로 끌어올린다 — 모듈 최상위는 `export function` 때문에,
+        ///   es5 는 블록 안 함수 선언이 표준이 아니어서. (es5 는 let/const 가 var 가 되므로
+        ///   끌어올린 함수도 try 안 선언을 본다.)
+        /// - 모듈 최상위: import·re-export 는 try 밖에 두고, try 안의 let/const/class 는 var 로
+        ///   바꿔 모듈 스코프에 남긴다. `export` 는 떼어 끝에 `export { … }` 로 모은다.
+        ///
+        /// 이 함수는 **방문하지 않고** 구조만 바꾼다 — 일반 목록은 결과를 그대로 방문하고,
+        /// generator 상태 기계는 결과의 try 를 기존 try 수집으로 접는다.
+        pub fn rewriteUsingStatements(self: *Transformer, start: u32, len: u32, kind: ListKind) Transformer.Error!NodeList {
             var has_await_using = false;
             {
                 var i: u32 = 0;
                 while (i < len) : (i += 1) {
-                    const raw_idx = self.ast.extra_data.items[start + i];
-                    const node = self.ast.getNode(@enumFromInt(raw_idx));
-                    if (node.tag == .variable_declaration) {
-                        const e = node.data.extra;
-                        if (self.ast.hasExtra(e, 3)) {
-                            const kind = self.ast.variableDeclarationKind(node);
-                            if (kind.isUsing()) {
-                                if (first_using_idx == len) first_using_idx = i;
-                                if (kind == .await_using) has_await_using = true;
-                            }
-                        }
-                    }
+                    const node = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[start + i]));
+                    if (node.tag == .variable_declaration and self.ast.hasExtra(node.data.extra, 3) and
+                        self.ast.variableDeclarationKind(node) == .await_using) has_await_using = true;
                 }
             }
 
-            // 방어: using이 없으면 일반 방문
-            if (first_using_idx == len) {
-                return self.visitExtraList(.{ .start = start, .len = len });
-            }
+            var head: std.ArrayList(NodeIndex) = .empty; // 지시문 + try 밖으로 끌어올린 문장
+            defer head.deinit(self.allocator);
+            var body: std.ArrayList(NodeIndex) = .empty; // try 블록
+            defer body.deinit(self.allocator);
+            var tail: std.ArrayList(NodeIndex) = .empty; // try 뒤 (`export { … }`)
+            defer tail.deinit(self.allocator);
+            var export_specs: std.ArrayList(NodeIndex) = .empty;
+            defer export_specs.deinit(self.allocator);
 
-            const zero_span = Span{ .start = 0, .end = 0 };
-
-            // 2. using 이전 문장들을 그대로 방문
-            {
-                var i: u32 = 0;
-                while (i < first_using_idx) : (i += 1) {
-                    const raw_idx = self.ast.extra_data.items[start + i];
-                    const new_child = try self.visitNode(@enumFromInt(raw_idx));
-                    // pending_nodes 드레인
-                    if (self.pending_nodes.items.len > pending_top) {
-                        try self.scratch.appendSlice(self.allocator, self.pending_nodes.items[pending_top..]);
-                        self.pending_nodes.shrinkRetainingCapacity(pending_top);
-                    }
-                    if (!new_child.isNone()) {
-                        try self.scratch.append(self.allocator, new_child);
-                    }
-                }
-            }
-
-            // 3. var _stack = [] 선언 생성
             self.runtime_helpers.using_ctx = true;
-            const stack_span = try self.ast.addString("_stack");
-            const stack_binding = try es_helpers.makeBindingIdentifier(self, stack_span);
-            // [] (빈 배열 리터럴)
-            const empty_array = try self.ast.addNode(.{
-                .tag = .array_expression,
-                .span = zero_span,
-                .data = .{ .list = .{ .start = 0, .len = 0 } },
-            });
-            const stack_declarator = try self.addExtraNode(.variable_declarator, zero_span, &.{
-                @intFromEnum(stack_binding),
-                @intFromEnum(NodeIndex.none),
-                @intFromEnum(empty_array),
-            });
-            const stack_decl_list = try self.ast.addNodeList(&.{stack_declarator});
-            const stack_decl = try self.addExtraNode(.variable_declaration, zero_span, &.{
-                @intFromEnum(VariableDeclarationKind.@"var"),
-                stack_decl_list.start,
-                stack_decl_list.len,
-            });
-            try self.scratch.append(self.allocator, stack_decl);
+            const names = try allocNames(self);
+            const zero_span = Span{ .start = 0, .end = 0 };
+            const hoist_functions = kind == .program or self.options.unsupported.block_scoping;
+            // 블록·함수 본문의 `using` 은 native let/const 가 되는 타겟이면 const 로 남긴다.
+            const using_kind: VariableDeclarationKind = if (kind == .program or self.options.unsupported.block_scoping) .@"var" else .@"const";
 
-            // 4. try body: using 선언 + 나머지 문장 변환
-            const try_body_scratch_top = self.scratch.items.len;
-            {
-                var i: u32 = first_using_idx;
-                while (i < len) : (i += 1) {
-                    const raw_idx = self.ast.extra_data.items[start + i];
-                    const node = self.ast.getNode(@enumFromInt(raw_idx));
+            var i: u32 = 0;
+            var in_prologue = true;
+            while (i < len) : (i += 1) {
+                const stmt: NodeIndex = @enumFromInt(self.ast.extra_data.items[start + i]);
+                const node = self.ast.getNode(stmt);
+                if (in_prologue and isDirective(node)) {
+                    try push(self, &head, stmt);
+                    continue;
+                }
+                in_prologue = false;
 
-                    // using 선언을 var + __using() 호출로 변환
-                    if (node.tag == .variable_declaration) {
-                        const e = node.data.extra;
-                        if (self.ast.hasExtra(e, 3)) {
-                            const kind = self.ast.variableDeclarationKind(node);
-                            if (kind.isUsing()) {
-                                const decl_list_start = self.readU32(e, 1);
-                                const decl_list_len = self.readU32(e, 2);
-                                try transformUsingDeclarators(
-                                    self,
-                                    decl_list_start,
-                                    decl_list_len,
-                                    kind == .await_using,
-                                    stack_span,
-                                    node.span,
-                                );
+                if (node.tag == .variable_declaration and self.ast.hasExtra(node.data.extra, 3)) {
+                    const vkind = self.ast.variableDeclarationKind(node);
+                    if (vkind.isUsing()) {
+                        try transformUsingDeclarators(self, &body, self.readU32(node.data.extra, 1), self.readU32(node.data.extra, 2), vkind == .await_using, names.stack, using_kind, node.span);
+                        continue;
+                    }
+                    if (kind == .program and (vkind == .let or vkind == .@"const")) {
+                        try push(self, &body, try asVarDeclaration(self, node));
+                        continue;
+                    }
+                }
+
+                switch (node.tag) {
+                    .function_declaration => if (hoist_functions) {
+                        try push(self, &head, stmt);
+                        continue;
+                    },
+                    else => {},
+                }
+
+                if (kind == .program) {
+                    switch (node.tag) {
+                        .import_declaration, .export_all_declaration => {
+                            try push(self, &head, stmt);
+                            continue;
+                        },
+                        .class_declaration => {
+                            try push(self, &body, try classAsVar(self, node));
+                            continue;
+                        },
+                        .export_named_declaration => {
+                            const x = module_parser.readExportNamedExtras(self.ast, node.data.extra);
+                            if (!x.source.isNone()) {
+                                try push(self, &head, stmt);
+                            } else if (x.decl.isNone()) {
+                                try push(self, &tail, stmt);
+                            } else {
+                                const decl = self.ast.getNode(x.decl);
+                                switch (decl.tag) {
+                                    .variable_declaration => {
+                                        try collectDeclNames(self, decl, &export_specs);
+                                        try push(self, &body, try asVarDeclaration(self, decl));
+                                    },
+                                    .class_declaration => {
+                                        const cname = self.readNodeIdx(decl.data.extra, ast_mod.ClassExtra.name);
+                                        try export_specs.append(self.allocator, try makeExportSpec(self, self.ast.getText(self.ast.getNode(cname).span), null));
+                                        try push(self, &body, try classAsVar(self, decl));
+                                    },
+                                    // `export function` 과 TS 전용 선언(enum/namespace 등)은 try 밖.
+                                    else => try push(self, &head, stmt),
+                                }
+                            }
+                            continue;
+                        },
+                        .export_default_declaration => {
+                            const operand = node.data.unary.operand;
+                            const on = self.ast.getNode(operand);
+                            if (on.tag == .function_declaration) {
+                                try push(self, &head, stmt);
                                 continue;
                             }
-                        }
-                    }
-
-                    // 일반 문장은 그대로 방문
-                    const new_child = try self.visitNode(@enumFromInt(raw_idx));
-                    // pending_nodes 드레인
-                    if (self.pending_nodes.items.len > pending_top) {
-                        try self.scratch.appendSlice(self.allocator, self.pending_nodes.items[pending_top..]);
-                        self.pending_nodes.shrinkRetainingCapacity(pending_top);
-                    }
-                    if (!new_child.isNone()) {
-                        try self.scratch.append(self.allocator, new_child);
+                            const named_class = on.tag == .class_declaration and !self.readNodeIdx(on.data.extra, ast_mod.ClassExtra.name).isNone();
+                            if (named_class) {
+                                const cname = self.readNodeIdx(on.data.extra, ast_mod.ClassExtra.name);
+                                try export_specs.append(self.allocator, try makeExportSpec(self, self.ast.getText(self.ast.getNode(cname).span), "default"));
+                                try push(self, &body, try classAsVar(self, on));
+                            } else {
+                                const default_name = try uniqueSourceName(self, "_default");
+                                const value = if (on.tag == .class_declaration) try classExpressionOf(self, on) else operand;
+                                const binding = try es_helpers.makeBindingIdentifier(self, try self.ast.addString(default_name));
+                                const decl = try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, binding, value, node.span)}, .@"var", node.span);
+                                try export_specs.append(self.allocator, try makeExportSpec(self, default_name, "default"));
+                                try push(self, &body, decl);
+                            }
+                            continue;
+                        },
+                        else => {},
                     }
                 }
+
+                try push(self, &body, stmt);
             }
-            const try_body_stmts = self.scratch.items[try_body_scratch_top..];
-            const try_body_list = try self.ast.addNodeList(try_body_stmts);
-            self.scratch.shrinkRetainingCapacity(try_body_scratch_top);
-            const try_block = try self.ast.addNode(.{
-                .tag = .block_statement,
-                .span = zero_span,
-                .data = .{ .list = try_body_list },
-            });
 
-            // 5. catch clause: catch (_) { var _error = _, _hasError = true; }
-            const catch_block = try buildCatchClause(self, zero_span);
+            // var _stack = [], _error = void 0, _hasError = false;
+            const empty_array = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = .{ .start = 0, .len = 0 } } });
+            const init_decl = try es_helpers.makeVarDeclaration(self, &.{
+                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, names.stack), empty_array, zero_span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, names.err), try es_helpers.makeVoidZero(self, zero_span), zero_span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, names.has_err), try es_helpers.makeBoolLiteral(self, false), zero_span),
+            }, .@"var", zero_span);
 
-            // 6. finally block: [await] __callDispose(_stack, _error, _hasError)
-            const finally_block = try buildFinallyBlock(self, stack_span, has_await_using, zero_span);
-
-            // 7. try_statement 조립
+            const try_block = try self.ast.addNode(.{ .tag = .block_statement, .span = zero_span, .data = .{ .list = try self.ast.addNodeList(body.items) } });
+            const catch_clause = try buildCatchClause(self, names, zero_span);
+            const finally_block = try buildFinallyBlock(self, names, has_await_using, zero_span);
             const try_stmt = try self.ast.addNode(.{
                 .tag = .try_statement,
                 .span = zero_span,
-                .data = .{ .ternary = .{ .a = try_block, .b = catch_block, .c = finally_block } },
+                .data = .{ .ternary = .{ .a = try_block, .b = catch_clause, .c = finally_block } },
             });
-            try self.scratch.append(self.allocator, try_stmt);
 
-            return self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            try head.append(self.allocator, init_decl);
+            try head.append(self.allocator, try_stmt);
+            try head.appendSlice(self.allocator, tail.items);
+            if (export_specs.items.len > 0) {
+                const specs = try self.ast.addNodeList(export_specs.items);
+                const none = @intFromEnum(NodeIndex.none);
+                try head.append(self.allocator, try self.addExtraNode(.export_named_declaration, zero_span, &.{ none, specs.start, specs.len, none, 0, 0 }));
+            }
+            return self.ast.addNodeList(head.items);
         }
 
-        /// using 선언의 각 declarator를 var + __using() 호출로 변환하여 scratch에 추가.
-        ///
-        /// using x = expr → var x = __using(_stack, expr)
-        /// await using x = expr → var x = __using(_stack, expr, true)
+        /// `for ([await] using x of it) body` → `for (const _using of it) { [await] using x = _using; body }`.
+        /// 루프 헤더의 using 은 어떤 경로에서도 낮춰지지 않았다 — es2015+ 에선 `using` 문법이
+        /// 그대로 남고, es5 에선 dispose 없이 var 가 됐다 (#4730). 본문 블록으로 옮기면 블록
+        /// 낮추기가 그대로 적용된다. 노드를 **제자리에서** 바꾸므로 모든 진입점(일반 방문,
+        /// 라벨 붙은 루프, 상태 기계)이 같은 모양을 보고, 두 번째 호출은 아무 일도 안 한다.
+        pub fn normalizeForOfUsingHead(self: *Transformer, idx: NodeIndex) Transformer.Error!bool {
+            if (!self.options.unsupported.using) return false;
+            const node = self.ast.getNode(idx);
+            if (node.tag != .for_of_statement and node.tag != .for_await_of_statement) return false;
+            const left = node.data.ternary.a;
+            if (left.isNone()) return false;
+            const ln = self.ast.getNode(left);
+            if (ln.tag != .variable_declaration or !self.ast.hasExtra(ln.data.extra, 3)) return false;
+            const vkind = self.ast.variableDeclarationKind(ln);
+            if (!vkind.isUsing()) return false;
+            if (self.readU32(ln.data.extra, 2) != 1) return false;
+            const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[self.readU32(ln.data.extra, 1)]));
+            const binding = self.readNodeIdx(d.data.extra, 0);
+
+            const tmp_name = try uniqueSourceName(self, "_using");
+            defer self.allocator.free(tmp_name);
+            const tmp_span = try self.ast.addString(tmp_name);
+            const new_left = try es_helpers.makeVarDeclaration(self, &.{
+                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, tmp_span), .none, ln.span),
+            }, .@"const", ln.span);
+            const using_decl = try es_helpers.makeVarDeclaration(self, &.{
+                try es_helpers.makeDeclarator(self, binding, try es_helpers.makeIdentifierRefFromSpan(self, tmp_span), d.span),
+            }, vkind, ln.span);
+            const new_body = try self.ast.addNode(.{ .tag = .block_statement, .span = node.span, .data = .{
+                .list = try self.ast.addNodeList(&.{ using_decl, node.data.ternary.c }),
+            } });
+            self.ast.nodes.items[@intFromEnum(idx)].data.ternary.a = new_left;
+            self.ast.nodes.items[@intFromEnum(idx)].data.ternary.c = new_body;
+            return true;
+        }
+
+        /// `let`/`const` 선언을 같은 declarator 들의 `var` 선언으로 (모듈 최상위 전용).
+        fn asVarDeclaration(self: *Transformer, decl: Node) Transformer.Error!NodeIndex {
+            return self.addExtraNode(.variable_declaration, decl.span, &.{
+                @intFromEnum(VariableDeclarationKind.@"var"),
+                self.readU32(decl.data.extra, 1),
+                self.readU32(decl.data.extra, 2),
+            });
+        }
+
+        fn classExpressionOf(self: *Transformer, decl: Node) Transformer.Error!NodeIndex {
+            return self.ast.addNode(.{ .tag = .class_expression, .span = decl.span, .data = decl.data });
+        }
+
+        /// `class C {}` → `var C = class C {}` — 모듈 스코프에 남아 끌어올린 함수·export 가 본다.
+        fn classAsVar(self: *Transformer, decl: Node) Transformer.Error!NodeIndex {
+            const cname = self.readNodeIdx(decl.data.extra, ast_mod.ClassExtra.name);
+            const name_span = try self.ast.addString(self.ast.getText(self.ast.getNode(cname).span));
+            const binding = try es_helpers.makeBindingIdentifier(self, name_span);
+            return es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, binding, try classExpressionOf(self, decl), decl.span)}, .@"var", decl.span);
+        }
+
+        fn collectDeclNames(self: *Transformer, decl: Node, specs: *std.ArrayList(NodeIndex)) Transformer.Error!void {
+            const BlockScoping = @import("es2015_block_scoping.zig").ES2015BlockScoping(Transformer);
+            const ds = self.readU32(decl.data.extra, 1);
+            const dl = self.readU32(decl.data.extra, 2);
+            var j: u32 = 0;
+            while (j < dl) : (j += 1) {
+                const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[ds + j]));
+                if (d.tag != .variable_declarator) continue;
+                var names: std.ArrayList([]const u8) = .empty;
+                defer names.deinit(self.allocator);
+                try BlockScoping.collectBindingNames(self, self.readNodeIdx(d.data.extra, 0), &names);
+                for (names.items) |n| try specs.append(self.allocator, try makeExportSpec(self, n, null));
+            }
+        }
+
+        /// `local as exported` 지정자. exported 가 null 이면 local 과 같은 이름.
+        fn makeExportSpec(self: *Transformer, local: []const u8, exported: ?[]const u8) Transformer.Error!NodeIndex {
+            const local_ref = try es_helpers.makeIdentifierRef(self, local);
+            const exported_ref = if (exported) |e| try es_helpers.makeIdentifierRef(self, e) else local_ref;
+            return self.ast.addNode(.{ .tag = .export_specifier, .span = Span{ .start = 0, .end = 0 }, .data = .{ .binary = .{ .left = local_ref, .right = exported_ref, .flags = 0 } } });
+        }
+
+        fn uniqueSourceName(self: *Transformer, base: []const u8) Transformer.Error![]const u8 {
+            var n: u32 = 1;
+            while (true) : (n += 1) {
+                const name = if (n == 1) try self.allocator.dupe(u8, base) else try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ base, n });
+                if (!es_helpers.nameAppearsInSource(self, name)) return name;
+                self.allocator.free(name);
+            }
+        }
+
+        /// using 선언의 각 declarator 를 `<kind> x = __using(_stack, expr [, true])` 로.
         fn transformUsingDeclarators(
             self: *Transformer,
+            out: *std.ArrayList(NodeIndex),
             decl_start: u32,
             decl_len: u32,
             is_await: bool,
             stack_span: Span,
+            decl_kind: VariableDeclarationKind,
             span: Span,
         ) Transformer.Error!void {
             var j: u32 = 0;
@@ -250,85 +403,43 @@ pub fn ES2025Using(comptime Transformer: type) type {
                 const name_idx = self.readNodeIdx(de, 0);
                 const init_idx = self.readNodeIdx(de, 2);
 
-                const new_name = try self.visitNode(name_idx);
+                // 방문은 호출자(목록 방문 또는 상태 기계)가 한다.
+                const new_name = name_idx;
                 const new_init = if (!init_idx.isNone())
-                    try self.visitNode(init_idx)
+                    init_idx
                 else
                     // using은 항상 초기화가 필요하지만 방어적으로 void 0 사용
                     try es_helpers.makeVoidZero(self, span);
 
-                // __using(_stack, init [, true])
                 const stack_ref = try es_helpers.makeIdentifierRefFromSpan(self, stack_span);
                 const using_ref = try es_helpers.makeRuntimeHelperRef(self, "__using");
+                const using_call = if (is_await)
+                    try es_helpers.makeCallExpr(self, using_ref, &.{ stack_ref, new_init, try es_helpers.makeBoolLiteral(self, true) }, span)
+                else
+                    try es_helpers.makeCallExpr(self, using_ref, &.{ stack_ref, new_init }, span);
 
-                const using_call = if (is_await) blk: {
-                    const true_span = try self.ast.addString("true");
-                    const true_node = try self.ast.addNode(.{
-                        .tag = .boolean_literal,
-                        .span = true_span,
-                        .data = .{ .none = 0 },
-                    });
-                    break :blk try es_helpers.makeCallExpr(self, using_ref, &.{ stack_ref, new_init, true_node }, span);
-                } else try es_helpers.makeCallExpr(self, using_ref, &.{ stack_ref, new_init }, span);
-
-                // var x = __using(...)
                 const none = @intFromEnum(NodeIndex.none);
                 const new_decl = try self.addExtraNode(.variable_declarator, decl.span, &.{
                     @intFromEnum(new_name), none, @intFromEnum(using_call),
                 });
-                const new_decl_list = try self.ast.addNodeList(&.{new_decl});
-                const var_decl = try self.addExtraNode(.variable_declaration, span, &.{
-                    @intFromEnum(VariableDeclarationKind.@"var"),
-                    new_decl_list.start,
-                    new_decl_list.len,
-                });
-                try self.scratch.append(self.allocator, var_decl);
+                try out.append(self.allocator, try es_helpers.makeVarDeclaration(self, &.{new_decl}, decl_kind, span));
             }
         }
 
-        /// catch (_) { var _error = _, _hasError = true; }
-        fn buildCatchClause(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
-            const catch_param_span = try self.ast.addString("_");
-            const catch_param = try es_helpers.makeBindingIdentifier(self, catch_param_span);
-
-            // var _error = _, _hasError = true;
-            // declarator 1: _error = _
-            const error_span = try self.ast.addString("_error");
-            const error_binding = try es_helpers.makeBindingIdentifier(self, error_span);
-            const underscore_ref = try es_helpers.makeIdentifierRefFromSpan(self, catch_param_span);
-            const none = @intFromEnum(NodeIndex.none);
-            const error_declarator = try self.addExtraNode(.variable_declarator, span, &.{
-                @intFromEnum(error_binding), none, @intFromEnum(underscore_ref),
-            });
-
-            // declarator 2: _hasError = true
-            const has_error_span = try self.ast.addString("_hasError");
-            const has_error_binding = try es_helpers.makeBindingIdentifier(self, has_error_span);
-            const true_span = try self.ast.addString("true");
-            const true_node = try self.ast.addNode(.{
-                .tag = .boolean_literal,
-                .span = true_span,
-                .data = .{ .none = 0 },
-            });
-            const has_error_declarator = try self.addExtraNode(.variable_declarator, span, &.{
-                @intFromEnum(has_error_binding), none, @intFromEnum(true_node),
-            });
-
-            const var_list = try self.ast.addNodeList(&.{ error_declarator, has_error_declarator });
-            const var_decl = try self.addExtraNode(.variable_declaration, span, &.{
-                @intFromEnum(VariableDeclarationKind.@"var"),
-                var_list.start,
-                var_list.len,
-            });
-
-            // block body
-            const body_list = try self.ast.addNodeList(&.{var_decl});
-            const body = try self.ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = body_list },
-            });
-
+        /// catch (_) { _error = _; _hasError = true; }
+        fn buildCatchClause(self: *Transformer, names: Names, span: Span) Transformer.Error!NodeIndex {
+            const catch_param = try es_helpers.makeBindingIdentifier(self, names.catch_param);
+            const set_err = try es_helpers.makeExprStmt(self, try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{
+                .left = try es_helpers.makeIdentifierRefFromSpan(self, names.err),
+                .right = try es_helpers.makeIdentifierRefFromSpan(self, names.catch_param),
+                .flags = 0,
+            } } }), span);
+            const set_has = try es_helpers.makeExprStmt(self, try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{
+                .left = try es_helpers.makeIdentifierRefFromSpan(self, names.has_err),
+                .right = try es_helpers.makeBoolLiteral(self, true),
+                .flags = 0,
+            } } }), span);
+            const body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{ set_err, set_has }) } });
             return self.ast.addNode(.{
                 .tag = .catch_clause,
                 .span = span,
@@ -337,27 +448,15 @@ pub fn ES2025Using(comptime Transformer: type) type {
         }
 
         /// finally { [await] __callDispose(_stack, _error, _hasError); }
-        fn buildFinallyBlock(self: *Transformer, stack_span: Span, has_await: bool, span: Span) Transformer.Error!NodeIndex {
-            const stack_ref = try es_helpers.makeIdentifierRefFromSpan(self, stack_span);
-            const error_ref = try es_helpers.makeIdentifierRef(self, "_error");
-            const has_error_ref = try es_helpers.makeIdentifierRef(self, "_hasError");
-            const dispose_ref = try es_helpers.makeRuntimeHelperRef(self, "__callDispose");
-
-            const call = try es_helpers.makeCallExpr(self, dispose_ref, &.{ stack_ref, error_ref, has_error_ref }, span);
-
-            // await __callDispose(...) for await using
-            const expr = if (has_await)
-                try es_helpers.makeAwaitExpression(self, call, span)
-            else
-                call;
-
+        fn buildFinallyBlock(self: *Transformer, names: Names, has_await: bool, span: Span) Transformer.Error!NodeIndex {
+            const call = try es_helpers.makeCallExpr(self, try es_helpers.makeRuntimeHelperRef(self, "__callDispose"), &.{
+                try es_helpers.makeIdentifierRefFromSpan(self, names.stack),
+                try es_helpers.makeIdentifierRefFromSpan(self, names.err),
+                try es_helpers.makeIdentifierRefFromSpan(self, names.has_err),
+            }, span);
+            const expr = if (has_await) try es_helpers.makeAwaitExpression(self, call, span) else call;
             const expr_stmt = try es_helpers.makeExprStmt(self, expr, span);
-            const body_list = try self.ast.addNodeList(&.{expr_stmt});
-            return self.ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = body_list },
-            });
+            return self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{expr_stmt}) } });
         }
     };
 }
