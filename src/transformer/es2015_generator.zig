@@ -433,12 +433,71 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         }
                     }
                 },
-                else => {
-                    const new_stmt = try self.visitNode(stmt_idx);
-                    if (!new_stmt.isNone()) {
-                        try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
-                    }
+                .class_declaration => {
+                    // 헤더에 yield 가 있으면 먼저 꺼내 둔다 (#4723). 없으면 평소대로.
+                    const target = if (es2015_scan.containsYield(self, stmt_idx))
+                        try extractClassHeaderYields(self, stmt_idx, ops, next_label)
+                    else
+                        stmt_idx;
+                    try appendVisitedStatement(self, target, ops, next_label);
                 },
+                else => try appendVisitedStatement(self, stmt_idx, ops, next_label),
+            }
+        }
+
+        /// 문장을 visit 해 op 로 넣되, visit 이 `pending_nodes`/`trailing_nodes` 로 **보류한
+        /// 문장까지** 같은 자리에 넣는다. (#4723)
+        ///
+        /// es5 클래스 선언은 `var C = (function () {…})()` 를 `pending_nodes` 에 넣고 `.none` 을
+        /// 돌려준다. 보통은 감싼 `visitExtraList` 가 그걸 비워 제자리에 꽂지만, 상태 기계
+        /// 수집기는 `visitExtraList` 를 거치지 않는다 — 그래서 보류 노드가 **바깥(모듈 최상위)
+        /// 목록**으로 새어 클래스가 generator 밖으로 끌려 나갔다. 클로저(`tag` 등)를 잃고
+        /// 모듈 로드 시점에 평가된다.
+        fn appendVisitedStatement(self: *Transformer, stmt_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
+            const pending_top = self.pending_nodes.items.len;
+            const trailing_top = self.trailing_nodes.items.len;
+            const new_stmt = try self.visitNode(stmt_idx);
+
+            // 보류 노드는 복사해 두고 즉시 되돌린다 — 아래 처리 중 또 쌓일 수 있다.
+            var pending: std.ArrayListUnmanaged(NodeIndex) = .empty;
+            defer pending.deinit(self.allocator);
+            try pending.appendSlice(self.allocator, self.pending_nodes.items[pending_top..]);
+            self.pending_nodes.shrinkRetainingCapacity(pending_top);
+            var trailing: std.ArrayListUnmanaged(NodeIndex) = .empty;
+            defer trailing.deinit(self.allocator);
+            try trailing.appendSlice(self.allocator, self.trailing_nodes.items[trailing_top..]);
+            self.trailing_nodes.shrinkRetainingCapacity(trailing_top);
+
+            for (pending.items) |n| try appendHoistedStatement(self, n, ops, next_label);
+            if (!new_stmt.isNone()) {
+                try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
+            }
+            for (trailing.items) |n| try appendHoistedStatement(self, n, ops, next_label);
+        }
+
+        /// 이미 visit 된 보류 문장을 op 로 넣는다. `var` 선언이면 대입으로 접고 이름을
+        /// **바깥 함수**의 var 리스트에 등록한다 — 콜백 안 `var` 는 resume 마다 리셋된다.
+        fn appendHoistedStatement(self: *Transformer, node_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
+            if (node_idx.isNone()) return;
+            const node = self.ast.getNode(node_idx);
+            if (node.tag != .variable_declaration) {
+                try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = node_idx } });
+                return;
+            }
+            try collectVarDeclWithYield(self, node, ops, next_label);
+            // 등록은 collectVarDeclWithYield **뒤** — 그 안에서 다른 상태 기계가 만들어지면
+            // 먼저 넣은 이름이 그쪽 리스트로 빨려 들어간다(#4716 에서 밟음).
+            const e = node.data.extra;
+            const list_start = self.readU32(e, 1);
+            const list_len = self.readU32(e, 2);
+            var i: u32 = 0;
+            while (i < list_len) : (i += 1) {
+                const decl = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[list_start + i]));
+                if (decl.tag != .variable_declarator) continue;
+                const binding = self.ast.getNode(self.readNodeIdx(decl.data.extra, 0));
+                if (binding.tag == .binding_identifier) {
+                    try self.generator_temp_var_spans.append(self.allocator, binding.data.string_ref);
+                }
             }
         }
 
@@ -1732,6 +1791,90 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return es_helpers.makeIdentifierRefFromSpan(self, node.data.string_ref);
         }
 
+        /// 클래스 **헤더**(extends 식 · computed 키)를 소스 순서대로 temp 에 미리 평가하고,
+        /// 그 자리를 temp 참조로 바꾼 **새 클래스 노드**를 돌려준다(아직 visit 안 함). (#4723)
+        ///
+        /// es5 는 클래스를 `(function () { var _a = <키>; … })()` IIFE 로 낮춘다. 키 식에
+        /// `yield` 가 있으면 그대로 IIFE — 새 함수 — 안으로 들어가 raw `yield` 가 남고
+        /// **산출물이 파싱조차 안 된다**. 그래서 상태 기계 쪽에서 키를 먼저 꺼내 둔다.
+        ///
+        /// yield 가 없는 키도 **같이** temp 로 뺀다 — 일부만 빼면 `[f()]` 와 `[yield x]` 의
+        /// 평가 순서가 뒤바뀐다(스펙: heritage → 멤버 키, 소스 순서).
+        fn extractClassHeaderYields(self: *Transformer, class_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!NodeIndex {
+            const class_node = self.ast.getNode(class_idx);
+            const ce = class_node.data.extra;
+            var class_slots: [8]u32 = undefined;
+            for (0..8) |k| class_slots[k] = self.ast.extra_data.items[ce + k];
+
+            // 1. extends 식
+            const super_idx: NodeIndex = @enumFromInt(class_slots[ast_mod.ClassExtra.super]);
+            if (!super_idx.isNone()) {
+                class_slots[ast_mod.ClassExtra.super] = @intFromEnum(try evalIntoGeneratorTemp(self, super_idx, ops, next_label));
+            }
+
+            // 2. 멤버의 computed 키 (소스 순서)
+            const body_idx: NodeIndex = @enumFromInt(class_slots[ast_mod.ClassExtra.body]);
+            if (!body_idx.isNone()) {
+                const body = self.ast.getNode(body_idx);
+                const scratch_top = self.scratch.items.len;
+                defer self.scratch.shrinkRetainingCapacity(scratch_top);
+                var i: u32 = 0;
+                while (i < body.data.list.len) : (i += 1) {
+                    // evalIntoGeneratorTemp 가 extra_data 를 재할당할 수 있으므로 매번 다시 읽는다.
+                    const member_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[body.data.list.start + i]);
+                    try self.scratch.append(self.allocator, try rewriteMemberComputedKey(self, member_idx, ops, next_label));
+                }
+                const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                const new_body = try self.ast.addNode(.{ .tag = .class_body, .span = body.span, .data = .{ .list = new_list } });
+                class_slots[ast_mod.ClassExtra.body] = @intFromEnum(new_body);
+            }
+
+            const new_extra = try self.ast.addExtras(&class_slots);
+            return self.ast.addNode(.{ .tag = class_node.tag, .span = class_node.span, .data = .{ .extra = new_extra } });
+        }
+
+        /// 멤버의 key 가 computed 면 그 식을 temp 로 평가해 `[_t]` 로 바꾼 새 멤버를 돌려준다.
+        fn rewriteMemberComputedKey(self: *Transformer, member_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!NodeIndex {
+            const member = self.ast.getNode(member_idx);
+            const slot_count: usize = switch (member.tag) {
+                .method_definition => 6, // MethodExtra: key, params, body, flags, deco_start, deco_len
+                .property_definition, .accessor_property => 5, // PropertyExtra: key, init, flags, deco_start, deco_len
+                else => return member_idx,
+            };
+            const me = member.data.extra;
+            const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me]);
+            if (key_idx.isNone() or self.ast.getNode(key_idx).tag != .computed_property_key) return member_idx;
+
+            const key_node = self.ast.getNode(key_idx);
+            const temp_ref = try evalIntoGeneratorTemp(self, key_node.data.unary.operand, ops, next_label);
+            const new_key = try self.ast.addNode(.{
+                .tag = .computed_property_key,
+                .span = key_node.span,
+                .data = .{ .unary = .{ .operand = temp_ref, .flags = key_node.data.unary.flags } },
+            });
+
+            var slots: [6]u32 = undefined;
+            for (0..slot_count) |k| slots[k] = self.ast.extra_data.items[me + k];
+            slots[0] = @intFromEnum(new_key);
+            const new_extra = try self.ast.addExtras(slots[0..slot_count]);
+            return self.ast.addNode(.{ .tag = member.tag, .span = member.span, .data = .{ .extra = new_extra } });
+        }
+
+        /// 식을 (yield 추출을 거쳐) 평가해 resume 사이에 살아남는 temp 에 담고 그 참조를 돌려준다.
+        fn evalIntoGeneratorTemp(self: *Transformer, expr_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!NodeIndex {
+            const value = try visitExprWithYieldExtraction(self, expr_idx, ops, next_label);
+            const temp_span = try es_helpers.makeTempVarSpan(self);
+            try self.generator_temp_var_spans.append(self.allocator, temp_span);
+            const lhs = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+            const assign = try self.ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = temp_span,
+                .data = .{ .binary = .{ .left = lhs, .right = value, .flags = 0 } },
+            });
+            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = try es_helpers.makeExprStmt(self, assign, temp_span) } });
+            return es_helpers.makeTempVarRef(self, temp_span, temp_span);
+        }
+
         /// expression body (arrow function 등)를 state machine으로 변환.
         /// expression을 implicit return으로 처리.
         /// expression 내부의 yield/await를 별도 yield operation으로 추출하고
@@ -1789,6 +1932,26 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // computed key 는 `computed_property_key` 래퍼 안에 있다. 래퍼를 유지한 채
             // 안쪽만 추출해야 `{ [_a]: 2 }` 로 나온다 (#4721).
+            // 객체 리터럴 메서드/접근자: 본문은 별도 스코프지만 computed 키는 이 문맥에서
+            // 평가된다 — 키만 추출하고 나머지는 평소대로 visit (#4723).
+            if (node.tag == .method_definition) {
+                const me = node.data.extra;
+                const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me]);
+                if (!key_idx.isNone() and self.ast.getNode(key_idx).tag == .computed_property_key) {
+                    const new_key = try visitExprWithYieldExtraction(self, key_idx, ops, next_label);
+                    var slots: [6]u32 = undefined;
+                    for (0..6) |k| slots[k] = self.ast.extra_data.items[me + k];
+                    slots[0] = @intFromEnum(new_key);
+                    const new_extra = try self.ast.addExtras(&slots);
+                    return self.visitNode(try self.ast.addNode(.{ .tag = .method_definition, .span = node.span, .data = .{ .extra = new_extra } }));
+                }
+            }
+
+            // 클래스 식: 헤더의 yield 를 먼저 꺼낸 뒤 평소대로 낮춘다 (#4723).
+            if (node.tag == .class_expression) {
+                return self.visitNode(try extractClassHeaderYields(self, expr_idx, ops, next_label));
+            }
+
             if (node.tag == .computed_property_key) {
                 const new_inner = try visitExprWithYieldExtraction(self, node.data.unary.operand, ops, next_label);
                 return self.ast.addNode(.{

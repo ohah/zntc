@@ -25,6 +25,21 @@ const PrivateMethodMapping = Transformer.PrivateMethodMapping;
 /// 멤버를 개별 분류하여 instance field를 constructor로 이동하고,
 /// experimental decorator를 __decorateClass 호출로 변환한다.
 pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeIndex {
+    // computed field 키의 선평가 대입(`_a = f()`)을 모은다. 클래스 **선언**은 앞 문장으로
+    // 끼우면 되지만, 클래스 **식**은 값 자리라 문장을 끼울 수 없다 — pending_nodes 로
+    // 넣으면 감싼 목록(예: `const` 선언자 목록)에 끼어들어 `const var _a;,_a = f();,C = …`
+    // 같은 깨진 코드가 나온다. 그래서 식은 `(_a = f(), class {…})` 쉼표 식으로 낸다. (#4723)
+    var key_assigns: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer key_assigns.deinit(self.allocator);
+    const result = try visitClassWithAssignSemanticsInner(self, node, &key_assigns);
+    if (key_assigns.items.len == 0 or result.isNone()) return result;
+    try key_assigns.append(self.allocator, result);
+    const list = try self.ast.addNodeList(key_assigns.items);
+    const seq = try self.ast.addListNode(.sequence_expression, node.span, list);
+    return self.ast.addNode(.{ .tag = .parenthesized_expression, .span = node.span, .data = .{ .unary = .{ .operand = seq, .flags = 0 } } });
+}
+
+fn visitClassWithAssignSemanticsInner(self: *Transformer, node: Node, key_assigns: *std.ArrayListUnmanaged(NodeIndex)) Error!NodeIndex {
     const e = node.data.extra;
     const super_idx = self.readNodeIdx(e, ast_mod.ClassExtra.super);
     const has_super = !super_idx.isNone();
@@ -136,6 +151,17 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
         if (had_any) body_idx = new_body_pl;
     }
 
+    // 필드를 낮추면 멤버들이 생성자·IIFE 등 **다른 자리**로 흩어진다. 그 경우 모든 멤버의
+    // computed 키를 소스 순서대로 **클래스 앞에서 한 번** 평가해 temp 로 바꿔 둔다 (#4723).
+    //  - 필드 키가 생성자로 들어가면 인스턴스마다 재평가된다(스펙: 정의 시점 1회).
+    //  - 메서드/접근자 키가 IIFE 안에 남으면 키의 `yield`/`await` 가 새 함수 안으로 들어가
+    //    파싱조차 안 되고, 필드 키만 빼면 키 평가 순서가 뒤바뀐다.
+    var pre_hoisted_keys = false;
+    if (classBodyHasFieldAndComputedKey(self, body_idx)) {
+        body_idx = try hoistAllComputedKeys(self, node.tag, body_idx, key_assigns);
+        pre_hoisted_keys = true;
+    }
+
     // 원본(또는 private 다운레벨된) class_body를 직접 순회
     const body_node = self.ast.getNode(body_idx);
     const body_members_start = body_node.data.list.start;
@@ -195,6 +221,17 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
         .ctor_params = &ctor_params,
     };
 
+    // 익명 클래스 식인데 static field / static block 을 **클래스 밖 문장**으로 낮춰야 하면
+    // 그 문장들이 클래스를 가리킬 이름이 필요하다. 이름 없이 진행하면 static field 할당이
+    // `.none` 이름을 역참조해 **컴파일러가 죽는다**(#4723 — #4629 가 es2015~es2021 에서
+    // field 를 낮추기 시작하며 드러남). 분류(static block 의 this 치환) **전에** 붙인다.
+    if (node.tag == .class_expression and new_name.isNone() and
+        classBodyNeedsNameForStatics(self, body_idx, ctx.static_field_assignments != null))
+    {
+        const tmp_span = try es_helpers.makeTempVarSpan(self);
+        new_name = try es_helpers.makeBindingIdentifier(self, tmp_span);
+    }
+
     // ES2022 static block this 치환을 위한 클래스 이름 추출
     if (self.options.unsupported.class_static_block) {
         ctx.class_name_span = self.getClassNameSpan(new_name);
@@ -210,9 +247,11 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
     }
 
     // computed key 호이스트: class 전에 var _a; _a = foo; 삽입 (esbuild 호환)
-    // assign semantics에서 computed key는 class 평가 전에 한 번만 평가되어야 함
-    if (!self.options.use_define_for_class_fields) {
-        var computed_idx: u8 = 0;
+    // computed key 는 **클래스 정의 시점에 한 번만** 평가돼야 한다 — 의미론(assign/define)과
+    // 무관한 스펙 규칙이다. 예전엔 assign 의미론에서만 켰는데, #4629 가 define 의미론(기본값)
+    // 으로 field 를 낮추기 시작하면서 키가 생성자 안으로 들어가 **인스턴스마다 재평가**됐다.
+    // (위의 hoistAllComputedKeys 가 이미 했으면 건너뛴다 — 두 번 빼면 `_c = _a` 가 생긴다.)
+    if (!pre_hoisted_keys) {
         for (field_assignments.items) |*field| {
             if (field.is_computed) {
                 const key_node = self.ast.getNode(field.key);
@@ -221,35 +260,10 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
                 else
                     field.key;
 
-                // var _a; / var _b; / ... (computed field별 고유 이름)
-                var name_buf: [4]u8 = undefined;
-                name_buf[0] = '_';
-                name_buf[1] = 'a' + computed_idx;
-                const temp_span = try self.ast.addString(name_buf[0..2]);
-                computed_idx += 1;
-                const temp_binding = try self.ast.addNode(.{
-                    .tag = .binding_identifier,
-                    .span = temp_span,
-                    .data = .{ .string_ref = temp_span },
-                });
-                const declarator_extra = try self.ast.addExtras(&.{
-                    @intFromEnum(temp_binding),
-                    @intFromEnum(NodeIndex.none),
-                    @intFromEnum(NodeIndex.none),
-                });
-                const declarator = try self.ast.addNode(.{
-                    .tag = .variable_declarator,
-                    .span = field.span,
-                    .data = .{ .extra = declarator_extra },
-                });
-                const decl_list = try self.ast.addNodeList(&.{declarator});
-                const var_decl_extra = try self.ast.addExtras(&.{ 0, decl_list.start, decl_list.len });
-                const var_decl = try self.ast.addNode(.{
-                    .tag = .variable_declaration,
-                    .span = field.span,
-                    .data = .{ .extra = var_decl_extra },
-                });
-                try self.pending_nodes.append(self.allocator, var_decl);
+                // computed field 별 고유 이름. 예전의 하드코딩 `_a`/`_b` 는 같은 스코프의
+                // 다른 temp(상태 기계 temp 등)와 이름이 겹칠 수 있었다. makeTempVarSpan 의
+                // temp 는 감싼 함수/프로그램 최상단에 자동으로 `var` 선언된다.
+                const temp_span = try es_helpers.makeTempVarSpan(self);
 
                 // _a = foo; 대입
                 const temp_ref = try self.ast.addNode(.{
@@ -262,12 +276,11 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
                     .span = field.span,
                     .data = .{ .binary = .{ .left = temp_ref, .right = actual_key, .flags = 0 } },
                 });
-                const assign_stmt = try self.ast.addNode(.{
-                    .tag = .expression_statement,
-                    .span = field.span,
-                    .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
-                });
-                try self.pending_nodes.append(self.allocator, assign_stmt);
+                if (node.tag == .class_expression) {
+                    try key_assigns.append(self.allocator, assign);
+                } else {
+                    try self.pending_nodes.append(self.allocator, try es_helpers.makeExprStmt(self, assign, field.span));
+                }
 
                 // field의 key를 임시 변수로 교체
                 const new_computed = try self.ast.addNode(.{
@@ -357,11 +370,11 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
             none,                   0,                       0,
             new_decos.start,        new_decos.len,
         });
-        // #3/#4: private weakset 선언은 class 정의/static 할당 앞에.
-        for (priv_pre_stmts.items) |stmt| try self.pending_nodes.append(self.allocator, stmt);
-        try self.pending_nodes.append(self.allocator, class_result);
+        // 클래스 뒤에 올 문장들: private static descriptor → (소스 순서대로) static field / block.
+        var post: std.ArrayListUnmanaged(NodeIndex) = .empty;
+        defer post.deinit(self.allocator);
         // V_ASSIGN fix: private static descriptor 는 class 뒤, static field 할당과 IIFE 의 앞에.
-        for (assign_static_descriptors.items) |desc| try self.pending_nodes.append(self.allocator, desc);
+        try post.appendSlice(self.allocator, assign_static_descriptors.items);
         // static field 와 static block 은 **소스 순서**대로 평가돼야 한다 (#4629).
         // `static a = …; static { … } static b = …` 에서 block 이 뒤로 밀리면
         // block 이 보는 값이 달라진다. counts[i] = 그 block 앞에 있던 field 수.
@@ -372,15 +385,24 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
             else
                 @intCast(static_field_assignments.items.len);
             while (emitted_fields < upto) : (emitted_fields += 1) {
-                const stmt = try self.buildStaticFieldAssignment(new_name, static_field_assignments.items[emitted_fields]);
-                try self.pending_nodes.append(self.allocator, stmt);
+                try post.append(self.allocator, try self.buildStaticFieldAssignment(new_name, static_field_assignments.items[emitted_fields]));
             }
-            try self.pending_nodes.append(self.allocator, iife);
+            try post.append(self.allocator, iife);
         }
         while (emitted_fields < static_field_assignments.items.len) : (emitted_fields += 1) {
-            const stmt = try self.buildStaticFieldAssignment(new_name, static_field_assignments.items[emitted_fields]);
-            try self.pending_nodes.append(self.allocator, stmt);
+            try post.append(self.allocator, try self.buildStaticFieldAssignment(new_name, static_field_assignments.items[emitted_fields]));
         }
+
+        // 클래스 **식**은 값 자리라 문장을 앞뒤에 끼울 수 없다 — IIFE 로 감싸 클래스를
+        // 돌려준다. 예전엔 여기서도 pending 에 넣고 `.none` 을 돌려줘 식이 통째로 사라질
+        // 경로였다(이름이 없어 그 전에 크래시했을 뿐). (#4723)
+        if (node.tag == .class_expression) {
+            return wrapClassExprInIIFE(self, &.{}, priv_pre_stmts.items, class_result, post.items, new_name, node.span);
+        }
+        // #3/#4: private weakset 선언은 class 정의/static 할당 앞에.
+        for (priv_pre_stmts.items) |stmt| try self.pending_nodes.append(self.allocator, stmt);
+        try self.pending_nodes.append(self.allocator, class_result);
+        for (post.items) |stmt| try self.pending_nodes.append(self.allocator, stmt);
         return .none;
     }
 
@@ -525,3 +547,125 @@ pub const appendEsDecorateStmt = stage3_helpers.appendEsDecorateStmt;
 
 const stage3_transform = @import("stage3_decorator_transform.zig");
 pub const transformStage3Decorators = stage3_transform.transformStage3Decorators;
+
+/// 클래스 본문에 **클래스 밖 문장으로 낮춰질** static 멤버가 있는지.
+/// `lowers_static_fields` = static field 를 할당문으로 빼는 중인지(ctx 기준).
+fn classBodyNeedsNameForStatics(self: *Transformer, body_idx: NodeIndex, lowers_static_fields: bool) bool {
+    if (body_idx.isNone()) return false;
+    const body = self.ast.getNode(body_idx);
+    var i: u32 = 0;
+    while (i < body.data.list.len) : (i += 1) {
+        const member = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[body.data.list.start + i]));
+        switch (member.tag) {
+            .static_block => if (self.options.unsupported.class_static_block) return true,
+            .property_definition => if (lowers_static_fields and
+                (self.readU32(member.data.extra, ast_mod.PropertyExtra.flags) & ast_mod.PropertyFlags.is_static) != 0) return true,
+            else => {},
+        }
+    }
+    return false;
+}
+
+/// 필드(property_definition / accessor_property)가 하나라도 있고, 어떤 멤버든 computed 키가 있는지.
+fn classBodyHasFieldAndComputedKey(self: *Transformer, body_idx: NodeIndex) bool {
+    if (body_idx.isNone()) return false;
+    const body = self.ast.getNode(body_idx);
+    var has_field = false;
+    var has_computed = false;
+    var i: u32 = 0;
+    while (i < body.data.list.len) : (i += 1) {
+        const member = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[body.data.list.start + i]));
+        switch (member.tag) {
+            .property_definition, .accessor_property => has_field = true,
+            .method_definition => {},
+            else => continue,
+        }
+        const key: NodeIndex = @enumFromInt(self.ast.extra_data.items[member.data.extra]);
+        if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key) has_computed = true;
+    }
+    return has_field and has_computed;
+}
+
+/// 모든 멤버의 computed 키를 소스 순서대로 temp 에 평가하고, 키를 `[_t]` 로 바꾼 새
+/// class_body 를 돌려준다. 대입은 클래스 **식**이면 `key_assigns`(쉼표 식)로, **선언**이면
+/// 앞 문장(pending_nodes)으로 낸다.
+fn hoistAllComputedKeys(self: *Transformer, tag: Node.Tag, body_idx: NodeIndex, key_assigns: *std.ArrayListUnmanaged(NodeIndex)) Error!NodeIndex {
+    const body = self.ast.getNode(body_idx);
+    var members: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer members.deinit(self.allocator);
+    var i: u32 = 0;
+    while (i < body.data.list.len) : (i += 1) {
+        const member_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[body.data.list.start + i]);
+        const member = self.ast.getNode(member_idx);
+        const slot_count: usize = switch (member.tag) {
+            .method_definition => 6, // MethodExtra: key, params, body, flags, deco_start, deco_len
+            .property_definition, .accessor_property => 5, // PropertyExtra: key, init, flags, deco_start, deco_len
+            else => {
+                try members.append(self.allocator, member_idx);
+                continue;
+            },
+        };
+        const me = member.data.extra;
+        const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me]);
+        if (key_idx.isNone() or self.ast.getNode(key_idx).tag != .computed_property_key) {
+            try members.append(self.allocator, member_idx);
+            continue;
+        }
+        const key_node = self.ast.getNode(key_idx);
+        const value = try self.visitNode(key_node.data.unary.operand);
+        const temp_span = try es_helpers.makeTempVarSpan(self);
+        const assign = try self.ast.addNode(.{
+            .tag = .assignment_expression,
+            .span = key_node.span,
+            .data = .{ .binary = .{ .left = try es_helpers.makeIdentifierRefFromSpan(self, temp_span), .right = value, .flags = 0 } },
+        });
+        if (tag == .class_expression) {
+            try key_assigns.append(self.allocator, assign);
+        } else {
+            try self.pending_nodes.append(self.allocator, try es_helpers.makeExprStmt(self, assign, key_node.span));
+        }
+        const new_key = try self.ast.addNode(.{
+            .tag = .computed_property_key,
+            .span = key_node.span,
+            .data = .{ .unary = .{ .operand = try es_helpers.makeIdentifierRefFromSpan(self, temp_span), .flags = key_node.data.unary.flags } },
+        });
+        var slots: [6]u32 = undefined;
+        for (0..slot_count) |k| slots[k] = self.ast.extra_data.items[me + k];
+        slots[0] = @intFromEnum(new_key);
+        const new_extra = try self.ast.addExtras(slots[0..slot_count]);
+        try members.append(self.allocator, try self.ast.addNode(.{ .tag = member.tag, .span = member.span, .data = .{ .extra = new_extra } }));
+    }
+    const list = try self.ast.addNodeList(members.items);
+    return self.ast.addNode(.{ .tag = .class_body, .span = body.span, .data = .{ .list = list } });
+}
+
+/// es5 클래스 경로(`es2015_class` 의 IIFE/함수 lowering)용 진입점 (#4723).
+///
+/// es5 는 필드를 생성자 안(`__publicField(this, <키>, …)`)으로 옮기므로, computed 키를
+/// 그대로 두면 **인스턴스마다 재평가**된다. 필드 + computed 키가 있으면 모든 멤버 키를
+/// 소스 순서대로 먼저 temp 로 평가하고, 키가 바뀐 클래스 노드로 `lower` 를 부른다.
+/// 클래스 식이면 결과를 `(_a = k1, …, <lowered>)` 쉼표 식으로 감싼다.
+pub fn lowerClassWithPrehoistedKeys(
+    self: *Transformer,
+    node: Node,
+    comptime lower: fn (*Transformer, Node) Error!NodeIndex,
+) Error!NodeIndex {
+    const body_idx = self.readNodeIdx(node.data.extra, ast_mod.ClassExtra.body);
+    if (!classBodyHasFieldAndComputedKey(self, body_idx)) return lower(self, node);
+
+    var key_assigns: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer key_assigns.deinit(self.allocator);
+    const new_body = try hoistAllComputedKeys(self, node.tag, body_idx, &key_assigns);
+
+    var slots: [8]u32 = undefined;
+    for (0..8) |k| slots[k] = self.ast.extra_data.items[node.data.extra + k];
+    slots[ast_mod.ClassExtra.body] = @intFromEnum(new_body);
+    const new_extra = try self.ast.addExtras(&slots);
+    const result = try lower(self, .{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
+
+    if (key_assigns.items.len == 0 or result.isNone()) return result;
+    try key_assigns.append(self.allocator, result);
+    const list = try self.ast.addNodeList(key_assigns.items);
+    const seq = try self.ast.addListNode(.sequence_expression, node.span, list);
+    return self.ast.addNode(.{ .tag = .parenthesized_expression, .span = node.span, .data = .{ .unary = .{ .operand = seq, .flags = 0 } } });
+}

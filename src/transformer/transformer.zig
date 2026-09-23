@@ -203,6 +203,9 @@ pub const Transformer = struct {
     /// `buildStateMachine` 이 진입하면서 소비해 `in_` 으로 옮긴다. 그래야 안쪽에 중첩된
     /// 평범한 generator 의 state machine 이 이 성질을 물려받지 않는다.
     pending_async_generator_sm: bool = false,
+    /// 지금 visit 중인 변수 선언이 `const` 인가 (#4723). `const X = class {…}` 의 익명 클래스를
+    /// 낮출 때 이름 추론(`X.name === "X"`)을 지키려고 선언 이름을 클래스에 붙이는 데 쓴다.
+    in_const_declaration: bool = false,
     in_async_generator_sm: bool = false,
     /// V7: object literal 안에서 visit 중인지 (nested 가능). visitMethodDefinition 이
     /// 이 flag 를 보고 method body 의 super context 를 reset 한다 — object literal method
@@ -552,6 +555,7 @@ pub const Transformer = struct {
 
     pub const visitClass = class_deco.visitClass;
     pub const visitClassWithAssignSemantics = class_deco.visitClassWithAssignSemantics;
+    pub const lowerClassWithPrehoistedKeys = class_deco.lowerClassWithPrehoistedKeys;
     pub const buildStaticFieldAssignment = class_deco.buildStaticFieldAssignment;
     pub const classifyClassMember = class_deco.classifyClassMember;
     pub const classifyPropertyDefinition = class_deco.classifyPropertyDefinition;

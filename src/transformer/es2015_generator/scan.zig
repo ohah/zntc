@@ -123,6 +123,22 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
                 if (!pushNode(self, &stack, node.data.binary.left)) return true;
                 if (!pushNode(self, &stack, node.data.binary.right)) return true;
             },
+            .class_expression, .class_declaration => {
+                // 클래스 **헤더**(extends 식 · computed 키)는 둘러싼 generator 의 문맥에서
+                // 평가되므로 yield 가 올 수 있다. 메서드 본문·필드 초기화는 별도 스코프라
+                // 여기서 내려가지 않는다(멤버는 key 만 push). (#4723)
+                const extras = self.ast.extra_data.items;
+                const e = node.data.extra;
+                if (e + 2 >= extras.len) continue;
+                if (!pushNode(self, &stack, @enumFromInt(extras[e + 1]))) return true; // super
+                if (!pushNode(self, &stack, @enumFromInt(extras[e + 2]))) return true; // body
+            },
+            .method_definition, .property_definition, .accessor_property => {
+                const extras = self.ast.extra_data.items;
+                const e = node.data.extra;
+                if (e >= extras.len) continue;
+                if (!pushNode(self, &stack, @enumFromInt(extras[e]))) return true; // key
+            },
             .for_statement => {
                 // init/test/update 도 봐야 한다 — 헤더에만 yield 가 있으면 루프가
                 // 상태 기계를 아예 안 타고 raw `yield` 가 남는다. (#4721)
