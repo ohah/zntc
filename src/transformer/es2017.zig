@@ -448,9 +448,10 @@ pub fn ES2017(comptime Transformer: type) type {
             // arrow 의 arguments 는 바깥 함수 것이고 arrow_this_depth 가 따로 처리한다).
             const saved_ext_sm = self.in_extracted_fn_body;
             self.in_extracted_fn_body = true;
+            var saved_sm_temps = try GenMod.enterStateMachineTemps(self);
+            defer GenMod.leaveStateMachineTemps(self, &saved_sm_temps);
             var sm_result = try GenMod.buildStateMachine(self, body_idx, span);
             self.in_extracted_fn_body = saved_ext_sm;
-            defer self.generator_temp_var_spans.clearRetainingCapacity();
             if (sm_result.body.isNone()) return .none;
             sm_result.body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span);
 
@@ -515,6 +516,8 @@ pub fn ES2017(comptime Transformer: type) type {
 
             const saved_temp_counter = self.temp_var_counter;
 
+            var saved_sm_temps = try GenMod.enterStateMachineTemps(self);
+            defer GenMod.leaveStateMachineTemps(self, &saved_sm_temps);
             const lowered = blk: {
                 // Async arrow skips ES2015Arrow.lowerArrowFunction(), so enter
                 // the arrow lexical environment while visiting params/body.
@@ -527,7 +530,6 @@ pub fn ES2017(comptime Transformer: type) type {
             };
             const params_list = lowered.params_list;
             var sm_result = lowered.sm_result;
-            defer self.generator_temp_var_spans.clearRetainingCapacity();
             if (sm_result.body.isNone()) return .none;
             sm_result.body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span);
 

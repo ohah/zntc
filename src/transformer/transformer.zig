@@ -227,6 +227,11 @@ pub const Transformer = struct {
     /// ES2015 generator: labeled break/continue를 위한 label 스택.
     /// labeled_statement 진입 시 push, 퇴장 시 pop.
     generator_label_stack: std.ArrayList(GeneratorLabelEntry) = .empty,
+    /// 지금 visit 중인 위치에서 **보이는** 라벨 스택 (#4722). `null` 은 경계 — 함수 진입이나
+    /// `_loop` 클로저로 추출될 루프 본문. 추출된 루프의 호출부 검사가 바깥 라벨 신호를
+    /// 되살릴 때, 라벨이 경계 없이 보이면 `continue L;` 로 바로 점프하고 경계 너머면
+    /// `return "continue|L"` 로 한 단계 위 클로저에 전달한다.
+    label_scope: std.ArrayList(?[]const u8) = .empty,
 
     /// ES2015 generator: for loop의 update label (labeled continue 대상).
     /// collectForOperations에서 update nop 추가 직전에 설정.

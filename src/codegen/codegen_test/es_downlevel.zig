@@ -753,6 +753,112 @@ test "es2017: 평범한 generator 의 yield* 는 건드리지 않는다 (#4628 �
 
 // === #1910: yield* iterable — __values() wrap ===
 
+test "ES2017: for-await 루프 변수는 원래 종류(const/let)를 유지한다 (#4722)" {
+    // es2015~es2017 은 let/const 가 네이티브다. `var` 로 내리면 반복별 바인딩이 합쳐져
+    // 루프 안 클로저가 전부 마지막 값을 캡처한다.
+    var r = try e2eTarget(std.testing.allocator, "async function f(s){ for await (const v of s) g(()=>v); }", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const v=") != null or std.mem.indexOf(u8, r.output, "const v =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var v=") == null);
+}
+
+test "ES5: async 함수의 for-await 루프 변수 캡처도 _loop 로 복원한다 (#4722)" {
+    var r = try e2eTarget(std.testing.allocator, "async function f(s){ for await (const v of s) g(()=>v); }", .es5);
+    defer r.deinit();
+    // 정의만이 아니라 **호출**돼야 한다(반복마다 새 프레임).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_loop(v)") != null);
+}
+
+test "ES5: 중첩 async 가 바깥 상태 기계 temp 를 지우지 않는다 (#4722)" {
+    // 안쪽 async 화살표 lowering 이 generator_temp_var_spans 를 통째로 clear 해, 바깥에
+    // 등록된 `_loop` 선언이 사라졌다(`_loop is not defined`).
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "async function f(s){ for await (const v of s) g(() => v); const r = await (async () => 1)(); return r; }",
+        .es5,
+    );
+    defer r.deinit();
+    const var_at = std.mem.indexOf(u8, r.output, "function f(s){var ") orelse return error.TestUnexpectedResult;
+    const end = std.mem.indexOfPos(u8, r.output, var_at, ";") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, r.output[var_at..end], "_loop") != null);
+}
+
+test "ES5: 추출된 루프 안의 바깥 라벨 continue 는 같은 함수면 라벨로 점프한다 (#4722)" {
+    // 예전엔 자기 루프 라벨이 아니면 전부 `return "continue|O"` 로 위에 전달해, 바깥 루프가
+    // 추출되지 않은 같은 함수의 루프일 때 **함수 전체를 빠져나갔다**(동기 코드에서도).
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "function run(fns){ O: for (const a of [1,2]) { for (const b of [1,2]) { fns.push(()=>b); if (b===2) continue O; } } done(); }",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "continue O") != null);
+    // 바깥(추출 안 된) 루프 레벨에서 신호를 return 으로 흘려 보내면 안 된다.
+    const outer_check = std.mem.lastIndexOf(u8, r.output, "_ret===\"continue|O\"") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.startsWith(u8, r.output[outer_check..], "_ret===\"continue|O\")continue O"));
+}
+
+test "ES5: 루프 본문 안에서 정의된 라벨은 바깥 신호가 아니다 (#4722)" {
+    // 바깥 루프 본문을 추출할 때 안쪽 라벨(B)의 정상 `continue B` 까지 `return` 신호로
+    // 바꾸면 안 된다 — B 는 추출된 클로저 안에 그대로 있다.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "function run(fns){ for (const a of [1,2]) { fns.push(()=>a); B: for (const b of [1,2]) { if (b===1) continue B; x(); } } }",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"continue|B\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "continue B") != null);
+}
+
+test "ES5: 추출로 블록이 된 클래식 for 에도 라벨이 붙는다 (#4722)" {
+    // `{ var _loop = …; for (…) {…} }` 블록에 라벨이 남으면 `continue O` 가 갈 곳이 없다.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "function run(fns){ O: for (let i=0;i<3;i++) { fns.push(()=>i); for (let j=0;j<3;j++) { fns.push(()=>j); if (j===1) continue O; } } }",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "O:for") != null or std.mem.indexOf(u8, r.output, "O: for") != null);
+}
+
+test "ES5: generator 안 일반 경로 for-of 도 캡처 시 _loop 를 generator 로 뽑는다 (#4722)" {
+    // for-await 본문은 일반 visitor 로 방문돼 안쪽 for-of 가 일반 경로를 탄다. 거기서
+    // 본문에 yield 가 있는데 평범한 함수로 뽑으면 raw yield 가 남아 파싱되지 않았다.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "async function* g(s,t,fns){ for await (const a of s) { for (const b of t) { fns.push(()=>b); yield b; } } }",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_loop") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "yield") == null);
+    // 합성된 `var _loop = …` 은 대입으로 접히므로 이름이 바깥 var 목록에 있어야 한다.
+    const var_at = std.mem.indexOf(u8, r.output, "{var ") orelse return error.TestUnexpectedResult;
+    const end = std.mem.indexOfPos(u8, r.output, var_at, ";") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, r.output[var_at..end], "_loop") != null);
+}
+
+test "ES5: 빈 case 가 '문장들 + yield' case 로 폴스루하지 않는다 (#4722)" {
+    // #4718 은 바로 다음 op 가 yield 일 때만 봤다. 문장 몇 개 뒤에 yield 가 와도, 빈 라벨로
+    // 들어오면 재개 라벨이 그 case 자신이라 문장까지 통째로 다시 실행된다.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "async function* g(s){ B: for await (const v of s) { C: { if (v) break C; yield v; } } a(); yield 'end'; }",
+        .es5,
+    );
+    defer r.deinit();
+    var idx: usize = 0;
+    while (std.mem.indexOfPos(u8, r.output, idx, ":case ")) |p| {
+        idx = p + 1;
+        const colon = std.mem.indexOfPos(u8, r.output, p + 6, ":") orelse continue;
+        const next_case = std.mem.indexOfPos(u8, r.output, colon, "case ") orelse r.output.len;
+        const body = r.output[colon + 1 .. next_case];
+        try std.testing.expect(std.mem.indexOf(u8, body, "return[4,") == null);
+        try std.testing.expect(std.mem.indexOf(u8, body, "return[4,__await") == null);
+    }
+}
+
 test "ES2021: 필드를 낮추면 모든 멤버의 computed 키를 클래스 앞에서 한 번 평가한다 (#4723)" {
     // 필드 키가 생성자로 들어가면 인스턴스마다 재평가되고, 메서드 키가 IIFE 안에 남으면
     // 키의 yield/await 가 새 함수 안으로 들어간다. 키는 소스 순서대로 temp 로 뺀다.
@@ -2052,8 +2158,10 @@ test "ES2018: for-await destructuring body lowered at es2015 target (#1382)" {
     defer r.deinit();
     try expectNoVarPattern(r.output);
     try std.testing.expect(std.mem.indexOf(u8, r.output, ".value") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "[0]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "[1]") != null);
+    // es2015 는 구조분해·`const` 가 네이티브다 — 루프 변수는 원래 종류로 남아 반복별
+    // 바인딩을 지킨다(#4722). 예전 기대값 `[0]`/`[1]` 은 모든 타겟에서 `var` + 인덱스로
+    // 풀던 부산물이었다(그래서 클로저가 전부 마지막 값을 캡처했다).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const [a,b]=") != null);
 }
 
 // --- ES2015: destructuring ---

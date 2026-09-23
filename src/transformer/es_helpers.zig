@@ -1041,6 +1041,18 @@ pub fn buildForOfLoopVarAssign(self: anytype, left: NodeIndex, elem: NodeIndex, 
         if (binding_idx.isNone()) return makeExprStmt(self, elem, span);
         const binding_node = self.ast.getNode(binding_idx);
 
+        // 타겟이 `let`/`const` 를 알면 원래 종류를 그대로 쓴다 (#4722). 루프 본문 블록 안의
+        // lexical 선언은 **반복마다 새 바인딩**이라, 본문의 클로저가 각 반복 값을 캡처한다.
+        // `var` 로 내리면 바인딩이 하나로 합쳐져 클로저가 전부 마지막 값을 본다
+        // (for-await 는 es2015~es2017 에서도 이 헬퍼로 낮아진다). 이 경우 구조분해도
+        // 네이티브라 패턴을 그대로 둔다. `let`/`const` 를 모르는 타겟(es5)은 아래 기존 경로.
+        const orig_kind = self.ast.variableDeclarationKind(left_node);
+        if (!self.options.unsupported.block_scoping and orig_kind.isLexical()) {
+            const new_binding = try self.visitNode(binding_idx);
+            const declarator = try makeDeclarator(self, new_binding, elem, span);
+            return makeVarDeclaration(self, &.{declarator}, orig_kind, span);
+        }
+
         if (binding_node.tag == .array_pattern or binding_node.tag == .object_pattern) {
             // Destructuring pattern — 임시 변수 _t 도입 후 패턴을 declarator 로 전개
             const temp_span = try makeTempVarSpan(self);

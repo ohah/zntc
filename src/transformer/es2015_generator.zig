@@ -107,17 +107,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // 덮으면 안 된다. 예전에는 끝에서 통째로 clear 했는데, 바깥 상태 기계를
             // 수집하는 도중에 안쪽 generator 가 낮아지면(#4716 의 `_loopN` 추출이 그렇다)
             // 바깥이 쌓아 둔 temp 가 같이 지워져 선언이 사라진다. 저장 후 복원한다.
-            var saved_temp_spans: std.ArrayListUnmanaged(Span) = .empty;
-            defer saved_temp_spans.deinit(self.allocator);
-            try saved_temp_spans.appendSlice(self.allocator, self.generator_temp_var_spans.items);
-            self.generator_temp_var_spans.clearRetainingCapacity();
+            var saved_temp_spans = try enterStateMachineTemps(self);
+            defer leaveStateMachineTemps(self, &saved_temp_spans);
+            // 함수 경계 — 바깥 함수의 라벨은 여기서 보이지 않는다 (#4722).
+            try self.label_scope.append(self.allocator, null);
+            defer _ = self.label_scope.pop();
 
             const sm_result = try buildStateMachine(self, body_idx, span);
             self.in_extracted_fn_body = saved_ext;
-            defer {
-                self.generator_temp_var_spans.clearRetainingCapacity();
-                self.generator_temp_var_spans.appendSlice(self.allocator, saved_temp_spans.items) catch {};
-            }
             if (sm_result.body.isNone()) return .none;
             const sm_body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span);
 
@@ -186,6 +183,26 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         /// generator body를 switch 문 기반 상태 머신으로 변환.
         /// es2017 결합 변환에서도 호출 (async body의 await를 yield처럼 처리).
+        /// 상태 기계 하나를 만들기 **전에** 부른다: 바깥 상태 기계가 쌓아 둔 temp 목록을
+        /// 떼어 두고 빈 목록으로 시작한다. 짝인 `leaveStateMachineTemps` 가 되돌린다.
+        ///
+        /// `generator_temp_var_spans` 는 상태 기계 하나당 쓰는 목록이다. 예전엔 각 호출부가
+        /// 끝에서 통째로 clear 했는데, 바깥 상태 기계를 수집하는 도중에 안쪽 함수(중첩 async
+        /// 화살표, 추출된 `_loop` generator …)가 낮아지면 **바깥 temp 까지 지워져** 선언이
+        /// 사라졌다(`_loop is not defined` — #4716 에서 한 곳, #4722 에서 나머지 셋).
+        pub fn enterStateMachineTemps(self: *Transformer) Transformer.Error!std.ArrayListUnmanaged(Span) {
+            var saved: std.ArrayListUnmanaged(Span) = .empty;
+            try saved.appendSlice(self.allocator, self.generator_temp_var_spans.items);
+            self.generator_temp_var_spans.clearRetainingCapacity();
+            return saved;
+        }
+
+        pub fn leaveStateMachineTemps(self: *Transformer, saved: *std.ArrayListUnmanaged(Span)) void {
+            self.generator_temp_var_spans.clearRetainingCapacity();
+            self.generator_temp_var_spans.appendSlice(self.allocator, saved.items) catch {};
+            saved.deinit(self.allocator);
+        }
+
         pub fn buildStateMachine(self: *Transformer, body_idx: NodeIndex, span: Span) Transformer.Error!StateMachineResult {
             if (body_idx.isNone()) return .{ .body = .none, .var_decl = .none };
 
@@ -243,11 +260,18 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (hoisted_vars.len == 0 and self.generator_temp_var_spans.items.len == 0) return .none;
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
+            // 같은 이름을 두 번 선언하지 않는다 — 합성 선언 등록(#4722)이 소스 선언과 겹칠 수 있다.
+            var seen: std.StringHashMapUnmanaged(void) = .empty;
+            defer seen.deinit(self.allocator);
             for (hoisted_vars) |binding| {
+                const bnode = self.ast.getNode(binding);
+                if (bnode.tag == .binding_identifier) try seen.put(self.allocator, self.ast.getText(bnode.data.string_ref), {});
                 const declarator = try es_helpers.makeDeclarator(self, binding, .none, span);
                 try self.scratch.append(self.allocator, declarator);
             }
             for (self.generator_temp_var_spans.items) |temp_span| {
+                const gop = try seen.getOrPut(self.allocator, self.ast.getText(temp_span));
+                if (gop.found_existing) continue;
                 const binding = try es_helpers.makeBindingIdentifier(self, temp_span);
                 const declarator = try es_helpers.makeDeclarator(self, binding, .none, span);
                 try self.scratch.append(self.allocator, declarator);
@@ -409,7 +433,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     // .statement 로 통째로 묻혀 내부 yield 가 state machine 에 안 보이므로,
                     // 여기서 변환 결과 block 의 자식 문장을 재귀적으로 collect 한다. (#1381)
                     const es2018 = @import("es2018_for_await.zig");
-                    const lowered = try es2018.ES2018ForAwait(Transformer).lowerForAwaitOf(self, stmt);
+                    // 루프 변수가 본문 클로저에 캡처되면 반복별 바인딩을 먼저 복원한다
+                    // (#4722 — #4716 과 같은 `_loop` generator 추출). es5 는 let 이 var 로 합쳐진다.
+                    const fa_stmt = blk: {
+                        const rewritten = try extractPerIterationLoopBody(self, stmt, stmt.data.ternary.a, stmt.data.ternary.c, ops, next_label);
+                        break :blk if (rewritten.isNone()) stmt else self.ast.getNode(rewritten);
+                    };
+                    const lowered = try es2018.ES2018ForAwait(Transformer).lowerForAwaitOf(self, fa_stmt);
                     if (!lowered.isNone()) {
                         // async generator 의 state machine 안이면, 방금 만들어진 await 들을
                         // `yield __await(x)` 로 표시해야 한다. 안 그러면 `[4, x]` 가 사용자
@@ -598,12 +628,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             defer flow.labels.deinit(self.allocator);
             BlockScoping.analyzeControlFlow(self, body_idx, &flow, 0, 0);
 
-            // ⚠️ 라벨 붙은 break/continue 가 **바깥** 루프를 겨냥하면 추출하지 않는다.
-            // 추출된 함수는 그 라벨을 볼 수 없고, 호출부가 신호를 되살리려면 어느 라벨인지
-            // 알아야 하는데 여기(루프 수집기)에는 그 정보가 없다(라벨은 `collectLabeledOperations`
-            // 가 갖고 있다). 억지로 추출하면 라벨 점프가 통째로 사라져 **값까지 틀린다**.
-            // 이 경우는 반복별 바인딩을 못 고치고 남긴다 — 라벨×es5 는 #4710 으로 별도 추적.
-            if (flow.has_labeled_break or flow.has_labeled_continue) return .none;
+            // 라벨 붙은 break/continue 가 바깥 루프를 겨냥해도 추출한다. 호출부 검사가 신호를
+            // `continue <label>` 문으로 되살리고(#4722), 상태 기계가 라벨 스택으로 해석한다.
+            // (예전엔 검사가 `return` 으로 전달해 라벨 점프가 사라졌기에 여기서 포기했다.)
 
             const result = try BlockScoping.buildLoopClosureWithFlow(
                 self,
@@ -655,7 +682,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         .data = .{ .extra = new_extra },
                     });
                 },
-                .for_of_statement, .for_in_statement => try self.ast.addNode(.{
+                .for_of_statement, .for_in_statement, .for_await_of_statement => try self.ast.addNode(.{
                     .tag = stmt.tag,
                     .span = stmt.span,
                     .data = .{ .ternary = .{
@@ -1197,7 +1224,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .continue_label = continue_label,
             });
 
+            try self.label_scope.append(self.allocator, label_name);
             try collectOperations(self, body_idx, ops, next_label);
+            _ = self.label_scope.pop();
 
             _ = self.generator_label_stack.pop();
 
@@ -1773,6 +1802,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     const assign_stmt = try makeDestructuringAssignStmt(self, new_binding, new_init, stmt.span);
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                 }
+
+                // `var` 는 대입으로 접혔으니 이름을 **바깥 함수** var 리스트에 등록한다 (#4722).
+                // 소스에 있던 선언은 사전 스캔(collectHoistedVars)이 이미 잡지만, 다른 lowering
+                // 이 **만들어 낸** 선언(예: 일반 경로 for-of 의 `var _loop = function* …`)은
+                // 그 스캔 이후에 생겨 빠진다 → `ReferenceError: _loop is not defined`.
+                // 중복은 buildHoistedVarDecl 이 이름으로 걸러 낸다. 등록은 init visit **뒤**
+                // (그 안에서 다른 상태 기계가 만들어질 수 있다 — #4716).
+                const bnode = self.ast.getNode(binding);
+                if (bnode.tag == .binding_identifier) {
+                    try self.generator_temp_var_spans.append(self.allocator, bnode.data.string_ref);
+                }
             }
         }
 
@@ -2269,12 +2309,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// 잡는다. 따라서 그 op 는 자기 case 의 라벨 + 1 에서 재개돼야 한다 — 빈 case 가
         /// 앞에 붙어 폴스루하면 그 관계가 깨져 같은 yield 가 두 번 실행된다. (#4718)
         fn nextOpIsResumeSensitive(ops: []const Operation, from: usize) bool {
+            // 폴스루해 들어갈 case 의 **끝까지**(다음 nop 전까지) 본다. 문장 몇 개 뒤에 yield 가
+            // 와도 같은 문제다 — 빈 라벨로 들어오면 yield 후 재개 라벨이 그 case 자신이라
+            // 문장까지 **통째로 다시 실행**된다(#4722 에서 발견 — #4718 은 바로 다음만 봤다).
             var i = from + 1;
             while (i < ops.len) : (i += 1) {
                 switch (ops[i].code) {
-                    .nop => return false, // 다음 case 가 바로 시작 — 빈 case 가 이어진다
+                    .nop => return false, // 다음 case 가 시작 — 빈 case 가 이어진다
                     .yield_op, .yield_star => return true,
-                    else => return false,
+                    else => {},
                 }
             }
             return false;

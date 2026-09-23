@@ -112,7 +112,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         /// 전달된다 — callback 이 그 정보로 자기 의미의 가드를 적용 (capture 검사,
         /// await/yield 검사 등). callback 이 true 반환 시 즉시 early-return true.
         ///
-        /// `parser_node_count` 가드로 transformer 가 새로 추가한 노드는 방문 안 함.
+        /// 트랜스포머가 새로 만든 노드도 방문한다(범위 검사만) — #4722.
         /// OOM 시 보수적으로 true 반환 (호출부가 안전한 fallback 으로 처리).
         fn anyMatchInsideClosure(
             self: *Transformer,
@@ -121,7 +121,10 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             comptime visit: fn (@TypeOf(ctx), Node, bool) bool,
         ) bool {
             if (body_idx.isNone()) return false;
-            const max_node = self.parser_node_count;
+            // 트랜스포머가 만든 노드도 본다(#4722). 예전엔 파서 노드만 봤는데, 바깥 루프 추출이
+            // 본문을 재작성하면 안쪽 루프가 새 노드가 되어 캡처를 못 보는 false negative 가
+            // 났다(가드 도입 당시 TODO 로 남아 있던 문제). 레이아웃은 comptime 표로 검증된다.
+            const max_node: usize = self.ast.nodes.items.len;
 
             const ScanEntry = struct { idx: NodeIndex, in_closure: bool };
             var stack: std.ArrayList(ScanEntry) = .empty;
@@ -191,7 +194,10 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         /// 캡처하므로 계속 탐색한다.
         pub fn hasLexicalThisReference(self: *Transformer, body_idx: NodeIndex) bool {
             if (body_idx.isNone()) return false;
-            const max_node = self.parser_node_count;
+            // 트랜스포머가 만든 노드도 본다(#4722). 예전엔 파서 노드만 봤는데, 바깥 루프 추출이
+            // 본문을 재작성하면 안쪽 루프가 새 노드가 되어 캡처를 못 보는 false negative 가
+            // 났다(가드 도입 당시 TODO 로 남아 있던 문제). 레이아웃은 comptime 표로 검증된다.
+            const max_node: usize = self.ast.nodes.items.len;
 
             var stack: std.ArrayList(NodeIndex) = .empty;
             defer stack.deinit(self.allocator);
@@ -230,15 +236,15 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         }
 
         /// 노드의 자식 NodeIndex들을 scratch 버퍼에 수집한다.
-        /// 공통 `ast_walk.ChildIterator` 로 자식 순회 + `parser_node_count` 가드로
-        /// transformer 신규 노드 영역을 걸러낸다 (extra 자식에만 한정).
+        /// 공통 `ast_walk.ChildIterator` 로 자식 순회 + 범위 밖 인덱스를 걸러낸다
+        /// (extra 자식에만 한정). 트랜스포머가 만든 노드도 포함한다 — #4722.
         fn collectChildIndices(self: *Transformer, node: Node, buf: *std.ArrayList(NodeIndex)) !void {
             const kind = node.tag.dataKind();
             var it = ast_walk.children(self.ast, node);
             while (it.next()) |child| {
                 if (kind == .extra) {
                     const raw = @intFromEnum(child);
-                    if (raw == 0 or raw >= self.parser_node_count) continue;
+                    if (raw == 0 or raw >= self.ast.nodes.items.len) continue;
                 }
                 try buf.append(self.allocator, child);
             }
@@ -428,10 +434,17 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             defer stack.deinit(self.allocator);
             stack.append(self.allocator, .{ .idx = body_idx, .loop_depth = init_loop_depth, .switch_depth = init_switch_depth }) catch return;
 
+            // 본문 **안에서** 정의된 라벨은 추출 후에도 그대로 유효하다 — 바깥 신호가 아니다 (#4722).
+            // 예전엔 라벨 점프를 전부 바깥 신호로 봐서, 안쪽 라벨 루프의 정상 `continue B` 까지
+            // `return "continue|B"` 로 바뀌어 함수를 빠져나갔다.
+            var inner_labels: std.ArrayList([]const u8) = .empty;
+            defer inner_labels.deinit(self.allocator);
+            collectDefinedLabels(self, body_idx, &inner_labels);
+
             while (stack.items.len > 0) {
                 const entry = stack.pop() orelse break;
                 if (entry.idx.isNone()) continue;
-                if (@intFromEnum(entry.idx) >= self.parser_node_count) continue;
+                if (@intFromEnum(entry.idx) >= self.ast.nodes.items.len) continue;
                 const node = self.ast.getNode(entry.idx);
 
                 var loop_depth = entry.loop_depth;
@@ -464,8 +477,11 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         if (node.data.unary.operand.isNone()) {
                             if (loop_depth == 0 and switch_depth == 0) flow.has_break = true;
                         } else {
-                            flow.has_labeled_break = true;
-                            appendUniqueLabel(flow, self.allocator, self.ast.getText(self.ast.getNode(node.data.unary.operand).span));
+                            const name = self.ast.getText(self.ast.getNode(node.data.unary.operand).span);
+                            if (!containsLabel(inner_labels.items, name)) {
+                                flow.has_labeled_break = true;
+                                appendUniqueLabel(flow, self.allocator, name);
+                            }
                         }
                         continue;
                     },
@@ -476,8 +492,11 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                             // 중첩 loop(>0) 안의 continue 는 해당 inner loop 가 그대로 받는다.
                             if (loop_depth == 0) flow.has_continue = true;
                         } else {
-                            flow.has_labeled_continue = true;
-                            appendUniqueLabel(flow, self.allocator, self.ast.getText(self.ast.getNode(node.data.unary.operand).span));
+                            const name = self.ast.getText(self.ast.getNode(node.data.unary.operand).span);
+                            if (!containsLabel(inner_labels.items, name)) {
+                                flow.has_labeled_continue = true;
+                                appendUniqueLabel(flow, self.allocator, name);
+                            }
                         }
                         continue;
                     },
@@ -490,6 +509,33 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 for (children.items) |child_idx| {
                     stack.append(self.allocator, .{ .idx = child_idx, .loop_depth = loop_depth, .switch_depth = switch_depth }) catch {};
                 }
+            }
+        }
+
+        fn containsLabel(labels: []const []const u8, name: []const u8) bool {
+            for (labels) |l| if (std.mem.eql(u8, l, name)) return true;
+            return false;
+        }
+
+        /// body 안(클로저 경계 제외)에서 정의된 라벨 이름을 모은다.
+        fn collectDefinedLabels(self: *Transformer, body_idx: NodeIndex, out: *std.ArrayList([]const u8)) void {
+            var stack: std.ArrayList(NodeIndex) = .empty;
+            defer stack.deinit(self.allocator);
+            stack.append(self.allocator, body_idx) catch return;
+            while (stack.pop()) |idx| {
+                if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+                const node = self.ast.getNode(idx);
+                switch (node.tag) {
+                    .function_expression, .function_declaration, .arrow_function_expression, .function => continue,
+                    .labeled_statement => if (!node.data.binary.left.isNone()) {
+                        out.append(self.allocator, self.ast.getText(self.ast.getNode(node.data.binary.left).span)) catch {};
+                    },
+                    else => {},
+                }
+                var children: std.ArrayList(NodeIndex) = .empty;
+                defer children.deinit(self.allocator);
+                collectChildIndices(self, node, &children) catch {};
+                stack.appendSlice(self.allocator, children.items) catch {};
             }
         }
 
@@ -601,8 +647,10 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                                 .data = .{ .unary = .{ .operand = str, .flags = 0 } },
                             });
                         }
-                    } else if (flow.has_labeled_break) {
-                        // break label → return "break|label"
+                    } else if (flow.has_labeled_break and
+                        containsLabel(flow.labels.items, self.ast.getText(self.ast.getNode(node.data.unary.operand).span)))
+                    {
+                        // break label → return "break|label" (본문 밖 라벨만 — #4722)
                         const label_text = self.ast.getText(self.ast.getNode(node.data.unary.operand).span);
                         const sentinel = try std.fmt.allocPrint(self.allocator, "\"break|{s}\"", .{label_text});
                         defer self.allocator.free(sentinel);
@@ -625,8 +673,10 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                                 .data = .{ .unary = .{ .operand = NodeIndex.none, .flags = 0 } },
                             });
                         }
-                    } else if (flow.has_labeled_continue) {
-                        // continue label → return "continue|label"
+                    } else if (flow.has_labeled_continue and
+                        containsLabel(flow.labels.items, self.ast.getText(self.ast.getNode(node.data.unary.operand).span)))
+                    {
+                        // continue label → return "continue|label" (본문 밖 라벨만 — #4722)
                         const label_text = self.ast.getText(self.ast.getNode(node.data.unary.operand).span);
                         const sentinel = try std.fmt.allocPrint(self.allocator, "\"continue|{s}\"", .{label_text});
                         defer self.allocator.free(sentinel);
@@ -787,6 +837,17 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
         /// _loop() 호출 후 제어 흐름 체크 코드를 생성한다.
         /// var _ret = _loop(i); if (typeof _ret === "object") return _ret.v; if (_ret === "break") break;
+        /// `label_scope` 를 위에서부터 훑어 경계(null) 전에 `label` 이 있으면 true.
+        fn labelVisibleWithoutBoundary(self: *Transformer, label: []const u8) bool {
+            var i = self.label_scope.items.len;
+            while (i > 0) {
+                i -= 1;
+                const entry = self.label_scope.items[i] orelse return false;
+                if (std.mem.eql(u8, entry, label)) return true;
+            }
+            return false;
+        }
+
         fn buildControlFlowCheck(
             self: *Transformer,
             loop_call: NodeIndex,
@@ -871,7 +932,14 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         .span = span,
                         .data = .{ .binary = .{ .left = ret_ref, .right = sentinel_str, .flags = @intFromEnum(token_mod.Kind.eq3) } },
                     });
-                    const ctrl_stmt = if (local_label != null and std.mem.eql(u8, local_label.?, label)) blk: {
+                    // 라벨이 **경계 없이 보이면** `break/continue <label>` 로 바로 점프하고, 클로저
+                    // 경계 너머면 `return "<kw>|<label>"` 로 한 단계 위 클로저에 전달한다 (#4722).
+                    // 예전엔 자기 루프 라벨(local_label)만 점프로 봤다 — 바깥 루프가 **추출되지 않은
+                    // 같은 함수의 루프**여도 return 으로 전달해 함수 전체를 빠져나갔다(동기 코드에서도).
+                    // 반대로 무조건 점프하면 중첩 추출에서 `break B` 가 정의 안 된 라벨이 된다.
+                    const jump = (local_label != null and std.mem.eql(u8, local_label.?, label)) or
+                        labelVisibleWithoutBoundary(self, label);
+                    const ctrl_stmt = if (jump) blk: {
                         const label_span = try self.ast.addString(label);
                         const label_node = try self.ast.addNode(.{
                             .tag = .identifier_reference,
