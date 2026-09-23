@@ -419,7 +419,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 },
                 .for_of_statement, .for_in_statement => {
                     if (es2015_scan.hasYieldOrReturn(self, stmt_idx)) {
-                        try collectForOfOperations(self, stmt, ops, next_label);
+                        if (stmt.tag == .for_in_statement) {
+                            try collectForOfOperations(self, stmt, ops, next_label, null);
+                        } else if (self.forof_close_pending != null and self.forof_close_pending.?.stmt == stmt_idx) {
+                            const c = self.forof_close_pending.?;
+                            self.forof_close_pending = null;
+                            try collectForOfOperations(self, stmt, ops, next_label, c);
+                        } else {
+                            try collectForOfWithIteratorClose(self, stmt_idx, stmt, ops, next_label);
+                        }
                     } else {
                         const new_stmt = try self.visitNode(stmt_idx);
                         if (!new_stmt.isNone()) {
@@ -695,6 +703,96 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             };
         }
 
+        /// for-of 를 `try { for-of } finally { if (!_n && _it && _it.return != null) _it.return(); }`
+        /// 로 감싸 수집한다 (#4714).
+        ///
+        /// 조기 종료(break·return·throw·바깥 generator 의 `.return()`) 때 iterator 의 `return()`
+        /// 을 불러야 한다(스펙 IteratorClose). 예전엔 루프를 op 로 바로 접어 그 정리가 없었다 —
+        /// 위임한 generator 의 `finally` 가 실행되지 않았다. 상태 기계는 이미 try/finally 를
+        /// 지원하므로 AST 를 합성해 그 경로에 태운다.
+        fn collectForOfWithIteratorClose(self: *Transformer, stmt_idx: NodeIndex, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
+            const span = stmt.span;
+            const c = @import("transformer.zig").ForOfCloseTemps{
+                .stmt = stmt_idx,
+                .iter = try es_helpers.makeTempVarSpan(self),
+                .step = try es_helpers.makeTempVarSpan(self),
+                .norm = try es_helpers.makeTempVarSpan(self),
+            };
+            try self.generator_temp_var_spans.appendSlice(self.allocator, &.{ c.iter, c.step, c.norm });
+
+            // !_n && _it && _it.return != null
+            const not_norm = try es_helpers.makeUnaryNot(self, try es_helpers.makeTempVarRef(self, c.norm, c.norm), span);
+            const and1 = try self.ast.addNode(.{ .tag = .logical_expression, .span = span, .data = .{ .binary = .{
+                .left = not_norm,
+                .right = try es_helpers.makeTempVarRef(self, c.iter, c.iter),
+                .flags = @intFromEnum(token_mod.Kind.amp2),
+            } } });
+            const ret_member = try es_helpers.makeStaticMember(self, try es_helpers.makeTempVarRef(self, c.iter, c.iter), try es_helpers.makeIdentifierRef(self, "return"), span);
+            const cond = try self.ast.addNode(.{ .tag = .logical_expression, .span = span, .data = .{ .binary = .{
+                .left = and1,
+                .right = try es_helpers.makeNeqNull(self, ret_member, span),
+                .flags = @intFromEnum(token_mod.Kind.amp2),
+            } } });
+            // _it.return()
+            const call_member = try es_helpers.makeStaticMember(self, try es_helpers.makeTempVarRef(self, c.iter, c.iter), try es_helpers.makeIdentifierRef(self, "return"), span);
+            const call_stmt = try es_helpers.makeExprStmt(self, try es_helpers.makeCallExpr(self, call_member, &.{}, span), span);
+            const if_stmt = try self.ast.addNode(.{ .tag = .if_statement, .span = span, .data = .{ .ternary = .{ .a = cond, .b = call_stmt, .c = .none } } });
+
+            // 본문이 **throw 로** 빠져나가면 `return()` 이 던져도 원래 에러가 이겨야 한다(스펙
+            // IteratorClose — throw completion 이면 inner 결과를 무시). 그래서 catch 로 원래
+            // 에러를 기억하고, 닫기를 감싼 안쪽 finally 에서 다시 던진다 — 일반 경로
+            // (es2015_for_of)와 같은 구조다. break/return 이면 `return()` 의 에러가 그대로 난다.
+            const did_err = try es_helpers.makeTempVarSpan(self);
+            const err_val = try es_helpers.makeTempVarSpan(self);
+            const catch_param = try es_helpers.makeTempVarSpan(self);
+            try self.generator_temp_var_spans.appendSlice(self.allocator, &.{ did_err, err_val, catch_param });
+
+            // catch (_p) { _d = true; _v = _p; }
+            const set_did = try es_helpers.makeExprStmt(self, try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{
+                .left = try es_helpers.makeTempVarRef(self, did_err, did_err),
+                .right = try es_helpers.makeBoolLiteral(self, true),
+                .flags = 0,
+            } } }), span);
+            const set_err = try es_helpers.makeExprStmt(self, try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{
+                .left = try es_helpers.makeTempVarRef(self, err_val, err_val),
+                .right = try es_helpers.makeTempVarRef(self, catch_param, catch_param),
+                .flags = 0,
+            } } }), span);
+            const catch_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{ set_did, set_err }) } });
+            const catch_clause = try self.ast.addNode(.{ .tag = .catch_clause, .span = span, .data = .{ .binary = .{
+                .left = try es_helpers.makeBindingIdentifier(self, catch_param),
+                .right = catch_body,
+                .flags = 0,
+            } } });
+
+            // finally { try { <닫기> } finally { if (_d) throw _v; } }
+            const rethrow = try self.ast.addNode(.{ .tag = .throw_statement, .span = span, .data = .{ .unary = .{ .operand = try es_helpers.makeTempVarRef(self, err_val, err_val), .flags = 0 } } });
+            const if_rethrow = try self.ast.addNode(.{ .tag = .if_statement, .span = span, .data = .{ .ternary = .{ .a = try es_helpers.makeTempVarRef(self, did_err, did_err), .b = rethrow, .c = .none } } });
+            const inner_try = try self.ast.addNode(.{ .tag = .try_statement, .span = span, .data = .{ .ternary = .{
+                .a = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{if_stmt}) } }),
+                .b = .none,
+                .c = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{if_rethrow}) } }),
+            } } });
+
+            const finally_block = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{inner_try}) } });
+            const try_block = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{stmt_idx}) } });
+            const try_idx = try self.ast.addNode(.{ .tag = .try_statement, .span = span, .data = .{ .ternary = .{ .a = try_block, .b = catch_clause, .c = finally_block } } });
+
+            const saved = self.forof_close_pending;
+            self.forof_close_pending = c;
+            defer self.forof_close_pending = saved;
+            try collectTryOperations(self, try_idx, self.ast.getNode(try_idx), ops, next_label);
+        }
+
+        fn appendNormFlagTrue(self: *Transformer, norm: Span, span: Span, ops: *std.ArrayList(Operation)) Transformer.Error!void {
+            const assign = try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{
+                .left = try es_helpers.makeTempVarRef(self, norm, norm),
+                .right = try es_helpers.makeBoolLiteral(self, true),
+                .flags = 0,
+            } } });
+            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = try es_helpers.makeExprStmt(self, assign, span) } });
+        }
+
         /// for문의 연산 수집.
         fn collectForOperations(self: *Transformer, stmt_idx: NodeIndex, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
             const e = stmt.data.extra;
@@ -815,7 +913,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// for (const x of arr) { yield ... }
         /// → for (var _i = 0, _arr = arr; _i < _arr.length; _i++) { var x = _arr[_i]; yield ... }
         /// for-in은 Object.keys(obj) snapshot을 순회하는 동일한 배열 기반 루프로 낮춘다.
-        fn collectForOfOperations(self: *Transformer, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
+        fn collectForOfOperations(self: *Transformer, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32, close: ?@import("transformer.zig").ForOfCloseTemps) Transformer.Error!void {
             const span = stmt.span;
             const left = stmt.data.ternary.a; // loop variable
             const right = stmt.data.ternary.b; // iterable
@@ -825,16 +923,22 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             {
                 const rewritten = try extractPerIterationLoopBody(self, stmt, left, body_idx, ops, next_label);
                 if (!rewritten.isNone()) {
-                    return collectForOfOperations(self, self.ast.getNode(rewritten), ops, next_label);
+                    return collectForOfOperations(self, self.ast.getNode(rewritten), ops, next_label, close);
                 }
             }
 
             // for-of/for-in → for 변환: _i (index), _arr (array or key snapshot)
-            const idx_span = try es_helpers.makeTempVarSpan(self);
-            const arr_span = try es_helpers.makeTempVarSpan(self);
-            // 임시 변수를 호이스팅 리스트에 등록 (buildGeneratorBody에서 var 선언 생성)
-            try self.generator_temp_var_spans.append(self.allocator, idx_span);
-            try self.generator_temp_var_spans.append(self.allocator, arr_span);
+            // close(#4714) 가 있으면 감싼 try/finally 와 temp 를 공유한다(이미 등록됨).
+            const idx_span = if (close) |c| c.step else try es_helpers.makeTempVarSpan(self);
+            const arr_span = if (close) |c| c.iter else try es_helpers.makeTempVarSpan(self);
+            if (close == null) {
+                // 임시 변수를 호이스팅 리스트에 등록 (buildGeneratorBody에서 var 선언 생성)
+                try self.generator_temp_var_spans.append(self.allocator, idx_span);
+                try self.generator_temp_var_spans.append(self.allocator, arr_span);
+            }
+            // `_n = true` — 정상 완료 플래그. iterator 를 만들기 **전에** 참으로 둬야,
+            // `__values(x)` 나 첫 `next()` 가 던질 때 finally 가 닫으려 하지 않는다.
+            if (close) |c| try appendNormFlagTrue(self, c.norm, stmt.span, ops);
             const new_right = if (es2015_scan.containsYield(self, right))
                 try visitExprWithYieldExtraction(self, right, ops, next_label)
             else
@@ -940,7 +1044,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 });
                 const done_prop = try es_helpers.makeIdentifierRef(self, "done");
                 const done_member = try es_helpers.makeStaticMember(self, step_assign, done_prop, span);
-                break :blk try es_helpers.makeUnaryNot(self, done_member, span);
+                // close 가 있으면 `.done` 을 정상 완료 플래그에도 담는다: 본문 도중 빠져나가면
+                // 거짓(=닫아야 함), 끝까지 돌면 참. `next()` 가 던지면 직전 `_n = true` 가 남는다.
+                const cond_value = if (close) |c| try self.ast.addNode(.{
+                    .tag = .assignment_expression,
+                    .span = span,
+                    .data = .{ .binary = .{ .left = try es_helpers.makeTempVarRef(self, c.norm, c.norm), .right = done_member, .flags = 0 } },
+                }) else done_member;
+                break :blk try es_helpers.makeUnaryNot(self, cond_value, span);
             };
             try ops.append(self.allocator, .{
                 .code = .break_when_false,
@@ -1015,6 +1126,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             next_label.* += 1;
             self.generator_loop_continue_label = update_label;
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+            // 다음 `next()` 전에 정상 완료 플래그를 되돌린다 — 그 `next()` 가 던지면 닫지 않는다.
+            if (close) |c| try appendNormFlagTrue(self, c.norm, span, ops);
             // ⚠️ for-of 에서는 `_i` 가 step 객체를 담고 있으므로 `_i++` 를 내면 안 된다
             // (NaN 이 되어 조용히 무한루프/오동작). 전진은 조건식의 `_iter.next()` 가 한다.
             // 라벨(=`continue` 타겟)은 그대로 둬야 하므로 nop 은 위에서 이미 방출했다.
