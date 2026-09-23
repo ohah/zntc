@@ -4001,7 +4001,8 @@ test "ES5: async for-in body extracts await into state machine" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.keys") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, " in fields)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "(yield validateField") == null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "validateField(field)") != null);
+    // 본문 const 는 상태 기계에서 블록 스코프를 지키려 `field$N` 으로 바뀐다 (#4712).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "validateField(field") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.sent()") != null);
 }
 
@@ -4088,11 +4089,12 @@ test "ES5 generator: labeled `continue` in for-of jumps to iterator advance, not
     , .es5);
     defer r.deinit();
     // continue outer 가 outer cond(case 1)로 바로 점프하던 버그 시그니처가 없어야 한다.
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "if(!(x===2))return[3,3];return[3,1]") == null);
+    // 헤더 const 는 상태 기계에서 `x$N` 으로 바뀐다 (#4712) — 이름 대신 `===2))` 로 찾는다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "===2))return[3,3];return[3,1]") == null);
     // continue outer 의 점프 대상 case 는 **전진 지점**이어야 한다 — cond(`if(!!(` 로 시작하는
     // next() 호출 case)로 바로 가면 안 된다. 라벨 번호에 의존하지 않도록 대상 case 를 찾아
     // 그 본문 첫머리를 본다(#4714 가 iterator close 용 try 영역을 더해 번호가 바뀐다).
-    const sig = "if(!(x===2))return[3,3];return[3,";
+    const sig = "===2))return[3,3];return[3,";
     const at = std.mem.indexOf(u8, r.output, sig) orelse return error.TestUnexpectedResult;
     const num_start = at + sig.len;
     const num_end = std.mem.indexOfScalarPos(u8, r.output, num_start, ']') orelse return error.TestUnexpectedResult;
@@ -4439,5 +4441,90 @@ test "ES5: generator 중첩 블록 using 의 새 이름도 wrapper 최상단에 
     // 선언 없는 대입(`_stack = []`)이 된다.
     var r = try e2eTarget(std.testing.allocator, "function* g(){ { using a = r(); yield 1; } }", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "function g(){var a,_stack,_error,_hasError;") != null);
+    // 블록의 using 바인딩은 블록 스코프라 `a$N` 으로 바뀌어 등록된다 (#4712).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_stack,_error,_hasError") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var a,") == null);
+}
+
+test "ES5 상태 기계: catch 파라미터는 고유 이름으로 바뀌어 바깥 동명 바인딩을 가리지 않는다 (#4712)" {
+    // 예전엔 catch 파라미터를 원래 이름 그대로 wrapper 최상단 var 로 올려, catch 안의 대입이
+    // catch 밖의 같은 이름(바깥 스코프)까지 덮었다.
+    var r = try e2eTarget(std.testing.allocator, "function* g(){ try { yield 1; } catch (err) { err = 1; yield 2; } log(err); }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function g(){var err$1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "err$1=_state.sent();err$1=1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "log(err);") != null);
+}
+
+test "ES5 상태 기계: 수집하지 않는 catch 는 native catch 로 남고 파라미터를 올리지 않는다 (#4712)" {
+    // yield 없는 try 는 문장 그대로 나가 native catch 스코프를 쓴다 — 파라미터를 wrapper 로
+    // 올리면 바깥 동명 바인딩을 가린다.
+    var r = try e2eTarget(std.testing.allocator, "function* g(){ try { f(); } catch (e) { log(e); } yield 1; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function g(){return $gn(") != null or std.mem.indexOf(u8, r.output, "function g(){return __generator(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "catch(e){log(e);}") != null);
+}
+
+test "ES5 상태 기계: 중첩 블록·루프 헤더의 let 은 고유 이름으로 바뀐다 (#4712)" {
+    var rb = try e2eTarget(std.testing.allocator, "function* g(){ { let x = 1; yield 1; log(x); } log(x); }", .es5);
+    defer rb.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, rb.output, "function g(){var x$1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rb.output, "log(x$1);log(x);") != null);
+
+    var rl = try e2eTarget(std.testing.allocator, "function* g(){ for (let i = 0; i < 1; i++) { yield i; } log(i); }", .es5);
+    defer rl.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, rl.output, "function g(){var i$1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rl.output, "log(i);") != null);
+}
+
+test "ES5 상태 기계: 구조분해 catch 파라미터는 단순 대입으로 낮추고 키를 보존한다 (#4712)" {
+    // 패턴을 대입 좌변에 그대로 쓰면 es5 에 구조분해가 남고, 리네임된 축약형 키가 다른
+    // 속성을 읽고, minify 가 값 자리를 선언과 잇지 못한다.
+    var r = try e2eTarget(std.testing.allocator, "function* g(){ try { yield 1; } catch ({ message }) { yield 2; log(message); } }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "message$1=_b.message,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "({") == null);
+
+    // 기본값이 붙은 중첩 패턴도 재귀로 푼다.
+    var rn = try e2eTarget(std.testing.allocator, "function* g(){ try { yield 1; } catch ({ b: [c] = d }) { yield 2; log(c); } }", .es5);
+    defer rn.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, rn.output, "c$1=_c[0]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rn.output, "[c") == null);
+}
+
+test "ES5: 리네임된 구조분해 기본값의 멤버 접근은 원래 속성 이름을 쓴다 (#4712)" {
+    // `{ a = 1 }` 의 기본값 분기가 키를 방문해 블록 리네임을 받아 `_a.a$1` 을 읽었다.
+    var r = try e2eTarget(std.testing.allocator, "function f(o){ let a = 0; { let { a = 1 } = o; g(a); } }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "a$1=_a.a===void 0?1:_a.a;") != null);
+}
+
+test "상태 기계: 구조분해가 native 인 타겟에서도 구조분해 대입은 단순 대입으로 낮춘다 (#4712)" {
+    // 바인딩 패턴을 대입 좌변에 두면 minify 재해석이 패턴 안을 선언으로 봐서, 리네임된
+    // 블록 바인딩의 대입이 호이스트된 선언과 이어지지 않는다(Hermes + minify 에서 드러남).
+    var u = helpers.TransformOptions.compat.fromESTarget(.esnext);
+    u.generator = true;
+    u.block_scoping = true;
+    var r = try e2eFull(std.testing.allocator, "function* g(e){ { let { m } = e; yield 1; log(m); } }", .{ .unsupported = u }, .{ .minify_whitespace = true }, ".ts");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "m$1=_a.m") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "({") == null);
+}
+
+test "ES5 상태 기계: 컴파일러가 만든 catch 임시 변수는 리네임하지 않는다 (#4712)" {
+    // for-of 닫기의 합성 catch 파라미터는 이미 wrapper 에 등록된 고유 이름이다.
+    var r = try e2eTarget(std.testing.allocator, "function* g(s){ for (var v of s) { if (v) break; yield v; } }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "$") == null);
+}
+
+test "상태 기계: block scoping 이 native 인 조합에선 블록 바인딩을 원래 이름으로 올린다 (#4712)" {
+    // 식별자 리네임은 block scoping 을 낮출 때만 적용된다 — 리네임 없이 선언만 `x$N` 으로
+    // 등록하면 참조가 선언 없는 `x` 가 된다. 이 조합에선 예전 동작을 유지한다.
+    var u = helpers.TransformOptions.compat.fromESTarget(.esnext);
+    u.generator = true;
+    var r = try e2eFull(std.testing.allocator, "function* g(){ { let x = 1; yield 1; log(x); } }", .{ .unsupported = u }, .{ .minify_whitespace = true }, ".ts");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var x;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "$") == null);
 }

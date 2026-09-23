@@ -685,9 +685,8 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             }
             return self.visitBinaryNode(idx);
         },
-        .binding_property,
-        .assignment_pattern,
-        => self.visitBinaryNode(idx),
+        .binding_property => visitBindingProperty(self, idx, node),
+        .assignment_pattern => self.visitBinaryNode(idx),
         .accessor_property => self.visitAccessorProperty(node),
 
         // === 리프 노드: 그대로 복사 (자식 없음) ===
@@ -1120,4 +1119,36 @@ fn visitObjectExpressionLowering(self: *Transformer, idx: NodeIndex, node: ast_m
         }
     }
     return self.visitListNode(idx);
+}
+
+/// 구조분해 패턴 속성 `{ key: value }` / 축약형 `{ key }`·`{ key = d }`.
+/// 계산되지 않은 키는 **속성 이름**이라 블록 스코핑 리네임을 받으면 안 된다. 축약형은 키와
+/// 값이 같은 바인딩 노드라 통째로 방문하면 키까지 `key$N` 이 되어 다른 속성을 읽는다 —
+/// 리네임이 걸리면 `key: key$N` 긴 형태로 푼다 (#4712: 상태 기계의 catch 파라미터·블록
+/// 바인딩 리네임에서 드러남).
+fn visitBindingProperty(self: *Transformer, idx: NodeIndex, node: ast_mod.Node) Error!NodeIndex {
+    const key = node.data.binary.left;
+    const value = node.data.binary.right;
+    if (key.isNone()) return self.visitBinaryNode(idx);
+    const key_node = self.ast.getNode(key);
+    if (key_node.tag == .computed_property_key) return self.visitBinaryNode(idx);
+
+    const shorthand = value == key or (!value.isNone() and blk: {
+        const vn = self.ast.getNode(value);
+        break :blk vn.tag == .assignment_pattern and vn.data.binary.left == key;
+    });
+    if (shorthand) {
+        const renamed = key_node.tag == .binding_identifier and self.options.unsupported.block_scoping and
+            self.lookupBlockRename(self.ast.getText(key_node.data.string_ref)) != null;
+        if (!renamed) return self.visitBinaryNode(idx);
+    }
+
+    const new_key = try self.copyNodeDirect(key);
+    self.propagateSymbolId(key, new_key);
+    const new_value = try self.visitNode(value);
+    return self.ast.addNode(.{
+        .tag = .binding_property,
+        .span = node.span,
+        .data = .{ .binary = .{ .left = new_key, .right = new_value, .flags = node.data.binary.flags } },
+    });
 }
