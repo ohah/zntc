@@ -131,6 +131,27 @@ pub fn collidesWithUserSymbol(self: anytype, name: []const u8) !bool {
     return self.temp_collision_set.?.contains(name);
 }
 
+/// 소스 텍스트에 `name` 이 식별자로 나오는지 (#4729 후속).
+/// `collidesWithUserSymbol` 은 temp 패턴(`_a`, `_b2`)만 보므로 `_obj`·`_stack` 같은
+/// 이름은 검사하지 못한다. 선언 여부와 무관하게(전역 참조 포함) 소스에 한 번이라도 나오면
+/// 참으로 본다 — 속성 이름 등으로 오탐하면 이름을 한 칸 더 옮길 뿐이라 안전하다.
+pub fn nameAppearsInSource(self: anytype, name: []const u8) bool {
+    const src = self.ast.source;
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, src, from, name)) |at| {
+        from = at + 1;
+        if (at > 0 and isIdentChar(src[at - 1])) continue;
+        const end = at + name.len;
+        if (end < src.len and isIdentChar(src[end])) continue;
+        return true;
+    }
+    return false;
+}
+
+fn isIdentChar(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_' or c == '$' or c >= 0x80;
+}
+
 fn isTempLikeName(name: []const u8) bool {
     if (name.len < 2 or name.len > 6) return false;
     if (name[0] != '_') return false;

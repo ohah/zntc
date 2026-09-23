@@ -149,7 +149,8 @@ fn allocHome(self: *Transformer, node: Node) Transformer.Error!Home {
         while (true) {
             const name = try self.buildUniqueName(prefix, &self.object_home_counter);
             defer if (name.ptr != prefix.ptr) self.allocator.free(name);
-            if (try es_helpers.collidesWithUserSymbol(self, name)) continue;
+            // 사용자 식별자를 가리면 값 자리의 `_obj` 참조가 파라미터로 바뀐다.
+            if (es_helpers.nameAppearsInSource(self, name)) continue;
             return .{ .span = try self.ast.addString(name), .wrap = wrap };
         }
     }

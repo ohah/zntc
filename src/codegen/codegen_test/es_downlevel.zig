@@ -4318,3 +4318,17 @@ test "native 필드 + async 낮추기 조합: 객체 메서드 안 클래스 필
     try std.testing.expect(std.mem.indexOf(u8, r.output, "f=super.q;") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.getPrototypeOf(_obj).m.call(this)") != null);
 }
+
+test "객체 home 파라미터 이름은 사용자 식별자를 가리지 않는다 (#4729 후속)" {
+    // `_obj` 는 temp 패턴(`_a`)이 아니라 기존 충돌 검사에 걸리지 않았다 — 값 자리의 사용자
+    // `_obj` 가 arrow/function 파라미터에 가려져 undefined 가 됐다.
+    var r5 = try e2eTarget(std.testing.allocator, "const _obj = 5; const o = { __proto__: p, a: _obj, n(){ return super.m(); } };", .es5);
+    defer r5.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r5.output, "(function(_obj2){return _obj2={") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r5.output, "a:_obj,") != null);
+
+    var r16 = try e2eTarget(std.testing.allocator, "const _obj = 5; const o = { __proto__: p, a: _obj, async n(){ return super.m(); } };", .es2016);
+    defer r16.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r16.output, "(_obj2=>_obj2={") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r16.output, "a:_obj,") != null);
+}
