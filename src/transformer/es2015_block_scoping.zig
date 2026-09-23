@@ -177,6 +177,280 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             }.visit);
         }
 
+        /// 루프 본문에서 선언되어 **반복마다 새로 생겨야 하는** 블록 스코프 바인딩 이름 (#4743).
+        /// `let`/`const`/`using`/`class` — 상태 기계는 catch 파라미터도 wrapper 로 끌어올리므로
+        /// `include_catch_params` 로 함께 모은다(일반 경로의 catch 는 native 라 불필요).
+        /// 함수 경계와 **중첩 루프**는 들어가지 않는다 — 중첩 루프의 본문 바인딩은 그 루프가
+        /// 자기 반복마다 추출한다.
+        pub fn collectLoopBodyLexicalNames(
+            self: *Transformer,
+            body_idx: NodeIndex,
+            include_catch_params: bool,
+            out: *std.ArrayList([]const u8),
+        ) !void {
+            if (body_idx.isNone()) return;
+            var ctx: LoopBodyScan = .{ .self = self, .include_catch = include_catch_params };
+            defer ctx.found.deinit(self.allocator);
+            try ast_walk.walkPreorderIterative(self.allocator, self.ast, body_idx, &ctx, LoopBodyScan.lexicalVisit);
+            for (ctx.found.items) |idx| try collectBindingNames(self, idx, out);
+            for (ctx.class_names.items) |name| try out.append(self.allocator, name);
+            ctx.class_names.deinit(self.allocator);
+        }
+
+        /// 루프 본문의 **원래** `var` 선언 이름 (#4743). 본문을 `_loop` 함수로 뽑으면 이 이름들이
+        /// 그 함수의 지역 변수가 되어 루프 밖에서 사라진다 — 추출할 때 바깥으로 끌어올린다.
+        /// 방문 뒤에는 `let` 도 `var` 가 되어 구분할 수 없으므로 **원본**에서 모은다.
+        /// var 는 함수 스코프라 중첩 루프·블록 안까지 보고, 함수 경계에서만 멈춘다.
+        pub fn collectLoopBodyVarNames(
+            self: *Transformer,
+            body_idx: NodeIndex,
+            out: *std.ArrayList([]const u8),
+        ) !void {
+            if (body_idx.isNone()) return;
+            var ctx: LoopBodyScan = .{ .self = self, .include_catch = false };
+            defer ctx.found.deinit(self.allocator);
+            defer ctx.class_names.deinit(self.allocator);
+            try ast_walk.walkPreorderIterative(self.allocator, self.ast, body_idx, &ctx, LoopBodyScan.varVisit);
+            for (ctx.found.items) |idx| try collectBindingNames(self, idx, out);
+        }
+
+        const LoopBodyScan = struct {
+            self: *Transformer,
+            include_catch: bool,
+            /// 바인딩(패턴 포함) 노드 — 이름 추출은 순회 뒤에 한다(visit 는 에러를 못 낸다).
+            found: std.ArrayList(NodeIndex) = .empty,
+            class_names: std.ArrayList([]const u8) = .empty,
+            oom: bool = false,
+
+            fn push(ctx: *LoopBodyScan, idx: NodeIndex) void {
+                ctx.found.append(ctx.self.allocator, idx) catch {
+                    ctx.oom = true;
+                };
+            }
+
+            fn pushDeclarators(ctx: *LoopBodyScan, node: Node) void {
+                const ds = ctx.self.readU32(node.data.extra, 1);
+                const dl = ctx.self.readU32(node.data.extra, 2);
+                var j: u32 = 0;
+                while (j < dl) : (j += 1) {
+                    const d = ctx.self.ast.getNode(@enumFromInt(ctx.self.ast.extra_data.items[ds + j]));
+                    if (d.tag != .variable_declarator) continue;
+                    const b = ctx.self.readNodeIdx(d.data.extra, 0);
+                    if (!b.isNone()) ctx.push(b);
+                }
+            }
+
+            fn isLoop(tag: Tag) bool {
+                return switch (tag) {
+                    .for_statement, .for_in_statement, .for_of_statement, .for_await_of_statement, .while_statement, .do_while_statement => true,
+                    else => false,
+                };
+            }
+
+            fn lexicalVisit(ctx: *LoopBodyScan, _: NodeIndex, node: Node) ast_walk.WalkAction {
+                if (isFunctionBoundary(node.tag) or isLoop(node.tag)) return .skip_children;
+                switch (node.tag) {
+                    .variable_declaration => {
+                        if (ctx.self.ast.hasExtra(node.data.extra, 3) and ctx.self.ast.variableDeclarationKind(node).isLexical()) ctx.pushDeclarators(node);
+                        return .descend;
+                    },
+                    .class_declaration => {
+                        const name = ctx.self.readNodeIdx(node.data.extra, ast_mod.ClassExtra.name);
+                        if (!name.isNone()) ctx.class_names.append(ctx.self.allocator, ctx.self.ast.getText(ctx.self.ast.getNode(name).span)) catch {
+                            ctx.oom = true;
+                        };
+                        return .skip_children;
+                    },
+                    .catch_clause => {
+                        if (ctx.include_catch and !node.data.binary.left.isNone()) ctx.push(node.data.binary.left);
+                        return .descend;
+                    },
+                    else => return .descend,
+                }
+            }
+
+            fn varVisit(ctx: *LoopBodyScan, _: NodeIndex, node: Node) ast_walk.WalkAction {
+                if (isFunctionBoundary(node.tag)) return .skip_children;
+                if (node.tag == .variable_declaration and ctx.self.ast.hasExtra(node.data.extra, 3) and
+                    ctx.self.ast.variableDeclarationKind(node) == .@"var") ctx.pushDeclarators(node);
+                return .descend;
+            }
+        };
+
+        /// 추출할 본문에서 `names` 의 `var` 선언을 대입으로 바꾼다 (#4743). 선언은 호출자가
+        /// `var names…, _loop = function…` 로 바깥에 둔다. 함수 경계 안은 건드리지 않는다.
+        /// 구조분해 패턴 선언은 그대로 둔다(일반 경로는 방문 때 이미 식별자로 풀렸다).
+        fn hoistVarsOutOfBody(self: *Transformer, idx: NodeIndex, names: []const []const u8) Transformer.Error!NodeIndex {
+            if (idx.isNone() or names.len == 0) return idx;
+            const node = self.ast.getNode(idx);
+            switch (node.tag) {
+                .block_statement => {
+                    var items: std.ArrayList(NodeIndex) = .empty;
+                    defer items.deinit(self.allocator);
+                    var changed = false;
+                    var i: u32 = 0;
+                    while (i < node.data.list.len) : (i += 1) {
+                        const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.list.start + i]);
+                        const cn = self.ast.getNode(child);
+                        if (cn.tag == .variable_declaration and isHoistableVar(self, cn, names)) {
+                            try appendVarAsAssignments(self, cn, names, &items);
+                            changed = true;
+                            continue;
+                        }
+                        const nc = try hoistVarsOutOfBody(self, child, names);
+                        if (nc != child) changed = true;
+                        try items.append(self.allocator, nc);
+                    }
+                    if (!changed) return idx;
+                    return self.ast.addNode(.{ .tag = .block_statement, .span = node.span, .data = .{ .list = try self.ast.addNodeList(items.items) } });
+                },
+                .variable_declaration => {
+                    if (!isHoistableVar(self, node, names)) return idx;
+                    var items: std.ArrayList(NodeIndex) = .empty;
+                    defer items.deinit(self.allocator);
+                    try appendVarAsAssignments(self, node, names, &items);
+                    return self.ast.addNode(.{ .tag = .block_statement, .span = node.span, .data = .{ .list = try self.ast.addNodeList(items.items) } });
+                },
+                .if_statement => {
+                    const t = node.data.ternary;
+                    const b = try hoistVarsOutOfBody(self, t.b, names);
+                    const c = try hoistVarsOutOfBody(self, t.c, names);
+                    if (b == t.b and c == t.c) return idx;
+                    return self.ast.addNode(.{ .tag = .if_statement, .span = node.span, .data = .{ .ternary = .{ .a = t.a, .b = b, .c = c } } });
+                },
+                .while_statement, .do_while_statement, .labeled_statement => {
+                    const r = try hoistVarsOutOfBody(self, node.data.binary.right, names);
+                    if (r == node.data.binary.right) return idx;
+                    return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .binary = .{ .left = node.data.binary.left, .right = r, .flags = node.data.binary.flags } } });
+                },
+                .for_statement => {
+                    const e = node.data.extra;
+                    var init = self.readNodeIdx(e, 0);
+                    if (!init.isNone()) {
+                        const init_node = self.ast.getNode(init);
+                        if (init_node.tag == .variable_declaration and isHoistableVar(self, init_node, names)) init = try varAsExpression(self, init_node, names);
+                    }
+                    const body = try hoistVarsOutOfBody(self, self.readNodeIdx(e, 3), names);
+                    if (init == self.readNodeIdx(e, 0) and body == self.readNodeIdx(e, 3)) return idx;
+                    return self.addExtraNode(.for_statement, node.span, &.{
+                        @intFromEnum(init), @intFromEnum(self.readNodeIdx(e, 1)), @intFromEnum(self.readNodeIdx(e, 2)), @intFromEnum(body),
+                    });
+                },
+                .for_in_statement, .for_of_statement, .for_await_of_statement => {
+                    const t = node.data.ternary;
+                    var left = t.a;
+                    if (!left.isNone()) {
+                        const ln = self.ast.getNode(left);
+                        if (ln.tag == .variable_declaration and isHoistableVar(self, ln, names)) {
+                            const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[self.readU32(ln.data.extra, 1)]));
+                            const b = self.ast.getNode(self.readNodeIdx(d.data.extra, 0));
+                            if (b.tag == .binding_identifier) left = try es_helpers.makeIdentifierRefFromSpan(self, b.data.string_ref);
+                        }
+                    }
+                    const c = try hoistVarsOutOfBody(self, t.c, names);
+                    if (left == t.a and c == t.c) return idx;
+                    return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .ternary = .{ .a = left, .b = t.b, .c = c } } });
+                },
+                .try_statement => {
+                    const t = node.data.ternary;
+                    const a = try hoistVarsOutOfBody(self, t.a, names);
+                    var b = t.b;
+                    if (!b.isNone()) {
+                        const cc = self.ast.getNode(b);
+                        const body = try hoistVarsOutOfBody(self, cc.data.binary.right, names);
+                        if (body != cc.data.binary.right) b = try self.ast.addNode(.{ .tag = .catch_clause, .span = cc.span, .data = .{ .binary = .{ .left = cc.data.binary.left, .right = body, .flags = cc.data.binary.flags } } });
+                    }
+                    const c = try hoistVarsOutOfBody(self, t.c, names);
+                    if (a == t.a and b == t.b and c == t.c) return idx;
+                    return self.ast.addNode(.{ .tag = .try_statement, .span = node.span, .data = .{ .ternary = .{ .a = a, .b = b, .c = c } } });
+                },
+                .switch_statement => {
+                    const e = node.data.extra;
+                    const cs = self.readU32(e, 1);
+                    const cl = self.readU32(e, 2);
+                    var cases: std.ArrayList(NodeIndex) = .empty;
+                    defer cases.deinit(self.allocator);
+                    var changed = false;
+                    var i: u32 = 0;
+                    while (i < cl) : (i += 1) {
+                        const case_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[cs + i]);
+                        const cn = self.ast.getNode(case_idx);
+                        const ce = cn.data.extra;
+                        const block = try self.ast.addNode(.{ .tag = .block_statement, .span = cn.span, .data = .{ .list = .{ .start = self.readU32(ce, 1), .len = self.readU32(ce, 2) } } });
+                        const nb = try hoistVarsOutOfBody(self, block, names);
+                        if (nb == block) {
+                            try cases.append(self.allocator, case_idx);
+                            continue;
+                        }
+                        changed = true;
+                        const bl = self.ast.getNode(nb).data.list;
+                        try cases.append(self.allocator, try self.addExtraNode(.switch_case, cn.span, &.{ @intFromEnum(self.readNodeIdx(ce, 0)), bl.start, bl.len }));
+                    }
+                    if (!changed) return idx;
+                    const list = try self.ast.addNodeList(cases.items);
+                    return self.addExtraNode(.switch_statement, node.span, &.{ @intFromEnum(self.readNodeIdx(e, 0)), list.start, list.len });
+                },
+                else => return idx,
+            }
+        }
+
+        /// 모든 declarator 가 `names` 에 든 **식별자**인 var 선언인지.
+        fn isHoistableVar(self: *Transformer, node: Node, names: []const []const u8) bool {
+            if (!self.ast.hasExtra(node.data.extra, 3) or self.ast.variableDeclarationKind(node) != .@"var") return false;
+            const ds = self.readU32(node.data.extra, 1);
+            const dl = self.readU32(node.data.extra, 2);
+            if (dl == 0) return false;
+            var j: u32 = 0;
+            while (j < dl) : (j += 1) {
+                const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[ds + j]));
+                if (d.tag != .variable_declarator) return false;
+                const b = self.ast.getNode(self.readNodeIdx(d.data.extra, 0));
+                if (b.tag != .binding_identifier) return false;
+                if (!nameIn(self.ast.getText(b.data.string_ref), names)) return false;
+            }
+            return true;
+        }
+
+        fn nameIn(name: []const u8, names: []const []const u8) bool {
+            for (names) |n| {
+                if (std.mem.eql(u8, n, name)) return true;
+            }
+            return false;
+        }
+
+        /// `var a = 1, b;` → `a = 1;` (초기값 없는 declarator 는 버린다)
+        fn appendVarAsAssignments(self: *Transformer, node: Node, names: []const []const u8, out: *std.ArrayList(NodeIndex)) Transformer.Error!void {
+            _ = names;
+            const ds = self.readU32(node.data.extra, 1);
+            const dl = self.readU32(node.data.extra, 2);
+            var j: u32 = 0;
+            while (j < dl) : (j += 1) {
+                const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[ds + j]));
+                const init = self.readNodeIdx(d.data.extra, 2);
+                if (init.isNone()) continue;
+                const b = self.ast.getNode(self.readNodeIdx(d.data.extra, 0));
+                const assign = try self.ast.addNode(.{ .tag = .assignment_expression, .span = d.span, .data = .{ .binary = .{
+                    .left = try es_helpers.makeIdentifierRefFromSpan(self, b.data.string_ref),
+                    .right = init,
+                    .flags = 0,
+                } } });
+                try out.append(self.allocator, try es_helpers.makeExprStmt(self, assign, d.span));
+            }
+        }
+
+        /// for 헤더용: `var i = 0, j = 1` → `i = 0, j = 1` (없으면 none)
+        fn varAsExpression(self: *Transformer, node: Node, names: []const []const u8) Transformer.Error!NodeIndex {
+            var stmts: std.ArrayList(NodeIndex) = .empty;
+            defer stmts.deinit(self.allocator);
+            try appendVarAsAssignments(self, node, names, &stmts);
+            if (stmts.items.len == 0) return .none;
+            var exprs: std.ArrayList(NodeIndex) = .empty;
+            defer exprs.deinit(self.allocator);
+            for (stmts.items) |st| try exprs.append(self.allocator, self.ast.getNode(st).data.unary.operand);
+            if (exprs.items.len == 1) return exprs.items[0];
+            return self.ast.addNode(.{ .tag = .sequence_expression, .span = node.span, .data = .{ .list = try self.ast.addNodeList(exprs.items) } });
+        }
+
         /// loop body 직속 (closure 경계 안 넘는) `await` expression 이 있는지 검사.
         /// 있으면 합성된 `_loop` 함수도 async 로 emit + 호출부 `await _loop(x)` wrap
         /// 필요 — `_loop` 가 새 function scope 라 enclosing async-ness 가 끊기기 때문.
@@ -299,6 +573,10 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             /// 반복이 한 변수를 공유해, 반복마다 만든 클로저가 마지막 값을 보게 된다 (#4729:
             /// 루프 안 객체 리터럴의 home 임시 변수). 본문을 visit 하지 않고 넘기면 null.
             body_temp_start: ?u32,
+            /// 본문의 원래 `var` 이름(`collectLoopBodyVarNames`). 함수로 뽑으면 지역 변수가 되어
+            /// 루프 밖에서 사라지므로, 본문 선언은 대입으로 바꾸고 `var …, _loop = …` 로 바깥에
+            /// 둔다 (#4743).
+            hoist_vars: []const []const u8,
         ) Transformer.Error!struct { loop_fn: NodeIndex, call_and_check: NodeIndex } {
             // --- _loop 함수명 생성 ---
             const loop_prefix = "_loop";
@@ -327,6 +605,8 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     });
                 }
             }
+
+            transformed_body = try hoistVarsOutOfBody(self, transformed_body, hoist_vars);
 
             if (body_temp_start) |start| {
                 if (self.temp_var_counter > start and !transformed_body.isNone()) {
@@ -380,7 +660,14 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             const loop_name_span = try self.ast.addString(loop_name);
             const loop_binding = try es_helpers.makeBindingIdentifier(self, loop_name_span);
             const loop_decl = try es_helpers.makeDeclarator(self, loop_binding, func_expr, span);
-            const loop_var = try es_helpers.makeVarDeclaration(self, &.{loop_decl}, .@"var", span);
+            var decls: std.ArrayList(NodeIndex) = .empty;
+            defer decls.deinit(self.allocator);
+            for (hoist_vars) |name| {
+                const b = try es_helpers.makeBindingIdentifier(self, try self.ast.addString(name));
+                try decls.append(self.allocator, try es_helpers.makeDeclarator(self, b, .none, span));
+            }
+            try decls.append(self.allocator, loop_decl);
+            const loop_var = try es_helpers.makeVarDeclaration(self, decls.items, .@"var", span);
 
             // --- _loop(i, j, ...) 호출 ---
             const scratch_top2 = self.scratch.items.len;

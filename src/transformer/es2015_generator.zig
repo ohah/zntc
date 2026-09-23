@@ -629,13 +629,21 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             next_label: *u32,
         ) Transformer.Error!NodeIndex {
             if (!self.options.unsupported.block_scoping) return .none;
-            if (decl_idx.isNone() or body_idx.isNone()) return .none;
+            if (body_idx.isNone()) return .none;
 
             const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
             var lexical_names = try BlockScoping.collectLexicalVarNames(self, decl_idx);
             defer lexical_names.deinit(self.allocator);
-            if (lexical_names.items.len == 0) return .none;
-            if (!BlockScoping.hasCapturedClosure(self, body_idx, lexical_names.items)) return .none;
+            // 헤더 let/const 에 더해 본문 선언(let/const/class)과 catch 파라미터도 본다 — 상태
+            // 기계는 이들을 wrapper var 로 올리므로 캡처되면 반복별로 뽑아야 한다 (#4743).
+            var capture_names: std.ArrayList([]const u8) = .empty;
+            defer capture_names.deinit(self.allocator);
+            try capture_names.appendSlice(self.allocator, lexical_names.items);
+            try BlockScoping.collectLoopBodyLexicalNames(self, body_idx, true, &capture_names);
+            if (!BlockScoping.hasCapturedClosure(self, body_idx, capture_names.items)) return .none;
+            var var_names: std.ArrayList([]const u8) = .empty;
+            defer var_names.deinit(self.allocator);
+            try BlockScoping.collectLoopBodyVarNames(self, body_idx, &var_names);
 
             var flow = BlockScoping.FlowResult{};
             defer flow.labels.deinit(self.allocator);
@@ -656,6 +664,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 BlockScoping.hasLexicalThisReference(self, body_idx),
                 true, // is_generator
                 null, // 본문은 아직 visit 전 — 추출된 generator 가 나중에 자기 temp 를 가진다
+                var_names.items,
             );
 
             // `var _loopN = function* (x) {…}` 은 대입문으로 접히므로, 이름을 **바깥 함수**
@@ -704,6 +713,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         .b = stmt.data.ternary.b,
                         .c = result.call_and_check,
                     } },
+                }),
+                .while_statement, .do_while_statement => try self.ast.addNode(.{
+                    .tag = stmt.tag,
+                    .span = stmt.span,
+                    .data = .{ .binary = .{ .left = stmt.data.binary.left, .right = result.call_and_check, .flags = stmt.data.binary.flags } },
                 }),
                 else => .none,
             };
@@ -1181,6 +1195,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 return;
             }
 
+            // 본문 선언이 클로저에 캡처되면 반복별로 뽑는다 (#4743).
+            {
+                const rewritten = try extractPerIterationLoopBody(self, stmt, .none, body_idx, ops, next_label);
+                if (!rewritten.isNone()) return collectWhileOperations(self, rewritten, self.ast.getNode(rewritten), ops, next_label);
+            }
+
             const cond_label = next_label.*;
             next_label.* += 1;
 
@@ -1501,6 +1521,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
                 }
                 return;
+            }
+
+            // 본문 선언이 클로저에 캡처되면 반복별로 뽑는다 (#4743).
+            {
+                const rewritten = try extractPerIterationLoopBody(self, stmt, .none, body_idx, ops, next_label);
+                if (!rewritten.isNone()) return collectDoWhileOperations(self, rewritten, self.ast.getNode(rewritten), ops, next_label);
             }
 
             const body_label = next_label.*;
