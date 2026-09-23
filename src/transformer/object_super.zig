@@ -45,36 +45,35 @@ fn superMustBeLowered(self: *const Transformer, flags: u32) bool {
 /// 함수 안에선 애초에 문법 오류). arrow 는 경계가 아니다.
 fn methodUsesSuper(self: *Transformer, method: Node) bool {
     const e = method.data.extra;
-    var stack: std.ArrayList(NodeIndex) = .empty;
-    defer stack.deinit(self.allocator);
+    var found = false;
     const roots = [_]NodeIndex{
         self.readNodeIdx(e, ast_mod.MethodExtra.params),
         self.readNodeIdx(e, ast_mod.MethodExtra.body),
     };
     for (roots) |r| {
-        if (!r.isNone()) stack.append(self.allocator, r) catch return true;
-    }
-    while (stack.pop()) |idx| {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
-        const node = self.ast.getNode(idx);
-        switch (node.tag) {
-            .super_expression => return true,
-            .function_declaration,
-            .function_expression,
-            .function,
-            .class_declaration,
-            .class_expression,
-            .method_definition,
-            => continue,
-            else => {},
-        }
-        var it = ast_walk.children(self.ast, node);
-        while (it.next()) |child| {
-            if (child.isNone()) continue;
-            stack.append(self.allocator, child) catch return true;
-        }
+        if (r.isNone()) continue;
+        // OOM 이면 보수적으로 "쓴다" — home 을 배정해도 결과는 맞다.
+        ast_walk.walkPreorderIterative(self.allocator, self.ast, r, &found, superVisit) catch return true;
+        if (found) return true;
     }
     return false;
+}
+
+fn superVisit(found: *bool, _: NodeIndex, node: Node) ast_walk.WalkAction {
+    switch (node.tag) {
+        .super_expression => {
+            found.* = true;
+            return .stop;
+        },
+        .function_declaration,
+        .function_expression,
+        .function,
+        .class_declaration,
+        .class_expression,
+        .method_definition,
+        => return .skip_children,
+        else => return .descend,
+    }
 }
 
 pub const Home = struct {
@@ -94,8 +93,7 @@ pub const Home = struct {
 /// 객체의 값 자리(메서드 본문 밖)에서 감싸는 함수가 바꿔 버릴 문맥을 쓰는지.
 /// arrow 는 투명(같은 문맥), 일반 함수는 경계. 클래스·중첩 메서드는 보수적으로 들여다본다.
 fn valuesUseFunctionContext(self: *Transformer, node: Node) bool {
-    var stack: std.ArrayList(NodeIndex) = .empty;
-    defer stack.deinit(self.allocator);
+    var ctx: ContextScan = .{ .ast = self.ast };
     const list = node.data.list;
     var i: u32 = 0;
     while (i < list.len) : (i += 1) {
@@ -103,24 +101,35 @@ fn valuesUseFunctionContext(self: *Transformer, node: Node) bool {
         if (m_idx.isNone()) continue;
         const m = self.ast.getNode(m_idx);
         const target = if (m.tag == .method_definition) self.readNodeIdx(m.data.extra, ast_mod.MethodExtra.key) else m_idx;
-        if (!target.isNone()) stack.append(self.allocator, target) catch return true;
-    }
-    while (stack.pop()) |idx| {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
-        const n = self.ast.getNode(idx);
-        switch (n.tag) {
-            .this_expression, .super_expression, .meta_property, .yield_expression, .await_expression => return true,
-            .identifier_reference => if (std.mem.eql(u8, self.ast.getText(n.data.string_ref), "arguments")) return true,
-            .function_declaration, .function_expression, .function => continue,
-            else => {},
-        }
-        var it = ast_walk.children(self.ast, n);
-        while (it.next()) |child| {
-            if (child.isNone()) continue;
-            stack.append(self.allocator, child) catch return true;
-        }
+        if (target.isNone()) continue;
+        // OOM 이면 보수적으로 "쓴다" — 함수로 감싸지 않고 임시 변수로 돌아갈 뿐이다.
+        ast_walk.walkPreorderIterative(self.allocator, self.ast, target, &ctx, contextVisit) catch return true;
+        if (ctx.found) return true;
     }
     return false;
+}
+
+const ContextScan = struct {
+    ast: *const ast_mod.Ast,
+    found: bool = false,
+};
+
+fn contextVisit(ctx: *ContextScan, _: NodeIndex, n: Node) ast_walk.WalkAction {
+    switch (n.tag) {
+        .this_expression, .super_expression, .meta_property, .yield_expression, .await_expression => {
+            ctx.found = true;
+            return .stop;
+        },
+        .identifier_reference => {
+            if (std.mem.eql(u8, ctx.ast.getText(n.data.string_ref), "arguments")) {
+                ctx.found = true;
+                return .stop;
+            }
+            return .descend;
+        },
+        .function_declaration, .function_expression, .function => return .skip_children,
+        else => return .descend,
+    }
 }
 
 /// 객체의 값 자리(메서드 본문 밖)에 `yield`/`await` 가 있는지 — arrow 로 감싸면 깨진다.
