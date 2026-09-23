@@ -56,6 +56,10 @@ pub const TransformOptions = options_mod.TransformOptions;
 /// const new_root = try t.transform();
 /// // t.ast 에 변환된 AST가 들어있다
 /// ```
+/// es5 상태 기계 for-of 의 iterator close 용 temp (#4714).
+/// `norm` = 정상 완료 플래그 — true 면 닫지 않는다(끝까지 돌았거나 `next()` 가 던짐).
+pub const ForOfCloseTemps = struct { stmt: NodeIndex, iter: Span, step: Span, norm: Span };
+
 pub const Transformer = struct {
     /// 통합 AST. 파서 노드(0..parser_node_count-1)는 읽기 전용,
     /// 트랜스포머가 추가한 노드(parser_node_count..)는 append-only.
@@ -206,6 +210,9 @@ pub const Transformer = struct {
     /// 지금 visit 중인 변수 선언이 `const` 인가 (#4723). `const X = class {…}` 의 익명 클래스를
     /// 낮출 때 이름 추론(`X.name === "X"`)을 지키려고 선언 이름을 클래스에 붙이는 데 쓴다.
     in_const_declaration: bool = false,
+    /// es5 상태 기계의 for-of 를 `try { … } finally { iterator close }` 로 감쌀 때, 감싼
+    /// try 안에서 **바로 그 for-of** 를 만나면 이 temp 들로 접으라는 1회용 신호 (#4714).
+    forof_close_pending: ?ForOfCloseTemps = null,
     in_async_generator_sm: bool = false,
     /// V7: object literal 안에서 visit 중인지 (nested 가능). visitMethodDefinition 이
     /// 이 flag 를 보고 method body 의 super context 를 reset 한다 — object literal method

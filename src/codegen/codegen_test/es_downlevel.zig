@@ -839,6 +839,40 @@ test "ES5: generator 안 일반 경로 for-of 도 캡처 시 _loop 를 generator
     try std.testing.expect(std.mem.indexOf(u8, r.output[var_at..end], "_loop") != null);
 }
 
+test "ES5: generator 안 for-of 는 조기 종료 시 iterator 의 return() 을 부른다 (#4714)" {
+    // break·return·throw·바깥 .return() 으로 빠져나가면 IteratorClose 가 필요하다.
+    // 예전엔 루프를 op 로 바로 접어 정리가 없었다 — 위임한 generator 의 finally 가 안 돌았다.
+    var r = try e2eTarget(std.testing.allocator, "function* g(s){ for (const v of s) { if (v) break; yield v; } }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".return!=null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".return()") != null);
+}
+
+test "ES5: iterator close 는 정상 완료 플래그로 next() 예외 시 닫지 않는다 (#4714)" {
+    // 플래그를 iterator 생성 **전에** true 로 두고, 조건식에서 `.done` 을 담는다.
+    // next() 가 던지면 직전의 true 가 남아 finally 가 닫지 않는다(스펙).
+    var r = try e2eTarget(std.testing.allocator, "function* g(s){ for (const v of s) yield v; }", .es5);
+    defer r.deinit();
+    const flag_at = std.mem.indexOf(u8, r.output, "=true;") orelse return error.TestUnexpectedResult;
+    const values_at = std.mem.indexOf(u8, r.output, "__values(") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(flag_at < values_at);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".next()).done") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "!(_") != null);
+}
+
+test "ES5: 본문 throw 로 빠질 때 return() 의 에러보다 원래 에러가 우선한다 (#4714)" {
+    // catch 로 원래 에러를 기억하고, 닫기를 감싼 안쪽 finally 에서 다시 던진다.
+    var r = try e2eTarget(std.testing.allocator, "function* g(s){ for (const v of s) yield v; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "finally{if(_") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ")throw _") != null);
+    // `= true` 는 세 곳: 루프 전 정상완료 플래그, 다음 next() 전 되돌림, catch 의 에러 표시.
+    // 하나라도 빠지면 next() 예외 시 닫거나(앞 둘) 원래 에러를 잃는다(catch).
+    try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, r.output, "=true;"));
+    // 닫기는 정상 완료가 아닐 때만 — `!_n` 게이트가 없으면 다 돈 iterator 를 또 닫는다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "try{if(!_") != null);
+}
+
 test "ES5: 빈 case 가 '문장들 + yield' case 로 폴스루하지 않는다 (#4722)" {
     // #4718 은 바로 다음 op 가 yield 일 때만 봤다. 문장 몇 개 뒤에 yield 가 와도, 빈 라벨로
     // 들어오면 재개 라벨이 그 case 자신이라 문장까지 통째로 다시 실행된다.
@@ -4055,8 +4089,23 @@ test "ES5 generator: labeled `continue` in for-of jumps to iterator advance, not
     defer r.deinit();
     // continue outer 가 outer cond(case 1)로 바로 점프하던 버그 시그니처가 없어야 한다.
     try std.testing.expect(std.mem.indexOf(u8, r.output, "if(!(x===2))return[3,3];return[3,1]") == null);
-    // continue outer 가 outer advance(_a++) case 로 점프.
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "if(!(x===2))return[3,3];return[3,6]") != null);
+    // continue outer 의 점프 대상 case 는 **전진 지점**이어야 한다 — cond(`if(!!(` 로 시작하는
+    // next() 호출 case)로 바로 가면 안 된다. 라벨 번호에 의존하지 않도록 대상 case 를 찾아
+    // 그 본문 첫머리를 본다(#4714 가 iterator close 용 try 영역을 더해 번호가 바뀐다).
+    const sig = "if(!(x===2))return[3,3];return[3,";
+    const at = std.mem.indexOf(u8, r.output, sig) orelse return error.TestUnexpectedResult;
+    const num_start = at + sig.len;
+    const num_end = std.mem.indexOfScalarPos(u8, r.output, num_start, ']') orelse return error.TestUnexpectedResult;
+    var case_buf: [32]u8 = undefined;
+    const case_text = try std.fmt.bufPrint(&case_buf, "case {s}:", .{r.output[num_start..num_end]});
+    const case_at = std.mem.indexOf(u8, r.output, case_text) orelse return error.TestUnexpectedResult;
+    var body = r.output[case_at + case_text.len ..];
+    // 비어 있는 별칭 case(`case 8:case 9:`)는 건너뛴다.
+    while (std.mem.startsWith(u8, body, "case ")) {
+        const colon = std.mem.indexOfScalar(u8, body, ':') orelse break;
+        body = body[colon + 1 ..];
+    }
+    try std.testing.expect(!std.mem.startsWith(u8, body, "if(!!("));
 }
 
 test "ES5 generator: labeled `continue` in do-while jumps to cond, not body (#4281)" {
