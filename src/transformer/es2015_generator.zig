@@ -806,6 +806,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const test_idx: NodeIndex = self.readNodeIdx(e, 1);
             const update_idx: NodeIndex = self.readNodeIdx(e, 2);
             const body_idx: NodeIndex = self.readNodeIdx(e, 3);
+            // 헤더의 let/const 는 루프 스코프 — 고유 이름으로 바꿔 wrapper 에 등록한다 (#4712).
+            const head_renames = try pushLoopHeadRenames(self, init_idx);
+            defer self.popBlockRenames(head_renames);
 
             // body 는 statement → hasYieldOrReturn, 헤더 세 칸은 expression → containsYield.
             // ⚠️ init/update 를 빼면 헤더에만 yield 가 있을 때 루프가 상태 기계를 안 타고
@@ -924,6 +927,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const left = stmt.data.ternary.a; // loop variable
             const right = stmt.data.ternary.b; // iterable
             const body_idx = stmt.data.ternary.c; // body
+            // 헤더의 let/const 는 루프 스코프 — 고유 이름으로 바꿔 wrapper 에 등록한다 (#4712).
+            const head_renames = try pushLoopHeadRenames(self, left);
+            defer self.popBlockRenames(head_renames);
 
             // 반복별 바인딩 복원 (#4716) — 자세한 배경은 extractPerIterationLoopBody 참고.
             {
@@ -1093,13 +1099,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     const declarator = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[decl_start]));
                     if (declarator.tag == .variable_declarator) {
                         const binding: NodeIndex = self.readNodeIdx(declarator.data.extra, 0);
-                        const new_binding = try self.visitNode(binding);
-                        const assign = try self.ast.addNode(.{
-                            .tag = .assignment_expression,
-                            .span = span,
-                            .data = .{ .binary = .{ .left = new_binding, .right = elem_access, .flags = 0 } },
-                        });
-                        const assign_stmt = try es_helpers.makeExprStmt(self, assign, span);
+                        // 좌변은 선언이 아니라 **참조**다 — 바인딩 노드를 그대로 쓰면 minify 가
+                        // 호이스트된 선언과 잇지 못한다(헤더가 `x$N` 으로 리네임될 때 드러남, #4712).
+                        // 구조분해 헤더는 단순 대입으로 낮춘다.
+                        const lhs = try bindingToAssignTarget(self, try self.visitNode(binding));
+                        const assign_stmt = try makeDestructuringAssignStmt(self, lhs, elem_access, span);
                         try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                     }
                 }
@@ -1607,7 +1611,31 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const catch_param = catch_node.data.binary.left;
                 const catch_body_idx = catch_node.data.binary.right;
 
-                if (!catch_param.isNone()) {
+                // catch 파라미터를 고유 이름으로 — 상태 기계는 wrapper 최상단 var 로 올리므로
+                // 원래 이름이면 바깥 동명 바인딩·중첩 catch 의 같은 이름을 덮는다 (#4712).
+                var param_names: std.ArrayList([]const u8) = .empty;
+                defer param_names.deinit(self.allocator);
+                if (!catch_param.isNone()) try BlockScopingNames.collectBindingNames(self, catch_param, &param_names);
+                // 컴파일러가 만든 catch 임시 변수(for-of 닫기의 `_f` 등)는 이미 wrapper 에 등록된
+                // 고유 이름이라 바꿀 필요가 없다.
+                if (param_names.items.len == 1 and isRegisteredGeneratorTemp(self, param_names.items[0])) param_names.clearRetainingCapacity();
+                const param_renames = try pushStateMachineRenames(self, param_names.items);
+                defer self.popBlockRenames(param_renames);
+
+                const param_is_pattern = !catch_param.isNone() and self.ast.getNode(catch_param).tag != .binding_identifier;
+                if (param_is_pattern) {
+                    // `catch ({ message })` — 받은 값을 임시 변수에 담고 `let <패턴> = 임시변수` 를
+                    // 일반 선언 수집으로 넘긴다. 패턴을 대입 좌변에 그대로 쓰면 (a) es5 에 구조분해
+                    // 문법이 남고 (b) 축약형 키가 리네임되고 (c) minify 가 값 자리를 선언과 연결하지
+                    // 못한다. 선언 경로는 셋 다 처리한다 (#4712).
+                    const tmp = try es_helpers.makeTempVarSpan(self);
+                    try self.generator_temp_var_spans.append(self.allocator, tmp);
+                    try appendAssignTempStmt(self, ops, tmp, try buildSentCall(self, stmt.span), stmt.span);
+                    const decl = try es_helpers.makeVarDeclaration(self, &.{
+                        try es_helpers.makeDeclarator(self, catch_param, try es_helpers.makeTempVarRef(self, tmp, tmp), stmt.span),
+                    }, .let, stmt.span);
+                    try collectVarDeclWithYield(self, self.ast.getNode(decl), ops, next_label);
+                } else if (!catch_param.isNone()) {
                     const visited_param = try self.visitNode(catch_param);
                     // `catch (e) {…}` → `case N: e = _state.sent();` 로 접을 때, catch 의
                     // **바인딩** 노드를 그대로 대입 좌변에 재사용하면 안 된다. 좌변은 선언이
@@ -1720,7 +1748,18 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         fn collectHoistedVarFromNode(self: *Transformer, idx: NodeIndex, hoisted: *std.ArrayList(NodeIndex)) Transformer.Error!void {
             if (idx.isNone()) return;
             const node = self.ast.getNode(idx);
-            if (node.tag == .block_statement or node.tag == .function_body) {
+            if (node.tag == .block_statement) {
+                // 중첩 블록의 let/const 는 블록 스코프다 — 원래 이름 그대로 wrapper 최상단에
+                // 올리면 바깥 동명 바인딩을 가린다. 상태 기계가 그 블록을 실제로 수집할 때
+                // 고유 이름으로 바꿔 등록한다(`pushStateMachineRenames`). 수집하지 않는 블록은
+                // 일반 방문이 블록 스코핑 규칙대로 처리한다 (#4712).
+                var i: u32 = 0;
+                while (i < node.data.list.len) : (i += 1) {
+                    const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.list.start + i]);
+                    if (stateMachineRenamesBlockScope(self) and isLexicalDeclaration(self, child)) continue;
+                    try collectHoistedVarFromNode(self, child, hoisted);
+                }
+            } else if (node.tag == .function_body) {
                 try collectHoistedVarsRange(self, node.data.list.start, node.data.list.len, hoisted);
             } else if (node.tag == .variable_declaration) {
                 // for-in/for-of의 left가 variable_declaration인 경우
@@ -1742,12 +1781,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 try collectHoistedVarFromNode(self, node.data.binary.right, hoisted);
             } else if (node.tag == .for_statement) {
                 const e = node.data.extra;
-                try collectHoistedVarFromNode(self, self.readNodeIdx(e, 0), hoisted);
+                // 헤더의 let/const 는 상태 기계가 루프를 수집할 때 리네임·등록한다 (#4712).
+                if (!stateMachineRenamesBlockScope(self) or !isLexicalDeclaration(self, self.readNodeIdx(e, 0))) try collectHoistedVarFromNode(self, self.readNodeIdx(e, 0), hoisted);
                 try collectHoistedVarFromNode(self, self.readNodeIdx(e, 3), hoisted);
             } else if (node.tag == .while_statement or node.tag == .do_while_statement) {
                 try collectHoistedVarFromNode(self, node.data.binary.right, hoisted);
             } else if (node.tag == .for_in_statement or node.tag == .for_of_statement) {
-                try collectHoistedVarFromNode(self, node.data.ternary.a, hoisted);
+                if (!stateMachineRenamesBlockScope(self) or !isLexicalDeclaration(self, node.data.ternary.a)) try collectHoistedVarFromNode(self, node.data.ternary.a, hoisted);
                 try collectHoistedVarFromNode(self, node.data.ternary.c, hoisted);
             } else if (node.tag == .if_statement) {
                 try collectHoistedVarFromNode(self, node.data.ternary.b, hoisted);
@@ -1758,8 +1798,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 try collectHoistedVarFromNode(self, node.data.ternary.b, hoisted);
                 try collectHoistedVarFromNode(self, node.data.ternary.c, hoisted);
             } else if (node.tag == .catch_clause) {
-                // catch.left = param (state machine 안에서 접근 가능하도록 hoist), right = body
-                if (!node.data.binary.left.isNone()) {
+                // catch 파라미터는 블록 스코프다 — 여기서 원래 이름으로 올리면 바깥 동명
+                // 바인딩을 가린다(yield 없는 평범한 catch 까지). 상태 기계가 catch 를 수집할
+                // 때 고유 이름으로 바꿔 등록한다 (#4712).
+                if (!stateMachineRenamesBlockScope(self) and !node.data.binary.left.isNone()) {
                     try collectBindingIdentifiers(self, node.data.binary.left, hoisted);
                 }
                 try collectHoistedVarFromNode(self, node.data.binary.right, hoisted);
@@ -1858,9 +1900,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// 도달하지 못하므로 emit 시점에 명시적으로 호출.
         fn makeDestructuringAssignStmt(self: *Transformer, lhs: NodeIndex, rhs: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const lhs_node = self.ast.getNode(lhs);
-            if (self.options.unsupported.destructuring and
-                (lhs_node.tag == .object_pattern or lhs_node.tag == .array_pattern))
-            {
+            // 구조분해가 native 인 타겟(Hermes 등)에서도 단순 대입으로 낮춘다. 바인딩 패턴을
+            // 대입 좌변에 그대로 두면 minify 의 스코프 재해석이 패턴 안을 **선언**으로 봐서,
+            // 호이스트된 선언만 맹글되고 대입 대상은 원래 이름으로 남는다(블록 바인딩이
+            // `x$N` 으로 리네임될 때 드러남, #4712).
+            if (lhs_node.tag == .object_pattern or lhs_node.tag == .array_pattern) {
                 const Es2015D = es2015_destructuring.ES2015Destructuring(Transformer);
                 const seq = try Es2015D.lowerBindingPatternAssignment(self, lhs_node, rhs, span);
                 return es_helpers.makeExprStmt(self, seq, span);
@@ -1928,9 +1972,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 // 그 스캔 이후에 생겨 빠진다 → `ReferenceError: _loop is not defined`.
                 // 중복은 buildHoistedVarDecl 이 이름으로 걸러 낸다. 등록은 init visit **뒤**
                 // (그 안에서 다른 상태 기계가 만들어질 수 있다 — #4716).
+                // 블록 스코프 바인딩이 `x$N` 으로 바뀌었으면 바뀐 이름을 등록한다 — 원래 이름을
+                // 올리면 바깥 동명 바인딩을 가린다 (#4712).
                 const bnode = self.ast.getNode(binding);
                 if (bnode.tag == .binding_identifier) {
-                    try self.generator_temp_var_spans.append(self.allocator, bnode.data.string_ref);
+                    const text = self.ast.getText(bnode.data.string_ref);
+                    const span_to_declare = if (self.lookupBlockRename(text)) |renamed| try self.ast.addString(renamed) else bnode.data.string_ref;
+                    try self.generator_temp_var_spans.append(self.allocator, span_to_declare);
                 }
             }
         }
@@ -1942,7 +1990,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// 그대로도 우연히 해석되지만, 트랜스포머가 합성한 이름(`_loopN`, `_ret`,
         /// for-await 의 `_e` …)은 분석 이후에 생겨 해석되지 않는다 → minify 때 호이스트된
         /// `var` 선언만 리네임되고 좌변만 원래 이름으로 남아 `ReferenceError`.
-        /// 구조분해 패턴은 바인딩 노드가 아니므로 그대로 둔다.
+        /// 구조분해 패턴은 바인딩 노드가 아니므로 그대로 둔다 — 상태 기계의 구조분해 대입은
+        /// `makeDestructuringAssignStmt` 가 항상 단순 대입으로 낮춘다.
         fn bindingToAssignTarget(self: *Transformer, binding: NodeIndex) Transformer.Error!NodeIndex {
             if (binding.isNone()) return binding;
             const node = self.ast.getNode(binding);
@@ -2575,12 +2624,88 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return Using.rewriteUsingStatements(self, list.start, list.len, .body);
         }
 
+        const BlockScopingNames = @import("es2015_block_scoping.zig").ES2015BlockScoping(Transformer);
+
+        /// 블록 스코프 바인딩 리네임(#4712)이 동작하는지. 식별자 리네임은 block scoping 을
+        /// 낮출 때만 적용되므로, 그렇지 않은 조합에서는 예전처럼 원래 이름을 끌어올린다.
+        fn stateMachineRenamesBlockScope(self: *const Transformer) bool {
+            return self.options.unsupported.block_scoping;
+        }
+
+        fn isLexicalDeclaration(self: *Transformer, idx: NodeIndex) bool {
+            if (idx.isNone()) return false;
+            const node = self.ast.getNode(idx);
+            if (node.tag == .class_declaration) return true;
+            return node.tag == .variable_declaration and self.ast.hasExtra(node.data.extra, 3) and
+                self.ast.variableDeclarationKind(node).isLexical();
+        }
+
+        /// 목록 직계의 let/const/class 선언 이름.
+        fn collectLexicalNamesInList(self: *Transformer, list: ast_mod.NodeList, out: *std.ArrayList([]const u8)) Transformer.Error!void {
+            var i: u32 = 0;
+            while (i < list.len) : (i += 1) {
+                const idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+                if (!isLexicalDeclaration(self, idx)) continue;
+                const node = self.ast.getNode(idx);
+                if (node.tag == .class_declaration) {
+                    const name = self.readNodeIdx(node.data.extra, ast_mod.ClassExtra.name);
+                    if (!name.isNone()) try out.append(self.allocator, self.ast.getText(self.ast.getNode(name).span));
+                    continue;
+                }
+                const ds = self.readU32(node.data.extra, 1);
+                const dl = self.readU32(node.data.extra, 2);
+                var j: u32 = 0;
+                while (j < dl) : (j += 1) {
+                    const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[ds + j]));
+                    if (d.tag != .variable_declarator) continue;
+                    try BlockScopingNames.collectBindingNames(self, self.readNodeIdx(d.data.extra, 0), out);
+                }
+            }
+        }
+
+        /// 상태 기계가 수집하는 블록 스코프 바인딩을 `name$N` 으로 바꾸고 wrapper 최상단 var 로
+        /// 등록한다 (#4712). 상태 기계 안에서는 바깥 스코프 이름 목록이 채워지지 않아 충돌 여부를
+        /// 알 수 없으므로 **항상** 바꾼다. 반환값은 `popBlockRenames` 에 넘길 개수.
+        fn pushStateMachineRenames(self: *Transformer, names: []const []const u8) Transformer.Error!u32 {
+            if (!stateMachineRenamesBlockScope(self)) return 0;
+            for (names) |name| {
+                self.block_rename_counter += 1;
+                const new_name = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, self.block_rename_counter });
+                try self.block_rename_stack.append(self.allocator, .{ .old_name = name, .new_name = new_name });
+                try self.generator_temp_var_spans.append(self.allocator, try self.ast.addString(new_name));
+            }
+            return @intCast(names.len);
+        }
+
+        fn isRegisteredGeneratorTemp(self: *Transformer, name: []const u8) bool {
+            for (self.generator_temp_var_spans.items) |sp| {
+                if (std.mem.eql(u8, self.ast.getText(sp), name)) return true;
+            }
+            return false;
+        }
+
+        fn pushLoopHeadRenames(self: *Transformer, head: NodeIndex) Transformer.Error!u32 {
+            if (!isLexicalDeclaration(self, head)) return 0;
+            var names: std.ArrayList([]const u8) = .empty;
+            defer names.deinit(self.allocator);
+            try collectLexicalNamesInList(self, .{ .start = try self.ast.addExtras(&.{@intFromEnum(head)}), .len = 1 }, &names);
+            return pushStateMachineRenames(self, names.items);
+        }
+
         fn collectBodyOperations(self: *Transformer, body_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
             const body_node = self.ast.getNode(body_idx);
             if (body_node.tag == .block_statement) {
+                // 이 블록의 let/const/class/using 은 블록 스코프 — 고유 이름으로 바꿔 wrapper 에
+                // 등록한다(호이스팅은 중첩 블록의 lexical 선언을 건너뛴다) (#4712). using 재구성
+                // 뒤에는 var 가 되므로 이름은 **원래 목록**에서 모은다.
+                var lexical: std.ArrayList([]const u8) = .empty;
+                defer lexical.deinit(self.allocator);
+                try collectLexicalNamesInList(self, body_node.data.list, &lexical);
                 const list = try rewriteUsingForStateMachine(self, body_node.data.list);
                 const stmts_start = list.start;
                 const stmts_len = list.len;
+                const renames = try pushStateMachineRenames(self, lexical.items);
+                defer self.popBlockRenames(renames);
                 // collectOperations가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
                 var i_stmt: u32 = 0;
                 while (i_stmt < stmts_len) : (i_stmt += 1) {

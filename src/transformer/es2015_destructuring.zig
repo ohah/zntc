@@ -252,6 +252,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         const inner_target_node = self.ast.getNode(inner_target);
                         const default_val = try self.visitNode(value_node.data.binary.right);
                         const defaulted = try buildDefaulted(self, member_access, default_val, ref_span, key_idx, key_node.tag, span);
+                        if (try emitNestedPatternAssignment(self, inner_target_node, defaulted, span)) continue;
                         const target_ref = if (inner_target_node.tag == .binding_identifier)
                             try es_helpers.makeIdentifierRefFromSpan(self, inner_target_node.data.string_ref)
                         else
@@ -273,6 +274,22 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             }
             // rest property — assignment 컨텍스트에서는 __rest 헬퍼 미지원, lowerDestructuringAssignment
             // 와 동일한 정책으로 일단 무시.
+        }
+
+        /// 기본값이 붙은 대상이 다시 패턴이면(`{ b: [c] = d }`) 임시 변수에 담고 재귀로 푼다.
+        /// 패턴을 대입 좌변에 그대로 두면 es5 에 구조분해 문법이 남고 minify 가 이름을 잇지
+        /// 못한다 (#4712). 처리했으면 true.
+        fn emitNestedPatternAssignment(self: *Transformer, target: Node, value: NodeIndex, span: Span) Transformer.Error!bool {
+            if (target.tag != .object_pattern and target.tag != .array_pattern) return false;
+            const inner_span = try es_helpers.makeTempVarSpan(self);
+            const inner_lhs = try es_helpers.makeTempVarRef(self, inner_span, inner_span);
+            try self.scratch.append(self.allocator, try es_helpers.makeAssignExpr(self, inner_lhs, value, span, 0));
+            if (target.tag == .object_pattern) {
+                try emitObjectPatternAssignments(self, target, inner_span, span);
+            } else {
+                try emitArrayPatternAssignments(self, target, inner_span, span);
+            }
+            return true;
         }
 
         /// array_pattern 의 각 element 를 `target = _ref[idx]` assignment 로 emit.
@@ -304,6 +321,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         .span = span,
                         .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = elem_access2 } },
                     });
+                    if (try emitNestedPatternAssignment(self, inner_target_node, conditional, span)) continue;
                     const target_ref = if (inner_target_node.tag == .binding_identifier)
                         try es_helpers.makeIdentifierRefFromSpan(self, inner_target_node.data.string_ref)
                     else
@@ -760,7 +778,9 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             });
             // access는 이미 eq_check에서 소비되었으므로 다시 생성
             const ref2 = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
-            const new_key = try self.visitNode(key_idx);
+            // 계산되지 않은 키는 속성 이름 — 방문하면 블록 스코핑 리네임을 받아 `_ref.a$1` 처럼
+            // 다른 속성을 읽는다 (#4712).
+            const new_key = if (key_tag == .computed_property_key) try self.visitNode(key_idx) else try self.copyNodeDirect(key_idx);
             const access2 = try es_helpers.makeMemberFromKey(self, ref2, new_key, key_tag, span);
             return self.ast.addNode(.{
                 .tag = .conditional_expression,

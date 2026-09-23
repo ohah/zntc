@@ -118,6 +118,40 @@ test "Bundler: es5 + minify — for-await 의 catch temp 가 선언과 같이 �
     }
 }
 
+test "Bundler: es5 minify 에서 상태 기계의 리네임된 블록 바인딩도 좌변까지 맹글된다 (#4712)" {
+    // 상태 기계는 블록 스코프 바인딩(for-of 헤더·중첩 블록 let·catch 파라미터)을 `x$N` 으로
+    // 바꿔 wrapper var 로 올린다. 대입 좌변에 **바인딩 노드**를 그대로 쓰면 minify 가 선언과
+    // 잇지 못해 `x$1=` 이 원래 이름으로 남고 읽기는 맹글된 이름을 봐 값이 사라진다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(
+        tmp.dir,
+        "index.ts",
+        "export function* g(s) { for (const v of s) yield v; { let x = 1; yield x; } try { yield 0; } catch (e) { yield e; } }",
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .unsupported = compat_mod.fromESTarget(.es5),
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".trys.push(") != null);
+    // 리네임된 이름(`v$1`, `x$2`, `e$3` …)은 전부 맹글돼 출력에 `$` 가 남지 않아야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$1") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$2") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$3") == null);
+}
+
 test "Bundler: minified output" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
