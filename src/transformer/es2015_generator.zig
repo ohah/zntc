@@ -319,8 +319,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                             else
                                 try es_helpers.makeAssignStmt(self, new_left, sent_call, stmt.span, expr.data.binary.flags);
                             try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
-                        } else if (es2015_scan.containsYield(self, right_idx)) {
-                            // x = [yield 5, yield 6] — 우측에 중첩 yield가 있는 assignment
+                        } else if (es2015_scan.containsYield(self, expr_idx)) {
+                            // x = [yield 5, yield 6] — 중첩 yield가 있는 assignment.
+                            // ⚠️ 우변만 보면 `o[yield k] = 1` 처럼 **좌변**에 있는 yield 를
+                            // 놓쳐 raw `yield` 가 남는다 (#4721).
                             // visitExprWithYieldExtraction으로 전체 assignment를 처리하여
                             // 각 yield를 temp 변수로 추출하고 _state.sent()로 대체
                             const new_expr = try visitExprWithYieldExtraction(self, expr_idx, ops, next_label);
@@ -615,8 +617,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const update_idx: NodeIndex = self.readNodeIdx(e, 2);
             const body_idx: NodeIndex = self.readNodeIdx(e, 3);
 
-            // body 는 statement → hasYieldOrReturn, test 는 expression → containsYield 만.
-            if (!es2015_scan.hasYieldOrReturn(self, body_idx) and !es2015_scan.containsYield(self, test_idx)) {
+            // body 는 statement → hasYieldOrReturn, 헤더 세 칸은 expression → containsYield.
+            // ⚠️ init/update 를 빼면 헤더에만 yield 가 있을 때 루프가 상태 기계를 안 타고
+            // raw `yield` 가 남아 **산출물이 파싱조차 안 된다** (#4721).
+            if (!es2015_scan.hasYieldOrReturn(self, body_idx) and
+                !es2015_scan.containsYield(self, test_idx) and
+                !es2015_scan.containsYield(self, init_idx) and
+                !es2015_scan.containsYield(self, update_idx))
+            {
                 const new_stmt = try self.visitNode(stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
@@ -690,7 +698,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             self.generator_loop_continue_label = update_label;
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } }); // mark update_label
             if (!update_idx.isNone()) {
-                const new_update = try self.visitNode(update_idx);
+                // update 절에도 yield 가 올 수 있다 — 추출하지 않으면 raw `yield` 가
+                // 남아 산출물이 파싱되지 않는다 (#4721).
+                const new_update = if (es2015_scan.containsYield(self, update_idx))
+                    try visitExprWithYieldExtraction(self, update_idx, ops, next_label)
+                else
+                    try self.visitNode(update_idx);
                 if (!new_update.isNone()) {
                     const update_stmt = try es_helpers.makeExprStmt(self, new_update, stmt.span);
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = update_stmt } });
@@ -1772,6 +1785,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // 이후 `(await x) as T` 가 추출되지 못한 raw `(yield x)` 로 남는다.
             if (Tag.isTransparentTypeWrapper(node.tag)) {
                 return visitExprWithYieldExtraction(self, node.data.unary.operand, ops, next_label);
+            }
+
+            // computed key 는 `computed_property_key` 래퍼 안에 있다. 래퍼를 유지한 채
+            // 안쪽만 추출해야 `{ [_a]: 2 }` 로 나온다 (#4721).
+            if (node.tag == .computed_property_key) {
+                const new_inner = try visitExprWithYieldExtraction(self, node.data.unary.operand, ops, next_label);
+                return self.ast.addNode(.{
+                    .tag = .computed_property_key,
+                    .span = node.span,
+                    .data = .{ .unary = .{ .operand = new_inner, .flags = node.data.unary.flags } },
+                });
             }
 
             // logical expression: short-circuit / nullish lazy branch 보존.

@@ -65,6 +65,11 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
             .throw_statement,
             .spread_element,
             .rest_element,
+            // ⚠️ computed key 는 `computed_property_key` 래퍼에 싸여 있다. 여기 없으면
+            // `{ [yield 1]: 2 }` / `class { [yield k]() {} }` 의 yield 를 못 보고,
+            // 추출이 시작되지 않아 raw `yield` 가 남아 **산출물이 파싱조차 안 된다**. (#4721)
+            .computed_property_key,
+            .chain_expression,
             .parenthesized_expression,
             .ts_as_expression,
             .ts_satisfies_expression,
@@ -119,10 +124,14 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
                 if (!pushNode(self, &stack, node.data.binary.right)) return true;
             },
             .for_statement => {
+                // init/test/update 도 봐야 한다 — 헤더에만 yield 가 있으면 루프가
+                // 상태 기계를 아예 안 타고 raw `yield` 가 남는다. (#4721)
                 const extras = self.ast.extra_data.items;
                 const e = node.data.extra;
                 if (e + 3 >= extras.len) continue;
-                if (!pushNode(self, &stack, @enumFromInt(extras[e + 3]))) return true; // body
+                for (0..4) |slot| {
+                    if (!pushNode(self, &stack, @enumFromInt(extras[e + slot]))) return true;
+                }
             },
             .switch_statement, .variable_declaration => {
                 // extra = [_, list_start, list_len]
