@@ -3561,3 +3561,91 @@ test "Transformer: prepended synthetic top-level stmts keep stmt-span ordering (
         try std.testing.expect(saw_synthetic_anchor);
     }
 }
+
+// ============================================================
+// graph pre-pass 게이트 ↔ 런타임 헬퍼 불변식 (#4727)
+// ============================================================
+
+/// 번들러는 `requiresGraphPrePass` 가 참인 모듈만 graph 단계에서 변환하고, 그때만 헬퍼
+/// 모듈 import 를 그래프에 등록한다. 게이트가 거짓인데 변환이 헬퍼를 쓰면 emit 단계
+/// 변환이 **호출만** 남기고 정의는 빠져 실행 즉시 ReferenceError 가 난다(minify 는
+/// 게이트를 무조건 켜서 가려졌다). 그래서 "헬퍼 비트가 하나라도 켜지면 게이트도 참" 을
+/// 코퍼스 × 타겟으로 검사한다. 새 헬퍼를 추가했는데 게이트 스캔을 빠뜨리면 여기서 걸린다.
+fn expectGateCoversHelpers(src: []const u8, unsupported: @import("compat.zig").UnsupportedFeatures, label: []const u8) !void {
+    const allocator = std.testing.allocator;
+    var scanner = try Scanner.init(allocator, src);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    parser.is_module = true;
+    _ = try parser.parse();
+
+    const opts: TransformOptions = .{ .unsupported = unsupported };
+    // 게이트는 변환 **전** AST 로 판정한다(번들러와 같은 순서).
+    const gate = opts.requiresGraphPrePass(&parser.ast);
+
+    var t = try Transformer.init(allocator, &parser.ast, opts);
+    _ = try t.transform();
+    const helpers = t.runtime_helpers;
+    const moved_ast = t.ast;
+    t.deinitExceptAst();
+    if (moved_ast != &parser.ast) {
+        moved_ast.deinit();
+        allocator.destroy(moved_ast);
+    }
+
+    if (helpers.hasAny() and !gate) {
+        std.debug.print("\n게이트 누락: target={s} src=`{s}` helpers=0x{x}\n", .{ label, src, @as(u32, @bitCast(helpers)) });
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "graph pre-pass 게이트는 변환이 헬퍼를 쓰는 모든 모듈을 덮는다 (#4727)" {
+    const compat = @import("compat.zig");
+    const corpus = [_][]const u8{
+        // 함수 모양 × async/generator 조합 — 메서드는 method_definition 에 비트가 있다.
+        "async function f(){ await 0; }",
+        "function* g(){ yield 1; }",
+        "async function* ag(){ yield 1; }",
+        "const ag = async function*(){ yield 1; };",
+        "async function* ag(){ yield* [1]; }",
+        "const f = async () => 1;",
+        "const o = { async m(){ return 1; } };",
+        "const o = { *m(){ yield 1; } };",
+        "const o = { async *m(){ yield 1; } };",
+        "const o = { async *[Symbol.asyncIterator](){ yield 1; } };",
+        "class C { async m(){ return 1; } }",
+        "class C { *m(){ yield 1; } }",
+        "class C { async *m(){ yield 1; } }",
+        "class C { static async m(){ return 1; } }",
+        "const o = { m(){ return (async function*(){ yield 1; })(); } };",
+        // 그 밖의 헬퍼 사용 문법
+        "async function f(s){ for await (const x of s) x; }",
+        "function f(...a){ return a; }",
+        "const { a, ...r } = { a: 1 };",
+        "function f({ a, ...r }){ return r; }",
+        "const [x, y] = new Set([1, 2]);",
+        "const a = [...new Set([1])];",
+        "function t(s){ return s; } t`a${1}`;",
+        "class A {} class B extends A { constructor(){ super(); } }",
+        "const o = { __proto__: { m(){} }, n(){ return super.m(); } };",
+        "class C { x = 1; static y = 2; }",
+        "class C { #x = 1; g(){ return this.#x; } }",
+        "class C { #m(){} g(){ return this.#m(); } }",
+        "class C { static #x = 1; static g(){ return C.#x; } }",
+        "const re = /(?<y>\\d+)/;",
+        "for (const x of new Set([1])) x;",
+        "{ using x = null; }",
+    };
+    const es_targets = std.enums.values(compat.ESTarget);
+    const engines = [_][]const u8{ "chrome49", "chrome55", "chrome60", "chrome70", "node8", "node10", "safari10", "safari11", "firefox52" };
+    for (corpus) |src| {
+        for (es_targets) |target| {
+            try expectGateCoversHelpers(src, compat.fromESTarget(target), @tagName(target));
+        }
+        for (engines) |e| {
+            try expectGateCoversHelpers(src, compat.unsupportedFeatures(&.{compat.EngineVersion.fromString(e).?}), e);
+        }
+        try expectGateCoversHelpers(src, compat.fromHermesPreset(), "hermes");
+    }
+}
