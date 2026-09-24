@@ -55,6 +55,8 @@ fn yieldVisit(found: *bool, _: NodeIndex, node: Node) ast_walk.WalkAction {
 pub const LoopCapture = struct {
     names: std.ArrayList([]const u8) = .empty,
     var_names: std.ArrayList([]const u8) = .empty,
+    /// `var_names` 와 같은 순서의 원래 바인딩 노드 (#4760).
+    var_bindings: std.ArrayList(NodeIndex) = .empty,
     /// 헤더가 아니라 본문 선언 때문에 추출해야 하는지(헤더 let 이 없는 루프도 추출하게 한다).
     body_captured: bool = false,
 
@@ -66,13 +68,15 @@ pub const LoopCapture = struct {
         if (c.names.items.len > head_names.len) {
             c.body_captured = BlockScoping.hasCapturedClosure(self, body, c.names.items[head_names.len..]);
         }
-        try BlockScoping.collectLoopBodyVarNames(self, body, &c.var_names);
+        try BlockScoping.collectLoopBodyVarBindings(self, body, &c.var_bindings);
+        for (c.var_bindings.items) |binding| try c.var_names.append(self.allocator, try self.stableName(self.ast.getText(self.ast.getNode(binding).span)));
         return c;
     }
 
     pub fn deinit(c: *LoopCapture, self: *Transformer) void {
         c.names.deinit(self.allocator);
         c.var_names.deinit(self.allocator);
+        c.var_bindings.deinit(self.allocator);
     }
 };
 
@@ -161,6 +165,8 @@ pub fn visitWhileLoop(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         false,
         body_temp_start,
         capture.var_names.items,
+        &.{},
+        capture.var_bindings.items,
     );
     const loop_node = try self.ast.addNode(.{
         .tag = node.tag,
@@ -182,6 +188,9 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
         const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
         var lexical_names = try BlockScoping.collectLexicalVarNames(self, node.data.ternary.a);
         defer lexical_names.deinit(self.allocator);
+        var lexical_bindings: std.ArrayList(NodeIndex) = .empty;
+        defer lexical_bindings.deinit(self.allocator);
+        try BlockScoping.collectLexicalVarBindings(self, node.data.ternary.a, &lexical_bindings);
         // 본문에서 선언한 let/const/class 도 반복마다 새로 생겨야 한다 — 캡처되면 추출 (#4743).
         var capture = try LoopCapture.init(self, lexical_names.items, node.data.ternary.c);
         defer capture.deinit(self);
@@ -234,6 +243,8 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
                     false,
                     body_temp_start,
                     capture.var_names.items,
+                    lexical_bindings.items,
+                    capture.var_bindings.items,
                 );
                 const loop_node = try self.ast.addNode(.{
                     .tag = node.tag,
@@ -393,6 +404,9 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
         const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
         var lexical_names = try BlockScoping.collectLexicalVarNames(self, init_idx);
         defer lexical_names.deinit(self.allocator);
+        var lexical_bindings: std.ArrayList(NodeIndex) = .empty;
+        defer lexical_bindings.deinit(self.allocator);
+        try BlockScoping.collectLexicalVarBindings(self, init_idx, &lexical_bindings);
         // 본문에서 선언한 let/const/class 도 반복마다 새로 생겨야 한다 — 캡처되면 추출 (#4743).
         var capture = try LoopCapture.init(self, lexical_names.items, self.readNodeIdx(e, 3));
         defer capture.deinit(self);
@@ -447,6 +461,8 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
                     yield_closure,
                     if (yield_closure) null else body_temp_start,
                     capture.var_names.items,
+                    lexical_bindings.items,
+                    capture.var_bindings.items,
                 );
 
                 // var _loop = function(...) { ... };

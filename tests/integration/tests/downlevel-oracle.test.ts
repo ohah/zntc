@@ -109,19 +109,18 @@ const KNOWN_FAILURES: Record<string, string[]> = {
   'asyncgen-default-param': ['es5/minify', 'hermes/plain', 'hermes/minify'],
   // #4733 Hermes 에서 async generator 를 for-await 로 돌 때
   '4730-using-30': ['hermes/plain', 'hermes/minify'],
+  // #4759 단일 파일 minify 가 낮추기 전 스코프로 이름을 줘, 상태 기계가 한 함수로 모은 형제
+  // 블록 바인딩이 같은 이름이 된다
+  'forawait-nested-forof-forin': ['transpile/es5/minify'],
   // #4766 `_loop` 의 return 스캔이 메서드 경계를 무시해 모듈 최상위에 `return _ret.v` 를 낸다
   // (번들은 IIFE 로 감싸 가려진다)
   '4729-super-16': ['transpile/es5/plain', 'transpile/es5/minify'],
   '4743-capture-11': ['transpile/es5/plain', 'transpile/es5/minify'],
   // #4760 단일 파일 변환 minify: 변환기가 새로 만든 식별자에 심볼이 없어 mangler 가 바꾼 이름과
-  // 갈라진다 — 루프 캡처 `_loop` 매개변수·인자, 일부 리네임 참조, es5 클래스 이름·클래스 필드
-  // 낮추기, minify 접기. `_super` 는 틀린 심볼(#4763). 번들 경로는 링커 리네이머가 변환 뒤에
-  // 돌아 정상이다.
-  '4712-scope-03': ['transpile/es5/minify'],
-  '4712-scope-07': ['transpile/es5/minify'],
+  // 갈라진다 — es5 클래스 이름·클래스 필드 낮추기, minify 접기(`(0, o).n`). `_super` 는 틀린
+  // 심볼(#4763). 번들 경로는 링커 리네이머가 변환 뒤에 돌아 정상이다.
   '4712-scope-14': ['transpile/es2015/minify', 'transpile/es2017/minify'],
   '4729-super-21': ['transpile/es2015/minify', 'transpile/es2017/minify'],
-  '4729-super-30': ['transpile/es5/minify'],
   '4729-super-37': [
     'transpile/es5/minify',
     'transpile/es2015/minify',
@@ -129,15 +128,6 @@ const KNOWN_FAILURES: Record<string, string[]> = {
     'transpile/esnext/minify',
     'transpile/hermes/minify',
   ],
-  '4730-using-13': ['transpile/es5/minify'],
-  '4730-using-19': ['transpile/es5/minify'],
-  '4743-capture-01': ['transpile/es5/minify'],
-  '4743-capture-05': ['transpile/es5/minify'],
-  '4743-capture-14': ['transpile/es5/minify'],
-  '4743-capture-17': ['transpile/es5/minify'],
-  '4743-capture-19': ['transpile/es5/minify'],
-  'forawait-nested-forof-forin': ['transpile/es5/minify'],
-  'forin-plain-capture': ['transpile/es5/minify'],
 };
 
 type Run = { stdout: string; exitCode: number };
