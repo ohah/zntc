@@ -19,10 +19,6 @@ const extractCleanVarName = stage3_helpers.extractCleanVarName;
 
 const ANON_CLASS_NAME = "_Class";
 
-fn makeIdentifier(self: *Transformer, name: []const u8) Error!NodeIndex {
-    return es_helpers.makeIdentifierRef(self, name);
-}
-
 /// TC39 Stage 3 decorator 변환 메인 함수.
 pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex {
     const e = node.data.extra;
@@ -173,8 +169,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 if (is_private_method) {
                     // private decorated method → getter로 교체: get #method() { return _descriptor.value; }
                     const info = member_infos.items[member_infos.items.len - 1];
-                    const desc_ref = try makeIdentifier(self, info.descriptor_name.?);
-                    const val_key = try makeIdentifier(self, "value");
+                    const desc_ref = try es_helpers.makeSyntheticRef(self, info.descriptor_name.?);
+                    const val_key = try es_helpers.makePropertyName(self, "value");
                     const return_expr = try es_helpers.makeStaticMember(self, desc_ref, val_key, zero_span);
                     const getter = try self.buildGetterMethod(new_key, return_expr, is_static, member.span);
                     try new_members.append(self.allocator, getter);
@@ -238,8 +234,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                         .span = zero_span,
                         .data = .{ .none = 0 },
                     });
-                    const callee = try makeIdentifier(self, "__runInitializers");
-                    const init_arr = try makeIdentifier(self, init_name);
+                    const callee = try es_helpers.makeRuntimeHelperRef(self, "__runInitializers");
+                    const init_arr = try es_helpers.makeSyntheticRef(self, init_name);
                     const init_call = if (!raw_init.isNone()) init_blk: {
                         const args = try self.ast.addNodeList(&.{ this_node, init_arr, raw_init });
                         break :init_blk try self.addExtraNode(.call_expression, zero_span, &.{
@@ -247,7 +243,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                         });
                     } else init_blk: {
                         // 초기값 없어도 void 0을 명시적으로 전달 — __runInitializers가 arguments.length > 2를 체크
-                        const void0 = try makeIdentifier(self, "void 0");
+                        const void0 = try es_helpers.makeVoidZero(self, .{ .start = 0, .end = 0 });
                         const args = try self.ast.addNodeList(&.{ this_node, init_arr, void0 });
                         break :init_blk try self.addExtraNode(.call_expression, zero_span, &.{
                             @intFromEnum(callee), args.start, args.len, 0,
@@ -331,8 +327,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                                 .span = zero_span,
                                 .data = .{ .none = 0 },
                             });
-                            const callee = try makeIdentifier(self, "__runInitializers");
-                            const init_arr_ref = try makeIdentifier(self, names.init_name);
+                            const callee = try es_helpers.makeRuntimeHelperRef(self, "__runInitializers");
+                            const init_arr_ref = try es_helpers.makeSyntheticRef(self, names.init_name);
                             const args = try self.ast.addNodeList(&.{ this_node, init_arr_ref, new_init });
                             break :init_blk try self.addExtraNode(.call_expression, zero_span, &.{
                                 @intFromEnum(callee), args.start, args.len, 0,
@@ -481,7 +477,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 .span = zero_span,
                 .data = .{ .list = deco_list },
             });
-            const var_ref = try makeIdentifier(self, vname);
+            const var_ref = try es_helpers.makeSyntheticRef(self, vname);
             const assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = zero_span,
@@ -520,7 +516,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
         try static_block_stmts.append(self.allocator, class_call_stmt);
 
         // Foo = _classThis = _classDescriptor.value;
-        const reassign = try self.buildClassReassign(class_name_text, classThis_span);
+        const name_is_anon = name_idx.isNone() or std.mem.eql(u8, self.ast.getText(self.ast.getNode(name_idx).data.string_ref), "default");
+        const reassign = try self.buildClassReassign(class_name_text, if (name_is_anon) .none else name_idx, classThis_span);
         try static_block_stmts.append(self.allocator, reassign);
     }
 
@@ -813,8 +810,8 @@ fn buildPiggybackedInitCall(self: *Transformer, prev_extra_name: []const u8, ini
         .span = zero_span,
         .data = .{ .none = 0 },
     });
-    const prev_callee = try makeIdentifier(self, "__runInitializers");
-    const prev_arr = try makeIdentifier(self, prev_extra_name);
+    const prev_callee = try es_helpers.makeRuntimeHelperRef(self, "__runInitializers");
+    const prev_arr = try es_helpers.makeSyntheticRef(self, prev_extra_name);
     const prev_args = try self.ast.addNodeList(&.{ prev_this, prev_arr });
     const prev_call = try self.addExtraNode(.call_expression, zero_span, &.{
         @intFromEnum(prev_callee), prev_args.start, prev_args.len, 0,

@@ -3171,6 +3171,21 @@ test "#4759 변환 뒤 재분석으로 이름을 지어도 export·클래스 식
     try std.testing.expect(std.mem.indexOf(u8, r2.code, "Holder") == null);
 }
 
+test "stage 3 데코레이터 헬퍼 호출은 minify 에서 preamble 과 같은 짧은 이름을 쓴다" {
+    // minify 는 헬퍼 정의를 `$eD`·`$rI` 로 줄이는데, 데코레이터 변환이 원래 이름
+    // (`__esDecorate(…)`) 으로 불러 `ReferenceError: __esDecorate is not defined` 였다.
+    var r = try transpile(std.testing.allocator,
+        \\function logged(value, ctx) { return value; }
+        \\export class Service { @logged run() { return 1; } static total = 2; }
+    , "/src/a.ts", .{
+        .minify_whitespace = true,
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "__esDecorate(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "__runInitializers(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "$eD(") != null);
+}
+
 test "#4493 `undefined` 바인딩에 void 0 peephole 이 새지 않는다" {
     // 이 노드는 대입 대상인데도 tag 가 identifier_reference 라, value 위치를 무조건
     // emitNode 로 태우면 `undefined` → `void 0` peephole 이 발동한다.

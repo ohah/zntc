@@ -10,10 +10,6 @@ const Span = token_mod.Span;
 const Kind = token_mod.Kind;
 const Error = std.mem.Allocator.Error;
 
-fn makeIdentifier(self: anytype, name: []const u8) Error!NodeIndex {
-    return es_helpers.makeIdentifierRef(self, name);
-}
-
 pub const Stage3MemberInfo = struct {
     /// "method", "getter", "setter", "field", "accessor"
     kind: []const u8,
@@ -123,21 +119,21 @@ pub fn collectStage3Decorators(self: anytype, deco_start: u32, deco_len: u32) Er
 pub fn buildEsDecorateCall(self: anytype, info: Stage3MemberInfo) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
-    const callee = try makeIdentifier(self, "__esDecorate");
+    const callee = try es_helpers.makeRuntimeHelperRef(self, "__esDecorate");
 
     // arg1: this (ctor — method/getter/setter) 또는 null (field)
     const arg1 = if (std.mem.eql(u8, info.kind, "field"))
-        try makeIdentifier(self, "null")
+        try es_helpers.makeNullLiteral(self)
     else
         try self.ast.addNode(.{ .tag = .this_expression, .span = zero_span, .data = .{ .none = 0 } });
 
     // arg2: null (public) 또는 _descriptor = { value: __setFunctionName(fn, "#name") } (private method)
     const arg2 = if (info.descriptor_name) |dname| blk: {
         // _private_method_descriptor = { value: __setFunctionName(function() { ... }, "#name") }
-        const desc_ref = try makeIdentifier(self, dname);
+        const desc_ref = try es_helpers.makeSyntheticRef(self, dname);
 
         // __setFunctionName(function() { ... }, "#name")
-        const setfn_callee = try makeIdentifier(self, "__setFunctionName");
+        const setfn_callee = try es_helpers.makeRuntimeHelperRef(self, "__setFunctionName");
         // function expression with original body
         const fn_params_node = try self.ast.addFormalParameters(info.method_params, zero_span);
         const fn_expr = try self.addExtraNode(.function_expression, zero_span, &.{
@@ -154,7 +150,7 @@ pub fn buildEsDecorateCall(self: anytype, info: Stage3MemberInfo) Error!NodeInde
         });
 
         // { value: __setFunctionName(...) }
-        const value_key = try makeIdentifier(self, "value");
+        const value_key = try es_helpers.makePropertyName(self, "value");
         const value_prop = try makeObjProp(self, value_key, setfn_call);
         const desc_list = try self.ast.addNodeList(&.{value_prop});
         const desc_obj = try self.ast.addNode(.{ .tag = .object_expression, .span = zero_span, .data = .{ .list = desc_list } });
@@ -165,11 +161,11 @@ pub fn buildEsDecorateCall(self: anytype, info: Stage3MemberInfo) Error!NodeInde
             .span = zero_span,
             .data = .{ .binary = .{ .left = desc_ref, .right = desc_obj, .flags = 0 } },
         });
-    } else try makeIdentifier(self, "null");
+    } else try es_helpers.makeNullLiteral(self);
 
     // arg3: decorator 배열 (변수 참조 — 식 평가는 이미 소스 순서로 완료)
     const arg3 = if (info.deco_var_name) |vname|
-        try makeIdentifier(self, vname)
+        try es_helpers.makeSyntheticRef(self, vname)
     else blk: {
         const deco_list = try self.ast.addNodeList(info.decorators);
         break :blk try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = deco_list } });
@@ -180,16 +176,16 @@ pub fn buildEsDecorateCall(self: anytype, info: Stage3MemberInfo) Error!NodeInde
 
     // arg5: initializers (null for method/getter/setter, per-field var for field/accessor)
     const arg5 = if (info.initializers_name) |name|
-        try makeIdentifier(self, name)
+        try es_helpers.makeSyntheticRef(self, name)
     else
-        try makeIdentifier(self, "null");
+        try es_helpers.makeNullLiteral(self);
 
     // arg6: extraInitializers (per-field var for field/accessor, shared var for method/getter/setter)
     const arg6 = if (info.extra_initializers_name) |name|
-        try makeIdentifier(self, name)
+        try es_helpers.makeSyntheticRef(self, name)
     else blk: {
         const extra_init_name = if (info.is_static) "_staticExtraInitializers" else "_instanceExtraInitializers";
-        break :blk try makeIdentifier(self, extra_init_name);
+        break :blk try es_helpers.makeSyntheticRef(self, extra_init_name);
     };
 
     const args = try self.ast.addNodeList(&.{ arg1, arg2, arg3, arg4, arg5, arg6 });
@@ -203,10 +199,10 @@ pub fn buildEsDecorateCall(self: anytype, info: Stage3MemberInfo) Error!NodeInde
 pub fn buildClassEsDecorateCall(self: anytype, classThis_span: Span) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
-    const callee = try makeIdentifier(self, "__esDecorate");
+    const callee = try es_helpers.makeRuntimeHelperRef(self, "__esDecorate");
 
     // arg1: null
-    const arg1 = try makeIdentifier(self, "null");
+    const arg1 = try es_helpers.makeNullLiteral(self);
 
     // arg2: _classDescriptor = { value: _classThis }
     const classThis_ref = try self.ast.addNode(.{
@@ -237,39 +233,39 @@ pub fn buildClassEsDecorateCall(self: anytype, classThis_span: Span) Error!NodeI
     });
 
     // arg3: _classDecorators (이미 static block에서 할당됨)
-    const arg3 = try makeIdentifier(self, "_classDecorators");
+    const arg3 = try es_helpers.makeSyntheticRef(self, "_classDecorators");
 
     // arg4: { kind: "class", name: _classThis.name, metadata: _metadata }
-    const kind_key = try makeIdentifier(self, "kind");
+    const kind_key = try es_helpers.makePropertyName(self, "kind");
     const kind_val_span = try self.ast.addString("\"class\"");
     const kind_val = try self.ast.addNode(.{ .tag = .string_literal, .span = kind_val_span, .data = .{ .string_ref = kind_val_span } });
     const kind_prop = try makeObjProp(self, kind_key, kind_val);
 
-    const name_key = try makeIdentifier(self, "name");
+    const name_key = try es_helpers.makePropertyName(self, "name");
     // _classThis.name
     const classThis_ref2 = try self.ast.addNode(.{
         .tag = .identifier_reference,
         .span = classThis_span,
         .data = .{ .string_ref = classThis_span },
     });
-    const name_prop_key = try makeIdentifier(self, "name");
+    const name_prop_key = try es_helpers.makePropertyName(self, "name");
     const classThis_name = try self.addExtraNode(.static_member_expression, zero_span, &.{
         @intFromEnum(classThis_ref2), @intFromEnum(name_prop_key), 0,
     });
     const name_prop = try makeObjProp(self, name_key, classThis_name);
 
-    const metadata_key = try makeIdentifier(self, "metadata");
-    const metadata_val = try makeIdentifier(self, "_metadata");
+    const metadata_key = try es_helpers.makePropertyName(self, "metadata");
+    const metadata_val = try es_helpers.makeSyntheticRef(self, "_metadata");
     const metadata_prop = try makeObjProp(self, metadata_key, metadata_val);
 
     const ctx_list = try self.ast.addNodeList(&.{ kind_prop, name_prop, metadata_prop });
     const arg4 = try self.ast.addNode(.{ .tag = .object_expression, .span = zero_span, .data = .{ .list = ctx_list } });
 
     // arg5: null
-    const arg5 = try makeIdentifier(self, "null");
+    const arg5 = try es_helpers.makeNullLiteral(self);
 
     // arg6: _classExtraInitializers
-    const arg6 = try makeIdentifier(self, "_classExtraInitializers");
+    const arg6 = try es_helpers.makeSyntheticRef(self, "_classExtraInitializers");
 
     const args = try self.ast.addNodeList(&.{ arg1, arg2, arg3, arg4, arg5, arg6 });
     return self.addExtraNode(.call_expression, zero_span, &.{
@@ -289,33 +285,33 @@ pub fn buildContextObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex
     const klen = info.kind.len;
     @memcpy(kind_buf[1 .. 1 + klen], info.kind);
     kind_buf[1 + klen] = '"';
-    const kind_key = try makeIdentifier(self, "kind");
+    const kind_key = try es_helpers.makePropertyName(self, "kind");
     const kind_val_span = try self.ast.addString(kind_buf[0 .. 2 + klen]);
     const kind_val = try self.ast.addNode(.{ .tag = .string_literal, .span = kind_val_span, .data = .{ .string_ref = kind_val_span } });
     try props.append(self.allocator, try makeObjProp(self, kind_key, kind_val));
 
     // name
-    const name_key = try makeIdentifier(self, "name");
+    const name_key = try es_helpers.makePropertyName(self, "name");
     try props.append(self.allocator, try makeObjProp(self, name_key, info.name));
 
     // static
-    const static_key = try makeIdentifier(self, "static");
-    const static_val = try makeIdentifier(self, if (info.is_static) "true" else "false");
+    const static_key = try es_helpers.makePropertyName(self, "static");
+    const static_val = try es_helpers.makeBoolLiteral(self, info.is_static);
     try props.append(self.allocator, try makeObjProp(self, static_key, static_val));
 
     // private
-    const private_key = try makeIdentifier(self, "private");
-    const private_val = try makeIdentifier(self, if (info.is_private) "true" else "false");
+    const private_key = try es_helpers.makePropertyName(self, "private");
+    const private_val = try es_helpers.makeBoolLiteral(self, info.is_private);
     try props.append(self.allocator, try makeObjProp(self, private_key, private_val));
 
     // access: { has: obj => "name" in obj, get: obj => obj.name, ... }
-    const access_key = try makeIdentifier(self, "access");
+    const access_key = try es_helpers.makePropertyName(self, "access");
     const access_obj = try buildAccessObject(self, info);
     try props.append(self.allocator, try makeObjProp(self, access_key, access_obj));
 
     // metadata
-    const metadata_key = try makeIdentifier(self, "metadata");
-    const metadata_val = try makeIdentifier(self, "_metadata");
+    const metadata_key = try es_helpers.makePropertyName(self, "metadata");
+    const metadata_val = try es_helpers.makeSyntheticRef(self, "_metadata");
     try props.append(self.allocator, try makeObjProp(self, metadata_key, metadata_val));
 
     const list = try self.ast.addNodeList(props.items);
@@ -365,7 +361,7 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
 
     // has: obj => "name" in obj (public) 또는 obj => #name in obj (private)
     {
-        const has_key = try makeIdentifier(self, "has");
+        const has_key = try es_helpers.makePropertyName(self, "has");
         const obj_param_span = try self.ast.addString("obj");
         const obj_param = try self.ast.addNode(.{
             .tag = .binding_identifier,
@@ -410,7 +406,7 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
     // get: obj => obj.name (method, getter, field, accessor — not setter)
     const is_setter_only = std.mem.eql(u8, info.kind, "setter");
     if (!is_setter_only) {
-        const get_key = try makeIdentifier(self, "get");
+        const get_key = try es_helpers.makePropertyName(self, "get");
         const obj_param_span = try self.ast.addString("obj");
         const obj_param = try self.ast.addNode(.{
             .tag = .binding_identifier,
@@ -450,7 +446,7 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
         std.mem.eql(u8, info.kind, "field") or
         std.mem.eql(u8, info.kind, "accessor");
     if (needs_set) {
-        const set_key = try makeIdentifier(self, "set");
+        const set_key = try es_helpers.makePropertyName(self, "set");
 
         // function(obj, value) { obj.name = value; }
         // function_expression: extra = [name(0), params_start, params_len, body(3), flags, ret_type(5)]
@@ -529,7 +525,7 @@ pub fn buildMetadataDecl(self: anytype) Error!NodeIndex {
     const none = @intFromEnum(NodeIndex.none);
 
     // typeof Symbol === "function"
-    const symbol_ref = try makeIdentifier(self, "Symbol");
+    const symbol_ref = try es_helpers.makeGlobalRef(self, "Symbol");
     const typeof_expr = try self.addExtraNode(.unary_expression, zero_span, &.{
         @intFromEnum(symbol_ref), @intFromEnum(Kind.kw_typeof),
     });
@@ -542,8 +538,8 @@ pub fn buildMetadataDecl(self: anytype) Error!NodeIndex {
     });
 
     // Symbol.metadata
-    const symbol_ref2 = try makeIdentifier(self, "Symbol");
-    const metadata_prop = try makeIdentifier(self, "metadata");
+    const symbol_ref2 = try es_helpers.makeGlobalRef(self, "Symbol");
+    const metadata_prop = try es_helpers.makePropertyName(self, "metadata");
     const symbol_metadata = try self.addExtraNode(.static_member_expression, zero_span, &.{
         @intFromEnum(symbol_ref2), @intFromEnum(metadata_prop), 0,
     });
@@ -556,19 +552,19 @@ pub fn buildMetadataDecl(self: anytype) Error!NodeIndex {
     });
 
     // Object.create(null)
-    const object_ref = try makeIdentifier(self, "Object");
-    const create_key = try makeIdentifier(self, "create");
+    const object_ref = try es_helpers.makeGlobalRef(self, "Object");
+    const create_key = try es_helpers.makePropertyName(self, "create");
     const obj_create = try self.addExtraNode(.static_member_expression, zero_span, &.{
         @intFromEnum(object_ref), @intFromEnum(create_key), 0,
     });
-    const null_arg = try makeIdentifier(self, "null");
+    const null_arg = try es_helpers.makeNullLiteral(self);
     const null_args = try self.ast.addNodeList(&.{null_arg});
     const obj_create_call = try self.addExtraNode(.call_expression, zero_span, &.{
         @intFromEnum(obj_create), null_args.start, null_args.len, 0,
     });
 
     // void 0
-    const void0 = try makeIdentifier(self, "void 0");
+    const void0 = try es_helpers.makeVoidZero(self, .{ .start = 0, .end = 0 });
 
     // ... ? Object.create(null) : void 0
     const ternary = try self.ast.addNode(.{
@@ -594,12 +590,13 @@ pub fn buildMetadataDecl(self: anytype) Error!NodeIndex {
 }
 
 /// Foo = _classThis = _classDescriptor.value; 문 생성
-pub fn buildClassReassign(self: anytype, class_name: []const u8, classThis_span: Span) Error!NodeIndex {
+/// `class_name_node` 는 원래 클래스 이름 바인딩(익명·`default` 면 `.none`) — 심볼을 물려준다.
+pub fn buildClassReassign(self: anytype, class_name: []const u8, class_name_node: NodeIndex, classThis_span: Span) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
     // _classDescriptor.value
-    const desc_ref = try makeIdentifier(self, "_classDescriptor");
-    const value_key = try makeIdentifier(self, "value");
+    const desc_ref = try es_helpers.makeSyntheticRef(self, "_classDescriptor");
+    const value_key = try es_helpers.makePropertyName(self, "value");
     const desc_value = try self.addExtraNode(.static_member_expression, zero_span, &.{
         @intFromEnum(desc_ref), @intFromEnum(value_key), 0,
     });
@@ -617,7 +614,7 @@ pub fn buildClassReassign(self: anytype, class_name: []const u8, classThis_span:
     });
 
     // Foo = _classThis = ...
-    const foo_ref = try makeIdentifier(self, class_name);
+    const foo_ref = try self.makeUserRefNamed(class_name, class_name_node);
     const outer_assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = zero_span,
@@ -635,13 +632,13 @@ pub fn buildClassReassign(self: anytype, class_name: []const u8, classThis_span:
 /// target은 Span(identifier_reference로 변환)
 pub fn buildRunInitializersCall(self: anytype, target_span: Span, init_name: []const u8) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
-    const callee = try makeIdentifier(self, "__runInitializers");
+    const callee = try es_helpers.makeRuntimeHelperRef(self, "__runInitializers");
     const target = try self.ast.addNode(.{
         .tag = .identifier_reference,
         .span = target_span,
         .data = .{ .string_ref = target_span },
     });
-    const init_ref = try makeIdentifier(self, init_name);
+    const init_ref = try es_helpers.makeSyntheticRef(self, init_name);
     const args = try self.ast.addNodeList(&.{ target, init_ref });
     return self.addExtraNode(.call_expression, zero_span, &.{
         @intFromEnum(callee), args.start, args.len, 0,
@@ -652,8 +649,8 @@ pub fn buildRunInitializersCall(self: anytype, target_span: Span, init_name: []c
 /// target은 이미 생성된 NodeIndex (예: this)
 pub fn buildRunInitializersCall2(self: anytype, target_node: NodeIndex, init_name: []const u8) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
-    const callee = try makeIdentifier(self, "__runInitializers");
-    const init_ref = try makeIdentifier(self, init_name);
+    const callee = try es_helpers.makeRuntimeHelperRef(self, "__runInitializers");
+    const init_ref = try es_helpers.makeSyntheticRef(self, init_name);
     const args = try self.ast.addNodeList(&.{ target_node, init_ref });
     return self.addExtraNode(.call_expression, zero_span, &.{
         @intFromEnum(callee), args.start, args.len, 0,
@@ -789,11 +786,11 @@ pub fn buildMetadataDefineProperty(self: anytype, classThis_span: Span) Error!No
     const zero_span = Span{ .start = 0, .end = 0 };
 
     // _metadata (condition)
-    const metadata_cond = try makeIdentifier(self, "_metadata");
+    const metadata_cond = try es_helpers.makeSyntheticRef(self, "_metadata");
 
     // Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata })
-    const object_ref = try makeIdentifier(self, "Object");
-    const defprop_key = try makeIdentifier(self, "defineProperty");
+    const object_ref = try es_helpers.makeGlobalRef(self, "Object");
+    const defprop_key = try es_helpers.makePropertyName(self, "defineProperty");
     const obj_defprop = try es_helpers.makeStaticMember(self, object_ref, defprop_key, zero_span);
 
     // arg1: _classThis
@@ -804,19 +801,19 @@ pub fn buildMetadataDefineProperty(self: anytype, classThis_span: Span) Error!No
     });
 
     // arg2: Symbol.metadata
-    const sym_ref = try makeIdentifier(self, "Symbol");
-    const meta_key = try makeIdentifier(self, "metadata");
+    const sym_ref = try es_helpers.makeGlobalRef(self, "Symbol");
+    const meta_key = try es_helpers.makePropertyName(self, "metadata");
     const sym_meta = try es_helpers.makeStaticMember(self, sym_ref, meta_key, zero_span);
 
     // arg3: { enumerable: true, configurable: true, writable: true, value: _metadata }
-    const enum_k = try makeIdentifier(self, "enumerable");
-    const enum_v = try makeIdentifier(self, "true");
-    const conf_k = try makeIdentifier(self, "configurable");
-    const conf_v = try makeIdentifier(self, "true");
-    const writ_k = try makeIdentifier(self, "writable");
-    const writ_v = try makeIdentifier(self, "true");
-    const val_k = try makeIdentifier(self, "value");
-    const val_v = try makeIdentifier(self, "_metadata");
+    const enum_k = try es_helpers.makePropertyName(self, "enumerable");
+    const enum_v = try es_helpers.makeBoolLiteral(self, true);
+    const conf_k = try es_helpers.makePropertyName(self, "configurable");
+    const conf_v = try es_helpers.makeBoolLiteral(self, true);
+    const writ_k = try es_helpers.makePropertyName(self, "writable");
+    const writ_v = try es_helpers.makeBoolLiteral(self, true);
+    const val_k = try es_helpers.makePropertyName(self, "value");
+    const val_v = try es_helpers.makeSyntheticRef(self, "_metadata");
 
     const p1 = try makeObjProp(self, enum_k, enum_v);
     const p2 = try makeObjProp(self, conf_k, conf_v);
