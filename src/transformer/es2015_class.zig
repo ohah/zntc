@@ -78,6 +78,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 new_name = try es_helpers.makeBindingIdentifier(self, synthetic);
                 break :blk synthetic;
             };
+            const saved_class_name_node = self.current_class_name_node;
+            self.current_class_name_node = new_name;
+            defer self.current_class_name_node = saved_class_name_node;
 
             // super class 처리
             const has_super = !super_idx.isNone();
@@ -149,11 +152,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // IIFE 내부의 모든 참조는 symbol 연결 없는 fresh identifier (linker 리네이밍 영향 없음).
             // parent class는 IIFE 매개변수로 전달하여 스코프 격리.
 
-            // IIFE 내부용 fresh binding (symbol 없음 — linker가 리네이밍 불가).
+            // IIFE 내부용 새 바인딩. IIFE 안 참조(`$cC(this, X)`, `return X`)와 **같은 심볼**을
+            // 물려준다 — 심볼 기준으로 이름을 바꿀 때 안쪽 함수 이름과 참조가 함께 바뀌어야
+            // 안쪽 바인딩을 계속 가리킨다(참조만 바뀌면 아직 대입 전인 바깥 var 를 읽는다) (#4760).
             // name_span은 stable Span이므로 재사용. getText slice는 이후 addString
             // realloc에 freed될 수 있어 쥐지 않는다 (#1481).
             const fresh_name_span = name_span;
             const fresh_name = try es_helpers.makeBindingIdentifier(self, fresh_name_span);
+            self.propagateSymbolId(new_name, fresh_name);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -332,6 +338,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 new_name
             else
                 try es_helpers.makeBindingIdentifier(self, name_span);
+            const saved_class_name_node = self.current_class_name_node;
+            self.current_class_name_node = name_node;
+            defer self.current_class_name_node = saved_class_name_node;
 
             // super class
             const has_super = !super_idx.isNone();
@@ -409,7 +418,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // `name_span`은 이미 addString/source에 저장된 stable Span이므로 그대로 재사용.
             // getText로 얻은 slice를 쥐고 있다가 이후 addString realloc에 freed 메모리 참조
             // → UTF-8 corrupted identifier 출력 (#1481).
-            const func_name = if (has_extra) try es_helpers.makeBindingIdentifier(self, name_span) else name_node;
+            const func_name = if (has_extra) blk: {
+                // IIFE 안쪽 함수 이름 — 안쪽 참조와 같은 심볼 (위 선언 경로와 같은 이유).
+                const b = try es_helpers.makeBindingIdentifier(self, name_span);
+                self.propagateSymbolId(name_node, b);
+                break :blk b;
+            } else name_node;
 
             var func_node = if (cm.constructor_idx) |ctor_idx|
                 try buildFunctionFromConstructor(self, ctor_idx, func_name, cm.instance_fields.items, has_super and super_span != null, span)

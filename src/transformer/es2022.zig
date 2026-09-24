@@ -220,7 +220,7 @@ pub fn ES2022(comptime Transformer: type) type {
                 self.this_depth = saved_this_depth;
             }
 
-            const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, class_name_span);
+            const class_ref = try self.makeCurrentClassRef(class_name_span);
             const member_ref = try es_helpers.makeMemberFromKeyIdx(self, class_ref, key, member.span);
             const value = if (init.isNone())
                 try es_helpers.makeVoidZero(self, member.span)

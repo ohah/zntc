@@ -468,7 +468,7 @@ pub fn ES2020(comptime Transformer: type) type {
                     .span = span,
                     .data = .{ .none = 0 },
                 });
-                return helpers.makeIdentifierRefFromSpan(self, receiver_span);
+                return self.makeCurrentClassRef(receiver_span);
             }
             if (self.options.unsupported.arrow and self.arrow_this_depth > 0) {
                 self.needs_this_var = true;

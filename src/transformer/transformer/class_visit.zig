@@ -46,6 +46,9 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
             const tmp_span = try es_helpers.makeTempVarSpan(self);
             new_name = try es_helpers.makeBindingIdentifier(self, tmp_span);
         }
+        const saved_class_name_node = self.current_class_name_node;
+        self.current_class_name_node = new_name;
+        defer self.current_class_name_node = saved_class_name_node;
 
         const saved_super_class = self.current_super_class;
         const saved_super_class_old_idx = self.current_super_class_old_idx;
@@ -488,7 +491,8 @@ pub fn wrapClassExprInIIFE(
     try self.scratch.append(self.allocator, class_decl);
     try self.scratch.appendSlice(self.allocator, post_stmts);
 
-    const ret_ref = try es_helpers.makeSyntheticRefFromSpan(self, ret_name_span);
+    // 이름 있는 클래스 식이면 그 이름(사용자 바인딩), 없으면 임시 이름 — 선언 노드의 심볼을 따른다.
+    const ret_ref = try self.makeIdentifierRefWithSymbol(ret_name_span, decl_name);
     try self.scratch.append(self.allocator, try self.ast.addNode(.{
         .tag = .return_statement,
         .span = span,

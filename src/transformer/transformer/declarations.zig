@@ -222,7 +222,7 @@ pub fn visitFunction(self: *Transformer, node: Node) Error!NodeIndex {
     if (self.options.unsupported.new_target) {
         const name_idx = self.readNodeIdx(e, 0);
         if (!name_idx.isNone()) {
-            self.new_target_ctx = .{ .function_named = self.ast.getNode(name_idx).span };
+            self.new_target_ctx = .{ .function_named = .{ .span = self.ast.getNode(name_idx).span, .node = name_idx } };
         } else {
             // 익명 함수: new.target → void 0 (이름 없으므로 instanceof 불가)
             self.new_target_ctx = .method;
@@ -583,10 +583,10 @@ pub fn lowerNewTarget(self: *Transformer, span: Span) Error!NodeIndex {
     return switch (self.new_target_ctx) {
         .constructor => es_helpers.makeThisDotConstructor(self, span),
         .method, .none => es_helpers.makeVoidZero(self, span),
-        .function_named => |fn_span| {
+        .function_named => |named| {
             // (this instanceof Fn ? this.constructor : void 0)
             const this1 = try es_helpers.makeThisExpr(self, span);
-            const fn_ref = try es_helpers.makeIdentifierRefFromSpan(self, fn_span);
+            const fn_ref = try self.makeIdentifierRefWithSymbol(named.span, named.node);
             const instanceof = try self.ast.addNode(.{
                 .tag = .binary_expression,
                 .span = span,

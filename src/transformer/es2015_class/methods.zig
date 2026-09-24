@@ -74,7 +74,7 @@ pub fn Methods(comptime Transformer: type) type {
         /// IIFE 내부용 ClassName.prototype — symbol 전파 없이 span 텍스트만 사용.
         /// fresh identifier를 받으므로 파서 영역 symbol_ids 조회 불가.
         fn buildFreshPrototypeRef(self: *Transformer, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
-            const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, class_name_span);
+            const class_ref = try self.makeCurrentClassRef(class_name_span);
             const proto_prop = try es_helpers.makePropertyName(self, "prototype");
             return es_helpers.makeStaticMember(self, class_ref, proto_prop, span);
         }
@@ -276,7 +276,7 @@ pub fn Methods(comptime Transformer: type) type {
         /// static method → Object.defineProperty(ClassName, "method", { configurable: true, writable: true, value: function() {} })
         fn buildMethodAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, key_idx: NodeIndex, func_expr: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const target = if (info.is_static)
-                try es_helpers.makeIdentifierRefFromSpan(self, class_name_span)
+                try self.makeCurrentClassRef(class_name_span)
             else
                 try buildFreshPrototypeRef(self, class_name_span, span);
 
@@ -380,7 +380,7 @@ pub fn Methods(comptime Transformer: type) type {
 
                 // target (IIFE fresh identifier — symbol 전파 없음)
                 const target = if (info.is_static)
-                    try es_helpers.makeIdentifierRefFromSpan(self, class_name_span)
+                    try self.makeCurrentClassRef(class_name_span)
                 else
                     try buildFreshPrototypeRef(self, class_name_span, span);
 

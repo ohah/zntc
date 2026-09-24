@@ -210,12 +210,17 @@ pub fn Members(comptime Transformer: type) type {
             for (cm.private_fields.items, 0..) |pf, i| {
                 mappings[i] = .{ .original_name = pf.original_name, .var_name = pf.name };
             }
-            const class_name = self.ast.getText(name_span);
+            // 매핑은 방문 내내 보관된다 — 리네임된 이름(`string_table`)이면 조각이 옮겨질 수 있다(#4768).
+            const class_name = try self.stableName(self.ast.getText(name_span));
+            // 이 span 이 지금 낮추는 클래스 이름이면 그 바인딩 심볼을 참조에 물려준다 (#4760).
+            const cls = self.current_class_name_node;
+            const class_name_node: NodeIndex = if (!cls.isNone() and std.meta.eql(self.ast.getNode(cls).data.string_ref, name_span)) cls else .none;
             for (cm.static_private_fields.items, 0..) |pf, i| {
                 mappings[cm.private_fields.items.len + i] = .{
                     .original_name = pf.original_name,
                     .var_name = pf.name,
                     .class_name = class_name,
+                    .class_name_node = class_name_node,
                 };
             }
             self.current_private_fields = mappings;

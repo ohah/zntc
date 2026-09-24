@@ -65,7 +65,7 @@ pub fn Constructors(comptime Transformer: type) type {
             // new.target: class constructor → function_named (ES5 class 변환 후 일반 함수)
             const saved_new_target_ctx = self.new_target_ctx;
             if (self.options.unsupported.new_target) {
-                self.new_target_ctx = .{ .function_named = self.ast.getNode(name).data.string_ref };
+                self.new_target_ctx = .{ .function_named = .{ .span = self.ast.getNode(name).data.string_ref, .node = name } };
             }
             defer self.new_target_ctx = saved_new_target_ctx;
 

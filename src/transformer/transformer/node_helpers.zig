@@ -115,6 +115,15 @@ pub fn makeRootScopeRef(self: anytype, name: []const u8) Error!NodeIndex {
     return ref;
 }
 
+/// 지금 낮추는 클래스(`current_class_name_node`)를 `name_span` 으로 가리키는 참조. span 이 그
+/// 클래스 이름 노드의 span 과 같을 때만 심볼을 물려준다 — 익명 클래스에 붙인 임시 이름(`_a`)
+/// 처럼 다른 이름이면 심볼 없이 만든다.
+pub fn makeCurrentClassRef(self: anytype, name_span: Span) Error!NodeIndex {
+    const cls = self.current_class_name_node;
+    const same = !cls.isNone() and std.meta.eql(self.ast.getNode(cls).data.string_ref, name_span);
+    return makeIdentifierRefWithSymbol(self, name_span, if (same) cls else .none);
+}
+
 /// span + old_idx로 identifier_reference 생성 + symbol_id 전파.
 /// ES5 class lowering, decorator 등에서 renamed 이름이 반영되도록 사용.
 pub fn makeIdentifierRefWithSymbol(self: anytype, name_span: Span, old_idx: NodeIndex) Error!NodeIndex {

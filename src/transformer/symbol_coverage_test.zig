@@ -124,3 +124,24 @@ test "#4763 es5 클래스의 _super 참조는 부모 클래스 심볼을 갖지 
     , .es5);
     try std.testing.expectEqual(@as(usize, 0), c.wrong);
 }
+
+test "#4760 클래스 낮추기가 클래스·함수 이름을 span 으로 가리켜도 원래 심볼을 가진다" {
+    // 클래스 이름·정적 메서드 수신자·new.target 함수 이름은 낮추기 함수 사이에 span 으로만
+    // 전달된다. 지금 낮추는 클래스(`current_class_name_node`)·함수 노드에서 심볼을 얻는다.
+    const src =
+        \\export class Counter {
+        \\  static #count = 0;
+        \\  static total = 1;
+        \\  static #bump() { return ++Counter.#count; }
+        \\  static run(other) { return #count in other ? Counter.#bump() : Counter.#count + Counter.total; }
+        \\}
+        \\export const Named = class Inner { static who() { return Inner.name; } static base = 2; };
+        \\export class Child extends Counter { static make() { return super.run(this); } }
+        \\export function Ctor() { return new.target; }
+    ;
+    for ([_]TransformOptions.compat.ESTarget{ .es5, .es2015, .es2020 }) |target| {
+        const c = try countsFor(src, target);
+        try std.testing.expectEqual(@as(usize, 0), c.missing);
+        try std.testing.expectEqual(@as(usize, 0), c.wrong);
+    }
+}
