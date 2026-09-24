@@ -169,6 +169,10 @@ pub const Transformer = struct {
     current_super_is_static: bool = false,
     /// static field/block 처럼 `this` 표현식이 사라지는 위치에서 super receiver로 사용할 class 이름.
     current_super_static_receiver: ?Span = null,
+    /// 지금 낮추는 클래스의 이름 바인딩 노드. 클래스 이름은 여러 낮추기 함수에 span 으로만
+    /// 전달되므로, 그 span 으로 클래스를 가리킬 때(`makeCurrentClassRef`) 심볼을 여기서 얻는다
+    /// (#4760). 클래스 진입 때 저장·복원한다.
+    current_class_name_node: NodeIndex = .none,
     /// #3680: private method 가 standalone function (`_name_fn`) 으로 추출돼 class body
     /// 밖에서 정의되는 동안 true. 추출된 함수는 `super` 키워드가 SyntaxError 이므로
     /// `super.x` / `super.method()` / `super.y = v` 등 super property 접근을
@@ -435,6 +439,7 @@ pub const Transformer = struct {
     pub const makeIdentifierRefWithSymbol = node_helpers.makeIdentifierRefWithSymbol;
     pub const makeUserRefNamed = node_helpers.makeUserRefNamed;
     pub const makeRootScopeRef = node_helpers.makeRootScopeRef;
+    pub const makeCurrentClassRef = node_helpers.makeCurrentClassRef;
     pub const attachRootScopeSymbolByName = node_helpers.attachRootScopeSymbolByName;
     pub const visitUnaryNode = node_helpers.visitUnaryNode;
     pub const visitBinaryNode = node_helpers.visitBinaryNode;

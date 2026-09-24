@@ -46,6 +46,10 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, node: Node, key_assign
     const raw_name_idx = self.readNodeIdx(e, ast_mod.ClassExtra.name);
     var new_name = try self.visitNode(raw_name_idx);
     const new_super = try self.visitNode(super_idx);
+    // 뒤에서 임시 이름으로 바꾸면 span 이 달라져 makeCurrentClassRef 가 심볼을 붙이지 않는다.
+    const saved_class_name_node = self.current_class_name_node;
+    self.current_class_name_node = new_name;
+    defer self.current_class_name_node = saved_class_name_node;
 
     // #4 fix(super_class): fast path(class_visit.zig)와 동일하게 private method body 내 super.x 가
     // 올바른 super class span 으로 lowering 되도록 current_super_class 를 set. assign-semantics

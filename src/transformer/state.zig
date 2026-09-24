@@ -39,7 +39,10 @@ pub const NewTargetCtx = union(enum) {
     none,
     constructor, // class constructor: new.target -> this.constructor
     method, // class method: new.target -> void 0
-    function_named: Span, // function Fn: new.target -> this instanceof Fn ? this.constructor : void 0
+    function_named: NamedFn, // function Fn: new.target -> this instanceof Fn ? this.constructor : void 0
+
+    /// `span` 은 함수 이름, `node` 는 그 바인딩(심볼을 물려준다, #4760).
+    pub const NamedFn = struct { span: Span, node: NodeIndex };
 };
 
 pub const ConstEnumValue = union(enum) {

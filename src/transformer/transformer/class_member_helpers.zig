@@ -19,6 +19,7 @@ pub fn buildStaticFieldAssignment(self: anytype, class_name: NodeIndex, field: F
         .span = name_node.span,
         .data = .{ .string_ref = name_node.span },
     });
+    self.propagateSymbolId(class_name, cls_ref);
     // 타겟이 class field 를 모르는데 define 의미론이면 헬퍼로 정의한다 (#4629).
     if (self.options.use_define_for_class_fields) return buildPublicFieldCall(self, cls_ref, field);
     const member = if (field.is_computed) blk: {
