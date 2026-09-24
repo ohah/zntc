@@ -1695,11 +1695,14 @@ pub fn emitModule(
             transformer.symbols = sem.symbols.items;
             transformer.references = sem.references;
         }
-    } else if (module.semantic) |sem| {
+    } else if (module.semantic) |*sem| {
         // legacy 경로: graph pre-pass 미실행 (asset/disabled/JSON 등). semantic 만 hydrate.
         transformer.initSymbolIds(sem.symbol_ids) catch return error.OutOfMemory;
         transformer.symbols = sem.symbols.items;
         transformer.references = sem.references;
+        transformer.scopes = sem.scopes;
+        transformer.scope_maps = sem.scope_maps;
+        transformer.unresolved_references = &sem.unresolved_references;
     }
     // jsxDEV source info 계산용 line offsets
     transformer.line_offsets = module.line_offsets;

@@ -3189,6 +3189,33 @@ test "stage 3 데코레이터 헬퍼 호출은 minify 에서 preamble 과 같은
     try std.testing.expect(std.mem.indexOf(u8, r.code, "$eD(") != null);
 }
 
+test "#4760 es5 블록 스코핑은 심볼로 충돌을 판정한다 (#4758 · #4764 · 매개변수)" {
+    const es5 = TranspileOptions{
+        .es_target = .es5,
+        .unsupported = @import("transformer/compat.zig").fromESTarget(.es5),
+    };
+    // #4758: 함수 본문 var 와 같은 이름의 블록 let — 합치면 바깥 x 를 덮는다.
+    var r1 = try transpile(std.testing.allocator, "export function f() { var x = 0; { let x = 1; g(x); } return x; }", "/src/a.js", es5);
+    defer r1.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, r1.code, "var x$") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r1.code, "var x = 0;") != null);
+
+    // #4764: switch case 의 let 과 바깥 같은 이름.
+    var r2 = try transpile(std.testing.allocator, "const value = 'outer'; export function f(k) { switch (k) { case 0: let value = 'zero'; g(value); } return value; }", "/src/b.js", es5);
+    defer r2.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, r2.code, "var value$") != null);
+
+    // 매개변수와 같은 이름의 루프 변수 — var 가 되면 매개변수를 덮는다.
+    var r3 = try transpile(std.testing.allocator, "export function f(key, items) { for (const key of items) g(key); return key; }", "/src/c.js", es5);
+    defer r3.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, r3.code, "key$") != null);
+
+    // 형제 루프의 같은 이름은 클로저에 안 잡히면 합친다 — 불필요하게 바꾸지 않는다.
+    var r4 = try transpile(std.testing.allocator, "export function f(n) { for (let i = 0; i < n; i++) g(i); for (let i = 0; i < n; i++) g(i); }", "/src/d.js", es5);
+    defer r4.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, r4.code, "i$") == null);
+}
+
 test "#4493 `undefined` 바인딩에 void 0 peephole 이 새지 않는다" {
     // 이 노드는 대입 대상인데도 tag 가 identifier_reference 라, value 위치를 무조건
     // emitNode 로 태우면 `undefined` → `void 0` peephole 이 발동한다.

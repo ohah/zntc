@@ -203,6 +203,8 @@ fn isNameInScope(self: *const Transformer, name: []const u8) bool {
 /// 충돌하는 이름을 찾고 리네이밍 맵을 push한다.
 /// 반환값: push한 rename entry 수 (퇴장 시 pop할 양).
 fn pushBlockRenames(self: *Transformer, list_start: u32, list_len: u32) Error!u32 {
+    // 심볼 표가 있으면 리네임은 심볼로 정해져 있다 (#4760).
+    if (self.block_rename_map != null) return 0;
     var renames_added: u32 = 0;
 
     var i: u32 = 0;
@@ -253,6 +255,7 @@ fn pushBlockRenames(self: *Transformer, list_start: u32, list_len: u32) Error!u3
 /// 되면 같은 함수 스코프의 기존 이름을 덮을 수 있으므로, 충돌하는 헤더 이름만
 /// 루프 헤더/body 방문 중 임시 rename 한다.
 pub fn pushLoopHeaderBlockRenames(self: *Transformer, names: []const []const u8) Error!u32 {
+    if (self.block_rename_map != null) return 0;
     var renames_added: u32 = 0;
     for (names) |name| {
         if (!isNameInScope(self, name)) continue;

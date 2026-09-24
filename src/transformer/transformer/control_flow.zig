@@ -80,9 +80,10 @@ pub const LoopCapture = struct {
     }
 };
 
-fn collectActiveLoopHeaderNames(self: *Transformer, names: []const []const u8, out: *std.ArrayList([]const u8)) Error!void {
-    for (names) |name| {
-        try out.append(self.allocator, self.lookupBlockRename(name) orelse name);
+fn collectActiveLoopHeaderNames(self: *Transformer, names: []const []const u8, bindings: []const NodeIndex, out: *std.ArrayList([]const u8)) Error!void {
+    for (names, 0..) |name, i| {
+        const renamed = if (i < bindings.len) self.renamedNameOf(bindings[i]) else self.lookupBlockRename(name);
+        try out.append(self.allocator, renamed orelse name);
     }
 }
 
@@ -229,7 +230,7 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
             if (has_capture) {
                 var active_lexical_names: std.ArrayList([]const u8) = .empty;
                 defer active_lexical_names.deinit(self.allocator);
-                try collectActiveLoopHeaderNames(self, lexical_names.items, &active_lexical_names);
+                try collectActiveLoopHeaderNames(self, lexical_names.items, lexical_bindings.items, &active_lexical_names);
 
                 const result = try BlockScoping.buildLoopClosureWithFlow(
                     self,
@@ -447,7 +448,7 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
             if (has_capture) {
                 var active_lexical_names: std.ArrayList([]const u8) = .empty;
                 defer active_lexical_names.deinit(self.allocator);
-                try collectActiveLoopHeaderNames(self, lexical_names.items, &active_lexical_names);
+                try collectActiveLoopHeaderNames(self, lexical_names.items, lexical_bindings.items, &active_lexical_names);
 
                 const result = try BlockScoping.buildLoopClosureWithFlow(
                     self,

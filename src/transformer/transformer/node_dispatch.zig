@@ -1139,7 +1139,7 @@ fn visitBindingProperty(self: *Transformer, idx: NodeIndex, node: ast_mod.Node) 
     });
     if (shorthand) {
         const renamed = key_node.tag == .binding_identifier and self.options.unsupported.block_scoping and
-            self.lookupBlockRename(self.ast.getText(key_node.data.string_ref)) != null;
+            self.renamedNameOf(key) != null;
         if (!renamed) return self.visitBinaryNode(idx);
     }
 

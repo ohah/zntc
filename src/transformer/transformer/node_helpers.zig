@@ -32,9 +32,7 @@ pub fn tryRenameIdentifierLike(
     comptime tag: Tag,
 ) Error!?NodeIndex {
     if (!self.options.unsupported.block_scoping) return null;
-    const stack_hit: ?[]const u8 = if (self.block_rename_stack.items.len == 0) null else self.lookupBlockRename(self.ast.getText(self.ast.getNode(idx).data.string_ref));
-    if (block_rename_debug.enabled()) try compareBlockRename(self, idx, stack_hit != null);
-    const new_name = stack_hit orelse return null;
+    const new_name = renamedNameOf(self, idx) orelse return null;
     const new_span = try self.ast.addString(new_name);
     const new_idx = try self.ast.addNode(.{
         .tag = tag,
@@ -45,47 +43,56 @@ pub fn tryRenameIdentifierLike(
     return new_idx;
 }
 
-const block_rename_debug = @import("../../env_flag.zig").Once("ZNTC_DEBUG_BLOCK_RENAME");
-
-/// `ZNTC_DEBUG_BLOCK_RENAME=1` 인지 (상태 기계가 비교 제외 심볼을 기록할 때만 쓴다).
-pub fn blockRenameDebugEnabled() bool {
-    return block_rename_debug.enabled();
+/// 심볼 표(`block_rename_map`)만 본 새 이름 — 이름 스택으로 떨어지지 않는다.
+pub fn tableRenameOf(self: anytype, idx: NodeIndex) ?[]const u8 {
+    const m = if (self.block_rename_map) |*mm| mm else return null;
+    const i = @intFromEnum(idx);
+    if (i >= self.symbol_ids.items.len) return null;
+    const sid = self.symbol_ids.items[i] orelse return null;
+    return m.get(sid);
 }
 
-/// 디버그: 심볼 표(`block_rename_table`)가 이 식별자의 심볼을 바꾸는지와 지금 이름 스택이
-/// 바꾸는지를 비교해 다르면 한 번씩 찍는다 (#4760 4단계 병행 검증).
-fn compareBlockRename(self: anytype, idx: NodeIndex, stack_hit: bool) Error!void {
-    const i = @intFromEnum(idx);
-    if (i >= self.symbol_ids.items.len) return;
-    const sym = self.symbol_ids.items[i] orelse return;
-    if (self.debug_block_rename_table == null) {
-        const unresolved = self.unresolved_references orelse return;
-        const Ctx = struct {
-            fn nameOf(ctx: *const anyopaque, s: @import("../../semantic/symbol.zig").Symbol) []const u8 {
-                const ast: *const @import("../../parser/ast.zig").Ast = @ptrCast(@alignCast(ctx));
-                return ast.getText(s.name);
-            }
-        };
-        self.debug_block_rename_table = try @import("../block_rename_table.zig").build(self.allocator, .{
-            .scopes = self.scopes,
-            .symbols = self.symbols,
-            .scope_maps = self.scope_maps,
-            .references = self.references,
-            .unresolved = unresolved,
-            .ctx = self.ast,
-            .nameOf = Ctx.nameOf,
-        });
+/// 이 식별자 노드의 블록 스코핑 새 이름. 심볼 표(`block_rename_map`)를 먼저 보고, 없으면
+/// 이름 스택(상태 기계가 쌓은 것, 또는 스코프 정보 없는 경로)을 본다 (#4760).
+pub fn renamedNameOf(self: anytype, idx: NodeIndex) ?[]const u8 {
+    if (tableRenameOf(self, idx)) |n| return n;
+    if (self.block_rename_stack.items.len == 0) return null;
+    return self.lookupBlockRename(self.ast.getText(self.ast.getNode(idx).data.string_ref));
+}
+
+/// 변환 시작에 심볼 표를 만든다. es5 블록 스코핑을 낮추고 분석기 스코프가 있을 때만.
+pub fn buildBlockRenameMap(self: anytype) Error!void {
+    if (!self.options.unsupported.block_scoping) return;
+    if (self.scopes.len == 0) return;
+    const unresolved = self.unresolved_references orelse return;
+    const Ctx = struct {
+        fn nameOf(ctx: *const anyopaque, s: @import("../../semantic/symbol.zig").Symbol) []const u8 {
+            const ast: *const @import("../../parser/ast.zig").Ast = @ptrCast(@alignCast(ctx));
+            return ast.getText(s.name);
+        }
+    };
+    var table = try @import("../block_rename_table.zig").build(self.allocator, .{
+        .scopes = self.scopes,
+        .symbols = self.symbols,
+        .scope_maps = self.scope_maps,
+        .references = self.references,
+        .unresolved = unresolved,
+        .ctx = self.ast,
+        .nameOf = Ctx.nameOf,
+    });
+    defer table.deinit(self.allocator);
+    var map: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    errdefer map.deinit(self.allocator);
+    if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+    const arena = self.name_arena.?.allocator();
+    // 심볼 번호 순서로 이름을 매겨 결정적으로 만든다.
+    for (self.symbols, 0..) |sym, i| {
+        if (!table.contains(@intCast(i))) continue;
+        self.block_rename_counter += 1;
+        const name = try std.fmt.allocPrint(arena, "{s}${d}", .{ self.ast.getText(sym.name), self.block_rename_counter });
+        try map.put(self.allocator, @intCast(i), name);
     }
-    if (self.debug_sm_renamed.contains(sym)) return;
-    const table_hit = self.debug_block_rename_table.?.contains(sym);
-    if (table_hit == stack_hit) return;
-    const gop = try self.debug_block_rename_logged.getOrPut(self.allocator, sym);
-    if (gop.found_existing) return;
-    const name = if (sym < self.symbols.len) self.ast.getText(self.symbols[sym].name) else "?";
-    const kind = if (sym < self.symbols.len) @tagName(self.symbols[sym].kind) else "?";
-    const at: u32 = if (sym < self.symbols.len) self.symbols[sym].name.start else 0;
-    const scope_kind = if (sym < self.symbols.len and !self.symbols[sym].scope_id.isNone() and self.symbols[sym].scope_id.toIndex() < self.scopes.len) @tagName(self.scopes[self.symbols[sym].scope_id.toIndex()].kind) else "?";
-    std.debug.print("zntc: block-rename diff {s} ({s} in {s}) table={} stack={} at={d}\n", .{ name, kind, scope_kind, table_hit, stack_hit, at });
+    self.block_rename_map = map;
 }
 
 /// 클래스 이름 노드에서 Span 추출. 익명 클래스(none)면 null 반환.

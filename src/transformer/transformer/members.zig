@@ -21,8 +21,7 @@ fn expandBlockRenamedShorthand(self: *Transformer, node: Node) Error!?NodeIndex 
     const key_node = self.ast.getNode(key_idx);
     if (key_node.tag != .identifier_reference) return null;
 
-    const name = self.ast.getText(key_node.data.string_ref);
-    const new_name = self.lookupBlockRename(name) orelse return null;
+    const new_name = self.renamedNameOf(key_idx) orelse return null;
 
     // Object shorthand 의 key 는 property 이름이라 원본을 보존해야 하지만,
     // 암시된 value 참조는 block-scoping lowering 이 만든 renamed binding 을 읽어야 한다.

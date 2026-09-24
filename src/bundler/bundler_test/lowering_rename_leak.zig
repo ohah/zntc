@@ -34,9 +34,10 @@ fn bundleEntry(backing: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_name:
     });
 }
 
-// outer module-scope `let acc` + inner function-scope `let acc` → block_rename_stack
-// 가 inner 를 `acc$1` 으로 rename. for-loop body 의 `acc = acc + i` 좌변/우변 모두
-// `acc$1` 으로 일관 rename 되어야.
+// outer module-scope `let acc` + inner function-scope `let acc`. 함수 본문 최상위 `let` 은
+// `var` 가 되어도 같은 함수 스코프라 이름을 바꿀 필요가 없다(심볼 기준 판정, #4760). 예전
+// 이름 스택은 모듈의 같은 이름 때문에 `acc$1` 로 바꿨고, 그때 좌변만 빠지는 누수가 있었다.
+// 어느 쪽이든 좌변·우변·선언이 **같은 이름**이어야 한다.
 test "rename leak: assignment LHS 가 block-rename suffix 적용됨 (compound for-loop)" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -60,12 +61,10 @@ test "rename leak: assignment LHS 가 block-rename suffix 적용됨 (compound fo
     defer r.deinit();
     const code = r.code();
 
-    // `var acc$1 = 0` 정의 + `acc$1 = acc$1 + i` 로 양쪽 rename. 좌변 `acc =` (suffix 없음) 가
-    // 함수 body 안에 있으면 BUG.
     const body = fnBody(code, "function sum(n)", "return acc") orelse return error.TestUnexpectedResult;
-    try testing.expect(std.mem.indexOf(u8, body, "var acc$1 = 0") != null);
-    try testing.expect(std.mem.indexOf(u8, body, "acc = acc$1 + i") == null);
-    try testing.expect(std.mem.indexOf(u8, body, "acc$1 = acc$1 + i") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "var acc = 0") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "acc = acc + i") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "acc$") == null);
 }
 
 // for-of + template literal 조합 (실제 whatwg-url-minimum.mjs 패턴).
@@ -93,12 +92,11 @@ test "rename leak: for-of body 의 template literal compound assign 도 일관 r
     const code = r.code();
 
     const body = fnBody(code, "function serializePath(e)", "return t") orelse return error.TestUnexpectedResult;
-    // 정의 + compound assign 좌변 모두 `t$1` suffix.
-    // 좌변 `t +=` (suffix 없음) 검색은 substring 매칭이 식별자 경계를 자동으로 인식 —
-    // `t$1 += ` 는 `t += ` 와 매칭되지 않으므로 indexOf 만으로 충분.
-    try testing.expect(std.mem.indexOf(u8, body, "var t$1 = \"\"") != null);
-    try testing.expect(std.mem.indexOf(u8, body, "t$1 += ") != null);
-    try testing.expect(std.mem.indexOf(u8, body, "t += ") == null);
+    // 함수 본문 최상위 `let t` 는 바꿀 필요가 없다(위 테스트와 같은 이유). 선언과 compound
+    // assign 좌변이 같은 이름이어야 한다.
+    try testing.expect(std.mem.indexOf(u8, body, "var t = \"\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "t += ") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "t$") == null);
 }
 
 test "rename leak: for-of header binding 이 outer 함수 이름을 덮지 않음" {

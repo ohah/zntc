@@ -629,9 +629,8 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     // block scoping rename이 필요한 경우 이름 교체.
                     var binding_span = key_node.span;
                     var binding_data = key_node.data.string_ref;
-                    if (self.options.unsupported.block_scoping and self.block_rename_stack.items.len > 0) {
-                        const text = self.ast.getText(key_node.data.string_ref);
-                        if (self.lookupBlockRename(text)) |new_name| {
+                    if (self.options.unsupported.block_scoping) {
+                        if (self.renamedNameOf(key_idx)) |new_name| {
                             const new_span = try self.ast.addString(new_name);
                             binding_span = new_span;
                             binding_data = new_span;
