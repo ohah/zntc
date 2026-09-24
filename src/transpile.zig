@@ -2984,6 +2984,24 @@ test "#4493 es5 다운레벨의 중첩 구조분해 대입 타겟도 rename 을 
     try std.testing.expect(std.mem.indexOf(u8, r.code, ".stackWeight") != null);
 }
 
+test "#4762 es5 기본값 매개변수의 기본값 검사도 매개변수 rename 을 따라간다" {
+    // es5 는 `opts = {}` 를 본문 `opts = opts === void 0 ? {} : opts` 로 낮춘다. 이 세 참조를
+    // 새 노드로 만들며 심볼을 물려주지 않으면, minify 가 매개변수 선언만 바꾸고 검사는
+    // 원래 이름으로 남아 호출마다 ReferenceError 가 난다.
+    const src =
+        \\export function f(alpha, opts = { k: 2 }) { return alpha + opts.k; }
+    ;
+    var r = try transpile(std.testing.allocator, src, "/src/a.js", .{
+        .minify_identifiers = true,
+        .minify_whitespace = true,
+        .es_target = .es5,
+        .unsupported = @import("transformer/compat.zig").fromESTarget(.es5),
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "opts") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "===void 0?{k:2}:") != null);
+}
+
 test "#4493 `undefined` 바인딩에 void 0 peephole 이 새지 않는다" {
     // 이 노드는 대입 대상인데도 tag 가 identifier_reference 라, value 위치를 무조건
     // emitNode 로 태우면 `undefined` → `void 0` peephole 이 발동한다.

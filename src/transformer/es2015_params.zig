@@ -399,14 +399,17 @@ pub fn ES2015Params(comptime Transformer: type) type {
             return es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", span);
         }
 
-        /// identifier 노드를 복제한다 (같은 이름의 새 노드).
+        /// identifier 노드를 복제한다 (같은 이름·같은 심볼의 새 노드). 심볼을 물려주지 않으면
+        /// minify 가 매개변수 선언만 바꾸고 이 참조는 원래 이름으로 남는다 (#4762).
         fn copyIdentifier(self: *Transformer, node_idx: NodeIndex) Transformer.Error!NodeIndex {
             const node = self.ast.getNode(node_idx);
-            return self.ast.addNode(.{
+            const copy = try self.ast.addNode(.{
                 .tag = .identifier_reference,
                 .span = node.span,
                 .data = .{ .string_ref = node.data.string_ref },
             });
+            self.propagateSymbolId(node_idx, copy);
+            return copy;
         }
 
         fn collectBindingNames(self: *Transformer, idx: NodeIndex, out: *std.ArrayList(Span)) Transformer.Error!void {
