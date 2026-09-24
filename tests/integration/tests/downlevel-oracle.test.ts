@@ -110,22 +110,30 @@ async function failingCells(entry: string, expected: Run, outDir: string): Promi
   return results.filter((x): x is string => x !== null);
 }
 
-describe('다운레벨 런타임 오라클: 네이티브 node 결과 = 번들 결과 (#4746)', () => {
-  for (const { name, entry } of listFixtures()) {
-    test(name, async () => {
-      const expected = await run(['node', entry]);
-      const outDir = mkdtempSync(join(tmpdir(), 'zntc-oracle-'));
-      try {
-        const failing = await failingCells(entry, expected, outDir);
-        expect(failing).toEqual(KNOWN_FAILURES[name] ?? []);
-      } finally {
-        rmSync(outDir, { recursive: true, force: true });
-      }
-    });
-  }
+/// 정답이 되는 node 는 `using`·`SuppressedError` 를 알아야 한다(24+). 더 낮으면 건너뛴다.
+const NODE_MAJOR = Number(
+  Bun.spawnSync(['node', '-p', 'process.versions.node.split(".")[0]']).stdout.toString().trim(),
+);
 
-  test('KNOWN_FAILURES 의 fixture 이름이 모두 존재한다', () => {
-    const names = new Set(listFixtures().map((f) => f.name));
-    expect(Object.keys(KNOWN_FAILURES).filter((n) => !names.has(n))).toEqual([]);
-  });
-});
+describe.skipIf(!(NODE_MAJOR >= 24))(
+  '다운레벨 런타임 오라클: 네이티브 node 결과 = 번들 결과 (#4746)',
+  () => {
+    for (const { name, entry } of listFixtures()) {
+      test(name, async () => {
+        const expected = await run(['node', entry]);
+        const outDir = mkdtempSync(join(tmpdir(), 'zntc-oracle-'));
+        try {
+          const failing = await failingCells(entry, expected, outDir);
+          expect(failing).toEqual(KNOWN_FAILURES[name] ?? []);
+        } finally {
+          rmSync(outDir, { recursive: true, force: true });
+        }
+      });
+    }
+
+    test('KNOWN_FAILURES 의 fixture 이름이 모두 존재한다', () => {
+      const names = new Set(listFixtures().map((f) => f.name));
+      expect(Object.keys(KNOWN_FAILURES).filter((n) => !names.has(n))).toEqual([]);
+    });
+  },
+);
