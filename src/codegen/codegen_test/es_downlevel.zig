@@ -3999,7 +3999,9 @@ test "ES5: async for-in body extracts await into state machine" {
     defer r.deinit();
     // #4337: for-in 은 native for-in 으로 키 수집(own+상속, shadow-safe) — Object.keys(own-only) 아님.
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.keys") == null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, " in fields)") != null);
+    // 객체를 임시 변수에 먼저 담고(`_a=fields`) 그 키를 native for-in 으로 모은다 (#4746 풀이).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=fields;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_keys.push(") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "(yield validateField") == null);
     // 본문 const 는 상태 기계에서 블록 스코프를 지키려 `field$N` 으로 바뀐다 (#4712).
     try std.testing.expect(std.mem.indexOf(u8, r.output, "validateField(field") != null);
@@ -4649,4 +4651,31 @@ test "for-of 풀이: 본문이 헤더 이름을 다시 선언하면 본문을 �
     var r2 = try e2eFull(std.testing.allocator, "for (const x of a) { let y = 1; f(x, y); }", .{ .unsupported = u }, .{ .minify_whitespace = true }, ".ts");
     defer r2.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r2.output, "{const x=_step.value;let y=1;f(x,y);}") != null);
+}
+
+test "ES5 상태 기계: for-in 은 키 스냅샷 + 인덱스 for 풀이를 수집하고 _keys/_idx 는 모듈 고유 이름이다 (#4746)" {
+    // 루프 변수 선언(`x = _keys[_idx]`)이 본문 안이라, 본문이 `_loop` 로 추출되면 함수 경계 너머
+    // 참조가 된다 — 카운터 temp 면 중첩 함수 temp 에 가려진다(for-of step 과 같은 이유).
+    var r = try e2eTarget(std.testing.allocator, "function* g(a,b){ for (const x in a) for (const y in b) yield x+y; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_keys=[];for(_b in _a)_keys.push(_b);_idx=0;") != null);
+    // 초기값 없는 키 변수 `_b` 도 wrapper 에 선언돼야 한다 — strict 모드에서 ReferenceError.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function g(a,b){var _a,_keys,_b,_idx,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=_keys[_idx];") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=_keys2[_idx2];") != null);
+}
+
+test "ES5 상태 기계: for-in 대상 식의 yield 는 선언 수집이 먼저 처리한다 (#4746)" {
+    // 대상 객체를 `_obj` 에 먼저 담아야 키 수집 for-in 에 yield 가 남지 않는다(남으면 그 for-in 을
+    // 다시 풀이하려다 끝나지 않는다).
+    var r = try e2eTarget(std.testing.allocator, "function* g(){ for (const k in (yield 1)) yield k; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=_state.sent();_a=_c;_keys=[];for(_b in _a)") != null);
+}
+
+test "ES5 상태 기계: 라벨 for-in 의 continue 는 바깥 인덱스 증가로 간다 (#4746)" {
+    var r = try e2eTarget(std.testing.allocator, "function* g(o){ L: for (const k in o) { for (const j in o) { if (j) continue L; yield j; } } }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "if(!j$2)return[3,3];return[3,7];") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "case 6:case 7:_idx++;") != null);
 }

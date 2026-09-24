@@ -2389,8 +2389,10 @@ test "#4337 generator for-in 은 native for-in 으로 키 수집 (Object.keys �
     defer std.testing.allocator.free(code);
     // Object.keys 미사용(own-only/shadow). native for-in 으로 객체 `o` 의 키 수집 + push.
     try std.testing.expect(std.mem.indexOf(u8, code, "Object.keys") == null);
-    try std.testing.expect(std.mem.indexOf(u8, code, " in o)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, code, ".push(") != null);
+    // 객체를 임시 변수에 먼저 담고 그 키를 native for-in 으로 모은다 (#4746 풀이).
+    try std.testing.expect(std.mem.indexOf(u8, code, " = o;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_keys.push(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "for (_") != null);
 }
 
 test "TLA: ES5 downlevel produces __async + __generator wrap, no bare yield" {

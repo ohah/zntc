@@ -418,8 +418,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     const child = stmt.data.binary.right;
                     if (!child.isNone()) {
                         _ = try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, child);
-                        if (self.ast.getNode(child).tag == .for_of_statement) {
-                            const rewritten = try ForOf.rewriteForOf(self, self.ast.getNode(child), stmt.data.binary.left, true);
+                        const child_node = self.ast.getNode(child);
+                        if (child_node.tag == .for_of_statement) {
+                            const rewritten = try ForOf.rewriteForOf(self, child_node, stmt.data.binary.left, true);
                             return collectOperations(self, rewritten, ops, next_label);
                         }
                     }
@@ -432,14 +433,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     if (try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, stmt_idx))
                         return collectOperations(self, stmt_idx, ops, next_label);
                     if (es2015_scan.hasYieldOrReturn(self, stmt_idx)) {
-                        if (stmt.tag == .for_in_statement) {
-                            try collectForInOperations(self, stmt, ops, next_label);
-                        } else {
-                            // for-of 는 일반 경로와 같은 풀이(반복자 for + 닫기 try/finally)로 바꿔
-                            // 그 구조를 수집한다 (#4746).
-                            const rewritten = try ForOf.rewriteForOf(self, stmt, .none, true);
-                            try collectOperations(self, rewritten, ops, next_label);
-                        }
+                        // for-of 는 일반 경로와 같은 풀이(반복자 for + 닫기 try/finally), for-in 은 키
+                        // 스냅샷 + 인덱스 for 풀이로 바꿔 그 구조를 수집한다 (#4746).
+                        const rewritten = if (stmt.tag == .for_in_statement)
+                            try ForOf.rewriteForIn(self, stmt)
+                        else
+                            try ForOf.rewriteForOf(self, stmt, .none, true);
+                        try collectOperations(self, rewritten, ops, next_label);
                     } else {
                         const new_stmt = try self.visitNode(stmt_idx);
                         if (!new_stmt.isNone()) {
@@ -855,202 +855,6 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// for (const x of arr) { yield ... }
         /// → for (var _i = 0, _arr = arr; _i < _arr.length; _i++) { var x = _arr[_i]; yield ... }
         /// for-in은 Object.keys(obj) snapshot을 순회하는 동일한 배열 기반 루프로 낮춘다.
-        /// for-in 의 연산 수집. (for-of 는 `ForOf.rewriteForOf` 풀이를 수집한다 — #4746.)
-        fn collectForInOperations(self: *Transformer, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
-            const span = stmt.span;
-            const left = stmt.data.ternary.a; // loop variable
-            const right = stmt.data.ternary.b; // iterable
-            const body_idx = stmt.data.ternary.c; // body
-            // 헤더의 let/const 는 루프 스코프 — 고유 이름으로 바꿔 wrapper 에 등록한다 (#4712).
-            const head_renames = try pushLoopHeadRenames(self, left);
-            defer self.popBlockRenames(head_renames);
-
-            // 반복별 바인딩 복원 (#4716) — 자세한 배경은 extractPerIterationLoopBody 참고.
-            {
-                const rewritten = try extractPerIterationLoopBody(self, stmt, left, body_idx, ops, next_label);
-                if (!rewritten.isNone()) {
-                    return collectForInOperations(self, self.ast.getNode(rewritten), ops, next_label);
-                }
-            }
-
-            // for-in → for 변환: _i (index), _arr (key snapshot)
-            const idx_span = try es_helpers.makeTempVarSpan(self);
-            const arr_span = try es_helpers.makeTempVarSpan(self);
-            // 임시 변수를 호이스팅 리스트에 등록 (buildGeneratorBody에서 var 선언 생성)
-            try self.generator_temp_var_spans.append(self.allocator, idx_span);
-            try self.generator_temp_var_spans.append(self.allocator, arr_span);
-            const new_right = if (es2015_scan.containsYield(self, right))
-                try visitExprWithYieldExtraction(self, right, ops, next_label)
-            else
-                try self.visitNode(right);
-            // `_arr = []` 후 native `for (_k in obj) _arr.push(_k)` 로 own+상속 enumerable 키를
-            // 수집한다. `Object.keys` 는 own 만 + `Object` shadow 취약이라 for-in 의미에 어긋났다.
-            // 수집 for-in 은 yield 없는 self-contained 문 → statement op 으로 verbatim 방출.
-            const iterable_value = try self.ast.addListNode(.array_expression, span, .{ .start = 0, .len = 0 });
-
-            // init: _i = 0, _arr = iterable (assignment)
-            // __generator 콜백은 매 호출마다 새 실행 컨텍스트이므로
-            // var 선언은 콜백 안에 두면 매번 undefined로 리셋됨.
-            // assignment만 사용하고 var는 collectHoistedVars에서 처리.
-            {
-                const idx_ref_init = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
-                const zero = try es_helpers.makeNumericLiteral(self, 0);
-                const idx_assign = try self.ast.addNode(.{
-                    .tag = .assignment_expression,
-                    .span = span,
-                    .data = .{ .binary = .{ .left = idx_ref_init, .right = zero, .flags = 0 } },
-                });
-                const idx_stmt = try es_helpers.makeExprStmt(self, idx_assign, span);
-                try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = idx_stmt } });
-            }
-
-            const arr_ref_init = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
-            const arr_assign = try self.ast.addNode(.{
-                .tag = .assignment_expression,
-                .span = span,
-                .data = .{ .binary = .{ .left = arr_ref_init, .right = iterable_value, .flags = 0 } },
-            });
-            const arr_stmt = try es_helpers.makeExprStmt(self, arr_assign, span);
-            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = arr_stmt } });
-
-            // for-in: `for (_k in obj) _arr.push(_k)` 로 own+상속 enumerable 키를 _arr 에 수집.
-            // hoist 된 _k 사용(기존 _i/_arr 와 동일). yield 없는 문이라 statement op 으로 verbatim.
-            {
-                const key_span = try es_helpers.makeTempVarSpan(self);
-                try self.generator_temp_var_spans.append(self.allocator, key_span);
-                const key_ref_left = try es_helpers.makeTempVarRef(self, key_span, key_span);
-                const arr_ref_push = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
-                const push_prop = try es_helpers.makeIdentifierRef(self, "push");
-                const push_member = try es_helpers.makeStaticMember(self, arr_ref_push, push_prop, span);
-                const key_arg = try es_helpers.makeTempVarRef(self, key_span, key_span);
-                const push_call = try es_helpers.makeCallExpr(self, push_member, &.{key_arg}, span);
-                const push_stmt = try es_helpers.makeExprStmt(self, push_call, span);
-                const collect = try self.ast.addNode(.{
-                    .tag = .for_in_statement,
-                    .span = span,
-                    .data = .{ .ternary = .{ .a = key_ref_left, .b = new_right, .c = push_stmt } },
-                });
-                try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = collect } });
-            }
-
-            // cond_label
-            const cond_label = next_label.*;
-            next_label.* += 1;
-            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
-
-            // test: _i < _arr.length
-            const depth = self.generator_label_stack.items.len;
-            const for_break_sent = breakSentinel(depth);
-            const for_continue_sent = continueSentinel(depth);
-            const for_ops_start = ops.items.len;
-            const test_expr = blk: {
-                const idx_ref_test = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
-                const arr_ref_test = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
-                const length_prop = try es_helpers.makeIdentifierRef(self, "length");
-                const arr_length = try es_helpers.makeStaticMember(self, arr_ref_test, length_prop, span);
-                break :blk try self.ast.addNode(.{
-                    .tag = .binary_expression,
-                    .span = span,
-                    .data = .{ .binary = .{
-                        .left = idx_ref_test,
-                        .right = arr_length,
-                        .flags = @intFromEnum(token_mod.Kind.l_angle),
-                    } },
-                });
-            };
-            try ops.append(self.allocator, .{
-                .code = .break_when_false,
-                .arg = .{ .label_and_node = .{ .label = for_break_sent, .node = test_expr } },
-            });
-
-            // body 앞에 루프 변수 대입 삽입: `_arr[_i]`.
-            const elem_access = blk: {
-                const arr_ref_body = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
-                const idx_ref_body = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
-                const elem_access_extra = try self.ast.addExtras(&.{
-                    @intFromEnum(arr_ref_body), @intFromEnum(idx_ref_body), 0,
-                });
-                break :blk try self.ast.addNode(.{
-                    .tag = .computed_member_expression,
-                    .span = span,
-                    .data = .{ .extra = elem_access_extra },
-                });
-            };
-
-            // loop variable assignment: x = _arr[_i]
-            const left_node = self.ast.getNode(left);
-            if (left_node.tag == .variable_declaration) {
-                // const/let/var x → x = _arr[_i]
-                const decl_e = left_node.data.extra;
-                const decl_start = self.readU32(decl_e, 1);
-                const decl_len = self.readU32(decl_e, 2);
-                if (decl_len > 0) {
-                    const declarator = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[decl_start]));
-                    if (declarator.tag == .variable_declarator) {
-                        const binding: NodeIndex = self.readNodeIdx(declarator.data.extra, 0);
-                        // 좌변은 선언이 아니라 **참조**다 — 바인딩 노드를 그대로 쓰면 minify 가
-                        // 호이스트된 선언과 잇지 못한다(헤더가 `x$N` 으로 리네임될 때 드러남, #4712).
-                        // 구조분해 헤더는 단순 대입으로 낮춘다.
-                        const lhs = try bindingToAssignTarget(self, try self.visitNode(binding));
-                        const assign_stmt = try makeDestructuringAssignStmt(self, lhs, elem_access, span);
-                        try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
-                    }
-                }
-            } else {
-                // expression: x = _arr[_i]
-                const new_left = try self.visitNode(left);
-                const assign = try self.ast.addNode(.{
-                    .tag = .assignment_expression,
-                    .span = span,
-                    .data = .{ .binary = .{ .left = new_left, .right = elem_access, .flags = 0 } },
-                });
-                const assign_stmt = try es_helpers.makeExprStmt(self, assign, span);
-                try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
-            }
-
-            // unlabeled break/continue를 이 for-in으로 라우팅.
-            try self.generator_label_stack.append(self.allocator, .{
-                .name = "",
-                .break_label = for_break_sent,
-                .continue_label = for_continue_sent,
-            });
-            {
-                defer _ = self.generator_label_stack.pop();
-                // body 수집 (yield 추출)
-                try collectBodyOperations(self, body_idx, ops, next_label);
-            }
-
-            // update: _i++
-            const update_label = next_label.*;
-            next_label.* += 1;
-            self.generator_loop_continue_label = update_label;
-            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
-            {
-                const idx_ref_update = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
-                const update_extra = try self.ast.addExtras(&.{
-                    @intFromEnum(idx_ref_update),
-                    @intFromEnum(token_mod.Kind.plus2) | (ast_mod.UnaryFlags.postfix),
-                });
-                const update_expr = try self.ast.addNode(.{
-                    .tag = .update_expression,
-                    .span = span,
-                    .data = .{ .extra = update_extra },
-                });
-                const update_stmt = try es_helpers.makeExprStmt(self, update_expr, span);
-                try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = update_stmt } });
-            }
-
-            // goto cond_label
-            try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = cond_label } });
-
-            // end_label
-            const end_label = next_label.*;
-            next_label.* += 1;
-            fixupSentinel(ops.items[for_ops_start..], for_break_sent, end_label);
-            fixupSentinel(ops.items[for_ops_start..], for_continue_sent, update_label);
-            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
-        }
-
         /// while문의 연산 수집.
         fn collectWhileOperations(self: *Transformer, stmt_idx: NodeIndex, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
             const condition = stmt.data.binary.left;
