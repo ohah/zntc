@@ -1,0 +1,81 @@
+//! 트랜스포머가 새로 만든 사용자 식별자에 심볼 ID 가 빠지지 않는지 (#4760).
+//!
+//! 단일 파일 minify 는 변환 뒤 코드를 다시 분석해 이름을 짓는다(#4759) — 그래서 심볼 누락이
+//! 출력으로는 드러나지 않는다. 대신 블록 스코핑을 심볼 기준으로 바꾸는 #4760 은 변환 **도중**
+//! 심볼이 필요하므로, 고친 지점마다 누락 0 을 검사기로 직접 고정한다.
+
+const std = @import("std");
+const Scanner = @import("../lexer/scanner.zig").Scanner;
+const Parser = @import("../parser/parser.zig").Parser;
+const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+const transformer_mod = @import("transformer.zig");
+const Transformer = transformer_mod.Transformer;
+const TransformOptions = transformer_mod.TransformOptions;
+const coverage = @import("symbol_coverage.zig");
+
+/// es5 로 변환한 뒤 새로 만든 사용자 식별자 중 심볼이 없는 노드 수.
+fn missingSymbols(source: []const u8) !usize {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    const root = try transformer.transform();
+
+    var report = try coverage.check(allocator, transformer.ast, root, transformer.parser_node_count, transformer.symbol_ids.items, analyzer.symbols.items);
+    defer report.deinit(allocator);
+    try std.testing.expect(report.new_user_idents > 0);
+    return report.missing.items.len;
+}
+
+test "#4762 es5 기본값 매개변수 검사의 참조는 매개변수 심볼을 가진다" {
+    try std.testing.expectEqual(@as(usize, 0), try missingSymbols(
+        \\export function f(alpha, opts = { k: 2 }) { return alpha + opts.k; }
+    ));
+}
+
+test "#4760 es5 상태 기계가 대입·선언으로 접은 바인딩은 원래 심볼을 가진다" {
+    try std.testing.expectEqual(@as(usize, 0), try missingSymbols(
+        \\export function* gen(items) {
+        \\  for (const value of items) {
+        \\    const doubled = yield value;
+        \\    record(doubled);
+        \\  }
+        \\}
+    ));
+    // catch 파라미터·블록 구조분해 선언은 이름만 모아 `name$N` 으로 바꾸는 경로로 올라간다.
+    try std.testing.expectEqual(@as(usize, 0), try missingSymbols(
+        \\export function* gen2(source) {
+        \\  try { yield 1; } catch (failure) { record(failure); }
+        \\  { const { first, second } = source; yield first; record(second); }
+        \\}
+    ));
+}
+
+test "#4760 es5 루프 캡처 `_loop` 의 매개변수·인자·끌어올린 var 는 원래 심볼을 가진다" {
+    try std.testing.expectEqual(@as(usize, 0), try missingSymbols(
+        \\export function collect(limit) {
+        \\  const getters = [];
+        \\  for (let index = 0; index < limit; index++) {
+        \\    var latest = index * 2;
+        \\    getters.push(() => index + latest);
+        \\  }
+        \\  return getters;
+        \\}
+    ));
+}

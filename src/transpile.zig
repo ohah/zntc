@@ -1402,22 +1402,9 @@ fn transpileWithCallbackInternal(
         return .{ .code = try allocator.dupe(u8, "") };
     }
 
-    // 3. Identifier mangling (--minify-identifiers)
+    // 3. Identifier mangling (--minify-identifiers) 은 변환 **뒤**에 한다 (아래 4.5).
     var mangle_result: ?Mangler.ManglerResult = null;
     defer if (mangle_result) |*mr| mr.deinit();
-
-    if (options.minify_identifiers) {
-        const analyzer = &(analyzer_storage.?);
-        if (analyzer.symbols.items.len > 0 and analyzer.scope_maps.items.len > 0) {
-            mangle_result = Mangler.mangle(arena_alloc, .{
-                .scopes = analyzer.scopes.items,
-                .symbols = analyzer.symbols.items,
-                .scope_maps = analyzer.scope_maps.items,
-                .references = analyzer.references.items,
-                .source = source,
-            }) catch null;
-        }
-    }
 
     // 4. 변환
     const transform_opts: TransformOptions = .{
@@ -1504,6 +1491,34 @@ fn transpileWithCallbackInternal(
         minify_mod.mergeDecls(transformer.ast, null);
     }
 
+    // 4.5. 이름 줄이기는 **낮춘 뒤의 코드**를 다시 분석해서 한다 (#4759·#4760). 변환은 변수를
+    // 다른 함수로 옮기고(상태 기계·`_loop`) 새 이름을 만든다 — 변환 전 스코프로 이름을 주면
+    // 형제 블록이 한 함수로 모여 같은 이름이 되고, 심볼을 물려받지 못한 새 노드는 원래 이름으로
+    // 남는다. 번들 경로도 변환 뒤 재분석(`refreshSemanticAndStmtInfoAfterAstMutation`)을 쓴다.
+    var post_analyzer_storage: ?SemanticAnalyzer = null;
+    if (options.minify_identifiers and analyzer_storage != null) {
+        post_analyzer_storage = SemanticAnalyzer.init(arena_alloc, transformer.ast);
+        const post = &post_analyzer_storage.?;
+        post.is_strict_mode = parser.is_strict_mode;
+        post.is_module = parser.is_module;
+        // 타입은 이미 지워졌다. 낮춘 코드의 분석 에러(낮추기가 만든 형태)는 이름 짓기와 무관하다.
+        post.analyze() catch return error.SemanticError;
+        if (post.symbols.items.len > 0 and post.scope_maps.items.len > 0) {
+            mangle_result = Mangler.mangle(arena_alloc, .{
+                .scopes = post.scopes.items,
+                .symbols = post.symbols.items,
+                .scope_maps = post.scope_maps.items,
+                .references = post.references.items,
+                .source = source,
+                .ast = transformer.ast,
+                // 코드가 참조하는 전역(`Set`, `Map` …)을 예약한다. 없으면 바인딩이 많아 3글자
+                // 이름까지 가면 `var Set = …` 처럼 전역을 가린다. 번들 경로는
+                // `Linker.collectReservedGlobals` 가 같은 일을 한다.
+                .external_reserved = &post.unresolved_references,
+            }) catch null;
+        }
+    }
+
     // 5. Mangling 메타데이터 구성. skip_nodes는 arena-owned이라 별도 deinit 불필요
     // (함수 종료 시 arena.deinit으로 일괄 해제).
     var mangle_metadata: ?LinkingMetadata = null;
@@ -1517,10 +1532,8 @@ fn transpileWithCallbackInternal(
             // 이 해제 — mangle_metadata 는 deinit 되지 않으므로 double-free 없음.
             .renames = mr.renames,
             .final_exports = null,
-            .symbol_ids = if (transformer.symbol_ids.items.len > 0)
-                transformer.symbol_ids.items
-            else
-                &.{},
+            // 이름 표(renames)는 변환 뒤 재분석의 심볼 번호로 만들었다 — 노드→심볼도 그쪽.
+            .symbol_ids = post_analyzer_storage.?.symbol_ids.items,
             // 단일 파일 transpile: codegen 의 scope-hoisted 전용 분기를 타지 않도록 false.
             .is_bundle_context = false,
             .allocator = arena_alloc,
@@ -2883,11 +2896,20 @@ test "#4390 refresh hook-sig: _s component ref follows mangler rename" {
         .minify_identifiers = true,
     });
     defer r.deinit(std.testing.allocator);
-    // 컴포넌트가 rename 됐고(_c = t / function t), _s 의 첫 인자도 같은 t 를 가리켜야 한다.
-    try std.testing.expect(std.mem.indexOf(u8, r.code, "_c = t;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.code, "_s(t,") != null);
+    // 컴포넌트가 rename 됐고, 등록 대입(`_c = <이름>`)과 서명 호출(`_s(<이름>, …)`)의 인자도
+    // 같은 이름을 가리켜야 한다. `_c`·`_s` 자신도 합성 바인딩이라 짧은 이름으로 바뀔 수 있다.
+    const fn_start = (std.mem.indexOf(u8, r.code, "function ") orelse return error.TestUnexpectedResult) + "function ".len;
+    const fn_end = std.mem.indexOfScalarPos(u8, r.code, fn_start, '(') orelse return error.TestUnexpectedResult;
+    const comp = r.code[fn_start..fn_end];
+    try std.testing.expect(!std.mem.eql(u8, comp, "App"));
+    const assign = try std.fmt.allocPrint(std.testing.allocator, " = {s};", .{comp});
+    defer std.testing.allocator.free(assign);
+    const sig_call = try std.fmt.allocPrint(std.testing.allocator, "({s}, \"useState", .{comp});
+    defer std.testing.allocator.free(sig_call);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, assign) != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, sig_call) != null);
     // dangling 원본 이름 참조가 남으면 안 된다.
-    try std.testing.expect(std.mem.indexOf(u8, r.code, "_s(App,") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "(App,") == null);
 }
 
 test "#4493 구조분해 할당의 shorthand+기본값 프로퍼티도 rename 을 따라간다" {
@@ -3064,9 +3086,44 @@ test "#4760 es5 루프 캡처 `_loop` 의 매개변수·인자·끌어올린 var
         .unsupported = @import("transformer/compat.zig").fromESTarget(.es5),
     });
     defer r.deinit(std.testing.allocator);
-    try std.testing.expect(std.mem.indexOf(u8, r.code, "_loop(") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.code, "index") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.code, "latest") == null);
+}
+
+test "#4759 이름 줄이기는 낮춘·접은 뒤 코드로 한다 — 새 노드도 같은 이름을 따른다" {
+    // 구문 접기가 `(0, holder).n` 을 `holder.n` 으로 바꾸며 만든 새 노드는 변환 전 분석의
+    // 심볼이 없다. 변환 전 스코프로 이름을 지으면 선언만 바뀌고 이 참조는 원래 이름으로 남는다.
+    const src =
+        \\const holder = { n() { return 1; } };
+        \\console.log(typeof (0, holder).n, holder.n());
+    ;
+    var r = try transpile(std.testing.allocator, src, "/src/a.js", .{
+        .minify_identifiers = true,
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "holder") == null);
+}
+
+test "minify 가 짓는 이름은 코드가 참조하는 전역을 가리지 않는다" {
+    // 바인딩이 많으면 2글자 이름까지 간다. 코드가 전역 `ee` 를 참조하는데 바인딩 하나가
+    // `ee` 로 바뀌면 그 참조가 전역 대신 지역 변수를 읽는다 (큰 파일에선 `var Set = …`).
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(std.testing.allocator);
+    try src.appendSlice(std.testing.allocator, "export function big(seed) {\n");
+    for (0..80) |i| try src.print(std.testing.allocator, "  let value{d} = seed + {d};\n", .{ i, i });
+    try src.appendSlice(std.testing.allocator, "  return [");
+    for (0..80) |i| try src.print(std.testing.allocator, "value{d}, ", .{i});
+    try src.appendSlice(std.testing.allocator, "ee];\n}\n");
+
+    var r = try transpile(std.testing.allocator, src.items, "/src/a.js", .{
+        .minify_identifiers = true,
+        .minify_whitespace = true,
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "let ee=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "ee]") != null);
 }
 
 test "#4493 `undefined` 바인딩에 void 0 peephole 이 새지 않는다" {
