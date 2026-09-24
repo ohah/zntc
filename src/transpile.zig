@@ -1252,6 +1252,8 @@ fn isDeclarationFile(file_path: []const u8) bool {
 /// `ZNTC_MEM_PROFILE` 존재 여부 — 프로세스 1회 캐시 (std.once, WASI/Windows 포터블).
 /// 직접 std.posix.getenv 는 WASI 에서 @compileError 라 env_flag.Once 사용.
 const mem_profile_env = @import("env_flag.zig").Once("ZNTC_MEM_PROFILE");
+/// `ZNTC_DEBUG_SYMBOL_COVERAGE` — 트랜스포머 출력의 심볼 ID 누락 측정 (#4760, 디버그 전용).
+const symbol_coverage_env = @import("env_flag.zig").Once("ZNTC_DEBUG_SYMBOL_COVERAGE");
 
 /// transpile phase 별 arena 누적 capacity 스냅샷 (RFC_TRANSFORMER_OWN_AST PR-3 측정).
 /// `ZNTC_MEM_PROFILE=1` 일 때만 stderr 로 phase 경계 증분 출력 — 단일 arena 라 phase 별
@@ -1462,6 +1464,15 @@ fn transpileWithCallbackInternal(
     transformer.line_offsets = scanner.line_offsets.items;
     const root = transformer.transform() catch return error.TransformError;
     mem_profile.snap(&arena, "transform");
+
+    // #4760: 트랜스포머가 새로 만든 사용자 식별자 노드의 심볼 ID 누락 측정(디버그 전용).
+    if (symbol_coverage_env.enabled()) {
+        if (analyzer_storage) |*analyzer| {
+            const coverage = @import("transformer/symbol_coverage.zig");
+            var report = coverage.check(arena_alloc, transformer.ast, root, transformer.parser_node_count, transformer.symbol_ids.items, analyzer.symbols.items) catch return error.OutOfMemory;
+            coverage.print(arena_alloc, file_path, &report);
+        }
+    }
 
     // #4210: 다운레벨 못한 ES2025 inline modifier 그룹이 출력에 보존됨 → loud 진단
     // (transform-driven — 실제 fold bail 을 정확 반영, graph pre-pass 와 동일 메시지).

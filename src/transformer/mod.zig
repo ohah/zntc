@@ -58,6 +58,7 @@ test {
 
     // test files
     _ = @import("transformer_test.zig");
+    _ = @import("symbol_coverage.zig");
     _ = @import("minify_test.zig");
     _ = @import("worklet_test.zig");
     _ = @import("worklet_babel_parity_test.zig");
