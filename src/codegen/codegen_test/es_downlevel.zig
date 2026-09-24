@@ -4597,3 +4597,22 @@ test "ES5: 추출할 때 중첩 함수 안의 var 는 끌어올리지 않는다 
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function h(){var z=1;return z;}") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var z,") == null);
 }
+
+test "ES5 상태 기계: 구조분해 대입의 object rest 를 __rest 로 채운다 (#4750)" {
+    // 상태 기계는 `const {a, ...r} = o` 를 대입으로 낮추는데, 이 경로가 rest 를 무시해
+    // r 이 undefined 로 남았다(Hermes 는 #4712 가 이 경로로 바꾼 회귀).
+    var r = try e2eTarget(std.testing.allocator, "function* g(o){ const { a, ...r } = o; yield r; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "a=_a.a,r=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a,[\"a\"])") != null);
+}
+
+test "ES5 상태 기계: 구조분해 대입의 array rest 를 slice 로 채우고 패턴 rest 는 재귀로 푼다 (#4750)" {
+    var ra = try e2eTarget(std.testing.allocator, "function* g(o){ const [x, ...r] = o; yield r; }", .es5);
+    defer ra.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, ra.output, "x=_a[0],r=_a.slice(1)") != null);
+
+    var rn = try e2eTarget(std.testing.allocator, "function* g(o){ const [x, ...[y, z]] = o; yield y+z; }", .es5);
+    defer rn.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, rn.output, "_b=_a.slice(1),y=_b[0],z=_b[1]") != null);
+}

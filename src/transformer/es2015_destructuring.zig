@@ -213,6 +213,9 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const opd_start = pattern.data.list.start;
             const split = self.ast.nodeListSplitRest(pattern.data.list);
             const non_rest_len: u32 = @intCast(split.elements.len);
+            // rest 가 있으면 앞 속성들의 키를 제외 목록으로 모은다(계산된 키는 한 번만 평가).
+            var exclude_keys: std.ArrayList(NodeIndex) = .empty;
+            defer exclude_keys.deinit(self.allocator);
             var i_loop: u32 = 0;
             while (i_loop < non_rest_len) : (i_loop += 1) {
                 const raw_idx = self.ast.extra_data.items[opd_start + i_loop];
@@ -225,7 +228,10 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
                 const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
                 const key_node = self.ast.getNode(key_idx);
-                const member_access = try es_helpers.makeMemberFromKeyIdx(self, ref, key_idx, span);
+                const member_access = if (split.rest_operand != null)
+                    try emitObjectMemberAccessForRest(self, ref, key_node, key_idx, &exclude_keys, .assign, span)
+                else
+                    try es_helpers.makeMemberFromKeyIdx(self, ref, key_idx, span);
 
                 if (value_idx.isNone() or @intFromEnum(value_idx) == @intFromEnum(key_idx)) {
                     // shorthand: { x } → x = _ref.x
@@ -272,8 +278,24 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     }
                 }
             }
-            // rest property — assignment 컨텍스트에서는 __rest 헬퍼 미지원, lowerDestructuringAssignment
-            // 와 동일한 정책으로 일단 무시.
+            // rest property: `rest = __rest(_ref, [앞 키들])` (#4750). 예전엔 무시해 rest 가
+            // undefined 로 남았다 — 상태 기계가 `let {…, ...r} = v` 를 이 경로로 낮춘다.
+            if (split.rest_operand) |rest_inner| {
+                const parts = try buildRestCall(self, rest_inner, ref_span, exclude_keys.items, span);
+                const target = try restAssignTarget(self, rest_inner, parts.binding);
+                try self.scratch.append(self.allocator, try es_helpers.makeAssignExpr(self, target, parts.call, span, 0));
+                self.runtime_helpers.rest = true;
+            }
+        }
+
+        /// rest 대입 좌변. 식별자는 **참조** 노드로 — 바인딩 노드를 좌변에 두면 minify 가
+        /// 선언과 잇지 못한다(#4712).
+        fn restAssignTarget(self: *Transformer, rest_inner: NodeIndex, visited: NodeIndex) Transformer.Error!NodeIndex {
+            const vn = self.ast.getNode(visited);
+            if (vn.tag != .binding_identifier) return visited;
+            const target = try es_helpers.makeIdentifierRefFromSpan(self, vn.data.string_ref);
+            self.propagateSymbolId(rest_inner, target);
+            return target;
         }
 
         /// 기본값이 붙은 대상이 다시 패턴이면(`{ b: [c] = d }`) 임시 변수에 담고 재귀로 푼다.
@@ -349,7 +371,17 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     try self.scratch.append(self.allocator, assign);
                 }
             }
-            // rest element — declaration 컨텍스트의 _ref.slice(N) 와 달리 assignment 에서는 미지원.
+            // rest element: `rest = _ref.slice(N)` (#4750). 패턴이면 재귀로 푼다.
+            if (split.rest_operand) |rest_inner| {
+                const slice = try buildArraySlice(self, ref_span, non_rest_len, span);
+                const rest_node = self.ast.getNode(rest_inner);
+                if (try emitNestedPatternAssignment(self, rest_node, slice, span)) return;
+                const target = if (rest_node.tag == .binding_identifier)
+                    try restAssignTarget(self, rest_inner, try self.visitNode(rest_inner))
+                else
+                    try self.visitNode(rest_inner);
+                try self.scratch.append(self.allocator, try es_helpers.makeAssignExpr(self, target, slice, span, 0));
+            }
         }
 
         /// assignment destructuring을 sequence expression으로 변환.

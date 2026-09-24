@@ -65,8 +65,6 @@ const KNOWN_FAILURES: Record<string, string[]> = {
   '4730-using-module': ['esnext/plain', 'esnext/minify', 'hermes/plain', 'hermes/minify'],
   // #4733 Hermes 에서 async generator 를 for-await 로 돌 때
   'forof-asyncgen-close-break': ['hermes/plain', 'hermes/minify'],
-  // #4750 상태 기계 구조분해 대입이 rest 를 빠뜨린다
-  'forof-gen-destructure-head': ['es5/plain', 'es5/minify', 'hermes/plain', 'hermes/minify'],
   // #4733 Hermes 에서 async generator 를 for-await 로 돌 때
   '4730-using-30': ['hermes/plain', 'hermes/minify'],
 };
