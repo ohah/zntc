@@ -140,6 +140,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.label_scope.deinit(self.allocator);
     self.object_super_homes.deinit(self.allocator);
     self.generator_temp_var_spans.deinit(self.allocator);
+    self.generator_var_origins.deinit(self.allocator);
     self.tagged_template_fns.deinit(self.allocator);
     for (self.block_rename_stack.items) |entry| self.allocator.free(entry.new_name);
     self.block_rename_stack.deinit(self.allocator);
