@@ -1,10 +1,10 @@
-const i = 'OUT';
+const iLong = 'OUT';
 const log = [];
-function* g() {
-  for (let i = 0; i < 1; i++) {
-    yield i;
+function* gLong() {
+  for (let iLong2 = 0; iLong2 < 1; iLong2++) {
+    yield iLong2;
   }
-  log.push(i);
+  log.push(iLong);
 }
-for (const x of g());
+for (const xLong of gLong());
 console.log(log.join());

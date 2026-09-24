@@ -1,20 +1,20 @@
-const R = (n, log) => ({
+const RLong = (nLong, log) => ({
   [Symbol.dispose]() {
-    log.push('d' + n);
+    log.push('d' + nLong);
   },
 });
-const AR = (n, log) => ({
+const AR = (nLong2, log) => ({
   async [Symbol.asyncDispose]() {
-    log.push('ad' + n);
+    log.push('ad' + nLong2);
   },
 });
 const log = [];
 (async () => {
   async function* src() {
-    yield R(1, log);
-    yield R(2, log);
+    yield RLong(1, log);
+    yield RLong(2, log);
   }
-  for await (using x of src()) {
+  for await (using xLong of src()) {
     await 0;
     log.push('b');
   }

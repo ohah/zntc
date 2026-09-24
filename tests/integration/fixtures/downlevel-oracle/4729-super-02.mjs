@@ -1,8 +1,8 @@
-const p = { x: 5 };
-const o = {
-  __proto__: p,
+const pLong = { x: 5 };
+const oLong = {
+  __proto__: pLong,
   get g() {
     return super.x;
   },
 };
-console.log(o.g);
+console.log(oLong.g);

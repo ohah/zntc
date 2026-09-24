@@ -1,13 +1,13 @@
-const p = {
+const pLong = {
   m() {
     return 'p:' + this.t;
   },
 };
-const o = {
-  __proto__: p,
+const oLong = {
+  __proto__: pLong,
   t: 1,
   n() {
     return super.m();
   },
 };
-console.log(o.n());
+console.log(oLong.n());

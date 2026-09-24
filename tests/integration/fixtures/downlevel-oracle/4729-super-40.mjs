@@ -1,15 +1,15 @@
-const k = 'x';
-const o = {
+const kLong = 'x';
+const oLong = {
   __proto__: {
     x() {
       return 'px';
     },
   },
-  [k]() {
-    return super[k]();
+  [kLong]() {
+    return super[kLong]();
   },
-  get [k + 'g']() {
+  get [kLong + 'g']() {
     return super.x();
   },
 };
-console.log(o.x(), o.xg);
+console.log(oLong.x(), oLong.xg);

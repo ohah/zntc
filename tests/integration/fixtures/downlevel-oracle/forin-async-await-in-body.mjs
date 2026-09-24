@@ -1,8 +1,8 @@
 const out = [];
 (async () => {
-  for (const k in { a: 1, b: 2 }) {
+  for (const kLong in { a: 1, b: 2 }) {
     await 0;
-    out.push(k);
+    out.push(kLong);
   }
   console.log(out.join());
 })();

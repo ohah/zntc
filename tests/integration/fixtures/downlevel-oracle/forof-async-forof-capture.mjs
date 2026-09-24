@@ -1,8 +1,8 @@
-const f = [];
+const fLong = [];
 (async () => {
-  for (const x of [1, 2]) {
+  for (const xLong of [1, 2]) {
     await 0;
-    f.push(() => x);
+    fLong.push(() => xLong);
   }
-  console.log(f.map((h) => h()).join());
+  console.log(fLong.map((hLong) => hLong()).join());
 })();

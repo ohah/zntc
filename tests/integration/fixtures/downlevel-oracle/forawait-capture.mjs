@@ -1,5 +1,5 @@
 const fns = [];
 (async () => {
-  for await (const v of [1, 2]) fns.push(() => v);
-  console.log(fns.map((f) => f()).join());
+  for await (const vLong of [1, 2]) fns.push(() => vLong);
+  console.log(fns.map((fLong) => fLong()).join());
 })();

@@ -1,10 +1,10 @@
 const fns = [];
-function* g() {
-  for (const a in { x: 1, y: 2 })
-    for (const b in { p: 1, q: 2 }) {
+function* gLong() {
+  for (const aLong in { x: 1, y: 2 })
+    for (const bLong in { p: 1, q: 2 }) {
       yield 0;
-      fns.push(() => a + b);
+      fns.push(() => aLong + bLong);
     }
 }
-for (const _ of g());
-console.log(fns.map((f) => f()).join());
+for (const _Long of gLong());
+console.log(fns.map((fLong) => fLong()).join());

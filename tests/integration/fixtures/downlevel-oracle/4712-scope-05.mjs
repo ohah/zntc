@@ -1,12 +1,12 @@
-const x = 'OUT';
+const xLong = 'OUT';
 const log = [];
-function* g() {
+function* gLong() {
   {
-    let x = 'IN';
+    let xLong2 = 'IN';
     yield 1;
-    log.push(x);
+    log.push(xLong2);
   }
-  log.push(x);
+  log.push(xLong);
 }
-for (const v of g());
+for (const vLong of gLong());
 console.log(log.join());

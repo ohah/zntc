@@ -1,7 +1,7 @@
-const f = [];
-for (var i = 0; i < 2; i++) {
-  let v = i;
-  f.push(() => v);
-  v += 100;
+const fLong = [];
+for (var iLong = 0; iLong < 2; iLong++) {
+  let vLong = iLong;
+  fLong.push(() => vLong);
+  vLong += 100;
 }
-console.log(f.map((g) => g()).join());
+console.log(fLong.map((gLong) => gLong()).join());

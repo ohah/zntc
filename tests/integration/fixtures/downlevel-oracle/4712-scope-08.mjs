@@ -1,13 +1,13 @@
-const e = 'OUT';
+const eLong = 'OUT';
 const log = [];
-function* g() {
+function* gLong() {
   try {
     yield 1;
     throw 'X';
   } catch {
     yield 2;
-    log.push(e);
+    log.push(eLong);
   }
 }
-for (const v of g());
+for (const vLong of gLong());
 console.log(log.join());

@@ -1,12 +1,12 @@
 const log = [];
-function* g() {
-  for (const v of [1, 2]) {
+function* gLong() {
+  for (const vLong of [1, 2]) {
     try {
-      if (v === 2) return 'r';
-      yield v;
+      if (vLong === 2) return 'r';
+      yield vLong;
     } finally {
-      log.push('f' + v);
+      log.push('f' + vLong);
     }
   }
 }
-console.log([...g()].join(), log.join());
+console.log([...gLong()].join(), log.join());

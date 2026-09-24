@@ -1,12 +1,12 @@
 const log = [];
-function* g() {
-  let x = 'top';
+function* gLong() {
+  let xLong = 'top';
   {
-    let x = 'inner';
+    let xLong2 = 'inner';
     yield 1;
-    log.push(x);
+    log.push(xLong2);
   }
-  log.push(x);
+  log.push(xLong);
 }
-for (const v of g());
+for (const vLong of gLong());
 console.log(log.join());

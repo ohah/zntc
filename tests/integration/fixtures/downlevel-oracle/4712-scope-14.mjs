@@ -1,14 +1,14 @@
-const C = 'OUT';
+const CLong = 'OUT';
 const log = [];
-function* g() {
+function* gLong() {
   {
-    class C {
+    class CLong2 {
       static v = 'IN';
     }
     yield 1;
-    log.push(C.v);
+    log.push(CLong2.v);
   }
-  log.push(C);
+  log.push(CLong);
 }
-for (const x of g());
+for (const xLong of gLong());
 console.log(log.join());

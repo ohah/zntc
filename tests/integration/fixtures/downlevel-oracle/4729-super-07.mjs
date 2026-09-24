@@ -1,4 +1,4 @@
-const o = {
+const oLong = {
   __proto__: {
     m() {
       return 1;
@@ -8,4 +8,4 @@ const o = {
     return super.m();
   },
 };
-o.n().then((v) => console.log(v));
+oLong.n().then((vLong) => console.log(vLong));

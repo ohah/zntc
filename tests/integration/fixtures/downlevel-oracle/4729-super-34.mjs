@@ -1,17 +1,17 @@
-const mk = (p) => ({
-  __proto__: p,
+const mk = (pLong) => ({
+  __proto__: pLong,
   n() {
     return super.m();
   },
 });
-const a = mk({
+const aLong = mk({
     m() {
       return 1;
     },
   }),
-  b = mk({
+  bLong = mk({
     m() {
       return 2;
     },
   });
-console.log(a.n(), b.n());
+console.log(aLong.n(), bLong.n());

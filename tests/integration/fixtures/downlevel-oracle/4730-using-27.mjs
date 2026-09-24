@@ -1,18 +1,18 @@
-const R = (n, log) => ({
+const RLong = (nLong, log) => ({
   [Symbol.dispose]() {
-    log.push('d' + n);
+    log.push('d' + nLong);
   },
 });
-const AR = (n, log) => ({
+const AR = (nLong2, log) => ({
   async [Symbol.asyncDispose]() {
-    log.push('ad' + n);
+    log.push('ad' + nLong2);
   },
 });
 const log = [];
-out: for (const k of [1, 2]) {
-  for (using x of [R(k * 10 + 1, log), R(k * 10 + 2, log)]) {
-    if (k === 1) continue out;
-    log.push('b' + k);
+out: for (const kLong of [1, 2]) {
+  for (using xLong of [RLong(kLong * 10 + 1, log), RLong(kLong * 10 + 2, log)]) {
+    if (kLong === 1) continue out;
+    log.push('b' + kLong);
   }
 }
 console.log(log.join());

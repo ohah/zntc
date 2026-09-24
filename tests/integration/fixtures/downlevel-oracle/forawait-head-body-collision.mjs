@@ -1,8 +1,8 @@
 (async () => {
   const out = [];
-  for await (const v of [1]) {
-    let v = 'in';
-    out.push(v);
+  for await (const vLong of [1]) {
+    let vLong2 = 'in';
+    out.push(vLong2);
   }
   console.log(out.join());
 })();

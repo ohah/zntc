@@ -1,0 +1,2 @@
+DIFF 4730-using-module
+DIFF forof-expr-left-targets.mjs

@@ -1,10 +1,10 @@
 (async () => {
   const out = [];
-  for await (const a of [1, 2]) {
-    for (const b of ['x']) out.push(a + b);
-    for (const k in { p: 1 }) {
+  for await (const aLong of [1, 2]) {
+    for (const bLong of ['x']) out.push(aLong + bLong);
+    for (const kLong in { p: 1 }) {
       await 0;
-      out.push(a + k);
+      out.push(aLong + kLong);
     }
   }
   console.log(out.join());

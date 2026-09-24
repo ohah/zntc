@@ -1,5 +1,5 @@
-for (var v of [1, 2, 3]);
-function* g() {
-  for (var w of [4, 5]) yield w;
+for (var vLong of [1, 2, 3]);
+function* gLong() {
+  for (var wLong of [4, 5]) yield wLong;
 }
-console.log(v, [...g()].join());
+console.log(vLong, [...gLong()].join());

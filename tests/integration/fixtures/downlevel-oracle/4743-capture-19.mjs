@@ -1,6 +1,6 @@
-const f = [];
-for (let i = 0; i < 2; i++) {
-  var w = i;
-  f.push(() => i);
+const fLong = [];
+for (let iLong = 0; iLong < 2; iLong++) {
+  var wLong = iLong;
+  fLong.push(() => iLong);
 }
-console.log(f.map((g) => g()).join(), w);
+console.log(fLong.map((gLong) => gLong()).join(), wLong);

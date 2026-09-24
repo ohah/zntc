@@ -1,6 +1,6 @@
-const f = [];
-for (let i = 0; i < 2; i++) {
-  const v = i * 10;
-  f.push(() => v);
+const fLong = [];
+for (let iLong = 0; iLong < 2; iLong++) {
+  const vLong = iLong * 10;
+  fLong.push(() => vLong);
 }
-console.log(f.map((g) => g()).join());
+console.log(fLong.map((gLong) => gLong()).join());

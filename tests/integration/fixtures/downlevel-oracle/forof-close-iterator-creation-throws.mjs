@@ -7,16 +7,16 @@ const bad = {
   },
 };
 try {
-  for (const v of bad) log.push(v);
-} catch (e) {
-  log.push(e.message);
+  for (const vLong of bad) log.push(vLong);
+} catch (eLong) {
+  log.push(eLong.message);
 }
-function* g() {
-  for (const v of bad) yield v;
+function* gLong() {
+  for (const vLong2 of bad) yield vLong2;
 }
 try {
-  for (const v of g()) log.push(v);
-} catch (e) {
-  log.push('g:' + e.message);
+  for (const vLong3 of gLong()) log.push(vLong3);
+} catch (eLong2) {
+  log.push('g:' + eLong2.message);
 }
 console.log(log.join());

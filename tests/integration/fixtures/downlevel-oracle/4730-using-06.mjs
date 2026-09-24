@@ -1,16 +1,16 @@
-const R = (n, log) => ({
+const RLong = (nLong, log) => ({
   [Symbol.dispose]() {
-    log.push('d' + n);
+    log.push('d' + nLong);
   },
 });
-const AR = (n, log) => ({
+const AR = (nLong2, log) => ({
   async [Symbol.asyncDispose]() {
-    log.push('ad' + n);
+    log.push('ad' + nLong2);
   },
 });
 const log = [];
-for (const x of [1, 2]) {
-  using a = R(x, log);
-  if (x === 1) break;
+for (const xLong of [1, 2]) {
+  using aLong = RLong(xLong, log);
+  if (xLong === 1) break;
 }
 console.log(log.join());

@@ -1,5 +1,5 @@
 const _obj = 5;
-const o = {
+const oLong = {
   __proto__: {
     m() {
       return 1;
@@ -10,4 +10,4 @@ const o = {
     return super.m();
   },
 };
-o.n().then((v) => console.log(o.a, v));
+oLong.n().then((vLong) => console.log(oLong.a, vLong));

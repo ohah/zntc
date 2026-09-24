@@ -1,13 +1,13 @@
-const f = [];
-function* g() {
-  for (let i = 0; i < 2; i++) {
+const fLong = [];
+function* gLong() {
+  for (let iLong = 0; iLong < 2; iLong++) {
     try {
-      throw i;
-    } catch (e) {
+      throw iLong;
+    } catch (eLong) {
       yield 0;
-      f.push(() => e);
+      fLong.push(() => eLong);
     }
   }
 }
-for (const _ of g());
-console.log(f.map((h) => h()).join());
+for (const _Long of gLong());
+console.log(fLong.map((hLong) => hLong()).join());

@@ -3,12 +3,12 @@ function* sg() {
   yield 'g1';
   yield 'g2';
 }
-for (const v of sg()) out.push(v);
-for (const v of new Set(['s1'])) out.push(v);
-for (const [k, x] of new Map([['k', 'v']])) out.push(k + x);
-for (const c of 'ab') out.push(c);
-for (const v of new Uint8Array([7])) out.push(v);
+for (const vLong of sg()) out.push(vLong);
+for (const vLong2 of new Set(['s1'])) out.push(vLong2);
+for (const [kLong, xLong] of new Map([['k', 'v']])) out.push(kLong + xLong);
+for (const cLong of 'ab') out.push(cLong);
+for (const vLong3 of new Uint8Array([7])) out.push(vLong3);
 (function () {
-  for (const a of arguments) out.push('a' + a);
+  for (const aLong of arguments) out.push('a' + aLong);
 })(1, 2);
 console.log(out.join());

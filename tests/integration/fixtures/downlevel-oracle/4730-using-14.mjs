@@ -1,17 +1,17 @@
-const R = (n, log) => ({
+const RLong = (nLong, log) => ({
   [Symbol.dispose]() {
-    log.push('d' + n);
+    log.push('d' + nLong);
   },
 });
-const AR = (n, log) => ({
+const AR = (nLong2, log) => ({
   async [Symbol.asyncDispose]() {
-    log.push('ad' + n);
+    log.push('ad' + nLong2);
   },
 });
 const log = [];
 {
-  using a = null,
-    b = R(2, log);
+  using aLong = null,
+    bLong = RLong(2, log);
   log.push('n');
 }
 console.log(log.join());

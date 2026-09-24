@@ -1,6 +1,6 @@
 const err = 'OUTER';
 const log = [];
-function* g() {
+function* gLong() {
   try {
     throw new Error('A');
   } catch (err) {
@@ -9,5 +9,5 @@ function* g() {
   yield 1;
   log.push(err);
 }
-for (const v of g());
+for (const vLong of gLong());
 console.log(log.join());

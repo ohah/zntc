@@ -1,6 +1,6 @@
-const f = [];
-for (const x of [1, 2]) {
-  const v = x * 2;
-  f.push(() => v);
+const fLong = [];
+for (const xLong of [1, 2]) {
+  const vLong = xLong * 2;
+  fLong.push(() => vLong);
 }
-console.log(f.map((g) => g()).join());
+console.log(fLong.map((gLong) => gLong()).join());

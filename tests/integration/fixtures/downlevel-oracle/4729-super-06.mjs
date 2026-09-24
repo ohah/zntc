@@ -1,11 +1,11 @@
-class A {
+class ALong {
   x() {
     return 'A';
   }
 }
-class B extends A {
+class BLong extends ALong {
   m() {
-    const o = {
+    const oLong = {
       __proto__: {
         x() {
           return 'P';
@@ -15,7 +15,7 @@ class B extends A {
         return super.x();
       },
     };
-    return o.n() + super.x();
+    return oLong.n() + super.x();
   }
 }
-console.log(new B().m());
+console.log(new BLong().m());

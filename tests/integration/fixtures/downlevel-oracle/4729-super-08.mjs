@@ -1,4 +1,4 @@
-const o = {
+const oLong = {
   __proto__: {
     m() {
       return 1;
@@ -8,4 +8,4 @@ const o = {
     yield super.m();
   },
 };
-console.log([...o.n()]);
+console.log([...oLong.n()]);

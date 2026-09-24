@@ -1,14 +1,18 @@
 const log = [];
 try {
   {
-    using a = {
+    using aLong = {
       [Symbol.dispose]() {
         throw new Error('D');
       },
     };
     throw new Error('B');
   }
-} catch (e) {
-  log.push(e.constructor.name, e.error && e.error.message, e.suppressed && e.suppressed.message);
+} catch (eLong) {
+  log.push(
+    eLong.constructor.name,
+    eLong.error && eLong.error.message,
+    eLong.suppressed && eLong.suppressed.message,
+  );
 }
 console.log(log.join());

@@ -1,9 +1,9 @@
-const f = [];
-outer: for (var i = 0; i < 2; i++) {
-  for (var j = 0; j < 2; j++) {
-    const v = i * 10 + j;
-    f.push(() => v);
-    if (j === 0) continue outer;
+const fLong = [];
+outer: for (var iLong = 0; iLong < 2; iLong++) {
+  for (var jLong = 0; jLong < 2; jLong++) {
+    const vLong = iLong * 10 + jLong;
+    fLong.push(() => vLong);
+    if (jLong === 0) continue outer;
   }
 }
-console.log(f.map((g) => g()).join());
+console.log(fLong.map((gLong) => gLong()).join());

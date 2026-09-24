@@ -1,7 +1,7 @@
-const o = {
+const oLong = {
   __proto__: { v: 1 },
   n() {
     return super.v?.toFixed(1);
   },
 };
-console.log(o.n());
+console.log(oLong.n());

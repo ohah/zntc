@@ -1,5 +1,5 @@
-function* g() {
-  for (var k in { a: 1, b: 2 }) yield k;
-  yield 'last:' + k;
+function* gLong() {
+  for (var kLong in { a: 1, b: 2 }) yield kLong;
+  yield 'last:' + kLong;
 }
-console.log([...g()].join());
+console.log([...gLong()].join());

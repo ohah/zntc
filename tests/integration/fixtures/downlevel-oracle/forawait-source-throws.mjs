@@ -1,9 +1,9 @@
 const log = [];
-async function* src(n, opts) {
+async function* src(nLong, opts) {
   try {
-    for (let i = 0; i < n; i++) {
-      if (opts.throwAt === i) throw new Error('src' + i);
-      yield i;
+    for (let iLong = 0; iLong < nLong; iLong++) {
+      if (opts.throwAt === iLong) throw new Error('src' + iLong);
+      yield iLong;
     }
   } finally {
     log.push('srcfin');
@@ -11,9 +11,9 @@ async function* src(n, opts) {
 }
 (async () => {
   try {
-    for await (const v of src(3, { throwAt: 1 })) log.push(v);
-  } catch (e) {
-    log.push(e.message);
+    for await (const vLong of src(3, { throwAt: 1 })) log.push(vLong);
+  } catch (eLong) {
+    log.push(eLong.message);
   }
   console.log(log.join());
 })();

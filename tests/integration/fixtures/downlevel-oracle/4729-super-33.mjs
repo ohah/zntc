@@ -1,5 +1,5 @@
-function f() {
-  const o = {
+function fLong() {
+  const oLong = {
     __proto__: {
       m() {
         return arguments.length;
@@ -10,6 +10,6 @@ function f() {
       return super.m(1, 2);
     },
   };
-  return o.c + ':' + o.n();
+  return oLong.c + ':' + oLong.n();
 }
-console.log(f(9, 9, 9));
+console.log(fLong(9, 9, 9));

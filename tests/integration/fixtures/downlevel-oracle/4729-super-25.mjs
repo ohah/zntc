@@ -1,13 +1,13 @@
-const p = {
+const pLong = {
   m() {
     return 1;
   },
 };
-const o = {
-  __proto__: p,
+const oLong = {
+  __proto__: pLong,
   async n() {
     await 0;
     return [0].map(() => super.m())[0];
   },
 };
-o.n().then((v) => console.log(v));
+oLong.n().then((vLong) => console.log(vLong));

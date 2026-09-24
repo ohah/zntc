@@ -1,11 +1,11 @@
-class C {
+class CLong {
   constructor() {
     this.k = 'K';
   }
-  async run(s) {
+  async run(sLong) {
     const out = [];
-    for await (const v of s) out.push(this.k + v);
+    for await (const vLong of sLong) out.push(this.k + vLong);
     return out.join();
   }
 }
-new C().run([1, 2]).then(console.log);
+new CLong().run([1, 2]).then(console.log);

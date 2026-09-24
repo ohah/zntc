@@ -1,31 +1,31 @@
 const log = [];
-function mk(n, opts = {}) {
-  let i = 0;
+function mk(nLong, opts = {}) {
+  let iLong = 0;
   return {
     [Symbol.iterator]() {
       return this;
     },
     next() {
-      if (opts.nextThrowsAt === i) throw new Error('next' + i);
-      return i < n ? { value: i++, done: false } : { value: undefined, done: true };
+      if (opts.nextThrowsAt === iLong) throw new Error('next' + iLong);
+      return iLong < nLong ? { value: iLong++, done: false } : { value: undefined, done: true };
     },
     ...(opts.noReturn
       ? {}
       : {
-          return(v) {
+          return(vLong) {
             log.push('close');
             if (opts.returnThrows) throw new Error('ret');
-            return { value: v, done: true };
+            return { value: vLong, done: true };
           },
         }),
   };
 }
-function* g() {
-  for (const v of mk(3, { nextThrowsAt: 1 })) yield v;
+function* gLong() {
+  for (const vLong2 of mk(3, { nextThrowsAt: 1 })) yield vLong2;
 }
 try {
-  for (const x of g()) log.push(x);
-} catch (e) {
-  log.push(e.message);
+  for (const xLong of gLong()) log.push(xLong);
+} catch (eLong) {
+  log.push(eLong.message);
 }
 console.log(log.join());

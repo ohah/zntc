@@ -1,12 +1,12 @@
-function* inner(n) {
-  yield n;
-  yield n + 1;
-  return 'r' + n;
+function* inner(nLong) {
+  yield nLong;
+  yield nLong + 1;
+  return 'r' + nLong;
 }
-function* g() {
-  for (const n of [10, 20]) {
-    const r = yield* inner(n);
-    yield r;
+function* gLong() {
+  for (const nLong2 of [10, 20]) {
+    const rLong = yield* inner(nLong2);
+    yield rLong;
   }
 }
-console.log([...g()].join());
+console.log([...gLong()].join());

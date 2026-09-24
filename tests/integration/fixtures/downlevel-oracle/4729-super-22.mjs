@@ -11,12 +11,12 @@ const ps = [
     },
   },
 ];
-for (var i = 0; i < 2; i++) {
+for (var iLong = 0; iLong < 2; iLong++) {
   out.push({
-    __proto__: ps[i],
+    __proto__: ps[iLong],
     n() {
       return super.m();
     },
   });
 }
-console.log(out.map((o) => o.n()).join());
+console.log(out.map((oLong) => oLong.n()).join());

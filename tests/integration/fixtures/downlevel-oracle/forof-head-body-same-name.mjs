@@ -1,13 +1,13 @@
 const out = [];
-for (const x of [1, 2]) {
-  const x2 = x;
+for (const xLong of [1, 2]) {
+  const x2 = xLong;
   {
-    let x = 'inner' + x2;
-    out.push(x);
+    let xLong2 = 'inner' + x2;
+    out.push(xLong2);
   }
 }
-for (let y of [3]) {
-  let z = y;
-  out.push(z);
+for (let yLong of [3]) {
+  let zLong = yLong;
+  out.push(zLong);
 }
 console.log(out.join());

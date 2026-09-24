@@ -1,7 +1,7 @@
-const f = [];
-let i = 0;
+const fLong = [];
+let iLong = 0;
 do {
-  const v = i++;
-  f.push(() => v);
-} while (i < 2);
-console.log(f.map((g) => g()).join());
+  const vLong = iLong++;
+  fLong.push(() => vLong);
+} while (iLong < 2);
+console.log(fLong.map((gLong) => gLong()).join());

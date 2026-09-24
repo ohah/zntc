@@ -1,8 +1,8 @@
-async function* g(s) {
-  for await (const v of s) yield v * 2;
+async function* gLong(sLong) {
+  for await (const vLong of sLong) yield vLong * 2;
 }
 (async () => {
   const out = [];
-  for await (const x of g([1, Promise.resolve(2)])) out.push(x);
+  for await (const xLong of gLong([1, Promise.resolve(2)])) out.push(xLong);
   console.log(out.join());
 })();

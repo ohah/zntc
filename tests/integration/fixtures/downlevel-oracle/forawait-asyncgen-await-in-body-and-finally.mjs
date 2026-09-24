@@ -1,16 +1,16 @@
 const log = [];
-async function* g(s) {
-  for await (const v of s) {
+async function* gLong(sLong) {
+  for await (const vLong of sLong) {
     try {
       await 0;
-      yield v;
+      yield vLong;
     } finally {
       await 0;
-      log.push('f' + v);
+      log.push('f' + vLong);
     }
   }
 }
 (async () => {
-  for await (const v of g([1, 2])) log.push(v);
+  for await (const vLong2 of gLong([1, 2])) log.push(vLong2);
   console.log(log.join());
 })();

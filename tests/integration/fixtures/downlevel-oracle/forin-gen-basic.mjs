@@ -4,7 +4,7 @@ function Base() {
 Base.prototype.inh = 2;
 const obj = new Base();
 obj.own2 = 3;
-function* g(o) {
-  for (const k in o) yield k;
+function* gLong(oLong) {
+  for (const kLong in oLong) yield kLong;
 }
-console.log([...g(obj)].join());
+console.log([...gLong(obj)].join());

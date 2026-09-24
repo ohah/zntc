@@ -1,12 +1,12 @@
-const p = {
+const pLong = {
   m() {
     return 1;
   },
 };
-const o = {
-  __proto__: p,
+const oLong = {
+  __proto__: pLong,
   n() {
     return [1].map(() => super.m());
   },
 };
-console.log(o.n());
+console.log(oLong.n());

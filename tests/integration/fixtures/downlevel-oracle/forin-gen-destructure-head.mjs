@@ -1,4 +1,4 @@
-function* g() {
-  for (const [c, d = '-'] in { ab: 1, c: 2 }) yield c + d;
+function* gLong() {
+  for (const [cLong, dLong = '-'] in { ab: 1, c: 2 }) yield cLong + dLong;
 }
-console.log([...g()].join());
+console.log([...gLong()].join());

@@ -1,8 +1,8 @@
 const log = [];
-function* g(e) {
-  let { message } = e;
+function* gLong(eLong) {
+  let { message } = eLong;
   yield 1;
   log.push(message);
 }
-for (const v of g({ message: 'M' }));
+for (const vLong of gLong({ message: 'M' }));
 console.log(log.join());

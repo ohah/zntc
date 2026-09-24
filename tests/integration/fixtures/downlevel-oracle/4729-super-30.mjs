@@ -1,17 +1,17 @@
-async function f() {
-  for (let i = 0; i < 2; i++) {
+async function fLong() {
+  for (let iLong = 0; iLong < 2; iLong++) {
     await 0;
-    const o = {
+    const oLong = {
       __proto__: {
         m() {
-          return i;
+          return iLong;
         },
       },
       n() {
         return super.m();
       },
     };
-    setTimeout(() => console.log(o.n()));
+    setTimeout(() => console.log(oLong.n()));
   }
 }
-f();
+fLong();

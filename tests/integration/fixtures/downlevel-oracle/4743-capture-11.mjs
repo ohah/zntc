@@ -1,11 +1,11 @@
-const f = [];
-for (var i = 0; i < 2; i++) {
-  class C {
+const fLong = [];
+for (var iLong = 0; iLong < 2; iLong++) {
+  class CLong {
     m() {
-      return i;
+      return iLong;
     }
   }
-  const c = C;
-  f.push(() => c === C);
+  const cLong = CLong;
+  fLong.push(() => cLong === CLong);
 }
-console.log(f.map((g) => g()).join());
+console.log(fLong.map((gLong) => gLong()).join());

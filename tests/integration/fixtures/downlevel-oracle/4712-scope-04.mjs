@@ -1,6 +1,6 @@
 const message = 'OUT';
 const log = [];
-function* g() {
+function* gLong() {
   try {
     yield 1;
     throw new Error('M');
@@ -10,5 +10,5 @@ function* g() {
   }
   log.push(message);
 }
-for (const v of g());
+for (const vLong of gLong());
 console.log(log.join());
