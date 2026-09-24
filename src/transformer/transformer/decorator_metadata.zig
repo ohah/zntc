@@ -15,19 +15,19 @@ const Error = std.mem.Allocator.Error;
 /// - symbol/bigint: typeof 런타임 체크
 /// - 클래스 참조: typeof X === "undefined" ? Object : X
 pub fn serializeTypeAnnotation(self: anytype, type_ann_idx: NodeIndex) Error!NodeIndex {
-    if (type_ann_idx.isNone()) return makeIdentifier(self, "Object");
+    if (type_ann_idx.isNone()) return es_helpers.makeGlobalRef(self, "Object");
 
     const type_node = self.ast.getNode(type_ann_idx);
 
     return switch (type_node.tag) {
         // 기본 타입 키워드 → 런타임 생성자 (런타임에 항상 존재)
-        .ts_number_keyword => makeIdentifier(self, "Number"),
-        .ts_string_keyword => makeIdentifier(self, "String"),
-        .ts_boolean_keyword => makeIdentifier(self, "Boolean"),
-        .ts_any_keyword, .ts_object_keyword, .ts_unknown_keyword => makeIdentifier(self, "Object"),
+        .ts_number_keyword => es_helpers.makeGlobalRef(self, "Number"),
+        .ts_string_keyword => es_helpers.makeGlobalRef(self, "String"),
+        .ts_boolean_keyword => es_helpers.makeGlobalRef(self, "Boolean"),
+        .ts_any_keyword, .ts_object_keyword, .ts_unknown_keyword => es_helpers.makeGlobalRef(self, "Object"),
 
         // void/null/undefined/never → void 0 (SWC 호환)
-        .ts_void_keyword, .ts_undefined_keyword, .ts_null_keyword, .ts_never_keyword => makeIdentifier(self, "void 0"),
+        .ts_void_keyword, .ts_undefined_keyword, .ts_null_keyword, .ts_never_keyword => es_helpers.makeVoidZero(self, .{ .start = 0, .end = 0 }),
 
         // symbol/bigint → typeof 런타임 체크 (ES5 환경에서 없을 수 있음, SWC 호환)
         .ts_symbol_keyword => makeTypeofGuard(self, "Symbol"),
@@ -46,11 +46,11 @@ pub fn serializeTypeAnnotation(self: anytype, type_ann_idx: NodeIndex) Error!Nod
         },
 
         // 배열/튜플 → Array
-        .ts_array_type, .ts_tuple_type => makeIdentifier(self, "Array"),
+        .ts_array_type, .ts_tuple_type => es_helpers.makeGlobalRef(self, "Array"),
         // 함수 타입 → Function
-        .ts_function_type, .ts_construct_signature => makeIdentifier(self, "Function"),
+        .ts_function_type, .ts_construct_signature => es_helpers.makeGlobalRef(self, "Function"),
         // QualifiedName, union, intersection 등 → Object
-        else => makeIdentifier(self, "Object"),
+        else => es_helpers.makeGlobalRef(self, "Object"),
     };
 }
 
@@ -59,14 +59,14 @@ pub fn serializeTypeAnnotation(self: anytype, type_ann_idx: NodeIndex) Error!Nod
 pub fn extractTypeFromSource(self: anytype, param: Node) Error!NodeIndex {
     const span_end = param.span.end;
     const source = self.ast.source;
-    if (span_end >= source.len) return makeIdentifier(self, "Object");
+    if (span_end >= source.len) return es_helpers.makeGlobalRef(self, "Object");
 
     // span 끝 이후에서 `: Type` 패턴 탐색
     var pos = span_end;
     // 공백 건너뜀
     while (pos < source.len and (source[pos] == ' ' or source[pos] == '\t' or source[pos] == '\n' or source[pos] == '\r' or source[pos] == '?')) : (pos += 1) {}
     // `:` 확인
-    if (pos >= source.len or source[pos] != ':') return makeIdentifier(self, "Object");
+    if (pos >= source.len or source[pos] != ':') return es_helpers.makeGlobalRef(self, "Object");
     pos += 1;
     // 공백 건너뜀
     while (pos < source.len and (source[pos] == ' ' or source[pos] == '\t')) : (pos += 1) {}
@@ -74,27 +74,22 @@ pub fn extractTypeFromSource(self: anytype, param: Node) Error!NodeIndex {
     const type_start = pos;
     // 식별자 끝 찾기 (알파벳, 숫자, _, $, .)
     while (pos < source.len and (std.ascii.isAlphanumeric(source[pos]) or source[pos] == '_' or source[pos] == '$' or source[pos] == '.')) : (pos += 1) {}
-    if (pos == type_start) return makeIdentifier(self, "Object");
+    if (pos == type_start) return es_helpers.makeGlobalRef(self, "Object");
 
     const type_name = source[type_start..pos];
     // SWC 호환 타입 직렬화 (텍스트 기반 폴백)
-    if (std.mem.eql(u8, type_name, "number")) return makeIdentifier(self, "Number");
-    if (std.mem.eql(u8, type_name, "string")) return makeIdentifier(self, "String");
-    if (std.mem.eql(u8, type_name, "boolean")) return makeIdentifier(self, "Boolean");
+    if (std.mem.eql(u8, type_name, "number")) return es_helpers.makeGlobalRef(self, "Number");
+    if (std.mem.eql(u8, type_name, "string")) return es_helpers.makeGlobalRef(self, "String");
+    if (std.mem.eql(u8, type_name, "boolean")) return es_helpers.makeGlobalRef(self, "Boolean");
     if (std.mem.eql(u8, type_name, "symbol")) return makeTypeofGuard(self, "Symbol");
     if (std.mem.eql(u8, type_name, "bigint")) return makeTypeofGuard(self, "BigInt");
     if (std.mem.eql(u8, type_name, "any") or std.mem.eql(u8, type_name, "object") or
-        std.mem.eql(u8, type_name, "unknown")) return makeIdentifier(self, "Object");
+        std.mem.eql(u8, type_name, "unknown")) return es_helpers.makeGlobalRef(self, "Object");
     if (std.mem.eql(u8, type_name, "void") or std.mem.eql(u8, type_name, "undefined") or
         std.mem.eql(u8, type_name, "null") or std.mem.eql(u8, type_name, "never"))
-        return makeIdentifier(self, "void 0");
+        return es_helpers.makeVoidZero(self, .{ .start = 0, .end = 0 });
     // 클래스/인터페이스 참조 → typeof 런타임 체크 (SWC 호환)
     return makeTypeofGuard(self, type_name);
-}
-
-/// 이름으로 identifier_reference 노드를 생성하는 헬퍼.
-fn makeIdentifier(self: anytype, name: []const u8) Error!NodeIndex {
-    return es_helpers.makeIdentifierRef(self, name);
 }
 
 /// typeof X === "undefined" ? Object : X 조건 표현식 생성 (SWC 호환).
@@ -103,7 +98,7 @@ fn makeTypeofGuard(self: anytype, name: []const u8) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
     // typeof X
-    const name_ref = try makeIdentifier(self, name);
+    const name_ref = try self.makeRootScopeRef(name);
     const typeof_expr = try self.addExtraNode(.unary_expression, zero_span, &.{
         @intFromEnum(name_ref), @intFromEnum(Kind.kw_typeof),
     });
@@ -120,10 +115,10 @@ fn makeTypeofGuard(self: anytype, name: []const u8) Error!NodeIndex {
     });
 
     // Object
-    const object_ref = try makeIdentifier(self, "Object");
+    const object_ref = try es_helpers.makeGlobalRef(self, "Object");
 
     // X (consequent)
-    const name_ref2 = try makeIdentifier(self, name);
+    const name_ref2 = try self.makeRootScopeRef(name);
 
     // typeof X === "undefined" ? Object : X
     return self.ast.addNode(.{
@@ -137,7 +132,7 @@ fn makeTypeofGuard(self: anytype, name: []const u8) Error!NodeIndex {
 pub fn buildMetadataCall(self: anytype, key: []const u8, value_idx: NodeIndex) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
-    const callee = try makeIdentifier(self, "__metadata");
+    const callee = try es_helpers.makeRuntimeHelperRef(self, "__metadata");
 
     // key 문자열 리터럴 — codegen의 writeStringLiteral은 따옴표 포함 텍스트를 기대
     var key_buf: [256]u8 = undefined;
@@ -166,7 +161,7 @@ pub fn buildParamTypesArray(self: anytype, params: ast_mod.NodeList) Error!NodeI
         const raw = self.ast.extra_data.items[params.start + j];
         const p_idx: NodeIndex = @enumFromInt(raw);
         if (p_idx.isNone() or @intFromEnum(p_idx) >= self.ast.nodes.items.len) {
-            try type_nodes.append(self.allocator, try makeIdentifier(self, "Object"));
+            try type_nodes.append(self.allocator, try es_helpers.makeGlobalRef(self, "Object"));
             continue;
         }
         const param = self.ast.getNode(p_idx);
@@ -178,14 +173,14 @@ pub fn buildParamTypesArray(self: anytype, params: ast_mod.NodeList) Error!NodeI
                 const type_val = try serializeTypeAnnotation(self, type_ann_idx);
                 try type_nodes.append(self.allocator, type_val);
             } else {
-                try type_nodes.append(self.allocator, try makeIdentifier(self, "Object"));
+                try type_nodes.append(self.allocator, try es_helpers.makeGlobalRef(self, "Object"));
             }
         } else if (param.tag == .binding_identifier or param.tag == .assignment_pattern) {
             // 일반 파라미터: 소스에서 타입 어노테이션 추출 (: Type 패턴)
             const type_val = try extractTypeFromSource(self, param);
             try type_nodes.append(self.allocator, type_val);
         } else {
-            try type_nodes.append(self.allocator, try makeIdentifier(self, "Object"));
+            try type_nodes.append(self.allocator, try es_helpers.makeGlobalRef(self, "Object"));
         }
     }
 
@@ -203,7 +198,7 @@ pub fn appendMemberMetadata(
     if (!self.options.emit_decorator_metadata) return;
 
     // design:type → always Function for methods
-    const func_ref = try makeIdentifier(self, "Function");
+    const func_ref = try es_helpers.makeGlobalRef(self, "Function");
     const type_meta = try buildMetadataCall(self, "design:type", func_ref);
     try deco_list.append(self.allocator, type_meta);
 
@@ -213,7 +208,7 @@ pub fn appendMemberMetadata(
     try deco_list.append(self.allocator, paramtypes_meta);
 
     // design:returntype → Object (AST에 리턴 타입 추출 미지원)
-    const return_type_val = try makeIdentifier(self, "Object");
+    const return_type_val = try es_helpers.makeGlobalRef(self, "Object");
     const return_meta = try buildMetadataCall(self, "design:returntype", return_type_val);
     try deco_list.append(self.allocator, return_meta);
 }

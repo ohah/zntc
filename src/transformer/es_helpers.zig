@@ -894,13 +894,18 @@ pub fn makeNeqNull(self: anytype, base: NodeIndex, span: Span) !NodeIndex {
     return makeNullCompare(self, base, span, .neq);
 }
 
-fn makeNullCompare(self: anytype, base: NodeIndex, span: Span, op: token_mod.Kind) !NodeIndex {
+/// `null` 리터럴 노드.
+pub fn makeNullLiteral(self: anytype) !NodeIndex {
     const null_span = try self.ast.addString("null");
-    const null_node = try self.ast.addNode(.{
+    return self.ast.addNode(.{
         .tag = .null_literal,
         .span = null_span,
         .data = .{ .none = 0 },
     });
+}
+
+fn makeNullCompare(self: anytype, base: NodeIndex, span: Span, op: token_mod.Kind) !NodeIndex {
+    const null_node = try makeNullLiteral(self);
     return self.ast.addNode(.{
         .tag = .binary_expression,
         .span = span,
