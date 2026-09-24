@@ -269,7 +269,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
 
         /// 루프 변수 대입을 앞에 둔 본문 블록. 원래 본문 블록에 루프 변수와 같은 이름의
         /// 선언이 있으면(헤더와 본문은 스코프가 다르다) 합치지 않고 한 겹 더 감싼다.
-        fn buildLoopBody(self: *Transformer, left: NodeIndex, value: NodeIndex, body: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        pub fn buildLoopBody(self: *Transformer, left: NodeIndex, value: NodeIndex, body: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const left_node = self.ast.getNode(left);
             const head_stmt = if (left_node.tag == .variable_declaration) blk: {
                 const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[self.readU32(left_node.data.extra, 1)]));
@@ -332,7 +332,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             return false;
         }
 
-        fn uniqueStepName(self: *Transformer) Transformer.Error!Span {
+        pub fn uniqueStepName(self: *Transformer) Transformer.Error!Span {
             const prefix = "_step";
             while (true) {
                 const name = try self.buildUniqueName(prefix, &self.forof_step_counter);

@@ -217,6 +217,11 @@ pub fn ES2017(comptime Transformer: type) type {
 
             // `yield*` 를 먼저 푼다 — 그래야 그 안에 남은 `await` 를 아래 패스가 한 번에 정리한다.
             try rewriteYieldStarToHelper(self, body_idx);
+            // for-await 를 먼저 제자리 풀이한다 — 그래야 풀이가 만든 await 도 아래 패스에서
+            // 사용자 await 와 함께 `yield __await(…)` 가 된다 (#4746 3단계, #4707 대체).
+            if (self.options.unsupported.needsForAwaitOfDownlevel()) {
+                try @import("es2018_for_await.zig").ES2018ForAwait(Transformer).lowerInPlace(self, body_idx);
+            }
             try rewriteAwaitToYieldAwait(self, body_idx);
             // ⚠️ 여기서는 `in_extracted_fn_body` 를 켜지 않는다. `__asyncGenerator(this,
             // arguments, fn)` 이 arguments 를 **인자로** 넘기고 헬퍼가 `fn.apply(this,
@@ -242,12 +247,10 @@ pub fn ES2017(comptime Transformer: type) type {
                 .data = .{ .extra = inner_extra },
             });
             // inner function 자체도 visitNode 거쳐 generator/await downlevel 적용.
-            // es5 에서는 이 visit 안에서 state machine 이 만들어진다. 그 안의 `for await`
-            // 가 새로 만드는 await 도 `__await(…)` 로 감싸야 한다고 알려 둔다 (#4707).
-            const saved_pending_sm = self.pending_async_generator_sm;
-            self.pending_async_generator_sm = true;
+            // es5 에서는 이 visit 안에서 state machine 이 만들어진다. for-await 는 위 전처리에서
+            // 이미 풀려 합성 await 까지 `yield __await(…)` 가 됐다 (#4746 — #4707 의 상태 기계
+            // 표시 신호를 대체).
             const lowered_inner = try self.visitNode(inner_func);
-            self.pending_async_generator_sm = saved_pending_sm;
             // 위 rewriteAwaitToYieldAwait 는 inner visit **전** 이라, 그 visit 중 for-await
             // 다운레벨이 새로 만든 await 를 놓친다 → 한 번 더 훑는다 (#4488).
             // 주의 — visit 은 body 를 **새 노드로 교체**하므로 원래 `body_idx` 가 아니라

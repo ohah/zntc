@@ -206,12 +206,6 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         pub fn buildStateMachine(self: *Transformer, body_idx: NodeIndex, span: Span) Transformer.Error!StateMachineResult {
             if (body_idx.isNone()) return .{ .body = .none, .var_decl = .none };
 
-            // 1회용 신호를 여기서 소비한다 — 중첩된 평범한 generator 가 물려받지 않도록. (#4707)
-            const saved_in_async_gen_sm = self.in_async_generator_sm;
-            self.in_async_generator_sm = self.pending_async_generator_sm;
-            self.pending_async_generator_sm = false;
-            defer self.in_async_generator_sm = saved_in_async_gen_sm;
-
             const body = self.ast.getNode(body_idx);
 
             // expression body (arrow function): implicit return으로 처리
@@ -450,29 +444,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .for_await_of_statement => {
                     if (try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, stmt_idx))
                         return collectOperations(self, stmt_idx, ops, next_label);
-                    // async_await 미지원 타겟(ES5/Hermes)에서 for-await 는 ES2018 lowering 으로
-                    // while 루프 + yield 로 풀어진다. visitNode 로 변환하면 결과 block 이
-                    // .statement 로 통째로 묻혀 내부 yield 가 state machine 에 안 보이므로,
-                    // 여기서 변환 결과 block 의 자식 문장을 재귀적으로 collect 한다. (#1381)
-                    const es2018 = @import("es2018_for_await.zig");
-                    // 루프 변수가 본문 클로저에 캡처되면 반복별 바인딩을 먼저 복원한다
-                    // (#4722 — #4716 과 같은 `_loop` generator 추출). es5 는 let 이 var 로 합쳐진다.
-                    const fa_stmt = blk: {
-                        const rewritten = try extractPerIterationLoopBody(self, stmt, stmt.data.ternary.a, stmt.data.ternary.c, ops, next_label);
-                        break :blk if (rewritten.isNone()) stmt else self.ast.getNode(rewritten);
-                    };
-                    const lowered = try es2018.ES2018ForAwait(Transformer).lowerForAwaitOf(self, fa_stmt);
-                    if (!lowered.isNone()) {
-                        // async generator 의 state machine 안이면, 방금 만들어진 await 들을
-                        // `yield __await(x)` 로 표시해야 한다. 안 그러면 `[4, x]` 가 사용자
-                        // yield 와 구분되지 않아 `__asyncGenerator` 가 소비자에게 내보내고,
-                        // `_state.sent()` 가 undefined 가 된다 (#4707).
-                        if (self.in_async_generator_sm) {
-                            const es2017 = @import("es2017.zig");
-                            try es2017.ES2017(Transformer).rewriteAwaitToYieldAwait(self, lowered);
-                        }
-                        try collectBodyOperations(self, lowered, ops, next_label);
-                    }
+                    // for-await 는 방문 없는 풀이(반복자 while + 닫기 try/finally)로 바꿔 그 구조를
+                    // 수집한다 (#4746 3단계). 본문이 상태 기계로 수집되므로 안쪽 for-of/for-in 의
+                    // yield 도 제대로 접히고, 반복별 바인딩은 while 의 본문 캡처 추출이 맡는다.
+                    // async generator 는 본문 전처리에서 이미 제자리 풀이돼 여기 오지 않는다.
+                    const rewritten = try @import("es2018_for_await.zig").ES2018ForAwait(Transformer).rewriteForAwait(self, stmt, .none);
+                    try collectOperations(self, rewritten, ops, next_label);
                 },
                 .break_statement, .continue_statement => {
                     const target = resolveBreakContinueTarget(self, stmt);
@@ -1521,10 +1498,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     }
                 }
             } else if (node.tag == .for_await_of_statement) {
-                // (#1901) ternary.a = left (var v 인 경우), c = body. helper var 들 (_iter,
-                // _step, _ret, _errObj, _err) 은 lowerForAwaitOf 가 generator_temp_var_spans
-                // 로 직접 push.
-                try collectHoistedVarFromNode(self, node.data.ternary.a, hoisted);
+                // ternary.a = left (var 헤더만 — lexical 은 풀이 후 본문 선언이라 수집 때 리네임),
+                // c = body. 풀이의 임시 변수는 초기값 있는 var 라 선언 수집이 등록한다 (#4746).
+                if (!stateMachineRenamesBlockScope(self) or !isLexicalDeclaration(self, node.data.ternary.a)) try collectHoistedVarFromNode(self, node.data.ternary.a, hoisted);
                 try collectHoistedVarFromNode(self, node.data.ternary.c, hoisted);
             }
         }
