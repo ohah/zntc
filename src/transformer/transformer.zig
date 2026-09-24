@@ -241,6 +241,9 @@ pub const Transformer = struct {
     /// ES2015 generator: for-of 변환에서 생성한 임시 변수 span.
     /// buildGeneratorBody에서 호이스팅 변수에 추가.
     generator_temp_var_spans: std.ArrayList(token_mod.Span) = .empty,
+    /// `generator_temp_var_spans` 중 사용자 바인딩에서 온 이름의 원래 바인딩 노드(span 키).
+    /// 호이스트한 `var` 선언에 심볼을 물려주는 데 쓴다 (#4760).
+    generator_var_origins: std.AutoHashMapUnmanaged(u64, NodeIndex) = .empty,
 
     /// ES2015 class private fields: "#name" → "_name" 매핑.
     /// class body 방문 중 설정되어, this.#x → _x.get(this), this.#x = v → _x.set(this, v) 변환에 사용.

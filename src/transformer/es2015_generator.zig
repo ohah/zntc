@@ -32,6 +32,7 @@
 //! - esbuild: 미지원
 
 const std = @import("std");
+const ast_walk = @import("../parser/ast_walk.zig");
 const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
@@ -248,6 +249,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return .{ .body = switch_node, .var_decl = var_decl_node };
         }
 
+        fn spanKey(span: Span) u64 {
+            return (@as(u64, span.start) << 32) | span.end;
+        }
+
+        /// 사용자 바인딩(`origin`)에서 온 이름을 wrapper 최상단 `var` 목록에 등록한다. 목록은 이름만
+        /// 담으므로, 선언을 만들 때 심볼을 물려줄 수 있게 원래 바인딩을 따로 기록한다.
+        fn registerGeneratorVar(self: *Transformer, span: Span, origin: NodeIndex) Transformer.Error!void {
+            try self.generator_temp_var_spans.append(self.allocator, span);
+            try self.generator_var_origins.put(self.allocator, spanKey(span), origin);
+        }
+
         /// generator body 의 hoisted `var` 선언과 for-of/await 변환에서 생성한 임시 변수를
         /// 하나의 `var` 선언으로 합쳐 반환. __generator 콜백 밖(함수 스코프)에 배치해야 한다 —
         /// 콜백 안에 두면 매 호출마다 재선언되어 상태가 리셋된다. 합칠 변수가 없으면 `.none`.
@@ -268,6 +280,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const gop = try seen.getOrPut(self.allocator, self.ast.getText(temp_span));
                 if (gop.found_existing) continue;
                 const binding = try es_helpers.makeBindingIdentifier(self, temp_span);
+                // 사용자 바인딩에서 온 이름이면 그 심볼을 물려준다 — 대입·참조만 심볼을 갖고
+                // 이 선언이 없으면 minify 가 둘을 다른 이름으로 찍는다 (#4760).
+                if (self.generator_var_origins.get(spanKey(temp_span))) |origin| self.propagateSymbolId(origin, binding);
                 const declarator = try es_helpers.makeDeclarator(self, binding, .none, span);
                 try self.scratch.append(self.allocator, declarator);
             }
@@ -523,9 +538,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             while (i < list_len) : (i += 1) {
                 const decl = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[list_start + i]));
                 if (decl.tag != .variable_declarator) continue;
-                const binding = self.ast.getNode(self.readNodeIdx(decl.data.extra, 0));
+                const binding_idx = self.readNodeIdx(decl.data.extra, 0);
+                const binding = self.ast.getNode(binding_idx);
                 if (binding.tag == .binding_identifier) {
-                    try self.generator_temp_var_spans.append(self.allocator, binding.data.string_ref);
+                    try registerGeneratorVar(self, binding.data.string_ref, binding_idx);
                 }
             }
         }
@@ -1290,13 +1306,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
                 // catch 파라미터를 고유 이름으로 — 상태 기계는 wrapper 최상단 var 로 올리므로
                 // 원래 이름이면 바깥 동명 바인딩·중첩 catch 의 같은 이름을 덮는다 (#4712).
-                var param_names: std.ArrayList([]const u8) = .empty;
-                defer param_names.deinit(self.allocator);
-                if (!catch_param.isNone()) try BlockScopingNames.collectBindingNames(self, catch_param, &param_names);
+                var param_bindings: std.ArrayList(NodeIndex) = .empty;
+                defer param_bindings.deinit(self.allocator);
+                if (!catch_param.isNone()) try collectBindingNodes(self, catch_param, &param_bindings);
                 // 컴파일러가 만든 catch 임시 변수(for-of 닫기의 `_f` 등)는 이미 wrapper 에 등록된
                 // 고유 이름이라 바꿀 필요가 없다.
-                if (param_names.items.len == 1 and isRegisteredGeneratorTemp(self, param_names.items[0])) param_names.clearRetainingCapacity();
-                const param_renames = try pushStateMachineRenames(self, param_names.items);
+                if (param_bindings.items.len == 1 and isRegisteredGeneratorTemp(self, self.ast.getText(self.ast.getNode(param_bindings.items[0]).span))) param_bindings.clearRetainingCapacity();
+                const param_renames = try pushStateMachineRenames(self, param_bindings.items);
                 defer self.popBlockRenames(param_renames);
 
                 const param_is_pattern = !catch_param.isNone() and self.ast.getNode(catch_param).tag != .binding_identifier;
@@ -1654,7 +1670,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 if (bnode.tag == .binding_identifier) {
                     const text = self.ast.getText(bnode.data.string_ref);
                     const span_to_declare = if (self.lookupBlockRename(text)) |renamed| try self.ast.addString(renamed) else bnode.data.string_ref;
-                    try self.generator_temp_var_spans.append(self.allocator, span_to_declare);
+                    try registerGeneratorVar(self, span_to_declare, binding);
                 }
             }
         }
@@ -1672,7 +1688,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (binding.isNone()) return binding;
             const node = self.ast.getNode(binding);
             if (node.tag != .binding_identifier) return binding;
-            return es_helpers.makeIdentifierRefFromSpan(self, node.data.string_ref);
+            return self.makeIdentifierRefWithSymbol(node.data.string_ref, binding);
         }
 
         /// 클래스 **헤더**(extends 식 · computed 키)를 소스 순서대로 temp 에 미리 평가하고,
@@ -2300,7 +2316,6 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return Using.rewriteUsingStatements(self, list.start, list.len, .body);
         }
 
-        const BlockScopingNames = @import("es2015_block_scoping.zig").ES2015BlockScoping(Transformer);
         const ForOf = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
 
         /// 블록 스코프 바인딩 리네임(#4712)이 동작하는지. 식별자 리네임은 block scoping 을
@@ -2318,7 +2333,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         }
 
         /// 목록 직계의 let/const/class 선언 이름.
-        fn collectLexicalNamesInList(self: *Transformer, list: ast_mod.NodeList, out: *std.ArrayList([]const u8)) Transformer.Error!void {
+        /// 목록 직계의 let/const/class 선언이 만드는 바인딩 노드. 이름이 아니라 노드를 모아
+        /// 바꾼 이름의 `var` 선언에 원래 심볼을 물려줄 수 있게 한다 (#4760).
+        fn collectLexicalBindingsInList(self: *Transformer, list: ast_mod.NodeList, out: *std.ArrayList(NodeIndex)) Transformer.Error!void {
             var i: u32 = 0;
             while (i < list.len) : (i += 1) {
                 const idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
@@ -2326,7 +2343,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const node = self.ast.getNode(idx);
                 if (node.tag == .class_declaration) {
                     const name = self.readNodeIdx(node.data.extra, ast_mod.ClassExtra.name);
-                    if (!name.isNone()) try out.append(self.allocator, try self.stableName(self.ast.getText(self.ast.getNode(name).span)));
+                    if (!name.isNone()) try out.append(self.allocator, name);
                     continue;
                 }
                 const ds = self.readU32(node.data.extra, 1);
@@ -2335,23 +2352,34 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 while (j < dl) : (j += 1) {
                     const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[ds + j]));
                     if (d.tag != .variable_declarator) continue;
-                    try BlockScopingNames.collectBindingNames(self, self.readNodeIdx(d.data.extra, 0), out);
+                    try collectBindingNodes(self, self.readNodeIdx(d.data.extra, 0), out);
                 }
+            }
+        }
+
+        /// 패턴 안의 바인딩 식별자 노드 (`collectBindingNames` 의 노드판).
+        fn collectBindingNodes(self: *Transformer, idx: NodeIndex, out: *std.ArrayList(NodeIndex)) Transformer.Error!void {
+            var it = try ast_walk.bindingIdentifiers(self.allocator, self.ast, idx, .{});
+            defer it.deinit();
+            while (try it.next()) |leaf_idx| {
+                if (self.ast.getNode(leaf_idx).tag != .binding_identifier) continue;
+                try out.append(self.allocator, leaf_idx);
             }
         }
 
         /// 상태 기계가 수집하는 블록 스코프 바인딩을 `name$N` 으로 바꾸고 wrapper 최상단 var 로
         /// 등록한다 (#4712). 상태 기계 안에서는 바깥 스코프 이름 목록이 채워지지 않아 충돌 여부를
         /// 알 수 없으므로 **항상** 바꾼다. 반환값은 `popBlockRenames` 에 넘길 개수.
-        fn pushStateMachineRenames(self: *Transformer, names: []const []const u8) Transformer.Error!u32 {
+        fn pushStateMachineRenames(self: *Transformer, bindings: []const NodeIndex) Transformer.Error!u32 {
             if (!stateMachineRenamesBlockScope(self)) return 0;
-            for (names) |name| {
+            for (bindings) |binding| {
+                const name = try self.stableName(self.ast.getText(self.ast.getNode(binding).span));
                 self.block_rename_counter += 1;
                 const new_name = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, self.block_rename_counter });
                 try self.block_rename_stack.append(self.allocator, .{ .old_name = name, .new_name = new_name });
-                try self.generator_temp_var_spans.append(self.allocator, try self.ast.addString(new_name));
+                try registerGeneratorVar(self, try self.ast.addString(new_name), binding);
             }
-            return @intCast(names.len);
+            return @intCast(bindings.len);
         }
 
         fn isRegisteredGeneratorTemp(self: *Transformer, name: []const u8) bool {
@@ -2363,10 +2391,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         fn pushLoopHeadRenames(self: *Transformer, head: NodeIndex) Transformer.Error!u32 {
             if (!isLexicalDeclaration(self, head)) return 0;
-            var names: std.ArrayList([]const u8) = .empty;
-            defer names.deinit(self.allocator);
-            try collectLexicalNamesInList(self, .{ .start = try self.ast.addExtras(&.{@intFromEnum(head)}), .len = 1 }, &names);
-            return pushStateMachineRenames(self, names.items);
+            var bindings: std.ArrayList(NodeIndex) = .empty;
+            defer bindings.deinit(self.allocator);
+            try collectLexicalBindingsInList(self, .{ .start = try self.ast.addExtras(&.{@intFromEnum(head)}), .len = 1 }, &bindings);
+            return pushStateMachineRenames(self, bindings.items);
         }
 
         fn collectBodyOperations(self: *Transformer, body_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
@@ -2375,9 +2403,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 // 이 블록의 let/const/class/using 은 블록 스코프 — 고유 이름으로 바꿔 wrapper 에
                 // 등록한다(호이스팅은 중첩 블록의 lexical 선언을 건너뛴다) (#4712). using 재구성
                 // 뒤에는 var 가 되므로 이름은 **원래 목록**에서 모은다.
-                var lexical: std.ArrayList([]const u8) = .empty;
+                var lexical: std.ArrayList(NodeIndex) = .empty;
                 defer lexical.deinit(self.allocator);
-                try collectLexicalNamesInList(self, body_node.data.list, &lexical);
+                try collectLexicalBindingsInList(self, body_node.data.list, &lexical);
                 const list = try rewriteUsingForStateMachine(self, body_node.data.list);
                 const stmts_start = list.start;
                 const stmts_len = list.len;

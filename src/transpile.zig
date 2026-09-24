@@ -3002,6 +3002,47 @@ test "#4762 es5 기본값 매개변수의 기본값 검사도 매개변수 renam
     try std.testing.expect(std.mem.indexOf(u8, r.code, "===void 0?{k:2}:") != null);
 }
 
+test "#4760 es5 상태 기계가 대입·선언으로 접은 블록 바인딩도 rename 을 따라간다" {
+    // 상태 기계는 `const value = …` 를 `value$1 = …` 대입으로 접고 `var value$1` 을 wrapper
+    // 최상단에 올린다. 두 노드가 원래 바인딩의 심볼을 받지 못하면 minify 가 참조만 바꿔
+    // `value$1=_step.value;return[4,n]` 처럼 갈라진다.
+    const src =
+        \\export function* gen(items) {
+        \\  for (const value of items) {
+        \\    const doubled = yield value;
+        \\    record(doubled);
+        \\  }
+        \\}
+    ;
+    var r = try transpile(std.testing.allocator, src, "/src/a.js", .{
+        .minify_identifiers = true,
+        .minify_whitespace = true,
+        .es_target = .es5,
+        .unsupported = @import("transformer/compat.zig").fromESTarget(.es5),
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "value$") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "doubled") == null);
+
+    // catch 파라미터·구조분해 선언은 이름만 모아 `name$N` 으로 바꾸는 경로로 올라간다.
+    const src2 =
+        \\export function* gen2(source) {
+        \\  try { yield 1; } catch (failure) { record(failure); }
+        \\  { const { first, second } = source; yield first; record(second); }
+        \\}
+    ;
+    var r2 = try transpile(std.testing.allocator, src2, "/src/b.js", .{
+        .minify_identifiers = true,
+        .minify_whitespace = true,
+        .es_target = .es5,
+        .unsupported = @import("transformer/compat.zig").fromESTarget(.es5),
+    });
+    defer r2.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, r2.code, "failure") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r2.code, "first$") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r2.code, "second$") == null);
+}
+
 test "#4493 `undefined` 바인딩에 void 0 peephole 이 새지 않는다" {
     // 이 노드는 대입 대상인데도 tag 가 identifier_reference 라, value 위치를 무조건
     // emitNode 로 태우면 `undefined` → `void 0` peephole 이 발동한다.
