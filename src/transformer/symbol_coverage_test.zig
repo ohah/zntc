@@ -15,6 +15,10 @@ const coverage = @import("symbol_coverage.zig");
 
 /// es5 로 변환한 뒤 새로 만든 사용자 식별자 중 심볼이 없는 노드 수.
 fn missingSymbols(source: []const u8) !usize {
+    return missingSymbolsFor(source, .es5);
+}
+
+fn missingSymbolsFor(source: []const u8, target: TransformOptions.compat.ESTarget) !usize {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -30,7 +34,7 @@ fn missingSymbols(source: []const u8) !usize {
     try analyzer.analyze();
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{
-        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .unsupported = TransformOptions.compat.fromESTarget(target),
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
@@ -78,4 +82,25 @@ test "#4760 es5 루프 캡처 `_loop` 의 매개변수·인자·끌어올린 var
         \\  return getters;
         \\}
     ));
+}
+
+test "#4760 static private 멤버를 낮출 때 만드는 클래스 참조는 클래스 심볼을 가진다" {
+    // `Counter.#count` → `__classStaticPrivateFieldSpecGet(Counter, Counter, _count)` 의 클래스
+    // 참조는 매핑에 이름만 있어 심볼이 없었다.
+    try std.testing.expectEqual(@as(usize, 0), try missingSymbolsFor(
+        \\export class Counter {
+        \\  static #count = 0;
+        \\  static #bump() { return ++Counter.#count; }
+        \\  static run(other) { return #count in other ? Counter.#bump() : Counter.#count; }
+        \\}
+    , .es2020));
+}
+
+test "#4760 모듈 최상위 using 이 export 를 지정자로 바꿀 때 로컬 참조는 원래 심볼을 가진다" {
+    try std.testing.expectEqual(@as(usize, 0), try missingSymbolsFor(
+        \\using handle = open();
+        \\export class Service { run() { return handle; } }
+        \\export const { first, second } = handle;
+        \\export default class Main {}
+    , .es2022));
 }

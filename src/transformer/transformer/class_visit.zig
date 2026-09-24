@@ -201,6 +201,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                 lower_pf,
                 has_super,
                 class_name_text,
+                new_name,
                 false, // fast path 는 lowerPrivateMembers 가 통째 visit + 복원 (기존 동작).
                 desc_out,
             );

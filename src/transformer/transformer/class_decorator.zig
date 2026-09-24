@@ -148,6 +148,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, node: Node, key_assign
             lower_pf,
             has_super,
             class_name_text,
+            new_name,
             true, // skip_visit_and_keep_private — public member 는 classifyClassMember 가 단일 visit.
             // V_ASSIGN fix: descriptor 를 별도 array 로 받아 class 뒤에 emit (TDZ 회피).
             &assign_static_descriptors,

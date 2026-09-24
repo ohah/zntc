@@ -83,6 +83,31 @@ fn visit(ctx: *Ctx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
             ctx.markName(@enumFromInt(ctx.ast.extra_data.items[node.data.extra]));
             return .descend;
         },
+        // 공용 순회는 export 지정자 목록으로 내려가지 않는다 — 로컬 export(`export { a as b }`)의
+        // 로컬 쪽은 변수 참조라 직접 본다. 내보내는 이름(`b`)은 변수가 아니다.
+        .export_named_declaration => {
+            const e = node.data.extra;
+            const source = ctx.ast.extra_data.items[e + 3];
+            if (source != @intFromEnum(NodeIndex.none)) return .descend;
+            const specs_start = ctx.ast.extra_data.items[e + 1];
+            const specs_len = ctx.ast.extra_data.items[e + 2];
+            for (ctx.ast.extra_data.items[specs_start .. specs_start + specs_len]) |raw| {
+                const spec = ctx.ast.getNode(@enumFromInt(raw));
+                if (spec.tag != .export_specifier) continue;
+                const local = spec.data.binary.left;
+                if (local.isNone()) continue;
+                _ = checkIdentifier(ctx, local, ctx.ast.getNode(local));
+            }
+            return .descend;
+        },
+        else => return .descend,
+    }
+    return checkIdentifier(ctx, idx, node);
+}
+
+fn checkIdentifier(ctx: *Ctx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
+    switch (node.tag) {
+        .identifier_reference, .binding_identifier, .assignment_target_identifier => {},
         else => return .descend,
     }
     const i = @intFromEnum(idx);

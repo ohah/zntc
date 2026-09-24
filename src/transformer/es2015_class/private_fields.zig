@@ -155,7 +155,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             if (mapping.class_name) |class_name| {
                 const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecSet");
                 const new_obj = try self.visitNode(obj_idx);
-                const class_ref = try es_helpers.makeIdentifierRef(self, class_name);
+                const class_ref = try self.makeUserRefNamed(class_name, mapping.class_name_node);
                 const desc_ref = try es_helpers.makeSyntheticRef(self, mapping.var_name);
                 self.runtime_helpers.class_static_private_field = true;
                 return es_helpers.makeCallExpr(self, helper, &.{ new_obj, class_ref, desc_ref, new_value }, span);
@@ -173,7 +173,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             const mapping = findPrivateFieldMapping(self, prop_old_idx) orelse return null;
             if (mapping.class_name) |class_name| {
                 const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
-                const class_ref = try es_helpers.makeIdentifierRef(self, class_name);
+                const class_ref = try self.makeUserRefNamed(class_name, mapping.class_name_node);
                 const desc_ref = try es_helpers.makeSyntheticRef(self, mapping.var_name);
                 self.runtime_helpers.class_static_private_field = true;
                 const call = try es_helpers.makeCallExpr(self, helper, &.{ obj_new, class_ref, desc_ref }, span);
@@ -385,7 +385,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
         fn buildStaticPrivateFieldGet(self: *Transformer, mapping: Transformer.PrivateFieldMapping, obj_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
             const new_obj = try self.visitNode(obj_idx);
-            const class_ref = try es_helpers.makeIdentifierRef(self, mapping.class_name.?);
+            const class_ref = try self.makeUserRefNamed(mapping.class_name.?, mapping.class_name_node);
             const desc_ref = try es_helpers.makeSyntheticRef(self, mapping.var_name);
             self.runtime_helpers.class_static_private_field = true;
             return es_helpers.makeCallExpr(self, helper, &.{ new_obj, class_ref, desc_ref }, span);
@@ -417,7 +417,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 if (pf.class_name) |class_name| {
                     // static: obj === ClassName (class identity 비교)
                     const new_obj = try self.visitNode(right_idx);
-                    const class_ref = try es_helpers.makeIdentifierRef(self, class_name);
+                    const class_ref = try self.makeUserRefNamed(class_name, pf.class_name_node);
                     return self.ast.addNode(.{
                         .tag = .binary_expression,
                         .span = node.span,
@@ -437,7 +437,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 if (!std.mem.eql(u8, pm.original_name, orig)) continue;
                 if (pm.class_name) |class_name| {
                     const new_obj = try self.visitNode(right_idx);
-                    const class_ref = try es_helpers.makeIdentifierRef(self, class_name);
+                    const class_ref = try self.makeUserRefNamed(class_name, pm.class_name_node);
                     return self.ast.addNode(.{
                         .tag = .binary_expression,
                         .span = node.span,
@@ -458,7 +458,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
         fn buildStaticPrivateFieldSet(self: *Transformer, mapping: Transformer.PrivateFieldMapping, obj_idx: NodeIndex, value_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecSet");
             const new_obj = try self.visitNode(obj_idx);
-            const class_ref = try es_helpers.makeIdentifierRef(self, mapping.class_name.?);
+            const class_ref = try self.makeUserRefNamed(mapping.class_name.?, mapping.class_name_node);
             const desc_ref = try es_helpers.makeSyntheticRef(self, mapping.var_name);
             const new_value = try self.visitNode(value_idx);
             self.runtime_helpers.class_static_private_field = true;

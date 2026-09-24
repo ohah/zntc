@@ -228,7 +228,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                                     },
                                     .class_declaration => {
                                         const cname = self.readNodeIdx(decl.data.extra, ast_mod.ClassExtra.name);
-                                        try export_specs.append(self.allocator, try makeExportSpec(self, self.ast.getText(self.ast.getNode(cname).span), null));
+                                        try export_specs.append(self.allocator, try makeExportSpec(self, self.ast.getText(self.ast.getNode(cname).span), cname, null));
                                         try push(self, &body, try classAsVar(self, decl));
                                     },
                                     // `export function` 과 TS 전용 선언(enum/namespace 등)은 try 밖.
@@ -247,14 +247,14 @@ pub fn ES2025Using(comptime Transformer: type) type {
                             const named_class = on.tag == .class_declaration and !self.readNodeIdx(on.data.extra, ast_mod.ClassExtra.name).isNone();
                             if (named_class) {
                                 const cname = self.readNodeIdx(on.data.extra, ast_mod.ClassExtra.name);
-                                try export_specs.append(self.allocator, try makeExportSpec(self, self.ast.getText(self.ast.getNode(cname).span), "default"));
+                                try export_specs.append(self.allocator, try makeExportSpec(self, self.ast.getText(self.ast.getNode(cname).span), cname, "default"));
                                 try push(self, &body, try classAsVar(self, on));
                             } else {
                                 const default_name = try uniqueSourceName(self, "_default");
                                 const value = if (on.tag == .class_declaration) try classExpressionOf(self, on) else operand;
                                 const binding = try es_helpers.makeBindingIdentifier(self, try self.ast.addString(default_name));
                                 const decl = try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, binding, value, node.span)}, .@"var", node.span);
-                                try export_specs.append(self.allocator, try makeExportSpec(self, default_name, "default"));
+                                try export_specs.append(self.allocator, try makeExportSpec(self, default_name, .none, "default"));
                                 try push(self, &body, decl);
                             }
                             continue;
@@ -348,6 +348,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
             const cname = self.readNodeIdx(decl.data.extra, ast_mod.ClassExtra.name);
             const name_span = try self.ast.addString(self.ast.getText(self.ast.getNode(cname).span));
             const binding = try es_helpers.makeBindingIdentifier(self, name_span);
+            self.propagateSymbolId(cname, binding);
             return es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, binding, try classExpressionOf(self, decl), decl.span)}, .@"var", decl.span);
         }
 
@@ -359,17 +360,18 @@ pub fn ES2025Using(comptime Transformer: type) type {
             while (j < dl) : (j += 1) {
                 const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[ds + j]));
                 if (d.tag != .variable_declarator) continue;
-                var names: std.ArrayList([]const u8) = .empty;
-                defer names.deinit(self.allocator);
-                try BlockScoping.collectBindingNames(self, self.readNodeIdx(d.data.extra, 0), &names);
-                for (names.items) |n| try specs.append(self.allocator, try makeExportSpec(self, n, null));
+                var bindings: std.ArrayList(NodeIndex) = .empty;
+                defer bindings.deinit(self.allocator);
+                try BlockScoping.collectBindingNodes(self, self.readNodeIdx(d.data.extra, 0), &bindings);
+                for (bindings.items) |b| try specs.append(self.allocator, try makeExportSpec(self, self.ast.getText(self.ast.getNode(b).span), b, null));
             }
         }
 
-        /// `local as exported` 지정자. exported 가 null 이면 local 과 같은 이름.
-        fn makeExportSpec(self: *Transformer, local: []const u8, exported: ?[]const u8) Transformer.Error!NodeIndex {
-            const local_ref = try es_helpers.makeIdentifierRef(self, local);
-            const exported_ref = if (exported) |e| try es_helpers.makeIdentifierRef(self, e) else local_ref;
+        /// `local as exported` 지정자. exported 가 null 이면 local 과 같은 이름. `local_origin` 은
+        /// local 의 원래 바인딩(합성 `_default` 면 `.none`) — 심볼을 물려준다 (#4760).
+        fn makeExportSpec(self: *Transformer, local: []const u8, local_origin: NodeIndex, exported: ?[]const u8) Transformer.Error!NodeIndex {
+            const local_ref = if (local_origin.isNone()) try es_helpers.makeSyntheticRef(self, local) else try self.makeUserRefNamed(local, local_origin);
+            const exported_ref = if (exported) |e| try es_helpers.makePropertyName(self, e) else local_ref;
             return self.ast.addNode(.{ .tag = .export_specifier, .span = Span{ .start = 0, .end = 0 }, .data = .{ .binary = .{ .left = local_ref, .right = exported_ref, .flags = 0 } } });
         }
 

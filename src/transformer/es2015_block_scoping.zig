@@ -734,8 +734,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 break :blk try es_helpers.makeStaticMember(self, loop_ref, call_prop, span);
             } else loop_ref;
             for (lexical_names, 0..) |name, name_i| {
-                const arg = try es_helpers.makeIdentifierRef(self, name);
-                if (name_i < lexical_bindings.len) self.propagateSymbolId(lexical_bindings[name_i], arg);
+                const arg = try self.makeUserRefNamed(name, if (name_i < lexical_bindings.len) lexical_bindings[name_i] else .none);
                 try self.scratch.append(self.allocator, arg);
             }
             const loop_call = try es_helpers.makeCallExpr(self, call_callee, self.scratch.items[scratch_top2..], span);
