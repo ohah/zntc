@@ -130,10 +130,14 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
 
     var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
 
-    if (module.semantic) |sem| {
+    if (module.semantic) |*sem| {
         transformer.initSymbolIds(sem.symbol_ids) catch return;
         transformer.symbols = sem.symbols.items;
         transformer.references = sem.references;
+        // 심볼 기준 블록 스코핑 표(#4760)용 — 스코프가 없으면 예전 이름 스택으로 판정한다.
+        transformer.scopes = sem.scopes;
+        transformer.scope_maps = sem.scope_maps;
+        transformer.unresolved_references = &sem.unresolved_references;
     }
     transformer.line_offsets = module.line_offsets;
 

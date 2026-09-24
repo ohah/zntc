@@ -119,11 +119,10 @@ pub const Transformer = struct {
     scopes: []const @import("../semantic/scope.zig").Scope = &.{},
     scope_maps: []const std.StringHashMapUnmanaged(usize) = &.{},
     unresolved_references: ?*const std.StringHashMapUnmanaged(void) = null,
-    /// `ZNTC_DEBUG_BLOCK_RENAME=1` 일 때만: 심볼 표 판정과 지금 이름 스택 판정을 비교한다.
-    debug_block_rename_table: ?@import("block_rename_table.zig").Table = null,
-    debug_block_rename_logged: std.AutoHashMapUnmanaged(u32, void) = .empty,
-    /// 상태 기계가 항상 바꾸는 심볼 — 표 비교에서 뺀다(표는 아직 그 경로를 다루지 않는다).
-    debug_sm_renamed: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// 심볼 → 블록 스코핑 새 이름(`x$N`). es5 블록 스코핑을 낮추고 분석기 스코프가 있을 때
+    /// 변환 시작에 `block_rename_table` 로 만든다 (#4760). 없으면(스코프 정보 없는 경로)
+    /// 예전 이름 스택 판정을 쓴다.
+    block_rename_map: ?std.AutoHashMapUnmanaged(u32, []const u8) = null,
 
     /// `isImportSpecifierUnused` 가 specifier 마다 `references` 전체를 선형 스캔(O(N²))하지
     /// 않도록, **value-use 가 있는 symbol_id 집합**을 1회 구축해 캐시한다(대형 fan-out 만).
@@ -449,6 +448,9 @@ pub const Transformer = struct {
     pub const makeUserRefNamed = node_helpers.makeUserRefNamed;
     pub const makeRootScopeRef = node_helpers.makeRootScopeRef;
     pub const makeCurrentClassRef = node_helpers.makeCurrentClassRef;
+    pub const renamedNameOf = node_helpers.renamedNameOf;
+    pub const tableRenameOf = node_helpers.tableRenameOf;
+    pub const buildBlockRenameMap = node_helpers.buildBlockRenameMap;
     pub const attachRootScopeSymbolByName = node_helpers.attachRootScopeSymbolByName;
     pub const visitUnaryNode = node_helpers.visitUnaryNode;
     pub const visitBinaryNode = node_helpers.visitBinaryNode;

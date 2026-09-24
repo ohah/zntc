@@ -1676,8 +1676,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 // 올리면 바깥 동명 바인딩을 가린다 (#4712).
                 const bnode = self.ast.getNode(binding);
                 if (bnode.tag == .binding_identifier) {
-                    const text = self.ast.getText(bnode.data.string_ref);
-                    const span_to_declare = if (self.lookupBlockRename(text)) |renamed| try self.ast.addString(renamed) else bnode.data.string_ref;
+                    const span_to_declare = if (self.renamedNameOf(binding)) |renamed| try self.ast.addString(renamed) else bnode.data.string_ref;
                     try registerGeneratorVar(self, span_to_declare, binding);
                 }
             }
@@ -2382,14 +2381,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (!stateMachineRenamesBlockScope(self)) return 0;
             for (bindings) |binding| {
                 const name = try self.stableName(self.ast.getText(self.ast.getNode(binding).span));
-                self.block_rename_counter += 1;
-                const new_name = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, self.block_rename_counter });
+                // 심볼 표가 이미 이름을 정했으면 그 이름을 쓴다 — 일반 경로 참조와 어긋나지 않게.
+                const new_name = if (self.tableRenameOf(binding)) |from_table| try self.allocator.dupe(u8, from_table) else blk: {
+                    self.block_rename_counter += 1;
+                    break :blk try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, self.block_rename_counter });
+                };
                 try self.block_rename_stack.append(self.allocator, .{ .old_name = name, .new_name = new_name });
                 try registerGeneratorVar(self, try self.ast.addString(new_name), binding);
-                if (@import("transformer/node_helpers.zig").blockRenameDebugEnabled()) {
-                    const bi = @intFromEnum(binding);
-                    if (bi < self.symbol_ids.items.len) if (self.symbol_ids.items[bi]) |sid| try self.debug_sm_renamed.put(self.allocator, sid, {});
-                }
             }
             return @intCast(bindings.len);
         }
