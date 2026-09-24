@@ -727,7 +727,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             // --- _loop(i, j, ...) 호출 ---
             const scratch_top2 = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top2);
-            const loop_ref = try es_helpers.makeIdentifierRef(self, loop_name);
+            const loop_ref = try es_helpers.makeSyntheticRef(self, loop_name);
             const call_callee = if (preserve_this) blk: {
                 const call_prop = try es_helpers.makePropertyName(self, "call");
                 try self.scratch.append(self.allocator, try es_helpers.makeThisExpr(self, span));

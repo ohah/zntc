@@ -180,7 +180,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
         /// resync 분석기가 이 ref 를 user scope 가 아닌 helper_scope_map 으로 binding
         /// 시킨다 — 사용자가 같은 이름의 식별자를 선언해도 충돌 회피 (#3068).
         fn makeJsxRuntimeRef(self: *Transformer, name: []const u8) Transformer.Error!NodeIndex {
-            const idx = try helpers.makeIdentifierRef(self, name);
+            const idx = try helpers.makeGlobalRef(self, name);
             try self.markRuntimeHelperRef(idx);
             return idx;
         }
@@ -1280,7 +1280,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             while (start < factory.len) {
                 const end = std.mem.indexOfPos(u8, factory, start, ".") orelse factory.len;
                 const part = factory[start..end];
-                const part_node = try helpers.makeIdentifierRef(self, part);
+                const part_node = if (current.isNone()) try helpers.makeIdentifierRef(self, part) else try helpers.makePropertyName(self, part);
 
                 if (current.isNone()) {
                     self.attachRootScopeSymbolByName(part_node, part);

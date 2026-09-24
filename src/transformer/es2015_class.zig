@@ -215,7 +215,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const super_param_text = "_super";
             if (has_super and super_span != null) {
                 const child_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
-                const parent_ref = try es_helpers.makeIdentifierRef(self, super_param_text);
+                const parent_ref = try es_helpers.makeSyntheticRef(self, super_param_text);
                 const extends_ref = try es_helpers.makeRuntimeHelperRef(self, "__extends");
                 const extends_call_expr = try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span);
                 try self.scratch.append(self.allocator, try es_helpers.makeExprStmt(self, extends_call_expr, span));
@@ -476,7 +476,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // __extends(ClassName, _super) — parent는 IIFE 매개변수
             if (has_super and super_span != null) {
                 const child_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
-                const parent_ref = try es_helpers.makeIdentifierRef(self, expr_super_param);
+                const parent_ref = try es_helpers.makeSyntheticRef(self, expr_super_param);
                 const extends_ref = try es_helpers.makeRuntimeHelperRef(self, "__extends");
                 try self.scratch.append(self.allocator, try es_helpers.makeExprStmt(self, try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span), span));
                 self.runtime_helpers.extends = true;

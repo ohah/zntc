@@ -398,7 +398,7 @@ pub fn makeIdentifierRef(self: anytype, name: []const u8) !NodeIndex {
 pub fn makeRuntimeHelperRef(self: anytype, base_name: []const u8) !NodeIndex {
     const names = @import("../runtime_helper_names.zig");
     const resolved = names.helperName(base_name, self.options.minify_whitespace);
-    const idx = try makeIdentifierRef(self, resolved);
+    const idx = try makeGlobalRef(self, resolved);
     // #2869 helper call site 를 marker 에 등록 → resync analyzer 가 user scope 가 아니라
     // helper_scope_map 으로 격리해 binding. user 가 동일 이름 local 을 선언해도 helper
     // 호출이 user binding 으로 잘못 resolve 되지 않는다.
@@ -1418,7 +1418,7 @@ pub fn privateMethodKindFromFlags(method_flags: u32) PrivateMethodKind {
 
 /// var _name = new Constructor(); 선언 생성. (WeakMap, WeakSet 등)
 pub fn buildWeakCollectionDecl(self: anytype, constructor_name: []const u8, var_name: []const u8, span: Span) !NodeIndex {
-    const ctor_ref = try makeIdentifierRef(self, constructor_name);
+    const ctor_ref = try makeGlobalRef(self, constructor_name);
     const empty_args = try self.ast.addNodeList(&.{});
     const new_extra = try self.ast.addExtras(&.{
         @intFromEnum(ctor_ref), empty_args.start, empty_args.len, 0,
@@ -1573,7 +1573,7 @@ pub fn buildPrivateMethodInit(self: anytype, ws_name: []const u8, span: Span) !N
         .span = span,
         .data = .{ .none = 0 },
     });
-    const ws_ref = try makeIdentifierRef(self, ws_name);
+    const ws_ref = try makeSyntheticRef(self, ws_name);
     const call = try makeCallExpr(self, callee, &.{ this_node, ws_ref }, span);
     return makeExprStmt(self, call, span);
 }

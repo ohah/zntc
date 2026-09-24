@@ -40,8 +40,8 @@ pub fn PrivateFields(comptime Transformer: type) type {
             const new_obj = try self.visitNode(obj_idx);
             const new_rhs = try self.visitNode(rhs_old);
             const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateMethodGet");
-            const ws_ref = try es_helpers.makeIdentifierRef(self, setter_mapping.weakset_name);
-            const fn_ref = try es_helpers.makeIdentifierRef(self, setter_mapping.func_name);
+            const ws_ref = try es_helpers.makeSyntheticRef(self, setter_mapping.weakset_name);
+            const fn_ref = try es_helpers.makeSyntheticRef(self, setter_mapping.func_name);
             const get_call = try es_helpers.makeCallExpr(self, helper_ref, &.{ new_obj, ws_ref, fn_ref }, span);
             const call_prop = try es_helpers.makePropertyName(self, "call");
             const callee = try es_helpers.makeStaticMember(self, get_call, call_prop, span);
@@ -62,8 +62,8 @@ pub fn PrivateFields(comptime Transformer: type) type {
 
             // getter side: __classPrivateMethodGet(obj, _x, _x_get).call(obj)
             const get_helper = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateMethodGet");
-            const get_ws = try es_helpers.makeIdentifierRef(self, getter_mapping.weakset_name);
-            const get_fn = try es_helpers.makeIdentifierRef(self, getter_mapping.func_name);
+            const get_ws = try es_helpers.makeSyntheticRef(self, getter_mapping.weakset_name);
+            const get_fn = try es_helpers.makeSyntheticRef(self, getter_mapping.func_name);
             const get_outer = try es_helpers.makeCallExpr(self, get_helper, &.{ try self.visitNode(obj_idx), get_ws, get_fn }, span);
             const get_call_prop = try es_helpers.makePropertyName(self, "call");
             const get_callee = try es_helpers.makeStaticMember(self, get_outer, get_call_prop, span);
@@ -79,8 +79,8 @@ pub fn PrivateFields(comptime Transformer: type) type {
 
             // setter side: __classPrivateMethodGet(obj, _x, _x_set).call(obj, computed)
             const set_helper = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateMethodGet");
-            const set_ws = try es_helpers.makeIdentifierRef(self, setter_mapping.weakset_name);
-            const set_fn = try es_helpers.makeIdentifierRef(self, setter_mapping.func_name);
+            const set_ws = try es_helpers.makeSyntheticRef(self, setter_mapping.weakset_name);
+            const set_fn = try es_helpers.makeSyntheticRef(self, setter_mapping.func_name);
             const set_outer = try es_helpers.makeCallExpr(self, set_helper, &.{ try self.visitNode(obj_idx), set_ws, set_fn }, span);
             const set_call_prop = try es_helpers.makePropertyName(self, "call");
             const set_callee = try es_helpers.makeStaticMember(self, set_outer, set_call_prop, span);
@@ -156,12 +156,12 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecSet");
                 const new_obj = try self.visitNode(obj_idx);
                 const class_ref = try es_helpers.makeIdentifierRef(self, class_name);
-                const desc_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
+                const desc_ref = try es_helpers.makeSyntheticRef(self, mapping.var_name);
                 self.runtime_helpers.class_static_private_field = true;
                 return es_helpers.makeCallExpr(self, helper, &.{ new_obj, class_ref, desc_ref, new_value }, span);
             }
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateFieldSet");
-            const wm_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
+            const wm_ref = try es_helpers.makeSyntheticRef(self, mapping.var_name);
             const new_obj = try self.visitNode(obj_idx);
             self.runtime_helpers.class_private_field_set = true;
             return es_helpers.makeCallExpr(self, helper, &.{ wm_ref, new_obj, new_value }, span);
@@ -174,12 +174,12 @@ pub fn PrivateFields(comptime Transformer: type) type {
             if (mapping.class_name) |class_name| {
                 const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
                 const class_ref = try es_helpers.makeIdentifierRef(self, class_name);
-                const desc_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
+                const desc_ref = try es_helpers.makeSyntheticRef(self, mapping.var_name);
                 self.runtime_helpers.class_static_private_field = true;
                 const call = try es_helpers.makeCallExpr(self, helper, &.{ obj_new, class_ref, desc_ref }, span);
                 return call;
             }
-            const wm_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
+            const wm_ref = try es_helpers.makeSyntheticRef(self, mapping.var_name);
             const get_prop = try es_helpers.makePropertyName(self, "get");
             const callee = try es_helpers.makeStaticMember(self, wm_ref, get_prop, span);
             const call = try es_helpers.makeCallExpr(self, callee, &.{obj_new}, span);
@@ -353,8 +353,8 @@ pub fn PrivateFields(comptime Transformer: type) type {
 
         /// _name.method(obj, extra_args...) 호출 생성.
         fn buildWeakMapCall(self: *Transformer, wm_name: []const u8, method: []const u8, obj_idx: NodeIndex, extra_arg_indices: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const wm_ref = try es_helpers.makeIdentifierRef(self, wm_name);
-            const method_prop = try es_helpers.makeIdentifierRef(self, method);
+            const wm_ref = try es_helpers.makeSyntheticRef(self, wm_name);
+            const method_prop = try es_helpers.makePropertyName(self, method);
             const callee = try es_helpers.makeStaticMember(self, wm_ref, method_prop, span);
             const new_obj = try self.visitNode(obj_idx);
 
@@ -386,7 +386,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
             const new_obj = try self.visitNode(obj_idx);
             const class_ref = try es_helpers.makeIdentifierRef(self, mapping.class_name.?);
-            const desc_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
+            const desc_ref = try es_helpers.makeSyntheticRef(self, mapping.var_name);
             self.runtime_helpers.class_static_private_field = true;
             return es_helpers.makeCallExpr(self, helper, &.{ new_obj, class_ref, desc_ref }, span);
         }
@@ -459,7 +459,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecSet");
             const new_obj = try self.visitNode(obj_idx);
             const class_ref = try es_helpers.makeIdentifierRef(self, mapping.class_name.?);
-            const desc_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
+            const desc_ref = try es_helpers.makeSyntheticRef(self, mapping.var_name);
             const new_value = try self.visitNode(value_idx);
             self.runtime_helpers.class_static_private_field = true;
             return es_helpers.makeCallExpr(self, helper, &.{ new_obj, class_ref, desc_ref, new_value }, span);

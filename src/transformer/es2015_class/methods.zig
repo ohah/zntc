@@ -249,7 +249,7 @@ pub fn Methods(comptime Transformer: type) type {
         }
 
         pub fn buildBooleanProp(self: *Transformer, name: []const u8, value: bool, span: Span) Transformer.Error!NodeIndex {
-            const key = try es_helpers.makeIdentifierRef(self, name);
+            const key = try es_helpers.makePropertyName(self, name);
             const value_span = try self.ast.addString(if (value) "true" else "false");
             const val = try self.ast.addNode(.{
                 .tag = .boolean_literal,
@@ -321,7 +321,7 @@ pub fn Methods(comptime Transformer: type) type {
                 const key_idx = self.readNodeIdx(me, MethodExtra.key);
 
                 const func_expr = try buildAccessorFunc(self, info.member_idx, span);
-                const accessor_key = try es_helpers.makeIdentifierRef(self, if (info.is_getter) "get" else "set");
+                const accessor_key = try es_helpers.makePropertyName(self, if (info.is_getter) "get" else "set");
                 const prop1 = try self.ast.addNode(.{
                     .tag = .object_property,
                     .span = info.member_span,
@@ -341,7 +341,7 @@ pub fn Methods(comptime Transformer: type) type {
                     {
                         used[j] = true;
                         const pair_func = try buildAccessorFunc(self, next.member_idx, span);
-                        const pair_key = try es_helpers.makeIdentifierRef(self, if (next.is_getter) "get" else "set");
+                        const pair_key = try es_helpers.makePropertyName(self, if (next.is_getter) "get" else "set");
                         paired_prop = try self.ast.addNode(.{
                             .tag = .object_property,
                             .span = next.member_span,

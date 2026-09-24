@@ -321,7 +321,7 @@ pub fn SuperProps(comptime Transformer: type) type {
         fn buildNonDerivedSuperBase(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
             const root_name = if (self.current_super_is_static) "Function" else "Object";
             const global_ref = try es_helpers.makeGlobalRef(self, "globalThis");
-            const root_ref = try es_helpers.makeIdentifierRef(self, root_name);
+            const root_ref = try es_helpers.makePropertyName(self, root_name);
             const proto_ref = try es_helpers.makePropertyName(self, "prototype");
             const global_root = try es_helpers.makeStaticMember(self, global_ref, root_ref, span);
             return es_helpers.makeStaticMember(self, global_root, proto_ref, span);
