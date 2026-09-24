@@ -115,6 +115,15 @@ pub const Transformer = struct {
     /// Reference 를 돌며 **value-use 가 하나라도 있는지** 로 판단한다. 비어있으면
     /// elision 비활성 (보수적 보존). caller 가 symbols 와 함께 설정.
     references: []const @import("../semantic/symbol.zig").Reference = &.{},
+    /// 분석기 스코프·스코프별 이름 표·선언 없는 전역 — 심볼 기준 블록 스코핑 표(#4760 4단계)용.
+    scopes: []const @import("../semantic/scope.zig").Scope = &.{},
+    scope_maps: []const std.StringHashMapUnmanaged(usize) = &.{},
+    unresolved_references: ?*const std.StringHashMapUnmanaged(void) = null,
+    /// `ZNTC_DEBUG_BLOCK_RENAME=1` 일 때만: 심볼 표 판정과 지금 이름 스택 판정을 비교한다.
+    debug_block_rename_table: ?@import("block_rename_table.zig").Table = null,
+    debug_block_rename_logged: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// 상태 기계가 항상 바꾸는 심볼 — 표 비교에서 뺀다(표는 아직 그 경로를 다루지 않는다).
+    debug_sm_renamed: std.AutoHashMapUnmanaged(u32, void) = .empty,
 
     /// `isImportSpecifierUnused` 가 specifier 마다 `references` 전체를 선형 스캔(O(N²))하지
     /// 않도록, **value-use 가 있는 symbol_id 집합**을 1회 구축해 캐시한다(대형 fan-out 만).

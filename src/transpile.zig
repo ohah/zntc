@@ -1445,6 +1445,9 @@ fn transpileWithCallbackInternal(
         transformer.initSymbolIds(analyzer.symbol_ids.items) catch return error.TransformError;
         transformer.symbols = analyzer.symbols.items;
         transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.unresolved_references = &analyzer.unresolved_references;
     } else if (binding_lite_storage) |*binding_lite| {
         transformer.binding_lite = binding_lite;
     }

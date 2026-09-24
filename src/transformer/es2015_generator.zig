@@ -2386,6 +2386,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const new_name = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, self.block_rename_counter });
                 try self.block_rename_stack.append(self.allocator, .{ .old_name = name, .new_name = new_name });
                 try registerGeneratorVar(self, try self.ast.addString(new_name), binding);
+                if (@import("transformer/node_helpers.zig").blockRenameDebugEnabled()) {
+                    const bi = @intFromEnum(binding);
+                    if (bi < self.symbol_ids.items.len) if (self.symbol_ids.items[bi]) |sid| try self.debug_sm_renamed.put(self.allocator, sid, {});
+                }
             }
             return @intCast(bindings.len);
         }
