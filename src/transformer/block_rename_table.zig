@@ -15,6 +15,10 @@
 //! (4) 같은 이름의 전역(선언 없는 참조)이 있으면
 //! S 를 바꾼다 — `var` 로 끌어올리면 그 참조들이 S 를 보게 된다. 아니면 S 의 이름을 F 의
 //! "끌어올린 이름"으로 등록한다. 전역 참조는 분석기가 이름만 모으므로 (4)는 보수적이다.
+//!
+//! 예외 — 블록이 direct `eval`/`with` 를 품으면(`blocksMangling`) 바꾸지 않는다. `eval('x')` 는
+//! 이름 문자열로 찾으므로 새 이름을 볼 수 없다. mangler 가 같은 스코프 이름을 줄이지 않는 것과
+//! 같은 이유다.
 
 const std = @import("std");
 const scope_mod = @import("../semantic/scope.zig");
@@ -103,6 +107,7 @@ pub fn build(allocator: std.mem.Allocator, in: Input) std.mem.Allocator.Error!Ta
     for (in.scopes, 0..) |sc, si| {
         if (sc.kind != .block and sc.kind != .switch_block) continue;
         if (si >= in.scope_maps.len) continue;
+        if (sc.blocksMangling()) continue;
         const var_scope = nearestVarScope(in.scopes, sc.parent);
         if (var_scope.isNone()) continue;
         const gop = try hoisted.getOrPut(allocator, var_scope.toIndex());

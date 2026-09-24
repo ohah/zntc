@@ -86,3 +86,7 @@ test "(3) 바깥 같은 이름을 참조하지 않으면 바꾸지 않는다" {
 test "(4) 같은 이름의 전역을 참조하면 바꾼다 (#4764 switch)" {
     try expectRenamed("export function f(k) { switch (k) { case 0: let value = 1; g(value); } return value; }", "value");
 }
+
+test "direct eval 을 품은 블록의 바인딩은 바꾸지 않는다 — eval 은 이름 문자열로 찾는다" {
+    try expectRenamed("export function f() { var x = 'v'; { let x = 'b'; return eval('x'); } }", "");
+}
