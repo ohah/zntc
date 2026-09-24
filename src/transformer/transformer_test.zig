@@ -3657,3 +3657,22 @@ test "graph pre-pass 게이트는 변환이 헬퍼를 쓰는 모든 모듈을 �
         try expectGateCoversHelpers(src, compat.fromHermesPreset(), "hermes");
     }
 }
+
+test "stableName: string_table 조각은 복사해 표가 옮겨져도 유효하고, 원문 조각은 그대로" {
+    // 이름 조각을 블록 스코핑 목록에 보관하는 동안 `addString` 이 `string_table` 을 옮기면
+    // 표 안을 가리키던 조각은 해제된 메모리가 된다.
+    var ast = Ast.init(std.testing.allocator, "let source_name;");
+    defer ast.deinit();
+    var t = try Transformer.init(std.testing.allocator, &ast, .{});
+    defer t.deinit();
+
+    const from_source = t.ast.source[4..15];
+    try std.testing.expectEqual(from_source.ptr, (try t.stableName(from_source)).ptr);
+
+    const raw = t.ast.getText(try t.ast.addString("_synthetic"));
+    const kept = try t.stableName(raw);
+    try std.testing.expect(kept.ptr != raw.ptr);
+    // 표를 강제로 새 버퍼로 옮긴다.
+    try t.ast.string_table.ensureTotalCapacity(t.ast.allocator, t.ast.string_table.capacity * 4 + 64);
+    try std.testing.expectEqualStrings("_synthetic", kept);
+}

@@ -4699,3 +4699,27 @@ test "ES2017 async generator: for-await 는 본문 전처리로 풀려 합성 aw
     try std.testing.expect(std.mem.indexOf(u8, r.output, "yield __await(_b.call(_a))") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "await ") == null);
 }
+
+test "ES5 상태 기계: 변환기가 만든 이름을 리네임해도 string_table 재할당 뒤 깨지지 않는다" {
+    // `for (using x of …)` 는 헤더를 `const _using` 으로 바꾸고, 상태 기계가 그 이름을
+    // `_using$N` 으로 리네임한다. `_using` 은 원문이 아니라 `string_table` 에 있어서, 이름 조각을
+    // 모은 뒤 using 재구성·for-of 풀이가 `addString` 으로 표를 옮기면 조각이 해제된 메모리를
+    // 가리켰다 — Debug 빌드에서 `var …,\xaa\xaa…$1` 이 찍혀 SyntaxError.
+    const src =
+        \\const R = (n, log) => ({ [Symbol.dispose]() { log.push('d' + n); } });
+        \\const AR = (n, log) => ({ async [Symbol.asyncDispose]() { log.push('ad' + n); } });
+        \\const log = [];
+        \\function* g() {
+        \\  for (using x of [R(1, log), R(2, log)]) {
+        \\    yield 1;
+        \\    log.push('y');
+        \\  }
+        \\}
+        \\for (const v of g()) log.push('v');
+        \\console.log(log.join());
+    ;
+    var r = try e2eTarget(std.testing.allocator, src, .es5);
+    defer r.deinit();
+    for (r.output) |c| try std.testing.expect(c < 0x80);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_using$") != null);
+}

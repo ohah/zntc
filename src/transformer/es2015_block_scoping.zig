@@ -103,7 +103,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             while (try it.next()) |leaf_idx| {
                 const leaf = self.ast.getNode(leaf_idx);
                 if (leaf.tag != .binding_identifier) continue;
-                try names.append(self.allocator, self.ast.getText(leaf.span));
+                try names.append(self.allocator, try self.stableName(self.ast.getText(leaf.span)));
             }
         }
 
@@ -256,9 +256,15 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     },
                     .class_declaration => {
                         const name = ctx.self.readNodeIdx(node.data.extra, ast_mod.ClassExtra.name);
-                        if (!name.isNone()) ctx.class_names.append(ctx.self.allocator, ctx.self.ast.getText(ctx.self.ast.getNode(name).span)) catch {
-                            ctx.oom = true;
-                        };
+                        if (!name.isNone()) {
+                            const text = ctx.self.stableName(ctx.self.ast.getText(ctx.self.ast.getNode(name).span)) catch blk: {
+                                ctx.oom = true;
+                                break :blk "";
+                            };
+                            ctx.class_names.append(ctx.self.allocator, text) catch {
+                                ctx.oom = true;
+                            };
+                        }
                         return .skip_children;
                     },
                     .catch_clause => {

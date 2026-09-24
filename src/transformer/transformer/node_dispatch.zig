@@ -507,7 +507,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             const child_idx = node.data.binary.right;
             // 이 라벨은 본문 안에서 보인다 — 추출된 루프 호출부가 점프/전달을 고를 때 쓴다 (#4722).
             if (!node.data.binary.left.isNone()) {
-                try self.label_scope.append(self.allocator, self.ast.getText(self.ast.getNode(node.data.binary.left).span));
+                try self.label_scope.append(self.allocator, try self.stableName(self.ast.getText(self.ast.getNode(node.data.binary.left).span)));
             } else try self.label_scope.append(self.allocator, "");
             defer _ = self.label_scope.pop();
             if (!child_idx.isNone()) {

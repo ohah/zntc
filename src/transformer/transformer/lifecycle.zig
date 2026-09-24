@@ -144,6 +144,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     for (self.block_rename_stack.items) |entry| self.allocator.free(entry.new_name);
     self.block_rename_stack.deinit(self.allocator);
     self.scope_var_names.deinit(self.allocator);
+    if (self.name_arena) |*a| a.deinit();
     for (self.const_enums.items) |decl| {
         self.allocator.free(decl.name);
         for (decl.members) |m| {
