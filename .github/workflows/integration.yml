@@ -214,6 +214,12 @@ jobs:
       - name: Install emotion v10 fixture deps
         run: cd tests/integration/fixtures/emotion-v10 && bun install --frozen-lockfile
 
+      # 다운레벨 런타임 오라클(downlevel-oracle.test.ts)은 네이티브 node 실행을 정답으로 쓴다 —
+      # fixture 가 `using`·`SuppressedError` 등 최신 문법을 쓰므로 node 24 가 필요하다.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
       - name: Run integration tests
         run: bun run test:integration
 
@@ -244,6 +250,12 @@ jobs:
       # emotion-v10 fixture 는 root workspace 미포함 — 격리 install 필요.
       - name: Install emotion v10 fixture deps
         run: cd tests/integration/fixtures/emotion-v10 && bun install --frozen-lockfile
+
+      # 다운레벨 런타임 오라클(downlevel-oracle.test.ts)은 네이티브 node 실행을 정답으로 쓴다 —
+      # fixture 가 `using`·`SuppressedError` 등 최신 문법을 쓰므로 node 24 가 필요하다.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
 
       - name: Run integration tests
         run: bun run test:integration
