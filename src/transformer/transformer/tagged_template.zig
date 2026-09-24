@@ -178,7 +178,7 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
     const data_decl = try self.buildVarDecl("data", helper_call, span);
 
     // --- _templateObject = function() { return data; } ---
-    const fn_name_ref = try es_helpers.makeIdentifierRef(self, fn_name);
+    const fn_name_ref = try es_helpers.makeSyntheticRef(self, fn_name);
     const data_ref = try es_helpers.makeSyntheticRef(self, "data");
     const return_stmt = try self.ast.addNode(.{
         .tag = .return_statement,
@@ -253,7 +253,7 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
 
     // --- tag(_templateObject(), ...exprs) 호출 ---
     const new_tag = try self.visitNode(tag_idx);
-    const fn_call_ref = try es_helpers.makeIdentifierRef(self, fn_name);
+    const fn_call_ref = try es_helpers.makeSyntheticRef(self, fn_name);
     const empty_args = try self.ast.addNodeList(&.{});
     const tmpl_call_extra = try self.ast.addExtras(&.{
         @intFromEnum(fn_call_ref), empty_args.start, empty_args.len, 0,

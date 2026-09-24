@@ -410,7 +410,7 @@ pub fn ES2022(comptime Transformer: type) type {
             }
             for (method_mappings.items) |m| {
                 if (m.class_name) |cname| {
-                    const fn_ref = try es_helpers.makeIdentifierRef(self, m.func_name);
+                    const fn_ref = try es_helpers.makeSyntheticRef(self, m.func_name);
                     const cname_span = try self.ast.addString(cname);
                     const desc = try es_helpers.buildStaticPrivateFieldDescriptor(self, m.weakset_name, fn_ref, span, cname_span);
                     try desc_target.append(self.allocator, desc);
@@ -716,7 +716,7 @@ pub fn ES2022(comptime Transformer: type) type {
 
             // getter → `.call(this)` 즉시 호출 (값 반환). 메서드 → `.bind(this)` 바운드 참조.
             const access_prop_name: []const u8 = if (mapping.kind == .getter) "call" else "bind";
-            const access_prop = try es_helpers.makeIdentifierRef(self, access_prop_name);
+            const access_prop = try es_helpers.makePropertyName(self, access_prop_name);
             const callee = try es_helpers.makeStaticMember(self, get_call, access_prop, node.span);
             return es_helpers.makeCallExpr(self, callee, &.{new_obj}, node.span);
         }
@@ -727,13 +727,13 @@ pub fn ES2022(comptime Transformer: type) type {
                 self.runtime_helpers.class_static_private_field = true;
                 const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
                 const class_ref = try es_helpers.makeIdentifierRef(self, class_name);
-                const desc_ref = try es_helpers.makeIdentifierRef(self, mapping.weakset_name);
+                const desc_ref = try es_helpers.makeSyntheticRef(self, mapping.weakset_name);
                 return es_helpers.makeCallExpr(self, helper_ref, &.{ new_obj, class_ref, desc_ref }, span);
             }
             self.runtime_helpers.class_private_method_get = true;
             const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateMethodGet");
-            const ws_ref = try es_helpers.makeIdentifierRef(self, mapping.weakset_name);
-            const fn_ref = try es_helpers.makeIdentifierRef(self, mapping.func_name);
+            const ws_ref = try es_helpers.makeSyntheticRef(self, mapping.weakset_name);
+            const fn_ref = try es_helpers.makeSyntheticRef(self, mapping.func_name);
             return es_helpers.makeCallExpr(self, helper_ref, &.{ new_obj, ws_ref, fn_ref }, span);
         }
 
@@ -759,7 +759,7 @@ pub fn ES2022(comptime Transformer: type) type {
 
         /// _f.set(this, init) expression_statement 생성. (es2015_class의 buildPrivateFieldInit 동일)
         fn buildPrivateFieldSetInit(self: *Transformer, var_name: []const u8, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const wm_ref = try es_helpers.makeIdentifierRef(self, var_name);
+            const wm_ref = try es_helpers.makeSyntheticRef(self, var_name);
             const set_prop = try es_helpers.makePropertyName(self, "set");
             const callee = try es_helpers.makeStaticMember(self, wm_ref, set_prop, span);
             const this_node = try self.ast.addNode(.{
