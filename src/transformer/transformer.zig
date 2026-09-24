@@ -188,25 +188,9 @@ pub const Transformer = struct {
     /// 치환되므로 안쪽 층은 평범한 식별자만 본다.
     in_extracted_fn_body: bool = false,
 
-    /// es5 async generator 의 **inner state machine** 을 만드는 중인가. (#4707)
-    ///
-    /// es5 에서 `async function*` 은 `__asyncGenerator(this, arguments, function () {
-    /// return __generator(this, function (_state) { … }) })` 로 낮아진다. 안쪽은 **동기**
-    /// generator 라 "await" 과 "yield" 가 `[4, x]` 라는 **같은 op** 로 나가고, 둘을 가르는
-    /// 건 값이 `__await(…)` 로 감싸였는지 뿐이다. 사용자 `await` 는 state machine 을 만들기
-    /// **전에** `rewriteAwaitToYieldAwait` 가 감싸 주지만, `for await` 다운레벨은 state
-    /// machine 을 **만드는 도중에** 새 await 노드를 만들어 그 시점을 놓친다 — 감싸지 않으면
-    /// `__asyncGenerator` 가 그 값을 소비자에게 내보낼 yield 로 처리해 `_state.sent()` 가
-    /// undefined 가 된다.
-    ///
-    /// `pending_` 은 "다음에 만들어질 state machine 이 그것"이라는 **1회용 신호**이고,
-    /// `buildStateMachine` 이 진입하면서 소비해 `in_` 으로 옮긴다. 그래야 안쪽에 중첩된
-    /// 평범한 generator 의 state machine 이 이 성질을 물려받지 않는다.
-    pending_async_generator_sm: bool = false,
     /// 지금 visit 중인 변수 선언이 `const` 인가 (#4723). `const X = class {…}` 의 익명 클래스를
     /// 낮출 때 이름 추론(`X.name === "X"`)을 지키려고 선언 이름을 클래스에 붙이는 데 쓴다.
     in_const_declaration: bool = false,
-    in_async_generator_sm: bool = false,
     /// V7: object literal 안에서 visit 중인지 (nested 가능). visitMethodDefinition 이
     /// 이 flag 를 보고 method body 의 super context 를 reset 한다 — object literal method
     /// 의 super 는 home object [[Prototype]] 기준이라 outer class super 와 무관.

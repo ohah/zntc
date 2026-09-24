@@ -67,8 +67,22 @@ const KNOWN_FAILURES: Record<string, string[]> = {
   'forof-asyncgen-close-break': ['hermes/plain', 'hermes/minify'],
   'forof-in-forawait-yield-capture': ['hermes/plain', 'hermes/minify'],
   'forof-in-forawait-yield-capture-inner': ['hermes/plain', 'hermes/minify'],
-  // #4746 3단계: for-await 본문은 일반 경로로 방문돼 안쪽 for-in 의 yield 가 raw 로 남는다
-  'forin-in-forawait-yield-capture': ['es5/plain', 'es5/minify', 'hermes/plain', 'hermes/minify'],
+  'forin-in-forawait-yield-capture': ['hermes/plain', 'hermes/minify'],
+  'forawait-asyncgen-src': ['hermes/plain', 'hermes/minify'],
+  'forawait-break-closes': ['hermes/plain', 'hermes/minify'],
+  'forawait-return-closes': ['hermes/plain', 'hermes/minify'],
+  'forawait-source-throws': ['hermes/plain', 'hermes/minify'],
+  'forawait-throw-in-body': ['hermes/plain', 'hermes/minify'],
+  'forawait-in-asyncgen': ['hermes/plain', 'hermes/minify'],
+  'forawait-in-asyncgen-capture': ['hermes/plain', 'hermes/minify'],
+  'forawait-asyncgen-labeled': ['hermes/plain', 'hermes/minify'],
+  'forawait-close-awaited-order': ['hermes/plain', 'hermes/minify'],
+  'forawait-asyncgen-nested-yieldstar': ['hermes/plain', 'hermes/minify'],
+  'forawait-asyncgen-method-and-arrow': ['hermes/plain', 'hermes/minify'],
+  'forawait-asyncgen-consumer-return': ['hermes/plain', 'hermes/minify'],
+  'forawait-asyncgen-await-in-body-and-finally': ['hermes/plain', 'hermes/minify'],
+  // #4756 es5 minify 에서 async generator 기본값 매개변수 이름 불일치 (+ Hermes #4733)
+  'asyncgen-default-param': ['es5/minify', 'hermes/plain', 'hermes/minify'],
   // #4733 Hermes 에서 async generator 를 for-await 로 돌 때
   '4730-using-30': ['hermes/plain', 'hermes/minify'],
 };

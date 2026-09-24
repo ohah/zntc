@@ -7,12 +7,12 @@
 //! 입력:
 //!   for await (const v of iterable) body;
 //!
-//! 출력 (tsc __asyncValues 스타일):
+//! 출력 (tsc __asyncValues 스타일, #4746 3단계부터 방문 없는 AST 풀이):
 //!   {
-//!     var _iter = __asyncValues(iterable), _step, _ret, _err_obj;
+//!     var _iter = __asyncValues(iterable), _step = void 0, _ret = void 0, _err_obj = void 0;
 //!     try {
 //!       while (!(_step = await _iter.next()).done) {
-//!         var v = _step.value;
+//!         const v = _step.value;   // 원래 종류
 //!         body;
 //!       }
 //!     } catch (_err) { _err_obj = { error: _err }; }
@@ -22,9 +22,9 @@
 //!     }
 //!   }
 //!
-//! 바깥쪽 async function 이 ES2017 lowering 으로 `__async(function*(){...})` 로 변환되면
-//! 내부의 `await` 는 `yield` 로 재변환된다. 즉 이 변환은 for-await 키워드/구조만 제거하고
-//! `await` 자체는 그대로 둠. 후속 ES2017 lowering 이 yield 변환을 처리.
+//! 풀이는 방문하지 않는다 — 일반 경로는 결과를 방문하고(합성한 `await` 도 그때 낮아진다),
+//! 상태 기계는 결과를 수집한다. async generator 는 본문 전처리 단계에서 **제자리 풀이**
+//! (`lowerInPlace`)해 합성 `await` 도 사용자 await 와 함께 `yield __await(…)` 로 바뀌게 한다.
 //!
 //! Flow gate: `options.unsupported.needsForAwaitOfDownlevel()` (= ES2018 미지원).
 //!
@@ -40,298 +40,182 @@ const NodeIndex = ast_mod.NodeIndex;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
+const ast_walk = @import("../parser/ast_walk.zig");
 
 pub fn ES2018ForAwait(comptime Transformer: type) type {
     return struct {
-        /// for await (const v of iter) body; → iterator protocol + await 수동 루프.
-        ///
-        /// label 이 있으면 inner while_statement 에 부여 (break/continue LABEL 지원).
+        const ForOf = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
+
+        /// for await (const v of iter) body; → 풀이 결과를 방문한다(일반 경로).
         pub fn lowerForAwaitOf(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             return lowerForAwaitOfLabeled(self, node, .none);
         }
 
+        /// label 이 있으면 안쪽 while 에 붙인다(`continue <label>` 이 루프를 가리키게).
         pub fn lowerForAwaitOfLabeled(self: *Transformer, node: Node, label_name_idx: NodeIndex) Transformer.Error!NodeIndex {
+            return self.visitNode(try rewriteForAwait(self, node, label_name_idx));
+        }
+
+        /// for-await 를 **방문 없이** 반복자 while 루프로 풀어 쓴다 (#4746 3단계).
+        ///
+        /// - 임시 변수는 선언 때 모두 초기화한다. 같은 함수에서 루프가 다시 실행될 때 앞
+        ///   실행의 `_errObj`·`_step` 이 남으면, 에러 없이 끝난 실행의 finally 가 옛 에러를
+        ///   다시 던지거나 새 iterator 를 닫았다. 초기값이 있으면 상태 기계도 선언을 대입으로
+        ///   바꾸며 이름을 wrapper 에 등록한다(catch 파라미터는 상태 기계가 리네임·등록).
+        /// - `_step` 은 본문(루프 변수 선언)에서 읽으므로 모듈 고유 이름(for-of 와 같은 이유).
+        /// - 반복자 생성은 try 밖 — 생성이 던지면 닫을 것이 없다.
+        pub fn rewriteForAwait(self: *Transformer, node: Node, label_name_idx: NodeIndex) Transformer.Error!NodeIndex {
             const span = node.span;
             const left = node.data.ternary.a;
             const right = node.data.ternary.b;
             const body = node.data.ternary.c;
 
-            // 런타임 헬퍼 사용 마킹.
             self.runtime_helpers.async_values = true;
 
-            // 임시 변수 span (겹침 방지 — makeTempVarSpan 는 counter 기반 고유 이름).
-            const iter_span = try es_helpers.makeTempVarSpan(self); // _a: iterator
-            const step_span = try es_helpers.makeTempVarSpan(self); // _b: step
-            const ret_span = try es_helpers.makeTempVarSpan(self); // _c: iterator.return 캐시
-            const errobj_span = try es_helpers.makeTempVarSpan(self); // _d: { error }
-            const err_span = try es_helpers.makeTempVarSpan(self); // _e: catch param
+            const iter = try es_helpers.makeTempVarSpan(self);
+            const step = try ForOf.uniqueStepName(self);
+            const ret = try es_helpers.makeTempVarSpan(self);
+            const errobj = try es_helpers.makeTempVarSpan(self);
+            const err = try es_helpers.makeTempVarSpan(self);
+            const ref = struct {
+                fn f(t: *Transformer, sp: Span) Transformer.Error!NodeIndex {
+                    return es_helpers.makeIdentifierRefFromSpan(t, sp);
+                }
+            }.f;
 
-            const new_right = try self.visitNode(right);
+            // var _iter = __asyncValues(iterable), _step = void 0, _ret = void 0, _errObj = void 0;
+            const values_call = try es_helpers.makeCallExpr(self, try es_helpers.makeRuntimeHelperRef(self, "__asyncValues"), &.{right}, span);
+            const decl = try es_helpers.makeVarDeclaration(self, &.{
+                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, iter), values_call, span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, step), try es_helpers.makeVoidZero(self, span), span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, ret), try es_helpers.makeVoidZero(self, span), span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, errobj), try es_helpers.makeVoidZero(self, span), span),
+            }, .@"var", span);
 
-            // =====================================================
-            // 1. _iter = __asyncValues(iterable);  (helper var 들은 함수 top hoist)
-            // =====================================================
-            // (#1901) 4 helper var (_iter, _step, _ret, _errObj) + catch param (_err) 을
-            // generator_temp_var_spans 로 hoist — generator state machine 의 buildStateMachine
-            // 이 함수 top 에 합쳐 emit. 기존엔 outer_var (var declaration) 으로 emit 했지만
-            // collectOperations 의 var → assignment 변환 path 가 raw for_await_of 안 traverse
-            // 못 해서 binding 들이 함수 top 에 안 올라가는 문제. lower 가 직접 push 하는 게
-            // 정통 — `collectForOperations` 의 `generator_temp_var_spans.append(idx_span, arr_span)` 와 동일 패턴.
-            try self.generator_temp_var_spans.appendSlice(self.allocator, &.{ iter_span, step_span, ret_span, errobj_span, err_span });
-
-            // _iter = __asyncValues(iterable) — assignment statement (declaration 아님).
-            const async_values_ref = try es_helpers.makeRuntimeHelperRef(self, "__asyncValues");
-            const async_values_call = try es_helpers.makeCallExpr(self, async_values_ref, &.{new_right}, span);
-            const iter_lhs = try es_helpers.makeIdentifierRefFromSpan(self, iter_span);
-            const outer_var = try es_helpers.makeAssignStmt(self, iter_lhs, async_values_call, span, 0);
-
-            // =====================================================
-            // 2. while test: !(_step = await _iter.next()).done
-            // =====================================================
-            const iter_ref_next = try es_helpers.makeIdentifierRefFromSpan(self, iter_span);
-            const next_prop = try es_helpers.makeIdentifierRef(self, "next");
-            const iter_next = try es_helpers.makeStaticMember(self, iter_ref_next, next_prop, span);
-            const iter_next_call = try es_helpers.makeCallExpr(self, iter_next, &.{}, span);
-
-            // await _iter.next()
-            const await_next = try es_helpers.makeAwaitExpression(self, iter_next_call, span);
-
-            // _step = await _iter.next()
-            const step_ref_assign = try es_helpers.makeIdentifierRefFromSpan(self, step_span);
-            const step_assign = try self.ast.addNode(.{
-                .tag = .assignment_expression,
+            // while (!(_step = await _iter.next()).done) { <루프 변수 = _step.value>; body }
+            const next_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try ref(self, iter), try es_helpers.makeIdentifierRef(self, "next"), span), &.{}, span);
+            const step_assign = try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{
+                .left = try ref(self, step),
+                .right = try es_helpers.makeAwaitExpression(self, next_call, span),
+                .flags = 0,
+            } } });
+            const test_expr = try es_helpers.makeUnaryNot(self, try es_helpers.makeStaticMember(self, step_assign, try es_helpers.makeIdentifierRef(self, "done"), span), span);
+            const value = try es_helpers.makeStaticMember(self, try ref(self, step), try es_helpers.makeIdentifierRef(self, "value"), span);
+            const while_stmt = try self.ast.addNode(.{ .tag = .while_statement, .span = span, .data = .{ .binary = .{
+                .left = test_expr,
+                .right = try ForOf.buildLoopBody(self, left, value, body, span),
+                .flags = 0,
+            } } });
+            const loop_stmt = if (label_name_idx.isNone()) while_stmt else try self.ast.addNode(.{
+                .tag = .labeled_statement,
                 .span = span,
-                .data = .{ .binary = .{ .left = step_ref_assign, .right = await_next, .flags = 0 } },
+                .data = .{ .binary = .{ .left = label_name_idx, .right = while_stmt, .flags = 0 } },
             });
 
-            // (_step = await _iter.next()).done
-            const done_prop = try es_helpers.makeIdentifierRef(self, "done");
-            const step_done = try es_helpers.makeStaticMember(self, step_assign, done_prop, span);
+            // catch (_err) { _errObj = { error: _err }; }
+            const error_prop = try self.ast.addNode(.{ .tag = .object_property, .span = span, .data = .{ .binary = .{
+                .left = try es_helpers.makeIdentifierRef(self, "error"),
+                .right = try ref(self, err),
+                .flags = 0,
+            } } });
+            const error_obj = try self.ast.addNode(.{ .tag = .object_expression, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{error_prop}) } });
+            const set_errobj = try es_helpers.makeAssignStmt(self, try ref(self, errobj), error_obj, span, 0);
+            const catch_clause = try self.ast.addNode(.{ .tag = .catch_clause, .span = span, .data = .{ .binary = .{
+                .left = try es_helpers.makeBindingIdentifier(self, err),
+                .right = try block(self, &.{set_errobj}, span),
+                .flags = 0,
+            } } });
 
-            // !(...)
-            const not_done = try es_helpers.makeUnaryNot(self, step_done, span);
+            // finally { try { if (_step && !_step.done && (_ret = _iter.return)) await _ret.call(_iter); }
+            //           finally { if (_errObj) throw _errObj.error; } }
+            const not_done = try es_helpers.makeUnaryNot(self, try es_helpers.makeStaticMember(self, try ref(self, step), try es_helpers.makeIdentifierRef(self, "done"), span), span);
+            const and1 = try logicalAnd(self, try ref(self, step), not_done, span);
+            const ret_assign = try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{
+                .left = try ref(self, ret),
+                .right = try es_helpers.makeStaticMember(self, try ref(self, iter), try es_helpers.makeIdentifierRef(self, "return"), span),
+                .flags = 0,
+            } } });
+            const close_cond = try logicalAnd(self, and1, ret_assign, span);
+            const close_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try ref(self, ret), try es_helpers.makeIdentifierRef(self, "call"), span), &.{try ref(self, iter)}, span);
+            const close_if = try self.ast.addNode(.{ .tag = .if_statement, .span = span, .data = .{ .ternary = .{
+                .a = close_cond,
+                .b = try es_helpers.makeExprStmt(self, try es_helpers.makeAwaitExpression(self, close_call, span), span),
+                .c = .none,
+            } } });
+            const rethrow = try self.ast.addNode(.{ .tag = .throw_statement, .span = span, .data = .{ .unary = .{
+                .operand = try es_helpers.makeStaticMember(self, try ref(self, errobj), try es_helpers.makeIdentifierRef(self, "error"), span),
+                .flags = 0,
+            } } });
+            const rethrow_if = try self.ast.addNode(.{ .tag = .if_statement, .span = span, .data = .{ .ternary = .{
+                .a = try ref(self, errobj),
+                .b = try block(self, &.{rethrow}, span),
+                .c = .none,
+            } } });
+            const inner_try = try self.ast.addNode(.{ .tag = .try_statement, .span = span, .data = .{ .ternary = .{
+                .a = try block(self, &.{close_if}, span),
+                .b = .none,
+                .c = try block(self, &.{rethrow_if}, span),
+            } } });
+            const try_stmt = try self.ast.addNode(.{ .tag = .try_statement, .span = span, .data = .{ .ternary = .{
+                .a = try block(self, &.{loop_stmt}, span),
+                .b = catch_clause,
+                .c = try block(self, &.{inner_try}, span),
+            } } });
+            return block(self, &.{ decl, try_stmt }, span);
+        }
 
-            // =====================================================
-            // 3. while body: var v = _step.value; body;
-            // =====================================================
-            const step_ref_body = try es_helpers.makeIdentifierRefFromSpan(self, step_span);
-            const value_prop = try es_helpers.makeIdentifierRef(self, "value");
-            const step_value = try es_helpers.makeStaticMember(self, step_ref_body, value_prop, span);
+        /// async generator 본문 전처리: 본문의 for-await(라벨 포함)를 **제자리에서** 풀이로
+        /// 바꾼다. 바로 뒤의 `rewriteAwaitToYieldAwait` 가 합성 `await` 까지 `yield __await(…)`
+        /// 로 바꾸게 하려는 것이다 — 풀이를 방문 때 하면 합성 await 가 평범한 `yield` 로
+        /// 낮아지거나(async 를 낮추는 타겟) 상태 기계가 따로 표시해야 했다(#4707).
+        /// 중첩 함수·클래스는 자기 문맥이라 들어가지 않는다.
+        pub fn lowerInPlace(self: *Transformer, root: NodeIndex) Transformer.Error!void {
+            if (root.isNone()) return;
+            var stack: std.ArrayList(NodeIndex) = .empty;
+            defer stack.deinit(self.allocator);
+            var kids: std.ArrayList(NodeIndex) = .empty;
+            defer kids.deinit(self.allocator);
+            try stack.append(self.allocator, root);
+            while (stack.pop()) |idx| {
+                if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+                var node = self.ast.getNode(idx);
+                switch (node.tag) {
+                    .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .class_declaration, .class_expression => continue,
+                    .for_await_of_statement => {
+                        _ = try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, idx);
+                        node = self.ast.getNode(idx);
+                        const rewritten = try rewriteForAwait(self, node, .none);
+                        self.ast.nodes.items[@intFromEnum(idx)] = self.ast.getNode(rewritten);
+                        node = self.ast.getNode(idx);
+                    },
+                    .labeled_statement => {
+                        const child = node.data.binary.right;
+                        if (!child.isNone() and self.ast.getNode(child).tag == .for_await_of_statement) {
+                            _ = try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, child);
+                            const rewritten = try rewriteForAwait(self, self.ast.getNode(child), node.data.binary.left);
+                            self.ast.nodes.items[@intFromEnum(idx)] = self.ast.getNode(rewritten);
+                            node = self.ast.getNode(idx);
+                        }
+                    },
+                    else => {},
+                }
+                // 제자리 풀이 **뒤의** 노드에서 자식을 모은다(풀이 결과 안의 원래 본문으로 내려간다).
+                kids.clearRetainingCapacity();
+                try ast_walk.collectChildrenInto(self.ast, node, &kids, self.allocator);
+                try stack.appendSlice(self.allocator, kids.items);
+            }
+        }
 
-            const new_body = try self.visitNode(body);
+        fn logicalAnd(self: *Transformer, a: NodeIndex, b: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            return self.ast.addNode(.{ .tag = .logical_expression, .span = span, .data = .{ .binary = .{
+                .left = a,
+                .right = b,
+                .flags = @intFromEnum(token_mod.Kind.amp2),
+            } } });
+        }
 
-            const elem_stmt = try es_helpers.buildForOfLoopVarAssign(self, left, step_value, span);
-
-            const while_body_block = if (!new_body.isNone())
-                try self.prependStatementsToBody(new_body, &.{elem_stmt})
-            else blk: {
-                const list = try self.ast.addNodeList(&.{elem_stmt});
-                break :blk try self.ast.addNode(.{
-                    .tag = .block_statement,
-                    .span = span,
-                    .data = .{ .list = list },
-                });
-            };
-
-            // while_statement: data.binary = { left=test, right=body }
-            const while_stmt = try self.ast.addNode(.{
-                .tag = .while_statement,
-                .span = span,
-                .data = .{ .binary = .{ .left = not_done, .right = while_body_block, .flags = 0 } },
-            });
-
-            // labeled while 지원 (iteration statement 라서 continue LABEL 합법).
-            const labeled_while = if (label_name_idx.isNone())
-                while_stmt
-            else
-                try self.ast.addNode(.{
-                    .tag = .labeled_statement,
-                    .span = span,
-                    .data = .{ .binary = .{ .left = label_name_idx, .right = while_stmt, .flags = 0 } },
-                });
-
-            // =====================================================
-            // 4. try block
-            // =====================================================
-            const try_body_list = try self.ast.addNodeList(&.{labeled_while});
-            const try_block = try self.ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = try_body_list },
-            });
-
-            // =====================================================
-            // 5. catch (_err) { _errObj = { error: _err }; }
-            // =====================================================
-            const errobj_ref_catch = try es_helpers.makeIdentifierRefFromSpan(self, errobj_span);
-            const error_key = try es_helpers.makeIdentifierRef(self, "error");
-            const err_ref_catch = try es_helpers.makeIdentifierRefFromSpan(self, err_span);
-            const error_prop = try self.ast.addNode(.{
-                .tag = .object_property,
-                .span = span,
-                .data = .{ .binary = .{ .left = error_key, .right = err_ref_catch, .flags = 0 } },
-            });
-            const error_props_list = try self.ast.addNodeList(&.{error_prop});
-            const error_obj = try self.ast.addNode(.{
-                .tag = .object_expression,
-                .span = span,
-                .data = .{ .list = error_props_list },
-            });
-            const errobj_assign = try self.ast.addNode(.{
-                .tag = .assignment_expression,
-                .span = span,
-                .data = .{ .binary = .{ .left = errobj_ref_catch, .right = error_obj, .flags = 0 } },
-            });
-            const errobj_assign_stmt = try es_helpers.makeExprStmt(self, errobj_assign, span);
-            const catch_body_list = try self.ast.addNodeList(&.{errobj_assign_stmt});
-            const catch_body = try self.ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = catch_body_list },
-            });
-            const catch_param = try es_helpers.makeBindingIdentifier(self, err_span);
-            const catch_clause = try self.ast.addNode(.{
-                .tag = .catch_clause,
-                .span = span,
-                .data = .{ .binary = .{ .left = catch_param, .right = catch_body, .flags = 0 } },
-            });
-
-            // =====================================================
-            // 6. finally:
-            //    try {
-            //      if (_step && !_step.done && (_ret = _iter.return)) await _ret.call(_iter);
-            //    } finally { if (_errObj) throw _errObj.error; }
-            // =====================================================
-
-            // _step
-            const step_ref_f1 = try es_helpers.makeIdentifierRefFromSpan(self, step_span);
-
-            // _step.done
-            const step_ref_f2 = try es_helpers.makeIdentifierRefFromSpan(self, step_span);
-            const done_prop2 = try es_helpers.makeIdentifierRef(self, "done");
-            const step_done2 = try es_helpers.makeStaticMember(self, step_ref_f2, done_prop2, span);
-            const not_step_done = try es_helpers.makeUnaryNot(self, step_done2, span);
-
-            // _step && !_step.done
-            const and1 = try self.ast.addNode(.{
-                .tag = .binary_expression,
-                .span = span,
-                .data = .{ .binary = .{
-                    .left = step_ref_f1,
-                    .right = not_step_done,
-                    .flags = @intFromEnum(token_mod.Kind.amp2),
-                } },
-            });
-
-            // _iter.return
-            const iter_ref_f = try es_helpers.makeIdentifierRefFromSpan(self, iter_span);
-            const return_prop = try es_helpers.makeIdentifierRef(self, "return");
-            const iter_return = try es_helpers.makeStaticMember(self, iter_ref_f, return_prop, span);
-
-            // _ret = _iter.return
-            const ret_ref_assign = try es_helpers.makeIdentifierRefFromSpan(self, ret_span);
-            const ret_assign = try self.ast.addNode(.{
-                .tag = .assignment_expression,
-                .span = span,
-                .data = .{ .binary = .{ .left = ret_ref_assign, .right = iter_return, .flags = 0 } },
-            });
-
-            // (_step && !_step.done) && (_ret = _iter.return)
-            const and2 = try self.ast.addNode(.{
-                .tag = .binary_expression,
-                .span = span,
-                .data = .{ .binary = .{
-                    .left = and1,
-                    .right = ret_assign,
-                    .flags = @intFromEnum(token_mod.Kind.amp2),
-                } },
-            });
-
-            // _ret.call(_iter)
-            const ret_ref_call = try es_helpers.makeIdentifierRefFromSpan(self, ret_span);
-            const call_prop = try es_helpers.makeIdentifierRef(self, "call");
-            const ret_call_method = try es_helpers.makeStaticMember(self, ret_ref_call, call_prop, span);
-            const iter_ref_arg = try es_helpers.makeIdentifierRefFromSpan(self, iter_span);
-            const ret_call = try es_helpers.makeCallExpr(self, ret_call_method, &.{iter_ref_arg}, span);
-
-            // await _ret.call(_iter)
-            const await_ret_call = try es_helpers.makeAwaitExpression(self, ret_call, span);
-            const await_stmt = try es_helpers.makeExprStmt(self, await_ret_call, span);
-
-            // if (_step && !_step.done && (_ret = _iter.return)) await _ret.call(_iter);
-            const if_return = try self.ast.addNode(.{
-                .tag = .if_statement,
-                .span = span,
-                .data = .{ .ternary = .{ .a = and2, .b = await_stmt, .c = .none } },
-            });
-
-            const inner_try_body_list = try self.ast.addNodeList(&.{if_return});
-            const inner_try_block = try self.ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = inner_try_body_list },
-            });
-
-            // inner finally: if (_errObj) throw _errObj.error;
-            const errobj_ref_f = try es_helpers.makeIdentifierRefFromSpan(self, errobj_span);
-            const errobj_ref_throw = try es_helpers.makeIdentifierRefFromSpan(self, errobj_span);
-            const error_prop_ref = try es_helpers.makeIdentifierRef(self, "error");
-            const errobj_error = try es_helpers.makeStaticMember(self, errobj_ref_throw, error_prop_ref, span);
-            const throw_stmt = try self.ast.addNode(.{
-                .tag = .throw_statement,
-                .span = span,
-                .data = .{ .unary = .{ .operand = errobj_error, .flags = 0 } },
-            });
-            const if_throw_body_list = try self.ast.addNodeList(&.{throw_stmt});
-            const if_throw_body = try self.ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = if_throw_body_list },
-            });
-            const if_throw = try self.ast.addNode(.{
-                .tag = .if_statement,
-                .span = span,
-                .data = .{ .ternary = .{ .a = errobj_ref_f, .b = if_throw_body, .c = .none } },
-            });
-            const inner_finally_list = try self.ast.addNodeList(&.{if_throw});
-            const inner_finally_block = try self.ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = inner_finally_list },
-            });
-
-            // inner try-finally (no catch)
-            const inner_try_stmt = try self.ast.addNode(.{
-                .tag = .try_statement,
-                .span = span,
-                .data = .{ .ternary = .{ .a = inner_try_block, .b = .none, .c = inner_finally_block } },
-            });
-
-            // outer finally block = { inner_try_stmt }
-            const outer_finally_list = try self.ast.addNodeList(&.{inner_try_stmt});
-            const outer_finally_block = try self.ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = outer_finally_list },
-            });
-
-            // =====================================================
-            // 7. 최종 try-catch-finally
-            // =====================================================
-            const try_stmt = try self.ast.addNode(.{
-                .tag = .try_statement,
-                .span = span,
-                .data = .{ .ternary = .{ .a = try_block, .b = catch_clause, .c = outer_finally_block } },
-            });
-
-            // 전체를 하나의 block 으로 래핑 (pending_nodes 사용 시 중첩에서 범위가 새는 문제 회피 —
-            // es2015_for_of.zig 와 동일 전략).
-            const wrapper_list = try self.ast.addNodeList(&.{ outer_var, try_stmt });
-            return self.ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = wrapper_list },
-            });
+        fn block(self: *Transformer, stmts: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            return self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(stmts) } });
         }
     };
 }

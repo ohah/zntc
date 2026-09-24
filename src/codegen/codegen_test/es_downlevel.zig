@@ -765,8 +765,10 @@ test "ES2017: for-await 루프 변수는 원래 종류(const/let)를 유지한�
 test "ES5: async 함수의 for-await 루프 변수 캡처도 _loop 로 복원한다 (#4722)" {
     var r = try e2eTarget(std.testing.allocator, "async function f(s){ for await (const v of s) g(()=>v); }", .es5);
     defer r.deinit();
-    // 정의만이 아니라 **호출**돼야 한다(반복마다 새 프레임).
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_loop(v)") != null);
+    // 정의만이 아니라 **호출**돼야 한다(반복마다 새 프레임). 루프 변수는 풀이 뒤 본문 첫
+    // 선언이라 `_loop` 안에서 반복마다 선언된다 (#4746 3단계 — 예전엔 파라미터로 전달).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__values(_loop())") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "v=_step.value;") != null);
 }
 
 test "ES5: 중첩 async 가 바깥 상태 기계 temp 를 지우지 않는다 (#4722)" {
@@ -4678,4 +4680,22 @@ test "ES5 상태 기계: 라벨 for-in 의 continue 는 바깥 인덱스 증가�
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "if(!j$2)return[3,3];return[3,7];") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "case 6:case 7:_idx++;") != null);
+}
+
+test "ES2017: for-await 풀이는 임시 변수를 선언 때 초기화하고 닫기를 기다린다 (#4746)" {
+    // 같은 함수에서 루프가 다시 실행되면 초기화 안 된 `_step`·`_errObj` 가 앞 실행 값을 들고
+    // 있어, 새 iterator 를 닫거나 옛 에러를 다시 던졌다.
+    var r = try e2eTarget(std.testing.allocator, "async function f(s){ for await (const v of s) g(v); }", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_step=void 0,_b=void 0,_c=void 0;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const v=_step.value;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "await _b.call(_a)") != null);
+}
+
+test "ES2017 async generator: for-await 는 본문 전처리로 풀려 합성 await 도 yield __await 가 되고 라벨은 while 에 붙는다 (#4746)" {
+    var r = try e2eTarget(std.testing.allocator, "async function* g(s){ L: for await (const v of s) { yield v; continue L; } }", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "L:while(!(_step=yield __await(_a.next())).done)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "yield __await(_b.call(_a))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "await ") == null);
 }
