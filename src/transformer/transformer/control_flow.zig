@@ -10,6 +10,7 @@ const es2015_block_scoping = @import("../es2015_block_scoping.zig");
 const es2015_class = @import("../es2015_class.zig");
 const es2015_destructuring = @import("../es2015_destructuring.zig");
 const es_helpers = @import("../es_helpers.zig");
+const ast_walk = @import("../../parser/ast_walk.zig");
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
@@ -26,6 +27,25 @@ fn ensureStatementBody(self: *Transformer, original_idx: NodeIndex, visited_idx:
     if (!visited_idx.isNone()) return visited_idx;
     const span = if (!original_idx.isNone()) self.ast.getNode(original_idx).span else parent_span;
     return makeEmptyStatement(self, span);
+}
+
+/// 함수 경계를 넘지 않고 `yield` 식이 있는지.
+fn bodyHasYield(self: *Transformer, root: NodeIndex) bool {
+    if (root.isNone()) return false;
+    var found = false;
+    ast_walk.walkPreorderIterative(self.allocator, self.ast, root, &found, yieldVisit) catch return true;
+    return found;
+}
+
+fn yieldVisit(found: *bool, _: NodeIndex, node: Node) ast_walk.WalkAction {
+    switch (node.tag) {
+        .yield_expression => {
+            found.* = true;
+            return .stop;
+        },
+        .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .class_declaration, .class_expression => return .skip_children,
+        else => return .descend,
+    }
 }
 
 /// 루프 추출 판단에 쓰는 이름들 (#4743).
@@ -397,10 +417,16 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
             const new_init = try self.visitNode(init_idx);
             const new_test = try self.visitNode(self.readNodeIdx(e, 1));
             const new_update = try self.visitNode(self.readNodeIdx(e, 2));
+            // 본문에 `yield` 가 있으면(= 나중에 상태 기계로 접힐 generator 안, 예: 일반 방문되는
+            // for-await 본문) 평범한 함수로 뽑을 수 없다 — generator 로 뽑고 `yield* _loop()` 로
+            // 위임하며, 본문은 방문하지 않고 원본 그대로 둔다(그 generator 가 나중에 한 번 방문).
+            // 헤더 let 은 리네임될 수 있어 방문 안 한 본문과 이름이 어긋나므로 헤더 선언이 없는
+            // 루프(for-of 풀이 결과)에만 쓴다 (#4722 → #4746).
+            const yield_closure = has_capture and lexical_names.items.len == 0 and bodyHasYield(self, orig_body_idx);
             // 이 본문은 `_loop` 클로저로 추출된다 — 안쪽에서 바깥 라벨은 경계 너머다 (#4722).
             if (has_capture) try self.label_scope.append(self.allocator, null);
             const body_temp_start = self.temp_var_counter;
-            const raw_body = try self.visitNode(orig_body_idx);
+            const raw_body = if (yield_closure) orig_body_idx else try self.visitNode(orig_body_idx);
             if (has_capture) _ = self.label_scope.pop();
             const new_body = try ensureStatementBody(self, orig_body_idx, raw_body, node.span);
 
@@ -416,10 +442,10 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
                     &flow,
                     null,
                     node.span,
-                    is_async,
+                    if (yield_closure) false else is_async,
                     preserve_this,
-                    false,
-                    body_temp_start,
+                    yield_closure,
+                    if (yield_closure) null else body_temp_start,
                     capture.var_names.items,
                 );
 

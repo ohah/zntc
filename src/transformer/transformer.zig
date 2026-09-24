@@ -56,10 +56,6 @@ pub const TransformOptions = options_mod.TransformOptions;
 /// const new_root = try t.transform();
 /// // t.ast 에 변환된 AST가 들어있다
 /// ```
-/// es5 상태 기계 for-of 의 iterator close 용 temp (#4714).
-/// `norm` = 정상 완료 플래그 — true 면 닫지 않는다(끝까지 돌았거나 `next()` 가 던짐).
-pub const ForOfCloseTemps = struct { stmt: NodeIndex, iter: Span, step: Span, norm: Span };
-
 pub const Transformer = struct {
     /// 통합 AST. 파서 노드(0..parser_node_count-1)는 읽기 전용,
     /// 트랜스포머가 추가한 노드(parser_node_count..)는 append-only.
@@ -210,9 +206,6 @@ pub const Transformer = struct {
     /// 지금 visit 중인 변수 선언이 `const` 인가 (#4723). `const X = class {…}` 의 익명 클래스를
     /// 낮출 때 이름 추론(`X.name === "X"`)을 지키려고 선언 이름을 클래스에 붙이는 데 쓴다.
     in_const_declaration: bool = false,
-    /// es5 상태 기계의 for-of 를 `try { … } finally { iterator close }` 로 감쌀 때, 감싼
-    /// try 안에서 **바로 그 for-of** 를 만나면 이 temp 들로 접으라는 1회용 신호 (#4714).
-    forof_close_pending: ?ForOfCloseTemps = null,
     in_async_generator_sm: bool = false,
     /// V7: object literal 안에서 visit 중인지 (nested 가능). visitMethodDefinition 이
     /// 이 flag 를 보고 method body 의 super context 를 reset 한다 — object literal method
@@ -233,6 +226,8 @@ pub const Transformer = struct {
     object_home_counter: u32 = 0,
     /// `_stack`/`_error`/`_hasError` 이름 접미사 카운터 — using 낮추기마다 고유 (#4730).
     using_counter: u32 = 0,
+    /// for-of 풀이의 step 변수 이름(`_step`, `_step2`, …) 카운터 — 모듈 전체에서 고유 (#4746).
+    forof_step_counter: u32 = 0,
     /// V8 정밀 fix: `class D extends getBase()` 같은 non-identifier extends 의 super
     /// lowering 시 `getBase().prototype.foo.call(this)` 형태로 inline 하면 super-prop
     /// access 마다 extends 표현식 (getBase()) 이 재평가됨 (spec 위반 — class declaration

@@ -2051,8 +2051,8 @@ test "ES2015: generator function destructuring params lowered" {
 test "ES2015: for-of with const" {
     var r = try e2eTarget(std.testing.allocator, "for(const x of arr){f(x);}", .es5);
     defer r.deinit();
-    // iterator protocol: Symbol.iterator + .next() + try-catch-finally
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Symbol.iterator") != null);
+    // iterator protocol: __values(반복자, Symbol 없는 엔진도) + .next() + try-catch-finally (#4746)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__values(") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, ".next()") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, ".value") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, ".done") != null);
@@ -2065,7 +2065,7 @@ test "ES2015: for-of with expression left" {
     var r = try e2eTarget(std.testing.allocator, "for(x of arr){}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "x=") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Symbol.iterator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__values(") != null);
 }
 
 test "ES2015: for-of no transform on esnext" {
@@ -2096,7 +2096,7 @@ test "ES2015: for-of let produces var" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var x=") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, ".value") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Symbol.iterator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__values(") != null);
 }
 
 test "ES2015: for-of .next().done in test expr" {
@@ -2110,9 +2110,9 @@ test "ES2015: nested for-of unique variable names" {
     // 중첩 for-of에서 변수명 충돌 없이 각각 고유한 temp var 사용
     var r = try e2eTarget(std.testing.allocator, "for(const x of a){for(const y of b){}}", .es5);
     defer r.deinit();
-    // Symbol.iterator가 2번 이상 나와야 함 (outer + inner)
-    const first = std.mem.indexOf(u8, r.output, "Symbol.iterator") orelse unreachable;
-    try std.testing.expect(std.mem.indexOf(u8, r.output[first + 1 ..], "Symbol.iterator") != null);
+    // 반복자 생성이 2번 이상 나와야 함 (outer + inner) — __values 헬퍼 호출 (#4746)
+    const first = std.mem.indexOf(u8, r.output, "__values(a)") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, r.output[first + 1 ..], "__values(b)") != null);
 }
 
 // --- ES2015: for-of body destructuring (#1383) ---
@@ -3112,7 +3112,7 @@ test "ES2015: for-of with destructuring" {
     defer r.deinit();
     // for-of → iterator protocol, destructuring 결합
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Symbol.iterator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__values(") != null);
 }
 
 // --- class edge cases ---
@@ -4076,13 +4076,14 @@ test "ES5: class async method + nested-member optional-call hoists temp decl (re
 
 test "ES5 generator: labeled `continue` in for-of jumps to iterator advance, not cond (#4281)" {
     // 라벨된 for-of 의 `continue outer` 는 outer iterator advance(_a++)로 가야 한다.
+    // (본문에 yield 가 있어야 상태 기계를 탄다 — 없으면 루프가 native 로 남는다, #4746.)
     // 버그 땐 outer cond 로 점프(`...return[3,3];return[3,1]`)해 _a++ 를 건너뛰어 무한 루프했다.
     // 수정 후엔 advance case 로 점프(`...return[3,3];return[3,6]`). (런타임: value=4, 종료)
     var r = try e2eTarget(std.testing.allocator,
         \\function* g() {
         \\  let s = 0;
         \\  outer: for (const x of [1, 2, 3]) {
-        \\    for (const y of [0]) { if (x === 2) continue outer; s += x; }
+        \\    for (const y of [0]) { if (x === 2) continue outer; s += x; yield y; }
         \\  }
         \\  return s;
         \\}
@@ -4299,11 +4300,12 @@ test "ES5: for-in/for-of 에서 _loop 으로 추출된 본문의 임시 변수�
 
     var r_of = try e2eTarget(std.testing.allocator, "for (const k of o){ fns.push(()=>k); x = a.b?.c; }", .es5);
     defer r_of.deinit();
-    const loop_at = std.mem.indexOf(u8, r_of.output, "var _loop=function(k){var _") orelse return error.TestUnexpectedResult;
+    // for-of 는 반복자 for 로 풀리고 k 는 본문 선언이 된다(#4746) — `_loop` 은 파라미터가 없다.
+    const loop_at = std.mem.indexOf(u8, r_of.output, "var _loop=function(){var _") orelse return error.TestUnexpectedResult;
     // 옵셔널 체인 temp 는 _loop 본문 안에서 선언·사용된다.
     const body = r_of.output[loop_at..];
     const decl_end = std.mem.indexOfScalar(u8, body, ';') orelse return error.TestUnexpectedResult;
-    const temp = body["var _loop=function(k){var ".len..decl_end];
+    const temp = body["var _loop=function(){var ".len..decl_end];
     var needle_buf: [32]u8 = undefined;
     const needle = try std.fmt.bufPrint(&needle_buf, "x=({s}=a.b)", .{temp});
     try std.testing.expect(std.mem.indexOf(u8, body, needle) != null);
@@ -4580,7 +4582,8 @@ test "ES5: for-of 본문 선언 캡처도 반복별로 뽑는다 (#4743)" {
     // 헤더 x 가 아니라 본문 v 를 캡처 — 예전엔 헤더만 봐서 추출하지 않았다.
     var r = try e2eTarget(std.testing.allocator, "for (const x of xs){ const v=x*2; f.push(()=>v); }", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_loop=function(x){var v=x*2;") != null);
+    // for-of 풀이 뒤 x·v 모두 본문 선언이라 둘 다 _loop 안에서 반복마다 새로 선언된다 (#4746).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_loop=function(){var x=_step.value;var v=x*2;") != null);
 }
 
 test "ES5: 중첩 루프 본문의 캡처는 안쪽 루프만 뽑는다 (#4743)" {
@@ -4615,4 +4618,35 @@ test "ES5 상태 기계: 구조분해 대입의 array rest 를 slice 로 채우�
     var rn = try e2eTarget(std.testing.allocator, "function* g(o){ const [x, ...[y, z]] = o; yield y+z; }", .es5);
     defer rn.deinit();
     try std.testing.expect(std.mem.indexOf(u8, rn.output, "_b=_a.slice(1),y=_b[0],z=_b[1]") != null);
+}
+
+test "ES5: for-of 풀이의 step 변수는 모듈 전체에서 고유한 이름이다 (#4746)" {
+    // 루프 변수 선언(`x = _step.value`)은 본문 안이라 본문이 `_loop` 로 추출되면 함수 경계 너머
+    // 참조가 된다. 카운터 temp 를 쓰면 추출된 generator 가 자기 상태 기계 temp 로 같은 이름을
+    // 선언해 가려 `undefined` 를 읽었다.
+    var r = try e2eTarget(std.testing.allocator, "for (const x of a) for (const y of b) f(x, y);", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var x=_step.value;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var y=_step2.value;") != null);
+}
+
+test "ES5 상태 기계: yield 없는 라벨 for-of 는 라벨을 안쪽 for 에 붙인 native 루프로 남는다 (#4746)" {
+    var r = try e2eTarget(std.testing.allocator, "function* g(){ outer: for (const x of a) { for (const y of b) { if (y) continue outer; } } yield 1; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "outer:for(var ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "continue outer;") != null);
+}
+
+test "for-of 풀이: 본문이 헤더 이름을 다시 선언하면 본문을 합치지 않고 한 겹 감싼다 (#4746)" {
+    // 헤더와 본문은 스코프가 다르다. let/const 가 native 로 남는 조합에서 합치면 같은 블록에
+    // `let x` 가 두 번 선언돼 SyntaxError 다(es5 는 var 로 내려 가려진다).
+    var u = helpers.TransformOptions.compat.fromESTarget(.esnext);
+    u.for_of = true;
+    var r = try e2eFull(std.testing.allocator, "for (const x of a) { let x = 1; f(x); }", .{ .unsupported = u }, .{ .minify_whitespace = true }, ".ts");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "{const x=_step.value;{let x=1;f(x);}}") != null);
+
+    var r2 = try e2eFull(std.testing.allocator, "for (const x of a) { let y = 1; f(x, y); }", .{ .unsupported = u }, .{ .minify_whitespace = true }, ".ts");
+    defer r2.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r2.output, "{const x=_step.value;let y=1;f(x,y);}") != null);
 }

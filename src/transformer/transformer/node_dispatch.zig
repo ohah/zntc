@@ -483,6 +483,11 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .for_of_statement => {
             // `for (using x of …)` 헤더를 본문 블록의 using 으로 옮긴다 (#4730).
             if (try es2025_using.ES2025Using(Transformer).normalizeForOfUsingHead(self, idx)) return self.visitNode(idx);
+            // for-of 를 낮추는 타겟: 반복자 for 루프로 풀어 쓴 뒤 방문한다. 루프 변수 대입은
+            // 본문의 평범한 선언/대입이 되므로 private 필드·구조분해 좌변도 일반 경로가 처리한다.
+            if (self.options.unsupported.for_of) {
+                return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatement(self, node);
+            }
             // private field target은 그대로 두면 `for (_x.get(this) of arr)` → invalid.
             // 임시 binding + body prefix assignment 패턴으로 변환 (#1491).
             if (self.current_private_fields.len > 0) {
@@ -492,9 +497,6 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             // LHS 슬롯에 destructuring expand 불가 → body-destructure 로.
             if (!self.options.unsupported.for_of) {
                 if (try self.maybeLowerForInOfDestructuring(node)) |result| return result;
-            }
-            if (self.options.unsupported.for_of) {
-                return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatement(self, node);
             }
             return self.visitForInOfTernary(node);
         },
@@ -516,8 +518,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                     return es2018_for_await.ES2018ForAwait(Transformer).lowerForAwaitOfLabeled(self, child, new_label);
                 }
                 if (self.options.unsupported.for_of and child.tag == .for_of_statement) {
-                    const new_label = try self.visitNode(node.data.binary.left);
-                    return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatementLabeled(self, child, new_label);
+                    return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatementLabeled(self, child, node.data.binary.left);
                 }
             }
             // 루프가 `_loop` 추출로 `{ var _loop = …; for (…) {…} }` 블록이 되면 라벨이 블록에
