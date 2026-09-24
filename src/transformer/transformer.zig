@@ -228,6 +228,8 @@ pub const Transformer = struct {
     using_counter: u32 = 0,
     /// for-of 풀이의 step 변수 이름(`_step`, `_step2`, …) 카운터 — 모듈 전체에서 고유 (#4746).
     forof_step_counter: u32 = 0,
+    /// 상태 기계 for-in 풀이의 `_keys`/`_idx` 이름 접미사 카운터 — 모듈 전체에서 고유 (#4746).
+    forin_counter: u32 = 0,
     /// V8 정밀 fix: `class D extends getBase()` 같은 non-identifier extends 의 super
     /// lowering 시 `getBase().prototype.foo.call(this)` 형태로 inline 하면 super-prop
     /// access 마다 extends 표현식 (getBase()) 이 재평가됨 (spec 위반 — class declaration

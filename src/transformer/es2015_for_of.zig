@@ -187,6 +187,86 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             return makeBlock(self, &.{ norm_decl, did_decl, err_decl, try_stmt }, span);
         }
 
+        /// 상태 기계용 for-in 풀이 (#4746 2단계). 방문 없이 AST 만 재구성하고, 상태 기계가 결과를
+        /// 수집한다(일반 경로의 for-in 은 ES1 문법이라 native 로 남는다).
+        ///
+        /// ```js
+        /// {
+        ///   var _obj = object, _keys = [], _k;
+        ///   for (_k in _obj) _keys.push(_k);          // own + 상속 enumerable 키 스냅샷
+        ///   for (var _idx = 0; _idx < _keys.length; _idx++) { <let x = _keys[_idx]>; body }
+        /// }
+        /// ```
+        ///
+        /// - 키 수집은 yield 없는 native for-in — `Object.keys` 는 own 만 보고 `Object` 가 가려지면
+        ///   깨진다. 대상 객체를 먼저 `_obj` 에 담아 그 식의 `yield` 는 선언 수집이 처리한다.
+        /// - `_keys`·`_idx` 는 본문(루프 변수 선언)에서 읽으므로 모듈 고유 이름을 쓴다(for-of 의
+        ///   step 과 같은 이유 — 본문이 `_loop` 로 추출되면 함수 경계 너머 참조가 된다).
+        /// - 상태 기계 전용이라 임시 변수를 wrapper 최상단에 선언하도록 항상 등록한다(초기값 없는
+        ///   `_k` 는 선언 수집이 등록하지 않는다 — 빠지면 strict 모드에서 ReferenceError).
+        /// - 라벨은 받지 않는다: 라벨 붙은 for-in 은 `collectLabeledOperations` 가 원래 노드로 루프
+        ///   여부를 판정하고, 풀이 결과 안쪽 for 의 증가 지점을 `continue` 대상으로 쓴다.
+        pub fn rewriteForIn(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            const span = node.span;
+            const left = node.data.ternary.a;
+            const right = node.data.ternary.b;
+            const body = node.data.ternary.c;
+
+            const obj = try es_helpers.makeTempVarSpan(self);
+            const key = try es_helpers.makeTempVarSpan(self);
+            const names = try uniqueForInNames(self);
+            try self.generator_temp_var_spans.appendSlice(self.allocator, &.{ obj, names.keys, key, names.idx });
+
+            // var _obj = object, _keys = [], _k;
+            const empty = try self.ast.addListNode(.array_expression, span, .{ .start = 0, .len = 0 });
+            const decl = try es_helpers.makeVarDeclaration(self, &.{
+                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, obj), right, span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, names.keys), empty, span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, key), .none, span),
+            }, .@"var", span);
+
+            // for (_k in _obj) _keys.push(_k);
+            const push = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, names.keys), try es_helpers.makeIdentifierRef(self, "push"), span), &.{try makeRefFromSpan(self, key)}, span);
+            const collect = try self.ast.addNode(.{ .tag = .for_in_statement, .span = span, .data = .{ .ternary = .{
+                .a = try makeRefFromSpan(self, key),
+                .b = try makeRefFromSpan(self, obj),
+                .c = try es_helpers.makeExprStmt(self, push, span),
+            } } });
+
+            // for (var _idx = 0; _idx < _keys.length; _idx++) { <루프 변수 = _keys[_idx]>; body }
+            const init = try es_helpers.makeVarDeclaration(self, &.{
+                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, names.idx), try es_helpers.makeNumericLiteral(self, 0), span),
+            }, .@"var", span);
+            const length = try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, names.keys), try es_helpers.makeIdentifierRef(self, "length"), span);
+            const test_expr = try self.ast.addNode(.{ .tag = .binary_expression, .span = span, .data = .{ .binary = .{
+                .left = try makeRefFromSpan(self, names.idx),
+                .right = length,
+                .flags = @intFromEnum(token_mod.Kind.l_angle),
+            } } });
+            const update = try self.ast.addNode(.{ .tag = .update_expression, .span = span, .data = .{ .extra = try self.ast.addExtras(&.{
+                @intFromEnum(try makeRefFromSpan(self, names.idx)),
+                @intFromEnum(token_mod.Kind.plus2) | ast_mod.UnaryFlags.postfix,
+            }) } });
+            const value = try es_helpers.makeComputedMember(self, try makeRefFromSpan(self, names.keys), try makeRefFromSpan(self, names.idx), span);
+            const for_stmt = try self.addExtraNode(.for_statement, span, &.{
+                @intFromEnum(init), @intFromEnum(test_expr), @intFromEnum(update), @intFromEnum(try buildLoopBody(self, left, value, body, span)),
+            });
+            return makeBlock(self, &.{ decl, collect, for_stmt }, span);
+        }
+
+        fn uniqueForInNames(self: *Transformer) Transformer.Error!struct { keys: Span, idx: Span } {
+            while (true) {
+                self.forin_counter += 1;
+                const n = self.forin_counter;
+                var kb: [32]u8 = undefined;
+                var ib: [32]u8 = undefined;
+                const k = if (n == 1) "_keys" else std.fmt.bufPrint(&kb, "_keys{d}", .{n}) catch unreachable;
+                const i = if (n == 1) "_idx" else std.fmt.bufPrint(&ib, "_idx{d}", .{n}) catch unreachable;
+                if (es_helpers.nameAppearsInSource(self, k) or es_helpers.nameAppearsInSource(self, i)) continue;
+                return .{ .keys = try self.ast.addString(k), .idx = try self.ast.addString(i) };
+            }
+        }
+
         /// 루프 변수 대입을 앞에 둔 본문 블록. 원래 본문 블록에 루프 변수와 같은 이름의
         /// 선언이 있으면(헤더와 본문은 스코프가 다르다) 합치지 않고 한 겹 더 감싼다.
         fn buildLoopBody(self: *Transformer, left: NodeIndex, value: NodeIndex, body: NodeIndex, span: Span) Transformer.Error!NodeIndex {
