@@ -119,16 +119,16 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             }, .@"var", span);
 
             // test: !(_a = (_e = _d.next()).done)
-            const next_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, iter), try es_helpers.makeIdentifierRef(self, "next"), span), &.{}, span);
+            const next_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, iter), try es_helpers.makePropertyName(self, "next"), span), &.{}, span);
             const step_assign = try makeAssign(self, try makeRefFromSpan(self, step), next_call, span);
-            const done = try es_helpers.makeStaticMember(self, step_assign, try es_helpers.makeIdentifierRef(self, "done"), span);
+            const done = try es_helpers.makeStaticMember(self, step_assign, try es_helpers.makePropertyName(self, "done"), span);
             const for_test = try es_helpers.makeUnaryNot(self, try makeAssign(self, try makeRefFromSpan(self, norm), done, span), span);
 
             // update: _a = true
             const for_update = try makeAssign(self, try makeRefFromSpan(self, norm), try es_helpers.makeBoolLiteral(self, true), span);
 
             // body: <루프 변수 = _e.value>; body
-            const value = try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, step), try es_helpers.makeIdentifierRef(self, "value"), span);
+            const value = try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, step), try es_helpers.makePropertyName(self, "value"), span);
             const for_body = try buildLoopBody(self, left, value, body, span);
 
             const for_stmt = try self.addExtraNode(.for_statement, span, &.{
@@ -152,13 +152,13 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             } } });
 
             // finally { try { if (!_a && _d.return != null) _d.return(); } finally { if (_b) throw _c; } }
-            const ret_member = try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, iter), try es_helpers.makeIdentifierRef(self, "return"), span);
+            const ret_member = try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, iter), try es_helpers.makePropertyName(self, "return"), span);
             const close_cond = try self.ast.addNode(.{ .tag = .logical_expression, .span = span, .data = .{ .binary = .{
                 .left = try es_helpers.makeUnaryNot(self, try makeRefFromSpan(self, norm), span),
                 .right = try es_helpers.makeNeqNull(self, ret_member, span),
                 .flags = @intFromEnum(token_mod.Kind.amp2),
             } } });
-            const close_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, iter), try es_helpers.makeIdentifierRef(self, "return"), span), &.{}, span);
+            const close_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, iter), try es_helpers.makePropertyName(self, "return"), span), &.{}, span);
             const close_if = try self.ast.addNode(.{ .tag = .if_statement, .span = span, .data = .{ .ternary = .{
                 .a = close_cond,
                 .b = try es_helpers.makeExprStmt(self, close_call, span),
@@ -226,7 +226,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             }, .@"var", span);
 
             // for (_k in _obj) _keys.push(_k);
-            const push = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, names.keys), try es_helpers.makeIdentifierRef(self, "push"), span), &.{try makeRefFromSpan(self, key)}, span);
+            const push = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, names.keys), try es_helpers.makePropertyName(self, "push"), span), &.{try makeRefFromSpan(self, key)}, span);
             const collect = try self.ast.addNode(.{ .tag = .for_in_statement, .span = span, .data = .{ .ternary = .{
                 .a = try makeRefFromSpan(self, key),
                 .b = try makeRefFromSpan(self, obj),
@@ -237,7 +237,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const init = try es_helpers.makeVarDeclaration(self, &.{
                 try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, names.idx), try es_helpers.makeNumericLiteral(self, 0), span),
             }, .@"var", span);
-            const length = try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, names.keys), try es_helpers.makeIdentifierRef(self, "length"), span);
+            const length = try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, names.keys), try es_helpers.makePropertyName(self, "length"), span);
             const test_expr = try self.ast.addNode(.{ .tag = .binary_expression, .span = span, .data = .{ .binary = .{
                 .left = try makeRefFromSpan(self, names.idx),
                 .right = length,

@@ -729,7 +729,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             defer self.scratch.shrinkRetainingCapacity(scratch_top2);
             const loop_ref = try es_helpers.makeIdentifierRef(self, loop_name);
             const call_callee = if (preserve_this) blk: {
-                const call_prop = try es_helpers.makeIdentifierRef(self, "call");
+                const call_prop = try es_helpers.makePropertyName(self, "call");
                 try self.scratch.append(self.allocator, try es_helpers.makeThisExpr(self, span));
                 break :blk try es_helpers.makeStaticMember(self, loop_ref, call_prop, span);
             } else loop_ref;
@@ -1185,7 +1185,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             // variant-typed helper — tag 에 맞는 variant 를 debug 빌드에서 assertion.
             // (이전에는 `addNode` 직접 호출로 `object_property` 에 `.extra` variant 를
             // 잘못 써서 codegen panic — #1797.)
-            const key = try es_helpers.makeIdentifierRef(self, "v");
+            const key = try es_helpers.makePropertyName(self, "v");
             const prop = try self.ast.addBinaryNode(.object_property, span, key, value, 0);
             const obj_list = try self.ast.addNodeList(&.{prop});
             return self.ast.addListNode(.object_expression, span, obj_list);
@@ -1220,7 +1220,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             // if (typeof _ret === "object") return _ret.v;
             if (flow.has_return) {
-                const ret_ref = try es_helpers.makeIdentifierRef(self, "_ret");
+                const ret_ref = try es_helpers.makeSyntheticRef(self, "_ret");
                 // variant-typed helper — `unary_expression` 은 `.extra = [operand, op]`
                 // layout. (이전엔 `.unary` variant 로 잘못 써서 `if (<= === "object")`
                 // syntax error — #1797.)
@@ -1236,8 +1236,8 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     .data = .{ .binary = .{ .left = typeof_expr, .right = obj_str, .flags = @intFromEnum(token_mod.Kind.eq3) } },
                 });
                 // _ret.v
-                const ret_ref2 = try es_helpers.makeIdentifierRef(self, "_ret");
-                const v_prop = try es_helpers.makeIdentifierRef(self, "v");
+                const ret_ref2 = try es_helpers.makeSyntheticRef(self, "_ret");
+                const v_prop = try es_helpers.makePropertyName(self, "v");
                 const ret_v = try es_helpers.makeStaticMember(self, ret_ref2, v_prop, span);
                 const return_stmt = try self.ast.addNode(.{
                     .tag = .return_statement,
@@ -1254,7 +1254,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             // if (_ret === "break") break;
             if (flow.has_break) {
-                const ret_ref = try es_helpers.makeIdentifierRef(self, "_ret");
+                const ret_ref = try es_helpers.makeSyntheticRef(self, "_ret");
                 const break_str = try es_helpers.buildStringNode(self, "\"break\"", span);
                 const break_check = try self.ast.addNode(.{
                     .tag = .binary_expression,
@@ -1281,7 +1281,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 for ([_][]const u8{ "break", "continue" }) |kw| {
                     const sentinel = try std.fmt.allocPrint(self.allocator, "\"{s}|{s}\"", .{ kw, label });
                     defer self.allocator.free(sentinel);
-                    const ret_ref = try es_helpers.makeIdentifierRef(self, "_ret");
+                    const ret_ref = try es_helpers.makeSyntheticRef(self, "_ret");
                     const sentinel_str = try es_helpers.buildStringNode(self, sentinel, span);
                     const check = try self.ast.addNode(.{
                         .tag = .binary_expression,

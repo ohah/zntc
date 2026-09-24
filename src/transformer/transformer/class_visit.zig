@@ -99,11 +99,11 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                 const alias_binding = try es_helpers.makeBindingIdentifier(self, alias_span);
                 const class_old_idx = if (!raw_name_idx.isNone()) raw_name_idx else NodeIndex.none;
                 const class_ref = try self.makeIdentifierRefWithSymbol(class_name_span_opt.?, class_old_idx);
-                const proto_prop = try es_helpers.makeIdentifierRef(self, "prototype");
+                const proto_prop = try es_helpers.makePropertyName(self, "prototype");
                 const class_proto = try es_helpers.makeStaticMember(self, class_ref, proto_prop, node.span);
-                const global_ref = try es_helpers.makeIdentifierRef(self, "globalThis");
-                const object_ref = try es_helpers.makeIdentifierRef(self, "Object");
-                const get_proto = try es_helpers.makeIdentifierRef(self, "getPrototypeOf");
+                const global_ref = try es_helpers.makeGlobalRef(self, "globalThis");
+                const object_ref = try es_helpers.makeGlobalRef(self, "Object");
+                const get_proto = try es_helpers.makePropertyName(self, "getPrototypeOf");
                 const global_object = try es_helpers.makeStaticMember(self, global_ref, object_ref, node.span);
                 const callee = try es_helpers.makeStaticMember(self, global_object, get_proto, node.span);
                 const init_call = try es_helpers.makeCallExpr(self, callee, &.{class_proto}, node.span);

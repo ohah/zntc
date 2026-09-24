@@ -52,7 +52,7 @@ pub fn SuperProps(comptime Transformer: type) type {
             const callee = try es_helpers.makeRuntimeHelperRef(self, "__callSuper");
 
             const parent_ref = try es_helpers.makeIdentifierRefFromSpan(self, super_class_span);
-            const new_target_ref = try es_helpers.makeIdentifierRef(self, "_newTarget");
+            const new_target_ref = try es_helpers.makeSyntheticRef(self, "_newTarget");
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -79,14 +79,14 @@ pub fn SuperProps(comptime Transformer: type) type {
             // _this = __callSuper(_super, [args], _newTarget)
             // 대입식으로 반환하여 super()가 if/else 등 어디에 있든 동작.
             // var _this / var _newTarget 선언과 return 검사는 postProcessDerivedConstructorBody에서 추가.
-            const this_ref = try es_helpers.makeIdentifierRef(self, "_this");
+            const this_ref = try es_helpers.makeSyntheticRef(self, "_this");
             const raw_assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
                 .data = .{ .binary = .{ .left = this_ref, .right = call, .flags = 0 } },
             });
             const assert_uninit = try es_helpers.makeRuntimeHelperRef(self, "__assertThisUninitialized");
-            const current_this = try es_helpers.makeIdentifierRef(self, "_this");
+            const current_this = try es_helpers.makeSyntheticRef(self, "_this");
             const assert_call = try es_helpers.makeCallExpr(self, assert_uninit, &.{current_this}, span);
 
             const seq_list = try self.ast.addNodeList(&.{ assert_call, raw_assign });
@@ -160,7 +160,7 @@ pub fn SuperProps(comptime Transformer: type) type {
             const method_member = try es_helpers.makeStaticMember(self, super_base, new_method_prop, span);
 
             // Parent.prototype.method.call
-            const call_prop = try es_helpers.makeIdentifierRef(self, "call");
+            const call_prop = try es_helpers.makePropertyName(self, "call");
             const call_callee = try es_helpers.makeStaticMember(self, method_member, call_prop, span);
 
             // args: [this, ...original_args]
@@ -306,7 +306,7 @@ pub fn SuperProps(comptime Transformer: type) type {
         /// class_name_old_idx는 OLD AST 노드 — symbol 기반 리네이밍 대상.
         fn buildPrototypeRef(self: *Transformer, class_name_span: Span, class_name_old_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const class_ref = try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx);
-            const proto_prop = try es_helpers.makeIdentifierRef(self, "prototype");
+            const proto_prop = try es_helpers.makePropertyName(self, "prototype");
             return es_helpers.makeStaticMember(self, class_ref, proto_prop, span);
         }
 
@@ -320,9 +320,9 @@ pub fn SuperProps(comptime Transformer: type) type {
         /// 현 시점 default target 은 ES2021+ 이라 globalThis 안전.
         fn buildNonDerivedSuperBase(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
             const root_name = if (self.current_super_is_static) "Function" else "Object";
-            const global_ref = try es_helpers.makeIdentifierRef(self, "globalThis");
+            const global_ref = try es_helpers.makeGlobalRef(self, "globalThis");
             const root_ref = try es_helpers.makeIdentifierRef(self, root_name);
-            const proto_ref = try es_helpers.makeIdentifierRef(self, "prototype");
+            const proto_ref = try es_helpers.makePropertyName(self, "prototype");
             const global_root = try es_helpers.makeStaticMember(self, global_ref, root_ref, span);
             return es_helpers.makeStaticMember(self, global_root, proto_ref, span);
         }
@@ -650,7 +650,7 @@ pub fn SuperProps(comptime Transformer: type) type {
             const new_method_prop = try self.visitNode(method_prop_idx);
             const method_member = try es_helpers.makeComputedMember(self, super_base, new_method_prop, span);
 
-            const call_prop = try es_helpers.makeIdentifierRef(self, "call");
+            const call_prop = try es_helpers.makePropertyName(self, "call");
             const call_callee = try es_helpers.makeStaticMember(self, method_member, call_prop, span);
 
             const this_node = try buildSuperReceiver(self, span);
@@ -689,7 +689,7 @@ pub fn SuperProps(comptime Transformer: type) type {
         fn makeThisOrAlias(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
             if (self.options.unsupported.arrow and self.arrow_this_depth > 0) {
                 self.needs_this_var = true;
-                return es_helpers.makeIdentifierRef(self, "_this");
+                return es_helpers.makeSyntheticRef(self, "_this");
             }
             return self.ast.addNode(.{
                 .tag = .this_expression,

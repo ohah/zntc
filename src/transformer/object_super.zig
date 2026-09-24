@@ -287,8 +287,8 @@ pub fn leaveMethod(self: *Transformer, saved: Saved) void {
 
 /// `Object.getPrototypeOf(<home>)` — 호출 시점의 home object 프로토타입.
 pub fn buildHomeProto(self: *Transformer, home: Span, span: Span) Transformer.Error!NodeIndex {
-    const object_ref = try es_helpers.makeIdentifierRef(self, "Object");
-    const get_proto = try es_helpers.makeIdentifierRef(self, "getPrototypeOf");
+    const object_ref = try es_helpers.makeGlobalRef(self, "Object");
+    const get_proto = try es_helpers.makePropertyName(self, "getPrototypeOf");
     const callee = try es_helpers.makeStaticMember(self, object_ref, get_proto, span);
     return es_helpers.makeCallExpr(self, callee, &.{try es_helpers.makeTempVarRef(self, home, home)}, span);
 }

@@ -660,7 +660,7 @@ pub fn Members(comptime Transformer: type) type {
         /// _x.set(this, init) expression_statement 생성.
         fn buildPrivateFieldInit(self: *Transformer, name: []const u8, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const wm_ref = try es_helpers.makeIdentifierRef(self, name);
-            const set_prop = try es_helpers.makeIdentifierRef(self, "set");
+            const set_prop = try es_helpers.makePropertyName(self, "set");
             const callee = try es_helpers.makeStaticMember(self, wm_ref, set_prop, span);
             const this_node = try self.ast.addNode(.{
                 .tag = .this_expression,

@@ -30,7 +30,7 @@ pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, in
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-    const writable_key = try makeIdentifierRef(self, "writable");
+    const writable_key = try makePropertyName(self, "writable");
     const true_span = try self.ast.addString("true");
     const true_val = try self.ast.addNode(.{
         .tag = .boolean_literal,
@@ -55,7 +55,7 @@ pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, in
     defer self.current_super_is_static = saved_super_is_static;
     defer self.current_super_static_receiver = saved_super_static_receiver;
 
-    const value_key = try makeIdentifierRef(self, "value");
+    const value_key = try makePropertyName(self, "value");
     const value_init = if (!init_idx.isNone()) try self.visitNode(init_idx) else try makeVoidZero(self, span);
     try self.scratch.append(self.allocator, try self.ast.addNode(.{
         .tag = .object_property,
@@ -353,6 +353,26 @@ pub fn makeVoidZero(self: anytype, span: Span) !NodeIndex {
 
 // (makeParenExpr 제거 #4042 PR8: emitParen 투명화 + IIFE auto-wrap 후 합성 paren 은
 //  precedence 가 동일 재유도 — TSC byte-identical 로 확인. 합성 노드 자체가 불필요해짐.)
+
+// ── 식별자 생성 (#4760 3단계) ──────────────────────────────────────────────
+// 식별자를 만들 때 **무엇을 가리키는지**를 함수 이름으로 고른다. 사용자 변수를 가리키면
+// 심볼이 필수라 `makeUserRef`(node_helpers)를 쓰고, 나머지는 심볼이 없다는 뜻을 이름에 담는다.
+// 이름만 받는 `makeIdentifierRef`/`makeIdentifierRefFromSpan` 은 이 넷으로 옮긴 뒤 없앤다.
+
+/// 속성 이름 — `o.call` 의 `call`, `{ v: … }` 의 `v`. 변수가 아니다.
+pub fn makePropertyName(self: anytype, name: []const u8) !NodeIndex {
+    return makeIdentifierRef(self, name);
+}
+
+/// 코드 안에 선언이 없는 전역·호스트 이름 — `Object`, `arguments`, `module`.
+pub fn makeGlobalRef(self: anytype, name: []const u8) !NodeIndex {
+    return makeIdentifierRef(self, name);
+}
+
+/// 변환기가 만든 합성 변수 참조 — `_this`, `_state`, `_ret`. 사용자 심볼이 없다.
+pub fn makeSyntheticRef(self: anytype, name: []const u8) !NodeIndex {
+    return makeIdentifierRef(self, name);
+}
 
 /// 이름 문자열로 identifier_reference 노드 생성.
 /// addString + addNode를 한 번에 수행.
@@ -895,8 +915,8 @@ fn makeNullCompare(self: anytype, base: NodeIndex, span: Span, op: token_mod.Kin
 /// `Math.pow(left, right)` 호출 노드 생성 — left/right는 이미 visit된(new-AST) 노드.
 /// `**` lowering(es2016) 및 `**=` private field compound 경로에서 공용.
 pub fn makeMathPowCall(self: anytype, left: NodeIndex, right: NodeIndex, span: Span) !NodeIndex {
-    const math_ref = try makeIdentifierRef(self, "Math");
-    const pow_ref = try makeIdentifierRef(self, "pow");
+    const math_ref = try makeGlobalRef(self, "Math");
+    const pow_ref = try makePropertyName(self, "pow");
     const callee = try makeStaticMember(self, math_ref, pow_ref, span);
     const args = try self.ast.addNodeList(&.{ left, right });
     const call_extra = try self.ast.addExtras(&.{
@@ -980,7 +1000,7 @@ pub fn makeThisExpr(self: anytype, span: Span) !NodeIndex {
 /// 양쪽 공용.
 pub fn makeThisDotConstructor(self: anytype, span: Span) !NodeIndex {
     const this_node = try makeThisExpr(self, span);
-    const ctor_ref = try makeIdentifierRef(self, "constructor");
+    const ctor_ref = try makePropertyName(self, "constructor");
     return makeStaticMember(self, this_node, ctor_ref, span);
 }
 
@@ -1126,8 +1146,8 @@ pub fn buildForOfLoopVarAssign(self: anytype, left: NodeIndex, elem: NodeIndex, 
 /// Object.assign(arg0, arg1, ...) 호출 노드를 생성.
 /// es2018, jsx_lowering 등에서 공용.
 pub fn makeObjectAssignCall(self: anytype, args: []const NodeIndex, span: Span) !NodeIndex {
-    const obj_ref = try makeIdentifierRef(self, "Object");
-    const assign_ref = try makeIdentifierRef(self, "assign");
+    const obj_ref = try makeGlobalRef(self, "Object");
+    const assign_ref = try makePropertyName(self, "assign");
     const callee = try makeStaticMember(self, obj_ref, assign_ref, span);
     return makeCallExpr(self, callee, args, span);
 }
@@ -1614,8 +1634,8 @@ pub fn buildAsyncHelperCall(self: anytype, gen_func: NodeIndex, span: Span) !Nod
     self.runtime_helpers.async_helper = true;
     const async_ref = try makeRuntimeHelperRef(self, "__async");
     const inner_call = try makeCallExpr(self, async_ref, &.{gen_func}, span);
-    const call_prop = try makeIdentifierRef(self, "call");
+    const call_prop = try makePropertyName(self, "call");
     const member = try makeStaticMember(self, inner_call, call_prop, span);
-    const this_ref = try makeIdentifierRef(self, "this");
+    const this_ref = try makeGlobalRef(self, "this");
     return makeCallExpr(self, member, &.{this_ref}, span);
 }

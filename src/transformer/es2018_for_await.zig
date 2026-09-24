@@ -93,14 +93,14 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             }, .@"var", span);
 
             // while (!(_step = await _iter.next()).done) { <루프 변수 = _step.value>; body }
-            const next_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try ref(self, iter), try es_helpers.makeIdentifierRef(self, "next"), span), &.{}, span);
+            const next_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try ref(self, iter), try es_helpers.makePropertyName(self, "next"), span), &.{}, span);
             const step_assign = try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{
                 .left = try ref(self, step),
                 .right = try es_helpers.makeAwaitExpression(self, next_call, span),
                 .flags = 0,
             } } });
-            const test_expr = try es_helpers.makeUnaryNot(self, try es_helpers.makeStaticMember(self, step_assign, try es_helpers.makeIdentifierRef(self, "done"), span), span);
-            const value = try es_helpers.makeStaticMember(self, try ref(self, step), try es_helpers.makeIdentifierRef(self, "value"), span);
+            const test_expr = try es_helpers.makeUnaryNot(self, try es_helpers.makeStaticMember(self, step_assign, try es_helpers.makePropertyName(self, "done"), span), span);
+            const value = try es_helpers.makeStaticMember(self, try ref(self, step), try es_helpers.makePropertyName(self, "value"), span);
             const while_stmt = try self.ast.addNode(.{ .tag = .while_statement, .span = span, .data = .{ .binary = .{
                 .left = test_expr,
                 .right = try ForOf.buildLoopBody(self, left, value, body, span),
@@ -114,7 +114,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
 
             // catch (_err) { _errObj = { error: _err }; }
             const error_prop = try self.ast.addNode(.{ .tag = .object_property, .span = span, .data = .{ .binary = .{
-                .left = try es_helpers.makeIdentifierRef(self, "error"),
+                .left = try es_helpers.makePropertyName(self, "error"),
                 .right = try ref(self, err),
                 .flags = 0,
             } } });
@@ -128,22 +128,22 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
 
             // finally { try { if (_step && !_step.done && (_ret = _iter.return)) await _ret.call(_iter); }
             //           finally { if (_errObj) throw _errObj.error; } }
-            const not_done = try es_helpers.makeUnaryNot(self, try es_helpers.makeStaticMember(self, try ref(self, step), try es_helpers.makeIdentifierRef(self, "done"), span), span);
+            const not_done = try es_helpers.makeUnaryNot(self, try es_helpers.makeStaticMember(self, try ref(self, step), try es_helpers.makePropertyName(self, "done"), span), span);
             const and1 = try logicalAnd(self, try ref(self, step), not_done, span);
             const ret_assign = try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{
                 .left = try ref(self, ret),
-                .right = try es_helpers.makeStaticMember(self, try ref(self, iter), try es_helpers.makeIdentifierRef(self, "return"), span),
+                .right = try es_helpers.makeStaticMember(self, try ref(self, iter), try es_helpers.makePropertyName(self, "return"), span),
                 .flags = 0,
             } } });
             const close_cond = try logicalAnd(self, and1, ret_assign, span);
-            const close_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try ref(self, ret), try es_helpers.makeIdentifierRef(self, "call"), span), &.{try ref(self, iter)}, span);
+            const close_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try ref(self, ret), try es_helpers.makePropertyName(self, "call"), span), &.{try ref(self, iter)}, span);
             const close_if = try self.ast.addNode(.{ .tag = .if_statement, .span = span, .data = .{ .ternary = .{
                 .a = close_cond,
                 .b = try es_helpers.makeExprStmt(self, try es_helpers.makeAwaitExpression(self, close_call, span), span),
                 .c = .none,
             } } });
             const rethrow = try self.ast.addNode(.{ .tag = .throw_statement, .span = span, .data = .{ .unary = .{
-                .operand = try es_helpers.makeStaticMember(self, try ref(self, errobj), try es_helpers.makeIdentifierRef(self, "error"), span),
+                .operand = try es_helpers.makeStaticMember(self, try ref(self, errobj), try es_helpers.makePropertyName(self, "error"), span),
                 .flags = 0,
             } } });
             const rethrow_if = try self.ast.addNode(.{ .tag = .if_statement, .span = span, .data = .{ .ternary = .{

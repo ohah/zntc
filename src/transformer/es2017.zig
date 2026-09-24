@@ -271,7 +271,7 @@ pub fn ES2017(comptime Transformer: type) type {
             self.runtime_helpers.await_helper = true;
             const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__asyncGenerator");
             const this_arg = try es_helpers.makeThisExpr(self, span);
-            const args_ref = try es_helpers.makeIdentifierRef(self, "arguments");
+            const args_ref = try es_helpers.makeGlobalRef(self, "arguments");
             const helper_call = try es_helpers.makeCallExpr(self, helper_ref, &.{ this_arg, args_ref, lowered_inner }, span);
 
             // outer wrapper: function name(<params>) { return __asyncGenerator(...); }

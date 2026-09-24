@@ -335,7 +335,7 @@ pub fn ES2020(comptime Transformer: type) type {
             const fn_cap = try helpers.captureToTemp(self, member, span);
             const eq_null = try helpers.makeEqNull(self, fn_cap.paren_assign, span);
 
-            const call_prop = try helpers.makeIdentifierRef(self, "call");
+            const call_prop = try helpers.makePropertyName(self, "call");
             const fn_ref = try helpers.makeTempVarRef(self, fn_cap.span, span);
             const call_member = try helpers.makeStaticMember(self, fn_ref, call_prop, span);
 
@@ -472,7 +472,7 @@ pub fn ES2020(comptime Transformer: type) type {
             }
             if (self.options.unsupported.arrow and self.arrow_this_depth > 0) {
                 self.needs_this_var = true;
-                return helpers.makeIdentifierRef(self, "_this");
+                return helpers.makeSyntheticRef(self, "_this");
             }
             return self.ast.addNode(.{
                 .tag = .this_expression,
@@ -483,7 +483,7 @@ pub fn ES2020(comptime Transformer: type) type {
 
         fn makePrototypeRef(self: *Transformer, class_name_span: Span, class_name_old_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const class_ref = try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx);
-            const proto_prop = try helpers.makeIdentifierRef(self, "prototype");
+            const proto_prop = try helpers.makePropertyName(self, "prototype");
             return helpers.makeStaticMember(self, class_ref, proto_prop, span);
         }
 
@@ -607,7 +607,7 @@ pub fn ES2020(comptime Transformer: type) type {
                     const new_args = try self.visitExtraList(.{ .start = args_start, .len = args_len });
 
                     if (is_optional and old_callee == optional_call_callee_idx) {
-                        const call_prop = try helpers.makeIdentifierRef(self, "call");
+                        const call_prop = try helpers.makePropertyName(self, "call");
                         const call_member = try helpers.makeStaticMember(self, chain_base, call_prop, old_node.span);
                         return helpers.makeCallExprPrepend(self, call_member, receiver, new_args, old_node.span);
                     }
