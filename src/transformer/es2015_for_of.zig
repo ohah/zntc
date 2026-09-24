@@ -60,379 +60,214 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         /// `continue <label>` / `break <label>` 가 iteration statement를 타겟으로 하게 한다.
         /// 미지정(.none)이면 일반 for-of 경로.
         pub fn lowerForOfStatementLabeled(self: *Transformer, node: Node, label_name_idx: NodeIndex) Transformer.Error!NodeIndex {
+            return self.visitNode(try rewriteForOf(self, node, label_name_idx, false));
+        }
+
+        /// for-of 를 **방문 없이** 반복자 for 루프로 풀어 쓴다 — 일반 경로와 상태 기계가 같은
+        /// 풀이를 쓴다(#4746 1단계). 결과를 방문(일반)하거나 수집(상태 기계)하면 된다.
+        ///
+        /// ```js
+        /// {
+        ///   var _a = true, _b = false, _c = void 0;   // 정상 완료 · 에러 여부 · 에러 값
+        ///   try {
+        ///     for (var _d = __values(iterable), _e; !(_a = (_e = _d.next()).done); _a = true) {
+        ///       <let x = _e.value>;  body
+        ///     }
+        ///   } catch (_f) { _b = true; _c = _f; }
+        ///   finally { try { if (!_a && _d.return != null) _d.return(); } finally { if (_b) throw _c; } }
+        /// }
+        /// ```
+        ///
+        /// - `_a` 는 iterator 를 만들기 **전**과 매 `next()` **전**에 참이다 — `__values` 나 `next()`
+        ///   가 던지면 닫지 않는다(스펙 IteratorClose). 본문 도중 빠져나가면 거짓이라 닫는다.
+        /// - 본문이 throw 로 빠지면 `return()` 의 에러보다 원래 에러가 이긴다(catch 로 기억).
+        /// - 루프 변수는 **본문 첫 문장의 원래 종류 선언**이 된다. 반복별 바인딩은 본문 선언
+        ///   캡처 추출(#4743)이 맡는다.
+        /// - `__values` 는 `Symbol` 이 없는 엔진에서도 배열·유사 배열을 돈다.
+        /// - `register_sm_temps`: 상태 기계는 var 선언을 대입으로 바꾸므로 임시 변수를 wrapper
+        ///   최상단에 선언하도록 등록한다(catch 임시 변수가 리네임되지 않게 하는 표시도 겸한다).
+        pub fn rewriteForOf(self: *Transformer, node: Node, label_name_idx: NodeIndex, register_sm_temps: bool) Transformer.Error!NodeIndex {
             const span = node.span;
-            const left = node.data.ternary.a; // loop variable (variable_declaration or expression)
-            const right = node.data.ternary.b; // iterable
-            const body = node.data.ternary.c; // body
+            const left = node.data.ternary.a;
+            const right = node.data.ternary.b;
+            const body = node.data.ternary.c;
 
-            // 임시 변수 (makeTempVarSpan으로 고유 이름 생성 — 중첩 for-of 안전)
-            const inc_span = try es_helpers.makeTempVarSpan(self); // _a: iteratorNormalCompletion
-            const die_span = try es_helpers.makeTempVarSpan(self); // _b: didIteratorError
-            const ie_span = try es_helpers.makeTempVarSpan(self); // _c: iteratorError
-            const iter_span = try es_helpers.makeTempVarSpan(self); // _d: iterator
-            const step_span = try es_helpers.makeTempVarSpan(self); // _e: step
-            const err_span = try es_helpers.makeTempVarSpan(self); // _f: catch param
-
-            // 리터럴 span 캐싱 (addString 중복 호출 방지)
-            const true_span = try self.ast.addString("true");
-            const false_span = try self.ast.addString("false");
-            const null_span_cached = try self.ast.addString("null");
-
-            const new_right = try self.visitNode(right);
-
-            // =====================================================
-            // 1. 세 개의 var 선언 (try 바깥)
-            // =====================================================
-
-            // var _a = true
-            const inc_true = try makeBoolLiteral(self, true_span, true);
-            const inc_decl = try makeVarDeclFromSpan(self, inc_span, inc_true, span);
-
-            // var _b = false
-            const die_false = try makeBoolLiteral(self, false_span, false);
-            const die_decl = try makeVarDeclFromSpan(self, die_span, die_false, span);
-
-            // var _c = void 0
-            const ie_undef = try es_helpers.makeVoidZero(self, span);
-            const ie_decl = try makeVarDeclFromSpan(self, ie_span, ie_undef, span);
-
-            // =====================================================
-            // 2. for 문 (try 블록 안)
-            // =====================================================
-
-            // --- init: var _d = iterable[Symbol.iterator](), _e ---
-
-            // iterable[Symbol.iterator]()
-            const symbol_ref = try es_helpers.makeIdentifierRef(self, "Symbol");
-            const iterator_prop = try es_helpers.makeIdentifierRef(self, "iterator");
-            const symbol_iterator = try es_helpers.makeStaticMember(self, symbol_ref, iterator_prop, span);
-            const iterable_iter_method = try es_helpers.makeComputedMember(self, new_right, symbol_iterator, span);
-            const iter_call = try es_helpers.makeCallExpr(self, iterable_iter_method, &.{}, span);
-
-            // var _d = ..., _e
-            const iter_binding = try es_helpers.makeBindingIdentifier(self, iter_span);
-            const iter_declarator = try es_helpers.makeDeclarator(self, iter_binding, iter_call, span);
-            const step_binding = try es_helpers.makeBindingIdentifier(self, step_span);
-            const step_declarator = try es_helpers.makeDeclarator(self, step_binding, .none, span);
-            const for_init = try es_helpers.makeVarDeclaration(self, &.{ iter_declarator, step_declarator }, .@"var", span);
-
-            // --- test: !(_a = (_e = _d.next()).done) ---
-
-            // _d.next()
-            const iter_ref_next = try makeRefFromSpan(self, iter_span);
-            const next_prop = try es_helpers.makeIdentifierRef(self, "next");
-            const iter_next = try es_helpers.makeStaticMember(self, iter_ref_next, next_prop, span);
-            const iter_next_call = try es_helpers.makeCallExpr(self, iter_next, &.{}, span);
-
-            // _e = _d.next()
-            const step_ref_assign = try makeRefFromSpan(self, step_span);
-            const step_assign = try self.ast.addNode(.{
-                .tag = .assignment_expression,
-                .span = span,
-                .data = .{ .binary = .{ .left = step_ref_assign, .right = iter_next_call, .flags = 0 } },
-            });
-
-            // (_e = _d.next()).done — paren 은 precedence 재유도가 처리 (#4042 PR8)
-            const done_prop = try es_helpers.makeIdentifierRef(self, "done");
-            const step_done = try es_helpers.makeStaticMember(self, step_assign, done_prop, span);
-
-            // _a = (...).done
-            const inc_ref_assign = try makeRefFromSpan(self, inc_span);
-            const inc_assign = try self.ast.addNode(.{
-                .tag = .assignment_expression,
-                .span = span,
-                .data = .{ .binary = .{ .left = inc_ref_assign, .right = step_done, .flags = 0 } },
-            });
-
-            // !(_a = ...) — paren 은 precedence 재유도가 처리 (#4042 PR8)
-            const not_inc = try es_helpers.makeUnaryNot(self, inc_assign, span);
-
-            // --- update: _a = true ---
-            const inc_ref_update = try makeRefFromSpan(self, inc_span);
-            const update_true = try makeBoolLiteral(self, true_span, true);
-            const for_update = try self.ast.addNode(.{
-                .tag = .assignment_expression,
-                .span = span,
-                .data = .{ .binary = .{ .left = inc_ref_update, .right = update_true, .flags = 0 } },
-            });
-
-            // --- body: var x = _e.value; original_body ---
-            // 본문에 `yield` 가 있으면(= 상태 기계로 접힐 generator 안) 본문을 여기서 visit 하지
-            // 않고 **원본 그대로** `_loop` generator 로 뽑는다 (#4722). 그 generator 는 나중에
-            // 상태 기계 수집이 한 번만 visit 하며 낮춘다 — 여기서 먼저 visit 하면 이중 방문이 된다.
-            // 헤더 let/const 뿐 아니라 본문에서 선언한 let/const/class 가 캡처돼도 추출한다 (#4743).
-            const LoopCapture = @import("transformer/control_flow.zig").LoopCapture;
-            var head_names: std.ArrayList([]const u8) = if (self.options.unsupported.block_scoping)
-                try es2015_block_scoping.ES2015BlockScoping(@TypeOf(self.*)).collectLexicalVarNames(self, left)
-            else
-                .empty;
-            defer head_names.deinit(self.allocator);
-            var capture: LoopCapture = if (self.options.unsupported.block_scoping) try LoopCapture.init(self, head_names.items, body) else .{};
-            defer capture.deinit(self);
-            const will_extract = self.options.unsupported.block_scoping and
-                es2015_block_scoping.ES2015BlockScoping(@TypeOf(self.*)).hasCapturedClosure(self, body, capture.names.items);
-            const yield_closure = will_extract and bodyHasYield(self, body);
-            // 추출될 본문 안에서는 바깥 라벨이 클로저 경계 너머다 (#4722).
-            if (will_extract) try self.label_scope.append(self.allocator, null);
-            const body_temp_start = self.temp_var_counter;
-            const new_body = if (yield_closure) body else try self.visitNode(body);
-            if (will_extract) _ = self.label_scope.pop();
-
-            // _e.value
-            const step_ref_body = try makeRefFromSpan(self, step_span);
-            const value_prop = try es_helpers.makeIdentifierRef(self, "value");
-            const step_value = try es_helpers.makeStaticMember(self, step_ref_body, value_prop, span);
-
-            // var x = _e.value
-            const elem_assign = try es_helpers.buildForOfLoopVarAssign(self, left, step_value, span);
-
-            // #1797: ES5 down-level 시 `for (let x of ...)` 의 body 가 closure (arrow /
-            // function expression) 로 `x` 를 캡처하면, `var x = _e.value` 로 단순 치환
-            // 시 per-iteration fresh binding semantics 가 깨져 모든 closure 가 마지막
-            // iteration 값을 공유한다 (`__copyProps` 의 getter 가 항상 마지막 key 를
-            // 반환 → RN 에서 `React.forwardRef is not a function (it is '19.2.0')`).
-            //
-            // block_scoping down-level 이 활성이고 left 가 let/const 이고 body 에 capture
-            // 가 있으면 body 를 `var _loopN = function(x) { ...body... }` 로 추출하고
-            // 루프 내부는 `_loopN(x);` 만 호출하도록 변환. break/continue/return 제어
-            // 흐름도 `buildLoopClosureWithFlow` 가 함께 처리.
-            var loop_fn_decl: ?NodeIndex = null;
-            var body_after_closure = new_body;
-            if (self.options.unsupported.block_scoping) {
-                const BlockScoping = es2015_block_scoping.ES2015BlockScoping(@TypeOf(self.*));
-                if (will_extract) {
-                    const is_async = BlockScoping.hasAwaitExpression(self, body);
-                    const preserve_this = BlockScoping.hasLexicalThisReference(self, body);
-                    var flow = BlockScoping.FlowResult{};
-                    defer flow.labels.deinit(self.allocator);
-                    BlockScoping.analyzeControlFlow(self, body, &flow, 0, 0);
-                    const local_label = if (label_name_idx.isNone())
-                        null
-                    else
-                        self.ast.getText(self.ast.getNode(label_name_idx).span);
-
-                    // 본문에 `yield` 가 있으면 평범한 함수로 뽑을 수 없다 — raw `yield` 가 남아
-                    // 산출물이 파싱되지 않았다(#4722). generator 로 뽑고 `yield* _loop(x)` 로 위임.
-                    const result = try BlockScoping.buildLoopClosureWithFlow(
-                        self,
-                        new_body,
-                        head_names.items,
-                        &flow,
-                        local_label,
-                        span,
-                        if (yield_closure) false else is_async,
-                        preserve_this,
-                        yield_closure,
-                        if (yield_closure) null else body_temp_start,
-                        capture.var_names.items,
-                    );
-                    loop_fn_decl = result.loop_fn;
-                    body_after_closure = result.call_and_check;
-                }
+            const norm = try es_helpers.makeTempVarSpan(self); // _a
+            const did_err = try es_helpers.makeTempVarSpan(self); // _b
+            const err_val = try es_helpers.makeTempVarSpan(self); // _c
+            const iter = try es_helpers.makeTempVarSpan(self); // _d
+            // step 은 본문(루프 변수 선언)에서 읽는다 — 본문이 `_loop` 함수로 추출되면 **함수 경계
+            // 너머**의 참조가 된다. 카운터 temp(`_e`)는 중첩 함수가 자기 temp 로 같은 이름을
+            // 다시 선언해 가릴 수 있어서, 모듈 전체에서 고유한 이름을 쓴다.
+            const step = try uniqueStepName(self);
+            const catch_param = try es_helpers.makeTempVarSpan(self); // _f
+            if (register_sm_temps) {
+                try self.generator_temp_var_spans.appendSlice(self.allocator, &.{ norm, did_err, err_val, iter, step, catch_param });
             }
 
-            // prepend to body
-            const final_body = if (!body_after_closure.isNone())
-                try self.prependStatementsToBody(body_after_closure, &.{elem_assign})
-            else
-                body_after_closure;
+            // var _a = true; var _b = false; var _c = void 0;
+            const norm_decl = try makeVarDeclFromSpan(self, norm, try es_helpers.makeBoolLiteral(self, true), span);
+            const did_decl = try makeVarDeclFromSpan(self, did_err, try es_helpers.makeBoolLiteral(self, false), span);
+            const err_decl = try makeVarDeclFromSpan(self, err_val, try es_helpers.makeVoidZero(self, span), span);
 
-            // --- for_statement ---
-            const for_extra = try self.ast.addExtras(&.{
-                @intFromEnum(for_init),
-                @intFromEnum(not_inc),
-                @intFromEnum(for_update),
-                @intFromEnum(final_body),
-            });
-            const for_stmt = try self.ast.addNode(.{
-                .tag = .for_statement,
-                .span = span,
-                .data = .{ .extra = for_extra },
-            });
+            // init: var _d = __values(iterable), _e
+            self.runtime_helpers.values = true;
+            const values_call = try es_helpers.makeCallExpr(self, try es_helpers.makeRuntimeHelperRef(self, "__values"), &.{right}, span);
+            const for_init = try es_helpers.makeVarDeclaration(self, &.{
+                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, iter), values_call, span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, step), .none, span),
+            }, .@"var", span);
 
-            // =====================================================
-            // 3. try 블록
-            // =====================================================
-            // labeled for-of: label을 block 대신 inner for_statement에 붙여야
-            // `continue LABEL` 이 합법적인 iteration statement를 가리킨다.
-            const labeled_for_stmt = if (label_name_idx.isNone())
-                for_stmt
-            else
-                try self.ast.addNode(.{
-                    .tag = .labeled_statement,
-                    .span = span,
-                    .data = .{ .binary = .{ .left = label_name_idx, .right = for_stmt, .flags = 0 } },
-                });
-            const try_body_list = try self.ast.addNodeList(&.{labeled_for_stmt});
-            const try_block = try self.ast.addNode(.{
-                .tag = .block_statement,
+            // test: !(_a = (_e = _d.next()).done)
+            const next_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, iter), try es_helpers.makeIdentifierRef(self, "next"), span), &.{}, span);
+            const step_assign = try makeAssign(self, try makeRefFromSpan(self, step), next_call, span);
+            const done = try es_helpers.makeStaticMember(self, step_assign, try es_helpers.makeIdentifierRef(self, "done"), span);
+            const for_test = try es_helpers.makeUnaryNot(self, try makeAssign(self, try makeRefFromSpan(self, norm), done, span), span);
+
+            // update: _a = true
+            const for_update = try makeAssign(self, try makeRefFromSpan(self, norm), try es_helpers.makeBoolLiteral(self, true), span);
+
+            // body: <루프 변수 = _e.value>; body
+            const value = try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, step), try es_helpers.makeIdentifierRef(self, "value"), span);
+            const for_body = try buildLoopBody(self, left, value, body, span);
+
+            const for_stmt = try self.addExtraNode(.for_statement, span, &.{
+                @intFromEnum(for_init), @intFromEnum(for_test), @intFromEnum(for_update), @intFromEnum(for_body),
+            });
+            const loop_stmt = if (label_name_idx.isNone()) for_stmt else try self.ast.addNode(.{
+                .tag = .labeled_statement,
                 .span = span,
-                .data = .{ .list = try_body_list },
+                .data = .{ .binary = .{ .left = label_name_idx, .right = for_stmt, .flags = 0 } },
             });
 
-            // =====================================================
-            // 4. catch (_f) { _b = true; _c = _f; }
-            // =====================================================
-            const die_ref_catch = try makeRefFromSpan(self, die_span);
-            const catch_true = try makeBoolLiteral(self, true_span, true);
-            const die_assign = try self.ast.addNode(.{
-                .tag = .assignment_expression,
-                .span = span,
-                .data = .{ .binary = .{ .left = die_ref_catch, .right = catch_true, .flags = 0 } },
-            });
-            const die_stmt = try es_helpers.makeExprStmt(self, die_assign, span);
+            // catch (_f) { _b = true; _c = _f; }
+            const catch_body = try makeBlock(self, &.{
+                try es_helpers.makeExprStmt(self, try makeAssign(self, try makeRefFromSpan(self, did_err), try es_helpers.makeBoolLiteral(self, true), span), span),
+                try es_helpers.makeExprStmt(self, try makeAssign(self, try makeRefFromSpan(self, err_val), try makeRefFromSpan(self, catch_param), span), span),
+            }, span);
+            const catch_clause = try self.ast.addNode(.{ .tag = .catch_clause, .span = span, .data = .{ .binary = .{
+                .left = try es_helpers.makeBindingIdentifier(self, catch_param),
+                .right = catch_body,
+                .flags = 0,
+            } } });
 
-            const ie_ref_catch = try makeRefFromSpan(self, ie_span);
-            const err_ref_catch = try makeRefFromSpan(self, err_span);
-            const ie_assign = try self.ast.addNode(.{
-                .tag = .assignment_expression,
-                .span = span,
-                .data = .{ .binary = .{ .left = ie_ref_catch, .right = err_ref_catch, .flags = 0 } },
-            });
-            const ie_stmt = try es_helpers.makeExprStmt(self, ie_assign, span);
+            // finally { try { if (!_a && _d.return != null) _d.return(); } finally { if (_b) throw _c; } }
+            const ret_member = try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, iter), try es_helpers.makeIdentifierRef(self, "return"), span);
+            const close_cond = try self.ast.addNode(.{ .tag = .logical_expression, .span = span, .data = .{ .binary = .{
+                .left = try es_helpers.makeUnaryNot(self, try makeRefFromSpan(self, norm), span),
+                .right = try es_helpers.makeNeqNull(self, ret_member, span),
+                .flags = @intFromEnum(token_mod.Kind.amp2),
+            } } });
+            const close_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, iter), try es_helpers.makeIdentifierRef(self, "return"), span), &.{}, span);
+            const close_if = try self.ast.addNode(.{ .tag = .if_statement, .span = span, .data = .{ .ternary = .{
+                .a = close_cond,
+                .b = try es_helpers.makeExprStmt(self, close_call, span),
+                .c = .none,
+            } } });
+            const rethrow = try self.ast.addNode(.{ .tag = .throw_statement, .span = span, .data = .{ .unary = .{ .operand = try makeRefFromSpan(self, err_val), .flags = 0 } } });
+            const rethrow_if = try self.ast.addNode(.{ .tag = .if_statement, .span = span, .data = .{ .ternary = .{
+                .a = try makeRefFromSpan(self, did_err),
+                .b = rethrow,
+                .c = .none,
+            } } });
+            const inner_try = try self.ast.addNode(.{ .tag = .try_statement, .span = span, .data = .{ .ternary = .{
+                .a = try makeBlock(self, &.{close_if}, span),
+                .b = .none,
+                .c = try makeBlock(self, &.{rethrow_if}, span),
+            } } });
 
-            const catch_body_list = try self.ast.addNodeList(&.{ die_stmt, ie_stmt });
-            const catch_body = try self.ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = catch_body_list },
-            });
-            const catch_param = try es_helpers.makeBindingIdentifier(self, err_span);
-            const catch_clause = try self.ast.addNode(.{
-                .tag = .catch_clause,
-                .span = span,
-                .data = .{ .binary = .{ .left = catch_param, .right = catch_body, .flags = 0 } },
-            });
+            const try_stmt = try self.ast.addNode(.{ .tag = .try_statement, .span = span, .data = .{ .ternary = .{
+                .a = try makeBlock(self, &.{loop_stmt}, span),
+                .b = catch_clause,
+                .c = try makeBlock(self, &.{inner_try}, span),
+            } } });
 
-            // =====================================================
-            // 5. finally: try { if (!_a && _d.return != null) { _d.return(); } }
-            //             finally { if (_b) { throw _c; } }
-            // =====================================================
+            // 블록으로 감싼 단일 노드 — pending_nodes 를 쓰면 중첩 for-of 에서 안쪽이 바깥
+            // 본문 밖으로 빠져나간다.
+            return makeBlock(self, &.{ norm_decl, did_decl, err_decl, try_stmt }, span);
+        }
 
-            // !_a
-            const inc_ref_finally = try makeRefFromSpan(self, inc_span);
-            const not_inc_finally = try es_helpers.makeUnaryNot(self, inc_ref_finally, span);
+        /// 루프 변수 대입을 앞에 둔 본문 블록. 원래 본문 블록에 루프 변수와 같은 이름의
+        /// 선언이 있으면(헤더와 본문은 스코프가 다르다) 합치지 않고 한 겹 더 감싼다.
+        fn buildLoopBody(self: *Transformer, left: NodeIndex, value: NodeIndex, body: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const left_node = self.ast.getNode(left);
+            const head_stmt = if (left_node.tag == .variable_declaration) blk: {
+                const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[self.readU32(left_node.data.extra, 1)]));
+                const binding = self.readNodeIdx(d.data.extra, 0);
+                break :blk try es_helpers.makeVarDeclaration(self, &.{
+                    try es_helpers.makeDeclarator(self, binding, value, span),
+                }, self.ast.variableDeclarationKind(left_node), span);
+            } else try es_helpers.makeExprStmt(self, try makeAssign(self, left, value, span), span);
 
-            // _d.return != null
-            const iter_ref_finally = try makeRefFromSpan(self, iter_span);
-            const return_prop = try es_helpers.makeIdentifierRef(self, "return");
-            const iter_return = try es_helpers.makeStaticMember(self, iter_ref_finally, return_prop, span);
-            const null_lit = try self.ast.addNode(.{
-                .tag = .null_literal,
-                .span = null_span_cached,
-                .data = .{ .none = 0 },
-            });
-            const return_neq_null = try self.ast.addNode(.{
-                .tag = .binary_expression,
-                .span = span,
-                .data = .{ .binary = .{
-                    .left = iter_return,
-                    .right = null_lit,
-                    .flags = @intFromEnum(token_mod.Kind.neq),
-                } },
-            });
+            if (body.isNone()) return makeBlock(self, &.{head_stmt}, span);
+            const body_node = self.ast.getNode(body);
+            if (body_node.tag == .block_statement and !(left_node.tag == .variable_declaration and try headCollidesWithBlock(self, left_node, body_node))) {
+                var items: std.ArrayList(NodeIndex) = .empty;
+                defer items.deinit(self.allocator);
+                try items.append(self.allocator, head_stmt);
+                var i: u32 = 0;
+                while (i < body_node.data.list.len) : (i += 1) {
+                    try items.append(self.allocator, @enumFromInt(self.ast.extra_data.items[body_node.data.list.start + i]));
+                }
+                return makeBlock(self, items.items, body_node.span);
+            }
+            return makeBlock(self, &.{ head_stmt, body }, span);
+        }
 
-            // !_a && _d.return != null
-            const and_expr = try self.ast.addNode(.{
-                .tag = .binary_expression,
-                .span = span,
-                .data = .{ .binary = .{
-                    .left = not_inc_finally,
-                    .right = return_neq_null,
-                    .flags = @intFromEnum(token_mod.Kind.amp2),
-                } },
-            });
+        /// 헤더 선언 이름이 본문 블록 직계 선언(let/const/using/var/class/function)과 겹치는지.
+        fn headCollidesWithBlock(self: *Transformer, head: Node, block: Node) Transformer.Error!bool {
+            const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
+            var head_names: std.ArrayList([]const u8) = .empty;
+            defer head_names.deinit(self.allocator);
+            const hd = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[self.readU32(head.data.extra, 1)]));
+            try BlockScoping.collectBindingNames(self, self.readNodeIdx(hd.data.extra, 0), &head_names);
 
-            // _d.return()
-            const iter_ref_call = try makeRefFromSpan(self, iter_span);
-            const return_prop2 = try es_helpers.makeIdentifierRef(self, "return");
-            const iter_return2 = try es_helpers.makeStaticMember(self, iter_ref_call, return_prop2, span);
-            const iter_return_call = try es_helpers.makeCallExpr(self, iter_return2, &.{}, span);
-            const iter_return_stmt = try es_helpers.makeExprStmt(self, iter_return_call, span);
+            var block_names: std.ArrayList([]const u8) = .empty;
+            defer block_names.deinit(self.allocator);
+            var i: u32 = 0;
+            while (i < block.data.list.len) : (i += 1) {
+                const st = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[block.data.list.start + i]));
+                switch (st.tag) {
+                    .variable_declaration => {
+                        const ds = self.readU32(st.data.extra, 1);
+                        const dl = self.readU32(st.data.extra, 2);
+                        var j: u32 = 0;
+                        while (j < dl) : (j += 1) {
+                            const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[ds + j]));
+                            if (d.tag == .variable_declarator) try BlockScoping.collectBindingNames(self, self.readNodeIdx(d.data.extra, 0), &block_names);
+                        }
+                    },
+                    .class_declaration, .function_declaration => {
+                        const name = self.readNodeIdx(st.data.extra, 0);
+                        if (!name.isNone()) try block_names.append(self.allocator, self.ast.getText(self.ast.getNode(name).span));
+                    },
+                    else => {},
+                }
+            }
+            for (head_names.items) |h| {
+                for (block_names.items) |b| {
+                    if (std.mem.eql(u8, h, b)) return true;
+                }
+            }
+            return false;
+        }
 
-            // if (!_a && _d.return != null) { _d.return(); }
-            const if_body_list = try self.ast.addNodeList(&.{iter_return_stmt});
-            const if_body = try self.ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = if_body_list },
-            });
-            const inner_if = try self.ast.addNode(.{
-                .tag = .if_statement,
-                .span = span,
-                .data = .{ .ternary = .{ .a = and_expr, .b = if_body, .c = .none } },
-            });
+        fn uniqueStepName(self: *Transformer) Transformer.Error!Span {
+            const prefix = "_step";
+            while (true) {
+                const name = try self.buildUniqueName(prefix, &self.forof_step_counter);
+                defer if (name.ptr != prefix.ptr) self.allocator.free(name);
+                if (es_helpers.nameAppearsInSource(self, name)) continue;
+                return self.ast.addString(name);
+            }
+        }
 
-            const inner_try_body_list = try self.ast.addNodeList(&.{inner_if});
-            const inner_try_block = try self.ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = inner_try_body_list },
-            });
+        fn makeAssign(self: *Transformer, target: NodeIndex, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            return self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{ .left = target, .right = value, .flags = 0 } } });
+        }
 
-            // if (_b) { throw _c; }
-            const die_ref_finally = try makeRefFromSpan(self, die_span);
-            const ie_ref_finally = try makeRefFromSpan(self, ie_span);
-            const throw_ie = try self.ast.addNode(.{
-                .tag = .throw_statement,
-                .span = span,
-                .data = .{ .unary = .{ .operand = ie_ref_finally, .flags = 0 } },
-            });
-            const inner_finally_if_body_list = try self.ast.addNodeList(&.{throw_ie});
-            const inner_finally_if_body = try self.ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = inner_finally_if_body_list },
-            });
-            const inner_finally_if = try self.ast.addNode(.{
-                .tag = .if_statement,
-                .span = span,
-                .data = .{ .ternary = .{ .a = die_ref_finally, .b = inner_finally_if_body, .c = .none } },
-            });
-            const inner_finally_list = try self.ast.addNodeList(&.{inner_finally_if});
-            const inner_finally_block = try self.ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = inner_finally_list },
-            });
-
-            // inner try-finally (no catch)
-            const inner_try_stmt = try self.ast.addNode(.{
-                .tag = .try_statement,
-                .span = span,
-                .data = .{ .ternary = .{ .a = inner_try_block, .b = .none, .c = inner_finally_block } },
-            });
-
-            // outer finally
-            const outer_finally_list = try self.ast.addNodeList(&.{inner_try_stmt});
-            const outer_finally_block = try self.ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = outer_finally_list },
-            });
-
-            // =====================================================
-            // 6. 전체 try-catch-finally 조립
-            // =====================================================
-            const try_catch_finally = try self.ast.addNode(.{
-                .tag = .try_statement,
-                .span = span,
-                .data = .{ .ternary = .{ .a = try_block, .b = catch_clause, .c = outer_finally_block } },
-            });
-
-            // 4(+1)개 statement를 block으로 래핑하여 단일 노드로 반환.
-            // pending_nodes를 쓰면 중첩 for-of에서 inner가 outer body 밖으로 빠져나감.
-            // loop_fn_decl 이 있으면 try-catch 밖 가장 앞에 삽입 — 루프가 매 iteration
-            // 마다 이 함수를 호출해 캡처 변수를 파라미터로 받아 fresh binding 효과를 낸다.
-            const wrapper_list = if (loop_fn_decl) |decl|
-                try self.ast.addNodeList(&.{ decl, inc_decl, die_decl, ie_decl, try_catch_finally })
-            else
-                try self.ast.addNodeList(&.{ inc_decl, die_decl, ie_decl, try_catch_finally });
-            return self.ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = wrapper_list },
-            });
+        fn makeBlock(self: *Transformer, stmts: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            return self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(stmts) } });
         }
 
         // ================================================================
@@ -453,14 +288,6 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             });
         }
 
-        fn makeBoolLiteral(self: *Transformer, lit_span: Span, value: bool) Transformer.Error!NodeIndex {
-            return self.ast.addNode(.{
-                .tag = .boolean_literal,
-                .span = lit_span,
-                .data = .{ .none = if (value) 1 else 0 },
-            });
-        }
-
         fn makeVarDeclFromSpan(self: *Transformer, name_span: Span, init: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const binding = try es_helpers.makeBindingIdentifier(self, name_span);
             const declarator = try es_helpers.makeDeclarator(self, binding, init, span);
@@ -471,26 +298,4 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
 
 test "ES2015 for-of module compiles" {
     _ = ES2015ForOf;
-}
-
-/// 함수 경계를 넘지 않고 `yield` 식이 있는지.
-fn bodyHasYield(self: anytype, root: NodeIndex) bool {
-    var stack: std.ArrayListUnmanaged(NodeIndex) = .empty;
-    defer stack.deinit(self.allocator);
-    var child_buf: std.ArrayListUnmanaged(NodeIndex) = .empty;
-    defer child_buf.deinit(self.allocator);
-    stack.append(self.allocator, root) catch return true;
-    while (stack.pop()) |idx| {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
-        const node = self.ast.getNode(idx);
-        switch (node.tag) {
-            .yield_expression => return true,
-            .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .class_declaration, .class_expression => continue,
-            else => {},
-        }
-        child_buf.clearRetainingCapacity();
-        ast_walk.collectChildrenInto(self.ast, node, &child_buf, self.allocator) catch return true;
-        stack.appendSlice(self.allocator, child_buf.items) catch return true;
-    }
-    return false;
 }

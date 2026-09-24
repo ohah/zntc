@@ -1175,10 +1175,11 @@ test "#1797 for-of + let + arrow closure: body 를 _loop 함수로 추출" {
     defer r.deinit();
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
-    // body 가 _loop 함수로 추출되고 루프 내부는 _loop(key) 호출만 남음.
+    // body 가 _loop 함수로 추출되고 루프 내부는 _loop() 호출만 남음. for-of 는 반복자 for 로
+    // 풀리며 루프 변수가 본문 첫 선언이 되므로(#4746) key 는 _loop 안에서 선언된다.
     try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
-    try std.testing.expect(std.mem.indexOf(u8, code, "function(key)") != null or
-        std.mem.indexOf(u8, code, "function (key)") != null);
+    const fn_at = std.mem.indexOf(u8, code, "_loop = function()") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOfPos(u8, code, fn_at, "var key = ") != null);
     // 루프 내부에 arr.push 가 직접 emit 되면 회귀 — _loop 안으로 들어가야.
     const push_pos = std.mem.indexOf(u8, code, "arr.push") orelse unreachable;
     const loop_pos = std.mem.indexOf(u8, code, "_loop") orelse unreachable;
@@ -1200,8 +1201,9 @@ test "#1797 for-of + let + function expression closure: 동일 변환" {
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
     try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
-    // 파라미터로 k 가 전달
-    try std.testing.expect(std.mem.indexOf(u8, code, "(k)") != null);
+    // k 는 반복마다 _loop 안에서 새로 선언된다(#4746 — 예전엔 파라미터로 전달).
+    const fn_at = std.mem.indexOf(u8, code, "_loop = function()") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOfPos(u8, code, fn_at, "var k = ") != null);
 }
 
 test "#1797 for-of + const + closure: const 도 lexical 이므로 동일 변환" {

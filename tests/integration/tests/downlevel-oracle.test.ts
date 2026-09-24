@@ -65,6 +65,8 @@ const KNOWN_FAILURES: Record<string, string[]> = {
   '4730-using-module': ['esnext/plain', 'esnext/minify', 'hermes/plain', 'hermes/minify'],
   // #4733 Hermes 에서 async generator 를 for-await 로 돌 때
   'forof-asyncgen-close-break': ['hermes/plain', 'hermes/minify'],
+  'forof-in-forawait-yield-capture': ['hermes/plain', 'hermes/minify'],
+  'forof-in-forawait-yield-capture-inner': ['hermes/plain', 'hermes/minify'],
   // #4733 Hermes 에서 async generator 를 for-await 로 돌 때
   '4730-using-30': ['hermes/plain', 'hermes/minify'],
 };
