@@ -92,6 +92,9 @@ pub const MangleInput = struct {
     /// `external_reserved` 가 *per-module* (예: Phase A 의 이 모듈 mangled 이름)
     /// 라면 본 필드는 *전 모듈 공통* (예: runtime helper 이름) 으로 분리된다.
     external_reserved_global: ?*const std.StringHashMapUnmanaged(void) = null,
+    /// 변환 **뒤** AST 를 다시 분석한 심볼이면 이름이 원문이 아니라 `string_table` 에 있을 수
+    /// 있다(`_loop`, `x$1` …). 주어지면 이름을 `source` 대신 이 AST 에서 읽는다 (#4759).
+    ast: ?*const @import("../parser/ast.zig").Ast = null,
 };
 
 /// scope-nesting 기반 mangling.
@@ -215,7 +218,7 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
         // Bundler 합성 심볼(#1338)은 source AST에 식별자 참조가 없고 span이 (0,0).
         // rename은 parser AST의 identifier 노드를 바꾸는 것이라 무의미 — skip.
         if (sym.isSynthetic()) continue;
-        const orig_name = sym.nameText(source);
+        const orig_name = if (input.ast) |ast| (if (sym.synthetic_name.len > 0) sym.synthetic_name else ast.getText(sym.name)) else sym.nameText(source);
 
         if (std.mem.eql(u8, orig_name, new_name)) continue;
 
