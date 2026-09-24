@@ -113,10 +113,11 @@ fn lowerObjectPattern(self: *Transformer, pnode: Node, subject: NodeIndex, span:
                 const empty_obj = try self.ast.addNode(.{ .tag = .object_expression, .span = span, .data = .{ .list = .{ .start = 0, .len = 0 } } });
                 const copy_call = try es_helpers.makeObjectAssignCall(self, &.{ empty_obj, try es_helpers.cloneNode(self, subject) }, span);
                 const bind = try es_helpers.makeBindingIdentifier(self, cn.span);
+                self.propagateSymbolId(child, bind);
                 const decl = try es_helpers.makeDeclarator(self, bind, copy_call, span);
                 try binds.append(self.allocator, try es_helpers.makeVarDeclaration(self, &.{decl}, .let, span));
                 for (key_lits.items) |kl| {
-                    const rest_ref = try es_helpers.makeIdentifierRefFromSpan(self, cn.span);
+                    const rest_ref = try self.makeIdentifierRefWithSymbol(cn.span, child);
                     const del_member = try es_helpers.makeComputedMember(self, rest_ref, kl, span);
                     const del_extra = try self.ast.addExtras(&.{ @intFromEnum(del_member), @intFromEnum(token_mod.Kind.kw_delete) });
                     const del = try self.ast.addNode(.{ .tag = .unary_expression, .span = span, .data = .{ .extra = del_extra } });

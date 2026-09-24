@@ -51,7 +51,7 @@ pub fn SuperProps(comptime Transformer: type) type {
 
             const callee = try es_helpers.makeRuntimeHelperRef(self, "__callSuper");
 
-            const parent_ref = try es_helpers.makeIdentifierRefFromSpan(self, super_class_span);
+            const parent_ref = try self.makeIdentifierRefWithSymbol(super_class_span, self.current_super_class_old_idx);
             const new_target_ref = try es_helpers.makeSyntheticRef(self, "_newTarget");
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -335,7 +335,7 @@ pub fn SuperProps(comptime Transformer: type) type {
         /// outer scope 의 unique binding 이라 영향 받지 않는다 (raw `D.prototype` reference 회피).
         fn buildSuperBaseViaProtoChain(self: *Transformer, alias_name_span: Span, span: Span) Transformer.Error!NodeIndex {
             _ = span;
-            return es_helpers.makeIdentifierRefFromSpan(self, alias_name_span);
+            return es_helpers.makeSyntheticRefFromSpan(self, alias_name_span);
         }
 
         /// V_OPT fix: es2020.zig (optional chain super lowering) 도 이 helper 를 호출해

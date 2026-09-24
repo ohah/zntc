@@ -622,7 +622,7 @@ fn hoistAllComputedKeys(self: *Transformer, tag: Node.Tag, body_idx: NodeIndex, 
         const assign = try self.ast.addNode(.{
             .tag = .assignment_expression,
             .span = key_node.span,
-            .data = .{ .binary = .{ .left = try es_helpers.makeIdentifierRefFromSpan(self, temp_span), .right = value, .flags = 0 } },
+            .data = .{ .binary = .{ .left = try es_helpers.makeSyntheticRefFromSpan(self, temp_span), .right = value, .flags = 0 } },
         });
         if (tag == .class_expression) {
             try key_assigns.append(self.allocator, assign);
@@ -632,7 +632,7 @@ fn hoistAllComputedKeys(self: *Transformer, tag: Node.Tag, body_idx: NodeIndex, 
         const new_key = try self.ast.addNode(.{
             .tag = .computed_property_key,
             .span = key_node.span,
-            .data = .{ .unary = .{ .operand = try es_helpers.makeIdentifierRefFromSpan(self, temp_span), .flags = key_node.data.unary.flags } },
+            .data = .{ .unary = .{ .operand = try es_helpers.makeSyntheticRefFromSpan(self, temp_span), .flags = key_node.data.unary.flags } },
         });
         var slots: [6]u32 = undefined;
         for (0..slot_count) |k| slots[k] = self.ast.extra_data.items[me + k];

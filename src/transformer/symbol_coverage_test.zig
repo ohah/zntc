@@ -19,6 +19,12 @@ fn missingSymbols(source: []const u8) !usize {
 }
 
 fn missingSymbolsFor(source: []const u8, target: TransformOptions.compat.ESTarget) !usize {
+    return (try countsFor(source, target)).missing;
+}
+
+const Counts = struct { missing: usize, wrong: usize };
+
+fn countsFor(source: []const u8, target: TransformOptions.compat.ESTarget) !Counts {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -44,7 +50,7 @@ fn missingSymbolsFor(source: []const u8, target: TransformOptions.compat.ESTarge
     var report = try coverage.check(allocator, transformer.ast, root, transformer.parser_node_count, transformer.symbol_ids.items, analyzer.symbols.items);
     defer report.deinit(allocator);
     try std.testing.expect(report.new_user_idents > 0);
-    return report.missing.items.len;
+    return .{ .missing = report.missing.items.len, .wrong = report.wrong.items.len };
 }
 
 test "#4762 es5 기본값 매개변수 검사의 참조는 매개변수 심볼을 가진다" {
@@ -103,4 +109,18 @@ test "#4760 모듈 최상위 using 이 export 를 지정자로 바꿀 때 로컬
         \\export const { first, second } = handle;
         \\export default class Main {}
     , .es2022));
+}
+
+test "#4763 es5 클래스의 _super 참조는 부모 클래스 심볼을 갖지 않는다" {
+    // es5 는 부모를 IIFE 매개변수 `_super` 로 넘긴다. `super.x()` 를 낮춘 `_super` 참조에 부모
+    // 클래스의 심볼이 붙으면, 심볼 기준 리네임이 `_super` 대신 바깥 부모 바인딩을 가리킨다.
+    const c = try countsFor(
+        \\let Parent = class { hello() { return 'A'; } };
+        \\export class Child extends Parent {
+        \\  constructor() { super(); }
+        \\  run() { return super.hello(); }
+        \\  static make() { return super.name; }
+        \\}
+    , .es5);
+    try std.testing.expectEqual(@as(usize, 0), c.wrong);
 }

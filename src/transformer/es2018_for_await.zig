@@ -79,7 +79,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             const err = try es_helpers.makeTempVarSpan(self);
             const ref = struct {
                 fn f(t: *Transformer, sp: Span) Transformer.Error!NodeIndex {
-                    return es_helpers.makeIdentifierRefFromSpan(t, sp);
+                    return es_helpers.makeSyntheticRefFromSpan(t, sp);
                 }
             }.f;
 

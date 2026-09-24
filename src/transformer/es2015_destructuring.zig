@@ -235,8 +235,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
                 if (value_idx.isNone() or @intFromEnum(value_idx) == @intFromEnum(key_idx)) {
                     // shorthand: { x } → x = _ref.x
-                    const target_ref = try es_helpers.makeIdentifierRefFromSpan(self, key_node.data.string_ref);
-                    self.propagateSymbolId(key_idx, target_ref);
+                    const target_ref = try self.makeIdentifierRefWithSymbol(key_node.data.string_ref, key_idx);
                     const assign = try es_helpers.makeAssignExpr(self, target_ref, member_access, span, 0);
                     try self.scratch.append(self.allocator, assign);
                 } else {
@@ -260,7 +259,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         const defaulted = try buildDefaulted(self, member_access, default_val, ref_span, key_idx, key_node.tag, span);
                         if (try emitNestedPatternAssignment(self, inner_target_node, defaulted, span)) continue;
                         const target_ref = if (inner_target_node.tag == .binding_identifier)
-                            try es_helpers.makeIdentifierRefFromSpan(self, inner_target_node.data.string_ref)
+                            try self.makeIdentifierRefWithSymbol(inner_target_node.data.string_ref, inner_target)
                         else
                             try self.visitNode(inner_target);
                         self.propagateSymbolId(inner_target, target_ref);
@@ -269,7 +268,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     } else {
                         // long-form: { a: b } → b = _ref.a
                         const target_ref = if (value_node.tag == .binding_identifier)
-                            try es_helpers.makeIdentifierRefFromSpan(self, value_node.data.string_ref)
+                            try self.makeIdentifierRefWithSymbol(value_node.data.string_ref, value_idx)
                         else
                             try self.visitNode(value_idx);
                         self.propagateSymbolId(value_idx, target_ref);
@@ -293,8 +292,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         fn restAssignTarget(self: *Transformer, rest_inner: NodeIndex, visited: NodeIndex) Transformer.Error!NodeIndex {
             const vn = self.ast.getNode(visited);
             if (vn.tag != .binding_identifier) return visited;
-            const target = try es_helpers.makeIdentifierRefFromSpan(self, vn.data.string_ref);
-            self.propagateSymbolId(rest_inner, target);
+            const target = try self.makeIdentifierRefWithSymbol(vn.data.string_ref, rest_inner);
             return target;
         }
 
@@ -345,7 +343,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     });
                     if (try emitNestedPatternAssignment(self, inner_target_node, conditional, span)) continue;
                     const target_ref = if (inner_target_node.tag == .binding_identifier)
-                        try es_helpers.makeIdentifierRefFromSpan(self, inner_target_node.data.string_ref)
+                        try self.makeIdentifierRefWithSymbol(inner_target_node.data.string_ref, inner_target)
                     else
                         try self.visitNode(inner_target);
                     self.propagateSymbolId(inner_target, target_ref);
@@ -363,7 +361,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     }
                 } else {
                     const target_ref = if (elem.tag == .binding_identifier)
-                        try es_helpers.makeIdentifierRefFromSpan(self, elem.data.string_ref)
+                        try self.makeIdentifierRefWithSymbol(elem.data.string_ref, @enumFromInt(raw_idx))
                     else
                         try self.visitNode(@enumFromInt(raw_idx));
                     self.propagateSymbolId(@enumFromInt(raw_idx), target_ref);

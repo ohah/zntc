@@ -641,7 +641,7 @@ pub fn Members(comptime Transformer: type) type {
             span: Span,
         ) Transformer.Error!NodeIndex {
             const return_expr = try makePrivateFieldAccess(self, storage_span, span);
-            const getter_key = try es_helpers.makeIdentifierRefFromSpan(self, key_span);
+            const getter_key = try es_helpers.makePropertyNameFromSpan(self, key_span);
             return self.buildGetterMethod(getter_key, return_expr, is_static, span);
         }
 
@@ -652,7 +652,7 @@ pub fn Members(comptime Transformer: type) type {
             is_static: bool,
             span: Span,
         ) Transformer.Error!NodeIndex {
-            const setter_key = try es_helpers.makeIdentifierRefFromSpan(self, key_span);
+            const setter_key = try es_helpers.makePropertyNameFromSpan(self, key_span);
             const assign_target = try makePrivateFieldAccess(self, storage_span, span);
             return self.buildSetterMethod(setter_key, assign_target, is_static, span);
         }

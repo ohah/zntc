@@ -534,7 +534,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
         /// instance_fields가 있으면: function Child() { var _newTarget = this.constructor; var _this = __callSuper(_super, arguments, _newTarget); <fields on _this>; return _this; }
         pub fn buildDefaultSuperConstructor(self: *Transformer, name: NodeIndex, super_class_span: Span, instance_fields: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const call_super_ref = try es_helpers.makeRuntimeHelperRef(self, "__callSuper");
-            const parent_ref = try es_helpers.makeIdentifierRefFromSpan(self, super_class_span);
+            const parent_ref = try self.makeIdentifierRefWithSymbol(super_class_span, self.current_super_class_old_idx);
             const args_ref = try es_helpers.makeGlobalRef(self, "arguments");
             const new_target_ref = try es_helpers.makeSyntheticRef(self, "_newTarget");
             const call_super = try es_helpers.makeCallExpr(self, call_super_ref, &.{ parent_ref, args_ref, new_target_ref }, span);
