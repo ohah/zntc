@@ -104,7 +104,7 @@ fn collectTopLevelVarNames(self: *Transformer, list_start: u32, list_len: u32) v
 
             for (names.items) |name| {
                 if (!isNameInScope(self, name)) {
-                    self.scope_var_names.append(self.allocator, name) catch {};
+                    self.scope_var_names.append(self.allocator, stableName(self, name) catch continue) catch {};
                 }
             }
         }
@@ -236,10 +236,10 @@ fn pushBlockRenames(self: *Transformer, list_start: u32, list_len: u32) Error!u3
                 if (isNameInScope(self, name)) {
                     self.block_rename_counter += 1;
                     const new_name = std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, self.block_rename_counter }) catch return Error.OutOfMemory;
-                    self.block_rename_stack.append(self.allocator, .{ .old_name = name, .new_name = new_name }) catch return Error.OutOfMemory;
+                    self.block_rename_stack.append(self.allocator, .{ .old_name = try stableName(self, name), .new_name = new_name }) catch return Error.OutOfMemory;
                     renames_added += 1;
                 } else {
-                    self.scope_var_names.append(self.allocator, name) catch return Error.OutOfMemory;
+                    self.scope_var_names.append(self.allocator, try stableName(self, name)) catch return Error.OutOfMemory;
                 }
             }
         }
@@ -259,10 +259,26 @@ pub fn pushLoopHeaderBlockRenames(self: *Transformer, names: []const []const u8)
 
         self.block_rename_counter += 1;
         const new_name = std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, self.block_rename_counter }) catch return Error.OutOfMemory;
-        self.block_rename_stack.append(self.allocator, .{ .old_name = name, .new_name = new_name }) catch return Error.OutOfMemory;
+        self.block_rename_stack.append(self.allocator, .{ .old_name = try stableName(self, name), .new_name = new_name }) catch return Error.OutOfMemory;
         renames_added += 1;
     }
     return renames_added;
+}
+
+/// 이름 조각을 **오래 들고 있어도 되는** 조각으로 바꾼다.
+///
+/// `ast.getText` 가 주는 조각은 원문(`source`)이나 `string_table` 을 가리킨다. 원문은 변하지
+/// 않지만 `string_table` 은 `addString` 이 늘릴 때 새 버퍼로 옮겨지므로, 그 안을 가리키는 조각
+/// (변환기가 만든 `_using` 이나 이미 바꾼 `x$1` 같은 이름)은 다음 `addString` 뒤에 해제된
+/// 메모리가 된다. 그런 조각만 `name_arena` 에 복사한다 — 조각을 얻은 **직후**, 다른
+/// `addString` 전에 불러야 한다.
+pub fn stableName(self: *Transformer, name: []const u8) Error![]const u8 {
+    const table = self.ast.string_table.items;
+    const start = @intFromPtr(table.ptr);
+    const p = @intFromPtr(name.ptr);
+    if (name.len == 0 or p < start or p >= start + table.len) return name;
+    if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+    return self.name_arena.?.allocator().dupe(u8, name) catch return Error.OutOfMemory;
 }
 
 pub fn popBlockRenames(self: *Transformer, renames_added: u32) void {

@@ -319,7 +319,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                     },
                     .class_declaration, .function_declaration => {
                         const name = self.readNodeIdx(st.data.extra, 0);
-                        if (!name.isNone()) try block_names.append(self.allocator, self.ast.getText(self.ast.getNode(name).span));
+                        if (!name.isNone()) try block_names.append(self.allocator, try self.stableName(self.ast.getText(self.ast.getNode(name).span)));
                     },
                     else => {},
                 }

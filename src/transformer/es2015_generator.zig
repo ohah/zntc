@@ -2326,7 +2326,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const node = self.ast.getNode(idx);
                 if (node.tag == .class_declaration) {
                     const name = self.readNodeIdx(node.data.extra, ast_mod.ClassExtra.name);
-                    if (!name.isNone()) try out.append(self.allocator, self.ast.getText(self.ast.getNode(name).span));
+                    if (!name.isNone()) try out.append(self.allocator, try self.stableName(self.ast.getText(self.ast.getNode(name).span)));
                     continue;
                 }
                 const ds = self.readU32(node.data.extra, 1);
