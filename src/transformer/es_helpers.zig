@@ -374,9 +374,24 @@ pub fn makeSyntheticRef(self: anytype, name: []const u8) !NodeIndex {
     return makeIdentifierRef(self, name);
 }
 
-/// 이름 문자열로 identifier_reference 노드 생성.
-/// addString + addNode를 한 번에 수행.
-pub fn makeIdentifierRef(self: anytype, name: []const u8) !NodeIndex {
+/// `makeSyntheticRef` 의 span 판 (이미 addString 한 이름).
+pub fn makeSyntheticRefFromSpan(self: anytype, name_span: Span) !NodeIndex {
+    return makeIdentifierRefFromSpan(self, name_span);
+}
+
+/// `makePropertyName` 의 span 판.
+pub fn makePropertyNameFromSpan(self: anytype, name_span: Span) !NodeIndex {
+    return makeIdentifierRefFromSpan(self, name_span);
+}
+
+/// `makeGlobalRef` 의 span 판.
+pub fn makeGlobalRefFromSpan(self: anytype, name_span: Span) !NodeIndex {
+    return makeIdentifierRefFromSpan(self, name_span);
+}
+
+/// 이름 문자열로 identifier_reference 노드 생성. 가리키는 대상을 드러내는 위 함수들로만
+/// 부른다 — 이름만 받아서는 사용자 변수 심볼을 빠뜨려도 드러나지 않는다 (#4760).
+fn makeIdentifierRef(self: anytype, name: []const u8) !NodeIndex {
     const name_span = try self.ast.addString(name);
     return self.ast.addNode(.{
         .tag = .identifier_reference,
@@ -596,7 +611,7 @@ pub fn makeMemberFromKeyIdx(self: anytype, obj: NodeIndex, key_idx: NodeIndex, s
     // 프로퍼티 키는 문자열 이름이므로 visitNode(symbol 전파) 대신 span만 복사.
     // destructuring { polyfillGlobal: renamed } → _ref.polyfillGlobal 에서
     // linker가 polyfillGlobal → polyfillGlobal$4 로 잘못 리네이밍하는 것을 방지.
-    const new_key = try makeIdentifierRefFromSpan(self, key_node.data.string_ref);
+    const new_key = try makePropertyNameFromSpan(self, key_node.data.string_ref);
     return makeMemberFromKey(self, obj, new_key, key_node.tag, span);
 }
 
@@ -868,8 +883,8 @@ pub fn buildObjectDefinePropertyCall(
     descriptor: NodeIndex,
     span: Span,
 ) !NodeIndex {
-    const obj_ref = try makeIdentifierRefFromSpan(self, obj_span);
-    const dp_prop = try makeIdentifierRefFromSpan(self, dp_span);
+    const obj_ref = try makeGlobalRefFromSpan(self, obj_span);
+    const dp_prop = try makePropertyNameFromSpan(self, dp_span);
     const callee = try makeStaticMember(self, obj_ref, dp_prop, span);
     return makeCallExpr(self, callee, &.{ target, key_arg, descriptor }, span);
 }

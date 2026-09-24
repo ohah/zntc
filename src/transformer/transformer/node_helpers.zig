@@ -110,7 +110,7 @@ pub fn makeUserRefNamed(self: anytype, name: []const u8, origin: NodeIndex) Erro
 /// 모듈(루트) 스코프 이름 참조 — JSX 팩토리(`React`)처럼 소스 위치가 아니라 설정에서 온
 /// 이름을 모듈 스코프 바인딩(import 등)에 잇는다. 그런 바인딩이 없으면 전역이다.
 pub fn makeRootScopeRef(self: anytype, name: []const u8) Error!NodeIndex {
-    const ref = try es_helpers.makeIdentifierRef(self, name);
+    const ref = try es_helpers.makeGlobalRef(self, name);
     self.attachRootScopeSymbolByName(ref, name);
     return ref;
 }

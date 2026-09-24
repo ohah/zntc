@@ -320,7 +320,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                 try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, tmp_span), .none, ln.span),
             }, .@"const", ln.span);
             const using_decl = try es_helpers.makeVarDeclaration(self, &.{
-                try es_helpers.makeDeclarator(self, binding, try es_helpers.makeIdentifierRefFromSpan(self, tmp_span), d.span),
+                try es_helpers.makeDeclarator(self, binding, try es_helpers.makeSyntheticRefFromSpan(self, tmp_span), d.span),
             }, vkind, ln.span);
             const new_body = try self.ast.addNode(.{ .tag = .block_statement, .span = node.span, .data = .{
                 .list = try self.ast.addNodeList(&.{ using_decl, node.data.ternary.c }),
@@ -413,7 +413,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                     // using은 항상 초기화가 필요하지만 방어적으로 void 0 사용
                     try es_helpers.makeVoidZero(self, span);
 
-                const stack_ref = try es_helpers.makeIdentifierRefFromSpan(self, stack_span);
+                const stack_ref = try es_helpers.makeSyntheticRefFromSpan(self, stack_span);
                 const using_ref = try es_helpers.makeRuntimeHelperRef(self, "__using");
                 const using_call = if (is_await)
                     try es_helpers.makeCallExpr(self, using_ref, &.{ stack_ref, new_init, try es_helpers.makeBoolLiteral(self, true) }, span)
@@ -432,12 +432,12 @@ pub fn ES2025Using(comptime Transformer: type) type {
         fn buildCatchClause(self: *Transformer, names: Names, span: Span) Transformer.Error!NodeIndex {
             const catch_param = try es_helpers.makeBindingIdentifier(self, names.catch_param);
             const set_err = try es_helpers.makeExprStmt(self, try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{
-                .left = try es_helpers.makeIdentifierRefFromSpan(self, names.err),
-                .right = try es_helpers.makeIdentifierRefFromSpan(self, names.catch_param),
+                .left = try es_helpers.makeSyntheticRefFromSpan(self, names.err),
+                .right = try es_helpers.makeSyntheticRefFromSpan(self, names.catch_param),
                 .flags = 0,
             } } }), span);
             const set_has = try es_helpers.makeExprStmt(self, try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{
-                .left = try es_helpers.makeIdentifierRefFromSpan(self, names.has_err),
+                .left = try es_helpers.makeSyntheticRefFromSpan(self, names.has_err),
                 .right = try es_helpers.makeBoolLiteral(self, true),
                 .flags = 0,
             } } }), span);
@@ -452,9 +452,9 @@ pub fn ES2025Using(comptime Transformer: type) type {
         /// finally { [await] __callDispose(_stack, _error, _hasError); }
         fn buildFinallyBlock(self: *Transformer, names: Names, has_await: bool, span: Span) Transformer.Error!NodeIndex {
             const call = try es_helpers.makeCallExpr(self, try es_helpers.makeRuntimeHelperRef(self, "__callDispose"), &.{
-                try es_helpers.makeIdentifierRefFromSpan(self, names.stack),
-                try es_helpers.makeIdentifierRefFromSpan(self, names.err),
-                try es_helpers.makeIdentifierRefFromSpan(self, names.has_err),
+                try es_helpers.makeSyntheticRefFromSpan(self, names.stack),
+                try es_helpers.makeSyntheticRefFromSpan(self, names.err),
+                try es_helpers.makeSyntheticRefFromSpan(self, names.has_err),
             }, span);
             const expr = if (has_await) try es_helpers.makeAwaitExpression(self, call, span) else call;
             const expr_stmt = try es_helpers.makeExprStmt(self, expr, span);

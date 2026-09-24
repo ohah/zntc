@@ -108,7 +108,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // #3680: inner class body 안의 super 는 lexical 로 valid — outer standalone fn flag reset.
             const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
             self.current_super_class = super_span;
-            self.current_super_class_old_idx = super_idx;
+            // `_super` 는 IIFE 매개변수라 부모 클래스 심볼이 아니다 (#4763).
+            self.current_super_class_old_idx = .none;
             self.current_super_is_static = false;
             self.current_super_static_receiver = null;
             self.current_super_in_extracted_fn = false;
@@ -203,7 +204,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             {
                 const check_id = try es_helpers.makeRuntimeHelperRef(self, "__classCallCheck");
                 const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .none = 0 } });
-                const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
+                const class_ref = try self.makeIdentifierRefWithSymbol(name_span, new_name);
                 const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
                 func_node = try prependToFunctionBody(self, func_node, &.{try es_helpers.makeExprStmt(self, call, span)});
                 self.runtime_helpers.class_call_check = true;
@@ -214,7 +215,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // __extends(ClassName, _super) — parent는 IIFE 매개변수 _super
             const super_param_text = "_super";
             if (has_super and super_span != null) {
-                const child_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
+                const child_ref = try self.makeIdentifierRefWithSymbol(name_span, new_name);
                 const parent_ref = try es_helpers.makeSyntheticRef(self, super_param_text);
                 const extends_ref = try es_helpers.makeRuntimeHelperRef(self, "__extends");
                 const extends_call_expr = try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span);
@@ -242,7 +243,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             for (cm.static_elements.items) |element| {
                 switch (element) {
                     .field => |field| {
-                        const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, fresh_name_span);
+                        const class_ref = try self.makeIdentifierRefWithSymbol(fresh_name_span, new_name);
                         const static_assign = try buildStaticFieldDefinePropertyWithCtx(self, class_ref, field.key, field.init, fresh_name_span, span);
                         try self.scratch.append(self.allocator, static_assign);
                     },
@@ -255,7 +256,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             try self.scratch.append(self.allocator, try self.ast.addNode(.{
                 .tag = .return_statement,
                 .span = span,
-                .data = .{ .unary = .{ .operand = try es_helpers.makeIdentifierRefFromSpan(self, name_span), .flags = 0 } },
+                .data = .{ .unary = .{ .operand = try self.makeIdentifierRefWithSymbol(name_span, new_name), .flags = 0 } },
             }));
 
             // IIFE body
@@ -355,7 +356,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // #3680: inner class body 안의 super 는 lexical 로 valid — outer standalone fn flag reset.
             const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
             self.current_super_class = super_span;
-            self.current_super_class_old_idx = super_idx;
+            // `_super` 는 IIFE 매개변수라 부모 클래스 심볼이 아니다 (#4763).
+            self.current_super_class_old_idx = .none;
             self.current_super_is_static = false;
             self.current_super_static_receiver = null;
             self.current_super_in_extracted_fn = false;
@@ -431,7 +433,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             {
                 const check_id = try es_helpers.makeRuntimeHelperRef(self, "__classCallCheck");
                 const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .none = 0 } });
-                const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
+                const class_ref = try self.makeIdentifierRefWithSymbol(name_span, name_node);
                 const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
                 func_node = try prependToFunctionBody(self, func_node, &.{try es_helpers.makeExprStmt(self, call, span)});
                 self.runtime_helpers.class_call_check = true;
@@ -475,7 +477,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // __extends(ClassName, _super) — parent는 IIFE 매개변수
             if (has_super and super_span != null) {
-                const child_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
+                const child_ref = try self.makeIdentifierRefWithSymbol(name_span, name_node);
                 const parent_ref = try es_helpers.makeSyntheticRef(self, expr_super_param);
                 const extends_ref = try es_helpers.makeRuntimeHelperRef(self, "__extends");
                 try self.scratch.append(self.allocator, try es_helpers.makeExprStmt(self, try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span), span));
@@ -495,7 +497,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             for (cm.static_elements.items) |element| {
                 switch (element) {
-                    .field => |field| try self.scratch.append(self.allocator, try buildStaticFieldDefinePropertyWithCtx(self, try es_helpers.makeIdentifierRefFromSpan(self, name_span), field.key, field.init, name_span, span)),
+                    .field => |field| try self.scratch.append(self.allocator, try buildStaticFieldDefinePropertyWithCtx(self, try self.makeIdentifierRefWithSymbol(name_span, name_node), field.key, field.init, name_span, span)),
                     .stmt => |sb_stmt| try self.scratch.append(self.allocator, sb_stmt),
                     .raw_stmt => unreachable, // visitDeferredStaticBlocks 가 호출됐어야 함
                 }
@@ -505,7 +507,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             try self.scratch.append(self.allocator, try self.ast.addNode(.{
                 .tag = .return_statement,
                 .span = span,
-                .data = .{ .unary = .{ .operand = try es_helpers.makeIdentifierRefFromSpan(self, name_span), .flags = 0 } },
+                .data = .{ .unary = .{ .operand = try self.makeIdentifierRefWithSymbol(name_span, name_node), .flags = 0 } },
             }));
 
             // IIFE body

@@ -28,9 +28,13 @@ pub const Report = struct {
     new_user_idents: usize = 0,
     /// 그중 심볼 ID 가 없는 노드
     missing: std.ArrayList(Finding) = .empty,
+    /// 새 노드인데 **다른 변수의** 심볼을 가진 것 — 심볼 이름과 텍스트(리네임 접미사 제외)가
+    /// 다르다. 빠진 심볼보다 위험하다: 심볼 기준 리네임이 엉뚱한 변수를 따라간다 (#4763).
+    wrong: std.ArrayList(Finding) = .empty,
 
     pub fn deinit(self: *Report, allocator: std.mem.Allocator) void {
         self.missing.deinit(allocator);
+        self.wrong.deinit(allocator);
     }
 };
 
@@ -50,6 +54,7 @@ const Ctx = struct {
     parser_node_count: u32,
     symbol_ids: []const ?u32,
     names: *const std.StringHashMapUnmanaged(void),
+    symbols: []const Symbol,
     report: *Report,
     /// 속성·키 자리의 식별자 — 변수가 아니라 이름이므로 세지 않는다.
     name_positions: std.AutoHashMapUnmanaged(u32, void) = .empty,
@@ -114,10 +119,17 @@ fn checkIdentifier(ctx: *Ctx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
     if (i < ctx.parser_node_count) return .descend;
     if (ctx.name_positions.contains(i)) return .descend;
     const name = ctx.ast.getText(node.data.string_ref);
+    const sym = if (i < ctx.symbol_ids.len) ctx.symbol_ids[i] else null;
+    if (sym) |sid| {
+        if (sid < ctx.symbols.len and !std.mem.eql(u8, ctx.ast.getText(ctx.symbols[sid].name), baseName(name))) {
+            ctx.report.wrong.append(ctx.allocator, .{ .name = name, .tag = node.tag }) catch {
+                ctx.oom = true;
+            };
+        }
+    }
     if (!ctx.names.contains(baseName(name))) return .descend;
     ctx.report.new_user_idents += 1;
-    const has = i < ctx.symbol_ids.len and ctx.symbol_ids[i] != null;
-    if (!has) ctx.report.missing.append(ctx.allocator, .{ .name = name, .tag = node.tag }) catch {
+    if (sym == null) ctx.report.missing.append(ctx.allocator, .{ .name = name, .tag = node.tag }) catch {
         ctx.oom = true;
     };
     return .descend;
@@ -143,6 +155,7 @@ pub fn check(
         .parser_node_count = parser_node_count,
         .symbol_ids = symbol_ids,
         .names = &names,
+        .symbols = symbols,
         .report = &report,
     };
     defer ctx.name_positions.deinit(allocator);
@@ -166,7 +179,8 @@ pub fn print(allocator: std.mem.Allocator, file_path: []const u8, report: *const
             gop.value_ptr.* += 1;
         } else gop.value_ptr.* = 1;
     }
-    std.debug.print("zntc: symbol-coverage {s}: new_user_idents={d} missing={d}\n", .{ file_path, report.new_user_idents, report.missing.items.len });
+    std.debug.print("zntc: symbol-coverage {s}: new_user_idents={d} missing={d} wrong={d}\n", .{ file_path, report.new_user_idents, report.missing.items.len, report.wrong.items.len });
+    for (report.wrong.items) |f| std.debug.print("  wrong {s}({s})\n", .{ f.name, @tagName(f.tag) });
     for (counts.keys(), counts.values()) |k, v| std.debug.print("  missing {s} x{d}\n", .{ k, v });
 }
 

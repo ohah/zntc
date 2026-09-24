@@ -207,7 +207,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             const func_expr = try buildAccessorFunction(self, member, span);
 
             const accessor_kind_span = try self.ast.addString(if (is_getter) "get" else "set");
-            const accessor_kind = try es_helpers.makeIdentifierRefFromSpan(self, accessor_kind_span);
+            const accessor_kind = try es_helpers.makePropertyNameFromSpan(self, accessor_kind_span);
             const accessor_prop = try self.ast.addNode(.{
                 .tag = .object_property,
                 .span = span,
@@ -257,7 +257,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
         fn makeTrueProp(self: *Transformer, name: []const u8, span: Span) Transformer.Error!NodeIndex {
             const name_span = try self.ast.addString(name);
             const true_span = try self.ast.addString("true");
-            const key = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
+            const key = try es_helpers.makePropertyNameFromSpan(self, name_span);
             const val = try self.ast.addNode(.{
                 .tag = .boolean_literal,
                 .span = true_span,

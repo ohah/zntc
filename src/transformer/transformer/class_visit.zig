@@ -488,7 +488,7 @@ pub fn wrapClassExprInIIFE(
     try self.scratch.append(self.allocator, class_decl);
     try self.scratch.appendSlice(self.allocator, post_stmts);
 
-    const ret_ref = try es_helpers.makeIdentifierRefFromSpan(self, ret_name_span);
+    const ret_ref = try es_helpers.makeSyntheticRefFromSpan(self, ret_name_span);
     try self.scratch.append(self.allocator, try self.ast.addNode(.{
         .tag = .return_statement,
         .span = span,
