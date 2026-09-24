@@ -294,6 +294,8 @@ pub fn ES2022(comptime Transformer: type) type {
             lower_fields: bool,
             has_super: bool,
             class_name_text: ?[]const u8,
+            /// `class_name_text` 의 바인딩 노드(없으면 `.none`).
+            class_name_node: NodeIndex,
             // #3/#4: assign-semantics(experimental_decorators) 경로용 — public member visit 을 skip
             // 하고 current_private_* 를 호출자가 set/restore 한다(이중-visit 회피, decorator strip
             // 방지). fast path 는 false(기존 동작: visit + defer 복원).
@@ -344,6 +346,7 @@ pub fn ES2022(comptime Transformer: type) type {
                             .member_idx = @enumFromInt(raw_idx),
                             .kind = pm_kind,
                             .class_name = if (is_static) class_name_text else null,
+                            .class_name_node = if (is_static) class_name_node else .none,
                         });
                     } else if (lower_fields and member.tag == .property_definition) {
                         const pe = member.data.extra;
@@ -366,6 +369,7 @@ pub fn ES2022(comptime Transformer: type) type {
                             .original_name = orig_name,
                             .var_name = var_name,
                             .class_name = if (is_static) class_name_text else null,
+                            .class_name_node = if (is_static) class_name_node else .none,
                         });
                         try field_member_raw.append(self.allocator, raw_idx);
                         try field_init_idx.append(self.allocator, init_val);
@@ -726,7 +730,7 @@ pub fn ES2022(comptime Transformer: type) type {
             if (mapping.class_name) |class_name| {
                 self.runtime_helpers.class_static_private_field = true;
                 const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
-                const class_ref = try es_helpers.makeIdentifierRef(self, class_name);
+                const class_ref = try self.makeUserRefNamed(class_name, mapping.class_name_node);
                 const desc_ref = try es_helpers.makeSyntheticRef(self, mapping.weakset_name);
                 return es_helpers.makeCallExpr(self, helper_ref, &.{ new_obj, class_ref, desc_ref }, span);
             }

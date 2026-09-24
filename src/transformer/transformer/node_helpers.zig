@@ -100,6 +100,21 @@ pub fn copySymbolId(self: anytype, src_idx: NodeIndex, dst_idx: NodeIndex) void 
     }
 }
 
+/// 사용자 변수 참조를 `name` 으로 만들고 원래 바인딩(`origin`)의 심볼을 물려준다 (#4760).
+/// 이름이 원래 노드 텍스트와 다를 수 있을 때(블록 스코핑 리네임 등) 쓴다. `origin` 이
+/// `.none` 이면(익명 클래스의 합성 이름 등) 심볼 없이 만든다.
+pub fn makeUserRefNamed(self: anytype, name: []const u8, origin: NodeIndex) Error!NodeIndex {
+    return makeIdentifierRefWithSymbol(self, try self.ast.addString(name), origin);
+}
+
+/// 모듈(루트) 스코프 이름 참조 — JSX 팩토리(`React`)처럼 소스 위치가 아니라 설정에서 온
+/// 이름을 모듈 스코프 바인딩(import 등)에 잇는다. 그런 바인딩이 없으면 전역이다.
+pub fn makeRootScopeRef(self: anytype, name: []const u8) Error!NodeIndex {
+    const ref = try es_helpers.makeIdentifierRef(self, name);
+    self.attachRootScopeSymbolByName(ref, name);
+    return ref;
+}
+
 /// span + old_idx로 identifier_reference 생성 + symbol_id 전파.
 /// ES5 class lowering, decorator 등에서 renamed 이름이 반영되도록 사용.
 pub fn makeIdentifierRefWithSymbol(self: anytype, name_span: Span, old_idx: NodeIndex) Error!NodeIndex {

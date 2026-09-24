@@ -1269,9 +1269,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             // dot이 없으면 단순 identifier
             const dot_pos = std.mem.indexOf(u8, factory, ".");
             if (dot_pos == null) {
-                const node = try helpers.makeIdentifierRef(self, factory);
-                self.attachRootScopeSymbolByName(node, factory);
-                return node;
+                return self.makeRootScopeRef(factory);
             }
 
             // dot 기반 분할: "A.B.C" → ["A", "B", "C"]
@@ -1280,10 +1278,9 @@ pub fn JsxLowering(comptime Transformer: type) type {
             while (start < factory.len) {
                 const end = std.mem.indexOfPos(u8, factory, start, ".") orelse factory.len;
                 const part = factory[start..end];
-                const part_node = if (current.isNone()) try helpers.makeIdentifierRef(self, part) else try helpers.makePropertyName(self, part);
+                const part_node = if (current.isNone()) try self.makeRootScopeRef(part) else try helpers.makePropertyName(self, part);
 
                 if (current.isNone()) {
-                    self.attachRootScopeSymbolByName(part_node, part);
                     current = part_node;
                 } else {
                     const span_val = try self.ast.addString(factory);
