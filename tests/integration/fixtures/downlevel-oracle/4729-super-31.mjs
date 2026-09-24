@@ -11,12 +11,12 @@ const ps = [
     },
   },
 ];
-for (var i = 0; i < 2; i++) {
+for (var iLong = 0; iLong < 2; iLong++) {
   out.push({
-    __proto__: ps[i],
+    __proto__: ps[iLong],
     async n() {
       return super.m();
     },
   });
 }
-Promise.all(out.map((o) => o.n())).then((v) => console.log(v.join()));
+Promise.all(out.map((oLong) => oLong.n())).then((vLong) => console.log(vLong.join()));

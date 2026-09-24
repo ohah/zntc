@@ -1,23 +1,23 @@
-const R = (n, log) => ({
+const RLong = (nLong, log) => ({
   [Symbol.dispose]() {
-    log.push('d' + n);
+    log.push('d' + nLong);
   },
 });
-const AR = (n, log) => ({
+const AR = (nLong2, log) => ({
   async [Symbol.asyncDispose]() {
-    log.push('ad' + n);
+    log.push('ad' + nLong2);
   },
 });
 const log = [];
-for (let i = 0; i < 2; i++) {
+for (let iLong = 0; iLong < 2; iLong++) {
   try {
     {
-      using a = R(i, log);
-      if (i === 0) throw new Error('e');
-      log.push('ok' + i);
+      using aLong = RLong(iLong, log);
+      if (iLong === 0) throw new Error('e');
+      log.push('ok' + iLong);
     }
-  } catch (e) {
-    log.push('c' + i);
+  } catch (eLong) {
+    log.push('c' + iLong);
   }
 }
 console.log(log.join());

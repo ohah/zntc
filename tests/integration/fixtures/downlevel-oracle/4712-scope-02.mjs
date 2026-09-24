@@ -1,6 +1,6 @@
 const err = 'OUTER';
 const log = [];
-async function f() {
+async function fLong() {
   try {
     await 0;
     throw new Error('A');
@@ -10,4 +10,4 @@ async function f() {
   }
   log.push(String(err));
 }
-f().then(() => console.log(log.join()));
+fLong().then(() => console.log(log.join()));

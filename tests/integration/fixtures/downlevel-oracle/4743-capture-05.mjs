@@ -1,6 +1,6 @@
-const f = [];
-for (const k in { a: 1, b: 2 }) {
-  const v = k + '!';
-  f.push(() => v);
+const fLong = [];
+for (const kLong in { a: 1, b: 2 }) {
+  const vLong = kLong + '!';
+  fLong.push(() => vLong);
 }
-console.log(f.map((g) => g()).join());
+console.log(fLong.map((gLong) => gLong()).join());

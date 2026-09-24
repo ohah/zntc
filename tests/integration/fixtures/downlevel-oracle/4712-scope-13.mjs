@@ -1,18 +1,18 @@
-const e = 'OUT';
+const eLong = 'OUT';
 const log = [];
-function* g() {
+function* gLong() {
   try {
     yield 1;
     throw 'X';
-  } catch (e) {
+  } catch (eLong2) {
     yield 2;
-    log.push([1].map(() => e)[0]);
-    function h(e) {
-      return 'h' + e;
+    log.push([1].map(() => eLong2)[0]);
+    function hLong(eLong3) {
+      return 'h' + eLong3;
     }
-    log.push(h('p'));
+    log.push(hLong('p'));
   }
-  log.push(e);
+  log.push(eLong);
 }
-for (const x of g());
+for (const xLong of gLong());
 console.log(log.join());

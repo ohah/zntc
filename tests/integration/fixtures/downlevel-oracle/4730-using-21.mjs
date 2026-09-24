@@ -1,20 +1,20 @@
-const R = (n, log) => ({
+const RLong = (nLong, log) => ({
   [Symbol.dispose]() {
-    log.push('d' + n);
+    log.push('d' + nLong);
   },
 });
-const AR = (n, log) => ({
+const AR = (nLong2, log) => ({
   async [Symbol.asyncDispose]() {
-    log.push('ad' + n);
+    log.push('ad' + nLong2);
   },
 });
 const log = [];
-function* g() {
-  using a = R(1, log);
+function* gLong() {
+  using aLong = RLong(1, log);
   yield 1;
   log.push('after');
 }
-const it = g();
+const it = gLong();
 it.next();
 it.return();
 console.log(log.join());

@@ -1,8 +1,8 @@
-function mk(v) {
+function mk(vLong) {
   return {
     __proto__: {
       m() {
-        return v;
+        return vLong;
       },
     },
     n() {
@@ -10,6 +10,6 @@ function mk(v) {
     },
   };
 }
-const a = mk(1),
-  b = mk(2);
-console.log(a.n(), b.n());
+const aLong = mk(1),
+  bLong = mk(2);
+console.log(aLong.n(), bLong.n());

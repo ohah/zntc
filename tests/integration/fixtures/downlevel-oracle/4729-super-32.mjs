@@ -1,6 +1,6 @@
-function F() {
+function FLong() {
   this.k = 'K';
-  const o = {
+  const oLong = {
     __proto__: {
       m() {
         return 'p';
@@ -11,6 +11,6 @@ function F() {
       return super.m();
     },
   };
-  return o.a + o.n();
+  return oLong.a + oLong.n();
 }
-console.log(F.call({}));
+console.log(FLong.call({}));

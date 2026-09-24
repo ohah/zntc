@@ -1,9 +1,9 @@
-class A {
+class ALong {
   static s() {
     return 'S';
   }
 }
-class B extends A {
+class BLong extends ALong {
   static f = {
     __proto__: {
       m() {
@@ -29,4 +29,4 @@ class B extends A {
     );
   }
 }
-console.log(B.f, B.g());
+console.log(BLong.f, BLong.g());

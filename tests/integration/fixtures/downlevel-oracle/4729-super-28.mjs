@@ -1,4 +1,4 @@
-const o = {
+const oLong = {
   __proto__: {
     m() {
       return 'p';
@@ -18,4 +18,4 @@ const o = {
     return inner.k() + super.m();
   },
 };
-console.log(o.n());
+console.log(oLong.n());

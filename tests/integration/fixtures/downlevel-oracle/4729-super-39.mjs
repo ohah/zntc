@@ -1,5 +1,5 @@
 label: {
-  const o = {
+  const oLong = {
     __proto__: {
       m() {
         return 'p';
@@ -9,6 +9,6 @@ label: {
       return super.m();
     },
   };
-  console.log(o.n());
+  console.log(oLong.n());
   break label;
 }

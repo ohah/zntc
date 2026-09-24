@@ -1,7 +1,7 @@
-function* g() {
-  for (const k in { a: 1 }) {
-    let k = 'x';
-    yield k;
+function* gLong() {
+  for (const kLong in { a: 1 }) {
+    let kLong2 = 'x';
+    yield kLong2;
   }
 }
-console.log([...g()].join());
+console.log([...gLong()].join());

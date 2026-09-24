@@ -11,8 +11,8 @@ async function* src() {
   }
 }
 (async () => {
-  for await (const v of src()) {
-    log.push(v);
+  for await (const vLong of src()) {
+    log.push(vLong);
     break;
   }
   log.push('after');

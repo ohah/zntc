@@ -4,13 +4,13 @@ const log = [];
 async function run() {
   for (let round = 0; round < 2; round++) {
     try {
-      for await (const v of [1, 2]) {
+      for await (const vLong of [1, 2]) {
         if (round === 0) throw new Error('r0');
-        log.push('r' + round + ':' + v);
+        log.push('r' + round + ':' + vLong);
       }
       log.push('done' + round);
-    } catch (e) {
-      log.push('caught:' + e.message);
+    } catch (eLong) {
+      log.push('caught:' + eLong.message);
     }
   }
 }

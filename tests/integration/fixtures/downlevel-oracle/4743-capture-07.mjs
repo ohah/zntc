@@ -1,8 +1,8 @@
-const f = [];
-for (var i = 0; i < 3; i++) {
-  if (i === 1) continue;
-  const v = i;
-  f.push(() => v);
-  if (i === 2) break;
+const fLong = [];
+for (var iLong = 0; iLong < 3; iLong++) {
+  if (iLong === 1) continue;
+  const vLong = iLong;
+  fLong.push(() => vLong);
+  if (iLong === 2) break;
 }
-console.log(f.map((g) => g()).join());
+console.log(fLong.map((gLong) => gLong()).join());

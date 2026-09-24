@@ -1,10 +1,11 @@
 (async () => {
   const out = [];
-  for await (const [a, { b = 9 }] of [
+  for await (const [aLong, { b: bLong = 9 }] of [
     [1, {}],
     [2, { b: 3 }],
   ])
-    out.push(a + b);
-  for await (const { x, ...r } of [{ x: 1, y: 2 }]) out.push(x + Object.keys(r).join(''));
+    out.push(aLong + bLong);
+  for await (const { x: xLong, ...rLong } of [{ x: 1, y: 2 }])
+    out.push(xLong + Object.keys(rLong).join(''));
   console.log(out.join());
 })();

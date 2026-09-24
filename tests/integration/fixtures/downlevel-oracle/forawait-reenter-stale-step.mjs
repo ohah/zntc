@@ -24,12 +24,12 @@ function it(name, fail) {
     ['b', true],
   ]) {
     try {
-      for await (const v of it(name, fail)) {
-        log.push(v);
+      for await (const vLong of it(name, fail)) {
+        log.push(vLong);
         break;
       }
-    } catch (e) {
-      log.push(e.message);
+    } catch (eLong) {
+      log.push(eLong.message);
     }
   }
   console.log(log.join());

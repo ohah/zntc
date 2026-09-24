@@ -1,26 +1,26 @@
-const R = (n, log) => ({
+const RLong = (nLong, log) => ({
   [Symbol.dispose]() {
-    log.push('d' + n);
+    log.push('d' + nLong);
   },
 });
-const AR = (n, log) => ({
+const AR = (nLong2, log) => ({
   async [Symbol.asyncDispose]() {
-    log.push('ad' + n);
+    log.push('ad' + nLong2);
   },
 });
 const log = [];
-function f() {
-  log.push(g());
-  using a = R(1, log);
-  const k = 1;
-  function g() {
-    return 'g' + typeof k;
+function fLong() {
+  log.push(gLong());
+  using aLong = RLong(1, log);
+  const kLong = 1;
+  function gLong() {
+    return 'g' + typeof kLong;
   }
-  return g();
+  return gLong();
 }
 try {
-  log.push(f());
-} catch (e) {
-  log.push(e.constructor.name);
+  log.push(fLong());
+} catch (eLong) {
+  log.push(eLong.constructor.name);
 }
 console.log(log.join());

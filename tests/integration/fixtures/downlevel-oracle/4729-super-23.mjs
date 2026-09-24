@@ -1,4 +1,4 @@
-const o = {
+const oLong = {
   __proto__: {
     get v() {
       return this.t;
@@ -8,9 +8,9 @@ const o = {
   get w() {
     return super.v;
   },
-  set w(x) {
-    super.t = x;
+  set w(xLong) {
+    super.t = xLong;
   },
 };
-o.w = 9;
-console.log(o.w, o.t);
+oLong.w = 9;
+console.log(oLong.w, oLong.t);

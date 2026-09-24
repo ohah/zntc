@@ -1,9 +1,9 @@
 const out = [];
-a: for (const x of [1, 2, 3]) {
-  b: for (const y of [1, 2]) {
-    if (y === 2) continue a;
-    if (x === 3) break a;
-    out.push(x + '' + y);
+a: for (const xLong of [1, 2, 3]) {
+  b: for (const yLong of [1, 2]) {
+    if (yLong === 2) continue a;
+    if (xLong === 3) break a;
+    out.push(xLong + '' + yLong);
   }
 }
 console.log(out.join());

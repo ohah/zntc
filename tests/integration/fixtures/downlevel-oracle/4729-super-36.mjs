@@ -1,14 +1,14 @@
-async function f() {
-  const r = [];
-  for (var i = 0; i < 2; i++) {
-    r.push({
-      __proto__: { v: i },
-      w: await i,
+async function fLong() {
+  const rLong = [];
+  for (var iLong = 0; iLong < 2; iLong++) {
+    rLong.push({
+      __proto__: { v: iLong },
+      w: await iLong,
       get g() {
         return super.v;
       },
     });
   }
-  return r.map((o) => o.g);
+  return rLong.map((oLong) => oLong.g);
 }
-f().then((v) => console.log(v.join()));
+fLong().then((vLong) => console.log(vLong.join()));

@@ -1,10 +1,10 @@
-const f = [];
-for (var i = 0; i < 2; i++) {
-  const v = i;
-  f.push(
+const fLong = [];
+for (var iLong = 0; iLong < 2; iLong++) {
+  const vLong = iLong;
+  fLong.push(
     function () {
-      return this.k + v;
+      return this.k + vLong;
     }.bind({ k: 'k' }),
   );
 }
-console.log(f.map((g) => g()).join());
+console.log(fLong.map((gLong) => gLong()).join());

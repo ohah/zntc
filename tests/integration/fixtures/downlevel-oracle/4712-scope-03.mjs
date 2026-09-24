@@ -1,13 +1,13 @@
 const log = [];
-function* g() {
-  for (let i = 0; i < 2; i++) {
+function* gLong() {
+  for (let iLong = 0; iLong < 2; iLong++) {
     try {
-      throw i;
-    } catch (e) {
+      throw iLong;
+    } catch (eLong) {
       yield 0;
-      log.push(() => e);
+      log.push(() => eLong);
     }
   }
 }
-for (const v of g());
-console.log(log.map((f) => f()).join());
+for (const vLong of gLong());
+console.log(log.map((fLong) => fLong()).join());

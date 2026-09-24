@@ -1,19 +1,19 @@
-const R = (n, log) => ({
+const RLong = (nLong, log) => ({
   [Symbol.dispose]() {
-    log.push('d' + n);
+    log.push('d' + nLong);
   },
 });
-const AR = (n, log) => ({
+const AR = (nLong2, log) => ({
   async [Symbol.asyncDispose]() {
-    log.push('ad' + n);
+    log.push('ad' + nLong2);
   },
 });
 const log = [];
-function* g() {
-  for (using x of [R(1, log), R(2, log)]) {
+function* gLong() {
+  for (using xLong of [RLong(1, log), RLong(2, log)]) {
     yield 1;
     log.push('y');
   }
 }
-for (const v of g()) log.push('v');
+for (const vLong of gLong()) log.push('v');
 console.log(log.join());

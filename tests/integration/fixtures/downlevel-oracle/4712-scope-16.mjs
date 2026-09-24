@@ -1,11 +1,11 @@
-const t = 'OUT';
+const tLong = 'OUT';
 const log = [];
-async function f() {
+async function fLong() {
   label: {
-    let t = 'IN';
+    let tLong2 = 'IN';
     await 0;
-    if (t) break label;
+    if (tLong2) break label;
   }
-  log.push(t);
+  log.push(tLong);
 }
-f().then(() => console.log(log.join()));
+fLong().then(() => console.log(log.join()));

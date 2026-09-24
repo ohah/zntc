@@ -1,4 +1,4 @@
-const f = [];
-for (const x of [1, 2]) f.push(() => x);
-for (let [a, b] of [[3, 4]]) f.push(() => a + b);
-console.log(f.map((h) => h()).join());
+const fLong = [];
+for (const xLong of [1, 2]) fLong.push(() => xLong);
+for (let [aLong, bLong] of [[3, 4]]) fLong.push(() => aLong + bLong);
+console.log(fLong.map((hLong) => hLong()).join());

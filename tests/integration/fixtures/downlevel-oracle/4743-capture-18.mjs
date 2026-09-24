@@ -1,6 +1,6 @@
-let n = 0;
-for (var i = 0; i < 2; i++) {
-  const v = i;
-  n += v;
+let nLong = 0;
+for (var iLong = 0; iLong < 2; iLong++) {
+  const vLong = iLong;
+  nLong += vLong;
 }
-console.log(n);
+console.log(nLong);

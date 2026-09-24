@@ -1,7 +1,7 @@
-class C {
+class CLong {
   *m(xs) {
-    for (const x of xs) yield this.k + x;
+    for (const xLong of xs) yield this.k + xLong;
   }
 }
-C.prototype.k = 'k';
-console.log([...new C().m([1, 2])].join());
+CLong.prototype.k = 'k';
+console.log([...new CLong().m([1, 2])].join());

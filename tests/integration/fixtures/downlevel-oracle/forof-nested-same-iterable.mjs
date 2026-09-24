@@ -1,4 +1,4 @@
-const s = new Set([1, 2]);
+const sLong = new Set([1, 2]);
 const out = [];
-for (const a of s) for (const b of s) out.push(a + '' + b);
+for (const aLong of sLong) for (const bLong of sLong) out.push(aLong + '' + bLong);
 console.log(out.join());

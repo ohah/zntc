@@ -1,14 +1,14 @@
-const z = 'OUT';
+const zLong = 'OUT';
 const log = [];
-function* g(v) {
-  switch (v) {
+function* gLong(vLong) {
+  switch (vLong) {
     case 1: {
-      let z = 'IN';
+      let zLong2 = 'IN';
       yield 1;
-      log.push(z);
+      log.push(zLong2);
     }
   }
-  log.push(z);
+  log.push(zLong);
 }
-for (const x of g(1));
+for (const xLong of gLong(1));
 console.log(log.join());

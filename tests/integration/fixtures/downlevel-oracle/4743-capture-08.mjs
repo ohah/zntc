@@ -1,13 +1,13 @@
-function t() {
-  const f = [];
-  for (var i = 0; i < 3; i++) {
-    const v = i;
-    f.push(() => v);
-    if (i === 1) return f;
+function tLong() {
+  const fLong = [];
+  for (var iLong = 0; iLong < 3; iLong++) {
+    const vLong = iLong;
+    fLong.push(() => vLong);
+    if (iLong === 1) return fLong;
   }
 }
 console.log(
-  t()
-    .map((g) => g())
+  tLong()
+    .map((gLong) => gLong())
     .join(),
 );

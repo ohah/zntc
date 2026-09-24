@@ -1,9 +1,9 @@
 const log = [];
 (async () => {
   try {
-    for await (const v of [1, Promise.reject(new Error('rej')), 3]) log.push(v);
-  } catch (e) {
-    log.push(e.message);
+    for await (const vLong of [1, Promise.reject(new Error('rej')), 3]) log.push(vLong);
+  } catch (eLong) {
+    log.push(eLong.message);
   }
   console.log(log.join());
 })();

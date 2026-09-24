@@ -1,33 +1,33 @@
 const log = [];
-function mk(n, opts = {}) {
-  let i = 0;
+function mk(nLong, opts = {}) {
+  let iLong = 0;
   return {
     [Symbol.iterator]() {
       return this;
     },
     next() {
-      if (opts.nextThrowsAt === i) throw new Error('next' + i);
-      return i < n ? { value: i++, done: false } : { value: undefined, done: true };
+      if (opts.nextThrowsAt === iLong) throw new Error('next' + iLong);
+      return iLong < nLong ? { value: iLong++, done: false } : { value: undefined, done: true };
     },
     ...(opts.noReturn
       ? {}
       : {
-          return(v) {
+          return(vLong) {
             log.push('close');
             if (opts.returnThrows) throw new Error('ret');
-            return { value: v, done: true };
+            return { value: vLong, done: true };
           },
         }),
   };
 }
-async function* g() {
-  for (const v of mk(3)) {
+async function* gLong() {
+  for (const vLong2 of mk(3)) {
     await 0;
-    if (v === 1) break;
-    yield v;
+    if (vLong2 === 1) break;
+    yield vLong2;
   }
 }
 (async () => {
-  for await (const x of g()) log.push('y' + x);
+  for await (const xLong of gLong()) log.push('y' + xLong);
   console.log(log.join());
 })();

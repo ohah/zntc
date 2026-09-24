@@ -1,12 +1,12 @@
 const message = 'OUT';
 const log = [];
-function* g(e) {
+function* gLong(eLong) {
   {
-    let { message } = e;
+    let { message } = eLong;
     yield 1;
     log.push(message);
   }
   log.push(message);
 }
-for (const v of g({ message: 'M' }));
+for (const vLong of gLong({ message: 'M' }));
 console.log(log.join());

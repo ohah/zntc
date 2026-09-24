@@ -1,4 +1,4 @@
-const o = {
+const oLong = {
   __proto__: {
     m() {
       return 'a';
@@ -8,9 +8,9 @@ const o = {
     return super.m();
   },
 };
-Object.setPrototypeOf(o, {
+Object.setPrototypeOf(oLong, {
   m() {
     return 'b';
   },
 });
-console.log(o.n());
+console.log(oLong.n());

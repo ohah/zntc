@@ -8,17 +8,17 @@ async function* src() {
     log.push('srcfin');
   }
 }
-async function* g() {
+async function* gLong() {
   try {
-    for await (const v of src()) yield v;
+    for await (const vLong of src()) yield vLong;
   } finally {
     log.push('gfin');
   }
 }
 (async () => {
-  for await (const v of g()) {
-    log.push(v);
-    if (v === 2) break;
+  for await (const vLong2 of gLong()) {
+    log.push(vLong2);
+    if (vLong2 === 2) break;
   }
   console.log(log.join());
 })();

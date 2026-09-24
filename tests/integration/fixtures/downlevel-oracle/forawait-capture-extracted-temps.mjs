@@ -3,10 +3,10 @@
 const fns = [];
 const out = [];
 (async () => {
-  for await (const v of [{ n: 1 }, null]) {
-    fns.push(() => v);
-    for (const w of [v]) out.push(w?.n ?? 'x');
-    for (const k in v ?? {}) out.push(k);
+  for await (const vLong of [{ n: 1 }, null]) {
+    fns.push(() => vLong);
+    for (const wLong of [vLong]) out.push(wLong?.n ?? 'x');
+    for (const kLong in vLong ?? {}) out.push(kLong);
   }
-  console.log(out.join(), fns.map((f) => JSON.stringify(f())).join());
+  console.log(out.join(), fns.map((fLong) => JSON.stringify(fLong())).join());
 })();

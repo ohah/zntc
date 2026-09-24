@@ -1,9 +1,9 @@
-class X {
+class XLong {
   q() {
     return 'X';
   }
 }
-const o = {
+const oLong = {
   __proto__: {
     k: 'P',
     q() {
@@ -11,12 +11,12 @@ const o = {
     },
   },
   async n() {
-    class C extends X {
+    class CLong extends XLong {
       [super.k]() {
         return 'm';
       }
     }
-    return Object.getOwnPropertyNames(C.prototype).join(',');
+    return Object.getOwnPropertyNames(CLong.prototype).join(',');
   },
 };
-o.n().then((v) => console.log(v));
+oLong.n().then((vLong) => console.log(vLong));

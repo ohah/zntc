@@ -1,18 +1,18 @@
 const log = [];
-function* g() {
+function* gLong() {
   try {
     yield 1;
     throw 'A';
-  } catch (e) {
+  } catch (eLong) {
     try {
       yield 2;
       throw 'B';
-    } catch (e) {
+    } catch (eLong2) {
       yield 3;
-      log.push(e);
+      log.push(eLong2);
     }
-    log.push(e);
+    log.push(eLong);
   }
 }
-for (const v of g());
+for (const vLong of gLong());
 console.log(log.join());

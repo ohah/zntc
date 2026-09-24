@@ -1,14 +1,15 @@
-const p = {
+const pLong = {
   m() {
     return 1;
   },
 };
-const o = {
-  __proto__: p,
+const oLong = {
+  __proto__: pLong,
   async *g() {
     yield super.m();
   },
 };
-o.g()
+oLong
+  .g()
   .next()
-  .then((r) => console.log(r.value));
+  .then((rLong) => console.log(rLong.value));

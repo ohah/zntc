@@ -1,4 +1,4 @@
-class C {
+class CLong {
   #x = 0;
   run() {
     const seen = [];
@@ -6,4 +6,4 @@ class C {
     return seen.join() + ':' + this.#x;
   }
 }
-console.log(new C().run());
+console.log(new CLong().run());

@@ -1,28 +1,28 @@
 const log = [];
-function mk(n, opts = {}) {
-  let i = 0;
+function mk(nLong, opts = {}) {
+  let iLong = 0;
   return {
     [Symbol.iterator]() {
       return this;
     },
     next() {
-      if (opts.nextThrowsAt === i) throw new Error('next' + i);
-      return i < n ? { value: i++, done: false } : { value: undefined, done: true };
+      if (opts.nextThrowsAt === iLong) throw new Error('next' + iLong);
+      return iLong < nLong ? { value: iLong++, done: false } : { value: undefined, done: true };
     },
     ...(opts.noReturn
       ? {}
       : {
-          return(v) {
+          return(vLong) {
             log.push('close');
             if (opts.returnThrows) throw new Error('ret');
-            return { value: v, done: true };
+            return { value: vLong, done: true };
           },
         }),
   };
 }
-outer: for (const a of mk(2)) {
-  for (const b of mk(2)) {
-    log.push(a + '' + b);
+outer: for (const aLong of mk(2)) {
+  for (const bLong of mk(2)) {
+    log.push(aLong + '' + bLong);
     continue outer;
   }
 }

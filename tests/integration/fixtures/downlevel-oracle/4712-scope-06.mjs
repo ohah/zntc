@@ -1,11 +1,11 @@
-const x = 'OUT';
+const xLong = 'OUT';
 const log = [];
-async function f() {
+async function fLong() {
   if (true) {
-    const x = 'IN';
+    const xLong2 = 'IN';
     await 0;
-    log.push(x);
+    log.push(xLong2);
   }
-  log.push(x);
+  log.push(xLong);
 }
-f().then(() => console.log(log.join()));
+fLong().then(() => console.log(log.join()));

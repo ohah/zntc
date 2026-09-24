@@ -1,6 +1,6 @@
-const o = {
+const oLong = {
   toString() {
     return 'X' + super.toString();
   },
 };
-console.log(String(o));
+console.log(String(oLong));

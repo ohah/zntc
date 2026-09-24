@@ -1,10 +1,10 @@
-const f = [];
-async function g() {
-  let i = 0;
-  while (i < 2) {
-    const v = i++;
+const fLong = [];
+async function gLong() {
+  let iLong = 0;
+  while (iLong < 2) {
+    const vLong = iLong++;
     await 0;
-    f.push(() => v);
+    fLong.push(() => vLong);
   }
 }
-g().then(() => console.log(f.map((h) => h()).join()));
+gLong().then(() => console.log(fLong.map((hLong) => hLong()).join()));

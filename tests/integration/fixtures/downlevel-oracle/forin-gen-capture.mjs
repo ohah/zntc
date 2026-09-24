@@ -5,11 +5,11 @@ Base.prototype.inh = 2;
 const obj = new Base();
 obj.own2 = 3;
 const fns = [];
-function* g(o) {
-  for (const k in o) {
-    yield k;
-    fns.push(() => k);
+function* gLong(oLong) {
+  for (const kLong in oLong) {
+    yield kLong;
+    fns.push(() => kLong);
   }
 }
-for (const _ of g(obj));
-console.log(fns.map((f) => f()).join());
+for (const _Long of gLong(obj));
+console.log(fns.map((fLong) => fLong()).join());

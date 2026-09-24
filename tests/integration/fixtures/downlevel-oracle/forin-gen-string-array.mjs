@@ -1,5 +1,5 @@
-function* g() {
-  for (const i in 'ab') yield i;
-  for (const i in [5, 6]) yield i;
+function* gLong() {
+  for (const iLong in 'ab') yield iLong;
+  for (const iLong2 in [5, 6]) yield iLong2;
 }
-console.log([...g()].join());
+console.log([...gLong()].join());

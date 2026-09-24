@@ -1,4 +1,4 @@
-const o = {
+const oLong = {
   __proto__: {
     m() {
       return 'p';
@@ -8,5 +8,5 @@ const o = {
     return super.m();
   },
 };
-const { n } = o;
-console.log(n.call(o), typeof (0, o).n);
+const { n: nLong } = oLong;
+console.log(nLong.call(oLong), typeof (0, oLong).n);

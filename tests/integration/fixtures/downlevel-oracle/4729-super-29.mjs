@@ -1,5 +1,5 @@
-function* g() {
-  const o = {
+function* gLong() {
+  const oLong = {
     __proto__: {
       m() {
         return 5;
@@ -9,6 +9,6 @@ function* g() {
       return super.m();
     },
   };
-  yield o.n();
+  yield oLong.n();
 }
-console.log([...g()].join());
+console.log([...gLong()].join());

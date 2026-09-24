@@ -1,10 +1,10 @@
 const log = [];
-function* g() {
-  for (let i = 0; i < 2; i++) {
-    const v = i * 10;
+function* gLong() {
+  for (let iLong = 0; iLong < 2; iLong++) {
+    const vLong = iLong * 10;
     yield 0;
-    log.push(() => v);
+    log.push(() => vLong);
   }
 }
-for (const _ of g());
-console.log(log.map((f) => f()).join());
+for (const _Long of gLong());
+console.log(log.map((fLong) => fLong()).join());
