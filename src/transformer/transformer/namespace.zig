@@ -48,8 +48,8 @@ pub fn visitExportAssignment(self: *Transformer, node: Node) Error!NodeIndex {
     const new_expr = try self.visitNode(node.data.unary.operand);
     if (new_expr.isNone()) return .none;
 
-    const module_id = try es_helpers.makeIdentifierRef(self, "module");
-    const exports_id = try es_helpers.makeIdentifierRef(self, "exports");
+    const module_id = try es_helpers.makeGlobalRef(self, "module");
+    const exports_id = try es_helpers.makeGlobalRef(self, "exports");
     const member = try es_helpers.makeStaticMember(self, module_id, exports_id, node.span);
     return es_helpers.makeAssignStmt(self, member, new_expr, node.span, 0);
 }

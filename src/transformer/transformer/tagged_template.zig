@@ -179,7 +179,7 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
 
     // --- _templateObject = function() { return data; } ---
     const fn_name_ref = try es_helpers.makeIdentifierRef(self, fn_name);
-    const data_ref = try es_helpers.makeIdentifierRef(self, "data");
+    const data_ref = try es_helpers.makeSyntheticRef(self, "data");
     const return_stmt = try self.ast.addNode(.{
         .tag = .return_statement,
         .span = span,
@@ -216,7 +216,7 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
     });
 
     // return data
-    const data_ref2 = try es_helpers.makeIdentifierRef(self, "data");
+    const data_ref2 = try es_helpers.makeSyntheticRef(self, "data");
     const return_stmt2 = try self.ast.addNode(.{
         .tag = .return_statement,
         .span = span,

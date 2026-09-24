@@ -832,7 +832,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         fn buildArraySlice(self: *Transformer, ref_span: Span, start_idx: usize, span: Span) Transformer.Error!NodeIndex {
             // _ref.slice
             const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
-            const slice_prop = try es_helpers.makeIdentifierRef(self, "slice");
+            const slice_prop = try es_helpers.makePropertyName(self, "slice");
             const callee = try es_helpers.makeStaticMember(self, ref, slice_prop, span);
 
             // slice(N)

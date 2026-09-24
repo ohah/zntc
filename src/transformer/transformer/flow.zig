@@ -155,11 +155,11 @@ fn lowerArrayPattern(self: *Transformer, pnode: Node, subject: NodeIndex, span: 
 
     const is_arr = try es_helpers.makeCallExpr(
         self,
-        try es_helpers.makeStaticMember(self, try es_helpers.makeIdentifierRef(self, "Array"), try es_helpers.makeIdentifierRef(self, "isArray"), span),
+        try es_helpers.makeStaticMember(self, try es_helpers.makeGlobalRef(self, "Array"), try es_helpers.makePropertyName(self, "isArray"), span),
         &.{try es_helpers.cloneNode(self, subject)},
         span,
     );
-    const len_member = try es_helpers.makeStaticMember(self, try es_helpers.cloneNode(self, subject), try es_helpers.makeIdentifierRef(self, "length"), span);
+    const len_member = try es_helpers.makeStaticMember(self, try es_helpers.cloneNode(self, subject), try es_helpers.makePropertyName(self, "length"), span);
     const len_cmp_kind: token_mod.Kind = if (rest_node.isNone()) .eq3 else .gt_eq;
     const len_test = try mkBin(self, span, len_member, try mkNum(self, elem_count), len_cmp_kind);
     var test_acc = try mkBin(self, span, is_arr, len_test, .amp2);
@@ -182,7 +182,7 @@ fn lowerArrayPattern(self: *Transformer, pnode: Node, subject: NodeIndex, span: 
         // let <rest> = S.slice(elem_count)
         const slice_call = try es_helpers.makeCallExpr(
             self,
-            try es_helpers.makeStaticMember(self, try es_helpers.cloneNode(self, subject), try es_helpers.makeIdentifierRef(self, "slice"), span),
+            try es_helpers.makeStaticMember(self, try es_helpers.cloneNode(self, subject), try es_helpers.makePropertyName(self, "slice"), span),
             &.{try mkNum(self, elem_count)},
             span,
         );

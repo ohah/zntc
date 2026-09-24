@@ -596,7 +596,7 @@ pub fn ES2022(comptime Transformer: type) type {
                     .span = span,
                     .data = .{ .none = 0 },
                 });
-                const args_ref = try es_helpers.makeIdentifierRef(self, "args");
+                const args_ref = try es_helpers.makeSyntheticRef(self, "args");
                 const spread = try self.ast.addNode(.{
                     .tag = .spread_element,
                     .span = span,
@@ -671,7 +671,7 @@ pub fn ES2022(comptime Transformer: type) type {
             const new_obj = try self.visitNode(obj_idx);
             const get_call = try buildMethodGetCall(self, new_obj, mapping, node.span);
 
-            const call_prop = try es_helpers.makeIdentifierRef(self, "call");
+            const call_prop = try es_helpers.makePropertyName(self, "call");
             const callee_member = try es_helpers.makeStaticMember(self, get_call, call_prop, node.span);
 
             const scratch_top = self.scratch.items.len;
@@ -760,7 +760,7 @@ pub fn ES2022(comptime Transformer: type) type {
         /// _f.set(this, init) expression_statement 생성. (es2015_class의 buildPrivateFieldInit 동일)
         fn buildPrivateFieldSetInit(self: *Transformer, var_name: []const u8, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const wm_ref = try es_helpers.makeIdentifierRef(self, var_name);
-            const set_prop = try es_helpers.makeIdentifierRef(self, "set");
+            const set_prop = try es_helpers.makePropertyName(self, "set");
             const callee = try es_helpers.makeStaticMember(self, wm_ref, set_prop, span);
             const this_node = try self.ast.addNode(.{
                 .tag = .this_expression,

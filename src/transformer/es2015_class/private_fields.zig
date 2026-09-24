@@ -43,7 +43,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             const ws_ref = try es_helpers.makeIdentifierRef(self, setter_mapping.weakset_name);
             const fn_ref = try es_helpers.makeIdentifierRef(self, setter_mapping.func_name);
             const get_call = try es_helpers.makeCallExpr(self, helper_ref, &.{ new_obj, ws_ref, fn_ref }, span);
-            const call_prop = try es_helpers.makeIdentifierRef(self, "call");
+            const call_prop = try es_helpers.makePropertyName(self, "call");
             const callee = try es_helpers.makeStaticMember(self, get_call, call_prop, span);
             return es_helpers.makeCallExpr(self, callee, &.{ new_obj, new_rhs }, span);
         }
@@ -65,7 +65,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             const get_ws = try es_helpers.makeIdentifierRef(self, getter_mapping.weakset_name);
             const get_fn = try es_helpers.makeIdentifierRef(self, getter_mapping.func_name);
             const get_outer = try es_helpers.makeCallExpr(self, get_helper, &.{ try self.visitNode(obj_idx), get_ws, get_fn }, span);
-            const get_call_prop = try es_helpers.makeIdentifierRef(self, "call");
+            const get_call_prop = try es_helpers.makePropertyName(self, "call");
             const get_callee = try es_helpers.makeStaticMember(self, get_outer, get_call_prop, span);
             const get_expr = try es_helpers.makeCallExpr(self, get_callee, &.{try self.visitNode(obj_idx)}, span);
 
@@ -82,7 +82,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             const set_ws = try es_helpers.makeIdentifierRef(self, setter_mapping.weakset_name);
             const set_fn = try es_helpers.makeIdentifierRef(self, setter_mapping.func_name);
             const set_outer = try es_helpers.makeCallExpr(self, set_helper, &.{ try self.visitNode(obj_idx), set_ws, set_fn }, span);
-            const set_call_prop = try es_helpers.makeIdentifierRef(self, "call");
+            const set_call_prop = try es_helpers.makePropertyName(self, "call");
             const set_callee = try es_helpers.makeStaticMember(self, set_outer, set_call_prop, span);
             return es_helpers.makeCallExpr(self, set_callee, &.{ try self.visitNode(obj_idx), computed }, span);
         }
@@ -180,7 +180,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 return call;
             }
             const wm_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
-            const get_prop = try es_helpers.makeIdentifierRef(self, "get");
+            const get_prop = try es_helpers.makePropertyName(self, "get");
             const callee = try es_helpers.makeStaticMember(self, wm_ref, get_prop, span);
             const call = try es_helpers.makeCallExpr(self, callee, &.{obj_new}, span);
             return call;

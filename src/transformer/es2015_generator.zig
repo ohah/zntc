@@ -1397,14 +1397,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// _state.trys.push([try_label, catch_label, finally_label, end_label]) expression_statement 생성.
         /// finally_label이 null이면 void 0을 출력하여 런타임의 _.label < t[2] 체크를 skip시킨다.
         fn buildTrysPush(self: *Transformer, try_label: u32, catch_label: ?u32, finally_label: ?u32, end_label: u32, span: Span) Transformer.Error!NodeIndex {
-            const state_ref = try es_helpers.makeIdentifierRef(self, "_state");
+            const state_ref = try es_helpers.makeSyntheticRef(self, "_state");
 
             // _state.trys
-            const trys_prop = try es_helpers.makeIdentifierRef(self, "trys");
+            const trys_prop = try es_helpers.makePropertyName(self, "trys");
             const trys_member = try es_helpers.makeStaticMember(self, state_ref, trys_prop, span);
 
             // _state.trys.push
-            const push_prop = try es_helpers.makeIdentifierRef(self, "push");
+            const push_prop = try es_helpers.makePropertyName(self, "push");
             const push_member = try es_helpers.makeStaticMember(self, trys_member, push_prop, span);
 
             // [try_label, catch_label, finally_label, end_label] 배열 (TypeScript __generator 스펙)
@@ -2296,8 +2296,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
 
             // switch(_state.label) { cases... }
-            const state_ref = try es_helpers.makeIdentifierRef(self, "_state");
-            const label_prop = try es_helpers.makeIdentifierRef(self, "label");
+            const state_ref = try es_helpers.makeSyntheticRef(self, "_state");
+            const label_prop = try es_helpers.makePropertyName(self, "label");
             const discriminant = try es_helpers.makeStaticMember(self, state_ref, label_prop, span);
 
             // switch_statement: extra = [discriminant, cases_start, cases_len]
@@ -2503,8 +2503,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         /// _state.sent() 호출 생성.
         fn buildSentCall(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
-            const state_ref = try es_helpers.makeIdentifierRef(self, "_state");
-            const sent_prop = try es_helpers.makeIdentifierRef(self, "sent");
+            const state_ref = try es_helpers.makeSyntheticRef(self, "_state");
+            const sent_prop = try es_helpers.makePropertyName(self, "sent");
             const sent_member = try es_helpers.makeStaticMember(self, state_ref, sent_prop, span);
             return es_helpers.makeCallExpr(self, sent_member, &.{}, span);
         }
@@ -2518,7 +2518,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         /// _state identifier reference 생성.
         fn buildStateRef(self: *Transformer, _: Span) Transformer.Error!NodeIndex {
-            return es_helpers.makeIdentifierRef(self, "_state");
+            return es_helpers.makeSyntheticRef(self, "_state");
         }
 
         /// __generator(function(_state) { ... }) 호출 생성.

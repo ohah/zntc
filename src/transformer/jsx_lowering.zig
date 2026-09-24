@@ -302,7 +302,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
                     const key_val = try getKeyValue(self, attrs_start, ki);
                     try self.scratch.append(self.allocator, key_val);
                 } else {
-                    try self.scratch.append(self.allocator, try helpers.makeIdentifierRef(self, "undefined"));
+                    try self.scratch.append(self.allocator, try helpers.makeGlobalRef(self, "undefined"));
                 }
                 // isStaticChildren
                 const bool_text = if (is_static) "true" else "false";
@@ -373,7 +373,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
 
             if (is_dev) {
                 // undefined key
-                try self.scratch.append(self.allocator, try helpers.makeIdentifierRef(self, "undefined"));
+                try self.scratch.append(self.allocator, try helpers.makeGlobalRef(self, "undefined"));
                 // isStaticChildren
                 const bool_text = if (is_static) "true" else "false";
                 const bool_span = try self.ast.addString(bool_text);

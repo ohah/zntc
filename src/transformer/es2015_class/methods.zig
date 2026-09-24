@@ -75,7 +75,7 @@ pub fn Methods(comptime Transformer: type) type {
         /// fresh identifier를 받으므로 파서 영역 symbol_ids 조회 불가.
         fn buildFreshPrototypeRef(self: *Transformer, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
             const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, class_name_span);
-            const proto_prop = try es_helpers.makeIdentifierRef(self, "prototype");
+            const proto_prop = try es_helpers.makePropertyName(self, "prototype");
             return es_helpers.makeStaticMember(self, class_ref, proto_prop, span);
         }
 
@@ -264,7 +264,7 @@ pub fn Methods(comptime Transformer: type) type {
         }
 
         pub fn buildValueProp(self: *Transformer, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const key = try es_helpers.makeIdentifierRef(self, "value");
+            const key = try es_helpers.makePropertyName(self, "value");
             return self.ast.addNode(.{
                 .tag = .object_property,
                 .span = span,
@@ -354,7 +354,7 @@ pub fn Methods(comptime Transformer: type) type {
                 // configurable: true — ES6 class getter/setter는 스펙상 configurable.
                 // ES5 Object.defineProperty의 기본값은 false이므로 명시 필요.
                 // 이를 누락하면 이후 Object.defineProperties로 재정의 시 TypeError 발생.
-                const config_key = try es_helpers.makeIdentifierRef(self, "configurable");
+                const config_key = try es_helpers.makePropertyName(self, "configurable");
                 const true_span = try self.ast.addString("true");
                 const config_val = try self.ast.addNode(.{
                     .tag = .boolean_literal,

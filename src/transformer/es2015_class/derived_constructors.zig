@@ -13,14 +13,14 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
     return struct {
         pub fn buildAssertThisInitialized(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__assertThisInitialized");
-            const this_ref = try es_helpers.makeIdentifierRef(self, "_this");
+            const this_ref = try es_helpers.makeSyntheticRef(self, "_this");
             self.runtime_helpers.derived_constructor = true;
             return es_helpers.makeCallExpr(self, helper, &.{this_ref}, span);
         }
 
         fn buildPossibleConstructorReturn(self: *Transformer, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__possibleConstructorReturn");
-            const this_ref = try es_helpers.makeIdentifierRef(self, "_this");
+            const this_ref = try es_helpers.makeSyntheticRef(self, "_this");
             self.runtime_helpers.derived_constructor = true;
             return es_helpers.makeCallExpr(self, helper, &.{ value, this_ref }, span);
         }
@@ -283,7 +283,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                         try self.scratch.append(self.allocator, replaced);
                     }
                 }
-                try self.scratch.append(self.allocator, try es_helpers.makeIdentifierRef(self, "_this"));
+                try self.scratch.append(self.allocator, try es_helpers.makeSyntheticRef(self, "_this"));
 
                 const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
                 const seq = try self.ast.addNode(.{
@@ -535,8 +535,8 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
         pub fn buildDefaultSuperConstructor(self: *Transformer, name: NodeIndex, super_class_span: Span, instance_fields: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const call_super_ref = try es_helpers.makeRuntimeHelperRef(self, "__callSuper");
             const parent_ref = try es_helpers.makeIdentifierRefFromSpan(self, super_class_span);
-            const args_ref = try es_helpers.makeIdentifierRef(self, "arguments");
-            const new_target_ref = try es_helpers.makeIdentifierRef(self, "_newTarget");
+            const args_ref = try es_helpers.makeGlobalRef(self, "arguments");
+            const new_target_ref = try es_helpers.makeSyntheticRef(self, "_newTarget");
             const call_super = try es_helpers.makeCallExpr(self, call_super_ref, &.{ parent_ref, args_ref, new_target_ref }, span);
 
             self.runtime_helpers.call_super = true;
@@ -565,7 +565,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                 }
 
                 // return _this;
-                const this_ref = try es_helpers.makeIdentifierRef(self, "_this");
+                const this_ref = try es_helpers.makeSyntheticRef(self, "_this");
                 try self.scratch.append(self.allocator, try self.ast.addNode(.{
                     .tag = .return_statement,
                     .span = span,
@@ -654,7 +654,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             const node = self.ast.getNode(idx);
 
             if (node.tag == .this_expression) {
-                return es_helpers.makeIdentifierRef(self, "_this");
+                return es_helpers.makeSyntheticRef(self, "_this");
             }
 
             // static_member_expression: extra = [object, property, flags]

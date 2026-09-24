@@ -378,15 +378,15 @@ pub fn ES2015Params(comptime Transformer: type) type {
             });
 
             // [].slice
-            const slice_prop = try es_helpers.makeIdentifierRef(self, "slice");
+            const slice_prop = try es_helpers.makePropertyName(self, "slice");
             const slice_member = try es_helpers.makeStaticMember(self, empty_arr, slice_prop, span);
 
             // [].slice.call
-            const call_prop = try es_helpers.makeIdentifierRef(self, "call");
+            const call_prop = try es_helpers.makePropertyName(self, "call");
             const slice_call = try es_helpers.makeStaticMember(self, slice_member, call_prop, span);
 
             // arguments
-            const args_ref = try es_helpers.makeIdentifierRef(self, "arguments");
+            const args_ref = try es_helpers.makeGlobalRef(self, "arguments");
 
             // start_index number
             const idx_node = try es_helpers.makeNumericLiteral(self, @intCast(start_index));
