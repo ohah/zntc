@@ -646,6 +646,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             var var_names: std.ArrayList([]const u8) = .empty;
             defer var_names.deinit(self.allocator);
             try BlockScoping.collectLoopBodyVarNames(self, body_idx, &var_names);
+            var lexical_bindings: std.ArrayList(NodeIndex) = .empty;
+            defer lexical_bindings.deinit(self.allocator);
+            try BlockScoping.collectLexicalVarBindings(self, decl_idx, &lexical_bindings);
+            var var_bindings: std.ArrayList(NodeIndex) = .empty;
+            defer var_bindings.deinit(self.allocator);
+            try BlockScoping.collectLoopBodyVarBindings(self, body_idx, &var_bindings);
 
             var flow = BlockScoping.FlowResult{};
             defer flow.labels.deinit(self.allocator);
@@ -667,6 +673,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 true, // is_generator
                 null, // 본문은 아직 visit 전 — 추출된 generator 가 나중에 자기 temp 를 가진다
                 var_names.items,
+                lexical_bindings.items,
+                var_bindings.items,
             );
 
             // `var _loopN = function* (x) {…}` 은 대입문으로 접히므로, 이름을 **바깥 함수**

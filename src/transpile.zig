@@ -3043,6 +3043,32 @@ test "#4760 es5 상태 기계가 대입·선언으로 접은 블록 바인딩도
     try std.testing.expect(std.mem.indexOf(u8, r2.code, "second$") == null);
 }
 
+test "#4760 es5 루프 캡처 `_loop` 의 매개변수·인자·끌어올린 var 도 rename 을 따라간다" {
+    // 클로저가 헤더 let 을 캡처하면 본문을 `_loop(index)` 로 뽑는다. 매개변수·인자와 본문
+    // `var` 를 바깥으로 올린 선언은 이름으로 새로 만들어져, 심볼이 없으면 minify 가 원래
+    // 이름으로 찍어 `_loop(index)` 가 미선언 참조가 된다.
+    const src =
+        \\export function collect(limit) {
+        \\  const getters = [];
+        \\  for (let index = 0; index < limit; index++) {
+        \\    var latest = index * 2;
+        \\    getters.push(() => index + latest);
+        \\  }
+        \\  return getters;
+        \\}
+    ;
+    var r = try transpile(std.testing.allocator, src, "/src/a.js", .{
+        .minify_identifiers = true,
+        .minify_whitespace = true,
+        .es_target = .es5,
+        .unsupported = @import("transformer/compat.zig").fromESTarget(.es5),
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "_loop(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "index") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "latest") == null);
+}
+
 test "#4493 `undefined` 바인딩에 void 0 peephole 이 새지 않는다" {
     // 이 노드는 대입 대상인데도 tag 가 identifier_reference 라, value 위치를 무조건
     // emitNode 로 태우면 `undefined` → `void 0` peephole 이 발동한다.

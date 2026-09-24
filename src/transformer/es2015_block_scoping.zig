@@ -66,15 +66,25 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             self: *Transformer,
             init_idx: NodeIndex,
         ) !std.ArrayList([]const u8) {
-            var names: std.ArrayList([]const u8) = .empty;
-            if (init_idx.isNone()) return names;
-            const init = self.ast.getNode(init_idx);
-            if (init.tag != .variable_declaration) return names;
+            var bindings: std.ArrayList(NodeIndex) = .empty;
+            defer bindings.deinit(self.allocator);
+            try collectLexicalVarBindings(self, init_idx, &bindings);
+            return namesOf(self, bindings.items);
+        }
 
-            if (!self.ast.variableDeclarationKind(init).isLexical()) return names;
+        /// `collectLexicalVarNames` 의 노드판 — 같은 순서의 바인딩 식별자 노드. 이름으로 만든
+        /// 새 노드(`_loop` 매개변수 등)에 원래 심볼을 물려줄 때 쓴다 (#4760).
+        pub fn collectLexicalVarBindings(
+            self: *Transformer,
+            init_idx: NodeIndex,
+            out: *std.ArrayList(NodeIndex),
+        ) !void {
+            if (init_idx.isNone()) return;
+            const init = self.ast.getNode(init_idx);
+            if (init.tag != .variable_declaration) return;
+            if (!self.ast.variableDeclarationKind(init).isLexical()) return;
 
             const e = init.data.extra;
-
             const list_start = self.readU32(e, 1);
             const list_len = self.readU32(e, 2);
 
@@ -83,9 +93,25 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 const decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list_start + i]);
                 const decl = self.ast.getNode(decl_idx);
                 if (decl.tag != .variable_declarator) continue;
-                const name_idx = self.readNodeIdx(decl.data.extra, 0);
-                try collectBindingNames(self, name_idx, &names);
+                try collectBindingNodes(self, self.readNodeIdx(decl.data.extra, 0), out);
             }
+        }
+
+        /// 패턴 안의 바인딩 식별자 노드 (`collectBindingNames` 의 노드판).
+        pub fn collectBindingNodes(self: *Transformer, idx: NodeIndex, out: *std.ArrayList(NodeIndex)) !void {
+            var it = try ast_walk.bindingIdentifiers(self.allocator, self.ast, idx, .{});
+            defer it.deinit();
+            while (try it.next()) |leaf_idx| {
+                if (self.ast.getNode(leaf_idx).tag != .binding_identifier) continue;
+                try out.append(self.allocator, leaf_idx);
+            }
+        }
+
+        /// 바인딩 노드들의 이름 (같은 순서).
+        fn namesOf(self: *Transformer, bindings: []const NodeIndex) !std.ArrayList([]const u8) {
+            var names: std.ArrayList([]const u8) = .empty;
+            errdefer names.deinit(self.allocator);
+            for (bindings) |binding| try names.append(self.allocator, try self.stableName(self.ast.getText(self.ast.getNode(binding).span)));
             return names;
         }
 
@@ -206,12 +232,24 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             body_idx: NodeIndex,
             out: *std.ArrayList([]const u8),
         ) !void {
+            var bindings: std.ArrayList(NodeIndex) = .empty;
+            defer bindings.deinit(self.allocator);
+            try collectLoopBodyVarBindings(self, body_idx, &bindings);
+            for (bindings.items) |binding| try out.append(self.allocator, try self.stableName(self.ast.getText(self.ast.getNode(binding).span)));
+        }
+
+        /// `collectLoopBodyVarNames` 의 노드판 (같은 순서).
+        pub fn collectLoopBodyVarBindings(
+            self: *Transformer,
+            body_idx: NodeIndex,
+            out: *std.ArrayList(NodeIndex),
+        ) !void {
             if (body_idx.isNone()) return;
             var ctx: LoopBodyScan = .{ .self = self, .include_catch = false };
             defer ctx.found.deinit(self.allocator);
             defer ctx.class_names.deinit(self.allocator);
             try ast_walk.walkPreorderIterative(self.allocator, self.ast, body_idx, &ctx, LoopBodyScan.varVisit);
-            for (ctx.found.items) |idx| try collectBindingNames(self, idx, out);
+            for (ctx.found.items) |idx| try collectBindingNodes(self, idx, out);
         }
 
         const LoopBodyScan = struct {
@@ -349,8 +387,9 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         const ln = self.ast.getNode(left);
                         if (ln.tag == .variable_declaration and isHoistableVar(self, ln, names)) {
                             const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[self.readU32(ln.data.extra, 1)]));
-                            const b = self.ast.getNode(self.readNodeIdx(d.data.extra, 0));
-                            if (b.tag == .binding_identifier) left = try es_helpers.makeIdentifierRefFromSpan(self, b.data.string_ref);
+                            const b_idx = self.readNodeIdx(d.data.extra, 0);
+                            const b = self.ast.getNode(b_idx);
+                            if (b.tag == .binding_identifier) left = try self.makeIdentifierRefWithSymbol(b.data.string_ref, b_idx);
                         }
                     }
                     const c = try hoistVarsOutOfBody(self, t.c, names);
@@ -434,9 +473,10 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[ds + j]));
                 const init = self.readNodeIdx(d.data.extra, 2);
                 if (init.isNone()) continue;
-                const b = self.ast.getNode(self.readNodeIdx(d.data.extra, 0));
+                const b_idx = self.readNodeIdx(d.data.extra, 0);
+                const b = self.ast.getNode(b_idx);
                 const assign = try self.ast.addNode(.{ .tag = .assignment_expression, .span = d.span, .data = .{ .binary = .{
-                    .left = try es_helpers.makeIdentifierRefFromSpan(self, b.data.string_ref),
+                    .left = try self.makeIdentifierRefWithSymbol(b.data.string_ref, b_idx),
                     .right = init,
                     .flags = 0,
                 } } });
@@ -583,7 +623,14 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             /// 루프 밖에서 사라지므로, 본문 선언은 대입으로 바꾸고 `var …, _loop = …` 로 바깥에
             /// 둔다 (#4743).
             hoist_vars: []const []const u8,
+            /// `lexical_names`·`hoist_vars` 와 같은 순서의 원래 바인딩 노드. 이름으로 만드는
+            /// 매개변수·인자·호이스트 선언에 심볼을 물려준다 — 없으면 minify 가 원래 이름으로
+            /// 찍는다 (#4760). 모르면 빈 slice.
+            lexical_bindings: []const NodeIndex,
+            hoist_bindings: []const NodeIndex,
         ) Transformer.Error!struct { loop_fn: NodeIndex, call_and_check: NodeIndex } {
+            std.debug.assert(lexical_bindings.len == 0 or lexical_bindings.len == lexical_names.len);
+            std.debug.assert(hoist_bindings.len == 0 or hoist_bindings.len == hoist_vars.len);
             // --- _loop 함수명 생성 ---
             const loop_prefix = "_loop";
             const loop_name = try self.buildUniqueName(loop_prefix, &self.loop_counter);
@@ -624,13 +671,14 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             // --- function params: 캡처된 변수 ---
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
-            for (lexical_names) |name| {
+            for (lexical_names, 0..) |name, name_i| {
                 const param_span = try self.ast.addString(name);
                 const param = try self.ast.addNode(.{
                     .tag = .binding_identifier,
                     .span = param_span,
                     .data = .{ .string_ref = param_span },
                 });
+                if (name_i < lexical_bindings.len) self.propagateSymbolId(lexical_bindings[name_i], param);
                 const formal = try self.ast.addNode(.{
                     .tag = .formal_parameter,
                     .span = param_span,
@@ -668,8 +716,9 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             const loop_decl = try es_helpers.makeDeclarator(self, loop_binding, func_expr, span);
             var decls: std.ArrayList(NodeIndex) = .empty;
             defer decls.deinit(self.allocator);
-            for (hoist_vars) |name| {
+            for (hoist_vars, 0..) |name, name_i| {
                 const b = try es_helpers.makeBindingIdentifier(self, try self.ast.addString(name));
+                if (name_i < hoist_bindings.len) self.propagateSymbolId(hoist_bindings[name_i], b);
                 try decls.append(self.allocator, try es_helpers.makeDeclarator(self, b, .none, span));
             }
             try decls.append(self.allocator, loop_decl);
@@ -684,8 +733,10 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 try self.scratch.append(self.allocator, try es_helpers.makeThisExpr(self, span));
                 break :blk try es_helpers.makeStaticMember(self, loop_ref, call_prop, span);
             } else loop_ref;
-            for (lexical_names) |name| {
-                try self.scratch.append(self.allocator, try es_helpers.makeIdentifierRef(self, name));
+            for (lexical_names, 0..) |name, name_i| {
+                const arg = try es_helpers.makeIdentifierRef(self, name);
+                if (name_i < lexical_bindings.len) self.propagateSymbolId(lexical_bindings[name_i], arg);
+                try self.scratch.append(self.allocator, arg);
             }
             const loop_call = try es_helpers.makeCallExpr(self, call_callee, self.scratch.items[scratch_top2..], span);
 
