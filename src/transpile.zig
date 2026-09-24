@@ -1504,6 +1504,26 @@ fn transpileWithCallbackInternal(
         // 타입은 이미 지워졌다. 낮춘 코드의 분석 에러(낮추기가 만든 형태)는 이름 짓기와 무관하다.
         post.analyze() catch return error.SemanticError;
         if (post.symbols.items.len > 0 and post.scope_maps.items.len > 0) {
+            // 변환 전 분석이 "이름 보존"으로 본 심볼(export·import·클래스 식 이름)을 재분석
+            // 심볼로 옮긴다. 변환이 그 흔적을 지우기도 한다 — TS `export = Box` 는
+            // `module.exports = Box` 가 되어 재분석에선 export 가 아니다. 같은 노드에
+            // 변환 전 심볼(트랜스포머가 물려준 것)과 재분석 심볼이 함께 붙어 있으면 짝이다.
+            // 보존 이름은 다른 바인딩이 같은 이름을 받지 않게 예약도 한다.
+            const pre = &(analyzer_storage.?);
+            var keep = std.DynamicBitSet.initEmpty(arena_alloc, post.symbols.items.len) catch return error.OutOfMemory;
+            var reserved: std.StringHashMapUnmanaged(void) = .empty;
+            var unresolved_it = post.unresolved_references.keyIterator();
+            while (unresolved_it.next()) |k| reserved.put(arena_alloc, k.*, {}) catch return error.OutOfMemory;
+            for (post.symbol_ids.items, 0..) |maybe_post_sym, node_i| {
+                const post_sym = maybe_post_sym orelse continue;
+                if (node_i >= transformer.symbol_ids.items.len) continue;
+                const pre_sym = transformer.symbol_ids.items[node_i] orelse continue;
+                if (pre_sym >= pre.symbols.items.len or post_sym >= post.symbols.items.len) continue;
+                if (!Mangler.preservesName(pre.symbols.items[pre_sym])) continue;
+                if (keep.isSet(post_sym)) continue;
+                keep.set(post_sym);
+                reserved.put(arena_alloc, transformer.ast.getText(post.symbols.items[post_sym].name), {}) catch return error.OutOfMemory;
+            }
             mangle_result = Mangler.mangle(arena_alloc, .{
                 .scopes = post.scopes.items,
                 .symbols = post.symbols.items,
@@ -1514,7 +1534,8 @@ fn transpileWithCallbackInternal(
                 // 코드가 참조하는 전역(`Set`, `Map` …)을 예약한다. 없으면 바인딩이 많아 3글자
                 // 이름까지 가면 `var Set = …` 처럼 전역을 가린다. 번들 경로는
                 // `Linker.collectReservedGlobals` 가 같은 일을 한다.
-                .external_reserved = &post.unresolved_references,
+                .external_reserved = &reserved,
+                .skip_symbols = keep,
             }) catch null;
         }
     }
@@ -3124,6 +3145,30 @@ test "minify 가 짓는 이름은 코드가 참조하는 전역을 가리지 않
     defer r.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.indexOf(u8, r.code, "let ee=") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.code, "ee]") != null);
+}
+
+test "#4759 변환 뒤 재분석으로 이름을 지어도 export·클래스 식 이름은 보존한다" {
+    // TS `export = Box` 는 변환 뒤 `module.exports = Box` 라 재분석에선 export 가 아니다.
+    // 변환 전 분석의 "이름 보존" 판정을 재분석 심볼로 옮기지 않으면 `class t` 가 된다.
+    var r = try transpile(std.testing.allocator, "class Box { v = 1; greet() { return this.v; } }\nconst helperValue = 2;\nexport = Box;\nconsole.log(helperValue);", "/src/app.ts", .{
+        .minify_identifiers = true,
+        .minify_whitespace = true,
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "class Box") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "module.exports=Box") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "helperValue") == null);
+
+    // es5 는 클래스 식을 함수로 낮춰 재분석에선 클래스 식 이름이 아니다 — `.name` 이 바뀌면 안 된다.
+    var r2 = try transpile(std.testing.allocator, "const Holder = class InnerName { static who() { return InnerName.name; } };\nconsole.log(Holder.who());", "/src/b.js", .{
+        .minify_identifiers = true,
+        .minify_whitespace = true,
+        .es_target = .es5,
+        .unsupported = @import("transformer/compat.zig").fromESTarget(.es5),
+    });
+    defer r2.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, r2.code, "function InnerName(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r2.code, "Holder") == null);
 }
 
 test "#4493 `undefined` 바인딩에 void 0 peephole 이 새지 않는다" {

@@ -470,12 +470,20 @@ const SlotSortEntry = struct {
 // mangling 제외 판정
 // ============================================================
 
-fn shouldSkip(sym: Symbol, name: []const u8) bool {
+/// 이름이 바깥에서 관찰되어 바꾸면 안 되는 심볼 — export·import·클래스 식 이름.
+/// 단일 파일 minify 는 변환 **뒤**를 다시 분석해 이름을 짓는데(#4759), 변환이 이 사실을
+/// 지울 수 있어(TS `export =` → `module.exports =`) 변환 전 심볼로 이 판정을 다시 한다.
+pub fn preservesName(sym: Symbol) bool {
     if (sym.isExported()) return true;
     if (sym.decl_flags.is_import) return true;
     // `const Foo = class Bar {}` 의 inner `Bar` (#2197). mangle 시 `.name` 프로퍼티도
     // 함께 바뀌므로 spec 준수를 위해 원본 이름 보존.
     if (sym.decl_flags.is_class_expr_name) return true;
+    return false;
+}
+
+fn shouldSkip(sym: Symbol, name: []const u8) bool {
+    if (preservesName(sym)) return true;
     if (std.mem.eql(u8, name, "arguments")) return true;
     if (name.len <= 1) return true;
     return false;
