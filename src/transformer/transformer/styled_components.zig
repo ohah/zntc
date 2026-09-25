@@ -1339,11 +1339,7 @@ fn forwardObjectInterpolations(
         const prop_name = std.fmt.bufPrint(&prop_buf, "_css{d}", .{local_id}) catch unreachable;
         const prop_name_span = try self.ast.addString(prop_name);
 
-        const attr_name = try self.ast.addNode(.{
-            .tag = .jsx_identifier,
-            .span = prop_name_span,
-            .data = .{ .string_ref = prop_name_span },
-        });
+        const attr_name = try es_helpers.makeJsxAttributeName(self, prop_name_span);
         const attr = try self.ast.addNode(.{
             .tag = .jsx_attribute,
             .span = zero,
@@ -1418,11 +1414,7 @@ fn forwardTemplateInterpolations(
         const prop_name_span = try self.ast.addString(prop_name);
 
         // jsx_attribute: `_cssN={original_expr}` (binary { left=name, right=value }).
-        const attr_name = try self.ast.addNode(.{
-            .tag = .jsx_identifier,
-            .span = prop_name_span,
-            .data = .{ .string_ref = prop_name_span },
-        });
+        const attr_name = try es_helpers.makeJsxAttributeName(self, prop_name_span);
         const attr = try self.ast.addNode(.{
             .tag = .jsx_attribute,
             .span = zero,
@@ -1782,11 +1774,7 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
     for (forwarded_attrs.items) |attr| try self.scratch.append(self.allocator, attr);
     const new_attrs_list = try self.ast.addNodeList(self.scratch.items[top..]);
 
-    const new_tag = try self.ast.addNode(.{
-        .tag = .jsx_identifier,
-        .span = generated_span,
-        .data = .{ .string_ref = generated_span },
-    });
+    const new_tag = try es_helpers.makeSyntheticJsxTag(self, generated_span);
 
     const new_extra = try self.ast.addExtras(&.{
         @intFromEnum(new_tag),
