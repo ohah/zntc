@@ -321,3 +321,43 @@ test "sideEffects: UserDefined lock — pattern matched file preserved even in n
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"ok\"") != null or
         std.mem.indexOf(u8, result.output, "'ok'") != null);
 }
+
+// #4747: member-augment 제거(`X.p = v` 를 X 를 안 읽으면 죽은 쓰기로 봄)는 X 가 **새 객체**일 때만
+// 맞다. 별칭(`const proto = Ctor.prototype`)이면 쓰기가 원래 객체로 보인다 — axios 의
+// `AxiosURLSearchParams` 가 `append` 를 잃고 `--minify` 에서 `append is not a function`.
+test "sideEffects: member-augment through alias of existing object is kept (#4747)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import { make } from './node_modules/pkg/index.js'; console.log(make());");
+    try writeFile(tmp.dir, "node_modules/pkg/package.json",
+        \\{"name":"pkg","sideEffects":false}
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/index.js",
+        \\function Params() { this.pairs = []; }
+        \\const proto = Params.prototype;
+        \\proto.appendPair = function (x) { this.pairs.push(x); };
+        \\const freshLib = { base: 1 };
+        \\freshLib.unusedAugment = function () { return 1; };
+        \\freshLib.unusedAugment2 = function () { return 2; };
+        \\let later = {};
+        \\later = Params.prototype;
+        \\later.laterMethod = function () { return 2; };
+        \\export function make() { const q = new Params(); q.appendPair(1); return q.pairs.length + q.laterMethod(); }
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .minify_syntax = true });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 별칭을 통한 쓰기는 남는다 (호출 `q.appendPair(1)` 이 아니라 정의를 본다).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".appendPair = function") != null);
+    // 새 객체로 선언했어도 다시 대입(`later = Params.prototype`)되면 별칭일 수 있다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".laterMethod = function") != null);
+    // 새 객체에 붙인, 아무도 안 읽는 쓰기는 여전히 지운다 (#3359 목적 유지).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "unusedAugment") == null);
+}
