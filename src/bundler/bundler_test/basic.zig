@@ -309,6 +309,54 @@ test "Bundler: minify 시 __publicField 가 축약명을 쓴다 (#4629 후속)" 
     try std.testing.expect(std.mem.indexOf(u8, result.output, rt.NAMES.PUBLIC_FIELD_MIN) != null);
 }
 
+// #4744: 클래스 필드를 낮추는 타깃은 계산된 키를 클래스 **앞 새 문장**(`_a = Ops.OP_A;`)으로 먼저
+// 평가한다. namespace 멤버를 쓴 문장을 span(소스 위치)으로 찾으면 이 새 문장 대신 원래 위치의
+// 문장이 나와, 트리 셰이커가 실제 사용 문장에서 `OP_A`·`Base.Class` 를 못 보고 선언을 지웠다
+// (effect `Class$2 is not defined`). 분석기 참조의 문장 번호로 찾아야 한다.
+test "Bundler: 클래스 필드 낮추기로 옮긴 namespace 멤버 사용도 트리 셰이킹이 본다 (#4744)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "base.js",
+        \\export class Class { base() { return "B"; } }
+    );
+    try writeFile(tmp.dir, "ops.js",
+        \\export const OP_A = "opA";
+        \\export const OP_UNUSED = "opUnused";
+    );
+    try writeFile(tmp.dir, "rt.js",
+        \\import * as Base from './base.js';
+        \\import * as Ops from './ops.js';
+        \\export class Runtime extends Base.Class {
+        \\  [Ops.OP_A]() { return "A"; }
+        \\  run = () => this.base();
+        \\}
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import { Runtime } from './rt.js';
+        \\const r = new Runtime();
+        \\console.log(r.run() + r.opA());
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .unsupported = compat_mod.fromESTarget(.es2017),
+    });
+    defer b.deinit();
+
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "OP_A = \"opA\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "class Class") != null);
+    // 정밀도는 그대로 — 안 쓴 멤버는 여전히 지운다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "opUnused") == null);
+}
+
 test "Bundler: --target=es5 산출물에 arrow/단축메서드가 남지 않는다 (#4630)" {
     // 헬퍼 상수만 ES5 로 바꿔도 래퍼 헤더(`"id"(exports, module) {`)나 동적 import
     // 재작성이 arrow 를 내면 번들 전체가 ES5 엔진에서 파싱조차 안 된다 — 네 표면이
