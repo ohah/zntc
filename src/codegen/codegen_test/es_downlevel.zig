@@ -3038,6 +3038,14 @@ test "ES2017: static init keeps this of nested class field initializers" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\"v\",this)") != null);
 }
 
+// static private 필드 초기값도 클래스 밖 descriptor 로 옮겨진다 — `this` 는 클래스 (#4801 후속:
+// 문맥 설정이 경로마다 흩어져 이 경로만 `this` 치환이 빠져 있었다).
+test "ES2017: static private field arrow this becomes class reference" {
+    var r = try e2eTarget(std.testing.allocator, "class A { static #x = () => this; static get() { return A.#x(); } }", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "value:()=>A}") != null);
+}
+
 test "ES2017: object rest declaration keeps const/let" {
     var r = try e2eTarget(std.testing.allocator, "{const {a,...r}=o;}{let {b,...s}=o;}", .es2017);
     defer r.deinit();

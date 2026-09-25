@@ -205,20 +205,8 @@ pub fn ES2022(comptime Transformer: type) type {
             const key: NodeIndex = key_override orelse self.readNodeIdx(pe, ast_mod.PropertyExtra.key);
             const init: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.init);
 
-            const saved_static = self.current_super_is_static;
-            const saved_receiver = self.current_super_static_receiver;
-            const saved_class_name = self.static_block_class_name;
-            const saved_this_depth = self.this_depth;
-            self.current_super_is_static = true;
-            self.current_super_static_receiver = class_name_span;
-            self.static_block_class_name = class_name_span;
-            self.this_depth = 0;
-            defer {
-                self.current_super_is_static = saved_static;
-                self.current_super_static_receiver = saved_receiver;
-                self.static_block_class_name = saved_class_name;
-                self.this_depth = saved_this_depth;
-            }
+            const static_ctx = es_helpers.enterStaticInitContext(self, class_name_span);
+            defer es_helpers.leaveStaticInitContext(self, static_ctx);
 
             const class_ref = try self.makeCurrentClassRef(class_name_span);
             const member_ref = try es_helpers.makeMemberFromKeyIdx(self, class_ref, key, member.span);
@@ -787,29 +775,10 @@ pub fn ES2022(comptime Transformer: type) type {
         /// 치환은 transformer의 static_block_class_name / this_depth 필드를 통해
         /// visitNode(.this_expression) 단계에서 수행된다.
         pub fn buildStaticBlockIIFE(self: *Transformer, static_block_node: Node, class_name_span: ?Span) Transformer.Error!NodeIndex {
-            // static block body 방문 시 this 치환 컨텍스트 설정
-            const saved_class_name = self.static_block_class_name;
-            const saved_this_depth = self.this_depth;
-            self.static_block_class_name = class_name_span;
-            self.this_depth = 0;
-            defer {
-                self.static_block_class_name = saved_class_name;
-                self.this_depth = saved_this_depth;
-            }
-
-            // VSB fix: static block 의 body 는 class body 안에서 평가되지만 lowering 시 IIFE 로 빠져
-            // module top-level 에 emit → super 키워드가 SyntaxError. is_static=true + static_receiver
-            // = class_name 으로 set 하고 in_extracted_fn=true 로 super lowering 강제. spec: static
-            // block 의 super 는 class.[[Prototype]] (parent class) 참조.
-            const saved_super_is_static = self.current_super_is_static;
-            const saved_super_static_receiver = self.current_super_static_receiver;
-            const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
-            self.current_super_is_static = true;
-            if (class_name_span) |s| self.current_super_static_receiver = s;
-            self.current_super_in_extracted_fn = true;
-            defer self.current_super_is_static = saved_super_is_static;
-            defer self.current_super_static_receiver = saved_super_static_receiver;
-            defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn;
+            // static block body 는 IIFE 로 빠져 클래스 밖에서 평가된다 — this·super 를 클래스 기준으로
+            // (VSB fix: spec 상 static block 의 super 는 class.[[Prototype]]).
+            const static_ctx = es_helpers.enterStaticInitContext(self, class_name_span);
+            defer es_helpers.leaveStaticInitContext(self, static_ctx);
 
             // static block의 body를 방문
             const new_body = try self.visitNode(static_block_node.data.unary.operand);
