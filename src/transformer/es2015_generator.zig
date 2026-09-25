@@ -698,7 +698,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             try self.generator_temp_var_spans.append(self.allocator, loop_name_span);
             // break/continue/return 신호를 받는 `_ret` 도 같은 이유로 등록한다.
             if (flow.needsRetVar()) {
-                try self.generator_temp_var_spans.append(self.allocator, try self.ast.addString("_ret"));
+                try self.generator_temp_var_spans.append(self.allocator, try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_ret")));
             }
 
             // body 만 교체한 새 루프 노드.
@@ -2547,7 +2547,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             self.runtime_helpers.generator = true;
 
             // _state 파라미터
-            const state_span = try self.ast.addString("_state");
+            const state_span = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_state"));
             const state_param = try es_helpers.makeSyntheticBinding(self, state_span);
 
             // function body: switch_body를 block으로 감싸기

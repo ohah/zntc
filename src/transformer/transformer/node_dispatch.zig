@@ -951,7 +951,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                     self.needs_arguments_var = true;
                     // 원래 `arguments` 참조의 심볼을 그대로 물려준다 — 사용자가 `arguments` 라는
                     // 바인딩을 선언한 경우(sloppy 스크립트) 그 바인딩을 계속 가리키게 한다.
-                    return self.makeUserRefNamed("_arguments", idx);
+                    return self.makeUserRefNamed(try es_helpers.resolveSyntheticName(self, "_arguments"), idx);
                 }
             }
             if (try self.tryRenameIdentifierLike(idx, .identifier_reference)) |i| return i;
