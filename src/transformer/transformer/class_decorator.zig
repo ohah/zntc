@@ -241,8 +241,8 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, node: Node, key_assign
         new_name = try es_helpers.makeBindingIdentifier(self, tmp_span);
     }
 
-    // ES2022 static block this 치환을 위한 클래스 이름 추출
-    if (self.options.unsupported.class_static_block) {
+    // static block·클래스 밖으로 옮기는 static field 의 this 치환을 위한 클래스 이름 (#4801).
+    if (self.options.unsupported.class_static_block or ctx.static_field_assignments != null) {
         ctx.class_name_span = self.getClassNameSpan(new_name);
     }
 

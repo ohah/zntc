@@ -3006,6 +3006,38 @@ test "ES2015: destructuring object rest" {
 
 // #4790: 객체 rest 선언을 낮춰도 원래 선언 종류를 지킨다. `var` 로 바꾸면 블록 밖으로 새고
 // for 헤더 `let` 의 반복별 바인딩이 사라진다.
+// #4801: static 필드 초기값을 클래스 밖(`__publicField(A, …)`)으로 옮기면 그 안 `this`·`super` 가
+// 클래스를 벗어난다 — `this` 는 클래스 이름, `super` 는 static 헬퍼로 낮춰야 한다.
+test "ES2017: static field arrow this becomes class reference" {
+    var r = try e2eTarget(std.testing.allocator, "class A { static x = 1; static f = () => this.x; }", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "()=>A.x") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "this") == null);
+}
+
+test "ES2017: static field arrow super is lowered outside class" {
+    var r = try e2eTarget(std.testing.allocator, "class P { static s() {} } class Q extends P { static t = () => super.s(); }", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".call(Q)") != null);
+}
+
+// 메서드·getter·중첩 클래스는 자기 `this` 를 가진다 — static 초기값·static 블록 안에서도 치환 금지.
+test "ES2017: static init keeps this of methods, getters and nested classes" {
+    var r = try e2eTarget(std.testing.allocator, "class A { static o = { get g() { return this; } }; static N = () => class { m() { return this; } }; static { this.k = { m() { return this; } }; } }", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "get g(){return this;}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "m(){return this;}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return A;") == null);
+}
+
+test "ES2017: static init keeps this of nested class field initializers" {
+    // 중첩 클래스 필드는 생성자로 옮겨진다 — 메서드 방문을 안 거치므로 클래스 경계에서 막아야 한다.
+    var r = try e2eTarget(std.testing.allocator, "class A { static N = () => class { v = this; }; }", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"v\",this)") != null);
+}
+
 test "ES2017: object rest declaration keeps const/let" {
     var r = try e2eTarget(std.testing.allocator, "{const {a,...r}=o;}{let {b,...s}=o;}", .es2017);
     defer r.deinit();
