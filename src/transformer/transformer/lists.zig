@@ -22,10 +22,6 @@ pub fn visitListNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
     if (self.options.unsupported.block_scoping and node.tag == .block_statement) {
         return visitBlockWithScoping(self, node);
     }
-    // program/function_body: 함수 스코프의 var 이름 수집
-    if (self.options.unsupported.block_scoping and (node.tag == .program or node.tag == .function_body)) {
-        collectTopLevelVarNames(self, node.data.list.start, node.data.list.len);
-    }
     // ES2025: using/await using → try-finally 래핑
     if (self.options.unsupported.using) {
         const Using = es2025_using.ES2025Using(Transformer);
@@ -50,13 +46,12 @@ pub fn visitListNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
     });
 }
 
-/// block_statement를 방문하면서 내부 let/const 리네이밍을 적용한다.
+/// es5 블록 방문. 블록 안 let/const 의 새 이름은 심볼 표(`block_rename_map`)로 이미 정해져
+/// 식별자 방문이 적용한다 (#4760).
 fn visitBlockWithScoping(self: *Transformer, node: Node) Error!NodeIndex {
     const list_start = node.data.list.start;
     const list_len = node.data.list.len;
 
-    const saved_scope_len = self.scope_var_names.items.len;
-    const renames_added = try pushBlockRenames(self, list_start, list_len);
     // es5 에선 블록(함수 본문 포함)이 이 경로로 빠진다 — using 낮추기도 여기서 해야 한다.
     // 예전엔 visitListNode 의 using 분기에 닿지 못해 dispose 없이 var 가 됐다 (#4730).
     const Using = es2025_using.ES2025Using(Transformer);
@@ -65,50 +60,11 @@ fn visitBlockWithScoping(self: *Transformer, node: Node) Error!NodeIndex {
     else
         try visitExtraList(self, .{ .start = list_start, .len = list_len });
 
-    // 블록 퇴장: rename 맵 + scope_var_names 모두 복원
-    popBlockRenames(self, renames_added);
-    self.scope_var_names.shrinkRetainingCapacity(saved_scope_len);
-
     return self.ast.addNode(.{
         .tag = .block_statement,
         .span = node.span,
         .data = .{ .list = new_list },
     });
-}
-
-/// program/function_body의 top-level 선언에서 var/let/const 이름을 scope_var_names에 수집.
-fn collectTopLevelVarNames(self: *Transformer, list_start: u32, list_len: u32) void {
-    var i: u32 = 0;
-    while (i < list_len) : (i += 1) {
-        const raw = self.ast.extra_data.items[list_start + i];
-        const stmt = self.ast.getNode(@enumFromInt(raw));
-        if (stmt.tag != .variable_declaration) continue;
-
-        const ve = stmt.data.extra;
-        const decl_start = self.readU32(ve, 1);
-        const decl_len = self.readU32(ve, 2);
-
-        var j: u32 = 0;
-        while (j < decl_len) : (j += 1) {
-            const decl_raw = self.ast.extra_data.items[decl_start + j];
-            const decl = self.ast.getNode(@enumFromInt(decl_raw));
-            if (decl.tag != .variable_declarator) continue;
-
-            const name_idx = self.readNodeIdx(decl.data.extra, 0);
-            if (name_idx.isNone()) continue;
-
-            const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
-            var names: std.ArrayList([]const u8) = .empty;
-            defer names.deinit(self.allocator);
-            BlockScoping.collectBindingNames(self, name_idx, &names) catch continue;
-
-            for (names.items) |name| {
-                if (!isNameInScope(self, name)) {
-                    self.scope_var_names.append(self.allocator, stableName(self, name) catch continue) catch {};
-                }
-            }
-        }
-    }
 }
 
 /// extra_data의 노드 리스트를 방문하여 새 AST에 복사.
@@ -189,83 +145,6 @@ pub fn lookupBlockRename(self: *const Transformer, name: []const u8) ?[]const u8
         if (std.mem.eql(u8, entry.old_name, name)) return entry.new_name;
     }
     return null;
-}
-
-/// 현재 함수 스코프의 var 이름 목록에 해당 이름이 있는지 확인.
-fn isNameInScope(self: *const Transformer, name: []const u8) bool {
-    for (self.scope_var_names.items) |n| {
-        if (std.mem.eql(u8, n, name)) return true;
-    }
-    return false;
-}
-
-/// block_statement 진입 시: 내부 let/const 선언을 스캔하여 외부 스코프와
-/// 충돌하는 이름을 찾고 리네이밍 맵을 push한다.
-/// 반환값: push한 rename entry 수 (퇴장 시 pop할 양).
-fn pushBlockRenames(self: *Transformer, list_start: u32, list_len: u32) Error!u32 {
-    // 심볼 표가 있으면 리네임은 심볼로 정해져 있다 (#4760).
-    if (self.block_rename_map != null) return 0;
-    var renames_added: u32 = 0;
-
-    var i: u32 = 0;
-    while (i < list_len) : (i += 1) {
-        const raw = self.ast.extra_data.items[list_start + i];
-        const stmt = self.ast.getNode(@enumFromInt(raw));
-        if (stmt.tag != .variable_declaration) continue;
-
-        const ve = stmt.data.extra;
-        if (!self.ast.variableDeclarationKind(stmt).isLexical()) continue;
-
-        const decl_start = self.readU32(ve, 1);
-        const decl_len = self.readU32(ve, 2);
-
-        var j: u32 = 0;
-        while (j < decl_len) : (j += 1) {
-            const decl_raw = self.ast.extra_data.items[decl_start + j];
-            const decl = self.ast.getNode(@enumFromInt(decl_raw));
-            if (decl.tag != .variable_declarator) continue;
-
-            const name_idx = self.readNodeIdx(decl.data.extra, 0);
-            if (name_idx.isNone()) continue;
-
-            // binding pattern에서 모든 이름 수집 (destructuring 지원)
-            const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
-            var names: std.ArrayList([]const u8) = .empty;
-            defer names.deinit(self.allocator);
-            BlockScoping.collectBindingNames(self, name_idx, &names) catch continue;
-
-            for (names.items) |name| {
-                if (isNameInScope(self, name)) {
-                    self.block_rename_counter += 1;
-                    const new_name = std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, self.block_rename_counter }) catch return Error.OutOfMemory;
-                    self.block_rename_stack.append(self.allocator, .{ .old_name = try stableName(self, name), .new_name = new_name }) catch return Error.OutOfMemory;
-                    renames_added += 1;
-                } else {
-                    self.scope_var_names.append(self.allocator, try stableName(self, name)) catch return Error.OutOfMemory;
-                }
-            }
-        }
-    }
-
-    return renames_added;
-}
-
-/// for/for-in/for-of 헤더의 lexical binding 은 block_statement 자식이 아니므로
-/// pushBlockRenames() 스캔에 잡히지 않는다. block_scoping lowering 으로 `var` 가
-/// 되면 같은 함수 스코프의 기존 이름을 덮을 수 있으므로, 충돌하는 헤더 이름만
-/// 루프 헤더/body 방문 중 임시 rename 한다.
-pub fn pushLoopHeaderBlockRenames(self: *Transformer, names: []const []const u8) Error!u32 {
-    if (self.block_rename_map != null) return 0;
-    var renames_added: u32 = 0;
-    for (names) |name| {
-        if (!isNameInScope(self, name)) continue;
-
-        self.block_rename_counter += 1;
-        const new_name = std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, self.block_rename_counter }) catch return Error.OutOfMemory;
-        self.block_rename_stack.append(self.allocator, .{ .old_name = try stableName(self, name), .new_name = new_name }) catch return Error.OutOfMemory;
-        renames_added += 1;
-    }
-    return renames_added;
 }
 
 /// 이름 조각을 **오래 들고 있어도 되는** 조각으로 바꾼다.

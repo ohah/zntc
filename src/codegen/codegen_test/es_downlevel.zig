@@ -4723,3 +4723,12 @@ test "ES5 상태 기계: 변환기가 만든 이름을 리네임해도 string_ta
     for (r.output) |c| try std.testing.expect(c < 0x80);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_using$") != null);
 }
+
+test "ES5 블록 스코핑: 함수 본문 var 와 같은 이름의 블록 let 은 새 이름을 받는다 (#4758, 심볼 표)" {
+    // 테스트 하네스도 분석기 스코프를 넘겨 심볼 표 경로를 탄다 — 예전 이름 스택은 함수 본문
+    // var 를 보지 못해 둘을 한 var 로 합쳤다.
+    var r = try e2eTarget(std.testing.allocator, "function f() { var x = 0; { let x = 1; g(x); } return x; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var x$") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var x=0;") != null);
+}

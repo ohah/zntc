@@ -208,10 +208,8 @@ pub fn visitFunction(self: *Transformer, node: Node) Error!NodeIndex {
     self.super_call_this_alias = false;
 
     // ES2015 block scoping: 함수는 새 var 스코프. save/restore.
-    const saved_scope_len = self.scope_var_names.items.len;
     const saved_rename_len = self.block_rename_stack.items.len;
     defer {
-        self.scope_var_names.shrinkRetainingCapacity(saved_scope_len);
         // 함수 내부에서 추가된 rename 해제
         for (self.block_rename_stack.items[saved_rename_len..]) |entry| self.allocator.free(entry.new_name);
         self.block_rename_stack.shrinkRetainingCapacity(saved_rename_len);

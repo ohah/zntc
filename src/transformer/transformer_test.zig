@@ -9,6 +9,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const Ast = ast_mod.Ast;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
+const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 
 test "Transformer: empty program" {
     const std_lib = @import("std");
@@ -314,7 +315,26 @@ pub fn parseAndTransformWithOptions(allocator: std.mem.Allocator, source: []cons
 
     _ = try parser_ptr.parse();
 
+    // es5 블록 스코핑은 심볼 표로 이름을 정한다(#4760) — 프로덕션처럼 분석기 스코프를 넘긴다.
+    var analyzer_storage: ?SemanticAnalyzer = null;
+    defer if (analyzer_storage) |*a| a.deinit();
+    if (options.unsupported.block_scoping) {
+        analyzer_storage = SemanticAnalyzer.init(allocator, &parser_ptr.ast);
+        const a = &analyzer_storage.?;
+        a.is_strict_mode = parser_ptr.is_strict_mode;
+        a.is_module = parser_ptr.is_module;
+        try a.analyze();
+    }
+
     var t = try Transformer.init(allocator, &parser_ptr.ast, options);
+    if (analyzer_storage) |*a| {
+        try t.initSymbolIds(a.symbol_ids.items);
+        t.symbols = a.symbols.items;
+        t.references = a.references.items;
+        t.scopes = a.scopes.items;
+        t.scope_maps = a.scope_maps.items;
+        t.unresolved_references = &a.unresolved_references;
+    }
     const root = try t.transform();
     const moved_ast = t.ast;
     t.deinitExceptAst();
@@ -1391,6 +1411,7 @@ test "#1797 negative: for-of down-level 꺼져있으면 변환 자체 비활성"
 }
 
 test "block scoping: dot member property names are not lexical references" {
+    // 입력은 블록 안 바인딩이 함수 안의 바깥 같은 이름 참조와 겹쳐 실제로 이름을 바꿔야 하는 모양(#4760: 함수 최상위 const 는 var 가 돼도 같은 함수 스코프라 바꾸지 않는다).
     // AxiosHeaders.accessor 패턴 축소. inner const `prototype` 은 rename 되어도
     // `this.prototype` 의 property key 는 Metro/Babel 처럼 그대로 유지해야 한다.
     const source =
@@ -1398,7 +1419,7 @@ test "block scoping: dot member property names are not lexical references" {
         \\let prototype = Outer.prototype;
         \\class Headers {
         \\  static accessor() {
-        \\    const prototype = this.prototype;
+        \\    { const prototype = this.prototype; use(prototype); }
         \\    return prototype;
         \\  }
         \\}
@@ -1418,13 +1439,14 @@ test "block scoping: dot member property names are not lexical references" {
 }
 
 test "block scoping: optional chain property names are not lexical references" {
+    // 입력은 블록 안 바인딩이 함수 안의 바깥 같은 이름 참조와 겹쳐 실제로 이름을 바꿔야 하는 모양(#4760: 함수 최상위 const 는 var 가 돼도 같은 함수 스코프라 바꾸지 않는다).
     // `?.foo` 는 같은 `static_member_expression` tag 의 flag bit 라 dot fix 와
     // 같은 경로. inner `prototype` 이 rename 되어도 property key 는 유지.
     const source =
         \\let prototype = null;
         \\function read(o) {
-        \\  const prototype = 1;
-        \\  return o?.prototype ?? prototype;
+        \\  { const prototype = 1; use(o?.prototype ?? prototype); }
+        \\  return prototype;
         \\}
     ;
     var r = try parseAndTransformWithOptions(
@@ -1609,6 +1631,7 @@ test "codegen: TS `<T>(expr)` prefix-assertion 도 load-bearing 괄호만 제거
 }
 
 test "block scoping: super member property names are not lexical references" {
+    // 입력은 블록 안 바인딩이 함수 안의 바깥 같은 이름 참조와 겹쳐 실제로 이름을 바꿔야 하는 모양(#4760: 함수 최상위 const 는 var 가 돼도 같은 함수 스코프라 바꾸지 않는다).
     // `super.foo` 도 `static_member_expression` 이고 left 가 super_expression.
     // outer `value` 와 method body 의 inner `value` 가 shadow 될 때 inner
     // 가 rename 되어도 `super.value` 의 property key 는 유지되어야 한다.
@@ -1619,8 +1642,8 @@ test "block scoping: super member property names are not lexical references" {
         \\}
         \\class Derived extends Base {
         \\  read() {
-        \\    const value = "inner";
-        \\    return super.value + value;
+        \\    { const value = "inner"; use(super.value + value); }
+        \\    return value;
         \\  }
         \\}
     ;
@@ -1641,14 +1664,15 @@ test "block scoping: super member property names are not lexical references" {
 }
 
 test "block scoping: computed member key is renamed (negative)" {
+    // 입력은 블록 안 바인딩이 함수 안의 바깥 같은 이름 참조와 겹쳐 실제로 이름을 바꿔야 하는 모양(#4760: 함수 최상위 const 는 var 가 돼도 같은 함수 스코프라 바꾸지 않는다).
     // computed_member_expression 의 right 는 lexical reference 이므로 inner
     // rename 이 그대로 적용되어야 한다. 위 dot/private/super fix 의 negative
     // 가드.
     const source =
         \\let key = "a";
         \\function pick(o) {
-        \\  const key = "b";
-        \\  return o[key];
+        \\  { const key = "b"; use(o[key]); }
+        \\  return key;
         \\}
     ;
     var r = try parseAndTransformWithOptions(
@@ -1695,6 +1719,7 @@ test "block scoping: private field property names are not lexical references" {
 }
 
 test "block scoping + object_extensions: shorthand key kept as property name" {
+    // 입력은 블록 안 바인딩이 함수 안의 바깥 같은 이름 참조와 겹쳐 실제로 이름을 바꿔야 하는 모양(#4760: 함수 최상위 const 는 var 가 돼도 같은 함수 스코프라 바꾸지 않는다).
     // `{ routes }` shorthand 의 key 는 property name 이라 block_rename 대상이
     // 아니다. inner `routes` 가 outer `routes` 와 shadow 돼 `routes$N` 으로
     // rename 되더라도 emit 결과는 `{ routes: routes$N }` 이어야 함.
@@ -1703,8 +1728,8 @@ test "block scoping + object_extensions: shorthand key kept as property name" {
     const source =
         \\let routes = "outer";
         \\function f() {
-        \\  const routes = "inner";
-        \\  return { routes };
+        \\  { const routes = "inner"; use({ routes }); }
+        \\  return routes;
         \\}
     ;
     var r = try parseAndTransformWithOptions(

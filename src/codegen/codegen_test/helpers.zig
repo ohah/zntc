@@ -4,6 +4,7 @@ pub const Codegen = codegen_mod.Codegen;
 pub const CodegenOptions = codegen_mod.CodegenOptions;
 pub const Scanner = @import("../../lexer/scanner.zig").Scanner;
 pub const Parser = @import("../../parser/parser.zig").Parser;
+const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
 pub const transformer_mod = @import("../../transformer/transformer.zig");
 pub const Transformer = transformer_mod.Transformer;
 pub const TransformOptions = transformer_mod.TransformOptions;
@@ -173,8 +174,29 @@ pub fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_optio
         return error.ParserDiagnosticsPresent;
     }
 
+    // es5 블록 스코핑을 낮추는 테스트는 프로덕션처럼 분석기 스코프를 넘긴다 — 블록 스코핑 이름은
+    // 심볼 표로 정해진다 (#4760). 다른 테스트는 예전처럼 분석 없이 돈다.
+    var analyzer_storage: ?SemanticAnalyzer = null;
+    if (t_options.unsupported.block_scoping) {
+        analyzer_storage = SemanticAnalyzer.init(allocator, &parser.ast);
+        const analyzer = &analyzer_storage.?;
+        analyzer.is_strict_mode = parser.is_strict_mode;
+        analyzer.is_module = parser.is_module;
+        analyzer.is_ts = parser.source_mode == .ts;
+        analyzer.is_flow = parser.is_flow;
+        try analyzer.analyze();
+    }
+
     var t = try Transformer.init(allocator, &parser.ast, t_options);
     t.line_offsets = scanner.line_offsets.items;
+    if (analyzer_storage) |*analyzer| {
+        try t.initSymbolIds(analyzer.symbol_ids.items);
+        t.symbols = analyzer.symbols.items;
+        t.references = analyzer.references.items;
+        t.scopes = analyzer.scopes.items;
+        t.scope_maps = analyzer.scope_maps.items;
+        t.unresolved_references = &analyzer.unresolved_references;
+    }
     const root = try t.transform();
 
     var cg = Codegen.initWithOptions(allocator, t.ast, cg_options);

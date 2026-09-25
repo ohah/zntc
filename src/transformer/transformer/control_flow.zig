@@ -213,8 +213,6 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
             }
 
             const new_b = try self.visitNode(node.data.ternary.b);
-            const renames_added = try self.pushLoopHeaderBlockRenames(lexical_names.items);
-            defer self.popBlockRenames(renames_added);
 
             const saved = self.in_for_in_of_header;
             self.in_for_in_of_header = true;
@@ -425,9 +423,6 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
             if (has_capture) {
                 BlockScoping.analyzeControlFlow(self, orig_body_idx, &flow, 0, 0);
             }
-
-            const renames_added = try self.pushLoopHeaderBlockRenames(lexical_names.items);
-            defer self.popBlockRenames(renames_added);
 
             const new_init = try self.visitNode(init_idx);
             const new_test = try self.visitNode(self.readNodeIdx(e, 1));
