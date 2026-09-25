@@ -2379,17 +2379,34 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// 알 수 없으므로 **항상** 바꾼다. 반환값은 `popBlockRenames` 에 넘길 개수.
         fn pushStateMachineRenames(self: *Transformer, bindings: []const NodeIndex) Transformer.Error!u32 {
             if (!stateMachineRenamesBlockScope(self)) return 0;
+            var stack_pushed: u32 = 0;
             for (bindings) |binding| {
                 const name = try self.stableName(self.ast.getText(self.ast.getNode(binding).span));
-                // 심볼 표가 이미 이름을 정했으면 그 이름을 쓴다 — 일반 경로 참조와 어긋나지 않게.
-                const new_name = if (self.tableRenameOf(binding)) |from_table| try self.allocator.dupe(u8, from_table) else blk: {
-                    self.block_rename_counter += 1;
-                    break :blk try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, self.block_rename_counter });
-                };
+                const bi = @intFromEnum(binding);
+                const sym: ?u32 = if (bi < self.symbol_ids.items.len) self.symbol_ids.items[bi] else null;
+                // 사용자 바인딩(심볼 있음)은 심볼 표에 등록한다 — 참조는 심볼로 찾아 이름이 같은
+                // 다른 변수와 섞이지 않는다 (#4760). 표가 이미 정한 이름이 있으면 그 이름.
+                if (sym) |sid| {
+                    const new_name = self.tableRenameOf(binding) orelse blk: {
+                        self.block_rename_counter += 1;
+                        if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+                        const n = try std.fmt.allocPrint(self.name_arena.?.allocator(), "{s}${d}", .{ name, self.block_rename_counter });
+                        if (self.block_rename_map == null) self.block_rename_map = .empty;
+                        try self.block_rename_map.?.put(self.allocator, sid, n);
+                        break :blk n;
+                    };
+                    try registerGeneratorVar(self, try self.ast.addString(new_name), binding);
+                    continue;
+                }
+                // 심볼 없는 바인딩은 변환기가 만든 임시 변수(`_d` 등)다. 상태 기계는 중첩 try 등에서
+                // 겹치지 않게 이들도 고유 이름으로 바꾸는데, 참조도 심볼이 없어 이름으로 찾는다.
+                self.block_rename_counter += 1;
+                const new_name = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, self.block_rename_counter });
                 try self.block_rename_stack.append(self.allocator, .{ .old_name = name, .new_name = new_name });
                 try registerGeneratorVar(self, try self.ast.addString(new_name), binding);
+                stack_pushed += 1;
             }
-            return @intCast(bindings.len);
+            return stack_pushed;
         }
 
         fn isRegisteredGeneratorTemp(self: *Transformer, name: []const u8) bool {

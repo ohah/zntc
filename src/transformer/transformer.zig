@@ -315,11 +315,7 @@ pub const Transformer = struct {
     /// 이름 충돌 시 리네이밍 (x → x$1). 스택으로 중첩 블록 지원.
     block_rename_stack: std.ArrayList(BlockRenameEntry) = .empty,
 
-    /// 현재 함수 스코프에서 선언된 모든 변수 이름 (var 호이스팅 범위).
-    /// 블록 진입 시 내부 let/const와 비교하여 충돌 감지에 사용.
-    scope_var_names: std.ArrayList([]const u8) = .empty,
-
-    /// `scope_var_names`·`block_rename_stack` 에 보관하는 이름 중 `string_table` 에 있던
+    /// `block_rename_stack` 에 보관하는 이름 중 `string_table` 에 있던
     /// 것의 복사본 저장소(`stableName`). `string_table` 은 `addString` 때 재할당되어 옮겨지므로
     /// 그 안을 가리키는 조각을 들고 있으면 해제된 메모리를 읽게 된다.
     name_arena: ?std.heap.ArenaAllocator = null,
@@ -484,7 +480,6 @@ pub const Transformer = struct {
     pub const visitListNode = lists_mod.visitListNode;
     pub const visitExtraList = lists_mod.visitExtraList;
     pub const lookupBlockRename = lists_mod.lookupBlockRename;
-    pub const pushLoopHeaderBlockRenames = lists_mod.pushLoopHeaderBlockRenames;
     pub const popBlockRenames = lists_mod.popBlockRenames;
     pub const stableName = lists_mod.stableName;
     pub const buildUniqueName = lists_mod.buildUniqueName;
