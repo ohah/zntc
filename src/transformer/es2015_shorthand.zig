@@ -30,13 +30,8 @@ pub fn ES2015Shorthand(comptime Transformer: type) type {
             const original_left = self.ast.getNode(left_idx);
 
             // key: 원본 이름 그대로. property name 이라 rename 대상 아님.
-            const new_key = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = original_left.span,
-                .data = .{ .string_ref = original_left.data.string_ref },
-            });
-            // scope hoisting 등 다른 후속 transform 이 symbol 을 따라가도록 복사.
-            self.copySymbolId(left_idx, new_key);
+            // scope hoisting 등 다른 후속 transform 이 symbol 을 따라가도록 심볼을 물려준다.
+            const new_key = try self.makeIdentifierRefWithSymbolAt(original_left.data.string_ref, original_left.span, left_idx);
 
             // value: visitNode 가 block_rename / scope hoist 를 적용.
             const new_value = try self.visitNode(left_idx);

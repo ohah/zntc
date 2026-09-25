@@ -78,12 +78,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             const combined_args = try buildSpreadArgs(self, args_start, args_len, span);
 
             // callee.apply(this, args)
-            const apply_span = try self.ast.addString("apply");
-            const apply_prop = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = apply_span,
-                .data = .{ .string_ref = apply_span },
-            });
+            const apply_prop = try es_helpers.makePropertyName(self, "apply");
             const member_extra = try self.ast.addExtras(&.{
                 @intFromEnum(new_callee), @intFromEnum(apply_prop), 0,
             });
@@ -153,12 +148,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             const combined_args = try buildSpreadArgs(self, args_start, args_len, span);
 
             // [null].concat(combined_args)
-            const concat_span = try self.ast.addString("concat");
-            const concat_prop = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = concat_span,
-                .data = .{ .string_ref = concat_span },
-            });
+            const concat_prop = try es_helpers.makePropertyName(self, "concat");
             const concat_me = try self.ast.addExtras(&.{
                 @intFromEnum(null_arr), @intFromEnum(concat_prop), 0,
             });
@@ -178,12 +168,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             });
 
             // Foo.bind
-            const bind_span = try self.ast.addString("bind");
-            const bind_prop = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = bind_span,
-                .data = .{ .string_ref = bind_span },
-            });
+            const bind_prop = try es_helpers.makePropertyName(self, "bind");
             const bind_me = try self.ast.addExtras(&.{
                 @intFromEnum(bind_target), @intFromEnum(bind_prop), 0,
             });
@@ -194,12 +179,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             });
 
             // Foo.bind.apply
-            const apply_span = try self.ast.addString("apply");
-            const apply_prop = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = apply_span,
-                .data = .{ .string_ref = apply_span },
-            });
+            const apply_prop = try es_helpers.makePropertyName(self, "apply");
             const apply_me = try self.ast.addExtras(&.{
                 @intFromEnum(bind_member), @intFromEnum(apply_prop), 0,
             });
@@ -419,12 +399,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             });
 
             // [].concat
-            const concat_span = try self.ast.addString("concat");
-            const concat_prop = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = concat_span,
-                .data = .{ .string_ref = concat_span },
-            });
+            const concat_prop = try es_helpers.makePropertyName(self, "concat");
             const member_extra = try self.ast.addExtras(&.{
                 @intFromEnum(empty_arr), @intFromEnum(concat_prop), 0,
             });

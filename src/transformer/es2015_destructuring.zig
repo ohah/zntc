@@ -143,7 +143,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     else
                         new_init;
                     const temp_span = try es_helpers.makeTempVarSpan(self);
-                    const temp_binding = try es_helpers.makeBindingIdentifier(self, temp_span);
+                    const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
 
                     // var _ref = init
                     const ref_decl = try es_helpers.makeDeclarator(self, temp_binding, pattern_init, span);
@@ -443,16 +443,10 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const access = try emitObjectMemberAccessForRest(self, ref, key_node, key_idx, &exclude_keys, .assign, span);
 
                 if (prop.tag == .assignment_target_property_identifier) {
-                    const target_node = try self.ast.addNode(.{
-                        .tag = .identifier_reference,
-                        .span = key_node.span,
-                        .data = .{ .string_ref = key_node.data.string_ref },
-                    });
-                    // 새로 만든 노드는 symbol_ids 밖이라 그대로 두면 mangler rename 이
+                    // 새로 만든 노드는 symbol_ids 밖이라 심볼을 안 물려주면 mangler rename 이
                     // 통째로 스킵된다 — `({o: {s, w = 1}} = box)` 가 es5 로 낮아질 때
                     // 원본 이름으로 대입돼 미선언 전역이 된다 (#4493 의 es5 표면).
-                    // 이 파일의 다른 노드 생성 지점과 동일하게 심볼을 물려준다.
-                    self.propagateSymbolId(key_idx, target_node);
+                    const target_node = try self.makeIdentifierRefWithSymbolAt(key_node.data.string_ref, key_node.span, key_idx);
 
                     // shorthand_with_default: {a = 1} → a = _ref.a === void 0 ? 1 : _ref.a
                     // flags bit 0 = shorthand_with_default, right = default value
@@ -625,21 +619,14 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 if (value_idx.isNone() or @intFromEnum(value_idx) == @intFromEnum(key_idx)) {
                     // shorthand: { a } → var a = _ref.a
                     // block scoping rename이 필요한 경우 이름 교체.
-                    var binding_span = key_node.span;
-                    var binding_data = key_node.data.string_ref;
+                    // 파서가 만든 식별자는 span 과 string_ref 가 같아 이름 span 을 노드 위치로 쓴다.
+                    var binding_name = key_node.data.string_ref;
                     if (self.options.unsupported.block_scoping) {
                         if (self.renamedNameOf(key_idx)) |new_name| {
-                            const new_span = try self.ast.addString(new_name);
-                            binding_span = new_span;
-                            binding_data = new_span;
+                            binding_name = try self.ast.addString(new_name);
                         }
                     }
-                    const binding = try self.ast.addNode(.{
-                        .tag = .binding_identifier,
-                        .span = binding_span,
-                        .data = .{ .string_ref = binding_data },
-                    });
-                    self.propagateSymbolId(key_idx, binding);
+                    const binding = try self.makeUserBinding(binding_name, key_idx);
                     const decl = try es_helpers.makeDeclarator(self, binding, member_access, span);
                     try self.scratch.append(self.allocator, decl);
                 } else {
@@ -655,7 +642,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                             try rewritePatternDefaultTDZ(self, default_val, pattern, i_loop);
                             const defaulted = try buildDefaulted(self, member_access, default_val, ref_span, key_idx, key_node.tag, span);
                             const nested_span = try es_helpers.makeTempVarSpan(self);
-                            const nested_binding = try es_helpers.makeBindingIdentifier(self, nested_span);
+                            const nested_binding = try es_helpers.makeSyntheticBinding(self, nested_span);
                             const nested_init = if (left_node.tag == .array_pattern)
                                 try buildArrayRead(self, defaulted, left_node, span)
                             else
@@ -675,7 +662,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     } else if (value_node.tag == .object_pattern or value_node.tag == .array_pattern) {
                         // nested: { a: { b } } → var _ref2 = _ref.a; var b = _ref2.b
                         const nested_span = try es_helpers.makeTempVarSpan(self);
-                        const nested_binding = try es_helpers.makeBindingIdentifier(self, nested_span);
+                        const nested_binding = try es_helpers.makeSyntheticBinding(self, nested_span);
                         const nested_init = if (value_node.tag == .array_pattern)
                             try buildArrayRead(self, member_access, value_node, span)
                         else
@@ -739,7 +726,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                             .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = elem_access2 } },
                         });
                         const nested_span = try es_helpers.makeTempVarSpan(self);
-                        const nested_binding = try es_helpers.makeBindingIdentifier(self, nested_span);
+                        const nested_binding = try es_helpers.makeSyntheticBinding(self, nested_span);
                         const nested_init = if (left_node.tag == .array_pattern)
                             try buildArrayRead(self, conditional, left_node, span)
                         else
@@ -770,7 +757,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 } else if (elem.tag == .object_pattern or elem.tag == .array_pattern) {
                     // nested: [[a, b]] → var _ref2 = _ref[0]; var a = _ref2[0]; ...
                     const nested_span = try es_helpers.makeTempVarSpan(self);
-                    const nested_binding = try es_helpers.makeBindingIdentifier(self, nested_span);
+                    const nested_binding = try es_helpers.makeSyntheticBinding(self, nested_span);
                     const nested_init = if (elem.tag == .array_pattern)
                         try buildArrayRead(self, elem_access, elem, span)
                     else
@@ -794,7 +781,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     // `[a, ...[b, c]]` — 패턴을 그대로 두면 es5 에 구조 분해 문법이 남는다 (#4791).
                     // slice 결과는 이미 배열이라 `__read` 없이 임시 변수에 받아 재귀한다.
                     const nested_span = try es_helpers.makeTempVarSpan(self);
-                    const nested_binding = try es_helpers.makeBindingIdentifier(self, nested_span);
+                    const nested_binding = try es_helpers.makeSyntheticBinding(self, nested_span);
                     try self.scratch.append(self.allocator, try es_helpers.makeDeclarator(self, nested_binding, rest_init, span));
                     try emitPatternDeclarators(self, rest_node, nested_span, span);
                     return;
@@ -912,7 +899,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const key_span = try es_helpers.makeTempVarSpan(self);
                 const capture: NodeIndex = switch (mode) {
                     .decl => blk: {
-                        const key_binding = try es_helpers.makeBindingIdentifier(self, key_span);
+                        const key_binding = try es_helpers.makeSyntheticBinding(self, key_span);
                         const key_value = try self.visitNode(key_node.data.unary.operand);
                         break :blk try es_helpers.makeDeclarator(self, key_binding, key_value, span);
                     },
@@ -1086,7 +1073,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const orig_kind = self.ast.variableDeclarationKind(left_node);
             const out_kind: ast_mod.VariableDeclarationKind = if (self.options.unsupported.block_scoping) .@"var" else orig_kind;
 
-            const temp_binding = try es_helpers.makeBindingIdentifier(self, temp_span);
+            const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
             const temp_decl = try es_helpers.makeDeclarator(self, temp_binding, NodeIndex.none, span);
             const new_left = try es_helpers.makeVarDeclaration(self, &.{temp_decl}, out_kind, span);
 
@@ -1140,7 +1127,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
             const temp_span = try es_helpers.makeTempVarSpan(self);
             const out_kind: ast_mod.VariableDeclarationKind = if (self.options.unsupported.block_scoping) .@"var" else .@"const";
-            const temp_binding = try es_helpers.makeBindingIdentifier(self, temp_span);
+            const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
             const temp_decl = try es_helpers.makeDeclarator(self, temp_binding, NodeIndex.none, span);
             const new_left = try es_helpers.makeVarDeclaration(self, &.{temp_decl}, out_kind, span);
 

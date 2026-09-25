@@ -279,10 +279,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             for (self.generator_temp_var_spans.items) |temp_span| {
                 const gop = try seen.getOrPut(self.allocator, self.ast.getText(temp_span));
                 if (gop.found_existing) continue;
-                const binding = try es_helpers.makeBindingIdentifier(self, temp_span);
                 // 사용자 바인딩에서 온 이름이면 그 심볼을 물려준다 — 대입·참조만 심볼을 갖고
                 // 이 선언이 없으면 minify 가 둘을 다른 이름으로 찍는다 (#4760).
-                if (self.generator_var_origins.get(spanKey(temp_span))) |origin| self.propagateSymbolId(origin, binding);
+                const binding = if (self.generator_var_origins.get(spanKey(temp_span))) |origin|
+                    try self.makeUserBinding(temp_span, origin)
+                else
+                    try es_helpers.makeSyntheticBinding(self, temp_span);
                 const declarator = try es_helpers.makeDeclarator(self, binding, .none, span);
                 try self.scratch.append(self.allocator, declarator);
             }
@@ -2546,7 +2548,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // _state 파라미터
             const state_span = try self.ast.addString("_state");
-            const state_param = try es_helpers.makeBindingIdentifier(self, state_span);
+            const state_param = try es_helpers.makeSyntheticBinding(self, state_span);
 
             // function body: switch_body를 block으로 감싸기
             const body_list = try self.ast.addNodeList(&.{switch_body});

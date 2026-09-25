@@ -250,7 +250,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             span: Span,
         ) Transformer.Error!NodeIndex {
             const temp_span = try es_helpers.makeTempVarSpan(self);
-            const temp_binding = try es_helpers.makeBindingIdentifier(self, temp_span);
+            const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
 
             const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, span);
             const default_stmt = try buildDefaultCheck(self, temp_ref, visited_default, span);
@@ -261,7 +261,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
             const read_span = if (pattern_node.tag == .array_pattern) blk: {
                 const read_span = try es_helpers.makeTempVarSpan(self);
-                const read_binding = try es_helpers.makeBindingIdentifier(self, read_span);
+                const read_binding = try es_helpers.makeSyntheticBinding(self, read_span);
                 const read_init = try es2015_destruct.buildArrayRead(self, temp_ref2, pattern_node, span);
                 const read_decl = try es_helpers.makeVarDeclaration(
                     self,
@@ -294,7 +294,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             span: Span,
         ) Transformer.Error!NodeIndex {
             const temp_span = try es_helpers.makeTempVarSpan(self);
-            const temp_binding = try es_helpers.makeBindingIdentifier(self, temp_span);
+            const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -303,7 +303,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
             const read_span = if (pattern.tag == .array_pattern) blk: {
                 const read_span = try es_helpers.makeTempVarSpan(self);
-                const read_binding = try es_helpers.makeBindingIdentifier(self, read_span);
+                const read_binding = try es_helpers.makeSyntheticBinding(self, read_span);
                 const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, span);
                 const read_init = try es2015_destruct.buildArrayRead(self, temp_ref, pattern, span);
                 const read_decl = try es_helpers.makeDeclarator(self, read_binding, read_init, span);
@@ -403,13 +403,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
         /// minify 가 매개변수 선언만 바꾸고 이 참조는 원래 이름으로 남는다 (#4762).
         fn copyIdentifier(self: *Transformer, node_idx: NodeIndex) Transformer.Error!NodeIndex {
             const node = self.ast.getNode(node_idx);
-            const copy = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = node.span,
-                .data = .{ .string_ref = node.data.string_ref },
-            });
-            self.propagateSymbolId(node_idx, copy);
-            return copy;
+            return self.makeIdentifierRefWithSymbolAt(node.data.string_ref, node.span, node_idx);
         }
 
         fn collectBindingNames(self: *Transformer, idx: NodeIndex, out: *std.ArrayList(Span)) Transformer.Error!void {

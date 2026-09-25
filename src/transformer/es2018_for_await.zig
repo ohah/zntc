@@ -86,10 +86,10 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             // var _iter = __asyncValues(iterable), _step = void 0, _ret = void 0, _errObj = void 0;
             const values_call = try es_helpers.makeCallExpr(self, try es_helpers.makeRuntimeHelperRef(self, "__asyncValues"), &.{right}, span);
             const decl = try es_helpers.makeVarDeclaration(self, &.{
-                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, iter), values_call, span),
-                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, step), try es_helpers.makeVoidZero(self, span), span),
-                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, ret), try es_helpers.makeVoidZero(self, span), span),
-                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, errobj), try es_helpers.makeVoidZero(self, span), span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, iter), values_call, span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, step), try es_helpers.makeVoidZero(self, span), span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, ret), try es_helpers.makeVoidZero(self, span), span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, errobj), try es_helpers.makeVoidZero(self, span), span),
             }, .@"var", span);
 
             // while (!(_step = await _iter.next()).done) { <루프 변수 = _step.value>; body }
@@ -121,7 +121,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             const error_obj = try self.ast.addNode(.{ .tag = .object_expression, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{error_prop}) } });
             const set_errobj = try es_helpers.makeAssignStmt(self, try ref(self, errobj), error_obj, span, 0);
             const catch_clause = try self.ast.addNode(.{ .tag = .catch_clause, .span = span, .data = .{ .binary = .{
-                .left = try es_helpers.makeBindingIdentifier(self, err),
+                .left = try es_helpers.makeSyntheticBinding(self, err),
                 .right = try block(self, &.{set_errobj}, span),
                 .flags = 0,
             } } });
