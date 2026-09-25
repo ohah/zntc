@@ -3350,6 +3350,7 @@ pub const Linker = struct {
                     sem.symbol_ids,
                     @intCast(sym_idx),
                     stmt_spans_opt,
+                    sem.references,
                     ns_index_ptr,
                     ib.local_name,
                 ) catch continue;

@@ -12,6 +12,7 @@ const Span = @import("../../lexer/token.zig").Span;
 const Ast = @import("../../parser/ast.zig").Ast;
 const ast_walk = @import("../../parser/ast_walk.zig");
 const stmt_info_mod = @import("../stmt_info.zig");
+const Reference = @import("../../semantic/symbol.zig").Reference;
 
 /// namespace 식별자가 member access 이외의 위치에서 사용되는지 판별.
 /// `ns.prop`만 사용되면 false (직접 치환 가능), `console.log(ns)` 등이면 true (객체 필요).
@@ -329,7 +330,7 @@ pub fn analyzeNamespaceAccess(
 ) std.mem.Allocator.Error!NamespaceAccess {
     var index = try NamespaceAccessIndex.build(allocator, ast);
     defer index.deinit(allocator);
-    return analyzeNamespaceAccessWithIndex(allocator, ast, symbol_ids, ns_sym_id, stmt_spans, &index, null);
+    return analyzeNamespaceAccessWithIndex(allocator, ast, symbol_ids, ns_sym_id, stmt_spans, &.{}, &index, null);
 }
 
 /// `analyzeNamespaceAccess` 의 ns_sym_id-의존 후반부만 분리.
@@ -348,6 +349,10 @@ pub fn analyzeNamespaceAccessWithIndex(
     symbol_ids: []const ?u32,
     ns_sym_id: u32,
     stmt_spans: ?[]const Span,
+    /// 분석기 참조. 각 참조의 `stmt_idx` 는 **순회 중 들어 있던** 최상위 문장이라, 변환이 만든
+    /// 문장(원래 위치 span 을 가진 노드를 옮겨 담은 `_a = ns.x` 등)에서도 맞다. 여기서 문장을
+    /// 찾으면 span 추정보다 우선한다 (#4744). 비어 있으면 span 으로만 찾는다.
+    references: []const Reference,
     index: *const NamespaceAccessIndex,
     ns_local_name: ?[]const u8,
 ) std.mem.Allocator.Error!NamespaceAccess {
@@ -355,6 +360,16 @@ pub fn analyzeNamespaceAccessWithIndex(
     var access: NamespaceAccess = .{ .kind = .member_only };
     errdefer access.deinit(allocator);
     if (node_count == 0) return access;
+
+    // namespace 식별자 노드 → 그 참조가 속한 최상위 문장.
+    var stmt_by_node: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer stmt_by_node.deinit(allocator);
+    if (stmt_spans != null) {
+        for (references) |r| {
+            if (@intFromEnum(r.symbol_id) != ns_sym_id or r.stmt_idx == Reference.NO_STMT) continue;
+            try stmt_by_node.put(allocator, @intFromEnum(r.node_index), r.stmt_idx);
+        }
+    }
 
     // symbol_id 매칭 — symbol_ids 가 정확하면 가장 정확. transformer rebind 시 누락 가능.
     var symbol_matched: usize = 0;
@@ -377,7 +392,7 @@ pub fn analyzeNamespaceAccessWithIndex(
 
         symbol_matched += 1;
         if (index.prop_by_obj.get(@intCast(node_i))) |prop_node_idx| {
-            try recordAccess(allocator, &access, ast, prop_node_idx, node.span.start, stmt_spans);
+            try recordAccessInStmt(allocator, &access, ast, prop_node_idx, node.span.start, stmt_spans, stmt_by_node.get(@intCast(node_i)));
         } else {
             access.deinit(allocator);
             access.members = .{};
@@ -493,6 +508,21 @@ fn recordAccess(
     obj_span_start: u32,
     stmt_spans: ?[]const Span,
 ) std.mem.Allocator.Error!void {
+    return recordAccessInStmt(allocator, access, ast, prop_node_idx, obj_span_start, stmt_spans, null);
+}
+
+/// `known_stmt` 가 있으면(분석기 참조로 찾은 문장) 그것을, 없으면 span 으로 찾은 문장을 기록한다.
+/// span 은 소스 위치라 변환이 앞에 끼워 넣은 문장(`var _a;`·`_a = ns.x;`)에서는 원래 위치를 가리켜
+/// 엉뚱한 문장이 나온다 — 그러면 트리 셰이커가 실제 사용 문장에서 이 멤버를 못 보고 export 를 지운다.
+fn recordAccessInStmt(
+    allocator: std.mem.Allocator,
+    access: *NamespaceAccess,
+    ast: *const Ast,
+    prop_node_idx: u32,
+    obj_span_start: u32,
+    stmt_spans: ?[]const Span,
+    known_stmt: ?u32,
+) std.mem.Allocator.Error!void {
     const prop_node = ast.nodes.items[prop_node_idx];
     const name = ast.getText(prop_node.span);
     if (name.len == 0) return;
@@ -501,7 +531,7 @@ fn recordAccess(
     if (!gop.found_existing) gop.value_ptr.* = .empty;
 
     if (stmt_spans) |spans| {
-        if (stmt_info_mod.findStmtForPos(spans, obj_span_start)) |stmt_idx| {
+        if (known_stmt orelse stmt_info_mod.findStmtForPos(spans, obj_span_start)) |stmt_idx| {
             const list = gop.value_ptr;
             for (list.items) |existing| if (existing == stmt_idx) return;
             try list.append(allocator, stmt_idx);

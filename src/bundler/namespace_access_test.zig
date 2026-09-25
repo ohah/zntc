@@ -310,6 +310,7 @@ fn runAccessWithFallback(
         analyzer.symbol_ids.items,
         ns_sym_id,
         null,
+        &.{},
         &index,
         ns_name,
     );
