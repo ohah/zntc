@@ -422,11 +422,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
 
     // static { _classThis = this; }
     {
-        const classThis_ref = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = classThis_span,
-            .data = .{ .string_ref = classThis_span },
-        });
+        const classThis_ref = try es_helpers.makeSyntheticRefFromSpan(self, classThis_span);
         const this_node = try self.ast.addNode(.{
             .tag = .this_expression,
             .span = zero_span,
@@ -633,12 +629,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 .span = zero_span,
                 .data = .{ .list = ctor_body_list },
             });
-            const ctor_key_span = try self.ast.addString("constructor");
-            const ctor_key = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = ctor_key_span,
-                .data = .{ .string_ref = ctor_key_span },
-            });
+            const ctor_key = try es_helpers.makePropertyName(self, "constructor");
             const empty_decos = try self.ast.addNodeList(&.{});
             const ctor_method = try self.addExtraNode(.method_definition, zero_span, &.{
                 @intFromEnum(ctor_key),
@@ -672,12 +663,10 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     });
 
     // IIFE 내부: var Foo = class { ... };
+    // 클래스 이름 바인딩 — 익명·`default` 면 임시 이름이라 심볼이 없다.
+    const class_name_origin: NodeIndex = if (name_idx.isNone() or std.mem.eql(u8, self.ast.getText(self.ast.getNode(name_idx).data.string_ref), "default")) .none else name_idx;
     const inner_name_span = try self.ast.addString(class_name_text);
-    const inner_binding = try self.ast.addNode(.{
-        .tag = .binding_identifier,
-        .span = inner_name_span,
-        .data = .{ .string_ref = inner_name_span },
-    });
+    const inner_binding = try self.makeUserBinding(inner_name_span, class_name_origin);
     const inner_declarator = try self.addExtraNode(.variable_declarator, zero_span, &.{
         @intFromEnum(inner_binding), none, @intFromEnum(inner_class),
     });
@@ -688,16 +677,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     try iife_stmts.append(self.allocator, inner_var_decl);
 
     // return Foo = _classThis;
-    const return_name = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = inner_name_span,
-        .data = .{ .string_ref = inner_name_span },
-    });
-    const classThis_ref2 = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = classThis_span,
-        .data = .{ .string_ref = classThis_span },
-    });
+    const return_name = try self.makeIdentifierRefWithSymbol(inner_name_span, class_name_origin);
+    const classThis_ref2 = try es_helpers.makeSyntheticRefFromSpan(self, classThis_span);
     const return_assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = zero_span,
@@ -773,11 +754,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     // "default" 이름은 IIFE 내부 var에서 사용한 temp var name을 재사용
     const outer_name_span = try self.ast.addString(class_name_text);
 
-    const outer_binding = try self.ast.addNode(.{
-        .tag = .binding_identifier,
-        .span = outer_name_span,
-        .data = .{ .string_ref = outer_name_span },
-    });
+    const outer_binding = try self.makeUserBinding(outer_name_span, name_idx);
     const outer_declarator = try self.addExtraNode(.variable_declarator, zero_span, &.{
         @intFromEnum(outer_binding), none, @intFromEnum(iife_call),
     });

@@ -44,7 +44,6 @@ const class_members = @import("es2015_class/members.zig");
 const class_private_fields = @import("es2015_class/private_fields.zig");
 const class_super_props = @import("es2015_class/super_props.zig");
 // #1752: 공용 helper 이름 모듈 (transformer → bundler 역의존 회피).
-const rt = @import("../runtime_helper_names.zig");
 
 const MethodExtra = ast_mod.MethodExtra;
 const PropertyExtra = ast_mod.PropertyExtra;
@@ -75,7 +74,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 self.ast.getNode(new_name).data.string_ref
             else blk: {
                 const synthetic = try self.ast.addString("_Class");
-                new_name = try es_helpers.makeBindingIdentifier(self, synthetic);
+                new_name = try es_helpers.makeSyntheticBinding(self, synthetic);
                 break :blk synthetic;
             };
             const saved_class_name_node = self.current_class_name_node;
@@ -158,8 +157,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // name_span은 stable Span이므로 재사용. getText slice는 이후 addString
             // realloc에 freed될 수 있어 쥐지 않는다 (#1481).
             const fresh_name_span = name_span;
-            const fresh_name = try es_helpers.makeBindingIdentifier(self, fresh_name_span);
-            self.propagateSymbolId(new_name, fresh_name);
+            const fresh_name = try self.makeUserBinding(fresh_name_span, new_name);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -272,7 +270,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // function(_super) { ... } 또는 function() { ... }
             const none = @intFromEnum(NodeIndex.none);
             const wrapper_params = if (has_super and super_span != null) blk: {
-                const param_binding = try es_helpers.makeBindingIdentifier(self, try self.ast.addString(super_param_text));
+                const param_binding = try es_helpers.makeSyntheticBinding(self, try self.ast.addString(super_param_text));
                 break :blk try self.ast.addNodeList(&.{param_binding});
             } else try self.ast.addNodeList(&.{});
             const wrapper_params_node = try self.ast.addFormalParameters(wrapper_params, span);
@@ -337,7 +335,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const name_node = if (!new_name.isNone())
                 new_name
             else
-                try es_helpers.makeBindingIdentifier(self, name_span);
+                try es_helpers.makeSyntheticBinding(self, name_span);
             const saved_class_name_node = self.current_class_name_node;
             self.current_class_name_node = name_node;
             defer self.current_class_name_node = saved_class_name_node;
@@ -420,9 +418,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // → UTF-8 corrupted identifier 출력 (#1481).
             const func_name = if (has_extra) blk: {
                 // IIFE 안쪽 함수 이름 — 안쪽 참조와 같은 심볼 (위 선언 경로와 같은 이유).
-                const b = try es_helpers.makeBindingIdentifier(self, name_span);
-                self.propagateSymbolId(name_node, b);
-                break :blk b;
+                break :blk try self.makeUserBinding(name_span, name_node);
             } else name_node;
 
             var func_node = if (cm.constructor_idx) |ctor_idx|
@@ -463,8 +459,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
 
             // IIFE (lowerClassDeclaration과 동일 패턴) — name_span을 재사용.
-            // func_node 는 위에서 이미 fresh name(`func_name` = makeBindingIdentifier, symbol
-            // 무연결)으로 빌드되고 instance_fields → `_this` alias → __classCallCheck prepend 까지
+            // func_node 는 위에서 이미 fresh name(`func_name` = makeUserBinding, 안쪽 참조와
+            // 같은 심볼)으로 빌드되고 instance_fields → `_this` alias → __classCallCheck prepend 까지
             // 끝난 상태이므로 그대로 사용한다. 이전엔 여기서 재빌드하며 `_this` alias prepend 를
             // 누락해, 화살표-함수 인스턴스 필드(`f = () => this`)가 `_this is not defined` 로
             // 런타임 크래시했다 (#4279). 재빌드 제거로 비대칭을 구조적으로 차단.
@@ -531,7 +527,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // function(_super) { ... } 또는 function() { ... }
             const none = @intFromEnum(NodeIndex.none);
             const wrapper_params = if (has_super and super_span != null) blk: {
-                break :blk try self.ast.addNodeList(&.{try es_helpers.makeBindingIdentifier(self, try self.ast.addString(expr_super_param))});
+                break :blk try self.ast.addNodeList(&.{try es_helpers.makeSyntheticBinding(self, try self.ast.addString(expr_super_param))});
             } else try self.ast.addNodeList(&.{});
             const wrapper_params_node2 = try self.ast.addFormalParameters(wrapper_params, span);
             const wrapper_extra = try self.ast.addExtras(&.{ none, @intFromEnum(wrapper_params_node2), @intFromEnum(iife_body), 0, none });
@@ -691,19 +687,15 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // decorator가 없으면 아무것도 안 함
             if (old_deco_len == 0 and member_decos.items.len == 0 and ctor_param_decos.items.len == 0) return;
 
-            const decorate_name = rt.helperName("__decorateClass", self.options.minify_whitespace);
-            const decorate_span = try self.ast.addString(decorate_name);
-
             // member decorator 호출: __decorateClass([dec], Foo.prototype, "name", kind)
             for (member_decos.items) |md| {
-                const call_stmt = try self.buildDecorateClassMemberCall(decorate_span, name_span, class_name_old_idx, md);
+                const call_stmt = try self.buildDecorateClassMemberCall(name_span, class_name_old_idx, md);
                 try self.pending_nodes.append(self.allocator, call_stmt);
             }
 
             // class + constructor param decorator 호출: Foo = __decorateClass([...], Foo)
             if (old_deco_len > 0 or ctor_param_decos.items.len > 0) {
                 const class_deco_stmt = try self.buildDecorateClassCall(
-                    decorate_span,
                     name_span,
                     class_name_old_idx,
                     old_deco_start,

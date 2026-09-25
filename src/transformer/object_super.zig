@@ -211,7 +211,7 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
     } } });
     if (home.wrap == .assign) return assign;
 
-    const param_binding = try es_helpers.makeBindingIdentifier(self, home.span);
+    const param_binding = try es_helpers.makeSyntheticBinding(self, home.span);
     const none = @intFromEnum(NodeIndex.none);
     const formal = try self.ast.addNode(.{
         .tag = .formal_parameter,

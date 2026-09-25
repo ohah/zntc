@@ -131,7 +131,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, node: Node, key_assign
             classBodyHasStaticPrivateMember(self, body_idx, lower_pm, lower_pf))
         {
             const tmp_span = try es_helpers.makeTempVarSpan(self);
-            new_name = try es_helpers.makeBindingIdentifier(self, tmp_span);
+            new_name = try es_helpers.makeSyntheticBinding(self, tmp_span);
         }
         var new_body_pl: NodeIndex = .none;
         var ctor_stmts_pl: std.ArrayList(NodeIndex) = .empty;
@@ -238,7 +238,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, node: Node, key_assign
         classBodyNeedsNameForStatics(self, body_idx, ctx.static_field_assignments != null))
     {
         const tmp_span = try es_helpers.makeTempVarSpan(self);
-        new_name = try es_helpers.makeBindingIdentifier(self, tmp_span);
+        new_name = try es_helpers.makeSyntheticBinding(self, tmp_span);
     }
 
     // static block·클래스 밖으로 옮기는 static field 의 this 치환을 위한 클래스 이름 (#4801).
@@ -275,11 +275,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, node: Node, key_assign
                 const temp_span = try es_helpers.makeTempVarSpan(self);
 
                 // _a = foo; 대입
-                const temp_ref = try self.ast.addNode(.{
-                    .tag = .identifier_reference,
-                    .span = temp_span,
-                    .data = .{ .string_ref = temp_span },
-                });
+                const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
                 const assign = try self.ast.addNode(.{
                     .tag = .assignment_expression,
                     .span = field.span,

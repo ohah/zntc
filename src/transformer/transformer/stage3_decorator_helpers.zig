@@ -205,27 +205,13 @@ pub fn buildClassEsDecorateCall(self: anytype, classThis_span: Span) Error!NodeI
     const arg1 = try es_helpers.makeNullLiteral(self);
 
     // arg2: _classDescriptor = { value: _classThis }
-    const classThis_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = classThis_span,
-        .data = .{ .string_ref = classThis_span },
-    });
-    const value_key_span = try self.ast.addString("value");
-    const value_key = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = value_key_span,
-        .data = .{ .string_ref = value_key_span },
-    });
+    const classThis_ref = try es_helpers.makeSyntheticRefFromSpan(self, classThis_span);
+    const value_key = try es_helpers.makePropertyName(self, "value");
     const value_prop = try makeObjProp(self, value_key, classThis_ref);
     const obj_list = try self.ast.addNodeList(&.{value_prop});
     const obj = try self.ast.addNode(.{ .tag = .object_expression, .span = zero_span, .data = .{ .list = obj_list } });
 
-    const desc_span = try self.ast.addString("_classDescriptor");
-    const desc_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = desc_span,
-        .data = .{ .string_ref = desc_span },
-    });
+    const desc_ref = try es_helpers.makeSyntheticRef(self, "_classDescriptor");
     const arg2 = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = zero_span,
@@ -243,11 +229,7 @@ pub fn buildClassEsDecorateCall(self: anytype, classThis_span: Span) Error!NodeI
 
     const name_key = try es_helpers.makePropertyName(self, "name");
     // _classThis.name
-    const classThis_ref2 = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = classThis_span,
-        .data = .{ .string_ref = classThis_span },
-    });
+    const classThis_ref2 = try es_helpers.makeSyntheticRefFromSpan(self, classThis_span);
     const name_prop_key = try es_helpers.makePropertyName(self, "name");
     const classThis_name = try self.addExtraNode(.static_member_expression, zero_span, &.{
         @intFromEnum(classThis_ref2), @intFromEnum(name_prop_key), 0,
@@ -363,17 +345,9 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
     {
         const has_key = try es_helpers.makePropertyName(self, "has");
         const obj_param_span = try self.ast.addString("obj");
-        const obj_param = try self.ast.addNode(.{
-            .tag = .binding_identifier,
-            .span = obj_param_span,
-            .data = .{ .string_ref = obj_param_span },
-        });
+        const obj_param = try es_helpers.makeSyntheticBinding(self, obj_param_span);
 
-        const obj_ref = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = obj_param_span,
-            .data = .{ .string_ref = obj_param_span },
-        });
+        const obj_ref = try es_helpers.makeSyntheticRefFromSpan(self, obj_param_span);
 
         const in_left = if (info.is_private) blk: {
             // #name (private_identifier)
@@ -408,30 +382,24 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
     if (!is_setter_only) {
         const get_key = try es_helpers.makePropertyName(self, "get");
         const obj_param_span = try self.ast.addString("obj");
-        const obj_param = try self.ast.addNode(.{
-            .tag = .binding_identifier,
-            .span = obj_param_span,
-            .data = .{ .string_ref = obj_param_span },
-        });
+        const obj_param = try es_helpers.makeSyntheticBinding(self, obj_param_span);
 
         // obj.name (public) / obj.#name (private) / obj["name"] or obj[0] (computed key)
-        const obj_ref = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = obj_param_span,
-            .data = .{ .string_ref = obj_param_span },
-        });
+        const obj_ref = try es_helpers.makeSyntheticRefFromSpan(self, obj_param_span);
         const obj_member = if (needs_computed) blk: {
             // obj["name"] 또는 obj[0]
             const key_node = info.name; // 이미 string_literal "\"name\"" 형태
             break :blk try es_helpers.makeComputedMember(self, obj_ref, key_node, zero_span);
         } else blk: {
-            const member_key_tag: Tag = if (info.is_private) .private_identifier else .identifier_reference;
             const member_key_span = try self.ast.addString(member_name);
-            const member_key_node = try self.ast.addNode(.{
-                .tag = member_key_tag,
-                .span = member_key_span,
-                .data = .{ .string_ref = member_key_span },
-            });
+            const member_key_node = if (info.is_private)
+                try self.ast.addNode(.{
+                    .tag = .private_identifier,
+                    .span = member_key_span,
+                    .data = .{ .string_ref = member_key_span },
+                })
+            else
+                try es_helpers.makePropertyNameFromSpan(self, member_key_span);
             break :blk try es_helpers.makeStaticMember(self, obj_ref, member_key_node, zero_span);
         };
 
@@ -451,42 +419,28 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
         // function(obj, value) { obj.name = value; }
         // function_expression: extra = [name(0), params_start, params_len, body(3), flags, ret_type(5)]
         const obj_param_span = try self.ast.addString("obj");
-        const obj_param = try self.ast.addNode(.{
-            .tag = .binding_identifier,
-            .span = obj_param_span,
-            .data = .{ .string_ref = obj_param_span },
-        });
+        const obj_param = try es_helpers.makeSyntheticBinding(self, obj_param_span);
         const val_param_span = try self.ast.addString("value");
-        const val_param = try self.ast.addNode(.{
-            .tag = .binding_identifier,
-            .span = val_param_span,
-            .data = .{ .string_ref = val_param_span },
-        });
+        const val_param = try es_helpers.makeSyntheticBinding(self, val_param_span);
         const fn_params = try self.ast.addNodeList(&.{ obj_param, val_param });
 
         // body: { obj.name = value; } / { obj.#name = value; } / { obj["name"] = value; }
-        const obj_ref = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = obj_param_span,
-            .data = .{ .string_ref = obj_param_span },
-        });
+        const obj_ref = try es_helpers.makeSyntheticRefFromSpan(self, obj_param_span);
         const obj_member = if (needs_computed) blk: {
             break :blk try es_helpers.makeComputedMember(self, obj_ref, info.name, zero_span);
         } else blk: {
-            const set_key_tag: Tag = if (info.is_private) .private_identifier else .identifier_reference;
             const set_key_span = try self.ast.addString(member_name);
-            const set_key_node = try self.ast.addNode(.{
-                .tag = set_key_tag,
-                .span = set_key_span,
-                .data = .{ .string_ref = set_key_span },
-            });
+            const set_key_node = if (info.is_private)
+                try self.ast.addNode(.{
+                    .tag = .private_identifier,
+                    .span = set_key_span,
+                    .data = .{ .string_ref = set_key_span },
+                })
+            else
+                try es_helpers.makePropertyNameFromSpan(self, set_key_span);
             break :blk try es_helpers.makeStaticMember(self, obj_ref, set_key_node, zero_span);
         };
-        const val_ref = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = val_param_span,
-            .data = .{ .string_ref = val_param_span },
-        });
+        const val_ref = try es_helpers.makeSyntheticRefFromSpan(self, val_param_span);
         const assign = try self.ast.addNode(.{
             .tag = .assignment_expression,
             .span = zero_span,
@@ -575,11 +529,7 @@ pub fn buildMetadataDecl(self: anytype) Error!NodeIndex {
 
     // const _metadata = ...;
     const metadata_span = try self.ast.addString("_metadata");
-    const metadata_binding = try self.ast.addNode(.{
-        .tag = .binding_identifier,
-        .span = metadata_span,
-        .data = .{ .string_ref = metadata_span },
-    });
+    const metadata_binding = try es_helpers.makeSyntheticBinding(self, metadata_span);
     const declarator = try self.addExtraNode(.variable_declarator, zero_span, &.{
         @intFromEnum(metadata_binding), none, @intFromEnum(ternary),
     });
@@ -602,11 +552,7 @@ pub fn buildClassReassign(self: anytype, class_name: []const u8, class_name_node
     });
 
     // _classThis = _classDescriptor.value
-    const classThis_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = classThis_span,
-        .data = .{ .string_ref = classThis_span },
-    });
+    const classThis_ref = try es_helpers.makeSyntheticRefFromSpan(self, classThis_span);
     const inner_assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = zero_span,
@@ -633,11 +579,7 @@ pub fn buildClassReassign(self: anytype, class_name: []const u8, class_name_node
 pub fn buildRunInitializersCall(self: anytype, target_span: Span, init_name: []const u8) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const callee = try es_helpers.makeRuntimeHelperRef(self, "__runInitializers");
-    const target = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = target_span,
-        .data = .{ .string_ref = target_span },
-    });
+    const target = try es_helpers.makeSyntheticRefFromSpan(self, target_span);
     const init_ref = try es_helpers.makeSyntheticRef(self, init_name);
     const args = try self.ast.addNodeList(&.{ target, init_ref });
     return self.addExtraNode(.call_expression, zero_span, &.{
@@ -744,11 +686,7 @@ pub fn makeObjProp(self: anytype, key: NodeIndex, value: NodeIndex) Error!NodeIn
 /// let name = init; 또는 let name; 선언 생성
 pub fn makeLet(self: anytype, span: Span, name: []const u8, init: NodeIndex) Error!NodeIndex {
     const name_span = try self.ast.addString(name);
-    const binding = try self.ast.addNode(.{
-        .tag = .binding_identifier,
-        .span = name_span,
-        .data = .{ .string_ref = name_span },
-    });
+    const binding = try es_helpers.makeSyntheticBinding(self, name_span);
     const declarator = try self.addExtraNode(.variable_declarator, span, &.{
         @intFromEnum(binding), @intFromEnum(NodeIndex.none), @intFromEnum(init),
     });
@@ -794,11 +732,7 @@ pub fn buildMetadataDefineProperty(self: anytype, classThis_span: Span) Error!No
     const obj_defprop = try es_helpers.makeStaticMember(self, object_ref, defprop_key, zero_span);
 
     // arg1: _classThis
-    const ct_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = classThis_span,
-        .data = .{ .string_ref = classThis_span },
-    });
+    const ct_ref = try es_helpers.makeSyntheticRefFromSpan(self, classThis_span);
 
     // arg2: Symbol.metadata
     const sym_ref = try es_helpers.makeGlobalRef(self, "Symbol");
@@ -881,19 +815,11 @@ pub fn buildGetterMethod(self: anytype, key: NodeIndex, return_expr: NodeIndex, 
 /// (예: this.#storage 노드). buildGetterMethod 와 대칭.
 pub fn buildSetterMethod(self: anytype, key: NodeIndex, assign_target: NodeIndex, is_static: bool, span: Span) Error!NodeIndex {
     const val_span = try self.ast.addString("value");
-    const val_param = try self.ast.addNode(.{
-        .tag = .binding_identifier,
-        .span = val_span,
-        .data = .{ .string_ref = val_span },
-    });
+    const val_param = try es_helpers.makeSyntheticBinding(self, val_span);
     const params_list = try self.ast.addNodeList(&.{val_param});
     const params_node = try self.ast.addFormalParameters(params_list, span);
 
-    const val_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = val_span,
-        .data = .{ .string_ref = val_span },
-    });
+    const val_ref = try es_helpers.makeSyntheticRefFromSpan(self, val_span);
     const assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = span,

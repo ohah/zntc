@@ -28,13 +28,7 @@ fn expandBlockRenamedShorthand(self: *Transformer, node: Node) Error!?NodeIndex 
     const new_key = try self.copyNodeDirect(key_idx);
     self.propagateSymbolId(key_idx, new_key);
 
-    const value_span = try self.ast.addString(new_name);
-    const new_value = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = value_span,
-        .data = .{ .string_ref = value_span },
-    });
-    self.propagateSymbolId(key_idx, new_value);
+    const new_value = try self.makeUserRefNamed(new_name, key_idx);
 
     return try self.ast.addNode(.{
         .tag = .object_property,
@@ -250,12 +244,7 @@ pub fn visitMethodDefinition(self: *Transformer, node: Node) Error!NodeIndex {
             capture_count += 1;
         }
         if (self.needs_arguments_var) {
-            const args_span = try self.ast.addString("arguments");
-            const args_init = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = args_span,
-                .data = .{ .string_ref = args_span },
-            });
+            const args_init = try es_helpers.makeGlobalRef(self, "arguments");
             capture_stmts[capture_count] = try self.buildVarDecl("_arguments", args_init, node.span);
             capture_count += 1;
         }
