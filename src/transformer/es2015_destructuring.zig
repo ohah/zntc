@@ -192,9 +192,11 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            // _ref = rhs
+            // _ref = rhs — 배열 패턴은 `__read` 로 배열을 만든다. 이터러블(Set·제너레이터)에
+            // 인덱스·slice 를 바로 쓰면 틀린다 (#4791, 선언 경로와 같은 규칙).
             const init_lhs = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
-            const init_assign = try es_helpers.makeAssignExpr(self, init_lhs, rhs, span, 0);
+            const init_value = if (pattern.tag == .array_pattern) try buildArrayRead(self, rhs, pattern, span) else rhs;
+            const init_assign = try es_helpers.makeAssignExpr(self, init_lhs, init_value, span, 0);
             try self.scratch.append(self.allocator, init_assign);
 
             if (pattern.tag == .object_pattern) {
@@ -249,15 +251,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     const value_node = self.ast.getNode(value_idx);
                     if (value_node.tag == .object_pattern or value_node.tag == .array_pattern) {
                         // nested: { a: { b } } → _inner = _ref.a, b = _inner.b
-                        const inner_span = try es_helpers.makeTempVarSpan(self);
-                        const inner_lhs = try es_helpers.makeTempVarRef(self, inner_span, inner_span);
-                        const inner_init = try es_helpers.makeAssignExpr(self, inner_lhs, member_access, span, 0);
-                        try self.scratch.append(self.allocator, inner_init);
-                        if (value_node.tag == .object_pattern) {
-                            try emitObjectPatternAssignments(self, value_node, inner_span, span);
-                        } else {
-                            try emitArrayPatternAssignments(self, value_node, inner_span, span);
-                        }
+                        _ = try emitNestedPatternAssignment(self, value_node, member_access, span);
                     } else if (value_node.tag == .assignment_pattern) {
                         // default: { a = 1 } 또는 { a: b = 1 } — _ref.key === void 0 ? default : _ref.key
                         const inner_target = value_node.data.binary.left;
@@ -310,7 +304,8 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             if (target.tag != .object_pattern and target.tag != .array_pattern) return false;
             const inner_span = try es_helpers.makeTempVarSpan(self);
             const inner_lhs = try es_helpers.makeTempVarRef(self, inner_span, inner_span);
-            try self.scratch.append(self.allocator, try es_helpers.makeAssignExpr(self, inner_lhs, value, span, 0));
+            const inner_value = if (target.tag == .array_pattern) try buildArrayRead(self, value, target, span) else value;
+            try self.scratch.append(self.allocator, try es_helpers.makeAssignExpr(self, inner_lhs, inner_value, span, 0));
             if (target.tag == .object_pattern) {
                 try emitObjectPatternAssignments(self, target, inner_span, span);
             } else {
@@ -357,15 +352,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     const assign = try es_helpers.makeAssignExpr(self, target_ref, conditional, span, 0);
                     try self.scratch.append(self.allocator, assign);
                 } else if (elem.tag == .object_pattern or elem.tag == .array_pattern) {
-                    const inner_span = try es_helpers.makeTempVarSpan(self);
-                    const inner_lhs = try es_helpers.makeTempVarRef(self, inner_span, inner_span);
-                    const inner_init = try es_helpers.makeAssignExpr(self, inner_lhs, elem_access, span, 0);
-                    try self.scratch.append(self.allocator, inner_init);
-                    if (elem.tag == .object_pattern) {
-                        try emitObjectPatternAssignments(self, elem, inner_span, span);
-                    } else {
-                        try emitArrayPatternAssignments(self, elem, inner_span, span);
-                    }
+                    _ = try emitNestedPatternAssignment(self, elem, elem_access, span);
                 } else {
                     const target_ref = if (elem.tag == .binding_identifier)
                         try self.makeIdentifierRefWithSymbol(elem.data.string_ref, @enumFromInt(raw_idx))
@@ -801,8 +788,18 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
             // ...rest → var rest = _ref.slice(N)
             if (split.rest_operand) |rest_inner| {
-                const rest_binding = try self.visitNode(rest_inner);
                 const rest_init = try buildArraySlice(self, ref_span, non_rest_len, span);
+                const rest_node = self.ast.getNode(rest_inner);
+                if (rest_node.tag == .object_pattern or rest_node.tag == .array_pattern) {
+                    // `[a, ...[b, c]]` — 패턴을 그대로 두면 es5 에 구조 분해 문법이 남는다 (#4791).
+                    // slice 결과는 이미 배열이라 `__read` 없이 임시 변수에 받아 재귀한다.
+                    const nested_span = try es_helpers.makeTempVarSpan(self);
+                    const nested_binding = try es_helpers.makeBindingIdentifier(self, nested_span);
+                    try self.scratch.append(self.allocator, try es_helpers.makeDeclarator(self, nested_binding, rest_init, span));
+                    try emitPatternDeclarators(self, rest_node, nested_span, span);
+                    return;
+                }
+                const rest_binding = try self.visitNode(rest_inner);
                 const rest_decl = try es_helpers.makeDeclarator(self, rest_binding, rest_init, span);
                 try self.scratch.append(self.allocator, rest_decl);
             }
