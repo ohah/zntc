@@ -274,14 +274,20 @@ fn tempNameInSpans(self: *const Transformer, name: []const u8, spans: []const Sp
     return false;
 }
 
-/// body (block_statement / program / function_body) 의 top-level var declaration 에서
-/// `name` 과 같은 binding identifier 가 있는지 검사. nested block 은 보지 않음 — var 는
-/// function-scoped 라 top-level 만 봐도 충분.
+/// body (block_statement / program / function_body) 의 top-level 변수 선언(`export` 안 포함)에서
+/// `name` 과 같은 binding identifier 가 있는지 검사. nested block 은 보지 않음 — 거기 `let`/`const`
+/// 는 스코프가 달라 끌어올린 `var` 와 충돌하지 않는다. 같은 스코프의 `export const _a = …` 를
+/// 놓치면 `var _a;` 와 겹쳐 SyntaxError (#4790).
 fn bodyHasTopLevelVarBinding(self: *const Transformer, body: Node, name: []const u8) bool {
     const list = body.data.list;
     const stmts = self.ast.extra_data.items[list.start .. list.start + list.len];
     for (stmts) |raw_idx| {
-        const stmt = self.ast.getNode(@enumFromInt(raw_idx));
+        var stmt = self.ast.getNode(@enumFromInt(raw_idx));
+        if (stmt.tag == .export_named_declaration) {
+            const decl_idx = self.readNodeIdx(stmt.data.extra, 0); // ExportNamedExtras.decl
+            if (decl_idx.isNone()) continue;
+            stmt = self.ast.getNode(decl_idx);
+        }
         if (stmt.tag != .variable_declaration) continue;
         const e = stmt.data.extra;
         if (e + 2 >= self.ast.extra_data.items.len) continue;
