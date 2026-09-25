@@ -149,6 +149,13 @@ pub fn visitMethodDefinition(self: *Transformer, node: Node) Error!NodeIndex {
     // TS method overload signature: body가 없으면 제거
     if (self.readNodeIdx(e, 2).isNone()) return NodeIndex.none;
     const new_key = try self.visitNode(self.readNodeIdx(e, 0));
+    // 메서드(객체 리터럴 메서드·getter 포함)는 자기 `this` 를 가진다 — static 초기값·static 블록
+    // 안에서도 클래스 이름으로 치환하면 안 된다. 계산된 키는 바깥 `this` 라 키 방문 **뒤에** 올린다 (#4801).
+    const in_static_ctx = self.static_block_class_name != null;
+    if (in_static_ctx) self.this_depth += 1;
+    defer if (in_static_ctx) {
+        self.this_depth -= 1;
+    };
     // 객체 리터럴이 이 메서드에 home 임시 변수를 배정했으면 그 기준으로 `super` 를 낮춘다.
     // 배정이 없으면(클래스 메서드 등) 바깥 객체 메서드의 home 을 끊는다. 계산된 키의
     // `super` 는 바깥 문맥이라 키 방문 **뒤에** 켠다 (#4729).

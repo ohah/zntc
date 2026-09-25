@@ -593,6 +593,13 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             return self.visitArrowFunction(node);
         },
         .class_declaration => {
+            // static 초기값·static 블록 안의 중첩 클래스는 자기 `this` 를 가진다 — 바깥 클래스 이름으로
+            // 치환하지 않게 함수 경계처럼 깊이를 올린다 (#4801).
+            const in_static_ctx = self.static_block_class_name != null;
+            if (in_static_ctx) self.this_depth += 1;
+            defer if (in_static_ctx) {
+                self.this_depth -= 1;
+            };
             const replacement_idx = try self.dispatchVisitor(.on_class_declaration, idx);
             const target_node = if (replacement_idx) |r| self.ast.getNode(r) else node;
             // Stage 3 decorator는 unsupported.class 분기보다 먼저 돌려야 한다 — 반대면 decorator가 silent drop.
@@ -611,6 +618,11 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             return self.visitClass(node);
         },
         .class_expression => {
+            const in_static_ctx = self.static_block_class_name != null;
+            if (in_static_ctx) self.this_depth += 1;
+            defer if (in_static_ctx) {
+                self.this_depth -= 1;
+            };
             const replacement_idx = try self.dispatchVisitor(.on_class_expression, idx);
             const target_node = if (replacement_idx) |r| self.ast.getNode(r) else node;
             if (try self.tryTransformStage3(target_node)) |stage3_result| {
