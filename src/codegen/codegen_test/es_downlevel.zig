@@ -3003,6 +3003,36 @@ test "ES2015: destructuring object rest" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "[\"a\"]") != null);
 }
 
+// #4790: 객체 rest 선언을 낮춰도 원래 선언 종류를 지킨다. `var` 로 바꾸면 블록 밖으로 새고
+// for 헤더 `let` 의 반복별 바인딩이 사라진다.
+test "ES2017: object rest declaration keeps const/let" {
+    var r = try e2eTarget(std.testing.allocator, "{const {a,...r}=o;}{let {b,...s}=o;}", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const _a=o,a=_a.a,r=__rest(_a,[\"a\"]);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _b=o,b=_b.b,s=__rest(_b,[\"b\"]);") != null);
+}
+
+test "ES2017: object rest declaration in for header keeps let" {
+    var r = try e2eTarget(std.testing.allocator, "for(let {i,...r}=o;i<2;i++)f(()=>i);", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "for(let _a=o,") != null);
+}
+
+// #4790: 같은 스코프의 `export const _a=…` 가 있으면 임시 변수를 `var _a;` 로 끌어올리지 않는다.
+test "ES2017: object rest export const temp is not hoisted again" {
+    var r = try e2eTarget(std.testing.allocator, "export const {a,...r}=o;", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "export const _a=o,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _a") == null);
+}
+
+test "ES5: object rest declaration still lowers to var" {
+    var r = try e2eTarget(std.testing.allocator, "{const {a,...r}=o;}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__rest(") != null);
+}
+
 test "ES2015: destructuring array rest" {
     var r = try e2eTarget(std.testing.allocator, "var [a,...r]=arr;", .es5);
     defer r.deinit();

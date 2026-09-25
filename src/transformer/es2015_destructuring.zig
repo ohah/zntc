@@ -28,6 +28,7 @@ const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
 const es2015_class = @import("es2015_class.zig");
+const es2015_block_scoping = @import("es2015_block_scoping.zig");
 
 pub fn ES2015Destructuring(comptime Transformer: type) type {
     return struct {
@@ -159,9 +160,13 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 }
             }
 
-            // 새 variable_declaration
+            // 새 variable_declaration — 원래 종류를 지킨다. `var` 로 바꾸면 블록 안 `const` 가
+            // 블록 밖으로 새고 같은 이름 `let` 과 충돌한다 (#4790). let/const 를 못 쓰는 타깃은
+            // 일반 선언과 같은 규칙(`lowerKind`)으로 낮춘다.
+            const orig_kind = self.ast.variableDeclarationKind(node);
+            const kind = if (self.options.unsupported.block_scoping) es2015_block_scoping.lowerKind(orig_kind) else orig_kind;
             const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-            const var_extra = try self.ast.addExtras(&.{ 0, new_list.start, new_list.len }); // 0 = var
+            const var_extra = try self.ast.addExtras(&.{ @intFromEnum(kind), new_list.start, new_list.len });
             return self.ast.addNode(.{
                 .tag = .variable_declaration,
                 .span = span,
