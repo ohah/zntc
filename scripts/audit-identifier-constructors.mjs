@@ -12,9 +12,14 @@
 //   - 전역:        makeGlobalRef(FromSpan/At)
 //   - 속성 이름:   makePropertyName(FromSpan/At)
 //
-// 규칙: src/transformer 안에서 `.tag = .identifier_reference` / `.tag = .binding_identifier` 로 노드를
-// 직접 만드는 곳과 `makeBindingIdentifier(` 호출은 아래 ALLOWLIST 의 함수 안에서만 허용한다.
-// 등록 안 된 곳이 있으면 CI 실패. 새 식별자가 필요하면 위 분류 함수 중 하나를 쓴다.
+//   - JSX:         makeSyntheticJsxTag · makeJsxAttributeName  (사용자 컴포넌트 태그는 원본 노드를 옮긴다)
+//
+// 규칙: src/transformer 안에서 identifier_reference / binding_identifier / jsx_identifier 노드를 직접
+// 만드는 곳(`.tag = if (…) … else .identifier_reference` 같은 조건식 포함)과 `makeBindingIdentifier(`
+// 호출은 아래 ALLOWLIST 의 함수 안에서만 허용한다. 등록 안 된 곳이 있으면 CI 실패.
+//
+// 대상 밖(의도): `private_identifier`(`#x`) 는 스코프 심볼이 아니다. AST 플러그인(`ast_plugin.zig`)은
+// 외부 API 라 임의 노드를 만든다 — 플러그인이 만든 식별자의 이름은 변환 뒤 재분석(minify·번들)이 정한다.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
@@ -31,11 +36,14 @@ const ALLOWLIST = {
   "src/transformer/es_helpers.zig::makeBindingIdentifier": "makeSyntheticBinding·makeUserBinding 의 내부 구현",
   "src/transformer/es_helpers.zig::makeSyntheticBinding": "합성 바인딩 생성 함수",
   "src/transformer/transformer/node_helpers.zig::makeUserBinding": "사용자 바인딩 생성 함수(심볼 전달)",
+  "src/transformer/es_helpers.zig::jsxIdentifierNode": "makeSyntheticJsxTag·makeJsxAttributeName 의 공통 노드 생성",
 };
 
 const PATTERNS = [
-  { re: /\.tag\s*=\s*\.identifier_reference\b/, what: "identifier_reference 직접 생성" },
-  { re: /\.tag\s*=\s*\.binding_identifier\b/, what: "binding_identifier 직접 생성" },
+  // `.tag = X` 뿐 아니라 `.tag = if (c) .a else .identifier_reference` 도 잡는다(`==` 비교는 제외).
+  { re: /\.tag\s*=(?!=)[^,;]*\.identifier_reference\b/, what: "identifier_reference 직접 생성" },
+  { re: /\.tag\s*=(?!=)[^,;]*\.binding_identifier\b/, what: "binding_identifier 직접 생성" },
+  { re: /\.tag\s*=(?!=)[^,;]*\.jsx_identifier\b/, what: "jsx_identifier 직접 생성" },
   { re: /\bmakeBindingIdentifier\(/, what: "makeBindingIdentifier 직접 호출" },
 ];
 

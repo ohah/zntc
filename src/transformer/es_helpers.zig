@@ -1028,6 +1028,25 @@ pub fn makePropertyNameAt(self: anytype, name_span: Span, node_span: Span) !Node
     return identifierRefNode(self, name_span, node_span);
 }
 
+/// JSX 속성 이름(`_css0={…}` 의 `_css0`) — 변수가 아니다.
+pub fn makeJsxAttributeName(self: anytype, name_span: Span) !NodeIndex {
+    return jsxIdentifierNode(self, name_span);
+}
+
+/// 변환기가 만든 **합성 컴포넌트 변수**를 가리키는 JSX 태그. 바인딩과 같은 이름이 되도록
+/// `resolveSyntheticName` 을 거친다. (사용자 컴포넌트를 가리키는 태그는 원본 노드를 옮긴다.)
+pub fn makeSyntheticJsxTag(self: anytype, name_span: Span) !NodeIndex {
+    return jsxIdentifierNode(self, try resolveSyntheticSpan(self, name_span));
+}
+
+fn jsxIdentifierNode(self: anytype, name_span: Span) !NodeIndex {
+    return self.ast.addNode(.{
+        .tag = .jsx_identifier,
+        .span = name_span,
+        .data = .{ .string_ref = name_span },
+    });
+}
+
 /// identifier_reference 노드 한 개. 위의 분류된 생성 함수만 부른다 — 트랜스포머의 다른 곳에서
 /// 이 태그로 노드를 직접 만들면 CI 감사(`scripts/audit-identifier-constructors.mjs`)가 막는다.
 pub fn identifierRefNode(self: anytype, name_span: Span, node_span: Span) !NodeIndex {

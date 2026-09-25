@@ -1,6 +1,7 @@
 //! Define replacement helpers for Transformer.
 
 const std = @import("std");
+const es_helpers = @import("../es_helpers.zig");
 const ast_mod = @import("../../parser/ast.zig");
 const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
@@ -96,11 +97,13 @@ pub fn tryDefineReplace(self: *Transformer, node: Node) ?Error!NodeIndex {
         // 값이 따옴표로 시작하면 string_literal, 아니면 identifier_reference.
         // "production" → string_literal, false/true/숫자 → identifier_reference.
         const is_string = entry.value.len >= 2 and (entry.value[0] == '"' or entry.value[0] == '\'');
-        return self.ast.addNode(.{
-            .tag = if (is_string) .string_literal else .identifier_reference,
+        if (is_string) return self.ast.addNode(.{
+            .tag = .string_literal,
             .span = value_span,
             .data = .{ .string_ref = value_span },
         });
+        // 식별자 값(`true`·`undefined`·전역 이름)은 사용자 변수가 아니라 전역이다.
+        return es_helpers.makeGlobalRefFromSpan(self, value_span);
     }
     return null;
 }
