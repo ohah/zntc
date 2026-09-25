@@ -92,6 +92,8 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 .array_assignment_target => targetListHasObjectRest(self, node.data.list),
                 .assignment_target_property_property => destructuringTargetHasObjectRest(self, node.data.binary.right),
                 .assignment_target_with_default => destructuringTargetHasObjectRest(self, node.data.binary.left),
+                // `[a, ...{ b, ...r }] = src` — 배열 rest 안에 중첩된 객체 rest (#4789).
+                .assignment_target_rest => destructuringTargetHasObjectRest(self, node.data.unary.operand),
                 else => false,
             };
         }
@@ -499,8 +501,6 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         /// array_assignment_target의 각 element를 assignment로 변환.
         fn emitArrayAssignments(self: *Transformer, target: Node, ref_span: Span, span: Span) Transformer.Error!void {
             const aa_start = target.data.list.start;
-            // assignment 컨텍스트의 rest는 declaration 컨텍스트의 __rest 같은 런타임 헬퍼가
-            // 없어 현재 미지원 — split으로 elements만 처리하고 rest는 무시.
             const split = self.ast.nodeListSplitRest(target.data.list);
             const non_rest_len: u32 = @intCast(split.elements.len);
             // visitNode가 AST를 변형하므로 인덱스 루프 사용
@@ -534,6 +534,12 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     // target = _ref[idx]. nested destructuring, private field, 일반 assignment 분기.
                     try emitTargetAssignOrRecurse(self, @enumFromInt(raw_idx), access, span);
                 }
+            }
+            // rest element: `rest = _ref.slice(N)` (#4789). `_ref` 는 `__read` 로 만든 배열이라
+            // 이터러블이어도 slice 가 있다. 좌변이 패턴·멤버·private 이면 같은 분기로 간다.
+            if (split.rest_operand) |rest_inner| {
+                const slice = try buildArraySlice(self, ref_span, non_rest_len, span);
+                try emitTargetAssignOrRecurse(self, rest_inner, slice, span);
             }
         }
 
