@@ -64,30 +64,10 @@ fn buildPublicFieldCall(self: anytype, obj: NodeIndex, field: FieldAssignment) E
     return es_helpers.makeExprStmt(self, call, field.span);
 }
 
-/// 클래스 밖 문장으로 옮길 static 필드 초기값을 방문한다 (#4801).
-///
-/// 초기값 안(화살표 포함, 일반 함수 제외)의 `this` 는 클래스, `super` 는 부모 클래스를 가리킨다.
-/// 그대로 옮기면 `this` 는 바깥(보통 undefined), `super` 는 문법 오류가 된다 — static 블록을
-/// IIFE 로 뺄 때(`buildStaticBlockIIFE`)와 같은 문맥을 켜서 `this` → 클래스 이름, `super` →
-/// static 헬퍼로 낮춘다.
+/// 클래스 밖 문장으로 옮길 static 필드 초기값을 방문한다 (#4801) — 문맥은 `enterStaticInitContext`.
 fn visitStaticFieldInit(self: anytype, init_idx: NodeIndex, class_name_span: Span) Error!NodeIndex {
-    const saved_class_name = self.static_block_class_name;
-    const saved_this_depth = self.this_depth;
-    const saved_super_is_static = self.current_super_is_static;
-    const saved_super_static_receiver = self.current_super_static_receiver;
-    const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
-    self.static_block_class_name = class_name_span;
-    self.this_depth = 0;
-    self.current_super_is_static = true;
-    self.current_super_static_receiver = class_name_span;
-    self.current_super_in_extracted_fn = true;
-    defer {
-        self.static_block_class_name = saved_class_name;
-        self.this_depth = saved_this_depth;
-        self.current_super_is_static = saved_super_is_static;
-        self.current_super_static_receiver = saved_super_static_receiver;
-        self.current_super_in_extracted_fn = saved_super_in_extracted_fn;
-    }
+    const static_ctx = es_helpers.enterStaticInitContext(self, class_name_span);
+    defer es_helpers.leaveStaticInitContext(self, static_ctx);
     return self.visitNode(init_idx);
 }
 

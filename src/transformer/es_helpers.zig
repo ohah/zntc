@@ -43,17 +43,9 @@ pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, in
         .data = .{ .binary = .{ .left = writable_key, .right = true_val, .flags = 0 } },
     }));
 
-    // #3680-F1: init 안 super 강제 lowering 컨텍스트 (static, extracted).
-    // V1 fix: class_name_span 으로 static_receiver 설정 — module top-level this=undefined 문제 해결.
-    const saved_in_extracted = self.current_super_in_extracted_fn;
-    const saved_super_is_static = self.current_super_is_static;
-    const saved_super_static_receiver = self.current_super_static_receiver;
-    self.current_super_in_extracted_fn = true;
-    self.current_super_is_static = true;
-    if (class_name_span) |s| self.current_super_static_receiver = s;
-    defer self.current_super_in_extracted_fn = saved_in_extracted;
-    defer self.current_super_is_static = saved_super_is_static;
-    defer self.current_super_static_receiver = saved_super_static_receiver;
+    // #3680-F1 / #4801: 클래스 밖 descriptor 로 옮기는 init — `this`·`super` 를 클래스 기준으로.
+    const static_ctx = enterStaticInitContext(self, class_name_span);
+    defer leaveStaticInitContext(self, static_ctx);
 
     const value_key = try makePropertyName(self, "value");
     const value_init = if (!init_idx.isNone()) try self.visitNode(init_idx) else try makeVoidZero(self, span);
@@ -1449,6 +1441,46 @@ pub fn buildWeakCollectionDecl(self: anytype, constructor_name: []const u8, var_
         .data = .{ .extra = new_extra },
     });
     return self.buildVarDecl(var_name, new_expr, span);
+}
+
+/// static 초기값·static 블록·static private 초기값을 **클래스 밖으로 옮겨** 방문할 때의 문맥.
+///
+/// 옮긴 코드 안(화살표 포함, 일반 함수·메서드·중첩 클래스 제외)의 `this` 는 클래스, `super` 는
+/// 부모 클래스(static)다. 그대로 두면 `this` 는 바깥(보통 undefined), `super` 는 문법 오류가 된다.
+/// 예전엔 이 설정이 경로마다 따로 있어서 일부 경로가 `this` 치환이나 `super` 강제 낮추기를 빠뜨렸다
+/// (#4801: public static 필드, static private 필드). 옮기는 경로는 모두 이 한 쌍을 쓴다.
+///
+/// `class_name_span` 이 null 이면(이름을 붙일 수 없는 문맥) `this` 는 치환하지 않고 `super` 만 낮춘다.
+pub const StaticInitSnapshot = struct {
+    static_block_class_name: ?Span,
+    this_depth: u32,
+    super_is_static: bool,
+    super_static_receiver: ?Span,
+    super_in_extracted_fn: bool,
+};
+
+pub fn enterStaticInitContext(self: anytype, class_name_span: ?Span) StaticInitSnapshot {
+    const snap = StaticInitSnapshot{
+        .static_block_class_name = self.static_block_class_name,
+        .this_depth = self.this_depth,
+        .super_is_static = self.current_super_is_static,
+        .super_static_receiver = self.current_super_static_receiver,
+        .super_in_extracted_fn = self.current_super_in_extracted_fn,
+    };
+    self.static_block_class_name = class_name_span;
+    self.this_depth = 0;
+    self.current_super_is_static = true;
+    if (class_name_span) |s| self.current_super_static_receiver = s;
+    self.current_super_in_extracted_fn = true;
+    return snap;
+}
+
+pub fn leaveStaticInitContext(self: anytype, snap: StaticInitSnapshot) void {
+    self.static_block_class_name = snap.static_block_class_name;
+    self.this_depth = snap.this_depth;
+    self.current_super_is_static = snap.super_is_static;
+    self.current_super_static_receiver = snap.super_static_receiver;
+    self.current_super_in_extracted_fn = snap.super_in_extracted_fn;
 }
 
 /// 함수 경계를 진입할 때 arrow this/arguments 캡처 상태를 저장하고 0/false 로 초기화.

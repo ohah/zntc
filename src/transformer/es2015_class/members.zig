@@ -128,20 +128,8 @@ pub fn Members(comptime Transformer: type) type {
             }
             if (!has_raw) return;
 
-            const saved_sb_name = self.static_block_class_name;
-            const saved_sb_depth = self.this_depth;
-            const saved_super_static = self.current_super_is_static;
-            const saved_super_static_receiver = self.current_super_static_receiver;
-            self.static_block_class_name = class_name_span;
-            self.this_depth = 0;
-            self.current_super_is_static = true;
-            self.current_super_static_receiver = class_name_span;
-            defer {
-                self.static_block_class_name = saved_sb_name;
-                self.this_depth = saved_sb_depth;
-                self.current_super_is_static = saved_super_static;
-                self.current_super_static_receiver = saved_super_static_receiver;
-            }
+            const static_ctx = es_helpers.enterStaticInitContext(self, class_name_span);
+            defer es_helpers.leaveStaticInitContext(self, static_ctx);
 
             var new_elements: std.ArrayList(StaticElement) = .empty;
             errdefer new_elements.deinit(self.allocator);
@@ -739,20 +727,8 @@ pub fn Members(comptime Transformer: type) type {
         }
 
         pub fn buildStaticFieldDefinePropertyWithCtx(self: *Transformer, obj: NodeIndex, key_idx: NodeIndex, init_idx: NodeIndex, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
-            const saved_static = self.current_super_is_static;
-            const saved_receiver = self.current_super_static_receiver;
-            const saved_class_name = self.static_block_class_name;
-            const saved_this_depth = self.this_depth;
-            self.current_super_is_static = true;
-            self.current_super_static_receiver = class_name_span;
-            self.static_block_class_name = class_name_span;
-            self.this_depth = 0;
-            defer {
-                self.current_super_is_static = saved_static;
-                self.current_super_static_receiver = saved_receiver;
-                self.static_block_class_name = saved_class_name;
-                self.this_depth = saved_this_depth;
-            }
+            const static_ctx = es_helpers.enterStaticInitContext(self, class_name_span);
+            defer es_helpers.leaveStaticInitContext(self, static_ctx);
             return buildStaticFieldDefineProperty(self, obj, key_idx, init_idx, span);
         }
     };
