@@ -12,6 +12,7 @@ const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
 const token_mod = @import("../../lexer/token.zig");
 const Span = token_mod.Span;
+const es_helpers = @import("../es_helpers.zig");
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
@@ -192,18 +193,8 @@ pub fn appendRefreshRegistrations(self: *Transformer, root: NodeIndex) Error!Nod
 pub fn buildRefreshAssignment(self: *Transformer, reg: RefreshRegistration) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
-    const handle_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = reg.handle_span,
-        .data = .{ .string_ref = reg.handle_span },
-    });
-    const comp_span = try self.ast.addString(reg.name);
-    const comp_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = comp_span,
-        .data = .{ .string_ref = comp_span },
-    });
-    self.copySymbolId(reg.component_idx, comp_ref);
+    const handle_ref = try es_helpers.makeSyntheticRefFromSpan(self, reg.handle_span);
+    const comp_ref = try self.makeUserRefNamed(reg.name, reg.component_idx);
     const assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = zero_span,
@@ -223,11 +214,7 @@ pub fn buildRefreshVarDeclaration(self: *Transformer) Error!NodeIndex {
     const none = @intFromEnum(NodeIndex.none);
 
     for (self.plugins.refresh.registrations.items) |reg| {
-        const binding = try self.ast.addNode(.{
-            .tag = .binding_identifier,
-            .span = reg.handle_span,
-            .data = .{ .string_ref = reg.handle_span },
-        });
+        const binding = try es_helpers.makeSyntheticBinding(self, reg.handle_span);
 
         // variable_declarator: extra = [name, type_ann(none), init(none)]
         const declarator = try self.addExtraNode(.variable_declarator, reg.handle_span, &.{
@@ -250,17 +237,9 @@ pub fn buildRefreshVarDeclaration(self: *Transformer) Error!NodeIndex {
 pub fn buildRefreshRegCall(self: *Transformer, reg: RefreshRegistration, refresh_reg_span: Span) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
-    const callee = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = refresh_reg_span,
-        .data = .{ .string_ref = refresh_reg_span },
-    });
+    const callee = try es_helpers.makeGlobalRefFromSpan(self, refresh_reg_span);
 
-    const handle_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = reg.handle_span,
-        .data = .{ .string_ref = reg.handle_span },
-    });
+    const handle_ref = try es_helpers.makeSyntheticRefFromSpan(self, reg.handle_span);
 
     // "ComponentName" 문자열 리터럴 (따옴표 포함). 컴포넌트 이름은 길이 상한이
     // 없으므로(긴 namespaced/generated 이름) 고정 스택 버퍼 대신 힙에 빌드한다 —
@@ -296,11 +275,7 @@ pub fn buildRefreshSigDeclaration(self: *Transformer, sig: RefreshSignature, ref
     const none = @intFromEnum(NodeIndex.none);
 
     // $RefreshSig$() 호출
-    const callee = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = refresh_sig_span,
-        .data = .{ .string_ref = refresh_sig_span },
-    });
+    const callee = try es_helpers.makeGlobalRefFromSpan(self, refresh_sig_span);
     const empty_args = try self.ast.addNodeList(&.{});
     const init_call = try self.addExtraNode(.call_expression, zero_span, &.{
         @intFromEnum(callee),
@@ -310,11 +285,7 @@ pub fn buildRefreshSigDeclaration(self: *Transformer, sig: RefreshSignature, ref
     });
 
     // var _s = $RefreshSig$();
-    const binding = try self.ast.addNode(.{
-        .tag = .binding_identifier,
-        .span = sig.handle_span,
-        .data = .{ .string_ref = sig.handle_span },
-    });
+    const binding = try es_helpers.makeSyntheticBinding(self, sig.handle_span);
     const declarator = try self.addExtraNode(.variable_declarator, sig.handle_span, &.{
         @intFromEnum(binding),
         none, // type annotation
@@ -334,22 +305,12 @@ pub fn buildRefreshSigCall(self: *Transformer, sig: RefreshSignature) Error!Node
     const zero_span = Span{ .start = 0, .end = 0 };
 
     // _s 식별자
-    const callee = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = sig.handle_span,
-        .data = .{ .string_ref = sig.handle_span },
-    });
+    const callee = try es_helpers.makeSyntheticRefFromSpan(self, sig.handle_span);
 
     // Component 식별자. buildRefreshAssignment 의 `_c = Component` 와 동일하게
-    // component binding 의 symbol_id 를 복사해 linker/mangler rename 을 따라가게 한다
+    // component binding 의 symbol_id 를 물려받아 linker/mangler rename 을 따라가게 한다
     // (없으면 컴포넌트가 rename 됐을 때 _s(원본이름, ...) 로 남아 dangling ref).
-    const comp_span = try self.ast.addString(sig.component_name);
-    const comp_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = comp_span,
-        .data = .{ .string_ref = comp_span },
-    });
-    self.copySymbolId(sig.component_idx, comp_ref);
+    const comp_ref = try self.makeUserRefNamed(sig.component_name, sig.component_idx);
 
     // "signature" 문자열 리터럴. hook 이 많은 컴포넌트는 signature 가 길이 상한이
     // 없으므로 고정 스택 버퍼 대신 힙에 빌드한다 — 과거 [1024]u8 버퍼는 초과 시
@@ -605,11 +566,7 @@ pub fn insertSigCallAtBodyStart(self: *Transformer, body_idx: NodeIndex, handle_
 
     // _s() 호출문
     const zero_span = Span{ .start = 0, .end = 0 };
-    const callee = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = handle_span,
-        .data = .{ .string_ref = handle_span },
-    });
+    const callee = try es_helpers.makeSyntheticRefFromSpan(self, handle_span);
     const empty_args = try self.ast.addNodeList(&.{});
     const call = try self.addExtraNode(.call_expression, zero_span, &.{
         @intFromEnum(callee),

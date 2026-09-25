@@ -20,6 +20,7 @@ const ast_plugin = @import("../ast_plugin.zig");
 const AstTransformCtx = ast_plugin.AstTransformCtx;
 const FunctionInfo = ast_plugin.FunctionInfo;
 const worklet_mod = @import("../transformer/worklet.zig");
+const es_helpers = @import("../es_helpers.zig");
 const plugin_mod = @import("../../bundler/plugin.zig");
 const Plugin = plugin_mod.Plugin;
 const PluginError = plugin_mod.PluginError;
@@ -277,11 +278,7 @@ fn buildFunctionExprFromMethod(api: *AstTransformCtx, info: FunctionInfo, body_i
 
     // method_definition extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
     const name_span = if (info.name) |n| (t.ast.addString(n) catch return error.OutOfMemory) else Span{ .start = 0, .end = 0 };
-    const name_node = if (info.name != null) (t.ast.addNode(.{
-        .tag = .binding_identifier,
-        .span = name_span,
-        .data = .{ .string_ref = name_span },
-    }) catch return error.OutOfMemory) else NodeIndex.none;
+    const name_node = if (info.name != null) (es_helpers.makeSyntheticBinding(t, name_span) catch return error.OutOfMemory) else NodeIndex.none;
 
     // method flags → function flags (async=bit0 of method flags bit3, generator=bit4)
     const method_flags = t.ast.extra_data.items[me + 3];
@@ -319,11 +316,7 @@ fn buildFactoryBody(
 
     // var funcName = <original function>;
     const name_span = try t.ast.addString(func_name);
-    const binding = try t.ast.addNode(.{
-        .tag = .binding_identifier,
-        .span = name_span,
-        .data = .{ .string_ref = name_span },
-    });
+    const binding = try es_helpers.makeSyntheticBinding(t, name_span);
     const none = @intFromEnum(NodeIndex.none);
     const declarator = try t.addExtraNode(.variable_declarator, zero_span, &.{
         @intFromEnum(binding),
@@ -338,11 +331,7 @@ fn buildFactoryBody(
     });
 
     // return funcName;
-    const return_ref = try t.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = name_span,
-        .data = .{ .string_ref = name_span },
-    });
+    const return_ref = try es_helpers.makeSyntheticRefFromSpan(t, name_span);
     const return_stmt = try t.ast.addNode(.{
         .tag = .return_statement,
         .span = zero_span,
@@ -596,12 +585,7 @@ fn lowerWorkletContextObject(t: *Transformer, node: Node) !NodeIndex {
 
         // __workletContextObjectFactory: function() { 'worklet'; return { ...methods... }; }
         // factory가 호출되면 marker 없는 원본 object를 재구성해 반환 (runtime 정확성).
-        const factory_name_span = try t.ast.addString("__workletContextObjectFactory");
-        const new_key = try t.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = factory_name_span,
-            .data = .{ .string_ref = factory_name_span },
-        });
+        const new_key = try es_helpers.makePropertyName(t, "__workletContextObjectFactory");
         const body = try buildContextObjectFactoryBody(t, list_start, list_len);
         const empty_params = try t.ast.addNodeList(&.{});
         const empty_params_node = try t.ast.addFormalParameters(empty_params, zero_span);
@@ -762,7 +746,7 @@ fn onClassDeclaration(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeInd
     });
     // visit은 skip (default 경로가 __workletClass 필드 없는 상태로 이미 완료).
     // Trailing: `Foo.Foo__classFactory = <worklet IIFE>`
-    const factory_stmt = try buildClassFactoryAssignment(t, class_name, stripped_body);
+    const factory_stmt = try buildClassFactoryAssignment(t, class_name, @enumFromInt(new_name_idx), stripped_body);
     // pending_nodes 또는 trailing_nodes에 추가해야 program/block이 반영.
     try t.trailing_nodes.append(t.allocator, factory_stmt);
     return new_class;
@@ -840,11 +824,8 @@ fn buildClassFactoryBody(t: *Transformer, class_name_span: Span, stripped_body: 
     const zero_span = Span{ .start = 0, .end = 0 };
     const none = @intFromEnum(NodeIndex.none);
 
-    const class_binding = try t.ast.addNode(.{
-        .tag = .binding_identifier,
-        .span = class_name_span,
-        .data = .{ .string_ref = class_name_span },
-    });
+    // factory 안에서 새로 만드는 지역 클래스 바인딩 — 바깥 사용자 클래스와 별개 스코프.
+    const class_binding = try es_helpers.makeSyntheticBinding(t, class_name_span);
     const class_expr = try t.addExtraNode(.class_expression, zero_span, &.{
         @intFromEnum(class_binding), none, @intFromEnum(stripped_body),
         none,                        0,    0,
@@ -860,17 +841,14 @@ fn buildClassFactoryBody(t: *Transformer, class_name_span: Span, stripped_body: 
         decl_list.start,
         decl_list.len,
     });
-    const return_ref = try t.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = class_name_span,
-        .data = .{ .string_ref = class_name_span },
-    });
+    const return_ref = try es_helpers.makeSyntheticRefFromSpan(t, class_name_span);
     return buildWorkletReturnBlock(t, return_ref, &.{var_decl});
 }
 
 /// 생성. plugin의 onFunction이 자동으로 함수를 worklet으로 변환.
 /// stripped_body: `__workletClass` 마커 제거된 class_body (factory가 클래스 재생성에 사용).
-fn buildClassFactoryAssignment(t: *Transformer, class_name: []const u8, stripped_body: NodeIndex) !NodeIndex {
+/// class_name_node: 원래 클래스 이름 binding_identifier (`ClassName.…` 참조에 심볼을 물려줌).
+fn buildClassFactoryAssignment(t: *Transformer, class_name: []const u8, class_name_node: NodeIndex, stripped_body: NodeIndex) !NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
     // factory 이름: `<ClassName>__classFactory`
@@ -879,11 +857,7 @@ fn buildClassFactoryAssignment(t: *Transformer, class_name: []const u8, stripped
     const factory_name_span = try t.ast.addString(factory_name);
     const class_name_span = try t.ast.addString(class_name);
 
-    const binding_node = try t.ast.addNode(.{
-        .tag = .binding_identifier,
-        .span = factory_name_span,
-        .data = .{ .string_ref = factory_name_span },
-    });
+    const binding_node = try es_helpers.makeSyntheticBinding(t, factory_name_span);
     const body = try buildClassFactoryBody(t, class_name_span, stripped_body);
     const empty_params = try t.ast.addNodeList(&.{});
     const empty_params_node = try t.ast.addFormalParameters(empty_params, zero_span);
@@ -895,11 +869,7 @@ fn buildClassFactoryAssignment(t: *Transformer, class_name: []const u8, stripped
     });
 
     // IIFE: (function() { function <fn>(){...} return <fn>; })()
-    const fn_ref = try t.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = factory_name_span,
-        .data = .{ .string_ref = factory_name_span },
-    });
+    const fn_ref = try es_helpers.makeSyntheticRefFromSpan(t, factory_name_span);
     const ret_stmt = try t.ast.addNode(.{
         .tag = .return_statement,
         .span = zero_span,
@@ -918,17 +888,9 @@ fn buildClassFactoryAssignment(t: *Transformer, class_name: []const u8, stripped
     // Fast Refresh 등록은 억제: IIFE 내부 factory는 최상위 바인딩이 아니라 `_cN = <name>`가 ReferenceError.
     const visited_iife = try t.visitWithRefreshSuppressed(iife);
 
-    // LHS: ClassName.ClassName__classFactory
-    const obj_ref = try t.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = class_name_span,
-        .data = .{ .string_ref = class_name_span },
-    });
-    const prop_ref = try t.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = factory_name_span,
-        .data = .{ .string_ref = factory_name_span },
-    });
+    // LHS: ClassName.ClassName__classFactory — ClassName 은 사용자 클래스라 그 심볼을 물려받는다.
+    const obj_ref = try t.makeIdentifierRefWithSymbol(class_name_span, class_name_node);
+    const prop_ref = try es_helpers.makePropertyNameFromSpan(t, factory_name_span);
     const member = try t.addExtraNode(.static_member_expression, zero_span, &.{
         @intFromEnum(obj_ref), @intFromEnum(prop_ref), 0,
     });
