@@ -1363,14 +1363,71 @@ fn gatedMemberAugmentObjectNode(
     return m.base;
 }
 
-/// base identifier 심볼 X 가 이 모듈 top-level (scope_id==0) 비-import 로컬인지
-/// 검증해 X 의 심볼 인덱스를 반환. 아니면 null.
-fn validateMemberAugmentBaseSymbol(symbols: []const Symbol, x_sym: u32) ?u32 {
+/// base identifier 심볼 X 가 이 모듈 top-level (scope_id==0) 비-import 로컬이고 **새로 만든
+/// 객체**를 가리키는지 검증해 X 의 심볼 인덱스를 반환. 아니면 null.
+///
+/// `X.p = v` 를 "X 를 아무도 안 읽으면 죽은 쓰기" 로 보는 전제는 X 의 객체가 X 로만 닿는다는 것이다.
+/// X 가 별칭이면(`const prototype = Ctor.prototype; prototype.append = …`) X 를 안 읽어도 쓰기가
+/// `Ctor.prototype` 으로 보인다 — 지우면 axios 의 `AxiosURLSearchParams` 가 `append` 를 잃는다 (#4747).
+fn validateMemberAugmentBaseSymbol(ast: *const Ast, symbols: []const Symbol, x_sym: u32) ?u32 {
     if (x_sym >= symbols.len) return null;
     const sym = &symbols[x_sym];
     if (@intFromEnum(sym.scope_id) != 0) return null;
     if (sym.decl_flags.is_import) return null;
+    // 선언 뒤 재대입(`X = other`)이 있으면 그 뒤로는 별칭일 수 있다.
+    if (sym.write_count != 0) return null;
+    if (!memberAugmentBaseIsFresh(ast, sym)) return null;
     return x_sym;
+}
+
+/// X 의 선언이 새 객체를 만드는지 — 함수·클래스 선언, 또는 초기값이 객체/배열 리터럴·함수·
+/// 화살표·클래스 식인 변수 선언. 그 밖(멤버 접근·식별자·호출 결과)은 기존 객체일 수 있다.
+fn memberAugmentBaseIsFresh(ast: *const Ast, sym: *const Symbol) bool {
+    switch (sym.kind) {
+        .function_decl, .generator_decl, .async_function_decl, .async_generator_decl, .class_decl => return true,
+        .variable_var, .variable_let, .variable_const => {},
+        else => return false,
+    }
+    const init = topLevelDeclaratorInit(ast, sym.name) orelse return false;
+    var node = ast.nodes.items[@intFromEnum(init)];
+    while (node.tag == .parenthesized_expression) node = ast.nodes.items[@intFromEnum(node.data.unary.operand)];
+    return switch (node.tag) {
+        .object_expression, .array_expression, .function_expression, .arrow_function_expression, .class_expression => true,
+        else => false,
+    };
+}
+
+/// 이름 span 이 `name` 인 top-level 변수 선언자의 초기값 노드 (`export` 로 싼 선언 포함).
+fn topLevelDeclaratorInit(ast: *const Ast, name: Span) ?NodeIndex {
+    if (ast.nodes.items.len == 0) return null;
+    const root = ast.nodes.items[ast.nodes.items.len - 1];
+    if (root.tag != .program) return null;
+    const list = root.data.list;
+    if (list.start + list.len > ast.extra_data.items.len) return null;
+    for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+        var stmt = ast.nodes.items[raw];
+        if (stmt.tag == .export_named_declaration) {
+            const decl_raw = ast.extra_data.items[stmt.data.extra];
+            if (decl_raw >= ast.nodes.items.len) continue;
+            stmt = ast.nodes.items[decl_raw];
+        }
+        if (stmt.tag != .variable_declaration) continue;
+        const e = stmt.data.extra;
+        const d_start = ast.extra_data.items[e + 1];
+        const d_len = ast.extra_data.items[e + 2];
+        for (ast.extra_data.items[d_start .. d_start + d_len]) |d_raw| {
+            const decl = ast.nodes.items[d_raw];
+            if (decl.tag != .variable_declarator) continue;
+            const binding_raw = ast.extra_data.items[decl.data.extra];
+            if (binding_raw >= ast.nodes.items.len) continue;
+            const binding = ast.nodes.items[binding_raw];
+            if (binding.tag != .binding_identifier) continue;
+            if (binding.span.start != name.start or binding.span.end != name.end) continue;
+            const init: NodeIndex = @enumFromInt(ast.extra_data.items[decl.data.extra + 2]);
+            return if (init.isNone()) null else init;
+        }
+    }
+    return null;
 }
 
 fn findUniqueTopLevelLocalSymbolByName(ast: *const Ast, symbols: []const Symbol, name: []const u8) ?u32 {
@@ -1394,7 +1451,7 @@ fn memberAugmentSymbolFromObjectNode(
     const obj_node_i = @intFromEnum(obj_node);
     if (obj_node_i < symbol_ids.len) {
         if (symbol_ids[obj_node_i]) |x_sym| {
-            return validateMemberAugmentBaseSymbol(symbols, x_sym);
+            return validateMemberAugmentBaseSymbol(ast, symbols, x_sym);
         }
     }
     if (obj_node_i >= ast.nodes.items.len) return null;
@@ -1623,7 +1680,7 @@ pub fn buildFromSemantic(
         // stmt 의 has_side_effects 를 해제하고 X 의 writer bucket 에 등록한다.
         if (member_augment_obj_to_stmt.fetchRemove(@intFromEnum(r.node_index))) |kv| {
             const aug_stmt = kv.value;
-            if (validateMemberAugmentBaseSymbol(symbols, sym_u32)) |x_sym| {
+            if (validateMemberAugmentBaseSymbol(ast, symbols, sym_u32)) |x_sym| {
                 stmts[aug_stmt].has_side_effects = false;
                 try writer_buckets[x_sym].append(allocator, aug_stmt);
             }
