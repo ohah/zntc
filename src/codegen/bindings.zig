@@ -98,6 +98,29 @@ pub fn emitRest(self: anytype, node: Node) !void {
 // Declaration 출력
 // ================================================================
 
+/// 선언 종류 키워드. 선언을 여러 조각으로 나눠 내는 경로(pm CJS storage·namespace export)도
+/// 같은 규칙을 써야 해서 한 곳에 둔다.
+pub fn declarationKeyword(self: anytype, kind: ast_mod.VariableDeclarationKind) []const u8 {
+    // #2198: cycle 모듈의 top-level let/const 는 var 로 강등 — 정의 전 참조 시
+    // TDZ throw 대신 var 호이스팅 의미 (`undefined`) 로 fallback. for-init / nested
+    // scope 는 영향 없음 (이 패스가 indent_level==0 의 ESM-flat 출력에서만 작용).
+    const demote_to_var = self.options.force_var_for_cycle and
+        self.indent_level == 0 and
+        !self.in_for_init and
+        (kind == .@"const" or kind == .let);
+    if (demote_to_var) return "var ";
+    return switch (kind) {
+        .@"var" => "var ",
+        .let => "let ",
+        // #3098: syntax minify 시 const → let. 런타임 의미 동일 (차이는 컴파일타임
+        // 재할당 에러뿐) → 올바른 프로그램엔 영향 없음. `using`/`await using` 은
+        // disposal 의미가 달라 제외.
+        .@"const" => if (self.options.minify_syntax) "let " else "const ",
+        .using => "using ",
+        .await_using => "await using ",
+    };
+}
+
 pub fn emitVariableDeclaration(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
@@ -146,24 +169,7 @@ pub fn emitVariableDeclaration(self: anytype, node: Node) !void {
         return;
     }
 
-    // #2198: cycle 모듈의 top-level let/const 는 var 로 강등 — 정의 전 참조 시
-    // TDZ throw 대신 var 호이스팅 의미 (`undefined`) 로 fallback. for-init / nested
-    // scope 는 영향 없음 (이 패스가 indent_level==0 의 ESM-flat 출력에서만 작용).
-    const demote_to_var = self.options.force_var_for_cycle and
-        self.indent_level == 0 and
-        !self.in_for_init and
-        (kind == .@"const" or kind == .let);
-    const keyword = if (demote_to_var) "var " else switch (kind) {
-        .@"var" => "var ",
-        .let => "let ",
-        // #3098: syntax minify 시 const → let. 런타임 의미 동일 (차이는 컴파일타임
-        // 재할당 에러뿐) → 올바른 프로그램엔 영향 없음. `using`/`await using` 은
-        // disposal 의미가 달라 제외.
-        .@"const" => if (self.options.minify_syntax) "let " else "const ",
-        .using => "using ",
-        .await_using => "await using ",
-    };
-    try self.write(keyword);
+    try self.write(declarationKeyword(self, kind));
     try self.emitNodeList(list_start, list_len, ",");
     // for문 init 위치에서는 세미콜론을 emitFor가 직접 출력하므로 생략
     if (!self.in_for_init) {
@@ -210,16 +216,9 @@ fn emitPmCjsStorageDeclaration(self: anytype, list_start: u32, list_len: u32, ki
     }
     if (!has_storage) return false;
 
-    // 비-storage declarator 용 keyword. cycle 강등(force_var_for_cycle)·const→let(minify_syntax)
-    // 은 현행 경로와 동일 규칙.
-    const demote_to_var = self.options.force_var_for_cycle and (kind == .@"const" or kind == .let);
-    const keyword = if (demote_to_var) "var " else switch (kind) {
-        .@"var" => "var ",
-        .let => "let ",
-        .@"const" => if (self.options.minify_syntax) "let " else "const ",
-        .using => "using ",
-        .await_using => "await using ",
-    };
+    // 비-storage declarator 용 keyword — 현행 경로와 같은 규칙. 이 함수는 top-level·for-init 밖
+    // 에서만 불리므로 `declarationKeyword` 의 강등 조건과 결과가 같다.
+    const keyword = declarationKeyword(self, kind);
 
     // 2nd pass: 소스 순서대로 emit (isStorage 는 캐시된 storage_flags 재사용).
     var has_output = false;

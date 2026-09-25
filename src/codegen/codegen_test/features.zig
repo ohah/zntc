@@ -677,6 +677,26 @@ test "Codegen: namespace nested export mutation — uses property access" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "B.foo=1") != null);
 }
 
+test "Codegen: namespace export — 패턴이 섞인 선언은 선언자마다 따로 낸다" {
+    // 한 선언으로 지역 선언하면 `[y]=[N.x]` 가 복사 전 N.x(undefined)를 읽었다. 구조 분해를 낮춘
+    // 임시 변수(`_a=o,a=_a.a`)가 minify 선언 병합으로 패턴과 한 선언이 될 때도 같은 모양이다.
+    var r = try e2e(std.testing.allocator, "namespace N { export const x = 1, [y] = [x]; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings(
+        "var N;((N) => {N.x=1;const [y]=[N.x];N.y=y;})(N || (N = {}));",
+        r.output,
+    );
+}
+
+test "Codegen: namespace export — 기본값이 있는 패턴 이름도 싣는다" {
+    // 바인딩 패턴의 기본값은 assignment_pattern — 예전엔 대입 표적 태그만 봐서 빠졌다.
+    var r = try e2e(std.testing.allocator, "namespace N { export const [a = 1, ...[b = 2]] = [], { c = 3 } = {}; }");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "N.a=a;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "N.b=b;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "N.c=c;") != null);
+}
+
 // ============================================================
 // E2E Tests: TS type assertions (stripped)
 // ============================================================
