@@ -8,7 +8,7 @@ const Span = token_mod.Span;
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
-const rt = @import("../../runtime_helper_names.zig");
+const es_helpers = @import("../es_helpers.zig");
 const class_member_helpers = @import("class_member_helpers.zig");
 
 const FieldAssignment = class_member_helpers.FieldAssignment;
@@ -31,9 +31,6 @@ pub fn transformExperimentalDecorators(
     ctor_params: NodeList,
 ) Error!NodeIndex {
     const none = @intFromEnum(NodeIndex.none);
-    // #1621: minify 시 $dC 축약.
-    const decorate_name = rt.helperName("__decorateClass", self.options.minify_whitespace);
-    const decorate_span = try self.ast.addString(decorate_name);
     // 헬퍼 정의가 transpile-only 모드에서도 inline 되도록 표식 (#2194).
     self.runtime_helpers.legacy_decorator = true;
 
@@ -55,11 +52,7 @@ pub fn transformExperimentalDecorators(
     if ((old_deco_len > 0 or ctor_param_decos.len > 0) and class_name_text != null) {
         // let Foo = class Foo {};
         const name_span = self.ast.getNode(new_name).data.string_ref;
-        const var_name = try self.ast.addNode(.{
-            .tag = .binding_identifier,
-            .span = name_span,
-            .data = .{ .string_ref = name_span },
-        });
+        const var_name = try self.makeUserBinding(name_span, name_old_idx);
         // variable_declarator: extra = [name, type_ann, init_val]
         const declarator = try self.addExtraNode(.variable_declarator, node.span, &.{
             @intFromEnum(var_name),
@@ -76,14 +69,13 @@ pub fn transformExperimentalDecorators(
 
         // member decorator 호출: __decorateClass([dec], Foo.prototype, "name", kind)
         for (member_decos) |md| {
-            const call_stmt = try buildDecorateClassMemberCall(self, decorate_span, name_span, name_old_idx, md);
+            const call_stmt = try buildDecorateClassMemberCall(self, name_span, name_old_idx, md);
             try self.pending_nodes.append(self.allocator, call_stmt);
         }
 
         // class + constructor param decorator 호출: Foo = __decorateClass([...paramDecos, ...classDecos], Foo)
         const class_deco_stmt = try buildDecorateClassCall(
             self,
-            decorate_span,
             name_span,
             name_old_idx,
             old_deco_start,
@@ -121,7 +113,7 @@ pub fn transformExperimentalDecorators(
         try self.pending_nodes.append(self.allocator, class_result);
 
         for (member_decos) |md| {
-            const call_stmt = try buildDecorateClassMemberCall(self, decorate_span, name_span, name_old_idx, md);
+            const call_stmt = try buildDecorateClassMemberCall(self, name_span, name_old_idx, md);
             try self.pending_nodes.append(self.allocator, call_stmt);
         }
 
@@ -162,19 +154,14 @@ pub fn transformExperimentalDecorators(
 /// __decorateClass([dec1, dec2], Foo.prototype, "methodName", kind) 호출문 생성
 pub fn buildDecorateClassMemberCall(
     self: *Transformer,
-    decorate_span: Span,
     class_name_span: Span,
     class_name_old_idx: NodeIndex,
     md: MemberDecoratorInfo,
 ) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
-    // callee: __decorateClass
-    const callee = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = decorate_span,
-        .data = .{ .string_ref = decorate_span },
-    });
+    // callee: __decorateClass (#1621: minify 시 $dC 축약)
+    const callee = try es_helpers.makeRuntimeHelperRef(self, "__decorateClass");
 
     // arg1: [dec1, dec2, ..., __metadata("design:type", Function), ...]
     var deco_items: std.ArrayList(NodeIndex) = .empty;
@@ -192,12 +179,7 @@ pub fn buildDecorateClassMemberCall(
     // arg2: Foo.prototype (instance) or Foo (static)
     const class_ref = try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx);
     const target = if (!md.is_static) blk: {
-        const proto_span = try self.ast.addString("prototype");
-        const proto_id = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = proto_span,
-            .data = .{ .string_ref = proto_span },
-        });
+        const proto_id = try es_helpers.makePropertyName(self, "prototype");
         const me = try self.ast.addExtras(&.{ @intFromEnum(class_ref), @intFromEnum(proto_id), 0 });
         break :blk try self.ast.addNode(.{
             .tag = .static_member_expression,
@@ -250,7 +232,6 @@ pub fn buildDecorateClassMemberCall(
 /// Foo = __decorateClass([...ctorParamDecos, ...classDecos], Foo) 호출문 생성 (class + constructor param decorator)
 pub fn buildDecorateClassCall(
     self: *Transformer,
-    decorate_span: Span,
     class_name_span: Span,
     class_name_old_idx: NodeIndex,
     old_deco_start: u32,
@@ -260,12 +241,8 @@ pub fn buildDecorateClassCall(
 ) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
-    // callee: __decorateClass
-    const callee = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = decorate_span,
-        .data = .{ .string_ref = decorate_span },
-    });
+    // callee: __decorateClass (#1621: minify 시 $dC 축약)
+    const callee = try es_helpers.makeRuntimeHelperRef(self, "__decorateClass");
 
     // arg1: [...ctorParamDecos, ...classDecos]
     const scratch_top = self.scratch.items.len;

@@ -218,12 +218,7 @@ pub fn Constructors(comptime Transformer: type) type {
                     capture_count += 1;
                 }
                 if (self.needs_arguments_var) {
-                    const args_span = try self.ast.addString("arguments");
-                    const args_init = try self.ast.addNode(.{
-                        .tag = .identifier_reference,
-                        .span = args_span,
-                        .data = .{ .string_ref = args_span },
-                    });
+                    const args_init = try es_helpers.makeGlobalRef(self, "arguments");
                     capture_stmts[capture_count] = try self.buildVarDecl("_arguments", args_init, span);
                     capture_count += 1;
                 }

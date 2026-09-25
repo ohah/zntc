@@ -570,11 +570,7 @@ pub fn ES2022(comptime Transformer: type) type {
             if (has_super) {
                 // rest parameter: ...args
                 const args_span = try self.ast.addString("args");
-                const args_binding = try self.ast.addNode(.{
-                    .tag = .binding_identifier,
-                    .span = args_span,
-                    .data = .{ .string_ref = args_span },
-                });
+                const args_binding = try es_helpers.makeSyntheticBinding(self, args_span);
                 const rest_param = try self.ast.addNode(.{
                     .tag = .rest_element,
                     .span = args_span,
@@ -609,12 +605,7 @@ pub fn ES2022(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .list = body_list },
             });
-            const ctor_name_span = try self.ast.addString("constructor");
-            const ctor_key = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = ctor_name_span,
-                .data = .{ .string_ref = ctor_name_span },
-            });
+            const ctor_key = try es_helpers.makePropertyName(self, "constructor");
             // method_definition: [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
             const ctor_params_node = try self.ast.addFormalParameters(params_list, span);
             const ctor_extra = try self.ast.addExtras(&.{

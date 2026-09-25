@@ -149,11 +149,7 @@ pub fn SuperProps(comptime Transformer: type) type {
                         defer decoded.deinit(self.allocator);
                         try group_name.appendCanonical(self.allocator, &decoded, raw);
                         const dec_span = try self.ast.addString(decoded.items);
-                        new_method_prop = try self.ast.addNode(.{
-                            .tag = .identifier_reference,
-                            .span = dec_span,
-                            .data = .{ .string_ref = dec_span },
-                        });
+                        new_method_prop = try es_helpers.makePropertyNameFromSpan(self, dec_span);
                     }
                 }
             }

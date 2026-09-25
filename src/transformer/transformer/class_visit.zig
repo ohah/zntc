@@ -44,7 +44,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
             classBodyHasStaticPrivateMember(self, _anon_body_idx, _lower_pm_pre, _lower_pf_pre))
         {
             const tmp_span = try es_helpers.makeTempVarSpan(self);
-            new_name = try es_helpers.makeBindingIdentifier(self, tmp_span);
+            new_name = try es_helpers.makeSyntheticBinding(self, tmp_span);
         }
         const saved_class_name_node = self.current_class_name_node;
         self.current_class_name_node = new_name;
@@ -99,7 +99,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                 // method body 안에서 V8 trigger 되는 케이스는 buildStandaloneFunc 의 is_static set 이
                 // 별도 처리 — 여기 alias 는 instance prototype 기준).
                 const alias_span = try es_helpers.makeTempVarSpan(self);
-                const alias_binding = try es_helpers.makeBindingIdentifier(self, alias_span);
+                const alias_binding = try es_helpers.makeSyntheticBinding(self, alias_span);
                 const class_old_idx = if (!raw_name_idx.isNone()) raw_name_idx else NodeIndex.none;
                 const class_ref = try self.makeIdentifierRefWithSymbol(class_name_span_opt.?, class_old_idx);
                 const proto_prop = try es_helpers.makePropertyName(self, "prototype");
@@ -472,7 +472,7 @@ pub fn wrapClassExprInIIFE(
     var decl_name = new_name;
     const ret_name_span: Span = if (decl_name.isNone()) blk: {
         const tmp_span = try es_helpers.makeTempVarSpan(self);
-        decl_name = try es_helpers.makeBindingIdentifier(self, tmp_span);
+        decl_name = try es_helpers.makeSyntheticBinding(self, tmp_span);
         break :blk tmp_span;
     } else self.ast.getNode(decl_name).data.string_ref;
 

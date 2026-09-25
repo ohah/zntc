@@ -3,7 +3,6 @@ const ast_mod = @import("../../parser/ast.zig");
 const token_mod = @import("../../lexer/token.zig");
 const es_helpers = @import("../es_helpers.zig");
 const es2022 = @import("../es2022.zig");
-const rt = @import("../../runtime_helper_names.zig");
 
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
@@ -14,12 +13,7 @@ const Error = std.mem.Allocator.Error;
 pub fn buildStaticFieldAssignment(self: anytype, class_name: NodeIndex, field: FieldAssignment) Error!NodeIndex {
     // ClassName
     const name_node = self.ast.getNode(class_name);
-    const cls_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = name_node.span,
-        .data = .{ .string_ref = name_node.span },
-    });
-    self.propagateSymbolId(class_name, cls_ref);
+    const cls_ref = try self.makeIdentifierRefWithSymbol(name_node.span, class_name);
     // 타겟이 class field 를 모르는데 define 의미론이면 헬퍼로 정의한다 (#4629).
     if (self.options.use_define_for_class_fields) return buildPublicFieldCall(self, cls_ref, field);
     const member = if (field.is_computed) blk: {
@@ -505,13 +499,7 @@ pub fn buildDecorateParamCall(
     span: Span,
 ) Error!NodeIndex {
     // callee: __decorateParam (#1621: minify 시 $dK 축약)
-    const param_name = rt.helperName("__decorateParam", self.options.minify_whitespace);
-    const callee_span = try self.ast.addString(param_name);
-    const callee = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = callee_span,
-        .data = .{ .string_ref = callee_span },
-    });
+    const callee = try es_helpers.makeRuntimeHelperRef(self, "__decorateParam");
 
     // arg1: index (numeric literal)
     var index_buf: [10]u8 = undefined;
@@ -644,11 +632,7 @@ pub fn buildSuperSpreadArgsShell(self: anytype) Error!struct {
     const args_span = try self.ast.addString("args");
 
     // ...args formal parameter
-    const args_id = try self.ast.addNode(.{
-        .tag = .binding_identifier,
-        .span = args_span,
-        .data = .{ .string_ref = args_span },
-    });
+    const args_id = try es_helpers.makeSyntheticBinding(self, args_span);
     const rest = try self.ast.addNode(.{
         .tag = .rest_element,
         .span = zero_span,
@@ -663,11 +647,7 @@ pub fn buildSuperSpreadArgsShell(self: anytype) Error!struct {
         .span = zero_span,
         .data = .{ .none = 0 },
     });
-    const args_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = args_span,
-        .data = .{ .string_ref = args_span },
-    });
+    const args_ref = try es_helpers.makeSyntheticRefFromSpan(self, args_span);
     const spread_args = try self.ast.addNode(.{
         .tag = .spread_element,
         .span = zero_span,
@@ -764,12 +744,7 @@ pub fn buildConstructorWithFieldAssignments(
     });
 
     // constructor key
-    const ctor_span = try self.ast.addString("constructor");
-    const ctor_key = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = ctor_span,
-        .data = .{ .string_ref = ctor_span },
-    });
+    const ctor_key = try es_helpers.makePropertyName(self, "constructor");
 
     const empty_decos = try self.ast.addNodeList(&.{});
     return self.addExtraNode(.method_definition, zero_span, &.{
