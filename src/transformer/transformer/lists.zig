@@ -136,17 +136,6 @@ pub fn visitExtraList(self: *Transformer, list: NodeList) Error!NodeList {
     return self.ast.addNodeList(scratch_slice);
 }
 
-/// block_rename_stack에서 이름 조회. 스택 뒤(가장 안쪽 블록)부터 검색.
-pub fn lookupBlockRename(self: *const Transformer, name: []const u8) ?[]const u8 {
-    var i = self.block_rename_stack.items.len;
-    while (i > 0) {
-        i -= 1;
-        const entry = self.block_rename_stack.items[i];
-        if (std.mem.eql(u8, entry.old_name, name)) return entry.new_name;
-    }
-    return null;
-}
-
 /// 이름 조각을 **오래 들고 있어도 되는** 조각으로 바꾼다.
 ///
 /// `ast.getText` 가 주는 조각은 원문(`source`)이나 `string_table` 을 가리킨다. 원문은 변하지
@@ -161,16 +150,6 @@ pub fn stableName(self: *Transformer, name: []const u8) Error![]const u8 {
     if (name.len == 0 or p < start or p >= start + table.len) return name;
     if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
     return self.name_arena.?.allocator().dupe(u8, name) catch return Error.OutOfMemory;
-}
-
-pub fn popBlockRenames(self: *Transformer, renames_added: u32) void {
-    if (renames_added == 0) return;
-
-    const saved_rename_len = self.block_rename_stack.items.len - renames_added;
-    for (self.block_rename_stack.items[saved_rename_len..]) |entry| {
-        self.allocator.free(entry.new_name);
-    }
-    self.block_rename_stack.shrinkRetainingCapacity(saved_rename_len);
 }
 
 /// var <name> = <init_value>; 문 생성 (범용 헬퍼).

@@ -207,14 +207,6 @@ pub fn visitFunction(self: *Transformer, node: Node) Error!NodeIndex {
     self.needs_arguments_var = false;
     self.super_call_this_alias = false;
 
-    // ES2015 block scoping: 함수는 새 var 스코프. save/restore.
-    const saved_rename_len = self.block_rename_stack.items.len;
-    defer {
-        // 함수 내부에서 추가된 rename 해제
-        for (self.block_rename_stack.items[saved_rename_len..]) |entry| self.allocator.free(entry.new_name);
-        self.block_rename_stack.shrinkRetainingCapacity(saved_rename_len);
-    }
-
     // ES2015 new.target: 일반 함수 → function_named 컨텍스트
     const saved_new_target_ctx = self.new_target_ctx;
     if (self.options.unsupported.new_target) {
