@@ -49,6 +49,7 @@ const import_scanner = @import("../../bundler/import_scanner.zig");
 const stmt_info = @import("../../bundler/stmt_info.zig");
 const wyhash = @import("../../util/wyhash.zig");
 const string_list = @import("../../util/string_list.zig");
+const es_helpers = @import("../es_helpers.zig");
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
@@ -1067,11 +1068,7 @@ fn buildWithConfigCall(self: *Transformer, tag_idx: NodeIndex, var_name: []const
 
     const display_value_span = try buildDisplayNameSpan(self, var_name);
 
-    const with_config_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = with_config_span,
-        .data = .{ .string_ref = with_config_span },
-    });
+    const with_config_ref = try es_helpers.makePropertyNameFromSpan(self, with_config_span);
     // extra = [object, property, flags]
     const member = try self.addExtraNode(.static_member_expression, zero, &.{
         @intFromEnum(tag_idx),
@@ -1195,11 +1192,7 @@ fn applyPureFlag(self: *Transformer, flags: u32) u32 {
 /// 따옴표 포함 문자열 리터럴 span 으로 미리 준비되어 있어야 함.
 fn buildKeyStringProperty(self: *Transformer, key_span: Span, quoted_value_span: Span) Error!NodeIndex {
     const zero = Span{ .start = 0, .end = 0 };
-    const key = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = key_span,
-        .data = .{ .string_ref = key_span },
-    });
+    const key = try es_helpers.makePropertyNameFromSpan(self, key_span);
     const value = try self.ast.addNode(.{
         .tag = .string_literal,
         .span = quoted_value_span,
@@ -1229,13 +1222,10 @@ fn jsxTagToExpr(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
     const node = self.ast.getNode(idx);
     switch (node.tag) {
         .jsx_identifier => {
+            // 사용자 컴포넌트 참조 — jsx_identifier 의 심볼을 물려받아 번들러 rename 을 따른다.
             const name_text = self.ast.getText(node.span);
             const span = try self.ast.addString(name_text);
-            return self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = span,
-                .data = .{ .string_ref = span },
-            });
+            return self.makeIdentifierRefWithSymbol(span, idx);
         },
         .jsx_member_expression => {
             // binary { left=object, right=property } — 둘 다 jsx_identifier 또는 jsx_member_expression
@@ -1244,12 +1234,7 @@ fn jsxTagToExpr(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             const obj_expr = try jsxTagToExpr(self, obj_idx);
             // property 는 identifier_reference (member 의 right 자리)
             const prop_node = self.ast.getNode(prop_idx);
-            const prop_span = try self.ast.addString(self.ast.getText(prop_node.span));
-            const prop_ref = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = prop_span,
-                .data = .{ .string_ref = prop_span },
-            });
+            const prop_ref = try es_helpers.makePropertyName(self, self.ast.getText(prop_node.span));
             const zero = Span{ .start = 0, .end = 0 };
             return self.addExtraNode(.static_member_expression, zero, &.{
                 @intFromEnum(obj_expr),
@@ -1367,18 +1352,8 @@ fn forwardObjectInterpolations(
         try forwarded_attrs.append(self.allocator, attr);
 
         // 새 value: `p._cssN`. p_ref + member 만들기.
-        const p_span = try self.ast.addString("p");
-        const p_ref = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = p_span,
-            .data = .{ .string_ref = p_span },
-        });
-        const member_prop_span = try self.ast.addString(prop_name);
-        const member_prop_ref = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = member_prop_span,
-            .data = .{ .string_ref = member_prop_span },
-        });
+        const p_ref = try es_helpers.makeSyntheticRef(self, "p");
+        const member_prop_ref = try es_helpers.makePropertyName(self, prop_name);
         const member = try self.addExtraNode(.static_member_expression, zero, &.{
             @intFromEnum(p_ref),
             @intFromEnum(member_prop_ref),
@@ -1457,28 +1432,15 @@ fn forwardTemplateInterpolations(
 
         // arrow function `p => p._cssN`. arrow extras = [params, body, flags].
         const p_span = try self.ast.addString("p");
-        const p_param_binding = try self.ast.addNode(.{
-            .tag = .binding_identifier,
-            .span = p_span,
-            .data = .{ .string_ref = p_span },
-        });
+        const p_param_binding = try es_helpers.makeSyntheticBinding(self, p_span);
         const params_list = try self.ast.addNodeList(&.{p_param_binding});
         const params = try self.ast.addNode(.{
             .tag = .formal_parameters,
             .span = zero,
             .data = .{ .list = params_list },
         });
-        const p_ref = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = p_span,
-            .data = .{ .string_ref = p_span },
-        });
-        const prop_member_span = try self.ast.addString(prop_name);
-        const prop_member_ref = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = prop_member_span,
-            .data = .{ .string_ref = prop_member_span },
-        });
+        const p_ref = try es_helpers.makeSyntheticRefFromSpan(self, p_span);
+        const prop_member_ref = try es_helpers.makePropertyName(self, prop_name);
         const member = try self.addExtraNode(.static_member_expression, zero, &.{
             @intFromEnum(p_ref),
             @intFromEnum(prop_member_ref),
@@ -1723,20 +1685,14 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
     else
         .none;
 
-    const styled_ref_span = try self.ast.addString(default_binding);
-    const styled_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = styled_ref_span,
-        .data = .{ .string_ref = styled_ref_span },
-    });
+    // 사용자 styled import 가 있으면 그 모듈 최상위 바인딩을, 없으면 자동 주입할 합성 import 이름.
+    const styled_ref = if (self.plugins.styled_components.default_binding != null)
+        try self.makeRootScopeRef(default_binding)
+    else
+        try es_helpers.makeSyntheticRef(self, default_binding);
     // intrinsic: `styled.<tag>` (static_member), custom: `styled(<expr>)` (call_expression)
     const styled_tag = if (is_intrinsic) blk: {
-        const tag_text_span = try self.ast.addString(self.ast.getText(tag_name_node.span));
-        const tag_prop = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = tag_text_span,
-            .data = .{ .string_ref = tag_text_span },
-        });
+        const tag_prop = try es_helpers.makePropertyName(self, self.ast.getText(tag_name_node.span));
         break :blk try self.addExtraNode(.static_member_expression, zero, &.{
             @intFromEnum(styled_ref),
             @intFromEnum(tag_prop),
@@ -1762,12 +1718,7 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
         const obj_arg: NodeIndex = if (object_did_forward) arrow_blk: {
             // arrow: `p => ({ ... })`. concise body 가 object literal 이면 codegen 측에서
             // `() => ({...})` 로 paren wrap 출력 (object/block 모호성 해소).
-            const p_span = try self.ast.addString("p");
-            const p_param = try self.ast.addNode(.{
-                .tag = .binding_identifier,
-                .span = p_span,
-                .data = .{ .string_ref = p_span },
-            });
+            const p_param = try es_helpers.makeSyntheticBinding(self, try self.ast.addString("p"));
             const params_list = try self.ast.addNodeList(&.{p_param});
             const params = try self.ast.addNode(.{
                 .tag = .formal_parameters,
@@ -1800,11 +1751,7 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
         0,
     });
 
-    const binding_id = try self.ast.addNode(.{
-        .tag = .binding_identifier,
-        .span = generated_span,
-        .data = .{ .string_ref = generated_span },
-    });
+    const binding_id = try es_helpers.makeSyntheticBinding(self, generated_span);
     const none_idx = @intFromEnum(NodeIndex.none);
     const declarator = try self.addExtraNode(.variable_declarator, zero, &.{
         @intFromEnum(binding_id),

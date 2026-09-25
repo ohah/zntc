@@ -230,12 +230,7 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
         .span = span,
         .data = .{ .list = outer_body_list },
     });
-    const fn_name_binding_span = try self.ast.addString(fn_name);
-    const fn_name_binding = try self.ast.addNode(.{
-        .tag = .binding_identifier,
-        .span = fn_name_binding_span,
-        .data = .{ .string_ref = fn_name_binding_span },
-    });
+    const fn_name_binding = try es_helpers.makeSyntheticBinding(self, try self.ast.addString(fn_name));
     const outer_empty_params = try self.ast.addNodeList(&.{});
     const outer_params_node = try self.ast.addFormalParameters(outer_empty_params, span);
     const outer_func_extra = try self.ast.addExtras(&.{

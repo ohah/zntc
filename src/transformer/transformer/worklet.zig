@@ -19,6 +19,7 @@ const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
 const token_mod = @import("../../lexer/token.zig");
 const Span = token_mod.Span;
+const es_helpers = @import("../es_helpers.zig");
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
@@ -541,26 +542,15 @@ fn isClosureExcludedGlobal(name: []const u8) bool {
 fn buildPropAssignment(self: *Transformer, func_name_span: Span, prop_name: []const u8, value: NodeIndex, func_name_node_idx: NodeIndex) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
-    // funcName (원본 binding_identifier의 symbol_id를 복사하여 scope hoisting rename 지원)
-    const obj_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = func_name_span,
-        .data = .{ .string_ref = func_name_span },
-    });
-    if (!func_name_node_idx.isNone()) {
-        // 원본 함수의 binding_identifier에서 symbol_id 복사
+    // funcName (원본 binding_identifier의 symbol_id를 물려받아 scope hoisting rename 지원)
+    const name_idx: NodeIndex = if (func_name_node_idx.isNone()) .none else blk: {
         const func_node = self.ast.getNode(func_name_node_idx);
-        const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[func_node.data.extra]);
-        self.copySymbolId(name_idx, obj_ref);
-    }
+        break :blk @enumFromInt(self.ast.extra_data.items[func_node.data.extra]);
+    };
+    const obj_ref = try self.makeIdentifierRefWithSymbol(func_name_span, name_idx);
 
     // .__propName
-    const prop_span = try self.ast.addString(prop_name);
-    const prop_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = prop_span,
-        .data = .{ .string_ref = prop_span },
-    });
+    const prop_ref = try es_helpers.makePropertyName(self, prop_name);
 
     // funcName.__propName (static_member_expression: extra = [object, property, flags])
     const member = try self.addExtraNode(.static_member_expression, zero_span, &.{
@@ -670,19 +660,9 @@ pub const WORKLET_PLUGIN_VERSION = "zntc-0.0.1";
 /// Babel workletFactory.ts:298-327 대응. Reanimated가 worklet 예외 발생 시 stack trace 생성에 사용.
 fn buildStackDetailsArray(self: *Transformer, line_offset: i32, zero_span: Span) Error!NodeIndex {
     // global identifier
-    const global_span = try self.ast.addString("global");
-    const global_id = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = global_span,
-        .data = .{ .string_ref = global_span },
-    });
-    // Error identifier
-    const error_span = try self.ast.addString("Error");
-    const error_id = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = error_span,
-        .data = .{ .string_ref = error_span },
-    });
+    const global_id = try es_helpers.makeGlobalRef(self, "global");
+    // Error — `global.Error` 의 속성 이름
+    const error_id = try es_helpers.makePropertyName(self, "Error");
     // global.Error member expression
     const global_error = try self.addExtraNode(.static_member_expression, zero_span, &.{
         @intFromEnum(global_id), @intFromEnum(error_id), 0,
@@ -736,37 +716,17 @@ fn buildClosureObject(self: *Transformer, closure_vars: []const ClosureVar) Erro
 
     for (closure_vars) |cv| {
         const name_span = try self.ast.addString(cv.name);
-        const key = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = name_span,
-            .data = .{ .string_ref = name_span },
-        });
+        const key = try es_helpers.makePropertyNameFromSpan(self, name_span);
         // 값 생성: 일반 closure는 identifier_reference, worklet class factory는
         // `<BaseClass>.<name>` 형태의 static_member_expression.
         const value = if (cv.class_factory_base) |base| blk: {
-            const base_span = try self.ast.addString(base);
-            const base_ref = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = base_span,
-                .data = .{ .string_ref = base_span },
-            });
-            const factory_ref = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = name_span,
-                .data = .{ .string_ref = name_span },
-            });
+            // `<BaseClass>` — ref_idx 는 `new BaseClass()` 의 callee 라 그 클래스 심볼을 물려받는다.
+            const base_ref = try self.makeUserRefNamed(base, cv.ref_idx);
+            const factory_ref = try es_helpers.makePropertyNameFromSpan(self, name_span);
             break :blk try self.addExtraNode(.static_member_expression, zero_span, &.{
                 @intFromEnum(base_ref), @intFromEnum(factory_ref), 0,
             });
-        } else blk: {
-            const v = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = name_span,
-                .data = .{ .string_ref = name_span },
-            });
-            self.copySymbolId(cv.ref_idx, v);
-            break :blk v;
-        };
+        } else try self.makeIdentifierRefWithSymbol(name_span, cv.ref_idx);
         const prop = try self.ast.addNode(.{
             .tag = .object_property,
             .span = zero_span,
@@ -790,12 +750,7 @@ fn buildInitDataObject(self: *Transformer, init_code: []const u8, source_locatio
 
     // code property
     {
-        const key_span = try self.ast.addString("code");
-        const key = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = key_span,
-            .data = .{ .string_ref = key_span },
-        });
+        const key = try es_helpers.makePropertyName(self, "code");
 
         // escape the init code string for JS literal
         const escaped = try escapeStringForJs(self.allocator, init_code);
@@ -822,12 +777,7 @@ fn buildInitDataObject(self: *Transformer, init_code: []const u8, source_locatio
 
     // location property
     {
-        const key_span = try self.ast.addString("location");
-        const key = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = key_span,
-            .data = .{ .string_ref = key_span },
-        });
+        const key = try es_helpers.makePropertyName(self, "location");
 
         var loc_buf: [1024]u8 = undefined;
         const loc_str = std.fmt.bufPrint(&loc_buf, "\"{s}\"", .{source_location}) catch return error.OutOfMemory;
@@ -914,12 +864,7 @@ pub fn generateInitCode(
     }
 
     // synthetic function: function funcName(params) { ...body... }
-    const name_span = try self.ast.addString(func_name);
-    const name_node = try self.ast.addNode(.{
-        .tag = .binding_identifier,
-        .span = name_span,
-        .data = .{ .string_ref = name_span },
-    });
+    const name_node = try es_helpers.makeSyntheticBinding(self, try self.ast.addString(func_name));
     const none = @intFromEnum(NodeIndex.none);
 
     const params_node = try self.ast.addFormalParameters(params, zero_span);
@@ -958,13 +903,9 @@ fn buildClosureDestructuring(self: *Transformer, closure_vars: []const ClosureVa
     // object binding pattern: { var1, var2, ... }
     // codegen에서 binding_property.right가 NodeIndex.none이면 `{key}` shorthand로 출력됨.
     // Babel/Metro 출력 (`const {X,Y}`)과 형태 일치 — Reanimated가 worklet code string을 파싱할 때 동일 형태 기대.
+    // key 는 buildClosureObject 가 만든 `__closure` 객체의 속성 이름(원래 이름)과 같아야 한다.
     for (closure_vars) |cv| {
-        const name_span = try self.ast.addString(cv.name);
-        const key = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = name_span,
-            .data = .{ .string_ref = name_span },
-        });
+        const key = try es_helpers.makePropertyName(self, cv.name);
         const prop = try self.ast.addNode(.{
             .tag = .binding_property,
             .span = zero_span,
@@ -986,12 +927,7 @@ fn buildClosureDestructuring(self: *Transformer, closure_vars: []const ClosureVa
         .span = zero_span,
         .data = .{ .none = 0 },
     });
-    const closure_span = try self.ast.addString("__closure");
-    const closure_prop = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = closure_span,
-        .data = .{ .string_ref = closure_span },
-    });
+    const closure_prop = try es_helpers.makePropertyName(self, "__closure");
     const this_closure = try self.addExtraNode(.static_member_expression, zero_span, &.{
         @intFromEnum(this_node),
         @intFromEnum(closure_prop),

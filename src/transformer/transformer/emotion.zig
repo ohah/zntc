@@ -303,13 +303,9 @@ fn wrapCssPropInCssCall(self: *Transformer, value_idx: NodeIndex, label: []const
     const css_binding = self.plugins.emotion.css_binding orelse return value_idx;
     const value_node = self.ast.getNode(value_idx);
 
-    // Callee: `<css_binding>` identifier_reference (alias 도 포함).
-    const callee_span = try self.ast.addString(css_binding);
-    const callee = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = callee_span,
-        .data = .{ .string_ref = callee_span },
-    });
+    // Callee: `<css_binding>` identifier_reference (alias 도 포함). css_binding 은 모듈 최상위
+    // import 의 지역 이름이라 루트 스코프 바인딩(그 import)의 심볼을 붙인다.
+    const callee = try self.makeRootScopeRef(css_binding);
 
     // Args: [value, optional label string]
     var args_buf: [2]u32 = undefined;
