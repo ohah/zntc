@@ -334,7 +334,7 @@ pub fn tryLowerForInOfPrivateTarget(self: *Transformer, node: Node) Error!?NodeI
     const span = node.span;
     const temp_span = try es_helpers.makeTempVarSpan(self);
     // var _t;
-    const binding = try es_helpers.makeBindingIdentifier(self, temp_span);
+    const binding = try es_helpers.makeSyntheticBinding(self, temp_span);
     const declarator = try es_helpers.makeDeclarator(self, binding, NodeIndex.none, span);
     const var_decl = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", span);
 

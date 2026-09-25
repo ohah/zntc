@@ -163,11 +163,7 @@ pub fn buildUniqueName(self: *Transformer, prefix: []const u8, counter: *u32) Er
 
 pub fn buildVarDecl(self: *Transformer, name: []const u8, init_value: NodeIndex, span: Span) Error!NodeIndex {
     const name_span = try self.ast.addString(name);
-    const binding = try self.ast.addNode(.{
-        .tag = .binding_identifier,
-        .span = name_span,
-        .data = .{ .string_ref = name_span },
-    });
+    const binding = try es_helpers.makeSyntheticBinding(self, name_span);
 
     const none = @intFromEnum(NodeIndex.none);
     const declarator = try self.addExtraNode(.variable_declarator, span, &.{
@@ -243,11 +239,7 @@ pub fn hoistTempVarsSkippingSpans(self: *Transformer, body_idx: NodeIndex, saved
         if (es_helpers.collidesWithPrivateField(self, name)) continue;
         if (try es_helpers.collidesWithUserSymbol(self, name)) continue;
         const name_span = try self.ast.addString(name);
-        const binding = try self.ast.addNode(.{
-            .tag = .binding_identifier,
-            .span = name_span,
-            .data = .{ .string_ref = name_span },
-        });
+        const binding = try es_helpers.makeSyntheticBinding(self, name_span);
         const none = @intFromEnum(NodeIndex.none);
         const declarator = try self.addExtraNode(.variable_declarator, span, &.{
             @intFromEnum(binding), none, none,

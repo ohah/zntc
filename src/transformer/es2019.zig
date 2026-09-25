@@ -58,7 +58,7 @@ pub fn ES2019(comptime Transformer: type) type {
                 if (try es_helpers.collidesWithUserSymbol(self, name)) continue;
                 break try self.ast.addString(name);
             };
-            const unused_binding = try es_helpers.makeBindingIdentifier(self, unused_span);
+            const unused_binding = try es_helpers.makeSyntheticBinding(self, unused_span);
             return self.ast.addNode(.{
                 .tag = .catch_clause,
                 .span = node.span,

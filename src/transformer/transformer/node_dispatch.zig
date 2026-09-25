@@ -707,11 +707,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             // ES2022 static block 다운레벨링 중이고, 일반 함수 안이 아니면 치환
             if (self.static_block_class_name) |class_span| {
                 if (self.this_depth == 0) {
-                    return self.ast.addNode(.{
-                        .tag = .identifier_reference,
-                        .span = class_span,
-                        .data = .{ .string_ref = class_span },
-                    });
+                    return self.makeCurrentClassRef(class_span);
                 }
             }
             // ES2015 arrow this 캡처: arrow body 안의 this → _this
@@ -843,18 +839,8 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                         .span = json_span,
                         .data = .{ .string_ref = json_span },
                     });
-                    const json_ident_span = try self.ast.addString("JSON");
-                    const json_ident = try self.ast.addNode(.{
-                        .tag = .identifier_reference,
-                        .span = json_ident_span,
-                        .data = .{ .string_ref = json_ident_span },
-                    });
-                    const parse_span = try self.ast.addString("parse");
-                    const parse_ident = try self.ast.addNode(.{
-                        .tag = .identifier_reference,
-                        .span = parse_span,
-                        .data = .{ .string_ref = parse_span },
-                    });
+                    const json_ident = try es_helpers.makeGlobalRef(self, "JSON");
+                    const parse_ident = try es_helpers.makePropertyName(self, "parse");
                     const json_parse = try es_helpers.makeStaticMember(self, json_ident, parse_ident, node.span);
                     const map_call = try es_helpers.makeCallExpr(self, json_parse, &.{json_node}, node.span);
                     const wrap_ref_json = try es_helpers.makeRuntimeHelperRef(self, "__wrapRegExp");
@@ -963,14 +949,9 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 const text = self.ast.getText(node.data.string_ref);
                 if (std.mem.eql(u8, text, "arguments")) {
                     self.needs_arguments_var = true;
-                    const args_span = try self.ast.addString("_arguments");
-                    const new_idx = try self.ast.addNode(.{
-                        .tag = .identifier_reference,
-                        .span = args_span,
-                        .data = .{ .string_ref = args_span },
-                    });
-                    self.propagateSymbolId(idx, new_idx);
-                    return new_idx;
+                    // 원래 `arguments` 참조의 심볼을 그대로 물려준다 — 사용자가 `arguments` 라는
+                    // 바인딩을 선언한 경우(sloppy 스크립트) 그 바인딩을 계속 가리키게 한다.
+                    return self.makeUserRefNamed("_arguments", idx);
                 }
             }
             if (try self.tryRenameIdentifierLike(idx, .identifier_reference)) |i| return i;
