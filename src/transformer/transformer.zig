@@ -222,6 +222,8 @@ pub const Transformer = struct {
     object_home_counter: u32 = 0,
     /// `_stack`/`_error`/`_hasError` 이름 접미사 카운터 — using 낮추기마다 고유 (#4730).
     using_counter: u32 = 0,
+    /// `for (using x of …)` 헤더 임시 변수 `_using` 번호 — 함수 안에서 고유하게 (#4760).
+    using_head_counter: u32 = 0,
     /// for-of 풀이의 step 변수 이름(`_step`, `_step2`, …) 카운터 — 모듈 전체에서 고유 (#4746).
     forof_step_counter: u32 = 0,
     /// 상태 기계 for-in 풀이의 `_keys`/`_idx` 이름 접미사 카운터 — 모듈 전체에서 고유 (#4746).
@@ -311,11 +313,7 @@ pub const Transformer = struct {
     /// ES2015 block scoping: _loop 함수명 카운터 (_loop, _loop2, ...)
     loop_counter: u32 = 0,
 
-    /// ES2015 block scoping 격리: 블록 내부 let/const 변수가 외부 스코프와
-    /// 이름 충돌 시 리네이밍 (x → x$1). 스택으로 중첩 블록 지원.
-    block_rename_stack: std.ArrayList(BlockRenameEntry) = .empty,
-
-    /// `block_rename_stack` 에 보관하는 이름 중 `string_table` 에 있던
+    /// 블록 스코핑 등이 보관하는 이름 중 `string_table` 에 있던
     /// 것의 복사본 저장소(`stableName`). `string_table` 은 `addString` 때 재할당되어 옮겨지므로
     /// 그 안을 가리키는 조각을 들고 있으면 해제된 메모리를 읽게 된다.
     name_arena: ?std.heap.ArenaAllocator = null,
@@ -344,7 +342,6 @@ pub const Transformer = struct {
     /// const 바인딩만 추적 (let/var 는 재할당 가능).
     regex_var_map: std.AutoHashMapUnmanaged(u32, []const u8) = .empty,
 
-    pub const BlockRenameEntry = state_mod.BlockRenameEntry;
     pub const GeneratorLabelEntry = state_mod.GeneratorLabelEntry;
     pub const NewTargetCtx = state_mod.NewTargetCtx;
     pub const ConstEnumValue = state_mod.ConstEnumValue;
@@ -479,8 +476,6 @@ pub const Transformer = struct {
     const lists_mod = @import("transformer/lists.zig");
     pub const visitListNode = lists_mod.visitListNode;
     pub const visitExtraList = lists_mod.visitExtraList;
-    pub const lookupBlockRename = lists_mod.lookupBlockRename;
-    pub const popBlockRenames = lists_mod.popBlockRenames;
     pub const stableName = lists_mod.stableName;
     pub const buildUniqueName = lists_mod.buildUniqueName;
     pub const buildVarDecl = lists_mod.buildVarDecl;

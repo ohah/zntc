@@ -87,12 +87,14 @@ pub fn ES2025Using(comptime Transformer: type) type {
         /// 낮추기마다 고유한 `_stack`/`_error`/`_hasError` 이름. 고정 이름이면 중첩 블록이
         /// 서로의 스택을 덮어쓰고, 사용자 변수 `_stack` 과도 충돌한다 (#4730).
         fn allocNames(self: *Transformer) Transformer.Error!Names {
-            const bases = [_][]const u8{ "_stack", "_error", "_hasError" };
+            // catch 파라미터(`_`)도 번호를 붙여 함수 안에서 겹치지 않게 한다 — 상태 기계는 이름이
+            // 고유하다고 보고 심볼 없는 합성 바인딩을 바꾸지 않는다 (#4760).
+            const bases = [_][]const u8{ "_stack", "_error", "_hasError", "_" };
             while (true) {
                 self.using_counter += 1;
                 const n = self.using_counter;
-                var bufs: [3][32]u8 = undefined;
-                var names: [3][]const u8 = undefined;
+                var bufs: [4][32]u8 = undefined;
+                var names: [4][]const u8 = undefined;
                 var collide = false;
                 for (bases, 0..) |b, k| {
                     names[k] = if (n == 1) b else std.fmt.bufPrint(&bufs[k], "{s}{d}", .{ b, n }) catch unreachable;
@@ -103,7 +105,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                     .stack = try self.ast.addString(names[0]),
                     .err = try self.ast.addString(names[1]),
                     .has_err = try self.ast.addString(names[2]),
-                    .catch_param = try self.ast.addString("_"),
+                    .catch_param = try self.ast.addString(names[3]),
                 };
             }
         }
@@ -313,7 +315,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
             const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[self.readU32(ln.data.extra, 1)]));
             const binding = self.readNodeIdx(d.data.extra, 0);
 
-            const tmp_name = try uniqueSourceName(self, "_using");
+            const tmp_name = try uniqueSynthName(self, "_using", &self.using_head_counter);
             defer self.allocator.free(tmp_name);
             const tmp_span = try self.ast.addString(tmp_name);
             const new_left = try es_helpers.makeVarDeclaration(self, &.{
@@ -373,6 +375,17 @@ pub fn ES2025Using(comptime Transformer: type) type {
             const local_ref = if (local_origin.isNone()) try es_helpers.makeSyntheticRef(self, local) else try self.makeUserRefNamed(local, local_origin);
             const exported_ref = if (exported) |e| try es_helpers.makePropertyName(self, e) else local_ref;
             return self.ast.addNode(.{ .tag = .export_specifier, .span = Span{ .start = 0, .end = 0 }, .data = .{ .binary = .{ .left = local_ref, .right = exported_ref, .flags = 0 } } });
+        }
+
+        /// 소스와 겹치지 않고, 이전에 같은 `counter` 로 만든 이름과도 겹치지 않는 이름.
+        fn uniqueSynthName(self: *Transformer, base: []const u8, counter: *u32) Transformer.Error![]const u8 {
+            while (true) {
+                counter.* += 1;
+                const n = counter.*;
+                const name = if (n == 1) try self.allocator.dupe(u8, base) else try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ base, n });
+                if (!es_helpers.nameAppearsInSource(self, name)) return name;
+                self.allocator.free(name);
+            }
         }
 
         fn uniqueSourceName(self: *Transformer, base: []const u8) Transformer.Error![]const u8 {

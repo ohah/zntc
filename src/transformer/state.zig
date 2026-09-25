@@ -24,11 +24,6 @@ pub const AstOwnership = enum {
     }
 };
 
-pub const BlockRenameEntry = struct {
-    old_name: []const u8,
-    new_name: []const u8,
-};
-
 pub const GeneratorLabelEntry = struct {
     name: []const u8,
     break_label: u32,

@@ -741,8 +741,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const update_idx: NodeIndex = self.readNodeIdx(e, 2);
             const body_idx: NodeIndex = self.readNodeIdx(e, 3);
             // 헤더의 let/const 는 루프 스코프 — 고유 이름으로 바꿔 wrapper 에 등록한다 (#4712).
-            const head_renames = try pushLoopHeadRenames(self, init_idx);
-            defer self.popBlockRenames(head_renames);
+            try registerLoopHeadBindings(self, init_idx);
 
             // body 는 statement → hasYieldOrReturn, 헤더 세 칸은 expression → containsYield.
             // ⚠️ init/update 를 빼면 헤더에만 yield 가 있을 때 루프가 상태 기계를 안 타고
@@ -1320,8 +1319,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 // 컴파일러가 만든 catch 임시 변수(for-of 닫기의 `_f` 등)는 이미 wrapper 에 등록된
                 // 고유 이름이라 바꿀 필요가 없다.
                 if (param_bindings.items.len == 1 and isRegisteredGeneratorTemp(self, self.ast.getText(self.ast.getNode(param_bindings.items[0]).span))) param_bindings.clearRetainingCapacity();
-                const param_renames = try pushStateMachineRenames(self, param_bindings.items);
-                defer self.popBlockRenames(param_renames);
+                try registerStateMachineBindings(self, param_bindings.items);
 
                 const param_is_pattern = !catch_param.isNone() and self.ast.getNode(catch_param).tag != .binding_identifier;
                 if (param_is_pattern) {
@@ -1452,7 +1450,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (node.tag == .block_statement) {
                 // 중첩 블록의 let/const 는 블록 스코프다 — 원래 이름 그대로 wrapper 최상단에
                 // 올리면 바깥 동명 바인딩을 가린다. 상태 기계가 그 블록을 실제로 수집할 때
-                // 고유 이름으로 바꿔 등록한다(`pushStateMachineRenames`). 수집하지 않는 블록은
+                // 고유 이름으로 바꿔 등록한다(`registerStateMachineBindings`). 수집하지 않는 블록은
                 // 일반 방문이 블록 스코핑 규칙대로 처리한다 (#4712).
                 var i: u32 = 0;
                 while (i < node.data.list.len) : (i += 1) {
@@ -2374,39 +2372,32 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
         }
 
-        /// 상태 기계가 수집하는 블록 스코프 바인딩을 `name$N` 으로 바꾸고 wrapper 최상단 var 로
-        /// 등록한다 (#4712). 상태 기계 안에서는 바깥 스코프 이름 목록이 채워지지 않아 충돌 여부를
-        /// 알 수 없으므로 **항상** 바꾼다. 반환값은 `popBlockRenames` 에 넘길 개수.
-        fn pushStateMachineRenames(self: *Transformer, bindings: []const NodeIndex) Transformer.Error!u32 {
-            if (!stateMachineRenamesBlockScope(self)) return 0;
-            var stack_pushed: u32 = 0;
+        /// 상태 기계가 수집하는 블록 스코프 바인딩을 wrapper 최상단 var 로 등록한다 (#4712).
+        /// 사용자 바인딩(심볼 있음)은 **항상** `name$N` 으로 바꿔 심볼 표에 둔다 — 상태 기계는
+        /// 블록마다 바인딩을 한 함수 스코프로 모으므로 같은 이름이 겹칠 수 있다(#4760 이전의 이름
+        /// 스택 판정과 같은 보수적 선택). 심볼 표가 이미 정한 이름이 있으면 그 이름을 쓴다.
+        /// 심볼 없는 바인딩은 변환기가 만든 임시 변수(`_d`, `_using`, `_` …)로, 만들 때 함수 안에서
+        /// 고유하게 지어지므로 이름을 그대로 올린다.
+        fn registerStateMachineBindings(self: *Transformer, bindings: []const NodeIndex) Transformer.Error!void {
+            if (!stateMachineRenamesBlockScope(self)) return;
             for (bindings) |binding| {
-                const name = try self.stableName(self.ast.getText(self.ast.getNode(binding).span));
                 const bi = @intFromEnum(binding);
                 const sym: ?u32 = if (bi < self.symbol_ids.items.len) self.symbol_ids.items[bi] else null;
-                // 사용자 바인딩(심볼 있음)은 심볼 표에 등록한다 — 참조는 심볼로 찾아 이름이 같은
-                // 다른 변수와 섞이지 않는다 (#4760). 표가 이미 정한 이름이 있으면 그 이름.
-                if (sym) |sid| {
-                    const new_name = self.tableRenameOf(binding) orelse blk: {
-                        self.block_rename_counter += 1;
-                        if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
-                        const n = try std.fmt.allocPrint(self.name_arena.?.allocator(), "{s}${d}", .{ name, self.block_rename_counter });
-                        if (self.block_rename_map == null) self.block_rename_map = .empty;
-                        try self.block_rename_map.?.put(self.allocator, sid, n);
-                        break :blk n;
-                    };
-                    try registerGeneratorVar(self, try self.ast.addString(new_name), binding);
+                const sid = sym orelse {
+                    try registerGeneratorVar(self, self.ast.getNode(binding).data.string_ref, binding);
                     continue;
-                }
-                // 심볼 없는 바인딩은 변환기가 만든 임시 변수(`_d` 등)다. 상태 기계는 중첩 try 등에서
-                // 겹치지 않게 이들도 고유 이름으로 바꾸는데, 참조도 심볼이 없어 이름으로 찾는다.
-                self.block_rename_counter += 1;
-                const new_name = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, self.block_rename_counter });
-                try self.block_rename_stack.append(self.allocator, .{ .old_name = name, .new_name = new_name });
+                };
+                const new_name = self.tableRenameOf(binding) orelse blk: {
+                    const name = self.ast.getText(self.ast.getNode(binding).span);
+                    self.block_rename_counter += 1;
+                    if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+                    const n = try std.fmt.allocPrint(self.name_arena.?.allocator(), "{s}${d}", .{ name, self.block_rename_counter });
+                    if (self.block_rename_map == null) self.block_rename_map = .empty;
+                    try self.block_rename_map.?.put(self.allocator, sid, n);
+                    break :blk n;
+                };
                 try registerGeneratorVar(self, try self.ast.addString(new_name), binding);
-                stack_pushed += 1;
             }
-            return stack_pushed;
         }
 
         fn isRegisteredGeneratorTemp(self: *Transformer, name: []const u8) bool {
@@ -2416,12 +2407,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return false;
         }
 
-        fn pushLoopHeadRenames(self: *Transformer, head: NodeIndex) Transformer.Error!u32 {
-            if (!isLexicalDeclaration(self, head)) return 0;
+        fn registerLoopHeadBindings(self: *Transformer, head: NodeIndex) Transformer.Error!void {
+            if (!isLexicalDeclaration(self, head)) return;
             var bindings: std.ArrayList(NodeIndex) = .empty;
             defer bindings.deinit(self.allocator);
             try collectLexicalBindingsInList(self, .{ .start = try self.ast.addExtras(&.{@intFromEnum(head)}), .len = 1 }, &bindings);
-            return pushStateMachineRenames(self, bindings.items);
+            try registerStateMachineBindings(self, bindings.items);
         }
 
         fn collectBodyOperations(self: *Transformer, body_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
@@ -2436,8 +2427,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const list = try rewriteUsingForStateMachine(self, body_node.data.list);
                 const stmts_start = list.start;
                 const stmts_len = list.len;
-                const renames = try pushStateMachineRenames(self, lexical.items);
-                defer self.popBlockRenames(renames);
+                try registerStateMachineBindings(self, lexical.items);
                 // collectOperations가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
                 var i_stmt: u32 = 0;
                 while (i_stmt < stmts_len) : (i_stmt += 1) {

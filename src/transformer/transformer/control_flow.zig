@@ -82,7 +82,7 @@ pub const LoopCapture = struct {
 
 fn collectActiveLoopHeaderNames(self: *Transformer, names: []const []const u8, bindings: []const NodeIndex, out: *std.ArrayList([]const u8)) Error!void {
     for (names, 0..) |name, i| {
-        const renamed = if (i < bindings.len) self.renamedNameOf(bindings[i]) else self.lookupBlockRename(name);
+        const renamed = if (i < bindings.len) self.renamedNameOf(bindings[i]) else null;
         try out.append(self.allocator, renamed orelse name);
     }
 }

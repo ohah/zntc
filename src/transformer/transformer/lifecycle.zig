@@ -142,8 +142,6 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.generator_temp_var_spans.deinit(self.allocator);
     self.generator_var_origins.deinit(self.allocator);
     self.tagged_template_fns.deinit(self.allocator);
-    for (self.block_rename_stack.items) |entry| self.allocator.free(entry.new_name);
-    self.block_rename_stack.deinit(self.allocator);
     if (self.name_arena) |*a| a.deinit();
     if (self.block_rename_map) |*m| m.deinit(self.allocator);
     for (self.const_enums.items) |decl| {

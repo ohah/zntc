@@ -4358,7 +4358,8 @@ test "ES2024: using 낮추기마다 이름이 고유하고 에러 상태를 초�
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var _stack=[],_error=void 0,_hasError=false;") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var _stack2=[],_error2=void 0,_hasError2=false;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "catch(_){_error2=_;_hasError2=true;}") != null);
+    // catch 파라미터도 낮추기마다 번호가 붙는다 — 상태 기계가 함수 안 고유 이름으로 믿는다 (#4760).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "catch(_2){_error2=_2;_hasError2=true;}") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__callDispose(_stack2,_error2,_hasError2)") != null);
     // 블록 안 using 은 native let/const 타겟에서 const 로 남는다.
     try std.testing.expect(std.mem.indexOf(u8, r.output, "const a=__using(_stack,") != null);
@@ -4721,7 +4722,8 @@ test "ES5 상태 기계: 변환기가 만든 이름을 리네임해도 string_ta
     var r = try e2eTarget(std.testing.allocator, src, .es5);
     defer r.deinit();
     for (r.output) |c| try std.testing.expect(c < 0x80);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_using$") != null);
+    // `_using` 은 만들 때 함수 안에서 고유하게 지어져 상태 기계가 다시 바꾸지 않는다 (#4760).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_using = _step.value") != null or std.mem.indexOf(u8, r.output, "_using=_step.value") != null);
 }
 
 test "ES5 블록 스코핑: 함수 본문 var 와 같은 이름의 블록 let 은 새 이름을 받는다 (#4758, 심볼 표)" {

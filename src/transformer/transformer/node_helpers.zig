@@ -22,7 +22,7 @@ pub fn copyNodeDirect(self: anytype, idx: NodeIndex) Error!NodeIndex {
 }
 
 /// ES2015 block scoping 격리: outer scope 와 충돌하는 inner `let`/`const` 가
-/// `block_rename_stack` 에 등록되어 있으면 `name$N` 으로 치환된 새 노드 반환.
+/// 심볼 표(`block_rename_map`)에 새 이름이 있으면 `name$N` 으로 치환된 새 노드 반환.
 /// identifier_reference / binding_identifier / assignment_target_identifier 가 공유.
 /// 호출 후 새 노드의 symbol_id 를 반드시 전파 - 누락 시 linker rename 미적용으로
 /// 정의/사용 비대칭 (`acc = acc$1 + n` 같은 strict-mode ReferenceError) 발생.
@@ -52,12 +52,9 @@ pub fn tableRenameOf(self: anytype, idx: NodeIndex) ?[]const u8 {
     return m.get(sid);
 }
 
-/// 이 식별자 노드의 블록 스코핑 새 이름. 심볼 표(`block_rename_map`)를 먼저 보고, 없으면
-/// 이름 스택(상태 기계가 쌓은 것, 또는 스코프 정보 없는 경로)을 본다 (#4760).
+/// 이 식별자 노드의 블록 스코핑 새 이름 — 심볼 표(`block_rename_map`)로 찾는다 (#4760).
 pub fn renamedNameOf(self: anytype, idx: NodeIndex) ?[]const u8 {
-    if (tableRenameOf(self, idx)) |n| return n;
-    if (self.block_rename_stack.items.len == 0) return null;
-    return self.lookupBlockRename(self.ast.getText(self.ast.getNode(idx).data.string_ref));
+    return tableRenameOf(self, idx);
 }
 
 /// 변환 시작에 심볼 표를 만든다. es5 블록 스코핑을 낮추고 분석기 스코프가 있을 때만.
