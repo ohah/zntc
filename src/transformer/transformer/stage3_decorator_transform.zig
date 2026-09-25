@@ -418,7 +418,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     defer iife_stmts.deinit(self.allocator);
 
     // _classThis 변수
-    const classThis_span = try self.ast.addString("_classThis");
+    const classThis_span = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_classThis"));
 
     // static { _classThis = this; }
     {

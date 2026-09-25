@@ -73,7 +73,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const name_span = if (!new_name.isNone())
                 self.ast.getNode(new_name).data.string_ref
             else blk: {
-                const synthetic = try self.ast.addString("_Class");
+                const synthetic = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_Class"));
                 new_name = try es_helpers.makeSyntheticBinding(self, synthetic);
                 break :blk synthetic;
             };
@@ -93,12 +93,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     // (예: EventEmitter가 eventemitter3과 react-native 양쪽에 존재),
                     // 항상 _super 매개변수를 통해 스코프를 격리한다.
                     super_expr_node = try self.makeIdentifierRefWithSymbol(super_node.data.string_ref, super_idx);
-                    super_span = try self.ast.addString("_super");
+                    super_span = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_super"));
                 } else {
                     // 표현식 (e.g. React.Component, eventTargetShim.EventTarget):
                     // visit하여 new AST 노드로 변환, IIFE 매개변수 _super로 전달.
                     super_expr_node = try self.visitNode(super_idx);
-                    super_span = try self.ast.addString("_super");
+                    super_span = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_super"));
                 }
             }
 
@@ -330,7 +330,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const name_span = if (!new_name.isNone())
                 self.ast.getNode(new_name).data.string_ref
             else
-                try self.ast.addString("_Class");
+                try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_Class"));
 
             const name_node = if (!new_name.isNone())
                 new_name
@@ -349,10 +349,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 if (super_node.tag == .identifier_reference or super_node.tag == .binding_identifier) {
                     // 단순 식별자도 IIFE 매개변수 _super로 전달 (스코프 격리)
                     expr_super_node = try self.makeIdentifierRefWithSymbol(super_node.data.string_ref, super_idx);
-                    super_span = try self.ast.addString("_super");
+                    super_span = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_super"));
                 } else {
                     expr_super_node = try self.visitNode(super_idx);
-                    super_span = try self.ast.addString("_super");
+                    super_span = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_super"));
                 }
             }
 

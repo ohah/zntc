@@ -31,7 +31,7 @@ pub fn visitExportDefaultDeclaration(self: *Transformer, node: Node) Error!NodeI
             const name_span = if (!name_idx.isNone())
                 self.ast.getNode(name_idx).data.string_ref
             else
-                try self.ast.addString("_Class");
+                try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_Class"));
             const name_ref = try self.makeIdentifierRefWithSymbol(name_span, name_idx);
             return self.ast.addNode(.{
                 .tag = node.tag,

@@ -123,6 +123,13 @@ pub const Transformer = struct {
     /// 변환 시작에 `block_rename_table` 로 만든다 (#4760). 없으면(스코프 정보 없는 경로)
     /// 예전 이름 스택 판정을 쓴다.
     block_rename_map: ?std.AutoHashMapUnmanaged(u32, []const u8) = null,
+    /// 합성 이름 → 이 모듈에서 실제로 쓰는 이름 (`resolveSyntheticName`). 사용자 코드에 같은 이름이
+    /// 있으면 `_this2` 처럼 비껴 간다. 같은 기본 이름은 모듈 안에서 늘 같은 결과라 바인딩과 참조가 맞는다.
+    synthetic_names: std.StringHashMapUnmanaged([]const u8) = .empty,
+    /// 이미 쓴 합성 결과 이름 — 서로 다른 합성 이름이 같은 결과로 겹치지 않게 (`_loop`→`_loop2` 와 두 번째 루프의 `_loop2`).
+    synthetic_taken: std.StringHashMapUnmanaged(void) = .empty,
+    /// 사용자 심볼 이름 집합 — 합성 이름 충돌 판정용, 처음 필요할 때 만든다.
+    user_symbol_names: ?std.StringHashMapUnmanaged(void) = null,
 
     /// `isImportSpecifierUnused` 가 specifier 마다 `references` 전체를 선형 스캔(O(N²))하지
     /// 않도록, **value-use 가 있는 symbol_id 집합**을 1회 구축해 캐시한다(대형 fan-out 만).

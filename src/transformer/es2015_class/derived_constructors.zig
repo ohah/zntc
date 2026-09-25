@@ -405,7 +405,8 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             if (node.tag != .assignment_expression) return false;
             const left = self.ast.getNode(node.data.binary.left);
             if (left.tag != .identifier_reference and left.tag != .assignment_target_identifier) return false;
-            if (!std.mem.eql(u8, self.ast.getText(left.data.string_ref), "_this")) return false;
+            const this_name = es_helpers.resolveSyntheticName(self, "_this") catch return false;
+            if (!std.mem.eql(u8, self.ast.getText(left.data.string_ref), this_name)) return false;
             const right = self.ast.getNode(node.data.binary.right);
             return isSuperCallLike(self, right);
         }

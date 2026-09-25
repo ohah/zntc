@@ -144,6 +144,9 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.tagged_template_fns.deinit(self.allocator);
     if (self.name_arena) |*a| a.deinit();
     if (self.block_rename_map) |*m| m.deinit(self.allocator);
+    self.synthetic_names.deinit(self.allocator);
+    self.synthetic_taken.deinit(self.allocator);
+    if (self.user_symbol_names) |*set| set.deinit(self.allocator);
     for (self.const_enums.items) |decl| {
         self.allocator.free(decl.name);
         for (decl.members) |m| {

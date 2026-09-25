@@ -359,12 +359,70 @@ pub fn makeGlobalRef(self: anytype, name: []const u8) !NodeIndex {
 
 /// 변환기가 만든 합성 변수 참조 — `_this`, `_state`, `_ret`. 사용자 심볼이 없다.
 pub fn makeSyntheticRef(self: anytype, name: []const u8) !NodeIndex {
-    return makeIdentifierRef(self, name);
+    return makeIdentifierRef(self, try resolveSyntheticName(self, name));
+}
+
+/// 합성 이름(`_this`·`_super`·`_loop`·`_ret`…)을 이 모듈에서 쓸 이름으로 정한다.
+///
+/// 변환기가 고정 이름으로 만드는 변수가 사용자 코드의 같은 이름과 겹치면 서로를 가린다 —
+/// `const _this = 'x'; () => this` 를 es5 로 낮추면 `var _this = this` 가 사용자 `_this` 를 덮었고,
+/// 사용자 `_super`·`_loop` 도 클래스·루프 낮추기를 깨뜨렸다. 소스에 같은 이름이 한 번이라도 나오면
+/// `이름2`, `이름3`… 중 빈 이름을 쓴다. 결과는 모듈 단위로 기억해 같은 기본 이름을 쓰는 바인딩과
+/// 참조가 늘 같은 이름이 되고, 서로 다른 합성 이름이 같은 결과로 겹치지 않게 한다. 결과는 사용 중이
+/// 아닌 이름이라 해석한 이름을 다시 넣어도 그대로 나온다(span 으로 들고 다니다 생성 함수를 한 번 더 거치는 경로).
+///
+/// 제외: 임시 변수(`_a`, `_b2` — `makeTempVarSpan` 이 이미 비껴 가고 참조는 `makeTempVarRef` 로
+/// 따로 만든다), 번들러와 이름으로 약속한 `_default`, 밑줄로 시작하지 않는 이름(합성 헬퍼 매개변수).
+pub fn resolveSyntheticName(self: anytype, name: []const u8) ![]const u8 {
+    if (name.len < 2 or name[0] != '_' or isTempLikeName(name) or std.mem.eql(u8, name, "_default")) return name;
+    if (self.synthetic_names.get(name)) |r| return r;
+    if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+    const arena = self.name_arena.?.allocator();
+    // `name` 은 string_table 조각일 수 있다 — 다음 addString 전에 고정한다.
+    const key = try arena.dupe(u8, name);
+    var resolved: []const u8 = key;
+    if (try syntheticNameInUse(self, key)) {
+        var n: u32 = 2;
+        while (true) : (n += 1) {
+            const cand = try std.fmt.allocPrint(arena, "{s}{d}", .{ key, n });
+            if (try syntheticNameInUse(self, cand) or self.synthetic_taken.contains(cand) or self.synthetic_names.contains(cand)) continue;
+            resolved = cand;
+            break;
+        }
+    }
+    try self.synthetic_names.put(self.allocator, key, resolved);
+    try self.synthetic_taken.put(self.allocator, resolved, {});
+    return resolved;
+}
+
+/// 사용자 코드가 `name` 을 변수로 쓰는지 — 선언한 바인딩(분석기 심볼)이나 선언 없이 참조한 전역.
+/// 속성 이름(`obj._state`)·주석은 가리지 않으므로 세지 않는다. 분석 결과가 없는 경로(심볼 없음)는
+/// 소스 텍스트로 보수적으로 판정한다.
+fn syntheticNameInUse(self: anytype, name: []const u8) !bool {
+    if (self.symbols.len == 0) return nameAppearsInSource(self, name);
+    if (self.unresolved_references) |u| {
+        if (u.contains(name)) return true;
+    } else if (nameAppearsInSource(self, name)) return true;
+    if (self.user_symbol_names == null) {
+        var set: std.StringHashMapUnmanaged(void) = .empty;
+        errdefer set.deinit(self.allocator);
+        for (self.symbols) |sym| try set.put(self.allocator, self.ast.getText(sym.name), {});
+        self.user_symbol_names = set;
+    }
+    return self.user_symbol_names.?.contains(name);
+}
+
+/// span 판 — 이름이 바뀌면 새 span 을 돌려준다.
+fn resolveSyntheticSpan(self: anytype, name_span: Span) !Span {
+    const text = self.ast.getText(name_span);
+    const resolved = try resolveSyntheticName(self, text);
+    if (std.mem.eql(u8, resolved, self.ast.getText(name_span))) return name_span;
+    return self.ast.addString(resolved);
 }
 
 /// `makeSyntheticRef` 의 span 판 (이미 addString 한 이름).
 pub fn makeSyntheticRefFromSpan(self: anytype, name_span: Span) !NodeIndex {
-    return makeIdentifierRefFromSpan(self, name_span);
+    return makeIdentifierRefFromSpan(self, try resolveSyntheticSpan(self, name_span));
 }
 
 /// `makePropertyName` 의 span 판.
@@ -953,13 +1011,13 @@ pub fn makeBoolLiteral(self: anytype, val: bool) !NodeIndex {
 /// 변환기가 만든 합성 바인딩 — `_a`, `_this`, `_loop`, 헬퍼 매개변수. 사용자 심볼이 없다 (#4760).
 /// 사용자 변수 바인딩을 다시 만들 때는 `makeUserBinding`(심볼 전달)을 쓴다.
 pub fn makeSyntheticBinding(self: anytype, name_span: Span) !NodeIndex {
-    return makeBindingIdentifier(self, name_span);
+    return makeBindingIdentifier(self, try resolveSyntheticSpan(self, name_span));
 }
 
 /// `makeSyntheticRef` 계열의 노드 위치 지정판 — 이름(`name_span`)과 다른 소스 위치(`node_span`)를
 /// 노드에 달아야 할 때(소스맵 위치 보존). 이름만 다른 위치를 가리키고 의미는 같다.
 pub fn makeSyntheticRefAt(self: anytype, name_span: Span, node_span: Span) !NodeIndex {
-    return identifierRefNode(self, name_span, node_span);
+    return identifierRefNode(self, try resolveSyntheticSpan(self, name_span), node_span);
 }
 
 pub fn makeGlobalRefAt(self: anytype, name_span: Span, node_span: Span) !NodeIndex {

@@ -3046,6 +3046,29 @@ test "ES2017: static private field arrow this becomes class reference" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "value:()=>A}") != null);
 }
 
+// 변환이 고정 이름으로 만드는 합성 변수(`_this`·`_super`·`_loop`)가 사용자 변수와 겹치면 서로를 가렸다
+// — 사용자 코드에 같은 이름이 있으면 `이름2` 로 비껴 간다(바인딩·참조 모두 같은 이름).
+test "ES5: synthetic _this avoids user _this" {
+    var r = try e2eTarget(std.testing.allocator, "function f(){ const _this = 1; return () => this; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _this2=this;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return _this2;") != null);
+}
+
+test "ES5: synthetic _super param avoids user _super" {
+    var r = try e2eTarget(std.testing.allocator, "class B{} class D extends B { constructor(){ const _super = 1; super(); } }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function(_super2)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(D,_super2)") != null);
+}
+
+test "ES5: synthetic _loop avoids user _loop and stays unique" {
+    var r = try e2eTarget(std.testing.allocator, "const _loop = 0; const a = []; for (let i = 0; i < 2; i++) a.push(() => i); for (let j = 0; j < 2; j++) a.push(() => j);", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _loop2=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _loop22=function") != null);
+}
+
 test "ES2017: object rest declaration keeps const/let" {
     var r = try e2eTarget(std.testing.allocator, "{const {a,...r}=o;}{let {b,...s}=o;}", .es2017);
     defer r.deinit();

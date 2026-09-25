@@ -336,7 +336,6 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const prefix = "_step";
             while (true) {
                 const name = try self.buildUniqueName(prefix, &self.forof_step_counter);
-                defer if (name.ptr != prefix.ptr) self.allocator.free(name);
                 if (es_helpers.nameAppearsInSource(self, name)) continue;
                 return self.ast.addString(name);
             }

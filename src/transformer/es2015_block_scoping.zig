@@ -634,7 +634,6 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             // --- _loop 함수명 생성 ---
             const loop_prefix = "_loop";
             const loop_name = try self.buildUniqueName(loop_prefix, &self.loop_counter);
-            defer if (loop_name.ptr != loop_prefix.ptr) self.allocator.free(loop_name);
 
             const needs_ret_var = flow.needsRetVar();
 

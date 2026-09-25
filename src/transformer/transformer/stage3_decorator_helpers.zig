@@ -528,7 +528,7 @@ pub fn buildMetadataDecl(self: anytype) Error!NodeIndex {
     });
 
     // const _metadata = ...;
-    const metadata_span = try self.ast.addString("_metadata");
+    const metadata_span = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_metadata"));
     const metadata_binding = try es_helpers.makeSyntheticBinding(self, metadata_span);
     const declarator = try self.addExtraNode(.variable_declarator, zero_span, &.{
         @intFromEnum(metadata_binding), none, @intFromEnum(ternary),
