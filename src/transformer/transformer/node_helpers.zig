@@ -170,6 +170,22 @@ pub fn makeCurrentClassRef(self: anytype, name_span: Span) Error!NodeIndex {
     return makeIdentifierRefWithSymbol(self, name_span, if (same) cls else .none);
 }
 
+/// 사용자 변수 **바인딩**을 `name_span` 으로 새로 만들고 원래 바인딩(`origin`)의 심볼을 물려준다
+/// (#4760). 변환이 선언을 다시 짤 때(구조 분해 풀기·클래스 낮추기 등) 쓴다. `origin` 이 `.none`
+/// 이면 심볼 없이 만든다.
+pub fn makeUserBinding(self: anytype, name_span: Span, origin: NodeIndex) Error!NodeIndex {
+    const binding = try es_helpers.makeBindingIdentifier(self, name_span);
+    self.propagateSymbolId(origin, binding);
+    return binding;
+}
+
+/// `makeIdentifierRefWithSymbol` 의 노드 위치 지정판 (소스맵 위치 보존).
+pub fn makeIdentifierRefWithSymbolAt(self: anytype, name_span: Span, node_span: Span, old_idx: NodeIndex) Error!NodeIndex {
+    const ref = try es_helpers.identifierRefNode(self, name_span, node_span);
+    self.propagateSymbolId(old_idx, ref);
+    return ref;
+}
+
 /// span + old_idx로 identifier_reference 생성 + symbol_id 전파.
 /// ES5 class lowering, decorator 등에서 renamed 이름이 반영되도록 사용.
 pub fn makeIdentifierRefWithSymbol(self: anytype, name_span: Span, old_idx: NodeIndex) Error!NodeIndex {
