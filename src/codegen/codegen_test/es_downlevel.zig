@@ -2268,6 +2268,37 @@ test "ES2015: assignment array destructuring" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "y=_a[1]") != null);
 }
 
+// #4789: 대입의 나머지 요소를 버리던 결함 — 선언처럼 `_ref.slice(N)` 을 대입해야 한다.
+test "ES2015: assignment array destructuring rest" {
+    var r = try e2eTarget(std.testing.allocator, "[x,...y]=arr;", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=__read(arr)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "y=_a.slice(1)") != null);
+}
+
+test "ES2015: assignment array destructuring nested rest pattern" {
+    var r = try e2eTarget(std.testing.allocator, "[x,...[y,z]]=arr;", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_b=__read(_a.slice(1),2)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "z=_b[1]") != null);
+}
+
+// #4789: 대입 rest 자리의 private 필드·중첩 객체 rest 도 구조 분해를 지원하는 타깃에서 낮춘다.
+// 안 낮추면 `[..._x.get(this)]=s` (잘못된 좌변) · es2017 에 객체 rest 문법이 남는다.
+test "ES2017: assignment rest private field forces lowering" {
+    var r = try e2eTarget(std.testing.allocator, "class B{#x;f(s){[...this.#x]=s;}}", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "ClassPrivateFieldSet(_x,this,_a.slice(0))") != null);
+}
+
+test "ES2017: assignment array rest nested object rest forces lowering" {
+    var r = try e2eTarget(std.testing.allocator, "[a,...{b,...c}]=arr;", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "c=__rest(") != null);
+}
+
 test "ES2015: assignment destructuring with default" {
     var r = try e2eTarget(std.testing.allocator, "({a=1,b}=obj);", .es5);
     defer r.deinit();

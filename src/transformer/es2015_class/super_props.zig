@@ -468,6 +468,8 @@ pub fn SuperProps(comptime Transformer: type) type {
                 },
                 .assignment_target_property_property => destructuringTargetHasSuper(self, node.data.binary.right),
                 .assignment_target_with_default => destructuringTargetHasSuper(self, node.data.binary.left),
+                // `[...super.x] = src` — rest 도 대입 좌변이다 (#4789).
+                .assignment_target_rest => destructuringTargetHasSuper(self, node.data.unary.operand),
                 else => false,
             };
         }
