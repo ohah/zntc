@@ -1653,27 +1653,21 @@ fn tryFoldIife(ast: *Ast, node_idx: u32, e: u32, changed: *bool) bool {
     if (return_ni >= ast.nodes.items.len) return false;
     const return_node = ast.nodes.items[return_ni];
 
-    // statement-context 위험한 leading-token 형태 (object/function/class)는
-    // parenthesized_expression 으로 감싸 emit 안전성 확보 — `{a:1};` 가 block 으로
-    // 파싱되는 ASI hazard 회피.
+    // 호출 노드 자리를 반환식 노드를 **가리키는** 괄호 노드로 바꾼다. 반환식을 값 복사하면
+    // 복사본은 원래 노드의 심볼·참조와 끊긴다 — 이후 패스(한 번만 쓰는 상수 인라인 등)가
+    // 분석기 참조로 원래 노드만 고치고 선언을 지워, 복사본이 없는 변수를 가리켰다
+    // (`const v = 1; return (() => v)();` → `return v;` ReferenceError, minify 없는 번들 포함).
+    // 괄호 노드는 codegen 에서 투명(함수류만 괄호 강제)이라 출력은 같고, object/function/class
+    // 를 statement 문맥에서 감싸 `{a:1};` 가 block 으로 파싱되는 위험도 그대로 막는다.
     //
     // **span 은 inner 그대로 유지** — string_literal/template_literal 등은 span 이
     // 곧 source text 위치라 call expression span (`(()=>"hi")()` 전체) 으로 덮으면
     // emit 시 wrong text 가 출력된다. esbuild/oxc 도 inner span 사용.
-    const needs_paren = switch (return_node.tag) {
-        .object_expression, .function_expression, .class_expression => true,
-        else => false,
+    ast.nodes.items[node_idx] = .{
+        .tag = .parenthesized_expression,
+        .span = return_node.span,
+        .data = .{ .unary = .{ .operand = @enumFromInt(return_ni), .flags = 0 } },
     };
-    if (needs_paren) {
-        const wrapped = ast.addNode(.{
-            .tag = .parenthesized_expression,
-            .span = return_node.span,
-            .data = .{ .unary = .{ .operand = @enumFromInt(return_ni), .flags = 0 } },
-        }) catch return false;
-        ast.nodes.items[node_idx] = ast.nodes.items[@intFromEnum(wrapped)];
-    } else {
-        ast.nodes.items[node_idx] = return_node;
-    }
     changed.* = true;
     return true;
 }

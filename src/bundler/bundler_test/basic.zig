@@ -357,6 +357,31 @@ test "Bundler: 클래스 필드 낮추기로 옮긴 namespace 멤버 사용도 �
     try std.testing.expect(std.mem.indexOf(u8, result.output, "opUnused") == null);
 }
 
+// IIFE 접기(`(() => v)()` → `v`)가 반환식을 값 복사하면 복사본이 원래 노드의 심볼·참조와 끊겨,
+// 한 번만 쓰는 상수 인라인이 원래 노드만 바꾸고 선언을 지웠다 → `return v;` ReferenceError.
+// minify 없는 기본 번들에서도 났다.
+test "Bundler: IIFE 접기가 노드를 복사하지 않아 선언이 사라진 변수를 가리키지 않는다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\function a() { const v = "A"; return (() => v)(); }
+        \\console.log(a());
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "return v;") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "return \"A\";") != null);
+}
+
 test "Bundler: --target=es5 산출물에 arrow/단축메서드가 남지 않는다 (#4630)" {
     // 헬퍼 상수만 ES5 로 바꿔도 래퍼 헤더(`"id"(exports, module) {`)나 동적 import
     // 재작성이 arrow 를 내면 번들 전체가 ES5 엔진에서 파싱조차 안 된다 — 네 표면이
