@@ -954,6 +954,36 @@ pub fn makeBoolLiteral(self: anytype, val: bool) !NodeIndex {
     });
 }
 
+/// 변환기가 만든 합성 바인딩 — `_a`, `_this`, `_loop`, 헬퍼 매개변수. 사용자 심볼이 없다 (#4760).
+/// 사용자 변수 바인딩을 다시 만들 때는 `makeUserBinding`(심볼 전달)을 쓴다.
+pub fn makeSyntheticBinding(self: anytype, name_span: Span) !NodeIndex {
+    return makeBindingIdentifier(self, name_span);
+}
+
+/// `makeSyntheticRef` 계열의 노드 위치 지정판 — 이름(`name_span`)과 다른 소스 위치(`node_span`)를
+/// 노드에 달아야 할 때(소스맵 위치 보존). 이름만 다른 위치를 가리키고 의미는 같다.
+pub fn makeSyntheticRefAt(self: anytype, name_span: Span, node_span: Span) !NodeIndex {
+    return identifierRefNode(self, name_span, node_span);
+}
+
+pub fn makeGlobalRefAt(self: anytype, name_span: Span, node_span: Span) !NodeIndex {
+    return identifierRefNode(self, name_span, node_span);
+}
+
+pub fn makePropertyNameAt(self: anytype, name_span: Span, node_span: Span) !NodeIndex {
+    return identifierRefNode(self, name_span, node_span);
+}
+
+/// identifier_reference 노드 한 개. 위의 분류된 생성 함수만 부른다 — 트랜스포머의 다른 곳에서
+/// 이 태그로 노드를 직접 만들면 CI 감사(`scripts/audit-identifier-constructors.mjs`)가 막는다.
+pub fn identifierRefNode(self: anytype, name_span: Span, node_span: Span) !NodeIndex {
+    return self.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = node_span,
+        .data = .{ .string_ref = name_span },
+    });
+}
+
 /// binding_identifier 노드 생성 (변수 바인딩용).
 /// span은 이미 addString된 이름 span.
 pub fn makeBindingIdentifier(self: anytype, name_span: Span) !NodeIndex {
