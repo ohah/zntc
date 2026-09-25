@@ -254,7 +254,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                             } else {
                                 const default_name = try uniqueSourceName(self, "_default");
                                 const value = if (on.tag == .class_declaration) try classExpressionOf(self, on) else operand;
-                                const binding = try es_helpers.makeBindingIdentifier(self, try self.ast.addString(default_name));
+                                const binding = try es_helpers.makeSyntheticBinding(self, try self.ast.addString(default_name));
                                 const decl = try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, binding, value, node.span)}, .@"var", node.span);
                                 try export_specs.append(self.allocator, try makeExportSpec(self, default_name, .none, "default"));
                                 try push(self, &body, decl);
@@ -271,9 +271,9 @@ pub fn ES2025Using(comptime Transformer: type) type {
             // var _stack = [], _error = void 0, _hasError = false;
             const empty_array = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = .{ .start = 0, .len = 0 } } });
             const init_decl = try es_helpers.makeVarDeclaration(self, &.{
-                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, names.stack), empty_array, zero_span),
-                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, names.err), try es_helpers.makeVoidZero(self, zero_span), zero_span),
-                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, names.has_err), try es_helpers.makeBoolLiteral(self, false), zero_span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, names.stack), empty_array, zero_span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, names.err), try es_helpers.makeVoidZero(self, zero_span), zero_span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, names.has_err), try es_helpers.makeBoolLiteral(self, false), zero_span),
             }, .@"var", zero_span);
 
             const try_block = try self.ast.addNode(.{ .tag = .block_statement, .span = zero_span, .data = .{ .list = try self.ast.addNodeList(body.items) } });
@@ -319,7 +319,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
             defer self.allocator.free(tmp_name);
             const tmp_span = try self.ast.addString(tmp_name);
             const new_left = try es_helpers.makeVarDeclaration(self, &.{
-                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, tmp_span), .none, ln.span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, tmp_span), .none, ln.span),
             }, .@"const", ln.span);
             const using_decl = try es_helpers.makeVarDeclaration(self, &.{
                 try es_helpers.makeDeclarator(self, binding, try es_helpers.makeSyntheticRefFromSpan(self, tmp_span), d.span),
@@ -349,8 +349,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
         fn classAsVar(self: *Transformer, decl: Node) Transformer.Error!NodeIndex {
             const cname = self.readNodeIdx(decl.data.extra, ast_mod.ClassExtra.name);
             const name_span = try self.ast.addString(self.ast.getText(self.ast.getNode(cname).span));
-            const binding = try es_helpers.makeBindingIdentifier(self, name_span);
-            self.propagateSymbolId(cname, binding);
+            const binding = try self.makeUserBinding(name_span, cname);
             return es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, binding, try classExpressionOf(self, decl), decl.span)}, .@"var", decl.span);
         }
 
@@ -443,7 +442,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
 
         /// catch (_) { _error = _; _hasError = true; }
         fn buildCatchClause(self: *Transformer, names: Names, span: Span) Transformer.Error!NodeIndex {
-            const catch_param = try es_helpers.makeBindingIdentifier(self, names.catch_param);
+            const catch_param = try es_helpers.makeSyntheticBinding(self, names.catch_param);
             const set_err = try es_helpers.makeExprStmt(self, try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{
                 .left = try es_helpers.makeSyntheticRefFromSpan(self, names.err),
                 .right = try es_helpers.makeSyntheticRefFromSpan(self, names.catch_param),

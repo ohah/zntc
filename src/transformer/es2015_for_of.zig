@@ -114,8 +114,8 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             self.runtime_helpers.values = true;
             const values_call = try es_helpers.makeCallExpr(self, try es_helpers.makeRuntimeHelperRef(self, "__values"), &.{right}, span);
             const for_init = try es_helpers.makeVarDeclaration(self, &.{
-                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, iter), values_call, span),
-                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, step), .none, span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, iter), values_call, span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, step), .none, span),
             }, .@"var", span);
 
             // test: !(_a = (_e = _d.next()).done)
@@ -146,7 +146,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 try es_helpers.makeExprStmt(self, try makeAssign(self, try makeRefFromSpan(self, err_val), try makeRefFromSpan(self, catch_param), span), span),
             }, span);
             const catch_clause = try self.ast.addNode(.{ .tag = .catch_clause, .span = span, .data = .{ .binary = .{
-                .left = try es_helpers.makeBindingIdentifier(self, catch_param),
+                .left = try es_helpers.makeSyntheticBinding(self, catch_param),
                 .right = catch_body,
                 .flags = 0,
             } } });
@@ -220,9 +220,9 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             // var _obj = object, _keys = [], _k;
             const empty = try self.ast.addListNode(.array_expression, span, .{ .start = 0, .len = 0 });
             const decl = try es_helpers.makeVarDeclaration(self, &.{
-                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, obj), right, span),
-                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, names.keys), empty, span),
-                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, key), .none, span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, obj), right, span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, names.keys), empty, span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, key), .none, span),
             }, .@"var", span);
 
             // for (_k in _obj) _keys.push(_k);
@@ -235,7 +235,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
 
             // for (var _idx = 0; _idx < _keys.length; _idx++) { <루프 변수 = _keys[_idx]>; body }
             const init = try es_helpers.makeVarDeclaration(self, &.{
-                try es_helpers.makeDeclarator(self, try es_helpers.makeBindingIdentifier(self, names.idx), try es_helpers.makeNumericLiteral(self, 0), span),
+                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, names.idx), try es_helpers.makeNumericLiteral(self, 0), span),
             }, .@"var", span);
             const length = try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, names.keys), try es_helpers.makePropertyName(self, "length"), span);
             const test_expr = try self.ast.addNode(.{ .tag = .binary_expression, .span = span, .data = .{ .binary = .{
@@ -361,15 +361,11 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         /// `getSourceText(node.span)` 이 원본 텍스트를 읽어 매칭 실패 → mangler 의
         /// cross-module rename 이 declaration 에만 적용되는 비대칭이 발생한다.
         fn makeRefFromSpan(self: *Transformer, name_span: Span) Transformer.Error!NodeIndex {
-            return self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = name_span,
-                .data = .{ .string_ref = name_span },
-            });
+            return es_helpers.makeSyntheticRefFromSpan(self, name_span);
         }
 
         fn makeVarDeclFromSpan(self: *Transformer, name_span: Span, init: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const binding = try es_helpers.makeBindingIdentifier(self, name_span);
+            const binding = try es_helpers.makeSyntheticBinding(self, name_span);
             const declarator = try es_helpers.makeDeclarator(self, binding, init, span);
             return es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", span);
         }

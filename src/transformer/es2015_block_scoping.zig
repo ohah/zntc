@@ -673,12 +673,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
             for (lexical_names, 0..) |name, name_i| {
                 const param_span = try self.ast.addString(name);
-                const param = try self.ast.addNode(.{
-                    .tag = .binding_identifier,
-                    .span = param_span,
-                    .data = .{ .string_ref = param_span },
-                });
-                if (name_i < lexical_bindings.len) self.propagateSymbolId(lexical_bindings[name_i], param);
+                const param = try self.makeUserBinding(param_span, if (name_i < lexical_bindings.len) lexical_bindings[name_i] else .none);
                 const formal = try self.ast.addNode(.{
                     .tag = .formal_parameter,
                     .span = param_span,
@@ -712,13 +707,12 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             // --- var _loop = function(...) { ... } ---
             const loop_name_span = try self.ast.addString(loop_name);
-            const loop_binding = try es_helpers.makeBindingIdentifier(self, loop_name_span);
+            const loop_binding = try es_helpers.makeSyntheticBinding(self, loop_name_span);
             const loop_decl = try es_helpers.makeDeclarator(self, loop_binding, func_expr, span);
             var decls: std.ArrayList(NodeIndex) = .empty;
             defer decls.deinit(self.allocator);
             for (hoist_vars, 0..) |name, name_i| {
-                const b = try es_helpers.makeBindingIdentifier(self, try self.ast.addString(name));
-                if (name_i < hoist_bindings.len) self.propagateSymbolId(hoist_bindings[name_i], b);
+                const b = try self.makeUserBinding(try self.ast.addString(name), if (name_i < hoist_bindings.len) hoist_bindings[name_i] else .none);
                 try decls.append(self.allocator, try es_helpers.makeDeclarator(self, b, .none, span));
             }
             try decls.append(self.allocator, loop_decl);
@@ -1295,12 +1289,8 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     const jump = (local_label != null and std.mem.eql(u8, local_label.?, label)) or
                         labelVisibleWithoutBoundary(self, label);
                     const ctrl_stmt = if (jump) blk: {
-                        const label_span = try self.ast.addString(label);
-                        const label_node = try self.ast.addNode(.{
-                            .tag = .identifier_reference,
-                            .span = label_span,
-                            .data = .{ .string_ref = label_span },
-                        });
+                        // 라벨 이름 — 변수가 아니라 심볼이 없다.
+                        const label_node = try es_helpers.makePropertyName(self, label);
                         const ctrl_tag: Tag = if (std.mem.eql(u8, kw, "break")) .break_statement else .continue_statement;
                         break :blk try self.ast.addNode(.{
                             .tag = ctrl_tag,

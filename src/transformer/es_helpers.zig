@@ -57,7 +57,7 @@ pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, in
 
     const obj = try makeObjectLiteral(self, self.scratch.items[scratch_top..], span);
 
-    const binding = try makeBindingIdentifier(self, try self.ast.addString(var_name));
+    const binding = try makeSyntheticBinding(self, try self.ast.addString(var_name));
     const declarator = try makeDeclarator(self, binding, obj, span);
     return makeVarDeclaration(self, &.{declarator}, .@"var", span);
 }
@@ -272,11 +272,7 @@ pub fn castOperandNeedsParen(ast: *const @import("../parser/ast.zig").Ast, opera
 /// `computed_property_key(identifier_reference(var_span))` 노드 생성.
 /// 임시 변수에 캡쳐된 computed key 식을 다시 key 위치로 참조할 때 사용 (#1511, static field key memoization).
 pub fn makeComputedKeyRef(self: anytype, var_span: Span, span: Span) !NodeIndex {
-    const id_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = var_span,
-        .data = .{ .string_ref = var_span },
-    });
+    const id_ref = try makeSyntheticRefFromSpan(self, var_span);
     return self.ast.addNode(.{
         .tag = .computed_property_key,
         .span = span,
@@ -294,7 +290,7 @@ pub const ComputedKeyMemo = struct {
 };
 pub fn memoizeComputedKey(self: anytype, key_expr: NodeIndex, span: Span) !ComputedKeyMemo {
     const temp_span = try makeTempVarSpan(self);
-    const temp_binding = try makeBindingIdentifier(self, temp_span);
+    const temp_binding = try makeSyntheticBinding(self, temp_span);
     const temp_init = try self.visitNode(key_expr);
     const temp_decl = try makeDeclarator(self, temp_binding, temp_init, span);
     return .{
@@ -1139,7 +1135,7 @@ pub fn buildForOfLoopVarAssign(self: anytype, left: NodeIndex, elem: NodeIndex, 
         if (binding_node.tag == .array_pattern or binding_node.tag == .object_pattern) {
             // Destructuring pattern — 임시 변수 _t 도입 후 패턴을 declarator 로 전개
             const temp_span = try makeTempVarSpan(self);
-            const temp_binding = try makeBindingIdentifier(self, temp_span);
+            const temp_binding = try makeSyntheticBinding(self, temp_span);
             const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(@TypeOf(self.*));
             const temp_init = if (binding_node.tag == .array_pattern)
                 try es2015_destruct.buildArrayRead(self, elem, binding_node, span)
@@ -1558,12 +1554,7 @@ pub fn fillThisArgumentsCaptures(self: anytype, buf: *[2]NodeIndex, span: Span) 
         count += 1;
     }
     if (self.needs_arguments_var) {
-        const args_span = try self.ast.addString("arguments");
-        const args_init = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = args_span,
-            .data = .{ .string_ref = args_span },
-        });
+        const args_init = try makeGlobalRef(self, "arguments");
         buf[count] = try self.buildVarDecl("_arguments", args_init, span);
         count += 1;
     }
@@ -1626,7 +1617,7 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
     self.temp_var_counter = saved_temp_counter;
 
     const name_span = try self.ast.addString(name);
-    const name_node = try makeBindingIdentifier(self, name_span);
+    const name_node = try makeSyntheticBinding(self, name_span);
 
     const fn_flags = ast_mod.methodFlagsToFunctionFlags(method_flags);
 
