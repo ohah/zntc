@@ -458,13 +458,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
                     } else {
                         // 대문자 → identifier_reference (symbol_id 전파로 번들러 rename 반영)
                         const id_span = try self.ast.addString(text);
-                        const new_idx = try self.ast.addNode(.{
-                            .tag = .identifier_reference,
-                            .span = tag_node.span,
-                            .data = .{ .string_ref = id_span },
-                        });
-                        self.propagateSymbolId(tag_name_idx, new_idx);
-                        return new_idx;
+                        return self.makeIdentifierRefWithSymbolAt(id_span, tag_node.span, tag_name_idx);
                     }
                 },
                 .jsx_member_expression => {
@@ -501,24 +495,14 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 // jsx_identifier → identifier_reference (symbol_id 전파로 번들러 rename 반영)
                 const text = self.ast.getText(left_node.span);
                 const id_span = try self.ast.addString(text);
-                const new_idx = try self.ast.addNode(.{
-                    .tag = .identifier_reference,
-                    .span = left_node.span,
-                    .data = .{ .string_ref = id_span },
-                });
-                self.propagateSymbolId(left_idx, new_idx);
-                break :blk new_idx;
+                break :blk try self.makeIdentifierRefWithSymbolAt(id_span, left_node.span, left_idx);
             };
 
             // right: always jsx_identifier → identifier_reference
             // data.string_ref는 원본 소스 span을 사용해야 함.
             // codegen의 emitStaticMember가 source[span.start..end]로 프로퍼티 이름을 읽기 때문.
             const right_node = self.ast.getNode(right_idx);
-            const new_right = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = right_node.span,
-                .data = .{ .string_ref = right_node.span },
-            });
+            const new_right = try helpers.makePropertyNameFromSpan(self, right_node.span);
 
             return helpers.makeStaticMember(self, new_left, new_right, node.span);
         }
@@ -612,12 +596,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             children_len: u32,
             span: Span,
         ) Transformer.Error!NodeIndex {
-            const key_span = try self.ast.addString("children");
-            const key_node = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = key_span,
-                .data = .{ .string_ref = key_span },
-            });
+            const key_node = try helpers.makePropertyName(self, "children");
 
             if (childrenAreStaticArray(self, children_start, children_len)) {
                 // 배열로 감싸기 (다중 child 또는 단일 spread). 단일 spread 는
@@ -680,12 +659,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             // 생성해야 object literal property key 로 유효. 그렇지 않으면 codegen 이
             // raw 로 뱉어 `aria-label: ...` 같은 파싱 불가한 JS 를 만듦.
             const key_node = if (isValidIdentifierName(name_text)) blk: {
-                const key_span = try self.ast.addString(name_text);
-                break :blk try self.ast.addNode(.{
-                    .tag = .identifier_reference,
-                    .span = key_span,
-                    .data = .{ .string_ref = key_span },
-                });
+                break :blk try helpers.makePropertyName(self, name_text);
             } else blk: {
                 const quoted = try quoteString(self, name_text);
                 const str_span = try self.ast.addString(quoted);
@@ -916,11 +890,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
 
             // fileName property
             const fn_key_span = try self.ast.addString("fileName");
-            const fn_key = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = fn_key_span,
-                .data = .{ .string_ref = fn_key_span },
-            });
+            const fn_key = try helpers.makePropertyNameFromSpan(self, fn_key_span);
             const quoted_filename = try quoteString(self, self.options.jsx_filename);
             const fn_val_span = try self.ast.addString(quoted_filename);
             const fn_val = try self.ast.addNode(.{
@@ -936,11 +906,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
 
             // lineNumber property
             const ln_key_span = try self.ast.addString("lineNumber");
-            const ln_key = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = ln_key_span,
-                .data = .{ .string_ref = ln_key_span },
-            });
+            const ln_key = try helpers.makePropertyNameFromSpan(self, ln_key_span);
             var ln_buf: [10]u8 = undefined;
             const ln_text = std.fmt.bufPrint(&ln_buf, "{d}", .{loc.line}) catch "0";
             const ln_val_span = try self.ast.addString(ln_text);
@@ -957,11 +923,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
 
             // columnNumber property
             const cn_key_span = try self.ast.addString("columnNumber");
-            const cn_key = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = cn_key_span,
-                .data = .{ .string_ref = cn_key_span },
-            });
+            const cn_key = try helpers.makePropertyNameFromSpan(self, cn_key_span);
             var cn_buf: [10]u8 = undefined;
             const cn_text = std.fmt.bufPrint(&cn_buf, "{d}", .{loc.col}) catch "0";
             const cn_val_span = try self.ast.addString(cn_text);

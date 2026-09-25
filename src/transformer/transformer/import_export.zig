@@ -6,6 +6,7 @@ const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const module_parser = @import("../../parser/module.zig");
+const es_helpers = @import("../es_helpers.zig");
 const token_mod = @import("../../lexer/token.zig");
 const Span = token_mod.Span;
 const emotion_mod = @import("emotion.zig");
@@ -133,11 +134,7 @@ pub fn visitExportNamedDeclaration(self: *Transformer, node: Node) Error!NodeInd
                 if (!name_idx.isNone()) {
                     const name_span = self.ast.getNode(name_idx).data.string_ref;
                     const local_ref = try self.makeIdentifierRefWithSymbol(name_span, name_idx);
-                    const exported_ref = try self.ast.addNode(.{
-                        .tag = .identifier_reference,
-                        .span = name_span,
-                        .data = .{ .string_ref = name_span },
-                    });
+                    const exported_ref = try es_helpers.makePropertyNameFromSpan(self, name_span);
                     const specifier = try self.ast.addNode(.{
                         .tag = .export_specifier,
                         .span = node.span,

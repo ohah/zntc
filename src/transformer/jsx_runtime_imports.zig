@@ -22,6 +22,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const Span = @import("../lexer/token.zig").Span;
 const ImportPhase = @import("../parser/module.zig").ImportPhase;
 const JsxImportInfo = @import("jsx_lowering.zig").JsxImportInfo;
+const es_helpers = @import("es_helpers.zig");
 
 const Pair = struct { imported: []const u8, local: []const u8 };
 
@@ -112,19 +113,9 @@ fn emitImportDeclaration(
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
     for (pairs) |p| {
-        const imported_text = try self.ast.addString(p.imported);
-        const imported_node = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = imported_text,
-            .data = .{ .string_ref = imported_text },
-        });
-
-        const local_text = try self.ast.addString(p.local);
-        const local_node = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = local_text,
-            .data = .{ .string_ref = local_text },
-        });
+        // imported(`jsx`)는 모듈이 내보낸 이름, local(`_jsx`)은 변환기가 만든 지역 이름.
+        const imported_node = try es_helpers.makePropertyName(self, p.imported);
+        const local_node = try es_helpers.makeSyntheticRef(self, p.local);
         try self.markRuntimeHelperRef(local_node);
 
         const spec = try self.ast.addNode(.{

@@ -28,6 +28,7 @@ const ImportPhase = @import("../parser/module.zig").ImportPhase;
 const helper_modules = @import("../runtime_helper_modules.zig");
 const helper_names = @import("../runtime_helper_names.zig");
 const RuntimeHelpers = @import("runtime_helper_bits.zig").RuntimeHelpers;
+const es_helpers = @import("es_helpers.zig");
 
 /// RuntimeHelpers 비트 ↔ helper base list 매핑.
 /// 비트 하나 = helper module 하나. `bases` 의 첫 항목은 module short 결정용 lookup key
@@ -176,22 +177,11 @@ fn emitOne(
     for (bases) |base| {
         const local = helper_names.helperName(base, self.options.minify_whitespace);
 
-        const imported_span = try self.ast.addString(base);
-        const imported_node = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = imported_span,
-            .data = .{ .string_ref = imported_span },
-        });
+        // imported(`__generator`)는 헬퍼 모듈이 내보낸 이름, local 은 변환기가 만든 지역 이름.
+        const imported_node = try es_helpers.makePropertyName(self, base);
 
         // local == base 면 같은 노드 재사용 (parser 패턴 — module.zig:516).
-        const local_node = if (std.mem.eql(u8, local, base)) imported_node else blk: {
-            const local_span = try self.ast.addString(local);
-            break :blk try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = local_span,
-                .data = .{ .string_ref = local_span },
-            });
-        };
+        const local_node = if (std.mem.eql(u8, local, base)) imported_node else try es_helpers.makeSyntheticRef(self, local);
 
         // #2869 import_specifier 의 local_node 를 helper marker 에 등록 → resync 의
         // visitImportDeclaration 이 user scope 가 아닌 helper_scope_map 으로 binding.

@@ -37,10 +37,10 @@ fn mkBlock(self: *Transformer, span: Span, stmts: []const NodeIndex) Error!NodeI
 }
 
 /// `let <id_span> = <subject>;` variable declaration 생성.
-/// subject 는 1회용 AST 노드라 cloneNode 로 복제해 쓴다.
-fn mkBindingDecl(self: *Transformer, id_span: Span, subject: NodeIndex, span: Span) Error!NodeIndex {
+/// subject 는 1회용 AST 노드라 cloneNode 로 복제해 쓴다. `origin` 은 이름이 나온 패턴 노드.
+fn mkBindingDecl(self: *Transformer, id_span: Span, origin: NodeIndex, subject: NodeIndex, span: Span) Error!NodeIndex {
     const subj = try es_helpers.cloneNode(self, subject);
-    const bind = try es_helpers.makeBindingIdentifier(self, id_span);
+    const bind = try self.makeUserBinding(id_span, origin);
     const decl = try es_helpers.makeDeclarator(self, bind, subj, span);
     return es_helpers.makeVarDeclaration(self, &.{decl}, .let, span);
 }
@@ -112,8 +112,7 @@ fn lowerObjectPattern(self: *Transformer, pnode: Node, subject: NodeIndex, span:
                 // let <rest> = Object.assign({}, S); delete <rest>.k1; ...
                 const empty_obj = try self.ast.addNode(.{ .tag = .object_expression, .span = span, .data = .{ .list = .{ .start = 0, .len = 0 } } });
                 const copy_call = try es_helpers.makeObjectAssignCall(self, &.{ empty_obj, try es_helpers.cloneNode(self, subject) }, span);
-                const bind = try es_helpers.makeBindingIdentifier(self, cn.span);
-                self.propagateSymbolId(child, bind);
+                const bind = try self.makeUserBinding(cn.span, child);
                 const decl = try es_helpers.makeDeclarator(self, bind, copy_call, span);
                 try binds.append(self.allocator, try es_helpers.makeVarDeclaration(self, &.{decl}, .let, span));
                 for (key_lits.items) |kl| {
@@ -187,7 +186,7 @@ fn lowerArrayPattern(self: *Transformer, pnode: Node, subject: NodeIndex, span: 
             &.{try mkNum(self, elem_count)},
             span,
         );
-        const bind = try es_helpers.makeBindingIdentifier(self, self.ast.getNode(rest_node).span);
+        const bind = try self.makeUserBinding(self.ast.getNode(rest_node).span, rest_node);
         const decl = try es_helpers.makeDeclarator(self, bind, slice_call, span);
         try binds.append(self.allocator, try es_helpers.makeVarDeclaration(self, &.{decl}, .let, span));
     }
@@ -225,7 +224,7 @@ fn lowerMatchPattern(self: *Transformer, pattern: NodeIndex, subject: NodeIndex,
         },
         .flow_match_binding_pattern => {
             const binds = try self.allocator.alloc(NodeIndex, 1);
-            binds[0] = try mkBindingDecl(self, pnode.span, subject, span);
+            binds[0] = try mkBindingDecl(self, pnode.span, pattern, subject, span);
             return .{ .test_expr = try mkBool(self, true), .bindings = binds, .guard = .none };
         },
         .flow_match_or_pattern => {
@@ -242,8 +241,8 @@ fn lowerMatchPattern(self: *Transformer, pattern: NodeIndex, subject: NodeIndex,
         },
         .flow_match_as_pattern => {
             const lp = try lowerMatchPattern(self, pnode.data.binary.left, try es_helpers.cloneNode(self, subject), span);
-            const id_node = self.ast.getNode(pnode.data.binary.right);
-            const extra_decl = try mkBindingDecl(self, id_node.span, subject, span);
+            const id_idx = pnode.data.binary.right;
+            const extra_decl = try mkBindingDecl(self, self.ast.getNode(id_idx).span, id_idx, subject, span);
             const binds = try self.allocator.alloc(NodeIndex, lp.bindings.len + 1);
             std.mem.copyForwards(NodeIndex, binds[0..lp.bindings.len], lp.bindings);
             binds[lp.bindings.len] = extra_decl;
@@ -299,7 +298,7 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
 
     // 임시 변수 _m
     const match_var = try es_helpers.makeTempVarSpan(self);
-    const match_param = try es_helpers.makeBindingIdentifier(self, match_var);
+    const match_param = try es_helpers.makeSyntheticBinding(self, match_var);
 
     // 각 arm → `if (<test>) { <bindings>; [if (<guard>)] return <body>; }`
     // 을 순서대로 나열. 매치되면 return 으로 함수 탈출, 아니면 다음 if 로 진행.

@@ -373,7 +373,7 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     //    (적대적 검증이 둘 다 잡음). 기존 임시변수 기계는 `collidesWithUserSymbol`
     //    (#4220) 로 충돌 회피가 이미 들어가 있고 리네이머와도 정합적이다.
     const tla_name = try es_helpers.makeTempVarSpan(self);
-    const tla_binding = try es_helpers.makeBindingIdentifier(self, tla_name);
+    const tla_binding = try es_helpers.makeSyntheticBinding(self, tla_name);
     const tla_declarator = try es_helpers.makeDeclarator(self, tla_binding, call, node.span);
     const iife_stmt = try es_helpers.makeVarDeclaration(self, &.{tla_declarator}, .@"var", node.span);
 

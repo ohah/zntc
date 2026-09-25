@@ -269,12 +269,7 @@ pub fn visitFunction(self: *Transformer, node: Node) Error!NodeIndex {
             capture_count += 1;
         }
         if (self.needs_arguments_var) {
-            const args_span = try self.ast.addString("arguments");
-            const args_init = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = args_span,
-                .data = .{ .string_ref = args_span },
-            });
+            const args_init = try es_helpers.makeGlobalRef(self, "arguments");
             capture_stmts[capture_count] = try self.buildVarDecl("_arguments", args_init, node.span);
             capture_count += 1;
         }
@@ -629,7 +624,9 @@ fn nameAnonymousConstClass(self: *Transformer, binding_idx: NodeIndex, init_idx:
 
     var slots: [8]u32 = undefined;
     for (0..8) |k| slots[k] = self.ast.extra_data.items[init.data.extra + k];
-    slots[ast_mod.ClassExtra.name] = @intFromEnum(try es_helpers.makeBindingIdentifier(self, binding.data.string_ref));
+    // 클래스 식의 이름은 바깥 `X` 와 **다른** 바인딩(클래스 안쪽 스코프)이라 바깥 심볼을 물려주지
+    // 않는다 — 물려주면 두 바인딩이 한 심볼을 나눠 가져 mangler 가 안쪽 이름을 따로 줄이지 못한다.
+    slots[ast_mod.ClassExtra.name] = @intFromEnum(try es_helpers.makeSyntheticBinding(self, binding.data.string_ref));
     const new_extra = try self.ast.addExtras(&slots);
     return self.ast.addNode(.{ .tag = .class_expression, .span = init.span, .data = .{ .extra = new_extra } });
 }
