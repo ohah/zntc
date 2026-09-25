@@ -1569,6 +1569,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         const raw_idx = self.ast.extra_data.items[elems_start + e_loop];
                         const elem_idx: NodeIndex = @enumFromInt(raw_idx);
                         if (elem_idx.isNone()) continue; // array hole
+                        // `[a, , b]` 의 빈 칸은 `.elision` 노드다 — 이름이 없다. `else => unreachable`
+                        // 로 떨어지면 릴리스 빌드에서 빈 이름이 들어가 `var a,,b` 가 된다 (#4791).
+                        if (self.ast.getNode(elem_idx).tag == .elision) continue;
                         try collectBindingIdentifiers(self, elem_idx, hoisted);
                     }
                     if (split.rest_operand) |op| {

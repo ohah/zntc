@@ -2366,7 +2366,8 @@ test "#1960-B: ES5 async + array binding pattern destructuring lowering" {
         .es5,
     );
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=_state.sent()") != null);
+    // await 결과가 이터러블이어도 되도록 `__read` 로 배열을 만든다 (#4791).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=__read(_state.sent(),2)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "a=_a[0]") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "b=_a[1]") != null);
 }
@@ -4653,7 +4654,39 @@ test "ES5 상태 기계: 구조분해 대입의 array rest 를 slice 로 채우�
 
     var rn = try e2eTarget(std.testing.allocator, "function* g(o){ const [x, ...[y, z]] = o; yield y+z; }", .es5);
     defer rn.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, rn.output, "_b=_a.slice(1),y=_b[0],z=_b[1]") != null);
+    // 중첩 배열 패턴도 `__read` 로 배열을 만든 뒤 푼다 (#4791).
+    try std.testing.expect(std.mem.indexOf(u8, rn.output, "_b=__read(_a.slice(1),2),y=_b[0],z=_b[1]") != null);
+}
+
+// #4791: 상태 기계의 구조 분해 대입도 선언 경로처럼 `__read` 로 배열을 만든다 — 이터러블(Set 등)에
+// 인덱스·slice 를 바로 쓰면 `_a.slice is not a function`.
+test "ES5 상태 기계: 배열 구조분해 대입이 __read 를 거친다 (#4791)" {
+    var r = try e2eTarget(std.testing.allocator, "function* g(){ const [x, ...r] = yield 0; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=__read(_state.sent()),x=_a[0],r=_a.slice(1)") != null);
+
+    var rn = try e2eTarget(std.testing.allocator, "function* g(){ const { l: [a] } = yield 0; }", .es5);
+    defer rn.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, rn.output, "_b=__read(_a.l,1),a=_b[0]") != null);
+}
+
+// #4791: 끌어올린 변수 목록에 배열 구멍(`.elision`)이 빈 이름으로 들어가 `var a,,b` 가 됐다.
+test "ES5 상태 기계: 배열 구멍은 끌어올린 변수 목록에 안 들어간다 (#4791)" {
+    var r = try e2eTarget(std.testing.allocator, "function* g(){ const [a, , b] = yield 0; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ",,") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var a,b;") != null);
+}
+
+// #4791: 선언의 rest 가 패턴이면 임시 변수로 받아 푼다 — 그대로 두면 es5 에 `[y,z]=` 가 남는다.
+test "ES5: 배열 선언 rest 안 중첩 패턴을 푼다 (#4791)" {
+    var r = try e2eTarget(std.testing.allocator, "var [x,...[y,z]]=arr;", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var _a=__read(arr),x=_a[0],_b=_a.slice(1),y=_b[0],z=_b[1];", r.output);
+
+    var ro = try e2eTarget(std.testing.allocator, "var [...{length}]=arr;", .es5);
+    defer ro.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, ro.output, "_b=_a.slice(0),length=_b.length") != null);
 }
 
 test "ES5: for-of 풀이의 step 변수는 모듈 전체에서 고유한 이름이다 (#4746)" {
