@@ -1487,3 +1487,41 @@ test "export default 로컬 바인딩은 materialize 하지 않는다 (anti-regr
     }
     try std.testing.expect(saw_value);
 }
+
+// #4804: 링크 뒤 AST 변형(상수 인라인)으로 재분석된 모듈이 합성 `_default` 리네임을 잃어,
+// 두 모듈이 모두 `var _default` 를 내고 뒤 것이 앞 것을 덮었다. 조건 = 같은 모듈에 다른
+// 리네임(`forEach$1`)도 있을 것 — 그래야 이관 목록이 비지 않아 원래 표가 교체된다.
+test "Default: export default rename survives post-link resync (#4804)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "num.js", "export const LIMIT = 5;");
+    try writeFile(tmp.dir, "utils.js",
+        \\function forEach() { return "u"; }
+        \\export default { forEach };
+    );
+    try writeFile(tmp.dir, "adapters.js",
+        \\import { LIMIT } from './num.js';
+        \\function forEach() { return "a"; }
+        \\function getAdapter() { return forEach() + LIMIT; }
+        \\export default { getAdapter };
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import utils from './utils.js';
+        \\import adapters from './adapters.js';
+        \\console.log(utils.forEach(), adapters.getAdapter());
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 두 default 객체가 서로 다른 이름이어야 한다.
+    const first = std.mem.indexOf(u8, result.output, "var _default = ") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, result.output[first + 1 ..], "var _default = ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var _default$1 = ") != null);
+}

@@ -333,13 +333,14 @@ fn captureRenamesToPending(
     module.pending_renames = rebuilt;
 }
 
+/// 재분석 전 semantic 을 돌려준다 — 리네임 이관(`captureRenamesAfterResync`)은 합성 심볼이 표시된
+/// **뒤에** 해야 해서(#4804) 호출자가 `refreshStableBindingRefsAfterSemanticResync` 다음에 한다.
 fn refreshSemanticAndStmtInfoAfterAstMutation(
     self: anytype,
     module: *Module,
     arena_alloc: std.mem.Allocator,
-    rename_table: ?*const bundler_symbol.RenameTable,
-) !void {
-    const ast = &(module.ast orelse return);
+) !?ModuleSemanticData {
+    const ast = &(module.ast orelse return null);
     const previous_semantic = module.semantic;
 
     var analyzer = SemanticAnalyzer.init(arena_alloc, ast);
@@ -371,13 +372,6 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
             .numeric_const_texts = analyzer.numeric_const_texts,
             .helper_scope_map = analyzer.helper_scope_map,
         };
-        if (!self.minify_identifiers) {
-            if (rename_table) |rt| {
-                if (previous_semantic) |old_sem| {
-                    try captureRenamesToPending(module, rt, old_sem, &module.semantic.?, module.source, arena_alloc);
-                }
-            }
-        }
         suppressRuntimeHelperInternalUnresolved(module);
         module.uses_top_level_await = analyzer.has_top_level_await;
         // base(self) 값 보존 — propagateTopLevelAwait 가 매 빌드 이 값으로 reset 후 전파.
@@ -417,6 +411,25 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
             );
         }
     }
+    return previous_semantic;
+}
+
+/// 링크 시점 리네임을 재분석된 심볼 번호로 옮긴다. 합성 심볼(`_default` 등)은
+/// `populateSyntheticSymbols` 가 표시한 뒤에야 짝을 찾을 수 있으므로 반드시
+/// `refreshStableBindingRefsAfterSemanticResync` **다음**에 부른다 — 먼저 부르면 짝을 못 찾아 리네임이
+/// 버려지고 모듈 간 같은 이름(`var _default`)이 겹친다 (#4804, axios es5 + minify-syntax).
+fn captureRenamesAfterResync(
+    self: anytype,
+    module: *Module,
+    arena_alloc: std.mem.Allocator,
+    rename_table: ?*const bundler_symbol.RenameTable,
+    previous_semantic: ?ModuleSemanticData,
+) !void {
+    if (self.minify_identifiers) return;
+    const rt = rename_table orelse return;
+    const old_sem = previous_semantic orelse return;
+    const new_sem = if (module.semantic) |*sem| sem else return;
+    try captureRenamesToPending(module, rt, old_sem, new_sem, module.source, arena_alloc);
 }
 
 fn refreshStableBindingRefsAfterSemanticResync(
@@ -472,8 +485,9 @@ pub fn resyncAfterConstMaterialization(
     defer const_scope.end();
 
     _ = &(module.ast orelse return);
-    try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc, rename_table);
+    const previous_semantic = try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc);
     try refreshStableBindingRefsAfterSemanticResync(self, module, arena_alloc, .graph_resync_binding_refs);
+    try captureRenamesAfterResync(self, module, arena_alloc, rename_table, previous_semantic);
 }
 
 pub fn resyncAfterAstMutation(
@@ -488,7 +502,7 @@ pub fn resyncAfterAstMutation(
     const ast = &(module.ast orelse return);
     const previous_import_records = module.import_records;
 
-    try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc, rename_table);
+    const previous_semantic = try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc);
 
     var scan_result: import_scanner.ScanResult = undefined;
     {
@@ -658,6 +672,7 @@ pub fn resyncAfterAstMutation(
     }
 
     try refreshStableBindingRefsAfterSemanticResync(self, module, arena_alloc, .graph_resync_alias);
+    try captureRenamesAfterResync(self, module, arena_alloc, rename_table, previous_semantic);
 }
 
 /// #4438 디스크 캐시 load 경로 전용 — parser 없이 복원된 `module.ast`(+semantic)만으로
