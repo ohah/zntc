@@ -7,6 +7,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const Ast = ast_mod.Ast;
 const FlowEnumBaseType = @import("../parser/flow.zig").FlowEnumBaseType;
 const rt = @import("../bundler/runtime_helpers.zig");
+const bindings = @import("bindings.zig");
 
 /// enum Color { Red, Green = 5, Blue } →
 /// var Color;((Color) => {Color[Color["Red"]=0]="Red";Color[Color["Green"]=5]="Green";Color[Color["Blue"]=6]="Blue";})(Color || (Color = {}));
@@ -456,12 +457,11 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
                             try emitNamespaceIIFEInner(self, decl_node, param_name);
                         } else if (decl_node.tag == .variable_declaration) {
                             // 단순 바인딩(identifier)은 직접 프로퍼티 할당: ns.a=1;
-                            // destructuring(array_pattern/object_pattern)은 폴백: var [...]=ref; ns.a=a;
+                            // destructuring(array_pattern/object_pattern)이 섞이면 선언자마다 따로 낸다.
                             if (isSimpleVarDeclaration(self, decl_idx)) {
                                 try emitNamespaceVarDirectAssign(self, param_name, decl_idx);
                             } else {
-                                try self.emitNode(decl_idx);
-                                try emitNamespaceExport(self, param_name, decl_idx);
+                                try emitNamespaceVarMixed(self, param_name, decl_idx);
                             }
                         } else {
                             try self.emitNode(decl_idx);
@@ -586,8 +586,9 @@ fn emitNamespaceBindingExport(self: anytype, ns_name: []const u8, name_idx: Node
                 try emitNamespaceBindingExport(self, ns_name, op);
             }
         },
-        .assignment_target_with_default => {
-            // { x = defaultVal } → x
+        // `[b = 7]`·`{ x = 1 }` — 바인딩 패턴의 기본값은 `assignment_pattern` 이다. 빠뜨리면
+        // 그 이름이 namespace 에 안 실린다.
+        .assignment_target_with_default, .assignment_pattern => {
             try emitNamespaceBindingExport(self, ns_name, node.data.binary.left);
         },
         else => {},
@@ -639,6 +640,43 @@ fn emitNamespaceVarDirectAssign(self: anytype, ns_name: []const u8, decl_idx: No
         try self.writeByte('=');
         try self.emitNode(init_idx);
         try self.writeByte(';');
+    }
+}
+
+/// 패턴 선언자가 섞인 export 선언을 선언자마다 따로 낸다: 단순 이름은 `ns.x=init;`,
+/// 패턴은 `let [a]=init;ns.a=a;`. 한 선언으로 지역 선언하면 단순 이름은 export 목록에 있어
+/// 같은 선언 안의 참조가 `ns.x` 로 치환되는데, 그 값은 선언이 끝난 뒤에야 복사되므로 아직
+/// 비어 있다 — `export const x = 1, [y] = [x]` 에서 y 가 undefined. 구조 분해를 낮추며 생긴
+/// 임시 변수(`_a = o, a = _a.a`)가 minify 의 선언 병합으로 패턴 선언자와 한 선언이 될 때도 같다.
+fn emitNamespaceVarMixed(self: anytype, ns_name: []const u8, decl_idx: NodeIndex) !void {
+    const decl = self.ast.getNode(decl_idx);
+    const keyword = bindings.declarationKeyword(self, self.ast.variableDeclarationKind(decl));
+    const e = decl.data.extra;
+    const list_start = self.ast.extra_data.items[e + 1];
+    const list_len = self.ast.extra_data.items[e + 2];
+    var i: u32 = 0;
+    while (i < list_len) : (i += 1) {
+        const raw_idx = self.ast.extra_data.items[list_start + i];
+        const declarator = self.ast.getNode(@enumFromInt(raw_idx));
+        const de = declarator.data.extra;
+        const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[de]);
+        const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[de + 2]);
+        const name_node = self.ast.getNode(name_idx);
+        if (name_node.tag == .binding_identifier) {
+            // init 이 없으면 할당할 값이 없다 (emitNamespaceVarDirectAssign 과 같음).
+            if (init_idx.isNone()) continue;
+            try self.write(ns_name);
+            try self.writeByte('.');
+            try self.write(self.ast.getText(name_node.span));
+            try self.writeByte('=');
+            try self.emitNode(init_idx);
+            try self.writeByte(';');
+        } else {
+            try self.write(keyword);
+            try self.emitNode(@enumFromInt(raw_idx));
+            try self.writeByte(';');
+            try emitNamespaceBindingExport(self, ns_name, name_idx);
+        }
     }
 }
 
