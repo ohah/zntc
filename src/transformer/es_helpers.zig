@@ -695,7 +695,26 @@ pub const AssignmentTargetRef = struct {
     read: NodeIndex,
     value: NodeIndex,
     write: NodeIndex,
+    temps: [2]?AssignmentTempRefs = .{ null, null },
 };
+
+const AssignmentTempRefs = struct {
+    span: Span,
+    first_write: NodeIndex,
+    value_read: NodeIndex,
+    write_read: NodeIndex,
+};
+
+/// prepareAssignmentTargetRef가 미리 만든 후보 중 실제 출력에 사용된 참조만 등록한다.
+/// read는 모든 호출자가 쓰고, value/write는 lowering별로 다르다.
+pub fn trackAssignmentTargetTemps(self: anytype, target: AssignmentTargetRef, use_value: bool, use_write: bool) !void {
+    for (target.temps) |maybe_temp| {
+        const temp = maybe_temp orelse continue;
+        try self.trackHoistedTempRef(temp.span, temp.first_write, .{ .write = true });
+        if (use_value) try self.trackHoistedTempRef(temp.span, temp.value_read, .{ .read = true });
+        if (use_write) try self.trackHoistedTempRef(temp.span, temp.write_read, .{ .read = true });
+    }
+}
 
 /// assignment target의 Reference를 1회 평가 형태로 준비.
 /// 지원 대상: `x` (identifier), `obj.x`, `obj[key]`.
@@ -735,6 +754,7 @@ pub fn prepareAssignmentTargetRef(
         .read = try makeMemberWithFlags(self, left.tag, obj.read, prop.read, flags, left.span),
         .value = try makeMemberWithFlags(self, left.tag, obj.value, prop.value, flags, left.span),
         .write = try makeMemberWithFlags(self, left.tag, obj.write, prop.write, flags, left.span),
+        .temps = .{ obj.temp, prop.temp },
     };
 }
 
@@ -742,6 +762,7 @@ const SingleEvalExpr = struct {
     read: NodeIndex,
     value: NodeIndex,
     write: NodeIndex,
+    temp: ?AssignmentTempRefs = null,
 };
 
 fn makeSingleEvalExpr(
@@ -781,12 +802,15 @@ fn makeSingleEvalExpr(
             .flags = @intFromEnum(token_mod.Kind.eq),
         } },
     });
+    const value_ref = try makeTempVarRef(self, temp_span, span);
+    const write_ref = try makeTempVarRef(self, temp_span, span);
     return .{
         // 합성 paren 제거(#4042 PR8): assign 을 직접 둔다 — 첫 사용 자리(member object/
         // binary-left 등)의 precedence 가 `(temp = value)` 괄호를 재유도한다.
         .read = assign,
-        .value = try makeTempVarRef(self, temp_span, span),
-        .write = try makeTempVarRef(self, temp_span, span),
+        .value = value_ref,
+        .write = write_ref,
+        .temp = .{ .span = temp_span, .first_write = temp_lhs, .value_read = value_ref, .write_read = write_ref },
     };
 }
 
