@@ -102,7 +102,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             const new_name = try self.visitNode(name_idx);
 
+            const parameter_temp_start = self.temp_var_counter;
             const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
+            const parameter_temp_end = self.temp_var_counter;
             const param_needs_this = self.needs_this_var;
             const param_needs_arguments = self.needs_arguments_var;
 
@@ -165,11 +167,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             try self.scratch.append(self.allocator, ret_stmt);
 
             const body_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-            const new_body = try self.ast.addNode(.{
+            const wrapper_body = try self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,
                 .data = .{ .list = body_list },
             });
+            const new_body = try self.hoistParameterTempsAndRestore(wrapper_body, parameter_temp_start, parameter_temp_end, span);
 
             // 일반 function으로 변환 (generator 플래그 제거)
             const new_flags = flags & ~@as(u32, ast_mod.FunctionFlags.is_generator);
