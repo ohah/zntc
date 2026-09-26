@@ -136,7 +136,9 @@ pub const Transformer = struct {
         node: NodeIndex,
         scope: ScopeId,
         flags: ReferenceFlags,
+        next: ?usize = null,
     }) = .empty,
+    pending_temp_ref_chains: std.AutoHashMapUnmanaged(u32, struct { first: usize, last: usize }) = .empty,
     unresolved_references: ?*const std.StringHashMapUnmanaged(void) = null,
     /// 심볼 → 블록 스코핑 새 이름(`x$N`). es5 블록 스코핑을 낮추고 분석기 스코프가 있을 때
     /// 변환 시작에 `block_rename_table` 로 만든다 (#4760). 없으면(스코프 정보 없는 경로)
@@ -530,6 +532,7 @@ pub const Transformer = struct {
     pub const buildUniqueName = lists_mod.buildUniqueName;
     pub const buildVarDecl = lists_mod.buildVarDecl;
     pub const hoistTempVars = lists_mod.hoistTempVars;
+    pub const hoistTempVarsInOriginalFunction = lists_mod.hoistTempVarsInOriginalFunction;
     pub const hoistTempVarsSkippingSpans = lists_mod.hoistTempVarsSkippingSpans;
     pub const hoistStateMachineTempsAndRestore = lists_mod.hoistStateMachineTempsAndRestore;
 

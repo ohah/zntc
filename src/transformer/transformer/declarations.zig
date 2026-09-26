@@ -176,7 +176,7 @@ pub fn visitVariableDeclarator(self: *Transformer, node: Node) Error!NodeIndex {
 /// parameter property 변환:
 ///   constructor(public x: number) {} →
 ///   constructor(x) { this.x = x; }
-pub fn visitFunction(self: *Transformer, node: Node) Error!NodeIndex {
+pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Error!NodeIndex {
     const e = node.data.extra;
 
     // TS function overload signature: body가 없으면 제거
@@ -279,7 +279,10 @@ pub fn visitFunction(self: *Transformer, node: Node) Error!NodeIndex {
 
     // 임시 변수 호이스팅: 이 함수 안에서 사용된 _a, _b, ... 선언을 body 앞에 삽입
     if (self.temp_var_counter > saved_temp_counter and !new_body.isNone()) {
-        new_body = try self.hoistTempVars(new_body, saved_temp_counter, node.span);
+        new_body = if (@intFromEnum(source_idx) < self.parser_node_count)
+            try self.hoistTempVarsInOriginalFunction(new_body, saved_temp_counter, node.span)
+        else
+            try self.hoistTempVars(new_body, saved_temp_counter, node.span);
     }
     // 함수 스코프 종료 — outer scope 의 hoistTempVars 가 같은 _a 를 다시 hoist 하지 않도록
     // 카운터 복원 (#1960). 다음 함수 / outer 에서 동일 이름을 안전하게 재사용 가능.

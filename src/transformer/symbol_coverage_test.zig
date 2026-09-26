@@ -51,11 +51,11 @@ test "#4819 temp hoist keeps allocation identity across counter reuse" {
     try std.testing.expectEqual(root, skipped);
 }
 
-test "#4819 top-level nullish temp keeps one SymbolId through deferred hoist" {
+test "#4819 function and top-level nullish temps keep separate SymbolIds through deferred hoist" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    var scanner = try Scanner.init(allocator, "const _a = 7; function read() { return null; } function local() { return read() ?? 0; } console.log(read() ?? 1, read() ?? 2, _a);");
+    var scanner = try Scanner.init(allocator, "const _a = 7; function read() { return null; } function local() { return read() ?? 0; } function local2() { return read() ?? 3; } console.log(read() ?? 1, read() ?? 2, _a);");
     var parser = Parser.init(allocator, &scanner);
     parser.configureFromExtension(".mjs");
     _ = try parser.parse();
@@ -76,9 +76,9 @@ test "#4819 top-level nullish temp keeps one SymbolId through deferred hoist" {
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
-    try std.testing.expectEqual(original_symbols + 2, edited.symbols.items.len);
+    try std.testing.expectEqual(original_symbols + 4, edited.symbols.items.len);
     for (edited.symbols.items[original_symbols..], 0..) |generated, offset| {
-        try std.testing.expectEqualStrings(if (offset == 0) "_b" else "_c", transformer.ast.getText(generated.name));
+        try std.testing.expectEqualStrings(if (offset == 3) "_c" else "_b", transformer.ast.getText(generated.name));
         try std.testing.expectEqual(@as(u32, 2), generated.reference_count);
         try std.testing.expectEqual(@as(u32, 1), generated.write_count);
         const generated_id: u32 = @intCast(original_symbols + offset);
@@ -95,7 +95,9 @@ test "#4819 top-level nullish temp keeps one SymbolId through deferred hoist" {
         try std.testing.expectEqual(@as(usize, 1), bindings);
         try std.testing.expectEqual(@as(usize, 2), refs);
     }
-    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
+    try std.testing.expect(edited.symbols.items[original_symbols].scope_id != edited.symbols.items[original_symbols + 1].scope_id);
+    try std.testing.expect(edited.symbols.items[original_symbols + 1].scope_id != edited.symbols.items[original_symbols + 2].scope_id);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
 
 test "#4819 transformed scope owners retain their original ScopeId" {
