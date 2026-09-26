@@ -567,7 +567,9 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
 
             if (instance_fields.len > 0) {
                 // var _this = __callSuper(_super, arguments, _newTarget);
-                try self.scratch.append(self.allocator, try self.buildVarDecl("_this", call_super, span));
+                const this_capture = try self.buildVarDecl("_this", call_super, span);
+                try self.bindLexicalCapture(this_capture, .this_value);
+                try self.scratch.append(self.allocator, this_capture);
 
                 // instance fields: this → _this 치환된 버전 사용
                 // instance_fields는 이미 this.x = ... 형태로 생성되었으므로
