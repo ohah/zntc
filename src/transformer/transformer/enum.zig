@@ -29,17 +29,20 @@ pub fn visitFlowEnumDeclaration(self: *Transformer, node: Node) Error!NodeIndex 
 }
 
 /// ts_enum_declaration: extra = [name, members_start, members_len, flags]
-/// flags: 0=일반 enum (codegen에서 IIFE), 1=const enum (선언 삭제 + 멤버를 self.const_enums 에 보관 → visitMemberExpression 에서 literal 인라인).
+/// flags bit0=const enum (선언 삭제 + 멤버를 self.const_enums 에 보관 → literal 인라인),
+/// bit1=ambient declare 문맥 (일반 enum은 런타임 선언 없음).
 pub fn visitEnumDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
     const e = node.data.extra;
     const flags = self.readU32(e, 3);
 
-    if (flags == 1) {
+    if ((flags & 1) != 0) {
         // 평가 가능한 단순 케이스만 등록. 실패해도 선언은 삭제 (참조는 그대로 남아 ReferenceError가 나지만,
         // 기존 동작과 동일하므로 회귀가 아님 — 인라인 가능 케이스만 새로 동작 추가).
         collectConstEnum(self, node) catch {};
         return .none;
     }
+
+    if ((flags & 2) != 0) return .none;
 
     const new_name = try self.visitNode(self.readNodeIdx(e, 0));
     const new_members = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });

@@ -55,7 +55,7 @@ pub fn visitExportAssignment(self: *Transformer, node: Node) Error!NodeIndex {
 }
 
 /// ts_module_declaration: binary = { left=name, right=body_or_inner, flags }
-/// flags=1: ambient module declaration (`declare module "*.css" { ... }`) -> strip.
+/// flags=1: ambient module/namespace declaration -> strip.
 /// flags=0: namespace with runtime output; codegen emits the IIFE.
 pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
     if (node.data.binary.flags == 1) return .none;

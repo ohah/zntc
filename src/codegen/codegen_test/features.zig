@@ -668,6 +668,34 @@ test "Codegen: namespace export declare — reference rewriting" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(ns.L1)") != null);
 }
 
+test "#4819 Codegen: nested ambient namespace body is removed" {
+    var r = try e2e(std.testing.allocator, "namespace Outer { export declare namespace Hidden { export const fake = ghost; } const live = actual; }");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "ghost") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Hidden") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "actual") != null);
+}
+
+test "#4819 Codegen: ambient enum body is removed and ambient const enum still inlines" {
+    var r = try e2e(std.testing.allocator, "namespace Outer { export declare enum Ghost { A = ghost } export declare const enum Inlined { A = 7 } const live = Inlined.A + actual; }");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "ghost") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Ghost") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Inlined") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "7") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "actual") != null);
+}
+
+test "#4819 Codegen: ambient namespace and enum uses follow TypeScript bare names" {
+    var r = try e2e(std.testing.allocator, "namespace Outer { export declare namespace Hidden { export const value: number; } export declare enum Numbers { A = 1 } export const sum = Hidden.value + Numbers.A; }");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Outer.sum=Hidden.value+Numbers.A") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Outer.Hidden") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Outer.Numbers") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var Hidden") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var Numbers") == null);
+}
+
 test "Codegen: namespace nested export mutation — uses property access" {
     // Bug 3 fix: mutations to exported vars should use ns.prop, not stale local.
     // foo += foo → B.foo += B.foo (not foo += B.foo)
