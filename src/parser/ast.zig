@@ -1735,6 +1735,30 @@ pub const Ast = struct {
         return span;
     }
 
+    /// 같은 텍스트라도 매 호출마다 새 위치를 준다. 임시 변수의 이름이 함수마다
+    /// 재사용되어도 생성된 변수의 정체성을 Span으로 구별할 때 사용한다.
+    /// 일반 문자열 interning 표에는 넣지 않는다.
+    pub fn addUniqueString(self: *Ast, text: []const u8) !Span {
+        std.debug.assert(self.string_table.items.len + text.len < STRING_TABLE_BIT);
+        const start: u32 = @intCast(self.string_table.items.len);
+        // 호출자가 string_table의 조각을 넘겨도 append 중 realloc으로 원본이
+        // 무효화되지 않도록 원래 offset을 기억한다.
+        const table_base = self.string_table.items.ptr;
+        const base_addr = @intFromPtr(table_base);
+        const items_end = base_addr + self.string_table.items.len;
+        const tp = @intFromPtr(text.ptr);
+        const text_in_table = tp >= base_addr and tp + text.len <= items_end;
+        if (text_in_table) {
+            const offset: usize = tp - base_addr;
+            try self.string_table.ensureUnusedCapacity(self.allocator, text.len);
+            self.string_table.items.len += text.len;
+            for (0..text.len) |i| self.string_table.items[start + i] = self.string_table.items[offset + i];
+        } else {
+            try self.string_table.appendSlice(self.allocator, text);
+        }
+        return .{ .start = start | STRING_TABLE_BIT, .end = @as(u32, @intCast(self.string_table.items.len)) | STRING_TABLE_BIT };
+    }
+
     /// Span이 가리키는 텍스트를 반환한다.
     /// bit 31이 설정되어 있으면 string_table에서, 아니면 source에서 읽는다.
     /// 기존 getSourceText와 달리, 합성 문자열도 투명하게 처리한다.

@@ -135,6 +135,21 @@ test "Ast string_table: addString deduplicates repeated text" {
     try std.testing.expectEqual(@as(usize, "Object".len + "defineProperty".len), ast.string_table.items.len);
 }
 
+test "Ast string_table: unique strings preserve allocation identity" {
+    var ast = Ast.init(std.testing.allocator, "");
+    defer ast.deinit();
+
+    const interned = try ast.addString("_a");
+    const first = try ast.addUniqueString("_a");
+    const second = try ast.addUniqueString(ast.getText(first));
+    const interned_again = try ast.addString("_a");
+    try std.testing.expect(first.start != second.start);
+    try std.testing.expect(first.start != interned.start);
+    try std.testing.expectEqual(interned.start, interned_again.start);
+    try std.testing.expectEqualStrings("_a", ast.getText(first));
+    try std.testing.expectEqualStrings("_a", ast.getText(second));
+}
+
 test "Ast string_table: addString deduplicates string_table self slices" {
     var ast = Ast.init(std.testing.allocator, "");
     defer ast.deinit();

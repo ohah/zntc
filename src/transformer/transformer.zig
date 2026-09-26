@@ -162,6 +162,9 @@ pub const Transformer = struct {
     /// ES 다운레벨링 임시 변수 카운터.
     /// `foo() ?? bar` → `(_a = foo()) != null ? _a : bar`에서 _a, _b, _c, ... 생성에 사용.
     temp_var_counter: u32 = 0,
+    /// 카운터를 되감아 같은 이름을 재사용해도 각 temp의 생성 위치는 고유하다.
+    /// hoist는 이름을 다시 만들지 않고 이 위치를 가져와야 한다.
+    temp_span_by_counter: std.AutoHashMapUnmanaged(u32, Span) = .empty,
     /// #4598: `es2022_tla.lowerProgram` 이 만든 async IIFE **statement** 의 인덱스.
     /// emitter 가 `__esm` factory 본문에서 이 문장을 `return <expr>;` 로 방출해
     /// `init_X()` 가 **초기화 완료 promise** 를 돌려주게 한다(소비자가 기다릴 대상).

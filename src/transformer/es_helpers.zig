@@ -80,7 +80,7 @@ pub fn isConstructorKey(self: anytype, key_idx: NodeIndex) bool {
 }
 
 /// 인덱스로부터 임시 변수명 생성: _a, _b, _c, ..., _a2, _b2, ...
-/// makeTempVarSpan과 hoistTempVars에서 공용.
+/// makeTempVarSpan에서 사용. hoistTempVars는 생성된 Span을 재사용한다.
 pub fn tempVarName(idx: u32, buf: *[16]u8) []const u8 {
     const letter: u8 = 'a' + @as(u8, @intCast(idx % 26));
     const cycle = idx / 26;
@@ -98,13 +98,17 @@ pub fn makeTempVarSpan(self: anytype) !Span {
     while (true) {
         const idx = self.temp_var_counter;
         self.temp_var_counter += 1;
+        // 카운터는 함수마다 되감긴다. 이전 함수의 같은 슬롯을 남기지 않는다.
+        _ = self.temp_span_by_counter.remove(idx);
         const name = tempVarName(idx, &buf);
         if (collidesWithPrivateField(self, name)) continue;
         // #4220: 사용자 식별자(_a 등)와 충돌하면 skip — 충돌 시 temp 대입이
         // 사용자 const 를 덮거나(TypeError) mangler/tree-shake 가 선언·사용을
         // 잘못 결합해 silent miscompile 이었다.
         if (try collidesWithUserSymbol(self, name)) continue;
-        return self.ast.addString(name);
+        const span = try self.ast.addUniqueString(name);
+        try self.temp_span_by_counter.put(self.allocator, idx, span);
+        return span;
     }
 }
 
