@@ -65,7 +65,9 @@ pub const RuntimeHelpers = packed struct(u32) {
     yield_star: bool = false,
     /// __publicField: define 의미론 public class field 낮추기 (#4629).
     public_field: bool = false,
-    _padding: u3 = 0,
+    /// __metadata: emitDecoratorMetadata의 Reflect.metadata wrapper.
+    metadata: bool = false,
+    _padding: u2 = 0,
 
     /// 어떤 helper flag 라도 set 됐는지 - emitter 의 prepend 분기에서 빈 helper 시
     /// no-op 결정에 사용.
