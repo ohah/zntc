@@ -123,6 +123,16 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             // var _this; (초기화 없는 선언) — extra_data grow 가능
             try self.scratch.append(self.allocator, try self.buildVarDecl("_this", .none, span));
 
+            // `arguments` captured by an arrow in a parameter default must
+            // be initialized before that default runs. A derived constructor
+            // never records `_this = this` here: this remains uninitialized
+            // until super() and reads use __assertThisInitialized(_this).
+            var param_capture_iter = self.ast.iterateExtraList(.{ .start = stmts_start, .len = stmts_len });
+            while (param_capture_iter.next()) |stmt_idx| {
+                if (self.parameter_capture_statements.contains(@intFromEnum(stmt_idx)))
+                    try self.scratch.append(self.allocator, stmt_idx);
+            }
+
             for (param_stmts) |stmt| {
                 if (containsSuperCallAssignment(self, stmt)) {
                     try self.scratch.append(self.allocator, try insertInstanceFieldsAfterSuper(self, stmt, instance_fields, span));
@@ -134,6 +144,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             // realloc-safe 순회 — 위 line 2527 의 "인덱스만 저장, 사용 시 재접근" 정책 적용 (#2422).
             var stmts_iter = self.ast.iterateExtraList(.{ .start = stmts_start, .len = stmts_len });
             while (stmts_iter.next()) |stmt_idx| {
+                if (self.parameter_capture_statements.contains(@intFromEnum(stmt_idx))) continue;
                 if (containsSuperCallAssignment(self, stmt_idx)) {
                     try self.scratch.append(self.allocator, try insertInstanceFieldsAfterSuper(self, stmt_idx, instance_fields, span));
                 } else {

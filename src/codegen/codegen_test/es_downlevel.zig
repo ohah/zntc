@@ -2757,7 +2757,7 @@ test "ES2015: derived constructor arrow this capture waits for super" {
     );
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__assertThisUninitialized(_this),_this=__callSuper") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "function(event){_this.seen=event.value;}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function(event){__assertThisInitialized(_this).seen=event.value;}") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var _this=this") == null);
 }
 

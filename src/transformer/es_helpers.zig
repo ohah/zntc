@@ -1821,6 +1821,9 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
 
     const arrow_env = pushArrowEnv(self);
     defer popArrowEnv(self, arrow_env);
+    const saved_extracted_body = self.in_extracted_fn_body;
+    self.in_extracted_fn_body = false;
+    defer self.in_extracted_fn_body = saved_extracted_body;
 
     const saved_temp_counter = self.temp_var_counter;
 
@@ -1875,6 +1878,8 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
     }
 
     const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
+    const param_needs_this = self.needs_this_var;
+    const param_needs_arguments = self.needs_arguments_var;
 
     var new_body = try self.visitNode(body_idx);
     if (self.options.unsupported.arrow and !new_body.isNone() and
@@ -1882,6 +1887,7 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
     {
         var capture_stmts: [2]NodeIndex = undefined;
         const capture_count = try fillThisArgumentsCaptures(self, &capture_stmts, span);
+        try recordParameterCaptures(self, capture_stmts[0..capture_count], param_needs_this, param_needs_arguments);
         new_body = try self.prependStatementsToBody(new_body, capture_stmts[0..capture_count]);
     }
     if (self.temp_var_counter > saved_temp_counter and !new_body.isNone()) {

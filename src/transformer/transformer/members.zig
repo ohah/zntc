@@ -142,6 +142,9 @@ pub fn lowerAsyncOrGeneratorMethod(self: *Transformer, source_owner: NodeIndex, 
 pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: Node) Error!NodeIndex {
     const e = node.data.extra;
     const flags = self.readU32(e, ast_mod.MethodExtra.flags);
+    const saved_extracted_body = self.in_extracted_fn_body;
+    self.in_extracted_fn_body = false;
+    defer self.in_extracted_fn_body = saved_extracted_body;
     // async / generator 메서드를 타겟에 맞춰 낮춘다 (#4628 · #4699).
     // getter/setter 는 async/generator 일 수 없으므로 자연히 제외된다.
     if (methodNeedsAsyncOrGeneratorLowering(self, flags) and
@@ -183,9 +186,6 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
     // class/module scope.
     const saved_temp_counter = self.temp_var_counter;
 
-    var pp = try self.visitParamsCollectProperties(params_list_old);
-    defer pp.prop_names.deinit(self.allocator);
-
     // arrow this/arguments 캡처: method도 자체 this 바인딩을 가짐 (visitFunction과 동일)
     const saved_arrow_depth = self.arrow_this_depth;
     const saved_needs_this = self.needs_this_var;
@@ -195,6 +195,10 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
     self.needs_this_var = false;
     self.needs_arguments_var = false;
     self.super_call_this_alias = false;
+    var pp = try self.visitParamsCollectProperties(params_list_old);
+    defer pp.prop_names.deinit(self.allocator);
+    const param_needs_this = self.needs_this_var;
+    const param_needs_arguments = self.needs_arguments_var;
     // V7 fix: object literal method 의 super 는 home object [[Prototype]]=Object.prototype
     // 기준이라 outer class super 와 무관. 이 method 가 object literal 의 일부이면
     // (in_object_literal_depth>0) super context 5종을 reset 한다. class method 면 no-op.
@@ -259,6 +263,8 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
             capture_stmts[capture_count] = try self.buildVarDecl("_arguments", args_init, node.span);
             capture_count += 1;
         }
+
+        try es_helpers.recordParameterCaptures(self, capture_stmts[0..capture_count], param_needs_this, param_needs_arguments);
 
         new_body = try self.prependStatementsToBody(new_body, capture_stmts[0..capture_count]);
     }

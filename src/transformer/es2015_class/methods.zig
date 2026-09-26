@@ -14,6 +14,7 @@ pub fn Methods(comptime Transformer: type) type {
     return struct {
         const constructors = constructors_mod.Constructors(Transformer);
         const visitMethodBodyWithCtx = constructors.visitMethodBodyWithCtx;
+        const visitMethodBodyWithParams = constructors.visitMethodBodyWithParams;
 
         pub const MethodInfo = struct {
             member_idx: NodeIndex,
@@ -37,6 +38,9 @@ pub fn Methods(comptime Transformer: type) type {
         /// accessor method_definition에서 function expression 생성.
         /// ES2015 params lowering 포함 (setter destructuring/default 등).
         fn buildAccessorFunc(self: *Transformer, member_idx: NodeIndex, source_member_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const saved_extracted_body = self.in_extracted_fn_body;
+            self.in_extracted_fn_body = false;
+            defer self.in_extracted_fn_body = saved_extracted_body;
             const saved_scope = self.current_scope;
             if (self.semantic_edit_enabled) {
                 if (self.scope_owner_map.get(@intFromEnum(source_member_idx))) |scope| self.current_scope = @enumFromInt(scope);
@@ -49,10 +53,14 @@ pub fn Methods(comptime Transformer: type) type {
             const params_len = params_list_old.len;
             const body_idx: NodeIndex = self.readNodeIdx(me, MethodExtra.body);
 
+            const arrow_env = es_helpers.pushArrowEnv(self);
+            defer es_helpers.popArrowEnv(self, arrow_env);
             const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
+            const param_needs_this = self.needs_this_var;
+            const param_needs_arguments = self.needs_arguments_var;
 
             const nt_ctx: ?Transformer.NewTargetCtx = if (self.options.unsupported.new_target) .method else null;
-            const new_body = try visitMethodBodyWithCtx(self, body_idx, span, nt_ctx);
+            const new_body = try visitMethodBodyWithParams(self, body_idx, span, nt_ctx, param_needs_this, param_needs_arguments);
 
             const none = @intFromEnum(NodeIndex.none);
             const new_params_node = try self.ast.addFormalParameters(new_params, span);
@@ -91,6 +99,9 @@ pub fn Methods(comptime Transformer: type) type {
         /// method → ClassName.prototype.method = function() {} (expression_statement)
         /// static method → ClassName.method = function() {}
         pub fn buildPrototypeAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
+            const saved_extracted_body = self.in_extracted_fn_body;
+            self.in_extracted_fn_body = false;
+            defer self.in_extracted_fn_body = saved_extracted_body;
             const saved_scope = self.current_scope;
             if (self.semantic_edit_enabled) {
                 if (self.scope_owner_map.get(@intFromEnum(info.source_member_idx))) |scope| self.current_scope = @enumFromInt(scope);
@@ -106,6 +117,7 @@ pub fn Methods(comptime Transformer: type) type {
             }
 
             var member = self.ast.getNode(info.member_idx);
+            var already_lowered = false;
             // class 낮추기가 보기 **전에** async/generator 메서드를 평범한 메서드로 바꾼다.
             //
             // 아래 경로는 `is_async` 만 분기하고 그것도 일반 async 로만 다룬다. 그래서
@@ -119,7 +131,10 @@ pub fn Methods(comptime Transformer: type) type {
                 !self.readNodeIdx(member.data.extra, MethodExtra.body).isNone())
             {
                 const lowered_method = try members_mod.lowerAsyncOrGeneratorMethod(self, info.source_member_idx, member);
-                if (!lowered_method.isNone()) member = self.ast.getNode(lowered_method);
+                if (!lowered_method.isNone()) {
+                    member = self.ast.getNode(lowered_method);
+                    already_lowered = true;
+                }
             }
             const me = member.data.extra;
             // 모든 읽기가 mutation(visitExtraList) 이전이므로 캐시 안전.
@@ -131,7 +146,14 @@ pub fn Methods(comptime Transformer: type) type {
 
             // function expression 생성 — ES2015 params lowering은 Pass 2에서 일괄 처리
             const params_list_unwrap = self.ast.functionParamsList(member);
-            const new_params = try self.visitExtraList(params_list_unwrap);
+            const arrow_env = es_helpers.pushArrowEnv(self);
+            defer es_helpers.popArrowEnv(self, arrow_env);
+            // The synthetic async/generator function was already visited by
+            // lowerAsyncOrGeneratorMethod. A second visit rewrites its freshly
+            // generated captures and loses their source parameter boundary.
+            const new_params = if (already_lowered) params_list_unwrap else try self.visitExtraList(params_list_unwrap);
+            const param_needs_this = self.needs_this_var;
+            const param_needs_arguments = self.needs_arguments_var;
 
             const is_async = flags & ast_mod.MethodFlags.is_async != 0;
             const is_generator = flags & ast_mod.MethodFlags.is_generator != 0;
@@ -144,8 +166,8 @@ pub fn Methods(comptime Transformer: type) type {
                 const GenMod = @import("../es2015_generator.zig").ES2015Generator(@TypeOf(self.*));
 
                 if (self.options.unsupported.generator) {
-                    const arrow_env = es_helpers.pushArrowEnv(self);
-                    defer es_helpers.popArrowEnv(self, arrow_env);
+                    const state_arrow_env = es_helpers.pushArrowEnv(self);
+                    defer es_helpers.popArrowEnv(self, state_arrow_env);
 
                     // es2017.zig 의 async-lowering 과 동일 불변식: state machine
                     // 안에서 optional chaining/nullish/destructuring lowering 이
@@ -191,7 +213,7 @@ pub fn Methods(comptime Transformer: type) type {
             }
 
             const method_nt: ?Transformer.NewTargetCtx = if (self.options.unsupported.new_target) .method else null;
-            const new_body = try visitMethodBodyWithCtx(self, body_idx, span, method_nt);
+            const new_body = if (already_lowered) body_idx else try visitMethodBodyWithParams(self, body_idx, span, method_nt, param_needs_this, param_needs_arguments);
 
             const func_flags: u32 = blk: {
                 var f: u32 = 0;

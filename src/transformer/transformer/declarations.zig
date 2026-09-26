@@ -185,6 +185,10 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
     // function foo(x?: number) {}  ← 구현체 (body 있음)
     if (self.readNodeIdx(e, 2).isNone()) return NodeIndex.none;
 
+    const saved_extracted_body = self.in_extracted_fn_body;
+    self.in_extracted_fn_body = false;
+    defer self.in_extracted_fn_body = saved_extracted_body;
+
     // 함수 경계 — 바깥 함수의 라벨은 여기서 보이지 않는다 (#4722).
     try self.label_scope.append(self.allocator, null);
     defer _ = self.label_scope.pop();

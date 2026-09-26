@@ -469,6 +469,7 @@ pub const Transformer = struct {
     /// 변환된 AST는 self.ast에 저장된다.
     const driver_mod = @import("transformer/driver.zig");
     pub const transform = driver_mod.transform;
+    pub const prependParameterInitializersToBody = driver_mod.prependParameterInitializers;
 
     // ================================================================
     // 핵심 visitor — switch 기반 (D042)
