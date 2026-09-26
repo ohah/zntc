@@ -289,23 +289,7 @@ pub const SemanticEditor = struct {
         const source_i = self.reference_index.get(@intFromEnum(source)) orelse return error.ReferenceNotFound;
         const ref = self.references.items[source_i];
         if (ref.flags.declare) return error.InvalidNode;
-        if (!self.validScope(scope) or !self.visibleFrom(ref.symbol_id, scope)) return error.InvalidScope;
-        const slot = try self.ensureNodeSlot(clone);
-        if (self.ast.getNode(clone).tag == .binding_identifier) return error.InvalidNode;
-        // 트랜스포머는 Reference보다 symbol_ids를 먼저 전파할 수 있다. 같은 ID만 허용한다.
-        if (self.symbol_ids.items[slot]) |existing| {
-            if (existing != @intFromEnum(ref.symbol_id)) return error.AlreadyBound;
-        }
-        try self.appendReference(.{
-            .node_index = clone,
-            .scope_id = scope,
-            .symbol_id = ref.symbol_id,
-            .stmt_idx = stmt_idx,
-            .scope_stmt_idx = scope_stmt_idx,
-            .flags = ref.flags,
-        });
-        self.symbol_ids.items[slot] = @intFromEnum(ref.symbol_id);
-        self.addCounts(ref.symbol_id, ref.flags);
+        return self.addCopiedReference(clone, ref.symbol_id, scope, ref.flags, stmt_idx, scope_stmt_idx);
     }
 
     pub fn cloneReferenceAtSameLocation(self: *SemanticEditor, source: NodeIndex, clone: NodeIndex) Error!void {
@@ -447,6 +431,37 @@ pub const SemanticEditor = struct {
         const slot = try self.ensureNodeSlot(node);
         if (self.ast.getNode(node).tag == .binding_identifier or flags.declare) return error.InvalidNode;
         if (self.symbol_ids.items[slot] != null) return error.AlreadyBound;
+        try self.appendReference(.{
+            .node_index = node,
+            .scope_id = scope,
+            .symbol_id = symbol,
+            .stmt_idx = stmt_idx,
+            .scope_stmt_idx = scope_stmt_idx,
+            .flags = flags,
+        });
+        self.symbol_ids.items[slot] = @intFromEnum(symbol);
+        self.addCounts(symbol, flags);
+    }
+
+    /// 새 참조에 SymbolId가 먼저 복사된 경로에서 Reference를 명시적으로 붙인다.
+    /// 같은 ID여도 이미 Reference가 있으면 중복으로 거부한다.
+    pub fn addCopiedReference(
+        self: *SemanticEditor,
+        node: NodeIndex,
+        symbol: SymbolId,
+        scope: ScopeId,
+        flags: ReferenceFlags,
+        stmt_idx: u32,
+        scope_stmt_idx: u32,
+    ) Error!void {
+        if (!self.validSymbol(symbol)) return error.InvalidSymbol;
+        if (!self.validScope(scope) or !self.visibleFrom(symbol, scope)) return error.InvalidScope;
+        const slot = try self.ensureNodeSlot(node);
+        if (self.ast.getNode(node).tag == .binding_identifier or flags.declare) return error.InvalidNode;
+        if (self.symbol_ids.items[slot]) |existing| {
+            if (existing != @intFromEnum(symbol)) return error.AlreadyBound;
+        }
+        try self.ensureReferenceIndex();
         try self.appendReference(.{
             .node_index = node,
             .scope_id = scope,

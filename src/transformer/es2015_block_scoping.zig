@@ -730,6 +730,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             } else loop_ref;
             for (lexical_names, 0..) |name, name_i| {
                 const arg = try self.makeUserRefNamed(name, lexical_bindings[name_i]);
+                try self.trackUserArgumentFromBinding(arg, lexical_bindings[name_i]);
                 try self.scratch.append(self.allocator, arg);
             }
             const loop_call = try es_helpers.makeCallExpr(self, call_callee, self.scratch.items[scratch_top2..], span);
