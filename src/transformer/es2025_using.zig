@@ -301,7 +301,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
         /// 그대로 남고, es5 에선 dispose 없이 var 가 됐다 (#4730). 본문 블록으로 옮기면 블록
         /// 낮추기가 그대로 적용된다. 노드를 **제자리에서** 바꾸므로 모든 진입점(일반 방문,
         /// 라벨 붙은 루프, 상태 기계)이 같은 모양을 보고, 두 번째 호출은 아무 일도 안 한다.
-        pub fn normalizeForOfUsingHead(self: *Transformer, idx: NodeIndex) Transformer.Error!bool {
+        pub fn normalizeForOfUsingHead(self: *Transformer, idx: NodeIndex, bind_stable: bool) Transformer.Error!bool {
             if (!self.options.unsupported.using) return false;
             const node = self.ast.getNode(idx);
             if (node.tag != .for_of_statement and node.tag != .for_await_of_statement) return false;
@@ -318,11 +318,21 @@ pub fn ES2025Using(comptime Transformer: type) type {
             const tmp_name = try uniqueSynthName(self, "_using", &self.using_head_counter);
             defer self.allocator.free(tmp_name);
             const tmp_span = try self.ast.addString(tmp_name);
+            const tmp_binding = try es_helpers.makeSyntheticBinding(self, tmp_span);
+            const tmp_ref = try es_helpers.makeSyntheticRefFromSpan(self, tmp_span);
+            // Generator and for-await prepasses can move this head into a new
+            // callback after normalization. The ordinary for-of visitor keeps
+            // the source loop's lexical scope (or remaps it to the ES5 for).
+            if (bind_stable and node.tag == .for_of_statement and self.semantic_edit_enabled and self.pending_loop_extraction_depth == 0) {
+                const loop_scope = self.outputOwnedScope(idx) orelse std.debug.panic("missing using for-of scope", .{});
+                const symbol = try self.declareSyntheticInScope(tmp_binding, ln.span, .variable_const, loop_scope);
+                try self.addSyntheticRefInScope(tmp_ref, symbol, loop_scope, .{ .read = true });
+            }
             const new_left = try es_helpers.makeVarDeclaration(self, &.{
-                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, tmp_span), .none, ln.span),
+                try es_helpers.makeDeclarator(self, tmp_binding, .none, ln.span),
             }, .@"const", ln.span);
             const using_decl = try es_helpers.makeVarDeclaration(self, &.{
-                try es_helpers.makeDeclarator(self, binding, try es_helpers.makeSyntheticRefFromSpan(self, tmp_span), d.span),
+                try es_helpers.makeDeclarator(self, binding, tmp_ref, d.span),
             }, vkind, ln.span);
             const new_body = try self.ast.addNode(.{ .tag = .block_statement, .span = node.span, .data = .{
                 .list = try self.ast.addNodeList(&.{ using_decl, node.data.ternary.c }),

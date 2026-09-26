@@ -182,7 +182,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
                 switch (node.tag) {
                     .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .class_declaration, .class_expression => continue,
                     .for_await_of_statement => {
-                        _ = try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, idx);
+                        _ = try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, idx, false);
                         node = self.ast.getNode(idx);
                         const rewritten = try rewriteForAwait(self, node, .none);
                         self.ast.nodes.items[@intFromEnum(idx)] = self.ast.getNode(rewritten);
@@ -191,7 +191,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
                     .labeled_statement => {
                         const child = node.data.binary.right;
                         if (!child.isNone() and self.ast.getNode(child).tag == .for_await_of_statement) {
-                            _ = try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, child);
+                            _ = try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, child, false);
                             const rewritten = try rewriteForAwait(self, self.ast.getNode(child), node.data.binary.left);
                             self.ast.nodes.items[@intFromEnum(idx)] = self.ast.getNode(rewritten);
                             node = self.ast.getNode(idx);

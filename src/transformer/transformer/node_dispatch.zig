@@ -472,7 +472,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .try_statement,
         => self.visitTernaryNode(node),
         .for_await_of_statement => {
-            if (try es2025_using.ES2025Using(Transformer).normalizeForOfUsingHead(self, idx)) return self.visitNode(idx);
+            if (try es2025_using.ES2025Using(Transformer).normalizeForOfUsingHead(self, idx, false)) return self.visitNode(idx);
             // for-await 키워드는 ES2018. ES2018 미만 타겟에서는 async function 자체를
             // 보존하더라도 for-await 구문만 __asyncValues + while 로 제거해야 한다.
             if (self.options.unsupported.needsForAwaitOfDownlevel()) {
@@ -482,7 +482,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         },
         .for_of_statement => {
             // `for (using x of …)` 헤더를 본문 블록의 using 으로 옮긴다 (#4730).
-            if (try es2025_using.ES2025Using(Transformer).normalizeForOfUsingHead(self, idx)) return self.visitNode(idx);
+            if (try es2025_using.ES2025Using(Transformer).normalizeForOfUsingHead(self, idx, true)) return self.visitNode(idx);
             // for-of 를 낮추는 타겟: 반복자 for 루프로 풀어 쓴 뒤 방문한다. 루프 변수 대입은
             // 본문의 평범한 선언/대입이 되므로 private 필드·구조분해 좌변도 일반 경로가 처리한다.
             if (self.options.unsupported.for_of) {
@@ -511,7 +511,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             } else try self.label_scope.append(self.allocator, "");
             defer _ = self.label_scope.pop();
             if (!child_idx.isNone()) {
-                _ = try es2025_using.ES2025Using(Transformer).normalizeForOfUsingHead(self, child_idx);
+                _ = try es2025_using.ES2025Using(Transformer).normalizeForOfUsingHead(self, child_idx, true);
                 const child = self.ast.getNode(child_idx);
                 if (self.options.unsupported.needsForAwaitOfDownlevel() and child.tag == .for_await_of_statement) {
                     return es2018_for_await.ES2018ForAwait(Transformer).lowerForAwaitOfLabeled(self, child, node.data.binary.left);
