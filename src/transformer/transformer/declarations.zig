@@ -636,5 +636,7 @@ fn nameAnonymousConstClass(self: *Transformer, binding_idx: NodeIndex, init_idx:
     // 않는다 — 물려주면 두 바인딩이 한 심볼을 나눠 가져 mangler 가 안쪽 이름을 따로 줄이지 못한다.
     slots[ast_mod.ClassExtra.name] = @intFromEnum(try es_helpers.makeSyntheticBinding(self, binding.data.string_ref));
     const new_extra = try self.ast.addExtras(&slots);
-    return self.ast.addNode(.{ .tag = .class_expression, .span = init.span, .data = .{ .extra = new_extra } });
+    const named = try self.ast.addNode(.{ .tag = .class_expression, .span = init.span, .data = .{ .extra = new_extra } });
+    try self.remapCopiedScopeOwner(init_idx, named);
+    return named;
 }

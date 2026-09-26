@@ -220,6 +220,7 @@ pub const SemanticEditor = struct {
         if (old_tag != new_tag and
             !(old_tag == .arrow_function_expression and new_tag == .function_expression) and
             !(old_tag == .for_of_statement and new_tag == .for_statement) and
+            !(old_tag == .class_declaration and new_tag == .class_expression) and
             !(old_tag == .method_definition and (new_tag == .function_declaration or new_tag == .function_expression)))
             return error.InvalidNode;
         const scope_id = self.scope_owner_map.get(old_key) orelse return error.InvalidScope;
@@ -245,10 +246,11 @@ pub const SemanticEditor = struct {
         }
         if (self.scopes.items[scope.toIndex()].parent == new_parent) return;
 
+        const was_strict = self.scopes.items[scope.toIndex()].is_strict;
         self.scopes.items[scope.toIndex()].parent = new_parent;
         self.scope_reparented = true;
         const new_strict = self.scopes.items[new_parent.toIndex()].is_strict;
-        if (new_strict) {
+        if (new_strict and !was_strict) {
             for (self.scopes.items, 0..) |*candidate, i| {
                 var ancestor: ScopeId = @enumFromInt(@as(u32, @intCast(i)));
                 var depth: usize = 0;

@@ -9,6 +9,145 @@ const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const Transformer = @import("transformer.zig").Transformer;
 const TransformOptions = @import("transformer.zig").TransformOptions;
 
+test "#4819 ES5 class IIFE scopes enclose source class bodies" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\class Declared { value() { return 1; } }
+        \\const Named = class Inner { value() { return 2; } };
+        \\const Anonymous = class { value() { return 3; } };
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    var sources: std.ArrayList(struct { scope: u32, parent: @import("../semantic/scope.zig").ScopeId }) = .empty;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .class_declaration and node.tag != .class_expression) continue;
+        const scope = analyzer.scope_owner_map.get(@intCast(raw)) orelse return error.TestUnexpectedResult;
+        try sources.append(allocator, .{ .scope = scope, .parent = analyzer.scopes.items[scope].parent });
+    }
+    try std.testing.expectEqual(@as(usize, 3), sources.items.len);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    for (sources.items) |item| {
+        const wrapper = edited.scopes[item.scope].parent;
+        try std.testing.expect(!wrapper.isNone());
+        try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[wrapper.toIndex()].kind);
+        try std.testing.expectEqual(item.parent, edited.scopes[wrapper.toIndex()].parent);
+        try std.testing.expect(edited.scopes[wrapper.toIndex()].is_strict);
+        var owners: usize = 0;
+        var it = edited.scope_owner_map.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* != @intFromEnum(wrapper)) continue;
+            try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.function_expression, transformer.ast.nodes.items[entry.key_ptr.*].tag);
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, entry.key_ptr.*) != null);
+            owners += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), owners);
+    }
+}
+
+test "#4819 using class copies preserve exact source scope owners" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\using resource = { [Symbol.dispose]() {} };
+        \\class Plain { value() { return 1; } }
+        \\export class Named { value() { return 2; } }
+        \\export default class Default { value() { return 3; } }
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    var source_scopes: std.ArrayList(u32) = .empty;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .class_declaration) continue;
+        try source_scopes.append(allocator, analyzer.scope_owner_map.get(@intCast(raw)) orelse return error.TestUnexpectedResult);
+    }
+    try std.testing.expectEqual(@as(usize, 3), source_scopes.items.len);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    for (source_scopes.items) |source_scope| {
+        const wrapper = edited.scopes[source_scope].parent;
+        try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[wrapper.toIndex()].kind);
+        var live_owners: usize = 0;
+        var owners = edited.scope_owner_map.iterator();
+        while (owners.next()) |entry| {
+            if (entry.value_ptr.* != @intFromEnum(wrapper)) continue;
+            try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.function_expression, transformer.ast.nodes.items[entry.key_ptr.*].tag);
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, entry.key_ptr.*) != null);
+            live_owners += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), live_owners);
+    }
+}
+
+test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\function logged(value) { return value; }
+        \\class Box { @logged method() { return 1; } }
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    var class_scope: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .class_declaration) class_scope = analyzer.scope_owner_map.get(@intCast(raw));
+    }
+    const source_scope = class_scope orelse return error.TestUnexpectedResult;
+    const source_parent = analyzer.scopes.items[source_scope].parent;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const class_iife = edited.scopes[source_scope].parent;
+    const decorator_iife = edited.scopes[class_iife.toIndex()].parent;
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[class_iife.toIndex()].kind);
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[decorator_iife.toIndex()].kind);
+    try std.testing.expectEqual(source_parent, edited.scopes[decorator_iife.toIndex()].parent);
+}
+
 test "#4819 ES5 class methods retain original scope on emitted functions and bind body temps" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
