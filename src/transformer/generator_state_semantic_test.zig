@@ -220,3 +220,48 @@ test "#4819 class async generator inner function owns its ES5 state callback" {
         0,
     );
 }
+
+test "#4819 computed class async method retains its original state owner" {
+    try checkStateScopes(
+        "const key = 'load'; export class Box { field = 1; async [key](value) { return await Promise.resolve(value + this.field); } }",
+        1,
+        true,
+        0,
+    );
+}
+
+test "#4819 computed class generator method retains its original state owner" {
+    try checkStateScopes(
+        "const key = 'read'; export class Box { *[key](value) { yield value + 1; } }",
+        1,
+        false,
+        0,
+    );
+}
+
+test "#4819 computed class async generator method retains its original state owner" {
+    try checkStateScopes(
+        "const key = 'read'; export class Box { async *[key](value) { yield await Promise.resolve(value + 1); } }",
+        1,
+        true,
+        0,
+    );
+}
+
+test "#4819 computed object async method retains its original state owner" {
+    try checkStateScopes(
+        "const key = 'load'; export const box = { async [key](value) { return await Promise.resolve(value + 1); } };",
+        1,
+        true,
+        0,
+    );
+}
+
+test "#4819 decorated computed class async method retains its original state owner" {
+    try checkStateScopes(
+        "const key = 'load'; function logged(value) { return value; } export class Box { @logged async [key](value) { return await Promise.resolve(value + 1); } }",
+        1,
+        true,
+        0,
+    );
+}
