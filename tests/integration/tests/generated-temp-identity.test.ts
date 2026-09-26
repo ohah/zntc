@@ -21,7 +21,10 @@ function outer(value) {
   return inner(value) + (value ?? 3);
 }
 function sibling(value) { return (Object.assign({ x: value }, {}).x ?? 6) + _a; }
-console.log(outer(null), outer(1), sibling(null), sibling(2), Object.assign({ x: null }, {}).x ?? 5, _a);
+const receiver = { x: 3, method: function () { return this.x + _a; } };
+function getReceiver(enabled) { return enabled ? receiver : null; }
+function call(value) { return value?.method?.(); }
+console.log(outer(null), outer(1), sibling(null), sibling(2), Object.assign({ x: null }, {}).x ?? 5, getReceiver(true)?.method?.(), call(receiver), String(call(null)), _a);
 `,
       });
       cleanup = fixture.cleanup;
@@ -39,7 +42,7 @@ console.log(outer(null), outer(1), sibling(null), sibling(2), Object.assign({ x:
       expect(result.exitCode).toBe(0);
       const runtime = spawnSync('node', [out], { encoding: 'utf8' });
       expect(runtime.status).toBe(0);
-      expect(runtime.stdout.trim()).toBe('45 42 46 42 5 40');
+      expect(runtime.stdout.trim()).toBe('45 42 46 42 5 43 43 undefined 40');
     });
   }
 });
