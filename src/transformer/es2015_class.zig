@@ -164,7 +164,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // name_span은 stable Span이므로 재사용. getText slice는 이후 addString
             // realloc에 freed될 수 있어 쥐지 않는다 (#1481).
             const fresh_name_span = name_span;
-            const fresh_name = try es_helpers.makeBindingIdentifier(self, fresh_name_span);
+            const fresh_name = try self.makeUserBinding(fresh_name_span, .none);
             if (name_idx.isNone() or !(try self.bindClassSelfStorage(source_idx, fresh_name, iife_scope)))
                 try self.propagateSymbolId(new_name, fresh_name);
 
@@ -443,7 +443,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // → UTF-8 corrupted identifier 출력 (#1481).
             const func_name = if (has_extra) blk: {
                 // IIFE 안쪽 함수 이름 — 안쪽 참조와 같은 심볼 (위 선언 경로와 같은 이유).
-                break :blk try es_helpers.makeBindingIdentifier(self, name_span);
+                break :blk try self.makeUserBinding(name_span, .none);
             } else name_node;
             if (has_extra and (name_idx.isNone() or !(try self.bindClassSelfStorage(source_idx, func_name, iife_scope))))
                 try self.propagateSymbolId(name_node, func_name);

@@ -41,6 +41,7 @@ fn checkParameterTempScope(source: []const u8, target: ESTarget, native_defaults
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;

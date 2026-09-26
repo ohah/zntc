@@ -41,9 +41,11 @@ describe('ES5 class self storage (#4819)', () => {
         const output = join(fixture.dir, 'out.mjs');
         const result = await runZntcInDir(fixture.dir, [
           ...(bundle ? ['--bundle', '--platform=node', '--format=esm'] : []),
-          'input.mjs', '--target=es5',
+          'input.mjs',
+          '--target=es5',
           ...(minify ? ['--minify-identifiers', '--minify-syntax'] : []),
-          '-o', output,
+          '-o',
+          output,
         ]);
         expect(result.exitCode, result.stderr).toBe(0);
         const runtime = spawnSync('node', [output], { encoding: 'utf8' });
