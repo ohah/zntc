@@ -241,6 +241,8 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
 
     var pp = try self.visitParamsCollectProperties(params_list_old);
     defer pp.prop_names.deinit(self.allocator);
+    const param_needs_this = self.needs_this_var;
+    const param_needs_arguments = self.needs_arguments_var;
 
     // 바디 방문
     const old_body_idx = self.readNodeIdx(e, 2);
@@ -273,6 +275,8 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
             capture_stmts[capture_count] = try self.buildVarDecl("_arguments", args_init, node.span);
             capture_count += 1;
         }
+
+        try es_helpers.recordParameterCaptures(self, capture_stmts[0..capture_count], param_needs_this, param_needs_arguments);
 
         new_body = try self.prependStatementsToBody(new_body, capture_stmts[0..capture_count]);
     }

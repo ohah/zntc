@@ -305,6 +305,8 @@ pub fn ES2017(comptime Transformer: type) type {
 
             const new_name = try self.visitNode(name_idx);
             const new_params = try self.visitExtraList(.{ .start = params_list.start, .len = params_list.len });
+            const param_needs_this = self.needs_this_var;
+            const param_needs_arguments = self.needs_arguments_var;
 
             // `yield*` 를 먼저 푼다 — 그래야 그 안에 남은 `await` 를 아래 패스가 한 번에 정리한다.
             try rewriteYieldStarToHelper(self, body_idx);
@@ -379,7 +381,14 @@ pub fn ES2017(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .unary = .{ .operand = helper_call, .flags = 0 } },
             });
-            const outer_body_list = try self.ast.addNodeList(&.{return_stmt});
+            var capture_stmts: [2]NodeIndex = undefined;
+            const capture_count = try es_helpers.fillThisArgumentsCaptures(self, &capture_stmts, span);
+            try es_helpers.recordParameterCaptures(self, capture_stmts[0..capture_count], param_needs_this, param_needs_arguments);
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+            try self.scratch.appendSlice(self.allocator, capture_stmts[0..capture_count]);
+            try self.scratch.append(self.allocator, return_stmt);
+            const outer_body_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
             const outer_body = try self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,
@@ -537,6 +546,8 @@ pub fn ES2017(comptime Transformer: type) type {
             const new_name = try self.visitNode(name_idx);
 
             const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
+            const param_needs_this = self.needs_this_var;
+            const param_needs_arguments = self.needs_arguments_var;
 
             // visitFunctionLike 를 거치지 않으므로 임시 변수 카운터를 직접 관리한다 (#1960).
             // state machine 안에서 optional chaining/nullish/destructuring lowering 이 만든
@@ -577,6 +588,7 @@ pub fn ES2017(comptime Transformer: type) type {
                 // arrow 다운레벨 여부와 무관 — body 가 안쪽 함수로 옮겨지면 캡처가 필요하다.
                 var capture_stmts: [2]NodeIndex = undefined;
                 const count = try es_helpers.fillThisArgumentsCaptures(self, &capture_stmts, span);
+                try es_helpers.recordParameterCaptures(self, capture_stmts[0..count], param_needs_this, param_needs_arguments);
                 try self.scratch.appendSlice(self.allocator, capture_stmts[0..count]);
                 if (!sm_result.var_decl.isNone()) try self.scratch.append(self.allocator, sm_result.var_decl);
                 try self.scratch.append(self.allocator, return_stmt);

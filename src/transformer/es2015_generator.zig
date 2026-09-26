@@ -94,9 +94,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const body_idx: NodeIndex = self.readNodeIdx(e, 2);
             const flags = self.readU32(e, ast_mod.FunctionExtra.flags);
 
+            const arrow_env = es_helpers.pushArrowEnv(self);
+            defer es_helpers.popArrowEnv(self, arrow_env);
+
             const new_name = try self.visitNode(name_idx);
 
             const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
+            const param_needs_this = self.needs_this_var;
+            const param_needs_arguments = self.needs_arguments_var;
 
             const saved_temp_counter = self.temp_var_counter;
 
@@ -147,6 +152,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             {
                 var capture_stmts: [2]NodeIndex = undefined;
                 const count = try es_helpers.fillThisArgumentsCaptures(self, &capture_stmts, span);
+                try es_helpers.recordParameterCaptures(self, capture_stmts[0..count], param_needs_this, param_needs_arguments);
                 try self.scratch.appendSlice(self.allocator, capture_stmts[0..count]);
             }
             if (!sm_result.var_decl.isNone()) {

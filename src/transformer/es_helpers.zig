@@ -1698,6 +1698,19 @@ pub fn fillThisArgumentsCaptures(self: anytype, buf: *[2]NodeIndex, span: Span) 
     return count;
 }
 
+/// Record the capture declarations that a default-parameter initializer can
+/// read. The ordinary body may need additional captures, but only these must
+/// execute before Pass 2's lowered default checks.
+pub fn recordParameterCaptures(self: anytype, captures: []const NodeIndex, needs_this: bool, needs_arguments: bool) !void {
+    if (!needs_this and !needs_arguments) return;
+    std.debug.assert(!needs_this or self.needs_this_var);
+    std.debug.assert(!needs_arguments or self.needs_arguments_var);
+    const last: usize = if (needs_arguments and self.needs_this_var) 1 else 0;
+    std.debug.assert(last < captures.len);
+    for (captures[0 .. last + 1]) |capture|
+        try self.parameter_capture_statements.put(self.allocator, @intFromEnum(capture), {});
+}
+
 /// method_definition → standalone function declaration으로 추출.
 /// private generator method (`*#name`) / async method 를 `_name_fn` 으로 꺼낼 때
 /// method flags(is_async, is_generator)를 function flags로 옮겨 호이스팅한다.
