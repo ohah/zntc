@@ -50,6 +50,20 @@ const PropertyExtra = ast_mod.PropertyExtra;
 
 pub fn ES2015Class(comptime Transformer: type) type {
     return struct {
+        /// Class decorators and computed-key prehoisting may copy a source
+        /// constructor. A Stage 3 initializer may instead synthesize one.
+        /// Only the former has an analyzed function scope to preserve.
+        fn originalConstructorOwner(self: *Transformer, ctor: ?NodeIndex) ?NodeIndex {
+            const idx = ctor orelse return null;
+            if (!self.semantic_edit_enabled) return idx;
+            const raw = @intFromEnum(idx);
+            const original: NodeIndex = @enumFromInt(self.scope_owner_origins.get(raw) orelse raw);
+            if (self.outputOwnedScope(original) != null) return original;
+            if (raw < self.parser_node_count)
+                std.debug.panic("source ES5 constructor lost its scope owner", .{});
+            return null;
+        }
+
         /// class_declaration을 function + prototype assignment로 변환.
         ///
         /// class: extra = [name, super, body, type_params, impl_start, impl_len, deco_start, deco_len]
@@ -186,10 +200,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span, name_span));
                 self.runtime_helpers.class_static_private_field = true;
             }
+            const source_ctor = originalConstructorOwner(self, cm.constructor_idx);
             const ctor_scope = if (!self.semantic_edit_enabled)
                 self.current_scope
-            else if (cm.constructor_idx) |ctor_idx|
-                self.outputOwnedScope(ctor_idx) orelse std.debug.panic("ES5 constructor has no source scope owner", .{})
+            else if (source_ctor) |ctor_idx|
+                self.outputOwnedScope(ctor_idx).?
             else
                 try self.reserveGeneratedFunctionScope(source_class_scope);
             var func_node: NodeIndex = .none;
@@ -216,7 +231,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 // prependToFunctionBody는 앞에 삽입하므로 역순으로 호출.
 
                 // 3. instance fields prepend (가장 마지막에 호출 → classCallCheck/this_decl 뒤에 위치)
-                if (cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
+                if (cm.constructor_idx == null and cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
                     func_node = try prependToFunctionBody(self, func_node, cm.instance_fields.items);
                 }
                 // 2. var _this = this; (field에 arrow this 캡처가 있는 경우)
@@ -240,9 +255,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 }
             }
 
-            if (cm.constructor_idx == null) try self.bindReservedFunctionOwner(ctor_scope, func_node);
+            if (source_ctor == null) try self.bindReservedFunctionOwner(ctor_scope, func_node);
 
-            if (cm.constructor_idx) |source_ctor| try self.remapCopiedScopeOwner(source_ctor, func_node);
+            if (source_ctor) |original| try self.remapCopiedScopeOwner(original, func_node);
 
             try self.scratch.append(self.allocator, func_node);
 
@@ -465,10 +480,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (has_extra and (name_idx.isNone() or !(try self.bindClassSelfStorage(source_idx, func_name, iife_scope))))
                 try self.propagateSymbolId(name_node, func_name);
 
+            const source_ctor = originalConstructorOwner(self, cm.constructor_idx);
             const ctor_scope = if (!self.semantic_edit_enabled)
                 self.current_scope
-            else if (cm.constructor_idx) |ctor_idx|
-                self.outputOwnedScope(ctor_idx) orelse std.debug.panic("ES5 constructor has no source scope owner", .{})
+            else if (source_ctor) |ctor_idx|
+                self.outputOwnedScope(ctor_idx).?
             else
                 try self.reserveGeneratedFunctionScope(source_class_scope);
             var func_node: NodeIndex = .none;
@@ -489,7 +505,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     try buildEmptyFunction(self, func_name, span);
 
                 // 순서: __classCallCheck → var _this = this → fields → body (역순 prepend)
-                if (cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
+                if (cm.constructor_idx == null and cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
                     func_node = try prependToFunctionBody(self, func_node, cm.instance_fields.items);
                 }
                 if (cm.constructor_idx == null and cm.fields_need_this_alias and cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
@@ -511,7 +527,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 }
             }
 
-            if (cm.constructor_idx == null) try self.bindReservedFunctionOwner(ctor_scope, func_node);
+            if (source_ctor == null) try self.bindReservedFunctionOwner(ctor_scope, func_node);
 
             if (!has_extra) {
                 const func = self.ast.getNode(func_node);
@@ -520,15 +536,15 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     .span = func.span,
                     .data = func.data,
                 });
-                if (cm.constructor_idx) |source_ctor| {
-                    try self.remapCopiedScopeOwner(source_ctor, func_expr);
+                if (source_ctor) |original| {
+                    try self.remapCopiedScopeOwner(original, func_expr);
                 } else {
                     try self.remapCopiedScopeOwner(func_node, func_expr);
                 }
                 return func_expr;
             }
 
-            if (cm.constructor_idx) |source_ctor| try self.remapCopiedScopeOwner(source_ctor, func_node);
+            if (source_ctor) |original| try self.remapCopiedScopeOwner(original, func_node);
 
             // IIFE (lowerClassDeclaration과 동일 패턴) — name_span을 재사용.
             // func_node 는 위에서 이미 fresh name(`func_name` = makeUserBinding, 안쪽 참조와
