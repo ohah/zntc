@@ -44,6 +44,43 @@ fn setSymbolId(self: *Transformer, node: NodeIndex, id: SymbolId) Transformer.Er
     self.symbol_ids.items[index] = @intFromEnum(id);
 }
 
+/// Bind the generated ES5 constructor to the source class's exact inner name.
+/// The outer declaration keeps its own SymbolId. Returns false only when the
+/// exact analyzer source was anonymous and this name was generated later.
+pub fn bindClassSelfStorage(self: *Transformer, source_class: NodeIndex, binding: NodeIndex, storage_scope: ScopeId) Transformer.Error!bool {
+    // Bare Transformer callers can intentionally omit semantic analysis.
+    if (self.symbol_ids.items.len == 0) {
+        if (self.semantic_edit_enabled) std.debug.panic("class self edit has no semantic input", .{});
+        return false;
+    }
+    const raw = @intFromEnum(source_class);
+    if (self.generated_class_without_source_anchor.contains(raw)) {
+        if (self.semantic_edit_enabled)
+            std.debug.panic("generated worklet class needs a fresh self scope and SymbolId", .{});
+        return false;
+    }
+    const origin = self.scope_owner_origins.get(raw) orelse if (raw < self.parser_node_count) raw else std.debug.panic("generated class has no exact source owner", .{});
+    const inner_raw = self.class_self_symbol_map.get(origin) orelse {
+        const source_node = self.ast.getNode(@enumFromInt(origin));
+        const source_name = self.ast.extra_data.items[source_node.data.extra + @import("../../parser/ast.zig").ClassExtra.name];
+        if (source_name == @intFromEnum(NodeIndex.none)) return false;
+        std.debug.panic("named source class has no inner self SymbolId", .{});
+    };
+    const inner: SymbolId = @enumFromInt(inner_raw);
+    if (self.getSymbolIdAt(binding)) |existing| {
+        if (existing != inner_raw) std.debug.panic("generated class self binding changed SymbolId", .{});
+    }
+    if (!self.semantic_edit_enabled) {
+        if (self.getSymbolIdAt(binding) == null) try setSymbolId(self, binding, inner);
+        return true;
+    }
+    const editor = try editorFor(self);
+    editor.relocateSymbol(inner, storage_scope) catch |err| return editError(err);
+    editor.attachExistingBinding(binding, inner) catch |err| return editError(err);
+    if (self.getSymbolIdAt(binding) == null) try setSymbolId(self, binding, inner);
+    return true;
+}
+
 pub fn programScope(self: *Transformer) ScopeId {
     return @enumFromInt(self.scope_owner_map.get(self.parser_node_count - 1) orelse
         std.debug.panic("missing program scope for generated declaration", .{}));

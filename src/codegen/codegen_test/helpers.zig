@@ -192,6 +192,8 @@ pub fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_optio
     if (analyzer_storage) |*analyzer| {
         try t.initSymbolIds(analyzer.symbol_ids.items);
         t.symbols = analyzer.symbols.items;
+        t.class_self_symbol_map = analyzer.class_self_symbol_map;
+        t.scope_owner_map = analyzer.scope_owner_map;
         t.references = analyzer.references.items;
         t.scopes = analyzer.scopes.items;
         t.scope_maps = analyzer.scope_maps.items;

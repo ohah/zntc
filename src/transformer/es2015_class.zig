@@ -85,7 +85,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 std.debug.panic("ES5 class declaration has no source scope owner", .{})
             else
                 self.current_scope;
-            const iife_parent = self.outputScopeParent(source_class_scope);
+            const iife_parent = if (self.semantic_edit_enabled) self.outputScopeParent(source_class_scope) else self.current_scope;
             const iife_scope = try self.reserveGeneratedFunctionScope(iife_parent);
             try self.reparentGeneratedScope(source_class_scope, iife_scope);
 
@@ -156,16 +156,17 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // --- IIFE 패턴 ---
             // class X extends P { ... }
             // → var X = (function(_super) { __extends(X, _super); function X() {...} return X; })(P)
-            // IIFE 내부의 모든 참조는 symbol 연결 없는 fresh identifier (linker 리네이밍 영향 없음).
             // parent class는 IIFE 매개변수로 전달하여 스코프 격리.
 
-            // IIFE 내부용 새 바인딩. IIFE 안 참조(`$cC(this, X)`, `return X`)와 **같은 심볼**을
-            // 물려준다 — 심볼 기준으로 이름을 바꿀 때 안쪽 함수 이름과 참조가 함께 바뀌어야
-            // 안쪽 바인딩을 계속 가리킨다(참조만 바뀌면 아직 대입 전인 바깥 var 를 읽는다) (#4760).
+            // IIFE 내부 함수 바인딩은 원본 class self SymbolId를 사용한다.
+            // 바깥 var 선언 SymbolId와 분리해야 바깥 재할당 후에도 self 참조가 안쪽
+            // 생성자를 가리키고, generated constructor/helper 참조도 같이 rename된다.
             // name_span은 stable Span이므로 재사용. getText slice는 이후 addString
             // realloc에 freed될 수 있어 쥐지 않는다 (#1481).
             const fresh_name_span = name_span;
-            const fresh_name = try self.makeUserBinding(fresh_name_span, new_name);
+            const fresh_name = try es_helpers.makeBindingIdentifier(self, fresh_name_span);
+            if (name_idx.isNone() or !(try self.bindClassSelfStorage(source_idx, fresh_name, iife_scope)))
+                try self.propagateSymbolId(new_name, fresh_name);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -188,7 +189,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             try emitInstanceInits(self, &cm, span);
             try emitPrivateMethodArtifacts(self, cm.private_methods.items, &cm.instance_fields, span, name_span);
 
-            // IIFE 내부 function (fresh identifier — linker 무관)
+            // IIFE 내부 function — 이름은 source class self SymbolId에 연결된다.
             var func_node = if (cm.constructor_idx) |ctor_idx|
                 try buildFunctionFromConstructor(self, ctor_idx, fresh_name, cm.instance_fields.items, has_super and super_span != null, span)
             else if (has_super and super_span != null)
@@ -216,7 +217,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             {
                 const check_id = try es_helpers.makeRuntimeHelperRef(self, "__classCallCheck");
                 const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .none = 0 } });
-                const class_ref = try self.makeIdentifierRefWithSymbol(name_span, new_name);
+                const class_ref = try self.makeIdentifierRefWithSymbol(name_span, fresh_name);
                 const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
                 func_node = try prependToFunctionBody(self, func_node, &.{try es_helpers.makeExprStmt(self, call, span)});
                 self.runtime_helpers.class_call_check = true;
@@ -229,7 +230,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // __extends(ClassName, _super) — parent는 IIFE 매개변수 _super
             const super_param_text = "_super";
             if (has_super and super_span != null) {
-                const child_ref = try self.makeIdentifierRefWithSymbol(name_span, new_name);
+                const child_ref = try self.makeIdentifierRefWithSymbol(name_span, fresh_name);
                 const parent_ref = try es_helpers.makeSyntheticRef(self, super_param_text);
                 const extends_ref = try es_helpers.makeRuntimeHelperRef(self, "__extends");
                 const extends_call_expr = try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span);
@@ -257,7 +258,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             for (cm.static_elements.items) |element| {
                 switch (element) {
                     .field => |field| {
-                        const class_ref = try self.makeIdentifierRefWithSymbol(fresh_name_span, new_name);
+                        const class_ref = try self.makeIdentifierRefWithSymbol(fresh_name_span, fresh_name);
                         const static_assign = try buildStaticFieldDefinePropertyWithCtx(self, class_ref, field.key, field.init, fresh_name_span, span);
                         try self.scratch.append(self.allocator, static_assign);
                     },
@@ -270,7 +271,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             try self.scratch.append(self.allocator, try self.ast.addNode(.{
                 .tag = .return_statement,
                 .span = span,
-                .data = .{ .unary = .{ .operand = try self.makeIdentifierRefWithSymbol(name_span, new_name), .flags = 0 } },
+                .data = .{ .unary = .{ .operand = try self.makeIdentifierRefWithSymbol(name_span, fresh_name), .flags = 0 } },
             }));
 
             // IIFE body
@@ -428,21 +429,24 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 std.debug.panic("ES5 class expression has no source scope owner", .{})
             else
                 self.current_scope;
-            const iife_parent = self.outputScopeParent(source_class_scope);
+            const iife_parent = if (self.semantic_edit_enabled) self.outputScopeParent(source_class_scope) else self.current_scope;
             const iife_scope = if (has_extra)
                 try self.reserveGeneratedFunctionScope(iife_parent)
             else
                 @as(@import("../semantic/scope.zig").ScopeId, .none);
             if (has_extra) try self.reparentGeneratedScope(source_class_scope, iife_scope);
 
-            // IIFE 경로면 fresh identifier (symbol 없음), 단순 경로면 원본 name_node.
+            // IIFE 경로는 source class self ID를 가진 새 함수 바인딩을 만든다.
+            // IIFE 없는 경로에서는 원본 name_node를 함수 식 이름으로 사용한다.
             // `name_span`은 이미 addString/source에 저장된 stable Span이므로 그대로 재사용.
             // getText로 얻은 slice를 쥐고 있다가 이후 addString realloc에 freed 메모리 참조
             // → UTF-8 corrupted identifier 출력 (#1481).
             const func_name = if (has_extra) blk: {
                 // IIFE 안쪽 함수 이름 — 안쪽 참조와 같은 심볼 (위 선언 경로와 같은 이유).
-                break :blk try self.makeUserBinding(name_span, name_node);
+                break :blk try es_helpers.makeBindingIdentifier(self, name_span);
             } else name_node;
+            if (has_extra and (name_idx.isNone() or !(try self.bindClassSelfStorage(source_idx, func_name, iife_scope))))
+                try self.propagateSymbolId(name_node, func_name);
 
             var func_node = if (cm.constructor_idx) |ctor_idx|
                 try buildFunctionFromConstructor(self, ctor_idx, func_name, cm.instance_fields.items, has_super and super_span != null, span)
@@ -466,7 +470,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             {
                 const check_id = try es_helpers.makeRuntimeHelperRef(self, "__classCallCheck");
                 const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .none = 0 } });
-                const class_ref = try self.makeIdentifierRefWithSymbol(name_span, name_node);
+                const class_ref = try self.makeIdentifierRefWithSymbol(name_span, func_name);
                 const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
                 func_node = try prependToFunctionBody(self, func_node, &.{try es_helpers.makeExprStmt(self, call, span)});
                 self.runtime_helpers.class_call_check = true;
@@ -514,7 +518,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // __extends(ClassName, _super) — parent는 IIFE 매개변수
             if (has_super and super_span != null) {
-                const child_ref = try self.makeIdentifierRefWithSymbol(name_span, name_node);
+                const child_ref = try self.makeIdentifierRefWithSymbol(name_span, func_name);
                 const parent_ref = try es_helpers.makeSyntheticRef(self, expr_super_param);
                 const extends_ref = try es_helpers.makeRuntimeHelperRef(self, "__extends");
                 try self.scratch.append(self.allocator, try es_helpers.makeExprStmt(self, try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span), span));
@@ -534,7 +538,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             for (cm.static_elements.items) |element| {
                 switch (element) {
-                    .field => |field| try self.scratch.append(self.allocator, try buildStaticFieldDefinePropertyWithCtx(self, try self.makeIdentifierRefWithSymbol(name_span, name_node), field.key, field.init, name_span, span)),
+                    .field => |field| try self.scratch.append(self.allocator, try buildStaticFieldDefinePropertyWithCtx(self, try self.makeIdentifierRefWithSymbol(name_span, func_name), field.key, field.init, name_span, span)),
                     .stmt => |sb_stmt| try self.scratch.append(self.allocator, sb_stmt),
                     .raw_stmt => unreachable, // visitDeferredStaticBlocks 가 호출됐어야 함
                 }
@@ -544,7 +548,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             try self.scratch.append(self.allocator, try self.ast.addNode(.{
                 .tag = .return_statement,
                 .span = span,
-                .data = .{ .unary = .{ .operand = try self.makeIdentifierRefWithSymbol(name_span, name_node), .flags = 0 } },
+                .data = .{ .unary = .{ .operand = try self.makeIdentifierRefWithSymbol(name_span, func_name), .flags = 0 } },
             }));
 
             // IIFE body

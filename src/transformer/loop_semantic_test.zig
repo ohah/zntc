@@ -76,6 +76,7 @@ test "#4819 loop body owner follows control-flow and var-hoist copies" {
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
@@ -127,6 +128,7 @@ test "#4819 arrow-to-function copy retains the analyzed function scope owner" {
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
@@ -157,6 +159,7 @@ test "#4819 generated function owner follows reversed revisits independently" {
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
@@ -216,6 +219,7 @@ fn expectExtractedLoopArgumentsVisible(source: []const u8, expected_args: u32) !
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
@@ -378,6 +382,7 @@ fn expectHoistedVarWrite(source: []const u8) !void {
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;

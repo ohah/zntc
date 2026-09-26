@@ -1796,7 +1796,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
 
             const new_extra = try self.ast.addExtras(&class_slots);
-            return self.ast.addNode(.{ .tag = class_node.tag, .span = class_node.span, .data = .{ .extra = new_extra } });
+            const copied = try self.ast.addNode(.{ .tag = class_node.tag, .span = class_node.span, .data = .{ .extra = new_extra } });
+            try self.remapCopiedScopeOwner(class_idx, copied);
+            return copied;
         }
 
         /// 멤버의 key 가 computed 면 그 식을 temp 로 평가해 `[_t]` 로 바꾼 새 멤버를 돌려준다.
@@ -1823,7 +1825,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             for (0..slot_count) |k| slots[k] = self.ast.extra_data.items[me + k];
             slots[0] = @intFromEnum(new_key);
             const new_extra = try self.ast.addExtras(slots[0..slot_count]);
-            return self.ast.addNode(.{ .tag = member.tag, .span = member.span, .data = .{ .extra = new_extra } });
+            const copied = try self.ast.addNode(.{ .tag = member.tag, .span = member.span, .data = .{ .extra = new_extra } });
+            if (member.tag == .method_definition) try self.remapCopiedScopeOwner(member_idx, copied);
+            return copied;
         }
 
         /// 식을 (yield 추출을 거쳐) 평가해 resume 사이에 살아남는 temp 에 담고 그 참조를 돌려준다.

@@ -72,6 +72,7 @@ fn checkNullishIdentifierReferences(source: []const u8, options: TransformOption
     var transformer = try Transformer.init(allocator, &parser.ast, options);
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
@@ -130,6 +131,7 @@ test "#4819 function and top-level nullish temps keep separate SymbolIds through
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
@@ -179,6 +181,7 @@ test "#4819 optional call captures bind their writes and reads across scopes" {
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
@@ -218,6 +221,7 @@ test "#4819 spread-new callee captures keep distinct function and module symbols
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
@@ -256,6 +260,7 @@ test "#4819 nullish assignment value captures keep distinct symbols" {
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
@@ -296,6 +301,7 @@ test "#4819 assignment target temps exclude unused candidate references" {
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
@@ -410,8 +416,10 @@ fn countsFor(source: []const u8, target: TransformOptions.compat.ESTarget) !Coun
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.synthetic_idents = .empty;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
     const root = try transformer.transform();
 
     var report = try coverage.check(allocator, transformer.ast, root, transformer.parser_node_count, transformer.symbol_ids.items, analyzer.symbols.items, if (transformer.synthetic_idents) |*s| s else null);
@@ -482,6 +490,7 @@ test "#4819 generated loop binding and call share one appended SymbolId" {
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
@@ -560,6 +569,7 @@ test "#4819 tagged template helpers keep distinct function and data scopes" {
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
@@ -617,6 +627,7 @@ test "#4819 decorator access functions own separate parameter symbols" {
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
@@ -678,6 +689,7 @@ test "#4819 runtime helper calls bind isolated import symbols before resync" {
         });
         try transformer.initSymbolIds(analyzer.symbol_ids.items);
         transformer.symbols = analyzer.symbols.items;
+        transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
         transformer.references = analyzer.references.items;
         transformer.scopes = analyzer.scopes.items;
         transformer.scope_maps = analyzer.scope_maps.items;
@@ -720,6 +732,7 @@ test "#4819 optional catch binding gets a symbol in its catch scope" {
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
