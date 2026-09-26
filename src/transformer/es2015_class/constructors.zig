@@ -89,7 +89,7 @@ pub fn Constructors(comptime Transformer: type) type {
             }
             defer self.new_target_ctx = saved_new_target_ctx;
 
-            var new_body = try visitMethodBodyWithCtxImpl(self, body_idx, span, null, is_derived, param_needs_this or field_needs_this, param_needs_arguments);
+            var new_body = try visitMethodBodyWithCtxImpl(self, body_idx, span, null, is_derived, param_needs_this or field_needs_this, param_needs_arguments, if (is_derived) &.{} else instance_fields);
 
             const lowered_params = if (param_lowering) |lr| lr.new_params else pp.new_params;
             const param_stmts = if (param_lowering) |lr| lr.body_stmts.items else &[_]NodeIndex{};
@@ -192,11 +192,11 @@ pub fn Constructors(comptime Transformer: type) type {
 
         /// visitMethodBody + new.target 컨텍스트 지정
         pub fn visitMethodBodyWithCtx(self: *Transformer, body_idx: NodeIndex, span: Span, nt_ctx: ?Transformer.NewTargetCtx) Transformer.Error!NodeIndex {
-            return visitMethodBodyWithCtxImpl(self, body_idx, span, nt_ctx, false, false, false);
+            return visitMethodBodyWithCtxImpl(self, body_idx, span, nt_ctx, false, false, false, &.{});
         }
 
         pub fn visitMethodBodyWithParams(self: *Transformer, body_idx: NodeIndex, span: Span, nt_ctx: ?Transformer.NewTargetCtx, param_needs_this: bool, param_needs_arguments: bool) Transformer.Error!NodeIndex {
-            return visitMethodBodyWithCtxImpl(self, body_idx, span, nt_ctx, false, param_needs_this, param_needs_arguments);
+            return visitMethodBodyWithCtxImpl(self, body_idx, span, nt_ctx, false, param_needs_this, param_needs_arguments, &.{});
         }
 
         /// visitMethodBodyWithCtx의 내부 구현.
@@ -211,6 +211,7 @@ pub fn Constructors(comptime Transformer: type) type {
             derived_constructor_this_alias: bool,
             param_needs_this: bool,
             param_needs_arguments: bool,
+            instance_fields: []const NodeIndex,
         ) Transformer.Error!NodeIndex {
             // arrow this state save/restore (일반 함수는 자체 this 바인딩)
             const saved_arrow_depth = self.arrow_this_depth;
@@ -228,6 +229,11 @@ pub fn Constructors(comptime Transformer: type) type {
             const saved_temp_counter = self.temp_var_counter;
 
             var new_body = try self.visitNode(body_idx);
+            // Field initializers execute after parameter evaluation and the
+            // capture declarations, but before original constructor statements.
+            // Insert them before adding those generated prefixes.
+            if (instance_fields.len > 0 and !new_body.isNone())
+                new_body = try self.prependStatementsToBody(new_body, instance_fields);
 
             // arrow가 this/arguments를 사용했으면 var _this = this; 등 삽입
             if (self.options.unsupported.arrow and !new_body.isNone() and

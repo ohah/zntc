@@ -35,6 +35,20 @@ const cases = {
     }
     console.log(new Box().field());
   `,
+  'immediately invoked field arrow observes initialized capture': `
+    class Plain {
+      field = (() => this)();
+      constructor() { this.value = 3; }
+    }
+    class Base {}
+    class Derived extends Base {
+      field = (() => this)();
+      constructor() { super(); this.value = 4; }
+    }
+    const plain = new Plain();
+    const derived = new Derived();
+    console.log(JSON.stringify([plain.field === plain, derived.field === derived]));
+  `,
 } as const;
 
 describe('ES5 class field lexical capture frame (#4819)', () => {
