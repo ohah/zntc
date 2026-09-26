@@ -241,6 +241,7 @@ pub fn hoistTempVarsSkippingSpans(self: *Transformer, body_idx: NodeIndex, saved
         if (tempSpanInSpans(name_span, skip_spans)) continue;
         if (has_block and bodyHasTopLevelVarBinding(self, body_node, name)) continue;
         const binding = try es_helpers.makeSyntheticBinding(self, name_span);
+        if (body_node.tag == .program) try self.bindHoistedTemp(binding, name_span, span);
         const none = @intFromEnum(NodeIndex.none);
         const declarator = try self.addExtraNode(.variable_declarator, span, &.{
             @intFromEnum(binding), none, none,

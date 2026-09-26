@@ -11,7 +11,7 @@ describe('generated temp allocation identity (#4819)', () => {
   });
 
   for (const bundled of [false, true]) {
-    test(`${bundled ? 'bundle' : 'single-file'} keeps nested temp variables distinct`, async () => {
+    test(`${bundled ? 'bundle' : 'single-file'} keeps nested and top-level temps distinct`, async () => {
       const fixture = await createFixture({
         'input.mjs': `
 const _a = 40;
@@ -20,7 +20,7 @@ function outer(value) {
   function inner(input) { return (input ?? _b) + _a; }
   return inner(value) + (value ?? 3);
 }
-console.log(outer(null), outer(1));
+console.log(outer(null), outer(1), Object.assign({ x: null }, {}).x ?? 5, _a);
 `,
       });
       cleanup = fixture.cleanup;
@@ -38,7 +38,7 @@ console.log(outer(null), outer(1));
       expect(result.exitCode).toBe(0);
       const runtime = spawnSync('node', [out], { encoding: 'utf8' });
       expect(runtime.status).toBe(0);
-      expect(runtime.stdout.trim()).toBe('45 42');
+      expect(runtime.stdout.trim()).toBe('45 42 5 40');
     });
   }
 });

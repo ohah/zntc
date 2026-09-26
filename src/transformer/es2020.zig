@@ -62,6 +62,7 @@ pub fn ES2020(comptime Transformer: type) type {
             } else {
                 const temp_span = try helpers.makeTempVarSpan(self);
                 const temp_ref1 = try helpers.makeTempVarRef(self, temp_span, node.span);
+                try self.trackHoistedTempRef(temp_span, temp_ref1, .{ .write = true });
                 const assign_node = try self.ast.addNode(.{
                     .tag = .assignment_expression,
                     .span = node.span,
@@ -81,6 +82,7 @@ pub fn ES2020(comptime Transformer: type) type {
                     } },
                 });
                 const temp_ref2 = try helpers.makeTempVarRef(self, temp_span, node.span);
+                try self.trackHoistedTempRef(temp_span, temp_ref2, .{ .read = true });
                 return self.ast.addNode(.{
                     .tag = .conditional_expression,
                     .span = node.span,
