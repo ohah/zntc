@@ -504,6 +504,63 @@ test "#4819 tagged template helpers keep distinct function and data scopes" {
     }
 }
 
+test "#4819 decorator access functions own separate parameter symbols" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator,
+        \\const obj = 7, value = 8;
+        \\function dec(v, context) { return v; }
+        \\class C { @dec first = 1; @dec second = 2; }
+        \\console.log(obj, value, new C().first);
+    );
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const original_symbols = analyzer.symbols.items.len;
+    const original_scopes = analyzer.scopes.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var access_params: usize = 0;
+    var access_scope_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    for (edited.symbols.items[original_symbols..], original_symbols..) |symbol, id| {
+        if (symbol.kind != .parameter) continue;
+        const name = transformer.ast.getText(symbol.name);
+        if (!std.mem.eql(u8, name, "obj") and !std.mem.eql(u8, name, "value")) continue;
+        access_params += 1;
+        try std.testing.expect(symbol.scope_id.toIndex() >= original_scopes);
+        try std.testing.expectEqual(@as(u32, 1), symbol.reference_count);
+        var bindings: usize = 0;
+        var refs: usize = 0;
+        const generated_id: u32 = @intCast(id);
+        for (edited.symbol_ids, 0..) |maybe_id, i| {
+            if (maybe_id != generated_id) continue;
+            switch (transformer.ast.nodes.items[i].tag) {
+                .binding_identifier => bindings += 1,
+                .identifier_reference => refs += 1,
+                else => {},
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), bindings);
+        try std.testing.expectEqual(@as(usize, 1), refs);
+        try access_scope_ids.put(allocator, symbol.scope_id.toIndex(), {});
+    }
+    try std.testing.expectEqual(@as(usize, 8), access_params);
+    try std.testing.expectEqual(@as(usize, 6), access_scope_ids.count());
+}
+
 test "#4819 optional catch binding gets a symbol in its catch scope" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

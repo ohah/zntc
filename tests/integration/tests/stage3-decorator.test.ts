@@ -15,6 +15,29 @@ describe('Stage 3 Decorators', () => {
     }
   });
 
+  it('access closures keep separate obj and value bindings across fields', async () => {
+    const result = await bundleAndRun(
+      {
+        'index.ts': `
+          const obj = 'outside-obj', value = 'outside-value';
+          const contexts: any[] = [];
+          function dec(_: any, context: any) { contexts.push(context); }
+          class C { @dec first = 1; @dec second = 2; }
+          const target = new C();
+          contexts[0].access.set(target, 3);
+          contexts[1].access.set(target, 4);
+          console.log(contexts[0].access.get(target), contexts[1].access.get(target),
+            contexts[0].access.has(target), contexts[1].access.has(target), obj, value);
+        `,
+      },
+      'index.ts',
+      ['--minify'],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('3 4 true true outside-obj outside-value');
+  });
+
   // --- Class decorator ---
 
   it('class decorator receives class and context', async () => {
