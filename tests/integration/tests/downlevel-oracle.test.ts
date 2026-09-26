@@ -107,9 +107,8 @@ const KNOWN_FAILURES: Record<string, string[]> = {
   'forawait-asyncgen-method-and-arrow': ['hermes/plain', 'hermes/minify'],
   'forawait-asyncgen-consumer-return': ['hermes/plain', 'hermes/minify'],
   'forawait-asyncgen-await-in-body-and-finally': ['hermes/plain', 'hermes/minify'],
-  // #4756 async generator 기본값 검사가 바깥 래퍼·안쪽 함수에 같은 노드로 들어가 minify 이름이
-  // 어긋난다 (+ Hermes #4733)
-  'asyncgen-default-param': ['es5/minify', 'hermes/plain', 'hermes/minify', 'transpile/es5/minify'],
+  // #4756 ES5 기본값 중복 삽입은 #4819의 함수 경계 보존으로 해결. Hermes #4733만 남는다.
+  'asyncgen-default-param': ['hermes/plain', 'hermes/minify'],
   // #4733 Hermes 에서 async generator 를 for-await 로 돌 때
   '4730-using-30': ['hermes/plain', 'hermes/minify'],
   // #4766 `_loop` 의 return 스캔이 메서드 경계를 무시해 모듈 최상위에 `return _ret.v` 를 낸다
