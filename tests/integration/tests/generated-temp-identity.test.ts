@@ -26,7 +26,15 @@ function getReceiver(enabled) { return enabled ? receiver : null; }
 function call(value) { return value?.method?.(); }
 const holder = { Box: function (x) { this.x = x; } };
 function makeBox(value) { return new holder.Box(...[value]); }
-console.log(outer(null), outer(1), sibling(null), sibling(2), Object.assign({ x: null }, {}).x ?? 5, getReceiver(true)?.method?.(), call(receiver), String(call(null)), new holder.Box(...[8]).x, makeBox(9).x, _a);
+let accesses = 0;
+const assignBox = { x: null };
+function objForAssign() { accesses++; return assignBox; }
+function keyForAssign() { accesses++; return 'x'; }
+function assignInside() { return objForAssign()[keyForAssign()] ??= 11; }
+const firstAssign = assignInside();
+assignBox.x = null;
+const secondAssign = objForAssign()[keyForAssign()] ??= 12;
+console.log(outer(null), outer(1), sibling(null), sibling(2), Object.assign({ x: null }, {}).x ?? 5, getReceiver(true)?.method?.(), call(receiver), String(call(null)), new holder.Box(...[8]).x, makeBox(9).x, firstAssign, secondAssign, accesses, _a);
 `,
       });
       cleanup = fixture.cleanup;
@@ -44,7 +52,7 @@ console.log(outer(null), outer(1), sibling(null), sibling(2), Object.assign({ x:
       expect(result.exitCode).toBe(0);
       const runtime = spawnSync('node', [out], { encoding: 'utf8' });
       expect(runtime.status).toBe(0);
-      expect(runtime.stdout.trim()).toBe('45 42 46 42 5 43 43 undefined 8 9 40');
+      expect(runtime.stdout.trim()).toBe('45 42 46 42 5 43 43 undefined 8 9 11 12 4 40');
     });
   }
 });
