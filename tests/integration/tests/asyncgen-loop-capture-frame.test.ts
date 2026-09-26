@@ -60,7 +60,8 @@ describe('async generator extracted loop lexical captures (#4819)', () => {
               'input.mjs',
               `--target=${target}`,
               ...(minify ? ['--minify'] : []),
-              '-o', output,
+              '-o',
+              output,
             ]);
             expect(result.exitCode, result.stderr).toBe(0);
             const actual = spawnSync('node', [output], { encoding: 'utf8' });
@@ -95,7 +96,8 @@ describe('async generator extracted loop lexical captures (#4819)', () => {
             'input.mjs',
             `--target=${target}`,
             ...(minify ? ['--minify'] : []),
-            '-o', output,
+            '-o',
+            output,
           ]);
           expect(result.exitCode, result.stderr).toBe(0);
           const actual = spawnSync('node', [output], { encoding: 'utf8' });
