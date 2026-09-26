@@ -628,6 +628,8 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             /// 길이가 어긋나면 조용히 심볼 없이 만들었다 — 이제 모든 호출자가 짝을 넘기므로 필수.
             lexical_bindings: []const NodeIndex,
             hoist_bindings: []const NodeIndex,
+            /// 생성자가 아는 실제 호출 위치. generator 수집기는 current_scope가 루프 스코프가 아니다.
+            call_scope: @import("../semantic/scope.zig").ScopeId,
         ) Transformer.Error!struct { loop_fn: NodeIndex, call_and_check: NodeIndex } {
             std.debug.assert(lexical_bindings.len == lexical_names.len);
             std.debug.assert(hoist_bindings.len == hoist_vars.len);
@@ -722,7 +724,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             const scratch_top2 = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top2);
             const loop_ref = try es_helpers.makeSyntheticRef(self, loop_name);
-            try self.addSyntheticRef(loop_ref, loop_symbol);
+            try self.addSyntheticRefInScope(loop_ref, loop_symbol, call_scope, .{ .read = true });
             const call_callee = if (preserve_this) blk: {
                 const call_prop = try es_helpers.makePropertyName(self, "call");
                 try self.scratch.append(self.allocator, try es_helpers.makeThisExpr(self, span));
@@ -730,7 +732,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             } else loop_ref;
             for (lexical_names, 0..) |name, name_i| {
                 const arg = try self.makeUserRefNamed(name, lexical_bindings[name_i]);
-                try self.trackUserArgumentFromBinding(arg, lexical_bindings[name_i]);
+                try self.trackUserArgumentFromBinding(arg, lexical_bindings[name_i], call_scope);
                 try self.scratch.append(self.allocator, arg);
             }
             const loop_call = try es_helpers.makeCallExpr(self, call_callee, self.scratch.items[scratch_top2..], span);
