@@ -59,6 +59,7 @@ pub fn ES2019(comptime Transformer: type) type {
                 break try self.ast.addString(name);
             };
             const unused_binding = try es_helpers.makeSyntheticBinding(self, unused_span);
+            try self.declareSyntheticCatch(unused_binding, node.span);
             return self.ast.addNode(.{
                 .tag = .catch_clause,
                 .span = node.span,
