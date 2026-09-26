@@ -339,6 +339,26 @@ pub fn collectReachableNodeIndices(allocator: std.mem.Allocator, ast: *const Ast
     return result.toOwnedSlice(allocator);
 }
 
+/// Direct statements of the program root. Namespace `export` nodes are
+/// reachable descendants but are properties of the namespace IIFE, not ESM
+/// exports of the containing file.
+pub fn topLevelStatementMask(ast: *const Ast) !std.DynamicBitSet {
+    // The scanners receive a module arena. This transient mask has its own
+    // allocator so callers can release it before the module arena is retired.
+    var mask = try std.DynamicBitSet.initEmpty(std.heap.page_allocator, ast.nodes.items.len);
+    if (ast.nodes.items.len == 0) return mask;
+    const root_idx = ast.transformed_root orelse @as(NodeIndex, @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))));
+    if (root_idx.isNone() or @intFromEnum(root_idx) >= ast.nodes.items.len) return mask;
+    const root = ast.getNode(root_idx);
+    if (root.tag != .program) return mask;
+    const list = root.data.list;
+    if (list.start + list.len > ast.extra_data.items.len) return mask;
+    for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+        if (raw < ast.nodes.items.len) mask.set(raw);
+    }
+    return mask;
+}
+
 /// `walkPreorderIterative` 의 노드별 콜백 반환값.
 pub const WalkAction = enum {
     /// 이 노드의 자식들을 마저 방문(일반 pre-order 하강).

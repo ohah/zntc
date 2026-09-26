@@ -152,6 +152,13 @@ fn extractDeclaredNames(
                 try name_to_stmt.put(allocator, name, stmt_idx);
             }
         },
+        .ts_module_declaration => {
+            const name_idx = node.data.binary.left;
+            if (!name_idx.isNone()) {
+                const name_node = ast.getNode(name_idx);
+                try name_to_stmt.put(allocator, ast.getText(name_node.span), stmt_idx);
+            }
+        },
         .variable_declaration => {
             try extractVarDeclNames(ast, node, stmt_idx, name_to_stmt, allocator);
         },

@@ -647,7 +647,9 @@ test "Codegen: namespace export reference — multiple exports" {
 test "Codegen: namespace export reference — function" {
     var r = try e2e(std.testing.allocator, "namespace ns { export function foo() {} console.log(foo); }");
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(ns.foo)") != null);
+    // Functions are emitted as local declarations plus an object assignment.
+    // TypeScript keeps subsequent references to the local binding.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(foo)") != null);
 }
 
 test "Codegen: namespace export var — direct property assignment (no local var)" {

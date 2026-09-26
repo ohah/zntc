@@ -8,6 +8,7 @@ const Ast = ast_mod.Ast;
 const FlowEnumBaseType = @import("../parser/flow.zig").FlowEnumBaseType;
 const rt = @import("../bundler/runtime_helpers.zig");
 const bindings = @import("bindings.zig");
+const NamespaceFrame = @import("codegen.zig").NamespaceFrame;
 
 /// enum Color { Red, Green = 5, Blue } →
 /// var Color;((Color) => {Color[Color["Red"]=0]="Red";Color[Color["Green"]=5]="Green";Color[Color["Blue"]=6]="Blue";})(Color || (Color = {}));
@@ -345,6 +346,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
     if (body_node.tag == .ts_module_declaration) {
         const name_node = self.ast.getNode(name_idx);
         const name_text = self.ast.getText(name_node.span);
+        const local_name = namespaceLocalName(self, name_idx, name_text);
 
         // 부모가 있으면 let, 없으면 var
         if (parent_ns != null) {
@@ -352,7 +354,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
         } else {
             try self.write("var ");
         }
-        try self.write(name_text);
+        try self.write(local_name);
         try self.writeByte(';');
         try self.write("((");
         try self.write(name_text);
@@ -362,7 +364,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
         // 중첩 closing: (bar = foo.bar || (foo.bar = {}))
         if (parent_ns) |pns| {
             try self.write("})(");
-            try self.write(name_text);
+            try self.write(local_name);
             try self.write(" = ");
             try self.write(pns);
             try self.writeByte('.');
@@ -373,7 +375,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
             try self.write(name_text);
             try self.write(" = {}));");
         } else {
-            try emitIIFEClosing(self, name_text);
+            try emitIIFEClosing(self, local_name);
         }
         return;
     }
@@ -381,19 +383,21 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
     // body가 block_statement인 경우 (일반 namespace)
     const name_node = self.ast.getNode(name_idx);
     const name_text = self.ast.getText(name_node.span);
+    const local_name = namespaceLocalName(self, name_idx, name_text);
 
     // 부모가 있으면 let, 없으면 var (esbuild 호환)
     // 같은 이름이 이미 선언되었으면 var/let 생략 (function + namespace 병합 등)
-    if (!self.declared_names.contains(name_text)) {
+    if (!self.declared_names.contains(name_text) and !self.declared_names.contains(local_name)) {
         if (parent_ns != null) {
             try self.write("let ");
         } else {
             try self.write("var ");
         }
-        try self.write(name_text);
+        try self.write(local_name);
         try self.writeByte(';');
     }
     self.declared_names.put(self.allocator, name_text, {}) catch {};
+    self.declared_names.put(self.allocator, local_name, {}) catch {};
 
     // 1단계: export된 이름 수집 (IIFE 열기 전에 — 파라미터 충돌 감지용)
     var ns_export_map: std.StringHashMapUnmanaged(void) = .empty;
@@ -413,31 +417,53 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
         }
     }
 
-    // 파라미터 이름: export 변수와 충돌하면 _ 접두사 (esbuild 호환)
-    // namespace a { export var a = 123 } → ((_a) => { _a.a = 123 })(a || (a = {}))
-    var param_buf: [256]u8 = undefined;
-    const param_name = if (ns_export_map.contains(name_text)) blk: {
-        const len = @min(name_text.len + 1, param_buf.len);
-        param_buf[0] = '_';
-        @memcpy(param_buf[1..len], name_text[0 .. len - 1]);
-        break :blk param_buf[0..len];
-    } else name_text;
+    // The synthetic parameter must not capture any source identifier. Its
+    // spelling is selected from the exact AST identifiers and linker renames;
+    // exported references themselves are resolved by SymbolId below.
+    var owned_param: ?[]u8 = null;
+    defer if (owned_param) |p| std.heap.page_allocator.free(p);
+    var param_name = name_text;
+    if (ns_export_map.contains(name_text) or namespaceParameterReserved(self, name_text, true)) {
+        var suffix: u32 = 0;
+        while (true) : (suffix += 1) {
+            const candidate = if (suffix == 0)
+                try std.fmt.allocPrint(std.heap.page_allocator, "_{s}", .{name_text})
+            else
+                try std.fmt.allocPrint(std.heap.page_allocator, "_{s}{d}", .{ name_text, suffix });
+            if (!namespaceParameterReserved(self, candidate, false)) {
+                owned_param = candidate;
+                param_name = candidate;
+                break;
+            }
+            std.heap.page_allocator.free(candidate);
+        }
+    }
 
     // ((Foo) => { ... })(Foo || (Foo = {}));
     try self.write("((");
     try self.write(param_name);
     try self.write(") => {");
 
-    // 2단계: ns_prefix 설정 (identifier 출력 시 치환 활성화)
-    const saved_prefix = self.ns_prefix;
-    const saved_exports = self.ns_exports;
-    if (ns_export_map.count() > 0) {
-        self.ns_prefix = param_name;
-        self.ns_exports = ns_export_map;
-    }
-    defer {
-        self.ns_prefix = saved_prefix;
-        self.ns_exports = saved_exports;
+    // The code generator writes simple exported bindings directly to object
+    // properties. Track precisely those source symbols, including a parent
+    // namespace frame for references from a nested namespace body.
+    var frame: NamespaceFrame = .{
+        .prefix = param_name,
+        .exported_symbols = .empty,
+        .parent = self.ns_frame,
+    };
+    defer frame.exported_symbols.deinit(std.heap.page_allocator);
+    const saved_frame = self.ns_frame;
+    self.ns_frame = &frame;
+    defer self.ns_frame = saved_frame;
+    if (body_node.tag == .block_statement) {
+        const list = body_node.data.list;
+        for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw_idx| {
+            const stmt = self.ast.getNode(@enumFromInt(raw_idx));
+            if (stmt.tag != .export_named_declaration) continue;
+            const decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[stmt.data.extra]);
+            if (!decl_idx.isNone()) try collectNamespaceExportSymbols(self, &frame.exported_symbols, decl_idx);
+        }
     }
 
     // 3단계: body 출력 (export 문은 Foo.name = expr 형태로 변환)
@@ -487,7 +513,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
     // 부모가 있으면 중첩 closing: (name = parent.name || (parent.name = {}))
     if (parent_ns) |pns| {
         try self.write("})(");
-        try self.write(name_text);
+        try self.write(local_name);
         try self.write(" = ");
         try self.write(pns);
         try self.writeByte('.');
@@ -498,7 +524,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
         try self.write(name_text);
         try self.write(" = {}));");
     } else {
-        try emitIIFEClosing(self, name_text);
+        try emitIIFEClosing(self, local_name);
     }
 }
 
@@ -531,7 +557,7 @@ fn emitNamespaceExport(self: anytype, ns_name: []const u8, decl_idx: NodeIndex) 
                 try emitNamespaceBindingExport(self, ns_name, name_idx);
             }
         },
-        .function_declaration, .class_declaration => {
+        .function_declaration, .class_declaration, .ts_enum_declaration => {
             // function foo() {} → Foo.foo = foo;
             const e = decl.data.extra;
             const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
@@ -698,7 +724,7 @@ fn collectExportNames(self: anytype, map: *std.StringHashMapUnmanaged(void), dec
                 try map.put(self.allocator, name, {});
             }
         },
-        .function_declaration, .class_declaration => {
+        .function_declaration, .class_declaration, .ts_enum_declaration => {
             const e = decl.data.extra;
             const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
             if (!name_idx.isNone()) {
@@ -709,6 +735,72 @@ fn collectExportNames(self: anytype, map: *std.StringHashMapUnmanaged(void), dec
         },
         else => {},
     }
+}
+
+fn collectNamespaceExportSymbols(self: anytype, symbols: *std.AutoHashMapUnmanaged(u32, void), decl_idx: NodeIndex) !void {
+    const decl = self.ast.getNode(decl_idx);
+    if (decl.tag != .variable_declaration) return;
+    const e = decl.data.extra;
+    const start = self.ast.extra_data.items[e + 1];
+    const len = self.ast.extra_data.items[e + 2];
+    for (self.ast.extra_data.items[start .. start + len]) |raw_idx| {
+        const declarator = self.ast.getNode(@enumFromInt(raw_idx));
+        if (declarator.tag != .variable_declarator) continue;
+        const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[declarator.data.extra]);
+        if (name_idx.isNone() or self.ast.getNode(name_idx).tag != .binding_identifier) continue;
+        const sid = self.sourceSymbolId(name_idx) orelse continue;
+        try symbols.put(std.heap.page_allocator, sid, {});
+    }
+}
+
+fn namespaceParameterReserved(self: anytype, candidate: []const u8, original: bool) bool {
+    var frame = self.ns_frame;
+    while (frame) |active| : (frame = active.parent) {
+        if (std.mem.eql(u8, active.prefix, candidate)) return true;
+    }
+    if (self.options.linking_metadata) |metadata| {
+        var it = metadata.renames.valueIterator();
+        while (it.next()) |renamed| {
+            if (std.mem.eql(u8, renamed.*, candidate)) return true;
+        }
+    }
+    for (self.ast.nodes.items, 0..) |node, ni| {
+        const relevant = switch (node.tag) {
+            .binding_identifier,
+            .import_default_specifier,
+            .import_namespace_specifier,
+            => true,
+            .identifier_reference,
+            .assignment_target_identifier,
+            => !original,
+            else => false,
+        };
+        if (!relevant) continue;
+        if (!std.mem.eql(u8, self.ast.identifierNameText(node), candidate)) continue;
+        // A namespace declaration's own name is the outer object. The IIFE
+        // parameter may reuse it; nested source bindings may not.
+        if (original and node.tag == .binding_identifier) {
+            var is_namespace_name = false;
+            for (self.ast.nodes.items) |owner| {
+                if (owner.tag == .ts_module_declaration and @intFromEnum(owner.data.binary.left) == ni) {
+                    is_namespace_name = true;
+                    break;
+                }
+            }
+            if (is_namespace_name) continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+fn namespaceLocalName(self: anytype, name_idx: NodeIndex, source_name: []const u8) []const u8 {
+    if (self.options.linking_metadata) |metadata| {
+        if (self.sourceSymbolId(name_idx)) |sid| {
+            if (metadata.renames.get(sid)) |renamed| return renamed;
+        }
+    }
+    return source_name;
 }
 
 fn emitInt(self: anytype, value: i64) !void {

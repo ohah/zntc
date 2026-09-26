@@ -9,6 +9,55 @@ const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const Parser = @import("../parser/parser.zig").Parser;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 
+test "#4819 namespace exports and shadowed parameter retain distinct reference IDs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const source = "namespace N { export let value = 1; export function local(value: number) { return value; } export function outer() { value++; return value; } }";
+    var scanner = try Scanner.init(alloc, source);
+    var parser = Parser.init(alloc, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(alloc, &parser.ast);
+    ana.is_ts = true;
+    try ana.analyze();
+    try std.testing.expectEqual(@as(usize, 0), ana.errors.items.len);
+
+    var exported: ?u32 = null;
+    var parameter: ?u32 = null;
+    for (ana.symbols.items, 0..) |sym, i| {
+        if (!std.mem.eql(u8, sym.nameText(source), "value")) continue;
+        if (sym.decl_flags.is_exported) {
+            try std.testing.expect(exported == null);
+            exported = @intCast(i);
+        } else {
+            try std.testing.expect(parameter == null);
+            parameter = @intCast(i);
+        }
+    }
+    const export_id = exported orelse return error.MissingNamespaceExport;
+    const param_id = parameter orelse return error.MissingShadowParameter;
+    try std.testing.expect(export_id != param_id);
+    var export_reads: usize = 0;
+    var export_writes: usize = 0;
+    var param_reads: usize = 0;
+    for (ana.references.items) |ref| {
+        if (ref.flags.declare) continue;
+        const ni = @intFromEnum(ref.node_index);
+        if (ni >= ana.symbol_ids.items.len) continue;
+        try std.testing.expectEqual(@as(?u32, @intFromEnum(ref.symbol_id)), ana.symbol_ids.items[ni]);
+        if (@intFromEnum(ref.symbol_id) == export_id) {
+            if (ref.flags.read) export_reads += 1;
+            if (ref.flags.write) export_writes += 1;
+        } else if (@intFromEnum(ref.symbol_id) == param_id and ref.flags.read) {
+            param_reads += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), export_reads);
+    try std.testing.expectEqual(@as(usize, 1), export_writes);
+    try std.testing.expectEqual(@as(usize, 1), param_reads);
+}
+
 test "#4819 editor preserves analyzed IDs while appending a generated binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

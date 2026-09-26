@@ -87,30 +87,36 @@ pub fn extractImportsWithCjsDetectionAndDefines(
 
     const reachable = try ast_walk.collectReachableNodeIndices(allocator, ast);
     defer allocator.free(reachable);
+    var top_level = try ast_walk.topLevelStatementMask(ast);
+    defer top_level.deinit();
 
     for (reachable) |ni| {
         const node = ast.nodes.items[ni];
         if (isInsideAnySpan(node.span, dead_ranges.items)) continue;
         switch (node.tag) {
             .import_declaration => {
+                if (!top_level.isSet(ni)) continue;
                 has_esm_syntax = true;
                 if (tryExtractImportDecl(ast, node)) |record| {
                     try records.append(allocator, record);
                 }
             },
             .export_all_declaration => {
+                if (!top_level.isSet(ni)) continue;
                 has_esm_syntax = true;
                 if (tryExtractExportAll(ast, node)) |record| {
                     try records.append(allocator, record);
                 }
             },
             .export_named_declaration => {
+                if (!top_level.isSet(ni)) continue;
                 has_esm_syntax = true;
                 if (tryExtractExportNamed(ast, node)) |record| {
                     try records.append(allocator, record);
                 }
             },
             .export_default_declaration => {
+                if (!top_level.isSet(ni)) continue;
                 has_esm_syntax = true;
             },
             .import_expression => {

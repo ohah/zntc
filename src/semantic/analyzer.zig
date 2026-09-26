@@ -129,6 +129,9 @@ pub const SemanticAnalyzer = struct {
     /// immutable self binding. Anchor the latter to the class node itself.
     class_self_symbol_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     current_visit_node: NodeIndex = .none,
+    /// Runtime TypeScript namespace bodies execute inside their emitted IIFE.
+    /// Their `export` declarations describe namespace properties, not module exports.
+    namespace_depth: u32 = 0,
 
     /// 미해결 참조 (unresolved references). resolveIdentifier에서 스코프 체인을 다 올라가도
     /// 선언을 찾지 못한 이름. 번들러 linker가 scope hoisting 시 이 이름들을 예약하여
@@ -1498,6 +1501,7 @@ pub const SemanticAnalyzer = struct {
             },
             .switch_statement => try self.visitSwitchStatement(node),
             .catch_clause => try self.visitCatchClause(node),
+            .ts_module_declaration => try self.visitNamespaceDeclaration(node),
 
             // ---- 선언 노드 ----
             .variable_declaration => try self.visitVariableDeclaration(node),
@@ -2239,6 +2243,7 @@ pub const SemanticAnalyzer = struct {
                 .function_declaration => try self.predeclareFuncDecl(node),
                 .class_declaration => try self.predeclareClassDecl(node),
                 .ts_enum_declaration => try self.predeclareEnumDecl(node),
+                .ts_module_declaration => try self.predeclareNamespaceDecl(node),
                 // RFC #3310 (D20): import 는 module top hoist — user binding 을
                 // .import_binding symbol 로 1st-pass 등록 (forward export/value use).
                 .import_declaration => try self.predeclareImportDecl(node),
@@ -2255,6 +2260,7 @@ pub const SemanticAnalyzer = struct {
                         .function_declaration => try self.predeclareFuncDecl(decl_node),
                         .class_declaration => try self.predeclareClassDecl(decl_node),
                         .ts_enum_declaration => try self.predeclareEnumDecl(decl_node),
+                        .ts_module_declaration => try self.predeclareNamespaceDecl(decl_node),
                         else => {},
                     }
                 },
@@ -2575,6 +2581,55 @@ pub const SemanticAnalyzer = struct {
         try self.predeclareLexicalDecls(node.data.list);
         try self.visitStmtList(node.data.list);
         self.exitScope(saved);
+    }
+
+    fn visitNamespaceDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
+        // Ambient namespaces have no runtime body or value references.
+        if (node.data.binary.flags == 1) return;
+        const name_idx = node.data.binary.left;
+        if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+            const name_node = self.ast.getNode(name_idx);
+            if (name_node.tag == .binding_identifier) {
+                const name = self.ast.getText(name_node.span);
+                if (self.findSymbolIndexInScope(self.current_scope, name)) |sym_idx| {
+                    self.symbol_ids.items[@intFromEnum(name_idx)] = @intCast(sym_idx);
+                } else {
+                    try self.declareSymbolWithNode(name_node.span, .variable_var, node.span, @intFromEnum(name_idx));
+                }
+            }
+        }
+
+        const saved = try self.enterScope(.function, self.is_strict_mode);
+        defer self.exitScope(saved);
+        self.namespace_depth += 1;
+        defer self.namespace_depth -= 1;
+        const body_idx = node.data.binary.right;
+        if (body_idx.isNone() or @intFromEnum(body_idx) >= self.ast.nodes.items.len) return;
+        const body = self.ast.getNode(body_idx);
+        if (body.tag == .block_statement) {
+            const saved_predeclared = self.predeclared_scope;
+            self.predeclared_scope = self.current_scope;
+            defer self.predeclared_scope = saved_predeclared;
+            try self.predeclareTopLevelBindings(body.data.list);
+            try self.predeclareNestedTopLevelVarDecls(body.data.list);
+            try self.visitStmtList(body.data.list);
+        } else {
+            try self.visitNode(body_idx);
+        }
+    }
+
+    fn predeclareNamespaceDecl(self: *SemanticAnalyzer, node: Node) AllocError!void {
+        if (node.data.binary.flags == 1) return;
+        const name_idx = node.data.binary.left;
+        if (name_idx.isNone() or @intFromEnum(name_idx) >= self.ast.nodes.items.len) return;
+        const name_node = self.ast.getNode(name_idx);
+        if (name_node.tag != .binding_identifier) return;
+        const name = self.ast.getText(name_node.span);
+        if (self.findSymbolIndexInScope(self.current_scope, name)) |sym_idx| {
+            self.symbol_ids.items[@intFromEnum(name_idx)] = @intCast(sym_idx);
+        } else {
+            try self.declareSymbolWithNode(name_node.span, .variable_var, node.span, @intFromEnum(name_idx));
+        }
     }
 
     /// Block 스코프에 let/const/class 선언을 미리 등록 (statement 순회 전).
@@ -3606,6 +3661,19 @@ pub const SemanticAnalyzer = struct {
         const specs_len = extras[extra_start + 2];
         const source_idx: NodeIndex = @enumFromInt(extras[extra_start + 3]);
 
+        if (self.namespace_depth > 0) {
+            // Namespace export is a property of its IIFE parameter. Keep the
+            // local declaration/ref IDs, but never publish a module export.
+            // The property is observable even when no source identifier reads
+            // it. Mark its binding live so the bundle dead-store pass cannot
+            // erase the initializer before codegen writes namespace.property.
+            try self.visitNode(decl_idx);
+            if (!decl_idx.isNone() and @intFromEnum(decl_idx) < self.ast.nodes.items.len) {
+                self.markExportedDeclSymbols(self.ast.getNode(decl_idx));
+            }
+            return;
+        }
+
         // export { a, b as c } — specifier로 내보낸 이름 추적
         if (specs_len > 0 and specs_start + specs_len <= extras.len) {
             const spec_indices = extras[specs_start .. specs_start + specs_len];
@@ -3819,6 +3887,14 @@ pub const SemanticAnalyzer = struct {
                     try self.registerExportedName(name, name_node.span);
                 }
             },
+            .ts_module_declaration => {
+                const name_idx = node.data.binary.left;
+                if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+                    const name_node = self.ast.getNode(name_idx);
+                    if (name_node.tag == .binding_identifier)
+                        try self.registerExportedName(self.ast.getText(name_node.span), name_node.span);
+                }
+            },
             else => {},
         }
     }
@@ -3867,6 +3943,14 @@ pub const SemanticAnalyzer = struct {
                     const name_node = self.ast.getNode(name_idx);
                     const name = self.ast.getText(name_node.span);
                     self.markSymbolExported(name, false);
+                }
+            },
+            .ts_module_declaration => {
+                const name_idx = node.data.binary.left;
+                if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+                    const name_node = self.ast.getNode(name_idx);
+                    if (name_node.tag == .binding_identifier)
+                        self.markSymbolExported(self.ast.getText(name_node.span), false);
                 }
             },
             else => {},

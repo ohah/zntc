@@ -1600,6 +1600,7 @@ fn transpileWithCallbackInternal(
         .lower_unicode_brace = options.unsupported.unicode_brace_escape,
         .quote_style = options.quote_style,
         .linking_metadata = if (mangle_metadata) |*mm| mm else null,
+        .semantic_symbol_ids = transformer.symbol_ids.items,
         .platform = options.platform,
         .source_root = options.source_root,
         .sources_content = options.sources_content,

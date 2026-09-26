@@ -33,6 +33,12 @@ pub const KeepNameEntry = options_mod.KeepNameEntry;
 const SourceMapBuilder = @import("sourcemap.zig").SourceMapBuilder;
 const FunctionMapBuilder = @import("function_map.zig").FunctionMapBuilder;
 
+pub const NamespaceFrame = struct {
+    prefix: []const u8,
+    exported_symbols: std.AutoHashMapUnmanaged(u32, void),
+    parent: ?*const NamespaceFrame,
+};
+
 pub const Codegen = struct {
     ast: *const Ast,
     allocator: std.mem.Allocator,
@@ -59,10 +65,9 @@ pub const Codegen = struct {
     in_for_init: bool = false,
     /// for-in var initializer hoisting: emitVariableDeclarator에서 init 스킵
     skip_var_init: bool = false,
-    /// namespace IIFE 내부에서 export된 변수의 참조를 ns.name으로 치환하기 위한 상태.
-    /// emitNamespaceIIFE에서 설정되고, emitNode의 identifier 출력에서 참조.
-    ns_prefix: ?[]const u8 = null,
-    ns_exports: ?std.StringHashMapUnmanaged(void) = null,
+    /// Active namespace frames. Their exported bindings are matched by exact
+    /// SymbolId, including references inside nested functions/namespaces.
+    ns_frame: ?*const NamespaceFrame = null,
     /// top-level에서 선언된 이름 추적 (namespace var 중복 제거용).
     /// function/class/var/let/const/enum 선언 시 등록, namespace 출력 시 이미 있으면 var 생략.
     declared_names: std.StringHashMapUnmanaged(void) = .empty,
@@ -403,6 +408,22 @@ pub const Codegen = struct {
         const node_i = @intFromEnum(idx);
         if (node_i < meta.symbol_ids.len) {
             return meta.symbol_ids[node_i];
+        }
+        return null;
+    }
+
+    pub fn sourceSymbolId(self: *Codegen, idx: NodeIndex) ?u32 {
+        if (self.options.linking_metadata) |meta| return self.resolveSymbolId(idx, meta);
+        const ni = @intFromEnum(idx);
+        if (ni < self.options.semantic_symbol_ids.len) return self.options.semantic_symbol_ids[ni];
+        return null;
+    }
+
+    pub fn namespaceExportPrefix(self: *Codegen, idx: NodeIndex) ?[]const u8 {
+        const sid = self.sourceSymbolId(idx) orelse return null;
+        var frame = self.ns_frame;
+        while (frame) |active| : (frame = active.parent) {
+            if (active.exported_symbols.contains(sid)) return active.prefix;
         }
         return null;
     }

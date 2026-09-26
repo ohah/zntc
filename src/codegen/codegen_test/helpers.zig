@@ -177,7 +177,7 @@ pub fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_optio
     // es5 블록 스코핑을 낮추는 테스트는 프로덕션처럼 분석기 스코프를 넘긴다 — 블록 스코핑 이름은
     // 심볼 표로 정해진다 (#4760). 다른 테스트는 예전처럼 분석 없이 돈다.
     var analyzer_storage: ?SemanticAnalyzer = null;
-    if (t_options.unsupported.block_scoping) {
+    if (t_options.unsupported.block_scoping or parser.ast.has_ts_namespace_or_enum) {
         analyzer_storage = SemanticAnalyzer.init(allocator, &parser.ast);
         const analyzer = &analyzer_storage.?;
         analyzer.is_strict_mode = parser.is_strict_mode;
@@ -201,7 +201,9 @@ pub fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_optio
     }
     const root = try t.transform();
 
-    var cg = Codegen.initWithOptions(allocator, t.ast, cg_options);
+    var options_with_symbols = cg_options;
+    options_with_symbols.semantic_symbol_ids = t.symbol_ids.items;
+    var cg = Codegen.initWithOptions(allocator, t.ast, options_with_symbols);
     const raw_output = try cg.generate(root);
 
     // JSX import prepend (transformer가 JSX lowering 수행한 경우)

@@ -124,6 +124,23 @@ test "export binding: export const" {
     try std.testing.expectEqual(ExportBinding.Kind.local, r.export_bindings[0].kind);
 }
 
+test "#4819 namespace member exports are not module exports" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var scanner = try Scanner.init(alloc, "export namespace N { export const value = 1; export function read() { return value; } }");
+    var parser = Parser.init(alloc, &scanner);
+    parser.configureFromExtension(".ts");
+    parser.is_module = true;
+    scanner.is_module = true;
+    _ = try parser.parse();
+    const records = try import_scanner.extractImports(alloc, &parser.ast);
+    const imports = try extractImportBindings(alloc, &parser.ast, records, null);
+    const exports = try extractExportBindings(alloc, &parser.ast, records, imports);
+    try std.testing.expectEqual(@as(usize, 1), exports.len);
+    try std.testing.expectEqualStrings("N", exports[0].exported_name);
+}
+
 test "export binding: export { a as b }" {
     const alloc = std.testing.allocator;
     var r = try parseAndExtractBindings(alloc, "const a = 1; export { a as b };");
