@@ -126,6 +126,8 @@ pub const Transformer = struct {
     /// ES5 destructuring declaration temp span -> exact generated SymbolId.
     /// The unique string-table span survives counter resets in nested functions.
     destructuring_temp_symbol_ids: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// Output declaration kind while lowering one destructuring declaration.
+    destructuring_temp_kind: ?@import("../semantic/symbol.zig").SymbolKind = null,
     namespace_iife_scope: ScopeId = .none,
     namespace_temp_bindings: std.ArrayListUnmanaged(struct { binding: NodeIndex, span: token_mod.Span, scope: ScopeId }) = .empty,
     pending_runtime_helper_chains: std.StringHashMapUnmanaged(struct { first: usize, last: usize }) = .empty,
