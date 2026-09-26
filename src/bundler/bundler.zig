@@ -948,8 +948,10 @@ pub const Bundler = struct {
             .tla_chunk_wrapped = self.tlaChunkWrapped(format),
             // #4598: 기다려 줄 기계가 있는 위상에서만 export 초기화식을 옮긴다.
             // ⚠️ `promoteAsyncConeToEsmWrap` 의 빌드-단위 조건과 **정확히 같아야** 한다.
+            // ⚠️ `async_await` 조건을 걸면 안 된다 — es5(Hermes preset)에서 lowering 이
+            //    꺼져 `v = yield …` 가 generator 아닌 factory 에 남는다(RN 앱 로드 실패).
+            //    es5 는 소비자가 `.then` 체이닝으로 기다린다.
             .tla_export_decl_deferrable = self.options.unsupported.top_level_await and
-                !self.options.unsupported.async_await and
                 !self.options.code_splitting and
                 !self.options.preserve_modules and
                 format == .esm,
