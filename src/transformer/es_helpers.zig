@@ -30,6 +30,16 @@ pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, in
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
+    // Every emitted descriptor owns its shape tag. The runtime must not read
+    // Object.prototype to distinguish data members from accessors.
+    const kind_key = try makePropertyName(self, "kind");
+    const kind_value = try makeNumericLiteral(self, 0);
+    try self.scratch.append(self.allocator, try self.ast.addNode(.{
+        .tag = .object_property,
+        .span = span,
+        .data = .{ .binary = .{ .left = kind_key, .right = kind_value, .flags = 0 } },
+    }));
+
     const writable_key = try makePropertyName(self, "writable");
     const true_span = try self.ast.addString("true");
     const true_val = try self.ast.addNode(.{
@@ -68,6 +78,14 @@ pub fn buildStaticPrivateMethodDescriptor(self: anytype, var_name: []const u8, m
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
+    const kind_key = try makePropertyName(self, "kind");
+    const kind_value = try makeNumericLiteral(self, if (method_fn != null) 0 else 1);
+    try self.scratch.append(self.allocator, try self.ast.addNode(.{
+        .tag = .object_property,
+        .span = span,
+        .data = .{ .binary = .{ .left = kind_key, .right = kind_value, .flags = 0 } },
+    }));
+
     if (method_fn) |name| {
         const key = try makePropertyName(self, "value");
         const value = try makeSyntheticRef(self, name);
@@ -89,24 +107,22 @@ pub fn buildStaticPrivateMethodDescriptor(self: anytype, var_name: []const u8, m
             .data = .{ .binary = .{ .left = writable_key, .right = false_val, .flags = 0 } },
         }));
     } else {
-        if (getter_fn) |name| {
-            const key = try makePropertyName(self, "get");
-            const value = try makeSyntheticRef(self, name);
-            try self.scratch.append(self.allocator, try self.ast.addNode(.{
-                .tag = .object_property,
-                .span = span,
-                .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
-            }));
-        }
-        if (setter_fn) |name| {
-            const key = try makePropertyName(self, "set");
-            const value = try makeSyntheticRef(self, name);
-            try self.scratch.append(self.allocator, try self.ast.addNode(.{
-                .tag = .object_property,
-                .span = span,
-                .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
-            }));
-        }
+        // Both slots are own properties even for one-sided accessors. An
+        // inherited getter/setter must never change the descriptor's shape.
+        const get_key = try makePropertyName(self, "get");
+        const get_value = if (getter_fn) |name| try makeSyntheticRef(self, name) else try makeVoidZero(self, span);
+        try self.scratch.append(self.allocator, try self.ast.addNode(.{
+            .tag = .object_property,
+            .span = span,
+            .data = .{ .binary = .{ .left = get_key, .right = get_value, .flags = 0 } },
+        }));
+        const set_key = try makePropertyName(self, "set");
+        const set_value = if (setter_fn) |name| try makeSyntheticRef(self, name) else try makeVoidZero(self, span);
+        try self.scratch.append(self.allocator, try self.ast.addNode(.{
+            .tag = .object_property,
+            .span = span,
+            .data = .{ .binary = .{ .left = set_key, .right = set_value, .flags = 0 } },
+        }));
     }
 
     const obj = try makeObjectLiteral(self, self.scratch.items[scratch_top..], span);
