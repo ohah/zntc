@@ -186,6 +186,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                         empty_list.start,
                         empty_list.len,
                     });
+                    try self.remapCopiedScopeOwner(member_idx, new_method);
                     try new_members.append(self.allocator, new_method);
                 }
             } else if (member.tag == .property_definition) {
