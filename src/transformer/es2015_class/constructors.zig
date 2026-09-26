@@ -43,7 +43,10 @@ pub fn Constructors(comptime Transformer: type) type {
         pub fn buildFunctionFromConstructor(self: *Transformer, ctor_idx: NodeIndex, name: NodeIndex, instance_fields: []const NodeIndex, is_derived: bool, span: Span) Transformer.Error!NodeIndex {
             const saved_scope = self.current_scope;
             if (self.semantic_edit_enabled) {
-                if (self.scope_owner_map.get(@intFromEnum(ctor_idx))) |scope| self.current_scope = @enumFromInt(scope);
+                const key = @intFromEnum(ctor_idx);
+                if (self.transformed_scope_owner_map.get(key) orelse self.scope_owner_map.get(key)) |scope| {
+                    self.current_scope = @enumFromInt(scope);
+                }
             }
             defer self.current_scope = saved_scope;
             const ctor = self.ast.getNode(ctor_idx);

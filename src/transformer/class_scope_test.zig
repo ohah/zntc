@@ -3,6 +3,7 @@ const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const Ast = @import("../parser/ast.zig").Ast;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+const MethodExtra = @import("../parser/ast.zig").MethodExtra;
 const ast_walk = @import("../parser/ast_walk.zig");
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const Transformer = @import("transformer.zig").Transformer;
@@ -80,4 +81,70 @@ test "#4819 ES5 class methods retain original scope on emitted functions and bin
         }
     }
     try std.testing.expect(generated_temp_refs >= 5);
+}
+
+test "#4819 decorated explicit constructor binds generated nullish temp in original scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\function logged(value) { return value; }
+        \\class Box {
+        \\  @logged field = 1;
+        \\  constructor(value) { this.field = value.next() ?? 2; }
+        \\}
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var ctor_scope: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, index| {
+        if (node.tag != .method_definition) continue;
+        const key_idx: NodeIndex = @enumFromInt(parser.ast.extra_data.items[node.data.extra + MethodExtra.key]);
+        const key = parser.ast.getNode(key_idx);
+        if (key.tag != .identifier_reference or !std.mem.eql(u8, parser.ast.getText(key.data.string_ref), "constructor")) continue;
+        ctor_scope = analyzer.scope_owner_map.get(@as(u32, @intCast(index)));
+    }
+    const source_scope = ctor_scope orelse return error.TestUnexpectedResult;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    var ctor_owners: usize = 0;
+    var owners = edited.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        if (entry.value_ptr.* != source_scope) continue;
+        const owner: NodeIndex = @enumFromInt(entry.key_ptr.*);
+        try std.testing.expect(transformer.ast.getNode(owner).tag == .function_declaration);
+        ctor_owners += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), ctor_owners);
+
+    var ctor_temp_refs: usize = 0;
+    for (edited.references) |ref| {
+        if (@intFromEnum(ref.scope_id) != source_scope or ref.node_index.isNone()) continue;
+        if (@intFromEnum(ref.node_index) < transformer.parser_node_count) continue;
+        const node = transformer.ast.getNode(ref.node_index);
+        if (node.tag != .identifier_reference) continue;
+        const name = transformer.ast.getText(node.data.string_ref);
+        if (!std.mem.startsWith(u8, name, "_")) continue;
+        try std.testing.expectEqual(source_scope, @intFromEnum(edited.symbols.items[@intFromEnum(ref.symbol_id)].scope_id));
+        ctor_temp_refs += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), ctor_temp_refs);
 }
