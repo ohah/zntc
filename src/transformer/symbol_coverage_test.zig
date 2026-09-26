@@ -12,6 +12,67 @@ const transformer_mod = @import("transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const TransformOptions = transformer_mod.TransformOptions;
 const coverage = @import("symbol_coverage.zig");
+const SemanticEditor = @import("../semantic/editor.zig").SemanticEditor;
+
+test "#4819 transformed scope owners retain their original ScopeId" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "function outer() { function inner() { return 1; } return inner(); }");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    _ = try transformer.transform();
+    try std.testing.expect(transformer.scope_owner_remaps.count() >= 2);
+
+    var editor = try SemanticEditor.init(
+        allocator,
+        transformer.ast,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        analyzer.scope_owner_map,
+        analyzer.references.items,
+        analyzer.symbol_ids.items,
+    );
+    defer editor.deinit();
+    var owners = analyzer.scope_owner_map.iterator();
+    var first_key: ?u32 = null;
+    var second_key: ?u32 = null;
+    while (owners.next()) |owner| {
+        if (transformer.ast.nodes.items[owner.key_ptr.*].tag != .function_declaration) continue;
+        if (first_key == null) first_key = owner.key_ptr.* else second_key = owner.key_ptr.*;
+    }
+    const first_owner: @import("../parser/ast.zig").NodeIndex = @enumFromInt(first_key.?);
+    const second_owner: @import("../parser/ast.zig").NodeIndex = @enumFromInt(second_key.?);
+    const first_scope = analyzer.scope_owner_map.get(first_key.?).?;
+    const second_scope = analyzer.scope_owner_map.get(second_key.?).?;
+    try std.testing.expectError(error.ScopeOwnerConflict, editor.remapScopeOwner(first_owner, second_owner));
+    try std.testing.expectEqual(first_scope, editor.scope_owner_map.get(first_key.?).?);
+    try std.testing.expectEqual(second_scope, editor.scope_owner_map.get(second_key.?).?);
+    const unrelated = try transformer.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = .EMPTY,
+        .data = .{ .string_ref = try transformer.ast.addString("unrelated") },
+    });
+    try std.testing.expectError(error.InvalidNode, editor.remapScopeOwner(first_owner, unrelated));
+    try std.testing.expectEqual(first_scope, editor.scope_owner_map.get(first_key.?).?);
+    var remaps = transformer.scope_owner_remaps.iterator();
+    while (remaps.next()) |entry| {
+        const old: @import("../parser/ast.zig").NodeIndex = @enumFromInt(entry.key_ptr.*);
+        const new: @import("../parser/ast.zig").NodeIndex = @enumFromInt(entry.value_ptr.*);
+        const original_scope = analyzer.scope_owner_map.get(entry.key_ptr.*).?;
+        try editor.remapScopeOwner(old, new);
+        try std.testing.expectEqual(@as(?u32, original_scope), editor.scope_owner_map.get(entry.value_ptr.*));
+        try std.testing.expectEqual(@as(?u32, null), editor.scope_owner_map.get(entry.key_ptr.*));
+    }
+}
 
 /// es5 로 변환한 뒤 새로 만든 사용자 식별자 중 심볼이 없는 노드 수.
 fn missingSymbols(source: []const u8) !usize {

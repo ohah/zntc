@@ -24,6 +24,7 @@ pub const Error = std.mem.Allocator.Error || error{
     InvalidScope,
     InvalidSymbol,
     InvalidNode,
+    ScopeOwnerConflict,
     DuplicateBinding,
     AlreadyBound,
     ReferenceNotFound,
@@ -164,6 +165,25 @@ pub const SemanticEditor = struct {
         try self.scope_maps.append(self.allocator, .empty);
         if (!owner.isNone()) try self.scope_owner_map.put(self.allocator, @intFromEnum(owner), @intFromEnum(id));
         return id;
+    }
+
+    /// 동일한 어휘 경계를 가진 노드를 트랜스포머가 복사했을 때 소유자를 새 AST 노드로 옮긴다.
+    /// 기존 노드를 재방문해도 scope_id를 새로 만들지 않는다.
+    pub fn remapScopeOwner(self: *SemanticEditor, old_owner: NodeIndex, new_owner: NodeIndex) Error!void {
+        if (old_owner.isNone() or new_owner.isNone() or
+            @intFromEnum(old_owner) >= self.ast.nodes.items.len or
+            @intFromEnum(new_owner) >= self.ast.nodes.items.len) return error.InvalidNode;
+        const old_key = @intFromEnum(old_owner);
+        const new_key = @intFromEnum(new_owner);
+        if (self.ast.getNode(old_owner).tag != self.ast.getNode(new_owner).tag) return error.InvalidNode;
+        const scope_id = self.scope_owner_map.get(old_key) orelse return error.InvalidScope;
+        if (old_key == new_key) return;
+        if (self.scope_owner_map.get(new_key)) |existing| {
+            if (existing != scope_id) return error.ScopeOwnerConflict;
+        } else {
+            try self.scope_owner_map.put(self.allocator, new_key, scope_id);
+        }
+        _ = self.scope_owner_map.remove(old_key);
     }
 
     fn bindingScope(self: *const SemanticEditor, lexical_scope: ScopeId, kind: SymbolKind) Error!ScopeId {
