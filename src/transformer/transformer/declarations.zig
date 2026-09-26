@@ -279,7 +279,8 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
 
     // 임시 변수 호이스팅: 이 함수 안에서 사용된 _a, _b, ... 선언을 body 앞에 삽입
     if (self.temp_var_counter > saved_temp_counter and !new_body.isNone()) {
-        new_body = if (@intFromEnum(source_idx) < self.parser_node_count)
+        new_body = if (@intFromEnum(source_idx) < self.parser_node_count or
+            self.transformed_scope_owner_map.contains(@intFromEnum(source_idx)))
             try self.hoistTempVarsInOriginalFunction(new_body, saved_temp_counter, node.span)
         else
             try self.hoistTempVars(new_body, saved_temp_counter, node.span);

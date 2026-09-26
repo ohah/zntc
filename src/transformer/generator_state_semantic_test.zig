@@ -9,6 +9,10 @@ const TransformOptions = @import("transformer.zig").TransformOptions;
 const Reference = @import("../semantic/symbol.zig").Reference;
 
 fn checkStateScopes(source: []const u8, expected_states: usize, wrapped: bool, expected_deferred_loops: usize) !void {
+    return checkStateScopesAtTarget(source, expected_states, wrapped, expected_deferred_loops, .es5);
+}
+
+fn checkStateScopesAtTarget(source: []const u8, expected_states: usize, wrapped: bool, expected_deferred_loops: usize, target: TransformOptions.compat.ESTarget) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -31,7 +35,7 @@ fn checkStateScopes(source: []const u8, expected_states: usize, wrapped: bool, e
     }
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{
-        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .unsupported = TransformOptions.compat.fromESTarget(target),
         .emit_runtime_helper_imports = true,
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
@@ -44,6 +48,17 @@ fn checkStateScopes(source: []const u8, expected_states: usize, wrapped: bool, e
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
+
+    if (target == .es2015) {
+        var inner_temps: usize = 0;
+        for (edited.symbols.items[original_symbol_count..]) |symbol| {
+            if (symbol.kind != .variable_var or !std.mem.startsWith(u8, symbol.synthetic_name, "_")) continue;
+            try std.testing.expect(symbol.scope_id.toIndex() >= analyzer.scopes.items.len);
+            try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[symbol.scope_id.toIndex()].kind);
+            inner_temps += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), inner_temps);
+    }
 
     var reachable: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const nodes = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
@@ -209,6 +224,16 @@ test "#4819 async generator inner function owns its ES5 state callback" {
         1,
         true,
         0,
+    );
+}
+
+test "#4819 async generator native inner function binds generated body temp" {
+    try checkStateScopesAtTarget(
+        "export async function* stream(source) { yield source() ?? 1; }",
+        0,
+        false,
+        0,
+        .es2015,
     );
 }
 
