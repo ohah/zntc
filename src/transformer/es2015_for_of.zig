@@ -123,8 +123,22 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const norm_decl = try es_helpers.makeVarDeclaration(self, &.{
                 try es_helpers.makeDeclarator(self, norm_binding, try es_helpers.makeBoolLiteral(self, true), span),
             }, .@"var", span);
-            const did_decl = try makeVarDeclFromSpan(self, did_err, try es_helpers.makeBoolLiteral(self, false), span);
-            const err_decl = try makeVarDeclFromSpan(self, err_val, try es_helpers.makeVoidZero(self, span), span);
+            const did_binding = try es_helpers.makeSyntheticBinding(self, did_err);
+            const did_symbol = if (stable_scope)
+                try self.declareSyntheticInScope(did_binding, span, .variable_var, outer_scope)
+            else
+                null;
+            const did_decl = try es_helpers.makeVarDeclaration(self, &.{
+                try es_helpers.makeDeclarator(self, did_binding, try es_helpers.makeBoolLiteral(self, false), span),
+            }, .@"var", span);
+            const err_binding = try es_helpers.makeSyntheticBinding(self, err_val);
+            const err_symbol = if (stable_scope)
+                try self.declareSyntheticInScope(err_binding, span, .variable_var, outer_scope)
+            else
+                null;
+            const err_decl = try es_helpers.makeVarDeclaration(self, &.{
+                try es_helpers.makeDeclarator(self, err_binding, try es_helpers.makeVoidZero(self, span), span),
+            }, .@"var", span);
 
             // init: var _d = __values(iterable), _e
             self.runtime_helpers.values = true;
@@ -174,15 +188,26 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             });
 
             // catch (_f) { _b = true; _c = _f; }
+            const did_catch_write = try makeRefFromSpan(self, did_err);
+            const err_catch_write = try makeRefFromSpan(self, err_val);
+            const catch_param_read = try makeRefFromSpan(self, catch_param);
             const catch_body = try makeBlock(self, &.{
-                try es_helpers.makeExprStmt(self, try makeAssign(self, try makeRefFromSpan(self, did_err), try es_helpers.makeBoolLiteral(self, true), span), span),
-                try es_helpers.makeExprStmt(self, try makeAssign(self, try makeRefFromSpan(self, err_val), try makeRefFromSpan(self, catch_param), span), span),
+                try es_helpers.makeExprStmt(self, try makeAssign(self, did_catch_write, try es_helpers.makeBoolLiteral(self, true), span), span),
+                try es_helpers.makeExprStmt(self, try makeAssign(self, err_catch_write, catch_param_read, span), span),
             }, span);
+            const catch_binding = try es_helpers.makeSyntheticBinding(self, catch_param);
             const catch_clause = try self.ast.addNode(.{ .tag = .catch_clause, .span = span, .data = .{ .binary = .{
-                .left = try es_helpers.makeSyntheticBinding(self, catch_param),
+                .left = catch_binding,
                 .right = catch_body,
                 .flags = 0,
             } } });
+            if (stable_scope) {
+                const catch_scope = try self.addGeneratedCatchScope(outer_scope, catch_clause);
+                const catch_symbol = try self.declareSyntheticInScope(catch_binding, span, .catch_binding, catch_scope);
+                try self.addSyntheticRefInScope(catch_param_read, catch_symbol, catch_scope, .{ .read = true });
+                try self.addSyntheticRefInScope(did_catch_write, did_symbol, catch_scope, .{ .write = true });
+                try self.addSyntheticRefInScope(err_catch_write, err_symbol, catch_scope, .{ .write = true });
+            }
 
             // finally { try { if (!_a && _d.return != null) _d.return(); } finally { if (_b) throw _c; } }
             // The finally wrapper is outside the source for-of lexical scope.
@@ -198,9 +223,9 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 .b = try es_helpers.makeExprStmt(self, close_call, span),
                 .c = .none,
             } } });
-            const rethrow = try self.ast.addNode(.{ .tag = .throw_statement, .span = span, .data = .{ .unary = .{ .operand = try makeRefFromSpan(self, err_val), .flags = 0 } } });
+            const rethrow = try self.ast.addNode(.{ .tag = .throw_statement, .span = span, .data = .{ .unary = .{ .operand = try makeForOfRef(self, err_val, err_symbol, outer_scope, .{ .read = true }), .flags = 0 } } });
             const rethrow_if = try self.ast.addNode(.{ .tag = .if_statement, .span = span, .data = .{ .ternary = .{
-                .a = try makeRefFromSpan(self, did_err),
+                .a = try makeForOfRef(self, did_err, did_symbol, outer_scope, .{ .read = true }),
                 .b = rethrow,
                 .c = .none,
             } } });

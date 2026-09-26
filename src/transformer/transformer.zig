@@ -570,6 +570,7 @@ pub const Transformer = struct {
     pub const bindClassSelfStorage = @import("transformer/semantic_edit.zig").bindClassSelfStorage;
     pub const programScope = @import("transformer/semantic_edit.zig").programScope;
     pub const addGeneratedFunctionScope = @import("transformer/semantic_edit.zig").addGeneratedFunctionScope;
+    pub const addGeneratedCatchScope = @import("transformer/semantic_edit.zig").addGeneratedCatchScope;
     pub const reserveGeneratedFunctionScope = @import("transformer/semantic_edit.zig").reserveGeneratedFunctionScope;
     pub const bindReservedFunctionOwner = @import("transformer/semantic_edit.zig").bindReservedFunctionOwner;
     pub const reparentGeneratedScope = @import("transformer/semantic_edit.zig").reparentGeneratedScope;
