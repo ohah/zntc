@@ -61,6 +61,15 @@ pub const LexicalCaptureKind = enum { this_value, arguments_value };
 /// // t.ast 에 변환된 AST가 들어있다
 /// ```
 pub const Transformer = struct {
+    pub const ClassSelfWriteTarget = struct {
+        inner_id: u32,
+        target_name: []const u8,
+        target_id: ?@import("../semantic/symbol.zig").SymbolId,
+        previous: ?*@This(),
+    };
+    active_class_self_write_target: ?*ClassSelfWriteTarget = null,
+    class_self_written_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    class_self_written_symbols_built: bool = false,
     /// 통합 AST. 파서 노드(0..parser_node_count-1)는 읽기 전용,
     /// 트랜스포머가 추가한 노드(parser_node_count..)는 append-only.
     /// `*Ast` — Transformer 가 소유권을 가진다 (clone 경로). D1b-2 의 `initInPlace` 는

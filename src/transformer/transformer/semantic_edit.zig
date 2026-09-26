@@ -267,7 +267,8 @@ pub fn bindReservedFunctionOwner(self: *Transformer, scope: ScopeId, owner: Node
     const editor = try editorFor(self);
     if (scope.isNone() or scope.toIndex() >= editor.scopes.items.len or owner.isNone() or
         @intFromEnum(owner) >= self.ast.nodes.items.len or
-        (self.ast.getNode(owner).tag != .function_expression and self.ast.getNode(owner).tag != .function_declaration))
+        (self.ast.getNode(owner).tag != .function_expression and self.ast.getNode(owner).tag != .function_declaration and
+            self.ast.getNode(owner).tag != .method_definition))
         std.debug.panic("invalid reserved function scope owner", .{});
     const raw = @intFromEnum(owner);
     if (editor.scope_owner_map.contains(raw) or self.transformed_scope_owner_map.contains(raw))

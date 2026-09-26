@@ -947,6 +947,9 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             break :blk new_regex;
         },
         .identifier_reference => {
+            if (self.options.unsupported.class) {
+                if (try es2015_class.ES2015Class(Transformer).classSelfAccess(self, idx)) |access| return access;
+            }
             // arguments 캡처: 본문이 **다른 함수 안으로 옮겨질 때** 필요하다.
             // arrow 다운레벨(`arrow_this_depth`)과 async/generator 다운레벨
             // (`in_extracted_fn_body`)이 같은 이유로 같은 처리를 쓴다 — 예전엔 arrow
@@ -971,6 +974,9 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             return self.copyNodeDirect(idx);
         },
         .assignment_target_identifier => {
+            if (self.options.unsupported.class) {
+                if (try es2015_class.ES2015Class(Transformer).classSelfAccess(self, idx)) |access| return access;
+            }
             if (try self.tryRenameIdentifierLike(idx, .assignment_target_identifier)) |i| return i;
             return self.copyNodeDirect(idx);
         },
