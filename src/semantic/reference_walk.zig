@@ -106,7 +106,7 @@ fn childContext(tag: Node.Tag, slot: u32) Context {
     };
 }
 
-fn isTypeOnly(tag: Node.Tag) bool {
+pub fn isTypeOnly(tag: Node.Tag) bool {
     return switch (tag) {
         .ts_type_reference,
         .ts_qualified_name,

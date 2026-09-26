@@ -20,6 +20,7 @@ const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
+const reference_walk = @import("../semantic/reference_walk.zig");
 
 pub const Finding = struct { name: []const u8, tag: Node.Tag };
 
@@ -191,9 +192,161 @@ pub fn print(allocator: std.mem.Allocator, file_path: []const u8, report: *const
     for (counts.keys(), counts.values()) |k, v| std.debug.print("  missing {s} x{d}\n", .{ k, v });
 }
 
+/// Diagnostic inventory of emitted identifiers. An unbound generated read may
+/// be a new global, so only bindings are definite missing-symbol findings.
+/// This never infers or assigns a SymbolId from identifier text.
+pub const StrictStatus = enum { bound, missing_binding, known_global, unclassified, invalid_id };
+pub const StrictFinding = struct {
+    node: u32,
+    name: []const u8,
+    tag: Node.Tag,
+    status: StrictStatus,
+    marked_synthetic: bool,
+};
+pub const StrictReport = struct {
+    counts: [std.meta.fields(StrictStatus).len]usize = @splat(0),
+    marked_synthetic: usize = 0,
+    findings: std.ArrayList(StrictFinding) = .empty,
+
+    pub fn deinit(self: *StrictReport, allocator: std.mem.Allocator) void {
+        self.findings.deinit(allocator);
+    }
+};
+
+const StrictCtx = struct {
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    parser_node_count: u32,
+    symbol_ids: []const ?u32,
+    symbol_count: usize,
+    synthetic: ?*const std.AutoHashMapUnmanaged(u32, void),
+    unresolved_globals: *const std.StringHashMapUnmanaged(void),
+    report: *StrictReport,
+    seen: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    oom: bool = false,
+
+    fn add(self: *StrictCtx, idx: NodeIndex, node: Node) void {
+        const raw = @intFromEnum(idx);
+        if (raw < self.parser_node_count or self.seen.contains(raw)) return;
+        self.seen.put(self.allocator, raw, {}) catch {
+            self.oom = true;
+            return;
+        };
+        const name = self.ast.getText(node.data.string_ref);
+        const sid = if (raw < self.symbol_ids.len) self.symbol_ids[raw] else null;
+        const marked = if (self.synthetic) |set| set.contains(raw) else false;
+        const status: StrictStatus = if (sid) |id|
+            if (id < self.symbol_count) .bound else .invalid_id
+        else if (node.tag == .binding_identifier)
+            .missing_binding
+        else if (!marked and self.unresolved_globals.contains(name))
+            .known_global
+        else
+            .unclassified;
+        self.report.counts[@intFromEnum(status)] += 1;
+        if (marked) self.report.marked_synthetic += 1;
+        self.report.findings.append(self.allocator, .{
+            .node = raw,
+            .name = name,
+            .tag = node.tag,
+            .status = status,
+            .marked_synthetic = marked,
+        }) catch {
+            self.oom = true;
+        };
+    }
+};
+
+fn strictBindingVisit(ctx: *StrictCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
+    if (reference_walk.isTypeOnly(node.tag)) return .skip_children;
+    if (node.tag == .ts_module_declaration and node.data.binary.flags == 1) return .skip_children;
+    if (node.tag == .binding_identifier) ctx.add(idx, node);
+    return .descend;
+}
+
+pub fn checkStrict(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    parser_node_count: u32,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    synthetic: ?*const std.AutoHashMapUnmanaged(u32, void),
+    unresolved_globals: *const std.StringHashMapUnmanaged(void),
+) std.mem.Allocator.Error!StrictReport {
+    var report: StrictReport = .{};
+    errdefer report.deinit(allocator);
+    var ctx: StrictCtx = .{
+        .allocator = allocator,
+        .ast = ast,
+        .parser_node_count = parser_node_count,
+        .symbol_ids = symbol_ids,
+        .symbol_count = symbols.len,
+        .synthetic = synthetic,
+        .unresolved_globals = unresolved_globals,
+        .report = &report,
+    };
+    defer ctx.seen.deinit(allocator);
+    try ast_walk.walkPreorderIterative(allocator, ast, root, &ctx, strictBindingVisit);
+    const refs = try reference_walk.collectIdentifierReferences(allocator, ast, root);
+    defer allocator.free(refs);
+    for (refs) |idx| ctx.add(idx, ast.getNode(idx));
+    if (ctx.oom) return error.OutOfMemory;
+    return report;
+}
+
+pub fn printStrict(file_path: []const u8, report: *const StrictReport) void {
+    std.debug.print(
+        "zntc: synthetic-coverage {s}: bound={d} missing_binding={d} known_global={d} unclassified={d} invalid_id={d} marked_synthetic={d}\n",
+        .{ file_path, report.counts[@intFromEnum(StrictStatus.bound)], report.counts[@intFromEnum(StrictStatus.missing_binding)], report.counts[@intFromEnum(StrictStatus.known_global)], report.counts[@intFromEnum(StrictStatus.unclassified)], report.counts[@intFromEnum(StrictStatus.invalid_id)], report.marked_synthetic },
+    );
+    var printed: [std.meta.fields(StrictStatus).len]usize = @splat(0);
+    for (report.findings.items) |finding| {
+        if (finding.status == .bound or finding.status == .known_global) continue;
+        const group = @intFromEnum(finding.status);
+        if (printed[group] == 8) continue;
+        std.debug.print("  synthetic-coverage {s} node={d} {s}({s}) marked={any}\n", .{
+            @tagName(finding.status), finding.node, finding.name, @tagName(finding.tag), finding.marked_synthetic,
+        });
+        printed[group] += 1;
+    }
+}
+
 test "baseName strips rename suffix" {
     try std.testing.expectEqualStrings("x", baseName("x$12"));
     try std.testing.expectEqualStrings("x$", baseName("x$"));
     try std.testing.expectEqualStrings("$x", baseName("$x"));
     try std.testing.expectEqualStrings("a$b", baseName("a$b"));
+}
+
+test "strict inventory separates missing generated storage from unresolved reads" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const storage = try ast.addString("_x");
+    const global = try ast.addString("Object");
+    const property = try ast.addString("value");
+    const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = storage, .data = .{ .string_ref = storage } });
+    const local_read = try ast.addNode(.{ .tag = .identifier_reference, .span = storage, .data = .{ .string_ref = storage } });
+    const global_read = try ast.addNode(.{ .tag = .identifier_reference, .span = global, .data = .{ .string_ref = global } });
+    const static_key = try ast.addNode(.{ .tag = .identifier_reference, .span = property, .data = .{ .string_ref = property } });
+    const member_extra = try ast.addExtras(&.{ @intFromEnum(local_read), @intFromEnum(static_key), 0 });
+    const member = try ast.addExtraNode(.static_member_expression, storage, member_extra);
+    const list = try ast.addNodeList(&.{ binding, member, global_read });
+    const root = try ast.addNode(.{ .tag = .program, .span = storage, .data = .{ .list = list } });
+    var marked: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer marked.deinit(allocator);
+    try marked.put(allocator, @intFromEnum(binding), {});
+    var unresolved: std.StringHashMapUnmanaged(void) = .empty;
+    defer unresolved.deinit(allocator);
+    try unresolved.put(allocator, "Object", {});
+    var report = try checkStrict(allocator, &ast, root, 0, &.{}, &.{}, &marked, &unresolved);
+    defer report.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), report.counts[@intFromEnum(StrictStatus.missing_binding)]);
+    try std.testing.expectEqual(@as(usize, 1), report.counts[@intFromEnum(StrictStatus.unclassified)]);
+    try std.testing.expectEqual(@as(usize, 1), report.counts[@intFromEnum(StrictStatus.known_global)]);
+    try std.testing.expectEqual(@as(usize, 1), report.marked_synthetic);
+    try std.testing.expectEqual(@intFromEnum(binding), report.findings.items[0].node);
 }
