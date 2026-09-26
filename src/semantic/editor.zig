@@ -42,6 +42,7 @@ pub const SemanticEditor = struct {
     helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty,
     references: std.ArrayList(Reference) = .empty,
     symbol_ids: std.ArrayList(?u32) = .empty,
+    scope_reparented: bool = false,
 
     /// 편집 완료 후 번들러 모듈 또는 단일 파일 출력 경로에 넘길 소유 데이터.
     /// 모든 slice는 init에 전달한 모듈 arena가 소유한다.
@@ -105,6 +106,11 @@ pub const SemanticEditor = struct {
     }
 
     pub fn finish(self: *SemanticEditor) Error!Result {
+        if (self.scope_reparented) {
+            for (self.references.items) |ref| {
+                if (!self.visibleFrom(ref.symbol_id, ref.scope_id)) return error.InvalidScope;
+            }
+        }
         const scopes = try self.scopes.toOwnedSlice(self.allocator);
         const scope_maps = try self.scope_maps.toOwnedSlice(self.allocator);
         const references = try self.references.toOwnedSlice(self.allocator);
@@ -195,6 +201,75 @@ pub const SemanticEditor = struct {
             try self.scope_owner_map.put(self.allocator, new_key, scope_id);
         }
         _ = self.scope_owner_map.remove(old_key);
+    }
+
+    /// AST 서브트리를 새 함수 안으로 옮길 때 기존 스코프 ID를 유지하며 부모만 바꾼다.
+    /// 호출자는 이전 부모에만 보이던 참조를 finish 전에 재바인딩하거나 제거해야 한다.
+    pub fn reparentScope(self: *SemanticEditor, scope: ScopeId, new_parent: ScopeId) Error!void {
+        if (!self.validScope(scope) or !self.validScope(new_parent)) return error.InvalidScope;
+        if (self.scopes.items[scope.toIndex()].parent.isNone()) return error.InvalidScope;
+        var cursor = new_parent;
+        var hops: usize = 0;
+        while (!cursor.isNone()) : (hops += 1) {
+            if (hops >= self.scopes.items.len or !self.validScope(cursor) or cursor == scope) return error.InvalidScope;
+            cursor = self.scopes.items[cursor.toIndex()].parent;
+        }
+        if (self.scopes.items[scope.toIndex()].parent == new_parent) return;
+
+        self.scopes.items[scope.toIndex()].parent = new_parent;
+        self.scope_reparented = true;
+        const new_strict = self.scopes.items[new_parent.toIndex()].is_strict;
+        if (new_strict) {
+            for (self.scopes.items, 0..) |*candidate, i| {
+                var ancestor: ScopeId = @enumFromInt(@as(u32, @intCast(i)));
+                var depth: usize = 0;
+                while (!ancestor.isNone() and depth < self.scopes.items.len) : (depth += 1) {
+                    if (!self.validScope(ancestor)) return error.InvalidScope;
+                    if (ancestor == scope) {
+                        candidate.is_strict = true;
+                        break;
+                    }
+                    ancestor = self.scopes.items[ancestor.toIndex()].parent;
+                }
+            }
+        }
+        const moved = self.scopes.items[scope.toIndex()];
+        cursor = new_parent;
+        hops = 0;
+        while (!cursor.isNone() and hops < self.scopes.items.len) : (hops += 1) {
+            const ancestor = &self.scopes.items[cursor.toIndex()];
+            ancestor.subtree_has_direct_eval = ancestor.subtree_has_direct_eval or moved.subtree_has_direct_eval;
+            ancestor.subtree_has_with = ancestor.subtree_has_with or moved.subtree_has_with;
+            cursor = ancestor.parent;
+        }
+    }
+
+    /// 서브트리 이전 시 기존 참조가 새 바인딩을 가리키도록 바꾼다.
+    pub fn rebindReference(self: *SemanticEditor, node: NodeIndex, symbol: SymbolId) Error!void {
+        if (!self.validSymbol(symbol)) return error.InvalidSymbol;
+        const slot = try self.ensureNodeSlot(node);
+        for (self.references.items) |*ref| {
+            if (ref.node_index != node) continue;
+            if (ref.flags.declare) return error.InvalidNode;
+            if (!self.visibleFrom(symbol, ref.scope_id)) return error.InvalidScope;
+            self.removeCounts(ref.symbol_id, ref.flags);
+            ref.symbol_id = symbol;
+            self.symbol_ids.items[slot] = @intFromEnum(symbol);
+            self.addCounts(symbol, ref.flags);
+            return;
+        }
+        return error.ReferenceNotFound;
+    }
+
+    /// AST 복사가 만든 새 식별자에 원본 참조의 대상과 read/write 플래그를 복제한다.
+    /// 원본 노드가 최종 AST에서 사라졌다면 caller가 removeReference로 정리한다.
+    pub fn cloneReference(self: *SemanticEditor, source: NodeIndex, clone: NodeIndex, scope: ScopeId, stmt_idx: u32, scope_stmt_idx: u32) Error!void {
+        for (self.references.items) |ref| {
+            if (ref.node_index != source) continue;
+            if (ref.flags.declare) return error.InvalidNode;
+            return self.addReference(clone, ref.symbol_id, scope, ref.flags, stmt_idx, scope_stmt_idx);
+        }
+        return error.ReferenceNotFound;
     }
 
     fn bindingScope(self: *const SemanticEditor, lexical_scope: ScopeId, kind: SymbolKind) Error!ScopeId {
@@ -467,6 +542,79 @@ test "helper import remains isolated from a user binding with the same name" {
     try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(helper_id)].reference_count);
     const result = try editor.finish();
     try std.testing.expectEqual(@as(?usize, @intFromEnum(helper_id)), result.helper_scope_map.get("__extends"));
+}
+
+test "reparenting a scope requires captured references to be rebound" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+    defer editor.deinit();
+    const root = try editor.addScope(.none, .none, .global, false);
+    const outer = try editor.addScope(root, .none, .block, false);
+    const generated_fn = try editor.addScope(root, .none, .function, true);
+    const body = try editor.addScope(outer, .none, .block, false);
+    const nested = try editor.addScope(body, .none, .function, false);
+    const name = try ast.addString("captured");
+    const outer_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const param_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const ref = try ast.addNode(.{ .tag = .identifier_reference, .span = name, .data = .{ .string_ref = name } });
+    const outer_id = try editor.declare(outer_binding, name, Span.EMPTY, outer, .variable_let, 0, 0);
+    const param_id = try editor.declare(param_binding, name, Span.EMPTY, generated_fn, .parameter, 0, 0);
+    try editor.addReference(ref, outer_id, nested, .{ .read = true }, 0, 0);
+    editor.scopes.items[body.toIndex()].subtree_has_direct_eval = true;
+    editor.scopes.items[body.toIndex()].subtree_has_with = true;
+    editor.scopes.items[outer.toIndex()].subtree_has_direct_eval = true;
+    editor.scopes.items[outer.toIndex()].subtree_has_with = true;
+    try editor.reparentScope(body, generated_fn);
+    try std.testing.expectEqual(generated_fn, editor.scopes.items[body.toIndex()].parent);
+    try std.testing.expect(editor.scopes.items[body.toIndex()].is_strict);
+    try std.testing.expect(editor.scopes.items[nested.toIndex()].is_strict);
+    try std.testing.expect(editor.scopes.items[generated_fn.toIndex()].blocksMangling());
+    try std.testing.expect(editor.scopes.items[outer.toIndex()].blocksMangling());
+    try std.testing.expectError(error.InvalidScope, editor.reparentScope(generated_fn, nested));
+    try std.testing.expectError(error.InvalidScope, editor.reparentScope(root, generated_fn));
+    try std.testing.expectError(error.InvalidScope, editor.finish());
+    try editor.rebindReference(ref, param_id);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(outer_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(param_id)].reference_count);
+    const result = try editor.finish();
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(param_id)), result.symbol_ids[@intFromEnum(ref)]);
+}
+
+test "cloned reference keeps target and write flags without stealing the source" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+    defer editor.deinit();
+    const root = try editor.addScope(.none, .none, .global, false);
+    const sibling = try editor.addScope(root, .none, .function, false);
+    const inner = try editor.addScope(sibling, .none, .block, false);
+    const name = try ast.addString("value");
+    const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const source = try ast.addNode(.{ .tag = .assignment_target_identifier, .span = name, .data = .{ .string_ref = name } });
+    const clone = try ast.addNode(.{ .tag = .assignment_target_identifier, .span = name, .data = .{ .string_ref = name } });
+    const symbol = try editor.declare(binding, name, Span.EMPTY, sibling, .variable_let, 0, 0);
+    try editor.addReference(source, symbol, inner, .{ .read = true, .write = true }, 2, 3);
+    try editor.cloneReference(source, clone, inner, 4, 5);
+    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@intFromEnum(symbol)].reference_count);
+    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@intFromEnum(symbol)].write_count);
+    try std.testing.expectError(error.AlreadyBound, editor.cloneReference(source, clone, inner, 4, 5));
+    try std.testing.expectError(error.ReferenceNotFound, editor.cloneReference(binding, clone, inner, 4, 5));
+    try std.testing.expectError(error.InvalidScope, editor.cloneReference(source, binding, root, 4, 5));
+    try editor.removeReference(source);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(symbol)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(symbol)].write_count);
+    const result = try editor.finish();
+    try std.testing.expectEqual(@as(?u32, null), result.symbol_ids[@intFromEnum(source)]);
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(symbol)), result.symbol_ids[@intFromEnum(clone)]);
+    try std.testing.expectEqual(@as(u32, 4), result.references[result.references.len - 1].stmt_idx);
+    try std.testing.expectEqual(@as(u32, 5), result.references[result.references.len - 1].scope_stmt_idx);
 }
 
 test "invalid identities and type-only references cannot corrupt liveness" {
