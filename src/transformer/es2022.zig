@@ -332,6 +332,7 @@ pub fn ES2022(comptime Transformer: type) type {
                             .weakset_name = names.ws_name,
                             .func_name = names.fn_name,
                             .member_idx = @enumFromInt(raw_idx),
+                            .source_member_idx = @enumFromInt(self.scope_owner_origins.get(raw_idx) orelse raw_idx),
                             .kind = pm_kind,
                             .class_name = if (is_static) class_name_text else null,
                             .class_name_node = if (is_static) class_name_node else .none,
@@ -411,7 +412,7 @@ pub fn ES2022(comptime Transformer: type) type {
                     const ws_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakSet", m.weakset_name, span);
                     try pre_stmts.append(self.allocator, ws_decl);
                 }
-                const fn_decl = try es_helpers.buildStandaloneFunc(self, m.func_name, m.member_idx, span);
+                const fn_decl = try es_helpers.buildStandaloneFunc(self, m.func_name, m.member_idx, m.source_member_idx, span);
                 try pre_stmts.append(self.allocator, fn_decl);
             }
 

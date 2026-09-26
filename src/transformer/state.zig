@@ -77,6 +77,8 @@ pub const PrivateMethodMapping = struct {
     weakset_name: []const u8, // "_method"
     func_name: []const u8, // "_method_fn" / "_method_get" / "_method_set"
     member_idx: NodeIndex = NodeIndex.none,
+    /// Exact parser method owner; member_idx may be a transformed copy.
+    source_member_idx: NodeIndex = NodeIndex.none,
     // Standalone function_declaration span. Keeps leading comments anchored before
     // `function _fn()` instead of after the function header (#1516).
     member_span: Span = .{ .start = 0, .end = 0 },

@@ -104,7 +104,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
                         try fo.append(self.allocator, try es_helpers.buildPrivateMethodInit(self, pm.weakset_name, span));
                     }
                 }
-                try self.scratch.append(self.allocator, try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, pm.member_span));
+                try self.scratch.append(self.allocator, try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, pm.source_member_idx, pm.member_span));
             }
         }
 

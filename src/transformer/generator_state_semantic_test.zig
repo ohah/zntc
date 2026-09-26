@@ -412,3 +412,83 @@ test "#4819 async generator moves body scope frontier under inner function and k
     try std.testing.expectEqual(inner, edited.scopes[decorator].parent);
     try std.testing.expectEqual(edited.scopes[outer].is_strict, edited.scopes[inner.toIndex()].is_strict);
 }
+
+test "#4819 private async method produces a scoped state callback" {
+    try checkStateScopes(
+        "export class Box { async #load(value) { return await Promise.resolve(value + 1); } read() { return this.#load(1); } }",
+        1,
+        true,
+        0,
+    );
+}
+
+test "#4819 private generator method produces a scoped state callback" {
+    try checkStateScopes(
+        "export class Box { *#read(value) { yield value + 1; } read() { return [...this.#read(1)]; } }",
+        1,
+        false,
+        0,
+    );
+}
+
+test "#4819 private async generator method produces a scoped state callback" {
+    try checkStateScopes(
+        "export class Box { async *#stream(value) { yield await Promise.resolve(value + 1); } read() { return this.#stream(1); } }",
+        1,
+        true,
+        0,
+    );
+}
+
+test "#4819 extracted private method functions own their exact source scopes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        "class Box { async #load() { await Promise.resolve(1); } " ++
+        "*#read() { yield 2; } async *#stream() { yield await Promise.resolve(3); } }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var source_owners: std.ArrayList(struct { node: u32, scope: u32 }) = .empty;
+    for (parser.ast.nodes.items, 0..) |node, index| {
+        if (node.tag != .method_definition) continue;
+        const key_idx: ast_mod.NodeIndex = @enumFromInt(parser.ast.extra_data.items[node.data.extra + ast_mod.MethodExtra.key]);
+        if (parser.ast.getNode(key_idx).tag != .private_identifier) continue;
+        const owner = @as(u32, @intCast(index));
+        try source_owners.append(allocator, .{ .node = owner, .scope = analyzer.scope_owner_map.get(owner).? });
+    }
+    try std.testing.expectEqual(@as(usize, 3), source_owners.items.len);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+
+    for (source_owners.items) |source_owner| {
+        try std.testing.expect(edited.scope_owner_map.get(source_owner.node) == null);
+        var final_owners: usize = 0;
+        var owners = edited.scope_owner_map.iterator();
+        while (owners.next()) |entry| {
+            if (entry.value_ptr.* != source_owner.scope) continue;
+            try std.testing.expectEqual(ast_mod.Node.Tag.function_declaration, transformer.ast.nodes.items[entry.key_ptr.*].tag);
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, entry.key_ptr.*) != null);
+            final_owners += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), final_owners);
+    }
+}

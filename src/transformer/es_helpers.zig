@@ -1720,13 +1720,19 @@ pub fn recordParameterCaptures(self: anytype, captures: []const NodeIndex, needs
 /// SyntaxError. params/body visit 동안 `current_super_in_extracted_fn` 을 켜서
 /// `super.x` 등을 `__superGet(Parent.prototype, "x", this)` 로 lowering 한다.
 /// nested class body 진입 시 visitClass 가 다시 false 로 reset.
-pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeIndex, span: Span) !NodeIndex {
+pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeIndex, source_owner: NodeIndex, span: Span) !NodeIndex {
     const method_node = self.ast.getNode(method_idx);
     const params_list_old = self.ast.functionParamsList(method_node);
     const params_start = params_list_old.start;
     const params_len = params_list_old.len;
     const body_idx: NodeIndex = @enumFromInt(self.readU32(method_node.data.extra, ast_mod.MethodExtra.body));
     const method_flags = self.readU32(method_node.data.extra, ast_mod.MethodExtra.flags);
+
+    const saved_scope = self.current_scope;
+    if (self.semantic_edit_enabled and !source_owner.isNone()) {
+        self.current_scope = self.originalFunctionScope(source_owner);
+    }
+    defer self.current_scope = saved_scope;
 
     const arrow_env = pushArrowEnv(self);
     defer popArrowEnv(self, arrow_env);
@@ -1751,6 +1757,38 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
     // Function.prototype) 으로 fallback 하도록 super_props.zig 에서 처리. 여기선 super_class 를
     // 그대로 두고 (null 인 채로 needsSuperLowering 통과) lowering pipeline 가 알아서 처리.
 
+    const fn_flags = ast_mod.methodFlagsToFunctionFlags(method_flags);
+    const is_async = (fn_flags & ast_mod.FunctionFlags.is_async) != 0;
+    const is_generator = (fn_flags & ast_mod.FunctionFlags.is_generator) != 0;
+    const needs_lowering = (is_async and is_generator and self.options.unsupported.async_generator) or
+        (is_async and self.options.unsupported.async_await) or
+        (is_generator and self.options.unsupported.generator);
+    if (needs_lowering) {
+        const name_span = try self.ast.addString(name);
+        const name_node = try makeSyntheticBinding(self, name_span);
+        const params_node = self.readNodeIdx(method_node.data.extra, ast_mod.MethodExtra.params);
+        const none = @intFromEnum(NodeIndex.none);
+        const synth_extra = try self.ast.addExtras(&.{
+            @intFromEnum(name_node), @intFromEnum(params_node), @intFromEnum(body_idx), fn_flags, none,
+        });
+        const synth = try self.ast.addNode(.{
+            .tag = .function_declaration,
+            .span = span,
+            .data = .{ .extra = synth_extra },
+        });
+        const saved_owner = self.synthetic_function_source_owner;
+        const saved_node = self.synthetic_function_node;
+        self.synthetic_function_source_owner = source_owner;
+        self.synthetic_function_node = synth;
+        defer {
+            self.synthetic_function_source_owner = saved_owner;
+            self.synthetic_function_node = saved_node;
+        }
+        const lowered = try self.visitNode(synth);
+        try self.remapCopiedScopeOwner(source_owner, lowered);
+        return lowered;
+    }
+
     const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
 
     var new_body = try self.visitNode(body_idx);
@@ -1762,14 +1800,12 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
         new_body = try self.prependStatementsToBody(new_body, capture_stmts[0..capture_count]);
     }
     if (self.temp_var_counter > saved_temp_counter and !new_body.isNone()) {
-        new_body = try self.hoistTempVars(new_body, saved_temp_counter, span);
+        new_body = try self.hoistTempVarsInOriginalFunction(new_body, saved_temp_counter, span);
     }
     self.temp_var_counter = saved_temp_counter;
 
     const name_span = try self.ast.addString(name);
     const name_node = try makeSyntheticBinding(self, name_span);
-
-    const fn_flags = ast_mod.methodFlagsToFunctionFlags(method_flags);
 
     const none = @intFromEnum(NodeIndex.none);
     const new_params_node = try self.ast.addFormalParameters(new_params, span);
@@ -1780,11 +1816,13 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
         fn_flags,
         none,
     });
-    return self.ast.addNode(.{
+    const result = try self.ast.addNode(.{
         .tag = .function_declaration,
         .span = span,
         .data = .{ .extra = func_extra },
     });
+    try self.remapCopiedScopeOwner(source_owner, result);
+    return result;
 }
 
 /// __classPrivateMethodInit(this, _set) expression_statement 생성.

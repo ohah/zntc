@@ -273,6 +273,7 @@ pub fn Members(comptime Transformer: type) type {
 
                             try cm.private_methods.append(self.allocator, .{
                                 .member_idx = @enumFromInt(raw_idx),
+                                .source_member_idx = @enumFromInt(self.scope_owner_origins.get(raw_idx) orelse raw_idx),
                                 .original_name = orig_name,
                                 .weakset_name = names.ws_name,
                                 .func_name = names.fn_name,
