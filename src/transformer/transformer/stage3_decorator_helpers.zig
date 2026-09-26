@@ -305,6 +305,16 @@ pub fn buildContextObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex
 /// - method/getter: has + get
 /// - setter: has + set
 /// - field/accessor: has + get + set
+fn bindAccessParameters(self: anytype, owner: NodeIndex, bindings: []const NodeIndex, refs: []const NodeIndex) Error!void {
+    if (!self.semantic_edit_enabled) return;
+    std.debug.assert(bindings.len == refs.len);
+    const scope = try self.addGeneratedFunctionScope(self.current_scope, owner);
+    for (bindings, refs) |binding, ref| {
+        const id = try self.declareSyntheticInScope(binding, self.ast.getNode(binding).span, .parameter, scope);
+        try self.addSyntheticRefInScope(ref, id, scope, .{ .read = true });
+    }
+}
+
 pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const none = @intFromEnum(NodeIndex.none);
@@ -374,6 +384,7 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
         const has_arrow = try self.addExtraNode(.arrow_function_expression, zero_span, &.{
             @intFromEnum(obj_param), @intFromEnum(in_expr), 0,
         });
+        try bindAccessParameters(self, has_arrow, &.{obj_param}, &.{obj_ref});
         try access_props.append(self.allocator, try makeObjProp(self, has_key, has_arrow));
     }
 
@@ -406,6 +417,7 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
         const get_arrow = try self.addExtraNode(.arrow_function_expression, zero_span, &.{
             @intFromEnum(obj_param), @intFromEnum(obj_member), 0,
         });
+        try bindAccessParameters(self, get_arrow, &.{obj_param}, &.{obj_ref});
         try access_props.append(self.allocator, try makeObjProp(self, get_key, get_arrow));
     }
 
@@ -466,6 +478,7 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
             0, // flags
             none, // ret_type
         });
+        try bindAccessParameters(self, set_fn, &.{ obj_param, val_param }, &.{ obj_ref, val_ref });
         try access_props.append(self.allocator, try makeObjProp(self, set_key, set_fn));
     }
 
