@@ -285,6 +285,9 @@ pub const Transformer = struct {
     /// generator → 안쪽 function* 가 다시 __generator 로) **가장 바깥에서 한 번**
     /// 치환되므로 안쪽 층은 평범한 식별자만 본다.
     in_extracted_fn_body: bool = false,
+    /// 방문 중인 루프 본문이 뒤에서 생성 `_loop` 함수로 이동할 수 있는 깊이.
+    /// 본문 안에서 만든 바인딩은 이동 후 스코프가 확정되기 전까지 등록하지 않는다.
+    pending_loop_extraction_depth: u32 = 0,
 
     /// 지금 visit 중인 변수 선언이 `const` 인가 (#4723). `const X = class {…}` 의 익명 클래스를
     /// 낮출 때 이름 추론(`X.name === "X"`)을 지키려고 선언 이름을 클래스에 붙이는 데 쓴다.
