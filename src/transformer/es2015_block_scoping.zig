@@ -623,14 +623,14 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             /// 루프 밖에서 사라지므로, 본문 선언은 대입으로 바꾸고 `var …, _loop = …` 로 바깥에
             /// 둔다 (#4743).
             hoist_vars: []const []const u8,
-            /// `lexical_names`·`hoist_vars` 와 같은 순서의 원래 바인딩 노드. 이름으로 만드는
-            /// 매개변수·인자·호이스트 선언에 심볼을 물려준다 — 없으면 minify 가 원래 이름으로
-            /// 찍는다 (#4760). 모르면 빈 slice.
+            /// `lexical_names`·`hoist_vars` 와 **같은 길이·같은 순서**의 원래 바인딩 노드. 이름으로 만드는
+            /// 매개변수·인자·호이스트 선언에 심볼을 물려준다 (#4760). 예전엔 "모르면 빈 slice" 라
+            /// 길이가 어긋나면 조용히 심볼 없이 만들었다 — 이제 모든 호출자가 짝을 넘기므로 필수.
             lexical_bindings: []const NodeIndex,
             hoist_bindings: []const NodeIndex,
         ) Transformer.Error!struct { loop_fn: NodeIndex, call_and_check: NodeIndex } {
-            std.debug.assert(lexical_bindings.len == 0 or lexical_bindings.len == lexical_names.len);
-            std.debug.assert(hoist_bindings.len == 0 or hoist_bindings.len == hoist_vars.len);
+            std.debug.assert(lexical_bindings.len == lexical_names.len);
+            std.debug.assert(hoist_bindings.len == hoist_vars.len);
             // --- _loop 함수명 생성 ---
             const loop_prefix = "_loop";
             const loop_name = try self.buildUniqueName(loop_prefix, &self.loop_counter);
@@ -672,7 +672,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
             for (lexical_names, 0..) |name, name_i| {
                 const param_span = try self.ast.addString(name);
-                const param = try self.makeUserBinding(param_span, if (name_i < lexical_bindings.len) lexical_bindings[name_i] else .none);
+                const param = try self.makeUserBinding(param_span, lexical_bindings[name_i]);
                 const formal = try self.ast.addNode(.{
                     .tag = .formal_parameter,
                     .span = param_span,
@@ -711,7 +711,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             var decls: std.ArrayList(NodeIndex) = .empty;
             defer decls.deinit(self.allocator);
             for (hoist_vars, 0..) |name, name_i| {
-                const b = try self.makeUserBinding(try self.ast.addString(name), if (name_i < hoist_bindings.len) hoist_bindings[name_i] else .none);
+                const b = try self.makeUserBinding(try self.ast.addString(name), hoist_bindings[name_i]);
                 try decls.append(self.allocator, try es_helpers.makeDeclarator(self, b, .none, span));
             }
             try decls.append(self.allocator, loop_decl);
@@ -727,7 +727,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 break :blk try es_helpers.makeStaticMember(self, loop_ref, call_prop, span);
             } else loop_ref;
             for (lexical_names, 0..) |name, name_i| {
-                const arg = try self.makeUserRefNamed(name, if (name_i < lexical_bindings.len) lexical_bindings[name_i] else .none);
+                const arg = try self.makeUserRefNamed(name, lexical_bindings[name_i]);
                 try self.scratch.append(self.allocator, arg);
             }
             const loop_call = try es_helpers.makeCallExpr(self, call_callee, self.scratch.items[scratch_top2..], span);

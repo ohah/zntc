@@ -45,9 +45,10 @@ fn countsFor(source: []const u8, target: TransformOptions.compat.ESTarget) !Coun
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
     transformer.references = analyzer.references.items;
+    transformer.synthetic_idents = .empty;
     const root = try transformer.transform();
 
-    var report = try coverage.check(allocator, transformer.ast, root, transformer.parser_node_count, transformer.symbol_ids.items, analyzer.symbols.items);
+    var report = try coverage.check(allocator, transformer.ast, root, transformer.parser_node_count, transformer.symbol_ids.items, analyzer.symbols.items, if (transformer.synthetic_idents) |*s| s else null);
     defer report.deinit(allocator);
     try std.testing.expect(report.new_user_idents > 0);
     return .{ .missing = report.missing.items.len, .wrong = report.wrong.items.len };
@@ -140,6 +141,30 @@ test "#4760 클래스 낮추기가 클래스·함수 이름을 span 으로 가�
         \\export function Ctor() { return new.target; }
     ;
     for ([_]TransformOptions.compat.ESTarget{ .es5, .es2015, .es2020 }) |target| {
+        const c = try countsFor(src, target);
+        try std.testing.expectEqual(@as(usize, 0), c.missing);
+        try std.testing.expectEqual(@as(usize, 0), c.wrong);
+    }
+}
+
+test "#4819 static private initializer this uses the active class symbol" {
+    const src =
+        \\class A {
+        \\  static y = 1;
+        \\  static #x = () => this.y;
+        \\  static get() { return A.#x(); }
+        \\}
+        \\function nested() {
+        \\  class A {
+        \\    static y = 2;
+        \\    static #x = () => this.y;
+        \\    static get() { return A.#x(); }
+        \\  }
+        \\  return A.get();
+        \\}
+        \\console.log(A.get(), nested());
+    ;
+    for ([_]TransformOptions.compat.ESTarget{ .es5, .es2015, .es2017 }) |target| {
         const c = try countsFor(src, target);
         try std.testing.expectEqual(@as(usize, 0), c.missing);
         try std.testing.expectEqual(@as(usize, 0), c.wrong);

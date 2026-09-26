@@ -107,9 +107,19 @@ fn ensureSymbolIds(self: anytype, target_idx: usize) void {
     }
 }
 
+/// 합성 노드(`synthetic_idents`, 누락 검사기가 켜졌을 때만 기록)에서 물려받은 노드도 합성이다 —
+/// 합성 바인딩을 원래 노드로 삼아 다시 만든 바인딩·참조(es5 클래스 낮추기의 `function Foo`)를
+/// 사용자 식별자 누락으로 세지 않게 한다.
+fn inheritSynthetic(self: anytype, from: NodeIndex, to: NodeIndex) void {
+    const set = if (self.synthetic_idents) |*s| s else return;
+    if (from.isNone() or to.isNone()) return;
+    if (set.contains(@intFromEnum(from))) set.put(self.allocator, @intFromEnum(to), {}) catch {};
+}
+
 /// 파서 노드 -> 트랜스포머 노드로 symbol_id 전파.
 /// 통합 AST에서는 old_idx와 new_idx가 같은 배열의 인덱스.
 pub fn propagateSymbolId(self: anytype, old_idx: NodeIndex, new_idx: NodeIndex) void {
+    inheritSynthetic(self, old_idx, new_idx);
     if (self.symbol_ids.items.len == 0) return; // 전파 비활성
     if (new_idx.isNone()) return;
 
@@ -131,6 +141,7 @@ pub fn propagateSymbolId(self: anytype, old_idx: NodeIndex, new_idx: NodeIndex) 
 /// AST 내에서 노드 간 symbol_id 복사.
 /// 노드 복제 시 symbol_id가 누락되지 않도록 사용.
 pub fn copySymbolId(self: anytype, src_idx: NodeIndex, dst_idx: NodeIndex) void {
+    inheritSynthetic(self, src_idx, dst_idx);
     if (self.symbol_ids.items.len == 0) return;
     if (src_idx.isNone() or dst_idx.isNone()) return;
 
@@ -161,12 +172,14 @@ pub fn makeRootScopeRef(self: anytype, name: []const u8) Error!NodeIndex {
     return ref;
 }
 
-/// 지금 낮추는 클래스(`current_class_name_node`)를 `name_span` 으로 가리키는 참조. span 이 그
-/// 클래스 이름 노드의 span 과 같을 때만 심볼을 물려준다 — 익명 클래스에 붙인 임시 이름(`_a`)
-/// 처럼 다른 이름이면 심볼 없이 만든다.
+/// 지금 낮추는 클래스(`current_class_name_node`)를 `name_span` 으로 가리키는 참조.
+/// static private descriptor 는 클래스 이름을 새 문자열 span 에 복사하므로 span 위치가
+/// 아니라 이름의 내용으로 현재 클래스 바인딩인지 확인한다.
 pub fn makeCurrentClassRef(self: anytype, name_span: Span) Error!NodeIndex {
     const cls = self.current_class_name_node;
-    const same = !cls.isNone() and std.meta.eql(self.ast.getNode(cls).data.string_ref, name_span);
+    const same = !cls.isNone() and std.mem.eql(u8, self.ast.getText(self.ast.getNode(cls).data.string_ref), self.ast.getText(name_span));
+    // 클래스 이름 노드가 합성(`const C = class {}` 의 안쪽 `C`)이면 `propagateSymbolId` 가 합성 표시를
+    // 물려준다. 심볼이 없다는 이유만으로 합성이라 하지 않는다 — 그러면 심볼을 빠뜨린 경우도 가려진다.
     return makeIdentifierRefWithSymbol(self, name_span, if (same) cls else .none);
 }
 
