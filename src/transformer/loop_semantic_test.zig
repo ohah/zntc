@@ -542,6 +542,73 @@ test "#4819 hoisted var assignment records generator for-of header write" {
     );
 }
 
+test "#4819 hostile switch case var write uses switch scope" {
+    try expectHoistedVarWrite(
+        \\export function switched(out) {
+        \\  for (let i = 0; i < 2; i++) {
+        \\    out.push(() => i);
+        \\    switch (i) { case 0: var sourceWrite = i; break; }
+        \\  }
+        \\}
+    );
+}
+
+test "#4819 hostile generator switch case var write uses source scope" {
+    try expectHoistedVarWrite(
+        \\export function* switched() {
+        \\  for (let i = 0; i < 2; i++) {
+        \\    yield () => i;
+        \\    switch (i) { case 0: var sourceWrite = i; break; }
+        \\  }
+        \\}
+    );
+}
+
+test "#4819 hostile unbraced try catch var write uses catch scope" {
+    try expectHoistedVarWrite(
+        \\export function caught(out) {
+        \\  for (let i = 0; i < 2; i++) {
+        \\    out.push(() => i);
+        \\    if (i) try { throw i; } catch (error) { var sourceWrite = error; }
+        \\  }
+        \\}
+    );
+}
+
+test "#4819 hostile generator yield initializer keeps one live write" {
+    try expectHoistedVarWrite(
+        \\export function* generated() {
+        \\  for (let i = 0; i < 2; i++) {
+        \\    yield () => i;
+        \\    var sourceWrite = yield i;
+        \\  }
+        \\}
+    );
+}
+
+test "#4819 hostile finally return keeps one live write" {
+    try expectHoistedVarWrite(
+        \\export function finished(out) {
+        \\  for (let i = 0; i < 2; i++) {
+        \\    out.push(() => i);
+        \\    try { var sourceWrite = i; if (i) return i; }
+        \\    finally { out.push(() => i); }
+        \\  }
+        \\}
+    );
+}
+
+test "#4819 hostile generator nested for-of body write" {
+    try expectHoistedVarWrite(
+        \\export function* generatedForOf() {
+        \\  for (let i = 0; i < 2; i++) {
+        \\    yield () => i;
+        \\    for (let item of [i]) { var sourceWrite = item; yield sourceWrite; }
+        \\  }
+        \\}
+    );
+}
+
 test "#4819 classic for keeps two extracted header arguments visible" {
     try expectExtractedLoopArgumentsVisible(
         \\export function collect() {
