@@ -13,6 +13,16 @@ const NamespaceFrame = @import("codegen.zig").NamespaceFrame;
 /// enum Color { Red, Green = 5, Blue } →
 /// var Color;((Color) => {Color[Color["Red"]=0]="Red";Color[Color["Green"]=5]="Green";Color[Color["Blue"]=6]="Blue";})(Color || (Color = {}));
 pub fn emitEnumIIFE(self: anytype, node: Node) !void {
+    return emitEnumIIFEInner(self, node, null);
+}
+
+/// The exported enum declaration itself supplies the namespace member target.
+/// Its local binding is initialized from that shared object before members run.
+fn emitNamespaceEnumIIFE(self: anytype, node: Node, namespace_param: []const u8) !void {
+    return emitEnumIIFEInner(self, node, namespace_param);
+}
+
+fn emitEnumIIFEInner(self: anytype, node: Node, namespace_param: ?[]const u8) !void {
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
@@ -200,7 +210,19 @@ pub fn emitEnumIIFE(self: anytype, node: Node) !void {
     try self.write(param_name);
     try self.write(";})(");
     try self.emitNode(name_idx);
-    try self.write(" || {});");
+    if (namespace_param) |ns| {
+        try self.writeByte('=');
+        try self.write(ns);
+        try self.writeByte('.');
+        try self.write(name_text);
+        try self.write(" || (");
+        try self.write(ns);
+        try self.writeByte('.');
+        try self.write(name_text);
+        try self.write(" = {}));");
+    } else {
+        try self.write(" || {});");
+    }
 }
 
 const EnumMemberValue = union(enum) {
@@ -511,6 +533,11 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
                             } else {
                                 try emitNamespaceVarMixed(self, param_name, decl_idx);
                             }
+                        } else if (decl_node.tag == .ts_enum_declaration) {
+                            // The exported declaration names the exact member of this
+                            // namespace object. Reuse its existing object across
+                            // merged namespace IIFEs before evaluating enum members.
+                            try emitNamespaceEnumIIFE(self, decl_node, param_name);
                         } else {
                             try self.emitNode(decl_idx);
                             try emitNamespaceExport(self, param_name, decl_idx);

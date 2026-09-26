@@ -698,6 +698,26 @@ test "#4819 Codegen: ambient namespace and enum uses follow TypeScript bare name
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var Numbers") == null);
 }
 
+test "#4819 Codegen: merged exported enum initializes from shared namespace member" {
+    var r = try e2e(std.testing.allocator, "namespace N { export enum E { A = 1 } } namespace N { export enum E { B = 2 } }");
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, r.output, "E=N.E || (N.E = {})"));
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "N.E=E;") == null);
+}
+
+test "#4819 Codegen: nested merged enum uses inner namespace member" {
+    var r = try e2e(std.testing.allocator, "namespace Outer.Inner { export enum E { A = 1 } } namespace Outer.Inner { export enum E { B = 2 } }");
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, r.output, "E=Inner.E || (Inner.E = {})"));
+}
+
+test "#4819 Codegen: exported const enum remains erased" {
+    var r = try e2e(std.testing.allocator, "namespace N { export const enum E { A = 1 } }");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "E=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "N.E") == null);
+}
+
 test "Codegen: namespace nested export mutation — uses property access" {
     // Bug 3 fix: mutations to exported vars should use ns.prop, not stale local.
     // foo += foo → B.foo += B.foo (not foo += B.foo)
