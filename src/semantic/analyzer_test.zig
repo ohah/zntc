@@ -58,6 +58,48 @@ test "#4819 namespace exports and shadowed parameter retain distinct reference I
     try std.testing.expectEqual(@as(usize, 1), param_reads);
 }
 
+test "#4819 merged namespace export has shared owner but separate lexical binding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const source = "namespace N { export let value = 1; export function first() { return value; } } namespace N { export let next = value + 2; export function read() { let value = 9; return value + next; } }";
+    var scanner = try Scanner.init(alloc, source);
+    var parser = Parser.init(alloc, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(alloc, &parser.ast);
+    ana.is_ts = true;
+    try ana.analyze();
+    try std.testing.expectEqual(@as(usize, 0), ana.errors.items.len);
+    var shared_owner: ?u32 = null;
+    var proxy_value: ?u32 = null;
+    var proxy_it = ana.namespace_member_owners.iterator();
+    while (proxy_it.next()) |entry| {
+        try std.testing.expect(shared_owner == null or shared_owner.? == entry.value_ptr.*);
+        shared_owner = entry.value_ptr.*;
+        const sym = ana.symbols.items[entry.key_ptr.*];
+        if (std.mem.eql(u8, sym.nameText(source), "value")) proxy_value = entry.key_ptr.*;
+    }
+    const owner = shared_owner orelse return error.MissingNamespaceOwner;
+    const proxy = proxy_value orelse return error.MissingNamespaceProxy;
+    try std.testing.expect(std.mem.eql(u8, ana.symbols.items[owner].nameText(source), "N"));
+    var proxy_reads: usize = 0;
+    var local_reads: usize = 0;
+    for (ana.references.items) |ref| {
+        if (ref.flags.declare or !ref.flags.read) continue;
+        const node = parser.ast.getNode(ref.node_index);
+        if (!std.mem.eql(u8, parser.ast.getText(node.span), "value")) continue;
+        if (@intFromEnum(ref.symbol_id) == proxy) {
+            proxy_reads += 1;
+            try std.testing.expectEqual(ana.symbols.items[owner].scope_id, ana.symbols.items[proxy].scope_id);
+        } else {
+            local_reads += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), proxy_reads);
+    try std.testing.expectEqual(@as(usize, 2), local_reads);
+}
+
 test "#4819 editor preserves analyzed IDs while appending a generated binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -35,6 +35,7 @@ const FunctionMapBuilder = @import("function_map.zig").FunctionMapBuilder;
 
 pub const NamespaceFrame = struct {
     prefix: []const u8,
+    owner_symbol: ?u32 = null,
     exported_symbols: std.AutoHashMapUnmanaged(u32, void),
     parent: ?*const NamespaceFrame,
 };
@@ -421,9 +422,11 @@ pub const Codegen = struct {
 
     pub fn namespaceExportPrefix(self: *Codegen, idx: NodeIndex) ?[]const u8 {
         const sid = self.sourceSymbolId(idx) orelse return null;
+        const proxy_owner = if (self.options.namespace_member_owners) |owners| owners.get(sid) else null;
         var frame = self.ns_frame;
         while (frame) |active| : (frame = active.parent) {
             if (active.exported_symbols.contains(sid)) return active.prefix;
+            if (proxy_owner != null and active.owner_symbol == proxy_owner) return active.prefix;
         }
         return null;
     }

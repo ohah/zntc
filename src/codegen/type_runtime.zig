@@ -359,6 +359,12 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
         try self.write("((");
         try self.write(name_text);
         try self.write(") => {");
+        const outer_declared_names = self.declared_names;
+        self.declared_names = .empty;
+        defer {
+            self.declared_names.deinit(self.allocator);
+            self.declared_names = outer_declared_names;
+        }
         // 내부 namespace를 재귀 출력 (부모 이름 전달)
         try emitNamespaceIIFEInner(self, body_node, name_text);
         // 중첩 closing: (bar = foo.bar || (foo.bar = {}))
@@ -398,6 +404,15 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
     }
     self.declared_names.put(self.allocator, name_text, {}) catch {};
     self.declared_names.put(self.allocator, local_name, {}) catch {};
+
+    // Each namespace body is emitted as its own function. Names declared by
+    // one IIFE cannot suppress declarations in a later merged IIFE.
+    const outer_declared_names = self.declared_names;
+    self.declared_names = .empty;
+    defer {
+        self.declared_names.deinit(self.allocator);
+        self.declared_names = outer_declared_names;
+    }
 
     // 1단계: export된 이름 수집 (IIFE 열기 전에 — 파라미터 충돌 감지용)
     var ns_export_map: std.StringHashMapUnmanaged(void) = .empty;
@@ -449,6 +464,12 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
     // namespace frame for references from a nested namespace body.
     var frame: NamespaceFrame = .{
         .prefix = param_name,
+        .owner_symbol = if (self.sourceSymbolId(name_idx)) |sid| blk: {
+            if (self.options.namespace_declaration_owners) |owners| {
+                break :blk owners.get(sid) orelse sid;
+            }
+            break :blk sid;
+        } else null,
         .exported_symbols = .empty,
         .parent = self.ns_frame,
     };

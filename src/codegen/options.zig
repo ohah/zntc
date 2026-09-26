@@ -105,6 +105,10 @@ pub const CodegenOptions = struct {
     /// Transformed AST node -> source semantic symbol for standalone output.
     /// LinkingMetadata supplies this map in bundle/mangle paths.
     semantic_symbol_ids: []const ?u32 = &.{},
+    /// Shared namespace-member proxy SymbolId -> namespace object SymbolId.
+    namespace_member_owners: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
+    /// Source nested namespace binding SID -> canonical shared member SID.
+    namespace_declaration_owners: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
     /// __esm 래핑 모듈: CJS import 변환 시 const 대신 var 사용.
     /// ESM의 import는 hoisted이지만 CJS 변환 시 선언 위치에 출력되어 TDZ 발생.
     use_var_for_imports: bool = false,

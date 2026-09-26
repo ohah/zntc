@@ -1601,6 +1601,8 @@ fn transpileWithCallbackInternal(
         .quote_style = options.quote_style,
         .linking_metadata = if (mangle_metadata) |*mm| mm else null,
         .semantic_symbol_ids = transformer.symbol_ids.items,
+        .namespace_member_owners = if (mangle_metadata != null) &post_analyzer_storage.?.namespace_member_owners else if (analyzer_storage) |*analyzer| &analyzer.namespace_member_owners else null,
+        .namespace_declaration_owners = if (mangle_metadata != null) &post_analyzer_storage.?.namespace_declaration_owners else if (analyzer_storage) |*analyzer| &analyzer.namespace_declaration_owners else null,
         .platform = options.platform,
         .source_root = options.source_root,
         .sources_content = options.sources_content,

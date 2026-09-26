@@ -203,6 +203,10 @@ pub fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_optio
 
     var options_with_symbols = cg_options;
     options_with_symbols.semantic_symbol_ids = t.symbol_ids.items;
+    if (analyzer_storage) |*analyzer| {
+        options_with_symbols.namespace_member_owners = &analyzer.namespace_member_owners;
+        options_with_symbols.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    }
     var cg = Codegen.initWithOptions(allocator, t.ast, options_with_symbols);
     const raw_output = try cg.generate(root);
 

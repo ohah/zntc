@@ -95,6 +95,54 @@ test "semantic_codec: analyzer round-trip — relocatable 필드 보존" {
     try testing.expectEqual(sem.numeric_const_texts.count(), sem2.numeric_const_texts.count());
 }
 
+test "semantic_codec: merged namespace member owner IDs survive cache round-trip" {
+    const alloc = testing.allocator;
+    const source = "namespace N { export let value = 1; } namespace N { export let next = value + 2; } namespace Outer { export namespace Inner { export let x = 1; } } namespace Outer { export namespace Inner { export let y = x + 2; } }";
+    var scanner = try Scanner.init(alloc, source);
+    defer scanner.deinit();
+    var parser = Parser.init(alloc, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(alloc, &parser.ast);
+    defer ana.deinit();
+    ana.is_ts = true;
+    try ana.analyze();
+    try testing.expect(ana.namespace_member_owners.count() > 0);
+    try testing.expect(ana.namespace_declaration_owners.count() > 0);
+    const sem = ModuleSemanticData{
+        .symbols = ana.symbols,
+        .scopes = ana.scopes.items,
+        .scope_maps = ana.scope_maps.items,
+        .scope_owner_map = ana.scope_owner_map,
+        .class_self_symbol_map = ana.class_self_symbol_map,
+        .namespace_member_owners = ana.namespace_member_owners,
+        .namespace_declaration_owners = ana.namespace_declaration_owners,
+        .exported_names = ana.exported_names,
+        .symbol_ids = ana.symbol_ids.items,
+        .unresolved_references = ana.unresolved_references,
+        .references = ana.references.items,
+        .numeric_const_texts = ana.numeric_const_texts,
+        .helper_scope_map = ana.helper_scope_map,
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(alloc);
+    try codec.serialize(&sem, &bytes, alloc);
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const decoded = try codec.deserialize(bytes.items, arena.allocator());
+    try testing.expectEqual(sem.namespace_member_owners.count(), decoded.namespace_member_owners.count());
+    var it = sem.namespace_member_owners.iterator();
+    while (it.next()) |entry| {
+        try testing.expectEqual(entry.value_ptr.*, decoded.namespace_member_owners.get(entry.key_ptr.*).?);
+    }
+    try testing.expectEqual(sem.namespace_declaration_owners.count(), decoded.namespace_declaration_owners.count());
+    var decl_it = sem.namespace_declaration_owners.iterator();
+    while (decl_it.next()) |entry| {
+        try testing.expectEqual(entry.value_ptr.*, decoded.namespace_declaration_owners.get(entry.key_ptr.*).?);
+    }
+}
+
 test "semantic_codec: synthetic_name 보존 (합성 심볼)" {
     const alloc = testing.allocator;
 

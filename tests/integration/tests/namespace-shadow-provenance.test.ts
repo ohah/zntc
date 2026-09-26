@@ -51,6 +51,28 @@ namespace A.B {
 }
 console.log(JSON.stringify([A.B.A, A.B.B, A.B.f()]));
 `,
+  'merged namespace declarations share exported storage': `
+namespace N {
+  export let value = 1;
+  export function first() { return value; }
+}
+namespace N {
+  export let next = value + 2;
+  export function read() { const value = 9; return [value, next, first()]; }
+  export function bump() { return ++value; }
+}
+console.log(JSON.stringify([N.value, N.next, N.read(), N.bump(), N.first()]));
+`,
+  'nested merged namespace declarations keep both lexical IIFEs': `
+namespace Outer { export namespace Inner { export let value = 1; } }
+namespace Outer { export namespace Inner { export let next = value + 2; } }
+console.log(JSON.stringify([Outer.Inner.value, Outer.Inner.next]));
+`,
+  'dotted merged namespace declarations share exact inner owner': `
+namespace Outer.Inner { export let value = 1; }
+namespace Outer.Inner { export let next = value + 2; }
+console.log(JSON.stringify([Outer.Inner.value, Outer.Inner.next]));
+`,
 } as const;
 
 function transpileReference(source: string): string {
@@ -99,6 +121,32 @@ describe('namespace binding provenance (#4819)', () => {
     test(`module namespace export remains one top-level binding, ${minify ? 'minify' : 'plain'}`, async () => {
       const lib = `export namespace N { export const value = 1; export function read() { return value; } }`;
       const entry = `import { N } from './lib'; console.log(JSON.stringify([N.value, N.read()]));`;
+      const fixture = await createFixture({
+        'lib.ts': lib,
+        'entry.ts': entry,
+        'lib.js': transpileReference(lib),
+        'reference.cjs': transpileReference(entry),
+      });
+      cleanup = fixture.cleanup;
+      const native = spawnSync('node', [join(fixture.dir, 'reference.cjs')], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      const out = join(fixture.dir, 'out.cjs');
+      const result = await runZntcInDir(fixture.dir, [
+        '--bundle', '--platform=node', '--format=cjs', '--target=es5',
+        ...(minify ? ['--minify'] : []),
+        'entry.ts', '-o', out,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+      const actual = spawnSync('node', [out], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(native.stdout);
+    });
+  }
+
+  for (const minify of [false, true]) {
+    test(`cross-module merged namespace exports stay live, ${minify ? 'minify' : 'plain'}`, async () => {
+      const lib = `export namespace N { export let value = 1; } export namespace N { export let next = value + 2; }`;
+      const entry = `import { N } from './lib'; console.log(JSON.stringify([N.value, N.next]));`;
       const fixture = await createFixture({
         'lib.ts': lib,
         'entry.ts': entry,
