@@ -37,19 +37,28 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             if (!self.namespace_iife_scope.isNone() and self.current_scope == self.namespace_iife_scope) {
                 try self.destructuring_temp_bindings.put(self.allocator, @intFromEnum(binding), {});
                 try self.namespace_temp_bindings.append(self.allocator, .{ .binding = binding, .span = name_span, .scope = self.current_scope });
+            } else if (self.semantic_edit_enabled and self.options.unsupported.block_scoping) {
+                // ES5 emits these declarators as `var`. Bind at creation, then
+                // use the unique temp span to pair all generated reads/writes.
+                const id = (try self.declareSyntheticVar(binding, self.ast.getNode(binding).span)).?;
+                try self.destructuring_temp_symbol_ids.put(self.allocator, name_span.start, @intFromEnum(id));
             }
             return binding;
         }
 
         fn makeDestructuringTempRead(self: *Transformer, name_span: Span, node_span: Span) Transformer.Error!NodeIndex {
             const ref = try es_helpers.makeTempVarRef(self, name_span, node_span);
-            if (!self.namespace_iife_scope.isNone()) try self.trackHoistedTempRef(name_span, ref, .{ .read = true });
+            if (self.destructuring_temp_symbol_ids.get(name_span.start)) |raw_id| {
+                try self.addSyntheticRefInScope(ref, @enumFromInt(raw_id), self.current_scope, .{ .read = true });
+            } else if (!self.namespace_iife_scope.isNone()) try self.trackHoistedTempRef(name_span, ref, .{ .read = true });
             return ref;
         }
 
         fn makeDestructuringTempWrite(self: *Transformer, name_span: Span, node_span: Span) Transformer.Error!NodeIndex {
             const ref = try es_helpers.makeTempVarRef(self, name_span, node_span);
-            if (!self.namespace_iife_scope.isNone()) try self.trackHoistedTempRef(name_span, ref, .{ .write = true });
+            if (self.destructuring_temp_symbol_ids.get(name_span.start)) |raw_id| {
+                try self.addSyntheticRefInScope(ref, @enumFromInt(raw_id), self.current_scope, .{ .write = true });
+            } else if (!self.namespace_iife_scope.isNone()) try self.trackHoistedTempRef(name_span, ref, .{ .write = true });
             return ref;
         }
 
