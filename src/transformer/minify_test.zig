@@ -6,6 +6,70 @@ const Codegen = @import("../codegen/codegen.zig").Codegen;
 const minify_mod = @import("minify.zig");
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 
+test "#4819 declaration merge ignores orphan parents sharing live declarations" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "var removed = 1; var kept = 2; use(kept);");
+    var parser = Parser.init(a, &scanner);
+    const original = try parser.parse();
+    const ast = &parser.ast;
+    const list = ast.getNode(original).data.list;
+    const kept: NodeIndex = @enumFromInt(ast.extra_data.items[list.start + 1]);
+    const use: NodeIndex = @enumFromInt(ast.extra_data.items[list.start + 2]);
+    const root = try ast.addNode(.{
+        .tag = .program,
+        .span = ast.getNode(original).span,
+        .data = .{ .list = try ast.addNodeList(&.{ kept, use }) },
+    });
+    // Last allocated program is also an orphan: the supplied output root wins.
+    _ = try ast.addNode(ast.getNode(original));
+    minify_mod.mergeDecls(ast, root, null, a);
+    minify_mod.mergeDecls(ast, root, null, a);
+    try std.testing.expectEqual(.variable_declaration, ast.getNode(kept).tag);
+    var cg = Codegen.initWithOptions(a, ast, .{ .minify_whitespace = true });
+    try std.testing.expectEqualStrings("var kept=2;use(kept);", std.mem.trimEnd(u8, try cg.generate(root), "\n"));
+}
+
+test "#4819 declaration merge preserves declarations shared by live parents" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "var first = one(); var shared = two(); var last = three();");
+    var parser = Parser.init(a, &scanner);
+    const original = try parser.parse();
+    const ast = &parser.ast;
+    const list = ast.getNode(original).data.list;
+    const first: NodeIndex = @enumFromInt(ast.extra_data.items[list.start]);
+    const shared: NodeIndex = @enumFromInt(ast.extra_data.items[list.start + 1]);
+    const last: NodeIndex = @enumFromInt(ast.extra_data.items[list.start + 2]);
+    const span = ast.getNode(original).span;
+    const left = try ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try ast.addNodeList(&.{ first, shared }) } });
+    const right = try ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try ast.addNodeList(&.{ shared, last }) } });
+    const root = try ast.addNode(.{ .tag = .program, .span = span, .data = .{ .list = try ast.addNodeList(&.{ left, right }) } });
+    minify_mod.mergeDecls(ast, root, null, a);
+    minify_mod.mergeDecls(ast, root, null, a);
+    var cg = Codegen.initWithOptions(a, ast, .{ .minify_whitespace = true });
+    try std.testing.expectEqualStrings("var first=one();var shared=two();var shared=two();var last=three();", std.mem.trimEnd(u8, try cg.generate(root), "\n"));
+}
+
+test "#4819 declaration merge skips mutation when reachability allocation fails" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "var first = 1; var second = 2;");
+    var parser = Parser.init(a, &scanner);
+    const root = try parser.parse();
+    const ast = &parser.ast;
+    const before = ast.getNode(root).data.list;
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    minify_mod.mergeDecls(ast, root, null, failing.allocator());
+    try std.testing.expectEqual(before, ast.getNode(root).data.list);
+    for (ast.extra_data.items[before.start .. before.start + before.len]) |raw| {
+        try std.testing.expectEqual(.variable_declaration, ast.nodes.items[raw].tag);
+    }
+}
+
 fn expectMinify(input: []const u8, expected: []const u8) !void {
     return expectMinifyOpts(input, expected, .{});
 }
@@ -42,7 +106,7 @@ fn expectMinifyOpts(
     var ctx: minify_mod.MinifyCtx = .empty;
     ctx.allow_top_level_inline = codegen_opts.minify_syntax;
     minify_mod.minify(transformer.ast, ctx, a, root);
-    minify_mod.mergeDecls(transformer.ast, null);
+    minify_mod.mergeDecls(transformer.ast, root, null, a);
 
     var cg = Codegen.initWithOptions(a, transformer.ast, codegen_opts);
     const result = try cg.generate(root);
@@ -65,8 +129,8 @@ fn expectMergeIdempotent(input: []const u8, expected: []const u8) !void {
     const root = try transformer.transform();
 
     minify_mod.minify(transformer.ast, .empty, a, root);
-    minify_mod.mergeDecls(transformer.ast, null);
-    minify_mod.mergeDecls(transformer.ast, null); // 두 번째 호출 — 결과 동일해야 함
+    minify_mod.mergeDecls(transformer.ast, root, null, a);
+    minify_mod.mergeDecls(transformer.ast, root, null, a); // 두 번째 호출 — 결과 동일해야 함
 
     var cg = Codegen.initWithOptions(a, transformer.ast, .{});
     const result = try cg.generate(root);
@@ -111,7 +175,7 @@ fn expectMergeWithSkip(
         }
     }
 
-    minify_mod.mergeDecls(transformer.ast, &skip);
+    minify_mod.mergeDecls(transformer.ast, root, &skip, a);
 
     // program 노드 찾기 (codegen이 쓰는 마지막 .program)
     var prog_idx: ?u32 = null;
@@ -836,7 +900,7 @@ test "S4b: convertConstToLet + mergeDecls — const/let 섞임 → let 합침" {
     ctx.allow_top_level_inline = true;
     minify_mod.minify(transformer.ast, ctx, a, root);
     minify_mod.convertConstToLet(transformer.ast);
-    minify_mod.mergeDecls(transformer.ast, null);
+    minify_mod.mergeDecls(transformer.ast, root, null, a);
     var cg = Codegen.initWithOptions(a, transformer.ast, .{ .minify_whitespace = true, .minify_syntax = true });
     const result = try cg.generate(root);
     const trimmed = std.mem.trimEnd(u8, result, "\n");
@@ -1188,7 +1252,7 @@ fn expectMinifyDead(body: []const u8, expected: []const u8) !void {
         .references = analyzer.references.items,
     };
     minify_mod.minify(transformer.ast, ctx, a, root);
-    minify_mod.mergeDecls(transformer.ast, null);
+    minify_mod.mergeDecls(transformer.ast, root, null, a);
 
     var cg = Codegen.initWithOptions(a, transformer.ast, .{});
     const result = try cg.generate(root);
@@ -1471,7 +1535,7 @@ fn expectMinifyTopLevelInlineOpts(
         .allow_top_level_inline = true,
     };
     minify_mod.minify(transformer.ast, ctx, a, root);
-    minify_mod.mergeDecls(transformer.ast, null);
+    minify_mod.mergeDecls(transformer.ast, root, null, a);
 
     var cg = Codegen.initWithOptions(a, transformer.ast, codegen_opts);
     const result = try cg.generate(root);

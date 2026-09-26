@@ -2010,7 +2010,9 @@ pub fn emitModule(
     if (!options.dev_mode) {
         @import("../transformer/minify.zig").mergeDecls(
             transformer.ast,
+            root,
             if (metadata) |*m| @as(?*const std.DynamicBitSet, &m.skip_nodes) else null,
+            arena_alloc,
         );
     }
 
