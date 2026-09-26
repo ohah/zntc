@@ -52,15 +52,15 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
     return struct {
         /// for (const x of iterable) { body }
         /// → iterator protocol (try-catch-finally 포함)
-        pub fn lowerForOfStatement(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
-            return lowerForOfStatementLabeled(self, node, .none);
+        pub fn lowerForOfStatement(self: *Transformer, source_idx: NodeIndex, node: Node) Transformer.Error!NodeIndex {
+            return lowerForOfStatementLabeled(self, source_idx, node, .none);
         }
 
         /// `label_name_idx`가 주어지면 lowered inner `for_statement`에 label을 부여해
         /// `continue <label>` / `break <label>` 가 iteration statement를 타겟으로 하게 한다.
         /// 미지정(.none)이면 일반 for-of 경로.
-        pub fn lowerForOfStatementLabeled(self: *Transformer, node: Node, label_name_idx: NodeIndex) Transformer.Error!NodeIndex {
-            return self.visitNode(try rewriteForOf(self, node, label_name_idx, false));
+        pub fn lowerForOfStatementLabeled(self: *Transformer, source_idx: NodeIndex, node: Node, label_name_idx: NodeIndex) Transformer.Error!NodeIndex {
+            return self.visitNode(try rewriteForOf(self, source_idx, node, label_name_idx, false));
         }
 
         /// for-of 를 **방문 없이** 반복자 for 루프로 풀어 쓴다 — 일반 경로와 상태 기계가 같은
@@ -86,7 +86,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         /// - `__values` 는 `Symbol` 이 없는 엔진에서도 배열·유사 배열을 돈다.
         /// - `register_sm_temps`: 상태 기계는 var 선언을 대입으로 바꾸므로 임시 변수를 wrapper
         ///   최상단에 선언하도록 등록한다(catch 임시 변수가 리네임되지 않게 하는 표시도 겸한다).
-        pub fn rewriteForOf(self: *Transformer, node: Node, label_name_idx: NodeIndex, register_sm_temps: bool) Transformer.Error!NodeIndex {
+        pub fn rewriteForOf(self: *Transformer, source_idx: NodeIndex, node: Node, label_name_idx: NodeIndex, register_sm_temps: bool) Transformer.Error!NodeIndex {
             const span = node.span;
             const left = node.data.ternary.a;
             const right = node.data.ternary.b;
@@ -134,6 +134,11 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const for_stmt = try self.addExtraNode(.for_statement, span, &.{
                 @intFromEnum(for_init), @intFromEnum(for_test), @intFromEnum(for_update), @intFromEnum(for_body),
             });
+            // This iterator loop is the source for-of's lexical boundary. Its
+            // synthetic try/block wrappers do not introduce source scopes.
+            // Keep the exact source owner before visiting the rewritten tree;
+            // then copied iterator loops can carry that same ScopeId onward.
+            try self.remapCopiedScopeOwner(source_idx, for_stmt);
             const loop_stmt = if (label_name_idx.isNone()) for_stmt else try self.ast.addNode(.{
                 .tag = .labeled_statement,
                 .span = span,

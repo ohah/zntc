@@ -35,6 +35,7 @@ const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
 const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
 
 /// block scoping 다운레벨 시 모든 lexical(let/const/using/await_using)을 var로 치환.
 /// (using disposal 등 의미 보존은 별도 패스가 처리)
@@ -324,14 +325,22 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         /// 추출할 본문에서 `names` 의 `var` 선언을 대입으로 바꾼다 (#4743). 선언은 호출자가
         /// `var names…, _loop = function…` 로 바깥에 둔다. 함수 경계 안은 건드리지 않는다.
         /// 구조분해 패턴 선언은 그대로 둔다(일반 경로는 방문 때 이미 식별자로 풀렸다).
-        fn hoistVarsOutOfBody(self: *Transformer, idx: NodeIndex, names: []const []const u8) Transformer.Error!NodeIndex {
-            const next = try hoistVarsOutOfBodyInner(self, idx, names);
+        fn hoistVarsOutOfBody(self: *Transformer, idx: NodeIndex, names: []const []const u8, inherited_scope: ScopeId) Transformer.Error!NodeIndex {
+            const next = try hoistVarsOutOfBodyInner(self, idx, names, inherited_scope);
             try self.remapCopiedScopeOwner(idx, next);
             return next;
         }
 
-        fn hoistVarsOutOfBodyInner(self: *Transformer, idx: NodeIndex, names: []const []const u8) Transformer.Error!NodeIndex {
+        fn hoistVarsOutOfBodyInner(self: *Transformer, idx: NodeIndex, names: []const []const u8, inherited_scope: ScopeId) Transformer.Error!NodeIndex {
             if (idx.isNone() or names.len == 0) return idx;
+            // A write executes in the scope of the original statement, even
+            // when this subtree has already been copied by control-flow
+            // lowering. The caller supplies the scope for synthetic wrappers.
+            const scope: ScopeId = if (self.semantic_edit_enabled)
+                @enumFromInt(self.transformed_scope_owner_map.get(@intFromEnum(idx)) orelse
+                    self.scope_owner_map.get(@intFromEnum(idx)) orelse @intFromEnum(inherited_scope))
+            else
+                inherited_scope;
             const node = self.ast.getNode(idx);
             switch (node.tag) {
                 .block_statement => {
@@ -343,11 +352,11 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.list.start + i]);
                         const cn = self.ast.getNode(child);
                         if (cn.tag == .variable_declaration and isHoistableVar(self, cn, names)) {
-                            try appendVarAsAssignments(self, cn, names, &items);
+                            try appendVarAsAssignments(self, cn, names, scope, &items);
                             changed = true;
                             continue;
                         }
-                        const nc = try hoistVarsOutOfBody(self, child, names);
+                        const nc = try hoistVarsOutOfBody(self, child, names, scope);
                         if (nc != child) changed = true;
                         try items.append(self.allocator, nc);
                     }
@@ -358,18 +367,18 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     if (!isHoistableVar(self, node, names)) return idx;
                     var items: std.ArrayList(NodeIndex) = .empty;
                     defer items.deinit(self.allocator);
-                    try appendVarAsAssignments(self, node, names, &items);
+                    try appendVarAsAssignments(self, node, names, scope, &items);
                     return self.ast.addNode(.{ .tag = .block_statement, .span = node.span, .data = .{ .list = try self.ast.addNodeList(items.items) } });
                 },
                 .if_statement => {
                     const t = node.data.ternary;
-                    const b = try hoistVarsOutOfBody(self, t.b, names);
-                    const c = try hoistVarsOutOfBody(self, t.c, names);
+                    const b = try hoistVarsOutOfBody(self, t.b, names, scope);
+                    const c = try hoistVarsOutOfBody(self, t.c, names, scope);
                     if (b == t.b and c == t.c) return idx;
                     return self.ast.addNode(.{ .tag = .if_statement, .span = node.span, .data = .{ .ternary = .{ .a = t.a, .b = b, .c = c } } });
                 },
                 .while_statement, .do_while_statement, .labeled_statement => {
-                    const r = try hoistVarsOutOfBody(self, node.data.binary.right, names);
+                    const r = try hoistVarsOutOfBody(self, node.data.binary.right, names, scope);
                     if (r == node.data.binary.right) return idx;
                     return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .binary = .{ .left = node.data.binary.left, .right = r, .flags = node.data.binary.flags } } });
                 },
@@ -378,9 +387,9 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     var init = self.readNodeIdx(e, 0);
                     if (!init.isNone()) {
                         const init_node = self.ast.getNode(init);
-                        if (init_node.tag == .variable_declaration and isHoistableVar(self, init_node, names)) init = try varAsExpression(self, init_node, names);
+                        if (init_node.tag == .variable_declaration and isHoistableVar(self, init_node, names)) init = try varAsExpression(self, init_node, names, scope);
                     }
-                    const body = try hoistVarsOutOfBody(self, self.readNodeIdx(e, 3), names);
+                    const body = try hoistVarsOutOfBody(self, self.readNodeIdx(e, 3), names, scope);
                     if (init == self.readNodeIdx(e, 0) and body == self.readNodeIdx(e, 3)) return idx;
                     return self.addExtraNode(.for_statement, node.span, &.{
                         @intFromEnum(init), @intFromEnum(self.readNodeIdx(e, 1)), @intFromEnum(self.readNodeIdx(e, 2)), @intFromEnum(body),
@@ -395,25 +404,32 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                             const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[self.readU32(ln.data.extra, 1)]));
                             const b_idx = self.readNodeIdx(d.data.extra, 0);
                             const b = self.ast.getNode(b_idx);
-                            if (b.tag == .binding_identifier) left = try self.makeIdentifierRefWithSymbol(b.data.string_ref, b_idx);
+                            if (b.tag == .binding_identifier) {
+                                left = try self.makeIdentifierRefWithSymbol(b.data.string_ref, b_idx);
+                                try self.trackUserWriteFromBinding(left, b_idx, scope);
+                            }
                         }
                     }
-                    const c = try hoistVarsOutOfBody(self, t.c, names);
+                    const c = try hoistVarsOutOfBody(self, t.c, names, scope);
                     if (left == t.a and c == t.c) return idx;
                     return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .ternary = .{ .a = left, .b = t.b, .c = c } } });
                 },
                 .try_statement => {
                     const t = node.data.ternary;
-                    const a = try hoistVarsOutOfBody(self, t.a, names);
-                    var b = t.b;
-                    if (!b.isNone()) {
-                        const cc = self.ast.getNode(b);
-                        const body = try hoistVarsOutOfBody(self, cc.data.binary.right, names);
-                        if (body != cc.data.binary.right) b = try self.ast.addNode(.{ .tag = .catch_clause, .span = cc.span, .data = .{ .binary = .{ .left = cc.data.binary.left, .right = body, .flags = cc.data.binary.flags } } });
-                    }
-                    const c = try hoistVarsOutOfBody(self, t.c, names);
+                    const a = try hoistVarsOutOfBody(self, t.a, names, scope);
+                    const b = try hoistVarsOutOfBody(self, t.b, names, scope);
+                    const c = try hoistVarsOutOfBody(self, t.c, names, scope);
                     if (a == t.a and b == t.b and c == t.c) return idx;
                     return self.ast.addNode(.{ .tag = .try_statement, .span = node.span, .data = .{ .ternary = .{ .a = a, .b = b, .c = c } } });
+                },
+                .catch_clause => {
+                    const body = try hoistVarsOutOfBody(self, node.data.binary.right, names, scope);
+                    if (body == node.data.binary.right) return idx;
+                    return self.ast.addNode(.{ .tag = .catch_clause, .span = node.span, .data = .{ .binary = .{
+                        .left = node.data.binary.left,
+                        .right = body,
+                        .flags = node.data.binary.flags,
+                    } } });
                 },
                 .switch_statement => {
                     const e = node.data.extra;
@@ -428,7 +444,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         const cn = self.ast.getNode(case_idx);
                         const ce = cn.data.extra;
                         const block = try self.ast.addNode(.{ .tag = .block_statement, .span = cn.span, .data = .{ .list = .{ .start = self.readU32(ce, 1), .len = self.readU32(ce, 2) } } });
-                        const nb = try hoistVarsOutOfBody(self, block, names);
+                        const nb = try hoistVarsOutOfBody(self, block, names, scope);
                         if (nb == block) {
                             try cases.append(self.allocator, case_idx);
                             continue;
@@ -470,7 +486,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         }
 
         /// `var a = 1, b;` → `a = 1;` (초기값 없는 declarator 는 버린다)
-        fn appendVarAsAssignments(self: *Transformer, node: Node, names: []const []const u8, out: *std.ArrayList(NodeIndex)) Transformer.Error!void {
+        fn appendVarAsAssignments(self: *Transformer, node: Node, names: []const []const u8, scope: ScopeId, out: *std.ArrayList(NodeIndex)) Transformer.Error!void {
             _ = names;
             const ds = self.readU32(node.data.extra, 1);
             const dl = self.readU32(node.data.extra, 2);
@@ -481,8 +497,10 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 if (init.isNone()) continue;
                 const b_idx = self.readNodeIdx(d.data.extra, 0);
                 const b = self.ast.getNode(b_idx);
+                const target = try self.makeIdentifierRefWithSymbol(b.data.string_ref, b_idx);
+                try self.trackUserWriteFromBinding(target, b_idx, scope);
                 const assign = try self.ast.addNode(.{ .tag = .assignment_expression, .span = d.span, .data = .{ .binary = .{
-                    .left = try self.makeIdentifierRefWithSymbol(b.data.string_ref, b_idx),
+                    .left = target,
                     .right = init,
                     .flags = 0,
                 } } });
@@ -491,10 +509,10 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         }
 
         /// for 헤더용: `var i = 0, j = 1` → `i = 0, j = 1` (없으면 none)
-        fn varAsExpression(self: *Transformer, node: Node, names: []const []const u8) Transformer.Error!NodeIndex {
+        fn varAsExpression(self: *Transformer, node: Node, names: []const []const u8, scope: ScopeId) Transformer.Error!NodeIndex {
             var stmts: std.ArrayList(NodeIndex) = .empty;
             defer stmts.deinit(self.allocator);
-            try appendVarAsAssignments(self, node, names, &stmts);
+            try appendVarAsAssignments(self, node, names, scope, &stmts);
             if (stmts.items.len == 0) return .none;
             var exprs: std.ArrayList(NodeIndex) = .empty;
             defer exprs.deinit(self.allocator);
@@ -666,7 +684,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 }
             }
 
-            transformed_body = try hoistVarsOutOfBody(self, transformed_body, hoist_vars);
+            transformed_body = try hoistVarsOutOfBody(self, transformed_body, hoist_vars, call_scope);
 
             const before_temp_hoist = transformed_body;
             if (body_temp_start) |start| {

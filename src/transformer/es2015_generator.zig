@@ -431,7 +431,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         _ = try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, child);
                         const child_node = self.ast.getNode(child);
                         if (child_node.tag == .for_of_statement) {
-                            const rewritten = try ForOf.rewriteForOf(self, child_node, stmt.data.binary.left, true);
+                            const rewritten = try ForOf.rewriteForOf(self, child, child_node, stmt.data.binary.left, true);
                             return collectOperations(self, rewritten, ops, next_label);
                         }
                     }
@@ -449,7 +449,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         const rewritten = if (stmt.tag == .for_in_statement)
                             try ForOf.rewriteForIn(self, stmt)
                         else
-                            try ForOf.rewriteForOf(self, stmt, .none, true);
+                            try ForOf.rewriteForOf(self, stmt_idx, stmt, .none, true);
                         try collectOperations(self, rewritten, ops, next_label);
                     } else {
                         const new_stmt = try self.visitNode(stmt_idx);

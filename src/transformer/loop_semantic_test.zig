@@ -7,6 +7,8 @@ const Transformer = transformer_mod.Transformer;
 const TransformOptions = transformer_mod.TransformOptions;
 const Ast = @import("../parser/ast.zig").Ast;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
+const Reference = @import("../semantic/symbol.zig").Reference;
 const ast_walk = @import("../parser/ast_walk.zig");
 
 fn findLoopFunctionBody(allocator: std.mem.Allocator, ast: *const Ast, root: NodeIndex) !NodeIndex {
@@ -193,7 +195,6 @@ test "#4819 generated function owner follows reversed revisits independently" {
         try std.testing.expect(edited.scope_owner_map.get(@intFromEnum(generated[i])) == null);
     }
 }
-
 /// `_loop(...)`의 각 인자는 원본 헤더 심볼을 읽으며, 그 심볼이 인자 스코프에서
 /// 보여야 한다. AST 전체에서 호출을 찾으므로 unreachable 생성 노드도 검사한다.
 fn expectExtractedLoopArgumentsVisible(source: []const u8, expected_args: u32) !void {
@@ -304,6 +305,241 @@ test "#4819 generator extracted loop keeps two header arguments visible" {
         \\  }
         \\}
     , 2);
+}
+
+fn isReachable(ast: *const @import("../parser/ast.zig").Ast, root: NodeIndex, wanted: NodeIndex) !bool {
+    const Context = struct {
+        wanted: NodeIndex,
+        found: bool = false,
+
+        fn visit(ctx: *@This(), idx: NodeIndex, _: @import("../parser/ast.zig").Node) ast_walk.WalkAction {
+            if (idx == ctx.wanted) {
+                ctx.found = true;
+                return .stop;
+            }
+            return .descend;
+        }
+    };
+    var ctx = Context{ .wanted = wanted };
+    try ast_walk.walkPreorderIterative(ast.allocator, ast, root, &ctx, Context.visit);
+    return ctx.found;
+}
+
+/// Each fixture declares one uniquely named `var` inside an extracted loop.
+/// Its write must keep the original binding ID but execute in the source
+/// statement's innermost lexical scope, which may be a nested block, catch,
+/// loop header, or the enclosing loop for an unbraced body.
+fn expectHoistedVarWrite(source: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var binding: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, i| {
+        if (node.tag != .binding_identifier) continue;
+        if (!std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "sourceWrite")) continue;
+        try std.testing.expect(binding.isNone());
+        binding = @enumFromInt(@as(u32, @intCast(i)));
+    }
+    try std.testing.expect(!binding.isNone());
+    const symbol_id = analyzer.symbol_ids.items[@intFromEnum(binding)] orelse return error.TestUnexpectedResult;
+    const before_writes = analyzer.symbols.items[symbol_id].write_count;
+
+    // Independent scope oracle: choose the tightest original scope owner
+    // containing the source binding span, before any transformer copy exists.
+    const binding_span = parser.ast.getNode(binding).span;
+    var expected_scope: ScopeId = .none;
+    var expected_owner: NodeIndex = .none;
+    var narrowest: u32 = std.math.maxInt(u32);
+    var owners = analyzer.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        const owner = parser.ast.getNode(@enumFromInt(entry.key_ptr.*));
+        if (owner.span.start > binding_span.start or owner.span.end < binding_span.end) continue;
+        const width = owner.span.end - owner.span.start;
+        if (width < narrowest) {
+            narrowest = width;
+            expected_scope = @enumFromInt(entry.value_ptr.*);
+            expected_owner = @enumFromInt(entry.key_ptr.*);
+        }
+    }
+    try std.testing.expect(!expected_scope.isNone());
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const root = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    var writes: usize = 0;
+    for (edited.references) |ref| {
+        if (@intFromEnum(ref.node_index) < transformer.parser_node_count or ref.node_index.isNone()) continue;
+        const node = transformer.ast.getNode(ref.node_index);
+        if (node.tag != .identifier_reference) continue;
+        if (!std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "sourceWrite")) continue;
+        if (!ref.flags.write) continue;
+        writes += 1;
+        try std.testing.expectEqual(symbol_id, @intFromEnum(ref.symbol_id));
+        try std.testing.expectEqual(@as(?u32, symbol_id), edited.symbol_ids[@intFromEnum(ref.node_index)]);
+        try std.testing.expectEqual(expected_scope, ref.scope_id);
+        try std.testing.expect(!ref.flags.read and !ref.flags.declare);
+        try std.testing.expectEqual(Reference.NO_STMT, ref.stmt_idx);
+        try std.testing.expectEqual(Reference.NO_STMT, ref.scope_stmt_idx);
+        try std.testing.expect(try isReachable(transformer.ast, root, ref.node_index));
+    }
+    try std.testing.expectEqual(@as(usize, 1), writes);
+    try std.testing.expectEqual(before_writes + 1, edited.symbols.items[symbol_id].write_count);
+    // Generator state-machine collection consumes its temporary iterator AST;
+    // that path is checked above for the live write's source ScopeId/count.
+    if (parser.ast.getNode(expected_owner).tag == .for_of_statement and
+        std.mem.indexOf(u8, source, "function*") == null)
+    {
+        var found_final_owner = false;
+        var final_owners = edited.scope_owner_map.iterator();
+        while (final_owners.next()) |entry| {
+            if (entry.value_ptr.* != @intFromEnum(expected_scope)) continue;
+            const owner_idx: NodeIndex = @enumFromInt(entry.key_ptr.*);
+            try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.for_statement, transformer.ast.getNode(owner_idx).tag);
+            try std.testing.expect(try isReachable(transformer.ast, root, owner_idx));
+            found_final_owner = true;
+        }
+        try std.testing.expect(found_final_owner);
+    }
+}
+
+test "#4819 hoisted var assignment records source block write" {
+    try expectHoistedVarWrite(
+        \\export function ordinary(out) {
+        \\  for (let i = 0; i < 2; i++) {
+        \\    out.push(() => i);
+        \\    var sourceWrite = i;
+        \\  }
+        \\}
+    );
+}
+
+test "#4819 hoisted var assignment records nested block write" {
+    try expectHoistedVarWrite(
+        \\export function nested(out) {
+        \\  for (let i = 0; i < 2; i++) {
+        \\    out.push(() => i);
+        \\    if (i) { var sourceWrite = i; }
+        \\  }
+        \\}
+    );
+}
+
+test "#4819 hoisted var assignment retains nested scope through control flow copy" {
+    try expectHoistedVarWrite(
+        \\export function flow(out) {
+        \\  for (let i = 0; i < 2; i++) {
+        \\    out.push(() => i);
+        \\    if (i) { var sourceWrite = i; break; }
+        \\  }
+        \\}
+    );
+}
+
+test "#4819 hoisted var assignment records catch body write" {
+    try expectHoistedVarWrite(
+        \\export function caught(out) {
+        \\  for (let i = 0; i < 2; i++) {
+        \\    out.push(() => i);
+        \\    try { throw i; } catch (error) { var sourceWrite = error; }
+        \\  }
+        \\}
+    );
+}
+
+test "#4819 hoisted var assignment records unbraced body write" {
+    try expectHoistedVarWrite(
+        \\export function unbraced() {
+        \\  for (let i = 0; i < 2; i++)
+        \\    if (i) var sourceWrite = (() => i)();
+        \\}
+    );
+}
+
+test "#4819 hoisted var assignment records nested for initializer write" {
+    try expectHoistedVarWrite(
+        \\export function forInit(out) {
+        \\  for (let i = 0; i < 2; i++) {
+        \\    out.push(() => i);
+        \\    for (var sourceWrite = 0; sourceWrite < 1; sourceWrite++) {}
+        \\  }
+        \\}
+    );
+}
+
+test "#4819 hoisted var assignment records nested for-in header write" {
+    try expectHoistedVarWrite(
+        \\export function forIn(out) {
+        \\  for (let i = 0; i < 2; i++) {
+        \\    out.push(() => i);
+        \\    for (var sourceWrite in { value: i }) {}
+        \\  }
+        \\}
+    );
+}
+
+test "#4819 hoisted var assignment records nested for-of header write" {
+    try expectHoistedVarWrite(
+        \\export function forOf(out) {
+        \\  for (let i = 0; i < 2; i++) {
+        \\    out.push(() => i);
+        \\    for (var sourceWrite of [i]) {}
+        \\  }
+        \\}
+    );
+}
+
+test "#4819 hoisted var assignment records labeled for-of header write" {
+    try expectHoistedVarWrite(
+        \\export function labeledForOf(out) {
+        \\  for (let i = 0; i < 2; i++) {
+        \\    out.push(() => i);
+        \\    iter: for (var sourceWrite of [i]) { break iter; }
+        \\  }
+        \\}
+    );
+}
+
+test "#4819 hoisted var assignment records generator body write" {
+    try expectHoistedVarWrite(
+        \\export function* generated() {
+        \\  for (let i = 0; i < 2; i++) {
+        \\    yield () => i;
+        \\    var sourceWrite = i;
+        \\  }
+        \\}
+    );
+}
+
+test "#4819 hoisted var assignment records generator for-of header write" {
+    try expectHoistedVarWrite(
+        \\export function* generatedForOf() {
+        \\  for (let i = 0; i < 2; i++) {
+        \\    yield () => i;
+        \\    for (var sourceWrite of [i]) { yield sourceWrite; }
+        \\  }
+        \\}
+    );
 }
 
 test "#4819 classic for keeps two extracted header arguments visible" {
