@@ -91,6 +91,7 @@ pub const CachedResolvedDep = struct {
 /// Semantic analyzer 결과. parse_arena가 소유하는 데이터의 참조.
 /// linker가 import→export 연결 + 이름 충돌 해결에 사용.
 pub const ModuleSemanticData = struct {
+    const SemanticEditor = @import("../semantic/editor.zig").SemanticEditor;
     /// Semantic 심볼 배열. parse_arena가 backing 메모리를 소유.
     /// #1328 Phase 4e-2 / RFC #1338: ArrayList로 보관하여 bundler가
     /// `extendSymbol`로 합성 심볼을 post-semantic 단계에 추가할 수 있게 한다.
@@ -117,6 +118,28 @@ pub const ModuleSemanticData = struct {
     /// `ImportBinding.is_helper=true` 인 binding 의 local_symbol 을 이 맵에서 찾도록 해
     /// 사용자가 같은 이름의 식별자를 선언해도 충돌이 일어나지 않게 한다.
     helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty,
+
+    /// AST 변경 전에 의미 정보를 가변 소유자로 복사한다. allocator는 parse_arena여야 한다.
+    pub fn beginEdit(self: *const ModuleSemanticData, allocator: std.mem.Allocator, ast: *Ast) @import("../semantic/editor.zig").Error!SemanticEditor {
+        return SemanticEditor.init(
+            allocator,
+            ast,
+            self.symbols.items,
+            self.scopes,
+            self.scope_maps,
+            self.references,
+            self.symbol_ids,
+        );
+    }
+
+    /// 변환이 끝난 뒤 동일 SymbolId를 유지한 배열을 모듈에 돌려준다.
+    pub fn applyEdit(self: *ModuleSemanticData, result: SemanticEditor.Result) void {
+        self.symbols = result.symbols;
+        self.scopes = result.scopes;
+        self.scope_maps = result.scope_maps;
+        self.references = result.references;
+        self.symbol_ids = result.symbol_ids;
+    }
 
     /// 심볼 id에 해당하는 이름을 반환. `Symbol.nameText` 래퍼.
     pub fn symbolName(self: *const ModuleSemanticData, id: u32, source: []const u8) []const u8 {

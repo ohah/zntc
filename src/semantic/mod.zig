@@ -17,10 +17,12 @@
 
 pub const analyzer = @import("analyzer.zig");
 pub const checker = @import("checker.zig");
+pub const editor = @import("editor.zig");
 pub const scope = @import("scope.zig");
 pub const symbol = @import("symbol.zig");
 
 pub const SemanticAnalyzer = analyzer.SemanticAnalyzer;
+pub const SemanticEditor = editor.SemanticEditor;
 pub const Diagnostic = @import("../diagnostic.zig").Diagnostic;
 pub const Scope = scope.Scope;
 pub const ScopeId = scope.ScopeId;
@@ -35,6 +37,7 @@ pub const ReferenceFlags = symbol.ReferenceFlags;
 test {
     _ = analyzer;
     _ = checker;
+    _ = editor;
     _ = scope;
     _ = symbol;
 
