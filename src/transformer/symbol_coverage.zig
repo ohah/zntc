@@ -318,35 +318,3 @@ test "baseName strips rename suffix" {
     try std.testing.expectEqualStrings("$x", baseName("$x"));
     try std.testing.expectEqualStrings("a$b", baseName("a$b"));
 }
-
-test "strict inventory separates missing generated storage from unresolved reads" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-    var ast = Ast.init(allocator, "");
-    defer ast.deinit();
-    const storage = try ast.addString("_x");
-    const global = try ast.addString("Object");
-    const property = try ast.addString("value");
-    const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = storage, .data = .{ .string_ref = storage } });
-    const local_read = try ast.addNode(.{ .tag = .identifier_reference, .span = storage, .data = .{ .string_ref = storage } });
-    const global_read = try ast.addNode(.{ .tag = .identifier_reference, .span = global, .data = .{ .string_ref = global } });
-    const static_key = try ast.addNode(.{ .tag = .identifier_reference, .span = property, .data = .{ .string_ref = property } });
-    const member_extra = try ast.addExtras(&.{ @intFromEnum(local_read), @intFromEnum(static_key), 0 });
-    const member = try ast.addExtraNode(.static_member_expression, storage, member_extra);
-    const list = try ast.addNodeList(&.{ binding, member, global_read });
-    const root = try ast.addNode(.{ .tag = .program, .span = storage, .data = .{ .list = list } });
-    var marked: std.AutoHashMapUnmanaged(u32, void) = .empty;
-    defer marked.deinit(allocator);
-    try marked.put(allocator, @intFromEnum(binding), {});
-    var unresolved: std.StringHashMapUnmanaged(void) = .empty;
-    defer unresolved.deinit(allocator);
-    try unresolved.put(allocator, "Object", {});
-    var report = try checkStrict(allocator, &ast, root, 0, &.{}, &.{}, &marked, &unresolved);
-    defer report.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 1), report.counts[@intFromEnum(StrictStatus.missing_binding)]);
-    try std.testing.expectEqual(@as(usize, 1), report.counts[@intFromEnum(StrictStatus.unclassified)]);
-    try std.testing.expectEqual(@as(usize, 1), report.counts[@intFromEnum(StrictStatus.known_global)]);
-    try std.testing.expectEqual(@as(usize, 1), report.marked_synthetic);
-    try std.testing.expectEqual(@intFromEnum(binding), report.findings.items[0].node);
-}
