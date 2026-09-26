@@ -559,17 +559,17 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             // ES2018 문법인 `async function*` 이 그대로 방출됐다 (#4628). es5/es2015/es2016
             // 이 멀쩡했던 건 `async_await` 가 켜져 **우연히** 걸렸기 때문이다.
             if (is_async and is_generator and self.options.unsupported.async_generator) {
-                return es2017_mod.ES2017(Transformer).lowerAsyncGeneratorToStateMachine(self, node);
+                return es2017_mod.ES2017(Transformer).lowerAsyncGeneratorToStateMachine(self, if (idx == self.synthetic_function_node) self.synthetic_function_source_owner else idx, node);
             }
             if (self.options.unsupported.async_await and is_async) {
                 // async + generator 둘 다 unsupported → 직접 state machine 생성
                 if (self.options.unsupported.generator) {
-                    return es2017_mod.ES2017(Transformer).lowerAsyncToStateMachine(self, node);
+                    return es2017_mod.ES2017(Transformer).lowerAsyncToStateMachine(self, if (idx == self.synthetic_function_node) self.synthetic_function_source_owner else idx, node);
                 }
                 return es2017_mod.ES2017(Transformer).lowerAsyncFunction(self, node);
             }
             if (self.options.unsupported.generator and is_generator) {
-                return es2015_generator.ES2015Generator(Transformer).lowerGeneratorFunction(self, node);
+                return es2015_generator.ES2015Generator(Transformer).lowerGeneratorFunction(self, if (idx == self.synthetic_function_node) self.synthetic_function_source_owner else idx, node);
             }
             return self.visitFunction(node, idx);
         },
@@ -582,7 +582,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 if (e + 2 < extras.len and (extras[e + 2] & ast_mod.ArrowFlags.is_async) != 0) {
                     // async + generator 둘 다 unsupported → 직접 state machine 생성
                     if (self.options.unsupported.generator) {
-                        return es2017_mod.ES2017(Transformer).lowerAsyncArrowToStateMachine(self, node);
+                        return es2017_mod.ES2017(Transformer).lowerAsyncArrowToStateMachine(self, idx, node);
                     }
                     return es2017_mod.ES2017(Transformer).lowerAsyncArrow(self, node);
                 }
@@ -683,7 +683,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             return self.visitNewExpression(node);
         },
         .tagged_template_expression => self.visitTaggedTemplate(node),
-        .method_definition => self.visitMethodDefinition(node),
+        .method_definition => self.visitMethodDefinition(idx, node),
         .property_definition => self.visitPropertyDefinition(node),
         .object_property => self.visitObjectProperty(node),
         .formal_parameter => self.visitFormalParameter(node),

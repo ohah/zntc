@@ -654,7 +654,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             hoist_bindings: []const NodeIndex,
             /// 생성자가 아는 실제 호출 위치. generator 수집기는 current_scope가 루프 스코프가 아니다.
             call_scope: @import("../semantic/scope.zig").ScopeId,
-        ) Transformer.Error!struct { loop_fn: NodeIndex, call_and_check: NodeIndex } {
+        ) Transformer.Error!struct { loop_fn: NodeIndex, loop_function: NodeIndex, call_and_check: NodeIndex } {
             std.debug.assert(lexical_bindings.len == lexical_names.len);
             std.debug.assert(hoist_bindings.len == hoist_vars.len);
             // --- _loop 함수명 생성 ---
@@ -796,7 +796,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 .data = .{ .list = call_block_list },
             });
 
-            return .{ .loop_fn = loop_var, .call_and_check = call_block };
+            return .{ .loop_fn = loop_var, .loop_function = func_expr, .call_and_check = call_block };
         }
 
         /// body AST를 반복적(iterative)으로 스캔하여 break/continue/return 사용을 분석한다.

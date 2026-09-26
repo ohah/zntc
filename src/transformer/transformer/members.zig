@@ -69,7 +69,7 @@ pub fn methodNeedsAsyncOrGeneratorLowering(self: *const Transformer, flags: u32)
     return false;
 }
 
-pub fn lowerAsyncOrGeneratorMethod(self: *Transformer, node: Node) Error!NodeIndex {
+pub fn lowerAsyncOrGeneratorMethod(self: *Transformer, source_owner: NodeIndex, node: Node) Error!NodeIndex {
     const e = node.data.extra;
     const flags = self.readU32(e, ast_mod.MethodExtra.flags);
     const span = node.span;
@@ -110,6 +110,17 @@ pub fn lowerAsyncOrGeneratorMethod(self: *Transformer, node: Node) Error!NodeInd
     defer self.current_super_in_extracted_fn = saved_in_extracted;
     defer self.current_super_is_static = saved_super_is_static;
 
+    const saved_owner = self.synthetic_function_source_owner;
+    const saved_node = self.synthetic_function_node;
+    const saved_scope = self.current_scope;
+    self.synthetic_function_source_owner = source_owner;
+    self.synthetic_function_node = synth;
+    if (self.semantic_edit_enabled) self.current_scope = self.originalFunctionScope(source_owner);
+    defer {
+        self.synthetic_function_source_owner = saved_owner;
+        self.synthetic_function_node = saved_node;
+        self.current_scope = saved_scope;
+    }
     const lowered = try self.visitNode(synth);
     if (lowered.isNone()) return NodeIndex.none;
     const ln = self.ast.getNode(lowered);
@@ -128,7 +139,7 @@ pub fn lowerAsyncOrGeneratorMethod(self: *Transformer, node: Node) Error!NodeInd
     });
 }
 
-pub fn visitMethodDefinition(self: *Transformer, node: Node) Error!NodeIndex {
+pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: Node) Error!NodeIndex {
     const e = node.data.extra;
     const flags = self.readU32(e, ast_mod.MethodExtra.flags);
     // async / generator 메서드를 타겟에 맞춰 낮춘다 (#4628 · #4699).
@@ -136,7 +147,7 @@ pub fn visitMethodDefinition(self: *Transformer, node: Node) Error!NodeIndex {
     if (methodNeedsAsyncOrGeneratorLowering(self, flags) and
         !self.readNodeIdx(e, ast_mod.MethodExtra.body).isNone())
     {
-        return lowerAsyncOrGeneratorMethod(self, node);
+        return lowerAsyncOrGeneratorMethod(self, source_owner, node);
     }
     // abstract 메서드는 타입 전용이므로 완전히 스트리핑
     if (self.options.strip_types and (flags & ast_mod.MethodFlags.is_abstract) != 0) return NodeIndex.none;

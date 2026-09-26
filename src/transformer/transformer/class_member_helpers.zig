@@ -112,7 +112,7 @@ pub fn classifyClassMember(
 
     // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
     if (member.tag == .method_definition) {
-        try classifyMethodDefinition(self, member, ctx);
+        try classifyMethodDefinition(self, member_idx, member, ctx);
         return;
     }
 
@@ -283,6 +283,7 @@ pub fn classifyPropertyDefinition(
 /// - 나머지 → class_members에 추가
 pub fn classifyMethodDefinition(
     self: anytype,
+    member_idx: NodeIndex,
     member: Node,
     ctx: *ClassMemberContext,
 ) Error!void {
@@ -312,7 +313,8 @@ pub fn classifyMethodDefinition(
             ctx.ctor_params.* = params_list_m;
         }
 
-        const new_member = try self.visitMethodDefinition(member);
+        const new_member = try self.visitMethodDefinition(member_idx, member);
+        if (!new_member.isNone()) try self.remapCopiedScopeOwner(member_idx, new_member);
         if (!new_member.isNone()) {
             ctx.existing_constructor.* = new_member;
             ctx.existing_constructor_pos.* = class_members.items.len;
@@ -340,7 +342,8 @@ pub fn classifyMethodDefinition(
         }
     }
 
-    const new_member = try self.visitMethodDefinition(member);
+    const new_member = try self.visitMethodDefinition(member_idx, member);
+    if (!new_member.isNone()) try self.remapCopiedScopeOwner(member_idx, new_member);
     if (!new_member.isNone()) {
         try class_members.append(self.allocator, new_member);
     }

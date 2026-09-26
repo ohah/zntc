@@ -203,7 +203,7 @@ pub fn ES2017(comptime Transformer: type) type {
         /// async generator (`async function*`) → `function() { return __asyncGenerator(this, arguments,
         /// function*() { /* await → yield __await */ }); }`. (#1911)
         /// generator 자체도 unsupported 면 inner function* 가 다시 ES5 generator state machine 으로 lower.
-        pub fn lowerAsyncGeneratorToStateMachine(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+        pub fn lowerAsyncGeneratorToStateMachine(self: *Transformer, source_owner: NodeIndex, node: Node) Transformer.Error!NodeIndex {
             const e = node.data.extra;
             const span = node.span;
 
@@ -246,6 +246,9 @@ pub fn ES2017(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .extra = inner_extra },
             });
+            // The inner generator is a real function boundary. Its ES5 state
+            // callback needs this exact scope as parent when visitNode lowers it.
+            _ = try self.addGeneratedFunctionScope(self.originalFunctionScope(source_owner), inner_func);
             // inner function 자체도 visitNode 거쳐 generator/await downlevel 적용.
             // es5 에서는 이 visit 안에서 state machine 이 만들어진다. for-await 는 위 전처리에서
             // 이미 풀려 합성 await 까지 `yield __await(…)` 가 됐다 (#4746 — #4707 의 상태 기계
@@ -420,7 +423,7 @@ pub fn ES2017(comptime Transformer: type) type {
         /// async_await + generator 둘 다 unsupported일 때 호출.
         /// body를 pre-visit하지 않고 원본 body에서 직접 state machine 생성.
         /// await_expression은 es2015_generator의 collectOperations에서 yield처럼 처리됨.
-        pub fn lowerAsyncToStateMachine(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+        pub fn lowerAsyncToStateMachine(self: *Transformer, source_owner: NodeIndex, node: Node) Transformer.Error!NodeIndex {
             const GenMod = es2015_generator.ES2015Generator(Transformer);
             const e = node.data.extra;
             const span = node.span;
@@ -458,10 +461,11 @@ pub fn ES2017(comptime Transformer: type) type {
             if (sm_result.body.isNone()) return .none;
             sm_result.body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span);
 
-            const gen_call = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
+            const gen = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
             // __async는 fn.apply()로 함수를 호출하므로 iterator를 직접 전달 불가.
             // function() { return __generator(cb); } 로 감싸야 함.
-            const gen_wrapper_func = try es_helpers.wrapInFunction(self, gen_call, span);
+            const gen_wrapper_func = try es_helpers.wrapInFunction(self, gen.call, span);
+            try GenMod.bindWrappedStateMachine(self, source_owner, gen_wrapper_func, gen, &saved_sm_temps, span);
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper_func, span);
 
             const return_stmt = try self.ast.addNode(.{
@@ -509,7 +513,7 @@ pub fn ES2017(comptime Transformer: type) type {
         /// async_await + generator 둘 다 unsupported일 때 호출.
         /// arrow도 unsupported이므로 function_expression으로 출력한다.
         /// params lowering은 Pass 2에서 자동 적용된다.
-        pub fn lowerAsyncArrowToStateMachine(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+        pub fn lowerAsyncArrowToStateMachine(self: *Transformer, source_owner: NodeIndex, node: Node) Transformer.Error!NodeIndex {
             const GenMod = es2015_generator.ES2015Generator(Transformer);
             const e = node.data.extra;
             const span = node.span;
@@ -536,8 +540,9 @@ pub fn ES2017(comptime Transformer: type) type {
             if (sm_result.body.isNone()) return .none;
             sm_result.body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span);
 
-            const gen_call = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
-            const gen_wrapper_func = try es_helpers.wrapInFunction(self, gen_call, span);
+            const gen = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
+            const gen_wrapper_func = try es_helpers.wrapInFunction(self, gen.call, span);
+            try GenMod.bindWrappedStateMachine(self, source_owner, gen_wrapper_func, gen, &saved_sm_temps, span);
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper_func, span);
 
             // function body 구성: return __async(...)

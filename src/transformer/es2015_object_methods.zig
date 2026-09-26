@@ -116,9 +116,23 @@ pub fn ES2015ObjectMethods(comptime Transformer: type) type {
                 // 상위 visitNode를 통해 async/generator lowering 적용.
                 // 함수로 바뀌어도 이 본문의 `super` 는 객체 리터럴이 home 이다 — 배정된 home
                 // 이 있으면 바깥 클래스의 super 문맥을 끊고 그 기준으로 낮춘다 (#4729).
-                const home_saved = object_super.enterMethod(self, object_super.lookup(self, me));
-                const new_fn = try self.visitNode(fn_expr);
-                object_super.leaveMethod(self, home_saved);
+                const new_fn = blk: {
+                    const home_saved = object_super.enterMethod(self, object_super.lookup(self, me));
+                    defer object_super.leaveMethod(self, home_saved);
+                    const saved_owner = self.synthetic_function_source_owner;
+                    const saved_node = self.synthetic_function_node;
+                    const saved_scope = self.current_scope;
+                    defer {
+                        self.synthetic_function_source_owner = saved_owner;
+                        self.synthetic_function_node = saved_node;
+                        self.current_scope = saved_scope;
+                    }
+                    self.synthetic_function_source_owner = m_idx;
+                    self.synthetic_function_node = fn_expr;
+                    if (self.semantic_edit_enabled) self.current_scope = self.originalFunctionScope(m_idx);
+                    break :blk try self.visitNode(fn_expr);
+                };
+                try self.remapCopiedScopeOwner(m_idx, new_fn);
 
                 // key도 방문 (computed_property_key 내부 expr 등)
                 const new_key = try self.visitNode(key_idx);
