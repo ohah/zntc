@@ -31,6 +31,7 @@ fn checkGeneratedTempsWithBlock(source: []const u8, target: TransformOptions.com
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
@@ -151,6 +152,7 @@ test "#4819 for-await extracted loop temps preserve live scopes" {
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;

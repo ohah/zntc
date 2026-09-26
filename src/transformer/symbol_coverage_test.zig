@@ -864,6 +864,7 @@ test "#4819 static private accessor and method temps have exact semantic referen
         });
         try transformer.initSymbolIds(analyzer.symbol_ids.items);
         transformer.symbols = analyzer.symbols.items;
+        transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
         transformer.references = analyzer.references.items;
         transformer.scopes = analyzer.scopes.items;
         transformer.scope_maps = analyzer.scope_maps.items;
@@ -919,6 +920,7 @@ test "#4819 static private for-in target temp binds in the method scope" {
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
