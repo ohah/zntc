@@ -4,6 +4,7 @@ const Transformer = @import("../transformer.zig").Transformer;
 const NodeIndex = @import("../../parser/ast.zig").NodeIndex;
 const Span = @import("../../lexer/token.zig").Span;
 const SymbolId = @import("../../semantic/symbol.zig").SymbolId;
+const SymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
 const Reference = @import("../../semantic/symbol.zig").Reference;
 const SemanticEditor = @import("../../semantic/editor.zig").SemanticEditor;
 const EditorError = @import("../../semantic/editor.zig").Error;
@@ -39,8 +40,7 @@ fn setSymbolId(self: *Transformer, node: NodeIndex, id: SymbolId) Transformer.Er
     self.symbol_ids.items[index] = @intFromEnum(id);
 }
 
-/// `var` 합성 선언을 현재 어휘 스코프에서 생성한다. SymbolId는 추가만 한다.
-pub fn declareSyntheticVar(self: *Transformer, binding: NodeIndex, declaration_span: Span) Transformer.Error!?SymbolId {
+fn declareSynthetic(self: *Transformer, binding: NodeIndex, declaration_span: Span, kind: SymbolKind) Transformer.Error!?SymbolId {
     if (!self.semantic_edit_enabled) return null;
     const editor = try editorFor(self);
     const name_span = self.ast.getNode(binding).data.string_ref;
@@ -49,12 +49,22 @@ pub fn declareSyntheticVar(self: *Transformer, binding: NodeIndex, declaration_s
         name_span,
         declaration_span,
         self.current_scope,
-        .variable_var,
+        kind,
         Reference.NO_STMT,
         Reference.NO_STMT,
     ) catch |err| return editError(err);
     try setSymbolId(self, binding, id);
     return id;
+}
+
+/// `var` 합성 선언을 현재 어휘 스코프에서 생성한다. SymbolId는 추가만 한다.
+pub fn declareSyntheticVar(self: *Transformer, binding: NodeIndex, declaration_span: Span) Transformer.Error!?SymbolId {
+    return declareSynthetic(self, binding, declaration_span, .variable_var);
+}
+
+/// `catch {}` lowering이 만든 미사용 파라미터를 catch 스코프에 등록한다.
+pub fn declareSyntheticCatch(self: *Transformer, binding: NodeIndex, declaration_span: Span) Transformer.Error!void {
+    _ = try declareSynthetic(self, binding, declaration_span, .catch_binding);
 }
 
 /// 생성자가 받은 SymbolId를 그대로 참조에 연결한다. 이름 재검색은 하지 않는다.

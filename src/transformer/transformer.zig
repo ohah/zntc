@@ -485,6 +485,7 @@ pub const Transformer = struct {
     pub const visitTernaryNode = node_helpers.visitTernaryNode;
     pub const getSymbolIdAt = node_helpers.getSymbolIdAt;
     pub const declareSyntheticVar = @import("transformer/semantic_edit.zig").declareSyntheticVar;
+    pub const declareSyntheticCatch = @import("transformer/semantic_edit.zig").declareSyntheticCatch;
     pub const addSyntheticRef = @import("transformer/semantic_edit.zig").addSyntheticRef;
     pub const finishSemanticEdit = @import("transformer/semantic_edit.zig").finishSemanticEdit;
     pub const readNodeIdx = node_helpers.readNodeIdx;
