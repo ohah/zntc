@@ -131,13 +131,7 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
     const expr_slice = self.scratch.items[expr_start .. expr_start + expr_count];
 
     // --- _templateObject 함수명 생성 ---
-    self.tagged_template_counter += 1;
-    const fn_name = if (self.tagged_template_counter == 1)
-        "_templateObject"
-    else blk: {
-        break :blk try std.fmt.allocPrint(self.allocator, "_templateObject{d}", .{self.tagged_template_counter});
-    };
-    defer if (self.tagged_template_counter > 1) self.allocator.free(fn_name);
+    const fn_name = try es_helpers.uniqueSyntheticName(self, "_templateObject", &self.tagged_template_counter);
 
     // --- cooked 배열 노드 ---
     const cooked_list = try self.ast.addNodeList(cooked_slice);
@@ -178,7 +172,7 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
     const data_decl = try self.buildVarDecl("data", helper_call, span);
 
     // --- _templateObject = function() { return data; } ---
-    const fn_name_ref = try es_helpers.makeSyntheticRef(self, fn_name);
+    const fn_name_ref = try es_helpers.makeExactSyntheticRef(self, fn_name);
     const data_ref = try es_helpers.makeSyntheticRef(self, "data");
     const return_stmt = try self.ast.addNode(.{
         .tag = .return_statement,
@@ -230,7 +224,7 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
         .span = span,
         .data = .{ .list = outer_body_list },
     });
-    const fn_name_binding = try es_helpers.makeSyntheticBinding(self, try self.ast.addString(fn_name));
+    const fn_name_binding = try es_helpers.makeExactSyntheticBinding(self, fn_name);
     const outer_empty_params = try self.ast.addNodeList(&.{});
     const outer_params_node = try self.ast.addFormalParameters(outer_empty_params, span);
     const outer_func_extra = try self.ast.addExtras(&.{
@@ -248,7 +242,21 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
 
     // --- tag(_templateObject(), ...exprs) 호출 ---
     const new_tag = try self.visitNode(tag_idx);
-    const fn_call_ref = try es_helpers.makeSyntheticRef(self, fn_name);
+    const fn_call_ref = try es_helpers.makeExactSyntheticRef(self, fn_name);
+    if (self.semantic_edit_enabled) {
+        const program_scope = self.programScope();
+        const outer_scope = try self.addGeneratedFunctionScope(program_scope, fn_decl);
+        const inner_scope = try self.addGeneratedFunctionScope(outer_scope, inner_func);
+        const fn_id = try self.declareSyntheticInScope(fn_name_binding, span, .function_decl, program_scope);
+        const data_declarator_start = self.ast.extra_data.items[self.ast.getNode(data_decl).data.extra + 1];
+        const data_declarator: NodeIndex = @enumFromInt(self.ast.extra_data.items[data_declarator_start]);
+        const data_binding: NodeIndex = @enumFromInt(self.ast.extra_data.items[self.ast.getNode(data_declarator).data.extra]);
+        const data_id = try self.declareSyntheticInScope(data_binding, span, .variable_var, outer_scope);
+        try self.addSyntheticRefInScope(fn_name_ref, fn_id, outer_scope, .{ .write = true });
+        try self.addSyntheticRefInScope(data_ref, data_id, inner_scope, .{ .read = true });
+        try self.addSyntheticRefInScope(data_ref2, data_id, outer_scope, .{ .read = true });
+        try self.addSyntheticRef(fn_call_ref, fn_id);
+    }
     const empty_args = try self.ast.addNodeList(&.{});
     const tmpl_call_extra = try self.ast.addExtras(&.{
         @intFromEnum(fn_call_ref), empty_args.start, empty_args.len, 0,

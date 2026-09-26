@@ -445,6 +445,65 @@ test "#4819 generated loop binding and call share one appended SymbolId" {
     try std.testing.expectEqual(@as(u32, 1), edited.symbols.items[generated_id].reference_count);
 }
 
+test "#4819 tagged template helpers keep distinct function and data scopes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator,
+        \\const _templateObject = 1, _templateObject2 = 2, data = 3;
+        \\function tag(strings) { return strings[0]; }
+        \\function nested() { return tag`one`; }
+        \\console.log(nested(), tag`two`, _templateObject, _templateObject2, data);
+    );
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const original_symbols = analyzer.symbols.items.len;
+    const original_scopes = analyzer.scopes.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    try std.testing.expectEqual(original_symbols + 4, edited.symbols.items.len);
+    try std.testing.expectEqual(original_scopes + 4, edited.scopes.len);
+    for (0..2) |i| {
+        const fn_id = original_symbols + i * 2;
+        const data_id = fn_id + 1;
+        const fn_symbol = edited.symbols.items[fn_id];
+        const data_symbol = edited.symbols.items[data_id];
+        try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.function_decl, fn_symbol.kind);
+        try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, data_symbol.kind);
+        try std.testing.expectEqualStrings(if (i == 0) "_templateObject3" else "_templateObject4", transformer.ast.getText(fn_symbol.name));
+        try std.testing.expectEqualStrings("data", transformer.ast.getText(data_symbol.name));
+        try std.testing.expectEqual(transformer.programScope(), fn_symbol.scope_id);
+        try std.testing.expectEqual(fn_symbol.scope_id, edited.scopes[data_symbol.scope_id.toIndex()].parent);
+        try std.testing.expectEqual(@as(u32, 2), fn_symbol.reference_count);
+        try std.testing.expectEqual(@as(u32, 1), fn_symbol.write_count);
+        try std.testing.expectEqual(@as(u32, 2), data_symbol.reference_count);
+        var nested_data_refs: usize = 0;
+        for (edited.references) |ref| {
+            if (@intFromEnum(ref.symbol_id) != data_id or !ref.flags.read) continue;
+            if (ref.scope_id != data_symbol.scope_id) {
+                try std.testing.expectEqual(data_symbol.scope_id, edited.scopes[ref.scope_id.toIndex()].parent);
+                nested_data_refs += 1;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), nested_data_refs);
+    }
+}
+
 test "#4819 optional catch binding gets a symbol in its catch scope" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -366,6 +366,31 @@ pub fn makeSyntheticRef(self: anytype, name: []const u8) !NodeIndex {
     return markSynthetic(self, try makeIdentifierRef(self, try resolveSyntheticName(self, name)));
 }
 
+/// 이미 고유 이름을 확정한 생성자가 동일한 철자의 바인딩/참조를 만든다.
+pub fn makeExactSyntheticRef(self: anytype, name: []const u8) !NodeIndex {
+    return markSynthetic(self, try makeIdentifierRef(self, name));
+}
+
+pub fn makeExactSyntheticBinding(self: anytype, name: []const u8) !NodeIndex {
+    return markSynthetic(self, try makeBindingIdentifier(self, try self.ast.addString(name)));
+}
+
+/// 파일 전체에서 고유한 합성 함수 이름. 사용자 이름과 이전 생성 이름을 모두 피한다.
+pub fn uniqueSyntheticName(self: anytype, prefix: []const u8, counter: *u32) ![]const u8 {
+    if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+    const arena = self.name_arena.?.allocator();
+    while (true) {
+        counter.* += 1;
+        const candidate = if (counter.* == 1)
+            try arena.dupe(u8, prefix)
+        else
+            try std.fmt.allocPrint(arena, "{s}{d}", .{ prefix, counter.* });
+        if (self.synthetic_taken.contains(candidate) or try syntheticNameInUse(self, candidate)) continue;
+        try self.synthetic_taken.put(self.allocator, candidate, {});
+        return candidate;
+    }
+}
+
 /// 합성 식별자 노드로 기록한다(심볼 누락 검사기가 켜졌을 때만) — 그대로 돌려준다.
 pub fn markSynthetic(self: anytype, node: NodeIndex) NodeIndex {
     if (self.synthetic_idents) |*set| set.put(self.allocator, @intFromEnum(node), {}) catch {};
