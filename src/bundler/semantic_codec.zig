@@ -29,8 +29,8 @@ const wyhash = @import("../util/wyhash.zig");
 const codec_io = @import("../util/codec_io.zig");
 
 pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
-// v3: 변환기의 scope owner map 추가. 구 캐시는 version mismatch로 재파싱한다.
-pub const FORMAT_VERSION: u32 = 3;
+// v4: class source node → immutable self SymbolId anchor 추가.
+pub const FORMAT_VERSION: u32 = 4;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로
@@ -80,10 +80,10 @@ comptime {
         "stmt_idx:u32;scope_stmt_idx:u32;flags:semantic.symbol.ReferenceFlags;";
     if (!std.mem.eql(u8, fieldSig(Reference), reference_sig))
         @compileError("Reference 필드 시그니처가 바뀜 — putReference/readReference 의 명시 직렬화 갱신 후 이 시그니처를 갱신.\n실제: " ++ fieldSig(Reference));
-    // serialize/deserialize 는 ModuleSemanticData 의 10개 필드를 손으로 열거한다. 필드가 추가되면
+    // serialize/deserialize 는 ModuleSemanticData 의 11개 필드를 손으로 열거한다. 필드가 추가되면
     // 직렬화에서 silently 누락 → PR4 cache-hit 연결 시 그 필드만 default 로 stale miscompile.
     // 필드 수를 못박아 새 필드 추가를 컴파일 에러로 만들어 codec 갱신을 강제한다.
-    if (@typeInfo(ModuleSemanticData).@"struct".fields.len != 10) {
+    if (@typeInfo(ModuleSemanticData).@"struct".fields.len != 11) {
         @compileError("ModuleSemanticData 필드 수가 바뀜 — semantic_codec 의 serialize/deserialize 에 새 필드 직렬화 추가 후 이 가드를 갱신.");
     }
 }
@@ -249,6 +249,16 @@ pub fn serialize(sem: *const ModuleSemanticData, out: *std.ArrayList(u8), alloc:
     for (owner_keys) |key| {
         try putU32(&payload, alloc, key);
         try putU32(&payload, alloc, sem.scope_owner_map.get(key).?);
+    }
+    try putU32(&payload, alloc, @intCast(sem.class_self_symbol_map.count()));
+    const class_keys = try alloc.alloc(u32, sem.class_self_symbol_map.count());
+    defer alloc.free(class_keys);
+    var class_it = sem.class_self_symbol_map.keyIterator();
+    for (class_keys) |*key| key.* = class_it.next().?.*;
+    std.mem.sortUnstable(u32, class_keys, {}, std.sort.asc(u32));
+    for (class_keys) |key| {
+        try putU32(&payload, alloc, key);
+        try putU32(&payload, alloc, sem.class_self_symbol_map.get(key).?);
     }
 
     const checksum = wyhash.hashU64(payload.items);
@@ -428,6 +438,15 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
         if (key >= symbol_ids_len or value >= scopes_len or scope_owner_map.contains(key)) return error.Truncated;
         scope_owner_map.putAssumeCapacity(key, value);
     }
+    var class_self_symbol_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const class_count = try checkedMapCount(&r, try r.u32v());
+    try class_self_symbol_map.ensureTotalCapacity(arena, class_count);
+    for (0..class_count) |_| {
+        const key = try r.u32v();
+        const value = try r.u32v();
+        if (key >= symbol_ids_len or value >= symbols_len or class_self_symbol_map.contains(key)) return error.Truncated;
+        class_self_symbol_map.putAssumeCapacity(key, value);
+    }
 
     return .{
         .symbols = .{ .items = symbols_slice, .capacity = symbols_slice.len },
@@ -440,5 +459,6 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
         .numeric_const_texts = numeric_const_texts,
         .helper_scope_map = helper_scope_map,
         .scope_owner_map = scope_owner_map,
+        .class_self_symbol_map = class_self_symbol_map,
     };
 }

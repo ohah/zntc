@@ -1448,6 +1448,7 @@ fn transpileWithCallbackInternal(
         transformer.scopes = analyzer.scopes.items;
         transformer.scope_maps = analyzer.scope_maps.items;
         transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
         transformer.helper_scope_map = analyzer.helper_scope_map;
         transformer.semantic_edit_enabled = true;
         transformer.unresolved_references = &analyzer.unresolved_references;
@@ -1466,6 +1467,7 @@ fn transpileWithCallbackInternal(
             transformer.scopes = analyzer.scopes.items;
             transformer.scope_maps = analyzer.scope_maps.items;
             transformer.scope_owner_map = analyzer.scope_owner_map;
+            transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
             transformer.helper_scope_map = analyzer.helper_scope_map;
         }
     }

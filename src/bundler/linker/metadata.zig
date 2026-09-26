@@ -381,6 +381,36 @@ fn mergeUnifiedPhaseB(
     }
 }
 
+/// A native class declaration emits one name token for two semantic bindings.
+/// The linker may deconflict its outer binding after analysis; its inner self
+/// references must use that exact emitted spelling. The source class anchor
+/// keeps this pairing independent of name searches or scope guesses.
+fn synchronizeClassSelfNames(
+    ast: *const Ast,
+    sem: *const @import("../module.zig").ModuleSemanticData,
+    renames: *std.AutoHashMapUnmanaged(u32, []const u8),
+    allocator: std.mem.Allocator,
+) !void {
+    var it = sem.class_self_symbol_map.iterator();
+    while (it.next()) |entry| {
+        const class_idx = entry.key_ptr.*;
+        const inner_id = entry.value_ptr.*;
+        if (class_idx >= ast.nodes.items.len or inner_id >= sem.symbols.items.len)
+            std.debug.panic("class self anchor is outside semantic table", .{});
+        const class_node = ast.nodes.items[class_idx];
+        if (class_node.tag != .class_declaration) continue;
+        const name_idx = ast.extra_data.items[class_node.data.extra + @import("../../parser/ast.zig").ClassExtra.name];
+        if (name_idx >= sem.symbol_ids.len) std.debug.panic("class outer binding node is outside semantic table", .{});
+        const outer_id = sem.symbol_ids[name_idx] orelse std.debug.panic("class outer binding has no SymbolId", .{});
+        if (outer_id == inner_id) std.debug.panic("class outer and self SymbolId collapsed", .{});
+        if (renames.get(outer_id)) |name| {
+            try renames.put(allocator, inner_id, name);
+        } else {
+            _ = renames.remove(inner_id);
+        }
+    }
+}
+
 /// record `rec_i` 에 속한 import binding 이 있는지 — `namespace_only=true` 면 namespace
 /// binding 한정. 대형 모듈은 precompute 된 비트셋으로 O(1), 작은 모듈(bitset=null)은
 /// import_bindings 선형 스캔(맵 alloc 회피). 두 호출처(has_binding/has_namespace)가 동일
@@ -1409,6 +1439,7 @@ pub fn buildMetadataForAst(
             }
         }
     }
+    try synchronizeClassSelfNames(ast, &sem, &renames, self.allocator);
 
     // Side-effect-only import has no ImportBinding, so scope-hoisted modules that
     // skip raw import declarations still need an explicit evaluation preamble for

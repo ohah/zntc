@@ -101,6 +101,7 @@ pub const ModuleSemanticData = struct {
     /// 스코프별 이름→심볼 인덱스 조회. scope_maps[scope_id].get("x") → symbol index.
     scope_maps: []const std.StringHashMapUnmanaged(usize),
     scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    class_self_symbol_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// export된 이름 목록. exported_names.get("x") → Span.
     exported_names: std.StringHashMapUnmanaged(Span),
     /// 노드 인덱스 → 심볼 인덱스 매핑. 식별자 노드만 유효값.

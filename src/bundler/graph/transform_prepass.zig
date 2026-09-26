@@ -138,6 +138,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         transformer.scopes = sem.scopes;
         transformer.scope_maps = sem.scope_maps;
         transformer.scope_owner_map = sem.scope_owner_map;
+        transformer.class_self_symbol_map = sem.class_self_symbol_map;
         transformer.helper_scope_map = sem.helper_scope_map;
         transformer.semantic_edit_enabled = true;
         transformer.unresolved_references = &sem.unresolved_references;
@@ -163,6 +164,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         transformer.scopes = module.semantic.?.scopes;
         transformer.scope_maps = module.semantic.?.scope_maps;
         transformer.scope_owner_map = module.semantic.?.scope_owner_map;
+        transformer.class_self_symbol_map = module.semantic.?.class_self_symbol_map;
         transformer.helper_scope_map = module.semantic.?.helper_scope_map;
     }
     // #4598: `lowerProgram` 이 만든 async IIFE statement 를 module 로 넘긴다 —
@@ -378,6 +380,7 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
             .scopes = analyzer.scopes.items,
             .scope_maps = analyzer.scope_maps.items,
             .scope_owner_map = analyzer.scope_owner_map,
+            .class_self_symbol_map = analyzer.class_self_symbol_map,
             .exported_names = analyzer.exported_names,
             .symbol_ids = analyzer.symbol_ids.items,
             .unresolved_references = analyzer.unresolved_references,

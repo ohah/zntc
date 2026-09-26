@@ -130,10 +130,9 @@ pub const DeclFlags = packed struct(u16) {
     /// Annex B: if/else body의 function declaration (sloppy mode).
     /// catch body에서 catch parameter와의 충돌 검사를 건너뛰기 위해 필요.
     is_annex_b_function: bool = false,
-    /// `const Foo = class Bar {}` 의 inner `Bar` 같은 named class expression 의
-    /// inner name binding. ECMA spec: 외부 scope 에서 안 보이고 `.name` 프로퍼티로만
-    /// 관찰됨. mangler 가 이 이름을 mangle 하면 `.name` 도 변하므로 (#2197) skip.
-    is_class_expr_name: bool = false,
+    /// Native class names are observable through `.name`. A declaration's one
+    /// name token also denotes outer and inner bindings, which must match.
+    preserve_class_name: bool = false,
     /// `import * as ns` 네임스페이스 import 바인딩. is_import 와 함께 set.
     /// `ns.x = v`/`delete ns.x` 등 namespace 멤버 변형이 ESM-불법(namespace 객체 sealed)
     /// 인지 판정. named import(`import {obj}`) 멤버 변형(`obj.x=v`)은 합법이라 구분 필요.

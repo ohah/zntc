@@ -29,12 +29,14 @@ test "semantic_codec: analyzer round-trip — relocatable 필드 보존" {
 
     try testing.expect(ana.scope_maps.items.len > 0); // 맵 round-trip 검증 의미 보장
     try testing.expect(ana.scope_owner_map.count() > 0);
+    try testing.expect(ana.class_self_symbol_map.count() > 0);
 
     const sem = ModuleSemanticData{
         .symbols = ana.symbols,
         .scopes = ana.scopes.items,
         .scope_maps = ana.scope_maps.items,
         .scope_owner_map = ana.scope_owner_map,
+        .class_self_symbol_map = ana.class_self_symbol_map,
         .exported_names = ana.exported_names,
         .symbol_ids = ana.symbol_ids.items,
         .unresolved_references = ana.unresolved_references,
@@ -59,6 +61,11 @@ test "semantic_codec: analyzer round-trip — relocatable 필드 보존" {
     var owner_it = sem.scope_owner_map.iterator();
     while (owner_it.next()) |entry| {
         try testing.expectEqual(entry.value_ptr.*, sem2.scope_owner_map.get(entry.key_ptr.*).?);
+    }
+    try testing.expectEqual(sem.class_self_symbol_map.count(), sem2.class_self_symbol_map.count());
+    var class_it = sem.class_self_symbol_map.iterator();
+    while (class_it.next()) |entry| {
+        try testing.expectEqual(entry.value_ptr.*, sem2.class_self_symbol_map.get(entry.key_ptr.*).?);
     }
 
     // relocatable 슬라이스는 byte 동일

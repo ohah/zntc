@@ -802,6 +802,7 @@ fn testCollectWithModuleType(source: []const u8, module_type: ModuleType) !Featu
         .scopes = analyzer.scopes.items,
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
+        .class_self_symbol_map = analyzer.class_self_symbol_map,
         .exported_names = analyzer.exported_names,
         .symbol_ids = analyzer.symbol_ids.items,
         .unresolved_references = analyzer.unresolved_references,
