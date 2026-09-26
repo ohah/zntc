@@ -307,7 +307,9 @@ pub fn ES2017(comptime Transformer: type) type {
             defer self.in_extracted_fn_body = saved_extracted_body;
 
             const new_name = try self.visitNode(name_idx);
+            const parameter_temp_start = self.temp_var_counter;
             const new_params = try self.visitExtraList(.{ .start = params_list.start, .len = params_list.len });
+            const parameter_temp_end = self.temp_var_counter;
             const param_needs_this = self.needs_this_var;
             const param_needs_arguments = self.needs_arguments_var;
 
@@ -392,11 +394,12 @@ pub fn ES2017(comptime Transformer: type) type {
             try self.scratch.appendSlice(self.allocator, capture_stmts[0..capture_count]);
             try self.scratch.append(self.allocator, return_stmt);
             const outer_body_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-            const outer_body = try self.ast.addNode(.{
+            const unhoisted_body = try self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,
                 .data = .{ .list = outer_body_list },
             });
+            const outer_body = try self.hoistParameterTempsAndRestore(unhoisted_body, parameter_temp_start, parameter_temp_end, span);
             const outer_params_node = try self.ast.addFormalParameters(new_params, span);
             const outer_flags = flags & ~(@as(u32, ast_mod.FunctionFlags.is_async) | @as(u32, ast_mod.FunctionFlags.is_generator));
             const outer_extra = try self.ast.addExtras(&.{
@@ -451,7 +454,9 @@ pub fn ES2017(comptime Transformer: type) type {
             self.ast.extra_data.items[self.ast.getNode(gen_func).data.extra + 2] = @intFromEnum(gen_body);
             try self.bindGeneratedFunctionTemps(source_scope, gen_scope, gen_body, body_temps.items, node.span);
 
+            const parameter_temp_start = self.temp_var_counter;
             const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
+            const parameter_temp_end = self.temp_var_counter;
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_func, node.span);
 
             const return_stmt = try self.ast.addNode(.{
@@ -470,11 +475,12 @@ pub fn ES2017(comptime Transformer: type) type {
                 break :blk_cap try self.ast.addNodeList(self.scratch.items[scratch_top..]);
             };
 
-            const wrapper_body = try self.ast.addNode(.{
+            const unhoisted_body = try self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = node.span,
                 .data = .{ .list = body_list },
             });
+            const wrapper_body = try self.hoistParameterTempsAndRestore(unhoisted_body, parameter_temp_start, parameter_temp_end, node.span);
 
             const new_flags = flags & ~ast_mod.FunctionFlags.is_async;
             const new_params_node = try self.ast.addFormalParameters(new_params, node.span);
@@ -569,7 +575,9 @@ pub fn ES2017(comptime Transformer: type) type {
 
             const new_name = try self.visitNode(name_idx);
 
+            const parameter_temp_start = self.temp_var_counter;
             const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
+            const parameter_temp_end = self.temp_var_counter;
             const param_needs_this = self.needs_this_var;
             const param_needs_arguments = self.needs_arguments_var;
 
@@ -618,11 +626,12 @@ pub fn ES2017(comptime Transformer: type) type {
                 try self.scratch.append(self.allocator, return_stmt);
                 break :blk try self.ast.addNodeList(self.scratch.items[scratch_top..]);
             };
-            const wrapper_body = try self.ast.addNode(.{
+            const unhoisted_body = try self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,
                 .data = .{ .list = body_list },
             });
+            const wrapper_body = try self.hoistParameterTempsAndRestore(unhoisted_body, parameter_temp_start, parameter_temp_end, span);
 
             // 일반 function으로 변환 (async + generator 플래그 모두 제거)
             const new_flags = flags & ~(ast_mod.FunctionFlags.is_async | @as(u32, ast_mod.FunctionFlags.is_generator));

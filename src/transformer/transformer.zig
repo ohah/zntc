@@ -588,6 +588,7 @@ pub const Transformer = struct {
     pub const hoistTempVars = lists_mod.hoistTempVars;
     pub const hoistTempVarsInOriginalFunction = lists_mod.hoistTempVarsInOriginalFunction;
     pub const hoistArrowBodyTemps = lists_mod.hoistArrowBodyTemps;
+    pub const hoistParameterTempsAndRestore = lists_mod.hoistParameterTempsAndRestore;
     pub const hoistTempVarsSkippingSpans = lists_mod.hoistTempVarsSkippingSpans;
     pub const hoistStateMachineTempsAndRestore = lists_mod.hoistStateMachineTempsAndRestore;
     pub const hoistTempVarsRecording = lists_mod.hoistTempVarsRecording;

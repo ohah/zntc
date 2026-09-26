@@ -55,12 +55,15 @@ pub fn Methods(comptime Transformer: type) type {
 
             const arrow_env = es_helpers.pushArrowEnv(self);
             defer es_helpers.popArrowEnv(self, arrow_env);
+            const parameter_temp_start = self.temp_var_counter;
             const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
+            const parameter_temp_end = self.temp_var_counter;
             const param_needs_this = self.needs_this_var;
             const param_needs_arguments = self.needs_arguments_var;
 
             const nt_ctx: ?Transformer.NewTargetCtx = if (self.options.unsupported.new_target) .method else null;
-            const new_body = try visitMethodBodyWithParams(self, body_idx, span, nt_ctx, param_needs_this, param_needs_arguments);
+            const visited_body = try visitMethodBodyWithParams(self, body_idx, span, nt_ctx, param_needs_this, param_needs_arguments);
+            const new_body = try self.hoistParameterTempsAndRestore(visited_body, parameter_temp_start, parameter_temp_end, span);
 
             const none = @intFromEnum(NodeIndex.none);
             const new_params_node = try self.ast.addFormalParameters(new_params, span);
@@ -148,10 +151,12 @@ pub fn Methods(comptime Transformer: type) type {
             const params_list_unwrap = self.ast.functionParamsList(member);
             const arrow_env = es_helpers.pushArrowEnv(self);
             defer es_helpers.popArrowEnv(self, arrow_env);
+            const parameter_temp_start = self.temp_var_counter;
             // The synthetic async/generator function was already visited by
             // lowerAsyncOrGeneratorMethod. A second visit rewrites its freshly
             // generated captures and loses their source parameter boundary.
             const new_params = if (already_lowered) params_list_unwrap else try self.visitExtraList(params_list_unwrap);
+            const parameter_temp_end = self.temp_var_counter;
             const param_needs_this = self.needs_this_var;
             const param_needs_arguments = self.needs_arguments_var;
 
@@ -196,6 +201,8 @@ pub fn Methods(comptime Transformer: type) type {
                             async_call,
                             sm_result.var_decl,
                             new_params,
+                            parameter_temp_start,
+                            parameter_temp_end,
                             span,
                         );
                         try self.remapCopiedScopeOwner(info.source_member_idx, func_expr);
@@ -206,14 +213,15 @@ pub fn Methods(comptime Transformer: type) type {
                 const method_nt: ?Transformer.NewTargetCtx = if (self.options.unsupported.new_target) .method else null;
                 const gen_wrapper = try es_helpers.buildGeneratorWrapper(self, try visitMethodBodyWithCtx(self, body_idx, span, method_nt), span);
                 const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper, span);
-                const func_expr = try buildWrappedFunc(self, async_call, .none, new_params, span);
+                const func_expr = try buildWrappedFunc(self, async_call, .none, new_params, parameter_temp_start, parameter_temp_end, span);
                 try self.remapCopiedScopeOwner(info.source_member_idx, func_expr);
                 self.current_scope = saved_scope;
                 return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
             }
 
             const method_nt: ?Transformer.NewTargetCtx = if (self.options.unsupported.new_target) .method else null;
-            const new_body = if (already_lowered) body_idx else try visitMethodBodyWithParams(self, body_idx, span, method_nt, param_needs_this, param_needs_arguments);
+            const visited_body = if (already_lowered) body_idx else try visitMethodBodyWithParams(self, body_idx, span, method_nt, param_needs_this, param_needs_arguments);
+            const new_body = if (already_lowered) visited_body else try self.hoistParameterTempsAndRestore(visited_body, parameter_temp_start, parameter_temp_end, span);
 
             const func_flags: u32 = blk: {
                 var f: u32 = 0;
@@ -251,6 +259,8 @@ pub fn Methods(comptime Transformer: type) type {
             call_expr: NodeIndex,
             var_decl: NodeIndex,
             params: ast_mod.NodeList,
+            parameter_temp_start: u32,
+            parameter_temp_end: u32,
             span: Span,
         ) Transformer.Error!NodeIndex {
             const return_stmt = try self.ast.addNode(.{
@@ -275,12 +285,13 @@ pub fn Methods(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .list = body_list },
             });
+            const final_body = try self.hoistParameterTempsAndRestore(wrapper_body, parameter_temp_start, parameter_temp_end, span);
             const none = @intFromEnum(NodeIndex.none);
             const params_node = try self.ast.addFormalParameters(params, span);
             const func_extra = try self.ast.addExtras(&.{
                 none,
                 @intFromEnum(params_node),
-                @intFromEnum(wrapper_body),
+                @intFromEnum(final_body),
                 0,
                 none,
             });

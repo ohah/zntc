@@ -69,8 +69,10 @@ pub fn Constructors(comptime Transformer: type) type {
 
             // TS parameter property(`constructor(public x)`)는 modifier 만 strip 되어 일반 형태로 visit 되지만,
             // 이 경로는 visitMethodDefinition 을 거치지 않으므로 `this.x = x` 삽입을 직접 수행해야 함 (#1471).
+            const parameter_temp_start = self.temp_var_counter;
             var pp = try self.visitParamsCollectProperties(params_list_old);
             defer pp.prop_names.deinit(self.allocator);
+            const parameter_temp_end = self.temp_var_counter;
             const param_needs_this = self.needs_this_var;
             const param_needs_arguments = self.needs_arguments_var;
             var param_lowering: ?es2015_params.ES2015Params(Transformer).LowerResult = null;
@@ -120,6 +122,8 @@ pub fn Constructors(comptime Transformer: type) type {
                 }
                 new_body = try self.prependParameterInitializersToBody(new_body, self.scratch.items[scratch_top..]);
             }
+
+            new_body = try self.hoistParameterTempsAndRestore(new_body, parameter_temp_start, parameter_temp_end, span);
 
             const none = @intFromEnum(NodeIndex.none);
             const new_params_node = try self.ast.addFormalParameters(lowered_params, span);
