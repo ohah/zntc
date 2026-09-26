@@ -21,11 +21,11 @@ function iterable(label, values) {
     },
   };
 }
-function run(_d, _step1) {
+function run(_a, _d, _step1) {
   const result = [];
   outerLoop: for (const outer of iterable('outer', [1, 2])) {
     for (const inner of iterable('inner', [outer])) {
-      result.push(inner + _d + _step1);
+      result.push(inner + _a + _d + _step1);
       break;
     }
     if (outer === 2) break outerLoop;
@@ -38,7 +38,7 @@ for (let index = 0; index < 2; index++) {
     captured.push(() => value + index);
   }
 }
-console.log(JSON.stringify([run(10, 100), captured.map(read => read()), events]));`;
+console.log(JSON.stringify([run(1000, 10, 100), captured.map(read => read()), events]));`;
 
 describe('ES5 for-of iterator symbol (#4819)', () => {
   let cleanup: (() => Promise<void>) | undefined;
