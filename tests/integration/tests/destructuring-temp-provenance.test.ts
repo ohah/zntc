@@ -34,12 +34,98 @@ function f() {
 console.log(f());
 `;
 
+const assignmentCases = [
+  {
+    target: 'es5',
+    source: `
+const _a = 99;
+let calls = 0;
+function source() { calls++; return { x: 3, nested: { value: 4 } }; }
+function run() {
+  let x = 0;
+  {
+    let y = 0;
+    const assigned = ({ x, nested: { value: y } } = source());
+    [x, y] = [x + 1, y + 1];
+    return [x, y, assigned.x, calls, _a];
+  }
+}
+console.log(JSON.stringify(run()));
+`,
+  },
+  {
+    target: 'es2015',
+    source: `
+const _a = 99;
+let calls = 0;
+function source() { calls++; return { x: 3, y: 4 }; }
+function run() {
+  let x = 0;
+  {
+    let rest;
+    const assigned = ({ x, ...rest } = source());
+    return [x, rest.y, assigned.y, calls, _a];
+  }
+}
+console.log(JSON.stringify(run()));
+`,
+  },
+] as const;
+
 describe('ES5 destructuring generated temp provenance (#4819)', () => {
   let cleanup: (() => Promise<void>) | undefined;
   afterEach(async () => {
     await cleanup?.();
     cleanup = undefined;
   });
+
+  for (const { target, source: assignmentSource } of assignmentCases) {
+    for (const bundle of [false, true]) {
+      for (const minify of [false, true]) {
+        test(`${target} assignment temps, ${bundle ? 'bundle' : 'single'}, ${minify ? 'minify' : 'plain'}`, async () => {
+          const fixture = await createFixture({
+            'input.mjs': assignmentSource,
+            'package.json': '{"type":"module"}',
+          });
+          cleanup = fixture.cleanup;
+          const native = spawnSync('node', [join(fixture.dir, 'input.mjs')], { encoding: 'utf8' });
+          expect(native.status, native.stderr).toBe(0);
+          const out = join(fixture.dir, bundle ? 'out.cjs' : 'out.mjs');
+          const result = await runZntcInDir(fixture.dir, [
+            ...(bundle ? ['--bundle', '--platform=node', '--format=cjs'] : []),
+            'input.mjs',
+            `--target=${target}`,
+            ...(minify ? ['--minify'] : []),
+            '-o',
+            out,
+          ]);
+          expect(result.exitCode, result.stderr).toBe(0);
+          const actual = spawnSync('node', [out], { encoding: 'utf8' });
+          expect(actual.status, actual.stderr).toBe(0);
+          expect(actual.stdout).toBe(native.stdout);
+        });
+      }
+    }
+  }
+
+  for (const { target, source: assignmentSource } of assignmentCases) {
+    test(`${target} assignment temps have no missing synthetic binding`, async () => {
+      const fixture = await createFixture({ 'input.mjs': assignmentSource });
+      cleanup = fixture.cleanup;
+      const result = spawnSync(ZNTC_BIN, ['input.mjs', `--target=${target}`, '-o', 'out.mjs'], {
+        cwd: fixture.dir,
+        env: {
+          PATH: process.env.PATH ?? '/usr/bin:/bin',
+          ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+          ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+        },
+        encoding: 'utf8',
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).toMatch(/synthetic-coverage .* missing_binding=0 /);
+      expect(result.stderr).toMatch(/symbol-coverage .* missing=0 wrong=0/);
+    });
+  }
 
   for (const bundle of [false, true]) {
     for (const minify of [false, true]) {
