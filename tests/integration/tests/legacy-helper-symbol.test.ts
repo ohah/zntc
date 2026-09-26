@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import ts from 'typescript';
 import { createFixture, runZntcInDir } from './helpers';
 
+// Return-type metadata currently emits Object for every method. Explicit any
+// keeps this helper-linkage fixture inside that supported serialization case.
 const source = `
 const events: string[] = [];
 (Reflect as any).metadata = function (key: string, value: any) {
@@ -18,7 +20,7 @@ function decorated(_target: any, property?: string) {
 @decorated
 class Service {
   constructor(value: number) {}
-  @decorated method(value: string): number { return value.length; }
+  @decorated method(value: string): any { return value.length; }
 }
 console.log(JSON.stringify([new Service(1).method('abc'), events]));
 `;
@@ -68,10 +70,10 @@ describe('legacy runtime helper symbols (#4819)', () => {
             ...(minify ? ['--minify-identifiers', '--minify-syntax'] : []),
             ...(mode === 'single' ? [] : ['--platform=node']),
             ...(mode === 'split'
-              ? ['--format=esm', '--splitting', '--outdir=dist']
+              ? ['--format=esm', '--splitting', '--outdir', 'dist']
               : [...(mode === 'bundle' ? ['--format=cjs'] : []), '-o', out]),
           ]);
-          expect(result.exitCode).toBe(0);
+          expect(result.exitCode, result.stderr).toBe(0);
           const runtime = spawnSync('node', [out], { encoding: 'utf8' });
           expect(runtime.status).toBe(0);
           expect(runtime.stdout).toBe(native.stdout);
