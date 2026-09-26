@@ -121,6 +121,9 @@ pub const Transformer = struct {
     scope_maps: []const std.StringHashMapUnmanaged(usize) = &.{},
     /// analyzer가 기록한 원본 스코프 생성 노드 → ScopeId. 별도 소유권은 analyzer/module에 있다.
     scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// 원본 scope owner가 동일한 종류의 새 노드로 복사되었을 때의 old → new 매핑.
+    /// scope_owner_map 자체는 analyzer 소유라 변환 중 수정하지 않는다.
+    scope_owner_remaps: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     current_scope: ScopeId = .none,
     unresolved_references: ?*const std.StringHashMapUnmanaged(void) = null,
     /// 심볼 → 블록 스코핑 새 이름(`x$N`). es5 블록 스코핑을 낮추고 분석기 스코프가 있을 때
@@ -435,9 +438,15 @@ pub const Transformer = struct {
     pub fn visitNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         if (idx.isNone()) return .none;
         const saved_scope = self.current_scope;
-        if (self.scope_owner_map.get(@intFromEnum(idx))) |scope_id| self.current_scope = @enumFromInt(scope_id);
+        const owner_scope = self.scope_owner_map.get(@intFromEnum(idx));
+        if (owner_scope) |scope_id| self.current_scope = @enumFromInt(scope_id);
         defer self.current_scope = saved_scope;
         const new_idx = try self.visitNodeInner(idx);
+        if (owner_scope != null and !new_idx.isNone() and new_idx != idx and
+            self.ast.getNode(idx).tag == self.ast.getNode(new_idx).tag)
+        {
+            try self.scope_owner_remaps.put(self.allocator, @intFromEnum(idx), @intFromEnum(new_idx));
+        }
         // symbol_id 전파: 원본 node_idx → 새 node_idx
         self.propagateSymbolId(idx, new_idx);
         return new_idx;
