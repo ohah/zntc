@@ -444,7 +444,8 @@ pub const Transformer = struct {
     /// `class` / `class_private_field` 옵션 둘 중 하나라도 켜져 있고, 현재 visit 중인
     /// class 가 private field 를 갖고 있을 때 true.
     pub inline fn hasActivePrivateFieldLowering(self: *const Transformer) bool {
-        return (self.options.unsupported.class or self.options.unsupported.class_private_field) and self.current_private_fields.len > 0;
+        return (self.options.unsupported.class or self.options.unsupported.class_private_field) and
+            (self.current_private_fields.len > 0 or self.current_private_methods.len > 0);
     }
 
     // Construction/teardown — transformer/lifecycle.zig로 위임

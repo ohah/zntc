@@ -821,3 +821,118 @@ test "#4819 static private initializer this uses the active class symbol" {
         try std.testing.expectEqual(@as(usize, 0), c.wrong);
     }
 }
+
+test "#4819 static private accessor and method temps have exact semantic references" {
+    const source =
+        \\class Counter {
+        \\  static #value = 1;
+        \\  static get #entry() { return this.#value; }
+        \\  static set #entry(value) { this.#value = value; }
+        \\  static #method(value) { return value; }
+        \\  static receiver() { return this; }
+        \\  static run() { this.receiver().#entry ??= 2; return [this.receiver().#entry++, this.receiver().#method(4)]; }
+        \\}
+        \\Counter.run();
+    ;
+    for ([_]TransformOptions.compat.ESTarget{ .es5, .es2015 }) |target| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, source);
+        var parser = Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".mjs");
+        _ = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        analyzer.is_module = true;
+        try analyzer.analyze();
+
+        var transformer = try Transformer.init(allocator, &parser.ast, .{
+            .unsupported = TransformOptions.compat.fromESTarget(target),
+        });
+        try transformer.initSymbolIds(analyzer.symbol_ids.items);
+        transformer.symbols = analyzer.symbols.items;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.semantic_edit_enabled = true;
+        _ = try transformer.transform();
+        const edited = (try transformer.finishSemanticEdit()).?;
+        try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+
+        const nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndices(allocator, transformer.ast);
+        var temp_refs: usize = 0;
+        var updates: usize = 0;
+        for (nodes) |raw| {
+            const node = transformer.ast.nodes.items[raw];
+            if (node.tag != .identifier_reference) continue;
+            const name = transformer.ast.getText(node.data.string_ref);
+            if (name.len != 2 or name[0] != '_' or name[1] < 'a' or name[1] > 'z') continue;
+            const symbol_id = edited.symbol_ids[raw] orelse return error.TestUnexpectedResult;
+            const symbol = edited.symbols.items[symbol_id];
+            try std.testing.expectEqual(node.data.string_ref.start, symbol.name.start);
+            try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, symbol.kind);
+            try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[symbol.scope_id.toIndex()].kind);
+            var found: usize = 0;
+            for (edited.references) |ref| {
+                if (@intFromEnum(ref.node_index) != raw) continue;
+                try std.testing.expectEqual(symbol_id, @intFromEnum(ref.symbol_id));
+                try std.testing.expectEqual(symbol.scope_id, ref.scope_id);
+                if (ref.flags.read and ref.flags.write) updates += 1;
+                found += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), found);
+            temp_refs += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 16), temp_refs);
+        try std.testing.expectEqual(@as(usize, 1), updates);
+    }
+}
+
+test "#4819 static private for-in target temp binds in the method scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "class Counter { static #method() {} static run() { for (this.#method in {x: 1}) {} } } Counter.run();");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const original_symbol_count = analyzer.symbols.items.len;
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable_nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndices(allocator, transformer.ast);
+    var reachable: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    for (reachable_nodes) |node| try reachable.put(allocator, node, {});
+
+    var temp_count: usize = 0;
+    for (edited.symbols.items[original_symbol_count..], original_symbol_count..) |symbol, id| {
+        const name = transformer.ast.getText(symbol.name);
+        if (name.len != 2 or name[0] != '_' or name[1] < 'a' or name[1] > 'z') continue;
+        try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[symbol.scope_id.toIndex()].kind);
+        var exact_refs: usize = 0;
+        for (edited.references) |ref| {
+            if (@intFromEnum(ref.symbol_id) != id or ref.node_index.isNone()) continue;
+            try std.testing.expect(reachable.contains(@intFromEnum(ref.node_index)));
+            try std.testing.expect(ref.flags.read);
+            try std.testing.expect(!ref.flags.write);
+            try std.testing.expectEqual(@as(?u32, @intCast(id)), edited.symbol_ids[@intFromEnum(ref.node_index)]);
+            exact_refs += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), exact_refs);
+        temp_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), temp_count);
+}

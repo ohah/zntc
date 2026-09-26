@@ -62,6 +62,59 @@ pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, in
     return makeVarDeclaration(self, &.{declarator}, .@"var", span);
 }
 
+/// A static private method is read-only; an accessor has independent get/set slots.
+/// Both accessor halves share one descriptor, regardless of declaration order.
+pub fn buildStaticPrivateMethodDescriptor(self: anytype, var_name: []const u8, method_fn: ?[]const u8, getter_fn: ?[]const u8, setter_fn: ?[]const u8, span: Span) !NodeIndex {
+    const scratch_top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+    if (method_fn) |name| {
+        const key = try makePropertyName(self, "value");
+        const value = try makeSyntheticRef(self, name);
+        try self.scratch.append(self.allocator, try self.ast.addNode(.{
+            .tag = .object_property,
+            .span = span,
+            .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
+        }));
+        const writable_key = try makePropertyName(self, "writable");
+        const false_span = try self.ast.addString("false");
+        const false_val = try self.ast.addNode(.{
+            .tag = .boolean_literal,
+            .span = false_span,
+            .data = .{ .none = 0 },
+        });
+        try self.scratch.append(self.allocator, try self.ast.addNode(.{
+            .tag = .object_property,
+            .span = span,
+            .data = .{ .binary = .{ .left = writable_key, .right = false_val, .flags = 0 } },
+        }));
+    } else {
+        if (getter_fn) |name| {
+            const key = try makePropertyName(self, "get");
+            const value = try makeSyntheticRef(self, name);
+            try self.scratch.append(self.allocator, try self.ast.addNode(.{
+                .tag = .object_property,
+                .span = span,
+                .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
+            }));
+        }
+        if (setter_fn) |name| {
+            const key = try makePropertyName(self, "set");
+            const value = try makeSyntheticRef(self, name);
+            try self.scratch.append(self.allocator, try self.ast.addNode(.{
+                .tag = .object_property,
+                .span = span,
+                .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
+            }));
+        }
+    }
+
+    const obj = try makeObjectLiteral(self, self.scratch.items[scratch_top..], span);
+    const binding = try makeSyntheticBinding(self, try self.ast.addString(var_name));
+    const declarator = try makeDeclarator(self, binding, obj, span);
+    return makeVarDeclaration(self, &.{declarator}, .@"var", span);
+}
+
 /// class member의 key가 non-computed `constructor` 이름인지 판별.
 /// IdentifierName/StringLiteral constructor는 실제 class constructor지만,
 /// ComputedPropertyName `['constructor']` 는 일반 prototype method 이다.
@@ -874,6 +927,22 @@ pub fn captureToTemp(self: anytype, value: NodeIndex, span: Span) !TempCapture {
         // 합성 paren 제거(#4042 PR8): bare assign — 첫 사용 자리의 precedence 가 괄호 재유도.
         .paren_assign = assign,
     };
+}
+
+/// Use only for new lowered expressions whose temp references will not be
+/// revisited by the transformer. The original captureToTemp contract stays
+/// unchanged for callers that track their own references.
+pub fn captureToTrackedTemp(self: anytype, value: NodeIndex, span: Span) !TempCapture {
+    const captured = try captureToTemp(self, value, span);
+    const assignment = self.ast.getNode(captured.paren_assign);
+    try self.trackHoistedTempRef(captured.span, assignment.data.binary.left, .{ .write = true });
+    return captured;
+}
+
+pub fn makeTrackedTempRef(self: anytype, name_span: Span, node_span: Span, flags: @import("../semantic/mod.zig").ReferenceFlags) !NodeIndex {
+    const ref = try makeTempVarRef(self, name_span, node_span);
+    try self.trackHoistedTempRef(name_span, ref, flags);
+    return ref;
 }
 
 /// `callee(receiver, ...args)` 호출 노드를 만든다 — 기존 args extra-list 를 ArrayList 로
