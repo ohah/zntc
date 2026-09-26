@@ -286,7 +286,8 @@ pub const Symbol = struct {
     /// #1328 Phase 4e-2: `extendSymbol`로 추가된 심볼만 non-null.
     synthetic_kind: ?SyntheticKind = null,
 
-    /// 합성 심볼의 이름 (소스 span이 없으므로 직접 저장). 정규 심볼은 빈 문자열.
+    /// 소스 span 대신 AST string table에 이름이 있는 바인딩의 안정적인 이름.
+    /// 번들러 wrapper 합성 심볼과 변환기가 만든 어휘 바인딩에 사용한다.
     /// #1338 Phase 4e-2c: HashMap 사이드카 대체 — ArrayList 수명과 일치시켜
     /// incremental rebuild 시 arena 불일치 방지.
     synthetic_name: []const u8 = "",

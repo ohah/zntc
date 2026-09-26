@@ -9,6 +9,30 @@ const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const Parser = @import("../parser/parser.zig").Parser;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 
+test "#4819 editor preserves analyzed IDs while appending a generated binding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const user = 1; function f() { return user; }");
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+    const original_count = ana.symbols.items.len;
+    const original_ids = try allocator.dupe(?u32, ana.symbol_ids.items);
+    var editor = try ana.beginEdit();
+    defer editor.deinit();
+    const name = try parser.ast.addString("_temp");
+    const binding = try parser.ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const id = try editor.declare(binding, name, @import("../lexer/token.zig").Span.EMPTY, @enumFromInt(0), .variable_var, 2, 2);
+    try std.testing.expectEqual(@as(u32, @intCast(original_count)), @intFromEnum(id));
+    try std.testing.expectEqual(original_count, ana.symbols.items.len);
+    try std.testing.expectEqualSlices(?u32, original_ids, editor.symbol_ids.items[0..original_ids.len]);
+}
+
 test "SemanticAnalyzer: var declaration creates symbol" {
     var scanner = try Scanner.init(std.testing.allocator, "var x = 1;");
     defer scanner.deinit();

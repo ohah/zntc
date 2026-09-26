@@ -249,6 +249,19 @@ pub const SemanticAnalyzer = struct {
         };
     }
 
+    /// 변환 패스가 사용할 append-only 의미 정보 편집기를 만든다.
+    pub fn beginEdit(self: *SemanticAnalyzer) @import("editor.zig").Error!@import("editor.zig").SemanticEditor {
+        return @import("editor.zig").SemanticEditor.init(
+            self.allocator,
+            self.ast,
+            self.symbols.items,
+            self.scopes.items,
+            self.scope_maps.items,
+            self.references.items,
+            self.symbol_ids.items,
+        );
+    }
+
     pub fn deinit(self: *SemanticAnalyzer) void {
         // allocPrint으로 할당된 에러 메시지/힌트 해제
         for (self.errors.items) |err| {
