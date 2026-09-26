@@ -60,7 +60,8 @@ describe('class inner self binding (#4819)', () => {
   for (const minify of [false, true]) {
     test(`bundle deconflicts two exported class self bindings, ${minify ? 'minify' : 'plain'}`, async () => {
       const fixture = await createFixture({
-        'a.mjs': 'export class Node { static self() { return Node; } static { this.saved = Node; } }',
+        'a.mjs':
+          'export class Node { static self() { return Node; } static { this.saved = Node; } }',
         'b.mjs': 'export class Node { static self() { return Node; } }',
         'entry.mjs': `import { Node as A } from './a.mjs';
           import { Node as B } from './b.mjs';
@@ -74,8 +75,14 @@ describe('class inner self binding (#4819)', () => {
       expect(native.status, native.stderr).toBe(0);
       const output = join(fixture.dir, 'out.mjs');
       const result = await runZntcInDir(fixture.dir, [
-        '--bundle', '--platform=node', '--format=esm', 'entry.mjs', '--target=esnext',
-        ...(minify ? ['--minify-identifiers', '--minify-syntax'] : []), '-o', output,
+        '--bundle',
+        '--platform=node',
+        '--format=esm',
+        'entry.mjs',
+        '--target=esnext',
+        ...(minify ? ['--minify-identifiers', '--minify-syntax'] : []),
+        '-o',
+        output,
       ]);
       expect(result.exitCode, result.stderr).toBe(0);
       const runtime = spawnSync('node', [output], { encoding: 'utf8' });
