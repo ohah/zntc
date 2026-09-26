@@ -1137,7 +1137,7 @@ fn visitBindingProperty(self: *Transformer, idx: NodeIndex, node: ast_mod.Node) 
     }
 
     const new_key = try self.copyNodeDirect(key);
-    self.propagateSymbolId(key, new_key);
+    try self.propagateSymbolId(key, new_key);
     const new_value = try self.visitNode(value);
     return self.ast.addNode(.{
         .tag = .binding_property,

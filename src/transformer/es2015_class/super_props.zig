@@ -206,7 +206,7 @@ pub fn SuperProps(comptime Transformer: type) type {
 
         fn cloneNewNode(self: *Transformer, idx: NodeIndex) Transformer.Error!NodeIndex {
             const cloned = try self.ast.addNode(self.ast.getNode(idx));
-            self.copySymbolId(idx, cloned);
+            try self.copySymbolId(idx, cloned);
             return cloned;
         }
 

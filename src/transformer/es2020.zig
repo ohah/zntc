@@ -58,7 +58,7 @@ pub fn ES2020(comptime Transformer: type) type {
 
             if (simple) {
                 const left_copy = try self.ast.addNode(self.ast.getNode(new_left));
-                self.copySymbolId(new_left, left_copy);
+                try self.copySymbolId(new_left, left_copy);
                 try self.trackNullishIdentifierCopies(old_left_idx, new_left, left_copy);
                 const neq_null = try self.ast.addNode(.{
                     .tag = .binary_expression,
