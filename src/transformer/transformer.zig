@@ -113,6 +113,9 @@ pub const Transformer = struct {
         next: ?usize = null,
     }) = .empty,
     pending_runtime_helper_ref_index: std.AutoHashMapUnmanaged(u32, usize) = .empty,
+    /// Generated this/arguments capture declarations needed by parameter
+    /// defaults. Pass 2 inserts default initializers after these statements.
+    parameter_capture_statements: std.AutoHashMapUnmanaged(u32, void) = .empty,
     pending_runtime_helper_chains: std.StringHashMapUnmanaged(struct { first: usize, last: usize }) = .empty,
 
     /// semantic analyzer의 심볼 테이블 (unused import 판별용).

@@ -164,6 +164,58 @@ pub fn transform(self: anytype) Error!NodeIndex {
 /// Pass 1에서 생성된 모든 function_declaration, function_expression, function,
 /// method_definition 노드를 순회하며, default/rest/destructuring params가 있으면
 /// lowerParams를 적용하고 extra_data를 in-place 수정한다.
+fn isUninitializedVarDeclaration(self: anytype, idx: NodeIndex) bool {
+    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+    const node = self.ast.getNode(idx);
+    if (node.tag != .variable_declaration or self.ast.variableDeclarationKind(node) != .@"var") return false;
+    const extra = self.ast.extra_data.items;
+    const e = node.data.extra;
+    if (e >= extra.len or extra.len - e < 3) return false;
+    const start = extra[e + 1];
+    const len = extra[e + 2];
+    if (start > extra.len or len > extra.len - start) return false;
+    for (extra[start .. start + len]) |raw| {
+        if (raw >= self.ast.nodes.items.len) return false;
+        const declarator = self.ast.nodes.items[raw];
+        if (declarator.tag != .variable_declarator) return false;
+        const de = declarator.data.extra;
+        if (de >= extra.len or extra.len - de < 3 or @as(NodeIndex, @enumFromInt(extra[de + 2])) != .none) return false;
+    }
+    return true;
+}
+
+/// Default checks run at function call time, before the function body. An
+/// arrow in a default can read the generated lexical this/arguments captures,
+/// so those declarations must precede the checks. Other body captures keep
+/// their original position relative to the checks.
+fn prependParameterInitializers(self: anytype, body_idx: NodeIndex, stmts: []const NodeIndex) Error!NodeIndex {
+    const body = self.ast.getNode(body_idx);
+    if (body.tag != .block_statement and body.tag != .function_body) return self.prependStatementsToBody(body_idx, stmts);
+    const list = body.data.list;
+    const extra = self.ast.extra_data.items;
+    if (list.start > extra.len or list.len > extra.len - list.start) return self.prependStatementsToBody(body_idx, stmts);
+    const old = extra[list.start .. list.start + list.len];
+    var insert_at: usize = 0;
+    var saw_capture = false;
+    for (old, 0..) |raw, i| {
+        if (self.parameter_capture_statements.contains(raw)) {
+            saw_capture = true;
+            insert_at = i + 1;
+        } else if (!isUninitializedVarDeclaration(self, @enumFromInt(raw))) {
+            break;
+        }
+    }
+    if (!saw_capture) return self.prependStatementsToBody(body_idx, stmts);
+
+    const scratch_top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(scratch_top);
+    for (old[0..insert_at]) |raw| try self.scratch.append(self.allocator, @enumFromInt(raw));
+    try self.scratch.appendSlice(self.allocator, stmts);
+    for (old[insert_at..]) |raw| try self.scratch.append(self.allocator, @enumFromInt(raw));
+    const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    return self.ast.addNode(.{ .tag = body.tag, .span = body.span, .data = .{ .list = new_list } });
+}
+
 fn lowerAllFunctionParams(self: anytype) Error!void {
     const Self = @TypeOf(self.*);
     const node_count = self.ast.nodes.items.len;
@@ -207,7 +259,7 @@ fn lowerAllFunctionParams(self: anytype) Error!void {
                 if (lr.body_stmts.items.len > 0) {
                     const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
                     if (!body_idx.isNone()) {
-                        const new_body = try self.prependStatementsToBody(body_idx, lr.body_stmts.items);
+                        const new_body = try prependParameterInitializers(self, body_idx, lr.body_stmts.items);
                         self.ast.extra_data.items[e + 2] = @intFromEnum(new_body);
                     }
                 }
