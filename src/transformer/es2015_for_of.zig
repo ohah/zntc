@@ -108,12 +108,21 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 self.outputOwnedScope(source_idx) orelse std.debug.panic("missing for-of source scope", .{})
             else
                 self.current_scope;
+            const stable_scope = self.semantic_edit_enabled and !register_sm_temps and self.pending_loop_extraction_depth == 0;
+            const outer_scope = if (stable_scope) self.outputScopeParent(loop_scope) else self.current_scope;
             if (register_sm_temps) {
                 try self.generator_temp_var_spans.appendSlice(self.allocator, &.{ norm, did_err, err_val, iter, step, catch_param });
             }
 
             // var _a = true; var _b = false; var _c = void 0;
-            const norm_decl = try makeVarDeclFromSpan(self, norm, try es_helpers.makeBoolLiteral(self, true), span);
+            const norm_binding = try es_helpers.makeSyntheticBinding(self, norm);
+            const norm_symbol = if (stable_scope)
+                try self.declareSyntheticInScope(norm_binding, span, .variable_var, outer_scope)
+            else
+                null;
+            const norm_decl = try es_helpers.makeVarDeclaration(self, &.{
+                try es_helpers.makeDeclarator(self, norm_binding, try es_helpers.makeBoolLiteral(self, true), span),
+            }, .@"var", span);
             const did_decl = try makeVarDeclFromSpan(self, did_err, try es_helpers.makeBoolLiteral(self, false), span);
             const err_decl = try makeVarDeclFromSpan(self, err_val, try es_helpers.makeVoidZero(self, span), span);
 
@@ -141,10 +150,10 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const next_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeIteratorRef(self, iter, iter_symbol, loop_scope), try es_helpers.makePropertyName(self, "next"), span), &.{}, span);
             const step_assign = try makeAssign(self, try makeForOfRef(self, step, step_symbol, loop_scope, .{ .write = true }), next_call, span);
             const done = try es_helpers.makeStaticMember(self, step_assign, try es_helpers.makePropertyName(self, "done"), span);
-            const for_test = try es_helpers.makeUnaryNot(self, try makeAssign(self, try makeRefFromSpan(self, norm), done, span), span);
+            const for_test = try es_helpers.makeUnaryNot(self, try makeAssign(self, try makeForOfRef(self, norm, norm_symbol, loop_scope, .{ .write = true }), done, span), span);
 
             // update: _a = true
-            const for_update = try makeAssign(self, try makeRefFromSpan(self, norm), try es_helpers.makeBoolLiteral(self, true), span);
+            const for_update = try makeAssign(self, try makeForOfRef(self, norm, norm_symbol, loop_scope, .{ .write = true }), try es_helpers.makeBoolLiteral(self, true), span);
 
             // body: <루프 변수 = _e.value>; body
             const value = try es_helpers.makeStaticMember(self, try makeForOfRef(self, step, step_symbol, loop_scope, .{ .read = true }), try es_helpers.makePropertyName(self, "value"), span);
@@ -177,10 +186,9 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
 
             // finally { try { if (!_a && _d.return != null) _d.return(); } finally { if (_b) throw _c; } }
             // The finally wrapper is outside the source for-of lexical scope.
-            const outer_scope = if (iter_symbol != null) self.outputScopeParent(loop_scope) else self.current_scope;
             const ret_member = try es_helpers.makeStaticMember(self, try makeIteratorRef(self, iter, iter_symbol, outer_scope), try es_helpers.makePropertyName(self, "return"), span);
             const close_cond = try self.ast.addNode(.{ .tag = .logical_expression, .span = span, .data = .{ .binary = .{
-                .left = try es_helpers.makeUnaryNot(self, try makeRefFromSpan(self, norm), span),
+                .left = try es_helpers.makeUnaryNot(self, try makeForOfRef(self, norm, norm_symbol, outer_scope, .{ .read = true }), span),
                 .right = try es_helpers.makeNeqNull(self, ret_member, span),
                 .flags = @intFromEnum(token_mod.Kind.amp2),
             } } });
