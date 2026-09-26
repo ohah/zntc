@@ -115,8 +115,11 @@ fn checkStateScopesAtTarget(source: []const u8, expected_states: usize, wrapped:
         const helper_id = edited.helper_scope_map.get("__generator").?;
         var helper_refs_in_parent: usize = 0;
         for (edited.references) |ref| {
-            if (@intFromEnum(ref.symbol_id) == helper_id and ref.scope_id == parent and ref.flags.read)
+            if (@intFromEnum(ref.symbol_id) == helper_id and ref.scope_id == parent and ref.flags.read) {
+                try std.testing.expect(reachable.contains(@intFromEnum(ref.node_index)));
+                try std.testing.expectEqual(@as(?u32, @intCast(helper_id)), edited.symbol_ids[@intFromEnum(ref.node_index)]);
                 helper_refs_in_parent += 1;
+            }
         }
         // The deferred generator `_loop` still carries its pre-migration
         // helper scope, so only fully registered callbacks have a 1:1 count.
