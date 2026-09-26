@@ -60,7 +60,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const ref = try es_helpers.makeTempVarRef(self, name_span, node_span);
             if (self.destructuring_temp_symbol_ids.get(name_span.start)) |raw_id| {
                 try self.addSyntheticRefInScope(ref, @enumFromInt(raw_id), self.current_scope, .{ .read = true });
-            } else if (!self.namespace_iife_scope.isNone()) try self.trackHoistedTempRef(name_span, ref, .{ .read = true });
+            } else try self.trackHoistedTempRef(name_span, ref, .{ .read = true });
             return ref;
         }
 
@@ -68,7 +68,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const ref = try es_helpers.makeTempVarRef(self, name_span, node_span);
             if (self.destructuring_temp_symbol_ids.get(name_span.start)) |raw_id| {
                 try self.addSyntheticRefInScope(ref, @enumFromInt(raw_id), self.current_scope, .{ .write = true });
-            } else if (!self.namespace_iife_scope.isNone()) try self.trackHoistedTempRef(name_span, ref, .{ .write = true });
+            } else try self.trackHoistedTempRef(name_span, ref, .{ .write = true });
             return ref;
         }
 
