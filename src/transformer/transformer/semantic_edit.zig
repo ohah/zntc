@@ -239,6 +239,21 @@ pub fn addGeneratedFunctionScope(self: *Transformer, parent: ScopeId, owner: Nod
     return scope;
 }
 
+/// Generated iterator-close catch clauses have a real lexical boundary.
+/// Register their owner before the rewritten tree is visited so copied
+/// catch nodes retain this ScopeId and their parameter does not leak outward.
+pub fn addGeneratedCatchScope(self: *Transformer, parent: ScopeId, owner: NodeIndex) Transformer.Error!ScopeId {
+    if (!self.semantic_edit_enabled) return .none;
+    if (owner.isNone() or self.ast.getNode(owner).tag != .catch_clause)
+        std.debug.panic("invalid generated catch scope owner", .{});
+    const editor = try editorFor(self);
+    const scope = editor.addScope(parent, owner, .catch_clause, false) catch |err| return editError(err);
+    const key = @intFromEnum(owner);
+    try self.transformed_scope_owner_map.put(self.allocator, key, @intFromEnum(scope));
+    try self.scope_owner_origins.put(self.allocator, key, key);
+    return scope;
+}
+
 /// Class lowering emits the IIFE body before its function node exists. Reserve
 /// its scope now so generated bindings and references have their output parent.
 pub fn reserveGeneratedFunctionScope(self: *Transformer, parent: ScopeId) Transformer.Error!ScopeId {

@@ -795,8 +795,14 @@ test "#4819 ES5 for-of iterator uses one var symbol across loop and finally" {
     var iterator_id: ?u32 = null;
     var step_id: ?u32 = null;
     var completion_id: ?u32 = null;
+    var did_error_id: ?u32 = null;
+    var error_value_id: ?u32 = null;
+    var catch_parameter_id: ?u32 = null;
     for (edited.symbols.items[original_symbols..], original_symbols..) |symbol, id| {
+        if (symbol.kind == .catch_binding) catch_parameter_id = @intCast(id);
         if (std.mem.eql(u8, transformer.ast.getText(symbol.name), "_a")) completion_id = @intCast(id);
+        if (std.mem.eql(u8, transformer.ast.getText(symbol.name), "_b")) did_error_id = @intCast(id);
+        if (std.mem.eql(u8, transformer.ast.getText(symbol.name), "_c")) error_value_id = @intCast(id);
         if (std.mem.eql(u8, transformer.ast.getText(symbol.name), "_d")) iterator_id = @intCast(id);
         if (std.mem.startsWith(u8, transformer.ast.getText(symbol.name), "_step")) step_id = @intCast(id);
     }
@@ -882,6 +888,57 @@ test "#4819 ES5 for-of iterator uses one var symbol across loop and finally" {
     try std.testing.expectEqual(@as(usize, 1), completion_bindings);
     try std.testing.expectEqual(@as(usize, 2), completion_loop_writes);
     try std.testing.expectEqual(@as(usize, 1), completion_finally_reads);
+
+    const catch_parameter = catch_parameter_id orelse return error.TestUnexpectedResult;
+    const catch_symbol = edited.symbols.items[catch_parameter];
+    const catch_scope = catch_symbol.scope_id;
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.catch_binding, catch_symbol.kind);
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.catch_clause, edited.scopes[catch_scope.toIndex()].kind);
+    try std.testing.expectEqual(outer_scope, edited.scopes[catch_scope.toIndex()].parent);
+    try std.testing.expectEqual(@as(u32, 1), catch_symbol.reference_count);
+    const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndices(allocator, transformer.ast);
+    var live_catch_owners: usize = 0;
+    for (reachable) |raw| {
+        if (transformer.ast.nodes.items[raw].tag != .catch_clause) continue;
+        if (edited.scope_owner_map.get(raw) == @intFromEnum(catch_scope)) live_catch_owners += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), live_catch_owners);
+    for ([_]u32{ did_error_id orelse return error.TestUnexpectedResult, error_value_id orelse return error.TestUnexpectedResult }) |temp| {
+        const generated = edited.symbols.items[temp];
+        try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, generated.kind);
+        try std.testing.expectEqual(symbol.scope_id, generated.scope_id);
+        try std.testing.expectEqual(@as(u32, 2), generated.reference_count);
+        var temp_bindings: usize = 0;
+        var catch_writes: usize = 0;
+        var temp_finally_reads: usize = 0;
+        for (edited.symbol_ids, 0..) |maybe_id, raw| {
+            if (maybe_id != temp) continue;
+            if (transformer.ast.nodes.items[raw].tag == .binding_identifier) temp_bindings += 1;
+        }
+        for (edited.references) |ref| {
+            if (@intFromEnum(ref.symbol_id) != temp or ref.flags.declare) continue;
+            try std.testing.expectEqual(@as(?u32, temp), edited.symbol_ids[@intFromEnum(ref.node_index)]);
+            if (ref.scope_id == catch_scope and ref.flags.write) catch_writes += 1;
+            if (ref.scope_id == outer_scope and ref.flags.read) temp_finally_reads += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), temp_bindings);
+        try std.testing.expectEqual(@as(usize, 1), catch_writes);
+        try std.testing.expectEqual(@as(usize, 1), temp_finally_reads);
+    }
+    var catch_bindings: usize = 0;
+    var catch_reads: usize = 0;
+    for (edited.symbol_ids, 0..) |maybe_id, raw| {
+        if (maybe_id != catch_parameter) continue;
+        if (transformer.ast.nodes.items[raw].tag == .binding_identifier) catch_bindings += 1;
+    }
+    for (edited.references) |ref| {
+        if (@intFromEnum(ref.symbol_id) != catch_parameter or ref.flags.declare) continue;
+        try std.testing.expectEqual(catch_scope, ref.scope_id);
+        try std.testing.expect(ref.flags.read);
+        catch_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), catch_bindings);
+    try std.testing.expectEqual(@as(usize, 1), catch_reads);
 }
 
 test "#4760 static private 멤버를 낮출 때 만드는 클래스 참조는 클래스 심볼을 가진다" {
