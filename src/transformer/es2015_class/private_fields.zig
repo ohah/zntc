@@ -90,7 +90,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
         /// private_methods 리스트를 순회하며 WeakSet 선언 + standalone function 을 scratch 에 append.
         /// 같은 name 의 getter/setter 는 WeakSet 을 공유하므로 weakset_name 기준 첫 등장에만 선언.
         /// private_field_init 도 동일한 dedup 으로 instance_fields 에 append (#1523).
-        pub fn emitPrivateMethodArtifacts(self: *Transformer, pms: []const Transformer.PrivateMethodMapping, fields_out: ?*std.ArrayList(NodeIndex), span: Span) Transformer.Error!void {
+        pub fn emitPrivateMethodArtifacts(self: *Transformer, pms: []const Transformer.PrivateMethodMapping, fields_out: ?*std.ArrayList(NodeIndex), span: Span, class_name_span: Span) Transformer.Error!void {
             for (pms, 0..) |pm, i| {
                 const first_occurrence = blk: {
                     for (pms[0..i]) |prev| {
@@ -99,9 +99,15 @@ pub fn PrivateFields(comptime Transformer: type) type {
                     break :blk true;
                 };
                 if (first_occurrence) {
-                    try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakSet", pm.weakset_name, span));
-                    if (fields_out) |fo| {
-                        try fo.append(self.allocator, try es_helpers.buildPrivateMethodInit(self, pm.weakset_name, span));
+                    if (pm.class_name != null) {
+                        const fn_ref = try es_helpers.makeSyntheticRef(self, pm.func_name);
+                        try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pm.weakset_name, fn_ref, span, class_name_span));
+                        self.runtime_helpers.class_static_private_field = true;
+                    } else {
+                        try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakSet", pm.weakset_name, span));
+                        if (fields_out) |fo| {
+                            try fo.append(self.allocator, try es_helpers.buildPrivateMethodInit(self, pm.weakset_name, span));
+                        }
                     }
                 }
                 try self.scratch.append(self.allocator, try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, pm.source_member_idx, pm.member_span));

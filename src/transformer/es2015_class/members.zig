@@ -215,7 +215,7 @@ pub fn Members(comptime Transformer: type) type {
             return total;
         }
 
-        pub fn classifyMembers(self: *Transformer, body_idx: NodeIndex, span: Span) Transformer.Error!ClassifiedMembers {
+        pub fn classifyMembers(self: *Transformer, body_idx: NodeIndex, span: Span, class_name_span: Span) Transformer.Error!ClassifiedMembers {
             const body_node = self.ast.getNode(body_idx);
             const members_start = body_node.data.list.start;
             const members_len = body_node.data.list.len;
@@ -274,6 +274,8 @@ pub fn Members(comptime Transformer: type) type {
                             try cm.private_methods.append(self.allocator, .{
                                 .member_idx = @enumFromInt(raw_idx),
                                 .source_member_idx = @enumFromInt(self.scope_owner_origins.get(raw_idx) orelse raw_idx),
+                                .class_name = if (is_static) try self.stableName(self.ast.getText(class_name_span)) else null,
+                                .class_name_node = if (is_static) self.current_class_name_node else .none,
                                 .original_name = orig_name,
                                 .weakset_name = names.ws_name,
                                 .func_name = names.fn_name,

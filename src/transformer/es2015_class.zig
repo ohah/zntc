@@ -134,7 +134,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn;
 
             // 클래스 바디 멤버 분류 (visitNode 호출 없이 metadata 만 수집).
-            var cm = try classifyMembers(self, body_idx, span);
+            var cm = try classifyMembers(self, body_idx, span, name_span);
             defer cm.deinit(self.allocator);
 
             // 매핑은 모든 private field (regular + accessor backing) 가 모인 뒤 단일 지점에서 build.
@@ -186,7 +186,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 self.runtime_helpers.class_static_private_field = true;
             }
             try emitInstanceInits(self, &cm, span);
-            try emitPrivateMethodArtifacts(self, cm.private_methods.items, &cm.instance_fields, span);
+            try emitPrivateMethodArtifacts(self, cm.private_methods.items, &cm.instance_fields, span, name_span);
 
             // IIFE 내부 function (fresh identifier — linker 무관)
             var func_node = if (cm.constructor_idx) |ctor_idx|
@@ -390,7 +390,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn;
 
             // 바디 멤버 분류 (visitNode 호출 없이 metadata 만 수집).
-            var cm = try classifyMembers(self, body_idx, span);
+            var cm = try classifyMembers(self, body_idx, span, name_span);
             defer cm.deinit(self.allocator);
 
             // 매핑은 모든 private field 가 모인 뒤 단일 지점에서 build — 이후 deferred visit 들이 이 매핑으로 lowering.
@@ -413,6 +413,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // private method 초기화 → constructor body에 삽입
             for (cm.private_methods.items) |pm| {
+                if (pm.class_name != null) continue;
                 const init_stmt = try es_helpers.buildPrivateMethodInit(self, pm.weakset_name, span);
                 try cm.instance_fields.append(self.allocator, init_stmt);
             }
@@ -507,7 +508,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span, name_span));
                 self.runtime_helpers.class_static_private_field = true;
             }
-            try emitPrivateMethodArtifacts(self, cm.private_methods.items, null, span);
+            try emitPrivateMethodArtifacts(self, cm.private_methods.items, null, span, name_span);
 
             try self.scratch.append(self.allocator, func_node);
 
