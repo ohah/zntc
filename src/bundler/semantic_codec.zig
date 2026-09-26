@@ -29,8 +29,8 @@ const wyhash = @import("../util/wyhash.zig");
 const codec_io = @import("../util/codec_io.zig");
 
 pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
-// v4: class source node → immutable self SymbolId anchor 추가.
-pub const FORMAT_VERSION: u32 = 4;
+// v5: shared namespace-member proxy and nested declaration owner IDs.
+pub const FORMAT_VERSION: u32 = 5;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로
@@ -83,7 +83,7 @@ comptime {
     // serialize/deserialize 는 ModuleSemanticData 의 11개 필드를 손으로 열거한다. 필드가 추가되면
     // 직렬화에서 silently 누락 → PR4 cache-hit 연결 시 그 필드만 default 로 stale miscompile.
     // 필드 수를 못박아 새 필드 추가를 컴파일 에러로 만들어 codec 갱신을 강제한다.
-    if (@typeInfo(ModuleSemanticData).@"struct".fields.len != 11) {
+    if (@typeInfo(ModuleSemanticData).@"struct".fields.len != 13) {
         @compileError("ModuleSemanticData 필드 수가 바뀜 — semantic_codec 의 serialize/deserialize 에 새 필드 직렬화 추가 후 이 가드를 갱신.");
     }
 }
@@ -259,6 +259,26 @@ pub fn serialize(sem: *const ModuleSemanticData, out: *std.ArrayList(u8), alloc:
     for (class_keys) |key| {
         try putU32(&payload, alloc, key);
         try putU32(&payload, alloc, sem.class_self_symbol_map.get(key).?);
+    }
+    try putU32(&payload, alloc, @intCast(sem.namespace_member_owners.count()));
+    const ns_keys = try alloc.alloc(u32, sem.namespace_member_owners.count());
+    defer alloc.free(ns_keys);
+    var ns_it = sem.namespace_member_owners.keyIterator();
+    for (ns_keys) |*key| key.* = ns_it.next().?.*;
+    std.mem.sortUnstable(u32, ns_keys, {}, std.sort.asc(u32));
+    for (ns_keys) |key| {
+        try putU32(&payload, alloc, key);
+        try putU32(&payload, alloc, sem.namespace_member_owners.get(key).?);
+    }
+    try putU32(&payload, alloc, @intCast(sem.namespace_declaration_owners.count()));
+    const ns_decl_keys = try alloc.alloc(u32, sem.namespace_declaration_owners.count());
+    defer alloc.free(ns_decl_keys);
+    var ns_decl_it = sem.namespace_declaration_owners.keyIterator();
+    for (ns_decl_keys) |*key| key.* = ns_decl_it.next().?.*;
+    std.mem.sortUnstable(u32, ns_decl_keys, {}, std.sort.asc(u32));
+    for (ns_decl_keys) |key| {
+        try putU32(&payload, alloc, key);
+        try putU32(&payload, alloc, sem.namespace_declaration_owners.get(key).?);
     }
 
     const checksum = wyhash.hashU64(payload.items);
@@ -447,6 +467,24 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
         if (key >= symbol_ids_len or value >= symbols_len or class_self_symbol_map.contains(key)) return error.Truncated;
         class_self_symbol_map.putAssumeCapacity(key, value);
     }
+    var namespace_member_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const ns_count = try checkedMapCount(&r, try r.u32v());
+    try namespace_member_owners.ensureTotalCapacity(arena, ns_count);
+    for (0..ns_count) |_| {
+        const key = try r.u32v();
+        const value = try r.u32v();
+        if (key >= symbols_len or value >= symbols_len or namespace_member_owners.contains(key)) return error.Truncated;
+        namespace_member_owners.putAssumeCapacity(key, value);
+    }
+    var namespace_declaration_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const ns_decl_count = try checkedMapCount(&r, try r.u32v());
+    try namespace_declaration_owners.ensureTotalCapacity(arena, ns_decl_count);
+    for (0..ns_decl_count) |_| {
+        const key = try r.u32v();
+        const value = try r.u32v();
+        if (key >= symbols_len or value >= symbols_len or namespace_declaration_owners.contains(key)) return error.Truncated;
+        namespace_declaration_owners.putAssumeCapacity(key, value);
+    }
 
     return .{
         .symbols = .{ .items = symbols_slice, .capacity = symbols_slice.len },
@@ -460,5 +498,7 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
         .helper_scope_map = helper_scope_map,
         .scope_owner_map = scope_owner_map,
         .class_self_symbol_map = class_self_symbol_map,
+        .namespace_member_owners = namespace_member_owners,
+        .namespace_declaration_owners = namespace_declaration_owners,
     };
 }

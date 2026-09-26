@@ -37,6 +37,11 @@ const runtime_helper_modules = @import("../runtime_helper_modules.zig");
 
 const AllocError = std.mem.Allocator.Error;
 
+const NamespaceMemberGroup = struct {
+    owner_symbol: u32,
+    members: std.StringHashMapUnmanaged(u32) = .empty,
+};
+
 /// Semantic Analyzer.
 ///
 /// 사용법:
@@ -132,6 +137,14 @@ pub const SemanticAnalyzer = struct {
     /// Runtime TypeScript namespace bodies execute inside their emitted IIFE.
     /// Their `export` declarations describe namespace properties, not module exports.
     namespace_depth: u32 = 0,
+    /// Property symbols shared by multiple declarations of one namespace.
+    /// They are not inserted into scope_maps: source locals keep lexical priority.
+    namespace_member_groups: std.ArrayList(NamespaceMemberGroup) = .empty,
+    namespace_scope_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// Proxy SymbolId -> namespace object SymbolId, consumed by codegen.
+    namespace_member_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// Source nested namespace binding SID -> shared merged member SID.
+    namespace_declaration_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty,
 
     /// 미해결 참조 (unresolved references). resolveIdentifier에서 스코프 체인을 다 올라가도
     /// 선언을 찾지 못한 이름. 번들러 linker가 scope hoisting 시 이 이름들을 예약하여
@@ -302,6 +315,11 @@ pub const SemanticAnalyzer = struct {
         self.scope_maps.deinit(self.allocator);
         self.scope_owner_map.deinit(self.allocator);
         self.class_self_symbol_map.deinit(self.allocator);
+        for (self.namespace_member_groups.items) |*group| group.members.deinit(self.allocator);
+        self.namespace_member_groups.deinit(self.allocator);
+        self.namespace_scope_owners.deinit(self.allocator);
+        self.namespace_member_owners.deinit(self.allocator);
+        self.namespace_declaration_owners.deinit(self.allocator);
         self.exported_names.deinit(self.allocator);
         // #4221: 키는 전부 dupe 사본 (소유) — 함께 해제.
         var unres_it = self.unresolved_references.keyIterator();
@@ -1029,6 +1047,35 @@ pub const SemanticAnalyzer = struct {
                 };
 
                 return;
+            }
+
+            // A later declaration of the same namespace has a different IIFE
+            // scope. Its earlier exported members live on the shared object,
+            // not as lexical bindings in this IIFE or its parent scope.
+            if (self.namespace_scope_owners.get(@intCast(idx))) |owner_sid| {
+                for (self.namespace_member_groups.items) |group| {
+                    if (group.owner_symbol != owner_sid) continue;
+                    if (group.members.get(name)) |member_sid| {
+                        const is_type_only_use = effective.type_context or effective.value_as_type;
+                        if (!is_type_only_use) {
+                            self.symbols.items[member_sid].reference_count += 1;
+                            if (flags.write) self.symbols.items[member_sid].write_count += 1;
+                        }
+                        const ni: u32 = @intFromEnum(node_idx);
+                        if (ni < self.symbol_ids.items.len) self.symbol_ids.items[ni] = member_sid;
+                        self.references.append(self.allocator, .{
+                            .node_index = node_idx,
+                            .scope_id = self.current_scope,
+                            .symbol_id = @enumFromInt(member_sid),
+                            .stmt_idx = self.current_top_stmt_idx orelse symbol_mod.Reference.NO_STMT,
+                            .scope_stmt_idx = self.current_stmt_idx,
+                            .flags = effective,
+                        }) catch {
+                            self.alloc_failed = true;
+                        };
+                        return;
+                    }
+                }
             }
 
             // 부모 스코프로 이동
@@ -2151,6 +2198,7 @@ pub const SemanticAnalyzer = struct {
         //       const bar = () => "hello"; // 여기서 선언된 bar를 1st pass에서 미리 등록
         // 2nd pass — 기존 visitNodeList로 전체 순회 (initializer 포함).
         try self.predeclareTopLevelBindings(node.data.list);
+        try self.predeclareNamespaceMembers(node.data.list);
         try self.predeclareNestedTopLevelVarDecls(node.data.list);
         self.predeclared_scope = self.current_scope;
 
@@ -2278,6 +2326,138 @@ pub const SemanticAnalyzer = struct {
                 else => {},
             }
         }
+    }
+
+    /// Register exported names on the shared namespace object before visiting
+    /// any declaration body. The proxy is deliberately absent from scope_maps:
+    /// a binding declared in this particular IIFE always wins lexical lookup.
+    fn predeclareNamespaceMembers(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
+        const extras = self.ast.extra_data.items;
+        if (list.start + list.len > extras.len) return;
+        for (extras[list.start .. list.start + list.len]) |raw_idx| {
+            const stmt_idx: NodeIndex = @enumFromInt(raw_idx);
+            if (stmt_idx.isNone() or @intFromEnum(stmt_idx) >= self.ast.nodes.items.len) continue;
+            const stmt = self.ast.getNode(stmt_idx);
+            const decl_idx: NodeIndex = if (stmt.tag == .export_named_declaration) blk: {
+                if (stmt.data.extra >= extras.len) continue;
+                break :blk @enumFromInt(extras[stmt.data.extra]);
+            } else stmt_idx;
+            if (decl_idx.isNone() or @intFromEnum(decl_idx) >= self.ast.nodes.items.len) continue;
+            const decl = self.ast.getNode(decl_idx);
+            if (decl.tag != .ts_module_declaration or decl.data.binary.flags == 1) continue;
+            const namespace_name_idx = decl.data.binary.left;
+            if (namespace_name_idx.isNone() or @intFromEnum(namespace_name_idx) >= self.symbol_ids.items.len) continue;
+            const owner_sid = self.symbol_ids.items[@intFromEnum(namespace_name_idx)] orelse continue;
+            var declaration_count: usize = 0;
+            for (extras[list.start .. list.start + list.len]) |other_raw| {
+                const other_idx: NodeIndex = @enumFromInt(other_raw);
+                if (other_idx.isNone() or @intFromEnum(other_idx) >= self.ast.nodes.items.len) continue;
+                const other_stmt = self.ast.getNode(other_idx);
+                const other_decl_idx: NodeIndex = if (other_stmt.tag == .export_named_declaration) blk: {
+                    if (other_stmt.data.extra >= extras.len) continue;
+                    break :blk @enumFromInt(extras[other_stmt.data.extra]);
+                } else other_idx;
+                if (other_decl_idx.isNone() or @intFromEnum(other_decl_idx) >= self.ast.nodes.items.len) continue;
+                const other_decl = self.ast.getNode(other_decl_idx);
+                if (other_decl.tag != .ts_module_declaration or other_decl.data.binary.flags == 1) continue;
+                const other_name = other_decl.data.binary.left;
+                if (other_name.isNone() or @intFromEnum(other_name) >= self.symbol_ids.items.len) continue;
+                if (self.symbol_ids.items[@intFromEnum(other_name)] == owner_sid) declaration_count += 1;
+            }
+            if (declaration_count < 2) continue;
+            try self.collectNamespaceMembersFromDeclaration(owner_sid, decl);
+        }
+    }
+
+    fn namespaceMemberProxy(self: *const SemanticAnalyzer, owner_sid: u32, name: []const u8) ?u32 {
+        for (self.namespace_member_groups.items) |group| {
+            if (group.owner_symbol == owner_sid) return group.members.get(name);
+        }
+        return null;
+    }
+
+    fn collectNamespaceMembersFromDeclaration(self: *SemanticAnalyzer, owner_sid: u32, decl: Node) AllocError!void {
+        const extras = self.ast.extra_data.items;
+        const body_idx = decl.data.binary.right;
+        if (body_idx.isNone() or @intFromEnum(body_idx) >= self.ast.nodes.items.len) return;
+        const body = self.ast.getNode(body_idx);
+        if (body.tag == .ts_module_declaration) {
+            const nested_name = body.data.binary.left;
+            try self.addNamespaceMemberBinding(owner_sid, nested_name);
+            if (!nested_name.isNone() and @intFromEnum(nested_name) < self.ast.nodes.items.len) {
+                const nested_text = self.ast.getText(self.ast.getNode(nested_name).span);
+                if (self.namespaceMemberProxy(owner_sid, nested_text)) |nested_owner| {
+                    try self.collectNamespaceMembersFromDeclaration(nested_owner, body);
+                }
+            }
+            return;
+        }
+        if (body.tag != .block_statement) return;
+        if (body.data.list.start + body.data.list.len > extras.len) return;
+        for (extras[body.data.list.start .. body.data.list.start + body.data.list.len]) |raw_member_idx| {
+            const member_idx: NodeIndex = @enumFromInt(raw_member_idx);
+            if (member_idx.isNone() or @intFromEnum(member_idx) >= self.ast.nodes.items.len) continue;
+            const member = self.ast.getNode(member_idx);
+            if (member.tag != .export_named_declaration or member.data.extra >= extras.len) continue;
+            const exported_idx: NodeIndex = @enumFromInt(extras[member.data.extra]);
+            if (exported_idx.isNone() or @intFromEnum(exported_idx) >= self.ast.nodes.items.len) continue;
+            const exported = self.ast.getNode(exported_idx);
+            switch (exported.tag) {
+                .variable_declaration => {
+                    const e = exported.data.extra;
+                    if (e + 2 >= extras.len) continue;
+                    const start = extras[e + 1];
+                    const len = extras[e + 2];
+                    if (start + len > extras.len) continue;
+                    for (extras[start .. start + len]) |raw_declarator| {
+                        const declarator = self.ast.getNode(@enumFromInt(raw_declarator));
+                        if (declarator.tag != .variable_declarator) continue;
+                        const binding_idx: NodeIndex = @enumFromInt(extras[declarator.data.extra]);
+                        try self.addNamespaceMemberBinding(owner_sid, binding_idx);
+                    }
+                },
+                .function_declaration, .class_declaration, .ts_enum_declaration => {
+                    const e = exported.data.extra;
+                    if (e >= extras.len) continue;
+                    try self.addNamespaceMemberBinding(owner_sid, @enumFromInt(extras[e]));
+                },
+                .ts_module_declaration => {
+                    const nested_name = exported.data.binary.left;
+                    try self.addNamespaceMemberBinding(owner_sid, nested_name);
+                    if (!nested_name.isNone() and @intFromEnum(nested_name) < self.ast.nodes.items.len) {
+                        const nested_text = self.ast.getText(self.ast.getNode(nested_name).span);
+                        if (self.namespaceMemberProxy(owner_sid, nested_text)) |nested_owner| {
+                            try self.collectNamespaceMembersFromDeclaration(nested_owner, exported);
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
+    fn addNamespaceMemberBinding(self: *SemanticAnalyzer, owner_sid: u32, binding_idx: NodeIndex) AllocError!void {
+        if (binding_idx.isNone() or @intFromEnum(binding_idx) >= self.ast.nodes.items.len) return;
+        const binding = self.ast.getNode(binding_idx);
+        if (binding.tag != .binding_identifier) return;
+        const name = try self.ast.getTextStable(self.allocator, binding.span);
+        var group_idx: usize = 0;
+        while (group_idx < self.namespace_member_groups.items.len and self.namespace_member_groups.items[group_idx].owner_symbol != owner_sid) : (group_idx += 1) {}
+        if (group_idx == self.namespace_member_groups.items.len) {
+            try self.namespace_member_groups.append(self.allocator, .{ .owner_symbol = owner_sid });
+        }
+        if (self.namespace_member_groups.items[group_idx].members.contains(name)) return;
+        const proxy_sid: u32 = @intCast(self.symbols.items.len);
+        try self.symbols.append(self.allocator, .{
+            .name = binding.span,
+            .scope_id = self.current_scope,
+            .origin_scope = self.current_scope,
+            .kind = .variable_var,
+            .decl_flags = .{ .is_exported = true },
+            .declaration_span = binding.span,
+        });
+        try self.namespace_member_groups.items[group_idx].members.put(self.allocator, name, proxy_sid);
+        try self.namespace_member_owners.put(self.allocator, proxy_sid, owner_sid);
     }
 
     /// Program/module scope 에서 nested statement 안의 `var` 선언을 미리 등록한다.
@@ -2599,8 +2779,24 @@ pub const SemanticAnalyzer = struct {
             }
         }
 
+        const parent_scope = self.current_scope;
         const saved = try self.enterScope(.function, self.is_strict_mode);
         defer self.exitScope(saved);
+        if (!name_idx.isNone() and @intFromEnum(name_idx) < self.symbol_ids.items.len) {
+            if (self.symbol_ids.items[@intFromEnum(name_idx)]) |sid| {
+                var canonical = sid;
+                if (!parent_scope.isNone()) {
+                    if (self.namespace_scope_owners.get(parent_scope.toIndex())) |parent_owner| {
+                        const name = self.ast.getText(self.ast.getNode(name_idx).span);
+                        if (self.namespaceMemberProxy(parent_owner, name)) |proxy| {
+                            canonical = proxy;
+                            try self.namespace_declaration_owners.put(self.allocator, sid, proxy);
+                        }
+                    }
+                }
+                try self.namespace_scope_owners.put(self.allocator, self.current_scope.toIndex(), canonical);
+            }
+        }
         self.namespace_depth += 1;
         defer self.namespace_depth -= 1;
         const body_idx = node.data.binary.right;
@@ -2611,6 +2807,7 @@ pub const SemanticAnalyzer = struct {
             self.predeclared_scope = self.current_scope;
             defer self.predeclared_scope = saved_predeclared;
             try self.predeclareTopLevelBindings(body.data.list);
+            try self.predeclareNamespaceMembers(body.data.list);
             try self.predeclareNestedTopLevelVarDecls(body.data.list);
             try self.visitStmtList(body.data.list);
         } else {
