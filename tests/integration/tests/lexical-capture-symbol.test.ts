@@ -201,4 +201,44 @@ describe('lexical capture symbol frames (#4819)', () => {
       }
     }
   }
+
+  for (const target of ['es5', 'es2015'] as const) {
+    for (const bundle of [false, true]) {
+      for (const minify of [false, true]) {
+        test(`Stage 3 derived constructor capture, ${target}, ${bundle ? 'bundle' : 'single'}, ${minify ? 'minify' : 'plain'}`, async () => {
+        const source = `function dec(value, _context) { return value; }
+          class Base { constructor() { this.base = 5; } }
+          class Derived extends Base {
+            @dec field = 1;
+            constructor() { super(); this.read = () => this.base; }
+          }
+          console.log(new Derived().read());`;
+        const reference = `class Base { constructor() { this.base = 5; } }
+          class Derived extends Base {
+            field = 1;
+            constructor() { super(); this.read = () => this.base; }
+          }
+          console.log(new Derived().read());`;
+          const dir = await createFixture({
+            'input.ts': source,
+            'reference.mjs': reference,
+            'package.json': '{"type":"module"}',
+          });
+          cleanup = dir.cleanup;
+          const native = spawnSync('node', [join(dir.dir, 'reference.mjs')], { encoding: 'utf8' });
+          expect(native.status, native.stderr).toBe(0);
+          expect(native.stdout).toBe('5\n');
+          const output = join(dir.dir, bundle ? 'out.cjs' : 'out.mjs');
+          const result = await runZntcInDir(dir.dir, [
+            ...(bundle ? ['--bundle', '--platform=node', '--format=cjs'] : []),
+            'input.ts', `--target=${target}`, ...(minify ? ['--minify'] : []), '-o', output,
+          ]);
+          expect(result.exitCode, result.stderr).toBe(0);
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, actual.stderr).toBe(0);
+          expect(actual.stdout).toBe(native.stdout);
+        });
+      }
+    }
+  }
 });

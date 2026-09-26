@@ -136,6 +136,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                 const is_static = (flags & ast_mod.MethodFlags.is_static) != 0;
                 const is_getter = (flags & ast_mod.MethodFlags.is_getter) != 0;
                 const is_setter = (flags & ast_mod.MethodFlags.is_setter) != 0;
+                var is_constructor = false;
 
                 // constructor 감지
                 if (!is_getter and !is_setter and !is_static) {
@@ -146,6 +147,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                             const key_text = self.ast.getText(key_node.data.string_ref);
                             if (std.mem.eql(u8, key_text, "constructor")) {
                                 has_constructor = true;
+                                is_constructor = true;
                             }
                         }
                     }
@@ -206,7 +208,14 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     try new_members.append(self.allocator, getter);
                 } else {
                     // public method 또는 non-decorated → 그대로 추가
-                    const new_body = try visitMethodBodyInSourceScope(self, member_idx, self.readNodeIdx(me, ast_mod.MethodExtra.body));
+                    // ES5 class lowering visits an existing constructor again
+                    // under its source function scope. Leave that body intact
+                    // here so its derived `super()` alias and arrow captures
+                    // are declared together by the final constructor visitor.
+                    const new_body = if (is_constructor and self.options.unsupported.class)
+                        self.readNodeIdx(me, ast_mod.MethodExtra.body)
+                    else
+                        try visitMethodBodyInSourceScope(self, member_idx, self.readNodeIdx(me, ast_mod.MethodExtra.body));
                     const empty_list = try self.ast.addNodeList(&.{});
                     const new_method = try self.addExtraNode(.method_definition, member.span, &.{
                         @intFromEnum(new_key),
