@@ -108,6 +108,9 @@ pub const Transformer = struct {
     /// invariant: `markRuntimeHelperRef` 호출처는 매번 새로 만든 NodeIndex 만 넣으므로
     /// 중복 entry 가 발생하지 않음 — dedupe 불필요.
     helper_ref_nodes: std.ArrayListUnmanaged(u32) = .empty,
+    /// Exact named simple-class constructor bindings that need their source
+    /// name-preservation flag after bundler semantic resync.
+    preserved_simple_class_names: std.ArrayListUnmanaged(u32) = .empty,
     pending_runtime_helper_refs: std.ArrayListUnmanaged(struct {
         node: NodeIndex,
         scope: ScopeId,

@@ -212,6 +212,11 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     // 를 clone 시 transformed_root 까지 복사되어 cache hit 분기 즉시 return.
     module.ast = transformer.ast.*;
 
+    // Temporary bridge until the final name planner consumes transformed
+    // SymbolIds directly. The no-IIFE class producer records only its emitted
+    // constructor binding; preserving unrelated class names here can affect
+    // tree shaking after semantic resync.
+    const owned_preserved_class_names = transformer.preserved_simple_class_names.toOwnedSlice(arena_alloc) catch return;
     const owned_symbol_ids = transformer.symbol_ids.toOwnedSlice(arena_alloc) catch &[_]?u32{};
     // #2869 helper marker sidecar — sorted u32 slice. resync analyzer 가 binary search.
     const owned_helper_ref_nodes = transformer.ownedHelperRefNodes(arena_alloc) catch &[_]u32{};
@@ -220,6 +225,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         .symbol_ids = owned_symbol_ids,
         .helper_ref_nodes = owned_helper_ref_nodes,
         .destructuring_temp_bindings = transformer.destructuring_temp_bindings,
+        .preserved_class_name_nodes = owned_preserved_class_names,
         .ref_deltas = prepass_ref_deltas,
     };
 
@@ -375,6 +381,18 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
             analyzer.helper_ref_nodes = cache.helper_ref_nodes;
         }
         try analyzer.analyze();
+
+        // Restore only producer-marked binding identities. No text lookup is
+        // involved, and dead intermediate nodes have no re-analyzed SymbolId.
+        if (module.transform_cache) |cache| {
+            for (cache.preserved_class_name_nodes) |raw| {
+                if (raw >= analyzer.symbol_ids.items.len or raw >= ast.nodes.items.len or
+                    ast.nodes.items[raw].tag != .binding_identifier) continue;
+                const id = analyzer.symbol_ids.items[raw] orelse continue;
+                if (id >= analyzer.symbols.items.len) continue;
+                analyzer.symbols.items[id].decl_flags.preserve_class_name = true;
+            }
+        }
 
         module.semantic = .{
             .symbols = analyzer.symbols,

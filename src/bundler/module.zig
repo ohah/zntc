@@ -180,6 +180,9 @@ pub const TransformCache = struct {
     helper_ref_nodes: []const u32 = &.{},
     /// Destructuring-produced local temp binding nodes (exact NodeIndex).
     destructuring_temp_bindings: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// Exact emitted binding nodes whose source SymbolId preserved a class
+    /// constructor name. Post-transform analysis must restore that flag.
+    preserved_class_name_nodes: []const u32 = &.{},
     /// #3267 N-step4 follow-up: prepass minify 의 cascade ref decrement 결과
     /// (`MinifyCtx.ref_deltas` snapshot, length == sem.symbols.len). emitter 의 minify
     /// 가 fresh ctx 에 hydrate 하여 prepass 에서 fold 된 dead branch 안 ref 감산

@@ -294,6 +294,88 @@ test "#4819 ES5 class methods retain original scope on emitted functions and bin
     try std.testing.expect(generated_temp_refs >= 5);
 }
 
+test "#4819 simple named class keeps inner name environment and binds constructor check alias" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const X = class C { constructor(C) { this.value = C; } };");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var class_scope: ?u32 = null;
+    var inner_id: ?u32 = null;
+    var constructor_scope: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .class_expression) {
+            class_scope = analyzer.scope_owner_map.get(@intCast(raw));
+            inner_id = analyzer.class_self_symbol_map.get(@intCast(raw));
+        } else if (node.tag == .method_definition) {
+            constructor_scope = analyzer.scope_owner_map.get(@intCast(raw));
+        }
+    }
+    const source_scope = class_scope orelse return error.TestUnexpectedResult;
+    const self_id = inner_id orelse return error.TestUnexpectedResult;
+    const ctor_scope = constructor_scope orelse return error.TestUnexpectedResult;
+    const original_parent = analyzer.scopes.items[source_scope].parent;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    const wrapper = edited.scopes[source_scope].parent;
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[wrapper.toIndex()].kind);
+    try std.testing.expectEqual(original_parent, edited.scopes[wrapper.toIndex()].parent);
+    try std.testing.expectEqual(@as(@import("../semantic/scope.zig").ScopeId, @enumFromInt(source_scope)), edited.symbols.items[self_id].scope_id);
+    const alias = edited.scope_maps[wrapper.toIndex()].get("_classSelf") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(alias != self_id);
+    var wrapper_reads: usize = 0;
+    var ctor_reads: usize = 0;
+    for (edited.references) |ref| {
+        if (@intFromEnum(ref.symbol_id) != alias or !ref.flags.read) continue;
+        if (ref.scope_id == wrapper) wrapper_reads += 1;
+        if (@intFromEnum(ref.scope_id) == ctor_scope) ctor_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), wrapper_reads);
+    try std.testing.expectEqual(@as(usize, 1), ctor_reads);
+}
+
+test "#4819 inferred anonymous class does not gain a named-class wrapper" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const Inferred = class {}; console.log(Inferred.name);");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.class_self_symbol_map.count());
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    try std.testing.expectEqual(@as(usize, 0), transformer.preserved_simple_class_names.items.len);
+    _ = try transformer.finishSemanticEdit();
+}
+
 test "#4819 decorated explicit constructor binds generated nullish temp in original scope" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
