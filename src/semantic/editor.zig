@@ -217,7 +217,9 @@ pub const SemanticEditor = struct {
         const new_key = @intFromEnum(new_owner);
         const old_tag = self.ast.getNode(old_owner).tag;
         const new_tag = self.ast.getNode(new_owner).tag;
-        if (old_tag != new_tag and !(old_tag == .arrow_function_expression and new_tag == .function_expression))
+        if (old_tag != new_tag and
+            !(old_tag == .arrow_function_expression and new_tag == .function_expression) and
+            !(old_tag == .for_of_statement and new_tag == .for_statement))
             return error.InvalidNode;
         const scope_id = self.scope_owner_map.get(old_key) orelse return error.InvalidScope;
         if (old_key == new_key) return;

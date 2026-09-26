@@ -65,7 +65,9 @@ pub fn remapCopiedScopeOwner(self: *Transformer, old: NodeIndex, new: NodeIndex)
     if (old.isNone() or new.isNone() or old == new) return;
     const old_tag = self.ast.getNode(old).tag;
     const new_tag = self.ast.getNode(new).tag;
-    if (old_tag != new_tag and !(old_tag == .arrow_function_expression and new_tag == .function_expression)) return;
+    if (old_tag != new_tag and
+        !(old_tag == .arrow_function_expression and new_tag == .function_expression) and
+        !(old_tag == .for_of_statement and new_tag == .for_statement)) return;
     const old_key = @intFromEnum(old);
     const new_key = @intFromEnum(new);
     const scope = self.transformed_scope_owner_map.get(old_key) orelse self.scope_owner_map.get(old_key) orelse return;
@@ -262,6 +264,25 @@ pub fn trackUserArgumentFromBinding(self: *Transformer, argument: NodeIndex, bin
         @enumFromInt(raw_id),
         scope,
         .{ .read = true },
+        Reference.NO_STMT,
+        Reference.NO_STMT,
+    ) catch |err| return editError(err);
+}
+
+/// Hoisting a source `var` declaration into an assignment creates a new write
+/// target. The binding has no Reference to clone, so record the source
+/// expression's lexical scope explicitly. This may differ from both the
+/// binding's function scope and `current_scope` (generator collection).
+pub fn trackUserWriteFromBinding(self: *Transformer, target: NodeIndex, binding: NodeIndex, scope: ScopeId) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const raw_id = self.getSymbolIdAt(binding) orelse return;
+    if (self.getSymbolIdAt(target) != raw_id) std.debug.panic("hoisted var write lost source symbol", .{});
+    const editor = try editorFor(self);
+    editor.addCopiedReference(
+        target,
+        @enumFromInt(raw_id),
+        scope,
+        .{ .write = true },
         Reference.NO_STMT,
         Reference.NO_STMT,
     ) catch |err| return editError(err);

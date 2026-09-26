@@ -486,7 +486,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             // for-of 를 낮추는 타겟: 반복자 for 루프로 풀어 쓴 뒤 방문한다. 루프 변수 대입은
             // 본문의 평범한 선언/대입이 되므로 private 필드·구조분해 좌변도 일반 경로가 처리한다.
             if (self.options.unsupported.for_of) {
-                return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatement(self, node);
+                return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatement(self, idx, node);
             }
             // private field target은 그대로 두면 `for (_x.get(this) of arr)` → invalid.
             // 임시 binding + body prefix assignment 패턴으로 변환 (#1491).
@@ -517,7 +517,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                     return es2018_for_await.ES2018ForAwait(Transformer).lowerForAwaitOfLabeled(self, child, node.data.binary.left);
                 }
                 if (self.options.unsupported.for_of and child.tag == .for_of_statement) {
-                    return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatementLabeled(self, child, node.data.binary.left);
+                    return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatementLabeled(self, child_idx, child, node.data.binary.left);
                 }
             }
             // 루프가 `_loop` 추출로 `{ var _loop = …; for (…) {…} }` 블록이 되면 라벨이 블록에
