@@ -38,7 +38,12 @@ export const users = [_jsx(), _jsxs(), _jsxDEV(), _Fragment(), _createElement()]
       for (const imported of imports) {
         const local = `_${imported}`;
         expect(code).toContain(`${imported} as ${local}2`);
-        expect(code).toContain(`${local}2`);
+        if (imported === 'Fragment') {
+          // One occurrence is the import; another must be the JSX fragment argument.
+          expect([...code.matchAll(/\b_Fragment2\b/g)].length).toBeGreaterThanOrEqual(2);
+        } else {
+          expect(code).toMatch(new RegExp(`\\b${local}2\\(`));
+        }
         expect(code).toContain(`${local}()`);
       }
     });
