@@ -347,7 +347,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         }
 
         fn makeAssign(self: *Transformer, target: NodeIndex, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            return self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{ .left = target, .right = value, .flags = 0 } } });
+            return self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{ .left = target, .right = value, .flags = @intFromEnum(token_mod.Kind.eq) } } });
         }
 
         fn makeBlock(self: *Transformer, stmts: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {

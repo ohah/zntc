@@ -337,11 +337,13 @@ pub fn tryLowerForInOfPrivateTarget(self: *Transformer, node: Node) Error!?NodeI
     const temp_span = try es_helpers.makeTempVarSpan(self);
     // var _t;
     const binding = try es_helpers.makeSyntheticBinding(self, temp_span);
+    const temp_symbol = try self.declareSyntheticVar(binding, span);
     const declarator = try es_helpers.makeDeclarator(self, binding, NodeIndex.none, span);
     const var_decl = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", span);
 
     // (LHS = _t) assignment_expression — 이후 방문 시 lowerPrivateFieldSet / destructuring 경로 거침.
     const tmp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+    try self.addSyntheticRefInScope(tmp_ref, temp_symbol, self.current_scope, .{ .read = true });
     const prefix_assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = span,

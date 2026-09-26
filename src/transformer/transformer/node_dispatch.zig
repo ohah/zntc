@@ -352,7 +352,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 if (!left_idx.isNone()) {
                     const left_node = self.ast.getNode(left_idx);
                     if (left_node.tag == .object_assignment_target or left_node.tag == .array_assignment_target) {
-                        const has_private = self.current_private_fields.len > 0 and
+                        const has_private = self.hasActivePrivateFieldLowering() and
                             es2015_class.ES2015Class(Transformer).destructuringTargetHasPrivateField(self, left_idx);
                         // #4251(+#4261): object rest (`({a, ...r} = o)`, ES2018) 는
                         // destructuring 지원 타겟(es2017)에서도 lowering 필요 — 게이트가
@@ -463,7 +463,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .if_statement => self.visitIfStatement(node),
         .conditional_expression => self.visitTernaryNode(node),
         .for_in_statement => {
-            if (node.tag == .for_in_statement and self.current_private_fields.len > 0) {
+            if (node.tag == .for_in_statement and self.hasActivePrivateFieldLowering()) {
                 if (try self.tryLowerForInOfPrivateTarget(node)) |result| return result;
             }
             if (try self.maybeLowerForInOfDestructuring(node)) |result| return result;
@@ -490,7 +490,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             }
             // private field target은 그대로 두면 `for (_x.get(this) of arr)` → invalid.
             // 임시 binding + body prefix assignment 패턴으로 변환 (#1491).
-            if (self.current_private_fields.len > 0) {
+            if (self.hasActivePrivateFieldLowering()) {
                 if (try self.tryLowerForInOfPrivateTarget(node)) |result| return result;
             }
             // #4254: for_of 가 native(es2015~17)인데 LHS binding 이 object rest 면
