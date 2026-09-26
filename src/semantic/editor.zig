@@ -37,6 +37,7 @@ pub const SemanticEditor = struct {
     symbols: std.ArrayList(Symbol) = .empty,
     scopes: std.ArrayList(Scope) = .empty,
     scope_maps: std.ArrayList(std.StringHashMapUnmanaged(usize)) = .empty,
+    scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     references: std.ArrayList(Reference) = .empty,
     symbol_ids: std.ArrayList(?u32) = .empty,
 
@@ -46,6 +47,7 @@ pub const SemanticEditor = struct {
         symbols: std.ArrayList(Symbol),
         scopes: []const Scope,
         scope_maps: []const std.StringHashMapUnmanaged(usize),
+        scope_owner_map: std.AutoHashMapUnmanaged(u32, u32),
         references: []const Reference,
         symbol_ids: []const ?u32,
     };
@@ -56,6 +58,7 @@ pub const SemanticEditor = struct {
         symbols: []const Symbol,
         scopes: []const Scope,
         scope_maps: []const std.StringHashMapUnmanaged(usize),
+        scope_owner_map: std.AutoHashMapUnmanaged(u32, u32),
         references: []const Reference,
         symbol_ids: []const ?u32,
     ) Error!SemanticEditor {
@@ -73,6 +76,10 @@ pub const SemanticEditor = struct {
             }
             try self.scope_maps.append(allocator, map);
         }
+        var owner_iter = scope_owner_map.iterator();
+        while (owner_iter.next()) |entry| {
+            try self.scope_owner_map.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
+        }
         try self.references.appendSlice(allocator, references);
         try self.symbol_ids.appendSlice(allocator, symbol_ids);
         return self;
@@ -81,6 +88,7 @@ pub const SemanticEditor = struct {
     pub fn deinit(self: *SemanticEditor) void {
         for (self.scope_maps.items) |*map| map.deinit(self.allocator);
         self.scope_maps.deinit(self.allocator);
+        self.scope_owner_map.deinit(self.allocator);
         self.symbols.deinit(self.allocator);
         self.scopes.deinit(self.allocator);
         self.references.deinit(self.allocator);
@@ -93,11 +101,14 @@ pub const SemanticEditor = struct {
         const references = try self.references.toOwnedSlice(self.allocator);
         const symbol_ids = try self.symbol_ids.toOwnedSlice(self.allocator);
         const symbols = self.symbols;
+        const scope_owner_map = self.scope_owner_map;
         self.symbols = .empty;
+        self.scope_owner_map = .empty;
         return .{
             .symbols = symbols,
             .scopes = scopes,
             .scope_maps = scope_maps,
+            .scope_owner_map = scope_owner_map,
             .references = references,
             .symbol_ids = symbol_ids,
         };
@@ -142,14 +153,16 @@ pub const SemanticEditor = struct {
     }
 
     /// AST가 새 어휘 경계를 만들 때 호출한다. strict는 부모에서 자식으로 전파된다.
-    pub fn addScope(self: *SemanticEditor, parent: ScopeId, kind: ScopeKind, is_strict: bool) Error!ScopeId {
+    pub fn addScope(self: *SemanticEditor, parent: ScopeId, owner: NodeIndex, kind: ScopeKind, is_strict: bool) Error!ScopeId {
         if (!parent.isNone() and !self.validScope(parent)) return error.InvalidScope;
         if (parent.isNone() and self.scopes.items.len != 0) return error.InvalidScope;
+        if (!owner.isNone() and @intFromEnum(owner) >= self.ast.nodes.items.len) return error.InvalidNode;
         const strict = is_strict or (if (parent.isNone()) false else self.scopes.items[parent.toIndex()].is_strict);
         const id: ScopeId = @enumFromInt(@as(u32, @intCast(self.scopes.items.len)));
         try self.scopes.append(self.allocator, .{ .parent = parent, .kind = kind, .is_strict = strict });
         errdefer _ = self.scopes.pop();
         try self.scope_maps.append(self.allocator, .empty);
+        if (!owner.isNone()) try self.scope_owner_map.put(self.allocator, @intFromEnum(owner), @intFromEnum(id));
         return id;
     }
 
@@ -295,10 +308,16 @@ test "synthetic declaration, explicit references, move and removal keep stable I
     const allocator = arena.allocator();
     var ast = Ast.init(allocator, "");
     defer ast.deinit();
-    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, &.{}, &.{});
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{});
     defer editor.deinit();
-    const root = try editor.addScope(.none, .module, true);
-    const block = try editor.addScope(root, .block, false);
+    const root = try editor.addScope(.none, .none, .module, true);
+    const block_owner = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = Span.EMPTY,
+        .data = .{ .list = try ast.addNodeList(&.{}) },
+    });
+    const block = try editor.addScope(root, block_owner, .block, false);
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(block)), editor.scope_owner_map.get(@intFromEnum(block_owner)));
     try std.testing.expect(editor.scopes.items[block.toIndex()].is_strict);
     const name = try ast.addString("_this");
     const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
@@ -315,6 +334,7 @@ test "synthetic declaration, explicit references, move and removal keep stable I
     try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@intFromEnum(ref_node)]);
     const result = try editor.finish();
     try std.testing.expectEqual(@as(usize, 2), result.scopes.len);
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(block)), result.scope_owner_map.get(@intFromEnum(block_owner)));
     try std.testing.expectEqual(@as(usize, 1), result.symbols.items.len);
     try std.testing.expectEqual(@as(usize, 1), result.references.len);
 }
@@ -325,11 +345,11 @@ test "same provisional name in separate scopes never shares a symbol" {
     const allocator = arena.allocator();
     var ast = Ast.init(allocator, "");
     defer ast.deinit();
-    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, &.{}, &.{});
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{});
     defer editor.deinit();
-    const root = try editor.addScope(.none, .module, true);
-    const left = try editor.addScope(root, .function, false);
-    const right = try editor.addScope(root, .function, false);
+    const root = try editor.addScope(.none, .none, .module, true);
+    const left = try editor.addScope(root, .none, .function, false);
+    const right = try editor.addScope(root, .none, .function, false);
     const name = try ast.addString("_this");
     const left_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
     const right_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
@@ -362,9 +382,9 @@ test "invalid identities and type-only references cannot corrupt liveness" {
     const allocator = arena.allocator();
     var ast = Ast.init(allocator, "");
     defer ast.deinit();
-    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, &.{}, &.{});
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{});
     defer editor.deinit();
-    const root = try editor.addScope(.none, .module, true);
+    const root = try editor.addScope(.none, .none, .module, true);
     const name = try ast.addString("temp");
     const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
     const type_ref = try ast.addNode(.{ .tag = .identifier_reference, .span = name, .data = .{ .string_ref = name } });

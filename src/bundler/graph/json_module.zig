@@ -46,6 +46,7 @@ pub fn parse(self: *ModuleGraph, io: std.Io, module: *Module) void {
             .symbols = analyzer.symbols,
             .scopes = analyzer.scopes.items,
             .scope_maps = analyzer.scope_maps.items,
+            .scope_owner_map = analyzer.scope_owner_map,
             .exported_names = analyzer.exported_names,
             .symbol_ids = analyzer.symbol_ids.items,
             .unresolved_references = analyzer.unresolved_references,

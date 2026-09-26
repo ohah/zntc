@@ -137,6 +137,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         // 심볼 기준 블록 스코핑 표(#4760)용 — 스코프가 없으면 예전 이름 스택으로 판정한다.
         transformer.scopes = sem.scopes;
         transformer.scope_maps = sem.scope_maps;
+        transformer.scope_owner_map = sem.scope_owner_map;
         transformer.unresolved_references = &sem.unresolved_references;
     }
     transformer.line_offsets = module.line_offsets;
@@ -365,6 +366,7 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
             .symbols = analyzer.symbols,
             .scopes = analyzer.scopes.items,
             .scope_maps = analyzer.scope_maps.items,
+            .scope_owner_map = analyzer.scope_owner_map,
             .exported_names = analyzer.exported_names,
             .symbol_ids = analyzer.symbol_ids.items,
             .unresolved_references = analyzer.unresolved_references,

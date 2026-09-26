@@ -122,6 +122,11 @@ pub const SemanticAnalyzer = struct {
     /// key는 소스 코드 슬라이스 (zero-copy), value는 symbols 배열의 인덱스.
     scope_maps: std.ArrayList(std.StringHashMapUnmanaged(usize)),
 
+    /// 원본 AST에서 새 어휘 스코프를 연 노드 → ScopeId. 변환기의 스코프 커서용.
+    /// 한 노드가 두 스코프를 열면 안쪽 스코프를 기록한다.
+    scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    current_visit_node: NodeIndex = .none,
+
     /// 미해결 참조 (unresolved references). resolveIdentifier에서 스코프 체인을 다 올라가도
     /// 선언을 찾지 못한 이름. 번들러 linker가 scope hoisting 시 이 이름들을 예약하여
     /// 모듈 top-level 변수가 글로벌을 shadowing하지 않도록 한다 (Rolldown 방식).
@@ -241,6 +246,7 @@ pub const SemanticAnalyzer = struct {
             .labels = .empty,
             .resolved_names = .empty,
             .scope_maps = .empty,
+            .scope_owner_map = .empty,
             .unresolved_references = .empty,
             .symbol_ids = .empty,
             .references = .empty,
@@ -257,6 +263,7 @@ pub const SemanticAnalyzer = struct {
             self.symbols.items,
             self.scopes.items,
             self.scope_maps.items,
+            self.scope_owner_map,
             self.references.items,
             self.symbol_ids.items,
         );
@@ -273,6 +280,7 @@ pub const SemanticAnalyzer = struct {
         self.symbols.deinit(self.allocator);
         for (self.scope_maps.items) |*m| m.deinit(self.allocator);
         self.scope_maps.deinit(self.allocator);
+        self.scope_owner_map.deinit(self.allocator);
         self.exported_names.deinit(self.allocator);
         // #4221: 키는 전부 dupe 사본 (소유) — 함께 해제.
         var unres_it = self.unresolved_references.keyIterator();
@@ -363,6 +371,9 @@ pub const SemanticAnalyzer = struct {
         });
         // scope_maps는 scopes와 동일 인덱스를 공유 — 빈 HashMap 추가
         try self.scope_maps.append(self.allocator, .empty);
+        if (!self.current_visit_node.isNone()) {
+            try self.scope_owner_map.put(self.allocator, @intFromEnum(self.current_visit_node), @intFromEnum(new_id));
+        }
         self.current_scope = new_id;
         return parent;
     }
@@ -1436,6 +1447,9 @@ pub const SemanticAnalyzer = struct {
         if (idx.isNone()) return;
         // 바운드 체크: 잘못된 인덱스 방어
         if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        const saved_visit_node = self.current_visit_node;
+        self.current_visit_node = idx;
+        defer self.current_visit_node = saved_visit_node;
 
         const node = self.ast.getNode(idx);
         // TS/Flow 타입 wrapper: 값(operand)만 순회, 타입 부분 스킵 (#3129 단일 source).

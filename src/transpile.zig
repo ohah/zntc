@@ -1447,6 +1447,7 @@ fn transpileWithCallbackInternal(
         transformer.references = analyzer.references.items;
         transformer.scopes = analyzer.scopes.items;
         transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
         transformer.unresolved_references = &analyzer.unresolved_references;
     } else if (binding_lite_storage) |*binding_lite| {
         transformer.binding_lite = binding_lite;
