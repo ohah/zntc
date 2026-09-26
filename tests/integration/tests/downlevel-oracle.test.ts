@@ -52,6 +52,8 @@ const KNOWN_FAILURES: Record<string, string[]> = {
   ],
   // #4733 Hermes 에서 객체 리터럴 async generator 메서드
   '4729-super-24': ['hermes/plain', 'hermes/minify'],
+  // #4733 Hermes 번들의 async generator 메서드. #4819 이전 main에서도 두 칸 실패 확인.
+  '4819-generator-state-computed': ['hermes/plain', 'hermes/minify'],
   // #4735 클래스 계산된 키 안 super 가 바깥 home 대신 클래스 자신의 super 문맥으로 낮춰진다
   '4729-super-41': [
     'es5/plain',
