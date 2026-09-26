@@ -282,6 +282,53 @@ pub const SemanticEditor = struct {
         self.addCounts(symbol, ref.flags);
     }
 
+    /// 참조의 위치와 대상을 함께 바꾼다. 이전 대상은 새 스코프에서 보이지 않고
+    /// 새 대상은 이전 스코프에서 보이지 않는 경우에도 최종 쌍만 유효하면 이동한다.
+    /// 오류가 나면 Reference, SymbolId, 사용 횟수는 변경하지 않는다.
+    pub fn relocateReference(
+        self: *SemanticEditor,
+        node: NodeIndex,
+        scope: ScopeId,
+        symbol: SymbolId,
+        stmt_idx: u32,
+        scope_stmt_idx: u32,
+    ) Error!void {
+        if (!self.validScope(scope)) return error.InvalidScope;
+        if (!self.validSymbol(symbol)) return error.InvalidSymbol;
+        try self.requireIdentifier(node);
+        if (self.ast.getNode(node).tag == .binding_identifier) return error.InvalidNode;
+        try self.ensureReferenceIndex();
+        const i = self.reference_index.get(@intFromEnum(node)) orelse return error.ReferenceNotFound;
+        const current = self.references.items[i];
+        if (current.flags.declare or (!current.flags.read and !current.flags.write)) return error.InvalidNode;
+        if (!self.validScope(current.scope_id)) return error.InvalidScope;
+        if (!self.validSymbol(current.symbol_id)) return error.InvalidSymbol;
+        const slot = @intFromEnum(node);
+        if (slot >= self.symbol_ids.items.len or self.symbol_ids.items[slot] != @as(?u32, @intFromEnum(current.symbol_id)))
+            return error.InvalidSymbol;
+        if (!self.visibleFrom(symbol, scope)) return error.InvalidScope;
+
+        if (current.symbol_id != symbol and countsAsValue(current.flags)) {
+            const source_counts = self.symbols.items[@intFromEnum(current.symbol_id)];
+            const target_counts = self.symbols.items[@intFromEnum(symbol)];
+            if (source_counts.reference_count == 0 or target_counts.reference_count == std.math.maxInt(u32))
+                return error.InvalidSymbol;
+            if (current.flags.write and
+                (source_counts.write_count == 0 or target_counts.write_count == std.math.maxInt(u32)))
+                return error.InvalidSymbol;
+        }
+
+        if (current.symbol_id != symbol) {
+            self.removeCounts(current.symbol_id, current.flags);
+            self.addCounts(symbol, current.flags);
+        }
+        self.references.items[i].scope_id = scope;
+        self.references.items[i].symbol_id = symbol;
+        self.references.items[i].stmt_idx = stmt_idx;
+        self.references.items[i].scope_stmt_idx = scope_stmt_idx;
+        self.symbol_ids.items[slot] = @intFromEnum(symbol);
+    }
+
     /// AST 복사가 만든 새 식별자에 원본 참조의 대상과 read/write 플래그를 복제한다.
     /// 원본 노드가 최종 AST에서 사라졌다면 caller가 removeReference로 정리한다.
     pub fn cloneReference(self: *SemanticEditor, source: NodeIndex, clone: NodeIndex, scope: ScopeId, stmt_idx: u32, scope_stmt_idx: u32) Error!void {
@@ -577,6 +624,199 @@ test "same provisional name in separate scopes never shares a symbol" {
         0,
         1,
     ));
+}
+
+test "relocate reference crosses sibling scopes with one final visibility check" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+
+    const root = try editor.addScope(.none, .none, .module, true);
+    const header = try editor.addScope(root, .none, .block, false);
+    const generated_fn = try editor.addScope(root, .none, .function, false);
+    const name = try ast.addString("index");
+    const header_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const param_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const ref = try ast.addNode(.{ .tag = .assignment_target_identifier, .span = name, .data = .{ .string_ref = name } });
+    const header_id = try editor.declare(header_binding, name, Span.EMPTY, header, .variable_let, 1, 0);
+    const param_id = try editor.declare(param_binding, name, Span.EMPTY, generated_fn, .parameter, 1, 0);
+    try editor.addReference(ref, header_id, header, .{ .read = true, .write = true }, 2, 3);
+
+    try std.testing.expectError(error.InvalidScope, editor.moveReference(ref, generated_fn, 4, 5));
+    try std.testing.expectError(error.InvalidScope, editor.rebindReference(ref, param_id));
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(header_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(header_id)].write_count);
+    try editor.relocateReference(ref, generated_fn, param_id, 4, 5);
+
+    const ref_i = editor.reference_index.get(@intFromEnum(ref)).?;
+    const relocated = editor.references.items[ref_i];
+    try std.testing.expectEqual(generated_fn, relocated.scope_id);
+    try std.testing.expectEqual(param_id, relocated.symbol_id);
+    try std.testing.expectEqual(@as(u32, 4), relocated.stmt_idx);
+    try std.testing.expectEqual(@as(u32, 5), relocated.scope_stmt_idx);
+    try std.testing.expect(relocated.flags.read and relocated.flags.write);
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(param_id)), editor.symbol_ids.items[@intFromEnum(ref)]);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(header_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(header_id)].write_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(param_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(param_id)].write_count);
+
+    try editor.relocateReference(ref, generated_fn, param_id, 4, 5);
+    try std.testing.expectEqualDeep(relocated, editor.references.items[ref_i]);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(param_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(param_id)].write_count);
+    try editor.removeReference(ref);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(param_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(param_id)].write_count);
+    try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@intFromEnum(ref)]);
+    try std.testing.expect(editor.reference_index.get(@intFromEnum(ref)) == null);
+}
+
+test "relocate reference after reparenting restores final visibility" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+
+    const root = try editor.addScope(.none, .none, .module, true);
+    const header = try editor.addScope(root, .none, .block, false);
+    const body = try editor.addScope(header, .none, .block, false);
+    const generated_fn = try editor.addScope(root, .none, .function, false);
+    const name = try ast.addString("index");
+    const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const param = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const ref = try ast.addNode(.{ .tag = .identifier_reference, .span = name, .data = .{ .string_ref = name } });
+    const header_id = try editor.declare(binding, name, Span.EMPTY, header, .variable_let, 0, 0);
+    const param_id = try editor.declare(param, name, Span.EMPTY, generated_fn, .parameter, 0, 0);
+    try editor.addReference(ref, header_id, body, .{ .read = true }, 1, 1);
+
+    try editor.reparentScope(body, generated_fn);
+    try std.testing.expectError(error.InvalidScope, editor.finish());
+    try editor.relocateReference(ref, body, param_id, Reference.NO_STMT, Reference.NO_STMT);
+    const result = try editor.finish();
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(param_id)), result.symbol_ids[@intFromEnum(ref)]);
+    try std.testing.expectEqual(@as(u32, 0), result.symbols.items[@intFromEnum(header_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), result.symbols.items[@intFromEnum(param_id)].reference_count);
+}
+
+test "failed relocation leaves references symbols counts and index intact" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+
+    const root = try editor.addScope(.none, .none, .module, true);
+    const left = try editor.addScope(root, .none, .block, false);
+    const right = try editor.addScope(root, .none, .function, false);
+    const other = try editor.addScope(root, .none, .function, false);
+    const name = try ast.addString("value");
+    const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const right_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const other_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const ref = try ast.addNode(.{ .tag = .assignment_target_identifier, .span = name, .data = .{ .string_ref = name } });
+    const later = try ast.addNode(.{ .tag = .identifier_reference, .span = name, .data = .{ .string_ref = name } });
+    const missing = try ast.addNode(.{ .tag = .identifier_reference, .span = name, .data = .{ .string_ref = name } });
+    const invalid_node = try ast.addNode(.{ .tag = .null_literal, .span = Span.EMPTY, .data = .{ .none = 0 } });
+    const left_id = try editor.declare(binding, name, Span.EMPTY, left, .variable_let, 0, 0);
+    const right_id = try editor.declare(right_binding, name, Span.EMPTY, right, .parameter, 0, 0);
+    const other_id = try editor.declare(other_binding, name, Span.EMPTY, other, .parameter, 0, 0);
+    try editor.addReference(ref, left_id, left, .{ .read = true, .write = true }, 1, 2);
+    try editor.addReference(later, left_id, left, .{ .read = true }, 3, 4);
+    try editor.ensureReferenceIndex();
+    const old_index = editor.reference_index.get(@intFromEnum(ref)).?;
+    const before = editor.references.items[old_index];
+
+    try std.testing.expectError(error.InvalidScope, editor.relocateReference(ref, .none, right_id, 8, 9));
+    try std.testing.expectError(error.InvalidSymbol, editor.relocateReference(ref, right, .none, 8, 9));
+    try std.testing.expectError(error.InvalidScope, editor.relocateReference(ref, right, other_id, 8, 9));
+    try std.testing.expectError(error.InvalidNode, editor.relocateReference(binding, right, right_id, 8, 9));
+    try std.testing.expectError(error.InvalidNode, editor.relocateReference(invalid_node, right, right_id, 8, 9));
+    try std.testing.expectError(error.ReferenceNotFound, editor.relocateReference(missing, right, right_id, 8, 9));
+    try std.testing.expectEqualDeep(before, editor.references.items[old_index]);
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(left_id)), editor.symbol_ids.items[@intFromEnum(ref)]);
+    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@intFromEnum(left_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(left_id)].write_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(right_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(other_id)].reference_count);
+    try std.testing.expectEqual(old_index, editor.reference_index.get(@intFromEnum(ref)).?);
+
+    editor.references.items[old_index].flags = .{ .declare = true };
+    try std.testing.expectError(error.InvalidNode, editor.relocateReference(ref, right, right_id, 8, 9));
+    editor.references.items[old_index].flags = .{};
+    try std.testing.expectError(error.InvalidNode, editor.relocateReference(ref, right, right_id, 8, 9));
+    editor.references.items[old_index].flags = before.flags;
+    editor.references.items[old_index].scope_id = .none;
+    try std.testing.expectError(error.InvalidScope, editor.relocateReference(ref, right, right_id, 8, 9));
+    editor.references.items[old_index].scope_id = before.scope_id;
+    editor.symbol_ids.items[@intFromEnum(ref)] = @intFromEnum(other_id);
+    try std.testing.expectError(error.InvalidSymbol, editor.relocateReference(ref, right, right_id, 8, 9));
+    editor.symbol_ids.items[@intFromEnum(ref)] = @intFromEnum(left_id);
+    editor.symbols.items[@intFromEnum(right_id)].write_count = std.math.maxInt(u32);
+    try std.testing.expectError(error.InvalidSymbol, editor.relocateReference(ref, right, right_id, 8, 9));
+    editor.symbols.items[@intFromEnum(right_id)].write_count = 0;
+    try std.testing.expectEqualDeep(before, editor.references.items[old_index]);
+    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@intFromEnum(left_id)].reference_count);
+
+    try editor.removeReference(ref);
+    const later_i = editor.reference_index.get(@intFromEnum(later)).?;
+    try std.testing.expectEqual(later, editor.references.items[later_i].node_index);
+    try editor.relocateReference(later, right, right_id, 10, 11);
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(right_id)), editor.symbol_ids.items[@intFromEnum(later)]);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(left_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(right_id)].reference_count);
+}
+
+test "relocate type references without adding value counts" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+
+    const root = try editor.addScope(.none, .none, .module, true);
+    const left = try editor.addScope(root, .none, .block, false);
+    const right = try editor.addScope(root, .none, .function, false);
+    const name = try ast.addString("TypeName");
+    const left_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const right_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const type_ref = try ast.addNode(.{ .tag = .identifier_reference, .span = name, .data = .{ .string_ref = name } });
+    const query_ref = try ast.addNode(.{ .tag = .identifier_reference, .span = name, .data = .{ .string_ref = name } });
+    const left_id = try editor.declare(left_binding, name, Span.EMPTY, left, .variable_let, 0, 0);
+    const right_id = try editor.declare(right_binding, name, Span.EMPTY, right, .parameter, 0, 0);
+    const type_flags: ReferenceFlags = .{ .read = true, .type_context = true };
+    const query_flags: ReferenceFlags = .{ .read = true, .value_as_type = true };
+    try editor.addReference(type_ref, left_id, left, type_flags, 1, 2);
+    try editor.addReference(query_ref, left_id, left, query_flags, 3, 4);
+
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(left_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(left_id)].write_count);
+    try editor.relocateReference(type_ref, right, right_id, 5, 6);
+    try editor.relocateReference(query_ref, right, right_id, 7, 8);
+
+    const relocated_type = editor.references.items[editor.reference_index.get(@intFromEnum(type_ref)).?];
+    const relocated_query = editor.references.items[editor.reference_index.get(@intFromEnum(query_ref)).?];
+    try std.testing.expectEqual(right, relocated_type.scope_id);
+    try std.testing.expectEqual(right_id, relocated_type.symbol_id);
+    try std.testing.expectEqual(@as(u32, 5), relocated_type.stmt_idx);
+    try std.testing.expectEqual(@as(u32, 6), relocated_type.scope_stmt_idx);
+    try std.testing.expectEqualDeep(type_flags, relocated_type.flags);
+    try std.testing.expect(!relocated_type.isValueUse());
+    try std.testing.expectEqual(right, relocated_query.scope_id);
+    try std.testing.expectEqual(right_id, relocated_query.symbol_id);
+    try std.testing.expectEqual(@as(u32, 7), relocated_query.stmt_idx);
+    try std.testing.expectEqual(@as(u32, 8), relocated_query.scope_stmt_idx);
+    try std.testing.expectEqualDeep(query_flags, relocated_query.flags);
+    try std.testing.expect(!relocated_query.isValueUse());
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(right_id)), editor.symbol_ids.items[@intFromEnum(type_ref)]);
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(right_id)), editor.symbol_ids.items[@intFromEnum(query_ref)]);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(left_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(left_id)].write_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(right_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(right_id)].write_count);
 }
 
 test "helper import remains isolated from a user binding with the same name" {
