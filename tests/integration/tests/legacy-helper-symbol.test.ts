@@ -30,7 +30,10 @@ console.log(JSON.stringify([new Service(1).method('abc'), events]));
 // without treating that separate serialization gap as helper linkage.
 const es5MetadataSource = source
   .replace('  constructor(value: number) {}\n', '')
-  .replace('@decorated method(value: string): any { return value.length; }', '@decorated method(): any { return 3; }')
+  .replace(
+    '@decorated method(value: string): any { return value.length; }',
+    '@decorated method(): any { return 3; }',
+  )
   .replace("new Service(1).method('abc')", 'new Service().method()');
 
 describe('legacy runtime helper symbols (#4819)', () => {
