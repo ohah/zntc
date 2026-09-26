@@ -1,6 +1,10 @@
 class Box {
-  static async *#stream(value) { yield await Promise.resolve(value + 1); }
-  static read(value) { return this.#stream(value); }
+  static async *#stream(value) {
+    yield await Promise.resolve(value + 1);
+  }
+  static read(value) {
+    return this.#stream(value);
+  }
 }
 (async () => {
   const values = [];
