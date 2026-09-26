@@ -269,6 +269,17 @@ pub const SemanticAnalyzer = struct {
         );
     }
 
+    /// 트랜스포머가 갱신한 배열을 받는다. 이전 배열도 같은 모듈 arena가 소유한다.
+    /// 개별 deinit은 하지 않고 arena가 변환 종료 시 일괄 해제한다.
+    pub fn applyEdit(self: *SemanticAnalyzer, result: @import("editor.zig").SemanticEditor.Result) void {
+        self.symbols = result.symbols;
+        self.scopes = std.ArrayList(Scope).fromOwnedSlice(result.scopes);
+        self.scope_maps = std.ArrayList(std.StringHashMapUnmanaged(usize)).fromOwnedSlice(result.scope_maps);
+        self.scope_owner_map = result.scope_owner_map;
+        self.references = std.ArrayList(symbol_mod.Reference).fromOwnedSlice(result.references);
+        self.symbol_ids = std.ArrayList(?u32).fromOwnedSlice(result.symbol_ids);
+    }
+
     pub fn deinit(self: *SemanticAnalyzer) void {
         // allocPrint으로 할당된 에러 메시지/힌트 해제
         for (self.errors.items) |err| {

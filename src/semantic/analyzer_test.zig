@@ -44,6 +44,31 @@ test "#4819 editor preserves analyzed IDs while appending a generated binding" {
     try std.testing.expectEqualSlices(?u32, original_ids, editor.symbol_ids.items[0..original_ids.len]);
 }
 
+test "#4819 analyzer accepts editor ownership without changing existing IDs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "let original = 1;");
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    try analyzer.analyze();
+    const original_ids = try allocator.dupe(?u32, analyzer.symbol_ids.items);
+    var editor = try analyzer.beginEdit();
+    defer editor.deinit();
+    const name = try parser.ast.addString("_generated");
+    const binding = try parser.ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const generated = try editor.declare(binding, name, .EMPTY, @enumFromInt(0), .variable_var, 0, 0);
+    const result = try editor.finish();
+    analyzer.applyEdit(result);
+    try std.testing.expectEqual(@as(u32, 1), @intFromEnum(generated));
+    try std.testing.expectEqualSlices(?u32, original_ids, analyzer.symbol_ids.items[0..original_ids.len]);
+    try std.testing.expectEqual(@as(?u32, 1), analyzer.symbol_ids.items[@intFromEnum(binding)]);
+}
+
 test "SemanticAnalyzer: var declaration creates symbol" {
     var scanner = try Scanner.init(std.testing.allocator, "var x = 1;");
     defer scanner.deinit();

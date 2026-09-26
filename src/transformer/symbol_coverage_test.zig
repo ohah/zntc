@@ -152,6 +152,56 @@ test "#4760 es5 루프 캡처 `_loop` 의 매개변수·인자·끌어올린 var
     ));
 }
 
+test "#4819 generated loop binding and call share one appended SymbolId" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator,
+        \\export function collect(limit) {
+        \\  const _loop = 7;
+        \\  const getters = [];
+        \\  for (let index = 0; index < limit; index++) getters.push(() => index + _loop);
+        \\  return getters;
+        \\}
+    );
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const original_symbols = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    try std.testing.expectEqual(original_symbols + 1, edited.symbols.items.len);
+    const generated_id: u32 = @intCast(original_symbols);
+    try std.testing.expectEqualStrings("_loop2", transformer.ast.getText(edited.symbols.items[generated_id].name));
+    var bindings: usize = 0;
+    var calls: usize = 0;
+    for (edited.symbol_ids, 0..) |maybe_id, i| {
+        if (maybe_id != generated_id) continue;
+        switch (transformer.ast.nodes.items[i].tag) {
+            .binding_identifier => bindings += 1,
+            .identifier_reference => calls += 1,
+            else => {},
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), bindings);
+    try std.testing.expect(calls >= 1);
+    try std.testing.expectEqual(@as(u32, 1), edited.symbols.items[generated_id].reference_count);
+}
+
 test "#4760 static private 멤버를 낮출 때 만드는 클래스 참조는 클래스 심볼을 가진다" {
     // `Counter.#count` → `__classStaticPrivateFieldSpecGet(Counter, Counter, _count)` 의 클래스
     // 참조는 매핑에 이름만 있어 심볼이 없었다.

@@ -138,6 +138,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         transformer.scopes = sem.scopes;
         transformer.scope_maps = sem.scope_maps;
         transformer.scope_owner_map = sem.scope_owner_map;
+        transformer.semantic_edit_enabled = true;
         transformer.unresolved_references = &sem.unresolved_references;
     }
     transformer.line_offsets = module.line_offsets;
@@ -154,6 +155,14 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     }
 
     const root = transformer.transform() catch return;
+    if (transformer.finishSemanticEdit() catch return) |edited| {
+        module.semantic.?.applyEdit(edited);
+        transformer.symbols = module.semantic.?.symbols.items;
+        transformer.references = module.semantic.?.references;
+        transformer.scopes = module.semantic.?.scopes;
+        transformer.scope_maps = module.semantic.?.scope_maps;
+        transformer.scope_owner_map = module.semantic.?.scope_owner_map;
+    }
     // #4598: `lowerProgram` 이 만든 async IIFE statement 를 module 로 넘긴다 —
     // emitter 가 `__esm` factory 안에서 그 문장만 `return <expr>;` 로 방출한다.
     if (transformer.tla_iife_stmt) |ix| module.tla_iife_stmt = @intFromEnum(ix);

@@ -29,6 +29,7 @@ const PluginState = plugin_state.PluginState;
 const jsx_lowering_mod = @import("jsx_lowering.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
+const SemanticEditor = @import("../semantic/editor.zig").SemanticEditor;
 const tagged_template_mod = @import("transformer/tagged_template.zig");
 const flow_mod = @import("transformer/flow.zig");
 const define_mod = @import("transformer/define.zig");
@@ -125,6 +126,9 @@ pub const Transformer = struct {
     /// scope_owner_map 자체는 analyzer 소유라 변환 중 수정하지 않는다.
     scope_owner_remaps: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     current_scope: ScopeId = .none,
+    /// 첫 합성 바인딩이 필요할 때만 기존 의미 정보를 복사한다.
+    semantic_edit_enabled: bool = false,
+    semantic_editor: ?SemanticEditor = null,
     unresolved_references: ?*const std.StringHashMapUnmanaged(void) = null,
     /// 심볼 → 블록 스코핑 새 이름(`x$N`). es5 블록 스코핑을 낮추고 분석기 스코프가 있을 때
     /// 변환 시작에 `block_rename_table` 로 만든다 (#4760). 없으면(스코프 정보 없는 경로)
@@ -480,6 +484,9 @@ pub const Transformer = struct {
     pub const visitMemberExpression = node_helpers.visitMemberExpression;
     pub const visitTernaryNode = node_helpers.visitTernaryNode;
     pub const getSymbolIdAt = node_helpers.getSymbolIdAt;
+    pub const declareSyntheticVar = @import("transformer/semantic_edit.zig").declareSyntheticVar;
+    pub const addSyntheticRef = @import("transformer/semantic_edit.zig").addSyntheticRef;
+    pub const finishSemanticEdit = @import("transformer/semantic_edit.zig").finishSemanticEdit;
     pub const readNodeIdx = node_helpers.readNodeIdx;
     pub const readU32 = node_helpers.readU32;
     pub const addExtraNode = node_helpers.addExtraNode;
