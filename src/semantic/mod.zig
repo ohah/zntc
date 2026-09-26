@@ -18,6 +18,7 @@
 pub const analyzer = @import("analyzer.zig");
 pub const checker = @import("checker.zig");
 pub const editor = @import("editor.zig");
+pub const reference_walk = @import("reference_walk.zig");
 pub const scope = @import("scope.zig");
 pub const symbol = @import("symbol.zig");
 
@@ -38,6 +39,7 @@ test {
     _ = analyzer;
     _ = checker;
     _ = editor;
+    _ = reference_walk;
     _ = scope;
     _ = symbol;
 
