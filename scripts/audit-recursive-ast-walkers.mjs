@@ -44,6 +44,12 @@ const ALLOWLIST = {
   "src/transformer/transformer/worklet.zig::collectNewExpressionCallees": { class: "iterative_safe", note: "explicit stack (worklet)" },
   "src/transformer/transformer/worklet.zig::walkBodyForClosureAnalysis": { class: "iterative_safe", note: "explicit stack; nested-fn depth bounded by source nesting" },
   "src/bundler/tree_shaker/const_materialize.zig::anyReachableNode": { class: "iterative_safe", note: "numeric_dfs_stack" },
+  "src/semantic/reference_walk.zig::collectIdentifierReferences": { class: "iterative_safe", note: "explicit edge stack and one-level child collector" },
+  "src/transformer/es2015_class/members.zig::moveInstanceInitScopes": { class: "iterative_safe", note: "explicit node stack for field initializer scope transfer" },
+  "src/transformer/es2017.zig::moveAsyncGeneratorBodyScopes": { class: "iterative_safe", note: "explicit node stack for async generator scope transfer" },
+  "src/transformer/minify.zig::mergeDecls": { class: "iterative_safe", note: "explicit node stack before adjacent declaration merge" },
+  "src/transformer/transformer/semantic_edit.zig::bindGeneratedState": { class: "iterative_safe", note: "explicit node stack for generated state references" },
+  "src/transformer/transformer/semantic_edit.zig::bindGeneratedFunctionTemps": { class: "iterative_safe", note: "explicit node stack for generated function temps" },
 
   // --- 직계 1단계만 (재귀 없음) ---
   "src/bundler/runtime_polyfills.zig::markSkippedIdentifiers": { class: "one_level", note: "import/export specifiers only, flat outer loop" },
