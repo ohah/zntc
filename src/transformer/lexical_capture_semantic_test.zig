@@ -169,3 +169,83 @@ test "#4819 explicit arguments binding moves to the exact capture initializer" {
     try std.testing.expectEqual(@as(u32, 1), edited.symbols.items[parameter_id].reference_count);
     try std.testing.expectEqual(@as(u32, 1), edited.symbols.items[alias].reference_count);
 }
+
+test "#4819 nested source functions keep distinct capture symbol IDs and scopes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        "function outer(_this,_arguments){" ++
+        "const first=()=>this.base+arguments.length;" ++
+        "function inner(_this,_arguments){return ()=>this.base+arguments.length;}" ++
+        "return first()+inner.call({base:5},1);}";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var function_scopes: [2]u32 = undefined;
+    var function_count: usize = 0;
+    var owners = analyzer.scope_owner_map.iterator();
+    while (owners.next()) |owner| {
+        if (parser.ast.nodes.items[owner.key_ptr.*].tag != .function_declaration) continue;
+        try std.testing.expect(function_count < function_scopes.len);
+        function_scopes[function_count] = owner.value_ptr.*;
+        function_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), function_count);
+    const old_symbols = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var live: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    for (reachable) |raw| try live.put(allocator, raw, {});
+
+    var counts: [2][2]usize = .{ .{ 0, 0 }, .{ 0, 0 } };
+    for (edited.symbols.items[old_symbols..], old_symbols..) |symbol, id| {
+        const kind: usize = if (std.mem.startsWith(u8, symbol.synthetic_name, "_this")) 0 else if (std.mem.startsWith(u8, symbol.synthetic_name, "_arguments")) 1 else continue;
+        const scope_index: usize = if (@intFromEnum(symbol.scope_id) == function_scopes[0]) 0 else if (@intFromEnum(symbol.scope_id) == function_scopes[1]) 1 else return error.TestUnexpectedResult;
+        counts[scope_index][kind] += 1;
+        var bindings: usize = 0;
+        for (reachable) |raw| {
+            if (transformer.ast.nodes.items[raw].tag == .binding_identifier and
+                raw < edited.symbol_ids.len and edited.symbol_ids[raw] == @as(u32, @intCast(id))) bindings += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), bindings);
+        var reads: usize = 0;
+        for (edited.references) |ref| {
+            if (@intFromEnum(ref.symbol_id) != id or ref.node_index.isNone()) continue;
+            try std.testing.expect(live.contains(@intFromEnum(ref.node_index)));
+            var scope = ref.scope_id;
+            var sees_owner = false;
+            while (!scope.isNone()) {
+                if (scope == symbol.scope_id) {
+                    sees_owner = true;
+                    break;
+                }
+                scope = edited.scopes[scope.toIndex()].parent;
+            }
+            try std.testing.expect(sees_owner);
+            reads += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), reads);
+        try std.testing.expectEqual(@as(u32, 1), symbol.reference_count);
+    }
+    try std.testing.expectEqualDeep([2][2]usize{ .{ 1, 1 }, .{ 1, 1 } }, counts);
+}

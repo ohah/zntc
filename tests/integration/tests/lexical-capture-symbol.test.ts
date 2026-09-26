@@ -45,6 +45,29 @@ const cases = [
     console.log(new C(2).method(3));`,
   },
   {
+    name: 'derived constructor separates default arguments and body this',
+    target: 'es5',
+    source: `class Base { constructor() { this.base = 5; } }
+    class Derived extends Base {
+      constructor(value = (() => arguments.length)()) {
+        super();
+        this.value = value;
+        this.read = () => this.base;
+      }
+    }
+    const derived = new Derived();
+    console.log(derived.value, derived.read());`,
+  },
+  {
+    name: 'derived constructor this stays uninitialized in defaults',
+    target: 'es5',
+    source: `class Base {}
+    class Derived extends Base {
+      constructor(value = (() => this)()) { super(); this.value = value; }
+    }
+    try { new Derived(); } catch (error) { console.log(error.name); }`,
+  },
+  {
     name: 'async body capture',
     target: 'es5',
     source: `async function run(value) {
@@ -125,6 +148,50 @@ describe('lexical capture symbol frames (#4819)', () => {
             `--target=${fixture.target}`,
             ...(minify ? ['--minify'] : []),
             '-o', output,
+          ]);
+          expect(result.exitCode, result.stderr).toBe(0);
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, actual.stderr).toBe(0);
+          expect(actual.stdout).toBe(native.stdout);
+        });
+      }
+    }
+  }
+
+  // The identity decorator does not change the class. Native JavaScript is
+  // the oracle here: TypeScript 6's ES5 transform leaves `arguments` inside
+  // this lowered arrow and reports 7, while the source method evaluates to 8.
+  for (const computed of [false, true]) {
+    for (const bundle of [false, true]) {
+      for (const minify of [false, true]) {
+        test(`Stage 3 ${computed ? 'computed' : 'plain'} method capture, ${bundle ? 'bundle' : 'single'}, ${minify ? 'minify' : 'plain'}`, async () => {
+          const method = computed ? '[key]' : 'method';
+          const source = `const key = 'method';
+          function dec(value, _context) { return value; }
+          class Box {
+            @dec field = 5;
+            ${method}(v) { return (() => this.field + arguments.length + v)(); }
+          }
+          console.log(new Box().method(2));`;
+          const reference = `const key = 'method';
+        class Box {
+          field = 5;
+          ${method}(v) { return (() => this.field + arguments.length + v)(); }
+        }
+        console.log(new Box().method(2));`;
+          const dir = await createFixture({
+            'input.ts': source,
+            'reference.mjs': reference,
+            'package.json': '{"type":"module"}',
+          });
+          cleanup = dir.cleanup;
+          const native = spawnSync('node', [join(dir.dir, 'reference.mjs')], { encoding: 'utf8' });
+          expect(native.status, native.stderr).toBe(0);
+          expect(native.stdout).toBe('8\n');
+          const output = join(dir.dir, bundle ? 'out.cjs' : 'out.mjs');
+          const result = await runZntcInDir(dir.dir, [
+            ...(bundle ? ['--bundle', '--platform=node', '--format=cjs'] : []),
+            'input.ts', '--target=es5', ...(minify ? ['--minify'] : []), '-o', output,
           ]);
           expect(result.exitCode, result.stderr).toBe(0);
           const actual = spawnSync('node', [output], { encoding: 'utf8' });
