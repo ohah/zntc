@@ -1336,6 +1336,9 @@ fn elideUnusedFnExprName(ast: *Ast, ctx: MinifyCtx, node: Node, changed: *bool) 
     if (name_ni >= ctx.symbol_ids.len) return;
     const sym_id = ctx.symbol_ids[name_ni] orelse return;
     if (sym_id >= ctx.symbols.len) return;
+    // A lowered named class expression has an observable constructor `.name`
+    // even when no runtime read refers to its inner binding.
+    if (ctx.symbols[sym_id].decl_flags.preserve_class_name) return;
     if (ctx.symbols[sym_id].reference_count != 0) return;
     ast.extra_data.items[e] = @intFromEnum(NodeIndex.none);
     changed.* = true;

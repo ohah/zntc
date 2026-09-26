@@ -454,12 +454,23 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 cm.accessors.items.len > 0 or cm.private_fields.items.len > 0 or
                 cm.static_private_fields.items.len > 0 or cm.private_methods.items.len > 0 or
                 (has_super and super_span != null);
+            // A simple named class needs a private alias for the generated
+            // class-call check when a constructor parameter shadows its name.
+            const source_origin = self.scope_owner_origins.get(@intFromEnum(source_idx)) orelse @intFromEnum(source_idx);
+            const wrap_self_alias = !has_extra and self.class_self_symbol_map.contains(source_origin);
             const iife_parent = if (self.semantic_edit_enabled) self.outputScopeParent(source_class_scope) else self.current_scope;
-            const iife_scope = if (has_extra)
+            const iife_scope = if (has_extra or wrap_self_alias)
                 try self.reserveGeneratedFunctionScope(iife_parent)
             else
                 @as(@import("../semantic/scope.zig").ScopeId, .none);
-            if (has_extra) try self.reparentGeneratedScope(source_class_scope, iife_scope);
+            if (has_extra or wrap_self_alias) try self.reparentGeneratedScope(source_class_scope, iife_scope);
+
+            const alias_text = if (wrap_self_alias) try es_helpers.resolveSyntheticName(self, "_classSelf") else "";
+            const alias_binding = if (wrap_self_alias) try es_helpers.makeExactSyntheticBinding(self, alias_text) else NodeIndex.none;
+            const alias_id = if (wrap_self_alias)
+                try self.declareSyntheticInScope(alias_binding, span, .variable_var, iife_scope)
+            else
+                null;
 
             // private method 초기화 → constructor body에 삽입
             for (cm.private_methods.items) |pm| {
@@ -477,6 +488,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 // IIFE 안쪽 함수 이름 — 안쪽 참조와 같은 심볼 (위 선언 경로와 같은 이유).
                 break :blk try self.makeUserBinding(name_span, .none);
             } else name_node;
+            if (wrap_self_alias) try self.preserved_simple_class_names.append(self.allocator, @intFromEnum(func_name));
             if (has_extra and (name_idx.isNone() or !(try self.bindClassSelfStorage(source_idx, func_name, iife_scope))))
                 try self.propagateSymbolId(name_node, func_name);
 
@@ -488,6 +500,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             else
                 try self.reserveGeneratedFunctionScope(source_class_scope);
             var func_node: NodeIndex = .none;
+            var alias_check_ref: NodeIndex = .none;
             {
                 const saved_scope = self.current_scope;
                 self.current_scope = ctor_scope;
@@ -520,14 +533,22 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 {
                     const check_id = try es_helpers.makeRuntimeHelperRef(self, "__classCallCheck");
                     const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .none = 0 } });
-                    const class_ref = try self.makeIdentifierRefWithSymbol(name_span, func_name);
+                    const class_ref = if (wrap_self_alias)
+                        try es_helpers.makeExactSyntheticRef(self, alias_text)
+                    else
+                        try self.makeIdentifierRefWithSymbol(name_span, func_name);
                     const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
                     func_node = try prependToFunctionBody(self, func_node, &.{try es_helpers.makeExprStmt(self, call, span)});
                     self.runtime_helpers.class_call_check = true;
+                    if (wrap_self_alias) {
+                        // The function owner is finalized below; retain this
+                        // exact use until its output scope is known.
+                        alias_check_ref = class_ref;
+                    }
                 }
             }
 
-            if (source_ctor == null) try self.bindReservedFunctionOwner(ctor_scope, func_node);
+            if (source_ctor == null and has_extra) try self.bindReservedFunctionOwner(ctor_scope, func_node);
 
             if (!has_extra) {
                 const func = self.ast.getNode(func_node);
@@ -539,9 +560,24 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 if (source_ctor) |original| {
                     try self.remapCopiedScopeOwner(original, func_expr);
                 } else {
-                    try self.remapCopiedScopeOwner(func_node, func_expr);
+                    try self.bindReservedFunctionOwner(ctor_scope, func_expr);
                 }
-                return func_expr;
+                if (!wrap_self_alias) return func_expr;
+                const constructor_scope = self.outputOwnedScope(func_expr) orelse
+                    std.debug.panic("simple class constructor has no output scope", .{});
+                try self.addSyntheticRefInScope(alias_check_ref, alias_id, constructor_scope, .{ .read = true });
+                const alias_decl = try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, alias_binding, func_expr, span)}, .@"var", span);
+                const alias_return_ref = try es_helpers.makeExactSyntheticRef(self, alias_text);
+                try self.addSyntheticRefInScope(alias_return_ref, alias_id, iife_scope, .{ .read = true });
+                const alias_return = try self.ast.addNode(.{ .tag = .return_statement, .span = span, .data = .{ .unary = .{ .operand = alias_return_ref, .flags = 0 } } });
+                const wrapper_list = try self.ast.addNodeList(&.{ alias_decl, alias_return });
+                const wrapper_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = wrapper_list } });
+                const none = @intFromEnum(NodeIndex.none);
+                const params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{}), span);
+                const wrapper_extra = try self.ast.addExtras(&.{ none, @intFromEnum(params), @intFromEnum(wrapper_body), 0, none });
+                const wrapper = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
+                try self.bindReservedFunctionOwner(iife_scope, wrapper);
+                return es_helpers.makeCallExpr(self, wrapper, &.{}, span);
             }
 
             if (source_ctor) |original| try self.remapCopiedScopeOwner(original, func_node);
