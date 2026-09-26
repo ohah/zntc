@@ -100,6 +100,7 @@ pub const ModuleSemanticData = struct {
     scopes: []const Scope,
     /// 스코프별 이름→심볼 인덱스 조회. scope_maps[scope_id].get("x") → symbol index.
     scope_maps: []const std.StringHashMapUnmanaged(usize),
+    scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// export된 이름 목록. exported_names.get("x") → Span.
     exported_names: std.StringHashMapUnmanaged(Span),
     /// 노드 인덱스 → 심볼 인덱스 매핑. 식별자 노드만 유효값.
@@ -127,6 +128,7 @@ pub const ModuleSemanticData = struct {
             self.symbols.items,
             self.scopes,
             self.scope_maps,
+            self.scope_owner_map,
             self.references,
             self.symbol_ids,
         );
@@ -137,6 +139,7 @@ pub const ModuleSemanticData = struct {
         self.symbols = result.symbols;
         self.scopes = result.scopes;
         self.scope_maps = result.scope_maps;
+        self.scope_owner_map = result.scope_owner_map;
         self.references = result.references;
         self.symbol_ids = result.symbol_ids;
     }

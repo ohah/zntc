@@ -21,6 +21,17 @@ test "#4819 editor preserves analyzed IDs while appending a generated binding" {
     var ana = SemanticAnalyzer.init(allocator, &parser.ast);
     defer ana.deinit();
     try ana.analyze();
+    var found_function_scope = false;
+    var owner_it = ana.scope_owner_map.iterator();
+    while (owner_it.next()) |entry| {
+        try std.testing.expect(entry.key_ptr.* < parser.ast.nodes.items.len);
+        try std.testing.expect(entry.value_ptr.* < ana.scopes.items.len);
+        if (parser.ast.nodes.items[entry.key_ptr.*].tag == .function_declaration) {
+            try std.testing.expectEqual(@import("scope.zig").ScopeKind.function, ana.scopes.items[entry.value_ptr.*].kind);
+            found_function_scope = true;
+        }
+    }
+    try std.testing.expect(found_function_scope);
     const original_count = ana.symbols.items.len;
     const original_ids = try allocator.dupe(?u32, ana.symbol_ids.items);
     var editor = try ana.beginEdit();

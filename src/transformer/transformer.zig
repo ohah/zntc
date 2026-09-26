@@ -28,6 +28,7 @@ const plugin_state = @import("plugin_state.zig");
 const PluginState = plugin_state.PluginState;
 const jsx_lowering_mod = @import("jsx_lowering.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const tagged_template_mod = @import("transformer/tagged_template.zig");
 const flow_mod = @import("transformer/flow.zig");
 const define_mod = @import("transformer/define.zig");
@@ -118,6 +119,9 @@ pub const Transformer = struct {
     /// 분석기 스코프·스코프별 이름 표·선언 없는 전역 — 심볼 기준 블록 스코핑 표(#4760 4단계)용.
     scopes: []const @import("../semantic/scope.zig").Scope = &.{},
     scope_maps: []const std.StringHashMapUnmanaged(usize) = &.{},
+    /// analyzer가 기록한 원본 스코프 생성 노드 → ScopeId. 별도 소유권은 analyzer/module에 있다.
+    scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    current_scope: ScopeId = .none,
     unresolved_references: ?*const std.StringHashMapUnmanaged(void) = null,
     /// 심볼 → 블록 스코핑 새 이름(`x$N`). es5 블록 스코핑을 낮추고 분석기 스코프가 있을 때
     /// 변환 시작에 `block_rename_table` 로 만든다 (#4760). 없으면(스코프 정보 없는 경로)
@@ -430,6 +434,9 @@ pub const Transformer = struct {
 
     pub fn visitNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         if (idx.isNone()) return .none;
+        const saved_scope = self.current_scope;
+        if (self.scope_owner_map.get(@intFromEnum(idx))) |scope_id| self.current_scope = @enumFromInt(scope_id);
+        defer self.current_scope = saved_scope;
         const new_idx = try self.visitNodeInner(idx);
         // symbol_id 전파: 원본 node_idx → 새 node_idx
         self.propagateSymbolId(idx, new_idx);
