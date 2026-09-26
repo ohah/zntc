@@ -92,6 +92,9 @@ fn checkNullishIdentifierReferences(source: []const u8, options: TransformOption
         try std.testing.expectEqual(source_ref.scope_stmt_idx, ref.scope_stmt_idx);
         if (distinct) |first| try std.testing.expect(first != ref.node_index);
         if (ref.node_index == source_ref.node_index) original_is_live = true;
+        if (@intFromEnum(ref.node_index) >= transformer.parser_node_count) {
+            try std.testing.expectEqual(@as(?u32, @intFromEnum(source_ref.node_index)), transformer.reference_origin_map.get(@intFromEnum(ref.node_index)));
+        }
         distinct = ref.node_index;
         reads += 1;
     }
@@ -521,6 +524,7 @@ test "#4819 generated loop binding and call share one appended SymbolId" {
     }
     const argument = loop_arg orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(?u32, header_id), edited.symbol_ids[@intFromEnum(argument)]);
+    try std.testing.expectEqual(@as(?u32, null), transformer.reference_origin_map.get(@intFromEnum(argument)));
     var argument_refs: usize = 0;
     for (edited.references) |ref| {
         if (ref.node_index != argument) continue;

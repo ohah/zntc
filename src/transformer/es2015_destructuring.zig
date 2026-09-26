@@ -263,7 +263,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                             try self.makeIdentifierRefWithSymbol(inner_target_node.data.string_ref, inner_target)
                         else
                             try self.visitNode(inner_target);
-                        self.propagateSymbolId(inner_target, target_ref);
+                        try self.propagateSymbolId(inner_target, target_ref);
                         const assign = try es_helpers.makeAssignExpr(self, target_ref, defaulted, span, 0);
                         try self.scratch.append(self.allocator, assign);
                     } else {
@@ -272,7 +272,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                             try self.makeIdentifierRefWithSymbol(value_node.data.string_ref, value_idx)
                         else
                             try self.visitNode(value_idx);
-                        self.propagateSymbolId(value_idx, target_ref);
+                        try self.propagateSymbolId(value_idx, target_ref);
                         const assign = try es_helpers.makeAssignExpr(self, target_ref, member_access, span, 0);
                         try self.scratch.append(self.allocator, assign);
                     }
@@ -348,7 +348,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         try self.makeIdentifierRefWithSymbol(inner_target_node.data.string_ref, inner_target)
                     else
                         try self.visitNode(inner_target);
-                    self.propagateSymbolId(inner_target, target_ref);
+                    try self.propagateSymbolId(inner_target, target_ref);
                     const assign = try es_helpers.makeAssignExpr(self, target_ref, conditional, span, 0);
                     try self.scratch.append(self.allocator, assign);
                 } else if (elem.tag == .object_pattern or elem.tag == .array_pattern) {
@@ -358,7 +358,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         try self.makeIdentifierRefWithSymbol(elem.data.string_ref, @enumFromInt(raw_idx))
                     else
                         try self.visitNode(@enumFromInt(raw_idx));
-                    self.propagateSymbolId(@enumFromInt(raw_idx), target_ref);
+                    try self.propagateSymbolId(@enumFromInt(raw_idx), target_ref);
                     const assign = try es_helpers.makeAssignExpr(self, target_ref, elem_access, span, 0);
                     try self.scratch.append(self.allocator, assign);
                 }

@@ -26,7 +26,7 @@ fn expandBlockRenamedShorthand(self: *Transformer, node: Node) Error!?NodeIndex 
     // Object shorthand 의 key 는 property 이름이라 원본을 보존해야 하지만,
     // 암시된 value 참조는 block-scoping lowering 이 만든 renamed binding 을 읽어야 한다.
     const new_key = try self.copyNodeDirect(key_idx);
-    self.propagateSymbolId(key_idx, new_key);
+    try self.propagateSymbolId(key_idx, new_key);
 
     const new_value = try self.makeUserRefNamed(new_name, key_idx);
 
@@ -378,7 +378,7 @@ pub fn visitObjectProperty(self: *Transformer, node: Node) Error!NodeIndex {
         try self.copyNodeDirect(key_idx)
     else
         try self.visitNode(key_idx);
-    self.propagateSymbolId(key_idx, new_key);
+    try self.propagateSymbolId(key_idx, new_key);
     var new_value = try self.visitNode(node.data.binary.right);
     // styled-components: { One: styled.div`...` } 의 value 가 styled tagged template 이면
     // property key 이름을 displayName 으로 사용해 wrap. variable_declarator 와 동일 패턴.

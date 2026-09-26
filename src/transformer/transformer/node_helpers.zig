@@ -39,7 +39,7 @@ pub fn tryRenameIdentifierLike(
         .span = new_span,
         .data = .{ .string_ref = new_span },
     });
-    self.propagateSymbolId(idx, new_idx);
+    try self.propagateSymbolId(idx, new_idx);
     return new_idx;
 }
 
@@ -100,33 +100,49 @@ pub fn getClassNameSpan(self: anytype, name_idx: NodeIndex) ?Span {
 }
 
 /// symbol_ids를 target_idx까지 null로 확장.
-fn ensureSymbolIds(self: anytype, target_idx: usize) void {
+fn ensureSymbolIds(self: anytype, target_idx: usize) Error!void {
     if (self.symbol_ids.items.len <= target_idx) {
         const needed = target_idx + 1 - self.symbol_ids.items.len;
-        self.symbol_ids.appendNTimes(self.allocator, null, needed) catch return;
+        try self.symbol_ids.appendNTimes(self.allocator, null, needed);
     }
 }
 
 /// 합성 노드(`synthetic_idents`, 누락 검사기가 켜졌을 때만 기록)에서 물려받은 노드도 합성이다 —
 /// 합성 바인딩을 원래 노드로 삼아 다시 만든 바인딩·참조(es5 클래스 낮추기의 `function Foo`)를
 /// 사용자 식별자 누락으로 세지 않게 한다.
-fn inheritSynthetic(self: anytype, from: NodeIndex, to: NodeIndex) void {
+fn inheritSynthetic(self: anytype, from: NodeIndex, to: NodeIndex) Error!void {
     const set = if (self.synthetic_idents) |*s| s else return;
     if (from.isNone() or to.isNone()) return;
-    if (set.contains(@intFromEnum(from))) set.put(self.allocator, @intFromEnum(to), {}) catch {};
+    if (set.contains(@intFromEnum(from))) try set.put(self.allocator, @intFromEnum(to), {});
+}
+
+fn recordReferenceOrigin(self: anytype, source: NodeIndex, clone: NodeIndex) Error!void {
+    if (!self.semantic_edit_enabled or source.isNone() or clone.isNone() or source == clone) return;
+    const source_tag = self.ast.getNode(source).tag;
+    const clone_tag = self.ast.getNode(clone).tag;
+    const source_is_ref = source_tag == .identifier_reference or source_tag == .assignment_target_identifier;
+    const clone_is_ref = clone_tag == .identifier_reference or clone_tag == .assignment_target_identifier;
+    if (!source_is_ref or !clone_is_ref or self.getSymbolIdAt(source) == null) return;
+    const origin = self.reference_origin_map.get(@intFromEnum(source)) orelse @intFromEnum(source);
+    const key = @intFromEnum(clone);
+    if (self.reference_origin_map.get(key)) |existing| {
+        if (existing != origin) std.debug.panic("reference clone has conflicting origins", .{});
+        return;
+    }
+    try self.reference_origin_map.put(self.allocator, key, origin);
 }
 
 /// 파서 노드 -> 트랜스포머 노드로 symbol_id 전파.
 /// 통합 AST에서는 old_idx와 new_idx가 같은 배열의 인덱스.
-pub fn propagateSymbolId(self: anytype, old_idx: NodeIndex, new_idx: NodeIndex) void {
-    inheritSynthetic(self, old_idx, new_idx);
+pub fn propagateSymbolId(self: anytype, old_idx: NodeIndex, new_idx: NodeIndex) Error!void {
+    try inheritSynthetic(self, old_idx, new_idx);
     if (self.symbol_ids.items.len == 0) return; // 전파 비활성
-    if (new_idx.isNone()) return;
+    if (old_idx.isNone() or new_idx.isNone()) return;
 
     const old_i = @intFromEnum(old_idx);
     const new_i = @intFromEnum(new_idx);
 
-    ensureSymbolIds(self, new_i);
+    try ensureSymbolIds(self, new_i);
 
     if (old_i < self.symbol_ids.items.len) {
         // ts_as_expression 등 wrapper 노드가 내부 노드와 같은 new_idx를 반환하면
@@ -136,25 +152,27 @@ pub fn propagateSymbolId(self: anytype, old_idx: NodeIndex, new_idx: NodeIndex) 
             self.symbol_ids.items[new_i] = self.symbol_ids.items[old_i];
         }
     }
+    try recordReferenceOrigin(self, old_idx, new_idx);
 }
 
 /// AST 내에서 노드 간 symbol_id 복사.
 /// 노드 복제 시 symbol_id가 누락되지 않도록 사용.
-pub fn copySymbolId(self: anytype, src_idx: NodeIndex, dst_idx: NodeIndex) void {
-    inheritSynthetic(self, src_idx, dst_idx);
+pub fn copySymbolId(self: anytype, src_idx: NodeIndex, dst_idx: NodeIndex) Error!void {
+    try inheritSynthetic(self, src_idx, dst_idx);
     if (self.symbol_ids.items.len == 0) return;
     if (src_idx.isNone() or dst_idx.isNone()) return;
 
     const src_i = @intFromEnum(src_idx);
     const dst_i = @intFromEnum(dst_idx);
 
-    ensureSymbolIds(self, dst_i);
+    try ensureSymbolIds(self, dst_i);
 
     if (src_i < self.symbol_ids.items.len) {
         if (self.symbol_ids.items[src_i]) |sid| {
             self.symbol_ids.items[dst_i] = sid;
         }
     }
+    try recordReferenceOrigin(self, src_idx, dst_idx);
 }
 
 /// 사용자 변수 참조를 `name` 으로 만들고 원래 바인딩(`origin`)의 심볼을 물려준다 (#4760).
@@ -168,7 +186,7 @@ pub fn makeUserRefNamed(self: anytype, name: []const u8, origin: NodeIndex) Erro
 /// 이름을 모듈 스코프 바인딩(import 등)에 잇는다. 그런 바인딩이 없으면 전역이다.
 pub fn makeRootScopeRef(self: anytype, name: []const u8) Error!NodeIndex {
     const ref = try es_helpers.makeGlobalRef(self, name);
-    self.attachRootScopeSymbolByName(ref, name);
+    try self.attachRootScopeSymbolByName(ref, name);
     return ref;
 }
 
@@ -188,14 +206,14 @@ pub fn makeCurrentClassRef(self: anytype, name_span: Span) Error!NodeIndex {
 /// 이면 심볼 없이 만든다.
 pub fn makeUserBinding(self: anytype, name_span: Span, origin: NodeIndex) Error!NodeIndex {
     const binding = try es_helpers.makeBindingIdentifier(self, name_span);
-    self.propagateSymbolId(origin, binding);
+    try self.propagateSymbolId(origin, binding);
     return binding;
 }
 
 /// `makeIdentifierRefWithSymbol` 의 노드 위치 지정판 (소스맵 위치 보존).
 pub fn makeIdentifierRefWithSymbolAt(self: anytype, name_span: Span, node_span: Span, old_idx: NodeIndex) Error!NodeIndex {
     const ref = try es_helpers.identifierRefNode(self, name_span, node_span);
-    self.propagateSymbolId(old_idx, ref);
+    try self.propagateSymbolId(old_idx, ref);
     return ref;
 }
 
@@ -203,14 +221,14 @@ pub fn makeIdentifierRefWithSymbolAt(self: anytype, name_span: Span, node_span: 
 /// ES5 class lowering, decorator 등에서 renamed 이름이 반영되도록 사용.
 pub fn makeIdentifierRefWithSymbol(self: anytype, name_span: Span, old_idx: NodeIndex) Error!NodeIndex {
     const ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
-    self.propagateSymbolId(old_idx, ref);
+    try self.propagateSymbolId(old_idx, ref);
     return ref;
 }
 
 /// JSX -> `React.createElement` 변환처럼 transformer 가 *원본 AST 에 없는*
 /// 식별자 노드를 만들 때, 그 이름으로 root scope (module/global) 의 binding
 /// 을 lookup 하여 symbol_id 를 attach 한다 (#2196).
-pub fn attachRootScopeSymbolByName(self: anytype, node_idx: NodeIndex, name: []const u8) void {
+pub fn attachRootScopeSymbolByName(self: anytype, node_idx: NodeIndex, name: []const u8) Error!void {
     if (self.symbols.len == 0) return;
     if (self.symbol_ids.items.len == 0) return;
     if (node_idx.isNone()) return;
@@ -221,7 +239,7 @@ pub fn attachRootScopeSymbolByName(self: anytype, node_idx: NodeIndex, name: []c
         const sym_name = sym.nameText(self.ast.source);
         if (std.mem.eql(u8, sym_name, name)) {
             const ni = @intFromEnum(node_idx);
-            ensureSymbolIds(self, ni);
+            try ensureSymbolIds(self, ni);
             if (ni < self.symbol_ids.items.len) {
                 self.symbol_ids.items[ni] = @intCast(i);
             }

@@ -96,6 +96,9 @@ pub const Transformer = struct {
     /// 트랜스포머 노드 영역은 propagateSymbolId/copySymbolId가 채운다.
     /// 빈 슬라이스이면 symbol 전파 비활성.
     symbol_ids: std.ArrayList(?u32) = .empty,
+    /// 새 참조 노드 → 최초 출처 참조 노드. `SymbolId` 복사와 별개로
+    /// read/write·문장 위치의 출처를 보존한다. 바인딩→참조 생성은 여기에 넣지 않는다.
+    reference_origin_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
 
     /// #2869 transformer 가 emit 한 runtime helper identifier_reference 노드 인덱스.
     /// resync 의 SemanticAnalyzer 가 이 marker 를 보고 user scope 와 격리된 별도
@@ -475,7 +478,7 @@ pub const Transformer = struct {
             try self.transformed_scope_owner_map.put(self.allocator, @intFromEnum(new_idx), owner_scope.?);
         }
         // symbol_id 전파: 원본 node_idx → 새 node_idx
-        self.propagateSymbolId(idx, new_idx);
+        try self.propagateSymbolId(idx, new_idx);
         return new_idx;
     }
 

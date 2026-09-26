@@ -853,7 +853,7 @@ fn makeStaticPropRef(self: anytype, old_prop: NodeIndex) !SingleEvalExpr {
 /// rename 대상이 되는 identifier reference 등을 안전하게 두 번 사용해야 할 때 쓴다.
 pub fn cloneNode(self: anytype, idx: NodeIndex) !NodeIndex {
     const cloned = try self.ast.addNode(self.ast.getNode(idx));
-    self.copySymbolId(idx, cloned);
+    try self.copySymbolId(idx, cloned);
     return cloned;
 }
 
