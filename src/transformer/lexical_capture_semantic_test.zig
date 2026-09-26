@@ -122,6 +122,7 @@ test "#4819 lowered arrow lexical captures have distinct exact function symbols"
 test "#4819 class field arrows share their exact constructor capture binding" {
     const cases = .{
         .{ "class C{field=()=>this.x;constructor(){this.x=2;this.body=()=>this.x}} new C().field();", @as(u32, 2) },
+        .{ "class C{field=()=>this.x;constructor(x=2){this.x=x}} new C().field();", @as(u32, 1) },
         .{ "class C{field=()=>this.x;x=2} new C().field();", @as(u32, 1) },
         .{ "class B{} class C extends B{field=()=>this.x;constructor(){super();this.x=2;this.body=()=>this.x}} new C().field();", @as(u32, 2) },
         .{ "class B{} class C extends B{field=()=>this.x;x=2} new C().field();", @as(u32, 1) },
@@ -153,6 +154,7 @@ test "#4819 class field arrows share their exact constructor capture binding" {
         transformer.unresolved_references = &analyzer.unresolved_references;
         transformer.semantic_edit_enabled = true;
         _ = try transformer.transform();
+        try std.testing.expectEqual(@as(usize, 0), transformer.parameter_capture_statements.count());
         const edited = (try transformer.finishSemanticEdit()).?;
         const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
         var live: std.AutoHashMapUnmanaged(u32, void) = .empty;

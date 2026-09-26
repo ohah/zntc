@@ -89,10 +89,24 @@ pub fn Constructors(comptime Transformer: type) type {
             }
             defer self.new_target_ctx = saved_new_target_ctx;
 
-            var new_body = try visitMethodBodyWithCtxImpl(self, body_idx, span, null, is_derived, param_needs_this or field_needs_this, param_needs_arguments, if (is_derived) &.{} else instance_fields);
-
             const lowered_params = if (param_lowering) |lr| lr.new_params else pp.new_params;
             const param_stmts = if (param_lowering) |lr| lr.body_stmts.items else &[_]NodeIndex{};
+            // Base-class fields run before constructor parameter defaults. The
+            // generated lexical capture must run before those fields. Add the
+            // field/default/property sequence to the original body first; the
+            // body visitor then prepends the single exact capture declaration.
+            var base_prefix: std.ArrayList(NodeIndex) = .empty;
+            defer base_prefix.deinit(self.allocator);
+            if (!is_derived) {
+                try base_prefix.appendSlice(self.allocator, instance_fields);
+                try base_prefix.appendSlice(self.allocator, param_stmts);
+                if (pp.prop_names.items.len > 0) {
+                    const pp_list = try self.buildParameterPropertyStatements(pp.prop_names.items);
+                    var pp_iter = self.ast.iterateExtraList(pp_list);
+                    while (pp_iter.next()) |stmt| try base_prefix.append(self.allocator, stmt);
+                }
+            }
+            var new_body = try visitMethodBodyWithCtxImpl(self, body_idx, span, null, is_derived, param_needs_this, param_needs_arguments, field_needs_this, base_prefix.items);
 
             if (is_derived) {
                 // derived class 의 parameter property `this.x = x` 는 super() 이후에 와야 한다.
@@ -112,16 +126,6 @@ pub fn Constructors(comptime Transformer: type) type {
                     try transformDerivedConstructorReturns(self, new_body);
                     new_body = try postProcessDerivedConstructorBody(self, new_body, param_stmts, instance_fields, span);
                 }
-            } else if ((param_stmts.len > 0 or pp.prop_names.items.len > 0) and !new_body.isNone()) {
-                const scratch_top = self.scratch.items.len;
-                defer self.scratch.shrinkRetainingCapacity(scratch_top);
-                for (param_stmts) |stmt| try self.scratch.append(self.allocator, stmt);
-                if (pp.prop_names.items.len > 0) {
-                    const pp_stmts_list = try self.buildParameterPropertyStatements(pp.prop_names.items);
-                    const pp_stmts = self.ast.extra_data.items[pp_stmts_list.start .. pp_stmts_list.start + pp_stmts_list.len];
-                    for (pp_stmts) |raw_idx| try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
-                }
-                new_body = try self.prependParameterInitializersToBody(new_body, self.scratch.items[scratch_top..]);
             }
 
             new_body = try self.hoistParameterTempsAndRestore(new_body, parameter_temp_start, parameter_temp_end, span);
@@ -192,11 +196,11 @@ pub fn Constructors(comptime Transformer: type) type {
 
         /// visitMethodBody + new.target 컨텍스트 지정
         pub fn visitMethodBodyWithCtx(self: *Transformer, body_idx: NodeIndex, span: Span, nt_ctx: ?Transformer.NewTargetCtx) Transformer.Error!NodeIndex {
-            return visitMethodBodyWithCtxImpl(self, body_idx, span, nt_ctx, false, false, false, &.{});
+            return visitMethodBodyWithCtxImpl(self, body_idx, span, nt_ctx, false, false, false, false, &.{});
         }
 
         pub fn visitMethodBodyWithParams(self: *Transformer, body_idx: NodeIndex, span: Span, nt_ctx: ?Transformer.NewTargetCtx, param_needs_this: bool, param_needs_arguments: bool) Transformer.Error!NodeIndex {
-            return visitMethodBodyWithCtxImpl(self, body_idx, span, nt_ctx, false, param_needs_this, param_needs_arguments, &.{});
+            return visitMethodBodyWithCtxImpl(self, body_idx, span, nt_ctx, false, param_needs_this, param_needs_arguments, false, &.{});
         }
 
         /// visitMethodBodyWithCtx의 내부 구현.
@@ -211,6 +215,7 @@ pub fn Constructors(comptime Transformer: type) type {
             derived_constructor_this_alias: bool,
             param_needs_this: bool,
             param_needs_arguments: bool,
+            field_needs_this: bool,
             instance_fields: []const NodeIndex,
         ) Transformer.Error!NodeIndex {
             // arrow this state save/restore (일반 함수는 자체 this 바인딩)
@@ -218,7 +223,7 @@ pub fn Constructors(comptime Transformer: type) type {
             const saved_needs_this = self.needs_this_var;
             const saved_needs_args = self.needs_arguments_var;
             self.arrow_this_depth = 0;
-            self.needs_this_var = param_needs_this;
+            self.needs_this_var = param_needs_this or field_needs_this;
             self.needs_arguments_var = param_needs_arguments;
 
             // new.target context
