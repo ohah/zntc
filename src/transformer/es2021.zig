@@ -9,6 +9,7 @@
 //! - ??= / ||= / &&= : https://tc39.es/ecma262/#sec-assignment-operators (ES2021, TC39 Stage 4: 2020-07)
 //!                      https://github.com/tc39/proposal-logical-assignment
 
+const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
@@ -40,7 +41,11 @@ pub fn ES2021(comptime Transformer: type) type {
                     });
                 }
                 const captured = try es_helpers.captureToTemp(self, target.read, node.span);
+                const captured_assign = self.ast.getNode(captured.paren_assign);
+                std.debug.assert(captured_assign.tag == .assignment_expression);
+                try self.trackHoistedTempRef(captured.span, captured_assign.data.binary.left, .{ .write = true });
                 const captured_value = try es_helpers.makeTempVarRef(self, captured.span, node.span);
+                try self.trackHoistedTempRef(captured.span, captured_value, .{ .read = true });
                 const neq_null = try es_helpers.makeNeqNull(self, captured.paren_assign, node.span);
                 return self.ast.addNode(.{
                     .tag = .conditional_expression,
