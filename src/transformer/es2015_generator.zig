@@ -626,6 +626,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// 호출문으로 바뀐 **새 루프 노드**를 돌려준다.
         fn extractPerIterationLoopBody(
             self: *Transformer,
+            stmt_idx: NodeIndex,
             stmt: Node,
             decl_idx: NodeIndex,
             body_idx: NodeIndex,
@@ -651,6 +652,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             var lexical_bindings: std.ArrayList(NodeIndex) = .empty;
             defer lexical_bindings.deinit(self.allocator);
             try BlockScoping.collectLexicalVarBindings(self, decl_idx, &lexical_bindings);
+            // 헤더 수집에서 정한 이름으로 생성해야 후속 상태 기계 방문이 인자를
+            // 다시 리네임하지 않는다. 캡처 판정은 위에서 원래 이름으로 마쳤다.
+            for (lexical_names.items, lexical_bindings.items) |*name, binding| {
+                name.* = self.renamedNameOf(binding) orelse name.*;
+            }
             var var_bindings: std.ArrayList(NodeIndex) = .empty;
             defer var_bindings.deinit(self.allocator);
             try BlockScoping.collectLoopBodyVarBindings(self, body_idx, &var_bindings);
@@ -677,6 +683,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 var_names.items,
                 lexical_bindings.items,
                 var_bindings.items,
+                loopCallScope(self, stmt_idx, lexical_bindings.items),
             );
 
             // `var _loopN = function* (x) {…}` 은 대입문으로 접히므로, 이름을 **바깥 함수**
@@ -735,6 +742,20 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             };
         }
 
+        /// 제어흐름 재작성은 중첩 루프 노드를 복사하지만 헤더 바인딩은 유지한다.
+        /// owner가 없는 복사본도 보존된 SymbolId의 선언 스코프로 호출 위치를 정한다.
+        fn loopCallScope(self: *Transformer, stmt_idx: NodeIndex, bindings: []const NodeIndex) @import("../semantic/scope.zig").ScopeId {
+            if (!self.semantic_edit_enabled) return self.current_scope;
+            if (self.scope_owner_map.get(@intFromEnum(stmt_idx)) orelse self.transformed_scope_owner_map.get(@intFromEnum(stmt_idx))) |scope|
+                return @enumFromInt(scope);
+            for (bindings) |binding| {
+                const id = self.getSymbolIdAt(binding) orelse continue;
+                const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+                return symbols[id].scope_id;
+            }
+            return self.current_scope;
+        }
+
         /// for문의 연산 수집.
         fn collectForOperations(self: *Transformer, stmt_idx: NodeIndex, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
             const e = stmt.data.extra;
@@ -764,7 +785,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // 노드로 다시 수집한다. 이 검사는 위 early-return **뒤**라, 상태 기계로 접히는
             // 루프에만 적용된다.
             {
-                const rewritten = try extractPerIterationLoopBody(self, stmt, init_idx, body_idx, ops, next_label);
+                const rewritten = try extractPerIterationLoopBody(self, stmt_idx, stmt, init_idx, body_idx, ops, next_label);
                 if (!rewritten.isNone()) {
                     return collectForOperations(self, rewritten, self.ast.getNode(rewritten), ops, next_label);
                 }
@@ -873,7 +894,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // 본문 선언이 클로저에 캡처되면 반복별로 뽑는다 (#4743).
             {
-                const rewritten = try extractPerIterationLoopBody(self, stmt, .none, body_idx, ops, next_label);
+                const rewritten = try extractPerIterationLoopBody(self, stmt_idx, stmt, .none, body_idx, ops, next_label);
                 if (!rewritten.isNone()) return collectWhileOperations(self, rewritten, self.ast.getNode(rewritten), ops, next_label);
             }
 
@@ -1201,7 +1222,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // 본문 선언이 클로저에 캡처되면 반복별로 뽑는다 (#4743).
             {
-                const rewritten = try extractPerIterationLoopBody(self, stmt, .none, body_idx, ops, next_label);
+                const rewritten = try extractPerIterationLoopBody(self, stmt_idx, stmt, .none, body_idx, ops, next_label);
                 if (!rewritten.isNone()) return collectDoWhileOperations(self, rewritten, self.ast.getNode(rewritten), ops, next_label);
             }
 

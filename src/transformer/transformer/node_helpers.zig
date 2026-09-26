@@ -33,6 +33,9 @@ pub fn tryRenameIdentifierLike(
 ) Error!?NodeIndex {
     if (!self.options.unsupported.block_scoping) return null;
     const new_name = renamedNameOf(self, idx) orelse return null;
+    // 생성된 참조를 generator 등이 다시 방문해도 이름이 같으면 정체성을 유지한다.
+    // 새 노드가 필요하지 않은데 복사하면 기존 Reference와 사용 횟수가 끊긴다.
+    if (std.mem.eql(u8, self.ast.getText(self.ast.getNode(idx).data.string_ref), new_name)) return idx;
     const new_span = try self.ast.addString(new_name);
     const new_idx = try self.ast.addNode(.{
         .tag = tag,
