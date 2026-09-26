@@ -202,13 +202,55 @@ test "#4819 nullish assignment value captures keep distinct symbols" {
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
-    try std.testing.expectEqual(original_symbols + 2, edited.symbols.items.len);
-    const local = edited.symbols.items[original_symbols];
-    const module = edited.symbols.items[original_symbols + 1];
-    try std.testing.expectEqualStrings("_d", transformer.ast.getText(local.name));
-    try std.testing.expectEqualStrings("_d", transformer.ast.getText(module.name));
-    try std.testing.expect(local.scope_id != module.scope_id);
-    for (edited.symbols.items[original_symbols..]) |generated| {
+    try std.testing.expectEqual(original_symbols + 6, edited.symbols.items.len);
+    for (edited.symbols.items[original_symbols..], 0..) |generated, offset| {
+        const name = switch (offset % 3) {
+            0 => "_b",
+            1 => "_c",
+            else => "_d",
+        };
+        try std.testing.expectEqualStrings(name, transformer.ast.getText(generated.name));
+        try std.testing.expectEqual(@as(u32, if (offset % 3 == 2) 2 else 3), generated.reference_count);
+        try std.testing.expectEqual(@as(u32, 1), generated.write_count);
+    }
+    try std.testing.expect(edited.symbols.items[original_symbols].scope_id != edited.symbols.items[original_symbols + 3].scope_id);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+}
+
+test "#4819 assignment target temps exclude unused candidate references" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const _a = 1; const box = { x: 2 }; function obj() { return box; } function key() { return 'x'; } obj()[key()] ||= 5; obj()[key()] **= 2; console.log(box.x, _a);");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const original_symbols = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    try std.testing.expectEqual(original_symbols + 4, edited.symbols.items.len);
+    for (edited.symbols.items[original_symbols..], 0..) |generated, offset| {
+        const expected_name = switch (offset) {
+            0 => "_b",
+            1 => "_c",
+            2 => "_d",
+            else => "_e",
+        };
+        try std.testing.expectEqualStrings(expected_name, transformer.ast.getText(generated.name));
         try std.testing.expectEqual(@as(u32, 2), generated.reference_count);
         try std.testing.expectEqual(@as(u32, 1), generated.write_count);
     }

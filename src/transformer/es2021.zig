@@ -28,6 +28,7 @@ pub fn ES2021(comptime Transformer: type) type {
             const assign = try es_helpers.makeAssignExpr(self, target.write, new_right, node.span, @intFromEnum(token_mod.Kind.eq));
 
             if (self.options.unsupported.nullish_coalescing) {
+                try es_helpers.trackAssignmentTargetTemps(self, target, true, true);
                 // ternary lowering 은 condition 과 truthy branch 두 자리에 read 표현을 emit 한다.
                 // member access 는 두 자리에 두면 getter 가 두 번 호출되므로 임시 변수에 캡처해야 한다.
                 // 그러나 plain identifier 는 부작용이 없어 캡처가 불필요한 noise 다 (#1287 follow-up).
@@ -54,6 +55,7 @@ pub fn ES2021(comptime Transformer: type) type {
                 });
             }
 
+            try es_helpers.trackAssignmentTargetTemps(self, target, false, true);
             return self.ast.addNode(.{
                 .tag = .logical_expression,
                 .span = node.span,
@@ -69,6 +71,7 @@ pub fn ES2021(comptime Transformer: type) type {
         /// 주의: private field 좌변은 caller(transformer.zig)에서 es2015_class로 먼저 라우팅됨.
         pub fn lowerLogicalAssignment(self: *Transformer, node: Node, logical_op: token_mod.Kind) Transformer.Error!NodeIndex {
             const target = (try es_helpers.prepareAssignmentTargetRef(self, node.data.binary.left, node.span)) orelse unreachable;
+            try es_helpers.trackAssignmentTargetTemps(self, target, false, true);
             const new_right = try self.visitNode(node.data.binary.right);
             const assign = try es_helpers.makeAssignExpr(self, target.write, new_right, node.span, @intFromEnum(token_mod.Kind.eq));
             return self.ast.addNode(.{
