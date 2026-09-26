@@ -53,7 +53,8 @@ describe('arrow body temp scope (#4819)', () => {
               'input.mjs',
               `--target=${target}`,
               ...(minify ? ['--minify'] : []),
-              '-o', output,
+              '-o',
+              output,
             ]);
             expect(result.exitCode, result.stderr).toBe(0);
             const actual = spawnSync('node', [output], { encoding: 'utf8' });
