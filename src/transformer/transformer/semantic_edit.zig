@@ -48,6 +48,50 @@ pub fn programScope(self: *Transformer) ScopeId {
         std.debug.panic("missing program scope for generated declaration", .{}));
 }
 
+/// The original function or method node, not the transform traversal cursor,
+/// determines where a state machine's generated functions live.
+pub fn originalFunctionScope(self: *Transformer, owner: NodeIndex) ScopeId {
+    if (!self.semantic_edit_enabled) return .none;
+    const raw = @intFromEnum(owner);
+    if (self.transformed_scope_owner_map.get(raw) orelse self.scope_owner_map.get(raw)) |scope|
+        return @enumFromInt(scope);
+    // This exact owner was produced by generator loop extraction before the
+    // enclosing state-machine callback exists. Its complete function/parameter
+    // migration will establish the true parent. No other missing owner may be
+    // silently treated as a generated loop.
+    if (self.deferred_generator_loop_owners.contains(raw)) return .none;
+    std.debug.panic("missing source function scope for state machine", .{});
+}
+
+/// Register one state machine callback and its exact pending `_state` uses.
+pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, callback: NodeIndex, parameter: NodeIndex, ref_start: usize, span: Span) Transformer.Error!void {
+    if (ref_start > self.generator_state_refs.items.len) std.debug.panic("invalid state machine frame", .{});
+    if (self.semantic_edit_enabled and !parent.isNone()) {
+        const scope = try addGeneratedFunctionScope(self, parent, callback);
+        const symbol = try declareSyntheticInScope(self, parameter, span, .parameter, scope);
+        // Operation lowering can create an expression and then discard it.
+        // Only references actually contained in this callback count as uses.
+        var pending: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        defer pending.deinit(self.allocator);
+        for (self.generator_state_refs.items[ref_start..]) |ref| try pending.put(self.allocator, @intFromEnum(ref), {});
+        var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        defer seen.deinit(self.allocator);
+        var stack: std.ArrayList(NodeIndex) = .empty;
+        defer stack.deinit(self.allocator);
+        try stack.append(self.allocator, callback);
+        while (stack.pop()) |node| {
+            if (node.isNone() or @intFromEnum(node) >= self.ast.nodes.items.len) continue;
+            const raw = @intFromEnum(node);
+            if (seen.contains(raw)) continue;
+            try seen.put(self.allocator, raw, {});
+            if (pending.contains(raw)) try addSyntheticRefInScope(self, node, symbol, scope, .{ .read = true });
+            var it = @import("../../parser/ast_walk.zig").children(self.ast, self.ast.getNode(node));
+            while (it.next()) |child| try stack.append(self.allocator, child);
+        }
+    }
+    self.generator_state_refs.shrinkRetainingCapacity(ref_start);
+}
+
 /// AST 생성 시점의 current_scope와 실제 삽입 위치가 다를 때 명시한 스코프에 등록한다.
 pub fn addGeneratedFunctionScope(self: *Transformer, parent: ScopeId, owner: NodeIndex) Transformer.Error!ScopeId {
     if (!self.semantic_edit_enabled) return .none;
@@ -67,7 +111,8 @@ pub fn remapCopiedScopeOwner(self: *Transformer, old: NodeIndex, new: NodeIndex)
     const new_tag = self.ast.getNode(new).tag;
     if (old_tag != new_tag and
         !(old_tag == .arrow_function_expression and new_tag == .function_expression) and
-        !(old_tag == .for_of_statement and new_tag == .for_statement)) return;
+        !(old_tag == .for_of_statement and new_tag == .for_statement) and
+        !(old_tag == .method_definition and new_tag == .function_expression)) return;
     const old_key = @intFromEnum(old);
     const new_key = @intFromEnum(new);
     const scope = self.transformed_scope_owner_map.get(old_key) orelse self.scope_owner_map.get(old_key) orelse return;
@@ -160,12 +205,23 @@ pub fn trackRuntimeHelperRef(self: *Transformer, node: NodeIndex, local_name: []
     if (self.current_scope.isNone()) std.debug.panic("runtime helper {s} created without scope", .{local_name});
     const index = self.pending_runtime_helper_refs.items.len;
     try self.pending_runtime_helper_refs.append(self.allocator, .{ .node = node, .scope = self.current_scope });
+    try self.pending_runtime_helper_ref_index.put(self.allocator, @intFromEnum(node), index);
     if (self.pending_runtime_helper_chains.getPtr(local_name)) |chain| {
         self.pending_runtime_helper_refs.items[chain.last].next = index;
         chain.last = index;
     } else {
         try self.pending_runtime_helper_chains.put(self.allocator, local_name, .{ .first = index, .last = index });
     }
+}
+
+/// `__generator` is created before the async wrapper that contains its call.
+/// Retarget only the exact pending helper node after that wrapper is created.
+pub fn relocatePendingRuntimeHelperRef(self: *Transformer, node: NodeIndex, scope: ScopeId) void {
+    if (!self.semantic_edit_enabled) return;
+    if (scope.isNone()) std.debug.panic("runtime helper relocation has no scope", .{});
+    const index = self.pending_runtime_helper_ref_index.get(@intFromEnum(node)) orelse
+        std.debug.panic("runtime helper reference was not pending", .{});
+    self.pending_runtime_helper_refs.items[index].scope = scope;
 }
 
 /// import specifier의 local 노드에 격리된 심볼을 만들고 앞서 생성한 호출을 연결한다.
@@ -178,11 +234,15 @@ pub fn bindRuntimeHelperImport(self: *Transformer, local: NodeIndex, local_name:
     var i: ?usize = chain.value.first;
     while (i) |index| {
         const ref = self.pending_runtime_helper_refs.items[index];
+        _ = self.pending_runtime_helper_ref_index.remove(@intFromEnum(ref.node));
         editor.addReference(ref.node, id, ref.scope, .{ .read = true }, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
         try setSymbolId(self, ref.node, id);
         i = ref.next;
     }
-    if (self.pending_runtime_helper_chains.count() == 0) self.pending_runtime_helper_refs.clearRetainingCapacity();
+    if (self.pending_runtime_helper_chains.count() == 0) {
+        self.pending_runtime_helper_refs.clearRetainingCapacity();
+        self.pending_runtime_helper_ref_index.clearRetainingCapacity();
+    }
 }
 
 /// nullish lowering의 temp 참조는 hoist 선언보다 먼저 생성된다. 이름 대신

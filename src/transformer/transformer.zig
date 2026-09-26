@@ -112,6 +112,7 @@ pub const Transformer = struct {
         scope: ScopeId,
         next: ?usize = null,
     }) = .empty,
+    pending_runtime_helper_ref_index: std.AutoHashMapUnmanaged(u32, usize) = .empty,
     pending_runtime_helper_chains: std.StringHashMapUnmanaged(struct { first: usize, last: usize }) = .empty,
 
     /// semantic analyzer의 심볼 테이블 (unused import 판별용).
@@ -305,6 +306,16 @@ pub const Transformer = struct {
     /// ES2015 generator: for-of 변환에서 생성한 임시 변수 span.
     /// buildGeneratorBody에서 호이스팅 변수에 추가.
     generator_temp_var_spans: std.ArrayList(token_mod.Span) = .empty,
+    /// Exact generated `_state` reference nodes awaiting their callback binding.
+    /// Each state machine records its starting offset, so nested lowering cannot
+    /// consume an enclosing machine's references.
+    generator_state_refs: std.ArrayList(NodeIndex) = .empty,
+    /// A method lowered through a synthetic function retains its original owner.
+    synthetic_function_source_owner: NodeIndex = .none,
+    synthetic_function_node: NodeIndex = .none,
+    /// Exact synthetic generator `_loop` owners whose callback parent cannot
+    /// be finalized until the generator loop body/parameter migration.
+    deferred_generator_loop_owners: std.AutoHashMapUnmanaged(u32, void) = .empty,
     /// `generator_temp_var_spans` 중 사용자 바인딩에서 온 이름의 원래 바인딩 노드(span 키).
     /// 호이스트한 `var` 선언에 심볼을 물려주는 데 쓴다 (#4760).
     generator_var_origins: std.AutoHashMapUnmanaged(u64, NodeIndex) = .empty,
@@ -514,6 +525,9 @@ pub const Transformer = struct {
     pub const programScope = @import("transformer/semantic_edit.zig").programScope;
     pub const addGeneratedFunctionScope = @import("transformer/semantic_edit.zig").addGeneratedFunctionScope;
     pub const remapCopiedScopeOwner = @import("transformer/semantic_edit.zig").remapCopiedScopeOwner;
+    pub const originalFunctionScope = @import("transformer/semantic_edit.zig").originalFunctionScope;
+    pub const bindGeneratedState = @import("transformer/semantic_edit.zig").bindGeneratedState;
+    pub const relocatePendingRuntimeHelperRef = @import("transformer/semantic_edit.zig").relocatePendingRuntimeHelperRef;
     pub const declareSyntheticInScope = @import("transformer/semantic_edit.zig").declareSyntheticInScope;
     pub const addSyntheticRefInScope = @import("transformer/semantic_edit.zig").addSyntheticRefInScope;
     pub const trackRuntimeHelperRef = @import("transformer/semantic_edit.zig").trackRuntimeHelperRef;

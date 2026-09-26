@@ -134,6 +134,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.pending_temp_ref_chains.deinit(self.allocator);
     self.helper_ref_nodes.deinit(self.allocator);
     self.pending_runtime_helper_refs.deinit(self.allocator);
+    self.pending_runtime_helper_ref_index.deinit(self.allocator);
     self.pending_runtime_helper_chains.deinit(self.allocator);
     self.plugins.refresh.registrations.deinit(self.allocator);
     for (self.plugins.refresh.signatures.items) |s| self.allocator.free(s.signature);
@@ -150,6 +151,8 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.label_scope.deinit(self.allocator);
     self.object_super_homes.deinit(self.allocator);
     self.generator_temp_var_spans.deinit(self.allocator);
+    self.generator_state_refs.deinit(self.allocator);
+    self.deferred_generator_loop_owners.deinit(self.allocator);
     self.generator_var_origins.deinit(self.allocator);
     self.tagged_template_fns.deinit(self.allocator);
     if (self.name_arena) |*a| a.deinit();

@@ -83,7 +83,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
     return struct {
         /// generator function을 상태 머신으로 변환.
         /// function*: extra = [name(0), params(1), body(2), flags(3), return_type(4)]
-        pub fn lowerGeneratorFunction(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+        pub fn lowerGeneratorFunction(self: *Transformer, source_owner: NodeIndex, node: Node) Transformer.Error!NodeIndex {
             const e = node.data.extra;
             const span = node.span;
 
@@ -108,8 +108,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // 덮으면 안 된다. 예전에는 끝에서 통째로 clear 했는데, 바깥 상태 기계를
             // 수집하는 도중에 안쪽 generator 가 낮아지면(#4716 의 `_loopN` 추출이 그렇다)
             // 바깥이 쌓아 둔 temp 가 같이 지워져 선언이 사라진다. 저장 후 복원한다.
-            var saved_temp_spans = try enterStateMachineTemps(self);
-            defer leaveStateMachineTemps(self, &saved_temp_spans);
+            var frame = try enterStateMachineTemps(self);
+            defer leaveStateMachineTemps(self, &frame);
             // 함수 경계 — 바깥 함수의 라벨은 여기서 보이지 않는다 (#4722).
             try self.label_scope.append(self.allocator, null);
             defer _ = self.label_scope.pop();
@@ -129,7 +129,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 try self.makeIdentifierRefWithSymbol(self.ast.getNode(new_name).data.string_ref, new_name)
             else
                 .none;
-            const gen_call = try buildGeneratorHelperCallWithProto(self, sm_body, genFn_ref, span);
+            const gen = try buildGeneratorHelperCallWithProto(self, sm_body, genFn_ref, span);
+            try self.bindGeneratedState(self.originalFunctionScope(source_owner), gen.callback, gen.state_param, frame.state_ref_start, span);
+            const gen_call = gen.call;
 
             // return __generator(...) 문
             const ret_stmt = try self.ast.addNode(.{
@@ -191,17 +193,23 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// 끝에서 통째로 clear 했는데, 바깥 상태 기계를 수집하는 도중에 안쪽 함수(중첩 async
         /// 화살표, 추출된 `_loop` generator …)가 낮아지면 **바깥 temp 까지 지워져** 선언이
         /// 사라졌다(`_loop is not defined` — #4716 에서 한 곳, #4722 에서 나머지 셋).
-        pub fn enterStateMachineTemps(self: *Transformer) Transformer.Error!std.ArrayListUnmanaged(Span) {
+        pub const StateMachineFrame = struct {
+            saved_temp_spans: std.ArrayListUnmanaged(Span),
+            state_ref_start: usize,
+        };
+
+        pub fn enterStateMachineTemps(self: *Transformer) Transformer.Error!StateMachineFrame {
             var saved: std.ArrayListUnmanaged(Span) = .empty;
             try saved.appendSlice(self.allocator, self.generator_temp_var_spans.items);
             self.generator_temp_var_spans.clearRetainingCapacity();
-            return saved;
+            return .{ .saved_temp_spans = saved, .state_ref_start = self.generator_state_refs.items.len };
         }
 
-        pub fn leaveStateMachineTemps(self: *Transformer, saved: *std.ArrayListUnmanaged(Span)) void {
+        pub fn leaveStateMachineTemps(self: *Transformer, frame: *StateMachineFrame) void {
+            self.generator_state_refs.shrinkRetainingCapacity(frame.state_ref_start);
             self.generator_temp_var_spans.clearRetainingCapacity();
-            self.generator_temp_var_spans.appendSlice(self.allocator, saved.items) catch {};
-            saved.deinit(self.allocator);
+            self.generator_temp_var_spans.appendSlice(self.allocator, frame.saved_temp_spans.items) catch {};
+            frame.saved_temp_spans.deinit(self.allocator);
         }
 
         pub fn buildStateMachine(self: *Transformer, body_idx: NodeIndex, span: Span) Transformer.Error!StateMachineResult {
@@ -685,6 +693,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 var_bindings.items,
                 loopCallScope(self, stmt_idx, lexical_bindings.items),
             );
+            // `_loop` is an assignment inside the callback being built, but
+            // that callback has no NodeIndex/ScopeId yet. Keep its exact owner
+            // identity for the later generator-loop migration. An arbitrary
+            // missing owner must still fail instead of using current_scope.
+            if (self.semantic_edit_enabled) try self.deferred_generator_loop_owners.put(self.allocator, @intFromEnum(result.loop_function), {});
 
             // `var _loopN = function* (x) {…}` 은 대입문으로 접히므로, 이름을 **바깥 함수**
             // 의 var 리스트에 등록해야 한다. 상태 기계가 만들어진 뒤에 생긴 이름이라
@@ -1418,7 +1431,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// _state.trys.push([try_label, catch_label, finally_label, end_label]) expression_statement 생성.
         /// finally_label이 null이면 void 0을 출력하여 런타임의 _.label < t[2] 체크를 skip시킨다.
         fn buildTrysPush(self: *Transformer, try_label: u32, catch_label: ?u32, finally_label: ?u32, end_label: u32, span: Span) Transformer.Error!NodeIndex {
-            const state_ref = try es_helpers.makeSyntheticRef(self, "_state");
+            const state_ref = try makePendingStateRef(self);
 
             // _state.trys
             const trys_prop = try es_helpers.makePropertyName(self, "trys");
@@ -2319,7 +2332,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
 
             // switch(_state.label) { cases... }
-            const state_ref = try es_helpers.makeSyntheticRef(self, "_state");
+            const state_ref = try makePendingStateRef(self);
             const label_prop = try es_helpers.makePropertyName(self, "label");
             const discriminant = try es_helpers.makeStaticMember(self, state_ref, label_prop, span);
 
@@ -2538,7 +2551,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         /// _state.sent() 호출 생성.
         fn buildSentCall(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
-            const state_ref = try es_helpers.makeSyntheticRef(self, "_state");
+            const state_ref = try makePendingStateRef(self);
             const sent_prop = try es_helpers.makePropertyName(self, "sent");
             const sent_member = try es_helpers.makeStaticMember(self, state_ref, sent_prop, span);
             return es_helpers.makeCallExpr(self, sent_member, &.{}, span);
@@ -2553,18 +2566,44 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         /// _state identifier reference 생성.
         fn buildStateRef(self: *Transformer, _: Span) Transformer.Error!NodeIndex {
-            return es_helpers.makeSyntheticRef(self, "_state");
+            return makePendingStateRef(self);
+        }
+
+        fn makePendingStateRef(self: *Transformer) Transformer.Error!NodeIndex {
+            const ref = try es_helpers.makeSyntheticRef(self, "_state");
+            try self.generator_state_refs.append(self.allocator, ref);
+            return ref;
+        }
+
+        pub const GeneratorCall = struct {
+            call: NodeIndex,
+            callback: NodeIndex,
+            state_param: NodeIndex,
+            helper_ref: NodeIndex,
+        };
+
+        /// The async helper receives a real function wrapper. Its body contains
+        /// the `__generator` call, and its child callback owns `_state`.
+        pub fn bindWrappedStateMachine(self: *Transformer, source_owner: NodeIndex, wrapper: NodeIndex, gen: GeneratorCall, frame: *const StateMachineFrame, span: Span) Transformer.Error!void {
+            const parent = self.originalFunctionScope(source_owner);
+            if (parent.isNone()) {
+                try self.bindGeneratedState(.none, gen.callback, gen.state_param, frame.state_ref_start, span);
+                return;
+            }
+            const wrapper_scope = try self.addGeneratedFunctionScope(parent, wrapper);
+            self.relocatePendingRuntimeHelperRef(gen.helper_ref, wrapper_scope);
+            try self.bindGeneratedState(wrapper_scope, gen.callback, gen.state_param, frame.state_ref_start, span);
         }
 
         /// __generator(function(_state) { ... }) 호출 생성.
         /// es2017 결합 변환에서도 호출.
         /// __generator(body) 또는 __generator(body, genFn) 호출을 생성.
         /// genFn_idx가 .none이 아니면 프로토타입 체인 설정을 위해 두 번째 인자로 전달.
-        pub fn buildGeneratorHelperCall(self: *Transformer, switch_body: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        pub fn buildGeneratorHelperCall(self: *Transformer, switch_body: NodeIndex, span: Span) Transformer.Error!GeneratorCall {
             return buildGeneratorHelperCallWithProto(self, switch_body, .none, span);
         }
 
-        pub fn buildGeneratorHelperCallWithProto(self: *Transformer, switch_body: NodeIndex, genFn_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        pub fn buildGeneratorHelperCallWithProto(self: *Transformer, switch_body: NodeIndex, genFn_idx: NodeIndex, span: Span) Transformer.Error!GeneratorCall {
             self.runtime_helpers.generator = true;
 
             // _state 파라미터
@@ -2601,9 +2640,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const gen_ref = try es_helpers.makeRuntimeHelperRef(self, "__generator");
             const this_arg = try es_helpers.makeThisExpr(self, span);
             if (!genFn_idx.isNone()) {
-                return es_helpers.makeCallExpr(self, gen_ref, &.{ this_arg, func_expr, genFn_idx }, span);
+                return .{ .call = try es_helpers.makeCallExpr(self, gen_ref, &.{ this_arg, func_expr, genFn_idx }, span), .callback = func_expr, .state_param = state_param, .helper_ref = gen_ref };
             }
-            return es_helpers.makeCallExpr(self, gen_ref, &.{ this_arg, func_expr }, span);
+            return .{ .call = try es_helpers.makeCallExpr(self, gen_ref, &.{ this_arg, func_expr }, span), .callback = func_expr, .state_param = state_param, .helper_ref = gen_ref };
         }
     };
 }
