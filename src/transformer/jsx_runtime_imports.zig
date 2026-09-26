@@ -52,21 +52,21 @@ pub fn appendJsxRuntimeImports(
         var pairs_len: usize = 0;
         if (is_dev) {
             if (info.used_jsxDEV) {
-                pairs_buf[pairs_len] = .{ .imported = "jsxDEV", .local = "_jsxDEV" };
+                pairs_buf[pairs_len] = .{ .imported = "jsxDEV", .local = info.jsxDEV_local };
                 pairs_len += 1;
             }
         } else {
             if (info.used_jsx) {
-                pairs_buf[pairs_len] = .{ .imported = "jsx", .local = "_jsx" };
+                pairs_buf[pairs_len] = .{ .imported = "jsx", .local = info.jsx_local };
                 pairs_len += 1;
             }
             if (info.used_jsxs) {
-                pairs_buf[pairs_len] = .{ .imported = "jsxs", .local = "_jsxs" };
+                pairs_buf[pairs_len] = .{ .imported = "jsxs", .local = info.jsxs_local };
                 pairs_len += 1;
             }
         }
         if (info.used_fragment) {
-            pairs_buf[pairs_len] = .{ .imported = "Fragment", .local = "_Fragment" };
+            pairs_buf[pairs_len] = .{ .imported = "Fragment", .local = info.fragment_local };
             pairs_len += 1;
         }
         if (pairs_len > 0) {
@@ -76,7 +76,7 @@ pub fn appendJsxRuntimeImports(
 
     // key-after-spread 폴백: `<source>` 에서 `createElement` 만 import.
     if (info.used_createElement) {
-        const pair = [_]Pair{.{ .imported = "createElement", .local = "_createElement" }};
+        const pair = [_]Pair{.{ .imported = "createElement", .local = info.createElement_local }};
         try emitImportDeclaration(self, import_source, &pair, span, out);
     }
 }
