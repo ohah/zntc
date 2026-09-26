@@ -1739,7 +1739,33 @@ pub const ArrowEnvSnapshot = struct {
     needs_this_var: bool,
     needs_arguments_var: bool,
     super_call_this_alias: bool,
+    capture: CaptureFrameSnapshot,
 };
+
+pub const CaptureFrameSnapshot = struct {
+    frame: u32,
+    scope: @import("../semantic/scope.zig").ScopeId,
+    outermost_arrow_scope: @import("../semantic/scope.zig").ScopeId,
+};
+
+pub fn pushCaptureFrame(self: anytype) CaptureFrameSnapshot {
+    const snap = CaptureFrameSnapshot{
+        .frame = self.capture_frame,
+        .scope = self.capture_scope,
+        .outermost_arrow_scope = self.outermost_lowered_arrow_scope,
+    };
+    self.capture_frame = self.next_capture_frame;
+    self.next_capture_frame += 1;
+    self.capture_scope = self.current_scope;
+    self.outermost_lowered_arrow_scope = .none;
+    return snap;
+}
+
+pub fn popCaptureFrame(self: anytype, snap: CaptureFrameSnapshot) void {
+    self.capture_frame = snap.frame;
+    self.capture_scope = snap.scope;
+    self.outermost_lowered_arrow_scope = snap.outermost_arrow_scope;
+}
 
 pub fn pushArrowEnv(self: anytype) ArrowEnvSnapshot {
     const snap = ArrowEnvSnapshot{
@@ -1747,6 +1773,7 @@ pub fn pushArrowEnv(self: anytype) ArrowEnvSnapshot {
         .needs_this_var = self.needs_this_var,
         .needs_arguments_var = self.needs_arguments_var,
         .super_call_this_alias = self.super_call_this_alias,
+        .capture = pushCaptureFrame(self),
     };
     self.arrow_this_depth = 0;
     self.needs_this_var = false;
@@ -1756,6 +1783,7 @@ pub fn pushArrowEnv(self: anytype) ArrowEnvSnapshot {
 }
 
 pub fn popArrowEnv(self: anytype, snap: ArrowEnvSnapshot) void {
+    popCaptureFrame(self, snap.capture);
     self.arrow_this_depth = snap.arrow_this_depth;
     self.needs_this_var = snap.needs_this_var;
     self.needs_arguments_var = snap.needs_arguments_var;
@@ -1773,11 +1801,13 @@ pub fn fillThisArgumentsCaptures(self: anytype, buf: *[2]NodeIndex, span: Span) 
             .data = .{ .none = 0 },
         });
         buf[count] = try self.buildVarDecl("_this", this_init, span);
+        try self.bindLexicalCapture(buf[count], .this_value);
         count += 1;
     }
     if (self.needs_arguments_var) {
-        const args_init = try makeGlobalRef(self, "arguments");
+        const args_init = try self.makeCapturedArgumentsInit();
         buf[count] = try self.buildVarDecl("_arguments", args_init, span);
+        try self.bindLexicalCapture(buf[count], .arguments_value);
         count += 1;
     }
     return count;

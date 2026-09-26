@@ -202,6 +202,7 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
     };
 
     // ES2015 arrow this/arguments 캡처: 일반 함수는 자체 this/arguments 바인딩을 가짐.
+    const capture_frame = es_helpers.pushCaptureFrame(self);
     const saved_arrow_depth = self.arrow_this_depth;
     const saved_needs_this = self.needs_this_var;
     const saved_needs_args = self.needs_arguments_var;
@@ -272,11 +273,13 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
                 .data = .{ .none = 0 },
             });
             capture_stmts[capture_count] = try self.buildVarDecl("_this", this_init, node.span);
+            try self.bindLexicalCapture(capture_stmts[capture_count], .this_value);
             capture_count += 1;
         }
         if (self.needs_arguments_var) {
-            const args_init = try es_helpers.makeGlobalRef(self, "arguments");
+            const args_init = try self.makeCapturedArgumentsInit();
             capture_stmts[capture_count] = try self.buildVarDecl("_arguments", args_init, node.span);
+            try self.bindLexicalCapture(capture_stmts[capture_count], .arguments_value);
             capture_count += 1;
         }
 
@@ -302,6 +305,7 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
     self.needs_this_var = saved_needs_this;
     self.needs_arguments_var = saved_needs_args;
     self.super_call_this_alias = saved_super_alias;
+    es_helpers.popCaptureFrame(self, capture_frame);
 
     // React Fast Refresh — hook signature opt-in. default off 면 visitFunction
     // hot path 영향 0 (옵션 read + early-return). opt-in 시 babel-plugin-react-refresh

@@ -50,6 +50,7 @@ pub const ModuleSpecifierMapEntry = options_mod.ModuleSpecifierMapEntry;
 pub const Plugin = options_mod.Plugin;
 pub const RuntimeHelpers = runtime_helper_bits.RuntimeHelpers;
 pub const TransformOptions = options_mod.TransformOptions;
+pub const LexicalCaptureKind = enum { this_value, arguments_value };
 
 /// 단일 AST append-only 변환기.
 ///
@@ -159,6 +160,21 @@ pub const Transformer = struct {
         next: ?usize = null,
     }) = .empty,
     pending_temp_ref_chains: std.AutoHashMapUnmanaged(u32, struct { first: usize, last: usize }) = .empty,
+    /// Exact generated lexical-capture uses, paired with the function frame
+    /// that will emit their `_this` or `_arguments` declaration.
+    capture_refs: std.ArrayListUnmanaged(struct {
+        node: NodeIndex,
+        source: NodeIndex,
+        scope: ScopeId,
+        frame: u32,
+        kind: LexicalCaptureKind,
+    }) = .empty,
+    capture_ref_by_origin: std.AutoHashMapUnmanaged(u32, usize) = .empty,
+    capture_binding_ids: std.AutoHashMapUnmanaged(u64, u32) = .empty,
+    capture_frame: u32 = 0,
+    next_capture_frame: u32 = 1,
+    capture_scope: ScopeId = .none,
+    outermost_lowered_arrow_scope: ScopeId = .none,
     unresolved_references: ?*const std.StringHashMapUnmanaged(void) = null,
     /// 심볼 → 블록 스코핑 새 이름(`x$N`). es5 블록 스코핑을 낮추고 분석기 스코프가 있을 때
     /// 변환 시작에 `block_rename_table` 로 만든다 (#4760). 없으면(스코프 정보 없는 경로)
@@ -550,6 +566,10 @@ pub const Transformer = struct {
     pub const trackRuntimeHelperRef = @import("transformer/semantic_edit.zig").trackRuntimeHelperRef;
     pub const bindRuntimeHelperImport = @import("transformer/semantic_edit.zig").bindRuntimeHelperImport;
     pub const trackHoistedTempRef = @import("transformer/semantic_edit.zig").trackHoistedTempRef;
+    pub const trackLexicalCaptureRef = @import("transformer/semantic_edit.zig").trackLexicalCaptureRef;
+    pub const bindLexicalCapture = @import("transformer/semantic_edit.zig").bindLexicalCapture;
+    pub const shouldCaptureArguments = @import("transformer/semantic_edit.zig").shouldCaptureArguments;
+    pub const makeCapturedArgumentsInit = @import("transformer/semantic_edit.zig").makeCapturedArgumentsInit;
     pub const bindHoistedTemp = @import("transformer/semantic_edit.zig").bindHoistedTemp;
     pub const trackNullishIdentifierCopies = @import("transformer/semantic_edit.zig").trackNullishIdentifierCopies;
     pub const trackUserArgumentFromBinding = @import("transformer/semantic_edit.zig").trackUserArgumentFromBinding;

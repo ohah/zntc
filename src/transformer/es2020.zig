@@ -489,7 +489,9 @@ pub fn ES2020(comptime Transformer: type) type {
             }
             if (self.options.unsupported.arrow and self.arrow_this_depth > 0) {
                 self.needs_this_var = true;
-                return helpers.makeSyntheticRef(self, "_this");
+                const ref = try helpers.makeSyntheticRef(self, "_this");
+                try self.trackLexicalCaptureRef(ref, .none, .this_value);
+                return ref;
             }
             return self.ast.addNode(.{
                 .tag = .this_expression,

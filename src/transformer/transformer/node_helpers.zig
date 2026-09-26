@@ -125,7 +125,8 @@ fn recordReferenceOrigin(self: anytype, source: NodeIndex, clone: NodeIndex) Err
     const clone_tag = self.ast.getNode(clone).tag;
     const source_is_ref = source_tag == .identifier_reference or source_tag == .assignment_target_identifier;
     const clone_is_ref = clone_tag == .identifier_reference or clone_tag == .assignment_target_identifier;
-    if (!source_is_ref or !clone_is_ref or self.getSymbolIdAt(source) == null) return;
+    if (!source_is_ref or !clone_is_ref or
+        (self.getSymbolIdAt(source) == null and !self.capture_ref_by_origin.contains(@intFromEnum(source)))) return;
     const origin = self.reference_origin_map.get(@intFromEnum(source)) orelse @intFromEnum(source);
     const key = @intFromEnum(clone);
     if (self.reference_origin_map.get(key)) |existing| {

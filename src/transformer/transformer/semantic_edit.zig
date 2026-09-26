@@ -10,6 +10,7 @@ const Reference = @import("../../semantic/symbol.zig").Reference;
 const ReferenceFlags = @import("../../semantic/symbol.zig").ReferenceFlags;
 const SemanticEditor = @import("../../semantic/editor.zig").SemanticEditor;
 const EditorError = @import("../../semantic/editor.zig").Error;
+const LexicalCaptureKind = @import("../transformer.zig").LexicalCaptureKind;
 
 fn editError(err: EditorError) Transformer.Error {
     if (err == error.OutOfMemory) return error.OutOfMemory;
@@ -343,6 +344,116 @@ pub fn addSyntheticRefInScope(self: *Transformer, node: NodeIndex, id: ?SymbolId
     try setSymbolId(self, node, symbol);
 }
 
+fn captureKey(frame: u32, kind: LexicalCaptureKind) u64 {
+    return (@as(u64, frame) << 1) | @intFromEnum(kind);
+}
+
+/// An `arguments` binding declared inside the lowered arrow already resolves
+/// inside its emitted function, without an outer capture alias.
+pub fn shouldCaptureArguments(self: *Transformer, source: NodeIndex) bool {
+    if (!self.semantic_edit_enabled or self.outermost_lowered_arrow_scope.isNone()) return true;
+    const raw_id = self.getSymbolIdAt(source) orelse return true;
+    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+    if (raw_id >= symbols.len) std.debug.panic("arguments source symbol is absent", .{});
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    var cursor = symbols[raw_id].scope_id;
+    while (!cursor.isNone()) {
+        if (cursor == self.outermost_lowered_arrow_scope) return false;
+        cursor = scopes[cursor.toIndex()].parent;
+    }
+    return true;
+}
+
+/// The capture initializer reads the source `arguments` binding when it is an
+/// explicit user symbol. Implicit function arguments remain a host reference.
+pub fn makeCapturedArgumentsInit(self: *Transformer) Transformer.Error!NodeIndex {
+    const helpers = @import("../es_helpers.zig");
+    if (!self.semantic_edit_enabled or self.capture_frame == 0)
+        return helpers.makeGlobalRef(self, "arguments");
+    var origin: NodeIndex = .none;
+    var source_id: ?u32 = null;
+    for (self.capture_refs.items) |pending| {
+        if (pending.frame != self.capture_frame or pending.kind != .arguments_value or pending.source.isNone()) continue;
+        const id = self.getSymbolIdAt(pending.source) orelse continue;
+        if (source_id) |existing| {
+            if (existing != id) std.debug.panic("one arguments capture frame has multiple source bindings", .{});
+        } else {
+            source_id = id;
+            origin = pending.source;
+        }
+    }
+    const id = source_id orelse return helpers.makeGlobalRef(self, "arguments");
+    const initializer = try self.makeUserRefNamed("arguments", origin);
+    const editor = try editorFor(self);
+    editor.addCopiedReference(initializer, @enumFromInt(id), self.capture_scope, .{ .read = true }, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+    return initializer;
+}
+
+/// A generated lexical alias reference is paired with its source function
+/// frame at construction. The source identifier is retained only so a replaced
+/// original `arguments` Reference can be removed after final reachability.
+pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeIndex, kind: LexicalCaptureKind) Transformer.Error!void {
+    if (!self.semantic_edit_enabled or self.capture_frame == 0) return;
+    if (self.capture_scope.isNone() or self.current_scope.isNone())
+        std.debug.panic("lexical capture has no source function scope", .{});
+    const index = self.capture_refs.items.len;
+    try self.capture_refs.append(self.allocator, .{
+        .node = node,
+        .source = source,
+        .scope = self.current_scope,
+        .frame = self.capture_frame,
+        .kind = kind,
+    });
+    const raw = @intFromEnum(node);
+    if (self.capture_ref_by_origin.contains(raw)) std.debug.panic("lexical capture node tracked twice", .{});
+    try self.capture_ref_by_origin.put(self.allocator, raw, index);
+    // A later copy can precede declaration binding; preserve exact origin even
+    // while this generated reference has no SymbolId yet.
+    try self.reference_origin_map.put(self.allocator, raw, raw);
+}
+
+/// Called at the actual capture declaration producer. A frame and role select
+/// the binding; emitted text is never used to recover a symbol.
+pub fn bindLexicalCapture(self: *Transformer, declaration: NodeIndex, kind: LexicalCaptureKind) Transformer.Error!void {
+    if (!self.semantic_edit_enabled or self.capture_frame == 0) return;
+    const decl = self.ast.getNode(declaration);
+    if (decl.tag != .variable_declaration) std.debug.panic("lexical capture is not a variable declaration", .{});
+    const start = self.readU32(decl.data.extra, 1);
+    const len = self.readU32(decl.data.extra, 2);
+    if (len != 1) std.debug.panic("lexical capture has multiple declarators", .{});
+    const item: NodeIndex = @enumFromInt(self.ast.extra_data.items[start]);
+    const binding = self.readNodeIdx(self.ast.getNode(item).data.extra, 0);
+    const id = (try declareSyntheticInScope(self, binding, decl.span, .variable_var, self.capture_scope)).?;
+    const key = captureKey(self.capture_frame, kind);
+    if (self.capture_binding_ids.contains(key)) std.debug.panic("duplicate lexical capture binding", .{});
+    try self.capture_binding_ids.put(self.allocator, key, @intFromEnum(id));
+}
+
+fn bindReachableLexicalCaptures(self: *Transformer) Transformer.Error!void {
+    if (self.capture_refs.items.len == 0) return;
+    const reachable = @import("../../parser/ast_walk.zig").collectReachableNodeIndices(self.allocator, self.ast) catch return error.OutOfMemory;
+    defer self.allocator.free(reachable);
+    var live: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer live.deinit(self.allocator);
+    for (reachable) |raw| try live.put(self.allocator, raw, {});
+
+    for (reachable) |raw| {
+        const origin = self.reference_origin_map.get(raw) orelse raw;
+        const index = self.capture_ref_by_origin.get(origin) orelse continue;
+        const pending = self.capture_refs.items[index];
+        const id = self.capture_binding_ids.get(captureKey(pending.frame, pending.kind)) orelse
+            std.debug.panic("live lexical capture has no declaration", .{});
+        try addSyntheticRefInScope(self, @enumFromInt(raw), @enumFromInt(id), pending.scope, .{ .read = true });
+    }
+
+    const editor = try editorFor(self);
+    for (self.capture_refs.items) |pending| {
+        if (pending.source.isNone() or live.contains(@intFromEnum(pending.source))) continue;
+        if (self.getSymbolIdAt(pending.source) == null) continue;
+        editor.removeReference(pending.source) catch |err| return editError(err);
+    }
+}
+
 /// 헬퍼 호출은 import 선언보다 먼저 생성된다. marker가 있는 노드만 보류한다.
 pub fn trackRuntimeHelperRef(self: *Transformer, node: NodeIndex, local_name: []const u8) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
@@ -507,6 +618,7 @@ pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.
     while (remaps.next()) |entry| {
         editor.remapScopeOwner(@enumFromInt(entry.key_ptr.*), @enumFromInt(entry.value_ptr.*)) catch |err| return editError(err);
     }
+    try bindReachableLexicalCaptures(self);
     if (editor.symbol_ids.items.len < self.symbol_ids.items.len) {
         try editor.symbol_ids.appendNTimes(self.allocator, null, self.symbol_ids.items.len - editor.symbol_ids.items.len);
     }

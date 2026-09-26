@@ -44,14 +44,21 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             const body_idx: NodeIndex = self.readNodeIdx(e, 1);
             const flags = self.readU32(e, ast_mod.ArrowExtra.flags);
 
-            const param_list = try arrowParamsToList(self, params_idx);
-            const body_temp_start = self.temp_var_counter;
-
-            // arrow body 안의 this/arguments를 캡처하기 위해 depth 증가.
-            // visitNode에서 this → _this, arguments → _arguments로 치환된다.
-            self.arrow_this_depth += 1;
-            var new_body = try self.visitBodyWorkletAware(body_idx);
-            self.arrow_this_depth -= 1;
+            const saved_outermost_arrow = self.outermost_lowered_arrow_scope;
+            if (self.arrow_this_depth == 0) self.outermost_lowered_arrow_scope = self.current_scope;
+            defer self.outermost_lowered_arrow_scope = saved_outermost_arrow;
+            const visited = blk: {
+                // Defaults and body share the arrow's lexical this/arguments.
+                self.arrow_this_depth += 1;
+                defer self.arrow_this_depth -= 1;
+                const params = try arrowParamsToList(self, params_idx);
+                const body_temps = self.temp_var_counter;
+                const body = try self.visitBodyWorkletAware(body_idx);
+                break :blk .{ .params = params, .body_temps = body_temps, .body = body };
+            };
+            const param_list = visited.params;
+            const body_temp_start = visited.body_temps;
+            const new_body = visited.body;
 
             // expression body → { return expr; }
             var func_body = blk: {

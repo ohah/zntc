@@ -132,6 +132,9 @@ pub fn deinitExceptAst(self: *Transformer) void {
     if (self.semantic_editor) |*editor| editor.deinit();
     self.pending_temp_refs.deinit(self.allocator);
     self.pending_temp_ref_chains.deinit(self.allocator);
+    self.capture_refs.deinit(self.allocator);
+    self.capture_ref_by_origin.deinit(self.allocator);
+    self.capture_binding_ids.deinit(self.allocator);
     self.helper_ref_nodes.deinit(self.allocator);
     self.pending_runtime_helper_refs.deinit(self.allocator);
     self.pending_runtime_helper_ref_index.deinit(self.allocator);

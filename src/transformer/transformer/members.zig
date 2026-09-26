@@ -187,6 +187,7 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
     const saved_temp_counter = self.temp_var_counter;
 
     // arrow this/arguments 캡처: method도 자체 this 바인딩을 가짐 (visitFunction과 동일)
+    const capture_frame = es_helpers.pushCaptureFrame(self);
     const saved_arrow_depth = self.arrow_this_depth;
     const saved_needs_this = self.needs_this_var;
     const saved_needs_args = self.needs_arguments_var;
@@ -256,11 +257,13 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
                 .data = .{ .none = 0 },
             });
             capture_stmts[capture_count] = try self.buildVarDecl("_this", this_init, node.span);
+            try self.bindLexicalCapture(capture_stmts[capture_count], .this_value);
             capture_count += 1;
         }
         if (self.needs_arguments_var) {
-            const args_init = try es_helpers.makeGlobalRef(self, "arguments");
+            const args_init = try self.makeCapturedArgumentsInit();
             capture_stmts[capture_count] = try self.buildVarDecl("_arguments", args_init, node.span);
+            try self.bindLexicalCapture(capture_stmts[capture_count], .arguments_value);
             capture_count += 1;
         }
 
@@ -282,6 +285,7 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
     self.needs_this_var = saved_needs_this;
     self.needs_arguments_var = saved_needs_args;
     self.super_call_this_alias = saved_super_alias;
+    es_helpers.popCaptureFrame(self, capture_frame);
 
     // experimentalDecorators 모드에서는 decorator를 class 수준에서 처리하므로
     // method_definition에서는 제거한다.

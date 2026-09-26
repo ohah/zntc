@@ -716,10 +716,13 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 if (self.super_call_this_alias) {
                     const helper = try es_helpers.makeRuntimeHelperRef(self, "__assertThisInitialized");
                     const this_ref = try es_helpers.makeSyntheticRef(self, "_this");
+                    try self.trackLexicalCaptureRef(this_ref, .none, .this_value);
                     self.runtime_helpers.derived_constructor = true;
                     return es_helpers.makeCallExpr(self, helper, &.{this_ref}, node.span);
                 }
-                return es_helpers.makeSyntheticRef(self, "_this");
+                const ref = try es_helpers.makeSyntheticRef(self, "_this");
+                try self.trackLexicalCaptureRef(ref, .none, .this_value);
+                return ref;
             }
             // ES2015 class super() 후 this → _this
             if (self.super_call_this_alias) {
@@ -953,11 +956,11 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 self.in_extracted_fn_body)
             {
                 const text = self.ast.getText(node.data.string_ref);
-                if (std.mem.eql(u8, text, "arguments")) {
+                if (std.mem.eql(u8, text, "arguments") and self.shouldCaptureArguments(idx)) {
                     self.needs_arguments_var = true;
-                    // 원래 `arguments` 참조의 심볼을 그대로 물려준다 — 사용자가 `arguments` 라는
-                    // 바인딩을 선언한 경우(sloppy 스크립트) 그 바인딩을 계속 가리키게 한다.
-                    return self.makeUserRefNamed(try es_helpers.resolveSyntheticName(self, "_arguments"), idx);
+                    const ref = try es_helpers.makeSyntheticRef(self, "_arguments");
+                    try self.trackLexicalCaptureRef(ref, idx, .arguments_value);
+                    return ref;
                 }
             }
             if (try self.tryRenameIdentifierLike(idx, .identifier_reference)) |i| return i;

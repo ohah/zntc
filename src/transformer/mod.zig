@@ -63,6 +63,7 @@ test {
     _ = @import("loop_semantic_test.zig");
     _ = @import("generator_state_semantic_test.zig");
     _ = @import("arrow_body_temp_semantic_test.zig");
+    _ = @import("lexical_capture_semantic_test.zig");
     _ = @import("generator_temp_semantic_test.zig");
     _ = @import("parameter_temp_semantic_test.zig");
     _ = @import("class_scope_test.zig");
