@@ -19,6 +19,24 @@ const extractCleanVarName = stage3_helpers.extractCleanVarName;
 
 const ANON_CLASS_NAME = "_Class";
 
+fn visitMethodBodyInSourceScope(self: *Transformer, method_idx: NodeIndex, body_idx: NodeIndex) Error!NodeIndex {
+    const saved_scope = self.current_scope;
+    defer self.current_scope = saved_scope;
+    const saved_temp_counter = self.temp_var_counter;
+    defer self.temp_var_counter = saved_temp_counter;
+    if (self.semantic_edit_enabled) {
+        const key = @intFromEnum(method_idx);
+        if (self.transformed_scope_owner_map.get(key) orelse self.scope_owner_map.get(key)) |scope| {
+            self.current_scope = @enumFromInt(scope);
+        }
+    }
+    var visited = try self.visitNode(body_idx);
+    if (self.temp_var_counter > saved_temp_counter and !visited.isNone()) {
+        visited = try self.hoistTempVarsInOriginalFunction(visited, saved_temp_counter, self.ast.getNode(method_idx).span);
+    }
+    return visited;
+}
+
 /// TC39 Stage 3 decorator 변환 메인 함수.
 pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex {
     const e = node.data.extra;
@@ -149,7 +167,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     var m_params: ast_mod.NodeList = .{ .start = 0, .len = 0 };
                     if (is_private_method) {
                         desc_name = try std.fmt.allocPrint(self.allocator, "_private_{s}_descriptor", .{var_n});
-                        m_body = try self.visitNode(self.readNodeIdx(me, ast_mod.MethodExtra.body));
+                        m_body = try visitMethodBodyInSourceScope(self, member_idx, self.readNodeIdx(me, ast_mod.MethodExtra.body));
                         m_params = self.ast.functionParamsList(member);
                     }
 
@@ -176,7 +194,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     try new_members.append(self.allocator, getter);
                 } else {
                     // public method 또는 non-decorated → 그대로 추가
-                    const new_body = try self.visitNode(self.readNodeIdx(me, ast_mod.MethodExtra.body));
+                    const new_body = try visitMethodBodyInSourceScope(self, member_idx, self.readNodeIdx(me, ast_mod.MethodExtra.body));
                     const empty_list = try self.ast.addNodeList(&.{});
                     const new_method = try self.addExtraNode(.method_definition, member.span, &.{
                         @intFromEnum(new_key),
@@ -605,6 +623,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     empty_decos.start,
                     empty_decos.len,
                 });
+                try self.remapCopiedScopeOwner(member_node_idx, new_ctor_method);
                 new_members.items[mi] = new_ctor_method;
                 break;
             }

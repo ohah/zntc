@@ -265,3 +265,48 @@ test "#4819 decorated computed class async method retains its original state own
         0,
     );
 }
+
+test "#4819 decorated field preserves explicit constructor and nested async state owners" {
+    try checkStateScopes(
+        "function logged(value) { return value; } export class Box { @logged field = 1; constructor() { this.load = async () => await Promise.resolve(this.field); } }",
+        1,
+        true,
+        0,
+    );
+}
+
+test "#4819 static class generator method owns its state callback" {
+    try checkStateScopes(
+        "export class Box { static *read(value) { yield value + 1; } }",
+        1,
+        false,
+        0,
+    );
+}
+
+test "#4819 class expression async method owns its state callback" {
+    try checkStateScopes(
+        "export const Box = class { async load(value) { return await Promise.resolve(value + 1); } };",
+        1,
+        true,
+        0,
+    );
+}
+
+test "#4819 computed object async method after spread owns its state callback" {
+    try checkStateScopes(
+        "const key = 'load'; export const box = { ...{}, async [key](value) { return await Promise.resolve(value + 1); } };",
+        1,
+        true,
+        0,
+    );
+}
+
+test "#4819 source state name collision retains generated state symbol" {
+    try checkStateScopes(
+        "export function* read() { let _state = 3; yield _state; }",
+        1,
+        false,
+        0,
+    );
+}
