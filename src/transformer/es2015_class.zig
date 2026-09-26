@@ -55,7 +55,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
         /// class: extra = [name, super, body, type_params, impl_start, impl_len, deco_start, deco_len]
         /// 반환: function_declaration. 나머지 prototype assignment는 pending_nodes에 추가.
         pub fn lowerClassDeclaration(self: *Transformer, source_idx: NodeIndex, node: Node) Transformer.Error!NodeIndex {
-            _ = source_idx; // Retained through computed-key copies for the later class IIFE scope slice.
             const e = node.data.extra;
             const span = node.span;
 
@@ -81,6 +80,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const saved_class_name_node = self.current_class_name_node;
             self.current_class_name_node = new_name;
             defer self.current_class_name_node = saved_class_name_node;
+
+            const source_class_scope = self.outputOwnedScope(source_idx) orelse if (self.semantic_edit_enabled)
+                std.debug.panic("ES5 class declaration has no source scope owner", .{})
+            else
+                self.current_scope;
+            const iife_parent = self.outputScopeParent(source_class_scope);
+            const iife_scope = try self.reserveGeneratedFunctionScope(iife_parent);
+            try self.reparentGeneratedScope(source_class_scope, iife_scope);
 
             // super class 처리
             const has_super = !super_idx.isNone();
@@ -284,6 +291,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 none,
             });
             const wrapper_fn = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
+            try self.bindReservedFunctionOwner(iife_scope, wrapper_fn);
 
             // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
             // IIFE callee paren 은 emitCall 자동 wrap 이 처리 (#4042 PR8)
@@ -315,7 +323,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
         ///
         /// 메서드/static이 없으면 단순 function expression으로 변환.
         pub fn lowerClassExpression(self: *Transformer, source_idx: NodeIndex, node: Node) Transformer.Error!NodeIndex {
-            _ = source_idx; // Retained through computed-key copies for the later class IIFE scope slice.
             const e = node.data.extra;
             const span = node.span;
 
@@ -415,6 +422,17 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 cm.accessors.items.len > 0 or cm.private_fields.items.len > 0 or
                 cm.static_private_fields.items.len > 0 or cm.private_methods.items.len > 0 or
                 (has_super and super_span != null);
+
+            const source_class_scope = self.outputOwnedScope(source_idx) orelse if (self.semantic_edit_enabled)
+                std.debug.panic("ES5 class expression has no source scope owner", .{})
+            else
+                self.current_scope;
+            const iife_parent = self.outputScopeParent(source_class_scope);
+            const iife_scope = if (has_extra)
+                try self.reserveGeneratedFunctionScope(iife_parent)
+            else
+                @as(@import("../semantic/scope.zig").ScopeId, .none);
+            if (has_extra) try self.reparentGeneratedScope(source_class_scope, iife_scope);
 
             // IIFE 경로면 fresh identifier (symbol 없음), 단순 경로면 원본 name_node.
             // `name_span`은 이미 addString/source에 저장된 stable Span이므로 그대로 재사용.
@@ -540,6 +558,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const wrapper_params_node2 = try self.ast.addFormalParameters(wrapper_params, span);
             const wrapper_extra = try self.ast.addExtras(&.{ none, @intFromEnum(wrapper_params_node2), @intFromEnum(iife_body), 0, none });
             const wrapper_fn = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
+            try self.bindReservedFunctionOwner(iife_scope, wrapper_fn);
 
             // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
             // IIFE callee paren 은 emitCall 자동 wrap 이 처리 (#4042 PR8)

@@ -212,7 +212,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                             continue;
                         },
                         .class_declaration => {
-                            try push(self, &body, try classAsVar(self, node));
+                            try push(self, &body, try classAsVar(self, stmt, node));
                             continue;
                         },
                         .export_named_declaration => {
@@ -231,7 +231,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                                     .class_declaration => {
                                         const cname = self.readNodeIdx(decl.data.extra, ast_mod.ClassExtra.name);
                                         try export_specs.append(self.allocator, try makeExportSpec(self, self.ast.getText(self.ast.getNode(cname).span), cname, null));
-                                        try push(self, &body, try classAsVar(self, decl));
+                                        try push(self, &body, try classAsVar(self, x.decl, decl));
                                     },
                                     // `export function` 과 TS 전용 선언(enum/namespace 등)은 try 밖.
                                     else => try push(self, &head, stmt),
@@ -250,10 +250,10 @@ pub fn ES2025Using(comptime Transformer: type) type {
                             if (named_class) {
                                 const cname = self.readNodeIdx(on.data.extra, ast_mod.ClassExtra.name);
                                 try export_specs.append(self.allocator, try makeExportSpec(self, self.ast.getText(self.ast.getNode(cname).span), cname, "default"));
-                                try push(self, &body, try classAsVar(self, on));
+                                try push(self, &body, try classAsVar(self, operand, on));
                             } else {
                                 const default_name = try uniqueSourceName(self, "_default");
-                                const value = if (on.tag == .class_declaration) try classExpressionOf(self, on) else operand;
+                                const value = if (on.tag == .class_declaration) try classExpressionOf(self, operand, on) else operand;
                                 const binding = try es_helpers.makeSyntheticBinding(self, try self.ast.addString(default_name));
                                 const decl = try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, binding, value, node.span)}, .@"var", node.span);
                                 try export_specs.append(self.allocator, try makeExportSpec(self, default_name, .none, "default"));
@@ -341,16 +341,18 @@ pub fn ES2025Using(comptime Transformer: type) type {
             });
         }
 
-        fn classExpressionOf(self: *Transformer, decl: Node) Transformer.Error!NodeIndex {
-            return self.ast.addNode(.{ .tag = .class_expression, .span = decl.span, .data = decl.data });
+        fn classExpressionOf(self: *Transformer, source_idx: NodeIndex, decl: Node) Transformer.Error!NodeIndex {
+            const expression = try self.ast.addNode(.{ .tag = .class_expression, .span = decl.span, .data = decl.data });
+            try self.remapCopiedScopeOwner(source_idx, expression);
+            return expression;
         }
 
         /// `class C {}` → `var C = class C {}` — 모듈 스코프에 남아 끌어올린 함수·export 가 본다.
-        fn classAsVar(self: *Transformer, decl: Node) Transformer.Error!NodeIndex {
+        fn classAsVar(self: *Transformer, source_idx: NodeIndex, decl: Node) Transformer.Error!NodeIndex {
             const cname = self.readNodeIdx(decl.data.extra, ast_mod.ClassExtra.name);
             const name_span = try self.ast.addString(self.ast.getText(self.ast.getNode(cname).span));
             const binding = try self.makeUserBinding(name_span, cname);
-            return es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, binding, try classExpressionOf(self, decl), decl.span)}, .@"var", decl.span);
+            return es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, binding, try classExpressionOf(self, source_idx, decl), decl.span)}, .@"var", decl.span);
         }
 
         fn collectDeclNames(self: *Transformer, decl: Node, specs: *std.ArrayList(NodeIndex)) Transformer.Error!void {

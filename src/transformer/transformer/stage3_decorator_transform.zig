@@ -38,7 +38,7 @@ fn visitMethodBodyInSourceScope(self: *Transformer, method_idx: NodeIndex, body_
 }
 
 /// TC39 Stage 3 decorator 변환 메인 함수.
-pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex {
+pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node: Node) Error!NodeIndex {
     const e = node.data.extra;
     const zero_span = Span{ .start = 0, .end = 0 };
     const none = @intFromEnum(NodeIndex.none);
@@ -681,6 +681,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
         none,              0,                       0,
         empty_decos.start, empty_decos.len,
     });
+    try self.remapCopiedScopeOwner(source_idx, inner_class);
 
     // IIFE 내부: var Foo = class { ... };
     // 클래스 이름 바인딩 — 익명·`default` 면 임시 이름이라 심볼이 없다.
@@ -745,6 +746,12 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
         @intFromEnum(iife_body),
         0, // flags (not async)
     });
+    const source_class_scope = self.outputOwnedScope(source_idx) orelse if (self.semantic_edit_enabled)
+        std.debug.panic("Stage 3 class has no source scope owner", .{})
+    else
+        self.current_scope;
+    const arrow_scope = try self.addGeneratedFunctionScope(self.outputScopeParent(source_class_scope), arrow);
+    try self.reparentGeneratedScope(source_class_scope, arrow_scope);
 
     // (() => { ... })()
     const paren_arrow = try self.ast.addNode(.{

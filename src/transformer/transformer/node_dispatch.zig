@@ -607,7 +607,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             // `.none`을 반환하므로, export_named/default declaration이 이름을 감지해 `export { X };` 또는
             // `export default X;` 형태로 분리한다 (#1538). 익명/class_expression은 iife_call을 직접 반환해
             // 아래 visitNode 재방문이 arrow/let/static block을 ES5로 마저 다운레벨링한다.
-            if (try self.tryTransformStage3(target_node)) |stage3_result| {
+            if (try self.tryTransformStage3(idx, target_node)) |stage3_result| {
                 if (self.options.unsupported.class) return self.visitNode(stage3_result);
                 return stage3_result;
             }
@@ -625,7 +625,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             };
             const replacement_idx = try self.dispatchVisitor(.on_class_expression, idx);
             const target_node = if (replacement_idx) |r| self.ast.getNode(r) else node;
-            if (try self.tryTransformStage3(target_node)) |stage3_result| {
+            if (try self.tryTransformStage3(idx, target_node)) |stage3_result| {
                 if (self.options.unsupported.class) return self.visitNode(stage3_result);
                 return stage3_result;
             }

@@ -532,6 +532,11 @@ pub const Transformer = struct {
     pub const declareSyntheticVar = @import("transformer/semantic_edit.zig").declareSyntheticVar;
     pub const programScope = @import("transformer/semantic_edit.zig").programScope;
     pub const addGeneratedFunctionScope = @import("transformer/semantic_edit.zig").addGeneratedFunctionScope;
+    pub const reserveGeneratedFunctionScope = @import("transformer/semantic_edit.zig").reserveGeneratedFunctionScope;
+    pub const bindReservedFunctionOwner = @import("transformer/semantic_edit.zig").bindReservedFunctionOwner;
+    pub const reparentGeneratedScope = @import("transformer/semantic_edit.zig").reparentGeneratedScope;
+    pub const outputScopeParent = @import("transformer/semantic_edit.zig").outputScopeParent;
+    pub const outputOwnedScope = @import("transformer/semantic_edit.zig").outputOwnedScope;
     pub const remapCopiedScopeOwner = @import("transformer/semantic_edit.zig").remapCopiedScopeOwner;
     pub const originalFunctionScope = @import("transformer/semantic_edit.zig").originalFunctionScope;
     pub const bindGeneratedState = @import("transformer/semantic_edit.zig").bindGeneratedState;
@@ -667,13 +672,13 @@ pub const Transformer = struct {
 
     /// Stage 3 decorator lowering이 필요한 class면 실행해 결과 NodeIndex 반환, 아니면 null.
     /// `unsupported.class` 분기보다 먼저 호출해 ES5 target에서 decorator silent drop을 방지한다.
-    pub fn tryTransformStage3(self: *Transformer, node: Node) Error!?NodeIndex {
+    pub fn tryTransformStage3(self: *Transformer, source_idx: NodeIndex, node: Node) Error!?NodeIndex {
         if (self.options.experimental_decorators) return null;
         const e = node.data.extra;
         const class_deco_len = self.readU32(e, ast_mod.ClassExtra.deco_len);
         const has_member_decos = self.hasAnyMemberDecorators(e);
         if (class_deco_len == 0 and !has_member_decos) return null;
-        return try self.transformStage3Decorators(node);
+        return try self.transformStage3Decorators(source_idx, node);
     }
 
     pub const visitClass = class_deco.visitClass;

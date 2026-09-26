@@ -107,6 +107,51 @@ pub fn addGeneratedFunctionScope(self: *Transformer, parent: ScopeId, owner: Nod
     return scope;
 }
 
+/// Class lowering emits the IIFE body before its function node exists. Reserve
+/// its scope now so generated bindings and references have their output parent.
+pub fn reserveGeneratedFunctionScope(self: *Transformer, parent: ScopeId) Transformer.Error!ScopeId {
+    if (!self.semantic_edit_enabled) return .none;
+    const editor = try editorFor(self);
+    return editor.addScope(parent, .none, .function, true) catch |err| return editError(err);
+}
+
+pub fn bindReservedFunctionOwner(self: *Transformer, scope: ScopeId, owner: NodeIndex) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const editor = try editorFor(self);
+    if (scope.isNone() or scope.toIndex() >= editor.scopes.items.len or owner.isNone() or
+        @intFromEnum(owner) >= self.ast.nodes.items.len or self.ast.getNode(owner).tag != .function_expression)
+        std.debug.panic("invalid reserved function scope owner", .{});
+    const raw = @intFromEnum(owner);
+    if (editor.scope_owner_map.contains(raw) or self.transformed_scope_owner_map.contains(raw))
+        std.debug.panic("reserved function scope owner already bound", .{});
+    try editor.scope_owner_map.put(self.allocator, raw, @intFromEnum(scope));
+    try self.transformed_scope_owner_map.put(self.allocator, raw, @intFromEnum(scope));
+    try self.scope_owner_origins.put(self.allocator, raw, raw);
+}
+
+pub fn reparentGeneratedScope(self: *Transformer, source: ScopeId, parent: ScopeId) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const editor = try editorFor(self);
+    editor.reparentScope(source, parent) catch |err| return editError(err);
+}
+
+pub fn outputScopeParent(self: *Transformer, source: ScopeId) ScopeId {
+    if (source.isNone()) return .none;
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    if (source.toIndex() >= scopes.len) std.debug.panic("invalid output source scope", .{});
+    return scopes[source.toIndex()].parent;
+}
+
+/// Generated class expressions can lack an analyzer-owned class scope. Return
+/// the exact owner only when the input node establishes that boundary.
+pub fn outputOwnedScope(self: *Transformer, owner: NodeIndex) ?ScopeId {
+    const raw = @intFromEnum(owner);
+    const id = self.transformed_scope_owner_map.get(raw) orelse
+        self.scope_owner_map.get(raw) orelse
+        if (self.semantic_editor) |*editor| editor.scope_owner_map.get(raw) else null;
+    return if (id) |value| @enumFromInt(value) else null;
+}
+
 /// Track all copies of a lexical boundary. A source node can be revisited on
 /// separate branches, so the live owner is selected from the final AST later.
 pub fn remapCopiedScopeOwner(self: *Transformer, old: NodeIndex, new: NodeIndex) Transformer.Error!void {
@@ -116,6 +161,7 @@ pub fn remapCopiedScopeOwner(self: *Transformer, old: NodeIndex, new: NodeIndex)
     if (old_tag != new_tag and
         !(old_tag == .arrow_function_expression and new_tag == .function_expression) and
         !(old_tag == .for_of_statement and new_tag == .for_statement) and
+        !(old_tag == .class_declaration and new_tag == .class_expression) and
         !(old_tag == .method_definition and (new_tag == .function_declaration or new_tag == .function_expression))) return;
     const old_key = @intFromEnum(old);
     const new_key = @intFromEnum(new);
