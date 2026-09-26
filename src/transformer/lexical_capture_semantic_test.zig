@@ -26,8 +26,24 @@ fn checkCaptureSymbols(source: []const u8, frame_tag: @import("../parser/ast.zig
         if (tag == frame_tag) outer_scope = owner.value_ptr.*;
         if (tag == .arrow_function_expression) arrow_scope = owner.value_ptr.*;
     }
-    const enclosing = outer_scope orelse return error.TestUnexpectedResult;
     const extracted = arrow_scope orelse return error.TestUnexpectedResult;
+    if (frame_tag == .method_definition) {
+        // A derived fixture also has a base constructor. Select the method
+        // that lexically owns the source arrow, not map iteration order.
+        var methods = analyzer.scope_owner_map.iterator();
+        while (methods.next()) |owner| {
+            if (parser.ast.nodes.items[owner.key_ptr.*].tag != .method_definition) continue;
+            var cursor: @import("../semantic/scope.zig").ScopeId = @enumFromInt(extracted);
+            while (!cursor.isNone()) {
+                if (@intFromEnum(cursor) == owner.value_ptr.*) {
+                    outer_scope = owner.value_ptr.*;
+                    break;
+                }
+                cursor = analyzer.scopes.items[cursor.toIndex()].parent;
+            }
+        }
+    }
+    const enclosing = outer_scope orelse return error.TestUnexpectedResult;
     const old_symbols = analyzer.symbols.items.len;
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{
@@ -94,6 +110,10 @@ test "#4819 lowered arrow lexical captures have distinct exact function symbols"
     );
     try checkCaptureSymbols(
         "function logged(value){return value} class C{@logged field=1;method(){return ()=>this.field+arguments.length}} new C().method();",
+        .method_definition,
+    );
+    try checkCaptureSymbols(
+        "function logged(value){return value} class Base{} class C extends Base{@logged field=1;constructor(){super();this.read=()=>this.field+arguments.length}} new C().read();",
         .method_definition,
     );
 }
