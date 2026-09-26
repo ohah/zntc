@@ -53,8 +53,12 @@ pub fn programScope(self: *Transformer) ScopeId {
 pub fn originalFunctionScope(self: *Transformer, owner: NodeIndex) ScopeId {
     if (!self.semantic_edit_enabled) return .none;
     const raw = @intFromEnum(owner);
-    if (self.transformed_scope_owner_map.get(raw) orelse self.scope_owner_map.get(raw)) |scope|
+    if (self.transformed_scope_owner_map.get(raw) orelse self.scope_owner_map.get(raw)) |scope| {
+        const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+        if (scope >= scopes.len or scopes[scope].kind != .function)
+            std.debug.panic("state machine owner {d} has no function scope", .{raw});
         return @enumFromInt(scope);
+    }
     // This exact owner was produced by generator loop extraction before the
     // enclosing state-machine callback exists. Its complete function/parameter
     // migration will establish the true parent. No other missing owner may be
