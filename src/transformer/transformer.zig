@@ -104,6 +104,12 @@ pub const Transformer = struct {
     /// invariant: `markRuntimeHelperRef` 호출처는 매번 새로 만든 NodeIndex 만 넣으므로
     /// 중복 entry 가 발생하지 않음 — dedupe 불필요.
     helper_ref_nodes: std.ArrayListUnmanaged(u32) = .empty,
+    pending_runtime_helper_refs: std.ArrayListUnmanaged(struct {
+        node: NodeIndex,
+        scope: ScopeId,
+        next: ?usize = null,
+    }) = .empty,
+    pending_runtime_helper_chains: std.StringHashMapUnmanaged(struct { first: usize, last: usize }) = .empty,
 
     /// semantic analyzer의 심볼 테이블 (unused import 판별용).
     /// 비어 있으면 unused import 제거 비활성.
@@ -123,9 +129,12 @@ pub const Transformer = struct {
     scope_maps: []const std.StringHashMapUnmanaged(usize) = &.{},
     /// analyzer가 기록한 원본 스코프 생성 노드 → ScopeId. 별도 소유권은 analyzer/module에 있다.
     scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty,
     /// 원본 scope owner가 동일한 종류의 새 노드로 복사되었을 때의 old → new 매핑.
     /// scope_owner_map 자체는 analyzer 소유라 변환 중 수정하지 않는다.
     scope_owner_remaps: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// Pass 2에서 복사된 함수 노드의 원래 스코프를 찾는다.
+    transformed_scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     current_scope: ScopeId = .none,
     /// 첫 합성 바인딩이 필요할 때만 기존 의미 정보를 복사한다.
     semantic_edit_enabled: bool = false,
@@ -463,6 +472,7 @@ pub const Transformer = struct {
             self.ast.getNode(idx).tag == self.ast.getNode(new_idx).tag)
         {
             try self.scope_owner_remaps.put(self.allocator, @intFromEnum(idx), @intFromEnum(new_idx));
+            try self.transformed_scope_owner_map.put(self.allocator, @intFromEnum(new_idx), owner_scope.?);
         }
         // symbol_id 전파: 원본 node_idx → 새 node_idx
         self.propagateSymbolId(idx, new_idx);
@@ -502,6 +512,8 @@ pub const Transformer = struct {
     pub const addGeneratedFunctionScope = @import("transformer/semantic_edit.zig").addGeneratedFunctionScope;
     pub const declareSyntheticInScope = @import("transformer/semantic_edit.zig").declareSyntheticInScope;
     pub const addSyntheticRefInScope = @import("transformer/semantic_edit.zig").addSyntheticRefInScope;
+    pub const trackRuntimeHelperRef = @import("transformer/semantic_edit.zig").trackRuntimeHelperRef;
+    pub const bindRuntimeHelperImport = @import("transformer/semantic_edit.zig").bindRuntimeHelperImport;
     pub const trackHoistedTempRef = @import("transformer/semantic_edit.zig").trackHoistedTempRef;
     pub const bindHoistedTemp = @import("transformer/semantic_edit.zig").bindHoistedTemp;
     pub const declareSyntheticCatch = @import("transformer/semantic_edit.zig").declareSyntheticCatch;

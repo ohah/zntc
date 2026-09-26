@@ -29,6 +29,7 @@ fn editorFor(self: *Transformer) Transformer.Error!*SemanticEditor {
             self.scope_owner_map,
             self.references,
             self.symbol_ids.items,
+            self.helper_scope_map,
         ) catch |err| return editError(err);
     }
     return &self.semantic_editor.?;
@@ -104,6 +105,37 @@ pub fn addSyntheticRefInScope(self: *Transformer, node: NodeIndex, id: ?SymbolId
     try setSymbolId(self, node, symbol);
 }
 
+/// 헬퍼 호출은 import 선언보다 먼저 생성된다. marker가 있는 노드만 보류한다.
+pub fn trackRuntimeHelperRef(self: *Transformer, node: NodeIndex, local_name: []const u8) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    if (self.current_scope.isNone()) std.debug.panic("runtime helper {s} created without scope", .{local_name});
+    const index = self.pending_runtime_helper_refs.items.len;
+    try self.pending_runtime_helper_refs.append(self.allocator, .{ .node = node, .scope = self.current_scope });
+    if (self.pending_runtime_helper_chains.getPtr(local_name)) |chain| {
+        self.pending_runtime_helper_refs.items[chain.last].next = index;
+        chain.last = index;
+    } else {
+        try self.pending_runtime_helper_chains.put(self.allocator, local_name, .{ .first = index, .last = index });
+    }
+}
+
+/// import specifier의 local 노드에 격리된 심볼을 만들고 앞서 생성한 호출을 연결한다.
+pub fn bindRuntimeHelperImport(self: *Transformer, local: NodeIndex, local_name: []const u8, declaration_span: Span) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const editor = try editorFor(self);
+    const id = editor.declareHelperImport(local, self.ast.getNode(local).data.string_ref, declaration_span, self.programScope()) catch |err| return editError(err);
+    try setSymbolId(self, local, id);
+    const chain = self.pending_runtime_helper_chains.fetchRemove(local_name) orelse return;
+    var i: ?usize = chain.value.first;
+    while (i) |index| {
+        const ref = self.pending_runtime_helper_refs.items[index];
+        editor.addReference(ref.node, id, ref.scope, .{ .read = true }, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+        try setSymbolId(self, ref.node, id);
+        i = ref.next;
+    }
+    if (self.pending_runtime_helper_chains.count() == 0) self.pending_runtime_helper_refs.clearRetainingCapacity();
+}
+
 /// nullish lowering의 temp 참조는 hoist 선언보다 먼저 생성된다. 이름 대신
 /// makeTempVarSpan의 고유 Span을 기록하고 선언 시점에 SymbolId를 연결한다.
 pub fn trackHoistedTempRef(self: *Transformer, name_span: Span, node: NodeIndex, flags: ReferenceFlags) Transformer.Error!void {
@@ -160,6 +192,8 @@ pub fn bindHoistedTemp(self: *Transformer, binding: NodeIndex, name_span: Span, 
 /// 변환 중 복사된 사용자 식별자와 scope owner도 편집 결과에 합친다.
 pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.Result {
     const editor = if (self.semantic_editor) |*e| e else return null;
+    if (self.options.emit_runtime_helper_imports and self.pending_runtime_helper_chains.count() != 0)
+        std.debug.panic("generated runtime helper reference has no import", .{});
     var remaps = self.scope_owner_remaps.iterator();
     while (remaps.next()) |entry| {
         editor.remapScopeOwner(@enumFromInt(entry.key_ptr.*), @enumFromInt(entry.value_ptr.*)) catch |err| return editError(err);

@@ -195,6 +195,7 @@ fn emitOne(
             .span = anchor,
             .data = .{ .binary = .{ .left = imported_node, .right = local_node, .flags = 0 } },
         });
+        try self.bindRuntimeHelperImport(local_node, local, anchor);
         try self.scratch.append(self.allocator, spec);
     }
 

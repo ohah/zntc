@@ -283,6 +283,7 @@ test "#4819 transformed scope owners retain their original ScopeId" {
         analyzer.scope_owner_map,
         analyzer.references.items,
         analyzer.symbol_ids.items,
+        analyzer.helper_scope_map,
     );
     defer editor.deinit();
     var owners = analyzer.scope_owner_map.iterator();
@@ -559,6 +560,56 @@ test "#4819 decorator access functions own separate parameter symbols" {
     }
     try std.testing.expectEqual(@as(usize, 8), access_params);
     try std.testing.expectEqual(@as(usize, 6), access_scope_ids.count());
+}
+
+test "#4819 runtime helper calls bind isolated import symbols before resync" {
+    const cases = [_]struct { src: []const u8, local: []const u8, minify: bool, inside_function: bool = false }{
+        .{ .src = "const __extends = 'shadow'; export class Child extends Object {} console.log(__extends);", .local = "__extends", .minify = false },
+        .{ .src = "const $eX = 'shadow'; export class Child extends Object {} console.log($eX);", .local = "$eX", .minify = true },
+        .{ .src = "const __rest = 'shadow'; function pick({a, ...rest}) { return rest.b; } console.log(pick({a: 1, b: 2}), __rest);", .local = "__rest", .minify = false, .inside_function = true },
+    };
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, case.src);
+        var parser = Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".mjs");
+        _ = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        analyzer.is_module = true;
+        try analyzer.analyze();
+        const user_id = analyzer.scope_maps.items[0].get(case.local).?;
+
+        var transformer = try Transformer.init(allocator, &parser.ast, .{
+            .unsupported = TransformOptions.compat.fromESTarget(.es5),
+            .emit_runtime_helper_imports = true,
+            .minify_whitespace = case.minify,
+        });
+        try transformer.initSymbolIds(analyzer.symbol_ids.items);
+        transformer.symbols = analyzer.symbols.items;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.semantic_edit_enabled = true;
+        _ = try transformer.transform();
+        const edited = (try transformer.finishSemanticEdit()).?;
+        const helper_id = edited.helper_scope_map.get(case.local).?;
+        try std.testing.expect(helper_id != user_id);
+        try std.testing.expectEqual(@as(?usize, user_id), edited.scope_maps[0].get(case.local));
+        try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, edited.symbols.items[helper_id].kind);
+        try std.testing.expect(edited.symbols.items[helper_id].reference_count >= 1);
+        var bound_refs: usize = 0;
+        for (edited.references) |ref| {
+            if (@intFromEnum(ref.symbol_id) != helper_id or !ref.flags.read) continue;
+            try std.testing.expectEqual(@as(?u32, @intCast(helper_id)), edited.symbol_ids[@intFromEnum(ref.node_index)]);
+            if (case.inside_function) try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[ref.scope_id.toIndex()].kind);
+            bound_refs += 1;
+        }
+        try std.testing.expect(bound_refs >= 1);
+        try std.testing.expectEqual(@as(usize, 0), transformer.pending_runtime_helper_chains.count());
+    }
 }
 
 test "#4819 optional catch binding gets a symbol in its catch scope" {

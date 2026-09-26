@@ -499,6 +499,7 @@ pub fn makeRuntimeHelperRef(self: anytype, base_name: []const u8) !NodeIndex {
     // helper_scope_map 으로 격리해 binding. user 가 동일 이름 local 을 선언해도 helper
     // 호출이 user binding 으로 잘못 resolve 되지 않는다.
     try self.markRuntimeHelperRef(idx);
+    try self.trackRuntimeHelperRef(idx, resolved);
     return idx;
 }
 
