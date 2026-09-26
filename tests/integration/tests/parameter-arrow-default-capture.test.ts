@@ -106,31 +106,33 @@ describe('parameter arrow this/arguments captures precede default checks (#4819)
   });
 
   for (const fixture of cases) {
-    for (const bundle of [false, true]) {
-      for (const minify of [false, true]) {
-        test(`${fixture.name}, ${bundle ? 'bundle' : 'single'}, ${minify ? 'minify' : 'plain'}`, async () => {
-          const dir = await createFixture({
-            'input.mjs': fixture.source,
-            'package.json': '{"type":"module"}',
+    for (const target of ['es5', 'es2015', 'es2017', 'esnext', 'hermes'] as const) {
+      for (const bundle of [false, true]) {
+        for (const minify of [false, true]) {
+          test(`${fixture.name}, ${target}, ${bundle ? 'bundle' : 'single'}, ${minify ? 'minify' : 'plain'}`, async () => {
+            const dir = await createFixture({
+              'input.mjs': fixture.source,
+              'package.json': '{"type":"module"}',
+            });
+            cleanup = dir.cleanup;
+            const input = join(dir.dir, 'input.mjs');
+            const native = spawnSync('node', [input], { encoding: 'utf8' });
+            expect(native.status, native.stderr).toBe(0);
+            const output = join(dir.dir, bundle ? 'out.cjs' : 'out.mjs');
+            const result = await runZntcInDir(dir.dir, [
+              ...(bundle ? ['--bundle', '--platform=node', '--format=cjs'] : []),
+              'input.mjs',
+              target === 'hermes' ? '--platform=react-native' : `--target=${target}`,
+              ...(minify ? ['--minify'] : []),
+              '-o',
+              output,
+            ]);
+            expect(result.exitCode, result.stderr).toBe(0);
+            const actual = spawnSync('node', [output], { encoding: 'utf8' });
+            expect(actual.status, actual.stderr).toBe(0);
+            expect(actual.stdout).toBe(native.stdout);
           });
-          cleanup = dir.cleanup;
-          const input = join(dir.dir, 'input.mjs');
-          const native = spawnSync('node', [input], { encoding: 'utf8' });
-          expect(native.status, native.stderr).toBe(0);
-          const output = join(dir.dir, bundle ? 'out.cjs' : 'out.mjs');
-          const result = await runZntcInDir(dir.dir, [
-            ...(bundle ? ['--bundle', '--platform=node', '--format=cjs'] : []),
-            'input.mjs',
-            '--target=es5',
-            ...(minify ? ['--minify'] : []),
-            '-o',
-            output,
-          ]);
-          expect(result.exitCode, result.stderr).toBe(0);
-          const actual = spawnSync('node', [output], { encoding: 'utf8' });
-          expect(actual.status, actual.stderr).toBe(0);
-          expect(actual.stdout).toBe(native.stdout);
-        });
+        }
       }
     }
   }
