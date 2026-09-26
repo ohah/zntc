@@ -139,6 +139,44 @@ test "#4819 optional call captures bind their writes and reads across scopes" {
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
 
+test "#4819 spread-new callee captures keep distinct function and module symbols" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const _a = 7; const holder = { Box: function(x) { this.x = x; } }; function local(v) { return new holder.Box(...[v]); } console.log(new holder.Box(...[8]).x, local(9).x, _a);");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const original_symbols = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    try std.testing.expectEqual(original_symbols + 2, edited.symbols.items.len);
+    const local = edited.symbols.items[original_symbols];
+    const module = edited.symbols.items[original_symbols + 1];
+    try std.testing.expectEqualStrings("_b", transformer.ast.getText(local.name));
+    try std.testing.expectEqualStrings("_b", transformer.ast.getText(module.name));
+    try std.testing.expect(local.scope_id != module.scope_id);
+    for (edited.symbols.items[original_symbols..]) |generated| {
+        try std.testing.expectEqual(@as(u32, 2), generated.reference_count);
+        try std.testing.expectEqual(@as(u32, 1), generated.write_count);
+    }
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+}
+
 test "#4819 transformed scope owners retain their original ScopeId" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
