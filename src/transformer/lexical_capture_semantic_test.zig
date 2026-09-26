@@ -119,6 +119,77 @@ test "#4819 lowered arrow lexical captures have distinct exact function symbols"
     );
 }
 
+test "#4819 class field arrows share their exact constructor capture binding" {
+    const cases = .{
+        .{ "class C{field=()=>this.x;constructor(){this.x=2;this.body=()=>this.x}} new C().field();", @as(u32, 2) },
+        .{ "class C{field=()=>this.x;x=2} new C().field();", @as(u32, 1) },
+        .{ "class B{} class C extends B{field=()=>this.x;constructor(){super();this.x=2;this.body=()=>this.x}} new C().field();", @as(u32, 2) },
+        .{ "class B{} class C extends B{field=()=>this.x;x=2} new C().field();", @as(u32, 1) },
+        .{ "const C=class{field=()=>this.x;constructor(){this.x=2;this.body=()=>this.x}}; new C().field();", @as(u32, 2) },
+    };
+    inline for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, case[0]);
+        var parser = Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".mjs");
+        _ = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        analyzer.is_module = true;
+        try analyzer.analyze();
+        const original_symbols = analyzer.symbols.items.len;
+        var transformer = try Transformer.init(allocator, &parser.ast, .{
+            .unsupported = TransformOptions.compat.fromESTarget(.es5),
+            .emit_runtime_helper_imports = true,
+        });
+        try transformer.initSymbolIds(analyzer.symbol_ids.items);
+        transformer.symbols = analyzer.symbols.items;
+        transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.unresolved_references = &analyzer.unresolved_references;
+        transformer.semantic_edit_enabled = true;
+        _ = try transformer.transform();
+        const edited = (try transformer.finishSemanticEdit()).?;
+        const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+        var live: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        for (reachable) |raw| try live.put(allocator, raw, {});
+        var captures: usize = 0;
+        for (edited.symbols.items[original_symbols..], original_symbols..) |symbol, id| {
+            if (!std.mem.startsWith(u8, symbol.synthetic_name, "_this")) continue;
+            captures += 1;
+            try std.testing.expectEqual(@as(@import("../semantic/scope.zig").ScopeKind, .function), edited.scopes[symbol.scope_id.toIndex()].kind);
+            var bindings: usize = 0;
+            for (reachable) |raw| {
+                if (transformer.ast.nodes.items[raw].tag == .binding_identifier and
+                    raw < edited.symbol_ids.len and edited.symbol_ids[raw] == @as(u32, @intCast(id))) bindings += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), bindings);
+            var reads: u32 = 0;
+            for (edited.references) |ref| {
+                if (@intFromEnum(ref.symbol_id) != id or ref.node_index.isNone() or !live.contains(@intFromEnum(ref.node_index))) continue;
+                var scope = ref.scope_id;
+                var visible = false;
+                while (!scope.isNone()) {
+                    if (scope == symbol.scope_id) {
+                        visible = true;
+                        break;
+                    }
+                    scope = edited.scopes[scope.toIndex()].parent;
+                }
+                try std.testing.expect(visible);
+                reads += 1;
+            }
+            try std.testing.expectEqual(case[1], reads);
+            try std.testing.expectEqual(case[1], symbol.reference_count);
+        }
+        try std.testing.expectEqual(@as(usize, 1), captures);
+    }
+}
+
 test "#4819 explicit arguments binding moves to the exact capture initializer" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

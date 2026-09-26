@@ -1,6 +1,7 @@
 //! Class body member classification and field emission helpers for ES2015 class lowering.
 
 const std = @import("std");
+const ast_walk = @import("../../parser/ast_walk.zig");
 const ast_mod = @import("../../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
@@ -186,6 +187,51 @@ pub fn Members(comptime Transformer: type) type {
                 self.needs_this_var = saved_needs_this;
                 try cm.instance_fields.append(self.allocator, init_stmt);
             }
+        }
+
+        /// Field initializers execute in the constructor. Move only scopes
+        /// reached from their original value expressions; computed keys and
+        /// decorators still execute while defining the class.
+        pub fn moveInstanceInitScopes(self: *Transformer, cm: *ClassifiedMembers, class_scope: @import("../../semantic/scope.zig").ScopeId, ctor_scope: @import("../../semantic/scope.zig").ScopeId) Transformer.Error!void {
+            if (!self.semantic_edit_enabled) return;
+            const scopes = if (self.semantic_editor) |*e| e.scopes.items else self.scopes;
+            var stack: std.ArrayList(NodeIndex) = .empty;
+            defer stack.deinit(self.allocator);
+            var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer seen.deinit(self.allocator);
+            var frontier: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer frontier.deinit(self.allocator);
+            for (cm.instance_inits.items) |entry| {
+                const init = switch (entry) {
+                    .private_field => |index| cm.private_fields.items[index].init,
+                    .public_field => |field| field.init,
+                };
+                if (!init.isNone()) try stack.append(self.allocator, init);
+            }
+            while (stack.pop()) |idx| {
+                if (idx.isNone()) continue;
+                const raw = @intFromEnum(idx);
+                if (seen.contains(raw)) continue;
+                try seen.put(self.allocator, raw, {});
+                const owner = self.transformed_scope_owner_map.get(raw) orelse
+                    (if (self.semantic_editor) |*e| e.scope_owner_map.get(raw) else null) orelse self.scope_owner_map.get(raw);
+                if (owner) |scope_raw| {
+                    var cursor: @import("../../semantic/scope.zig").ScopeId = @enumFromInt(scope_raw);
+                    var steps: usize = 0;
+                    while (!cursor.isNone() and cursor != class_scope and steps < scopes.len) : (steps += 1) {
+                        const parent = scopes[cursor.toIndex()].parent;
+                        if (parent == class_scope) {
+                            try frontier.put(self.allocator, cursor.toIndex(), {});
+                            break;
+                        }
+                        cursor = parent;
+                    }
+                }
+                var children = ast_walk.children(self.ast, self.ast.getNode(idx));
+                while (children.next()) |child| try stack.append(self.allocator, child);
+            }
+            var roots = frontier.keyIterator();
+            while (roots.next()) |raw| try self.reparentGeneratedScope(@enumFromInt(raw.*), ctor_scope);
         }
 
         /// instance + static private field 매핑을 빌드하여 current_private_fields에 설정.

@@ -186,42 +186,61 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span, name_span));
                 self.runtime_helpers.class_static_private_field = true;
             }
-            try emitInstanceInits(self, &cm, span);
-            try emitPrivateMethodArtifacts(self, cm.private_methods.items, &cm.instance_fields, span, name_span);
-
-            // IIFE 내부 function — 이름은 source class self SymbolId에 연결된다.
-            var func_node = if (cm.constructor_idx) |ctor_idx|
-                try buildFunctionFromConstructor(self, ctor_idx, fresh_name, cm.instance_fields.items, has_super and super_span != null, span)
-            else if (has_super and super_span != null)
-                try buildDefaultSuperConstructor(self, fresh_name, super_span.?, cm.instance_fields.items, span)
+            const ctor_scope = if (!self.semantic_edit_enabled)
+                self.current_scope
+            else if (cm.constructor_idx) |ctor_idx|
+                self.outputOwnedScope(ctor_idx) orelse std.debug.panic("ES5 constructor has no source scope owner", .{})
             else
-                try buildEmptyFunction(self, fresh_name, span);
-
-            // 순서: __classCallCheck → var _this = this → fields → 원래 constructor body
-            // prependToFunctionBody는 앞에 삽입하므로 역순으로 호출.
-
-            // 3. instance fields prepend (가장 마지막에 호출 → classCallCheck/this_decl 뒤에 위치)
-            if (cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
-                func_node = try prependToFunctionBody(self, func_node, cm.instance_fields.items);
-            }
-            // 2. var _this = this; (field에 arrow this 캡처가 있는 경우)
-            if (cm.fields_need_this_alias and cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
-                const this_decl = try self.buildVarDecl("_this", try self.ast.addNode(.{
-                    .tag = .this_expression,
-                    .span = span,
-                    .data = .{ .none = 0 },
-                }), span);
-                func_node = try prependToFunctionBody(self, func_node, &.{this_decl});
-            }
-            // 1. __classCallCheck(this, ClassName) — constructor body 맨 앞
+                try self.reserveGeneratedFunctionScope(source_class_scope);
+            var func_node: NodeIndex = .none;
             {
-                const check_id = try es_helpers.makeRuntimeHelperRef(self, "__classCallCheck");
-                const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .none = 0 } });
-                const class_ref = try self.makeIdentifierRefWithSymbol(name_span, fresh_name);
-                const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
-                func_node = try prependToFunctionBody(self, func_node, &.{try es_helpers.makeExprStmt(self, call, span)});
-                self.runtime_helpers.class_call_check = true;
+                const saved_scope = self.current_scope;
+                self.current_scope = ctor_scope;
+                defer self.current_scope = saved_scope;
+                const field_env = es_helpers.pushArrowEnv(self);
+                defer es_helpers.popArrowEnv(self, field_env);
+                try moveInstanceInitScopes(self, &cm, source_class_scope, ctor_scope);
+                try emitInstanceInits(self, &cm, span);
+                self.current_scope = saved_scope;
+                try emitPrivateMethodArtifacts(self, cm.private_methods.items, &cm.instance_fields, span, name_span);
+                self.current_scope = ctor_scope;
+
+                func_node = if (cm.constructor_idx) |ctor_idx|
+                    try buildFunctionFromConstructor(self, ctor_idx, fresh_name, cm.instance_fields.items, has_super and super_span != null, cm.fields_need_this_alias, span)
+                else if (has_super and super_span != null)
+                    try buildDefaultSuperConstructor(self, fresh_name, super_span.?, cm.instance_fields.items, span)
+                else
+                    try buildEmptyFunction(self, fresh_name, span);
+
+                // 순서: __classCallCheck → var _this = this → fields → 원래 constructor body
+                // prependToFunctionBody는 앞에 삽입하므로 역순으로 호출.
+
+                // 3. instance fields prepend (가장 마지막에 호출 → classCallCheck/this_decl 뒤에 위치)
+                if (cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
+                    func_node = try prependToFunctionBody(self, func_node, cm.instance_fields.items);
+                }
+                // 2. var _this = this; (field에 arrow this 캡처가 있는 경우)
+                if (cm.constructor_idx == null and cm.fields_need_this_alias and cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
+                    const this_decl = try self.buildVarDecl("_this", try self.ast.addNode(.{
+                        .tag = .this_expression,
+                        .span = span,
+                        .data = .{ .none = 0 },
+                    }), span);
+                    try self.bindLexicalCapture(this_decl, .this_value);
+                    func_node = try prependToFunctionBody(self, func_node, &.{this_decl});
+                }
+                // 1. __classCallCheck(this, ClassName) — constructor body 맨 앞
+                {
+                    const check_id = try es_helpers.makeRuntimeHelperRef(self, "__classCallCheck");
+                    const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .none = 0 } });
+                    const class_ref = try self.makeIdentifierRefWithSymbol(name_span, fresh_name);
+                    const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
+                    func_node = try prependToFunctionBody(self, func_node, &.{try es_helpers.makeExprStmt(self, call, span)});
+                    self.runtime_helpers.class_call_check = true;
+                }
             }
+
+            if (cm.constructor_idx == null) try self.bindReservedFunctionOwner(ctor_scope, func_node);
 
             if (cm.constructor_idx) |source_ctor| try self.remapCopiedScopeOwner(source_ctor, func_node);
 
@@ -410,7 +429,22 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
             defer self.current_private_methods = saved_private_methods;
 
-            try emitInstanceInits(self, &cm, span);
+            // Instance initializers execute in the constructor, whose lexical
+            // scope must exist before their nested arrows are visited.
+            const source_class_scope = self.outputOwnedScope(source_idx) orelse if (self.semantic_edit_enabled)
+                std.debug.panic("ES5 class expression has no source scope owner", .{})
+            else
+                self.current_scope;
+            const has_extra = cm.methods.items.len > 0 or cm.static_elements.items.len > 0 or
+                cm.accessors.items.len > 0 or cm.private_fields.items.len > 0 or
+                cm.static_private_fields.items.len > 0 or cm.private_methods.items.len > 0 or
+                (has_super and super_span != null);
+            const iife_parent = if (self.semantic_edit_enabled) self.outputScopeParent(source_class_scope) else self.current_scope;
+            const iife_scope = if (has_extra)
+                try self.reserveGeneratedFunctionScope(iife_parent)
+            else
+                @as(@import("../semantic/scope.zig").ScopeId, .none);
+            if (has_extra) try self.reparentGeneratedScope(source_class_scope, iife_scope);
 
             // private method 초기화 → constructor body에 삽입
             for (cm.private_methods.items) |pm| {
@@ -418,23 +452,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const init_stmt = try es_helpers.buildPrivateMethodInit(self, pm.weakset_name, span);
                 try cm.instance_fields.append(self.allocator, init_stmt);
             }
-
-            // has_extra를 먼저 계산하여 func_node를 올바른 이름으로 한 번만 빌드
-            const has_extra = cm.methods.items.len > 0 or cm.static_elements.items.len > 0 or
-                cm.accessors.items.len > 0 or cm.private_fields.items.len > 0 or
-                cm.static_private_fields.items.len > 0 or cm.private_methods.items.len > 0 or
-                (has_super and super_span != null);
-
-            const source_class_scope = self.outputOwnedScope(source_idx) orelse if (self.semantic_edit_enabled)
-                std.debug.panic("ES5 class expression has no source scope owner", .{})
-            else
-                self.current_scope;
-            const iife_parent = if (self.semantic_edit_enabled) self.outputScopeParent(source_class_scope) else self.current_scope;
-            const iife_scope = if (has_extra)
-                try self.reserveGeneratedFunctionScope(iife_parent)
-            else
-                @as(@import("../semantic/scope.zig").ScopeId, .none);
-            if (has_extra) try self.reparentGeneratedScope(source_class_scope, iife_scope);
 
             // IIFE 경로는 source class self ID를 가진 새 함수 바인딩을 만든다.
             // IIFE 없는 경로에서는 원본 name_node를 함수 식 이름으로 사용한다.
@@ -448,33 +465,53 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (has_extra and (name_idx.isNone() or !(try self.bindClassSelfStorage(source_idx, func_name, iife_scope))))
                 try self.propagateSymbolId(name_node, func_name);
 
-            var func_node = if (cm.constructor_idx) |ctor_idx|
-                try buildFunctionFromConstructor(self, ctor_idx, func_name, cm.instance_fields.items, has_super and super_span != null, span)
-            else if (has_super and super_span != null)
-                try buildDefaultSuperConstructor(self, func_name, super_span.?, cm.instance_fields.items, span)
+            const ctor_scope = if (!self.semantic_edit_enabled)
+                self.current_scope
+            else if (cm.constructor_idx) |ctor_idx|
+                self.outputOwnedScope(ctor_idx) orelse std.debug.panic("ES5 constructor has no source scope owner", .{})
             else
-                try buildEmptyFunction(self, func_name, span);
-
-            // 순서: __classCallCheck → var _this = this → fields → body (역순 prepend)
-            if (cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
-                func_node = try prependToFunctionBody(self, func_node, cm.instance_fields.items);
-            }
-            if (cm.fields_need_this_alias and cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
-                const this_decl = try self.buildVarDecl("_this", try self.ast.addNode(.{
-                    .tag = .this_expression,
-                    .span = span,
-                    .data = .{ .none = 0 },
-                }), span);
-                func_node = try prependToFunctionBody(self, func_node, &.{this_decl});
-            }
+                try self.reserveGeneratedFunctionScope(source_class_scope);
+            var func_node: NodeIndex = .none;
             {
-                const check_id = try es_helpers.makeRuntimeHelperRef(self, "__classCallCheck");
-                const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .none = 0 } });
-                const class_ref = try self.makeIdentifierRefWithSymbol(name_span, func_name);
-                const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
-                func_node = try prependToFunctionBody(self, func_node, &.{try es_helpers.makeExprStmt(self, call, span)});
-                self.runtime_helpers.class_call_check = true;
+                const saved_scope = self.current_scope;
+                self.current_scope = ctor_scope;
+                defer self.current_scope = saved_scope;
+                const field_env = es_helpers.pushArrowEnv(self);
+                defer es_helpers.popArrowEnv(self, field_env);
+                try moveInstanceInitScopes(self, &cm, source_class_scope, ctor_scope);
+                try emitInstanceInits(self, &cm, span);
+
+                func_node = if (cm.constructor_idx) |ctor_idx|
+                    try buildFunctionFromConstructor(self, ctor_idx, func_name, cm.instance_fields.items, has_super and super_span != null, cm.fields_need_this_alias, span)
+                else if (has_super and super_span != null)
+                    try buildDefaultSuperConstructor(self, func_name, super_span.?, cm.instance_fields.items, span)
+                else
+                    try buildEmptyFunction(self, func_name, span);
+
+                // 순서: __classCallCheck → var _this = this → fields → body (역순 prepend)
+                if (cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
+                    func_node = try prependToFunctionBody(self, func_node, cm.instance_fields.items);
+                }
+                if (cm.constructor_idx == null and cm.fields_need_this_alias and cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
+                    const this_decl = try self.buildVarDecl("_this", try self.ast.addNode(.{
+                        .tag = .this_expression,
+                        .span = span,
+                        .data = .{ .none = 0 },
+                    }), span);
+                    try self.bindLexicalCapture(this_decl, .this_value);
+                    func_node = try prependToFunctionBody(self, func_node, &.{this_decl});
+                }
+                {
+                    const check_id = try es_helpers.makeRuntimeHelperRef(self, "__classCallCheck");
+                    const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .none = 0 } });
+                    const class_ref = try self.makeIdentifierRefWithSymbol(name_span, func_name);
+                    const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
+                    func_node = try prependToFunctionBody(self, func_node, &.{try es_helpers.makeExprStmt(self, call, span)});
+                    self.runtime_helpers.class_call_check = true;
+                }
             }
+
+            if (cm.constructor_idx == null) try self.bindReservedFunctionOwner(ctor_scope, func_node);
 
             if (!has_extra) {
                 const func = self.ast.getNode(func_node);
@@ -483,7 +520,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     .span = func.span,
                     .data = func.data,
                 });
-                if (cm.constructor_idx) |source_ctor| try self.remapCopiedScopeOwner(source_ctor, func_expr);
+                if (cm.constructor_idx) |source_ctor| {
+                    try self.remapCopiedScopeOwner(source_ctor, func_expr);
+                } else {
+                    try self.remapCopiedScopeOwner(func_node, func_expr);
+                }
                 return func_expr;
             }
 
@@ -616,6 +657,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
         const setupPrivateFieldMappings = members_mod.setupPrivateFieldMappings;
         const visitDeferredStaticBlocks = members_mod.visitDeferredStaticBlocks;
         const emitInstanceInits = members_mod.emitInstanceInits;
+        const moveInstanceInitScopes = members_mod.moveInstanceInitScopes;
         const buildStaticFieldDefinePropertyWithCtx = members_mod.buildStaticFieldDefinePropertyWithCtx;
 
         // Constructor/default-constructor helpers are delegated to es2015_class/constructors.zig.

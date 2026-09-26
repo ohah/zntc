@@ -41,7 +41,7 @@ pub fn Constructors(comptime Transformer: type) type {
         }
 
         /// constructor method_definition에서 function_declaration 생성.
-        pub fn buildFunctionFromConstructor(self: *Transformer, ctor_idx: NodeIndex, name: NodeIndex, instance_fields: []const NodeIndex, is_derived: bool, span: Span) Transformer.Error!NodeIndex {
+        pub fn buildFunctionFromConstructor(self: *Transformer, ctor_idx: NodeIndex, name: NodeIndex, instance_fields: []const NodeIndex, is_derived: bool, field_needs_this: bool, span: Span) Transformer.Error!NodeIndex {
             const saved_extracted_body = self.in_extracted_fn_body;
             self.in_extracted_fn_body = false;
             defer self.in_extracted_fn_body = saved_extracted_body;
@@ -59,8 +59,9 @@ pub fn Constructors(comptime Transformer: type) type {
             const params_list_old = self.ast.functionParamsList(ctor);
             const body_idx: NodeIndex = self.readNodeIdx(me, MethodExtra.body);
 
-            const arrow_env = es_helpers.pushArrowEnv(self);
-            defer es_helpers.popArrowEnv(self, arrow_env);
+            // The caller already opened the constructor's capture frame before
+            // visiting deferred field initializers. Reuse it for parameters and
+            // body so all `_this` references share one exact binding.
 
             // derived constructor 안의 this는 super() 전 접근을 런타임에서 검사해야 한다.
             const saved_super_alias = self.super_call_this_alias;
@@ -88,7 +89,7 @@ pub fn Constructors(comptime Transformer: type) type {
             }
             defer self.new_target_ctx = saved_new_target_ctx;
 
-            var new_body = try visitMethodBodyWithCtxImpl(self, body_idx, span, null, is_derived, param_needs_this, param_needs_arguments);
+            var new_body = try visitMethodBodyWithCtxImpl(self, body_idx, span, null, is_derived, param_needs_this or field_needs_this, param_needs_arguments);
 
             const lowered_params = if (param_lowering) |lr| lr.new_params else pp.new_params;
             const param_stmts = if (param_lowering) |lr| lr.body_stmts.items else &[_]NodeIndex{};
