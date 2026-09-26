@@ -156,6 +156,42 @@ pub const SemanticEditor = struct {
         return false;
     }
 
+    /// Move an existing binding to its emitted storage scope. The SymbolId and
+    /// its references remain unchanged; the caller must also move any source
+    /// scopes whose live references now execute beneath the new storage scope.
+    pub fn relocateSymbol(self: *SemanticEditor, id: SymbolId, target: ScopeId) Error!void {
+        if (!self.validSymbol(id)) return error.InvalidSymbol;
+        if (!self.validScope(target)) return error.InvalidScope;
+        const symbol = &self.symbols.items[@intFromEnum(id)];
+        const source = symbol.scope_id;
+        if (!self.validScope(source)) return error.InvalidScope;
+        if (source == target) return;
+        const name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else self.ast.getText(symbol.name);
+        const source_map = &self.scope_maps.items[source.toIndex()];
+        if (source_map.get(name) != @as(?usize, @intFromEnum(id))) return error.InvalidSymbol;
+        if (self.scope_maps.items[target.toIndex()].contains(name)) return error.DuplicateBinding;
+        if (self.scopes.items[target.toIndex()].symbol_count == std.math.maxInt(u16) or
+            self.scopes.items[source.toIndex()].symbol_count == 0) return error.InvalidScope;
+        try self.scope_maps.items[target.toIndex()].put(self.allocator, name, @intFromEnum(id));
+        _ = source_map.remove(name);
+        self.scopes.items[source.toIndex()].symbol_count -= 1;
+        self.scopes.items[target.toIndex()].symbol_count += 1;
+        symbol.scope_id = target;
+        symbol.origin_scope = target;
+        self.scope_reparented = true;
+    }
+
+    pub fn attachExistingBinding(self: *SemanticEditor, node: NodeIndex, id: SymbolId) Error!void {
+        if (!self.validSymbol(id)) return error.InvalidSymbol;
+        const slot = try self.ensureNodeSlot(node);
+        if (self.ast.getNode(node).tag != .binding_identifier) return error.InvalidNode;
+        if (self.symbol_ids.items[slot]) |existing| {
+            if (existing == @intFromEnum(id)) return;
+            return error.AlreadyBound;
+        }
+        self.symbol_ids.items[slot] = @intFromEnum(id);
+    }
+
     fn requireIdentifier(self: *const SemanticEditor, idx: NodeIndex) Error!void {
         if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return error.InvalidNode;
         switch (self.ast.getNode(idx).tag) {
@@ -595,6 +631,38 @@ test "synthetic declaration, explicit references, move and removal keep stable I
     try std.testing.expectEqual(@as(?u32, @intFromEnum(block)), result.scope_owner_map.get(@intFromEnum(block_owner)));
     try std.testing.expectEqual(@as(usize, 1), result.symbols.items.len);
     try std.testing.expectEqual(@as(usize, 1), result.references.len);
+}
+
+test "class self storage relocation preserves identity and rejects occupied target atomically" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+    defer editor.deinit();
+    const root = try editor.addScope(.none, .none, .module, true);
+    const source = try editor.addScope(root, .none, .class_body, true);
+    const occupied = try editor.addScope(root, .none, .function, true);
+    const destination = try editor.addScope(root, .none, .function, true);
+    const name = try ast.addString("C");
+    const source_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const duplicate_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const generated_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const id = try editor.declare(source_binding, name, Span.EMPTY, source, .class_decl, 0, 0);
+    _ = try editor.declare(duplicate_binding, name, Span.EMPTY, occupied, .function_decl, 0, 0);
+    try std.testing.expectError(error.DuplicateBinding, editor.relocateSymbol(id, occupied));
+    try std.testing.expectEqual(source, editor.symbols.items[@intFromEnum(id)].scope_id);
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(id)), editor.scope_maps.items[source.toIndex()].get("C"));
+    try editor.reparentScope(source, destination);
+    try editor.relocateSymbol(id, destination);
+    try editor.attachExistingBinding(generated_binding, id);
+    try editor.attachExistingBinding(generated_binding, id);
+    try std.testing.expectEqual(destination, editor.symbols.items[@intFromEnum(id)].scope_id);
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(id)), editor.scope_maps.items[destination.toIndex()].get("C"));
+    try std.testing.expectEqual(@as(?usize, null), editor.scope_maps.items[source.toIndex()].get("C"));
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(id)), editor.symbol_ids.items[@intFromEnum(generated_binding)]);
+    _ = try editor.finish();
 }
 
 test "same provisional name in separate scopes never shares a symbol" {

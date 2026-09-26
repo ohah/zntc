@@ -177,6 +177,8 @@ fn e2eEnumWithRename(backing_allocator: std.mem.Allocator, source: []const u8, r
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.references = analyzer.references.items;
     const root = try transformer.transform();
 

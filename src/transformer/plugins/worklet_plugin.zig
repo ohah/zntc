@@ -831,6 +831,7 @@ fn buildClassFactoryBody(t: *Transformer, class_name_span: Span, stripped_body: 
         none,                        0,    0,
         0,                           0,
     });
+    try t.generated_class_without_source_anchor.put(t.allocator, @intFromEnum(class_expr), {});
     // var <Class> = class_expr;
     const declarator = try t.addExtraNode(.variable_declarator, zero_span, &.{
         @intFromEnum(class_binding), none, @intFromEnum(class_expr),

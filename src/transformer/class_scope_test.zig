@@ -30,10 +30,23 @@ test "#4819 ES5 class IIFE scopes enclose source class bodies" {
         try sources.append(allocator, .{ .scope = scope, .parent = analyzer.scopes.items[scope].parent });
     }
     try std.testing.expectEqual(@as(usize, 3), sources.items.len);
+    var declared_inner: ?u32 = null;
+    var declared_outer: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .class_declaration) continue;
+        const name_raw = parser.ast.extra_data.items[node.data.extra + @import("../parser/ast.zig").ClassExtra.name];
+        declared_inner = analyzer.class_self_symbol_map.get(@intCast(raw));
+        declared_outer = analyzer.symbol_ids.items[name_raw];
+        break;
+    }
+    const inner_id = declared_inner orelse return error.TestUnexpectedResult;
+    const outer_id = declared_outer orelse return error.TestUnexpectedResult;
+    try std.testing.expect(inner_id != outer_id);
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
@@ -59,6 +72,62 @@ test "#4819 ES5 class IIFE scopes enclose source class bodies" {
         }
         try std.testing.expectEqual(@as(usize, 1), owners);
     }
+    const inner_scope = edited.symbols.items[inner_id].scope_id;
+    try std.testing.expectEqual(edited.scopes[sources.items[0].scope].parent, inner_scope);
+    try std.testing.expectEqual(@as(?usize, @intCast(inner_id)), edited.scope_maps[inner_scope.toIndex()].get("Declared"));
+    try std.testing.expectEqual(@as(?usize, @intCast(outer_id)), edited.scope_maps[edited.symbols.items[outer_id].scope_id.toIndex()].get("Declared"));
+    var inner_binding_live = false;
+    var outer_binding_live = false;
+    for (reachable) |raw| {
+        if (transformer.ast.nodes.items[raw].tag != .binding_identifier or raw >= edited.symbol_ids.len) continue;
+        if (edited.symbol_ids[raw] == inner_id) inner_binding_live = true;
+        if (edited.symbol_ids[raw] == outer_id) outer_binding_live = true;
+    }
+    try std.testing.expect(inner_binding_live and outer_binding_live);
+}
+
+test "#4819 ES5 named class expression stores exact inner self in wrapper" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const Value = class Named extends Object { static self() { return Named; } };");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    var source_scope: ?u32 = null;
+    var inner_id: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .class_expression) continue;
+        const candidate = analyzer.class_self_symbol_map.get(@intCast(raw)) orelse continue;
+        source_scope = analyzer.scope_owner_map.get(@intCast(raw));
+        inner_id = candidate;
+        break;
+    }
+    const class_scope = source_scope orelse return error.TestUnexpectedResult;
+    const inner = inner_id orelse return error.TestUnexpectedResult;
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const wrapper = edited.scopes[class_scope].parent;
+    try std.testing.expectEqual(wrapper, edited.symbols.items[inner].scope_id);
+    try std.testing.expectEqual(@as(?usize, @intCast(inner)), edited.scope_maps[wrapper.toIndex()].get("Named"));
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var live_binding = false;
+    for (reachable) |raw| {
+        if (transformer.ast.nodes.items[raw].tag != .binding_identifier or raw >= edited.symbol_ids.len) continue;
+        if (edited.symbol_ids[raw] == inner) live_binding = true;
+    }
+    try std.testing.expect(live_binding);
 }
 
 test "#4819 using class copies preserve exact source scope owners" {
@@ -86,6 +155,7 @@ test "#4819 using class copies preserve exact source scope owners" {
     var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
@@ -133,6 +203,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
@@ -183,6 +254,7 @@ test "#4819 ES5 class methods retain original scope on emitted functions and bin
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
@@ -254,6 +326,7 @@ test "#4819 decorated explicit constructor binds generated nullish temp in origi
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;

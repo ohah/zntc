@@ -330,6 +330,8 @@ pub fn parseAndTransformWithOptions(allocator: std.mem.Allocator, source: []cons
     if (analyzer_storage) |*a| {
         try t.initSymbolIds(a.symbol_ids.items);
         t.symbols = a.symbols.items;
+        t.class_self_symbol_map = a.class_self_symbol_map;
+        t.scope_owner_map = a.scope_owner_map;
         t.references = a.references.items;
         t.scopes = a.scopes.items;
         t.scope_maps = a.scope_maps.items;

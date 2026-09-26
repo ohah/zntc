@@ -145,6 +145,8 @@ pub const Transformer = struct {
     /// Intermediate copies of a parsed or generated owner retain their origin.
     /// Final reachability chooses one live copy for each scope.
     scope_owner_origins: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// Producer-marked classes with no source class self anchor.
+    generated_class_without_source_anchor: std.AutoHashMapUnmanaged(u32, void) = .empty,
     /// Pass 2에서 복사된 함수 노드의 원래 스코프를 찾는다.
     transformed_scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     current_scope: ScopeId = .none,
@@ -549,6 +551,7 @@ pub const Transformer = struct {
     pub const visitTernaryNode = node_helpers.visitTernaryNode;
     pub const getSymbolIdAt = node_helpers.getSymbolIdAt;
     pub const declareSyntheticVar = @import("transformer/semantic_edit.zig").declareSyntheticVar;
+    pub const bindClassSelfStorage = @import("transformer/semantic_edit.zig").bindClassSelfStorage;
     pub const programScope = @import("transformer/semantic_edit.zig").programScope;
     pub const addGeneratedFunctionScope = @import("transformer/semantic_edit.zig").addGeneratedFunctionScope;
     pub const reserveGeneratedFunctionScope = @import("transformer/semantic_edit.zig").reserveGeneratedFunctionScope;
