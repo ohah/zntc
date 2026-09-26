@@ -277,10 +277,26 @@ test "private static method: class declaration call lowers (es2021)" {
         \\}
     , .es2021);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _m={value:_m_fn,writable:false}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _m={kind:0,value:_m_fn,writable:false}") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function _m_fn()") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__classStaticPrivateFieldSpecGet(_a,Foo,_m).call(_a)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, ".#m(") == null);
+}
+
+test "private static descriptors own their data or accessor shape (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  static #field = 1;
+        \\  static #method() { return 2; }
+        \\  static get #readOnly() { return 3; }
+        \\  static set #writeOnly(value) {}
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _field={kind:0,writable:true,value:1}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _method={kind:0,value:_method_fn,writable:false}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _readOnly={kind:1,get:_readOnly_get,set:void 0}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _writeOnly={kind:1,get:void 0,set:_writeOnly_set}") != null);
 }
 
 test "private static method: detached read preserves function identity (es2021)" {
@@ -1083,7 +1099,7 @@ test "#1278-2: static #field → descriptor + StaticPrivateFieldSpecGet/Set" {
     , .es2021);
     defer r.deinit();
     // descriptor 객체 선언 (class 밖)
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _map={writable:true,value:new Map()}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _map={kind:0,writable:true,value:new Map()}") != null);
     // static private field property_definition은 body에서 제거
     try std.testing.expect(std.mem.indexOf(u8, r.output, "static #map") == null);
     // helper 경유 접근 (class name은 'Foo')
@@ -1102,7 +1118,7 @@ test "#1278-2: static #field + instance #field 혼합 (brand check + WeakMap 공
     , .es2021);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var _inst=new WeakMap") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _stc={writable:true,value:2}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _stc={kind:0,writable:true,value:2}") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_inst.get(this)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__classStaticPrivateFieldSpecGet(Mixed,Mixed,_stc)") != null);
 }
@@ -1339,7 +1355,7 @@ test "#3680-F1: static private field init 안의 super → static form lowering 
     , .es2021);
     defer r.deinit();
     // descriptor 형태 — value 위치
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _x={writable:true,value:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _x={kind:0,writable:true,value:") != null);
     // raw super 가 남지 않음
     try std.testing.expect(std.mem.indexOf(u8, r.output, "value:super.factor") == null);
     // static super 는 Base.factor (instance form Base.prototype.factor 가 아님)
@@ -1463,7 +1479,7 @@ test "#3680-V1: static private field init 의 super.method() receiver 가 class 
     , .es2021);
     defer r.deinit();
     // descriptor 가 emit 됨
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _x={writable:true,value:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _x={kind:0,writable:true,value:") != null);
     // receiver 가 raw this 가 아니라 class 식별자 D
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Base.factor.call(this)") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Base.factor.call(D)") != null);
@@ -1663,7 +1679,7 @@ test "#3680-VEXPR: named class_expression static private init super TDZ 회피 (
     defer r.deinit();
     // class D 의 위치가 var _x descriptor 보다 앞에 emit 돼야 TDZ 회피.
     const class_idx = std.mem.indexOf(u8, r.output, "class D") orelse unreachable;
-    const desc_idx = std.mem.indexOf(u8, r.output, "var _x={writable:true,value:") orelse unreachable;
+    const desc_idx = std.mem.indexOf(u8, r.output, "var _x={kind:0,writable:true,value:") orelse unreachable;
     try std.testing.expect(class_idx < desc_idx);
 }
 
@@ -1678,7 +1694,7 @@ test "#3680-VASSIGN: assign-semantics static private init super TDZ 회피 (es20
     , .{ .unsupported = helpers.compat.fromESTarget(.es2021), .experimental_decorators = true }, .{ .minify_whitespace = true, .assert_no_raw_private_syntax = true }, ".ts");
     defer r.deinit();
     const class_idx = std.mem.indexOf(u8, r.output, "class D") orelse 0;
-    const desc_idx = std.mem.indexOf(u8, r.output, "var _x={writable:true,value:") orelse 0;
+    const desc_idx = std.mem.indexOf(u8, r.output, "var _x={kind:0,writable:true,value:") orelse 0;
     try std.testing.expect(class_idx != 0 and desc_idx != 0);
     try std.testing.expect(class_idx < desc_idx);
 }
