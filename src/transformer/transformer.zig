@@ -491,6 +491,11 @@ pub const Transformer = struct {
         defer self.current_scope = saved_scope;
         const new_idx = try self.visitNodeInner(idx);
         if (owner_scope != null) try self.remapCopiedScopeOwner(idx, new_idx);
+        // A later visit may copy a generated capture declaration while
+        // building an outer async/generator state machine. Pass 2 must see
+        // the same parameter-capture role on the final statement identity.
+        if (!new_idx.isNone() and self.parameter_capture_statements.contains(@intFromEnum(idx)))
+            try self.parameter_capture_statements.put(self.allocator, @intFromEnum(new_idx), {});
         // symbol_id 전파: 원본 node_idx → 새 node_idx
         try self.propagateSymbolId(idx, new_idx);
         return new_idx;

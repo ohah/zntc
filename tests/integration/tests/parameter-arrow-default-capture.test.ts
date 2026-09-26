@@ -5,6 +5,13 @@ import { createFixture, runZntcInDir } from './helpers';
 
 const cases = [
   {
+    name: 'ordinary function nested in async state machine',
+    source: `(async function () {
+      function run(value = (() => this.base + arguments.length)()) { return value; }
+      console.log(run.call({ base: 3 }));
+    })();`,
+  },
+  {
     name: 'parameter arguments with body this capture',
     source: `
       const host = { base: 9 };
