@@ -133,16 +133,20 @@ fn generatedTempRefScope(self: *Transformer, source_scope: ScopeId, target_scope
         std.debug.panic("generated temp reference has unrelated source scope", .{});
 
     // The state machine can flatten a source block away. A live copied block or
-    // nested function keeps its lexical scope; only its first live frontier
-    // moves below the generated function. A fully erased frontier makes the
-    // reference directly callback-local.
+    // nested function keeps its entire source ancestor chain. A removed loop
+    // owner can still carry a header binding used by a live descendant, so
+    // moving only the live descendant would disconnect that binding. Move
+    // the first child of the source function when any scope in that chain is
+    // live; a fully erased chain makes the reference callback-local.
     var cursor = old_scope;
     var frontier: ScopeId = .none;
+    var has_live_scope = false;
     while (cursor != source_scope) {
-        if (live_scopes.contains(@intFromEnum(cursor))) frontier = cursor;
+        has_live_scope = has_live_scope or live_scopes.contains(@intFromEnum(cursor));
+        frontier = cursor;
         cursor = editor.scopes.items[cursor.toIndex()].parent;
     }
-    if (frontier.isNone()) return target_scope;
+    if (!has_live_scope) return target_scope;
     editor.reparentScope(frontier, target_scope) catch |err| return editError(err);
     return old_scope;
 }

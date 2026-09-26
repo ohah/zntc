@@ -117,3 +117,62 @@ test "#4819 nested state callbacks keep distinct private temps beside user colli
     const source = "class Box { static #method() { return 1; } static receiver() { return this; } static async outer() { const _a = 5; const before = this.receiver().#method(); async function inner() { return Box.receiver().#method(); } await 0; return _a + before + await inner(); } }";
     try checkGeneratedTemps(source, .es5, 2, true);
 }
+
+test "#4819 for-await extracted loop temps preserve live scopes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\const fns = [], out = [];
+        \\(async () => {
+        \\  for await (const value of [{ n: 1 }, null]) {
+        \\    fns.push(() => value);
+        \\    for (const item of [value]) out.push(item?.n ?? 'x');
+        \\    for (const key in value ?? {}) out.push(key);
+        \\  }
+        \\})();
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    var header_scope: ?@import("../semantic/scope.zig").ScopeId = null;
+    for (analyzer.symbols.items) |symbol| {
+        if (std.mem.eql(u8, parser.ast.getText(symbol.name), "value")) header_scope = symbol.scope_id;
+    }
+    const original_header_scope = header_scope orelse return error.TestUnexpectedResult;
+    const source_function = analyzer.scopes.items[original_header_scope.toIndex()].parent;
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es2015),
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const wrapper = edited.scopes[original_header_scope.toIndex()].parent;
+    try std.testing.expect(wrapper != source_function);
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[wrapper.toIndex()].kind);
+    try std.testing.expectEqual(source_function, edited.scopes[wrapper.toIndex()].parent);
+    var live_owners: usize = 0;
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var owners = edited.scope_owner_map.iterator();
+    while (owners.next()) |owner| {
+        if (owner.value_ptr.* != @intFromEnum(wrapper)) continue;
+        try std.testing.expect(std.mem.indexOfScalar(u32, reachable, owner.key_ptr.*) != null);
+        const function = transformer.ast.nodes.items[owner.key_ptr.*];
+        try std.testing.expectEqual(ast_mod.Node.Tag.function_expression, function.tag);
+        try std.testing.expect(transformer.readU32(function.data.extra, ast_mod.FunctionExtra.flags) & ast_mod.FunctionFlags.is_generator != 0);
+        live_owners += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), live_owners);
+}
