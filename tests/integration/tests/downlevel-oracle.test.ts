@@ -50,15 +50,6 @@ const KNOWN_FAILURES: Record<string, string[]> = {
     'transpile/es2017/plain',
     'transpile/es2017/minify',
   ],
-  // #4733 Hermes 에서 객체 리터럴 async generator 메서드
-  '4729-super-24': ['hermes/plain', 'hermes/minify'],
-  // #4733 Hermes 번들의 async generator 메서드. #4819 이전 main에서도 두 칸 실패 확인.
-  '4819-generator-state-computed': ['hermes/plain', 'hermes/minify'],
-  // #4733 Hermes async generator consumer. Both cells fail on the pre-private-producer baseline.
-  '4819-private-async-generator': ['hermes/plain', 'hermes/minify'],
-  // #4733 Hermes async generator consumer; the pre-fix static-private fixture also fails here.
-  '4819-static-private-async-generator': ['hermes/plain', 'hermes/minify'],
-  '4819-static-private-async-generator-super': ['hermes/plain', 'hermes/minify'],
   // #4735 클래스 계산된 키 안 super 가 바깥 home 대신 클래스 자신의 super 문맥으로 낮춰진다
   '4729-super-41': [
     'es5/plain',
@@ -94,28 +85,6 @@ const KNOWN_FAILURES: Record<string, string[]> = {
   // #4740 esnext 번들에서 의존 모듈 최상위 using 의 dispose 가 번들 끝으로 밀린다
   // #4749 __esm 래퍼(RN)가 블록 안 최상위 var 를 끌어올리지 않는다
   '4730-using-module': ['esnext/plain', 'esnext/minify', 'hermes/plain', 'hermes/minify'],
-  // #4733 Hermes 에서 async generator 를 for-await 로 돌 때
-  'forof-asyncgen-close-break': ['hermes/plain', 'hermes/minify'],
-  'forof-in-forawait-yield-capture': ['hermes/plain', 'hermes/minify'],
-  'forof-in-forawait-yield-capture-inner': ['hermes/plain', 'hermes/minify'],
-  'forin-in-forawait-yield-capture': ['hermes/plain', 'hermes/minify'],
-  'forawait-asyncgen-src': ['hermes/plain', 'hermes/minify'],
-  'forawait-break-closes': ['hermes/plain', 'hermes/minify'],
-  'forawait-return-closes': ['hermes/plain', 'hermes/minify'],
-  'forawait-source-throws': ['hermes/plain', 'hermes/minify'],
-  'forawait-throw-in-body': ['hermes/plain', 'hermes/minify'],
-  'forawait-in-asyncgen': ['hermes/plain', 'hermes/minify'],
-  'forawait-in-asyncgen-capture': ['hermes/plain', 'hermes/minify'],
-  'forawait-asyncgen-labeled': ['hermes/plain', 'hermes/minify'],
-  'forawait-close-awaited-order': ['hermes/plain', 'hermes/minify'],
-  'forawait-asyncgen-nested-yieldstar': ['hermes/plain', 'hermes/minify'],
-  'forawait-asyncgen-method-and-arrow': ['hermes/plain', 'hermes/minify'],
-  'forawait-asyncgen-consumer-return': ['hermes/plain', 'hermes/minify'],
-  'forawait-asyncgen-await-in-body-and-finally': ['hermes/plain', 'hermes/minify'],
-  // #4756 ES5 기본값 중복 삽입은 #4819의 함수 경계 보존으로 해결. Hermes #4733만 남는다.
-  'asyncgen-default-param': ['hermes/plain', 'hermes/minify'],
-  // #4733 Hermes 에서 async generator 를 for-await 로 돌 때
-  '4730-using-30': ['hermes/plain', 'hermes/minify'],
   // #4766 `_loop` 의 return 스캔이 메서드 경계를 무시해 모듈 최상위에 `return _ret.v` 를 낸다
   // (번들은 IIFE 로 감싸 가려진다)
   '4729-super-16': ['transpile/es5/plain', 'transpile/es5/minify'],
