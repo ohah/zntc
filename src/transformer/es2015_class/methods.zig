@@ -17,6 +17,7 @@ pub fn Methods(comptime Transformer: type) type {
 
         pub const MethodInfo = struct {
             member_idx: NodeIndex,
+            source_member_idx: NodeIndex = .none,
             is_static: bool,
             // prototype assignment statement 의 span 으로 사용 — leading comment 가
             // `X.prototype.foo` 토큰 사이가 아니라 statement 앞에서 flush 되도록 (#1508).
@@ -25,6 +26,7 @@ pub fn Methods(comptime Transformer: type) type {
 
         pub const AccessorInfo = struct {
             member_idx: NodeIndex,
+            source_member_idx: NodeIndex = .none,
             is_static: bool,
             is_getter: bool,
             // `Object.defineProperty(...)` statement 및 get/set prop 의 span 으로 사용 —
@@ -34,7 +36,12 @@ pub fn Methods(comptime Transformer: type) type {
 
         /// accessor method_definition에서 function expression 생성.
         /// ES2015 params lowering 포함 (setter destructuring/default 등).
-        fn buildAccessorFunc(self: *Transformer, member_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        fn buildAccessorFunc(self: *Transformer, member_idx: NodeIndex, source_member_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const saved_scope = self.current_scope;
+            if (self.semantic_edit_enabled) {
+                if (self.scope_owner_map.get(@intFromEnum(source_member_idx))) |scope| self.current_scope = @enumFromInt(scope);
+            }
+            defer self.current_scope = saved_scope;
             const member = self.ast.getNode(member_idx);
             const me = member.data.extra;
             const params_list_old = self.ast.functionParamsList(member);
@@ -54,11 +61,13 @@ pub fn Methods(comptime Transformer: type) type {
                 @intFromEnum(new_body), 0,
                 none,
             });
-            return self.ast.addNode(.{
+            const func_expr = try self.ast.addNode(.{
                 .tag = .function_expression,
                 .span = span,
                 .data = .{ .extra = func_extra },
             });
+            try self.remapCopiedScopeOwner(source_member_idx, func_expr);
+            return func_expr;
         }
 
         /// 두 key 노드의 소스 텍스트가 같은지 확인.
@@ -82,6 +91,11 @@ pub fn Methods(comptime Transformer: type) type {
         /// method → ClassName.prototype.method = function() {} (expression_statement)
         /// static method → ClassName.method = function() {}
         pub fn buildPrototypeAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
+            const saved_scope = self.current_scope;
+            if (self.semantic_edit_enabled) {
+                if (self.scope_owner_map.get(@intFromEnum(info.source_member_idx))) |scope| self.current_scope = @enumFromInt(scope);
+            }
+            defer self.current_scope = saved_scope;
             const saved_static = self.current_super_is_static;
             const saved_receiver = self.current_super_static_receiver;
             self.current_super_is_static = info.is_static;
@@ -162,6 +176,8 @@ pub fn Methods(comptime Transformer: type) type {
                             new_params,
                             span,
                         );
+                        try self.remapCopiedScopeOwner(info.source_member_idx, func_expr);
+                        self.current_scope = saved_scope;
                         return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
                     }
                 }
@@ -169,6 +185,8 @@ pub fn Methods(comptime Transformer: type) type {
                 const gen_wrapper = try es_helpers.buildGeneratorWrapper(self, try visitMethodBodyWithCtx(self, body_idx, span, method_nt), span);
                 const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper, span);
                 const func_expr = try buildWrappedFunc(self, async_call, .none, new_params, span);
+                try self.remapCopiedScopeOwner(info.source_member_idx, func_expr);
+                self.current_scope = saved_scope;
                 return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
             }
 
@@ -197,6 +215,8 @@ pub fn Methods(comptime Transformer: type) type {
                 .data = .{ .extra = func_extra },
             });
 
+            try self.remapCopiedScopeOwner(info.source_member_idx, func_expr);
+            self.current_scope = saved_scope;
             return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
         }
 
@@ -323,7 +343,7 @@ pub fn Methods(comptime Transformer: type) type {
                 // mutation 이전 읽기 — 캐시 불필요, readNodeIdx 사용.
                 const key_idx = self.readNodeIdx(me, MethodExtra.key);
 
-                const func_expr = try buildAccessorFunc(self, info.member_idx, span);
+                const func_expr = try buildAccessorFunc(self, info.member_idx, info.source_member_idx, span);
                 const accessor_key = try es_helpers.makePropertyName(self, if (info.is_getter) "get" else "set");
                 const prop1 = try self.ast.addNode(.{
                     .tag = .object_property,
@@ -343,7 +363,7 @@ pub fn Methods(comptime Transformer: type) type {
                         keysMatch(self, key_idx, next_key))
                     {
                         used[j] = true;
-                        const pair_func = try buildAccessorFunc(self, next.member_idx, span);
+                        const pair_func = try buildAccessorFunc(self, next.member_idx, next.source_member_idx, span);
                         const pair_key = try es_helpers.makePropertyName(self, if (next.is_getter) "get" else "set");
                         paired_prop = try self.ast.addNode(.{
                             .tag = .object_property,

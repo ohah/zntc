@@ -638,7 +638,9 @@ fn hoistAllComputedKeys(self: *Transformer, tag: Node.Tag, body_idx: NodeIndex, 
         for (0..slot_count) |k| slots[k] = self.ast.extra_data.items[me + k];
         slots[0] = @intFromEnum(new_key);
         const new_extra = try self.ast.addExtras(slots[0..slot_count]);
-        try members.append(self.allocator, try self.ast.addNode(.{ .tag = member.tag, .span = member.span, .data = .{ .extra = new_extra } }));
+        const copied = try self.ast.addNode(.{ .tag = member.tag, .span = member.span, .data = .{ .extra = new_extra } });
+        if (member.tag == .method_definition) try self.remapCopiedScopeOwner(member_idx, copied);
+        try members.append(self.allocator, copied);
     }
     const list = try self.ast.addNodeList(members.items);
     return self.ast.addNode(.{ .tag = .class_body, .span = body.span, .data = .{ .list = list } });
@@ -652,11 +654,12 @@ fn hoistAllComputedKeys(self: *Transformer, tag: Node.Tag, body_idx: NodeIndex, 
 /// 클래스 식이면 결과를 `(_a = k1, …, <lowered>)` 쉼표 식으로 감싼다.
 pub fn lowerClassWithPrehoistedKeys(
     self: *Transformer,
+    source_idx: NodeIndex,
     node: Node,
-    comptime lower: fn (*Transformer, Node) Error!NodeIndex,
+    comptime lower: fn (*Transformer, NodeIndex, Node) Error!NodeIndex,
 ) Error!NodeIndex {
     const body_idx = self.readNodeIdx(node.data.extra, ast_mod.ClassExtra.body);
-    if (!classBodyHasFieldAndComputedKey(self, body_idx)) return lower(self, node);
+    if (!classBodyHasFieldAndComputedKey(self, body_idx)) return lower(self, source_idx, node);
 
     var key_assigns: std.ArrayListUnmanaged(NodeIndex) = .empty;
     defer key_assigns.deinit(self.allocator);
@@ -666,7 +669,7 @@ pub fn lowerClassWithPrehoistedKeys(
     for (0..8) |k| slots[k] = self.ast.extra_data.items[node.data.extra + k];
     slots[ast_mod.ClassExtra.body] = @intFromEnum(new_body);
     const new_extra = try self.ast.addExtras(&slots);
-    const result = try lower(self, .{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
+    const result = try lower(self, source_idx, .{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
 
     if (key_assigns.items.len == 0 or result.isNone()) return result;
     try key_assigns.append(self.allocator, result);

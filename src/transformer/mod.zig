@@ -62,6 +62,7 @@ test {
     _ = @import("symbol_coverage_test.zig");
     _ = @import("loop_semantic_test.zig");
     _ = @import("generator_state_semantic_test.zig");
+    _ = @import("class_scope_test.zig");
     _ = @import("block_rename_table_test.zig");
     _ = @import("minify_test.zig");
     _ = @import("worklet_test.zig");

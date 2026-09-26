@@ -112,7 +112,7 @@ pub fn remapCopiedScopeOwner(self: *Transformer, old: NodeIndex, new: NodeIndex)
     if (old_tag != new_tag and
         !(old_tag == .arrow_function_expression and new_tag == .function_expression) and
         !(old_tag == .for_of_statement and new_tag == .for_statement) and
-        !(old_tag == .method_definition and new_tag == .function_expression)) return;
+        !(old_tag == .method_definition and (new_tag == .function_declaration or new_tag == .function_expression))) return;
     const old_key = @intFromEnum(old);
     const new_key = @intFromEnum(new);
     const scope = self.transformed_scope_owner_map.get(old_key) orelse self.scope_owner_map.get(old_key) orelse return;
