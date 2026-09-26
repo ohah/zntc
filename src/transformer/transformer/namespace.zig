@@ -61,7 +61,23 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
     if (node.data.binary.flags == 1) return .none;
 
     const new_name = try self.visitNode(node.data.binary.left);
-    const new_body = try self.visitNode(node.data.binary.right);
+    const saved_namespace_scope = self.namespace_iife_scope;
+    const saved_temp_counter = self.temp_var_counter;
+    const saved_binding_len = self.namespace_temp_bindings.items.len;
+    self.namespace_iife_scope = self.current_scope;
+    defer self.namespace_iife_scope = saved_namespace_scope;
+    var new_body = try self.visitNode(node.data.binary.right);
+    if (!new_body.isNone()) {
+        for (self.namespace_temp_bindings.items[saved_binding_len..]) |entry| {
+            try self.bindHoistedTemp(entry.binding, entry.span, node.span, entry.scope);
+        }
+        self.namespace_temp_bindings.shrinkRetainingCapacity(saved_binding_len);
+        const body_tag = self.ast.getNode(new_body).tag;
+        if (body_tag == .block_statement) {
+            new_body = try self.hoistTempVarsInOriginalFunction(new_body, saved_temp_counter, node.span);
+            self.temp_var_counter = saved_temp_counter;
+        }
+    }
     if (new_body.isNone()) return .none;
 
     const body_node = self.ast.getNode(new_body);

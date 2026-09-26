@@ -2168,6 +2168,7 @@ pub fn emitModule(
         .semantic_symbol_ids = transformer.symbol_ids.items,
         .namespace_member_owners = if (module.semantic) |*sem| &sem.namespace_member_owners else null,
         .namespace_declaration_owners = if (module.semantic) |*sem| &sem.namespace_declaration_owners else null,
+        .destructuring_temp_bindings = if (module.transform_cache) |*cache| &cache.destructuring_temp_bindings else &transformer.destructuring_temp_bindings,
         // 번들 모드에서 ESM이 아니면 import.meta → {} 치환 (esbuild 호환)
         // Node.js는 import.meta를 보면 ESM으로 재파싱하려 해서 에러 발생
         .replace_import_meta = options.format != .esm,

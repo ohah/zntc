@@ -178,6 +178,8 @@ pub const TransformCache = struct {
     /// (sorted, ascending). resync 의 SemanticAnalyzer 가 binary search 로 helper-aware
     /// binding 분기에 사용. 비어있으면 helper-aware path 비활성 (기존 동작 유지).
     helper_ref_nodes: []const u32 = &.{},
+    /// Destructuring-produced local temp binding nodes (exact NodeIndex).
+    destructuring_temp_bindings: std.AutoHashMapUnmanaged(u32, void) = .empty,
     /// #3267 N-step4 follow-up: prepass minify 의 cascade ref decrement 결과
     /// (`MinifyCtx.ref_deltas` snapshot, length == sem.symbols.len). emitter 의 minify
     /// 가 fresh ctx 에 hydrate 하여 prepass 에서 fold 된 dead branch 안 ref 감산

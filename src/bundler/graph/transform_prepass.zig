@@ -219,6 +219,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         .runtime_helpers = transformer.runtime_helpers,
         .symbol_ids = owned_symbol_ids,
         .helper_ref_nodes = owned_helper_ref_nodes,
+        .destructuring_temp_bindings = transformer.destructuring_temp_bindings,
         .ref_deltas = prepass_ref_deltas,
     };
 

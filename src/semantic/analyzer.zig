@@ -2439,7 +2439,18 @@ pub const SemanticAnalyzer = struct {
     fn addNamespaceMemberBinding(self: *SemanticAnalyzer, owner_sid: u32, binding_idx: NodeIndex) AllocError!void {
         if (binding_idx.isNone() or @intFromEnum(binding_idx) >= self.ast.nodes.items.len) return;
         const binding = self.ast.getNode(binding_idx);
-        if (binding.tag != .binding_identifier) return;
+        switch (binding.tag) {
+            .array_pattern, .object_pattern => {
+                const split = self.ast.nodeListSplitRest(binding.data.list);
+                for (split.elements) |raw_idx| try self.addNamespaceMemberBinding(owner_sid, @enumFromInt(raw_idx));
+                if (split.rest_operand) |rest| try self.addNamespaceMemberBinding(owner_sid, rest);
+                return;
+            },
+            .binding_property => return self.addNamespaceMemberBinding(owner_sid, binding.data.binary.right),
+            .assignment_pattern => return self.addNamespaceMemberBinding(owner_sid, binding.data.binary.left),
+            .binding_identifier => {},
+            else => return,
+        }
         const name = try self.ast.getTextStable(self.allocator, binding.span);
         var group_idx: usize = 0;
         while (group_idx < self.namespace_member_groups.items.len and self.namespace_member_groups.items[group_idx].owner_symbol != owner_sid) : (group_idx += 1) {}

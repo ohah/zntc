@@ -32,6 +32,27 @@ const es2015_block_scoping = @import("es2015_block_scoping.zig");
 
 pub fn ES2015Destructuring(comptime Transformer: type) type {
     return struct {
+        fn makeDestructuringTempBinding(self: *Transformer, name_span: Span) Transformer.Error!NodeIndex {
+            const binding = try es_helpers.makeSyntheticBinding(self, name_span);
+            if (!self.namespace_iife_scope.isNone() and self.current_scope == self.namespace_iife_scope) {
+                try self.destructuring_temp_bindings.put(self.allocator, @intFromEnum(binding), {});
+                try self.namespace_temp_bindings.append(self.allocator, .{ .binding = binding, .span = name_span, .scope = self.current_scope });
+            }
+            return binding;
+        }
+
+        fn makeDestructuringTempRead(self: *Transformer, name_span: Span, node_span: Span) Transformer.Error!NodeIndex {
+            const ref = try es_helpers.makeTempVarRef(self, name_span, node_span);
+            if (!self.namespace_iife_scope.isNone()) try self.trackHoistedTempRef(name_span, ref, .{ .read = true });
+            return ref;
+        }
+
+        fn makeDestructuringTempWrite(self: *Transformer, name_span: Span, node_span: Span) Transformer.Error!NodeIndex {
+            const ref = try es_helpers.makeTempVarRef(self, name_span, node_span);
+            if (!self.namespace_iife_scope.isNone()) try self.trackHoistedTempRef(name_span, ref, .{ .write = true });
+            return ref;
+        }
+
         /// variable_declaration에 destructuring pattern이 있는지 확인.
         pub fn hasDestructuring(self: *const Transformer, node: Node) bool {
             const extras = self.ast.extra_data.items;
@@ -143,7 +164,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     else
                         new_init;
                     const temp_span = try es_helpers.makeTempVarSpan(self);
-                    const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
+                    const temp_binding = try makeDestructuringTempBinding(self, temp_span);
 
                     // var _ref = init
                     const ref_decl = try es_helpers.makeDeclarator(self, temp_binding, pattern_init, span);
@@ -194,7 +215,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
             // _ref = rhs — 배열 패턴은 `__read` 로 배열을 만든다. 이터러블(Set·제너레이터)에
             // 인덱스·slice 를 바로 쓰면 틀린다 (#4791, 선언 경로와 같은 규칙).
-            const init_lhs = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+            const init_lhs = try makeDestructuringTempWrite(self, temp_span, temp_span);
             const init_value = if (pattern.tag == .array_pattern) try buildArrayRead(self, rhs, pattern, span) else rhs;
             const init_assign = try es_helpers.makeAssignExpr(self, init_lhs, init_value, span, 0);
             try self.scratch.append(self.allocator, init_assign);
@@ -206,7 +227,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             }
 
             // 마지막에 _ref 노출 — destructuring assignment 의 평가 결과 (rhs) 와 일관
-            try self.scratch.append(self.allocator, try es_helpers.makeTempVarRef(self, temp_span, temp_span));
+            try self.scratch.append(self.allocator, try makeDestructuringTempRead(self, temp_span, temp_span));
 
             const seq_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
             return self.ast.addNode(.{
@@ -235,7 +256,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const value_idx = prop.data.binary.right;
                 if (key_idx.isNone()) continue;
 
-                const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
+                const ref = try makeDestructuringTempRead(self, ref_span, ref_span);
                 const key_node = self.ast.getNode(key_idx);
                 const member_access = if (split.rest_operand != null)
                     try emitObjectMemberAccessForRest(self, ref, key_node, key_idx, &exclude_keys, .assign, span)
@@ -303,7 +324,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         fn emitNestedPatternAssignment(self: *Transformer, target: Node, value: NodeIndex, span: Span) Transformer.Error!bool {
             if (target.tag != .object_pattern and target.tag != .array_pattern) return false;
             const inner_span = try es_helpers.makeTempVarSpan(self);
-            const inner_lhs = try es_helpers.makeTempVarRef(self, inner_span, inner_span);
+            const inner_lhs = try makeDestructuringTempWrite(self, inner_span, inner_span);
             const inner_value = if (target.tag == .array_pattern) try buildArrayRead(self, value, target, span) else value;
             try self.scratch.append(self.allocator, try es_helpers.makeAssignExpr(self, inner_lhs, inner_value, span, 0));
             if (target.tag == .object_pattern) {
@@ -395,7 +416,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
             // _ref = obj
-            const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+            const temp_ref = try makeDestructuringTempWrite(self, temp_span, temp_span);
             const init_assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
@@ -411,7 +432,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             }
 
             // 마지막에 _ref 반환
-            try self.scratch.append(self.allocator, try es_helpers.makeTempVarRef(self, temp_span, temp_span));
+            try self.scratch.append(self.allocator, try makeDestructuringTempRead(self, temp_span, temp_span));
 
             // sequence expression
             const seq_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
@@ -438,7 +459,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const key_idx = prop.data.binary.left;
                 if (key_idx.isNone()) continue;
 
-                const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
+                const ref = try makeDestructuringTempRead(self, ref_span, ref_span);
                 const key_node = self.ast.getNode(key_idx);
                 const access = try emitObjectMemberAccessForRest(self, ref, key_node, key_idx, &exclude_keys, .assign, span);
 
@@ -550,7 +571,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             if (target_node.tag == .object_assignment_target or target_node.tag == .array_assignment_target or target_node.tag == .object_pattern or target_node.tag == .array_pattern) {
                 // nested: _inner = value; 각 element 재귀 emit.
                 const inner_span = try es_helpers.makeTempVarSpan(self);
-                const inner_lhs = try es_helpers.makeTempVarRef(self, inner_span, inner_span);
+                const inner_lhs = try makeDestructuringTempWrite(self, inner_span, inner_span);
                 const inner_value = if (target_node.tag == .array_assignment_target or target_node.tag == .array_pattern)
                     try buildArrayRead(self, value, target_node, span)
                 else
@@ -610,7 +631,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const key_idx = prop.data.binary.left;
                 const value_idx = prop.data.binary.right;
 
-                const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
+                const ref = try makeDestructuringTempRead(self, ref_span, ref_span);
                 const key_node = self.ast.getNode(key_idx);
 
                 const member_access = try emitObjectMemberAccessForRest(self, ref, key_node, key_idx, &exclude_keys, .decl, span);
@@ -642,7 +663,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                             try rewritePatternDefaultTDZ(self, default_val, pattern, i_loop);
                             const defaulted = try buildDefaulted(self, member_access, default_val, ref_span, key_idx, key_node.tag, span);
                             const nested_span = try es_helpers.makeTempVarSpan(self);
-                            const nested_binding = try es_helpers.makeSyntheticBinding(self, nested_span);
+                            const nested_binding = try makeDestructuringTempBinding(self, nested_span);
                             const nested_init = if (left_node.tag == .array_pattern)
                                 try buildArrayRead(self, defaulted, left_node, span)
                             else
@@ -662,7 +683,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     } else if (value_node.tag == .object_pattern or value_node.tag == .array_pattern) {
                         // nested: { a: { b } } → var _ref2 = _ref.a; var b = _ref2.b
                         const nested_span = try es_helpers.makeTempVarSpan(self);
-                        const nested_binding = try es_helpers.makeSyntheticBinding(self, nested_span);
+                        const nested_binding = try makeDestructuringTempBinding(self, nested_span);
                         const nested_init = if (value_node.tag == .array_pattern)
                             try buildArrayRead(self, member_access, value_node, span)
                         else
@@ -726,7 +747,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                             .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = elem_access2 } },
                         });
                         const nested_span = try es_helpers.makeTempVarSpan(self);
-                        const nested_binding = try es_helpers.makeSyntheticBinding(self, nested_span);
+                        const nested_binding = try makeDestructuringTempBinding(self, nested_span);
                         const nested_init = if (left_node.tag == .array_pattern)
                             try buildArrayRead(self, conditional, left_node, span)
                         else
@@ -757,7 +778,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 } else if (elem.tag == .object_pattern or elem.tag == .array_pattern) {
                     // nested: [[a, b]] → var _ref2 = _ref[0]; var a = _ref2[0]; ...
                     const nested_span = try es_helpers.makeTempVarSpan(self);
-                    const nested_binding = try es_helpers.makeSyntheticBinding(self, nested_span);
+                    const nested_binding = try makeDestructuringTempBinding(self, nested_span);
                     const nested_init = if (elem.tag == .array_pattern)
                         try buildArrayRead(self, elem_access, elem, span)
                     else
@@ -781,7 +802,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     // `[a, ...[b, c]]` — 패턴을 그대로 두면 es5 에 구조 분해 문법이 남는다 (#4791).
                     // slice 결과는 이미 배열이라 `__read` 없이 임시 변수에 받아 재귀한다.
                     const nested_span = try es_helpers.makeTempVarSpan(self);
-                    const nested_binding = try es_helpers.makeSyntheticBinding(self, nested_span);
+                    const nested_binding = try makeDestructuringTempBinding(self, nested_span);
                     try self.scratch.append(self.allocator, try es_helpers.makeDeclarator(self, nested_binding, rest_init, span));
                     try emitPatternDeclarators(self, rest_node, nested_span, span);
                     return;
@@ -801,7 +822,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 .data = .{ .binary = .{ .left = access, .right = void_zero, .flags = @intFromEnum(token_mod.Kind.eq3) } },
             });
             // access는 이미 eq_check에서 소비되었으므로 다시 생성
-            const ref2 = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
+            const ref2 = try makeDestructuringTempRead(self, ref_span, ref_span);
             // 계산되지 않은 키는 속성 이름 — 방문하면 블록 스코핑 리네임을 받아 `_ref.a$1` 처럼
             // 다른 속성을 읽는다 (#4712).
             const new_key = if (key_tag == .computed_property_key) try self.visitNode(key_idx) else try self.copyNodeDirect(key_idx);
@@ -815,7 +836,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
         /// _ref[idx] computed member expression 생성 (배열 인덱스 접근).
         fn makeArrayAccess(self: *Transformer, ref_span: Span, idx: usize, span: Span) Transformer.Error!NodeIndex {
-            const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
+            const ref = try makeDestructuringTempRead(self, ref_span, ref_span);
             const idx_node = try es_helpers.makeNumericLiteral(self, @intCast(idx));
             return es_helpers.makeComputedMember(self, ref, idx_node, span);
         }
@@ -823,7 +844,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         /// _ref.slice(N) 호출 생성 (array rest 변환용).
         fn buildArraySlice(self: *Transformer, ref_span: Span, start_idx: usize, span: Span) Transformer.Error!NodeIndex {
             // _ref.slice
-            const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
+            const ref = try makeDestructuringTempRead(self, ref_span, ref_span);
             const slice_prop = try es_helpers.makePropertyName(self, "slice");
             const callee = try es_helpers.makeStaticMember(self, ref, slice_prop, span);
 
@@ -899,7 +920,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const key_span = try es_helpers.makeTempVarSpan(self);
                 const capture: NodeIndex = switch (mode) {
                     .decl => blk: {
-                        const key_binding = try es_helpers.makeSyntheticBinding(self, key_span);
+                        const key_binding = try makeDestructuringTempBinding(self, key_span);
                         const key_value = try self.visitNode(key_node.data.unary.operand);
                         break :blk try es_helpers.makeDeclarator(self, key_binding, key_value, span);
                     },
@@ -907,15 +928,15 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         .tag = .assignment_expression,
                         .span = span,
                         .data = .{ .binary = .{
-                            .left = try es_helpers.makeTempVarRef(self, key_span, span),
+                            .left = try makeDestructuringTempWrite(self, key_span, span),
                             .right = try self.visitNode(key_node.data.unary.operand),
                             .flags = @intFromEnum(token_mod.Kind.eq),
                         } },
                     }),
                 };
                 try self.scratch.append(self.allocator, capture);
-                try exclude_keys.append(self.allocator, try es_helpers.makeTempVarRef(self, key_span, span));
-                return es_helpers.makeComputedMember(self, ref, try es_helpers.makeTempVarRef(self, key_span, span), span);
+                try exclude_keys.append(self.allocator, try makeDestructuringTempRead(self, key_span, span));
+                return es_helpers.makeComputedMember(self, ref, try makeDestructuringTempRead(self, key_span, span), span);
             }
             try exclude_keys.append(self.allocator, try makeRestExcludeKey(self, key_node));
             return es_helpers.makeMemberFromKeyIdx(self, ref, key_idx, span);
@@ -963,7 +984,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         ) Transformer.Error!struct { binding: NodeIndex, call: NodeIndex } {
             const binding = try self.visitNode(rest_idx);
             const rest_callee = try es_helpers.makeRuntimeHelperRef(self, "__rest");
-            const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
+            const ref = try makeDestructuringTempRead(self, ref_span, ref_span);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -1073,7 +1094,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const orig_kind = self.ast.variableDeclarationKind(left_node);
             const out_kind: ast_mod.VariableDeclarationKind = if (self.options.unsupported.block_scoping) .@"var" else orig_kind;
 
-            const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
+            const temp_binding = try makeDestructuringTempBinding(self, temp_span);
             const temp_decl = try es_helpers.makeDeclarator(self, temp_binding, NodeIndex.none, span);
             const new_left = try es_helpers.makeVarDeclaration(self, &.{temp_decl}, out_kind, span);
 
@@ -1127,7 +1148,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
             const temp_span = try es_helpers.makeTempVarSpan(self);
             const out_kind: ast_mod.VariableDeclarationKind = if (self.options.unsupported.block_scoping) .@"var" else .@"const";
-            const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
+            const temp_binding = try makeDestructuringTempBinding(self, temp_span);
             const temp_decl = try es_helpers.makeDeclarator(self, temp_binding, NodeIndex.none, span);
             const new_left = try es_helpers.makeVarDeclaration(self, &.{temp_decl}, out_kind, span);
 
@@ -1135,7 +1156,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const new_body = try self.visitNode(body);
 
             // ({a,...r} = _ref) — visit 시 lowerDestructuringAssignment 로 __rest lowering.
-            const ref_for_assign = try es_helpers.makeTempVarRef(self, temp_span, span);
+            const ref_for_assign = try makeDestructuringTempRead(self, temp_span, span);
             const assign = try es_helpers.makeAssignExpr(self, left, ref_for_assign, span, 0);
             const visited_assign = try self.visitNode(assign);
             const assign_stmt = try es_helpers.makeExprStmt(self, visited_assign, span);
