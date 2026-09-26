@@ -492,3 +492,30 @@ test "#4819 extracted private method functions own their exact source scopes" {
         try std.testing.expectEqual(@as(usize, 1), final_owners);
     }
 }
+
+test "#4819 static private async method owns its state callback" {
+    try checkStateScopes(
+        "export class Box { static async #load(value) { return await Promise.resolve(value + 1); } static read() { return this.#load(1); } }",
+        1,
+        true,
+        0,
+    );
+}
+
+test "#4819 static private generator method owns its state callback" {
+    try checkStateScopes(
+        "export class Box { static *#read(value) { yield value + 1; } static read() { return [...this.#read(1)]; } }",
+        1,
+        false,
+        0,
+    );
+}
+
+test "#4819 static private async generator method owns its state callback" {
+    try checkStateScopes(
+        "export class Box { static async *#stream(value) { yield await Promise.resolve(value + 1); } static read() { return this.#stream(1); } }",
+        1,
+        true,
+        0,
+    );
+}
