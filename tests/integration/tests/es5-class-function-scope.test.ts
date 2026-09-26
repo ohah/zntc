@@ -37,6 +37,20 @@ const cases = {
     const read = box.make(() => null);
     console.log(read());
   `,
+  'decorated computed async method with field': `
+    const key = 'read';
+    const calls = [];
+    function trace(method, context) {
+      calls.push(context.name);
+      return function(...args) { return method.apply(this, args); };
+    }
+    class Box {
+      value = 6;
+      @trace
+      async [key](offset) { return this.value + await Promise.resolve(offset); }
+    }
+    new Box().read(2).then(value => console.log(JSON.stringify([calls, value])));
+  `,
 } as const;
 
 describe('ES5 class function scope (#4819)', () => {
