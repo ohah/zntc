@@ -118,7 +118,7 @@ pub fn Methods(comptime Transformer: type) type {
             if (members_mod.methodNeedsAsyncOrGeneratorLowering(self, self.readU32(member.data.extra, MethodExtra.flags)) and
                 !self.readNodeIdx(member.data.extra, MethodExtra.body).isNone())
             {
-                const lowered_method = try members_mod.lowerAsyncOrGeneratorMethod(self, info.member_idx, member);
+                const lowered_method = try members_mod.lowerAsyncOrGeneratorMethod(self, info.source_member_idx, member);
                 if (!lowered_method.isNone()) member = self.ast.getNode(lowered_method);
             }
             const me = member.data.extra;
@@ -167,7 +167,7 @@ pub fn Methods(comptime Transformer: type) type {
                         sm_result.body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span);
                         const gen = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
                         const gen_wrapper = try es_helpers.wrapInFunction(self, gen.call, span);
-                        try GenMod.bindWrappedStateMachine(self, info.member_idx, gen_wrapper, gen, &saved_sm_temps, span);
+                        try GenMod.bindWrappedStateMachine(self, info.source_member_idx, gen_wrapper, gen, &saved_sm_temps, span);
                         const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper, span);
                         const func_expr = try buildWrappedFunc(
                             self,
@@ -297,7 +297,6 @@ pub fn Methods(comptime Transformer: type) type {
         /// static method → Object.defineProperty(ClassName, "method", { configurable: true, writable: true, value: function() {} })
         fn buildMethodAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, key_idx: NodeIndex, func_expr: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             // The emitted function replaces the original method boundary.
-            try self.remapCopiedScopeOwner(info.member_idx, func_expr);
             const target = if (info.is_static)
                 try self.makeCurrentClassRef(class_name_span)
             else
