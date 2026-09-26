@@ -478,7 +478,7 @@ pub fn preservesName(sym: Symbol) bool {
     if (sym.decl_flags.is_import) return true;
     // `const Foo = class Bar {}` 의 inner `Bar` (#2197). mangle 시 `.name` 프로퍼티도
     // 함께 바뀌므로 spec 준수를 위해 원본 이름 보존.
-    if (sym.decl_flags.is_class_expr_name) return true;
+    if (sym.decl_flags.preserve_class_name) return true;
     return false;
 }
 

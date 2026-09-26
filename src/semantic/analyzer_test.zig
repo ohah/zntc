@@ -1624,6 +1624,64 @@ test "ClassExpression: name registered as class_decl in class body scope (#1592)
     try std.testing.expect(found_foo);
 }
 
+test "#4819 class declaration separates outer and immutable heritage self bindings" {
+    var scanner = try Scanner.init(std.testing.allocator,
+        \\class C extends C { self() { return C; } static mutate() { C = 42; } }
+        \\C = class Other {};
+    );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+    try std.testing.expectEqual(@as(usize, 0), ana.errors.items.len);
+
+    var class_idx: ?u32 = null;
+    var name_idx: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .class_declaration) continue;
+        const candidate: u32 = @intCast(raw);
+        const name = parser.ast.extra_data.items[node.data.extra + @import("../parser/ast.zig").ClassExtra.name];
+        if (parser.ast.getNode(@enumFromInt(name)).tag != .binding_identifier) continue;
+        if (!std.mem.eql(u8, parser.ast.getText(parser.ast.getNode(@enumFromInt(name)).data.string_ref), "C")) continue;
+        class_idx = candidate;
+        name_idx = name;
+        break;
+    }
+    const outer = ana.symbol_ids.items[name_idx orelse return error.TestUnexpectedResult] orelse return error.TestUnexpectedResult;
+    const inner = ana.class_self_symbol_map.get(class_idx orelse return error.TestUnexpectedResult) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(outer != inner);
+    try std.testing.expect(ana.symbols.items[outer].decl_flags.preserve_class_name);
+    try std.testing.expect(ana.symbols.items[inner].decl_flags.is_const);
+    try std.testing.expectEqual(@as(u32, 3), ana.symbols.items[inner].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), ana.symbols.items[outer].reference_count);
+}
+
+test "#4819 named class expression heritage resolves its own immutable binding" {
+    var scanner = try Scanner.init(std.testing.allocator, "let C = class C extends C { self() { return C; } }; C = class Other {};");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+    try std.testing.expectEqual(@as(usize, 0), ana.errors.items.len);
+    var self_id: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .class_expression) {
+            const id = ana.class_self_symbol_map.get(@intCast(raw)) orelse continue;
+            const name: u32 = parser.ast.extra_data.items[node.data.extra + @import("../parser/ast.zig").ClassExtra.name];
+            if (std.mem.eql(u8, parser.ast.getText(parser.ast.getNode(@enumFromInt(name)).data.string_ref), "C")) self_id = id;
+        }
+    }
+    const inner = self_id orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u32, 2), ana.symbols.items[inner].reference_count);
+    try std.testing.expect(ana.symbols.items[inner].decl_flags.is_const);
+}
+
 test "ClassExpression: self-reference in body increments reference_count (#1592)" {
     var scanner = try Scanner.init(std.testing.allocator,
         \\const c = class Foo {

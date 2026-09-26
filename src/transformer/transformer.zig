@@ -136,6 +136,7 @@ pub const Transformer = struct {
     scope_maps: []const std.StringHashMapUnmanaged(usize) = &.{},
     /// analyzer가 기록한 원본 스코프 생성 노드 → ScopeId. 별도 소유권은 analyzer/module에 있다.
     scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    class_self_symbol_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty,
     /// 원본 scope owner가 동일한 종류의 새 노드로 복사되었을 때의 old → new 매핑.
     /// scope_owner_map 자체는 analyzer 소유라 변환 중 수정하지 않는다.

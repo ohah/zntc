@@ -1703,6 +1703,7 @@ pub fn emitModule(
         transformer.scopes = sem.scopes;
         transformer.scope_maps = sem.scope_maps;
         transformer.scope_owner_map = sem.scope_owner_map;
+        transformer.class_self_symbol_map = sem.class_self_symbol_map;
         transformer.unresolved_references = &sem.unresolved_references;
     }
     // jsxDEV source info 계산용 line offsets
