@@ -129,6 +129,10 @@ fn recordReferenceOrigin(self: anytype, source: NodeIndex, clone: NodeIndex) Err
         (self.getSymbolIdAt(source) == null and !self.capture_ref_by_origin.contains(@intFromEnum(source)))) return;
     const origin = self.reference_origin_map.get(@intFromEnum(source)) orelse @intFromEnum(source);
     const key = @intFromEnum(clone);
+    // A replaced user reference can become a generated capture reference in
+    // visitNodeInner. Its exact capture origin was recorded at construction;
+    // the source user's Reference must not overwrite that new identity.
+    if (self.capture_ref_by_origin.contains(key)) return;
     if (self.reference_origin_map.get(key)) |existing| {
         if (existing != origin) std.debug.panic("reference clone has conflicting origins", .{});
         return;
@@ -145,6 +149,11 @@ pub fn propagateSymbolId(self: anytype, old_idx: NodeIndex, new_idx: NodeIndex) 
 
     const old_i = @intFromEnum(old_idx);
     const new_i = @intFromEnum(new_idx);
+
+    // The visitor intentionally replaced this user reference with a fresh
+    // lexical-capture use. Its symbol is bound from the capture declaration,
+    // never inherited from the replaced source identifier.
+    if (self.capture_ref_by_origin.contains(new_i)) return;
 
     try ensureSymbolIds(self, new_i);
 

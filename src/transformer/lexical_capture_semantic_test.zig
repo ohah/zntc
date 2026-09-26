@@ -92,4 +92,80 @@ test "#4819 lowered arrow lexical captures have distinct exact function symbols"
         "class C{method(value=(()=>this.x+arguments.length)()){return value}} new C().method();",
         .method_definition,
     );
+    try checkCaptureSymbols(
+        "function logged(value){return value} class C{@logged field=1;method(){return ()=>this.field+arguments.length}} new C().method();",
+        .method_definition,
+    );
+}
+
+test "#4819 explicit arguments binding moves to the exact capture initializer" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "function outer(arguments){return ()=>arguments} outer(3)();";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var function_scope: ?u32 = null;
+    var arrow_scope: ?u32 = null;
+    var owners = analyzer.scope_owner_map.iterator();
+    while (owners.next()) |owner| {
+        switch (parser.ast.nodes.items[owner.key_ptr.*].tag) {
+            .function_declaration => function_scope = owner.value_ptr.*,
+            .arrow_function_expression => arrow_scope = owner.value_ptr.*,
+            else => {},
+        }
+    }
+    const outer = function_scope orelse return error.TestUnexpectedResult;
+    const arrow = arrow_scope orelse return error.TestUnexpectedResult;
+    const parameter_id: u32 = @intCast(analyzer.scope_maps.items[outer].get("arguments").?);
+    const old_count = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var live: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    for (reachable) |raw| try live.put(allocator, raw, {});
+
+    var capture_id: ?u32 = null;
+    for (edited.symbols.items[old_count..], old_count..) |symbol, id| {
+        if (!std.mem.startsWith(u8, symbol.synthetic_name, "_arguments")) continue;
+        try std.testing.expect(capture_id == null);
+        try std.testing.expectEqual(outer, @intFromEnum(symbol.scope_id));
+        capture_id = @intCast(id);
+    }
+    const alias = capture_id orelse return error.TestUnexpectedResult;
+    var source_reads: usize = 0;
+    var alias_reads: usize = 0;
+    for (edited.references) |ref| {
+        if (ref.node_index.isNone() or !live.contains(@intFromEnum(ref.node_index))) continue;
+        if (@intFromEnum(ref.symbol_id) == parameter_id) {
+            try std.testing.expectEqual(outer, @intFromEnum(ref.scope_id));
+            source_reads += 1;
+        }
+        if (@intFromEnum(ref.symbol_id) == alias) {
+            try std.testing.expectEqual(arrow, @intFromEnum(ref.scope_id));
+            alias_reads += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), source_reads);
+    try std.testing.expectEqual(@as(usize, 1), alias_reads);
+    try std.testing.expectEqual(@as(u32, 1), edited.symbols.items[parameter_id].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), edited.symbols.items[alias].reference_count);
 }

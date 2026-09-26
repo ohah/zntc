@@ -30,9 +30,21 @@ fn visitMethodBodyInSourceScope(self: *Transformer, method_idx: NodeIndex, body_
             self.current_scope = @enumFromInt(scope);
         }
     }
+    // This path visits a preserved method body directly, bypassing the usual
+    // method visitor. Give nested arrows the method's own lexical capture
+    // frame and emit its captures in that same source function scope.
+    const arrow_env = es_helpers.pushArrowEnv(self);
+    defer es_helpers.popArrowEnv(self, arrow_env);
     var visited = try self.visitNode(body_idx);
     if (self.temp_var_counter > saved_temp_counter and !visited.isNone()) {
         visited = try self.hoistTempVarsInOriginalFunction(visited, saved_temp_counter, self.ast.getNode(method_idx).span);
+    }
+    if (self.options.unsupported.arrow and !visited.isNone() and
+        (self.needs_this_var or self.needs_arguments_var))
+    {
+        var captures: [2]NodeIndex = undefined;
+        const count = try es_helpers.fillThisArgumentsCaptures(self, &captures, self.ast.getNode(method_idx).span);
+        visited = try self.prependStatementsToBody(visited, captures[0..count]);
     }
     return visited;
 }
