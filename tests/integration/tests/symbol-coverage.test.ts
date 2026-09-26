@@ -78,7 +78,10 @@ describe('symbol coverage gate (#4760)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-synthetic-coverage-'));
     try {
       const input = join(dir, 'input.mjs');
-      writeFileSync(input, 'class C { static #x = 1; static read() { return this.#x; } } console.log(C.read());');
+      writeFileSync(
+        input,
+        'class C { static #x = 1; static read() { return this.#x; } } console.log(C.read());',
+      );
       const proc = spawnSync(ZNTC_BIN, [input, '--target=es5', '-o', join(dir, 'out.mjs')], {
         env: {
           ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
@@ -90,7 +93,9 @@ describe('symbol coverage gate (#4760)', () => {
       expect(proc.status, proc.stderr).toBe(0);
       expect(proc.stderr).toMatch(/symbol-coverage .* missing=0 wrong=0/);
       expect(proc.stderr).toMatch(/synthetic-coverage .* missing_binding=[1-9]\d*/);
-      expect(proc.stderr).toMatch(/synthetic-coverage missing_binding node=\d+ _x\(binding_identifier\) marked=true/);
+      expect(proc.stderr).toMatch(
+        /synthetic-coverage missing_binding node=\d+ _x\(binding_identifier\) marked=true/,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
