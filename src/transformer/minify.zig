@@ -1242,13 +1242,41 @@ pub fn convertConstToLet(ast: *Ast) void {
 /// `B`만 tree-shake로 skip_nodes에 마킹하는데, merge가 이를 무시하면 B가 A와 합쳐져
 /// tree-shaker가 단일 statement를 제거하지 못해 미사용 declarator가 최종 출력에 남는다.
 /// `skip_nodes`가 주어지면 마킹된 statement는 merge 대상에서 제외해 tree-shaker 효과를 보존한다.
-pub fn mergeDecls(ast: *Ast, skip_nodes: ?*const std.DynamicBitSet) void {
-    for (ast.nodes.items, 0..) |node, i| {
+/// 변환 전/중간 블록은 살아있는 선언 노드를 공유할 수 있다. 그런 블록에서 병합하면
+/// 선언을 죽은 부모로 옮기고 실제 출력 위치를 비우므로, 출력 root에서 도달한 부모만 쓴다.
+/// 순회 할당이 실패하면 AST를 바꾸기 전에 최적화 전체를 건너뛴다.
+/// `scratch_allocator`는 emit 단위 allocator를 사용한다. 캐시된 AST allocator에
+/// 방문 표를 할당하면 watch 재빌드마다 모듈 수명 동안 임시 메모리가 누적된다.
+pub fn mergeDecls(ast: *Ast, root: NodeIndex, skip_nodes: ?*const std.DynamicBitSet, scratch_allocator: std.mem.Allocator) void {
+    var arena = std.heap.ArenaAllocator.init(scratch_allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var visited = std.DynamicBitSet.initEmpty(scratch, ast.nodes.items.len) catch return;
+    var shared = std.DynamicBitSet.initEmpty(scratch, ast.nodes.items.len) catch return;
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    var parents: std.ArrayList(u32) = .empty;
+    stack.append(scratch, root) catch return;
+    while (stack.pop()) |idx| {
+        if (idx.isNone()) continue;
+        const raw = @intFromEnum(idx);
+        if (raw >= ast.nodes.items.len) continue;
+        if (visited.isSet(raw)) {
+            shared.set(raw);
+            continue;
+        }
+        visited.set(raw);
+        if (skip_nodes) |skip| {
+            if (raw < skip.capacity() and skip.isSet(raw)) continue;
+        }
+        const node = ast.nodes.items[raw];
         switch (node.tag) {
-            .program, .block_statement, .function_body => mergeAdjacentDecls(ast, @intCast(i), node, skip_nodes),
+            .program, .block_statement, .function_body => parents.append(scratch, raw) catch return,
             else => {},
         }
+        var children = ast_walk.children(ast, node);
+        while (children.next()) |child| stack.append(scratch, child) catch return;
     }
+    for (parents.items) |raw| mergeAdjacentDecls(ast, raw, ast.nodes.items[raw], skip_nodes, &shared);
 }
 
 // ================================================================
@@ -2149,7 +2177,7 @@ const MAX_DECLS_PER_MERGE: usize = 1024;
 /// `skip_nodes`가 주어지면 tree-shake로 마킹된 statement는 accumulator에 넣지 않아
 /// merge 대상에서도 제외된다 (statement 자체는 새 리스트에 그대로 남음 — codegen이
 /// skip_nodes를 보고 출력을 생략).
-fn mergeAdjacentDecls(ast: *Ast, node_idx: u32, node: Node, skip_nodes: ?*const std.DynamicBitSet) void {
+fn mergeAdjacentDecls(ast: *Ast, node_idx: u32, node: Node, skip_nodes: ?*const std.DynamicBitSet, shared: *const std.DynamicBitSet) void {
     const list = node.data.list;
     if (list.len < 2) return;
     if (list.len > MAX_STMTS_PER_BLOCK) return;
@@ -2169,7 +2197,7 @@ fn mergeAdjacentDecls(ast: *Ast, node_idx: u32, node: Node, skip_nodes: ?*const 
         // 대신 원본 순서대로 out_buf에 포함 — codegen이 skip_nodes 보고 출력 생략.
         const is_skipped = if (skip_nodes) |s| (stmt_ni < s.capacity() and s.isSet(stmt_ni)) else false;
 
-        if (!is_skipped and tryMergeWithPrev(ast, stmt_ni, out_buf[0..out_len], skip_nodes)) {
+        if (!is_skipped and tryMergeWithPrev(ast, stmt_ni, out_buf[0..out_len], skip_nodes, shared)) {
             changed = true;
             continue;
         }
@@ -2189,10 +2217,13 @@ fn mergeAdjacentDecls(ast: *Ast, node_idx: u32, node: Node, skip_nodes: ?*const 
 
 /// `cur_ni`가 `accumulated`의 마지막 non-skipped 선언과 병합 가능하면 병합하고 true 반환.
 /// 병합 시: prev의 declarator list를 `[prev_decls ++ cur_decls]`로 확장.
-fn tryMergeWithPrev(ast: *Ast, cur_ni: u32, accumulated: []const u32, skip_nodes: ?*const std.DynamicBitSet) bool {
+fn tryMergeWithPrev(ast: *Ast, cur_ni: u32, accumulated: []const u32, skip_nodes: ?*const std.DynamicBitSet, shared: *const std.DynamicBitSet) bool {
     if (accumulated.len == 0) return false;
     if (cur_ni >= ast.nodes.items.len) return false;
     const cur_info = resolveMergeableVarDecl(ast, cur_ni) orelse return false;
+    // 두 출력 위치가 공유하는 선언은 병합의 경계다. NodeIndex를 직접 비우거나
+    // 다른 선언의 초기화식을 붙이면 다른 부모의 출력·평가 순서까지 바뀐다.
+    if (shared.isSet(cur_ni) or shared.isSet(cur_info.vardecl_ni)) return false;
 
     // prev 탐색 시 skip_nodes 마킹된 항목은 건너뜀 — 이들은 codegen에서도 출력 안 되므로
     // 인접성 기준으로 삼으면 tree-shake 결과와 어긋날 수 있다.
@@ -2212,6 +2243,7 @@ fn tryMergeWithPrev(ast: *Ast, cur_ni: u32, accumulated: []const u32, skip_nodes
 
     if (prev_ni >= ast.nodes.items.len) return false;
     const prev_info = resolveMergeableVarDecl(ast, prev_ni) orelse return false;
+    if (shared.isSet(prev_ni) or shared.isSet(prev_info.vardecl_ni)) return false;
 
     // correctness 핵심: export↔non-export 혼합 금지. `export const a=1; const b=2;`
     // 를 한 선언으로 합치면 b 가 잘못 export 되거나 a 가 un-export 됨. 둘 다
