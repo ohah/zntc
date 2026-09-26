@@ -5,6 +5,49 @@ import { createFixture, runZntcInDir } from './helpers';
 
 const cases = [
   {
+    name: 'parameter arguments with body this capture',
+    source: `
+      const host = { base: 9 };
+      function run(value = (() => arguments.length)()) {
+        return [value, (() => this.base)()];
+      }
+      console.log(JSON.stringify([run.call(host), run.call(host, 4)]));
+    `,
+  },
+  {
+    name: 'parameter this with body arguments capture',
+    source: `
+      const host = { base: 9 };
+      function run(value = (() => this.base)()) {
+        return [value, (() => arguments[1])()];
+      }
+      console.log(JSON.stringify([run.call(host, undefined, 3), run.call(host, 4, 5)]));
+    `,
+  },
+  {
+    name: 'nested function in default retains its own captures',
+    source: `
+      const host = { base: 9 };
+      function run(value = (() => {
+        function nested(inner = (() => this.base + arguments.length)()) { return inner; }
+        return [this.base, arguments.length, nested.call({ base: 2 })];
+      })()) { return value; }
+      console.log(JSON.stringify([run.call(host), run.call(host, 4)]));
+    `,
+  },
+  {
+    name: 'generator default throws at call time before body starts',
+    source: `
+      const events = [];
+      function* run(value = (() => {
+        events.push(this.base, arguments.length);
+        throw new Error('parameter');
+      })()) { events.push('body'); yield value; }
+      try { run.call({ base: 7 }); } catch (error) { events.push(error.message); }
+      console.log(JSON.stringify(events));
+    `,
+  },
+  {
     name: 'ordinary function',
     source: `
       const host = { base: 3 };
@@ -73,7 +116,8 @@ describe('parameter arrow this/arguments captures precede default checks (#4819)
             'input.mjs',
             '--target=es5',
             ...(minify ? ['--minify'] : []),
-            '-o', output,
+            '-o',
+            output,
           ]);
           expect(result.exitCode, result.stderr).toBe(0);
           const actual = spawnSync('node', [output], { encoding: 'utf8' });
