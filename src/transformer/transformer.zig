@@ -542,6 +542,7 @@ pub const Transformer = struct {
     pub const remapCopiedScopeOwner = @import("transformer/semantic_edit.zig").remapCopiedScopeOwner;
     pub const originalFunctionScope = @import("transformer/semantic_edit.zig").originalFunctionScope;
     pub const bindGeneratedState = @import("transformer/semantic_edit.zig").bindGeneratedState;
+    pub const bindGeneratedFunctionTemps = @import("transformer/semantic_edit.zig").bindGeneratedFunctionTemps;
     pub const relocatePendingRuntimeHelperRef = @import("transformer/semantic_edit.zig").relocatePendingRuntimeHelperRef;
     pub const declareSyntheticInScope = @import("transformer/semantic_edit.zig").declareSyntheticInScope;
     pub const addSyntheticRefInScope = @import("transformer/semantic_edit.zig").addSyntheticRefInScope;
@@ -587,6 +588,7 @@ pub const Transformer = struct {
     pub const hoistTempVarsInOriginalFunction = lists_mod.hoistTempVarsInOriginalFunction;
     pub const hoistTempVarsSkippingSpans = lists_mod.hoistTempVarsSkippingSpans;
     pub const hoistStateMachineTempsAndRestore = lists_mod.hoistStateMachineTempsAndRestore;
+    pub const hoistTempVarsRecording = lists_mod.hoistTempVarsRecording;
 
     // ================================================================
     // Flow syntax 변환 — transformer/flow.zig로 위임

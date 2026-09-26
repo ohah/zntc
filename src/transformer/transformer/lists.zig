@@ -190,11 +190,16 @@ pub fn buildVarDecl(self: *Transformer, name: []const u8, init_value: NodeIndex,
 /// scope-hoist 번들 모듈에서 미선언 참조(`ReferenceError`)를 유발한다.
 /// caller 가 none-body 정책(early return / fall-through)을 호출 전에 결정하므로
 /// 이 helper 는 항상 non-none `sm_body` 로 호출된다.
-pub fn hoistStateMachineTempsAndRestore(self: *Transformer, sm_body: NodeIndex, saved_counter: u32, span: Span) Error!NodeIndex {
+pub const HoistedStateTemp = struct {
+    binding: NodeIndex,
+    name_span: Span,
+};
+
+pub fn hoistStateMachineTempsAndRestore(self: *Transformer, sm_body: NodeIndex, saved_counter: u32, span: Span, bindings: *std.ArrayListUnmanaged(HoistedStateTemp)) Error!NodeIndex {
     std.debug.assert(!sm_body.isNone());
     var body = sm_body;
     if (self.temp_var_counter > saved_counter) {
-        body = try self.hoistTempVarsSkippingSpans(body, saved_counter, span, self.generator_temp_var_spans.items);
+        body = try hoistTempVarsWithScope(self, body, saved_counter, span, self.generator_temp_var_spans.items, null, bindings);
     }
     self.temp_var_counter = saved_counter;
     return body;
@@ -205,7 +210,13 @@ pub fn hoistStateMachineTempsAndRestore(self: *Transformer, sm_body: NodeIndex, 
 /// 처럼 declaration 형태로 직접 emit 하는 패스가 있어 mergeAdjacentDecls 가 `var _a, _a = init, ...`
 /// 같은 어색한 출력을 만드는 회귀 방지 (#1960).
 pub fn hoistTempVars(self: *Transformer, body_idx: NodeIndex, saved_counter: u32, span: Span) Error!NodeIndex {
-    return hoistTempVarsWithScope(self, body_idx, saved_counter, span, &.{}, null);
+    return hoistTempVarsWithScope(self, body_idx, saved_counter, span, &.{}, null, null);
+}
+
+/// Hoist into a generated function whose scope is registered after its body
+/// has been visited. Return exact binding nodes for that later registration.
+pub fn hoistTempVarsRecording(self: *Transformer, body_idx: NodeIndex, saved_counter: u32, span: Span, bindings: *std.ArrayListUnmanaged(HoistedStateTemp)) Error!NodeIndex {
+    return hoistTempVarsWithScope(self, body_idx, saved_counter, span, &.{}, null, bindings);
 }
 
 /// 원본 함수 또는 명시적으로 등록한 합성 함수의 var scope에 temp를 연결한다.
@@ -217,7 +228,7 @@ pub fn hoistTempVarsInOriginalFunction(self: *Transformer, body_idx: NodeIndex, 
         self.current_scope
     else
         null;
-    return hoistTempVarsWithScope(self, body_idx, saved_counter, span, &.{}, scope);
+    return hoistTempVarsWithScope(self, body_idx, saved_counter, span, &.{}, scope, null);
 }
 
 /// 임시 변수 호이스팅: saved_counter..current counter 범위의 var _a, _b, ... 선언을 body 앞에 삽입.
@@ -232,10 +243,10 @@ pub fn hoistTempVarsInOriginalFunction(self: *Transformer, body_idx: NodeIndex, 
 /// 이 helper는 state-machine callback-local hoist가 state temp를 다시 선언해 shadowing하지
 /// 않도록 skip 목록을 받는다.
 pub fn hoistTempVarsSkippingSpans(self: *Transformer, body_idx: NodeIndex, saved_counter: u32, span: Span, skip_spans: []const Span) Error!NodeIndex {
-    return hoistTempVarsWithScope(self, body_idx, saved_counter, span, skip_spans, null);
+    return hoistTempVarsWithScope(self, body_idx, saved_counter, span, skip_spans, null, null);
 }
 
-fn hoistTempVarsWithScope(self: *Transformer, body_idx: NodeIndex, saved_counter: u32, span: Span, skip_spans: []const Span, function_scope: ?@import("../../semantic/scope.zig").ScopeId) Error!NodeIndex {
+fn hoistTempVarsWithScope(self: *Transformer, body_idx: NodeIndex, saved_counter: u32, span: Span, skip_spans: []const Span, function_scope: ?@import("../../semantic/scope.zig").ScopeId, state_bindings: ?*std.ArrayListUnmanaged(HoistedStateTemp)) Error!NodeIndex {
     const count = self.temp_var_counter - saved_counter;
     if (count == 0) return body_idx;
 
@@ -257,6 +268,7 @@ fn hoistTempVarsWithScope(self: *Transformer, body_idx: NodeIndex, saved_counter
         if (tempSpanInSpans(name_span, skip_spans)) continue;
         if (has_block and bodyHasTopLevelVarBinding(self, body_node, name)) continue;
         const binding = try es_helpers.makeSyntheticBinding(self, name_span);
+        if (state_bindings) |bindings| try bindings.append(self.allocator, .{ .binding = binding, .name_span = name_span });
         if (body_node.tag == .program and self.semantic_edit_enabled) {
             try self.bindHoistedTemp(binding, name_span, span, .none);
         } else if (function_scope) |scope_id| {

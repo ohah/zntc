@@ -164,7 +164,7 @@ pub fn Methods(comptime Transformer: type) type {
                     // (temp 미할당) → counter 복원 불필요, non-generator 경로로
                     // fall-through 안전. hoist+복원은 if 안에서만 수행.
                     if (!sm_result.body.isNone()) {
-                        sm_result.body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span);
+                        sm_result.body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span, &saved_sm_temps.callback_temps);
                         const gen = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
                         const gen_wrapper = try es_helpers.wrapInFunction(self, gen.call, span);
                         try GenMod.bindWrappedStateMachine(self, info.source_member_idx, gen_wrapper, gen, &saved_sm_temps, span);

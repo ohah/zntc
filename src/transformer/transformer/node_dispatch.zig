@@ -566,7 +566,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 if (self.options.unsupported.generator) {
                     return es2017_mod.ES2017(Transformer).lowerAsyncToStateMachine(self, if (idx == self.synthetic_function_node) self.synthetic_function_source_owner else idx, node);
                 }
-                return es2017_mod.ES2017(Transformer).lowerAsyncFunction(self, node);
+                return es2017_mod.ES2017(Transformer).lowerAsyncFunction(self, if (idx == self.synthetic_function_node) self.synthetic_function_source_owner else idx, node);
             }
             if (self.options.unsupported.generator and is_generator) {
                 return es2015_generator.ES2015Generator(Transformer).lowerGeneratorFunction(self, if (idx == self.synthetic_function_node) self.synthetic_function_source_owner else idx, node);
@@ -584,7 +584,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                     if (self.options.unsupported.generator) {
                         return es2017_mod.ES2017(Transformer).lowerAsyncArrowToStateMachine(self, idx, node);
                     }
-                    return es2017_mod.ES2017(Transformer).lowerAsyncArrow(self, node);
+                    return es2017_mod.ES2017(Transformer).lowerAsyncArrow(self, idx, node);
                 }
             }
             if (self.options.unsupported.arrow) {

@@ -304,6 +304,29 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     }
     const imports_end = self.scratch.items.len;
 
+    // Allocate the synthetic async boundary before visiting its body. Temps
+    // and helper references created by that visit then carry this exact
+    // lexical scope. Imports and exports are visited outside this boundary.
+    const empty_params = try self.ast.addNodeList(&.{});
+    const empty_params_node = try self.ast.addFormalParameters(empty_params, node.span);
+    const arrow_extra = try self.ast.addExtras(&.{
+        @intFromEnum(empty_params_node),
+        @intFromEnum(NodeIndex.none),
+        ast_mod.ArrowFlags.is_async,
+    });
+    const arrow = try self.ast.addNode(.{
+        .tag = .arrow_function_expression,
+        .span = node.span,
+        .data = .{ .extra = arrow_extra },
+    });
+    const outer_scope = self.current_scope;
+    const arrow_scope = if (self.semantic_edit_enabled)
+        try self.addGeneratedFunctionScope(self.programScope(), arrow)
+    else
+        outer_scope;
+    self.current_scope = arrow_scope;
+    defer self.current_scope = outer_scope;
+
     // wrap target 수집 (visit 하여 기본 변환 적용)
     const body_stmts_top = self.scratch.items.len;
     i = 0;
@@ -338,6 +361,7 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
         try drainPendingAround(Transformer, self, pt, tt, visited);
     }
     const body_stmts_end = self.scratch.items.len;
+    self.current_scope = outer_scope;
 
     // async arrow body block 생성
     const body_list_nodes = self.scratch.items[body_stmts_top..body_stmts_end];
@@ -348,19 +372,8 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
         .data = .{ .list = body_list },
     });
 
-    // async arrow: () => body_block  (with is_async flag)
-    const empty_params = try self.ast.addNodeList(&.{});
-    const empty_params_node = try self.ast.addFormalParameters(empty_params, node.span);
-    const arrow_extra = try self.ast.addExtras(&.{
-        @intFromEnum(empty_params_node),
-        @intFromEnum(body_block),
-        ast_mod.ArrowFlags.is_async,
-    });
-    const arrow = try self.ast.addNode(.{
-        .tag = .arrow_function_expression,
-        .span = node.span,
-        .data = .{ .extra = arrow_extra },
-    });
+    // Fill the pre-registered async arrow once the visited body is available.
+    self.ast.extra_data.items[arrow_extra + 1] = @intFromEnum(body_block);
 
     // (arrow)() — 호출 (arrow 는 call-target 위치에서 codegen 이 자동 wrap)
     const call = try es_helpers.makeCallExpr(self, arrow, &.{}, node.span);

@@ -122,7 +122,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const sm_result = try buildStateMachine(self, body_idx, span);
             self.in_extracted_fn_body = saved_ext;
             if (sm_result.body.isNone()) return .none;
-            const sm_body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span);
+            const sm_body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span, &frame.callback_temps);
 
             // generator function 이름이 있으면 프로토타입 체인 설정을 위해 __generator에 전달.
             // #1756: makeIdentifierRefFromSpan 만 쓰면 symbol_id 가 전파되지 않아
@@ -135,7 +135,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             else
                 .none;
             const gen = try buildGeneratorHelperCallWithProto(self, sm_body, genFn_ref, span);
-            try self.bindGeneratedState(self.originalFunctionScope(source_owner), gen.callback, gen.state_param, frame.state_ref_start, span);
+            const source_scope = self.originalFunctionScope(source_owner);
+            try self.bindGeneratedState(source_scope, source_scope, gen.callback, gen.state_param, frame.state_ref_start, frame.callback_temps.items, span);
             const gen_call = gen.call;
 
             // return __generator(...) 문
@@ -202,6 +203,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         pub const StateMachineFrame = struct {
             saved_temp_spans: std.ArrayListUnmanaged(Span),
             state_ref_start: usize,
+            callback_temps: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty,
         };
 
         pub fn enterStateMachineTemps(self: *Transformer) Transformer.Error!StateMachineFrame {
@@ -216,6 +218,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             self.generator_temp_var_spans.clearRetainingCapacity();
             self.generator_temp_var_spans.appendSlice(self.allocator, frame.saved_temp_spans.items) catch {};
             frame.saved_temp_spans.deinit(self.allocator);
+            frame.callback_temps.deinit(self.allocator);
         }
 
         pub fn buildStateMachine(self: *Transformer, body_idx: NodeIndex, span: Span) Transformer.Error!StateMachineResult {
@@ -2593,12 +2596,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         pub fn bindWrappedStateMachine(self: *Transformer, source_owner: NodeIndex, wrapper: NodeIndex, gen: GeneratorCall, frame: *const StateMachineFrame, span: Span) Transformer.Error!void {
             const parent = self.originalFunctionScope(source_owner);
             if (parent.isNone()) {
-                try self.bindGeneratedState(.none, gen.callback, gen.state_param, frame.state_ref_start, span);
+                try self.bindGeneratedState(.none, .none, gen.callback, gen.state_param, frame.state_ref_start, frame.callback_temps.items, span);
                 return;
             }
             const wrapper_scope = try self.addGeneratedFunctionScope(parent, wrapper);
             self.relocatePendingRuntimeHelperRef(gen.helper_ref, wrapper_scope);
-            try self.bindGeneratedState(wrapper_scope, gen.callback, gen.state_param, frame.state_ref_start, span);
+            try self.bindGeneratedState(wrapper_scope, parent, gen.callback, gen.state_param, frame.state_ref_start, frame.callback_temps.items, span);
         }
 
         /// __generator(function(_state) { ... }) 호출 생성.
