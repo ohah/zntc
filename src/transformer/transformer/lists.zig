@@ -208,11 +208,12 @@ pub fn hoistTempVars(self: *Transformer, body_idx: NodeIndex, saved_counter: u32
     return hoistTempVarsWithScope(self, body_idx, saved_counter, span, &.{}, null);
 }
 
-/// parser가 분석한 원본 함수의 var scope가 현재 스코프일 때만 합성 temp를
-/// 의미 정보에 연결한다. 새로 만든 함수는 별도 scope 등록 전이라 대상이 아니다.
+/// 원본 함수 또는 명시적으로 등록한 합성 함수의 var scope에 temp를 연결한다.
+/// 등록한 합성 함수의 scope는 원본 배열 대신 SemanticEditor에만 있을 수 있다.
 pub fn hoistTempVarsInOriginalFunction(self: *Transformer, body_idx: NodeIndex, saved_counter: u32, span: Span) Error!NodeIndex {
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
     const scope = if (self.semantic_edit_enabled and !self.current_scope.isNone() and
-        self.scopes[self.current_scope.toIndex()].kind == .function)
+        scopes[self.current_scope.toIndex()].kind == .function)
         self.current_scope
     else
         null;
