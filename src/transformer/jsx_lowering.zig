@@ -38,6 +38,15 @@ pub const JsxImportInfo = struct {
     used_jsxDEV: bool = false,
     used_fragment: bool = false,
     used_createElement: bool = false,
+    jsx_local: []const u8 = "_jsx",
+    jsxs_local: []const u8 = "_jsxs",
+    jsxDEV_local: []const u8 = "_jsxDEV",
+    fragment_local: []const u8 = "_Fragment",
+    createElement_local: []const u8 = "_createElement",
+
+    pub fn setLocal(self: *JsxImportInfo, base: []const u8, local: []const u8) void {
+        if (std.mem.eql(u8, base, "_jsx")) self.jsx_local = local else if (std.mem.eql(u8, base, "_jsxs")) self.jsxs_local = local else if (std.mem.eql(u8, base, "_jsxDEV")) self.jsxDEV_local = local else if (std.mem.eql(u8, base, "_Fragment")) self.fragment_local = local else if (std.mem.eql(u8, base, "_createElement")) self.createElement_local = local;
+    }
 
     pub fn hasImports(self: JsxImportInfo) bool {
         return self.used_jsx or self.used_jsxs or self.used_jsxDEV or
@@ -57,23 +66,27 @@ pub const JsxImportInfo = struct {
             var first = true;
             if (is_dev) {
                 if (self.used_jsxDEV) {
-                    buf.appendSlice(allocator, "jsxDEV as _jsxDEV") catch return null;
+                    buf.appendSlice(allocator, "jsxDEV as ") catch return null;
+                    buf.appendSlice(allocator, self.jsxDEV_local) catch return null;
                     first = false;
                 }
             } else {
                 if (self.used_jsx) {
-                    buf.appendSlice(allocator, "jsx as _jsx") catch return null;
+                    buf.appendSlice(allocator, "jsx as ") catch return null;
+                    buf.appendSlice(allocator, self.jsx_local) catch return null;
                     first = false;
                 }
                 if (self.used_jsxs) {
                     if (!first) buf.appendSlice(allocator, ", ") catch return null;
-                    buf.appendSlice(allocator, "jsxs as _jsxs") catch return null;
+                    buf.appendSlice(allocator, "jsxs as ") catch return null;
+                    buf.appendSlice(allocator, self.jsxs_local) catch return null;
                     first = false;
                 }
             }
             if (self.used_fragment) {
                 if (!first) buf.appendSlice(allocator, ", ") catch return null;
-                buf.appendSlice(allocator, "Fragment as _Fragment") catch return null;
+                buf.appendSlice(allocator, "Fragment as ") catch return null;
+                buf.appendSlice(allocator, self.fragment_local) catch return null;
             }
             buf.appendSlice(allocator, " } from \"") catch return null;
             buf.appendSlice(allocator, source) catch return null;
@@ -86,7 +99,9 @@ pub const JsxImportInfo = struct {
 
         // createElement import (key-after-spread 폴백용)
         if (self.used_createElement) {
-            buf.appendSlice(allocator, "import { createElement as _createElement } from \"") catch return null;
+            buf.appendSlice(allocator, "import { createElement as ") catch return null;
+            buf.appendSlice(allocator, self.createElement_local) catch return null;
+            buf.appendSlice(allocator, " } from \"") catch return null;
             buf.appendSlice(allocator, source) catch return null;
             buf.appendSlice(allocator, "\";\n") catch return null;
         }
@@ -180,7 +195,9 @@ pub fn JsxLowering(comptime Transformer: type) type {
         /// resync 분석기가 이 ref 를 user scope 가 아닌 helper_scope_map 으로 binding
         /// 시킨다 — 사용자가 같은 이름의 식별자를 선언해도 충돌 회피 (#3068).
         fn makeJsxRuntimeRef(self: *Transformer, name: []const u8) Transformer.Error!NodeIndex {
-            const idx = try helpers.makeGlobalRef(self, name);
+            const local = try helpers.resolveSyntheticName(self, name);
+            self.jsx_import_info.setLocal(name, local);
+            const idx = try helpers.makeGlobalRef(self, local);
             try self.markRuntimeHelperRef(idx);
             return idx;
         }
