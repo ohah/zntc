@@ -335,3 +335,77 @@ test "#4819 source state name collision retains generated state symbol" {
         0,
     );
 }
+
+test "#4819 async generator moves body scope frontier under inner function and keeps parameter defaults outside" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\const fallback = [1];
+        \\export async function* stream(sLong = (() => fallback)(), tLong = ['x']) {
+        \\  @((value) => value)
+        \\  class Local {}
+        \\  for await (const aLong of sLong) {
+        \\    for (const bLong of tLong) {
+        \\      const read = () => aLong + bLong;
+        \\      yield read();
+        \\    }
+        \\  }
+        \\}
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var source_scope: ?u32 = null;
+    var body_scope: ?u32 = null;
+    var default_scope: ?u32 = null;
+    var decorator_scope: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, i| {
+        const scope = analyzer.scope_owner_map.get(@as(u32, @intCast(i))) orelse continue;
+        switch (node.tag) {
+            .function_declaration => source_scope = scope,
+            .for_await_of_statement => body_scope = scope,
+            .arrow_function_expression => {
+                if (default_scope == null) {
+                    default_scope = scope;
+                } else if (decorator_scope == null) {
+                    decorator_scope = scope;
+                }
+            },
+            else => {},
+        }
+    }
+    const outer = source_scope orelse return error.TestUnexpectedResult;
+    const body = body_scope orelse return error.TestUnexpectedResult;
+    const param = default_scope orelse return error.TestUnexpectedResult;
+    const decorator = decorator_scope orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(outer, @intFromEnum(analyzer.scopes.items[param].parent));
+    try std.testing.expectEqual(outer, @intFromEnum(analyzer.scopes.items[decorator].parent));
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const inner = edited.scopes[body].parent;
+    try std.testing.expect(inner != .none and @intFromEnum(inner) != outer);
+    try std.testing.expectEqual(outer, @intFromEnum(edited.scopes[inner.toIndex()].parent));
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[inner.toIndex()].kind);
+    try std.testing.expectEqual(outer, @intFromEnum(edited.scopes[param].parent));
+    try std.testing.expectEqual(inner, edited.scopes[decorator].parent);
+    try std.testing.expectEqual(edited.scopes[outer].is_strict, edited.scopes[inner.toIndex()].is_strict);
+}

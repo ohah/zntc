@@ -19,11 +19,96 @@ const es2015_arrow = @import("es2015_arrow.zig");
 const es2015_generator = @import("es2015_generator.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 
 pub fn ES2017(comptime Transformer: type) type {
     return struct {
+        fn appendBodyExtraList(self: *Transformer, stack: *std.ArrayList(NodeIndex), base: u32, start_offset: u32, len_offset: u32) Transformer.Error!void {
+            const extra = self.ast.extra_data.items;
+            if (base >= extra.len or start_offset >= extra.len - base or len_offset >= extra.len - base) return;
+            const start = extra[base + start_offset];
+            const len = extra[base + len_offset];
+            if (start > extra.len or len > extra.len - start) return;
+            for (extra[start .. start + len]) |raw| try stack.append(self.allocator, @enumFromInt(raw));
+        }
+
+        /// The async generator's body moves into a generated inner function,
+        /// while its parameters stay on the outer function. Reparent only the
+        /// first analyzed scope below the source function found in the body.
+        /// Descendants follow that scope, including catch scopes whose owner
+        /// node was overwritten by the analyzer's catch-body scope.
+        fn moveAsyncGeneratorBodyScopes(self: *Transformer, body: NodeIndex, source: ScopeId, inner: ScopeId) Transformer.Error!void {
+            if (!self.semantic_edit_enabled) return;
+            const editor = if (self.semantic_editor) |*e| e else std.debug.panic("missing semantic editor for async generator body", .{});
+            var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer seen.deinit(self.allocator);
+            var frontier: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer frontier.deinit(self.allocator);
+            var stack: std.ArrayList(NodeIndex) = .empty;
+            defer stack.deinit(self.allocator);
+            try stack.append(self.allocator, body);
+            while (stack.pop()) |idx| {
+                if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+                const raw = @intFromEnum(idx);
+                if (seen.contains(raw)) continue;
+                try seen.put(self.allocator, raw, {});
+                const owner = self.transformed_scope_owner_map.get(raw) orelse
+                    editor.scope_owner_map.get(raw) orelse self.scope_owner_map.get(raw);
+                if (owner) |scope_raw| {
+                    if (scope_raw != @intFromEnum(source)) {
+                        if (scope_raw >= editor.scopes.items.len) std.debug.panic("invalid async generator body scope", .{});
+                        var cursor: ScopeId = @enumFromInt(scope_raw);
+                        var steps: usize = 0;
+                        while (!cursor.isNone() and cursor != source and steps < editor.scopes.items.len) : (steps += 1) {
+                            const parent = editor.scopes.items[cursor.toIndex()].parent;
+                            if (parent == source) {
+                                try frontier.put(self.allocator, cursor.toIndex(), {});
+                                break;
+                            }
+                            cursor = parent;
+                        }
+                    }
+                }
+                const node = self.ast.getNode(idx);
+                var children = ast_walk.children(self.ast, node);
+                while (children.next()) |child| try stack.append(self.allocator, child);
+                // ast_walk omits some lists that can contain evaluated
+                // expressions with their own scope owners. Type-only enum
+                // initializers remain excluded because they are erased.
+                switch (node.tag) {
+                    .class_declaration, .class_expression => try appendBodyExtraList(self, &stack, node.data.extra, ast_mod.ClassExtra.deco_start, ast_mod.ClassExtra.deco_len),
+                    .method_definition => try appendBodyExtraList(self, &stack, node.data.extra, ast_mod.MethodExtra.deco_start, ast_mod.MethodExtra.deco_len),
+                    .property_definition, .accessor_property => try appendBodyExtraList(self, &stack, node.data.extra, ast_mod.PropertyExtra.deco_start, ast_mod.PropertyExtra.deco_len),
+                    .formal_parameter => try appendBodyExtraList(self, &stack, node.data.extra, ast_mod.FormalParameterExtra.deco_start, ast_mod.FormalParameterExtra.deco_len),
+                    .ts_enum_declaration => {
+                        const e = node.data.extra;
+                        const extra = self.ast.extra_data.items;
+                        if (e < extra.len and extra.len - e >= 4 and extra[e + 3] == 0)
+                            try appendBodyExtraList(self, &stack, e, 1, 2);
+                    },
+                    .flow_enum_declaration => try appendBodyExtraList(self, &stack, node.data.extra, 1, 2),
+                    .flow_match_expression => {
+                        const e = node.data.extra;
+                        const extra = self.ast.extra_data.items;
+                        if (e < extra.len and extra.len - e >= 3) {
+                            try stack.append(self.allocator, @enumFromInt(extra[e]));
+                            try appendBodyExtraList(self, &stack, e, 1, 2);
+                        }
+                    },
+                    else => {},
+                }
+            }
+            var roots = frontier.keyIterator();
+            while (roots.next()) |raw| {
+                editor.reparentScope(@enumFromInt(raw.*), inner) catch |err| {
+                    if (err == error.OutOfMemory) return error.OutOfMemory;
+                    std.debug.panic("invalid async generator body scope frontier: {s}", .{@errorName(err)});
+                };
+            }
+        }
+
         /// async generator (`async function*`) body 안 await 표현을 `yield __await(value)` 로
         /// 변환. nested function/arrow scope 는 traversal 안 함 (own this/await context 가짐).
         /// (#1911)
@@ -212,6 +297,12 @@ pub fn ES2017(comptime Transformer: type) type {
             const body_idx: NodeIndex = self.readNodeIdx(e, 2);
             const flags = self.readU32(e, ast_mod.FunctionExtra.flags);
 
+            // An async generator is a new lexical `this`/`arguments` boundary.
+            // In particular, a surrounding arrow must not make references in
+            // this function's parameter defaults use its own capture aliases.
+            const arrow_env = es_helpers.pushArrowEnv(self);
+            defer es_helpers.popArrowEnv(self, arrow_env);
+
             const new_name = try self.visitNode(name_idx);
             const new_params = try self.visitExtraList(.{ .start = params_list.start, .len = params_list.len });
 
@@ -232,7 +323,10 @@ pub fn ES2017(comptime Transformer: type) type {
 
             // inner function*(): visitNode 거치면 ES5 target 시 자동으로 generator state machine 으로 lower.
             const inner_flags = (flags & ~@as(u32, ast_mod.FunctionFlags.is_async)) | @as(u32, ast_mod.FunctionFlags.is_generator);
-            const inner_params_node = try self.ast.addFormalParameters(new_params, span);
+            // The original parameters and their defaults belong to the outer
+            // function. The inner generator closes over their bindings and is
+            // invoked with the original arguments only for `arguments` itself.
+            const inner_params_node = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{}), span);
             const none = @intFromEnum(NodeIndex.none);
             const inner_extra = try self.ast.addExtras(&.{
                 none, // anonymous
@@ -248,7 +342,9 @@ pub fn ES2017(comptime Transformer: type) type {
             });
             // The inner generator is a real function boundary. Its ES5 state
             // callback needs this exact scope as parent when visitNode lowers it.
-            _ = try self.addGeneratedFunctionScope(self.originalFunctionScope(source_owner), inner_func);
+            const source_scope = self.originalFunctionScope(source_owner);
+            const inner_scope = try self.addGeneratedFunctionScope(source_scope, inner_func);
+            try moveAsyncGeneratorBodyScopes(self, body_idx, source_scope, inner_scope);
             // inner function 자체도 visitNode 거쳐 generator/await downlevel 적용.
             // es5 에서는 이 visit 안에서 state machine 이 만들어진다. for-await 는 위 전처리에서
             // 이미 풀려 합성 await 까지 `yield __await(…)` 가 됐다 (#4746 — #4707 의 상태 기계
