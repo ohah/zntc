@@ -115,7 +115,7 @@ pub fn parseTsInterfaceDeclaration(self: *Parser) ParseError2!NodeIndex {
 }
 
 /// const enum Foo { A, B, C }
-/// const enum은 일반 enum과 동일하게 파싱하되, flags=1로 표시.
+/// const enum은 일반 enum과 동일하게 파싱하되, flags bit0으로 표시.
 pub fn parseConstEnum(self: *Parser) ParseError2!NodeIndex {
     try self.advance(); // skip 'const'
     return parseTsEnumDeclarationWithFlags(self, 1);
@@ -126,7 +126,7 @@ pub fn parseTsEnumDeclaration(self: *Parser) ParseError2!NodeIndex {
     return parseTsEnumDeclarationWithFlags(self, 0);
 }
 
-/// enum 파싱. flags: 0=일반 enum, 1=const enum.
+/// enum 파싱. flags bit0=const enum, bit1=ambient declare 문맥.
 /// extra = [name, members_start, members_len, flags]
 fn parseTsEnumDeclarationWithFlags(self: *Parser, flags: u32) ParseError2!NodeIndex {
     self.ast.has_ts_namespace_or_enum = true;
@@ -154,7 +154,8 @@ fn parseTsEnumDeclarationWithFlags(self: *Parser, flags: u32) ParseError2!NodeIn
     self.restoreScratch(scratch_top);
 
     const extra_start = try self.ast.addExtras(&.{
-        @intFromEnum(name), members.start, members.len, flags,
+        @intFromEnum(name),                                    members.start, members.len,
+        flags | (if (self.ctx.in_ambient) @as(u32, 2) else 0),
     });
 
     return try self.ast.addNode(.{
@@ -234,13 +235,18 @@ fn parseTsModuleBody(self: *Parser, start: u32) ParseError2!NodeIndex {
     }
     const name = try self.parseSimpleIdentifier();
 
+    // `declare namespace` 안쪽에서도 ambient 표시를 AST에 보존한다.
+    // parseTsDeclareStatement는 namespace 내부에서 노드를 유지하므로,
+    // transformer와 reference walker가 source text 없이 이를 구분해야 한다.
+    const ambient_flag: u16 = if (self.ctx.in_ambient) 1 else 0;
+
     // 중첩: namespace A.B.C { }
     if (try self.eat(.dot)) {
         const inner = try parseTsModuleBody(self, start);
         return try self.ast.addNode(.{
             .tag = .ts_module_declaration,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = name, .right = inner, .flags = 0 } },
+            .data = .{ .binary = .{ .left = name, .right = inner, .flags = ambient_flag } },
         });
     }
 
@@ -252,7 +258,7 @@ fn parseTsModuleBody(self: *Parser, start: u32) ParseError2!NodeIndex {
     return try self.ast.addNode(.{
         .tag = .ts_module_declaration,
         .span = .{ .start = start, .end = self.currentSpan().start },
-        .data = .{ .binary = .{ .left = name, .right = body, .flags = 0 } },
+        .data = .{ .binary = .{ .left = name, .right = body, .flags = ambient_flag } },
     });
 }
 

@@ -3554,6 +3554,71 @@ test "declare module: named exports in ambient body" {
     , ".ts");
 }
 
+test "#4819 parser preserves ambient bit on identifier namespaces inside namespaces" {
+    const source = "namespace Outer { export declare namespace Hidden.Deep { export const fake = ghost; } const live = actual; }";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    parser.is_module = true;
+    scanner.is_module = true;
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var saw_outer = false;
+    var saw_hidden = false;
+    var saw_deep = false;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .ts_module_declaration) continue;
+        const name = parser.ast.getText(parser.ast.getNode(node.data.binary.left).span);
+        if (std.mem.eql(u8, name, "Outer")) {
+            saw_outer = true;
+            try std.testing.expectEqual(@as(u16, 0), node.data.binary.flags);
+        } else if (std.mem.eql(u8, name, "Hidden")) {
+            saw_hidden = true;
+            try std.testing.expectEqual(@as(u16, 1), node.data.binary.flags);
+        } else if (std.mem.eql(u8, name, "Deep")) {
+            saw_deep = true;
+            try std.testing.expectEqual(@as(u16, 1), node.data.binary.flags);
+        }
+    }
+    try std.testing.expect(saw_outer and saw_hidden and saw_deep);
+}
+
+test "#4819 parser preserves const and ambient enum bits independently" {
+    const source = "namespace Outer { export declare enum Ambient { A = ghost } export declare const enum ConstAmbient { A = 7 } enum Runtime { A = actual } } const enum ConstOnly { A = 1 };";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    parser.is_module = true;
+    scanner.is_module = true;
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var seen: u4 = 0;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .ts_enum_declaration) continue;
+        const e = node.data.extra;
+        const name = parser.ast.getText(parser.ast.getNode(@enumFromInt(parser.ast.extra_data.items[e])).span);
+        const flags = parser.ast.extra_data.items[e + 3];
+        if (std.mem.eql(u8, name, "Ambient")) {
+            try std.testing.expectEqual(@as(u32, 2), flags);
+            seen |= 1;
+        } else if (std.mem.eql(u8, name, "ConstAmbient")) {
+            try std.testing.expectEqual(@as(u32, 3), flags);
+            seen |= 2;
+        } else if (std.mem.eql(u8, name, "Runtime")) {
+            try std.testing.expectEqual(@as(u32, 0), flags);
+            seen |= 4;
+        } else if (std.mem.eql(u8, name, "ConstOnly")) {
+            try std.testing.expectEqual(@as(u32, 1), flags);
+            seen |= 8;
+        }
+    }
+    try std.testing.expectEqual(@as(u4, 15), seen);
+}
+
 // ============================================================
 // JSX attribute {expr} + self-closing: regex 오스캔 방지
 // ============================================================

@@ -17,7 +17,8 @@ pub fn emitEnumIIFE(self: anytype, node: Node) !void {
     const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
     const members_start = self.ast.extra_data.items[e + 1];
     const members_len = self.ast.extra_data.items[e + 2];
-    // extras[3] = flags (0=일반, 1=const). const enum은 transformer에서 삭제됨.
+    // extras[3]: bit0=const, bit1=ambient. 둘 다 transformer에서 제거되므로
+    // 이 런타임 emitter에는 일반 enum(flags=0)만 도달한다.
 
     // enum 이름 텍스트 가져오기
     const name_node = self.ast.getNode(name_idx);
