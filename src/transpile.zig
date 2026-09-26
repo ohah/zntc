@@ -530,6 +530,21 @@ fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
         options.react_refresh_hook_signatures;
 }
 
+/// Native JavaScript script syntax with no lowering keeps the same lexical
+/// graph even when the visitor copies AST nodes. The transform semantic editor
+/// carries copied identifier IDs and scope owners to those nodes. Other paths
+/// still need post-transform analysis until their semantic edits are complete.
+fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Parser) bool {
+    if (!options.minify_identifiers or options.minify_syntax or
+        options.unsupported.hasAny() or options.module_format != .esm or
+        options.drop_console or options.drop_debugger or options.define.len != 0 or
+        options.experimental_decorators or options.emit_decorator_metadata or
+        options.react_refresh or options.react_refresh_hook_signatures or
+        !options.use_define_for_class_fields or parser.source_mode != .js_strict or
+        parser.is_module or parser.is_flow or parser.ast.has_jsx) return false;
+    return !collectAstFacts(&parser.ast).has_runtime_sensitive_syntax;
+}
+
 fn buildTransformPlan(
     options: TranspileOptions,
     parser: *const Parser,
@@ -1520,23 +1535,30 @@ fn transpileWithCallbackInternal(
         minify_mod.mergeDecls(transformer.ast, root, null, arena_alloc);
     }
 
-    // 4.5. 이름 줄이기는 **낮춘 뒤의 코드**를 다시 분석해서 한다 (#4759·#4760). 변환은 변수를
-    // 다른 함수로 옮기고(상태 기계·`_loop`) 새 이름을 만든다 — 변환 전 스코프로 이름을 주면
-    // 형제 블록이 한 함수로 모여 같은 이름이 되고, 심볼을 물려받지 못한 새 노드는 원래 이름으로
-    // 남는다. 번들 경로도 변환 뒤 재분석(`refreshSemanticAndStmtInfoAfterAstMutation`)을 쓴다.
+    // 4.5. 이름 줄이기는 보통 **낮춘 뒤의 코드**를 다시 분석해서 한다 (#4759·#4760).
+    // 상태 기계·`_loop` 은 변수를 다른 함수로 옮기고 새 이름을 만든다. native JS
+    // script 는 visitor 가 AST 노드를 복제하더라도 어휘 그래프가 그대로이므로
+    // 편집된 변환 의미 정보를 쓴다. AST 길이만으로 이 조건을 판정할 수 없다.
     var post_analyzer_storage: ?SemanticAnalyzer = null;
+    var mangle_analyzer: ?*SemanticAnalyzer = null;
     if (options.minify_identifiers and analyzer_storage != null) {
-        post_analyzer_storage = SemanticAnalyzer.init(arena_alloc, transformer.ast);
-        const post = &post_analyzer_storage.?;
-        post.is_strict_mode = parser.is_strict_mode;
-        post.is_module = parser.is_module;
-        // 타입은 이미 지워졌다. 낮춘 코드의 분석 에러(낮추기가 만든 형태)는 이름 짓기와 무관하다.
-        post.analyze() catch return error.SemanticError;
+        if (canMangleWithTransformSemantic(options, &parser)) {
+            mangle_analyzer = &analyzer_storage.?;
+        } else {
+            post_analyzer_storage = SemanticAnalyzer.init(arena_alloc, transformer.ast);
+            const post = &post_analyzer_storage.?;
+            post.is_strict_mode = parser.is_strict_mode;
+            post.is_module = parser.is_module;
+            // 타입은 이미 지워졌다. 낮춘 코드의 분석 에러(낮추기가 만든 형태)는 이름 짓기와 무관하다.
+            post.analyze() catch return error.SemanticError;
+            mangle_analyzer = post;
+        }
+        const post = mangle_analyzer.?;
         if (post.symbols.items.len > 0 and post.scope_maps.items.len > 0) {
-            // 변환 전 분석이 "이름 보존"으로 본 심볼(export·import·클래스 식 이름)을 재분석
-            // 심볼로 옮긴다. 변환이 그 흔적을 지우기도 한다 — TS `export = Box` 는
-            // `module.exports = Box` 가 되어 재분석에선 export 가 아니다. 같은 노드에
-            // 변환 전 심볼(트랜스포머가 물려준 것)과 재분석 심볼이 함께 붙어 있으면 짝이다.
+            // 변환 전 분석이 "이름 보존"으로 본 심볼(export·import·클래스 식 이름)을
+            // mangler graph 로 옮긴다. 재분석 경로에서는 변환이 그 흔적을 지우기도 한다 —
+            // TS `export = Box` 는 `module.exports = Box` 가 되어 재분석에선 export 가 아니다.
+            // 같은 노드에 변환 전 심볼(트랜스포머가 물려준 것)과 mangler 심볼이 붙으면 짝이다.
             // 보존 이름은 다른 바인딩이 같은 이름을 받지 않게 예약도 한다.
             const pre = &(analyzer_storage.?);
             var keep = std.DynamicBitSet.initEmpty(arena_alloc, post.symbols.items.len) catch return error.OutOfMemory;
@@ -1582,8 +1604,8 @@ fn transpileWithCallbackInternal(
             // 이 해제 — mangle_metadata 는 deinit 되지 않으므로 double-free 없음.
             .renames = mr.renames,
             .final_exports = null,
-            // 이름 표(renames)는 변환 뒤 재분석의 심볼 번호로 만들었다 — 노드→심볼도 그쪽.
-            .symbol_ids = post_analyzer_storage.?.symbol_ids.items,
+            // 이름 표와 노드→심볼은 같은 semantic graph를 사용한다.
+            .symbol_ids = mangle_analyzer.?.symbol_ids.items,
             // 단일 파일 transpile: codegen 의 scope-hoisted 전용 분기를 타지 않도록 false.
             .is_bundle_context = false,
             .allocator = arena_alloc,
@@ -1601,8 +1623,8 @@ fn transpileWithCallbackInternal(
         .quote_style = options.quote_style,
         .linking_metadata = if (mangle_metadata) |*mm| mm else null,
         .semantic_symbol_ids = transformer.symbol_ids.items,
-        .namespace_member_owners = if (mangle_metadata != null) &post_analyzer_storage.?.namespace_member_owners else if (analyzer_storage) |*analyzer| &analyzer.namespace_member_owners else null,
-        .namespace_declaration_owners = if (mangle_metadata != null) &post_analyzer_storage.?.namespace_declaration_owners else if (analyzer_storage) |*analyzer| &analyzer.namespace_declaration_owners else null,
+        .namespace_member_owners = if (mangle_metadata != null) &mangle_analyzer.?.namespace_member_owners else if (analyzer_storage) |*analyzer| &analyzer.namespace_member_owners else null,
+        .namespace_declaration_owners = if (mangle_metadata != null) &mangle_analyzer.?.namespace_declaration_owners else if (analyzer_storage) |*analyzer| &analyzer.namespace_declaration_owners else null,
         .destructuring_temp_bindings = &transformer.destructuring_temp_bindings,
         .platform = options.platform,
         .source_root = options.source_root,
@@ -1770,6 +1792,24 @@ fn testTransformPlan(source: []const u8, file_path: []const u8, options: Transpi
     try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
 
     return buildTransformPlan(options, &parser, &parser.ast, false);
+}
+
+test "#4819 native JS script mangling reuses transform semantic graph" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "function read(argument) { const local = argument + 1; return local; }");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    try std.testing.expect(!parser.is_module);
+    const minify: TranspileOptions = .{ .minify_identifiers = true };
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
+    try std.testing.expect(!canMangleWithTransformSemantic(.{ .minify_identifiers = true, .minify_syntax = true }, &parser));
+    try std.testing.expect(!canMangleWithTransformSemantic(.{ .minify_identifiers = true, .unsupported = TransformOptions.compat.fromESTarget(.es5) }, &parser));
+    try std.testing.expect(!canMangleWithTransformSemantic(.{ .minify_identifiers = true, .drop_console = true }, &parser));
+    parser.is_module = true;
+    try std.testing.expect(!canMangleWithTransformSemantic(minify, &parser));
 }
 
 /// fast 와 full 양쪽 경로의 출력이 expected 와 일치하는지 검증. parity 만으로는
