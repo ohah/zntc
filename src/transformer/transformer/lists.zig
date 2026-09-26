@@ -205,7 +205,18 @@ pub fn hoistStateMachineTempsAndRestore(self: *Transformer, sm_body: NodeIndex, 
 /// 처럼 declaration 형태로 직접 emit 하는 패스가 있어 mergeAdjacentDecls 가 `var _a, _a = init, ...`
 /// 같은 어색한 출력을 만드는 회귀 방지 (#1960).
 pub fn hoistTempVars(self: *Transformer, body_idx: NodeIndex, saved_counter: u32, span: Span) Error!NodeIndex {
-    return hoistTempVarsSkippingSpans(self, body_idx, saved_counter, span, &.{});
+    return hoistTempVarsWithScope(self, body_idx, saved_counter, span, &.{}, null);
+}
+
+/// parser가 분석한 원본 함수의 var scope가 현재 스코프일 때만 합성 temp를
+/// 의미 정보에 연결한다. 새로 만든 함수는 별도 scope 등록 전이라 대상이 아니다.
+pub fn hoistTempVarsInOriginalFunction(self: *Transformer, body_idx: NodeIndex, saved_counter: u32, span: Span) Error!NodeIndex {
+    const scope = if (self.semantic_edit_enabled and !self.current_scope.isNone() and
+        self.scopes[self.current_scope.toIndex()].kind == .function)
+        self.current_scope
+    else
+        null;
+    return hoistTempVarsWithScope(self, body_idx, saved_counter, span, &.{}, scope);
 }
 
 /// 임시 변수 호이스팅: saved_counter..current counter 범위의 var _a, _b, ... 선언을 body 앞에 삽입.
@@ -220,6 +231,10 @@ pub fn hoistTempVars(self: *Transformer, body_idx: NodeIndex, saved_counter: u32
 /// 이 helper는 state-machine callback-local hoist가 state temp를 다시 선언해 shadowing하지
 /// 않도록 skip 목록을 받는다.
 pub fn hoistTempVarsSkippingSpans(self: *Transformer, body_idx: NodeIndex, saved_counter: u32, span: Span, skip_spans: []const Span) Error!NodeIndex {
+    return hoistTempVarsWithScope(self, body_idx, saved_counter, span, skip_spans, null);
+}
+
+fn hoistTempVarsWithScope(self: *Transformer, body_idx: NodeIndex, saved_counter: u32, span: Span, skip_spans: []const Span, function_scope: ?@import("../../semantic/scope.zig").ScopeId) Error!NodeIndex {
     const count = self.temp_var_counter - saved_counter;
     if (count == 0) return body_idx;
 
@@ -241,7 +256,11 @@ pub fn hoistTempVarsSkippingSpans(self: *Transformer, body_idx: NodeIndex, saved
         if (tempSpanInSpans(name_span, skip_spans)) continue;
         if (has_block and bodyHasTopLevelVarBinding(self, body_node, name)) continue;
         const binding = try es_helpers.makeSyntheticBinding(self, name_span);
-        if (body_node.tag == .program) try self.bindHoistedTemp(binding, name_span, span);
+        if (body_node.tag == .program and self.semantic_edit_enabled) {
+            try self.bindHoistedTemp(binding, name_span, span, .none);
+        } else if (function_scope) |scope_id| {
+            try self.bindHoistedTemp(binding, name_span, span, scope_id);
+        }
         const none = @intFromEnum(NodeIndex.none);
         const declarator = try self.addExtraNode(.variable_declarator, span, &.{
             @intFromEnum(binding), none, none,

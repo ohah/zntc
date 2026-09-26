@@ -20,7 +20,8 @@ function outer(value) {
   function inner(input) { return (input ?? _b) + _a; }
   return inner(value) + (value ?? 3);
 }
-console.log(outer(null), outer(1), Object.assign({ x: null }, {}).x ?? 5, _a);
+function sibling(value) { return (Object.assign({ x: value }, {}).x ?? 6) + _a; }
+console.log(outer(null), outer(1), sibling(null), sibling(2), Object.assign({ x: null }, {}).x ?? 5, _a);
 `,
       });
       cleanup = fixture.cleanup;
@@ -38,7 +39,7 @@ console.log(outer(null), outer(1), Object.assign({ x: null }, {}).x ?? 5, _a);
       expect(result.exitCode).toBe(0);
       const runtime = spawnSync('node', [out], { encoding: 'utf8' });
       expect(runtime.status).toBe(0);
-      expect(runtime.stdout.trim()).toBe('45 42 5 40');
+      expect(runtime.stdout.trim()).toBe('45 42 46 42 5 40');
     });
   }
 });

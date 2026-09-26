@@ -571,10 +571,10 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             if (self.options.unsupported.generator and is_generator) {
                 return es2015_generator.ES2015Generator(Transformer).lowerGeneratorFunction(self, node);
             }
-            return self.visitFunction(node);
+            return self.visitFunction(node, idx);
         },
         .function,
-        => self.visitFunction(node),
+        => self.visitFunction(node, idx),
         .arrow_function_expression => {
             if (self.options.unsupported.async_await) {
                 const extras = self.ast.extra_data.items;
