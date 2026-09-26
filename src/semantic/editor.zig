@@ -41,6 +41,8 @@ pub const SemanticEditor = struct {
     scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty,
     references: std.ArrayList(Reference) = .empty,
+    reference_index: std.AutoHashMapUnmanaged(u32, usize) = .empty,
+    reference_index_built: bool = false,
     symbol_ids: std.ArrayList(?u32) = .empty,
     scope_reparented: bool = false,
 
@@ -102,6 +104,7 @@ pub const SemanticEditor = struct {
         self.symbols.deinit(self.allocator);
         self.scopes.deinit(self.allocator);
         self.references.deinit(self.allocator);
+        self.reference_index.deinit(self.allocator);
         self.symbol_ids.deinit(self.allocator);
     }
 
@@ -168,6 +171,26 @@ pub const SemanticEditor = struct {
             try self.symbol_ids.appendNTimes(self.allocator, null, i + 1 - self.symbol_ids.items.len);
         }
         return i;
+    }
+
+    fn appendReference(self: *SemanticEditor, ref: Reference) Error!void {
+        if (self.reference_index_built and !ref.node_index.isNone()) {
+            const key = @intFromEnum(ref.node_index);
+            if (self.reference_index.contains(key)) return error.AlreadyBound;
+            try self.reference_index.put(self.allocator, key, self.references.items.len);
+            errdefer _ = self.reference_index.remove(key);
+        }
+        try self.references.append(self.allocator, ref);
+    }
+
+    fn ensureReferenceIndex(self: *SemanticEditor) Error!void {
+        if (self.reference_index_built) return;
+        for (self.references.items, 0..) |ref, i| {
+            if (!ref.node_index.isNone() and !self.reference_index.contains(@intFromEnum(ref.node_index))) {
+                try self.reference_index.put(self.allocator, @intFromEnum(ref.node_index), i);
+            }
+        }
+        self.reference_index_built = true;
     }
 
     /// AST가 새 어휘 경계를 만들 때 호출한다. strict는 부모에서 자식으로 전파된다.
@@ -247,29 +270,49 @@ pub const SemanticEditor = struct {
     /// 서브트리 이전 시 기존 참조가 새 바인딩을 가리키도록 바꾼다.
     pub fn rebindReference(self: *SemanticEditor, node: NodeIndex, symbol: SymbolId) Error!void {
         if (!self.validSymbol(symbol)) return error.InvalidSymbol;
+        try self.ensureReferenceIndex();
         const slot = try self.ensureNodeSlot(node);
-        for (self.references.items) |*ref| {
-            if (ref.node_index != node) continue;
-            if (ref.flags.declare) return error.InvalidNode;
-            if (!self.visibleFrom(symbol, ref.scope_id)) return error.InvalidScope;
-            self.removeCounts(ref.symbol_id, ref.flags);
-            ref.symbol_id = symbol;
-            self.symbol_ids.items[slot] = @intFromEnum(symbol);
-            self.addCounts(symbol, ref.flags);
-            return;
-        }
-        return error.ReferenceNotFound;
+        const i = self.reference_index.get(@intFromEnum(node)) orelse return error.ReferenceNotFound;
+        const ref = &self.references.items[i];
+        if (ref.flags.declare) return error.InvalidNode;
+        if (!self.visibleFrom(symbol, ref.scope_id)) return error.InvalidScope;
+        self.removeCounts(ref.symbol_id, ref.flags);
+        ref.symbol_id = symbol;
+        self.symbol_ids.items[slot] = @intFromEnum(symbol);
+        self.addCounts(symbol, ref.flags);
     }
 
     /// AST 복사가 만든 새 식별자에 원본 참조의 대상과 read/write 플래그를 복제한다.
     /// 원본 노드가 최종 AST에서 사라졌다면 caller가 removeReference로 정리한다.
     pub fn cloneReference(self: *SemanticEditor, source: NodeIndex, clone: NodeIndex, scope: ScopeId, stmt_idx: u32, scope_stmt_idx: u32) Error!void {
-        for (self.references.items) |ref| {
-            if (ref.node_index != source) continue;
-            if (ref.flags.declare) return error.InvalidNode;
-            return self.addReference(clone, ref.symbol_id, scope, ref.flags, stmt_idx, scope_stmt_idx);
+        try self.ensureReferenceIndex();
+        const source_i = self.reference_index.get(@intFromEnum(source)) orelse return error.ReferenceNotFound;
+        const ref = self.references.items[source_i];
+        if (ref.flags.declare) return error.InvalidNode;
+        if (!self.validScope(scope) or !self.visibleFrom(ref.symbol_id, scope)) return error.InvalidScope;
+        const slot = try self.ensureNodeSlot(clone);
+        if (self.ast.getNode(clone).tag == .binding_identifier) return error.InvalidNode;
+        // 트랜스포머는 Reference보다 symbol_ids를 먼저 전파할 수 있다. 같은 ID만 허용한다.
+        if (self.symbol_ids.items[slot]) |existing| {
+            if (existing != @intFromEnum(ref.symbol_id)) return error.AlreadyBound;
         }
-        return error.ReferenceNotFound;
+        try self.appendReference(.{
+            .node_index = clone,
+            .scope_id = scope,
+            .symbol_id = ref.symbol_id,
+            .stmt_idx = stmt_idx,
+            .scope_stmt_idx = scope_stmt_idx,
+            .flags = ref.flags,
+        });
+        self.symbol_ids.items[slot] = @intFromEnum(ref.symbol_id);
+        self.addCounts(ref.symbol_id, ref.flags);
+    }
+
+    pub fn cloneReferenceAtSameLocation(self: *SemanticEditor, source: NodeIndex, clone: NodeIndex) Error!void {
+        try self.ensureReferenceIndex();
+        const i = self.reference_index.get(@intFromEnum(source)) orelse return error.ReferenceNotFound;
+        const ref = self.references.items[i];
+        return self.cloneReference(source, clone, ref.scope_id, ref.stmt_idx, ref.scope_stmt_idx);
     }
 
     fn bindingScope(self: *const SemanticEditor, lexical_scope: ScopeId, kind: SymbolKind) Error!ScopeId {
@@ -404,7 +447,7 @@ pub const SemanticEditor = struct {
         const slot = try self.ensureNodeSlot(node);
         if (self.ast.getNode(node).tag == .binding_identifier or flags.declare) return error.InvalidNode;
         if (self.symbol_ids.items[slot] != null) return error.AlreadyBound;
-        try self.references.append(self.allocator, .{
+        try self.appendReference(.{
             .node_index = node,
             .scope_id = scope,
             .symbol_id = symbol,
@@ -419,29 +462,31 @@ pub const SemanticEditor = struct {
     /// 서브트리를 다른 문장이나 스코프로 옮긴 경우 참조의 소유권을 수정한다.
     pub fn moveReference(self: *SemanticEditor, node: NodeIndex, scope: ScopeId, stmt_idx: u32, scope_stmt_idx: u32) Error!void {
         if (!self.validScope(scope)) return error.InvalidScope;
-        for (self.references.items) |*ref| {
-            if (ref.node_index != node) continue;
-            if (!self.visibleFrom(ref.symbol_id, scope)) return error.InvalidScope;
-            ref.scope_id = scope;
-            ref.stmt_idx = stmt_idx;
-            ref.scope_stmt_idx = scope_stmt_idx;
-            return;
-        }
-        return error.ReferenceNotFound;
+        try self.ensureReferenceIndex();
+        const i = self.reference_index.get(@intFromEnum(node)) orelse return error.ReferenceNotFound;
+        const ref = &self.references.items[i];
+        if (!self.visibleFrom(ref.symbol_id, scope)) return error.InvalidScope;
+        ref.scope_id = scope;
+        ref.stmt_idx = stmt_idx;
+        ref.scope_stmt_idx = scope_stmt_idx;
     }
 
     /// 제거된 참조의 사용 횟수도 되돌린다. 다른 참조의 순서는 유지한다.
     pub fn removeReference(self: *SemanticEditor, node: NodeIndex) Error!void {
-        for (self.references.items, 0..) |ref, i| {
-            if (ref.node_index != node) continue;
-            if (!self.validSymbol(ref.symbol_id)) return error.InvalidSymbol;
-            self.removeCounts(ref.symbol_id, ref.flags);
-            _ = self.references.orderedRemove(i);
-            const slot = @intFromEnum(node);
-            if (slot < self.symbol_ids.items.len) self.symbol_ids.items[slot] = null;
-            return;
+        try self.ensureReferenceIndex();
+        const key = @intFromEnum(node);
+        const i = self.reference_index.get(key) orelse return error.ReferenceNotFound;
+        const ref = self.references.items[i];
+        if (!self.validSymbol(ref.symbol_id)) return error.InvalidSymbol;
+        self.removeCounts(ref.symbol_id, ref.flags);
+        _ = self.references.orderedRemove(i);
+        _ = self.reference_index.remove(key);
+        for (self.references.items[i..], i..) |moved, new_i| {
+            if (!moved.node_index.isNone()) {
+                if (self.reference_index.getPtr(@intFromEnum(moved.node_index))) |indexed| indexed.* = new_i;
+            }
         }
-        return error.ReferenceNotFound;
+        if (key < self.symbol_ids.items.len) self.symbol_ids.items[key] = null;
     }
 };
 
@@ -599,17 +644,26 @@ test "cloned reference keeps target and write flags without stealing the source"
     const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
     const source = try ast.addNode(.{ .tag = .assignment_target_identifier, .span = name, .data = .{ .string_ref = name } });
     const clone = try ast.addNode(.{ .tag = .assignment_target_identifier, .span = name, .data = .{ .string_ref = name } });
+    const wrong_clone = try ast.addNode(.{ .tag = .assignment_target_identifier, .span = name, .data = .{ .string_ref = name } });
     const symbol = try editor.declare(binding, name, Span.EMPTY, sibling, .variable_let, 0, 0);
     try editor.addReference(source, symbol, inner, .{ .read = true, .write = true }, 2, 3);
+    editor.symbol_ids.items[try editor.ensureNodeSlot(clone)] = @intFromEnum(symbol);
+    editor.symbol_ids.items[try editor.ensureNodeSlot(wrong_clone)] = 999;
     try editor.cloneReference(source, clone, inner, 4, 5);
     try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@intFromEnum(symbol)].reference_count);
     try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@intFromEnum(symbol)].write_count);
     try std.testing.expectError(error.AlreadyBound, editor.cloneReference(source, clone, inner, 4, 5));
+    try std.testing.expectError(error.AlreadyBound, editor.cloneReferenceAtSameLocation(source, wrong_clone));
     try std.testing.expectError(error.ReferenceNotFound, editor.cloneReference(binding, clone, inner, 4, 5));
     try std.testing.expectError(error.InvalidScope, editor.cloneReference(source, binding, root, 4, 5));
     try editor.removeReference(source);
     try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(symbol)].reference_count);
     try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(symbol)].write_count);
+    const later = try ast.addNode(.{ .tag = .assignment_target_identifier, .span = name, .data = .{ .string_ref = name } });
+    try editor.cloneReferenceAtSameLocation(clone, later);
+    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@intFromEnum(symbol)].reference_count);
+    try editor.removeReference(later);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(symbol)].reference_count);
     const result = try editor.finish();
     try std.testing.expectEqual(@as(?u32, null), result.symbol_ids[@intFromEnum(source)]);
     try std.testing.expectEqual(@as(?u32, @intFromEnum(symbol)), result.symbol_ids[@intFromEnum(clone)]);

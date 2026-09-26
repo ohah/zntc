@@ -51,6 +51,64 @@ test "#4819 temp hoist keeps allocation identity across counter reuse" {
     try std.testing.expectEqual(root, skipped);
 }
 
+fn checkNullishIdentifierReferences(source: []const u8, options: TransformOptions, source_replaced: bool) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    var original_ref: ?@import("../semantic/symbol.zig").Reference = null;
+    for (analyzer.references.items) |ref| {
+        if (ref.flags.declare) continue;
+        const sym = analyzer.symbols.items[@intFromEnum(ref.symbol_id)];
+        if (std.mem.eql(u8, sym.nameText(parser.ast.source), "value")) original_ref = ref;
+    }
+    const source_ref = original_ref orelse return error.TestUnexpectedResult;
+    const id = @intFromEnum(source_ref.symbol_id);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, options);
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var reads: usize = 0;
+    var original_is_live = false;
+    var distinct: ?@import("../parser/ast.zig").NodeIndex = null;
+    for (edited.references) |ref| {
+        if (@intFromEnum(ref.symbol_id) != id or ref.flags.declare) continue;
+        try std.testing.expect(ref.flags.read);
+        try std.testing.expect(!ref.flags.write);
+        try std.testing.expectEqual(source_ref.scope_id, ref.scope_id);
+        try std.testing.expectEqual(source_ref.stmt_idx, ref.stmt_idx);
+        try std.testing.expectEqual(source_ref.scope_stmt_idx, ref.scope_stmt_idx);
+        if (distinct) |first| try std.testing.expect(first != ref.node_index);
+        if (ref.node_index == source_ref.node_index) original_is_live = true;
+        distinct = ref.node_index;
+        reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), reads);
+    try std.testing.expectEqual(@as(u32, 2), edited.symbols.items[id].reference_count);
+    try std.testing.expectEqual(!source_replaced, original_is_live);
+}
+
+test "#4819 nullish identifier duplication records two exact read references" {
+    try checkNullishIdentifierReferences("function read(value) { return value ?? 2; }", .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es2019),
+    }, false);
+    try checkNullishIdentifierReferences("function read(value) { use(value); { let value = 1; return value ?? 2; } }", .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    }, true);
+}
+
 test "#4819 function and top-level nullish temps keep separate SymbolIds through deferred hoist" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

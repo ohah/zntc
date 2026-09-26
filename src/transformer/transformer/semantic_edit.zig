@@ -189,6 +189,20 @@ pub fn bindHoistedTemp(self: *Transformer, binding: NodeIndex, name_span: Span, 
     if (self.pending_temp_ref_chains.count() == 0) self.pending_temp_refs.clearRetainingCapacity();
 }
 
+/// `a ?? b`가 `a != null ? a : b`로 늘린 두 읽기 노드의 Reference를 기록한다.
+/// 원본 식별자가 새 노드로 교체된 경우 원본 사용 횟수는 제거한다.
+pub fn trackNullishIdentifierCopies(self: *Transformer, source: NodeIndex, test_ref: NodeIndex, value_ref: NodeIndex) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const source_i = @intFromEnum(source);
+    if (source_i >= self.symbol_ids.items.len or self.symbol_ids.items[source_i] == null) return;
+    const editor = try editorFor(self);
+    if (test_ref != source) {
+        editor.cloneReferenceAtSameLocation(source, test_ref) catch |err| return editError(err);
+    }
+    editor.cloneReferenceAtSameLocation(source, value_ref) catch |err| return editError(err);
+    if (test_ref != source) editor.removeReference(source) catch |err| return editError(err);
+}
+
 /// 변환 중 복사된 사용자 식별자와 scope owner도 편집 결과에 합친다.
 pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.Result {
     const editor = if (self.semantic_editor) |*e| e else return null;
