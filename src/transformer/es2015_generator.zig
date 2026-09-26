@@ -456,7 +456,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     // 블록에 붙으면 `continue <label>` 이 루프를 못 찾는다 (#4746).
                     const child = stmt.data.binary.right;
                     if (!child.isNone()) {
-                        _ = try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, child);
+                        _ = try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, child, false);
                         const child_node = self.ast.getNode(child);
                         if (child_node.tag == .for_of_statement) {
                             const rewritten = try ForOf.rewriteForOf(self, child, child_node, stmt.data.binary.left, true);
@@ -469,7 +469,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try collectSwitchOperations(self, stmt_idx, stmt, ops, next_label);
                 },
                 .for_of_statement, .for_in_statement => {
-                    if (try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, stmt_idx))
+                    if (try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, stmt_idx, false))
                         return collectOperations(self, stmt_idx, ops, next_label);
                     if (es2015_scan.hasYieldOrReturn(self, stmt_idx)) {
                         // for-of 는 일반 경로와 같은 풀이(반복자 for + 닫기 try/finally), for-in 은 키
@@ -487,7 +487,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     }
                 },
                 .for_await_of_statement => {
-                    if (try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, stmt_idx))
+                    if (try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, stmt_idx, false))
                         return collectOperations(self, stmt_idx, ops, next_label);
                     // for-await 는 방문 없는 풀이(반복자 while + 닫기 try/finally)로 바꿔 그 구조를
                     // 수집한다 (#4746 3단계). 본문이 상태 기계로 수집되므로 안쪽 for-of/for-in 의
