@@ -393,7 +393,14 @@ pub fn makeCapturedArgumentsInit(self: *Transformer) Transformer.Error!NodeIndex
 /// frame at construction. The source identifier is retained only so a replaced
 /// original `arguments` Reference can be removed after final reachability.
 pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeIndex, kind: LexicalCaptureKind) Transformer.Error!void {
-    if (!self.semantic_edit_enabled or self.capture_frame == 0) return;
+    if (!self.semantic_edit_enabled) return;
+    if (self.capture_frame == 0) {
+        const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+        if (!self.current_scope.isNone() and scopes[self.current_scope.toIndex()].kind == .function)
+            std.debug.panic("lexical capture in a function without a capture frame", .{});
+        // Program-level arrow capture placement is a separate lowering path.
+        return;
+    }
     if (self.capture_scope.isNone() or self.current_scope.isNone())
         std.debug.panic("lexical capture has no source function scope", .{});
     const index = self.capture_refs.items.len;

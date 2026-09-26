@@ -425,6 +425,8 @@ pub fn ES2017(comptime Transformer: type) type {
 
         /// async function foo() { ... } → function foo() { return __async(function*() { ... }); }
         pub fn lowerAsyncFunction(self: *Transformer, source_owner: NodeIndex, node: Node) Transformer.Error!NodeIndex {
+            const arrow_env = es_helpers.pushArrowEnv(self);
+            defer es_helpers.popArrowEnv(self, arrow_env);
             const e = node.data.extra;
             const name_idx: NodeIndex = self.readNodeIdx(e, 0);
             const params_list = self.ast.functionParamsList(node);
