@@ -57,6 +57,8 @@ const HelperBit = enum {
     using_ctx,
     class_static_private_field,
     es_decorator,
+    legacy_decorator,
+    metadata,
     async_values,
     class_private_field_set,
     async_generator,
@@ -107,6 +109,8 @@ const BIT_DEFS = [_]BitDef{
         "__setFunctionName",
         "__propKey",
     } },
+    .{ .bit = .legacy_decorator, .bases = &.{ "__decorateClass", "__decorateParam", "__defProp2" } },
+    .{ .bit = .metadata, .bases = &.{"__metadata"} },
     .{ .bit = .async_values, .bases = &.{"__asyncValues"} },
     .{ .bit = .class_private_field_set, .bases = &.{"__classPrivateFieldSet"} },
     .{ .bit = .async_generator, .bases = &.{"__asyncGenerator"} },
@@ -119,11 +123,30 @@ const BIT_DEFS = [_]BitDef{
 };
 
 comptime {
+    @setEvalBranchQuota(10_000);
     // HelperBit 의 모든 tag 가 RuntimeHelpers 의 실 필드와 매핑되는지 빌드 타임 검증.
     // enum rename 시 즉시 컴파일 에러로 노출.
     for (@typeInfo(HelperBit).@"enum".fields) |field| {
         if (!@hasField(RuntimeHelpers, field.name)) {
             @compileError("HelperBit tag '" ++ field.name ++ "' not present on RuntimeHelpers");
+        }
+    }
+    // 반대 방향도 확인한다. 사용 비트가 import 목록에서 빠지면 live helper
+    // Reference가 import binding 없이 남는다.
+    for (@typeInfo(RuntimeHelpers).@"struct".fields) |field| {
+        if (std.mem.eql(u8, field.name, "_padding")) continue;
+        if (!@hasField(HelperBit, field.name)) {
+            @compileError("RuntimeHelpers field '" ++ field.name ++ "' missing from HelperBit");
+        }
+    }
+    // Enum 선언만 있고 BIT_DEFS에 빠진 경우에도 import가 조용히 누락된다.
+    for (@typeInfo(HelperBit).@"enum".fields) |field| {
+        var count: usize = 0;
+        for (BIT_DEFS) |def| {
+            if (std.mem.eql(u8, field.name, @tagName(def.bit))) count += 1;
+        }
+        if (count != 1) {
+            @compileError("HelperBit tag '" ++ field.name ++ "' must occur once in BIT_DEFS");
         }
     }
 }

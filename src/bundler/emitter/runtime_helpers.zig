@@ -65,9 +65,8 @@ pub fn emitBundleRuntimeHelpers(
     if (needs_esm_wrap_runtime) {
         try rt.appendEsmWrapRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports);
     }
-    if (options.experimental_decorators) {
-        try rt.appendDecoratorRuntime(output, allocator, options.minify_whitespace);
-    }
+    // Legacy decorators use the transformer's named virtual-module import.
+    // An option-wide preamble would define __decorateClass a second time.
     // __async는 이후 appendRuntimeHelpers(collected_helpers)에서 실제 사용 여부 기반으로
     // 주입됨 — 여기서 target 기반으로 또 주입하면 중복 emit 된다.
     // dev mode: HMR 런타임 주입 (__zntc_modules, __zntc_require, __zntc_apply_update 등).
@@ -394,9 +393,7 @@ pub fn emitChunkRuntimeHelpers(
     if (needs_esm_wrap_runtime) {
         try rt.appendEsmWrapRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports);
     }
-    if (options.experimental_decorators) {
-        try rt.appendDecoratorRuntime(output, allocator, options.minify_whitespace);
-    }
+    // The virtual decorator module is distributed with its importing chunk.
     // #1961: RuntimeHelpers 비트맵 기반 helper (es_decorator / async_helper / generator
     // 등) 는 transformer 가 graph parse 단계에서 named import 으로 emit -> graph 가 chunk
     // 분배. chunk-level prepend 는 중복 정의를 만들기 때문에 제거.

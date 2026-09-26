@@ -132,6 +132,7 @@ fn makeTypeofGuard(self: anytype, name: []const u8) Error!NodeIndex {
 pub fn buildMetadataCall(self: anytype, key: []const u8, value_idx: NodeIndex) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
+    self.runtime_helpers.metadata = true;
     const callee = try es_helpers.makeRuntimeHelperRef(self, "__metadata");
 
     // key 문자열 리터럴 — codegen의 writeStringLiteral은 따옴표 포함 텍스트를 기대

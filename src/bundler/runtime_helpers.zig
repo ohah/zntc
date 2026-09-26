@@ -1681,6 +1681,9 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     if (helpers.legacy_decorator) {
         try buf.appendSlice(allocator, if (minify) DECORATOR_RUNTIME_MIN else DECORATOR_RUNTIME);
     }
+    if (helpers.metadata) {
+        try buf.appendSlice(allocator, if (minify) METADATA_RUNTIME_MIN else METADATA_RUNTIME);
+    }
     if (helpers.spread_array) {
         try buf.appendSlice(allocator, if (minify) SPREAD_ARRAY_RUNTIME_MIN else SPREAD_ARRAY_RUNTIME);
     }

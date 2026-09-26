@@ -2152,6 +2152,37 @@ test "Minify non-fast-path: experimental decorator blocks anonymization (#1596)"
     try std.testing.expect(std.mem.indexOf(u8, result.output, "DecoratedExpr") != null);
 }
 
+test "#4819 legacy decorator runtime imports bind metadata helper" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\function Log(target: any, key?: any, kind?: any) {}
+        \\@Log class Decorated {
+        \\  @Log method(value: number): number { return value; }
+        \\}
+        \\console.log(new Decorated().method(3));
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_syntax = true,
+        .experimental_decorators = true,
+        .emit_decorator_metadata = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Reflect.metadata") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "design:type") != null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.output, "$dC="));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.output, "$mD="));
+}
+
 test "Minify non-fast-path: instance field allows anonymization (#1596)" {
     // instance field 는 constructor 로 이동되므로 class name 참조가 남지 않는다.
     var tmp = std.testing.tmpDir(.{});
