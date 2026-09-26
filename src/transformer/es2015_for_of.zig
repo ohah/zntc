@@ -127,14 +127,19 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 null
             else
                 try self.declareSyntheticInScope(iter_binding, span, .variable_var, loop_scope);
+            const step_binding = try es_helpers.makeSyntheticBinding(self, step);
+            const step_symbol = if (register_sm_temps or self.pending_loop_extraction_depth != 0)
+                null
+            else
+                try self.declareSyntheticInScope(step_binding, span, .variable_var, loop_scope);
             const for_init = try es_helpers.makeVarDeclaration(self, &.{
                 try es_helpers.makeDeclarator(self, iter_binding, values_call, span),
-                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, step), .none, span),
+                try es_helpers.makeDeclarator(self, step_binding, .none, span),
             }, .@"var", span);
 
             // test: !(_a = (_e = _d.next()).done)
             const next_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeIteratorRef(self, iter, iter_symbol, loop_scope), try es_helpers.makePropertyName(self, "next"), span), &.{}, span);
-            const step_assign = try makeAssign(self, try makeRefFromSpan(self, step), next_call, span);
+            const step_assign = try makeAssign(self, try makeForOfRef(self, step, step_symbol, loop_scope, .{ .write = true }), next_call, span);
             const done = try es_helpers.makeStaticMember(self, step_assign, try es_helpers.makePropertyName(self, "done"), span);
             const for_test = try es_helpers.makeUnaryNot(self, try makeAssign(self, try makeRefFromSpan(self, norm), done, span), span);
 
@@ -142,7 +147,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const for_update = try makeAssign(self, try makeRefFromSpan(self, norm), try es_helpers.makeBoolLiteral(self, true), span);
 
             // body: <루프 변수 = _e.value>; body
-            const value = try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, step), try es_helpers.makePropertyName(self, "value"), span);
+            const value = try es_helpers.makeStaticMember(self, try makeForOfRef(self, step, step_symbol, loop_scope, .{ .read = true }), try es_helpers.makePropertyName(self, "value"), span);
             const for_body = try buildLoopBody(self, left, value, body, span);
 
             const for_stmt = try self.addExtraNode(.for_statement, span, &.{
@@ -385,8 +390,12 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         }
 
         fn makeIteratorRef(self: *Transformer, name_span: Span, symbol: ?SymbolId, scope: @import("../semantic/scope.zig").ScopeId) Transformer.Error!NodeIndex {
+            return makeForOfRef(self, name_span, symbol, scope, .{ .read = true });
+        }
+
+        fn makeForOfRef(self: *Transformer, name_span: Span, symbol: ?SymbolId, scope: @import("../semantic/scope.zig").ScopeId, flags: @import("../semantic/symbol.zig").ReferenceFlags) Transformer.Error!NodeIndex {
             const ref = try makeRefFromSpan(self, name_span);
-            try self.addSyntheticRefInScope(ref, symbol, scope, .{ .read = true });
+            try self.addSyntheticRefInScope(ref, symbol, scope, flags);
             return ref;
         }
 
