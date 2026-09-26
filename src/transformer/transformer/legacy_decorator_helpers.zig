@@ -161,6 +161,9 @@ pub fn buildDecorateClassMemberCall(
     const zero_span = Span{ .start = 0, .end = 0 };
 
     // callee: __decorateClass (#1621: minify 시 $dC 축약)
+    // ES5 class lowering calls this builder directly, without passing through
+    // transformExperimentalDecorators. Record the helper at its actual use.
+    self.runtime_helpers.legacy_decorator = true;
     const callee = try es_helpers.makeRuntimeHelperRef(self, "__decorateClass");
 
     // arg1: [dec1, dec2, ..., __metadata("design:type", Function), ...]
@@ -242,6 +245,7 @@ pub fn buildDecorateClassCall(
     const zero_span = Span{ .start = 0, .end = 0 };
 
     // callee: __decorateClass (#1621: minify 시 $dC 축약)
+    self.runtime_helpers.legacy_decorator = true;
     const callee = try es_helpers.makeRuntimeHelperRef(self, "__decorateClass");
 
     // arg1: [...ctorParamDecos, ...classDecos]
