@@ -54,7 +54,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
         ///
         /// class: extra = [name, super, body, type_params, impl_start, impl_len, deco_start, deco_len]
         /// 반환: function_declaration. 나머지 prototype assignment는 pending_nodes에 추가.
-        pub fn lowerClassDeclaration(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+        pub fn lowerClassDeclaration(self: *Transformer, source_idx: NodeIndex, node: Node) Transformer.Error!NodeIndex {
+            _ = source_idx; // Retained through computed-key copies for the later class IIFE scope slice.
             const e = node.data.extra;
             const span = node.span;
 
@@ -214,6 +215,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 self.runtime_helpers.class_call_check = true;
             }
 
+            if (cm.constructor_idx) |source_ctor| try self.remapCopiedScopeOwner(source_ctor, func_node);
+
             try self.scratch.append(self.allocator, func_node);
 
             // __extends(ClassName, _super) — parent는 IIFE 매개변수 _super
@@ -311,7 +314,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
         /// → const Foo = (function() { function Bar() {} Bar.prototype.method = ...; return Bar; })()
         ///
         /// 메서드/static이 없으면 단순 function expression으로 변환.
-        pub fn lowerClassExpression(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+        pub fn lowerClassExpression(self: *Transformer, source_idx: NodeIndex, node: Node) Transformer.Error!NodeIndex {
+            _ = source_idx; // Retained through computed-key copies for the later class IIFE scope slice.
             const e = node.data.extra;
             const span = node.span;
 
@@ -451,12 +455,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             if (!has_extra) {
                 const func = self.ast.getNode(func_node);
-                return self.ast.addNode(.{
+                const func_expr = try self.ast.addNode(.{
                     .tag = .function_expression,
                     .span = func.span,
                     .data = func.data,
                 });
+                if (cm.constructor_idx) |source_ctor| try self.remapCopiedScopeOwner(source_ctor, func_expr);
+                return func_expr;
             }
+
+            if (cm.constructor_idx) |source_ctor| try self.remapCopiedScopeOwner(source_ctor, func_node);
 
             // IIFE (lowerClassDeclaration과 동일 패턴) — name_span을 재사용.
             // func_node 는 위에서 이미 fresh name(`func_name` = makeUserBinding, 안쪽 참조와

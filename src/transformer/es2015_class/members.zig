@@ -287,10 +287,14 @@ pub fn Members(comptime Transformer: type) type {
                         const memo_key = try memoizeStaticComputedFieldKey(self, &cm, self.ast.getNode(key).data.unary.operand, member.span);
                         break :blk try es_helpers.replaceMethodDefinitionKey(self, @enumFromInt(raw_idx), memo_key);
                     } else @as(NodeIndex, @enumFromInt(raw_idx));
+                    // Field computed-key prehoisting can already have copied this
+                    // method before classification. Keep the analyzer's exact owner.
+                    const source_member_idx: NodeIndex = @enumFromInt(self.scope_owner_origins.get(raw_idx) orelse raw_idx);
 
                     if (kind == 1 or kind == 2) {
                         try cm.accessors.append(self.allocator, .{
                             .member_idx = member_idx,
+                            .source_member_idx = source_member_idx,
                             .is_static = is_static,
                             .is_getter = kind == 1,
                             .member_span = member.span,
@@ -298,6 +302,7 @@ pub fn Members(comptime Transformer: type) type {
                     } else {
                         try cm.methods.append(self.allocator, .{
                             .member_idx = member_idx,
+                            .source_member_idx = source_member_idx,
                             .is_static = is_static,
                             .member_span = member.span,
                         });

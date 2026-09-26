@@ -612,7 +612,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 return stage3_result;
             }
             if (self.options.unsupported.class) {
-                return self.lowerClassWithPrehoistedKeys(target_node, es2015_class.ES2015Class(Transformer).lowerClassDeclaration);
+                return self.lowerClassWithPrehoistedKeys(idx, target_node, es2015_class.ES2015Class(Transformer).lowerClassDeclaration);
             }
             if (replacement_idx) |r| return r;
             return self.visitClass(node);
@@ -630,7 +630,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 return stage3_result;
             }
             if (self.options.unsupported.class) {
-                return self.lowerClassWithPrehoistedKeys(target_node, es2015_class.ES2015Class(Transformer).lowerClassExpression);
+                return self.lowerClassWithPrehoistedKeys(idx, target_node, es2015_class.ES2015Class(Transformer).lowerClassExpression);
             }
             if (replacement_idx) |r| return r;
             return self.visitClass(node);

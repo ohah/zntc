@@ -41,6 +41,11 @@ pub fn Constructors(comptime Transformer: type) type {
 
         /// constructor method_definition에서 function_declaration 생성.
         pub fn buildFunctionFromConstructor(self: *Transformer, ctor_idx: NodeIndex, name: NodeIndex, instance_fields: []const NodeIndex, is_derived: bool, span: Span) Transformer.Error!NodeIndex {
+            const saved_scope = self.current_scope;
+            if (self.semantic_edit_enabled) {
+                if (self.scope_owner_map.get(@intFromEnum(ctor_idx))) |scope| self.current_scope = @enumFromInt(scope);
+            }
+            defer self.current_scope = saved_scope;
             const ctor = self.ast.getNode(ctor_idx);
             const me = ctor.data.extra;
 
@@ -227,7 +232,7 @@ pub fn Constructors(comptime Transformer: type) type {
             }
 
             if (self.temp_var_counter > saved_temp_counter and !new_body.isNone()) {
-                new_body = try self.hoistTempVars(new_body, saved_temp_counter, span);
+                new_body = try self.hoistTempVarsInOriginalFunction(new_body, saved_temp_counter, span);
             }
             self.temp_var_counter = saved_temp_counter;
 
