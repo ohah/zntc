@@ -1093,6 +1093,20 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     });
                 },
 
+                .catch_clause => {
+                    const new_body = try transformStmtFlow(self, node.data.binary.right, flow, loop_depth, switch_depth);
+                    if (new_body == node.data.binary.right) return idx;
+                    return self.ast.addNode(.{
+                        .tag = .catch_clause,
+                        .span = node.span,
+                        .data = .{ .binary = .{
+                            .left = node.data.binary.left,
+                            .right = new_body,
+                            .flags = node.data.binary.flags,
+                        } },
+                    });
+                },
+
                 else => return idx,
             }
         }
