@@ -184,10 +184,7 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
 
             // 3 substitute path (undefined→void 0, linking_metadata renames, cjs_wrap)
             // 가 모두 sym_id 를 본다 — 단일 호출로 hoist (per-identifier hot path).
-            const sym_id: ?u32 = if (self.options.linking_metadata) |meta|
-                self.resolveSymbolId(idx, meta)
-            else
-                null;
+            const sym_id = self.sourceSymbolId(idx);
 
             // Peephole: global `undefined` → `void 0` (minify_syntax 활성화 시).
             // 9 bytes → 6 bytes, 3 bytes 절감 (esbuild/rolldown/rspack 동일).
@@ -231,21 +228,17 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
                     }
                 }
             }
-            // namespace IIFE 내부: export된 변수의 "참조"를 ns.name으로 치환.
-            // identifier_reference(값 참조)와 assignment_target_identifier(대입 대상) 모두 치환.
-            // binding_identifier(선언 위치)는 치환하지 않음 — 선언은 emitNamespaceVarDirectAssign에서 처리.
-            if (self.ns_prefix) |prefix| {
-                if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
+            // Namespace-exported value storage is an IIFE object property.
+            // Resolve the source binding first: a same-named local, parameter,
+            // or nested function binding must never become that property.
+            if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
+                if (self.namespaceExportPrefix(idx)) |prefix| {
                     const name = self.ast.getText(node.data.string_ref);
-                    if (self.ns_exports) |exports| {
-                        if (exports.contains(name)) {
-                            try self.addSourceMappingWithName(node.span, name);
-                            try self.write(prefix);
-                            try self.writeByte('.');
-                            try self.write(name);
-                            return;
-                        }
-                    }
+                    try self.addSourceMappingWithName(node.span, name);
+                    try self.write(prefix);
+                    try self.writeByte('.');
+                    try self.write(name);
+                    return;
                 }
             }
             // CJS wrapper free `exports`/`module` 참조 치환 (RFC PR-2). wrapper

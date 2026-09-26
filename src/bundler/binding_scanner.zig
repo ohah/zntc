@@ -315,9 +315,12 @@ pub fn extractExportBindings(
 
     const reachable = try ast_walk.collectReachableNodeIndices(allocator, ast);
     defer allocator.free(reachable);
+    var top_level = try ast_walk.topLevelStatementMask(ast);
+    defer top_level.deinit();
 
     for (reachable) |ni| {
         const node = ast.nodes.items[ni];
+        if (!top_level.isSet(ni)) continue;
         switch (node.tag) {
             .export_named_declaration => {
                 const e = node.data.extra;
@@ -566,6 +569,16 @@ fn extractDeclExportNames(allocator: std.mem.Allocator, ast: *const Ast, decl: N
                 .name = ast.getText(name_node.span),
                 .span = name_node.span,
             });
+        },
+        .ts_module_declaration => {
+            const name_idx = decl.data.binary.left;
+            if (!name_idx.isNone()) {
+                const name_node = ast.getNode(name_idx);
+                try names.append(allocator, .{
+                    .name = ast.getText(name_node.span),
+                    .span = name_node.span,
+                });
+            }
         },
         else => {},
     }

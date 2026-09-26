@@ -102,6 +102,9 @@ pub const CodegenOptions = struct {
     sources_content: bool = true,
     /// 번들러 linker 메타데이터. 설정 시 import 스킵 + 식별자 리네임 적용.
     linking_metadata: ?*const LinkingMetadata = null,
+    /// Transformed AST node -> source semantic symbol for standalone output.
+    /// LinkingMetadata supplies this map in bundle/mangle paths.
+    semantic_symbol_ids: []const ?u32 = &.{},
     /// __esm 래핑 모듈: CJS import 변환 시 const 대신 var 사용.
     /// ESM의 import는 hoisted이지만 CJS 변환 시 선언 위치에 출력되어 TDZ 발생.
     use_var_for_imports: bool = false,

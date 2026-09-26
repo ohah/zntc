@@ -2165,6 +2165,7 @@ pub fn emitModule(
         .pm_cjs_storage = options.preserve_modules and options.format == .cjs and module.wrap_kind == .none and
             (options.output_exports == .auto or options.output_exports == .named),
         .linking_metadata = if (metadata) |*m| m else null,
+        .semantic_symbol_ids = transformer.symbol_ids.items,
         // 번들 모드에서 ESM이 아니면 import.meta → {} 치환 (esbuild 호환)
         // Node.js는 import.meta를 보면 ESM으로 재파싱하려 해서 에러 발생
         .replace_import_meta = options.format != .esm,
