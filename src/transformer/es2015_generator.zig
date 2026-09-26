@@ -94,8 +94,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const body_idx: NodeIndex = self.readNodeIdx(e, 2);
             const flags = self.readU32(e, ast_mod.FunctionExtra.flags);
 
-            const arrow_env = es_helpers.pushArrowEnv(self);
-            defer es_helpers.popArrowEnv(self, arrow_env);
+            // An extracted per-iteration generator is an implementation
+            // function, not a lexical boundary for arrows in the source loop
+            // body. Their `this`/`arguments` belong to the enclosing source
+            // generator; keep that frame so its wrapper owns the aliases.
+            const extracted_loop = self.deferred_generator_loop_owners.contains(@intFromEnum(source_owner));
+            const arrow_env: ?es_helpers.ArrowEnvSnapshot = if (extracted_loop) null else es_helpers.pushArrowEnv(self);
+            defer if (arrow_env) |env| es_helpers.popArrowEnv(self, env);
             const saved_extracted_body = self.in_extracted_fn_body;
             self.in_extracted_fn_body = false;
             defer self.in_extracted_fn_body = saved_extracted_body;
@@ -105,8 +110,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const parameter_temp_start = self.temp_var_counter;
             const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
             const parameter_temp_end = self.temp_var_counter;
-            const param_needs_this = self.needs_this_var;
-            const param_needs_arguments = self.needs_arguments_var;
+            const param_needs_this = if (extracted_loop) false else self.needs_this_var;
+            const param_needs_arguments = if (extracted_loop) false else self.needs_arguments_var;
 
             const saved_temp_counter = self.temp_var_counter;
 
@@ -155,7 +160,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            {
+            if (!extracted_loop) {
                 var capture_stmts: [2]NodeIndex = undefined;
                 const count = try es_helpers.fillThisArgumentsCaptures(self, &capture_stmts, span);
                 try es_helpers.recordParameterCaptures(self, capture_stmts[0..count], param_needs_this, param_needs_arguments);
@@ -712,7 +717,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // that callback has no NodeIndex/ScopeId yet. Keep its exact owner
             // identity for the later generator-loop migration. An arbitrary
             // missing owner must still fail instead of using current_scope.
-            if (self.semantic_edit_enabled) try self.deferred_generator_loop_owners.put(self.allocator, @intFromEnum(result.loop_function), {});
+            // This also marks the synthetic boundary as transparent to source
+            // lexical arrow captures during its later generator visit.
+            try self.deferred_generator_loop_owners.put(self.allocator, @intFromEnum(result.loop_function), {});
 
             // `var _loopN = function* (x) {…}` 은 대입문으로 접히므로, 이름을 **바깥 함수**
             // 의 var 리스트에 등록해야 한다. 상태 기계가 만들어진 뒤에 생긴 이름이라
