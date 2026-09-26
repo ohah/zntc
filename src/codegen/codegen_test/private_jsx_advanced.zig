@@ -277,13 +277,13 @@ test "private static method: class declaration call lowers (es2021)" {
         \\}
     , .es2021);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _m={writable:true,value:_m_fn}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _m={value:_m_fn,writable:false}") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function _m_fn()") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classStaticPrivateFieldSpecGet(Foo,Foo,_m).call(Foo)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classStaticPrivateFieldSpecGet(_a,Foo,_m).call(_a)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, ".#m(") == null);
 }
 
-test "private static method: method reference binds receiver (es2021)" {
+test "private static method: detached read preserves function identity (es2021)" {
     var r = try e2eTarget(std.testing.allocator,
         \\class Foo {
         \\  static #m() { return this; }
@@ -291,7 +291,8 @@ test "private static method: method reference binds receiver (es2021)" {
         \\}
     , .es2021);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classStaticPrivateFieldSpecGet(this,Foo,_m).bind(this)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return __classStaticPrivateFieldSpecGet(this,Foo,_m)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".bind(this)") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, ".#m") == null);
 }
 

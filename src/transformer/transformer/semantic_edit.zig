@@ -68,7 +68,7 @@ pub fn originalFunctionScope(self: *Transformer, owner: NodeIndex) ScopeId {
 }
 
 /// Register one state machine callback and its exact pending `_state` uses.
-pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, callback: NodeIndex, parameter: NodeIndex, ref_start: usize, span: Span) Transformer.Error!void {
+pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: ScopeId, callback: NodeIndex, parameter: NodeIndex, ref_start: usize, callback_temps: []const @import("lists.zig").HoistedStateTemp, span: Span) Transformer.Error!void {
     if (ref_start > self.generator_state_refs.items.len) std.debug.panic("invalid state machine frame", .{});
     if (self.semantic_edit_enabled and !parent.isNone()) {
         const scope = try addGeneratedFunctionScope(self, parent, callback);
@@ -92,8 +92,98 @@ pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, callback: NodeInd
             var it = @import("../../parser/ast_walk.zig").children(self.ast, self.ast.getNode(node));
             while (it.next()) |child| try stack.append(self.allocator, child);
         }
+        var live_scopes = try liveScopeOwners(self, &seen);
+        defer live_scopes.deinit(self.allocator);
+        for (callback_temps) |temp| {
+            try bindStateCallbackTemp(self, temp, span, source_scope, scope, &seen, &live_scopes);
+        }
     }
     self.generator_state_refs.shrinkRetainingCapacity(ref_start);
+}
+
+/// Bind only the exact temp declarations emitted into this callback. The
+/// producer records their NodeIndex while hoisting, so no identifier-name
+/// lookup or scan of unrelated pending temps is needed.
+fn liveScopeOwners(self: *Transformer, live: *const std.AutoHashMapUnmanaged(u32, void)) Transformer.Error!std.AutoHashMapUnmanaged(u32, void) {
+    var scopes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    var it = live.iterator();
+    while (it.next()) |entry| {
+        const node = entry.key_ptr.*;
+        if (self.transformed_scope_owner_map.get(node) orelse self.scope_owner_map.get(node)) |scope|
+            try scopes.put(self.allocator, scope, {});
+    }
+    return scopes;
+}
+
+fn scopeWithin(scopes: []const @import("../../semantic/scope.zig").Scope, scope: ScopeId, ancestor: ScopeId) bool {
+    var cursor = scope;
+    var hops: usize = 0;
+    while (!cursor.isNone() and hops < scopes.len) : (hops += 1) {
+        if (cursor == ancestor) return true;
+        cursor = scopes[cursor.toIndex()].parent;
+    }
+    return false;
+}
+
+fn generatedTempRefScope(self: *Transformer, source_scope: ScopeId, target_scope: ScopeId, old_scope: ScopeId, live_scopes: *const std.AutoHashMapUnmanaged(u32, void)) Transformer.Error!ScopeId {
+    const editor = try editorFor(self);
+    if (old_scope == source_scope) return target_scope;
+    if (scopeWithin(editor.scopes.items, old_scope, target_scope)) return old_scope;
+    if (!scopeWithin(editor.scopes.items, old_scope, source_scope))
+        std.debug.panic("generated temp reference has unrelated source scope", .{});
+
+    // The state machine can flatten a source block away. A live copied block or
+    // nested function keeps its lexical scope; only its first live frontier
+    // moves below the generated function. A fully erased frontier makes the
+    // reference directly callback-local.
+    var cursor = old_scope;
+    var frontier: ScopeId = .none;
+    while (cursor != source_scope) {
+        if (live_scopes.contains(@intFromEnum(cursor))) frontier = cursor;
+        cursor = editor.scopes.items[cursor.toIndex()].parent;
+    }
+    if (frontier.isNone()) return target_scope;
+    editor.reparentScope(frontier, target_scope) catch |err| return editError(err);
+    return old_scope;
+}
+
+fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedStateTemp, declaration_span: Span, source_scope: ScopeId, callback_scope: ScopeId, live: *const std.AutoHashMapUnmanaged(u32, void), live_scopes: *const std.AutoHashMapUnmanaged(u32, void)) Transformer.Error!void {
+    const chain = self.pending_temp_ref_chains.fetchRemove(temp.name_span.start);
+    const editor = try editorFor(self);
+    const id = editor.declare(temp.binding, temp.name_span, declaration_span, callback_scope, .variable_var, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+    try setSymbolId(self, temp.binding, id);
+    var i: ?usize = if (chain) |found| found.value.first else null;
+    while (i) |index| {
+        const ref = self.pending_temp_refs.items[index];
+        std.debug.assert(ref.name_start == temp.name_span.start);
+        if (live.contains(@intFromEnum(ref.node))) {
+            const scope = try generatedTempRefScope(self, source_scope, callback_scope, ref.scope, live_scopes);
+            editor.addReference(ref.node, id, scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+            try setSymbolId(self, ref.node, id);
+        }
+        i = ref.next;
+    }
+    if (self.pending_temp_ref_chains.count() == 0) self.pending_temp_refs.clearRetainingCapacity();
+}
+
+pub fn bindGeneratedFunctionTemps(self: *Transformer, source_scope: ScopeId, function_scope: ScopeId, body: NodeIndex, temps: []const @import("lists.zig").HoistedStateTemp, span: Span) Transformer.Error!void {
+    if (!self.semantic_edit_enabled or function_scope.isNone()) return;
+    var live: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer live.deinit(self.allocator);
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    try stack.append(self.allocator, body);
+    while (stack.pop()) |node| {
+        if (node.isNone() or @intFromEnum(node) >= self.ast.nodes.items.len) continue;
+        const raw = @intFromEnum(node);
+        if (live.contains(raw)) continue;
+        try live.put(self.allocator, raw, {});
+        var it = @import("../../parser/ast_walk.zig").children(self.ast, self.ast.getNode(node));
+        while (it.next()) |child| try stack.append(self.allocator, child);
+    }
+    var live_scopes = try liveScopeOwners(self, &live);
+    defer live_scopes.deinit(self.allocator);
+    for (temps) |temp| try bindStateCallbackTemp(self, temp, span, source_scope, function_scope, &live, &live_scopes);
 }
 
 /// AST 생성 시점의 current_scope와 실제 삽입 위치가 다를 때 명시한 스코프에 등록한다.

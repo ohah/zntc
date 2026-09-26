@@ -418,7 +418,7 @@ pub fn ES2017(comptime Transformer: type) type {
         }
 
         /// async function foo() { ... } → function foo() { return __async(function*() { ... }); }
-        pub fn lowerAsyncFunction(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+        pub fn lowerAsyncFunction(self: *Transformer, source_owner: NodeIndex, node: Node) Transformer.Error!NodeIndex {
             const e = node.data.extra;
             const name_idx: NodeIndex = self.readNodeIdx(e, 0);
             const params_list = self.ast.functionParamsList(node);
@@ -426,6 +426,7 @@ pub fn ES2017(comptime Transformer: type) type {
             const params_len = params_list.len;
             const body_idx: NodeIndex = self.readNodeIdx(e, 2);
             const flags = self.readU32(e, ast_mod.FunctionExtra.flags);
+            const saved_temp_counter = self.temp_var_counter;
 
             const new_name = try self.visitNode(name_idx);
             // body 가 `__async(function*(){…})` 안쪽으로 옮겨진다 → `arguments` 캡처 필요.
@@ -437,9 +438,17 @@ pub fn ES2017(comptime Transformer: type) type {
             // await→yield 변환을 못 받는다 → 여기서 정리 (#4488).
             try rewriteRemainingAwaitToYield(self, new_body);
 
-            const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
-
             const gen_func = try es_helpers.buildGeneratorWrapper(self, new_body, node.span);
+            const source_scope = self.originalFunctionScope(source_owner);
+            const gen_scope = try self.addGeneratedFunctionScope(source_scope, gen_func);
+            var body_temps: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty;
+            defer body_temps.deinit(self.allocator);
+            const gen_body = try self.hoistTempVarsRecording(new_body, saved_temp_counter, node.span, &body_temps);
+            self.temp_var_counter = saved_temp_counter;
+            self.ast.extra_data.items[self.ast.getNode(gen_func).data.extra + 2] = @intFromEnum(gen_body);
+            try self.bindGeneratedFunctionTemps(source_scope, gen_scope, gen_body, body_temps.items, node.span);
+
+            const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_func, node.span);
 
             const return_stmt = try self.ast.addNode(.{
@@ -481,13 +490,14 @@ pub fn ES2017(comptime Transformer: type) type {
         }
 
         /// async () => { ... } → () => __async(function*() { ... })
-        pub fn lowerAsyncArrow(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+        pub fn lowerAsyncArrow(self: *Transformer, source_owner: NodeIndex, node: Node) Transformer.Error!NodeIndex {
             const e = node.data.extra;
             const params_idx: NodeIndex = self.readNodeIdx(e, 0);
             const body_idx: NodeIndex = self.readNodeIdx(e, 1);
             const flags = self.readU32(e, ast_mod.ArrowExtra.flags);
 
             const new_params = try self.visitNode(params_idx);
+            const saved_temp_counter = self.temp_var_counter;
             const new_body = try self.visitBodyWorkletAware(body_idx);
             // body visit 중 for-await 다운레벨이 새로 만든 await 정리 (#4488, lowerAsyncFunction 동일).
             try rewriteRemainingAwaitToYield(self, new_body);
@@ -509,6 +519,14 @@ pub fn ES2017(comptime Transformer: type) type {
             } else new_body;
 
             const gen_func = try es_helpers.buildGeneratorWrapper(self, gen_body, node.span);
+            const source_scope = self.originalFunctionScope(source_owner);
+            const gen_scope = try self.addGeneratedFunctionScope(source_scope, gen_func);
+            var body_temps: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty;
+            defer body_temps.deinit(self.allocator);
+            const hoisted_body = try self.hoistTempVarsRecording(gen_body, saved_temp_counter, node.span, &body_temps);
+            self.temp_var_counter = saved_temp_counter;
+            self.ast.extra_data.items[self.ast.getNode(gen_func).data.extra + 2] = @intFromEnum(hoisted_body);
+            try self.bindGeneratedFunctionTemps(source_scope, gen_scope, hoisted_body, body_temps.items, node.span);
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_func, node.span);
 
             const new_flags = flags & ~@as(u32, ast_mod.ArrowFlags.is_async);
@@ -566,7 +584,7 @@ pub fn ES2017(comptime Transformer: type) type {
             var sm_result = try GenMod.buildStateMachine(self, body_idx, span);
             self.in_extracted_fn_body = saved_ext_sm;
             if (sm_result.body.isNone()) return .none;
-            sm_result.body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span);
+            sm_result.body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span, &saved_sm_temps.callback_temps);
 
             const gen = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
             // __async는 fn.apply()로 함수를 호출하므로 iterator를 직접 전달 불가.
@@ -646,7 +664,7 @@ pub fn ES2017(comptime Transformer: type) type {
             const params_list = lowered.params_list;
             var sm_result = lowered.sm_result;
             if (sm_result.body.isNone()) return .none;
-            sm_result.body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span);
+            sm_result.body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span, &saved_sm_temps.callback_temps);
 
             const gen = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
             const gen_wrapper_func = try es_helpers.wrapInFunction(self, gen.call, span);
