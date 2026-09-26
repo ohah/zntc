@@ -231,6 +231,28 @@ pub fn hoistTempVarsInOriginalFunction(self: *Transformer, body_idx: NodeIndex, 
     return hoistTempVarsWithScope(self, body_idx, saved_counter, span, &.{}, scope, null);
 }
 
+/// An arrow's body owns temps allocated while visiting that body. Its
+/// parameters were visited before saved_counter and keep their existing
+/// allocation policy. Wrap an expression body only if it needs a declaration.
+pub fn hoistArrowBodyTemps(self: *Transformer, body_idx: NodeIndex, saved_counter: u32, span: Span) Error!NodeIndex {
+    if (self.temp_var_counter == saved_counter) return body_idx;
+    std.debug.assert(!body_idx.isNone() and self.temp_var_counter > saved_counter);
+    var body = body_idx;
+    const node = self.ast.getNode(body);
+    if (node.tag != .block_statement and node.tag != .function_body) {
+        const ret = try self.ast.addNode(.{
+            .tag = .return_statement,
+            .span = span,
+            .data = .{ .unary = .{ .operand = body, .flags = 0 } },
+        });
+        const list = try self.ast.addNodeList(&.{ret});
+        body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = list } });
+    }
+    body = try self.hoistTempVarsInOriginalFunction(body, saved_counter, span);
+    self.temp_var_counter = saved_counter;
+    return body;
+}
+
 /// 임시 변수 호이스팅: saved_counter..current counter 범위의 var _a, _b, ... 선언을 body 앞에 삽입.
 /// `skip_spans`에 들어있는 synthetic temp 이름은 선언하지 않는다.
 ///

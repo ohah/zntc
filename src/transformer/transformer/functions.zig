@@ -36,7 +36,9 @@ pub fn visitArrowFunction(self: *Transformer, node: Node) Error!NodeIndex {
     const body_idx = self.readNodeIdx(e, 1);
     const flags = self.readU32(e, 2);
     const new_params = try self.visitNode(params_idx);
-    const new_body = try self.visitBodyWorkletAware(body_idx);
+    const body_temp_start = self.temp_var_counter;
+    const visited_body = try self.visitBodyWorkletAware(body_idx);
+    const new_body = try self.hoistArrowBodyTemps(visited_body, body_temp_start, node.span);
     const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_params), @intFromEnum(new_body), flags });
     const result = try self.ast.addNode(.{ .tag = .arrow_function_expression, .span = node.span, .data = .{ .extra = new_extra } });
 

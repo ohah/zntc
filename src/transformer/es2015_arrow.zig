@@ -45,6 +45,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             const flags = self.readU32(e, ast_mod.ArrowExtra.flags);
 
             const param_list = try arrowParamsToList(self, params_idx);
+            const body_temp_start = self.temp_var_counter;
 
             // arrow body 안의 this/arguments를 캡처하기 위해 depth 증가.
             // visitNode에서 this → _this, arguments → _arguments로 치환된다.
@@ -53,7 +54,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             self.arrow_this_depth -= 1;
 
             // expression body → { return expr; }
-            const func_body = blk: {
+            var func_body = blk: {
                 if (new_body.isNone()) break :blk new_body;
                 const body_node = self.ast.getNode(new_body);
                 if (body_node.tag != .block_statement and body_node.tag != .function_body) {
@@ -71,6 +72,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 }
                 break :blk new_body;
             };
+            func_body = try self.hoistArrowBodyTemps(func_body, body_temp_start, node.span);
 
             // function_expression: extra = [name(0), params(1), body(2), flags(3), return_type(4)]
             const func_flags: u32 = if (flags & ast_mod.ArrowFlags.is_async != 0)
