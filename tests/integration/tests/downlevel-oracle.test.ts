@@ -58,6 +58,7 @@ const KNOWN_FAILURES: Record<string, string[]> = {
   '4819-private-async-generator': ['hermes/plain', 'hermes/minify'],
   // #4733 Hermes async generator consumer; the pre-fix static-private fixture also fails here.
   '4819-static-private-async-generator': ['hermes/plain', 'hermes/minify'],
+  '4819-static-private-async-generator-super': ['hermes/plain', 'hermes/minify'],
   // #4735 클래스 계산된 키 안 super 가 바깥 home 대신 클래스 자신의 super 문맥으로 낮춰진다
   '4729-super-41': [
     'es5/plain',
