@@ -130,6 +130,124 @@ test "#4819 ES5 named class expression stores exact inner self in wrapper" {
     try std.testing.expect(live_binding);
 }
 
+test "#4819 ES5 class IIFE check alias does not resolve to shadowing parameter" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const X = class Inner { constructor(Inner) { this.value = Inner; } static self() { return Inner; } };");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    var source_scope: ?u32 = null;
+    var inner_id: ?u32 = null;
+    var ctor_scope: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .class_expression) {
+            source_scope = analyzer.scope_owner_map.get(@intCast(raw));
+            inner_id = analyzer.class_self_symbol_map.get(@intCast(raw));
+        } else if (node.tag == .method_definition and ctor_scope == null) {
+            ctor_scope = analyzer.scope_owner_map.get(@intCast(raw));
+        }
+    }
+    const class_scope = source_scope orelse return error.TestUnexpectedResult;
+    const inner = inner_id orelse return error.TestUnexpectedResult;
+    const constructor_scope = ctor_scope orelse return error.TestUnexpectedResult;
+    const parameter = analyzer.scope_maps.items[constructor_scope].get("Inner") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(parameter != inner);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    const wrapper = edited.scopes[class_scope].parent;
+    try std.testing.expectEqual(wrapper, edited.symbols.items[inner].scope_id);
+    const alias = edited.scope_maps[wrapper.toIndex()].get("_classSelf") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(alias != inner and alias != parameter);
+    try std.testing.expectEqual(@as(?usize, @intCast(parameter)), edited.scope_maps[constructor_scope].get("Inner"));
+    var alias_constructor_reads: usize = 0;
+    var inner_wrapper_reads: usize = 0;
+    for (edited.references) |ref| {
+        if (!ref.flags.read or ref.node_index.isNone()) continue;
+        if (@intFromEnum(ref.symbol_id) == alias and @intFromEnum(ref.scope_id) == constructor_scope)
+            alias_constructor_reads += 1;
+        if (@intFromEnum(ref.symbol_id) == inner and ref.scope_id == wrapper)
+            inner_wrapper_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), alias_constructor_reads);
+    try std.testing.expectEqual(@as(usize, 1), inner_wrapper_reads);
+}
+
+test "#4819 ES5 class declaration IIFE check keeps outer and inner identities" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "class Inner { constructor(Inner) { this.value = Inner; } static self() { return Inner; } }");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    var source_scope: ?u32 = null;
+    var inner_id: ?u32 = null;
+    var outer_id: ?u32 = null;
+    var ctor_scope: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .class_declaration) {
+            source_scope = analyzer.scope_owner_map.get(@intCast(raw));
+            inner_id = analyzer.class_self_symbol_map.get(@intCast(raw));
+            const name_raw = parser.ast.extra_data.items[node.data.extra + @import("../parser/ast.zig").ClassExtra.name];
+            outer_id = analyzer.symbol_ids.items[name_raw];
+        } else if (node.tag == .method_definition and ctor_scope == null) {
+            ctor_scope = analyzer.scope_owner_map.get(@intCast(raw));
+        }
+    }
+    const class_scope = source_scope orelse return error.TestUnexpectedResult;
+    const inner = inner_id orelse return error.TestUnexpectedResult;
+    const outer = outer_id orelse return error.TestUnexpectedResult;
+    const constructor_scope = ctor_scope orelse return error.TestUnexpectedResult;
+    const parameter = analyzer.scope_maps.items[constructor_scope].get("Inner") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(inner != outer and inner != parameter and outer != parameter);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    const wrapper = edited.scopes[class_scope].parent;
+    try std.testing.expectEqual(wrapper, edited.symbols.items[inner].scope_id);
+    try std.testing.expect(edited.symbols.items[outer].scope_id != wrapper);
+    const alias = edited.scope_maps[wrapper.toIndex()].get("_classSelf") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(alias != inner and alias != outer and alias != parameter);
+    var alias_constructor_reads: usize = 0;
+    var inner_wrapper_reads: usize = 0;
+    for (edited.references) |ref| {
+        if (!ref.flags.read or ref.node_index.isNone()) continue;
+        if (@intFromEnum(ref.symbol_id) == alias and @intFromEnum(ref.scope_id) == constructor_scope)
+            alias_constructor_reads += 1;
+        if (@intFromEnum(ref.symbol_id) == inner and ref.scope_id == wrapper)
+            inner_wrapper_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), alias_constructor_reads);
+    try std.testing.expectEqual(@as(usize, 1), inner_wrapper_reads);
+}
+
 test "#4819 using class copies preserve exact source scope owners" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
