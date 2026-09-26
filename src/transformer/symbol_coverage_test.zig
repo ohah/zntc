@@ -793,8 +793,10 @@ test "#4819 ES5 for-of iterator uses one var symbol across loop and finally" {
     const edited = (try transformer.finishSemanticEdit()).?;
 
     var iterator_id: ?u32 = null;
+    var step_id: ?u32 = null;
     for (edited.symbols.items[original_symbols..], original_symbols..) |symbol, id| {
         if (std.mem.eql(u8, transformer.ast.getText(symbol.name), "_d")) iterator_id = @intCast(id);
+        if (std.mem.startsWith(u8, transformer.ast.getText(symbol.name), "_step")) step_id = @intCast(id);
     }
     const id = iterator_id orelse return error.TestUnexpectedResult;
     const symbol = edited.symbols.items[id];
@@ -829,6 +831,31 @@ test "#4819 ES5 for-of iterator uses one var symbol across loop and finally" {
     try std.testing.expectEqual(@as(usize, 3), semantic_reads);
     try std.testing.expectEqual(@as(usize, 1), loop_reads);
     try std.testing.expectEqual(@as(usize, 2), finally_reads);
+
+    const step = step_id orelse return error.TestUnexpectedResult;
+    const step_symbol = edited.symbols.items[step];
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, step_symbol.kind);
+    try std.testing.expectEqual(symbol.scope_id, step_symbol.scope_id);
+    try std.testing.expectEqual(@as(u32, 2), step_symbol.reference_count);
+    var step_bindings: usize = 0;
+    var step_reads: usize = 0;
+    var step_writes: usize = 0;
+    for (edited.symbol_ids, 0..) |maybe_id, raw| {
+        if (maybe_id != step) continue;
+        const tag = transformer.ast.nodes.items[raw].tag;
+        if (tag == .binding_identifier) step_bindings += 1;
+        if (tag == .identifier_reference) {
+            for (edited.references) |ref| {
+                if (@intFromEnum(ref.node_index) != raw or @intFromEnum(ref.symbol_id) != step) continue;
+                try std.testing.expectEqual(loop_scope, ref.scope_id);
+                if (ref.flags.read) step_reads += 1;
+                if (ref.flags.write) step_writes += 1;
+            }
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), step_bindings);
+    try std.testing.expectEqual(@as(usize, 1), step_reads);
+    try std.testing.expectEqual(@as(usize, 1), step_writes);
 }
 
 test "#4760 static private 멤버를 낮출 때 만드는 클래스 참조는 클래스 심볼을 가진다" {
