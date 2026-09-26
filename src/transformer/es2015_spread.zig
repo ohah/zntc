@@ -127,7 +127,12 @@ pub fn ES2015Spread(comptime Transformer: type) type {
                     .{ new_callee, try es_helpers.cloneNode(self, new_callee) }
                 else blk: {
                     const cap = try es_helpers.captureToTemp(self, new_callee, span);
-                    break :blk .{ cap.paren_assign, try es_helpers.makeTempVarRef(self, cap.span, span) };
+                    const assignment = self.ast.getNode(cap.paren_assign);
+                    std.debug.assert(assignment.tag == .assignment_expression);
+                    try self.trackHoistedTempRef(cap.span, assignment.data.binary.left, .{ .write = true });
+                    const ref = try es_helpers.makeTempVarRef(self, cap.span, span);
+                    try self.trackHoistedTempRef(cap.span, ref, .{ .read = true });
+                    break :blk .{ cap.paren_assign, ref };
                 };
 
             // [null].concat(args) — null을 첫 인자로 추가 (bind의 this)
