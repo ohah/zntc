@@ -242,11 +242,13 @@ pub fn Constructors(comptime Transformer: type) type {
                         .data = .{ .none = 0 },
                     });
                     capture_stmts[capture_count] = try self.buildVarDecl("_this", this_init, span);
+                    try self.bindLexicalCapture(capture_stmts[capture_count], .this_value);
                     capture_count += 1;
                 }
                 if (self.needs_arguments_var) {
-                    const args_init = try es_helpers.makeGlobalRef(self, "arguments");
+                    const args_init = try self.makeCapturedArgumentsInit();
                     capture_stmts[capture_count] = try self.buildVarDecl("_arguments", args_init, span);
+                    try self.bindLexicalCapture(capture_stmts[capture_count], .arguments_value);
                     capture_count += 1;
                 }
 

@@ -121,7 +121,9 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             );
 
             // var _this; (초기화 없는 선언) — extra_data grow 가능
-            try self.scratch.append(self.allocator, try self.buildVarDecl("_this", .none, span));
+            const this_capture = try self.buildVarDecl("_this", .none, span);
+            try self.bindLexicalCapture(this_capture, .this_value);
+            try self.scratch.append(self.allocator, this_capture);
 
             // `arguments` captured by an arrow in a parameter default must
             // be initialized before that default runs. A derived constructor
