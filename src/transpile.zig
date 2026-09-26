@@ -1448,6 +1448,7 @@ fn transpileWithCallbackInternal(
         transformer.scopes = analyzer.scopes.items;
         transformer.scope_maps = analyzer.scope_maps.items;
         transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.semantic_edit_enabled = true;
         transformer.unresolved_references = &analyzer.unresolved_references;
     } else if (binding_lite_storage) |*binding_lite| {
         transformer.binding_lite = binding_lite;
@@ -1456,6 +1457,16 @@ fn transpileWithCallbackInternal(
     // 누락 검사기가 합성 노드를 빼도록 기록을 켠다(검사기가 켜졌을 때만 — 평소 비용 없음).
     if (symbol_coverage_env.enabled()) transformer.synthetic_idents = .empty;
     const root = transformer.transform() catch return error.TransformError;
+    if (analyzer_storage) |*analyzer| {
+        if (transformer.finishSemanticEdit() catch return error.TransformError) |edited| {
+            analyzer.applyEdit(edited);
+            transformer.symbols = analyzer.symbols.items;
+            transformer.references = analyzer.references.items;
+            transformer.scopes = analyzer.scopes.items;
+            transformer.scope_maps = analyzer.scope_maps.items;
+            transformer.scope_owner_map = analyzer.scope_owner_map;
+        }
+    }
     mem_profile.snap(&arena, "transform");
 
     // #4760: 트랜스포머가 새로 만든 사용자 식별자 노드의 심볼 ID 누락 측정(디버그 전용).

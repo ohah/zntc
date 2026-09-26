@@ -46,11 +46,11 @@ pub const SemanticEditor = struct {
     /// 모든 slice는 init에 전달한 모듈 arena가 소유한다.
     pub const Result = struct {
         symbols: std.ArrayList(Symbol),
-        scopes: []const Scope,
-        scope_maps: []const std.StringHashMapUnmanaged(usize),
+        scopes: []Scope,
+        scope_maps: []std.StringHashMapUnmanaged(usize),
         scope_owner_map: std.AutoHashMapUnmanaged(u32, u32),
-        references: []const Reference,
-        symbol_ids: []const ?u32,
+        references: []Reference,
+        symbol_ids: []?u32,
     };
 
     pub fn init(
