@@ -774,6 +774,7 @@ pub fn fromHermesPreset() UnsupportedFeatures {
         .block_scoping = true,
         .generator = true,
         .async_await = true,
+        .async_generator = true,
         .new_target = true,
         // Hermes 미지원
         .class_static_block = true,
@@ -963,6 +964,13 @@ pub fn unsupportedFeatures(targets: []const EngineVersion) UnsupportedFeatures {
 }
 
 // ─── 테스트 ───
+
+test "fromHermesPreset lowers async generators with async and generator state machines" {
+    const features = fromHermesPreset();
+    try std.testing.expect(features.generator);
+    try std.testing.expect(features.async_await);
+    try std.testing.expect(features.async_generator);
+}
 
 test "fromESTarget — esnext는 모두 false" {
     const f = fromESTarget(.esnext);
