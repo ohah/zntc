@@ -1254,6 +1254,7 @@ fn isDeclarationFile(file_path: []const u8) bool {
 const mem_profile_env = @import("env_flag.zig").Once("ZNTC_MEM_PROFILE");
 /// `ZNTC_DEBUG_SYMBOL_COVERAGE` — 트랜스포머 출력의 심볼 ID 누락 측정 (#4760, 디버그 전용).
 const symbol_coverage_env = @import("env_flag.zig").Once("ZNTC_DEBUG_SYMBOL_COVERAGE");
+const synthetic_coverage_env = @import("env_flag.zig").Once("ZNTC_DEBUG_SYNTHETIC_COVERAGE");
 
 /// transpile phase 별 arena 누적 capacity 스냅샷 (RFC_TRANSFORMER_OWN_AST PR-3 측정).
 /// `ZNTC_MEM_PROFILE=1` 일 때만 stderr 로 phase 경계 증분 출력 — 단일 arena 라 phase 별
@@ -1457,7 +1458,7 @@ fn transpileWithCallbackInternal(
     }
     transformer.line_offsets = scanner.line_offsets.items;
     // 누락 검사기가 합성 노드를 빼도록 기록을 켠다(검사기가 켜졌을 때만 — 평소 비용 없음).
-    if (symbol_coverage_env.enabled()) transformer.synthetic_idents = .empty;
+    if (symbol_coverage_env.enabled() or synthetic_coverage_env.enabled()) transformer.synthetic_idents = .empty;
     const root = transformer.transform() catch return error.TransformError;
     if (analyzer_storage) |*analyzer| {
         if (transformer.finishSemanticEdit() catch return error.TransformError) |edited| {
@@ -1479,6 +1480,13 @@ fn transpileWithCallbackInternal(
             const coverage = @import("transformer/symbol_coverage.zig");
             var report = coverage.check(arena_alloc, transformer.ast, root, transformer.parser_node_count, transformer.symbol_ids.items, analyzer.symbols.items, if (transformer.synthetic_idents) |*s| s else null) catch return error.OutOfMemory;
             coverage.print(arena_alloc, file_path, &report);
+        }
+    }
+    if (synthetic_coverage_env.enabled()) {
+        if (analyzer_storage) |*analyzer| {
+            const coverage = @import("transformer/symbol_coverage.zig");
+            var report = coverage.checkStrict(arena_alloc, transformer.ast, root, transformer.parser_node_count, transformer.symbol_ids.items, analyzer.symbols.items, if (transformer.synthetic_idents) |*s| s else null, &analyzer.unresolved_references) catch return error.OutOfMemory;
+            coverage.printStrict(file_path, &report);
         }
     }
 

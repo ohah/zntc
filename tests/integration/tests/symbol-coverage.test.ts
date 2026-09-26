@@ -10,7 +10,7 @@
 // (`_this`·임시 변수·사용자 이름을 빌린 합성 바인딩)은 검사기가 뺀다.
 import { describe, test, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ZNTC_BIN } from './helpers';
@@ -73,4 +73,26 @@ describe('symbol coverage gate (#4760)', () => {
     expect(problems).toEqual([]);
     expect(runs).toBe(fixtures.length * TARGETS.length);
   }, 600_000);
+
+  test('opt-in 합성 진단은 기존 게이트가 제외한 private 저장소를 별도로 표시한다', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-synthetic-coverage-'));
+    try {
+      const input = join(dir, 'input.mjs');
+      writeFileSync(input, 'class C { static #x = 1; static read() { return this.#x; } } console.log(C.read());');
+      const proc = spawnSync(ZNTC_BIN, [input, '--target=es5', '-o', join(dir, 'out.mjs')], {
+        env: {
+          ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+          ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+          PATH: process.env.PATH ?? '/usr/bin:/bin',
+        },
+        encoding: 'utf8',
+      });
+      expect(proc.status, proc.stderr).toBe(0);
+      expect(proc.stderr).toMatch(/symbol-coverage .* missing=0 wrong=0/);
+      expect(proc.stderr).toMatch(/synthetic-coverage .* missing_binding=[1-9]\d*/);
+      expect(proc.stderr).toMatch(/synthetic-coverage missing_binding node=\d+ _x\(binding_identifier\) marked=true/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
