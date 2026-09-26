@@ -713,6 +713,12 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             // ES2015 arrow this 캡처: arrow body 안의 this → _this
             if (self.options.unsupported.arrow and self.arrow_this_depth > 0) {
                 self.needs_this_var = true;
+                if (self.super_call_this_alias) {
+                    const helper = try es_helpers.makeRuntimeHelperRef(self, "__assertThisInitialized");
+                    const this_ref = try es_helpers.makeSyntheticRef(self, "_this");
+                    self.runtime_helpers.derived_constructor = true;
+                    return es_helpers.makeCallExpr(self, helper, &.{this_ref}, node.span);
+                }
                 return es_helpers.makeSyntheticRef(self, "_this");
             }
             // ES2015 class super() 후 this → _this

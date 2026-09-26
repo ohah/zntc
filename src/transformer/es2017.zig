@@ -302,6 +302,9 @@ pub fn ES2017(comptime Transformer: type) type {
             // this function's parameter defaults use its own capture aliases.
             const arrow_env = es_helpers.pushArrowEnv(self);
             defer es_helpers.popArrowEnv(self, arrow_env);
+            const saved_extracted_body = self.in_extracted_fn_body;
+            self.in_extracted_fn_body = false;
+            defer self.in_extracted_fn_body = saved_extracted_body;
 
             const new_name = try self.visitNode(name_idx);
             const new_params = try self.visitExtraList(.{ .start = params_list.start, .len = params_list.len });
@@ -560,6 +563,9 @@ pub fn ES2017(comptime Transformer: type) type {
 
             const arrow_env = es_helpers.pushArrowEnv(self);
             defer es_helpers.popArrowEnv(self, arrow_env);
+            const saved_extracted_body = self.in_extracted_fn_body;
+            self.in_extracted_fn_body = false;
+            defer self.in_extracted_fn_body = saved_extracted_body;
 
             const new_name = try self.visitNode(name_idx);
 

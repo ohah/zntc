@@ -188,7 +188,7 @@ fn isUninitializedVarDeclaration(self: anytype, idx: NodeIndex) bool {
 /// arrow in a default can read the generated lexical this/arguments captures,
 /// so those declarations must precede the checks. Other body captures keep
 /// their original position relative to the checks.
-fn prependParameterInitializers(self: anytype, body_idx: NodeIndex, stmts: []const NodeIndex) Error!NodeIndex {
+pub fn prependParameterInitializers(self: anytype, body_idx: NodeIndex, stmts: []const NodeIndex) Error!NodeIndex {
     const body = self.ast.getNode(body_idx);
     if (body.tag != .block_statement and body.tag != .function_body) return self.prependStatementsToBody(body_idx, stmts);
     const list = body.data.list;
