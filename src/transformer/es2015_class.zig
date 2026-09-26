@@ -32,6 +32,7 @@
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
+const ast_walk = @import("../parser/ast_walk.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
@@ -62,6 +63,33 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (raw < self.parser_node_count)
                 std.debug.panic("source ES5 constructor lost its scope owner", .{});
             return null;
+        }
+
+        /// An emitted class-call check runs at the top of the constructor.
+        /// Inspect exact source binding IDs to decide whether its class-name
+        /// spelling may be shadowed. Text only detects the collision; it never
+        /// supplies a SymbolId. Scanning the constructor subtree is
+        /// conservative for a nested binding with the same spelling.
+        fn constructorShadowsClassSelf(self: *Transformer, ctor: ?NodeIndex, name_span: Span, inner: u32) Transformer.Error!bool {
+            const owner = originalConstructorOwner(self, ctor) orelse return false;
+            const Scan = struct {
+                transformer: *Transformer,
+                inner: u32,
+                name: []const u8,
+                found: bool = false,
+
+                fn visit(scan: *@This(), idx: NodeIndex, node: Node) ast_walk.WalkAction {
+                    if (node.tag != .binding_identifier) return .descend;
+                    const id = scan.transformer.getSymbolIdAt(idx) orelse return .descend;
+                    if (id == scan.inner) return .descend;
+                    if (!std.mem.eql(u8, scan.transformer.ast.getText(node.data.string_ref), scan.name)) return .descend;
+                    scan.found = true;
+                    return .stop;
+                }
+            };
+            var scan = Scan{ .transformer = self, .inner = inner, .name = self.ast.getText(name_span) };
+            try ast_walk.walkPreorderIterative(self.allocator, self.ast, owner, &scan, Scan.visit);
+            return scan.found;
         }
 
         /// class_declaration을 function + prototype assignment로 변환.
@@ -150,6 +178,15 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // 클래스 바디 멤버 분류 (visitNode 호출 없이 metadata 만 수집).
             var cm = try classifyMembers(self, body_idx, span, name_span);
             defer cm.deinit(self.allocator);
+            const source_origin = self.scope_owner_origins.get(@intFromEnum(source_idx)) orelse @intFromEnum(source_idx);
+            const inner = if (!name_idx.isNone()) self.class_self_symbol_map.get(source_origin) else null;
+            const has_self_alias = if (inner) |id| try constructorShadowsClassSelf(self, cm.constructor_idx, name_span, id) else false;
+            const alias_text = if (has_self_alias) try es_helpers.resolveSyntheticName(self, "_classSelf") else "";
+            const alias_binding = if (has_self_alias) try es_helpers.makeExactSyntheticBinding(self, alias_text) else NodeIndex.none;
+            const alias_id = if (has_self_alias)
+                try self.declareSyntheticInScope(alias_binding, span, .variable_var, iife_scope)
+            else
+                null;
 
             // 매핑은 모든 private field (regular + accessor backing) 가 모인 뒤 단일 지점에서 build.
             // 이후 deferred visit (static block / instance init) 가 이 매핑으로 lowering.
@@ -181,6 +218,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const fresh_name = try self.makeUserBinding(fresh_name_span, .none);
             if (name_idx.isNone() or !(try self.bindClassSelfStorage(source_idx, fresh_name, iife_scope)))
                 try self.propagateSymbolId(new_name, fresh_name);
+            if (has_self_alias) try self.preserved_simple_class_names.append(self.allocator, @intFromEnum(fresh_name));
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -208,6 +246,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             else
                 try self.reserveGeneratedFunctionScope(source_class_scope);
             var func_node: NodeIndex = .none;
+            var alias_check_ref: NodeIndex = .none;
             {
                 const saved_scope = self.current_scope;
                 self.current_scope = ctor_scope;
@@ -248,18 +287,38 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 {
                     const check_id = try es_helpers.makeRuntimeHelperRef(self, "__classCallCheck");
                     const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .none = 0 } });
-                    const class_ref = try self.makeIdentifierRefWithSymbol(name_span, fresh_name);
+                    const class_ref = if (has_self_alias)
+                        try es_helpers.makeExactSyntheticRef(self, alias_text)
+                    else
+                        try self.makeIdentifierRefWithSymbol(name_span, fresh_name);
                     const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
                     func_node = try prependToFunctionBody(self, func_node, &.{try es_helpers.makeExprStmt(self, call, span)});
                     self.runtime_helpers.class_call_check = true;
+                    if (has_self_alias) alias_check_ref = class_ref;
                 }
             }
 
             if (source_ctor == null) try self.bindReservedFunctionOwner(ctor_scope, func_node);
 
             if (source_ctor) |original| try self.remapCopiedScopeOwner(original, func_node);
+            if (has_self_alias) try self.addSyntheticRefInScope(alias_check_ref, alias_id, ctor_scope, .{ .read = true });
 
             try self.scratch.append(self.allocator, func_node);
+            if (has_self_alias) {
+                const self_ref = if (self.semantic_edit_enabled) blk: {
+                    const ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
+                    const self_raw = self.getSymbolIdAt(fresh_name) orelse std.debug.panic("class IIFE self alias has no source SymbolId", .{});
+                    const self_id: @import("../semantic/symbol.zig").SymbolId = @enumFromInt(self_raw);
+                    try self.addSyntheticRefInScope(ref, self_id, iife_scope, .{ .read = true });
+                    break :blk ref;
+                } else try self.makeIdentifierRefWithSymbol(name_span, fresh_name);
+                try self.scratch.append(self.allocator, try es_helpers.makeVarDeclaration(
+                    self,
+                    &.{try es_helpers.makeDeclarator(self, alias_binding, self_ref, span)},
+                    .@"var",
+                    span,
+                ));
+            }
 
             // __extends(ClassName, _super) — parent는 IIFE 매개변수 _super
             const super_param_text = "_super";
@@ -457,7 +516,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // A simple named class needs a private alias for the generated
             // class-call check when a constructor parameter shadows its name.
             const source_origin = self.scope_owner_origins.get(@intFromEnum(source_idx)) orelse @intFromEnum(source_idx);
-            const wrap_self_alias = !has_extra and self.class_self_symbol_map.contains(source_origin);
+            const inner = if (!name_idx.isNone()) self.class_self_symbol_map.get(source_origin) else null;
+            const has_source_self = inner != null;
+            const wrap_self_alias = !has_extra and has_source_self;
+            const iife_self_alias = if (has_extra and inner != null)
+                try constructorShadowsClassSelf(self, cm.constructor_idx, name_span, inner.?)
+            else
+                false;
+            const has_self_alias = wrap_self_alias or iife_self_alias;
             const iife_parent = if (self.semantic_edit_enabled) self.outputScopeParent(source_class_scope) else self.current_scope;
             const iife_scope = if (has_extra or wrap_self_alias)
                 try self.reserveGeneratedFunctionScope(iife_parent)
@@ -465,9 +531,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 @as(@import("../semantic/scope.zig").ScopeId, .none);
             if (has_extra or wrap_self_alias) try self.reparentGeneratedScope(source_class_scope, iife_scope);
 
-            const alias_text = if (wrap_self_alias) try es_helpers.resolveSyntheticName(self, "_classSelf") else "";
-            const alias_binding = if (wrap_self_alias) try es_helpers.makeExactSyntheticBinding(self, alias_text) else NodeIndex.none;
-            const alias_id = if (wrap_self_alias)
+            const alias_text = if (has_self_alias) try es_helpers.resolveSyntheticName(self, "_classSelf") else "";
+            const alias_binding = if (has_self_alias) try es_helpers.makeExactSyntheticBinding(self, alias_text) else NodeIndex.none;
+            const alias_id = if (has_self_alias)
                 try self.declareSyntheticInScope(alias_binding, span, .variable_var, iife_scope)
             else
                 null;
@@ -488,7 +554,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 // IIFE 안쪽 함수 이름 — 안쪽 참조와 같은 심볼 (위 선언 경로와 같은 이유).
                 break :blk try self.makeUserBinding(name_span, .none);
             } else name_node;
-            if (wrap_self_alias) try self.preserved_simple_class_names.append(self.allocator, @intFromEnum(func_name));
+            if (has_self_alias) try self.preserved_simple_class_names.append(self.allocator, @intFromEnum(func_name));
             if (has_extra and (name_idx.isNone() or !(try self.bindClassSelfStorage(source_idx, func_name, iife_scope))))
                 try self.propagateSymbolId(name_node, func_name);
 
@@ -533,14 +599,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 {
                     const check_id = try es_helpers.makeRuntimeHelperRef(self, "__classCallCheck");
                     const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .none = 0 } });
-                    const class_ref = if (wrap_self_alias)
+                    const class_ref = if (has_self_alias)
                         try es_helpers.makeExactSyntheticRef(self, alias_text)
                     else
                         try self.makeIdentifierRefWithSymbol(name_span, func_name);
                     const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
                     func_node = try prependToFunctionBody(self, func_node, &.{try es_helpers.makeExprStmt(self, call, span)});
                     self.runtime_helpers.class_call_check = true;
-                    if (wrap_self_alias) {
+                    if (has_self_alias) {
                         // The function owner is finalized below; retain this
                         // exact use until its output scope is known.
                         alias_check_ref = class_ref;
@@ -581,6 +647,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
 
             if (source_ctor) |original| try self.remapCopiedScopeOwner(original, func_node);
+            if (iife_self_alias) try self.addSyntheticRefInScope(alias_check_ref, alias_id, ctor_scope, .{ .read = true });
 
             // IIFE (lowerClassDeclaration과 동일 패턴) — name_span을 재사용.
             // func_node 는 위에서 이미 fresh name(`func_name` = makeUserBinding, 안쪽 참조와
@@ -608,6 +675,25 @@ pub fn ES2015Class(comptime Transformer: type) type {
             try emitPrivateMethodArtifacts(self, cm.private_methods.items, null, span, name_span);
 
             try self.scratch.append(self.allocator, func_node);
+            if (iife_self_alias) {
+                // The class self binding remains the source inner SymbolId in
+                // the IIFE. Give the constructor check an independent storage
+                // binding so a parameter or local with the class name cannot
+                // shadow that check.
+                const self_ref = if (self.semantic_edit_enabled) blk: {
+                    const ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
+                    const self_raw = self.getSymbolIdAt(func_name) orelse std.debug.panic("class IIFE self alias has no source SymbolId", .{});
+                    const self_id: @import("../semantic/symbol.zig").SymbolId = @enumFromInt(self_raw);
+                    try self.addSyntheticRefInScope(ref, self_id, iife_scope, .{ .read = true });
+                    break :blk ref;
+                } else try self.makeIdentifierRefWithSymbol(name_span, func_name);
+                try self.scratch.append(self.allocator, try es_helpers.makeVarDeclaration(
+                    self,
+                    &.{try es_helpers.makeDeclarator(self, alias_binding, self_ref, span)},
+                    .@"var",
+                    span,
+                ));
+            }
 
             // __extends(ClassName, _super) — parent는 IIFE 매개변수
             if (has_super and super_span != null) {

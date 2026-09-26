@@ -213,8 +213,8 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     module.ast = transformer.ast.*;
 
     // Temporary bridge until the final name planner consumes transformed
-    // SymbolIds directly. The no-IIFE class producer records only its emitted
-    // constructor binding; preserving unrelated class names here can affect
+    // SymbolIds directly. The ES5 named-class producers record only their
+    // emitted constructor bindings; preserving unrelated class names can affect
     // tree shaking after semantic resync.
     const owned_preserved_class_names = transformer.preserved_simple_class_names.toOwnedSlice(arena_alloc) catch return;
     const owned_symbol_ids = transformer.symbol_ids.toOwnedSlice(arena_alloc) catch &[_]?u32{};
