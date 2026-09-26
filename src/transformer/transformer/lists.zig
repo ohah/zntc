@@ -234,16 +234,12 @@ pub fn hoistTempVarsSkippingSpans(self: *Transformer, body_idx: NodeIndex, saved
 
     var i: u32 = saved_counter;
     while (i < self.temp_var_counter) : (i += 1) {
-        var buf: [16]u8 = undefined;
-        const name = es_helpers.tempVarName(i, &buf);
-        if (tempNameInSpans(self, name, skip_spans)) continue;
+        // makeTempVarSpan이 충돌로 건너뛴 슬롯에는 할당 기록이 없다.
+        // 이름을 재생성하면 다른 함수의 같은 이름을 이 선언에 잘못 묶게 된다.
+        const name_span = self.temp_span_by_counter.get(i) orelse continue;
+        const name = self.ast.getText(name_span);
+        if (tempSpanInSpans(name_span, skip_spans)) continue;
         if (has_block and bodyHasTopLevelVarBinding(self, body_node, name)) continue;
-        // #4220: makeTempVarSpan 이 skip 한 이름(사용자/private 충돌)을 여기서
-        // 재생성-선언하면 함수 스코프 `var _a` 가 outer 사용자 `_a` 를 shadow
-        // — make-시점과 동일 predicate 로 일관 skip (집합 불변이라 결정 일치).
-        if (es_helpers.collidesWithPrivateField(self, name)) continue;
-        if (try es_helpers.collidesWithUserSymbol(self, name)) continue;
-        const name_span = try self.ast.addString(name);
         const binding = try es_helpers.makeSyntheticBinding(self, name_span);
         const none = @intFromEnum(NodeIndex.none);
         const declarator = try self.addExtraNode(.variable_declarator, span, &.{
@@ -264,9 +260,9 @@ pub fn hoistTempVarsSkippingSpans(self: *Transformer, body_idx: NodeIndex, saved
     return self.prependStatementsToBody(body_idx, &.{var_decl});
 }
 
-fn tempNameInSpans(self: *const Transformer, name: []const u8, spans: []const Span) bool {
+fn tempSpanInSpans(target: Span, spans: []const Span) bool {
     for (spans) |sp| {
-        if (std.mem.eql(u8, self.ast.getText(sp), name)) return true;
+        if (sp.start == target.start and sp.end == target.end) return true;
     }
     return false;
 }

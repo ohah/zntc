@@ -121,6 +121,7 @@ pub fn deinit(self: *Transformer) void {
 pub fn deinitExceptAst(self: *Transformer) void {
     self.scratch.deinit(self.allocator);
     if (self.temp_collision_set) |*set| set.deinit(self.allocator);
+    self.temp_span_by_counter.deinit(self.allocator);
     self.value_used_symbols.deinit(self.allocator);
     self.pending_nodes.deinit(self.allocator);
     self.symbol_ids.deinit(self.allocator);

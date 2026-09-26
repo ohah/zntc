@@ -14,6 +14,43 @@ const TransformOptions = transformer_mod.TransformOptions;
 const coverage = @import("symbol_coverage.zig");
 const SemanticEditor = @import("../semantic/editor.zig").SemanticEditor;
 
+fn firstHoistedTempSpan(ast: *const @import("../parser/ast.zig").Ast, program_idx: @import("../parser/ast.zig").NodeIndex) @import("../lexer/token.zig").Span {
+    const program = ast.getNode(program_idx);
+    const declaration = ast.getNode(@enumFromInt(ast.extra_data.items[program.data.list.start]));
+    const declarator_start = ast.extra_data.items[declaration.data.extra + 1];
+    const declarator = ast.getNode(@enumFromInt(ast.extra_data.items[declarator_start]));
+    const binding = ast.getNode(@enumFromInt(ast.extra_data.items[declarator.data.extra]));
+    return binding.data.string_ref;
+}
+
+test "#4819 temp hoist keeps allocation identity across counter reuse" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    const root = try transformer.transform();
+    const helpers = @import("es_helpers.zig");
+
+    const first = try helpers.makeTempVarSpan(&transformer);
+    const first_body = try transformer.hoistTempVars(root, 0, .EMPTY);
+    try std.testing.expectEqual(first.start, firstHoistedTempSpan(transformer.ast, first_body).start);
+
+    // 다른 함수가 끝난 것처럼 counter를 되감으면 출력 이름은 같아도 변수는 다르다.
+    transformer.temp_var_counter = 0;
+    const second = try helpers.makeTempVarSpan(&transformer);
+    // 상태 기계의 이전 temp와 이름만 같은 새 temp를 잘못 제외하면 안 된다.
+    const second_body = try transformer.hoistTempVarsSkippingSpans(root, 0, .EMPTY, &.{first});
+    try std.testing.expectEqualStrings("_a", transformer.ast.getText(first));
+    try std.testing.expectEqualStrings("_a", transformer.ast.getText(second));
+    try std.testing.expect(first.start != second.start);
+    try std.testing.expectEqual(second.start, firstHoistedTempSpan(transformer.ast, second_body).start);
+    const skipped = try transformer.hoistTempVarsSkippingSpans(root, 0, .EMPTY, &.{second});
+    try std.testing.expectEqual(root, skipped);
+}
+
 test "#4819 transformed scope owners retain their original ScopeId" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
