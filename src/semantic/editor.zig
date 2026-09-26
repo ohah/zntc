@@ -215,7 +215,10 @@ pub const SemanticEditor = struct {
             @intFromEnum(new_owner) >= self.ast.nodes.items.len) return error.InvalidNode;
         const old_key = @intFromEnum(old_owner);
         const new_key = @intFromEnum(new_owner);
-        if (self.ast.getNode(old_owner).tag != self.ast.getNode(new_owner).tag) return error.InvalidNode;
+        const old_tag = self.ast.getNode(old_owner).tag;
+        const new_tag = self.ast.getNode(new_owner).tag;
+        if (old_tag != new_tag and !(old_tag == .arrow_function_expression and new_tag == .function_expression))
+            return error.InvalidNode;
         const scope_id = self.scope_owner_map.get(old_key) orelse return error.InvalidScope;
         if (old_key == new_key) return;
         if (self.scope_owner_map.get(new_key)) |existing| {

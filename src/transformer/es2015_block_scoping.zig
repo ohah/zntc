@@ -325,6 +325,12 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         /// `var names…, _loop = function…` 로 바깥에 둔다. 함수 경계 안은 건드리지 않는다.
         /// 구조분해 패턴 선언은 그대로 둔다(일반 경로는 방문 때 이미 식별자로 풀렸다).
         fn hoistVarsOutOfBody(self: *Transformer, idx: NodeIndex, names: []const []const u8) Transformer.Error!NodeIndex {
+            const next = try hoistVarsOutOfBodyInner(self, idx, names);
+            try self.remapCopiedScopeOwner(idx, next);
+            return next;
+        }
+
+        fn hoistVarsOutOfBodyInner(self: *Transformer, idx: NodeIndex, names: []const []const u8) Transformer.Error!NodeIndex {
             if (idx.isNone() or names.len == 0) return idx;
             const node = self.ast.getNode(idx);
             switch (node.tag) {
@@ -662,12 +668,14 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             transformed_body = try hoistVarsOutOfBody(self, transformed_body, hoist_vars);
 
+            const before_temp_hoist = transformed_body;
             if (body_temp_start) |start| {
                 if (self.temp_var_counter > start and !transformed_body.isNone()) {
                     transformed_body = try self.hoistTempVars(transformed_body, start, span);
                     self.temp_var_counter = start;
                 }
             }
+            try self.remapCopiedScopeOwner(before_temp_hoist, transformed_body);
 
             // --- function params: 캡처된 변수 ---
             const scratch_top = self.scratch.items.len;
@@ -909,6 +917,16 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             body_idx: NodeIndex,
             flow: *const FlowResult,
         ) Transformer.Error!NodeIndex {
+            const next = try transformControlFlowInner(self, body_idx, flow);
+            try self.remapCopiedScopeOwner(body_idx, next);
+            return next;
+        }
+
+        fn transformControlFlowInner(
+            self: *Transformer,
+            body_idx: NodeIndex,
+            flow: *const FlowResult,
+        ) Transformer.Error!NodeIndex {
             if (body_idx.isNone()) return body_idx;
             const body = self.ast.getNode(body_idx);
             // body 가 block 이 아닐 때도 transformStmtFlow 로 재귀 변환해야 한다.
@@ -937,6 +955,18 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         }
 
         fn transformStmtFlow(
+            self: *Transformer,
+            idx: NodeIndex,
+            flow: *const FlowResult,
+            loop_depth: u32,
+            switch_depth: u32,
+        ) Transformer.Error!NodeIndex {
+            const next = try transformStmtFlowInner(self, idx, flow, loop_depth, switch_depth);
+            try self.remapCopiedScopeOwner(idx, next);
+            return next;
+        }
+
+        fn transformStmtFlowInner(
             self: *Transformer,
             idx: NodeIndex,
             flow: *const FlowResult,

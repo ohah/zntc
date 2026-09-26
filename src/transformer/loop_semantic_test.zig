@@ -5,6 +5,194 @@ const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const transformer_mod = @import("transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const TransformOptions = transformer_mod.TransformOptions;
+const Ast = @import("../parser/ast.zig").Ast;
+const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+const ast_walk = @import("../parser/ast_walk.zig");
+
+fn findLoopFunctionBody(allocator: std.mem.Allocator, ast: *const Ast, root: NodeIndex) !NodeIndex {
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    try stack.append(allocator, root);
+    while (stack.pop()) |idx| {
+        if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) continue;
+        const raw = @intFromEnum(idx);
+        if (seen.contains(raw)) continue;
+        try seen.put(allocator, raw, {});
+        const node = ast.getNode(idx);
+        if (node.tag == .variable_declarator) {
+            const binding = ast.getNode(@enumFromInt(ast.extra_data.items[node.data.extra]));
+            const init: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra + 2]);
+            if (binding.tag == .binding_identifier and !init.isNone() and
+                std.mem.startsWith(u8, ast.getText(binding.data.string_ref), "_loop") and
+                ast.getNode(init).tag == .function_expression)
+            {
+                return @enumFromInt(ast.extra_data.items[ast.getNode(init).data.extra + 2]);
+            }
+        }
+        var it = ast_walk.children(ast, node);
+        while (it.next()) |child| try stack.append(allocator, child);
+    }
+    return error.TestUnexpectedResult;
+}
+
+test "#4819 loop body owner follows control-flow and var-hoist copies" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\function collect() {
+        \\  var out = [];
+        \\  for (let i = 0; i < 2; i++) {
+        \\    var lifted = i;
+        \\    if (i) { out.push(() => lifted + i); continue; }
+        \\    out.push(() => lifted + i);
+        \\  }
+        \\  return out;
+        \\}
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var original_body: NodeIndex = .none;
+    var nested_block: NodeIndex = .none;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag == .for_statement) {
+            original_body = @enumFromInt(parser.ast.extra_data.items[node.data.extra + 3]);
+        } else if (node.tag == .if_statement and parser.ast.getNode(node.data.ternary.b).tag == .block_statement) {
+            nested_block = node.data.ternary.b;
+        }
+    }
+    try std.testing.expect(!original_body.isNone() and !nested_block.isNone());
+    const body_scope = analyzer.scope_owner_map.get(@intFromEnum(original_body)).?;
+    const nested_scope = analyzer.scope_owner_map.get(@intFromEnum(nested_block)).?;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const root = try transformer.transform();
+    const final_body = try findLoopFunctionBody(allocator, transformer.ast, root);
+    const edited = (try transformer.finishSemanticEdit()).?;
+    try std.testing.expectEqual(@as(?u32, body_scope), edited.scope_owner_map.get(@intFromEnum(final_body)));
+    try std.testing.expect(edited.scope_owner_map.get(@intFromEnum(original_body)) == null);
+
+    var reachable: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    try stack.append(allocator, final_body);
+    while (stack.pop()) |idx| {
+        if (idx.isNone() or @intFromEnum(idx) >= transformer.ast.nodes.items.len) continue;
+        const raw = @intFromEnum(idx);
+        if (reachable.contains(raw)) continue;
+        try reachable.put(allocator, raw, {});
+        var it = ast_walk.children(transformer.ast, transformer.ast.getNode(idx));
+        while (it.next()) |child| try stack.append(allocator, child);
+    }
+    var nested_owner_reachable = false;
+    var owners = edited.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        if (entry.value_ptr.* == nested_scope and reachable.contains(entry.key_ptr.*)) nested_owner_reachable = true;
+    }
+    try std.testing.expect(nested_owner_reachable);
+}
+
+test "#4819 arrow-to-function copy retains the analyzed function scope owner" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "function outer(value) { const read = () => value; return read; }");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    var arrow: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, i| {
+        if (node.tag == .arrow_function_expression) arrow = @enumFromInt(@as(u32, @intCast(i)));
+    }
+    try std.testing.expect(!arrow.isNone());
+    const scope = analyzer.scope_owner_map.get(@intFromEnum(arrow)).?;
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var replacement: ?u32 = null;
+    var owners = edited.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        if (entry.value_ptr.* == scope) replacement = entry.key_ptr.*;
+    }
+    try std.testing.expect(replacement != null);
+    try std.testing.expect(replacement.? != @intFromEnum(arrow));
+    try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.function_expression, transformer.ast.nodes.items[replacement.?].tag);
+}
+
+test "#4819 generated function owner follows reversed revisits independently" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    const root = try transformer.transform();
+    const parent = transformer.programScope();
+    var generated: [2]NodeIndex = undefined;
+    var scopes: [2]@import("../semantic/scope.zig").ScopeId = undefined;
+    for (0..2) |i| {
+        const empty = try transformer.ast.addNodeList(&.{});
+        const params = try transformer.ast.addFormalParameters(empty, .EMPTY);
+        const body = try transformer.ast.addNode(.{ .tag = .block_statement, .span = .EMPTY, .data = .{ .list = empty } });
+        const extra = try transformer.ast.addExtras(&.{
+            @intFromEnum(NodeIndex.none), @intFromEnum(params), @intFromEnum(body), 0, @intFromEnum(NodeIndex.none),
+        });
+        generated[i] = try transformer.ast.addNode(.{ .tag = .function_expression, .span = .EMPTY, .data = .{ .extra = extra } });
+        scopes[i] = try transformer.addGeneratedFunctionScope(parent, generated[i]);
+    }
+    var final: [2]NodeIndex = undefined;
+    final[1] = try transformer.visitNode(generated[1]);
+    // Revisiting an earlier generated owner creates a dead branch. The final
+    // AST, not visit order, must decide which copy owns its function scope.
+    _ = try transformer.visitNode(generated[0]);
+    final[0] = try transformer.visitNode(generated[0]);
+    try std.testing.expectEqual(root, transformer.ast.transformed_root.?);
+    var stmts: [2]NodeIndex = undefined;
+    for (final, 0..) |func, i| {
+        stmts[i] = try transformer.ast.addUnaryNode(.expression_statement, .EMPTY, func, 0);
+    }
+    transformer.ast.nodes.items[@intFromEnum(root)].data.list = try transformer.ast.addNodeList(&stmts);
+    const edited = (try transformer.finishSemanticEdit()).?;
+    for (0..2) |i| {
+        try std.testing.expect(generated[i] != final[i]);
+        try std.testing.expectEqual(@as(?u32, @intFromEnum(scopes[i])), edited.scope_owner_map.get(@intFromEnum(final[i])));
+        try std.testing.expect(edited.scope_owner_map.get(@intFromEnum(generated[i])) == null);
+    }
+}
 
 /// `_loop(...)`의 각 인자는 원본 헤더 심볼을 읽으며, 그 심볼이 인자 스코프에서
 /// 보여야 한다. AST 전체에서 호출을 찾으므로 unreachable 생성 노드도 검사한다.
