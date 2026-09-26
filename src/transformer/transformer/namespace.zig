@@ -69,7 +69,13 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
     var new_body = try self.visitNode(node.data.binary.right);
     if (!new_body.isNone()) {
         for (self.namespace_temp_bindings.items[saved_binding_len..]) |entry| {
-            try self.bindHoistedTemp(entry.binding, entry.span, node.span, entry.scope);
+            if (self.pending_temp_ref_chains.contains(entry.span.start)) {
+                try self.bindHoistedTemp(entry.binding, entry.span, node.span, entry.scope);
+            } else {
+                // An empty destructuring pattern still emits the initializer's
+                // local temp, even though no member reads that binding.
+                _ = try self.declareSyntheticInScope(entry.binding, node.span, .variable_var, entry.scope);
+            }
         }
         self.namespace_temp_bindings.shrinkRetainingCapacity(saved_binding_len);
         const body_tag = self.ast.getNode(new_body).tag;
