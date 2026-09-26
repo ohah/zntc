@@ -51,6 +51,53 @@ test "#4819 temp hoist keeps allocation identity across counter reuse" {
     try std.testing.expectEqual(root, skipped);
 }
 
+test "#4819 top-level nullish temp keeps one SymbolId through deferred hoist" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const _a = 7; function read() { return null; } function local() { return read() ?? 0; } console.log(read() ?? 1, read() ?? 2, _a);");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const original_symbols = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    try std.testing.expectEqual(original_symbols + 2, edited.symbols.items.len);
+    for (edited.symbols.items[original_symbols..], 0..) |generated, offset| {
+        try std.testing.expectEqualStrings(if (offset == 0) "_b" else "_c", transformer.ast.getText(generated.name));
+        try std.testing.expectEqual(@as(u32, 2), generated.reference_count);
+        try std.testing.expectEqual(@as(u32, 1), generated.write_count);
+        const generated_id: u32 = @intCast(original_symbols + offset);
+        var bindings: usize = 0;
+        var refs: usize = 0;
+        for (edited.symbol_ids, 0..) |maybe_id, i| {
+            if (maybe_id != generated_id) continue;
+            switch (transformer.ast.nodes.items[i].tag) {
+                .binding_identifier => bindings += 1,
+                .identifier_reference => refs += 1,
+                else => {},
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), bindings);
+        try std.testing.expectEqual(@as(usize, 2), refs);
+    }
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
+}
+
 test "#4819 transformed scope owners retain their original ScopeId" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
