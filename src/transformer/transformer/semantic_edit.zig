@@ -52,7 +52,54 @@ pub fn programScope(self: *Transformer) ScopeId {
 pub fn addGeneratedFunctionScope(self: *Transformer, parent: ScopeId, owner: NodeIndex) Transformer.Error!ScopeId {
     if (!self.semantic_edit_enabled) return .none;
     const editor = try editorFor(self);
-    return editor.addScope(parent, owner, .function, false) catch |err| return editError(err);
+    const scope = editor.addScope(parent, owner, .function, false) catch |err| return editError(err);
+    const key = @intFromEnum(owner);
+    try self.transformed_scope_owner_map.put(self.allocator, key, @intFromEnum(scope));
+    try self.scope_owner_origins.put(self.allocator, key, key);
+    return scope;
+}
+
+/// Track all copies of a lexical boundary. A source node can be revisited on
+/// separate branches, so the live owner is selected from the final AST later.
+pub fn remapCopiedScopeOwner(self: *Transformer, old: NodeIndex, new: NodeIndex) Transformer.Error!void {
+    if (old.isNone() or new.isNone() or old == new) return;
+    const old_tag = self.ast.getNode(old).tag;
+    const new_tag = self.ast.getNode(new).tag;
+    if (old_tag != new_tag and !(old_tag == .arrow_function_expression and new_tag == .function_expression)) return;
+    const old_key = @intFromEnum(old);
+    const new_key = @intFromEnum(new);
+    const scope = self.transformed_scope_owner_map.get(old_key) orelse self.scope_owner_map.get(old_key) orelse return;
+    if (self.transformed_scope_owner_map.get(new_key) orelse self.scope_owner_map.get(new_key)) |existing| {
+        if (existing != scope) std.debug.panic("copied scope owner has conflicting scopes", .{});
+    }
+    const origin = self.scope_owner_origins.get(old_key) orelse if (self.scope_owner_map.contains(old_key)) old_key else null;
+    if (origin) |first| {
+        try self.scope_owner_remaps.put(self.allocator, first, new_key);
+        try self.scope_owner_origins.put(self.allocator, new_key, first);
+    }
+    try self.transformed_scope_owner_map.put(self.allocator, new_key, scope);
+}
+
+/// Resolve branch copies only after transform() has installed the final root.
+/// Two reachable copies of one scope cannot safely share its ScopeId.
+fn resolveReachableScopeOwners(self: *Transformer) Transformer.Error!void {
+    if (self.scope_owner_remaps.count() == 0) return;
+    const reachable = @import("../../parser/ast_walk.zig").collectReachableNodeIndices(self.allocator, self.ast) catch return error.OutOfMemory;
+    defer self.allocator.free(reachable);
+    var final_by_origin: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer final_by_origin.deinit(self.allocator);
+    for (reachable) |node| {
+        const origin = self.scope_owner_origins.get(node) orelse if (self.scope_owner_map.contains(node)) node else continue;
+        if (final_by_origin.get(origin)) |existing| {
+            if (existing != node) std.debug.panic("one scope owner has multiple reachable copies", .{});
+        } else try final_by_origin.put(self.allocator, origin, node);
+    }
+    var remaps = self.scope_owner_remaps.iterator();
+    while (remaps.next()) |entry| {
+        // An erased boundary has no final owner. Keep its original metadata;
+        // pruning dead scopes is a separate semantic edit.
+        entry.value_ptr.* = final_by_origin.get(entry.key_ptr.*) orelse entry.key_ptr.*;
+    }
 }
 
 pub fn declareSyntheticInScope(self: *Transformer, binding: NodeIndex, declaration_span: Span, kind: SymbolKind, scope: ScopeId) Transformer.Error!?SymbolId {
@@ -222,6 +269,12 @@ pub fn trackUserArgumentFromBinding(self: *Transformer, argument: NodeIndex, bin
 
 /// 변환 중 복사된 사용자 식별자와 scope owner도 편집 결과에 합친다.
 pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.Result {
+    if (!self.semantic_edit_enabled) return null;
+    try resolveReachableScopeOwners(self);
+    // Scope-owner remaps are semantic edits even when no binding/reference was
+    // synthesized. Arrow-to-function and copied body scopes need a final map.
+    if (self.semantic_editor == null and self.scope_owner_remaps.count() > 0)
+        _ = try editorFor(self);
     const editor = if (self.semantic_editor) |*e| e else return null;
     if (self.options.emit_runtime_helper_imports and self.pending_runtime_helper_chains.count() != 0)
         std.debug.panic("generated runtime helper reference has no import", .{});
