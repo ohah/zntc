@@ -169,11 +169,11 @@ pub fn collidesWithPrivateField(self: anytype, name: []const u8) bool {
 /// node_span(원본 위치, sourcemap 용)과 span(string_table 이름)이 다를 수 있다 —
 /// semantic 의 이름 해석은 ast.identifierNameText 가 string_ref 를 정본으로 읽는다 (#4218).
 pub fn makeTempVarRef(self: anytype, span: Span, node_span: Span) !NodeIndex {
-    return self.ast.addNode(.{
+    return markSynthetic(self, try self.ast.addNode(.{
         .tag = .identifier_reference,
         .span = node_span,
         .data = .{ .string_ref = span },
-    });
+    }));
 }
 
 /// left 노드가 단순 식별자(부작용 없음)인지 판단.
@@ -359,7 +359,13 @@ pub fn makeGlobalRef(self: anytype, name: []const u8) !NodeIndex {
 
 /// 변환기가 만든 합성 변수 참조 — `_this`, `_state`, `_ret`. 사용자 심볼이 없다.
 pub fn makeSyntheticRef(self: anytype, name: []const u8) !NodeIndex {
-    return makeIdentifierRef(self, try resolveSyntheticName(self, name));
+    return markSynthetic(self, try makeIdentifierRef(self, try resolveSyntheticName(self, name)));
+}
+
+/// 합성 식별자 노드로 기록한다(심볼 누락 검사기가 켜졌을 때만) — 그대로 돌려준다.
+pub fn markSynthetic(self: anytype, node: NodeIndex) NodeIndex {
+    if (self.synthetic_idents) |*set| set.put(self.allocator, @intFromEnum(node), {}) catch {};
+    return node;
 }
 
 /// 합성 이름(`_this`·`_super`·`_loop`·`_ret`…)을 이 모듈에서 쓸 이름으로 정한다.
@@ -422,7 +428,7 @@ fn resolveSyntheticSpan(self: anytype, name_span: Span) !Span {
 
 /// `makeSyntheticRef` 의 span 판 (이미 addString 한 이름).
 pub fn makeSyntheticRefFromSpan(self: anytype, name_span: Span) !NodeIndex {
-    return makeIdentifierRefFromSpan(self, try resolveSyntheticSpan(self, name_span));
+    return markSynthetic(self, try makeIdentifierRefFromSpan(self, try resolveSyntheticSpan(self, name_span)));
 }
 
 /// `makePropertyName` 의 span 판.
@@ -1011,13 +1017,13 @@ pub fn makeBoolLiteral(self: anytype, val: bool) !NodeIndex {
 /// 변환기가 만든 합성 바인딩 — `_a`, `_this`, `_loop`, 헬퍼 매개변수. 사용자 심볼이 없다 (#4760).
 /// 사용자 변수 바인딩을 다시 만들 때는 `makeUserBinding`(심볼 전달)을 쓴다.
 pub fn makeSyntheticBinding(self: anytype, name_span: Span) !NodeIndex {
-    return makeBindingIdentifier(self, try resolveSyntheticSpan(self, name_span));
+    return markSynthetic(self, try makeBindingIdentifier(self, try resolveSyntheticSpan(self, name_span)));
 }
 
 /// `makeSyntheticRef` 계열의 노드 위치 지정판 — 이름(`name_span`)과 다른 소스 위치(`node_span`)를
 /// 노드에 달아야 할 때(소스맵 위치 보존). 이름만 다른 위치를 가리키고 의미는 같다.
 pub fn makeSyntheticRefAt(self: anytype, name_span: Span, node_span: Span) !NodeIndex {
-    return identifierRefNode(self, try resolveSyntheticSpan(self, name_span), node_span);
+    return markSynthetic(self, try identifierRefNode(self, try resolveSyntheticSpan(self, name_span), node_span));
 }
 
 pub fn makeGlobalRefAt(self: anytype, name_span: Span, node_span: Span) !NodeIndex {
@@ -1036,7 +1042,7 @@ pub fn makeJsxAttributeName(self: anytype, name_span: Span) !NodeIndex {
 /// 변환기가 만든 **합성 컴포넌트 변수**를 가리키는 JSX 태그. 바인딩과 같은 이름이 되도록
 /// `resolveSyntheticName` 을 거친다. (사용자 컴포넌트를 가리키는 태그는 원본 노드를 옮긴다.)
 pub fn makeSyntheticJsxTag(self: anytype, name_span: Span) !NodeIndex {
-    return jsxIdentifierNode(self, try resolveSyntheticSpan(self, name_span));
+    return markSynthetic(self, try jsxIdentifierNode(self, try resolveSyntheticSpan(self, name_span)));
 }
 
 fn jsxIdentifierNode(self: anytype, name_span: Span) !NodeIndex {

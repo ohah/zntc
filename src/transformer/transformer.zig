@@ -128,6 +128,10 @@ pub const Transformer = struct {
     synthetic_names: std.StringHashMapUnmanaged([]const u8) = .empty,
     /// 이미 쓴 합성 결과 이름 — 서로 다른 합성 이름이 같은 결과로 겹치지 않게 (`_loop`→`_loop2` 와 두 번째 루프의 `_loop2`).
     synthetic_taken: std.StringHashMapUnmanaged(void) = .empty,
+    /// 합성 생성 함수가 만든 식별자 노드 — 심볼 누락 검사기(`symbol_coverage`)가 켜졌을 때만 기록한다
+    /// (null 이면 기록 안 함). 사용자 이름을 빌려 쓰는 합성 바인딩(`const C = class {}` 의 안쪽 `C`)을
+    /// 사용자 식별자 누락으로 세지 않게 한다.
+    synthetic_idents: ?std.AutoHashMapUnmanaged(u32, void) = null,
     /// 사용자 심볼 이름 집합 — 합성 이름 충돌 판정용, 처음 필요할 때 만든다.
     user_symbol_names: ?std.StringHashMapUnmanaged(void) = null,
 

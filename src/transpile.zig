@@ -1452,6 +1452,8 @@ fn transpileWithCallbackInternal(
         transformer.binding_lite = binding_lite;
     }
     transformer.line_offsets = scanner.line_offsets.items;
+    // 누락 검사기가 합성 노드를 빼도록 기록을 켠다(검사기가 켜졌을 때만 — 평소 비용 없음).
+    if (symbol_coverage_env.enabled()) transformer.synthetic_idents = .empty;
     const root = transformer.transform() catch return error.TransformError;
     mem_profile.snap(&arena, "transform");
 
@@ -1459,7 +1461,7 @@ fn transpileWithCallbackInternal(
     if (symbol_coverage_env.enabled()) {
         if (analyzer_storage) |*analyzer| {
             const coverage = @import("transformer/symbol_coverage.zig");
-            var report = coverage.check(arena_alloc, transformer.ast, root, transformer.parser_node_count, transformer.symbol_ids.items, analyzer.symbols.items) catch return error.OutOfMemory;
+            var report = coverage.check(arena_alloc, transformer.ast, root, transformer.parser_node_count, transformer.symbol_ids.items, analyzer.symbols.items, if (transformer.synthetic_idents) |*s| s else null) catch return error.OutOfMemory;
             coverage.print(arena_alloc, file_path, &report);
         }
     }

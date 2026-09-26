@@ -53,6 +53,8 @@ const Ctx = struct {
     ast: *const Ast,
     parser_node_count: u32,
     symbol_ids: []const ?u32,
+    /// 합성 생성 함수가 만든 노드 — 사용자 이름을 빌려 써도 사용자 식별자가 아니다.
+    synthetic: ?*const std.AutoHashMapUnmanaged(u32, void),
     names: *const std.StringHashMapUnmanaged(void),
     symbols: []const Symbol,
     report: *Report,
@@ -117,11 +119,14 @@ fn checkIdentifier(ctx: *Ctx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
     }
     const i = @intFromEnum(idx);
     if (i < ctx.parser_node_count) return .descend;
+    if (ctx.synthetic) |set| {
+        if (set.contains(i)) return .descend;
+    }
     if (ctx.name_positions.contains(i)) return .descend;
     const name = ctx.ast.getText(node.data.string_ref);
     const sym = if (i < ctx.symbol_ids.len) ctx.symbol_ids[i] else null;
     if (sym) |sid| {
-        if (sid < ctx.symbols.len and !std.mem.eql(u8, ctx.ast.getText(ctx.symbols[sid].name), baseName(name))) {
+        if (sid >= ctx.symbols.len or !std.mem.eql(u8, ctx.ast.getText(ctx.symbols[sid].name), baseName(name))) {
             ctx.report.wrong.append(ctx.allocator, .{ .name = name, .tag = node.tag }) catch {
                 ctx.oom = true;
             };
@@ -142,6 +147,7 @@ pub fn check(
     parser_node_count: u32,
     symbol_ids: []const ?u32,
     symbols: []const Symbol,
+    synthetic: ?*const std.AutoHashMapUnmanaged(u32, void),
 ) std.mem.Allocator.Error!Report {
     var names: std.StringHashMapUnmanaged(void) = .empty;
     defer names.deinit(allocator);
@@ -154,6 +160,7 @@ pub fn check(
         .ast = ast,
         .parser_node_count = parser_node_count,
         .symbol_ids = symbol_ids,
+        .synthetic = synthetic,
         .names = &names,
         .symbols = symbols,
         .report = &report,
