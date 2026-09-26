@@ -76,11 +76,10 @@ pub fn transform(self: anytype) Error!NodeIndex {
     // #4251: object rest 가 든 param (`{a, ...r}`, ES2018) 은 default_params 지원
     // 타겟(es2017)에서도 lowering 필요 → object_spread 도 게이트. per-function 은
     // lowerAllFunctionParams 가 target-aware 로 object-rest param 만 선별(default-
-    // param-only 함수 과트리거 방지). 기본값이 body 캡처를 요구하는 함수도
-    // parameter environment에서 해당 캡처를 읽을 수 있도록 함께 낮춘다.
-    if (self.options.unsupported.default_params or self.options.unsupported.object_spread or
-        self.parameter_capture_statements.count() != 0)
-    {
+    // param-only 함수 과트리거 방지). Native defaults must retain their
+    // parameter environment: lowering them because of a generated body
+    // capture changes body shadowing, later-param TDZ, and direct eval.
+    if (self.options.unsupported.default_params or self.options.unsupported.object_spread) {
         var pass2_scope = profile.begin(.transform_pass2);
         defer pass2_scope.end();
         try lowerAllFunctionParams(self);
@@ -219,20 +218,6 @@ pub fn prependParameterInitializers(self: anytype, body_idx: NodeIndex, stmts: [
     return self.ast.addNode(.{ .tag = body.tag, .span = body.span, .data = .{ .list = new_list } });
 }
 
-/// Native default parameters cannot access variables declared in the function
-/// body. When lowering an initializer creates a body capture, its initializer
-/// must move into that body too, even if the target supports default syntax.
-fn parameterInitializersNeedBodyScope(self: anytype, body_idx: NodeIndex) bool {
-    if (body_idx.isNone()) return false;
-    const body = self.ast.getNode(body_idx);
-    if (body.tag != .block_statement and body.tag != .function_body) return false;
-    var statements = self.ast.iterateExtraList(body.data.list);
-    while (statements.next()) |statement| {
-        if (self.parameter_capture_statements.contains(@intFromEnum(statement))) return true;
-    }
-    return false;
-}
-
 fn lowerAllFunctionParams(self: anytype) Error!void {
     const Self = @TypeOf(self.*);
     const node_count = self.ast.nodes.items.len;
@@ -258,10 +243,9 @@ fn lowerAllFunctionParams(self: anytype) Error!void {
                 // #4251: default_params 미지원(es5..es2015)이면 전체(default/rest/
                 // destructuring) lowering. object_spread 만 미지원(es2016/es2017)이면
                 // object rest 든 param 만 — default-param-only 함수 불필요 lowering 회피.
-                // 생성된 body 캡처를 읽는 기본값은 native parameter environment에 둘 수 없다.
-                const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
-                const needs_body_scope = parameterInitializersNeedBodyScope(self, body_idx);
-                const needs_lowering = if (self.options.unsupported.default_params or needs_body_scope)
+                // TODO(#4819): object-rest lowering itself must preserve native
+                // defaults on other parameters and their parameter environment.
+                const needs_lowering = if (self.options.unsupported.default_params)
                     es2015_params.ES2015Params(Self).hasDefaultOrRest(self, params_list)
                 else
                     es2015_params.ES2015Params(Self).hasObjectRestParam(self, params_list);
@@ -277,6 +261,7 @@ fn lowerAllFunctionParams(self: anytype) Error!void {
                 self.ast.extra_data.items[e + 1] = @intFromEnum(new_params_node);
 
                 if (lr.body_stmts.items.len > 0) {
+                    const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
                     if (!body_idx.isNone()) {
                         const new_body = try prependParameterInitializers(self, body_idx, lr.body_stmts.items);
                         self.ast.extra_data.items[e + 2] = @intFromEnum(new_body);
@@ -286,8 +271,8 @@ fn lowerAllFunctionParams(self: anytype) Error!void {
             // #4251: arrow 의 object rest param 은 es2017(arrow 지원, object_spread
             // 미지원)에서 arrow→function 변환 없이(this 보존) param 만 lowering.
             // es5 에선 arrow 가 Pass 1 에서 function 으로 변환돼 위 arm 이 처리 →
-            // 여기 도달하는 건 orphan(무해). 유지된 arrow는 object rest 또는
-            // 기본값의 body 캡처가 있을 때 해당 매개변수만 낮춘다.
+            // 여기 도달하는 건 orphan(무해). default/array-rest arrow param 도 그
+            // 경로라, 여기선 object rest 만 대상(hasObjectRestParam).
             .arrow_function_expression => {
                 // arrow 가 미지원(es5..es2015)이면 Pass 1 에서 function 으로 변환됨 →
                 // 여기 남은 arrow 노드는 orphan(변환 전 원본). 처리하면 temp 카운터를
@@ -302,13 +287,10 @@ fn lowerAllFunctionParams(self: anytype) Error!void {
                 if (params_node.tag != .formal_parameters) continue;
                 const params_list = params_node.data.list;
                 if (params_list.len == 0) continue;
-                const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
-                const needs_body_scope = parameterInitializersNeedBodyScope(self, body_idx);
-                if (!es2015_params.ES2015Params(Self).hasObjectRestParam(self, params_list) and
-                    !(needs_body_scope and es2015_params.ES2015Params(Self).hasDefaultOrRest(self, params_list))) continue;
+                if (!es2015_params.ES2015Params(Self).hasObjectRestParam(self, params_list)) continue;
                 // (이전 #4251 array-rest skip 제거: lowerParamsImpl 이 default_params
                 //  지원 타겟에선 array-rest 를 native 유지하므로 arrow arguments 크래시
-                //  없음. object rest와 body 캡처가 필요한 기본값만 분해.)
+                //  없음. object rest 만 temp+body 분해.)
                 var lr = try es2015_params.ES2015Params(Self).lowerParamsPass2(self, params_list, node.span);
                 defer lr.body_stmts.deinit(self.allocator);
 
@@ -316,6 +298,7 @@ fn lowerAllFunctionParams(self: anytype) Error!void {
                 self.ast.extra_data.items[e + 0] = @intFromEnum(new_params_node);
 
                 if (lr.body_stmts.items.len > 0) {
+                    const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
                     if (!body_idx.isNone()) {
                         // arrow expression body → `{ return expr; }` 먼저 (implicit
                         // return 보존), 그 후 rest 추출문 prepend. (es2015_arrow 동형.)
@@ -333,7 +316,7 @@ fn lowerAllFunctionParams(self: anytype) Error!void {
                                 .data = .{ .list = list },
                             });
                         } else body_idx;
-                        const new_body = try prependParameterInitializers(self, block_body, lr.body_stmts.items);
+                        const new_body = try self.prependStatementsToBody(block_body, lr.body_stmts.items);
                         self.ast.extra_data.items[e + 1] = @intFromEnum(new_body);
                     }
                 }

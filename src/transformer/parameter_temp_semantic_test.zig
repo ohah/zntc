@@ -7,7 +7,7 @@ const Transformer = @import("transformer.zig").Transformer;
 const TransformOptions = @import("transformer.zig").TransformOptions;
 const ESTarget = @import("compat.zig").ESTarget;
 
-fn checkParameterTempScope(source: []const u8, target: ESTarget) !void {
+fn checkParameterTempScope(source: []const u8, target: ESTarget, native_defaults: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -28,7 +28,11 @@ fn checkParameterTempScope(source: []const u8, target: ESTarget) !void {
         try std.testing.expect(function_scope == null);
         function_scope = owner.value_ptr.*;
     }
-    const expected_scope = function_scope orelse return error.TestUnexpectedResult;
+    const reference_scope = function_scope orelse return error.TestUnexpectedResult;
+    const expected_scope = if (native_defaults)
+        analyzer.scope_owner_map.get(@intCast(parser.ast.nodes.items.len - 1)) orelse return error.TestUnexpectedResult
+    else
+        reference_scope;
     const original_symbol_count = analyzer.symbols.items.len;
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{
@@ -68,7 +72,7 @@ fn checkParameterTempScope(source: []const u8, target: ESTarget) !void {
         for (edited.references) |ref| {
             if (@intFromEnum(ref.symbol_id) != symbol_index or ref.node_index.isNone()) continue;
             try std.testing.expect(live.contains(@intFromEnum(ref.node_index)));
-            try std.testing.expectEqual(expected_scope, @intFromEnum(ref.scope_id));
+            try std.testing.expectEqual(reference_scope, @intFromEnum(ref.scope_id));
             try std.testing.expect(ref.flags.read or ref.flags.write);
             refs += 1;
         }
@@ -78,7 +82,7 @@ fn checkParameterTempScope(source: []const u8, target: ESTarget) !void {
     try std.testing.expectEqual(@as(usize, 1), temp_count);
 }
 
-test "#4819 parameter optional-chain temp retains exact source function scope" {
+test "#4819 parameter optional-chain temp uses exact emitted storage scope" {
     const fixtures = [_][]const u8{
         "function get(){return {value:5}} class C{constructor(value=get()?.value){this.value=value}} new C();",
         "function get(){return {value:5}} class C{method(value=get()?.value){return value}} new C().method();",
@@ -91,9 +95,15 @@ test "#4819 parameter optional-chain temp retains exact source function scope" {
         "function get(){return {value:5}} async function* run(value=get()?.value){yield value} run().next();",
         "function get(){return {value:5}} async function* run(value=get()?.value){for await(const item of [1]) yield value+item} run().next();",
     };
-    for (fixtures) |source| try checkParameterTempScope(source, .es5);
+    for (fixtures) |source| try checkParameterTempScope(source, .es5, false);
     try checkParameterTempScope(
         "function get(){return {value:5}} async function run(value=get()?.value){return value} run();",
         .es2016,
+        true,
+    );
+    try checkParameterTempScope(
+        "function get(){return {value:5}} async function* run(value=get()?.value){yield value} run().next();",
+        .es2017,
+        true,
     );
 }

@@ -258,6 +258,12 @@ pub fn hoistArrowBodyTemps(self: *Transformer, body_idx: NodeIndex, saved_counte
 /// restored the counter to the value after parameter visitation at this point.
 pub fn hoistParameterTempsAndRestore(self: *Transformer, body_idx: NodeIndex, before_params: u32, after_params: u32, span: Span) Error!NodeIndex {
     if (after_params == before_params) return body_idx;
+    // Native defaults execute in a parameter environment that cannot see a
+    // var declaration in the function body. Leave these slots for the
+    // enclosing hoist; in state-machine wrappers that is the program hoist.
+    // This also applies when only an object-rest parameter is lowered.
+    // Defaults lowered by Pass 2 execute in the body and can use its var scope.
+    if (!self.options.unsupported.default_params) return body_idx;
     // Visit of a generated inner function can leave later body/state temps in
     // the counter. Restrict this hoist to the exact parameter allocation range.
     std.debug.assert(!body_idx.isNone() and self.temp_var_counter >= after_params and after_params > before_params);
@@ -267,9 +273,7 @@ pub fn hoistParameterTempsAndRestore(self: *Transformer, body_idx: NodeIndex, be
     const body = try self.hoistTempVarsInOriginalFunction(body_idx, before_params, span);
     if (body != body_idx) {
         // This exact declaration is needed while evaluating a lowered default.
-        // Pass 2 must keep it before default checks, and native defaults must
-        // be lowered because their separate parameter environment cannot see
-        // a body var binding.
+        // Pass 2 must keep it before default checks.
         const list = self.ast.getNode(body).data.list;
         const declaration = self.ast.extra_data.items[list.start];
         try self.parameter_capture_statements.put(self.allocator, declaration, {});
