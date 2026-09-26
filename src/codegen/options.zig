@@ -109,6 +109,8 @@ pub const CodegenOptions = struct {
     namespace_member_owners: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
     /// Source nested namespace binding SID -> canonical shared member SID.
     namespace_declaration_owners: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
+    /// Exact generated destructuring temp bindings that remain IIFE locals.
+    destructuring_temp_bindings: ?*const std.AutoHashMapUnmanaged(u32, void) = null,
     /// __esm 래핑 모듈: CJS import 변환 시 const 대신 var 사용.
     /// ESM의 import는 hoisted이지만 CJS 변환 시 선언 위치에 출력되어 TDZ 발생.
     use_var_for_imports: bool = false,

@@ -66,6 +66,7 @@ test {
     _ = @import("lexical_capture_semantic_test.zig");
     _ = @import("generator_temp_semantic_test.zig");
     _ = @import("parameter_temp_semantic_test.zig");
+    _ = @import("namespace_temp_semantic_test.zig");
     _ = @import("class_scope_test.zig");
     _ = @import("block_rename_table_test.zig");
     _ = @import("minify_test.zig");

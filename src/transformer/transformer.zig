@@ -117,6 +117,11 @@ pub const Transformer = struct {
     /// Generated this/arguments capture declarations needed by parameter
     /// defaults. Pass 2 inserts default initializers after these statements.
     parameter_capture_statements: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// Exact binding nodes created while lowering destructuring declarations.
+    /// Namespace export printing keeps these temporary stores local to its IIFE.
+    destructuring_temp_bindings: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    namespace_iife_scope: ScopeId = .none,
+    namespace_temp_bindings: std.ArrayListUnmanaged(struct { binding: NodeIndex, span: token_mod.Span, scope: ScopeId }) = .empty,
     pending_runtime_helper_chains: std.StringHashMapUnmanaged(struct { first: usize, last: usize }) = .empty,
 
     /// semantic analyzer의 심볼 테이블 (unused import 판별용).

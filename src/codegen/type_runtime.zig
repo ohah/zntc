@@ -667,6 +667,7 @@ fn isSimpleVarDeclaration(self: anytype, decl_idx: NodeIndex) bool {
 /// 예: export let a = 1, b = a → ns.a=1;ns.b=ns.a;
 fn emitNamespaceVarDirectAssign(self: anytype, ns_name: []const u8, decl_idx: NodeIndex) !void {
     const decl = self.ast.getNode(decl_idx);
+    const keyword = bindings.declarationKeyword(self, self.ast.variableDeclarationKind(decl));
     const e = decl.data.extra;
     const extras = self.ast.extra_data.items[e .. e + 3];
     const list_start = extras[1];
@@ -682,6 +683,14 @@ fn emitNamespaceVarDirectAssign(self: anytype, ns_name: []const u8, decl_idx: No
         if (init_idx.isNone()) continue;
         const var_name_node = self.ast.getNode(name_idx);
         const var_name = self.ast.getText(var_name_node.span);
+        if (isDestructuringTempBinding(self, name_idx)) {
+            try self.write(keyword);
+            try self.write(var_name);
+            try self.writeByte('=');
+            try self.emitNode(init_idx);
+            try self.writeByte(';');
+            continue;
+        }
         try self.write(ns_name);
         try self.writeByte('.');
         try self.write(var_name);
@@ -713,6 +722,14 @@ fn emitNamespaceVarMixed(self: anytype, ns_name: []const u8, decl_idx: NodeIndex
         if (name_node.tag == .binding_identifier) {
             // init 이 없으면 할당할 값이 없다 (emitNamespaceVarDirectAssign 과 같음).
             if (init_idx.isNone()) continue;
+            if (isDestructuringTempBinding(self, name_idx)) {
+                try self.write(keyword);
+                try self.write(self.ast.getText(name_node.span));
+                try self.writeByte('=');
+                try self.emitNode(init_idx);
+                try self.writeByte(';');
+                continue;
+            }
             try self.write(ns_name);
             try self.writeByte('.');
             try self.write(self.ast.getText(name_node.span));
@@ -740,6 +757,7 @@ fn collectExportNames(self: anytype, map: *std.StringHashMapUnmanaged(void), dec
             for (declarators) |raw_idx| {
                 const declarator = self.ast.getNode(@enumFromInt(raw_idx));
                 const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[declarator.data.extra]);
+                if (isDestructuringTempBinding(self, name_idx)) continue;
                 const name_node = self.ast.getNode(name_idx);
                 const name = self.ast.getText(name_node.span);
                 try map.put(self.allocator, name, {});
@@ -768,10 +786,18 @@ fn collectNamespaceExportSymbols(self: anytype, symbols: *std.AutoHashMapUnmanag
         const declarator = self.ast.getNode(@enumFromInt(raw_idx));
         if (declarator.tag != .variable_declarator) continue;
         const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[declarator.data.extra]);
+        if (isDestructuringTempBinding(self, name_idx)) continue;
         if (name_idx.isNone() or self.ast.getNode(name_idx).tag != .binding_identifier) continue;
         const sid = self.sourceSymbolId(name_idx) orelse continue;
         try symbols.put(std.heap.page_allocator, sid, {});
     }
+}
+
+fn isDestructuringTempBinding(self: anytype, idx: NodeIndex) bool {
+    if (self.options.destructuring_temp_bindings) |bindings_map| {
+        return bindings_map.contains(@intFromEnum(idx));
+    }
+    return false;
 }
 
 fn namespaceParameterReserved(self: anytype, candidate: []const u8, original: bool) bool {
