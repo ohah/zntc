@@ -1,6 +1,8 @@
 function* outer() {
   yield 1;
-  const inner = function* () { yield 2; };
+  const inner = function* () {
+    yield 2;
+  };
   yield inner().next().value;
 }
 
