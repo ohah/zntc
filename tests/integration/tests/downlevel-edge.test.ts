@@ -1347,6 +1347,26 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
   });
 
   describe('template literal / tagged template', () => {
+    test('generated template functions avoid user names across nested and top-level sites', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            const _templateObject = 'user1';
+            const _templateObject2 = 'user2';
+            const data = 'user-data';
+            function tag(strings: TemplateStringsArray) { return strings[0]; }
+            function nested() { return tag\`one\`; }
+            console.log(nested(), tag\`two\`, _templateObject, _templateObject2, data);
+          `,
+        },
+        'index.ts',
+        ['--target=es5', '--minify'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('one two user1 user2 user-data');
+    });
+
     test('tagged template with expressions', async () => {
       const result = await bundleAndRun(
         {

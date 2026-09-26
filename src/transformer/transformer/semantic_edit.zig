@@ -5,6 +5,7 @@ const NodeIndex = @import("../../parser/ast.zig").NodeIndex;
 const Span = @import("../../lexer/token.zig").Span;
 const SymbolId = @import("../../semantic/symbol.zig").SymbolId;
 const SymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 const Reference = @import("../../semantic/symbol.zig").Reference;
 const ReferenceFlags = @import("../../semantic/symbol.zig").ReferenceFlags;
 const SemanticEditor = @import("../../semantic/editor.zig").SemanticEditor;
@@ -41,7 +42,19 @@ fn setSymbolId(self: *Transformer, node: NodeIndex, id: SymbolId) Transformer.Er
     self.symbol_ids.items[index] = @intFromEnum(id);
 }
 
-fn declareSynthetic(self: *Transformer, binding: NodeIndex, declaration_span: Span, kind: SymbolKind) Transformer.Error!?SymbolId {
+pub fn programScope(self: *Transformer) ScopeId {
+    return @enumFromInt(self.scope_owner_map.get(self.parser_node_count - 1) orelse
+        std.debug.panic("missing program scope for generated declaration", .{}));
+}
+
+/// AST 생성 시점의 current_scope와 실제 삽입 위치가 다를 때 명시한 스코프에 등록한다.
+pub fn addGeneratedFunctionScope(self: *Transformer, parent: ScopeId, owner: NodeIndex) Transformer.Error!ScopeId {
+    if (!self.semantic_edit_enabled) return .none;
+    const editor = try editorFor(self);
+    return editor.addScope(parent, owner, .function, false) catch |err| return editError(err);
+}
+
+pub fn declareSyntheticInScope(self: *Transformer, binding: NodeIndex, declaration_span: Span, kind: SymbolKind, scope: ScopeId) Transformer.Error!?SymbolId {
     if (!self.semantic_edit_enabled) return null;
     const editor = try editorFor(self);
     const name_span = self.ast.getNode(binding).data.string_ref;
@@ -49,13 +62,17 @@ fn declareSynthetic(self: *Transformer, binding: NodeIndex, declaration_span: Sp
         binding,
         name_span,
         declaration_span,
-        self.current_scope,
+        scope,
         kind,
         Reference.NO_STMT,
         Reference.NO_STMT,
     ) catch |err| return editError(err);
     try setSymbolId(self, binding, id);
     return id;
+}
+
+fn declareSynthetic(self: *Transformer, binding: NodeIndex, declaration_span: Span, kind: SymbolKind) Transformer.Error!?SymbolId {
+    return declareSyntheticInScope(self, binding, declaration_span, kind, self.current_scope);
 }
 
 /// `var` 합성 선언을 현재 어휘 스코프에서 생성한다. SymbolId는 추가만 한다.
@@ -70,13 +87,17 @@ pub fn declareSyntheticCatch(self: *Transformer, binding: NodeIndex, declaration
 
 /// 생성자가 받은 SymbolId를 그대로 참조에 연결한다. 이름 재검색은 하지 않는다.
 pub fn addSyntheticRef(self: *Transformer, node: NodeIndex, id: ?SymbolId) Transformer.Error!void {
+    return addSyntheticRefInScope(self, node, id, self.current_scope, .{ .read = true });
+}
+
+pub fn addSyntheticRefInScope(self: *Transformer, node: NodeIndex, id: ?SymbolId, scope: ScopeId, flags: ReferenceFlags) Transformer.Error!void {
     const symbol = id orelse return;
     const editor = try editorFor(self);
     editor.addReference(
         node,
         symbol,
-        self.current_scope,
-        .{ .read = true },
+        scope,
+        flags,
         Reference.NO_STMT,
         Reference.NO_STMT,
     ) catch |err| return editError(err);
