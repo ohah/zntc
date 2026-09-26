@@ -1031,15 +1031,15 @@ pub const STATIC_PRIVATE_FIELD_RUNTIME =
     \\var __classStaticPrivateFieldSpecGet = function(receiver, classConstructor, descriptor) {
     \\  __classCheckPrivateStaticAccess(receiver, classConstructor);
     \\  __classCheckPrivateStaticFieldDescriptor(descriptor, "get");
-    \\  if (descriptor.get) return descriptor.get.call(receiver);
+    \\  if (Object.prototype.hasOwnProperty.call(descriptor, "get")) return descriptor.get.call(receiver);
     \\  if (Object.prototype.hasOwnProperty.call(descriptor, "value")) return descriptor.value;
     \\  throw new TypeError("Private static accessor has no getter");
     \\};
     \\var __classStaticPrivateFieldSpecSet = function(receiver, classConstructor, descriptor, value) {
     \\  __classCheckPrivateStaticAccess(receiver, classConstructor);
     \\  __classCheckPrivateStaticFieldDescriptor(descriptor, "set");
-    \\  if (descriptor.set) descriptor.set.call(receiver, value);
-    \\  else if (descriptor.writable) descriptor.value = value;
+    \\  if (Object.prototype.hasOwnProperty.call(descriptor, "set")) descriptor.set.call(receiver, value);
+    \\  else if (Object.prototype.hasOwnProperty.call(descriptor, "writable") && descriptor.writable) descriptor.value = value;
     \\  else throw new TypeError("Private static member is read-only");
     \\  return value;
     \\};
@@ -1051,11 +1051,11 @@ pub const STATIC_PRIVATE_FIELD_RUNTIME_MIN =
     "var " ++ NAMES.STATIC_PRIVATE_GET_MIN ++ "=function(receiver,classConstructor,descriptor){" ++
     NAMES.STATIC_PRIVATE_ACCESS_MIN ++ "(receiver,classConstructor);" ++
     NAMES.STATIC_PRIVATE_DESC_MIN ++ "(descriptor,\"get\");" ++
-    "if(descriptor.get)return descriptor.get.call(receiver);if(Object.prototype.hasOwnProperty.call(descriptor,\"value\"))return descriptor.value;throw new TypeError(\"private static getter\")};" ++
+    "if(Object.prototype.hasOwnProperty.call(descriptor,\"get\"))return descriptor.get.call(receiver);if(Object.prototype.hasOwnProperty.call(descriptor,\"value\"))return descriptor.value;throw new TypeError(\"private static getter\")};" ++
     "var " ++ NAMES.STATIC_PRIVATE_SET_MIN ++ "=function(receiver,classConstructor,descriptor,value){" ++
     NAMES.STATIC_PRIVATE_ACCESS_MIN ++ "(receiver,classConstructor);" ++
     NAMES.STATIC_PRIVATE_DESC_MIN ++ "(descriptor,\"set\");" ++
-    "if(descriptor.set)descriptor.set.call(receiver,value);else if(descriptor.writable)descriptor.value=value;else throw new TypeError(\"private static read-only\");return value};";
+    "if(Object.prototype.hasOwnProperty.call(descriptor,\"set\"))descriptor.set.call(receiver,value);else if(Object.prototype.hasOwnProperty.call(descriptor,\"writable\")&&descriptor.writable)descriptor.value=value;else throw new TypeError(\"private static read-only\");return value};";
 
 /// __classPrivateFieldSet: instance private field 쓰기 + 값 반환.
 /// `wm.set(obj, value)` 는 WeakMap을 반환하므로 expression 값이 값 자체가 되도록 helper 사용.
