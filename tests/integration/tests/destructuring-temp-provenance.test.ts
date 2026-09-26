@@ -22,6 +22,18 @@ const [] = [];
 console.log(JSON.stringify([nested(), values, picked, rest.y, keyCalls]));
 `;
 
+const lexicalSource = `
+function f() {
+  let _a = 9;
+  {
+    const { x, ...tail } = { x: 1, y: 2 };
+    let { z, ...more } = { z: 3, w: 4 };
+    return x + z + tail.y + more.w + _a;
+  }
+}
+console.log(f());
+`;
+
 describe('ES5 destructuring generated temp provenance (#4819)', () => {
   let cleanup: (() => Promise<void>) | undefined;
   afterEach(async () => {
@@ -74,4 +86,35 @@ describe('ES5 destructuring generated temp provenance (#4819)', () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.stderr).toMatch(/synthetic-coverage .* bound=\d+ missing_binding=0 /);
   });
+
+  for (const target of ['es2015', 'es2017']) {
+    for (const bundle of [false, true]) {
+      for (const minify of [false, true]) {
+        test(`${target} lexical object rest, ${bundle ? 'bundle' : 'single'}, ${minify ? 'minify' : 'plain'}`, async () => {
+          const fixture = await createFixture({
+            'input.mjs': lexicalSource,
+            'package.json': '{"type":"module"}',
+          });
+          cleanup = fixture.cleanup;
+          const native = spawnSync('node', [join(fixture.dir, 'input.mjs')], {
+            encoding: 'utf8',
+          });
+          expect(native.status, native.stderr).toBe(0);
+          const out = join(fixture.dir, bundle ? 'out.cjs' : 'out.mjs');
+          const result = await runZntcInDir(fixture.dir, [
+            ...(bundle ? ['--bundle', '--platform=node', '--format=cjs'] : []),
+            'input.mjs',
+            `--target=${target}`,
+            ...(minify ? ['--minify'] : []),
+            '-o',
+            out,
+          ]);
+          expect(result.exitCode, result.stderr).toBe(0);
+          const actual = spawnSync('node', [out], { encoding: 'utf8' });
+          expect(actual.status, actual.stderr).toBe(0);
+          expect(actual.stdout).toBe(native.stdout);
+        });
+      }
+    }
+  }
 });

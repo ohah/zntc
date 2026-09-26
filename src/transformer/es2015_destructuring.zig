@@ -32,15 +32,25 @@ const es2015_block_scoping = @import("es2015_block_scoping.zig");
 
 pub fn ES2015Destructuring(comptime Transformer: type) type {
     return struct {
+        const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
+
+        fn tempSymbolKind(kind: ast_mod.VariableDeclarationKind) SymbolKind {
+            return switch (kind) {
+                .@"var" => .variable_var,
+                .let => .variable_let,
+                .@"const", .using, .await_using => .variable_const,
+            };
+        }
+
         fn makeDestructuringTempBinding(self: *Transformer, name_span: Span) Transformer.Error!NodeIndex {
             const binding = try es_helpers.makeSyntheticBinding(self, name_span);
             if (!self.namespace_iife_scope.isNone() and self.current_scope == self.namespace_iife_scope) {
                 try self.destructuring_temp_bindings.put(self.allocator, @intFromEnum(binding), {});
                 try self.namespace_temp_bindings.append(self.allocator, .{ .binding = binding, .span = name_span, .scope = self.current_scope });
-            } else if (self.semantic_edit_enabled and self.options.unsupported.block_scoping) {
-                // ES5 emits these declarators as `var`. Bind at creation, then
-                // use the unique temp span to pair all generated reads/writes.
-                const id = (try self.declareSyntheticVar(binding, self.ast.getNode(binding).span)).?;
+            } else if (self.semantic_edit_enabled and self.destructuring_temp_kind != null) {
+                // The generated temp has the same declaration kind as its
+                // lowered sibling bindings. Its unique span pairs exact uses.
+                const id = (try self.declareSyntheticInScope(binding, self.ast.getNode(binding).span, self.destructuring_temp_kind.?, self.current_scope)).?;
                 try self.destructuring_temp_symbol_ids.put(self.allocator, name_span.start, @intFromEnum(id));
             }
             return binding;
@@ -142,6 +152,11 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         pub fn lowerDestructuringDeclaration(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const e = node.data.extra;
             const span = node.span;
+            const orig_kind = self.ast.variableDeclarationKind(node);
+            const kind = if (self.options.unsupported.block_scoping) es2015_block_scoping.lowerKind(orig_kind) else orig_kind;
+            const saved_temp_kind = self.destructuring_temp_kind;
+            self.destructuring_temp_kind = tempSymbolKind(kind);
+            defer self.destructuring_temp_kind = saved_temp_kind;
 
             // extras를 visitNode 전에 읽기 (재할당 방지)
             const list_start = self.readU32(e, 1);
@@ -193,8 +208,6 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             // 새 variable_declaration — 원래 종류를 지킨다. `var` 로 바꾸면 블록 안 `const` 가
             // 블록 밖으로 새고 같은 이름 `let` 과 충돌한다 (#4790). let/const 를 못 쓰는 타깃은
             // 일반 선언과 같은 규칙(`lowerKind`)으로 낮춘다.
-            const orig_kind = self.ast.variableDeclarationKind(node);
-            const kind = if (self.options.unsupported.block_scoping) es2015_block_scoping.lowerKind(orig_kind) else orig_kind;
             const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
             const var_extra = try self.ast.addExtras(&.{ @intFromEnum(kind), new_list.start, new_list.len });
             return self.ast.addNode(.{
@@ -1102,6 +1115,9 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             // 경로 미도달=lowerForOfStatement; for-in 만, 기존 var 동작 유지).
             const orig_kind = self.ast.variableDeclarationKind(left_node);
             const out_kind: ast_mod.VariableDeclarationKind = if (self.options.unsupported.block_scoping) .@"var" else orig_kind;
+            const saved_temp_kind = self.destructuring_temp_kind;
+            self.destructuring_temp_kind = tempSymbolKind(out_kind);
+            defer self.destructuring_temp_kind = saved_temp_kind;
 
             const temp_binding = try makeDestructuringTempBinding(self, temp_span);
             const temp_decl = try es_helpers.makeDeclarator(self, temp_binding, NodeIndex.none, span);
@@ -1157,6 +1173,9 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
             const temp_span = try es_helpers.makeTempVarSpan(self);
             const out_kind: ast_mod.VariableDeclarationKind = if (self.options.unsupported.block_scoping) .@"var" else .@"const";
+            const saved_temp_kind = self.destructuring_temp_kind;
+            self.destructuring_temp_kind = tempSymbolKind(out_kind);
+            defer self.destructuring_temp_kind = saved_temp_kind;
             const temp_binding = try makeDestructuringTempBinding(self, temp_span);
             const temp_decl = try es_helpers.makeDeclarator(self, temp_binding, NodeIndex.none, span);
             const new_left = try es_helpers.makeVarDeclaration(self, &.{temp_decl}, out_kind, span);

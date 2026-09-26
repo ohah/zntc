@@ -76,3 +76,64 @@ test "#4819 ES5 destructuring temps keep exact IDs in hoisted function scope" {
     try std.testing.expectEqual(@as(usize, 1), unused_count);
     try std.testing.expectEqual(@as(usize, 1), used_count);
 }
+
+test "#4819 ES2015 object-rest temps keep const and let block scopes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const source = "function f() { let _a = 9; { const { x, ...tail } = { x: 1, y: 2 }; let { z, ...more } = { z: 3, w: 4 }; return x + z + tail.y + more.w + _a; } }";
+    var scanner = try Scanner.init(alloc, source);
+    var parser = Parser.init(alloc, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(alloc, &parser.ast);
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var block_scope: ?u32 = null;
+    for (analyzer.symbols.items) |symbol| {
+        if (std.mem.eql(u8, parser.ast.getText(symbol.name), "x")) block_scope = @intFromEnum(symbol.scope_id);
+    }
+    const expected_scope = block_scope orelse return error.MissingBlockScope;
+    const original_symbol_count = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(alloc, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es2015),
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(alloc, transformer.ast);
+
+    var const_count: usize = 0;
+    var let_count: usize = 0;
+    var temps = transformer.destructuring_temp_symbol_ids.iterator();
+    while (temps.next()) |entry| {
+        const id = entry.value_ptr.*;
+        try std.testing.expect(id >= original_symbol_count and id < edited.symbols.items.len);
+        const symbol = edited.symbols.items[id];
+        try std.testing.expectEqual(expected_scope, @intFromEnum(symbol.scope_id));
+        try std.testing.expectEqual(@as(?usize, id), edited.scope_maps[expected_scope].get(symbol.synthetic_name));
+        var binding_count: usize = 0;
+        for (reachable) |raw| {
+            if (transformer.ast.nodes.items[raw].tag != .binding_identifier) continue;
+            if (raw < edited.symbol_ids.len and edited.symbol_ids[raw] == id) binding_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), binding_count);
+        try std.testing.expect(symbol.reference_count > 0);
+        switch (symbol.kind) {
+            .variable_const => const_count += 1,
+            .variable_let => let_count += 1,
+            else => return error.WrongTempKind,
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), const_count);
+    try std.testing.expectEqual(@as(usize, 1), let_count);
+}
