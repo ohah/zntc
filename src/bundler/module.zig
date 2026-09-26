@@ -131,6 +131,7 @@ pub const ModuleSemanticData = struct {
             self.scope_owner_map,
             self.references,
             self.symbol_ids,
+            self.helper_scope_map,
         );
     }
 
@@ -140,6 +141,7 @@ pub const ModuleSemanticData = struct {
         self.scopes = result.scopes;
         self.scope_maps = result.scope_maps;
         self.scope_owner_map = result.scope_owner_map;
+        self.helper_scope_map = result.helper_scope_map;
         self.references = result.references;
         self.symbol_ids = result.symbol_ids;
     }

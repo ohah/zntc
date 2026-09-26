@@ -170,6 +170,11 @@ fn lowerAllFunctionParams(self: anytype) Error!void {
     var i: usize = 0;
     while (i < node_count) : (i += 1) {
         const node = self.ast.nodes.items[i];
+        const saved_scope = self.current_scope;
+        defer self.current_scope = saved_scope;
+        if (self.transformed_scope_owner_map.get(@intCast(i)) orelse self.scope_owner_map.get(@intCast(i))) |scope_id| {
+            self.current_scope = @enumFromInt(scope_id);
+        }
         switch (node.tag) {
             .function_declaration, .function_expression, .function, .method_definition => {
                 // extra layout: [name_or_key(0), params(1), body(2), ...]

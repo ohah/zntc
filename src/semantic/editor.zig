@@ -39,6 +39,7 @@ pub const SemanticEditor = struct {
     scopes: std.ArrayList(Scope) = .empty,
     scope_maps: std.ArrayList(std.StringHashMapUnmanaged(usize)) = .empty,
     scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty,
     references: std.ArrayList(Reference) = .empty,
     symbol_ids: std.ArrayList(?u32) = .empty,
 
@@ -49,6 +50,7 @@ pub const SemanticEditor = struct {
         scopes: []Scope,
         scope_maps: []std.StringHashMapUnmanaged(usize),
         scope_owner_map: std.AutoHashMapUnmanaged(u32, u32),
+        helper_scope_map: std.StringHashMapUnmanaged(usize),
         references: []Reference,
         symbol_ids: []?u32,
     };
@@ -62,6 +64,7 @@ pub const SemanticEditor = struct {
         scope_owner_map: std.AutoHashMapUnmanaged(u32, u32),
         references: []const Reference,
         symbol_ids: []const ?u32,
+        helper_scope_map: std.StringHashMapUnmanaged(usize),
     ) Error!SemanticEditor {
         if (scopes.len != scope_maps.len) return error.InvalidScope;
         var self: SemanticEditor = .{ .allocator = allocator, .ast = ast };
@@ -81,6 +84,10 @@ pub const SemanticEditor = struct {
         while (owner_iter.next()) |entry| {
             try self.scope_owner_map.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
         }
+        var helper_iter = helper_scope_map.iterator();
+        while (helper_iter.next()) |entry| {
+            try self.helper_scope_map.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
+        }
         try self.references.appendSlice(allocator, references);
         try self.symbol_ids.appendSlice(allocator, symbol_ids);
         return self;
@@ -90,6 +97,7 @@ pub const SemanticEditor = struct {
         for (self.scope_maps.items) |*map| map.deinit(self.allocator);
         self.scope_maps.deinit(self.allocator);
         self.scope_owner_map.deinit(self.allocator);
+        self.helper_scope_map.deinit(self.allocator);
         self.symbols.deinit(self.allocator);
         self.scopes.deinit(self.allocator);
         self.references.deinit(self.allocator);
@@ -103,13 +111,16 @@ pub const SemanticEditor = struct {
         const symbol_ids = try self.symbol_ids.toOwnedSlice(self.allocator);
         const symbols = self.symbols;
         const scope_owner_map = self.scope_owner_map;
+        const helper_scope_map = self.helper_scope_map;
         self.symbols = .empty;
         self.scope_owner_map = .empty;
+        self.helper_scope_map = .empty;
         return .{
             .symbols = symbols,
             .scopes = scopes,
             .scope_maps = scope_maps,
             .scope_owner_map = scope_owner_map,
+            .helper_scope_map = helper_scope_map,
             .references = references,
             .symbol_ids = symbol_ids,
         };
@@ -243,6 +254,43 @@ pub const SemanticEditor = struct {
         return id;
     }
 
+    /// 헬퍼 import의 local 노드는 파서 관례상 identifier_reference일 수 있다.
+    /// 사용자 동명 선언과 충돌해도 별도 helper_scope_map에 보관한다.
+    pub fn declareHelperImport(self: *SemanticEditor, local: NodeIndex, name_span: Span, declaration_span: Span, scope: ScopeId) Error!SymbolId {
+        const slot = try self.ensureNodeSlot(local);
+        if (!self.validScope(scope)) return error.InvalidScope;
+        if (self.symbol_ids.items[slot] != null) return error.AlreadyBound;
+        if (self.ast.getNode(local).tag != .identifier_reference) return error.InvalidNode;
+        if (name_span.start & Ast.STRING_TABLE_BIT == 0) return error.InvalidNode;
+        const name = try self.ast.getTextStable(self.allocator, name_span);
+        if (self.helper_scope_map.contains(name)) return error.DuplicateBinding;
+        const id: SymbolId = @enumFromInt(@as(u32, @intCast(self.symbols.items.len)));
+        try self.symbols.append(self.allocator, .{
+            .name = name_span,
+            .scope_id = scope,
+            .origin_scope = scope,
+            .kind = .import_binding,
+            .decl_flags = SymbolKind.import_binding.declFlags(),
+            .declaration_span = declaration_span,
+            .synthetic_name = name,
+        });
+        try self.helper_scope_map.put(self.allocator, name, @intFromEnum(id));
+        if (!self.scope_maps.items[scope.toIndex()].contains(name)) {
+            try self.scope_maps.items[scope.toIndex()].put(self.allocator, name, @intFromEnum(id));
+            self.scopes.items[scope.toIndex()].symbol_count +|= 1;
+        }
+        try self.references.append(self.allocator, .{
+            .node_index = .none,
+            .scope_id = scope,
+            .symbol_id = id,
+            .stmt_idx = Reference.NO_STMT,
+            .scope_stmt_idx = Reference.NO_STMT,
+            .flags = .{ .declare = true },
+        });
+        self.symbol_ids.items[slot] = @intFromEnum(id);
+        return id;
+    }
+
     fn countsAsValue(flags: ReferenceFlags) bool {
         return !flags.declare and !flags.type_context and !flags.value_as_type;
     }
@@ -328,7 +376,7 @@ test "synthetic declaration, explicit references, move and removal keep stable I
     const allocator = arena.allocator();
     var ast = Ast.init(allocator, "");
     defer ast.deinit();
-    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{});
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
     defer editor.deinit();
     const root = try editor.addScope(.none, .none, .module, true);
     const block_owner = try ast.addNode(.{
@@ -365,7 +413,7 @@ test "same provisional name in separate scopes never shares a symbol" {
     const allocator = arena.allocator();
     var ast = Ast.init(allocator, "");
     defer ast.deinit();
-    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{});
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
     defer editor.deinit();
     const root = try editor.addScope(.none, .none, .module, true);
     const left = try editor.addScope(root, .none, .function, false);
@@ -396,13 +444,38 @@ test "same provisional name in separate scopes never shares a symbol" {
     ));
 }
 
+test "helper import remains isolated from a user binding with the same name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+    defer editor.deinit();
+    const root = try editor.addScope(.none, .none, .module, true);
+    const name = try ast.addString("__extends");
+    const user_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const helper_local = try ast.addNode(.{ .tag = .identifier_reference, .span = name, .data = .{ .string_ref = name } });
+    const helper_call = try ast.addNode(.{ .tag = .identifier_reference, .span = name, .data = .{ .string_ref = name } });
+    const user_id = try editor.declare(user_binding, name, Span.EMPTY, root, .variable_const, 0, 0);
+    const helper_id = try editor.declareHelperImport(helper_local, name, Span.EMPTY, root);
+    try std.testing.expect(user_id != helper_id);
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(user_id)), editor.scope_maps.items[root.toIndex()].get("__extends"));
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(helper_id)), editor.helper_scope_map.get("__extends"));
+    try editor.addReference(helper_call, helper_id, root, .{ .read = true }, 0, 0);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(user_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(helper_id)].reference_count);
+    const result = try editor.finish();
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(helper_id)), result.helper_scope_map.get("__extends"));
+}
+
 test "invalid identities and type-only references cannot corrupt liveness" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
     var ast = Ast.init(allocator, "");
     defer ast.deinit();
-    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{});
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
     defer editor.deinit();
     const root = try editor.addScope(.none, .none, .module, true);
     const name = try ast.addString("temp");

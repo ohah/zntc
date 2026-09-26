@@ -126,10 +126,13 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.pending_nodes.deinit(self.allocator);
     self.symbol_ids.deinit(self.allocator);
     self.scope_owner_remaps.deinit(self.allocator);
+    self.transformed_scope_owner_map.deinit(self.allocator);
     if (self.semantic_editor) |*editor| editor.deinit();
     self.pending_temp_refs.deinit(self.allocator);
     self.pending_temp_ref_chains.deinit(self.allocator);
     self.helper_ref_nodes.deinit(self.allocator);
+    self.pending_runtime_helper_refs.deinit(self.allocator);
+    self.pending_runtime_helper_chains.deinit(self.allocator);
     self.plugins.refresh.registrations.deinit(self.allocator);
     for (self.plugins.refresh.signatures.items) |s| self.allocator.free(s.signature);
     self.plugins.refresh.signatures.deinit(self.allocator);

@@ -266,6 +266,7 @@ pub const SemanticAnalyzer = struct {
             self.scope_owner_map,
             self.references.items,
             self.symbol_ids.items,
+            self.helper_scope_map,
         );
     }
 
@@ -276,6 +277,7 @@ pub const SemanticAnalyzer = struct {
         self.scopes = std.ArrayList(Scope).fromOwnedSlice(result.scopes);
         self.scope_maps = std.ArrayList(std.StringHashMapUnmanaged(usize)).fromOwnedSlice(result.scope_maps);
         self.scope_owner_map = result.scope_owner_map;
+        self.helper_scope_map = result.helper_scope_map;
         self.references = std.ArrayList(symbol_mod.Reference).fromOwnedSlice(result.references);
         self.symbol_ids = std.ArrayList(?u32).fromOwnedSlice(result.symbol_ids);
     }
