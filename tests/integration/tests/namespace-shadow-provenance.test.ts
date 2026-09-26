@@ -101,6 +101,17 @@ namespace N {
 namespace N { export const next = x + y; }
 console.log(JSON.stringify([N.x, N.y, N.next]));
 `,
+  'empty exported patterns evaluate each initializer once': `
+let objectCalls = 0;
+let arrayCalls = 0;
+function objectSource() { objectCalls++; return { ignored: 1 }; }
+function arraySource() { arrayCalls++; return []; }
+namespace N {
+  export const {} = objectSource();
+  export const [] = arraySource();
+}
+console.log(JSON.stringify([objectCalls, arrayCalls]));
+`,
 } as const;
 
 function transpileReference(source: string): string {
