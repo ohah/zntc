@@ -88,7 +88,11 @@ describe('ES5 class field lexical capture frame (#4819)', () => {
     for (const target of ['es5', 'es2015']) {
       // ES2015 class-field/default ordering already differs from native on
       // main 929d342e3; this hotfix changes only ES5 constructor lowering.
-      if (name === 'base field initializes before constructor default and body' && target === 'es2015') continue;
+      if (
+        name === 'base field initializes before constructor default and body' &&
+        target === 'es2015'
+      )
+        continue;
       for (const bundle of [false, true]) {
         for (const minify of [false, true]) {
           test(`${name}, ${target}, ${bundle ? 'bundle' : 'single'}, ${minify ? 'minify' : 'plain'}`, async () => {
@@ -97,7 +101,9 @@ describe('ES5 class field lexical capture frame (#4819)', () => {
               'package.json': '{"type":"module"}',
             });
             cleanup = fixture.cleanup;
-            const native = spawnSync('node', [join(fixture.dir, 'input.mjs')], { encoding: 'utf8' });
+            const native = spawnSync('node', [join(fixture.dir, 'input.mjs')], {
+              encoding: 'utf8',
+            });
             expect(native.status, native.stderr).toBe(0);
             const output = join(fixture.dir, bundle ? 'out.cjs' : 'out.mjs');
             const transformed = await runZntcInDir(fixture.dir, [
