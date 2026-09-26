@@ -502,6 +502,34 @@ test "#4819 generated loop binding and call share one appended SymbolId" {
     try std.testing.expectEqual(@as(usize, 1), bindings);
     try std.testing.expect(calls >= 1);
     try std.testing.expectEqual(@as(u32, 1), edited.symbols.items[generated_id].reference_count);
+
+    var index_id: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |sym, i| {
+        if (std.mem.eql(u8, sym.nameText(parser.ast.source), "index")) index_id = @intCast(i);
+    }
+    const header_id = index_id orelse return error.TestUnexpectedResult;
+    var loop_arg: ?@import("../parser/ast.zig").NodeIndex = null;
+    for (transformer.ast.nodes.items) |node| {
+        if (node.tag != .call_expression) continue;
+        const extra = transformer.ast.extra_data.items;
+        const e = node.data.extra;
+        const callee: @import("../parser/ast.zig").NodeIndex = @enumFromInt(extra[e]);
+        if (transformer.ast.getNode(callee).tag != .identifier_reference) continue;
+        if (!std.mem.eql(u8, transformer.ast.getText(transformer.ast.getNode(callee).data.string_ref), "_loop2")) continue;
+        if (extra[e + 2] != 1) continue;
+        loop_arg = @enumFromInt(extra[extra[e + 1]]);
+    }
+    const argument = loop_arg orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(?u32, header_id), edited.symbol_ids[@intFromEnum(argument)]);
+    var argument_refs: usize = 0;
+    for (edited.references) |ref| {
+        if (ref.node_index != argument) continue;
+        try std.testing.expectEqual(header_id, @intFromEnum(ref.symbol_id));
+        try std.testing.expect(ref.flags.read);
+        try std.testing.expect(!ref.flags.write and !ref.flags.declare);
+        argument_refs += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), argument_refs);
 }
 
 test "#4819 tagged template helpers keep distinct function and data scopes" {

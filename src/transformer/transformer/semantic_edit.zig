@@ -203,6 +203,23 @@ pub fn trackNullishIdentifierCopies(self: *Transformer, source: NodeIndex, test_
     if (test_ref != source) editor.removeReference(source) catch |err| return editError(err);
 }
 
+/// `_loop(index)`의 새 인자는 원래 헤더 바인딩을 읽는다. 바인딩에는 복제할
+/// Reference가 없으므로 생성 위치의 스코프와 읽기 플래그로 직접 등록한다.
+pub fn trackUserArgumentFromBinding(self: *Transformer, argument: NodeIndex, binding: NodeIndex) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const raw_id = self.getSymbolIdAt(binding) orelse return;
+    if (self.getSymbolIdAt(argument) != raw_id) std.debug.panic("loop argument lost header symbol", .{});
+    const editor = try editorFor(self);
+    editor.addCopiedReference(
+        argument,
+        @enumFromInt(raw_id),
+        self.current_scope,
+        .{ .read = true },
+        Reference.NO_STMT,
+        Reference.NO_STMT,
+    ) catch |err| return editError(err);
+}
+
 /// 변환 중 복사된 사용자 식별자와 scope owner도 편집 결과에 합친다.
 pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.Result {
     const editor = if (self.semantic_editor) |*e| e else return null;
