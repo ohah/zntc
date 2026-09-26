@@ -150,7 +150,12 @@ pub fn visitWhileLoop(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
     // 이 본문은 `_loop` 클로저로 추출된다 — 안쪽에서 바깥 라벨은 경계 너머다 (#4722).
     try self.label_scope.append(self.allocator, null);
     const body_temp_start = self.temp_var_counter;
-    const raw_body = try self.visitNode(orig_body);
+    self.pending_loop_extraction_depth += 1;
+    const raw_body = self.visitNode(orig_body) catch |err| {
+        self.pending_loop_extraction_depth -= 1;
+        return err;
+    };
+    self.pending_loop_extraction_depth -= 1;
     _ = self.label_scope.pop();
     const new_body = try ensureStatementBody(self, orig_body, raw_body, node.span);
 
@@ -222,7 +227,12 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
             // 이 본문은 `_loop` 클로저로 추출된다 — 안쪽에서 바깥 라벨은 경계 너머다 (#4722).
             if (has_capture) try self.label_scope.append(self.allocator, null);
             const body_temp_start = self.temp_var_counter;
-            const raw_c = try self.visitNode(orig_body_idx);
+            if (has_capture) self.pending_loop_extraction_depth += 1;
+            const raw_c = self.visitNode(orig_body_idx) catch |err| {
+                if (has_capture) self.pending_loop_extraction_depth -= 1;
+                return err;
+            };
+            if (has_capture) self.pending_loop_extraction_depth -= 1;
             if (has_capture) _ = self.label_scope.pop();
             const new_c = try ensureStatementBody(self, orig_body_idx, raw_c, node.span);
 
@@ -440,7 +450,12 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
             // 이 본문은 `_loop` 클로저로 추출된다 — 안쪽에서 바깥 라벨은 경계 너머다 (#4722).
             if (has_capture) try self.label_scope.append(self.allocator, null);
             const body_temp_start = self.temp_var_counter;
-            const raw_body = if (yield_closure) orig_body_idx else try self.visitNode(orig_body_idx);
+            if (has_capture and !yield_closure) self.pending_loop_extraction_depth += 1;
+            const raw_body = if (yield_closure) orig_body_idx else self.visitNode(orig_body_idx) catch |err| {
+                if (has_capture) self.pending_loop_extraction_depth -= 1;
+                return err;
+            };
+            if (has_capture and !yield_closure) self.pending_loop_extraction_depth -= 1;
             if (has_capture) _ = self.label_scope.pop();
             const new_body = try ensureStatementBody(self, orig_body_idx, raw_body, node.span);
 

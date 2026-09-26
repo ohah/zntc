@@ -755,6 +755,82 @@ test "#4819 optional catch binding gets a symbol in its catch scope" {
     try std.testing.expectEqual(@as(usize, 2), bindings);
 }
 
+test "#4819 ES5 for-of iterator uses one var symbol across loop and finally" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator,
+        \\export function consume(values) {
+        \\  const seen = [];
+        \\  outer: for (const value of values) { seen.push(value); if (value === 2) break outer; }
+        \\  return seen;
+        \\}
+    );
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    var source_loop_scope: ?@import("../semantic/scope.zig").ScopeId = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .for_of_statement) continue;
+        source_loop_scope = @enumFromInt(analyzer.scope_owner_map.get(@intCast(raw)) orelse return error.TestUnexpectedResult);
+    }
+    const loop_scope = source_loop_scope orelse return error.TestUnexpectedResult;
+    const outer_scope = analyzer.scopes.items[loop_scope.toIndex()].parent;
+    const original_symbols = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    var iterator_id: ?u32 = null;
+    for (edited.symbols.items[original_symbols..], original_symbols..) |symbol, id| {
+        if (std.mem.eql(u8, transformer.ast.getText(symbol.name), "_d")) iterator_id = @intCast(id);
+    }
+    const id = iterator_id orelse return error.TestUnexpectedResult;
+    const symbol = edited.symbols.items[id];
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, symbol.kind);
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[symbol.scope_id.toIndex()].kind);
+
+    var bindings: usize = 0;
+    var reads: usize = 0;
+    for (edited.symbol_ids, 0..) |maybe_id, raw| {
+        if (maybe_id != id) continue;
+        const tag = transformer.ast.nodes.items[raw].tag;
+        if (tag == .binding_identifier) bindings += 1;
+        if (tag == .identifier_reference) reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), bindings);
+    try std.testing.expectEqual(@as(usize, 3), reads);
+    try std.testing.expectEqual(@as(u32, 3), symbol.reference_count);
+    var semantic_reads: usize = 0;
+    var loop_reads: usize = 0;
+    var finally_reads: usize = 0;
+    for (edited.references) |ref| {
+        if (@intFromEnum(ref.symbol_id) != id or ref.flags.declare) continue;
+        try std.testing.expect(ref.flags.read);
+        try std.testing.expectEqual(@as(?u32, id), edited.symbol_ids[@intFromEnum(ref.node_index)]);
+        if (ref.scope_id == loop_scope) {
+            loop_reads += 1;
+        } else if (ref.scope_id == outer_scope) {
+            finally_reads += 1;
+        } else return error.TestUnexpectedResult;
+        semantic_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 3), semantic_reads);
+    try std.testing.expectEqual(@as(usize, 1), loop_reads);
+    try std.testing.expectEqual(@as(usize, 2), finally_reads);
+}
+
 test "#4760 static private 멤버를 낮출 때 만드는 클래스 참조는 클래스 심볼을 가진다" {
     // `Counter.#count` → `__classStaticPrivateFieldSpecGet(Counter, Counter, _count)` 의 클래스
     // 참조는 매핑에 이름만 있어 심볼이 없었다.

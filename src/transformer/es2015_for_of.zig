@@ -46,6 +46,7 @@ const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
 const ast_walk = @import("../parser/ast_walk.zig");
 const std = @import("std");
+const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const es2015_block_scoping = @import("es2015_block_scoping.zig");
 
 pub fn ES2015ForOf(comptime Transformer: type) type {
@@ -101,6 +102,12 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             // 다시 선언해 가릴 수 있어서, 모듈 전체에서 고유한 이름을 쓴다.
             const step = try uniqueStepName(self);
             const catch_param = try es_helpers.makeTempVarSpan(self); // _f
+            // Labeled for-of lowering enters here without visitNode(source_idx),
+            // so the traversal cursor can still be the enclosing scope.
+            const loop_scope = if (self.semantic_edit_enabled and !register_sm_temps and self.pending_loop_extraction_depth == 0)
+                self.outputOwnedScope(source_idx) orelse std.debug.panic("missing for-of source scope", .{})
+            else
+                self.current_scope;
             if (register_sm_temps) {
                 try self.generator_temp_var_spans.appendSlice(self.allocator, &.{ norm, did_err, err_val, iter, step, catch_param });
             }
@@ -113,13 +120,20 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             // init: var _d = __values(iterable), _e
             self.runtime_helpers.values = true;
             const values_call = try es_helpers.makeCallExpr(self, try es_helpers.makeRuntimeHelperRef(self, "__values"), &.{right}, span);
+            const iter_binding = try es_helpers.makeSyntheticBinding(self, iter);
+            // State-machine collection and a pending `_loop` extraction can move
+            // this var into a generated function after this AST is built.
+            const iter_symbol = if (register_sm_temps or self.pending_loop_extraction_depth != 0)
+                null
+            else
+                try self.declareSyntheticInScope(iter_binding, span, .variable_var, loop_scope);
             const for_init = try es_helpers.makeVarDeclaration(self, &.{
-                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, iter), values_call, span),
+                try es_helpers.makeDeclarator(self, iter_binding, values_call, span),
                 try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, step), .none, span),
             }, .@"var", span);
 
             // test: !(_a = (_e = _d.next()).done)
-            const next_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, iter), try es_helpers.makePropertyName(self, "next"), span), &.{}, span);
+            const next_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeIteratorRef(self, iter, iter_symbol, loop_scope), try es_helpers.makePropertyName(self, "next"), span), &.{}, span);
             const step_assign = try makeAssign(self, try makeRefFromSpan(self, step), next_call, span);
             const done = try es_helpers.makeStaticMember(self, step_assign, try es_helpers.makePropertyName(self, "done"), span);
             const for_test = try es_helpers.makeUnaryNot(self, try makeAssign(self, try makeRefFromSpan(self, norm), done, span), span);
@@ -157,13 +171,15 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             } } });
 
             // finally { try { if (!_a && _d.return != null) _d.return(); } finally { if (_b) throw _c; } }
-            const ret_member = try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, iter), try es_helpers.makePropertyName(self, "return"), span);
+            // The finally wrapper is outside the source for-of lexical scope.
+            const outer_scope = if (iter_symbol != null) self.outputScopeParent(loop_scope) else self.current_scope;
+            const ret_member = try es_helpers.makeStaticMember(self, try makeIteratorRef(self, iter, iter_symbol, outer_scope), try es_helpers.makePropertyName(self, "return"), span);
             const close_cond = try self.ast.addNode(.{ .tag = .logical_expression, .span = span, .data = .{ .binary = .{
                 .left = try es_helpers.makeUnaryNot(self, try makeRefFromSpan(self, norm), span),
                 .right = try es_helpers.makeNeqNull(self, ret_member, span),
                 .flags = @intFromEnum(token_mod.Kind.amp2),
             } } });
-            const close_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, iter), try es_helpers.makePropertyName(self, "return"), span), &.{}, span);
+            const close_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeIteratorRef(self, iter, iter_symbol, outer_scope), try es_helpers.makePropertyName(self, "return"), span), &.{}, span);
             const close_if = try self.ast.addNode(.{ .tag = .if_statement, .span = span, .data = .{ .ternary = .{
                 .a = close_cond,
                 .b = try es_helpers.makeExprStmt(self, close_call, span),
@@ -366,6 +382,12 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         /// cross-module rename 이 declaration 에만 적용되는 비대칭이 발생한다.
         fn makeRefFromSpan(self: *Transformer, name_span: Span) Transformer.Error!NodeIndex {
             return es_helpers.makeSyntheticRefFromSpan(self, name_span);
+        }
+
+        fn makeIteratorRef(self: *Transformer, name_span: Span, symbol: ?SymbolId, scope: @import("../semantic/scope.zig").ScopeId) Transformer.Error!NodeIndex {
+            const ref = try makeRefFromSpan(self, name_span);
+            try self.addSyntheticRefInScope(ref, symbol, scope, .{ .read = true });
+            return ref;
         }
 
         fn makeVarDeclFromSpan(self: *Transformer, name_span: Span, init: NodeIndex, span: Span) Transformer.Error!NodeIndex {
