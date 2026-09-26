@@ -51,6 +51,96 @@ const PropertyExtra = ast_mod.PropertyExtra;
 
 pub fn ES2015Class(comptime Transformer: type) type {
     return struct {
+        /// A source class-name use is identified by its inner SymbolId. The
+        /// descriptor is private to the emitted class wrapper and makes every
+        /// assignment form use JavaScript's ordinary getter/setter sequencing.
+        pub fn classSelfAccess(self: *Transformer, idx: NodeIndex) Transformer.Error!?NodeIndex {
+            const id = self.getSymbolIdAt(idx) orelse return null;
+            var cursor = self.active_class_self_write_target;
+            while (cursor) |target| : (cursor = target.previous) {
+                if (target.inner_id != id) continue;
+                const base = try es_helpers.makeExactSyntheticRef(self, target.target_name);
+                if (self.semantic_edit_enabled)
+                    try self.addSyntheticRefInScope(base, target.target_id, self.current_scope, .{ .read = true });
+                const key = try es_helpers.makePropertyName(self, "value");
+                return try es_helpers.makeStaticMember(self, base, key, self.ast.getNode(idx).span);
+            }
+            return null;
+        }
+
+        fn hasClassSelfWrite(self: *Transformer, inner: ?u32) Transformer.Error!bool {
+            const id = inner orelse return false;
+            if (!self.class_self_written_symbols_built) {
+                for (self.references) |ref| {
+                    if (ref.flags.write and ref.isValueUse())
+                        try self.class_self_written_symbols.put(self.allocator, @intFromEnum(ref.symbol_id), {});
+                }
+                self.class_self_written_symbols_built = true;
+            }
+            return self.class_self_written_symbols.contains(id);
+        }
+
+        fn beginClassSelfWrite(self: *Transformer, inner: ?u32, scope: @import("../semantic/scope.zig").ScopeId, context: *Transformer.ClassSelfWriteTarget, span: Span) Transformer.Error!?NodeIndex {
+            if (!(try hasClassSelfWrite(self, inner))) return null;
+            const name = try es_helpers.resolveSyntheticName(self, "_classSelfWrite");
+            const binding = try es_helpers.makeExactSyntheticBinding(self, name);
+            const target_id = try self.declareSyntheticInScope(binding, span, .variable_var, scope);
+            context.* = .{ .inner_id = inner.?, .target_name = name, .target_id = target_id, .previous = self.active_class_self_write_target };
+            self.active_class_self_write_target = context;
+            return binding;
+        }
+
+        fn emitClassSelfWriteTarget(self: *Transformer, binding: NodeIndex, storage_binding: NodeIndex, scope: @import("../semantic/scope.zig").ScopeId, span: Span) Transformer.Error!NodeIndex {
+            const storage_name = self.ast.getNode(storage_binding).data.string_ref;
+            const storage_ref = try es_helpers.makeIdentifierRefFromSpan(self, storage_name);
+            const read = try self.ast.addNode(.{ .tag = .return_statement, .span = span, .data = .{ .unary = .{ .operand = storage_ref, .flags = 0 } } });
+            const getter_scope = if (self.semantic_edit_enabled) try self.reserveGeneratedFunctionScope(scope) else scope;
+            const getter_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{read}) } });
+            const getter_params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{}), span);
+            const getter_key = try es_helpers.makePropertyName(self, "value");
+            const getter_extra = try self.ast.addExtras(&.{ @intFromEnum(getter_key), @intFromEnum(getter_params), @intFromEnum(getter_body), ast_mod.MethodFlags.is_getter, 0, 0 });
+            const getter = try self.ast.addNode(.{ .tag = .method_definition, .span = span, .data = .{ .extra = getter_extra } });
+            if (self.semantic_edit_enabled) try self.bindReservedFunctionOwner(getter_scope, getter);
+            if (self.semantic_edit_enabled) {
+                const storage_raw = self.getSymbolIdAt(storage_binding) orelse std.debug.panic("class self storage has no SymbolId", .{});
+                try self.addSyntheticRefInScope(storage_ref, @enumFromInt(storage_raw), getter_scope, .{ .read = true });
+            } else try self.propagateSymbolId(storage_binding, storage_ref);
+            // A named function expression has an immutable self binding. An
+            // assignment to that binding in strict code raises the intrinsic
+            // TypeError even when user code shadows the global TypeError.
+            const setter_name = try es_helpers.resolveSyntheticName(self, "_classSelfReadonly");
+            const setter_binding = try es_helpers.makeExactSyntheticBinding(self, setter_name);
+            const setter_ref = try es_helpers.makeExactSyntheticRef(self, setter_name);
+            const accessor_scope = if (self.semantic_edit_enabled) try self.reserveGeneratedFunctionScope(scope) else scope;
+            const setter_scope = if (self.semantic_edit_enabled) try self.reserveGeneratedFunctionScope(accessor_scope) else accessor_scope;
+            const setter_id = if (self.semantic_edit_enabled)
+                try self.declareSyntheticInScope(setter_binding, span, .variable_const, setter_scope)
+            else
+                null;
+            if (self.semantic_edit_enabled)
+                try self.addSyntheticRefInScope(setter_ref, setter_id, setter_scope, .{ .write = true });
+            const zero = try es_helpers.makeNumericLiteral(self, 0);
+            const assignment = try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{ .left = setter_ref, .right = zero, .flags = @intFromEnum(token_mod.Kind.eq) } } });
+            const directive_span = try self.ast.addString("\"use strict\"");
+            const directive = try self.ast.addNode(.{ .tag = .directive, .span = directive_span, .data = .{ .none = 0 } });
+            const body_stmt = try es_helpers.makeExprStmt(self, assignment, span);
+            const setter_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{ directive, body_stmt }) } });
+            const setter_params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{}), span);
+            const setter_extra = try self.ast.addExtras(&.{ @intFromEnum(setter_binding), @intFromEnum(setter_params), @intFromEnum(setter_body), 0, @intFromEnum(NodeIndex.none) });
+            const thrower = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = setter_extra } });
+            if (self.semantic_edit_enabled) try self.bindReservedFunctionOwner(setter_scope, thrower);
+            const call_thrower = try es_helpers.makeCallExpr(self, thrower, &.{}, span);
+            const accessor_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{try es_helpers.makeExprStmt(self, call_thrower, span)}) } });
+            const setter_param = try es_helpers.makeExactSyntheticBinding(self, try es_helpers.resolveSyntheticName(self, "_ignoredClassSelfWrite"));
+            const accessor_params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{setter_param}), span);
+            if (self.semantic_edit_enabled) _ = try self.declareSyntheticInScope(setter_param, span, .parameter, accessor_scope);
+            const accessor_key = try es_helpers.makePropertyName(self, "value");
+            const accessor_extra = try self.ast.addExtras(&.{ @intFromEnum(accessor_key), @intFromEnum(accessor_params), @intFromEnum(accessor_body), ast_mod.MethodFlags.is_setter, 0, 0 });
+            const setter = try self.ast.addNode(.{ .tag = .method_definition, .span = span, .data = .{ .extra = accessor_extra } });
+            if (self.semantic_edit_enabled) try self.bindReservedFunctionOwner(accessor_scope, setter);
+            const init = try self.ast.addNode(.{ .tag = .object_expression, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{ getter, setter }) } });
+            return es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, binding, init, span)}, .@"var", span);
+        }
         /// Class decorators and computed-key prehoisting may copy a source
         /// constructor. A Stage 3 initializer may instead synthesize one.
         /// Only the former has an analyzed function scope to preserve.
@@ -180,6 +270,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer cm.deinit(self.allocator);
             const source_origin = self.scope_owner_origins.get(@intFromEnum(source_idx)) orelse @intFromEnum(source_idx);
             const inner = if (!name_idx.isNone()) self.class_self_symbol_map.get(source_origin) else null;
+            const previous_write_target = self.active_class_self_write_target;
+            defer self.active_class_self_write_target = previous_write_target;
+            var write_context: Transformer.ClassSelfWriteTarget = undefined;
+            const write_binding = try beginClassSelfWrite(self, inner, iife_scope, &write_context, span);
             const has_self_alias = if (inner) |id| try constructorShadowsClassSelf(self, cm.constructor_idx, name_span, id) else false;
             const alias_text = if (has_self_alias) try es_helpers.resolveSyntheticName(self, "_classSelf") else "";
             const alias_binding = if (has_self_alias) try es_helpers.makeExactSyntheticBinding(self, alias_text) else NodeIndex.none;
@@ -218,7 +312,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const fresh_name = try self.makeUserBinding(fresh_name_span, .none);
             if (name_idx.isNone() or !(try self.bindClassSelfStorage(source_idx, fresh_name, iife_scope)))
                 try self.propagateSymbolId(new_name, fresh_name);
-            if (has_self_alias) try self.preserved_simple_class_names.append(self.allocator, @intFromEnum(fresh_name));
+            if (inner != null and (write_binding != null or has_self_alias))
+                try self.preserved_simple_class_names.append(self.allocator, @intFromEnum(fresh_name));
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -304,6 +399,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (has_self_alias) try self.addSyntheticRefInScope(alias_check_ref, alias_id, ctor_scope, .{ .read = true });
 
             try self.scratch.append(self.allocator, func_node);
+            if (write_binding) |binding|
+                try self.scratch.append(self.allocator, try emitClassSelfWriteTarget(self, binding, fresh_name, iife_scope, span));
             if (has_self_alias) {
                 const self_ref = if (self.semantic_edit_enabled) blk: {
                     const ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
@@ -531,6 +628,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 @as(@import("../semantic/scope.zig").ScopeId, .none);
             if (has_extra or wrap_self_alias) try self.reparentGeneratedScope(source_class_scope, iife_scope);
 
+            const previous_write_target = self.active_class_self_write_target;
+            defer self.active_class_self_write_target = previous_write_target;
+            var write_context: Transformer.ClassSelfWriteTarget = undefined;
+            const write_binding = if (!iife_scope.isNone()) try beginClassSelfWrite(self, inner, iife_scope, &write_context, span) else null;
+
             const alias_text = if (has_self_alias) try es_helpers.resolveSyntheticName(self, "_classSelf") else "";
             const alias_binding = if (has_self_alias) try es_helpers.makeExactSyntheticBinding(self, alias_text) else NodeIndex.none;
             const alias_id = if (has_self_alias)
@@ -554,7 +656,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 // IIFE 안쪽 함수 이름 — 안쪽 참조와 같은 심볼 (위 선언 경로와 같은 이유).
                 break :blk try self.makeUserBinding(name_span, .none);
             } else name_node;
-            if (has_self_alias) try self.preserved_simple_class_names.append(self.allocator, @intFromEnum(func_name));
+            if (inner != null and (write_binding != null or has_self_alias))
+                try self.preserved_simple_class_names.append(self.allocator, @intFromEnum(func_name));
             if (has_extra and (name_idx.isNone() or !(try self.bindClassSelfStorage(source_idx, func_name, iife_scope))))
                 try self.propagateSymbolId(name_node, func_name);
 
@@ -633,10 +736,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     std.debug.panic("simple class constructor has no output scope", .{});
                 try self.addSyntheticRefInScope(alias_check_ref, alias_id, constructor_scope, .{ .read = true });
                 const alias_decl = try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, alias_binding, func_expr, span)}, .@"var", span);
+                const write_decl = if (write_binding) |binding| try emitClassSelfWriteTarget(self, binding, alias_binding, iife_scope, span) else NodeIndex.none;
                 const alias_return_ref = try es_helpers.makeExactSyntheticRef(self, alias_text);
                 try self.addSyntheticRefInScope(alias_return_ref, alias_id, iife_scope, .{ .read = true });
                 const alias_return = try self.ast.addNode(.{ .tag = .return_statement, .span = span, .data = .{ .unary = .{ .operand = alias_return_ref, .flags = 0 } } });
-                const wrapper_list = try self.ast.addNodeList(&.{ alias_decl, alias_return });
+                const wrapper_list = if (write_decl.isNone())
+                    try self.ast.addNodeList(&.{ alias_decl, alias_return })
+                else
+                    try self.ast.addNodeList(&.{ alias_decl, write_decl, alias_return });
                 const wrapper_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = wrapper_list } });
                 const none = @intFromEnum(NodeIndex.none);
                 const params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{}), span);
@@ -675,6 +782,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             try emitPrivateMethodArtifacts(self, cm.private_methods.items, null, span, name_span);
 
             try self.scratch.append(self.allocator, func_node);
+            if (write_binding) |binding|
+                try self.scratch.append(self.allocator, try emitClassSelfWriteTarget(self, binding, func_name, iife_scope, span));
             if (iife_self_alias) {
                 // The class self binding remains the source inner SymbolId in
                 // the IIFE. Give the constructor check an independent storage

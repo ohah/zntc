@@ -9,6 +9,82 @@ const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const Transformer = @import("transformer.zig").Transformer;
 const TransformOptions = @import("transformer.zig").TransformOptions;
 
+test "#4819 ES5 class inner write keeps source IDs and binds accessor uses" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\let Outer = class Inner { constructor(Inner) { this.arg = Inner; } static write() { Inner = 3; } static self() { return Inner; } };
+        \\class Declared { static write() { Declared++; } static self() { return Declared; } }
+        \\Outer = Declared;
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var expression_inner: ?u32 = null;
+    var declaration_inner: ?u32 = null;
+    var declaration_outer: ?u32 = null;
+    var parameter_id: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .class_expression) expression_inner = analyzer.class_self_symbol_map.get(@intCast(raw));
+        if (node.tag == .class_declaration) {
+            declaration_inner = analyzer.class_self_symbol_map.get(@intCast(raw));
+            const name_raw = parser.ast.extra_data.items[node.data.extra + @import("../parser/ast.zig").ClassExtra.name];
+            declaration_outer = analyzer.symbol_ids.items[name_raw];
+        }
+    }
+    const expr_id = expression_inner orelse return error.TestUnexpectedResult;
+    const decl_id = declaration_inner orelse return error.TestUnexpectedResult;
+    const outer_id = declaration_outer orelse return error.TestUnexpectedResult;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or !std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "Inner")) continue;
+        const id = analyzer.symbol_ids.items[raw] orelse continue;
+        if (id != expr_id) parameter_id = id;
+    }
+    const param_id = parameter_id orelse return error.TestUnexpectedResult;
+    try std.testing.expect(expr_id != param_id);
+    try std.testing.expect(decl_id != outer_id);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var found_expr_storage = false;
+    var found_decl_storage = false;
+    var found_outer = false;
+    var found_param = false;
+    var accessor_refs: usize = 0;
+    for (reachable) |raw| {
+        if (raw >= edited.symbol_ids.len or transformer.ast.nodes.items[raw].tag != .binding_identifier) continue;
+        const id = edited.symbol_ids[raw] orelse continue;
+        if (id == expr_id) found_expr_storage = true;
+        if (id == decl_id) found_decl_storage = true;
+        if (id == outer_id) found_outer = true;
+        if (id == param_id) found_param = true;
+    }
+    for (edited.references) |ref| {
+        if (ref.node_index.isNone()) continue;
+        const raw = @intFromEnum(ref.node_index);
+        if (std.mem.indexOfScalar(u32, reachable, raw) == null) continue;
+        if ((@intFromEnum(ref.symbol_id) == expr_id or @intFromEnum(ref.symbol_id) == decl_id) and
+            raw >= transformer.parser_node_count and ref.flags.read) accessor_refs += 1;
+    }
+    try std.testing.expect(found_expr_storage and found_decl_storage and found_outer and found_param);
+    try std.testing.expect(accessor_refs >= 2);
+}
+
 test "#4819 ES5 class IIFE scopes enclose source class bodies" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
