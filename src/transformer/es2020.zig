@@ -27,6 +27,20 @@ const es2015_class = @import("es2015_class.zig");
 /// Transformer 타입 (순환 import 방지를 위해 generic)
 pub fn ES2020(comptime Transformer: type) type {
     return struct {
+        fn captureTrackedTemp(self: *Transformer, value: NodeIndex, span: Span) Transformer.Error!helpers.TempCapture {
+            const cap = try helpers.captureToTemp(self, value, span);
+            const assignment = self.ast.getNode(cap.paren_assign);
+            std.debug.assert(assignment.tag == .assignment_expression);
+            try self.trackHoistedTempRef(cap.span, assignment.data.binary.left, .{ .write = true });
+            return cap;
+        }
+
+        fn readTrackedTemp(self: *Transformer, name_span: Span, node_span: Span) Transformer.Error!NodeIndex {
+            const ref = try helpers.makeTempVarRef(self, name_span, node_span);
+            try self.trackHoistedTempRef(name_span, ref, .{ .read = true });
+            return ref;
+        }
+
         /// `a ?? b` → `a != null ? a : b`
         pub fn lowerNullishCoalescing(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const old_left_idx = node.data.binary.left;
@@ -156,9 +170,9 @@ pub fn ES2020(comptime Transformer: type) type {
                 null_check_base = visited_base;
                 chain_base = try helpers.cloneNode(self, visited_base);
             } else {
-                const cap = try helpers.captureToTemp(self, visited_base, node.span);
+                const cap = try captureTrackedTemp(self, visited_base, node.span);
                 null_check_base = cap.paren_assign;
-                chain_base = try helpers.makeTempVarRef(self, cap.span, node.span);
+                chain_base = try readTrackedTemp(self, cap.span, node.span);
             }
 
             const rebuilt_chain = if (optional_member_call) |mc|
@@ -220,10 +234,10 @@ pub fn ES2020(comptime Transformer: type) type {
 
             if (isSuperExpression(self, old_obj)) {
                 const member = try makeSuperMethodMember(self, base.tag, old_prop, flags, root.span);
-                const cap = try helpers.captureToTemp(self, member, root.span);
+                const cap = try captureTrackedTemp(self, member, root.span);
                 return .{
                     .null_check_base = cap.paren_assign,
-                    .chain_base = try helpers.makeTempVarRef(self, cap.span, root.span),
+                    .chain_base = try readTrackedTemp(self, cap.span, root.span),
                     .receiver = try makeThisOrAlias(self, root.span),
                 };
             }
@@ -237,9 +251,9 @@ pub fn ES2020(comptime Transformer: type) type {
                 member_obj = visited_obj;
                 receiver = try helpers.cloneNode(self, visited_obj);
             } else {
-                const obj_cap = try helpers.captureToTemp(self, visited_obj, root.span);
+                const obj_cap = try captureTrackedTemp(self, visited_obj, root.span);
                 member_obj = obj_cap.paren_assign;
-                receiver = try helpers.makeTempVarRef(self, obj_cap.span, root.span);
+                receiver = try readTrackedTemp(self, obj_cap.span, root.span);
             }
 
             const new_prop = try self.visitNode(old_prop);
@@ -247,10 +261,10 @@ pub fn ES2020(comptime Transformer: type) type {
             const member_extra = try self.ast.addExtras(&.{ @intFromEnum(member_obj), @intFromEnum(new_prop), member_flags });
             const member = try self.ast.addNode(.{ .tag = base.tag, .span = base.span, .data = .{ .extra = member_extra } });
 
-            const fn_cap = try helpers.captureToTemp(self, member, root.span);
+            const fn_cap = try captureTrackedTemp(self, member, root.span);
             return .{
                 .null_check_base = fn_cap.paren_assign,
-                .chain_base = try helpers.makeTempVarRef(self, fn_cap.span, root.span),
+                .chain_base = try readTrackedTemp(self, fn_cap.span, root.span),
                 .receiver = receiver,
             };
         }
@@ -286,10 +300,10 @@ pub fn ES2020(comptime Transformer: type) type {
                 member_obj = try helpers.cloneNode(self, visited_obj);
                 receiver = try helpers.cloneNode(self, visited_obj);
             } else {
-                const cap = try helpers.captureToTemp(self, visited_obj, root.span);
+                const cap = try captureTrackedTemp(self, visited_obj, root.span);
                 receiver_check = cap.paren_assign;
-                member_obj = try helpers.makeTempVarRef(self, cap.span, root.span);
-                receiver = try helpers.makeTempVarRef(self, cap.span, root.span);
+                member_obj = try readTrackedTemp(self, cap.span, root.span);
+                receiver = try readTrackedTemp(self, cap.span, root.span);
             }
 
             const new_prop = try self.visitNode(old_prop);
@@ -334,11 +348,11 @@ pub fn ES2020(comptime Transformer: type) type {
             call_e: u32,
             span: Span,
         ) Transformer.Error!NodeIndex {
-            const fn_cap = try helpers.captureToTemp(self, member, span);
+            const fn_cap = try captureTrackedTemp(self, member, span);
             const eq_null = try helpers.makeEqNull(self, fn_cap.paren_assign, span);
 
             const call_prop = try helpers.makePropertyName(self, "call");
-            const fn_ref = try helpers.makeTempVarRef(self, fn_cap.span, span);
+            const fn_ref = try readTrackedTemp(self, fn_cap.span, span);
             const call_member = try helpers.makeStaticMember(self, fn_ref, call_prop, span);
 
             const args_start = self.readU32(call_e, 1);
