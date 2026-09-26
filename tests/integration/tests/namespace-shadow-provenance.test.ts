@@ -63,6 +63,11 @@ namespace N {
 }
 console.log(JSON.stringify([N.value, N.next, N.read(), N.bump(), N.first()]));
 `,
+  'merged exported enums retain earlier members': `
+namespace N { export enum E { A = 1 } }
+namespace N { export enum E { B = 2 } }
+console.log(JSON.stringify([N.E.A, N.E.B]));
+`,
   'nested merged namespace declarations keep both lexical IIFEs': `
 namespace Outer { export namespace Inner { export let value = 1; } }
 namespace Outer { export namespace Inner { export let next = value + 2; } }
