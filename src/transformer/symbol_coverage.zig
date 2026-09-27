@@ -201,7 +201,6 @@ pub fn print(allocator: std.mem.Allocator, file_path: []const u8, report: *const
 pub const StrictStatus = enum {
     bound,
     missing_binding,
-    known_global,
     unclassified,
     invalid_id,
     name_mismatch,
@@ -223,6 +222,8 @@ pub const StrictFinding = struct {
     symbol_id: ?u32 = null,
     reference_symbol_id: ?u32 = null,
     expected_scope_id: ?u32 = null,
+    symbol_scope_id: ?u32 = null,
+    symbol_origin_scope_id: ?u32 = null,
     reference_scope_id: ?u32 = null,
 };
 pub const StrictReport = struct {
@@ -232,6 +233,16 @@ pub const StrictReport = struct {
 
     pub fn deinit(self: *StrictReport, allocator: std.mem.Allocator) void {
         self.findings.deinit(allocator);
+    }
+
+    /// True only when every generated runtime identifier has exact SymbolId
+    /// and ScopeId evidence. Unbound references remain unclassified: spelling
+    /// alone cannot prove that they refer to a global.
+    pub fn hasCompleteExactCoverage(self: *const StrictReport) bool {
+        for (self.counts, 0..) |count, status| {
+            if (status != @intFromEnum(StrictStatus.bound) and count != 0) return false;
+        }
+        return true;
     }
 };
 
@@ -245,7 +256,6 @@ const StrictCtx = struct {
     node_scopes: *const std.AutoHashMapUnmanaged(u32, ScopeTrace),
     references: *const std.AutoHashMapUnmanaged(u32, ReferenceEvidence),
     synthetic: ?*const std.AutoHashMapUnmanaged(u32, void),
-    unresolved_globals: *const std.StringHashMapUnmanaged(void),
     report: *StrictReport,
     seen: std.AutoHashMapUnmanaged(u32, void) = .empty,
     oom: bool = false,
@@ -262,7 +272,7 @@ const StrictCtx = struct {
         const marked = if (self.synthetic) |set| set.contains(raw) else false;
         const trace = self.node_scopes.get(raw);
         const reference = self.references.get(raw);
-        const status = self.classify(raw, node, name, sid, trace, reference);
+        const status = self.classify(node, name, sid, trace, reference);
         self.report.counts[@intFromEnum(status)] += 1;
         if (marked) self.report.marked_synthetic += 1;
         self.report.findings.append(self.allocator, .{
@@ -274,6 +284,8 @@ const StrictCtx = struct {
             .symbol_id = sid,
             .reference_symbol_id = if (reference) |e| @intFromEnum(e.reference.symbol_id) else null,
             .expected_scope_id = if (trace) |s| s.scope_id else null,
+            .symbol_scope_id = if (sid) |id| if (id < self.symbols.len) @intFromEnum(self.symbols[id].scope_id) else null else null,
+            .symbol_origin_scope_id = if (sid) |id| if (id < self.symbols.len) @intFromEnum(self.symbols[id].origin_scope) else null else null,
             .reference_scope_id = if (reference) |e| @intFromEnum(e.reference.scope_id) else null,
         }) catch {
             self.oom = true;
@@ -282,7 +294,6 @@ const StrictCtx = struct {
 
     fn classify(
         self: *const StrictCtx,
-        raw: u32,
         node: Node,
         name: []const u8,
         sid: ?u32,
@@ -291,8 +302,9 @@ const StrictCtx = struct {
     ) StrictStatus {
         const id = sid orelse {
             if (node.tag == .binding_identifier) return .missing_binding;
-            const marked = if (self.synthetic) |set| set.contains(raw) else false;
-            if (!marked and self.unresolved_globals.contains(name)) return .known_global;
+            // The analyzer currently records unresolved globals by spelling,
+            // not by NodeIndex. A same-named local reference therefore cannot
+            // be proven global from this table alone.
             return .unclassified;
         };
         if (id >= self.symbols.len) return .invalid_id;
@@ -308,12 +320,18 @@ const StrictCtx = struct {
             const expected = trace orelse return .scope_unknown;
             if (expected.ambiguous) return .scope_ambiguous;
             if (!expected.valid) return .invalid_scope;
-            const expected_scope = expected.scope_id orelse return .scope_unknown;
+            const lexical_scope = expected.scope_id orelse return .scope_unknown;
+            if (!validScope(@enumFromInt(lexical_scope), self.scopes)) return .invalid_scope;
             const declaration_scope = if (symbol.kind == .variable_var)
-                nearestVarScope(expected_scope, self.scopes) orelse return .invalid_scope
+                nearestVarScope(lexical_scope, self.scopes) orelse return .invalid_scope
             else
-                expected_scope;
-            return if (@intFromEnum(symbol.origin_scope) == declaration_scope) .bound else .scope_mismatch;
+                lexical_scope;
+            // Both fields must identify the exact binding scope. For `var`,
+            // the semantic declaration is normalized to its nearest var scope;
+            // other bindings stay at their lexical owner. Checking only
+            // origin_scope lets a valid but unrelated storage scope pass.
+            return if (@intFromEnum(symbol.scope_id) == declaration_scope and
+                @intFromEnum(symbol.origin_scope) == declaration_scope) .bound else .scope_mismatch;
         }
 
         const evidence = reference orelse return .missing_reference;
@@ -499,8 +517,13 @@ pub fn checkStrict(
     scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
     references: []const Reference,
     synthetic: ?*const std.AutoHashMapUnmanaged(u32, void),
-    unresolved_globals: *const std.StringHashMapUnmanaged(void),
+    // Kept as a diagnostic hint input for callers; name-only global sets are
+    // intentionally not sufficient to classify a generated reference.
+    _unresolved_globals: *const std.StringHashMapUnmanaged(void),
 ) std.mem.Allocator.Error!StrictReport {
+    // Kept for caller compatibility; its name-only entries are not exact
+    // evidence for a particular generated reference NodeIndex.
+    _ = _unresolved_globals;
     var report: StrictReport = .{};
     errdefer report.deinit(allocator);
     var node_scopes = try collectScopeTraces(allocator, ast, root, scopes, scope_owner_map);
@@ -517,7 +540,6 @@ pub fn checkStrict(
         .node_scopes = &node_scopes,
         .references = &reference_evidence,
         .synthetic = synthetic,
-        .unresolved_globals = unresolved_globals,
         .report = &report,
     };
     defer ctx.seen.deinit(allocator);
@@ -531,17 +553,18 @@ pub fn checkStrict(
 
 pub fn printStrict(file_path: []const u8, report: *const StrictReport) void {
     std.debug.print(
-        "zntc: synthetic-coverage {s}: bound={d} missing_binding={d} known_global={d} unclassified={d} invalid_id={d} name_mismatch={d} missing_reference={d} identity_mismatch={d} invalid_scope={d} scope_unknown={d} scope_ambiguous={d} scope_mismatch={d} invisible_reference={d} duplicate_reference={d} marked_synthetic={d}\n",
-        .{ file_path, report.counts[@intFromEnum(StrictStatus.bound)], report.counts[@intFromEnum(StrictStatus.missing_binding)], report.counts[@intFromEnum(StrictStatus.known_global)], report.counts[@intFromEnum(StrictStatus.unclassified)], report.counts[@intFromEnum(StrictStatus.invalid_id)], report.counts[@intFromEnum(StrictStatus.name_mismatch)], report.counts[@intFromEnum(StrictStatus.missing_reference)], report.counts[@intFromEnum(StrictStatus.identity_mismatch)], report.counts[@intFromEnum(StrictStatus.invalid_scope)], report.counts[@intFromEnum(StrictStatus.scope_unknown)], report.counts[@intFromEnum(StrictStatus.scope_ambiguous)], report.counts[@intFromEnum(StrictStatus.scope_mismatch)], report.counts[@intFromEnum(StrictStatus.invisible_reference)], report.counts[@intFromEnum(StrictStatus.duplicate_reference)], report.marked_synthetic },
+        "zntc: synthetic-coverage {s}: bound={d} missing_binding={d} unclassified={d} invalid_id={d} name_mismatch={d} missing_reference={d} identity_mismatch={d} invalid_scope={d} scope_unknown={d} scope_ambiguous={d} scope_mismatch={d} invisible_reference={d} duplicate_reference={d} marked_synthetic={d}\n",
+        .{ file_path, report.counts[@intFromEnum(StrictStatus.bound)], report.counts[@intFromEnum(StrictStatus.missing_binding)], report.counts[@intFromEnum(StrictStatus.unclassified)], report.counts[@intFromEnum(StrictStatus.invalid_id)], report.counts[@intFromEnum(StrictStatus.name_mismatch)], report.counts[@intFromEnum(StrictStatus.missing_reference)], report.counts[@intFromEnum(StrictStatus.identity_mismatch)], report.counts[@intFromEnum(StrictStatus.invalid_scope)], report.counts[@intFromEnum(StrictStatus.scope_unknown)], report.counts[@intFromEnum(StrictStatus.scope_ambiguous)], report.counts[@intFromEnum(StrictStatus.scope_mismatch)], report.counts[@intFromEnum(StrictStatus.invisible_reference)], report.counts[@intFromEnum(StrictStatus.duplicate_reference)], report.marked_synthetic },
     );
     var printed: [std.meta.fields(StrictStatus).len]usize = @splat(0);
     for (report.findings.items) |finding| {
-        if (finding.status == .bound or finding.status == .known_global) continue;
+        if (finding.status == .bound) continue;
         const group = @intFromEnum(finding.status);
         if (printed[group] == 8) continue;
-        std.debug.print("  synthetic-coverage {s} node={d} {s}({s}) marked={any} sid={any} ref_sid={any} scope={any} ref_scope={any}\n", .{
-            @tagName(finding.status), finding.node,                finding.name,              @tagName(finding.tag),      finding.marked_synthetic,
-            finding.symbol_id,        finding.reference_symbol_id, finding.expected_scope_id, finding.reference_scope_id,
+        std.debug.print("  synthetic-coverage {s} node={d} {s}({s}) marked={any} sid={any} ref_sid={any} scope={any} symbol_scope={any} origin_scope={any} ref_scope={any}\n", .{
+            @tagName(finding.status),   finding.node,                finding.name,              @tagName(finding.tag),   finding.marked_synthetic,
+            finding.symbol_id,          finding.reference_symbol_id, finding.expected_scope_id, finding.symbol_scope_id, finding.symbol_origin_scope_id,
+            finding.reference_scope_id,
         });
         printed[group] += 1;
     }

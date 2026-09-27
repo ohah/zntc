@@ -72,6 +72,38 @@ console.log(JSON.stringify(run()));
   },
 ] as const;
 
+function expectCompleteExactCoverage(stderr: string) {
+  const reports = stderr
+    .split(/\r?\n/)
+    .filter((line) => line.includes('synthetic-coverage') && line.includes(' bound='));
+  expect(reports).toHaveLength(1);
+  const report = reports[0];
+  if (!report) throw new Error('missing synthetic coverage report');
+
+  const counts = new Map<string, number>();
+  for (const [, name, value] of report.matchAll(/([a-z_]+)=(\d+)/g)) {
+    counts.set(name, Number(value));
+  }
+  const statuses = [
+    'bound',
+    'missing_binding',
+    'unclassified',
+    'invalid_id',
+    'name_mismatch',
+    'missing_reference',
+    'identity_mismatch',
+    'invalid_scope',
+    'scope_unknown',
+    'scope_ambiguous',
+    'scope_mismatch',
+    'invisible_reference',
+    'duplicate_reference',
+  ];
+  expect(statuses.filter((status) => !counts.has(status))).toEqual([]);
+  expect(counts.get('bound') ?? 0).toBeGreaterThan(0);
+  expect(statuses.filter((status) => status !== 'bound' && counts.get(status) !== 0)).toEqual([]);
+}
+
 describe('ES5 destructuring generated temp provenance (#4819)', () => {
   let cleanup: (() => Promise<void>) | undefined;
   afterEach(async () => {
@@ -156,7 +188,7 @@ describe('ES5 destructuring generated temp provenance (#4819)', () => {
     }
   }
 
-  test('used and empty declaration temps have generated SymbolIds', async () => {
+  test('used and empty declaration temps have complete exact SymbolId and ScopeId coverage', async () => {
     const fixture = await createFixture({
       'input.mjs': 'const _a = 99; const { x } = { x: 1 }; const {} = {}; console.log(_a + x);',
     });
@@ -170,7 +202,7 @@ describe('ES5 destructuring generated temp provenance (#4819)', () => {
       encoding: 'utf8',
     });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stderr).toMatch(/synthetic-coverage .* bound=\d+ missing_binding=0 /);
+    expectCompleteExactCoverage(result.stderr);
   });
 
   for (const target of ['es2015', 'es2017']) {

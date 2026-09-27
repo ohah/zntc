@@ -173,6 +173,16 @@ fn expectForAwaitSyntheticCoverage(source: []const u8, target: TransformOptions.
     for (report.findings.items) |finding| {
         if (!finding.marked_synthetic) continue;
         marked_count += 1;
+        if (finding.status != .bound) {
+            const symbol = edited.symbols.items[finding.symbol_id.?];
+            std.debug.print("non-bound synthetic finding: name={s} finding={any} kind={s} storage_scope_kind={s} expected_scope_kind={s}\n", .{
+                finding.name,
+                finding,
+                @tagName(symbol.kind),
+                @tagName(edited.scopes[symbol.scope_id.toIndex()].kind),
+                @tagName(edited.scopes[finding.expected_scope_id.?].kind),
+            });
+        }
         try std.testing.expectEqual(coverage.StrictStatus.bound, finding.status);
     }
     try std.testing.expect(marked_count > 0);
