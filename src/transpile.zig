@@ -1500,7 +1500,19 @@ fn transpileWithCallbackInternal(
     if (synthetic_coverage_env.enabled()) {
         if (analyzer_storage) |*analyzer| {
             const coverage = @import("transformer/symbol_coverage.zig");
-            var report = coverage.checkStrict(arena_alloc, transformer.ast, root, transformer.parser_node_count, transformer.symbol_ids.items, analyzer.symbols.items, if (transformer.synthetic_idents) |*s| s else null, &analyzer.unresolved_references) catch return error.OutOfMemory;
+            var report = coverage.checkStrict(
+                arena_alloc,
+                transformer.ast,
+                root,
+                transformer.parser_node_count,
+                transformer.symbol_ids.items,
+                analyzer.symbols.items,
+                analyzer.scopes.items,
+                &analyzer.scope_owner_map,
+                analyzer.references.items,
+                if (transformer.synthetic_idents) |*s| s else null,
+                &analyzer.unresolved_references,
+            ) catch return error.OutOfMemory;
             coverage.printStrict(file_path, &report);
         }
     }

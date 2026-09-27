@@ -20,6 +20,9 @@ const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
+const Reference = @import("../semantic/symbol.zig").Reference;
+const Scope = @import("../semantic/scope.zig").Scope;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const reference_walk = @import("../semantic/reference_walk.zig");
 
 pub const Finding = struct { name: []const u8, tag: Node.Tag };
@@ -195,13 +198,32 @@ pub fn print(allocator: std.mem.Allocator, file_path: []const u8, report: *const
 /// Diagnostic inventory of emitted identifiers. An unbound generated read may
 /// be a new global, so only bindings are definite missing-symbol findings.
 /// This never infers or assigns a SymbolId from identifier text.
-pub const StrictStatus = enum { bound, missing_binding, known_global, unclassified, invalid_id };
+pub const StrictStatus = enum {
+    bound,
+    missing_binding,
+    known_global,
+    unclassified,
+    invalid_id,
+    name_mismatch,
+    missing_reference,
+    identity_mismatch,
+    invalid_scope,
+    scope_unknown,
+    scope_ambiguous,
+    scope_mismatch,
+    invisible_reference,
+    duplicate_reference,
+};
 pub const StrictFinding = struct {
     node: u32,
     name: []const u8,
     tag: Node.Tag,
     status: StrictStatus,
     marked_synthetic: bool,
+    symbol_id: ?u32 = null,
+    reference_symbol_id: ?u32 = null,
+    expected_scope_id: ?u32 = null,
+    reference_scope_id: ?u32 = null,
 };
 pub const StrictReport = struct {
     counts: [std.meta.fields(StrictStatus).len]usize = @splat(0),
@@ -218,7 +240,10 @@ const StrictCtx = struct {
     ast: *const Ast,
     parser_node_count: u32,
     symbol_ids: []const ?u32,
-    symbol_count: usize,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    node_scopes: *const std.AutoHashMapUnmanaged(u32, ScopeTrace),
+    references: *const std.AutoHashMapUnmanaged(u32, ReferenceEvidence),
     synthetic: ?*const std.AutoHashMapUnmanaged(u32, void),
     unresolved_globals: *const std.StringHashMapUnmanaged(void),
     report: *StrictReport,
@@ -235,14 +260,9 @@ const StrictCtx = struct {
         const name = self.ast.getText(node.data.string_ref);
         const sid = if (raw < self.symbol_ids.len) self.symbol_ids[raw] else null;
         const marked = if (self.synthetic) |set| set.contains(raw) else false;
-        const status: StrictStatus = if (sid) |id|
-            if (id < self.symbol_count) .bound else .invalid_id
-        else if (node.tag == .binding_identifier)
-            .missing_binding
-        else if (!marked and self.unresolved_globals.contains(name))
-            .known_global
-        else
-            .unclassified;
+        const trace = self.node_scopes.get(raw);
+        const reference = self.references.get(raw);
+        const status = self.classify(raw, node, name, sid, trace, reference);
         self.report.counts[@intFromEnum(status)] += 1;
         if (marked) self.report.marked_synthetic += 1;
         self.report.findings.append(self.allocator, .{
@@ -251,11 +271,199 @@ const StrictCtx = struct {
             .tag = node.tag,
             .status = status,
             .marked_synthetic = marked,
+            .symbol_id = sid,
+            .reference_symbol_id = if (reference) |e| @intFromEnum(e.reference.symbol_id) else null,
+            .expected_scope_id = if (trace) |s| s.scope_id else null,
+            .reference_scope_id = if (reference) |e| @intFromEnum(e.reference.scope_id) else null,
         }) catch {
             self.oom = true;
         };
     }
+
+    fn classify(
+        self: *const StrictCtx,
+        raw: u32,
+        node: Node,
+        name: []const u8,
+        sid: ?u32,
+        trace: ?ScopeTrace,
+        reference: ?ReferenceEvidence,
+    ) StrictStatus {
+        const id = sid orelse {
+            if (node.tag == .binding_identifier) return .missing_binding;
+            const marked = if (self.synthetic) |set| set.contains(raw) else false;
+            if (!marked and self.unresolved_globals.contains(name)) return .known_global;
+            return .unclassified;
+        };
+        if (id >= self.symbols.len) return .invalid_id;
+        const symbol = self.symbols[id];
+        const symbol_name = if (symbol.synthetic_name.len > 0)
+            symbol.synthetic_name
+        else
+            self.ast.getText(symbol.name);
+        if (!std.mem.eql(u8, baseName(name), baseName(symbol_name))) return .name_mismatch;
+
+        if (node.tag == .binding_identifier) {
+            if (!validScope(symbol.scope_id, self.scopes) or !validScope(symbol.origin_scope, self.scopes)) return .invalid_scope;
+            const expected = trace orelse return .scope_unknown;
+            if (expected.ambiguous) return .scope_ambiguous;
+            if (!expected.valid) return .invalid_scope;
+            const expected_scope = expected.scope_id orelse return .scope_unknown;
+            return if (@intFromEnum(symbol.origin_scope) == expected_scope) .bound else .scope_mismatch;
+        }
+
+        const evidence = reference orelse return .missing_reference;
+        if (evidence.count != 1) return .duplicate_reference;
+        if (@intFromEnum(evidence.reference.symbol_id) != id) return .identity_mismatch;
+        if (!validScope(evidence.reference.scope_id, self.scopes) or !validScope(symbol.scope_id, self.scopes)) return .invalid_scope;
+        const expected = trace orelse return .scope_unknown;
+        if (expected.ambiguous) return .scope_ambiguous;
+        if (!expected.valid) return .invalid_scope;
+        const expected_scope = expected.scope_id orelse return .scope_unknown;
+        if (@intFromEnum(evidence.reference.scope_id) != expected_scope) return .scope_mismatch;
+        if (!visibleFrom(symbol.scope_id, evidence.reference.scope_id, self.scopes)) return .invisible_reference;
+        return .bound;
+    }
 };
+
+const ScopeTrace = struct {
+    scope_id: ?u32 = null,
+    valid: bool = true,
+    ambiguous: bool = false,
+};
+
+const ReferenceEvidence = struct {
+    reference: Reference,
+    count: u8 = 1,
+};
+
+const ScopePath = struct {
+    scope_id: ?u32 = null,
+    valid: bool = true,
+};
+
+const ScopeVisit = struct {
+    node: NodeIndex,
+    incoming: ScopePath,
+};
+
+const ScopeVisitKey = struct {
+    node: u32,
+    scope_id: ?u32,
+    valid: bool,
+};
+
+fn validScope(scope: ScopeId, scopes: []const Scope) bool {
+    return !scope.isNone() and @as(usize, scope.toIndex()) < scopes.len;
+}
+
+fn visibleFrom(binding: ScopeId, reference: ScopeId, scopes: []const Scope) bool {
+    if (!validScope(binding, scopes) or !validScope(reference, scopes)) return false;
+    var current = reference;
+    var hops: usize = 0;
+    while (hops < scopes.len) : (hops += 1) {
+        if (current == binding) return true;
+        const index = current.toIndex();
+        if (@as(usize, index) >= scopes.len) return false;
+        current = scopes[index].parent;
+        if (current.isNone()) return false;
+    }
+    return false;
+}
+
+fn collectScopeTraces(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    scopes: []const Scope,
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+) std.mem.Allocator.Error!std.AutoHashMapUnmanaged(u32, ScopeTrace) {
+    var traces: std.AutoHashMapUnmanaged(u32, ScopeTrace) = .empty;
+    errdefer traces.deinit(allocator);
+    var visited: std.AutoHashMapUnmanaged(ScopeVisitKey, void) = .empty;
+    defer visited.deinit(allocator);
+    var stack: std.ArrayList(ScopeVisit) = .empty;
+    defer stack.deinit(allocator);
+    var children: std.ArrayList(NodeIndex) = .empty;
+    defer children.deinit(allocator);
+    var root_scope: ?u32 = null;
+    var multiple_root_scopes = false;
+    for (scopes, 0..) |scope, index| {
+        if (!scope.parent.isNone()) continue;
+        if (root_scope != null) multiple_root_scopes = true else root_scope = @intCast(index);
+    }
+    const initial_scope: ScopePath = if (multiple_root_scopes)
+        .{ .valid = false }
+    else if (root_scope) |scope|
+        .{ .scope_id = scope }
+    else
+        .{ .valid = false };
+    try stack.append(allocator, .{ .node = root, .incoming = initial_scope });
+    while (stack.pop()) |scope_visit| {
+        if (scope_visit.node.isNone() or @as(usize, @intFromEnum(scope_visit.node)) >= ast.nodes.items.len) continue;
+        const raw = @intFromEnum(scope_visit.node);
+        var effective = scope_visit.incoming;
+        if (scope_owner_map.get(raw)) |owner_scope| {
+            if (@as(usize, owner_scope) >= scopes.len) {
+                effective = .{ .valid = false };
+            } else {
+                effective = .{ .scope_id = owner_scope, .valid = true };
+            }
+        }
+        const key: ScopeVisitKey = .{ .node = raw, .scope_id = effective.scope_id, .valid = effective.valid };
+        const visit_result = try visited.getOrPut(allocator, key);
+        if (visit_result.found_existing) continue;
+        if (traces.getPtr(raw)) |trace| {
+            if (trace.scope_id != effective.scope_id or trace.valid != effective.valid) trace.ambiguous = true;
+        } else {
+            try traces.put(allocator, raw, .{ .scope_id = effective.scope_id, .valid = effective.valid });
+        }
+        const parent = ast.getNode(scope_visit.node);
+        try ast_walk.collectChildrenInto(ast, parent, &children, allocator);
+        var index = children.items.len;
+        while (index > 0) {
+            index -= 1;
+            const child = children.items[index];
+            // FunctionDeclaration/ClassDeclaration names are bound in the
+            // enclosing lexical scope, although their node also owns the
+            // function/class body scope. Other children inherit that scope.
+            const child_scope = if (isOuterDeclarationName(ast, parent, child)) scope_visit.incoming else effective;
+            try stack.append(allocator, .{ .node = child, .incoming = child_scope });
+        }
+    }
+    return traces;
+}
+
+fn isOuterDeclarationName(ast: *const Ast, parent: Node, child: NodeIndex) bool {
+    const offset: ?u32 = switch (parent.tag) {
+        .function_declaration => ast_mod.FunctionExtra.name,
+        .class_declaration => ast_mod.ClassExtra.name,
+        else => null,
+    };
+    const name_offset = offset orelse return false;
+    const slot = parent.data.extra + name_offset;
+    if (@as(usize, slot) >= ast.extra_data.items.len) return false;
+    const raw = ast.extra_data.items[slot];
+    return raw != @intFromEnum(NodeIndex.none) and raw == @intFromEnum(child);
+}
+
+fn collectReferenceEvidence(
+    allocator: std.mem.Allocator,
+    references: []const Reference,
+) std.mem.Allocator.Error!std.AutoHashMapUnmanaged(u32, ReferenceEvidence) {
+    var result: std.AutoHashMapUnmanaged(u32, ReferenceEvidence) = .empty;
+    errdefer result.deinit(allocator);
+    for (references) |reference| {
+        if (reference.node_index.isNone() or reference.flags.declare) continue;
+        const raw = @intFromEnum(reference.node_index);
+        if (result.getPtr(raw)) |evidence| {
+            evidence.count = if (evidence.count == std.math.maxInt(u8)) evidence.count else evidence.count + 1;
+        } else {
+            try result.put(allocator, raw, .{ .reference = reference });
+        }
+    }
+    return result;
+}
 
 fn strictBindingVisit(ctx: *StrictCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
     if (reference_walk.isTypeOnly(node.tag)) return .skip_children;
@@ -271,17 +479,27 @@ pub fn checkStrict(
     parser_node_count: u32,
     symbol_ids: []const ?u32,
     symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    references: []const Reference,
     synthetic: ?*const std.AutoHashMapUnmanaged(u32, void),
     unresolved_globals: *const std.StringHashMapUnmanaged(void),
 ) std.mem.Allocator.Error!StrictReport {
     var report: StrictReport = .{};
     errdefer report.deinit(allocator);
+    var node_scopes = try collectScopeTraces(allocator, ast, root, scopes, scope_owner_map);
+    defer node_scopes.deinit(allocator);
+    var reference_evidence = try collectReferenceEvidence(allocator, references);
+    defer reference_evidence.deinit(allocator);
     var ctx: StrictCtx = .{
         .allocator = allocator,
         .ast = ast,
         .parser_node_count = parser_node_count,
         .symbol_ids = symbol_ids,
-        .symbol_count = symbols.len,
+        .symbols = symbols,
+        .scopes = scopes,
+        .node_scopes = &node_scopes,
+        .references = &reference_evidence,
         .synthetic = synthetic,
         .unresolved_globals = unresolved_globals,
         .report = &report,
@@ -297,16 +515,17 @@ pub fn checkStrict(
 
 pub fn printStrict(file_path: []const u8, report: *const StrictReport) void {
     std.debug.print(
-        "zntc: synthetic-coverage {s}: bound={d} missing_binding={d} known_global={d} unclassified={d} invalid_id={d} marked_synthetic={d}\n",
-        .{ file_path, report.counts[@intFromEnum(StrictStatus.bound)], report.counts[@intFromEnum(StrictStatus.missing_binding)], report.counts[@intFromEnum(StrictStatus.known_global)], report.counts[@intFromEnum(StrictStatus.unclassified)], report.counts[@intFromEnum(StrictStatus.invalid_id)], report.marked_synthetic },
+        "zntc: synthetic-coverage {s}: bound={d} missing_binding={d} known_global={d} unclassified={d} invalid_id={d} name_mismatch={d} missing_reference={d} identity_mismatch={d} invalid_scope={d} scope_unknown={d} scope_ambiguous={d} scope_mismatch={d} invisible_reference={d} duplicate_reference={d} marked_synthetic={d}\n",
+        .{ file_path, report.counts[@intFromEnum(StrictStatus.bound)], report.counts[@intFromEnum(StrictStatus.missing_binding)], report.counts[@intFromEnum(StrictStatus.known_global)], report.counts[@intFromEnum(StrictStatus.unclassified)], report.counts[@intFromEnum(StrictStatus.invalid_id)], report.counts[@intFromEnum(StrictStatus.name_mismatch)], report.counts[@intFromEnum(StrictStatus.missing_reference)], report.counts[@intFromEnum(StrictStatus.identity_mismatch)], report.counts[@intFromEnum(StrictStatus.invalid_scope)], report.counts[@intFromEnum(StrictStatus.scope_unknown)], report.counts[@intFromEnum(StrictStatus.scope_ambiguous)], report.counts[@intFromEnum(StrictStatus.scope_mismatch)], report.counts[@intFromEnum(StrictStatus.invisible_reference)], report.counts[@intFromEnum(StrictStatus.duplicate_reference)], report.marked_synthetic },
     );
     var printed: [std.meta.fields(StrictStatus).len]usize = @splat(0);
     for (report.findings.items) |finding| {
         if (finding.status == .bound or finding.status == .known_global) continue;
         const group = @intFromEnum(finding.status);
         if (printed[group] == 8) continue;
-        std.debug.print("  synthetic-coverage {s} node={d} {s}({s}) marked={any}\n", .{
-            @tagName(finding.status), finding.node, finding.name, @tagName(finding.tag), finding.marked_synthetic,
+        std.debug.print("  synthetic-coverage {s} node={d} {s}({s}) marked={any} sid={any} ref_sid={any} scope={any} ref_scope={any}\n", .{
+            @tagName(finding.status), finding.node,                finding.name,              @tagName(finding.tag),      finding.marked_synthetic,
+            finding.symbol_id,        finding.reference_symbol_id, finding.expected_scope_id, finding.reference_scope_id,
         });
         printed[group] += 1;
     }
