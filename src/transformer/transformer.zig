@@ -621,6 +621,7 @@ pub const Transformer = struct {
     pub const trackNullishIdentifierCopies = @import("transformer/semantic_edit.zig").trackNullishIdentifierCopies;
     pub const trackUserArgumentFromBinding = @import("transformer/semantic_edit.zig").trackUserArgumentFromBinding;
     pub const trackUserWriteFromBinding = @import("transformer/semantic_edit.zig").trackUserWriteFromBinding;
+    pub const replaceUserReference = @import("transformer/semantic_edit.zig").replaceUserReference;
     pub const declareSyntheticCatch = @import("transformer/semantic_edit.zig").declareSyntheticCatch;
     pub const addSyntheticRef = @import("transformer/semantic_edit.zig").addSyntheticRef;
     pub const finishSemanticEdit = @import("transformer/semantic_edit.zig").finishSemanticEdit;

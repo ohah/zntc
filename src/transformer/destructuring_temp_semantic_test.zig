@@ -105,6 +105,89 @@ test "#4819 assignment destructuring temps have exact hoisted IDs and nested rea
     }
 }
 
+test "#4819 destructuring shorthand moves the exact assignment reference" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const source = "function run() { let x = 1; { let x = 2; const assigned = ({ x } = { x: 3 }); return [x, assigned.x]; } }";
+    var scanner = try Scanner.init(alloc, source);
+    var parser = Parser.init(alloc, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(alloc, &parser.ast);
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var source_target: ?@import("../parser/ast.zig").NodeIndex = null;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .assignment_target_property_identifier) continue;
+        const key = node.data.binary.left;
+        if (!std.mem.eql(u8, parser.ast.getText(parser.ast.getNode(key).data.string_ref), "x")) continue;
+        source_target = key;
+    }
+    const target = source_target orelse return error.MissingAssignmentTarget;
+    const source_raw = @intFromEnum(target);
+    const target_symbol = analyzer.symbol_ids.items[source_raw] orelse return error.MissingTargetSymbol;
+    const source_reference = for (analyzer.references.items) |reference| {
+        if (reference.node_index == target) break reference;
+    } else return error.MissingTargetReference;
+
+    var transformer = try Transformer.init(alloc, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(alloc, transformer.ast);
+
+    try std.testing.expect(std.mem.indexOfScalar(u32, reachable, source_raw) == null);
+    for (edited.references) |reference| {
+        try std.testing.expect(reference.node_index != target);
+    }
+    try std.testing.expectEqualStrings("", analyzer.symbols.items[target_symbol].synthetic_name);
+    var has_shadowed_outer_x = false;
+    for (analyzer.symbols.items, 0..) |symbol, index| {
+        if (@as(u32, @intCast(index)) == target_symbol or !std.mem.eql(u8, symbol.nameText(source), "x")) continue;
+        has_shadowed_outer_x = true;
+    }
+    try std.testing.expect(has_shadowed_outer_x);
+
+    var generated_target_count: usize = 0;
+    for (reachable) |raw| {
+        if (raw < transformer.parser_node_count or raw >= edited.symbol_ids.len) continue;
+        if (edited.symbol_ids[raw] != @as(?u32, target_symbol)) continue;
+        const node: @import("../parser/ast.zig").NodeIndex = @enumFromInt(raw);
+        if (transformer.ast.getNode(node).tag != .identifier_reference) continue;
+        const reference = for (edited.references) |candidate| {
+            if (candidate.node_index == node) break candidate;
+        } else return error.MissingGeneratedTargetReference;
+        try std.testing.expectEqual(target_symbol, @intFromEnum(reference.symbol_id));
+        try std.testing.expectEqual(source_reference.scope_id, reference.scope_id);
+        try std.testing.expect(reference.flags.write);
+        generated_target_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), generated_target_count);
+
+    var references: usize = 0;
+    var writes: usize = 0;
+    for (edited.references) |reference| {
+        if (@intFromEnum(reference.symbol_id) != target_symbol) continue;
+        references += 1;
+        if (reference.flags.write) writes += 1;
+    }
+    const symbol = edited.symbols.items[target_symbol];
+    try std.testing.expectEqual(symbol.reference_count, references);
+    try std.testing.expectEqual(symbol.write_count, writes);
+    try std.testing.expectEqual(@as(usize, 2), references);
+    try std.testing.expectEqual(@as(usize, 1), writes);
+}
+
 test "#4819 ES5 destructuring temps keep exact IDs in hoisted function scope" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

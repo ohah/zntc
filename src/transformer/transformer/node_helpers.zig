@@ -43,6 +43,9 @@ pub fn tryRenameIdentifierLike(
         .data = .{ .string_ref = new_span },
     });
     try self.propagateSymbolId(idx, new_idx);
+    if (comptime tag == .identifier_reference or tag == .assignment_target_identifier) {
+        try self.replaceUserReference(idx, new_idx);
+    }
     return new_idx;
 }
 
