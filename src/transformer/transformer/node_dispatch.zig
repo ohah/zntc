@@ -476,7 +476,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             // for-await 키워드는 ES2018. ES2018 미만 타겟에서는 async function 자체를
             // 보존하더라도 for-await 구문만 __asyncValues + while 로 제거해야 한다.
             if (self.options.unsupported.needsForAwaitOfDownlevel()) {
-                return es2018_for_await.ES2018ForAwait(Transformer).lowerForAwaitOf(self, node);
+                return es2018_for_await.ES2018ForAwait(Transformer).lowerForAwaitOf(self, idx, node);
             }
             return self.visitForInOfTernary(node);
         },
@@ -514,7 +514,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 _ = try es2025_using.ES2025Using(Transformer).normalizeForOfUsingHead(self, child_idx, true);
                 const child = self.ast.getNode(child_idx);
                 if (self.options.unsupported.needsForAwaitOfDownlevel() and child.tag == .for_await_of_statement) {
-                    return es2018_for_await.ES2018ForAwait(Transformer).lowerForAwaitOfLabeled(self, child, node.data.binary.left);
+                    return es2018_for_await.ES2018ForAwait(Transformer).lowerForAwaitOfLabeled(self, child_idx, child, node.data.binary.left);
                 }
                 if (self.options.unsupported.for_of and child.tag == .for_of_statement) {
                     return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatementLabeled(self, child_idx, child, node.data.binary.left);

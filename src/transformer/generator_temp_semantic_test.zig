@@ -119,6 +119,84 @@ test "#4819 nested state callbacks keep distinct private temps beside user colli
     try checkGeneratedTemps(source, .es5, 2, true);
 }
 
+test "#4819 for-await lowering registers every generated temp reference" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\const _a=1,_b=2,_step=3,_ret=4,_errObj=5,_err=6;
+        \\async function drain(source) {
+        \\  outer: for await (const item of source) {
+        \\    try {
+        \\      if (item === null) continue outer;
+        \\      for await (const inner of source) {
+        \\        try { if (inner === item) break; }
+        \\        catch (_err2) { throw _err2; }
+        \\      }
+        \\    } catch (_outerErr) { if (_outerErr) break outer; }
+        \\  }
+        \\}
+        \\top: for await (const item of input) { if (item) break top; }
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es2017),
+        .emit_runtime_helper_imports = true,
+    });
+    // Isolate for-await's module-scope symbols from the separate TLA IIFE
+    // producer, which owns its own generated promise binding.
+    transformer.options.unsupported.top_level_await = false;
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.synthetic_idents = .empty;
+
+    const root = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const coverage = @import("symbol_coverage.zig");
+    var report = try coverage.checkStrict(
+        allocator,
+        transformer.ast,
+        root,
+        transformer.parser_node_count,
+        edited.symbol_ids,
+        edited.symbols.items,
+        edited.scopes,
+        &edited.scope_owner_map,
+        edited.references,
+        &transformer.synthetic_idents.?,
+        &analyzer.unresolved_references,
+    );
+    defer report.deinit(allocator);
+
+    var marked_count: usize = 0;
+    for (report.findings.items) |finding| {
+        if (!finding.marked_synthetic) continue;
+        marked_count += 1;
+        if (finding.status != .bound) {
+            std.debug.print("for-await coverage: {s} node={d} {s}({s}) sid={any} ref_sid={any} scope={any} ref_scope={any}\n", .{
+                @tagName(finding.status),    finding.node,              finding.name,               @tagName(finding.tag), finding.symbol_id,
+                finding.reference_symbol_id, finding.expected_scope_id, finding.reference_scope_id,
+            });
+        }
+        try std.testing.expectEqual(coverage.StrictStatus.bound, finding.status);
+    }
+    try std.testing.expect(marked_count > 0);
+}
+
 test "#4819 for-await extracted loop temps preserve live scopes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

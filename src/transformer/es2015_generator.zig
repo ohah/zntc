@@ -493,7 +493,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     // 수집한다 (#4746 3단계). 본문이 상태 기계로 수집되므로 안쪽 for-of/for-in 의
                     // yield 도 제대로 접히고, 반복별 바인딩은 while 의 본문 캡처 추출이 맡는다.
                     // async generator 는 본문 전처리에서 이미 제자리 풀이돼 여기 오지 않는다.
-                    const rewritten = try @import("es2018_for_await.zig").ES2018ForAwait(Transformer).rewriteForAwait(self, stmt, .none);
+                    const rewritten = try @import("es2018_for_await.zig").ES2018ForAwait(Transformer).rewriteForAwait(self, stmt_idx, stmt, .none, false);
                     try collectOperations(self, rewritten, ops, next_label);
                 },
                 .break_statement, .continue_statement => {

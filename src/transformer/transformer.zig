@@ -135,6 +135,9 @@ pub const Transformer = struct {
     /// ES5 destructuring declaration temp span -> exact generated SymbolId.
     /// The unique string-table span survives counter resets in nested functions.
     destructuring_temp_symbol_ids: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// for-await lowering temp span + var scope -> exact SymbolId. Its later
+    /// hoisted declaration reuses this ID without merging unrelated temps.
+    synthetic_temp_symbol_ids: std.AutoHashMapUnmanaged(u64, u32) = .empty,
     /// Output declaration kind while lowering one destructuring declaration.
     destructuring_temp_kind: ?@import("../semantic/symbol.zig").SymbolKind = null,
     namespace_iife_scope: ScopeId = .none,
@@ -591,6 +594,7 @@ pub const Transformer = struct {
     pub const bindGeneratedFunctionTemps = @import("transformer/semantic_edit.zig").bindGeneratedFunctionTemps;
     pub const relocatePendingRuntimeHelperRef = @import("transformer/semantic_edit.zig").relocatePendingRuntimeHelperRef;
     pub const declareSyntheticInScope = @import("transformer/semantic_edit.zig").declareSyntheticInScope;
+    pub const declareSyntheticTempInScope = @import("transformer/semantic_edit.zig").declareSyntheticTempInScope;
     pub const addSyntheticRefInScope = @import("transformer/semantic_edit.zig").addSyntheticRefInScope;
     pub const trackRuntimeHelperRef = @import("transformer/semantic_edit.zig").trackRuntimeHelperRef;
     pub const bindRuntimeHelperImport = @import("transformer/semantic_edit.zig").bindRuntimeHelperImport;

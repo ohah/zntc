@@ -1361,3 +1361,43 @@ test "strict inventory checks generated identity and exact lexical scope" {
     defer ambiguous.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), ambiguous.counts[@intFromEnum(coverage.StrictStatus.scope_ambiguous)]);
 }
+
+test "strict inventory checks var bindings at their nearest var scope" {
+    const allocator = std.testing.allocator;
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("x");
+    const var_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const lexical_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const block = try ast.addNode(.{ .tag = .block_statement, .span = name, .data = .{ .list = try ast.addNodeList(&.{ var_binding, lexical_binding }) } });
+    const root = try ast.addNode(.{ .tag = .program, .span = name, .data = .{ .list = try ast.addNodeList(&.{block}) } });
+
+    const global_scope: ScopeId = @enumFromInt(0);
+    const function_scope: ScopeId = @enumFromInt(1);
+    const block_scope: ScopeId = @enumFromInt(2);
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = global_scope, .kind = .function, .is_strict = false },
+        .{ .parent = function_scope, .kind = .block, .is_strict = false },
+    };
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer owners.deinit(allocator);
+    try owners.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
+    try owners.put(allocator, @intFromEnum(block), @intFromEnum(block_scope));
+
+    const symbols = [_]Symbol{
+        .{ .name = name, .scope_id = function_scope, .origin_scope = function_scope, .kind = .variable_var, .declaration_span = name },
+        .{ .name = name, .scope_id = function_scope, .origin_scope = function_scope, .kind = .variable_const, .declaration_span = name },
+    };
+    const symbol_ids = [_]?u32{ 0, 1, null, null };
+    var synthetic: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer synthetic.deinit(allocator);
+    try synthetic.put(allocator, @intFromEnum(var_binding), {});
+    try synthetic.put(allocator, @intFromEnum(lexical_binding), {});
+    const unresolved: std.StringHashMapUnmanaged(void) = .empty;
+
+    var report = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &.{}, &synthetic, &unresolved);
+    defer report.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), report.counts[@intFromEnum(coverage.StrictStatus.bound)]);
+    try std.testing.expectEqual(@as(usize, 1), report.counts[@intFromEnum(coverage.StrictStatus.scope_mismatch)]);
+}
