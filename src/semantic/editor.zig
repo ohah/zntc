@@ -143,6 +143,16 @@ pub const SemanticEditor = struct {
         return !id.isNone() and @intFromEnum(id) < self.symbols.items.len;
     }
 
+    fn validTextSpan(self: *const SemanticEditor, span: Span) bool {
+        const start_is_string = span.start & Ast.STRING_TABLE_BIT != 0;
+        const end_is_string = span.end & Ast.STRING_TABLE_BIT != 0;
+        if (start_is_string != end_is_string) return false;
+        const start: usize = @intCast(span.start & ~Ast.STRING_TABLE_BIT);
+        const end: usize = @intCast(span.end & ~Ast.STRING_TABLE_BIT);
+        const limit = if (start_is_string) self.ast.string_table.items.len else self.ast.source.len;
+        return start <= end and end <= limit;
+    }
+
     fn visibleFrom(self: *const SemanticEditor, symbol: SymbolId, scope: ScopeId) bool {
         if (!self.validSymbol(symbol) or !self.validScope(scope)) return false;
         const target = self.symbols.items[@intFromEnum(symbol)].scope_id;
@@ -176,12 +186,12 @@ pub const SemanticEditor = struct {
         if (output_binding.isNone() or @intFromEnum(output_binding) >= self.ast.nodes.items.len) return error.InvalidNode;
         const node = self.ast.getNode(output_binding);
         if (node.tag != .binding_identifier) return error.InvalidNode;
+        const output_name_span = node.data.string_ref;
+        if (!self.validTextSpan(output_name_span)) return error.InvalidNode;
         const slot = try self.ensureNodeSlot(output_binding);
         if (self.symbol_ids.items[slot]) |existing| {
             if (existing != @intFromEnum(id)) return error.AlreadyBound;
         }
-        const output_name_span = node.data.string_ref;
-        if (output_name_span.start & Ast.STRING_TABLE_BIT == 0) return error.InvalidNode;
         const output_name = self.ast.getText(output_name_span);
         const stable_output_name = try self.ast.getTextStable(self.allocator, output_name_span);
         try self.relocateSymbolWithName(id, target, output_name, stable_output_name);
@@ -775,6 +785,66 @@ test "same-text bindings relocate under their exact emitted names" {
     try std.testing.expectEqual(@as(?usize, @intFromEnum(conflict_id)), editor.scope_maps.items[conflict_scope.toIndex()].get("_err3"));
     try std.testing.expectEqual(@as(?usize, @intFromEnum(left_id)), editor.scope_maps.items[storage_scope.toIndex()].get("_err3$4"));
     try std.testing.expectEqual(@as(u16, 2), editor.scopes.items[storage_scope.toIndex()].symbol_count);
+    _ = try editor.finish();
+}
+
+test "relocateSymbolAs accepts a source-backed emitted binding name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "x");
+    defer ast.deinit();
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+    defer editor.deinit();
+
+    const root = try editor.addScope(.none, .none, .module, true);
+    const target_scope = try editor.addScope(root, .none, .function, false);
+    const source_scope = try editor.addScope(target_scope, .none, .block, false);
+    const original_name = try ast.addString("original");
+    const source_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = original_name, .data = .{ .string_ref = original_name } });
+    const source_name_span = Span{ .start = 0, .end = 1 };
+    const output_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = source_name_span, .data = .{ .string_ref = source_name_span } });
+    const id = try editor.declare(source_binding, original_name, Span.EMPTY, source_scope, .variable_let, 0, 0);
+
+    try editor.relocateSymbolAs(id, target_scope, output_binding);
+
+    try std.testing.expectEqual(target_scope, editor.symbols.items[@intFromEnum(id)].scope_id);
+    try std.testing.expectEqualStrings("x", editor.symbols.items[@intFromEnum(id)].synthetic_name);
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(id)), editor.scope_maps.items[target_scope.toIndex()].get("x"));
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(id)), editor.symbol_ids.items[@intFromEnum(output_binding)]);
+    _ = try editor.finish();
+}
+
+test "relocateSymbolAs rejects invalid emitted name spans without changing bindings" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "x");
+    defer ast.deinit();
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+    defer editor.deinit();
+
+    const root = try editor.addScope(.none, .none, .module, true);
+    const target_scope = try editor.addScope(root, .none, .function, false);
+    const source_scope = try editor.addScope(target_scope, .none, .block, false);
+    const original_name = try ast.addString("original");
+    const source_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = original_name, .data = .{ .string_ref = original_name } });
+    const id = try editor.declare(source_binding, original_name, Span.EMPTY, source_scope, .variable_let, 0, 0);
+
+    const invalid_spans = [_]Span{
+        .{ .start = 0, .end = 2 },
+        .{ .start = Ast.STRING_TABLE_BIT, .end = 1 },
+    };
+    for (invalid_spans) |invalid_span| {
+        const output_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = invalid_span, .data = .{ .string_ref = invalid_span } });
+        const prior_symbol_id_len = editor.symbol_ids.items.len;
+        try std.testing.expectError(error.InvalidNode, editor.relocateSymbolAs(id, target_scope, output_binding));
+        try std.testing.expectEqual(prior_symbol_id_len, editor.symbol_ids.items.len);
+    }
+
+    try std.testing.expectEqual(source_scope, editor.symbols.items[@intFromEnum(id)].scope_id);
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(id)), editor.scope_maps.items[source_scope.toIndex()].get("original"));
+    try std.testing.expectEqual(@as(?usize, null), editor.scope_maps.items[target_scope.toIndex()].get("x"));
     _ = try editor.finish();
 }
 
