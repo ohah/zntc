@@ -161,21 +161,57 @@ pub const SemanticEditor = struct {
     /// scopes whose live references now execute beneath the new storage scope.
     pub fn relocateSymbol(self: *SemanticEditor, id: SymbolId, target: ScopeId) Error!void {
         if (!self.validSymbol(id)) return error.InvalidSymbol;
+        const symbol = &self.symbols.items[@intFromEnum(id)];
+        const name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else self.ast.getText(symbol.name);
+        try self.relocateSymbolWithName(id, target, name, null);
+    }
+
+    /// Move and attach an existing binding using its exact emitted name. This
+    /// keeps the SymbolId while rekeying the scope map for transforms that
+    /// lower distinct same-text bindings into one storage scope with unique
+    /// output names.
+    pub fn relocateSymbolAs(self: *SemanticEditor, id: SymbolId, target: ScopeId, output_binding: NodeIndex) Error!void {
+        if (!self.validSymbol(id)) return error.InvalidSymbol;
+        if (!self.validScope(target)) return error.InvalidScope;
+        if (output_binding.isNone() or @intFromEnum(output_binding) >= self.ast.nodes.items.len) return error.InvalidNode;
+        const node = self.ast.getNode(output_binding);
+        if (node.tag != .binding_identifier) return error.InvalidNode;
+        const slot = try self.ensureNodeSlot(output_binding);
+        if (self.symbol_ids.items[slot]) |existing| {
+            if (existing != @intFromEnum(id)) return error.AlreadyBound;
+        }
+        const output_name_span = node.data.string_ref;
+        if (output_name_span.start & Ast.STRING_TABLE_BIT == 0) return error.InvalidNode;
+        const output_name = self.ast.getText(output_name_span);
+        const stable_output_name = try self.ast.getTextStable(self.allocator, output_name_span);
+        try self.relocateSymbolWithName(id, target, output_name, stable_output_name);
+        self.symbol_ids.items[slot] = @intFromEnum(id);
+    }
+
+    fn relocateSymbolWithName(self: *SemanticEditor, id: SymbolId, target: ScopeId, target_name: []const u8, stable_output_name: ?[]const u8) Error!void {
+        if (!self.validSymbol(id)) return error.InvalidSymbol;
         if (!self.validScope(target)) return error.InvalidScope;
         const symbol = &self.symbols.items[@intFromEnum(id)];
         const source = symbol.scope_id;
         if (!self.validScope(source)) return error.InvalidScope;
-        if (source == target) return;
         const name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else self.ast.getText(symbol.name);
+        if (source == target and std.mem.eql(u8, name, target_name)) return;
         const source_map = &self.scope_maps.items[source.toIndex()];
         if (source_map.get(name) != @as(?usize, @intFromEnum(id))) return error.InvalidSymbol;
-        if (self.scope_maps.items[target.toIndex()].contains(name)) return error.DuplicateBinding;
-        if (self.scopes.items[target.toIndex()].symbol_count == std.math.maxInt(u16) or
-            self.scopes.items[source.toIndex()].symbol_count == 0) return error.InvalidScope;
-        try self.scope_maps.items[target.toIndex()].put(self.allocator, name, @intFromEnum(id));
+        const target_map = &self.scope_maps.items[target.toIndex()];
+        if (target_map.get(target_name)) |existing| {
+            if (existing != @intFromEnum(id)) return error.DuplicateBinding;
+            if (source != target) return error.DuplicateBinding;
+        }
+        if (source != target and (self.scopes.items[target.toIndex()].symbol_count == std.math.maxInt(u16) or
+            self.scopes.items[source.toIndex()].symbol_count == 0)) return error.InvalidScope;
+        try target_map.put(self.allocator, target_name, @intFromEnum(id));
         _ = source_map.remove(name);
-        self.scopes.items[source.toIndex()].symbol_count -= 1;
-        self.scopes.items[target.toIndex()].symbol_count += 1;
+        if (source != target) {
+            self.scopes.items[source.toIndex()].symbol_count -= 1;
+            self.scopes.items[target.toIndex()].symbol_count += 1;
+        }
+        if (stable_output_name) |output_name| symbol.synthetic_name = output_name;
         symbol.scope_id = target;
         symbol.origin_scope = target;
         self.scope_reparented = true;
@@ -227,6 +263,15 @@ pub const SemanticEditor = struct {
             }
         }
         self.reference_index_built = true;
+    }
+
+    /// Return the single stored reference for this node, building the index on
+    /// first use. Transform finalizers use this before relocating live copies.
+    pub fn referenceForNode(self: *SemanticEditor, node: NodeIndex) Error!?Reference {
+        if (node.isNone()) return null;
+        try self.ensureReferenceIndex();
+        const index = self.reference_index.get(@intFromEnum(node)) orelse return null;
+        return self.references.items[index];
     }
 
     /// AST가 새 어휘 경계를 만들 때 호출한다. strict는 부모에서 자식으로 전파된다.
@@ -683,6 +728,53 @@ test "class self storage relocation preserves identity and rejects occupied targ
     try std.testing.expectEqual(@as(?usize, @intFromEnum(id)), editor.scope_maps.items[destination.toIndex()].get("C"));
     try std.testing.expectEqual(@as(?usize, null), editor.scope_maps.items[source.toIndex()].get("C"));
     try std.testing.expectEqual(@as(?u32, @intFromEnum(id)), editor.symbol_ids.items[@intFromEnum(generated_binding)]);
+    _ = try editor.finish();
+}
+
+test "same-text bindings relocate under their exact emitted names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+    defer editor.deinit();
+    const root = try editor.addScope(.none, .none, .module, true);
+    const storage_scope = try editor.addScope(root, .none, .function, false);
+    const left_scope = try editor.addScope(storage_scope, .none, .block, false);
+    const right_scope = try editor.addScope(storage_scope, .none, .block, false);
+    const conflict_scope = try editor.addScope(storage_scope, .none, .block, false);
+
+    const original_name = try ast.addString("_err3");
+    const left_source_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = original_name, .data = .{ .string_ref = original_name } });
+    const right_source_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = original_name, .data = .{ .string_ref = original_name } });
+    const conflict_source_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = original_name, .data = .{ .string_ref = original_name } });
+    const left_id = try editor.declare(left_source_binding, original_name, Span.EMPTY, left_scope, .variable_let, 0, 0);
+    const right_id = try editor.declare(right_source_binding, original_name, Span.EMPTY, right_scope, .variable_let, 1, 0);
+    const conflict_id = try editor.declare(conflict_source_binding, original_name, Span.EMPTY, conflict_scope, .variable_let, 2, 0);
+    try std.testing.expect(left_id != right_id and right_id != conflict_id and left_id != conflict_id);
+
+    const left_name = try ast.addString("_err3$4");
+    const right_name = try ast.addString("_err3$6");
+    const left_output = try ast.addNode(.{ .tag = .binding_identifier, .span = left_name, .data = .{ .string_ref = left_name } });
+    const right_output = try ast.addNode(.{ .tag = .binding_identifier, .span = right_name, .data = .{ .string_ref = right_name } });
+    try editor.relocateSymbolAs(left_id, storage_scope, left_output);
+    try editor.relocateSymbolAs(right_id, storage_scope, right_output);
+
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(left_id)), editor.scope_maps.items[storage_scope.toIndex()].get("_err3$4"));
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(right_id)), editor.scope_maps.items[storage_scope.toIndex()].get("_err3$6"));
+    try std.testing.expectEqual(@as(?usize, null), editor.scope_maps.items[left_scope.toIndex()].get("_err3"));
+    try std.testing.expectEqualStrings("_err3$4", editor.symbols.items[@intFromEnum(left_id)].nameText(ast.source));
+    try std.testing.expectEqualStrings("_err3$6", editor.symbols.items[@intFromEnum(right_id)].nameText(ast.source));
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(left_id)), editor.symbol_ids.items[@intFromEnum(left_output)]);
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(right_id)), editor.symbol_ids.items[@intFromEnum(right_output)]);
+
+    const conflict_output = try ast.addNode(.{ .tag = .binding_identifier, .span = left_name, .data = .{ .string_ref = left_name } });
+    try std.testing.expectError(error.DuplicateBinding, editor.relocateSymbolAs(conflict_id, storage_scope, conflict_output));
+    try std.testing.expectEqual(conflict_scope, editor.symbols.items[@intFromEnum(conflict_id)].scope_id);
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(conflict_id)), editor.scope_maps.items[conflict_scope.toIndex()].get("_err3"));
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(left_id)), editor.scope_maps.items[storage_scope.toIndex()].get("_err3$4"));
+    try std.testing.expectEqual(@as(u16, 2), editor.scopes.items[storage_scope.toIndex()].symbol_count);
     _ = try editor.finish();
 }
 

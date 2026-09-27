@@ -81,6 +81,7 @@ fn yieldOpCodeFor(node: Node) OpCode {
 
 pub fn ES2015Generator(comptime Transformer: type) type {
     return struct {
+        const HoistedStateTemp = @import("transformer/lists.zig").HoistedStateTemp;
         /// generator function을 상태 머신으로 변환.
         /// function*: extra = [name(0), params(1), body(2), flags(3), return_type(4)]
         pub fn lowerGeneratorFunction(self: *Transformer, source_owner: NodeIndex, node: Node) Transformer.Error!NodeIndex {
@@ -129,7 +130,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             try self.label_scope.append(self.allocator, null);
             defer _ = self.label_scope.pop();
 
-            const sm_result = try buildStateMachine(self, body_idx, span);
+            var sm_result = try buildStateMachine(self, body_idx, span);
+            defer sm_result.hoisted_temps.deinit(self.allocator);
             self.in_extracted_fn_body = saved_ext;
             if (sm_result.body.isNone()) return .none;
             const sm_body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span, &frame.callback_temps);
@@ -146,7 +148,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .none;
             const gen = try buildGeneratorHelperCallWithProto(self, sm_body, genFn_ref, span);
             const source_scope = self.originalFunctionScope(source_owner);
-            try self.bindGeneratedState(source_scope, source_scope, gen.callback, gen.state_param, frame.state_ref_start, frame.callback_temps.items, span);
+            try self.bindGeneratedState(source_scope, source_scope, gen.callback, gen.state_param, frame.state_ref_start, sm_result.hoisted_temps.items, frame.callback_temps.items, span);
             const gen_call = gen.call;
 
             // return __generator(...) 문
@@ -200,6 +202,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         pub const StateMachineResult = struct {
             body: NodeIndex, // switch 문 (또는 switch를 포함하는 block)
             var_decl: NodeIndex, // 호이스팅된 var 선언 (없으면 .none)
+            hoisted_temps: std.ArrayListUnmanaged(HoistedStateTemp) = .empty,
         };
 
         /// generator body를 switch 문 기반 상태 머신으로 변환.
@@ -213,6 +216,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// 사라졌다(`_loop is not defined` — #4716 에서 한 곳, #4722 에서 나머지 셋).
         pub const StateMachineFrame = struct {
             saved_temp_spans: std.ArrayListUnmanaged(Span),
+            saved_var_origins: std.AutoHashMapUnmanaged(u64, NodeIndex),
             state_ref_start: usize,
             callback_temps: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty,
         };
@@ -221,7 +225,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             var saved: std.ArrayListUnmanaged(Span) = .empty;
             try saved.appendSlice(self.allocator, self.generator_temp_var_spans.items);
             self.generator_temp_var_spans.clearRetainingCapacity();
-            return .{ .saved_temp_spans = saved, .state_ref_start = self.generator_state_refs.items.len };
+            const saved_origins = self.generator_var_origins;
+            self.generator_var_origins = .empty;
+            return .{ .saved_temp_spans = saved, .saved_var_origins = saved_origins, .state_ref_start = self.generator_state_refs.items.len };
         }
 
         pub fn leaveStateMachineTemps(self: *Transformer, frame: *StateMachineFrame) void {
@@ -229,6 +235,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             self.generator_temp_var_spans.clearRetainingCapacity();
             self.generator_temp_var_spans.appendSlice(self.allocator, frame.saved_temp_spans.items) catch {};
             frame.saved_temp_spans.deinit(self.allocator);
+            self.generator_var_origins.deinit(self.allocator);
+            self.generator_var_origins = frame.saved_var_origins;
+            frame.saved_var_origins = .empty;
             frame.callback_temps.deinit(self.allocator);
         }
 
@@ -273,12 +282,26 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // Phase 2: 연산을 switch case로 변환
             const switch_node = try buildSwitchFromOps(self, ops.items, span);
-            const var_decl_node = try buildHoistedVarDecl(self, hoisted_vars.items, span);
-            return .{ .body = switch_node, .var_decl = var_decl_node };
+            var state_temps: std.ArrayListUnmanaged(HoistedStateTemp) = .empty;
+            errdefer state_temps.deinit(self.allocator);
+            const var_decl_node = try buildHoistedVarDecl(self, hoisted_vars.items, span, &state_temps);
+            return .{ .body = switch_node, .var_decl = var_decl_node, .hoisted_temps = state_temps };
         }
 
         fn spanKey(span: Span) u64 {
             return (@as(u64, span.start) << 32) | span.end;
+        }
+
+        fn makeGeneratorTempRef(self: *Transformer, name_span: Span, node_span: Span, flags: @import("../semantic/symbol.zig").ReferenceFlags) Transformer.Error!NodeIndex {
+            const ref = try es_helpers.makeTempVarRef(self, name_span, node_span);
+            if (self.semantic_edit_enabled and !self.generator_var_origins.contains(spanKey(name_span))) {
+                for (self.generator_temp_var_spans.items) |state_span| {
+                    if (state_span.start != name_span.start or state_span.end != name_span.end) continue;
+                    try self.trackHoistedTempRef(name_span, ref, flags);
+                    break;
+                }
+            }
+            return ref;
         }
 
         /// 사용자 바인딩(`origin`)에서 온 이름을 wrapper 최상단 `var` 목록에 등록한다. 목록은 이름만
@@ -291,7 +314,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// generator body 의 hoisted `var` 선언과 for-of/await 변환에서 생성한 임시 변수를
         /// 하나의 `var` 선언으로 합쳐 반환. __generator 콜백 밖(함수 스코프)에 배치해야 한다 —
         /// 콜백 안에 두면 매 호출마다 재선언되어 상태가 리셋된다. 합칠 변수가 없으면 `.none`.
-        fn buildHoistedVarDecl(self: *Transformer, hoisted_vars: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        fn buildHoistedVarDecl(self: *Transformer, hoisted_vars: []const NodeIndex, span: Span, state_temps: *std.ArrayListUnmanaged(HoistedStateTemp)) Transformer.Error!NodeIndex {
             if (hoisted_vars.len == 0 and self.generator_temp_var_spans.items.len == 0) return .none;
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -309,10 +332,16 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 if (gop.found_existing) continue;
                 // 사용자 바인딩에서 온 이름이면 그 심볼을 물려준다 — 대입·참조만 심볼을 갖고
                 // 이 선언이 없으면 minify 가 둘을 다른 이름으로 찍는다 (#4760).
-                const binding = if (self.generator_var_origins.get(spanKey(temp_span))) |origin|
-                    try self.makeUserBinding(temp_span, origin)
+                const origin = self.generator_var_origins.get(spanKey(temp_span));
+                const binding = if (origin) |source|
+                    try self.makeUserBinding(temp_span, source)
                 else
                     try es_helpers.makeSyntheticBinding(self, temp_span);
+                try state_temps.append(self.allocator, .{
+                    .binding = binding,
+                    .name_span = temp_span,
+                    .symbol_id = if (origin) |source| self.getSymbolIdAt(source) else null,
+                });
                 const declarator = try es_helpers.makeDeclarator(self, binding, .none, span);
                 try self.scratch.append(self.allocator, declarator);
             }
@@ -728,10 +757,16 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const loop_fn_node = self.ast.getNode(result.loop_fn);
             const loop_name_span = blk: {
                 const decl_start = self.readU32(loop_fn_node.data.extra, 1);
-                const decl_raw = self.ast.extra_data.items[decl_start];
-                const declarator = self.ast.getNode(@as(NodeIndex, @enumFromInt(decl_raw)));
-                const binding = self.ast.getNode(self.readNodeIdx(declarator.data.extra, 0));
-                break :blk binding.data.string_ref;
+                const decl_len = self.readU32(loop_fn_node.data.extra, 2);
+                for (0..decl_len) |offset| {
+                    const decl_raw = self.ast.extra_data.items[decl_start + offset];
+                    const declarator = self.ast.getNode(@as(NodeIndex, @enumFromInt(decl_raw)));
+                    if (declarator.tag != .variable_declarator or
+                        self.readNodeIdx(declarator.data.extra, 2) != result.loop_function) continue;
+                    const binding = self.ast.getNode(self.readNodeIdx(declarator.data.extra, 0));
+                    break :blk binding.data.string_ref;
+                }
+                std.debug.panic("extracted generator loop binding missing from its declaration", .{});
             };
             // ⚠️ 등록은 **collectVarDeclWithYield 뒤**에 해야 한다. 그 안에서 `_loopN` 의
             // generator 본문이 낮아지며 자기 상태 기계를 만드는데, 먼저 넣어 두면 그
@@ -1374,9 +1409,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 var param_bindings: std.ArrayList(NodeIndex) = .empty;
                 defer param_bindings.deinit(self.allocator);
                 if (!catch_param.isNone()) try collectBindingNodes(self, catch_param, &param_bindings);
-                // 컴파일러가 만든 catch 임시 변수(for-of 닫기의 `_f` 등)는 이미 wrapper 에 등록된
-                // 고유 이름이라 바꿀 필요가 없다.
-                if (param_bindings.items.len == 1 and isRegisteredGeneratorTemp(self, self.ast.getText(self.ast.getNode(param_bindings.items[0]).span))) param_bindings.clearRetainingCapacity();
+                // 이미 wrapper 에 등록한 바인딩의 정확한 노드/심볼만 재사용한다. 이름만 같다는
+                // 이유로 중첩 catch 둘을 하나의 상태 변수로 합치면 서로의 값을 덮는다.
+                if (param_bindings.items.len == 1 and isRegisteredGeneratorBinding(self, param_bindings.items[0])) param_bindings.clearRetainingCapacity();
                 try registerStateMachineBindings(self, param_bindings.items);
 
                 const param_is_pattern = !catch_param.isNone() and self.ast.getNode(catch_param).tag != .binding_identifier;
@@ -1389,7 +1424,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try self.generator_temp_var_spans.append(self.allocator, tmp);
                     try appendAssignTempStmt(self, ops, tmp, try buildSentCall(self, stmt.span), stmt.span);
                     const decl = try es_helpers.makeVarDeclaration(self, &.{
-                        try es_helpers.makeDeclarator(self, catch_param, try es_helpers.makeTempVarRef(self, tmp, tmp), stmt.span),
+                        try es_helpers.makeDeclarator(self, catch_param, try makeGeneratorTempRef(self, tmp, tmp, .{ .read = true }), stmt.span),
                     }, .let, stmt.span);
                     try collectVarDeclWithYield(self, self.ast.getNode(decl), ops, next_label);
                 } else if (!catch_param.isNone()) {
@@ -1835,14 +1870,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const value = try visitExprWithYieldExtraction(self, expr_idx, ops, next_label);
             const temp_span = try es_helpers.makeTempVarSpan(self);
             try self.generator_temp_var_spans.append(self.allocator, temp_span);
-            const lhs = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+            const lhs = try makeGeneratorTempRef(self, temp_span, temp_span, .{ .write = true });
             const assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = temp_span,
                 .data = .{ .binary = .{ .left = lhs, .right = value, .flags = 0 } },
             });
             try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = try es_helpers.makeExprStmt(self, assign, temp_span) } });
-            return es_helpers.makeTempVarRef(self, temp_span, temp_span);
+            return makeGeneratorTempRef(self, temp_span, temp_span, .{ .read = true });
         }
 
         /// expression body (arrow function 등)를 state machine으로 변환.
@@ -1872,7 +1907,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 // 이 있을 때만 hoist 됐지만, nested await 또는 for-await-of 의 cond 안 await
                 // (#1901) 의 경우 외부 binding 이 없어서 temp 가 어디에도 declare 안 됐음.
                 try self.generator_temp_var_spans.append(self.allocator, temp_span);
-                const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+                const temp_ref = try makeGeneratorTempRef(self, temp_span, temp_span, .{ .write = true });
                 const sent_call = try buildSentCall(self, temp_span);
                 const assign = try self.ast.addNode(.{
                     .tag = .assignment_expression,
@@ -1881,7 +1916,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 });
                 const assign_stmt = try es_helpers.makeExprStmt(self, assign, temp_span);
                 try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
-                return es_helpers.makeTempVarRef(self, temp_span, temp_span);
+                return makeGeneratorTempRef(self, temp_span, temp_span, .{ .read = true });
             }
 
             // yield를 포함하지 않으면 일반 visit
@@ -2137,7 +2172,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         const EXPR_LAZY_COND_END_SENTINEL = LABEL_SENTINEL_BASE - 10_002;
 
         fn appendAssignTempStmt(self: *Transformer, ops: *std.ArrayList(Operation), temp_span: Span, value_idx: NodeIndex, span: Span) Transformer.Error!void {
-            const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+            const temp_ref = try makeGeneratorTempRef(self, temp_span, temp_span, .{ .write = true });
             const assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
@@ -2155,7 +2190,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const left_value = try visitExprWithYieldExtraction(self, node.data.binary.left, ops, next_label);
             try appendAssignTempStmt(self, ops, temp_span, left_value, node.span);
 
-            const temp_for_cond = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+            const temp_for_cond = try makeGeneratorTempRef(self, temp_span, temp_span, .{ .read = true });
             const cond = if (op_kind == .question2)
                 try es_helpers.makeNeqNull(self, temp_for_cond, node.span)
             else
@@ -2174,7 +2209,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
             fixupSentinel(ops.items[ops_start..], EXPR_LAZY_BRANCH_END_SENTINEL, end_label);
 
-            return es_helpers.makeTempVarRef(self, temp_span, temp_span);
+            return makeGeneratorTempRef(self, temp_span, temp_span, .{ .read = true });
         }
 
         fn lowerConditionalExprWithYieldExtraction(self: *Transformer, node: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!NodeIndex {
@@ -2205,7 +2240,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             fixupSentinel(ops.items[ops_start..], EXPR_LAZY_COND_ELSE_SENTINEL, else_label);
             fixupSentinel(ops.items[ops_start..], EXPR_LAZY_COND_END_SENTINEL, end_label);
 
-            return es_helpers.makeTempVarRef(self, temp_span, temp_span);
+            return makeGeneratorTempRef(self, temp_span, temp_span, .{ .read = true });
         }
 
         fn buildExpressionBodyStateMachine(self: *Transformer, body_idx: NodeIndex, body: Node, span: Span) Transformer.Error!StateMachineResult {
@@ -2237,8 +2272,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
 
             const switch_node = try buildSwitchFromOps(self, ops.items, span);
-            const var_decl_node = try buildHoistedVarDecl(self, &.{}, span);
-            return .{ .body = switch_node, .var_decl = var_decl_node };
+            var state_temps: std.ArrayListUnmanaged(HoistedStateTemp) = .empty;
+            errdefer state_temps.deinit(self.allocator);
+            const var_decl_node = try buildHoistedVarDecl(self, &.{}, span, &state_temps);
+            return .{ .body = switch_node, .var_decl = var_decl_node, .hoisted_temps = state_temps };
         }
 
         /// 연산 리스트를 switch case로 변환.
@@ -2465,9 +2502,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
         }
 
-        fn isRegisteredGeneratorTemp(self: *Transformer, name: []const u8) bool {
-            for (self.generator_temp_var_spans.items) |sp| {
-                if (std.mem.eql(u8, self.ast.getText(sp), name)) return true;
+        fn isRegisteredGeneratorBinding(self: *Transformer, binding: NodeIndex) bool {
+            const id = self.getSymbolIdAt(binding);
+            var origins = self.generator_var_origins.iterator();
+            while (origins.next()) |entry| {
+                const origin = entry.value_ptr.*;
+                if (origin == binding) return true;
+                if (id) |symbol_id| {
+                    if (self.getSymbolIdAt(origin) == symbol_id) return true;
+                }
             }
             return false;
         }
@@ -2610,15 +2653,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         /// The async helper receives a real function wrapper. Its body contains
         /// the `__generator` call, and its child callback owns `_state`.
-        pub fn bindWrappedStateMachine(self: *Transformer, source_owner: NodeIndex, wrapper: NodeIndex, gen: GeneratorCall, frame: *const StateMachineFrame, span: Span) Transformer.Error!void {
+        pub fn bindWrappedStateMachine(self: *Transformer, source_owner: NodeIndex, wrapper: NodeIndex, gen: GeneratorCall, frame: *const StateMachineFrame, wrapper_temps: []const HoistedStateTemp, span: Span) Transformer.Error!void {
             const parent = self.originalFunctionScope(source_owner);
             if (parent.isNone()) {
-                try self.bindGeneratedState(.none, .none, gen.callback, gen.state_param, frame.state_ref_start, frame.callback_temps.items, span);
+                try self.bindGeneratedState(.none, .none, gen.callback, gen.state_param, frame.state_ref_start, wrapper_temps, frame.callback_temps.items, span);
                 return;
             }
             const wrapper_scope = try self.addGeneratedFunctionScope(parent, wrapper);
             self.relocatePendingRuntimeHelperRef(gen.helper_ref, wrapper_scope);
-            try self.bindGeneratedState(wrapper_scope, parent, gen.callback, gen.state_param, frame.state_ref_start, frame.callback_temps.items, span);
+            try self.bindGeneratedState(wrapper_scope, parent, gen.callback, gen.state_param, frame.state_ref_start, wrapper_temps, frame.callback_temps.items, span);
         }
 
         /// __generator(function(_state) { ... }) 호출 생성.

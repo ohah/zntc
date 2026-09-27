@@ -363,6 +363,14 @@ pub const Transformer = struct {
     /// Each state machine records its starting offset, so nested lowering cannot
     /// consume an enclosing machine's references.
     generator_state_refs: std.ArrayList(NodeIndex) = .empty,
+    /// Exact for-await generated references whose scopes move into an ES5
+    /// generator callback. Capture identity and read/write intent at creation.
+    generator_state_semantic_refs: std.ArrayListUnmanaged(struct {
+        node: NodeIndex,
+        symbol_id: u32,
+        scope: ScopeId,
+        flags: ReferenceFlags,
+    }) = .empty,
     /// A method lowered through a synthetic function retains its original owner.
     synthetic_function_source_owner: NodeIndex = .none,
     synthetic_function_node: NodeIndex = .none,
@@ -597,6 +605,7 @@ pub const Transformer = struct {
     pub const originalFunctionScope = @import("transformer/semantic_edit.zig").originalFunctionScope;
     pub const bindGeneratedState = @import("transformer/semantic_edit.zig").bindGeneratedState;
     pub const bindGeneratedFunctionTemps = @import("transformer/semantic_edit.zig").bindGeneratedFunctionTemps;
+    pub const trackGeneratorStateReference = @import("transformer/semantic_edit.zig").trackGeneratorStateReference;
     pub const relocatePendingRuntimeHelperRef = @import("transformer/semantic_edit.zig").relocatePendingRuntimeHelperRef;
     pub const declareSyntheticInScope = @import("transformer/semantic_edit.zig").declareSyntheticInScope;
     pub const declareSyntheticTempInScope = @import("transformer/semantic_edit.zig").declareSyntheticTempInScope;
