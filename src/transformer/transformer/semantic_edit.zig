@@ -310,6 +310,7 @@ pub fn remapCopiedScopeOwner(self: *Transformer, old: NodeIndex, new: NodeIndex)
     if (old_tag != new_tag and
         !(old_tag == .arrow_function_expression and new_tag == .function_expression) and
         !(old_tag == .for_of_statement and new_tag == .for_statement) and
+        !(old_tag == .for_await_of_statement and new_tag == .while_statement) and
         !(old_tag == .class_declaration and new_tag == .class_expression) and
         !(old_tag == .method_definition and (new_tag == .function_declaration or new_tag == .function_expression))) return;
     const old_key = @intFromEnum(old);
@@ -348,6 +349,22 @@ fn resolveReachableScopeOwners(self: *Transformer) Transformer.Error!void {
     }
 }
 
+fn variableScope(self: *Transformer, start: ScopeId) ScopeId {
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    var scope = start;
+    var hops: usize = 0;
+    while (!scope.isNone() and hops < scopes.len) : (hops += 1) {
+        if (scope.toIndex() >= scopes.len) std.debug.panic("invalid synthetic binding scope", .{});
+        if (scopes[scope.toIndex()].kind.isVarScope()) return scope;
+        scope = scopes[scope.toIndex()].parent;
+    }
+    std.debug.panic("synthetic var has no enclosing var scope", .{});
+}
+
+fn syntheticTempSymbolKey(name_span: Span, scope: ScopeId) u64 {
+    return (@as(u64, @intFromEnum(scope)) << 32) | name_span.start;
+}
+
 pub fn declareSyntheticInScope(self: *Transformer, binding: NodeIndex, declaration_span: Span, kind: SymbolKind, scope: ScopeId) Transformer.Error!?SymbolId {
     if (!self.semantic_edit_enabled) return null;
     const editor = try editorFor(self);
@@ -362,6 +379,33 @@ pub fn declareSyntheticInScope(self: *Transformer, binding: NodeIndex, declarati
         Reference.NO_STMT,
     ) catch |err| return editError(err);
     try setSymbolId(self, binding, id);
+    return id;
+}
+
+/// Register only a known lowering temp whose later hoisted declaration must
+/// share this SymbolId. General synthetic `var` declarations stay independent.
+pub fn declareSyntheticTempInScope(self: *Transformer, binding: NodeIndex, declaration_span: Span, scope: ScopeId) Transformer.Error!?SymbolId {
+    if (!self.semantic_edit_enabled) return null;
+    const editor = try editorFor(self);
+    const name_span = self.ast.getNode(binding).data.string_ref;
+    const key = syntheticTempSymbolKey(name_span, variableScope(self, scope));
+    if (self.synthetic_temp_symbol_ids.get(key)) |raw_id| {
+        const id: SymbolId = @enumFromInt(raw_id);
+        editor.attachExistingBinding(binding, id) catch |err| return editError(err);
+        try setSymbolId(self, binding, id);
+        return id;
+    }
+    const id = editor.declare(
+        binding,
+        name_span,
+        declaration_span,
+        scope,
+        .variable_var,
+        Reference.NO_STMT,
+        Reference.NO_STMT,
+    ) catch |err| return editError(err);
+    try setSymbolId(self, binding, id);
+    try self.synthetic_temp_symbol_ids.put(self.allocator, key, @intFromEnum(id));
     return id;
 }
 
@@ -584,7 +628,7 @@ pub fn trackHoistedTempRef(self: *Transformer, name_span: Span, node: NodeIndex,
 /// 새로 만든 함수에는 scope 등록 전이므로 호출하지 않는다.
 pub fn bindHoistedTemp(self: *Transformer, binding: NodeIndex, name_span: Span, declaration_span: Span, binding_scope: @import("../../semantic/scope.zig").ScopeId) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
-    const chain = self.pending_temp_ref_chains.fetchRemove(name_span.start) orelse return;
+    const chain = self.pending_temp_ref_chains.fetchRemove(name_span.start);
 
     const target_scope = if (binding_scope.isNone())
         @as(@import("../../semantic/scope.zig").ScopeId, @enumFromInt(
@@ -592,24 +636,25 @@ pub fn bindHoistedTemp(self: *Transformer, binding: NodeIndex, name_span: Span, 
         ))
     else
         binding_scope;
-    const editor = try editorFor(self);
-    const id = editor.declare(
-        binding,
-        name_span,
-        declaration_span,
-        target_scope,
-        .variable_var,
-        Reference.NO_STMT,
-        Reference.NO_STMT,
-    ) catch |err| return editError(err);
-    try setSymbolId(self, binding, id);
-    var i: ?usize = chain.value.first;
-    while (i) |index| {
-        const ref = self.pending_temp_refs.items[index];
-        std.debug.assert(ref.name_start == name_span.start);
-        editor.addReference(ref.node, id, ref.scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
-        try setSymbolId(self, ref.node, id);
-        i = ref.next;
+    const temp_key = syntheticTempSymbolKey(name_span, variableScope(self, target_scope));
+    // Only create a semantic binding when this declaration owns pending reads
+    // or repeats a temp already registered in the same var scope. Registering
+    // every hoisted temp here changes unrelated generator/ES5 graphs.
+    if (chain == null and !self.synthetic_temp_symbol_ids.contains(temp_key)) return;
+    const id = if (self.synthetic_temp_symbol_ids.contains(temp_key))
+        (try declareSyntheticTempInScope(self, binding, declaration_span, target_scope)).?
+    else
+        (try declareSyntheticInScope(self, binding, declaration_span, .variable_var, target_scope)).?;
+    if (chain) |entry| {
+        const editor = try editorFor(self);
+        var i: ?usize = entry.value.first;
+        while (i) |index| {
+            const ref = self.pending_temp_refs.items[index];
+            std.debug.assert(ref.name_start == name_span.start);
+            editor.addReference(ref.node, id, ref.scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+            try setSymbolId(self, ref.node, id);
+            i = ref.next;
+        }
     }
     if (self.pending_temp_ref_chains.count() == 0) self.pending_temp_refs.clearRetainingCapacity();
 }

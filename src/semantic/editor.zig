@@ -256,6 +256,7 @@ pub const SemanticEditor = struct {
         if (old_tag != new_tag and
             !(old_tag == .arrow_function_expression and new_tag == .function_expression) and
             !(old_tag == .for_of_statement and new_tag == .for_statement) and
+            !(old_tag == .for_await_of_statement and new_tag == .while_statement) and
             !(old_tag == .class_declaration and new_tag == .class_expression) and
             !(old_tag == .method_definition and (new_tag == .function_declaration or new_tag == .function_expression)))
             return error.InvalidNode;

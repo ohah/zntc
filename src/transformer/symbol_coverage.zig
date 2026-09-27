@@ -309,7 +309,11 @@ const StrictCtx = struct {
             if (expected.ambiguous) return .scope_ambiguous;
             if (!expected.valid) return .invalid_scope;
             const expected_scope = expected.scope_id orelse return .scope_unknown;
-            return if (@intFromEnum(symbol.origin_scope) == expected_scope) .bound else .scope_mismatch;
+            const declaration_scope = if (symbol.kind == .variable_var)
+                nearestVarScope(expected_scope, self.scopes) orelse return .invalid_scope
+            else
+                expected_scope;
+            return if (@intFromEnum(symbol.origin_scope) == declaration_scope) .bound else .scope_mismatch;
         }
 
         const evidence = reference orelse return .missing_reference;
@@ -355,6 +359,18 @@ const ScopeVisitKey = struct {
 
 fn validScope(scope: ScopeId, scopes: []const Scope) bool {
     return !scope.isNone() and @as(usize, scope.toIndex()) < scopes.len;
+}
+
+fn nearestVarScope(start: u32, scopes: []const Scope) ?u32 {
+    var current: ScopeId = @enumFromInt(start);
+    var hops: usize = 0;
+    while (!current.isNone() and hops < scopes.len) : (hops += 1) {
+        const index = current.toIndex();
+        if (@as(usize, index) >= scopes.len) return null;
+        if (scopes[index].kind.isVarScope()) return index;
+        current = scopes[index].parent;
+    }
+    return null;
 }
 
 fn visibleFrom(binding: ScopeId, reference: ScopeId, scopes: []const Scope) bool {
