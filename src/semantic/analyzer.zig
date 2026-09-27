@@ -1457,6 +1457,14 @@ pub const SemanticAnalyzer = struct {
         try self.addErrorMsgCodeWithPrevious(span, msg, .identifier_redeclared, previous_span);
     }
 
+    fn hasRedeclarationDiagnosticAt(self: *const SemanticAnalyzer, name_span: Span) bool {
+        for (self.errors.items) |err| {
+            if (err.code != .identifier_redeclared) continue;
+            if (err.span.start < name_span.end and name_span.start < err.span.end) return true;
+        }
+        return false;
+    }
+
     /// 재선언 계열 에러 + "previously declared here" secondary label.
     /// previous_span이 null이면 label 없이 기본 에러.
     /// msg는 allocator 소유가 인계된다 (deinit에서 free).
@@ -3285,9 +3293,14 @@ pub const SemanticAnalyzer = struct {
                 const name_node = self.ast.getNode(name_idx);
                 self.setSymbolIdForPredeclared(name_node.span, @intFromEnum(name_idx));
             }
-            const outer_idx = self.symbol_ids.items[@intFromEnum(name_idx)] orelse
+            const name_node = self.ast.getNode(name_idx);
+            const name_raw = @intFromEnum(name_idx);
+            const outer_idx = if (name_raw < self.symbol_ids.items.len) self.symbol_ids.items[name_raw] else null;
+            if (outer_idx) |idx| {
+                self.symbols.items[idx].decl_flags.preserve_class_name = true;
+            } else if (!self.hasRedeclarationDiagnosticAt(name_node.span)) {
                 std.debug.panic("class declaration has no outer SymbolId", .{});
-            self.symbols.items[outer_idx].decl_flags.preserve_class_name = true;
+            }
         }
 
         const heritage_idx: NodeIndex = @enumFromInt(extras[extra_start + 1]);
