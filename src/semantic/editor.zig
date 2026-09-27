@@ -270,6 +270,26 @@ pub const SemanticEditor = struct {
         _ = self.scope_owner_map.remove(old_key);
     }
 
+    /// Transfer an owner after a controlled in-place rewrite changed the old
+    /// node's tag before semantic edits are finalized. The caller must have
+    /// recorded this exact replacement; all node, scope, and conflict checks
+    /// still apply here.
+    pub fn remapScopeOwnerAfterInPlaceRewrite(self: *SemanticEditor, old_owner: NodeIndex, new_owner: NodeIndex) Error!void {
+        if (old_owner.isNone() or new_owner.isNone() or
+            @intFromEnum(old_owner) >= self.ast.nodes.items.len or
+            @intFromEnum(new_owner) >= self.ast.nodes.items.len) return error.InvalidNode;
+        const old_key = @intFromEnum(old_owner);
+        const new_key = @intFromEnum(new_owner);
+        const scope_id = self.scope_owner_map.get(old_key) orelse return error.InvalidScope;
+        if (old_key == new_key) return;
+        if (self.scope_owner_map.get(new_key)) |existing| {
+            if (existing != scope_id) return error.ScopeOwnerConflict;
+        } else {
+            try self.scope_owner_map.put(self.allocator, new_key, scope_id);
+        }
+        _ = self.scope_owner_map.remove(old_key);
+    }
+
     /// AST 서브트리를 새 함수 안으로 옮길 때 기존 스코프 ID를 유지하며 부모만 바꾼다.
     /// 호출자는 이전 부모에만 보이던 참조를 finish 전에 재바인딩하거나 제거해야 한다.
     pub fn reparentScope(self: *SemanticEditor, scope: ScopeId, new_parent: ScopeId) Error!void {

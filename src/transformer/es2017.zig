@@ -315,24 +315,14 @@ pub fn ES2017(comptime Transformer: type) type {
 
             // `yield*` 를 먼저 푼다 — 그래야 그 안에 남은 `await` 를 아래 패스가 한 번에 정리한다.
             try rewriteYieldStarToHelper(self, body_idx);
-            // for-await 를 먼저 제자리 풀이한다 — 그래야 풀이가 만든 await 도 아래 패스에서
-            // 사용자 await 와 함께 `yield __await(…)` 가 된다 (#4746 3단계, #4707 대체).
-            if (self.options.unsupported.needsForAwaitOfDownlevel()) {
-                try @import("es2018_for_await.zig").ES2018ForAwait(Transformer).lowerInPlace(self, body_idx);
-            }
-            try rewriteAwaitToYieldAwait(self, body_idx);
-            // ⚠️ 여기서는 `in_extracted_fn_body` 를 켜지 않는다. `__asyncGenerator(this,
-            // arguments, fn)` 이 arguments 를 **인자로** 넘기고 헬퍼가 `fn.apply(this,
-            // _arguments)` 로 적용하므로 안쪽 `function*` 의 `arguments` 가 이미 원본이다.
-            // es5 처럼 그 안쪽이 다시 `__generator` 로 낮아지는 경우는 그 낮추기가 자기
-            // wrapper 에 캡처를 선언해 해결한다. 여기서 켜면 안쪽 visit 의 pushArrowEnv 가
-            // `needs_arguments_var` 를 되돌려 선언이 유실된다(`_arguments is not defined`).
 
-            // inner function*(): visitNode 거치면 ES5 target 시 자동으로 generator state machine 으로 lower.
-            const inner_flags = (flags & ~@as(u32, ast_mod.FunctionFlags.is_async)) | @as(u32, ast_mod.FunctionFlags.is_generator);
+            // Create the inner generator scope before moving and lowering its
+            // body. Generated loop temps then belong to the function that runs
+            // them instead of the outer async-generator wrapper.
             // The original parameters and their defaults belong to the outer
             // function. The inner generator closes over their bindings and is
             // invoked with the original arguments only for `arguments` itself.
+            const inner_flags = (flags & ~@as(u32, ast_mod.FunctionFlags.is_async)) | @as(u32, ast_mod.FunctionFlags.is_generator);
             const inner_params_node = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{}), span);
             const none = @intFromEnum(NodeIndex.none);
             const inner_extra = try self.ast.addExtras(&.{
@@ -347,11 +337,27 @@ pub fn ES2017(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .extra = inner_extra },
             });
-            // The inner generator is a real function boundary. Its ES5 state
-            // callback needs this exact scope as parent when visitNode lowers it.
             const source_scope = self.originalFunctionScope(source_owner);
             const inner_scope = try self.addGeneratedFunctionScope(source_scope, inner_func);
             try moveAsyncGeneratorBodyScopes(self, body_idx, source_scope, inner_scope);
+            // for-await 를 먼저 제자리 풀이한다 — 그래야 풀이가 만든 await 도 아래 패스에서
+            // 사용자 await 와 함께 `yield __await(…)` 가 된다 (#4746 3단계, #4707 대체).
+            if (self.options.unsupported.needsForAwaitOfDownlevel()) {
+                try @import("es2018_for_await.zig").ES2018ForAwait(Transformer).lowerInPlace(
+                    self,
+                    body_idx,
+                    self.semantic_edit_enabled and !self.options.unsupported.generator,
+                );
+            }
+            try rewriteAwaitToYieldAwait(self, body_idx);
+            // ⚠️ 여기서는 `in_extracted_fn_body` 를 켜지 않는다. `__asyncGenerator(this,
+            // arguments, fn)` 이 arguments 를 **인자로** 넘기고 헬퍼가 `fn.apply(this,
+            // _arguments)` 로 적용하므로 안쪽 `function*` 의 `arguments` 가 이미 원본이다.
+            // es5 처럼 그 안쪽이 다시 `__generator` 로 낮아지는 경우는 그 낮추기가 자기
+            // wrapper 에 캡처를 선언해 해결한다. 여기서 켜면 안쪽 visit 의 pushArrowEnv 가
+            // `needs_arguments_var` 를 되돌려 선언이 유실된다(`_arguments is not defined`).
+
+            // inner function*(): visitNode 거치면 ES5 target 시 자동으로 generator state machine 으로 lower.
             // inner function 자체도 visitNode 거쳐 generator/await downlevel 적용.
             // es5 에서는 이 visit 안에서 state machine 이 만들어진다. for-await 는 위 전처리에서
             // 이미 풀려 합성 await 까지 `yield __await(…)` 가 됐다 (#4746 — #4707 의 상태 기계

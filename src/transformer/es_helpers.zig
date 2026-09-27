@@ -181,6 +181,21 @@ pub fn makeTempVarSpan(self: anytype) !Span {
     }
 }
 
+/// Remove a temp that already has an explicit declaration from the later
+/// synthetic-temp hoist. Keep the counter advanced so a later temp cannot
+/// reuse its output name in the same allocation frame.
+pub fn consumeTempVarSpan(self: anytype, span: Span) void {
+    var key_to_remove: ?u32 = null;
+    var iter = self.temp_span_by_counter.iterator();
+    while (iter.next()) |entry| {
+        if (entry.value_ptr.start == span.start and entry.value_ptr.end == span.end) {
+            key_to_remove = entry.key_ptr.*;
+            break;
+        }
+    }
+    if (key_to_remove) |key| _ = self.temp_span_by_counter.remove(key);
+}
+
 /// 모듈 심볼 중 temp 패턴(`_`+letter[+digits]) 이름만 lazy 수집해 조회 (#4220).
 /// symbols 가 비어있는 경로(semantic-off 테스트)는 집합도 비어 기존 동작.
 pub fn collidesWithUserSymbol(self: anytype, name: []const u8) !bool {

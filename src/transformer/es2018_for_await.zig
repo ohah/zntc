@@ -117,6 +117,11 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
                 try es_helpers.makeDeclarator(self, ret_binding, try es_helpers.makeVoidZero(self, span), span),
                 try es_helpers.makeDeclarator(self, errobj_binding, try es_helpers.makeVoidZero(self, span), span),
             }, .@"var", span);
+            // These temps are declared in `decl`; the generic temp hoister must
+            // not create unbound duplicates in the program or wrapper scope.
+            es_helpers.consumeTempVarSpan(self, iter);
+            es_helpers.consumeTempVarSpan(self, ret);
+            es_helpers.consumeTempVarSpan(self, errobj);
 
             // while (!(_step = await _iter.next()).done) { <루프 변수 = _step.value>; body }
             const next_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeRef(self, iter, iter_symbol, loop_scope, .{ .read = true }, register_semantics), try es_helpers.makePropertyName(self, "next"), span), &.{}, span);
@@ -226,7 +231,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
         /// 로 바꾸게 하려는 것이다 — 풀이를 방문 때 하면 합성 await 가 평범한 `yield` 로
         /// 낮아지거나(async 를 낮추는 타겟) 상태 기계가 따로 표시해야 했다(#4707).
         /// 중첩 함수·클래스는 자기 문맥이라 들어가지 않는다.
-        pub fn lowerInPlace(self: *Transformer, root: NodeIndex) Transformer.Error!void {
+        pub fn lowerInPlace(self: *Transformer, root: NodeIndex, register_semantics: bool) Transformer.Error!void {
             if (root.isNone()) return;
             var stack: std.ArrayList(NodeIndex) = .empty;
             defer stack.deinit(self.allocator);
@@ -241,15 +246,16 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
                     .for_await_of_statement => {
                         _ = try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, idx, false);
                         node = self.ast.getNode(idx);
-                        const rewritten = try rewriteForAwait(self, idx, node, .none, false);
+                        const rewritten = try rewriteForAwait(self, idx, node, .none, register_semantics);
                         self.ast.nodes.items[@intFromEnum(idx)] = self.ast.getNode(rewritten);
+                        if (register_semantics) try self.removeInPlaceScopeOwner(idx);
                         node = self.ast.getNode(idx);
                     },
                     .labeled_statement => {
                         const child = node.data.binary.right;
                         if (!child.isNone() and self.ast.getNode(child).tag == .for_await_of_statement) {
                             _ = try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, child, false);
-                            const rewritten = try rewriteForAwait(self, child, self.ast.getNode(child), node.data.binary.left, false);
+                            const rewritten = try rewriteForAwait(self, child, self.ast.getNode(child), node.data.binary.left, register_semantics);
                             self.ast.nodes.items[@intFromEnum(idx)] = self.ast.getNode(rewritten);
                             node = self.ast.getNode(idx);
                         }
