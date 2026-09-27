@@ -1203,7 +1203,7 @@ test "#4819 static private for-in target temp binds in the method scope" {
     try std.testing.expectEqual(@as(usize, 1), temp_count);
 }
 
-test "strict inventory separates missing generated storage from unresolved reads" {
+test "strict inventory does not infer generated global identity from spelling" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -1225,14 +1225,16 @@ test "strict inventory separates missing generated storage from unresolved reads
     try marked.put(allocator, @intFromEnum(binding), {});
     var unresolved: std.StringHashMapUnmanaged(void) = .empty;
     defer unresolved.deinit(allocator);
-    try unresolved.put(allocator, "Object", {});
+    // A name-only unresolved-global table cannot distinguish this generated
+    // local read from an unrelated global with the same spelling.
+    try unresolved.put(allocator, "_x", {});
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
     var report = try coverage.checkStrict(allocator, &ast, root, 0, &.{}, &.{}, &.{}, &scope_owner_map, &.{}, &marked, &unresolved);
     defer report.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), report.counts[@intFromEnum(coverage.StrictStatus.missing_binding)]);
-    try std.testing.expectEqual(@as(usize, 1), report.counts[@intFromEnum(coverage.StrictStatus.unclassified)]);
-    try std.testing.expectEqual(@as(usize, 1), report.counts[@intFromEnum(coverage.StrictStatus.known_global)]);
+    try std.testing.expectEqual(@as(usize, 2), report.counts[@intFromEnum(coverage.StrictStatus.unclassified)]);
+    try std.testing.expect(!report.hasCompleteExactCoverage());
     try std.testing.expectEqual(@as(usize, 1), report.marked_synthetic);
     try std.testing.expectEqual(@intFromEnum(binding), report.findings.items[0].node);
 }
@@ -1280,6 +1282,7 @@ test "strict inventory checks generated identity and exact lexical scope" {
     var correct = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &references, &synthetic, &unresolved);
     defer correct.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 2), correct.counts[@intFromEnum(coverage.StrictStatus.bound)]);
+    try std.testing.expect(correct.hasCompleteExactCoverage());
 
     // A different in-range SymbolId with the same spelling must not pass as bound.
     symbol_ids[@intFromEnum(read)] = 1;
@@ -1316,6 +1319,21 @@ test "strict inventory checks generated identity and exact lexical scope" {
     var wrong_binding_scope = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &wrong_binding_symbols, &scopes, &owners, &references, &synthetic, &unresolved);
     defer wrong_binding_scope.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), wrong_binding_scope.counts[@intFromEnum(coverage.StrictStatus.scope_mismatch)]);
+
+    // A valid but unrelated storage ScopeId must fail even if origin_scope is
+    // correct. The old check validated scope_id's range but never compared it.
+    var wrong_storage_symbols = symbols;
+    wrong_storage_symbols[0].scope_id = sibling_scope;
+    wrong_storage_symbols[0].origin_scope = block_scope;
+    var wrong_storage_scope = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &wrong_storage_symbols, &scopes, &owners, &references, &synthetic, &unresolved);
+    defer wrong_storage_scope.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), wrong_storage_scope.counts[@intFromEnum(coverage.StrictStatus.scope_mismatch)]);
+    const bad_binding = for (wrong_storage_scope.findings.items) |finding| {
+        if (finding.node == @intFromEnum(binding)) break finding;
+    } else return error.MissingExpectedFinding;
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(block_scope)), bad_binding.expected_scope_id);
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(sibling_scope)), bad_binding.symbol_scope_id);
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(block_scope)), bad_binding.symbol_origin_scope_id);
 
     // A valid ID with a different symbol spelling is not accepted as identity.
     const other_name = try ast.addString("y");
@@ -1362,14 +1380,15 @@ test "strict inventory checks generated identity and exact lexical scope" {
     try std.testing.expectEqual(@as(usize, 1), ambiguous.counts[@intFromEnum(coverage.StrictStatus.scope_ambiguous)]);
 }
 
-test "strict inventory checks var bindings at their nearest var scope" {
+test "strict inventory checks var storage and lexical origin scopes exactly" {
     const allocator = std.testing.allocator;
     var ast = Ast.init(allocator, "");
     defer ast.deinit();
     const name = try ast.addString("x");
     const var_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
     const lexical_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
-    const block = try ast.addNode(.{ .tag = .block_statement, .span = name, .data = .{ .list = try ast.addNodeList(&.{ var_binding, lexical_binding }) } });
+    const function_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const block = try ast.addNode(.{ .tag = .block_statement, .span = name, .data = .{ .list = try ast.addNodeList(&.{ var_binding, lexical_binding, function_binding }) } });
     const root = try ast.addNode(.{ .tag = .program, .span = name, .data = .{ .list = try ast.addNodeList(&.{block}) } });
 
     const global_scope: ScopeId = @enumFromInt(0);
@@ -1387,17 +1406,40 @@ test "strict inventory checks var bindings at their nearest var scope" {
 
     const symbols = [_]Symbol{
         .{ .name = name, .scope_id = function_scope, .origin_scope = function_scope, .kind = .variable_var, .declaration_span = name },
-        .{ .name = name, .scope_id = function_scope, .origin_scope = function_scope, .kind = .variable_const, .declaration_span = name },
+        .{ .name = name, .scope_id = block_scope, .origin_scope = block_scope, .kind = .variable_const, .declaration_span = name },
+        .{ .name = name, .scope_id = block_scope, .origin_scope = block_scope, .kind = .function_decl, .declaration_span = name },
     };
-    const symbol_ids = [_]?u32{ 0, 1, null, null };
+    const symbol_ids = [_]?u32{ 0, 1, 2, null, null };
     var synthetic: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer synthetic.deinit(allocator);
     try synthetic.put(allocator, @intFromEnum(var_binding), {});
     try synthetic.put(allocator, @intFromEnum(lexical_binding), {});
+    try synthetic.put(allocator, @intFromEnum(function_binding), {});
     const unresolved: std.StringHashMapUnmanaged(void) = .empty;
 
     var report = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &.{}, &synthetic, &unresolved);
     defer report.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 1), report.counts[@intFromEnum(coverage.StrictStatus.bound)]);
-    try std.testing.expectEqual(@as(usize, 1), report.counts[@intFromEnum(coverage.StrictStatus.scope_mismatch)]);
+    try std.testing.expectEqual(@as(usize, 3), report.counts[@intFromEnum(coverage.StrictStatus.bound)]);
+    try std.testing.expect(report.hasCompleteExactCoverage());
+
+    var wrong_var_storage = symbols;
+    wrong_var_storage[0].scope_id = global_scope;
+    var wrong_storage_report = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &wrong_var_storage, &scopes, &owners, &.{}, &synthetic, &unresolved);
+    defer wrong_storage_report.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), wrong_storage_report.counts[@intFromEnum(coverage.StrictStatus.scope_mismatch)]);
+    try std.testing.expect(!wrong_storage_report.hasCompleteExactCoverage());
+
+    var wrong_var_origin = symbols;
+    wrong_var_origin[0].origin_scope = block_scope;
+    var wrong_origin_report = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &wrong_var_origin, &scopes, &owners, &.{}, &synthetic, &unresolved);
+    defer wrong_origin_report.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), wrong_origin_report.counts[@intFromEnum(coverage.StrictStatus.scope_mismatch)]);
+
+    // A regular function declaration inside a block remains block-scoped in
+    // this analyzer; the function_scoped flag alone is not enough to hoist it.
+    var wrong_function_scope = symbols;
+    wrong_function_scope[2].scope_id = global_scope;
+    var wrong_function_report = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &wrong_function_scope, &scopes, &owners, &.{}, &synthetic, &unresolved);
+    defer wrong_function_report.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), wrong_function_report.counts[@intFromEnum(coverage.StrictStatus.scope_mismatch)]);
 }
