@@ -5,9 +5,14 @@
 //! 심볼이 필요하므로, 고친 지점마다 누락 0 을 검사기로 직접 고정한다.
 
 const std = @import("std");
+const Ast = @import("../parser/ast.zig").Ast;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+const Reference = @import("../semantic/symbol.zig").Reference;
+const Symbol = @import("../semantic/symbol.zig").Symbol;
+const Scope = @import("../semantic/scope.zig").Scope;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const transformer_mod = @import("transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const TransformOptions = transformer_mod.TransformOptions;
@@ -1221,11 +1226,138 @@ test "strict inventory separates missing generated storage from unresolved reads
     var unresolved: std.StringHashMapUnmanaged(void) = .empty;
     defer unresolved.deinit(allocator);
     try unresolved.put(allocator, "Object", {});
-    var report = try coverage.checkStrict(allocator, &ast, root, 0, &.{}, &.{}, &marked, &unresolved);
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    var report = try coverage.checkStrict(allocator, &ast, root, 0, &.{}, &.{}, &.{}, &scope_owner_map, &.{}, &marked, &unresolved);
     defer report.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), report.counts[@intFromEnum(coverage.StrictStatus.missing_binding)]);
     try std.testing.expectEqual(@as(usize, 1), report.counts[@intFromEnum(coverage.StrictStatus.unclassified)]);
     try std.testing.expectEqual(@as(usize, 1), report.counts[@intFromEnum(coverage.StrictStatus.known_global)]);
     try std.testing.expectEqual(@as(usize, 1), report.marked_synthetic);
     try std.testing.expectEqual(@intFromEnum(binding), report.findings.items[0].node);
+}
+
+test "strict inventory checks generated identity and exact lexical scope" {
+    const allocator = std.testing.allocator;
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("x");
+    const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const read = try ast.addNode(.{ .tag = .identifier_reference, .span = name, .data = .{ .string_ref = name } });
+    const block = try ast.addNode(.{ .tag = .block_statement, .span = name, .data = .{ .list = try ast.addNodeList(&.{ binding, read }) } });
+    const root = try ast.addNode(.{ .tag = .program, .span = name, .data = .{ .list = try ast.addNodeList(&.{block}) } });
+
+    const global_scope: ScopeId = @enumFromInt(0);
+    const block_scope: ScopeId = @enumFromInt(1);
+    const sibling_scope: ScopeId = @enumFromInt(2);
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = global_scope, .kind = .block, .is_strict = false },
+        .{ .parent = global_scope, .kind = .block, .is_strict = false },
+    };
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer owners.deinit(allocator);
+    try owners.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
+    try owners.put(allocator, @intFromEnum(block), @intFromEnum(block_scope));
+
+    const symbols = [_]Symbol{
+        .{ .name = name, .scope_id = block_scope, .origin_scope = block_scope, .kind = .variable_const, .declaration_span = name },
+        .{ .name = name, .scope_id = sibling_scope, .origin_scope = sibling_scope, .kind = .variable_const, .declaration_span = name },
+    };
+    var symbol_ids = [_]?u32{ 0, 0, null, null };
+    const references = [_]Reference{.{
+        .node_index = read,
+        .scope_id = block_scope,
+        .symbol_id = @enumFromInt(0),
+        .flags = .{ .read = true },
+    }};
+    var synthetic: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer synthetic.deinit(allocator);
+    try synthetic.put(allocator, @intFromEnum(binding), {});
+    try synthetic.put(allocator, @intFromEnum(read), {});
+    const unresolved: std.StringHashMapUnmanaged(void) = .empty;
+
+    var correct = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &references, &synthetic, &unresolved);
+    defer correct.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), correct.counts[@intFromEnum(coverage.StrictStatus.bound)]);
+
+    // A different in-range SymbolId with the same spelling must not pass as bound.
+    symbol_ids[@intFromEnum(read)] = 1;
+    var wrong_id = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &references, &synthetic, &unresolved);
+    defer wrong_id.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), wrong_id.counts[@intFromEnum(coverage.StrictStatus.identity_mismatch)]);
+    symbol_ids[@intFromEnum(read)] = 0;
+
+    // Matching ID records are still invalid when that same-name symbol lives
+    // in an inaccessible sibling scope.
+    symbol_ids[@intFromEnum(read)] = 1;
+    var sibling_reference = references;
+    sibling_reference[0].symbol_id = @enumFromInt(1);
+    var invisible = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &sibling_reference, &synthetic, &unresolved);
+    defer invisible.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), invisible.counts[@intFromEnum(coverage.StrictStatus.invisible_reference)]);
+    symbol_ids[@intFromEnum(read)] = 0;
+
+    // A valid but lexically incorrect scope must fail even though the symbol ID is right.
+    var wrong_scope_references = references;
+    wrong_scope_references[0].scope_id = global_scope;
+    var wrong_scope = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &wrong_scope_references, &synthetic, &unresolved);
+    defer wrong_scope.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), wrong_scope.counts[@intFromEnum(coverage.StrictStatus.scope_mismatch)]);
+
+    // A SymbolId copied onto a read without the matching Reference record is incomplete.
+    var missing_reference = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &.{}, &synthetic, &unresolved);
+    defer missing_reference.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), missing_reference.counts[@intFromEnum(coverage.StrictStatus.missing_reference)]);
+
+    // Binding ownership is compared to the AST's scope owner as well.
+    var wrong_binding_symbols = symbols;
+    wrong_binding_symbols[0].origin_scope = global_scope;
+    var wrong_binding_scope = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &wrong_binding_symbols, &scopes, &owners, &references, &synthetic, &unresolved);
+    defer wrong_binding_scope.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), wrong_binding_scope.counts[@intFromEnum(coverage.StrictStatus.scope_mismatch)]);
+
+    // A valid ID with a different symbol spelling is not accepted as identity.
+    const other_name = try ast.addString("y");
+    var wrong_name_symbols = symbols;
+    wrong_name_symbols[0].name = other_name;
+    var wrong_name = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &wrong_name_symbols, &scopes, &owners, &references, &synthetic, &unresolved);
+    defer wrong_name.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), wrong_name.counts[@intFromEnum(coverage.StrictStatus.name_mismatch)]);
+
+    // Out-of-range IDs and scopes must fail closed instead of passing as valid.
+    symbol_ids[@intFromEnum(read)] = 9;
+    var invalid_id = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &references, &synthetic, &unresolved);
+    defer invalid_id.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), invalid_id.counts[@intFromEnum(coverage.StrictStatus.invalid_id)]);
+    symbol_ids[@intFromEnum(read)] = 0;
+
+    var invalid_scope_references = references;
+    invalid_scope_references[0].scope_id = @enumFromInt(99);
+    var invalid_scope = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &invalid_scope_references, &synthetic, &unresolved);
+    defer invalid_scope.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), invalid_scope.counts[@intFromEnum(coverage.StrictStatus.invalid_scope)]);
+
+    // One AST reference must have one semantic record; duplicated evidence is ambiguous.
+    const duplicate_references = [_]Reference{ references[0], references[0] };
+    var duplicate = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &duplicate_references, &synthetic, &unresolved);
+    defer duplicate.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), duplicate.counts[@intFromEnum(coverage.StrictStatus.duplicate_reference)]);
+
+    // A shared AST node reached under two lexical scopes has no single safe scope.
+    const sibling_block = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = name,
+        .data = .{ .list = try ast.addNodeList(&.{read}) },
+    });
+    const shared_root = try ast.addNode(.{
+        .tag = .program,
+        .span = name,
+        .data = .{ .list = try ast.addNodeList(&.{ block, sibling_block }) },
+    });
+    try owners.put(allocator, @intFromEnum(shared_root), @intFromEnum(global_scope));
+    try owners.put(allocator, @intFromEnum(sibling_block), @intFromEnum(sibling_scope));
+    var ambiguous = try coverage.checkStrict(allocator, &ast, shared_root, 0, &symbol_ids, &symbols, &scopes, &owners, &references, &synthetic, &unresolved);
+    defer ambiguous.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), ambiguous.counts[@intFromEnum(coverage.StrictStatus.scope_ambiguous)]);
 }
