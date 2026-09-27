@@ -205,6 +205,40 @@ describe('ES5 destructuring generated temp provenance (#4819)', () => {
     expectCompleteExactCoverage(result.stderr);
   });
 
+  for (const { name, source } of [
+    {
+      name: 'var declarations in sibling branches',
+      source:
+        'function f(flag, a, b) { if (flag) { var { x } = a; } else { var { x } = b; } return x; } console.log(f(true, { x: 1 }, { x: 2 }));',
+    },
+    {
+      name: 'nested const declaration',
+      source: 'function f() { { const { x } = { x: 1 }; return x; } } console.log(f());',
+    },
+  ]) {
+    test(`${name} temps have complete exact coverage`, async () => {
+      const fixture = await createFixture({ 'input.mjs': source });
+      cleanup = fixture.cleanup;
+      const native = spawnSync('node', [join(fixture.dir, 'input.mjs')], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      const result = spawnSync(ZNTC_BIN, ['input.mjs', '--target=es5', '-o', 'out.mjs'], {
+        cwd: fixture.dir,
+        env: {
+          PATH: process.env.PATH ?? '/usr/bin:/bin',
+          ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+        },
+        encoding: 'utf8',
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expectCompleteExactCoverage(result.stderr);
+      const actual = spawnSync('node', [join(fixture.dir, 'out.mjs')], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(native.stdout);
+      await fixture.cleanup();
+      cleanup = undefined;
+    });
+  }
+
   for (const minify of [false, true]) {
     test(`ES5 shadowed, nested, and computed assignment targets have exact coverage${minify ? ' with minify' : ''}`, async () => {
       const fixture = await createFixture({

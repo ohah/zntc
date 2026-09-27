@@ -53,6 +53,10 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const id = (try self.declareSyntheticInScope(binding, self.ast.getNode(binding).span, self.destructuring_temp_kind.?, self.current_scope)).?;
                 try self.destructuring_temp_symbol_ids.put(self.allocator, name_span.start, @intFromEnum(id));
             }
+            // This temp already has an explicit declaration in the lowered
+            // pattern. Do not emit a second, unbound `var _a` at the enclosing
+            // function or program boundary during generic temp hoisting.
+            es_helpers.consumeTempVarSpan(self, name_span);
             return binding;
         }
 
