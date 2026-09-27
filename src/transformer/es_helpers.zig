@@ -175,10 +175,29 @@ pub fn makeTempVarSpan(self: anytype) !Span {
         // 사용자 const 를 덮거나(TypeError) mangler/tree-shake 가 선언·사용을
         // 잘못 결합해 silent miscompile 이었다.
         if (try collidesWithUserSymbol(self, name)) continue;
+        // Nested callbacks can move their live temps into an enclosing var
+        // scope after the local counter has been restored. Avoid reusing a
+        // name already registered there, even if it was generated (and thus
+        // absent from the original analyzer symbol slice).
+        if (collidesWithCurrentVarScopeSymbol(self, name)) continue;
         const span = try self.ast.addUniqueString(name);
         try self.temp_span_by_counter.put(self.allocator, idx, span);
         return span;
     }
+}
+
+fn collidesWithCurrentVarScopeSymbol(self: anytype, name: []const u8) bool {
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    const scope_maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;
+    var scope = self.current_scope;
+    var hops: usize = 0;
+    while (!scope.isNone() and hops < scopes.len) : (hops += 1) {
+        const idx = scope.toIndex();
+        if (idx >= scopes.len or idx >= scope_maps.len) return false;
+        if (scopes[idx].kind.isVarScope()) return scope_maps[idx].contains(name);
+        scope = scopes[idx].parent;
+    }
+    return false;
 }
 
 /// Remove a temp that already has an explicit declaration from the later
