@@ -489,10 +489,10 @@ f2(async function*() {
 });
 // repro from #41428
 var Directive = /* @__PURE__ */ ((Directive) => {Directive[Directive["Back"]=0]="Back";Directive[Directive["Cancel"]=1]="Cancel";Directive[Directive["LoadMore"]=2]="LoadMore";Directive[Directive["Noop"]=3]="Noop";return Directive;})(Directive || {});
-var Directive;((Directive) => {function is(value) {
+var Directive;((_Directive) => {function is(value) {
 	return typeof value === "number" && Directive[value] != null;
-}Directive.is=is;})(Directive || (Directive = {}));
-var StepResult;((StepResult) => {StepResult.Break=Symbol("BreakStep");})(StepResult || (StepResult = {}));
+}_Directive.is=is;})(Directive || (Directive = {}));
+var StepResult;((_StepResult) => {_StepResult.Break=Symbol("BreakStep");})(StepResult || (StepResult = {}));
 function canPickStepContinue(_step,_state,_selection) {
 	return false;
 }

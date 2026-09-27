@@ -9453,7 +9453,7 @@ var obj = (n) => "";var obj;// OK
 var arr = [(n) => ""];var arr;// Incorrect error here (bug 829597)
 // Arrow function as enum value
 var E = /* @__PURE__ */ ((E) => {E[E["x"]=() => 4]="x";E[E["y"]=// Error expected
-(() => this).length]="y";return E;})(E || {});((M) => {M.a=// Arrow function as module variable initializer
+(() => this).length]="y";return E;})(E || {});let M;((M) => {M.a=// Arrow function as module variable initializer
 (s) => "";var b = (s) => s;})(M = M2.M || (M2.M = {}));})(M2 || (M2 = {}));
 // <Identifier>(ParamList) => { ... } is a generic arrow function
 var generic1 = (n) => [n];
@@ -13469,7 +13469,7 @@ num = typeof var1 === "string" && var1.length;// string
 // local variables from outer module declaration
 num = typeof var2 === "string" && var2.length;// string
 // exported variable from outer the module
-strOrNum = typeof var3 === "string" && var3;// string | number
+strOrNum = typeof m2.var3 === "string" && m2.var3;// string | number
 // variables in module declaration
 var var4;if (typeof var4 === "string") {
 	num = var4.length;

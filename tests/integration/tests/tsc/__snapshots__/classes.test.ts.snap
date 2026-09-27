@@ -135,7 +135,7 @@ class G extends A {
 
 exports[`TSC: classes classAbstractInAModule 1`] = `
 "var M;((M) => {class A {
-}M.A=A;class B extends M.A {
+}M.A=A;class B extends A {
 }M.B=B;})(M || (M = {}));
 new M.A();
 new M.B();
@@ -3484,7 +3484,7 @@ class C {
 	foo;
 	static bar;
 }
-((C) => {C.y=C.bar;})(C || (C = {}));
+((_C) => {_C.y=C.bar;})(C || (C = {}));
 // error
 "
 `;
@@ -3498,7 +3498,7 @@ class C {
 class D extends C {
 	baz;
 }
-((D) => {D.y=D.bar;})(D || (D = {}));
+((_D) => {_D.y=D.bar;})(D || (D = {}));
 // error
 "
 `;
@@ -4122,7 +4122,7 @@ class C {
 	static foo;
 	static bar;
 }
-((C) => {C.f=C.foo;C.b=// OK
+((_C) => {_C.f=C.foo;_C.b=// OK
 C.bar;})(C || (C = {}));
 // error
 "
@@ -4276,7 +4276,7 @@ exports[`TSC: classes staticPropertyNotInClassType 1`] = `
 	}
 	static foo;
 	// not reflected in class type
-}let C;((C) => {C.bar="";})(C = NonGeneric.C || (NonGeneric.C = {}));// not reflected in class type
+}let C;((_C) => {_C.bar="";})(C = NonGeneric.C || (NonGeneric.C = {}));// not reflected in class type
 var c = new C(1, 2);var r = c.fn();var r4 = c.foo;// error
 var r5 = c.bar;// error
 var r6 = c.x;})(NonGeneric || (NonGeneric = {}));
@@ -4296,7 +4296,7 @@ var Generic;((Generic) => {class C {
 	}
 	static foo;
 	// not reflected in class type
-}((C) => {C.bar="";})(C = Generic.C || (Generic.C = {}));// not reflected in class type
+}let C;((_C) => {_C.bar="";})(C = Generic.C || (Generic.C = {}));// not reflected in class type
 var c = new C(1, "");var r = c.fn();var r4 = c.foo;// error
 var r5 = c.bar;// error
 var r6 = c.x;})(Generic || (Generic = {}));
