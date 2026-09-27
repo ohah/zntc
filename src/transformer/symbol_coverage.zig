@@ -326,12 +326,19 @@ const StrictCtx = struct {
                 nearestVarScope(lexical_scope, self.scopes) orelse return .invalid_scope
             else
                 lexical_scope;
-            // Both fields must identify the exact binding scope. For `var`,
-            // the semantic declaration is normalized to its nearest var scope;
-            // other bindings stay at their lexical owner. Checking only
-            // origin_scope lets a valid but unrelated storage scope pass.
-            return if (@intFromEnum(symbol.scope_id) == declaration_scope and
-                @intFromEnum(symbol.origin_scope) == declaration_scope) .bound else .scope_mismatch;
+            if (@intFromEnum(symbol.scope_id) != declaration_scope) return .scope_mismatch;
+            if (symbol.kind == .variable_var) {
+                // A `var` is stored in its nearest var scope, while
+                // origin_scope records the lexical scope where it was
+                // declared. Those scopes can differ for a declaration inside
+                // a block. Require the origin to lie on the exact lexical to
+                // storage path, so an unrelated sibling scope still fails.
+                return if (scopeIsOnPath(self.scopes, lexical_scope, declaration_scope, @intFromEnum(symbol.origin_scope)))
+                    .bound
+                else
+                    .scope_mismatch;
+            }
+            return if (@intFromEnum(symbol.origin_scope) == declaration_scope) .bound else .scope_mismatch;
         }
 
         const evidence = reference orelse return .missing_reference;
@@ -389,6 +396,19 @@ fn nearestVarScope(start: u32, scopes: []const Scope) ?u32 {
         current = scopes[index].parent;
     }
     return null;
+}
+
+fn scopeIsOnPath(scopes: []const Scope, descendant: u32, ancestor: u32, candidate: u32) bool {
+    var current: ScopeId = @enumFromInt(descendant);
+    var hops: usize = 0;
+    while (!current.isNone() and hops < scopes.len) : (hops += 1) {
+        const index = current.toIndex();
+        if (@as(usize, index) >= scopes.len) return false;
+        if (index == candidate) return true;
+        if (index == ancestor) return false;
+        current = scopes[index].parent;
+    }
+    return false;
 }
 
 fn visibleFrom(binding: ScopeId, reference: ScopeId, scopes: []const Scope) bool {

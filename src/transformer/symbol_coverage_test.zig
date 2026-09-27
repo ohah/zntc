@@ -1394,9 +1394,11 @@ test "strict inventory checks var storage and lexical origin scopes exactly" {
     const global_scope: ScopeId = @enumFromInt(0);
     const function_scope: ScopeId = @enumFromInt(1);
     const block_scope: ScopeId = @enumFromInt(2);
+    const sibling_scope: ScopeId = @enumFromInt(3);
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
         .{ .parent = global_scope, .kind = .function, .is_strict = false },
+        .{ .parent = function_scope, .kind = .block, .is_strict = false },
         .{ .parent = function_scope, .kind = .block, .is_strict = false },
     };
     var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -1405,7 +1407,7 @@ test "strict inventory checks var storage and lexical origin scopes exactly" {
     try owners.put(allocator, @intFromEnum(block), @intFromEnum(block_scope));
 
     const symbols = [_]Symbol{
-        .{ .name = name, .scope_id = function_scope, .origin_scope = function_scope, .kind = .variable_var, .declaration_span = name },
+        .{ .name = name, .scope_id = function_scope, .origin_scope = block_scope, .kind = .variable_var, .declaration_span = name },
         .{ .name = name, .scope_id = block_scope, .origin_scope = block_scope, .kind = .variable_const, .declaration_span = name },
         .{ .name = name, .scope_id = block_scope, .origin_scope = block_scope, .kind = .function_decl, .declaration_span = name },
     };
@@ -1422,6 +1424,12 @@ test "strict inventory checks var storage and lexical origin scopes exactly" {
     try std.testing.expectEqual(@as(usize, 3), report.counts[@intFromEnum(coverage.StrictStatus.bound)]);
     try std.testing.expect(report.hasCompleteExactCoverage());
 
+    var hoisted_origin = symbols;
+    hoisted_origin[0].origin_scope = function_scope;
+    var hoisted_origin_report = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &hoisted_origin, &scopes, &owners, &.{}, &synthetic, &unresolved);
+    defer hoisted_origin_report.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 3), hoisted_origin_report.counts[@intFromEnum(coverage.StrictStatus.bound)]);
+
     var wrong_var_storage = symbols;
     wrong_var_storage[0].scope_id = global_scope;
     var wrong_storage_report = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &wrong_var_storage, &scopes, &owners, &.{}, &synthetic, &unresolved);
@@ -1430,7 +1438,7 @@ test "strict inventory checks var storage and lexical origin scopes exactly" {
     try std.testing.expect(!wrong_storage_report.hasCompleteExactCoverage());
 
     var wrong_var_origin = symbols;
-    wrong_var_origin[0].origin_scope = block_scope;
+    wrong_var_origin[0].origin_scope = sibling_scope;
     var wrong_origin_report = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &wrong_var_origin, &scopes, &owners, &.{}, &synthetic, &unresolved);
     defer wrong_origin_report.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), wrong_origin_report.counts[@intFromEnum(coverage.StrictStatus.scope_mismatch)]);
