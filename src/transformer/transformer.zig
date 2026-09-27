@@ -167,6 +167,9 @@ pub const Transformer = struct {
     /// 원본 scope owner가 동일한 종류의 새 노드로 복사되었을 때의 old → new 매핑.
     /// scope_owner_map 자체는 analyzer 소유라 변환 중 수정하지 않는다.
     scope_owner_remaps: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// Source owner indices overwritten in-place by a wrapper node. Their
+    /// analyzer scope ownership must not remain on the replacement node.
+    scope_owner_removed: std.AutoHashMapUnmanaged(u32, void) = .empty,
     /// Intermediate copies of a parsed or generated owner retain their origin.
     /// Final reachability chooses one live copy for each scope.
     scope_owner_origins: std.AutoHashMapUnmanaged(u32, u32) = .empty,
@@ -533,9 +536,10 @@ pub const Transformer = struct {
     pub fn visitNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         if (idx.isNone()) return .none;
         const saved_scope = self.current_scope;
-        const owner_scope = self.transformed_scope_owner_map.get(@intFromEnum(idx)) orelse
-            self.scope_owner_map.get(@intFromEnum(idx)) orelse
-            if (self.semantic_editor) |*editor| editor.scope_owner_map.get(@intFromEnum(idx)) else null;
+        const raw_idx = @intFromEnum(idx);
+        const owner_scope = if (self.scope_owner_removed.contains(raw_idx)) null else self.transformed_scope_owner_map.get(raw_idx) orelse
+            self.scope_owner_map.get(raw_idx) orelse
+            if (self.semantic_editor) |*editor| editor.scope_owner_map.get(raw_idx) else null;
         if (owner_scope) |scope_id| self.current_scope = @enumFromInt(scope_id);
         defer self.current_scope = saved_scope;
         const new_idx = try self.visitNodeInner(idx);
@@ -589,6 +593,7 @@ pub const Transformer = struct {
     pub const outputScopeParent = @import("transformer/semantic_edit.zig").outputScopeParent;
     pub const outputOwnedScope = @import("transformer/semantic_edit.zig").outputOwnedScope;
     pub const remapCopiedScopeOwner = @import("transformer/semantic_edit.zig").remapCopiedScopeOwner;
+    pub const removeInPlaceScopeOwner = @import("transformer/semantic_edit.zig").removeInPlaceScopeOwner;
     pub const originalFunctionScope = @import("transformer/semantic_edit.zig").originalFunctionScope;
     pub const bindGeneratedState = @import("transformer/semantic_edit.zig").bindGeneratedState;
     pub const bindGeneratedFunctionTemps = @import("transformer/semantic_edit.zig").bindGeneratedFunctionTemps;

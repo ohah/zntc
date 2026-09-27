@@ -336,9 +336,18 @@ fn resolveReachableScopeOwners(self: *Transformer) Transformer.Error!void {
     var final_by_origin: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer final_by_origin.deinit(self.allocator);
     for (reachable) |node| {
+        if (self.scope_owner_removed.contains(node)) continue;
         const origin = self.scope_owner_origins.get(node) orelse if (self.scope_owner_map.contains(node)) node else continue;
         if (final_by_origin.get(origin)) |existing| {
-            if (existing != node) std.debug.panic("one scope owner has multiple reachable copies", .{});
+            if (existing != node) std.debug.panic("one scope owner {d} has reachable copies {d}:{s}(removed={any}) and {d}:{s}(removed={any})", .{
+                origin,
+                existing,
+                @tagName(self.ast.nodes.items[existing].tag),
+                self.scope_owner_removed.contains(existing),
+                node,
+                @tagName(self.ast.nodes.items[node].tag),
+                self.scope_owner_removed.contains(node),
+            });
         } else try final_by_origin.put(self.allocator, origin, node);
     }
     var remaps = self.scope_owner_remaps.iterator();
@@ -347,6 +356,16 @@ fn resolveReachableScopeOwners(self: *Transformer) Transformer.Error!void {
         // pruning dead scopes is a separate semantic edit.
         entry.value_ptr.* = final_by_origin.get(entry.key_ptr.*) orelse entry.key_ptr.*;
     }
+}
+
+/// An in-place lowering can replace a scope-owning source node with an outer
+/// wrapper while moving that source scope to a nested generated loop/function.
+/// Keep the source map entry until finishSemanticEdit transfers it, but exclude
+/// the reused node index from final owner resolution and visitor scope entry.
+pub fn removeInPlaceScopeOwner(self: *Transformer, node: NodeIndex) Transformer.Error!void {
+    if (!self.semantic_edit_enabled or node.isNone()) return;
+    const raw = @intFromEnum(node);
+    try self.scope_owner_removed.put(self.allocator, raw, {});
 }
 
 fn variableScope(self: *Transformer, start: ScopeId) ScopeId {
@@ -722,7 +741,11 @@ pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.
         std.debug.panic("generated runtime helper reference has no import", .{});
     var remaps = self.scope_owner_remaps.iterator();
     while (remaps.next()) |entry| {
-        editor.remapScopeOwner(@enumFromInt(entry.key_ptr.*), @enumFromInt(entry.value_ptr.*)) catch |err| return editError(err);
+        if (self.scope_owner_removed.contains(entry.key_ptr.*)) {
+            editor.remapScopeOwnerAfterInPlaceRewrite(@enumFromInt(entry.key_ptr.*), @enumFromInt(entry.value_ptr.*)) catch |err| return editError(err);
+        } else {
+            editor.remapScopeOwner(@enumFromInt(entry.key_ptr.*), @enumFromInt(entry.value_ptr.*)) catch |err| return editError(err);
+        }
     }
     try bindReachableLexicalCaptures(self);
     if (editor.symbol_ids.items.len < self.symbol_ids.items.len) {

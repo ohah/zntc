@@ -119,25 +119,10 @@ test "#4819 nested state callbacks keep distinct private temps beside user colli
     try checkGeneratedTemps(source, .es5, 2, true);
 }
 
-test "#4819 for-await lowering registers every generated temp reference" {
+fn expectForAwaitSyntheticCoverage(source: []const u8, target: TransformOptions.compat.ESTarget, disable_top_level_await: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const source =
-        \\const _a=1,_b=2,_step=3,_ret=4,_errObj=5,_err=6;
-        \\async function drain(source) {
-        \\  outer: for await (const item of source) {
-        \\    try {
-        \\      if (item === null) continue outer;
-        \\      for await (const inner of source) {
-        \\        try { if (inner === item) break; }
-        \\        catch (_err2) { throw _err2; }
-        \\      }
-        \\    } catch (_outerErr) { if (_outerErr) break outer; }
-        \\  }
-        \\}
-        \\top: for await (const item of input) { if (item) break top; }
-    ;
     var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
     parser.configureFromExtension(".mjs");
@@ -148,12 +133,14 @@ test "#4819 for-await lowering registers every generated temp reference" {
     try analyzer.analyze();
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{
-        .unsupported = TransformOptions.compat.fromESTarget(.es2017),
+        .unsupported = TransformOptions.compat.fromESTarget(target),
         .emit_runtime_helper_imports = true,
     });
-    // Isolate for-await's module-scope symbols from the separate TLA IIFE
-    // producer, which owns its own generated promise binding.
-    transformer.options.unsupported.top_level_await = false;
+    if (disable_top_level_await) {
+        // Isolate for-await's module-scope symbols from the separate TLA IIFE
+        // producer, which owns its own generated promise binding.
+        transformer.options.unsupported.top_level_await = false;
+    }
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
     transformer.references = analyzer.references.items;
@@ -195,6 +182,45 @@ test "#4819 for-await lowering registers every generated temp reference" {
         try std.testing.expectEqual(coverage.StrictStatus.bound, finding.status);
     }
     try std.testing.expect(marked_count > 0);
+}
+
+test "#4819 for-await lowering registers every generated temp reference" {
+    const source =
+        \\const _a=1,_b=2,_step=3,_ret=4,_errObj=5,_err=6;
+        \\async function drain(source) {
+        \\  outer: for await (const item of source) {
+        \\    try {
+        \\      if (item === null) continue outer;
+        \\      for await (const inner of source) {
+        \\        try { if (inner === item) break; }
+        \\        catch (_err2) { throw _err2; }
+        \\      }
+        \\    } catch (_outerErr) { if (_outerErr) break outer; }
+        \\  }
+        \\}
+        \\top: for await (const item of input) { if (item) break top; }
+    ;
+    try expectForAwaitSyntheticCoverage(source, .es2017, true);
+}
+
+test "#4819 async-generator for-await temps keep their inner generator scope" {
+    const source =
+        \\const _a=1,_b=2,_step=3,_ret=4,_errObj=5,_err=6;
+        \\async function* drain(source) {
+        \\  outer: for await (const item of source) {
+        \\    try {
+        \\      if (item === null) continue outer;
+        \\      inner: for await (const value of source) {
+        \\        try { if (value === item) break inner; yield await value; }
+        \\        catch (_err2) { yield _err2; }
+        \\        finally { void item; }
+        \\      }
+        \\    } catch (_outerErr) { yield _outerErr; }
+        \\    finally { void item; }
+        \\  }
+        \\}
+    ;
+    try expectForAwaitSyntheticCoverage(source, .es2017, false);
 }
 
 test "#4819 for-await extracted loop temps preserve live scopes" {
