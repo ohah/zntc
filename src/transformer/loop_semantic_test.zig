@@ -275,7 +275,10 @@ fn expectExtractedLoopArgumentsVisible(source: []const u8, expected_args: u32) !
             // 이미 현재 출력 이름으로 만든 인자는 재방문 후에도 같은 노드다.
             try std.testing.expectEqual(@as(?u32, null), transformer.reference_origin_map.get(@intFromEnum(arg)));
             var scope = ref_scope orelse return error.TestUnexpectedResult;
-            try std.testing.expectEqual(edited.symbols.items[sym_idx].scope_id, scope);
+            // Lowered generators store loop state in the outer wrapper while
+            // the call argument executes inside the nested state-machine
+            // callback. The reference must retain that callback scope and see
+            // its binding through the parent chain.
             var visible = false;
             for (0..edited.scopes.len) |_| {
                 if (scope.isNone() or scope.toIndex() >= edited.scopes.len) break;

@@ -222,7 +222,10 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
 
         fn makeRef(self: *Transformer, name_span: Span, id: ?SymbolId, scope: ScopeId, flags: ReferenceFlags, register_semantics: bool) Transformer.Error!NodeIndex {
             const node = try es_helpers.makeSyntheticRefFromSpan(self, name_span);
-            if (register_semantics) try self.addSyntheticRefInScope(node, id, scope, flags);
+            if (register_semantics) {
+                try self.addSyntheticRefInScope(node, id, scope, flags);
+                try self.trackGeneratorStateReference(node, id, scope, flags);
+            }
             return node;
         }
 

@@ -1,8 +1,12 @@
 //! 변환 중 합성 바인딩과 참조를 원래 semantic SymbolId 공간에 추가한다 (#4819).
 const std = @import("std");
 const Transformer = @import("../transformer.zig").Transformer;
-const NodeIndex = @import("../../parser/ast.zig").NodeIndex;
+const ast_mod = @import("../../parser/ast.zig");
+const Node = ast_mod.Node;
+const NodeIndex = ast_mod.NodeIndex;
+const ast_walk = @import("../../parser/ast_walk.zig");
 const Span = @import("../../lexer/token.zig").Span;
+const token_mod = @import("../../lexer/token.zig");
 const SymbolId = @import("../../semantic/symbol.zig").SymbolId;
 const SymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
 const ScopeId = @import("../../semantic/scope.zig").ScopeId;
@@ -106,7 +110,7 @@ pub fn originalFunctionScope(self: *Transformer, owner: NodeIndex) ScopeId {
 }
 
 /// Register one state machine callback and its exact pending `_state` uses.
-pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: ScopeId, callback: NodeIndex, parameter: NodeIndex, ref_start: usize, callback_temps: []const @import("lists.zig").HoistedStateTemp, span: Span) Transformer.Error!void {
+pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: ScopeId, callback: NodeIndex, parameter: NodeIndex, ref_start: usize, wrapper_temps: []const @import("lists.zig").HoistedStateTemp, callback_temps: []const @import("lists.zig").HoistedStateTemp, span: Span) Transformer.Error!void {
     if (ref_start > self.generator_state_refs.items.len) std.debug.panic("invalid state machine frame", .{});
     if (self.semantic_edit_enabled and !parent.isNone()) {
         const scope = try addGeneratedFunctionScope(self, parent, callback);
@@ -132,9 +136,13 @@ pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: Sco
         }
         var live_scopes = try liveScopeOwners(self, &seen);
         defer live_scopes.deinit(self.allocator);
-        for (callback_temps) |temp| {
-            try bindStateCallbackTemp(self, temp, span, source_scope, scope, &seen, &live_scopes);
+        for (wrapper_temps) |temp| {
+            try bindStateCallbackTemp(self, temp, span, source_scope, source_scope, scope, &seen, &live_scopes);
         }
+        for (callback_temps) |temp| {
+            try bindStateCallbackTemp(self, temp, span, source_scope, scope, scope, &seen, &live_scopes);
+        }
+        try bindGeneratorStateReferences(self, source_scope, scope, callback, &seen, &live_scopes);
     }
     self.generator_state_refs.shrinkRetainingCapacity(ref_start);
 }
@@ -151,6 +159,120 @@ fn liveScopeOwners(self: *Transformer, live: *const std.AutoHashMapUnmanaged(u32
             try scopes.put(self.allocator, scope, {});
     }
     return scopes;
+}
+
+const GeneratedNodeTrace = struct {
+    scope: ScopeId,
+    ambiguous_scope: bool = false,
+    flags: ReferenceFlags = .{},
+};
+
+const GeneratedNodeVisit = struct {
+    node: NodeIndex,
+    incoming: ScopeId,
+    flags: ReferenceFlags = .{},
+};
+
+const GeneratedNodeVisitKey = struct { node: u32, scope: u32 };
+
+fn collectGeneratedNodeTraces(self: *Transformer, root: NodeIndex, root_scope: ScopeId) Transformer.Error!std.AutoHashMapUnmanaged(u32, GeneratedNodeTrace) {
+    var traces: std.AutoHashMapUnmanaged(u32, GeneratedNodeTrace) = .empty;
+    errdefer traces.deinit(self.allocator);
+    var visited: std.AutoHashMapUnmanaged(GeneratedNodeVisitKey, void) = .empty;
+    defer visited.deinit(self.allocator);
+    var stack: std.ArrayList(GeneratedNodeVisit) = .empty;
+    defer stack.deinit(self.allocator);
+    try stack.append(self.allocator, .{ .node = root, .incoming = root_scope });
+    while (stack.pop()) |visit| {
+        if (visit.node.isNone() or @intFromEnum(visit.node) >= self.ast.nodes.items.len) continue;
+        const raw = @intFromEnum(visit.node);
+        var scope = visit.incoming;
+        if (self.transformed_scope_owner_map.get(raw) orelse self.scope_owner_map.get(raw)) |owner_scope| {
+            if (owner_scope >= (if (self.semantic_editor) |*editor| editor.scopes.items.len else self.scopes.len))
+                std.debug.panic("generated reference scope owner is invalid", .{});
+            scope = @enumFromInt(owner_scope);
+        }
+        const trace = try traces.getOrPut(self.allocator, raw);
+        if (trace.found_existing) {
+            if (trace.value_ptr.scope != scope) trace.value_ptr.ambiguous_scope = true;
+            trace.value_ptr.flags.read = trace.value_ptr.flags.read or visit.flags.read;
+            trace.value_ptr.flags.write = trace.value_ptr.flags.write or visit.flags.write;
+        } else {
+            trace.value_ptr.* = .{ .scope = scope, .flags = visit.flags };
+        }
+        const key: GeneratedNodeVisitKey = .{ .node = raw, .scope = @intFromEnum(scope) };
+        const prior = try visited.getOrPut(self.allocator, key);
+        if (prior.found_existing) continue;
+        const parent = self.ast.getNode(visit.node);
+        var children = ast_walk.children(self.ast, parent);
+        while (children.next()) |child| {
+            if (child.isNone() or @intFromEnum(child) >= self.ast.nodes.items.len) continue;
+            const child_node = self.ast.getNode(child);
+            const flags = if (child_node.tag == .identifier_reference or child_node.tag == .assignment_target_identifier)
+                generatedReferenceFlags(parent, child, child_node.tag)
+            else
+                ReferenceFlags{};
+            try stack.append(self.allocator, .{ .node = child, .incoming = scope, .flags = flags });
+        }
+    }
+    return traces;
+}
+
+fn generatedReferenceFlags(parent: Node, child: NodeIndex, child_tag: Node.Tag) ReferenceFlags {
+    if (child_tag == .assignment_target_identifier) return .{ .write = true };
+    if (parent.tag == .assignment_expression and parent.data.binary.left == child) {
+        const op: token_mod.Kind = @enumFromInt(parent.data.binary.flags);
+        return if (op.isCompoundAssignment()) .{ .read = true, .write = true } else .{ .write = true };
+    }
+    if (parent.tag == .update_expression) return .{ .read = true, .write = true };
+    return .{ .read = true };
+}
+
+/// In-place for-await refs can be copied while the generator body is lowered.
+/// Reconcile only producer-recorded synthetic SymbolIds, using final AST scope
+/// and access mode; never resolve a binding from emitted text.
+fn bindGeneratorStateReferences(self: *Transformer, source_scope: ScopeId, callback_scope: ScopeId, callback: NodeIndex, live: *const std.AutoHashMapUnmanaged(u32, void), live_scopes: *const std.AutoHashMapUnmanaged(u32, void)) Transformer.Error!void {
+    if (source_scope.isNone() or self.generator_state_semantic_refs.items.len == 0) return;
+    const editor = try editorFor(self);
+    var ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer ids.deinit(self.allocator);
+    for (self.generator_state_semantic_refs.items) |pending| {
+        if (!scopeWithin(editor.scopes.items, pending.scope, source_scope)) continue;
+        try ids.put(self.allocator, pending.symbol_id, {});
+        _ = try generatedTempRefScope(self, source_scope, callback_scope, pending.scope, live_scopes);
+    }
+    if (ids.count() == 0) return;
+
+    var traces = try collectGeneratedNodeTraces(self, callback, callback_scope);
+    defer traces.deinit(self.allocator);
+    var entries = traces.iterator();
+    while (entries.next()) |entry| {
+        const raw = entry.key_ptr.*;
+        if (raw >= self.symbol_ids.items.len) continue;
+        if (!ids.contains(self.symbol_ids.items[raw] orelse continue)) continue;
+        const trace = entry.value_ptr.*;
+        if (trace.ambiguous_scope) std.debug.panic("generated state reference has ambiguous output scopes", .{});
+        const node: NodeIndex = @enumFromInt(raw);
+        const node_tag = self.ast.getNode(node).tag;
+        if (node_tag != .identifier_reference and node_tag != .assignment_target_identifier) continue;
+        if (!trace.flags.read and !trace.flags.write) std.debug.panic("generated state reference has no access mode", .{});
+        const id: SymbolId = @enumFromInt(self.symbol_ids.items[raw].?);
+        const maybe_reference = editor.referenceForNode(node) catch |err| return editError(err);
+        if (maybe_reference) |reference| {
+            editor.relocateReference(node, trace.scope, id, reference.stmt_idx, reference.scope_stmt_idx) catch |err| return editError(err);
+        } else {
+            editor.addCopiedReference(node, id, trace.scope, trace.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+        }
+    }
+
+    var kept: usize = 0;
+    for (self.generator_state_semantic_refs.items) |pending| {
+        if (ids.contains(pending.symbol_id) and scopeWithin(editor.scopes.items, pending.scope, source_scope)) continue;
+        self.generator_state_semantic_refs.items[kept] = pending;
+        kept += 1;
+    }
+    self.generator_state_semantic_refs.shrinkRetainingCapacity(kept);
+    _ = live;
 }
 
 fn scopeWithin(scopes: []const @import("../../semantic/scope.zig").Scope, scope: ScopeId, ancestor: ScopeId) bool {
@@ -189,11 +311,38 @@ fn generatedTempRefScope(self: *Transformer, source_scope: ScopeId, target_scope
     return old_scope;
 }
 
-fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedStateTemp, declaration_span: Span, source_scope: ScopeId, callback_scope: ScopeId, live: *const std.AutoHashMapUnmanaged(u32, void), live_scopes: *const std.AutoHashMapUnmanaged(u32, void)) Transformer.Error!void {
+fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedStateTemp, declaration_span: Span, source_scope: ScopeId, binding_scope: ScopeId, callback_scope: ScopeId, live: *const std.AutoHashMapUnmanaged(u32, void), live_scopes: *const std.AutoHashMapUnmanaged(u32, void)) Transformer.Error!void {
     const chain = self.pending_temp_ref_chains.fetchRemove(temp.name_span.start);
     const editor = try editorFor(self);
-    const id = editor.declare(temp.binding, temp.name_span, declaration_span, callback_scope, .variable_var, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
-    try setSymbolId(self, temp.binding, id);
+    const id: SymbolId = if (temp.symbol_id) |raw_id| blk: {
+        const existing: SymbolId = @enumFromInt(raw_id);
+        editor.relocateSymbolAs(existing, binding_scope, temp.binding) catch |err| return editError(err);
+        break :blk existing;
+    } else blk: {
+        const declared = editor.declare(temp.binding, temp.name_span, declaration_span, binding_scope, .variable_var, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+        try setSymbolId(self, temp.binding, declared);
+        break :blk declared;
+    };
+
+    if (temp.symbol_id) |raw_id| {
+        var nodes = live.iterator();
+        while (nodes.next()) |entry| {
+            const raw_node = entry.key_ptr.*;
+            if (raw_node >= self.symbol_ids.items.len or self.symbol_ids.items[raw_node] != raw_id) continue;
+            const node: NodeIndex = @enumFromInt(raw_node);
+            switch (self.ast.getNode(node).tag) {
+                .identifier_reference, .assignment_target_identifier => {},
+                else => continue,
+            }
+            const maybe_reference = editor.referenceForNode(node) catch |err| return editError(err);
+            const reference = maybe_reference orelse continue;
+            const target = try generatedTempRefScope(self, source_scope, callback_scope, reference.scope_id, live_scopes);
+            if (target != reference.scope_id) {
+                editor.relocateReference(node, target, id, reference.stmt_idx, reference.scope_stmt_idx) catch |err| return editError(err);
+            }
+        }
+    }
+
     var i: ?usize = if (chain) |found| found.value.first else null;
     while (i) |index| {
         const ref = self.pending_temp_refs.items[index];
@@ -225,7 +374,7 @@ pub fn bindGeneratedFunctionTemps(self: *Transformer, source_scope: ScopeId, fun
     }
     var live_scopes = try liveScopeOwners(self, &live);
     defer live_scopes.deinit(self.allocator);
-    for (temps) |temp| try bindStateCallbackTemp(self, temp, span, source_scope, function_scope, &live, &live_scopes);
+    for (temps) |temp| try bindStateCallbackTemp(self, temp, span, source_scope, function_scope, function_scope, &live, &live_scopes);
 }
 
 /// AST 생성 시점의 current_scope와 실제 삽입 위치가 다를 때 명시한 스코프에 등록한다.
@@ -626,6 +775,17 @@ pub fn bindRuntimeHelperImport(self: *Transformer, local: NodeIndex, local_name:
 
 /// nullish lowering의 temp 참조는 hoist 선언보다 먼저 생성된다. 이름 대신
 /// makeTempVarSpan의 고유 Span을 기록하고 선언 시점에 SymbolId를 연결한다.
+pub fn trackGeneratorStateReference(self: *Transformer, node: NodeIndex, id: ?SymbolId, scope: ScopeId, flags: ReferenceFlags) Transformer.Error!void {
+    if (!self.semantic_edit_enabled or !self.options.unsupported.generator) return;
+    const symbol = id orelse return;
+    try self.generator_state_semantic_refs.append(self.allocator, .{
+        .node = node,
+        .symbol_id = @intFromEnum(symbol),
+        .scope = scope,
+        .flags = flags,
+    });
+}
+
 pub fn trackHoistedTempRef(self: *Transformer, name_span: Span, node: NodeIndex, flags: ReferenceFlags) Transformer.Error!void {
     if (!self.semantic_edit_enabled or self.current_scope.isNone()) return;
     const index = self.pending_temp_refs.items.len;

@@ -193,6 +193,10 @@ pub fn buildVarDecl(self: *Transformer, name: []const u8, init_value: NodeIndex,
 pub const HoistedStateTemp = struct {
     binding: NodeIndex,
     name_span: Span,
+    /// A state-machine name can originate from an already analyzed lexical
+    /// binding (for example a catch parameter flattened into the wrapper).
+    /// Such a binding is relocated; only synthetic temps need a new symbol.
+    symbol_id: ?u32 = null,
 };
 
 pub fn hoistStateMachineTempsAndRestore(self: *Transformer, sm_body: NodeIndex, saved_counter: u32, span: Span, bindings: *std.ArrayListUnmanaged(HoistedStateTemp)) Error!NodeIndex {

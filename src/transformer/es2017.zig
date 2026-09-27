@@ -346,7 +346,7 @@ pub fn ES2017(comptime Transformer: type) type {
                 try @import("es2018_for_await.zig").ES2018ForAwait(Transformer).lowerInPlace(
                     self,
                     body_idx,
-                    self.semantic_edit_enabled and !self.options.unsupported.generator,
+                    self.semantic_edit_enabled,
                 );
             }
             try rewriteAwaitToYieldAwait(self, body_idx);
@@ -604,6 +604,7 @@ pub fn ES2017(comptime Transformer: type) type {
             var saved_sm_temps = try GenMod.enterStateMachineTemps(self);
             defer GenMod.leaveStateMachineTemps(self, &saved_sm_temps);
             var sm_result = try GenMod.buildStateMachine(self, body_idx, span);
+            defer sm_result.hoisted_temps.deinit(self.allocator);
             self.in_extracted_fn_body = saved_ext_sm;
             if (sm_result.body.isNone()) return .none;
             sm_result.body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span, &saved_sm_temps.callback_temps);
@@ -612,7 +613,7 @@ pub fn ES2017(comptime Transformer: type) type {
             // __async는 fn.apply()로 함수를 호출하므로 iterator를 직접 전달 불가.
             // function() { return __generator(cb); } 로 감싸야 함.
             const gen_wrapper_func = try es_helpers.wrapInFunction(self, gen.call, span);
-            try GenMod.bindWrappedStateMachine(self, source_owner, gen_wrapper_func, gen, &saved_sm_temps, span);
+            try GenMod.bindWrappedStateMachine(self, source_owner, gen_wrapper_func, gen, &saved_sm_temps, sm_result.hoisted_temps.items, span);
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper_func, span);
 
             const return_stmt = try self.ast.addNode(.{
@@ -686,12 +687,13 @@ pub fn ES2017(comptime Transformer: type) type {
             };
             const params_list = lowered.params_list;
             var sm_result = lowered.sm_result;
+            defer sm_result.hoisted_temps.deinit(self.allocator);
             if (sm_result.body.isNone()) return .none;
             sm_result.body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span, &saved_sm_temps.callback_temps);
 
             const gen = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
             const gen_wrapper_func = try es_helpers.wrapInFunction(self, gen.call, span);
-            try GenMod.bindWrappedStateMachine(self, source_owner, gen_wrapper_func, gen, &saved_sm_temps, span);
+            try GenMod.bindWrappedStateMachine(self, source_owner, gen_wrapper_func, gen, &saved_sm_temps, sm_result.hoisted_temps.items, span);
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper_func, span);
 
             // function body 구성: return __async(...)

@@ -173,12 +173,6 @@ fn expectForAwaitSyntheticCoverage(source: []const u8, target: TransformOptions.
     for (report.findings.items) |finding| {
         if (!finding.marked_synthetic) continue;
         marked_count += 1;
-        if (finding.status != .bound) {
-            std.debug.print("for-await coverage: {s} node={d} {s}({s}) sid={any} ref_sid={any} scope={any} ref_scope={any}\n", .{
-                @tagName(finding.status),    finding.node,              finding.name,               @tagName(finding.tag), finding.symbol_id,
-                finding.reference_symbol_id, finding.expected_scope_id, finding.reference_scope_id,
-            });
-        }
         try std.testing.expectEqual(coverage.StrictStatus.bound, finding.status);
     }
     try std.testing.expect(marked_count > 0);
@@ -221,6 +215,26 @@ test "#4819 async-generator for-await temps keep their inner generator scope" {
         \\}
     ;
     try expectForAwaitSyntheticCoverage(source, .es2017, false);
+}
+
+test "#4819 async-generator for-await temps survive ES5 state-machine lowering" {
+    const source =
+        \\const _a=1,_b=2,_step=3,_ret=4,_errObj=5,_err=6;
+        \\async function* drain(source) {
+        \\  outer: for await (const item of source) {
+        \\    try {
+        \\      if (item === null) continue outer;
+        \\      inner: for await (const value of source) {
+        \\        try { if (value === item) break inner; yield await value; }
+        \\        catch (_err2) { yield _err2; }
+        \\        finally { void item; }
+        \\      }
+        \\    } catch (_outerErr) { yield _outerErr; }
+        \\    finally { void item; }
+        \\  }
+        \\}
+    ;
+    try expectForAwaitSyntheticCoverage(source, .es5, false);
 }
 
 test "#4819 for-await extracted loop temps preserve live scopes" {
