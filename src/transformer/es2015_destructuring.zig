@@ -489,7 +489,12 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     // 새로 만든 노드는 symbol_ids 밖이라 심볼을 안 물려주면 mangler rename 이
                     // 통째로 스킵된다 — `({o: {s, w = 1}} = box)` 가 es5 로 낮아질 때
                     // 원본 이름으로 대입돼 미선언 전역이 된다 (#4493 의 es5 표면).
-                    const target_node = try self.makeIdentifierRefWithSymbolAt(key_node.data.string_ref, key_node.span, key_idx);
+                    const target_name = if (self.renamedNameOf(key_idx)) |renamed|
+                        try self.ast.addString(renamed)
+                    else
+                        key_node.data.string_ref;
+                    const target_node = try self.makeIdentifierRefWithSymbolAt(target_name, key_node.span, key_idx);
+                    try self.replaceUserReference(key_idx, target_node);
 
                     // shorthand_with_default: {a = 1} → a = _ref.a === void 0 ? 1 : _ref.a
                     // flags bit 0 = shorthand_with_default, right = default value

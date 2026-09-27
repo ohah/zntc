@@ -205,6 +205,48 @@ describe('ES5 destructuring generated temp provenance (#4819)', () => {
     expectCompleteExactCoverage(result.stderr);
   });
 
+  for (const minify of [false, true]) {
+    test(`ES5 shadowed, nested, and computed assignment targets have exact coverage${minify ? ' with minify' : ''}`, async () => {
+      const fixture = await createFixture({
+        'input.mjs': `const _a = 99;
+let keyCalls = 0;
+function key() { keyCalls++; return 'selected'; }
+function source() { return { x: 3, nested: { value: undefined }, selected: 5 }; }
+function run() {
+  let x = -1;
+  let y = 0;
+  const outerX = x;
+  {
+    let x = 1;
+    const assigned = ({ x, nested: { value: y = 7 }, [key()]: y } = source());
+    return [outerX, x, y, assigned.x, assigned.nested.value, keyCalls, _a];
+  }
+}
+console.log(JSON.stringify(run()));`,
+      });
+      cleanup = fixture.cleanup;
+      const native = spawnSync('node', [join(fixture.dir, 'input.mjs')], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      const result = spawnSync(
+        ZNTC_BIN,
+        ['input.mjs', '--target=es5', ...(minify ? ['--minify'] : []), '-o', 'out.mjs'],
+        {
+          cwd: fixture.dir,
+          env: {
+            PATH: process.env.PATH ?? '/usr/bin:/bin',
+            ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+          },
+          encoding: 'utf8',
+        },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expectCompleteExactCoverage(result.stderr);
+      const actual = spawnSync('node', [join(fixture.dir, 'out.mjs')], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(native.stdout);
+    });
+  }
+
   for (const target of ['es2015', 'es2017']) {
     for (const bundle of [false, true]) {
       for (const minify of [false, true]) {

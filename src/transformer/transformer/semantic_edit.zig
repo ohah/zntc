@@ -845,11 +845,17 @@ pub fn trackNullishIdentifierCopies(self: *Transformer, source: NodeIndex, test_
     const source_i = @intFromEnum(source);
     if (source_i >= self.symbol_ids.items.len or self.symbol_ids.items[source_i] == null) return;
     const editor = try editorFor(self);
-    if (test_ref != source) {
-        editor.cloneReferenceAtSameLocation(source, test_ref) catch |err| return editError(err);
-    }
-    editor.cloneReferenceAtSameLocation(source, value_ref) catch |err| return editError(err);
-    if (test_ref != source) editor.removeReference(source) catch |err| return editError(err);
+    const source_reference = editor.referenceForNode(source) catch |err| return editError(err);
+    const copy_reference = if (test_ref != source) blk: {
+        const test_reference = editor.referenceForNode(test_ref) catch |err| return editError(err);
+        if (test_reference == null) {
+            if (source_reference == null) return editError(error.ReferenceNotFound);
+            editor.cloneReferenceAtSameLocation(source, test_ref) catch |err| return editError(err);
+        }
+        if (source_reference != null) editor.removeReference(source) catch |err| return editError(err);
+        break :blk test_ref;
+    } else source;
+    editor.cloneReferenceAtSameLocation(copy_reference, value_ref) catch |err| return editError(err);
 }
 
 /// `_loop(index)`의 새 인자는 원래 헤더 바인딩을 읽는다. 바인딩에는 복제할
@@ -886,6 +892,18 @@ pub fn trackUserWriteFromBinding(self: *Transformer, target: NodeIndex, binding:
         Reference.NO_STMT,
         Reference.NO_STMT,
     ) catch |err| return editError(err);
+}
+
+/// When a transform replaces a user reference with a fresh identifier node,
+/// move the exact source Reference and remove the now unreachable source use
+/// so SymbolId counts and Reference evidence stay aligned.
+pub fn replaceUserReference(self: *Transformer, source: NodeIndex, replacement: NodeIndex) Transformer.Error!void {
+    if (!self.semantic_edit_enabled or self.getSymbolIdAt(source) == null) return;
+    const editor = try editorFor(self);
+    const source_ref = editor.referenceForNode(source) catch |err| return editError(err);
+    if (source_ref == null) return;
+    editor.cloneReferenceAtSameLocation(source, replacement) catch |err| return editError(err);
+    editor.removeReference(source) catch |err| return editError(err);
 }
 
 /// 변환 중 복사된 사용자 식별자와 scope owner도 편집 결과에 합친다.
