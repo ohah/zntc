@@ -1750,6 +1750,23 @@ test "#4819 class declaration separates outer and immutable heritage self bindin
     try std.testing.expectEqual(@as(u32, 1), ana.symbols.items[outer].reference_count);
 }
 
+test "#4819 duplicate predeclared class keeps its redeclaration diagnostic without an outer symbol" {
+    const source = "$DONOTEVALUATE();\n{ const f = 0; class f {} }";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len > 0);
+    for (ana.errors.items) |err|
+        try std.testing.expectEqual(@import("../error_codes.zig").Code.identifier_redeclared, err.code.?);
+}
+
 test "#4819 named class expression heritage resolves its own immutable binding" {
     var scanner = try Scanner.init(std.testing.allocator, "let C = class C extends C { self() { return C; } }; C = class Other {};");
     defer scanner.deinit();
