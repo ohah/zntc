@@ -207,6 +207,14 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 try self.addSyntheticRefInScope(catch_param_read, catch_symbol, catch_scope, .{ .read = true });
                 try self.addSyntheticRefInScope(did_catch_write, did_symbol, catch_scope, .{ .write = true });
                 try self.addSyntheticRefInScope(err_catch_write, err_symbol, catch_scope, .{ .write = true });
+
+                // These names already have explicit bindings in the lowered
+                // loop/catch. The generic function temp hoister would add
+                // duplicate `var` bindings outside the catch scope, where
+                // they have no matching semantic identity.
+                for ([_]Span{ norm, did_err, err_val, iter, catch_param }) |temp_span| {
+                    es_helpers.consumeTempVarSpan(self, temp_span);
+                }
             }
 
             // finally { try { if (!_a && _d.return != null) _d.return(); } finally { if (_b) throw _c; } }
