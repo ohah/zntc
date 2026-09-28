@@ -654,6 +654,8 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             hoist_bindings: []const NodeIndex,
             /// 생성자가 아는 실제 호출 위치. generator 수집기는 current_scope가 루프 스코프가 아니다.
             call_scope: @import("../semantic/scope.zig").ScopeId,
+            /// 추출된 generator 함수의 실제 삽입 부모. 비-generator 호출은 `.none`.
+            generator_parent_scope: @import("../semantic/scope.zig").ScopeId,
         ) Transformer.Error!struct { loop_fn: NodeIndex, loop_function: NodeIndex, call_and_check: NodeIndex } {
             std.debug.assert(lexical_bindings.len == lexical_names.len);
             std.debug.assert(hoist_bindings.len == hoist_vars.len);
@@ -698,9 +700,15 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             // --- function params: 캡처된 변수 ---
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
+            var param_bindings: std.ArrayList(NodeIndex) = .empty;
+            defer param_bindings.deinit(self.allocator);
             for (lexical_names, 0..) |name, name_i| {
                 const param_span = try self.ast.addString(name);
-                const param = try self.makeUserBinding(param_span, lexical_bindings[name_i]);
+                const param = if (is_generator and self.semantic_edit_enabled)
+                    try self.makeUserBinding(param_span, .none)
+                else
+                    try self.makeUserBinding(param_span, lexical_bindings[name_i]);
+                try param_bindings.append(self.allocator, param);
                 const formal = try self.ast.addNode(.{
                     .tag = .formal_parameter,
                     .span = param_span,
@@ -732,6 +740,32 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 .data = .{ .extra = func_extra },
             });
 
+            if (is_generator and self.semantic_edit_enabled) {
+                if (generator_parent_scope.isNone() or call_scope.isNone())
+                    std.debug.panic("extracted generator loop has no exact insertion scope", .{});
+                const function_scope = try self.addGeneratedFunctionScope(generator_parent_scope, func_expr);
+                var header_symbol_ids: std.ArrayList(u32) = .empty;
+                defer header_symbol_ids.deinit(self.allocator);
+                var parameter_symbol_ids: std.ArrayList(u32) = .empty;
+                defer parameter_symbol_ids.deinit(self.allocator);
+                for (lexical_bindings, param_bindings.items) |source_binding, parameter_binding| {
+                    const source_id = self.getSymbolIdAt(source_binding) orelse
+                        std.debug.panic("extracted generator loop header has no source SymbolId", .{});
+                    _ = try self.declareSyntheticInScope(parameter_binding, span, .parameter, function_scope);
+                    const parameter_id = self.getSymbolIdAt(parameter_binding) orelse
+                        std.debug.panic("extracted generator loop parameter has no generated SymbolId", .{});
+                    try header_symbol_ids.append(self.allocator, source_id);
+                    try parameter_symbol_ids.append(self.allocator, parameter_id);
+                }
+                try self.deferred_generator_loop_migrations.put(self.allocator, @intFromEnum(function_scope), .{
+                    .body = visited_body,
+                    .enclosing_function_scope = self.current_scope,
+                    .call_scope = call_scope,
+                    .header_symbol_ids = try self.allocator.dupe(u32, header_symbol_ids.items),
+                    .parameter_symbol_ids = try self.allocator.dupe(u32, parameter_symbol_ids.items),
+                });
+            }
+
             // --- var _loop = function(...) { ... } ---
             const loop_name_span = try self.ast.addString(loop_name);
             const loop_binding = try es_helpers.makeSyntheticBinding(self, loop_name_span);
@@ -750,7 +784,30 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             const scratch_top2 = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top2);
             const loop_ref = try es_helpers.makeSyntheticRef(self, loop_name);
-            try self.addSyntheticRefInScope(loop_ref, loop_symbol, call_scope, .{ .read = true });
+            var loop_ref_scope = call_scope;
+            if (loop_symbol) |symbol| {
+                const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+                const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+                const loop_symbol_scope = symbols[@intFromEnum(symbol)].scope_id;
+                var cursor = call_scope;
+                var visible_from_call_scope = false;
+                for (0..scopes.len) |_| {
+                    if (cursor.isNone() or cursor.toIndex() >= scopes.len) break;
+                    if (cursor == loop_symbol_scope) {
+                        visible_from_call_scope = true;
+                        break;
+                    }
+                    cursor = scopes[cursor.toIndex()].parent;
+                }
+                if (!visible_from_call_scope) {
+                    if (self.current_scope.isNone()) std.debug.panic("extracted loop reference has no provisional scope", .{});
+                    loop_ref_scope = self.current_scope;
+                }
+                try self.addSyntheticRefInScope(loop_ref, symbol, loop_ref_scope, .{ .read = true });
+                if (is_generator) try self.trackGeneratorStateReference(loop_ref, symbol, loop_ref_scope, .{ .read = true });
+            } else {
+                try self.addSyntheticRefInScope(loop_ref, null, loop_ref_scope, .{ .read = true });
+            }
             const call_callee = if (preserve_this) blk: {
                 const call_prop = try es_helpers.makePropertyName(self, "call");
                 try self.scratch.append(self.allocator, try es_helpers.makeThisExpr(self, span));

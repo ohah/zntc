@@ -5,6 +5,7 @@ const ast_mod = @import("../../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const ast_walk = @import("../../parser/ast_walk.zig");
+const reference_walk = @import("../../semantic/reference_walk.zig");
 const Span = @import("../../lexer/token.zig").Span;
 const token_mod = @import("../../lexer/token.zig");
 const SymbolId = @import("../../semantic/symbol.zig").SymbolId;
@@ -115,6 +116,7 @@ pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: Sco
     if (self.semantic_edit_enabled and !parent.isNone()) {
         const scope = try addGeneratedFunctionScope(self, parent, callback);
         const symbol = try declareSyntheticInScope(self, parameter, span, .parameter, scope);
+        try reparentDeferredGeneratorLoops(self, source_scope, scope);
         // Operation lowering can create an expression and then discard it.
         // Only references actually contained in this callback count as uses.
         var pending: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -136,15 +138,87 @@ pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: Sco
         }
         var live_scopes = try liveScopeOwners(self, &seen);
         defer live_scopes.deinit(self.allocator);
+        var callback_traces = try collectGeneratedNodeTraces(self, callback, scope);
+        defer callback_traces.deinit(self.allocator);
         for (wrapper_temps) |temp| {
-            try bindStateCallbackTemp(self, temp, span, source_scope, source_scope, scope, &seen, &live_scopes);
+            try bindStateCallbackTemp(self, temp, span, source_scope, source_scope, scope, &seen, &live_scopes, &callback_traces);
         }
         for (callback_temps) |temp| {
-            try bindStateCallbackTemp(self, temp, span, source_scope, scope, scope, &seen, &live_scopes);
+            try bindStateCallbackTemp(self, temp, span, source_scope, scope, scope, &seen, &live_scopes, &callback_traces);
         }
         try bindGeneratorStateReferences(self, source_scope, scope, callback, &seen, &live_scopes);
+        var migrations = self.deferred_generator_loop_migrations.iterator();
+        while (migrations.next()) |entry| {
+            const migration = entry.value_ptr;
+            if (entry.key_ptr.* != @intFromEnum(source_scope)) continue;
+            if (!migration.state_callback.isNone()) std.debug.panic("generator loop state callback registered twice", .{});
+            migration.state_callback = callback;
+            migration.state_callback_scope = scope;
+        }
+        try migrateDeferredGeneratorLoopBodies(self, source_scope);
     }
     self.generator_state_refs.shrinkRetainingCapacity(ref_start);
+}
+
+/// Extracted generator functions are emitted inside their enclosing state
+/// callback. Their provisional parent exists before that callback does; move
+/// each exact generated function scope once its enclosing callback is known.
+fn reparentDeferredGeneratorLoops(self: *Transformer, source_scope: ScopeId, callback_scope: ScopeId) Transformer.Error!void {
+    if (source_scope.isNone() or self.deferred_generator_loop_migrations.count() == 0) return;
+    const editor = try editorFor(self);
+    var ready: std.ArrayList(u32) = .empty;
+    defer ready.deinit(self.allocator);
+    var entries = self.deferred_generator_loop_migrations.iterator();
+    while (entries.next()) |entry| {
+        const migration = entry.value_ptr.*;
+        if (migration.enclosing_function_scope == source_scope and !migration.function_reparented)
+            try ready.append(self.allocator, entry.key_ptr.*);
+    }
+    for (ready.items) |function_scope_raw| {
+        const migration = self.deferred_generator_loop_migrations.getPtr(function_scope_raw) orelse continue;
+        const function_scope: ScopeId = @enumFromInt(function_scope_raw);
+        if (!scopeWithin(editor.scopes.items, function_scope, callback_scope))
+            editor.reparentScope(function_scope, callback_scope) catch |err| return editError(err);
+        migration.function_reparented = true;
+        try discardCompletedGeneratorLoopMigration(self, function_scope_raw);
+    }
+}
+
+fn migrateDeferredGeneratorLoopBodies(self: *Transformer, source_scope: ScopeId) Transformer.Error!void {
+    if (source_scope.isNone() or self.deferred_generator_loop_migrations.count() == 0) return;
+    var ready: std.ArrayList(u32) = .empty;
+    defer ready.deinit(self.allocator);
+    var entries = self.deferred_generator_loop_migrations.iterator();
+    while (entries.next()) |entry| {
+        const migration = entry.value_ptr.*;
+        if (entry.key_ptr.* != @intFromEnum(source_scope) or migration.state_callback.isNone() or migration.body_migrated) continue;
+        try ready.append(self.allocator, entry.key_ptr.*);
+    }
+
+    for (ready.items) |function_scope_raw| {
+        const migration_ptr = self.deferred_generator_loop_migrations.getPtr(function_scope_raw) orelse continue;
+        const migration = migration_ptr.*;
+        try migrateGeneratorLoopBody(
+            self,
+            migration.body,
+            migration.state_callback,
+            @enumFromInt(function_scope_raw),
+            migration.state_callback_scope,
+            migration.call_scope,
+            migration.header_symbol_ids,
+            migration.parameter_symbol_ids,
+        );
+        migration_ptr.body_migrated = true;
+        try discardCompletedGeneratorLoopMigration(self, function_scope_raw);
+    }
+}
+
+fn discardCompletedGeneratorLoopMigration(self: *Transformer, function_scope_raw: u32) Transformer.Error!void {
+    const migration = self.deferred_generator_loop_migrations.get(function_scope_raw) orelse return;
+    if (!migration.function_reparented or !migration.body_migrated) return;
+    const removed = self.deferred_generator_loop_migrations.fetchRemove(function_scope_raw) orelse return;
+    self.allocator.free(removed.value.header_symbol_ids);
+    self.allocator.free(removed.value.parameter_symbol_ids);
 }
 
 /// Bind only the exact temp declarations emitted into this callback. The
@@ -187,10 +261,13 @@ fn collectGeneratedNodeTraces(self: *Transformer, root: NodeIndex, root_scope: S
         if (visit.node.isNone() or @intFromEnum(visit.node) >= self.ast.nodes.items.len) continue;
         const raw = @intFromEnum(visit.node);
         var scope = visit.incoming;
-        if (self.transformed_scope_owner_map.get(raw) orelse self.scope_owner_map.get(raw)) |owner_scope| {
-            if (owner_scope >= (if (self.semantic_editor) |*editor| editor.scopes.items.len else self.scopes.len))
+        const owner_scope = if (self.scope_owner_removed.contains(raw)) null else self.transformed_scope_owner_map.get(raw) orelse
+            self.scope_owner_map.get(raw) orelse
+            if (self.semantic_editor) |*editor| editor.scope_owner_map.get(raw) else null;
+        if (owner_scope) |owner_scope_id| {
+            if (owner_scope_id >= (if (self.semantic_editor) |*editor| editor.scopes.items.len else self.scopes.len))
                 std.debug.panic("generated reference scope owner is invalid", .{});
-            scope = @enumFromInt(owner_scope);
+            scope = @enumFromInt(owner_scope_id);
         }
         const trace = try traces.getOrPut(self.allocator, raw);
         if (trace.found_existing) {
@@ -216,6 +293,249 @@ fn collectGeneratedNodeTraces(self: *Transformer, root: NodeIndex, root_scope: S
         }
     }
     return traces;
+}
+
+const GeneratedLoopNodeSet = std.AutoHashMapUnmanaged(u32, void);
+
+fn appendGeneratedLoopExtraList(self: *Transformer, stack: *std.ArrayList(NodeIndex), extra_base: u32, start_off: u32, len_off: u32) Transformer.Error!void {
+    const extra = self.ast.extra_data.items;
+    if (extra_base >= extra.len or start_off >= extra.len - extra_base or len_off >= extra.len - extra_base) return;
+    const start = extra[extra_base + start_off];
+    const len = extra[extra_base + len_off];
+    if (start > extra.len or len > extra.len - start) return;
+    for (extra[start .. start + len]) |raw| try stack.append(self.allocator, @enumFromInt(raw));
+}
+
+fn collectGeneratedLoopNodes(self: *Transformer, root: NodeIndex) Transformer.Error!GeneratedLoopNodeSet {
+    var nodes: GeneratedLoopNodeSet = .empty;
+    errdefer nodes.deinit(self.allocator);
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    try stack.append(self.allocator, root);
+    while (stack.pop()) |node| {
+        if (node.isNone() or @intFromEnum(node) >= self.ast.nodes.items.len) continue;
+        const raw = @intFromEnum(node);
+        if (nodes.contains(raw)) continue;
+        try nodes.put(self.allocator, raw, {});
+        const parent = self.ast.getNode(node);
+        var children = ast_walk.children(self.ast, parent);
+        while (children.next()) |child| try stack.append(self.allocator, child);
+        switch (parent.tag) {
+            .class_declaration, .class_expression => try appendGeneratedLoopExtraList(self, &stack, parent.data.extra, ast_mod.ClassExtra.deco_start, ast_mod.ClassExtra.deco_len),
+            .method_definition => try appendGeneratedLoopExtraList(self, &stack, parent.data.extra, ast_mod.MethodExtra.deco_start, ast_mod.MethodExtra.deco_len),
+            .property_definition, .accessor_property => try appendGeneratedLoopExtraList(self, &stack, parent.data.extra, ast_mod.PropertyExtra.deco_start, ast_mod.PropertyExtra.deco_len),
+            .formal_parameter => try appendGeneratedLoopExtraList(self, &stack, parent.data.extra, ast_mod.FormalParameterExtra.deco_start, ast_mod.FormalParameterExtra.deco_len),
+            .ts_enum_declaration, .flow_enum_declaration => try appendGeneratedLoopExtraList(self, &stack, parent.data.extra, 1, 2),
+            .flow_match_expression => {
+                const extra = self.ast.extra_data.items;
+                if (parent.data.extra < extra.len) try stack.append(self.allocator, @enumFromInt(extra[parent.data.extra]));
+                try appendGeneratedLoopExtraList(self, &stack, parent.data.extra, 1, 2);
+            },
+            else => {},
+        }
+    }
+    return nodes;
+}
+
+fn reparentGeneratedLoopScopeFrontiers(self: *Transformer, nodes: *const GeneratedLoopNodeSet, source_nodes: *const GeneratedLoopNodeSet, new_parent: ScopeId) Transformer.Error!GeneratedLoopNodeSet {
+    const editor = try editorFor(self);
+    var candidates: GeneratedLoopNodeSet = .empty;
+    defer candidates.deinit(self.allocator);
+    var owners = nodes.keyIterator();
+    while (owners.next()) |raw| {
+        const origin = self.scope_owner_origins.get(raw.*) orelse raw.*;
+        if (!source_nodes.contains(origin)) continue;
+        const owner_scope = self.transformed_scope_owner_map.get(raw.*) orelse editor.scope_owner_map.get(raw.*) orelse self.scope_owner_map.get(raw.*) orelse continue;
+        const scope: ScopeId = @enumFromInt(owner_scope);
+        if (scope == new_parent or scopeWithin(editor.scopes.items, scope, new_parent)) continue;
+        if (scope.isNone() or scope.toIndex() >= editor.scopes.items.len) std.debug.panic("generated loop scope owner is invalid", .{});
+        try candidates.put(self.allocator, scope.toIndex(), {});
+    }
+    var frontiers: GeneratedLoopNodeSet = .empty;
+    errdefer frontiers.deinit(self.allocator);
+    var roots = candidates.keyIterator();
+    while (roots.next()) |raw| {
+        var parent = editor.scopes.items[raw.*].parent;
+        var has_candidate_ancestor = false;
+        while (!parent.isNone()) {
+            if (candidates.contains(parent.toIndex())) {
+                has_candidate_ancestor = true;
+                break;
+            }
+            parent = editor.scopes.items[parent.toIndex()].parent;
+        }
+        if (has_candidate_ancestor) continue;
+        try frontiers.put(self.allocator, raw.*, {});
+        editor.reparentScope(@enumFromInt(raw.*), new_parent) catch |err| return editError(err);
+    }
+    return frontiers;
+}
+
+/// Reconcile the source body first, then its lowered state callback. Header
+/// parameters get fresh identities; every copied reference uses its recorded
+/// source node and the final AST scope trace.
+pub fn migrateGeneratorLoopBody(self: *Transformer, original_body: NodeIndex, final_body: NodeIndex, output_function_scope: ScopeId, output_body_scope: ScopeId, reparent_from_scope: ScopeId, header_symbol_ids: []const u32, parameter_symbol_ids: []const u32) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    if (header_symbol_ids.len != parameter_symbol_ids.len)
+        std.debug.panic("generator loop parameter migration arity mismatch", .{});
+    const editor = try editorFor(self);
+
+    var source_nodes = try collectGeneratedLoopNodes(self, original_body);
+    defer source_nodes.deinit(self.allocator);
+    // Lowering a source binding into an assignment target creates a reference
+    // from the binding node itself, so it has no source-reference origin. Keep
+    // those writes exact by accepting their SymbolId only when this source
+    // body contains the corresponding binding declaration.
+    var source_binding_ids: GeneratedLoopNodeSet = .empty;
+    defer source_binding_ids.deinit(self.allocator);
+    var source_binding_nodes = source_nodes.keyIterator();
+    while (source_binding_nodes.next()) |raw| {
+        const node: NodeIndex = @enumFromInt(raw.*);
+        if (self.ast.getNode(node).tag != .binding_identifier) continue;
+        if (self.getSymbolIdAt(node)) |id| try source_binding_ids.put(self.allocator, id, {});
+    }
+    var final_nodes = try collectGeneratedLoopNodes(self, final_body);
+    defer final_nodes.deinit(self.allocator);
+    var moved_scope_frontiers = try reparentGeneratedLoopScopeFrontiers(self, &final_nodes, &source_nodes, output_body_scope);
+    defer moved_scope_frontiers.deinit(self.allocator);
+
+    var traces = try collectGeneratedNodeTraces(self, final_body, output_body_scope);
+    defer traces.deinit(self.allocator);
+    const runtime_refs = try reference_walk.collectIdentifierReferences(self.allocator, self.ast, final_body);
+    defer self.allocator.free(runtime_refs);
+    var live_symbol_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer live_symbol_ids.deinit(self.allocator);
+    for (runtime_refs) |node| {
+        const raw = @intFromEnum(node);
+        const origin = self.reference_origin_map.get(raw) orelse raw;
+        const id = self.getSymbolIdAt(node) orelse continue;
+        if (!source_nodes.contains(origin) and !source_binding_ids.contains(id)) continue;
+        try live_symbol_ids.put(self.allocator, id, {});
+    }
+    var moved_bindings: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer moved_bindings.deinit(self.allocator);
+    var source_nodes_it = source_nodes.keyIterator();
+    while (source_nodes_it.next()) |raw| {
+        const node: NodeIndex = @enumFromInt(raw.*);
+        if (self.ast.getNode(node).tag != .binding_identifier) continue;
+        const id_raw = self.getSymbolIdAt(node) orelse continue;
+        if (id_raw >= editor.symbols.items.len) std.debug.panic("generator loop binding has an invalid SymbolId", .{});
+        if (!live_symbol_ids.contains(id_raw)) continue;
+        if (std.mem.indexOfScalar(u32, header_symbol_ids, id_raw) != null) continue;
+        const traced_binding_scope = if (final_nodes.contains(raw.*)) blk: {
+            const trace = traces.get(raw.*) orelse std.debug.panic("generator loop binding has no final scope trace", .{});
+            if (trace.ambiguous_scope) std.debug.panic("generator loop binding has ambiguous output scopes", .{});
+            break :blk trace.scope;
+        } else output_function_scope;
+        // Some declaration nodes own a function-body scope while their name
+        // binding remains in the enclosing lexical scope. Keep the existing
+        // binding scope when it is still visible from the traced output site.
+        const original_binding_scope = editor.symbols.items[id_raw].scope_id;
+        const binding_scope = if (scopeWithin(editor.scopes.items, traced_binding_scope, original_binding_scope))
+            original_binding_scope
+        else
+            traced_binding_scope;
+        if (moved_bindings.get(id_raw)) |prior_scope| {
+            if (prior_scope != @intFromEnum(binding_scope))
+                std.debug.panic("one generator loop binding has multiple output scopes", .{});
+            continue;
+        }
+        try moved_bindings.put(self.allocator, id_raw, @intFromEnum(binding_scope));
+        const id: SymbolId = @enumFromInt(id_raw);
+        if (editor.symbols.items[id_raw].scope_id != binding_scope)
+            editor.relocateSymbolAs(id, binding_scope, node) catch |err| return editError(err);
+    }
+    var original_references: std.AutoHashMapUnmanaged(u32, Reference) = .empty;
+    defer original_references.deinit(self.allocator);
+    for (self.references) |reference| {
+        if (reference.node_index.isNone()) continue;
+        try original_references.put(self.allocator, @intFromEnum(reference.node_index), reference);
+    }
+
+    var live_refs: GeneratedLoopNodeSet = .empty;
+    defer live_refs.deinit(self.allocator);
+    for (runtime_refs) |node| {
+        const raw = @intFromEnum(node);
+        const origin = self.reference_origin_map.get(raw) orelse raw;
+        const current_id = self.getSymbolIdAt(node) orelse continue;
+        if (!source_nodes.contains(origin) and !source_binding_ids.contains(current_id)) continue;
+        try live_refs.put(self.allocator, raw, {});
+        if (current_id >= editor.symbols.items.len) std.debug.panic("generator loop reference has an invalid SymbolId", .{});
+        var target_id = current_id;
+        for (header_symbol_ids, parameter_symbol_ids) |header_id, parameter_id| {
+            if (current_id == header_id) {
+                target_id = parameter_id;
+                break;
+            }
+        }
+        const trace = traces.get(raw) orelse std.debug.panic("generator loop reference has no final scope trace", .{});
+        if (trace.ambiguous_scope) std.debug.panic("generator loop reference has ambiguous output scopes", .{});
+        const output_scope = trace.scope;
+        const target: SymbolId = @enumFromInt(target_id);
+        const maybe_reference = editor.referenceForNode(node) catch |err| return editError(err);
+        if (maybe_reference) |reference| {
+            // The source Reference can still carry a pre-extraction scope that
+            // remains an ancestor of the binding, yet no longer matches the
+            // final AST owner (for example, a nested arrow inside a moved catch).
+            if (reference.scope_id != output_scope or reference.symbol_id != target) {
+                editor.relocateReference(node, output_scope, target, reference.stmt_idx, reference.scope_stmt_idx) catch |err| return editError(err);
+            }
+        } else {
+            const metadata = original_references.get(origin);
+            const flags = if (metadata) |reference| reference.flags else trace.flags;
+            const reference_scope = if (metadata != null and
+                scopeWithin(editor.scopes.items, metadata.?.scope_id, editor.symbols.items[target_id].scope_id))
+                metadata.?.scope_id
+            else
+                output_scope;
+            if (!flags.read and !flags.write) std.debug.panic("generated loop reference has no access-mode evidence", .{});
+            if (raw < editor.symbol_ids.items.len and editor.symbol_ids.items[raw] != null and editor.symbol_ids.items[raw] != target_id)
+                editor.symbol_ids.items[raw] = null;
+            editor.addCopiedReference(node, target, reference_scope, flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+        }
+        if (self.symbol_ids.items.len <= raw)
+            try self.symbol_ids.appendNTimes(self.allocator, null, raw + 1 - self.symbol_ids.items.len);
+        self.symbol_ids.items[raw] = target_id;
+    }
+
+    var old_nodes = source_nodes.keyIterator();
+    while (old_nodes.next()) |raw| {
+        if (live_refs.contains(raw.*)) continue;
+        const node: NodeIndex = @enumFromInt(raw.*);
+        const reference = editor.referenceForNode(node) catch |err| return editError(err);
+        if (reference == null) continue;
+        editor.removeReference(node) catch |err| return editError(err);
+        if (raw.* < self.symbol_ids.items.len) self.symbol_ids.items[raw.*] = null;
+    }
+
+    // A lowered loop head can be emitted in the extracted generator function
+    // even though its binding node is outside the source body subtree. Source
+    // loop scopes reparented with the body have the same treatment. Move only
+    // exact live identities whose output binding remains outside that body.
+    var live_ids = live_symbol_ids.keyIterator();
+    while (live_ids.next()) |raw_id| {
+        if (std.mem.indexOfScalar(u32, header_symbol_ids, raw_id.*) != null) continue;
+        if (raw_id.* >= editor.symbols.items.len) continue;
+        const source_binding_scope = editor.symbols.items[raw_id.*].scope_id;
+        if (source_binding_scope.isNone() or source_binding_scope.toIndex() >= editor.scopes.items.len or
+            editor.scopes.items[source_binding_scope.toIndex()].kind.isVarScope()) continue;
+        const is_call_scope_binding = source_binding_scope == reparent_from_scope;
+        if (!is_call_scope_binding and !moved_scope_frontiers.contains(source_binding_scope.toIndex())) continue;
+        var binding_node: ?NodeIndex = null;
+        var binding_node_is_in_source = false;
+        for (self.symbol_ids.items, 0..) |maybe_id, node_raw| {
+            if (maybe_id == null or maybe_id.? != raw_id.* or node_raw >= self.ast.nodes.items.len) continue;
+            const candidate: NodeIndex = @enumFromInt(node_raw);
+            if (self.ast.getNode(candidate).tag == .binding_identifier) {
+                binding_node = candidate;
+                binding_node_is_in_source = source_nodes.contains(@intCast(node_raw));
+                if (binding_node_is_in_source) break;
+            }
+        }
+        if (binding_node_is_in_source and !is_call_scope_binding) continue;
+        const binding = binding_node orelse std.debug.panic("live extracted loop binding has no output binding node", .{});
+        editor.relocateSymbolAs(@enumFromInt(raw_id.*), output_function_scope, binding) catch |err| return editError(err);
+    }
 }
 
 fn generatedReferenceFlags(parent: Node, child: NodeIndex, child_tag: Node.Tag) ReferenceFlags {
@@ -289,8 +609,12 @@ fn generatedTempRefScope(self: *Transformer, source_scope: ScopeId, target_scope
     const editor = try editorFor(self);
     if (old_scope == source_scope) return target_scope;
     if (scopeWithin(editor.scopes.items, old_scope, target_scope)) return old_scope;
-    if (!scopeWithin(editor.scopes.items, old_scope, source_scope))
+    if (!scopeWithin(editor.scopes.items, old_scope, source_scope)) {
+        if (self.deferred_generator_loop_migrations.get(@intFromEnum(old_scope))) |migration| {
+            if (!migration.function_reparented) return target_scope;
+        }
         std.debug.panic("generated temp reference has unrelated source scope", .{});
+    }
 
     // The state machine can flatten a source block away. A live copied block or
     // nested function keeps its entire source ancestor chain. A removed loop
@@ -311,7 +635,17 @@ fn generatedTempRefScope(self: *Transformer, source_scope: ScopeId, target_scope
     return old_scope;
 }
 
-fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedStateTemp, declaration_span: Span, source_scope: ScopeId, binding_scope: ScopeId, callback_scope: ScopeId, live: *const std.AutoHashMapUnmanaged(u32, void), live_scopes: *const std.AutoHashMapUnmanaged(u32, void)) Transformer.Error!void {
+fn stateTempOutputScope(self: *Transformer, source_scope: ScopeId, target_scope: ScopeId, binding_scope: ScopeId, old_scope: ScopeId, traced_scope: ScopeId, live_scopes: *const std.AutoHashMapUnmanaged(u32, void)) Transformer.Error!ScopeId {
+    const editor = try editorFor(self);
+    if (old_scope == source_scope or scopeWithin(editor.scopes.items, old_scope, source_scope) or
+        scopeWithin(editor.scopes.items, old_scope, target_scope))
+        return generatedTempRefScope(self, source_scope, target_scope, old_scope, live_scopes);
+    if (scopeWithin(editor.scopes.items, traced_scope, binding_scope)) return traced_scope;
+    if (scopeWithin(editor.scopes.items, target_scope, binding_scope)) return target_scope;
+    std.debug.panic("generated state temp has no visible output scope", .{});
+}
+
+fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedStateTemp, declaration_span: Span, source_scope: ScopeId, binding_scope: ScopeId, callback_scope: ScopeId, live: *const std.AutoHashMapUnmanaged(u32, void), live_scopes: *const std.AutoHashMapUnmanaged(u32, void), traces: *const std.AutoHashMapUnmanaged(u32, GeneratedNodeTrace)) Transformer.Error!void {
     const chain = self.pending_temp_ref_chains.fetchRemove(temp.name_span.start);
     const editor = try editorFor(self);
     const id: SymbolId = if (temp.symbol_id) |raw_id| blk: {
@@ -336,7 +670,9 @@ fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedS
             }
             const maybe_reference = editor.referenceForNode(node) catch |err| return editError(err);
             const reference = maybe_reference orelse continue;
-            const target = try generatedTempRefScope(self, source_scope, callback_scope, reference.scope_id, live_scopes);
+            const trace = traces.get(raw_node) orelse std.debug.panic("generated temp reference has no final scope trace", .{});
+            if (trace.ambiguous_scope) std.debug.panic("generated temp reference has ambiguous output scopes", .{});
+            const target = try stateTempOutputScope(self, source_scope, callback_scope, binding_scope, reference.scope_id, trace.scope, live_scopes);
             if (target != reference.scope_id) {
                 editor.relocateReference(node, target, id, reference.stmt_idx, reference.scope_stmt_idx) catch |err| return editError(err);
             }
@@ -348,7 +684,9 @@ fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedS
         const ref = self.pending_temp_refs.items[index];
         std.debug.assert(ref.name_start == temp.name_span.start);
         if (live.contains(@intFromEnum(ref.node))) {
-            const scope = try generatedTempRefScope(self, source_scope, callback_scope, ref.scope, live_scopes);
+            const trace = traces.get(@intFromEnum(ref.node)) orelse std.debug.panic("generated temp reference has no final scope trace", .{});
+            if (trace.ambiguous_scope) std.debug.panic("generated temp reference has ambiguous output scopes", .{});
+            const scope = try stateTempOutputScope(self, source_scope, callback_scope, binding_scope, ref.scope, trace.scope, live_scopes);
             editor.addReference(ref.node, id, scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
             try setSymbolId(self, ref.node, id);
         }
@@ -374,7 +712,9 @@ pub fn bindGeneratedFunctionTemps(self: *Transformer, source_scope: ScopeId, fun
     }
     var live_scopes = try liveScopeOwners(self, &live);
     defer live_scopes.deinit(self.allocator);
-    for (temps) |temp| try bindStateCallbackTemp(self, temp, span, source_scope, function_scope, function_scope, &live, &live_scopes);
+    var traces = try collectGeneratedNodeTraces(self, body, function_scope);
+    defer traces.deinit(self.allocator);
+    for (temps) |temp| try bindStateCallbackTemp(self, temp, span, source_scope, function_scope, function_scope, &live, &live_scopes, &traces);
 }
 
 /// AST 생성 시점의 current_scope와 실제 삽입 위치가 다를 때 명시한 스코프에 등록한다.
@@ -873,6 +1213,7 @@ pub fn trackUserArgumentFromBinding(self: *Transformer, argument: NodeIndex, bin
         Reference.NO_STMT,
         Reference.NO_STMT,
     ) catch |err| return editError(err);
+    try self.trackGeneratorStateReference(argument, @enumFromInt(raw_id), scope, .{ .read = true });
 }
 
 /// Hoisting a source `var` declaration into an assignment creates a new write

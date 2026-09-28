@@ -224,6 +224,13 @@ pub const SemanticEditor = struct {
         if (stable_output_name) |output_name| symbol.synthetic_name = output_name;
         symbol.scope_id = target;
         symbol.origin_scope = target;
+        // The declaration record represents the binding site too. When the
+        // declaration is moved with its SymbolId, keep that record in the
+        // destination scope so finish() can validate the relocated graph.
+        for (self.references.items) |*reference| {
+            if (reference.symbol_id == id and reference.flags.declare)
+                reference.scope_id = target;
+        }
         self.scope_reparented = true;
     }
 
@@ -788,7 +795,7 @@ test "same-text bindings relocate under their exact emitted names" {
     _ = try editor.finish();
 }
 
-test "relocateSymbolAs accepts a source-backed emitted binding name" {
+test "relocateSymbolAs moves declaration reference with emitted binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -798,8 +805,8 @@ test "relocateSymbolAs accepts a source-backed emitted binding name" {
     defer editor.deinit();
 
     const root = try editor.addScope(.none, .none, .module, true);
+    const source_scope = try editor.addScope(root, .none, .block, false);
     const target_scope = try editor.addScope(root, .none, .function, false);
-    const source_scope = try editor.addScope(target_scope, .none, .block, false);
     const original_name = try ast.addString("original");
     const source_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = original_name, .data = .{ .string_ref = original_name } });
     const source_name_span = Span{ .start = 0, .end = 1 };
@@ -809,6 +816,7 @@ test "relocateSymbolAs accepts a source-backed emitted binding name" {
     try editor.relocateSymbolAs(id, target_scope, output_binding);
 
     try std.testing.expectEqual(target_scope, editor.symbols.items[@intFromEnum(id)].scope_id);
+    try std.testing.expectEqual(target_scope, editor.references.items[0].scope_id);
     try std.testing.expectEqualStrings("x", editor.symbols.items[@intFromEnum(id)].synthetic_name);
     try std.testing.expectEqual(@as(?usize, @intFromEnum(id)), editor.scope_maps.items[target_scope.toIndex()].get("x"));
     try std.testing.expectEqual(@as(?u32, @intFromEnum(id)), editor.symbol_ids.items[@intFromEnum(output_binding)]);

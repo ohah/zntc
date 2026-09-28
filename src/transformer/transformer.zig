@@ -51,6 +51,17 @@ pub const Plugin = options_mod.Plugin;
 pub const RuntimeHelpers = runtime_helper_bits.RuntimeHelpers;
 pub const TransformOptions = options_mod.TransformOptions;
 pub const LexicalCaptureKind = enum { this_value, arguments_value };
+pub const DeferredGeneratorLoopMigration = struct {
+    body: NodeIndex,
+    enclosing_function_scope: ScopeId,
+    call_scope: ScopeId,
+    header_symbol_ids: []const u32,
+    parameter_symbol_ids: []const u32,
+    state_callback: NodeIndex = .none,
+    state_callback_scope: ScopeId = .none,
+    function_reparented: bool = false,
+    body_migrated: bool = false,
+};
 
 /// 단일 AST append-only 변환기.
 ///
@@ -178,6 +189,9 @@ pub const Transformer = struct {
     /// Pass 2에서 복사된 함수 노드의 원래 스코프를 찾는다.
     transformed_scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     current_scope: ScopeId = .none,
+    /// Manual generator operation collection carries lexical insertion context
+    /// separately from `current_scope`, which remains the visitor's source scope.
+    generator_operation_scope: ScopeId = .none,
     /// 첫 합성 바인딩이 필요할 때만 기존 의미 정보를 복사한다.
     semantic_edit_enabled: bool = false,
     semantic_editor: ?SemanticEditor = null,
@@ -377,6 +391,9 @@ pub const Transformer = struct {
     /// Exact synthetic generator `_loop` owners whose callback parent cannot
     /// be finalized until the generator loop body/parameter migration.
     deferred_generator_loop_owners: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// Exact source-to-generated parameter identities for extracted generator
+    /// loops, keyed by their generated function ScopeId until state binding.
+    deferred_generator_loop_migrations: std.AutoHashMapUnmanaged(u32, DeferredGeneratorLoopMigration) = .empty,
     /// `generator_temp_var_spans` 중 사용자 바인딩에서 온 이름의 원래 바인딩 노드(span 키).
     /// 호이스트한 `var` 선언에 심볼을 물려주는 데 쓴다 (#4760).
     generator_var_origins: std.AutoHashMapUnmanaged(u64, NodeIndex) = .empty,
@@ -604,6 +621,7 @@ pub const Transformer = struct {
     pub const removeInPlaceScopeOwner = @import("transformer/semantic_edit.zig").removeInPlaceScopeOwner;
     pub const originalFunctionScope = @import("transformer/semantic_edit.zig").originalFunctionScope;
     pub const bindGeneratedState = @import("transformer/semantic_edit.zig").bindGeneratedState;
+    pub const migrateGeneratorLoopBody = @import("transformer/semantic_edit.zig").migrateGeneratorLoopBody;
     pub const bindGeneratedFunctionTemps = @import("transformer/semantic_edit.zig").bindGeneratedFunctionTemps;
     pub const trackGeneratorStateReference = @import("transformer/semantic_edit.zig").trackGeneratorStateReference;
     pub const relocatePendingRuntimeHelperRef = @import("transformer/semantic_edit.zig").relocatePendingRuntimeHelperRef;
