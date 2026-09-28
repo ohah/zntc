@@ -10,6 +10,7 @@ const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const Reference = @import("../semantic/symbol.zig").Reference;
 const ast_walk = @import("../parser/ast_walk.zig");
+const symbol_coverage = @import("symbol_coverage.zig");
 
 fn findLoopFunctionBody(allocator: std.mem.Allocator, ast: *const Ast, root: NodeIndex) !NodeIndex {
     var stack: std.ArrayList(NodeIndex) = .empty;
@@ -333,9 +334,8 @@ fn isReachable(ast: *const @import("../parser/ast.zig").Ast, root: NodeIndex, wa
 }
 
 /// Each fixture declares one uniquely named `var` inside an extracted loop.
-/// Its write must keep the original binding ID but execute in the source
-/// statement's innermost lexical scope, which may be a nested block, catch,
-/// loop header, or the enclosing loop for an unbraced body.
+/// Its generated write must keep the original binding ID and match the final
+/// AST scope, including when generator lowering moves it into a state callback.
 fn expectHoistedVarWrite(source: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -360,9 +360,10 @@ fn expectHoistedVarWrite(source: []const u8) !void {
     try std.testing.expect(!binding.isNone());
     const symbol_id = analyzer.symbol_ids.items[@intFromEnum(binding)] orelse return error.TestUnexpectedResult;
     const before_writes = analyzer.symbols.items[symbol_id].write_count;
+    const is_generator = std.mem.indexOf(u8, source, "function*") != null;
 
-    // Independent scope oracle: choose the tightest original scope owner
-    // containing the source binding span, before any transformer copy exists.
+    // Find the tightest original scope owner for the for-of owner assertion
+    // below. Generated reference scopes are checked against the final AST.
     const binding_span = parser.ast.getNode(binding).span;
     var expected_scope: ScopeId = .none;
     var expected_owner: NodeIndex = .none;
@@ -394,6 +395,20 @@ fn expectHoistedVarWrite(source: []const u8) !void {
     transformer.semantic_edit_enabled = true;
     const root = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
+    var maybe_coverage: ?symbol_coverage.StrictReport = if (is_generator) try symbol_coverage.checkStrict(
+        allocator,
+        transformer.ast,
+        root,
+        transformer.parser_node_count,
+        edited.symbol_ids,
+        edited.symbols.items,
+        edited.scopes,
+        &edited.scope_owner_map,
+        edited.references,
+        if (transformer.synthetic_idents) |*synthetic| synthetic else null,
+        &analyzer.unresolved_references,
+    ) else null;
+    defer if (maybe_coverage) |*coverage| coverage.deinit(allocator);
 
     var writes: usize = 0;
     for (edited.references) |ref| {
@@ -405,16 +420,26 @@ fn expectHoistedVarWrite(source: []const u8) !void {
         writes += 1;
         try std.testing.expectEqual(symbol_id, @intFromEnum(ref.symbol_id));
         try std.testing.expectEqual(@as(?u32, symbol_id), edited.symbol_ids[@intFromEnum(ref.node_index)]);
-        try std.testing.expectEqual(expected_scope, ref.scope_id);
         try std.testing.expect(!ref.flags.read and !ref.flags.declare);
         try std.testing.expectEqual(Reference.NO_STMT, ref.stmt_idx);
         try std.testing.expectEqual(Reference.NO_STMT, ref.scope_stmt_idx);
         try std.testing.expect(try isReachable(transformer.ast, root, ref.node_index));
+        var saw_bound_finding = false;
+        if (maybe_coverage) |coverage| {
+            for (coverage.findings.items) |finding| {
+                if (finding.node != @intFromEnum(ref.node_index)) continue;
+                try std.testing.expectEqual(symbol_coverage.StrictStatus.bound, finding.status);
+                saw_bound_finding = true;
+            }
+            try std.testing.expect(saw_bound_finding);
+        } else {
+            try std.testing.expectEqual(expected_scope, ref.scope_id);
+        }
     }
     try std.testing.expectEqual(@as(usize, 1), writes);
     try std.testing.expectEqual(before_writes + 1, edited.symbols.items[symbol_id].write_count);
     // Generator state-machine collection consumes its temporary iterator AST;
-    // that path is checked above for the live write's source ScopeId/count.
+    // its live output reference is checked above by strict final-AST coverage.
     if (parser.ast.getNode(expected_owner).tag == .for_of_statement and
         std.mem.indexOf(u8, source, "function*") == null)
     {

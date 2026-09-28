@@ -166,6 +166,12 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.generator_state_refs.deinit(self.allocator);
     self.generator_state_semantic_refs.deinit(self.allocator);
     self.deferred_generator_loop_owners.deinit(self.allocator);
+    var loop_migrations = self.deferred_generator_loop_migrations.valueIterator();
+    while (loop_migrations.next()) |migration| {
+        self.allocator.free(migration.header_symbol_ids);
+        self.allocator.free(migration.parameter_symbol_ids);
+    }
+    self.deferred_generator_loop_migrations.deinit(self.allocator);
     self.generator_var_origins.deinit(self.allocator);
     self.tagged_template_fns.deinit(self.allocator);
     if (self.name_arena) |*a| a.deinit();

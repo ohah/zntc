@@ -174,6 +174,7 @@ pub fn visitWhileLoop(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         &.{},
         capture.var_bindings.items,
         self.current_scope,
+        .none,
     );
     const loop_node = try self.ast.addNode(.{
         .tag = node.tag,
@@ -256,6 +257,7 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
                     lexical_bindings.items,
                     capture.var_bindings.items,
                     self.current_scope,
+                    .none,
                 );
                 const loop_node = try self.ast.addNode(.{
                     .tag = node.tag,
@@ -479,6 +481,7 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
                     lexical_bindings.items,
                     capture.var_bindings.items,
                     self.current_scope,
+                    if (yield_closure) self.outputScopeParent(self.current_scope) else .none,
                 );
 
                 // var _loop = function(...) { ... };

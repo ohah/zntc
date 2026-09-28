@@ -130,7 +130,16 @@ fn checkIdentifier(ctx: *Ctx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
     const name = ctx.ast.getText(node.data.string_ref);
     const sym = if (i < ctx.symbol_ids.len) ctx.symbol_ids[i] else null;
     if (sym) |sid| {
-        if (sid >= ctx.symbols.len or !std.mem.eql(u8, ctx.ast.getText(ctx.symbols[sid].name), baseName(name))) {
+        const matches = if (sid < ctx.symbols.len) blk: {
+            const symbol = ctx.symbols[sid];
+            const symbol_name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else ctx.ast.getText(symbol.name);
+            // Loop extraction may declare a fresh parameter identity using
+            // the already-renamed output spelling (for example `iLong$1`).
+            // Compare source bases on both sides so that generated suffix is
+            // accepted without treating a different user binding as a match.
+            break :blk std.mem.eql(u8, baseName(symbol_name), baseName(name));
+        } else false;
+        if (!matches) {
             ctx.report.wrong.append(ctx.allocator, .{ .name = name, .tag = node.tag }) catch {
                 ctx.oom = true;
             };

@@ -372,6 +372,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// AST 문을 순회하며 연산을 수집.
         fn collectOperations(self: *Transformer, stmt_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
             if (stmt_idx.isNone()) return;
+            const saved_scope = self.generator_operation_scope;
+            if (self.semantic_edit_enabled) {
+                const raw = @intFromEnum(stmt_idx);
+                const owner_scope = if (self.scope_owner_removed.contains(raw)) null else self.transformed_scope_owner_map.get(raw) orelse
+                    self.scope_owner_map.get(raw) orelse
+                    if (self.semantic_editor) |*editor| editor.scope_owner_map.get(raw) else null;
+                if (owner_scope) |scope| self.generator_operation_scope = @enumFromInt(scope);
+            }
+            defer self.generator_operation_scope = saved_scope;
             const stmt = self.ast.getNode(stmt_idx);
 
             switch (stmt.tag) {
@@ -725,6 +734,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // 라벨 붙은 break/continue 가 바깥 루프를 겨냥해도 추출한다. 호출부 검사가 신호를
             // `continue <label>` 문으로 되살리고(#4722), 상태 기계가 라벨 스택으로 해석한다.
             // (예전엔 검사가 `return` 으로 전달해 라벨 점프가 사라졌기에 여기서 포기했다.)
+            const call_scope = loopCallScope(self, stmt_idx, lexical_bindings.items);
+            const generator_parent_scope = loopFunctionParent(self, stmt_idx, stmt.tag, call_scope);
 
             const result = try BlockScoping.buildLoopClosureWithFlow(
                 self,
@@ -740,7 +751,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 var_names.items,
                 lexical_bindings.items,
                 var_bindings.items,
-                loopCallScope(self, stmt_idx, lexical_bindings.items),
+                call_scope,
+                generator_parent_scope,
             );
             // `_loop` is an assignment inside the callback being built, but
             // that callback has no NodeIndex/ScopeId yet. Keep its exact owner
@@ -823,7 +835,32 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
                 return symbols[id].scope_id;
             }
+            if (!self.generator_operation_scope.isNone()) return self.generator_operation_scope;
             return self.current_scope;
+        }
+
+        fn loopFunctionParent(self: *Transformer, owner: NodeIndex, loop_tag: Node.Tag, call_scope: @import("../semantic/scope.zig").ScopeId) @import("../semantic/scope.zig").ScopeId {
+            if (!self.semantic_edit_enabled) return .none;
+            const has_loop_scope = switch (loop_tag) {
+                .for_statement, .for_in_statement, .for_of_statement, .for_await_of_statement => true,
+                else => false,
+            };
+            if (!has_loop_scope) return call_scope;
+            const raw = @intFromEnum(owner);
+            const has_exact_loop_owner = !self.scope_owner_removed.contains(raw) and
+                (self.transformed_scope_owner_map.contains(raw) or self.scope_owner_map.contains(raw) or
+                    (if (self.semantic_editor) |*editor| editor.scope_owner_map.contains(raw) else false));
+            // A transformed generator loop can be a synthetic for-statement
+            // with no source loop scope. In that case call_scope already is its
+            // exact insertion parent; walking to its parent would detach outer
+            // lexical bindings such as a captured generator parameter.
+            if (!has_exact_loop_owner) return call_scope;
+            if (call_scope.isNone()) std.debug.panic("generator loop call has no source scope", .{});
+            const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+            if (call_scope.toIndex() >= scopes.len) std.debug.panic("generator loop call scope is invalid", .{});
+            const parent = scopes[call_scope.toIndex()].parent;
+            if (parent.isNone()) std.debug.panic("generator loop has no output function parent", .{});
+            return parent;
         }
 
         /// for문의 연산 수집.
@@ -2524,6 +2561,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         }
 
         fn collectBodyOperations(self: *Transformer, body_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
+            const saved_scope = self.generator_operation_scope;
+            if (self.semantic_edit_enabled) {
+                const raw = @intFromEnum(body_idx);
+                const owner_scope = if (self.scope_owner_removed.contains(raw)) null else self.transformed_scope_owner_map.get(raw) orelse
+                    self.scope_owner_map.get(raw) orelse
+                    if (self.semantic_editor) |*editor| editor.scope_owner_map.get(raw) else null;
+                if (owner_scope) |scope| self.generator_operation_scope = @enumFromInt(scope);
+            }
+            defer self.generator_operation_scope = saved_scope;
             const body_node = self.ast.getNode(body_idx);
             if (body_node.tag == .block_statement) {
                 // 이 블록의 let/const/class/using 은 블록 스코프 — 고유 이름으로 바꿔 wrapper 에

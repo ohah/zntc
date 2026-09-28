@@ -7,6 +7,7 @@ const ast_mod = @import("../parser/ast.zig");
 const Transformer = @import("transformer.zig").Transformer;
 const TransformOptions = @import("transformer.zig").TransformOptions;
 const Reference = @import("../semantic/symbol.zig").Reference;
+const symbol_coverage = @import("symbol_coverage.zig");
 
 fn checkStateScopes(source: []const u8, expected_states: usize, wrapped: bool, expected_deferred_loops: usize) !void {
     return checkStateScopesAtTarget(source, expected_states, wrapped, expected_deferred_loops, .es5);
@@ -85,6 +86,24 @@ fn checkStateScopesAtTarget(source: []const u8, expected_states: usize, wrapped:
         if (wrapped) {
             try std.testing.expect(!source_scopes.contains(@intFromEnum(parent)));
             try std.testing.expect(source_scopes.contains(@intFromEnum(edited.scopes[parent.toIndex()].parent)));
+        } else if (expected_deferred_loops > 0 and !source_scopes.contains(@intFromEnum(parent))) {
+            // An extracted generator loop owns its own state callback. The
+            // callback's immediate parent is the synthetic loop function;
+            // that function is then nested beneath the source callback.
+            try std.testing.expect(!source_scopes.contains(@intFromEnum(parent)));
+            try std.testing.expect(parent.toIndex() >= analyzer.scopes.items.len);
+            try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[parent.toIndex()].kind);
+            var ancestor = edited.scopes[parent.toIndex()].parent;
+            var found_source_ancestor = false;
+            for (0..edited.scopes.len) |_| {
+                if (ancestor.isNone() or ancestor.toIndex() >= edited.scopes.len) break;
+                if (source_scopes.contains(@intFromEnum(ancestor))) {
+                    found_source_ancestor = true;
+                    break;
+                }
+                ancestor = edited.scopes[ancestor.toIndex()].parent;
+            }
+            try std.testing.expect(found_source_ancestor);
         } else {
             try std.testing.expect(source_scopes.contains(@intFromEnum(parent)));
         }
@@ -216,10 +235,89 @@ test "#4819 nested async arrow in object method keeps separate state owners" {
 test "#4819 generated loop state explicitly waits for generator loop migration" {
     try checkStateScopes(
         "export function* collect() { for (let index = 0; index < 2; index++) { yield () => index; } }",
-        1,
+        2,
         false,
         1,
     );
+}
+
+test "#4819 extracted generator loop has exact header and catch symbols" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\const log = [];
+        \\function* gLong() {
+        \\  for (let iLong = 0; iLong < 2; iLong++) {
+        \\    try {
+        \\      throw iLong;
+        \\    } catch (eLong) {
+        \\      yield 0;
+        \\      log.push(() => eLong);
+        \\      log.push((iLong) => iLong);
+        \\    }
+        \\  }
+        \\}
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const root = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    var report = try symbol_coverage.checkStrict(
+        allocator,
+        transformer.ast,
+        root,
+        transformer.parser_node_count,
+        edited.symbol_ids,
+        edited.symbols.items,
+        edited.scopes,
+        &edited.scope_owner_map,
+        edited.references,
+        if (transformer.synthetic_idents) |*synthetic| synthetic else null,
+        &analyzer.unresolved_references,
+    );
+    defer report.deinit(allocator);
+
+    var saw_i_binding = false;
+    var saw_i_reference = false;
+    var saw_e_binding = false;
+    var saw_e_reference = false;
+    for (report.findings.items) |finding| {
+        const suffix = std.mem.lastIndexOfScalar(u8, finding.name, '$');
+        const base = if (suffix) |index| finding.name[0..index] else finding.name;
+        const is_i = std.mem.eql(u8, base, "iLong");
+        const is_e = std.mem.eql(u8, base, "eLong");
+        if (!is_i and !is_e) continue;
+        try std.testing.expectEqual(symbol_coverage.StrictStatus.bound, finding.status);
+        if (finding.tag == .binding_identifier) {
+            if (is_i) saw_i_binding = true else saw_e_binding = true;
+        } else if (finding.tag == .identifier_reference or finding.tag == .assignment_target_identifier) {
+            if (is_i) saw_i_reference = true else saw_e_reference = true;
+        }
+    }
+    try std.testing.expect(saw_i_binding);
+    try std.testing.expect(saw_i_reference);
+    try std.testing.expect(saw_e_binding);
+    try std.testing.expect(saw_e_reference);
 }
 
 test "#4819 async generator inner function owns its ES5 state callback" {
