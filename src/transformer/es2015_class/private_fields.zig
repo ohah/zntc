@@ -9,6 +9,9 @@ const Span = token_mod.Span;
 const es_helpers = @import("../es_helpers.zig");
 const es2022 = @import("../es2022.zig");
 const assign_ops = @import("assign_ops.zig");
+const SymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
+const ReferenceFlags = @import("../../semantic/symbol.zig").ReferenceFlags;
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 
 pub fn PrivateFields(comptime Transformer: type) type {
     return struct {
@@ -176,6 +179,138 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 }
                 try self.scratch.append(self.allocator, try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, pm.source_member_idx, pm.member_span));
             }
+        }
+
+        /// Private method lowering creates declarations and references in several
+        /// helpers before the enclosing class IIFE is complete. Once its owner
+        /// scope is known, bind the exact generated names across that live tree.
+        pub fn trackPrivateMethodSymbols(self: *Transformer, root: NodeIndex, pms: []const Transformer.PrivateMethodMapping, pfs: []const Transformer.PrivateFieldMapping, root_scope: ScopeId) Transformer.Error!void {
+            if (!self.semantic_edit_enabled or (pms.len == 0 and pfs.len == 0)) return;
+            const PrivateName = struct { kind: SymbolKind, binding: NodeIndex = .none };
+            const Ref = struct { node: NodeIndex, scope: ScopeId };
+            var names: std.StringHashMapUnmanaged(PrivateName) = .empty;
+            defer names.deinit(self.allocator);
+            for (pms) |pm| {
+                const ws = try names.getOrPut(self.allocator, pm.weakset_name);
+                if (!ws.found_existing) ws.value_ptr.* = .{ .kind = .variable_var };
+                const fn_entry = try names.getOrPut(self.allocator, pm.func_name);
+                if (!fn_entry.found_existing) fn_entry.value_ptr.* = .{ .kind = .function_decl };
+            }
+            for (pfs) |pf| {
+                const field_entry = try names.getOrPut(self.allocator, pf.var_name);
+                if (!field_entry.found_existing) field_entry.value_ptr.* = .{ .kind = .variable_var };
+            }
+
+            var refs: std.ArrayList(Ref) = .empty;
+            defer refs.deinit(self.allocator);
+            const Work = struct { node: NodeIndex, scope: ScopeId };
+            var stack: std.ArrayList(Work) = .empty;
+            defer stack.deinit(self.allocator);
+            try stack.append(self.allocator, .{ .node = root, .scope = root_scope });
+            var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer seen.deinit(self.allocator);
+            while (stack.pop()) |work| {
+                if (work.node.isNone() or @intFromEnum(work.node) >= self.ast.nodes.items.len) continue;
+                const raw = @intFromEnum(work.node);
+                if (seen.contains(raw)) continue;
+                try seen.put(self.allocator, raw, {});
+                const node = self.ast.getNode(work.node);
+                const scope = self.outputOwnedScope(work.node) orelse work.scope;
+
+                if (node.tag == .function_declaration) {
+                    const name_idx = self.readNodeIdx(node.data.extra, ast_mod.FunctionExtra.name);
+                    if (!name_idx.isNone()) {
+                        const name = self.ast.getText(self.ast.getNode(name_idx).data.string_ref);
+                        if (names.getPtr(name)) |entry| entry.kind = functionSymbolKind(self, node);
+                    }
+                }
+
+                switch (node.tag) {
+                    .binding_identifier => {
+                        const name = self.ast.getText(node.data.string_ref);
+                        if (names.getPtr(name)) |entry| {
+                            if (!entry.binding.isNone()) std.debug.panic("duplicate private helper binding {s}", .{name});
+                            entry.binding = work.node;
+                        }
+                    },
+                    .identifier_reference, .assignment_target_identifier => {
+                        const name = self.ast.getText(node.data.string_ref);
+                        if (names.contains(name)) try refs.append(self.allocator, .{ .node = work.node, .scope = scope });
+                    },
+                    else => {},
+                }
+
+                var it = @import("../../parser/ast_walk.zig").children(self.ast, node);
+                while (it.next()) |child| try stack.append(self.allocator, .{ .node = child, .scope = scope });
+            }
+
+            var entries = names.iterator();
+            while (entries.next()) |entry| {
+                const name = entry.key_ptr.*;
+                const binding = entry.value_ptr.binding;
+                if (binding.isNone()) std.debug.panic("private helper {s} has no emitted binding", .{name});
+                const binding_node = self.ast.getNode(binding);
+                const id = try self.declareSyntheticInScope(binding, binding_node.span, entry.value_ptr.kind, root_scope);
+                for (refs.items) |ref| {
+                    if (!std.mem.eql(u8, self.ast.getText(self.ast.getNode(ref.node).data.string_ref), name)) continue;
+                    const flags: ReferenceFlags = if (self.ast.getNode(ref.node).tag == .assignment_target_identifier)
+                        .{ .write = true }
+                    else
+                        .{ .read = true };
+                    try self.addSyntheticRefInScope(ref.node, id, ref.scope, flags);
+                }
+            }
+        }
+
+        /// Bind a generated class IIFE parameter and its exact emitted uses.
+        /// The walk stays within this completed wrapper AST; nested wrappers
+        /// that were already lowered keep their own SymbolIds.
+        pub fn trackGeneratedParameterSymbols(self: *Transformer, root: NodeIndex, binding: NodeIndex, root_scope: ScopeId) Transformer.Error!void {
+            if (!self.semantic_edit_enabled or binding.isNone()) return;
+            const name = self.ast.getText(self.ast.getNode(binding).data.string_ref);
+            const binding_span = self.ast.getNode(binding).span;
+            const id = try self.declareSyntheticInScope(binding, binding_span, .parameter, root_scope) orelse return;
+
+            const Work = struct { node: NodeIndex, scope: ScopeId };
+            var stack: std.ArrayList(Work) = .empty;
+            defer stack.deinit(self.allocator);
+            var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer seen.deinit(self.allocator);
+            try stack.append(self.allocator, .{ .node = root, .scope = root_scope });
+            while (stack.pop()) |work| {
+                if (work.node.isNone() or @intFromEnum(work.node) >= self.ast.nodes.items.len) continue;
+                const raw = @intFromEnum(work.node);
+                if (seen.contains(raw)) continue;
+                try seen.put(self.allocator, raw, {});
+                const node = self.ast.getNode(work.node);
+                const scope = self.outputOwnedScope(work.node) orelse work.scope;
+                if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
+                    if (std.mem.eql(u8, self.ast.getText(node.data.string_ref), name) and self.getSymbolIdAt(work.node) == null) {
+                        const flags: ReferenceFlags = if (node.tag == .assignment_target_identifier)
+                            .{ .write = true }
+                        else
+                            .{ .read = true };
+                        try self.addSyntheticRefInScope(work.node, id, scope, flags);
+                    }
+                }
+                var it = @import("../../parser/ast_walk.zig").children(self.ast, node);
+                while (it.next()) |child| try stack.append(self.allocator, .{ .node = child, .scope = scope });
+            }
+        }
+
+        fn functionSymbolKind(self: *Transformer, node: Node) SymbolKind {
+            const flags = self.readU32(node.data.extra, ast_mod.FunctionExtra.flags);
+            const FnFlags = ast_mod.FunctionFlags;
+            const is_async = (flags & FnFlags.is_async) != 0;
+            const is_generator = (flags & FnFlags.is_generator) != 0;
+            return if (is_async and is_generator)
+                .async_generator_decl
+            else if (is_async)
+                .async_function_decl
+            else if (is_generator)
+                .generator_decl
+            else
+                .function_decl;
         }
 
         /// target이 private_field_expression이면 set 호출 생성(instance/static 자동 분기). 해당 없으면 null.

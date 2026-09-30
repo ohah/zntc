@@ -809,12 +809,11 @@ pub const Node = struct {
                 .unary_expression, .update_expression => .{ .kind = .extra, .child_offsets = &.{0} },
                 // object_property: binary = { left: key, right: value, flags: prop_flags }
                 .object_property => .{ .kind = .binary },
-                // import_declaration: extra = [specs_start, specs_len, source(2)]
-                // import_declaration: extra = [specs_start, specs_len, source(2), phase_flags, attrs_start, attrs_len]
+                // import_declaration: extra = [specs_start(0), specs_len(1), source(2), phase_flags, attrs_start, attrs_len]
                 // phase_flags: u32. low 4 bits = ImportPhase (0=none, 1=defer, 2=source)
-                .import_declaration => .{ .kind = .extra, .child_offsets = &.{2} },
+                .import_declaration => .{ .kind = .extra, .child_offsets = &.{2}, .list_offsets = &.{.{ 0, 1 }} },
                 // export_named: extra = [decl(0), specs_start, specs_len, source(3), attrs_start(4), attrs_len(5)]
-                .export_named_declaration => .{ .kind = .extra, .child_offsets = &.{ 0, 3 } },
+                .export_named_declaration => .{ .kind = .extra, .child_offsets = &.{ 0, 3 }, .list_offsets = &.{.{ 1, 2 }} },
                 // export_all: extra = [exported_name(0), source(1), attrs_start(2), attrs_len(3)]
                 // `export *` 은 exported_name = .none, `export * as ns` 는 namespace identifier.
                 .export_all_declaration => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },

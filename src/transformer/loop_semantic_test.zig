@@ -11,6 +11,7 @@ const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const Reference = @import("../semantic/symbol.zig").Reference;
 const ast_walk = @import("../parser/ast_walk.zig");
 const symbol_coverage = @import("symbol_coverage.zig");
+const output_scope = @import("output_scope_test_utils.zig");
 
 fn findLoopFunctionBody(allocator: std.mem.Allocator, ast: *const Ast, root: NodeIndex) !NodeIndex {
     var stack: std.ArrayList(NodeIndex) = .empty;
@@ -409,6 +410,8 @@ fn expectHoistedVarWrite(source: []const u8) !void {
         &analyzer.unresolved_references,
     ) else null;
     defer if (maybe_coverage) |*coverage| coverage.deinit(allocator);
+    var output_parents = try output_scope.buildParentMap(allocator, transformer.ast, root);
+    defer output_parents.deinit(allocator);
 
     var writes: usize = 0;
     for (edited.references) |ref| {
@@ -420,6 +423,22 @@ fn expectHoistedVarWrite(source: []const u8) !void {
         writes += 1;
         try std.testing.expectEqual(symbol_id, @intFromEnum(ref.symbol_id));
         try std.testing.expectEqual(@as(?u32, symbol_id), edited.symbol_ids[@intFromEnum(ref.node_index)]);
+        const expected_output_scope = output_scope.expectedScope(
+            transformer.ast,
+            root,
+            &output_parents,
+            &edited.scope_owner_map,
+            @intFromEnum(ref.node_index),
+        ) orelse return error.TestUnexpectedResult;
+        if (expected_output_scope != ref.scope_id) {
+            std.debug.print("scope mismatch: source={s} node={d} expected={d} actual={d}\n", .{
+                source,
+                @intFromEnum(ref.node_index),
+                @intFromEnum(expected_output_scope),
+                @intFromEnum(ref.scope_id),
+            });
+        }
+        try std.testing.expectEqual(expected_output_scope, ref.scope_id);
         try std.testing.expect(!ref.flags.read and !ref.flags.declare);
         try std.testing.expectEqual(Reference.NO_STMT, ref.stmt_idx);
         try std.testing.expectEqual(Reference.NO_STMT, ref.scope_stmt_idx);
@@ -432,8 +451,6 @@ fn expectHoistedVarWrite(source: []const u8) !void {
                 saw_bound_finding = true;
             }
             try std.testing.expect(saw_bound_finding);
-        } else {
-            try std.testing.expectEqual(expected_scope, ref.scope_id);
         }
     }
     try std.testing.expectEqual(@as(usize, 1), writes);

@@ -77,6 +77,7 @@ pub fn Methods(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .extra = func_extra },
             });
+            try es_helpers.trackThisArgumentsCaptureSymbols(self, func_expr, self.current_scope);
             try self.remapCopiedScopeOwner(source_member_idx, func_expr);
             return func_expr;
         }
@@ -93,15 +94,15 @@ pub fn Methods(comptime Transformer: type) type {
 
         /// IIFE 내부용 ClassName.prototype — symbol 전파 없이 span 텍스트만 사용.
         /// fresh identifier를 받으므로 파서 영역 symbol_ids 조회 불가.
-        fn buildFreshPrototypeRef(self: *Transformer, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
-            const class_ref = try self.makeCurrentClassRef(class_name_span);
+        fn buildFreshPrototypeRef(self: *Transformer, class_name_span: Span, span: Span, reference_scope: @import("../../semantic/scope.zig").ScopeId) Transformer.Error!NodeIndex {
+            const class_ref = try self.makeCurrentClassRefAtScope(class_name_span, reference_scope);
             const proto_prop = try es_helpers.makePropertyName(self, "prototype");
             return es_helpers.makeStaticMember(self, class_ref, proto_prop, span);
         }
 
         /// method → ClassName.prototype.method = function() {} (expression_statement)
         /// static method → ClassName.method = function() {}
-        pub fn buildPrototypeAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
+        pub fn buildPrototypeAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, span: Span, reference_scope: @import("../../semantic/scope.zig").ScopeId) Transformer.Error!NodeIndex {
             const saved_extracted_body = self.in_extracted_fn_body;
             self.in_extracted_fn_body = false;
             defer self.in_extracted_fn_body = saved_extracted_body;
@@ -208,7 +209,7 @@ pub fn Methods(comptime Transformer: type) type {
                         );
                         try self.remapCopiedScopeOwner(info.source_member_idx, func_expr);
                         self.current_scope = saved_scope;
-                        return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
+                        return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span, reference_scope);
                     }
                 }
                 const method_nt: ?Transformer.NewTargetCtx = if (self.options.unsupported.new_target) .method else null;
@@ -217,7 +218,7 @@ pub fn Methods(comptime Transformer: type) type {
                 const func_expr = try buildWrappedFunc(self, async_call, .none, new_params, parameter_temp_start, parameter_temp_end, span);
                 try self.remapCopiedScopeOwner(info.source_member_idx, func_expr);
                 self.current_scope = saved_scope;
-                return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
+                return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span, reference_scope);
             }
 
             const method_nt: ?Transformer.NewTargetCtx = if (self.options.unsupported.new_target) .method else null;
@@ -246,9 +247,10 @@ pub fn Methods(comptime Transformer: type) type {
                 .data = .{ .extra = func_extra },
             });
 
+            try es_helpers.trackThisArgumentsCaptureSymbols(self, func_expr, self.current_scope);
             try self.remapCopiedScopeOwner(info.source_member_idx, func_expr);
             self.current_scope = saved_scope;
-            return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
+            return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span, reference_scope);
         }
 
         /// return call_expr 를 body로 하는 function expression 생성.
@@ -296,11 +298,13 @@ pub fn Methods(comptime Transformer: type) type {
                 0,
                 none,
             });
-            return self.ast.addNode(.{
+            const func_expr = try self.ast.addNode(.{
                 .tag = .function_expression,
                 .span = span,
                 .data = .{ .extra = func_extra },
             });
+            try es_helpers.trackThisArgumentsCaptureSymbols(self, func_expr, self.current_scope);
+            return func_expr;
         }
 
         pub fn buildBooleanProp(self: *Transformer, name: []const u8, value: bool, span: Span) Transformer.Error!NodeIndex {
@@ -329,12 +333,12 @@ pub fn Methods(comptime Transformer: type) type {
 
         /// method → Object.defineProperty(ClassName.prototype, "method", { configurable: true, writable: true, value: function() {} })
         /// static method → Object.defineProperty(ClassName, "method", { configurable: true, writable: true, value: function() {} })
-        fn buildMethodAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, key_idx: NodeIndex, func_expr: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        fn buildMethodAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, key_idx: NodeIndex, func_expr: NodeIndex, span: Span, reference_scope: @import("../../semantic/scope.zig").ScopeId) Transformer.Error!NodeIndex {
             // The emitted function replaces the original method boundary.
             const target = if (info.is_static)
-                try self.makeCurrentClassRef(class_name_span)
+                try self.makeCurrentClassRefAtScope(class_name_span, reference_scope)
             else
-                try buildFreshPrototypeRef(self, class_name_span, span);
+                try buildFreshPrototypeRef(self, class_name_span, span, reference_scope);
 
             const config_prop = try buildBooleanProp(self, "configurable", true, span);
             const writable_prop = try buildBooleanProp(self, "writable", true, span);
@@ -358,7 +362,7 @@ pub fn Methods(comptime Transformer: type) type {
         }
 
         /// getter/setter → Object.defineProperty(target, "prop", { get/set: function() {} })
-        pub fn emitAccessors(self: *Transformer, items: []const AccessorInfo, class_name_span: Span, span: Span) Transformer.Error!void {
+        pub fn emitAccessors(self: *Transformer, items: []const AccessorInfo, class_name_span: Span, span: Span, reference_scope: @import("../../semantic/scope.zig").ScopeId) Transformer.Error!void {
             const obj_str_span = try self.ast.addString("Object");
             const dp_str_span = try self.ast.addString("defineProperty");
 
@@ -436,9 +440,9 @@ pub fn Methods(comptime Transformer: type) type {
 
                 // target (IIFE fresh identifier — symbol 전파 없음)
                 const target = if (info.is_static)
-                    try self.makeCurrentClassRef(class_name_span)
+                    try self.makeCurrentClassRefAtScope(class_name_span, reference_scope)
                 else
-                    try buildFreshPrototypeRef(self, class_name_span, span);
+                    try buildFreshPrototypeRef(self, class_name_span, span, reference_scope);
 
                 const key_str = try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
                 const call = try es_helpers.buildObjectDefinePropertyCall(self, obj_str_span, dp_str_span, target, key_str, desc_obj, span);

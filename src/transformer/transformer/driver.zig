@@ -72,6 +72,12 @@ pub fn transform(self: anytype) Error!NodeIndex {
         root = try self.visitNode(root_idx);
     }
 
+    // Pass 1 can create function nodes without attaching scopes until final
+    // symbol completion. Register their output scopes now because parameter
+    // lowering adds references to the bodies during Pass 2.
+    if (self.semantic_edit_enabled)
+        try self.registerGeneratedFunctionScopes(root, self.programScope());
+
     // Pass 2: ES2015 params lowering 일괄 적용
     // #4251: object rest 가 든 param (`{a, ...r}`, ES2018) 은 default_params 지원
     // 타겟(es2017)에서도 lowering 필요 → object_spread 도 게이트. per-function 은
@@ -157,6 +163,15 @@ pub fn transform(self: anytype) Error!NodeIndex {
         root = try self.appendRefreshRegistrations(root);
     }
 
+    if (self.semantic_edit_enabled) {
+        try self.completeGeneratedStateSymbols(root, self.programScope());
+        try self.bindOutputScopesAndReferences(root, self.programScope());
+        var generated_temp_specs: std.ArrayListUnmanaged(@import("../transformer.zig").Transformer.GeneratedLocalSpec) = .empty;
+        defer generated_temp_specs.deinit(self.allocator);
+        try self.appendGeneratedTempSpecs(saved_temp_counter, &generated_temp_specs);
+        try self.trackGeneratedLocalSymbols(root, self.programScope(), generated_temp_specs.items);
+    }
+
     self.ast.transformed_root = root;
     self.ast.assertInvariants();
     return root;
@@ -218,12 +233,41 @@ pub fn prependParameterInitializers(self: anytype, body_idx: NodeIndex, stmts: [
     return self.ast.addNode(.{ .tag = body.tag, .span = body.span, .data = .{ .list = new_list } });
 }
 
+fn hasScopedOutputReplacement(self: anytype, idx: NodeIndex) bool {
+    const raw = @intFromEnum(idx);
+    if (raw < self.parser_node_count or self.outputOwnedScope(idx) != null) return false;
+    const node = self.ast.getNode(idx);
+    if (node.tag != .function_expression and node.tag != .function and node.tag != .function_declaration and
+        node.tag != .arrow_function_expression) return false;
+
+    var owners = self.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        const source_raw = entry.key_ptr.*;
+        if (source_raw >= self.parser_node_count or source_raw >= self.ast.nodes.items.len) continue;
+        const source = self.ast.nodes.items[source_raw];
+        if (source.span.start != node.span.start or source.span.end != node.span.end) continue;
+        if (source.tag != .function_expression and source.tag != .function and source.tag != .function_declaration and
+            source.tag != .arrow_function_expression and source.tag != .method_definition) continue;
+
+        const replacement_raw = self.scope_owner_remaps.get(source_raw) orelse continue;
+        if (replacement_raw == raw or replacement_raw >= self.ast.nodes.items.len) continue;
+        const replacement = self.ast.nodes.items[replacement_raw];
+        if (replacement.span.start != node.span.start or replacement.span.end != node.span.end) continue;
+        if (replacement.tag != .function_expression and replacement.tag != .function and replacement.tag != .function_declaration and
+            replacement.tag != .arrow_function_expression) continue;
+        const replacement_scope = self.outputOwnedScope(@enumFromInt(replacement_raw)) orelse continue;
+        if (@intFromEnum(replacement_scope) == entry.value_ptr.*) return true;
+    }
+    return false;
+}
+
 fn lowerAllFunctionParams(self: anytype) Error!void {
     const Self = @TypeOf(self.*);
     const node_count = self.ast.nodes.items.len;
     var i: usize = 0;
     while (i < node_count) : (i += 1) {
         const node = self.ast.nodes.items[i];
+        if (hasScopedOutputReplacement(self, @enumFromInt(@as(u32, @intCast(i))))) continue;
         const saved_scope = self.current_scope;
         defer self.current_scope = saved_scope;
         if (self.transformed_scope_owner_map.get(@intCast(i)) orelse self.scope_owner_map.get(@intCast(i))) |scope_id| {
@@ -250,7 +294,6 @@ fn lowerAllFunctionParams(self: anytype) Error!void {
                 else
                     es2015_params.ES2015Params(Self).hasObjectRestParam(self, params_list);
                 if (!needs_lowering) continue;
-
                 var lr = try es2015_params.ES2015Params(Self).lowerParamsPass2(self, params_list, node.span);
                 defer lr.body_stmts.deinit(self.allocator);
 

@@ -36,6 +36,7 @@ const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
 const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
+const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 
 /// block scoping 다운레벨 시 모든 lexical(let/const/using/await_using)을 var로 치환.
 /// (using disposal 등 의미 보존은 별도 패스가 처리)
@@ -814,8 +815,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 break :blk try es_helpers.makeStaticMember(self, loop_ref, call_prop, span);
             } else loop_ref;
             for (lexical_names, 0..) |name, name_i| {
-                const arg = try self.makeUserRefNamed(name, lexical_bindings[name_i]);
-                try self.trackUserArgumentFromBinding(arg, lexical_bindings[name_i], call_scope);
+                const arg = try self.makeUserRefNamedAtScope(name, lexical_bindings[name_i], call_scope);
                 try self.scratch.append(self.allocator, arg);
             }
             const loop_call = try es_helpers.makeCallExpr(self, call_callee, self.scratch.items[scratch_top2..], span);
@@ -836,7 +836,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             // --- 제어 흐름 후처리: var _ret = await _loop(i); if (...) ... ---
             var final_stmt: NodeIndex = undefined;
             if (needs_ret_var) {
-                final_stmt = try buildControlFlowCheck(self, call_expr, flow, local_label, span);
+                final_stmt = try buildControlFlowCheck(self, call_expr, flow, local_label, call_scope, span);
             } else {
                 final_stmt = try self.ast.addNode(.{
                     .tag = .expression_statement,
@@ -1320,23 +1320,56 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             return false;
         }
 
+        fn makeControlFlowRetRef(
+            self: *Transformer,
+            name: []const u8,
+            name_span: Span,
+            symbol: ?SymbolId,
+            call_scope: ScopeId,
+        ) Transformer.Error!NodeIndex {
+            const ref = try es_helpers.makeExactSyntheticRef(self, name);
+            if (symbol) |id| {
+                const reference_scope = if (call_scope.isNone()) self.programScope() else call_scope;
+                try self.addSyntheticRefInScope(ref, id, reference_scope, .{ .read = true });
+            } else if (self.semantic_edit_enabled and self.state_machine_depth > 0) {
+                const reference_scope = if (call_scope.isNone()) self.current_scope else call_scope;
+                try self.trackHoistedTempRefInScope(name_span, ref, reference_scope, .{ .read = true });
+            }
+            return ref;
+        }
+
         fn buildControlFlowCheck(
             self: *Transformer,
             loop_call: NodeIndex,
             flow: *const FlowResult,
             local_label: ?[]const u8,
+            call_scope: @import("../semantic/scope.zig").ScopeId,
             span: Span,
         ) Transformer.Error!NodeIndex {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            // var _ret = _loop(i)
-            const ret_decl = try self.buildVarDecl("_ret", loop_call, span);
+            // Use a per-loop exact name/span so deferred generator callback
+            // references cannot merge with another loop's `_ret` chain.
+            const ret_name = try es_helpers.uniqueSyntheticName(self, "_ret", &self.control_flow_ret_counter);
+            const ret_name_span = try self.ast.addString(ret_name);
+            const ret_binding = try es_helpers.makeExactSyntheticBinding(self, ret_name);
+            const ret_declarator = try es_helpers.makeDeclarator(self, ret_binding, loop_call, span);
+            const ret_decl = try es_helpers.makeVarDeclaration(self, &.{ret_declarator}, .@"var", span);
+            const ret_symbol: ?SymbolId = if (!self.semantic_edit_enabled)
+                null
+            else if (call_scope.isNone() and self.state_machine_depth > 0) blk: {
+                try self.bindHoistedTemp(ret_binding, ret_name_span, span, .none);
+                break :blk null;
+            } else blk: {
+                const binding_scope = if (call_scope.isNone()) self.programScope() else self.nearestVarScope(call_scope);
+                break :blk try self.declareSyntheticTempInScope(ret_binding, span, binding_scope);
+            };
             try self.scratch.append(self.allocator, ret_decl);
 
             // if (typeof _ret === "object") return _ret.v;
             if (flow.has_return) {
-                const ret_ref = try es_helpers.makeSyntheticRef(self, "_ret");
+                const ret_ref = try makeControlFlowRetRef(self, ret_name, ret_name_span, ret_symbol, call_scope);
                 // variant-typed helper — `unary_expression` 은 `.extra = [operand, op]`
                 // layout. (이전엔 `.unary` variant 로 잘못 써서 `if (<= === "object")`
                 // syntax error — #1797.)
@@ -1352,7 +1385,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     .data = .{ .binary = .{ .left = typeof_expr, .right = obj_str, .flags = @intFromEnum(token_mod.Kind.eq3) } },
                 });
                 // _ret.v
-                const ret_ref2 = try es_helpers.makeSyntheticRef(self, "_ret");
+                const ret_ref2 = try makeControlFlowRetRef(self, ret_name, ret_name_span, ret_symbol, call_scope);
                 const v_prop = try es_helpers.makePropertyName(self, "v");
                 const ret_v = try es_helpers.makeStaticMember(self, ret_ref2, v_prop, span);
                 const return_stmt = try self.ast.addNode(.{
@@ -1370,7 +1403,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             // if (_ret === "break") break;
             if (flow.has_break) {
-                const ret_ref = try es_helpers.makeSyntheticRef(self, "_ret");
+                const ret_ref = try makeControlFlowRetRef(self, ret_name, ret_name_span, ret_symbol, call_scope);
                 const break_str = try es_helpers.buildStringNode(self, "\"break\"", span);
                 const break_check = try self.ast.addNode(.{
                     .tag = .binary_expression,
@@ -1397,7 +1430,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 for ([_][]const u8{ "break", "continue" }) |kw| {
                     const sentinel = try std.fmt.allocPrint(self.allocator, "\"{s}|{s}\"", .{ kw, label });
                     defer self.allocator.free(sentinel);
-                    const ret_ref = try es_helpers.makeSyntheticRef(self, "_ret");
+                    const ret_ref = try makeControlFlowRetRef(self, ret_name, ret_name_span, ret_symbol, call_scope);
                     const sentinel_str = try es_helpers.buildStringNode(self, sentinel, span);
                     const check = try self.ast.addNode(.{
                         .tag = .binary_expression,
@@ -1436,11 +1469,12 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             // 모든 문을 블록으로 감싸기
             const block_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-            return self.ast.addNode(.{
+            const block = try self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,
                 .data = .{ .list = block_list },
             });
+            return block;
         }
     };
 }

@@ -15,6 +15,7 @@ const styled_components_mod = @import("styled_components.zig");
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
+const SymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
 
 /// variable_declaration: extra_data = [kind_flags, list.start, list.len]
 /// binding이 destructuring pattern (object/array)인지 판별.
@@ -177,6 +178,7 @@ pub fn visitVariableDeclarator(self: *Transformer, node: Node) Error!NodeIndex {
 ///   constructor(public x: number) {} →
 ///   constructor(x) { this.x = x; }
 pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Error!NodeIndex {
+    _ = source_idx;
     const e = node.data.extra;
 
     // TS function overload signature: body가 없으면 제거
@@ -290,12 +292,19 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
 
     // 임시 변수 호이스팅: 이 함수 안에서 사용된 _a, _b, ... 선언을 body 앞에 삽입
     if (self.temp_var_counter > saved_temp_counter and !new_body.isNone()) {
-        new_body = if (@intFromEnum(source_idx) < self.parser_node_count or
-            self.transformed_scope_owner_map.contains(@intFromEnum(source_idx)))
+        new_body = if (self.semantic_edit_enabled)
             try self.hoistTempVarsInOriginalFunction(new_body, saved_temp_counter, node.span)
         else
             try self.hoistTempVars(new_body, saved_temp_counter, node.span);
     }
+    var generated_local_specs: std.ArrayListUnmanaged(Transformer.GeneratedLocalSpec) = .empty;
+    defer generated_local_specs.deinit(self.allocator);
+    try generated_local_specs.appendSlice(self.allocator, &.{
+        .{ .name = try es_helpers.resolveSyntheticName(self, "_this"), .kind = .variable_var },
+        .{ .name = try es_helpers.resolveSyntheticName(self, "_arguments"), .kind = .variable_var },
+    });
+    try self.appendGeneratedTempSpecs(saved_temp_counter, &generated_local_specs);
+    try self.trackGeneratedLocalSymbols(new_body, self.current_scope, generated_local_specs.items);
     // 함수 스코프 종료 — outer scope 의 hoistTempVars 가 같은 _a 를 다시 hoist 하지 않도록
     // 카운터 복원 (#1960). 다음 함수 / outer 에서 동일 이름을 안전하게 재사용 가능.
     self.temp_var_counter = saved_temp_counter;
@@ -588,6 +597,7 @@ pub fn lowerNewTarget(self: *Transformer, span: Span) Error!NodeIndex {
             // (this instanceof Fn ? this.constructor : void 0)
             const this1 = try es_helpers.makeThisExpr(self, span);
             const fn_ref = try self.makeIdentifierRefWithSymbol(named.span, named.node);
+            try self.trackUserReadFromBinding(fn_ref, named.node, self.current_scope);
             const instanceof = try self.ast.addNode(.{
                 .tag = .binary_expression,
                 .span = span,
@@ -642,9 +652,22 @@ fn nameAnonymousConstClass(self: *Transformer, binding_idx: NodeIndex, init_idx:
     for (0..8) |k| slots[k] = self.ast.extra_data.items[init.data.extra + k];
     // 클래스 식의 이름은 바깥 `X` 와 **다른** 바인딩(클래스 안쪽 스코프)이라 바깥 심볼을 물려주지
     // 않는다 — 물려주면 두 바인딩이 한 심볼을 나눠 가져 mangler 가 안쪽 이름을 따로 줄이지 못한다.
-    slots[ast_mod.ClassExtra.name] = @intFromEnum(try es_helpers.makeSyntheticBinding(self, binding.data.string_ref));
+    const name_span = try self.ast.addString(self.ast.getText(binding.data.string_ref));
+    const synthetic_name = try es_helpers.makeSyntheticBinding(self, name_span);
+    slots[ast_mod.ClassExtra.name] = @intFromEnum(synthetic_name);
     const new_extra = try self.ast.addExtras(&slots);
     const named = try self.ast.addNode(.{ .tag = .class_expression, .span = init.span, .data = .{ .extra = new_extra } });
     try self.remapCopiedScopeOwner(init_idx, named);
+    if (self.semantic_edit_enabled) {
+        const class_scope = self.outputOwnedScope(named) orelse
+            std.debug.panic("inferred class name has no class scope", .{});
+        const id = (try self.declareSyntheticInScope(
+            synthetic_name,
+            name_span,
+            .class_decl,
+            class_scope,
+        )) orelse std.debug.panic("inferred class name did not receive a SymbolId", .{});
+        try self.class_self_symbol_map.put(self.allocator, @intFromEnum(named), @intFromEnum(id));
+    }
     return named;
 }

@@ -14,6 +14,8 @@ const NodeList = ast_mod.NodeList;
 const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
+const GeneratedLocalSpec = @import("transformer/semantic_edit.zig").GeneratedLocalSpec;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
 
 /// static private field descriptor 선언 생성: `var _x = { writable: true, value: initValue };`
 /// __classStaticPrivateFieldSpecGet/Set 헬퍼가 descriptor 객체의 value/get/set 슬롯을 읽는다.
@@ -182,6 +184,7 @@ pub fn makeTempVarSpan(self: anytype) !Span {
         if (collidesWithCurrentVarScopeSymbol(self, name)) continue;
         const span = try self.ast.addUniqueString(name);
         try self.temp_span_by_counter.put(self.allocator, idx, span);
+        try self.generated_temp_spans.append(self.allocator, span);
         return span;
     }
 }
@@ -461,7 +464,9 @@ pub fn makePropertyName(self: anytype, name: []const u8) !NodeIndex {
 
 /// 코드 안에 선언이 없는 전역·호스트 이름 — `Object`, `arguments`, `module`.
 pub fn makeGlobalRef(self: anytype, name: []const u8) !NodeIndex {
-    return makeIdentifierRef(self, name);
+    const node = try makeIdentifierRef(self, name);
+    try self.markExplicitGlobalReference(node);
+    return node;
 }
 
 /// 변환기가 만든 합성 변수 참조 — `_this`, `_state`, `_ret`. 사용자 심볼이 없다.
@@ -570,7 +575,9 @@ pub fn makePropertyNameFromSpan(self: anytype, name_span: Span) !NodeIndex {
 
 /// `makeGlobalRef` 의 span 판.
 pub fn makeGlobalRefFromSpan(self: anytype, name_span: Span) !NodeIndex {
-    return makeIdentifierRefFromSpan(self, name_span);
+    const node = try makeIdentifierRefFromSpan(self, name_span);
+    try self.markExplicitGlobalReference(node);
+    return node;
 }
 
 /// 이름 문자열로 identifier_reference 노드 생성. 가리키는 대상을 드러내는 위 함수들로만
@@ -1200,7 +1207,9 @@ pub fn makeSyntheticRefAt(self: anytype, name_span: Span, node_span: Span) !Node
 }
 
 pub fn makeGlobalRefAt(self: anytype, name_span: Span, node_span: Span) !NodeIndex {
-    return identifierRefNode(self, name_span, node_span);
+    const node = try identifierRefNode(self, name_span, node_span);
+    try self.markExplicitGlobalReference(node);
+    return node;
 }
 
 pub fn makePropertyNameAt(self: anytype, name_span: Span, node_span: Span) !NodeIndex {
@@ -1403,7 +1412,8 @@ pub fn buildForOfLoopVarAssign(self: anytype, left: NodeIndex, elem: NodeIndex, 
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
             try self.scratch.append(self.allocator, temp_decl);
 
-            try es2015_destruct.emitPatternDeclarators(self, binding_node, temp_span, span);
+            try es2015_destruct.emitPatternDeclarators(self, binding_node, temp_span, span, .@"var");
+            try self.bindSyntheticTempInScope(temp_binding, temp_span, span, .variable_var, self.current_scope);
 
             return makeVarDeclaration(self, self.scratch.items[scratch_top..], .@"var", span);
         }
@@ -1847,6 +1857,26 @@ pub fn fillThisArgumentsCaptures(self: anytype, buf: *[2]NodeIndex, span: Span) 
     return count;
 }
 
+/// Bind the generated capture declarations and their uses after an async or
+/// generator lowering has assembled the final wrapper tree. These paths can
+/// move the references into a nested state-machine callback before the
+/// capture declaration exists.
+pub fn trackThisArgumentsCaptureSymbols(self: anytype, root: NodeIndex, root_scope: ScopeId) !void {
+    if (!self.semantic_edit_enabled) return;
+    // A per-iteration generator function can be lowered while its parent
+    // callback is still being assembled. The final-root pass assigns its
+    // output function scope and resolves these capture locals afterward.
+    if (root_scope.isNone()) {
+        try self.deferred_capture_function_owners.put(self.allocator, @intFromEnum(root), {});
+        return;
+    }
+    const specs = [_]GeneratedLocalSpec{
+        .{ .name = try resolveSyntheticName(self, "_this"), .kind = .variable_var },
+        .{ .name = try resolveSyntheticName(self, "_arguments"), .kind = .variable_var },
+    };
+    try self.trackGeneratedLocalSymbols(root, root_scope, &specs);
+}
+
 /// Record the capture declarations that a default-parameter initializer can
 /// read. The ordinary body may need additional captures, but only these must
 /// execute before Pass 2's lowered default checks.
@@ -1957,6 +1987,14 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
     if (self.temp_var_counter > saved_temp_counter and !new_body.isNone()) {
         new_body = try self.hoistTempVarsInOriginalFunction(new_body, saved_temp_counter, span);
     }
+    var generated_local_specs: std.ArrayListUnmanaged(GeneratedLocalSpec) = .empty;
+    defer generated_local_specs.deinit(self.allocator);
+    try generated_local_specs.appendSlice(self.allocator, &.{
+        .{ .name = try resolveSyntheticName(self, "_this"), .kind = .variable_var },
+        .{ .name = try resolveSyntheticName(self, "_arguments"), .kind = .variable_var },
+    });
+    try self.appendGeneratedTempSpecs(saved_temp_counter, &generated_local_specs);
+    try self.trackGeneratedLocalSymbols(new_body, self.current_scope, generated_local_specs.items);
     self.temp_var_counter = saved_temp_counter;
 
     const name_span = try self.ast.addString(name);

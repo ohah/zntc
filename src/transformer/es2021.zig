@@ -28,12 +28,12 @@ pub fn ES2021(comptime Transformer: type) type {
             const assign = try es_helpers.makeAssignExpr(self, target.write, new_right, node.span, @intFromEnum(token_mod.Kind.eq));
 
             if (self.options.unsupported.nullish_coalescing) {
-                try es_helpers.trackAssignmentTargetTemps(self, target, true, true);
                 // ternary lowering 은 condition 과 truthy branch 두 자리에 read 표현을 emit 한다.
                 // member access 는 두 자리에 두면 getter 가 두 번 호출되므로 임시 변수에 캡처해야 한다.
                 // 그러나 plain identifier 는 부작용이 없어 캡처가 불필요한 noise 다 (#1287 follow-up).
                 const read_tag = self.ast.getNode(target.read).tag;
                 if (read_tag == .identifier_reference or read_tag == .assignment_target_identifier) {
+                    try es_helpers.trackAssignmentTargetTemps(self, target, false, true);
                     const neq_null = try es_helpers.makeNeqNull(self, target.read, node.span);
                     return self.ast.addNode(.{
                         .tag = .conditional_expression,
@@ -41,6 +41,9 @@ pub fn ES2021(comptime Transformer: type) type {
                         .data = .{ .ternary = .{ .a = neq_null, .b = target.value, .c = assign } },
                     });
                 }
+                // The member target is captured as a whole below, so its
+                // prebuilt `target.value` refs are discarded with that branch.
+                try es_helpers.trackAssignmentTargetTemps(self, target, false, true);
                 const captured = try es_helpers.captureToTemp(self, target.read, node.span);
                 const captured_assign = self.ast.getNode(captured.paren_assign);
                 std.debug.assert(captured_assign.tag == .assignment_expression);

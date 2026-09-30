@@ -222,6 +222,25 @@ inline fn replaceNode(ast: *Ast, idx: u32, new_node: Node, changed: *bool) void 
     changed.* = true;
 }
 
+/// Replace an AST slot with a child node and move the child's semantic identity
+/// to the surviving NodeIndex. Identifier names are resolved by NodeIndex during
+/// code generation, so copying only the Node payload can leave a stale source name.
+pub inline fn replaceNodeFromChild(
+    ast: *Ast,
+    ctx: MinifyCtx,
+    idx: u32,
+    child_idx: u32,
+    new_node: Node,
+    changed: *bool,
+) void {
+    replaceNode(ast, idx, new_node, changed);
+    if (ctx.symbol_ids_mut) |symbol_ids| {
+        if (idx < symbol_ids.len and child_idx < symbol_ids.len) {
+            symbol_ids[idx] = symbol_ids[child_idx];
+        }
+    }
+}
+
 inline fn sourceSpanStart(node: Node) u32 {
     return node.span.start & ~ast_mod.Ast.STRING_TABLE_BIT;
 }
@@ -1959,7 +1978,7 @@ fn foldConditional(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed
     const kept_ni = @intFromEnum(kept);
     if (kept_ni >= ast.nodes.items.len) return;
     if (ctx.hasSemantic() and !dropped.isNone()) decrementRefsShallow(ast, ctx, dropped);
-    replaceNode(ast, node_idx, ast.nodes.items[kept_ni], changed);
+    replaceNodeFromChild(ast, ctx, node_idx, kept_ni, ast.nodes.items[kept_ni], changed);
 }
 
 /// if_statement: if (false) { A } else { B } → B, if (true) { A } → A.
@@ -1977,7 +1996,7 @@ fn foldIf(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) 
         if (then_ni >= ast.nodes.items.len) return;
         if (ast.nodes.items[then_ni].tag == .function_declaration) return;
         if (semantic and !node.data.ternary.c.isNone()) decrementRefsShallow(ast, ctx, node.data.ternary.c);
-        replaceNode(ast, node_idx, ast.nodes.items[then_ni], changed);
+        replaceNodeFromChild(ast, ctx, node_idx, then_ni, ast.nodes.items[then_ni], changed);
     } else {
         if (!node.data.ternary.c.isNone()) {
             // if (false) { A } else { B } → B. then (A) 분기 cascade.
@@ -1985,7 +2004,7 @@ fn foldIf(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) 
             if (else_ni >= ast.nodes.items.len) return;
             if (ast.nodes.items[else_ni].tag == .function_declaration) return;
             if (semantic) decrementRefsShallow(ast, ctx, node.data.ternary.b);
-            replaceNode(ast, node_idx, ast.nodes.items[else_ni], changed);
+            replaceNodeFromChild(ast, ctx, node_idx, else_ni, ast.nodes.items[else_ni], changed);
         } else {
             // if (false) { A } → empty_statement. then (A) 분기 cascade.
             if (semantic) decrementRefsShallow(ast, ctx, node.data.ternary.b);
@@ -2125,23 +2144,23 @@ fn foldLogical(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *b
                 // true && x → x (left literal — 영향 0)
                 const right_ni = @intFromEnum(node.data.binary.right);
                 if (right_ni >= ast.nodes.items.len) return;
-                replaceNode(ast, node_idx, ast.nodes.items[right_ni], changed);
+                replaceNodeFromChild(ast, ctx, node_idx, right_ni, ast.nodes.items[right_ni], changed);
             } else {
                 // false && x → false. right (x) drop → cascade.
                 if (semantic) decrementRefsShallow(ast, ctx, node.data.binary.right);
-                replaceNode(ast, node_idx, left, changed);
+                replaceNodeFromChild(ast, ctx, node_idx, left_ni, left, changed);
             }
         },
         .pipe2 => { // ||
             if (truthy) {
                 // true || x → true. right (x) drop → cascade.
                 if (semantic) decrementRefsShallow(ast, ctx, node.data.binary.right);
-                replaceNode(ast, node_idx, left, changed);
+                replaceNodeFromChild(ast, ctx, node_idx, left_ni, left, changed);
             } else {
                 // false || x → x (left literal — 영향 0)
                 const right_ni = @intFromEnum(node.data.binary.right);
                 if (right_ni >= ast.nodes.items.len) return;
-                replaceNode(ast, node_idx, ast.nodes.items[right_ni], changed);
+                replaceNodeFromChild(ast, ctx, node_idx, right_ni, ast.nodes.items[right_ni], changed);
             }
         },
         .question2 => { // ??
@@ -2149,13 +2168,13 @@ fn foldLogical(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *b
             if (left.tag == .null_literal) {
                 const right_ni = @intFromEnum(node.data.binary.right);
                 if (right_ni >= ast.nodes.items.len) return;
-                replaceNode(ast, node_idx, ast.nodes.items[right_ni], changed);
+                replaceNodeFromChild(ast, ctx, node_idx, right_ni, ast.nodes.items[right_ni], changed);
             } else if (left.tag == .identifier_reference) {
                 const text = ast.getText(left.span);
                 if (std.mem.eql(u8, text, "undefined")) {
                     const right_ni = @intFromEnum(node.data.binary.right);
                     if (right_ni >= ast.nodes.items.len) return;
-                    replaceNode(ast, node_idx, ast.nodes.items[right_ni], changed);
+                    replaceNodeFromChild(ast, ctx, node_idx, right_ni, ast.nodes.items[right_ni], changed);
                 }
             }
         },

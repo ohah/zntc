@@ -530,19 +530,18 @@ fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
         options.react_refresh_hook_signatures;
 }
 
-/// Native JavaScript script syntax with no lowering keeps the same lexical
-/// graph even when the visitor copies AST nodes. The transform semantic editor
-/// carries copied identifier IDs and scope owners to those nodes. Other paths
-/// still need post-transform analysis until their semantic edits are complete.
+/// The transform semantic editor carries identifier IDs, references, and output
+/// scopes through the downlevel passes used by strict JavaScript scripts. Keep
+/// paths that can replace or reinterpret declarations outside this graph on the
+/// post-transform analyzer until their semantic edits are complete.
 fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Parser) bool {
-    if (!options.minify_identifiers or options.minify_syntax or
-        options.unsupported.hasAny() or options.module_format != .esm or
-        options.drop_console or options.drop_debugger or options.define.len != 0 or
+    if (!options.minify_identifiers or
+        options.module_format != .esm or
         options.experimental_decorators or options.emit_decorator_metadata or
         options.react_refresh or options.react_refresh_hook_signatures or
-        !options.use_define_for_class_fields or parser.source_mode != .js_strict or
-        parser.is_module or parser.is_flow or parser.ast.has_jsx) return false;
-    return !collectAstFacts(&parser.ast).has_runtime_sensitive_syntax;
+        parser.source_mode != .js_strict or
+        parser.is_flow) return false;
+    return true;
 }
 
 fn buildTransformPlan(
@@ -1403,6 +1402,7 @@ fn transpileWithCallbackInternal(
         analyzer.is_flow = parser.is_flow;
         analyzer.es_target = options.es_target;
         analyzer.unsupported = options.unsupported;
+        analyzer.collect_unresolved_reference_nodes = symbol_coverage_env.enabled();
         analyzer.analyze() catch return error.SemanticError;
         // tsc 호환: 시맨틱 에러가 있어도 codegen 을 진행한다 — 콜백으로 stderr 통지 후
         // 변환 결과도 함께 반환.
@@ -1474,6 +1474,9 @@ fn transpileWithCallbackInternal(
     transformer.line_offsets = scanner.line_offsets.items;
     // 누락 검사기가 합성 노드를 빼도록 기록을 켠다(검사기가 켜졌을 때만 — 평소 비용 없음).
     if (symbol_coverage_env.enabled() or synthetic_coverage_env.enabled()) transformer.synthetic_idents = .empty;
+    if (symbol_coverage_env.enabled()) {
+        if (analyzer_storage) |*analyzer| transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    }
     const root = transformer.transform() catch return error.TransformError;
     if (analyzer_storage) |*analyzer| {
         if (transformer.finishSemanticEdit() catch return error.TransformError) |edited| {
@@ -1495,6 +1498,24 @@ fn transpileWithCallbackInternal(
             const coverage = @import("transformer/symbol_coverage.zig");
             var report = coverage.check(arena_alloc, transformer.ast, root, transformer.parser_node_count, transformer.symbol_ids.items, analyzer.symbols.items, if (transformer.synthetic_idents) |*s| s else null) catch return error.OutOfMemory;
             coverage.print(arena_alloc, file_path, &report);
+            const exact = coverage.checkExact(
+                arena_alloc,
+                transformer.ast,
+                root,
+                transformer.parser_node_count,
+                analyzer.symbol_ids.items,
+                analyzer.symbols.items,
+                analyzer.scopes.items,
+                analyzer.scope_maps.items,
+                &analyzer.scope_owner_map,
+                analyzer.references.items,
+                transformer.helper_ref_nodes.items,
+                &analyzer.helper_scope_map,
+                &analyzer.unresolved_reference_nodes,
+                &transformer.explicit_global_reference_nodes,
+                &transformer.reference_origin_map,
+            ) catch return error.OutOfMemory;
+            coverage.printExact(file_path, exact);
         }
     }
     if (synthetic_coverage_env.enabled()) {
@@ -1553,8 +1574,10 @@ fn transpileWithCallbackInternal(
     // 편집된 변환 의미 정보를 쓴다. AST 길이만으로 이 조건을 판정할 수 없다.
     var post_analyzer_storage: ?SemanticAnalyzer = null;
     var mangle_analyzer: ?*SemanticAnalyzer = null;
+    var mangle_uses_transform_semantic = false;
     if (options.minify_identifiers and analyzer_storage != null) {
         if (canMangleWithTransformSemantic(options, &parser)) {
+            mangle_uses_transform_semantic = true;
             mangle_analyzer = &analyzer_storage.?;
         } else {
             post_analyzer_storage = SemanticAnalyzer.init(arena_alloc, transformer.ast);
@@ -1617,7 +1640,14 @@ fn transpileWithCallbackInternal(
             .renames = mr.renames,
             .final_exports = null,
             // 이름 표와 노드→심볼은 같은 semantic graph를 사용한다.
-            .symbol_ids = mangle_analyzer.?.symbol_ids.items,
+            // Minify can replace a parent node with an identifier child. In the
+            // transform-graph path it transfers that child's ID into the surviving
+            // AST slot, so codegen must consult the same updated node-to-symbol map.
+            // The post-transform reanalysis path instead owns its own complete map.
+            .symbol_ids = if (mangle_uses_transform_semantic)
+                transformer.symbol_ids.items
+            else
+                mangle_analyzer.?.symbol_ids.items,
             // 단일 파일 transpile: codegen 의 scope-hoisted 전용 분기를 타지 않도록 false.
             .is_bundle_context = false,
             .allocator = arena_alloc,
@@ -1806,7 +1836,7 @@ fn testTransformPlan(source: []const u8, file_path: []const u8, options: Transpi
     return buildTransformPlan(options, &parser, &parser.ast, false);
 }
 
-test "#4819 native JS script mangling reuses transform semantic graph" {
+test "#4819 downlevel JS script mangling reuses transform semantic graph" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -1817,11 +1847,37 @@ test "#4819 native JS script mangling reuses transform semantic graph" {
     try std.testing.expect(!parser.is_module);
     const minify: TranspileOptions = .{ .minify_identifiers = true };
     try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
-    try std.testing.expect(!canMangleWithTransformSemantic(.{ .minify_identifiers = true, .minify_syntax = true }, &parser));
-    try std.testing.expect(!canMangleWithTransformSemantic(.{ .minify_identifiers = true, .unsupported = TransformOptions.compat.fromESTarget(.es5) }, &parser));
-    try std.testing.expect(!canMangleWithTransformSemantic(.{ .minify_identifiers = true, .drop_console = true }, &parser));
+    try std.testing.expect(canMangleWithTransformSemantic(.{ .minify_identifiers = true, .minify_syntax = true }, &parser));
+    try std.testing.expect(canMangleWithTransformSemantic(.{ .minify_identifiers = true, .unsupported = TransformOptions.compat.fromESTarget(.es5) }, &parser));
+    try std.testing.expect(canMangleWithTransformSemantic(.{ .minify_identifiers = true, .drop_console = true }, &parser));
+    try std.testing.expect(canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .define = &.{.{ .key = "__VALUE__", .value = "e" }},
+    }, &parser));
+    try std.testing.expect(canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .use_define_for_class_fields = false,
+    }, &parser));
     parser.is_module = true;
-    try std.testing.expect(!canMangleWithTransformSemantic(minify, &parser));
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
+    parser.is_module = false;
+    parser.ast.has_jsx = true;
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
+}
+
+test "#4819 class lowering reuses transform semantic graph" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "class Box extends Base { read() { return super.read(); } }");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    try std.testing.expect(!parser.is_module);
+    try std.testing.expect(canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    }, &parser));
 }
 
 /// fast 와 full 양쪽 경로의 출력이 expected 와 일치하는지 검증. parity 만으로는

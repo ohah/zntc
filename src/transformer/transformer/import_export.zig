@@ -134,6 +134,8 @@ pub fn visitExportNamedDeclaration(self: *Transformer, node: Node) Error!NodeInd
                 if (!name_idx.isNone()) {
                     const name_span = self.ast.getNode(name_idx).data.string_ref;
                     const local_ref = try self.makeIdentifierRefWithSymbol(name_span, name_idx);
+                    if (self.semantic_edit_enabled)
+                        try self.trackUserReadFromBinding(local_ref, name_idx, self.programScope());
                     const exported_ref = try es_helpers.makePropertyNameFromSpan(self, name_span);
                     const specifier = try self.ast.addNode(.{
                         .tag = .export_specifier,

@@ -29,7 +29,7 @@ pub fn visitWithRefreshSuppressed(self: *Transformer, node_idx: NodeIndex) Error
 }
 
 /// arrow_function_expression: extra = [params_list, body, flags]
-pub fn visitArrowFunction(self: *Transformer, node: Node) Error!NodeIndex {
+pub fn visitArrowFunction(self: *Transformer, source_owner: NodeIndex, node: Node) Error!NodeIndex {
     const e = node.data.extra;
     if (e + 2 >= self.ast.extra_data.items.len) return NodeIndex.none;
     const params_idx = self.readNodeIdx(e, 0);
@@ -38,7 +38,7 @@ pub fn visitArrowFunction(self: *Transformer, node: Node) Error!NodeIndex {
     const new_params = try self.visitNode(params_idx);
     const body_temp_start = self.temp_var_counter;
     const visited_body = try self.visitBodyWorkletAware(body_idx);
-    const new_body = try self.hoistArrowBodyTemps(visited_body, body_temp_start, node.span);
+    const new_body = try self.hoistArrowBodyTemps(visited_body, body_temp_start, node.span, source_owner);
     const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_params), @intFromEnum(new_body), flags });
     const result = try self.ast.addNode(.{ .tag = .arrow_function_expression, .span = node.span, .data = .{ .extra = new_extra } });
 

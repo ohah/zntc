@@ -5,51 +5,152 @@
 // `scripts/audit-identifier-constructors.mjs` 가 분류 생성 함수로만 하게 막지만, 그 함수에 원래
 // 노드를 잘못(`.none`·다른 노드) 넘기는 것까지는 못 막는다 — 이 테스트가 그 값 수준을 지킨다.
 //
-// 다운레벨 오라클 fixture 전체 × 낮추는 타깃으로 단일 파일 변환을 돌려 누락 검사기
-// (`ZNTC_DEBUG_SYMBOL_COVERAGE`) 의 missing·wrong 이 모두 0 인지 본다. 변환기가 만든 합성 이름
-// (`_this`·임시 변수·사용자 이름을 빌린 합성 바인딩)은 검사기가 뺀다.
+// 다운레벨 오라클의 모든 *.mjs fixture × 타깃에서 단일 파일 변환을 돌려 누락 검사기
+// (`ZNTC_DEBUG_SYMBOL_COVERAGE`) 와 합성 변수까지 포함한 exact identity 감사가 깨끗한지 본다.
+// 현재 보고서는 transform 직후이며, minify·최종 이름 결정 단계의 검증은 별도 후속 게이트다.
 import { describe, test, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { ZNTC_BIN } from './helpers';
 
 const FIXTURE_DIR = join(import.meta.dir, '../fixtures/downlevel-oracle');
-const TARGETS = ['es5', 'es2015', 'es2017', 'es2022'];
+const TARGETS = [
+  { name: 'es5', arg: '--target=es5' },
+  { name: 'es2015', arg: '--target=es2015' },
+  { name: 'es2017', arg: '--target=es2017' },
+  { name: 'es2022', arg: '--target=es2022' },
+  { name: 'esnext', arg: '--target=esnext' },
+  { name: 'hermes', arg: '--platform=react-native' },
+];
+const EXACT_ZERO_COUNTERS = [
+  'invalid_id',
+  'invalid_reference_node',
+  'unreachable_reference',
+  'ambiguous_ast_parent',
+  'shadowed_external_reference',
+  'duplicate_reference',
+  'identity_mismatch',
+  'binding_scope_mismatch',
+  'binding_scope_unknown',
+  'invalid_scope',
+  'reference_scope_mismatch',
+  'scope_map_mismatch',
+  'scope_owner_mismatch',
+  'scope_resolution_mismatch',
+  'invisible_reference',
+  'reference_count_mismatch',
+  'write_count_mismatch',
+  'missing_binding',
+  'missing_reference',
+  'unclassified_reference',
+];
+const STRICT_ZERO_COUNTERS = [
+  'missing_binding',
+  'invalid_id',
+  'name_mismatch',
+  'missing_reference',
+  'identity_mismatch',
+  'invalid_scope',
+  'scope_unknown',
+  'scope_ambiguous',
+  'invisible_reference',
+  'duplicate_reference',
+];
+
+// The exact audit above owns transform-aware binding-scope validation. The
+// synthetic diagnostic intentionally uses a simpler emitted-scope trace, so
+// its raw scope_mismatch counter can include retained source scopes for
+// lowered `var` bindings.
+
+function collectFixtures(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true })
+    .flatMap((entry) => {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) return collectFixtures(path);
+      return entry.isFile() && entry.name.endsWith('.mjs') ? [path] : [];
+    })
+    .sort();
+}
 
 function runCoverage(
   file: string,
-  target: string,
+  target: (typeof TARGETS)[number],
   outDir: string,
 ): { stderr: string; exitCode: number } {
-  const proc = spawnSync(ZNTC_BIN, [file, `--target=${target}`, '-o', join(outDir, 'out.js')], {
-    env: { ZNTC_DEBUG_SYMBOL_COVERAGE: '1', PATH: process.env.PATH ?? '/usr/bin:/bin' },
-    stdio: ['ignore', 'ignore', 'pipe'],
-  });
-  return { stderr: proc.stderr.toString(), exitCode: proc.status ?? -1 };
+  const stderrPath = join(outDir, 'stderr.log');
+  const proc = spawnSync(
+    '/bin/sh',
+    [
+      '-c',
+      'exec "$1" "$2" "$3" "$4" "$5" 2>"$6"',
+      'zntc-symbol-coverage',
+      ZNTC_BIN,
+      file,
+      target.arg,
+      '-o',
+      join(outDir, 'out.js'),
+      stderrPath,
+    ],
+    {
+      env: {
+        ...process.env,
+        ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+        ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+      },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    },
+  );
+  return {
+    stderr: readFileSync(stderrPath, 'utf8'),
+    exitCode: proc.status ?? -1,
+  };
 }
 
-describe('symbol coverage gate (#4760)', () => {
-  const fixtures = readdirSync(FIXTURE_DIR)
-    .filter((f) => f.endsWith('.mjs'))
-    .sort();
+describe('symbol identity coverage gate (#4819)', () => {
+  const fixtures = collectFixtures(FIXTURE_DIR);
 
-  test('오라클 fixture 전체에서 새 사용자 식별자의 심볼 누락·오류가 0', async () => {
+  test('오라클 전체에서 exact 구조 불변식과 심볼 부채가 모두 0', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-symcov-'));
     const problems: string[] = [];
+    const exactCounts = new Map<string, number>();
+    const exactExamples = new Map<string, string[]>();
+    let generatedBindings = 0;
+    let generatedReferences = 0;
     let runs = 0;
     try {
-      for (const name of fixtures) {
+      for (const file of fixtures) {
+        const name = relative(FIXTURE_DIR, file);
         for (const target of TARGETS) {
-          const { stderr, exitCode } = runCoverage(join(FIXTURE_DIR, name), target, outDir);
+          const { stderr, exitCode } = runCoverage(file, target, outDir);
           if (exitCode !== 0) {
-            problems.push(`${name} ${target}: exit=${exitCode} ${stderr.trim()}`);
+            problems.push(`${name} ${target.name}: exit=${exitCode} ${stderr.trim()}`);
             continue;
           }
           const lines = stderr.split('\n').filter((l) => l.includes('symbol-coverage'));
           if (lines.length !== 1) {
-            problems.push(`${name} ${target}: expected one coverage report, got ${lines.length}`);
+            problems.push(
+              `${name} ${target.name}: expected one coverage report, got ${lines.length}`,
+            );
+            continue;
+          }
+          const identityLines = stderr
+            .split('\n')
+            .filter((l) => l.includes('zntc: symbol-identity '));
+          if (identityLines.length !== 1) {
+            problems.push(
+              `${name} ${target.name}: expected one identity report, got ${identityLines.length}`,
+            );
+            continue;
+          }
+          const strictLines = stderr
+            .split('\n')
+            .filter((l) => l.includes('zntc: synthetic-coverage '));
+          if (strictLines.length !== 1) {
+            problems.push(
+              `${name} ${target.name}: expected one strict coverage report, got ${strictLines.length}`,
+            );
             continue;
           }
           const line = lines[0];
@@ -61,20 +162,83 @@ describe('symbol coverage gate (#4760)', () => {
               .filter((l) => /^\s+(missing|wrong) /.test(l))
               .join('; ');
             problems.push(
-              `${name} ${target}: ${m ? `missing=${m[1]} wrong=${m[2]}` : line} ${detail}`,
+              `${name} ${target.name}: ${m ? `missing=${m[1]} wrong=${m[2]}` : line} ${detail}`,
             );
+          }
+          const identity = identityLines[0];
+          const generatedBindingsMatch = identity.match(/generated_bindings=(\d+)/);
+          const generatedReferencesMatch = identity.match(/generated_references=(\d+)/);
+          if (!generatedBindingsMatch || !generatedReferencesMatch) {
+            problems.push(`${name} ${target.name}: missing generated-node totals: ${identity}`);
+          } else {
+            generatedBindings += Number(generatedBindingsMatch[1]);
+            generatedReferences += Number(generatedReferencesMatch[1]);
+          }
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            const value = identity.match(new RegExp(`${counter}=(\\d+)`))?.[1];
+            if (value === undefined) {
+              problems.push(
+                `${name} ${target.name}: missing identity counter ${counter}: ${identity}`,
+              );
+              continue;
+            }
+            exactCounts.set(counter, (exactCounts.get(counter) ?? 0) + Number(value));
+            if (value !== '0') {
+              const examples = exactExamples.get(counter) ?? [];
+              if (examples.length < 4) examples.push(`${name} ${target.name} ${counter}=${value}`);
+              exactExamples.set(counter, examples);
+            }
+          }
+          for (const counter of STRICT_ZERO_COUNTERS) {
+            const value = strictLines[0].match(new RegExp(`${counter}=(\\d+)`))?.[1];
+            if (value === undefined) {
+              problems.push(
+                `${name} ${target.name}: missing strict counter ${counter}: ${strictLines[0]}`,
+              );
+            } else if (value !== '0') {
+              problems.push(
+                `${name} ${target.name}: strict ${counter}=${value}: ${strictLines[0]}`,
+              );
+            }
           }
         }
       }
     } finally {
       rmSync(outDir, { recursive: true, force: true });
     }
+    const identityFailures = [...exactCounts.entries()].filter(([, count]) => count !== 0);
+    if (identityFailures.length > 0) {
+      problems.push(
+        `exact identity totals: ${identityFailures.map(([counter, count]) => `${counter}=${count}`).join(' ')}; examples: ${identityFailures.map(([counter]) => `${counter}: ${(exactExamples.get(counter) ?? []).join(' || ')}`).join(' || ')}`,
+      );
+    }
     // 검사기가 실제로 돌았는지(출력 형식이 바뀌어 전부 건너뛰면 공허하게 통과한다).
+    expect(fixtures.length).toBeGreaterThan(0);
     expect(problems).toEqual([]);
     expect(runs).toBe(fixtures.length * TARGETS.length);
+    expect(generatedBindings).toBeGreaterThan(0);
+    expect(generatedReferences).toBeGreaterThan(0);
   }, 600_000);
 
-  test('opt-in 합성 진단은 기존 게이트가 제외한 private 저장소를 별도로 표시한다', () => {
+  test('중첩 함수의 direct eval 은 모듈 범위의 외부 참조를 오염시키지 않는다', () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-eval-scope-'));
+    try {
+      const { stderr, exitCode } = runCoverage(
+        join(FIXTURE_DIR, '4760-block-eval.mjs'),
+        TARGETS[0],
+        outDir,
+      );
+      expect(exitCode, stderr).toBe(0);
+      const identity = stderr.split('\n').find((line) => line.includes('zntc: symbol-identity '));
+      expect(identity).toBeDefined();
+      expect(Number(identity?.match(/external=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+      expect(Number(identity?.match(/unclassified_reference=(\d+)/)?.[1] ?? 1)).toBe(0);
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  test('opt-in 합성 진단은 private 저장소를 추적하면서 누락으로 오분류하지 않는다', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-synthetic-coverage-'));
     try {
       const input = join(dir, 'input.mjs');
@@ -92,10 +256,8 @@ describe('symbol coverage gate (#4760)', () => {
       });
       expect(proc.status, proc.stderr).toBe(0);
       expect(proc.stderr).toMatch(/symbol-coverage .* missing=0 wrong=0/);
-      expect(proc.stderr).toMatch(/synthetic-coverage .* missing_binding=[1-9]\d*/);
-      expect(proc.stderr).toMatch(
-        /synthetic-coverage missing_binding node=\d+ _x\(binding_identifier\) marked=true/,
-      );
+      expect(proc.stderr).toMatch(/synthetic-coverage .* missing_binding=0/);
+      expect(proc.stderr).toMatch(/synthetic-coverage .* marked_synthetic=2/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

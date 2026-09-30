@@ -588,9 +588,9 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 }
             }
             if (self.options.unsupported.arrow) {
-                return es2015_arrow.ES2015Arrow(Transformer).lowerArrowFunction(self, node);
+                return es2015_arrow.ES2015Arrow(Transformer).lowerArrowFunction(self, idx, node);
             }
-            return self.visitArrowFunction(node);
+            return self.visitArrowFunction(idx, node);
         },
         .class_declaration => {
             // static 초기값·static 블록 안의 중첩 클래스는 자기 `this` 를 가진다 — 바깥 클래스 이름으로
@@ -615,7 +615,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 return self.lowerClassWithPrehoistedKeys(idx, target_node, es2015_class.ES2015Class(Transformer).lowerClassDeclaration);
             }
             if (replacement_idx) |r| return r;
-            return self.visitClass(node);
+            return self.visitClass(idx, node);
         },
         .class_expression => {
             const in_static_ctx = self.static_block_class_name != null;
@@ -633,7 +633,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 return self.lowerClassWithPrehoistedKeys(idx, target_node, es2015_class.ES2015Class(Transformer).lowerClassExpression);
             }
             if (replacement_idx) |r| return r;
-            return self.visitClass(node);
+            return self.visitClass(idx, node);
         },
         .for_statement => self.visitForStatement(node),
         .switch_statement => self.visitSwitchStatement(node),
@@ -728,6 +728,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             if (self.super_call_this_alias) {
                 const helper = try es_helpers.makeRuntimeHelperRef(self, "__assertThisInitialized");
                 const this_ref = try es_helpers.makeSyntheticRef(self, "_this");
+                try self.trackLexicalCaptureRef(this_ref, .none, .this_value);
                 self.runtime_helpers.derived_constructor = true;
                 return es_helpers.makeCallExpr(self, helper, &.{this_ref}, node.span);
             }

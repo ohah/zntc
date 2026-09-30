@@ -43,8 +43,11 @@ pub fn tryRenameIdentifierLike(
         .data = .{ .string_ref = new_span },
     });
     try self.propagateSymbolId(idx, new_idx);
-    if (comptime tag == .identifier_reference or tag == .assignment_target_identifier) {
-        try self.replaceUserReference(idx, new_idx);
+    if (tag == .identifier_reference or tag == .assignment_target_identifier) {
+        _ = self.replaceUserReferenceWithCopy(idx, new_idx) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            std.debug.panic("renamed reference lost semantic evidence: {s}", .{@errorName(err)});
+        };
     }
     return new_idx;
 }
@@ -128,9 +131,17 @@ fn recordReferenceOrigin(self: anytype, source: NodeIndex, clone: NodeIndex) Err
     const clone_tag = self.ast.getNode(clone).tag;
     const source_is_ref = source_tag == .identifier_reference or source_tag == .assignment_target_identifier;
     const clone_is_ref = clone_tag == .identifier_reference or clone_tag == .assignment_target_identifier;
-    if (!source_is_ref or !clone_is_ref or
-        (self.getSymbolIdAt(source) == null and !self.capture_ref_by_origin.contains(@intFromEnum(source)))) return;
-    const origin = self.reference_origin_map.get(@intFromEnum(source)) orelse @intFromEnum(source);
+    if (!source_is_ref or !clone_is_ref) return;
+    const has_symbol = self.getSymbolIdAt(source) != null;
+    const source_raw = @intFromEnum(source);
+    const origin = self.reference_origin_map.get(source_raw) orelse source_raw;
+    const explicit_globals = &self.explicit_global_reference_nodes;
+    const unresolved = self.unresolved_reference_nodes;
+    const has_external_origin = explicit_globals.contains(source_raw) or explicit_globals.contains(origin) or
+        (if (unresolved) |nodes| nodes.contains(source_raw) or nodes.contains(origin) else false);
+    const pending_helper = self.pending_runtime_helper_ref_index.get(source_raw);
+    const has_capture_origin = self.capture_ref_by_origin.contains(source_raw);
+    if (!has_symbol and !has_external_origin and !has_capture_origin and self.synthetic_idents == null) return;
     const key = @intFromEnum(clone);
     // A replaced user reference can become a generated capture reference in
     // visitNodeInner. Its exact capture origin was recorded at construction;
@@ -141,6 +152,11 @@ fn recordReferenceOrigin(self: anytype, source: NodeIndex, clone: NodeIndex) Err
         return;
     }
     try self.reference_origin_map.put(self.allocator, key, origin);
+    if (pending_helper) |pending_index| {
+        const local_name = self.pending_runtime_helper_refs.items[pending_index].local_name;
+        try self.markRuntimeHelperRef(clone);
+        try self.trackRuntimeHelperRef(clone, local_name);
+    }
 }
 
 /// 파서 노드 -> 트랜스포머 노드로 symbol_id 전파.
@@ -157,6 +173,16 @@ pub fn propagateSymbolId(self: anytype, old_idx: NodeIndex, new_idx: NodeIndex) 
     // lexical-capture use. Its symbol is bound from the capture declaration,
     // never inherited from the replaced source identifier.
     if (self.capture_ref_by_origin.contains(new_i)) return;
+
+    // A helper node is an explicit global only until its isolated import is
+    // appended. Cloning it must retain that pending helper identity instead
+    // of copying a same-spelled user binding from a source node.
+    if (self.pending_runtime_helper_ref_index.contains(old_i)) {
+        try ensureSymbolIds(self, new_i);
+        self.symbol_ids.items[new_i] = null;
+        try recordReferenceOrigin(self, old_idx, new_idx);
+        return;
+    }
 
     try ensureSymbolIds(self, new_i);
 
@@ -195,7 +221,22 @@ pub fn copySymbolId(self: anytype, src_idx: NodeIndex, dst_idx: NodeIndex) Error
 /// 이름이 원래 노드 텍스트와 다를 수 있을 때(블록 스코핑 리네임 등) 쓴다. `origin` 이
 /// `.none` 이면(익명 클래스의 합성 이름 등) 심볼 없이 만든다.
 pub fn makeUserRefNamed(self: anytype, name: []const u8, origin: NodeIndex) Error!NodeIndex {
-    return makeIdentifierRefWithSymbol(self, try self.ast.addString(name), origin);
+    return makeUserRefNamedAtScope(self, name, origin, self.current_scope);
+}
+
+/// Creates a renamed user read in the scope that owns its emitted use.
+/// Some rewrites assemble calls outside the lexical scope where their
+/// synthesized argument will live, so `current_scope` is not sufficient.
+pub fn makeUserRefNamedAtScope(self: anytype, name: []const u8, origin: NodeIndex, scope: @import("../../semantic/scope.zig").ScopeId) Error!NodeIndex {
+    const name_span = try self.ast.addString(name);
+    if (!self.current_class_name_node.isNone() and
+        std.mem.eql(u8, self.ast.getText(self.ast.getNode(self.current_class_name_node).data.string_ref), name))
+    {
+        return makeCurrentClassRefAtScope(self, name_span, scope);
+    }
+    const ref = try makeIdentifierRefWithSymbol(self, name_span, origin);
+    try self.trackUserReadFromBinding(ref, origin, scope);
+    return ref;
 }
 
 /// 모듈(루트) 스코프 이름 참조 — JSX 팩토리(`React`)처럼 소스 위치가 아니라 설정에서 온
@@ -210,11 +251,57 @@ pub fn makeRootScopeRef(self: anytype, name: []const u8) Error!NodeIndex {
 /// static private descriptor 는 클래스 이름을 새 문자열 span 에 복사하므로 span 위치가
 /// 아니라 이름의 내용으로 현재 클래스 바인딩인지 확인한다.
 pub fn makeCurrentClassRef(self: anytype, name_span: Span) Error!NodeIndex {
+    return makeCurrentClassRefAtScope(self, name_span, self.current_scope);
+}
+
+/// A generated class-name read can live in a different lexical scope from the
+/// source member currently being visited (for example, a prototype assignment).
+pub fn makeCurrentClassRefAtScope(self: anytype, name_span: Span, scope: @import("../../semantic/scope.zig").ScopeId) Error!NodeIndex {
     const cls = self.current_class_name_node;
     const same = !cls.isNone() and std.mem.eql(u8, self.ast.getText(self.ast.getNode(cls).data.string_ref), self.ast.getText(name_span));
     // 클래스 이름 노드가 합성(`const C = class {}` 의 안쪽 `C`)이면 `propagateSymbolId` 가 합성 표시를
     // 물려준다. 심볼이 없다는 이유만으로 합성이라 하지 않는다 — 그러면 심볼을 빠뜨린 경우도 가려진다.
-    return makeIdentifierRefWithSymbol(self, name_span, if (same) cls else .none);
+    if (same) if (self.current_class_self_symbol_id) |raw_id| {
+        const visible = if (!self.semantic_edit_enabled)
+            true
+        else if (self.semantic_editor) |*editor|
+            editor.symbolVisibleFrom(@enumFromInt(raw_id), scope)
+        else blk: {
+            if (raw_id >= self.symbols.len or scope.isNone() or scope.toIndex() >= self.scopes.len) break :blk false;
+            var cursor = scope;
+            var hops: usize = 0;
+            while (!cursor.isNone() and hops < self.scopes.len) : (hops += 1) {
+                if (cursor == self.symbols[raw_id].scope_id) break :blk true;
+                cursor = self.scopes[cursor.toIndex()].parent;
+            }
+            break :blk false;
+        };
+        if (visible) {
+            const ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
+            if (self.semantic_edit_enabled) {
+                self.addSyntheticRefInScope(ref, @enumFromInt(raw_id), scope, .{ .read = true }) catch |err| {
+                    if (err == error.OutOfMemory) return error.OutOfMemory;
+                    std.debug.panic("generated class-self read lost semantic evidence: {s}", .{@errorName(err)});
+                };
+            } else {
+                const slot = @intFromEnum(ref);
+                if (self.symbol_ids.items.len <= slot)
+                    try self.symbol_ids.appendNTimes(self.allocator, null, slot + 1 - self.symbol_ids.items.len);
+                if (self.symbol_ids.items[slot]) |existing| {
+                    if (existing != raw_id) std.debug.panic("generated class-self read has another SymbolId", .{});
+                } else self.symbol_ids.items[slot] = raw_id;
+            }
+            return ref;
+        }
+    };
+    const ref = try makeIdentifierRefWithSymbol(self, name_span, if (same) cls else .none);
+    if (same) if (self.getSymbolIdAt(cls) != null) {
+        self.trackUserReadFromBinding(ref, cls, scope) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            std.debug.panic("generated class-name read lost semantic evidence: {s}", .{@errorName(err)});
+        };
+    };
+    return ref;
 }
 
 /// 사용자 변수 **바인딩**을 `name_span` 으로 새로 만들고 원래 바인딩(`origin`)의 심볼을 물려준다
@@ -335,11 +422,13 @@ pub fn visitBinaryNode(self: anytype, idx: NodeIndex) Error!NodeIndex {
         const new_left = try self.visitNode(root_left);
         const new_right = try self.visitNode(old_right);
         if (new_left == root_left and new_right == old_right) return idx;
-        return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .binary = .{
+        const copied = try self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .binary = .{
             .left = new_left,
             .right = new_right,
             .flags = node.data.binary.flags,
         } } });
+        try self.remapCopiedScopeOwner(idx, copied);
+        return copied;
     }
 
     // 느린 경로: 좌 스파인 평탄화. 체인당 1회만 할당(노드당 아님).
@@ -366,11 +455,13 @@ pub fn visitBinaryNode(self: anytype, idx: NodeIndex) Error!NodeIndex {
         if (acc == n.data.binary.left and new_right == old_right) {
             acc = sidx;
         } else {
-            acc = try self.ast.addNode(.{ .tag = n.tag, .span = n.span, .data = .{ .binary = .{
+            const copied = try self.ast.addNode(.{ .tag = n.tag, .span = n.span, .data = .{ .binary = .{
                 .left = acc,
                 .right = new_right,
                 .flags = n.data.binary.flags,
             } } });
+            try self.remapCopiedScopeOwner(sidx, copied);
+            acc = copied;
         }
     }
     return acc;

@@ -190,14 +190,7 @@ pub fn buildVarDecl(self: *Transformer, name: []const u8, init_value: NodeIndex,
 /// scope-hoist 번들 모듈에서 미선언 참조(`ReferenceError`)를 유발한다.
 /// caller 가 none-body 정책(early return / fall-through)을 호출 전에 결정하므로
 /// 이 helper 는 항상 non-none `sm_body` 로 호출된다.
-pub const HoistedStateTemp = struct {
-    binding: NodeIndex,
-    name_span: Span,
-    /// A state-machine name can originate from an already analyzed lexical
-    /// binding (for example a catch parameter flattened into the wrapper).
-    /// Such a binding is relocated; only synthetic temps need a new symbol.
-    symbol_id: ?u32 = null,
-};
+pub const HoistedStateTemp = transformer_mod.GeneratedTempBinding;
 
 pub fn hoistStateMachineTempsAndRestore(self: *Transformer, sm_body: NodeIndex, saved_counter: u32, span: Span, bindings: *std.ArrayListUnmanaged(HoistedStateTemp)) Error!NodeIndex {
     std.debug.assert(!sm_body.isNone());
@@ -238,7 +231,7 @@ pub fn hoistTempVarsInOriginalFunction(self: *Transformer, body_idx: NodeIndex, 
 /// An arrow's body owns temps allocated while visiting that body. Its
 /// parameters were visited before saved_counter and keep their existing
 /// allocation policy. Wrap an expression body only if it needs a declaration.
-pub fn hoistArrowBodyTemps(self: *Transformer, body_idx: NodeIndex, saved_counter: u32, span: Span) Error!NodeIndex {
+pub fn hoistArrowBodyTemps(self: *Transformer, body_idx: NodeIndex, saved_counter: u32, span: Span, source_owner: NodeIndex) Error!NodeIndex {
     if (self.temp_var_counter == saved_counter) return body_idx;
     std.debug.assert(!body_idx.isNone() and self.temp_var_counter > saved_counter);
     var body = body_idx;
@@ -252,7 +245,12 @@ pub fn hoistArrowBodyTemps(self: *Transformer, body_idx: NodeIndex, saved_counte
         const list = try self.ast.addNodeList(&.{ret});
         body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = list } });
     }
-    body = try self.hoistTempVarsInOriginalFunction(body, saved_counter, span);
+    const source_scope = self.outputOwnedScope(source_owner);
+    if (source_scope) |scope| {
+        body = try hoistTempVarsWithScope(self, body, saved_counter, span, &.{}, scope, null);
+    } else {
+        body = try self.hoistTempVarsInOriginalFunction(body, saved_counter, span);
+    }
     self.temp_var_counter = saved_counter;
     return body;
 }
@@ -274,7 +272,17 @@ pub fn hoistParameterTempsAndRestore(self: *Transformer, body_idx: NodeIndex, be
     const later_counter = self.temp_var_counter;
     self.temp_var_counter = after_params;
     errdefer self.temp_var_counter = later_counter;
-    const body = try self.hoistTempVarsInOriginalFunction(body_idx, before_params, span);
+    const source_scope = if (self.semantic_edit_enabled and !self.synthetic_function_source_owner.isNone())
+        self.originalFunctionScope(self.synthetic_function_source_owner)
+    else
+        self.current_scope;
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    const function_scope = if (self.semantic_edit_enabled and !source_scope.isNone() and
+        source_scope.toIndex() < scopes.len and scopes[source_scope.toIndex()].kind == .function)
+        source_scope
+    else
+        null;
+    const body = try hoistTempVarsWithScope(self, body_idx, before_params, span, &.{}, function_scope, null);
     if (body != body_idx) {
         // This exact declaration is needed while evaluating a lowered default.
         // Pass 2 must keep it before default checks.
@@ -282,11 +290,13 @@ pub fn hoistParameterTempsAndRestore(self: *Transformer, body_idx: NodeIndex, be
         const declaration = self.ast.extra_data.items[list.start];
         try self.parameter_capture_statements.put(self.allocator, declaration, {});
     }
+    // These parameter slots now have an explicit declaration in this
+    // function. Consume them even when no later allocation currently extends
+    // the counter: an enclosing transform may allocate more temps afterwards
+    // and otherwise sweep the stale parameter slots into its own hoist.
+    for (before_params..after_params) |i| _ = self.temp_span_by_counter.remove(@intCast(i));
     if (later_counter > after_params) {
-        // Those later allocations still need their existing body owner. The
-        // enclosing hoist may inspect the whole counter range, so remove only
-        // the parameter slots already declared and bound above.
-        for (before_params..after_params) |i| _ = self.temp_span_by_counter.remove(@intCast(i));
+        // Those later allocations still need their existing body owner.
         self.temp_var_counter = later_counter;
     } else {
         self.temp_var_counter = before_params;
@@ -330,6 +340,7 @@ fn hoistTempVarsWithScope(self: *Transformer, body_idx: NodeIndex, saved_counter
         const name = self.ast.getText(name_span);
         if (tempSpanInSpans(name_span, skip_spans)) continue;
         if (has_block and bodyHasTopLevelVarBinding(self, body_node, name)) continue;
+        try self.generated_temp_spans.append(self.allocator, name_span);
         const binding = try es_helpers.makeSyntheticBinding(self, name_span);
         if (state_bindings) |bindings| try bindings.append(self.allocator, .{ .binding = binding, .name_span = name_span });
         if (body_node.tag == .program and self.semantic_edit_enabled) {

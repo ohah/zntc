@@ -71,6 +71,16 @@ pub const DeferredGeneratorLoopMigration = struct {
 /// const new_root = try t.transform();
 /// // t.ast 에 변환된 AST가 들어있다
 /// ```
+pub const GeneratedTempBinding = struct {
+    binding: NodeIndex,
+    name_span: Span,
+    /// Existing source bindings retain their SymbolId when moved into output storage.
+    symbol_id: ?u32 = null,
+    /// `true` means this declaration belongs to the generated state-machine
+    /// callback; otherwise it belongs to the surrounding wrapper function.
+    callback_local: bool = false,
+};
+
 pub const Transformer = struct {
     pub const ClassSelfWriteTarget = struct {
         inner_id: u32,
@@ -120,6 +130,9 @@ pub const Transformer = struct {
     /// 새 참조 노드 → 최초 출처 참조 노드. `SymbolId` 복사와 별개로
     /// read/write·문장 위치의 출처를 보존한다. 바인딩→참조 생성은 여기에 넣지 않는다.
     reference_origin_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// Coverage-only provenance for generated refs that intentionally remain external.
+    explicit_global_reference_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    unresolved_reference_nodes: ?*const std.AutoHashMapUnmanaged(u32, void) = null,
 
     /// #2869 transformer 가 emit 한 runtime helper identifier_reference 노드 인덱스.
     /// resync 의 SemanticAnalyzer 가 이 marker 를 보고 user scope 와 격리된 별도
@@ -128,12 +141,14 @@ pub const Transformer = struct {
     /// invariant: `markRuntimeHelperRef` 호출처는 매번 새로 만든 NodeIndex 만 넣으므로
     /// 중복 entry 가 발생하지 않음 — dedupe 불필요.
     helper_ref_nodes: std.ArrayListUnmanaged(u32) = .empty,
+    runtime_helper_ref_index: std.AutoHashMapUnmanaged(u32, void) = .empty,
     /// Exact named simple-class constructor bindings that need their source
     /// name-preservation flag after bundler semantic resync.
     preserved_simple_class_names: std.ArrayListUnmanaged(u32) = .empty,
     pending_runtime_helper_refs: std.ArrayListUnmanaged(struct {
         node: NodeIndex,
         scope: ScopeId,
+        local_name: []const u8,
         next: ?usize = null,
     }) = .empty,
     pending_runtime_helper_ref_index: std.AutoHashMapUnmanaged(u32, usize) = .empty,
@@ -162,6 +177,9 @@ pub const Transformer = struct {
     /// #4220: 합성 temp(_a, _b2 …)와 충돌하는 사용자 심볼 이름 집합 (lazy).
     /// 키는 source 슬라이스 (ast/source 수명 — transform 동안 안정).
     temp_collision_set: ?std.StringHashMapUnmanaged(void) = null,
+    /// Exact spans allocated for generated transform temps. Unlike the
+    /// per-function counter map, this history survives nested counter resets.
+    generated_temp_spans: std.ArrayListUnmanaged(@import("../lexer/token.zig").Span) = .empty,
 
     /// #1791 per-reference 기록 (`semantic/analyzer::SemanticAnalyzer.references`).
     /// import binding elision 판정은 `Symbol.reference_count` 대신 여기서 symbol 별
@@ -219,6 +237,19 @@ pub const Transformer = struct {
     next_capture_frame: u32 = 1,
     capture_scope: ScopeId = .none,
     outermost_lowered_arrow_scope: ScopeId = .none,
+    /// Exact name Span to the first SymbolId allocated for that transform temp.
+    /// Later duplicate `var` declarations for the same generated temp
+    /// reuse this identity instead of inventing a second symbol by text.
+    bound_temp_symbols: std.AutoHashMapUnmanaged(u64, u32) = .empty,
+    /// Exact generated `var` bindings emitted beside a state-machine callback.
+    /// They are registered only after the callback scope exists, so references
+    /// can be attached with their final output ScopeIds.
+    generator_state_bindings: std.ArrayListUnmanaged(GeneratedTempBinding) = .empty,
+    generated_body_binding_moves: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// Lowering helpers can run while their output is being assembled into a
+    /// generated state-machine callback. Their temps must wait for that
+    /// callback's scope instead of binding to the still-current source function.
+    state_machine_depth: u32 = 0,
     unresolved_references: ?*const std.StringHashMapUnmanaged(void) = null,
     /// 심볼 → 블록 스코핑 새 이름(`x$N`). es5 블록 스코핑을 낮추고 분석기 스코프가 있을 때
     /// 변환 시작에 `block_rename_table` 로 만든다 (#4760). 없으면(스코프 정보 없는 경로)
@@ -296,6 +327,10 @@ pub const Transformer = struct {
     /// 전달되므로, 그 span 으로 클래스를 가리킬 때(`makeCurrentClassRef`) 심볼을 여기서 얻는다
     /// (#4760). 클래스 진입 때 저장·복원한다.
     current_class_name_node: NodeIndex = .none,
+    /// Class lowering keeps the outer declaration and immutable class self
+    /// binding distinct. Generated reads select the self binding only where
+    /// its exact SymbolId is visible.
+    current_class_self_symbol_id: ?u32 = null,
     /// #3680: private method 가 standalone function (`_name_fn`) 으로 추출돼 class body
     /// 밖에서 정의되는 동안 true. 추출된 함수는 `super` 키워드가 SyntaxError 이므로
     /// `super.x` / `super.method()` / `super.y = v` 등 super property 접근을
@@ -394,6 +429,12 @@ pub const Transformer = struct {
     /// Exact source-to-generated parameter identities for extracted generator
     /// loops, keyed by their generated function ScopeId until state binding.
     deferred_generator_loop_migrations: std.AutoHashMapUnmanaged(u32, DeferredGeneratorLoopMigration) = .empty,
+    /// Runtime helper references emitted inside those generator loops. Their
+    /// lexical owner is only known after the generated function is attached.
+    deferred_generator_helper_refs: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty,
+    /// Generated functions whose `_this`/`_arguments` capture scope is unknown
+    /// until their final output owner is attached.
+    deferred_capture_function_owners: std.AutoHashMapUnmanaged(u32, void) = .empty,
     /// `generator_temp_var_spans` 중 사용자 바인딩에서 온 이름의 원래 바인딩 노드(span 키).
     /// 호이스트한 `var` 선언에 심볼을 물려주는 데 쓴다 (#4760).
     generator_var_origins: std.AutoHashMapUnmanaged(u64, NodeIndex) = .empty,
@@ -451,6 +492,7 @@ pub const Transformer = struct {
 
     /// ES2015 block scoping: _loop 함수명 카운터 (_loop, _loop2, ...)
     loop_counter: u32 = 0,
+    control_flow_ret_counter: u32 = 0,
 
     /// 블록 스코핑 등이 보관하는 이름 중 `string_table` 에 있던
     /// 것의 복사본 저장소(`stableName`). `string_table` 은 `addString` 때 재할당되어 옮겨지므로
@@ -593,10 +635,16 @@ pub const Transformer = struct {
     pub const copySymbolId = node_helpers.copySymbolId;
     pub const makeIdentifierRefWithSymbol = node_helpers.makeIdentifierRefWithSymbol;
     pub const makeUserRefNamed = node_helpers.makeUserRefNamed;
+    pub const makeUserRefNamedAtScope = node_helpers.makeUserRefNamedAtScope;
     pub const makeUserBinding = node_helpers.makeUserBinding;
     pub const makeIdentifierRefWithSymbolAt = node_helpers.makeIdentifierRefWithSymbolAt;
     pub const makeRootScopeRef = node_helpers.makeRootScopeRef;
+    pub fn markExplicitGlobalReference(self: *Transformer, node: NodeIndex) !void {
+        if (self.synthetic_idents == null) return;
+        try self.explicit_global_reference_nodes.put(self.allocator, @intFromEnum(node), {});
+    }
     pub const makeCurrentClassRef = node_helpers.makeCurrentClassRef;
+    pub const makeCurrentClassRefAtScope = node_helpers.makeCurrentClassRefAtScope;
     pub const renamedNameOf = node_helpers.renamedNameOf;
     pub const tableRenameOf = node_helpers.tableRenameOf;
     pub const buildBlockRenameMap = node_helpers.buildBlockRenameMap;
@@ -610,6 +658,7 @@ pub const Transformer = struct {
     pub const declareSyntheticVar = @import("transformer/semantic_edit.zig").declareSyntheticVar;
     pub const bindClassSelfStorage = @import("transformer/semantic_edit.zig").bindClassSelfStorage;
     pub const programScope = @import("transformer/semantic_edit.zig").programScope;
+    pub const nearestVarScope = @import("transformer/semantic_edit.zig").nearestVarScope;
     pub const addGeneratedFunctionScope = @import("transformer/semantic_edit.zig").addGeneratedFunctionScope;
     pub const addGeneratedCatchScope = @import("transformer/semantic_edit.zig").addGeneratedCatchScope;
     pub const reserveGeneratedFunctionScope = @import("transformer/semantic_edit.zig").reserveGeneratedFunctionScope;
@@ -622,24 +671,47 @@ pub const Transformer = struct {
     pub const originalFunctionScope = @import("transformer/semantic_edit.zig").originalFunctionScope;
     pub const bindGeneratedState = @import("transformer/semantic_edit.zig").bindGeneratedState;
     pub const migrateGeneratorLoopBody = @import("transformer/semantic_edit.zig").migrateGeneratorLoopBody;
+    pub const trackGeneratedLocalSymbols = @import("transformer/semantic_edit.zig").trackGeneratedLocalSymbols;
+    pub const GeneratedLocalSpec = @import("transformer/semantic_edit.zig").GeneratedLocalSpec;
+    pub const appendGeneratedTempSpecs = @import("transformer/semantic_edit.zig").appendGeneratedTempSpecs;
+    pub const registerGeneratedFunctionScopes = @import("transformer/semantic_edit.zig").registerGeneratedFunctionScopes;
+    pub const bindOutputScopesAndReferences = @import("transformer/semantic_edit.zig").bindOutputScopesAndReferences;
+    pub const completeGeneratedStateSymbols = @import("transformer/semantic_edit.zig").completeGeneratedStateSymbols;
     pub const bindGeneratedFunctionTemps = @import("transformer/semantic_edit.zig").bindGeneratedFunctionTemps;
+    pub const moveGeneratedFunctionBodyBindings = @import("transformer/semantic_edit.zig").moveGeneratedFunctionBodyBindings;
     pub const trackGeneratorStateReference = @import("transformer/semantic_edit.zig").trackGeneratorStateReference;
+    pub const addGeneratedScope = @import("transformer/semantic_edit.zig").addGeneratedScope;
     pub const relocatePendingRuntimeHelperRef = @import("transformer/semantic_edit.zig").relocatePendingRuntimeHelperRef;
     pub const declareSyntheticInScope = @import("transformer/semantic_edit.zig").declareSyntheticInScope;
     pub const declareSyntheticTempInScope = @import("transformer/semantic_edit.zig").declareSyntheticTempInScope;
-    pub const addSyntheticRefInScope = @import("transformer/semantic_edit.zig").addSyntheticRefInScope;
-    pub const trackRuntimeHelperRef = @import("transformer/semantic_edit.zig").trackRuntimeHelperRef;
-    pub const bindRuntimeHelperImport = @import("transformer/semantic_edit.zig").bindRuntimeHelperImport;
-    pub const trackHoistedTempRef = @import("transformer/semantic_edit.zig").trackHoistedTempRef;
+    pub const deferGeneratedWrapperTemp = @import("transformer/semantic_edit.zig").deferGeneratedWrapperTemp;
     pub const trackLexicalCaptureRef = @import("transformer/semantic_edit.zig").trackLexicalCaptureRef;
     pub const bindLexicalCapture = @import("transformer/semantic_edit.zig").bindLexicalCapture;
     pub const shouldCaptureArguments = @import("transformer/semantic_edit.zig").shouldCaptureArguments;
     pub const makeCapturedArgumentsInit = @import("transformer/semantic_edit.zig").makeCapturedArgumentsInit;
+    pub const addSyntheticRefInScope = @import("transformer/semantic_edit.zig").addSyntheticRefInScope;
+    pub const trackRuntimeHelperRef = @import("transformer/semantic_edit.zig").trackRuntimeHelperRef;
+    pub const bindRuntimeHelperImport = @import("transformer/semantic_edit.zig").bindRuntimeHelperImport;
+    pub const trackHoistedTempRef = @import("transformer/semantic_edit.zig").trackHoistedTempRef;
+    pub const trackHoistedTempRefInScope = @import("transformer/semantic_edit.zig").trackHoistedTempRefInScope;
+    pub const replaceUserReference = @import("transformer/semantic_edit.zig").replaceUserReference;
+    pub const trackUserReadFromBinding = @import("transformer/semantic_edit.zig").trackUserReadFromBinding;
+    pub const moveBindingToOutputScope = @import("transformer/semantic_edit.zig").moveBindingToOutputScope;
+    pub const moveSymbolToOutputScope = @import("transformer/semantic_edit.zig").moveSymbolToOutputScope;
+    pub const setGeneratedSymbolId = @import("transformer/semantic_edit.zig").setGeneratedSymbolId;
+    pub const rebindOutputBinding = @import("transformer/semantic_edit.zig").rebindOutputBinding;
+    pub const splitOutputBindingAsVar = @import("transformer/semantic_edit.zig").splitOutputBindingAsVar;
+    pub const relocateOutputSymbolAs = @import("transformer/semantic_edit.zig").relocateOutputSymbolAs;
+    pub const rebindOutputReference = @import("transformer/semantic_edit.zig").rebindOutputReference;
+    pub const reparentGeneratedBodyScopes = @import("transformer/semantic_edit.zig").reparentGeneratedBodyScopes;
+    pub const ensureSymbolDeclaration = @import("transformer/semantic_edit.zig").ensureSymbolDeclaration;
     pub const bindHoistedTemp = @import("transformer/semantic_edit.zig").bindHoistedTemp;
+    pub const bindSyntheticTempInScope = @import("transformer/semantic_edit.zig").bindSyntheticTempInScope;
     pub const trackNullishIdentifierCopies = @import("transformer/semantic_edit.zig").trackNullishIdentifierCopies;
+    pub const replaceUserReferenceWithCopy = @import("transformer/semantic_edit.zig").replaceUserReferenceWithCopy;
+    pub const duplicateUserReference = @import("transformer/semantic_edit.zig").duplicateUserReference;
     pub const trackUserArgumentFromBinding = @import("transformer/semantic_edit.zig").trackUserArgumentFromBinding;
     pub const trackUserWriteFromBinding = @import("transformer/semantic_edit.zig").trackUserWriteFromBinding;
-    pub const replaceUserReference = @import("transformer/semantic_edit.zig").replaceUserReference;
     pub const declareSyntheticCatch = @import("transformer/semantic_edit.zig").declareSyntheticCatch;
     pub const addSyntheticRef = @import("transformer/semantic_edit.zig").addSyntheticRef;
     pub const finishSemanticEdit = @import("transformer/semantic_edit.zig").finishSemanticEdit;

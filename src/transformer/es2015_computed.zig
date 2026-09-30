@@ -101,7 +101,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             });
 
             // _a = { ... }
-            const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+            const temp_ref = try es_helpers.makeTrackedTempRef(self, temp_span, temp_span, .{ .write = true });
             const init_assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
@@ -155,7 +155,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 // (dot)로 emit → `_a."q\"z"`/`_a.10` 같은 비-identifier 키가
                 // SyntaxError. property 키는 rename 비대상이라 makeMemberFromKeyIdx
                 // 가 (computed inner 만 visit, 그 외 span 복사) 적절.
-                const obj_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+                const obj_ref = try es_helpers.makeTrackedTempRef(self, temp_span, temp_span, .{ .read = true });
                 const member_expr = try es_helpers.makeMemberFromKeyIdx(self, obj_ref, key_idx, span);
 
                 const assign = try self.ast.addNode(.{
@@ -167,7 +167,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             }
 
             // 마지막에 _a 반환
-            try self.scratch.append(self.allocator, try es_helpers.makeTempVarRef(self, temp_span, temp_span));
+            try self.scratch.append(self.allocator, try es_helpers.makeTrackedTempRef(self, temp_span, temp_span, .{ .read = true }));
 
             // sequence_expression — paren 은 precedence 재유도가 처리 (#4042 PR8)
             const seq_list = try self.ast.addNodeList(self.scratch.items[seq_scratch_top..]);
@@ -224,7 +224,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
 
             const key_arg = try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
 
-            const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+            const temp_ref = try es_helpers.makeTrackedTempRef(self, temp_span, temp_span, .{ .read = true });
             const object_span = try self.ast.addString("Object");
             const define_property_span = try self.ast.addString("defineProperty");
             return es_helpers.buildObjectDefinePropertyCall(self, object_span, define_property_span, temp_ref, key_arg, desc_obj, span);
