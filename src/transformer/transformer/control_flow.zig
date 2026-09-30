@@ -80,6 +80,102 @@ pub const LoopCapture = struct {
     }
 };
 
+fn findBindingWithSymbol(self: *Transformer, root: NodeIndex, raw_id: u32) Error!NodeIndex {
+    if (root.isNone()) return .none;
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(self.allocator);
+    try stack.append(self.allocator, root);
+    while (stack.pop()) |idx| {
+        if (idx.isNone()) continue;
+        const raw = @intFromEnum(idx);
+        if (raw >= self.ast.nodes.items.len or seen.contains(raw)) continue;
+        try seen.put(self.allocator, raw, {});
+        const node = self.ast.getNode(idx);
+        if (node.tag == .binding_identifier and self.getSymbolIdAt(idx) == @as(?u32, raw_id)) return idx;
+        var children = ast_walk.children(self.ast, node);
+        while (children.next()) |child| try stack.append(self.allocator, child);
+    }
+    return .none;
+}
+
+fn findLoopCallbackParameter(self: *Transformer, function: NodeIndex, raw_id: u32) NodeIndex {
+    const node = self.ast.getNode(function);
+    if (node.tag != .function_expression and node.tag != .function_declaration) return .none;
+    var params = self.ast.iterateExtraList(self.ast.functionParamsList(node));
+    while (params.next()) |formal_idx| {
+        const formal = self.ast.getNode(formal_idx);
+        if (formal.tag != .formal_parameter) continue;
+        const binding = self.readNodeIdx(formal.data.extra, 0);
+        if (!binding.isNone() and self.ast.getNode(binding).tag == .binding_identifier and
+            self.getSymbolIdAt(binding) == @as(?u32, raw_id)) return binding;
+    }
+    return .none;
+}
+
+fn rebindLoopStorageReferences(self: *Transformer, root: NodeIndex, source_id: u32, storage_id: u32) Error!void {
+    if (root.isNone()) return;
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(self.allocator);
+    try stack.append(self.allocator, root);
+    while (stack.pop()) |idx| {
+        if (idx.isNone()) continue;
+        const raw = @intFromEnum(idx);
+        if (raw >= self.ast.nodes.items.len or seen.contains(raw)) continue;
+        try seen.put(self.allocator, raw, {});
+        const node = self.ast.getNode(idx);
+        if ((node.tag == .identifier_reference or node.tag == .assignment_target_identifier) and
+            self.getSymbolIdAt(idx) == @as(?u32, source_id))
+        {
+            try self.rebindOutputReference(idx, storage_id);
+        }
+        var children = ast_walk.children(self.ast, node);
+        while (children.next()) |child| try stack.append(self.allocator, child);
+    }
+}
+
+/// A captured `for (let/const x...)` becomes an outer storage variable plus
+/// one callback parameter per iteration. Keep their emitted identities apart.
+fn splitCapturedLoopHeaderSymbols(
+    self: *Transformer,
+    header_roots: []const NodeIndex,
+    lexical_bindings: []const NodeIndex,
+    loop_function: NodeIndex,
+    span: Span,
+) Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const parent_scope = if (self.current_scope.isNone())
+        self.programScope()
+    else
+        self.outputScopeParent(self.current_scope);
+    const function_scope = self.outputOwnedScope(loop_function) orelse
+        try self.addGeneratedFunctionScope(parent_scope, loop_function);
+    if (function_scope.isNone()) return;
+    try self.reparentGeneratedBodyScopes(self.current_scope, function_scope, loop_function);
+    if (lexical_bindings.len == 0) return;
+    const storage_scope = self.nearestVarScope(parent_scope);
+    if (storage_scope.isNone()) std.debug.panic("captured loop storage has no output var scope", .{});
+
+    for (lexical_bindings) |source_binding| {
+        const source_id = self.getSymbolIdAt(source_binding) orelse continue;
+        var output_binding: NodeIndex = .none;
+        for (header_roots) |root| {
+            output_binding = try findBindingWithSymbol(self, root, source_id);
+            if (!output_binding.isNone()) break;
+        }
+        if (output_binding.isNone()) continue;
+        const parameter = findLoopCallbackParameter(self, loop_function, source_id);
+        if (parameter.isNone()) continue;
+
+        const storage_id = try self.splitOutputBindingAsVar(output_binding, source_id, storage_scope, span);
+        for (header_roots) |root| try rebindLoopStorageReferences(self, root, source_id, storage_id);
+        try self.relocateOutputSymbolAs(source_id, function_scope, parameter);
+    }
+}
+
 fn collectActiveLoopHeaderNames(self: *Transformer, names: []const []const u8, bindings: []const NodeIndex, out: *std.ArrayList([]const u8)) Error!void {
     for (names, 0..) |name, i| {
         const renamed = if (i < bindings.len) self.renamedNameOf(bindings[i]) else null;
@@ -258,6 +354,13 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
                     capture.var_bindings.items,
                     self.current_scope,
                     .none,
+                );
+                try splitCapturedLoopHeaderSymbols(
+                    self,
+                    &.{ new_a, new_b, result.call_and_check },
+                    lexical_bindings.items,
+                    result.loop_function,
+                    node.span,
                 );
                 const loop_node = try self.ast.addNode(.{
                     .tag = node.tag,
@@ -482,6 +585,14 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
                     capture.var_bindings.items,
                     self.current_scope,
                     if (yield_closure) self.outputScopeParent(self.current_scope) else .none,
+                );
+
+                try splitCapturedLoopHeaderSymbols(
+                    self,
+                    &.{ new_init, new_test, new_update, result.call_and_check },
+                    lexical_bindings.items,
+                    result.loop_function,
+                    node.span,
                 );
 
                 // var _loop = function(...) { ... };

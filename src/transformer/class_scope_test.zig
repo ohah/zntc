@@ -260,7 +260,9 @@ test "#4819 ES5 class IIFE check alias does not resolve to shadowing parameter" 
             inner_wrapper_reads += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), alias_constructor_reads);
-    try std.testing.expectEqual(@as(usize, 1), inner_wrapper_reads);
+    // The exact class-self ID is used by the wrapper's constructor binding,
+    // IIFE call, and final return. None may resolve to the shadowing parameter.
+    try std.testing.expectEqual(@as(usize, 3), inner_wrapper_reads);
 }
 
 test "#4819 ES5 class declaration IIFE check keeps outer and inner identities" {
@@ -321,7 +323,10 @@ test "#4819 ES5 class declaration IIFE check keeps outer and inner identities" {
             inner_wrapper_reads += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), alias_constructor_reads);
-    try std.testing.expectEqual(@as(usize, 1), inner_wrapper_reads);
+    // The exact class-self ID is used by the wrapper's constructor binding,
+    // IIFE call, and final return. None may resolve to the outer declaration
+    // or the shadowing constructor parameter.
+    try std.testing.expectEqual(@as(usize, 3), inner_wrapper_reads);
 }
 
 test "#4819 using class copies preserve exact source scope owners" {
@@ -630,7 +635,7 @@ test "#4819 decorated explicit constructor binds generated nullish temp in origi
         const node = transformer.ast.getNode(ref.node_index);
         if (node.tag != .identifier_reference) continue;
         const name = transformer.ast.getText(node.data.string_ref);
-        if (!std.mem.startsWith(u8, name, "_")) continue;
+        if (!std.mem.eql(u8, name, "_a")) continue;
         try std.testing.expectEqual(source_scope, @intFromEnum(edited.symbols.items[@intFromEnum(ref.symbol_id)].scope_id));
         ctor_temp_refs += 1;
     }

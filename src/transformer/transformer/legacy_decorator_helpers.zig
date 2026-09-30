@@ -87,7 +87,7 @@ pub fn transformExperimentalDecorators(
 
         // static field: Foo.x = value (decorator 호출 뒤에 배치)
         for (static_field_assigns) |field| {
-            const stmt = try self.buildStaticFieldAssignment(new_name, field);
+            const stmt = try self.buildStaticFieldAssignment(new_name, field, self.current_scope);
             try self.pending_nodes.append(self.allocator, stmt);
         }
 
@@ -118,7 +118,7 @@ pub fn transformExperimentalDecorators(
         }
 
         for (static_field_assigns) |field| {
-            const stmt = try self.buildStaticFieldAssignment(new_name, field);
+            const stmt = try self.buildStaticFieldAssignment(new_name, field, self.current_scope);
             try self.pending_nodes.append(self.allocator, stmt);
         }
 

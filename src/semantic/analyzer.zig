@@ -151,6 +151,12 @@ pub const SemanticAnalyzer = struct {
     /// 모듈 top-level 변수가 글로벌을 shadowing하지 않도록 한다 (Rolldown 방식).
     /// key는 소스 코드 슬라이스 (zero-copy).
     unresolved_references: std.StringHashMapUnmanaged(void) = .empty,
+    /// Exact source nodes that resolve to an undeclared global/host name.
+    /// Coverage diagnostics must not infer external status from spelling alone.
+    unresolved_reference_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// Set only by the exact symbol-coverage integration gate; ordinary transpiles
+    /// retain the existing name-only unresolved-global representation.
+    collect_unresolved_reference_nodes: bool = false,
 
     /// Forward reference 지원을 위한 pre-declaration 스코프.
     /// visitProgram에서 첫 번째 패스로 top-level 바인딩 이름을 미리 등록한 후,
@@ -268,6 +274,7 @@ pub const SemanticAnalyzer = struct {
             .scope_owner_map = .empty,
             .class_self_symbol_map = .empty,
             .unresolved_references = .empty,
+            .unresolved_reference_nodes = .empty,
             .symbol_ids = .empty,
             .references = .empty,
             .errors = .empty,
@@ -325,6 +332,7 @@ pub const SemanticAnalyzer = struct {
         var unres_it = self.unresolved_references.keyIterator();
         while (unres_it.next()) |k| self.allocator.free(k.*);
         self.unresolved_references.deinit(self.allocator);
+        self.unresolved_reference_nodes.deinit(self.allocator);
         self.labels.deinit(self.allocator);
         // resolvePrivateName에서 할당된 문자열 해제
         for (self.resolved_names.items) |name| {
@@ -1088,6 +1096,11 @@ pub const SemanticAnalyzer = struct {
         // 시점까지 string_table 이 realloc 되면 dangling (#3100 클래스). declare
         // 쪽(getTextStable)과 대칭으로 stable 사본 키 사용. 이미 등록된 키면
         // 사본을 만들지 않는다.
+        if (self.collect_unresolved_reference_nodes) {
+            self.unresolved_reference_nodes.put(self.allocator, @intFromEnum(node_idx), {}) catch {
+                self.alloc_failed = true;
+            };
+        }
         if (self.unresolved_references.contains(name)) return;
         // OOM 으로 미해결 글로벌 이름이 누락되면 linker 가 그 이름을 예약하지 못해
         // scope hoisting 시 shadowing → silent miscompile. alloc_failed 로 표면화
@@ -3990,13 +4003,15 @@ pub const SemanticAnalyzer = struct {
             const module_scope = self.findVarScope();
             if (!module_scope.isNone()) {
                 const sym_index = self.symbols.items.len;
+                const facade_name = try self.ast.addString("_default");
                 try self.symbols.append(self.allocator, .{
-                    .name = node.span, // export default 문 전체 span
+                    .name = facade_name,
                     .scope_id = module_scope,
                     .kind = .variable_const,
                     .decl_flags = .{ .block_scoped = true, .is_const = true, .is_exported = true, .is_default_export = true },
                     .declaration_span = node.span,
                     .origin_scope = module_scope,
+                    .synthetic_name = "_default",
                 });
                 // symbol_ids에 export_default_declaration 노드 자체를 기록
                 const ni = @intFromEnum(node_idx);
@@ -4004,7 +4019,10 @@ pub const SemanticAnalyzer = struct {
                     self.symbol_ids.items[ni] = @intCast(sym_index);
                 }
                 // scope_maps[0]에 "_default" 등록 — emitter/StmtInfo가 찾을 수 있도록
-                try self.scope_maps.items[module_scope.toIndex()].put(self.allocator, "_default", sym_index);
+                // The facade is only a reachability token. Preserve a user's
+                // real `_default` binding in lexical lookup when one exists.
+                if (!self.scope_maps.items[module_scope.toIndex()].contains("_default"))
+                    try self.scope_maps.items[module_scope.toIndex()].put(self.allocator, "_default", sym_index);
                 // StmtInfo 사전 수집: facade 심볼을 declared 로 기록 (#1669: scope 무관).
                 self.recordDeclareRef(@intCast(sym_index), module_scope);
                 // export default <literal> → facade 심볼에 const_kind + 사이드테이블 텍스트 설정

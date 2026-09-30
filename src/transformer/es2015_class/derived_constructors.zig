@@ -11,16 +11,23 @@ const helper_names = @import("../../runtime_helper_names.zig");
 
 pub fn DerivedConstructors(comptime Transformer: type) type {
     return struct {
+        fn makeThisAliasRef(self: *Transformer) Transformer.Error!NodeIndex {
+            const ref = try es_helpers.makeSyntheticRef(self, "_this");
+            if (self.semantic_edit_enabled and self.capture_frame != 0)
+                try self.trackLexicalCaptureRef(ref, .none, .this_value);
+            return ref;
+        }
+
         pub fn buildAssertThisInitialized(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__assertThisInitialized");
-            const this_ref = try es_helpers.makeSyntheticRef(self, "_this");
+            const this_ref = try makeThisAliasRef(self);
             self.runtime_helpers.derived_constructor = true;
             return es_helpers.makeCallExpr(self, helper, &.{this_ref}, span);
         }
 
         fn buildPossibleConstructorReturn(self: *Transformer, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__possibleConstructorReturn");
-            const this_ref = try es_helpers.makeSyntheticRef(self, "_this");
+            const this_ref = try makeThisAliasRef(self);
             self.runtime_helpers.derived_constructor = true;
             return es_helpers.makeCallExpr(self, helper, &.{ value, this_ref }, span);
         }
@@ -296,7 +303,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                         try self.scratch.append(self.allocator, replaced);
                     }
                 }
-                try self.scratch.append(self.allocator, try es_helpers.makeSyntheticRef(self, "_this"));
+                try self.scratch.append(self.allocator, try makeThisAliasRef(self));
 
                 const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
                 const seq = try self.ast.addNode(.{
@@ -581,7 +588,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                 }
 
                 // return _this;
-                const this_ref = try es_helpers.makeSyntheticRef(self, "_this");
+                const this_ref = try makeThisAliasRef(self);
                 try self.scratch.append(self.allocator, try self.ast.addNode(.{
                     .tag = .return_statement,
                     .span = span,
@@ -670,7 +677,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             const node = self.ast.getNode(idx);
 
             if (node.tag == .this_expression) {
-                return es_helpers.makeSyntheticRef(self, "_this");
+                return makeThisAliasRef(self);
             }
 
             // static_member_expression: extra = [object, property, flags]

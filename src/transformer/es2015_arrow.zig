@@ -36,7 +36,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
         /// arrow_function_expression → function_expression 변환.
         /// arrow body 안의 this → _this, arguments → _arguments 치환을 위해
         /// arrow_this_depth를 증가시킨 상태로 body를 방문한다.
-        pub fn lowerArrowFunction(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+        pub fn lowerArrowFunction(self: *Transformer, source_owner: NodeIndex, node: Node) Transformer.Error!NodeIndex {
             const e = node.data.extra;
             if (e + 2 >= self.ast.extra_data.items.len) return NodeIndex.none;
 
@@ -79,7 +79,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 }
                 break :blk new_body;
             };
-            func_body = try self.hoistArrowBodyTemps(func_body, body_temp_start, node.span);
+            func_body = try self.hoistArrowBodyTemps(func_body, body_temp_start, node.span, source_owner);
 
             // function_expression: extra = [name(0), params(1), body(2), flags(3), return_type(4)]
             const func_flags: u32 = if (flags & ast_mod.ArrowFlags.is_async != 0)

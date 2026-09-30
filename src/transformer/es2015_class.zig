@@ -80,6 +80,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return self.class_self_written_symbols.contains(id);
         }
 
+        fn trackDerivedConstructorLocalSymbols(self: *Transformer, function: NodeIndex, function_scope: @import("../semantic/scope.zig").ScopeId) Transformer.Error!void {
+            if (!self.semantic_edit_enabled) return;
+            const specs = [_]Transformer.GeneratedLocalSpec{.{
+                .name = try es_helpers.resolveSyntheticName(self, "_newTarget"),
+                .kind = .variable_var,
+                .binding_scope = function_scope,
+            }};
+            try self.trackGeneratedLocalSymbols(function, function_scope, &specs);
+        }
+
         fn beginClassSelfWrite(self: *Transformer, inner: ?u32, scope: @import("../semantic/scope.zig").ScopeId, context: *Transformer.ClassSelfWriteTarget, span: Span) Transformer.Error!?NodeIndex {
             if (!(try hasClassSelfWrite(self, inner))) return null;
             const name = try es_helpers.resolveSyntheticName(self, "_classSelfWrite");
@@ -210,8 +220,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 break :blk synthetic;
             };
             const saved_class_name_node = self.current_class_name_node;
+            const saved_class_self_symbol_id = self.current_class_self_symbol_id;
             self.current_class_name_node = new_name;
+            self.current_class_self_symbol_id = self.class_self_symbol_map.get(@intFromEnum(source_idx));
             defer self.current_class_name_node = saved_class_name_node;
+            defer self.current_class_self_symbol_id = saved_class_self_symbol_id;
 
             const source_class_scope = self.outputOwnedScope(source_idx) orelse if (self.semantic_edit_enabled)
                 std.debug.panic("ES5 class declaration has no source scope owner", .{})
@@ -220,6 +233,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const iife_parent = if (self.semantic_edit_enabled) self.outputScopeParent(source_class_scope) else self.current_scope;
             const iife_scope = try self.reserveGeneratedFunctionScope(iife_parent);
             try self.reparentGeneratedScope(source_class_scope, iife_scope);
+            if (self.current_class_self_symbol_id) |id| try self.moveSymbolToOutputScope(id, iife_scope);
 
             // super class 처리
             const has_super = !super_idx.isNone();
@@ -233,6 +247,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     // (예: EventEmitter가 eventemitter3과 react-native 양쪽에 존재),
                     // 항상 _super 매개변수를 통해 스코프를 격리한다.
                     super_expr_node = try self.makeIdentifierRefWithSymbol(super_node.data.string_ref, super_idx);
+                    try self.trackUserReadFromBinding(super_expr_node, super_idx, iife_parent);
                     super_span = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_super"));
                 } else {
                     // 표현식 (e.g. React.Component, eventTargetShim.EventTarget):
@@ -269,7 +284,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             var cm = try classifyMembers(self, body_idx, span, name_span);
             defer cm.deinit(self.allocator);
             const source_origin = self.scope_owner_origins.get(@intFromEnum(source_idx)) orelse @intFromEnum(source_idx);
-            const inner = if (!name_idx.isNone()) self.class_self_symbol_map.get(source_origin) else null;
+            const inner = self.class_self_symbol_map.get(@intFromEnum(source_idx)) orelse
+                self.class_self_symbol_map.get(source_origin);
             const previous_write_target = self.active_class_self_write_target;
             defer self.active_class_self_write_target = previous_write_target;
             var write_context: Transformer.ClassSelfWriteTarget = undefined;
@@ -386,6 +402,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         try es_helpers.makeExactSyntheticRef(self, alias_text)
                     else
                         try self.makeIdentifierRefWithSymbol(name_span, fresh_name);
+                    if (!has_self_alias) try self.trackUserReadFromBinding(class_ref, fresh_name, ctor_scope);
                     const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
                     func_node = try prependToFunctionBody(self, func_node, &.{try es_helpers.makeExprStmt(self, call, span)});
                     self.runtime_helpers.class_call_check = true;
@@ -397,6 +414,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             if (source_ctor) |original| try self.remapCopiedScopeOwner(original, func_node);
             if (has_self_alias) try self.addSyntheticRefInScope(alias_check_ref, alias_id, ctor_scope, .{ .read = true });
+            if (has_super and super_span != null) try trackDerivedConstructorLocalSymbols(self, func_node, ctor_scope);
 
             try self.scratch.append(self.allocator, func_node);
             if (write_binding) |binding|
@@ -420,7 +438,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // __extends(ClassName, _super) — parent는 IIFE 매개변수 _super
             const super_param_text = "_super";
             if (has_super and super_span != null) {
-                const child_ref = try self.makeIdentifierRefWithSymbol(name_span, fresh_name);
+                const child_ref = try self.makeCurrentClassRefAtScope(name_span, iife_scope);
                 const parent_ref = try es_helpers.makeSyntheticRef(self, super_param_text);
                 const extends_ref = try es_helpers.makeRuntimeHelperRef(self, "__extends");
                 const extends_call_expr = try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span);
@@ -430,12 +448,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // prototype assignment — 문자열 기반 참조 (linker 무관)
             for (cm.methods.items) |info| {
-                try self.scratch.append(self.allocator, try buildPrototypeAssignment(self, info, fresh_name_span, span));
+                try self.scratch.append(self.allocator, try buildPrototypeAssignment(self, info, fresh_name_span, span, iife_scope));
             }
 
             const pending_top = self.pending_nodes.items.len;
             if (cm.accessors.items.len > 0) {
-                try emitAccessors(self, cm.accessors.items, fresh_name_span, span);
+                try emitAccessors(self, cm.accessors.items, fresh_name_span, span, iife_scope);
             }
             for (self.pending_nodes.items[pending_top..]) |p| {
                 try self.scratch.append(self.allocator, p);
@@ -448,7 +466,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             for (cm.static_elements.items) |element| {
                 switch (element) {
                     .field => |field| {
-                        const class_ref = try self.makeIdentifierRefWithSymbol(fresh_name_span, fresh_name);
+                        const class_ref = try self.makeCurrentClassRefAtScope(name_span, iife_scope);
                         const static_assign = try buildStaticFieldDefinePropertyWithCtx(self, class_ref, field.key, field.init, fresh_name_span, span);
                         try self.scratch.append(self.allocator, static_assign);
                     },
@@ -458,10 +476,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
 
             // return ClassName;
+            const class_return_ref = try self.makeCurrentClassRefAtScope(name_span, iife_scope);
             try self.scratch.append(self.allocator, try self.ast.addNode(.{
                 .tag = .return_statement,
                 .span = span,
-                .data = .{ .unary = .{ .operand = try self.makeIdentifierRefWithSymbol(name_span, fresh_name), .flags = 0 } },
+                .data = .{ .unary = .{ .operand = class_return_ref, .flags = 0 } },
             }));
 
             // IIFE body
@@ -470,10 +489,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // function(_super) { ... } 또는 function() { ... }
             const none = @intFromEnum(NodeIndex.none);
-            const wrapper_params = if (has_super and super_span != null) blk: {
-                const param_binding = try es_helpers.makeSyntheticBinding(self, try self.ast.addString(super_param_text));
-                break :blk try self.ast.addNodeList(&.{param_binding});
-            } else try self.ast.addNodeList(&.{});
+            const super_param_binding = if (has_super and super_span != null)
+                try es_helpers.makeSyntheticBinding(self, try self.ast.addString(super_param_text))
+            else
+                NodeIndex.none;
+            const wrapper_params = if (!super_param_binding.isNone())
+                try self.ast.addNodeList(&.{super_param_binding})
+            else
+                try self.ast.addNodeList(&.{});
             const wrapper_params_node = try self.ast.addFormalParameters(wrapper_params, span);
             // function_expression: [name(0), params(1), body(2), flags(3), ret_type(4)]
             const wrapper_extra = try self.ast.addExtras(&.{
@@ -483,6 +506,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
             const wrapper_fn = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
             try self.bindReservedFunctionOwner(iife_scope, wrapper_fn);
+            if (!super_param_binding.isNone()) try trackGeneratedParameterSymbols(self, wrapper_fn, super_param_binding, iife_scope);
+            try trackClassPrivateSymbols(self, wrapper_fn, cm, iife_scope);
 
             // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
             // IIFE callee paren 은 emitCall 자동 wrap 이 처리 (#4042 PR8)
@@ -539,8 +564,20 @@ pub fn ES2015Class(comptime Transformer: type) type {
             else
                 try es_helpers.makeSyntheticBinding(self, name_span);
             const saved_class_name_node = self.current_class_name_node;
+            const saved_class_self_symbol_id = self.current_class_self_symbol_id;
             self.current_class_name_node = name_node;
+            // Named class expressions already carry their class-self SymbolId
+            // on the source name node. Inferred names use the separate map.
+            self.current_class_self_symbol_id = self.class_self_symbol_map.get(@intFromEnum(source_idx)) orelse
+                if (!new_name.isNone()) self.getSymbolIdAt(new_name) else null;
             defer self.current_class_name_node = saved_class_name_node;
+            defer self.current_class_self_symbol_id = saved_class_self_symbol_id;
+
+            const source_class_scope = self.outputOwnedScope(source_idx) orelse if (self.semantic_edit_enabled)
+                std.debug.panic("ES5 class expression has no source scope owner", .{})
+            else
+                self.current_scope;
+            const iife_parent = if (self.semantic_edit_enabled) self.outputScopeParent(source_class_scope) else self.current_scope;
 
             // super class
             const has_super = !super_idx.isNone();
@@ -551,6 +588,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 if (super_node.tag == .identifier_reference or super_node.tag == .binding_identifier) {
                     // 단순 식별자도 IIFE 매개변수 _super로 전달 (스코프 격리)
                     expr_super_node = try self.makeIdentifierRefWithSymbol(super_node.data.string_ref, super_idx);
+                    try self.trackUserReadFromBinding(expr_super_node, super_idx, iife_parent);
                     super_span = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_super"));
                 } else {
                     expr_super_node = try self.visitNode(super_idx);
@@ -602,10 +640,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // Instance initializers execute in the constructor, whose lexical
             // scope must exist before their nested arrows are visited.
-            const source_class_scope = self.outputOwnedScope(source_idx) orelse if (self.semantic_edit_enabled)
-                std.debug.panic("ES5 class expression has no source scope owner", .{})
-            else
-                self.current_scope;
             const has_extra = cm.methods.items.len > 0 or cm.static_elements.items.len > 0 or
                 cm.accessors.items.len > 0 or cm.private_fields.items.len > 0 or
                 cm.static_private_fields.items.len > 0 or cm.private_methods.items.len > 0 or
@@ -621,12 +655,19 @@ pub fn ES2015Class(comptime Transformer: type) type {
             else
                 false;
             const has_self_alias = wrap_self_alias or iife_self_alias;
-            const iife_parent = if (self.semantic_edit_enabled) self.outputScopeParent(source_class_scope) else self.current_scope;
             const iife_scope = if (has_extra or wrap_self_alias)
                 try self.reserveGeneratedFunctionScope(iife_parent)
             else
                 @as(@import("../semantic/scope.zig").ScopeId, .none);
             if (has_extra or wrap_self_alias) try self.reparentGeneratedScope(source_class_scope, iife_scope);
+            const func_name = if (has_extra)
+                try self.makeUserBinding(name_span, .none)
+            else
+                name_node;
+            const class_self_storage_bound = if (has_extra)
+                try self.bindClassSelfStorage(source_idx, func_name, iife_scope)
+            else
+                false;
 
             const previous_write_target = self.active_class_self_write_target;
             defer self.active_class_self_write_target = previous_write_target;
@@ -652,13 +693,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // `name_span`은 이미 addString/source에 저장된 stable Span이므로 그대로 재사용.
             // getText로 얻은 slice를 쥐고 있다가 이후 addString realloc에 freed 메모리 참조
             // → UTF-8 corrupted identifier 출력 (#1481).
-            const func_name = if (has_extra) blk: {
-                // IIFE 안쪽 함수 이름 — 안쪽 참조와 같은 심볼 (위 선언 경로와 같은 이유).
-                break :blk try self.makeUserBinding(name_span, .none);
-            } else name_node;
             if (inner != null and (write_binding != null or has_self_alias))
                 try self.preserved_simple_class_names.append(self.allocator, @intFromEnum(func_name));
-            if (has_extra and (name_idx.isNone() or !(try self.bindClassSelfStorage(source_idx, func_name, iife_scope))))
+            if (has_extra and (name_idx.isNone() or !class_self_storage_bound))
                 try self.propagateSymbolId(name_node, func_name);
 
             const source_ctor = originalConstructorOwner(self, cm.constructor_idx);
@@ -706,6 +743,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         try es_helpers.makeExactSyntheticRef(self, alias_text)
                     else
                         try self.makeIdentifierRefWithSymbol(name_span, func_name);
+                    if (!has_self_alias) try self.trackUserReadFromBinding(class_ref, func_name, ctor_scope);
                     const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
                     func_node = try prependToFunctionBody(self, func_node, &.{try es_helpers.makeExprStmt(self, call, span)});
                     self.runtime_helpers.class_call_check = true;
@@ -718,6 +756,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
 
             if (source_ctor == null and has_extra) try self.bindReservedFunctionOwner(ctor_scope, func_node);
+
+            if (has_super and super_span != null) try trackDerivedConstructorLocalSymbols(self, func_node, ctor_scope);
 
             if (!has_extra) {
                 const func = self.ast.getNode(func_node);
@@ -806,7 +846,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // __extends(ClassName, _super) — parent는 IIFE 매개변수
             if (has_super and super_span != null) {
-                const child_ref = try self.makeIdentifierRefWithSymbol(name_span, func_name);
+                const child_ref = try self.makeCurrentClassRefAtScope(name_span, iife_scope);
                 const parent_ref = try es_helpers.makeSyntheticRef(self, expr_super_param);
                 const extends_ref = try es_helpers.makeRuntimeHelperRef(self, "__extends");
                 try self.scratch.append(self.allocator, try es_helpers.makeExprStmt(self, try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span), span));
@@ -814,29 +854,30 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
 
             for (cm.methods.items) |info| {
-                try self.scratch.append(self.allocator, try buildPrototypeAssignment(self, info, name_span, span));
+                try self.scratch.append(self.allocator, try buildPrototypeAssignment(self, info, name_span, span, iife_scope));
             }
 
             const pending_top = self.pending_nodes.items.len;
             defer self.pending_nodes.shrinkRetainingCapacity(pending_top);
             if (cm.accessors.items.len > 0) {
-                try emitAccessors(self, cm.accessors.items, name_span, span);
+                try emitAccessors(self, cm.accessors.items, name_span, span, iife_scope);
             }
             try self.scratch.appendSlice(self.allocator, self.pending_nodes.items[pending_top..]);
 
             for (cm.static_elements.items) |element| {
                 switch (element) {
-                    .field => |field| try self.scratch.append(self.allocator, try buildStaticFieldDefinePropertyWithCtx(self, try self.makeIdentifierRefWithSymbol(name_span, func_name), field.key, field.init, name_span, span)),
+                    .field => |field| try self.scratch.append(self.allocator, try buildStaticFieldDefinePropertyWithCtx(self, try self.makeCurrentClassRefAtScope(name_span, iife_scope), field.key, field.init, name_span, span)),
                     .stmt => |sb_stmt| try self.scratch.append(self.allocator, sb_stmt),
                     .raw_stmt => unreachable, // visitDeferredStaticBlocks 가 호출됐어야 함
                 }
             }
 
             // return ClassName;
+            const class_return_ref = try self.makeCurrentClassRefAtScope(name_span, iife_scope);
             try self.scratch.append(self.allocator, try self.ast.addNode(.{
                 .tag = .return_statement,
                 .span = span,
-                .data = .{ .unary = .{ .operand = try self.makeIdentifierRefWithSymbol(name_span, func_name), .flags = 0 } },
+                .data = .{ .unary = .{ .operand = class_return_ref, .flags = 0 } },
             }));
 
             // IIFE body
@@ -845,13 +886,28 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // function(_super) { ... } 또는 function() { ... }
             const none = @intFromEnum(NodeIndex.none);
-            const wrapper_params = if (has_super and super_span != null) blk: {
-                break :blk try self.ast.addNodeList(&.{try es_helpers.makeSyntheticBinding(self, try self.ast.addString(expr_super_param))});
-            } else try self.ast.addNodeList(&.{});
+            const expr_super_param_binding = if (has_super and super_span != null)
+                try es_helpers.makeSyntheticBinding(self, try self.ast.addString(expr_super_param))
+            else
+                NodeIndex.none;
+            const wrapper_params = if (!expr_super_param_binding.isNone())
+                try self.ast.addNodeList(&.{expr_super_param_binding})
+            else
+                try self.ast.addNodeList(&.{});
             const wrapper_params_node2 = try self.ast.addFormalParameters(wrapper_params, span);
             const wrapper_extra = try self.ast.addExtras(&.{ none, @intFromEnum(wrapper_params_node2), @intFromEnum(iife_body), 0, none });
             const wrapper_fn = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
             try self.bindReservedFunctionOwner(iife_scope, wrapper_fn);
+            if (!expr_super_param_binding.isNone()) try trackGeneratedParameterSymbols(self, wrapper_fn, expr_super_param_binding, iife_scope);
+            try trackClassPrivateSymbols(self, wrapper_fn, cm, iife_scope);
+            if (name_idx.isNone()) {
+                const generated_class_name_specs = [_]GeneratedLocalSpec{.{
+                    .name = self.ast.getText(name_span),
+                    .kind = .function_decl,
+                    .binding_scope = iife_scope,
+                }};
+                try trackGeneratedLocalSymbols(self, wrapper_fn, iife_scope, &generated_class_name_specs);
+            }
 
             // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
             // IIFE callee paren 은 emitCall 자동 wrap 이 처리 (#4042 PR8)
@@ -886,6 +942,22 @@ pub fn ES2015Class(comptime Transformer: type) type {
         const private_fields_mod = class_private_fields.PrivateFields(Transformer);
         pub const lowerPrivateFieldGet = private_fields_mod.lowerPrivateFieldGet;
         const emitPrivateMethodArtifacts = private_fields_mod.emitPrivateMethodArtifacts;
+        const trackPrivateMethodSymbols = private_fields_mod.trackPrivateMethodSymbols;
+        const trackGeneratedParameterSymbols = private_fields_mod.trackGeneratedParameterSymbols;
+        const trackGeneratedLocalSymbols = Transformer.trackGeneratedLocalSymbols;
+        const GeneratedLocalSpec = Transformer.GeneratedLocalSpec;
+
+        fn trackClassPrivateSymbols(self: *Transformer, root: NodeIndex, cm: anytype, scope: @import("../semantic/scope.zig").ScopeId) Transformer.Error!void {
+            var field_mappings: std.ArrayList(Transformer.PrivateFieldMapping) = .empty;
+            defer field_mappings.deinit(self.allocator);
+            for (cm.private_fields.items) |pf| {
+                try field_mappings.append(self.allocator, .{ .original_name = pf.original_name, .var_name = pf.name });
+            }
+            for (cm.static_private_fields.items) |pf| {
+                try field_mappings.append(self.allocator, .{ .original_name = pf.original_name, .var_name = pf.name });
+            }
+            try trackPrivateMethodSymbols(self, root, cm.private_methods.items, field_mappings.items, scope);
+        }
         pub const tryLowerPrivateFieldAssign = private_fields_mod.tryLowerPrivateFieldAssign;
         pub const destructuringTargetHasPrivateField = private_fields_mod.destructuringTargetHasPrivateField;
         pub const emitPrivateFieldGetWithNewObj = private_fields_mod.emitPrivateFieldGetWithNewObj;

@@ -92,7 +92,6 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const left = node.data.ternary.a;
             const right = node.data.ternary.b;
             const body = node.data.ternary.c;
-
             const norm = try es_helpers.makeTempVarSpan(self); // _a
             const did_err = try es_helpers.makeTempVarSpan(self); // _b
             const err_val = try es_helpers.makeTempVarSpan(self); // _c
@@ -273,11 +272,15 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         ///   `_k` 는 선언 수집이 등록하지 않는다 — 빠지면 strict 모드에서 ReferenceError).
         /// - 라벨은 받지 않는다: 라벨 붙은 for-in 은 `collectLabeledOperations` 가 원래 노드로 루프
         ///   여부를 판정하고, 풀이 결과 안쪽 for 의 증가 지점을 `continue` 대상으로 쓴다.
-        pub fn rewriteForIn(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+        pub fn rewriteForIn(self: *Transformer, source_idx: NodeIndex, node: Node) Transformer.Error!NodeIndex {
             const span = node.span;
             const left = node.data.ternary.a;
             const right = node.data.ternary.b;
             const body = node.data.ternary.c;
+            const loop_scope: @import("../semantic/scope.zig").ScopeId = if (self.semantic_edit_enabled)
+                @enumFromInt(self.scope_owner_map.get(@intFromEnum(source_idx)) orelse @intFromEnum(self.current_scope))
+            else
+                self.current_scope;
 
             const obj = try es_helpers.makeTempVarSpan(self);
             const key = try es_helpers.makeTempVarSpan(self);
@@ -293,10 +296,10 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             }, .@"var", span);
 
             // for (_k in _obj) _keys.push(_k);
-            const push = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, names.keys), try es_helpers.makePropertyName(self, "push"), span), &.{try makeRefFromSpan(self, key)}, span);
+            const push = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeTrackedRefFromSpan(self, names.keys, .{ .read = true }, loop_scope, true), try es_helpers.makePropertyName(self, "push"), span), &.{try makeTrackedRefFromSpan(self, key, .{ .read = true }, loop_scope, true)}, span);
             const collect = try self.ast.addNode(.{ .tag = .for_in_statement, .span = span, .data = .{ .ternary = .{
-                .a = try makeRefFromSpan(self, key),
-                .b = try makeRefFromSpan(self, obj),
+                .a = try makeTrackedRefFromSpan(self, key, .{ .write = true }, loop_scope, true),
+                .b = try makeTrackedRefFromSpan(self, obj, .{ .read = true }, loop_scope, true),
                 .c = try es_helpers.makeExprStmt(self, push, span),
             } } });
 
@@ -304,17 +307,17 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const init = try es_helpers.makeVarDeclaration(self, &.{
                 try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, names.idx), try es_helpers.makeNumericLiteral(self, 0), span),
             }, .@"var", span);
-            const length = try es_helpers.makeStaticMember(self, try makeRefFromSpan(self, names.keys), try es_helpers.makePropertyName(self, "length"), span);
+            const length = try es_helpers.makeStaticMember(self, try makeTrackedRefFromSpan(self, names.keys, .{ .read = true }, loop_scope, true), try es_helpers.makePropertyName(self, "length"), span);
             const test_expr = try self.ast.addNode(.{ .tag = .binary_expression, .span = span, .data = .{ .binary = .{
-                .left = try makeRefFromSpan(self, names.idx),
+                .left = try makeTrackedRefFromSpan(self, names.idx, .{ .read = true }, loop_scope, true),
                 .right = length,
                 .flags = @intFromEnum(token_mod.Kind.l_angle),
             } } });
             const update = try self.ast.addNode(.{ .tag = .update_expression, .span = span, .data = .{ .extra = try self.ast.addExtras(&.{
-                @intFromEnum(try makeRefFromSpan(self, names.idx)),
+                @intFromEnum(try makeTrackedRefFromSpan(self, names.idx, .{ .read = true, .write = true }, loop_scope, true)),
                 @intFromEnum(token_mod.Kind.plus2) | ast_mod.UnaryFlags.postfix,
             }) } });
-            const value = try es_helpers.makeComputedMember(self, try makeRefFromSpan(self, names.keys), try makeRefFromSpan(self, names.idx), span);
+            const value = try es_helpers.makeComputedMember(self, try makeTrackedRefFromSpan(self, names.keys, .{ .read = true }, loop_scope, true), try makeTrackedRefFromSpan(self, names.idx, .{ .read = true }, loop_scope, true), span);
             const for_stmt = try self.addExtraNode(.for_statement, span, &.{
                 @intFromEnum(init), @intFromEnum(test_expr), @intFromEnum(update), @intFromEnum(try buildLoopBody(self, left, value, body, span)),
             });
@@ -404,7 +407,9 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             while (true) {
                 const name = try self.buildUniqueName(prefix, &self.forof_step_counter);
                 if (es_helpers.nameAppearsInSource(self, name)) continue;
-                return self.ast.addString(name);
+                const span = try self.ast.addString(name);
+                try self.generated_temp_spans.append(self.allocator, span);
+                return span;
             }
         }
 
@@ -428,6 +433,12 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         /// cross-module rename 이 declaration 에만 적용되는 비대칭이 발생한다.
         fn makeRefFromSpan(self: *Transformer, name_span: Span) Transformer.Error!NodeIndex {
             return es_helpers.makeSyntheticRefFromSpan(self, name_span);
+        }
+
+        fn makeTrackedRefFromSpan(self: *Transformer, name_span: Span, flags: @import("../semantic/symbol.zig").ReferenceFlags, scope: @import("../semantic/scope.zig").ScopeId, track: bool) Transformer.Error!NodeIndex {
+            const ref = try es_helpers.makeSyntheticRefFromSpan(self, name_span);
+            if (track) try self.trackHoistedTempRefInScope(name_span, ref, scope, flags);
+            return ref;
         }
 
         fn makeIteratorRef(self: *Transformer, name_span: Span, symbol: ?SymbolId, scope: @import("../semantic/scope.zig").ScopeId) Transformer.Error!NodeIndex {

@@ -1,8 +1,32 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createFixture, runNode, runZntc } from './helpers';
 
-describe('#4819 transform semantic graph for native JavaScript mangling', () => {
+const EXACT_ZERO_COUNTERS = [
+  'invalid_id',
+  'invalid_reference_node',
+  'unreachable_reference',
+  'ambiguous_ast_parent',
+  'shadowed_external_reference',
+  'duplicate_reference',
+  'identity_mismatch',
+  'binding_scope_mismatch',
+  'binding_scope_unknown',
+  'invalid_scope',
+  'reference_scope_mismatch',
+  'scope_map_mismatch',
+  'scope_owner_mismatch',
+  'scope_resolution_mismatch',
+  'invisible_reference',
+  'reference_count_mismatch',
+  'write_count_mismatch',
+  'missing_binding',
+  'missing_reference',
+  'unclassified_reference',
+];
+
+describe('#4819 transform semantic graph for JavaScript mangling', () => {
   let cleanup: (() => Promise<void>) | undefined;
 
   afterEach(async () => {
@@ -23,6 +47,77 @@ describe('#4819 transform semantic graph for native JavaScript mangling', () => 
     expect(native.stdout).toBe(expected);
     expect(transformed.stdout).toBe(native.stdout);
   }
+
+  async function expectEs5Parity(source: string, expected: string, minifySyntax = false) {
+    const fixture = await createFixture({ 'input.js': source });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+    const output = join(fixture.dir, 'output.js');
+    const result = await runZntc(
+      [
+        input,
+        '-o',
+        output,
+        '--target=es5',
+        '--minify-identifiers',
+        ...(minifySyntax ? ['--minify-syntax'] : []),
+      ],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+    const identity = result.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity '));
+    expect(identity).toBeDefined();
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const emitted = readFileSync(output, 'utf8');
+    expect(emitted).not.toMatch(/\b(?:const|let)\s|\bfunction\s*\*|=>|\?\?|\?\.|\.\.\./);
+    expect(emitted).not.toContain('class Base');
+    expect(emitted).not.toContain('class Box');
+    expect(emitted).not.toContain('#count');
+    expect(emitted).not.toContain('#value');
+    const native = await runNode(input);
+    const transformed = await runNode(output);
+    expect(native.stdout).toBe(expected);
+    expect(transformed.stdout).toBe(native.stdout);
+  }
+
+  test('ESM imports, named exports, and default exports keep one semantic graph', async () => {
+    const fixture = await createFixture({
+      'dependency.mjs': 'export const value = 8;',
+      'input.mjs': `
+        import { value as _loop } from './dependency.mjs';
+        const _state = 3;
+        const calculate = (local = _loop) => local + _state;
+        export const result = calculate();
+        const _default = calculate(9);
+        export default _default;
+        console.log(result, _default, _loop);
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.mjs');
+    const output = join(fixture.dir, 'output.mjs');
+    const result = await runZntc([input, '-o', output, '--minify-identifiers'], {
+      env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+    const identity = result.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity '));
+    expect(identity).toBeDefined();
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const native = await runNode(input);
+    const transformed = await runNode(output);
+    expect(native.stdout).toBe('11 12 8');
+    expect(transformed.stdout).toBe(native.stdout);
+  });
 
   test('copied declarations retain their binding and nested scope', async () => {
     await expectNativeParity(
@@ -51,5 +146,289 @@ describe('#4819 transform semantic graph for native JavaScript mangling', () => 
       `,
       '12',
     );
+  });
+
+  test('downlevel loop closures and default parameters use the edited scope graph', async () => {
+    await expectEs5Parity(
+      `
+        const _loop = 7;
+        const _a = 40;
+        function collect(values) {
+          const readers = [];
+          for (let index = 0; index < values.length; index++) {
+            let _a = index;
+            readers.push((fallback = _loop) => () => _a + fallback);
+          }
+          return readers.map((makeReader) => makeReader()()).join(',');
+        }
+        console.log(collect([1, 2, 3]), _a);
+      `,
+      '7,8,9 40',
+    );
+  });
+
+  test('downlevel generator state and destructuring temps keep colliding source names', async () => {
+    await expectEs5Parity(
+      `
+        const _state = 3;
+        const _loop = 7;
+        function* read(input = _state) {
+          const { value = _loop, ...rest } = input ?? {};
+          yield value;
+          yield rest.extra ?? _state;
+        }
+        const first = Array.from(read({ value: 9, extra: 5 }));
+        const second = Array.from(read(null));
+        console.log(first.concat(second).join(','), _state, _loop);
+      `,
+      '9,5,7,3 3 7',
+    );
+  });
+
+  test('downlevel classes keep private state, class self names, and shadowed helpers', async () => {
+    await expectEs5Parity(
+      `
+        const _Class = 11;
+        const _super = 13;
+        class Base {
+          read() { return this.value; }
+        }
+        class Box extends Base {
+          static #count = 0;
+          #value;
+          constructor(value) {
+            super();
+            this.value = value;
+            this.#value = value;
+            Box.#count++;
+          }
+          read() { return this.#value + super.read() + _Class + _super; }
+          static count() { return Box.#count; }
+        }
+        const first = new Box(2);
+        const second = new Box(3);
+        console.log(first.read(), second.read(), Box.count(), _Class, _super);
+      `,
+      '28 30 2 11 13',
+    );
+  });
+
+  test('assignment class fields reuse edited symbol scopes after downleveling', async () => {
+    const fixture = await createFixture({
+      'input.js': `
+        const _a = 39;
+        class Base {
+          set value(value) { this.stored = value; }
+        }
+        class Box extends Base {
+          value = (() => {
+            const _a = 2;
+            return _a + 1;
+          })();
+          read() { return this.stored + ':' + _a; }
+        }
+        console.log(new Box().read());
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+
+    for (const minify of [false, true]) {
+      const output = join(fixture.dir, minify ? 'minified.js' : 'plain.js');
+      const result = await runZntc(
+        [
+          input,
+          '-o',
+          output,
+          '--target=es5',
+          '--use-define-for-class-fields=false',
+          ...(minify ? ['--minify-identifiers'] : []),
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, result.stderr).toBe(0);
+      if (minify) {
+        expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+        const identity = result.stderr
+          .split(/\r?\n/)
+          .find((line) => line.includes('zntc: symbol-identity '));
+        expect(identity).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+        }
+      }
+      const transformed = await runNode(output);
+      expect(transformed.stdout).toBe('3:39');
+    }
+  });
+
+  test('syntax minification reads the edited loop and closure scopes', async () => {
+    await expectEs5Parity(
+      `
+        const _loop = 7;
+        const _a = 40;
+        function collect(values) {
+          const readers = [];
+          for (let index = 0; index < values.length; index++) {
+            readers.push(() => values[index] + index + _loop);
+          }
+          return readers.map((read) => read()).join(',');
+        }
+        console.log(collect([1, 2, 3]), _a);
+      `,
+      '8,10,12 40',
+      true,
+    );
+  });
+
+  test('syntax folds keep renamed symbols when expression slots adopt identifier children', async () => {
+    const fixture = await createFixture({
+      'input.js': `
+        const holder = { n() { return 1; } };
+        console.log(
+          typeof (0, holder).n,
+          (true ? holder : null).n(),
+          (true && holder).n(),
+          (false || holder).n(),
+          (null ?? holder).n(),
+        );
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+    const output = join(fixture.dir, 'output.js');
+    const result = await runZntc(
+      [input, '-o', output, '--minify-identifiers', '--minify-whitespace', '--minify-syntax'],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+    const identity = result.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity '));
+    expect(identity).toBeDefined();
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    expect(readFileSync(output, 'utf8')).not.toContain('holder');
+    const native = await runNode(input);
+    const transformed = await runNode(output);
+    expect(native.stdout).toBe('function 1 1 1 1');
+    expect(transformed.stdout).toBe(native.stdout);
+  });
+
+  test('drop-console and drop-debugger remove only their emitted references', async () => {
+    const fixture = await createFixture({
+      'input.js': `
+        const _a = 40;
+        let result = 0;
+        function calculate(value) {
+          console.log('discarded', value);
+          debugger;
+          result = value + _a;
+        }
+        calculate(2);
+        process.stdout.write(String(result));
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+    const output = join(fixture.dir, 'output.js');
+    const result = await runZntc(
+      [
+        input,
+        '-o',
+        output,
+        '--target=es5',
+        '--minify-identifiers',
+        '--drop=console',
+        '--drop=debugger',
+      ],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+    const identity = result.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity '));
+    expect(identity).toBeDefined();
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const transformed = await runNode(output);
+    expect(transformed.stdout).toBe('42');
+  });
+
+  test('defined external names stay reserved after transform editing', async () => {
+    const fixture = await createFixture({
+      'input.js': `
+        globalThis.e = 40;
+        function calculate() {
+          const first = 1;
+          const second = 2;
+          const third = 3;
+          const fourth = 4;
+          return first + second + third + fourth + __VALUE__;
+        }
+        console.log(calculate());
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+    const output = join(fixture.dir, 'output.js');
+    const result = await runZntc(
+      [input, '-o', output, '--minify-identifiers', '--define:__VALUE__=e'],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+    const identity = result.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity '));
+    expect(identity).toBeDefined();
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const emitted = readFileSync(output, 'utf8');
+    expect(emitted).not.toMatch(/\bvar e\b/);
+    const transformed = await runNode(output);
+    expect(transformed.stdout).toBe('50');
+  });
+
+  test('automatic JSX runtime import aliases track their generated references', async () => {
+    const fixture = await createFixture({
+      'node_modules/react/package.json': JSON.stringify({
+        exports: { './jsx-runtime': './jsx-runtime.mjs' },
+      }),
+      'node_modules/react/jsx-runtime.mjs': `
+        export function jsx(type, props) { return { type, props }; }
+        export function jsxs(type, props) { return { type, props }; }
+        export const Fragment = Symbol.for('fragment');
+      `,
+      'input.jsx': `
+        const _jsx = 99;
+        const _jsxs = 100;
+        const value = 3;
+        const element = <div data-x={value}><span>{_jsx}</span><span>{_jsxs}</span></div>;
+        console.log(element.type, element.props['data-x'], element.props.children.map((child) => child.props.children).join(','), _jsx, _jsxs);
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.jsx');
+    const output = join(fixture.dir, 'output.mjs');
+    const result = await runZntc([input, '-o', output, '--jsx=automatic', '--minify-identifiers'], {
+      env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+    const identity = result.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity '));
+    expect(identity).toBeDefined();
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const transformed = await runNode(output);
+    expect(transformed.stdout).toBe('div 3 99,100 99 100');
   });
 });

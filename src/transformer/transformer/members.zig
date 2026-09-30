@@ -273,8 +273,7 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
     }
 
     if (self.temp_var_counter > saved_temp_counter and !new_body.isNone()) {
-        new_body = if (@intFromEnum(source_owner) < self.parser_node_count or
-            self.transformed_scope_owner_map.contains(@intFromEnum(source_owner)))
+        new_body = if (self.semantic_edit_enabled)
             try self.hoistTempVarsInOriginalFunction(new_body, saved_temp_counter, node.span)
         else
             try self.hoistTempVars(new_body, saved_temp_counter, node.span);

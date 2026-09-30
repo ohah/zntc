@@ -142,10 +142,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // `__generator(body, foo)` 의 `foo` 가 원본 이름 그대로 emit → ReferenceError.
             // makeIdentifierRefWithSymbol 로 원본 binding 의 symbol_id 까지 전파해야
             // codegen 이 `meta.renames.get(sid)` 로 mangled name 을 찾아 emit 함.
-            const genFn_ref: NodeIndex = if (!new_name.isNone())
-                try self.makeIdentifierRefWithSymbol(self.ast.getNode(new_name).data.string_ref, new_name)
-            else
-                .none;
+            const genFn_ref: NodeIndex = if (!new_name.isNone()) blk: {
+                const ref = try self.makeIdentifierRefWithSymbol(self.ast.getNode(new_name).data.string_ref, new_name);
+                try self.trackUserReadFromBinding(ref, new_name, self.current_scope);
+                break :blk ref;
+            } else .none;
             const gen = try buildGeneratorHelperCallWithProto(self, sm_body, genFn_ref, span);
             const source_scope = self.originalFunctionScope(source_owner);
             try self.bindGeneratedState(source_scope, source_scope, gen.callback, gen.state_param, frame.state_ref_start, sm_result.hoisted_temps.items, frame.callback_temps.items, span);
@@ -192,11 +193,16 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 new_flags,
                 none,
             });
-            return self.ast.addNode(.{
+            const result = try self.ast.addNode(.{
                 .tag = node.tag,
                 .span = span,
                 .data = .{ .extra = new_extra },
             });
+            if (self.semantic_edit_enabled and source_scope.isNone()) {
+                try self.deferred_generator_helper_refs.put(self.allocator, @intFromEnum(result), gen.helper_ref);
+            }
+            try es_helpers.trackThisArgumentsCaptureSymbols(self, result, source_scope);
+            return result;
         }
 
         pub const StateMachineResult = struct {
@@ -217,6 +223,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         pub const StateMachineFrame = struct {
             saved_temp_spans: std.ArrayListUnmanaged(Span),
             saved_var_origins: std.AutoHashMapUnmanaged(u64, NodeIndex),
+            saved_state_bindings: std.ArrayListUnmanaged(HoistedStateTemp),
             state_ref_start: usize,
             callback_temps: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty,
         };
@@ -227,14 +234,28 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             self.generator_temp_var_spans.clearRetainingCapacity();
             const saved_origins = self.generator_var_origins;
             self.generator_var_origins = .empty;
-            return .{ .saved_temp_spans = saved, .saved_var_origins = saved_origins, .state_ref_start = self.generator_state_refs.items.len };
+            var saved_state_bindings: std.ArrayListUnmanaged(HoistedStateTemp) = .empty;
+            try saved_state_bindings.appendSlice(self.allocator, self.generator_state_bindings.items);
+            self.generator_state_bindings.clearRetainingCapacity();
+            self.state_machine_depth += 1;
+            return .{
+                .saved_temp_spans = saved,
+                .saved_var_origins = saved_origins,
+                .saved_state_bindings = saved_state_bindings,
+                .state_ref_start = self.generator_state_refs.items.len,
+            };
         }
 
         pub fn leaveStateMachineTemps(self: *Transformer, frame: *StateMachineFrame) void {
+            std.debug.assert(self.state_machine_depth > 0);
+            self.state_machine_depth -= 1;
             self.generator_state_refs.shrinkRetainingCapacity(frame.state_ref_start);
             self.generator_temp_var_spans.clearRetainingCapacity();
             self.generator_temp_var_spans.appendSlice(self.allocator, frame.saved_temp_spans.items) catch {};
+            self.generator_state_bindings.clearRetainingCapacity();
+            self.generator_state_bindings.appendSlice(self.allocator, frame.saved_state_bindings.items) catch {};
             frame.saved_temp_spans.deinit(self.allocator);
+            frame.saved_state_bindings.deinit(self.allocator);
             self.generator_var_origins.deinit(self.allocator);
             self.generator_var_origins = frame.saved_var_origins;
             frame.saved_var_origins = .empty;
@@ -292,6 +313,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return (@as(u64, span.start) << 32) | span.end;
         }
 
+        fn recordGeneratorStateBinding(self: *Transformer, binding: NodeIndex, name_span: Span) Transformer.Error!void {
+            for (self.generator_state_bindings.items) |existing| {
+                if (existing.binding == binding) return;
+            }
+            try self.generated_temp_spans.append(self.allocator, name_span);
+            try self.generator_state_bindings.append(self.allocator, .{ .binding = binding, .name_span = name_span });
+        }
+
         fn makeGeneratorTempRef(self: *Transformer, name_span: Span, node_span: Span, flags: @import("../semantic/symbol.zig").ReferenceFlags) Transformer.Error!NodeIndex {
             const ref = try es_helpers.makeTempVarRef(self, name_span, node_span);
             if (self.semantic_edit_enabled and !self.generator_var_origins.contains(spanKey(name_span))) {
@@ -308,7 +337,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// 담으므로, 선언을 만들 때 심볼을 물려줄 수 있게 원래 바인딩을 따로 기록한다.
         fn registerGeneratorVar(self: *Transformer, span: Span, origin: NodeIndex) Transformer.Error!void {
             try self.generator_temp_var_spans.append(self.allocator, span);
-            try self.generator_var_origins.put(self.allocator, spanKey(span), origin);
+            const origin_raw = @intFromEnum(origin);
+            if (origin_raw < self.symbol_ids.items.len and self.symbol_ids.items[origin_raw] != null)
+                try self.generator_var_origins.put(self.allocator, spanKey(span), origin);
         }
 
         /// generator body 의 hoisted `var` 선언과 for-of/await 변환에서 생성한 임시 변수를
@@ -323,7 +354,16 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             defer seen.deinit(self.allocator);
             for (hoisted_vars) |binding| {
                 const bnode = self.ast.getNode(binding);
-                if (bnode.tag == .binding_identifier) try seen.put(self.allocator, self.ast.getText(bnode.data.string_ref), {});
+                if (bnode.tag == .binding_identifier) {
+                    try seen.put(self.allocator, self.ast.getText(bnode.data.string_ref), {});
+                    for (self.generator_temp_var_spans.items) |temp_span| {
+                        if (self.generator_var_origins.contains(spanKey(temp_span))) continue;
+                        if (bnode.data.string_ref.start == temp_span.start) {
+                            try recordGeneratorStateBinding(self, binding, temp_span);
+                            break;
+                        }
+                    }
+                }
                 const declarator = try es_helpers.makeDeclarator(self, binding, .none, span);
                 try self.scratch.append(self.allocator, declarator);
             }
@@ -337,6 +377,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try self.makeUserBinding(temp_span, source)
                 else
                     try es_helpers.makeSyntheticBinding(self, temp_span);
+                if (origin == null) try self.generated_temp_spans.append(self.allocator, temp_span);
                 try state_temps.append(self.allocator, .{
                     .binding = binding,
                     .name_span = temp_span,
@@ -513,7 +554,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         // for-of 는 일반 경로와 같은 풀이(반복자 for + 닫기 try/finally), for-in 은 키
                         // 스냅샷 + 인덱스 for 풀이로 바꿔 그 구조를 수집한다 (#4746).
                         const rewritten = if (stmt.tag == .for_in_statement)
-                            try ForOf.rewriteForIn(self, stmt)
+                            try ForOf.rewriteForIn(self, stmt_idx, stmt)
                         else
                             try ForOf.rewriteForOf(self, stmt_idx, stmt, .none, true);
                         try collectOperations(self, rewritten, ops, next_label);
@@ -531,7 +572,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     // 수집한다 (#4746 3단계). 본문이 상태 기계로 수집되므로 안쪽 for-of/for-in 의
                     // yield 도 제대로 접히고, 반복별 바인딩은 while 의 본문 캡처 추출이 맡는다.
                     // async generator 는 본문 전처리에서 이미 제자리 풀이돼 여기 오지 않는다.
-                    const rewritten = try @import("es2018_for_await.zig").ES2018ForAwait(Transformer).rewriteForAwait(self, stmt_idx, stmt, .none, false);
+                    const rewritten = try @import("es2018_for_await.zig").ES2018ForAwait(Transformer).rewriteForAwait(self, stmt_idx, stmt, .none, false, true);
                     try collectOperations(self, rewritten, ops, next_label);
                 },
                 .break_statement, .continue_statement => {
@@ -1826,7 +1867,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (binding.isNone()) return binding;
             const node = self.ast.getNode(binding);
             if (node.tag != .binding_identifier) return binding;
-            return self.makeIdentifierRefWithSymbol(node.data.string_ref, binding);
+            const target = try self.makeIdentifierRefWithSymbol(node.data.string_ref, binding);
+            if (self.getSymbolIdAt(binding)) |raw_id| {
+                const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+                if (raw_id >= symbols.len) std.debug.panic("generator assignment binding id is out of range", .{});
+                try self.trackUserWriteFromBinding(target, binding, symbols[raw_id].scope_id);
+            } else {
+                try self.trackHoistedTempRef(node.data.string_ref, target, .{ .write = true });
+            }
+            return target;
         }
 
         /// 클래스 **헤더**(extends 식 · computed 키)를 소스 순서대로 temp 에 미리 평가하고,
@@ -2679,6 +2728,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return es_helpers.makeExprStmt(self, sent, span);
         }
 
+        fn makeTrackedGeneratorTempRef(self: *Transformer, name_span: Span, flags: @import("../semantic/symbol.zig").ReferenceFlags) Transformer.Error!NodeIndex {
+            const ref = try es_helpers.makeTempVarRef(self, name_span, name_span);
+            try self.trackHoistedTempRef(name_span, ref, flags);
+            return ref;
+        }
+
         /// _state identifier reference 생성.
         fn buildStateRef(self: *Transformer, _: Span) Transformer.Error!NodeIndex {
             return makePendingStateRef(self);
@@ -2706,7 +2761,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 return;
             }
             const wrapper_scope = try self.addGeneratedFunctionScope(parent, wrapper);
-            self.relocatePendingRuntimeHelperRef(gen.helper_ref, wrapper_scope);
+            try self.relocatePendingRuntimeHelperRef(gen.helper_ref, wrapper_scope);
             try self.bindGeneratedState(wrapper_scope, parent, gen.callback, gen.state_param, frame.state_ref_start, wrapper_temps, frame.callback_temps.items, span);
         }
 

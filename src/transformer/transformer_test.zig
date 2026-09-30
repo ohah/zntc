@@ -2351,6 +2351,25 @@ test "TLA: wraps top-level await in async IIFE when unsupported" {
     try std.testing.expect(std.mem.indexOf(u8, code, "yield") == null);
 }
 
+test "TLA: deferred export moves with a wrapped top-level local dependency" {
+    const source = "const items = [1]; await Promise.resolve(); export const OUT = { items };";
+    var r = try parseAsModuleAndTransform(
+        std.testing.allocator,
+        source,
+        .{
+            .tla_export_decl_deferrable = true,
+            .unsupported = .{ .top_level_await = true },
+        },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+
+    try std.testing.expect(std.mem.indexOf(u8, code, "var OUT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "OUT = { items }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "export const OUT") == null);
+}
+
 test "TLA: no top-level await → no wrapping" {
     // TLA 가 없으면 wrap 을 적용하지 않는다 (불필요한 IIFE 생성 방지).
     const source = "console.log(1);";

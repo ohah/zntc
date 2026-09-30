@@ -312,6 +312,12 @@ pub fn ES2017(comptime Transformer: type) type {
             const parameter_temp_end = self.temp_var_counter;
             const param_needs_this = self.needs_this_var;
             const param_needs_arguments = self.needs_arguments_var;
+            // for-await is lowered in place before the inner generator is
+            // visited. Its state temps are registered from the rewritten
+            // declarations below; they must not also escape to the program
+            // hoister through this enclosing transform's counter range.
+            const body_temp_counter = self.temp_var_counter;
+            defer self.temp_var_counter = body_temp_counter;
 
             // `yield*` 를 먼저 푼다 — 그래야 그 안에 남은 `await` 를 아래 패스가 한 번에 정리한다.
             try rewriteYieldStarToHelper(self, body_idx);
@@ -378,6 +384,16 @@ pub fn ES2017(comptime Transformer: type) type {
                 }
             }
 
+            if (self.semantic_edit_enabled and self.generator_temp_var_spans.items.len > 0 and !lowered_inner.isNone()) {
+                var temp_specs: std.ArrayListUnmanaged(Transformer.GeneratedLocalSpec) = .empty;
+                defer temp_specs.deinit(self.allocator);
+                for (self.generator_temp_var_spans.items) |temp_span| {
+                    try temp_specs.append(self.allocator, .{ .name = self.ast.getText(temp_span), .kind = .variable_var });
+                }
+                const inner_output_scope = self.outputOwnedScope(lowered_inner) orelse inner_scope;
+                try self.trackGeneratedLocalSymbols(lowered_inner, inner_output_scope, temp_specs.items);
+            }
+
             // __asyncGenerator(this, arguments, function*() {...})
             self.runtime_helpers.async_generator = true;
             self.runtime_helpers.await_helper = true;
@@ -415,11 +431,13 @@ pub fn ES2017(comptime Transformer: type) type {
                 outer_flags,
                 none,
             });
-            return self.ast.addNode(.{
+            const result = try self.ast.addNode(.{
                 .tag = node.tag,
                 .span = span,
                 .data = .{ .extra = outer_extra },
             });
+            try es_helpers.trackThisArgumentsCaptureSymbols(self, result, source_scope);
+            return result;
         }
 
         /// `await expr` → `(yield expr)`
@@ -461,6 +479,7 @@ pub fn ES2017(comptime Transformer: type) type {
             self.temp_var_counter = saved_temp_counter;
             self.ast.extra_data.items[self.ast.getNode(gen_func).data.extra + 2] = @intFromEnum(gen_body);
             try self.bindGeneratedFunctionTemps(source_scope, gen_scope, gen_body, body_temps.items, node.span);
+            try self.moveGeneratedFunctionBodyBindings(source_scope, gen_scope, gen_body);
 
             const parameter_temp_start = self.temp_var_counter;
             const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
@@ -499,11 +518,13 @@ pub fn ES2017(comptime Transformer: type) type {
                 new_flags,
                 @intFromEnum(NodeIndex.none),
             });
-            return self.ast.addNode(.{
+            const result = try self.ast.addNode(.{
                 .tag = node.tag,
                 .span = node.span,
                 .data = .{ .extra = new_extra },
             });
+            try es_helpers.trackThisArgumentsCaptureSymbols(self, result, source_scope);
+            return result;
         }
 
         /// async () => { ... } → () => __async(function*() { ... })
@@ -544,6 +565,7 @@ pub fn ES2017(comptime Transformer: type) type {
             self.temp_var_counter = saved_temp_counter;
             self.ast.extra_data.items[self.ast.getNode(gen_func).data.extra + 2] = @intFromEnum(hoisted_body);
             try self.bindGeneratedFunctionTemps(source_scope, gen_scope, hoisted_body, body_temps.items, node.span);
+            try self.moveGeneratedFunctionBodyBindings(source_scope, gen_scope, hoisted_body);
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_func, node.span);
 
             const new_flags = flags & ~@as(u32, ast_mod.ArrowFlags.is_async);
@@ -652,11 +674,13 @@ pub fn ES2017(comptime Transformer: type) type {
                 new_flags,
                 @intFromEnum(NodeIndex.none),
             });
-            return self.ast.addNode(.{
+            const result = try self.ast.addNode(.{
                 .tag = node.tag,
                 .span = span,
                 .data = .{ .extra = new_extra },
             });
+            try es_helpers.trackThisArgumentsCaptureSymbols(self, result, self.originalFunctionScope(source_owner));
+            return result;
         }
 
         /// async arrow → function() { return __async(__generator(function(_state) { switch... }).call(this)) }

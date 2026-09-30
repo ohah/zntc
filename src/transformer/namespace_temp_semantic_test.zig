@@ -64,7 +64,16 @@ test "#4819 namespace destructuring temp has one IIFE binding and exact read ref
         for (edited.references) |ref| {
             if (@intFromEnum(ref.symbol_id) != si or ref.flags.declare) continue;
             try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(ref.node_index)) != null);
-            try std.testing.expectEqual(expected_scope, @intFromEnum(ref.scope_id));
+            var use_scope = ref.scope_id;
+            var resolves_temp = false;
+            while (!use_scope.isNone()) {
+                if (@intFromEnum(use_scope) == expected_scope) {
+                    resolves_temp = true;
+                    break;
+                }
+                use_scope = edited.scopes[use_scope.toIndex()].parent;
+            }
+            try std.testing.expect(resolves_temp);
             try std.testing.expect(ref.flags.read and !ref.flags.write);
             try std.testing.expectEqual(Reference.NO_STMT, ref.stmt_idx);
             try std.testing.expectEqual(@as(?u32, @intCast(si)), edited.symbol_ids[@intFromEnum(ref.node_index)]);

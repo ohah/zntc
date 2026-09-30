@@ -153,6 +153,59 @@ fn referencesAny(self: anytype, idx: NodeIndex, names: *const std.StringHashMapU
     return c.found;
 }
 
+fn addDeferredName(allocator: std.mem.Allocator, ast: *const ast_mod.Ast, names: *std.StringHashMapUnmanaged(void), node: NodeIndex) std.mem.Allocator.Error!void {
+    if (node.isNone() or @intFromEnum(node) >= ast.nodes.items.len) return;
+    const binding = ast.getNode(node);
+    if (binding.tag != .binding_identifier) return;
+    const name = try ast.getTextStable(allocator, binding.data.string_ref);
+    try names.put(allocator, name, {});
+}
+
+fn addDeferredPatternNames(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    names: *std.StringHashMapUnmanaged(void),
+    pattern: NodeIndex,
+) std.mem.Allocator.Error!void {
+    var walker = try ast_walk.bindingIdentifiers(allocator, ast, pattern, .{ .cover_grammar_assignment = true });
+    defer walker.deinit();
+    while (try walker.next()) |binding| try addDeferredName(allocator, ast, names, binding);
+}
+
+/// Names declared by top-level statements moved into the async wrapper. An
+/// export initializer that reads one of them must move with it when the
+/// module's evaluation promise can defer exports safely.
+fn addDeferredStatementNames(allocator: std.mem.Allocator, ast: *const ast_mod.Ast, names: *std.StringHashMapUnmanaged(void), statement: NodeIndex) std.mem.Allocator.Error!void {
+    if (statement.isNone() or @intFromEnum(statement) >= ast.nodes.items.len) return;
+    const node = ast.getNode(statement);
+    switch (node.tag) {
+        .variable_declaration => {
+            const extra = node.data.extra;
+            if (extra + 2 >= ast.extra_data.items.len) return;
+            const start = ast.extra_data.items[extra + 1];
+            const len = ast.extra_data.items[extra + 2];
+            if (start > ast.extra_data.items.len or len > ast.extra_data.items.len - start) return;
+            for (ast.extra_data.items[start .. start + len]) |raw_declarator| {
+                if (raw_declarator >= ast.nodes.items.len) continue;
+                const declarator = ast.nodes.items[raw_declarator];
+                if (declarator.tag != .variable_declarator or declarator.data.extra >= ast.extra_data.items.len) continue;
+                try addDeferredPatternNames(allocator, ast, names, @enumFromInt(ast.extra_data.items[declarator.data.extra]));
+            }
+        },
+        .function_declaration => {
+            const extra = node.data.extra;
+            if (extra + ast_mod.FunctionExtra.name < ast.extra_data.items.len)
+                try addDeferredName(allocator, ast, names, @enumFromInt(ast.extra_data.items[extra + ast_mod.FunctionExtra.name]));
+        },
+        .class_declaration => {
+            const extra = node.data.extra;
+            if (extra + ast_mod.ClassExtra.name < ast.extra_data.items.len)
+                try addDeferredName(allocator, ast, names, @enumFromInt(ast.extra_data.items[extra + ast_mod.ClassExtra.name]));
+        },
+        else => {},
+    }
+}
+
 /// declarator 들의 초기화식을 떼어 `var a, b;` 로 만든다 (선언은 밖에 남아 export 보존).
 /// 호출 전에 `allDeclaratorsAreIdentifiers` 가 참임이 보장돼야 한다.
 fn stripVarInitializers(comptime Transformer: type, self: *Transformer, decl_idx: NodeIndex) Transformer.Error!NodeIndex {
@@ -188,13 +241,24 @@ fn drainPendingAround(
     trailing_top: usize,
     visited: NodeIndex,
 ) Transformer.Error!void {
+    return drainPendingAroundTo(Transformer, self, pending_top, trailing_top, visited, &self.scratch);
+}
+
+fn drainPendingAroundTo(
+    comptime Transformer: type,
+    self: *Transformer,
+    pending_top: usize,
+    trailing_top: usize,
+    visited: NodeIndex,
+    destination: *std.ArrayList(NodeIndex),
+) Transformer.Error!void {
     if (self.pending_nodes.items.len > pending_top) {
-        try self.scratch.appendSlice(self.allocator, self.pending_nodes.items[pending_top..]);
+        try destination.appendSlice(self.allocator, self.pending_nodes.items[pending_top..]);
         self.pending_nodes.shrinkRetainingCapacity(pending_top);
     }
-    if (!visited.isNone()) try self.scratch.append(self.allocator, visited);
+    if (!visited.isNone()) try destination.append(self.allocator, visited);
     if (self.trailing_nodes.items.len > trailing_top) {
-        try self.scratch.appendSlice(self.allocator, self.trailing_nodes.items[trailing_top..]);
+        try destination.appendSlice(self.allocator, self.trailing_nodes.items[trailing_top..]);
         self.trailing_nodes.shrinkRetainingCapacity(trailing_top);
     }
 }
@@ -248,6 +312,18 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     var move_set: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer move_set.deinit(self.allocator);
     {
+        // In ESM modes with a supported async evaluator, any export depending
+        // on a top-level local moved into the wrapper must be assigned there
+        // too. The importer waits for the returned evaluation promise.
+        if (self.options.tla_export_decl_deferrable) {
+            var local_i: u32 = 0;
+            while (local_i < list.len) : (local_i += 1) {
+                const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + local_i]);
+                if (!isModuleDeclaration(self.ast.getNode(child).tag))
+                    try addDeferredStatementNames(self.allocator, self.ast, &deferred_names, child);
+            }
+        }
+
         var j: u32 = 0;
         while (j < list.len) : (j += 1) {
             const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + j]);
@@ -328,7 +404,10 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     defer self.current_scope = outer_scope;
 
     // wrap target 수집 (visit 하여 기본 변환 적용)
+    var prelude_stmts: std.ArrayList(NodeIndex) = .empty;
+    defer prelude_stmts.deinit(self.allocator);
     const body_stmts_top = self.scratch.items.len;
+    var wrapper_started = self.options.tla_export_decl_deferrable;
     i = 0;
     while (i < list.len) : (i += 1) {
         const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
@@ -358,7 +437,9 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
         const pt = self.pending_nodes.items.len;
         const tt = self.trailing_nodes.items.len;
         const visited = try self.visitNode(child);
-        try drainPendingAround(Transformer, self, pt, tt, visited);
+        if (!wrapper_started and try hasTopLevelAwait(self.ast, child)) wrapper_started = true;
+        const destination = if (wrapper_started) &self.scratch else &prelude_stmts;
+        try drainPendingAroundTo(Transformer, self, pt, tt, visited, destination);
     }
     const body_stmts_end = self.scratch.items.len;
     self.current_scope = outer_scope;
@@ -410,6 +491,7 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     // 현재 scratch 에는 [imports_end..body_stmts_end] 까지 wrap 대상이 있으므로
     // body_stmts_top 이후를 drop 하고 새 리스트를 구성.
     self.scratch.shrinkRetainingCapacity(imports_end);
+    try self.scratch.appendSlice(self.allocator, prelude_stmts.items);
     if (!visited_iife.isNone()) try self.scratch.append(self.allocator, visited_iife);
 
     // exports pass-through

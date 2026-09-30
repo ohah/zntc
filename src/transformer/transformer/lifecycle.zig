@@ -122,10 +122,13 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.scratch.deinit(self.allocator);
     if (self.temp_collision_set) |*set| set.deinit(self.allocator);
     self.temp_span_by_counter.deinit(self.allocator);
+    self.generated_temp_spans.deinit(self.allocator);
     self.value_used_symbols.deinit(self.allocator);
     self.pending_nodes.deinit(self.allocator);
     self.symbol_ids.deinit(self.allocator);
     self.reference_origin_map.deinit(self.allocator);
+    self.explicit_global_reference_nodes.deinit(self.allocator);
+    self.runtime_helper_ref_index.deinit(self.allocator);
     self.scope_owner_remaps.deinit(self.allocator);
     self.scope_owner_removed.deinit(self.allocator);
     self.scope_owner_origins.deinit(self.allocator);
@@ -137,6 +140,9 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.capture_refs.deinit(self.allocator);
     self.capture_ref_by_origin.deinit(self.allocator);
     self.capture_binding_ids.deinit(self.allocator);
+    self.bound_temp_symbols.deinit(self.allocator);
+    self.generator_state_bindings.deinit(self.allocator);
+    self.generated_body_binding_moves.deinit(self.allocator);
     self.helper_ref_nodes.deinit(self.allocator);
     self.preserved_simple_class_names.deinit(self.allocator);
     self.class_self_written_symbols.deinit(self.allocator);
@@ -172,6 +178,8 @@ pub fn deinitExceptAst(self: *Transformer) void {
         self.allocator.free(migration.parameter_symbol_ids);
     }
     self.deferred_generator_loop_migrations.deinit(self.allocator);
+    self.deferred_generator_helper_refs.deinit(self.allocator);
+    self.deferred_capture_function_owners.deinit(self.allocator);
     self.generator_var_origins.deinit(self.allocator);
     self.tagged_template_fns.deinit(self.allocator);
     if (self.name_arena) |*a| a.deinit();
@@ -204,7 +212,10 @@ pub fn initSymbolIds(self: *Transformer, analyzer_symbol_ids: []const ?u32) Erro
 
 /// #2869 helper marker 등록. caller 는 새로 만든 NodeIndex 를 넘긴다.
 pub fn markRuntimeHelperRef(self: *Transformer, idx: ast_mod.NodeIndex) Error!void {
-    try self.helper_ref_nodes.append(self.allocator, @intFromEnum(idx));
+    const raw = @intFromEnum(idx);
+    if (self.runtime_helper_ref_index.contains(raw)) return;
+    try self.helper_ref_nodes.append(self.allocator, raw);
+    try self.runtime_helper_ref_index.put(self.allocator, raw, {});
 }
 
 /// #2869 marker 를 caller 소유 sorted slice 로 transfer. resync analyzer 가

@@ -8,12 +8,17 @@ const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const Span = token_mod.Span;
 const Error = std.mem.Allocator.Error;
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 
 /// ClassName.key = value; 할당문을 생성한다.
-pub fn buildStaticFieldAssignment(self: anytype, class_name: NodeIndex, field: FieldAssignment) Error!NodeIndex {
+pub fn buildStaticFieldAssignment(self: anytype, class_name: NodeIndex, field: FieldAssignment, reference_scope: ScopeId) Error!NodeIndex {
     // ClassName
     const name_node = self.ast.getNode(class_name);
-    const cls_ref = try self.makeIdentifierRefWithSymbol(name_node.span, class_name);
+    const cls_ref = try self.makeUserRefNamedAtScope(
+        self.ast.getText(name_node.data.string_ref),
+        class_name,
+        reference_scope,
+    );
     // 타겟이 class field 를 모르는데 define 의미론이면 헬퍼로 정의한다 (#4629).
     if (self.options.use_define_for_class_fields) return buildPublicFieldCall(self, cls_ref, field);
     const member = if (field.is_computed) blk: {

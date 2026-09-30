@@ -59,7 +59,7 @@ pub fn ES2020(comptime Transformer: type) type {
             if (simple) {
                 const left_copy = try self.ast.addNode(self.ast.getNode(new_left));
                 try self.copySymbolId(new_left, left_copy);
-                try self.trackNullishIdentifierCopies(old_left_idx, new_left, left_copy);
+                try self.trackNullishIdentifierCopies(new_left, left_copy);
                 const neq_null = try self.ast.addNode(.{
                     .tag = .binary_expression,
                     .span = node.span,
@@ -170,6 +170,7 @@ pub fn ES2020(comptime Transformer: type) type {
             } else if (simple) {
                 null_check_base = visited_base;
                 chain_base = try helpers.cloneNode(self, visited_base);
+                try self.duplicateUserReference(visited_base, chain_base);
             } else {
                 const cap = try captureTrackedTemp(self, visited_base, node.span);
                 null_check_base = cap.paren_assign;

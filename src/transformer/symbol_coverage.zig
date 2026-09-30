@@ -20,9 +20,12 @@ const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
+const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const Reference = @import("../semantic/symbol.zig").Reference;
 const Scope = @import("../semantic/scope.zig").Scope;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
+const ScopeKind = @import("../semantic/scope.zig").ScopeKind;
+const Span = @import("../lexer/token.zig").Span;
 const reference_walk = @import("../semantic/reference_walk.zig");
 
 pub const Finding = struct { name: []const u8, tag: Node.Tag };
@@ -107,6 +110,7 @@ fn visit(ctx: *Ctx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
                 if (spec.tag != .export_specifier) continue;
                 const local = spec.data.binary.left;
                 if (local.isNone()) continue;
+                if (local != spec.data.binary.right) ctx.markName(spec.data.binary.right);
                 _ = checkIdentifier(ctx, local, ctx.ast.getNode(local));
             }
             return .descend;
@@ -130,16 +134,7 @@ fn checkIdentifier(ctx: *Ctx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
     const name = ctx.ast.getText(node.data.string_ref);
     const sym = if (i < ctx.symbol_ids.len) ctx.symbol_ids[i] else null;
     if (sym) |sid| {
-        const matches = if (sid < ctx.symbols.len) blk: {
-            const symbol = ctx.symbols[sid];
-            const symbol_name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else ctx.ast.getText(symbol.name);
-            // Loop extraction may declare a fresh parameter identity using
-            // the already-renamed output spelling (for example `iLong$1`).
-            // Compare source bases on both sides so that generated suffix is
-            // accepted without treating a different user binding as a match.
-            break :blk std.mem.eql(u8, baseName(symbol_name), baseName(name));
-        } else false;
-        if (!matches) {
+        if (sid >= ctx.symbols.len or !std.mem.eql(u8, baseName(exactSymbolName(ctx.ast, &ctx.symbols[sid])), baseName(name))) {
             ctx.report.wrong.append(ctx.allocator, .{ .name = name, .tag = node.tag }) catch {
                 ctx.oom = true;
             };
@@ -164,7 +159,7 @@ pub fn check(
 ) std.mem.Allocator.Error!Report {
     var names: std.StringHashMapUnmanaged(void) = .empty;
     defer names.deinit(allocator);
-    for (symbols) |sym| try names.put(allocator, ast.getText(sym.name), {});
+    for (symbols) |*sym| try names.put(allocator, baseName(exactSymbolName(ast, sym)), {});
 
     var report: Report = .{};
     errdefer report.deinit(allocator);
@@ -202,6 +197,1430 @@ pub fn print(allocator: std.mem.Allocator, file_path: []const u8, report: *const
     std.debug.print("zntc: symbol-coverage {s}: new_user_idents={d} missing={d} wrong={d}\n", .{ file_path, report.new_user_idents, report.missing.items.len, report.wrong.items.len });
     for (report.wrong.items) |f| std.debug.print("  wrong {s}({s})\n", .{ f.name, @tagName(f.tag) });
     for (counts.keys(), counts.values()) |k, v| std.debug.print("  missing {s} x{d}\n", .{ k, v });
+}
+
+/// Exact post-transform semantic identity audit. This deliberately includes
+/// synthetic identifiers; spelling and `synthetic_idents` are not evidence of
+/// which binding a node denotes.
+pub const ExactReport = struct {
+    generated_bindings: usize = 0,
+    generated_references: usize = 0,
+    external_references: usize = 0,
+    missing_binding: usize = 0,
+    invalid_reference_node: usize = 0,
+    unreachable_reference: usize = 0,
+    ambiguous_ast_parent: usize = 0,
+    shadowed_external_reference: usize = 0,
+    invalid_id: usize = 0,
+    missing_reference: usize = 0,
+    duplicate_reference: usize = 0,
+    identity_mismatch: usize = 0,
+    binding_scope_mismatch: usize = 0,
+    binding_scope_unknown: usize = 0,
+    invalid_scope: usize = 0,
+    reference_scope_mismatch: usize = 0,
+    scope_map_mismatch: usize = 0,
+    scope_owner_mismatch: usize = 0,
+    scope_resolution_mismatch: usize = 0,
+    invisible_reference: usize = 0,
+    unclassified_reference: usize = 0,
+    reference_count_mismatch: usize = 0,
+    write_count_mismatch: usize = 0,
+    legacy_debt_fingerprint: u64 = 0xcbf29ce484222325,
+    first_missing_binding: ?ExactFinding = null,
+    first_missing_reference: ?ExactFinding = null,
+    first_unclassified_reference: ?ExactFinding = null,
+    first_scope_owner_mismatch: ?ScopeOwnerFinding = null,
+    first_scope_map_mismatch: ?ScopeMapFinding = null,
+    first_ambiguous_ast_parent: ?AstParentFinding = null,
+    first_shadowed_external_reference: ?ExactFinding = null,
+
+    pub fn isClean(self: ExactReport) bool {
+        return self.missing_binding == 0 and self.invalid_reference_node == 0 and self.unreachable_reference == 0 and
+            self.ambiguous_ast_parent == 0 and self.shadowed_external_reference == 0 and self.invalid_id == 0 and
+            self.missing_reference == 0 and self.duplicate_reference == 0 and
+            self.identity_mismatch == 0 and self.binding_scope_mismatch == 0 and self.invalid_scope == 0 and
+            self.reference_scope_mismatch == 0 and
+            self.scope_map_mismatch == 0 and self.scope_owner_mismatch == 0 and self.scope_resolution_mismatch == 0 and self.invisible_reference == 0 and
+            self.unclassified_reference == 0 and self.reference_count_mismatch == 0 and
+            self.write_count_mismatch == 0;
+    }
+};
+
+pub const ExactFinding = struct {
+    name: []const u8,
+    tag: Node.Tag,
+    node_index: u32,
+    span_start: u32,
+};
+
+pub const ScopeOwnerFinding = struct {
+    node_index: u32,
+    tag: Node.Tag,
+    issue: []const u8,
+    scope_id: ?u32 = null,
+    expected_kind: ?ScopeKind = null,
+    actual_kind: ?ScopeKind = null,
+};
+
+pub const ScopeMapFinding = struct {
+    issue: []const u8,
+    scope_id: ?u32 = null,
+    symbol_id: ?u32 = null,
+    name: ?[]const u8 = null,
+};
+
+pub const AstParentFinding = struct {
+    node_index: u32,
+    first_parent: ?u32,
+    additional_parent: u32,
+};
+
+fn recordScopeOwnerMismatch(
+    report: *ExactReport,
+    node_index: u32,
+    tag: Node.Tag,
+    issue: []const u8,
+    scope_id: ?u32,
+    expected_kind: ?ScopeKind,
+    actual_kind: ?ScopeKind,
+) void {
+    report.scope_owner_mismatch += 1;
+    if (report.first_scope_owner_mismatch == null) report.first_scope_owner_mismatch = .{
+        .node_index = node_index,
+        .tag = tag,
+        .issue = issue,
+        .scope_id = scope_id,
+        .expected_kind = expected_kind,
+        .actual_kind = actual_kind,
+    };
+}
+
+fn recordScopeMapMismatch(
+    report: *ExactReport,
+    issue: []const u8,
+    scope_id: ?u32,
+    symbol_id: ?u32,
+    name: ?[]const u8,
+) void {
+    report.scope_map_mismatch += 1;
+    if (report.first_scope_map_mismatch == null) report.first_scope_map_mismatch = .{
+        .issue = issue,
+        .scope_id = scope_id,
+        .symbol_id = symbol_id,
+        .name = name,
+    };
+}
+
+fn hashDebtPart(hash: *u64, bytes: []const u8) void {
+    for (bytes) |byte| {
+        hash.* ^= byte;
+        hash.* *%= 0x100000001b3;
+    }
+    hash.* ^= 0xff;
+    hash.* *%= 0x100000001b3;
+}
+
+fn recordLegacyDebt(report: *ExactReport, issue: []const u8, finding: ExactFinding) void {
+    hashDebtPart(&report.legacy_debt_fingerprint, issue);
+    hashDebtPart(&report.legacy_debt_fingerprint, finding.name);
+    hashDebtPart(&report.legacy_debt_fingerprint, @tagName(finding.tag));
+    var index = finding.node_index;
+    for (0..4) |_| {
+        hashDebtPart(&report.legacy_debt_fingerprint, &.{@truncate(index)});
+        index >>= 8;
+    }
+}
+
+const IndexedReference = struct {
+    symbol_id: u32,
+    scope_id: ScopeId,
+    count: usize = 1,
+};
+
+const ExternalReferenceClassification = enum {
+    external,
+    shadowed,
+    unknown_scope,
+};
+
+fn exactValidScope(scopes: []const Scope, id: ScopeId) bool {
+    return !id.isNone() and id.toIndex() < scopes.len;
+}
+
+fn spanKey(span: Span) u64 {
+    return (@as(u64, span.start) << 32) | span.end;
+}
+
+fn exactSymbolName(ast: *const Ast, symbol: *const Symbol) []const u8 {
+    return if (symbol.synthetic_name.len > 0) symbol.synthetic_name else ast.getText(symbol.name);
+}
+
+fn collectBindingPatternNodes(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    bindings: *std.AutoHashMapUnmanaged(u32, void),
+) std.mem.Allocator.Error!void {
+    if (root.isNone() or @intFromEnum(root) >= ast.nodes.items.len) return;
+    var walker = try ast_walk.bindingIdentifiers(allocator, ast, root, .{ .cover_grammar_assignment = true });
+    defer walker.deinit();
+    while (try walker.next()) |idx| {
+        const tag = ast.getNode(idx).tag;
+        if (tag == .binding_identifier or tag == .identifier_reference or tag == .assignment_target_identifier)
+            try bindings.put(allocator, @intFromEnum(idx), {});
+    }
+}
+
+fn collectDeclarationNodes(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    reachable: *const std.AutoHashMapUnmanaged(u32, void),
+) std.mem.Allocator.Error!std.AutoHashMapUnmanaged(u32, void) {
+    var bindings: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    errdefer bindings.deinit(allocator);
+    var nodes = reachable.iterator();
+    while (nodes.next()) |entry| {
+        const raw = entry.key_ptr.*;
+        const node = ast.nodes.items[raw];
+        switch (node.tag) {
+            .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => {
+                const slot: u32 = if (node.tag == .arrow_function_expression) 0 else 1;
+                if (ast.hasExtra(node.data.extra, slot)) {
+                    const params: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra + slot]);
+                    try collectBindingPatternNodes(allocator, ast, params, &bindings);
+                }
+            },
+            .catch_clause => try collectBindingPatternNodes(allocator, ast, node.data.binary.left, &bindings),
+            .variable_declarator => {
+                if (ast.hasExtra(node.data.extra, 1)) {
+                    const pattern: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
+                    try collectBindingPatternNodes(allocator, ast, pattern, &bindings);
+                }
+            },
+            .import_declaration => {
+                const extra = node.data.extra;
+                if (extra + 1 >= ast.extra_data.items.len) continue;
+                const specs_start = ast.extra_data.items[extra];
+                const specs_len = ast.extra_data.items[extra + 1];
+                if (specs_start + specs_len > ast.extra_data.items.len) continue;
+                for (ast.extra_data.items[specs_start .. specs_start + specs_len]) |raw_spec| {
+                    const spec_idx: NodeIndex = @enumFromInt(raw_spec);
+                    if (spec_idx.isNone() or @intFromEnum(spec_idx) >= ast.nodes.items.len) continue;
+                    const spec = ast.getNode(spec_idx);
+                    if (spec.tag == .import_specifier)
+                        try collectBindingPatternNodes(allocator, ast, spec.data.binary.right, &bindings);
+                }
+            },
+            else => {},
+        }
+    }
+    return bindings;
+}
+
+fn exactVisibleFrom(scopes: []const Scope, symbols: []const Symbol, symbol_id: SymbolId, use_scope: ScopeId) bool {
+    const sid = @intFromEnum(symbol_id);
+    if (sid >= symbols.len or !exactValidScope(scopes, use_scope)) return false;
+    const declared_scope = symbols[sid].scope_id;
+    if (!exactValidScope(scopes, declared_scope)) return false;
+    var current = use_scope;
+    var hops: usize = 0;
+    while (hops < scopes.len) : (hops += 1) {
+        if (current == declared_scope) return true;
+        current = scopes[current.toIndex()].parent;
+        if (current.isNone() or !exactValidScope(scopes, current)) return false;
+    }
+    return false;
+}
+
+fn resolveInScopes(
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    name: []const u8,
+    use_scope: ScopeId,
+) ?u32 {
+    if (!exactValidScope(scopes, use_scope)) return null;
+    const normalized = baseName(name);
+    var current = use_scope;
+    var hops: usize = 0;
+    while (exactValidScope(scopes, current) and hops < scopes.len) : (hops += 1) {
+        if (current.toIndex() < scope_maps.len) {
+            const map = scope_maps[current.toIndex()];
+            if (map.get(name)) |sid| return @intCast(sid);
+            if (!std.mem.eql(u8, name, normalized)) {
+                if (map.get(normalized)) |sid| return @intCast(sid);
+            }
+        }
+        current = scopes[current.toIndex()].parent;
+    }
+    return null;
+}
+
+fn resolveInAnyScope(
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    helper_scope_map: *const std.StringHashMapUnmanaged(usize),
+    name: []const u8,
+) bool {
+    const normalized = baseName(name);
+    for (scope_maps) |map| {
+        if (map.get(name) != null) return true;
+        if (!std.mem.eql(u8, name, normalized) and map.get(normalized) != null) return true;
+    }
+    return helper_scope_map.get(name) != null or
+        (!std.mem.eql(u8, name, normalized) and helper_scope_map.get(normalized) != null);
+}
+
+fn exactExecutionUnit(scopes: []const Scope, start: ScopeId) ?u32 {
+    var current = start;
+    var hops: usize = 0;
+    while (!current.isNone() and hops < scopes.len) : (hops += 1) {
+        if (!exactValidScope(scopes, current)) return null;
+        const scope = scopes[current.toIndex()];
+        switch (scope.kind) {
+            .global, .module, .function, .class_body => return current.toIndex(),
+            .block, .switch_block, .catch_clause => {},
+        }
+        current = scope.parent;
+    }
+    return null;
+}
+
+fn hasExactExternalEvidence(
+    ast: *const Ast,
+    node: u32,
+    parser_node_count: u32,
+    unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    explicit_global_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    origins: *const std.AutoHashMapUnmanaged(u32, u32),
+) bool {
+    if (explicit_global_nodes.contains(node)) return true;
+    const origin = origins.get(node) orelse node;
+    const has_evidence = explicit_global_nodes.contains(origin) or
+        (origin < parser_node_count and unresolved_nodes.contains(origin));
+    if (!has_evidence) return false;
+    if (origin == node) return true;
+    if (origin >= ast.nodes.items.len or node >= ast.nodes.items.len) return false;
+    const origin_node = ast.nodes.items[origin];
+    const generated_node = ast.nodes.items[node];
+    if (origin_node.tag != .identifier_reference or generated_node.tag != .identifier_reference) return false;
+    return std.mem.eql(u8, ast.getText(origin_node.data.string_ref), ast.getText(generated_node.data.string_ref));
+}
+
+fn containsExtraListNode(ast: *const Ast, start: u32, len: u32, child: u32) bool {
+    if (start > ast.extra_data.items.len or len > ast.extra_data.items.len - start) return false;
+    for (ast.extra_data.items[start .. start + len]) |raw| {
+        if (raw == child) return true;
+    }
+    return false;
+}
+
+/// Some scope-owner nodes are entered only after selected child expressions are
+/// evaluated. Ignore that owner while walking from those children to their AST
+/// ancestors so the expected scope mirrors the analyzer's evaluation order.
+fn childSkipsScopeOwner(ast: *const Ast, parent_raw: u32, child_raw: u32) bool {
+    if (parent_raw >= ast.nodes.items.len) return false;
+    const parent = ast.nodes.items[parent_raw];
+    switch (parent.tag) {
+        .function_declaration => {
+            const extra = parent.data.extra;
+            return extra < ast.extra_data.items.len and ast.extra_data.items[extra] == child_raw;
+        },
+        .switch_statement => {
+            const extra = parent.data.extra;
+            return extra < ast.extra_data.items.len and ast.extra_data.items[extra] == child_raw;
+        },
+        .method_definition => {
+            const extra = parent.data.extra;
+            if (extra + ast_mod.MethodExtra.deco_len >= ast.extra_data.items.len) return false;
+            if (ast.extra_data.items[extra + ast_mod.MethodExtra.key] == child_raw) return true;
+            return containsExtraListNode(
+                ast,
+                ast.extra_data.items[extra + ast_mod.MethodExtra.deco_start],
+                ast.extra_data.items[extra + ast_mod.MethodExtra.deco_len],
+                child_raw,
+            );
+        },
+        .class_declaration => {
+            const extra = parent.data.extra;
+            if (extra < ast.extra_data.items.len and ast.extra_data.items[extra] == child_raw) return true;
+            if (extra + ast_mod.ClassExtra.deco_len >= ast.extra_data.items.len) return false;
+            return containsExtraListNode(
+                ast,
+                ast.extra_data.items[extra + ast_mod.ClassExtra.deco_start],
+                ast.extra_data.items[extra + ast_mod.ClassExtra.deco_len],
+                child_raw,
+            );
+        },
+        .class_expression => {
+            const extra = parent.data.extra;
+            if (extra + ast_mod.ClassExtra.deco_len >= ast.extra_data.items.len) return false;
+            return containsExtraListNode(
+                ast,
+                ast.extra_data.items[extra + ast_mod.ClassExtra.deco_start],
+                ast.extra_data.items[extra + ast_mod.ClassExtra.deco_len],
+                child_raw,
+            );
+        },
+        else => return false,
+    }
+}
+
+const ExpectedScopeOwner = struct { node: u32, scope: u32 };
+
+fn expectedReferenceScopeFromParent(
+    ast: *const Ast,
+    root: NodeIndex,
+    parent_by_node: *const std.AutoHashMapUnmanaged(u32, u32),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    node: u32,
+    initial_parent: u32,
+) ?ExpectedScopeOwner {
+    var child = node;
+    var parent: ?u32 = initial_parent;
+    var hops: usize = 0;
+    while (hops <= ast.nodes.items.len) : (hops += 1) {
+        const parent_raw = parent orelse return if (scope_owner_map.get(child)) |scope|
+            .{ .node = child, .scope = scope }
+        else
+            null;
+        if (!childSkipsScopeOwner(ast, parent_raw, child)) {
+            if (scope_owner_map.get(parent_raw)) |scope| return .{ .node = parent_raw, .scope = scope };
+        }
+        child = parent_raw;
+        if (child == @intFromEnum(root)) return if (scope_owner_map.get(child)) |scope|
+            .{ .node = child, .scope = scope }
+        else
+            null;
+        parent = parent_by_node.get(child);
+    }
+    return null;
+}
+
+fn expectedReferenceScope(
+    ast: *const Ast,
+    root: NodeIndex,
+    parent_by_node: *const std.AutoHashMapUnmanaged(u32, u32),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    node: u32,
+) ?ExpectedScopeOwner {
+    const parent = parent_by_node.get(node) orelse return if (scope_owner_map.get(node)) |scope|
+        .{ .node = node, .scope = scope }
+    else
+        null;
+    return expectedReferenceScopeFromParent(ast, root, parent_by_node, scope_owner_map, node, parent);
+}
+
+fn scopeOwnerNode(scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32), scope: u32) ?u32 {
+    var it = scope_owner_map.iterator();
+    while (it.next()) |entry| if (entry.value_ptr.* == scope) return entry.key_ptr.*;
+    return null;
+}
+
+fn exactVisit(ctx: *ExactCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
+    switch (node.tag) {
+        .static_member_expression => {
+            ctx.markName(@enumFromInt(ctx.ast.extra_data.items[node.data.extra + 1]));
+            return .descend;
+        },
+        .jsx_attribute => {
+            ctx.markName(node.data.binary.left);
+            return .descend;
+        },
+        .jsx_namespaced_name => {
+            ctx.markName(node.data.binary.left);
+            ctx.markName(node.data.binary.right);
+            return .descend;
+        },
+        .jsx_member_expression => {
+            ctx.markJsxMember(idx);
+            return .descend;
+        },
+        .jsx_identifier => {
+            const raw = @intFromEnum(idx);
+            if (ctx.jsx_variable_roots.contains(raw)) {
+                ctx.checkIdentifier(idx);
+                return .descend;
+            }
+            const name = ctx.ast.getText(node.data.string_ref);
+            if (name.len > 0 and !std.ascii.isLower(name[0])) ctx.checkIdentifier(idx);
+            return .descend;
+        },
+        .object_property, .binding_property => {
+            const key = node.data.binary.left;
+            const value = node.data.binary.right;
+            if (!value.isNone() and value != key) ctx.markName(key);
+            return .descend;
+        },
+        .assignment_target_property_property => {
+            if (node.data.binary.left != node.data.binary.right) ctx.markName(node.data.binary.left);
+            return .descend;
+        },
+        .import_specifier => {
+            // The imported side is a label; an unaliased specifier reuses the
+            // local node and is classified as a declaration below.
+            if (node.data.binary.left != node.data.binary.right) ctx.markName(node.data.binary.left);
+            return .descend;
+        },
+        .method_definition, .property_definition, .accessor_property => {
+            ctx.markName(@enumFromInt(ctx.ast.extra_data.items[node.data.extra]));
+            return .descend;
+        },
+        .export_named_declaration => {
+            // Names in a sourced re-export are both module labels, not local
+            // references. Source-less exports still resolve the local side.
+            const extra = node.data.extra;
+            if (extra + 3 < ctx.ast.extra_data.items.len and
+                ctx.ast.extra_data.items[extra + 3] != @intFromEnum(NodeIndex.none))
+            {
+                const start = ctx.ast.extra_data.items[extra + 1];
+                const len = ctx.ast.extra_data.items[extra + 2];
+                if (start <= ctx.ast.extra_data.items.len and len <= ctx.ast.extra_data.items.len - start) {
+                    for (ctx.ast.extra_data.items[start .. start + len]) |raw_spec| {
+                        const spec = ctx.ast.getNode(@enumFromInt(raw_spec));
+                        if (spec.tag != .export_specifier) continue;
+                        ctx.markName(spec.data.binary.left);
+                        ctx.markName(spec.data.binary.right);
+                    }
+                }
+            }
+            return .descend;
+        },
+        .export_specifier => {
+            // The exported name is a property label. When no alias is written,
+            // the parser may reuse the same node for both sides; preserve that
+            // node as the local binding reference in that case.
+            if (node.data.binary.left != node.data.binary.right) ctx.markName(node.data.binary.right);
+            return .descend;
+        },
+        .labeled_statement => {
+            // Labels use identifier nodes in the same namespace as variable
+            // references but do not denote SymbolIds.
+            ctx.markName(node.data.binary.left);
+            return .descend;
+        },
+        .break_statement, .continue_statement => {
+            // Labels occupy the same AST identifier tag as variable reads, but
+            // are resolved in the label namespace and never carry a SymbolId.
+            ctx.markName(node.data.unary.operand);
+            return .descend;
+        },
+        .identifier_reference, .binding_identifier, .assignment_target_identifier => ctx.checkIdentifier(idx),
+        else => {},
+    }
+    return .descend;
+}
+
+const ExactCtx = struct {
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    parser_node_count: u32,
+    parent_by_node: *const std.AutoHashMapUnmanaged(u32, u32),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    symbol_ids: []const ?u32,
+    declaration_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    references_by_node: *const std.AutoHashMapUnmanaged(u32, IndexedReference),
+    helper_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    helper_scope_map: *const std.StringHashMapUnmanaged(usize),
+    dynamic_eval_units: *const std.AutoHashMapUnmanaged(u32, void),
+    with_body_roots: *const std.AutoHashMapUnmanaged(u32, void),
+    declaration_counts: []const usize,
+    unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    explicit_global_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    origins: *const std.AutoHashMapUnmanaged(u32, u32),
+    reachable_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    report: *ExactReport,
+    name_positions: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    jsx_variable_roots: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    oom: bool = false,
+
+    fn isWithinWithBody(ctx: *const ExactCtx, node: u32) bool {
+        var current = node;
+        var hops: usize = 0;
+        while (hops <= ctx.ast.nodes.items.len) : (hops += 1) {
+            if (ctx.with_body_roots.contains(current)) return true;
+            if (current == @intFromEnum(ctx.root)) return false;
+            current = ctx.parent_by_node.get(current) orelse return false;
+        }
+        return false;
+    }
+
+    fn isDirectEvalCallee(ctx: *const ExactCtx, node: u32) bool {
+        const parent = ctx.parent_by_node.get(node) orelse return false;
+        if (parent >= ctx.ast.nodes.items.len) return false;
+        const call = ctx.ast.nodes.items[parent];
+        return call.tag == .call_expression and call.data.extra < ctx.ast.extra_data.items.len and
+            ctx.ast.extra_data.items[call.data.extra] == node;
+    }
+
+    fn hasDynamicNameEnvironment(ctx: *const ExactCtx, node: u32, scope: ?u32) bool {
+        if (ctx.isWithinWithBody(node)) return true;
+        if (scope) |scope_id| {
+            const unit = exactExecutionUnit(ctx.scopes, @enumFromInt(scope_id)) orelse
+                return ctx.dynamic_eval_units.count() > 0;
+            return ctx.dynamic_eval_units.contains(unit);
+        }
+        // A broken or absent owner path cannot establish whether an eval shares
+        // this reference's execution environment; preserve the uncertainty.
+        return ctx.dynamic_eval_units.count() > 0;
+    }
+
+    fn markName(ctx: *ExactCtx, idx: NodeIndex) void {
+        if (idx.isNone() or ctx.ast.getNode(idx).tag == .computed_property_key) return;
+        ctx.name_positions.put(ctx.allocator, @intFromEnum(idx), {}) catch {
+            ctx.oom = true;
+        };
+    }
+
+    fn markJsxMember(ctx: *ExactCtx, idx: NodeIndex) void {
+        var current = idx;
+        while (!current.isNone()) {
+            const member = ctx.ast.getNode(current);
+            if (member.tag != .jsx_member_expression) break;
+            ctx.markName(member.data.binary.right);
+            current = member.data.binary.left;
+        }
+        if (!current.isNone() and ctx.ast.getNode(current).tag == .jsx_identifier) {
+            ctx.jsx_variable_roots.put(ctx.allocator, @intFromEnum(current), {}) catch {
+                ctx.oom = true;
+            };
+        }
+    }
+
+    fn classifyExternalReference(ctx: *const ExactCtx, node: u32, name: []const u8) ExternalReferenceClassification {
+        const expected = expectedReferenceScope(
+            ctx.ast,
+            ctx.root,
+            ctx.parent_by_node,
+            ctx.scope_owner_map,
+            node,
+        ) orelse {
+            // A copied unresolved name remains external only when no lexical
+            // or isolated helper binding anywhere could shadow it. Dynamic
+            // eval/with scopes make that proof impossible, so keep it visible
+            // as unclassified instead of guessing.
+            if (ctx.hasDynamicNameEnvironment(node, null) or
+                resolveInAnyScope(ctx.scope_maps, ctx.helper_scope_map, name)) return .unknown_scope;
+            return .external;
+        };
+        // The `eval` reference that triggers direct eval is resolved before
+        // the eval environment exists. Keep an unresolved intrinsic eval
+        // external while still treating other references in that execution
+        // unit as dynamic.
+        if (!ctx.isDirectEvalCallee(node) and ctx.hasDynamicNameEnvironment(node, expected.scope)) return .unknown_scope;
+        if (resolveInScopes(ctx.scopes, ctx.scope_maps, name, @enumFromInt(expected.scope)) != null or
+            ctx.helper_scope_map.get(name) != null) return .shadowed;
+        return .external;
+    }
+
+    fn checkIdentifier(ctx: *ExactCtx, idx: NodeIndex) void {
+        const raw = @intFromEnum(idx);
+        if (ctx.name_positions.contains(raw)) return;
+        const node = ctx.ast.getNode(idx);
+        if (!ctx.reachable_nodes.contains(raw)) std.debug.print(
+            "zntc: symbol-identity-traversal-mismatch node={d} name={s} root={d}\n",
+            .{ raw, ctx.ast.getText(node.data.string_ref), @intFromEnum(ctx.root) },
+        );
+        const name = ctx.ast.getText(node.data.string_ref);
+        const generated = raw >= ctx.parser_node_count;
+        const finding: ExactFinding = .{
+            .name = name,
+            .tag = node.tag,
+            .node_index = raw,
+            .span_start = node.span.start,
+        };
+        const is_binding = node.tag == .binding_identifier or
+            ctx.declaration_nodes.contains(raw);
+        if (generated) {
+            if (is_binding) {
+                ctx.report.generated_bindings += 1;
+            } else {
+                ctx.report.generated_references += 1;
+            }
+        }
+        const maybe_id = if (raw < ctx.symbol_ids.len) ctx.symbol_ids[raw] else null;
+        if (maybe_id == null) {
+            if (is_binding) {
+                ctx.report.missing_binding += 1;
+                if (generated) {
+                    recordLegacyDebt(ctx.report, "missing_binding", finding);
+                    std.debug.print("zntc: symbol-debt-node kind=missing_binding node={d} name={s} tag={s} span={d}\n", .{ raw, name, @tagName(node.tag), node.span.start });
+                }
+                if (ctx.report.first_missing_binding == null) ctx.report.first_missing_binding = finding;
+            } else {
+                const external_evidence = hasExactExternalEvidence(
+                    ctx.ast,
+                    raw,
+                    ctx.parser_node_count,
+                    ctx.unresolved_nodes,
+                    ctx.explicit_global_nodes,
+                    ctx.origins,
+                );
+                const external_classification = if (external_evidence)
+                    ctx.classifyExternalReference(raw, name)
+                else
+                    .unknown_scope;
+                switch (external_classification) {
+                    .external => ctx.report.external_references += 1,
+                    .shadowed => {
+                        ctx.report.shadowed_external_reference += 1;
+                        if (ctx.report.first_shadowed_external_reference == null)
+                            ctx.report.first_shadowed_external_reference = finding;
+                        std.debug.print(
+                            "zntc: symbol-shadowed-external node={d} name={s}\n",
+                            .{ raw, name },
+                        );
+                    },
+                    .unknown_scope => {
+                        ctx.report.unclassified_reference += 1;
+                        if (generated) {
+                            recordLegacyDebt(ctx.report, "unclassified_reference", finding);
+                            std.debug.print("zntc: symbol-debt-node kind=unclassified_reference node={d} name={s} tag={s} span={d}\n", .{ raw, name, @tagName(node.tag), node.span.start });
+                        }
+                        if (ctx.report.first_unclassified_reference == null) ctx.report.first_unclassified_reference = finding;
+                    },
+                }
+            }
+            return;
+        }
+        const raw_id = maybe_id.?;
+        if (raw_id >= ctx.symbols.len) {
+            ctx.report.invalid_id += 1;
+            return;
+        }
+        const id: SymbolId = @enumFromInt(raw_id);
+        const symbol = ctx.symbols[raw_id];
+        if (!exactValidScope(ctx.scopes, symbol.scope_id)) {
+            ctx.report.invalid_scope += 1;
+        }
+        if (is_binding) {
+            const symbol_name = exactSymbolName(ctx.ast, &symbol);
+            if (!std.mem.eql(u8, baseName(name), baseName(symbol_name))) ctx.report.identity_mismatch += 1;
+            if (node.tag == .binding_identifier) {
+                const expected_scope = expectedBindingScope(ctx, raw, symbol.kind);
+                if (expected_scope) |expected| {
+                    const lexical_scope = expectedReferenceScope(
+                        ctx.ast,
+                        ctx.root,
+                        ctx.parent_by_node,
+                        ctx.scope_owner_map,
+                        raw,
+                    );
+                    const resolved = resolveInScopes(ctx.scopes, ctx.scope_maps, symbol_name, @enumFromInt(expected));
+                    const relocated = symbol.synthetic_name.len > 0 or symbol.kind == .variable_var or
+                        outputBindingIsVar(ctx, raw);
+                    const owner_binding = if (expected < ctx.scope_maps.len)
+                        ctx.scope_maps[expected].get(symbol_name)
+                    else
+                        null;
+                    const lexical_binding = if (lexical_scope) |lexical|
+                        if (lexical.scope < ctx.scope_maps.len) ctx.scope_maps[lexical.scope].get(symbol_name) else null
+                    else
+                        null;
+                    const lexical_binding_matches = lexical_binding != null and lexical_binding.? == raw_id;
+                    const shadowed_lexical_owner = lexical_binding != null and lexical_binding.? != raw_id;
+                    const shadowed_storage_owner = owner_binding != null and owner_binding.? != raw_id and
+                        !lexical_binding_matches;
+                    const symbol_keeps_lexical_scope = if (lexical_scope) |lexical|
+                        symbol.scope_id.toIndex() == lexical.scope
+                    else
+                        false;
+                    const retained_source_scope = !hasReachableScopeOwner(ctx, @intFromEnum(symbol.scope_id)) and
+                        (resolved == null or resolved.? == raw_id);
+                    if (shadowed_lexical_owner or shadowed_storage_owner or
+                        (symbol.scope_id.toIndex() != expected and
+                            (!relocated and !symbol_keeps_lexical_scope) and
+                            !retained_source_scope and !isRetainedCatchBinding(ctx, raw, raw_id, symbol.scope_id)))
+                    {
+                        ctx.report.binding_scope_mismatch += 1;
+                    }
+                } else {
+                    ctx.report.binding_scope_unknown += 1;
+                }
+            }
+            if (symbol.scope_id.toIndex() < ctx.scope_maps.len) {
+                const mapped = ctx.scope_maps[symbol.scope_id.toIndex()].get(symbol_name);
+                if (mapped == null or mapped.? != raw_id) recordScopeMapMismatch(
+                    ctx.report,
+                    "binding-not-in-scope-map",
+                    @intFromEnum(symbol.scope_id),
+                    raw_id,
+                    symbol_name,
+                );
+            } else {
+                recordScopeMapMismatch(ctx.report, "binding-scope-map-out-of-range", @intFromEnum(symbol.scope_id), raw_id, symbol_name);
+            }
+            if (symbol.synthetic_name.len > 0 and
+                (raw_id >= ctx.declaration_counts.len or ctx.declaration_counts[raw_id] == 0))
+            {
+                ctx.report.missing_reference += 1;
+                recordLegacyDebt(ctx.report, "missing_reference", finding);
+                std.debug.print("zntc: symbol-debt-node kind=missing_reference node={d} name={s} tag={s} span={d}\n", .{ raw, name, @tagName(node.tag), node.span.start });
+                if (ctx.report.first_missing_reference == null) ctx.report.first_missing_reference = finding;
+            }
+            return;
+        }
+
+        const indexed = ctx.references_by_node.get(raw) orelse {
+            ctx.report.missing_reference += 1;
+            if (generated) recordLegacyDebt(ctx.report, "missing_reference", finding);
+            const origin = ctx.origins.get(raw) orelse std.math.maxInt(u32);
+            if (origin < ctx.ast.nodes.items.len and ctx.ast.nodes.items[origin].tag == .identifier_reference) {
+                const origin_node = ctx.ast.getNode(@enumFromInt(origin));
+                std.debug.print("zntc: symbol-debt-node kind=missing_reference node={d} name={s} tag={s} span={d} id={d} origin={d}:{s}@{d}\n", .{ raw, name, @tagName(node.tag), node.span.start, raw_id, origin, ctx.ast.getText(origin_node.data.string_ref), origin_node.span.start });
+            } else {
+                std.debug.print("zntc: symbol-debt-node kind=missing_reference node={d} name={s} tag={s} span={d} id={d} origin={d}\n", .{ raw, name, @tagName(node.tag), node.span.start, raw_id, origin });
+            }
+            if (ctx.report.first_missing_reference == null) ctx.report.first_missing_reference = finding;
+            return;
+        };
+        if (indexed.count != 1) ctx.report.duplicate_reference += indexed.count - 1;
+        if (indexed.symbol_id != raw_id) ctx.report.identity_mismatch += 1;
+        if (!exactValidScope(ctx.scopes, indexed.scope_id)) {
+            ctx.report.invalid_scope += 1;
+        } else if (!exactVisibleFrom(ctx.scopes, ctx.symbols, id, indexed.scope_id)) {
+            ctx.report.invisible_reference += 1;
+        }
+        if (!ctx.helper_reference_nodes.contains(raw)) {
+            if (expectedReferenceScope(ctx.ast, ctx.root, ctx.parent_by_node, ctx.scope_owner_map, raw)) |expected_scope| {
+                if (@intFromEnum(indexed.scope_id) != expected_scope.scope) {
+                    if (!isRetainedSourceScopeReference(ctx, raw, id, indexed.scope_id)) {
+                        ctx.report.reference_scope_mismatch += 1;
+                        const actual_owner = scopeOwnerNode(ctx.scope_owner_map, @intFromEnum(indexed.scope_id));
+                        const actual_owner_tag = if (actual_owner) |owner|
+                            if (owner < ctx.ast.nodes.items.len) @tagName(ctx.ast.nodes.items[owner].tag) else "out-of-range"
+                        else
+                            "none";
+                        const indexed_id = indexed.symbol_id;
+                        const indexed_symbol_scope = if (indexed_id < ctx.symbols.len)
+                            @intFromEnum(ctx.symbols[indexed_id].scope_id)
+                        else
+                            std.math.maxInt(u32);
+                        const indexed_symbol_kind = if (indexed_id < ctx.symbols.len)
+                            @tagName(ctx.symbols[indexed_id].kind)
+                        else
+                            "out-of-range";
+                        std.debug.print(
+                            "zntc: symbol-reference-scope node={d}:{s} name={s} symbol={d}@{d}:{s} actual={d} owner={s}@{d} expected={d} owner={s}@{d}\n",
+                            .{
+                                raw,
+                                @tagName(node.tag),
+                                name,
+                                indexed_id,
+                                indexed_symbol_scope,
+                                indexed_symbol_kind,
+                                @intFromEnum(indexed.scope_id),
+                                actual_owner_tag,
+                                actual_owner orelse std.math.maxInt(u32),
+                                expected_scope.scope,
+                                @tagName(ctx.ast.nodes.items[expected_scope.node].tag),
+                                expected_scope.node,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        const expected: ?u32 = if (ctx.helper_reference_nodes.contains(raw)) blk: {
+            if (ctx.helper_scope_map.get(name)) |sid| break :blk @intCast(sid);
+            break :blk null;
+        } else resolveInScopes(ctx.scopes, ctx.scope_maps, name, indexed.scope_id);
+        if (expected) |expected_id| {
+            if (expected_id != raw_id) {
+                ctx.report.scope_resolution_mismatch += 1;
+                const expected_scope = if (expected_id < ctx.symbols.len) @intFromEnum(ctx.symbols[expected_id].scope_id) else std.math.maxInt(u32);
+                const actual_scope = @intFromEnum(ctx.symbols[raw_id].scope_id);
+                const expected_kind = if (expected_id < ctx.symbols.len) @tagName(ctx.symbols[expected_id].kind) else "invalid";
+                std.debug.print(
+                    "zntc: symbol-identity-resolution node={d} name={s} actual={d}@{d}:{s} expected={d}@{d}:{s} ref_scope={d}\n",
+                    .{ raw, name, raw_id, actual_scope, @tagName(ctx.symbols[raw_id].kind), expected_id, expected_scope, expected_kind, @intFromEnum(indexed.scope_id) },
+                );
+                for (ctx.symbol_ids, 0..) |binding_id, binding_node| {
+                    if (binding_id == null or (binding_id.? != raw_id and binding_id.? != expected_id)) continue;
+                    if (binding_node >= ctx.ast.nodes.items.len or ctx.ast.nodes.items[binding_node].tag != .binding_identifier) continue;
+                    const binding = ctx.ast.getNode(@enumFromInt(@as(u32, @intCast(binding_node))));
+                    const binding_name = ctx.ast.getText(binding.data.string_ref);
+                    std.debug.print(
+                        "  identity-binding id={d} node={d} name={s} span={d} tag={s}\n",
+                        .{ binding_id.?, binding_node, binding_name, binding.span.start, @tagName(ctx.ast.nodes.items[binding_node].tag) },
+                    );
+                }
+            }
+        } else {
+            ctx.report.scope_resolution_mismatch += 1;
+        }
+        if (ctx.origins.get(raw)) |origin| {
+            if (origin < ctx.parser_node_count and origin < ctx.symbol_ids.len) {
+                if (ctx.symbol_ids[origin]) |origin_id| {
+                    if (origin_id != raw_id) ctx.report.identity_mismatch += 1;
+                }
+            }
+        }
+    }
+};
+
+fn outputBindingIsVar(ctx: *const ExactCtx, node: u32) bool {
+    var child = node;
+    var parent = ctx.parent_by_node.get(child);
+    var hops: usize = 0;
+    while (parent) |raw| : (hops += 1) {
+        if (hops >= ctx.ast.nodes.items.len or raw >= ctx.ast.nodes.items.len) return false;
+        const ancestor = ctx.ast.nodes.items[raw];
+        if (ancestor.tag == .variable_declaration)
+            return ctx.ast.variableDeclarationKind(ancestor) == .@"var";
+        switch (ancestor.tag) {
+            .function_declaration,
+            .function_expression,
+            .function,
+            .arrow_function_expression,
+            .class_declaration,
+            .class_expression,
+            .catch_clause,
+            => return false,
+            else => {},
+        }
+        child = raw;
+        parent = ctx.parent_by_node.get(child);
+    }
+    return false;
+}
+
+fn expectedBindingScope(ctx: *const ExactCtx, node: u32, kind: @import("../semantic/symbol.zig").SymbolKind) ?u32 {
+    if (node >= ctx.ast.nodes.items.len) return null;
+    const binding_name = ctx.ast.nodes.items[node];
+    if (binding_name.tag != .binding_identifier) return null;
+    // A named function expression's self-binding lives in the synthetic block
+    // scope immediately surrounding its function scope.
+    var child = node;
+    var parent = ctx.parent_by_node.get(child);
+    var hops: usize = 0;
+    while (parent) |raw| : (hops += 1) {
+        if (hops >= ctx.ast.nodes.items.len or raw >= ctx.ast.nodes.items.len) return null;
+        const ancestor = ctx.ast.nodes.items[raw];
+        if (ancestor.tag == .function_expression and ancestor.data.extra < ctx.ast.extra_data.items.len and
+            ctx.ast.extra_data.items[ancestor.data.extra] == child)
+        {
+            const function_scope = ctx.scope_owner_map.get(raw) orelse return null;
+            if (function_scope >= ctx.scopes.len) return null;
+            const name_scope = ctx.scopes[function_scope].parent;
+            return if (exactValidScope(ctx.scopes, name_scope)) name_scope.toIndex() else null;
+        }
+        child = raw;
+        parent = ctx.parent_by_node.get(child);
+    }
+
+    const lexical = expectedReferenceScope(
+        ctx.ast,
+        ctx.root,
+        ctx.parent_by_node,
+        ctx.scope_owner_map,
+        node,
+    ) orelse return null;
+    if (kind == .variable_var or outputBindingIsVar(ctx, node))
+        return nearestVarScope(lexical.scope, ctx.scopes);
+    return lexical.scope;
+}
+
+fn isRetainedCatchBinding(ctx: *const ExactCtx, node: u32, symbol_id: u32, scope: ScopeId) bool {
+    if (symbol_id >= ctx.symbols.len or ctx.symbols[symbol_id].kind != .catch_binding) return false;
+    return !hasReachableScopeOwner(ctx, @intFromEnum(scope)) and
+        hasReachableBindingForSymbol(ctx, symbol_id) and
+        node < ctx.symbol_ids.len and ctx.symbol_ids[node] == symbol_id;
+}
+
+/// Validate exact generated-node identities against the post-edit semantic graph.
+/// Name equality is used only as an additional corruption check; it never binds a node.
+pub fn checkExact(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    parser_node_count: u32,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    references: []const Reference,
+    helper_reference_nodes: []const u32,
+    helper_scope_map: *const std.StringHashMapUnmanaged(usize),
+    unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    explicit_global_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    origins: *const std.AutoHashMapUnmanaged(u32, u32),
+) std.mem.Allocator.Error!ExactReport {
+    var report: ExactReport = .{};
+    var reachable_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer reachable_nodes.deinit(allocator);
+    var parent_by_node: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer parent_by_node.deinit(allocator);
+    var reachable_stack: std.ArrayList(NodeIndex) = .empty;
+    defer reachable_stack.deinit(allocator);
+    try reachable_stack.append(allocator, root);
+    while (reachable_stack.pop()) |node_idx| {
+        if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) continue;
+        const raw = @intFromEnum(node_idx);
+        const gop = try reachable_nodes.getOrPut(allocator, raw);
+        if (gop.found_existing) continue;
+        var children = ast_walk.children(ast, ast.getNode(node_idx));
+        while (children.next()) |child| {
+            if (!child.isNone() and @intFromEnum(child) < ast.nodes.items.len) {
+                const child_raw = @intFromEnum(child);
+                if (child_raw == @intFromEnum(root)) {
+                    report.ambiguous_ast_parent += 1;
+                    if (report.first_ambiguous_ast_parent == null) report.first_ambiguous_ast_parent = .{
+                        .node_index = child_raw,
+                        .first_parent = null,
+                        .additional_parent = raw,
+                    };
+                } else {
+                    const parent_gop = try parent_by_node.getOrPut(allocator, child_raw);
+                    if (parent_gop.found_existing) {
+                        if (parent_gop.value_ptr.* != raw) {
+                            const first_scope = expectedReferenceScopeFromParent(
+                                ast,
+                                root,
+                                &parent_by_node,
+                                scope_owner_map,
+                                child_raw,
+                                parent_gop.value_ptr.*,
+                            );
+                            const additional_scope = expectedReferenceScopeFromParent(
+                                ast,
+                                root,
+                                &parent_by_node,
+                                scope_owner_map,
+                                child_raw,
+                                raw,
+                            );
+                            // AST nodes can legitimately be aliased by more
+                            // than one structural parent inside one lexical
+                            // scope. Only a conflicting or unprovable scope
+                            // path is ambiguous for identifier identity.
+                            if (first_scope == null or additional_scope == null or
+                                first_scope.?.scope != additional_scope.?.scope)
+                            {
+                                report.ambiguous_ast_parent += 1;
+                                if (report.first_ambiguous_ast_parent == null) report.first_ambiguous_ast_parent = .{
+                                    .node_index = child_raw,
+                                    .first_parent = parent_gop.value_ptr.*,
+                                    .additional_parent = raw,
+                                };
+                            }
+                        }
+                    } else parent_gop.value_ptr.* = raw;
+                }
+            }
+            try reachable_stack.append(allocator, child);
+        }
+    }
+    var dynamic_eval_units: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer dynamic_eval_units.deinit(allocator);
+    var with_body_roots: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer with_body_roots.deinit(allocator);
+    var reachable_dynamic_scan = reachable_nodes.iterator();
+    while (reachable_dynamic_scan.next()) |entry| {
+        const raw = entry.key_ptr.*;
+        const node = ast.nodes.items[raw];
+        if (node.tag == .with_statement and !node.data.binary.right.isNone()) {
+            try with_body_roots.put(allocator, @intFromEnum(node.data.binary.right), {});
+        }
+        if (node.tag != .call_expression or node.data.extra + 2 >= ast.extra_data.items.len) continue;
+        const callee: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
+        if (callee.isNone() or @intFromEnum(callee) >= ast.nodes.items.len) continue;
+        const callee_node = ast.getNode(callee);
+        if (callee_node.tag != .identifier_reference or
+            !std.mem.eql(u8, ast.getText(callee_node.data.string_ref), "eval")) continue;
+        const eval_scope = expectedReferenceScope(ast, root, &parent_by_node, scope_owner_map, @intFromEnum(callee)) orelse continue;
+        if (exactExecutionUnit(scopes, @enumFromInt(eval_scope.scope))) |unit|
+            try dynamic_eval_units.put(allocator, unit, {});
+    }
+    var declaration_nodes = try collectDeclarationNodes(allocator, ast, &reachable_nodes);
+    defer declaration_nodes.deinit(allocator);
+    var references_by_node: std.AutoHashMapUnmanaged(u32, IndexedReference) = .empty;
+    defer references_by_node.deinit(allocator);
+    var helper_refs: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer helper_refs.deinit(allocator);
+    for (helper_reference_nodes) |node| try helper_refs.put(allocator, node, {});
+    var declaration_counts = try allocator.alloc(usize, symbols.len);
+    defer allocator.free(declaration_counts);
+    var value_counts = try allocator.alloc(usize, symbols.len);
+    defer allocator.free(value_counts);
+    var write_counts = try allocator.alloc(usize, symbols.len);
+    defer allocator.free(write_counts);
+    @memset(declaration_counts, 0);
+    @memset(value_counts, 0);
+    @memset(write_counts, 0);
+
+    if (scope_maps.len != scopes.len) recordScopeMapMismatch(&report, "scope-map-count", null, null, null);
+    for (scopes, 0..) |scope, scope_i| {
+        if (scope_i == 0) {
+            if (!scope.parent.isNone()) report.invalid_scope += 1;
+        } else if (!exactValidScope(scopes, scope.parent) or scope.parent.toIndex() == scope_i) {
+            report.invalid_scope += 1;
+        }
+        var ancestor: ScopeId = @enumFromInt(@as(u32, @intCast(scope_i)));
+        var hops: usize = 0;
+        while (!ancestor.isNone() and hops <= scopes.len) : (hops += 1) {
+            if (!exactValidScope(scopes, ancestor)) {
+                report.invalid_scope += 1;
+                break;
+            }
+            ancestor = scopes[ancestor.toIndex()].parent;
+        }
+        if (!ancestor.isNone()) report.invalid_scope += 1;
+        if (scope_i >= scope_maps.len) continue;
+        var bindings = scope_maps[scope_i].iterator();
+        while (bindings.next()) |entry| {
+            if (entry.value_ptr.* >= symbols.len) {
+                recordScopeMapMismatch(&report, "entry-symbol-out-of-range", @intCast(scope_i), @intCast(entry.value_ptr.*), entry.key_ptr.*);
+                continue;
+            }
+            const mapped_symbol = symbols[entry.value_ptr.*];
+            const mapped_scope: ScopeId = @enumFromInt(@as(u32, @intCast(scope_i)));
+            if (!std.mem.eql(u8, entry.key_ptr.*, exactSymbolName(ast, &mapped_symbol)) or
+                mapped_symbol.scope_id != mapped_scope)
+            {
+                recordScopeMapMismatch(&report, "entry-name-or-owner", @intCast(scope_i), @intCast(entry.value_ptr.*), entry.key_ptr.*);
+            }
+        }
+    }
+    for (symbols) |symbol| {
+        if (!exactValidScope(scopes, symbol.scope_id)) report.invalid_scope += 1;
+    }
+    // Validate both directions: a scope-map entry must point to a same-named
+    // symbol in that scope, and every symbol must be reachable through its
+    // scope map or the isolated runtime-helper map.
+    for (symbols, 0..) |symbol, sid| {
+        if (!exactValidScope(scopes, symbol.scope_id)) continue;
+        // Expression `export default` has a synthetic reachability facade
+        // without an emitted local binding when no using transform runs.
+        // Its scope-map alias is optional because a user `_default` may own
+        // that lexical name.
+        if (symbol.decl_flags.is_default_export and std.mem.eql(u8, symbol.synthetic_name, "_default")) continue;
+        const name = exactSymbolName(ast, &symbol);
+        const normal = if (symbol.scope_id.toIndex() < scope_maps.len)
+            scope_maps[symbol.scope_id.toIndex()].get(name)
+        else
+            null;
+        const helper = helper_scope_map.get(name);
+        if ((normal == null or normal.? != sid) and (helper == null or helper.? != sid))
+            recordScopeMapMismatch(&report, "symbol-not-in-either-map", @intFromEnum(symbol.scope_id), @intCast(sid), name);
+    }
+    var reachable_iter = reachable_nodes.iterator();
+    while (reachable_iter.next()) |reachable_entry| {
+        const raw = reachable_entry.key_ptr.*;
+        const tag = ast.nodes.items[raw].tag;
+        const is_generated = raw >= parser_node_count;
+        const expected_kind: ?ScopeKind = switch (tag) {
+            .program => null, // global vs module depends on parser mode
+            .block_statement, .for_statement, .for_in_statement, .for_of_statement, .for_await_of_statement => .block,
+            .switch_statement => .switch_block,
+            // The source analyzer enters catch and body-block scopes on the
+            // same owner node; the latter may be the recorded owner.
+            .catch_clause => null,
+            .class_declaration, .class_expression => .class_body,
+            .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => .function,
+            else => continue,
+        };
+        if (tag == .block_statement) {
+            const parent_raw = parent_by_node.get(raw);
+            const is_function_body = if (parent_raw) |parent| blk: {
+                const parent_node = ast.nodes.items[parent];
+                break :blk ast.functionBodyBlock(parent_node) != null and
+                    @intFromEnum(ast.functionBodyBlock(parent_node).?) == raw;
+            } else false;
+            const is_aliased_catch_body = if (parent_raw) |parent| blk: {
+                const parent_node = ast.nodes.items[parent];
+                if (parent_node.tag != .catch_clause or scope_owner_map.get(parent) == null) break :blk false;
+                const parent_scope = scope_owner_map.get(parent).?;
+                break :blk parent_scope < scopes.len and scopes[parent_scope].kind == .block;
+            } else false;
+            if (is_function_body or is_aliased_catch_body) continue;
+        }
+        const raw_scope = scope_owner_map.get(raw) orelse {
+            // Rebuilt Programs and generated blocks/loops may be structural
+            // wrappers with no fresh semantic scope. Class, switch, catch, and
+            // function nodes always establish a semantic boundary.
+            if (is_generated and (tag == .program or tag == .block_statement or tag == .for_statement or
+                tag == .for_in_statement or tag == .for_of_statement or tag == .for_await_of_statement)) continue;
+            recordScopeOwnerMismatch(&report, raw, tag, "missing-owner", null, expected_kind, null);
+            continue;
+        };
+        if (raw_scope >= scopes.len) {
+            recordScopeOwnerMismatch(&report, raw, tag, "owner-out-of-range", raw_scope, expected_kind, null);
+            continue;
+        }
+        const actual_kind = scopes[raw_scope].kind;
+        if (expected_kind) |expected| {
+            if (actual_kind != expected) recordScopeOwnerMismatch(&report, raw, tag, "owner-kind", raw_scope, expected, actual_kind);
+        } else switch (tag) {
+            .program => {
+                if (actual_kind != .global and actual_kind != .module)
+                    recordScopeOwnerMismatch(&report, raw, tag, "program-owner-kind", raw_scope, null, actual_kind);
+            },
+            .catch_clause => {
+                if (actual_kind != .catch_clause and actual_kind != .block)
+                    recordScopeOwnerMismatch(&report, raw, tag, "catch-owner-kind", raw_scope, null, actual_kind);
+            },
+            else => unreachable,
+        }
+    }
+    var owners = scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        if (entry.key_ptr.* >= ast.nodes.items.len or entry.value_ptr.* >= scopes.len)
+            recordScopeOwnerMismatch(&report, entry.key_ptr.*, .program, "map-entry-out-of-range", entry.value_ptr.*, null, null);
+    }
+
+    for (references) |reference| {
+        const sid = @intFromEnum(reference.symbol_id);
+        if (sid >= symbols.len) {
+            report.invalid_id += 1;
+            continue;
+        }
+        if (reference.flags.declare) {
+            declaration_counts[sid] += 1;
+        } else if (!reference.flags.type_context and !reference.flags.value_as_type and
+            (reference.flags.read or reference.flags.write))
+        {
+            value_counts[sid] += 1;
+            if (reference.flags.write) write_counts[sid] += 1;
+        }
+        if (!exactValidScope(scopes, reference.scope_id)) {
+            report.invalid_scope += 1;
+        } else if (!exactVisibleFrom(scopes, symbols, reference.symbol_id, reference.scope_id)) {
+            report.invisible_reference += 1;
+        }
+        if (reference.node_index.isNone()) {
+            if (!reference.flags.declare) report.invalid_reference_node += 1;
+            continue;
+        }
+        const key = @intFromEnum(reference.node_index);
+        if (key >= ast.nodes.items.len or reference.flags.declare) {
+            report.invalid_reference_node += 1;
+            continue;
+        }
+        if (!reachable_nodes.contains(key)) {
+            report.unreachable_reference += 1;
+            continue;
+        }
+        switch (ast.nodes.items[key].tag) {
+            .identifier_reference, .assignment_target_identifier, .jsx_identifier => {},
+            else => {
+                report.invalid_reference_node += 1;
+                continue;
+            },
+        }
+        if (references_by_node.getPtr(key)) |existing| {
+            existing.count += 1;
+            if (existing.symbol_id != sid) report.identity_mismatch += 1;
+        } else {
+            try references_by_node.put(allocator, key, .{
+                .symbol_id = sid,
+                .scope_id = reference.scope_id,
+            });
+        }
+    }
+    for (symbols, 0..) |symbol, sid| {
+        if (symbol.reference_count != value_counts[sid]) report.reference_count_mismatch += 1;
+        if (symbol.write_count != write_counts[sid]) report.write_count_mismatch += 1;
+    }
+    var helper_scopes = helper_scope_map.iterator();
+    while (helper_scopes.next()) |entry| {
+        if (entry.value_ptr.* >= symbols.len) {
+            recordScopeMapMismatch(&report, "helper-entry-symbol-out-of-range", null, @intCast(entry.value_ptr.*), entry.key_ptr.*);
+            continue;
+        }
+        const symbol = symbols[entry.value_ptr.*];
+        if (symbol.kind != .import_binding or !std.mem.eql(u8, entry.key_ptr.*, exactSymbolName(ast, &symbol))) {
+            recordScopeMapMismatch(&report, "helper-entry-kind-or-name", @intFromEnum(symbol.scope_id), @intCast(entry.value_ptr.*), entry.key_ptr.*);
+        }
+    }
+
+    var ctx: ExactCtx = .{
+        .allocator = allocator,
+        .ast = ast,
+        .root = root,
+        .parser_node_count = parser_node_count,
+        .parent_by_node = &parent_by_node,
+        .scope_owner_map = scope_owner_map,
+        .symbol_ids = symbol_ids,
+        .declaration_nodes = &declaration_nodes,
+        .symbols = symbols,
+        .scopes = scopes,
+        .scope_maps = scope_maps,
+        .dynamic_eval_units = &dynamic_eval_units,
+        .with_body_roots = &with_body_roots,
+        .references_by_node = &references_by_node,
+        .helper_reference_nodes = &helper_refs,
+        .helper_scope_map = helper_scope_map,
+        .declaration_counts = declaration_counts,
+        .unresolved_nodes = unresolved_nodes,
+        .explicit_global_nodes = explicit_global_nodes,
+        .origins = origins,
+        .reachable_nodes = &reachable_nodes,
+        .report = &report,
+    };
+    defer ctx.name_positions.deinit(allocator);
+    defer ctx.jsx_variable_roots.deinit(allocator);
+    try ast_walk.walkPreorderIterative(allocator, ast, root, &ctx, exactVisit);
+    if (ctx.oom) return error.OutOfMemory;
+    return report;
+}
+
+/// Some lowerings retain the source lexical ScopeId for a user binding even
+/// after its source owner node is removed (for example an extracted generator
+/// loop argument). Accept that reference scope only when it remains visible
+/// for the same source symbol and no reachable output AST node owns it.
+fn isRetainedSourceScopeReference(ctx: *const ExactCtx, node: u32, symbol_id: SymbolId, use_scope: ScopeId) bool {
+    const raw_id = @intFromEnum(symbol_id);
+    if (raw_id >= ctx.symbols.len or !exactValidScope(ctx.scopes, use_scope)) return false;
+    const symbol = ctx.symbols[raw_id];
+    if (symbol.synthetic_kind != null or symbol.synthetic_name.len > 0) {
+        // A generator state machine can replace a generated catch clause with
+        // `binding = _state.sent()` and hoist that binding into its wrapper.
+        // Keep the exact catch SymbolId only when the catch owner disappeared
+        // from the output tree and a binding with that ID still exists there.
+        if (symbol.kind != .catch_binding or
+            hasReachableScopeOwner(ctx, @intFromEnum(symbol.scope_id)) or
+            !hasReachableBindingForSymbol(ctx, raw_id)) return false;
+    }
+    if (!exactVisibleFrom(ctx.scopes, ctx.symbols, symbol_id, use_scope)) return false;
+    var child = node;
+    var hops: usize = 0;
+    while (ctx.parent_by_node.get(child)) |parent| : (hops += 1) {
+        if (hops >= ctx.ast.nodes.items.len or parent >= ctx.ast.nodes.items.len) return false;
+        if (!childSkipsScopeOwner(ctx.ast, parent, child)) {
+            if (ctx.scope_owner_map.get(parent)) |scope| {
+                if (scope == @intFromEnum(use_scope)) return false;
+            }
+        }
+        child = parent;
+        if (child == @intFromEnum(ctx.root)) {
+            if (ctx.scope_owner_map.get(child)) |scope| {
+                if (scope == @intFromEnum(use_scope)) return false;
+            }
+            break;
+        }
+    }
+    return true;
+}
+
+fn hasReachableScopeOwner(ctx: *const ExactCtx, scope: u32) bool {
+    var nodes = ctx.reachable_nodes.iterator();
+    while (nodes.next()) |entry| {
+        if (ctx.scope_owner_map.get(entry.key_ptr.*)) |owner_scope| {
+            if (owner_scope == scope) return true;
+        }
+    }
+    return false;
+}
+
+fn hasReachableBindingForSymbol(ctx: *const ExactCtx, symbol_id: u32) bool {
+    for (ctx.symbol_ids, 0..) |maybe_id, raw| {
+        if (maybe_id == null or maybe_id.? != symbol_id or raw >= ctx.ast.nodes.items.len) continue;
+        const node = @as(u32, @intCast(raw));
+        if (ctx.reachable_nodes.contains(node) and ctx.ast.nodes.items[raw].tag == .binding_identifier) return true;
+    }
+    return false;
+}
+
+pub fn printExact(file_path: []const u8, report: ExactReport) void {
+    std.debug.print(
+        "zntc: symbol-identity {s}: generated_bindings={d} generated_references={d} external={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} ambiguous_ast_parent={d} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} reference_count_mismatch={d} write_count_mismatch={d} legacy_debt_fingerprint={x}\n",
+        .{
+            file_path,
+            report.generated_bindings,
+            report.generated_references,
+            report.external_references,
+            report.missing_binding,
+            report.invalid_reference_node,
+            report.unreachable_reference,
+            report.ambiguous_ast_parent,
+            report.shadowed_external_reference,
+            report.invalid_id,
+            report.missing_reference,
+            report.duplicate_reference,
+            report.identity_mismatch,
+            report.binding_scope_mismatch,
+            report.binding_scope_unknown,
+            report.invalid_scope,
+            report.reference_scope_mismatch,
+            report.scope_map_mismatch,
+            report.scope_owner_mismatch,
+            report.scope_resolution_mismatch,
+            report.invisible_reference,
+            report.unclassified_reference,
+            report.reference_count_mismatch,
+            report.write_count_mismatch,
+            report.legacy_debt_fingerprint,
+        },
+    );
+    if (report.first_missing_binding) |finding| printExactFinding(file_path, "missing_binding", finding);
+    if (report.first_missing_reference) |finding| printExactFinding(file_path, "missing_reference", finding);
+    if (report.first_unclassified_reference) |finding| printExactFinding(file_path, "unclassified_reference", finding);
+    if (report.first_shadowed_external_reference) |finding| printExactFinding(file_path, "shadowed_external_reference", finding);
+    printExactDiagnostics(file_path, report);
+}
+
+fn printExactFinding(file_path: []const u8, issue: []const u8, finding: ExactFinding) void {
+    std.debug.print(
+        "zntc: symbol-identity-detail {s}: {s} {s}({s}) node={d} span={d}\n",
+        .{ file_path, issue, finding.name, @tagName(finding.tag), finding.node_index, finding.span_start },
+    );
+}
+
+fn optionalScopeKindName(kind: ?ScopeKind) []const u8 {
+    return if (kind) |value| @tagName(value) else "none";
+}
+
+fn optionalIndexText(buffer: []u8, value: ?u32) []const u8 {
+    return if (value) |index| std.fmt.bufPrint(buffer, "{d}", .{index}) catch "format-error" else "none";
+}
+
+fn printExactDiagnostics(file_path: []const u8, report: ExactReport) void {
+    if (report.first_ambiguous_ast_parent) |finding| {
+        var first_parent_buffer: [16]u8 = undefined;
+        std.debug.print(
+            "zntc: symbol-identity-detail {s}: ambiguous_ast_parent node={d} first_parent={s} additional_parent={d}\n",
+            .{
+                file_path,
+                finding.node_index,
+                optionalIndexText(&first_parent_buffer, finding.first_parent),
+                finding.additional_parent,
+            },
+        );
+    }
+    if (report.first_scope_owner_mismatch) |finding| {
+        var scope_buffer: [16]u8 = undefined;
+        std.debug.print(
+            "zntc: symbol-identity-detail {s}: scope_owner issue={s} node={d} tag={s} scope={s} expected={s} actual={s}\n",
+            .{
+                file_path,
+                finding.issue,
+                finding.node_index,
+                @tagName(finding.tag),
+                optionalIndexText(&scope_buffer, finding.scope_id),
+                optionalScopeKindName(finding.expected_kind),
+                optionalScopeKindName(finding.actual_kind),
+            },
+        );
+    }
+    if (report.first_scope_map_mismatch) |finding| {
+        var scope_buffer: [16]u8 = undefined;
+        var symbol_buffer: [16]u8 = undefined;
+        std.debug.print(
+            "zntc: symbol-identity-detail {s}: scope_map issue={s} scope={s} symbol={s} name={s}\n",
+            .{
+                file_path,
+                finding.issue,
+                optionalIndexText(&scope_buffer, finding.scope_id),
+                optionalIndexText(&symbol_buffer, finding.symbol_id),
+                finding.name orelse "none",
+            },
+        );
+    }
 }
 
 /// Diagnostic inventory of emitted identifiers. An unbound generated read may
@@ -263,6 +1682,7 @@ const StrictCtx = struct {
     symbols: []const Symbol,
     scopes: []const Scope,
     node_scopes: *const std.AutoHashMapUnmanaged(u32, ScopeTrace),
+    parent_traces: *const std.AutoHashMapUnmanaged(u32, ParentTrace),
     references: *const std.AutoHashMapUnmanaged(u32, ReferenceEvidence),
     synthetic: ?*const std.AutoHashMapUnmanaged(u32, void),
     report: *StrictReport,
@@ -281,7 +1701,7 @@ const StrictCtx = struct {
         const marked = if (self.synthetic) |set| set.contains(raw) else false;
         const trace = self.node_scopes.get(raw);
         const reference = self.references.get(raw);
-        const status = self.classify(node, name, sid, trace, reference);
+        const status = self.classify(raw, node, name, sid, trace, reference);
         self.report.counts[@intFromEnum(status)] += 1;
         if (marked) self.report.marked_synthetic += 1;
         self.report.findings.append(self.allocator, .{
@@ -303,6 +1723,7 @@ const StrictCtx = struct {
 
     fn classify(
         self: *const StrictCtx,
+        raw: u32,
         node: Node,
         name: []const u8,
         sid: ?u32,
@@ -328,26 +1749,23 @@ const StrictCtx = struct {
             if (!validScope(symbol.scope_id, self.scopes) or !validScope(symbol.origin_scope, self.scopes)) return .invalid_scope;
             const expected = trace orelse return .scope_unknown;
             if (expected.ambiguous) return .scope_ambiguous;
+            if (self.parent_traces.get(raw)) |parents| {
+                if (parents.ambiguous) return .scope_ambiguous;
+            }
             if (!expected.valid) return .invalid_scope;
             const lexical_scope = expected.scope_id orelse return .scope_unknown;
             if (!validScope(@enumFromInt(lexical_scope), self.scopes)) return .invalid_scope;
-            const declaration_scope = if (symbol.kind == .variable_var)
+            const is_output_var = symbol.kind == .variable_var or strictBindingIsOutputVar(self.ast, raw, self.parent_traces);
+            const declaration_scope = if (is_output_var)
                 nearestVarScope(lexical_scope, self.scopes) orelse return .invalid_scope
             else
                 lexical_scope;
             if (@intFromEnum(symbol.scope_id) != declaration_scope) return .scope_mismatch;
-            if (symbol.kind == .variable_var) {
-                // A `var` is stored in its nearest var scope, while
-                // origin_scope records the lexical scope where it was
-                // declared. Those scopes can differ for a declaration inside
-                // a block. Require the origin to lie on the exact lexical to
-                // storage path, so an unrelated sibling scope still fails.
-                return if (scopeIsOnPath(self.scopes, lexical_scope, declaration_scope, @intFromEnum(symbol.origin_scope)))
-                    .bound
-                else
-                    .scope_mismatch;
-            }
-            return if (@intFromEnum(symbol.origin_scope) == declaration_scope) .bound else .scope_mismatch;
+            // scope_id is the binding's current output storage scope.
+            // origin_scope is source provenance and may name a detached
+            // source scope after lowering moves the binding into generated
+            // output. It must remain valid, but is not the output AST scope.
+            return .bound;
         }
 
         const evidence = reference orelse return .missing_reference;
@@ -370,10 +1788,83 @@ const ScopeTrace = struct {
     ambiguous: bool = false,
 };
 
+const ParentTrace = struct {
+    parent: u32,
+    ambiguous: bool = false,
+};
+
 const ReferenceEvidence = struct {
     reference: Reference,
     count: u8 = 1,
 };
+
+const ParentVisit = struct {
+    node: NodeIndex,
+    parent: ?u32 = null,
+};
+
+fn collectParentTraces(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+) std.mem.Allocator.Error!std.AutoHashMapUnmanaged(u32, ParentTrace) {
+    var traces: std.AutoHashMapUnmanaged(u32, ParentTrace) = .empty;
+    errdefer traces.deinit(allocator);
+    var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer visited.deinit(allocator);
+    var stack: std.ArrayList(ParentVisit) = .empty;
+    defer stack.deinit(allocator);
+    var children: std.ArrayList(NodeIndex) = .empty;
+    defer children.deinit(allocator);
+    try stack.append(allocator, .{ .node = root });
+    while (stack.pop()) |parent_visit| {
+        if (parent_visit.node.isNone() or @as(usize, @intFromEnum(parent_visit.node)) >= ast.nodes.items.len) continue;
+        const raw = @intFromEnum(parent_visit.node);
+        if (parent_visit.parent) |parent| {
+            const gop = try traces.getOrPut(allocator, raw);
+            if (gop.found_existing) {
+                if (gop.value_ptr.parent != parent) gop.value_ptr.ambiguous = true;
+            } else {
+                gop.value_ptr.* = .{ .parent = parent };
+            }
+        }
+        const visited_result = try visited.getOrPut(allocator, raw);
+        if (visited_result.found_existing) continue;
+        try ast_walk.collectChildrenInto(ast, ast.getNode(parent_visit.node), &children, allocator);
+        for (children.items) |child| try stack.append(allocator, .{ .node = child, .parent = raw });
+    }
+    return traces;
+}
+
+fn strictBindingIsOutputVar(
+    ast: *const Ast,
+    binding: u32,
+    parents: *const std.AutoHashMapUnmanaged(u32, ParentTrace),
+) bool {
+    var child = binding;
+    var parent = parents.get(child);
+    var hops: usize = 0;
+    while (parent) |trace| : (hops += 1) {
+        if (trace.ambiguous or hops >= ast.nodes.items.len or trace.parent >= ast.nodes.items.len) return false;
+        const ancestor = ast.nodes.items[trace.parent];
+        if (ancestor.tag == .variable_declaration)
+            return ast.variableDeclarationKind(ancestor) == .@"var";
+        switch (ancestor.tag) {
+            .function_declaration,
+            .function_expression,
+            .function,
+            .arrow_function_expression,
+            .class_declaration,
+            .class_expression,
+            .catch_clause,
+            => return false,
+            else => {},
+        }
+        child = trace.parent;
+        parent = parents.get(child);
+    }
+    return false;
+}
 
 const ScopePath = struct {
     scope_id: ?u32 = null,
@@ -405,19 +1896,6 @@ fn nearestVarScope(start: u32, scopes: []const Scope) ?u32 {
         current = scopes[index].parent;
     }
     return null;
-}
-
-fn scopeIsOnPath(scopes: []const Scope, descendant: u32, ancestor: u32, candidate: u32) bool {
-    var current: ScopeId = @enumFromInt(descendant);
-    var hops: usize = 0;
-    while (!current.isNone() and hops < scopes.len) : (hops += 1) {
-        const index = current.toIndex();
-        if (@as(usize, index) >= scopes.len) return false;
-        if (index == candidate) return true;
-        if (index == ancestor) return false;
-        current = scopes[index].parent;
-    }
-    return false;
 }
 
 fn visibleFrom(binding: ScopeId, reference: ScopeId, scopes: []const Scope) bool {
@@ -487,27 +1965,18 @@ fn collectScopeTraces(
         while (index > 0) {
             index -= 1;
             const child = children.items[index];
-            // FunctionDeclaration/ClassDeclaration names are bound in the
-            // enclosing lexical scope, although their node also owns the
-            // function/class body scope. Other children inherit that scope.
-            const child_scope = if (isOuterDeclarationName(ast, parent, child)) scope_visit.incoming else effective;
+            // Some owner nodes enter their body scope after evaluating
+            // selected children: switch discriminants, method keys and
+            // decorators, and declaration names all belong to the enclosing
+            // scope. Keep strict traces aligned with the analyzer's order.
+            const child_scope = if (childSkipsScopeOwner(ast, raw, @intFromEnum(child)))
+                scope_visit.incoming
+            else
+                effective;
             try stack.append(allocator, .{ .node = child, .incoming = child_scope });
         }
     }
     return traces;
-}
-
-fn isOuterDeclarationName(ast: *const Ast, parent: Node, child: NodeIndex) bool {
-    const offset: ?u32 = switch (parent.tag) {
-        .function_declaration => ast_mod.FunctionExtra.name,
-        .class_declaration => ast_mod.ClassExtra.name,
-        else => null,
-    };
-    const name_offset = offset orelse return false;
-    const slot = parent.data.extra + name_offset;
-    if (@as(usize, slot) >= ast.extra_data.items.len) return false;
-    const raw = ast.extra_data.items[slot];
-    return raw != @intFromEnum(NodeIndex.none) and raw == @intFromEnum(child);
 }
 
 fn collectReferenceEvidence(
@@ -557,6 +2026,8 @@ pub fn checkStrict(
     errdefer report.deinit(allocator);
     var node_scopes = try collectScopeTraces(allocator, ast, root, scopes, scope_owner_map);
     defer node_scopes.deinit(allocator);
+    var parent_traces = try collectParentTraces(allocator, ast, root);
+    defer parent_traces.deinit(allocator);
     var reference_evidence = try collectReferenceEvidence(allocator, references);
     defer reference_evidence.deinit(allocator);
     var ctx: StrictCtx = .{
@@ -567,6 +2038,7 @@ pub fn checkStrict(
         .symbols = symbols,
         .scopes = scopes,
         .node_scopes = &node_scopes,
+        .parent_traces = &parent_traces,
         .references = &reference_evidence,
         .synthetic = synthetic,
         .report = &report,
@@ -604,4 +2076,1359 @@ test "baseName strips rename suffix" {
     try std.testing.expectEqualStrings("x$", baseName("x$"));
     try std.testing.expectEqualStrings("$x", baseName("$x"));
     try std.testing.expectEqualStrings("a$b", baseName("a$b"));
+}
+
+/// Inline white-box tests need raw identifier AST nodes; production transforms
+/// must use the classified symbol-aware constructors.
+fn makeTestIdentifierNode(ast: *Ast, tag: Node.Tag, span: Span) !NodeIndex {
+    return ast.addNode(.{ .tag = tag, .span = span, .data = .{ .string_ref = span } });
+}
+
+test "exact identity audit catches a same-name reference bound to the wrong scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("x");
+    const ref_node = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const list = try ast.addNodeList(&.{ref_node});
+    const root = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = name,
+        .data = .{ .list = list },
+    });
+
+    const outer_scope: ScopeId = @enumFromInt(0);
+    const inner_scope: ScopeId = @enumFromInt(1);
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = outer_scope, .kind = .block, .is_strict = false },
+    };
+    var outer_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer outer_names.deinit(allocator);
+    var inner_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer inner_names.deinit(allocator);
+    try outer_names.put(allocator, "x", 0);
+    try inner_names.put(allocator, "x", 1);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ outer_names, inner_names };
+    const symbols = [_]Symbol{
+        .{ .name = name, .scope_id = outer_scope, .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
+        .{ .name = name, .scope_id = inner_scope, .kind = .variable_let, .declaration_span = name },
+    };
+    const symbol_ids = [_]?u32{ 0, null };
+    const references = [_]Reference{
+        .{ .node_index = ref_node, .scope_id = inner_scope, .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+    };
+    const scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const helper_refs: []const u32 = &.{};
+    const helper_scopes: std.StringHashMapUnmanaged(usize) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        helper_refs,
+        &helper_scopes,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.scope_resolution_mismatch);
+    try std.testing.expectEqual(@as(usize, 0), report.invalid_reference_node);
+    try std.testing.expectEqual(@as(usize, 0), report.identity_mismatch);
+    try std.testing.expect(!report.isClean());
+}
+
+test "exact identity audit rejects a shadowed binding carrying the outer SymbolId" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("x");
+    const outer_binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const inner_binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const inner = try ast.addListNode(.block_statement, name, try ast.addNodeList(&.{inner_binding}));
+    const root = try ast.addListNode(.program, name, try ast.addNodeList(&.{ outer_binding, inner }));
+
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+    };
+    var outer_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer outer_names.deinit(allocator);
+    var inner_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer inner_names.deinit(allocator);
+    try outer_names.put(allocator, "x", 0);
+    try inner_names.put(allocator, "x", 1);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ outer_names, inner_names };
+    const symbols = [_]Symbol{
+        .{ .name = name, .scope_id = @enumFromInt(0), .kind = .variable_let, .declaration_span = name },
+        .{ .name = name, .scope_id = @enumFromInt(1), .kind = .variable_let, .declaration_span = name },
+    };
+    var symbol_ids = [_]?u32{ null, null, null, null };
+    symbol_ids[@intFromEnum(outer_binding)] = 0;
+    // Adversarial corruption: the inner declaration uses the outer identity.
+    symbol_ids[@intFromEnum(inner_binding)] = 0;
+    const references = [_]Reference{
+        .{ .node_index = .none, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
+        .{ .node_index = .none, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(1), .flags = .{ .declare = true } },
+    };
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @intFromEnum(root), 0);
+    try scope_owner_map.put(allocator, @intFromEnum(inner), 1);
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.binding_scope_mismatch);
+    try std.testing.expect(!report.isClean());
+}
+
+test "exact identity audit resolves relocated symbols by their emitted scope-map names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const source_name = try ast.addString("_err3");
+    const left_name = try ast.addString("_err3$4");
+    const right_name = try ast.addString("_err3$6");
+    const left_binding = try makeTestIdentifierNode(&ast, .binding_identifier, left_name);
+    const right_binding = try makeTestIdentifierNode(&ast, .binding_identifier, right_name);
+    const root = try ast.addListNode(.program, source_name, try ast.addNodeList(&.{ left_binding, right_binding }));
+    const scopes = [_]Scope{.{ .parent = .none, .kind = .global, .is_strict = false }};
+    var output_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer output_names.deinit(allocator);
+    try output_names.put(allocator, "_err3$4", 0);
+    try output_names.put(allocator, "_err3$6", 1);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){output_names};
+    const symbols = [_]Symbol{
+        .{ .name = source_name, .scope_id = @enumFromInt(0), .kind = .variable_let, .declaration_span = source_name, .synthetic_name = "_err3$4" },
+        .{ .name = source_name, .scope_id = @enumFromInt(0), .kind = .variable_let, .declaration_span = source_name, .synthetic_name = "_err3$6" },
+    };
+    const symbol_ids = [_]?u32{ 0, 1, null };
+    const references = [_]Reference{
+        .{ .node_index = .none, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
+        .{ .node_index = .none, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(1), .flags = .{ .declare = true } },
+    };
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @intFromEnum(root), 0);
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 0), report.scope_map_mismatch);
+    try std.testing.expectEqual(@as(usize, 0), report.identity_mismatch);
+    try std.testing.expect(report.isClean());
+}
+
+test "exact identity audit rejects non-declaration references without an AST node" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("x");
+    const binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const list = try ast.addNodeList(&.{binding});
+    const root = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = name,
+        .data = .{ .list = list },
+    });
+    const scope: ScopeId = @enumFromInt(0);
+    var names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer names.deinit(allocator);
+    try names.put(allocator, "x", 0);
+    const scopes = [_]Scope{.{ .parent = .none, .kind = .global, .is_strict = false }};
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){names};
+    const symbols = [_]Symbol{
+        .{ .name = name, .scope_id = scope, .kind = .variable_let, .declaration_span = name, .reference_count = 2 },
+    };
+    const symbol_ids = [_]?u32{ 0, null };
+    const references = [_]Reference{
+        .{ .node_index = .none, .scope_id = scope, .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+        .{ .node_index = root, .scope_id = scope, .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+    };
+    const scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 2), report.invalid_reference_node);
+    try std.testing.expect(!report.isClean());
+}
+
+test "exact identity audit checks parser-owned SymbolIds against their references" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const x_name = try ast.addString("x");
+    const y_name = try ast.addString("y");
+    const binding = try makeTestIdentifierNode(&ast, .binding_identifier, x_name);
+    const ref = try makeTestIdentifierNode(&ast, .identifier_reference, x_name);
+    const list = try ast.addNodeList(&.{ binding, ref });
+    const root = try ast.addListNode(.array_expression, x_name, list);
+    const scope: ScopeId = @enumFromInt(0);
+    var names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer names.deinit(allocator);
+    try names.put(allocator, "x", 0);
+    try names.put(allocator, "y", 1);
+    const scopes = [_]Scope{.{ .parent = .none, .kind = .global, .is_strict = false }};
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){names};
+    const symbols = [_]Symbol{
+        .{ .name = x_name, .scope_id = scope, .kind = .variable_let, .declaration_span = x_name, .reference_count = 1 },
+        .{ .name = y_name, .scope_id = scope, .kind = .variable_let, .declaration_span = y_name },
+    };
+    const symbol_ids = [_]?u32{ 0, 1, null };
+    const references = [_]Reference{
+        .{ .node_index = ref, .scope_id = scope, .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+    };
+    const scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        2,
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.identity_mismatch);
+    try std.testing.expectEqual(@as(usize, 1), report.scope_resolution_mismatch);
+    try std.testing.expect(!report.isClean());
+}
+
+test "exact identity audit rejects references to nodes removed from the final AST" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const x_name = try ast.addString("x");
+    const orphan = try makeTestIdentifierNode(&ast, .identifier_reference, x_name);
+    const zero = try ast.addString("0");
+    const root = try ast.addNode(.{ .tag = .numeric_literal, .span = zero, .data = .{ .none = 0 } });
+    const scope: ScopeId = @enumFromInt(0);
+    var names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer names.deinit(allocator);
+    try names.put(allocator, "x", 0);
+    const scopes = [_]Scope{.{ .parent = .none, .kind = .global, .is_strict = false }};
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){names};
+    const symbols = [_]Symbol{
+        .{ .name = x_name, .scope_id = scope, .kind = .variable_let, .declaration_span = x_name, .reference_count = 1 },
+    };
+    const symbol_ids = [_]?u32{ 0, null };
+    const references = [_]Reference{
+        .{ .node_index = orphan, .scope_id = scope, .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+    };
+    const scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.unreachable_reference);
+    try std.testing.expect(!report.isClean());
+}
+
+test "exact identity audit rejects an identifier node shared by different lexical parents" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("x");
+    const binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const shared_ref = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const left = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = name,
+        .data = .{ .list = try ast.addNodeList(&.{shared_ref}) },
+    });
+    const right = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = name,
+        .data = .{ .list = try ast.addNodeList(&.{shared_ref}) },
+    });
+    const root = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = name,
+        .data = .{ .list = try ast.addNodeList(&.{ binding, left, right }) },
+    });
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+        .{ .parent = @enumFromInt(1), .kind = .block, .is_strict = false },
+        .{ .parent = @enumFromInt(1), .kind = .block, .is_strict = false },
+    };
+    var root_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer root_names.deinit(allocator);
+    try root_names.put(allocator, "x", 0);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, root_names, .empty, .empty };
+    const symbols = [_]Symbol{
+        .{ .name = name, .scope_id = @enumFromInt(1), .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
+    };
+    const symbol_ids = [_]?u32{ 0, 0, null, null, null };
+    const references = [_]Reference{
+        .{ .node_index = .none, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
+        .{ .node_index = shared_ref, .scope_id = @enumFromInt(3), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+    };
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @intFromEnum(root), 1);
+    try scope_owner_map.put(allocator, @intFromEnum(left), 2);
+    try scope_owner_map.put(allocator, @intFromEnum(right), 3);
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.ambiguous_ast_parent);
+    try std.testing.expectEqual(@as(usize, 0), report.reference_scope_mismatch);
+    try std.testing.expect(!report.isClean());
+}
+
+test "exact identity audit allows a shared identifier node within one lexical scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("x");
+    const binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const shared_ref = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const left_parent = try ast.addNode(.{
+        .tag = .expression_statement,
+        .span = name,
+        .data = .{ .unary = .{ .operand = shared_ref, .flags = 0 } },
+    });
+    const right_parent = try ast.addNode(.{
+        .tag = .expression_statement,
+        .span = name,
+        .data = .{ .unary = .{ .operand = shared_ref, .flags = 0 } },
+    });
+    const root = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = name,
+        .data = .{ .list = try ast.addNodeList(&.{ binding, left_parent, right_parent }) },
+    });
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+    };
+    var local_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer local_names.deinit(allocator);
+    try local_names.put(allocator, "x", 0);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, local_names };
+    const symbols = [_]Symbol{
+        .{ .name = name, .scope_id = @enumFromInt(1), .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
+    };
+    const symbol_ids = [_]?u32{ 0, 0, null, null, null };
+    const references = [_]Reference{
+        .{ .node_index = .none, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
+        .{ .node_index = shared_ref, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+    };
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @intFromEnum(root), 1);
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 0), report.ambiguous_ast_parent);
+    try std.testing.expect(report.isClean());
+}
+
+test "exact identity audit rejects a copied external reference shadowed in its output scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("Object");
+    const source_global = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const copied_global = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const root = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = name,
+        .data = .{ .list = try ast.addNodeList(&.{ binding, copied_global }) },
+    });
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+    };
+    var local_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer local_names.deinit(allocator);
+    try local_names.put(allocator, "Object", 0);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, local_names };
+    const symbols = [_]Symbol{
+        .{ .name = name, .scope_id = @enumFromInt(1), .kind = .variable_let, .declaration_span = name },
+    };
+    const symbol_ids = [_]?u32{ null, 0, null, null };
+    const references = [_]Reference{
+        .{ .node_index = .none, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
+    };
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @intFromEnum(root), 1);
+    var unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer unresolved.deinit(allocator);
+    try unresolved.put(allocator, @intFromEnum(source_global), {});
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    var origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer origins.deinit(allocator);
+    try origins.put(allocator, @intFromEnum(copied_global), @intFromEnum(source_global));
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        1,
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 0), report.external_references);
+    try std.testing.expectEqual(@as(usize, 1), report.shadowed_external_reference);
+    try std.testing.expect(!report.isClean());
+}
+
+test "exact identity audit accepts a provenance-backed external at a known ordinary scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("Object");
+    const external_ref = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const root = try ast.addListNode(.program, name, try ast.addNodeList(&.{external_ref}));
+    const scopes = [_]Scope{.{ .parent = .none, .kind = .global, .is_strict = false }};
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){.empty};
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer owners.deinit(allocator);
+    try owners.put(allocator, @intFromEnum(root), 0);
+    var unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer unresolved.deinit(allocator);
+    try unresolved.put(allocator, @intFromEnum(external_ref), {});
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        &.{},
+        &.{},
+        &scopes,
+        &scope_maps,
+        &owners,
+        &.{},
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.external_references);
+    try std.testing.expectEqual(@as(usize, 0), report.unclassified_reference);
+    try std.testing.expect(report.isClean());
+}
+
+test "exact identity audit keeps a copied external unclassified inside with at a known scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("Object");
+    const source_ref = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const copied_ref = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const parser_node_count = @intFromEnum(copied_ref);
+    const object_span = try ast.addString("'scope'");
+    const object = try ast.addNode(.{
+        .tag = .string_literal,
+        .span = object_span,
+        .data = .{ .string_ref = object_span },
+    });
+    const body_statement = try ast.addNode(.{
+        .tag = .expression_statement,
+        .span = name,
+        .data = .{ .unary = .{ .operand = copied_ref, .flags = 0 } },
+    });
+    const body = try ast.addListNode(.block_statement, name, try ast.addNodeList(&.{body_statement}));
+    const with_statement = try ast.addNode(.{
+        .tag = .with_statement,
+        .span = name,
+        .data = .{ .binary = .{ .left = object, .right = body, .flags = 0 } },
+    });
+    const root = try ast.addListNode(.program, name, try ast.addNodeList(&.{with_statement}));
+    const scopes = [_]Scope{.{
+        .parent = .none,
+        .kind = .global,
+        .is_strict = false,
+        .subtree_has_with = true,
+    }};
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){.empty};
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @intFromEnum(root), 0);
+    var unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer unresolved.deinit(allocator);
+    try unresolved.put(allocator, @intFromEnum(source_ref), {});
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    var origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer origins.deinit(allocator);
+    try origins.put(allocator, @intFromEnum(copied_ref), @intFromEnum(source_ref));
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        parser_node_count,
+        &.{},
+        &.{},
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &.{},
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 0), report.external_references);
+    try std.testing.expectEqual(@as(usize, 1), report.unclassified_reference);
+    try std.testing.expectEqual(@intFromEnum(copied_ref), report.first_unclassified_reference.?.node_index);
+}
+
+test "exact identity audit keeps a copied external unclassified after direct eval" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const object_name = try ast.addString("Object");
+    const source_ref = try makeTestIdentifierNode(&ast, .identifier_reference, object_name);
+    const eval_name = try ast.addString("eval");
+    const eval_ref = try makeTestIdentifierNode(&ast, .identifier_reference, eval_name);
+    const eval_arg_span = try ast.addString("'var Object = 1'");
+    const eval_arg = try ast.addNode(.{
+        .tag = .string_literal,
+        .span = eval_arg_span,
+        .data = .{ .string_ref = eval_arg_span },
+    });
+    const eval_args = try ast.addNodeList(&.{eval_arg});
+    const eval_extra = try ast.addExtras(&.{ @intFromEnum(eval_ref), eval_args.start, eval_args.len, 0 });
+    const eval_call = try ast.addExtraNode(.call_expression, eval_name, eval_extra);
+    const eval_statement = try ast.addNode(.{
+        .tag = .expression_statement,
+        .span = eval_name,
+        .data = .{ .unary = .{ .operand = eval_call, .flags = 0 } },
+    });
+    const parser_node_count: u32 = @intCast(ast.nodes.items.len);
+    const copied_ref = try makeTestIdentifierNode(&ast, .identifier_reference, object_name);
+    const object_statement = try ast.addNode(.{
+        .tag = .expression_statement,
+        .span = object_name,
+        .data = .{ .unary = .{ .operand = copied_ref, .flags = 0 } },
+    });
+    const root = try ast.addListNode(.program, object_name, try ast.addNodeList(&.{ eval_statement, object_statement }));
+    const scopes = [_]Scope{.{
+        .parent = .none,
+        .kind = .global,
+        .is_strict = false,
+        .subtree_has_direct_eval = true,
+    }};
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){.empty};
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @intFromEnum(root), 0);
+    var unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer unresolved.deinit(allocator);
+    try unresolved.put(allocator, @intFromEnum(source_ref), {});
+    try unresolved.put(allocator, @intFromEnum(eval_ref), {});
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    var origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer origins.deinit(allocator);
+    try origins.put(allocator, @intFromEnum(copied_ref), @intFromEnum(source_ref));
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        parser_node_count,
+        &.{},
+        &.{},
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &.{},
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.external_references);
+    try std.testing.expectEqual(@as(usize, 1), report.unclassified_reference);
+    try std.testing.expectEqual(@as(usize, 1), report.generated_references);
+}
+
+test "exact identity audit accepts an unresolved external when its scope path is absent but no binding can shadow it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("Object");
+    const external_ref = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const scopes = [_]Scope{.{ .parent = .none, .kind = .global, .is_strict = false }};
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){.empty};
+    const scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    var unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer unresolved.deinit(allocator);
+    try unresolved.put(allocator, @intFromEnum(external_ref), {});
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        external_ref,
+        @intCast(ast.nodes.items.len),
+        &.{null},
+        &.{},
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &.{},
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.external_references);
+    try std.testing.expectEqual(@as(usize, 0), report.unclassified_reference);
+    try std.testing.expect(report.isClean());
+}
+
+test "exact identity audit keeps an unknown-scope external unclassified if any lexical binding can shadow it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("Object");
+    const external_ref = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    var nested_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer nested_names.deinit(allocator);
+    try nested_names.put(allocator, "Object", 0);
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = false },
+    };
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, nested_names };
+    const symbols = [_]Symbol{
+        .{ .name = name, .scope_id = @enumFromInt(1), .kind = .variable_let, .declaration_span = name },
+    };
+    const symbol_ids = [_]?u32{null};
+    const scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    var unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer unresolved.deinit(allocator);
+    try unresolved.put(allocator, @intFromEnum(external_ref), {});
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        external_ref,
+        @intCast(ast.nodes.items.len),
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &.{},
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 0), report.external_references);
+    try std.testing.expectEqual(@as(usize, 1), report.unclassified_reference);
+    try std.testing.expect(!report.isClean());
+}
+
+test "exact identity audit rejects a visible but non-innermost reference scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("x");
+    const ref_node = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const inner_list = try ast.addNodeList(&.{ref_node});
+    const inner = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = name,
+        .data = .{ .list = inner_list },
+    });
+    const outer_list = try ast.addNodeList(&.{inner});
+    const root = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = name,
+        .data = .{ .list = outer_list },
+    });
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+        .{ .parent = @enumFromInt(1), .kind = .block, .is_strict = false },
+    };
+    var outer_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer outer_names.deinit(allocator);
+    try outer_names.put(allocator, "x", 0);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, outer_names, .empty };
+    const symbols = [_]Symbol{
+        .{ .name = name, .scope_id = @enumFromInt(1), .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
+    };
+    const symbol_ids = [_]?u32{ 0, null, null };
+    // x는 outer_scope에서 보이고 여기서 이름 조회도 성공하지만, 실제
+    // 참조 노드는 inner block 안에 있으므로 ScopeId는 2여야 한다.
+    const references = [_]Reference{
+        .{ .node_index = ref_node, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+    };
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @intFromEnum(root), 1);
+    try scope_owner_map.put(allocator, @intFromEnum(inner), 2);
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.reference_scope_mismatch);
+    try std.testing.expectEqual(@as(usize, 0), report.invisible_reference);
+    try std.testing.expect(!report.isClean());
+}
+
+test "exact identity audit preserves visible source scopes whose owner was lowered away" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("x");
+    const ref_node = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const list = try ast.addNodeList(&.{ref_node});
+    const root = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = name,
+        .data = .{ .list = list },
+    });
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+    };
+    var source_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer source_names.deinit(allocator);
+    try source_names.put(allocator, "x", 0);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, source_names, .empty };
+    const symbols = [_]Symbol{
+        .{ .name = name, .scope_id = @enumFromInt(1), .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
+    };
+    const symbol_ids = [_]?u32{ 0, null };
+    const references = [_]Reference{
+        .{ .node_index = ref_node, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+    };
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @intFromEnum(root), 2);
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 0), report.reference_scope_mismatch);
+    try std.testing.expectEqual(@as(usize, 0), report.scope_resolution_mismatch);
+    try std.testing.expectEqual(@as(usize, 0), report.invisible_reference);
+}
+
+test "exact identity audit preserves generated catch symbols after state-machine lowering" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("_caught");
+    const binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const ref = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const none = @intFromEnum(NodeIndex.none);
+    const declarator_extra = try ast.addExtras(&.{ @intFromEnum(binding), none, none });
+    const declarator = try ast.addNode(.{ .tag = .variable_declarator, .span = name, .data = .{ .extra = declarator_extra } });
+    const declarators = try ast.addNodeList(&.{declarator});
+    const declaration_extra = try ast.addExtras(&.{
+        @intFromEnum(ast_mod.VariableDeclarationKind.@"var"),
+        declarators.start,
+        declarators.len,
+    });
+    const declaration = try ast.addNode(.{ .tag = .variable_declaration, .span = name, .data = .{ .extra = declaration_extra } });
+    const body = try ast.addNode(.{ .tag = .block_statement, .span = name, .data = .{ .list = try ast.addNodeList(&.{ declaration, ref }) } });
+    const dead_catch = try ast.addNode(.{ .tag = .catch_clause, .span = name, .data = .{ .binary = .{ .left = .none, .right = .none, .flags = 0 } } });
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = @enumFromInt(0), .kind = .catch_clause, .is_strict = false },
+        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+    };
+    var catch_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer catch_names.deinit(allocator);
+    try catch_names.put(allocator, "_caught", 0);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, catch_names, .empty };
+    const symbols = [_]Symbol{
+        .{ .name = name, .scope_id = @enumFromInt(1), .kind = .catch_binding, .declaration_span = name, .reference_count = 1, .synthetic_name = "_caught" },
+    };
+    const symbol_ids = [_]?u32{ 0, 0, null, null, null };
+    const references = [_]Reference{
+        .{ .node_index = .none, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
+        .{ .node_index = ref, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+    };
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @intFromEnum(body), 2);
+    try scope_owner_map.put(allocator, @intFromEnum(dead_catch), 1);
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        body,
+        0,
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 0), report.reference_scope_mismatch);
+    try std.testing.expectEqual(@as(usize, 0), report.missing_binding);
+    try std.testing.expectEqual(@as(usize, 0), report.missing_reference);
+}
+
+test "exact identity audit rejects generated catch symbols while their owner remains" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("_caught");
+    const binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const ref = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const body = try ast.addNode(.{ .tag = .block_statement, .span = name, .data = .{ .list = try ast.addNodeList(&.{ref}) } });
+    const catch_clause = try ast.addNode(.{ .tag = .catch_clause, .span = name, .data = .{ .binary = .{ .left = binding, .right = body, .flags = 0 } } });
+    const root = try ast.addListNode(.array_expression, name, try ast.addNodeList(&.{catch_clause}));
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = @enumFromInt(0), .kind = .catch_clause, .is_strict = false },
+        .{ .parent = @enumFromInt(1), .kind = .block, .is_strict = false },
+    };
+    var catch_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer catch_names.deinit(allocator);
+    try catch_names.put(allocator, "_caught", 0);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, catch_names, .empty };
+    const symbols = [_]Symbol{
+        .{ .name = name, .scope_id = @enumFromInt(1), .kind = .catch_binding, .declaration_span = name, .reference_count = 1, .synthetic_name = "_caught" },
+    };
+    const symbol_ids = [_]?u32{ 0, 0, null, null };
+    const references = [_]Reference{
+        .{ .node_index = .none, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
+        .{ .node_index = ref, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+    };
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @intFromEnum(catch_clause), 1);
+    try scope_owner_map.put(allocator, @intFromEnum(body), 2);
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.reference_scope_mismatch);
+    try std.testing.expectEqual(@as(usize, 0), report.invisible_reference);
+}
+
+test "exact identity audit requires generated class and switch scopes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const span = try ast.addString("x");
+    const discriminant = try ast.addNode(.{ .tag = .numeric_literal, .span = span, .data = .{ .none = 0 } });
+    const no_cases = try ast.addNodeList(&.{});
+    const switch_extra = try ast.addExtras(&.{ @intFromEnum(discriminant), no_cases.start, no_cases.len });
+    const switch_node = try ast.addNode(.{
+        .tag = .switch_statement,
+        .span = span,
+        .data = .{ .extra = switch_extra },
+    });
+    const class_extra = try ast.addExtras(&.{
+        @intFromEnum(NodeIndex.none),
+        @intFromEnum(NodeIndex.none),
+        @intFromEnum(NodeIndex.none),
+    });
+    const class_node = try ast.addNode(.{
+        .tag = .class_expression,
+        .span = span,
+        .data = .{ .extra = class_extra },
+    });
+    const list = try ast.addNodeList(&.{ switch_node, class_node });
+    const root = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = span,
+        .data = .{ .list = list },
+    });
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+    };
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, .empty };
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @intFromEnum(root), 1);
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &.{},
+        &.{},
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &.{},
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 2), report.scope_owner_mismatch);
+    try std.testing.expect(!report.isClean());
+}
+
+test "exact identity audit excludes statement labels from variable references" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const label_span = try ast.addString("outer");
+    const label = try makeTestIdentifierNode(&ast, .identifier_reference, label_span);
+    const break_node = try ast.addNode(.{
+        .tag = .break_statement,
+        .span = label_span,
+        .data = .{ .unary = .{ .operand = label, .flags = 0 } },
+    });
+    const continue_label = try makeTestIdentifierNode(&ast, .identifier_reference, label_span);
+    const continue_node = try ast.addNode(.{
+        .tag = .continue_statement,
+        .span = label_span,
+        .data = .{ .unary = .{ .operand = continue_label, .flags = 0 } },
+    });
+    const labeled_name = try makeTestIdentifierNode(&ast, .identifier_reference, label_span);
+    const empty_statement = try ast.addNode(.{
+        .tag = .empty_statement,
+        .span = label_span,
+        .data = .{ .none = 0 },
+    });
+    const labeled_statement = try ast.addNode(.{
+        .tag = .labeled_statement,
+        .span = label_span,
+        .data = .{ .binary = .{ .left = labeled_name, .right = empty_statement, .flags = 0 } },
+    });
+    const list = try ast.addNodeList(&.{ break_node, continue_node, labeled_statement });
+    const root = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = label_span,
+        .data = .{ .list = list },
+    });
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+    };
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .{}, .{} };
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @intFromEnum(root), 1);
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &.{},
+        &.{},
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &.{},
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 0), report.missing_binding);
+    try std.testing.expectEqual(@as(usize, 0), report.unclassified_reference);
+    try std.testing.expect(report.isClean());
+}
+
+test "exact identity audit checks JSX component roots and skips intrinsic, property, and attribute names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const lower_root_name = try ast.addString("component");
+    const lower_root = try makeTestIdentifierNode(&ast, .jsx_identifier, lower_root_name);
+    const member_name = try ast.addString("Panel");
+    const member = try makeTestIdentifierNode(&ast, .jsx_identifier, member_name);
+    const member_expr = try ast.addNode(.{
+        .tag = .jsx_member_expression,
+        .span = lower_root_name,
+        .data = .{ .binary = .{ .left = lower_root, .right = member, .flags = 0 } },
+    });
+    const intrinsic_name = try ast.addString("div");
+    const intrinsic = try makeTestIdentifierNode(&ast, .jsx_identifier, intrinsic_name);
+    const attribute_name = try ast.addString("Component");
+    const attribute = try makeTestIdentifierNode(&ast, .jsx_identifier, attribute_name);
+    const attribute_node = try ast.addNode(.{
+        .tag = .jsx_attribute,
+        .span = attribute_name,
+        .data = .{ .binary = .{ .left = attribute, .right = .none, .flags = 0 } },
+    });
+    const list = try ast.addNodeList(&.{ member_expr, intrinsic, attribute_node });
+    const root = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = lower_root_name,
+        .data = .{ .list = list },
+    });
+    const scopes = [_]Scope{.{ .parent = .none, .kind = .global, .is_strict = false }};
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){.empty};
+    const symbols: []const Symbol = &.{};
+    const references: []const Reference = &.{};
+    const scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &.{},
+        symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        references,
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.generated_references);
+    try std.testing.expectEqual(@as(usize, 1), report.unclassified_reference);
+}
+
+test "exact identity audit requires node provenance for external references and IDs for bindings" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const global_name = try ast.addString("Object");
+    const source_global = try makeTestIdentifierNode(&ast, .identifier_reference, global_name);
+    const copied_global = try makeTestIdentifierNode(&ast, .identifier_reference, global_name);
+    const explicit_global = try makeTestIdentifierNode(&ast, .identifier_reference, global_name);
+    const unproven_global = try makeTestIdentifierNode(&ast, .identifier_reference, global_name);
+    const synthetic_name = try ast.addString("_temp");
+    const unbound_binding = try makeTestIdentifierNode(&ast, .binding_identifier, synthetic_name);
+    const different_global_name = try ast.addString("DifferentGlobal");
+    const different_global = try makeTestIdentifierNode(&ast, .identifier_reference, different_global_name);
+    const list = try ast.addNodeList(&.{ source_global, copied_global, explicit_global, unproven_global, unbound_binding, different_global });
+    const root = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = global_name,
+        .data = .{ .list = list },
+    });
+    const symbols: []const Symbol = &.{};
+    const symbol_ids = [_]?u32{ null, null, null, null, null, null };
+    const scopes = [_]Scope{.{ .parent = .none, .kind = .block, .is_strict = false }};
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){.empty};
+    const references: []const Reference = &.{};
+    var unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    try unresolved.put(allocator, @intFromEnum(source_global), {});
+    var explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    try explicit_globals.put(allocator, @intFromEnum(explicit_global), {});
+    var origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    try origins.put(allocator, @intFromEnum(copied_global), @intFromEnum(source_global));
+    try origins.put(allocator, @intFromEnum(different_global), @intFromEnum(source_global));
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @intFromEnum(root), 0);
+    const helper_refs: []const u32 = &.{};
+    const helper_scopes: std.StringHashMapUnmanaged(usize) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        1,
+        &symbol_ids,
+        symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        references,
+        helper_refs,
+        &helper_scopes,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 3), report.external_references);
+    try std.testing.expectEqual(@as(usize, 2), report.unclassified_reference);
+    try std.testing.expectEqual(@as(usize, 1), report.missing_binding);
+    try std.testing.expect(!report.isClean());
 }

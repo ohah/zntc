@@ -11,10 +11,39 @@ const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
 const PrivateMethodMapping = Transformer.PrivateMethodMapping;
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 const es_helpers = @import("../es_helpers.zig");
 const es2022 = @import("../es2022.zig");
+const class_private_fields = @import("../es2015_class/private_fields.zig");
 
-pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
+fn trackPrivateHelperPrelude(
+    self: *Transformer,
+    source_idx: NodeIndex,
+    pre_stmts: []const NodeIndex,
+    static_descriptors: []const NodeIndex,
+    class_result: NodeIndex,
+    method_mappings: []const PrivateMethodMapping,
+    field_mappings: []const Transformer.PrivateFieldMapping,
+    span: Span,
+) Error!void {
+    if (!self.semantic_edit_enabled or (method_mappings.len == 0 and field_mappings.len == 0)) return;
+    const class_scope = self.outputOwnedScope(source_idx) orelse
+        std.debug.panic("private helper class has no source scope", .{});
+    const root_scope = self.outputScopeParent(class_scope);
+    var statements: std.ArrayList(NodeIndex) = .empty;
+    defer statements.deinit(self.allocator);
+    try statements.appendSlice(self.allocator, pre_stmts);
+    try statements.appendSlice(self.allocator, static_descriptors);
+    try statements.append(self.allocator, class_result);
+    const root = try self.ast.addNode(.{
+        .tag = .block_statement,
+        .span = span,
+        .data = .{ .list = try self.ast.addNodeList(statements.items) },
+    });
+    try class_private_fields.PrivateFields(Transformer).trackPrivateMethodSymbols(self, root, method_mappings, field_mappings, root_scope);
+}
+
+pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!NodeIndex {
     const e = node.data.extra;
 
     // 낮춰야 할 public class field 가 **실제로 있을 때만** fast path 를 벗어난다 (#4629).
@@ -47,8 +76,11 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
             new_name = try es_helpers.makeSyntheticBinding(self, tmp_span);
         }
         const saved_class_name_node = self.current_class_name_node;
+        const saved_class_self_symbol_id = self.current_class_self_symbol_id;
         self.current_class_name_node = new_name;
+        self.current_class_self_symbol_id = self.class_self_symbol_map.get(@intFromEnum(source_idx));
         defer self.current_class_name_node = saved_class_name_node;
+        defer self.current_class_self_symbol_id = saved_class_self_symbol_id;
 
         const saved_super_class = self.current_super_class;
         const saved_super_class_old_idx = self.current_super_class_old_idx;
@@ -244,6 +276,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                     none,                   0,                       0,
                     new_decos.start,        new_decos.len,
                 });
+                if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
 
                 if (node.tag == .class_expression) {
                     // V_EXPR fix: post_stmts = super_alias + static_descriptors + static_block_iifes
@@ -255,14 +288,20 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                     try self.scratch.appendSlice(self.allocator, static_block_iifes.items);
                     return wrapClassExprInIIFE(
                         self,
+                        source_idx,
                         static_key_memos.items,
                         pre_stmts.items,
                         class_result,
                         self.scratch.items[scratch_top_e..],
                         new_name,
+                        .none,
+                        pm_mappings.items,
+                        pf_mappings.items,
                         node.span,
                     );
                 }
+
+                try trackPrivateHelperPrelude(self, source_idx, pre_stmts.items, static_descriptors.items, class_result, pm_mappings.items, pf_mappings.items, node.span);
 
                 for (static_key_memos.items) |stmt| {
                     try self.pending_nodes.append(self.allocator, stmt);
@@ -293,6 +332,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                 none,                   0,                       0,
                 new_decos.start,        new_decos.len,
             });
+            if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
 
             if (node.tag == .class_expression) {
                 // V_EXPR + VSHADOW fix: super_alias + descriptor 를 IIFE 안 class_decl 뒤에 emit.
@@ -302,14 +342,20 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                 try self.scratch.appendSlice(self.allocator, static_descriptors.items);
                 return wrapClassExprInIIFE(
                     self,
+                    source_idx,
                     &.{},
                     pre_stmts.items,
                     class_result,
                     self.scratch.items[scratch_top_e2..],
                     new_name,
+                    .none,
+                    pm_mappings.items,
+                    pf_mappings.items,
                     node.span,
                 );
             }
+
+            try trackPrivateHelperPrelude(self, source_idx, pre_stmts.items, static_descriptors.items, class_result, pm_mappings.items, pf_mappings.items, node.span);
 
             for (pre_stmts.items) |stmt| {
                 try self.pending_nodes.append(self.allocator, stmt);
@@ -335,7 +381,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
         });
     }
 
-    return self.visitClassWithAssignSemantics(node);
+    return self.visitClassWithAssignSemantics(source_idx, node);
 }
 
 /// V8 super_proto_alias 가 emit 될 수 있는 body 인지 probe.
@@ -462,13 +508,24 @@ pub fn classBodyHasStaticPrivateMember(self: *Transformer, body_idx: NodeIndex, 
 
 pub fn wrapClassExprInIIFE(
     self: *Transformer,
+    source_idx: NodeIndex,
     pre_stmts_a: []const NodeIndex,
     pre_stmts_b: []const NodeIndex,
     class_expr_node: NodeIndex,
     post_stmts: []const NodeIndex,
     new_name: NodeIndex,
+    prepared_wrapper_scope: ScopeId,
+    method_mappings: []const PrivateMethodMapping,
+    field_mappings: []const Transformer.PrivateFieldMapping,
     span: Span,
 ) Error!NodeIndex {
+    const wrapper_scope: ScopeId = if (self.semantic_edit_enabled)
+        (if (prepared_wrapper_scope.isNone())
+            try prepareClassExprWrapperScope(self, source_idx)
+        else
+            prepared_wrapper_scope)
+    else
+        .none;
     var decl_name = new_name;
     const ret_name_span: Span = if (decl_name.isNone()) blk: {
         const tmp_span = try es_helpers.makeTempVarSpan(self);
@@ -483,6 +540,7 @@ pub fn wrapClassExprInIIFE(
         none,                    0,                                     0,
         self.readU32(ce, 6),     self.readU32(ce, 7),
     });
+    if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_decl);
 
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -491,13 +549,18 @@ pub fn wrapClassExprInIIFE(
     try self.scratch.append(self.allocator, class_decl);
     try self.scratch.appendSlice(self.allocator, post_stmts);
 
-    // 이름 있는 클래스 식이면 그 이름(사용자 바인딩), 없으면 임시 이름 — 선언 노드의 심볼을 따른다.
-    const ret_ref = try self.makeIdentifierRefWithSymbol(ret_name_span, decl_name);
-    try self.scratch.append(self.allocator, try self.ast.addNode(.{
+    // The wrapper's class read follows the class-self identity selected by the
+    // class transform, not an outer declaration node that may share its text.
+    const ret_ref = if (self.semantic_edit_enabled)
+        try self.makeCurrentClassRefAtScope(ret_name_span, wrapper_scope)
+    else
+        try self.makeIdentifierRefWithSymbol(ret_name_span, decl_name);
+    const return_stmt = try self.ast.addNode(.{
         .tag = .return_statement,
         .span = span,
         .data = .{ .unary = .{ .operand = ret_ref, .flags = 0 } },
-    }));
+    });
+    try self.scratch.append(self.allocator, return_stmt);
 
     const body_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     const body_block = try self.ast.addNode(.{
@@ -509,7 +572,32 @@ pub fn wrapClassExprInIIFE(
     const arrow = try self.addExtraNode(.arrow_function_expression, span, &.{
         none, @intFromEnum(body_block), 0,
     });
+    if (self.semantic_edit_enabled) {
+        try self.bindReservedFunctionOwner(wrapper_scope, arrow);
+        const result = try es_helpers.makeCallExpr(self, arrow, &.{}, span);
+        try class_private_fields.PrivateFields(Transformer).trackPrivateMethodSymbols(
+            self,
+            result,
+            method_mappings,
+            field_mappings,
+            wrapper_scope,
+        );
+        return result;
+    }
     return es_helpers.makeCallExpr(self, arrow, &.{}, span);
+}
+
+/// Reserve and attach the class-expression body scope before static postlude
+/// references are built, so those references can be recorded in their actual
+/// IIFE scope rather than the source class-body scope.
+pub fn prepareClassExprWrapperScope(self: *Transformer, source_idx: NodeIndex) Error!ScopeId {
+    if (!self.semantic_edit_enabled) return .none;
+    const class_scope = self.outputOwnedScope(source_idx) orelse
+        std.debug.panic("private helper class expression has no source scope", .{});
+    const wrapper_scope = try self.reserveGeneratedFunctionScope(self.outputScopeParent(class_scope));
+    try self.reparentGeneratedScope(class_scope, wrapper_scope);
+    if (self.current_class_self_symbol_id) |id| try self.moveSymbolToOutputScope(id, wrapper_scope);
+    return wrapper_scope;
 }
 
 pub fn shouldDropClassExprName(self: *Transformer, tag: Tag, name_idx: NodeIndex) bool {

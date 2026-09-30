@@ -428,3 +428,66 @@ pub fn collectChildrenInto(
     var it = children(ast, node);
     while (it.next()) |c| try out.append(allocator, c);
 }
+
+test "import and named export specifiers are reachable AST children" {
+    var ast = Ast.init(std.testing.allocator, "");
+    defer ast.deinit();
+
+    const imported_span = try ast.addString("imported");
+    const imported = try ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = imported_span,
+        .data = .{ .string_ref = imported_span },
+    });
+    const import_local_span = try ast.addString("localImport");
+    const import_local = try ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = import_local_span,
+        .data = .{ .string_ref = import_local_span },
+    });
+    const import_specifier = try ast.addNode(.{
+        .tag = .import_specifier,
+        .span = import_local_span,
+        .data = .{ .binary = .{ .left = imported, .right = import_local, .flags = 0 } },
+    });
+    const import_specifiers = try ast.addNodeList(&.{import_specifier});
+    const import_source_span = try ast.addString("\"./dep\"");
+    const import_source = try ast.addNode(.{
+        .tag = .string_literal,
+        .span = import_source_span,
+        .data = .{ .string_ref = import_source_span },
+    });
+    const none = @intFromEnum(NodeIndex.none);
+    const import_extra = try ast.addExtras(&.{ import_specifiers.start, import_specifiers.len, @intFromEnum(import_source), 0, 0, 0 });
+    const import_node = try ast.addExtraNode(.import_declaration, import_source_span, import_extra);
+
+    const local_span = try ast.addString("local");
+    const local = try ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = local_span,
+        .data = .{ .string_ref = local_span },
+    });
+    const exported = try ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = local_span,
+        .data = .{ .string_ref = local_span },
+    });
+    const specifier = try ast.addNode(.{
+        .tag = .export_specifier,
+        .span = local_span,
+        .data = .{ .binary = .{ .left = local, .right = exported, .flags = 0 } },
+    });
+    const specifiers = try ast.addNodeList(&.{specifier});
+    const extra = try ast.addExtras(&.{ none, specifiers.start, specifiers.len, none, 0, 0 });
+    const export_node = try ast.addExtraNode(.export_named_declaration, local_span, extra);
+    const statements = try ast.addNodeList(&.{ import_node, export_node });
+    const root = try ast.addListNode(.program, local_span, statements);
+    ast.transformed_root = root;
+
+    const reachable = try collectReachableNodeIndices(std.testing.allocator, &ast);
+    defer std.testing.allocator.free(reachable);
+    try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(imported)) != null);
+    try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(import_local)) != null);
+    try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(local)) != null);
+    try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(exported)) != null);
+}

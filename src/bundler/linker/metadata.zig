@@ -58,7 +58,8 @@ fn canDeferStaticImportForInlineRequires(
 
         if (ib.is_helper) return false;
         if (ib.kind != .named or ib.importsDefault()) return false;
-        if (exported_locals.contains(m.importBindingLocalName(ib))) return false;
+        const local_name = if (ib.local_symbol.isValid()) m.importBindingLocalName(ib) else ib.local_name;
+        if (exported_locals.contains(local_name)) return false;
     }
 
     return saw_binding;
@@ -959,6 +960,10 @@ pub fn buildMetadataForAst(
                 // target(default) export 가 init_xxx() 호출 전에 참조됨 → 미초기화 ReferenceError
                 // (code-review max 적발: RN/Metro inline_requires + esm-wrapped sideEffects:false).
                 const is_synthetic_binding = if (resolved) |rb| rb.canonical.synthetic_member != null else false;
+                // A prior lowering can inline an import completely while the scanner's
+                // ImportBinding row remains for this metadata pass. With no live local
+                // SymbolId, only the scanner-captured spelling remains available here.
+                const import_local_name = if (ib.local_symbol.isValid()) m.importBindingLocalName(ib) else ib.local_name;
                 lazy_esm_import = self.inline_requires and
                     m.wrap_kind == .esm and
                     rec.kind == .static_import and
@@ -972,7 +977,7 @@ pub fn buildMetadataForAst(
                     !value_init_mod.uses_top_level_await and
                     !target_mod.isUserDeclaredSideEffectful() and
                     !value_init_mod.isUserDeclaredSideEffectful() and
-                    !exported_locals.contains(m.importBindingLocalName(ib)) and
+                    !exported_locals.contains(import_local_name) and
                     !is_synthetic_binding;
                 if (lazy_esm_import) {
                     lazy_esm_import_mod = value_init_mod;

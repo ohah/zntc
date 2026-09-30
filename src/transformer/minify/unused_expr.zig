@@ -83,7 +83,7 @@ pub fn simplifySequence(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, ch
     if (kept_buf.items.len == 0) {
         // 마지막 하나만 남음 → sequence 를 해당 노드로 교체. list rewrite 불필요.
         for (removed_buf.items) |raw| minify_mod.decrementRefsInExpr(ast, ctx, @enumFromInt(raw));
-        replaceNode(ast, node_idx, ast.nodes.items[last_raw], changed);
+        minify_mod.replaceNodeFromChild(ast, ctx, node_idx, last_raw, ast.nodes.items[last_raw], changed);
         return;
     }
 
@@ -295,7 +295,7 @@ fn rewriteBinaryUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: 
         const right_ni = @intFromEnum(right_idx);
         if (right_ni >= ast.nodes.items.len) return false;
         minify_mod.decrementRefsInExpr(ast, ctx, left_idx);
-        replaceNode(ast, ni, ast.nodes.items[right_ni], changed);
+        minify_mod.replaceNodeFromChild(ast, ctx, ni, right_ni, ast.nodes.items[right_ni], changed);
         return false;
     }
     if (right_rem) {
@@ -303,7 +303,7 @@ fn rewriteBinaryUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: 
         const left_ni = @intFromEnum(left_idx);
         if (left_ni >= ast.nodes.items.len) return false;
         minify_mod.decrementRefsInExpr(ast, ctx, right_idx);
-        replaceNode(ast, ni, ast.nodes.items[left_ni], changed);
+        minify_mod.replaceNodeFromChild(ast, ctx, ni, left_ni, ast.nodes.items[left_ni], changed);
         return false;
     }
     return false;
@@ -329,7 +329,7 @@ fn rewriteLogicalUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed:
     const left_ni = @intFromEnum(left_idx);
     if (left_ni >= ast.nodes.items.len) return false;
     minify_mod.decrementRefsInExpr(ast, ctx, right_idx);
-    replaceNode(ast, ni, ast.nodes.items[left_ni], changed);
+    minify_mod.replaceNodeFromChild(ast, ctx, ni, left_ni, ast.nodes.items[left_ni], changed);
     return false;
 }
 
@@ -357,7 +357,7 @@ fn rewriteConditionalUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, chan
         if (test_ni >= ast.nodes.items.len) return false;
         minify_mod.decrementRefsInExpr(ast, ctx, cons_idx);
         minify_mod.decrementRefsInExpr(ast, ctx, alt_idx);
-        replaceNode(ast, ni, ast.nodes.items[test_ni], changed);
+        minify_mod.replaceNodeFromChild(ast, ctx, ni, test_ni, ast.nodes.items[test_ni], changed);
         return isStmtRemovableDepth(ast, test_idx, ctx, d);
     }
 
@@ -421,6 +421,7 @@ fn ensureLogicalOperand(ast: *Ast, idx: NodeIndex) !NodeIndex {
 /// `span` 은 원본 노드의 span (sequence 의 표시용).
 fn reduceToSequenceExpr(
     ast: *Ast,
+    ctx: MinifyCtx,
     ni: u32,
     span: Span,
     kept: []const NodeIndex,
@@ -430,7 +431,7 @@ fn reduceToSequenceExpr(
     if (kept.len == 1) {
         const single_ni = @intFromEnum(kept[0]);
         if (single_ni >= ast.nodes.items.len) return false;
-        replaceNode(ast, ni, ast.nodes.items[single_ni], changed);
+        minify_mod.replaceNodeFromChild(ast, ctx, ni, single_ni, ast.nodes.items[single_ni], changed);
         return false;
     }
     // kept >= 2: sequence_expression 생성
@@ -475,7 +476,7 @@ fn rewriteArrayUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: *
         kept.append(ast.allocator, idx) catch return false;
     }
 
-    return reduceToSequenceExpr(ast, ni, node.span, kept.items, changed) catch false;
+    return reduceToSequenceExpr(ast, ctx, ni, node.span, kept.items, changed) catch false;
 }
 
 /// `new F(a, b, c);` / `F(a, b, c);` 를 `@__PURE__` 등으로 purity 확정된 경우
@@ -515,7 +516,7 @@ fn rewriteCallOrNewUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, change
         kept.append(ast.allocator, idx) catch return false;
     }
 
-    return reduceToSequenceExpr(ast, ni, node.span, kept.items, changed) catch false;
+    return reduceToSequenceExpr(ast, ctx, ni, node.span, kept.items, changed) catch false;
 }
 
 /// `{k: v, [k()]: v2};` 의 key / value / spread 를 분해해 pure 는 drop, impure 만 남김.
@@ -612,7 +613,7 @@ fn rewriteObjectUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: 
         }
     }
 
-    return reduceToSequenceExpr(ast, ni, node.span, kept.items, changed) catch false;
+    return reduceToSequenceExpr(ast, ctx, ni, node.span, kept.items, changed) catch false;
 }
 
 /// Template literal 의 substitution expression 을 부분 축약 (oxc 방식).
@@ -678,7 +679,7 @@ fn rewriteTemplateLiteralUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, 
         transformed.append(ast.allocator, tmpl) catch return false;
     }
 
-    return reduceToSequenceExpr(ast, ni, node.span, transformed.items, changed) catch false;
+    return reduceToSequenceExpr(ast, ctx, ni, node.span, transformed.items, changed) catch false;
 }
 
 /// `exprs` 를 substitution 으로 갖는 새 template_literal 노드를 생성한다. 각 quasi 는

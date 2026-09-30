@@ -56,6 +56,10 @@ const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
 const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const module_parser = @import("../parser/module.zig");
+const SymbolId = @import("../semantic/symbol.zig").SymbolId;
+const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
+const ReferenceFlags = @import("../semantic/symbol.zig").ReferenceFlags;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
 
 pub fn ES2025Using(comptime Transformer: type) type {
     return struct {
@@ -170,6 +174,12 @@ pub fn ES2025Using(comptime Transformer: type) type {
             self.runtime_helpers.using_ctx = true;
             const names = try allocNames(self);
             const zero_span = Span{ .start = 0, .end = 0 };
+            const stack_binding = try es_helpers.makeSyntheticBinding(self, names.stack);
+            const err_binding = try es_helpers.makeSyntheticBinding(self, names.err);
+            const has_err_binding = try es_helpers.makeSyntheticBinding(self, names.has_err);
+            const stack_id = try registerUsingVar(self, stack_binding, names.stack, zero_span);
+            const err_id = try registerUsingVar(self, err_binding, names.err, zero_span);
+            const has_err_id = try registerUsingVar(self, has_err_binding, names.has_err, zero_span);
             const hoist_functions = kind == .program or self.options.unsupported.block_scoping;
             // 블록·함수 본문의 `using` 은 native let/const 가 되는 타겟이면 const 로 남긴다.
             const using_kind: VariableDeclarationKind = if (kind == .program or self.options.unsupported.block_scoping) .@"var" else .@"const";
@@ -188,7 +198,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                 if (node.tag == .variable_declaration and self.ast.hasExtra(node.data.extra, 3)) {
                     const vkind = self.ast.variableDeclarationKind(node);
                     if (vkind.isUsing()) {
-                        try transformUsingDeclarators(self, &body, self.readU32(node.data.extra, 1), self.readU32(node.data.extra, 2), vkind == .await_using, names.stack, using_kind, node.span);
+                        try transformUsingDeclarators(self, &body, self.readU32(node.data.extra, 1), self.readU32(node.data.extra, 2), vkind == .await_using, names.stack, stack_id, self.current_scope, using_kind, node.span);
                         continue;
                     }
                     if (kind == .program and (vkind == .let or vkind == .@"const")) {
@@ -230,7 +240,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                                     },
                                     .class_declaration => {
                                         const cname = self.readNodeIdx(decl.data.extra, ast_mod.ClassExtra.name);
-                                        try export_specs.append(self.allocator, try makeExportSpec(self, self.ast.getText(self.ast.getNode(cname).span), cname, null));
+                                        try export_specs.append(self.allocator, try makeExportSpec(self, self.ast.getText(self.ast.getNode(cname).span), cname, null, null));
                                         try push(self, &body, try classAsVar(self, x.decl, decl));
                                     },
                                     // `export function` 과 TS 전용 선언(enum/namespace 등)은 try 밖.
@@ -249,14 +259,23 @@ pub fn ES2025Using(comptime Transformer: type) type {
                             const named_class = on.tag == .class_declaration and !self.readNodeIdx(on.data.extra, ast_mod.ClassExtra.name).isNone();
                             if (named_class) {
                                 const cname = self.readNodeIdx(on.data.extra, ast_mod.ClassExtra.name);
-                                try export_specs.append(self.allocator, try makeExportSpec(self, self.ast.getText(self.ast.getNode(cname).span), cname, "default"));
+                                try export_specs.append(self.allocator, try makeExportSpec(self, self.ast.getText(self.ast.getNode(cname).span), cname, "default", null));
                                 try push(self, &body, try classAsVar(self, operand, on));
                             } else {
                                 const default_name = try uniqueSourceName(self, "_default");
                                 const value = if (on.tag == .class_declaration) try classExpressionOf(self, operand, on) else operand;
                                 const binding = try es_helpers.makeSyntheticBinding(self, try self.ast.addString(default_name));
+                                const default_symbol: ?SymbolId = if (self.semantic_edit_enabled) blk: {
+                                    if (std.mem.eql(u8, default_name, "_default")) {
+                                        const raw_id = self.getSymbolIdAt(stmt) orelse std.debug.panic("default export facade has no SymbolId", .{});
+                                        try self.setGeneratedSymbolId(binding, raw_id);
+                                        try self.ensureSymbolDeclaration(raw_id, self.programScope());
+                                        break :blk @enumFromInt(raw_id);
+                                    }
+                                    break :blk try self.declareSyntheticInScope(binding, node.span, .variable_var, self.programScope());
+                                } else null;
                                 const decl = try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, binding, value, node.span)}, .@"var", node.span);
-                                try export_specs.append(self.allocator, try makeExportSpec(self, default_name, .none, "default"));
+                                try export_specs.append(self.allocator, try makeExportSpec(self, default_name, .none, "default", default_symbol));
                                 try push(self, &body, decl);
                             }
                             continue;
@@ -271,14 +290,14 @@ pub fn ES2025Using(comptime Transformer: type) type {
             // var _stack = [], _error = void 0, _hasError = false;
             const empty_array = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = .{ .start = 0, .len = 0 } } });
             const init_decl = try es_helpers.makeVarDeclaration(self, &.{
-                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, names.stack), empty_array, zero_span),
-                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, names.err), try es_helpers.makeVoidZero(self, zero_span), zero_span),
-                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, names.has_err), try es_helpers.makeBoolLiteral(self, false), zero_span),
+                try es_helpers.makeDeclarator(self, stack_binding, empty_array, zero_span),
+                try es_helpers.makeDeclarator(self, err_binding, try es_helpers.makeVoidZero(self, zero_span), zero_span),
+                try es_helpers.makeDeclarator(self, has_err_binding, try es_helpers.makeBoolLiteral(self, false), zero_span),
             }, .@"var", zero_span);
 
             const try_block = try self.ast.addNode(.{ .tag = .block_statement, .span = zero_span, .data = .{ .list = try self.ast.addNodeList(body.items) } });
-            const catch_clause = try buildCatchClause(self, names, zero_span);
-            const finally_block = try buildFinallyBlock(self, names, has_await_using, zero_span);
+            const catch_clause = try buildCatchClause(self, names, zero_span, err_id, has_err_id, self.current_scope);
+            const finally_block = try buildFinallyBlock(self, names, has_await_using, zero_span, stack_id, err_id, has_err_id, self.current_scope);
             const try_stmt = try self.ast.addNode(.{
                 .tag = .try_statement,
                 .span = zero_span,
@@ -318,6 +337,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
             const tmp_name = try uniqueSynthName(self, "_using", &self.using_head_counter);
             defer self.allocator.free(tmp_name);
             const tmp_span = try self.ast.addString(tmp_name);
+            if (self.semantic_edit_enabled) try self.generated_temp_spans.append(self.allocator, tmp_span);
             const tmp_binding = try es_helpers.makeSyntheticBinding(self, tmp_span);
             const tmp_ref = try es_helpers.makeSyntheticRefFromSpan(self, tmp_span);
             // Generator and for-await prepasses can move this head into a new
@@ -354,6 +374,16 @@ pub fn ES2025Using(comptime Transformer: type) type {
         fn classExpressionOf(self: *Transformer, source_idx: NodeIndex, decl: Node) Transformer.Error!NodeIndex {
             const expression = try self.ast.addNode(.{ .tag = .class_expression, .span = decl.span, .data = decl.data });
             try self.remapCopiedScopeOwner(source_idx, expression);
+            // A declaration has two identities for a named class: its outer
+            // binding and its immutable self binding. The copied expression
+            // must retain the class-owner mapping so ES5 lowering moves the
+            // self binding, rather than the outer declaration, into its IIFE.
+            if (self.class_self_symbol_map.get(@intFromEnum(source_idx))) |self_symbol| {
+                const class_name = self.readNodeIdx(decl.data.extra, ast_mod.ClassExtra.name);
+                if (!class_name.isNone() and self.getSymbolIdAt(class_name) != self_symbol)
+                    try self.rebindOutputBinding(class_name, self_symbol);
+                try self.class_self_symbol_map.put(self.allocator, @intFromEnum(expression), self_symbol);
+            }
             return expression;
         }
 
@@ -376,14 +406,21 @@ pub fn ES2025Using(comptime Transformer: type) type {
                 var bindings: std.ArrayList(NodeIndex) = .empty;
                 defer bindings.deinit(self.allocator);
                 try BlockScoping.collectBindingNodes(self, self.readNodeIdx(d.data.extra, 0), &bindings);
-                for (bindings.items) |b| try specs.append(self.allocator, try makeExportSpec(self, self.ast.getText(self.ast.getNode(b).span), b, null));
+                for (bindings.items) |b| try specs.append(self.allocator, try makeExportSpec(self, self.ast.getText(self.ast.getNode(b).span), b, null, null));
             }
         }
 
         /// `local as exported` 지정자. exported 가 null 이면 local 과 같은 이름. `local_origin` 은
         /// local 의 원래 바인딩(합성 `_default` 면 `.none`) — 심볼을 물려준다 (#4760).
-        fn makeExportSpec(self: *Transformer, local: []const u8, local_origin: NodeIndex, exported: ?[]const u8) Transformer.Error!NodeIndex {
-            const local_ref = if (local_origin.isNone()) try es_helpers.makeSyntheticRef(self, local) else try self.makeUserRefNamed(local, local_origin);
+        fn makeExportSpec(self: *Transformer, local: []const u8, local_origin: NodeIndex, exported: ?[]const u8, local_symbol: ?SymbolId) Transformer.Error!NodeIndex {
+            const local_ref = if (local_origin.isNone())
+                try es_helpers.makeSyntheticRef(self, local)
+            else blk: {
+                const ref = try self.makeIdentifierRefWithSymbol(try self.ast.addString(local), local_origin);
+                if (self.semantic_edit_enabled) try self.trackUserReadFromBinding(ref, local_origin, self.programScope());
+                break :blk ref;
+            };
+            if (local_origin.isNone()) if (local_symbol) |id| try self.addSyntheticRefInScope(local_ref, id, self.programScope(), .{ .read = true });
             const exported_ref = if (exported) |e| try es_helpers.makePropertyName(self, e) else local_ref;
             return self.ast.addNode(.{ .tag = .export_specifier, .span = Span{ .start = 0, .end = 0 }, .data = .{ .binary = .{ .left = local_ref, .right = exported_ref, .flags = 0 } } });
         }
@@ -416,6 +453,8 @@ pub fn ES2025Using(comptime Transformer: type) type {
             decl_len: u32,
             is_await: bool,
             stack_span: Span,
+            stack_id: ?SymbolId,
+            reference_scope: ScopeId,
             decl_kind: VariableDeclarationKind,
             span: Span,
         ) Transformer.Error!void {
@@ -438,6 +477,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                     try es_helpers.makeVoidZero(self, span);
 
                 const stack_ref = try es_helpers.makeSyntheticRefFromSpan(self, stack_span);
+                try registerUsingRef(self, stack_span, stack_ref, stack_id, reference_scope, .{ .read = true });
                 const using_ref = try es_helpers.makeRuntimeHelperRef(self, "__using");
                 const using_call = if (is_await)
                     try es_helpers.makeCallExpr(self, using_ref, &.{ stack_ref, new_init, try es_helpers.makeBoolLiteral(self, true) }, span)
@@ -453,38 +493,76 @@ pub fn ES2025Using(comptime Transformer: type) type {
         }
 
         /// catch (_) { _error = _; _hasError = true; }
-        fn buildCatchClause(self: *Transformer, names: Names, span: Span) Transformer.Error!NodeIndex {
+        fn buildCatchClause(self: *Transformer, names: Names, span: Span, err_id: ?SymbolId, has_err_id: ?SymbolId, parent_scope: ScopeId) Transformer.Error!NodeIndex {
             const catch_param = try es_helpers.makeSyntheticBinding(self, names.catch_param);
+            const err_target = try es_helpers.makeSyntheticRefFromSpan(self, names.err);
+            const caught_ref = try es_helpers.makeSyntheticRefFromSpan(self, names.catch_param);
+            const has_err_target = try es_helpers.makeSyntheticRefFromSpan(self, names.has_err);
             const set_err = try es_helpers.makeExprStmt(self, try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{
-                .left = try es_helpers.makeSyntheticRefFromSpan(self, names.err),
-                .right = try es_helpers.makeSyntheticRefFromSpan(self, names.catch_param),
+                .left = err_target,
+                .right = caught_ref,
                 .flags = 0,
             } } }), span);
             const set_has = try es_helpers.makeExprStmt(self, try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{
-                .left = try es_helpers.makeSyntheticRefFromSpan(self, names.has_err),
+                .left = has_err_target,
                 .right = try es_helpers.makeBoolLiteral(self, true),
                 .flags = 0,
             } } }), span);
             const body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{ set_err, set_has }) } });
-            return self.ast.addNode(.{
+            const clause = try self.ast.addNode(.{
                 .tag = .catch_clause,
                 .span = span,
                 .data = .{ .binary = .{ .left = catch_param, .right = body, .flags = 0 } },
             });
+            if (self.semantic_edit_enabled) {
+                const catch_scope = try self.addGeneratedScope(parent_scope, clause, .catch_clause);
+                const catch_id = try self.declareSyntheticInScope(catch_param, span, .catch_binding, catch_scope);
+                try registerUsingRef(self, names.err, err_target, err_id, catch_scope, .{ .write = true });
+                // The catch binding already has an exact SymbolId and scope.
+                // Do not defer this use as a hoisted temp during state-machine
+                // collection: it belongs to this generated catch clause.
+                try self.addSyntheticRefInScope(caught_ref, catch_id, catch_scope, .{ .read = true });
+                try registerUsingRef(self, names.has_err, has_err_target, has_err_id, catch_scope, .{ .write = true });
+            }
+            return clause;
         }
 
         /// finally { [await] __callDispose(_stack, _error, _hasError); }
-        fn buildFinallyBlock(self: *Transformer, names: Names, has_await: bool, span: Span) Transformer.Error!NodeIndex {
+        fn buildFinallyBlock(self: *Transformer, names: Names, has_await: bool, span: Span, stack_id: ?SymbolId, err_id: ?SymbolId, has_err_id: ?SymbolId, reference_scope: ScopeId) Transformer.Error!NodeIndex {
+            const stack_ref = try es_helpers.makeSyntheticRefFromSpan(self, names.stack);
+            const err_ref = try es_helpers.makeSyntheticRefFromSpan(self, names.err);
+            const has_err_ref = try es_helpers.makeSyntheticRefFromSpan(self, names.has_err);
+            try registerUsingRef(self, names.stack, stack_ref, stack_id, reference_scope, .{ .read = true });
+            try registerUsingRef(self, names.err, err_ref, err_id, reference_scope, .{ .read = true });
+            try registerUsingRef(self, names.has_err, has_err_ref, has_err_id, reference_scope, .{ .read = true });
             const call = try es_helpers.makeCallExpr(self, try es_helpers.makeRuntimeHelperRef(self, "__callDispose"), &.{
-                try es_helpers.makeSyntheticRefFromSpan(self, names.stack),
-                try es_helpers.makeSyntheticRefFromSpan(self, names.err),
-                try es_helpers.makeSyntheticRefFromSpan(self, names.has_err),
+                stack_ref,
+                err_ref,
+                has_err_ref,
             }, span);
             const expr = if (has_await) try es_helpers.makeAwaitExpression(self, call, span) else call;
             const expr_stmt = try es_helpers.makeExprStmt(self, expr, span);
             return self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{expr_stmt}) } });
         }
     };
+}
+
+fn registerUsingVar(self: anytype, binding: NodeIndex, name_span: Span, declaration_span: Span) !?SymbolId {
+    if (!self.semantic_edit_enabled) return null;
+    if (self.state_machine_depth > 0) {
+        try self.deferGeneratedWrapperTemp(binding, name_span);
+        return null;
+    }
+    return self.declareSyntheticInScope(binding, declaration_span, SymbolKind.variable_var, self.nearestVarScope(self.current_scope));
+}
+
+fn registerUsingRef(self: anytype, name_span: Span, ref: NodeIndex, id: ?SymbolId, scope: ScopeId, flags: ReferenceFlags) !void {
+    if (!self.semantic_edit_enabled) return;
+    if (self.state_machine_depth > 0) {
+        try self.trackHoistedTempRefInScope(name_span, ref, scope, flags);
+        return;
+    }
+    try self.addSyntheticRefInScope(ref, id, scope, flags);
 }
 
 // readU32 헬퍼: Transformer에 이미 정의된 것을 사용 (mixin 패턴)

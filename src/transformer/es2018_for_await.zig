@@ -48,6 +48,11 @@ const ast_walk = @import("../parser/ast_walk.zig");
 pub fn ES2018ForAwait(comptime Transformer: type) type {
     return struct {
         const ForOf = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
+        const PendingTempReference = struct {
+            name_span: Span,
+            node: NodeIndex,
+            flags: @import("../semantic/symbol.zig").ReferenceFlags,
+        };
 
         /// for await (const v of iter) body; → 풀이 결과를 방문한다(일반 경로).
         pub fn lowerForAwaitOf(self: *Transformer, source_idx: NodeIndex, node: Node) Transformer.Error!NodeIndex {
@@ -63,7 +68,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
                 !self.in_extracted_fn_body and
                 !self.options.unsupported.async_await and
                 !self.options.unsupported.generator;
-            return self.visitNode(try rewriteForAwait(self, source_idx, node, label_name_idx, register_semantics));
+            return self.visitNode(try rewriteForAwait(self, source_idx, node, label_name_idx, register_semantics, false));
         }
 
         /// for-await 를 **방문 없이** 반복자 while 루프로 풀어 쓴다 (#4746 3단계).
@@ -74,14 +79,23 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
         ///   바꾸며 이름을 wrapper 에 등록한다(catch 파라미터는 상태 기계가 리네임·등록).
         /// - `_step` 은 본문(루프 변수 선언)에서 읽으므로 모듈 고유 이름(for-of 와 같은 이유).
         /// - 반복자 생성은 try 밖 — 생성이 던지면 닫을 것이 없다.
-        pub fn rewriteForAwait(self: *Transformer, source_idx: NodeIndex, node: Node, label_name_idx: NodeIndex, register_semantics: bool) Transformer.Error!NodeIndex {
+        pub fn rewriteForAwait(self: *Transformer, source_idx: NodeIndex, node: Node, label_name_idx: NodeIndex, register_semantics: bool, register_sm_temps: bool) Transformer.Error!NodeIndex {
             const span = node.span;
             const left = node.data.ternary.a;
             const right = node.data.ternary.b;
             const body = node.data.ternary.c;
+            const source_loop_scope = if (self.semantic_edit_enabled)
+                self.outputOwnedScope(source_idx) orelse self.current_scope
+            else
+                self.current_scope;
+            const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+            const outer_scope = if (!source_loop_scope.isNone() and @intFromEnum(source_loop_scope) < scopes.len)
+                scopes[source_loop_scope.toIndex()].parent
+            else
+                source_loop_scope;
 
             const input_loop_scope = if (register_semantics)
-                self.outputOwnedScope(source_idx) orelse self.current_scope
+                source_loop_scope
             else
                 ScopeId.none;
             const loop_scope = if (register_semantics and input_loop_scope.isNone())
@@ -90,6 +104,8 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
                 input_loop_scope;
             const var_scope = if (register_semantics) variableScope(self, loop_scope) else ScopeId.none;
             const wrapper_scope = if (register_semantics) self.outputScopeParent(loop_scope) else ScopeId.none;
+            const loop_ref_scope = if (register_semantics) loop_scope else source_loop_scope;
+            const wrapper_ref_scope = if (register_semantics) wrapper_scope else source_loop_scope;
 
             self.runtime_helpers.async_values = true;
 
@@ -97,6 +113,9 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             const step = try ForOf.uniqueStepName(self);
             const ret = try es_helpers.makeTempVarSpan(self);
             const errobj = try es_helpers.makeTempVarSpan(self);
+            if (register_sm_temps) {
+                try self.generator_temp_var_spans.appendSlice(self.allocator, &.{ iter, step, ret, errobj });
+            }
             // A catch parameter is not a function-scoped temp. Using
             // makeTempVarSpan here also makes the hoister emit a second `var`
             // binding with the same spelling outside the catch scope.
@@ -111,6 +130,8 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             const ret_symbol = if (register_semantics) try self.declareSyntheticTempInScope(ret_binding, span, var_scope) else null;
             const errobj_binding = try es_helpers.makeSyntheticBinding(self, errobj);
             const errobj_symbol = if (register_semantics) try self.declareSyntheticTempInScope(errobj_binding, span, var_scope) else null;
+            var pending_refs: std.ArrayListUnmanaged(PendingTempReference) = .empty;
+            defer pending_refs.deinit(self.allocator);
             const decl = try es_helpers.makeVarDeclaration(self, &.{
                 try es_helpers.makeDeclarator(self, iter_binding, values_call, span),
                 try es_helpers.makeDeclarator(self, step_binding, try es_helpers.makeVoidZero(self, span), span),
@@ -124,14 +145,14 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             es_helpers.consumeTempVarSpan(self, errobj);
 
             // while (!(_step = await _iter.next()).done) { <루프 변수 = _step.value>; body }
-            const next_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeRef(self, iter, iter_symbol, loop_scope, .{ .read = true }, register_semantics), try es_helpers.makePropertyName(self, "next"), span), &.{}, span);
+            const next_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeRef(self, iter, iter_symbol, loop_ref_scope, .{ .read = true }, register_semantics, register_sm_temps, &pending_refs), try es_helpers.makePropertyName(self, "next"), span), &.{}, span);
             const step_assign = try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{
-                .left = try makeRef(self, step, step_symbol, loop_scope, .{ .write = true }, register_semantics),
+                .left = try makeRef(self, step, step_symbol, loop_ref_scope, .{ .write = true }, register_semantics, register_sm_temps, &pending_refs),
                 .right = try es_helpers.makeAwaitExpression(self, next_call, span),
                 .flags = 0,
             } } });
             const test_expr = try es_helpers.makeUnaryNot(self, try es_helpers.makeStaticMember(self, step_assign, try es_helpers.makePropertyName(self, "done"), span), span);
-            const value = try es_helpers.makeStaticMember(self, try makeRef(self, step, step_symbol, loop_scope, .{ .read = true }, register_semantics), try es_helpers.makePropertyName(self, "value"), span);
+            const value = try es_helpers.makeStaticMember(self, try makeRef(self, step, step_symbol, loop_ref_scope, .{ .read = true }, register_semantics, register_sm_temps, &pending_refs), try es_helpers.makePropertyName(self, "value"), span);
             const while_stmt = try self.ast.addNode(.{ .tag = .while_statement, .span = span, .data = .{ .binary = .{
                 .left = test_expr,
                 .right = try ForOf.buildLoopBody(self, left, value, body, span),
@@ -156,14 +177,14 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             else
                 ScopeId.none;
             const err_symbol = if (register_semantics) try self.declareSyntheticInScope(err_binding, span, .catch_binding, catch_scope) else null;
-            const err_ref = try makeRef(self, err, err_symbol, catch_scope, .{ .read = true }, register_semantics);
+            const err_ref = try makeRef(self, err, err_symbol, catch_scope, .{ .read = true }, register_semantics, false, &pending_refs);
             const error_prop = try self.ast.addNode(.{ .tag = .object_property, .span = span, .data = .{ .binary = .{
                 .left = try es_helpers.makePropertyName(self, "error"),
                 .right = err_ref,
                 .flags = 0,
             } } });
             const error_obj = try self.ast.addNode(.{ .tag = .object_expression, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{error_prop}) } });
-            const catch_write = try makeRef(self, errobj, errobj_symbol, catch_scope, .{ .write = true }, register_semantics);
+            const catch_write = try makeRef(self, errobj, errobj_symbol, wrapper_ref_scope, .{ .write = true }, register_semantics, register_sm_temps, &pending_refs);
             const set_errobj = try es_helpers.makeAssignStmt(self, catch_write, error_obj, span, 0);
             const catch_body = try block(self, &.{set_errobj}, span);
             var catch_node = self.ast.getNode(catch_clause);
@@ -172,26 +193,26 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
 
             // finally { try { if (_step && !_step.done && (_ret = _iter.return)) await _ret.call(_iter); }
             //           finally { if (_errObj) throw _errObj.error; } }
-            const not_done = try es_helpers.makeUnaryNot(self, try es_helpers.makeStaticMember(self, try makeRef(self, step, step_symbol, wrapper_scope, .{ .read = true }, register_semantics), try es_helpers.makePropertyName(self, "done"), span), span);
-            const and1 = try logicalAnd(self, try makeRef(self, step, step_symbol, wrapper_scope, .{ .read = true }, register_semantics), not_done, span);
+            const not_done = try es_helpers.makeUnaryNot(self, try es_helpers.makeStaticMember(self, try makeRef(self, step, step_symbol, wrapper_ref_scope, .{ .read = true }, register_semantics, register_sm_temps, &pending_refs), try es_helpers.makePropertyName(self, "done"), span), span);
+            const and1 = try logicalAnd(self, try makeRef(self, step, step_symbol, wrapper_ref_scope, .{ .read = true }, register_semantics, register_sm_temps, &pending_refs), not_done, span);
             const ret_assign = try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{
-                .left = try makeRef(self, ret, ret_symbol, wrapper_scope, .{ .write = true }, register_semantics),
-                .right = try es_helpers.makeStaticMember(self, try makeRef(self, iter, iter_symbol, wrapper_scope, .{ .read = true }, register_semantics), try es_helpers.makePropertyName(self, "return"), span),
+                .left = try makeRef(self, ret, ret_symbol, wrapper_ref_scope, .{ .write = true }, register_semantics, register_sm_temps, &pending_refs),
+                .right = try es_helpers.makeStaticMember(self, try makeRef(self, iter, iter_symbol, wrapper_ref_scope, .{ .read = true }, register_semantics, register_sm_temps, &pending_refs), try es_helpers.makePropertyName(self, "return"), span),
                 .flags = 0,
             } } });
             const close_cond = try logicalAnd(self, and1, ret_assign, span);
-            const close_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeRef(self, ret, ret_symbol, wrapper_scope, .{ .read = true }, register_semantics), try es_helpers.makePropertyName(self, "call"), span), &.{try makeRef(self, iter, iter_symbol, wrapper_scope, .{ .read = true }, register_semantics)}, span);
+            const close_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeRef(self, ret, ret_symbol, wrapper_ref_scope, .{ .read = true }, register_semantics, register_sm_temps, &pending_refs), try es_helpers.makePropertyName(self, "call"), span), &.{try makeRef(self, iter, iter_symbol, wrapper_ref_scope, .{ .read = true }, register_semantics, register_sm_temps, &pending_refs)}, span);
             const close_if = try self.ast.addNode(.{ .tag = .if_statement, .span = span, .data = .{ .ternary = .{
                 .a = close_cond,
                 .b = try es_helpers.makeExprStmt(self, try es_helpers.makeAwaitExpression(self, close_call, span), span),
                 .c = .none,
             } } });
             const rethrow = try self.ast.addNode(.{ .tag = .throw_statement, .span = span, .data = .{ .unary = .{
-                .operand = try es_helpers.makeStaticMember(self, try makeRef(self, errobj, errobj_symbol, wrapper_scope, .{ .read = true }, register_semantics), try es_helpers.makePropertyName(self, "error"), span),
+                .operand = try es_helpers.makeStaticMember(self, try makeRef(self, errobj, errobj_symbol, wrapper_ref_scope, .{ .read = true }, register_semantics, register_sm_temps, &pending_refs), try es_helpers.makePropertyName(self, "error"), span),
                 .flags = 0,
             } } });
             const rethrow_if = try self.ast.addNode(.{ .tag = .if_statement, .span = span, .data = .{ .ternary = .{
-                .a = try makeRef(self, errobj, errobj_symbol, wrapper_scope, .{ .read = true }, register_semantics),
+                .a = try makeRef(self, errobj, errobj_symbol, wrapper_ref_scope, .{ .read = true }, register_semantics, register_sm_temps, &pending_refs),
                 .b = try block(self, &.{rethrow}, span),
                 .c = .none,
             } } });
@@ -205,7 +226,17 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
                 .b = catch_clause,
                 .c = try block(self, &.{inner_try}, span),
             } } });
-            return block(self, &.{ decl, try_stmt }, span);
+            const wrapper = try block(self, &.{ decl, try_stmt }, span);
+            if (register_sm_temps and self.semantic_edit_enabled) {
+                const generated_wrapper_scope = try self.addGeneratedScope(outer_scope, wrapper, .block);
+                if (!source_loop_scope.isNone()) try self.reparentGeneratedScope(source_loop_scope, generated_wrapper_scope);
+                const generated_catch_scope = try self.addGeneratedCatchScope(generated_wrapper_scope, catch_clause);
+                const generated_catch_symbol = try self.declareSyntheticInScope(err_binding, span, .catch_binding, generated_catch_scope);
+                try self.addSyntheticRefInScope(err_ref, generated_catch_symbol, generated_catch_scope, .{ .read = true });
+                for (pending_refs.items) |pending| try self.trackHoistedTempRefInScope(pending.name_span, pending.node, generated_wrapper_scope, pending.flags);
+                try self.remapCopiedScopeOwner(source_idx, while_stmt);
+            }
+            return wrapper;
         }
 
         fn variableScope(self: *Transformer, start: ScopeId) ScopeId {
@@ -220,11 +251,13 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             std.debug.panic("for-await has no enclosing var scope", .{});
         }
 
-        fn makeRef(self: *Transformer, name_span: Span, id: ?SymbolId, scope: ScopeId, flags: ReferenceFlags, register_semantics: bool) Transformer.Error!NodeIndex {
+        fn makeRef(self: *Transformer, name_span: Span, id: ?SymbolId, scope: ScopeId, flags: ReferenceFlags, register_semantics: bool, register_sm_temps: bool, pending_refs: *std.ArrayListUnmanaged(PendingTempReference)) Transformer.Error!NodeIndex {
             const node = try es_helpers.makeSyntheticRefFromSpan(self, name_span);
             if (register_semantics) {
                 try self.addSyntheticRefInScope(node, id, scope, flags);
                 try self.trackGeneratorStateReference(node, id, scope, flags);
+            } else if (register_sm_temps) {
+                try pending_refs.append(self.allocator, .{ .name_span = name_span, .node = node, .flags = flags });
             }
             return node;
         }
@@ -249,7 +282,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
                     .for_await_of_statement => {
                         _ = try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, idx, false);
                         node = self.ast.getNode(idx);
-                        const rewritten = try rewriteForAwait(self, idx, node, .none, register_semantics);
+                        const rewritten = try rewriteForAwait(self, idx, node, .none, register_semantics, false);
                         self.ast.nodes.items[@intFromEnum(idx)] = self.ast.getNode(rewritten);
                         if (register_semantics) try self.removeInPlaceScopeOwner(idx);
                         node = self.ast.getNode(idx);
@@ -258,7 +291,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
                         const child = node.data.binary.right;
                         if (!child.isNone() and self.ast.getNode(child).tag == .for_await_of_statement) {
                             _ = try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, child, false);
-                            const rewritten = try rewriteForAwait(self, child, self.ast.getNode(child), node.data.binary.left, register_semantics);
+                            const rewritten = try rewriteForAwait(self, child, self.ast.getNode(child), node.data.binary.left, register_semantics, false);
                             self.ast.nodes.items[@intFromEnum(idx)] = self.ast.getNode(rewritten);
                             node = self.ast.getNode(idx);
                         }

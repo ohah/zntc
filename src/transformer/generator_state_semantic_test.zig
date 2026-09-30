@@ -8,6 +8,19 @@ const Transformer = @import("transformer.zig").Transformer;
 const TransformOptions = @import("transformer.zig").TransformOptions;
 const Reference = @import("../semantic/symbol.zig").Reference;
 const symbol_coverage = @import("symbol_coverage.zig");
+const output_scope = @import("output_scope_test_utils.zig");
+
+fn scopeHasAncestor(scopes: []const @import("../semantic/scope.zig").Scope, descendant: u32, ancestor: u32) bool {
+    var current = descendant;
+    var hops: usize = 0;
+    while (current < scopes.len and hops < scopes.len) : (hops += 1) {
+        const parent = scopes[current].parent;
+        if (parent.isNone()) return false;
+        if (@intFromEnum(parent) == ancestor) return true;
+        current = @intFromEnum(parent);
+    }
+    return false;
+}
 
 fn checkStateScopes(source: []const u8, expected_states: usize, wrapped: bool, expected_deferred_loops: usize) !void {
     return checkStateScopesAtTarget(source, expected_states, wrapped, expected_deferred_loops, .es5);
@@ -48,7 +61,7 @@ fn checkStateScopesAtTarget(source: []const u8, expected_states: usize, wrapped:
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
-    _ = try transformer.transform();
+    const root = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
 
     if (target == .es2015) {
@@ -65,6 +78,8 @@ fn checkStateScopesAtTarget(source: []const u8, expected_states: usize, wrapped:
     var reachable: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const nodes = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
     for (nodes) |node| try reachable.put(allocator, node, {});
+    var output_parents = try output_scope.buildParentMap(allocator, transformer.ast, root);
+    defer output_parents.deinit(allocator);
 
     var found: usize = 0;
     for (edited.symbols.items[original_symbol_count..], original_symbol_count..) |symbol, symbol_index| {
@@ -104,6 +119,18 @@ fn checkStateScopesAtTarget(source: []const u8, expected_states: usize, wrapped:
                 ancestor = edited.scopes[ancestor.toIndex()].parent;
             }
             try std.testing.expect(found_source_ancestor);
+            try std.testing.expect(!parent.isNone());
+            try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[parent.toIndex()].kind);
+            var parent_owners: usize = 0;
+            var parent_owners_iter = edited.scope_owner_map.iterator();
+            while (parent_owners_iter.next()) |entry| {
+                if (entry.value_ptr.* != @intFromEnum(parent)) continue;
+                try std.testing.expect(reachable.contains(entry.key_ptr.*));
+                const owner_tag = transformer.ast.nodes.items[entry.key_ptr.*].tag;
+                try std.testing.expect(owner_tag == .function_expression or owner_tag == .function_declaration);
+                parent_owners += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), parent_owners);
         } else {
             try std.testing.expect(source_scopes.contains(@intFromEnum(parent)));
         }
@@ -119,7 +146,14 @@ fn checkStateScopesAtTarget(source: []const u8, expected_states: usize, wrapped:
         for (edited.references) |ref| {
             if (@intFromEnum(ref.symbol_id) != symbol_index or ref.node_index.isNone()) continue;
             try std.testing.expect(reachable.contains(@intFromEnum(ref.node_index)));
-            try std.testing.expectEqual(callback_scope, ref.scope_id);
+            const expected_scope = output_scope.expectedScope(
+                transformer.ast,
+                root,
+                &output_parents,
+                &edited.scope_owner_map,
+                @intFromEnum(ref.node_index),
+            ) orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(expected_scope, ref.scope_id);
             try std.testing.expect(ref.flags.read and !ref.flags.write and !ref.flags.declare);
             try std.testing.expectEqual(Reference.NO_STMT, ref.stmt_idx);
             try std.testing.expectEqual(Reference.NO_STMT, ref.scope_stmt_idx);
@@ -235,7 +269,7 @@ test "#4819 nested async arrow in object method keeps separate state owners" {
 test "#4819 generated loop state explicitly waits for generator loop migration" {
     try checkStateScopes(
         "export function* collect() { for (let index = 0; index < 2; index++) { yield () => index; } }",
-        2,
+        2, // source generator plus the extracted per-iteration generator
         false,
         1,
     );
@@ -504,12 +538,17 @@ test "#4819 async generator moves body scope frontier under inner function and k
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
-    const inner = edited.scopes[body].parent;
+    var inner = edited.scopes[body].parent;
+    while (!inner.isNone() and edited.scopes[inner.toIndex()].kind != .function) {
+        inner = edited.scopes[inner.toIndex()].parent;
+    }
     try std.testing.expect(inner != .none and @intFromEnum(inner) != outer);
-    try std.testing.expectEqual(outer, @intFromEnum(edited.scopes[inner.toIndex()].parent));
+    // The downlevel for-await try/finally introduces a block between the
+    // generated async callback and its source function.
+    try std.testing.expect(scopeHasAncestor(edited.scopes, @intFromEnum(inner), outer));
     try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[inner.toIndex()].kind);
     try std.testing.expectEqual(outer, @intFromEnum(edited.scopes[param].parent));
-    try std.testing.expectEqual(inner, edited.scopes[decorator].parent);
+    try std.testing.expect(scopeHasAncestor(edited.scopes, decorator, inner.toIndex()));
     try std.testing.expectEqual(edited.scopes[outer].is_strict, edited.scopes[inner.toIndex()].is_strict);
 }
 

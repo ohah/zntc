@@ -28,6 +28,9 @@ const ast_walk = @import("../parser/ast_walk.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const Span = @import("../lexer/token.zig").Span;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
+const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
+const ReferenceFlags = @import("../semantic/symbol.zig").ReferenceFlags;
 const transformer_mod = @import("transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const es_helpers = @import("es_helpers.zig");
@@ -208,7 +211,11 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
         .right = obj,
         .flags = 0,
     } } });
-    if (home.wrap == .assign) return assign;
+    if (home.wrap == .assign) {
+        const parent_scope = homeObjectParentScope(self, obj, self.current_scope);
+        try trackHoistedHomeReferences(self, obj, self.ast.getNode(assign).data.binary.left, home.span, parent_scope);
+        return assign;
+    }
 
     const param_binding = try es_helpers.makeSyntheticBinding(self, home.span);
     const none = @intFromEnum(NodeIndex.none);
@@ -232,7 +239,131 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
             } });
         },
     };
+    const parent_scope = homeObjectParentScope(self, obj, self.current_scope);
+    try bindWrappedHomeParameter(self, callee, param_binding, assign, home.span, parent_scope);
     return es_helpers.makeCallExpr(self, callee, &.{}, span);
+}
+
+/// Generator and async lowering can visit an object's value expressions while
+/// the transform cursor is at an outer scope. The shallowest owned scope in
+/// the emitted object still records the lexical scope that contains the
+/// expression, so use its parent for the generated home wrapper.
+fn homeObjectParentScope(self: *Transformer, root: NodeIndex, fallback: ScopeId) ScopeId {
+    if (!self.semantic_edit_enabled or root.isNone()) return fallback;
+    var queue: std.ArrayList(NodeIndex) = .empty;
+    defer queue.deinit(self.allocator);
+    queue.append(self.allocator, root) catch return fallback;
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(self.allocator);
+    var cursor: usize = 0;
+    while (cursor < queue.items.len) : (cursor += 1) {
+        const node_idx = queue.items[cursor];
+        if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) continue;
+        const raw = @intFromEnum(node_idx);
+        if (seen.contains(raw)) continue;
+        seen.put(self.allocator, raw, {}) catch return fallback;
+        if (self.outputOwnedScope(node_idx)) |scope| {
+            const parent = self.outputScopeParent(scope);
+            if (!parent.isNone()) return parent;
+        }
+        var it = ast_walk.children(self.ast, self.ast.getNode(node_idx));
+        while (it.next()) |child| queue.append(self.allocator, child) catch return fallback;
+    }
+    return fallback;
+}
+
+/// Function-scoped home temps use the normal exact-Span hoister. Record every
+/// generated use with its output lexical scope so binding insertion can attach
+/// it to the one declaration that owns this temp.
+fn trackHoistedHomeReferences(
+    self: *Transformer,
+    root: NodeIndex,
+    write_ref: NodeIndex,
+    name_span: Span,
+    root_scope: ScopeId,
+) Transformer.Error!void {
+    if (!self.semantic_edit_enabled or root_scope.isNone()) return;
+    try self.trackHoistedTempRefInScope(name_span, write_ref, root_scope, .{ .write = true });
+    const name = self.ast.getText(name_span);
+    const Work = struct { node: NodeIndex, scope: ScopeId };
+    var queue: std.ArrayList(Work) = .empty;
+    defer queue.deinit(self.allocator);
+    try queue.append(self.allocator, .{ .node = root, .scope = root_scope });
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(self.allocator);
+    var cursor: usize = 0;
+    while (cursor < queue.items.len) : (cursor += 1) {
+        const work = queue.items[cursor];
+        if (work.node.isNone() or @intFromEnum(work.node) >= self.ast.nodes.items.len) continue;
+        const raw = @intFromEnum(work.node);
+        if (seen.contains(raw)) continue;
+        try seen.put(self.allocator, raw, {});
+        const node = self.ast.getNode(work.node);
+        const scope = self.outputOwnedScope(work.node) orelse work.scope;
+        if (work.node != write_ref and
+            (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) and
+            std.mem.eql(u8, self.ast.getText(node.data.string_ref), name))
+        {
+            try self.trackHoistedTempRefInScope(name_span, work.node, scope, .{ .read = true });
+        }
+        var it = ast_walk.children(self.ast, node);
+        while (it.next()) |child| try queue.append(self.allocator, .{ .node = child, .scope = scope });
+    }
+}
+
+/// Arrow/function home wrappers introduce a real parameter scope after their
+/// contents were transformed. Move the scopes owned inside the wrapped object
+/// under that scope, then attach the generated home binding and every exact
+/// read/write in the wrapper tree.
+fn bindWrappedHomeParameter(
+    self: *Transformer,
+    wrapper: NodeIndex,
+    binding: NodeIndex,
+    assignment: NodeIndex,
+    name_span: Span,
+    parent_scope: ScopeId,
+) Transformer.Error!void {
+    if (!self.semantic_edit_enabled or parent_scope.isNone()) return;
+    const wrapper_scope = try self.addGeneratedFunctionScope(parent_scope, wrapper);
+    if (wrapper_scope.isNone()) return;
+    const id = (try self.declareSyntheticInScope(binding, self.ast.getNode(binding).span, .parameter, wrapper_scope)) orelse return;
+    const write_ref = self.ast.getNode(assignment).data.binary.left;
+    const name = self.ast.getText(name_span);
+    const Work = struct { node: NodeIndex, scope: ScopeId };
+    var worklist: std.ArrayList(Work) = .empty;
+    defer worklist.deinit(self.allocator);
+    try worklist.append(self.allocator, .{ .node = wrapper, .scope = parent_scope });
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(self.allocator);
+    var cursor: usize = 0;
+    while (cursor < worklist.items.len) : (cursor += 1) {
+        const work = worklist.items[cursor];
+        if (work.node.isNone() or @intFromEnum(work.node) >= self.ast.nodes.items.len) continue;
+        const raw = @intFromEnum(work.node);
+        if (seen.contains(raw)) continue;
+        try seen.put(self.allocator, raw, {});
+        const node = self.ast.getNode(work.node);
+        var scope = work.scope;
+        if (self.outputOwnedScope(work.node)) |owned_scope| {
+            scope = owned_scope;
+            if (owned_scope != wrapper_scope) {
+                const visible = if (self.semantic_editor) |*editor|
+                    editor.symbolVisibleFrom(id, owned_scope)
+                else
+                    false;
+                if (!visible) try self.reparentGeneratedScope(owned_scope, wrapper_scope);
+            }
+        }
+
+        if (work.node != binding and (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) and
+            std.mem.eql(u8, self.ast.getText(node.data.string_ref), name))
+        {
+            const flags: ReferenceFlags = if (work.node == write_ref) .{ .write = true } else .{ .read = true };
+            try self.addSyntheticRefInScope(work.node, id, scope, flags);
+        }
+        var it = ast_walk.children(self.ast, node);
+        while (it.next()) |child| try worklist.append(self.allocator, .{ .node = child, .scope = scope });
+    }
 }
 
 pub const Saved = struct {

@@ -11,6 +11,7 @@ const NodeList = ast_mod.NodeList;
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 const class_visit_mod = @import("class_visit.zig");
 pub const visitClass = class_visit_mod.visitClass;
 const shouldDropClassExprName = class_visit_mod.shouldDropClassExprName;
@@ -19,19 +20,46 @@ const classBodyHasStaticPrivateMember = class_visit_mod.classBodyHasStaticPrivat
 const wrapClassExprInIIFE = class_visit_mod.wrapClassExprInIIFE;
 const es_helpers = @import("../es_helpers.zig");
 const es2022 = @import("../es2022.zig");
+const class_private_fields = @import("../es2015_class/private_fields.zig");
 const PrivateMethodMapping = Transformer.PrivateMethodMapping;
+
+fn trackPrivateHelperPrelude(
+    self: *Transformer,
+    source_idx: NodeIndex,
+    pre_stmts: []const NodeIndex,
+    static_descriptors: []const NodeIndex,
+    class_result: NodeIndex,
+    method_mappings: []const PrivateMethodMapping,
+    field_mappings: []const Transformer.PrivateFieldMapping,
+) Error!void {
+    if (!self.semantic_edit_enabled or (method_mappings.len == 0 and field_mappings.len == 0)) return;
+    const class_scope = self.outputOwnedScope(source_idx) orelse
+        std.debug.panic("private helper class has no source scope", .{});
+    const root_scope = self.outputScopeParent(class_scope);
+    var statements: std.ArrayList(NodeIndex) = .empty;
+    defer statements.deinit(self.allocator);
+    try statements.appendSlice(self.allocator, pre_stmts);
+    try statements.appendSlice(self.allocator, static_descriptors);
+    try statements.append(self.allocator, class_result);
+    const root = try self.ast.addNode(.{
+        .tag = .block_statement,
+        .span = self.ast.getNode(class_result).span,
+        .data = .{ .list = try self.ast.addNodeList(statements.items) },
+    });
+    try class_private_fields.PrivateFields(Transformer).trackPrivateMethodSymbols(self, root, method_mappings, field_mappings, root_scope);
+}
 
 /// useDefineForClassFields=false / experimentalDecorators 처리.
 /// 멤버를 개별 분류하여 instance field를 constructor로 이동하고,
 /// experimental decorator를 __decorateClass 호출로 변환한다.
-pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeIndex {
+pub fn visitClassWithAssignSemantics(self: *Transformer, source_idx: NodeIndex, node: Node) Error!NodeIndex {
     // computed field 키의 선평가 대입(`_a = f()`)을 모은다. 클래스 **선언**은 앞 문장으로
     // 끼우면 되지만, 클래스 **식**은 값 자리라 문장을 끼울 수 없다 — pending_nodes 로
     // 넣으면 감싼 목록(예: `const` 선언자 목록)에 끼어들어 `const var _a;,_a = f();,C = …`
     // 같은 깨진 코드가 나온다. 그래서 식은 `(_a = f(), class {…})` 쉼표 식으로 낸다. (#4723)
     var key_assigns: std.ArrayListUnmanaged(NodeIndex) = .empty;
     defer key_assigns.deinit(self.allocator);
-    const result = try visitClassWithAssignSemanticsInner(self, node, &key_assigns);
+    const result = try visitClassWithAssignSemanticsInner(self, source_idx, node, &key_assigns);
     if (key_assigns.items.len == 0 or result.isNone()) return result;
     try key_assigns.append(self.allocator, result);
     const list = try self.ast.addNodeList(key_assigns.items);
@@ -39,7 +67,7 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
     return self.ast.addNode(.{ .tag = .parenthesized_expression, .span = node.span, .data = .{ .unary = .{ .operand = seq, .flags = 0 } } });
 }
 
-fn visitClassWithAssignSemanticsInner(self: *Transformer, node: Node, key_assigns: *std.ArrayListUnmanaged(NodeIndex)) Error!NodeIndex {
+fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex, node: Node, key_assigns: *std.ArrayListUnmanaged(NodeIndex)) Error!NodeIndex {
     const e = node.data.extra;
     const super_idx = self.readNodeIdx(e, ast_mod.ClassExtra.super);
     const has_super = !super_idx.isNone();
@@ -48,8 +76,11 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, node: Node, key_assign
     const new_super = try self.visitNode(super_idx);
     // 뒤에서 임시 이름으로 바꾸면 span 이 달라져 makeCurrentClassRef 가 심볼을 붙이지 않는다.
     const saved_class_name_node = self.current_class_name_node;
+    const saved_class_self_symbol_id = self.current_class_self_symbol_id;
     self.current_class_name_node = new_name;
+    self.current_class_self_symbol_id = self.class_self_symbol_map.get(@intFromEnum(source_idx));
     defer self.current_class_name_node = saved_class_name_node;
+    defer self.current_class_self_symbol_id = saved_class_self_symbol_id;
 
     // #4 fix(super_class): fast path(class_visit.zig)와 동일하게 private method body 내 super.x 가
     // 올바른 super class span 으로 lowering 되도록 current_super_class 를 set. assign-semantics
@@ -370,11 +401,21 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, node: Node, key_assign
     const has_static_blocks = static_block_iifes.items.len > 0;
 
     if (has_static_fields or has_static_blocks) {
+        const prepared_wrapper_scope = if (node.tag == .class_expression and has_static_fields)
+            try class_visit_mod.prepareClassExprWrapperScope(self, source_idx)
+        else
+            @as(ScopeId, .none);
+        const static_field_ref_scope = if (!prepared_wrapper_scope.isNone()) prepared_wrapper_scope else if (self.semantic_edit_enabled) blk: {
+            const class_scope = self.outputOwnedScope(source_idx) orelse
+                std.debug.panic("static class field has no source class scope", .{});
+            break :blk self.outputScopeParent(class_scope);
+        } else self.current_scope;
         const class_result = try self.addExtraNode(node.tag, node.span, &.{
             @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
             none,                   0,                       0,
             new_decos.start,        new_decos.len,
         });
+        if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
         // 클래스 뒤에 올 문장들: private static descriptor → (소스 순서대로) static field / block.
         var post: std.ArrayListUnmanaged(NodeIndex) = .empty;
         defer post.deinit(self.allocator);
@@ -390,20 +431,21 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, node: Node, key_assign
             else
                 @intCast(static_field_assignments.items.len);
             while (emitted_fields < upto) : (emitted_fields += 1) {
-                try post.append(self.allocator, try self.buildStaticFieldAssignment(new_name, static_field_assignments.items[emitted_fields]));
+                try post.append(self.allocator, try self.buildStaticFieldAssignment(new_name, static_field_assignments.items[emitted_fields], static_field_ref_scope));
             }
             try post.append(self.allocator, iife);
         }
         while (emitted_fields < static_field_assignments.items.len) : (emitted_fields += 1) {
-            try post.append(self.allocator, try self.buildStaticFieldAssignment(new_name, static_field_assignments.items[emitted_fields]));
+            try post.append(self.allocator, try self.buildStaticFieldAssignment(new_name, static_field_assignments.items[emitted_fields], static_field_ref_scope));
         }
 
         // 클래스 **식**은 값 자리라 문장을 앞뒤에 끼울 수 없다 — IIFE 로 감싸 클래스를
         // 돌려준다. 예전엔 여기서도 pending 에 넣고 `.none` 을 돌려줘 식이 통째로 사라질
         // 경로였다(이름이 없어 그 전에 크래시했을 뿐). (#4723)
         if (node.tag == .class_expression) {
-            return wrapClassExprInIIFE(self, &.{}, priv_pre_stmts.items, class_result, post.items, new_name, node.span);
+            return wrapClassExprInIIFE(self, source_idx, &.{}, priv_pre_stmts.items, class_result, post.items, new_name, prepared_wrapper_scope, pm_mappings.items, pf_mappings.items, node.span);
         }
+        try trackPrivateHelperPrelude(self, source_idx, priv_pre_stmts.items, assign_static_descriptors.items, class_result, pm_mappings.items, pf_mappings.items);
         // #3/#4: private weakset 선언은 class 정의/static 할당 앞에.
         for (priv_pre_stmts.items) |stmt| try self.pending_nodes.append(self.allocator, stmt);
         try self.pending_nodes.append(self.allocator, class_result);
@@ -421,17 +463,23 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, node: Node, key_assign
             none,                   0,                       0,
             new_decos.start,        new_decos.len,
         });
+        if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
         if (node.tag == .class_expression) {
             return wrapClassExprInIIFE(
                 self,
+                source_idx,
                 &.{},
                 priv_pre_stmts.items,
                 class_result,
                 assign_static_descriptors.items,
                 new_name,
+                .none,
+                pm_mappings.items,
+                pf_mappings.items,
                 node.span,
             );
         }
+        try trackPrivateHelperPrelude(self, source_idx, priv_pre_stmts.items, assign_static_descriptors.items, class_result, pm_mappings.items, pf_mappings.items);
         for (priv_pre_stmts.items) |stmt| try self.pending_nodes.append(self.allocator, stmt);
         try self.pending_nodes.append(self.allocator, class_result);
         // V_ASSIGN fix: descriptor 를 class 뒤에 emit.
@@ -439,11 +487,13 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, node: Node, key_assign
         return .none;
     }
 
-    return self.addExtraNode(node.tag, node.span, &.{
+    const class_result = try self.addExtraNode(node.tag, node.span, &.{
         @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
         none,                   0,                       0,
         new_decos.start,        new_decos.len,
     });
+    if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
+    return class_result;
 }
 
 // ================================================================

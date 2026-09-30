@@ -252,16 +252,16 @@ pub fn ES2015Params(comptime Transformer: type) type {
             const temp_span = try es_helpers.makeTempVarSpan(self);
             const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
 
-            const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, span);
-            const default_stmt = try buildDefaultCheck(self, temp_ref, visited_default, span);
+            const default_stmt = try buildDefaultCheckForTemp(self, temp_span, visited_default, span);
             try body_stmts.append(self.allocator, default_stmt);
 
-            const temp_ref2 = try es_helpers.makeTempVarRef(self, temp_span, span);
+            const temp_ref2 = try es_helpers.makeTrackedTempRef(self, temp_span, span, .{ .read = true });
             const pattern_node = self.ast.getNode(visited_pattern);
             const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
+            var read_binding: NodeIndex = .none;
             const read_span = if (pattern_node.tag == .array_pattern) blk: {
                 const read_span = try es_helpers.makeTempVarSpan(self);
-                const read_binding = try es_helpers.makeSyntheticBinding(self, read_span);
+                read_binding = try es_helpers.makeSyntheticBinding(self, read_span);
                 const read_init = try es2015_destruct.buildArrayRead(self, temp_ref2, pattern_node, span);
                 const read_decl = try es_helpers.makeVarDeclaration(
                     self,
@@ -275,7 +275,9 @@ pub fn ES2015Params(comptime Transformer: type) type {
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
-            try es2015_destruct.emitPatternDeclarators(self, pattern_node, read_span, span);
+            try es2015_destruct.emitPatternDeclarators(self, pattern_node, read_span, span, .@"var");
+            try self.bindSyntheticTempInScope(temp_binding, temp_span, span, .parameter, self.current_scope);
+            if (!read_binding.isNone()) try self.bindSyntheticTempInScope(read_binding, read_span, span, .variable_var, self.current_scope);
             const declarators = self.scratch.items[scratch_top..];
             if (declarators.len > 0) {
                 const destruct_decl = try es_helpers.makeVarDeclaration(self, declarators, .@"var", span);
@@ -301,16 +303,19 @@ pub fn ES2015Params(comptime Transformer: type) type {
 
             const pattern = self.ast.getNode(pattern_idx);
             const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
+            var read_binding: NodeIndex = .none;
             const read_span = if (pattern.tag == .array_pattern) blk: {
                 const read_span = try es_helpers.makeTempVarSpan(self);
-                const read_binding = try es_helpers.makeSyntheticBinding(self, read_span);
-                const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, span);
+                read_binding = try es_helpers.makeSyntheticBinding(self, read_span);
+                const temp_ref = try es_helpers.makeTrackedTempRef(self, temp_span, span, .{ .read = true });
                 const read_init = try es2015_destruct.buildArrayRead(self, temp_ref, pattern, span);
                 const read_decl = try es_helpers.makeDeclarator(self, read_binding, read_init, span);
                 try self.scratch.append(self.allocator, read_decl);
                 break :blk read_span;
             } else temp_span;
-            try es2015_destruct.emitPatternDeclarators(self, pattern, read_span, span);
+            try es2015_destruct.emitPatternDeclarators(self, pattern, read_span, span, .@"var");
+            try self.bindSyntheticTempInScope(temp_binding, temp_span, span, .parameter, self.current_scope);
+            if (!read_binding.isNone()) try self.bindSyntheticTempInScope(read_binding, read_span, span, .variable_var, self.current_scope);
 
             const declarators = self.scratch.items[scratch_top..];
             if (declarators.len > 0) {
@@ -328,7 +333,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             const void_zero = try es_helpers.makeVoidZero(self, span);
 
             // x === void 0
-            const pattern_ref = try copyIdentifier(self, pattern);
+            const pattern_ref = try copyIdentifier(self, pattern, .{ .read = true });
             const eq_check = try self.ast.addNode(.{
                 .tag = .binary_expression,
                 .span = span,
@@ -340,7 +345,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             });
 
             // x === void 0 ? default_value : x
-            const pattern_ref2 = try copyIdentifier(self, pattern);
+            const pattern_ref2 = try copyIdentifier(self, pattern, .{ .read = true });
             const conditional = try self.ast.addNode(.{
                 .tag = .conditional_expression,
                 .span = span,
@@ -352,7 +357,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             });
 
             // x = (conditional)
-            const pattern_ref3 = try copyIdentifier(self, pattern);
+            const pattern_ref3 = try copyIdentifier(self, pattern, .{ .write = true });
             const assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
@@ -360,6 +365,33 @@ pub fn ES2015Params(comptime Transformer: type) type {
             });
 
             // expression_statement
+            return self.ast.addNode(.{
+                .tag = .expression_statement,
+                .span = span,
+                .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+            });
+        }
+
+        fn buildDefaultCheckForTemp(self: *Transformer, temp_span: Span, default_val: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const void_zero = try es_helpers.makeVoidZero(self, span);
+            const test_ref = try es_helpers.makeTrackedTempRef(self, temp_span, span, .{ .read = true });
+            const eq_check = try self.ast.addNode(.{
+                .tag = .binary_expression,
+                .span = span,
+                .data = .{ .binary = .{ .left = test_ref, .right = void_zero, .flags = @intFromEnum(token_mod.Kind.eq3) } },
+            });
+            const value_ref = try es_helpers.makeTrackedTempRef(self, temp_span, span, .{ .read = true });
+            const conditional = try self.ast.addNode(.{
+                .tag = .conditional_expression,
+                .span = span,
+                .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = value_ref } },
+            });
+            const write_ref = try es_helpers.makeTrackedTempRef(self, temp_span, span, .{ .write = true });
+            const assign = try self.ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = span,
+                .data = .{ .binary = .{ .left = write_ref, .right = conditional, .flags = 0 } },
+            });
             return self.ast.addNode(.{
                 .tag = .expression_statement,
                 .span = span,
@@ -401,9 +433,17 @@ pub fn ES2015Params(comptime Transformer: type) type {
 
         /// identifier 노드를 복제한다 (같은 이름·같은 심볼의 새 노드). 심볼을 물려주지 않으면
         /// minify 가 매개변수 선언만 바꾸고 이 참조는 원래 이름으로 남는다 (#4762).
-        fn copyIdentifier(self: *Transformer, node_idx: NodeIndex) Transformer.Error!NodeIndex {
+        fn copyIdentifier(self: *Transformer, node_idx: NodeIndex, flags: @import("../semantic/symbol.zig").ReferenceFlags) Transformer.Error!NodeIndex {
             const node = self.ast.getNode(node_idx);
-            return self.makeIdentifierRefWithSymbolAt(node.data.string_ref, node.span, node_idx);
+            const ref = try self.makeIdentifierRefWithSymbolAt(node.data.string_ref, node.span, node_idx);
+            const use_scope = if (self.getSymbolIdAt(node_idx)) |raw_id| blk: {
+                const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+                if (raw_id < symbols.len) break :blk symbols[raw_id].scope_id;
+                break :blk self.current_scope;
+            } else self.current_scope;
+            if (flags.read) try self.trackUserReadFromBinding(ref, node_idx, use_scope);
+            if (flags.write) try self.trackUserWriteFromBinding(ref, node_idx, use_scope);
+            return ref;
         }
 
         fn collectBindingNames(self: *Transformer, idx: NodeIndex, out: *std.ArrayList(Span)) Transformer.Error!void {

@@ -7,6 +7,7 @@ const ast_mod = @import("../parser/ast.zig");
 const Transformer = @import("transformer.zig").Transformer;
 const TransformOptions = @import("transformer.zig").TransformOptions;
 const Reference = @import("../semantic/symbol.zig").Reference;
+const output_scope = @import("output_scope_test_utils.zig");
 
 fn checkGeneratedTemps(source: []const u8, target: TransformOptions.compat.ESTarget, expected: usize, has_state: bool) !void {
     return checkGeneratedTempsWithBlock(source, target, expected, has_state, false);
@@ -38,10 +39,12 @@ fn checkGeneratedTempsWithBlock(source: []const u8, target: TransformOptions.com
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
-    _ = try transformer.transform();
+    const root = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
     const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var output_parents = try output_scope.buildParentMap(allocator, transformer.ast, root);
+    defer output_parents.deinit(allocator);
 
     var found: usize = 0;
     for (edited.symbols.items[source_symbol_count..], source_symbol_count..) |symbol, symbol_index| {
@@ -70,11 +73,17 @@ fn checkGeneratedTempsWithBlock(source: []const u8, target: TransformOptions.com
         for (edited.references) |ref| {
             if (@intFromEnum(ref.symbol_id) != symbol_index or ref.node_index.isNone()) continue;
             try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(ref.node_index)) != null);
+            const expected_scope = output_scope.expectedScope(
+                transformer.ast,
+                root,
+                &output_parents,
+                &edited.scope_owner_map,
+                @intFromEnum(ref.node_index),
+            ) orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(expected_scope, ref.scope_id);
             if (expect_block_refs) {
-                try std.testing.expect(ref.scope_id != symbol.scope_id);
+                try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.block, edited.scopes[ref.scope_id.toIndex()].kind);
                 try std.testing.expectEqual(symbol.scope_id, edited.scopes[ref.scope_id.toIndex()].parent);
-            } else {
-                try std.testing.expectEqual(symbol.scope_id, ref.scope_id);
             }
             try std.testing.expectEqual(Reference.NO_STMT, ref.stmt_idx);
             try std.testing.expectEqual(Reference.NO_STMT, ref.scope_stmt_idx);
@@ -289,15 +298,19 @@ test "#4819 for-await extracted loop temps preserve live scopes" {
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
-    const wrapper = edited.scopes[original_header_scope.toIndex()].parent;
-    try std.testing.expect(wrapper != source_function);
-    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[wrapper.toIndex()].kind);
-    try std.testing.expectEqual(source_function, edited.scopes[wrapper.toIndex()].parent);
+    // State-machine lowering flattens the temporary for-await wrapper block
+    // into switch operations. The source loop scope therefore attaches
+    // directly to the emitted generator callback, which remains nested in the
+    // original async function scope.
+    const wrapper_function = edited.scopes[original_header_scope.toIndex()].parent;
+    try std.testing.expect(!wrapper_function.isNone());
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[wrapper_function.toIndex()].kind);
+    try std.testing.expectEqual(source_function, edited.scopes[wrapper_function.toIndex()].parent);
     var live_owners: usize = 0;
     const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
     var owners = edited.scope_owner_map.iterator();
     while (owners.next()) |owner| {
-        if (owner.value_ptr.* != @intFromEnum(wrapper)) continue;
+        if (owner.value_ptr.* != @intFromEnum(wrapper_function)) continue;
         try std.testing.expect(std.mem.indexOfScalar(u32, reachable, owner.key_ptr.*) != null);
         const function = transformer.ast.nodes.items[owner.key_ptr.*];
         try std.testing.expectEqual(ast_mod.Node.Tag.function_expression, function.tag);

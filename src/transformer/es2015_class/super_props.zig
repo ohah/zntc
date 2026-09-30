@@ -17,6 +17,13 @@ pub fn SuperProps(comptime Transformer: type) type {
         const constructors = constructors_mod.Constructors(Transformer);
         const buildAssertThisInitialized = constructors.buildAssertThisInitialized;
 
+        fn makeThisAliasRef(self: *Transformer) Transformer.Error!NodeIndex {
+            const ref = try es_helpers.makeSyntheticRef(self, "_this");
+            if (self.semantic_edit_enabled and self.capture_frame != 0)
+                try self.trackLexicalCaptureRef(ref, .none, .this_value);
+            return ref;
+        }
+
         /// transparent wrapper(괄호, TS as 등) 안쪽이 super_expression 인지 검사 (#2030).
         /// wrapper-unwrap 자체는 `es_helpers.unwrapTransparentWrappers` 가 담당.
         fn isSuperUnwrapped(self: *Transformer, idx: NodeIndex) bool {
@@ -79,14 +86,14 @@ pub fn SuperProps(comptime Transformer: type) type {
             // _this = __callSuper(_super, [args], _newTarget)
             // 대입식으로 반환하여 super()가 if/else 등 어디에 있든 동작.
             // var _this / var _newTarget 선언과 return 검사는 postProcessDerivedConstructorBody에서 추가.
-            const this_ref = try es_helpers.makeSyntheticRef(self, "_this");
+            const this_ref = try makeThisAliasRef(self);
             const raw_assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
                 .data = .{ .binary = .{ .left = this_ref, .right = call, .flags = 0 } },
             });
             const assert_uninit = try es_helpers.makeRuntimeHelperRef(self, "__assertThisUninitialized");
-            const current_this = try es_helpers.makeSyntheticRef(self, "_this");
+            const current_this = try makeThisAliasRef(self);
             const assert_call = try es_helpers.makeCallExpr(self, assert_uninit, &.{current_this}, span);
 
             const seq_list = try self.ast.addNodeList(&.{ assert_call, raw_assign });
@@ -302,6 +309,7 @@ pub fn SuperProps(comptime Transformer: type) type {
         /// class_name_old_idx는 OLD AST 노드 — symbol 기반 리네이밍 대상.
         fn buildPrototypeRef(self: *Transformer, class_name_span: Span, class_name_old_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const class_ref = try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx);
+            try self.trackUserReadFromBinding(class_ref, class_name_old_idx, self.current_scope);
             const proto_prop = try es_helpers.makePropertyName(self, "prototype");
             return es_helpers.makeStaticMember(self, class_ref, proto_prop, span);
         }
@@ -350,7 +358,9 @@ pub fn SuperProps(comptime Transformer: type) type {
                 return buildSuperBaseViaProtoChain(self, super_class_span, span);
             }
             if (self.current_super_is_static) {
-                return self.makeIdentifierRefWithSymbol(super_class_span, self.current_super_class_old_idx);
+                const class_ref = try self.makeIdentifierRefWithSymbol(super_class_span, self.current_super_class_old_idx);
+                try self.trackUserReadFromBinding(class_ref, self.current_super_class_old_idx, self.current_scope);
+                return class_ref;
             }
             return buildPrototypeRef(self, super_class_span, self.current_super_class_old_idx, span);
         }

@@ -194,7 +194,9 @@ pub fn buildRefreshAssignment(self: *Transformer, reg: RefreshRegistration) Erro
     const zero_span = Span{ .start = 0, .end = 0 };
 
     const handle_ref = try es_helpers.makeSyntheticRefFromSpan(self, reg.handle_span);
-    const comp_ref = try self.makeUserRefNamed(reg.name, reg.component_idx);
+    // Registrations are appended after the main transform pass, when
+    // current_scope may still name the last visited nested function.
+    const comp_ref = try self.makeUserRefNamedAtScope(reg.name, reg.component_idx, self.programScope());
     const assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = zero_span,
@@ -310,7 +312,9 @@ pub fn buildRefreshSigCall(self: *Transformer, sig: RefreshSignature) Error!Node
     // Component 식별자. buildRefreshAssignment 의 `_c = Component` 와 동일하게
     // component binding 의 symbol_id 를 물려받아 linker/mangler rename 을 따라가게 한다
     // (없으면 컴포넌트가 rename 됐을 때 _s(원본이름, ...) 로 남아 dangling ref).
-    const comp_ref = try self.makeUserRefNamed(sig.component_name, sig.component_idx);
+    // Signature calls are appended at the program root after the main transform
+    // pass, so current_scope may still point inside the last visited function.
+    const comp_ref = try self.makeUserRefNamedAtScope(sig.component_name, sig.component_idx, self.programScope());
 
     // "signature" 문자열 리터럴. hook 이 많은 컴포넌트는 signature 가 길이 상한이
     // 없으므로 고정 스택 버퍼 대신 힙에 빌드한다 — 과거 [1024]u8 버퍼는 초과 시
