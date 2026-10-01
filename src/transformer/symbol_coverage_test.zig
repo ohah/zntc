@@ -975,6 +975,57 @@ test "#4819 for-in temporaries bind symbols during lowering" {
     try std.testing.expectEqual(expected_names.len, found);
 }
 
+test "#4819 generator for-of temporaries bind symbols during lowering" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+    const source = "for (const value of source) use(value);";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    var source_loop: ?NodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, index| {
+        if (node.tag == .for_of_statement) source_loop = @enumFromInt(index);
+    }
+    const loop = source_loop orelse return error.MissingForOfLoop;
+    const loop_scope = analyzer.scope_owner_map.get(@intFromEnum(loop)) orelse return error.MissingForOfScope;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = @enumFromInt(loop_scope);
+    transformer.state_machine_depth = 1;
+    const lowering = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
+    _ = try lowering.rewriteForOf(&transformer, loop, parser.ast.getNode(loop), .none, true);
+
+    const expected_names = [_][]const u8{ "_a", "_b", "_c", "_d", "_step" };
+    var found: usize = 0;
+    for (transformer.ast.nodes.items[transformer.parser_node_count..], transformer.parser_node_count..) |node, raw| {
+        if (node.tag != .binding_identifier) continue;
+        const name = transformer.ast.getText(node.data.string_ref);
+        var expected = false;
+        for (expected_names) |expected_name| {
+            if (std.mem.eql(u8, name, expected_name)) expected = true;
+        }
+        if (!expected) continue;
+        found += 1;
+        const symbol_id = if (raw < transformer.symbol_ids.items.len) transformer.symbol_ids.items[raw] else null;
+        try std.testing.expect(symbol_id != null);
+    }
+    try std.testing.expectEqual(expected_names.len, found);
+}
+
 test "#4819 optional catch binding gets a symbol in its catch scope" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

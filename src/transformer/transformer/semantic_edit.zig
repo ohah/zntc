@@ -1057,6 +1057,46 @@ pub fn migrateGeneratorLoopBody(self: *Transformer, original_body: NodeIndex, fi
         if (!source_nodes.contains(origin) and !source_binding_ids.contains(id)) continue;
         try live_symbol_ids.put(self.allocator, id, {});
     }
+
+    // A lowering-created function-scoped temp can be hoisted before a captured
+    // generator loop is extracted. Its exact binding then remains in the
+    // enclosing function even though every surviving use is now inside the
+    // extracted function. Move only such exact synthetic identities, and only
+    // when all live uses are within this output function.
+    var live_symbols = live_symbol_ids.keyIterator();
+    while (live_symbols.next()) |raw_id| {
+        if (raw_id.* >= editor.symbols.items.len) continue;
+        const symbol = editor.symbols.items[raw_id.*];
+        if (symbol.synthetic_name.len == 0 or symbol.kind != .variable_var or symbol.scope_id.isNone() or
+            symbol.scope_id.toIndex() >= editor.scopes.items.len or symbol.scope_id == output_function_scope or
+            !editor.scopes.items[symbol.scope_id.toIndex()].kind.isVarScope()) continue;
+        var needs_move = false;
+        var all_uses_in_output = true;
+        for (runtime_refs) |node| {
+            const current_id = self.getSymbolIdAt(node) orelse continue;
+            if (current_id != raw_id.*) continue;
+            const raw = @intFromEnum(node);
+            const origin = self.reference_origin_map.get(raw) orelse raw;
+            if (!source_nodes.contains(origin) and !source_binding_ids.contains(raw_id.*)) continue;
+            const trace = traces.get(raw) orelse std.debug.panic("generator loop reference has no final scope trace", .{});
+            if (trace.ambiguous_scope) std.debug.panic("generator loop reference has ambiguous output scopes", .{});
+            if (!scopeWithin(editor.scopes.items, trace.scope, symbol.scope_id)) needs_move = true;
+            if (!scopeWithin(editor.scopes.items, trace.scope, output_function_scope)) all_uses_in_output = false;
+        }
+        if (!needs_move or !all_uses_in_output) continue;
+
+        var binding_node: ?NodeIndex = null;
+        for (self.symbol_ids.items, 0..) |maybe_id, node_raw| {
+            if (maybe_id == null or maybe_id.? != raw_id.* or node_raw >= self.ast.nodes.items.len) continue;
+            const candidate: NodeIndex = @enumFromInt(node_raw);
+            if (self.ast.getNode(candidate).tag != .binding_identifier) continue;
+            binding_node = candidate;
+            if (final_nodes.contains(@intCast(node_raw))) break;
+        }
+        const binding = binding_node orelse std.debug.panic("live extracted loop temp has no output binding node", .{});
+        editor.relocateSymbolAs(@enumFromInt(raw_id.*), output_function_scope, binding) catch |err| return editError(err);
+    }
+
     var moved_bindings: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer moved_bindings.deinit(self.allocator);
     var source_nodes_it = source_nodes.keyIterator();

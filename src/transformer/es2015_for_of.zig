@@ -109,6 +109,10 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 self.current_scope;
             const stable_scope = self.semantic_edit_enabled and !register_sm_temps and self.pending_loop_extraction_depth == 0;
             const outer_scope = if (stable_scope) self.outputScopeParent(loop_scope) else self.current_scope;
+            const generated_temp_scope = if (self.semantic_edit_enabled and register_sm_temps)
+                self.nearestVarScope(loop_scope)
+            else
+                loop_scope;
             if (register_sm_temps) {
                 try self.generator_temp_var_spans.appendSlice(self.allocator, &.{ norm, did_err, err_val, iter, step, catch_param });
             }
@@ -117,24 +121,33 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const norm_binding = try es_helpers.makeSyntheticBinding(self, norm);
             const norm_symbol = if (stable_scope)
                 try self.declareSyntheticInScope(norm_binding, span, .variable_var, outer_scope)
+            else if (register_sm_temps)
+                try self.declareSyntheticTempInScope(norm_binding, span, generated_temp_scope)
             else
                 null;
+            if (register_sm_temps) try self.recordGeneratorStateTempSymbol(norm, norm_symbol);
             const norm_decl = try es_helpers.makeVarDeclaration(self, &.{
                 try es_helpers.makeDeclarator(self, norm_binding, try es_helpers.makeBoolLiteral(self, true), span),
             }, .@"var", span);
             const did_binding = try es_helpers.makeSyntheticBinding(self, did_err);
             const did_symbol = if (stable_scope)
                 try self.declareSyntheticInScope(did_binding, span, .variable_var, outer_scope)
+            else if (register_sm_temps)
+                try self.declareSyntheticTempInScope(did_binding, span, generated_temp_scope)
             else
                 null;
+            if (register_sm_temps) try self.recordGeneratorStateTempSymbol(did_err, did_symbol);
             const did_decl = try es_helpers.makeVarDeclaration(self, &.{
                 try es_helpers.makeDeclarator(self, did_binding, try es_helpers.makeBoolLiteral(self, false), span),
             }, .@"var", span);
             const err_binding = try es_helpers.makeSyntheticBinding(self, err_val);
             const err_symbol = if (stable_scope)
                 try self.declareSyntheticInScope(err_binding, span, .variable_var, outer_scope)
+            else if (register_sm_temps)
+                try self.declareSyntheticTempInScope(err_binding, span, generated_temp_scope)
             else
                 null;
+            if (register_sm_temps) try self.recordGeneratorStateTempSymbol(err_val, err_symbol);
             const err_decl = try es_helpers.makeVarDeclaration(self, &.{
                 try es_helpers.makeDeclarator(self, err_binding, try es_helpers.makeVoidZero(self, span), span),
             }, .@"var", span);
@@ -145,15 +158,21 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const iter_binding = try es_helpers.makeSyntheticBinding(self, iter);
             // State-machine collection and a pending `_loop` extraction can move
             // this var into a generated function after this AST is built.
-            const iter_symbol = if (register_sm_temps or self.pending_loop_extraction_depth != 0)
+            const iter_symbol = if (register_sm_temps)
+                try self.declareSyntheticTempInScope(iter_binding, span, generated_temp_scope)
+            else if (self.pending_loop_extraction_depth != 0)
                 null
             else
                 try self.declareSyntheticInScope(iter_binding, span, .variable_var, loop_scope);
+            if (register_sm_temps) try self.recordGeneratorStateTempSymbol(iter, iter_symbol);
             const step_binding = try es_helpers.makeSyntheticBinding(self, step);
-            const step_symbol = if (register_sm_temps or self.pending_loop_extraction_depth != 0)
+            const step_symbol = if (register_sm_temps)
+                try self.declareSyntheticTempInScope(step_binding, span, generated_temp_scope)
+            else if (self.pending_loop_extraction_depth != 0)
                 null
             else
                 try self.declareSyntheticInScope(step_binding, span, .variable_var, loop_scope);
+            if (register_sm_temps) try self.recordGeneratorStateTempSymbol(step, step_symbol);
             const for_init = try es_helpers.makeVarDeclaration(self, &.{
                 try es_helpers.makeDeclarator(self, iter_binding, values_call, span),
                 try es_helpers.makeDeclarator(self, step_binding, .none, span),
