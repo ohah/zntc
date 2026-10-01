@@ -241,15 +241,39 @@ pub const ExactReport = struct {
     first_ambiguous_ast_parent: ?AstParentFinding = null,
     first_shadowed_external_reference: ?ExactFinding = null,
 
+    fn isObservationField(comptime name: []const u8) bool {
+        return std.mem.eql(u8, name, "generated_bindings") or
+            std.mem.eql(u8, name, "generated_references") or
+            std.mem.eql(u8, name, "external_references") or
+            std.mem.eql(u8, name, "namespace_iife_params") or
+            std.mem.eql(u8, name, "enum_iife_params") or
+            std.mem.eql(u8, name, "legacy_debt_fingerprint");
+    }
+
+    fn isDiagnosticField(comptime name: []const u8) bool {
+        return std.mem.eql(u8, name, "first_missing_binding") or
+            std.mem.eql(u8, name, "first_missing_reference") or
+            std.mem.eql(u8, name, "first_unclassified_reference") or
+            std.mem.eql(u8, name, "first_scope_owner_mismatch") or
+            std.mem.eql(u8, name, "first_scope_map_mismatch") or
+            std.mem.eql(u8, name, "first_ambiguous_ast_parent") or
+            std.mem.eql(u8, name, "first_shadowed_external_reference");
+    }
+
+    /// Observations are allowed to be nonzero. Every other numeric field is
+    /// an invariant counter and fails closed by default, so adding a new
+    /// counter cannot silently leave the aggregate exact-coverage gate green.
     pub fn isClean(self: ExactReport) bool {
-        return self.missing_binding == 0 and self.invalid_reference_node == 0 and self.unreachable_reference == 0 and
-            self.ambiguous_ast_parent == 0 and self.shadowed_external_reference == 0 and self.invalid_id == 0 and
-            self.missing_reference == 0 and self.duplicate_reference == 0 and
-            self.identity_mismatch == 0 and self.binding_scope_mismatch == 0 and self.binding_scope_unknown == 0 and self.invalid_scope == 0 and
-            self.reference_scope_mismatch == 0 and
-            self.scope_map_mismatch == 0 and self.scope_owner_mismatch == 0 and self.namespace_iife_param_mismatch == 0 and self.enum_iife_param_mismatch == 0 and self.helper_symbol_mismatch == 0 and self.scope_resolution_mismatch == 0 and self.invisible_reference == 0 and
-            self.unclassified_reference == 0 and self.reference_count_mismatch == 0 and
-            self.write_count_mismatch == 0;
+        inline for (std.meta.fields(ExactReport)) |field| {
+            if (comptime isObservationField(field.name)) continue;
+            if (comptime isDiagnosticField(field.name)) {
+                if (@field(self, field.name) != null) return false;
+                continue;
+            }
+            if (comptime field.type != usize) @compileError("unclassified ExactReport field; classify it as an observation, diagnostic, or usize invariant counter");
+            if (@field(self, field.name) != 0) return false;
+        }
+        return true;
     }
 };
 
@@ -2029,7 +2053,7 @@ fn hasReachableBindingForSymbol(ctx: *const ExactCtx, symbol_id: u32) bool {
 
 pub fn printExact(file_path: []const u8, report: ExactReport) void {
     std.debug.print(
-        "zntc: symbol-identity {s}: generated_bindings={d} generated_references={d} external={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} ambiguous_ast_parent={d} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} namespace_iife_params={d} namespace_iife_param_mismatch={d} enum_iife_params={d} enum_iife_param_mismatch={d} helper_symbol_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} reference_count_mismatch={d} write_count_mismatch={d} legacy_debt_fingerprint={x}\n",
+        "zntc: symbol-identity {s}: generated_bindings={d} generated_references={d} external={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} ambiguous_ast_parent={d} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} namespace_iife_params={d} namespace_iife_param_mismatch={d} enum_iife_params={d} enum_iife_param_mismatch={d} helper_symbol_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} reference_count_mismatch={d} write_count_mismatch={d} clean={d} legacy_debt_fingerprint={x}\n",
         .{
             file_path,
             report.generated_bindings,
@@ -2060,6 +2084,7 @@ pub fn printExact(file_path: []const u8, report: ExactReport) void {
             report.unclassified_reference,
             report.reference_count_mismatch,
             report.write_count_mismatch,
+            @intFromBool(report.isClean()),
             report.legacy_debt_fingerprint,
         },
     );
@@ -2700,6 +2725,44 @@ test "exact coverage is not clean when a generated binding scope is unknown" {
     try std.testing.expect(report.isClean());
     report.binding_scope_unknown = 1;
     try std.testing.expect(!report.isClean());
+}
+
+test "exact coverage cleanliness fails closed for every invariant counter" {
+    inline for (std.meta.fields(ExactReport)) |field| {
+        if (comptime ExactReport.isObservationField(field.name) or ExactReport.isDiagnosticField(field.name)) continue;
+        var report: ExactReport = .{};
+        @field(report, field.name) = 1;
+        try std.testing.expect(!report.isClean());
+    }
+
+    const observations: ExactReport = .{
+        .generated_bindings = 1,
+        .generated_references = 1,
+        .external_references = 1,
+        .namespace_iife_params = 1,
+        .enum_iife_params = 1,
+        .legacy_debt_fingerprint = 0x1234,
+    };
+    try std.testing.expect(observations.isClean());
+}
+
+test "exact coverage diagnostic findings cannot disagree with a clean report" {
+    const finding: ExactFinding = .{
+        .name = "x",
+        .tag = .identifier_reference,
+        .node_index = 1,
+        .span_start = 0,
+    };
+    const reports = [_]ExactReport{
+        .{ .first_missing_binding = finding },
+        .{ .first_missing_reference = finding },
+        .{ .first_unclassified_reference = finding },
+        .{ .first_scope_owner_mismatch = .{ .node_index = 1, .tag = .block_statement, .issue = "test" } },
+        .{ .first_scope_map_mismatch = .{ .issue = "test" } },
+        .{ .first_ambiguous_ast_parent = .{ .node_index = 1, .first_parent = 2, .additional_parent = 3 } },
+        .{ .first_shadowed_external_reference = finding },
+    };
+    for (reports) |report| try std.testing.expect(!report.isClean());
 }
 
 test "exact helper coverage rejects an unbound generated helper reference" {
