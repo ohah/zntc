@@ -66,6 +66,7 @@ test {
     _ = @import("lexical_capture_semantic_test.zig");
     _ = @import("generator_temp_semantic_test.zig");
     _ = @import("parameter_temp_semantic_test.zig");
+    _ = @import("flow_match_semantic_test.zig");
     _ = @import("namespace_temp_semantic_test.zig");
     _ = @import("tla_temp_semantic_test.zig");
     _ = @import("destructuring_temp_semantic_test.zig");
