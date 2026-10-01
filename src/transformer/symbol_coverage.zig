@@ -2052,9 +2052,18 @@ fn hasReachableBindingForSymbol(ctx: *const ExactCtx, symbol_id: u32) bool {
 }
 
 pub fn printExact(file_path: []const u8, report: ExactReport) void {
+    printExactNamed("symbol-identity", file_path, report);
+}
+
+pub fn printExactPrepass(file_path: []const u8, report: ExactReport) void {
+    printExactNamed("symbol-identity-prepass", file_path, report);
+}
+
+fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport) void {
     std.debug.print(
-        "zntc: symbol-identity {s}: generated_bindings={d} generated_references={d} external={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} ambiguous_ast_parent={d} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} namespace_iife_params={d} namespace_iife_param_mismatch={d} enum_iife_params={d} enum_iife_param_mismatch={d} helper_symbol_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} reference_count_mismatch={d} write_count_mismatch={d} clean={d} legacy_debt_fingerprint={x}\n",
+        "zntc: {s} {s}: generated_bindings={d} generated_references={d} external={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} ambiguous_ast_parent={d} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} namespace_iife_params={d} namespace_iife_param_mismatch={d} enum_iife_params={d} enum_iife_param_mismatch={d} helper_symbol_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} reference_count_mismatch={d} write_count_mismatch={d} clean={d} legacy_debt_fingerprint={x}\n",
         .{
+            name,
             file_path,
             report.generated_bindings,
             report.generated_references,
