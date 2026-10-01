@@ -10,7 +10,8 @@ const import_scanner = @import("../import_scanner.zig");
 const stmt_info_mod = @import("../stmt_info.zig");
 const purity = @import("../purity.zig");
 const profile = @import("../../profile.zig");
-const NodeTag = @import("../../parser/ast.zig").Node.Tag;
+const ast_mod = @import("../../parser/ast.zig");
+const NodeTag = ast_mod.Node.Tag;
 const SemanticSymbol = @import("../../semantic/symbol.zig").Symbol;
 const SemanticSymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
 const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
@@ -20,6 +21,7 @@ const builtin_plugins = @import("../../transformer/plugins/builtin.zig");
 const Span = @import("../../lexer/token.zig").Span;
 const parse_helpers = @import("parse_helpers.zig");
 const injectFlowEnumRuntimeImport = @import("synthetic_imports.zig").injectFlowEnumRuntimeImport;
+const symbol_coverage_env = @import("../../env_flag.zig").Once("ZNTC_DEBUG_SYMBOL_COVERAGE");
 
 const isFlowPath = parse_helpers.isFlowPath;
 const suppressRuntimeHelperInternalUnresolved = parse_helpers.suppressRuntimeHelperInternalUnresolved;
@@ -78,6 +80,117 @@ pub fn shouldRun(
     }
 }
 
+/// A Flow match expression is lowered entirely inside the parsed module body.
+/// For the restricted no-plugin/no-helper case, the transform editor already
+/// carries the exact binding/reference/scope graph and no module metadata needs
+/// to be rescanned. Keep this predicate deliberately narrow: any other Flow
+/// extension, import rewriting, JSX, runtime helper, or semantic-changing
+/// transform continues through the full resync path.
+fn canKeepFlowMatchSemanticGraph(
+    self: anytype,
+    module: *const Module,
+    options: TransformOptions,
+    plugins: anytype,
+) bool {
+    if (module.ast == null or module.semantic == null) return false;
+    const ast = &module.ast.?;
+    if (self.worklet_transform or self.react_refresh or self.styled_components or self.emotion or
+        self.plugins.len != 0 or plugins.len != 0 or options.plugins.len != 0) return false;
+    if (ast.has_jsx or ast.has_decorator or ast.has_ts_namespace_or_enum or
+        ast.has_ts_import_equals or ast.has_ts_export_equals or ast.has_flow_enum_declaration) return false;
+    if (options.jsx_transform or options.unsupported.hasAny() or options.minify_syntax or
+        options.minify_whitespace or options.drop_console or options.drop_debugger or
+        options.drop_labels.len != 0 or options.define.len != 0 or options.module_specifier_map.len != 0 or
+        !options.use_define_for_class_fields or options.experimental_decorators or
+        options.emit_decorator_metadata or options.tla_chunk_wrapped or options.tla_export_decl_deferrable) return false;
+    if (module.uses_top_level_await or module.self_uses_top_level_await) return false;
+
+    var found_flow_match = false;
+    for (ast.nodes.items) |node| {
+        const tag_name = @tagName(node.tag);
+        if (std.mem.startsWith(u8, tag_name, "flow_") and
+            !std.mem.startsWith(u8, tag_name, "flow_match_")) return false;
+        switch (node.tag) {
+            .flow_match_expression => found_flow_match = true,
+            // Array/rest patterns synthesize unbound Array.isArray or
+            // Object.assign references. Those names must be added to module
+            // unresolved metadata before scope hoisting, so keep the current
+            // post-transform analysis fallback for those cases.
+            .flow_match_array_pattern => return false,
+            .flow_match_rest => if (node.data.none == 1) return false,
+            // These constructs can alter the import/export graph or create
+            // dynamic-name environments independently of Flow match lowering.
+            .import_declaration,
+            .export_specifier,
+            .export_all_declaration,
+            .ts_enum_declaration,
+            .ts_module_declaration,
+            .ts_import_equals_declaration,
+            .ts_export_assignment,
+            .ts_namespace_export_declaration,
+            .await_expression,
+            .yield_expression,
+            .with_statement,
+            => return false,
+            .identifier_reference => if (std.mem.eql(u8, ast.getText(node.span), "eval")) return false,
+            else => {},
+        }
+    }
+    return found_flow_match;
+}
+
+fn printFlowMatchPrepassExact(
+    allocator: std.mem.Allocator,
+    module: *const Module,
+    root: @import("../../parser/ast.zig").NodeIndex,
+    parser_node_count: u32,
+    transformer: *const Transformer,
+    unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+) !void {
+    const sem = if (module.semantic) |*value| value else return;
+    const ast = &(module.ast orelse return);
+    const no_namespace_scopes: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const helper_refs = if (module.transform_cache) |cache| cache.helper_ref_nodes else &.{};
+    const coverage = @import("../../transformer/symbol_coverage.zig");
+    const exact = try coverage.checkExactWithNamespaceMetadata(
+        allocator,
+        ast,
+        root,
+        parser_node_count,
+        sem.symbol_ids,
+        sem.symbols.items,
+        sem.scopes,
+        sem.scope_maps,
+        &sem.scope_owner_map,
+        sem.references,
+        helper_refs,
+        &sem.helper_scope_map,
+        unresolved_nodes,
+        &transformer.explicit_global_reference_nodes,
+        &transformer.reference_origin_map,
+        &sem.namespace_member_owners,
+        &no_namespace_scopes,
+    );
+    coverage.printExactPrepass(module.path, exact);
+}
+
+fn collectParserUnresolvedNodes(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    parser_node_count: u32,
+    symbol_ids: []const ?u32,
+    unresolved_references: *const std.StringHashMapUnmanaged(void),
+    unresolved_nodes: *std.AutoHashMapUnmanaged(u32, void),
+) !void {
+    const parser_len = @min(@as(usize, parser_node_count), ast.nodes.items.len);
+    for (ast.nodes.items[0..parser_len], 0..) |node, raw| {
+        if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
+        if (raw >= symbol_ids.len or symbol_ids[raw] != null) continue;
+        if (!unresolved_references.contains(ast.getText(node.span))) continue;
+        try unresolved_nodes.put(allocator, @intCast(raw), {});
+    }
+}
+
 /// transformer pre-pass — graph 단계에서 1회 실행.
 /// 결과: `module.ast` 를 transformer 결과 AST 로 교체, `module.transform_cache` set,
 /// final AST 기준 분석 데이터 refresh.
@@ -131,6 +244,9 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     // 안전. dev mode 모듈도 동일.
     opts.emit_runtime_helper_imports = true;
 
+    const can_keep_flow_match_graph = canKeepFlowMatchSemanticGraph(self, module, opts, merged_plugins);
+    const debug_symbol_coverage = symbol_coverage_env.enabled();
+
     var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
 
     if (module.semantic) |*sem| {
@@ -147,6 +263,23 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         transformer.unresolved_references = &sem.unresolved_references;
     }
     transformer.line_offsets = module.line_offsets;
+
+    var unresolved_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer unresolved_nodes.deinit(arena_alloc);
+    if (debug_symbol_coverage) {
+        if (module.semantic) |*sem| {
+            collectParserUnresolvedNodes(
+                arena_alloc,
+                ast_ptr,
+                parser_node_count,
+                sem.symbol_ids,
+                &sem.unresolved_references,
+                &unresolved_nodes,
+            ) catch return;
+            transformer.synthetic_idents = .empty;
+            transformer.unresolved_reference_nodes = &unresolved_nodes;
+        }
+    }
 
     // #4598: 청크에 위임한 경우, **변환 전** AST 에서 TLA 유무를 확인해 전용 필드에 남긴다.
     // 변환 뒤에 도는 analyzer 로는 알 수 없고(그 변환이 await 를 없앤다), 전역
@@ -232,7 +365,17 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         .ref_deltas = prepass_ref_deltas,
     };
 
-    _ = parser_node_count;
+    // Flow match lowering edits only expression-local syntax. The editor keeps
+    // its exact SymbolId/ScopeId graph; all module-graph-changing constructs
+    // were rejected by canKeepFlowMatchSemanticGraph above. Rebuild statement
+    // facts lazily from the edited graph rather than reanalyzing the module.
+    if (can_keep_flow_match_graph and !transformer.runtime_helpers.hasAny()) {
+        if (debug_symbol_coverage) {
+            printFlowMatchPrepassExact(arena_alloc, module, root, parser_node_count, &transformer, &unresolved_nodes) catch {};
+        }
+        module.prebuilt_stmt_info = null;
+        return;
+    }
 
     resyncAfterAstMutation(self, module, arena_alloc, null) catch {
         self.addDiag(

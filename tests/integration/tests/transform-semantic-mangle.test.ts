@@ -1383,6 +1383,126 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stdout.trim()).toBe('one,two,other');
   });
 
+  test('bundler keeps the edited Flow match graph only for the syntax-local path', async () => {
+    const fixture = await createFixture({
+      'match.mjs': `
+        // @flow
+        const _fallback = 'outer';
+        const _m = 'user-m';
+        const _m2 = 'user-m2';
+        export function classify(value) {
+          return match (value) {
+            { kind: 1, payload: const payload } if (payload > 0) => payload,
+            0 => 'zero',
+            _ => _fallback,
+          };
+        }
+        console.log(classify({ kind: 1, payload: 4 }), classify(0), classify(9), _m, _m2);
+      `,
+      'array-pattern.mjs': `
+        // @flow
+        function classify(value) {
+          return match (value) { [const first] => first, _ => 0 };
+        }
+        console.log(classify([4]));
+      `,
+      'object-rest.mjs': `
+        // @flow
+        function classify(value) {
+          return match (value) { { kind: 1, ...const rest } => Object.keys(rest).length, _ => 0 };
+        }
+        console.log(classify({ kind: 1, extra: true }));
+      `,
+      'typed.mjs': `
+        // @flow
+        function classify(value: number) {
+          return match (value) { 0 => 'zero', _ => value };
+        }
+        console.log(classify(3));
+      `,
+      'with-import.mjs': `
+        // @flow
+        import { base } from './dependency.mjs';
+        function classify(value) {
+          return match (value) { 0 => base, _ => value };
+        }
+        console.log(classify(0));
+      `,
+      'with-eval.mjs': `
+        // @flow
+        function classify(value) {
+          const dynamic = eval('value');
+          return match (dynamic) { 0 => 'zero', _ => dynamic };
+        }
+        console.log(classify(0));
+      `,
+      'dependency.mjs': 'export const base = 5;',
+    });
+    cleanup = fixture.cleanup;
+
+    async function bundle(entry: string, suffix: string, extraArgs: string[] = []) {
+      const output = join(fixture.dir, `${suffix}.mjs`);
+      const result = await runZntc(
+        [
+          '--bundle',
+          join(fixture.dir, entry),
+          '-o',
+          output,
+          '--platform=node',
+          '--format=esm',
+          '--target=esnext',
+          '--flow',
+          '--minify-identifiers',
+          ...extraArgs,
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, `${entry}: ${result.stderr}`).toBe(0);
+      return { output, stderr: result.stderr };
+    }
+
+    const kept = await bundle('match.mjs', 'match-kept');
+    const prepassIdentity = kept.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity-prepass '));
+    expect(prepassIdentity).toBeDefined();
+    expect(prepassIdentity).toMatch(/clean=1(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(prepassIdentity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const emitted = await runNode(kept.output);
+    expect(emitted.stderr).toBe('');
+    expect(emitted.stdout.trim()).toBe('4 zero outer user-m user-m2');
+
+    for (const [entry, suffix, extraArgs] of [
+      ['array-pattern.mjs', 'match-array-fallback', []],
+      ['object-rest.mjs', 'match-object-rest-fallback', []],
+      ['typed.mjs', 'match-typed-fallback', []],
+      ['with-import.mjs', 'match-import-fallback', []],
+      ['with-eval.mjs', 'match-eval-fallback', []],
+      ['match.mjs', 'match-es5-fallback', ['--target=es5']],
+      ['match.mjs', 'match-minify-syntax-fallback', ['--minify-syntax']],
+    ] as const) {
+      const fallback = await bundle(entry, suffix, [...extraArgs]);
+      expect(fallback.stderr, suffix).not.toContain('symbol-identity-prepass');
+      const transformed = await runNode(fallback.output);
+      expect(transformed.stderr, suffix).toBe('');
+      const expected =
+        suffix === 'match-array-fallback'
+          ? '4'
+          : suffix === 'match-object-rest-fallback'
+            ? '1'
+            : suffix === 'match-typed-fallback'
+              ? '3'
+              : suffix === 'match-import-fallback'
+                ? '5'
+                : suffix === 'match-eval-fallback'
+                  ? 'zero'
+                  : '4 zero outer user-m user-m2';
+      expect(transformed.stdout.trim(), suffix).toBe(expected);
+    }
+  });
+
   test('Flow enum bindings and codegen globals keep distinct symbols when mangled', async () => {
     const fixture = await createFixture({
       'input.js': `
