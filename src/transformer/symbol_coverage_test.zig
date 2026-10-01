@@ -738,6 +738,134 @@ test "#4819 runtime helper calls bind isolated import symbols before resync" {
     }
 }
 
+test "#4819 JSX runtime imports bind exact helper symbols before resync" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "const _jsx = 1; const _jsxs = 2; const _Fragment = 3; const _createElement = 4; export function View() { const view = <><A /><B /></>; const fallback = <A {...props} key=\"x\" />; return [view, fallback]; } console.log(_jsx, _jsxs, _Fragment, _createElement);";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".tsx");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    const user_jsx_id = analyzer.scope_maps.items[0].get("_jsx").?;
+    const user_jsxs_id = analyzer.scope_maps.items[0].get("_jsxs").?;
+    const user_fragment_id = analyzer.scope_maps.items[0].get("_Fragment").?;
+    const user_create_element_id = analyzer.scope_maps.items[0].get("_createElement").?;
+    var expected_call_scope: ?u32 = null;
+    var scope_owners = analyzer.scope_owner_map.iterator();
+    while (scope_owners.next()) |entry| {
+        if (parser.ast.nodes.items[entry.key_ptr.*].tag == .function_declaration) expected_call_scope = entry.value_ptr.*;
+    }
+    const function_scope = expected_call_scope orelse return error.MissingJsxFunctionScope;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .jsx_transform = true,
+        .jsx_runtime = .automatic,
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    const cases = [_]struct { local: []const u8, user_id: usize }{
+        .{ .local = transformer.jsx_import_info.jsx_local, .user_id = user_jsx_id },
+        .{ .local = transformer.jsx_import_info.jsxs_local, .user_id = user_jsxs_id },
+        .{ .local = transformer.jsx_import_info.fragment_local, .user_id = user_fragment_id },
+        .{ .local = transformer.jsx_import_info.createElement_local, .user_id = user_create_element_id },
+    };
+    for (cases) |case| {
+        try std.testing.expect(case.local.len > 0);
+        const helper_id = edited.helper_scope_map.get(case.local) orelse return error.MissingJsxHelperSymbol;
+        try std.testing.expect(helper_id != case.user_id);
+        try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, edited.symbols.items[helper_id].kind);
+        var declarations: usize = 0;
+        var reads: usize = 0;
+        for (edited.references) |reference| {
+            if (@intFromEnum(reference.symbol_id) != helper_id) continue;
+            if (reference.flags.declare) {
+                declarations += 1;
+            } else if (reference.flags.read) {
+                reads += 1;
+                try std.testing.expectEqual(function_scope, @intFromEnum(reference.scope_id));
+                const node = transformer.ast.getNode(reference.node_index);
+                try std.testing.expectEqual(@as(?u32, @intCast(helper_id)), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+                try std.testing.expectEqualStrings(case.local, transformer.ast.identifierNameText(node));
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), declarations);
+        try std.testing.expect(reads >= 1);
+        try std.testing.expectEqual(@as(u32, @intCast(reads)), edited.symbols.items[helper_id].reference_count);
+    }
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_runtime_helper_chains.count());
+}
+
+test "#4819 JSX dev runtime call binds its isolated import symbol" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "const _jsxDEV = 1; export function View() { return <A />; } console.log(_jsxDEV);";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".tsx");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    const user_id = analyzer.scope_maps.items[0].get("_jsxDEV").?;
+    var expected_call_scope: ?u32 = null;
+    var scope_owners = analyzer.scope_owner_map.iterator();
+    while (scope_owners.next()) |entry| {
+        if (parser.ast.nodes.items[entry.key_ptr.*].tag == .function_declaration) expected_call_scope = entry.value_ptr.*;
+    }
+    const function_scope = expected_call_scope orelse return error.MissingJsxDevFunctionScope;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .jsx_transform = true,
+        .jsx_runtime = .automatic_dev,
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    const local = transformer.jsx_import_info.jsxDEV_local;
+    const helper_id = edited.helper_scope_map.get(local) orelse return error.MissingJsxDevHelperSymbol;
+    try std.testing.expect(helper_id != user_id);
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, edited.symbols.items[helper_id].kind);
+    var reads: usize = 0;
+    for (edited.references) |reference| {
+        if (@intFromEnum(reference.symbol_id) != helper_id or reference.flags.declare) continue;
+        try std.testing.expect(reference.flags.read);
+        try std.testing.expectEqual(function_scope, @intFromEnum(reference.scope_id));
+        const node = transformer.ast.getNode(reference.node_index);
+        try std.testing.expectEqual(@as(?u32, @intCast(helper_id)), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+        try std.testing.expectEqualStrings(local, transformer.ast.identifierNameText(node));
+        reads += 1;
+    }
+    try std.testing.expectEqual(@as(u32, @intCast(reads)), edited.symbols.items[helper_id].reference_count);
+    try std.testing.expect(reads >= 1);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_runtime_helper_chains.count());
+}
+
 test "#4819 optional catch binding gets a symbol in its catch scope" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
