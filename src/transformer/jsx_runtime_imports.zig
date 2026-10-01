@@ -1,14 +1,8 @@
 //! JSX automatic runtime import 를 transformer finalize 단계에 정식 AST 노드로 추가 (#3062).
 //!
-//! 기존 `JsxImportInfo.buildImportString` 은 string 으로 import 를 만들어
-//! `transpile.zig::prependImportLine` 으로 output 에 합쳐버리는 single-file 경로 전용이었다.
-//! bundle 흐름은 이 string 을 사용 못 해서, parser_metadata 가 `synthetic ImportRecord +
-//! ImportBinding` 을 별도 inject 하는 우회 경로를 만들었다. 우회 경로는 linker / mangler /
-//! emitter 곳곳에 `isSynthetic` 분기를 남겼다.
-//!
-//! 본 모듈은 transformer 안에서 JSX runtime import 를 정식 import_declaration 노드로 만들어
-//! program body 에 prepend 한다. 이후 graph resync 단계의 import_scanner / binding_scanner 가
-//! 일반 import 처럼 detect → 다운스트림에 synthetic 분기 없이 처리된다.
+//! 본 모듈은 standalone 과 bundler 양쪽에서 transformer 안에 JSX runtime import 를 정식
+//! import_declaration 노드로 만들어 program body 에 prepend 한다. 이후 semantic edit 와
+//! graph resync 가 일반 import binding 처럼 처리한다.
 //! `runtime_helper_imports.zig` 가 사용하는 패턴과 의도적으로 동일 구조.
 //!
 //! `#2869` helper marker (helper_scope_map 격리) 도 함께 적용 (#3068). 사용자가
@@ -30,8 +24,8 @@ const Pair = struct { imported: []const u8, local: []const u8 };
 /// `info` 가 어떤 helper 가 사용됐는지 추적. `import_source` 는 옵션의 jsx-import-source
 /// (예: "react", "preact"). `is_dev` 가 true 면 `/jsx-dev-runtime` 사용.
 ///
-/// 호출 위치: `transformer/transformer/driver.zig::transform` 의 finalize 단계 — runtime
-/// helper import 와 같은 분기 (`emit_runtime_helper_imports`) 안에서.
+/// 호출 위치: `transformer/transformer/driver.zig::transform` 의 finalize 단계 — bundler 의
+/// runtime helper import 옵션 또는 standalone 전용 JSX import 옵션에서 활성화.
 pub fn appendJsxRuntimeImports(
     self: anytype,
     info: JsxImportInfo,

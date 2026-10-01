@@ -866,6 +866,65 @@ test "#4819 JSX dev runtime call binds its isolated import symbol" {
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_runtime_helper_chains.count());
 }
 
+test "#4819 standalone JSX imports bind exact symbols without bundler helper imports" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "const _jsx = 'user'; export function View() { return <A />; } console.log(_jsx);";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".tsx");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const user_id = analyzer.scope_maps.items[0].get("_jsx").?;
+    var function_scope: ?u32 = null;
+    var scope_owners = analyzer.scope_owner_map.iterator();
+    while (scope_owners.next()) |entry| {
+        if (parser.ast.nodes.items[entry.key_ptr.*].tag == .function_declaration) function_scope = entry.value_ptr.*;
+    }
+    const expected_function_scope = function_scope orelse return error.MissingStandaloneJsxFunctionScope;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .jsx_transform = true,
+        .jsx_runtime = .automatic,
+        .emit_jsx_runtime_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    const local = transformer.jsx_import_info.jsx_local;
+    try std.testing.expectEqualStrings("_jsx2", local);
+    const helper_id = edited.helper_scope_map.get(local) orelse return error.MissingStandaloneJsxHelperSymbol;
+    try std.testing.expect(helper_id != user_id);
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, edited.symbols.items[helper_id].kind);
+    var declarations: usize = 0;
+    var reads: usize = 0;
+    for (edited.references) |reference| {
+        if (@intFromEnum(reference.symbol_id) != helper_id) continue;
+        if (reference.flags.declare) {
+            declarations += 1;
+        } else if (reference.flags.read) {
+            reads += 1;
+            try std.testing.expectEqual(expected_function_scope, @intFromEnum(reference.scope_id));
+            try std.testing.expectEqual(@as(?u32, @intCast(helper_id)), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), declarations);
+    try std.testing.expectEqual(@as(usize, 1), reads);
+    try std.testing.expectEqual(@as(u32, @intCast(reads)), edited.symbols.items[helper_id].reference_count);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_runtime_helper_chains.count());
+}
+
 test "#4819 optional catch binding gets a symbol in its catch scope" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

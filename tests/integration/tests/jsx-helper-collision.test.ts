@@ -31,6 +31,11 @@ export const users = [_jsx(), _jsxs(), _jsxDEV(), _Fragment(), _createElement()]
       const result = await runZntcInDir(fx.dir, ['app.tsx', '-o', out, `--jsx=${mode}`]);
       expect(result.exitCode).toBe(0);
       const code = await readFile(out, 'utf8');
+      const runtimeModule = mode === 'automatic' ? 'react/jsx-runtime' : 'react/jsx-dev-runtime';
+      // standalone JSX imports now come from the edited AST; the legacy string prefix must
+      // not duplicate either generated import, including the createElement spread fallback.
+      expect([...code.matchAll(new RegExp(`from "${runtimeModule}"`, 'g'))]).toHaveLength(1);
+      expect([...code.matchAll(/from "react"/g)]).toHaveLength(1);
       const imports =
         mode === 'automatic'
           ? ['jsx', 'jsxs', 'Fragment', 'createElement']

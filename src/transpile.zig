@@ -1496,6 +1496,8 @@ fn transpileWithCallbackInternal(
         .unsupported = options.unsupported,
         // JSX lowering: JSX가 있는 모듈에서만 활성화
         .jsx_transform = parser.ast.has_jsx,
+        // standalone JSX import 도 AST binding 으로 만들어 semantic edit 에 연결한다.
+        .emit_jsx_runtime_imports = parser.ast.has_jsx,
         .jsx_runtime = options.jsx_runtime,
         .jsx_factory = options.jsx_factory,
         .jsx_fragment = options.jsx_fragment,
@@ -1747,14 +1749,7 @@ fn transpileWithCallbackInternal(
     const raw_output = cg.generate(root) catch return error.CodegenError;
     mem_profile.snap(&arena, "generate");
 
-    // 6.5. JSX import prepend (transformer가 JSX lowering 수행한 경우).
-    // transformer.options 는 per-file pragma (#D026) 가 적용된 effective 설정 — 원본
-    // `options.jsx_*` 가 아니라 이쪽을 써야 `@jsxImportSource` / `@jsxRuntime` 가 반영된다.
-    const jsx_import_str: ?[]const u8 = if (transformer.jsx_import_info.hasImports()) blk: {
-        const is_dev = transformer.options.jsx_runtime == .automatic_dev;
-        break :blk transformer.jsx_import_info.buildImportString(arena_alloc, transformer.options.jsx_import_source, is_dev);
-    } else null;
-    const jsx_output = prependImportLine(arena_alloc, jsx_import_str, raw_output);
+    // JSX runtime import 는 위 transformer finalize 단계에서 semantic ID 가 붙은 AST 노드로 생성.
 
     // 6.6. styled-components cssProp auto-inject — 사용자 코드에 styled import 가 없는데
     // cssProp transform 이 일어난 경우 program 시작에 styled import 추가. binding 이름은
@@ -1763,7 +1758,7 @@ fn transpileWithCallbackInternal(
         const name = transformer.plugins.styled_components.css_prop_inject_name;
         break :blk std.fmt.allocPrint(arena_alloc, "import {s} from \"styled-components\";\n", .{name}) catch null;
     } else null;
-    const css_prop_output = prependImportLine(arena_alloc, css_prop_import, jsx_output);
+    const css_prop_output = prependImportLine(arena_alloc, css_prop_import, raw_output);
 
     // 7. 런타임 헬퍼 prepend
     const rh = transformer.runtime_helpers;

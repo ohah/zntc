@@ -131,13 +131,11 @@ pub fn transform(self: anytype) Error!NodeIndex {
     }
 
     // #3062: JSX automatic runtime import 를 정식 AST 노드로 추가.
-    // 기존엔 `JsxImportInfo.buildImportString` 으로 만든 string 을 `transpile.zig`
-    // 가 출력 앞에 prepend 하던 single-file 경로뿐이라, bundle 흐름은 별도 synthetic
-    // ImportRecord/Binding 우회 경로 (parser_metadata) 를 사용했다. transformer 가
-    // 정식 AST 노드를 만들면 bundle 의 resync 도 일반 import 로 처리한다.
-    // 동일 게이트 (`emit_runtime_helper_imports`) — bundle pre-pass 만 true, emitter
-    // in-place transform 호출은 false 유지.
-    if (self.options.emit_runtime_helper_imports and !root.isNone() and
+    // standalone 과 bundler 가 같은 AST import 경로를 사용해 semantic/linker 단계에서
+    // import binding 과 JSX call reference 를 하나의 symbol 로 추적한다.
+    // Bundler pre-pass 는 runtime helper import 옵션을, standalone transpile 은 별도
+    // JSX 옵션을 사용한다. emitter 의 in-place transform 호출에서는 둘 다 false다.
+    if ((self.options.emit_runtime_helper_imports or self.options.emit_jsx_runtime_imports) and !root.isNone() and
         self.jsx_import_info.hasImports() and self.options.jsx_runtime != .classic)
     {
         const jsx_runtime_imports = @import("../jsx_runtime_imports.zig");
