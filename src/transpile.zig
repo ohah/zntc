@@ -532,15 +532,20 @@ fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
 }
 
 /// The transform semantic editor carries identifier IDs, references, and output
-/// scopes through the downlevel passes used by strict JavaScript scripts. Keep
-/// paths that can replace or reinterpret declarations outside this graph on the
-/// post-transform analyzer until their semantic edits are complete.
+/// scopes through the downlevel passes used by JavaScript and type-erased TS. Keep
+/// runtime-generating TS syntax outside this graph until its semantic edits are
+/// complete; those paths use the post-transform analyzer.
 fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Parser) bool {
     if (!options.minify_identifiers or
         options.experimental_decorators or options.emit_decorator_metadata or
         options.react_refresh or options.react_refresh_hook_signatures or
-        parser.source_mode != .js_strict or
         parser.is_flow) return false;
+
+    if (parser.source_mode == .ts) {
+        const facts = collectAstFacts(&parser.ast);
+        return !facts.has_runtime_sensitive_syntax and !parser.ast.has_jsx;
+    }
+    if (parser.source_mode != .js_strict) return false;
     return true;
 }
 
@@ -1900,6 +1905,33 @@ test "#4819 class lowering reuses transform semantic graph" {
         .minify_identifiers = true,
         .unsupported = TransformOptions.compat.fromESTarget(.es5),
     }, &parser));
+}
+
+test "#4819 type-erased TypeScript reuses transform semantic graph" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "type Alias = number; interface Shape { amount: Alias } const value: Alias = 1;");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    const minify: TranspileOptions = .{ .minify_identifiers = true };
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
+
+    const runtime_sources = [_][]const u8{
+        "enum Color { Red }",
+        "namespace N { export const value = 1 }",
+        "class Box { value = 1 }",
+        "using resource = openResource();",
+        "const view = <div />;",
+    };
+    for (runtime_sources) |source| {
+        var runtime_scanner = try Scanner.init(allocator, source);
+        var runtime_parser = Parser.init(allocator, &runtime_scanner);
+        runtime_parser.configureFromExtension(if (std.mem.indexOf(u8, source, "<div") != null) ".tsx" else ".ts");
+        _ = try runtime_parser.parse();
+        try std.testing.expect(!canMangleWithTransformSemantic(minify, &runtime_parser));
+    }
 }
 
 /// fast 와 full 양쪽 경로의 출력이 expected 와 일치하는지 검증. parity 만으로는
