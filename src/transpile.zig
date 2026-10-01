@@ -161,10 +161,10 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
 
             .private_identifier,
             .private_field_expression,
+            .accessor_property,
             => facts.has_runtime_sensitive_syntax = true,
 
             .decorator,
-            .accessor_property,
             .ts_enum_declaration,
             .ts_module_declaration,
             .ts_import_equals_declaration,
@@ -1977,7 +1977,6 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     const runtime_sources = [_][]const u8{
         "enum Color { Red }",
         "namespace N { export const value = 1 }",
-        "class Box { accessor value = 1 }",
         "using resource = openResource();",
         "const view = <div />;",
     };
@@ -2028,6 +2027,19 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     _ = try private_class_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), private_class_parser.errors.items.len);
     try std.testing.expect(canMangleWithTransformSemantic(minify, &private_class_parser));
+
+    var accessor_scanner = try Scanner.init(
+        allocator,
+        "function make(value: number) { const outer = value + 1; return class Generated { " ++
+            "accessor value = outer; static accessor count = 0; " ++
+            "constructor(delta: number) { this.value += delta; Generated.count++; } " ++
+            "}; }",
+    );
+    var accessor_parser = Parser.init(allocator, &accessor_scanner);
+    accessor_parser.configureFromExtension(".ts");
+    _ = try accessor_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), accessor_parser.errors.items.len);
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &accessor_parser));
 }
 
 test "#4819 type-erased Flow reuses transform semantic graph only without runtime lowering" {
