@@ -258,6 +258,9 @@ pub const Transformer = struct {
     /// 합성 이름 → 이 모듈에서 실제로 쓰는 이름 (`resolveSyntheticName`). 사용자 코드에 같은 이름이
     /// 있으면 `_this2` 처럼 비껴 간다. 같은 기본 이름은 모듈 안에서 늘 같은 결과라 바인딩과 참조가 맞는다.
     synthetic_names: std.StringHashMapUnmanaged([]const u8) = .empty,
+    /// Standalone runtime helpers share the output's top-level scope with user
+    /// declarations. Cache collision-free helper locals by their emitted name.
+    runtime_helper_aliases: std.StringHashMapUnmanaged([]const u8) = .empty,
     /// 이미 쓴 합성 결과 이름 — 서로 다른 합성 이름이 같은 결과로 겹치지 않게 (`_loop`→`_loop2` 와 두 번째 루프의 `_loop2`).
     synthetic_taken: std.StringHashMapUnmanaged(void) = .empty,
     /// 합성 생성 함수가 만든 식별자 노드 — 심볼 누락 검사기(`symbol_coverage`)가 켜졌을 때만 기록한다

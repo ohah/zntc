@@ -16,6 +16,8 @@ const Ast = ast_mod.Ast;
 const ast_walk = @import("parser/ast_walk.zig");
 const SemanticAnalyzer = @import("semantic/mod.zig").SemanticAnalyzer;
 const Transformer = @import("transformer/transformer.zig").Transformer;
+const es_helpers = @import("transformer/es_helpers.zig");
+const runtime_helper_names = @import("runtime_helper_names.zig");
 const TransformOptions = @import("transformer/transformer.zig").TransformOptions;
 const BindingLite = @import("transformer/transformer.zig").BindingLite;
 const Codegen = @import("codegen/codegen.zig").Codegen;
@@ -1242,6 +1244,44 @@ fn markBindingLiteValueUsesNode(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *
     return false;
 }
 
+/// Rewrite only identifier tokens in the standalone helper preamble. A byte
+/// replacement would also alter strings, comments, or regular expressions.
+fn rewriteRuntimeHelperPreamble(
+    allocator: std.mem.Allocator,
+    transformer: *Transformer,
+    preamble: []const u8,
+    minify: bool,
+) TranspileError![]const u8 {
+    var scanner = Scanner.init(allocator, preamble) catch return error.OutOfMemory;
+    defer scanner.deinit();
+
+    var output: std.ArrayList(u8) = .empty;
+    var copied_until: usize = 0;
+    var changed = false;
+    scanner.next() catch return error.OutOfMemory;
+    while (scanner.token.kind != .eof) {
+        const token = scanner.token;
+        if (token.kind == .identifier) {
+            const start: usize = token.span.start;
+            const end: usize = token.span.end;
+            const name = preamble[start..end];
+            if (runtime_helper_names.isRuntimeHelperLocalName(name, minify)) {
+                const resolved = es_helpers.resolveRuntimeHelperName(transformer, name) catch return error.OutOfMemory;
+                if (!std.mem.eql(u8, name, resolved)) {
+                    try output.appendSlice(allocator, preamble[copied_until..start]);
+                    try output.appendSlice(allocator, resolved);
+                    copied_until = end;
+                    changed = true;
+                }
+            }
+        }
+        scanner.next() catch return error.OutOfMemory;
+    }
+    if (!changed) return preamble;
+    try output.appendSlice(allocator, preamble[copied_until..]);
+    return output.items;
+}
+
 /// 소스 문자열을 트랜스파일한다. I/O 없음, 순수 함수.
 ///
 /// file_path는 확장자 감지용으로만 사용 (실제 파일 읽기 안 함).
@@ -1730,8 +1770,16 @@ fn transpileWithCallbackInternal(
         var buf: std.ArrayList(u8) = .empty;
         rt.appendRuntimeHelpers(&buf, arena_alloc, rh, options.minify_whitespace, transformer.runtime_es5_compat) catch
             break :blk css_prop_output;
-        buf.appendSlice(arena_alloc, css_prop_output) catch break :blk css_prop_output;
-        break :blk buf.items;
+        const helper_preamble = rewriteRuntimeHelperPreamble(
+            arena_alloc,
+            &transformer,
+            buf.items,
+            options.minify_whitespace,
+        ) catch break :blk css_prop_output;
+        var combined: std.ArrayList(u8) = .empty;
+        combined.appendSlice(arena_alloc, helper_preamble) catch break :blk css_prop_output;
+        combined.appendSlice(arena_alloc, css_prop_output) catch break :blk css_prop_output;
+        break :blk combined.items;
     } else css_prop_output;
 
     // 8. Sentry Debug ID (UUID v4) — sourcemap_debug_ids 활성화 시 생성
