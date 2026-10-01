@@ -733,7 +733,9 @@ fn emitNamespaceExport(self: anytype, ns_name: []const u8, decl_idx: NodeIndex) 
                 try self.writeByte('.');
                 try self.write(fn_name);
                 try self.writeByte('=');
-                try self.write(fn_name);
+                // The namespace property keeps the source export name, while
+                // the local binding may have a SymbolId-based linker rename.
+                try self.emitNode(name_idx);
                 try self.writeByte(';');
             }
         },
@@ -755,7 +757,9 @@ fn emitNamespaceBindingExport(self: anytype, ns_name: []const u8, name_idx: Node
             try self.writeByte('.');
             try self.write(var_name);
             try self.writeByte('=');
-            try self.write(var_name);
+            // Export keys are public source names; local values must follow
+            // the binding's SymbolId rename just like ordinary references.
+            try self.emitNode(name_idx);
             try self.writeByte(';');
         },
         .array_pattern => {
