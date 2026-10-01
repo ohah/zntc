@@ -1585,7 +1585,7 @@ fn transpileWithCallbackInternal(
     if (synthetic_coverage_env.enabled()) {
         if (analyzer_storage) |*analyzer| {
             const coverage = @import("transformer/symbol_coverage.zig");
-            var report = coverage.checkStrict(
+            var report = coverage.checkStrictWithExactExternalEvidence(
                 arena_alloc,
                 transformer.ast,
                 root,
@@ -1596,7 +1596,11 @@ fn transpileWithCallbackInternal(
                 &analyzer.scope_owner_map,
                 analyzer.references.items,
                 if (transformer.synthetic_idents) |*s| s else null,
-                &analyzer.unresolved_references,
+                .{
+                    .unresolved_reference_nodes = &analyzer.unresolved_reference_nodes,
+                    .explicit_global_reference_nodes = &transformer.explicit_global_reference_nodes,
+                    .reference_origin_map = &transformer.reference_origin_map,
+                },
             ) catch return error.OutOfMemory;
             coverage.printStrict(file_path, &report);
         }

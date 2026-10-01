@@ -1565,6 +1565,81 @@ test "strict inventory does not infer generated global identity from spelling" {
     try std.testing.expectEqual(@intFromEnum(binding), report.findings.items[0].node);
 }
 
+test "strict exact external references require matching NodeIndex provenance" {
+    const allocator = std.testing.allocator;
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const object_name = try ast.addString("Object");
+    const window_name = try ast.addString("Window");
+    const missing_name = try ast.addString("MissingGlobal");
+    const source_ref = try ast.addNode(.{ .tag = .identifier_reference, .span = object_name, .data = .{ .string_ref = object_name } });
+    const copied_external = try ast.addNode(.{ .tag = .identifier_reference, .span = object_name, .data = .{ .string_ref = object_name } });
+    const explicit_global = try ast.addNode(.{ .tag = .identifier_reference, .span = window_name, .data = .{ .string_ref = window_name } });
+    const mismatched_origin = try ast.addNode(.{ .tag = .identifier_reference, .span = window_name, .data = .{ .string_ref = window_name } });
+    const no_origin = try ast.addNode(.{ .tag = .identifier_reference, .span = missing_name, .data = .{ .string_ref = missing_name } });
+    const parser_node_count = @intFromEnum(copied_external);
+    const exact_root = try ast.addListNode(.program, object_name, try ast.addNodeList(&.{ copied_external, explicit_global }));
+    const mixed_root = try ast.addListNode(.program, object_name, try ast.addNodeList(&.{ copied_external, explicit_global, mismatched_origin, no_origin }));
+
+    const global_scope: ScopeId = @enumFromInt(0);
+    const scopes = [_]Scope{.{ .parent = .none, .kind = .global, .is_strict = false }};
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer owners.deinit(allocator);
+    try owners.put(allocator, @intFromEnum(exact_root), @intFromEnum(global_scope));
+    try owners.put(allocator, @intFromEnum(mixed_root), @intFromEnum(global_scope));
+    var unresolved_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer unresolved_nodes.deinit(allocator);
+    try unresolved_nodes.put(allocator, @intFromEnum(source_ref), {});
+    var explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer explicit_globals.deinit(allocator);
+    try explicit_globals.put(allocator, @intFromEnum(explicit_global), {});
+    var origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer origins.deinit(allocator);
+    try origins.put(allocator, @intFromEnum(copied_external), @intFromEnum(source_ref));
+    try origins.put(allocator, @intFromEnum(mismatched_origin), @intFromEnum(source_ref));
+    const evidence: coverage.StrictExternalEvidence = .{
+        .unresolved_reference_nodes = &unresolved_nodes,
+        .explicit_global_reference_nodes = &explicit_globals,
+        .reference_origin_map = &origins,
+    };
+
+    var exact = try coverage.checkStrictWithExactExternalEvidence(
+        allocator,
+        &ast,
+        exact_root,
+        parser_node_count,
+        &.{},
+        &.{},
+        &scopes,
+        &owners,
+        &.{},
+        null,
+        evidence,
+    );
+    defer exact.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), exact.counts[@intFromEnum(coverage.StrictStatus.external)]);
+    try std.testing.expectEqual(@as(usize, 0), exact.counts[@intFromEnum(coverage.StrictStatus.unclassified)]);
+    try std.testing.expect(exact.hasCompleteExactCoverage());
+
+    var mixed = try coverage.checkStrictWithExactExternalEvidence(
+        allocator,
+        &ast,
+        mixed_root,
+        parser_node_count,
+        &.{},
+        &.{},
+        &scopes,
+        &owners,
+        &.{},
+        null,
+        evidence,
+    );
+    defer mixed.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), mixed.counts[@intFromEnum(coverage.StrictStatus.external)]);
+    try std.testing.expectEqual(@as(usize, 2), mixed.counts[@intFromEnum(coverage.StrictStatus.unclassified)]);
+    try std.testing.expect(!mixed.hasCompleteExactCoverage());
+}
+
 test "strict inventory reports generated symbols with no reachable binding" {
     const allocator = std.testing.allocator;
     var ast = Ast.init(allocator, "");
