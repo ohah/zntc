@@ -45,9 +45,6 @@ fn emitEnumIIFEInner(self: anytype, node: Node, namespace_param: ?[]const u8) !v
     // 1차 패스에서 needs_rename도 같이 판별 (별도 순회 불필요)
     var needs_rename = false;
 
-    // TS 식별자는 실전에서 256자를 넘지 않음
-    var param_buf: [256]u8 = undefined;
-
     // 1차 패스: 멤버 값 수집 + needs_rename 판별 (출력 전에 실행)
     {
         var auto_value: i64 = 0;
@@ -107,11 +104,21 @@ fn emitEnumIIFEInner(self: anytype, node: Node, namespace_param: ?[]const u8) !v
         }
     }
 
+    var owned_param: ?[]u8 = null;
+    defer if (owned_param) |param| std.heap.page_allocator.free(param);
     const param_name = if (needs_rename) blk: {
-        const len = @min(name_text.len + 1, param_buf.len);
-        param_buf[0] = '_';
-        @memcpy(param_buf[1..len], name_text[0 .. len - 1]);
-        break :blk param_buf[0..len];
+        var suffix: u32 = 0;
+        while (true) : (suffix += 1) {
+            const candidate = if (suffix == 0)
+                try std.fmt.allocPrint(std.heap.page_allocator, "_{s}", .{name_text})
+            else
+                try std.fmt.allocPrint(std.heap.page_allocator, "_{s}{d}", .{ name_text, suffix });
+            if (!generatedIifeParamReserved(self, candidate, null)) {
+                owned_param = candidate;
+                break :blk candidate;
+            }
+            std.heap.page_allocator.free(candidate);
+        }
     } else name_text;
 
     // var Color = /* @__PURE__ */ ((Color) => { ...; return Color; })(Color || {});
@@ -452,14 +459,15 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, placement: NamespacePlaceme
     var owned_param: ?[]u8 = null;
     defer if (owned_param) |p| std.heap.page_allocator.free(p);
     var param_name = name_text;
-    if (ns_export_map.contains(name_text) or namespaceParameterReserved(self, name_text, true, name_idx, body_idx)) {
+    const namespace_param_context = NamespaceParamContext{ .name_idx = name_idx, .body_idx = body_idx };
+    if (ns_export_map.contains(name_text) or generatedIifeParamReserved(self, name_text, namespace_param_context)) {
         var suffix: u32 = 0;
         while (true) : (suffix += 1) {
             const candidate = if (suffix == 0)
                 try std.fmt.allocPrint(std.heap.page_allocator, "_{s}", .{name_text})
             else
                 try std.fmt.allocPrint(std.heap.page_allocator, "_{s}{d}", .{ name_text, suffix });
-            if (!namespaceParameterReserved(self, candidate, false, name_idx, body_idx)) {
+            if (!generatedIifeParamReserved(self, candidate, null)) {
                 owned_param = candidate;
                 param_name = candidate;
                 break;
@@ -835,12 +843,15 @@ fn isDestructuringTempBinding(self: anytype, idx: NodeIndex) bool {
     return false;
 }
 
-fn namespaceParameterReserved(
+const NamespaceParamContext = struct {
+    name_idx: NodeIndex,
+    body_idx: NodeIndex,
+};
+
+fn generatedIifeParamReserved(
     self: anytype,
     candidate: []const u8,
-    original: bool,
-    namespace_name_idx: NodeIndex,
-    namespace_body_idx: NodeIndex,
+    namespace_context: ?NamespaceParamContext,
 ) bool {
     var frame = self.ns_frame;
     while (frame) |active| : (frame = active.parent) {
@@ -860,20 +871,21 @@ fn namespaceParameterReserved(
             => true,
             .identifier_reference,
             .assignment_target_identifier,
-            => !original,
+            => namespace_context == null,
             else => false,
         };
         if (!relevant) continue;
         if (!std.mem.eql(u8, self.ast.identifierNameText(node), candidate)) continue;
-        if (original and node.tag == .binding_identifier) {
+        if (namespace_context) |context| {
+            if (node.tag != .binding_identifier) return true;
             const binding_idx: NodeIndex = @enumFromInt(ni);
-            if (binding_idx == namespace_name_idx) continue;
+            if (binding_idx == context.name_idx) continue;
             // Separate merged declarations get separate IIFEs, so their
             // namespace names do not share this parameter's lexical scope.
             // Direct nested declarations do share the body scope and must
             // still reserve the spelling.
             if (isNamespaceDeclarationName(self, binding_idx) and
-                !isDirectNamespaceNameInBody(self, namespace_body_idx, binding_idx))
+                !isDirectNamespaceNameInBody(self, context.body_idx, binding_idx))
             {
                 continue;
             }

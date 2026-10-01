@@ -59,6 +59,12 @@ namespace N {
 }
 console.log(JSON.stringify([N.E.A, N.read()]));
 `,
+  'enum IIFE parameter does not capture a source initializer': `
+const _E = 7;
+const _E1 = 11;
+enum E { E = _E1 }
+console.log(JSON.stringify([_E, E.E]));
+`,
   'dotted namespace and generated-name collisions': `
 namespace A.B {
   export let A = 1;
