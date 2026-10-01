@@ -468,6 +468,10 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     //    (#4220) 로 충돌 회피가 이미 들어가 있고 리네이머와도 정합적이다.
     const tla_name = try es_helpers.makeTempVarSpan(self);
     const tla_binding = try es_helpers.makeSyntheticBinding(self, tla_name);
+    // The wrapper result is a real module-local variable. Give it identity
+    // before visiting the declaration so later transforms and name assignment
+    // do not need to recover it from the generated temp's spelling.
+    if (self.semantic_edit_enabled) _ = try self.declareSyntheticVar(tla_binding, node.span);
     const tla_declarator = try es_helpers.makeDeclarator(self, tla_binding, call, node.span);
     const iife_stmt = try es_helpers.makeVarDeclaration(self, &.{tla_declarator}, .@"var", node.span);
 
