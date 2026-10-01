@@ -431,4 +431,153 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     const transformed = await runNode(output);
     expect(transformed.stdout).toBe('div 3 99,100 99 100');
   });
+
+  test('CommonJS codegen globals do not capture minified source bindings', async () => {
+    const fixture = await createFixture({
+      'dependency.cjs': `
+        exports.value = 8;
+        exports.other = 10;
+      `,
+      'input.mjs': `
+        import { value as _value } from './dependency.cjs';
+        const require = 5;
+        const module = 6;
+        const exports = 7;
+        const Object = 9;
+        const __filename = 11;
+        const __dirname = 13;
+        function collect(values) {
+          const readers = [];
+          for (let index = 0; index < values.length; index++) {
+            let _a = index;
+            readers.push(() => _a + _value);
+          }
+          return readers.map((read) => read()).join(',');
+        }
+        export const result = _value + require + module + exports + Object + __filename + __dirname;
+        export * from './dependency.cjs';
+        export default result;
+        console.log(result, _value, require, module, exports, Object, __filename, __dirname, collect([1, 2]), import.meta.url.startsWith('file:'));
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.mjs');
+    const output = join(fixture.dir, 'output.cjs');
+    const result = await runZntc(
+      [
+        input,
+        '-o',
+        output,
+        '--format=cjs',
+        '--platform=node',
+        '--target=es5',
+        '--minify-identifiers',
+        '--minify-syntax',
+      ],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+    const identity = result.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity '));
+    expect(identity).toBeDefined();
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const native = await runNode(input);
+    const transformed = await runNode(output);
+    expect(native.stdout).toBe('59 8 5 6 7 9 11 13 8,9 true');
+    expect(transformed.stdout).toBe(native.stdout);
+  });
+
+  test('CommonJS class lowering keeps generated Object global under a source shadow', async () => {
+    const fixture = await createFixture({
+      'input.mjs': `
+        const Object = 9;
+        class Base {
+          set value(value) { this.stored = value; }
+        }
+        class Box extends Base {
+          value = 3;
+          read() { return this.stored; }
+        }
+        console.log(new Box().read(), Object);
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.mjs');
+    const output = join(fixture.dir, 'output.cjs');
+    const result = await runZntc(
+      [
+        input,
+        '-o',
+        output,
+        '--format=cjs',
+        '--platform=node',
+        '--target=es5',
+        '--use-define-for-class-fields=false',
+        '--minify-identifiers',
+      ],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    expect(result.exitCode, result.stderr).toBe(0);
+    // This audit runs before final names are assigned. It reports the two deliberate
+    // transform-generated Object globals as shadowed, while the CJS reservation makes
+    // the source binding take another name before codegen.
+    expect(result.stderr).toMatch(/symbol-coverage .*missing=2 wrong=0/);
+    expect(result.stderr).toContain('missing Object(identifier_reference) x2');
+    const identity = result.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity '));
+    expect(identity).toBeDefined();
+    expect(identity).toMatch(/shadowed_external_reference=2(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS.filter(
+      (name) => name !== 'shadowed_external_reference',
+    )) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const emitted = readFileSync(output, 'utf8');
+    expect(emitted).toContain('Object.setPrototypeOf');
+    expect(emitted).not.toMatch(/\bvar Object\s*=/);
+    const transformed = await runNode(output);
+    expect(transformed.stdout).toBe('3 9');
+  });
+
+  test('CommonJS script mangling preserves direct eval and with lookup names', async () => {
+    const fixture = await createFixture({
+      'input.cjs': `
+        const value = 'outer';
+        function read(object) {
+          const local = 'lexical';
+          const viaEval = eval('local');
+          with (object) {
+            return viaEval + ':' + value + ':' + dynamic;
+          }
+        }
+        console.log(read({ value: 'object', dynamic: 'with' }));
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.cjs');
+    const output = join(fixture.dir, 'output.cjs');
+    const result = await runZntc([input, '-o', output, '--format=cjs', '--minify-identifiers'], {
+      env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+    });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+    const identity = result.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity '));
+    expect(identity).toBeDefined();
+    // `dynamic` intentionally has no stable SymbolId inside `with`.
+    expect(identity).toMatch(/unclassified_reference=1(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS.filter((name) => name !== 'unclassified_reference')) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const native = await runNode(input);
+    const transformed = await runNode(output);
+    expect(native.stdout).toBe('lexical:object:with');
+    expect(transformed.stdout).toBe(native.stdout);
+  });
 });
