@@ -460,14 +460,14 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
     var owned_param: ?[]u8 = null;
     defer if (owned_param) |p| std.heap.page_allocator.free(p);
     var param_name = name_text;
-    if (ns_export_map.contains(name_text) or namespaceParameterReserved(self, name_text, true)) {
+    if (ns_export_map.contains(name_text) or namespaceParameterReserved(self, name_text, true, name_idx)) {
         var suffix: u32 = 0;
         while (true) : (suffix += 1) {
             const candidate = if (suffix == 0)
                 try std.fmt.allocPrint(std.heap.page_allocator, "_{s}", .{name_text})
             else
                 try std.fmt.allocPrint(std.heap.page_allocator, "_{s}{d}", .{ name_text, suffix });
-            if (!namespaceParameterReserved(self, candidate, false)) {
+            if (!namespaceParameterReserved(self, candidate, false, name_idx)) {
                 owned_param = candidate;
                 param_name = candidate;
                 break;
@@ -827,7 +827,7 @@ fn isDestructuringTempBinding(self: anytype, idx: NodeIndex) bool {
     return false;
 }
 
-fn namespaceParameterReserved(self: anytype, candidate: []const u8, original: bool) bool {
+fn namespaceParameterReserved(self: anytype, candidate: []const u8, original: bool, namespace_name_idx: NodeIndex) bool {
     var frame = self.ns_frame;
     while (frame) |active| : (frame = active.parent) {
         if (std.mem.eql(u8, active.prefix, candidate)) return true;
@@ -853,15 +853,8 @@ fn namespaceParameterReserved(self: anytype, candidate: []const u8, original: bo
         if (!std.mem.eql(u8, self.ast.identifierNameText(node), candidate)) continue;
         // A namespace declaration's own name is the outer object. The IIFE
         // parameter may reuse it; nested source bindings may not.
-        if (original and node.tag == .binding_identifier) {
-            var is_namespace_name = false;
-            for (self.ast.nodes.items) |owner| {
-                if (owner.tag == .ts_module_declaration and @intFromEnum(owner.data.binary.left) == ni) {
-                    is_namespace_name = true;
-                    break;
-                }
-            }
-            if (is_namespace_name) continue;
+        if (original and node.tag == .binding_identifier and ni == @intFromEnum(namespace_name_idx)) {
+            continue;
         }
         return true;
     }

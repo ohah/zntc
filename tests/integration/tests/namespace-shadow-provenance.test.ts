@@ -36,6 +36,10 @@ namespace Outer {
 }
 console.log(JSON.stringify([Outer.read(), Outer.bump(), Outer.shorthand(), Outer.local(), Outer.Inner.child, Outer.Inner.parent(), Outer.Inner.shadow(11)]));
 `,
+  'nested namespace repeats its parent name': `
+namespace N { namespace N { export const value = 1; } export const outer = 2; }
+console.log(JSON.stringify(N.outer));
+`,
   'exported enum stays reachable as namespace property': `
 namespace N {
   export enum E { A = 1 }
