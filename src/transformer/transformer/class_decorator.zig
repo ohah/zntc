@@ -337,6 +337,10 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
             existing_constructor,
             existing_constructor_pos,
             has_super,
+            if (self.semantic_edit_enabled)
+                self.outputOwnedScope(source_idx) orelse @panic("class field lowering has no source scope")
+            else
+                self.current_scope,
         );
     }
 
@@ -509,6 +513,7 @@ pub const classifyClassMember = class_member_helpers.classifyClassMember;
 pub const classifyPropertyDefinition = class_member_helpers.classifyPropertyDefinition;
 pub const classifyMethodDefinition = class_member_helpers.classifyMethodDefinition;
 pub const applyFieldAssignments = class_member_helpers.applyFieldAssignments;
+pub const bindSuperSpreadArgs = class_member_helpers.bindSuperSpreadArgs;
 pub const insertFieldAssignmentsIntoConstructor = class_member_helpers.insertFieldAssignmentsIntoConstructor;
 pub const isSuperCallStatement = class_member_helpers.isSuperCallStatement;
 pub const buildConstructorWithFieldAssignments = class_member_helpers.buildConstructorWithFieldAssignments;

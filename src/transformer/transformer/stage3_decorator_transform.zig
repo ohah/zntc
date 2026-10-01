@@ -68,6 +68,10 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     const name_idx = self.readNodeIdx(e, ast_mod.ClassExtra.name);
     const super_idx = self.readNodeIdx(e, ast_mod.ClassExtra.super);
     const body_idx = self.readNodeIdx(e, ast_mod.ClassExtra.body);
+    const class_parent_scope = if (self.semantic_edit_enabled)
+        self.outputOwnedScope(source_idx) orelse @panic("Stage 3 class has no source scope owner")
+    else
+        self.current_scope;
     const class_deco_start = self.readU32(e, ast_mod.ClassExtra.deco_start);
     const class_deco_len = self.readU32(e, ast_mod.ClassExtra.deco_len);
 
@@ -654,8 +658,10 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             const stmts_scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(stmts_scratch_top);
 
+            var super_shell: ?class_member_helpers.SuperSpreadArgsShell = null;
             const ctor_params_node: NodeIndex = if (has_super) blk: {
                 const shell = try buildSuperSpreadArgsShell(self);
+                super_shell = shell;
                 try self.scratch.append(self.allocator, shell.super_stmt);
                 break :blk shell.params_node;
             } else blk: {
@@ -680,6 +686,8 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                 empty_decos.start,
                 empty_decos.len,
             });
+            if (super_shell) |shell|
+                try class_member_helpers.bindSuperSpreadArgs(self, ctor_method, class_parent_scope, shell.args_binding, shell.args_ref);
             try new_members.append(self.allocator, ctor_method);
         }
     }
@@ -767,10 +775,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         @intFromEnum(iife_body),
         0, // flags (not async)
     });
-    const source_class_scope = self.outputOwnedScope(source_idx) orelse if (self.semantic_edit_enabled)
-        std.debug.panic("Stage 3 class has no source scope owner", .{})
-    else
-        self.current_scope;
+    const source_class_scope = class_parent_scope;
     const arrow_scope = try self.addGeneratedFunctionScope(self.outputScopeParent(source_class_scope), arrow);
     try self.reparentGeneratedScope(source_class_scope, arrow_scope);
 

@@ -363,6 +363,7 @@ pub fn applyFieldAssignments(
     existing_constructor: ?NodeIndex,
     existing_constructor_pos: ?usize,
     has_super: bool,
+    class_scope: ScopeId,
 ) Error!void {
     if (existing_constructor) |ctor_idx| {
         // 기존 constructor의 body에 field assignments 삽입
@@ -373,7 +374,7 @@ pub fn applyFieldAssignments(
         }
     } else {
         // constructor가 없으면 새로 생성
-        const new_ctor = try buildConstructorWithFieldAssignments(self, fields, has_super);
+        const new_ctor = try buildConstructorWithFieldAssignments(self, fields, has_super, class_scope);
         // class body 맨 앞에 삽입
         try class_members.insert(self.allocator, 0, new_ctor);
     }
@@ -630,12 +631,16 @@ fn findSuperCallInsertPos(self: anytype, body_idx: NodeIndex) ?u32 {
     return null;
 }
 
-/// derived class 합성 constructor 의 기본 shell `(...args)` 과 `super(...args);` 를 생성.
-/// has_super=true 경로에서만 호출. 두 노드는 독립 반환 — caller 가 scratch/body 조립에 배치.
-pub fn buildSuperSpreadArgsShell(self: anytype) Error!struct {
+pub const SuperSpreadArgsShell = struct {
     params_node: NodeIndex,
     super_stmt: NodeIndex,
-} {
+    args_binding: NodeIndex,
+    args_ref: NodeIndex,
+};
+
+/// derived class 합성 constructor 의 기본 shell `(...args)` 과 `super(...args);` 를 생성.
+/// has_super=true 경로에서만 호출. 두 노드는 독립 반환 — caller 가 scratch/body 조립에 배치.
+pub fn buildSuperSpreadArgsShell(self: anytype) Error!SuperSpreadArgsShell {
     const zero_span = Span{ .start = 0, .end = 0 };
     const args_span = try self.ast.addString("args");
 
@@ -671,7 +676,30 @@ pub fn buildSuperSpreadArgsShell(self: anytype) Error!struct {
         .data = .{ .unary = .{ .operand = super_call, .flags = 0 } },
     });
 
-    return .{ .params_node = params_node, .super_stmt = super_stmt };
+    return .{
+        .params_node = params_node,
+        .super_stmt = super_stmt,
+        .args_binding = args_id,
+        .args_ref = args_ref,
+    };
+}
+
+/// Register the generated rest parameter and its `super(...args)` read in the
+/// exact function scope owned by the synthesized constructor method.
+pub fn bindSuperSpreadArgs(
+    self: anytype,
+    owner: NodeIndex,
+    parent_scope: ScopeId,
+    binding: NodeIndex,
+    reference: NodeIndex,
+) Error!void {
+    if (!self.semantic_edit_enabled) return;
+    if (owner.isNone() or self.ast.getNode(owner).tag != .method_definition or parent_scope.isNone())
+        @panic("invalid generated super constructor semantic owner");
+    const function_scope = try self.addGeneratedFunctionScope(parent_scope, owner);
+    const binding_span = self.ast.getNode(binding).span;
+    const symbol = try self.declareSyntheticInScope(binding, binding_span, .parameter, function_scope);
+    try self.addSyntheticRefInScope(reference, symbol, function_scope, .{ .read = true });
 }
 
 /// block_statement body 에 new_stmts 를 insert_pos 위치에 splice 한 새 block_statement 반환.
@@ -722,6 +750,7 @@ pub fn buildConstructorWithFieldAssignments(
     self: anytype,
     fields: []const FieldAssignment,
     has_super: bool,
+    class_scope: ScopeId,
 ) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
@@ -729,8 +758,10 @@ pub fn buildConstructorWithFieldAssignments(
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
     // extends가 있으면: constructor(...args) { super(...args); this.x = v; }
+    var super_shell: ?SuperSpreadArgsShell = null;
     const params_node: NodeIndex = if (has_super) blk: {
         const shell = try buildSuperSpreadArgsShell(self);
+        super_shell = shell;
         try self.scratch.append(self.allocator, shell.super_stmt);
         break :blk shell.params_node;
     } else blk: {
@@ -755,11 +786,13 @@ pub fn buildConstructorWithFieldAssignments(
     const ctor_key = try es_helpers.makePropertyName(self, "constructor");
 
     const empty_decos = try self.ast.addNodeList(&.{});
-    return self.addExtraNode(.method_definition, zero_span, &.{
+    const constructor = try self.addExtraNode(.method_definition, zero_span, &.{
         @intFromEnum(ctor_key), @intFromEnum(params_node),
         @intFromEnum(body), 0, // flags=0 (non-static, normal method)
         empty_decos.start,  empty_decos.len,
     });
+    if (super_shell) |shell| try bindSuperSpreadArgs(self, constructor, class_scope, shell.args_binding, shell.args_ref);
+    return constructor;
 }
 
 /// this.key = value; expression statement 생성

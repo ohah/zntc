@@ -80,9 +80,10 @@ const AstFacts = struct {
     has_import_declaration: bool = false,
     /// default / namespace import — binding-lite 는 named 만 다루므로 모두 full path 로 위임.
     has_non_named_import: bool = false,
-    /// class / private / decorator / TS 런타임 구문 (`enum`, `namespace`, `import =`,
-    /// `export =`, `namespace export`) / `using` — runtime transform 필요.
+    /// class / private / decorator / TS runtime syntax / using — runtime transform needed.
     has_runtime_sensitive_syntax: bool = false,
+    /// Runtime syntax whose semantic edits still need the post-transform analyzer.
+    has_unhandled_runtime_syntax: bool = false,
 };
 
 pub const TranspileError = error{
@@ -156,11 +157,13 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             .import_namespace_specifier,
             => facts.has_non_named_import = true,
 
-            .class_declaration,
-            .class_expression,
+            .class_declaration, .class_expression => facts.has_runtime_sensitive_syntax = true,
+
             .private_identifier,
             .private_field_expression,
             .decorator,
+            .static_block,
+            .accessor_property,
             .ts_enum_declaration,
             .ts_module_declaration,
             .ts_import_equals_declaration,
@@ -169,11 +172,15 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             .flow_enum_declaration,
             .flow_match_expression,
             .flow_component_wrapper,
-            => facts.has_runtime_sensitive_syntax = true,
+            => {
+                facts.has_runtime_sensitive_syntax = true;
+                facts.has_unhandled_runtime_syntax = true;
+            },
 
             .variable_declaration => {
                 if (ast.variableDeclarationKind(node).isUsing()) {
                     facts.has_runtime_sensitive_syntax = true;
+                    facts.has_unhandled_runtime_syntax = true;
                 }
             },
 
@@ -537,18 +544,17 @@ fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
 }
 
 /// The transform semantic editor carries identifier IDs, references, and output
-/// scopes through the downlevel passes used by JavaScript and type-erased TS. Keep
-/// runtime-generating TS syntax outside this graph until its semantic edits are
-/// complete; those paths use the post-transform analyzer.
+/// scopes through JavaScript and ordinary TypeScript class lowering. Keep private,
+/// decorator, and other runtime-generating TS/Flow constructs outside this graph
+/// until their semantic edits are complete; those paths use the post-transform analyzer.
 fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Parser) bool {
     if (!options.minify_identifiers or
         options.experimental_decorators or options.emit_decorator_metadata or
         options.react_refresh or options.react_refresh_hook_signatures) return false;
 
-    if (parser.is_flow or parser.source_mode == .ts) {
-        const facts = collectAstFacts(&parser.ast);
-        return !facts.has_runtime_sensitive_syntax and !parser.ast.has_jsx;
-    }
+    const facts = collectAstFacts(&parser.ast);
+    if (parser.is_flow) return !facts.has_runtime_sensitive_syntax and !parser.ast.has_jsx;
+    if (parser.source_mode == .ts) return !facts.has_unhandled_runtime_syntax and !parser.ast.has_jsx;
     if (parser.source_mode != .js_strict) return false;
     return true;
 }
@@ -1970,7 +1976,9 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     const runtime_sources = [_][]const u8{
         "enum Color { Red }",
         "namespace N { export const value = 1 }",
-        "class Box { value = 1 }",
+        "class Box { #value = 1 }",
+        "class Box { static { this.value = 1 } }",
+        "class Box { accessor value = 1 }",
         "using resource = openResource();",
         "const view = <div />;",
     };
@@ -1981,6 +1989,17 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
         _ = try runtime_parser.parse();
         try std.testing.expect(!canMangleWithTransformSemantic(minify, &runtime_parser));
     }
+
+    var class_scanner = try Scanner.init(
+        allocator,
+        "class Base { constructor(public value: number) {} read(): number { return this.value; } } " ++
+            "class Box extends Base { amount: number = 2; read(): number { return super.read() + this.amount; } }",
+    );
+    var class_parser = Parser.init(allocator, &class_scanner);
+    class_parser.configureFromExtension(".ts");
+    _ = try class_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), class_parser.errors.items.len);
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &class_parser));
 }
 
 test "#4819 type-erased Flow reuses transform semantic graph only without runtime lowering" {

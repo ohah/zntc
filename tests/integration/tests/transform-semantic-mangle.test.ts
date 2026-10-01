@@ -229,6 +229,123 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stdout).toBe(reference.stdout);
   });
 
+  test('type-erased TypeScript class lowering reuses the edited semantic graph', async () => {
+    const fixture = await createFixture({
+      'input.ts': `
+        class Base {
+          constructor(public value: number) {}
+          read(): number { return this.value; }
+        }
+        class Box extends Base {
+          amount: number = 2;
+          read(): number { return super.read() + this.amount; }
+        }
+        function calculate(argument: number): number {
+          const local = new Box(argument);
+          return local.read() + argument;
+        }
+        function createGeneratedClass(args: number) {
+          return class extends Base { amount: number = args; };
+        }
+        const Generated = createGeneratedClass(5);
+        console.log(calculate(3) + new Generated(2).amount);
+      `,
+      'reference.js': `
+        class Base {
+          constructor(value) { this.value = value; }
+          read() { return this.value; }
+        }
+        class Box extends Base {
+          constructor(value) { super(value); this.amount = 2; }
+          read() { return super.read() + this.amount; }
+        }
+        function calculate(argument) {
+          const local = new Box(argument);
+          return local.read() + argument;
+        }
+        function createGeneratedClass(args) {
+          return class extends Base {
+            constructor(value) { super(value); this.amount = args; }
+          };
+        }
+        const Generated = createGeneratedClass(5);
+        console.log(calculate(3) + new Generated(2).amount);
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.ts');
+    const reference = await runNode(join(fixture.dir, 'reference.js'));
+    expect(reference.stdout.trim()).toBe('13');
+
+    for (const target of ['es5', 'es2015', 'es2017', 'es2022', 'esnext']) {
+      const output = join(fixture.dir, `output-${target}.js`);
+      const result = await runZntc(
+        [input, '-o', output, `--target=${target}`, '--minify-identifiers'],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, `${target}: ${result.stderr}`).toBe(0);
+      expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+      const identity = result.stderr
+        .split(/\r?\n/)
+        .find((line) => line.includes('zntc: symbol-identity '));
+      expect(identity).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+      }
+      const transformed = await runNode(output);
+      expect(transformed.stderr, target).toBe('');
+      expect(transformed.stdout.trim(), target).toBe(reference.stdout.trim());
+    }
+  });
+
+  test('private-field lowering registers generated super-rest symbols and avoids captured-name collisions', async () => {
+    const fixture = await createFixture({
+      'input.ts': `
+        class Base { constructor(public value: number) {} }
+        function create(_args: number) {
+          return class extends Base {
+            #hidden = 1;
+            amount: number = _args;
+          };
+        }
+        const Generated = create(5);
+        console.log(new Generated(2).amount);
+      `,
+      'reference.js': `
+        class Base { constructor(value) { this.value = value; } }
+        function create(_args) {
+          return class extends Base {
+            #hidden = 1;
+            amount = _args;
+          };
+        }
+        const Generated = create(5);
+        console.log(new Generated(2).amount);
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.ts');
+    const output = join(fixture.dir, 'output-es2021.js');
+    const reference = await runNode(join(fixture.dir, 'reference.js'));
+    expect(reference.stdout.trim()).toBe('5');
+
+    const result = await runZntc([input, '-o', output, '--target=es2021', '--minify-identifiers'], {
+      env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+    });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+    const identity = result.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity '));
+    expect(identity).toBeDefined();
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const transformed = await runNode(output);
+    expect(transformed.stderr).toBe('');
+    expect(transformed.stdout.trim()).toBe(reference.stdout.trim());
+  });
+
   test('copied declarations retain their binding and nested scope', async () => {
     await expectNativeParity(
       `
