@@ -1852,12 +1852,11 @@ pub const Linker = struct {
                     for (sem.symbols.items, 0..) |*sym, si| {
                         const sk = sym.synthetic_kind orelse continue;
                         switch (sk) {
-                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter => {},
+                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .runtime_helper_preamble => {},
                         }
-                        if (sk == .namespace_iife_parameter) {
-                            // Codegen emits this virtual binding directly from
-                            // its semantic row. Keep its chosen name reserved
-                            // so another linked symbol cannot capture it.
+                        if (sk == .namespace_iife_parameter or sk == .runtime_helper_preamble) {
+                            // Keep virtual output-owned binding names reserved
+                            // so another linked symbol cannot capture them.
                             try reserved.put(self.allocator, sym.synthetic_name, {});
                             continue;
                         }

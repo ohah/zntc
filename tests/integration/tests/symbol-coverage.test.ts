@@ -39,6 +39,7 @@ const EXACT_ZERO_COUNTERS = [
   'scope_map_mismatch',
   'scope_owner_mismatch',
   'namespace_iife_param_mismatch',
+  'helper_symbol_mismatch',
   'scope_resolution_mismatch',
   'invisible_reference',
   'reference_count_mismatch',
@@ -137,6 +138,31 @@ describe('symbol identity coverage gate (#4819)', () => {
         expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
         expect(actual.stdout).toBe('[109,102]\n');
       }
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  test('인라인 runtime helper 호출은 preamble helper 심볼에 연결된다', () => {
+    const file = join(FIXTURE_DIR, '4819-inline-runtime-helper-symbols.mjs');
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-inline-helper-symbols-'));
+    try {
+      const { stderr, exitCode } = runCoverage(file, TARGETS[0], outDir);
+      expect(exitCode, stderr).toBe(0);
+      const identity = stderr.split('\n').find((line) => line.includes('zntc: symbol-identity '));
+      const strict = stderr.split('\n').find((line) => line.includes('zntc: synthetic-coverage '));
+      expect(identity).toBeDefined();
+      expect(strict).toBeDefined();
+      expect(Number(identity?.match(/generated_references=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+      expect(Number(identity?.match(/helper_symbol_mismatch=(\d+)/)?.[1] ?? -1)).toBe(0);
+      const generatedReferences = Number(identity?.match(/generated_references=(\d+)/)?.[1] ?? 0);
+      const boundReferences = Number(strict?.match(/bound=(\d+)/)?.[1] ?? -1);
+      expect(boundReferences).toBeGreaterThanOrEqual(generatedReferences);
+      expect(Number(strict?.match(/orphan_symbols=(\d+)/)?.[1] ?? -1)).toBe(0);
+      expect(Number(strict?.match(/missing_binding=(\d+)/)?.[1] ?? -1)).toBe(0);
+      const actual = spawnSync('node', [join(outDir, 'out.js')], { encoding: 'utf8' });
+      expect(actual.status, `${actual.stderr}\n${actual.stdout}`).toBe(0);
+      expect(actual.stdout).toBe('[7]\n');
     } finally {
       rmSync(outDir, { recursive: true, force: true });
     }

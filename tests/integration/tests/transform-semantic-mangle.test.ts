@@ -18,6 +18,7 @@ const EXACT_ZERO_COUNTERS = [
   'scope_map_mismatch',
   'scope_owner_mismatch',
   'scope_resolution_mismatch',
+  'helper_symbol_mismatch',
   'invisible_reference',
   'reference_count_mismatch',
   'write_count_mismatch',
@@ -1227,6 +1228,33 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         `${item.userValues} 2 ${item.helper} ${item.reserved}`,
       );
     }
+  });
+
+  test('inline async helper symbols stay distinct from a colliding user binding', async () => {
+    const fixture = await createFixture({
+      'input.mjs': `
+        const __generator = 'user-generator';
+        async function run(value) { return await value; }
+        run(Promise.resolve(7)).then((value) => console.log(__generator, value));
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.mjs');
+    const output = join(fixture.dir, 'output.mjs');
+    const result = await runZntc([input, '-o', output, '--target=es5'], {
+      env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+    });
+    expect(result.exitCode, result.stderr).toBe(0);
+    const identity = result.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity '));
+    expect(identity).toBeDefined();
+    expect(identity).toMatch(/helper_symbol_mismatch=0(?:\s|$)/);
+    const emitted = readFileSync(output, 'utf8');
+    expect(emitted).toMatch(/var __generator\d+\s*=/);
+    const transformed = await runNode(output);
+    expect(transformed.stderr).toBe('');
+    expect(transformed.stdout.trim()).toBe('user-generator 7');
   });
 
   test('standalone helper dependencies avoid user bindings in async iterator fallbacks', async () => {

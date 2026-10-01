@@ -224,6 +224,7 @@ pub const ExactReport = struct {
     scope_owner_mismatch: usize = 0,
     namespace_iife_params: usize = 0,
     namespace_iife_param_mismatch: usize = 0,
+    helper_symbol_mismatch: usize = 0,
     scope_resolution_mismatch: usize = 0,
     invisible_reference: usize = 0,
     unclassified_reference: usize = 0,
@@ -244,7 +245,7 @@ pub const ExactReport = struct {
             self.missing_reference == 0 and self.duplicate_reference == 0 and
             self.identity_mismatch == 0 and self.binding_scope_mismatch == 0 and self.binding_scope_unknown == 0 and self.invalid_scope == 0 and
             self.reference_scope_mismatch == 0 and
-            self.scope_map_mismatch == 0 and self.scope_owner_mismatch == 0 and self.namespace_iife_param_mismatch == 0 and self.scope_resolution_mismatch == 0 and self.invisible_reference == 0 and
+            self.scope_map_mismatch == 0 and self.scope_owner_mismatch == 0 and self.namespace_iife_param_mismatch == 0 and self.helper_symbol_mismatch == 0 and self.scope_resolution_mismatch == 0 and self.invisible_reference == 0 and
             self.unclassified_reference == 0 and self.reference_count_mismatch == 0 and
             self.write_count_mismatch == 0;
     }
@@ -1247,6 +1248,53 @@ pub fn checkExact(
     var helper_refs: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer helper_refs.deinit(allocator);
     for (helper_reference_nodes) |node| try helper_refs.put(allocator, node, {});
+    // Runtime helper markers include both local call/import nodes and, for
+    // defensive coverage, import_specifier.left (the imported export name).
+    // The export-name slot is not a local binding unless it aliases the local
+    // slot itself; every reachable local/call node must resolve through the
+    // exact helper map entry and carry that SymbolId.
+    for (helper_reference_nodes) |raw| {
+        if (raw >= ast.nodes.items.len) {
+            report.helper_symbol_mismatch += 1;
+            continue;
+        }
+        if (!reachable_nodes.contains(raw)) continue;
+        if (parent_by_node.get(raw)) |parent_raw| {
+            if (parent_raw < ast.nodes.items.len) {
+                const parent = ast.nodes.items[parent_raw];
+                if (parent.tag == .import_specifier) {
+                    const is_imported_slot = @intFromEnum(parent.data.binary.left) == raw;
+                    const is_local_slot = @intFromEnum(parent.data.binary.right) == raw;
+                    if (is_imported_slot and !is_local_slot) continue;
+                    if (!is_imported_slot and !is_local_slot) {
+                        report.helper_symbol_mismatch += 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        const node = ast.nodes.items[raw];
+        if (node.tag != .identifier_reference and node.tag != .jsx_identifier) {
+            report.helper_symbol_mismatch += 1;
+            continue;
+        }
+        if (raw >= symbol_ids.len or symbol_ids[raw] == null or symbol_ids[raw].? >= symbols.len) {
+            report.helper_symbol_mismatch += 1;
+            continue;
+        }
+        const sid = symbol_ids[raw].?;
+        const name = ast.getText(node.data.string_ref);
+        const helper_id = helper_scope_map.get(name) orelse {
+            report.helper_symbol_mismatch += 1;
+            continue;
+        };
+        const symbol = symbols[sid];
+        if (helper_id != sid or symbol.kind != .import_binding or
+            !std.mem.eql(u8, exactSymbolName(ast, &symbol), name))
+        {
+            report.helper_symbol_mismatch += 1;
+        }
+    }
     var declaration_counts = try allocator.alloc(usize, symbols.len);
     defer allocator.free(declaration_counts);
     var value_counts = try allocator.alloc(usize, symbols.len);
@@ -1592,7 +1640,7 @@ fn hasReachableBindingForSymbol(ctx: *const ExactCtx, symbol_id: u32) bool {
 
 pub fn printExact(file_path: []const u8, report: ExactReport) void {
     std.debug.print(
-        "zntc: symbol-identity {s}: generated_bindings={d} generated_references={d} external={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} ambiguous_ast_parent={d} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} namespace_iife_params={d} namespace_iife_param_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} reference_count_mismatch={d} write_count_mismatch={d} legacy_debt_fingerprint={x}\n",
+        "zntc: symbol-identity {s}: generated_bindings={d} generated_references={d} external={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} ambiguous_ast_parent={d} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} namespace_iife_params={d} namespace_iife_param_mismatch={d} helper_symbol_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} reference_count_mismatch={d} write_count_mismatch={d} legacy_debt_fingerprint={x}\n",
         .{
             file_path,
             report.generated_bindings,
@@ -1615,6 +1663,7 @@ pub fn printExact(file_path: []const u8, report: ExactReport) void {
             report.scope_owner_mismatch,
             report.namespace_iife_params,
             report.namespace_iife_param_mismatch,
+            report.helper_symbol_mismatch,
             report.scope_resolution_mismatch,
             report.invisible_reference,
             report.unclassified_reference,
@@ -2203,7 +2252,7 @@ fn checkStrictImpl(
         if (symbol.synthetic_name.len == 0 or raw_id > std.math.maxInt(u32)) continue;
         // Virtual namespace IIFE parameters have no emitted AST binding node;
         // checkExact validates them against reachable namespace owner scopes.
-        if (symbol.synthetic_kind == .namespace_iife_parameter) continue;
+        if (symbol.synthetic_kind == .namespace_iife_parameter or symbol.synthetic_kind == .runtime_helper_preamble) continue;
         // Expression `export default` keeps a synthetic reachability facade
         // even when it has no emitted local binding.
         if (symbol.decl_flags.is_default_export and std.mem.eql(u8, symbol.synthetic_name, "_default")) continue;
@@ -2258,6 +2307,55 @@ test "exact coverage is not clean when a generated binding scope is unknown" {
     var report: ExactReport = .{};
     try std.testing.expect(report.isClean());
     report.binding_scope_unknown = 1;
+    try std.testing.expect(!report.isClean());
+}
+
+test "exact helper coverage rejects an unbound generated helper reference" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("__helper");
+    const helper_ref = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const root = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = .EMPTY,
+        .data = .{ .list = try ast.addNodeList(&.{helper_ref}) },
+    });
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .block, .is_strict = false },
+    };
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){.empty};
+    const symbol_ids = [_]?u32{null};
+    const helper_refs = [_]u32{@intFromEnum(helper_ref)};
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @intFromEnum(root), 0);
+    const helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &symbol_ids,
+        &.{},
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &.{},
+        &helper_refs,
+        &helper_scope_map,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.helper_symbol_mismatch);
     try std.testing.expect(!report.isClean());
 }
 
