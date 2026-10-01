@@ -598,7 +598,8 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
     while (candidate_start < output_bindings.items.len) {
         var candidate_end = candidate_start + 1;
         while (candidate_end < output_bindings.items.len and
-            sameOutputBindingGroup(output_bindings.items[candidate_start], output_bindings.items[candidate_end])) : (candidate_end += 1) {}
+            sameOutputBindingGroup(output_bindings.items[candidate_start], output_bindings.items[candidate_end])) : (candidate_end += 1)
+        {}
         const candidate = output_bindings.items[candidate_start];
         try binding_groups.append(self.allocator, .{
             .raw_id = candidate.raw_id,
@@ -2214,6 +2215,19 @@ pub fn declareSyntheticTempInScope(self: *Transformer, binding: NodeIndex, decla
     try setSymbolId(self, binding, id);
     try self.synthetic_temp_symbol_ids.put(self.allocator, key, @intFromEnum(id));
     return id;
+}
+
+/// Carry the exact identity from a lowering-created generator temp binding to
+/// the wrapper declaration emitted after state-machine operation collection.
+pub fn recordGeneratorStateTempSymbol(self: *Transformer, name_span: Span, symbol: ?SymbolId) Transformer.Error!void {
+    if (!self.semantic_edit_enabled or self.state_machine_depth == 0) return;
+    const id = symbol orelse return;
+    const gop = try self.generator_state_temp_symbols.getOrPut(self.allocator, name_span.start);
+    if (gop.found_existing) {
+        if (gop.value_ptr.* != @intFromEnum(id)) std.debug.panic("generator temp Span was assigned multiple symbols", .{});
+        return;
+    }
+    gop.value_ptr.* = @intFromEnum(id);
 }
 
 pub fn deferGeneratedWrapperTemp(self: *Transformer, binding: NodeIndex, name_span: Span) Transformer.Error!void {

@@ -113,6 +113,108 @@ test "#4819 generator and async generator callback temps stay separate" {
     try checkGeneratedTemps("class Box { static #method() { return 1; } static receiver() { return this; } static async *run() { yield await Promise.resolve(this.receiver().#method()); } }", .es5, 1, true);
 }
 
+test "#4819 generator for-in temps retain their exact wrapper symbols" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "export function* first(source) { for (const value in source) { yield value; } } export function* second(source) { for (const value in source) { yield value; } }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const source_symbol_count = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const root = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var output_parents = try output_scope.buildParentMap(allocator, transformer.ast, root);
+    defer output_parents.deinit(allocator);
+
+    const expected_names = [_][]const u8{ "_a", "_b", "_keys", "_idx", "_keys2", "_idx2" };
+    var found: usize = 0;
+    var a_scopes: [2]@import("../semantic/scope.zig").ScopeId = undefined;
+    var a_count: usize = 0;
+    var b_scopes: [2]@import("../semantic/scope.zig").ScopeId = undefined;
+    var b_count: usize = 0;
+    for (edited.symbols.items[source_symbol_count..], source_symbol_count..) |symbol, symbol_index| {
+        const name = transformer.ast.getText(symbol.name);
+        var expected = false;
+        for (expected_names) |expected_name| {
+            if (std.mem.eql(u8, name, expected_name)) expected = true;
+        }
+        if (!expected) continue;
+        found += 1;
+        try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[symbol.scope_id.toIndex()].kind);
+        if (std.mem.eql(u8, name, "_a")) {
+            try std.testing.expect(a_count < a_scopes.len);
+            a_scopes[a_count] = symbol.scope_id;
+            a_count += 1;
+        } else if (std.mem.eql(u8, name, "_b")) {
+            try std.testing.expect(b_count < b_scopes.len);
+            b_scopes[b_count] = symbol.scope_id;
+            b_count += 1;
+        }
+
+        var binding_count: usize = 0;
+        for (reachable) |raw| {
+            if (transformer.ast.nodes.items[raw].tag == .binding_identifier and
+                raw < edited.symbol_ids.len and edited.symbol_ids[raw] == @as(u32, @intCast(symbol_index))) binding_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), binding_count);
+
+        var reference_count: usize = 0;
+        for (edited.references) |ref| {
+            if (@intFromEnum(ref.symbol_id) != symbol_index or ref.node_index.isNone()) continue;
+            const raw = @intFromEnum(ref.node_index);
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, raw) != null);
+            try std.testing.expectEqual(@as(?u32, @intCast(symbol_index)), edited.symbol_ids[raw]);
+            const expected_scope = output_scope.expectedScope(
+                transformer.ast,
+                root,
+                &output_parents,
+                &edited.scope_owner_map,
+                raw,
+            ) orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(expected_scope, ref.scope_id);
+            var cursor = ref.scope_id;
+            var visible = false;
+            for (0..edited.scopes.len) |_| {
+                if (cursor.isNone() or cursor.toIndex() >= edited.scopes.len) break;
+                if (cursor == symbol.scope_id) {
+                    visible = true;
+                    break;
+                }
+                cursor = edited.scopes[cursor.toIndex()].parent;
+            }
+            try std.testing.expect(visible);
+            reference_count += 1;
+        }
+        try std.testing.expect(reference_count > 0);
+    }
+    try std.testing.expectEqual(@as(usize, 2), a_count);
+    try std.testing.expectEqual(@as(usize, 2), b_count);
+    try std.testing.expect(a_scopes[0] != a_scopes[1]);
+    try std.testing.expect(b_scopes[0] != b_scopes[1]);
+    for (a_scopes) |scope| try std.testing.expect(scope == b_scopes[0] or scope == b_scopes[1]);
+    try std.testing.expectEqual(@as(usize, 8), found);
+}
+
 test "#4819 native generator async body temp belongs to inner function" {
     const source = "class Box { static #method() { return 1; } static receiver() { return this; } static async run() { await Promise.resolve(); return this.receiver().#method(); } }";
     try checkGeneratedTemps(source, .es2015, 1, false);

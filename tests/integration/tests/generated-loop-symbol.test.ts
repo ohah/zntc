@@ -75,6 +75,39 @@ console.log([...collect(100)].map(read => read()).join(','));
         expect(runtime.status).toBe(0);
         expect(runtime.stdout).toBe(native.stdout);
       });
+
+      test(`${bundled ? 'bundle' : 'single-file'} generator for-in keeps same-name temps in separate scopes (${minify ? 'minify' : 'plain'})`, async () => {
+        const fixture = await createFixture({
+          'input.mjs': `
+const _a = 10, _b = 20, _keys = 30, _idx = 40;
+function* first(source) {
+  for (const key in source) yield () => key + ':' + _a + ':' + _b + ':' + _keys + ':' + _idx;
+}
+function* second(source) {
+  for (const key in source) yield () => key + ':' + _a + ':' + _b + ':' + _keys + ':' + _idx;
+}
+console.log([...first({ x: 0, y: 0 }), ...second({ p: 0, q: 0 })].map(read => read()).join(','));
+`,
+        });
+        cleanup = fixture.cleanup;
+        const input = join(fixture.dir, 'input.mjs');
+        const native = spawnSync('node', [input], { encoding: 'utf8' });
+        expect(native.status, native.stderr).toBe(0);
+        const output = join(fixture.dir, bundled ? 'out.cjs' : 'out.mjs');
+        const result = await runZntcInDir(fixture.dir, [
+          ...(bundled ? ['--bundle'] : []),
+          'input.mjs',
+          '--target=es5',
+          ...(minify ? ['--minify-identifiers', '--minify-syntax'] : []),
+          ...(bundled ? ['--platform=node', '--format=cjs'] : []),
+          '-o',
+          output,
+        ]);
+        expect(result.exitCode, result.stderr).toBe(0);
+        const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(runtime.status, runtime.stderr).toBe(0);
+        expect(runtime.stdout).toBe(native.stdout);
+      });
     }
   }
 });
