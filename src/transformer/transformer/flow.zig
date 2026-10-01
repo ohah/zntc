@@ -7,10 +7,42 @@ const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const token_mod = @import("../../lexer/token.zig");
 const Span = token_mod.Span;
+const SymbolId = @import("../../semantic/symbol.zig").SymbolId;
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 const es_helpers = @import("../es_helpers.zig");
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
+
+const FlowMatchContext = struct {
+    temp_span: Span,
+    symbol_id: ?SymbolId,
+    function_scope: ScopeId,
+    arm_scope: ScopeId,
+};
+
+fn sourceBindingScope(self: *Transformer, binding: NodeIndex) ScopeId {
+    const raw_id = self.getSymbolIdAt(binding) orelse std.debug.panic("Flow match binding has no SymbolId", .{});
+    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+    if (raw_id >= symbols.len) std.debug.panic("Flow match binding SymbolId is out of range", .{});
+    return symbols[raw_id].scope_id;
+}
+
+/// A Flow match subject is represented as a path until an emitted use is
+/// built. This avoids creating identifier-reference nodes for intermediate
+/// pattern paths that never reach the output tree.
+const MatchSubject = struct { path: std.ArrayListUnmanaged(NodeIndex) = .empty };
+
+/// Build one emitted subject expression and register the generated temp read
+/// at the expression's actual output scope.
+fn makeMatchSubjectExpr(self: *Transformer, subject: *const MatchSubject, context: FlowMatchContext, scope: ScopeId, span: Span) Error!NodeIndex {
+    var expression = try es_helpers.makeTempVarRef(self, context.temp_span, context.temp_span);
+    try self.addSyntheticRefInScope(expression, context.symbol_id, scope, .{ .read = true });
+    for (subject.path.items) |key| {
+        expression = try es_helpers.makeComputedMember(self, expression, try es_helpers.cloneNode(self, key), span);
+    }
+    return expression;
+}
 
 /// 한 pattern 의 lowering 결과.
 ///   test_expr : subject 와 비교한 boolean 식 (true literal = 무조건 매치)
@@ -38,8 +70,8 @@ fn mkBlock(self: *Transformer, span: Span, stmts: []const NodeIndex) Error!NodeI
 
 /// `let <id_span> = <subject>;` variable declaration 생성.
 /// subject 는 1회용 AST 노드라 cloneNode 로 복제해 쓴다. `origin` 은 이름이 나온 패턴 노드.
-fn mkBindingDecl(self: *Transformer, id_span: Span, origin: NodeIndex, subject: NodeIndex, span: Span) Error!NodeIndex {
-    const subj = try es_helpers.cloneNode(self, subject);
+fn mkBindingDecl(self: *Transformer, id_span: Span, origin: NodeIndex, subject: *MatchSubject, span: Span, context: FlowMatchContext) Error!NodeIndex {
+    const subj = try makeMatchSubjectExpr(self, subject, context, context.arm_scope, span);
     const bind = try self.makeUserBinding(id_span, origin);
     const decl = try es_helpers.makeDeclarator(self, bind, subj, span);
     return es_helpers.makeVarDeclaration(self, &.{decl}, .let, span);
@@ -77,9 +109,9 @@ fn mkStrLit(self: *Transformer, text: []const u8) Error!NodeIndex {
 }
 
 /// `typeof <subject> === "object"` — `in`/속성 접근 전 object 가드.
-fn mkTypeofObject(self: *Transformer, subject: NodeIndex, span: Span) Error!NodeIndex {
+fn mkTypeofObject(self: *Transformer, subject: *MatchSubject, span: Span, context: FlowMatchContext) Error!NodeIndex {
     const tof_extra = try self.ast.addExtras(&.{
-        @intFromEnum(try es_helpers.cloneNode(self, subject)),
+        @intFromEnum(try makeMatchSubjectExpr(self, subject, context, context.function_scope, span)),
         @intFromEnum(token_mod.Kind.kw_typeof),
     });
     const tof = try self.ast.addNode(.{ .tag = .unary_expression, .span = span, .data = .{ .extra = tof_extra } });
@@ -87,14 +119,14 @@ fn mkTypeofObject(self: *Transformer, subject: NodeIndex, span: Span) Error!Node
 }
 
 /// object match pattern: `S != null && ("k" in S) && <sub(S.k)> && ...` (+rest).
-fn lowerObjectPattern(self: *Transformer, pnode: Node, subject: NodeIndex, span: Span) Error!LoweredPattern {
+fn lowerObjectPattern(self: *Transformer, pnode: Node, subject: *MatchSubject, span: Span, context: FlowMatchContext) Error!LoweredPattern {
     const lst = pnode.data.list;
     // S != null && typeof S === "object" — primitive/null 이면 `in` throw 방지.
     var test_acc = try mkBin(
         self,
         span,
-        try es_helpers.makeNeqNull(self, try es_helpers.cloneNode(self, subject), span),
-        try mkTypeofObject(self, subject, span),
+        try es_helpers.makeNeqNull(self, try makeMatchSubjectExpr(self, subject, context, context.function_scope, span), span),
+        try mkTypeofObject(self, subject, span, context),
         .amp2,
     );
     var binds: std.ArrayListUnmanaged(NodeIndex) = .empty;
@@ -111,12 +143,14 @@ fn lowerObjectPattern(self: *Transformer, pnode: Node, subject: NodeIndex, span:
             if (cn.data.none == 1) {
                 // let <rest> = Object.assign({}, S); delete <rest>.k1; ...
                 const empty_obj = try self.ast.addNode(.{ .tag = .object_expression, .span = span, .data = .{ .list = .{ .start = 0, .len = 0 } } });
-                const copy_call = try es_helpers.makeObjectAssignCall(self, &.{ empty_obj, try es_helpers.cloneNode(self, subject) }, span);
+                const copy_call = try es_helpers.makeObjectAssignCall(self, &.{ empty_obj, try makeMatchSubjectExpr(self, subject, context, context.arm_scope, span) }, span);
                 const bind = try self.makeUserBinding(cn.span, child);
                 const decl = try es_helpers.makeDeclarator(self, bind, copy_call, span);
                 try binds.append(self.allocator, try es_helpers.makeVarDeclaration(self, &.{decl}, .let, span));
                 for (key_lits.items) |kl| {
                     const rest_ref = try self.makeIdentifierRefWithSymbol(cn.span, child);
+                    if (self.semantic_edit_enabled)
+                        try self.trackUserReadFromBinding(rest_ref, child, sourceBindingScope(self, child));
                     const del_member = try es_helpers.makeComputedMember(self, rest_ref, kl, span);
                     const del_extra = try self.ast.addExtras(&.{ @intFromEnum(del_member), @intFromEnum(token_mod.Kind.kw_delete) });
                     const del = try self.ast.addNode(.{ .tag = .unary_expression, .span = span, .data = .{ .extra = del_extra } });
@@ -128,9 +162,10 @@ fn lowerObjectPattern(self: *Transformer, pnode: Node, subject: NodeIndex, span:
         // flow_match_object_prop: binary { key, value }
         const key = cn.data.binary.left;
         const value = cn.data.binary.right;
-        const member = try es_helpers.makeComputedMember(self, try es_helpers.cloneNode(self, subject), try mkKeyLit(self, key), span);
-        const sub = try lowerMatchPattern(self, value, member, span);
-        const in_expr = try mkBin(self, span, try mkKeyLit(self, key), try es_helpers.cloneNode(self, subject), .kw_in);
+        try subject.path.append(self.allocator, try mkKeyLit(self, key));
+        const sub = try lowerMatchPattern(self, value, subject, span, context);
+        _ = subject.path.pop();
+        const in_expr = try mkBin(self, span, try mkKeyLit(self, key), try makeMatchSubjectExpr(self, subject, context, context.function_scope, span), .kw_in);
         try key_lits.append(self.allocator, try mkKeyLit(self, key));
         test_acc = try andJoin(self, span, test_acc, in_expr);
         if (!isAlwaysTrue(self, sub.test_expr)) test_acc = try andJoin(self, span, test_acc, sub.test_expr);
@@ -141,7 +176,7 @@ fn lowerObjectPattern(self: *Transformer, pnode: Node, subject: NodeIndex, span:
 }
 
 /// array match pattern: `Array.isArray(S) && S.length (===|>=) N && <sub(S[i])>` (+rest slice).
-fn lowerArrayPattern(self: *Transformer, pnode: Node, subject: NodeIndex, span: Span) Error!LoweredPattern {
+fn lowerArrayPattern(self: *Transformer, pnode: Node, subject: *MatchSubject, span: Span, context: FlowMatchContext) Error!LoweredPattern {
     const lst = pnode.data.list;
     var elem_count: usize = 0;
     var rest_node: NodeIndex = .none;
@@ -156,10 +191,10 @@ fn lowerArrayPattern(self: *Transformer, pnode: Node, subject: NodeIndex, span: 
     const is_arr = try es_helpers.makeCallExpr(
         self,
         try es_helpers.makeStaticMember(self, try es_helpers.makeGlobalRef(self, "Array"), try es_helpers.makePropertyName(self, "isArray"), span),
-        &.{try es_helpers.cloneNode(self, subject)},
+        &.{try makeMatchSubjectExpr(self, subject, context, context.function_scope, span)},
         span,
     );
-    const len_member = try es_helpers.makeStaticMember(self, try es_helpers.cloneNode(self, subject), try es_helpers.makePropertyName(self, "length"), span);
+    const len_member = try es_helpers.makeStaticMember(self, try makeMatchSubjectExpr(self, subject, context, context.function_scope, span), try es_helpers.makePropertyName(self, "length"), span);
     const len_cmp_kind: token_mod.Kind = if (rest_node.isNone()) .eq3 else .gt_eq;
     const len_test = try mkBin(self, span, len_member, try mkNum(self, elem_count), len_cmp_kind);
     var test_acc = try mkBin(self, span, is_arr, len_test, .amp2);
@@ -171,8 +206,9 @@ fn lowerArrayPattern(self: *Transformer, pnode: Node, subject: NodeIndex, span: 
     while (i < lst.len) : (i += 1) {
         const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[lst.start + i]);
         if (self.ast.getNode(child).tag == .flow_match_rest) continue;
-        const member = try es_helpers.makeComputedMember(self, try es_helpers.cloneNode(self, subject), try mkNum(self, idx), span);
-        const sub = try lowerMatchPattern(self, child, member, span);
+        try subject.path.append(self.allocator, try mkNum(self, idx));
+        const sub = try lowerMatchPattern(self, child, subject, span, context);
+        _ = subject.path.pop();
         if (!isAlwaysTrue(self, sub.test_expr)) test_acc = try andJoin(self, span, test_acc, sub.test_expr);
         for (sub.bindings) |b| try binds.append(self.allocator, b);
         if (!sub.guard.isNone()) guard_acc = try andJoin(self, span, guard_acc, sub.guard);
@@ -182,7 +218,7 @@ fn lowerArrayPattern(self: *Transformer, pnode: Node, subject: NodeIndex, span: 
         // let <rest> = S.slice(elem_count)
         const slice_call = try es_helpers.makeCallExpr(
             self,
-            try es_helpers.makeStaticMember(self, try es_helpers.cloneNode(self, subject), try es_helpers.makePropertyName(self, "slice"), span),
+            try es_helpers.makeStaticMember(self, try makeMatchSubjectExpr(self, subject, context, context.arm_scope, span), try es_helpers.makePropertyName(self, "slice"), span),
             &.{try mkNum(self, elem_count)},
             span,
         );
@@ -214,7 +250,7 @@ fn andJoin(self: *Transformer, span: Span, a: NodeIndex, b: NodeIndex) Error!Nod
 ///   object `{k: p, ...r}`   → `S != null && ("k" in S) && test(p, S.k)` + rest
 ///   array `[p, ...r]`       → `Array.isArray(S) && length && test(p, S[i])` + rest
 ///   instance `C { ... }`    → `S instanceof C && <object body>`
-fn lowerMatchPattern(self: *Transformer, pattern: NodeIndex, subject: NodeIndex, span: Span) Error!LoweredPattern {
+fn lowerMatchPattern(self: *Transformer, pattern: NodeIndex, subject: *MatchSubject, span: Span, context: FlowMatchContext) Error!LoweredPattern {
     const pnode = self.ast.getNode(pattern);
     switch (pnode.tag) {
         .flow_match_opaque_pattern => return .{
@@ -224,7 +260,7 @@ fn lowerMatchPattern(self: *Transformer, pattern: NodeIndex, subject: NodeIndex,
         },
         .flow_match_binding_pattern => {
             const binds = try self.allocator.alloc(NodeIndex, 1);
-            binds[0] = try mkBindingDecl(self, pnode.span, pattern, subject, span);
+            binds[0] = try mkBindingDecl(self, pnode.span, pattern, subject, span, context);
             return .{ .test_expr = try mkBool(self, true), .bindings = binds, .guard = .none };
         },
         .flow_match_or_pattern => {
@@ -233,35 +269,35 @@ fn lowerMatchPattern(self: *Transformer, pattern: NodeIndex, subject: NodeIndex,
             var i: u32 = 0;
             while (i < lst.len) : (i += 1) {
                 const sub: NodeIndex = @enumFromInt(self.ast.extra_data.items[lst.start + i]);
-                const lp = try lowerMatchPattern(self, sub, try es_helpers.cloneNode(self, subject), span);
+                const lp = try lowerMatchPattern(self, sub, subject, span, context);
                 acc = if (acc.isNone()) lp.test_expr else try mkBin(self, span, acc, lp.test_expr, .pipe2);
             }
             if (acc.isNone()) acc = try mkBool(self, false);
             return .{ .test_expr = acc, .bindings = &.{}, .guard = .none };
         },
         .flow_match_as_pattern => {
-            const lp = try lowerMatchPattern(self, pnode.data.binary.left, try es_helpers.cloneNode(self, subject), span);
+            const lp = try lowerMatchPattern(self, pnode.data.binary.left, subject, span, context);
             const id_idx = pnode.data.binary.right;
-            const extra_decl = try mkBindingDecl(self, self.ast.getNode(id_idx).span, id_idx, subject, span);
+            const extra_decl = try mkBindingDecl(self, self.ast.getNode(id_idx).span, id_idx, subject, span, context);
             const binds = try self.allocator.alloc(NodeIndex, lp.bindings.len + 1);
             std.mem.copyForwards(NodeIndex, binds[0..lp.bindings.len], lp.bindings);
             binds[lp.bindings.len] = extra_decl;
             return .{ .test_expr = lp.test_expr, .bindings = binds, .guard = lp.guard };
         },
         .flow_match_guard_pattern => {
-            const lp = try lowerMatchPattern(self, pnode.data.binary.left, subject, span);
+            const lp = try lowerMatchPattern(self, pnode.data.binary.left, subject, span, context);
             const g = try self.visitNode(pnode.data.binary.right);
             const combined = if (lp.guard.isNone()) g else try mkBin(self, span, lp.guard, g, .amp2);
             return .{ .test_expr = lp.test_expr, .bindings = lp.bindings, .guard = combined };
         },
-        .flow_match_object_pattern => return lowerObjectPattern(self, pnode, subject, span),
-        .flow_match_array_pattern => return lowerArrayPattern(self, pnode, subject, span),
+        .flow_match_object_pattern => return lowerObjectPattern(self, pnode, subject, span, context),
+        .flow_match_array_pattern => return lowerArrayPattern(self, pnode, subject, span, context),
         .flow_match_instance_pattern => {
             // S instanceof Ctor && <object body test>
             const ctor = try self.visitNode(pnode.data.binary.left);
-            const inst = try mkBin(self, span, try es_helpers.cloneNode(self, subject), ctor, .kw_instanceof);
+            const inst = try mkBin(self, span, try makeMatchSubjectExpr(self, subject, context, context.function_scope, span), ctor, .kw_instanceof);
             const body = self.ast.getNode(pnode.data.binary.right);
-            const lp = try lowerObjectPattern(self, body, subject, span);
+            const lp = try lowerObjectPattern(self, body, subject, span, context);
             return .{ .test_expr = try andJoin(self, span, inst, lp.test_expr), .bindings = lp.bindings, .guard = lp.guard };
         },
         // wildcard `_` 는 무조건 매치.
@@ -273,7 +309,7 @@ fn lowerMatchPattern(self: *Transformer, pattern: NodeIndex, subject: NodeIndex,
     // identifier(non-`_`) / literal / member / unary → `S === <expr>`
     const v = try self.visitNode(pattern);
     return .{
-        .test_expr = try mkBin(self, span, try es_helpers.cloneNode(self, subject), v, .eq3),
+        .test_expr = try mkBin(self, span, try makeMatchSubjectExpr(self, subject, context, context.function_scope, span), v, .eq3),
         .bindings = &.{},
         .guard = .none,
     };
@@ -299,6 +335,27 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
     // 임시 변수 _m
     const match_var = try es_helpers.makeTempVarSpan(self);
     const match_param = try es_helpers.makeSyntheticBinding(self, match_var);
+
+    // The function owner and parameter must exist before any emitted temp
+    // reference is created, so lowering can attach the exact SymbolId and
+    // output ScopeId immediately.
+    const fn_body = try mkBlock(self, span, &.{});
+    const fn_params_list = try self.ast.addNodeList(&.{match_param});
+    const fn_params_node = try self.ast.addFormalParameters(fn_params_list, span);
+    const fn_extra = try self.ast.addExtras(&.{
+        @intFromEnum(NodeIndex.none), // name (anonymous)
+        @intFromEnum(fn_params_node),
+        @intFromEnum(fn_body),
+        0, // flags
+        @intFromEnum(NodeIndex.none), // return type
+    });
+    const fn_expr = try self.ast.addNode(.{
+        .tag = .function_expression,
+        .span = span,
+        .data = .{ .extra = fn_extra },
+    });
+    const fn_scope = try self.addGeneratedFunctionScope(self.current_scope, fn_expr);
+    const match_symbol = try self.declareSyntheticInScope(match_param, span, .parameter, fn_scope);
 
     // 각 arm → `if (<test>) { <bindings>; [if (<guard>)] return <body>; }`
     // 을 순서대로 나열. 매치되면 return 으로 함수 탈출, 아니면 다음 if 로 진행.
@@ -336,8 +393,17 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
             }));
         }
 
-        const subject = try es_helpers.makeTempVarRef(self, match_var, match_var);
-        const lp = try lowerMatchPattern(self, pattern, subject, span);
+        const then_block = try mkBlock(self, span, &.{});
+        const arm_scope = try self.addGeneratedScope(fn_scope, then_block, .block);
+        const context: FlowMatchContext = .{
+            .temp_span = match_var,
+            .symbol_id = match_symbol,
+            .function_scope = fn_scope,
+            .arm_scope = arm_scope,
+        };
+        var subject = MatchSubject{};
+        defer subject.path.deinit(self.allocator);
+        const lp = try lowerMatchPattern(self, pattern, &subject, span, context);
 
         // then-block: bindings... + (guard ? if (guard) { body } : body)
         var then_list: std.ArrayListUnmanaged(NodeIndex) = .empty;
@@ -355,7 +421,7 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
                 } },
             }));
         }
-        const then_block = try mkBlock(self, span, then_list.items);
+        self.ast.nodes.items[@intFromEnum(then_block)].data.list = try self.ast.addNodeList(then_list.items);
 
         if_stmts[k] = try self.ast.addNode(.{
             .tag = .if_statement,
@@ -365,21 +431,7 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
     }
 
     // function(_m) { if-list }
-    const fn_body = try mkBlock(self, span, if_stmts);
-    const fn_params_list = try self.ast.addNodeList(&.{match_param});
-    const fn_params_node = try self.ast.addFormalParameters(fn_params_list, span);
-    const fn_extra = try self.ast.addExtras(&.{
-        @intFromEnum(NodeIndex.none), // name (anonymous)
-        @intFromEnum(fn_params_node),
-        @intFromEnum(fn_body),
-        0, // flags
-        @intFromEnum(NodeIndex.none), // return type
-    });
-    const fn_expr = try self.ast.addNode(.{
-        .tag = .function_expression,
-        .span = span,
-        .data = .{ .extra = fn_extra },
-    });
+    self.ast.nodes.items[@intFromEnum(fn_body)].data.list = try self.ast.addNodeList(if_stmts);
 
     // (function(_m){...})(discriminant)
     // function expression을 IIFE 형태로 호출 — emitCall이 callee를 자동으로 괄호 처리
