@@ -117,12 +117,15 @@ fn emitImportDeclaration(
         const imported_node = try es_helpers.makePropertyName(self, p.imported);
         const local_node = try es_helpers.makeSyntheticRef(self, p.local);
         try self.markRuntimeHelperRef(local_node);
+        if (local_node != imported_node) try self.markRuntimeHelperRef(imported_node);
 
         const spec = try self.ast.addNode(.{
             .tag = .import_specifier,
             .span = anchor,
             .data = .{ .binary = .{ .left = imported_node, .right = local_node, .flags = 0 } },
         });
+        // Bind the import and any earlier JSX calls to one exact SymbolId.
+        try self.bindRuntimeHelperImport(local_node, p.local, anchor);
         try self.scratch.append(self.allocator, spec);
     }
 
