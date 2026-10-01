@@ -218,8 +218,8 @@ pub fn consumeTempVarSpan(self: anytype, span: Span) void {
     if (key_to_remove) |key| _ = self.temp_span_by_counter.remove(key);
 }
 
-/// 모듈 심볼 중 temp 패턴(`_`+letter[+digits]) 이름만 lazy 수집해 조회 (#4220).
-/// symbols 가 비어있는 경로(semantic-off 테스트)는 집합도 비어 기존 동작.
+/// 사용자 선언 심볼 중 temp 패턴(`_`+letter[+digits]) 이름만 lazy 수집해 조회 (#4220).
+/// 선언 없이 참조한 전역 이름도 임시 binding이 가리지 않도록 검사한다.
 pub fn collidesWithUserSymbol(self: anytype, name: []const u8) !bool {
     if (self.temp_collision_set == null) {
         var set: std.StringHashMapUnmanaged(void) = .empty;
@@ -230,7 +230,11 @@ pub fn collidesWithUserSymbol(self: anytype, name: []const u8) !bool {
         }
         self.temp_collision_set = set;
     }
-    return self.temp_collision_set.?.contains(name);
+    if (self.temp_collision_set.?.contains(name)) return true;
+    if (self.unresolved_references) |unresolved| return unresolved.contains(name);
+    // semantic 정보가 없는 경로에서는 전역 참조를 판별할 수 없으므로 소스에서
+    // 식별자 경계를 확인한다. 속성/주석의 오탐은 이름을 하나 더 건너뛰게 할 뿐이다.
+    return nameAppearsInSource(self, name);
 }
 
 /// 소스 텍스트에 `name` 이 식별자로 나오는지 (#4729 후속).

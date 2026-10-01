@@ -37,5 +37,31 @@ try { throw 2; } catch { console.log('two', _a); }
       expect(runtime.status).toBe(0);
       expect(runtime.stdout.trim()).toBe('one 9\ntwo 9');
     });
+
+    test(`${bundled ? 'bundle' : 'single-file'} does not shadow undeclared global _a`, async () => {
+      const fixture = await createFixture({
+        'input.mjs': `
+globalThis._a = 9;
+try { throw 1; } catch { console.log(_a); }
+`,
+      });
+      cleanup = fixture.cleanup;
+      const out = join(fixture.dir, 'out.cjs');
+      const args = [
+        ...(bundled ? ['--bundle'] : []),
+        'input.mjs',
+        '--target=es5',
+        '--minify-identifiers',
+        '--minify-syntax',
+        ...(bundled ? ['--platform=node', '--format=cjs'] : []),
+        '-o',
+        out,
+      ];
+      const result = await runZntcInDir(fixture.dir, args);
+      expect(result.exitCode).toBe(0);
+      const runtime = spawnSync('node', [out], { encoding: 'utf8' });
+      expect(runtime.status).toBe(0);
+      expect(runtime.stdout.trim()).toBe('9');
+    });
   }
 });
