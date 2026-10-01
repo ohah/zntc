@@ -237,6 +237,23 @@ pub fn helperName(base_name: []const u8, minify: bool) []const u8 {
     return helper_map.get(base_name) orelse base_name;
 }
 
+/// Standalone helper preambles also declare these two identity-named helpers;
+/// unlike the others they are deliberately absent from PAIRS because they do
+/// not have a minified spelling.
+const identity_runtime_names = [_][]const u8{ "__values", "__await" };
+
+/// Whether `name` can occur as a top-level helper local in an emitted runtime
+/// preamble for this formatting mode. Used by the standalone collision rewriter.
+pub fn isRuntimeHelperLocalName(name: []const u8, minify: bool) bool {
+    inline for (PAIRS) |pair| {
+        if (std.mem.eql(u8, name, helperName(pair.base, minify))) return true;
+    }
+    for (identity_runtime_names) |identity| {
+        if (std.mem.eql(u8, name, identity)) return true;
+    }
+    return false;
+}
+
 test "helperName: tslib UMD 와 충돌하는 PAIRS entry 는 LOCAL_OVERRIDES 로 격리" {
     // TSLIB_UMD_EXPORTS 에 등록된 이름이 PAIRS 에도 있다면 (즉 ZNTC inline
     // 이 그 이름을 emit 한다면) helperName(.., false) 결과는 반드시 base 와

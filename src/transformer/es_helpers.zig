@@ -499,6 +499,29 @@ pub fn uniqueSyntheticName(self: anytype, prefix: []const u8, counter: *u32) ![]
     }
 }
 
+/// Resolve a standalone runtime-helper local without changing bundler imports.
+/// The helper preamble is emitted into the same top-level scope as the user's
+/// file, so both a binding and an unresolved reference with this spelling must
+/// reserve it. The preamble rewriter uses the same cached mapping.
+pub fn resolveRuntimeHelperName(self: anytype, name: []const u8) ![]const u8 {
+    if (self.options.emit_runtime_helper_imports) return name;
+    if (self.runtime_helper_aliases.get(name)) |resolved| return resolved;
+
+    if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+    const arena = self.name_arena.?.allocator();
+    const key = try arena.dupe(u8, name);
+    const in_use = self.synthetic_taken.contains(name) or try syntheticNameInUse(self, name);
+    if (!in_use) {
+        try self.runtime_helper_aliases.put(self.allocator, key, name);
+        return name;
+    }
+
+    var counter: u32 = 1;
+    const resolved = try uniqueSyntheticName(self, name, &counter);
+    try self.runtime_helper_aliases.put(self.allocator, key, resolved);
+    return resolved;
+}
+
 /// 합성 식별자 노드로 기록한다(심볼 누락 검사기가 켜졌을 때만) — 그대로 돌려준다.
 pub fn markSynthetic(self: anytype, node: NodeIndex) NodeIndex {
     if (self.synthetic_idents) |*set| set.put(self.allocator, @intFromEnum(node), {}) catch {};
@@ -603,7 +626,8 @@ fn makeIdentifierRef(self: anytype, name: []const u8) !NodeIndex {
 /// 공용 모듈 `../runtime_helper_names.zig` 를 import 한다.
 pub fn makeRuntimeHelperRef(self: anytype, base_name: []const u8) !NodeIndex {
     const names = @import("../runtime_helper_names.zig");
-    const resolved = names.helperName(base_name, self.options.minify_whitespace);
+    const local_name = names.helperName(base_name, self.options.minify_whitespace);
+    const resolved = try resolveRuntimeHelperName(self, local_name);
     const idx = try makeGlobalRef(self, resolved);
     // #2869 helper call site 를 marker 에 등록 → resync analyzer 가 user scope 가 아니라
     // helper_scope_map 으로 격리해 binding. user 가 동일 이름 local 을 선언해도 helper

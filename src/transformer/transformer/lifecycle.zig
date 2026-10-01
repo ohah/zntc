@@ -185,6 +185,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     if (self.name_arena) |*a| a.deinit();
     if (self.block_rename_map) |*m| m.deinit(self.allocator);
     self.synthetic_names.deinit(self.allocator);
+    self.runtime_helper_aliases.deinit(self.allocator);
     self.synthetic_taken.deinit(self.allocator);
     if (self.user_symbol_names) |*set| set.deinit(self.allocator);
     if (self.synthetic_idents) |*set| set.deinit(self.allocator);

@@ -690,4 +690,103 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(native.stdout).toBe('lexical:object:with');
     expect(transformed.stdout).toBe(native.stdout);
   });
+
+  test('standalone downlevel helpers avoid user bindings in normal and minified output', async () => {
+    const cases = [
+      {
+        helper: '__extends',
+        reserved: '__extends2',
+        alias: '__extends3',
+        options: [] as string[],
+        userValues: 'user-long reserved-long',
+      },
+      {
+        helper: '$eX',
+        reserved: '$eX2',
+        alias: '$eX3',
+        options: ['--minify-whitespace'],
+        userValues: 'user-short reserved-short',
+      },
+    ];
+    const files: Record<string, string> = {};
+    for (const [index, item] of cases.entries()) {
+      files[`input-${index}.mjs`] = `
+        const ${item.helper} = '${index === 0 ? 'user-long' : 'user-short'}';
+        const ${item.reserved} = '${index === 0 ? 'reserved-long' : 'reserved-short'}';
+        const marker = '${item.helper} ${item.reserved}';
+        class Base { value() { return 1; } }
+        export class Child extends Base { read() { return super.value() + 1; } }
+        console.log(${item.helper}, ${item.reserved}, new Child().read(), marker);
+      `;
+    }
+    const fixture = await createFixture(files);
+    cleanup = fixture.cleanup;
+
+    for (const [index, item] of cases.entries()) {
+      const input = join(fixture.dir, `input-${index}.mjs`);
+      const output = join(fixture.dir, `output-${index}.mjs`);
+      const result = await runZntc([input, '-o', output, '--target=es5', ...item.options], {
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+      });
+      expect(result.exitCode, result.stderr).toBe(0);
+      const emitted = readFileSync(output, 'utf8');
+      expect(emitted).toContain(`var ${item.alias}`);
+      expect(emitted).toContain(`${item.alias}(Child`);
+      // The source literal that mentions both colliding spellings is not rewritten.
+      expect(emitted).toContain(`${item.helper} ${item.reserved}`);
+      const transformed = await runNode(output);
+      expect(transformed.stderr).toBe('');
+      expect(transformed.stdout.trim()).toBe(
+        `${item.userValues} 2 ${item.helper} ${item.reserved}`,
+      );
+    }
+  });
+
+  test('standalone helper dependencies avoid user bindings in async iterator fallbacks', async () => {
+    const fixture = await createFixture({
+      'input.mjs': `
+        const __values = 'user-values';
+        const __values2 = 'reserved-values';
+        async function sum(items) {
+          let total = 0;
+          for await (const item of items) total += item;
+          return total;
+        }
+        sum([2, 3]).then((total) => console.log(__values, __values2, total));
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.mjs');
+    const output = join(fixture.dir, 'output.mjs');
+    const result = await runZntc([input, '-o', output, '--target=es5']);
+    expect(result.exitCode, result.stderr).toBe(0);
+    const emitted = readFileSync(output, 'utf8');
+    expect(emitted).toContain('var __values3');
+    expect(emitted).toContain('typeof __values3');
+    const transformed = await runNode(output);
+    expect(transformed.stderr).toBe('');
+    expect(transformed.stdout.trim()).toBe('user-values reserved-values 5');
+  });
+
+  test('standalone helpers do not capture unresolved source globals', async () => {
+    const fixture = await createFixture({
+      'input.mjs': `
+        globalThis.__extends = 'external-value';
+        class Base { value() { return 1; } }
+        class Child extends Base { read() { return super.value() + 1; } }
+        console.log(__extends, new Child().read());
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.mjs');
+    const output = join(fixture.dir, 'output.mjs');
+    const result = await runZntc([input, '-o', output, '--target=es5']);
+    expect(result.exitCode, result.stderr).toBe(0);
+    const emitted = readFileSync(output, 'utf8');
+    expect(emitted).toContain('var __extends2');
+    expect(emitted).toContain('console.log(__extends,');
+    const transformed = await runNode(output);
+    expect(transformed.stderr).toBe('');
+    expect(transformed.stdout.trim()).toBe('external-value 2');
+  });
 });
