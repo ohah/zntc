@@ -169,7 +169,10 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             // and initializer references in the edited semantic graph.
             .ts_enum_declaration => facts.has_runtime_sensitive_syntax = true,
 
-            .ts_module_declaration,
+            // Namespace IIFE parameters and exported binding edges are tracked
+            // by SymbolId and emitted from that graph by codegen.
+            .ts_module_declaration => facts.has_runtime_sensitive_syntax = true,
+
             .ts_import_equals_declaration,
             .ts_export_assignment,
             .ts_namespace_export_declaration,
@@ -1572,7 +1575,7 @@ fn transpileWithCallbackInternal(
             const coverage = @import("transformer/symbol_coverage.zig");
             var report = coverage.check(arena_alloc, transformer.ast, root, transformer.parser_node_count, transformer.symbol_ids.items, analyzer.symbols.items, if (transformer.synthetic_idents) |*s| s else null) catch return error.OutOfMemory;
             coverage.print(arena_alloc, file_path, &report);
-            const exact = coverage.checkExact(
+            const exact = coverage.checkExactWithNamespaceMetadata(
                 arena_alloc,
                 transformer.ast,
                 root,
@@ -1588,6 +1591,8 @@ fn transpileWithCallbackInternal(
                 &analyzer.unresolved_reference_nodes,
                 &transformer.explicit_global_reference_nodes,
                 &transformer.reference_origin_map,
+                &analyzer.namespace_member_owners,
+                &analyzer.namespace_scope_owners,
             ) catch return error.OutOfMemory;
             coverage.printExact(file_path, exact);
         }
@@ -1988,7 +1993,6 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
 
     const runtime_sources = [_][]const u8{
-        "namespace N { export const value = 1 }",
         "using resource = openResource();",
         "const view = <div />;",
     };
@@ -1999,6 +2003,16 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
         _ = try runtime_parser.parse();
         try std.testing.expect(!canMangleWithTransformSemantic(minify, &runtime_parser));
     }
+
+    var namespace_scanner = try Scanner.init(
+        allocator,
+        "namespace N { export const value = 1; export function read() { return value; } }",
+    );
+    var namespace_parser = Parser.init(allocator, &namespace_scanner);
+    namespace_parser.configureFromExtension(".ts");
+    _ = try namespace_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), namespace_parser.errors.items.len);
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &namespace_parser));
 
     var enum_scanner = try Scanner.init(allocator, "enum Color { Red }");
     var enum_parser = Parser.init(allocator, &enum_scanner);

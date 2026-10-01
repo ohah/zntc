@@ -829,7 +829,10 @@ fn emitNamespaceVarDirectAssign(self: anytype, ns_name: []const u8, decl_idx: No
         const var_name = self.ast.getText(var_name_node.span);
         if (isDestructuringTempBinding(self, name_idx)) {
             try self.write(keyword);
-            try self.write(var_name);
+            // The transformed declaration and its generated references share
+            // a semantic SymbolId. Emit the binding through codegen so an
+            // identifier rename cannot affect only the reads.
+            try self.emitNode(name_idx);
             try self.writeByte('=');
             try self.emitNode(init_idx);
             try self.writeByte(';');
@@ -868,7 +871,9 @@ fn emitNamespaceVarMixed(self: anytype, ns_name: []const u8, decl_idx: NodeIndex
             if (init_idx.isNone()) continue;
             if (isDestructuringTempBinding(self, name_idx)) {
                 try self.write(keyword);
-                try self.write(self.ast.getText(name_node.span));
+                // Keep the declaration spelling in sync with the generated
+                // reads that go through emitNode and the SymbolId mangler.
+                try self.emitNode(name_idx);
                 try self.writeByte('=');
                 try self.emitNode(init_idx);
                 try self.writeByte(';');
