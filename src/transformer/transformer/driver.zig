@@ -1,5 +1,6 @@
 const std = @import("std");
 const ast_mod = @import("../../parser/ast.zig");
+const ast_walk = @import("../../parser/ast_walk.zig");
 const es2015_params = @import("../es2015_params.zig");
 
 const NodeIndex = ast_mod.NodeIndex;
@@ -88,7 +89,7 @@ pub fn transform(self: anytype) Error!NodeIndex {
     if (self.options.unsupported.default_params or self.options.unsupported.object_spread) {
         var pass2_scope = profile.begin(.transform_pass2);
         defer pass2_scope.end();
-        try lowerAllFunctionParams(self);
+        try lowerAllFunctionParams(self, root);
     }
 
     var finalize_scope = profile.begin(.transform_finalize);
@@ -261,13 +262,16 @@ fn hasScopedOutputReplacement(self: anytype, idx: NodeIndex) bool {
     return false;
 }
 
-fn lowerAllFunctionParams(self: anytype) Error!void {
+fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
     const Self = @TypeOf(self.*);
     const node_count = self.ast.nodes.items.len;
-    var i: usize = 0;
-    while (i < node_count) : (i += 1) {
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(self.allocator, self.ast, root);
+    defer self.allocator.free(reachable);
+    for (reachable) |raw| {
+        if (raw >= node_count) continue;
+        const i: usize = raw;
         const node = self.ast.nodes.items[i];
-        if (hasScopedOutputReplacement(self, @enumFromInt(@as(u32, @intCast(i))))) continue;
+        if (hasScopedOutputReplacement(self, @enumFromInt(raw))) continue;
         const saved_scope = self.current_scope;
         defer self.current_scope = saved_scope;
         if (self.transformed_scope_owner_map.get(@intCast(i)) orelse self.scope_owner_map.get(@intCast(i))) |scope_id| {
