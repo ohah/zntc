@@ -51,7 +51,9 @@ pub fn emitBundleRuntimeHelpers(
         // `__commonJS` wrapper 자체는 cb 를 직접 호출하므로 shim 필요 조건은
         // `kind=.require and is_external` 한 import_record 의 존재로 좁혀진다.
         if (needsRequireShim(sorted_modules, options)) {
-            try rt.appendRequireShim(output, allocator, options.minify_whitespace);
+            const create_require_local = try requireShimCreateRequireLocal(allocator, sorted_modules, linker);
+            defer allocator.free(create_require_local);
+            try rt.appendRequireShimWithLocalName(output, allocator, options.minify_whitespace, create_require_local);
         }
         if (needs_cjs_runtime) {
             try rt.appendCommonJsFactoryRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports);
@@ -371,7 +373,14 @@ pub fn emitChunkRuntimeHelpers(
     if (needs_cjs_runtime or needs_esm_wrap_runtime) {
         // bundle 경로와 동일 정책. chunk 의 module index 들을 graph 로 resolve 후 동일 검사.
         if (needsRequireShimForChunk(chunk, graph, options)) {
-            try rt.appendRequireShim(output, allocator, options.minify_whitespace);
+            var chunk_modules: std.ArrayList(*const Module) = .empty;
+            defer chunk_modules.deinit(allocator);
+            for (chunk.modules.items) |mod_idx| {
+                if (graph.getModule(mod_idx)) |m| try chunk_modules.append(allocator, m);
+            }
+            const create_require_local = try requireShimCreateRequireLocal(allocator, chunk_modules.items, linker);
+            defer allocator.free(create_require_local);
+            try rt.appendRequireShimWithLocalName(output, allocator, options.minify_whitespace, create_require_local);
         }
         if (needs_cjs_runtime) {
             try rt.appendCommonJsFactoryRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports);
@@ -423,6 +432,62 @@ fn needsRequireShimForChunk(chunk: *const Chunk, graph: *const ModuleGraph, opti
         const m = graph.getModule(mod_idx) orelse continue;
         for (m.import_records) |rec| {
             if (rec.kind == .require and rec.is_external) return true;
+        }
+    }
+    return false;
+}
+
+/// Pick the createRequire import binding against every local name that can
+/// appear in this output unit. The runtime shim is emitted after linking, so
+/// it must account for both source spellings and names already assigned by the
+/// linker, including cross-chunk consumer aliases.
+fn requireShimCreateRequireLocal(
+    allocator: std.mem.Allocator,
+    modules: []const *const Module,
+    linker: ?*const Linker,
+) ![]const u8 {
+    var suffix: u32 = 0;
+    while (true) : (suffix += 1) {
+        const candidate = if (suffix == 0)
+            try allocator.dupe(u8, "createRequire")
+        else
+            try std.fmt.allocPrint(allocator, "createRequire${d}", .{suffix});
+        if (!requireShimNameInUse(candidate, modules, linker)) return candidate;
+        allocator.free(candidate);
+    }
+}
+
+fn requireShimNameInUse(candidate: []const u8, modules: []const *const Module, linker: ?*const Linker) bool {
+    if (linker) |l| {
+        if (l.reserved_globals.contains(candidate) or l.canonical_names_used.contains(candidate)) return true;
+        for (l.global_identifiers) |name| {
+            if (std.mem.eql(u8, name, candidate)) return true;
+        }
+        var renamed = l.rename_table.map.valueIterator();
+        while (renamed.next()) |name| {
+            if (std.mem.eql(u8, name.*, candidate)) return true;
+        }
+        var cross_chunk = l.cross_chunk_global_names.valueIterator();
+        while (cross_chunk.next()) |names| {
+            var values = names.valueIterator();
+            while (values.next()) |name| {
+                if (std.mem.eql(u8, name.*, candidate)) return true;
+            }
+        }
+        var consumer_imports = l.consumer_import_local.valueIterator();
+        while (consumer_imports.next()) |names| {
+            var values = names.valueIterator();
+            while (values.next()) |name| {
+                if (std.mem.eql(u8, name.*, candidate)) return true;
+            }
+        }
+    }
+
+    for (modules) |m| {
+        const sem = m.semantic orelse continue;
+        if (sem.unresolved_references.contains(candidate)) return true;
+        for (sem.symbols.items) |symbol| {
+            if (std.mem.eql(u8, symbol.nameText(m.source), candidate)) return true;
         }
     }
     return false;
