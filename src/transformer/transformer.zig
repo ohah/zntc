@@ -130,8 +130,11 @@ pub const Transformer = struct {
     /// 새 참조 노드 → 최초 출처 참조 노드. `SymbolId` 복사와 별개로
     /// read/write·문장 위치의 출처를 보존한다. 바인딩→참조 생성은 여기에 넣지 않는다.
     reference_origin_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
-    /// Coverage-only provenance for generated refs that intentionally remain external.
+    /// Provenance for generated refs that intentionally remain external.
+    /// Coverage audits and bundler semantic resync both consume this marker set.
     explicit_global_reference_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// Graph prepass can retain this provenance across a later semantic resync.
+    record_explicit_global_references: bool = false,
     unresolved_reference_nodes: ?*const std.AutoHashMapUnmanaged(u32, void) = null,
 
     /// #2869 transformer 가 emit 한 runtime helper identifier_reference 노드 인덱스.
@@ -583,6 +586,7 @@ pub const Transformer = struct {
     pub const initSymbolIds = lifecycle_mod.initSymbolIds;
     pub const markRuntimeHelperRef = lifecycle_mod.markRuntimeHelperRef;
     pub const ownedHelperRefNodes = lifecycle_mod.ownedHelperRefNodes;
+    pub const ownedExplicitGlobalRefNodes = lifecycle_mod.ownedExplicitGlobalRefNodes;
 
     // ================================================================
     // 공개 API
@@ -649,7 +653,7 @@ pub const Transformer = struct {
     pub const makeIdentifierRefWithSymbolAt = node_helpers.makeIdentifierRefWithSymbolAt;
     pub const makeRootScopeRef = node_helpers.makeRootScopeRef;
     pub fn markExplicitGlobalReference(self: *Transformer, node: NodeIndex) !void {
-        if (self.synthetic_idents == null) return;
+        if (self.synthetic_idents == null and !self.record_explicit_global_references) return;
         try self.explicit_global_reference_nodes.put(self.allocator, @intFromEnum(node), {});
     }
     pub const makeCurrentClassRef = node_helpers.makeCurrentClassRef;

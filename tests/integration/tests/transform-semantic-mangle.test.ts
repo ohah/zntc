@@ -1413,6 +1413,33 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         }
         console.log(classify({ kind: 1, extra: true }));
       `,
+      'array-shadow.mjs': `
+        // @flow
+        function classify(value) {
+          const Array = { isArray: () => false };
+          const matched = match (value) { [const first] => first, _ => 0 };
+          return [matched, Array.isArray([])].join(' ');
+        }
+        console.log(classify([4]));
+      `,
+      'object-rest-shadow.mjs': `
+        // @flow
+        function classify(value) {
+          const Object = {
+            keys: value => globalThis.Object.keys(value),
+            assign: () => { throw new Error('shadowed Object.assign'); },
+          };
+          return match (value) { { kind: 1, ...const rest } => Object.keys(rest).length, _ => 0 };
+        }
+        console.log(classify({ kind: 1, extra: true }));
+      `,
+      'array-rest.mjs': `
+        // @flow
+        function classify(value) {
+          return match (value) { [const first, ...const rest] => [first, rest.length].join(':'), _ => 'none' };
+        }
+        console.log(classify([4, 5, 6]));
+      `,
       'typed.mjs': `
         // @flow
         function classify(value: number) {
@@ -1474,31 +1501,55 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(emitted.stderr).toBe('');
     expect(emitted.stdout.trim()).toBe('4 zero outer user-m user-m2');
 
-    for (const [entry, suffix, extraArgs] of [
-      ['array-pattern.mjs', 'match-array-fallback', []],
-      ['object-rest.mjs', 'match-object-rest-fallback', []],
-      ['typed.mjs', 'match-typed-fallback', []],
-      ['with-import.mjs', 'match-import-fallback', []],
-      ['with-eval.mjs', 'match-eval-fallback', []],
-      ['match.mjs', 'match-es5-fallback', ['--target=es5']],
-      ['match.mjs', 'match-minify-syntax-fallback', ['--minify-syntax']],
+    for (const [entry, suffix, extraArgs, keepsGraph, expected] of [
+      ['array-pattern.mjs', 'match-array-kept', [], true, '4'],
+      ['object-rest.mjs', 'match-object-rest-kept', [], true, '1'],
+      ['array-rest.mjs', 'match-array-rest-kept', [], true, '4:2'],
+      ['array-shadow.mjs', 'match-array-shadow-kept', [], true, '4 false'],
+      ['object-rest-shadow.mjs', 'match-object-rest-shadow-kept', [], true, '1'],
+      ['array-shadow.mjs', 'match-array-shadow-es5-fallback', ['--target=es5'], false, '4 false'],
+      [
+        'object-rest-shadow.mjs',
+        'match-object-rest-shadow-es5-fallback',
+        ['--target=es5'],
+        false,
+        '1',
+      ],
+      ['array-pattern.mjs', 'match-array-es5-fallback', ['--target=es5'], false, '4'],
+      ['object-rest.mjs', 'match-object-rest-es5-fallback', ['--target=es5'], false, '1'],
+      ['typed.mjs', 'match-typed-fallback', [], false, '3'],
+      ['with-import.mjs', 'match-import-fallback', [], false, '5'],
+      ['with-eval.mjs', 'match-eval-fallback', [], false, 'zero'],
+      ['match.mjs', 'match-es5-fallback', ['--target=es5'], false, '4 zero outer user-m user-m2'],
+      [
+        'match.mjs',
+        'match-minify-syntax-fallback',
+        ['--minify-syntax'],
+        false,
+        '4 zero outer user-m user-m2',
+      ],
     ] as const) {
-      const fallback = await bundle(entry, suffix, [...extraArgs]);
-      expect(fallback.stderr, suffix).not.toContain('symbol-identity-prepass');
-      const transformed = await runNode(fallback.output);
+      const result = await bundle(entry, suffix, [...extraArgs]);
+      if (keepsGraph) {
+        const identity = result.stderr
+          .split(/\r?\n/)
+          .find((line) => line.includes('zntc: symbol-identity-prepass '));
+        expect(identity, suffix).toBeDefined();
+        const hasExternalShadow = suffix.includes('-shadow-kept');
+        expect(identity, suffix).toMatch(
+          new RegExp(`shadowed_external_reference=${hasExternalShadow ? 1 : 0}(?:\\s|$)`),
+        );
+        expect(identity, suffix).toMatch(new RegExp(`clean=${hasExternalShadow ? 0 : 1}(?:\\s|$)`));
+        for (const counter of EXACT_ZERO_COUNTERS.filter(
+          (name) => name !== 'shadowed_external_reference',
+        )) {
+          expect(identity, `${suffix}: ${counter}`).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+        }
+      } else {
+        expect(result.stderr, suffix).not.toContain('symbol-identity-prepass');
+      }
+      const transformed = await runNode(result.output);
       expect(transformed.stderr, suffix).toBe('');
-      const expected =
-        suffix === 'match-array-fallback'
-          ? '4'
-          : suffix === 'match-object-rest-fallback'
-            ? '1'
-            : suffix === 'match-typed-fallback'
-              ? '3'
-              : suffix === 'match-import-fallback'
-                ? '5'
-                : suffix === 'match-eval-fallback'
-                  ? 'zero'
-                  : '4 zero outer user-m user-m2';
       expect(transformed.stdout.trim(), suffix).toBe(expected);
     }
   });
