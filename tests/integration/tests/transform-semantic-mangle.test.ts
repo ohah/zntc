@@ -789,4 +789,75 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stderr).toBe('');
     expect(transformed.stdout.trim()).toBe('external-value 2');
   });
+
+  test('type-erased Flow scripts reuse the transform semantic graph', async () => {
+    const fixture = await createFixture({
+      'input.js': `
+        // @flow
+        import type { Numeric } from './types.js';
+        const _state: Numeric = 3;
+        function calculate(_argument: Numeric = _state): Numeric {
+          const local: Numeric = _argument + _state;
+          return Number(eval('local'));
+        }
+        console.log(calculate(4), _state);
+      `,
+      'reference.js': `
+        const state = 3;
+        function calculate(argument = state) {
+          const local = argument + state;
+          return Number(eval('local'));
+        }
+        console.log(calculate(4), state);
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+    const output = join(fixture.dir, 'output.js');
+    const result = await runZntc([input, '-o', output, '--minify-identifiers'], {
+      env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+    });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+    const identity = result.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity '));
+    expect(identity).toBeDefined();
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const emitted = readFileSync(output, 'utf8');
+    expect(emitted).not.toContain('type Numeric');
+    expect(emitted).not.toContain(': Numeric');
+    const reference = await runNode(join(fixture.dir, 'reference.js'));
+    const transformed = await runNode(output);
+    expect(reference.stdout.trim()).toBe('7 3');
+    expect(transformed.stdout).toBe(reference.stdout);
+  });
+
+  test('Flow match lowering with minification stays on the runtime-transform path', async () => {
+    const fixture = await createFixture({
+      'input.js': `
+        // @flow
+        function classify(value) {
+          return match (value) {
+            1 => 'one',
+            2 => 'two',
+            _ => 'other',
+          };
+        }
+        console.log([classify(1), classify(2), classify(3)].join(','));
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+    const output = join(fixture.dir, 'output.js');
+    const result = await runZntc([input, '-o', output, '--minify-identifiers', '--flow'], {
+      env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+    });
+    expect(result.exitCode, result.stderr).toBe(0);
+    const transformed = await runNode(output);
+    expect(transformed.stderr).toBe('');
+    expect(transformed.stdout.trim()).toBe('one,two,other');
+  });
 });
