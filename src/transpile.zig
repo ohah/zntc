@@ -166,6 +166,9 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             .ts_import_equals_declaration,
             .ts_export_assignment,
             .ts_namespace_export_declaration,
+            .flow_enum_declaration,
+            .flow_match_expression,
+            .flow_component_wrapper,
             => facts.has_runtime_sensitive_syntax = true,
 
             .variable_declaration => {
@@ -540,10 +543,9 @@ fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
 fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Parser) bool {
     if (!options.minify_identifiers or
         options.experimental_decorators or options.emit_decorator_metadata or
-        options.react_refresh or options.react_refresh_hook_signatures or
-        parser.is_flow) return false;
+        options.react_refresh or options.react_refresh_hook_signatures) return false;
 
-    if (parser.source_mode == .ts) {
+    if (parser.is_flow or parser.source_mode == .ts) {
         const facts = collectAstFacts(&parser.ast);
         return !facts.has_runtime_sensitive_syntax and !parser.ast.has_jsx;
     }
@@ -1980,6 +1982,49 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
         _ = try runtime_parser.parse();
         try std.testing.expect(!canMangleWithTransformSemantic(minify, &runtime_parser));
     }
+}
+
+test "#4819 type-erased Flow reuses transform semantic graph only without runtime lowering" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const minify: TranspileOptions = .{ .minify_identifiers = true };
+
+    var scanner = try Scanner.init(allocator, "// @flow\ntype Alias = number; const value: Alias = 1;");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    _ = try parser.parse();
+    try std.testing.expect(parser.is_flow);
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
+
+    const runtime_sources = [_]struct { source: []const u8, path: []const u8, tag: ast_mod.Node.Tag }{
+        .{ .source = "// @flow\nenum Color { Red }", .path = ".js", .tag = .flow_enum_declaration },
+        .{ .source = "// @flow\nfunction classify(value) { return match (value) { 1 => 'one', _ => 'other' }; }", .path = ".js", .tag = .flow_match_expression },
+        .{ .source = "// @flow\ncomponent Card(ref?: mixed, ...props: { label?: string }) { return null; }", .path = ".js", .tag = .flow_component_wrapper },
+    };
+    for (runtime_sources) |item| {
+        var runtime_scanner = try Scanner.init(allocator, item.source);
+        var runtime_parser = Parser.init(allocator, &runtime_scanner);
+        runtime_parser.configureFromExtension(item.path);
+        _ = try runtime_parser.parse();
+        try std.testing.expect(runtime_parser.is_flow);
+        try std.testing.expectEqual(@as(usize, 0), runtime_parser.errors.items.len);
+        var has_runtime_tag = false;
+        for (runtime_parser.ast.nodes.items) |node| {
+            if (node.tag == item.tag) has_runtime_tag = true;
+        }
+        try std.testing.expect(has_runtime_tag);
+        try std.testing.expect(!canMangleWithTransformSemantic(minify, &runtime_parser));
+    }
+
+    var jsx_scanner = try Scanner.init(allocator, "// @flow\nconst view = <div />;");
+    var jsx_parser = Parser.init(allocator, &jsx_scanner);
+    jsx_parser.configureFromExtension(".jsx");
+    _ = try jsx_parser.parse();
+    try std.testing.expect(jsx_parser.is_flow);
+    try std.testing.expect(jsx_parser.ast.has_jsx);
+    try std.testing.expect(!canMangleWithTransformSemantic(minify, &jsx_parser));
 }
 
 /// fast 와 full 양쪽 경로의 출력이 expected 와 일치하는지 검증. parity 만으로는
