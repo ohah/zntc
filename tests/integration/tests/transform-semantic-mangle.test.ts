@@ -856,8 +856,56 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
     });
     expect(result.exitCode, result.stderr).toBe(0);
+    const identity = result.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity '));
+    expect(identity).toBeDefined();
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
     const transformed = await runNode(output);
     expect(transformed.stderr).toBe('');
     expect(transformed.stdout.trim()).toBe('one,two,other');
+  });
+
+  test('Flow match pattern bindings keep exact IDs through minified lowering', async () => {
+    const fixture = await createFixture({
+      'input.js': `
+        // @flow
+        function classify(_a, input, expected) {
+          return match (input) {
+            { kind: expected, payload: const payload } if (payload > 0) => payload,
+            [const first, ...const rest] => first + rest.length,
+            const item if (item > 2) => item,
+            { fallback: const item } => item,
+            _ => _a,
+          };
+        }
+        console.log([
+          classify(99, { kind: 1, payload: 4 }, 1),
+          classify(99, [2, 3], 1),
+          classify(99, 5, 1),
+          classify(99, 1, 1),
+        ].join(','));
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+    const output = join(fixture.dir, 'output.js');
+    const result = await runZntc(
+      [input, '-o', output, '--target=es5', '--minify-identifiers', '--flow'],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    expect(result.exitCode, result.stderr).toBe(0);
+    const identity = result.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity '));
+    expect(identity).toBeDefined();
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const transformed = await runNode(output);
+    expect(transformed.stderr).toBe('');
+    expect(transformed.stdout.trim()).toBe('4,3,5,99');
   });
 });

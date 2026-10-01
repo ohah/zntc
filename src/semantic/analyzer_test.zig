@@ -2681,3 +2681,75 @@ test "Reference #4515: non-computed key 는 여전히 참조로 잡히지 않는
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u32, 0), counts[0]);
 }
+
+test "#4819 Flow match value patterns and arms preserve source reference IDs" {
+    const allocator = std.testing.allocator;
+    const source = "function classify(value, one, fallback) { return match (value) { one => fallback, _ => value, }; }";
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    parser.is_flow = true;
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_flow = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var value_reads: usize = 0;
+    var one_reads: usize = 0;
+    var fallback_reads: usize = 0;
+    for (analyzer.references.items) |reference| {
+        if (reference.flags.declare or !reference.flags.read) continue;
+        const node = parser.ast.getNode(reference.node_index);
+        const name = parser.ast.getText(node.span);
+        if (std.mem.eql(u8, name, "value")) value_reads += 1;
+        if (std.mem.eql(u8, name, "one")) one_reads += 1;
+        if (std.mem.eql(u8, name, "fallback")) fallback_reads += 1;
+        const node_index = @intFromEnum(reference.node_index);
+        try std.testing.expectEqual(@as(?u32, @intFromEnum(reference.symbol_id)), analyzer.symbol_ids.items[node_index]);
+    }
+    try std.testing.expectEqual(@as(usize, 2), value_reads);
+    try std.testing.expectEqual(@as(usize, 1), one_reads);
+    try std.testing.expectEqual(@as(usize, 1), fallback_reads);
+    try std.testing.expectEqual(@as(usize, 0), analyzer.unresolved_references.count());
+}
+
+test "#4819 Flow match bindings resolve in guards and arm bodies" {
+    const allocator = std.testing.allocator;
+    const source = "function classify(subject, fallback) { return match (subject) { const item if (item > fallback) => item, _ => fallback, }; }";
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    parser.is_flow = true;
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_flow = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var item_id: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, index| {
+        if (symbol.kind == .variable_let and std.mem.eql(u8, symbol.nameText(source), "item")) {
+            try std.testing.expect(item_id == null);
+            item_id = @intCast(index);
+        }
+    }
+    const expected_item = item_id orelse return error.MissingFlowMatchBinding;
+    var item_reads: usize = 0;
+    for (analyzer.references.items) |reference| {
+        if (reference.flags.declare or !reference.flags.read) continue;
+        const node = parser.ast.getNode(reference.node_index);
+        if (!std.mem.eql(u8, parser.ast.getText(node.span), "item")) continue;
+        try std.testing.expectEqual(expected_item, @intFromEnum(reference.symbol_id));
+        item_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), item_reads);
+}

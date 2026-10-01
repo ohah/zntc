@@ -1616,6 +1616,8 @@ pub const SemanticAnalyzer = struct {
             // func_decl의 이름/params가 합성 span이라 visitFunctionDeclaration을
             // 직접 호출할 수 없으므로, body만 함수 스코프로 방문한다.
             .flow_component_wrapper => try self.visitFlowComponentWrapper(node),
+            .flow_match_expression => try self.visitFlowMatchExpression(node),
+            .flow_match_arm => try self.visitFlowMatchArm(node),
 
             // `@expr` — decorator의 expression을 방문해 identifier_reference resolve.
             // 누락 시 import binding이 resolve 안 돼 tree-shake에서 drop됨.
@@ -3102,6 +3104,134 @@ pub const SemanticAnalyzer = struct {
         //    `__ns_N_0` 로 치환할 수 있다. 누락되면 `React.forwardRef` 가 그대로 emit 되어
         //    `ReferenceError: Property 'React' doesn't exist` 로 런타임 크래시.
         if (!const_idx.isNone()) try self.visitNode(const_idx);
+    }
+
+    fn visitFlowMatchExpression(self: *SemanticAnalyzer, node: Node) AllocError!void {
+        const e = node.data.extra;
+        if (!self.ast.hasExtra(e, 2)) return;
+        try self.visitNode(self.ast.readExtraNode(e, 0));
+
+        const start = self.ast.readExtra(e, 1);
+        const len = self.ast.readExtra(e, 2);
+        const extra = self.ast.extra_data.items;
+        if (start > extra.len or len > extra.len - start) return;
+        for (extra[start .. start + len]) |arm| {
+            try self.visitNode(@enumFromInt(arm));
+        }
+    }
+
+    fn visitFlowMatchArm(self: *SemanticAnalyzer, node: Node) AllocError!void {
+        const pattern = node.data.binary.left;
+
+        // Pattern values execute before the arm's bindings are introduced.
+        // This also gives the original discriminant/pattern/body references
+        // SymbolIds before Flow lowering reuses their NodeIndexes.
+        try self.visitFlowMatchPatternValues(pattern);
+
+        const saved = try self.enterScope(.block, self.is_strict_mode);
+        try self.declareFlowMatchPatternBindings(pattern);
+        try self.visitFlowMatchPatternGuards(pattern);
+        try self.visitNode(node.data.binary.right);
+        self.exitScope(saved);
+    }
+
+    fn visitFlowMatchPatternValues(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .flow_match_binding_pattern, .flow_match_rest, .flow_match_opaque_pattern => {},
+            .flow_match_as_pattern, .flow_match_guard_pattern => {
+                try self.visitFlowMatchPatternValues(node.data.binary.left);
+            },
+            .flow_match_object_prop => {
+                try self.visitFlowMatchPatternValues(node.data.binary.right);
+            },
+            .flow_match_instance_pattern => {
+                try self.visitNode(node.data.binary.left);
+                try self.visitFlowMatchPatternValues(node.data.binary.right);
+            },
+            .flow_match_or_pattern, .flow_match_object_pattern, .flow_match_array_pattern => {
+                try self.visitFlowMatchPatternValueList(node.data.list);
+            },
+            .identifier_reference => {
+                if (!std.mem.eql(u8, self.ast.getText(node.span), "_")) try self.visitNode(idx);
+            },
+            else => try self.visitNode(idx),
+        }
+    }
+
+    fn visitFlowMatchPatternValueList(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
+        const extra = self.ast.extra_data.items;
+        if (list.start > extra.len or list.len > extra.len - list.start) return;
+        var i: u32 = 0;
+        while (i < list.len) : (i += 1) {
+            try self.visitFlowMatchPatternValues(@enumFromInt(extra[list.start + i]));
+        }
+    }
+
+    fn declareFlowMatchPatternBindings(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .flow_match_binding_pattern => try self.declareSymbolWithNode(node.span, .variable_let, node.span, @intFromEnum(idx)),
+            .flow_match_rest => if (node.data.none != 0) {
+                try self.declareSymbolWithNode(node.span, .variable_let, node.span, @intFromEnum(idx));
+            },
+            .flow_match_as_pattern => {
+                try self.declareFlowMatchPatternBindings(node.data.binary.left);
+                const binding = node.data.binary.right;
+                if (!binding.isNone() and @intFromEnum(binding) < self.ast.nodes.items.len) {
+                    const binding_node = self.ast.getNode(binding);
+                    try self.declareSymbolWithNode(binding_node.span, .variable_let, binding_node.span, @intFromEnum(binding));
+                }
+            },
+            .flow_match_guard_pattern => try self.declareFlowMatchPatternBindings(node.data.binary.left),
+            .flow_match_object_prop => try self.declareFlowMatchPatternBindings(node.data.binary.right),
+            .flow_match_instance_pattern => try self.declareFlowMatchPatternBindings(node.data.binary.right),
+            .flow_match_object_pattern, .flow_match_array_pattern => try self.visitFlowMatchPatternBindingList(node.data.list),
+            // The current Flow lowering deliberately drops bindings inside OR
+            // alternatives, so do not create source identities that have no
+            // corresponding output binding.
+            .flow_match_or_pattern => {},
+            else => {},
+        }
+    }
+
+    fn visitFlowMatchPatternBindingList(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
+        const extra = self.ast.extra_data.items;
+        if (list.start > extra.len or list.len > extra.len - list.start) return;
+        var i: u32 = 0;
+        while (i < list.len) : (i += 1) {
+            const raw = extra[list.start + i];
+            try self.declareFlowMatchPatternBindings(@enumFromInt(raw));
+        }
+    }
+
+    fn visitFlowMatchPatternGuards(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .flow_match_guard_pattern => {
+                try self.visitFlowMatchPatternGuards(node.data.binary.left);
+                try self.visitNode(node.data.binary.right);
+            },
+            .flow_match_as_pattern => try self.visitFlowMatchPatternGuards(node.data.binary.left),
+            .flow_match_object_prop => try self.visitFlowMatchPatternGuards(node.data.binary.right),
+            .flow_match_instance_pattern => try self.visitFlowMatchPatternGuards(node.data.binary.right),
+            .flow_match_object_pattern, .flow_match_array_pattern, .flow_match_or_pattern => {
+                try self.visitFlowMatchPatternGuardList(node.data.list);
+            },
+            else => {},
+        }
+    }
+
+    fn visitFlowMatchPatternGuardList(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
+        const extra = self.ast.extra_data.items;
+        if (list.start > extra.len or list.len > extra.len - list.start) return;
+        var i: u32 = 0;
+        while (i < list.len) : (i += 1) {
+            try self.visitFlowMatchPatternGuards(@enumFromInt(extra[list.start + i]));
+        }
     }
 
     fn visitFunctionExpression(self: *SemanticAnalyzer, node: Node) AllocError!void {
