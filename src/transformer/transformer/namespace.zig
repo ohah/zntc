@@ -69,6 +69,7 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
     var new_body = try self.visitNode(node.data.binary.right);
     if (!new_body.isNone()) {
         for (self.namespace_temp_bindings.items[saved_binding_len..]) |entry| {
+            if (self.getSymbolIdAt(entry.binding) != null) continue;
             if (self.pending_temp_ref_chains.contains(entry.span.start)) {
                 try self.bindHoistedTemp(entry.binding, entry.span, node.span, entry.scope);
             } else {
