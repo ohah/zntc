@@ -82,9 +82,9 @@ const AstFacts = struct {
     has_non_named_import: bool = false,
     /// class / private / decorator / TS runtime syntax / using — runtime transform needed.
     has_runtime_sensitive_syntax: bool = false,
-    /// Flow keeps its conservative post-transform pass for every runtime
-    /// transform except Flow match, whose generated graph is fully edited.
-    has_flow_runtime_syntax_outside_match: bool = false,
+    /// Flow keeps its conservative post-transform pass except for match and
+    /// enum, whose generated/source identities now live in the edited graph.
+    has_flow_runtime_syntax_without_complete_graph: bool = false,
     /// Runtime syntax whose semantic edits still need the post-transform analyzer.
     has_unhandled_runtime_syntax: bool = false,
 };
@@ -162,7 +162,7 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
 
             .class_declaration, .class_expression => {
                 facts.has_runtime_sensitive_syntax = true;
-                facts.has_flow_runtime_syntax_outside_match = true;
+                facts.has_flow_runtime_syntax_without_complete_graph = true;
             },
 
             .private_identifier,
@@ -171,31 +171,30 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             .decorator,
             => {
                 facts.has_runtime_sensitive_syntax = true;
-                facts.has_flow_runtime_syntax_outside_match = true;
+                facts.has_flow_runtime_syntax_without_complete_graph = true;
             },
 
             // TypeScript enum lowering now records the emitted IIFE parameter
             // and initializer references in the edited semantic graph.
             .ts_enum_declaration => {
                 facts.has_runtime_sensitive_syntax = true;
-                facts.has_flow_runtime_syntax_outside_match = true;
+                facts.has_flow_runtime_syntax_without_complete_graph = true;
             },
 
             // Namespace IIFE parameters and exported binding edges are tracked
             // by SymbolId and emitted from that graph by codegen.
             .ts_module_declaration => {
                 facts.has_runtime_sensitive_syntax = true;
-                facts.has_flow_runtime_syntax_outside_match = true;
+                facts.has_flow_runtime_syntax_without_complete_graph = true;
             },
 
             .ts_import_equals_declaration,
             .ts_export_assignment,
             .ts_namespace_export_declaration,
-            .flow_enum_declaration,
             .flow_component_wrapper,
             => {
                 facts.has_runtime_sensitive_syntax = true;
-                facts.has_flow_runtime_syntax_outside_match = true;
+                facts.has_flow_runtime_syntax_without_complete_graph = true;
                 facts.has_unhandled_runtime_syntax = true;
             },
 
@@ -204,10 +203,14 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             // already part of the transform graph.
             .flow_match_expression => facts.has_runtime_sensitive_syntax = true,
 
+            // Flow enum declaration and references have exact source SymbolIds;
+            // codegen emits the declaration name through the same symbol-aware path.
+            .flow_enum_declaration => facts.has_runtime_sensitive_syntax = true,
+
             .variable_declaration => {
                 if (ast.variableDeclarationKind(node).isUsing()) {
                     facts.has_runtime_sensitive_syntax = true;
-                    facts.has_flow_runtime_syntax_outside_match = true;
+                    facts.has_flow_runtime_syntax_without_complete_graph = true;
                     facts.has_unhandled_runtime_syntax = true;
                 }
             },
@@ -581,7 +584,7 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
         options.react_refresh or options.react_refresh_hook_signatures) return false;
 
     const facts = collectAstFacts(&parser.ast);
-    if (parser.is_flow) return !facts.has_flow_runtime_syntax_outside_match and !parser.ast.has_jsx;
+    if (parser.is_flow) return !facts.has_flow_runtime_syntax_without_complete_graph and !parser.ast.has_jsx;
     if (parser.source_mode == .ts) return !facts.has_unhandled_runtime_syntax and !parser.ast.has_jsx;
     if (parser.source_mode != .js_strict) return false;
     return true;
@@ -600,6 +603,21 @@ fn reserveCommonJsCodegenNames(allocator: std.mem.Allocator, reserved: *std.Stri
         "__filename",
     };
     for (names) |name| try reserved.put(allocator, name, {});
+}
+
+/// Flow enum codegen inserts these free identifiers without AST reference
+/// nodes. Reserve them so minified source bindings cannot capture the runtime.
+fn reserveFlowEnumCodegenNames(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    reserved: *std.StringHashMapUnmanaged(void),
+) error{OutOfMemory}!void {
+    for (ast.nodes.items) |node| {
+        if (node.tag != .flow_enum_declaration) continue;
+        try reserved.put(allocator, "require", {});
+        try reserved.put(allocator, "Symbol", {});
+        return;
+    }
 }
 
 fn buildTransformPlan(
@@ -1707,6 +1725,7 @@ fn transpileWithCallbackInternal(
             if (options.module_format == .cjs) {
                 reserveCommonJsCodegenNames(arena_alloc, &reserved) catch return error.OutOfMemory;
             }
+            reserveFlowEnumCodegenNames(arena_alloc, transformer.ast, &reserved) catch return error.OutOfMemory;
             for (post.symbol_ids.items, 0..) |maybe_post_sym, node_i| {
                 const post_sym = maybe_post_sym orelse continue;
                 if (node_i >= transformer.symbol_ids.items.len) continue;
@@ -2111,7 +2130,7 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     try std.testing.expect(canMangleWithTransformSemantic(minify, &accessor_parser));
 }
 
-test "#4819 type-erased Flow reuses transform semantic graph only without runtime lowering" {
+test "#4819 Flow match and enum reuse the transform graph while other runtime syntax falls back" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -2144,7 +2163,7 @@ test "#4819 type-erased Flow reuses transform semantic graph only without runtim
         }
         try std.testing.expect(has_runtime_tag);
         try std.testing.expectEqual(
-            item.tag == .flow_match_expression,
+            item.tag == .flow_match_expression or item.tag == .flow_enum_declaration,
             canMangleWithTransformSemantic(minify, &runtime_parser),
         );
     }

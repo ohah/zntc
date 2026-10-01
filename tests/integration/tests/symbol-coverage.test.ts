@@ -87,7 +87,7 @@ function runCoverage(
   outDir: string,
 ): { stderr: string; exitCode: number } {
   const stderrPath = join(outDir, 'stderr.log');
-  const isFlow = file.endsWith('.flow.mjs');
+  const isFlow = file.endsWith('.flow.mjs') || file.endsWith('.flow');
   const proc = spawnSync(
     '/bin/sh',
     [
@@ -298,6 +298,28 @@ describe('symbol identity coverage gate (#4819)', () => {
       const actual = spawnSync('node', [join(outDir, 'out.js')], { encoding: 'utf8' });
       expect(actual.status, `${actual.stderr}\n${actual.stdout}`).toBe(0);
       expect(actual.stdout).toBe('[7]\n');
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  test('Flow enum bindings and references have exact identity across targets', () => {
+    const file = join(FIXTURE_DIR, '4819-flow-enum.flow');
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-flow-enum-'));
+    try {
+      for (const target of TARGETS) {
+        const { stderr, exitCode } = runCoverage(file, target, outDir);
+        expect(exitCode, `${target.name}: ${stderr}`).toBe(0);
+        const identity = stderr.split('\n').find((line) => line.includes('zntc: symbol-identity '));
+        expect(identity, `${target.name}: missing exact report`).toBeDefined();
+        expect(identity, `${target.name}: ${identity}`).toMatch(/clean=1(?:\s|$)/);
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${target.name}: ${counter}: ${identity}`,
+          ).toBe(0);
+        }
+      }
     } finally {
       rmSync(outDir, { recursive: true, force: true });
     }

@@ -266,9 +266,6 @@ pub fn emitFlowEnum(self: anytype, node: Node) std.mem.Allocator.Error!void {
     const base_type_raw = self.ast.extra_data.items[e + 3];
     const base_type: FlowEnumBaseType = @enumFromInt(base_type_raw);
 
-    const name_node = self.ast.getNode(name_idx);
-    const name_text = self.ast.getText(name_node.span);
-
     const members = self.ast.extra_data.items[members_start .. members_start + members_len];
 
     // Mirrored 케이스: string body + 첫 멤버 init 없음 (= all defaulted 가정 — reference 동일).
@@ -276,7 +273,10 @@ pub fn emitFlowEnum(self: anytype, node: Node) std.mem.Allocator.Error!void {
         self.ast.getNode(@enumFromInt(members[0])).data.binary.right == .none);
 
     try self.write("const ");
-    try self.write(name_text);
+    // The enum binding is a source SymbolId. Route its declaration through
+    // normal identifier emission so single-file mangling renames it together
+    // with references instead of leaving the source spelling here.
+    try self.emitNode(name_idx);
     try self.writeByte('=');
     if (self.resolveRequireRewriteSpecifier(rt.FLOW_ENUMS_RUNTIME_SPECIFIER)) |req_var| {
         try self.emitRewriteValue(req_var);

@@ -1753,6 +1753,7 @@ pub const SemanticAnalyzer = struct {
             .catch_clause => try self.visitCatchClause(node),
             .ts_module_declaration => try self.visitNamespaceDeclaration(node),
             .ts_enum_declaration => try self.visitEnumDeclaration(node),
+            .flow_enum_declaration => try self.visitFlowEnumDeclaration(node),
 
             // ---- 선언 노드 ----
             .variable_declaration => try self.visitVariableDeclaration(node),
@@ -2497,6 +2498,7 @@ pub const SemanticAnalyzer = struct {
                 .function_declaration => try self.predeclareFuncDecl(node),
                 .class_declaration => try self.predeclareClassDecl(node),
                 .ts_enum_declaration => try self.predeclareEnumDecl(node),
+                .flow_enum_declaration => try self.predeclareFlowEnumDecl(node),
                 .ts_module_declaration => try self.predeclareNamespaceDecl(node),
                 // RFC #3310 (D20): import 는 module top hoist — user binding 을
                 // .import_binding symbol 로 1st-pass 등록 (forward export/value use).
@@ -2514,6 +2516,7 @@ pub const SemanticAnalyzer = struct {
                         .function_declaration => try self.predeclareFuncDecl(decl_node),
                         .class_declaration => try self.predeclareClassDecl(decl_node),
                         .ts_enum_declaration => try self.predeclareEnumDecl(decl_node),
+                        .flow_enum_declaration => try self.predeclareFlowEnumDecl(decl_node),
                         .ts_module_declaration => try self.predeclareNamespaceDecl(decl_node),
                         else => {},
                     }
@@ -2707,6 +2710,7 @@ pub const SemanticAnalyzer = struct {
                 .function_declaration,
                 .class_declaration,
                 .ts_enum_declaration,
+                .flow_enum_declaration,
                 => continue,
                 .export_named_declaration => {
                     const extra_start = node.data.extra;
@@ -2720,6 +2724,7 @@ pub const SemanticAnalyzer = struct {
                         .function_declaration,
                         .class_declaration,
                         .ts_enum_declaration,
+                        .flow_enum_declaration,
                         => continue,
                         else => try self.predeclareVarDeclsRecursive(decl_idx),
                     }
@@ -2892,6 +2897,37 @@ pub const SemanticAnalyzer = struct {
         if (!name_idx.isNone()) {
             const name_node = self.ast.getNode(name_idx);
             try self.declareSymbolWithNode(name_node.span, .variable_var, node.span, @intFromEnum(name_idx));
+        }
+    }
+
+    /// flow_enum_declaration is a lexical runtime binding emitted as a const.
+    /// extra = [name, members_start, members_len, base_type].
+    fn predeclareFlowEnumDecl(self: *SemanticAnalyzer, node: Node) AllocError!void {
+        const extra_start = node.data.extra;
+        const extras = self.ast.extra_data.items;
+        if (extra_start + 3 >= extras.len) return;
+        const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
+        if (name_idx.isNone() or @intFromEnum(name_idx) >= self.ast.nodes.items.len) return;
+        const name_node = self.ast.getNode(name_idx);
+        if (name_node.tag != .binding_identifier) return;
+        try self.declareSymbolWithNode(name_node.span, .variable_const, node.span, @intFromEnum(name_idx));
+    }
+
+    /// Flow enum member keys are names, not lexical references. Visit only explicit
+    /// member values so their source bindings resolve in the enclosing scope.
+    fn visitFlowEnumDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
+        const e = node.data.extra;
+        const extras = self.ast.extra_data.items;
+        if (e + 2 >= extras.len) return;
+        const members_start = extras[e + 1];
+        const members_len = extras[e + 2];
+        if (members_start + members_len > extras.len) return;
+        for (extras[members_start .. members_start + members_len]) |raw_idx| {
+            const member_idx: NodeIndex = @enumFromInt(raw_idx);
+            if (member_idx.isNone() or @intFromEnum(member_idx) >= self.ast.nodes.items.len) continue;
+            const member = self.ast.getNode(member_idx);
+            if (member.tag != .flow_enum_member or member.data.binary.right.isNone()) continue;
+            try self.visitNode(member.data.binary.right);
         }
     }
 
@@ -3273,6 +3309,9 @@ pub const SemanticAnalyzer = struct {
                     self.declareSymbolWithNode(name_node.span, .class_decl, stmt.span, @intFromEnum(name_idx)) catch {
                         self.alloc_failed = true;
                     };
+                },
+                .flow_enum_declaration => self.predeclareFlowEnumDecl(stmt) catch {
+                    self.alloc_failed = true;
                 },
                 else => {},
             }
@@ -4625,7 +4664,7 @@ pub const SemanticAnalyzer = struct {
                     }
                 }
             },
-            .function_declaration, .class_declaration, .ts_enum_declaration => {
+            .function_declaration, .class_declaration, .ts_enum_declaration, .flow_enum_declaration => {
                 const extras = self.ast.extra_data.items;
                 if (node.data.extra >= extras.len) return;
                 const name_idx: NodeIndex = @enumFromInt(extras[node.data.extra]);
@@ -4683,7 +4722,7 @@ pub const SemanticAnalyzer = struct {
                     }
                 }
             },
-            .function_declaration, .class_declaration, .ts_enum_declaration => {
+            .function_declaration, .class_declaration, .ts_enum_declaration, .flow_enum_declaration => {
                 const extras = self.ast.extra_data.items;
                 if (node.data.extra >= extras.len) return;
                 const name_idx: NodeIndex = @enumFromInt(extras[node.data.extra]);

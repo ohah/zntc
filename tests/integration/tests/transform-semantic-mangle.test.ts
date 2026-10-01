@@ -1383,6 +1383,60 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stdout.trim()).toBe('one,two,other');
   });
 
+  test('Flow enum bindings and codegen globals keep distinct symbols when mangled', async () => {
+    const fixture = await createFixture({
+      'input.js': `
+        // @flow
+        const require = () => 'user-require';
+        const Symbol = () => 'user-Symbol';
+        enum LongColor { Red, Blue }
+        function read() { return LongColor.Red; }
+        console.log(typeof read(), read().description, require(), Symbol());
+      `,
+      'node_modules/flow-enums-runtime/index.js': `
+        function make(values) { return values; }
+        make.Mirrored = (names) => make(Object.fromEntries(names.map((name) => [name, name])));
+        module.exports = make;
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+    for (const target of ['es5', 'es2015', 'es2017', 'es2022', 'esnext']) {
+      for (const minifySyntax of [false, true]) {
+        const output = join(fixture.dir, `flow-enum-${target}-${minifySyntax}.js`);
+        const result = await runZntc(
+          [
+            input,
+            '-o',
+            output,
+            `--target=${target}`,
+            '--flow',
+            '--minify-identifiers',
+            ...(minifySyntax ? ['--minify-syntax'] : []),
+          ],
+          { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+        );
+        expect(result.exitCode, `${target} minifySyntax=${minifySyntax}: ${result.stderr}`).toBe(0);
+        expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+        const identity = result.stderr
+          .split(/\r?\n/)
+          .find((line) => line.includes('zntc: symbol-identity '));
+        expect(identity).toBeDefined();
+        expect(identity).toMatch(/clean=1(?:\s|$)/);
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+        }
+        const emitted = readFileSync(output, 'utf8');
+        expect(emitted).not.toContain('LongColor');
+        const transformed = await runNode(output);
+        expect(transformed.stderr, `${target} minifySyntax=${minifySyntax}`).toBe('');
+        expect(transformed.stdout.trim(), `${target} minifySyntax=${minifySyntax}`).toBe(
+          'symbol Red user-require user-Symbol',
+        );
+      }
+    }
+  });
+
   test('Flow match pattern bindings keep exact IDs through minified lowering across targets', async () => {
     const fixture = await createFixture({
       'input.js': `
