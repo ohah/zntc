@@ -251,6 +251,12 @@ pub const TransformOptions = struct {
     /// 사고 방지). 자세한 매핑은 `runtime_helper_imports.zig`.
     emit_runtime_helper_imports: bool = false,
 
+    /// standalone transpile 에서 JSX automatic runtime import 를 AST 노드로 prepend.
+    /// bundler 는 `emit_runtime_helper_imports` 경로에서 함께 처리하므로 이 옵션은
+    /// 단일 파일 변환 전용이다. 문자열 prepend 대신 semantic edit 가 import binding 과
+    /// JSX call reference 를 같은 SymbolId 로 연결하도록 한다.
+    emit_jsx_runtime_imports: bool = false,
+
     pub const compat = @import("compat.zig");
 
     /// graph 단계 transformer pre-pass 가 필요한지.

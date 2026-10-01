@@ -187,7 +187,9 @@ pub fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_optio
         try analyzer.analyze();
     }
 
-    var t = try Transformer.init(allocator, &parser.ast, t_options);
+    var test_transform_options = t_options;
+    test_transform_options.emit_jsx_runtime_imports = parser.ast.has_jsx;
+    var t = try Transformer.init(allocator, &parser.ast, test_transform_options);
     t.line_offsets = scanner.line_offsets.items;
     if (analyzer_storage) |*analyzer| {
         try t.initSymbolIds(analyzer.symbol_ids.items);
@@ -210,18 +212,7 @@ pub fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_optio
     }
     var cg = Codegen.initWithOptions(allocator, t.ast, options_with_symbols);
     const raw_output = try cg.generate(root);
-
-    // JSX import prepend (transformer가 JSX lowering 수행한 경우)
-    const output = if (t.jsx_import_info.hasImports()) blk: {
-        const is_dev = t.options.jsx_runtime == .automatic_dev;
-        if (t.jsx_import_info.buildImportString(allocator, t.options.jsx_import_source, is_dev)) |import_str| {
-            var combined: std.ArrayList(u8) = .empty;
-            try combined.ensureTotalCapacity(allocator, import_str.len + raw_output.len);
-            combined.appendSliceAssumeCapacity(import_str);
-            combined.appendSliceAssumeCapacity(raw_output);
-            break :blk combined.items;
-        } else break :blk raw_output;
-    } else raw_output;
+    const output = raw_output;
 
     // 산출물 재파싱 게이트 (#4472/#4481/#4482 계열). 이 계열의 버그는 전부 "빌드 green +
     // 산출물이 파싱 불가" 였다 — codegen 이 필수 괄호를 빠뜨리거나(`c&&{x:a}=o`) 인접 토큰을

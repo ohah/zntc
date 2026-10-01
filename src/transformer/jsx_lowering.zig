@@ -31,7 +31,7 @@ const styled_components_mod = @import("transformer/styled_components.zig");
 pub const JsxRuntime = @import("../codegen/codegen.zig").JsxRuntime;
 
 /// JSX 변환에서 사용된 import 추적.
-/// transformer가 채우고, transpile.zig에서 import문 생성에 사용.
+/// transformer가 채우고, finalize 단계에서 import AST 노드 생성에 사용.
 pub const JsxImportInfo = struct {
     used_jsx: bool = false,
     used_jsxs: bool = false,
@@ -51,62 +51,6 @@ pub const JsxImportInfo = struct {
     pub fn hasImports(self: JsxImportInfo) bool {
         return self.used_jsx or self.used_jsxs or self.used_jsxDEV or
             self.used_fragment or self.used_createElement;
-    }
-
-    /// "import { jsx as _jsx, ... } from "react/jsx-runtime";\n" 문자열 생성.
-    /// 사용된 헬퍼가 없으면 null 반환.
-    pub fn buildImportString(self: JsxImportInfo, allocator: std.mem.Allocator, source: []const u8, is_dev: bool) ?[]const u8 {
-        if (!self.hasImports()) return null;
-
-        var buf: std.ArrayList(u8) = .empty;
-
-        // jsx-runtime (또는 jsx-dev-runtime) import
-        if (self.used_jsx or self.used_jsxs or self.used_jsxDEV or self.used_fragment) {
-            buf.appendSlice(allocator, "import { ") catch return null;
-            var first = true;
-            if (is_dev) {
-                if (self.used_jsxDEV) {
-                    buf.appendSlice(allocator, "jsxDEV as ") catch return null;
-                    buf.appendSlice(allocator, self.jsxDEV_local) catch return null;
-                    first = false;
-                }
-            } else {
-                if (self.used_jsx) {
-                    buf.appendSlice(allocator, "jsx as ") catch return null;
-                    buf.appendSlice(allocator, self.jsx_local) catch return null;
-                    first = false;
-                }
-                if (self.used_jsxs) {
-                    if (!first) buf.appendSlice(allocator, ", ") catch return null;
-                    buf.appendSlice(allocator, "jsxs as ") catch return null;
-                    buf.appendSlice(allocator, self.jsxs_local) catch return null;
-                    first = false;
-                }
-            }
-            if (self.used_fragment) {
-                if (!first) buf.appendSlice(allocator, ", ") catch return null;
-                buf.appendSlice(allocator, "Fragment as ") catch return null;
-                buf.appendSlice(allocator, self.fragment_local) catch return null;
-            }
-            buf.appendSlice(allocator, " } from \"") catch return null;
-            buf.appendSlice(allocator, source) catch return null;
-            if (is_dev) {
-                buf.appendSlice(allocator, "/jsx-dev-runtime\";\n") catch return null;
-            } else {
-                buf.appendSlice(allocator, "/jsx-runtime\";\n") catch return null;
-            }
-        }
-
-        // createElement import (key-after-spread 폴백용)
-        if (self.used_createElement) {
-            buf.appendSlice(allocator, "import { createElement as ") catch return null;
-            buf.appendSlice(allocator, self.createElement_local) catch return null;
-            buf.appendSlice(allocator, " } from \"") catch return null;
-            buf.appendSlice(allocator, source) catch return null;
-            buf.appendSlice(allocator, "\";\n") catch return null;
-        }
-
-        return buf.items;
     }
 };
 

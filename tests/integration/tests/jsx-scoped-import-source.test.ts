@@ -71,4 +71,20 @@ describe('JSX automatic — scoped @jsxImportSource (#3617 회귀)', () => {
     const code = await readFile(out, 'utf8');
     expect(code).toContain('"preact/jsx-runtime"');
   });
+
+  test('standalone transpile keeps scoped @jsxImportSource in its AST import', async () => {
+    const fx = await createFixture({
+      'app.tsx': '/** @jsxImportSource @emotion/react */\nexport const App = () => <p>hi</p>;\n',
+    });
+    cleanup = fx.cleanup;
+    const out = join(fx.dir, 'out.js');
+
+    const r = await runZntcInDir(fx.dir, ['app.tsx', '-o', out, '--jsx=automatic']);
+    expect(r.exitCode).toBe(0);
+
+    const code = await readFile(out, 'utf8');
+    expect(code).toContain('"@emotion/react/jsx-runtime"');
+    expect(code).not.toContain('"@emotion/jsx-runtime"');
+    expect([...code.matchAll(/from "@emotion\/react\/jsx-runtime"/g)]).toHaveLength(1);
+  });
 });
