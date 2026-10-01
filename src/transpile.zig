@@ -161,6 +161,8 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
 
             .private_identifier,
             .private_field_expression,
+            => facts.has_runtime_sensitive_syntax = true,
+
             .decorator,
             .accessor_property,
             .ts_enum_declaration,
@@ -1975,7 +1977,6 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     const runtime_sources = [_][]const u8{
         "enum Color { Red }",
         "namespace N { export const value = 1 }",
-        "class Box { #value = 1 }",
         "class Box { accessor value = 1 }",
         "using resource = openResource();",
         "const view = <div />;",
@@ -2008,6 +2009,25 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     _ = try static_block_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), static_block_parser.errors.items.len);
     try std.testing.expect(canMangleWithTransformSemantic(minify, &static_block_parser));
+
+    var private_class_scanner = try Scanner.init(
+        allocator,
+        "class Base { baseValue(): number { return 7; } } " ++
+            "function make(value: number) { const args = value + 1; return class Generated extends Base { " ++
+            "#state = args; static #count = 0; " ++
+            "constructor(offset: number) { super(); this.#state += offset; Generated.#count++; } " ++
+            "#read(delta: number): number { return this.#state + delta + super.baseValue(); } " ++
+            "get value(): number { const args = 1000; return this.#read(2) + args; } " ++
+            "evaluated(): number { return eval('args'); } " ++
+            "hasState(target: object): boolean { return #state in target; } " ++
+            "static count(): number { return Generated.#count; } " ++
+            "static hasCount(target: object): boolean { return #count in target; } }; }",
+    );
+    var private_class_parser = Parser.init(allocator, &private_class_scanner);
+    private_class_parser.configureFromExtension(".ts");
+    _ = try private_class_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), private_class_parser.errors.items.len);
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &private_class_parser));
 }
 
 test "#4819 type-erased Flow reuses transform semantic graph only without runtime lowering" {
