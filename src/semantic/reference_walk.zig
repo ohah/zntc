@@ -9,8 +9,9 @@
 //! Reachability needs only AST edges; callers must use their existing
 //! Reference/scope-owner maps to decide whether a surviving node belongs to
 //! the migrated loop body and whether its recorded scope is still valid.
-//! The AST metadata deliberately omits some syntax-specific children; the
-//! export specifier, decorator, and enum member lists are added explicitly.
+//! The AST metadata deliberately omits some syntax-specific children; export
+//! specifiers and decorator lists are added explicitly. Const and ambient enum
+//! initializers are skipped because their declarations have no runtime IIFE.
 //! Flow `match` needs contextual edges: value patterns are references, while
 //! wildcard and newly bound names are not.
 //! JSX names use `jsx_identifier`, a different tag, and are outside this API.
@@ -70,6 +71,10 @@ pub fn collectIdentifierReferences(
             continue;
         }
         if (node.tag == .ts_module_declaration and node.data.binary.flags == 1) continue;
+        if (node.tag == .ts_enum_declaration) {
+            const extra = node.data.extra;
+            if (extra + 3 >= ast.extra_data.items.len or ast.extra_data.items[extra + 3] != 0) continue;
+        }
 
         children.clearRetainingCapacity();
         var it = ast_walk.children(ast, node);
@@ -241,16 +246,6 @@ fn appendExtraEdges(
         .method_definition => try appendExtraList(ast, node.data.extra, ast_mod.MethodExtra.deco_start, ast_mod.MethodExtra.deco_len, .value, out, allocator),
         .property_definition, .accessor_property => try appendExtraList(ast, node.data.extra, ast_mod.PropertyExtra.deco_start, ast_mod.PropertyExtra.deco_len, .value, out, allocator),
         .formal_parameter => try appendExtraList(ast, node.data.extra, ast_mod.FormalParameterExtra.deco_start, ast_mod.FormalParameterExtra.deco_len, .value, out, allocator),
-        .ts_enum_declaration => {
-            const e = node.data.extra;
-            const extra = ast.extra_data.items;
-            // Parser extra[e+3]: bit0=const, bit1=ambient. Transformer
-            // erases both declarations without runtime initializer evaluation.
-            if (e < extra.len and extra.len - e >= 4 and extra[e + 3] == 0) {
-                try appendExtraList(ast, e, 1, 2, .value, out, allocator);
-            }
-        },
-        .flow_enum_declaration => try appendExtraList(ast, node.data.extra, 1, 2, .value, out, allocator),
         .flow_match_expression => {
             const e = node.data.extra;
             const extra = ast.extra_data.items;

@@ -805,6 +805,9 @@ pub const Node = struct {
                 .variable_declarator => .{ .kind = .extra, .child_offsets = &.{ 0, 2 } },
                 // formal_parameter: extra = [pattern(0), type_ann(1), default(2), flags, deco_start, deco_len]
                 .formal_parameter => .{ .kind = .extra, .child_offsets = &.{ 0, 2 } },
+                // Runtime enum: extra = [name(0), members_start(1), members_len(2), flags/base_type].
+                // Initializer expressions are runtime children of the emitted enum IIFE.
+                .ts_enum_declaration, .flow_enum_declaration => .{ .kind = .extra, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
                 // unary/update_expression: 파서에서 data.extra로 생성 — extra = [operand(0), flags]
                 .unary_expression, .update_expression => .{ .kind = .extra, .child_offsets = &.{0} },
                 // object_property: binary = { left: key, right: value, flags: prop_flags }
@@ -854,8 +857,6 @@ pub const Node = struct {
                 .ts_index_signature,
                 .ts_getter_signature,
                 .ts_setter_signature,
-                .ts_enum_declaration,
-                .flow_enum_declaration,
                 .ts_external_module_reference,
                 .ts_namespace_export_declaration,
                 .ts_type_parameter,

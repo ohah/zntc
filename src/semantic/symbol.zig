@@ -216,6 +216,9 @@ pub const SyntheticKind = enum(u8) {
     /// TypeScript namespace codegen의 가상 IIFE 매개변수. namespace AST에는
     /// 출력 단계에서 생성되는 바인딩 노드가 없으므로 owner scope로 연결한다.
     namespace_iife_parameter,
+    /// TypeScript enum codegen의 가상 IIFE 매개변수. enum AST에는 출력 단계에서
+    /// 생성되는 바인딩 노드가 없으므로 enum 선언의 함수 scope owner로 연결한다.
+    enum_iife_parameter,
     /// 단일 파일 출력에서 AST 밖에 prepend되는 런타임 helper 선언.
     runtime_helper_preamble,
 };

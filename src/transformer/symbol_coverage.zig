@@ -224,6 +224,8 @@ pub const ExactReport = struct {
     scope_owner_mismatch: usize = 0,
     namespace_iife_params: usize = 0,
     namespace_iife_param_mismatch: usize = 0,
+    enum_iife_params: usize = 0,
+    enum_iife_param_mismatch: usize = 0,
     helper_symbol_mismatch: usize = 0,
     scope_resolution_mismatch: usize = 0,
     invisible_reference: usize = 0,
@@ -245,7 +247,7 @@ pub const ExactReport = struct {
             self.missing_reference == 0 and self.duplicate_reference == 0 and
             self.identity_mismatch == 0 and self.binding_scope_mismatch == 0 and self.binding_scope_unknown == 0 and self.invalid_scope == 0 and
             self.reference_scope_mismatch == 0 and
-            self.scope_map_mismatch == 0 and self.scope_owner_mismatch == 0 and self.namespace_iife_param_mismatch == 0 and self.helper_symbol_mismatch == 0 and self.scope_resolution_mismatch == 0 and self.invisible_reference == 0 and
+            self.scope_map_mismatch == 0 and self.scope_owner_mismatch == 0 and self.namespace_iife_param_mismatch == 0 and self.enum_iife_param_mismatch == 0 and self.helper_symbol_mismatch == 0 and self.scope_resolution_mismatch == 0 and self.invisible_reference == 0 and
             self.unclassified_reference == 0 and self.reference_count_mismatch == 0 and
             self.write_count_mismatch == 0;
     }
@@ -357,6 +359,7 @@ fn spanKey(span: Span) u64 {
 }
 
 fn exactSymbolName(ast: *const Ast, symbol: *const Symbol) []const u8 {
+    if (symbol.synthetic_kind == .enum_iife_parameter) return ast.getText(symbol.name);
     return if (symbol.synthetic_name.len > 0) symbol.synthetic_name else ast.getText(symbol.name);
 }
 
@@ -525,6 +528,10 @@ fn childSkipsScopeOwner(ast: *const Ast, parent_raw: u32, child_raw: u32) bool {
     if (parent_raw >= ast.nodes.items.len) return false;
     const parent = ast.nodes.items[parent_raw];
     switch (parent.tag) {
+        .ts_enum_declaration => {
+            const extra = parent.data.extra;
+            return extra < ast.extra_data.items.len and ast.extra_data.items[extra] == child_raw;
+        },
         .function_declaration => {
             const extra = parent.data.extra;
             return extra < ast.extra_data.items.len and ast.extra_data.items[extra] == child_raw;
@@ -668,6 +675,10 @@ fn exactVisit(ctx: *ExactCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
         },
         .method_definition, .property_definition, .accessor_property => {
             ctx.markName(@enumFromInt(ctx.ast.extra_data.items[node.data.extra]));
+            return .descend;
+        },
+        .ts_enum_member, .flow_enum_member => {
+            ctx.markName(node.data.binary.left);
             return .descend;
         },
         .export_named_declaration => {
@@ -1485,6 +1496,76 @@ pub fn checkExact(
         if (owner_is_reachable) report.namespace_iife_param_mismatch += 1;
     }
 
+    // Enum codegen emits a parameter for every non-const, non-ambient runtime
+    // enum. Its initializer references must resolve through this exact function
+    // scope; a textual match with the outer enum name is not identity evidence.
+    var matched_enum_params: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer matched_enum_params.deinit(allocator);
+    var enum_nodes = reachable_nodes.iterator();
+    while (enum_nodes.next()) |entry| {
+        const raw = entry.key_ptr.*;
+        const declaration = ast.nodes.items[raw];
+        if (declaration.tag != .ts_enum_declaration) continue;
+        const enum_extra = declaration.data.extra;
+        if (enum_extra + 3 >= ast.extra_data.items.len or ast.extra_data.items[enum_extra + 3] != 0) continue;
+        const scope_raw = scope_owner_map.get(raw) orelse {
+            report.enum_iife_param_mismatch += 1;
+            continue;
+        };
+        if (scope_raw >= scopes.len or scopes[scope_raw].kind != .function) {
+            report.enum_iife_param_mismatch += 1;
+            continue;
+        }
+        var parameter_id: ?u32 = null;
+        var parameter_count: usize = 0;
+        for (symbols, 0..) |symbol, sid| {
+            if (symbol.synthetic_kind != .enum_iife_parameter or @intFromEnum(symbol.scope_id) != scope_raw) continue;
+            parameter_id = @intCast(sid);
+            parameter_count += 1;
+        }
+        if (parameter_count != 1 or parameter_id == null) {
+            report.enum_iife_param_mismatch += 1;
+            continue;
+        }
+        const sid = parameter_id.?;
+        report.enum_iife_params += 1;
+        const parameter = symbols[sid];
+        const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[enum_extra]);
+        const source_name = if (!name_idx.isNone() and @intFromEnum(name_idx) < ast.nodes.items.len)
+            ast.getText(ast.getNode(name_idx).span)
+        else
+            "";
+        if (parameter.kind != .parameter or !parameter.decl_flags.is_parameter or parameter.synthetic_name.len == 0 or
+            source_name.len == 0 or scope_raw >= scope_maps.len or
+            scope_maps[scope_raw].get(source_name) != @as(?usize, @intCast(sid)))
+        {
+            report.enum_iife_param_mismatch += 1;
+        }
+        if (name_idx.isNone() or @intFromEnum(name_idx) >= ast.nodes.items.len or @intFromEnum(name_idx) >= symbol_ids.len or
+            symbol_ids[@intFromEnum(name_idx)] == null or symbol_ids[@intFromEnum(name_idx)].? == sid)
+        {
+            report.enum_iife_param_mismatch += 1;
+        }
+        try matched_enum_params.put(allocator, sid, {});
+    }
+    for (symbols, 0..) |symbol, sid| {
+        if (symbol.synthetic_kind != .enum_iife_parameter or sid > std.math.maxInt(u32)) continue;
+        const id: u32 = @intCast(sid);
+        if (matched_enum_params.contains(id)) continue;
+        var owner_is_reachable = false;
+        var reachable_owner_scan = reachable_nodes.iterator();
+        while (reachable_owner_scan.next()) |reachable| {
+            const owner_idx = reachable.key_ptr.*;
+            if (ast.nodes.items[owner_idx].tag == .ts_enum_declaration and
+                scope_owner_map.get(owner_idx) == @as(?u32, @intCast(@intFromEnum(symbol.scope_id))))
+            {
+                owner_is_reachable = true;
+                break;
+            }
+        }
+        if (owner_is_reachable) report.enum_iife_param_mismatch += 1;
+    }
+
     for (references) |reference| {
         const sid = @intFromEnum(reference.symbol_id);
         if (sid >= symbols.len) {
@@ -1640,7 +1721,7 @@ fn hasReachableBindingForSymbol(ctx: *const ExactCtx, symbol_id: u32) bool {
 
 pub fn printExact(file_path: []const u8, report: ExactReport) void {
     std.debug.print(
-        "zntc: symbol-identity {s}: generated_bindings={d} generated_references={d} external={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} ambiguous_ast_parent={d} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} namespace_iife_params={d} namespace_iife_param_mismatch={d} helper_symbol_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} reference_count_mismatch={d} write_count_mismatch={d} legacy_debt_fingerprint={x}\n",
+        "zntc: symbol-identity {s}: generated_bindings={d} generated_references={d} external={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} ambiguous_ast_parent={d} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} namespace_iife_params={d} namespace_iife_param_mismatch={d} enum_iife_params={d} enum_iife_param_mismatch={d} helper_symbol_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} reference_count_mismatch={d} write_count_mismatch={d} legacy_debt_fingerprint={x}\n",
         .{
             file_path,
             report.generated_bindings,
@@ -1663,6 +1744,8 @@ pub fn printExact(file_path: []const u8, report: ExactReport) void {
             report.scope_owner_mismatch,
             report.namespace_iife_params,
             report.namespace_iife_param_mismatch,
+            report.enum_iife_params,
+            report.enum_iife_param_mismatch,
             report.helper_symbol_mismatch,
             report.scope_resolution_mismatch,
             report.invisible_reference,
@@ -2250,9 +2333,10 @@ fn checkStrictImpl(
     // reachable identifier has exact identity.
     for (symbols, 0..) |symbol, raw_id| {
         if (symbol.synthetic_name.len == 0 or raw_id > std.math.maxInt(u32)) continue;
-        // Virtual namespace IIFE parameters have no emitted AST binding node;
-        // checkExact validates them against reachable namespace owner scopes.
-        if (symbol.synthetic_kind == .namespace_iife_parameter or symbol.synthetic_kind == .runtime_helper_preamble) continue;
+        // Virtual namespace/enum IIFE parameters have no emitted AST binding
+        // node; checkExact validates them against reachable owner scopes.
+        if (symbol.synthetic_kind == .namespace_iife_parameter or symbol.synthetic_kind == .enum_iife_parameter or
+            symbol.synthetic_kind == .runtime_helper_preamble) continue;
         // Expression `export default` keeps a synthetic reachability facade
         // even when it has no emitted local binding.
         if (symbol.decl_flags.is_default_export and std.mem.eql(u8, symbol.synthetic_name, "_default")) continue;

@@ -117,6 +117,49 @@ test "ChildIterator: extra (call_expression) 은 callee + args" {
     try std.testing.expectEqual(@as(usize, 4), children.items.len);
 }
 
+test "ChildIterator: runtime enum reaches member initializers" {
+    const a = std.testing.allocator;
+    const source = "enum Self { Self = 1, Next = Self.Self + 2 }";
+    var scanner = try Scanner.init(a, source);
+    defer scanner.deinit();
+    var parser = Parser.init(a, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+
+    const enum_idx = findFirstTag(&parser.ast, .ts_enum_declaration) orelse return error.NotFound;
+    var enum_children = try collectChildren(a, &parser.ast, enum_idx);
+    defer enum_children.deinit(a);
+    try std.testing.expectEqual(@as(usize, 3), enum_children.items.len);
+    try std.testing.expectEqual(Node.Tag.binding_identifier, parser.ast.getNode(enum_children.items[0]).tag);
+    try std.testing.expectEqual(Node.Tag.ts_enum_member, parser.ast.getNode(enum_children.items[1]).tag);
+    try std.testing.expectEqual(Node.Tag.ts_enum_member, parser.ast.getNode(enum_children.items[2]).tag);
+
+    const next_member = parser.ast.getNode(enum_children.items[2]);
+    const initializer = next_member.data.binary.right;
+    try std.testing.expectEqual(Node.Tag.binary_expression, parser.ast.getNode(initializer).tag);
+    var member_children = try collectChildren(a, &parser.ast, enum_children.items[2]);
+    defer member_children.deinit(a);
+    try std.testing.expectEqual(@as(usize, 2), member_children.items.len);
+    try std.testing.expectEqual(initializer, member_children.items[1]);
+
+    const self_object_start = std.mem.indexOf(u8, source, "Next = Self") orelse return error.NotFound;
+    const expected_start: u32 = @intCast(self_object_start + "Next = ".len);
+    const root: NodeIndex = @enumFromInt(parser.ast.nodes.items.len - 1);
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(a, &parser.ast, root);
+    defer a.free(reachable);
+    var found_initializer_reference = false;
+    for (reachable) |raw| {
+        const candidate: NodeIndex = @enumFromInt(raw);
+        const node = parser.ast.getNode(candidate);
+        if (node.tag == .identifier_reference and node.span.start == expected_start) {
+            found_initializer_reference = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_initializer_reference);
+}
+
 test "ChildIterator: unary (update) 은 operand 1개" {
     const a = std.testing.allocator;
     var ctx = try parseSource(a, "x++;");

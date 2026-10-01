@@ -39,6 +39,7 @@ const EXACT_ZERO_COUNTERS = [
   'scope_map_mismatch',
   'scope_owner_mismatch',
   'namespace_iife_param_mismatch',
+  'enum_iife_param_mismatch',
   'helper_symbol_mismatch',
   'scope_resolution_mismatch',
   'invisible_reference',
@@ -137,6 +138,31 @@ describe('symbol identity coverage gate (#4819)', () => {
         const actual = spawnSync('node', [join(outDir, 'out.js')], { encoding: 'utf8' });
         expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
         expect(actual.stdout).toBe('[109,102]\n');
+      }
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  test('가상 enum IIFE 매개변수와 initializer 참조가 정확한 SymbolId와 ScopeId를 가진다', () => {
+    const file = join(FIXTURE_DIR, '4819-enum-iife-params.ts');
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-enum-param-'));
+    try {
+      for (const target of TARGETS) {
+        const { stderr, exitCode } = runCoverage(file, target, outDir);
+        expect(exitCode, `${target.name}: ${stderr}`).toBe(0);
+        const identity = stderr.split('\n').find((line) => line.includes('zntc: symbol-identity '));
+        expect(identity, `${target.name}: missing exact report`).toBeDefined();
+        expect(Number(identity?.match(/enum_iife_params=(\d+)/)?.[1] ?? 0)).toBe(2);
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${target.name}: ${counter}: ${identity}`,
+          ).toBe(0);
+        }
+        const actual = spawnSync('node', [join(outDir, 'out.js')], { encoding: 'utf8' });
+        expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout).toBe('[3,1,3,23]\n');
       }
     } finally {
       rmSync(outDir, { recursive: true, force: true });

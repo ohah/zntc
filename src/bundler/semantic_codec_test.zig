@@ -97,7 +97,7 @@ test "semantic_codec: analyzer round-trip — relocatable 필드 보존" {
 
 test "semantic_codec: merged namespace member owner IDs survive cache round-trip" {
     const alloc = testing.allocator;
-    const source = "namespace N { export let value = 1; } namespace N { export let next = value + 2; } namespace Outer { export namespace Inner { export let x = 1; } } namespace Outer { export namespace Inner { export let y = x + 2; } }";
+    const source = "enum Color { Red = 1, Green = Color.Red + 1 } namespace N { export let value = 1; } namespace N { export let next = value + 2; } namespace Outer { export namespace Inner { export let x = 1; } } namespace Outer { export namespace Inner { export let y = x + 2; } }";
     var scanner = try Scanner.init(alloc, source);
     defer scanner.deinit();
     var parser = Parser.init(alloc, &scanner);
@@ -146,11 +146,17 @@ test "semantic_codec: merged namespace member owner IDs survive cache round-trip
     defer arena.deinit();
     const decoded = try codec.deserialize(bytes.items, arena.allocator());
     var namespace_iife_parameters: usize = 0;
+    var enum_iife_parameters: usize = 0;
     var runtime_helper_preambles: usize = 0;
     for (sem.symbols.items, 0..) |symbol, raw| {
         switch (symbol.synthetic_kind orelse continue) {
             .namespace_iife_parameter => {
                 namespace_iife_parameters += 1;
+                try testing.expectEqual(symbol.synthetic_kind, decoded.symbols.items[raw].synthetic_kind);
+                try testing.expectEqualStrings(symbol.synthetic_name, decoded.symbols.items[raw].synthetic_name);
+            },
+            .enum_iife_parameter => {
+                enum_iife_parameters += 1;
                 try testing.expectEqual(symbol.synthetic_kind, decoded.symbols.items[raw].synthetic_kind);
                 try testing.expectEqualStrings(symbol.synthetic_name, decoded.symbols.items[raw].synthetic_name);
             },
@@ -163,6 +169,7 @@ test "semantic_codec: merged namespace member owner IDs survive cache round-trip
         }
     }
     try testing.expect(namespace_iife_parameters >= 4);
+    try testing.expectEqual(@as(usize, 1), enum_iife_parameters);
     try testing.expectEqual(@as(usize, 1), runtime_helper_preambles);
     try testing.expectEqual(@as(?usize, helper_symbol_id), decoded.helper_scope_map.get("__inlineRuntimeHelper"));
     try testing.expectEqual(sem.namespace_member_owners.count(), decoded.namespace_member_owners.count());
