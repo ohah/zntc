@@ -119,6 +119,116 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stdout).toBe(native.stdout);
   });
 
+  test('type-erased TypeScript imports and bindings reuse one semantic graph', async () => {
+    const fixture = await createFixture({
+      'dependency.mjs': `
+        export const value = 8;
+        export const extra = 5;
+        export const Shape = {};
+        export default 11;
+      `,
+      'input.ts': `
+        import fallback, { value as _loop, type Shape as _Shape } from './dependency.mjs';
+        import * as _namespace from './dependency.mjs';
+        type Alias = number;
+        interface Value extends _Shape { amount: Alias }
+        const _state: Alias = 3;
+        function calculate<T extends Value>(entry: T, initial: Alias = _loop): Alias {
+          const local: Alias = entry.amount + initial + _state + fallback + _namespace.extra;
+          return Number(eval('local'));
+        }
+        export const result: Alias = calculate({ amount: 2 });
+        console.log(result, _state, _loop);
+      `,
+      'reference.mjs': `
+        import fallback, { value as loop } from './dependency.mjs';
+        import * as namespace from './dependency.mjs';
+        const state = 3;
+        const local = 2 + loop + state + fallback + namespace.extra;
+        console.log(Number(eval('local')), state, loop);
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.ts');
+    const output = join(fixture.dir, 'output.mjs');
+    const result = await runZntc([input, '-o', output, '--minify-identifiers'], {
+      env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+    });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+    const identity = result.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity '));
+    expect(identity).toBeDefined();
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const emitted = readFileSync(output, 'utf8');
+    expect(emitted).not.toContain('interface Value');
+    expect(emitted).not.toContain('type Alias');
+    expect(emitted).not.toContain('_Shape');
+    const reference = await runNode(join(fixture.dir, 'reference.mjs'));
+    const transformed = await runNode(output);
+    expect(reference.stdout).toBe('29 3 8');
+    expect(transformed.stdout).toBe(reference.stdout);
+  });
+
+  test('type-erased TypeScript CommonJS output reserves wrapper names', async () => {
+    const fixture = await createFixture({
+      'dependency.cjs': 'exports.value = 8;\n',
+      'input.ts': `
+        import { value as dependencyValue } from './dependency.cjs';
+        const exports: number = 1;
+        const module: number = 2;
+        const require: number = 3;
+        const Object: number = 4;
+        const __filename = 'f';
+        const __dirname = 'd';
+        function calculate(extra: number): number {
+          return exports + module + require + Object + __filename.length + __dirname.length + extra + dependencyValue;
+        }
+        export const result: number = calculate(5);
+        console.log(result, exports, module, require, Object, __filename, __dirname, dependencyValue);
+      `,
+      'reference.mjs': `
+        import { value as dependencyValue } from './dependency.cjs';
+        const exports = 1;
+        const module = 2;
+        const require = 3;
+        const Object = 4;
+        const __filename = 'f';
+        const __dirname = 'd';
+        function calculate(extra) {
+          return exports + module + require + Object + __filename.length + __dirname.length + extra + dependencyValue;
+        }
+        const result = calculate(5);
+        console.log(result, exports, module, require, Object, __filename, __dirname, dependencyValue);
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.ts');
+    const output = join(fixture.dir, 'output.cjs');
+    const result = await runZntc([input, '-o', output, '--format=cjs', '--minify-identifiers'], {
+      env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+    });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+    const identity = result.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity '));
+    expect(identity).toBeDefined();
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const emitted = readFileSync(output, 'utf8');
+    expect(emitted).toMatch(/exports\.result/);
+    expect(emitted).not.toMatch(/\bvar exports\s*=/);
+    const reference = await runNode(join(fixture.dir, 'reference.mjs'));
+    const transformed = await runNode(output);
+    expect(reference.stdout).toBe('25 1 2 3 4 f d 8');
+    expect(transformed.stdout).toBe(reference.stdout);
+  });
+
   test('copied declarations retain their binding and nested scope', async () => {
     await expectNativeParity(
       `
