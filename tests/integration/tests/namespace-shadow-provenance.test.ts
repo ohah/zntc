@@ -21,6 +21,14 @@ namespace N {
 }
 console.log(JSON.stringify([N.N, N.read()]));
 `,
+  'generated IIFE parameter collision with extracted loop': `
+namespace loop {
+  const callbacks: Array<() => number> = [];
+  for (let i = 0; i < 2; i++) callbacks.push(() => i);
+  export const values = callbacks.map((callback) => callback());
+}
+console.log(JSON.stringify([loop.values]));
+`,
   'nested namespace reads, writes and shorthand': `
 namespace Outer {
   export let count = 1;

@@ -131,6 +131,14 @@ test "semantic_codec: merged namespace member owner IDs survive cache round-trip
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
     const decoded = try codec.deserialize(bytes.items, arena.allocator());
+    var namespace_iife_parameters: usize = 0;
+    for (sem.symbols.items, 0..) |symbol, raw| {
+        if (symbol.synthetic_kind != .namespace_iife_parameter) continue;
+        namespace_iife_parameters += 1;
+        try testing.expectEqual(symbol.synthetic_kind, decoded.symbols.items[raw].synthetic_kind);
+        try testing.expectEqualStrings(symbol.synthetic_name, decoded.symbols.items[raw].synthetic_name);
+    }
+    try testing.expect(namespace_iife_parameters >= 4);
     try testing.expectEqual(sem.namespace_member_owners.count(), decoded.namespace_member_owners.count());
     var it = sem.namespace_member_owners.iterator();
     while (it.next()) |entry| {

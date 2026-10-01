@@ -38,6 +38,7 @@ const EXACT_ZERO_COUNTERS = [
   'reference_scope_mismatch',
   'scope_map_mismatch',
   'scope_owner_mismatch',
+  'namespace_iife_param_mismatch',
   'scope_resolution_mismatch',
   'invisible_reference',
   'reference_count_mismatch',
@@ -115,6 +116,31 @@ function runCoverage(
 
 describe('symbol identity coverage gate (#4819)', () => {
   const fixtures = collectFixtures(FIXTURE_DIR);
+
+  test('가상 namespace IIFE 매개변수도 정확한 SymbolId와 ScopeId를 가진다', () => {
+    const file = join(FIXTURE_DIR, '4819-namespace-iife-params.ts');
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-namespace-param-'));
+    try {
+      for (const target of TARGETS) {
+        const { stderr, exitCode } = runCoverage(file, target, outDir);
+        expect(exitCode, `${target.name}: ${stderr}`).toBe(0);
+        const identity = stderr.split('\n').find((line) => line.includes('zntc: symbol-identity '));
+        expect(identity, `${target.name}: missing exact report`).toBeDefined();
+        expect(Number(identity?.match(/namespace_iife_params=(\d+)/)?.[1] ?? 0)).toBe(3);
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${target.name}: ${counter}: ${identity}`,
+          ).toBe(0);
+        }
+        const actual = spawnSync('node', [join(outDir, 'out.js')], { encoding: 'utf8' });
+        expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout).toBe('[109,102]\n');
+      }
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
 
   test('오라클 전체에서 exact 구조 불변식과 심볼 부채가 모두 0', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-symcov-'));

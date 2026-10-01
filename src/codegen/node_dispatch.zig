@@ -400,7 +400,7 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
 
         // TS enum/namespace → IIFE 출력
         .ts_enum_declaration => try type_runtime_emit.emitEnumIIFE(self, node),
-        .ts_module_declaration => try type_runtime_emit.emitNamespaceIIFE(self, node),
+        .ts_module_declaration => try type_runtime_emit.emitNamespaceIIFE(self, node, idx),
         // Flow enum (#2401) → `const Name = Object.freeze({...})` 출력. members 의
         // init expression 이 없으면 base_type 에 따라 default value (string/number/...).
         .flow_enum_declaration => try type_runtime_emit.emitFlowEnum(self, node),

@@ -100,6 +100,50 @@ test "#4819 merged namespace export has shared owner but separate lexical bindin
     try std.testing.expectEqual(@as(usize, 2), local_reads);
 }
 
+test "#4819 namespace IIFE parameter has a separate SymbolId in its function ScopeId" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "namespace N { export const N = 1; export const _N = 2; }";
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_ts = true;
+    try analyzer.analyze();
+
+    var declaration_raw: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .ts_module_declaration and node.data.binary.flags == 0) {
+            declaration_raw = @intCast(raw);
+            break;
+        }
+    }
+    const declaration_id = declaration_raw orelse return error.MissingRuntimeNamespace;
+    const namespace_scope = analyzer.scope_owner_map.get(declaration_id) orelse return error.MissingNamespaceScope;
+    const declaration = parser.ast.nodes.items[declaration_id];
+    const namespace_name_raw = @intFromEnum(declaration.data.binary.left);
+    const outer_symbol = analyzer.symbol_ids.items[namespace_name_raw] orelse return error.MissingOuterNamespaceSymbol;
+
+    var parameter_id: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (symbol.synthetic_kind != .namespace_iife_parameter) continue;
+        try std.testing.expect(parameter_id == null);
+        parameter_id = @intCast(raw);
+        try std.testing.expectEqual(SymbolKind.parameter, symbol.kind);
+        try std.testing.expectEqual(@as(u32, namespace_scope), @intFromEnum(symbol.scope_id));
+        try std.testing.expectEqualStrings("_N1", symbol.synthetic_name);
+    }
+    const iife_parameter = parameter_id orelse return error.MissingNamespaceIifeParameter;
+    try std.testing.expect(iife_parameter != outer_symbol);
+    try std.testing.expectEqual(@as(?usize, iife_parameter), analyzer.scope_maps.items[namespace_scope].get("_N1"));
+    try std.testing.expectEqual(@as(u32, 0), @intFromEnum(analyzer.symbols.items[outer_symbol].scope_id));
+}
+
 test "#4819 runtime enum initializer references retain their source symbol IDs" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
