@@ -29,7 +29,36 @@ pub const REQUIRE_SHIM_MIN = "import{createRequire}from\"node:module\";const req
 /// ESM 번들에 CJS wrapper가 섞일 때 preamble에 require shim을 주입.
 /// 호출부에서 `platform=node + format=esm + CJS wrap 존재` 조건을 판정하고 호출한다.
 pub fn appendRequireShim(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool) !void {
-    try buf.appendSlice(allocator, if (minify) REQUIRE_SHIM_MIN else REQUIRE_SHIM);
+    try appendRequireShimWithLocalName(buf, allocator, minify, "createRequire");
+}
+
+/// Emit the Node ESM require shim with a caller-selected import binding.
+/// The binding shares the bundle's module scope and therefore must be chosen
+/// against source symbols and linker-generated locals before being written.
+pub fn appendRequireShimWithLocalName(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    minify: bool,
+    create_require_local: []const u8,
+) !void {
+    if (std.mem.eql(u8, create_require_local, "createRequire")) {
+        try buf.appendSlice(allocator, if (minify) REQUIRE_SHIM_MIN else REQUIRE_SHIM);
+        return;
+    }
+
+    if (minify) {
+        try buf.appendSlice(allocator, "import{createRequire as ");
+        try buf.appendSlice(allocator, create_require_local);
+        try buf.appendSlice(allocator, "}from\"node:module\";const require=");
+        try buf.appendSlice(allocator, create_require_local);
+        try buf.appendSlice(allocator, "(import.meta.url);");
+    } else {
+        try buf.appendSlice(allocator, "import { createRequire as ");
+        try buf.appendSlice(allocator, create_require_local);
+        try buf.appendSlice(allocator, " } from \"node:module\";\nconst require = ");
+        try buf.appendSlice(allocator, create_require_local);
+        try buf.appendSlice(allocator, "(import.meta.url);\n");
+    }
 }
 
 // #1618 / #1621 / #1752: runtime helper 축약 이름 테이블은 `src/runtime_helper_names.zig`

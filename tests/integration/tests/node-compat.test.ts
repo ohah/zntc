@@ -232,6 +232,35 @@ describe('Node.js 호환 edge case', () => {
       expect(run.stdout.length).toBeGreaterThan(0);
     });
 
+    test('createRequire shim alias avoids user bindings in ESM bundles', async () => {
+      const f = await createFixture({
+        'app.ts': `import dep from 'cjs-dep';\nconst createRequire = 1;\nconst createRequire$1 = 2;\nconsole.log(dep.has, createRequire, createRequire$1);`,
+        'package.json': `{"type":"module"}`,
+        'node_modules/cjs-dep/package.json': `{"name":"cjs-dep","main":"index.cjs"}`,
+        'node_modules/cjs-dep/index.cjs': `const fs = require('node:fs');\nmodule.exports = { has: typeof fs.readFileSync };`,
+      });
+      cleanup = f.cleanup;
+
+      for (const minify of [false, true]) {
+        const outFile = join(f.dir, minify ? 'out.min.mjs' : 'out.mjs');
+        const args = [
+          '--bundle',
+          join(f.dir, 'app.ts'),
+          '--format=esm',
+          '--platform=node',
+          '-o',
+          outFile,
+        ];
+        if (minify) args.push('--minify');
+        const bundle = await runZntc(args);
+        if (bundle.exitCode !== 0) throw new Error(`zntc bundle failed: ${bundle.stderr}`);
+
+        const bundled = readFileSync(outFile, 'utf8');
+        if (!minify) expect(bundled).toContain('createRequire as createRequire$2');
+        expect((await runNode(outFile)).stdout).toBe('function 1 2');
+      }
+    });
+
     test('shim NOT injected for pure ESM', async () => {
       const f = await createFixture({ 'app.ts': `export const v = 1;\nconsole.log(v);` });
       cleanup = f.cleanup;
@@ -277,7 +306,7 @@ describe('Node.js 호환 edge case', () => {
       // require → 해당 dep 이 들어간 chunk 에 `createRequire(import.meta.url)` shim emit.
       const f = await createFixture({
         'app.ts': `const lazy = import('./lazy');\nlazy.then((m) => console.log(m.run()));`,
-        'lazy.ts': `import dep from 'cjs-dep';\nexport function run() { return dep.has; }`,
+        'lazy.ts': `import dep from 'cjs-dep';\nconst createRequire = 1;\nconst createRequire$1 = 2;\nexport function run() { return dep.has + createRequire + createRequire$1; }`,
         'package.json': `{"type": "module"}`,
         'node_modules/cjs-dep/package.json': `{"name":"cjs-dep","main":"index.cjs"}`,
         'node_modules/cjs-dep/index.cjs': `const fs = require('node:fs');\nmodule.exports = { has: typeof fs.readFileSync };`,
@@ -297,10 +326,11 @@ describe('Node.js 호환 edge case', () => {
       if (bundle.exitCode !== 0) throw new Error(`zntc bundle failed: ${bundle.stderr}`);
 
       const outputs = readdirSync(outDir).filter((n) => n.endsWith('.js') || n.endsWith('.mjs'));
-      const hasShim = outputs.some((n) =>
-        readFileSync(join(outDir, n), 'utf8').includes('createRequire(import.meta.url)'),
-      );
-      expect(hasShim).toBe(true);
+      const shimChunk = outputs
+        .map((n) => readFileSync(join(outDir, n), 'utf8'))
+        .find((content) => content.includes('node:module') && content.includes('import.meta.url)'));
+      expect(shimChunk).toBeDefined();
+      expect(shimChunk).toContain('createRequire as createRequire$2');
     });
   });
 
