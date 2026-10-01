@@ -10,6 +10,9 @@ const import_scanner = @import("../import_scanner.zig");
 const stmt_info_mod = @import("../stmt_info.zig");
 const purity = @import("../purity.zig");
 const profile = @import("../../profile.zig");
+const NodeTag = @import("../../parser/ast.zig").Node.Tag;
+const SemanticSymbol = @import("../../semantic/symbol.zig").Symbol;
+const SemanticSymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
 const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
 const Transformer = @import("../../transformer/transformer.zig").Transformer;
 const TransformOptions = @import("../../transformer/transformer.zig").TransformOptions;
@@ -262,12 +265,85 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
 /// 이 중앙 resync 경로를 우회해서 record/binding 만 수동 보정하면 linker, tree-shaker,
 /// chunking 이 서로 다른 AST/semantic 상태를 보게 되므로 여기서만 metadata 재구축
 /// 정책을 확장해야 한다 (#1913).
+/// Re-analysis replaces the semantic symbol array, so old SymbolIDs cannot be
+/// reused directly. Carry a rename only through a surviving declaration/facade
+/// node with the same NodeIndex in both semantic snapshots. References are not
+/// anchors because re-analysis can resolve one to a different binding. Names,
+/// declaration spans, and synthetic-name strings are not identity. Ambiguous
+/// mappings are dropped instead of guessing which new symbol inherited the old
+/// identity.
+fn isRenameAnchorNode(tag: NodeTag, old_symbol: SemanticSymbol, new_symbol: SemanticSymbol) bool {
+    if (old_symbol.kind != new_symbol.kind) return false;
+    return switch (tag) {
+        .binding_identifier => true,
+        .import_default_specifier, .import_namespace_specifier => old_symbol.kind == .import_binding,
+        .export_default_declaration => old_symbol.decl_flags.is_default_export and new_symbol.decl_flags.is_default_export,
+        else => false,
+    };
+}
+
+fn remapRenamesByNodeIdentity(
+    scratch_allocator: std.mem.Allocator,
+    output_allocator: std.mem.Allocator,
+    module_index: bundler_symbol.ModuleIndex,
+    node_tags: []const NodeTag,
+    old_symbol_ids: []const ?u32,
+    new_symbol_ids: []const ?u32,
+    old_symbols: []const SemanticSymbol,
+    new_symbols: []const SemanticSymbol,
+    old_renames: []const ?[]const u8,
+    rebuilt: *bundler_symbol.RenameTable,
+) !void {
+    const old_to_new = try scratch_allocator.alloc(?u32, old_symbols.len);
+    defer scratch_allocator.free(old_to_new);
+    @memset(old_to_new, null);
+    const old_ambiguous = try scratch_allocator.alloc(bool, old_symbols.len);
+    defer scratch_allocator.free(old_ambiguous);
+    @memset(old_ambiguous, false);
+    const new_to_old = try scratch_allocator.alloc(?u32, new_symbols.len);
+    defer scratch_allocator.free(new_to_old);
+    @memset(new_to_old, null);
+    const new_ambiguous = try scratch_allocator.alloc(bool, new_symbols.len);
+    defer scratch_allocator.free(new_ambiguous);
+    @memset(new_ambiguous, false);
+
+    for (0..@min(@min(old_symbol_ids.len, new_symbol_ids.len), node_tags.len)) |raw| {
+        const old_idx = old_symbol_ids[raw] orelse continue;
+        if (old_idx >= old_symbols.len) continue;
+        const new_idx = new_symbol_ids[raw] orelse continue;
+        if (new_idx >= new_symbols.len) continue;
+        if (!isRenameAnchorNode(node_tags[raw], old_symbols[old_idx], new_symbols[new_idx])) continue;
+
+        if (old_to_new[old_idx]) |previous_new| {
+            if (previous_new != new_idx) old_ambiguous[old_idx] = true;
+        } else {
+            old_to_new[old_idx] = new_idx;
+        }
+
+        if (new_to_old[new_idx]) |previous_old| {
+            if (previous_old != old_idx) {
+                new_ambiguous[new_idx] = true;
+                old_ambiguous[previous_old] = true;
+                old_ambiguous[old_idx] = true;
+            }
+        } else {
+            new_to_old[new_idx] = old_idx;
+        }
+    }
+
+    for (old_to_new, 0..) |maybe_new_idx, old_idx| {
+        const new_idx = maybe_new_idx orelse continue;
+        if (old_ambiguous[old_idx] or new_ambiguous[new_idx]) continue;
+        if (old_idx >= old_renames.len) continue;
+        const rename = old_renames[old_idx] orelse continue;
+        try rebuilt.put(output_allocator, bundler_symbol.SymbolID.make(module_index, new_idx), rename);
+    }
+}
+
 /// **RFC #3940 L.5a — carry-over 를 build-scope `rename_table` 기반으로 재설계**.
 /// post-link tree-shake (const-materialize 등) 의 semantic resync 가 symbols 배열을 재생성하면
-/// old idx 기준 rename 정보가 stale 해진다. resync **전** old_sem 각 symbol 의 rename 을
-/// `rename_table.get(SymbolID(module.index, old_idx))` 로 읽어, resync **후** new_sem 에서
-/// name-based 로 new_idx 를 찾아 `module.pending_renames` 에
-/// `SymbolID(module.index, new_idx) → name` 으로 stash 한다.
+/// old idx 기준 rename 정보가 stale 해진다. resync 전 rename 을 읽고 같은 AST NodeIndex 의
+/// old/new SymbolID 연결로 새 idx 를 찾아 `module.pending_renames` 에 stash 한다.
 /// bundler 의 post-shake finalize 가 `Linker.applyPendingRenames` 로 mutable `rename_table` 에
 /// 반영한다 (tree_shaker.linker 는 *const 라 put 불가 — capture=read, apply=write 분리).
 /// `rename_table == null` (graph pre-pass, link 전) 이면 rename 미설정이라 no-op.
@@ -286,72 +362,43 @@ fn captureRenamesToPending(
     rename_table: *const bundler_symbol.RenameTable,
     old_sem: ModuleSemanticData,
     new_sem: *const ModuleSemanticData,
-    source: []const u8,
+    scratch_allocator: std.mem.Allocator,
     arena: std.mem.Allocator,
 ) !void {
-    const module_scope: ?*const std.StringHashMapUnmanaged(usize) = if (new_sem.scope_maps.len > 0) &new_sem.scope_maps[0] else null;
     // old_sem 기준 새 맵을 만들어 교체 — 이전 idx 의 stale entry 누적/오염 방지 (multi-pass).
     var rebuilt: bundler_symbol.RenameTable = .{};
-    // `rename_table` (link 시점 = pass0 idx) 폴백은 **첫 capture (pending 비어있음)** 에서만
-    // 허용한다. 2차+ resync 는 old_sem idx 가 pass1+ 라, pass0 키 폴백 시 그 슬롯의 *다른* 심볼
-    // rename 을 오인해 잘못 적용할 수 있다 (idx-space mismatch). 직전 resync 가 old_sem idx 로
-    // stash 한 `pending_renames` 가 2차+ 의 유일한 정합 source 다. apply 가 build 끝에 pending 을
-    // clear 하므로 다음 build 의 첫 capture 는 다시 count==0 — cross-build 안전.
-    const allow_table_fallback = module.pending_renames.count() == 0;
-    for (old_sem.symbols.items, 0..) |old_sym, old_idx| {
+    // `rename_table` (link 시점 = pass0 idx) 폴백은 첫 resync 에서만 허용한다.
+    // pending 이 비어도 이전 capture 가 이미 끝났을 수 있으므로 map count 대신 별도 상태를 쓴다.
+    // 2차+ resync 는 old_sem idx 가 pass1+ 라 pass0 키 폴백 시 다른 심볼 rename 을 오인할 수 있다.
+    const allow_table_fallback = !module.pending_rename_capture_seen;
+    const ast = &(module.ast orelse return);
+    const node_tags = try scratch_allocator.alloc(NodeTag, ast.nodes.items.len);
+    defer scratch_allocator.free(node_tags);
+    for (ast.nodes.items, 0..) |node, raw| node_tags[raw] = node.tag;
+    const old_renames = try scratch_allocator.alloc(?[]const u8, old_sem.symbols.items.len);
+    defer scratch_allocator.free(old_renames);
+    @memset(old_renames, null);
+    for (old_sem.symbols.items, 0..) |_, old_idx| {
         const old_id = bundler_symbol.SymbolID.make(module.index, old_idx);
         // 직전 resync 결과(pending) 우선; 첫 capture 만 link 시점 rename_table 폴백.
         const rename = module.pending_renames.get(old_id) orelse
             (if (allow_table_fallback) rename_table.get(old_id) else null) orelse continue;
-
-        if (old_sym.synthetic_kind == null) {
-            const name = old_sym.nameText(source);
-            // ⚠️ old_sym 이 정말 **module-scope(scope 0) 심볼**일 때만 module_scope 로 재유도한다.
-            // 같은 이름이 scope 0 과 nested 양쪽에 있으면(#4533 소비자 shadow-rename 케이스),
-            // module_scope.get(name) 은 **scope 0 idx** 를 주는데 old_sym 이 nested 였다면 rename 이
-            // 엉뚱한 심볼에 붙는다 → 아래 span 폴백으로 가야 한다.
-            const old_is_module_scope = if (old_sem.scope_maps.len > 0)
-                (old_sem.scope_maps[0].get(name) orelse std.math.maxInt(usize)) == old_idx
-            else
-                false;
-            const new_idx = if (old_is_module_scope) (if (module_scope) |scope| scope.get(name) else null) else null;
-            if (new_idx) |idx| {
-                if (idx < new_sem.symbols.items.len and new_sem.symbols.items[idx].synthetic_kind == null) {
-                    try rebuilt.put(arena, bundler_symbol.SymbolID.make(module.index, idx), rename);
-                }
-                continue;
-            }
-            // module_scope(scope 0) 에 없으면 **nested 바인딩**이다 (#4533 소비자 shadow-rename).
-            // rename_table 에 nested entry 가 생기는 건 이번(#4533) 부터다. 이름은 nested 스코프
-            // 에서 유일하지 않으므로 `declaration_span` 으로 매칭한다 — const-materialization 은
-            // leaf 식별자만 치환하고 선언 위치는 안 옮기므로 span 안정.
-            //
-            // ⚠️ 이 폴백은 **pending 이 비지 않은(=module-scope rename 도 있는) 소비자가
-            // AST 변형(const-materialize)까지 겪을 때**만 발동한다 — 그 경우 `applyPendingRenames`
-            // 가 `removeModule` 로 nested entry 까지 지우므로 여기서 재-stash 해야 한다. nested-only
-            // 소비자는 pending 이 비어 applyPendingRenames 가 skip → rename_table 이 보존되어
-            // 이 경로가 필요 없다(그래서 cold 단순 케이스로는 재현 안 됨).
-            if (old_sym.declaration_span.end > old_sym.declaration_span.start) {
-                for (new_sem.symbols.items, 0..) |new_sym, idx| {
-                    if (new_sym.synthetic_kind != null) continue;
-                    if (new_sym.declaration_span.start != old_sym.declaration_span.start) continue;
-                    if (new_sym.declaration_span.end != old_sym.declaration_span.end) continue;
-                    if (!std.mem.eql(u8, new_sym.nameText(source), name)) continue;
-                    try rebuilt.put(arena, bundler_symbol.SymbolID.make(module.index, idx), rename);
-                    break;
-                }
-            }
-            continue;
-        }
-
-        for (new_sem.symbols.items, 0..) |new_sym, new_idx| {
-            if (new_sym.synthetic_kind != old_sym.synthetic_kind) continue;
-            if (!std.mem.eql(u8, new_sym.synthetic_name, old_sym.synthetic_name)) continue;
-            try rebuilt.put(arena, bundler_symbol.SymbolID.make(module.index, new_idx), rename);
-            break;
-        }
+        old_renames[old_idx] = rename;
     }
+    try remapRenamesByNodeIdentity(
+        scratch_allocator,
+        arena,
+        module.index,
+        node_tags,
+        old_sem.symbol_ids,
+        new_sem.symbol_ids,
+        old_sem.symbols.items,
+        new_sem.symbols.items,
+        old_renames,
+        &rebuilt,
+    );
     module.pending_renames = rebuilt;
+    module.pending_rename_capture_seen = true;
 }
 
 /// 재분석 전 semantic 을 돌려준다 — 리네임 이관(`captureRenamesAfterResync`)은 합성 심볼이 표시된
@@ -466,7 +513,7 @@ fn captureRenamesAfterResync(
     const rt = rename_table orelse return;
     const old_sem = previous_semantic orelse return;
     const new_sem = if (module.semantic) |*sem| sem else return;
-    try captureRenamesToPending(module, rt, old_sem, new_sem, module.source, arena_alloc);
+    try captureRenamesToPending(module, rt, old_sem, new_sem, self.allocator, arena_alloc);
 }
 
 fn refreshStableBindingRefsAfterSemanticResync(
@@ -738,4 +785,108 @@ pub fn materializeFromCachedAst(self: anytype, module: *Module, arena_alloc: std
     if (ast.has_flow_enum_declaration) {
         module.import_records = injectFlowEnumRuntimeImport(arena_alloc, module.import_records) catch module.import_records;
     }
+}
+
+test "rename carry-over follows same-node SymbolID lineage and drops ambiguity" {
+    var test_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer test_arena.deinit();
+    const allocator = test_arena.allocator();
+    const module_index: bundler_symbol.ModuleIndex = @enumFromInt(0);
+    const node_tags = [_]NodeTag{
+        .binding_identifier,
+        .identifier_reference,
+        .export_default_declaration,
+        .binding_identifier,
+        .binding_identifier,
+    };
+    const old_ids = [_]?u32{ 1, 1, 2, 3, 3 };
+    const new_ids = [_]?u32{ 4, 6, 5, 7, 8 };
+    const old_symbols = [_]SemanticSymbol{
+        testRenameSymbol(.variable_let, false),
+        testRenameSymbol(.variable_let, false),
+        testRenameSymbol(.variable_const, true),
+        testRenameSymbol(.variable_let, false),
+    };
+    const new_symbols = [_]SemanticSymbol{
+        testRenameSymbol(.variable_let, false),
+        testRenameSymbol(.variable_let, false),
+        testRenameSymbol(.variable_const, true),
+        testRenameSymbol(.variable_let, false),
+        testRenameSymbol(.variable_let, false),
+        testRenameSymbol(.variable_const, true),
+        testRenameSymbol(.variable_let, false),
+        testRenameSymbol(.variable_let, false),
+        testRenameSymbol(.variable_let, false),
+    };
+    const old_renames = [_]?[]const u8{ null, "renamed-a", "renamed-b", "ambiguous" };
+    var rebuilt: bundler_symbol.RenameTable = .{};
+
+    try remapRenamesByNodeIdentity(
+        allocator,
+        allocator,
+        module_index,
+        &node_tags,
+        &old_ids,
+        &new_ids,
+        &old_symbols,
+        &new_symbols,
+        &old_renames,
+        &rebuilt,
+    );
+
+    try std.testing.expectEqual(@as(u32, 2), rebuilt.count());
+    try std.testing.expectEqualStrings("renamed-a", rebuilt.get(bundler_symbol.SymbolID.make(module_index, 4)).?);
+    try std.testing.expectEqualStrings("renamed-b", rebuilt.get(bundler_symbol.SymbolID.make(module_index, 5)).?);
+    try std.testing.expect(rebuilt.get(bundler_symbol.SymbolID.make(module_index, 6)) == null);
+    try std.testing.expect(rebuilt.get(bundler_symbol.SymbolID.make(module_index, 7)) == null);
+    try std.testing.expect(rebuilt.get(bundler_symbol.SymbolID.make(module_index, 8)) == null);
+}
+
+test "rename carry-over drops many-to-one node lineage" {
+    var test_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer test_arena.deinit();
+    const allocator = test_arena.allocator();
+    const module_index: bundler_symbol.ModuleIndex = @enumFromInt(0);
+    const node_tags = [_]NodeTag{ .binding_identifier, .binding_identifier };
+    const old_ids = [_]?u32{ 1, 2 };
+    const new_ids = [_]?u32{ 4, 4 };
+    const old_symbols = [_]SemanticSymbol{
+        testRenameSymbol(.variable_let, false),
+        testRenameSymbol(.variable_let, false),
+        testRenameSymbol(.variable_let, false),
+    };
+    const new_symbols = [_]SemanticSymbol{
+        testRenameSymbol(.variable_let, false),
+        testRenameSymbol(.variable_let, false),
+        testRenameSymbol(.variable_let, false),
+        testRenameSymbol(.variable_let, false),
+        testRenameSymbol(.variable_let, false),
+    };
+    const old_renames = [_]?[]const u8{ null, "renamed-a", null };
+    var rebuilt: bundler_symbol.RenameTable = .{};
+
+    try remapRenamesByNodeIdentity(
+        allocator,
+        allocator,
+        module_index,
+        &node_tags,
+        &old_ids,
+        &new_ids,
+        &old_symbols,
+        &new_symbols,
+        &old_renames,
+        &rebuilt,
+    );
+
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+}
+
+fn testRenameSymbol(kind: SemanticSymbolKind, is_default_export: bool) SemanticSymbol {
+    return .{
+        .name = Span.EMPTY,
+        .scope_id = .none,
+        .kind = kind,
+        .decl_flags = .{ .is_default_export = is_default_export },
+        .declaration_span = Span.EMPTY,
+    };
 }

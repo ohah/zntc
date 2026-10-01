@@ -3898,13 +3898,17 @@ pub const Linker = struct {
     pub fn applyPendingRenames(self: *Linker) !void {
         var mit = self.graph.modules.iterator(0);
         while (mit.next()) |m| {
-            if (m.pending_renames.count() == 0) continue;
+            if (m.pending_renames.count() == 0) {
+                m.pending_rename_capture_seen = false;
+                continue;
+            }
             try self.rename_table.removeModule(self.allocator, m.index);
             var it = m.pending_renames.map.iterator();
             while (it.next()) |e| {
                 try self.rename_table.put(self.allocator, e.key_ptr.*, e.value_ptr.*);
             }
             m.pending_renames.clear();
+            m.pending_rename_capture_seen = false;
         }
     }
 

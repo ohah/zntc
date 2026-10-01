@@ -1638,6 +1638,7 @@ test "applyPendingRenames: pending 반영 + mutated module stale entry prune (RF
     // carry-over 모사: resync 로 idx 가 바뀌어 (m0, 99) 가 stale 가 된 상태 + new idx (m0, 0) pending.
     try r.linker.rename_table.put(std.testing.allocator, symbol_mod.SymbolID.make(mi, 99), "stale");
     try m0.pending_renames.put(std.testing.allocator, symbol_mod.SymbolID.make(mi, 0), "fresh");
+    m0.pending_rename_capture_seen = true;
 
     try r.linker.applyPendingRenames();
 
@@ -1645,6 +1646,12 @@ test "applyPendingRenames: pending 반영 + mutated module stale entry prune (RF
     try std.testing.expect(r.linker.rename_table.get(symbol_mod.SymbolID.make(mi, 99)) == null);
     try std.testing.expectEqualStrings("fresh", r.linker.rename_table.get(symbol_mod.SymbolID.make(mi, 0)).?);
     try std.testing.expectEqual(@as(u32, 0), m0.pending_renames.count());
+    try std.testing.expect(!m0.pending_rename_capture_seen);
+
+    // 빈 carry 결과도 capture state 를 소비해야 다음 build 에서 첫-pass fallback 을 다시 허용한다.
+    m0.pending_rename_capture_seen = true;
+    try r.linker.applyPendingRenames();
+    try std.testing.expect(!m0.pending_rename_capture_seen);
 }
 
 // Regression: HMR rebuild 에서 소스가 재파싱된 모듈의 `alias_table` 이 줄어들
