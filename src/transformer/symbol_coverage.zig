@@ -2756,9 +2756,10 @@ test "exact coverage cleanliness fails closed for every invariant counter" {
 }
 
 test "exact coverage diagnostic findings cannot disagree with a clean report" {
+    const identifier_reference_tag: Node.Tag = .identifier_reference;
     const finding: ExactFinding = .{
         .name = "x",
-        .tag = .identifier_reference,
+        .tag = identifier_reference_tag,
         .node_index = 1,
         .span_start = 0,
     };
