@@ -532,7 +532,8 @@ pub fn computeAsyncCone(self: *ModuleGraph) void {
 pub fn promoteAsyncConeToEsmWrap(self: *ModuleGraph) void {
     const base = &self.transform_options_base;
     if (!base.unsupported.top_level_await) return; // 타겟이 TLA 지원 → 손대지 않음
-    if (base.unsupported.async_await) return; // es5 는 아직 대상 아님
+    // es5 도 대상이다 — factory 를 async 로 못 만들 뿐, `init_X()` 는 이미 낮춰진
+    // `__async(...)` promise 를 돌려주고 소비자는 `.then` 으로 기다릴 수 있다.
     if (self.code_splitting or self.preserve_modules) return;
     // 청크 위임(#4625)이 이 청크를 async factory 로 감싸면 모듈을 또 래핑하지 않는다.
     // 위임 산물이 scope-hoist 라 더 작고 이미 검증돼 있다 — 겹치면 커지기만 한다.
