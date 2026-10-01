@@ -1277,6 +1277,55 @@ test "strict inventory does not infer generated global identity from spelling" {
     try std.testing.expectEqual(@intFromEnum(binding), report.findings.items[0].node);
 }
 
+test "strict inventory reports generated symbols with no reachable binding" {
+    const allocator = std.testing.allocator;
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("_unused");
+    const root = try ast.addNode(.{ .tag = .program, .span = name, .data = .{ .list = try ast.addNodeList(&.{}) } });
+    const global_scope: ScopeId = @enumFromInt(0);
+    const scopes = [_]Scope{.{ .parent = .none, .kind = .global, .is_strict = false }};
+    const symbols = [_]Symbol{
+        .{ .name = name, .scope_id = global_scope, .origin_scope = global_scope, .kind = .variable_var, .declaration_span = name, .synthetic_name = "_unused" },
+    };
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer owners.deinit(allocator);
+    try owners.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
+    var synthetic: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer synthetic.deinit(allocator);
+    const unresolved: std.StringHashMapUnmanaged(void) = .empty;
+
+    var orphan = try coverage.checkStrict(allocator, &ast, root, 0, &.{}, &symbols, &scopes, &owners, &.{}, &synthetic, &unresolved);
+    defer orphan.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), orphan.orphan_symbols);
+    try std.testing.expect(!orphan.hasCompleteExactCoverage());
+    try std.testing.expectEqual(@as(usize, 1), orphan.orphan_symbol_findings.items.len);
+    try std.testing.expectEqual(@as(u32, 0), orphan.orphan_symbol_findings.items[0].symbol_id);
+    try std.testing.expectEqualStrings("_unused", orphan.orphan_symbol_findings.items[0].name);
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, orphan.orphan_symbol_findings.items[0].kind);
+    try std.testing.expectEqual(global_scope, orphan.orphan_symbol_findings.items[0].scope_id);
+
+    // Expression `export default` uses an intentional symbol-table facade
+    // when there is no emitted local declaration to attach it to.
+    var default_facade_symbols = symbols;
+    default_facade_symbols[0].synthetic_name = "_default";
+    default_facade_symbols[0].decl_flags.is_default_export = true;
+    var default_facade = try coverage.checkStrict(allocator, &ast, root, 0, &.{}, &default_facade_symbols, &scopes, &owners, &.{}, &synthetic, &unresolved);
+    defer default_facade.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), default_facade.orphan_symbols);
+    try std.testing.expect(default_facade.hasCompleteExactCoverage());
+
+    // Once the exact symbol is attached to a reachable binding, it is no longer orphaned.
+    const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const root_with_binding = try ast.addNode(.{ .tag = .program, .span = name, .data = .{ .list = try ast.addNodeList(&.{binding}) } });
+    try owners.put(allocator, @intFromEnum(root_with_binding), @intFromEnum(global_scope));
+    const symbol_ids = [_]?u32{ null, 0, null };
+    var attached = try coverage.checkStrict(allocator, &ast, root_with_binding, 0, &symbol_ids, &symbols, &scopes, &owners, &.{}, &synthetic, &unresolved);
+    defer attached.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), attached.orphan_symbols);
+    try std.testing.expect(attached.hasCompleteExactCoverage());
+}
+
 test "strict inventory checks generated identity and exact lexical scope" {
     const allocator = std.testing.allocator;
     var ast = Ast.init(allocator, "");
