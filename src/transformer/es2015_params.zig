@@ -27,9 +27,41 @@ const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
+const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
 
 pub fn ES2015Params(comptime Transformer: type) type {
     return struct {
+        /// The emitted formal parameter and body declarations have different
+        /// SymbolKinds. Register each binding before emitting references to it.
+        fn registerDestructuringTempAtCreation(
+            self: *Transformer,
+            binding: NodeIndex,
+            name_span: Span,
+            declaration_span: Span,
+            kind: SymbolKind,
+        ) Transformer.Error!void {
+            if (!self.semantic_edit_enabled or self.current_scope.isNone()) return;
+            const id = if (kind == .variable_var)
+                try self.declareSyntheticTempInScope(binding, declaration_span, self.current_scope)
+            else
+                try self.declareSyntheticInScope(binding, declaration_span, kind, self.current_scope);
+            if (id) |symbol_id|
+                try self.destructuring_temp_symbol_ids.put(self.allocator, name_span.start, @intFromEnum(symbol_id));
+        }
+
+        fn emitParameterPatternDeclarators(
+            self: *Transformer,
+            pattern: Node,
+            read_span: Span,
+            span: Span,
+        ) Transformer.Error!void {
+            const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
+            const saved_kind = self.destructuring_temp_kind;
+            self.destructuring_temp_kind = .variable_var;
+            defer self.destructuring_temp_kind = saved_kind;
+            try es2015_destruct.emitPatternDeclarators(self, pattern, read_span, span, .@"var");
+        }
+
         /// 파라미터 패턴 안에 object rest (`{a, ...r}`, ES2018) 가 있는지 검사 (#4251).
         /// default_params(ES2015) 는 지원하나 object_spread(ES2018) 만 미지원인
         /// 타겟(es2016/es2017)에서, object rest 가 든 param 만 lowering 하기 위한
@@ -251,6 +283,8 @@ pub fn ES2015Params(comptime Transformer: type) type {
         ) Transformer.Error!NodeIndex {
             const temp_span = try es_helpers.makeTempVarSpan(self);
             const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
+            try registerDestructuringTempAtCreation(self, temp_binding, temp_span, span, .parameter);
+            es_helpers.consumeTempVarSpan(self, temp_span);
 
             const default_stmt = try buildDefaultCheckForTemp(self, temp_span, visited_default, span);
             try body_stmts.append(self.allocator, default_stmt);
@@ -262,6 +296,8 @@ pub fn ES2015Params(comptime Transformer: type) type {
             const read_span = if (pattern_node.tag == .array_pattern) blk: {
                 const read_span = try es_helpers.makeTempVarSpan(self);
                 read_binding = try es_helpers.makeSyntheticBinding(self, read_span);
+                try registerDestructuringTempAtCreation(self, read_binding, read_span, span, .variable_var);
+                es_helpers.consumeTempVarSpan(self, read_span);
                 const read_init = try es2015_destruct.buildArrayRead(self, temp_ref2, pattern_node, span);
                 const read_decl = try es_helpers.makeVarDeclaration(
                     self,
@@ -275,9 +311,11 @@ pub fn ES2015Params(comptime Transformer: type) type {
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
-            try es2015_destruct.emitPatternDeclarators(self, pattern_node, read_span, span, .@"var");
-            try self.bindSyntheticTempInScope(temp_binding, temp_span, span, .parameter, self.current_scope);
-            if (!read_binding.isNone()) try self.bindSyntheticTempInScope(read_binding, read_span, span, .variable_var, self.current_scope);
+            try emitParameterPatternDeclarators(self, pattern_node, read_span, span);
+            if (self.getSymbolIdAt(temp_binding) == null)
+                try self.bindSyntheticTempInScope(temp_binding, temp_span, span, .parameter, self.current_scope);
+            if (!read_binding.isNone() and self.getSymbolIdAt(read_binding) == null)
+                try self.bindSyntheticTempInScope(read_binding, read_span, span, .variable_var, self.current_scope);
             const declarators = self.scratch.items[scratch_top..];
             if (declarators.len > 0) {
                 const destruct_decl = try es_helpers.makeVarDeclaration(self, declarators, .@"var", span);
@@ -297,6 +335,8 @@ pub fn ES2015Params(comptime Transformer: type) type {
         ) Transformer.Error!NodeIndex {
             const temp_span = try es_helpers.makeTempVarSpan(self);
             const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
+            try registerDestructuringTempAtCreation(self, temp_binding, temp_span, span, .parameter);
+            es_helpers.consumeTempVarSpan(self, temp_span);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -307,15 +347,19 @@ pub fn ES2015Params(comptime Transformer: type) type {
             const read_span = if (pattern.tag == .array_pattern) blk: {
                 const read_span = try es_helpers.makeTempVarSpan(self);
                 read_binding = try es_helpers.makeSyntheticBinding(self, read_span);
+                try registerDestructuringTempAtCreation(self, read_binding, read_span, span, .variable_var);
+                es_helpers.consumeTempVarSpan(self, read_span);
                 const temp_ref = try es_helpers.makeTrackedTempRef(self, temp_span, span, .{ .read = true });
                 const read_init = try es2015_destruct.buildArrayRead(self, temp_ref, pattern, span);
                 const read_decl = try es_helpers.makeDeclarator(self, read_binding, read_init, span);
                 try self.scratch.append(self.allocator, read_decl);
                 break :blk read_span;
             } else temp_span;
-            try es2015_destruct.emitPatternDeclarators(self, pattern, read_span, span, .@"var");
-            try self.bindSyntheticTempInScope(temp_binding, temp_span, span, .parameter, self.current_scope);
-            if (!read_binding.isNone()) try self.bindSyntheticTempInScope(read_binding, read_span, span, .variable_var, self.current_scope);
+            try emitParameterPatternDeclarators(self, pattern, read_span, span);
+            if (self.getSymbolIdAt(temp_binding) == null)
+                try self.bindSyntheticTempInScope(temp_binding, temp_span, span, .parameter, self.current_scope);
+            if (!read_binding.isNone() and self.getSymbolIdAt(read_binding) == null)
+                try self.bindSyntheticTempInScope(read_binding, read_span, span, .variable_var, self.current_scope);
 
             const declarators = self.scratch.items[scratch_top..];
             if (declarators.len > 0) {

@@ -294,7 +294,18 @@ pub fn hasRawPrivateSyntax(ast: *const Ast, root: NodeIndex) bool {
 /// transformer는 새 노드를 append하면서 이전 노드를 orphan으로 남길 수 있으므로,
 /// post-transform 분석은 `ast.nodes.items` 전체 순회 대신 이 결과를 사용해야 한다.
 pub fn collectReachableNodeIndices(allocator: std.mem.Allocator, ast: *const Ast) ![]u32 {
-    if (ast.nodes.items.len == 0) return &.{};
+    const root_idx = ast.transformed_root orelse if (ast.nodes.items.len == 0)
+        @as(NodeIndex, .none)
+    else
+        @as(NodeIndex, @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))));
+    return collectReachableNodeIndicesFrom(allocator, ast, root_idx);
+}
+
+/// Collect reachable nodes from an explicit root. Transform passes use this
+/// before `transformed_root` is committed, when the root is already known but
+/// the AST's last allocated node is only an arbitrary child or replacement.
+pub fn collectReachableNodeIndicesFrom(allocator: std.mem.Allocator, ast: *const Ast, root_idx: NodeIndex) ![]u32 {
+    if (ast.nodes.items.len == 0 or root_idx.isNone()) return &.{};
 
     var visited = try allocator.alloc(bool, ast.nodes.items.len);
     defer allocator.free(visited);
@@ -305,8 +316,6 @@ pub fn collectReachableNodeIndices(allocator: std.mem.Allocator, ast: *const Ast
 
     var stack: std.ArrayList(NodeIndex) = .empty;
     defer stack.deinit(allocator);
-    const root_idx = ast.transformed_root orelse
-        @as(NodeIndex, @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))));
     try stack.append(allocator, root_idx);
 
     var child_buf: std.ArrayList(NodeIndex) = .empty;

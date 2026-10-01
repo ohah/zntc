@@ -1022,7 +1022,11 @@ pub fn captureToTrackedTemp(self: anytype, value: NodeIndex, span: Span) !TempCa
 
 pub fn makeTrackedTempRef(self: anytype, name_span: Span, node_span: Span, flags: @import("../semantic/mod.zig").ReferenceFlags) !NodeIndex {
     const ref = try makeTempVarRef(self, name_span, node_span);
-    try self.trackHoistedTempRef(name_span, ref, flags);
+    if (self.destructuring_temp_symbol_ids.get(name_span.start)) |raw_id| {
+        try self.addSyntheticRefInScope(ref, @enumFromInt(raw_id), self.current_scope, flags);
+    } else {
+        try self.trackHoistedTempRef(name_span, ref, flags);
+    }
     return ref;
 }
 

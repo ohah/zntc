@@ -108,3 +108,112 @@ test "#4819 parameter optional-chain temp uses exact emitted storage scope" {
         true,
     );
 }
+
+fn checkDestructuringParameterTempSymbols(source: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var function_scope: ?u32 = null;
+    var owners = analyzer.scope_owner_map.iterator();
+    while (owners.next()) |owner| {
+        switch (parser.ast.nodes.items[owner.key_ptr.*].tag) {
+            .function_declaration, .function_expression, .function, .method_definition, .arrow_function_expression => function_scope = owner.value_ptr.*,
+            else => {},
+        }
+    }
+    const expected_function_scope = function_scope orelse return error.MissingFunctionScope;
+    const original_symbol_count = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+
+    var parameter_temps: usize = 0;
+    var function_var_temps: usize = 0;
+    for (edited.symbols.items[original_symbol_count..], original_symbol_count..) |symbol, symbol_index| {
+        if (symbol.synthetic_name.len < 2 or symbol.synthetic_name[0] != '_' or symbol.synthetic_name[1] == '_') continue;
+        if (symbol.kind == .parameter) {
+            parameter_temps += 1;
+            try std.testing.expectEqual(expected_function_scope, @intFromEnum(symbol.scope_id));
+        } else if (symbol.kind == .variable_var and @intFromEnum(symbol.scope_id) == expected_function_scope) {
+            function_var_temps += 1;
+        } else if (symbol.kind == .variable_var) {
+            try std.testing.expectEqual(expected_function_scope, @intFromEnum(symbol.scope_id));
+        }
+
+        var live_bindings: usize = 0;
+        for (reachable) |raw| {
+            if (transformer.ast.nodes.items[raw].tag != .binding_identifier) continue;
+            if (raw < edited.symbol_ids.len and edited.symbol_ids[raw] == @as(u32, @intCast(symbol_index)))
+                live_bindings += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), live_bindings);
+
+        var live_references: u32 = 0;
+        for (edited.references) |reference| {
+            if (@intFromEnum(reference.symbol_id) != symbol_index or reference.flags.declare) continue;
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(reference.node_index)) != null);
+            try std.testing.expectEqual(@as(?u32, @intCast(symbol_index)), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+            try std.testing.expectEqual(expected_function_scope, @intFromEnum(reference.scope_id));
+            try std.testing.expect(reference.flags.read or reference.flags.write);
+            live_references += 1;
+        }
+        try std.testing.expectEqual(symbol.reference_count, live_references);
+    }
+
+    var exact_temp_ids = transformer.destructuring_temp_symbol_ids.iterator();
+    var mapped_temp_count: usize = 0;
+    while (exact_temp_ids.next()) |entry| {
+        const raw_symbol_index = entry.value_ptr.*;
+        const symbol_index: usize = @intCast(raw_symbol_index);
+        try std.testing.expect(symbol_index >= original_symbol_count and symbol_index < edited.symbols.items.len);
+        const symbol = edited.symbols.items[symbol_index];
+        try std.testing.expect(symbol.kind == .parameter or symbol.kind == .variable_var);
+        try std.testing.expectEqual(expected_function_scope, @intFromEnum(symbol.scope_id));
+
+        var binding_count: usize = 0;
+        for (reachable) |raw| {
+            if (transformer.ast.nodes.items[raw].tag != .binding_identifier) continue;
+            if (raw < edited.symbol_ids.len and edited.symbol_ids[raw] == raw_symbol_index) binding_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), binding_count);
+        mapped_temp_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), parameter_temps);
+    try std.testing.expect(function_var_temps > 0);
+    try std.testing.expectEqual(parameter_temps + function_var_temps, mapped_temp_count);
+}
+
+test "#4819 destructuring parameter temps stay in their emitted function scope" {
+    const fixtures = [_][]const u8{
+        "function run({ first: { seed } }) { return seed; }",
+        "function run({ first: { seed } } = {}) { return seed; }",
+        "function run([{ first: { seed } }]) { return seed; }",
+        "function run([{ first: { seed } } = {}] = []) { return seed; }",
+        "function run({ [key()]: { seed }, ...rest } = {}) { return [seed, rest]; }",
+        "class Host { run({ first: { seed } }) { return seed; } }",
+        "const run = ({ first: { seed } }) => seed;",
+    };
+    for (fixtures) |source| try checkDestructuringParameterTempSymbols(source);
+}
