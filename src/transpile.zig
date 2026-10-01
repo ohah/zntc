@@ -82,6 +82,9 @@ const AstFacts = struct {
     has_non_named_import: bool = false,
     /// class / private / decorator / TS runtime syntax / using — runtime transform needed.
     has_runtime_sensitive_syntax: bool = false,
+    /// Flow keeps its conservative post-transform pass for every runtime
+    /// transform except Flow match, whose generated graph is fully edited.
+    has_flow_runtime_syntax_outside_match: bool = false,
     /// Runtime syntax whose semantic edits still need the post-transform analyzer.
     has_unhandled_runtime_syntax: bool = false,
 };
@@ -157,36 +160,54 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             .import_namespace_specifier,
             => facts.has_non_named_import = true,
 
-            .class_declaration, .class_expression => facts.has_runtime_sensitive_syntax = true,
+            .class_declaration, .class_expression => {
+                facts.has_runtime_sensitive_syntax = true;
+                facts.has_flow_runtime_syntax_outside_match = true;
+            },
 
             .private_identifier,
             .private_field_expression,
             .accessor_property,
             .decorator,
-            => facts.has_runtime_sensitive_syntax = true,
+            => {
+                facts.has_runtime_sensitive_syntax = true;
+                facts.has_flow_runtime_syntax_outside_match = true;
+            },
 
             // TypeScript enum lowering now records the emitted IIFE parameter
             // and initializer references in the edited semantic graph.
-            .ts_enum_declaration => facts.has_runtime_sensitive_syntax = true,
+            .ts_enum_declaration => {
+                facts.has_runtime_sensitive_syntax = true;
+                facts.has_flow_runtime_syntax_outside_match = true;
+            },
 
             // Namespace IIFE parameters and exported binding edges are tracked
             // by SymbolId and emitted from that graph by codegen.
-            .ts_module_declaration => facts.has_runtime_sensitive_syntax = true,
+            .ts_module_declaration => {
+                facts.has_runtime_sensitive_syntax = true;
+                facts.has_flow_runtime_syntax_outside_match = true;
+            },
 
             .ts_import_equals_declaration,
             .ts_export_assignment,
             .ts_namespace_export_declaration,
             .flow_enum_declaration,
-            .flow_match_expression,
             .flow_component_wrapper,
             => {
                 facts.has_runtime_sensitive_syntax = true;
+                facts.has_flow_runtime_syntax_outside_match = true;
                 facts.has_unhandled_runtime_syntax = true;
             },
+
+            // Flow match is fully lowered by the semantic editor: its generated
+            // function scope, parameter symbol, arm scopes, and references are
+            // already part of the transform graph.
+            .flow_match_expression => facts.has_runtime_sensitive_syntax = true,
 
             .variable_declaration => {
                 if (ast.variableDeclarationKind(node).isUsing()) {
                     facts.has_runtime_sensitive_syntax = true;
+                    facts.has_flow_runtime_syntax_outside_match = true;
                     facts.has_unhandled_runtime_syntax = true;
                 }
             },
@@ -560,7 +581,7 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
         options.react_refresh or options.react_refresh_hook_signatures) return false;
 
     const facts = collectAstFacts(&parser.ast);
-    if (parser.is_flow) return !facts.has_runtime_sensitive_syntax and !parser.ast.has_jsx;
+    if (parser.is_flow) return !facts.has_flow_runtime_syntax_outside_match and !parser.ast.has_jsx;
     if (parser.source_mode == .ts) return !facts.has_unhandled_runtime_syntax and !parser.ast.has_jsx;
     if (parser.source_mode != .js_strict) return false;
     return true;
@@ -2108,6 +2129,7 @@ test "#4819 type-erased Flow reuses transform semantic graph only without runtim
         .{ .source = "// @flow\nenum Color { Red }", .path = ".js", .tag = .flow_enum_declaration },
         .{ .source = "// @flow\nfunction classify(value) { return match (value) { 1 => 'one', _ => 'other' }; }", .path = ".js", .tag = .flow_match_expression },
         .{ .source = "// @flow\ncomponent Card(ref?: mixed, ...props: { label?: string }) { return null; }", .path = ".js", .tag = .flow_component_wrapper },
+        .{ .source = "// @flow\nclass Box { read(value: number): number { return value; } }", .path = ".js", .tag = .class_declaration },
     };
     for (runtime_sources) |item| {
         var runtime_scanner = try Scanner.init(allocator, item.source);
@@ -2121,7 +2143,10 @@ test "#4819 type-erased Flow reuses transform semantic graph only without runtim
             if (node.tag == item.tag) has_runtime_tag = true;
         }
         try std.testing.expect(has_runtime_tag);
-        try std.testing.expect(!canMangleWithTransformSemantic(minify, &runtime_parser));
+        try std.testing.expectEqual(
+            item.tag == .flow_match_expression,
+            canMangleWithTransformSemantic(minify, &runtime_parser),
+        );
     }
 
     var jsx_scanner = try Scanner.init(allocator, "// @flow\nconst view = <div />;");

@@ -1350,7 +1350,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stdout).toBe(reference.stdout);
   });
 
-  test('Flow match lowering with minification stays on the runtime-transform path', async () => {
+  test('Flow match lowering keeps generated callback identities under minification', async () => {
     const fixture = await createFixture({
       'input.js': `
         // @flow
@@ -1387,6 +1387,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     const fixture = await createFixture({
       'input.js': `
         // @flow
+        const _m = 'outer-m';
         function classify(_a, input, expected) {
           return match (input) {
             { kind: expected, payload: const payload, ...const details } if (payload > 0) => payload + Object.keys(details).length,
@@ -1396,33 +1397,50 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
             _ => _a,
           };
         }
+        function fallback(input) {
+          return match (input) { 0 => 'zero', _ => _m };
+        }
         console.log([
           classify(99, { kind: 1, payload: 4, extra: true }, 1),
           classify(99, [2, 3], 1),
           classify(99, 5, 1),
           classify(99, 1, 1),
+          fallback(0),
+          fallback(1),
         ].join(','));
       `,
     });
     cleanup = fixture.cleanup;
     const input = join(fixture.dir, 'input.js');
     for (const target of ['es5', 'es2015', 'es2017', 'es2022', 'esnext']) {
-      const output = join(fixture.dir, `output-${target}.js`);
-      const result = await runZntc(
-        [input, '-o', output, `--target=${target}`, '--minify-identifiers', '--flow'],
-        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
-      );
-      expect(result.exitCode, `${target}: ${result.stderr}`).toBe(0);
-      const identity = result.stderr
-        .split(/\r?\n/)
-        .find((line) => line.includes('zntc: symbol-identity '));
-      expect(identity).toBeDefined();
-      for (const counter of EXACT_ZERO_COUNTERS) {
-        expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+      for (const minifySyntax of [false, true]) {
+        const output = join(fixture.dir, `output-${target}-${minifySyntax}.js`);
+        const result = await runZntc(
+          [
+            input,
+            '-o',
+            output,
+            `--target=${target}`,
+            '--minify-identifiers',
+            ...(minifySyntax ? ['--minify-syntax'] : []),
+            '--flow',
+          ],
+          { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+        );
+        expect(result.exitCode, `${target} minifySyntax=${minifySyntax}: ${result.stderr}`).toBe(0);
+        const identity = result.stderr
+          .split(/\r?\n/)
+          .find((line) => line.includes('zntc: symbol-identity '));
+        expect(identity).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+        }
+        const transformed = await runNode(output);
+        expect(transformed.stderr, `${target} minifySyntax=${minifySyntax}`).toBe('');
+        expect(transformed.stdout.trim(), `${target} minifySyntax=${minifySyntax}`).toBe(
+          '5,3,5,99,zero,outer-m',
+        );
       }
-      const transformed = await runNode(output);
-      expect(transformed.stderr, target).toBe('');
-      expect(transformed.stdout.trim(), target).toBe('5,3,5,99');
     }
   });
 });
