@@ -607,6 +607,115 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     }
   });
 
+  test('type-erased TypeScript Stage 3 decorators reuse the edited semantic graph', async () => {
+    const fixture = await createFixture({
+      'input.ts': `
+        const _classThis = 11, _method_decorators = 13, _metadata = 17;
+        function identity(method: any, _context: any) { return method; }
+        function create(value: number) {
+          const outer = value + 4;
+          return class Generated {
+            @identity
+            method(value: number) { return eval('outer') + value; }
+          };
+        }
+        const Generated = create(6);
+        console.log(new Generated().method(3), _classThis, _method_decorators, _metadata);
+      `,
+      'reference.js': `
+        const _classThis = 11, _method_decorators = 13, _metadata = 17;
+        function create(value) {
+          const outer = value + 4;
+          return class Generated {
+            method(value) { return eval('outer') + value; }
+          };
+        }
+        const Generated = create(6);
+        console.log(new Generated().method(3), _classThis, _method_decorators, _metadata);
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.ts');
+    const reference = await runNode(join(fixture.dir, 'reference.js'));
+    expect(reference.stdout.trim()).toBe('13 11 13 17');
+
+    for (const target of ['es5', 'es2015', 'es2017', 'es2021', 'es2022', 'esnext']) {
+      const output = join(fixture.dir, `output-${target}.js`);
+      const result = await runZntc(
+        [input, '-o', output, `--target=${target}`, '--minify-identifiers'],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, `${target}: ${result.stderr}`).toBe(0);
+      expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+      const identity = result.stderr
+        .split(/\r?\n/)
+        .find((line) => line.includes('zntc: symbol-identity '));
+      expect(identity).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+      }
+      const transformed = await runNode(output);
+      expect(transformed.stderr, target).toBe('');
+      expect(transformed.stdout.trim(), target).toBe(reference.stdout.trim());
+    }
+  });
+
+  test('type-erased Stage 3 decorated class declarations keep outer exports separate from class self', async () => {
+    const fixture = await createFixture({
+      'input.mts': `
+        const _classThis = 11, _method_decorators = 13, _field_decorators = 17;
+        const _field_initializers = 19, _field_extraInitializers = 23, _metadata = 29;
+        function identity(value: any, _context: any) { return value; }
+        @identity
+        export class Service {
+          @identity field = 10;
+          @identity method(value: number) { return this.field + value; }
+          static self() { return Service; }
+        }
+        console.log(new Service().method(3), Service.self() === Service,
+          _classThis, _method_decorators, _field_decorators,
+          _field_initializers, _field_extraInitializers, _metadata);
+      `,
+      'reference.mjs': `
+        const _classThis = 11, _method_decorators = 13, _field_decorators = 17;
+        const _field_initializers = 19, _field_extraInitializers = 23, _metadata = 29;
+        class Service {
+          field = 10;
+          method(value) { return this.field + value; }
+          static self() { return Service; }
+        }
+        console.log(new Service().method(3), Service.self() === Service,
+          _classThis, _method_decorators, _field_decorators,
+          _field_initializers, _field_extraInitializers, _metadata);
+        export { Service };
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.mts');
+    const reference = await runNode(join(fixture.dir, 'reference.mjs'));
+    expect(reference.stdout.trim()).toBe('13 true 11 13 17 19 23 29');
+
+    for (const target of ['es5', 'es2015', 'es2017', 'es2021', 'es2022', 'esnext']) {
+      const output = join(fixture.dir, `output-${target}.mjs`);
+      const result = await runZntc(
+        [input, '-o', output, `--target=${target}`, '--minify-identifiers'],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, `${target}: ${result.stderr}`).toBe(0);
+      expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+      const identity = result.stderr
+        .split(/\r?\n/)
+        .find((line) => line.includes('zntc: symbol-identity '));
+      expect(identity).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+      }
+      const transformed = await runNode(output);
+      expect(transformed.stderr, target).toBe('');
+      expect(transformed.stdout.trim(), target).toBe(reference.stdout.trim());
+    }
+  });
+
   test('copied declarations retain their binding and nested scope', async () => {
     await expectNativeParity(
       `

@@ -204,6 +204,9 @@ pub const Transformer = struct {
     scope_owner_origins: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// Producer-marked classes with no source class self anchor.
     generated_class_without_source_anchor: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// Stage 3 class wrappers move a named source class-self SymbolId to the
+    /// wrapper local; the anonymous implementation class gets its own name.
+    generated_class_self_relocated_to_wrapper: std.AutoHashMapUnmanaged(u32, void) = .empty,
     /// Pass 2에서 복사된 함수 노드의 원래 스코프를 찾는다.
     transformed_scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     current_scope: ScopeId = .none,

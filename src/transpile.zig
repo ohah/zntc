@@ -162,9 +162,9 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             .private_identifier,
             .private_field_expression,
             .accessor_property,
+            .decorator,
             => facts.has_runtime_sensitive_syntax = true,
 
-            .decorator,
             .ts_enum_declaration,
             .ts_module_declaration,
             .ts_import_equals_declaration,
@@ -1987,6 +1987,21 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
         _ = try runtime_parser.parse();
         try std.testing.expect(!canMangleWithTransformSemantic(minify, &runtime_parser));
     }
+
+    var decorator_scanner = try Scanner.init(allocator, "function dec(value: any) {} class Box { @dec method() {} }");
+    var decorator_parser = Parser.init(allocator, &decorator_scanner);
+    decorator_parser.configureFromExtension(".ts");
+    _ = try decorator_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), decorator_parser.errors.items.len);
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &decorator_parser));
+    try std.testing.expect(!canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .experimental_decorators = true,
+    }, &decorator_parser));
+    try std.testing.expect(!canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .emit_decorator_metadata = true,
+    }, &decorator_parser));
 
     var class_scanner = try Scanner.init(
         allocator,

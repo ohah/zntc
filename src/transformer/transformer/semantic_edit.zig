@@ -68,6 +68,7 @@ pub fn bindClassSelfStorage(self: *Transformer, source_class: NodeIndex, binding
         return false;
     }
     const raw = @intFromEnum(source_class);
+    if (self.generated_class_self_relocated_to_wrapper.contains(raw)) return false;
     if (self.generated_class_without_source_anchor.contains(raw)) {
         if (self.semantic_edit_enabled)
             std.debug.panic("generated worklet class needs a fresh self scope and SymbolId", .{});

@@ -5,6 +5,7 @@ const ast_mod = @import("../../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const Span = @import("../../lexer/token.zig").Span;
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
@@ -18,6 +19,19 @@ const Stage3MemberInfo = stage3_helpers.Stage3MemberInfo;
 const extractCleanVarName = stage3_helpers.extractCleanVarName;
 
 const ANON_CLASS_NAME = "_Class";
+
+fn generatedLetBinding(self: *Transformer, declaration_idx: NodeIndex) NodeIndex {
+    const declaration = self.ast.getNode(declaration_idx);
+    if (declaration.tag != .variable_declaration) std.debug.panic("Stage 3 generated local is not a variable declaration", .{});
+    const declaration_extra = declaration.data.extra;
+    const list_start = self.ast.extra_data.items[declaration_extra + 1];
+    const list_len = self.ast.extra_data.items[declaration_extra + 2];
+    if (list_len != 1) std.debug.panic("Stage 3 generated local declaration must have one declarator", .{});
+    const declarator_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list_start]);
+    const declarator = self.ast.getNode(declarator_idx);
+    if (declarator.tag != .variable_declarator) std.debug.panic("Stage 3 generated local has no declarator", .{});
+    return @enumFromInt(self.ast.extra_data.items[declarator.data.extra]);
+}
 
 fn visitMethodBodyInSourceScope(self: *Transformer, method_idx: NodeIndex, body_idx: NodeIndex) Error!NodeIndex {
     const saved_scope = self.current_scope;
@@ -456,6 +470,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     // __esDecorate 호출 목록 (static {} 블록에 넣을 것)
     var static_block_stmts: std.ArrayList(NodeIndex) = .empty;
     defer static_block_stmts.deinit(self.allocator);
+    var metadata_block_scope: ScopeId = .none;
 
     // IIFE 내부 let 선언 목록
     var iife_stmts: std.ArrayList(NodeIndex) = .empty;
@@ -488,6 +503,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .span = zero_span,
             .data = .{ .list = static_body_list },
         });
+        _ = try self.addGeneratedScope(class_parent_scope, static_body, .block);
         const static_block = try self.ast.addNode(.{
             .tag = .static_block,
             .span = zero_span,
@@ -501,6 +517,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
 
     // const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
     const metadata_decl = try self.buildMetadataDecl();
+    const metadata_binding = generatedLetBinding(self, metadata_decl);
     try static_block_stmts.append(self.allocator, metadata_decl);
 
     // TC39 스펙 decorator 순서:
@@ -586,6 +603,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .span = zero_span,
             .data = .{ .list = sb_body_list },
         });
+        metadata_block_scope = try self.addGeneratedScope(class_parent_scope, sb_body, .block);
         const sb = try self.ast.addNode(.{
             .tag = .static_block,
             .span = zero_span,
@@ -703,6 +721,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     // var Foo = class [extends Super] { ... } (decorator 없이, 이름 제거)
     // class body 내의 이름 바인딩은 const이므로, static { } 블록에서 Foo = ... 재대입이 불가.
     // TypeScript와 동일하게 class expression에 이름을 제거하여 외부 var Foo를 참조하게 한다.
+    const class_name_origin: NodeIndex = if (name_idx.isNone() or std.mem.eql(u8, self.ast.getText(self.ast.getNode(name_idx).data.string_ref), "default")) .none else name_idx;
     const new_super = try self.visitNode(super_idx);
     const empty_decos = try self.ast.addNodeList(&.{});
     const inner_class = try self.addExtraNode(.class_expression, node.span, &.{
@@ -711,12 +730,24 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         empty_decos.start, empty_decos.len,
     });
     try self.remapCopiedScopeOwner(source_idx, inner_class);
+    // The rewritten class is intentionally anonymous: the source class-self
+    // symbol belongs to the wrapper's `var Foo`, not the ES5 `_Class` helper.
+    if (self.semantic_edit_enabled and !class_name_origin.isNone())
+        try self.generated_class_self_relocated_to_wrapper.put(self.allocator, @intFromEnum(inner_class), {});
 
     // IIFE 내부: var Foo = class { ... };
     // 클래스 이름 바인딩 — 익명·`default` 면 임시 이름이라 심볼이 없다.
-    const class_name_origin: NodeIndex = if (name_idx.isNone() or std.mem.eql(u8, self.ast.getText(self.ast.getNode(name_idx).data.string_ref), "default")) .none else name_idx;
     const inner_name_span = try self.ast.addString(class_name_text);
     const inner_binding = try self.makeUserBinding(inner_name_span, class_name_origin);
+    // Class declarations have distinct outer and inner names in the analyzer:
+    // the source name node owns the outer binding, while class-body references
+    // resolve to the class-self SymbolId. Keep the outer identity for the
+    // emitted declaration below and bind this IIFE-local storage to class self.
+    if (!class_name_origin.isNone()) {
+        if (self.class_self_symbol_map.get(@intFromEnum(source_idx))) |class_self_id| {
+            try self.rebindOutputBinding(inner_binding, class_self_id);
+        }
+    }
     const inner_declarator = try self.addExtraNode(.variable_declarator, zero_span, &.{
         @intFromEnum(inner_binding), none, @intFromEnum(inner_class),
     });
@@ -727,7 +758,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     try iife_stmts.append(self.allocator, inner_var_decl);
 
     // return Foo = _classThis;
-    const return_name = try self.makeIdentifierRefWithSymbol(inner_name_span, class_name_origin);
+    const return_name = try self.makeIdentifierRefWithSymbol(inner_name_span, inner_binding);
     const classThis_ref2 = try es_helpers.makeSyntheticRefFromSpan(self, classThis_span);
     const return_assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
@@ -754,6 +785,11 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         has_instance_decorators,
         has_static_decorators,
     );
+    var stage3_let_bindings: std.ArrayList(NodeIndex) = .empty;
+    defer stage3_let_bindings.deinit(self.allocator);
+    for (let_decls) |declaration| {
+        try stage3_let_bindings.append(self.allocator, generatedLetBinding(self, declaration));
+    }
     try all_iife_stmts.appendSlice(self.allocator, let_decls);
     self.allocator.free(let_decls);
 
@@ -778,6 +814,8 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     const source_class_scope = class_parent_scope;
     const arrow_scope = try self.addGeneratedFunctionScope(self.outputScopeParent(source_class_scope), arrow);
     try self.reparentGeneratedScope(source_class_scope, arrow_scope);
+    try self.moveBindingToOutputScope(inner_binding, arrow_scope);
+    try self.trackUserReadFromBinding(return_name, inner_binding, arrow_scope);
 
     // (() => { ... })()
     const paren_arrow = try self.ast.addNode(.{
@@ -789,6 +827,25 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     const iife_call = try self.addExtraNode(.call_expression, zero_span, &.{
         @intFromEnum(paren_arrow), empty_args.start, empty_args.len, 0,
     });
+
+    var generated_local_specs: std.ArrayList(Transformer.GeneratedLocalSpec) = .empty;
+    defer generated_local_specs.deinit(self.allocator);
+    for (stage3_let_bindings.items) |binding| {
+        const span = self.ast.getNode(binding).data.string_ref;
+        try generated_local_specs.append(self.allocator, .{
+            .name = self.ast.getText(span),
+            .kind = .variable_let,
+            .exact_binding_span = span,
+        });
+    }
+    const metadata_span = self.ast.getNode(metadata_binding).data.string_ref;
+    try generated_local_specs.append(self.allocator, .{
+        .name = self.ast.getText(metadata_span),
+        .kind = .variable_const,
+        .binding_scope = metadata_block_scope,
+        .exact_binding_span = metadata_span,
+    });
+    try self.trackGeneratedLocalSymbols(arrow, arrow_scope, generated_local_specs.items);
 
     // class expression / 익명 class / export default class → IIFE call 직접 반환
     // 이름 있는 class declaration만 `let Foo = (...)` 선언을 사용.
