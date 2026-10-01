@@ -1437,6 +1437,120 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     }
   });
 
+  test('Flow ref-component helper avoids user-name collisions in every target and mangle mode', async () => {
+    const fixture = await createFixture({
+      'input.js': `
+        // @flow
+        const LongCard_withRef = 'user-binding';
+        const LongCard_withRef2 = 'user-binding-2';
+        const React = { forwardRef: (fn) => fn };
+        component LongCard(ref?: mixed, ...props: { label?: string }) {
+          return props.label;
+        }
+        function renderLocal() {
+          const LocalCard_withRef = 'nested-binding';
+          const LocalCard_withRef2 = 'nested-binding-2';
+          component LocalCard(ref?: mixed, ...props: { label?: string }) {
+            return props.label;
+          }
+          return [LocalCard({ label: 'nested' }), LocalCard_withRef, LocalCard_withRef2].join(' ');
+        }
+        console.log(LongCard({ label: 'ok' }), LongCard_withRef, LongCard_withRef2, renderLocal());
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+    for (const target of ['es5', 'es2015', 'es2017', 'es2022', 'esnext']) {
+      for (const minifyIdentifiers of [false, true]) {
+        for (const minifySyntax of [false, true]) {
+          const output = join(
+            fixture.dir,
+            `flow-component-${target}-${minifyIdentifiers}-${minifySyntax}.js`,
+          );
+          const result = await runZntc(
+            [
+              input,
+              '-o',
+              output,
+              `--target=${target}`,
+              '--flow',
+              ...(minifyIdentifiers ? ['--minify-identifiers'] : []),
+              ...(minifySyntax ? ['--minify-syntax'] : []),
+            ],
+            { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+          );
+          const context = `${target} minifyIdentifiers=${minifyIdentifiers} minifySyntax=${minifySyntax}`;
+          expect(result.exitCode, `${context}: ${result.stderr}`).toBe(0);
+          expect(result.stderr, context).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+          const identity = result.stderr
+            .split(/\r?\n/)
+            .find((line) => line.includes('zntc: symbol-identity '));
+          expect(identity, context).toBeDefined();
+          expect(identity, context).toMatch(/clean=1(?:\s|$)/);
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(identity, `${context}: ${counter}: ${identity}`).toMatch(
+              new RegExp(`${counter}=0(?:\\s|$)`),
+            );
+          }
+          const emitted = readFileSync(output, 'utf8');
+          if (!minifyIdentifiers) {
+            expect(emitted, context).toContain('LongCard_withRef3');
+            expect(emitted, context).toContain('LocalCard_withRef3');
+          }
+          const transformed = await runNode(output);
+          expect(transformed.stderr, context).toBe('');
+          expect(transformed.stdout.trim(), context).toBe(
+            'ok user-binding user-binding-2 nested nested-binding nested-binding-2',
+          );
+        }
+      }
+    }
+  });
+
+  test('exported Flow ref-component preserves export identity and exact symbols', async () => {
+    const fixture = await createFixture({
+      'input.mjs': `
+        // @flow
+        const LongCard_withRef = 'user-binding';
+        const React = { forwardRef: (fn) => fn };
+        export component LongCard(ref?: mixed, ...props: { label?: string }) {
+          return props.label;
+        }
+        console.log(LongCard({ label: 'ok' }), LongCard_withRef);
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.mjs');
+    for (const minifyIdentifiers of [false, true]) {
+      const output = join(fixture.dir, `exported-flow-component-${minifyIdentifiers}.mjs`);
+      const result = await runZntc(
+        [
+          input,
+          '-o',
+          output,
+          '--target=es2022',
+          '--flow',
+          ...(minifyIdentifiers ? ['--minify-identifiers'] : []),
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, `minifyIdentifiers=${minifyIdentifiers}: ${result.stderr}`).toBe(0);
+      expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+      const identity = result.stderr
+        .split(/\r?\n/)
+        .find((line) => line.includes('zntc: symbol-identity '));
+      expect(identity).toBeDefined();
+      expect(identity).toMatch(/clean=1(?:\s|$)/);
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(identity, `${counter}: ${identity}`).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+      }
+      expect(readFileSync(output, 'utf8')).toMatch(/export (?:var|let|const) LongCard\s*=/);
+      const transformed = await runNode(output);
+      expect(transformed.stderr).toBe('');
+      expect(transformed.stdout.trim()).toBe('ok user-binding');
+    }
+  });
+
   test('Flow match pattern bindings keep exact IDs through minified lowering across targets', async () => {
     const fixture = await createFixture({
       'input.js': `

@@ -9,6 +9,7 @@ const token_mod = @import("../../lexer/token.zig");
 const Span = token_mod.Span;
 const SymbolId = @import("../../semantic/symbol.zig").SymbolId;
 const ScopeId = @import("../../semantic/scope.zig").ScopeId;
+const SymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
 const es_helpers = @import("../es_helpers.zig");
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
@@ -458,15 +459,85 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
 /// Flow component with ref: 파서가 생성한 2개 statement를 방문.
 /// extra = [func_decl, const_decl]
 /// func_decl은 pending_nodes에, const_decl은 반환.
+fn flowComponentForwardRefArgument(self: *Transformer, const_decl: NodeIndex) NodeIndex {
+    if (const_decl.isNone() or @intFromEnum(const_decl) >= self.ast.nodes.items.len) return .none;
+    const declaration = self.ast.getNode(const_decl);
+    if (declaration.tag != .variable_declaration) return .none;
+    const variable_extra = declaration.data.extra;
+    const extras = self.ast.extra_data.items;
+    if (variable_extra + 2 >= extras.len or extras[variable_extra + 2] != 1) return .none;
+    const declarators_start = extras[variable_extra + 1];
+    if (declarators_start >= extras.len) return .none;
+    const declarator_idx: NodeIndex = @enumFromInt(extras[declarators_start]);
+    if (declarator_idx.isNone() or @intFromEnum(declarator_idx) >= self.ast.nodes.items.len) return .none;
+    const declarator = self.ast.getNode(declarator_idx);
+    if (declarator.tag != .variable_declarator) return .none;
+    const declarator_extra = declarator.data.extra;
+    if (declarator_extra + 2 >= extras.len) return .none;
+    const call_idx: NodeIndex = @enumFromInt(extras[declarator_extra + 2]);
+    if (call_idx.isNone() or @intFromEnum(call_idx) >= self.ast.nodes.items.len) return .none;
+    const call = self.ast.getNode(call_idx);
+    if (call.tag != .call_expression) return .none;
+    const call_extra = call.data.extra;
+    if (call_extra + 2 >= extras.len or extras[call_extra + 2] != 1) return .none;
+    const args_start = extras[call_extra + 1];
+    if (args_start >= extras.len) return .none;
+    const argument: NodeIndex = @enumFromInt(extras[args_start]);
+    if (argument.isNone() or @intFromEnum(argument) >= self.ast.nodes.items.len or
+        self.ast.getNode(argument).tag != .identifier_reference) return .none;
+    return argument;
+}
+
+fn updateFlowComponentName(self: *Transformer, identifier: NodeIndex, name_span: Span) void {
+    if (identifier.isNone() or @intFromEnum(identifier) >= self.ast.nodes.items.len) return;
+    const raw = @intFromEnum(identifier);
+    const node = &self.ast.nodes.items[raw];
+    if (node.tag != .binding_identifier and node.tag != .identifier_reference) return;
+    node.span = name_span;
+    node.data = .{ .string_ref = name_span };
+}
+
 pub fn visitFlowComponentWrapper(self: *Transformer, node: Node) Error!NodeIndex {
     const e = node.data.extra;
     const func_decl_idx = self.readNodeIdx(e, 0);
     const const_decl_idx = self.readNodeIdx(e, 1);
+
+    // The parser-created helper name is not present in source text. Resolve it
+    // against source identifiers before adding it to the semantic scope; the
+    // ordinary Flow component binding remains unchanged.
+    const func_decl = self.ast.getNode(func_decl_idx);
+    const name_idx = self.readNodeIdx(func_decl.data.extra, ast_mod.FunctionExtra.name);
+    const forward_ref_argument = flowComponentForwardRefArgument(self, const_decl_idx);
+    if (!name_idx.isNone() and !forward_ref_argument.isNone()) {
+        const old_name_span = self.ast.getNode(name_idx).data.string_ref;
+        const old_name = self.ast.getText(old_name_span);
+        const resolved_name = try es_helpers.resolveGeneratedName(self, old_name);
+        if (!std.mem.eql(u8, old_name, resolved_name)) {
+            // The analyzer saw the parser-created argument before this generated
+            // binding existed, so it may have resolved the name to a user binding.
+            try self.removeSemanticReference(forward_ref_argument);
+            const new_name_span = try self.ast.addString(resolved_name);
+            updateFlowComponentName(self, name_idx, new_name_span);
+            updateFlowComponentName(self, forward_ref_argument, new_name_span);
+        }
+    }
 
     // function Name_withRef 방문 (ES2015 lowering 등 적용)
     const new_func = try self.visitNode(func_decl_idx);
     try self.pending_nodes.append(self.allocator, new_func);
 
     // const Name = React.forwardRef(Name_withRef) 방문
-    return self.visitNode(const_decl_idx);
+    const new_const = try self.visitNode(const_decl_idx);
+    if (self.semantic_edit_enabled and !new_func.isNone() and !new_const.isNone()) {
+        const output_func = self.ast.getNode(new_func);
+        if (output_func.tag == .function_declaration) {
+            const output_name = self.readNodeIdx(output_func.data.extra, ast_mod.FunctionExtra.name);
+            const output_ref = flowComponentForwardRefArgument(self, new_const);
+            if (!output_name.isNone() and !output_ref.isNone()) {
+                const symbol = try self.declareSyntheticInScope(output_name, node.span, .function_decl, self.current_scope);
+                try self.addSyntheticRefInScope(output_ref, symbol, self.current_scope, .{ .read = true });
+            }
+        }
+    }
+    return new_const;
 }

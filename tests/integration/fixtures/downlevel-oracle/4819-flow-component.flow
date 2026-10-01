@@ -1,0 +1,14 @@
+// @flow
+const LongCard_withRef = 'user-binding';
+const React = { forwardRef: (fn) => fn };
+component LongCard(ref?: mixed, ...props: { label?: string }) {
+  return props.label;
+}
+function renderLocal() {
+  const LocalCard_withRef = 'nested-binding';
+  component LocalCard(ref?: mixed, ...props: { label?: string }) {
+    return props.label;
+  }
+  return [LocalCard({ label: 'nested' }), LocalCard_withRef].join(' ');
+}
+console.log(LongCard({ label: 'ok' }), LongCard_withRef, renderLocal());

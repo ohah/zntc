@@ -2473,6 +2473,14 @@ pub const SemanticAnalyzer = struct {
         return false;
     }
 
+    fn flowComponentConstDeclaration(self: *SemanticAnalyzer, wrapper: Node) ?Node {
+        if (wrapper.tag != .flow_component_wrapper or !self.ast.hasExtra(wrapper.data.extra, 1)) return null;
+        const decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[wrapper.data.extra + 1]);
+        if (decl_idx.isNone() or @intFromEnum(decl_idx) >= self.ast.nodes.items.len) return null;
+        const decl = self.ast.getNode(decl_idx);
+        return if (decl.tag == .variable_declaration) decl else null;
+    }
+
     fn predeclareTopLevelBindings(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
         if (list.len == 0) return;
         if (list.start + list.len > self.ast.extra_data.items.len) return;
@@ -2499,6 +2507,9 @@ pub const SemanticAnalyzer = struct {
                 .class_declaration => try self.predeclareClassDecl(node),
                 .ts_enum_declaration => try self.predeclareEnumDecl(node),
                 .flow_enum_declaration => try self.predeclareFlowEnumDecl(node),
+                .flow_component_wrapper => {
+                    if (self.flowComponentConstDeclaration(node)) |decl| try self.predeclareVarDecl(decl);
+                },
                 .ts_module_declaration => try self.predeclareNamespaceDecl(node),
                 // RFC #3310 (D20): import 는 module top hoist — user binding 을
                 // .import_binding symbol 로 1st-pass 등록 (forward export/value use).
@@ -2517,6 +2528,9 @@ pub const SemanticAnalyzer = struct {
                         .class_declaration => try self.predeclareClassDecl(decl_node),
                         .ts_enum_declaration => try self.predeclareEnumDecl(decl_node),
                         .flow_enum_declaration => try self.predeclareFlowEnumDecl(decl_node),
+                        .flow_component_wrapper => {
+                            if (self.flowComponentConstDeclaration(decl_node)) |decl| try self.predeclareVarDecl(decl);
+                        },
                         .ts_module_declaration => try self.predeclareNamespaceDecl(decl_node),
                         else => {},
                     }
@@ -3312,6 +3326,13 @@ pub const SemanticAnalyzer = struct {
                 },
                 .flow_enum_declaration => self.predeclareFlowEnumDecl(stmt) catch {
                     self.alloc_failed = true;
+                },
+                .flow_component_wrapper => {
+                    if (self.flowComponentConstDeclaration(stmt)) |decl| {
+                        self.predeclareLexicalVarDecl(decl, .variable_const) catch {
+                            self.alloc_failed = true;
+                        };
+                    }
                 },
                 else => {},
             }
@@ -4682,6 +4703,9 @@ pub const SemanticAnalyzer = struct {
                         try self.registerExportedName(self.ast.getText(name_node.span), name_node.span);
                 }
             },
+            .flow_component_wrapper => {
+                if (self.flowComponentConstDeclaration(node)) |decl| try self.collectExportedDeclNames(decl);
+            },
             else => {},
         }
     }
@@ -4739,6 +4763,9 @@ pub const SemanticAnalyzer = struct {
                     if (name_node.tag == .binding_identifier)
                         self.markSymbolExported(self.ast.getText(name_node.span), false);
                 }
+            },
+            .flow_component_wrapper => {
+                if (self.flowComponentConstDeclaration(node)) |decl| self.markExportedDeclSymbols(decl);
             },
             else => {},
         }

@@ -325,6 +325,28 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('Flow component helper and component binding have exact identity across targets', () => {
+    const file = join(FIXTURE_DIR, '4819-flow-component.flow');
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-flow-component-'));
+    try {
+      for (const target of TARGETS) {
+        const { stderr, exitCode } = runCoverage(file, target, outDir);
+        expect(exitCode, `${target.name}: ${stderr}`).toBe(0);
+        const identity = stderr.split('\n').find((line) => line.includes('zntc: symbol-identity '));
+        expect(identity, `${target.name}: missing exact report`).toBeDefined();
+        expect(identity, `${target.name}: ${identity}`).toMatch(/clean=1(?:\s|$)/);
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${target.name}: ${counter}: ${identity}`,
+          ).toBe(0);
+        }
+      }
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
   test('오라클 전체에서 exact 구조 불변식과 심볼 부채가 모두 0', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-symcov-'));
     const problems: string[] = [];

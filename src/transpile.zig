@@ -191,7 +191,6 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             .ts_import_equals_declaration,
             .ts_export_assignment,
             .ts_namespace_export_declaration,
-            .flow_component_wrapper,
             => {
                 facts.has_runtime_sensitive_syntax = true;
                 facts.has_flow_runtime_syntax_without_complete_graph = true;
@@ -206,6 +205,10 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             // Flow enum declaration and references have exact source SymbolIds;
             // codegen emits the declaration name through the same symbol-aware path.
             .flow_enum_declaration => facts.has_runtime_sensitive_syntax = true,
+
+            // Flow component-with-ref adds the helper binding and call reference
+            // to the same transform graph; JSX remains gated separately below.
+            .flow_component_wrapper => facts.has_runtime_sensitive_syntax = true,
 
             .variable_declaration => {
                 if (ast.variableDeclarationKind(node).isUsing()) {
@@ -2163,7 +2166,7 @@ test "#4819 Flow match and enum reuse the transform graph while other runtime sy
         }
         try std.testing.expect(has_runtime_tag);
         try std.testing.expectEqual(
-            item.tag == .flow_match_expression or item.tag == .flow_enum_declaration,
+            item.tag == .flow_match_expression or item.tag == .flow_enum_declaration or item.tag == .flow_component_wrapper,
             canMangleWithTransformSemantic(minify, &runtime_parser),
         );
     }
@@ -2175,6 +2178,14 @@ test "#4819 Flow match and enum reuse the transform graph while other runtime sy
     try std.testing.expect(jsx_parser.is_flow);
     try std.testing.expect(jsx_parser.ast.has_jsx);
     try std.testing.expect(!canMangleWithTransformSemantic(minify, &jsx_parser));
+
+    var flow_component_jsx_scanner = try Scanner.init(allocator, "// @flow\ncomponent Card(ref?: mixed, ...props: { label?: string }) { return <div />; }");
+    var flow_component_jsx_parser = Parser.init(allocator, &flow_component_jsx_scanner);
+    flow_component_jsx_parser.configureFromExtension(".jsx");
+    _ = try flow_component_jsx_parser.parse();
+    try std.testing.expect(flow_component_jsx_parser.is_flow);
+    try std.testing.expect(flow_component_jsx_parser.ast.has_jsx);
+    try std.testing.expect(!canMangleWithTransformSemantic(minify, &flow_component_jsx_parser));
 }
 
 /// fast 와 full 양쪽 경로의 출력이 expected 와 일치하는지 검증. parity 만으로는
