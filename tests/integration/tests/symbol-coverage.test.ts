@@ -55,6 +55,7 @@ const STRICT_ZERO_COUNTERS = [
   'invalid_scope',
   'scope_unknown',
   'scope_ambiguous',
+  'unclassified',
   'invisible_reference',
   'duplicate_reference',
   'orphan_symbols',
@@ -63,7 +64,8 @@ const STRICT_ZERO_COUNTERS = [
 // The exact audit above owns transform-aware binding-scope validation. The
 // synthetic diagnostic intentionally uses a simpler emitted-scope trace, so
 // its raw scope_mismatch counter can include retained source scopes for
-// lowered `var` bindings.
+// lowered `var` bindings. Its unbound references are external only when exact
+// NodeIndex provenance points to an analyzer-unresolved or explicit-global node.
 
 function collectFixtures(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true })
@@ -119,6 +121,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     const exactExamples = new Map<string, string[]>();
     let generatedBindings = 0;
     let generatedReferences = 0;
+    let strictExternalReferences = 0;
     let runs = 0;
     try {
       for (const file of fixtures) {
@@ -202,6 +205,14 @@ describe('symbol identity coverage gate (#4819)', () => {
               );
             }
           }
+          const externalCount = strictLines[0].match(/external=(\d+)/)?.[1];
+          if (externalCount === undefined) {
+            problems.push(
+              `${name} ${target.name}: missing strict external counter: ${strictLines[0]}`,
+            );
+          } else {
+            strictExternalReferences += Number(externalCount);
+          }
         }
       }
     } finally {
@@ -219,6 +230,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     expect(runs).toBe(fixtures.length * TARGETS.length);
     expect(generatedBindings).toBeGreaterThan(0);
     expect(generatedReferences).toBeGreaterThan(0);
+    expect(strictExternalReferences).toBeGreaterThan(0);
   }, 600_000);
 
   test('중첩 함수의 direct eval 은 모듈 범위의 외부 참조를 오염시키지 않는다', () => {

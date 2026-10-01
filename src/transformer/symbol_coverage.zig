@@ -240,7 +240,7 @@ pub const ExactReport = struct {
         return self.missing_binding == 0 and self.invalid_reference_node == 0 and self.unreachable_reference == 0 and
             self.ambiguous_ast_parent == 0 and self.shadowed_external_reference == 0 and self.invalid_id == 0 and
             self.missing_reference == 0 and self.duplicate_reference == 0 and
-            self.identity_mismatch == 0 and self.binding_scope_mismatch == 0 and self.invalid_scope == 0 and
+            self.identity_mismatch == 0 and self.binding_scope_mismatch == 0 and self.binding_scope_unknown == 0 and self.invalid_scope == 0 and
             self.reference_scope_mismatch == 0 and
             self.scope_map_mismatch == 0 and self.scope_owner_mismatch == 0 and self.scope_resolution_mismatch == 0 and self.invisible_reference == 0 and
             self.unclassified_reference == 0 and self.reference_count_mismatch == 0 and
@@ -1629,6 +1629,7 @@ fn printExactDiagnostics(file_path: []const u8, report: ExactReport) void {
 /// This never infers or assigns a SymbolId from identifier text.
 pub const StrictStatus = enum {
     bound,
+    external,
     missing_binding,
     unclassified,
     invalid_id,
@@ -1655,6 +1656,15 @@ pub const StrictFinding = struct {
     symbol_origin_scope_id: ?u32 = null,
     reference_scope_id: ?u32 = null,
 };
+/// Node-index provenance used to prove that a generated unbound reference is
+/// intentionally external. A name-only unresolved-global set is not enough:
+/// another generated identifier with the same spelling may need a SymbolId.
+pub const StrictExternalEvidence = struct {
+    unresolved_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    explicit_global_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    reference_origin_map: *const std.AutoHashMapUnmanaged(u32, u32),
+};
+
 pub const OrphanSyntheticSymbol = struct {
     symbol_id: u32,
     name: []const u8,
@@ -1674,12 +1684,13 @@ pub const StrictReport = struct {
     }
 
     /// True only when every generated runtime identifier has exact SymbolId
-    /// and ScopeId evidence. Unbound references remain unclassified: spelling
-    /// alone cannot prove that they refer to a global.
+    /// and ScopeId evidence, or exact node-index evidence that an unbound
+    /// reference remains external.
     pub fn hasCompleteExactCoverage(self: *const StrictReport) bool {
         if (self.orphan_symbols != 0) return false;
         for (self.counts, 0..) |count, status| {
-            if (status != @intFromEnum(StrictStatus.bound) and count != 0) return false;
+            if (status != @intFromEnum(StrictStatus.bound) and
+                status != @intFromEnum(StrictStatus.external) and count != 0) return false;
         }
         return true;
     }
@@ -1696,6 +1707,7 @@ const StrictCtx = struct {
     parent_traces: *const std.AutoHashMapUnmanaged(u32, ParentTrace),
     references: *const std.AutoHashMapUnmanaged(u32, ReferenceEvidence),
     synthetic: ?*const std.AutoHashMapUnmanaged(u32, void),
+    external_evidence: ?StrictExternalEvidence,
     reachable_binding_symbols: *std.AutoHashMapUnmanaged(u32, void),
     report: *StrictReport,
     seen: std.AutoHashMapUnmanaged(u32, void) = .empty,
@@ -1744,9 +1756,18 @@ const StrictCtx = struct {
     ) StrictStatus {
         const id = sid orelse {
             if (node.tag == .binding_identifier) return .missing_binding;
-            // The analyzer currently records unresolved globals by spelling,
-            // not by NodeIndex. A same-named local reference therefore cannot
-            // be proven global from this table alone.
+            if (self.external_evidence) |evidence| {
+                if (hasExactExternalEvidence(
+                    self.ast,
+                    raw,
+                    self.parser_node_count,
+                    evidence.unresolved_reference_nodes,
+                    evidence.explicit_global_reference_nodes,
+                    evidence.reference_origin_map,
+                )) return .external;
+            }
+            // No exact source/global provenance: spelling alone cannot prove
+            // that this generated reference intentionally denotes a global.
             return .unclassified;
         };
         if (id >= self.symbols.len) return .invalid_id;
@@ -2021,6 +2042,62 @@ pub fn checkStrict(
     // Kept for caller compatibility; its name-only entries are not exact
     // evidence for a particular generated reference NodeIndex.
     _ = _unresolved_globals;
+    return checkStrictImpl(
+        allocator,
+        ast,
+        root,
+        parser_node_count,
+        symbol_ids,
+        symbols,
+        scopes,
+        scope_owner_map,
+        references,
+        synthetic,
+        null,
+    );
+}
+
+pub fn checkStrictWithExactExternalEvidence(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    parser_node_count: u32,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    references: []const Reference,
+    synthetic: ?*const std.AutoHashMapUnmanaged(u32, void),
+    external_evidence: StrictExternalEvidence,
+) std.mem.Allocator.Error!StrictReport {
+    return checkStrictImpl(
+        allocator,
+        ast,
+        root,
+        parser_node_count,
+        symbol_ids,
+        symbols,
+        scopes,
+        scope_owner_map,
+        references,
+        synthetic,
+        external_evidence,
+    );
+}
+
+fn checkStrictImpl(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    parser_node_count: u32,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    references: []const Reference,
+    synthetic: ?*const std.AutoHashMapUnmanaged(u32, void),
+    external_evidence: ?StrictExternalEvidence,
+) std.mem.Allocator.Error!StrictReport {
     var report: StrictReport = .{};
     errdefer report.deinit(allocator);
     var node_scopes = try collectScopeTraces(allocator, ast, root, scopes, scope_owner_map);
@@ -2042,6 +2119,7 @@ pub fn checkStrict(
         .parent_traces = &parent_traces,
         .references = &reference_evidence,
         .synthetic = synthetic,
+        .external_evidence = external_evidence,
         .reachable_binding_symbols = &reachable_binding_symbols,
         .report = &report,
     };
@@ -2076,8 +2154,8 @@ pub fn checkStrict(
 
 pub fn printStrict(file_path: []const u8, report: *const StrictReport) void {
     std.debug.print(
-        "zntc: synthetic-coverage {s}: bound={d} missing_binding={d} unclassified={d} invalid_id={d} name_mismatch={d} missing_reference={d} identity_mismatch={d} invalid_scope={d} scope_unknown={d} scope_ambiguous={d} scope_mismatch={d} invisible_reference={d} duplicate_reference={d} orphan_symbols={d} marked_synthetic={d}\n",
-        .{ file_path, report.counts[@intFromEnum(StrictStatus.bound)], report.counts[@intFromEnum(StrictStatus.missing_binding)], report.counts[@intFromEnum(StrictStatus.unclassified)], report.counts[@intFromEnum(StrictStatus.invalid_id)], report.counts[@intFromEnum(StrictStatus.name_mismatch)], report.counts[@intFromEnum(StrictStatus.missing_reference)], report.counts[@intFromEnum(StrictStatus.identity_mismatch)], report.counts[@intFromEnum(StrictStatus.invalid_scope)], report.counts[@intFromEnum(StrictStatus.scope_unknown)], report.counts[@intFromEnum(StrictStatus.scope_ambiguous)], report.counts[@intFromEnum(StrictStatus.scope_mismatch)], report.counts[@intFromEnum(StrictStatus.invisible_reference)], report.counts[@intFromEnum(StrictStatus.duplicate_reference)], report.orphan_symbols, report.marked_synthetic },
+        "zntc: synthetic-coverage {s}: bound={d} external={d} missing_binding={d} unclassified={d} invalid_id={d} name_mismatch={d} missing_reference={d} identity_mismatch={d} invalid_scope={d} scope_unknown={d} scope_ambiguous={d} scope_mismatch={d} invisible_reference={d} duplicate_reference={d} orphan_symbols={d} marked_synthetic={d}\n",
+        .{ file_path, report.counts[@intFromEnum(StrictStatus.bound)], report.counts[@intFromEnum(StrictStatus.external)], report.counts[@intFromEnum(StrictStatus.missing_binding)], report.counts[@intFromEnum(StrictStatus.unclassified)], report.counts[@intFromEnum(StrictStatus.invalid_id)], report.counts[@intFromEnum(StrictStatus.name_mismatch)], report.counts[@intFromEnum(StrictStatus.missing_reference)], report.counts[@intFromEnum(StrictStatus.identity_mismatch)], report.counts[@intFromEnum(StrictStatus.invalid_scope)], report.counts[@intFromEnum(StrictStatus.scope_unknown)], report.counts[@intFromEnum(StrictStatus.scope_ambiguous)], report.counts[@intFromEnum(StrictStatus.scope_mismatch)], report.counts[@intFromEnum(StrictStatus.invisible_reference)], report.counts[@intFromEnum(StrictStatus.duplicate_reference)], report.orphan_symbols, report.marked_synthetic },
     );
     for (report.orphan_symbol_findings.items[0..@min(report.orphan_symbol_findings.items.len, 8)]) |finding| {
         std.debug.print("  synthetic-coverage orphan_symbol id={d} name={s} kind={s} scope={d}\n", .{
@@ -2089,7 +2167,7 @@ pub fn printStrict(file_path: []const u8, report: *const StrictReport) void {
     }
     var printed: [std.meta.fields(StrictStatus).len]usize = @splat(0);
     for (report.findings.items) |finding| {
-        if (finding.status == .bound) continue;
+        if (finding.status == .bound or finding.status == .external) continue;
         const group = @intFromEnum(finding.status);
         if (printed[group] == 8) continue;
         std.debug.print("  synthetic-coverage {s} node={d} {s}({s}) marked={any} sid={any} ref_sid={any} scope={any} symbol_scope={any} origin_scope={any} ref_scope={any}\n", .{
@@ -2106,6 +2184,13 @@ test "baseName strips rename suffix" {
     try std.testing.expectEqualStrings("x$", baseName("x$"));
     try std.testing.expectEqualStrings("$x", baseName("$x"));
     try std.testing.expectEqualStrings("a$b", baseName("a$b"));
+}
+
+test "exact coverage is not clean when a generated binding scope is unknown" {
+    var report: ExactReport = .{};
+    try std.testing.expect(report.isClean());
+    report.binding_scope_unknown = 1;
+    try std.testing.expect(!report.isClean());
 }
 
 /// Inline white-box tests need raw identifier AST nodes; production transforms
