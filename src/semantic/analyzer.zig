@@ -1570,6 +1570,7 @@ pub const SemanticAnalyzer = struct {
             .switch_statement => try self.visitSwitchStatement(node),
             .catch_clause => try self.visitCatchClause(node),
             .ts_module_declaration => try self.visitNamespaceDeclaration(node),
+            .ts_enum_declaration => try self.visitEnumDeclaration(node),
 
             // ---- 선언 노드 ----
             .variable_declaration => try self.visitVariableDeclaration(node),
@@ -2707,6 +2708,26 @@ pub const SemanticAnalyzer = struct {
         if (!name_idx.isNone()) {
             const name_node = self.ast.getNode(name_idx);
             try self.declareSymbolWithNode(name_node.span, .variable_var, node.span, @intFromEnum(name_idx));
+        }
+    }
+
+    /// Runtime enum initializers are evaluated in the surrounding lexical
+    /// scope. Visit only member initializer expressions; member names are keys,
+    /// and const/ambient enum declarations are erased by the transformer.
+    fn visitEnumDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
+        const e = node.data.extra;
+        const extras = self.ast.extra_data.items;
+        if (e + 3 >= extras.len or extras[e + 3] != 0) return;
+        const members_start = extras[e + 1];
+        const members_len = extras[e + 2];
+        if (members_start + members_len > extras.len) return;
+        for (extras[members_start .. members_start + members_len]) |raw_idx| {
+            const member_idx: NodeIndex = @enumFromInt(raw_idx);
+            if (member_idx.isNone() or @intFromEnum(member_idx) >= self.ast.nodes.items.len) continue;
+            const member = self.ast.getNode(member_idx);
+            if (member.tag == .ts_enum_member and !member.data.binary.right.isNone()) {
+                try self.visitNode(member.data.binary.right);
+            }
         }
     }
 

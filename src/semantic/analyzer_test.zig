@@ -100,6 +100,40 @@ test "#4819 merged namespace export has shared owner but separate lexical bindin
     try std.testing.expectEqual(@as(usize, 2), local_reads);
 }
 
+test "#4819 runtime enum initializer references retain their source symbol IDs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "const _E = 7; const _E1 = 11; enum E { E = _E1 }";
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_ts = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var source_symbol: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, index| {
+        if (std.mem.eql(u8, symbol.nameText(source), "_E1")) source_symbol = @intCast(index);
+    }
+    const expected = source_symbol orelse return error.MissingEnumInitializerBinding;
+    var initializer_reference = false;
+    for (analyzer.references.items) |reference| {
+        if (reference.flags.declare) continue;
+        const node = parser.ast.getNode(reference.node_index);
+        if (!std.mem.eql(u8, parser.ast.identifierNameText(node), "_E1")) continue;
+        try std.testing.expectEqual(expected, @intFromEnum(reference.symbol_id));
+        try std.testing.expectEqual(@as(?u32, expected), analyzer.symbol_ids.items[@intFromEnum(reference.node_index)]);
+        initializer_reference = true;
+    }
+    try std.testing.expect(initializer_reference);
+}
+
 test "#4819 editor preserves analyzed IDs while appending a generated binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
