@@ -1755,7 +1755,14 @@ const StrictCtx = struct {
             if (!expected.valid) return .invalid_scope;
             const lexical_scope = expected.scope_id orelse return .scope_unknown;
             if (!validScope(@enumFromInt(lexical_scope), self.scopes)) return .invalid_scope;
-            const is_output_var = symbol.kind == .variable_var or strictBindingIsOutputVar(self.ast, raw, self.parent_traces);
+            // Lowering a lexical `let`/`const` declaration to emitted `var`
+            // syntax does not change that source binding's semantic scope.
+            // The transformer keeps those SymbolIds in their lexical scopes
+            // and renames colliding output names separately. Resource helpers
+            // are the exception: their synthetic `_using` bindings are
+            // deliberately stored in the nearest var scope.
+            const is_output_var = symbol.kind == .variable_var or
+                (symbol.kind == .variable_const and std.mem.startsWith(u8, symbol.synthetic_name, "_using"));
             const declaration_scope = if (is_output_var)
                 nearestVarScope(lexical_scope, self.scopes) orelse return .invalid_scope
             else
@@ -1834,36 +1841,6 @@ fn collectParentTraces(
         for (children.items) |child| try stack.append(allocator, .{ .node = child, .parent = raw });
     }
     return traces;
-}
-
-fn strictBindingIsOutputVar(
-    ast: *const Ast,
-    binding: u32,
-    parents: *const std.AutoHashMapUnmanaged(u32, ParentTrace),
-) bool {
-    var child = binding;
-    var parent = parents.get(child);
-    var hops: usize = 0;
-    while (parent) |trace| : (hops += 1) {
-        if (trace.ambiguous or hops >= ast.nodes.items.len or trace.parent >= ast.nodes.items.len) return false;
-        const ancestor = ast.nodes.items[trace.parent];
-        if (ancestor.tag == .variable_declaration)
-            return ast.variableDeclarationKind(ancestor) == .@"var";
-        switch (ancestor.tag) {
-            .function_declaration,
-            .function_expression,
-            .function,
-            .arrow_function_expression,
-            .class_declaration,
-            .class_expression,
-            .catch_clause,
-            => return false,
-            else => {},
-        }
-        child = trace.parent;
-        parent = parents.get(child);
-    }
-    return false;
 }
 
 const ScopePath = struct {
