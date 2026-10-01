@@ -2519,6 +2519,10 @@ pub fn bindRuntimeHelperImport(self: *Transformer, local: NodeIndex, local_name:
     const editor = try editorFor(self);
     const id = editor.declareHelperImport(local, self.ast.getNode(local).data.string_ref, declaration_span, self.programScope()) catch |err| return editError(err);
     try setSymbolId(self, local, id);
+    try bindPendingRuntimeHelperRefs(self, editor, local_name, id);
+}
+
+fn bindPendingRuntimeHelperRefs(self: *Transformer, editor: *SemanticEditor, local_name: []const u8, id: SymbolId) Transformer.Error!void {
     const chain = self.pending_runtime_helper_chains.fetchRemove(local_name) orelse return;
     var i: ?usize = chain.value.first;
     while (i) |index| {
@@ -2532,6 +2536,14 @@ pub fn bindRuntimeHelperImport(self: *Transformer, local: NodeIndex, local_name:
         self.pending_runtime_helper_refs.clearRetainingCapacity();
         self.pending_runtime_helper_ref_index.clearRetainingCapacity();
     }
+}
+
+/// 단일 파일 출력은 AST 밖 preamble으로 runtime helper를 선언한다. 남은 helper 호출을
+/// preamble alias의 가상 심볼에 연결해 외부 전역 참조로 오분류되지 않게 한다.
+fn bindRuntimeHelperPreamble(self: *Transformer, editor: *SemanticEditor, local_name: []const u8) Transformer.Error!void {
+    const name_span = self.ast.addString(local_name) catch return error.OutOfMemory;
+    const id = editor.declareRuntimeHelperPreamble(name_span, Span.EMPTY, self.programScope()) catch |err| return editError(err);
+    try bindPendingRuntimeHelperRefs(self, editor, local_name, id);
 }
 
 /// nullish lowering의 temp 참조는 hoist 선언보다 먼저 생성된다. 이름 대신
@@ -2873,11 +2885,23 @@ pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.
     try resolveReachableScopeOwners(self);
     // Scope-owner remaps are semantic edits even when no binding/reference was
     // synthesized. Arrow-to-function and copied body scopes need a final map.
-    if (self.semantic_editor == null and self.scope_owner_remaps.count() > 0)
+    if (self.semantic_editor == null and (self.scope_owner_remaps.count() > 0 or
+        (!self.options.emit_runtime_helper_imports and self.pending_runtime_helper_chains.count() > 0)))
+    {
         _ = try editorFor(self);
-    const editor = if (self.semantic_editor) |*e| e else return null;
+    }
     if (self.options.emit_runtime_helper_imports and self.pending_runtime_helper_chains.count() != 0)
         std.debug.panic("generated runtime helper reference has no import", .{});
+    if (!self.options.emit_runtime_helper_imports and self.pending_runtime_helper_chains.count() > 0) {
+        const editor = try editorFor(self);
+        // Binding removes entries from the chain map, so snapshot its keys first.
+        var names: std.ArrayList([]const u8) = .empty;
+        defer names.deinit(self.allocator);
+        var pending = self.pending_runtime_helper_chains.iterator();
+        while (pending.next()) |entry| try names.append(self.allocator, entry.key_ptr.*);
+        for (names.items) |name| try bindRuntimeHelperPreamble(self, editor, name);
+    }
+    const editor = if (self.semantic_editor) |*e| e else return null;
     var remaps = self.scope_owner_remaps.iterator();
     while (remaps.next()) |entry| {
         if (self.scope_owner_removed.contains(entry.key_ptr.*)) {

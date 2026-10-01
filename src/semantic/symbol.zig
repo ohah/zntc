@@ -201,7 +201,7 @@ pub const DeclFlags = packed struct(u16) {
 };
 
 /// AST에 일반 선언 노드가 없는 합성 심볼 종류. 번들러가 추가하거나
-/// 변환 출력의 가상 바인딩(namespace IIFE 매개변수)을 나타낸다.
+/// 변환 출력의 가상 바인딩(namespace IIFE 매개변수, 런타임 helper preamble)을 나타낸다.
 /// `re_export_alias`는 값 의미가 없어 semantic 공간에 얹지 않으며 bundler
 /// 전용 `AliasTable`에 남는다 (RFC #1338 결정).
 pub const SyntheticKind = enum(u8) {
@@ -216,6 +216,8 @@ pub const SyntheticKind = enum(u8) {
     /// TypeScript namespace codegen의 가상 IIFE 매개변수. namespace AST에는
     /// 출력 단계에서 생성되는 바인딩 노드가 없으므로 owner scope로 연결한다.
     namespace_iife_parameter,
+    /// 단일 파일 출력에서 AST 밖에 prepend되는 런타임 helper 선언.
+    runtime_helper_preamble,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)

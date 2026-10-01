@@ -110,6 +110,20 @@ test "semantic_codec: merged namespace member owner IDs survive cache round-trip
     try ana.analyze();
     try testing.expect(ana.namespace_member_owners.count() > 0);
     try testing.expect(ana.namespace_declaration_owners.count() > 0);
+    const helper_name_span = try parser.ast.addString("__inlineRuntimeHelper");
+    const helper_name = "__inlineRuntimeHelper";
+    const helper_symbol_id = ana.symbols.items.len;
+    try ana.symbols.append(alloc, .{
+        .name = helper_name_span,
+        .scope_id = @enumFromInt(0),
+        .origin_scope = @enumFromInt(0),
+        .kind = .import_binding,
+        .decl_flags = @import("../semantic/symbol.zig").SymbolKind.import_binding.declFlags(),
+        .declaration_span = Span.EMPTY,
+        .synthetic_kind = .runtime_helper_preamble,
+        .synthetic_name = helper_name,
+    });
+    try ana.helper_scope_map.put(alloc, helper_name, helper_symbol_id);
     const sem = ModuleSemanticData{
         .symbols = ana.symbols,
         .scopes = ana.scopes.items,
@@ -132,13 +146,25 @@ test "semantic_codec: merged namespace member owner IDs survive cache round-trip
     defer arena.deinit();
     const decoded = try codec.deserialize(bytes.items, arena.allocator());
     var namespace_iife_parameters: usize = 0;
+    var runtime_helper_preambles: usize = 0;
     for (sem.symbols.items, 0..) |symbol, raw| {
-        if (symbol.synthetic_kind != .namespace_iife_parameter) continue;
-        namespace_iife_parameters += 1;
-        try testing.expectEqual(symbol.synthetic_kind, decoded.symbols.items[raw].synthetic_kind);
-        try testing.expectEqualStrings(symbol.synthetic_name, decoded.symbols.items[raw].synthetic_name);
+        switch (symbol.synthetic_kind orelse continue) {
+            .namespace_iife_parameter => {
+                namespace_iife_parameters += 1;
+                try testing.expectEqual(symbol.synthetic_kind, decoded.symbols.items[raw].synthetic_kind);
+                try testing.expectEqualStrings(symbol.synthetic_name, decoded.symbols.items[raw].synthetic_name);
+            },
+            .runtime_helper_preamble => {
+                runtime_helper_preambles += 1;
+                try testing.expectEqual(symbol.synthetic_kind, decoded.symbols.items[raw].synthetic_kind);
+                try testing.expectEqualStrings(symbol.synthetic_name, decoded.symbols.items[raw].synthetic_name);
+            },
+            else => {},
+        }
     }
     try testing.expect(namespace_iife_parameters >= 4);
+    try testing.expectEqual(@as(usize, 1), runtime_helper_preambles);
+    try testing.expectEqual(@as(?usize, helper_symbol_id), decoded.helper_scope_map.get("__inlineRuntimeHelper"));
     try testing.expectEqual(sem.namespace_member_owners.count(), decoded.namespace_member_owners.count());
     var it = sem.namespace_member_owners.iterator();
     while (it.next()) |entry| {

@@ -601,11 +601,24 @@ test "#4819 tagged template helpers keep distinct function and data scopes" {
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
-    try std.testing.expectEqual(original_symbols + 4, edited.symbols.items.len);
+    try std.testing.expectEqual(original_symbols + 5, edited.symbols.items.len);
     try std.testing.expectEqual(original_scopes + 4, edited.scopes.len);
+    var template_symbol_ids: std.ArrayList(u32) = .empty;
+    defer template_symbol_ids.deinit(allocator);
+    var runtime_helper_preambles: usize = 0;
+    for (edited.symbols.items[original_symbols..], original_symbols..) |symbol, raw_id| {
+        if (symbol.synthetic_kind == .runtime_helper_preamble) {
+            runtime_helper_preambles += 1;
+            try std.testing.expectEqual(@as(?usize, raw_id), edited.helper_scope_map.get(symbol.synthetic_name));
+            continue;
+        }
+        try template_symbol_ids.append(allocator, @intCast(raw_id));
+    }
+    try std.testing.expectEqual(@as(usize, 1), runtime_helper_preambles);
+    try std.testing.expectEqual(@as(usize, 4), template_symbol_ids.items.len);
     for (0..2) |i| {
-        const fn_id = original_symbols + i * 2;
-        const data_id = fn_id + 1;
+        const fn_id = template_symbol_ids.items[i * 2];
+        const data_id = template_symbol_ids.items[i * 2 + 1];
         const fn_symbol = edited.symbols.items[fn_id];
         const data_symbol = edited.symbols.items[data_id];
         try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.function_decl, fn_symbol.kind);
@@ -627,6 +640,7 @@ test "#4819 tagged template helpers keep distinct function and data scopes" {
         }
         try std.testing.expectEqual(@as(usize, 1), nested_data_refs);
     }
+    try std.testing.expect(edited.symbols.items[template_symbol_ids.items[0]].scope_id != edited.symbols.items[template_symbol_ids.items[3]].scope_id);
 }
 
 test "#4819 decorator access functions own separate parameter symbols" {

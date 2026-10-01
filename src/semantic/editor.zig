@@ -675,6 +675,40 @@ pub const SemanticEditor = struct {
         return id;
     }
 
+    /// 단일 파일 출력의 AST 밖 런타임 helper 선언을 helper 심볼로 등록한다.
+    /// 이름은 최종 preamble이 출력할 alias이며, AST 노드 대신 helper_scope_map으로 연결한다.
+    pub fn declareRuntimeHelperPreamble(self: *SemanticEditor, name_span: Span, declaration_span: Span, scope: ScopeId) Error!SymbolId {
+        if (!self.validScope(scope)) return error.InvalidScope;
+        if (name_span.start & Ast.STRING_TABLE_BIT == 0) return error.InvalidNode;
+        const name = try self.ast.getTextStable(self.allocator, name_span);
+        if (self.helper_scope_map.contains(name)) return error.DuplicateBinding;
+        const id: SymbolId = @enumFromInt(@as(u32, @intCast(self.symbols.items.len)));
+        try self.symbols.append(self.allocator, .{
+            .name = name_span,
+            .scope_id = scope,
+            .origin_scope = scope,
+            .kind = .import_binding,
+            .decl_flags = SymbolKind.import_binding.declFlags(),
+            .declaration_span = declaration_span,
+            .synthetic_kind = .runtime_helper_preamble,
+            .synthetic_name = name,
+        });
+        try self.helper_scope_map.put(self.allocator, name, @intFromEnum(id));
+        if (!self.scope_maps.items[scope.toIndex()].contains(name)) {
+            try self.scope_maps.items[scope.toIndex()].put(self.allocator, name, @intFromEnum(id));
+            self.scopes.items[scope.toIndex()].symbol_count +|= 1;
+        }
+        try self.references.append(self.allocator, .{
+            .node_index = .none,
+            .scope_id = scope,
+            .symbol_id = id,
+            .stmt_idx = Reference.NO_STMT,
+            .scope_stmt_idx = Reference.NO_STMT,
+            .flags = .{ .declare = true },
+        });
+        return id;
+    }
+
     fn countsAsValue(flags: ReferenceFlags) bool {
         return !flags.declare and !flags.type_context and !flags.value_as_type;
     }
