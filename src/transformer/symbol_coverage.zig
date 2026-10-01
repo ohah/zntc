@@ -21,6 +21,7 @@ const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 const SymbolId = @import("../semantic/symbol.zig").SymbolId;
+const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
 const Reference = @import("../semantic/symbol.zig").Reference;
 const Scope = @import("../semantic/scope.zig").Scope;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
@@ -1654,19 +1655,29 @@ pub const StrictFinding = struct {
     symbol_origin_scope_id: ?u32 = null,
     reference_scope_id: ?u32 = null,
 };
+pub const OrphanSyntheticSymbol = struct {
+    symbol_id: u32,
+    name: []const u8,
+    kind: SymbolKind,
+    scope_id: ScopeId,
+};
 pub const StrictReport = struct {
     counts: [std.meta.fields(StrictStatus).len]usize = @splat(0),
     marked_synthetic: usize = 0,
+    orphan_symbols: usize = 0,
     findings: std.ArrayList(StrictFinding) = .empty,
+    orphan_symbol_findings: std.ArrayList(OrphanSyntheticSymbol) = .empty,
 
     pub fn deinit(self: *StrictReport, allocator: std.mem.Allocator) void {
         self.findings.deinit(allocator);
+        self.orphan_symbol_findings.deinit(allocator);
     }
 
     /// True only when every generated runtime identifier has exact SymbolId
     /// and ScopeId evidence. Unbound references remain unclassified: spelling
     /// alone cannot prove that they refer to a global.
     pub fn hasCompleteExactCoverage(self: *const StrictReport) bool {
+        if (self.orphan_symbols != 0) return false;
         for (self.counts, 0..) |count, status| {
             if (status != @intFromEnum(StrictStatus.bound) and count != 0) return false;
         }
@@ -1685,6 +1696,7 @@ const StrictCtx = struct {
     parent_traces: *const std.AutoHashMapUnmanaged(u32, ParentTrace),
     references: *const std.AutoHashMapUnmanaged(u32, ReferenceEvidence),
     synthetic: ?*const std.AutoHashMapUnmanaged(u32, void),
+    reachable_binding_symbols: *std.AutoHashMapUnmanaged(u32, void),
     report: *StrictReport,
     seen: std.AutoHashMapUnmanaged(u32, void) = .empty,
     oom: bool = false,
@@ -1977,7 +1989,17 @@ fn collectReferenceEvidence(
 fn strictBindingVisit(ctx: *StrictCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
     if (reference_walk.isTypeOnly(node.tag)) return .skip_children;
     if (node.tag == .ts_module_declaration and node.data.binary.flags == 1) return .skip_children;
-    if (node.tag == .binding_identifier) ctx.add(idx, node);
+    if (node.tag == .binding_identifier) {
+        const raw = @intFromEnum(idx);
+        if (raw < ctx.symbol_ids.len) {
+            if (ctx.symbol_ids[raw]) |id| {
+                if (id < ctx.symbols.len) ctx.reachable_binding_symbols.put(ctx.allocator, id, {}) catch {
+                    ctx.oom = true;
+                };
+            }
+        }
+        ctx.add(idx, node);
+    }
     return .descend;
 }
 
@@ -2007,6 +2029,8 @@ pub fn checkStrict(
     defer parent_traces.deinit(allocator);
     var reference_evidence = try collectReferenceEvidence(allocator, references);
     defer reference_evidence.deinit(allocator);
+    var reachable_binding_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer reachable_binding_symbols.deinit(allocator);
     var ctx: StrictCtx = .{
         .allocator = allocator,
         .ast = ast,
@@ -2018,6 +2042,7 @@ pub fn checkStrict(
         .parent_traces = &parent_traces,
         .references = &reference_evidence,
         .synthetic = synthetic,
+        .reachable_binding_symbols = &reachable_binding_symbols,
         .report = &report,
     };
     defer ctx.seen.deinit(allocator);
@@ -2026,14 +2051,42 @@ pub fn checkStrict(
     defer allocator.free(refs);
     for (refs) |idx| ctx.add(idx, ast.getNode(idx));
     if (ctx.oom) return error.OutOfMemory;
+
+    // Identifier coverage alone misses generated Symbol rows whose owner
+    // node was discarded before output. Count these independently: such rows
+    // can still poison scope maps and later name allocation even though every
+    // reachable identifier has exact identity.
+    for (symbols, 0..) |symbol, raw_id| {
+        if (symbol.synthetic_name.len == 0 or raw_id > std.math.maxInt(u32)) continue;
+        // Expression `export default` keeps a synthetic reachability facade
+        // even when it has no emitted local binding.
+        if (symbol.decl_flags.is_default_export and std.mem.eql(u8, symbol.synthetic_name, "_default")) continue;
+        const id: u32 = @intCast(raw_id);
+        if (reachable_binding_symbols.contains(id)) continue;
+        report.orphan_symbols += 1;
+        try report.orphan_symbol_findings.append(allocator, .{
+            .symbol_id = id,
+            .name = symbol.synthetic_name,
+            .kind = symbol.kind,
+            .scope_id = symbol.scope_id,
+        });
+    }
     return report;
 }
 
 pub fn printStrict(file_path: []const u8, report: *const StrictReport) void {
     std.debug.print(
-        "zntc: synthetic-coverage {s}: bound={d} missing_binding={d} unclassified={d} invalid_id={d} name_mismatch={d} missing_reference={d} identity_mismatch={d} invalid_scope={d} scope_unknown={d} scope_ambiguous={d} scope_mismatch={d} invisible_reference={d} duplicate_reference={d} marked_synthetic={d}\n",
-        .{ file_path, report.counts[@intFromEnum(StrictStatus.bound)], report.counts[@intFromEnum(StrictStatus.missing_binding)], report.counts[@intFromEnum(StrictStatus.unclassified)], report.counts[@intFromEnum(StrictStatus.invalid_id)], report.counts[@intFromEnum(StrictStatus.name_mismatch)], report.counts[@intFromEnum(StrictStatus.missing_reference)], report.counts[@intFromEnum(StrictStatus.identity_mismatch)], report.counts[@intFromEnum(StrictStatus.invalid_scope)], report.counts[@intFromEnum(StrictStatus.scope_unknown)], report.counts[@intFromEnum(StrictStatus.scope_ambiguous)], report.counts[@intFromEnum(StrictStatus.scope_mismatch)], report.counts[@intFromEnum(StrictStatus.invisible_reference)], report.counts[@intFromEnum(StrictStatus.duplicate_reference)], report.marked_synthetic },
+        "zntc: synthetic-coverage {s}: bound={d} missing_binding={d} unclassified={d} invalid_id={d} name_mismatch={d} missing_reference={d} identity_mismatch={d} invalid_scope={d} scope_unknown={d} scope_ambiguous={d} scope_mismatch={d} invisible_reference={d} duplicate_reference={d} orphan_symbols={d} marked_synthetic={d}\n",
+        .{ file_path, report.counts[@intFromEnum(StrictStatus.bound)], report.counts[@intFromEnum(StrictStatus.missing_binding)], report.counts[@intFromEnum(StrictStatus.unclassified)], report.counts[@intFromEnum(StrictStatus.invalid_id)], report.counts[@intFromEnum(StrictStatus.name_mismatch)], report.counts[@intFromEnum(StrictStatus.missing_reference)], report.counts[@intFromEnum(StrictStatus.identity_mismatch)], report.counts[@intFromEnum(StrictStatus.invalid_scope)], report.counts[@intFromEnum(StrictStatus.scope_unknown)], report.counts[@intFromEnum(StrictStatus.scope_ambiguous)], report.counts[@intFromEnum(StrictStatus.scope_mismatch)], report.counts[@intFromEnum(StrictStatus.invisible_reference)], report.counts[@intFromEnum(StrictStatus.duplicate_reference)], report.orphan_symbols, report.marked_synthetic },
     );
+    for (report.orphan_symbol_findings.items[0..@min(report.orphan_symbol_findings.items.len, 8)]) |finding| {
+        std.debug.print("  synthetic-coverage orphan_symbol id={d} name={s} kind={s} scope={d}\n", .{
+            finding.symbol_id,
+            finding.name,
+            @tagName(finding.kind),
+            @intFromEnum(finding.scope_id),
+        });
+    }
     var printed: [std.meta.fields(StrictStatus).len]usize = @splat(0);
     for (report.findings.items) |finding| {
         if (finding.status == .bound) continue;

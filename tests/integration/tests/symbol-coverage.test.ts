@@ -57,6 +57,7 @@ const STRICT_ZERO_COUNTERS = [
   'scope_ambiguous',
   'invisible_reference',
   'duplicate_reference',
+  'orphan_symbols',
 ];
 
 // The exact audit above owns transform-aware binding-scope validation. The
