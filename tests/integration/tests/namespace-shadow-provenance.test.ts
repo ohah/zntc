@@ -117,6 +117,24 @@ namespace N {
 namespace N { export const next = value + 2; }
 console.log(JSON.stringify([N.value, N.next, N.local()]));
 `,
+  'ES5 namespace class lowering tracks its binding in the namespace scope': `
+const C = class Outer {};
+namespace N {
+  export class C {}
+  export function create() { return new C(); }
+}
+console.log(JSON.stringify([N.C === C, N.create() instanceof N.C]));
+`,
+  'ES5 namespace decorated class lowering preserves the export edge': `
+function identity(value: any) { return value; }
+const C = class Outer {};
+namespace N {
+  @identity
+  export class C {}
+  export function create() { return new C(); }
+}
+console.log(JSON.stringify([N.C === C, N.create() instanceof N.C]));
+`,
   'merged aliased and rest destructuring exports': `
 namespace N {
   export const { x: alias, ...rest } = { x: 1, y: 4 };

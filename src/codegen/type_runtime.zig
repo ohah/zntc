@@ -579,6 +579,16 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
                     const e = stmt_node.data.extra;
                     const extras = self.ast.extra_data.items[e .. e + 4];
                     const decl_idx: NodeIndex = @enumFromInt(extras[0]);
+                    if (decl_idx.isNone() and extras[2] > 0 and @as(NodeIndex, @enumFromInt(extras[3])).isNone()) {
+                        // Some declaration transforms replace an exported class
+                        // with a local declaration plus `export { Local as Name }`.
+                        // Inside a TS namespace that specifier is the namespace
+                        // export edge, not an ECMAScript module export. Preserve
+                        // the edge here and emit the local through its SymbolId so
+                        // later renames stay attached to the binding.
+                        try emitNamespaceExportSpecifiers(self, param_name, extras[1], extras[2]);
+                        continue;
+                    }
                     if (!decl_idx.isNone()) {
                         const decl_node = self.ast.getNode(decl_idx);
                         // export namespace bar {} → 중첩 namespace (부모 이름 전달)
@@ -658,6 +668,38 @@ fn emitIIFEClosing(self: anytype, name_text: []const u8) !void {
     try self.write(" || (");
     try self.write(name_text);
     try self.write(" = {}));");
+}
+
+fn emitNamespaceExportSpecifiers(self: anytype, ns_name: []const u8, specs_start: u32, specs_len: u32) !void {
+    const spec_indices = self.ast.extra_data.items[specs_start .. specs_start + specs_len];
+    for (spec_indices) |raw_idx| {
+        const spec = self.ast.getNode(@enumFromInt(raw_idx));
+        if (spec.tag != .export_specifier) continue;
+        const local_idx = spec.data.binary.left;
+        const exported_idx = spec.data.binary.right;
+        if (local_idx.isNone() or exported_idx.isNone()) continue;
+        const local = self.ast.getNode(local_idx);
+        if (local.tag != .identifier_reference and local.tag != .binding_identifier) continue;
+
+        const exported = self.ast.getNode(exported_idx);
+        try self.addSourceMapping(exported.span);
+        try self.write(ns_name);
+        switch (exported.tag) {
+            .identifier_reference, .binding_identifier => {
+                try self.writeByte('.');
+                try self.writeIdentifierSpan(exported.data.string_ref);
+            },
+            .string_literal => {
+                try self.writeByte('[');
+                try self.writeStringLiteral(exported.span);
+                try self.writeByte(']');
+            },
+            else => continue,
+        }
+        try self.writeByte('=');
+        try self.emitNode(local_idx);
+        try self.writeByte(';');
+    }
 }
 
 /// namespace 내부의 export 선언에서 이름을 추출하여 Foo.name = name; 형태로 출력.
