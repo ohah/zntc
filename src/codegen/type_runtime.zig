@@ -381,6 +381,35 @@ fn enumIifeParamName(self: anytype, enum_idx: NodeIndex) ?[]const u8 {
     return generatedIifeParamName(self, enum_idx, .enum_iife_parameter);
 }
 
+/// Emit a semantic bare enum-member reference as a property read on the
+/// generated IIFE parameter. The virtual member SymbolId points at its owning
+/// IIFE scope, where the matching enum parameter row supplies the output name.
+pub fn emitEnumIifeMemberReference(self: anytype, node: Node, member: anytype) !bool {
+    if (member.synthetic_kind != .enum_iife_member) return false;
+    const owner_id = member.synthetic_owner_id orelse return false;
+    const owner_raw = @intFromEnum(owner_id);
+    if (owner_raw >= self.options.semantic_symbols.len) return false;
+    const parameter = self.options.semantic_symbols[owner_raw];
+    if (parameter.synthetic_kind != .enum_iife_parameter or parameter.scope_id != member.scope_id) return false;
+    const parameter_name = if (self.options.linking_metadata) |metadata|
+        metadata.renames.get(@intCast(owner_raw)) orelse parameter.synthetic_name
+    else
+        parameter.synthetic_name;
+
+    try self.addSourceMappingWithName(node.span, self.ast.identifierNameText(node));
+    try self.write(parameter_name);
+    const raw_key = self.ast.getText(member.name);
+    if (raw_key.len > 0 and (raw_key[0] == '\'' or raw_key[0] == '"')) {
+        try self.writeByte('[');
+        try self.writeStringLiteral(member.name);
+        try self.writeByte(']');
+    } else {
+        try self.writeByte('.');
+        try self.writeIdentifierSpan(member.name);
+    }
+    return true;
+}
+
 fn generatedIifeParamName(self: anytype, owner_idx: NodeIndex, expected_kind: SyntheticKind) ?[]const u8 {
     const owners = self.options.generated_iife_scope_owner_map orelse return null;
     const scope = owners.get(@intFromEnum(owner_idx)) orelse return null;

@@ -148,6 +148,25 @@ enum Ref { First = 1, Next = Ref.First + 2 }
 enum Self { Self = 1, Next = Self.Self + 2 }
 console.log(JSON.stringify([Ref.Next, Self.Self, Self.Next, _Self]));
 `,
+  'bare enum members override outer names but preserve initializer locals': `
+const Same = 100;
+const _Self1 = 19;
+const _Self = 91;
+const A = 100;
+enum Escaped { "\\u0041" = 1, B = A + 2 }
+enum Self {
+  "\\u0053elf" = 1,
+  Same = Self,
+  Next = Same + _Self1,
+  NextSelf = Self + 2,
+  Qualified = (Self).Self + 3,
+  Direct = Self.Self + 4,
+  Computed = Self["Self"] + 5,
+  Shadow = (() => { const Same = 9; return Same; })(),
+}
+function read(Self: number) { return Self + 1; }
+console.log(JSON.stringify([Self.Self, Self.Same, Self.Next, Self.NextSelf, Self.Qualified, Self.Direct, Self.Computed, Self.Shadow, Same, _Self1, read(40), Escaped.B, A, _Self]));
+`,
   'enum IIFE parameter collisions stay scoped inside nested namespaces': `
 const _E = 71;
 namespace Outer {

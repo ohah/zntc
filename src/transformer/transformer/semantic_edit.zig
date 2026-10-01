@@ -750,8 +750,9 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
             }
         }
         const output_name = outputReferenceName(self.ast, reference.node);
+        const is_virtual_enum_member = editor.symbols.items[reference.raw_id].synthetic_kind == .enum_iife_member;
         const lexical_id = if (output_name) |name|
-            if (self.runtime_helper_ref_index.contains(@intFromEnum(reference.node)))
+            if (self.runtime_helper_ref_index.contains(@intFromEnum(reference.node)) or is_virtual_enum_member)
                 null
             else
                 nearestOutputSymbolAtScope(editor, name, reference.scope)

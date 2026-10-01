@@ -227,6 +227,102 @@ test "#4819 runtime enum initializer references retain their source symbol IDs" 
     try std.testing.expect(initializer_reference);
 }
 
+test "#4819 bare enum members use virtual member IDs while initializer locals shadow them" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "const Same = 100; const _Self1 = 19; enum Self { Self = 1, Same = Self, Next = Same + _Self1, NextSelf = Self + 2, Qualified = (Self).Self + 3, Direct = Self.Self + 4, Shadow = (() => { const Same = 9; return Same; })() }";
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_ts = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    const next_marker = std.mem.indexOf(u8, source, "Next = Same") orelse return error.MissingEnumMemberReference;
+    const same_self_marker = std.mem.indexOf(u8, source, "Same = Self") orelse return error.MissingBareSelfMemberReference;
+    const direct_marker = std.mem.indexOf(u8, source, "Direct = Self.Self") orelse return error.MissingDirectSelfReference;
+    const shadow_marker = std.mem.indexOf(u8, source, "return Same") orelse return error.MissingShadowReference;
+    var member_reference: ?u32 = null;
+    var shadow_reference: ?u32 = null;
+    var bare_self_references: usize = 0;
+    var direct_object_reference: ?u32 = null;
+    var enum_parameter_id: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (symbol.synthetic_kind == .enum_iife_parameter) enum_parameter_id = @intCast(raw);
+    }
+    for (analyzer.references.items) |reference| {
+        if (reference.flags.declare or reference.node_index.isNone()) continue;
+        const node = parser.ast.getNode(reference.node_index);
+        const name = parser.ast.identifierNameText(node);
+        if (std.mem.eql(u8, name, "Same")) {
+            if (node.span.start > next_marker and node.span.start < shadow_marker) {
+                member_reference = @intFromEnum(reference.symbol_id);
+            } else if (node.span.start > shadow_marker) {
+                shadow_reference = @intFromEnum(reference.symbol_id);
+            }
+        } else if (std.mem.eql(u8, name, "Self")) {
+            if (node.span.start > same_self_marker and node.span.start < direct_marker) {
+                try std.testing.expectEqual(.enum_iife_member, analyzer.symbols.items[@intFromEnum(reference.symbol_id)].synthetic_kind.?);
+                bare_self_references += 1;
+            } else if (node.span.start > direct_marker and node.span.start < shadow_marker) {
+                direct_object_reference = @intFromEnum(reference.symbol_id);
+            }
+        }
+    }
+    const member_id = member_reference orelse return error.MissingBareEnumMemberReference;
+    const shadow_id = shadow_reference orelse return error.MissingShadowedLocalReference;
+    try std.testing.expectEqual(.enum_iife_member, analyzer.symbols.items[member_id].synthetic_kind.?);
+    try std.testing.expect(analyzer.symbols.items[shadow_id].synthetic_kind == null);
+    try std.testing.expect(analyzer.symbols.items[member_id].scope_id != analyzer.symbols.items[shadow_id].scope_id);
+    try std.testing.expectEqual(@as(usize, 3), bare_self_references);
+    try std.testing.expectEqual(enum_parameter_id, direct_object_reference);
+    const owner_id = analyzer.symbols.items[member_id].synthetic_owner_id orelse return error.MissingEnumMemberOwner;
+    try std.testing.expectEqual(enum_parameter_id, @as(?u32, @intFromEnum(owner_id)));
+}
+
+test "#4819 escaped string enum member names resolve by decoded key" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "const A = 100; enum Escaped { \"\\u0041\" = 1, B = A + 2 }";
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_ts = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    const reference_start = std.mem.indexOf(u8, source, "B = A") orelse return error.MissingEscapedEnumReference;
+    var found_reference = false;
+    var parameter_id: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (symbol.synthetic_kind == .enum_iife_parameter) parameter_id = @intCast(raw);
+    }
+    for (analyzer.references.items) |reference| {
+        if (reference.flags.declare or reference.node_index.isNone()) continue;
+        const node = parser.ast.getNode(reference.node_index);
+        if (!std.mem.eql(u8, parser.ast.identifierNameText(node), "A") or node.span.start <= reference_start) continue;
+        const symbol = analyzer.symbols.items[@intFromEnum(reference.symbol_id)];
+        try std.testing.expectEqual(.enum_iife_member, symbol.synthetic_kind.?);
+        try std.testing.expectEqualStrings("A", symbol.synthetic_name);
+        const owner_id = symbol.synthetic_owner_id orelse return error.MissingEscapedMemberOwner;
+        try std.testing.expectEqual(parameter_id, @as(?u32, @intFromEnum(owner_id)));
+        found_reference = true;
+    }
+    try std.testing.expect(found_reference);
+}
+
 test "#4819 editor preserves analyzed IDs while appending a generated binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
