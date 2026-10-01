@@ -411,6 +411,9 @@ pub const Transformer = struct {
     /// ES2015 generator: for-of 변환에서 생성한 임시 변수 span.
     /// buildGeneratorBody에서 호이스팅 변수에 추가.
     generator_temp_var_spans: std.ArrayList(token_mod.Span) = .empty,
+    /// Creation-time identities for exact generated temps awaiting their final
+    /// state-machine wrapper bindings, keyed by the interned name Span start.
+    generator_state_temp_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// Exact generated `_state` reference nodes awaiting their callback binding.
     /// Each state machine records its starting offset, so nested lowering cannot
     /// consume an enclosing machine's references.
@@ -687,6 +690,7 @@ pub const Transformer = struct {
     pub const relocatePendingRuntimeHelperRef = @import("transformer/semantic_edit.zig").relocatePendingRuntimeHelperRef;
     pub const declareSyntheticInScope = @import("transformer/semantic_edit.zig").declareSyntheticInScope;
     pub const declareSyntheticTempInScope = @import("transformer/semantic_edit.zig").declareSyntheticTempInScope;
+    pub const recordGeneratorStateTempSymbol = @import("transformer/semantic_edit.zig").recordGeneratorStateTempSymbol;
     pub const deferGeneratedWrapperTemp = @import("transformer/semantic_edit.zig").deferGeneratedWrapperTemp;
     pub const trackLexicalCaptureRef = @import("transformer/semantic_edit.zig").trackLexicalCaptureRef;
     pub const bindLexicalCapture = @import("transformer/semantic_edit.zig").bindLexicalCapture;

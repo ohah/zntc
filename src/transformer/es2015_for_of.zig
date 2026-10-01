@@ -287,12 +287,28 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const names = try uniqueForInNames(self);
             try self.generator_temp_var_spans.appendSlice(self.allocator, &.{ obj, names.keys, key, names.idx });
 
+            const obj_binding = try es_helpers.makeSyntheticBinding(self, obj);
+            const keys_binding = try es_helpers.makeSyntheticBinding(self, names.keys);
+            const key_binding = try es_helpers.makeSyntheticBinding(self, key);
+            const idx_binding = try es_helpers.makeSyntheticBinding(self, names.idx);
+            if (self.semantic_edit_enabled) {
+                // These declarations are hoisted into the generator wrapper
+                // after state-machine collection. Give each binding its
+                // function-scoped identity now; the final wrapper binding
+                // reuses this exact symbol through state-machine hoisting.
+                const var_scope = self.nearestVarScope(loop_scope);
+                try self.recordGeneratorStateTempSymbol(obj, try self.declareSyntheticTempInScope(obj_binding, span, var_scope));
+                try self.recordGeneratorStateTempSymbol(names.keys, try self.declareSyntheticTempInScope(keys_binding, span, var_scope));
+                try self.recordGeneratorStateTempSymbol(key, try self.declareSyntheticTempInScope(key_binding, span, var_scope));
+                try self.recordGeneratorStateTempSymbol(names.idx, try self.declareSyntheticTempInScope(idx_binding, span, var_scope));
+            }
+
             // var _obj = object, _keys = [], _k;
             const empty = try self.ast.addListNode(.array_expression, span, .{ .start = 0, .len = 0 });
             const decl = try es_helpers.makeVarDeclaration(self, &.{
-                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, obj), right, span),
-                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, names.keys), empty, span),
-                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, key), .none, span),
+                try es_helpers.makeDeclarator(self, obj_binding, right, span),
+                try es_helpers.makeDeclarator(self, keys_binding, empty, span),
+                try es_helpers.makeDeclarator(self, key_binding, .none, span),
             }, .@"var", span);
 
             // for (_k in _obj) _keys.push(_k);
@@ -305,7 +321,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
 
             // for (var _idx = 0; _idx < _keys.length; _idx++) { <루프 변수 = _keys[_idx]>; body }
             const init = try es_helpers.makeVarDeclaration(self, &.{
-                try es_helpers.makeDeclarator(self, try es_helpers.makeSyntheticBinding(self, names.idx), try es_helpers.makeNumericLiteral(self, 0), span),
+                try es_helpers.makeDeclarator(self, idx_binding, try es_helpers.makeNumericLiteral(self, 0), span),
             }, .@"var", span);
             const length = try es_helpers.makeStaticMember(self, try makeTrackedRefFromSpan(self, names.keys, .{ .read = true }, loop_scope, true), try es_helpers.makePropertyName(self, "length"), span);
             const test_expr = try self.ast.addNode(.{ .tag = .binary_expression, .span = span, .data = .{ .binary = .{

@@ -223,6 +223,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         pub const StateMachineFrame = struct {
             saved_temp_spans: std.ArrayListUnmanaged(Span),
             saved_var_origins: std.AutoHashMapUnmanaged(u64, NodeIndex),
+            saved_temp_symbols: std.AutoHashMapUnmanaged(u32, u32),
             saved_state_bindings: std.ArrayListUnmanaged(HoistedStateTemp),
             state_ref_start: usize,
             callback_temps: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty,
@@ -234,6 +235,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             self.generator_temp_var_spans.clearRetainingCapacity();
             const saved_origins = self.generator_var_origins;
             self.generator_var_origins = .empty;
+            const saved_temp_symbols = self.generator_state_temp_symbols;
+            self.generator_state_temp_symbols = .empty;
             var saved_state_bindings: std.ArrayListUnmanaged(HoistedStateTemp) = .empty;
             try saved_state_bindings.appendSlice(self.allocator, self.generator_state_bindings.items);
             self.generator_state_bindings.clearRetainingCapacity();
@@ -241,6 +244,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return .{
                 .saved_temp_spans = saved,
                 .saved_var_origins = saved_origins,
+                .saved_temp_symbols = saved_temp_symbols,
                 .saved_state_bindings = saved_state_bindings,
                 .state_ref_start = self.generator_state_refs.items.len,
             };
@@ -252,6 +256,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             self.generator_state_refs.shrinkRetainingCapacity(frame.state_ref_start);
             self.generator_temp_var_spans.clearRetainingCapacity();
             self.generator_temp_var_spans.appendSlice(self.allocator, frame.saved_temp_spans.items) catch {};
+            self.generator_state_temp_symbols.deinit(self.allocator);
+            self.generator_state_temp_symbols = frame.saved_temp_symbols;
+            frame.saved_temp_symbols = .empty;
             self.generator_state_bindings.clearRetainingCapacity();
             self.generator_state_bindings.appendSlice(self.allocator, frame.saved_state_bindings.items) catch {};
             frame.saved_temp_spans.deinit(self.allocator);
@@ -378,10 +385,16 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 else
                     try es_helpers.makeSyntheticBinding(self, temp_span);
                 if (origin == null) try self.generated_temp_spans.append(self.allocator, temp_span);
+                const symbol_id: ?u32 = if (origin) |source|
+                    self.getSymbolIdAt(source)
+                else if (self.generator_state_temp_symbols.get(temp_span.start)) |id|
+                    id
+                else
+                    null;
                 try state_temps.append(self.allocator, .{
                     .binding = binding,
                     .name_span = temp_span,
-                    .symbol_id = if (origin) |source| self.getSymbolIdAt(source) else null,
+                    .symbol_id = symbol_id,
                 });
                 const declarator = try es_helpers.makeDeclarator(self, binding, .none, span);
                 try self.scratch.append(self.allocator, declarator);
