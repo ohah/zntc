@@ -100,6 +100,55 @@ test "#4819 merged namespace export has shared owner but separate lexical bindin
     try std.testing.expectEqual(@as(usize, 2), local_reads);
 }
 
+test "#4819 enum initializer self-reference resolves to the generated IIFE parameter" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const source = "const _Self = 23; enum Self { Self = 1, Next = Self.Self + 2 }";
+    var scanner = try Scanner.init(alloc, source);
+    var parser = Parser.init(alloc, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(alloc, &parser.ast);
+    ana.is_ts = true;
+    try ana.analyze();
+    try std.testing.expectEqual(@as(usize, 0), ana.errors.items.len);
+
+    var enum_scope: ?u32 = null;
+    var parameter_id: ?u32 = null;
+    var enum_binding_id: ?u32 = null;
+    for (ana.symbols.items, 0..) |symbol, raw_id| {
+        switch (symbol.synthetic_kind orelse continue) {
+            .enum_iife_parameter => {
+                try std.testing.expect(parameter_id == null);
+                parameter_id = @intCast(raw_id);
+                enum_scope = @intFromEnum(symbol.scope_id);
+            },
+            else => {},
+        }
+    }
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .ts_enum_declaration) continue;
+        const name_idx: NodeIndex = @enumFromInt(parser.ast.extra_data.items[node.data.extra]);
+        enum_binding_id = ana.symbol_ids.items[@intFromEnum(name_idx)];
+        break;
+    }
+    const parameter = parameter_id orelse return error.MissingEnumIifeParameter;
+    const enum_binding = enum_binding_id orelse return error.MissingEnumBinding;
+    try std.testing.expect(parameter != enum_binding);
+    try std.testing.expectEqual(@as(?usize, parameter), ana.scope_maps.items[enum_scope.?].get("Self"));
+
+    var self_object_reads: usize = 0;
+    for (ana.references.items) |reference| {
+        if (reference.flags.declare or reference.node_index.isNone()) continue;
+        const node = parser.ast.getNode(reference.node_index);
+        if (node.tag != .identifier_reference or !std.mem.eql(u8, parser.ast.getText(node.span), "Self")) continue;
+        try std.testing.expectEqual(parameter, @intFromEnum(reference.symbol_id));
+        self_object_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), self_object_reads);
+}
+
 test "#4819 namespace IIFE parameter has a separate SymbolId in its function ScopeId" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1261,6 +1310,9 @@ test "Enum: export enum declaration marks exported symbol" {
 
     var found = false;
     for (r.analyzer.symbols.items) |sym| {
+        // The output-only enum IIFE parameter can share the source enum name;
+        // this assertion is about the declaration node's exported symbol.
+        if (sym.synthetic_kind == .enum_iife_parameter) continue;
         if (!std.mem.eql(u8, sym.nameText(r.parser.ast.source), "Color")) continue;
         found = true;
         try std.testing.expect(sym.decl_flags.is_exported);

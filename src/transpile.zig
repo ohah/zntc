@@ -1733,6 +1733,13 @@ fn transpileWithCallbackInternal(
     }
 
     // 6. 코드 생성
+    // Without identifier mangling, the semantic editor's applied result is the
+    // authoritative node->SymbolId map. Syntax minification mutates the
+    // transformer's live map later, so keep using that view in that case.
+    const codegen_symbol_ids = if (mangle_metadata == null and !options.minify_syntax) blk: {
+        if (analyzer_storage) |*analyzer| break :blk analyzer.symbol_ids.items;
+        break :blk transformer.symbol_ids.items;
+    } else transformer.symbol_ids.items;
     var cg = Codegen.initWithOptions(arena_alloc, transformer.ast, .{
         .module_format = options.module_format,
         .minify_whitespace = options.minify_whitespace,
@@ -1742,10 +1749,10 @@ fn transpileWithCallbackInternal(
         .lower_unicode_brace = options.unsupported.unicode_brace_escape,
         .quote_style = options.quote_style,
         .linking_metadata = if (mangle_metadata) |*mm| mm else null,
-        .semantic_symbol_ids = transformer.symbol_ids.items,
+        .semantic_symbol_ids = codegen_symbol_ids,
         .semantic_symbols = if (mangle_metadata != null) mangle_analyzer.?.symbols.items else if (analyzer_storage) |*analyzer| analyzer.symbols.items else &.{},
         .semantic_scope_maps = if (mangle_metadata != null) mangle_analyzer.?.scope_maps.items else if (analyzer_storage) |*analyzer| analyzer.scope_maps.items else &.{},
-        .namespace_scope_owner_map = if (mangle_metadata != null) &mangle_analyzer.?.scope_owner_map else if (analyzer_storage) |*analyzer| &analyzer.scope_owner_map else null,
+        .generated_iife_scope_owner_map = if (mangle_metadata != null) &mangle_analyzer.?.scope_owner_map else if (analyzer_storage) |*analyzer| &analyzer.scope_owner_map else null,
         .namespace_member_owners = if (mangle_metadata != null) &mangle_analyzer.?.namespace_member_owners else if (analyzer_storage) |*analyzer| &analyzer.namespace_member_owners else null,
         .namespace_declaration_owners = if (mangle_metadata != null) &mangle_analyzer.?.namespace_declaration_owners else if (analyzer_storage) |*analyzer| &analyzer.namespace_declaration_owners else null,
         .destructuring_temp_bindings = &transformer.destructuring_temp_bindings,

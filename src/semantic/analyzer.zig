@@ -151,6 +151,11 @@ pub const SemanticAnalyzer = struct {
     /// Stable copies stored on virtual namespace parameter symbols. The active
     /// name stack only borrows these names until the namespace body is visited.
     namespace_iife_param_stable_names: std.ArrayListUnmanaged([]const u8) = .empty,
+    /// Active virtual enum IIFE parameters, used to avoid capturing an enclosing
+    /// generated parameter while visiting nested initializer expressions.
+    enum_iife_param_names: std.ArrayListUnmanaged([]const u8) = .empty,
+    /// Stable copies stored on virtual enum parameter symbols.
+    enum_iife_param_stable_names: std.ArrayListUnmanaged([]const u8) = .empty,
 
     /// 미해결 참조 (unresolved references). resolveIdentifier에서 스코프 체인을 다 올라가도
     /// 선언을 찾지 못한 이름. 번들러 linker가 scope hoisting 시 이 이름들을 예약하여
@@ -336,6 +341,9 @@ pub const SemanticAnalyzer = struct {
         self.namespace_iife_param_names.deinit(self.allocator);
         for (self.namespace_iife_param_stable_names.items) |name| self.allocator.free(name);
         self.namespace_iife_param_stable_names.deinit(self.allocator);
+        self.enum_iife_param_names.deinit(self.allocator);
+        for (self.enum_iife_param_stable_names.items) |name| self.allocator.free(name);
+        self.enum_iife_param_stable_names.deinit(self.allocator);
         self.exported_names.deinit(self.allocator);
         // #4221: 키는 전부 dupe 사본 (소유) — 함께 해제.
         var unres_it = self.unresolved_references.keyIterator();
@@ -2722,16 +2730,27 @@ pub const SemanticAnalyzer = struct {
         }
     }
 
-    /// Runtime enum initializers are evaluated in the surrounding lexical
-    /// scope. Visit only member initializer expressions; member names are keys,
-    /// and const/ambient enum declarations are erased by the transformer.
+    /// Runtime enum initializers execute inside the generated enum IIFE. Model
+    /// that function scope and its parameter even though neither has an AST
+    /// binding node. Const/ambient enum declarations are erased by the transformer.
     fn visitEnumDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
         const e = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (e + 3 >= extras.len or extras[e + 3] != 0) return;
+        const name_idx: NodeIndex = @enumFromInt(extras[e]);
         const members_start = extras[e + 1];
         const members_len = extras[e + 2];
         if (members_start + members_len > extras.len) return;
+
+        const saved_scope = try self.enterScope(.function, self.is_strict_mode);
+        defer self.exitScope(saved_scope);
+        const param_name = try self.declareEnumIifeParameter(name_idx, node, members_start, members_len);
+        defer if (param_name) |name| {
+            const popped = self.enum_iife_param_names.pop() orelse unreachable;
+            std.debug.assert(std.mem.eql(u8, popped, name));
+            self.allocator.free(popped);
+        };
+
         for (extras[members_start .. members_start + members_len]) |raw_idx| {
             const member_idx: NodeIndex = @enumFromInt(raw_idx);
             if (member_idx.isNone() or @intFromEnum(member_idx) >= self.ast.nodes.items.len) continue;
@@ -2831,6 +2850,9 @@ pub const SemanticAnalyzer = struct {
         for (self.namespace_iife_param_names.items) |active| {
             if (std.mem.eql(u8, active, candidate)) return true;
         }
+        for (self.enum_iife_param_names.items) |active| {
+            if (std.mem.eql(u8, active, candidate)) return true;
+        }
         if (!self.current_scope.isNone() and self.current_scope.toIndex() < self.scope_maps.items.len and
             self.scope_maps.items[self.current_scope.toIndex()].contains(candidate)) return true;
         for (self.ast.nodes.items) |node| {
@@ -2878,6 +2900,69 @@ pub const SemanticAnalyzer = struct {
         try self.namespace_iife_param_stable_names.append(self.allocator, stable_name);
         stable_name_untracked = false;
         try self.namespace_iife_param_names.append(self.allocator, candidate);
+        return candidate;
+    }
+
+    fn declareEnumIifeParameter(
+        self: *SemanticAnalyzer,
+        name_idx: NodeIndex,
+        declaration: Node,
+        members_start: u32,
+        members_len: u32,
+    ) AllocError!?[]const u8 {
+        if (name_idx.isNone() or @intFromEnum(name_idx) >= self.ast.nodes.items.len or self.current_scope.isNone()) return null;
+        const name_text = self.ast.getText(self.ast.getNode(name_idx).span);
+        var needs_rename = false;
+        for (self.ast.extra_data.items[members_start .. members_start + members_len]) |raw_idx| {
+            const member_idx: NodeIndex = @enumFromInt(raw_idx);
+            if (member_idx.isNone() or @intFromEnum(member_idx) >= self.ast.nodes.items.len) continue;
+            const member = self.ast.getNode(member_idx);
+            if (member.tag != .ts_enum_member or member.data.binary.left.isNone()) continue;
+            const key = self.ast.getNode(member.data.binary.left);
+            const key_name = ast_mod.Ast.stripStringQuotes(self.ast.getText(key.span));
+            if (std.mem.eql(u8, key_name, name_text)) {
+                needs_rename = true;
+                break;
+            }
+        }
+
+        var candidate: []const u8 = undefined;
+        if (needs_rename) {
+            var suffix: u32 = 0;
+            while (true) : (suffix += 1) {
+                const proposed = if (suffix == 0)
+                    try std.fmt.allocPrint(self.allocator, "_{s}", .{name_text})
+                else
+                    try std.fmt.allocPrint(self.allocator, "_{s}{d}", .{ name_text, suffix });
+                if (!self.namespaceIifeParamReserved(proposed)) {
+                    candidate = proposed;
+                    break;
+                }
+                self.allocator.free(proposed);
+            }
+        } else {
+            candidate = try self.allocator.dupe(u8, name_text);
+        }
+        errdefer self.allocator.free(candidate);
+
+        const source_name_span = self.ast.getNode(name_idx).span;
+        const before = self.symbols.items.len;
+        try self.declareSymbolWithNode(source_name_span, .parameter, declaration.span, null);
+        const sid = self.scope_maps.items[self.current_scope.toIndex()].get(candidate) orelse
+            self.scope_maps.items[self.current_scope.toIndex()].get(name_text) orelse
+            std.debug.panic("enum IIFE parameter was not declared", .{});
+        if (sid < before) std.debug.panic("enum IIFE parameter collided with a prior binding", .{});
+        self.symbols.items[sid].synthetic_kind = .enum_iife_parameter;
+        // The lexical binding is the source enum name, while synthetic_name is
+        // the emitted parameter spelling. They can differ when a member shares
+        // the enum name (`enum Self { Self = 1 }`).
+        const stable_name = try self.allocator.dupe(u8, candidate);
+        self.symbols.items[sid].synthetic_name = stable_name;
+        var stable_name_untracked = true;
+        errdefer if (stable_name_untracked) self.allocator.free(stable_name);
+        try self.enum_iife_param_stable_names.append(self.allocator, stable_name);
+        stable_name_untracked = false;
+        try self.enum_iife_param_names.append(self.allocator, candidate);
         return candidate;
     }
 

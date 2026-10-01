@@ -311,6 +311,10 @@ fn childSkipsOutputScope(ast: *const ast_mod.Ast, parent_raw: u32, child_raw: u3
     if (parent_raw >= ast.nodes.items.len) return false;
     const parent = ast.nodes.items[parent_raw];
     switch (parent.tag) {
+        .ts_enum_declaration => {
+            const extra = parent.data.extra;
+            return extra < ast.extra_data.items.len and ast.extra_data.items[extra] == child_raw;
+        },
         .function_declaration => {
             const extra = parent.data.extra;
             return extra < ast.extra_data.items.len and ast.extra_data.items[extra + ast_mod.FunctionExtra.name] == child_raw;
@@ -359,6 +363,14 @@ fn isNamespaceDeclarationNameBinding(ast: *const ast_mod.Ast, parent_raw: u32, c
     if (parent_raw >= ast.nodes.items.len) return false;
     const parent = ast.nodes.items[parent_raw];
     return parent.tag == .ts_module_declaration and parent.data.binary.left == @as(NodeIndex, @enumFromInt(child_raw));
+}
+
+fn isEnumDeclarationNameBinding(ast: *const ast_mod.Ast, parent_raw: u32, child_raw: u32) bool {
+    if (parent_raw >= ast.nodes.items.len) return false;
+    const parent = ast.nodes.items[parent_raw];
+    return parent.tag == .ts_enum_declaration and
+        parent.data.extra < ast.extra_data.items.len and
+        ast.extra_data.items[parent.data.extra] == child_raw;
 }
 
 fn isGeneratedOutputVar(symbol: Symbol) bool {
@@ -519,7 +531,8 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
         // merge those two identities and collide with an exported member of
         // the same name.
         if (node.tag == .binding_identifier and
-            !isNamespaceDeclarationNameBinding(self.ast, @intFromEnum(work.parent), raw))
+            !isNamespaceDeclarationNameBinding(self.ast, @intFromEnum(work.parent), raw) and
+            !isEnumDeclarationNameBinding(self.ast, @intFromEnum(work.parent), raw))
         {
             if (self.generated_body_binding_moves.fetchRemove(raw)) |move| {
                 const id = outputSymbolIdAt(self, editor, work.node) orelse std.debug.panic("moved source binding lost its SymbolId", .{});

@@ -245,6 +245,23 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
                     }
                 }
             }
+            // Enum self references inside the generated IIFE can resolve to a
+            // virtual parameter whose chosen spelling differs from the source
+            // enum name (for example `_Self1` when the enum has a `Self` member).
+            // Emit that identity's spelling even when no linker rename exists.
+            if ((node.tag == .identifier_reference or node.tag == .assignment_target_identifier) and
+                sym_id != null and sym_id.? < self.options.semantic_symbols.len)
+            {
+                const symbol = self.options.semantic_symbols[sym_id.?];
+                if (symbol.synthetic_kind == .enum_iife_parameter) {
+                    const original = self.ast.getText(node.data.string_ref);
+                    if (!std.mem.eql(u8, original, symbol.synthetic_name)) {
+                        try self.addSourceMappingWithName(node.span, original);
+                        try self.write(symbol.synthetic_name);
+                        return;
+                    }
+                }
+            }
             // Same-declaration exported values use their original binding ID.
             if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
                 if (self.namespaceExportPrefix(idx)) |prefix| {
@@ -399,7 +416,7 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
         },
 
         // TS enum/namespace → IIFE 출력
-        .ts_enum_declaration => try type_runtime_emit.emitEnumIIFE(self, node),
+        .ts_enum_declaration => try type_runtime_emit.emitEnumIIFE(self, node, idx),
         .ts_module_declaration => try type_runtime_emit.emitNamespaceIIFE(self, node, idx),
         // Flow enum (#2401) → `const Name = Object.freeze({...})` 출력. members 의
         // init expression 이 없으면 base_type 에 따라 default value (string/number/...).

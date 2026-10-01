@@ -6,23 +6,24 @@ const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const Ast = ast_mod.Ast;
 const FlowEnumBaseType = @import("../parser/flow.zig").FlowEnumBaseType;
+const SyntheticKind = @import("../semantic/symbol.zig").SyntheticKind;
 const rt = @import("../bundler/runtime_helpers.zig");
 const bindings = @import("bindings.zig");
 const NamespaceFrame = @import("codegen.zig").NamespaceFrame;
 
 /// enum Color { Red, Green = 5, Blue } →
 /// var Color;((Color) => {Color[Color["Red"]=0]="Red";Color[Color["Green"]=5]="Green";Color[Color["Blue"]=6]="Blue";})(Color || (Color = {}));
-pub fn emitEnumIIFE(self: anytype, node: Node) !void {
-    return emitEnumIIFEInner(self, node, null);
+pub fn emitEnumIIFE(self: anytype, node: Node, enum_idx: NodeIndex) !void {
+    return emitEnumIIFEInner(self, node, enum_idx, null);
 }
 
 /// The exported enum declaration itself supplies the namespace member target.
 /// Its local binding is initialized from that shared object before members run.
-fn emitNamespaceEnumIIFE(self: anytype, node: Node, namespace_param: []const u8) !void {
-    return emitEnumIIFEInner(self, node, namespace_param);
+fn emitNamespaceEnumIIFE(self: anytype, node: Node, enum_idx: NodeIndex, namespace_param: []const u8) !void {
+    return emitEnumIIFEInner(self, node, enum_idx, namespace_param);
 }
 
-fn emitEnumIIFEInner(self: anytype, node: Node, namespace_param: ?[]const u8) !void {
+fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_param: ?[]const u8) !void {
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
@@ -106,7 +107,7 @@ fn emitEnumIIFEInner(self: anytype, node: Node, namespace_param: ?[]const u8) !v
 
     var owned_param: ?[]u8 = null;
     defer if (owned_param) |param| std.heap.page_allocator.free(param);
-    const param_name = if (needs_rename) blk: {
+    const param_name = enumIifeParamName(self, enum_idx) orelse if (needs_rename) blk: {
         var suffix: u32 = 0;
         while (true) : (suffix += 1) {
             const candidate = if (suffix == 0)
@@ -373,15 +374,23 @@ const NamespacePlacement = union(enum) {
 /// Placement distinguishes a top-level namespace, a private nested binding,
 /// and an exported namespace stored on its parent's object.
 fn namespaceIifeParamName(self: anytype, namespace_idx: NodeIndex) ?[]const u8 {
-    const owners = self.options.namespace_scope_owner_map orelse return null;
-    const scope = owners.get(@intFromEnum(namespace_idx)) orelse return null;
+    return generatedIifeParamName(self, namespace_idx, .namespace_iife_parameter);
+}
+
+fn enumIifeParamName(self: anytype, enum_idx: NodeIndex) ?[]const u8 {
+    return generatedIifeParamName(self, enum_idx, .enum_iife_parameter);
+}
+
+fn generatedIifeParamName(self: anytype, owner_idx: NodeIndex, expected_kind: SyntheticKind) ?[]const u8 {
+    const owners = self.options.generated_iife_scope_owner_map orelse return null;
+    const scope = owners.get(@intFromEnum(owner_idx)) orelse return null;
     if (scope >= self.options.semantic_scope_maps.len) return null;
     var scope_bindings = self.options.semantic_scope_maps[scope].iterator();
     while (scope_bindings.next()) |binding| {
         const raw_id = binding.value_ptr.*;
         if (raw_id >= self.options.semantic_symbols.len) continue;
         const symbol = self.options.semantic_symbols[raw_id];
-        if (symbol.synthetic_kind != .namespace_iife_parameter or @intFromEnum(symbol.scope_id) != scope) continue;
+        if (symbol.synthetic_kind != expected_kind or @intFromEnum(symbol.scope_id) != scope) continue;
         if (self.options.linking_metadata) |metadata| {
             if (metadata.renames.get(@intCast(raw_id))) |renamed| return renamed;
         }
@@ -558,7 +567,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
                             // The exported declaration names the exact member of this
                             // namespace object. Reuse its existing object across
                             // merged namespace IIFEs before evaluating enum members.
-                            try emitNamespaceEnumIIFE(self, decl_node, param_name);
+                            try emitNamespaceEnumIIFE(self, decl_node, decl_idx, param_name);
                         } else {
                             try self.emitNode(decl_idx);
                             try emitNamespaceExport(self, param_name, decl_idx);

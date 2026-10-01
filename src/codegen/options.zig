@@ -105,11 +105,11 @@ pub const CodegenOptions = struct {
     /// Transformed AST node -> source semantic symbol for standalone output.
     /// LinkingMetadata supplies this map in bundle/mangle paths.
     semantic_symbol_ids: []const ?u32 = &.{},
-    /// Semantic rows and namespace owner scopes used to resolve virtual
-    /// TypeScript namespace IIFE parameters by SymbolId.
+    /// Semantic rows and generated IIFE owner scopes used to resolve virtual
+    /// TypeScript namespace/enum parameters by SymbolId.
     semantic_symbols: []const @import("../semantic/symbol.zig").Symbol = &.{},
     semantic_scope_maps: []const std.StringHashMapUnmanaged(usize) = &.{},
-    namespace_scope_owner_map: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
+    generated_iife_scope_owner_map: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
     /// Shared namespace-member proxy SymbolId -> namespace object SymbolId.
     namespace_member_owners: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
     /// Source nested namespace binding SID -> canonical shared member SID.

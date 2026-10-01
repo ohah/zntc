@@ -142,6 +142,24 @@ namespace N {
 }
 console.log(JSON.stringify([objectCalls, arrayCalls]));
 `,
+  'enum IIFE parameters keep identity through shadowing and minification': `
+const _Self = 23;
+enum Ref { First = 1, Next = Ref.First + 2 }
+enum Self { Self = 1, Next = Self.Self + 2 }
+console.log(JSON.stringify([Ref.Next, Self.Self, Self.Next, _Self]));
+`,
+  'enum IIFE parameter collisions stay scoped inside nested namespaces': `
+const _E = 71;
+namespace Outer {
+  export namespace Inner {
+    const _E1 = 13;
+    export enum E { E = 1, Next = E.E + 2 }
+    export const value = E.Next + _E1 + _E;
+    export function read(E: number) { return value + E; }
+  }
+}
+console.log(JSON.stringify([Outer.Inner.E.Next, Outer.Inner.value, Outer.Inner.read(5), _E]));
+`,
 } as const;
 
 function transpileReference(source: string): string {

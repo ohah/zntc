@@ -29,8 +29,8 @@ const wyhash = @import("../util/wyhash.zig");
 const codec_io = @import("../util/codec_io.zig");
 
 pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
-// v7: inline runtime helper preamble symbols use the new SyntheticKind variant.
-pub const FORMAT_VERSION: u32 = 7;
+// v8: TypeScript enum IIFE parameter symbols use the new SyntheticKind variant.
+pub const FORMAT_VERSION: u32 = 8;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로
