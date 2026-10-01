@@ -1,0 +1,7 @@
+// @flow
+function readColor() {
+  return LongColor.Red;
+}
+
+enum LongColor of string { Red, Blue }
+console.log(readColor());
