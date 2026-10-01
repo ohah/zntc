@@ -421,6 +421,95 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     }
   });
 
+  test('type-erased TypeScript private elements reuse the edited semantic graph', async () => {
+    const fixture = await createFixture({
+      'input.ts': `
+        class Base { baseValue(): number { return 7; } }
+        function make(value: number) {
+          const args = value + 1;
+          return class Generated extends Base {
+            #state = args;
+            static #count = 0;
+            constructor(offset: number) {
+              super();
+              this.#state += offset;
+              Generated.#count++;
+            }
+            #read(delta: number): number {
+              return this.#state + delta + super.baseValue();
+            }
+            get value(): number {
+              const args = 1000;
+              return this.#read(2) + args;
+            }
+            evaluated(): number { return eval('args'); }
+            hasState(target: object): boolean { return #state in target; }
+            static count(): number { return Generated.#count; }
+            static hasCount(target: object): boolean { return #count in target; }
+          };
+        }
+        const Generated = make(5);
+        const first = new Generated(3);
+        const second = new Generated(0);
+        console.log(first.value, second.value, Generated.count(), first.evaluated(), first.hasState(second), first.hasState({}), Generated.hasCount(Generated), Generated.hasCount({}));
+      `,
+      'reference.js': `
+        class Base { baseValue() { return 7; } }
+        function make(value) {
+          const args = value + 1;
+          return class Generated extends Base {
+            #state = args;
+            static #count = 0;
+            constructor(offset) {
+              super();
+              this.#state += offset;
+              Generated.#count++;
+            }
+            #read(delta) {
+              return this.#state + delta + super.baseValue();
+            }
+            get value() {
+              const args = 1000;
+              return this.#read(2) + args;
+            }
+            evaluated() { return eval('args'); }
+            hasState(target) { return #state in target; }
+            static count() { return Generated.#count; }
+            static hasCount(target) { return #count in target; }
+          };
+        }
+        const Generated = make(5);
+        const first = new Generated(3);
+        const second = new Generated(0);
+        console.log(first.value, second.value, Generated.count(), first.evaluated(), first.hasState(second), first.hasState({}), Generated.hasCount(Generated), Generated.hasCount({}));
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.ts');
+    const reference = await runNode(join(fixture.dir, 'reference.js'));
+    expect(reference.stdout.trim()).toBe('1018 1015 2 6 true false true false');
+
+    for (const target of ['es5', 'es2015', 'es2017', 'es2021', 'es2022', 'esnext']) {
+      const output = join(fixture.dir, `output-${target}.js`);
+      const result = await runZntc(
+        [input, '-o', output, `--target=${target}`, '--minify-identifiers'],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, `${target}: ${result.stderr}`).toBe(0);
+      expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+      const identity = result.stderr
+        .split(/\r?\n/)
+        .find((line) => line.includes('zntc: symbol-identity '));
+      expect(identity).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+      }
+      const transformed = await runNode(output);
+      expect(transformed.stderr, target).toBe('');
+      expect(transformed.stdout.trim(), target).toBe(reference.stdout.trim());
+    }
+  });
+
   test('copied declarations retain their binding and nested scope', async () => {
     await expectNativeParity(
       `
