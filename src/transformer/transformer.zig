@@ -861,6 +861,7 @@ pub const Transformer = struct {
     pub const classifyPropertyDefinition = class_deco.classifyPropertyDefinition;
     pub const classifyMethodDefinition = class_deco.classifyMethodDefinition;
     pub const applyFieldAssignments = class_deco.applyFieldAssignments;
+    pub const bindSuperSpreadArgs = class_deco.bindSuperSpreadArgs;
     pub const ClassMemberContext = class_deco.ClassMemberContext;
     pub const FieldAssignment = class_deco.FieldAssignment;
     pub const MemberDecoratorInfo = class_deco.MemberDecoratorInfo;

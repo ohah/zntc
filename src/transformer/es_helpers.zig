@@ -542,9 +542,15 @@ pub fn markSynthetic(self: anytype, node: NodeIndex) NodeIndex {
 /// 아닌 이름이라 해석한 이름을 다시 넣어도 그대로 나온다(span 으로 들고 다니다 생성 함수를 한 번 더 거치는 경로).
 ///
 /// 제외: 임시 변수(`_a`, `_b2` — `makeTempVarSpan` 이 이미 비껴 가고 참조는 `makeTempVarRef` 로
-/// 따로 만든다), 번들러와 이름으로 약속한 `_default`, 밑줄로 시작하지 않는 이름(합성 헬퍼 매개변수).
+/// 따로 만든다), 번들러와 이름으로 약속한 `_default`, 일반 합성 헬퍼 매개변수. `args` 는 이
+/// 규칙의 예외로, 생성된 derived constructor rest parameter 의 사용자 이름 충돌을 확인한다.
 pub fn resolveSyntheticName(self: anytype, name: []const u8) ![]const u8 {
-    if (name.len < 2 or name[0] != '_' or isTempLikeName(name) or std.mem.eql(u8, name, "_default")) return name;
+    // The generated derived-class rest parameter is the one non-underscore
+    // synthetic local that can be moved into a source lexical scope. Reserve
+    // its spelling too, or `super(...args)` can shadow an outer `args` used by
+    // a moved field initializer.
+    const generated_rest_parameter = std.mem.eql(u8, name, "args");
+    if (name.len < 2 or (name[0] != '_' and !generated_rest_parameter) or isTempLikeName(name) or std.mem.eql(u8, name, "_default")) return name;
     if (self.synthetic_names.get(name)) |r| return r;
     if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
     const arena = self.name_arena.?.allocator();

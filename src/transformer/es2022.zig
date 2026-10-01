@@ -38,6 +38,7 @@ const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
 
 pub fn ES2022(comptime Transformer: type) type {
     return struct {
@@ -535,7 +536,7 @@ pub fn ES2022(comptime Transformer: type) type {
                 if (ctor_pos) |pos| {
                     body_nodes.items[pos] = try injectIntoMethod(self, body_nodes.items[pos], ctor_init_stmts.items, has_super);
                 } else {
-                    const ctor = try buildNewConstructor(self, ctor_init_stmts.items, has_super, span);
+                    const ctor = try buildNewConstructor(self, ctor_init_stmts.items, has_super, span, self.current_scope);
                     try body_nodes.insert(self.allocator, 0, ctor);
                 }
             }
@@ -578,18 +579,19 @@ pub fn ES2022(comptime Transformer: type) type {
         }
 
         /// 빈 constructor method_definition에 init_stmts를 넣어 생성.
-        fn buildNewConstructor(self: *Transformer, init_stmts: []const NodeIndex, has_super: bool, span: Span) Transformer.Error!NodeIndex {
+        fn buildNewConstructor(self: *Transformer, init_stmts: []const NodeIndex, has_super: bool, span: Span, class_scope: ScopeId) Transformer.Error!NodeIndex {
             // body: [super(...args), ...init_stmts] (has_super일 때)
             //       [...init_stmts] (has_super가 아닐 때)
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
             var params_list = try self.ast.addNodeList(&.{});
+            var args_binding: NodeIndex = .none;
+            var args_ref: NodeIndex = .none;
 
             if (has_super) {
-                // rest parameter: ...args
                 const args_span = try self.ast.addString("args");
-                const args_binding = try es_helpers.makeSyntheticBinding(self, args_span);
+                args_binding = try es_helpers.makeSyntheticBinding(self, args_span);
                 const rest_param = try self.ast.addNode(.{
                     .tag = .rest_element,
                     .span = args_span,
@@ -603,7 +605,7 @@ pub fn ES2022(comptime Transformer: type) type {
                     .span = span,
                     .data = .{ .none = 0 },
                 });
-                const args_ref = try es_helpers.makeSyntheticRef(self, "args");
+                args_ref = try es_helpers.makeSyntheticRefFromSpan(self, args_span);
                 const spread = try self.ast.addNode(.{
                     .tag = .spread_element,
                     .span = span,
@@ -633,11 +635,14 @@ pub fn ES2022(comptime Transformer: type) type {
                 @intFromEnum(ctor_body),
                 0, 0, 0, // flags, deco_start, deco_len
             });
-            return self.ast.addNode(.{
+            const constructor = try self.ast.addNode(.{
                 .tag = .method_definition,
                 .span = span,
                 .data = .{ .extra = ctor_extra },
             });
+            if (has_super)
+                try self.bindSuperSpreadArgs(constructor, class_scope, args_binding, args_ref);
+            return constructor;
         }
 
         /// this.#method(args) → __classPrivateMethodGet(this, _set, _fn).call(this, args)
