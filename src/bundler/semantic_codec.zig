@@ -29,8 +29,8 @@ const wyhash = @import("../util/wyhash.zig");
 const codec_io = @import("../util/codec_io.zig");
 
 pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
-// v5: shared namespace-member proxy and nested declaration owner IDs.
-pub const FORMAT_VERSION: u32 = 5;
+// v6: virtual namespace IIFE parameter symbols use the new SyntheticKind variant.
+pub const FORMAT_VERSION: u32 = 6;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로
@@ -40,7 +40,7 @@ const NULL_U32: u32 = std.math.maxInt(u32);
 comptime {
     // synthetic_kind 직렬화(putSymbol/readSymbol)가 0xFF 를 ?SyntheticKind 의 null sentinel 로
     // 쓴다. SyntheticKind(enum(u8))에 값 0xFF 변형이 생기면 null 로 오역(silent miscompile)되므로
-    // 0xFF 가 유효 변형이 아님을 못박는다(현재 4 변형이라 여유 충분 — 미래 회귀 가드).
+    // 0xFF 가 유효 변형이 아님을 못박는다(현재 5 변형이라 여유 충분 — 미래 회귀 가드).
     if (std.enums.fromInt(symbol_mod.SyntheticKind, 0xFF) != null)
         @compileError("SyntheticKind 0xFF 변형이 semantic_codec 의 null sentinel 과 충돌 — sentinel 폭 확장 필요.");
 }
@@ -126,7 +126,7 @@ fn putSymbol(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, s: Symbol) !void
     try putU32(buf, alloc, s.reference_count);
     try putU32(buf, alloc, s.write_count);
     try putU8(buf, alloc, @intFromEnum(s.const_kind));
-    // ?SyntheticKind → 0xFF=null, 아니면 enum 값(SyntheticKind 변형 수가 4개라 충돌 없음).
+    // ?SyntheticKind → 0xFF=null, 아니면 enum 값(0xFF sentinel과 충돌하지 않음).
     try putU8(buf, alloc, if (s.synthetic_kind) |k| @intFromEnum(k) else 0xFF);
     try putBytes(buf, alloc, s.synthetic_name);
 }

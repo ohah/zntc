@@ -145,6 +145,12 @@ pub const SemanticAnalyzer = struct {
     namespace_member_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// Source nested namespace binding SID -> shared merged member SID.
     namespace_declaration_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// Active virtual namespace IIFE parameters, used to prevent nested frames
+    /// from choosing the same codegen-visible name.
+    namespace_iife_param_names: std.ArrayListUnmanaged([]const u8) = .empty,
+    /// Stable copies stored on virtual namespace parameter symbols. The active
+    /// name stack only borrows these names until the namespace body is visited.
+    namespace_iife_param_stable_names: std.ArrayListUnmanaged([]const u8) = .empty,
 
     /// 미해결 참조 (unresolved references). resolveIdentifier에서 스코프 체인을 다 올라가도
     /// 선언을 찾지 못한 이름. 번들러 linker가 scope hoisting 시 이 이름들을 예약하여
@@ -327,6 +333,9 @@ pub const SemanticAnalyzer = struct {
         self.namespace_scope_owners.deinit(self.allocator);
         self.namespace_member_owners.deinit(self.allocator);
         self.namespace_declaration_owners.deinit(self.allocator);
+        self.namespace_iife_param_names.deinit(self.allocator);
+        for (self.namespace_iife_param_stable_names.items) |name| self.allocator.free(name);
+        self.namespace_iife_param_stable_names.deinit(self.allocator);
         self.exported_names.deinit(self.allocator);
         // #4221: 키는 전부 dupe 사본 (소유) — 함께 해제.
         var unres_it = self.unresolved_references.keyIterator();
@@ -2818,6 +2827,60 @@ pub const SemanticAnalyzer = struct {
         self.exitScope(saved);
     }
 
+    fn namespaceIifeParamReserved(self: *const SemanticAnalyzer, candidate: []const u8) bool {
+        for (self.namespace_iife_param_names.items) |active| {
+            if (std.mem.eql(u8, active, candidate)) return true;
+        }
+        if (!self.current_scope.isNone() and self.current_scope.toIndex() < self.scope_maps.items.len and
+            self.scope_maps.items[self.current_scope.toIndex()].contains(candidate)) return true;
+        for (self.ast.nodes.items) |node| {
+            const relevant = switch (node.tag) {
+                .binding_identifier,
+                .identifier_reference,
+                .assignment_target_identifier,
+                .jsx_identifier,
+                .import_default_specifier,
+                .import_namespace_specifier,
+                => true,
+                else => false,
+            };
+            if (relevant and std.mem.eql(u8, self.ast.identifierNameText(node), candidate)) return true;
+        }
+        return false;
+    }
+
+    fn chooseNamespaceIifeParamName(self: *SemanticAnalyzer, name_idx: NodeIndex) AllocError![]const u8 {
+        const source_name = self.ast.getText(self.ast.getNode(name_idx).span);
+        var suffix: u32 = 0;
+        while (true) : (suffix += 1) {
+            const candidate = if (suffix == 0)
+                try std.fmt.allocPrint(self.allocator, "_{s}", .{source_name})
+            else
+                try std.fmt.allocPrint(self.allocator, "_{s}{d}", .{ source_name, suffix });
+            if (!self.namespaceIifeParamReserved(candidate)) return candidate;
+        }
+    }
+
+    fn declareNamespaceIifeParameter(self: *SemanticAnalyzer, name_idx: NodeIndex, declaration: Node) AllocError!?[]const u8 {
+        if (name_idx.isNone() or @intFromEnum(name_idx) >= self.ast.nodes.items.len or self.current_scope.isNone()) return null;
+        const candidate = try self.chooseNamespaceIifeParamName(name_idx);
+        errdefer self.allocator.free(candidate);
+        const name_span = try self.ast.addString(candidate);
+        const before = self.symbols.items.len;
+        try self.declareSymbolWithNode(name_span, .parameter, declaration.span, null);
+        const sid = self.scope_maps.items[self.current_scope.toIndex()].get(candidate) orelse
+            std.debug.panic("namespace IIFE parameter was not declared", .{});
+        if (sid < before) std.debug.panic("namespace IIFE parameter collided with a prior binding", .{});
+        self.symbols.items[sid].synthetic_kind = .namespace_iife_parameter;
+        const stable_name = self.symbols.items[sid].synthetic_name;
+        var stable_name_untracked = true;
+        errdefer if (stable_name_untracked) self.allocator.free(stable_name);
+        try self.namespace_iife_param_stable_names.append(self.allocator, stable_name);
+        stable_name_untracked = false;
+        try self.namespace_iife_param_names.append(self.allocator, candidate);
+        return candidate;
+    }
+
     fn visitNamespaceDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
         // Ambient namespaces have no runtime body or value references.
         if (node.data.binary.flags == 1) return;
@@ -2857,6 +2920,10 @@ pub const SemanticAnalyzer = struct {
         const body_idx = node.data.binary.right;
         if (body_idx.isNone() or @intFromEnum(body_idx) >= self.ast.nodes.items.len) return;
         const body = self.ast.getNode(body_idx);
+        const namespace_iife_param_name = try self.declareNamespaceIifeParameter(name_idx, node);
+        defer if (namespace_iife_param_name != null) {
+            self.allocator.free(self.namespace_iife_param_names.pop() orelse unreachable);
+        };
         if (body.tag == .block_statement) {
             const saved_predeclared = self.predeclared_scope;
             self.predeclared_scope = self.current_scope;

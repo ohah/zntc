@@ -355,6 +355,12 @@ fn childSkipsOutputScope(ast: *const ast_mod.Ast, parent_raw: u32, child_raw: u3
     }
 }
 
+fn isNamespaceDeclarationNameBinding(ast: *const ast_mod.Ast, parent_raw: u32, child_raw: u32) bool {
+    if (parent_raw >= ast.nodes.items.len) return false;
+    const parent = ast.nodes.items[parent_raw];
+    return parent.tag == .ts_module_declaration and parent.data.binary.left == @as(NodeIndex, @enumFromInt(child_raw));
+}
+
 fn isGeneratedOutputVar(symbol: Symbol) bool {
     // Generated declarations emitted as `var` belong to the output function's
     // var scope, including loop temps assembled inside extracted callbacks.
@@ -507,7 +513,14 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
             try bridgeOutputParentToSourceParent(editor, work.scope, source_parent);
             editor.reparentScope(scope, work.scope) catch |err| return editError(err);
         }
-        if (node.tag == .binding_identifier) {
+        // A namespace name node denotes the outer namespace object. Codegen's
+        // IIFE parameter is a separate virtual binding already represented in
+        // the namespace function scope; relocating this source SymbolId would
+        // merge those two identities and collide with an exported member of
+        // the same name.
+        if (node.tag == .binding_identifier and
+            !isNamespaceDeclarationNameBinding(self.ast, @intFromEnum(work.parent), raw))
+        {
             if (self.generated_body_binding_moves.fetchRemove(raw)) |move| {
                 const id = outputSymbolIdAt(self, editor, work.node) orelse std.debug.panic("moved source binding lost its SymbolId", .{});
                 if (id != move.value or id >= editor.symbols.items.len)

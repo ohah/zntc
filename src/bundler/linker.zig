@@ -1852,7 +1852,14 @@ pub const Linker = struct {
                     for (sem.symbols.items, 0..) |*sym, si| {
                         const sk = sym.synthetic_kind orelse continue;
                         switch (sk) {
-                            .default_export, .cjs_exports, .cjs_require, .esm_init => {},
+                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter => {},
+                        }
+                        if (sk == .namespace_iife_parameter) {
+                            // Codegen emits this virtual binding directly from
+                            // its semantic row. Keep its chosen name reserved
+                            // so another linked symbol cannot capture it.
+                            try reserved.put(self.allocator, sym.synthetic_name, {});
+                            continue;
                         }
                         // default_export 는 wrapper 와 달리 cross-module emit 보장이 없다 —
                         // ref=0 이면 어디서도 import 하지 않아 codegen 이 binding 을 emit
