@@ -19,6 +19,7 @@ const Transformer = @import("transformer/transformer.zig").Transformer;
 const TransformOptions = @import("transformer/transformer.zig").TransformOptions;
 const BindingLite = @import("transformer/transformer.zig").BindingLite;
 const Codegen = @import("codegen/codegen.zig").Codegen;
+const cg_options = @import("codegen/options.zig");
 const SourceMap = @import("codegen/sourcemap.zig");
 const Mangler = @import("codegen/mod.zig").mangler;
 const module_parser = @import("parser/module.zig");
@@ -536,12 +537,26 @@ fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
 /// post-transform analyzer until their semantic edits are complete.
 fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Parser) bool {
     if (!options.minify_identifiers or
-        options.module_format != .esm or
         options.experimental_decorators or options.emit_decorator_metadata or
         options.react_refresh or options.react_refresh_hook_signatures or
         parser.source_mode != .js_strict or
         parser.is_flow) return false;
     return true;
+}
+
+/// Single-file CommonJS codegen emits these free identifiers after the transform
+/// semantic graph is built. Reserve them before mangling so a source binding cannot
+/// be assigned one of those names, just as the post-transform analyzer used to do.
+fn reserveCommonJsCodegenNames(allocator: std.mem.Allocator, reserved: *std.StringHashMapUnmanaged(void)) !void {
+    const names = [_][]const u8{
+        cg_options.default_cjs_exports_name,
+        cg_options.default_cjs_module_name,
+        "require",
+        "Object",
+        "__dirname",
+        "__filename",
+    };
+    for (names) |name| try reserved.put(allocator, name, {});
 }
 
 fn buildTransformPlan(
@@ -1600,6 +1615,9 @@ fn transpileWithCallbackInternal(
             var reserved: std.StringHashMapUnmanaged(void) = .empty;
             var unresolved_it = post.unresolved_references.keyIterator();
             while (unresolved_it.next()) |k| reserved.put(arena_alloc, k.*, {}) catch return error.OutOfMemory;
+            if (options.module_format == .cjs) {
+                reserveCommonJsCodegenNames(arena_alloc, &reserved) catch return error.OutOfMemory;
+            }
             for (post.symbol_ids.items, 0..) |maybe_post_sym, node_i| {
                 const post_sym = maybe_post_sym orelse continue;
                 if (node_i >= transformer.symbol_ids.items.len) continue;
@@ -1847,6 +1865,10 @@ test "#4819 downlevel JS script mangling reuses transform semantic graph" {
     try std.testing.expect(!parser.is_module);
     const minify: TranspileOptions = .{ .minify_identifiers = true };
     try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
+    try std.testing.expect(canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .module_format = .cjs,
+    }, &parser));
     try std.testing.expect(canMangleWithTransformSemantic(.{ .minify_identifiers = true, .minify_syntax = true }, &parser));
     try std.testing.expect(canMangleWithTransformSemantic(.{ .minify_identifiers = true, .unsupported = TransformOptions.compat.fromESTarget(.es5) }, &parser));
     try std.testing.expect(canMangleWithTransformSemantic(.{ .minify_identifiers = true, .drop_console = true }, &parser));
