@@ -226,6 +226,83 @@ test "Codegen: enum IIFE uses renamed binding in esm assignment mode" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "RuntimeKind = /* @__PURE__ */") == null);
 }
 
+fn e2eNamespaceBindingWithRename(
+    backing_allocator: std.mem.Allocator,
+    source: []const u8,
+    original: []const u8,
+    renamed: []const u8,
+) !TestResult {
+    var arena = std.heap.ArenaAllocator.init(backing_allocator);
+    errdefer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    analyzer.is_ts = parser.source_mode == .ts;
+    analyzer.is_flow = parser.is_flow;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.references = analyzer.references.items;
+    const root = try transformer.transform();
+
+    var renames: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    var renamed_bindings: usize = 0;
+    for (transformer.ast.nodes.items, 0..) |node, raw_idx| {
+        if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.span), original)) continue;
+        const sid = transformer.symbol_ids.items[raw_idx] orelse continue;
+        try renames.put(allocator, sid, renamed);
+        renamed_bindings += 1;
+    }
+    if (renamed_bindings != 1) return error.ExpectedUniqueBinding;
+
+    const skip = try std.DynamicBitSet.initEmpty(allocator, transformer.ast.nodes.items.len);
+    var md: LinkingMetadata = .{
+        .skip_nodes = skip,
+        .renames = renames,
+        .final_exports = null,
+        .symbol_ids = transformer.symbol_ids.items,
+        .allocator = allocator,
+    };
+    defer md.deinit();
+
+    var cg = Codegen.initWithOptions(allocator, transformer.ast, .{
+        .minify_whitespace = true,
+        .esm_var_assign_only = false,
+        .linking_metadata = &md,
+    });
+    const output = try cg.generate(root);
+    return .{ .output = output, .arena = arena };
+}
+
+test "Codegen: namespace function export follows renamed local SymbolId" {
+    var r = try e2eNamespaceBindingWithRename(std.testing.allocator, "namespace N { export function original() {} }", "original", "fn");
+    defer r.deinit();
+
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function fn()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "N.original=fn;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "N.original=original;") == null);
+}
+
+test "Codegen: namespace destructuring export follows renamed local SymbolId" {
+    var r = try e2eNamespaceBindingWithRename(std.testing.allocator, "namespace N { export const [original] = [1]; }", "original", "binding");
+    defer r.deinit();
+
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[binding]=[1]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "N.original=binding;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "N.original=original;") == null);
+}
+
 test "Codegen: const enum removed" {
     var r = try e2e(std.testing.allocator, "const enum Dir { Up, Down }");
     defer r.deinit();
