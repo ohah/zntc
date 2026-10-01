@@ -83,15 +83,17 @@ function runCoverage(
   outDir: string,
 ): { stderr: string; exitCode: number } {
   const stderrPath = join(outDir, 'stderr.log');
+  const isFlow = file.endsWith('.flow.mjs');
   const proc = spawnSync(
     '/bin/sh',
     [
       '-c',
-      'exec "$1" "$2" "$3" "$4" "$5" 2>"$6"',
+      isFlow ? 'exec "$1" "$2" "$3" "$4" "$5" "$6" 2>"$7"' : 'exec "$1" "$2" "$3" "$4" "$5" 2>"$6"',
       'zntc-symbol-coverage',
       ZNTC_BIN,
       file,
       target.arg,
+      ...(isFlow ? ['--flow'] : []),
       '-o',
       join(outDir, 'out.js'),
       stderrPath,
