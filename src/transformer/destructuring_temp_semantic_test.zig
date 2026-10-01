@@ -105,6 +105,77 @@ test "#4819 assignment destructuring temps have exact hoisted IDs and nested rea
     }
 }
 
+test "#4819 for-of destructuring temps get exact IDs before emitted reads" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const source = "function run(items) { let total = 0; for (const { value, nested: { deep } } of items) total += value + deep; return total; }";
+    var scanner = try Scanner.init(alloc, source);
+    var parser = Parser.init(alloc, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(alloc, &parser.ast);
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var function_scope: ?u32 = null;
+    var owners = analyzer.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        if (parser.ast.nodes.items[entry.key_ptr.*].tag == .function_declaration)
+            function_scope = entry.value_ptr.*;
+    }
+    const expected_scope = function_scope orelse return error.MissingFunctionScope;
+    const original_symbol_count = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(alloc, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+    const reachable = try ast_walk.collectReachableNodeIndices(alloc, transformer.ast);
+
+    var temp_count: usize = 0;
+    var temps = transformer.destructuring_temp_symbol_ids.iterator();
+    while (temps.next()) |entry| {
+        const id = entry.value_ptr.*;
+        try std.testing.expect(id >= original_symbol_count and id < edited.symbols.items.len);
+        const symbol = edited.symbols.items[id];
+        try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, symbol.kind);
+        try std.testing.expectEqual(expected_scope, @intFromEnum(symbol.scope_id));
+        try std.testing.expectEqual(@as(?usize, id), edited.scope_maps[expected_scope].get(symbol.synthetic_name));
+
+        var binding_count: usize = 0;
+        for (reachable) |raw| {
+            if (transformer.ast.nodes.items[raw].tag != .binding_identifier) continue;
+            if (raw < edited.symbol_ids.len and edited.symbol_ids[raw] == id) binding_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), binding_count);
+
+        var reference_count: u32 = 0;
+        for (edited.references) |ref| {
+            if (@intFromEnum(ref.symbol_id) != id or ref.flags.declare) continue;
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(ref.node_index)) != null);
+            try std.testing.expectEqual(@as(?u32, id), edited.symbol_ids[@intFromEnum(ref.node_index)]);
+            try std.testing.expect(ref.flags.read);
+            reference_count += 1;
+        }
+        try std.testing.expect(reference_count > 0);
+        try std.testing.expectEqual(reference_count, symbol.reference_count);
+        try std.testing.expectEqual(@as(u32, 0), symbol.write_count);
+        temp_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), temp_count);
+}
+
 test "#4819 destructuring shorthand moves the exact assignment reference" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -256,11 +327,10 @@ test "#4819 ES5 destructuring temps keep exact IDs in hoisted function scope" {
         if (ref_count == 0) unused_count += 1 else used_count += 1;
         temp_count += 1;
     }
-    // The empty destructuring in the fixture has no binding leaves, so its
-    // initializer needs no generated temp. Only the non-empty pattern above
-    // contributes one referenced temp.
-    try std.testing.expectEqual(@as(usize, 1), temp_count);
-    try std.testing.expectEqual(@as(usize, 0), unused_count);
+    // The empty destructuring still evaluates its initializer through an
+    // emitted temp. It has a SymbolId at creation time, with no references.
+    try std.testing.expectEqual(@as(usize, 2), temp_count);
+    try std.testing.expectEqual(@as(usize, 1), unused_count);
     try std.testing.expectEqual(@as(usize, 1), used_count);
 }
 

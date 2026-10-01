@@ -44,6 +44,20 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
         fn makeDestructuringTempBinding(self: *Transformer, name_span: Span) Transformer.Error!NodeIndex {
             const binding = try es_helpers.makeSyntheticBinding(self, name_span);
+            // Destructuring temps have their declaration kind and source
+            // scope at construction time. Attach the SymbolId now so reads
+            // emitted below can refer to it directly instead of queuing a
+            // name/span lookup for the later binding pass. Some callers
+            // (notably parameter lowering) choose their declaration kind
+            // after emitting the pattern, so those keep the deferred path.
+            if (self.semantic_edit_enabled and !self.current_scope.isNone()) {
+                if (self.destructuring_temp_kind) |kind| {
+                    const binding_name = self.ast.getNode(binding).data.string_ref;
+                    const id = (try self.declareSyntheticInScope(binding, binding_name, kind, self.current_scope)) orelse
+                        std.debug.panic("semantic destructuring temp did not receive a SymbolId", .{});
+                    try self.destructuring_temp_symbol_ids.put(self.allocator, name_span.start, @intFromEnum(id));
+                }
+            }
             if (!self.namespace_iife_scope.isNone() and self.current_scope == self.namespace_iife_scope) {
                 try self.destructuring_temp_bindings.put(self.allocator, @intFromEnum(binding), {});
                 try self.namespace_temp_bindings.append(self.allocator, .{ .binding = binding, .span = name_span, .scope = self.current_scope });
@@ -123,6 +137,10 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         fn bindPatternTemp(self: *Transformer, binding: NodeIndex, name_span: Span, span: Span, decl_kind: ast_mod.VariableDeclarationKind) Transformer.Error!void {
             if (!self.namespace_iife_scope.isNone() and self.current_scope == self.namespace_iife_scope and
                 self.destructuring_temp_bindings.contains(@intFromEnum(binding))) return;
+            if (self.getSymbolIdAt(binding)) |id| {
+                try self.destructuring_temp_symbol_ids.put(self.allocator, name_span.start, id);
+                return;
+            }
             const kind: @import("../semantic/symbol.zig").SymbolKind = switch (decl_kind) {
                 .@"var" => .variable_var,
                 .let => .variable_let,
@@ -901,8 +919,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const new_key = if (key_tag == .computed_property_key)
                 try self.visitNode(key_idx)
             else switch (key_node.tag) {
-                .identifier_reference, .binding_identifier, .assignment_target_identifier =>
-                    try es_helpers.makePropertyNameFromSpan(self, key_node.data.string_ref),
+                .identifier_reference, .binding_identifier, .assignment_target_identifier => try es_helpers.makePropertyNameFromSpan(self, key_node.data.string_ref),
                 else => try self.copyNodeDirect(key_idx),
             };
             const access2 = try es_helpers.makeMemberFromKey(self, ref2, new_key, key_tag, span);
