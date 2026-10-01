@@ -1566,6 +1566,95 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     }
   });
 
+  test('bundler reuses TypeScript graphs for local erasure and resyncs unsafe scopes', async () => {
+    const fixture = await createFixture({
+      'typed.ts': `
+        type Box<T> = { value: T };
+        type Value = number;
+        interface HasValue { value: number }
+        export interface PublicValue { value: number }
+        export type PublicAlias = Value;
+        const Box = 7;
+        const Value = 2;
+        class Carrier implements HasValue { value = 4; }
+        function calculate<T extends Box<Value>>(input: T, initial: Value = 3): Value {
+          const result: Value = input.value + initial + Box;
+          return (result as Value) satisfies Value;
+        }
+        console.log(calculate<{ value: Value }>({ value: 4 }), Box, Value, new Carrier().value);
+      `,
+      'typed-import.ts': `
+        import type { Item } from './types.ts';
+        const item: Item = { value: 3 };
+        console.log(item.value);
+      `,
+      'typed-eval.ts': `
+        const value: number = 5;
+        console.log(eval('value'));
+      `,
+      'typed-escaped-eval.ts': String.raw`
+        const value: number = 6;
+        console.log(\u0065val('value'), \u{65}val('value'));
+      `,
+      'types.ts': 'export type Item = { value: number };',
+    });
+    cleanup = fixture.cleanup;
+
+    async function bundle(entry: string, suffix: string) {
+      const output = join(fixture.dir, `${suffix}.mjs`);
+      const result = await runZntc(
+        [
+          '--bundle',
+          join(fixture.dir, entry),
+          '-o',
+          output,
+          '--platform=node',
+          '--format=esm',
+          '--target=esnext',
+          '--minify-identifiers',
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, `${entry}: ${result.stderr}`).toBe(0);
+      return { output, stderr: result.stderr };
+    }
+
+    const kept = await bundle('typed.ts', 'typed-kept');
+    const identity = kept.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity-prepass '));
+    expect(identity).toBeDefined();
+    expect(identity).toMatch(/clean=1(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const emitted = readFileSync(kept.output, 'utf8');
+    expect(emitted).not.toContain('type Box');
+    expect(emitted).not.toContain('type Value');
+    expect(emitted).not.toContain('satisfies');
+    const transformed = await runNode(kept.output);
+    expect(transformed.stderr).toBe('');
+    expect(transformed.stdout.trim()).toBe('14 7 2 4');
+
+    const imported = await bundle('typed-import.ts', 'typed-import-fallback');
+    expect(imported.stderr).not.toContain('symbol-identity-prepass');
+    const fallback = await runNode(imported.output);
+    expect(fallback.stderr).toBe('');
+    expect(fallback.stdout.trim()).toBe('3');
+
+    const dynamic = await bundle('typed-eval.ts', 'typed-eval-fallback');
+    expect(dynamic.stderr).not.toContain('symbol-identity-prepass');
+    const dynamicFallback = await runNode(dynamic.output);
+    expect(dynamicFallback.stderr).toBe('');
+    expect(dynamicFallback.stdout.trim()).toBe('5');
+
+    const escaped = await bundle('typed-escaped-eval.ts', 'typed-escaped-eval-fallback');
+    expect(escaped.stderr).not.toContain('symbol-identity-prepass');
+    const escapedFallback = await runNode(escaped.output);
+    expect(escapedFallback.stderr).toBe('');
+    expect(escapedFallback.stdout.trim()).toBe('6 6');
+  });
+
   test('Flow enum bindings and codegen globals keep distinct symbols when mangled', async () => {
     const fixture = await createFixture({
       'input.js': `

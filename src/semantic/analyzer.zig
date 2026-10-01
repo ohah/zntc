@@ -20,6 +20,7 @@ const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
 const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const token = @import("../lexer/token.zig");
+const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Span = token.Span;
 const scope_mod = @import("scope.zig");
 const ScopeId = scope_mod.ScopeId;
@@ -36,6 +37,18 @@ const ErrorCode = @import("../error_codes.zig").Code;
 const runtime_helper_modules = @import("../runtime_helper_modules.zig");
 
 const AllocError = std.mem.Allocator.Error;
+
+fn isDirectEvalIdentifier(ast: *const Ast, node: Node) bool {
+    const raw_name = ast.identifierNameText(node);
+    if (std.mem.eql(u8, raw_name, "eval")) return true;
+    if (std.mem.indexOfScalar(u8, raw_name, '\\') == null) return false;
+
+    // Identifier escapes are semantically decoded before name resolution. Use
+    // the same decoder here so `\\u0065val()` also marks its scope dynamic.
+    var decode_buffer: [64]u8 = undefined;
+    const decoded_name = Scanner.decodeIdentifierEscapesInto(raw_name, &decode_buffer) orelse return false;
+    return std.mem.eql(u8, decoded_name, "eval");
+}
 
 const NamespaceMemberGroup = struct {
     owner_symbol: u32,
@@ -2064,8 +2077,7 @@ pub const SemanticAnalyzer = struct {
                         if (callee_ni < self.ast.nodes.items.len) {
                             const callee_node = self.ast.nodes.items[callee_ni];
                             if (callee_node.tag == .identifier_reference) {
-                                const callee_name = self.ast.identifierNameText(callee_node);
-                                if (std.mem.eql(u8, callee_name, "eval")) {
+                                if (isDirectEvalIdentifier(self.ast, callee_node)) {
                                     self.markScopeFieldToRoot("subtree_has_direct_eval");
                                 }
                             }
