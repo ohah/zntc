@@ -510,6 +510,103 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     }
   });
 
+  test('type-erased TypeScript auto-accessors reuse the edited semantic graph', async () => {
+    const fixture = await createFixture({
+      'input.ts': `
+        class Parent { baseValue(): number { return 4; } }
+        function make(value: number) {
+          const outer = value + 1;
+          return class Generated extends Parent {
+            accessor value: number = outer;
+            static accessor count = 0;
+            get alias(): number { return this.value; }
+            set alias(value: number) { this.value = value; }
+            constructor(delta: number) {
+              super();
+              this.value += delta;
+              Generated.count++;
+            }
+            total(): number {
+              const value = 1000;
+              return this.value + super.baseValue() + value;
+            }
+            captured(): number { return eval('outer'); }
+          };
+        }
+        const Generated = make(5);
+        const first = new Generated(3);
+        const second = new Generated(0);
+        first.alias = first.alias;
+        console.log(first.total(), second.total(), Generated.count, first.captured());
+      `,
+      'reference.js': `
+        class Parent { baseValue() { return 4; } }
+        function make(value) {
+          const outer = value + 1;
+          return class Generated extends Parent {
+            #value = outer;
+            static #count = 0;
+            constructor(delta) {
+              super();
+              this.value += delta;
+              Generated.count++;
+            }
+            get value() { return this.#value; }
+            set value(value) { this.#value = value; }
+            static get count() { return Generated.#count; }
+            static set count(value) { Generated.#count = value; }
+            get alias() { return this.value; }
+            set alias(value) { this.value = value; }
+            total() {
+              const value = 1000;
+              return this.value + super.baseValue() + value;
+            }
+            captured() { return eval('outer'); }
+          };
+        }
+        const Generated = make(5);
+        const first = new Generated(3);
+        const second = new Generated(0);
+        first.alias = first.alias;
+        console.log(first.total(), second.total(), Generated.count, first.captured());
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.ts');
+    const reference = await runNode(join(fixture.dir, 'reference.js'));
+    expect(reference.stdout.trim()).toBe('1013 1010 2 6');
+
+    for (const target of ['es5', 'es2015', 'es2017', 'es2021', 'es2022', 'esnext']) {
+      const output = join(fixture.dir, `output-${target}.js`);
+      const result = await runZntc(
+        [input, '-o', output, `--target=${target}`, '--minify-identifiers'],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, `${target}: ${result.stderr}`).toBe(0);
+      expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+      const identity = result.stderr
+        .split(/\r?\n/)
+        .find((line) => line.includes('zntc: symbol-identity '));
+      expect(identity).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+      }
+      const emitted = readFileSync(output, 'utf8');
+      if (target === 'es5') {
+        expect(emitted).not.toContain('accessor value');
+        expect(emitted).not.toContain('static accessor count');
+        const transformed = await runNode(output);
+        expect(transformed.stderr, target).toBe('');
+        expect(transformed.stdout.trim(), target).toBe(reference.stdout.trim());
+      } else {
+        // Current class lowering only expands auto-accessors on the ES5 path.
+        // Keep higher-target syntax intact; Node does not parse this proposal yet.
+        expect(emitted).toMatch(/\baccessor\s+value/);
+        expect(emitted).toMatch(/\bstatic\s+accessor\s+count/);
+      }
+    }
+  });
+
   test('copied declarations retain their binding and nested scope', async () => {
     await expectNativeParity(
       `

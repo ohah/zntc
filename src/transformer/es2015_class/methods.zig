@@ -7,6 +7,7 @@ const token_mod = @import("../../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("../es_helpers.zig");
 const constructors_mod = @import("constructors.zig");
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 
 const MethodExtra = ast_mod.MethodExtra;
 
@@ -37,17 +38,28 @@ pub fn Methods(comptime Transformer: type) type {
 
         /// accessor method_definition에서 function expression 생성.
         /// ES2015 params lowering 포함 (setter destructuring/default 등).
-        fn buildAccessorFunc(self: *Transformer, member_idx: NodeIndex, source_member_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        fn buildAccessorFunc(self: *Transformer, member_idx: NodeIndex, source_member_idx: NodeIndex, span: Span, reference_scope: ScopeId) Transformer.Error!NodeIndex {
             const saved_extracted_body = self.in_extracted_fn_body;
             self.in_extracted_fn_body = false;
             defer self.in_extracted_fn_body = saved_extracted_body;
             const saved_scope = self.current_scope;
-            if (self.semantic_edit_enabled) {
-                if (self.scope_owner_map.get(@intFromEnum(source_member_idx))) |scope| self.current_scope = @enumFromInt(scope);
-            }
             defer self.current_scope = saved_scope;
             const member = self.ast.getNode(member_idx);
             const me = member.data.extra;
+            const flags = self.readU32(me, MethodExtra.flags);
+            const is_generated_setter = source_member_idx.isNone() and
+                (flags & ast_mod.MethodFlags.is_setter) != 0;
+            const generated_scope = if (self.semantic_edit_enabled and is_generated_setter)
+                try self.reserveGeneratedFunctionScope(reference_scope)
+            else
+                ScopeId.none;
+            if (self.semantic_edit_enabled) {
+                if (!source_member_idx.isNone()) {
+                    if (self.scope_owner_map.get(@intFromEnum(source_member_idx))) |scope| self.current_scope = @enumFromInt(scope);
+                } else if (!generated_scope.isNone()) {
+                    self.current_scope = generated_scope;
+                }
+            }
             const params_list_old = self.ast.functionParamsList(member);
             const params_start = params_list_old.start;
             const params_len = params_list_old.len;
@@ -79,6 +91,20 @@ pub fn Methods(comptime Transformer: type) type {
             });
             try es_helpers.trackThisArgumentsCaptureSymbols(self, func_expr, self.current_scope);
             try self.remapCopiedScopeOwner(source_member_idx, func_expr);
+            if (!generated_scope.isNone()) {
+                try self.bindReservedFunctionOwner(generated_scope, func_expr);
+                if (new_params.len != 1) std.debug.panic("generated accessor setter must have exactly one parameter", .{});
+                const parameter: NodeIndex = @enumFromInt(self.ast.extra_data.items[new_params.start]);
+                const parameter_node = self.ast.getNode(parameter);
+                if (parameter_node.tag != .binding_identifier) std.debug.panic("generated accessor setter parameter is not a binding", .{});
+                const name_span = parameter_node.data.string_ref;
+                const specs = [_]Transformer.GeneratedLocalSpec{.{
+                    .name = self.ast.getText(name_span),
+                    .kind = .parameter,
+                    .exact_binding_span = name_span,
+                }};
+                try self.trackGeneratedLocalSymbols(func_expr, generated_scope, &specs);
+            }
             return func_expr;
         }
 
@@ -380,7 +406,7 @@ pub fn Methods(comptime Transformer: type) type {
                 // mutation 이전 읽기 — 캐시 불필요, readNodeIdx 사용.
                 const key_idx = self.readNodeIdx(me, MethodExtra.key);
 
-                const func_expr = try buildAccessorFunc(self, info.member_idx, info.source_member_idx, span);
+                const func_expr = try buildAccessorFunc(self, info.member_idx, info.source_member_idx, span, reference_scope);
                 const accessor_key = try es_helpers.makePropertyName(self, if (info.is_getter) "get" else "set");
                 const prop1 = try self.ast.addNode(.{
                     .tag = .object_property,
@@ -400,7 +426,7 @@ pub fn Methods(comptime Transformer: type) type {
                         keysMatch(self, key_idx, next_key))
                     {
                         used[j] = true;
-                        const pair_func = try buildAccessorFunc(self, next.member_idx, next.source_member_idx, span);
+                        const pair_func = try buildAccessorFunc(self, next.member_idx, next.source_member_idx, span, reference_scope);
                         const pair_key = try es_helpers.makePropertyName(self, if (next.is_getter) "get" else "set");
                         paired_prop = try self.ast.addNode(.{
                             .tag = .object_property,
