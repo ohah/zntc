@@ -1442,10 +1442,20 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       `,
       'typed.mjs': `
         // @flow
-        function classify(value: number) {
-          return match (value) { 0 => 'zero', _ => value };
-        }
-        console.log(classify(3));
+        type Box<T> = { value: T };
+        interface Options { enabled: boolean }
+        opaque type Score = number;
+        const Box = 7;
+        function read<T>(value: Box<T>): T { return (value.value: T); }
+        const result: number = read({ value: Box });
+        const score: Score = 5;
+        console.log(result, (score: number));
+      `,
+      'typed-import.mjs': `
+        // @flow
+        import type { Item } from './types.mjs';
+        const item: Item = { value: 3 };
+        console.log(item.value);
       `,
       'with-import.mjs': `
         // @flow
@@ -1464,6 +1474,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         console.log(classify(0));
       `,
       'dependency.mjs': 'export const base = 5;',
+      'types.mjs': 'export type Item = { value: number };',
     });
     cleanup = fixture.cleanup;
 
@@ -1517,7 +1528,8 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       ],
       ['array-pattern.mjs', 'match-array-es5-fallback', ['--target=es5'], false, '4'],
       ['object-rest.mjs', 'match-object-rest-es5-fallback', ['--target=es5'], false, '1'],
-      ['typed.mjs', 'match-typed-fallback', [], false, '3'],
+      ['typed.mjs', 'flow-types-kept', [], true, '7 5'],
+      ['typed-import.mjs', 'flow-type-import-fallback', [], false, '3'],
       ['with-import.mjs', 'match-import-fallback', [], false, '5'],
       ['with-eval.mjs', 'match-eval-fallback', [], false, 'zero'],
       ['match.mjs', 'match-es5-fallback', ['--target=es5'], false, '4 zero outer user-m user-m2'],

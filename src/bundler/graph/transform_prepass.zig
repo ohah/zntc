@@ -15,6 +15,7 @@ const NodeTag = ast_mod.Node.Tag;
 const SemanticSymbol = @import("../../semantic/symbol.zig").Symbol;
 const SemanticSymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
 const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+const isTypeOnlyNode = @import("../../transformer/transformer/type_only.zig").isTypeOnlyNode;
 const Transformer = @import("../../transformer/transformer.zig").Transformer;
 const TransformOptions = @import("../../transformer/transformer.zig").TransformOptions;
 const builtin_plugins = @import("../../transformer/plugins/builtin.zig");
@@ -80,12 +81,12 @@ pub fn shouldRun(
     }
 }
 
-/// A Flow match expression is lowered entirely inside the parsed module body.
+/// Flow type erasure and match lowering are local to the parsed module body.
 /// For the restricted no-plugin/no-helper case, the transform editor already
 /// carries the exact binding/reference/scope graph. Keep this predicate
-/// deliberately narrow: any other Flow extension, import rewriting, JSX,
-/// runtime helper, or semantic-changing transform continues through the full
-/// resync path.
+/// deliberately narrow: runtime Flow extensions, import rewriting, JSX,
+/// runtime helpers, and semantic-changing transforms continue through the
+/// full resync path.
 const FlowMatchGeneratedGlobals = struct {
     has_match: bool = false,
     array: bool = false,
@@ -138,7 +139,19 @@ fn addFlowMatchGeneratedGlobals(
     if (globals.object) try addGeneratedGlobal(allocator, semantic, "Object");
 }
 
-fn canKeepFlowMatchSemanticGraph(
+fn isFlowTypeErasureTag(tag: NodeTag) bool {
+    const tag_name = @tagName(tag);
+    if (!std.mem.startsWith(u8, tag_name, "flow_")) return false;
+    if (isTypeOnlyNode(tag)) return true;
+    return switch (tag) {
+        .flow_as_expression,
+        .flow_type_cast_expression,
+        => true,
+        else => false,
+    };
+}
+
+fn canKeepFlowSemanticGraph(
     self: anytype,
     module: *const Module,
     options: TransformOptions,
@@ -157,13 +170,15 @@ fn canKeepFlowMatchSemanticGraph(
         options.emit_decorator_metadata or options.tla_chunk_wrapped or options.tla_export_decl_deferrable) return false;
     if (module.uses_top_level_await or module.self_uses_top_level_await) return false;
 
-    var found_flow_match = false;
+    var found_flow_transform = false;
     for (ast.nodes.items) |node| {
         const tag_name = @tagName(node.tag);
-        if (std.mem.startsWith(u8, tag_name, "flow_") and
-            !std.mem.startsWith(u8, tag_name, "flow_match_")) return false;
+        const is_flow_match_tag = std.mem.startsWith(u8, tag_name, "flow_match_");
+        if (std.mem.startsWith(u8, tag_name, "flow_") and !is_flow_match_tag and
+            !isFlowTypeErasureTag(node.tag)) return false;
+        if (isFlowTypeErasureTag(node.tag)) found_flow_transform = true;
         switch (node.tag) {
-            .flow_match_expression => found_flow_match = true,
+            .flow_match_expression => found_flow_transform = true,
             // These constructs can alter the import/export graph or create
             // dynamic-name environments independently of Flow match lowering.
             .import_declaration,
@@ -182,10 +197,10 @@ fn canKeepFlowMatchSemanticGraph(
             else => {},
         }
     }
-    return found_flow_match;
+    return found_flow_transform;
 }
 
-fn printFlowMatchPrepassExact(
+fn printKeptFlowPrepassExact(
     allocator: std.mem.Allocator,
     module: *const Module,
     root: @import("../../parser/ast.zig").NodeIndex,
@@ -290,7 +305,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     // 안전. dev mode 모듈도 동일.
     opts.emit_runtime_helper_imports = true;
 
-    const can_keep_flow_match_graph = canKeepFlowMatchSemanticGraph(self, module, opts, merged_plugins);
+    const can_keep_flow_graph = canKeepFlowSemanticGraph(self, module, opts, merged_plugins);
     const flow_match_generated_globals = flowMatchGeneratedGlobals(ast_ptr);
     const debug_symbol_coverage = symbol_coverage_env.enabled();
 
@@ -427,11 +442,11 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         .ref_deltas = prepass_ref_deltas,
     };
 
-    // Flow match lowering edits only expression-local syntax. The editor keeps
-    // its exact SymbolId/ScopeId graph; all module-graph-changing constructs
-    // were rejected by canKeepFlowMatchSemanticGraph above. Rebuild statement
+    // Flow type erasure and match lowering preserve the module graph in the
+    // restricted path. The editor keeps its exact SymbolId/ScopeId graph;
+    // module-graph-changing constructs were rejected above. Rebuild statement
     // facts lazily from the edited graph rather than reanalyzing the module.
-    if (can_keep_flow_match_graph and !transformer.runtime_helpers.hasAny()) {
+    if (can_keep_flow_graph and !transformer.runtime_helpers.hasAny()) {
         // Generated built-ins are not source references, so the transform
         // editor cannot add them to unresolved_references. If recording them
         // runs out of memory, use the normal analyzer refresh below.
@@ -456,7 +471,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             return;
         }
         if (debug_symbol_coverage) {
-            printFlowMatchPrepassExact(arena_alloc, module, root, parser_node_count, &transformer, &unresolved_nodes) catch {};
+            printKeptFlowPrepassExact(arena_alloc, module, root, parser_node_count, &transformer, &unresolved_nodes) catch {};
         }
         module.prebuilt_stmt_info = null;
         return;
