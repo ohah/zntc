@@ -354,11 +354,18 @@ fn emitFlowEnumDefaultValue(self: anytype, base_type: u32, member_name: []const 
 ///
 /// 현재 단순 구현: 내부 문을 그대로 출력하고, export 문은 Foo.name = name으로 변환.
 pub fn emitNamespaceIIFE(self: anytype, node: Node) !void {
-    return emitNamespaceIIFEInner(self, node, null);
+    return emitNamespaceIIFEInner(self, node, .root);
 }
 
-/// parent_ns: 부모 namespace 이름 (중첩 시 foo.bar 경로 생성용)
-fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !void {
+const NamespacePlacement = union(enum) {
+    root,
+    local,
+    property: []const u8,
+};
+
+/// Placement distinguishes a top-level namespace, a private nested binding,
+/// and an exported namespace stored on its parent's object.
+fn emitNamespaceIIFEInner(self: anytype, node: Node, placement: NamespacePlacement) !void {
     try self.addSourceMapping(node.span);
     const name_idx = node.data.binary.left;
     const body_idx = node.data.binary.right;
@@ -370,8 +377,8 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
         const name_text = self.ast.getText(name_node.span);
         const local_name = namespaceLocalName(self, name_idx, name_text);
 
-        // 부모가 있으면 let, 없으면 var
-        if (parent_ns != null) {
+        // A nested namespace is block-scoped whether it is private or exported.
+        if (namespacePlacementIsNested(placement)) {
             try self.write("let ");
         } else {
             try self.write("var ");
@@ -388,23 +395,8 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
             self.declared_names = outer_declared_names;
         }
         // 내부 namespace를 재귀 출력 (부모 이름 전달)
-        try emitNamespaceIIFEInner(self, body_node, name_text);
-        // 중첩 closing: (bar = foo.bar || (foo.bar = {}))
-        if (parent_ns) |pns| {
-            try self.write("})(");
-            try self.write(local_name);
-            try self.write(" = ");
-            try self.write(pns);
-            try self.writeByte('.');
-            try self.write(name_text);
-            try self.write(" || (");
-            try self.write(pns);
-            try self.writeByte('.');
-            try self.write(name_text);
-            try self.write(" = {}));");
-        } else {
-            try emitIIFEClosing(self, local_name);
-        }
+        try emitNamespaceIIFEInner(self, body_node, .{ .property = name_text });
+        try emitNamespaceIIFEClosing(self, placement, local_name, name_text);
         return;
     }
 
@@ -413,10 +405,10 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
     const name_text = self.ast.getText(name_node.span);
     const local_name = namespaceLocalName(self, name_idx, name_text);
 
-    // 부모가 있으면 let, 없으면 var (esbuild 호환)
+    // Nested namespaces use lexical bindings; top-level namespaces use var.
     // 같은 이름이 이미 선언되었으면 var/let 생략 (function + namespace 병합 등)
     if (!self.declared_names.contains(name_text) and !self.declared_names.contains(local_name)) {
-        if (parent_ns != null) {
+        if (namespacePlacementIsNested(placement)) {
             try self.write("let ");
         } else {
             try self.write("var ");
@@ -460,14 +452,14 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
     var owned_param: ?[]u8 = null;
     defer if (owned_param) |p| std.heap.page_allocator.free(p);
     var param_name = name_text;
-    if (ns_export_map.contains(name_text) or namespaceParameterReserved(self, name_text, true, name_idx)) {
+    if (ns_export_map.contains(name_text) or namespaceParameterReserved(self, name_text, true, name_idx, body_idx)) {
         var suffix: u32 = 0;
         while (true) : (suffix += 1) {
             const candidate = if (suffix == 0)
                 try std.fmt.allocPrint(std.heap.page_allocator, "_{s}", .{name_text})
             else
                 try std.fmt.allocPrint(std.heap.page_allocator, "_{s}{d}", .{ name_text, suffix });
-            if (!namespaceParameterReserved(self, candidate, false, name_idx)) {
+            if (!namespaceParameterReserved(self, candidate, false, name_idx, body_idx)) {
                 owned_param = candidate;
                 param_name = candidate;
                 break;
@@ -524,7 +516,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
                         const decl_node = self.ast.getNode(decl_idx);
                         // export namespace bar {} → 중첩 namespace (부모 이름 전달)
                         if (decl_node.tag == .ts_module_declaration) {
-                            try emitNamespaceIIFEInner(self, decl_node, param_name);
+                            try emitNamespaceIIFEInner(self, decl_node, .{ .property = param_name });
                         } else if (decl_node.tag == .variable_declaration) {
                             // 단순 바인딩(identifier)은 직접 프로퍼티 할당: ns.a=1;
                             // destructuring(array_pattern/object_pattern)이 섞이면 선언자마다 따로 낸다.
@@ -551,28 +543,44 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, parent_ns: ?[]const u8) !vo
                     try self.writeByte(';');
                 },
                 .ts_module_declaration => {
-                    try emitNamespaceIIFEInner(self, stmt_node, param_name);
+                    try emitNamespaceIIFEInner(self, stmt_node, .local);
                 },
                 else => try self.emitNode(@enumFromInt(raw_idx)),
             }
         }
     }
 
-    // 부모가 있으면 중첩 closing: (name = parent.name || (parent.name = {}))
-    if (parent_ns) |pns| {
-        try self.write("})(");
-        try self.write(local_name);
-        try self.write(" = ");
-        try self.write(pns);
-        try self.writeByte('.');
-        try self.write(name_text);
-        try self.write(" || (");
-        try self.write(pns);
-        try self.writeByte('.');
-        try self.write(name_text);
-        try self.write(" = {}));");
-    } else {
-        try emitIIFEClosing(self, local_name);
+    try emitNamespaceIIFEClosing(self, placement, local_name, name_text);
+}
+
+fn namespacePlacementIsNested(placement: NamespacePlacement) bool {
+    return switch (placement) {
+        .root => false,
+        .local, .property => true,
+    };
+}
+
+fn emitNamespaceIIFEClosing(
+    self: anytype,
+    placement: NamespacePlacement,
+    local_name: []const u8,
+    name_text: []const u8,
+) !void {
+    switch (placement) {
+        .root, .local => try emitIIFEClosing(self, local_name),
+        .property => |parent_name| {
+            try self.write("})(");
+            try self.write(local_name);
+            try self.write(" = ");
+            try self.write(parent_name);
+            try self.writeByte('.');
+            try self.write(name_text);
+            try self.write(" || (");
+            try self.write(parent_name);
+            try self.writeByte('.');
+            try self.write(name_text);
+            try self.write(" = {}));");
+        },
     }
 }
 
@@ -827,7 +835,13 @@ fn isDestructuringTempBinding(self: anytype, idx: NodeIndex) bool {
     return false;
 }
 
-fn namespaceParameterReserved(self: anytype, candidate: []const u8, original: bool, namespace_name_idx: NodeIndex) bool {
+fn namespaceParameterReserved(
+    self: anytype,
+    candidate: []const u8,
+    original: bool,
+    namespace_name_idx: NodeIndex,
+    namespace_body_idx: NodeIndex,
+) bool {
     var frame = self.ns_frame;
     while (frame) |active| : (frame = active.parent) {
         if (std.mem.eql(u8, active.prefix, candidate)) return true;
@@ -851,12 +865,49 @@ fn namespaceParameterReserved(self: anytype, candidate: []const u8, original: bo
         };
         if (!relevant) continue;
         if (!std.mem.eql(u8, self.ast.identifierNameText(node), candidate)) continue;
-        // A namespace declaration's own name is the outer object. The IIFE
-        // parameter may reuse it; nested source bindings may not.
-        if (original and node.tag == .binding_identifier and ni == @intFromEnum(namespace_name_idx)) {
-            continue;
+        if (original and node.tag == .binding_identifier) {
+            const binding_idx: NodeIndex = @enumFromInt(ni);
+            if (binding_idx == namespace_name_idx) continue;
+            // Separate merged declarations get separate IIFEs, so their
+            // namespace names do not share this parameter's lexical scope.
+            // Direct nested declarations do share the body scope and must
+            // still reserve the spelling.
+            if (isNamespaceDeclarationName(self, binding_idx) and
+                !isDirectNamespaceNameInBody(self, namespace_body_idx, binding_idx))
+            {
+                continue;
+            }
         }
         return true;
+    }
+    return false;
+}
+
+fn isNamespaceDeclarationName(self: anytype, name_idx: NodeIndex) bool {
+    for (self.ast.nodes.items) |owner| {
+        if (owner.tag == .ts_module_declaration and owner.data.binary.left == name_idx) return true;
+    }
+    return false;
+}
+
+fn isDirectNamespaceNameInBody(self: anytype, body_idx: NodeIndex, name_idx: NodeIndex) bool {
+    if (body_idx.isNone()) return false;
+    const body = self.ast.getNode(body_idx);
+    if (body.tag == .ts_module_declaration) return body.data.binary.left == name_idx;
+    if (body.tag != .block_statement) return false;
+
+    const list = body.data.list;
+    const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+    for (indices) |raw_idx| {
+        const stmt = self.ast.getNode(@enumFromInt(raw_idx));
+        const decl_idx: NodeIndex = if (stmt.tag == .export_named_declaration) blk: {
+            const extra_idx = stmt.data.extra;
+            if (extra_idx >= self.ast.extra_data.items.len) continue;
+            break :blk @enumFromInt(self.ast.extra_data.items[extra_idx]);
+        } else @enumFromInt(raw_idx);
+        if (decl_idx.isNone()) continue;
+        const decl = self.ast.getNode(decl_idx);
+        if (decl.tag == .ts_module_declaration and decl.data.binary.left == name_idx) return true;
     }
     return false;
 }

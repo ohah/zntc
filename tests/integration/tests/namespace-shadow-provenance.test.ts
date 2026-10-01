@@ -40,6 +40,18 @@ console.log(JSON.stringify([Outer.read(), Outer.bump(), Outer.shorthand(), Outer
 namespace N { namespace N { export const value = 1; } export const outer = 2; }
 console.log(JSON.stringify(N.outer));
 `,
+  'unexported nested namespace stays private to its parent': `
+namespace A {
+  namespace B { export const value = 1; }
+  console.log(JSON.stringify([B.value, (A as any).B]));
+}
+`,
+  'unexported dotted namespace stays private to its parent': `
+namespace A {
+  namespace B.C { export const value = 2; }
+  console.log(JSON.stringify([B.C.value, (A as any).B]));
+}
+`,
   'exported enum stays reachable as namespace property': `
 namespace N {
   export enum E { A = 1 }
