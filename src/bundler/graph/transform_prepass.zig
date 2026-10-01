@@ -82,10 +82,62 @@ pub fn shouldRun(
 
 /// A Flow match expression is lowered entirely inside the parsed module body.
 /// For the restricted no-plugin/no-helper case, the transform editor already
-/// carries the exact binding/reference/scope graph and no module metadata needs
-/// to be rescanned. Keep this predicate deliberately narrow: any other Flow
-/// extension, import rewriting, JSX, runtime helper, or semantic-changing
-/// transform continues through the full resync path.
+/// carries the exact binding/reference/scope graph. Keep this predicate
+/// deliberately narrow: any other Flow extension, import rewriting, JSX,
+/// runtime helper, or semantic-changing transform continues through the full
+/// resync path.
+const FlowMatchGeneratedGlobals = struct {
+    has_match: bool = false,
+    array: bool = false,
+    object: bool = false,
+};
+
+fn flowMatchGeneratedGlobals(ast: *const ast_mod.Ast) FlowMatchGeneratedGlobals {
+    var globals: FlowMatchGeneratedGlobals = .{};
+    for (ast.nodes.items) |node| {
+        switch (node.tag) {
+            .flow_match_expression => globals.has_match = true,
+            .flow_match_array_pattern => globals.array = true,
+            .flow_match_object_pattern => {
+                const list = node.data.list;
+                for (0..list.len) |i| {
+                    const child_raw = ast.extra_data.items[list.start + i];
+                    const child = ast.getNode(@enumFromInt(child_raw));
+                    if (child.tag == .flow_match_rest and child.data.none == 1) {
+                        globals.object = true;
+                        break;
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+    return globals;
+}
+
+fn addGeneratedGlobal(
+    allocator: std.mem.Allocator,
+    semantic: *ModuleSemanticData,
+    name: []const u8,
+) !void {
+    if (semantic.unresolved_references.contains(name)) return;
+    const stable_name = try allocator.dupe(u8, name);
+    errdefer allocator.free(stable_name);
+    try semantic.unresolved_references.put(allocator, stable_name, {});
+}
+
+/// Flow match array/object-rest lowering emits these free references without
+/// parser nodes. The full analyzer normally discovers them after lowering;
+/// when keeping the editor graph, preserve the same linker reservation facts.
+fn addFlowMatchGeneratedGlobals(
+    allocator: std.mem.Allocator,
+    semantic: *ModuleSemanticData,
+    globals: FlowMatchGeneratedGlobals,
+) !void {
+    if (globals.array) try addGeneratedGlobal(allocator, semantic, "Array");
+    if (globals.object) try addGeneratedGlobal(allocator, semantic, "Object");
+}
+
 fn canKeepFlowMatchSemanticGraph(
     self: anytype,
     module: *const Module,
@@ -112,12 +164,6 @@ fn canKeepFlowMatchSemanticGraph(
             !std.mem.startsWith(u8, tag_name, "flow_match_")) return false;
         switch (node.tag) {
             .flow_match_expression => found_flow_match = true,
-            // Array/rest patterns synthesize unbound Array.isArray or
-            // Object.assign references. Those names must be added to module
-            // unresolved metadata before scope hoisting, so keep the current
-            // post-transform analysis fallback for those cases.
-            .flow_match_array_pattern => return false,
-            .flow_match_rest => if (node.data.none == 1) return false,
             // These constructs can alter the import/export graph or create
             // dynamic-name environments independently of Flow match lowering.
             .import_declaration,
@@ -245,9 +291,11 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     opts.emit_runtime_helper_imports = true;
 
     const can_keep_flow_match_graph = canKeepFlowMatchSemanticGraph(self, module, opts, merged_plugins);
+    const flow_match_generated_globals = flowMatchGeneratedGlobals(ast_ptr);
     const debug_symbol_coverage = symbol_coverage_env.enabled();
 
     var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
+    transformer.record_explicit_global_references = flow_match_generated_globals.has_match;
 
     if (module.semantic) |*sem| {
         transformer.initSymbolIds(sem.symbol_ids) catch return;
@@ -356,10 +404,24 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     const owned_symbol_ids = transformer.symbol_ids.toOwnedSlice(arena_alloc) catch &[_]?u32{};
     // #2869 helper marker sidecar — sorted u32 slice. resync analyzer 가 binary search.
     const owned_helper_ref_nodes = transformer.ownedHelperRefNodes(arena_alloc) catch &[_]u32{};
+    const owned_explicit_global_ref_nodes = transformer.ownedExplicitGlobalRefNodes(arena_alloc) catch {
+        self.addDiag(
+            .parse_error,
+            .@"error",
+            module.path,
+            Span.EMPTY,
+            .parse,
+            "Could not preserve generated global references",
+            "The transformed AST's explicit global references could not be tracked safely.",
+        );
+        module.state = .ready;
+        return;
+    };
     module.transform_cache = .{
         .runtime_helpers = transformer.runtime_helpers,
         .symbol_ids = owned_symbol_ids,
         .helper_ref_nodes = owned_helper_ref_nodes,
+        .explicit_global_ref_nodes = owned_explicit_global_ref_nodes,
         .destructuring_temp_bindings = transformer.destructuring_temp_bindings,
         .preserved_class_name_nodes = owned_preserved_class_names,
         .ref_deltas = prepass_ref_deltas,
@@ -370,6 +432,29 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     // were rejected by canKeepFlowMatchSemanticGraph above. Rebuild statement
     // facts lazily from the edited graph rather than reanalyzing the module.
     if (can_keep_flow_match_graph and !transformer.runtime_helpers.hasAny()) {
+        // Generated built-ins are not source references, so the transform
+        // editor cannot add them to unresolved_references. If recording them
+        // runs out of memory, use the normal analyzer refresh below.
+        addFlowMatchGeneratedGlobals(arena_alloc, &module.semantic.?, flow_match_generated_globals) catch {};
+        const generated_globals_recorded =
+            (!flow_match_generated_globals.array or module.semantic.?.unresolved_references.contains("Array")) and
+            (!flow_match_generated_globals.object or module.semantic.?.unresolved_references.contains("Object"));
+        if (!generated_globals_recorded) {
+            resyncAfterAstMutation(self, module, arena_alloc, null) catch {
+                self.addDiag(
+                    .parse_error,
+                    .@"error",
+                    module.path,
+                    Span.EMPTY,
+                    .parse,
+                    "Post-transform analysis refresh failed",
+                    "The transformed AST could not be re-analyzed safely.",
+                );
+                module.state = .ready;
+                return;
+            };
+            return;
+        }
         if (debug_symbol_coverage) {
             printFlowMatchPrepassExact(arena_alloc, module, root, parser_node_count, &transformer, &unresolved_nodes) catch {};
         }
@@ -569,6 +654,7 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
         // 가 아닌 helper_scope_map 으로 격리한다.
         if (module.transform_cache) |cache| {
             analyzer.helper_ref_nodes = cache.helper_ref_nodes;
+            analyzer.explicit_global_ref_nodes = cache.explicit_global_ref_nodes;
         }
         try analyzer.analyze();
 

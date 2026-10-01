@@ -193,6 +193,9 @@ pub const SemanticAnalyzer = struct {
     /// helper-aware path 비활성 — 단일 파일 transpile 등에서는 helper marker 자체가
     /// 없으므로 기존 scope-walk 동작.
     helper_ref_nodes: []const u32 = &.{},
+    /// Transform-generated globals that must remain external across graph resync.
+    /// Sorted NodeIndex sidecar produced by the bundler transform prepass.
+    explicit_global_ref_nodes: []const u32 = &.{},
 
     /// #2869 helper import_specifier 의 import_binding symbol 을 user scope_maps[0]
     /// 와 격리하는 별도 풀. key = helper local name (e.g. `__extends`, `$eX`), value
@@ -1146,6 +1149,14 @@ pub const SemanticAnalyzer = struct {
         if (self.type_context_depth > 0) effective.type_context = true;
         if (self.value_as_type_depth > 0) effective.value_as_type = true;
 
+        // Transform producers explicitly marked this node as an external global.
+        // Keep it unresolved instead of rebinding it to a same-named user symbol
+        // during the graph's post-transform semantic refresh.
+        if (self.isExplicitGlobalRefNode(node_idx)) {
+            self.recordUnresolvedReference(name, node_idx);
+            return;
+        }
+
         // #2869 transformer 가 emit 한 runtime helper 식별자는 user scope chain 이 아닌
         // helper_scope_map 에서만 lookup. 사용자가 helper 와 동일 이름 local 을 선언해도
         // helper call site 가 user binding 으로 잘못 resolve 되지 않는다.
@@ -1272,7 +1283,11 @@ pub const SemanticAnalyzer = struct {
             scope_id = self.scopes.items[idx].parent;
         }
 
-        // 스코프 체인을 전부 올라갔는데 선언을 찾지 못함 → 미해결 참조 (글로벌).
+        // 스코프 체인을 전부 올라가도 선언을 찾지 못하면 외부 참조로 남긴다.
+        self.recordUnresolvedReference(name, node_idx);
+    }
+
+    fn recordUnresolvedReference(self: *SemanticAnalyzer, name: []const u8, node_idx: NodeIndex) void {
         // 번들러 linker가 이 이름들을 예약하여 scope hoisting 시 shadowing을 방지.
         // #4221: 이름이 string_table 슬라이스(합성 노드)일 수 있다 — emitter 소비
         // 시점까지 string_table 이 realloc 되면 dangling (#3100 클래스). declare
@@ -4367,6 +4382,19 @@ pub const SemanticAnalyzer = struct {
                 else => {},
             }
         }
+    }
+
+    /// Transform prepass sidecar marks references that must stay external.
+    inline fn isExplicitGlobalRefNode(self: *const SemanticAnalyzer, node_idx: NodeIndex) bool {
+        const sorted = self.explicit_global_ref_nodes;
+        if (sorted.len == 0) return false;
+        const key: u32 = @intFromEnum(node_idx);
+        const Ctx = struct {
+            fn order(ctx: u32, item: u32) std.math.Order {
+                return std.math.order(ctx, item);
+            }
+        };
+        return std.sort.binarySearch(u32, sorted, key, Ctx.order) != null;
     }
 
     /// #2869 sorted u32 slice (transformer pre-pass marker) 에 대해 binary search.

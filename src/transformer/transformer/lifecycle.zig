@@ -230,3 +230,26 @@ pub fn ownedHelperRefNodes(self: *Transformer, alloc: std.mem.Allocator) Error![
     std.mem.sort(u32, out, {}, std.sort.asc(u32));
     return out;
 }
+
+/// Copy only live explicit-global reference nodes with no attached user symbol.
+/// Semantic resync consumes this sorted sidecar to keep generated globals out of
+/// same-named source scopes. `makeRootScopeRef` nodes that were attached to a
+/// source binding remain ordinary references.
+pub fn ownedExplicitGlobalRefNodes(self: *Transformer, alloc: std.mem.Allocator) Error![]u32 {
+    if (self.explicit_global_reference_nodes.count() == 0) return &.{};
+
+    var nodes: std.ArrayListUnmanaged(u32) = .empty;
+    defer nodes.deinit(alloc);
+    var it = self.explicit_global_reference_nodes.keyIterator();
+    while (it.next()) |key| {
+        const raw = key.*;
+        if (raw >= self.ast.nodes.items.len) continue;
+        const node = self.ast.nodes.items[raw];
+        if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
+        if (raw < self.symbol_ids.items.len and self.symbol_ids.items[raw] != null) continue;
+        try nodes.append(alloc, raw);
+    }
+    const out = try nodes.toOwnedSlice(alloc);
+    std.mem.sort(u32, out, {}, std.sort.asc(u32));
+    return out;
+}

@@ -178,6 +178,9 @@ pub const TransformCache = struct {
     /// (sorted, ascending). resync 의 SemanticAnalyzer 가 binary search 로 helper-aware
     /// binding 분기에 사용. 비어있으면 helper-aware path 비활성 (기존 동작 유지).
     helper_ref_nodes: []const u32 = &.{},
+    /// Generated references marked as explicit globals (sorted, ascending).
+    /// Resync must keep them external even when a source scope declares the same name.
+    explicit_global_ref_nodes: []const u32 = &.{},
     /// Destructuring-produced local temp binding nodes (exact NodeIndex).
     destructuring_temp_bindings: std.AutoHashMapUnmanaged(u32, void) = .empty,
     /// Exact emitted binding nodes whose source SymbolId preserved a class
