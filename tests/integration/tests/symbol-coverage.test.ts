@@ -359,6 +359,12 @@ describe('symbol identity coverage gate (#4819)', () => {
             );
           }
           const identity = identityLines[0];
+          const clean = identity.match(/(?:^| )clean=(\d+)(?: |$)/)?.[1];
+          if (clean !== '1') {
+            problems.push(
+              `${name} ${target.name}: exact aggregate clean=${clean ?? 'missing'}: ${identity}`,
+            );
+          }
           const generatedBindingsMatch = identity.match(/generated_bindings=(\d+)/);
           const generatedReferencesMatch = identity.match(/generated_references=(\d+)/);
           if (!generatedBindingsMatch || !generatedReferencesMatch) {
