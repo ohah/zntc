@@ -2344,6 +2344,21 @@ pub fn addSyntheticRefInScope(self: *Transformer, node: NodeIndex, id: ?SymbolId
     try setSymbolId(self, node, symbol);
 }
 
+/// Drop a parser reference that was resolved before a lowering assigned its
+/// generated identifier a distinct name and SymbolId.
+pub fn removeSemanticReference(self: *Transformer, node: NodeIndex) Transformer.Error!void {
+    if (!self.semantic_edit_enabled or node.isNone()) return;
+    const editor = try editorFor(self);
+    const existing = editor.referenceForNode(node) catch |err| return editError(err);
+    if (existing != null) {
+        try removeReference(self, editor, node);
+        return;
+    }
+    const raw = @intFromEnum(node);
+    if (raw < editor.symbol_ids.items.len) editor.symbol_ids.items[raw] = null;
+    if (raw < self.symbol_ids.items.len) self.symbol_ids.items[raw] = null;
+}
+
 fn removeReference(self: *Transformer, editor: *SemanticEditor, node: NodeIndex) Transformer.Error!void {
     editor.removeReference(node) catch |err| return editError(err);
     const raw = @intFromEnum(node);

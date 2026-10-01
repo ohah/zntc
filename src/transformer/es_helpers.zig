@@ -571,6 +571,31 @@ pub fn resolveSyntheticName(self: anytype, name: []const u8) ![]const u8 {
     return resolved;
 }
 
+/// Resolve a codegen-created binding whose readable base name is not one of the
+/// underscore-prefixed transformer temps. Check the original source as well as
+/// other generated names so a parser-lowered Flow component helper cannot
+/// collide with a user binding of the same spelling.
+pub fn resolveGeneratedName(self: anytype, name: []const u8) ![]const u8 {
+    if (self.synthetic_names.get(name)) |r| return r;
+    if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+    const arena = self.name_arena.?.allocator();
+    // `name` 은 string_table 조각일 수 있다 — 다음 addString 전에 고정한다.
+    const key = try arena.dupe(u8, name);
+    var resolved: []const u8 = key;
+    if (nameAppearsInSource(self, key) or self.synthetic_taken.contains(key)) {
+        var n: u32 = 2;
+        while (true) : (n += 1) {
+            const cand = try std.fmt.allocPrint(arena, "{s}{d}", .{ key, n });
+            if (nameAppearsInSource(self, cand) or self.synthetic_taken.contains(cand) or self.synthetic_names.contains(cand)) continue;
+            resolved = cand;
+            break;
+        }
+    }
+    try self.synthetic_names.put(self.allocator, key, resolved);
+    try self.synthetic_taken.put(self.allocator, resolved, {});
+    return resolved;
+}
+
 /// 사용자 코드가 `name` 을 변수로 쓰는지 — 선언한 바인딩(분석기 심볼)이나 선언 없이 참조한 전역.
 /// 속성 이름(`obj._state`)·주석은 가리지 않으므로 세지 않는다. 분석 결과가 없는 경로(심볼 없음)는
 /// 소스 텍스트로 보수적으로 판정한다.
