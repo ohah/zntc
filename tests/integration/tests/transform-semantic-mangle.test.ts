@@ -346,6 +346,81 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stdout.trim()).toBe(reference.stdout.trim());
   });
 
+  test('type-erased TypeScript static blocks reuse the edited semantic graph', async () => {
+    const fixture = await createFixture({
+      'input.ts': `
+        function run(value: number): number {
+          const outer = value + 1;
+          class Box {
+            static {
+              const outer = 99;
+              Box.result = outer + value;
+            }
+          }
+          return Box.result + outer;
+        }
+        class Parent { static base = 3; }
+        function make(value: number) {
+          return class Generated extends Parent {
+            static {
+              this.value = eval('value');
+              Generated.next = this.value + super.base;
+            }
+          };
+        }
+        const Generated = make(11);
+        console.log(run(4), Generated.next);
+      `,
+      'reference.js': `
+        function run(value) {
+          const outer = value + 1;
+          class Box {
+            static {
+              const outer = 99;
+              Box.result = outer + value;
+            }
+          }
+          return Box.result + outer;
+        }
+        class Parent { static base = 3; }
+        function make(value) {
+          return class Generated extends Parent {
+            static {
+              this.value = eval('value');
+              Generated.next = this.value + super.base;
+            }
+          };
+        }
+        const Generated = make(11);
+        console.log(run(4), Generated.next);
+      `,
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.ts');
+    const reference = await runNode(join(fixture.dir, 'reference.js'));
+    expect(reference.stdout.trim()).toBe('108 14');
+
+    for (const target of ['es5', 'es2015', 'es2017', 'es2021', 'es2022', 'esnext']) {
+      const output = join(fixture.dir, `output-${target}.js`);
+      const result = await runZntc(
+        [input, '-o', output, `--target=${target}`, '--minify-identifiers'],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, `${target}: ${result.stderr}`).toBe(0);
+      expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+      const identity = result.stderr
+        .split(/\r?\n/)
+        .find((line) => line.includes('zntc: symbol-identity '));
+      expect(identity).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+      }
+      const transformed = await runNode(output);
+      expect(transformed.stderr, target).toBe('');
+      expect(transformed.stdout.trim(), target).toBe(reference.stdout.trim());
+    }
+  });
+
   test('copied declarations retain their binding and nested scope', async () => {
     await expectNativeParity(
       `

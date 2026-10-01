@@ -162,7 +162,6 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             .private_identifier,
             .private_field_expression,
             .decorator,
-            .static_block,
             .accessor_property,
             .ts_enum_declaration,
             .ts_module_declaration,
@@ -1977,7 +1976,6 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
         "enum Color { Red }",
         "namespace N { export const value = 1 }",
         "class Box { #value = 1 }",
-        "class Box { static { this.value = 1 } }",
         "class Box { accessor value = 1 }",
         "using resource = openResource();",
         "const view = <div />;",
@@ -2000,6 +1998,16 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     _ = try class_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), class_parser.errors.items.len);
     try std.testing.expect(canMangleWithTransformSemantic(minify, &class_parser));
+
+    var static_block_scanner = try Scanner.init(
+        allocator,
+        "function run(value: number) { class Box { static { const local = 99; Box.result = local + value; } } return Box.result; }",
+    );
+    var static_block_parser = Parser.init(allocator, &static_block_scanner);
+    static_block_parser.configureFromExtension(".ts");
+    _ = try static_block_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), static_block_parser.errors.items.len);
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &static_block_parser));
 }
 
 test "#4819 type-erased Flow reuses transform semantic graph only without runtime lowering" {
