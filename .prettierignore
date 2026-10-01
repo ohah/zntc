@@ -1,2 +1,3 @@
 compat-table-report.json
 tests/integration/tests/fixtures/
+tests/integration/fixtures/downlevel-oracle/flow-match-symbols.flow.mjs
