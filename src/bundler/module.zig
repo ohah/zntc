@@ -400,6 +400,11 @@ pub const Module = struct {
     /// finalize 내 소비). build-scope 라 store round-trip 전 반드시 clear (cross-build dangling 방지).
     /// 맵 backing 은 `parse_arena` 소유 — 개별 `deinit` 금지 (`arena.deinit` 가 일괄 해제, #1287).
     pending_renames: RenameTable = .{},
+    /// `pending_renames` 가 비어도 semantic resync 가 이미 수행됐는지 기록한다.
+    /// 첫 resync 뒤 carry 대상이 없으면 map count 로는 다음 pass 와 구분할 수 없어,
+    /// link 시점 rename_table 의 구 stale SymbolID 를 다시 fallback 으로 읽게 된다.
+    /// applyPendingRenames 는 성공/빈 결과 모두 소비한 뒤 이 값을 reset 한다.
+    pending_rename_capture_seen: bool = false,
 
     /// 내가 import하는 모듈들 (순방향)
     dependencies: std.ArrayList(ModuleIndex),
