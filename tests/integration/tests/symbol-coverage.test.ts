@@ -145,6 +145,31 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('ES5 namespace class export와 decorator binding도 exact SymbolId를 유지한다', () => {
+    const file = join(FIXTURE_DIR, '4819-namespace-class-export.ts');
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-namespace-class-export-'));
+    try {
+      for (const target of TARGETS) {
+        const { stderr, exitCode } = runCoverage(file, target, outDir);
+        expect(exitCode, `${target.name}: ${stderr}`).toBe(0);
+        const identity = stderr.split('\n').find((line) => line.includes('zntc: symbol-identity '));
+        expect(identity, `${target.name}: missing exact report`).toBeDefined();
+        expect(Number(identity?.match(/namespace_iife_params=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${target.name}: ${counter}: ${identity}`,
+          ).toBe(0);
+        }
+        const actual = spawnSync('node', [join(outDir, 'out.js')], { encoding: 'utf8' });
+        expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout).toBe('[false,true,false,true]\n');
+      }
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
   test('가상 enum IIFE 매개변수와 initializer 참조가 정확한 SymbolId와 ScopeId를 가진다', () => {
     const file = join(FIXTURE_DIR, '4819-enum-iife-params.ts');
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-enum-param-'));
