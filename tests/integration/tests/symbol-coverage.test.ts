@@ -13,6 +13,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
+import ts from 'typescript';
 import { ZNTC_BIN } from './helpers';
 
 const FIXTURE_DIR = join(import.meta.dir, '../fixtures/downlevel-oracle');
@@ -166,6 +167,58 @@ describe('symbol identity coverage gate (#4819)', () => {
       }
     } finally {
       rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  test('TS enum identifier minify reuses exact transform symbols without changing runtime behavior', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-enum-symbol-mangle-'));
+    const input = join(dir, 'input.ts');
+    const referencePath = join(dir, 'reference.cjs');
+    const source = [
+      'const Same = 100;',
+      'const _Self1 = 19;',
+      'const _Self = 91;',
+      'const A = 100;',
+      'enum Escaped { "\\u0041" = 1, B = A + 2 }',
+      'enum Self { "\\u0053elf" = 1, Same = Self, Next = Same + _Self1, NextSelf = Self + 2, Qualified = (Self).Self + 3, Direct = Self.Self + 4, Computed = Self["Self"] + 5, Shadow = (() => { const Same = 9; return Same; })() }',
+      'function read(Self: number) { return Self + 1; }',
+      'console.log(Self.Self, Self.Same, Self.Next, Self.NextSelf, Self.Qualified, Self.Direct, Self.Computed, Self.Shadow, Same, _Self1, read(40), Escaped.B, A, _Self);',
+    ].join('\n');
+    writeFileSync(input, source);
+    const referenceJs = ts.transpileModule(source, {
+      compilerOptions: { target: ts.ScriptTarget.ES2015, module: ts.ModuleKind.CommonJS },
+    }).outputText;
+    writeFileSync(referencePath, referenceJs);
+    try {
+      const reference = spawnSync('node', [referencePath], { encoding: 'utf8' });
+      expect(reference.status, reference.stderr).toBe(0);
+      expect(reference.stdout).toBe('1 1 20 3 NaN 5 NaN 9 100 19 41 3 100 91\n');
+      for (const target of [TARGETS[0], TARGETS[4]]) {
+        for (const minify of [['--minify-identifiers'], ['--minify']]) {
+          const label = `${target.name} ${minify[0]}`;
+          const output = join(dir, `${target.name}-${minify[0]}.js`);
+          const proc = spawnSync(ZNTC_BIN, [input, target.arg, ...minify, '-o', output], {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          });
+          expect(proc.status, `${label}: ${proc.stderr}`).toBe(0);
+          const identity = proc.stderr
+            .split('\n')
+            .find((line) => line.includes('zntc: symbol-identity '));
+          expect(identity, `${label}: missing exact identity report`).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${label}: ${counter}: ${identity}`,
+            ).toBe(0);
+          }
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, `${label}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout).toBe(reference.stdout);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

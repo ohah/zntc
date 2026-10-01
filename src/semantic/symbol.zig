@@ -221,6 +221,9 @@ pub const SyntheticKind = enum(u8) {
     enum_iife_parameter,
     /// 단일 파일 출력에서 AST 밖에 prepend되는 런타임 helper 선언.
     runtime_helper_preamble,
+    /// TypeScript enum member names referenced bare from a later initializer.
+    /// These are semantic property references, not lexical bindings.
+    enum_iife_member,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)
@@ -298,6 +301,10 @@ pub const Symbol = struct {
     /// #1338 Phase 4e-2c: HashMap 사이드카 대체 — ArrayList 수명과 일치시켜
     /// incremental rebuild 시 arena 불일치 방지.
     synthetic_name: []const u8 = "",
+
+    /// Owner symbol for virtual references attached to an emitted binding,
+    /// such as an enum member property owned by its generated IIFE parameter.
+    synthetic_owner_id: ?SymbolId = null,
 
     /// 이 심볼의 이름을 반환. 합성은 `synthetic_name`, 정규는 source Span에서.
     pub fn nameText(self: *const Symbol, source: []const u8) []const u8 {

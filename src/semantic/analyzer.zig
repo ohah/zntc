@@ -134,6 +134,9 @@ pub const SemanticAnalyzer = struct {
     /// immutable self binding. Anchor the latter to the class node itself.
     class_self_symbol_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     current_visit_node: NodeIndex = .none,
+    /// Identifier being visited as the object of a static member expression in
+    /// an enum initializer. Parentheses and computed access stop recognition.
+    enum_object_base_node: NodeIndex = .none,
     /// Runtime TypeScript namespace bodies execute inside their emitted IIFE.
     /// Their `export` declarations describe namespace properties, not module exports.
     namespace_depth: u32 = 0,
@@ -156,6 +159,11 @@ pub const SemanticAnalyzer = struct {
     enum_iife_param_names: std.ArrayListUnmanaged([]const u8) = .empty,
     /// Stable copies stored on virtual enum parameter symbols.
     enum_iife_param_stable_names: std.ArrayListUnmanaged([]const u8) = .empty,
+    /// Stable decoded names stored on virtual enum-member symbols.
+    enum_member_stable_names: std.ArrayList([]u8) = .empty,
+    /// Bare references to preceding members inside an enum initializer resolve
+    /// to virtual property symbols owned by the generated enum IIFE scope.
+    enum_member_contexts: std.ArrayList(EnumMemberContext) = .empty,
 
     /// 미해결 참조 (unresolved references). resolveIdentifier에서 스코프 체인을 다 올라가도
     /// 선언을 찾지 못한 이름. 번들러 linker가 scope hoisting 시 이 이름들을 예약하여
@@ -271,6 +279,29 @@ pub const SemanticAnalyzer = struct {
         is_loop: bool,
     };
 
+    const EnumMemberBinding = struct {
+        name_span: Span,
+        name: []const u8,
+        symbol_id: ?u32 = null,
+    };
+
+    const EnumMemberName = struct {
+        text: []const u8,
+        owned: ?[]u8 = null,
+    };
+
+    const EnumIifeParameter = struct {
+        name: []const u8,
+        symbol_id: u32,
+    };
+
+    const EnumMemberContext = struct {
+        scope_id: ScopeId,
+        parameter_symbol_id: ?u32 = null,
+        members: std.StringHashMapUnmanaged(EnumMemberBinding) = .empty,
+        owned_member_names: std.ArrayList([]u8) = .empty,
+    };
+
     pub fn init(allocator: std.mem.Allocator, ast: *Ast) SemanticAnalyzer {
         return .{
             .ast = ast,
@@ -344,6 +375,14 @@ pub const SemanticAnalyzer = struct {
         self.enum_iife_param_names.deinit(self.allocator);
         for (self.enum_iife_param_stable_names.items) |name| self.allocator.free(name);
         self.enum_iife_param_stable_names.deinit(self.allocator);
+        for (self.enum_member_stable_names.items) |name| self.allocator.free(name);
+        self.enum_member_stable_names.deinit(self.allocator);
+        for (self.enum_member_contexts.items) |*context| {
+            context.members.deinit(self.allocator);
+            for (context.owned_member_names.items) |name| self.allocator.free(name);
+            context.owned_member_names.deinit(self.allocator);
+        }
+        self.enum_member_contexts.deinit(self.allocator);
         self.exported_names.deinit(self.allocator);
         // #4221: 키는 전부 dupe 사본 (소유) — 함께 해제.
         var unres_it = self.unresolved_references.keyIterator();
@@ -642,7 +681,7 @@ pub const SemanticAnalyzer = struct {
 
     /// private_field_expression 노드에서 private name을 추출하고 참조를 기록한다.
     /// read / write (assignment LHS, update_expression) 진입 모두에서 동일하게 사용.
-    fn visitPrivateFieldExpr(self: *SemanticAnalyzer, extra: u32) AllocError!void {
+    fn visitPrivateFieldExpr(self: *SemanticAnalyzer, extra: u32, recognize_enum_object: bool) AllocError!void {
         if (self.ast.hasExtra(extra, 1)) {
             const prop_idx = self.ast.readExtraNode(extra, 1);
             if (!prop_idx.isNone() and @intFromEnum(prop_idx) < self.ast.nodes.items.len) {
@@ -654,7 +693,29 @@ pub const SemanticAnalyzer = struct {
                 }
             }
         }
-        try self.visitNode(self.ast.readExtraNode(extra, 0));
+        try self.visitMemberObject(extra, recognize_enum_object);
+    }
+
+    /// Visit a member's object while optionally marking its bare identifier.
+    /// Only static access opts in; TS wrappers erase, parentheses remain a boundary.
+    fn visitMemberObject(self: *SemanticAnalyzer, extra: u32, recognize_enum_object: bool) AllocError!void {
+        if (!self.ast.hasExtra(extra, 0)) return;
+        const object_idx = self.ast.readExtraNode(extra, 0);
+        var candidate = object_idx;
+        var guard: u8 = 0;
+        while (!candidate.isNone() and @intFromEnum(candidate) < self.ast.nodes.items.len and guard < 64) : (guard += 1) {
+            const node = self.ast.getNode(candidate);
+            if (!ast_mod.Node.Tag.isTransparentTypeWrapper(node.tag)) break;
+            candidate = node.data.unary.operand;
+        }
+        const saved_object_base = self.enum_object_base_node;
+        self.enum_object_base_node = if (recognize_enum_object and !candidate.isNone() and @intFromEnum(candidate) < self.ast.nodes.items.len and
+            self.ast.getNode(candidate).tag == .identifier_reference)
+            candidate
+        else
+            .none;
+        defer self.enum_object_base_node = saved_object_base;
+        try self.visitNode(object_idx);
     }
 
     // ================================================================
@@ -990,6 +1051,87 @@ pub const SemanticAnalyzer = struct {
     // 참조 추적 (Reference Tracking)
     // ================================================================
 
+    fn isScopeAncestorOf(self: *const SemanticAnalyzer, ancestor: ScopeId, descendant: ScopeId) bool {
+        var current = descendant;
+        var hops: usize = 0;
+        while (!current.isNone() and hops <= self.scopes.items.len) : (hops += 1) {
+            if (current == ancestor) return true;
+            const raw = current.toIndex();
+            if (raw >= self.scopes.items.len) return false;
+            current = self.scopes.items[raw].parent;
+        }
+        return false;
+    }
+
+    /// Resolve a bare enum member only after checking the nearest lexical
+    /// binding. A local declared in an initializer closure shadows the virtual
+    /// member; bindings outside the enum IIFE do not.
+    fn resolveActiveEnumMember(self: *SemanticAnalyzer, name: []const u8, node_idx: NodeIndex) ?usize {
+        if (self.enum_member_contexts.items.len == 0) return null;
+
+        var lexical_symbol: ?usize = null;
+        var lexical_scope = self.current_scope;
+        while (!lexical_scope.isNone()) {
+            const raw_scope = lexical_scope.toIndex();
+            if (raw_scope >= self.scope_maps.items.len or raw_scope >= self.scopes.items.len) break;
+            if (self.scope_maps.items[raw_scope].get(name)) |sid| {
+                lexical_symbol = sid;
+                break;
+            }
+            lexical_scope = self.scopes.items[raw_scope].parent;
+        }
+
+        var context_index = self.enum_member_contexts.items.len;
+        while (context_index > 0) {
+            context_index -= 1;
+            const enum_context = &self.enum_member_contexts.items[context_index];
+            const context_scope = enum_context.scope_id;
+            if (!self.isScopeAncestorOf(context_scope, self.current_scope)) continue;
+            const binding = self.enum_member_contexts.items[context_index].members.getPtr(name) orelse continue;
+
+            if (lexical_symbol) |sid| {
+                const binding_scope = self.symbols.items[sid].scope_id;
+                // Initializer-local bindings shadow enum members. The generated
+                // enum-object parameter is the exception: it wins only when the
+                // reference is the object of a property access; a bare matching
+                // name denotes the preceding enum member.
+                if (self.isScopeAncestorOf(context_scope, binding_scope)) {
+                    const is_enum_object_parameter = binding_scope == context_scope and
+                        self.symbols.items[sid].synthetic_kind == .enum_iife_parameter;
+                    if (!is_enum_object_parameter or self.enum_object_base_node == node_idx) return null;
+                }
+            }
+
+            if (binding.symbol_id) |sid| return sid;
+            const stable_name = self.allocator.dupe(u8, binding.name) catch {
+                self.alloc_failed = true;
+                return null;
+            };
+            self.enum_member_stable_names.append(self.allocator, stable_name) catch {
+                self.allocator.free(stable_name);
+                self.alloc_failed = true;
+                return null;
+            };
+            const sid = self.symbols.items.len;
+            self.symbols.append(self.allocator, .{
+                .name = binding.name_span,
+                .scope_id = context_scope,
+                .kind = .parameter,
+                .decl_flags = SymbolKind.parameter.declFlags(),
+                .declaration_span = binding.name_span,
+                .synthetic_kind = .enum_iife_member,
+                .synthetic_name = stable_name,
+                .synthetic_owner_id = if (enum_context.parameter_symbol_id) |owner| @enumFromInt(owner) else null,
+            }) catch {
+                self.alloc_failed = true;
+                return null;
+            };
+            binding.symbol_id = @intCast(sid);
+            return sid;
+        }
+        return null;
+    }
+
     /// 식별자 참조를 해결한다.
     /// 현재 스코프부터 부모 체인을 따라 올라가며 scope_maps로 O(1) 조회.
     /// 심볼을 찾으면 reference_count를 증가시킨다.
@@ -1035,6 +1177,29 @@ pub const SemanticAnalyzer = struct {
             // 정의되거나 (legacy 모드) helper 자체가 사용되지 않는 식이라 fallthrough
             // scope-walk 가 합리적 fallback. graph 모드 (#2869 회귀의 실 무대) 는 항상
             // helper import 가 prepend 되어 helper_scope_map 이 populated.
+        }
+
+        if (!self.isHelperRefNode(node_idx)) {
+            if (self.resolveActiveEnumMember(name, node_idx)) |sym_idx| {
+                const is_type_only_use = effective.type_context or effective.value_as_type;
+                if (!is_type_only_use) {
+                    self.symbols.items[sym_idx].reference_count += 1;
+                    if (flags.write) self.symbols.items[sym_idx].write_count += 1;
+                }
+                const ni: u32 = @intFromEnum(node_idx);
+                if (ni < self.symbol_ids.items.len) self.symbol_ids.items[ni] = @intCast(sym_idx);
+                self.references.append(self.allocator, .{
+                    .node_index = node_idx,
+                    .scope_id = self.current_scope,
+                    .symbol_id = @enumFromInt(sym_idx),
+                    .stmt_idx = self.current_top_stmt_idx orelse symbol_mod.Reference.NO_STMT,
+                    .scope_stmt_idx = self.current_stmt_idx,
+                    .flags = effective,
+                }) catch {
+                    self.alloc_failed = true;
+                };
+                return;
+            }
         }
 
         var scope_id = self.current_scope;
@@ -1642,12 +1807,12 @@ pub const SemanticAnalyzer = struct {
 
             // ---- private name 참조 ----
             .private_field_expression, .static_member_expression => {
-                try self.visitPrivateFieldExpr(node.data.extra);
+                try self.visitPrivateFieldExpr(node.data.extra, node.tag == .static_member_expression);
             },
             .computed_member_expression => {
                 // extra: [object, property, flags]
                 const e = node.data.extra;
-                try self.visitNode(self.ast.readExtraNode(e, 0));
+                try self.visitMemberObject(e, false);
                 try self.visitNode(self.ast.readExtraNode(e, 1));
             },
 
@@ -1775,7 +1940,7 @@ pub const SemanticAnalyzer = struct {
                     if (!lhs_idx.isNone() and @intFromEnum(lhs_idx) < self.ast.nodes.items.len and
                         self.ast.getNode(lhs_idx).tag == .private_field_expression)
                     {
-                        try self.visitPrivateFieldExpr(self.ast.getNode(lhs_idx).data.extra);
+                        try self.visitPrivateFieldExpr(self.ast.getNode(lhs_idx).data.extra, false);
                     } else {
                         try self.visitNode(lhs_idx);
                     }
@@ -1832,7 +1997,7 @@ pub const SemanticAnalyzer = struct {
                         if (!operand_idx.isNone() and @intFromEnum(operand_idx) < self.ast.nodes.items.len and
                             self.ast.getNode(operand_idx).tag == .private_field_expression)
                         {
-                            try self.visitPrivateFieldExpr(self.ast.getNode(operand_idx).data.extra);
+                            try self.visitPrivateFieldExpr(self.ast.getNode(operand_idx).data.extra, false);
                         } else {
                             try self.visitNode(operand_idx);
                         }
@@ -2744,21 +2909,61 @@ pub const SemanticAnalyzer = struct {
 
         const saved_scope = try self.enterScope(.function, self.is_strict_mode);
         defer self.exitScope(saved_scope);
-        const param_name = try self.declareEnumIifeParameter(name_idx, node, members_start, members_len);
-        defer if (param_name) |name| {
+        const enum_parameter = try self.declareEnumIifeParameter(name_idx, node, members_start, members_len);
+        defer if (enum_parameter) |parameter| {
             const popped = self.enum_iife_param_names.pop() orelse unreachable;
-            std.debug.assert(std.mem.eql(u8, popped, name));
+            std.debug.assert(std.mem.eql(u8, popped, parameter.name));
             self.allocator.free(popped);
         };
+
+        try self.enum_member_contexts.append(self.allocator, .{
+            .scope_id = self.current_scope,
+            .parameter_symbol_id = if (enum_parameter) |parameter| parameter.symbol_id else null,
+        });
+        defer {
+            var context = self.enum_member_contexts.pop() orelse unreachable;
+            context.members.deinit(self.allocator);
+            for (context.owned_member_names.items) |name| self.allocator.free(name);
+            context.owned_member_names.deinit(self.allocator);
+        }
 
         for (extras[members_start .. members_start + members_len]) |raw_idx| {
             const member_idx: NodeIndex = @enumFromInt(raw_idx);
             if (member_idx.isNone() or @intFromEnum(member_idx) >= self.ast.nodes.items.len) continue;
             const member = self.ast.getNode(member_idx);
-            if (member.tag == .ts_enum_member and !member.data.binary.right.isNone()) {
-                try self.visitNode(member.data.binary.right);
+            if (member.tag != .ts_enum_member or member.data.binary.left.isNone()) continue;
+            if (!member.data.binary.right.isNone()) try self.visitNode(member.data.binary.right);
+
+            const member_name = (try self.enumMemberName(member.data.binary.left)) orelse continue;
+            const context = &self.enum_member_contexts.items[self.enum_member_contexts.items.len - 1];
+            if (member_name.owned) |owned| {
+                context.owned_member_names.append(self.allocator, owned) catch {
+                    self.allocator.free(owned);
+                    return error.OutOfMemory;
+                };
             }
+            try context.members.put(
+                self.allocator,
+                member_name.text,
+                .{ .name_span = self.ast.getNode(member.data.binary.left).span, .name = member_name.text },
+            );
         }
+    }
+
+    fn enumMemberName(self: *SemanticAnalyzer, key_idx: NodeIndex) AllocError!?EnumMemberName {
+        if (key_idx.isNone() or @intFromEnum(key_idx) >= self.ast.nodes.items.len) return null;
+        const key = self.ast.getNode(key_idx);
+        return switch (key.tag) {
+            .identifier_reference, .binding_identifier => .{ .text = self.ast.identifierNameText(key) },
+            .string_literal => blk: {
+                const raw = self.ast.getText(key.span);
+                const stripped = ast_mod.Ast.stripStringQuotes(raw);
+                if (std.mem.indexOfScalar(u8, stripped, '\\') == null) break :blk .{ .text = stripped };
+                const decoded = (try self.ast.staticKeyName(self.allocator, key_idx)) orelse break :blk null;
+                break :blk .{ .text = decoded, .owned = decoded };
+            },
+            else => null,
+        };
     }
 
     /// RFC #3310 (D20) 완전 근본 해결 — top-level import 의 user binding 을 1st-pass
@@ -2909,7 +3114,7 @@ pub const SemanticAnalyzer = struct {
         declaration: Node,
         members_start: u32,
         members_len: u32,
-    ) AllocError!?[]const u8 {
+    ) AllocError!?EnumIifeParameter {
         if (name_idx.isNone() or @intFromEnum(name_idx) >= self.ast.nodes.items.len or self.current_scope.isNone()) return null;
         const name_text = self.ast.getText(self.ast.getNode(name_idx).span);
         var needs_rename = false;
@@ -2918,9 +3123,10 @@ pub const SemanticAnalyzer = struct {
             if (member_idx.isNone() or @intFromEnum(member_idx) >= self.ast.nodes.items.len) continue;
             const member = self.ast.getNode(member_idx);
             if (member.tag != .ts_enum_member or member.data.binary.left.isNone()) continue;
-            const key = self.ast.getNode(member.data.binary.left);
-            const key_name = ast_mod.Ast.stripStringQuotes(self.ast.getText(key.span));
-            if (std.mem.eql(u8, key_name, name_text)) {
+            const key_name = (try self.enumMemberName(member.data.binary.left)) orelse continue;
+            const matches_enum_name = std.mem.eql(u8, key_name.text, name_text);
+            if (key_name.owned) |owned| self.allocator.free(owned);
+            if (matches_enum_name) {
                 needs_rename = true;
                 break;
             }
@@ -2963,7 +3169,7 @@ pub const SemanticAnalyzer = struct {
         try self.enum_iife_param_stable_names.append(self.allocator, stable_name);
         stable_name_untracked = false;
         try self.enum_iife_param_names.append(self.allocator, candidate);
-        return candidate;
+        return .{ .name = candidate, .symbol_id = @intCast(sid) };
     }
 
     fn visitNamespaceDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {

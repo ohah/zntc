@@ -832,6 +832,112 @@ const ExactCtx = struct {
         return .external;
     }
 
+    fn isEnumObjectBase(ctx: *const ExactCtx, node_raw: u32) bool {
+        var child = node_raw;
+        var hops: usize = 0;
+        while (ctx.parent_by_node.get(child)) |parent_raw| : (hops += 1) {
+            if (hops >= ctx.ast.nodes.items.len or parent_raw >= ctx.ast.nodes.items.len) return false;
+            const parent = ctx.ast.nodes.items[parent_raw];
+            if (ast_mod.Node.Tag.isTransparentTypeWrapper(parent.tag) and
+                parent.data.unary.operand == @as(NodeIndex, @enumFromInt(child)))
+            {
+                child = parent_raw;
+                continue;
+            }
+            if (parent.tag == .static_member_expression) {
+                return ctx.ast.readExtraNode(parent.data.extra, 0) == @as(NodeIndex, @enumFromInt(child));
+            }
+            return false;
+        }
+        return false;
+    }
+
+    fn isEnumMemberReference(ctx: *ExactCtx, node_raw: u32, name: []const u8, symbol_id: u32, use_scope: ScopeId) bool {
+        if (symbol_id >= ctx.symbols.len) return false;
+        const symbol = ctx.symbols[symbol_id];
+        if (symbol.synthetic_kind != .enum_iife_member or !std.mem.eql(u8, symbol.synthetic_name, name)) return false;
+        const owner_id = symbol.synthetic_owner_id orelse return false;
+        const parameter_raw = @intFromEnum(owner_id);
+        if (parameter_raw >= ctx.symbols.len or ctx.symbols[parameter_raw].synthetic_kind != .enum_iife_parameter or
+            ctx.symbols[parameter_raw].scope_id != symbol.scope_id) return false;
+        if (isEnumObjectBase(ctx, node_raw)) return false;
+        if (!exactVisibleFrom(ctx.scopes, ctx.symbols, @enumFromInt(symbol_id), use_scope)) return false;
+
+        var enum_raw: ?u32 = null;
+        var current_member: ?u32 = null;
+        var current = node_raw;
+        var hops: usize = 0;
+        while (ctx.parent_by_node.get(current)) |parent| : (hops += 1) {
+            if (hops >= ctx.ast.nodes.items.len or parent >= ctx.ast.nodes.items.len) return false;
+            const ancestor = ctx.ast.nodes.items[parent];
+            if (ancestor.tag == .ts_enum_member and current_member == null) current_member = parent;
+            if (ancestor.tag == .ts_enum_declaration) {
+                enum_raw = parent;
+                break;
+            }
+            current = parent;
+        }
+        const owner_raw = enum_raw orelse return false;
+        const member_raw = current_member orelse return false;
+        if (ctx.scope_owner_map.get(owner_raw) != @as(?u32, @intCast(@intFromEnum(symbol.scope_id)))) return false;
+
+        const declaration = ctx.ast.nodes.items[owner_raw];
+        const extra = declaration.data.extra;
+        if (extra + 2 >= ctx.ast.extra_data.items.len) return false;
+        const members_start = ctx.ast.extra_data.items[extra + 1];
+        const members_len = ctx.ast.extra_data.items[extra + 2];
+        if (members_start > ctx.ast.extra_data.items.len or members_len > ctx.ast.extra_data.items.len - members_start) return false;
+
+        var current_position: ?u32 = null;
+        var target_position: ?u32 = null;
+        for (ctx.ast.extra_data.items[members_start .. members_start + members_len], 0..) |raw_member, position| {
+            const listed_member: NodeIndex = @enumFromInt(raw_member);
+            if (raw_member == member_raw) current_position = @intCast(position);
+            if (listed_member.isNone() or @intFromEnum(listed_member) >= ctx.ast.nodes.items.len) continue;
+            const member_node = ctx.ast.getNode(listed_member);
+            if (member_node.tag != .ts_enum_member or member_node.data.binary.left.isNone()) continue;
+            const key = ctx.ast.getNode(member_node.data.binary.left);
+            if (key.span.start != symbol.name.start or key.span.end != symbol.name.end) continue;
+            const matches_name = switch (key.tag) {
+                .identifier_reference, .binding_identifier => std.mem.eql(u8, ctx.ast.identifierNameText(key), name),
+                .string_literal => blk: {
+                    const stripped = Ast.stripStringQuotes(ctx.ast.getText(key.span));
+                    if (std.mem.indexOfScalar(u8, stripped, '\\') == null) break :blk std.mem.eql(u8, stripped, name);
+                    const decoded = (ctx.ast.staticKeyName(ctx.allocator, member_node.data.binary.left) catch {
+                        ctx.oom = true;
+                        return false;
+                    }) orelse break :blk false;
+                    defer ctx.allocator.free(decoded);
+                    break :blk std.mem.eql(u8, decoded, name);
+                },
+                else => false,
+            };
+            if (matches_name) target_position = @intCast(position);
+        }
+        const use_position = current_position orelse return false;
+        const declaration_position = target_position orelse return false;
+        if (declaration_position >= use_position) return false;
+
+        // Initializer-local bindings win over a virtual member. The generated
+        // enum-object parameter shares the source enum name, so permit that one
+        // binding in the owner scope; object-base references were rejected above.
+        var scope = use_scope;
+        var scope_hops: usize = 0;
+        while (scope_hops <= ctx.scopes.len) : (scope_hops += 1) {
+            if (!exactValidScope(ctx.scopes, scope)) return false;
+            if (scope.toIndex() < ctx.scope_maps.len) {
+                if (ctx.scope_maps[scope.toIndex()].get(name)) |mapped| {
+                    const is_owner_enum_parameter = scope == symbol.scope_id and mapped < ctx.symbols.len and
+                        ctx.symbols[mapped].synthetic_kind == .enum_iife_parameter;
+                    if (!is_owner_enum_parameter) return false;
+                }
+            }
+            if (scope == symbol.scope_id) return true;
+            scope = ctx.scopes[scope.toIndex()].parent;
+        }
+        return false;
+    }
+
     fn checkIdentifier(ctx: *ExactCtx, idx: NodeIndex) void {
         const raw = @intFromEnum(idx);
         if (ctx.name_positions.contains(raw)) return;
@@ -1043,7 +1149,7 @@ const ExactCtx = struct {
         const expected: ?u32 = if (ctx.helper_reference_nodes.contains(raw)) blk: {
             if (ctx.helper_scope_map.get(name)) |sid| break :blk @intCast(sid);
             break :blk null;
-        } else resolveInScopes(ctx.scopes, ctx.scope_maps, name, indexed.scope_id);
+        } else if (isEnumMemberReference(ctx, raw, name, raw_id, indexed.scope_id)) raw_id else resolveInScopes(ctx.scopes, ctx.scope_maps, name, indexed.scope_id);
         if (expected) |expected_id| {
             if (expected_id != raw_id) {
                 ctx.report.scope_resolution_mismatch += 1;
@@ -1362,6 +1468,9 @@ pub fn checkExact(
         // Its scope-map alias is optional because a user `_default` may own
         // that lexical name.
         if (symbol.decl_flags.is_default_export and std.mem.eql(u8, symbol.synthetic_name, "_default")) continue;
+        // Enum members are semantic properties of the generated IIFE object,
+        // not lexical bindings, so they intentionally have no scope-map entry.
+        if (symbol.synthetic_kind == .enum_iife_member) continue;
         const name = exactSymbolName(ast, &symbol);
         const normal = if (symbol.scope_id.toIndex() < scope_maps.len)
             scope_maps[symbol.scope_id.toIndex()].get(name)
@@ -2336,7 +2445,7 @@ fn checkStrictImpl(
         // Virtual namespace/enum IIFE parameters have no emitted AST binding
         // node; checkExact validates them against reachable owner scopes.
         if (symbol.synthetic_kind == .namespace_iife_parameter or symbol.synthetic_kind == .enum_iife_parameter or
-            symbol.synthetic_kind == .runtime_helper_preamble) continue;
+            symbol.synthetic_kind == .enum_iife_member or symbol.synthetic_kind == .runtime_helper_preamble) continue;
         // Expression `export default` keeps a synthetic reachability facade
         // even when it has no emitted local binding.
         if (symbol.decl_flags.is_default_export and std.mem.eql(u8, symbol.synthetic_name, "_default")) continue;

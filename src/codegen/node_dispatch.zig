@@ -186,6 +186,14 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
             // 가 모두 sym_id 를 본다 — 단일 호출로 hoist (per-identifier hot path).
             const sym_id = self.sourceSymbolId(idx);
 
+            // A bare enum member is a property reference, not a lexical name.
+            // Its exact virtual SymbolId lets codegen preserve same-named outer
+            // bindings and nested locals without guessing from identifier text.
+            if (sym_id) |sid| {
+                if (sid < self.options.semantic_symbols.len and
+                    try type_runtime_emit.emitEnumIifeMemberReference(self, node, self.options.semantic_symbols[sid])) return;
+            }
+
             // Peephole: global `undefined` → `void 0` (minify_syntax 활성화 시).
             // 9 bytes → 6 bytes, 3 bytes 절감 (esbuild/rolldown/rspack 동일).
             // `void 0` 는 prefix 단항이라 `.prefix` 이상 슬롯(member/call/new 타겟,

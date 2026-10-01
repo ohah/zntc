@@ -165,7 +165,10 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             .decorator,
             => facts.has_runtime_sensitive_syntax = true,
 
-            .ts_enum_declaration,
+            // TypeScript enum lowering now records the emitted IIFE parameter
+            // and initializer references in the edited semantic graph.
+            .ts_enum_declaration => facts.has_runtime_sensitive_syntax = true,
+
             .ts_module_declaration,
             .ts_import_equals_declaration,
             .ts_export_assignment,
@@ -545,9 +548,9 @@ fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
 }
 
 /// The transform semantic editor carries identifier IDs, references, and output
-/// scopes through JavaScript and ordinary TypeScript class lowering. Keep private,
-/// decorator, and other runtime-generating TS/Flow constructs outside this graph
-/// until their semantic edits are complete; those paths use the post-transform analyzer.
+/// scopes through JavaScript and TypeScript lowering paths whose semantic edits
+/// are complete, including enum IIFEs. Keep still-unhandled runtime-generating
+/// TS/Flow constructs outside this graph until their edits are complete.
 fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Parser) bool {
     if (!options.minify_identifiers or
         options.experimental_decorators or options.emit_decorator_metadata or
@@ -1985,7 +1988,6 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
 
     const runtime_sources = [_][]const u8{
-        "enum Color { Red }",
         "namespace N { export const value = 1 }",
         "using resource = openResource();",
         "const view = <div />;",
@@ -1997,6 +1999,13 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
         _ = try runtime_parser.parse();
         try std.testing.expect(!canMangleWithTransformSemantic(minify, &runtime_parser));
     }
+
+    var enum_scanner = try Scanner.init(allocator, "enum Color { Red }");
+    var enum_parser = Parser.init(allocator, &enum_scanner);
+    enum_parser.configureFromExtension(".ts");
+    _ = try enum_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), enum_parser.errors.items.len);
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &enum_parser));
 
     var decorator_scanner = try Scanner.init(allocator, "function dec(value: any) {} class Box { @dec method() {} }");
     var decorator_parser = Parser.init(allocator, &decorator_scanner);

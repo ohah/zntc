@@ -80,6 +80,7 @@ test "semantic_codec: analyzer round-trip — relocatable 필드 보존" {
         try testing.expectEqual(s1.kind, s2.kind);
         try testing.expectEqual(s1.declaration_span, s2.declaration_span);
         try testing.expectEqualStrings(s1.synthetic_name, s2.synthetic_name);
+        try testing.expectEqual(s1.synthetic_owner_id, s2.synthetic_owner_id);
     }
 
     // scope_maps: 실 analyzer 출력 — 맵 개수 + 각 키→심볼인덱스 동일
@@ -97,7 +98,7 @@ test "semantic_codec: analyzer round-trip — relocatable 필드 보존" {
 
 test "semantic_codec: merged namespace member owner IDs survive cache round-trip" {
     const alloc = testing.allocator;
-    const source = "enum Color { Red = 1, Green = Color.Red + 1 } namespace N { export let value = 1; } namespace N { export let next = value + 2; } namespace Outer { export namespace Inner { export let x = 1; } } namespace Outer { export namespace Inner { export let y = x + 2; } }";
+    const source = "enum Color { Red = 1, Green = Color.Red + 1 } enum Bare { A = 1, B = A + 2 } namespace N { export let value = 1; } namespace N { export let next = value + 2; } namespace Outer { export namespace Inner { export let x = 1; } } namespace Outer { export namespace Inner { export let y = x + 2; } }";
     var scanner = try Scanner.init(alloc, source);
     defer scanner.deinit();
     var parser = Parser.init(alloc, &scanner);
@@ -147,6 +148,7 @@ test "semantic_codec: merged namespace member owner IDs survive cache round-trip
     const decoded = try codec.deserialize(bytes.items, arena.allocator());
     var namespace_iife_parameters: usize = 0;
     var enum_iife_parameters: usize = 0;
+    var enum_iife_members: usize = 0;
     var runtime_helper_preambles: usize = 0;
     for (sem.symbols.items, 0..) |symbol, raw| {
         switch (symbol.synthetic_kind orelse continue) {
@@ -160,6 +162,12 @@ test "semantic_codec: merged namespace member owner IDs survive cache round-trip
                 try testing.expectEqual(symbol.synthetic_kind, decoded.symbols.items[raw].synthetic_kind);
                 try testing.expectEqualStrings(symbol.synthetic_name, decoded.symbols.items[raw].synthetic_name);
             },
+            .enum_iife_member => {
+                enum_iife_members += 1;
+                try testing.expectEqual(symbol.synthetic_kind, decoded.symbols.items[raw].synthetic_kind);
+                try testing.expectEqualStrings(symbol.synthetic_name, decoded.symbols.items[raw].synthetic_name);
+                try testing.expectEqual(symbol.synthetic_owner_id, decoded.symbols.items[raw].synthetic_owner_id);
+            },
             .runtime_helper_preamble => {
                 runtime_helper_preambles += 1;
                 try testing.expectEqual(symbol.synthetic_kind, decoded.symbols.items[raw].synthetic_kind);
@@ -169,7 +177,8 @@ test "semantic_codec: merged namespace member owner IDs survive cache round-trip
         }
     }
     try testing.expect(namespace_iife_parameters >= 4);
-    try testing.expectEqual(@as(usize, 1), enum_iife_parameters);
+    try testing.expectEqual(@as(usize, 2), enum_iife_parameters);
+    try testing.expectEqual(@as(usize, 1), enum_iife_members);
     try testing.expectEqual(@as(usize, 1), runtime_helper_preambles);
     try testing.expectEqual(@as(?usize, helper_symbol_id), decoded.helper_scope_map.get("__inlineRuntimeHelper"));
     try testing.expectEqual(sem.namespace_member_owners.count(), decoded.namespace_member_owners.count());
@@ -314,6 +323,7 @@ test "semantic_codec: struct padding poison 이 직렬화에 새지 않는다 (#
             s.write_count = 0;
             s.const_kind = .number;
             s.synthetic_kind = null;
+            s.synthetic_owner_id = null;
             try symbols.append(a, s);
 
             const scopes = try a.alloc(Scope, 1);
