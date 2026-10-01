@@ -463,6 +463,54 @@ fn resolveInScopes(
     return null;
 }
 
+fn namespaceMemberForOwner(ctx: *const ExactCtx, owner_id: u32, name: []const u8) ?u32 {
+    const owners = ctx.namespace_member_owners orelse return null;
+    var entries = owners.iterator();
+    while (entries.next()) |entry| {
+        if (entry.value_ptr.* != owner_id or entry.key_ptr.* >= ctx.symbols.len) continue;
+        const symbol_name = exactSymbolName(ctx.ast, &ctx.symbols[entry.key_ptr.*]);
+        if (std.mem.eql(u8, symbol_name, name)) return entry.key_ptr.*;
+    }
+    return null;
+}
+
+fn hasNamespaceMemberNamed(ctx: *const ExactCtx, name: []const u8) bool {
+    const owners = ctx.namespace_member_owners orelse return false;
+    var entries = owners.keyIterator();
+    while (entries.next()) |member_id| {
+        if (member_id.* < ctx.symbols.len and
+            std.mem.eql(u8, exactSymbolName(ctx.ast, &ctx.symbols[member_id.*]), name)) return true;
+    }
+    return false;
+}
+
+/// Resolve like SemanticAnalyzer.visitIdentifier: a namespace member proxy is
+/// considered after lexical bindings in its namespace IIFE scope and before
+/// moving to the parent scope. Proxies intentionally do not live in scope_maps.
+fn resolveInExactScopes(ctx: *const ExactCtx, name: []const u8, use_scope: ScopeId) ?u32 {
+    if (!exactValidScope(ctx.scopes, use_scope)) return null;
+    const normalized = baseName(name);
+    var current = use_scope;
+    var hops: usize = 0;
+    while (exactValidScope(ctx.scopes, current) and hops < ctx.scopes.len) : (hops += 1) {
+        const scope_index = current.toIndex();
+        if (scope_index < ctx.scope_maps.len) {
+            const map = ctx.scope_maps[scope_index];
+            if (map.get(name)) |sid| return @intCast(sid);
+            if (!std.mem.eql(u8, name, normalized)) {
+                if (map.get(normalized)) |sid| return @intCast(sid);
+            }
+        }
+        if (ctx.namespace_scope_owners) |namespace_owners| {
+            if (namespace_owners.get(scope_index)) |owner_id| {
+                if (namespaceMemberForOwner(ctx, owner_id, name)) |sid| return sid;
+            }
+        }
+        current = ctx.scopes[scope_index].parent;
+    }
+    return null;
+}
+
 fn resolveInAnyScope(
     scope_maps: []const std.StringHashMapUnmanaged(usize),
     helper_scope_map: *const std.StringHashMapUnmanaged(usize),
@@ -738,6 +786,8 @@ const ExactCtx = struct {
     symbols: []const Symbol,
     scopes: []const Scope,
     scope_maps: []const std.StringHashMapUnmanaged(usize),
+    namespace_member_owners: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
+    namespace_scope_owners: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
     references_by_node: *const std.AutoHashMapUnmanaged(u32, IndexedReference),
     helper_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     helper_scope_map: *const std.StringHashMapUnmanaged(usize),
@@ -819,7 +869,8 @@ const ExactCtx = struct {
             // eval/with scopes make that proof impossible, so keep it visible
             // as unclassified instead of guessing.
             if (ctx.hasDynamicNameEnvironment(node, null) or
-                resolveInAnyScope(ctx.scope_maps, ctx.helper_scope_map, name)) return .unknown_scope;
+                resolveInAnyScope(ctx.scope_maps, ctx.helper_scope_map, name) or
+                hasNamespaceMemberNamed(ctx, name)) return .unknown_scope;
             return .external;
         };
         // The `eval` reference that triggers direct eval is resolved before
@@ -827,7 +878,7 @@ const ExactCtx = struct {
         // external while still treating other references in that execution
         // unit as dynamic.
         if (!ctx.isDirectEvalCallee(node) and ctx.hasDynamicNameEnvironment(node, expected.scope)) return .unknown_scope;
-        if (resolveInScopes(ctx.scopes, ctx.scope_maps, name, @enumFromInt(expected.scope)) != null or
+        if (resolveInExactScopes(ctx, name, @enumFromInt(expected.scope)) != null or
             ctx.helper_scope_map.get(name) != null) return .shadowed;
         return .external;
     }
@@ -1149,7 +1200,7 @@ const ExactCtx = struct {
         const expected: ?u32 = if (ctx.helper_reference_nodes.contains(raw)) blk: {
             if (ctx.helper_scope_map.get(name)) |sid| break :blk @intCast(sid);
             break :blk null;
-        } else if (isEnumMemberReference(ctx, raw, name, raw_id, indexed.scope_id)) raw_id else resolveInScopes(ctx.scopes, ctx.scope_maps, name, indexed.scope_id);
+        } else if (isEnumMemberReference(ctx, raw, name, raw_id, indexed.scope_id)) raw_id else resolveInExactScopes(ctx, name, indexed.scope_id);
         if (expected) |expected_id| {
             if (expected_id != raw_id) {
                 ctx.report.scope_resolution_mismatch += 1;
@@ -1271,6 +1322,86 @@ pub fn checkExact(
     unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     explicit_global_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     origins: *const std.AutoHashMapUnmanaged(u32, u32),
+) std.mem.Allocator.Error!ExactReport {
+    return checkExactImpl(
+        allocator,
+        ast,
+        root,
+        parser_node_count,
+        symbol_ids,
+        symbols,
+        scopes,
+        scope_maps,
+        scope_owner_map,
+        references,
+        helper_reference_nodes,
+        helper_scope_map,
+        unresolved_nodes,
+        explicit_global_nodes,
+        origins,
+        null,
+        null,
+    );
+}
+
+pub fn checkExactWithNamespaceMetadata(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    parser_node_count: u32,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    references: []const Reference,
+    helper_reference_nodes: []const u32,
+    helper_scope_map: *const std.StringHashMapUnmanaged(usize),
+    unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    explicit_global_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    origins: *const std.AutoHashMapUnmanaged(u32, u32),
+    namespace_member_owners: *const std.AutoHashMapUnmanaged(u32, u32),
+    namespace_scope_owners: *const std.AutoHashMapUnmanaged(u32, u32),
+) std.mem.Allocator.Error!ExactReport {
+    return checkExactImpl(
+        allocator,
+        ast,
+        root,
+        parser_node_count,
+        symbol_ids,
+        symbols,
+        scopes,
+        scope_maps,
+        scope_owner_map,
+        references,
+        helper_reference_nodes,
+        helper_scope_map,
+        unresolved_nodes,
+        explicit_global_nodes,
+        origins,
+        namespace_member_owners,
+        namespace_scope_owners,
+    );
+}
+
+fn checkExactImpl(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    parser_node_count: u32,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    references: []const Reference,
+    helper_reference_nodes: []const u32,
+    helper_scope_map: *const std.StringHashMapUnmanaged(usize),
+    unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    explicit_global_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    origins: *const std.AutoHashMapUnmanaged(u32, u32),
+    namespace_member_owners: ?*const std.AutoHashMapUnmanaged(u32, u32),
+    namespace_scope_owners: ?*const std.AutoHashMapUnmanaged(u32, u32),
 ) std.mem.Allocator.Error!ExactReport {
     var report: ExactReport = .{};
     var reachable_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -1458,6 +1589,69 @@ pub fn checkExact(
     for (symbols) |symbol| {
         if (!exactValidScope(scopes, symbol.scope_id)) report.invalid_scope += 1;
     }
+    if (namespace_scope_owners) |scope_owners| {
+        var owners = scope_owners.iterator();
+        while (owners.next()) |entry| {
+            const namespace_scope = entry.key_ptr.*;
+            const owner_id = entry.value_ptr.*;
+            if (namespace_scope >= scopes.len or owner_id >= symbols.len) {
+                recordScopeMapMismatch(&report, "namespace-scope-owner-out-of-range", namespace_scope, owner_id, null);
+                continue;
+            }
+            var has_declaration = false;
+            var nodes = reachable_nodes.iterator();
+            while (nodes.next()) |node_entry| {
+                const raw = node_entry.key_ptr.*;
+                if (raw >= ast.nodes.items.len or ast.nodes.items[raw].tag != .ts_module_declaration or
+                    ast.nodes.items[raw].data.binary.flags == 1) continue;
+                if (scope_owner_map.get(raw) == namespace_scope) {
+                    has_declaration = true;
+                    break;
+                }
+            }
+            if (!has_declaration) {
+                recordScopeMapMismatch(&report, "namespace-scope-owner-unreachable", namespace_scope, owner_id, exactSymbolName(ast, &symbols[owner_id]));
+            }
+        }
+    }
+    if (namespace_member_owners) |member_owners| {
+        var members = member_owners.iterator();
+        while (members.next()) |entry| {
+            const member_id = entry.key_ptr.*;
+            const owner_id = entry.value_ptr.*;
+            if (member_id >= symbols.len or owner_id >= symbols.len) {
+                recordScopeMapMismatch(&report, "namespace-member-owner-out-of-range", null, member_id, null);
+                continue;
+            }
+            var owner_has_scope = false;
+            if (namespace_scope_owners) |scope_owners| {
+                var owner_scopes = scope_owners.iterator();
+                while (owner_scopes.next()) |owner_scope| {
+                    if (owner_scope.key_ptr.* < scopes.len and owner_scope.value_ptr.* == owner_id) {
+                        owner_has_scope = true;
+                        break;
+                    }
+                }
+            }
+            if (!owner_has_scope) {
+                recordScopeMapMismatch(&report, "namespace-member-owner-unreachable", null, member_id, exactSymbolName(ast, &symbols[member_id]));
+            }
+            var member_in_lexical_map = false;
+            for (scope_maps) |map| {
+                var bindings = map.iterator();
+                while (bindings.next()) |binding| {
+                    if (binding.value_ptr.* == member_id) {
+                        member_in_lexical_map = true;
+                        break;
+                    }
+                }
+                if (member_in_lexical_map) break;
+            }
+            if (member_in_lexical_map) {
+                recordScopeMapMismatch(&report, "namespace-member-in-lexical-map", @intFromEnum(symbols[member_id].scope_id), member_id, exactSymbolName(ast, &symbols[member_id]));
+            }
+        }
+    }
     // Validate both directions: a scope-map entry must point to a same-named
     // symbol in that scope, and every symbol must be reachable through its
     // scope map or the isolated runtime-helper map.
@@ -1471,6 +1665,9 @@ pub fn checkExact(
         // Enum members are semantic properties of the generated IIFE object,
         // not lexical bindings, so they intentionally have no scope-map entry.
         if (symbol.synthetic_kind == .enum_iife_member) continue;
+        if (namespace_member_owners) |member_owners| {
+            if (sid <= std.math.maxInt(u32) and member_owners.contains(@intCast(sid))) continue;
+        }
         const name = exactSymbolName(ast, &symbol);
         const normal = if (symbol.scope_id.toIndex() < scope_maps.len)
             scope_maps[symbol.scope_id.toIndex()].get(name)
@@ -1752,6 +1949,8 @@ pub fn checkExact(
         .symbols = symbols,
         .scopes = scopes,
         .scope_maps = scope_maps,
+        .namespace_member_owners = namespace_member_owners,
+        .namespace_scope_owners = namespace_scope_owners,
         .dynamic_eval_units = &dynamic_eval_units,
         .with_body_roots = &with_body_roots,
         .references_by_node = &references_by_node,

@@ -170,6 +170,37 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('namespace destructuring 임시 바인딩은 transform mangling 중 exact SymbolId를 유지한다', () => {
+    const file = join(FIXTURE_DIR, '4819-namespace-destructuring-mangle.ts');
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-namespace-destructuring-mangle-'));
+    try {
+      for (const target of TARGETS) {
+        const output = join(outDir, `${target.name}.js`);
+        const proc = spawnSync(ZNTC_BIN, [file, target.arg, '--minify-identifiers', '-o', output], {
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        });
+        expect(proc.status, `${target.name}: ${proc.stderr}`).toBe(0);
+        expect(proc.stderr).toMatch(/symbol-coverage .* missing=0 wrong=0/);
+        const identity = proc.stderr
+          .split('\n')
+          .find((line) => line.includes('zntc: symbol-identity '));
+        expect(identity, `${target.name}: missing exact identity report`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${target.name}: ${counter}: ${identity}`,
+          ).toBe(0);
+        }
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout).toBe('[1,3,99,7,8]\n');
+      }
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
   test('가상 enum IIFE 매개변수와 initializer 참조가 정확한 SymbolId와 ScopeId를 가진다', () => {
     const file = join(FIXTURE_DIR, '4819-enum-iife-params.ts');
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-enum-param-'));
