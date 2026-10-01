@@ -2113,6 +2113,12 @@ pub const Scanner = struct {
     /// \uXXXX 와 \u{XXXX} 형태를 처리. BMP 문자만 지원 (키워드 매칭에 충분).
     /// 인스턴스의 decode_buf를 사용하여 dangling pointer 방지.
     pub fn decodeIdentifierEscapes(self: *Scanner, raw: []const u8) ?[]const u8 {
+        return decodeIdentifierEscapesInto(raw, &self.decode_buf);
+    }
+
+    /// Caller-owned scratch buffer를 사용해 이스케이프된 identifier를 디코딩한다.
+    /// Scanner 전체 초기화 없이 semantic analysis 같은 cold path에서 재사용한다.
+    pub fn decodeIdentifierEscapesInto(raw: []const u8, decode_buf: []u8) ?[]const u8 {
         // 이스케이프가 없으면 그대로 반환 (소스 텍스트 포인터, 항상 유효)
         if (std.mem.indexOfScalar(u8, raw, '\\') == null) return raw;
 
@@ -2142,21 +2148,21 @@ pub const Scanner = struct {
                 }
                 // BMP 문자만 (키워드는 전부 ASCII)
                 if (codepoint < 0x80) {
-                    if (out >= self.decode_buf.len) return null;
-                    self.decode_buf[out] = @intCast(codepoint);
+                    if (out >= decode_buf.len) return null;
+                    decode_buf[out] = @intCast(codepoint);
                     out += 1;
                 } else {
                     return null; // non-ASCII codepoint → 키워드 아님
                 }
             } else {
-                if (out >= self.decode_buf.len) return null;
-                self.decode_buf[out] = raw[i];
+                if (out >= decode_buf.len) return null;
+                decode_buf[out] = raw[i];
                 out += 1;
                 i += 1;
             }
         }
 
-        return self.decode_buf[0..out];
+        return decode_buf[0..out];
     }
 
     // ====================================================================
