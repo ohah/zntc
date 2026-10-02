@@ -1764,6 +1764,34 @@ fn transpileWithCallbackInternal(
         }
     }
 
+    // Syntax minification mutates the AST; identifier minification builds the
+    // final SymbolId-to-name map. Audit after both decisions so syntax-only,
+    // identifier-only, and combined minification all pass through this gate.
+    if (symbol_coverage_env.enabled() and (options.minify_syntax or options.minify_identifiers)) {
+        const source_analyzer = &(analyzer_storage.?);
+        const post_minify_coverage = @import("transformer/symbol_coverage.zig");
+        var post_minify_analyzer = SemanticAnalyzer.init(arena_alloc, transformer.ast);
+        post_minify_analyzer.is_strict_mode = parser.is_strict_mode;
+        post_minify_analyzer.is_module = parser.is_module;
+        post_minify_analyzer.analyze() catch return error.SemanticError;
+        const post_minify_report = try post_minify_coverage.checkPostMinify(
+            arena_alloc,
+            transformer.ast,
+            root,
+            transformer.symbol_ids.items,
+            post_minify_analyzer.symbol_ids.items,
+            source_analyzer.symbols.items,
+            post_minify_analyzer.symbols.items,
+            source_analyzer.references.items,
+            transformer.helper_ref_nodes.items,
+            &source_analyzer.helper_scope_map,
+            &transformer.explicit_global_reference_nodes,
+            &source_analyzer.class_self_symbol_map,
+            &post_minify_analyzer.class_self_symbol_map,
+        );
+        post_minify_coverage.printPostMinify(file_path, post_minify_report);
+    }
+
     // 5. Mangling 메타데이터 구성. skip_nodes는 arena-owned이라 별도 deinit 불필요
     // (함수 종료 시 arena.deinit으로 일괄 해제).
     var mangle_metadata: ?LinkingMetadata = null;
