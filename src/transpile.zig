@@ -87,6 +87,9 @@ const AstFacts = struct {
     has_flow_runtime_syntax_without_complete_graph: bool = false,
     /// Runtime syntax whose semantic edits still need the post-transform analyzer.
     has_unhandled_runtime_syntax: bool = false,
+    /// `using` is safe on the original graph when preserved natively. Its
+    /// downlevel rewrite still uses the conservative post-transform analyzer.
+    has_using_syntax: bool = false,
 };
 
 pub const TranspileError = error{
@@ -213,8 +216,7 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             .variable_declaration => {
                 if (ast.variableDeclarationKind(node).isUsing()) {
                     facts.has_runtime_sensitive_syntax = true;
-                    facts.has_flow_runtime_syntax_without_complete_graph = true;
-                    facts.has_unhandled_runtime_syntax = true;
+                    facts.has_using_syntax = true;
                 }
             },
 
@@ -587,6 +589,7 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
         options.react_refresh or options.react_refresh_hook_signatures) return false;
 
     const facts = collectAstFacts(&parser.ast);
+    if (facts.has_using_syntax and options.unsupported.using) return false;
     if (parser.is_flow) return !facts.has_flow_runtime_syntax_without_complete_graph and !parser.ast.has_jsx;
     if (parser.source_mode == .ts) return !facts.has_unhandled_runtime_syntax and !parser.ast.has_jsx;
     if (parser.source_mode != .js_strict) return false;
@@ -2036,7 +2039,6 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
 
     const runtime_sources = [_][]const u8{
-        "using resource = openResource();",
         "const view = <div />;",
     };
     for (runtime_sources) |source| {
@@ -2131,6 +2133,42 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     _ = try accessor_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), accessor_parser.errors.items.len);
     try std.testing.expect(canMangleWithTransformSemantic(minify, &accessor_parser));
+}
+
+test "#4819 native using reuses the transform graph while downlevel using falls back" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const minify: TranspileOptions = .{ .minify_identifiers = true };
+    const ts_source = "function run(resource: any) { using local = resource; return local; } " ++
+        "async function wait(resource: any) { await using local = resource; return local; }";
+
+    var ts_scanner = try Scanner.init(allocator, ts_source);
+    var ts_parser = Parser.init(allocator, &ts_scanner);
+    ts_parser.configureFromExtension(".ts");
+    _ = try ts_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), ts_parser.errors.items.len);
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &ts_parser));
+    try std.testing.expect(!canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    }, &ts_parser));
+
+    var flow_scanner = try Scanner.init(allocator, "// @flow\nfunction run(resource) { using local = resource; return local; }");
+    var flow_parser = Parser.init(allocator, &flow_scanner);
+    flow_parser.configureFromExtension(".js");
+    _ = try flow_parser.parse();
+    try std.testing.expect(flow_parser.is_flow);
+    try std.testing.expectEqual(@as(usize, 0), flow_parser.errors.items.len);
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &flow_parser));
+    try std.testing.expect(!canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    }, &flow_parser));
+
+    var result = try transpile(allocator, "function run(resource: any) { using local = resource; return local; }", "input.ts", minify);
+    defer result.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "using ") != null);
 }
 
 test "#4819 Flow match and enum reuse the transform graph while other runtime syntax falls back" {
