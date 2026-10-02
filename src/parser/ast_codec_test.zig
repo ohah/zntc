@@ -202,11 +202,12 @@ test "ast_codec: 변조/버전/매직/truncated 거부 (fail-safe)" {
     }
 }
 
-test "ast_codec: declare_only_names + jsx_pragma round-trip 보존" {
+test "ast_codec: type_only_binding_names + jsx_pragma round-trip 보존" {
     const alloc = testing.allocator;
     const source =
         "/** @jsx h @jsxFrag Frag */\n" ++
         "declare const X: number;\n" ++
+        "export default interface DefaultShape { value: number }\n" ++
         "export { X };\n" ++
         "const y = 1;\n";
 
@@ -217,7 +218,7 @@ test "ast_codec: declare_only_names + jsx_pragma round-trip 보존" {
     _ = try parser.parse();
 
     // 이 소스가 실제로 두 필드를 채워야 검증이 의미있다 (안 채우면 trivially-pass 갭).
-    try testing.expect(parser.ast.declare_only_names.count() > 0);
+    try testing.expect(parser.ast.type_only_binding_names.count() > 0);
     try testing.expect(parser.ast.jsx_pragma_factory != null);
 
     var buf: std.ArrayList(u8) = .empty;
@@ -230,9 +231,10 @@ test "ast_codec: declare_only_names + jsx_pragma round-trip 보존" {
         ast2.deinit();
     }
 
-    // declare_only_names 보존 (transpile.zig type-only export 판정의 입력)
-    try testing.expectEqual(parser.ast.declare_only_names.count(), ast2.declare_only_names.count());
-    try testing.expect(ast2.declare_only_names.contains("X"));
+    // type_only_binding_names 보존 (TS 자동 export 판정의 입력)
+    try testing.expectEqual(parser.ast.type_only_binding_names.count(), ast2.type_only_binding_names.count());
+    try testing.expect(ast2.type_only_binding_names.contains("X"));
+    try testing.expect(ast2.type_only_binding_names.contains("DefaultShape"));
 
     // jsx_pragma 보존 (source offset 재설정 path 검증)
     try testing.expectEqualStrings(parser.ast.jsx_pragma_factory.?, ast2.jsx_pragma_factory.?);

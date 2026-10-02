@@ -7,6 +7,7 @@ const extractExportBindings = binding_scanner.extractExportBindings;
 const types = @import("types.zig");
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
+const ts_auto_export = @import("../parser/ts_auto_export.zig");
 const import_scanner = @import("import_scanner.zig");
 const symbol = @import("symbol.zig");
 const semantic_symbol = @import("../semantic/symbol.zig");
@@ -152,6 +153,27 @@ test "export binding: export { a as b }" {
     try std.testing.expectEqual(@as(usize, 1), r.export_bindings.len);
     try std.testing.expectEqualStrings("b", r.export_bindings[0].exported_name);
     try std.testing.expectEqualStrings("a", r.export_bindings[0].local_name);
+}
+
+test "export binding: inferred type-only local aliases are omitted from scan and graph metadata" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var scanner = try Scanner.init(alloc, "interface _Shape { value: number } export { _Shape as PublicShape };");
+    var parser = Parser.init(alloc, &scanner);
+    parser.configureFromExtension(".ts");
+    parser.is_module = true;
+    parser.enable_scan = true;
+    scanner.is_module = true;
+    _ = try parser.parse();
+
+    try ts_auto_export.markAutoTypeOnlyExportSpecifiers(alloc, &parser.ast, &parser.scan_export_bindings);
+    try std.testing.expectEqual(@as(usize, 0), parser.scan_export_bindings.items.len);
+
+    const records = try import_scanner.extractImports(alloc, &parser.ast);
+    const imports = try extractImportBindings(alloc, &parser.ast, records, null);
+    const exports = try extractExportBindings(alloc, &parser.ast, records, imports);
+    try std.testing.expectEqual(@as(usize, 0), exports.len);
 }
 
 test "export binding: re-export" {

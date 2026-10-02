@@ -369,6 +369,7 @@ pub fn extractExportBindings(
                         if (@intFromEnum(spec) >= ast.nodes.items.len) continue;
                         const spec_node = ast.getNode(spec);
                         if (spec_node.tag != .export_specifier) continue;
+                        if ((spec_node.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0) continue;
 
                         // binary { left=local, right=exported }
                         const local_idx = spec_node.data.binary.left;

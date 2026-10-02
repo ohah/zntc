@@ -2062,6 +2062,34 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         'enum LongStatus { Ready = 3, Next = Ready + 1 }',
         'console.log(LongStatus.Next);',
       ].join('\n'),
+      'default-type-only-export.ts': [
+        'export default interface _Shape { value: number }',
+        'export { _Shape as PublicShape };',
+        "console.log('DEFAULT_INTERFACE_OK');",
+      ].join('\n'),
+      'type-only-resync.ts': [
+        "import './type-side-effect.ts';",
+        'interface _Shape { value: number }',
+        'export { _Shape as PublicShape };',
+        'export const runtime = 4;',
+      ].join('\n'),
+      'type-side-effect.ts': "console.log('TYPE_SIDE_EFFECT');",
+      'type-only-resync-entry.ts': [
+        "import { runtime } from './type-only-resync.ts';",
+        'console.log(runtime);',
+      ].join('\n'),
+      'type-only-import-export.ts': [
+        "import type { _Shape } from './types.ts';",
+        'export { _Shape as PublicShape };',
+        "console.log('TYPE_IMPORT_EXPORT_OK');",
+      ].join('\n'),
+      'types.ts': 'export interface _Shape { value: number }',
+      'merged-type-value.ts': [
+        'interface _Both { value: number }',
+        'const _Both = { value: 5 };',
+        'export { _Both as PublicBoth };',
+        'console.log(_Both.value);',
+      ].join('\n'),
       'explicit-type-only-export.ts': [
         'interface _Shape { value: number }',
         'export { type _Shape as PublicShape };',
@@ -2131,10 +2159,85 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(explicitResult.stderr).toBe('');
     expect(explicitResult.stdout.trim()).toBe('4');
 
-    for (const entry of ['type-only-export.ts', 'string-export.ts']) {
+    const inferredTypeOnly = await bundle('type-only-export.ts', 'inferred-type-only-export');
+    const inferredIdentity = inferredTypeOnly.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('type-only-export.ts:'));
+    expect(inferredIdentity).toBeDefined();
+    expect(inferredIdentity).toMatch(/clean=1(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(inferredIdentity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    expect(readFileSync(inferredTypeOnly.output, 'utf8')).not.toContain('_Shape');
+    expect(readFileSync(inferredTypeOnly.output, 'utf8')).not.toContain('PublicShape');
+    const inferredResult = await runNode(inferredTypeOnly.output);
+    expect(inferredResult.stderr).toBe('');
+    expect(inferredResult.stdout.trim()).toBe('4');
+
+    const defaultInterface = await bundle(
+      'default-type-only-export.ts',
+      'default-interface-export',
+    );
+    const defaultInterfaceOutput = readFileSync(defaultInterface.output, 'utf8');
+    expect(defaultInterfaceOutput).not.toContain('_Shape');
+    expect(defaultInterfaceOutput).not.toContain('PublicShape');
+    const defaultInterfaceResult = await runNode(defaultInterface.output);
+    expect(defaultInterfaceResult.stderr).toBe('');
+    expect(defaultInterfaceResult.stdout.trim()).toBe('DEFAULT_INTERFACE_OK');
+
+    const resyncedTypeOnly = await bundle('type-only-resync-entry.ts', 'resynced-type-only-export');
+    const resyncedOutput = readFileSync(resyncedTypeOnly.output, 'utf8');
+    expect(resyncedOutput).not.toContain('_Shape');
+    expect(resyncedOutput).not.toContain('PublicShape');
+    const resyncedResult = await runNode(resyncedTypeOnly.output);
+    expect(resyncedResult.stderr).toBe('');
+    expect(resyncedResult.stdout.trim()).toBe('TYPE_SIDE_EFFECT\n4');
+
+    const importedTypeOnly = await bundle('type-only-import-export.ts', 'type-only-import-export');
+    const importedTypeOutput = readFileSync(importedTypeOnly.output, 'utf8');
+    expect(importedTypeOutput).not.toContain('_Shape');
+    expect(importedTypeOutput).not.toContain('PublicShape');
+    const importedTypeResult = await runNode(importedTypeOnly.output);
+    expect(importedTypeResult.stderr).toBe('');
+    expect(importedTypeResult.stdout.trim()).toBe('TYPE_IMPORT_EXPORT_OK');
+
+    const mergedValue = await bundle('merged-type-value.ts', 'merged-type-value-export');
+    expect(readFileSync(mergedValue.output, 'utf8')).toContain('PublicBoth');
+    const mergedValueResult = await runNode(mergedValue.output);
+    expect(mergedValueResult.stderr).toBe('');
+    expect(mergedValueResult.stdout.trim()).toBe('5');
+
+    for (const entry of ['string-export.ts']) {
       const rejected = await bundle(entry, entry.replace('.ts', '-fallback'));
       expect(rejected.stderr).not.toContain(`${entry}:`);
     }
+  });
+
+  test('auto type-only export inference does not elide namespace runtime exports', async () => {
+    const fixture = await createFixture({
+      'input.ts': [
+        'type _NestedValue = string;',
+        'namespace N {',
+        '  const _NestedValue = 13;',
+        '  export { _NestedValue as value };',
+        '}',
+        'console.log(N.value);',
+      ].join('\n'),
+      'reference.js': [
+        'var N;',
+        '((N) => { const _NestedValue = 13; N.value = _NestedValue; })(N || (N = {}));',
+        'console.log(N.value);',
+      ].join('\n'),
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'nested-namespace.js');
+    const reference = await runNode(join(fixture.dir, 'reference.js'));
+    expect(reference.stdout.trim()).toBe('13');
+    const result = await runZntc([join(fixture.dir, 'input.ts'), '-o', output, '--target=esnext']);
+    expect(result.exitCode, result.stderr).toBe(0);
+    const transformed = await runNode(output);
+    expect(transformed.stderr).toBe('');
+    expect(transformed.stdout.trim()).toBe(reference.stdout.trim());
   });
 
   test('Flow enum bindings and codegen globals keep distinct symbols when mangled', async () => {

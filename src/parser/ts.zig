@@ -324,14 +324,13 @@ pub fn parseTsDeclareStatement(self: *Parser) ParseError2!NodeIndex {
     // → codegen이 ns.L1 참조 치환에 사용. 본체는 출력하지 않되 이름만 ns_export_map에 등록.
     if (self.in_namespace) return stmt;
     // top-level declare 는 strip 되어 AST 에 사라지므로, declare 된 binding name 만
-    // `ast.declare_only_names` 에 미리 등록한다. 이후 transpile.zig 의
-    // markAutoTypeOnlyExportSpecifiers 가 이 set 을 type-only 로 분류해
-    // `export { X as Y };` 의 X 가 declare 만 reference 하는 경우를 자동 elide (D13).
+    // `ast.type_only_binding_names` 에 미리 등록한다. 이후 TS 자동 export 처리기가 이 set을
+    // type-only 로 분류해 `export { X as Y };` 에서 declare 전용 이름을 자동 elide한다 (D13).
     try registerDeclareBindingNames(self, stmt);
     return NodeIndex.none;
 }
 
-/// declare 된 statement 의 top-level binding name 을 `ast.declare_only_names` 에 등록.
+/// declare 된 statement 의 top-level binding name 을 `ast.type_only_binding_names` 에 등록.
 /// parseTsDeclareStatement 가 strip 직전 호출.
 fn registerDeclareBindingNames(self: *Parser, stmt_idx: NodeIndex) ParseError2!void {
     if (stmt_idx.isNone()) return;
@@ -399,7 +398,7 @@ fn putAstDeclareName(self: *Parser, name_idx: NodeIndex) ParseError2!void {
     const name_node = self.ast.getNode(name_idx);
     const name_text = self.ast.getText(name_node.span);
     if (name_text.len == 0) return;
-    try self.ast.declare_only_names.put(self.ast.allocator, name_text, {});
+    try self.ast.type_only_binding_names.put(self.ast.allocator, name_text, {});
 }
 
 /// abstract class Foo { }

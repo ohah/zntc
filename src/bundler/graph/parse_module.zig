@@ -8,6 +8,7 @@ const plugin_mod = @import("../plugin.zig");
 const Scanner = @import("../../lexer/scanner.zig").Scanner;
 const Parser = @import("../../parser/parser.zig").Parser;
 const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+const ts_auto_export = @import("../../parser/ts_auto_export.zig");
 const profile = @import("../../profile.zig");
 const stmt_info_mod = @import("../stmt_info.zig");
 const purity = @import("../purity.zig");
@@ -183,6 +184,21 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
             module.state = .ready;
             return;
         }
+    }
+
+    // TS export { X }는 X가 type-only declaration이면 value export가 아니다.
+    // semantic analyzer와 parser scan metadata를 만들기 전에 함께 표시/정리해야
+    // bundler가 존재하지 않는 runtime export binding을 합성하지 않는다.
+    if (parser.source_mode == .ts and !parser.is_flow) {
+        ts_auto_export.markAutoTypeOnlyExportSpecifiers(
+            arena_alloc,
+            &parser.ast,
+            &parser.scan_export_bindings,
+        ) catch {
+            self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Out of memory while preparing TypeScript exports", null);
+            module.state = .ready;
+            return;
+        };
     }
 
     // Legal comments 수집 (eof/linked/external 모드용)

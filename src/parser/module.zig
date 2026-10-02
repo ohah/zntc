@@ -611,7 +611,19 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
             else => blk: {
                 // export default interface Foo {} — TS 전용, 런타임에 제거
                 if (self.current() == .kw_interface) {
-                    _ = try self.parseTsInterfaceDeclaration();
+                    const iface_idx = try self.parseTsInterfaceDeclaration();
+                    if (!iface_idx.isNone() and @intFromEnum(iface_idx) < self.ast.nodes.items.len) {
+                        const iface = self.ast.getNode(iface_idx);
+                        if (iface.data.extra < self.ast.extra_data.items.len) {
+                            const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[iface.data.extra]);
+                            if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+                                const name = self.ast.getText(self.ast.getNode(name_idx).span);
+                                if (name.len > 0) {
+                                    try self.ast.type_only_binding_names.put(self.allocator, name, {});
+                                }
+                            }
+                        }
+                    }
                     break :blk NodeIndex.none;
                 }
                 // export default abstract class Foo {}
