@@ -220,6 +220,7 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
 
     const hash = @as(u32, @truncate(wyhash.hashU64(init_code)));
 
+    const function_binding = if (info.node_tag == .function_declaration) info.node_idx else NodeIndex.none;
     const stmts = try worklet_mod.buildWorkletPropertyAssignments(
         api.transformer,
         func_name,
@@ -227,7 +228,7 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
         init_code,
         hash,
         info.source_path,
-        info.node_idx,
+        function_binding,
     );
 
     if (info.node_tag == .function_declaration) {
@@ -248,11 +249,12 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
             // class body의 getter/setter는 IIFE object_property로 교체 불가 (class syntax 제약).
             // Babel 호환: body를 `var _w=function(){...}; _w.__workletHash=...; return _w;`로 치환.
             // getter 접근 시 worklet 함수를 반환 (Reanimated runtime 동작과 일치).
-            api.modified_body = try buildFactoryBody(api, func_expr, func_name, stmts);
+            api.modified_body = try buildFactoryBody(api, func_expr, func_name, stmts, t.current_scope);
             return;
         }
 
         // 일반 object method → `{ key: (function(){ var fn=...; fn.__workletHash=...; return fn; })() }`
+        if (t.semantic_edit_enabled) try t.remapCopiedScopeOwner(info.node_idx, func_expr);
         const iife = try buildWorkletIIFE(api, func_expr, func_name, stmts);
         const key_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[me]);
         const prop = try t.ast.addNode(.{
@@ -310,6 +312,7 @@ fn buildFactoryBody(
     func_node: NodeIndex,
     func_name: []const u8,
     prop_stmts: [5]NodeIndex,
+    scope: @import("../../semantic/scope.zig").ScopeId,
 ) PluginError!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const t = api.transformer;
@@ -317,6 +320,11 @@ fn buildFactoryBody(
     // var funcName = <original function>;
     const name_span = try t.ast.addString(func_name);
     const binding = try es_helpers.makeSyntheticBinding(t, name_span);
+    const binding_symbol = if (t.semantic_edit_enabled)
+        try t.declareSyntheticInScope(binding, zero_span, .variable_var, scope)
+    else
+        null;
+    const binding_name_span = t.ast.getNode(binding).data.string_ref;
     const none = @intFromEnum(NodeIndex.none);
     const declarator = try t.addExtraNode(.variable_declarator, zero_span, &.{
         @intFromEnum(binding),
@@ -330,8 +338,20 @@ fn buildFactoryBody(
         decl_list.len,
     });
 
+    // Each generated property assignment reads the factory-local binding.
+    // Bind the reads after this IIFE's output scope and local SymbolId exist.
+    for (prop_stmts) |stmt| {
+        const statement = t.ast.getNode(stmt);
+        const assignment = t.ast.getNode(statement.data.unary.operand);
+        const member = t.ast.getNode(assignment.data.binary.left);
+        const name_ref: NodeIndex = @enumFromInt(t.ast.extra_data.items[member.data.extra]);
+        t.ast.nodes.items[@intFromEnum(name_ref)].data.string_ref = binding_name_span;
+        try t.addSyntheticRefInScope(name_ref, binding_symbol, scope, .{ .read = true });
+    }
+
     // return funcName;
     const return_ref = try es_helpers.makeSyntheticRefFromSpan(t, name_span);
+    try t.addSyntheticRefInScope(return_ref, binding_symbol, scope, .{ .read = true });
     const return_stmt = try t.ast.addNode(.{
         .tag = .return_statement,
         .span = zero_span,
@@ -364,18 +384,23 @@ fn buildWorkletIIFE(
     const t = api.transformer;
     const none = @intFromEnum(NodeIndex.none);
 
-    const body = try buildFactoryBody(api, func_node, func_name, prop_stmts);
-
     // function() { ... } (wrapper — 파라미터 없는 익명 함수)
     const empty_params = try t.ast.addNodeList(&.{});
     const empty_params_node = try t.ast.addFormalParameters(empty_params, zero_span);
     const wrapper_func = try t.addExtraNode(.function_expression, zero_span, &.{
         none, // name (anonymous)
         @intFromEnum(empty_params_node),
-        @intFromEnum(body),
+        none, // body filled after its output scope is registered
         0, // flags
         none, // return type
     });
+    const wrapper_scope = if (t.semantic_edit_enabled)
+        try t.addGeneratedFunctionScope(t.current_scope, wrapper_func)
+    else
+        .none;
+    const body = try buildFactoryBody(api, func_node, func_name, prop_stmts, wrapper_scope);
+    const wrapper_extra = t.ast.getNode(wrapper_func).data.extra;
+    t.ast.extra_data.items[wrapper_extra + ast_mod.FunctionExtra.body] = @intFromEnum(body);
 
     // (function() { ... })() — IIFE 호출
     const call_args = try t.ast.addNodeList(&.{});

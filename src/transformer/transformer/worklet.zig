@@ -548,6 +548,14 @@ fn buildPropAssignment(self: *Transformer, func_name_span: Span, prop_name: []co
         break :blk @enumFromInt(self.ast.extra_data.items[func_node.data.extra]);
     };
     const obj_ref = try self.makeIdentifierRefWithSymbol(func_name_span, name_idx);
+    if (self.semantic_edit_enabled and !name_idx.isNone()) {
+        if (self.getSymbolIdAt(name_idx)) |raw_id| {
+            // This generated read is emitted beside the function declaration.
+            // Keep its exact binding identity and record it for semantic edits.
+            try self.removeSemanticReference(obj_ref);
+            try self.addSyntheticRefInScope(obj_ref, @enumFromInt(raw_id), self.current_scope, .{ .read = true });
+        }
+    }
 
     // .__propName
     const prop_ref = try es_helpers.makePropertyName(self, prop_name);
