@@ -346,7 +346,8 @@ fn canKeepPrepassSemanticGraph(
     if (!options.strip_types) return false;
     const classic_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .classic;
     const automatic_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .automatic;
-    const graph_editable_jsx = classic_jsx or automatic_jsx;
+    const automatic_dev_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .automatic_dev;
+    const graph_editable_jsx = classic_jsx or automatic_jsx or automatic_dev_jsx;
     if ((ast.has_jsx and !graph_editable_jsx) or ast.has_decorator or ast.has_ts_import_equals or
         ast.has_ts_export_equals or ast.has_flow_enum_declaration) return false;
     if (options.unsupported.hasAny() or options.minify_syntax or
@@ -678,9 +679,9 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     };
 
     // Type erasure, Flow match lowering, TypeScript enums, and supported JSX
-    // lowerings preserve the edited semantic graph. JSX automatic adds helper
-    // imports to the AST, so refresh module import/export metadata from syntax
-    // without running the semantic analyzer again.
+    // lowerings preserve the edited semantic graph. JSX automatic and
+    // automatic-dev add helper imports to the AST, so refresh module import/export
+    // metadata from syntax without running the semantic analyzer again.
     if (can_keep_semantic_graph and !transformer.runtime_helpers.hasAny()) {
         // Generated built-ins are not source references, so the transform
         // editor cannot add them to unresolved_references. If recording them
