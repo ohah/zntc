@@ -20,7 +20,7 @@ test "base54: basic encoding" {
     try std.testing.expect(two[0] == 'e');
 }
 
-test "#4819 mangle reserves fixed-name synthetic output bindings" {
+test "#4819 namespace IIFE parameters receive final names by SymbolId" {
     const allocator = std.testing.allocator;
     const Span = @import("../lexer/token.zig").Span;
 
@@ -60,8 +60,22 @@ test "#4819 mangle reserves fixed-name synthetic output bindings" {
             .synthetic_name = "_N",
         },
     };
+    var namespace_result = try mangler.mangle(allocator, .{
+        .scopes = &scopes,
+        .symbols = &symbols,
+        .scope_maps = &scope_maps,
+        .references = &.{},
+        .source = "outer",
+        .starting_name_counter = counter,
+    });
+    defer namespace_result.deinit();
+    try std.testing.expectEqual(@as(usize, 2), namespace_result.stats.slot_count);
+    const outer_name = namespace_result.renames.get(0) orelse return error.MissingRename;
+    const parameter_name = namespace_result.renames.get(1) orelse return error.MissingRename;
+    try std.testing.expectEqualStrings("_N", outer_name);
+    try std.testing.expect(!std.mem.eql(u8, parameter_name, outer_name));
+
     const fixed_kinds = [_]SyntheticKind{
-        .namespace_iife_parameter,
         .enum_iife_parameter,
         .runtime_helper_preamble,
     };
@@ -78,8 +92,8 @@ test "#4819 mangle reserves fixed-name synthetic output bindings" {
         defer result.deinit();
 
         try std.testing.expectEqual(@as(usize, 1), result.stats.slot_count);
-        const outer_name = result.renames.get(0) orelse return error.MissingRename;
-        try std.testing.expect(!std.mem.eql(u8, outer_name, "_N"));
+        const fixed_outer_name = result.renames.get(0) orelse return error.MissingRename;
+        try std.testing.expect(!std.mem.eql(u8, fixed_outer_name, "_N"));
     }
 }
 

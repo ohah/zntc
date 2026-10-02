@@ -216,8 +216,8 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
         const new_name = slot_names[slot_id] orelse continue;
         const sym = symbols[sym_idx];
         // Bundler 합성 심볼(#1338)은 source AST에 식별자 참조가 없고 span이 (0,0).
-        // rename은 parser AST의 identifier 노드를 바꾸는 것이라 무의미 — skip.
-        if (sym.isSynthetic()) continue;
+        // namespace IIFE parameter는 codegen이 SymbolId로 직접 소비하므로 예외로 rename한다.
+        if (sym.isSynthetic() and sym.synthetic_kind != .namespace_iife_parameter) continue;
         const orig_name = if (input.ast) |ast| (if (sym.synthetic_name.len > 0) sym.synthetic_name else ast.getText(sym.name)) else sym.nameText(source);
 
         if (std.mem.eql(u8, orig_name, new_name)) continue;
@@ -277,8 +277,8 @@ fn collectScopeBindings(
             const sym = symbols[sym_idx];
             const name = entry.key_ptr.*;
 
-            // mangling 하지 않는 이름은 길이와 무관하게 예약한다. 생성된 namespace IIFE
-            // 매개변수나 JSX import alias가 `_N`/`_jsx`처럼 base54 후보와 같을 수 있다.
+            // mangling 하지 않는 이름은 길이와 무관하게 예약한다. 고정된 JSX import
+            // alias가 `_jsx`처럼 base54 후보와 같을 수 있다.
             if (shouldSkip(sym, name)) {
                 try reserved_names.put(allocator, name, {});
                 continue;
@@ -489,19 +489,18 @@ fn shouldSkip(sym: Symbol, name: []const u8) bool {
     return false;
 }
 
-/// These semantic-only symbols represent bindings that codegen emits under their
-/// existing spelling. They must reserve that spelling even though they have no
-/// parser binding node for the mangler to rename.
+/// These semantic-only symbols represent bindings that codegen emits without a
+/// parser binding node. Keep only symbols whose codegen paths cannot yet resolve
+/// their final spelling from the SymbolId out of the mangler.
 fn hasFixedOutputName(sym: Symbol) bool {
     const kind = sym.synthetic_kind orelse return false;
     return switch (kind) {
-        .namespace_iife_parameter,
         .enum_iife_parameter,
         .runtime_helper_preamble,
         => true,
         // These bundler wrapper symbols can receive their final name in Phase A;
         // their original spelling is not necessarily present in emitted output.
-        .default_export, .cjs_exports, .cjs_require, .esm_init, .enum_iife_member => false,
+        .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_member => false,
     };
 }
 

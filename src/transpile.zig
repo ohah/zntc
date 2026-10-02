@@ -2391,16 +2391,16 @@ test "#4819 native and downlevel using reuse the transform graph" {
     try std.testing.expectEqual(@as(usize, 0), output_analyzer.errors.items.len);
 }
 
-test "#4819 standalone mangling reserves namespace IIFE parameter names" {
+test "#4819 standalone mangling names namespace IIFE parameters from their SymbolIds" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
     var source: std.ArrayList(u8) = .empty;
     defer source.deinit(allocator);
 
-    // This drives `hot` to the `_N` Base54 slot. The namespace IIFE also uses
-    // `_N` as its emitted parameter, so failing to reserve that virtual binding
-    // changes `read()` from the outer value to the namespace object.
+    // This drives `hot` to the `_N` Base54 slot. The namespace parameter starts
+    // with a collision-free source spelling, then receives a distinct final
+    // name from its own SymbolId so it cannot capture `hot`.
     for (0..1841) |i| {
         const declaration = try std.fmt.allocPrint(allocator, "const v{d} = {d}; void v{d};\n", .{ i, i, i });
         try source.appendSlice(allocator, declaration);
@@ -2414,9 +2414,9 @@ test "#4819 standalone mangling reserves namespace IIFE parameter names" {
 
     var result = try transpile(allocator, source.items, "input.ts", .{ .minify_identifiers = true });
     defer result.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, result.code, "((_N) =>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.code, "const _N = 42;") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.code, "return _N;") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "((_N) =>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "const _N = 42;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "return _N;") != null);
 }
 
 test "#4819 TypeScript JSX lowering reuses the transform graph" {
