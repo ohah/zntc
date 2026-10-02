@@ -1822,6 +1822,26 @@ test "strict exact coverage rejects counter and finding drift" {
     try std.testing.expect(!marked_count_drift.hasCompleteExactCoverage());
 }
 
+test "strict symbol identity fails closed except bound external and delegated scope traces" {
+    const allocator = std.testing.allocator;
+    inline for (std.meta.tags(coverage.StrictStatus)) |status| {
+        var report: coverage.StrictReport = .{};
+        defer report.deinit(allocator);
+        report.counts[@intFromEnum(status)] = 1;
+        try report.findings.append(allocator, .{
+            .node = 1,
+            .name = "x",
+            .tag = .identifier_reference,
+            .status = status,
+            .marked_synthetic = false,
+        });
+
+        try std.testing.expect(report.isConsistent());
+        const expected_complete = status == .bound or status == .external or status == .scope_mismatch;
+        try std.testing.expectEqual(expected_complete, report.hasCompleteSymbolIdentity());
+    }
+}
+
 test "strict exact external references require matching NodeIndex provenance" {
     const allocator = std.testing.allocator;
     var ast = Ast.init(allocator, "");
