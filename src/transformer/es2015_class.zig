@@ -668,6 +668,15 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try self.bindClassSelfStorage(source_idx, func_name, iife_scope)
             else
                 false;
+            // Allocate the anonymous inner constructor identity while its
+            // binding and owning scope are known. Reads created from this point
+            // can carry the ID directly; earlier wrapper-local reads still use
+            // the generated-local scan below.
+            const generated_class_name_id = if (self.semantic_edit_enabled and name_idx.isNone() and has_extra and !class_self_storage_bound)
+                try self.declareSyntheticInScope(func_name, span, .function_decl, iife_scope)
+            else
+                null;
+            if (generated_class_name_id) |id| self.current_class_self_symbol_id = @intFromEnum(id);
 
             const previous_write_target = self.active_class_self_write_target;
             defer self.active_class_self_write_target = previous_write_target;
