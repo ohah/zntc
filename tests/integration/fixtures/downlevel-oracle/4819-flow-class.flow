@@ -1,0 +1,30 @@
+// @flow
+const shadow = 900;
+
+function build(base: number): number {
+  class Box {
+    value: number = 0;
+
+    constructor(value: number) {
+      this.value = value;
+    }
+
+    add(delta: number): number {
+      const total = this.value + delta;
+      return total;
+    }
+  }
+
+  const shadow = new Box(base);
+  return shadow.add(2);
+}
+
+const Factory = (seed: number) => class Local {
+  value: number = seed;
+
+  add(delta: number): number {
+    return this.value + delta;
+  }
+};
+
+console.log(build(40) + '|' + new (Factory(20))(0).add(2) + '|' + shadow);

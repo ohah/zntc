@@ -160,10 +160,8 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             .import_namespace_specifier,
             => facts.has_non_named_import = true,
 
-            .class_declaration, .class_expression => {
-                facts.has_runtime_sensitive_syntax = true;
-                facts.has_flow_runtime_syntax_without_complete_graph = true;
-            },
+            // Flow class lowering preserves source binding identities in the edited graph.
+            .class_declaration, .class_expression => facts.has_runtime_sensitive_syntax = true,
 
             .private_identifier,
             .private_field_expression,
@@ -2298,7 +2296,7 @@ test "#4819 TypeScript JSX lowering reuses the transform graph" {
     try std.testing.expectEqual(@as(usize, 0), classic_output_analyzer.unresolved_references.count());
 }
 
-test "#4819 Flow match and enum reuse the transform graph while other runtime syntax falls back" {
+test "#4819 Flow match, enum, and plain classes reuse the transform graph" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -2331,9 +2329,26 @@ test "#4819 Flow match and enum reuse the transform graph while other runtime sy
         }
         try std.testing.expect(has_runtime_tag);
         try std.testing.expectEqual(
-            item.tag == .flow_match_expression or item.tag == .flow_enum_declaration or item.tag == .flow_component_wrapper,
+            item.tag == .flow_match_expression or
+                item.tag == .flow_enum_declaration or
+                item.tag == .flow_component_wrapper or
+                item.tag == .class_declaration,
             canMangleWithTransformSemantic(minify, &runtime_parser),
         );
+    }
+
+    const unsupported_class_sources = [_][]const u8{
+        "// @flow\nclass Box { #value: number = 1; read() { return this.#value; } }",
+        "// @flow\nfunction dec(value) { return value; } @dec class Box {}",
+    };
+    for (unsupported_class_sources) |source| {
+        var unsupported_scanner = try Scanner.init(allocator, source);
+        var unsupported_parser = Parser.init(allocator, &unsupported_scanner);
+        unsupported_parser.configureFromExtension(".js");
+        _ = try unsupported_parser.parse();
+        try std.testing.expect(unsupported_parser.is_flow);
+        try std.testing.expectEqual(@as(usize, 0), unsupported_parser.errors.items.len);
+        try std.testing.expect(!canMangleWithTransformSemantic(minify, &unsupported_parser));
     }
 
     var jsx_scanner = try Scanner.init(allocator, "// @flow\nconst view = <div />;");
