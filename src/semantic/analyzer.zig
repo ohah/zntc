@@ -1782,6 +1782,7 @@ pub const SemanticAnalyzer = struct {
             .ts_module_declaration => try self.visitNamespaceDeclaration(node),
             .ts_enum_declaration => try self.visitEnumDeclaration(node),
             .flow_enum_declaration => try self.visitFlowEnumDeclaration(node),
+            .ts_import_equals_declaration => try self.visitImportEqualsDeclaration(node),
 
             // ---- 선언 노드 ----
             .variable_declaration => try self.visitVariableDeclaration(node),
@@ -2538,6 +2539,7 @@ pub const SemanticAnalyzer = struct {
                     if (self.flowComponentConstDeclaration(node)) |decl| try self.predeclareVarDecl(decl);
                 },
                 .ts_module_declaration => try self.predeclareNamespaceDecl(node),
+                .ts_import_equals_declaration => try self.predeclareImportEqualsDecl(node),
                 // RFC #3310 (D20): import 는 module top hoist — user binding 을
                 // .import_binding symbol 로 1st-pass 등록 (forward export/value use).
                 .import_declaration => try self.predeclareImportDecl(node),
@@ -3319,6 +3321,35 @@ pub const SemanticAnalyzer = struct {
         }
     }
 
+    /// `import X = ...` lowers to a const binding. Register that binding before
+    /// visiting the statement list so forward references and transformed output
+    /// share the same SymbolId.
+    fn predeclareImportEqualsDecl(self: *SemanticAnalyzer, node: Node) AllocError!void {
+        const name_idx = node.data.binary.left;
+        if (name_idx.isNone() or @intFromEnum(name_idx) >= self.ast.nodes.items.len) return;
+        const name_node = self.ast.getNode(name_idx);
+        if (name_node.tag != .identifier_reference) return;
+        try self.declareSymbolWithNode(name_node.span, .variable_const, node.span, @intFromEnum(name_idx));
+    }
+
+    fn visitImportEqualsDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
+        const name_idx = node.data.binary.left;
+        if (name_idx.isNone() or @intFromEnum(name_idx) >= self.ast.nodes.items.len) return;
+        const name_node = self.ast.getNode(name_idx);
+        if (name_node.tag != .identifier_reference) return;
+        try self.checkStrictBindingName(name_node.span);
+        // Program/namespace lists and lexical block lists predeclare this node.
+        // Keep a direct declaration path for parser contexts outside those lists.
+        if (self.symbolIndexOfNode(name_idx) == null and
+            self.findSymbolIndexInScope(self.current_scope, self.ast.getText(name_node.span)) == null)
+        {
+            try self.declareSymbolWithNode(name_node.span, .variable_const, node.span, @intFromEnum(name_idx));
+        }
+        // The left child is the declaration name, not a read reference. The RHS
+        // is an ordinary value expression (`require(...)` or a namespace alias).
+        try self.visitNode(node.data.binary.right);
+    }
+
     /// Block 스코프에 let/const/class 선언을 미리 등록 (statement 순회 전).
     /// `predeclareVarDecls` 의 lexical 버전 — var/function 은 함수 스코프로 hoisting 되므로
     /// 여기서는 다루지 않고 `visitFunctionBodyInner` 의 기존 경로를 사용한다.
@@ -3360,6 +3391,9 @@ pub const SemanticAnalyzer = struct {
                             self.alloc_failed = true;
                         };
                     }
+                },
+                .ts_import_equals_declaration => self.predeclareImportEqualsDecl(stmt) catch {
+                    self.alloc_failed = true;
                 },
                 else => {},
             }
