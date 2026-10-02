@@ -135,6 +135,69 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('bundler prepass exact gate covers retained and reanalyzed semantic graphs', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-prepass-exact-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(join(dir, 'dep.ts'), 'export namespace Data { export const value = 42; }');
+    writeFileSync(
+      join(dir, 'entry.tsx'),
+      [
+        "import { Data } from './dep';",
+        'function render(h: (tag: string, props: unknown, child: number) => number) {',
+        '  return <main>{Data.value}</main>;',
+        '}',
+        'console.log(render((_tag, _props, child) => child));',
+      ].join('\n'),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.tsx',
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--jsx=classic',
+          '--jsx-factory=h',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const reports = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .filter((line) => line.includes('zntc: symbol-identity-prepass '));
+      expect(reports, proc.stderr).toHaveLength(2);
+      for (const report of reports) {
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(Number(report.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+        }
+        expect(report).toMatch(/clean=1(?:\s|$)/);
+      }
+
+      const retained = reports.find((line) => line.includes('dep.ts'));
+      const reanalyzed = reports.find((line) => line.includes('entry.tsx'));
+      expect(retained, reports.join('\n')).toBeDefined();
+      expect(reanalyzed, reports.join('\n')).toBeDefined();
+      expect(Number(retained?.match(/namespace_iife_params=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+      expect(Number(reanalyzed?.match(/generated_references=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('가상 namespace IIFE 매개변수도 정확한 SymbolId와 ScopeId를 가진다', () => {
     const file = join(FIXTURE_DIR, '4819-namespace-iife-params.ts');
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-namespace-param-'));
