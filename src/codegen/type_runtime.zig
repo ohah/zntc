@@ -377,6 +377,10 @@ fn namespaceIifeParamName(self: anytype, namespace_idx: NodeIndex) ?[]const u8 {
     return generatedIifeParamName(self, namespace_idx, .namespace_iife_parameter);
 }
 
+fn namespaceIifeParamSymbolId(self: anytype, namespace_idx: NodeIndex) ?u32 {
+    return generatedIifeParamSymbolId(self, namespace_idx, .namespace_iife_parameter);
+}
+
 fn enumIifeParamName(self: anytype, enum_idx: NodeIndex) ?[]const u8 {
     return generatedIifeParamName(self, enum_idx, .enum_iife_parameter);
 }
@@ -411,6 +415,15 @@ pub fn emitEnumIifeMemberReference(self: anytype, node: Node, member: anytype) !
 }
 
 fn generatedIifeParamName(self: anytype, owner_idx: NodeIndex, expected_kind: SyntheticKind) ?[]const u8 {
+    const raw_id = generatedIifeParamSymbolId(self, owner_idx, expected_kind) orelse return null;
+    const symbol = self.options.semantic_symbols[@intCast(raw_id)];
+    if (self.options.linking_metadata) |metadata| {
+        if (metadata.renames.get(raw_id)) |renamed| return renamed;
+    }
+    return symbol.synthetic_name;
+}
+
+fn generatedIifeParamSymbolId(self: anytype, owner_idx: NodeIndex, expected_kind: SyntheticKind) ?u32 {
     const owners = self.options.generated_iife_scope_owner_map orelse return null;
     const scope = owners.get(@intFromEnum(owner_idx)) orelse return null;
     if (scope >= self.options.semantic_scope_maps.len) return null;
@@ -420,10 +433,7 @@ fn generatedIifeParamName(self: anytype, owner_idx: NodeIndex, expected_kind: Sy
         if (raw_id >= self.options.semantic_symbols.len) continue;
         const symbol = self.options.semantic_symbols[raw_id];
         if (symbol.synthetic_kind != expected_kind or @intFromEnum(symbol.scope_id) != scope) continue;
-        if (self.options.linking_metadata) |metadata| {
-            if (metadata.renames.get(@intCast(raw_id))) |renamed| return renamed;
-        }
-        return symbol.synthetic_name;
+        return @intCast(raw_id);
     }
     return null;
 }
@@ -544,7 +554,10 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
     // properties. Track precisely those source symbols, including a parent
     // namespace frame for references from a nested namespace body.
     var frame: NamespaceFrame = .{
-        .prefix = param_name,
+        .prefix = .{
+            .symbol_id = namespaceIifeParamSymbolId(self, namespace_idx),
+            .fallback_name = param_name,
+        },
         .owner_symbol = if (self.sourceSymbolId(name_idx)) |sid| blk: {
             if (self.options.namespace_declaration_owners) |owners| {
                 break :blk owners.get(sid) orelse sid;
@@ -965,7 +978,7 @@ fn generatedIifeParamReserved(
 ) bool {
     var frame = self.ns_frame;
     while (frame) |active| : (frame = active.parent) {
-        if (std.mem.eql(u8, active.prefix, candidate)) return true;
+        if (std.mem.eql(u8, self.namespacePrefixName(active.prefix), candidate)) return true;
     }
     if (self.options.linking_metadata) |metadata| {
         var it = metadata.renames.valueIterator();

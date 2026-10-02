@@ -13,9 +13,12 @@ const Parser = helpers.Parser;
 const Transformer = helpers.Transformer;
 const Codegen = helpers.Codegen;
 const TestResult = helpers.TestResult;
+const Ast = @import("../../parser/ast.zig").Ast;
 const NodeIndex = @import("../../parser/ast.zig").NodeIndex;
 const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+const Symbol = @import("../../semantic/symbol.zig").Symbol;
 const LinkingMetadata = @import("../../bundler/linker.zig").LinkingMetadata;
+const NamespaceFrame = @import("../codegen.zig").NamespaceFrame;
 
 test "Codegen: empty program" {
     var r = try e2e(std.testing.allocator, "");
@@ -301,6 +304,71 @@ test "Codegen: namespace destructuring export follows renamed local SymbolId" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "[binding]=[1]") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "N.original=binding;") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "N.original=original;") == null);
+}
+
+test "Codegen: namespace export prefix resolves its final parameter SymbolId name" {
+    const allocator = std.testing.allocator;
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+
+    const skip_nodes = try std.DynamicBitSet.initEmpty(allocator, 0);
+    var renames: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    try renames.put(allocator, 0, "shortNamespace");
+    var metadata: LinkingMetadata = .{
+        .skip_nodes = skip_nodes,
+        .renames = renames,
+        .final_exports = null,
+        .symbol_ids = &.{7},
+        .allocator = allocator,
+    };
+    defer metadata.deinit();
+
+    const symbols = [_]Symbol{
+        .{
+            .name = .{ .start = 0, .end = 0 },
+            .scope_id = @enumFromInt(0),
+            .origin_scope = @enumFromInt(0),
+            .kind = .parameter,
+            .declaration_span = .{ .start = 0, .end = 0 },
+            .synthetic_kind = .namespace_iife_parameter,
+            .synthetic_name = "_LongNamespace",
+        },
+        .{
+            .name = .{ .start = 0, .end = 0 },
+            .scope_id = @enumFromInt(0),
+            .origin_scope = @enumFromInt(0),
+            .kind = .parameter,
+            .declaration_span = .{ .start = 0, .end = 0 },
+            .synthetic_kind = .namespace_iife_parameter,
+            .synthetic_name = "_PlainNamespace",
+        },
+    };
+
+    var exported_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer exported_symbols.deinit(allocator);
+    try exported_symbols.put(allocator, 7, {});
+    const frame: NamespaceFrame = .{
+        .prefix = .{ .symbol_id = 0, .fallback_name = "stalePrefix" },
+        .exported_symbols = exported_symbols,
+        .parent = null,
+    };
+    var cg = Codegen.initWithOptions(allocator, &ast, .{
+        .linking_metadata = &metadata,
+        .semantic_symbols = &symbols,
+    });
+    defer cg.deinit();
+    cg.ns_frame = &frame;
+
+    const prefix = cg.namespaceExportPrefix(@enumFromInt(0)) orelse return error.MissingNamespacePrefix;
+    try std.testing.expectEqualStrings("shortNamespace", cg.namespacePrefixName(prefix));
+    try std.testing.expectEqualStrings(
+        "_PlainNamespace",
+        cg.namespacePrefixName(.{ .symbol_id = 1, .fallback_name = "stalePrefix" }),
+    );
+    try std.testing.expectEqualStrings(
+        "legacyPrefix",
+        cg.namespacePrefixName(.{ .symbol_id = null, .fallback_name = "legacyPrefix" }),
+    );
 }
 
 test "Codegen: const enum removed" {
