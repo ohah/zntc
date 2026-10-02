@@ -33,8 +33,13 @@ pub const KeepNameEntry = options_mod.KeepNameEntry;
 const SourceMapBuilder = @import("sourcemap.zig").SourceMapBuilder;
 const FunctionMapBuilder = @import("function_map.zig").FunctionMapBuilder;
 
+pub const NamespacePrefix = struct {
+    symbol_id: ?u32,
+    fallback_name: []const u8,
+};
+
 pub const NamespaceFrame = struct {
-    prefix: []const u8,
+    prefix: NamespacePrefix,
     owner_symbol: ?u32 = null,
     exported_symbols: std.AutoHashMapUnmanaged(u32, void),
     parent: ?*const NamespaceFrame,
@@ -420,7 +425,7 @@ pub const Codegen = struct {
         return null;
     }
 
-    pub fn namespaceExportPrefix(self: *Codegen, idx: NodeIndex) ?[]const u8 {
+    pub fn namespaceExportPrefix(self: *Codegen, idx: NodeIndex) ?NamespacePrefix {
         const sid = self.sourceSymbolId(idx) orelse return null;
         const proxy_owner = if (self.options.namespace_member_owners) |owners| owners.get(sid) else null;
         var frame = self.ns_frame;
@@ -429,6 +434,24 @@ pub const Codegen = struct {
             if (proxy_owner != null and active.owner_symbol == proxy_owner) return active.prefix;
         }
         return null;
+    }
+
+    /// Resolve a namespace IIFE prefix from its parameter SymbolId at the point
+    /// of emission. The fallback is retained only for codegen callers without a
+    /// semantic namespace owner map.
+    pub fn namespacePrefixName(self: *Codegen, prefix: NamespacePrefix) []const u8 {
+        if (prefix.symbol_id) |sid| {
+            if (self.options.linking_metadata) |metadata| {
+                if (metadata.renames.get(sid)) |renamed| return renamed;
+            }
+            if (sid < self.options.semantic_symbols.len) {
+                const symbol = self.options.semantic_symbols[sid];
+                if (symbol.synthetic_kind == .namespace_iife_parameter and symbol.synthetic_name.len > 0) {
+                    return symbol.synthetic_name;
+                }
+            }
+        }
+        return prefix.fallback_name;
     }
 
     /// export default X에서 X의 (rename된) 이름이 def_name과 같은지 확인.

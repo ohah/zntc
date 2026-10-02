@@ -217,7 +217,7 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
                 if (self.namespaceExportPrefix(idx)) |prefix| {
                     const name = self.ast.getText(node.data.string_ref);
                     try self.addSourceMappingWithName(node.span, name);
-                    try self.write(prefix);
+                    try self.write(self.namespacePrefixName(prefix));
                     try self.writeByte('.');
                     try self.write(name);
                     return;
@@ -275,7 +275,7 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
                 if (self.namespaceExportPrefix(idx)) |prefix| {
                     const name = self.ast.getText(node.data.string_ref);
                     try self.addSourceMappingWithName(node.span, name);
-                    try self.write(prefix);
+                    try self.write(self.namespacePrefixName(prefix));
                     try self.writeByte('.');
                     try self.write(name);
                     return;
