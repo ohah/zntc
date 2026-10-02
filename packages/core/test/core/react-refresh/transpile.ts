@@ -1,4 +1,5 @@
 import { describe, test, expect } from '../helpers';
+import { runInNewContext } from 'node:vm';
 import { transpileReactRefreshCode } from './fixture';
 
 describe('React Refresh: transpile() single-file path', () => {
@@ -107,6 +108,101 @@ export default MyComp;`;
       });
       expect(code).not.toContain('$RefreshSig$');
       expect(code).not.toContain('$RefreshReg$');
+    });
+
+    test('identifier minify가 helper 이름과 refresh handle 충돌을 피하고 등록 심볼을 따라간다', () => {
+      const code = transpileReactRefreshCode(
+        `
+          const _c = 100;
+          const _c2 = 200;
+          const _s = 300;
+          const _s2 = 400;
+          const $RefreshReg$ = 'local-reg';
+          const $RefreshSig$ = 'local-sig';
+          function App() {
+            const state = useState(1);
+            return state + _c + _s;
+          }
+          function Card() { return _c2 + _s2; }
+          function readLocalRefreshNames() { return [$RefreshReg$, $RefreshSig$]; }
+          globalThis.runRefreshResults = () => [App(), Card(), readLocalRefreshNames()];
+        `,
+        {
+          filename: 'RefreshCollision.tsx',
+          target: 'es5',
+          minifyIdentifiers: true,
+          reactRefresh: true,
+          reactRefreshHookSignatures: true,
+        },
+      );
+
+      const registrations: Array<{ component: () => number; name: string }> = [];
+      const signatures: Array<{ component: () => number; signature: string }> = [];
+      const context: Record<string, unknown> = {
+        $RefreshReg$: (component: () => number, name: string) =>
+          registrations.push({ component, name }),
+        $RefreshSig$:
+          () =>
+          (...args: unknown[]) => {
+            if (args.length === 2)
+              signatures.push({ component: args[0] as () => number, signature: args[1] as string });
+          },
+        useState: (value: number) => value,
+      };
+
+      runInNewContext(code, context);
+      expect((context.runRefreshResults as () => unknown[])()).toEqual([
+        401,
+        600,
+        ['local-reg', 'local-sig'],
+      ]);
+      expect(registrations.map(({ name }) => name).sort()).toEqual(['App', 'Card']);
+      expect(registrations.find(({ name }) => name === 'App')?.component()).toBe(401);
+      expect(registrations.find(({ name }) => name === 'Card')?.component()).toBe(600);
+      expect(signatures).toHaveLength(1);
+      expect(signatures[0].component()).toBe(401);
+      expect(signatures[0].signature).toContain('useState');
+    });
+
+    test('React Refresh를 켜도 direct eval이 읽는 지역 이름을 유지한다', () => {
+      const code = transpileReactRefreshCode(
+        `
+          function App() {
+            const evalVisibleName = 73;
+            return eval('evalVisibleName');
+          }
+          globalThis.runApp = () => App();
+        `,
+        { filename: 'RefreshEval.jsx', minifyIdentifiers: true, reactRefresh: true },
+      );
+      const context: Record<string, unknown> = {
+        $RefreshReg$: () => {},
+      };
+
+      runInNewContext(code, context);
+      expect((context.runApp as () => number)()).toBe(73);
+    });
+
+    test('Flow 입력도 지원되는 문법이면 transform 심볼 그래프를 사용한다', () => {
+      const code = transpileReactRefreshCode(
+        `
+          const outside: number = 19;
+          function App(): number {
+            const local: number = 23;
+            return local + outside;
+          }
+          globalThis.runApp = () => App();
+        `,
+        { filename: 'RefreshFlow.js', flow: true, minifyIdentifiers: true, reactRefresh: true },
+      );
+      const registrations: string[] = [];
+      const context: Record<string, unknown> = {
+        $RefreshReg$: (_component: unknown, name: string) => registrations.push(name),
+      };
+
+      runInNewContext(code, context);
+      expect((context.runApp as () => number)()).toBe(42);
+      expect(registrations).toEqual(['App']);
     });
   });
 });

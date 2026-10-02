@@ -597,11 +597,13 @@ fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
 
 /// The transform semantic editor carries identifier IDs, references, and output
 /// scopes through JavaScript and TypeScript lowering paths whose semantic edits
-/// are complete, including enum IIFEs. Keep still-unhandled runtime-generating
-/// TS/Flow constructs outside this graph until their edits are complete.
+/// are complete, including enum IIFEs and React Refresh registrations. Refresh
+/// handles and hook signatures are added before `finishSemanticEdit`; their
+/// component refs carry source SymbolIds and their runtime hooks are explicit
+/// globals. Keep still-unhandled runtime-generating TS/Flow constructs outside
+/// this graph until their edits are complete.
 fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Parser) bool {
-    if (!options.minify_identifiers or
-        options.react_refresh or options.react_refresh_hook_signatures) return false;
+    if (!options.minify_identifiers) return false;
 
     // emitDecoratorMetadata is currently modeled for TypeScript legacy
     // decorators. Other parser modes/options stay on the established analyzer.
@@ -2123,6 +2125,30 @@ test "#4819 class lowering reuses transform semantic graph" {
     try std.testing.expect(canMangleWithTransformSemantic(.{
         .minify_identifiers = true,
         .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    }, &parser));
+}
+
+test "#4819 React Refresh output reuses transform semantic graph" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(
+        allocator,
+        "function App() { const value = useState(1); return value; }",
+    );
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".tsx");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    try std.testing.expect(canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .react_refresh = true,
+    }, &parser));
+    try std.testing.expect(canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .react_refresh = true,
+        .react_refresh_hook_signatures = true,
     }, &parser));
 }
 
