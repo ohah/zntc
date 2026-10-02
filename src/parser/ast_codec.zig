@@ -11,7 +11,7 @@
 //!
 //! PR1 범위 = AST 만. semantic(symbols/scopes/references) / import_records / Module 레벨은
 //! 후속 PR. `string_interns`(parse dedup 최적화 — codegen/transformer 가 read 안 함, 확인됨)
-//! 는 빈 맵으로 복원. `declare_only_names`(transpile.zig 의 type-only export 판정이 read)는
+//! 는 빈 맵으로 복원. `type_only_binding_names`(TS 자동 export 판정이 read)는
 //! 직렬화한다 — 누락 시 `declare const X; export {X}` 가 value export 로 잘못 출력된다.
 //!
 //! 포맷은 host endian/정렬 native — cross-arch 캐시 공유엔 부적합(magic 불일치 시 fail-safe
@@ -126,11 +126,11 @@ pub fn serialize(ast: *const Ast, out: *std.ArrayList(u8), alloc: std.mem.Alloca
     try putBytes(&payload, alloc, std.mem.sliceAsBytes(ast.extra_data.items));
     try putBytes(&payload, alloc, ast.string_table.items);
 
-    // declare_only_names 키 (transpile.zig type-only export 판정용). 키는 source/string_table
+    // type_only_binding_names 키 (TS 자동 export 판정용). 키는 source/string_table
     // backed slice 라 문자열 자체를 저장하고, deserialize 가 string_table 에 귀속시켜 복원.
     // 키를 정렬(lexicographic)해 HashMap iteration 순서 비결정성을 제거한다 — 같은 입력은
     // 항상 같은 byte stream (캐시 결정성). deserialize 는 순서 무관(키 set 복원).
-    try putSortedKeySet(&payload, alloc, &ast.declare_only_names);
+    try putSortedKeySet(&payload, alloc, &ast.type_only_binding_names);
 
     // 메타 플래그 7개 (1바이트씩)
     const flags = [_]bool{
@@ -228,7 +228,7 @@ pub fn deserialize(data: []const u8, alloc: std.mem.Allocator) Error!Ast {
 
     try ast.string_table.appendSlice(alloc, strtab_bytes);
 
-    // declare_only_names: 키를 string_table 에 append 후 슬라이스로 등록 (소유권=string_table,
+    // type_only_binding_names: 키를 string_table 에 append 후 슬라이스로 등록 (소유권=string_table,
     // ast.deinit 가 일괄 해제). append 가 realloc 할 수 있으니 전부 append 후 offset 으로 슬라이스
     // 를 만들어 put (2-pass — 1-pass 면 먼저 만든 슬라이스가 realloc 으로 dangling).
     const decl_count = try r.u32v();
@@ -242,7 +242,7 @@ pub fn deserialize(data: []const u8, alloc: std.mem.Allocator) Error!Ast {
             try ast.string_table.appendSlice(alloc, kb);
         }
         for (spans) |sp| {
-            try ast.declare_only_names.put(alloc, ast.string_table.items[sp.off..][0..sp.len], {});
+            try ast.type_only_binding_names.put(alloc, ast.string_table.items[sp.off..][0..sp.len], {});
         }
     }
 

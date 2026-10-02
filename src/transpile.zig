@@ -25,6 +25,7 @@ const cg_options = @import("codegen/options.zig");
 const SourceMap = @import("codegen/sourcemap.zig");
 const Mangler = @import("codegen/mod.zig").mangler;
 const module_parser = @import("parser/module.zig");
+const ts_auto_export = @import("parser/ts_auto_export.zig");
 const qualified_type_name = @import("transformer/qualified_type_name.zig");
 const LinkingMetadata = @import("bundler/linker.zig").LinkingMetadata;
 const rt = @import("bundler/runtime_helpers.zig");
@@ -780,257 +781,6 @@ fn collectBindingLite(allocator: std.mem.Allocator, ast: *const Ast) !BindingLit
     return lite;
 }
 
-/// Babel `preset-typescript` 의 자동 type-only export elision 을 모든 변환 경로에서
-/// 재현. transformer 의 `.export_specifier` 디스패치가 SPEC_FLAG_TYPE_ONLY 비트를 보고
-/// 자동 drop 하므로, 비트만 일관되게 마킹하면 .none / .bindings / .full 모두 동일 출력.
-///
-/// **호출 시점**: `SemanticAnalyzer.analyze()` 호출 전. .full 경로의 analyzer 가
-/// 마킹된 비트를 보고 specifier 검증을 skip 한다. .none / .bindings 도 동일 비트 기반.
-///
-/// **두 패스**:
-///   pass 1 (top-level statement walk): value binding name (var/let/const/function/class
-///   /enum, import default/namespace/named-value) 과 type-only binding name (type alias,
-///   interface, import-type specifier) 을 각각 set 에 수집. declaration merging
-///   (`const X = 1; type X = ...;`) 처리를 위해 value 가 type 보다 우선.
-///   pass 2 (export_named_declaration scan): source 없는 `export { x }` 의 specifier
-///   중 local 이 value_names 에 없고 type_only_names 에 있는 것만 비트 OR.
-///
-/// 재-export (`export { x } from './y'`) 는 로컬 binding 과 무관 → skip.
-/// `export { 'name' }` string literal local 도 식별자가 아니라 skip.
-fn markAutoTypeOnlyExportSpecifiers(
-    allocator: std.mem.Allocator,
-    ast: *Ast,
-) error{OutOfMemory}!void {
-    // program 의 top-level statements 만 본다. ES module spec: export 는 모듈 scope
-    // binding 만 reference. nested function 의 local var/type alias 는 export 와 무관.
-    var program_idx: ast_mod.NodeIndex = .none;
-    for (ast.nodes.items, 0..) |node, raw_idx| {
-        if (node.tag == .program) {
-            program_idx = @enumFromInt(raw_idx);
-            break;
-        }
-    }
-    if (program_idx.isNone()) return;
-    const prog_node = ast.getNode(program_idx);
-    const stmt_start = prog_node.data.list.start;
-    const stmt_len = prog_node.data.list.len;
-    if (stmt_len == 0) return;
-
-    var value_names: std.StringHashMapUnmanaged(void) = .empty;
-    defer value_names.deinit(allocator);
-    var type_only_names: std.StringHashMapUnmanaged(void) = .empty;
-    defer type_only_names.deinit(allocator);
-
-    // pass 1
-    var i: u32 = 0;
-    while (i < stmt_len) : (i += 1) {
-        const stmt_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[stmt_start + i]);
-        if (stmt_idx.isNone()) continue;
-        if (@intFromEnum(stmt_idx) >= ast.nodes.items.len) continue;
-        try collectAutoTypeOnlyDeclNames(allocator, ast, stmt_idx, &value_names, &type_only_names);
-    }
-
-    // ast.declare_only_names: top-level `declare class/function/var/...` 는 parser 가
-    // strip 해 AST 에 없지만, 이름 자체는 parser 가 사이드테이블에 등록 (D13). value-only
-    // binding 으로 분류되지 않는 type-only binding 으로 취급.
-    if (type_only_names.count() == 0 and ast.declare_only_names.count() == 0) return;
-
-    // pass 2
-    for (ast.nodes.items) |node| {
-        if (node.tag != .export_named_declaration) continue;
-        const extra_start = node.data.extra;
-        const extras = ast.extra_data.items;
-        if (extra_start + 3 >= extras.len) continue;
-        const specs_start = extras[extra_start + 1];
-        const specs_len = extras[extra_start + 2];
-        const source_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra_start + 3]);
-        if (!source_idx.isNone()) continue;
-        if (specs_len == 0 or specs_start + specs_len > extras.len) continue;
-
-        const spec_indices = extras[specs_start .. specs_start + specs_len];
-        for (spec_indices) |raw_idx| {
-            const spec_idx: ast_mod.NodeIndex = @enumFromInt(raw_idx);
-            if (spec_idx.isNone()) continue;
-            if (@intFromEnum(spec_idx) >= ast.nodes.items.len) continue;
-            const spec_node = ast.getNode(spec_idx);
-            if (spec_node.tag != .export_specifier) continue;
-            if ((spec_node.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0) continue;
-
-            const local_idx = spec_node.data.binary.left;
-            if (local_idx.isNone()) continue;
-            if (@intFromEnum(local_idx) >= ast.nodes.items.len) continue;
-            const local_node = ast.getNode(local_idx);
-            if (local_node.tag == .string_literal) continue;
-
-            const local_name = ast.getText(local_node.span);
-            // declaration merging: 동명의 value binding 이 있으면 type-only 마킹 skip.
-            // `const X = 1; type X = ...; export { X };` 또는
-            // `class A {}; declare class A; export { A };` 양쪽에서 value 우선.
-            if (value_names.contains(local_name)) continue;
-            if (type_only_names.contains(local_name) or
-                ast.declare_only_names.contains(local_name))
-            {
-                ast.setBinaryFlags(spec_idx, spec_node.data.binary.flags | module_parser.SPEC_FLAG_TYPE_ONLY);
-            }
-        }
-    }
-}
-
-/// `markAutoTypeOnlyExportSpecifiers` pass 1 의 statement-level 분기. top-level
-/// program statement 한 개를 처리.
-fn collectAutoTypeOnlyDeclNames(
-    allocator: std.mem.Allocator,
-    ast: *const Ast,
-    stmt_idx: ast_mod.NodeIndex,
-    value_names: *std.StringHashMapUnmanaged(void),
-    type_only_names: *std.StringHashMapUnmanaged(void),
-) error{OutOfMemory}!void {
-    const stmt = ast.getNode(stmt_idx);
-    switch (stmt.tag) {
-        // value bindings: function / class / enum — extras[0] = name
-        .function_declaration,
-        .class_declaration,
-        .ts_enum_declaration,
-        => try putNameAtExtraSlot(allocator, ast, stmt, 0, value_names),
-
-        // ts_module_declaration: binary layout — binary.left = name (namespace) 또는
-        // string_literal (declare module "..."). 후자는 binding 이름이 아니라 skip.
-        .ts_module_declaration => {
-            const name_idx = stmt.data.binary.left;
-            if (name_idx.isNone()) return;
-            if (@intFromEnum(name_idx) >= ast.nodes.items.len) return;
-            const name_node = ast.getNode(name_idx);
-            if (name_node.tag == .string_literal) return;
-            try putNodeIdName(allocator, ast, name_idx, value_names);
-        },
-
-        // import X = require(...) — runtime value
-        .ts_import_equals_declaration => {
-            // binary: left=name, right=value
-            const left = stmt.data.binary.left;
-            try putNodeIdName(allocator, ast, left, value_names);
-        },
-
-        // variable_declaration: destructuring 포함 모든 binding identifier 추출.
-        // extras = [kind_flags, list_start, list_len]
-        .variable_declaration => {
-            const list_start = ast.extra_data.items[stmt.data.extra + 1];
-            const list_len = ast.extra_data.items[stmt.data.extra + 2];
-            var j: u32 = 0;
-            while (j < list_len) : (j += 1) {
-                const decl_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[list_start + j]);
-                if (decl_idx.isNone()) continue;
-                const decl = ast.getNode(decl_idx);
-                if (decl.tag != .variable_declarator) continue;
-                // variable_declarator extras[0] = binding pattern (또는 simple identifier)
-                const binding_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[decl.data.extra]);
-                try collectBindingIdentifierNames(allocator, ast, binding_idx, value_names);
-            }
-        },
-
-        // type-only declarations
-        .ts_type_alias_declaration,
-        .ts_interface_declaration,
-        => try putNameAtExtraSlot(allocator, ast, stmt, 0, type_only_names),
-
-        // import declaration: type-only spec / inline `type X` 는 type_only_names,
-        // 나머지 (default / namespace / named-value) 는 value_names
-        .import_declaration => {
-            const decl = module_parser.readImportDeclExtras(ast, stmt.data.extra);
-            var j: u32 = 0;
-            while (j < decl.specs_len) : (j += 1) {
-                const spec_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[decl.specs_start + j]);
-                if (spec_idx.isNone()) continue;
-                if (@intFromEnum(spec_idx) >= ast.nodes.items.len) continue;
-                const spec = ast.getNode(spec_idx);
-                switch (spec.tag) {
-                    // import_specifier: binary { left=imported, right=local }
-                    .import_specifier => {
-                        const local_idx = spec.data.binary.right;
-                        if (local_idx.isNone()) continue;
-                        const is_type_only = decl.is_type_only or
-                            (spec.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0;
-                        const bucket = if (is_type_only) type_only_names else value_names;
-                        try putNodeIdName(allocator, ast, local_idx, bucket);
-                    },
-                    // import_default_specifier / import_namespace_specifier: 파서가 local
-                    // 이름을 spec_node.span (string_ref) 에 직접 저장 — 별도 name 노드
-                    // 없음 (module.zig parseImportClause). codegen/analyzer 와 동일하게
-                    // span 텍스트로 읽는다 (D13 layout: 이전엔 extra_data 인덱스로 오독).
-                    .import_default_specifier, .import_namespace_specifier => {
-                        const name_text = ast.getText(spec.span);
-                        if (name_text.len == 0) continue;
-                        const bucket = if (decl.is_type_only) type_only_names else value_names;
-                        try bucket.put(allocator, name_text, {});
-                    },
-                    else => {},
-                }
-            }
-        },
-
-        // export declaration 안의 nested decl 도 처리 (export const / type / interface / ...).
-        // extras = [decl, specs_start, specs_len, source, ...]
-        .export_named_declaration => {
-            const extra_start = stmt.data.extra;
-            if (extra_start >= ast.extra_data.items.len) return;
-            const decl_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra_start]);
-            if (decl_idx.isNone()) return;
-            if (@intFromEnum(decl_idx) >= ast.nodes.items.len) return;
-            // 재귀 분기 — declaration 자체의 binding 만 등록 (specifier 는 pass 2 에서 처리)
-            try collectAutoTypeOnlyDeclNames(allocator, ast, decl_idx, value_names, type_only_names);
-        },
-
-        else => {},
-    }
-}
-
-fn putNameAtExtraSlot(
-    allocator: std.mem.Allocator,
-    ast: *const Ast,
-    node: ast_mod.Node,
-    slot: u32,
-    bucket: *std.StringHashMapUnmanaged(void),
-) error{OutOfMemory}!void {
-    const extra_start = node.data.extra;
-    if (extra_start + slot >= ast.extra_data.items.len) return;
-    const name_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra_start + slot]);
-    try putNodeIdName(allocator, ast, name_idx, bucket);
-}
-
-fn putNodeIdName(
-    allocator: std.mem.Allocator,
-    ast: *const Ast,
-    name_idx: ast_mod.NodeIndex,
-    bucket: *std.StringHashMapUnmanaged(void),
-) error{OutOfMemory}!void {
-    if (name_idx.isNone()) return;
-    if (@intFromEnum(name_idx) >= ast.nodes.items.len) return;
-    const name_node = ast.getNode(name_idx);
-    const name_text = ast.getText(name_node.span);
-    if (name_text.len == 0) return;
-    try bucket.put(allocator, name_text, {});
-}
-
-/// binding pattern (identifier / array / object pattern) 안의 모든 binding identifier
-/// 텍스트를 bucket 에 모은다. `const { a: b, c = 1, ...rest } = x;` 같은 destructuring
-/// 도 b / c / rest 가 value binding.
-fn collectBindingIdentifierNames(
-    allocator: std.mem.Allocator,
-    ast: *const Ast,
-    idx: ast_mod.NodeIndex,
-    bucket: *std.StringHashMapUnmanaged(void),
-) error{OutOfMemory}!void {
-    if (idx.isNone()) return;
-    if (@intFromEnum(idx) >= ast.nodes.items.len) return;
-    var it = try ast_walk.bindingIdentifiers(ast.allocator, ast, idx, .{ .cover_grammar_assignment = false });
-    defer it.deinit();
-    while (try it.next()) |leaf_idx| {
-        const leaf = ast.getNode(leaf_idx);
-        const name = ast.getText(leaf.span);
-        if (name.len > 0) try bucket.put(allocator, name, {});
-    }
-}
-
 fn markBindingLiteUse(lite: *BindingLite, name: []const u8, shadowed_names: []const []const u8) void {
     if (string_list.contains(shadowed_names, name)) return;
     for (lite.named_imports) |*binding| {
@@ -1569,7 +1319,7 @@ fn transpileWithCallbackInternal(
     // Flow 는 별도 type system 이라 제외 (flow_ 태그 처리는 별도 영역). non-TS 입력은
     // type alias 자체가 없어 helper 가 early return.
     if (parser.source_mode == .ts and !parser.is_flow) {
-        try markAutoTypeOnlyExportSpecifiers(arena_alloc, &parser.ast);
+        try ts_auto_export.markAutoTypeOnlyExportSpecifiers(arena_alloc, &parser.ast, null);
     }
 
     var analyzer_storage: ?SemanticAnalyzer = null;
@@ -3289,10 +3039,25 @@ test "TS auto type-only export: declaration merging preserves value binding" {
     );
 }
 
+test "TS auto type-only export: named alias of default interface is elided" {
+    try expectTranspileOutput(
+        \\export default interface _Shape { value: number }
+        \\export { _Shape as PublicShape };
+        \\console.log("DEFAULT_INTERFACE_OK");
+        \\
+    ,
+        \\console.log("DEFAULT_INTERFACE_OK");
+        \\
+    ,
+        "input.ts",
+        .{},
+    );
+}
+
 // D13: top-level `declare class/function/var` 의 name 은 type-only binding.
 // `export { X as Y };` 가 declare 만 reference 하면 specifier 가 자동 elide (Babel
 // preset-typescript 동작). parser 가 top-level declare 를 strip 해 AST 에 사라지므로
-// markAutoTypeOnlyExportSpecifiers 가 별도 sideband (`ast.declare_only_names`) 에서
+// markAutoTypeOnlyExportSpecifiers 가 별도 sideband (`ast.type_only_binding_names`) 에서
 // name 을 조회해야 한다.
 test "Transpile: .d.ts declaration file emits empty output (D12.5)" {
     // tsc/Babel: `.d.ts` 는 declaration-only 파일이라 transpile 결과가 빈 출력.
