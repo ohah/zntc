@@ -176,4 +176,92 @@ console.log(events.join('|'));
       /symbol-identity-post-minify .* missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
     );
   });
+
+  const qualifiedMetadataSource = `
+const events: string[] = [];
+function decorate(): any { return () => {}; }
+(Reflect as any).metadata = (key: string, value: any) => (_target: any, property?: string) => {
+  if (key !== 'design:paramtypes') return;
+  const names = value.map((item: any) =>
+    item === rootLocal ? 'root-local' :
+    item === rootGeneric ? 'root-generic' :
+    item === shadowLocal ? 'shadow-local' :
+    item === globalThis.Array ? 'array' :
+    item === globalThis.Object ? 'object' :
+    'other');
+  events.push((property ?? 'class') + ':' + names.join(','));
+};
+namespace Types { export class Local {} export class Generic<T> {} }
+const rootLocal = Types.Local;
+const rootGeneric = Types.Generic;
+class ShadowLocal {}
+let shadowLocal: any;
+function build(Types: any) {
+  shadowLocal = Types.Local;
+  class ShadowBox { @decorate() method(value: Types.Local) {} }
+  return ShadowBox;
+}
+@decorate()
+class RootBox {
+  @decorate() local(value: Types.Local) {}
+  @decorate() generic(value: Types.Generic<string>) {}
+  @decorate() array(value: Types.Local[]) {}
+  @decorate() union(value: Types.Local | null) {}
+}
+const ShadowBox = build({ Local: ShadowLocal });
+new RootBox().local(rootLocal);
+new RootBox().generic(rootGeneric);
+new RootBox().array([rootLocal]);
+new RootBox().union(rootLocal);
+new ShadowBox().method(shadowLocal);
+console.log(events.join('|'));
+`;
+
+  test('qualified metadata refs retain lexical base symbols', async () => {
+    const fixture = await createFixture({
+      'input.ts': qualifiedMetadataSource,
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: { experimentalDecorators: true, emitDecoratorMetadata: true },
+      }),
+    });
+    cleanup = fixture.cleanup;
+
+    const reference = ts.transpileModule(qualifiedMetadataSource, {
+      compilerOptions: {
+        experimentalDecorators: true,
+        emitDecoratorMetadata: true,
+        target: ts.ScriptTarget.ES2020,
+        module: ts.ModuleKind.CommonJS,
+      },
+    }).outputText;
+    const referencePath = join(fixture.dir, 'reference.js');
+    writeFileSync(referencePath, reference);
+    const native = spawnSync('node', [referencePath], { encoding: 'utf8' });
+    expect(native.status, native.stderr).toBe(0);
+
+    const output = join(fixture.dir, 'out.js');
+    const proc = spawnSync(
+      ZNTC_BIN,
+      ['input.ts', '--target=es2020', '--minify-identifiers', '--minify-syntax', '-o', output],
+      {
+        cwd: fixture.dir,
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      },
+    );
+    expect(proc.status, proc.stderr).toBe(0);
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe(native.stdout);
+
+    const exact = proc.stderr
+      .split('\n')
+      .find((line) => line.includes('zntc: symbol-identity input.ts:'));
+    expect(exact).toContain('missing_binding=0');
+    expect(exact).toContain('shadowed_external_reference=0');
+    expect(exact).toContain('clean=1');
+    expect(proc.stderr).toMatch(
+      /symbol-identity-post-minify .* missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+    );
+  });
 });
