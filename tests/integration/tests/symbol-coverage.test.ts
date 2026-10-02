@@ -288,6 +288,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const strict = stderr.split('\n').find((line) => line.includes('zntc: synthetic-coverage '));
       expect(identity).toBeDefined();
       expect(strict).toBeDefined();
+      expect(strict).toMatch(/(?:^| )consistent=1(?: |$)/);
       expect(Number(identity?.match(/generated_references=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
       expect(Number(identity?.match(/helper_symbol_mismatch=(\d+)/)?.[1] ?? -1)).toBe(0);
       const generatedReferences = Number(identity?.match(/generated_references=(\d+)/)?.[1] ?? 0);
@@ -389,6 +390,11 @@ describe('symbol identity coverage gate (#4819)', () => {
               `${name} ${target.name}: expected one strict coverage report, got ${strictLines.length}`,
             );
             continue;
+          }
+          if (!/(?:^| )consistent=1(?: |$)/.test(strictLines[0])) {
+            problems.push(
+              `${name} ${target.name}: strict report counters/details disagree: ${strictLines[0]}`,
+            );
           }
           const line = lines[0];
           runs++;
@@ -510,6 +516,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(proc.stderr).toMatch(/symbol-coverage .* missing=0 wrong=0/);
       expect(proc.stderr).toMatch(/synthetic-coverage .* missing_binding=0/);
       expect(proc.stderr).toMatch(/synthetic-coverage .* marked_synthetic=2/);
+      expect(proc.stderr).toMatch(/synthetic-coverage .* consistent=1/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

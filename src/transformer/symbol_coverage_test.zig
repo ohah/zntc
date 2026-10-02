@@ -1579,6 +1579,43 @@ test "strict inventory does not infer generated global identity from spelling" {
     try std.testing.expectEqual(@intFromEnum(binding), report.findings.items[0].node);
 }
 
+test "strict exact coverage rejects counter and finding drift" {
+    const allocator = std.testing.allocator;
+    var hidden_error: coverage.StrictReport = .{};
+    defer hidden_error.deinit(allocator);
+    try hidden_error.findings.append(allocator, .{
+        .node = 1,
+        .name = "_missing",
+        .tag = .binding_identifier,
+        .status = .missing_binding,
+        .marked_synthetic = true,
+    });
+    // A stale zeroed counter array must not hide an error retained in details.
+    try std.testing.expect(!hidden_error.hasCompleteExactCoverage());
+
+    var missing_detail: coverage.StrictReport = .{};
+    defer missing_detail.deinit(allocator);
+    missing_detail.counts[@intFromEnum(coverage.StrictStatus.bound)] = 1;
+    // Conversely, a positive aggregate without a corresponding finding is
+    // report drift and must not be accepted as exact coverage.
+    try std.testing.expect(!missing_detail.hasCompleteExactCoverage());
+
+    var hidden_orphan: coverage.StrictReport = .{};
+    defer hidden_orphan.deinit(allocator);
+    try hidden_orphan.orphan_symbol_findings.append(allocator, .{
+        .symbol_id = 4,
+        .name = "_orphan",
+        .kind = .variable_var,
+        .scope_id = @enumFromInt(0),
+    });
+    try std.testing.expect(!hidden_orphan.hasCompleteExactCoverage());
+
+    var marked_count_drift: coverage.StrictReport = .{};
+    defer marked_count_drift.deinit(allocator);
+    marked_count_drift.marked_synthetic = 1;
+    try std.testing.expect(!marked_count_drift.hasCompleteExactCoverage());
+}
+
 test "strict exact external references require matching NodeIndex provenance" {
     const allocator = std.testing.allocator;
     var ast = Ast.init(allocator, "");
