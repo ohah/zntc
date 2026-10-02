@@ -629,8 +629,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 if (total_private_ce > 0) self.allocator.free(self.current_private_fields);
                 self.current_private_fields = saved_private_fields;
             }
-            try visitDeferredStaticBlocks(self, &cm, name_span);
-
             // private method 매핑 설정
             const saved_private_methods = self.current_private_methods;
             if (cm.private_methods.items.len > 0) {
@@ -668,15 +666,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try self.bindClassSelfStorage(source_idx, func_name, iife_scope)
             else
                 false;
-            // Allocate the anonymous inner constructor identity while its
-            // binding and owning scope are known. Reads created from this point
-            // can carry the ID directly; earlier wrapper-local reads still use
-            // the generated-local scan below.
+            // Allocate this before deferred static blocks are visited so their
+            // class-self reads can carry the constructor identity directly.
             const generated_class_name_id = if (self.semantic_edit_enabled and name_idx.isNone() and has_extra and !class_self_storage_bound)
                 try self.declareSyntheticInScope(func_name, span, .function_decl, iife_scope)
             else
                 null;
             if (generated_class_name_id) |id| self.current_class_self_symbol_id = @intFromEnum(id);
+            try visitDeferredStaticBlocks(self, &cm, name_span);
 
             const previous_write_target = self.active_class_self_write_target;
             defer self.active_class_self_write_target = previous_write_target;
@@ -909,7 +906,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             try self.bindReservedFunctionOwner(iife_scope, wrapper_fn);
             if (!expr_super_param_binding.isNone()) try trackGeneratedParameterSymbols(self, wrapper_fn, expr_super_param_binding, iife_scope);
             try trackClassPrivateSymbols(self, wrapper_fn, cm, iife_scope);
-            if (name_idx.isNone()) {
+            // Keep spelling-based recovery only for paths that could not
+            // allocate the generated binding identity at its producer.
+            if (name_idx.isNone() and generated_class_name_id == null) {
                 const generated_class_name_specs = [_]GeneratedLocalSpec{.{
                     .name = self.ast.getText(name_span),
                     .kind = .function_decl,
@@ -917,7 +916,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 }};
                 try trackGeneratedLocalSymbols(self, wrapper_fn, iife_scope, &generated_class_name_specs);
             }
-
             // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
             // IIFE callee paren 은 emitCall 자동 wrap 이 처리 (#4042 PR8)
             return if (has_super and super_span != null) blk: {
