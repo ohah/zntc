@@ -82,8 +82,7 @@ const AstFacts = struct {
     has_non_named_import: bool = false,
     /// class / private / decorator / TS runtime syntax / using — runtime transform needed.
     has_runtime_sensitive_syntax: bool = false,
-    /// Flow keeps its conservative post-transform pass except for match and
-    /// enum, whose generated/source identities now live in the edited graph.
+    /// Runtime transforms whose graph edits are not certified for Flow-mode input yet.
     has_flow_runtime_syntax_without_complete_graph: bool = false,
     /// Runtime syntax whose semantic edits still need the post-transform analyzer.
     has_unhandled_runtime_syntax: bool = false,
@@ -171,10 +170,9 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
 
             .accessor_property => facts.has_runtime_sensitive_syntax = true,
 
-            .decorator => {
-                facts.has_runtime_sensitive_syntax = true;
-                facts.has_flow_runtime_syntax_without_complete_graph = true;
-            },
+            // Stage 3 decorator lowering records generated bindings, references,
+            // and class/decorator scopes in the edited semantic graph for Flow too.
+            .decorator => facts.has_runtime_sensitive_syntax = true,
 
             // TypeScript enum lowering now records the emitted IIFE parameter
             // and initializer references in the edited semantic graph.
@@ -2148,6 +2146,29 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     try std.testing.expect(canMangleWithTransformSemantic(minify, &accessor_parser));
 }
 
+test "#4819 Flow Stage 3 decorators reuse the transform semantic graph" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "// @flow\nfunction dec(value, context) { return value; } " ++
+        "@dec class Box { @dec read(input) { return input; } }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    _ = try parser.parse();
+    try std.testing.expect(parser.is_flow);
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    try std.testing.expect(canMangleWithTransformSemantic(.{ .minify_identifiers = true }, &parser));
+    try std.testing.expect(!canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .experimental_decorators = true,
+    }, &parser));
+    try std.testing.expect(!canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .emit_decorator_metadata = true,
+    }, &parser));
+}
+
 test "#4819 native and downlevel using reuse the transform graph" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -2321,6 +2342,7 @@ test "#4819 Flow match, enum, classes, private fields, and accessors reuse the t
         .{ .source = "// @flow\nclass Box { read(value: number): number { return value; } }", .path = ".js", .tag = .class_declaration },
         .{ .source = "// @flow\nclass Vault { #value: number = 0; read(value: number) { this.#value = value; return this.#value; } }", .path = ".js", .tag = .private_field_expression },
         .{ .source = "// @flow\nclass Counter { accessor value: number = 0; add(value: number) { this.value += value; return this.value; } }", .path = ".js", .tag = .accessor_property },
+        .{ .source = "// @flow\nfunction dec(value, context) { return value; } @dec class Box { @dec read(input) { return input; } }", .path = ".js", .tag = .decorator },
     };
     for (runtime_sources) |item| {
         var runtime_scanner = try Scanner.init(allocator, item.source);
@@ -2340,22 +2362,10 @@ test "#4819 Flow match, enum, classes, private fields, and accessors reuse the t
                 item.tag == .flow_component_wrapper or
                 item.tag == .class_declaration or
                 item.tag == .private_field_expression or
-                item.tag == .accessor_property,
+                item.tag == .accessor_property or
+                item.tag == .decorator,
             canMangleWithTransformSemantic(minify, &runtime_parser),
         );
-    }
-
-    const unsupported_class_sources = [_][]const u8{
-        "// @flow\nfunction dec(value) { return value; } @dec class Box {}",
-    };
-    for (unsupported_class_sources) |source| {
-        var unsupported_scanner = try Scanner.init(allocator, source);
-        var unsupported_parser = Parser.init(allocator, &unsupported_scanner);
-        unsupported_parser.configureFromExtension(".js");
-        _ = try unsupported_parser.parse();
-        try std.testing.expect(unsupported_parser.is_flow);
-        try std.testing.expectEqual(@as(usize, 0), unsupported_parser.errors.items.len);
-        try std.testing.expect(!canMangleWithTransformSemantic(minify, &unsupported_parser));
     }
 
     var jsx_scanner = try Scanner.init(allocator, "// @flow\nconst view = <div />;");

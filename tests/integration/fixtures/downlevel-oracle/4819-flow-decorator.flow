@@ -1,0 +1,38 @@
+const _class = 7, _metadata = 8, _init = 9, _decorators = 10, _runInitializers = 11;
+const value = 40;
+let originalClass: any;
+function bump(amount) {
+  return function(original, context) {
+    if (context.kind === 'field') return function(initial) { return initial + amount; };
+    if (context.kind === 'method') return function(value) { return original.call(this, value) + amount; };
+    if (context.kind === 'class') {
+      originalClass = original;
+      return class extends original {};
+    }
+    return original;
+  };
+}
+@bump(value)
+class Box {
+  @bump(value)
+  field: number = 2;
+  @bump(value)
+  read(value: number): number { return this.field + eval('value'); }
+  inspect(value: number): number { return this.read(value); }
+  static self(): any { return Box; }
+}
+function makeExpression(captured: number) {
+  const Named = @preserve class Local {
+    @bump(captured)
+    static extra: number = 3;
+    @bump(captured)
+    static read(value: number): number { return this.extra + eval('value') + eval('captured'); }
+    static self(): any { return Local; }
+  };
+  return Named;
+}
+function preserve(original: any, context: any) { return original; }
+const instance = new Box();
+const Expression = makeExpression(5);
+console.log(instance.inspect(1), value, _class, _metadata, _init, _decorators, _runInitializers,
+  Box.self() === originalClass, Expression.read(2), Expression.self() === Expression);
