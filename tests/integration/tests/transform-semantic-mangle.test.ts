@@ -1682,8 +1682,51 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         'console.log(typeof AmbientCode);',
       ].join('\n'),
       'namespace.ts': [
+        "function _LongNamespace() { return 'outer'; }",
+        'namespace LongNamespace { export const value = 3; export namespace Inner { export const next = LongNamespace.value + 1; } }',
+        'console.log(LongNamespace.Inner.next, _LongNamespace());',
+      ].join('\n'),
+      'namespace-provider.ts': [
+        "function _LongNamespace() { return 'outer'; }",
+        'export namespace LongNamespace { export const value = 3; export namespace Inner { export const next = LongNamespace.value + 1; } }',
+        'export function getLongNamespaceLabel() { return _LongNamespace(); }',
+      ].join('\n'),
+      'namespace-entry.ts': [
+        "import { LongNamespace as NS, getLongNamespaceLabel } from './namespace-provider.ts';",
+        'console.log(NS.value, NS.Inner.next, getLongNamespaceLabel());',
+      ].join('\n'),
+      'namespace-local-shadow.ts': [
+        "const N = { value: 'outer' };",
+        'function read() { namespace N { export const value = 7; } return N.value; }',
+        'console.log(N.value, read());',
+      ].join('\n'),
+      'namespace-function-merge.ts': [
+        "function _Mergeable() { return 'outer'; }",
+        'function Mergeable() { return 2; }',
+        'namespace Mergeable { export const value = 3; }',
+        'console.log(Mergeable(), Mergeable.value, _Mergeable());',
+      ].join('\n'),
+      'namespace-enum-merge.ts': [
+        "function _Mergeable() { return 'outer'; }",
+        'enum Mergeable { Value = 2 }',
+        'namespace Mergeable { export const extra = 3; }',
+        'console.log(Mergeable.Value, Mergeable.extra, _Mergeable());',
+      ].join('\n'),
+      'namespace-merged.ts': [
         'namespace LongNamespace { export const value = 3; }',
-        'console.log(LongNamespace.value);',
+        'namespace LongNamespace { export const finalValue = 5; }',
+        'console.log(LongNamespace.value, LongNamespace.finalValue);',
+      ].join('\n'),
+      'namespace-nested-merged.ts': [
+        'namespace Root {',
+        '  export namespace Inner { export const first = 1; }',
+        '  export namespace Inner { export const second = Inner.first + 1; }',
+        '}',
+        'console.log(Root.Inner.first, Root.Inner.second);',
+      ].join('\n'),
+      'ambient-namespace.ts': [
+        'declare namespace Ambient { const value: number; }',
+        "console.log('ok');",
       ].join('\n'),
     });
     cleanup = fixture.cleanup;
@@ -1705,6 +1748,28 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       );
       expect(result.exitCode, entry + ': ' + result.stderr).toBe(0);
       return { output, stderr: result.stderr };
+    }
+
+    async function expectRetainedNamespace(
+      entry: string,
+      suffix: string,
+      params: number,
+      stdout: string,
+    ) {
+      const bundled = await bundle(entry, suffix);
+      const identity = bundled.stderr
+        .split(/\r?\n/)
+        .find((line) => line.includes('zntc: symbol-identity-prepass '));
+      expect(identity, entry).toBeDefined();
+      expect(identity).toMatch(/clean=1(?:\s|$)/);
+      expect(identity).toMatch(new RegExp(`namespace_iife_params=${params}(?:\\s|$)`));
+      expect(identity).toMatch(/namespace_iife_param_mismatch=0(?:\s|$)/);
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(identity).toMatch(new RegExp(counter + '=0(?:\\s|$)'));
+      }
+      const result = await runNode(bundled.output);
+      expect(result.stderr).toBe('');
+      expect(result.stdout.trim()).toBe(stdout);
     }
 
     const runtimeEnum = await bundle('runtime-enum.ts', 'runtime-enum');
@@ -1749,11 +1814,43 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(ambientEnumResult.stderr).toBe('');
     expect(ambientEnumResult.stdout.trim()).toBe('undefined');
 
-    const namespace = await bundle('namespace.ts', 'namespace-fallback');
-    expect(namespace.stderr).not.toContain('symbol-identity-prepass');
-    const namespaceResult = await runNode(namespace.output);
-    expect(namespaceResult.stderr).toBe('');
-    expect(namespaceResult.stdout.trim()).toBe('3');
+    await expectRetainedNamespace('namespace.ts', 'namespace-retained', 2, '4 outer');
+    await expectRetainedNamespace(
+      'namespace-entry.ts',
+      'namespace-export-retained',
+      2,
+      '3 4 outer',
+    );
+    await expectRetainedNamespace(
+      'namespace-local-shadow.ts',
+      'namespace-local-retained',
+      1,
+      'outer 7',
+    );
+    await expectRetainedNamespace(
+      'namespace-function-merge.ts',
+      'namespace-function-merge-retained',
+      1,
+      '2 3 outer',
+    );
+    await expectRetainedNamespace(
+      'namespace-enum-merge.ts',
+      'namespace-enum-merge-retained',
+      1,
+      '2 3 outer',
+    );
+
+    for (const [entry, expected] of [
+      ['namespace-merged.ts', '3 5'],
+      ['namespace-nested-merged.ts', '1 2'],
+      ['ambient-namespace.ts', 'ok'],
+    ] as const) {
+      const fallback = await bundle(entry, entry.replace('.ts', '-fallback'));
+      expect(fallback.stderr).not.toContain('symbol-identity-prepass');
+      const result = await runNode(fallback.output);
+      expect(result.stderr).toBe('');
+      expect(result.stdout.trim()).toBe(expected);
+    }
   });
 
   test('Flow enum bindings and codegen globals keep distinct symbols when mangled', async () => {

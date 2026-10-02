@@ -216,6 +216,23 @@ fn isSupportedRuntimeTsEnum(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     return ast.extra_data.items[extra + 3] == 0;
 }
 
+fn hasMergedRuntimeNamespaceDeclarations(allocator: std.mem.Allocator, module: *const Module) bool {
+    const ast = &(module.ast orelse return true);
+    const semantic = module.semantic orelse return true;
+    var namespace_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer namespace_symbols.deinit(allocator);
+
+    for (ast.nodes.items) |node| {
+        if (node.tag != .ts_module_declaration or node.data.binary.flags != 0) continue;
+        const name_idx = node.data.binary.left;
+        if (name_idx.isNone() or @intFromEnum(name_idx) >= semantic.symbol_ids.len) return true;
+        const symbol_id = semantic.symbol_ids[@intFromEnum(name_idx)] orelse return true;
+        const entry = namespace_symbols.getOrPut(allocator, symbol_id) catch return true;
+        if (entry.found_existing) return true;
+    }
+    return false;
+}
+
 fn canKeepPrepassSemanticGraph(
     self: anytype,
     module: *const Module,
@@ -224,6 +241,10 @@ fn canKeepPrepassSemanticGraph(
 ) bool {
     if (module.ast == null or module.semantic == null) return false;
     const ast = &module.ast.?;
+    // Namespace declaration merging currently creates proxy ownership edges
+    // that are not represented exactly in the retained scope graph. Keep those
+    // modules on the full resync path until the proxy graph has exact coverage.
+    if (hasMergedRuntimeNamespaceDeclarations(self.allocator, module)) return false;
     if (self.worklet_transform or self.react_refresh or self.styled_components or self.emotion or
         self.plugins.len != 0 or plugins.len != 0 or options.plugins.len != 0) return false;
     if (!options.strip_types) return false;
@@ -250,7 +271,6 @@ fn canKeepPrepassSemanticGraph(
             .import_declaration,
             .export_specifier,
             .export_all_declaration,
-            .ts_module_declaration,
             .ts_import_equals_declaration,
             .ts_export_assignment,
             .ts_namespace_export_declaration,
@@ -260,6 +280,10 @@ fn canKeepPrepassSemanticGraph(
             => return false,
             .ts_enum_declaration => {
                 if (!isSupportedRuntimeTsEnum(ast, node)) return false;
+                found_transform = true;
+            },
+            .ts_module_declaration => {
+                if (node.data.binary.flags != 0) return false;
                 found_transform = true;
             },
             .identifier_reference => {
