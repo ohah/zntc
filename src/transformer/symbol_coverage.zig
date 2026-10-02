@@ -2270,11 +2270,24 @@ pub const PostMinifyReport = struct {
     dangling_reference_id: usize = 0,
     wrong_reference_target: usize = 0,
 
+    fn isObservationField(comptime name: []const u8) bool {
+        return std.mem.eql(u8, name, "bindings_checked") or
+            std.mem.eql(u8, name, "references_checked") or
+            std.mem.eql(u8, name, "external_references") or
+            std.mem.eql(u8, name, "helper_references") or
+            std.mem.eql(u8, name, "preserved_transform_references");
+    }
+
+    /// The checked counts are observations. Every other numeric field is an
+    /// invariant counter and participates automatically so a new failure
+    /// counter cannot be omitted from the post-minify gate.
     pub fn isClean(self: PostMinifyReport) bool {
-        return self.missing_binding_id == 0 and
-            self.missing_reference_id == 0 and
-            self.dangling_reference_id == 0 and
-            self.wrong_reference_target == 0;
+        inline for (std.meta.fields(PostMinifyReport)) |field| {
+            if (comptime isObservationField(field.name)) continue;
+            if (comptime field.type != usize) @compileError("unclassified PostMinifyReport field; classify it as an observation or usize invariant counter");
+            if (@field(self, field.name) != 0) return false;
+        }
+        return true;
     }
 };
 
@@ -3242,6 +3255,24 @@ test "exact coverage diagnostic findings cannot disagree with a clean report" {
         .{ .first_shadowed_external_reference = finding },
     };
     for (reports) |report| try std.testing.expect(!report.isClean());
+}
+
+test "post-minify coverage cleanliness includes every invariant counter" {
+    inline for (std.meta.fields(PostMinifyReport)) |field| {
+        if (comptime PostMinifyReport.isObservationField(field.name)) continue;
+        var report: PostMinifyReport = .{};
+        @field(report, field.name) = 1;
+        try std.testing.expect(!report.isClean());
+    }
+
+    const observations: PostMinifyReport = .{
+        .bindings_checked = 1,
+        .references_checked = 1,
+        .external_references = 1,
+        .helper_references = 1,
+        .preserved_transform_references = 1,
+    };
+    try std.testing.expect(observations.isClean());
 }
 
 test "exact helper coverage rejects an unbound generated helper reference" {
