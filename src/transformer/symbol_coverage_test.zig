@@ -824,6 +824,156 @@ test "#4819 JSX runtime imports bind exact helper symbols before resync" {
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_runtime_helper_chains.count());
 }
 
+test "#4819 classic JSX factory reference follows its lexical binding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "// @flow\nexport function View(React) { return <div />; }");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".jsx");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    var expected_symbol: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (symbol.kind == .parameter and std.mem.eql(u8, symbol.nameText(parser.ast.source), "React"))
+            expected_symbol = @intCast(raw);
+    }
+    const react_parameter = expected_symbol orelse return error.MissingReactParameter;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .jsx_transform = true,
+        .jsx_runtime = .classic,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    var factory_reads: usize = 0;
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .identifier_reference or !std.mem.eql(u8, transformer.ast.getText(node.span), "React")) continue;
+        try std.testing.expect(raw < edited.symbol_ids.len);
+        try std.testing.expectEqual(@as(?u32, react_parameter), edited.symbol_ids[raw]);
+        var has_reference = false;
+        for (edited.references) |reference| {
+            if (@intFromEnum(reference.node_index) != raw) continue;
+            try std.testing.expectEqual(react_parameter, @intFromEnum(reference.symbol_id));
+            try std.testing.expect(reference.flags.read);
+            has_reference = true;
+        }
+        try std.testing.expect(has_reference);
+        factory_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), factory_reads);
+    try std.testing.expectEqual(@as(u32, 1), edited.symbols.items[react_parameter].reference_count);
+}
+
+test "#4819 classic JSX custom factory binds through the current scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "// @flow\nfunction View(h) { return <div />; }");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".jsx");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    var expected_symbol: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (symbol.kind == .parameter and std.mem.eql(u8, symbol.nameText(parser.ast.source), "h"))
+            expected_symbol = @intCast(raw);
+    }
+    const factory_symbol = expected_symbol orelse return error.MissingJsxFactoryParameter;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .jsx_transform = true,
+        .jsx_runtime = .classic,
+        .jsx_factory = "h",
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    var factory_reads: usize = 0;
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .identifier_reference or !std.mem.eql(u8, transformer.ast.getText(node.span), "h")) continue;
+        try std.testing.expect(raw < edited.symbol_ids.len);
+        try std.testing.expectEqual(@as(?u32, factory_symbol), edited.symbol_ids[raw]);
+        factory_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), factory_reads);
+    try std.testing.expectEqual(@as(u32, 1), edited.symbols.items[factory_symbol].reference_count);
+}
+
+test "#4819 Flow component classic JSX reads are recorded in the transform graph" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "// @flow\nimport React from 'react'; " ++
+        "export component View(ref?: mixed, value: number, ...props: { label?: string }) { " ++
+        "return <><div value={value} /><span>{props.label}</span></>; }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".jsx");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    const react_symbol: u32 = @intCast(analyzer.scope_maps.items[0].get("React") orelse return error.MissingReactImport);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .jsx_transform = true,
+        .jsx_runtime = .classic,
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    var react_reads: usize = 0;
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .identifier_reference or !std.mem.eql(u8, transformer.ast.getText(node.span), "React")) continue;
+        try std.testing.expect(raw < edited.symbol_ids.len);
+        try std.testing.expectEqual(@as(?u32, react_symbol), edited.symbol_ids[raw]);
+        var has_reference = false;
+        for (edited.references) |reference| {
+            if (@intFromEnum(reference.node_index) != raw) continue;
+            try std.testing.expectEqual(react_symbol, @intFromEnum(reference.symbol_id));
+            try std.testing.expect(reference.flags.read);
+            has_reference = true;
+        }
+        try std.testing.expect(has_reference);
+        react_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 5), react_reads);
+    try std.testing.expectEqual(@as(u32, 5), edited.symbols.items[react_symbol].reference_count);
+}
+
 test "#4819 JSX dev runtime call binds its isolated import symbol" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

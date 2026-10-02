@@ -652,6 +652,7 @@ pub const Transformer = struct {
     pub const makeUserBinding = node_helpers.makeUserBinding;
     pub const makeIdentifierRefWithSymbolAt = node_helpers.makeIdentifierRefWithSymbolAt;
     pub const makeRootScopeRef = node_helpers.makeRootScopeRef;
+    pub const makeLexicalScopeRef = node_helpers.makeLexicalScopeRef;
     pub fn markExplicitGlobalReference(self: *Transformer, node: NodeIndex) !void {
         if (self.synthetic_idents == null and !self.record_explicit_global_references) return;
         try self.explicit_global_reference_nodes.put(self.allocator, @intFromEnum(node), {});

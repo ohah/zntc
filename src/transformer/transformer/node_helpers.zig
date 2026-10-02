@@ -239,11 +239,41 @@ pub fn makeUserRefNamedAtScope(self: anytype, name: []const u8, origin: NodeInde
     return ref;
 }
 
-/// 모듈(루트) 스코프 이름 참조 — JSX 팩토리(`React`)처럼 소스 위치가 아니라 설정에서 온
-/// 이름을 모듈 스코프 바인딩(import 등)에 잇는다. 그런 바인딩이 없으면 전역이다.
+/// 모듈(루트) 스코프 바인딩을 뜻하는 생성 참조. 그런 바인딩이 없으면 전역이다.
 pub fn makeRootScopeRef(self: anytype, name: []const u8) Error!NodeIndex {
     const ref = try es_helpers.makeGlobalRef(self, name);
     try self.attachRootScopeSymbolByName(ref, name);
+    return ref;
+}
+
+/// Create a generated read that resolves as ordinary code at the JSX use site.
+/// Unlike makeRootScopeRef, a JSX factory can be shadowed by a parameter or a
+/// local binding, so bind it through the current lexical scope chain.
+pub fn makeLexicalScopeRef(self: anytype, name: []const u8) Error!NodeIndex {
+    const ref = try es_helpers.makeGlobalRef(self, name);
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    const scope_maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;
+    var scope = self.current_scope;
+    var hops: usize = 0;
+    while (!scope.isNone() and hops < scopes.len) : (hops += 1) {
+        const scope_index = scope.toIndex();
+        if (scope_index >= scopes.len or scope_index >= scope_maps.len) break;
+        if (scope_maps[scope_index].get(name)) |raw_symbol| {
+            const symbol_id: u32 = @intCast(raw_symbol);
+            if (self.semantic_edit_enabled) {
+                try self.addSyntheticRefInScope(ref, @enumFromInt(symbol_id), self.current_scope, .{ .read = true });
+            } else {
+                const raw_node = @intFromEnum(ref);
+                if (self.symbol_ids.items.len <= raw_node)
+                    try self.symbol_ids.appendNTimes(self.allocator, null, raw_node + 1 - self.symbol_ids.items.len);
+                if (self.symbol_ids.items[raw_node]) |existing| {
+                    if (existing != symbol_id) std.debug.panic("lexical generated reference changed SymbolId", .{});
+                } else self.symbol_ids.items[raw_node] = symbol_id;
+            }
+            return ref;
+        }
+        scope = scopes[scope_index].parent;
+    }
     return ref;
 }
 

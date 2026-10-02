@@ -1187,16 +1187,15 @@ pub fn JsxLowering(comptime Transformer: type) type {
         /// "A.B.C" 형태의 factory 문자열을 static_member_expression 체인으로 변환.
         /// "React.createElement" → static_member(React, createElement)
         ///
-        /// 첫 식별자 (head — `React`/`jsx`/`h`) 는 외부 binding 을 가리키므로 root scope
-        /// 에서 symbol_id lookup → attach 한다 (#2196). 이렇게 안 하면 mangler 가
-        /// 원본 binding 만 rename 하고 여기서 만든 새 노드는 mangle 대상에서 누락 →
-        /// `const n=...; React.createElement(...)` 같은 ReferenceError. 멤버 (`createElement`,
-        /// `Fragment`) 는 property access 라 lookup 불필요.
+        /// 첫 식별자 (head — `React`/`jsx`/`h`) 는 생성 코드가 놓인 lexical scope 에서
+        /// lookup → attach 한다. JSX factory 도 일반 식별자이므로 매개변수/지역 바인딩의
+        /// shadowing 을 그대로 따른다. 바인딩이 없으면 전역으로 둔다. 멤버
+        /// (`createElement`, `Fragment`) 는 property access 라 lookup 불필요.
         fn makeFactoryCallee(self: *Transformer, factory: []const u8) Transformer.Error!NodeIndex {
             // dot이 없으면 단순 identifier
             const dot_pos = std.mem.indexOf(u8, factory, ".");
             if (dot_pos == null) {
-                return self.makeRootScopeRef(factory);
+                return self.makeLexicalScopeRef(factory);
             }
 
             // dot 기반 분할: "A.B.C" → ["A", "B", "C"]
@@ -1205,7 +1204,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             while (start < factory.len) {
                 const end = std.mem.indexOfPos(u8, factory, start, ".") orelse factory.len;
                 const part = factory[start..end];
-                const part_node = if (current.isNone()) try self.makeRootScopeRef(part) else try helpers.makePropertyName(self, part);
+                const part_node = if (current.isNone()) try self.makeLexicalScopeRef(part) else try helpers.makePropertyName(self, part);
 
                 if (current.isNone()) {
                     current = part_node;
