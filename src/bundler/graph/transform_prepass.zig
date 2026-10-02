@@ -189,7 +189,7 @@ fn addFlowMatchGeneratedGlobals(
     if (globals.object) try addGeneratedGlobal(allocator, semantic, "Object");
 }
 
-fn fallbackToFullSemanticResync(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void {
+fn fallbackToFullSemanticResync(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) bool {
     resyncAfterAstMutation(self, module, arena_alloc, null) catch {
         self.addDiag(
             .parse_error,
@@ -201,7 +201,9 @@ fn fallbackToFullSemanticResync(self: anytype, module: *Module, arena_alloc: std
             "The transformed AST could not be re-analyzed safely.",
         );
         module.state = .ready;
+        return false;
     };
+    return true;
 }
 
 fn isTypeErasureTag(tag: NodeTag) bool {
@@ -368,7 +370,7 @@ fn canKeepPrepassSemanticGraph(
     return found_transform;
 }
 
-fn printKeptPrepassExact(
+fn printPrepassExact(
     allocator: std.mem.Allocator,
     module: *const Module,
     root: @import("../../parser/ast.zig").NodeIndex,
@@ -402,6 +404,32 @@ fn printKeptPrepassExact(
         pre_transform_scope_count,
     );
     coverage.printExactPrepass(module.path, exact);
+}
+
+fn auditPrepassExactIfEnabled(
+    allocator: std.mem.Allocator,
+    module: *const Module,
+    root: ast_mod.NodeIndex,
+    parser_node_count: u32,
+    transformer: *const Transformer,
+    unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    pre_transform_scope_count: usize,
+    enabled: bool,
+) void {
+    if (!enabled) return;
+    printPrepassExact(
+        allocator,
+        module,
+        root,
+        parser_node_count,
+        transformer,
+        unresolved_nodes,
+        pre_transform_scope_count,
+    ) catch |err| {
+        // An absent report must be distinguishable from a clean report. The
+        // integration gate treats this diagnostic as a failure.
+        std.debug.print("zntc: symbol-identity-prepass-error {s}: {s}\n", .{ module.path, @errorName(err) });
+    };
 }
 
 fn collectParserUnresolvedNodes(
@@ -642,6 +670,16 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
                 module.state = .ready;
                 return;
             };
+            auditPrepassExactIfEnabled(
+                arena_alloc,
+                module,
+                root,
+                parser_node_count,
+                &transformer,
+                &unresolved_nodes,
+                pre_transform_scope_count,
+                debug_symbol_coverage,
+            );
             return;
         }
         // Parser metadata can omit runtime TypeScript enum exports. The transform
@@ -652,27 +690,48 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             module.import_records,
             module.import_bindings,
         ) catch {
-            fallbackToFullSemanticResync(self, module, arena_alloc);
+            if (fallbackToFullSemanticResync(self, module, arena_alloc)) {
+                auditPrepassExactIfEnabled(
+                    arena_alloc,
+                    module,
+                    root,
+                    parser_node_count,
+                    &transformer,
+                    &unresolved_nodes,
+                    pre_transform_scope_count,
+                    debug_symbol_coverage,
+                );
+            }
             return;
         };
         module.exported_names = projectExportedNames(arena_alloc, module.export_bindings);
         @import("requested_exports.zig").computeBarrelFlags(module);
         @import("requested_exports.zig").populateExportIndexByName(module, self.allocator) catch {};
         refreshStableBindingRefsFromSemanticGraph(self, module, arena_alloc, .graph_resync_binding_refs) catch {
-            fallbackToFullSemanticResync(self, module, arena_alloc);
+            if (fallbackToFullSemanticResync(self, module, arena_alloc)) {
+                auditPrepassExactIfEnabled(
+                    arena_alloc,
+                    module,
+                    root,
+                    parser_node_count,
+                    &transformer,
+                    &unresolved_nodes,
+                    pre_transform_scope_count,
+                    debug_symbol_coverage,
+                );
+            }
             return;
         };
-        if (debug_symbol_coverage) {
-            printKeptPrepassExact(
-                arena_alloc,
-                module,
-                root,
-                parser_node_count,
-                &transformer,
-                &unresolved_nodes,
-                pre_transform_scope_count,
-            ) catch {};
-        }
+        auditPrepassExactIfEnabled(
+            arena_alloc,
+            module,
+            root,
+            parser_node_count,
+            &transformer,
+            &unresolved_nodes,
+            pre_transform_scope_count,
+            debug_symbol_coverage,
+        );
         refreshTlaPromiseReference(module);
         module.prebuilt_stmt_info = null;
         return;
@@ -691,6 +750,16 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         module.state = .ready;
         return;
     };
+    auditPrepassExactIfEnabled(
+        arena_alloc,
+        module,
+        root,
+        parser_node_count,
+        &transformer,
+        &unresolved_nodes,
+        pre_transform_scope_count,
+        debug_symbol_coverage,
+    );
 }
 
 /// AST mutation 이후 module 의 graph-facing metadata 를 같은 AST 기준으로 재동기화한다.

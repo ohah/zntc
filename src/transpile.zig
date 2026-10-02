@@ -1449,7 +1449,7 @@ fn transpileWithCallbackInternal(
                 &transformer.explicit_global_reference_nodes,
                 &transformer.reference_origin_map,
                 &analyzer.namespace_member_owners,
-                &analyzer.namespace_scope_owners,
+                &analyzer.namespace_declaration_owners,
                 pre_transform_scope_count,
             ) catch return error.OutOfMemory;
             coverage.printExact(file_path, exact);

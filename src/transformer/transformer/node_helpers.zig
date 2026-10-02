@@ -250,6 +250,8 @@ pub fn makeRootScopeRef(self: anytype, name: []const u8) Error!NodeIndex {
 /// Unlike makeRootScopeRef, a JSX factory can be shadowed by a parameter or a
 /// local binding, so bind it through the current lexical scope chain.
 pub fn makeLexicalScopeRef(self: anytype, name: []const u8) Error!NodeIndex {
+    // This starts with global provenance as a fallback; remove it below if
+    // the exact lexical lookup finds a local binding.
     const ref = try es_helpers.makeGlobalRef(self, name);
     const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
     const scope_maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;
@@ -260,6 +262,10 @@ pub fn makeLexicalScopeRef(self: anytype, name: []const u8) Error!NodeIndex {
         if (scope_index >= scopes.len or scope_index >= scope_maps.len) break;
         if (scope_maps[scope_index].get(name)) |raw_symbol| {
             const symbol_id: u32 = @intCast(raw_symbol);
+            // makeGlobalRef marks a no-binding fallback before this lookup.
+            // Once this exact lexical binding is found, remove that external
+            // provenance so a later analyzer refresh resolves the local read.
+            _ = self.explicit_global_reference_nodes.remove(@intFromEnum(ref));
             if (self.semantic_edit_enabled) {
                 try self.addSyntheticRefInScope(ref, @enumFromInt(symbol_id), self.current_scope, .{ .read = true });
             } else {
@@ -274,6 +280,7 @@ pub fn makeLexicalScopeRef(self: anytype, name: []const u8) Error!NodeIndex {
         }
         scope = scopes[scope_index].parent;
     }
+    try self.markExplicitGlobalReference(ref);
     return ref;
 }
 
