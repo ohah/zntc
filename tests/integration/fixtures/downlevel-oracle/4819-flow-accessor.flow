@@ -1,0 +1,19 @@
+// @flow
+const value = 'outer';
+const _value = 99;
+
+function build(start: number): string {
+  class Counter {
+    accessor value: number = start;
+
+    add(value: number): number {
+      const local = value;
+      this.value += local;
+      return this.value;
+    }
+  }
+
+  return new Counter().add(2) + ':' + value + ':' + _value;
+}
+
+console.log(build(40));
