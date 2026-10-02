@@ -169,9 +169,9 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
                 facts.has_runtime_sensitive_syntax = true;
             },
 
-            .accessor_property,
-            .decorator,
-            => {
+            .accessor_property => facts.has_runtime_sensitive_syntax = true,
+
+            .decorator => {
                 facts.has_runtime_sensitive_syntax = true;
                 facts.has_flow_runtime_syntax_without_complete_graph = true;
             },
@@ -2300,7 +2300,7 @@ test "#4819 TypeScript JSX lowering reuses the transform graph" {
     try std.testing.expectEqual(@as(usize, 0), classic_output_analyzer.unresolved_references.count());
 }
 
-test "#4819 Flow match, enum, plain classes, and private fields reuse the transform graph" {
+test "#4819 Flow match, enum, classes, private fields, and accessors reuse the transform graph" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -2320,6 +2320,7 @@ test "#4819 Flow match, enum, plain classes, and private fields reuse the transf
         .{ .source = "// @flow\ncomponent Card(ref?: mixed, ...props: { label?: string }) { return null; }", .path = ".js", .tag = .flow_component_wrapper },
         .{ .source = "// @flow\nclass Box { read(value: number): number { return value; } }", .path = ".js", .tag = .class_declaration },
         .{ .source = "// @flow\nclass Vault { #value: number = 0; read(value: number) { this.#value = value; return this.#value; } }", .path = ".js", .tag = .private_field_expression },
+        .{ .source = "// @flow\nclass Counter { accessor value: number = 0; add(value: number) { this.value += value; return this.value; } }", .path = ".js", .tag = .accessor_property },
     };
     for (runtime_sources) |item| {
         var runtime_scanner = try Scanner.init(allocator, item.source);
@@ -2338,7 +2339,8 @@ test "#4819 Flow match, enum, plain classes, and private fields reuse the transf
                 item.tag == .flow_enum_declaration or
                 item.tag == .flow_component_wrapper or
                 item.tag == .class_declaration or
-                item.tag == .private_field_expression,
+                item.tag == .private_field_expression or
+                item.tag == .accessor_property,
             canMangleWithTransformSemantic(minify, &runtime_parser),
         );
     }
