@@ -483,6 +483,13 @@ pub fn makeExactSyntheticRef(self: anytype, name: []const u8) !NodeIndex {
     return markSynthetic(self, try makeIdentifierRef(self, name));
 }
 
+/// Reference the exact already-resolved spelling carried by a generated
+/// binding handle. Unlike makeSyntheticRefFromSpan, this does not run name
+/// collision resolution a second time.
+pub fn makeExactSyntheticRefFromSpan(self: anytype, name_span: Span) !NodeIndex {
+    return markSynthetic(self, try makeIdentifierRefFromSpan(self, name_span));
+}
+
 pub fn makeExactSyntheticBinding(self: anytype, name: []const u8) !NodeIndex {
     return markSynthetic(self, try makeBindingIdentifier(self, try self.ast.addString(name)));
 }

@@ -20,6 +20,13 @@ const EditorError = @import("../../semantic/editor.zig").Error;
 const LexicalCaptureKind = @import("../transformer.zig").LexicalCaptureKind;
 const es_helpers = @import("../es_helpers.zig");
 
+pub const SyntheticBinding = struct {
+    node: NodeIndex,
+    /// The collision-resolved spelling stored on the binding node.
+    name_span: Span,
+    symbol_id: ?SymbolId,
+};
+
 fn editError(err: EditorError) Transformer.Error {
     if (err == error.OutOfMemory) return error.OutOfMemory;
     std.debug.panic("invalid transform semantic edit: {s}", .{@errorName(err)});
@@ -2286,6 +2293,25 @@ pub fn declareSyntheticTempInScope(self: *Transformer, binding: NodeIndex, decla
     try setSymbolId(self, binding, id);
     try self.synthetic_temp_symbol_ids.put(self.allocator, key, @intFromEnum(id));
     return id;
+}
+
+/// Create a generated `var` temp and register its semantic identity at the
+/// same boundary when the output scope is already known. A missing scope is
+/// explicit: state-machine and extracted-function paths attach these temps
+/// later, after their generated owner scopes exist.
+pub fn createSyntheticTempBinding(
+    self: *Transformer,
+    requested_name: Span,
+    declaration_span: Span,
+    scope: ?ScopeId,
+) Transformer.Error!SyntheticBinding {
+    const node = try es_helpers.makeSyntheticBinding(self, requested_name);
+    const name_span = self.ast.getNode(node).data.string_ref;
+    const symbol_id = if (scope) |target|
+        try declareSyntheticTempInScope(self, node, declaration_span, target)
+    else
+        null;
+    return .{ .node = node, .name_span = name_span, .symbol_id = symbol_id };
 }
 
 /// Carry the exact identity from a lowering-created generator temp binding to
