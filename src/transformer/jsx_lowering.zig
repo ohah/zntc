@@ -421,7 +421,9 @@ pub fn JsxLowering(comptime Transformer: type) type {
                     } else {
                         // 대문자 → identifier_reference (symbol_id 전파로 번들러 rename 반영)
                         const id_span = try self.ast.addString(text);
-                        return self.makeIdentifierRefWithSymbolAt(id_span, tag_node.span, tag_name_idx);
+                        const ref = try self.makeIdentifierRefWithSymbolAt(id_span, tag_node.span, tag_name_idx);
+                        try self.replaceUserReference(tag_name_idx, ref);
+                        return ref;
                     }
                 },
                 .jsx_member_expression => {

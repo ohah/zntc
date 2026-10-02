@@ -49,6 +49,8 @@ const import_scanner = @import("../../bundler/import_scanner.zig");
 const stmt_info = @import("../../bundler/stmt_info.zig");
 const wyhash = @import("../../util/wyhash.zig");
 const string_list = @import("../../util/string_list.zig");
+const SymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
+const SymbolId = @import("../../semantic/symbol.zig").SymbolId;
 const es_helpers = @import("../es_helpers.zig");
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
@@ -1744,6 +1746,10 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
     });
 
     const binding_id = try es_helpers.makeSyntheticBinding(self, generated_span);
+    const binding_symbol: ?SymbolId = if (self.semantic_edit_enabled)
+        try self.declareSyntheticInScope(binding_id, jsx_node.span, SymbolKind.variable_const, self.programScope())
+    else
+        null;
     const none_idx = @intFromEnum(NodeIndex.none);
     const declarator = try self.addExtraNode(.variable_declarator, zero, &.{
         @intFromEnum(binding_id),
@@ -1775,6 +1781,7 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
     const new_attrs_list = try self.ast.addNodeList(self.scratch.items[top..]);
 
     const new_tag = try es_helpers.makeSyntheticJsxTag(self, generated_span);
+    try self.addSyntheticRefInScope(new_tag, binding_symbol, self.current_scope, .{ .read = true });
 
     const new_extra = try self.ast.addExtras(&.{
         @intFromEnum(new_tag),

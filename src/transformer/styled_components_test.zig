@@ -1594,6 +1594,110 @@ test "styled (cssProp): intrinsic tag + template_literal css value 추출" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red") != null);
 }
 
+test "#4819 styled cssProp generated component keeps its exact symbol" {
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const ast_walk = @import("../parser/ast_walk.zig");
+    const output_scope = @import("output_scope_test_utils.zig");
+    const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\import styled from "styled-components";
+        \\const _styled_0 = 17;
+        \\function App() { return <div css={`color: red;`}>x</div>; }
+    ;
+
+    var scanner = try helpers.Scanner.init(allocator, source);
+    var parser = helpers.Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".tsx");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    const options: TransformOptions = .{
+        .styled_components = true,
+        .styled_components_css_prop = true,
+        .jsx_transform = true,
+        .jsx_runtime = .automatic,
+        .jsx_filename = "/src/App.tsx",
+        .emit_jsx_runtime_imports = true,
+    };
+    var transformer = try helpers.Transformer.init(allocator, &parser.ast, options);
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    const root = try transformer.transform();
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var output_parents = try output_scope.buildParentMap(allocator, transformer.ast, root);
+    defer output_parents.deinit(allocator);
+
+    var generated_binding: ?@import("../parser/ast.zig").NodeIndex = null;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .binding_identifier or raw < transformer.parser_node_count) continue;
+        const name = transformer.ast.getText(node.data.string_ref);
+        if (std.mem.startsWith(u8, name, "_styled_")) {
+            generated_binding = @enumFromInt(raw);
+            break;
+        }
+    }
+    const binding = generated_binding orelse return error.TestExpectedEqual;
+    const binding_id = transformer.getSymbolIdAt(binding) orelse return error.TestExpectedEqual;
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const program_scope = transformer.programScope();
+    const name = transformer.ast.getText(transformer.ast.getNode(binding).data.string_ref);
+    const symbol = edited.symbols.items[binding_id];
+    try std.testing.expect(!std.mem.eql(u8, name, "_styled_0"));
+    try std.testing.expectEqual(SymbolKind.variable_const, symbol.kind);
+    try std.testing.expectEqual(program_scope, symbol.scope_id);
+    try std.testing.expectEqualStrings(name, symbol.synthetic_name);
+
+    var original_binding: ?@import("../parser/ast.zig").NodeIndex = null;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .binding_identifier or raw >= transformer.parser_node_count) continue;
+        if (std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_styled_0")) {
+            original_binding = @enumFromInt(raw);
+            break;
+        }
+    }
+    const original = original_binding orelse return error.TestExpectedEqual;
+    const original_id = transformer.getSymbolIdAt(original) orelse return error.TestExpectedEqual;
+    try std.testing.expect(original_id != binding_id);
+
+    var binding_count: usize = 0;
+    var read_count: usize = 0;
+    for (reachable) |raw| {
+        if (transformer.ast.nodes.items[raw].tag == .binding_identifier and
+            raw < edited.symbol_ids.len and edited.symbol_ids[raw] == binding_id)
+            binding_count += 1;
+    }
+    for (edited.references) |reference| {
+        if (@intFromEnum(reference.symbol_id) != binding_id) continue;
+        if (reference.node_index.isNone()) continue;
+        const raw = @intFromEnum(reference.node_index);
+        try std.testing.expect(std.mem.indexOfScalar(u32, reachable, raw) != null);
+        try std.testing.expect(transformer.ast.nodes.items[raw].tag == .identifier_reference);
+        try std.testing.expect(reference.flags.read);
+        try std.testing.expect(!reference.flags.write);
+        const expected = output_scope.expectedScope(transformer.ast, root, &output_parents, &edited.scope_owner_map, raw) orelse return error.TestExpectedEqual;
+        try std.testing.expectEqual(expected, reference.scope_id);
+        read_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), binding_count);
+    try std.testing.expectEqual(@as(usize, 1), read_count);
+}
+
 test "styled (cssProp) #4339: top-level-await wrap 시에도 추출된 module-level decl 보존" {
     // TLA 다운레벨(async IIFE wrap)과 cssProp 추출이 동시에 일어나는 파일. 과거엔 program 의
     // TLA wrap 이 early-return 해 css_prop_pending_decls 가 hoist 되지 않고 소실(undefined ref).
