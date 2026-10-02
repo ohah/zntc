@@ -541,6 +541,69 @@ console.log(new Example().method(undefined, 3), __decorateClass, __decorateParam
     }
   });
 
+  // TypeScript drops legacy decorators on class expressions; lowering must still keep the expression value and scope.
+  test('legacy decorator stripping keeps named class expressions valid', () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-legacy-decorator-class-expression-'));
+    try {
+      const file = join(outDir, 'input.ts');
+      const source = `const events: string[] = [];
+function methodDec(target: any, key: string, descriptor: PropertyDescriptor): PropertyDescriptor { events.push(key); return descriptor; }
+const Holder = class Inner {
+  @methodDec method(value: number): number { return value + 1; }
+  static value = (events.push('static'), 7);
+  static selfValue = Inner;
+  static self() { return Inner; }
+};
+const Anonymous = class {
+  @methodDec value(): number { return 3; }
+};
+console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Holder.selfValue === Holder, new Anonymous().value(), events.join(','));
+`;
+      writeFileSync(file, source);
+      const referenceFile = join(outDir, 'reference.js');
+      const reference = ts.transpileModule(source, {
+        compilerOptions: {
+          experimentalDecorators: true,
+          target: ts.ScriptTarget.ES5,
+        },
+      }).outputText;
+      writeFileSync(referenceFile, reference);
+      const oracle = spawnSync('node', [referenceFile], { encoding: 'utf8' });
+      expect(oracle.status, oracle.stderr).toBe(0);
+      expect(oracle.stdout).toBe('4 true 7 true 3 static\n');
+      for (const target of TARGETS) {
+        const output = join(outDir, `${target.name}.js`);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [file, target.arg, '--experimental-decorators', '--minify-identifiers', '-o', output],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${target.name}: ${proc.stderr}`).toBe(0);
+        const identity = proc.stderr
+          .split('\n')
+          .find((line) => line.includes('zntc: symbol-identity '));
+        expect(identity, `${target.name}: missing exact report`).toBeDefined();
+        expect(identity, `${target.name}: ${identity}`).toMatch(/clean=1(?:\s|$)/);
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${target.name}: ${counter}: ${identity}`,
+          ).toBe(0);
+        }
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, `${target.name}: differs from TypeScript 5 output`).toBe(
+          oracle.stdout,
+        );
+      }
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
   test('Flow class lowering reuses exact symbols and keeps shadowed bindings separate', () => {
     const file = join(FIXTURE_DIR, '4819-flow-class.flow');
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-flow-class-'));

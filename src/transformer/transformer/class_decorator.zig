@@ -368,8 +368,11 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
         }
     }
 
-    // experimentalDecorators — decorator를 class에서 제거하고 __decorateClass 호출 생성
-    if (self.options.experimental_decorators) {
+    // TypeScript's legacy-decorator lowering applies to class declarations.
+    // A decorated class expression remains an expression; its member decorators
+    // are stripped with the type/decorator syntax instead of queuing statements
+    // into its parent expression list.
+    if (self.options.experimental_decorators and node.tag == .class_declaration) {
         const old_deco_start = self.readU32(e, ast_mod.ClassExtra.deco_start);
 
         if (has_any_decorator) {
