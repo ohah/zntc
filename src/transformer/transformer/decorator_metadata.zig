@@ -3,6 +3,8 @@ const ast_mod = @import("../../parser/ast.zig");
 const token_mod = @import("../../lexer/token.zig");
 const module_parser = @import("../../parser/module.zig");
 const es_helpers = @import("../es_helpers.zig");
+const qualified_type_name = @import("../qualified_type_name.zig");
+const type_only = @import("type_only.zig");
 
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
@@ -34,12 +36,17 @@ pub fn serializeTypeAnnotation(self: anytype, type_ann_idx: NodeIndex) Error!Nod
         .ts_symbol_keyword => makeTypeofGuard(self, "Symbol"),
         .ts_bigint_keyword => makeTypeofGuard(self, "BigInt"),
 
-        // 타입 참조 (MyClass, Promise 등) → typeof 런타임 체크 (SWC 호환)
+        // Unqualified type references use the existing typeof guard. Qualified
+        // names retain a lexical base reference and explicit property nodes.
         .ts_type_reference => blk: {
+            if (qualified_type_name.typeReferenceName(self.ast, type_node)) |name| {
+                if (qualified_type_name.isSimpleQualifiedPath(name)) {
+                    break :blk makeQualifiedMetadataTypeRef(self, name);
+                }
+            }
             const src_text = self.ast.getText(type_node.span);
             const name_end = std.mem.indexOfScalar(u8, src_text, '<') orelse src_text.len;
-            const name_only = src_text[0..name_end];
-            break :blk makeTypeofGuard(self, name_only);
+            break :blk makeTypeofGuard(self, src_text[0..name_end]);
         },
         .identifier_reference, .binding_identifier => blk: {
             const name = self.ast.getText(type_node.data.string_ref);
@@ -58,6 +65,10 @@ pub fn serializeTypeAnnotation(self: anytype, type_ann_idx: NodeIndex) Error!Nod
 /// 소스 텍스트에서 파라미터 뒤의 타입 어노테이션을 추출한다.
 /// `name: Type` → "Type" 부분을 찾아 런타임 식별자로 직렬화.
 pub fn extractTypeFromSource(self: anytype, param: Node) Error!NodeIndex {
+    return extractTypeFromSourceAtNode(self, param, NodeIndex.none);
+}
+
+fn extractTypeFromSourceAtNode(self: anytype, param: Node, param_idx: NodeIndex) Error!NodeIndex {
     const span_end = param.span.end;
     const source = self.ast.source;
     if (span_end >= source.len) return makeMetadataNameRef(self, "Object");
@@ -73,6 +84,11 @@ pub fn extractTypeFromSource(self: anytype, param: Node) Error!NodeIndex {
     while (pos < source.len and (source[pos] == ' ' or source[pos] == '\t')) : (pos += 1) {}
     // 타입 이름 시작
     const type_start = pos;
+    if (!param_idx.isNone()) {
+        if (findTypeAnnotationForParam(self, param_idx, @intCast(type_start))) |type_ann_idx| {
+            return serializeTypeAnnotation(self, type_ann_idx);
+        }
+    }
     // 식별자 끝 찾기 (알파벳, 숫자, _, $, .)
     while (pos < source.len and (std.ascii.isAlphanumeric(source[pos]) or source[pos] == '_' or source[pos] == '$' or source[pos] == '.')) : (pos += 1) {}
     if (pos == type_start) return makeMetadataNameRef(self, "Object");
@@ -89,8 +105,60 @@ pub fn extractTypeFromSource(self: anytype, param: Node) Error!NodeIndex {
     if (std.mem.eql(u8, type_name, "void") or std.mem.eql(u8, type_name, "undefined") or
         std.mem.eql(u8, type_name, "null") or std.mem.eql(u8, type_name, "never"))
         return es_helpers.makeVoidZero(self, .{ .start = 0, .end = 0 });
+    if (qualified_type_name.isSimpleQualifiedPath(type_name)) {
+        return makeQualifiedMetadataTypeRef(self, type_name);
+    }
     // 클래스/인터페이스 참조 → typeof 런타임 체크 (SWC 호환)
     return makeTypeofGuard(self, type_name);
+}
+
+/// Simple parameter ASTs store the binding identifier in the parameter list,
+/// while their type nodes are appended immediately after that binding. Select
+/// the widest type-only node starting at the annotation's source position so
+/// arrays and unions are serialized from their root shape instead of the first
+/// identifier in the source text.
+fn findTypeAnnotationForParam(self: anytype, param_idx: NodeIndex, type_start: u32) ?NodeIndex {
+    var anchor = param_idx;
+    var hops: usize = 0;
+    while (!anchor.isNone() and hops < self.ast.nodes.items.len) : (hops += 1) {
+        const node = self.ast.getNode(anchor);
+        anchor = switch (node.tag) {
+            .assignment_pattern => node.data.binary.left,
+            .spread_element, .rest_element => node.data.unary.operand,
+            .formal_parameter => @enumFromInt(self.ast.extra_data.items[node.data.extra]),
+            else => break,
+        };
+    }
+    if (anchor.isNone()) return null;
+    const anchor_raw = @intFromEnum(anchor);
+    if (anchor_raw >= self.ast.nodes.items.len) return null;
+
+    var best: ?NodeIndex = null;
+    var best_end = type_start;
+    var raw = anchor_raw + 1;
+    while (raw < self.ast.nodes.items.len) : (raw += 1) {
+        const node = self.ast.nodes.items[raw];
+        if (!type_only.isTypeOnlyNode(node.tag)) break;
+        if (node.span.start == type_start and node.span.end >= best_end) {
+            best = @enumFromInt(raw);
+            best_end = node.span.end;
+        }
+    }
+    return best;
+}
+
+/// Build `Namespace.Type` as a lexical base reference plus property names.
+/// Only the base can be a variable symbol; qualified suffixes are properties.
+fn makeQualifiedMetadataTypeRef(self: anytype, name: []const u8) Error!NodeIndex {
+    var parts = std.mem.splitScalar(u8, name, '.');
+    const base_name = parts.next() orelse return makeMetadataNameRef(self, name);
+    var expression = try makeMetadataNameRef(self, base_name);
+    const zero_span = Span{ .start = 0, .end = 0 };
+    while (parts.next()) |property_name| {
+        const property = try es_helpers.makePropertyName(self, property_name);
+        expression = try es_helpers.makeStaticMember(self, expression, property, zero_span);
+    }
+    return expression;
 }
 
 /// typeof X === "undefined" ? Object : X 조건 표현식 생성 (SWC 호환).
@@ -219,7 +287,7 @@ pub fn buildParamTypesArray(self: anytype, params: ast_mod.NodeList) Error!NodeI
             }
         } else if (param.tag == .binding_identifier or param.tag == .assignment_pattern) {
             // 일반 파라미터: 소스에서 타입 어노테이션 추출 (: Type 패턴)
-            const type_val = try extractTypeFromSource(self, param);
+            const type_val = try extractTypeFromSourceAtNode(self, param, p_idx);
             try type_nodes.append(self.allocator, type_val);
         } else {
             try type_nodes.append(self.allocator, try makeMetadataNameRef(self, "Object"));

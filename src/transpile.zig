@@ -25,6 +25,7 @@ const cg_options = @import("codegen/options.zig");
 const SourceMap = @import("codegen/sourcemap.zig");
 const Mangler = @import("codegen/mod.zig").mangler;
 const module_parser = @import("parser/module.zig");
+const qualified_type_name = @import("transformer/qualified_type_name.zig");
 const LinkingMetadata = @import("bundler/linker.zig").LinkingMetadata;
 const rt = @import("bundler/runtime_helpers.zig");
 const Diagnostic = @import("diagnostic.zig").Diagnostic;
@@ -86,9 +87,9 @@ const AstFacts = struct {
     has_flow_runtime_syntax_without_complete_graph: bool = false,
     /// Runtime syntax whose semantic edits still need the post-transform analyzer.
     has_unhandled_runtime_syntax: bool = false,
-    /// Metadata currently serializes qualified type names as source text, so
-    /// those references cannot yet be attached to an exact base SymbolId.
-    has_qualified_metadata_type_reference: bool = false,
+    /// Qualified metadata names with spellings the transform graph cannot yet
+    /// split into exact base references and property names.
+    has_unsupported_qualified_metadata_type_reference: bool = false,
 };
 
 pub const TranspileError = error{
@@ -198,8 +199,14 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             .ts_import_equals_declaration => facts.has_runtime_sensitive_syntax = true,
 
             .ts_type_reference => {
-                if (std.mem.indexOfScalar(u8, ast.getText(node.span), '.') != null) {
-                    facts.has_qualified_metadata_type_reference = true;
+                if (qualified_type_name.typeReferenceName(ast, node)) |name| {
+                    if (std.mem.indexOfScalar(u8, name, '.') != null and
+                        !qualified_type_name.isSimpleQualifiedPath(name))
+                    {
+                        facts.has_unsupported_qualified_metadata_type_reference = true;
+                    }
+                } else if (std.mem.indexOfScalar(u8, ast.getText(node.span), '.') != null) {
+                    facts.has_unsupported_qualified_metadata_type_reference = true;
                 }
             },
 
@@ -610,7 +617,7 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
     if (parser.is_flow) return !facts.has_flow_runtime_syntax_without_complete_graph;
     if (parser.source_mode == .ts) {
         return !facts.has_unhandled_runtime_syntax and
-            !(options.emit_decorator_metadata and facts.has_qualified_metadata_type_reference);
+            !(options.emit_decorator_metadata and facts.has_unsupported_qualified_metadata_type_reference);
     }
     if (parser.source_mode != .js_strict) return false;
     return true;
@@ -2194,11 +2201,26 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     var qualified_metadata_parser = Parser.init(allocator, &qualified_metadata_scanner);
     qualified_metadata_parser.configureFromExtension(".ts");
     _ = try qualified_metadata_parser.parse();
-    try std.testing.expect(!canMangleWithTransformSemantic(.{
+    try std.testing.expect(canMangleWithTransformSemantic(.{
         .minify_identifiers = true,
         .experimental_decorators = true,
         .emit_decorator_metadata = true,
     }, &qualified_metadata_parser));
+
+    var unsupported_qualified_metadata_scanner = try Scanner.init(
+        allocator,
+        "namespace Types { export class Local {} } function decorate(value: Types . Local) {} " ++
+            "class Box { @decorate method(value: Types . Local) {} }",
+    );
+    var unsupported_qualified_metadata_parser = Parser.init(allocator, &unsupported_qualified_metadata_scanner);
+    unsupported_qualified_metadata_parser.configureFromExtension(".ts");
+    _ = try unsupported_qualified_metadata_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), unsupported_qualified_metadata_parser.errors.items.len);
+    try std.testing.expect(!canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .experimental_decorators = true,
+        .emit_decorator_metadata = true,
+    }, &unsupported_qualified_metadata_parser));
 
     var class_scanner = try Scanner.init(
         allocator,
