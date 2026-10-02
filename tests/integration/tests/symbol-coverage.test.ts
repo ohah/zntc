@@ -507,6 +507,44 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('Flow private field lowering reuses exact symbols across shadowed names', () => {
+    const file = join(FIXTURE_DIR, '4819-flow-private-class.flow');
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-flow-private-class-'));
+    try {
+      for (const target of TARGETS) {
+        const output = join(outDir, `${target.name}.js`);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [file, target.arg, '--flow', '--minify-identifiers', '-o', output],
+          {
+            env: {
+              ...process.env,
+              ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+              ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+            },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${target.name}: ${proc.stderr}`).toBe(0);
+        const identity = proc.stderr
+          .split('\n')
+          .find((line) => line.includes('zntc: symbol-identity '));
+        expect(identity, `${target.name}: missing exact report`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${target.name}: ${counter}: ${identity}`,
+          ).toBe(0);
+        }
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout).toBe('42:outer|5:outer\n');
+      }
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
   test('오라클 전체에서 exact 구조 불변식과 심볼 부채가 모두 0', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-symcov-'));
     const problems: string[] = [];

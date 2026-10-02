@@ -1,0 +1,26 @@
+// @flow
+const value = 'outer';
+
+function run(seed: number): string {
+  class Vault {
+    #value: number = 0;
+
+    constructor(value: number) {
+      this.#value = value;
+    }
+
+    #combine(value: number): number {
+      const local = value;
+      return this.#value + local;
+    }
+
+    read(value: number): number {
+      return this.#combine(value);
+    }
+  }
+
+  const box = new Vault(seed);
+  return box.read(2) + ':' + value;
+}
+
+console.log(run(40) + '|' + run(3));
