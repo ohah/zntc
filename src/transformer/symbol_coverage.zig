@@ -1528,7 +1528,7 @@ pub fn checkExactWithNamespaceMetadata(
     explicit_global_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     origins: *const std.AutoHashMapUnmanaged(u32, u32),
     namespace_member_owners: *const std.AutoHashMapUnmanaged(u32, u32),
-    namespace_scope_owners: *const std.AutoHashMapUnmanaged(u32, u32),
+    namespace_declaration_owners: *const std.AutoHashMapUnmanaged(u32, u32),
     pre_transform_scope_count: usize,
 ) std.mem.Allocator.Error!ExactReport {
     return checkExactImpl(
@@ -1548,7 +1548,7 @@ pub fn checkExactWithNamespaceMetadata(
         explicit_global_nodes,
         origins,
         namespace_member_owners,
-        namespace_scope_owners,
+        namespace_declaration_owners,
         pre_transform_scope_count,
     );
 }
@@ -1570,7 +1570,7 @@ fn checkExactImpl(
     explicit_global_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     origins: *const std.AutoHashMapUnmanaged(u32, u32),
     namespace_member_owners: ?*const std.AutoHashMapUnmanaged(u32, u32),
-    namespace_scope_owners: ?*const std.AutoHashMapUnmanaged(u32, u32),
+    namespace_declaration_owners: ?*const std.AutoHashMapUnmanaged(u32, u32),
     pre_transform_scope_count: ?usize,
 ) std.mem.Allocator.Error!ExactReport {
     var report: ExactReport = .{};
@@ -1636,6 +1636,37 @@ fn checkExactImpl(
                 }
             }
             try reachable_stack.append(allocator, child);
+        }
+    }
+    // Rebuild namespace IIFE-scope ownership from the transformed reachable
+    // declarations. The analyzer keeps this map while resolving references,
+    // but ModuleSemanticData stores the declaration-to-proxy relation instead.
+    // Deriving it here keeps erased namespaces out and lets exact validation
+    // resolve merged namespace members through their canonical proxy owner.
+    var namespace_scope_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer namespace_scope_owners.deinit(allocator);
+    if (namespace_declaration_owners) |declaration_owners| {
+        var namespace_nodes = reachable_nodes.iterator();
+        while (namespace_nodes.next()) |entry| {
+            const raw = entry.key_ptr.*;
+            const declaration = ast.nodes.items[raw];
+            if (declaration.tag != .ts_module_declaration or declaration.data.binary.flags == 1) continue;
+            const scope_id = scope_owner_map.get(raw) orelse continue;
+            const name_idx = declaration.data.binary.left;
+            if (name_idx.isNone() or @intFromEnum(name_idx) >= symbol_ids.len) continue;
+            const declaration_id = symbol_ids[@intFromEnum(name_idx)] orelse continue;
+            if (declaration_id >= symbols.len) continue;
+            const owner_id = declaration_owners.get(declaration_id) orelse declaration_id;
+            if (scope_id >= scopes.len or owner_id >= symbols.len) {
+                recordScopeMapMismatch(&report, "namespace-scope-owner-out-of-range", scope_id, owner_id, null);
+                continue;
+            }
+            const owner = try namespace_scope_owners.getOrPut(allocator, scope_id);
+            if (owner.found_existing and owner.value_ptr.* != owner_id) {
+                recordScopeMapMismatch(&report, "namespace-scope-owner-conflict", scope_id, owner_id, exactSymbolName(ast, &symbols[owner_id]));
+            } else {
+                owner.value_ptr.* = owner_id;
+            }
         }
     }
     var dynamic_eval_units: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -1804,29 +1835,27 @@ fn checkExactImpl(
             }
         }
     }
-    if (namespace_scope_owners) |scope_owners| {
-        var owners = scope_owners.iterator();
-        while (owners.next()) |entry| {
-            const namespace_scope = entry.key_ptr.*;
-            const owner_id = entry.value_ptr.*;
-            if (namespace_scope >= scopes.len or owner_id >= symbols.len) {
-                recordScopeMapMismatch(&report, "namespace-scope-owner-out-of-range", namespace_scope, owner_id, null);
-                continue;
+    var namespace_owners_iter = namespace_scope_owners.iterator();
+    while (namespace_owners_iter.next()) |entry| {
+        const namespace_scope = entry.key_ptr.*;
+        const owner_id = entry.value_ptr.*;
+        if (namespace_scope >= scopes.len or owner_id >= symbols.len) {
+            recordScopeMapMismatch(&report, "namespace-scope-owner-out-of-range", namespace_scope, owner_id, null);
+            continue;
+        }
+        var has_declaration = false;
+        var nodes = reachable_nodes.iterator();
+        while (nodes.next()) |node_entry| {
+            const raw = node_entry.key_ptr.*;
+            if (raw >= ast.nodes.items.len or ast.nodes.items[raw].tag != .ts_module_declaration or
+                ast.nodes.items[raw].data.binary.flags == 1) continue;
+            if (scope_owner_map.get(raw) == namespace_scope) {
+                has_declaration = true;
+                break;
             }
-            var has_declaration = false;
-            var nodes = reachable_nodes.iterator();
-            while (nodes.next()) |node_entry| {
-                const raw = node_entry.key_ptr.*;
-                if (raw >= ast.nodes.items.len or ast.nodes.items[raw].tag != .ts_module_declaration or
-                    ast.nodes.items[raw].data.binary.flags == 1) continue;
-                if (scope_owner_map.get(raw) == namespace_scope) {
-                    has_declaration = true;
-                    break;
-                }
-            }
-            if (!has_declaration) {
-                recordScopeMapMismatch(&report, "namespace-scope-owner-unreachable", namespace_scope, owner_id, exactSymbolName(ast, &symbols[owner_id]));
-            }
+        }
+        if (!has_declaration) {
+            recordScopeMapMismatch(&report, "namespace-scope-owner-unreachable", namespace_scope, owner_id, exactSymbolName(ast, &symbols[owner_id]));
         }
     }
     if (namespace_member_owners) |member_owners| {
@@ -1839,13 +1868,11 @@ fn checkExactImpl(
                 continue;
             }
             var owner_has_scope = false;
-            if (namespace_scope_owners) |scope_owners| {
-                var owner_scopes = scope_owners.iterator();
-                while (owner_scopes.next()) |owner_scope| {
-                    if (owner_scope.key_ptr.* < scopes.len and owner_scope.value_ptr.* == owner_id) {
-                        owner_has_scope = true;
-                        break;
-                    }
+            var owner_scopes = namespace_scope_owners.iterator();
+            while (owner_scopes.next()) |owner_scope| {
+                if (owner_scope.key_ptr.* < scopes.len and owner_scope.value_ptr.* == owner_id) {
+                    owner_has_scope = true;
+                    break;
                 }
             }
             if (!owner_has_scope) {
@@ -2178,7 +2205,7 @@ fn checkExactImpl(
         .scopes = scopes,
         .scope_maps = scope_maps,
         .namespace_member_owners = namespace_member_owners,
-        .namespace_scope_owners = namespace_scope_owners,
+        .namespace_scope_owners = &namespace_scope_owners,
         .dynamic_eval_units = &dynamic_eval_units,
         .with_body_roots = &with_body_roots,
         .references_by_node = &references_by_node,
