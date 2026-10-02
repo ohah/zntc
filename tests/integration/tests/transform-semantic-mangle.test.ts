@@ -1655,7 +1655,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(escapedFallback.stdout.trim()).toBe('6 6');
   });
 
-  test('bundler retains local runtime enum identities and resyncs exported or erased enums and namespaces', async () => {
+  test('bundler retains local and exported runtime enum identities and resyncs erased enums and namespaces', async () => {
     const fixture = await createFixture({
       'runtime-enum.ts': [
         "function _LongStatus() { return 'outer'; }",
@@ -1666,11 +1666,12 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       'exported-enum.ts': [
         "function _LongStatus() { return 'outer'; }",
         'export enum LongStatus { LongStatus = 4, Next = LongStatus + 1 }',
+        'export enum LongMode { LongMode = 2, Next = LongMode + 1 }',
         'export function getLongStatusLabel() { return _LongStatus(); }',
       ].join('\n'),
       'entry.ts': [
-        "import { LongStatus, getLongStatusLabel } from './exported-enum.ts';",
-        'console.log(LongStatus.LongStatus, LongStatus.Next, getLongStatusLabel());',
+        "import { LongStatus, LongMode as Mode, getLongStatusLabel } from './exported-enum.ts';",
+        'console.log(LongStatus.LongStatus, LongStatus.Next, Mode.Next, getLongStatusLabel());',
       ].join('\n'),
       'const-enum.ts': [
         'const enum StaticCode { Created = 7, Failed = Created + 1 }',
@@ -1721,11 +1722,20 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(runtimeEnumResult.stderr).toBe('');
     expect(runtimeEnumResult.stdout.trim()).toBe('4 5 3 outer');
 
-    const exportedEnum = await bundle('entry.ts', 'exported-enum-fallback');
-    expect(exportedEnum.stderr).not.toContain('symbol-identity-prepass');
+    const exportedEnum = await bundle('entry.ts', 'exported-enum-retained');
+    const exportedIdentity = exportedEnum.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity-prepass '));
+    expect(exportedIdentity).toBeDefined();
+    expect(exportedIdentity).toMatch(/clean=1(?:\s|$)/);
+    expect(exportedIdentity).toMatch(/enum_iife_params=2(?:\s|$)/);
+    expect(exportedIdentity).toMatch(/enum_iife_param_mismatch=0(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(exportedIdentity).toMatch(new RegExp(counter + '=0(?:\\s|$)'));
+    }
     const exportedEnumResult = await runNode(exportedEnum.output);
     expect(exportedEnumResult.stderr).toBe('');
-    expect(exportedEnumResult.stdout.trim()).toBe('4 5 outer');
+    expect(exportedEnumResult.stdout.trim()).toBe('4 5 3 outer');
 
     const constEnum = await bundle('const-enum.ts', 'const-enum-fallback');
     expect(constEnum.stderr).not.toContain('symbol-identity-prepass');
