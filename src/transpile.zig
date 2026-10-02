@@ -90,6 +90,9 @@ const AstFacts = struct {
     /// `using` is safe on the original graph when preserved natively. Its
     /// downlevel rewrite still uses the conservative post-transform analyzer.
     has_using_syntax: bool = false,
+    /// Flow component wrappers are complete without JSX, but their combined
+    /// wrapper-plus-JSX edit still uses the conservative post-transform pass.
+    has_flow_component_wrapper: bool = false,
 };
 
 pub const TranspileError = error{
@@ -211,7 +214,10 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
 
             // Flow component-with-ref adds the helper binding and call reference
             // to the same transform graph; JSX remains gated separately below.
-            .flow_component_wrapper => facts.has_runtime_sensitive_syntax = true,
+            .flow_component_wrapper => {
+                facts.has_runtime_sensitive_syntax = true;
+                facts.has_flow_component_wrapper = true;
+            },
 
             .variable_declaration => {
                 if (ast.variableDeclarationKind(node).isUsing()) {
@@ -590,7 +596,8 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
 
     const facts = collectAstFacts(&parser.ast);
     if (facts.has_using_syntax and options.unsupported.using) return false;
-    if (parser.is_flow) return !facts.has_flow_runtime_syntax_without_complete_graph and !parser.ast.has_jsx;
+    if (parser.is_flow) return !facts.has_flow_runtime_syntax_without_complete_graph and
+        !(facts.has_flow_component_wrapper and parser.ast.has_jsx);
     if (parser.source_mode == .ts) return !facts.has_unhandled_runtime_syntax;
     if (parser.source_mode != .js_strict) return false;
     return true;
@@ -2262,7 +2269,7 @@ test "#4819 Flow match and enum reuse the transform graph while other runtime sy
     _ = try jsx_parser.parse();
     try std.testing.expect(jsx_parser.is_flow);
     try std.testing.expect(jsx_parser.ast.has_jsx);
-    try std.testing.expect(!canMangleWithTransformSemantic(minify, &jsx_parser));
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &jsx_parser));
 
     var flow_component_jsx_scanner = try Scanner.init(allocator, "// @flow\ncomponent Card(ref?: mixed, ...props: { label?: string }) { return <div />; }");
     var flow_component_jsx_parser = Parser.init(allocator, &flow_component_jsx_scanner);
@@ -2271,6 +2278,39 @@ test "#4819 Flow match and enum reuse the transform graph while other runtime sy
     try std.testing.expect(flow_component_jsx_parser.is_flow);
     try std.testing.expect(flow_component_jsx_parser.ast.has_jsx);
     try std.testing.expect(!canMangleWithTransformSemantic(minify, &flow_component_jsx_parser));
+}
+
+test "#4819 Flow JSX lowering reuses the transform graph without a component wrapper" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const options: TranspileOptions = .{ .flow = true, .minify_identifiers = true, .jsx_runtime = .automatic };
+    const source = "// @flow\nconst _jsx = 1, _jsxs = 2, _Fragment = 3; " ++
+        "export function View(props: { value: number }) { return <><div value={_jsx} /><span>{_jsxs + _Fragment + props.value}</span></>; }";
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".jsx");
+    _ = try parser.parse();
+    try std.testing.expect(parser.is_flow);
+    try std.testing.expect(parser.ast.has_jsx);
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    try std.testing.expect(canMangleWithTransformSemantic(options, &parser));
+
+    var result = try transpile(allocator, source, "input.jsx", options);
+    defer result.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "react/jsx-runtime") != null);
+
+    var output_scanner = try Scanner.init(allocator, result.code);
+    var output_parser = Parser.init(allocator, &output_scanner);
+    output_parser.configureFromExtension(".mjs");
+    _ = try output_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), output_parser.errors.items.len);
+    var output_analyzer = SemanticAnalyzer.init(allocator, &output_parser.ast);
+    output_analyzer.is_module = true;
+    try output_analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), output_analyzer.errors.items.len);
+    try std.testing.expectEqual(@as(usize, 0), output_analyzer.unresolved_references.count());
 }
 
 /// fast 와 full 양쪽 경로의 출력이 expected 와 일치하는지 검증. parity 만으로는
