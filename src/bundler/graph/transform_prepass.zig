@@ -219,6 +219,38 @@ fn isSupportedRuntimeTsEnum(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     return ast.extra_data.items[extra + 3] == 0;
 }
 
+/// Keeping the semantic graph is safe only when the transform leaves each
+/// runtime import's module-graph shape unchanged. Ordinary unused named
+/// imports can be elided, and inline type-only specifiers can be removed, so
+/// this first slice admits runtime imports only under verbatim syntax and
+/// without inline type-only specifiers. Declaration-level type imports have
+/// no runtime import record and are always erased.
+fn hasStableRuntimeImports(ast: *const ast_mod.Ast, options: TransformOptions) bool {
+    for (ast.nodes.items) |node| {
+        if (node.tag != .import_declaration) continue;
+        const import = module_parser.readImportDeclExtras(ast, node.data.extra);
+        if (import.is_type_only) continue;
+        if (import.phase != .none or import.attrs_len != 0) return false;
+        if (import.specs_len == 0) continue;
+        if (!options.verbatim_module_syntax) return false;
+        if (import.specs_start > ast.extra_data.items.len or
+            import.specs_len > ast.extra_data.items.len - import.specs_start) return false;
+
+        for (ast.extra_data.items[import.specs_start .. import.specs_start + import.specs_len]) |raw_spec_idx| {
+            if (raw_spec_idx >= ast.nodes.items.len) return false;
+            const specifier = ast.nodes.items[raw_spec_idx];
+            switch (specifier.tag) {
+                .import_default_specifier, .import_namespace_specifier => {},
+                .import_specifier => {
+                    if ((specifier.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0) return false;
+                },
+                else => return false,
+            }
+        }
+    }
+    return true;
+}
+
 /// Source-less export lists at the program root retain local references and
 /// rebuild export bindings from the transformed AST. Re-exports, namespace
 /// exports, and string export names require the full graph resync path.
@@ -322,6 +354,7 @@ fn canKeepPrepassSemanticGraph(
         options.emit_decorator_metadata or options.tla_chunk_wrapped or options.tla_export_decl_deferrable) return false;
     if (module.uses_top_level_await or module.self_uses_top_level_await) return false;
     if (!hasOnlyTopLevelLocalExportSpecifiers(module)) return false;
+    if (!hasStableRuntimeImports(ast, options)) return false;
 
     var found_transform = classic_jsx;
     for (ast.nodes.items) |node| {
@@ -342,14 +375,9 @@ fn canKeepPrepassSemanticGraph(
             .yield_expression,
             .with_statement,
             => return false,
-            .import_declaration => {
-                const import = module_parser.readImportDeclExtras(ast, node.data.extra);
-                // A declaration-level type import has no runtime ImportRecord or
-                // ImportBinding, and the transformer removes the entire node.
-                // Inline type-only specifiers stay on the resync path because
-                // verbatim module syntax can preserve their module side effect.
-                if (!import.is_type_only) return false;
-            },
+            // Runtime import module-graph stability was proven by the preflight
+            // above; declaration-level type imports have no runtime record.
+            .import_declaration => {},
             .ts_enum_declaration => {
                 if (!isSupportedRuntimeTsEnum(ast, node)) return false;
                 found_transform = true;
