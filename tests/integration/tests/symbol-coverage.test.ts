@@ -587,6 +587,152 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('automatic-dev JSX keeps runtime and key-spread fallback helpers in the semantic graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-automatic-dev-jsx-retained-'));
+    const output = join(dir, 'out.cjs');
+    mkdirSync(join(dir, 'runtime'), { recursive: true });
+    writeFileSync(
+      join(dir, 'runtime', 'jsx-dev-runtime.js'),
+      [
+        "export const Fragment = 'fragment';",
+        "export function jsxDEV(tag, _props) { return tag === 'div' ? 42 : tag; }",
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'runtime', 'index.js'),
+      "export function createElement(tag, props) { return 'fallback:' + tag + ':' + props.key; }",
+    );
+    writeFileSync(
+      join(dir, 'view.tsx'),
+      [
+        'const _jsxDEV = 7;',
+        'const _jsxDEV2 = 8;',
+        'const _Fragment = 9;',
+        'export function view() { return [<><span /><div /></>, <div {...{ value: true }} key="k" />, _jsxDEV, _jsxDEV2, _Fragment].join(" "); }',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'entry.ts'),
+      ["import { view } from './view.tsx';", 'console.log(view());'].join('\n'),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.ts',
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '--jsx=automatic-dev',
+          '--jsx-import-source=./runtime',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('view.tsx'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+      expect(Number(report?.match(/generated_references=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+
+      const graphMode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('view.tsx'),
+        );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('fragment fallback:div:k 7 8 9\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('automatic-dev JSX in a dead function does not keep its helper import live', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-automatic-dev-jsx-dead-'));
+    const output = join(dir, 'out.cjs');
+    mkdirSync(join(dir, 'runtime'), { recursive: true });
+    writeFileSync(
+      join(dir, 'runtime', 'jsx-dev-runtime.js'),
+      "export function jsxDEV() { throw new Error('dead JSX ran'); }",
+    );
+    writeFileSync(
+      join(dir, 'dep.tsx'),
+      ['function unused() { return <div />; }', "console.log('dep side effect');"].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'entry.ts'),
+      ["import './dep.tsx';", "console.log('entry');"].join('\n'),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.ts',
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '--jsx=automatic-dev',
+          '--jsx-import-source=./runtime',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('dep.tsx'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+
+      const graphMode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('dep.tsx'),
+        );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('dep side effect\nentry\n');
+      expect(readFileSync(output, 'utf8')).not.toContain('dead JSX ran');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('가상 namespace IIFE 매개변수도 정확한 SymbolId와 ScopeId를 가진다', () => {
     const file = join(FIXTURE_DIR, '4819-namespace-iife-params.ts');
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-namespace-param-'));
