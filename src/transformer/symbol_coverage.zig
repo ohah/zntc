@@ -1238,7 +1238,15 @@ const ExactCtx = struct {
             }
             if (symbol.scope_id.toIndex() < ctx.scope_maps.len) {
                 const mapped = ctx.scope_maps[symbol.scope_id.toIndex()].get(symbol_name);
-                if (mapped == null or mapped.? != raw_id) recordScopeMapMismatch(
+                const isolated_helper_binding = symbol.kind == .import_binding and
+                    ctx.helper_scope_map.get(symbol_name) == raw_id and
+                    if (mapped) |mapped_id|
+                        mapped_id != raw_id and mapped_id < ctx.symbols.len and
+                            ctx.symbols[mapped_id].scope_id == symbol.scope_id and
+                            std.mem.eql(u8, exactSymbolName(ctx.ast, &ctx.symbols[mapped_id]), symbol_name)
+                    else
+                        false;
+                if ((mapped == null or mapped.? != raw_id) and !isolated_helper_binding) recordScopeMapMismatch(
                     ctx.report,
                     "binding-not-in-scope-map",
                     @intFromEnum(symbol.scope_id),
