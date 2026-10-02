@@ -116,7 +116,7 @@ pub const AstTransformCtx = struct {
             self.transformer,
             info.original_body_idx,
             info.original_params,
-            info.name,
+            if (info.node_tag == .method_definition) null else info.name,
         );
         self.closure_cache = .{ .node_idx = info.node_idx, .vars = vars };
         return vars;

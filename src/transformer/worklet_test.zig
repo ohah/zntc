@@ -26,14 +26,21 @@ test "Worklet: generated factory locals keep exact semantic coverage" {
     defer arena.deinit();
     const allocator = arena.allocator();
     const source =
+        \\const current = 17;
+        \\const run = () => 2;
         \\function declared() { "worklet"; return 1; }
         \\function make() { return function nested() { "worklet"; return 42; }; }
         \\const anonymous = function() { "worklet"; return 3; };
         \\const arrow = () => { "worklet"; return 4; };
         \\const handlers = {
-        \\  run(value) { "worklet"; return value; },
-        \\  get current() { "worklet"; return 7; }
+        \\  run(value) { "worklet"; return run() + value; },
+        \\  get current() { "worklet"; return 7; },
+        \\  set current(current) { "worklet"; this.currentValue = current; }
         \\};
+        \\class Box {
+        \\  set value(value) { "worklet"; this.stored = value; }
+        \\  set current(input) { "worklet"; this.storedCurrent = current + input; }
+        \\}
     ;
 
     var scanner = try Scanner.init(allocator, source);
@@ -61,6 +68,15 @@ test "Worklet: generated factory locals keep exact semantic coverage" {
     transformer.synthetic_idents = .empty;
 
     const root = try transformer.transform();
+    var codegen = @import("../codegen/codegen.zig").Codegen.init(allocator, transformer.ast);
+    defer codegen.deinit();
+    const output = try codegen.generate(root);
+    try std.testing.expect(std.mem.indexOf(u8, output, "var run2 = function(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "run2.__closure = { run: run }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "current4.__closure = { current: current }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "var value2 = function(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "value2.__workletHash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "current.__workletHash") == null);
     const edited = (try transformer.finishSemanticEdit()).?;
     var report = try coverage.checkStrictWithExactExternalEvidence(
         allocator,

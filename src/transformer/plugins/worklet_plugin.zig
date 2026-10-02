@@ -243,19 +243,21 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
         const method_node = t.ast.getNode(info.node_idx);
         const me = method_node.data.extra;
         const method_flags = t.ast.extra_data.items[me + 3];
+        const is_accessor = (method_flags & (METHOD_FLAG_GETTER | METHOD_FLAG_SETTER)) != 0;
         const func_expr = try buildFunctionExprFromMethod(api, info, stripped_body);
 
-        if ((method_flags & (METHOD_FLAG_GETTER | METHOD_FLAG_SETTER)) != 0) {
+        if (is_accessor) {
             // class body의 getter/setter는 IIFE object_property로 교체 불가 (class syntax 제약).
             // Babel 호환: body를 `var _w=function(){...}; _w.__workletHash=...; return _w;`로 치환.
             // getter 접근 시 worklet 함수를 반환 (Reanimated runtime 동작과 일치).
-            api.modified_body = try buildFactoryBody(api, func_expr, func_name, stmts, t.current_scope);
+            const local_name = try chooseFactoryLocalName(api, func_name, closure_vars, true);
+            api.modified_body = try buildFactoryBody(api, func_expr, local_name, stmts, t.current_scope);
             return;
         }
 
         // 일반 object method → `{ key: (function(){ var fn=...; fn.__workletHash=...; return fn; })() }`
         if (t.semantic_edit_enabled) try t.remapCopiedScopeOwner(info.node_idx, func_expr);
-        const iife = try buildWorkletIIFE(api, func_expr, func_name, stmts);
+        const iife = try buildWorkletIIFE(api, func_expr, func_name, closure_vars, stmts);
         const key_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[me]);
         const prop = try t.ast.addNode(.{
             .tag = .object_property,
@@ -265,13 +267,13 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
         api.replaced_node = prop;
     } else {
         // expression 위치 (function_expression/arrow): IIFE factory로 감싸서 교체
-        const iife = try buildWorkletIIFE(api, info.node_idx, func_name, stmts);
+        const iife = try buildWorkletIIFE(api, info.node_idx, func_name, closure_vars, stmts);
         api.replaced_node = iife;
     }
 }
 
 /// method_definition에서 function_expression을 추출한다.
-/// { build(props) { body } } → function build(props) { body }
+/// 메서드 이름은 원본에서 lexical binding이 아니므로 새 함수도 익명으로 만든다.
 /// body_idx: directive가 제거된 stripped body (caller가 전달).
 fn buildFunctionExprFromMethod(api: *AstTransformCtx, info: FunctionInfo, body_idx: NodeIndex) PluginError!NodeIndex {
     const t = api.transformer;
@@ -279,8 +281,7 @@ fn buildFunctionExprFromMethod(api: *AstTransformCtx, info: FunctionInfo, body_i
     const me = method_node.data.extra;
 
     // method_definition extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
-    const name_span = if (info.name) |n| (t.ast.addString(n) catch return error.OutOfMemory) else Span{ .start = 0, .end = 0 };
-    const name_node = if (info.name != null) (es_helpers.makeSyntheticBinding(t, name_span) catch return error.OutOfMemory) else NodeIndex.none;
+    const name_node = NodeIndex.none;
 
     // method flags → function flags (async=bit0 of method flags bit3, generator=bit4)
     const method_flags = t.ast.extra_data.items[me + 3];
@@ -310,7 +311,7 @@ fn buildFunctionExprFromMethod(api: *AstTransformCtx, info: FunctionInfo, body_i
 fn buildFactoryBody(
     api: *AstTransformCtx,
     func_node: NodeIndex,
-    func_name: []const u8,
+    local_name: []const u8,
     prop_stmts: [5]NodeIndex,
     scope: @import("../../semantic/scope.zig").ScopeId,
 ) PluginError!NodeIndex {
@@ -318,7 +319,7 @@ fn buildFactoryBody(
     const t = api.transformer;
 
     // var funcName = <original function>;
-    const name_span = try t.ast.addString(func_name);
+    const name_span = try t.ast.addString(local_name);
     const binding = try es_helpers.makeSyntheticBinding(t, name_span);
     const binding_symbol = if (t.semantic_edit_enabled)
         try t.declareSyntheticInScope(binding, zero_span, .variable_var, scope)
@@ -378,6 +379,7 @@ fn buildWorkletIIFE(
     api: *AstTransformCtx,
     func_node: NodeIndex,
     func_name: []const u8,
+    closure_vars: []const worklet_mod.ClosureVar,
     prop_stmts: [5]NodeIndex,
 ) PluginError!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
@@ -398,7 +400,8 @@ fn buildWorkletIIFE(
         try t.addGeneratedFunctionScope(t.current_scope, wrapper_func)
     else
         .none;
-    const body = try buildFactoryBody(api, func_node, func_name, prop_stmts, wrapper_scope);
+    const local_name = try chooseFactoryLocalName(api, func_name, closure_vars, false);
+    const body = try buildFactoryBody(api, func_node, local_name, prop_stmts, wrapper_scope);
     const wrapper_extra = t.ast.getNode(wrapper_func).data.extra;
     t.ast.extra_data.items[wrapper_extra + ast_mod.FunctionExtra.body] = @intFromEnum(body);
 
@@ -415,6 +418,30 @@ fn buildWorkletIIFE(
         .span = zero_span,
         .data = .{ .extra = call_extra },
     });
+}
+
+/// A method's name is a property key, not a binding. Keep the historical
+/// generated local spelling unless it would shadow one of the worklet's
+/// captured variables. Accessors share their body scope with parameters and
+/// source locals, so their factory binding always needs a collision-free name.
+fn chooseFactoryLocalName(
+    api: *AstTransformCtx,
+    func_name: []const u8,
+    closure_vars: []const worklet_mod.ClosureVar,
+    force_unique: bool,
+) PluginError![]const u8 {
+    var needs_unique = force_unique;
+    if (!needs_unique) {
+        for (closure_vars) |closure| {
+            if (std.mem.eql(u8, closure.name, func_name)) {
+                needs_unique = true;
+                break;
+            }
+        }
+    }
+    if (!needs_unique) return func_name;
+    var counter: u32 = 0;
+    return es_helpers.uniqueSyntheticName(api.transformer, func_name, &counter) catch return error.OutOfMemory;
 }
 
 // ================================================================

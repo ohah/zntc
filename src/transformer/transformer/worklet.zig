@@ -734,7 +734,15 @@ fn buildClosureObject(self: *Transformer, closure_vars: []const ClosureVar) Erro
             break :blk try self.addExtraNode(.static_member_expression, zero_span, &.{
                 @intFromEnum(base_ref), @intFromEnum(factory_ref), 0,
             });
-        } else try self.makeIdentifierRefWithSymbol(name_span, cv.ref_idx);
+        } else blk: {
+            const ref = try self.makeIdentifierRefWithSymbol(name_span, cv.ref_idx);
+            // Closure object values are fresh reads at the generated factory
+            // site. Preserve their exact semantic evidence as well as their
+            // SymbolId so coverage and downstream scope analysis see the use.
+            if (self.semantic_edit_enabled)
+                try self.trackUserReadFromBinding(ref, cv.ref_idx, self.current_scope);
+            break :blk ref;
+        };
         const prop = try self.ast.addNode(.{
             .tag = .object_property,
             .span = zero_span,
