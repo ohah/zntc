@@ -673,6 +673,9 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
         const primary_binding = binding_groups.items[primary];
         const editor_binding_id = outputSymbolIdAt(self, editor, primary_binding.first_node) orelse std.debug.panic("primary synthetic binding lost its SymbolId", .{});
         if (editor_binding_id != raw_id) std.debug.panic("primary synthetic binding changed SymbolId", .{});
+        const existing_target_identity = primary_binding.target_scope.toIndex() < editor.scope_maps.items.len and
+            editor.scope_maps.items[primary_binding.target_scope.toIndex()].get(primary_binding.name) == @as(?usize, raw_id) and
+            std.mem.eql(u8, original_name, primary_binding.name);
         var merged_into_existing_var = false;
         if (primary_binding.target_scope.toIndex() < editor.scope_maps.items.len) {
             if (editor.scope_maps.items[primary_binding.target_scope.toIndex()].get(primary_binding.name)) |existing_raw| {
@@ -692,7 +695,7 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
                 }
             }
         }
-        if (!merged_into_existing_var and
+        if (!merged_into_existing_var and !existing_target_identity and
             (editor.symbols.items[raw_id].scope_id != primary_binding.target_scope or
                 !std.mem.eql(u8, original_name, primary_binding.name)))
         {

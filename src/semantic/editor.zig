@@ -307,7 +307,15 @@ pub const SemanticEditor = struct {
                 self.symbol_ids.items[slot] = @intFromEnum(existing_id);
                 return existing_id;
             }
-            return error.DuplicateBinding;
+            // Block function declarations can share one analyzer SymbolId
+            // through aliases in sibling lexical scopes. If output emission
+            // splits those declarations into distinct block bindings, replace
+            // only this alias before declaring the output identity.
+            if (existing_raw == @intFromEnum(expected) and existing.scope_id != target) {
+                _ = self.scope_maps.items[target.toIndex()].remove(name);
+            } else {
+                return error.DuplicateBinding;
+            }
         }
         const name_span = try self.ast.addString(name);
         self.ast.nodes.items[@intFromEnum(node)].data.string_ref = name_span;
