@@ -469,6 +469,78 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('legacy TypeScript decorators retain exact transform graph references', () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-legacy-decorator-'));
+    try {
+      const file = join(outDir, 'input.ts');
+      const source = `const __decorateClass = 7, __decorateParam = 8, __metadata = 9;
+function classDec(target: any): any { return target; }
+function propertyDec(target: any, key: string): void {}
+function methodDec(target: any, key: string, descriptor: PropertyDescriptor): PropertyDescriptor { return descriptor; }
+function parameterDec(target: any, key: string, index: number): void {}
+@classDec
+class Example {
+  @propertyDec field: number = 2;
+  @methodDec method(@parameterDec parameterDec: number, value: number): number { return this.field + eval('value'); }
+  static self() { return Example; }
+}
+const parameterEvents: string[] = [];
+class ParamExample {
+  static decorator(target: any, key: string, index: number): void { parameterEvents.push(key + ':' + index + ':' + (target === ParamExample.prototype)); }
+  method(@ParamExample.decorator value: number): number { return value; }
+}
+class CtorExample {
+  static decorator(target: any, key: string | undefined, index: number): void { parameterEvents.push((key === undefined) + ':' + index + ':' + (target === CtorExample)); }
+  constructor(@CtorExample.decorator value: number) {}
+}
+new CtorExample(4);
+console.log(new Example().method(undefined, 3), __decorateClass, __decorateParam, __metadata, Example.self() === Example, parameterEvents.join(','), new ParamExample().method(6));
+`;
+      writeFileSync(file, source);
+      const referenceFile = join(outDir, 'reference.js');
+      const reference = ts.transpileModule(source, {
+        compilerOptions: {
+          experimentalDecorators: true,
+          target: ts.ScriptTarget.ES5,
+        },
+      }).outputText;
+      writeFileSync(referenceFile, reference);
+      const oracle = spawnSync('node', [referenceFile], { encoding: 'utf8' });
+      expect(oracle.status, oracle.stderr).toBe(0);
+      expect(oracle.stdout).toBe('5 7 8 9 true method:0:true,true:0:true 6\n');
+      for (const target of TARGETS) {
+        const output = join(outDir, `${target.name}.js`);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [file, target.arg, '--experimental-decorators', '--minify-identifiers', '-o', output],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${target.name}: ${proc.stderr}`).toBe(0);
+        const identity = proc.stderr
+          .split('\n')
+          .find((line) => line.includes('zntc: symbol-identity '));
+        expect(identity, `${target.name}: missing exact report`).toBeDefined();
+        expect(identity, `${target.name}: ${identity}`).toMatch(/clean=1(?:\s|$)/);
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${target.name}: ${counter}: ${identity}`,
+          ).toBe(0);
+        }
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, `${target.name}: differs from TypeScript 5 output`).toBe(
+          oracle.stdout,
+        );
+      }
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
   test('Flow class lowering reuses exact symbols and keeps shadowed bindings separate', () => {
     const file = join(FIXTURE_DIR, '4819-flow-class.flow');
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-flow-class-'));

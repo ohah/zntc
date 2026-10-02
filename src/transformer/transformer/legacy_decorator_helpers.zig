@@ -10,13 +10,30 @@ const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
 const es_helpers = @import("../es_helpers.zig");
 const class_member_helpers = @import("class_member_helpers.zig");
+const symbol_mod = @import("../../semantic/symbol.zig");
+const ReferenceFlags = symbol_mod.ReferenceFlags;
+const SymbolId = symbol_mod.SymbolId;
 
 const FieldAssignment = class_member_helpers.FieldAssignment;
 const MemberDecoratorInfo = class_member_helpers.MemberDecoratorInfo;
 
+/// Decorator lowering can synthesize class-name references from a binding node,
+/// which has no source Reference row to clone. Record that edge explicitly.
+fn makeClassNameReference(self: anytype, name_span: Span, source: NodeIndex, flags: ReferenceFlags) Error!NodeIndex {
+    if (self.semantic_edit_enabled and !source.isNone() and self.ast.getNode(source).tag == .binding_identifier) {
+        if (self.getSymbolIdAt(source)) |raw_id| {
+            const ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
+            try self.addSyntheticRefInScope(ref, @enumFromInt(raw_id), self.current_scope, flags);
+            return ref;
+        }
+    }
+    return self.makeIdentifierRefWithSymbol(name_span, source);
+}
+
 /// experimentalDecorators: class/member decorator를 __decorateClass 호출로 변환.
 pub fn transformExperimentalDecorators(
     self: *Transformer,
+    source_idx: NodeIndex,
     node: Node,
     new_name: NodeIndex,
     name_old_idx: NodeIndex,
@@ -40,13 +57,29 @@ pub fn transformExperimentalDecorators(
         break :blk self.ast.getText(name_node.data.string_ref);
     } else null;
 
+    // A class declaration has distinct outer and inner names in the semantic
+    // graph. When a class decorator lowers it to `let Foo = class Foo {}`,
+    // the emitted class-expression binding must keep the inner class-self ID;
+    // the generated `let` below retains the source declaration's outer ID.
+    var class_expr_name = new_name;
+    if (self.semantic_edit_enabled and node.tag == .class_declaration and class_name_text != null and
+        (old_deco_len > 0 or ctor_param_decos.len > 0))
+    {
+        if (self.class_self_symbol_map.get(@intFromEnum(source_idx))) |class_self_id| {
+            const name_span = self.ast.getNode(new_name).data.string_ref;
+            class_expr_name = try self.makeUserBinding(name_span, name_old_idx);
+            try self.rebindOutputBinding(class_expr_name, class_self_id);
+        }
+    }
+
     // class node 생성 (decorator 없이)
     const empty_list = try self.ast.addNodeList(&.{});
     const class_node = try self.addExtraNode(.class_expression, node.span, &.{
-        @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
-        none,                   0,                       0,
+        @intFromEnum(class_expr_name), @intFromEnum(new_super), @intFromEnum(new_body),
+        none,                          0,                       0,
         empty_list.start, empty_list.len, // decorator 제거
     });
+    if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_node);
 
     // class decorator 또는 constructor param decorator가 있으면 → let Foo = class Foo {}; 로 변환
     if ((old_deco_len > 0 or ctor_param_decos.len > 0) and class_name_text != null) {
@@ -110,6 +143,7 @@ pub fn transformExperimentalDecorators(
             none,                   0,                       0,
             empty_list.start, empty_list.len, // decorator 제거
         });
+        if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
         try self.pending_nodes.append(self.allocator, class_result);
 
         for (member_decos) |md| {
@@ -180,7 +214,7 @@ pub fn buildDecorateClassMemberCall(
     });
 
     // arg2: Foo.prototype (instance) or Foo (static)
-    const class_ref = try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx);
+    const class_ref = try makeClassNameReference(self, class_name_span, class_name_old_idx, .{ .read = true });
     const target = if (!md.is_static) blk: {
         const proto_id = try es_helpers.makePropertyName(self, "prototype");
         const me = try self.ast.addExtras(&.{ @intFromEnum(class_ref), @intFromEnum(proto_id), 0 });
@@ -284,7 +318,7 @@ pub fn buildDecorateClassCall(
     });
 
     // arg2: Foo
-    const class_ref = try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx);
+    const class_ref = try makeClassNameReference(self, class_name_span, class_name_old_idx, .{ .read = true });
 
     const args = try self.ast.addNodeList(&.{ deco_array, class_ref });
     const call = try self.addExtraNode(.call_expression, zero_span, &.{
@@ -292,7 +326,7 @@ pub fn buildDecorateClassCall(
     });
 
     // Foo = __decorateClass([dec], Foo)
-    const lhs = try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx);
+    const lhs = try makeClassNameReference(self, class_name_span, class_name_old_idx, .{ .write = true });
     const assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = zero_span,

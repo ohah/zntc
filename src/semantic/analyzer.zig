@@ -1872,13 +1872,17 @@ pub const SemanticAnalyzer = struct {
                         });
                     }
 
+                    // Parameter decorators are evaluated in the surrounding class scope,
+                    // before method parameters can shadow names used by decorator expressions.
+                    const params_list = self.ast.functionParamsList(node);
+                    try self.visitParameterDecorators(params_list);
+
                     // getter/setter 파라미터 개수 검증
                     try checker.checkGetterSetterParams(self.ast, node, &self.errors, self.allocator);
 
                     const body_idx: NodeIndex = @enumFromInt(extras[extra_start + ast_mod.MethodExtra.body]);
                     // 함수 본문을 function scope로 감싸서 순회
                     const scope_saved = try self.enterScope(.function, self.is_strict_mode);
-                    const params_list = self.ast.functionParamsList(node);
                     try self.registerParams(params_list);
                     // 메서드는 항상 UniqueFormalParameters — 중복 금지
                     try checker.checkDuplicateParams(self.ast, params_list, &self.errors, self.allocator);
@@ -4984,6 +4988,24 @@ pub const SemanticAnalyzer = struct {
                 try self.visitNode(node.data.binary.right);
             },
             else => {},
+        }
+    }
+
+    /// Visit parameter decorator expressions before entering the function scope.
+    /// They run during class evaluation, so a same-named method parameter must not shadow them.
+    fn visitParameterDecorators(self: *SemanticAnalyzer, params: ast_mod.NodeList) AllocError!void {
+        const split = self.ast.nodeListSplitRest(params);
+        for (split.elements) |raw_idx| {
+            const param_idx: NodeIndex = @enumFromInt(raw_idx);
+            if (param_idx.isNone()) continue;
+            const param = self.ast.getNode(param_idx);
+            if (param.tag != .formal_parameter) continue;
+            const extra = param.data.extra;
+            if (extra + 5 >= self.ast.extra_data.items.len) continue;
+            try self.visitNodeList(.{
+                .start = self.ast.extra_data.items[extra + 4],
+                .len = self.ast.extra_data.items[extra + 5],
+            });
         }
     }
 
