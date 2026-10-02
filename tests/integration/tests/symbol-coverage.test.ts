@@ -5,7 +5,7 @@
 // `scripts/audit-identifier-constructors.mjs` 가 분류 생성 함수로만 하게 막지만, 그 함수에 원래
 // 노드를 잘못(`.none`·다른 노드) 넘기는 것까지는 못 막는다 — 이 테스트가 그 값 수준을 지킨다.
 //
-// 다운레벨 오라클의 모든 *.mjs fixture × 타깃에서 단일 파일 변환을 돌려 누락 검사기
+// 다운레벨 오라클의 JS·TypeScript·Flow fixture 전체 × 타깃에서 단일 파일 변환을 돌려 누락 검사기
 // (`ZNTC_DEBUG_SYMBOL_COVERAGE`) 와 합성 변수까지 포함한 exact identity 감사가 깨끗한지 본다.
 // 현재 보고서는 transform 직후이며, minify·최종 이름 결정 단계의 검증은 별도 후속 게이트다.
 import { describe, test, expect } from 'bun:test';
@@ -71,12 +71,17 @@ const STRICT_ZERO_COUNTERS = [
 // lowered `var` bindings. Its unbound references are external only when exact
 // NodeIndex provenance points to an analyzer-unresolved or explicit-global node.
 
+// Fail closed if a new source extension would otherwise be omitted from the matrix.
 function collectFixtures(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true })
     .flatMap((entry) => {
       const path = join(directory, entry.name);
       if (entry.isDirectory()) return collectFixtures(path);
-      return entry.isFile() && entry.name.endsWith('.mjs') ? [path] : [];
+      if (!entry.isFile()) throw new Error(`unsupported downlevel-oracle fixture entry: ${path}`);
+      if (!/\.(?:mjs|js|cjs|ts|mts|cts|tsx|jsx|flow)$/.test(entry.name)) {
+        throw new Error(`unsupported downlevel-oracle fixture extension: ${path}`);
+      }
+      return [path];
     })
     .sort();
 }
@@ -119,6 +124,16 @@ function runCoverage(
 
 describe('symbol identity coverage gate (#4819)', () => {
   const fixtures = collectFixtures(FIXTURE_DIR);
+
+  test('지원하지 않는 오라클 fixture 확장자는 조용히 건너뛰지 않는다', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-symcov-unknown-extension-'));
+    try {
+      writeFileSync(join(dir, 'fixture.unknown'), '');
+      expect(() => collectFixtures(dir)).toThrow(/unsupported downlevel-oracle fixture extension/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   test('가상 namespace IIFE 매개변수도 정확한 SymbolId와 ScopeId를 가진다', () => {
     const file = join(FIXTURE_DIR, '4819-namespace-iife-params.ts');
