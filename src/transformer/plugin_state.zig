@@ -37,6 +37,10 @@ pub const WorkletState = struct {
 pub const RefreshRegistration = struct {
     /// _c / _c2 핸들 변수의 string_table Span (재사용)
     handle_span: Span,
+    /// registration 수집 시점에 만든 루트 바인딩 노드. 출력 트리에 그대로 삽입한다.
+    handle_binding_node: NodeIndex,
+    /// 같은 루트 핸들 바인딩을 가리키는 정확한 SymbolId.
+    handle_symbol_id: ?u32,
     /// 등록 대상 컴포넌트 binding node. linker rename 이 Refresh assignment 에도
     /// 적용되도록 symbol_id 를 이 노드에서 복사한다. 호출자(`appendRefreshRegistration`)
     /// 는 component 이름이 확정된 뒤에만 등록을 추가하므로 항상 non-none.
@@ -48,6 +52,10 @@ pub const RefreshRegistration = struct {
 pub const RefreshSignature = struct {
     /// _s / _s2 핸들 변수의 string_table Span
     handle_span: Span,
+    /// 시그니처를 발견한 시점에 만든 루트 바인딩 노드.
+    handle_binding_node: NodeIndex,
+    /// body 및 프로그램 끝 참조가 공유하는 정확한 SymbolId.
+    handle_symbol_id: ?u32,
     /// 컴포넌트 이름 (문자열)
     component_name: []const u8,
     /// 등록 대상 컴포넌트 binding node. linker/mangler rename 이 `_s(Component, "sig")`

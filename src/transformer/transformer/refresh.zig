@@ -13,6 +13,9 @@ const Ast = ast_mod.Ast;
 const token_mod = @import("../../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("../es_helpers.zig");
+const SymbolId = @import("../../semantic/symbol.zig").SymbolId;
+const ReferenceFlags = @import("../../semantic/symbol.zig").ReferenceFlags;
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
@@ -118,8 +121,17 @@ pub fn maybeRegisterRefreshComponentByBinding(
 
 fn appendRefreshRegistration(self: *Transformer, name: []const u8, component_idx: NodeIndex) Error!void {
     const handle_span = try self.makeRefreshHandle();
+    const handle_binding_node = try es_helpers.makeExactSyntheticBinding(self, self.ast.getText(handle_span));
+    const handle_symbol = try self.declareSyntheticInScope(
+        handle_binding_node,
+        handle_span,
+        .variable_var,
+        self.programScope(),
+    );
     try self.plugins.refresh.registrations.append(self.allocator, .{
         .handle_span = handle_span,
+        .handle_binding_node = handle_binding_node,
+        .handle_symbol_id = if (handle_symbol) |id| @intFromEnum(id) else null,
         .component_idx = component_idx,
         .name = name,
     });
@@ -128,12 +140,9 @@ fn appendRefreshRegistration(self: *Transformer, name: []const u8, component_idx
 /// _c, _c2, _c3, ... 핸들 변수명 생성
 pub fn makeRefreshHandle(self: *Transformer) Error!Span {
     const idx = self.plugins.refresh.registrations.items.len;
-    if (idx == 0) {
-        return self.ast.addString("_c");
-    }
     var buf: [16]u8 = undefined;
-    const len = std.fmt.bufPrint(&buf, "_c{d}", .{idx + 1}) catch return error.OutOfMemory;
-    return self.ast.addString(len);
+    const base_name = if (idx == 0) "_c" else std.fmt.bufPrint(&buf, "_c{d}", .{idx + 1}) catch return error.OutOfMemory;
+    return self.ast.addString(try es_helpers.resolveGeneratedName(self, base_name));
 }
 
 /// 프로그램 끝에 var _c, _c2; $RefreshReg$(_c, "Name"); ... 를 추가한다.
@@ -193,7 +202,7 @@ pub fn appendRefreshRegistrations(self: *Transformer, root: NodeIndex) Error!Nod
 pub fn buildRefreshAssignment(self: *Transformer, reg: RefreshRegistration) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
-    const handle_ref = try es_helpers.makeSyntheticRefFromSpan(self, reg.handle_span);
+    const handle_ref = try makeRefreshHandleRef(self, reg.handle_span, reg.handle_symbol_id, self.programScope(), .{ .write = true });
     // Registrations are appended after the main transform pass, when
     // current_scope may still name the last visited nested function.
     const comp_ref = try self.makeUserRefNamedAtScope(reg.name, reg.component_idx, self.programScope());
@@ -209,6 +218,21 @@ pub fn buildRefreshAssignment(self: *Transformer, reg: RefreshRegistration) Erro
     });
 }
 
+/// Refresh handle의 최종 철자와 이미 선언한 SymbolId를 사용해 참조를 만든다.
+/// handle span은 resolveGeneratedName으로 충돌을 피한 이름이므로 다시 이름을 고르지 않는다.
+fn makeRefreshHandleRef(
+    self: *Transformer,
+    handle_span: Span,
+    raw_symbol_id: ?u32,
+    scope: ScopeId,
+    flags: ReferenceFlags,
+) Error!NodeIndex {
+    const ref = try es_helpers.makeExactSyntheticRef(self, self.ast.getText(handle_span));
+    const symbol_id: ?SymbolId = if (raw_symbol_id) |raw| @enumFromInt(raw) else null;
+    try self.addSyntheticRefInScope(ref, symbol_id, scope, flags);
+    return ref;
+}
+
 /// var _c, _c2, ...; 선언 노드 생성
 pub fn buildRefreshVarDeclaration(self: *Transformer) Error!NodeIndex {
     const scratch_top = self.scratch.items.len;
@@ -216,7 +240,7 @@ pub fn buildRefreshVarDeclaration(self: *Transformer) Error!NodeIndex {
     const none = @intFromEnum(NodeIndex.none);
 
     for (self.plugins.refresh.registrations.items) |reg| {
-        const binding = try es_helpers.makeSyntheticBinding(self, reg.handle_span);
+        const binding = reg.handle_binding_node;
 
         // variable_declarator: extra = [name, type_ann(none), init(none)]
         const declarator = try self.addExtraNode(.variable_declarator, reg.handle_span, &.{
@@ -241,7 +265,7 @@ pub fn buildRefreshRegCall(self: *Transformer, reg: RefreshRegistration, refresh
 
     const callee = try es_helpers.makeGlobalRefFromSpan(self, refresh_reg_span);
 
-    const handle_ref = try es_helpers.makeSyntheticRefFromSpan(self, reg.handle_span);
+    const handle_ref = try makeRefreshHandleRef(self, reg.handle_span, reg.handle_symbol_id, self.programScope(), .{ .read = true });
 
     // "ComponentName" 문자열 리터럴 (따옴표 포함). 컴포넌트 이름은 길이 상한이
     // 없으므로(긴 namespaced/generated 이름) 고정 스택 버퍼 대신 힙에 빌드한다 —
@@ -287,7 +311,7 @@ pub fn buildRefreshSigDeclaration(self: *Transformer, sig: RefreshSignature, ref
     });
 
     // var _s = $RefreshSig$();
-    const binding = try es_helpers.makeSyntheticBinding(self, sig.handle_span);
+    const binding = sig.handle_binding_node;
     const declarator = try self.addExtraNode(.variable_declarator, sig.handle_span, &.{
         @intFromEnum(binding),
         none, // type annotation
@@ -307,7 +331,7 @@ pub fn buildRefreshSigCall(self: *Transformer, sig: RefreshSignature) Error!Node
     const zero_span = Span{ .start = 0, .end = 0 };
 
     // _s 식별자
-    const callee = try es_helpers.makeSyntheticRefFromSpan(self, sig.handle_span);
+    const callee = try makeRefreshHandleRef(self, sig.handle_span, sig.handle_symbol_id, self.programScope(), .{ .read = true });
 
     // Component 식별자. buildRefreshAssignment 의 `_c = Component` 와 동일하게
     // component binding 의 symbol_id 를 물려받아 linker/mangler rename 을 따라가게 한다
@@ -519,12 +543,9 @@ pub fn findHookCallsInNodeDepth(self: *Transformer, idx: NodeIndex, sig_buf: *st
 /// _s / _s2 핸들 변수명 생성
 pub fn makeSigHandle(self: *Transformer) Error!Span {
     const idx = self.plugins.refresh.signatures.items.len;
-    if (idx == 0) {
-        return self.ast.addString("_s");
-    }
     var buf: [16]u8 = undefined;
-    const name = std.fmt.bufPrint(&buf, "_s{d}", .{idx + 1}) catch return error.OutOfMemory;
-    return self.ast.addString(name);
+    const base_name = if (idx == 0) "_s" else std.fmt.bufPrint(&buf, "_s{d}", .{idx + 1}) catch return error.OutOfMemory;
+    return self.ast.addString(try es_helpers.resolveGeneratedName(self, base_name));
 }
 
 /// Hook 시그니처가 있는 컴포넌트를 등록하고, body에 _s() 호출을 삽입한다.
@@ -545,19 +566,39 @@ pub fn maybeRegisterRefreshSignature(
     const signature = try self.scanHookSignature(old_body_idx) orelse return;
 
     const handle_span = try self.makeSigHandle();
+    const handle_binding_node = try es_helpers.makeExactSyntheticBinding(self, self.ast.getText(handle_span));
+    const handle_symbol = try self.declareSyntheticInScope(
+        handle_binding_node,
+        handle_span,
+        .variable_var,
+        self.programScope(),
+    );
     try self.plugins.refresh.signatures.append(self.allocator, .{
         .handle_span = handle_span,
+        .handle_binding_node = handle_binding_node,
+        .handle_symbol_id = if (handle_symbol) |id| @intFromEnum(id) else null,
         .component_name = name,
         .component_idx = component_idx,
         .signature = signature,
     });
 
     // body 시작에 _s(); 호출 삽입
-    new_body.* = try self.insertSigCallAtBodyStart(new_body.*, handle_span);
+    new_body.* = try self.insertSigCallAtBodyStart(
+        new_body.*,
+        handle_span,
+        if (handle_symbol) |id| @intFromEnum(id) else null,
+        self.current_scope,
+    );
 }
 
 /// 블록 body 시작에 _s(); 호출문을 삽입한다.
-pub fn insertSigCallAtBodyStart(self: *Transformer, body_idx: NodeIndex, handle_span: Span) Error!NodeIndex {
+pub fn insertSigCallAtBodyStart(
+    self: *Transformer,
+    body_idx: NodeIndex,
+    handle_span: Span,
+    handle_symbol_id: ?u32,
+    scope: ScopeId,
+) Error!NodeIndex {
     const body = self.ast.getNode(body_idx);
     if (body.tag != .block_statement) return body_idx;
 
@@ -570,7 +611,7 @@ pub fn insertSigCallAtBodyStart(self: *Transformer, body_idx: NodeIndex, handle_
 
     // _s() 호출문
     const zero_span = Span{ .start = 0, .end = 0 };
-    const callee = try es_helpers.makeSyntheticRefFromSpan(self, handle_span);
+    const callee = try makeRefreshHandleRef(self, handle_span, handle_symbol_id, scope, .{ .read = true });
     const empty_args = try self.ast.addNodeList(&.{});
     const call = try self.addExtraNode(.call_expression, zero_span, &.{
         @intFromEnum(callee),
@@ -646,6 +687,126 @@ test "computeRefreshEnabled: react_refresh=false short-circuits filter" {
     const TransformOptions = @import("../transformer.zig").TransformOptions;
     const opts: TransformOptions = .{ .react_refresh = false, .jsx_filename = "/src/App.tsx" };
     try std.testing.expect(!computeRefreshEnabled(opts));
+}
+
+test "#4819 React Refresh handles keep exact root symbols through nested visitation" {
+    const Scanner = @import("../../lexer/scanner.zig").Scanner;
+    const Parser = @import("../../parser/parser.zig").Parser;
+    const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+    const ast_walk = @import("../../parser/ast_walk.zig");
+    const output_scope = @import("../output_scope_test_utils.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\const _c = 1, _c2 = 2, _c3 = 3, _s = 4, _s2 = 5;
+        \\function Alpha() { useState(0); return null; }
+        \\function Beta() { useState(1); return null; }
+        \\function Container() { function helper() { return null; } return helper; }
+    ;
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".tsx");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .react_refresh = true,
+        .react_refresh_hook_signatures = true,
+        .jsx_filename = "/src/App.tsx",
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    const root = try transformer.transform();
+    try std.testing.expectEqual(@as(usize, 3), transformer.plugins.refresh.registrations.items.len);
+    try std.testing.expectEqual(@as(usize, 2), transformer.plugins.refresh.signatures.items.len);
+
+    const registrations = try allocator.dupe(RefreshRegistration, transformer.plugins.refresh.registrations.items);
+    const signatures = try allocator.dupe(RefreshSignature, transformer.plugins.refresh.signatures.items);
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var output_parents = try output_scope.buildParentMap(allocator, transformer.ast, root);
+    defer output_parents.deinit(allocator);
+    const program_scope = transformer.programScope();
+
+    var saw_nested_signature_ref = false;
+    for (registrations) |reg| {
+        const raw_id = reg.handle_symbol_id orelse return error.TestUnexpectedResult;
+        const symbol = edited.symbols.items[raw_id];
+        try std.testing.expectEqual(@import("../../semantic/symbol.zig").SymbolKind.variable_var, symbol.kind);
+        try std.testing.expectEqual(program_scope, symbol.scope_id);
+        try std.testing.expectEqualStrings(transformer.ast.getText(reg.handle_span), symbol.synthetic_name);
+        try std.testing.expect(!std.mem.eql(u8, symbol.synthetic_name, "_c"));
+        try std.testing.expect(!std.mem.eql(u8, symbol.synthetic_name, "_c2"));
+        try std.testing.expect(!std.mem.eql(u8, symbol.synthetic_name, "_c3"));
+
+        var binding_count: usize = 0;
+        var read_count: usize = 0;
+        var write_count: usize = 0;
+        for (reachable) |raw_node| {
+            if (transformer.ast.nodes.items[raw_node].tag == .binding_identifier and
+                raw_node < edited.symbol_ids.len and edited.symbol_ids[raw_node] == raw_id)
+                binding_count += 1;
+        }
+        for (edited.references) |ref| {
+            if (ref.node_index.isNone() or @intFromEnum(ref.symbol_id) != raw_id) continue;
+            const raw_node = @intFromEnum(ref.node_index);
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, raw_node) != null);
+            try std.testing.expectEqual(
+                output_scope.expectedScope(transformer.ast, root, &output_parents, &edited.scope_owner_map, raw_node) orelse return error.TestUnexpectedResult,
+                ref.scope_id,
+            );
+            if (ref.flags.read) read_count += 1;
+            if (ref.flags.write) write_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), binding_count);
+        try std.testing.expectEqual(@as(usize, 1), read_count);
+        try std.testing.expectEqual(@as(usize, 1), write_count);
+    }
+
+    for (signatures) |sig| {
+        const raw_id = sig.handle_symbol_id orelse return error.TestUnexpectedResult;
+        const symbol = edited.symbols.items[raw_id];
+        try std.testing.expectEqual(@import("../../semantic/symbol.zig").SymbolKind.variable_var, symbol.kind);
+        try std.testing.expectEqual(program_scope, symbol.scope_id);
+        try std.testing.expectEqualStrings(transformer.ast.getText(sig.handle_span), symbol.synthetic_name);
+        try std.testing.expect(!std.mem.eql(u8, symbol.synthetic_name, "_s"));
+        try std.testing.expect(!std.mem.eql(u8, symbol.synthetic_name, "_s2"));
+
+        var binding_count: usize = 0;
+        var refs: usize = 0;
+        for (reachable) |raw_node| {
+            if (transformer.ast.nodes.items[raw_node].tag == .binding_identifier and
+                raw_node < edited.symbol_ids.len and edited.symbol_ids[raw_node] == raw_id)
+                binding_count += 1;
+        }
+        for (edited.references) |ref| {
+            if (ref.node_index.isNone() or @intFromEnum(ref.symbol_id) != raw_id) continue;
+            const raw_node = @intFromEnum(ref.node_index);
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, raw_node) != null);
+            try std.testing.expect(ref.flags.read);
+            try std.testing.expect(!ref.flags.write);
+            const expected = output_scope.expectedScope(transformer.ast, root, &output_parents, &edited.scope_owner_map, raw_node) orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(expected, ref.scope_id);
+            if (ref.scope_id != program_scope) saw_nested_signature_ref = true;
+            refs += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), binding_count);
+        try std.testing.expectEqual(@as(usize, 2), refs);
+    }
+    try std.testing.expect(saw_nested_signature_ref);
 }
 
 test "computeRefreshEnabled: react_refresh=true + matching path" {
