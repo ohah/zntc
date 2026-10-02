@@ -277,11 +277,10 @@ fn collectScopeBindings(
             const sym = symbols[sym_idx];
             const name = entry.key_ptr.*;
 
-            // skip 판정 — 원본 이름이 출력에 살아남는 1글자/arguments 만 reserved.
+            // mangling 하지 않는 이름은 길이와 무관하게 예약한다. 생성된 namespace IIFE
+            // 매개변수나 JSX import alias가 `_N`/`_jsx`처럼 base54 후보와 같을 수 있다.
             if (shouldSkip(sym, name)) {
-                if (name.len <= 1 or std.mem.eql(u8, name, "arguments")) {
-                    try reserved_names.put(allocator, name, {});
-                }
+                try reserved_names.put(allocator, name, {});
                 continue;
             }
             // direct eval / with 스코프 바인딩(#1258): 동적 lookup 대상이라 원본 이름 reserve.
@@ -292,12 +291,12 @@ fn collectScopeBindings(
                     continue;
                 }
             }
-            // skip_symbols (번들 module-scope): nested mangler 미관리, reserve 안 함
-            // (mangled name 은 external_reserved 보유, 원본 reserve 시 1-char 풀 잠식).
+            // Phase A/다른 모듈 경로가 이름을 정하는 module-scope 심볼은 여기서 건너뛴다.
+            // shouldSkip/blocksMangling 인 이름은 위에서 먼저 예약해 자식 scope capture 를 막고,
+            // 나머지 출력 이름은 caller 의 external_reserved 가 관리한다.
             if (skip_symbols) |ss| {
                 if (sym_idx < ss.capacity() and ss.isSet(sym_idx)) continue;
             }
-
             try binding_buf.append(allocator, .{ .sym_idx = sym_idx, .name = name });
         }
     }
@@ -483,10 +482,27 @@ pub fn preservesName(sym: Symbol) bool {
 }
 
 fn shouldSkip(sym: Symbol, name: []const u8) bool {
+    if (hasFixedOutputName(sym)) return true;
     if (preservesName(sym)) return true;
     if (std.mem.eql(u8, name, "arguments")) return true;
     if (name.len <= 1) return true;
     return false;
+}
+
+/// These semantic-only symbols represent bindings that codegen emits under their
+/// existing spelling. They must reserve that spelling even though they have no
+/// parser binding node for the mangler to rename.
+fn hasFixedOutputName(sym: Symbol) bool {
+    const kind = sym.synthetic_kind orelse return false;
+    return switch (kind) {
+        .namespace_iife_parameter,
+        .enum_iife_parameter,
+        .runtime_helper_preamble,
+        => true,
+        // These bundler wrapper symbols can receive their final name in Phase A;
+        // their original spelling is not necessarily present in emitted output.
+        .default_export, .cjs_exports, .cjs_require, .esm_init, .enum_iife_member => false,
+    };
 }
 
 // ============================================================
