@@ -376,6 +376,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
             // #3/#4: private weakset 선언은 `let Foo = class {...}` 분해 앞에 와야 한다.
             for (priv_pre_stmts.items) |stmt| try self.pending_nodes.append(self.allocator, stmt);
             return try self.transformExperimentalDecorators(
+                source_idx,
                 node,
                 new_name,
                 self.readNodeIdx(e, 0),

@@ -585,8 +585,13 @@ fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
 /// TS/Flow constructs outside this graph until their edits are complete.
 fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Parser) bool {
     if (!options.minify_identifiers or
-        options.experimental_decorators or options.emit_decorator_metadata or
+        options.emit_decorator_metadata or
         options.react_refresh or options.react_refresh_hook_signatures) return false;
+
+    // The exact transform graph now covers TypeScript's legacy decorator
+    // lowering. Keep Flow and JavaScript decorator modes gated until their
+    // corresponding lowering paths receive the same exact-identity audit.
+    if (options.experimental_decorators and (parser.is_flow or parser.source_mode != .ts)) return false;
 
     const facts = collectAstFacts(&parser.ast);
     if (parser.is_flow) return !facts.has_flow_runtime_syntax_without_complete_graph;
@@ -2083,7 +2088,7 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     _ = try decorator_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), decorator_parser.errors.items.len);
     try std.testing.expect(canMangleWithTransformSemantic(minify, &decorator_parser));
-    try std.testing.expect(!canMangleWithTransformSemantic(.{
+    try std.testing.expect(canMangleWithTransformSemantic(.{
         .minify_identifiers = true,
         .experimental_decorators = true,
     }, &decorator_parser));
