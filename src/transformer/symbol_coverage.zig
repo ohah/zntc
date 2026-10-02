@@ -378,6 +378,23 @@ fn exactValidScope(scopes: []const Scope, id: ScopeId) bool {
     return !id.isNone() and id.toIndex() < scopes.len;
 }
 
+fn markScopeAndAncestors(
+    allocator: std.mem.Allocator,
+    marked: *std.AutoHashMapUnmanaged(u32, void),
+    scopes: []const Scope,
+    start: u32,
+) std.mem.Allocator.Error!void {
+    var current = start;
+    var hops: usize = 0;
+    while (hops <= scopes.len) : (hops += 1) {
+        if (current >= scopes.len) return;
+        try marked.put(allocator, current, {});
+        const parent = scopes[current].parent;
+        if (parent.isNone()) return;
+        current = parent.toIndex();
+    }
+}
+
 fn spanKey(span: Span) u64 {
     return (@as(u64, span.start) << 32) | span.end;
 }
@@ -698,6 +715,26 @@ fn scopeOwnerNode(scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32), sc
     var it = scope_owner_map.iterator();
     while (it.next()) |entry| if (entry.value_ptr.* == scope) return entry.key_ptr.*;
     return null;
+}
+
+fn scopeOwnerKindMatches(tag: Node.Tag, kind: ScopeKind) bool {
+    return switch (tag) {
+        .program => kind == .global or kind == .module,
+        // Function and catch bodies reuse their owner block node for the
+        // enclosing execution scope in the source analyzer.
+        .block_statement => kind == .block or kind == .function or kind == .catch_clause,
+        // A lowered for-await loop reuses its lexical loop scope on the
+        // generated while node (remapCopiedScopeOwner in semantic_edit.zig).
+        .for_statement, .for_in_statement, .for_of_statement, .for_await_of_statement, .while_statement => kind == .block,
+        .switch_statement => kind == .switch_block,
+        .catch_clause => kind == .catch_clause or kind == .block,
+        .class_declaration, .class_expression => kind == .class_body,
+        .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => kind == .function,
+        // Namespace and enum lowering attach their generated IIFE scope to
+        // the surviving declaration node instead of a generated function node.
+        .ts_module_declaration, .ts_enum_declaration => kind == .function,
+        else => false,
+    };
 }
 
 fn exactVisit(ctx: *ExactCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
@@ -1365,6 +1402,51 @@ pub fn checkExact(
         origins,
         null,
         null,
+        null,
+    );
+}
+
+/// Exact audit for a graph edited in-place by the transformer. Scopes below
+/// `pre_transform_scope_count` came from source analysis and may remain after
+/// their source AST owner is lowered away; every appended transform scope must
+/// still have a reachable owner in the emitted AST.
+pub fn checkExactWithScopeBoundary(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    parser_node_count: u32,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    references: []const Reference,
+    helper_reference_nodes: []const u32,
+    helper_scope_map: *const std.StringHashMapUnmanaged(usize),
+    unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    explicit_global_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    origins: *const std.AutoHashMapUnmanaged(u32, u32),
+    pre_transform_scope_count: usize,
+) std.mem.Allocator.Error!ExactReport {
+    return checkExactImpl(
+        allocator,
+        ast,
+        root,
+        parser_node_count,
+        symbol_ids,
+        symbols,
+        scopes,
+        scope_maps,
+        scope_owner_map,
+        references,
+        helper_reference_nodes,
+        helper_scope_map,
+        unresolved_nodes,
+        explicit_global_nodes,
+        origins,
+        null,
+        null,
+        pre_transform_scope_count,
     );
 }
 
@@ -1386,6 +1468,7 @@ pub fn checkExactWithNamespaceMetadata(
     origins: *const std.AutoHashMapUnmanaged(u32, u32),
     namespace_member_owners: *const std.AutoHashMapUnmanaged(u32, u32),
     namespace_scope_owners: *const std.AutoHashMapUnmanaged(u32, u32),
+    pre_transform_scope_count: usize,
 ) std.mem.Allocator.Error!ExactReport {
     return checkExactImpl(
         allocator,
@@ -1405,6 +1488,7 @@ pub fn checkExactWithNamespaceMetadata(
         origins,
         namespace_member_owners,
         namespace_scope_owners,
+        pre_transform_scope_count,
     );
 }
 
@@ -1426,6 +1510,7 @@ fn checkExactImpl(
     origins: *const std.AutoHashMapUnmanaged(u32, u32),
     namespace_member_owners: ?*const std.AutoHashMapUnmanaged(u32, u32),
     namespace_scope_owners: ?*const std.AutoHashMapUnmanaged(u32, u32),
+    pre_transform_scope_count: ?usize,
 ) std.mem.Allocator.Error!ExactReport {
     var report: ExactReport = .{};
     var reachable_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -1613,6 +1698,51 @@ fn checkExactImpl(
     for (symbols) |symbol| {
         if (!exactValidScope(scopes, symbol.scope_id)) report.invalid_scope += 1;
     }
+
+    if (pre_transform_scope_count) |source_scope_count| {
+        if (source_scope_count > scopes.len) {
+            recordScopeOwnerMismatch(&report, @intFromEnum(root), ast.getNode(root).tag, "source-scope-count-out-of-range", null, null, null);
+        } else {
+            var reachable_scope_owners: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer reachable_scope_owners.deinit(allocator);
+            var live_scope_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer live_scope_ids.deinit(allocator);
+            for (symbols) |symbol| try markScopeAndAncestors(allocator, &live_scope_ids, scopes, @intFromEnum(symbol.scope_id));
+            for (references) |reference| try markScopeAndAncestors(allocator, &live_scope_ids, scopes, @intFromEnum(reference.scope_id));
+            for (scope_maps, 0..) |scope_map, scope_index| {
+                if (scope_map.count() > 0) try markScopeAndAncestors(allocator, &live_scope_ids, scopes, @intCast(scope_index));
+            }
+            var reachable_owner_iter = reachable_nodes.iterator();
+            while (reachable_owner_iter.next()) |entry| {
+                if (scope_owner_map.get(entry.key_ptr.*)) |scope| {
+                    if (scope < scopes.len and scopeOwnerKindMatches(ast.nodes.items[entry.key_ptr.*].tag, scopes[scope].kind)) {
+                        try reachable_scope_owners.put(allocator, scope, {});
+                    }
+                }
+            }
+            for (source_scope_count..scopes.len) |scope_index| {
+                const scope_id: u32 = @intCast(scope_index);
+                // Empty dead scopes left by a lowering are inert: no symbol,
+                // reference, or descendant scope depends on them. Gate every
+                // semantically live transform scope and its ancestor chain.
+                if (!live_scope_ids.contains(scope_id) or reachable_scope_owners.contains(scope_id)) continue;
+                const mapped_owner = scopeOwnerNode(scope_owner_map, scope_id);
+                const owner_node = if (mapped_owner) |raw|
+                    if (raw < ast.nodes.items.len) ast.nodes.items[raw].tag else .program
+                else
+                    .program;
+                recordScopeOwnerMismatch(
+                    &report,
+                    mapped_owner orelse std.math.maxInt(u32),
+                    owner_node,
+                    "generated-scope-owner-unreachable",
+                    scope_id,
+                    null,
+                    scopes[scope_index].kind,
+                );
+            }
+        }
+    }
     if (namespace_scope_owners) |scope_owners| {
         var owners = scope_owners.iterator();
         while (owners.next()) |entry| {
@@ -1762,8 +1892,21 @@ fn checkExactImpl(
     }
     var owners = scope_owner_map.iterator();
     while (owners.next()) |entry| {
-        if (entry.key_ptr.* >= ast.nodes.items.len or entry.value_ptr.* >= scopes.len)
+        if (entry.key_ptr.* >= ast.nodes.items.len or entry.value_ptr.* >= scopes.len) {
             recordScopeOwnerMismatch(&report, entry.key_ptr.*, .program, "map-entry-out-of-range", entry.value_ptr.*, null, null);
+        } else if (reachable_nodes.contains(entry.key_ptr.*) and
+            !scopeOwnerKindMatches(ast.nodes.items[entry.key_ptr.*].tag, scopes[entry.value_ptr.*].kind))
+        {
+            recordScopeOwnerMismatch(
+                &report,
+                entry.key_ptr.*,
+                ast.nodes.items[entry.key_ptr.*].tag,
+                "owner-node-kind",
+                entry.value_ptr.*,
+                null,
+                scopes[entry.value_ptr.*].kind,
+            );
+        }
     }
 
     // Namespace codegen emits an IIFE parameter that has no AST binding node.
@@ -4015,6 +4158,118 @@ test "exact identity audit requires generated class and switch scopes" {
     );
     try std.testing.expectEqual(@as(usize, 2), report.scope_owner_mismatch);
     try std.testing.expect(!report.isClean());
+}
+
+test "exact identity audit rejects appended scopes without a reachable AST owner" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const empty_list = try ast.addNodeList(&.{});
+    const statement = try ast.addNode(.{
+        .tag = .empty_statement,
+        .span = .EMPTY,
+        .data = .{ .none = 0 },
+    });
+    const root_list = try ast.addNodeList(&.{statement});
+    const root = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = .EMPTY,
+        .data = .{ .list = root_list },
+    });
+    const stale_owner = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = .EMPTY,
+        .data = .{ .list = empty_list },
+    });
+    const generated_name = try ast.addString("generated");
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .block, .is_strict = false },
+        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+    };
+    var generated_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+    try generated_scope_map.put(allocator, ast.getText(generated_name), 0);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, generated_scope_map };
+    const symbols = [_]Symbol{
+        .{ .name = generated_name, .scope_id = @enumFromInt(1), .kind = .variable_let, .declaration_span = generated_name },
+    };
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @intFromEnum(root), 0);
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const missing_owner = try checkExactWithScopeBoundary(
+        allocator,
+        &ast,
+        root,
+        3,
+        &.{},
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &.{},
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+        1,
+    );
+    try std.testing.expectEqual(@as(usize, 1), missing_owner.scope_owner_mismatch);
+    try std.testing.expectEqualStrings("generated-scope-owner-unreachable", missing_owner.first_scope_owner_mismatch.?.issue);
+    try std.testing.expect(!missing_owner.isClean());
+
+    // A stale mapping to an AST node removed from the root is not ownership
+    // evidence for a transform-created scope.
+    try scope_owner_map.put(allocator, @intFromEnum(stale_owner), 1);
+    const stale_mapping = try checkExactWithScopeBoundary(
+        allocator,
+        &ast,
+        root,
+        3,
+        &.{},
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &.{},
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+        1,
+    );
+    try std.testing.expectEqual(@as(usize, 1), stale_mapping.scope_owner_mismatch);
+    try std.testing.expect(!stale_mapping.isClean());
+
+    // A reachable non-scope AST node is not a valid owner either.
+    try scope_owner_map.put(allocator, @intFromEnum(statement), 1);
+    const wrong_owner_kind = try checkExactWithScopeBoundary(
+        allocator,
+        &ast,
+        root,
+        3,
+        &.{},
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &.{},
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+        1,
+    );
+    try std.testing.expect(wrong_owner_kind.scope_owner_mismatch >= 1);
+    try std.testing.expect(!wrong_owner_kind.isClean());
 }
 
 test "exact identity audit excludes statement labels from variable references" {

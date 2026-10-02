@@ -255,6 +255,7 @@ fn printKeptTypeErasurePrepassExact(
     parser_node_count: u32,
     transformer: *const Transformer,
     unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    pre_transform_scope_count: usize,
 ) !void {
     const sem = if (module.semantic) |*value| value else return;
     const ast = &(module.ast orelse return);
@@ -279,6 +280,7 @@ fn printKeptTypeErasurePrepassExact(
         &transformer.reference_origin_map,
         &sem.namespace_member_owners,
         &no_namespace_scopes,
+        pre_transform_scope_count,
     );
     coverage.printExactPrepass(module.path, exact);
 }
@@ -356,6 +358,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     const can_keep_semantic_graph = canKeepTypeErasureGraph(self, module, opts, merged_plugins);
     const flow_match_generated_globals = flowMatchGeneratedGlobals(ast_ptr);
     const debug_symbol_coverage = symbol_coverage_env.enabled();
+    const pre_transform_scope_count = if (module.semantic) |*sem| sem.scopes.len else 0;
 
     var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
     transformer.record_explicit_global_references = flow_match_generated_globals.has_match;
@@ -522,7 +525,15 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             return;
         }
         if (debug_symbol_coverage) {
-            printKeptTypeErasurePrepassExact(arena_alloc, module, root, parser_node_count, &transformer, &unresolved_nodes) catch {};
+            printKeptTypeErasurePrepassExact(
+                arena_alloc,
+                module,
+                root,
+                parser_node_count,
+                &transformer,
+                &unresolved_nodes,
+                pre_transform_scope_count,
+            ) catch {};
         }
         refreshTlaPromiseReference(module);
         module.prebuilt_stmt_info = null;

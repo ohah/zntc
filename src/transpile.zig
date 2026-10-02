@@ -1582,6 +1582,7 @@ fn transpileWithCallbackInternal(
     // bundler 의 graph cache / HMR re-process 는 원본 보존 의무라 init 유지.
     // 위 `defer parser.ast.dumpStringInternStatsIfEnabled()` 가 stats 를 dump 하므로
     // 여기서 별도 defer 불필요 — parser.ast 와 transformer.ast 가 같은 instance.
+    const pre_transform_scope_count = if (analyzer_storage) |*analyzer| analyzer.scopes.items.len else 0;
     var transformer = try Transformer.initFromOwnedAst(arena_alloc, &parser.ast, effective_opts);
     if (analyzer_storage) |*analyzer| {
         transformer.initSymbolIds(analyzer.symbol_ids.items) catch return error.TransformError;
@@ -1642,6 +1643,7 @@ fn transpileWithCallbackInternal(
                 &transformer.reference_origin_map,
                 &analyzer.namespace_member_owners,
                 &analyzer.namespace_scope_owners,
+                pre_transform_scope_count,
             ) catch return error.OutOfMemory;
             coverage.printExact(file_path, exact);
         }
