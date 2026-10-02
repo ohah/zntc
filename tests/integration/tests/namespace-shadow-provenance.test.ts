@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
 import { createFixture, runZntcInDir } from './helpers';
@@ -244,6 +245,33 @@ describe('namespace binding provenance (#4819)', () => {
       }
     }
   }
+
+  test('namespace IIFE parameter follows its final SymbolId name', async () => {
+    const source = `
+const outer = 40;
+namespace LongSpace {
+  export const value = 1;
+  export function read() { return value + outer; }
+}
+console.log(JSON.stringify([LongSpace.value, LongSpace.read()]));
+`;
+    const fixture = await createFixture({ 'input.ts': source });
+    cleanup = fixture.cleanup;
+    const out = join(fixture.dir, 'out.mjs');
+    const result = await runZntcInDir(fixture.dir, [
+      '--target=esnext',
+      '--minify-identifiers',
+      'input.ts',
+      '-o',
+      out,
+    ]);
+    expect(result.exitCode, result.stderr).toBe(0);
+    const code = readFileSync(out, 'utf8');
+    expect(code).not.toContain('_LongSpace');
+    const actual = spawnSync('node', [out], { encoding: 'utf8' });
+    expect(actual.status, actual.stderr).toBe(0);
+    expect(actual.stdout).toBe('[1,41]\n');
+  });
 
   for (const minify of [false, true]) {
     test(`module namespace export remains one top-level binding, ${minify ? 'minify' : 'plain'}`, async () => {
