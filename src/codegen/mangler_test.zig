@@ -2,6 +2,9 @@ const std = @import("std");
 const mangler = @import("mangler.zig");
 const base54 = mangler.base54;
 const isReservedOrGlobal = mangler.isReservedOrGlobal;
+const Scope = @import("../semantic/scope.zig").Scope;
+const Symbol = @import("../semantic/symbol.zig").Symbol;
+const SyntheticKind = @import("../semantic/symbol.zig").SyntheticKind;
 
 test "base54: basic encoding" {
     var buf: [8]u8 = undefined;
@@ -15,6 +18,125 @@ test "base54: basic encoding" {
     const two = base54(54, &buf);
     try std.testing.expect(two.len == 2);
     try std.testing.expect(two[0] == 'e');
+}
+
+test "#4819 mangle reserves fixed-name synthetic output bindings" {
+    const allocator = std.testing.allocator;
+    const Span = @import("../lexer/token.zig").Span;
+
+    // Start directly at the two-character candidate to isolate the collision
+    // without manufacturing thousands of ordinary bindings.
+    var counter: u32 = 0;
+    var buf: [8]u8 = undefined;
+    while (!std.mem.eql(u8, base54(counter, &buf), "_N")) : (counter += 1) {}
+
+    var root_map: std.StringHashMapUnmanaged(usize) = .empty;
+    defer root_map.deinit(allocator);
+    try root_map.put(allocator, "outer", 0);
+    var namespace_map: std.StringHashMapUnmanaged(usize) = .empty;
+    defer namespace_map.deinit(allocator);
+    try namespace_map.put(allocator, "_N", 1);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ root_map, namespace_map };
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = true, .symbol_count = 1 },
+        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = true, .symbol_count = 1 },
+    };
+    var symbols = [_]Symbol{
+        .{
+            .name = .{ .start = 0, .end = 5 },
+            .scope_id = @enumFromInt(0),
+            .origin_scope = @enumFromInt(0),
+            .kind = .variable_const,
+            .declaration_span = Span{ .start = 0, .end = 5 },
+            .reference_count = 10,
+        },
+        .{
+            .name = .{ .start = 0, .end = 0 },
+            .scope_id = @enumFromInt(1),
+            .origin_scope = @enumFromInt(1),
+            .kind = .parameter,
+            .declaration_span = Span{ .start = 0, .end = 0 },
+            .synthetic_kind = .namespace_iife_parameter,
+            .synthetic_name = "_N",
+        },
+    };
+    const fixed_kinds = [_]SyntheticKind{
+        .namespace_iife_parameter,
+        .enum_iife_parameter,
+        .runtime_helper_preamble,
+    };
+    for (fixed_kinds) |kind| {
+        symbols[1].synthetic_kind = kind;
+        var result = try mangler.mangle(allocator, .{
+            .scopes = &scopes,
+            .symbols = &symbols,
+            .scope_maps = &scope_maps,
+            .references = &.{},
+            .source = "outer",
+            .starting_name_counter = counter,
+        });
+        defer result.deinit();
+
+        try std.testing.expectEqual(@as(usize, 1), result.stats.slot_count);
+        const outer_name = result.renames.get(0) orelse return error.MissingRename;
+        try std.testing.expect(!std.mem.eql(u8, outer_name, "_N"));
+    }
+}
+
+test "mangle reserves preserved short module names before skipping Phase A symbols" {
+    const allocator = std.testing.allocator;
+    const Span = @import("../lexer/token.zig").Span;
+
+    var counter: u32 = 0;
+    var buf: [8]u8 = undefined;
+    while (!std.mem.eql(u8, base54(counter, &buf), "a")) : (counter += 1) {}
+
+    var root_map: std.StringHashMapUnmanaged(usize) = .empty;
+    defer root_map.deinit(allocator);
+    try root_map.put(allocator, "a", 0);
+    var function_map: std.StringHashMapUnmanaged(usize) = .empty;
+    defer function_map.deinit(allocator);
+    try function_map.put(allocator, "outer", 1);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ root_map, function_map };
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = true, .symbol_count = 1 },
+        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = true, .symbol_count = 1 },
+    };
+    const symbols = [_]Symbol{
+        .{
+            .name = .{ .start = 0, .end = 1 },
+            .scope_id = @enumFromInt(0),
+            .origin_scope = @enumFromInt(0),
+            .kind = .variable_const,
+            .declaration_span = Span{ .start = 0, .end = 1 },
+            .reference_count = 1,
+        },
+        .{
+            .name = .{ .start = 1, .end = 6 },
+            .scope_id = @enumFromInt(1),
+            .origin_scope = @enumFromInt(1),
+            .kind = .parameter,
+            .declaration_span = Span{ .start = 1, .end = 6 },
+            .reference_count = 1,
+        },
+    };
+    var skip_symbols = try std.DynamicBitSet.initEmpty(allocator, symbols.len);
+    defer skip_symbols.deinit();
+    skip_symbols.set(0);
+
+    var result = try mangler.mangle(allocator, .{
+        .scopes = &scopes,
+        .symbols = &symbols,
+        .scope_maps = &scope_maps,
+        .references = &.{},
+        .source = "aouter",
+        .skip_symbols = skip_symbols,
+        .starting_name_counter = counter,
+    });
+    defer result.deinit();
+
+    const outer_name = result.renames.get(1) orelse return error.MissingRename;
+    try std.testing.expect(!std.mem.eql(u8, outer_name, "a"));
 }
 
 test "base54: 1글자 'e'/'m' 만 reserved (legacy CJS alias 충돌 방지)" {
