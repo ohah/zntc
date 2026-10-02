@@ -90,9 +90,6 @@ const AstFacts = struct {
     /// `using` is safe on the original graph when preserved natively. Its
     /// downlevel rewrite still uses the conservative post-transform analyzer.
     has_using_syntax: bool = false,
-    /// Flow component wrappers are complete without JSX, but their combined
-    /// wrapper-plus-JSX edit still uses the conservative post-transform pass.
-    has_flow_component_wrapper: bool = false,
 };
 
 pub const TranspileError = error{
@@ -213,11 +210,8 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             .flow_enum_declaration => facts.has_runtime_sensitive_syntax = true,
 
             // Flow component-with-ref adds the helper binding and call reference
-            // to the same transform graph; JSX remains gated separately below.
-            .flow_component_wrapper => {
-                facts.has_runtime_sensitive_syntax = true;
-                facts.has_flow_component_wrapper = true;
-            },
+            // to the same transform graph, including when its body lowers JSX.
+            .flow_component_wrapper => facts.has_runtime_sensitive_syntax = true,
 
             .variable_declaration => {
                 if (ast.variableDeclarationKind(node).isUsing()) {
@@ -596,8 +590,7 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
 
     const facts = collectAstFacts(&parser.ast);
     if (facts.has_using_syntax and options.unsupported.using) return false;
-    if (parser.is_flow) return !facts.has_flow_runtime_syntax_without_complete_graph and
-        !(facts.has_flow_component_wrapper and parser.ast.has_jsx);
+    if (parser.is_flow) return !facts.has_flow_runtime_syntax_without_complete_graph;
     if (parser.source_mode == .ts) return !facts.has_unhandled_runtime_syntax;
     if (parser.source_mode != .js_strict) return false;
     return true;
@@ -2277,7 +2270,129 @@ test "#4819 Flow match and enum reuse the transform graph while other runtime sy
     _ = try flow_component_jsx_parser.parse();
     try std.testing.expect(flow_component_jsx_parser.is_flow);
     try std.testing.expect(flow_component_jsx_parser.ast.has_jsx);
-    try std.testing.expect(!canMangleWithTransformSemantic(minify, &flow_component_jsx_parser));
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &flow_component_jsx_parser));
+}
+
+test "#4819 Flow component and JSX lowering retain generated and source identities" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const options: TranspileOptions = .{ .flow = true, .minify_identifiers = true, .jsx_runtime = .automatic };
+    const source = "// @flow\nimport React from 'react'; " ++
+        "export component View(ref?: mixed, value: number, ...props: { label?: string }) { " ++
+        "return <><div value={value + _jsx + _jsxs + _Fragment + View_withRef} />{props.label}</>; } " ++
+        "const _jsx = 1, _jsxs = 2, _Fragment = 3, View_withRef = 4;";
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".jsx");
+    _ = try parser.parse();
+    try std.testing.expect(parser.is_flow);
+    try std.testing.expect(parser.ast.has_jsx);
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    try std.testing.expect(canMangleWithTransformSemantic(options, &parser));
+
+    var result = try transpile(allocator, source, "input.jsx", options);
+    defer result.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "React.forwardRef") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "react/jsx-runtime") != null);
+
+    var output_scanner = try Scanner.init(allocator, result.code);
+    var output_parser = Parser.init(allocator, &output_scanner);
+    output_parser.configureFromExtension(".mjs");
+    _ = try output_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), output_parser.errors.items.len);
+    var output_analyzer = SemanticAnalyzer.init(allocator, &output_parser.ast);
+    output_analyzer.is_module = true;
+    try output_analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), output_analyzer.errors.items.len);
+    try std.testing.expectEqual(@as(usize, 0), output_analyzer.unresolved_references.count());
+
+    // The `forwardRef` argument must resolve to the generated helper function,
+    // not to the colliding source binding `View_withRef`.
+    var helper_symbol: ?u32 = null;
+    var forward_ref_argument_symbol: ?u32 = null;
+    for (output_parser.ast.nodes.items) |node| {
+        if (node.tag == .function_declaration) {
+            const name_raw = output_parser.ast.extra_data.items[node.data.extra + ast_mod.FunctionExtra.name];
+            const name_index: usize = name_raw;
+            if (name_index < output_analyzer.symbol_ids.items.len)
+                helper_symbol = output_analyzer.symbol_ids.items[name_index];
+        }
+        if (node.tag != .call_expression) continue;
+        const call_extra = node.data.extra;
+        if (call_extra + 2 >= output_parser.ast.extra_data.items.len) continue;
+        const callee: ast_mod.NodeIndex = @enumFromInt(output_parser.ast.extra_data.items[call_extra]);
+        if (callee.isNone() or output_parser.ast.getNode(callee).tag != .static_member_expression) continue;
+        const member_extra = output_parser.ast.getNode(callee).data.extra;
+        if (member_extra + 1 >= output_parser.ast.extra_data.items.len) continue;
+        const property: ast_mod.NodeIndex = @enumFromInt(output_parser.ast.extra_data.items[member_extra + 1]);
+        if (property.isNone() or !std.mem.eql(u8, output_parser.ast.getText(output_parser.ast.getNode(property).span), "forwardRef")) continue;
+        const args_start = output_parser.ast.extra_data.items[call_extra + 1];
+        const args_len = output_parser.ast.extra_data.items[call_extra + 2];
+        if (args_len != 1 or args_start >= output_parser.ast.extra_data.items.len) continue;
+        const argument: ast_mod.NodeIndex = @enumFromInt(output_parser.ast.extra_data.items[args_start]);
+        const argument_raw = @intFromEnum(argument);
+        if (argument_raw < output_analyzer.symbol_ids.items.len)
+            forward_ref_argument_symbol = output_analyzer.symbol_ids.items[argument_raw];
+    }
+    try std.testing.expect(helper_symbol != null);
+    try std.testing.expect(forward_ref_argument_symbol != null);
+    try std.testing.expectEqual(helper_symbol, forward_ref_argument_symbol);
+
+    var source_collision_symbol: ?u32 = null;
+    for (output_parser.ast.nodes.items) |node| {
+        if (node.tag != .variable_declarator) continue;
+        const extra = node.data.extra;
+        if (extra + 2 >= output_parser.ast.extra_data.items.len) continue;
+        const binding: ast_mod.NodeIndex = @enumFromInt(output_parser.ast.extra_data.items[extra]);
+        const initializer: ast_mod.NodeIndex = @enumFromInt(output_parser.ast.extra_data.items[extra + 2]);
+        if (binding.isNone() or initializer.isNone()) continue;
+        const value = output_parser.ast.getNode(initializer);
+        if (value.tag != .numeric_literal or !std.mem.eql(u8, output_parser.ast.getText(value.span), "4")) continue;
+        const binding_raw = @intFromEnum(binding);
+        if (binding_raw < output_analyzer.symbol_ids.items.len)
+            source_collision_symbol = output_analyzer.symbol_ids.items[binding_raw];
+    }
+    try std.testing.expect(source_collision_symbol != null);
+    try std.testing.expect(source_collision_symbol.? != helper_symbol.?);
+    var source_collision_reads: usize = 0;
+    for (output_parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .identifier_reference or raw >= output_analyzer.symbol_ids.items.len) continue;
+        if (output_analyzer.symbol_ids.items[raw] == source_collision_symbol) source_collision_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), source_collision_reads);
+}
+
+test "#4819 Flow component and JSX lowering retain graph in classic runtime" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const options: TranspileOptions = .{
+        .flow = true,
+        .minify_identifiers = true,
+        .jsx_runtime = .classic,
+    };
+    const source = "// @flow\nimport React from 'react'; " ++
+        "export component View(ref?: mixed, value: number, ...props: { label?: string }) { " ++
+        "return <div>{value + View_withRef + (props.label ? 1 : 0)}</div>; } " ++
+        "const View_withRef = 4;";
+
+    var result = try transpile(allocator, source, "input.jsx", options);
+    defer result.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "React.forwardRef") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "React.createElement") != null);
+
+    var output_scanner = try Scanner.init(allocator, result.code);
+    var output_parser = Parser.init(allocator, &output_scanner);
+    output_parser.configureFromExtension(".mjs");
+    _ = try output_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), output_parser.errors.items.len);
+    var output_analyzer = SemanticAnalyzer.init(allocator, &output_parser.ast);
+    output_analyzer.is_module = true;
+    try output_analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), output_analyzer.errors.items.len);
+    try std.testing.expectEqual(@as(usize, 0), output_analyzer.unresolved_references.count());
 }
 
 test "#4819 Flow JSX lowering reuses the transform graph without a component wrapper" {
