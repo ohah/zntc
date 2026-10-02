@@ -198,11 +198,8 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             // reference and an ordinary `.exports` property name.
             .ts_export_assignment => facts.has_runtime_sensitive_syntax = true,
 
-            .ts_namespace_export_declaration => {
-                facts.has_runtime_sensitive_syntax = true;
-                facts.has_flow_runtime_syntax_without_complete_graph = true;
-                facts.has_unhandled_runtime_syntax = true;
-            },
+            // `export as namespace` is erased and carries no runtime references or bindings.
+            .ts_namespace_export_declaration => facts.has_runtime_sensitive_syntax = true,
 
             // Flow match is fully lowered by the semantic editor: its generated
             // function scope, parameter symbol, arm scopes, and references are
@@ -2065,6 +2062,13 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     export_equals_parser.configureFromExtension(".ts");
     _ = try export_equals_parser.parse();
     try std.testing.expect(canMangleWithTransformSemantic(minify, &export_equals_parser));
+
+    var namespace_export_scanner = try Scanner.init(allocator, "export as namespace TypeOnlyGlobal;");
+    var namespace_export_parser = Parser.init(allocator, &namespace_export_scanner);
+    namespace_export_parser.configureFromExtension(".ts");
+    _ = try namespace_export_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), namespace_export_parser.errors.items.len);
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &namespace_export_parser));
 
     var enum_scanner = try Scanner.init(allocator, "enum Color { Red }");
     var enum_parser = Parser.init(allocator, &enum_scanner);

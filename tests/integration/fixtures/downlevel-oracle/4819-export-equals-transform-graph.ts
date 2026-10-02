@@ -1,3 +1,5 @@
+export as namespace TypeOnlyGlobal;
+
 const value = {
   add(delta: number) {
     return 40 + delta;
