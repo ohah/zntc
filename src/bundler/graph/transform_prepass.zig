@@ -188,6 +188,21 @@ fn addFlowMatchGeneratedGlobals(
     if (globals.object) try addGeneratedGlobal(allocator, semantic, "Object");
 }
 
+fn fallbackToFullSemanticResync(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void {
+    resyncAfterAstMutation(self, module, arena_alloc, null) catch {
+        self.addDiag(
+            .parse_error,
+            .@"error",
+            module.path,
+            Span.EMPTY,
+            .parse,
+            "Post-transform analysis refresh failed",
+            "The transformed AST could not be re-analyzed safely.",
+        );
+        module.state = .ready;
+    };
+}
+
 fn isTypeErasureTag(tag: NodeTag) bool {
     return isTypeOnlyNode(tag) or ast_mod.Node.Tag.isTransparentTypeWrapper(tag);
 }
@@ -201,25 +216,6 @@ fn isSupportedRuntimeTsEnum(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     return ast.extra_data.items[extra + 3] == 0;
 }
 
-fn hasExportedRuntimeTsEnum(ast: *const ast_mod.Ast) bool {
-    for (ast.nodes.items) |node| {
-        const declaration_raw = switch (node.tag) {
-            .export_named_declaration => blk: {
-                const extra = node.data.extra;
-                if (extra >= ast.extra_data.items.len) return true;
-                break :blk ast.extra_data.items[extra];
-            },
-            .export_default_declaration => @intFromEnum(node.data.unary.operand),
-            else => continue,
-        };
-        if (declaration_raw == @intFromEnum(ast_mod.NodeIndex.none)) continue;
-        if (declaration_raw >= ast.nodes.items.len) return true;
-        const declaration = ast.nodes.items[declaration_raw];
-        if (declaration.tag == .ts_enum_declaration and isSupportedRuntimeTsEnum(ast, declaration)) return true;
-    }
-    return false;
-}
-
 fn canKeepPrepassSemanticGraph(
     self: anytype,
     module: *const Module,
@@ -228,9 +224,6 @@ fn canKeepPrepassSemanticGraph(
 ) bool {
     if (module.ast == null or module.semantic == null) return false;
     const ast = &module.ast.?;
-    // Until the linker carries the exported enum's output identity through
-    // cross-module imports, keep this path on full semantic resync.
-    if (hasExportedRuntimeTsEnum(ast)) return false;
     if (self.worklet_transform or self.react_refresh or self.styled_components or self.emotion or
         self.plugins.len != 0 or plugins.len != 0 or options.plugins.len != 0) return false;
     if (!options.strip_types) return false;
@@ -559,6 +552,24 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             };
             return;
         }
+        // Parser metadata can omit runtime TypeScript enum exports. The transform
+        // lowers them to declarations the bundler's graph scanner can represent.
+        module.export_bindings = binding_scanner_mod.extractExportBindings(
+            arena_alloc,
+            &(module.ast orelse return),
+            module.import_records,
+            module.import_bindings,
+        ) catch {
+            fallbackToFullSemanticResync(self, module, arena_alloc);
+            return;
+        };
+        module.exported_names = projectExportedNames(arena_alloc, module.export_bindings);
+        @import("requested_exports.zig").computeBarrelFlags(module);
+        @import("requested_exports.zig").populateExportIndexByName(module, self.allocator) catch {};
+        refreshStableBindingRefsFromSemanticGraph(self, module, arena_alloc, .graph_resync_binding_refs) catch {
+            fallbackToFullSemanticResync(self, module, arena_alloc);
+            return;
+        };
         if (debug_symbol_coverage) {
             printKeptPrepassExact(
                 arena_alloc,
@@ -743,7 +754,7 @@ fn captureRenamesToPending(
 }
 
 /// 재분석 전 semantic 을 돌려준다 — 리네임 이관(`captureRenamesAfterResync`)은 합성 심볼이 표시된
-/// **뒤에** 해야 해서(#4804) 호출자가 `refreshStableBindingRefsAfterSemanticResync` 다음에 한다.
+/// **뒤에** 해야 해서(#4804) 호출자가 `refreshStableBindingRefsFromSemanticGraph` 다음에 한다.
 fn refreshSemanticAndStmtInfoAfterAstMutation(
     self: anytype,
     module: *Module,
@@ -843,7 +854,7 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
 
 /// 링크 시점 리네임을 재분석된 심볼 번호로 옮긴다. 합성 심볼(`_default` 등)은
 /// `populateSyntheticSymbols` 가 표시한 뒤에야 짝을 찾을 수 있으므로 반드시
-/// `refreshStableBindingRefsAfterSemanticResync` **다음**에 부른다 — 먼저 부르면 짝을 못 찾아 리네임이
+/// `refreshStableBindingRefsFromSemanticGraph` **다음**에 부른다 — 먼저 부르면 짝을 못 찾아 리네임이
 /// 버려지고 모듈 간 같은 이름(`var _default`)이 겹친다 (#4804, axios es5 + minify-syntax).
 fn captureRenamesAfterResync(
     self: anytype,
@@ -859,7 +870,7 @@ fn captureRenamesAfterResync(
     try captureRenamesToPending(module, rt, old_sem, new_sem, self.allocator, arena_alloc);
 }
 
-fn refreshStableBindingRefsAfterSemanticResync(
+fn refreshStableBindingRefsFromSemanticGraph(
     self: anytype,
     module: *Module,
     arena_alloc: std.mem.Allocator,
@@ -913,7 +924,7 @@ pub fn resyncAfterConstMaterialization(
 
     _ = &(module.ast orelse return);
     const previous_semantic = try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc);
-    try refreshStableBindingRefsAfterSemanticResync(self, module, arena_alloc, .graph_resync_binding_refs);
+    try refreshStableBindingRefsFromSemanticGraph(self, module, arena_alloc, .graph_resync_binding_refs);
     try captureRenamesAfterResync(self, module, arena_alloc, rename_table, previous_semantic);
 }
 
@@ -1098,7 +1109,7 @@ pub fn resyncAfterAstMutation(
         );
     }
 
-    try refreshStableBindingRefsAfterSemanticResync(self, module, arena_alloc, .graph_resync_alias);
+    try refreshStableBindingRefsFromSemanticGraph(self, module, arena_alloc, .graph_resync_alias);
     try captureRenamesAfterResync(self, module, arena_alloc, rename_table, previous_semantic);
 }
 
