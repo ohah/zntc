@@ -16,6 +16,74 @@ const transformWorklet = tt.transformWorklet;
 const generateCode = tt.generateCode;
 const parseAndTransformWithOptions = tt.parseAndTransformWithOptions;
 
+test "Worklet: generated factory locals keep exact semantic coverage" {
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    const Parser = @import("../parser/parser.zig").Parser;
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const coverage = @import("symbol_coverage.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\function declared() { "worklet"; return 1; }
+        \\function make() { return function nested() { "worklet"; return 42; }; }
+        \\const anonymous = function() { "worklet"; return 3; };
+        \\const arrow = () => { "worklet"; return 4; };
+        \\const handlers = {
+        \\  run(value) { "worklet"; return value; },
+        \\  get current() { "worklet"; return 7; }
+        \\};
+    ;
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var transformer = try transformer_mod.Transformer.init(allocator, &parser.ast, .{
+        .plugins = &plugins,
+        .jsx_filename = "test.ts",
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.synthetic_idents = .empty;
+
+    const root = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var report = try coverage.checkStrictWithExactExternalEvidence(
+        allocator,
+        transformer.ast,
+        root,
+        transformer.parser_node_count,
+        edited.symbol_ids,
+        edited.symbols.items,
+        edited.scopes,
+        &edited.scope_owner_map,
+        edited.references,
+        if (transformer.synthetic_idents) |*synthetic| synthetic else null,
+        .{
+            .unresolved_reference_nodes = &analyzer.unresolved_reference_nodes,
+            .explicit_global_reference_nodes = &transformer.explicit_global_reference_nodes,
+            .reference_origin_map = &transformer.reference_origin_map,
+        },
+    );
+    defer report.deinit(allocator);
+    if (!report.hasCompleteExactCoverage()) coverage.printStrict("worklet-factory-locals.ts", &report);
+    try std.testing.expect(report.hasCompleteExactCoverage());
+}
+
 test "Worklet: function with worklet directive adds property assignments" {
     var r = try transformWorklet(std.testing.allocator,
         \\function animate(x) {
