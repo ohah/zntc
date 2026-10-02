@@ -32,6 +32,18 @@ pub fn isComponentName(name: []const u8) bool {
     return name[0] >= 'A' and name[0] <= 'Z';
 }
 
+/// Module-scope registration code can only refer to bindings visible from the
+/// program scope. Use the binding's exact SymbolId so nested declarations are
+/// not emitted as dangling root references. Missing semantic identity is
+/// conservatively ineligible for this module-level transform.
+fn isProgramScopeBinding(self: *Transformer, binding_idx: NodeIndex) bool {
+    const raw_id = self.getSymbolIdAt(binding_idx) orelse return false;
+    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+    if (raw_id >= symbols.len or self.parser_node_count == 0) return false;
+    if (self.scope_owner_map.get(self.parser_node_count - 1) == null) return false;
+    return symbols[raw_id].scope_id == self.programScope();
+}
+
 /// Vite core `JS_TYPES_RE` (`/\.(?:j|t)sx?$|\.mjs$/`) 매칭 확장자 — plugin-react 기본 filter.
 const refresh_target_extensions = [_][]const u8{ ".js", ".jsx", ".ts", ".tsx", ".mjs" };
 
@@ -92,6 +104,7 @@ pub fn maybeRegisterRefreshComponent(self: *Transformer, new_func_idx: NodeIndex
     const name_node = self.ast.getNode(name_idx);
     const name = self.ast.getText(name_node.data.string_ref);
     if (!isComponentName(name)) return;
+    if (!isProgramScopeBinding(self, name_idx)) return;
 
     try appendRefreshRegistration(self, name, name_idx);
 }
@@ -115,6 +128,7 @@ pub fn maybeRegisterRefreshComponentByBinding(
         init_tag == .function_expression or
         init_tag == .function;
     if (!is_target) return;
+    if (!isProgramScopeBinding(self, binding_idx)) return;
 
     try appendRefreshRegistration(self, binding_name, binding_idx);
 }
@@ -562,6 +576,7 @@ pub fn maybeRegisterRefreshSignature(
     if (!self.options.react_refresh_hook_signatures) return;
     const name = func_name orelse return;
     if (!isComponentName(name)) return;
+    if (!isProgramScopeBinding(self, component_idx)) return;
 
     const signature = try self.scanHookSignature(old_body_idx) orelse return;
 
@@ -703,7 +718,9 @@ test "#4819 React Refresh handles keep exact root symbols through nested visitat
         \\const _c = 1, _c2 = 2, _c3 = 3, _s = 4, _s2 = 5;
         \\function Alpha() { useState(0); return null; }
         \\function Beta() { useState(1); return null; }
-        \\function Container() { function helper() { return null; } return helper; }
+        \\function Nested() { useState(4); return null; }
+        \\function Container() { function Nested() { useState(2); return null; } const Local = () => { useState(3); return null; }; return null; }
+        \\const ArrowCard = () => { return null; };
     ;
 
     var scanner = try Scanner.init(allocator, source);
@@ -730,8 +747,13 @@ test "#4819 React Refresh handles keep exact root symbols through nested visitat
     transformer.semantic_edit_enabled = true;
 
     const root = try transformer.transform();
-    try std.testing.expectEqual(@as(usize, 3), transformer.plugins.refresh.registrations.items.len);
-    try std.testing.expectEqual(@as(usize, 2), transformer.plugins.refresh.signatures.items.len);
+    try std.testing.expectEqual(@as(usize, 5), transformer.plugins.refresh.registrations.items.len);
+    try std.testing.expectEqual(@as(usize, 3), transformer.plugins.refresh.signatures.items.len);
+    try std.testing.expectEqualStrings("Alpha", transformer.plugins.refresh.registrations.items[0].name);
+    try std.testing.expectEqualStrings("Beta", transformer.plugins.refresh.registrations.items[1].name);
+    try std.testing.expectEqualStrings("Nested", transformer.plugins.refresh.registrations.items[2].name);
+    try std.testing.expectEqualStrings("Container", transformer.plugins.refresh.registrations.items[3].name);
+    try std.testing.expectEqualStrings("ArrowCard", transformer.plugins.refresh.registrations.items[4].name);
 
     const registrations = try allocator.dupe(RefreshRegistration, transformer.plugins.refresh.registrations.items);
     const signatures = try allocator.dupe(RefreshSignature, transformer.plugins.refresh.signatures.items);
