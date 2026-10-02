@@ -250,6 +250,77 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('TypeScript export-equals mangling reuses the edited semantic graph', () => {
+    const file = join(FIXTURE_DIR, '4819-export-equals-transform-graph.ts');
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-export-equals-graph-'));
+    const shadowFile = join(outDir, 'export-equals-shadow.ts');
+    writeFileSync(
+      shadowFile,
+      `
+        const module = 'local-module';
+        const exports = 'local-exports';
+        const value = {
+          module,
+          exports,
+          add(delta: number) { return 40 + delta; },
+        };
+        export = value;
+      `,
+    );
+    try {
+      for (const target of TARGETS) {
+        const output = join(outDir, `${target.name}.js`);
+        const proc = spawnSync(ZNTC_BIN, [file, target.arg, '--minify-identifiers', '-o', output], {
+          env: {
+            ...process.env,
+            ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+            ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+          },
+          encoding: 'utf8',
+        });
+        expect(proc.status, `${target.name}: ${proc.stderr}`).toBe(0);
+        const identity = proc.stderr
+          .split('\n')
+          .find((line) => line.includes('zntc: symbol-identity '));
+        expect(identity, `${target.name}: missing exact identity report`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${target.name}: ${counter}: ${identity}`,
+          ).toBe(0);
+        }
+        const actual = spawnSync(
+          'node',
+          ['-e', 'console.log(require(process.argv[1]).add(2));', output],
+          { encoding: 'utf8' },
+        );
+        expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout).toBe('42\n');
+
+        const shadowOutput = join(outDir, `shadow-${target.name}.js`);
+        const shadowProc = spawnSync(
+          ZNTC_BIN,
+          [shadowFile, target.arg, '--minify-identifiers', '-o', shadowOutput],
+          { encoding: 'utf8' },
+        );
+        expect(shadowProc.status, `${target.name} shadow: ${shadowProc.stderr}`).toBe(0);
+        const shadowActual = spawnSync(
+          'node',
+          [
+            '-e',
+            'const api = require(process.argv[1]); console.log(`${api.module}|${api.exports}|${api.add(2)}`);',
+            shadowOutput,
+          ],
+          { encoding: 'utf8' },
+        );
+        expect(shadowActual.status, `${target.name} shadow: ${shadowActual.stderr}`).toBe(0);
+        expect(shadowActual.stdout).toBe('local-module|local-exports|42\n');
+      }
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
   test('가상 enum IIFE 매개변수와 initializer 참조가 정확한 SymbolId와 ScopeId를 가진다', () => {
     const file = join(FIXTURE_DIR, '4819-enum-iife-params.ts');
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-enum-param-'));

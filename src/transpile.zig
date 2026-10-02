@@ -194,9 +194,11 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             // symbol reconstruction.
             .ts_import_equals_declaration => facts.has_runtime_sensitive_syntax = true,
 
-            .ts_export_assignment,
-            .ts_namespace_export_declaration,
-            => {
+            // `export = expr` preserves its value reference; lowering adds a global `module`
+            // reference and an ordinary `.exports` property name.
+            .ts_export_assignment => facts.has_runtime_sensitive_syntax = true,
+
+            .ts_namespace_export_declaration => {
                 facts.has_runtime_sensitive_syntax = true;
                 facts.has_flow_runtime_syntax_without_complete_graph = true;
                 facts.has_unhandled_runtime_syntax = true;
@@ -2062,7 +2064,7 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     var export_equals_parser = Parser.init(allocator, &export_equals_scanner);
     export_equals_parser.configureFromExtension(".ts");
     _ = try export_equals_parser.parse();
-    try std.testing.expect(!canMangleWithTransformSemantic(minify, &export_equals_parser));
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &export_equals_parser));
 
     var enum_scanner = try Scanner.init(allocator, "enum Color { Red }");
     var enum_parser = Parser.init(allocator, &enum_scanner);
