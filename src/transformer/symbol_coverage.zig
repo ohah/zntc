@@ -2222,10 +2222,28 @@ pub const StrictReport = struct {
         self.orphan_symbol_findings.deinit(allocator);
     }
 
+    /// Keep aggregate counters and emitted diagnostic details tied together.
+    /// The checker updates both while walking the AST; a drift here would let
+    /// a zeroed counter hide a failing finding (or hide a dropped finding).
+    pub fn isConsistent(self: *const StrictReport) bool {
+        var observed_counts: [std.meta.fields(StrictStatus).len]usize = @splat(0);
+        var observed_marked_synthetic: usize = 0;
+        for (self.findings.items) |finding| {
+            observed_counts[@intFromEnum(finding.status)] += 1;
+            if (finding.marked_synthetic) observed_marked_synthetic += 1;
+        }
+        for (observed_counts, self.counts) |observed, reported| {
+            if (observed != reported) return false;
+        }
+        return observed_marked_synthetic == self.marked_synthetic and
+            self.orphan_symbols == self.orphan_symbol_findings.items.len;
+    }
+
     /// True only when every generated runtime identifier has exact SymbolId
     /// and ScopeId evidence, or exact node-index evidence that an unbound
     /// reference remains external.
     pub fn hasCompleteExactCoverage(self: *const StrictReport) bool {
+        if (!self.isConsistent()) return false;
         if (self.orphan_symbols != 0) return false;
         for (self.counts, 0..) |count, status| {
             if (status != @intFromEnum(StrictStatus.bound) and
@@ -2697,8 +2715,8 @@ fn checkStrictImpl(
 
 pub fn printStrict(file_path: []const u8, report: *const StrictReport) void {
     std.debug.print(
-        "zntc: synthetic-coverage {s}: bound={d} external={d} missing_binding={d} unclassified={d} invalid_id={d} name_mismatch={d} missing_reference={d} identity_mismatch={d} invalid_scope={d} scope_unknown={d} scope_ambiguous={d} scope_mismatch={d} invisible_reference={d} duplicate_reference={d} orphan_symbols={d} marked_synthetic={d}\n",
-        .{ file_path, report.counts[@intFromEnum(StrictStatus.bound)], report.counts[@intFromEnum(StrictStatus.external)], report.counts[@intFromEnum(StrictStatus.missing_binding)], report.counts[@intFromEnum(StrictStatus.unclassified)], report.counts[@intFromEnum(StrictStatus.invalid_id)], report.counts[@intFromEnum(StrictStatus.name_mismatch)], report.counts[@intFromEnum(StrictStatus.missing_reference)], report.counts[@intFromEnum(StrictStatus.identity_mismatch)], report.counts[@intFromEnum(StrictStatus.invalid_scope)], report.counts[@intFromEnum(StrictStatus.scope_unknown)], report.counts[@intFromEnum(StrictStatus.scope_ambiguous)], report.counts[@intFromEnum(StrictStatus.scope_mismatch)], report.counts[@intFromEnum(StrictStatus.invisible_reference)], report.counts[@intFromEnum(StrictStatus.duplicate_reference)], report.orphan_symbols, report.marked_synthetic },
+        "zntc: synthetic-coverage {s}: bound={d} external={d} missing_binding={d} unclassified={d} invalid_id={d} name_mismatch={d} missing_reference={d} identity_mismatch={d} invalid_scope={d} scope_unknown={d} scope_ambiguous={d} scope_mismatch={d} invisible_reference={d} duplicate_reference={d} orphan_symbols={d} marked_synthetic={d} consistent={d}\n",
+        .{ file_path, report.counts[@intFromEnum(StrictStatus.bound)], report.counts[@intFromEnum(StrictStatus.external)], report.counts[@intFromEnum(StrictStatus.missing_binding)], report.counts[@intFromEnum(StrictStatus.unclassified)], report.counts[@intFromEnum(StrictStatus.invalid_id)], report.counts[@intFromEnum(StrictStatus.name_mismatch)], report.counts[@intFromEnum(StrictStatus.missing_reference)], report.counts[@intFromEnum(StrictStatus.identity_mismatch)], report.counts[@intFromEnum(StrictStatus.invalid_scope)], report.counts[@intFromEnum(StrictStatus.scope_unknown)], report.counts[@intFromEnum(StrictStatus.scope_ambiguous)], report.counts[@intFromEnum(StrictStatus.scope_mismatch)], report.counts[@intFromEnum(StrictStatus.invisible_reference)], report.counts[@intFromEnum(StrictStatus.duplicate_reference)], report.orphan_symbols, report.marked_synthetic, @intFromBool(report.isConsistent()) },
     );
     for (report.orphan_symbol_findings.items[0..@min(report.orphan_symbol_findings.items.len, 8)]) |finding| {
         std.debug.print("  synthetic-coverage orphan_symbol id={d} name={s} kind={s} scope={d}\n", .{
