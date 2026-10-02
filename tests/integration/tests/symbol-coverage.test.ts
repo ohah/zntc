@@ -274,6 +274,173 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('classic JSX keeps stable runtime imports only when verbatim syntax preserves them', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-classic-jsx-import-graph-'));
+    writeFileSync(
+      join(dir, 'dep.ts'),
+      [
+        'export interface Props { label?: string; }',
+        'export const Header: () => void = () => {};',
+        'export const unused: number = 1;',
+      ].join('\n'),
+    );
+    try {
+      for (const { name, importLine, flag, expectedMode } of [
+        {
+          name: 'verbatim',
+          importLine: "import { Header, unused } from './dep';",
+          flag: '--verbatim-module-syntax',
+          expectedMode: 'retained',
+        },
+        {
+          name: 'eliding',
+          importLine: "import { Header, unused } from './dep';",
+          flag: '--verbatim-module-syntax=false',
+          expectedMode: 'reanalyzed',
+        },
+        {
+          name: 'inline-type',
+          importLine: "import { Header, type unused } from './dep';",
+          flag: '--verbatim-module-syntax',
+          expectedMode: 'reanalyzed',
+        },
+      ]) {
+        writeFileSync(
+          join(dir, 'entry.tsx'),
+          [
+            "import type { Props } from './dep';",
+            importLine,
+            'function render(h: (tag: unknown, props: Props) => number) {',
+            '  return <Header />;',
+            '}',
+            'console.log(render((tag) => tag === Header ? 42 : 0));',
+          ].join('\n'),
+        );
+        const output = join(dir, `out-${name}.cjs`);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            'entry.tsx',
+            '--target=esnext',
+            '--platform=node',
+            '--format=cjs',
+            '--jsx=classic',
+            '--jsx-factory=h',
+            '--minify-identifiers',
+            flag,
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${name}: ${proc.stderr}`).toBe(0);
+
+        const reports = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .filter((line) => line.includes('zntc: symbol-identity-prepass '));
+        expect(reports, `${name}: ${proc.stderr}`).toHaveLength(2);
+        for (const report of reports) {
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(Number(report.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(
+              0,
+            );
+          }
+          expect(report).toMatch(/clean=1(?:\s|$)/);
+        }
+
+        const entryMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.tsx'),
+          );
+        expect(entryMode, `${name}: ${proc.stderr}`).toContain(`semantic_graph=${expectedMode}`);
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout).toBe('42\n');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('classic JSX preserves side-effect import graph entries in place', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-classic-jsx-side-effect-import-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'side.ts'),
+      '(globalThis as { sideEffect?: boolean }).sideEffect = true;',
+    );
+    writeFileSync(
+      join(dir, 'entry.tsx'),
+      [
+        "import './side';",
+        'const Header = function () {};',
+        'function render(h: (tag: unknown) => number) {',
+        '  return <Header />;',
+        '}',
+        'console.log(render((tag) => tag === Header ? 42 : 0), (globalThis as { sideEffect?: boolean }).sideEffect);',
+      ].join('\n'),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.tsx',
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '--jsx=classic',
+          '--jsx-factory=h',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const reports = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .filter((line) => line.includes('zntc: symbol-identity-prepass '));
+      expect(reports, proc.stderr).toHaveLength(2);
+      for (const report of reports) {
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(Number(report.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+        }
+        expect(report).toMatch(/clean=1(?:\s|$)/);
+      }
+
+      const graphModes = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .filter((line) => line.includes('zntc: symbol-identity-prepass-mode '));
+      expect(graphModes, proc.stderr).toHaveLength(2);
+      expect(graphModes.find((line) => line.includes('side.ts'))).toContain(
+        'semantic_graph=retained',
+      );
+      expect(graphModes.find((line) => line.includes('entry.tsx'))).toContain(
+        'semantic_graph=retained',
+      );
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42 true\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('가상 namespace IIFE 매개변수도 정확한 SymbolId와 ScopeId를 가진다', () => {
     const file = join(FIXTURE_DIR, '4819-namespace-iife-params.ts');
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-namespace-param-'));
