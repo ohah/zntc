@@ -385,7 +385,9 @@ pub fn emitEsmWrappedModule(
                         // ⚠️ AST 원본 이름(`_a`)을 쓰면 minify 시 실제 방출명(`c`)과 어긋나
                         //    `ReferenceError` 다(적대적 검증이 잡음).
                         if (module.tla_iife_stmt) |tix| {
-                            if (raw_idx == tix) tla_var_name = resolved;
+                            if (raw_idx == tix and module.matchesTlaPromiseReference(@intFromEnum(name_raw))) {
+                                tla_var_name = resolved;
+                            }
                         }
                         try hoisted_var_names.append(allocator, resolved);
                     } else {
@@ -877,6 +879,7 @@ pub fn emitEsmWrappedModule(
     // ⚠️ 문장을 쪼개 `generateStatements` 를 여러 번 부르면 안 된다. codegen 이 내부
     //    버퍼에 누적해서 앞 내용이 다시 붙는다(IIFE 2회 방출 — 유닛 테스트가 잡음).
     var body_code = try body_cg.generateStatements(root, body_stmts.items);
+    if (module.tla_iife_stmt != null and tla_var_name == null) return error.MissingTlaPromiseIdentity;
     if (tla_var_name) |tla_var| {
         body_code = try std.fmt.allocPrint(arena_alloc, "{s}\treturn {s};\n", .{ body_code, tla_var });
     }

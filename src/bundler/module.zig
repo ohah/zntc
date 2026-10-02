@@ -20,6 +20,7 @@ const Symbol = semantic_symbol.Symbol;
 const Reference = semantic_symbol.Reference;
 const SemanticSymbolId = semantic_symbol.SymbolId;
 const Scope = @import("../semantic/scope.zig").Scope;
+const SemanticScopeId = @import("../semantic/scope.zig").ScopeId;
 const RnAssetMetadata = @import("graph/assets.zig").RnAssetMetadata;
 const binding_scanner = @import("binding_scanner.zig");
 pub const ImportBinding = binding_scanner.ImportBinding;
@@ -247,6 +248,16 @@ pub fn isAwaitableInit(
 }
 
 pub const Module = struct {
+    /// Exact identity for a TLA promise variable consumed by references that the
+    /// bundler emits after AST code generation (`await <promise>` or
+    /// `return <promise>`). Keep the binding node, SymbolId, and ScopeId together
+    /// so the emitter never has to recover the target from generated text.
+    pub const TlaPromiseReference = struct {
+        binding_node_index: u32,
+        symbol_id: SemanticSymbolId,
+        scope_id: SemanticScopeId,
+    };
+
     index: ModuleIndex,
     /// 절대 파일 경로. graph의 path_to_module 키와 동일한 메모리를 참조 (빌림).
     path: []const u8,
@@ -539,6 +550,10 @@ pub const Module = struct {
     /// `__esm` factory 방출 시 이 문장만 `return <expr>;` 로 바꿔 `init_X()` 가
     /// 초기화 완료 promise 를 돌려주게 한다. null 이면 해당 없음.
     tla_iife_stmt: ?u32 = null,
+    /// Exact binding identity for emitter-added references to the TLA promise.
+    /// This is populated from the transformed AST and semantic graph together
+    /// with `tla_iife_stmt`.
+    tla_promise_reference: ?TlaPromiseReference = null,
     /// Module Federation 연합 경계 모듈 (#3318 P1-1). `mf.exposes` 타겟 ∪
     /// `mf.shared` ∪ shared 전방-의존 폐포. P1-1 은 **표시·안정 ID 계산만**
     /// (분석) — 스코프 호이스팅 소거 제외 *enforcement*·container/manifest
@@ -663,6 +678,19 @@ pub const Module = struct {
         /// import 추출 완료, 사용 가능
         ready,
     };
+
+    /// Check that an emitter-side TLA reference still points at the binding
+    /// and scope captured when the lowering created the promise variable.
+    pub fn matchesTlaPromiseReference(self: *const Module, binding_node_index: u32) bool {
+        const reference = self.tla_promise_reference orelse return false;
+        if (reference.binding_node_index != binding_node_index) return false;
+        const semantic = self.semantic orelse return false;
+        const binding_index: usize = @intCast(binding_node_index);
+        const symbol_index: usize = @intFromEnum(reference.symbol_id);
+        if (binding_index >= semantic.symbol_ids.len or symbol_index >= semantic.symbols.items.len) return false;
+        if (semantic.symbol_ids[binding_index] != @as(u32, @intCast(symbol_index))) return false;
+        return semantic.symbols.items[symbol_index].scope_id == reference.scope_id;
+    }
 
     /// 등록된 합성 심볼의 출력 이름을 반환. 링커/망글러가 canonical_name 을
     /// 주입한 경우 릴리즈/압축 출력에서는 그 이름을 우선 사용한다.
