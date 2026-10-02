@@ -1529,7 +1529,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       ['array-pattern.mjs', 'match-array-es5-fallback', ['--target=es5'], false, '4'],
       ['object-rest.mjs', 'match-object-rest-es5-fallback', ['--target=es5'], false, '1'],
       ['typed.mjs', 'flow-types-kept', [], true, '7 5'],
-      ['typed-import.mjs', 'flow-type-import-fallback', [], false, '3'],
+      ['typed-import.mjs', 'flow-type-import-retained', [], true, '3'],
       ['with-import.mjs', 'match-import-fallback', [], false, '5'],
       ['with-eval.mjs', 'match-eval-fallback', [], false, 'zero'],
       ['match.mjs', 'match-es5-fallback', ['--target=es5'], false, '4 zero outer user-m user-m2'],
@@ -1585,9 +1585,33 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       `,
       'typed-import.ts': `
         import type { Item } from './types.ts';
-        const item: Item = { value: 3 };
+        import type DefaultItem from './default-types.ts';
+        type Combined = Item & DefaultItem;
+        const item: Combined = { value: 3 };
         console.log(item.value);
       `,
+      'typed-mixed-import.ts': `
+        import { value as _runtimeValue, type Shape } from './mixed-dependency.ts';
+        type Alias = Shape;
+        enum LongStatus { Value = 3, Next = Value + 1 }
+        console.log(_runtimeValue, LongStatus.Next);
+      `,
+      'mixed-dependency.ts': 'export const value = 9; export interface Shape { value: number }',
+      'typed-side-effect-import.ts': `
+        import './side-effect.ts';
+        type Shape = { value: number };
+        enum LongStatus { Value = 3, Next = Value + 1 }
+        console.log(LongStatus.Next);
+      `,
+      'side-effect.ts': "console.log('SIDE_EFFECT_IMPORT');",
+      'typed-inline-import.ts': `
+        import { type Shape } from './inline-types.ts';
+        type Alias = Shape;
+        enum LongStatus { Value = 3, Next = Value + 1 }
+        console.log(LongStatus.Next);
+      `,
+      'inline-types.ts':
+        "console.log('INLINE_TYPE_IMPORT_SIDE_EFFECT'); export interface Shape { value: number }",
       'typed-eval.ts': `
         const value: number = 5;
         console.log(eval('value'));
@@ -1600,7 +1624,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     });
     cleanup = fixture.cleanup;
 
-    async function bundle(entry: string, suffix: string) {
+    async function bundle(entry: string, suffix: string, extraArgs: string[] = []) {
       const output = join(fixture.dir, `${suffix}.mjs`);
       const result = await runZntc(
         [
@@ -1612,6 +1636,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
           '--format=esm',
           '--target=esnext',
           '--minify-identifiers',
+          ...extraArgs,
         ],
         { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
       );
@@ -1636,11 +1661,48 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stderr).toBe('');
     expect(transformed.stdout.trim()).toBe('14 7 2 4');
 
-    const imported = await bundle('typed-import.ts', 'typed-import-fallback');
-    expect(imported.stderr).not.toContain('symbol-identity-prepass');
-    const fallback = await runNode(imported.output);
-    expect(fallback.stderr).toBe('');
-    expect(fallback.stdout.trim()).toBe('3');
+    const imported = await bundle('typed-import.ts', 'typed-import-retained', [
+      '--verbatim-module-syntax',
+    ]);
+    const importedIdentity = imported.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity-prepass '));
+    expect(importedIdentity).toBeDefined();
+    expect(importedIdentity).toMatch(/clean=1(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(importedIdentity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const importedOutput = readFileSync(imported.output, 'utf8');
+    expect(importedOutput).not.toContain('types.ts');
+    expect(importedOutput).not.toContain('default-types.ts');
+    const importedResult = await runNode(imported.output);
+    expect(importedResult.stderr).toBe('');
+    expect(importedResult.stdout.trim()).toBe('3');
+
+    const mixedImport = await bundle('typed-mixed-import.ts', 'typed-mixed-import-fallback', [
+      '--verbatim-module-syntax',
+    ]);
+    expect(mixedImport.stderr).not.toContain('typed-mixed-import.ts:');
+    const mixedImportResult = await runNode(mixedImport.output);
+    expect(mixedImportResult.stderr).toBe('');
+    expect(mixedImportResult.stdout.trim()).toBe('9 4');
+
+    const inlineImport = await bundle('typed-inline-import.ts', 'typed-inline-import-fallback', [
+      '--verbatim-module-syntax',
+    ]);
+    expect(inlineImport.stderr).not.toContain('typed-inline-import.ts:');
+    const inlineImportResult = await runNode(inlineImport.output);
+    expect(inlineImportResult.stderr).toBe('');
+    expect(inlineImportResult.stdout.trim()).toBe('INLINE_TYPE_IMPORT_SIDE_EFFECT\n4');
+
+    const sideEffectImport = await bundle(
+      'typed-side-effect-import.ts',
+      'type-side-effect-fallback',
+    );
+    expect(sideEffectImport.stderr).not.toContain('typed-side-effect-import.ts:');
+    const sideEffectImportResult = await runNode(sideEffectImport.output);
+    expect(sideEffectImportResult.stderr).toBe('');
+    expect(sideEffectImportResult.stdout.trim()).toBe('SIDE_EFFECT_IMPORT\n4');
 
     const dynamic = await bundle('typed-eval.ts', 'typed-eval-fallback');
     expect(dynamic.stderr).not.toContain('symbol-identity-prepass');
@@ -1924,6 +1986,51 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       expect(result.stderr).toBe('');
       expect(result.stdout.trim()).toBe(expected);
     }
+  });
+
+  test('bundler retains semantic graph when declaration-level type imports erase', async () => {
+    const fixture = await createFixture({
+      'entry.ts': [
+        "import type { Shape } from './missing-types.ts';",
+        "import type DefaultShape from './missing-default-types.ts';",
+        'type Alias = Shape & DefaultShape;',
+        "function _LongStatus() { return 'outer'; }",
+        'enum LongStatus { Value = 3, Next = Value + 1 }',
+        'console.log(LongStatus.Next, _LongStatus());',
+      ].join('\n'),
+    });
+    cleanup = fixture.cleanup;
+
+    const output = join(fixture.dir, 'type-import-retained.mjs');
+    const result = await runZntc(
+      [
+        '--bundle',
+        join(fixture.dir, 'entry.ts'),
+        '-o',
+        output,
+        '--platform=node',
+        '--format=esm',
+        '--target=esnext',
+        '--minify-identifiers',
+      ],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    expect(result.exitCode, result.stderr).toBe(0);
+    const identity = result.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity-prepass '));
+    expect(identity).toBeDefined();
+    expect(identity).toMatch(/clean=1(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const emitted = readFileSync(output, 'utf8');
+    expect(emitted).not.toContain('missing-types');
+    expect(emitted).not.toContain('missing-default-types');
+    expect(emitted).not.toContain('import type');
+    const transformed = await runNode(output);
+    expect(transformed.stderr).toBe('');
+    expect(transformed.stdout.trim()).toBe('4 outer');
   });
 
   test('Flow enum bindings and codegen globals keep distinct symbols when mangled', async () => {
