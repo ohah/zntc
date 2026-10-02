@@ -192,7 +192,35 @@ fn isTypeErasureTag(tag: NodeTag) bool {
     return isTypeOnlyNode(tag) or ast_mod.Node.Tag.isTransparentTypeWrapper(tag);
 }
 
-fn canKeepTypeErasureGraph(
+fn isSupportedRuntimeTsEnum(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
+    if (node.tag != .ts_enum_declaration) return false;
+    const extra = node.data.extra;
+    if (extra >= ast.extra_data.items.len or ast.extra_data.items.len - extra <= 3) return false;
+    // Only ordinary runtime enums retain the same AST and semantic edges.
+    // Const and ambient enums are erased or inlined by the transformer.
+    return ast.extra_data.items[extra + 3] == 0;
+}
+
+fn hasExportedRuntimeTsEnum(ast: *const ast_mod.Ast) bool {
+    for (ast.nodes.items) |node| {
+        const declaration_raw = switch (node.tag) {
+            .export_named_declaration => blk: {
+                const extra = node.data.extra;
+                if (extra >= ast.extra_data.items.len) return true;
+                break :blk ast.extra_data.items[extra];
+            },
+            .export_default_declaration => @intFromEnum(node.data.unary.operand),
+            else => continue,
+        };
+        if (declaration_raw == @intFromEnum(ast_mod.NodeIndex.none)) continue;
+        if (declaration_raw >= ast.nodes.items.len) return true;
+        const declaration = ast.nodes.items[declaration_raw];
+        if (declaration.tag == .ts_enum_declaration and isSupportedRuntimeTsEnum(ast, declaration)) return true;
+    }
+    return false;
+}
+
+fn canKeepPrepassSemanticGraph(
     self: anytype,
     module: *const Module,
     options: TransformOptions,
@@ -200,11 +228,14 @@ fn canKeepTypeErasureGraph(
 ) bool {
     if (module.ast == null or module.semantic == null) return false;
     const ast = &module.ast.?;
+    // Until the linker carries the exported enum's output identity through
+    // cross-module imports, keep this path on full semantic resync.
+    if (hasExportedRuntimeTsEnum(ast)) return false;
     if (self.worklet_transform or self.react_refresh or self.styled_components or self.emotion or
         self.plugins.len != 0 or plugins.len != 0 or options.plugins.len != 0) return false;
     if (!options.strip_types) return false;
-    if (ast.has_jsx or ast.has_decorator or ast.has_ts_namespace_or_enum or
-        ast.has_ts_import_equals or ast.has_ts_export_equals or ast.has_flow_enum_declaration) return false;
+    if (ast.has_jsx or ast.has_decorator or ast.has_ts_import_equals or
+        ast.has_ts_export_equals or ast.has_flow_enum_declaration) return false;
     if (options.jsx_transform or options.unsupported.hasAny() or options.minify_syntax or
         options.minify_whitespace or options.drop_console or options.drop_debugger or
         options.drop_labels.len != 0 or options.define.len != 0 or options.module_specifier_map.len != 0 or
@@ -226,7 +257,6 @@ fn canKeepTypeErasureGraph(
             .import_declaration,
             .export_specifier,
             .export_all_declaration,
-            .ts_enum_declaration,
             .ts_module_declaration,
             .ts_import_equals_declaration,
             .ts_export_assignment,
@@ -235,6 +265,10 @@ fn canKeepTypeErasureGraph(
             .yield_expression,
             .with_statement,
             => return false,
+            .ts_enum_declaration => {
+                if (!isSupportedRuntimeTsEnum(ast, node)) return false;
+                found_transform = true;
+            },
             .identifier_reference => {
                 const name = ast.getText(node.span);
                 // Escaped identifiers can decode to `eval` while their source
@@ -248,7 +282,7 @@ fn canKeepTypeErasureGraph(
     return found_transform;
 }
 
-fn printKeptTypeErasurePrepassExact(
+fn printKeptPrepassExact(
     allocator: std.mem.Allocator,
     module: *const Module,
     root: @import("../../parser/ast.zig").NodeIndex,
@@ -355,7 +389,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     // 안전. dev mode 모듈도 동일.
     opts.emit_runtime_helper_imports = true;
 
-    const can_keep_semantic_graph = canKeepTypeErasureGraph(self, module, opts, merged_plugins);
+    const can_keep_semantic_graph = canKeepPrepassSemanticGraph(self, module, opts, merged_plugins);
     const flow_match_generated_globals = flowMatchGeneratedGlobals(ast_ptr);
     const debug_symbol_coverage = symbol_coverage_env.enabled();
     const pre_transform_scope_count = if (module.semantic) |*sem| sem.scopes.len else 0;
@@ -496,9 +530,10 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         .ref_deltas = prepass_ref_deltas,
     };
 
-    // TS/Flow type erasure and Flow match lowering preserve the module graph in the
-    // restricted path. The editor keeps its exact SymbolId/ScopeId graph;
-    // module-graph-changing constructs were rejected above. Rebuild statement
+    // Type erasure, Flow match lowering, and ordinary TypeScript enums preserve
+    // the module graph in this restricted path. The editor keeps its exact
+    // SymbolId/ScopeId graph, including enum IIFE parameters and member refs.
+    // Module-graph-changing constructs were rejected above. Rebuild statement
     // facts lazily from the edited graph rather than reanalyzing the module.
     if (can_keep_semantic_graph and !transformer.runtime_helpers.hasAny()) {
         // Generated built-ins are not source references, so the transform
@@ -525,7 +560,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             return;
         }
         if (debug_symbol_coverage) {
-            printKeptTypeErasurePrepassExact(
+            printKeptPrepassExact(
                 arena_alloc,
                 module,
                 root,

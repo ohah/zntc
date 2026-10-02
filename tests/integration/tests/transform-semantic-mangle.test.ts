@@ -1655,6 +1655,97 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(escapedFallback.stdout.trim()).toBe('6 6');
   });
 
+  test('bundler retains local runtime enum identities and resyncs exported or erased enums and namespaces', async () => {
+    const fixture = await createFixture({
+      'runtime-enum.ts': [
+        "function _LongStatus() { return 'outer'; }",
+        'enum LongStatus { LongStatus = 4, Next = LongStatus + 1 }',
+        'enum LongMode { LongMode = 2, Next = LongMode + 1 }',
+        'console.log(LongStatus.LongStatus, LongStatus.Next, LongMode.Next, _LongStatus());',
+      ].join('\n'),
+      'exported-enum.ts': [
+        "function _LongStatus() { return 'outer'; }",
+        'export enum LongStatus { LongStatus = 4, Next = LongStatus + 1 }',
+        'export function getLongStatusLabel() { return _LongStatus(); }',
+      ].join('\n'),
+      'entry.ts': [
+        "import { LongStatus, getLongStatusLabel } from './exported-enum.ts';",
+        'console.log(LongStatus.LongStatus, LongStatus.Next, getLongStatusLabel());',
+      ].join('\n'),
+      'const-enum.ts': [
+        'const enum StaticCode { Created = 7, Failed = Created + 1 }',
+        'console.log(StaticCode.Failed);',
+      ].join('\n'),
+      'ambient-enum.ts': [
+        'declare enum AmbientCode { Value = 9 }',
+        'console.log(typeof AmbientCode);',
+      ].join('\n'),
+      'namespace.ts': [
+        'namespace LongNamespace { export const value = 3; }',
+        'console.log(LongNamespace.value);',
+      ].join('\n'),
+    });
+    cleanup = fixture.cleanup;
+
+    async function bundle(entry: string, suffix: string) {
+      const output = join(fixture.dir, suffix + '.mjs');
+      const result = await runZntc(
+        [
+          '--bundle',
+          join(fixture.dir, entry),
+          '-o',
+          output,
+          '--platform=node',
+          '--format=esm',
+          '--target=esnext',
+          '--minify-identifiers',
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, entry + ': ' + result.stderr).toBe(0);
+      return { output, stderr: result.stderr };
+    }
+
+    const runtimeEnum = await bundle('runtime-enum.ts', 'runtime-enum');
+    const identity = runtimeEnum.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity-prepass '));
+    expect(identity).toBeDefined();
+    expect(identity).toMatch(/clean=1(?:\s|$)/);
+    expect(identity).toMatch(/enum_iife_params=2(?:\s|$)/);
+    expect(identity).toMatch(/enum_iife_param_mismatch=0(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(counter + '=0(?:\\s|$)'));
+    }
+    const runtimeEnumResult = await runNode(runtimeEnum.output);
+    expect(runtimeEnumResult.stderr).toBe('');
+    expect(runtimeEnumResult.stdout.trim()).toBe('4 5 3 outer');
+
+    const exportedEnum = await bundle('entry.ts', 'exported-enum-fallback');
+    expect(exportedEnum.stderr).not.toContain('symbol-identity-prepass');
+    const exportedEnumResult = await runNode(exportedEnum.output);
+    expect(exportedEnumResult.stderr).toBe('');
+    expect(exportedEnumResult.stdout.trim()).toBe('4 5 outer');
+
+    const constEnum = await bundle('const-enum.ts', 'const-enum-fallback');
+    expect(constEnum.stderr).not.toContain('symbol-identity-prepass');
+    const constEnumResult = await runNode(constEnum.output);
+    expect(constEnumResult.stderr).toBe('');
+    expect(constEnumResult.stdout.trim()).toBe('8');
+
+    const ambientEnum = await bundle('ambient-enum.ts', 'ambient-enum-fallback');
+    expect(ambientEnum.stderr).not.toContain('symbol-identity-prepass');
+    const ambientEnumResult = await runNode(ambientEnum.output);
+    expect(ambientEnumResult.stderr).toBe('');
+    expect(ambientEnumResult.stdout.trim()).toBe('undefined');
+
+    const namespace = await bundle('namespace.ts', 'namespace-fallback');
+    expect(namespace.stderr).not.toContain('symbol-identity-prepass');
+    const namespaceResult = await runNode(namespace.output);
+    expect(namespaceResult.stderr).toBe('');
+    expect(namespaceResult.stdout.trim()).toBe('3');
+  });
+
   test('Flow enum bindings and codegen globals keep distinct symbols when mangled', async () => {
     const fixture = await createFixture({
       'input.js': `
