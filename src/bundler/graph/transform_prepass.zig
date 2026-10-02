@@ -11,6 +11,7 @@ const stmt_info_mod = @import("../stmt_info.zig");
 const purity = @import("../purity.zig");
 const profile = @import("../../profile.zig");
 const ast_mod = @import("../../parser/ast.zig");
+const module_parser = @import("../../parser/module.zig");
 const NodeTag = ast_mod.Node.Tag;
 const SemanticSymbol = @import("../../semantic/symbol.zig").Symbol;
 const SemanticSymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
@@ -247,7 +248,6 @@ fn canKeepPrepassSemanticGraph(
             .flow_match_expression => found_transform = true,
             // These constructs can alter the import/export graph or create
             // dynamic-name environments independently of Flow match lowering.
-            .import_declaration,
             .export_specifier,
             .export_all_declaration,
             .ts_import_equals_declaration,
@@ -257,6 +257,14 @@ fn canKeepPrepassSemanticGraph(
             .yield_expression,
             .with_statement,
             => return false,
+            .import_declaration => {
+                const import = module_parser.readImportDeclExtras(ast, node.data.extra);
+                // A declaration-level type import has no runtime ImportRecord or
+                // ImportBinding, and the transformer removes the entire node.
+                // Inline type-only specifiers stay on the resync path because
+                // verbatim module syntax can preserve their module side effect.
+                if (!import.is_type_only) return false;
+            },
             .ts_enum_declaration => {
                 if (!isSupportedRuntimeTsEnum(ast, node)) return false;
                 found_transform = true;
