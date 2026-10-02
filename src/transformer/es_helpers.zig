@@ -670,7 +670,7 @@ pub fn makeRuntimeHelperRef(self: anytype, base_name: []const u8) !NodeIndex {
     const names = @import("../runtime_helper_names.zig");
     const local_name = names.helperName(base_name, self.options.minify_whitespace);
     const resolved = try resolveRuntimeHelperName(self, local_name);
-    const idx = try makeGlobalRef(self, resolved);
+    const idx = markSynthetic(self, try makeIdentifierRef(self, resolved));
     // #2869 helper call site 를 marker 에 등록 → resync analyzer 가 user scope 가 아니라
     // helper_scope_map 으로 격리해 binding. user 가 동일 이름 local 을 선언해도 helper
     // 호출이 user binding 으로 잘못 resolve 되지 않는다.

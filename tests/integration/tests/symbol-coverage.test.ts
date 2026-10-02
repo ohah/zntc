@@ -733,6 +733,150 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('JSX runtime helpers stay bound through ES5 semantic reanalysis', () => {
+    const cases = [
+      { mode: 'automatic', helper: '_jsx', runtimeFile: 'jsx-runtime.js', exportName: 'jsx' },
+      {
+        mode: 'automatic-dev',
+        helper: '_jsxDEV',
+        runtimeFile: 'jsx-dev-runtime.js',
+        exportName: 'jsxDEV',
+      },
+    ] as const;
+
+    for (const { mode, helper, runtimeFile, exportName } of cases) {
+      const dir = mkdtempSync(join(tmpdir(), `zntc-${mode}-es5-resync-`));
+      const output = join(dir, 'out.cjs');
+      mkdirSync(join(dir, 'runtime'), { recursive: true });
+      writeFileSync(
+        join(dir, 'runtime', runtimeFile),
+        `export function ${exportName}(tag, _props) { return tag === 'div' ? 42 : tag; }`,
+      );
+      writeFileSync(
+        join(dir, 'view.tsx'),
+        [
+          `var ${helper} = 7;`,
+          `export function view() { return [<div />, ${helper}].join(" "); }`,
+        ].join('\n'),
+      );
+      writeFileSync(
+        join(dir, 'entry.ts'),
+        ["import { view } from './view.tsx';", 'console.log(view());'].join('\n'),
+      );
+      try {
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            'entry.ts',
+            '--target=es5',
+            '--platform=node',
+            '--format=cjs',
+            `--jsx=${mode}`,
+            '--jsx-import-source=./runtime',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${mode}: ${proc.stderr}`).toBe(0);
+
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('view.tsx'),
+          );
+        expect(report, `${mode}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${mode}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report, `${mode}: ${report}`).toMatch(/clean=1(?:\s|$)/);
+
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('view.tsx'),
+          );
+        expect(graphMode, `${mode}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${mode}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout).toBe('42 7\n');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test('downlevel runtime helpers stay bound through semantic reanalysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-runtime-helper-es5-resync-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'entry.ts'),
+      [
+        "var __extends = 'shadow';",
+        'function Base() {}',
+        'export class Child extends Base {}',
+        'console.log(new Child() instanceof Base, __extends);',
+      ].join('\n'),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.ts',
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+
+      const graphMode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('true shadow\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('가상 namespace IIFE 매개변수도 정확한 SymbolId와 ScopeId를 가진다', () => {
     const file = join(FIXTURE_DIR, '4819-namespace-iife-params.ts');
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-namespace-param-'));
@@ -1546,7 +1690,9 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       expect(proc.status, proc.stderr).toBe(0);
       expect(proc.stderr).toMatch(/symbol-coverage .* missing=0 wrong=0/);
       expect(proc.stderr).toMatch(/synthetic-coverage .* missing_binding=0/);
-      expect(proc.stderr).toMatch(/synthetic-coverage .* marked_synthetic=2/);
+      // Private storage and generated runtime-helper references all carry
+      // synthetic identity markers now.
+      expect(proc.stderr).toMatch(/synthetic-coverage .* marked_synthetic=4/);
       expect(proc.stderr).toMatch(/synthetic-coverage .* consistent=1/);
       expect(proc.stderr).toMatch(/synthetic-coverage .* symbol_identity_complete=1/);
     } finally {
