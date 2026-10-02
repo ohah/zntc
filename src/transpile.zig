@@ -86,6 +86,9 @@ const AstFacts = struct {
     has_flow_runtime_syntax_without_complete_graph: bool = false,
     /// Runtime syntax whose semantic edits still need the post-transform analyzer.
     has_unhandled_runtime_syntax: bool = false,
+    /// Metadata currently serializes qualified type names as source text, so
+    /// those references cannot yet be attached to an exact base SymbolId.
+    has_qualified_metadata_type_reference: bool = false,
 };
 
 pub const TranspileError = error{
@@ -193,6 +196,12 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             // the edited semantic graph, so it does not need post-transform
             // symbol reconstruction.
             .ts_import_equals_declaration => facts.has_runtime_sensitive_syntax = true,
+
+            .ts_type_reference => {
+                if (std.mem.indexOfScalar(u8, ast.getText(node.span), '.') != null) {
+                    facts.has_qualified_metadata_type_reference = true;
+                }
+            },
 
             // `export = expr` preserves its value reference; lowering adds a global `module`
             // reference and an ordinary `.exports` property name.
@@ -585,8 +594,12 @@ fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
 /// TS/Flow constructs outside this graph until their edits are complete.
 fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Parser) bool {
     if (!options.minify_identifiers or
-        options.emit_decorator_metadata or
         options.react_refresh or options.react_refresh_hook_signatures) return false;
+
+    // emitDecoratorMetadata is currently modeled for TypeScript legacy
+    // decorators. Other parser modes/options stay on the established analyzer.
+    if (options.emit_decorator_metadata and
+        (parser.is_flow or parser.source_mode != .ts or !options.experimental_decorators)) return false;
 
     // The exact transform graph now covers TypeScript's legacy decorator
     // lowering. Keep Flow and JavaScript decorator modes gated until their
@@ -595,7 +608,10 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
 
     const facts = collectAstFacts(&parser.ast);
     if (parser.is_flow) return !facts.has_flow_runtime_syntax_without_complete_graph;
-    if (parser.source_mode == .ts) return !facts.has_unhandled_runtime_syntax;
+    if (parser.source_mode == .ts) {
+        return !facts.has_unhandled_runtime_syntax and
+            !(options.emit_decorator_metadata and facts.has_qualified_metadata_type_reference);
+    }
     if (parser.source_mode != .js_strict) return false;
     return true;
 }
@@ -613,6 +629,38 @@ fn reserveCommonJsCodegenNames(allocator: std.mem.Allocator, reserved: *std.Stri
         "__filename",
     };
     for (names) |name| try reserved.put(allocator, name, {});
+}
+
+/// New explicit-global references created during lowering are not present in
+/// the parser's unresolved-name table. Reserve their names when the edited
+/// transform graph drives mangling so a generated global cannot be captured.
+fn reserveGeneratedExternalNames(
+    allocator: std.mem.Allocator,
+    reserved: *std.StringHashMapUnmanaged(void),
+    ast: *const Ast,
+    root: ast_mod.NodeIndex,
+    symbol_ids: []const ?u32,
+    explicit_global_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+) !void {
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root);
+    defer allocator.free(reachable);
+    var reachable_set: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer reachable_set.deinit(allocator);
+    for (reachable) |raw| try reachable_set.put(allocator, raw, {});
+
+    var it = explicit_global_nodes.keyIterator();
+    while (it.next()) |key| {
+        const raw = key.*;
+        if (!reachable_set.contains(raw) or raw >= ast.nodes.items.len) continue;
+        if (raw < symbol_ids.len and symbol_ids[raw] != null) continue;
+        const node = ast.nodes.items[raw];
+        switch (node.tag) {
+            .identifier_reference, .assignment_target_identifier => {},
+            else => continue,
+        }
+        const name = ast.getText(node.data.string_ref);
+        if (name.len > 0) try reserved.put(allocator, name, {});
+    }
 }
 
 /// Flow enum codegen inserts these free identifiers without AST reference
@@ -1738,6 +1786,16 @@ fn transpileWithCallbackInternal(
                 reserveCommonJsCodegenNames(arena_alloc, &reserved) catch return error.OutOfMemory;
             }
             reserveFlowEnumCodegenNames(arena_alloc, transformer.ast, &reserved) catch return error.OutOfMemory;
+            if (mangle_uses_transform_semantic) {
+                reserveGeneratedExternalNames(
+                    arena_alloc,
+                    &reserved,
+                    transformer.ast,
+                    root,
+                    transformer.symbol_ids.items,
+                    &transformer.explicit_global_reference_nodes,
+                ) catch return error.OutOfMemory;
+            }
             for (post.symbol_ids.items, 0..) |maybe_post_sym, node_i| {
                 const post_sym = maybe_post_sym orelse continue;
                 if (node_i >= transformer.symbol_ids.items.len) continue;
@@ -2122,10 +2180,25 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
         .minify_identifiers = true,
         .experimental_decorators = true,
     }, &decorator_parser));
-    try std.testing.expect(!canMangleWithTransformSemantic(.{
+    try std.testing.expect(canMangleWithTransformSemantic(.{
         .minify_identifiers = true,
+        .experimental_decorators = true,
         .emit_decorator_metadata = true,
     }, &decorator_parser));
+
+    var qualified_metadata_scanner = try Scanner.init(
+        allocator,
+        "namespace Types { export class Local {} } function decorate(value: Types.Local) {} " ++
+            "class Box { @decorate method(value: Types.Local) {} }",
+    );
+    var qualified_metadata_parser = Parser.init(allocator, &qualified_metadata_scanner);
+    qualified_metadata_parser.configureFromExtension(".ts");
+    _ = try qualified_metadata_parser.parse();
+    try std.testing.expect(!canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .experimental_decorators = true,
+        .emit_decorator_metadata = true,
+    }, &qualified_metadata_parser));
 
     var class_scanner = try Scanner.init(
         allocator,

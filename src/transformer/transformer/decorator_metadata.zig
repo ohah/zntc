@@ -1,6 +1,7 @@
 const std = @import("std");
 const ast_mod = @import("../../parser/ast.zig");
 const token_mod = @import("../../lexer/token.zig");
+const module_parser = @import("../../parser/module.zig");
 const es_helpers = @import("../es_helpers.zig");
 
 const Node = ast_mod.Node;
@@ -15,16 +16,16 @@ const Error = std.mem.Allocator.Error;
 /// - symbol/bigint: typeof 런타임 체크
 /// - 클래스 참조: typeof X === "undefined" ? Object : X
 pub fn serializeTypeAnnotation(self: anytype, type_ann_idx: NodeIndex) Error!NodeIndex {
-    if (type_ann_idx.isNone()) return es_helpers.makeGlobalRef(self, "Object");
+    if (type_ann_idx.isNone()) return makeMetadataNameRef(self, "Object");
 
     const type_node = self.ast.getNode(type_ann_idx);
 
     return switch (type_node.tag) {
         // 기본 타입 키워드 → 런타임 생성자 (런타임에 항상 존재)
-        .ts_number_keyword => es_helpers.makeGlobalRef(self, "Number"),
-        .ts_string_keyword => es_helpers.makeGlobalRef(self, "String"),
-        .ts_boolean_keyword => es_helpers.makeGlobalRef(self, "Boolean"),
-        .ts_any_keyword, .ts_object_keyword, .ts_unknown_keyword => es_helpers.makeGlobalRef(self, "Object"),
+        .ts_number_keyword => makeMetadataNameRef(self, "Number"),
+        .ts_string_keyword => makeMetadataNameRef(self, "String"),
+        .ts_boolean_keyword => makeMetadataNameRef(self, "Boolean"),
+        .ts_any_keyword, .ts_object_keyword, .ts_unknown_keyword => makeMetadataNameRef(self, "Object"),
 
         // void/null/undefined/never → void 0 (SWC 호환)
         .ts_void_keyword, .ts_undefined_keyword, .ts_null_keyword, .ts_never_keyword => es_helpers.makeVoidZero(self, .{ .start = 0, .end = 0 }),
@@ -46,11 +47,11 @@ pub fn serializeTypeAnnotation(self: anytype, type_ann_idx: NodeIndex) Error!Nod
         },
 
         // 배열/튜플 → Array
-        .ts_array_type, .ts_tuple_type => es_helpers.makeGlobalRef(self, "Array"),
+        .ts_array_type, .ts_tuple_type => makeMetadataNameRef(self, "Array"),
         // 함수 타입 → Function
-        .ts_function_type, .ts_construct_signature => es_helpers.makeGlobalRef(self, "Function"),
+        .ts_function_type, .ts_construct_signature => makeMetadataNameRef(self, "Function"),
         // QualifiedName, union, intersection 등 → Object
-        else => es_helpers.makeGlobalRef(self, "Object"),
+        else => makeMetadataNameRef(self, "Object"),
     };
 }
 
@@ -59,14 +60,14 @@ pub fn serializeTypeAnnotation(self: anytype, type_ann_idx: NodeIndex) Error!Nod
 pub fn extractTypeFromSource(self: anytype, param: Node) Error!NodeIndex {
     const span_end = param.span.end;
     const source = self.ast.source;
-    if (span_end >= source.len) return es_helpers.makeGlobalRef(self, "Object");
+    if (span_end >= source.len) return makeMetadataNameRef(self, "Object");
 
     // span 끝 이후에서 `: Type` 패턴 탐색
     var pos = span_end;
     // 공백 건너뜀
     while (pos < source.len and (source[pos] == ' ' or source[pos] == '\t' or source[pos] == '\n' or source[pos] == '\r' or source[pos] == '?')) : (pos += 1) {}
     // `:` 확인
-    if (pos >= source.len or source[pos] != ':') return es_helpers.makeGlobalRef(self, "Object");
+    if (pos >= source.len or source[pos] != ':') return makeMetadataNameRef(self, "Object");
     pos += 1;
     // 공백 건너뜀
     while (pos < source.len and (source[pos] == ' ' or source[pos] == '\t')) : (pos += 1) {}
@@ -74,17 +75,17 @@ pub fn extractTypeFromSource(self: anytype, param: Node) Error!NodeIndex {
     const type_start = pos;
     // 식별자 끝 찾기 (알파벳, 숫자, _, $, .)
     while (pos < source.len and (std.ascii.isAlphanumeric(source[pos]) or source[pos] == '_' or source[pos] == '$' or source[pos] == '.')) : (pos += 1) {}
-    if (pos == type_start) return es_helpers.makeGlobalRef(self, "Object");
+    if (pos == type_start) return makeMetadataNameRef(self, "Object");
 
     const type_name = source[type_start..pos];
     // SWC 호환 타입 직렬화 (텍스트 기반 폴백)
-    if (std.mem.eql(u8, type_name, "number")) return es_helpers.makeGlobalRef(self, "Number");
-    if (std.mem.eql(u8, type_name, "string")) return es_helpers.makeGlobalRef(self, "String");
-    if (std.mem.eql(u8, type_name, "boolean")) return es_helpers.makeGlobalRef(self, "Boolean");
+    if (std.mem.eql(u8, type_name, "number")) return makeMetadataNameRef(self, "Number");
+    if (std.mem.eql(u8, type_name, "string")) return makeMetadataNameRef(self, "String");
+    if (std.mem.eql(u8, type_name, "boolean")) return makeMetadataNameRef(self, "Boolean");
     if (std.mem.eql(u8, type_name, "symbol")) return makeTypeofGuard(self, "Symbol");
     if (std.mem.eql(u8, type_name, "bigint")) return makeTypeofGuard(self, "BigInt");
     if (std.mem.eql(u8, type_name, "any") or std.mem.eql(u8, type_name, "object") or
-        std.mem.eql(u8, type_name, "unknown")) return es_helpers.makeGlobalRef(self, "Object");
+        std.mem.eql(u8, type_name, "unknown")) return makeMetadataNameRef(self, "Object");
     if (std.mem.eql(u8, type_name, "void") or std.mem.eql(u8, type_name, "undefined") or
         std.mem.eql(u8, type_name, "null") or std.mem.eql(u8, type_name, "never"))
         return es_helpers.makeVoidZero(self, .{ .start = 0, .end = 0 });
@@ -98,7 +99,7 @@ fn makeTypeofGuard(self: anytype, name: []const u8) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
     // typeof X
-    const name_ref = try self.makeRootScopeRef(name);
+    const name_ref = try makeMetadataNameRef(self, name);
     const typeof_expr = try self.addExtraNode(.unary_expression, zero_span, &.{
         @intFromEnum(name_ref), @intFromEnum(Kind.kw_typeof),
     });
@@ -115,10 +116,10 @@ fn makeTypeofGuard(self: anytype, name: []const u8) Error!NodeIndex {
     });
 
     // Object
-    const object_ref = try es_helpers.makeGlobalRef(self, "Object");
+    const object_ref = try makeMetadataNameRef(self, "Object");
 
     // X (consequent)
-    const name_ref2 = try self.makeRootScopeRef(name);
+    const name_ref2 = try makeMetadataNameRef(self, name);
 
     // typeof X === "undefined" ? Object : X
     return self.ast.addNode(.{
@@ -126,6 +127,46 @@ fn makeTypeofGuard(self: anytype, name: []const u8) Error!NodeIndex {
         .span = zero_span,
         .data = .{ .ternary = .{ .a = eq_check, .b = object_ref, .c = name_ref2 } },
     });
+}
+
+/// Metadata expressions execute where the decorated class executes. Resolve a
+/// simple name through that lexical scope so minification can carry local class
+/// and shadowed built-in identities into the generated references.
+fn makeMetadataNameRef(self: anytype, name: []const u8) Error!NodeIndex {
+    const ref = try self.makeLexicalScopeRef(name);
+    const symbol_id = self.getSymbolIdAt(ref) orelse return ref;
+    if (isTypeOnlyImportBinding(self, name, symbol_id)) try self.removeSemanticReference(ref);
+    return ref;
+}
+
+fn isTypeOnlyImportBinding(self: anytype, name: []const u8, symbol_id: u32) bool {
+    if (symbol_id >= self.symbols.len or self.symbols[symbol_id].kind != .import_binding) return false;
+
+    for (self.ast.nodes.items) |node| {
+        if (node.tag != .import_declaration) continue;
+        const start = node.data.extra;
+        if (start > self.ast.extra_data.items.len or self.ast.extra_data.items.len - start < 6) continue;
+        const import = module_parser.readImportDeclExtras(self.ast, start);
+        if (import.specs_start > self.ast.extra_data.items.len or
+            import.specs_len > self.ast.extra_data.items.len - import.specs_start) continue;
+        var i: u32 = 0;
+        while (i < import.specs_len) : (i += 1) {
+            const spec_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[import.specs_start + i]);
+            if (spec_idx.isNone() or @intFromEnum(spec_idx) >= self.ast.nodes.items.len) continue;
+            const spec = self.ast.getNode(spec_idx);
+            const local_idx = switch (spec.tag) {
+                .import_default_specifier, .import_namespace_specifier => spec_idx,
+                .import_specifier => spec.data.binary.right,
+                else => continue,
+            };
+            if (local_idx.isNone() or self.getSymbolIdAt(local_idx) != symbol_id) continue;
+            if (!std.mem.eql(u8, name, self.ast.getText(self.ast.getNode(local_idx).span))) continue;
+            const inline_type_only = spec.tag == .import_specifier and
+                (spec.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0;
+            if (import.is_type_only or inline_type_only) return true;
+        }
+    }
+    return false;
 }
 
 /// __metadata(key, value) 호출 노드를 생성한다.
@@ -162,7 +203,7 @@ pub fn buildParamTypesArray(self: anytype, params: ast_mod.NodeList) Error!NodeI
         const raw = self.ast.extra_data.items[params.start + j];
         const p_idx: NodeIndex = @enumFromInt(raw);
         if (p_idx.isNone() or @intFromEnum(p_idx) >= self.ast.nodes.items.len) {
-            try type_nodes.append(self.allocator, try es_helpers.makeGlobalRef(self, "Object"));
+            try type_nodes.append(self.allocator, try makeMetadataNameRef(self, "Object"));
             continue;
         }
         const param = self.ast.getNode(p_idx);
@@ -174,14 +215,14 @@ pub fn buildParamTypesArray(self: anytype, params: ast_mod.NodeList) Error!NodeI
                 const type_val = try serializeTypeAnnotation(self, type_ann_idx);
                 try type_nodes.append(self.allocator, type_val);
             } else {
-                try type_nodes.append(self.allocator, try es_helpers.makeGlobalRef(self, "Object"));
+                try type_nodes.append(self.allocator, try makeMetadataNameRef(self, "Object"));
             }
         } else if (param.tag == .binding_identifier or param.tag == .assignment_pattern) {
             // 일반 파라미터: 소스에서 타입 어노테이션 추출 (: Type 패턴)
             const type_val = try extractTypeFromSource(self, param);
             try type_nodes.append(self.allocator, type_val);
         } else {
-            try type_nodes.append(self.allocator, try es_helpers.makeGlobalRef(self, "Object"));
+            try type_nodes.append(self.allocator, try makeMetadataNameRef(self, "Object"));
         }
     }
 
@@ -199,7 +240,7 @@ pub fn appendMemberMetadata(
     if (!self.options.emit_decorator_metadata) return;
 
     // design:type → always Function for methods
-    const func_ref = try es_helpers.makeGlobalRef(self, "Function");
+    const func_ref = try makeMetadataNameRef(self, "Function");
     const type_meta = try buildMetadataCall(self, "design:type", func_ref);
     try deco_list.append(self.allocator, type_meta);
 
@@ -209,7 +250,7 @@ pub fn appendMemberMetadata(
     try deco_list.append(self.allocator, paramtypes_meta);
 
     // design:returntype → Object (AST에 리턴 타입 추출 미지원)
-    const return_type_val = try es_helpers.makeGlobalRef(self, "Object");
+    const return_type_val = try makeMetadataNameRef(self, "Object");
     const return_meta = try buildMetadataCall(self, "design:returntype", return_type_val);
     try deco_list.append(self.allocator, return_meta);
 }

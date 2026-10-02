@@ -27,6 +27,7 @@ const Scope = @import("../semantic/scope.zig").Scope;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const ScopeKind = @import("../semantic/scope.zig").ScopeKind;
 const Span = @import("../lexer/token.zig").Span;
+const module_parser = @import("../parser/module.zig");
 const reference_walk = @import("../semantic/reference_walk.zig");
 
 pub const Finding = struct { name: []const u8, tag: Node.Tag };
@@ -958,9 +959,50 @@ const ExactCtx = struct {
         // external while still treating other references in that execution
         // unit as dynamic.
         if (!ctx.isDirectEvalCallee(node) and ctx.hasDynamicNameEnvironment(node, expected.scope)) return .unknown_scope;
-        if (resolveInExactScopes(ctx, name, @enumFromInt(expected.scope)) != null or
-            ctx.helper_scope_map.get(name) != null) return .shadowed;
+        if (resolveInExactScopes(ctx, name, @enumFromInt(expected.scope))) |symbol_id| {
+            if (!ctx.isErasedTypeOnlyImportBinding(name, symbol_id)) return .shadowed;
+        }
+        if (ctx.helper_scope_map.get(name) != null) return .shadowed;
         return .external;
+    }
+
+    /// TypeScript metadata intentionally emits a guarded reference for an
+    /// `import type`, even though the import binding itself is erased. Such a
+    /// reference is external in the output lexical environment, so the stale
+    /// source scope-map entry must not make it look shadowed.
+    fn isErasedTypeOnlyImportBinding(ctx: *const ExactCtx, name: []const u8, symbol_id: u32) bool {
+        if (symbol_id >= ctx.symbols.len or ctx.symbols[symbol_id].kind != .import_binding or
+            hasReachableBindingForSymbol(ctx, symbol_id)) return false;
+
+        for (ctx.ast.nodes.items) |node| {
+            if (node.tag != .import_declaration) continue;
+            const import_start = node.data.extra;
+            if (import_start > ctx.ast.extra_data.items.len or
+                ctx.ast.extra_data.items.len - import_start < 6) continue;
+            const import = module_parser.readImportDeclExtras(ctx.ast, import_start);
+            if (import.specs_start > ctx.ast.extra_data.items.len or
+                import.specs_len > ctx.ast.extra_data.items.len - import.specs_start) continue;
+            var i: u32 = 0;
+            while (i < import.specs_len) : (i += 1) {
+                const spec_idx: NodeIndex = @enumFromInt(ctx.ast.extra_data.items[import.specs_start + i]);
+                if (spec_idx.isNone() or @intFromEnum(spec_idx) >= ctx.ast.nodes.items.len) continue;
+                const spec = ctx.ast.getNode(spec_idx);
+                const local_idx = switch (spec.tag) {
+                    .import_default_specifier, .import_namespace_specifier => spec_idx,
+                    .import_specifier => spec.data.binary.right,
+                    else => continue,
+                };
+                if (local_idx.isNone() or @intFromEnum(local_idx) >= ctx.ast.nodes.items.len or
+                    @intFromEnum(local_idx) >= ctx.symbol_ids.len or
+                    ctx.symbol_ids[@intFromEnum(local_idx)] != symbol_id) continue;
+                const local_name = ctx.ast.getText(ctx.ast.getNode(local_idx).span);
+                if (!std.mem.eql(u8, local_name, name)) continue;
+                const inline_type_only = spec.tag == .import_specifier and
+                    (spec.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0;
+                if (import.is_type_only or inline_type_only) return true;
+            }
+        }
+        return false;
     }
 
     fn isEnumObjectBase(ctx: *const ExactCtx, node_raw: u32) bool {
@@ -2386,9 +2428,8 @@ pub fn checkPostMinify(
             }
             continue;
         }
-        if (explicit_global_reference_nodes.contains(raw)) {
+        if (explicit_global_reference_nodes.contains(raw) and actual == null) {
             report.external_references += 1;
-            if (actual != null) report.wrong_reference_target += 1;
             continue;
         }
         if (actual == null and resolved == null) continue; // unresolved external/global
@@ -4802,4 +4843,69 @@ test "post-minify audit rejects a reference mapped to the wrong shadowed binding
     const report = try checkPostMinify(allocator, &ast, root, &actual, &resolved, &.{}, &.{}, &.{}, &.{}, &empty_helper_scope_map, &empty_markers, &empty_class_symbols, &empty_class_symbols);
     try std.testing.expectEqual(@as(usize, 1), report.wrong_reference_target);
     try std.testing.expect(!report.isClean());
+}
+
+test "post-minify audit distinguishes lexical reads from explicit globals" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+
+    const name = try ast.addString("LocalName");
+    const binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const reference = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const list = try ast.addNodeList(&.{ binding, reference });
+    const root = try ast.addNode(.{ .tag = .block_statement, .span = name, .data = .{ .list = list } });
+    var actual = [_]?u32{ 7, 7, null };
+    var resolved = [_]?u32{ 2, 2, null };
+    actual[@intFromEnum(binding)] = 7;
+    actual[@intFromEnum(reference)] = 7;
+    resolved[@intFromEnum(binding)] = 2;
+    resolved[@intFromEnum(reference)] = 2;
+    var explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer explicit_globals.deinit(allocator);
+    try explicit_globals.put(allocator, @intFromEnum(reference), {});
+
+    const empty_helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+    const empty_class_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    var report = try checkPostMinify(
+        allocator,
+        &ast,
+        root,
+        &actual,
+        &resolved,
+        &.{},
+        &.{},
+        &.{},
+        &.{},
+        &empty_helper_scope_map,
+        &explicit_globals,
+        &empty_class_symbols,
+        &empty_class_symbols,
+    );
+    try std.testing.expect(report.isClean());
+    try std.testing.expectEqual(@as(usize, 0), report.external_references);
+
+    // The same provenance marker can describe a true generated global when no
+    // SymbolId was attached; it must remain external even if analysis finds a
+    // same-named source binding before the mangler renames that binding away.
+    actual[@intFromEnum(reference)] = null;
+    report = try checkPostMinify(
+        allocator,
+        &ast,
+        root,
+        &actual,
+        &resolved,
+        &.{},
+        &.{},
+        &.{},
+        &.{},
+        &empty_helper_scope_map,
+        &explicit_globals,
+        &empty_class_symbols,
+        &empty_class_symbols,
+    );
+    try std.testing.expect(report.isClean());
+    try std.testing.expectEqual(@as(usize, 1), report.external_references);
 }
