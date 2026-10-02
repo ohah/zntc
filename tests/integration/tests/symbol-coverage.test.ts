@@ -10,7 +10,7 @@
 // transform 직후 exact 검사와 minify 후 최종 AST 재분석 identity 검사를 함께 확인한다.
 import { describe, test, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import ts from 'typescript';
@@ -436,6 +436,152 @@ describe('symbol identity coverage gate (#4819)', () => {
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
       expect(actual.stdout).toBe('42 true\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('automatic JSX keeps its generated helper import in the semantic graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-automatic-jsx-retained-'));
+    const output = join(dir, 'out.cjs');
+    mkdirSync(join(dir, 'runtime'), { recursive: true });
+    writeFileSync(
+      join(dir, 'runtime', 'jsx-runtime.js'),
+      [
+        "export const Fragment = 'fragment';",
+        "export function jsx(tag, _props) { return tag === 'div' ? 42 : tag; }",
+        "export function jsxs(tag, props) { return `${tag}:${props.children.join(',')}`; }",
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'view.tsx'),
+      [
+        'const _jsx = 7;',
+        'const _jsx2 = 8;',
+        'const _jsxs = 9;',
+        'const _jsxs2 = 10;',
+        'const _Fragment = 11;',
+        'export function view() { return [<><span /><div /></>, _jsx, _jsx2, _jsxs, _jsxs2, _Fragment].join(" "); }',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'entry.ts'),
+      ["import { view } from './view.tsx';", 'console.log(view());'].join('\n'),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.ts',
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '--jsx=automatic',
+          '--jsx-import-source=./runtime',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('view.tsx'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+      expect(Number(report?.match(/generated_references=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+
+      const graphMode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('view.tsx'),
+        );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('fragment:span,42 7 8 9 10 11\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('automatic JSX helper references in dead functions do not keep imports live', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-automatic-jsx-dead-'));
+    const output = join(dir, 'out.cjs');
+    mkdirSync(join(dir, 'runtime'), { recursive: true });
+    writeFileSync(
+      join(dir, 'runtime', 'jsx-runtime.js'),
+      "export function jsx() { throw new Error('dead JSX ran'); }",
+    );
+    writeFileSync(
+      join(dir, 'dep.tsx'),
+      ['function unused() { return <div />; }', "console.log('dep side effect');"].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'entry.ts'),
+      ["import './dep.tsx';", "console.log('entry');"].join('\n'),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.ts',
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '--jsx=automatic',
+          '--jsx-import-source=./runtime',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('dep.tsx'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+      expect(Number(report?.match(/generated_references=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+
+      const graphMode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('dep.tsx'),
+        );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('dep side effect\nentry\n');
+      expect(readFileSync(output, 'utf8')).not.toContain('dead JSX ran');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

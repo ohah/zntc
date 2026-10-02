@@ -345,7 +345,9 @@ fn canKeepPrepassSemanticGraph(
         self.plugins.len != 0 or plugins.len != 0 or options.plugins.len != 0) return false;
     if (!options.strip_types) return false;
     const classic_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .classic;
-    if ((ast.has_jsx and !classic_jsx) or ast.has_decorator or ast.has_ts_import_equals or
+    const automatic_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .automatic;
+    const graph_editable_jsx = classic_jsx or automatic_jsx;
+    if ((ast.has_jsx and !graph_editable_jsx) or ast.has_decorator or ast.has_ts_import_equals or
         ast.has_ts_export_equals or ast.has_flow_enum_declaration) return false;
     if (options.unsupported.hasAny() or options.minify_syntax or
         options.minify_whitespace or options.drop_console or options.drop_debugger or
@@ -356,7 +358,7 @@ fn canKeepPrepassSemanticGraph(
     if (!hasOnlyTopLevelLocalExportSpecifiers(module)) return false;
     if (!hasStableRuntimeImports(ast, options)) return false;
 
-    var found_transform = classic_jsx;
+    var found_transform = graph_editable_jsx;
     for (ast.nodes.items) |node| {
         const tag_name = @tagName(node.tag);
         const is_flow_match_tag = std.mem.startsWith(u8, tag_name, "flow_match_");
@@ -675,11 +677,10 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         .ref_deltas = prepass_ref_deltas,
     };
 
-    // Type erasure, Flow match lowering, and ordinary TypeScript enums preserve
-    // the module graph in this restricted path. The editor keeps its exact
-    // SymbolId/ScopeId graph, including enum IIFE parameters and member refs.
-    // Module-graph-changing constructs were rejected above. Rebuild statement
-    // facts lazily from the edited graph rather than reanalyzing the module.
+    // Type erasure, Flow match lowering, TypeScript enums, and supported JSX
+    // lowerings preserve the edited semantic graph. JSX automatic adds helper
+    // imports to the AST, so refresh module import/export metadata from syntax
+    // without running the semantic analyzer again.
     if (can_keep_semantic_graph and !transformer.runtime_helpers.hasAny()) {
         // Generated built-ins are not source references, so the transform
         // editor cannot add them to unresolved_references. If recording them
@@ -715,33 +716,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             );
             return;
         }
-        // Parser metadata can omit runtime TypeScript enum exports. The transform
-        // lowers them to declarations the bundler's graph scanner can represent.
-        module.export_bindings = binding_scanner_mod.extractExportBindings(
-            arena_alloc,
-            &(module.ast orelse return),
-            module.import_records,
-            module.import_bindings,
-        ) catch {
-            if (fallbackToFullSemanticResync(self, module, arena_alloc)) {
-                auditPrepassExactIfEnabled(
-                    arena_alloc,
-                    module,
-                    root,
-                    parser_node_count,
-                    &transformer,
-                    &unresolved_nodes,
-                    pre_transform_scope_count,
-                    debug_symbol_coverage,
-                    false,
-                );
-            }
-            return;
-        };
-        module.exported_names = projectExportedNames(arena_alloc, module.export_bindings);
-        @import("requested_exports.zig").computeBarrelFlags(module);
-        @import("requested_exports.zig").populateExportIndexByName(module, self.allocator) catch {};
-        refreshStableBindingRefsFromSemanticGraph(self, module, arena_alloc, .graph_resync_binding_refs) catch {
+        resyncModuleGraphMetadataAfterAstMutation(self, module, arena_alloc) catch {
             if (fallbackToFullSemanticResync(self, module, arena_alloc)) {
                 auditPrepassExactIfEnabled(
                     arena_alloc,
@@ -1126,19 +1101,17 @@ pub fn resyncAfterConstMaterialization(
     try captureRenamesAfterResync(self, module, arena_alloc, rename_table, previous_semantic);
 }
 
-pub fn resyncAfterAstMutation(
+/// Rebuild graph-facing module metadata from the transformed AST without
+/// re-running semantic analysis. This is used when the transformer has already
+/// edited the retained SymbolId/ScopeId graph and only syntax-level import or
+/// export records changed.
+pub fn resyncModuleGraphMetadataAfterAstMutation(
     self: anytype,
     module: *Module,
     arena_alloc: std.mem.Allocator,
-    rename_table: ?*const bundler_symbol.RenameTable,
 ) !void {
-    var resync_scope = profile.begin(.graph_resync);
-    defer resync_scope.end();
-
     const ast = &(module.ast orelse return);
     const previous_import_records = module.import_records;
-
-    const previous_semantic = try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc);
 
     var scan_result: import_scanner.ScanResult = undefined;
     {
@@ -1308,6 +1281,19 @@ pub fn resyncAfterAstMutation(
     }
 
     try refreshStableBindingRefsFromSemanticGraph(self, module, arena_alloc, .graph_resync_alias);
+}
+
+pub fn resyncAfterAstMutation(
+    self: anytype,
+    module: *Module,
+    arena_alloc: std.mem.Allocator,
+    rename_table: ?*const bundler_symbol.RenameTable,
+) !void {
+    var resync_scope = profile.begin(.graph_resync);
+    defer resync_scope.end();
+
+    const previous_semantic = try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc);
+    try resyncModuleGraphMetadataAfterAstMutation(self, module, arena_alloc);
     try captureRenamesAfterResync(self, module, arena_alloc, rename_table, previous_semantic);
 }
 
