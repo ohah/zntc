@@ -304,6 +304,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(identity).toBeDefined();
       expect(strict).toBeDefined();
       expect(strict).toMatch(/(?:^| )consistent=1(?: |$)/);
+      expect(strict).toMatch(/(?:^| )symbol_identity_complete=1(?: |$)/);
       expect(Number(identity?.match(/generated_references=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
       expect(Number(identity?.match(/helper_symbol_mismatch=(\d+)/)?.[1] ?? -1)).toBe(0);
       const generatedReferences = Number(identity?.match(/generated_references=(\d+)/)?.[1] ?? 0);
@@ -371,6 +372,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     let generatedBindings = 0;
     let generatedReferences = 0;
     let strictExternalReferences = 0;
+    let strictRawScopeMismatches = 0;
     let runs = 0;
     try {
       for (const file of fixtures) {
@@ -409,6 +411,11 @@ describe('symbol identity coverage gate (#4819)', () => {
           if (!/(?:^| )consistent=1(?: |$)/.test(strictLines[0])) {
             problems.push(
               `${name} ${target.name}: strict report counters/details disagree: ${strictLines[0]}`,
+            );
+          }
+          if (!/(?:^| )symbol_identity_complete=1(?: |$)/.test(strictLines[0])) {
+            problems.push(
+              `${name} ${target.name}: strict SymbolId identity coverage is incomplete: ${strictLines[0]}`,
             );
           }
           const line = lines[0];
@@ -473,6 +480,14 @@ describe('symbol identity coverage gate (#4819)', () => {
           } else {
             strictExternalReferences += Number(externalCount);
           }
+          const rawScopeMismatchCount = strictLines[0].match(/scope_mismatch=(\d+)/)?.[1];
+          if (rawScopeMismatchCount === undefined) {
+            problems.push(
+              `${name} ${target.name}: missing delegated raw scope counter: ${strictLines[0]}`,
+            );
+          } else {
+            strictRawScopeMismatches += Number(rawScopeMismatchCount);
+          }
         }
       }
     } finally {
@@ -491,6 +506,9 @@ describe('symbol identity coverage gate (#4819)', () => {
     expect(generatedBindings).toBeGreaterThan(0);
     expect(generatedReferences).toBeGreaterThan(0);
     expect(strictExternalReferences).toBeGreaterThan(0);
+    // Exercise the documented raw-trace exception while the separate exact
+    // report still requires all transform-aware binding/reference scopes clean.
+    expect(strictRawScopeMismatches).toBeGreaterThan(0);
   }, 600_000);
 
   test('중첩 함수의 direct eval 은 모듈 범위의 외부 참조를 오염시키지 않는다', () => {
@@ -532,6 +550,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(proc.stderr).toMatch(/synthetic-coverage .* missing_binding=0/);
       expect(proc.stderr).toMatch(/synthetic-coverage .* marked_synthetic=2/);
       expect(proc.stderr).toMatch(/synthetic-coverage .* consistent=1/);
+      expect(proc.stderr).toMatch(/synthetic-coverage .* symbol_identity_complete=1/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
