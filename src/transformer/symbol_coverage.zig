@@ -2531,7 +2531,9 @@ pub fn printExact(file_path: []const u8, report: ExactReport) void {
     printExactNamed("symbol-identity", file_path, report);
 }
 
-pub fn printExactPrepass(file_path: []const u8, report: ExactReport) void {
+pub fn printExactPrepass(file_path: []const u8, report: ExactReport, retained_graph: bool) void {
+    const graph = if (retained_graph) "retained" else "reanalyzed";
+    std.debug.print("zntc: symbol-identity-prepass-mode {s}: semantic_graph={s}\n", .{ file_path, graph });
     printExactNamed("symbol-identity-prepass", file_path, report);
 }
 

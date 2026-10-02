@@ -135,7 +135,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('bundler prepass exact gate covers retained and reanalyzed semantic graphs', () => {
+  test('bundler prepass exact gate labels target-lowered modules as reanalyzed', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-prepass-exact-'));
     const output = join(dir, 'out.cjs');
     writeFileSync(join(dir, 'dep.ts'), 'export namespace Data { export const value = 42; }');
@@ -183,12 +183,88 @@ describe('symbol identity coverage gate (#4819)', () => {
         expect(report).toMatch(/clean=1(?:\s|$)/);
       }
 
-      const retained = reports.find((line) => line.includes('dep.ts'));
+      const dependency = reports.find((line) => line.includes('dep.ts'));
       const reanalyzed = reports.find((line) => line.includes('entry.tsx'));
-      expect(retained, reports.join('\n')).toBeDefined();
+      expect(dependency, reports.join('\n')).toBeDefined();
       expect(reanalyzed, reports.join('\n')).toBeDefined();
-      expect(Number(retained?.match(/namespace_iife_params=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+      const graphModes = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .filter((line) => line.includes('zntc: symbol-identity-prepass-mode '));
+      expect(graphModes, proc.stderr).toHaveLength(2);
+      expect(graphModes.find((line) => line.includes('dep.ts'))).toContain(
+        'semantic_graph=reanalyzed',
+      );
+      expect(graphModes.find((line) => line.includes('entry.tsx'))).toContain(
+        'semantic_graph=reanalyzed',
+      );
+      expect(Number(dependency?.match(/namespace_iife_params=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
       expect(Number(reanalyzed?.match(/generated_references=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('classic JSX with a local factory preserves its semantic graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-classic-jsx-retained-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'entry.tsx'),
+      [
+        'const Header = function () {};',
+        'Header.Button = function () {};',
+        'Header.Controls = { Button: function () {} };',
+        'function render(h: (tag: unknown, props: unknown, child?: number) => number) {',
+        '  return <Header><Header.Button /><Header.Controls.Button /></Header>;',
+        '}',
+        'console.log(render((tag, _props, child) => tag === Header ? 20 + (child ?? 0) : 22));',
+      ].join('\n'),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.tsx',
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '--jsx=classic',
+          '--jsx-factory=h',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.tsx'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+      expect(Number(report?.match(/generated_references=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+
+      const graphMode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.tsx'),
+        );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
 
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);

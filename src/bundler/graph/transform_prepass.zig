@@ -312,9 +312,10 @@ fn canKeepPrepassSemanticGraph(
     if (self.worklet_transform or self.react_refresh or self.styled_components or self.emotion or
         self.plugins.len != 0 or plugins.len != 0 or options.plugins.len != 0) return false;
     if (!options.strip_types) return false;
-    if (ast.has_jsx or ast.has_decorator or ast.has_ts_import_equals or
+    const classic_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .classic;
+    if ((ast.has_jsx and !classic_jsx) or ast.has_decorator or ast.has_ts_import_equals or
         ast.has_ts_export_equals or ast.has_flow_enum_declaration) return false;
-    if (options.jsx_transform or options.unsupported.hasAny() or options.minify_syntax or
+    if (options.unsupported.hasAny() or options.minify_syntax or
         options.minify_whitespace or options.drop_console or options.drop_debugger or
         options.drop_labels.len != 0 or options.define.len != 0 or options.module_specifier_map.len != 0 or
         !options.use_define_for_class_fields or options.experimental_decorators or
@@ -322,7 +323,7 @@ fn canKeepPrepassSemanticGraph(
     if (module.uses_top_level_await or module.self_uses_top_level_await) return false;
     if (!hasOnlyTopLevelLocalExportSpecifiers(module)) return false;
 
-    var found_transform = false;
+    var found_transform = classic_jsx;
     for (ast.nodes.items) |node| {
         const tag_name = @tagName(node.tag);
         const is_flow_match_tag = std.mem.startsWith(u8, tag_name, "flow_match_");
@@ -378,6 +379,7 @@ fn printPrepassExact(
     transformer: *const Transformer,
     unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     pre_transform_scope_count: usize,
+    retained_graph: bool,
 ) !void {
     const sem = if (module.semantic) |*value| value else return;
     const ast = &(module.ast orelse return);
@@ -403,7 +405,7 @@ fn printPrepassExact(
         &sem.namespace_declaration_owners,
         pre_transform_scope_count,
     );
-    coverage.printExactPrepass(module.path, exact);
+    coverage.printExactPrepass(module.path, exact, retained_graph);
 }
 
 fn auditPrepassExactIfEnabled(
@@ -415,6 +417,7 @@ fn auditPrepassExactIfEnabled(
     unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     pre_transform_scope_count: usize,
     enabled: bool,
+    retained_graph: bool,
 ) void {
     if (!enabled) return;
     printPrepassExact(
@@ -425,6 +428,7 @@ fn auditPrepassExactIfEnabled(
         transformer,
         unresolved_nodes,
         pre_transform_scope_count,
+        retained_graph,
     ) catch |err| {
         // An absent report must be distinguishable from a clean report. The
         // integration gate treats this diagnostic as a failure.
@@ -679,6 +683,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
                 &unresolved_nodes,
                 pre_transform_scope_count,
                 debug_symbol_coverage,
+                false,
             );
             return;
         }
@@ -700,6 +705,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
                     &unresolved_nodes,
                     pre_transform_scope_count,
                     debug_symbol_coverage,
+                    false,
                 );
             }
             return;
@@ -718,6 +724,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
                     &unresolved_nodes,
                     pre_transform_scope_count,
                     debug_symbol_coverage,
+                    false,
                 );
             }
             return;
@@ -731,6 +738,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             &unresolved_nodes,
             pre_transform_scope_count,
             debug_symbol_coverage,
+            true,
         );
         refreshTlaPromiseReference(module);
         module.prebuilt_stmt_info = null;
@@ -759,6 +767,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         &unresolved_nodes,
         pre_transform_scope_count,
         debug_symbol_coverage,
+        false,
     );
 }
 
