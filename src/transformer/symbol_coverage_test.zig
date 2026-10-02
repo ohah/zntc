@@ -1496,6 +1496,62 @@ test "#4819 for-of using head keeps one generated binding and reference" {
     }
 }
 
+test "#4819 downlevel using lowering preserves exact transform identities" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "function run(resource: any, _stack: any, _error: any, _hasError: any, _: any, __using: any, __callDispose: any) { " ++
+        "using local = resource; return local + _stack; } " ++
+        "async function wait(resource: any) { await using asyncLocal = resource; return asyncLocal; } " ++
+        "function nested(resource: any) { { using blockLocal = resource; use(blockLocal); } return 1; } " ++
+        "function loop(resources: any) { for (using item of resources) use(item); }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    transformer.synthetic_idents = .empty;
+    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    const transformed_root = try transformer.transform();
+    try std.testing.expect(!transformed_root.isNone());
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    var exact = try coverage.checkExact(
+        allocator,
+        transformer.ast,
+        transformed_root,
+        transformer.parser_node_count,
+        transformer.symbol_ids.items,
+        edited.symbols.items,
+        edited.scopes,
+        edited.scope_maps,
+        &edited.scope_owner_map,
+        edited.references,
+        transformer.helper_ref_nodes.items,
+        &edited.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &transformer.explicit_global_reference_nodes,
+        &transformer.reference_origin_map,
+    );
+    try std.testing.expect(exact.isClean());
+}
+
 test "#4760 static private 멤버를 낮출 때 만드는 클래스 참조는 클래스 심볼을 가진다" {
     // `Counter.#count` → `__classStaticPrivateFieldSpecGet(Counter, Counter, _count)` 의 클래스
     // 참조는 매핑에 이름만 있어 심볼이 없었다.

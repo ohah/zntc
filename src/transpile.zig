@@ -87,9 +87,6 @@ const AstFacts = struct {
     has_flow_runtime_syntax_without_complete_graph: bool = false,
     /// Runtime syntax whose semantic edits still need the post-transform analyzer.
     has_unhandled_runtime_syntax: bool = false,
-    /// `using` is safe on the original graph when preserved natively. Its
-    /// downlevel rewrite still uses the conservative post-transform analyzer.
-    has_using_syntax: bool = false,
 };
 
 pub const TranspileError = error{
@@ -216,7 +213,6 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             .variable_declaration => {
                 if (ast.variableDeclarationKind(node).isUsing()) {
                     facts.has_runtime_sensitive_syntax = true;
-                    facts.has_using_syntax = true;
                 }
             },
 
@@ -589,7 +585,6 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
         options.react_refresh or options.react_refresh_hook_signatures) return false;
 
     const facts = collectAstFacts(&parser.ast);
-    if (facts.has_using_syntax and options.unsupported.using) return false;
     if (parser.is_flow) return !facts.has_flow_runtime_syntax_without_complete_graph;
     if (parser.source_mode == .ts) return !facts.has_unhandled_runtime_syntax;
     if (parser.source_mode != .js_strict) return false;
@@ -2124,7 +2119,7 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     try std.testing.expect(canMangleWithTransformSemantic(minify, &accessor_parser));
 }
 
-test "#4819 native using reuses the transform graph while downlevel using falls back" {
+test "#4819 native and downlevel using reuse the transform graph" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -2138,10 +2133,11 @@ test "#4819 native using reuses the transform graph while downlevel using falls 
     _ = try ts_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), ts_parser.errors.items.len);
     try std.testing.expect(canMangleWithTransformSemantic(minify, &ts_parser));
-    try std.testing.expect(!canMangleWithTransformSemantic(.{
+    const downlevel: TranspileOptions = .{
         .minify_identifiers = true,
         .unsupported = TransformOptions.compat.fromESTarget(.es5),
-    }, &ts_parser));
+    };
+    try std.testing.expect(canMangleWithTransformSemantic(downlevel, &ts_parser));
 
     var flow_scanner = try Scanner.init(allocator, "// @flow\nfunction run(resource) { using local = resource; return local; }");
     var flow_parser = Parser.init(allocator, &flow_scanner);
@@ -2150,14 +2146,43 @@ test "#4819 native using reuses the transform graph while downlevel using falls 
     try std.testing.expect(flow_parser.is_flow);
     try std.testing.expectEqual(@as(usize, 0), flow_parser.errors.items.len);
     try std.testing.expect(canMangleWithTransformSemantic(minify, &flow_parser));
-    try std.testing.expect(!canMangleWithTransformSemantic(.{
-        .minify_identifiers = true,
-        .unsupported = TransformOptions.compat.fromESTarget(.es5),
-    }, &flow_parser));
+    try std.testing.expect(canMangleWithTransformSemantic(downlevel, &flow_parser));
+
+    var js_scanner = try Scanner.init(allocator, "function run(resource) { using local = resource; return local; }");
+    var js_parser = Parser.init(allocator, &js_scanner);
+    js_parser.configureFromExtension(".js");
+    _ = try js_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), js_parser.errors.items.len);
+    try std.testing.expect(canMangleWithTransformSemantic(downlevel, &js_parser));
 
     var result = try transpile(allocator, "function run(resource: any) { using local = resource; return local; }", "input.ts", minify);
     defer result.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, result.code, "using ") != null);
+
+    var downlevel_result = try transpile(
+        allocator,
+        "async function wait(resource: any, _stack: any, _error: any, _hasError: any, _: any, __using: any, __callDispose: any) { " ++
+            "using local = resource; await using asyncLocal = resource; return local + asyncLocal + _stack; }",
+        "input.ts",
+        downlevel,
+    );
+    defer downlevel_result.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, downlevel_result.code, "__using") != null);
+    try std.testing.expect(std.mem.indexOf(u8, downlevel_result.code, "__callDispose") != null);
+    var output_scanner = try Scanner.init(allocator, downlevel_result.code);
+    var output_parser = Parser.init(allocator, &output_scanner);
+    output_parser.configureFromExtension(".mjs");
+    _ = try output_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), output_parser.errors.items.len);
+    for (output_parser.ast.nodes.items) |node| {
+        if (node.tag == .variable_declaration) {
+            try std.testing.expect(!output_parser.ast.variableDeclarationKind(node).isUsing());
+        }
+    }
+    var output_analyzer = SemanticAnalyzer.init(allocator, &output_parser.ast);
+    output_analyzer.is_module = true;
+    try output_analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), output_analyzer.errors.items.len);
 }
 
 test "#4819 TypeScript JSX lowering reuses the transform graph" {
