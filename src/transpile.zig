@@ -591,7 +591,7 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
     const facts = collectAstFacts(&parser.ast);
     if (facts.has_using_syntax and options.unsupported.using) return false;
     if (parser.is_flow) return !facts.has_flow_runtime_syntax_without_complete_graph and !parser.ast.has_jsx;
-    if (parser.source_mode == .ts) return !facts.has_unhandled_runtime_syntax and !parser.ast.has_jsx;
+    if (parser.source_mode == .ts) return !facts.has_unhandled_runtime_syntax;
     if (parser.source_mode != .js_strict) return false;
     return true;
 }
@@ -2038,17 +2038,6 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     const minify: TranspileOptions = .{ .minify_identifiers = true };
     try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
 
-    const runtime_sources = [_][]const u8{
-        "const view = <div />;",
-    };
-    for (runtime_sources) |source| {
-        var runtime_scanner = try Scanner.init(allocator, source);
-        var runtime_parser = Parser.init(allocator, &runtime_scanner);
-        runtime_parser.configureFromExtension(if (std.mem.indexOf(u8, source, "<div") != null) ".tsx" else ".ts");
-        _ = try runtime_parser.parse();
-        try std.testing.expect(!canMangleWithTransformSemantic(minify, &runtime_parser));
-    }
-
     var namespace_scanner = try Scanner.init(
         allocator,
         "namespace N { export const value = 1; export function read() { return value; } }",
@@ -2169,6 +2158,64 @@ test "#4819 native using reuses the transform graph while downlevel using falls 
     var result = try transpile(allocator, "function run(resource: any) { using local = resource; return local; }", "input.ts", minify);
     defer result.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, result.code, "using ") != null);
+}
+
+test "#4819 TypeScript JSX lowering reuses the transform graph" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const automatic: TranspileOptions = .{ .minify_identifiers = true, .jsx_runtime = .automatic };
+    const automatic_source = "const _jsx = 1, _jsxs = 2, _Fragment = 3; " ++
+        "export function View() { return <><div value={_jsx} /><span>{_jsxs + _Fragment}</span></>; }";
+
+    var automatic_scanner = try Scanner.init(allocator, automatic_source);
+    var automatic_parser = Parser.init(allocator, &automatic_scanner);
+    automatic_parser.configureFromExtension(".tsx");
+    _ = try automatic_parser.parse();
+    try std.testing.expect(automatic_parser.ast.has_jsx);
+    try std.testing.expectEqual(@as(usize, 0), automatic_parser.errors.items.len);
+    try std.testing.expect(canMangleWithTransformSemantic(automatic, &automatic_parser));
+
+    var automatic_result = try transpile(allocator, automatic_source, "input.tsx", automatic);
+    defer automatic_result.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, automatic_result.code, "react/jsx-runtime") != null);
+    var automatic_output_scanner = try Scanner.init(allocator, automatic_result.code);
+    var automatic_output_parser = Parser.init(allocator, &automatic_output_scanner);
+    automatic_output_parser.configureFromExtension(".mjs");
+    _ = try automatic_output_parser.parse();
+    var automatic_output_analyzer = SemanticAnalyzer.init(allocator, &automatic_output_parser.ast);
+    automatic_output_analyzer.is_module = true;
+    try automatic_output_analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), automatic_output_analyzer.errors.items.len);
+    try std.testing.expectEqual(@as(usize, 0), automatic_output_analyzer.unresolved_references.count());
+
+    const classic: TranspileOptions = .{
+        .minify_identifiers = true,
+        .jsx_runtime = .classic,
+        .jsx_factory = "h",
+        .jsx_fragment = "Frag",
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    };
+    const classic_source = "const h = (type, props) => ({ type, props }), Frag = {}; " ++
+        "export const View = () => <><div /></>;";
+    var classic_scanner = try Scanner.init(allocator, classic_source);
+    var classic_parser = Parser.init(allocator, &classic_scanner);
+    classic_parser.configureFromExtension(".tsx");
+    _ = try classic_parser.parse();
+    try std.testing.expect(classic_parser.ast.has_jsx);
+    try std.testing.expect(canMangleWithTransformSemantic(classic, &classic_parser));
+
+    var classic_result = try transpile(allocator, classic_source, "input.tsx", classic);
+    defer classic_result.deinit(allocator);
+    var classic_output_scanner = try Scanner.init(allocator, classic_result.code);
+    var classic_output_parser = Parser.init(allocator, &classic_output_scanner);
+    classic_output_parser.configureFromExtension(".mjs");
+    _ = try classic_output_parser.parse();
+    var classic_output_analyzer = SemanticAnalyzer.init(allocator, &classic_output_parser.ast);
+    classic_output_analyzer.is_module = true;
+    try classic_output_analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), classic_output_analyzer.errors.items.len);
+    try std.testing.expectEqual(@as(usize, 0), classic_output_analyzer.unresolved_references.count());
 }
 
 test "#4819 Flow match and enum reuse the transform graph while other runtime syntax falls back" {
