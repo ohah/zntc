@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
-import { createFixture, runZntcInDir } from './helpers';
+import { createFixture, runZntcInDir, ZNTC_BIN } from './helpers';
 
 // Return-type metadata currently emits Object for every method. Explicit any
 // keeps this helper-linkage fixture inside that supported serialization case.
@@ -95,4 +96,84 @@ describe('legacy runtime helper symbols (#4819)', () => {
       }
     }
   }
+
+  test('metadata references retain nested classes and shadowed built-ins in the transform graph', async () => {
+    const metadataSource = `
+import type { Phantom } from './types';
+import { type Phantom as a } from './types';
+const events: string[] = [];
+function decorate(): any { return () => {}; }
+function build(Number: any, Object: any) {
+  class LocalType { static marker = 'local-type'; }
+  const expectedNumber = Number;
+  const expectedObject = Object;
+  const expectedLocalType = LocalType;
+  (Reflect as any).metadata = (key: string, value: any) => (_target: any, property?: string) => {
+    if (key !== 'design:paramtypes') return;
+    const names = value.map((item: any) =>
+      item === expectedNumber ? 'shadowed-number' :
+      item === expectedObject ? 'shadowed-object' :
+      item === expectedLocalType ? 'local-class' :
+      item === globalThis.Object ? 'global-object' : 'other');
+    events.push((property ?? 'class') + ':' + names.join(','));
+  };
+  @decorate()
+  class Service {
+    constructor(number: number, local: LocalType, phantom: Phantom, inlinePhantom: a) {}
+    @decorate() method(local: LocalType) { return local; }
+  }
+  return Service;
+}
+class ShadowNumber {}
+class ShadowObject {}
+const Service = build(ShadowNumber, ShadowObject);
+new Service(ShadowNumber, ShadowObject, Service).method(Service);
+console.log(events.join('|'));
+`;
+    const fixture = await createFixture({
+      'input.ts': metadataSource,
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: { experimentalDecorators: true, emitDecoratorMetadata: true },
+      }),
+    });
+    cleanup = fixture.cleanup;
+
+    const reference = ts.transpileModule(metadataSource, {
+      compilerOptions: {
+        experimentalDecorators: true,
+        emitDecoratorMetadata: true,
+        target: ts.ScriptTarget.ES2020,
+        module: ts.ModuleKind.CommonJS,
+      },
+    }).outputText;
+    writeFileSync(join(fixture.dir, 'reference.js'), reference);
+    const native = spawnSync('node', [join(fixture.dir, 'reference.js')], { encoding: 'utf8' });
+    expect(native.status, native.stderr).toBe(0);
+
+    const output = join(fixture.dir, 'out.js');
+    const proc = spawnSync(
+      ZNTC_BIN,
+      ['input.ts', '--minify-identifiers', '--minify-syntax', '-o', output],
+      {
+        cwd: fixture.dir,
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      },
+    );
+    expect(proc.status, proc.stderr).toBe(0);
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe(native.stdout);
+
+    const exact = proc.stderr
+      .split('\n')
+      .find((line) => line.includes('zntc: symbol-identity input.ts:'));
+    expect(exact).toContain('shadowed_external_reference=0');
+    expect(exact).toContain('missing_binding=0');
+    expect(exact).toContain('identity_mismatch=0');
+    expect(exact).toContain('clean=1');
+    expect(proc.stderr).toMatch(
+      /symbol-identity-post-minify .* missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+    );
+  });
 });
