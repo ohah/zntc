@@ -2937,6 +2937,29 @@ pub fn ensureSymbolDeclaration(self: *Transformer, raw_id: u32, scope: ScopeId) 
     editor.ensureDeclaration(@enumFromInt(raw_id), scope) catch |err| return editError(err);
 }
 
+/// State-machine collection can flatten an empty generated block while keeping
+/// its child lexical scopes. Once dead references are removed, drop only those
+/// unreachable generated block owners that carry no bindings or references.
+fn elideUnreachableEmptyGeneratedScopes(
+    self: *Transformer,
+    editor: *SemanticEditor,
+    reachable_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+) Transformer.Error!void {
+    var candidates: std.ArrayList(NodeIndex) = .empty;
+    defer candidates.deinit(self.allocator);
+    var owners = editor.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        const owner_raw = entry.key_ptr.*;
+        const scope_raw = entry.value_ptr.*;
+        if (owner_raw >= self.ast.nodes.items.len or reachable_nodes.contains(owner_raw) or
+            scope_raw < self.scopes.len or scope_raw >= editor.scopes.items.len) continue;
+        try candidates.append(self.allocator, @enumFromInt(owner_raw));
+    }
+    for (candidates.items) |owner| {
+        _ = editor.elideEmptyGeneratedScopeOwner(owner) catch |err| return editError(err);
+    }
+}
+
 /// 변환 중 복사된 사용자 식별자와 scope owner도 편집 결과에 합친다.
 pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.Result {
     if (!self.semantic_edit_enabled) return null;
@@ -2996,6 +3019,7 @@ pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.
                 if (ref.node_index.isNone() or live.contains(@intFromEnum(ref.node_index))) continue;
                 try removeReference(self, editor, ref.node_index);
             }
+            try elideUnreachableEmptyGeneratedScopes(self, editor, &live);
         }
     }
     const result = editor.finish() catch |err| return editError(err);

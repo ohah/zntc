@@ -441,6 +441,43 @@ pub const SemanticEditor = struct {
         _ = self.scope_owner_map.remove(old_key);
     }
 
+    /// Remove an empty generated block boundary after a lowering flattens its
+    /// owner node out of the output AST. Children keep their own scopes and
+    /// are reparented to the removed scope's parent; a scope with bindings or
+    /// references cannot be elided.
+    pub fn elideEmptyGeneratedScopeOwner(self: *SemanticEditor, owner: NodeIndex) Error!bool {
+        if (owner.isNone() or @intFromEnum(owner) >= self.ast.nodes.items.len) return error.InvalidNode;
+        const owner_raw = @intFromEnum(owner);
+        const scope_raw = self.scope_owner_map.get(owner_raw) orelse return false;
+        if (scope_raw >= self.scopes.items.len) return error.InvalidScope;
+        const scope_id: ScopeId = @enumFromInt(scope_raw);
+        const scope = self.scopes.items[scope_raw];
+        if (scope.kind != .block and scope.kind != .switch_block) return false;
+        if (scope.parent.isNone() or !self.validScope(scope.parent)) return error.InvalidScope;
+        if (scope.symbol_count != 0 or self.scope_maps.items[scope_raw].count() != 0) return false;
+        for (self.symbols.items) |symbol| {
+            if (symbol.scope_id == scope_id or symbol.origin_scope == scope_id) return false;
+        }
+        for (self.references.items) |reference| {
+            if (reference.scope_id == scope_id) return false;
+        }
+        var owner_iter = self.scope_owner_map.iterator();
+        while (owner_iter.next()) |entry| {
+            if (entry.key_ptr.* != owner_raw and entry.value_ptr.* == scope_raw) return false;
+        }
+
+        const parent = scope.parent;
+        self.scopes.items[parent.toIndex()].subtree_has_direct_eval =
+            self.scopes.items[parent.toIndex()].subtree_has_direct_eval or scope.subtree_has_direct_eval;
+        self.scopes.items[parent.toIndex()].subtree_has_with =
+            self.scopes.items[parent.toIndex()].subtree_has_with or scope.subtree_has_with;
+        for (self.scopes.items, 0..) |child, child_index| {
+            if (child.parent == scope_id) try self.reparentScope(@enumFromInt(@as(u32, @intCast(child_index))), parent);
+        }
+        _ = self.scope_owner_map.remove(owner_raw);
+        return true;
+    }
+
     /// AST 서브트리를 새 함수 안으로 옮길 때 기존 스코프 ID를 유지하며 부모만 바꾼다.
     /// 호출자는 이전 부모에만 보이던 참조를 finish 전에 재바인딩하거나 제거해야 한다.
     pub fn reparentScope(self: *SemanticEditor, scope: ScopeId, new_parent: ScopeId) Error!void {
@@ -884,6 +921,55 @@ test "synthetic declaration, explicit references, move and removal keep stable I
     try std.testing.expectEqual(@as(?u32, @intFromEnum(block)), result.scope_owner_map.get(@intFromEnum(block_owner)));
     try std.testing.expectEqual(@as(usize, 1), result.symbols.items.len);
     try std.testing.expectEqual(@as(usize, 1), result.references.len);
+}
+
+test "empty flattened block scope elision reparents children and preserves dynamic lookup flags" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+    defer editor.deinit();
+    const root = try editor.addScope(.none, .none, .module, true);
+    const wrapper_owner = try ast.addNode(.{ .tag = .block_statement, .span = Span.EMPTY, .data = .{ .list = try ast.addNodeList(&.{}) } });
+    const wrapper = try editor.addScope(root, wrapper_owner, .block, false);
+    const child_owner = try ast.addNode(.{ .tag = .block_statement, .span = Span.EMPTY, .data = .{ .list = try ast.addNodeList(&.{}) } });
+    const child = try editor.addScope(wrapper, child_owner, .block, false);
+    editor.scopes.items[wrapper.toIndex()].subtree_has_direct_eval = true;
+    editor.scopes.items[wrapper.toIndex()].subtree_has_with = true;
+
+    const name = try ast.addString("outer");
+    const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const reference = try ast.addNode(.{ .tag = .identifier_reference, .span = name, .data = .{ .string_ref = name } });
+    const id = try editor.declare(binding, name, Span.EMPTY, root, .variable_let, 0, 0);
+    try editor.addReference(reference, id, child, .{ .read = true }, 0, 0);
+
+    try std.testing.expect(try editor.elideEmptyGeneratedScopeOwner(wrapper_owner));
+    try std.testing.expectEqual(@as(?u32, null), editor.scope_owner_map.get(@intFromEnum(wrapper_owner)));
+    try std.testing.expectEqual(root, editor.scopes.items[child.toIndex()].parent);
+    try std.testing.expect(editor.scopes.items[root.toIndex()].subtree_has_direct_eval);
+    try std.testing.expect(editor.scopes.items[root.toIndex()].subtree_has_with);
+    _ = try editor.finish();
+}
+
+test "empty flattened block scope elision refuses a scope with a local binding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+    defer editor.deinit();
+    const root = try editor.addScope(.none, .none, .module, true);
+    const owner = try ast.addNode(.{ .tag = .block_statement, .span = Span.EMPTY, .data = .{ .list = try ast.addNodeList(&.{}) } });
+    const scope = try editor.addScope(root, owner, .block, false);
+    const name = try ast.addString("local");
+    const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    _ = try editor.declare(binding, name, Span.EMPTY, scope, .variable_let, 0, 0);
+
+    try std.testing.expect(!(try editor.elideEmptyGeneratedScopeOwner(owner)));
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(scope)), editor.scope_owner_map.get(@intFromEnum(owner)));
 }
 
 test "class self storage relocation preserves identity and rejects occupied target atomically" {
