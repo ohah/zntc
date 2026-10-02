@@ -30,6 +30,55 @@ const mergeImportRecords = parse_helpers.mergeImportRecords;
 const projectExportedNames = parse_helpers.projectExportedNames;
 const determineExportsKind = parse_helpers.determineExportsKind;
 
+/// Capture the exact binding that owns the promise returned by TLA lowering.
+/// The emitter adds a wait/return after ordinary AST codegen, so it needs this
+/// binding's semantic identity instead of searching the generated source text.
+fn tlaPromiseReference(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    stmt_idx: ast_mod.NodeIndex,
+) ?Module.TlaPromiseReference {
+    const stmt_raw = @intFromEnum(stmt_idx);
+    if (stmt_idx.isNone() or stmt_raw >= ast.nodes.items.len) return null;
+    const stmt = ast.nodes.items[stmt_raw];
+    if (stmt.tag != .variable_declaration) return null;
+
+    const extra = stmt.data.extra;
+    if (extra + 2 >= ast.extra_data.items.len) return null;
+    const list_start = ast.extra_data.items[extra + 1];
+    const list_len = ast.extra_data.items[extra + 2];
+    if (list_len != 1 or list_start >= ast.extra_data.items.len) return null;
+
+    const decl_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[list_start]);
+    if (decl_idx.isNone() or @intFromEnum(decl_idx) >= ast.nodes.items.len) return null;
+    const decl = ast.nodes.items[@intFromEnum(decl_idx)];
+    if (decl.tag != .variable_declarator or decl.data.extra >= ast.extra_data.items.len) return null;
+    const binding_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[decl.data.extra]);
+    if (binding_idx.isNone() or @intFromEnum(binding_idx) >= ast.nodes.items.len) return null;
+    if (ast.nodes.items[@intFromEnum(binding_idx)].tag != .binding_identifier) return null;
+
+    const binding_raw = @intFromEnum(binding_idx);
+    if (binding_raw >= semantic.symbol_ids.len) return null;
+    const symbol_raw = semantic.symbol_ids[binding_raw] orelse return null;
+    if (symbol_raw >= semantic.symbols.items.len) return null;
+    const symbol = semantic.symbols.items[symbol_raw];
+    if (symbol.scope_id.isNone()) return null;
+
+    return .{
+        .binding_node_index = binding_raw,
+        .symbol_id = @enumFromInt(symbol_raw),
+        .scope_id = symbol.scope_id,
+    };
+}
+
+fn refreshTlaPromiseReference(module: *Module) void {
+    module.tla_promise_reference = null;
+    const stmt_raw = module.tla_iife_stmt orelse return;
+    const ast = &(module.ast orelse return);
+    const semantic = &(module.semantic orelse return);
+    module.tla_promise_reference = tlaPromiseReference(ast, semantic, @enumFromInt(stmt_raw));
+}
+
 /// 보수적 graph pre-pass 게이트.
 ///
 /// graph 단계 pre-pass 는 helper/runtime import 를 link 전에 발견해야 하는 모듈에만
@@ -367,7 +416,10 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     }
     // #4598: `lowerProgram` 이 만든 async IIFE statement 를 module 로 넘긴다 —
     // emitter 가 `__esm` factory 안에서 그 문장만 `return <expr>;` 로 방출한다.
-    if (transformer.tla_iife_stmt) |ix| module.tla_iife_stmt = @intFromEnum(ix);
+    if (transformer.tla_iife_stmt) |ix| {
+        module.tla_iife_stmt = @intFromEnum(ix);
+        module.tla_promise_reference = null;
+    }
     // #4210: 다운레벨 못한 ES2025 inline modifier 가 출력에 보존됨 → loud 진단
     // (transform-driven — 실제 fold bail 반영). transpile path 와 동일 메시지.
     if (transformer.used_unsupported_modifier) {
@@ -472,6 +524,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         if (debug_symbol_coverage) {
             printKeptTypeErasurePrepassExact(arena_alloc, module, root, parser_node_count, &transformer, &unresolved_nodes) catch {};
         }
+        refreshTlaPromiseReference(module);
         module.prebuilt_stmt_info = null;
         return;
     }
@@ -706,6 +759,7 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
         if (module.transform_cache) |*cache| {
             cache.symbol_ids = analyzer.symbol_ids.items;
         }
+        refreshTlaPromiseReference(module);
     }
 
     if (self.ignore_annotations) {

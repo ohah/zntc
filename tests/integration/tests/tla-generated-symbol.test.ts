@@ -39,4 +39,34 @@ describe('top-level-await result temp symbol (#4819)', () => {
       }
     });
   }
+
+  test('unwrapped ESM entry waits for the exact lowered TLA promise', async () => {
+    const fixture = await createFixture({
+      'main.mjs':
+        'const early = (async () => Promise.resolve("decoy"))();\n' +
+        'export let value = 0;\n' +
+        'await new Promise((resolve) => setTimeout(resolve, 20));\n' +
+        'value = 42;\n',
+      'verify.mjs': 'import { value } from "./bundle.mjs"; console.log(value);\n',
+    });
+    try {
+      const output = join(fixture.dir, 'bundle.mjs');
+      const bundle = await runZntc([
+        '--bundle',
+        join(fixture.dir, 'main.mjs'),
+        '--target=es5',
+        '--platform=node',
+        '--format=esm',
+        '-o',
+        output,
+      ]);
+      expect(bundle.exitCode, bundle.stderr).toBe(0);
+
+      const result = await runNode(join(fixture.dir, 'verify.mjs'));
+      expect(result.stdout).toBe('42');
+      expect(result.stderr).toBe('');
+    } finally {
+      await fixture.cleanup();
+    }
+  });
 });

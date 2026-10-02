@@ -65,6 +65,7 @@ const linker_mod = @import("linker.zig");
 const Linker = linker_mod.Linker;
 const LinkingMetadata = linker_mod.LinkingMetadata;
 const RenameTable = @import("symbol.zig").RenameTable;
+const SymbolID = @import("symbol.zig").SymbolID;
 const TreeShaker = @import("tree_shaker.zig").TreeShaker;
 const statement_shaker = @import("statement_shaker.zig");
 const stmt_info_mod = @import("stmt_info.zig");
@@ -988,12 +989,11 @@ pub fn emitWithTreeShaking(
             // 최상위에서 기다린다. ESM 출력에선 문법적으로 합법이고, main 도 같은 위상에서
             // 최상위 await 를 내므로 회귀가 아니다.
             if (m.tla_iife_stmt != null and m.wrap_kind == .none and options.format == .esm) {
-                if (findTlaTempName(code_to_append)) |tmp_name| {
-                    try module_output.appendSlice(allocator, "await ");
-                    try module_output.appendSlice(allocator, tmp_name);
-                    try module_output.appendSlice(allocator, ";\n");
-                    module_line += 1;
-                }
+                const tmp_name = resolveTlaPromiseName(m, linker) orelse return error.MissingTlaPromiseIdentity;
+                try module_output.appendSlice(allocator, "await ");
+                try module_output.appendSlice(allocator, tmp_name);
+                try module_output.appendSlice(allocator, ";\n");
+                module_line += 1;
             }
             module_line += @intCast(std.mem.count(u8, code_to_append, "\n"));
             if (!options.minify_whitespace) {
@@ -1418,48 +1418,25 @@ pub fn needsPropertyQuote(name: []const u8) bool {
 }
 
 /// 들여쓰기를 적용하여 텍스트를 ArrayList에 추가. 줄바꿈 뒤에 탭을 삽입.
-/// #4598: 방출된 모듈 코드에서 TLA promise 임시변수명을 찾는다.
-/// `lowerProgram` 이 만든 형태는 `<name> = (async () => {` 또는 `<name>=(async()=>{`.
-/// ⚠️ 이름은 리네임/mangle 을 거치므로 하드코딩할 수 없다 — 방출된 텍스트에서 읽는다.
-fn findTlaTempName(code: []const u8) ?[]const u8 {
-    // ⚠️ codegen 철자를 리터럴로 못 박으면 minify 형태(`=(async ()=>`)를 놓쳐 최상위
-    //    await 가 조용히 빠진다 → export 값이 `undefined`(리뷰 실측). `=` 뒤 공백과
-    //    `async` 뒤 공백을 모두 허용해 스캔한다.
-    const at = blk: {
-        var i: usize = 0;
-        while (std.mem.indexOfPos(u8, code, i, "async")) |a| {
-            i = a + 5;
-            // `async` 앞으로 `=`(공백 허용)가 있어야 한다.
-            var b = a;
-            while (b > 0 and (code[b - 1] == ' ' or code[b - 1] == '\t')) b -= 1;
-            // IIFE 여는 괄호 `(` 허용: `= (async () => …)()` / `=(async ()=>…)()`
-            if (b > 0 and code[b - 1] == '(') {
-                b -= 1;
-                while (b > 0 and (code[b - 1] == ' ' or code[b - 1] == '\t')) b -= 1;
-            }
-            if (b == 0 or code[b - 1] != '=') continue;
-            // `async` 뒤로 `()` 그리고 `=>` 가 와야 한다(공백 허용).
-            var c = a + 5;
-            while (c < code.len and (code[c] == ' ' or code[c] == '\t')) c += 1;
-            if (c + 1 >= code.len or code[c] != '(' or code[c + 1] != ')') continue;
-            var d = c + 2;
-            while (d < code.len and (code[d] == ' ' or code[d] == '\t')) d += 1;
-            if (d + 1 >= code.len or code[d] != '=' or code[d + 1] != '>') continue;
-            break :blk b - 1; // `=` 위치
-        }
-        return null;
-    };
-    var end = at;
-    while (end > 0 and (code[end - 1] == ' ' or code[end - 1] == '\t')) end -= 1;
-    var start = end;
-    while (start > 0) : (start -= 1) {
-        const c = code[start - 1];
-        const ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
-            (c >= '0' and c <= '9') or c == '_' or c == '$';
-        if (!ok) break;
+/// Resolve the late-emitted TLA wait from the binding identity captured during
+/// transformation. The generated `await` is outside the AST, so the identity
+/// record also checks its source node, SymbolId, and ScopeId against the final
+/// module semantic graph before selecting the linked name.
+fn resolveTlaPromiseName(module: *const Module, linker: ?*const Linker) ?[]const u8 {
+    const reference = module.tla_promise_reference orelse return null;
+    const ast = &(module.ast orelse return null);
+    const binding_raw = reference.binding_node_index;
+    if (@as(usize, binding_raw) >= ast.nodes.items.len or !module.matchesTlaPromiseReference(binding_raw)) return null;
+    const binding = ast.nodes.items[binding_raw];
+    if (binding.tag != .binding_identifier) return null;
+
+    const symbol_raw = @intFromEnum(reference.symbol_id);
+    const source_name = ast.getText(binding.data.string_ref);
+    if (linker) |l| {
+        const linked_id = SymbolID.make(module.index, symbol_raw);
+        if (l.rename_table.get(linked_id)) |renamed| return renamed;
     }
-    if (start == end) return null;
-    return code[start..end];
+    return source_name;
 }
 
 pub fn appendIndented(wrapped: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []const u8) !void {

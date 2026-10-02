@@ -4745,6 +4745,58 @@ fn bundleTlaDownlevel(tmp: *std.testing.TmpDir, dep_src: []const u8, main_src: [
     return std.testing.allocator.dupe(u8, result.output);
 }
 
+fn expectUnwrappedTlaWaitUsesGeneratedBinding(minify_identifiers: bool) !void {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(
+        tmp.dir,
+        "index.ts",
+        "const early = (async () => Promise.resolve(7))();\nexport let value = 0;\nawait Promise.resolve(41);\nvalue = 42;",
+    );
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .unsupported = .{ .top_level_await = true, .async_await = true },
+        .minify_identifiers = minify_identifiers,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+
+    const js = result.output;
+    const tla_body = std.mem.indexOf(u8, js, "Promise.resolve(41)") orelse return error.MissingTlaBody;
+    const tla_generator = std.mem.lastIndexOf(u8, js[0..tla_body], "function*()") orelse return error.MissingTlaGenerator;
+    var equals = std.mem.lastIndexOf(u8, js[0..tla_generator], "=") orelse return error.MissingTlaAssignment;
+    while (equals > 0 and (js[equals - 1] == ' ' or js[equals - 1] == '\t')) equals -= 1;
+    const name_end = equals;
+    while (equals > 0) {
+        const c = js[equals - 1];
+        const is_ident = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or c == '_' or c == '$';
+        if (!is_ident) break;
+        equals -= 1;
+    }
+    try std.testing.expect(equals < name_end);
+    const tla_name = js[equals..name_end];
+
+    var wait_name: ?[]const u8 = null;
+    var lines = std.mem.splitScalar(u8, js, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "await ")) continue;
+        const end = std.mem.indexOfScalar(u8, line, ';') orelse line.len;
+        wait_name = line[6..end];
+    }
+    try std.testing.expectEqualStrings(tla_name, wait_name orelse return error.MissingTopLevelTlaWait);
+}
+
+test "#4819 unwrapped ESM TLA wait uses symbol identity after async syntax lowering" {
+    try expectUnwrappedTlaWaitUsesGeneratedBinding(false);
+    try expectUnwrappedTlaWaitUsesGeneratedBinding(true);
+}
+
 test "#4598 다운레벨 ESM: export 선언 안의 TLA 가 최상위 await 를 남기지 않는다" {
     // `--target < es2022` 는 "이 엔진은 top-level await 를 못 쓴다" 는 선언이다. 그런데
     // `lowerProgram` 이 export 선언을 건너뛰어 await 가 최상위에 남았고, 그 산물은 타겟
