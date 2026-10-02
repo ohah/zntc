@@ -432,11 +432,27 @@ fn collectDeclarationNodes(
         const raw = entry.key_ptr.*;
         const node = ast.nodes.items[raw];
         switch (node.tag) {
-            .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => {
+            .function_declaration, .function_expression, .function => {
+                if (ast.hasExtra(node.data.extra, 0)) {
+                    const name: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
+                    if (!name.isNone()) try bindings.put(allocator, @intFromEnum(name), {});
+                }
+                if (ast.hasExtra(node.data.extra, 1)) {
+                    const params: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra + 1]);
+                    try collectBindingPatternNodes(allocator, ast, params, &bindings);
+                }
+            },
+            .arrow_function_expression, .method_definition => {
                 const slot: u32 = if (node.tag == .arrow_function_expression) 0 else 1;
                 if (ast.hasExtra(node.data.extra, slot)) {
                     const params: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra + slot]);
                     try collectBindingPatternNodes(allocator, ast, params, &bindings);
+                }
+            },
+            .class_declaration, .class_expression => {
+                if (ast.hasExtra(node.data.extra, 0)) {
+                    const name: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
+                    if (!name.isNone()) try bindings.put(allocator, @intFromEnum(name), {});
                 }
             },
             .catch_clause => try collectBindingPatternNodes(allocator, ast, node.data.binary.left, &bindings),
@@ -456,8 +472,11 @@ fn collectDeclarationNodes(
                     const spec_idx: NodeIndex = @enumFromInt(raw_spec);
                     if (spec_idx.isNone() or @intFromEnum(spec_idx) >= ast.nodes.items.len) continue;
                     const spec = ast.getNode(spec_idx);
-                    if (spec.tag == .import_specifier)
-                        try collectBindingPatternNodes(allocator, ast, spec.data.binary.right, &bindings);
+                    switch (spec.tag) {
+                        .import_default_specifier, .import_namespace_specifier => try bindings.put(allocator, @intFromEnum(spec_idx), {}),
+                        .import_specifier => try collectBindingPatternNodes(allocator, ast, spec.data.binary.right, &bindings),
+                        else => {},
+                    }
                 }
             },
             else => {},
@@ -2192,6 +2211,239 @@ fn hasReachableBindingForSymbol(ctx: *const ExactCtx, symbol_id: u32) bool {
         if (ctx.reachable_nodes.contains(node) and ctx.ast.nodes.items[raw].tag == .binding_identifier) return true;
     }
     return false;
+}
+
+/// Compare the mutable SymbolIds used by minification/codegen with a fresh
+/// semantic resolution of the final reachable AST. The pre-minify reference
+/// table only preserves a transform-owned lexical reference when reanalysis
+/// cannot see the generated scope; it never maps a rewritten alias reference.
+pub const PostMinifyReport = struct {
+    bindings_checked: usize = 0,
+    references_checked: usize = 0,
+    external_references: usize = 0,
+    helper_references: usize = 0,
+    preserved_transform_references: usize = 0,
+    missing_binding_id: usize = 0,
+    missing_reference_id: usize = 0,
+    dangling_reference_id: usize = 0,
+    wrong_reference_target: usize = 0,
+
+    pub fn isClean(self: PostMinifyReport) bool {
+        return self.missing_binding_id == 0 and
+            self.missing_reference_id == 0 and
+            self.dangling_reference_id == 0 and
+            self.wrong_reference_target == 0;
+    }
+};
+
+pub fn checkPostMinify(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    actual_symbol_ids: []const ?u32,
+    resolved_symbol_ids: []const ?u32,
+    actual_symbols: []const Symbol,
+    resolved_symbols: []const Symbol,
+    pre_minify_references: []const Reference,
+    helper_ref_nodes: []const u32,
+    helper_scope_map: *const std.StringHashMapUnmanaged(usize),
+    explicit_global_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    actual_class_self_symbols: *const std.AutoHashMapUnmanaged(u32, u32),
+    resolved_class_self_symbols: *const std.AutoHashMapUnmanaged(u32, u32),
+) !PostMinifyReport {
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root);
+    defer allocator.free(reachable);
+    var reachable_set: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer reachable_set.deinit(allocator);
+    for (reachable) |raw| try reachable_set.put(allocator, raw, {});
+    var declaration_nodes = try collectDeclarationNodes(allocator, ast, &reachable_set);
+    defer declaration_nodes.deinit(allocator);
+
+    // One source/transform SymbolId can correspond to one or more surviving
+    // output bindings after lowering. Keep the full relation so cloned scopes
+    // remain valid while still rejecting a reference that resolves elsewhere.
+    var binding_pairs: std.AutoHashMapUnmanaged(u64, void) = .empty;
+    defer binding_pairs.deinit(allocator);
+    var bound_actual_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer bound_actual_ids.deinit(allocator);
+    var helper_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer helper_nodes.deinit(allocator);
+    for (helper_ref_nodes) |raw| try helper_nodes.put(allocator, raw, {});
+    var pre_reference_ids: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer pre_reference_ids.deinit(allocator);
+    for (pre_minify_references) |reference| {
+        if (!reference.node_index.isNone()) try pre_reference_ids.put(allocator, @intFromEnum(reference.node_index), @intFromEnum(reference.symbol_id));
+    }
+    var report: PostMinifyReport = .{};
+
+    for (reachable) |raw| {
+        if (raw >= ast.nodes.items.len) continue;
+        if (ast.nodes.items[raw].tag != .binding_identifier and !declaration_nodes.contains(raw)) continue;
+        report.bindings_checked += 1;
+        const actual = if (raw < actual_symbol_ids.len) actual_symbol_ids[raw] else null;
+        const resolved = if (raw < resolved_symbol_ids.len) resolved_symbol_ids[raw] else null;
+        if (actual == null or resolved == null) {
+            report.missing_binding_id += 1;
+            continue;
+        }
+        try bound_actual_ids.put(allocator, actual.?, {});
+        try binding_pairs.put(allocator, (@as(u64, actual.?) << 32) | resolved.?, {});
+    }
+
+    // Named classes have a separate inner self-binding used by references in
+    // the class body. It is attached to the class owner, not an AST binding node.
+    for (reachable) |owner| {
+        if (owner >= ast.nodes.items.len) continue;
+        switch (ast.nodes.items[owner].tag) {
+            .class_declaration, .class_expression => {},
+            else => continue,
+        }
+        const resolved = resolved_class_self_symbols.get(owner) orelse continue;
+        const owner_key = spanKey(ast.nodes.items[owner].span);
+        var actual: ?u32 = null;
+        var actual_it = actual_class_self_symbols.iterator();
+        while (actual_it.next()) |entry| {
+            if (entry.key_ptr.* >= ast.nodes.items.len) continue;
+            const actual_owner = ast.nodes.items[entry.key_ptr.*];
+            if (actual_owner.tag != .class_declaration and actual_owner.tag != .class_expression) continue;
+            if (spanKey(actual_owner.span) != owner_key) continue;
+            actual = entry.value_ptr.*;
+            break;
+        }
+        const actual_id = actual orelse continue;
+        report.bindings_checked += 1;
+        try bound_actual_ids.put(allocator, actual_id, {});
+        try binding_pairs.put(allocator, (@as(u64, actual_id) << 32) | resolved, {});
+    }
+
+    // Namespace and enum emitters synthesize an IIFE parameter in codegen;
+    // its semantic SymbolId has no binding node in the transformed AST.
+    for (actual_symbols, 0..) |actual_symbol, actual_raw| {
+        const kind = actual_symbol.synthetic_kind orelse continue;
+        if (kind != .namespace_iife_parameter and kind != .enum_iife_parameter) continue;
+        if (actual_raw > std.math.maxInt(u32)) continue;
+        for (resolved_symbols, 0..) |resolved_symbol, resolved_raw| {
+            if (resolved_raw > std.math.maxInt(u32) or resolved_symbol.synthetic_kind != kind) continue;
+            if (actual_symbol.declaration_span.start != resolved_symbol.declaration_span.start or
+                actual_symbol.declaration_span.end != resolved_symbol.declaration_span.end or
+                !std.mem.eql(u8, actual_symbol.synthetic_name, resolved_symbol.synthetic_name)) continue;
+            const actual_id: u32 = @intCast(actual_raw);
+            const resolved_id: u32 = @intCast(resolved_raw);
+            try bound_actual_ids.put(allocator, actual_id, {});
+            try binding_pairs.put(allocator, (@as(u64, actual_id) << 32) | resolved_id, {});
+            break;
+        }
+    }
+
+    // Some TypeScript namespace exports and transformed declarations have a
+    // semantic declaration row but no identifier binding node in the output
+    // AST. Match those rows by their declaration span, kind, and effective
+    // name. This does not rescue erased aliases: the fresh analysis has no row
+    // at the removed declaration span.
+    for (actual_symbols, 0..) |actual_symbol, actual_raw| {
+        if (actual_raw > std.math.maxInt(u32) or bound_actual_ids.contains(@intCast(actual_raw))) continue;
+        const actual_name = if (actual_symbol.synthetic_name.len > 0)
+            actual_symbol.synthetic_name
+        else
+            ast.getText(actual_symbol.name);
+        const actual_id: u32 = @intCast(actual_raw);
+        for (resolved_symbols, 0..) |resolved_symbol, resolved_raw| {
+            if (resolved_raw > std.math.maxInt(u32) or actual_symbol.kind != resolved_symbol.kind or
+                actual_symbol.synthetic_kind != resolved_symbol.synthetic_kind or
+                actual_symbol.declaration_span.start != resolved_symbol.declaration_span.start or
+                actual_symbol.declaration_span.end != resolved_symbol.declaration_span.end) continue;
+            const resolved_name = if (resolved_symbol.synthetic_name.len > 0)
+                resolved_symbol.synthetic_name
+            else
+                ast.getText(resolved_symbol.name);
+            if (!std.mem.eql(u8, actual_name, resolved_name)) continue;
+            const resolved_id: u32 = @intCast(resolved_raw);
+            try bound_actual_ids.put(allocator, actual_id, {});
+            try binding_pairs.put(allocator, (@as(u64, actual_id) << 32) | resolved_id, {});
+        }
+    }
+
+    for (reachable) |raw| {
+        if (raw >= ast.nodes.items.len) continue;
+        switch (ast.nodes.items[raw].tag) {
+            .identifier_reference, .assignment_target_identifier => {},
+            else => continue,
+        }
+        if (ast.nodes.items[raw].tag == .binding_identifier or declaration_nodes.contains(raw)) continue;
+        report.references_checked += 1;
+        const actual = if (raw < actual_symbol_ids.len) actual_symbol_ids[raw] else null;
+        const resolved = if (raw < resolved_symbol_ids.len) resolved_symbol_ids[raw] else null;
+        const name = ast.getText(ast.nodes.items[raw].data.string_ref);
+        const expected_helper = helper_scope_map.get(name);
+        const mapped_helper = actual != null and expected_helper != null and
+            actual.? == @as(u32, @intCast(expected_helper.?));
+        if (helper_nodes.contains(raw) or mapped_helper) {
+            report.helper_references += 1;
+            if (actual == null or expected_helper == null) {
+                report.missing_reference_id += 1;
+            } else if (actual.? != @as(u32, @intCast(expected_helper.?))) {
+                report.wrong_reference_target += 1;
+            }
+            continue;
+        }
+        if (explicit_global_reference_nodes.contains(raw)) {
+            report.external_references += 1;
+            if (actual != null) report.wrong_reference_target += 1;
+            continue;
+        }
+        if (actual == null and resolved == null) continue; // unresolved external/global
+        if (actual == null or resolved == null) {
+            if (actual) |actual_id| {
+                if (resolved == null and pre_reference_ids.get(raw) == actual_id and actual_id < actual_symbols.len) {
+                    const actual_symbol = actual_symbols[actual_id];
+                    const expected_name = if (actual_symbol.synthetic_name.len > 0)
+                        actual_symbol.synthetic_name
+                    else
+                        ast.getText(actual_symbol.name);
+                    const current_name = ast.getText(ast.nodes.items[raw].data.string_ref);
+                    if (std.mem.eql(u8, baseName(expected_name), baseName(current_name))) {
+                        report.preserved_transform_references += 1;
+                        continue;
+                    }
+                }
+            }
+            report.missing_reference_id += 1;
+            if (report.missing_reference_id <= 8) std.debug.print("zntc: post-minify-symbol-detail kind=missing-reference node={d} name={s} actual={d} resolved={d}\n", .{ raw, ast.getText(ast.nodes.items[raw].data.string_ref), actual orelse std.math.maxInt(u32), resolved orelse std.math.maxInt(u32) });
+            continue;
+        }
+        if (!bound_actual_ids.contains(actual.?)) {
+            report.dangling_reference_id += 1;
+            if (report.dangling_reference_id <= 8) {
+                std.debug.print("zntc: post-minify-symbol-detail kind=dangling-reference node={d} name={s} actual={d} resolved={d}\n", .{ raw, ast.getText(ast.nodes.items[raw].data.string_ref), actual.?, resolved.? });
+            }
+            continue;
+        }
+        const pair = (@as(u64, actual.?) << 32) | resolved.?;
+        if (!binding_pairs.contains(pair)) {
+            report.wrong_reference_target += 1;
+            if (report.wrong_reference_target <= 8) std.debug.print("zntc: post-minify-symbol-detail kind=wrong-reference-target node={d} name={s} actual={d} resolved={d}\n", .{ raw, ast.getText(ast.nodes.items[raw].data.string_ref), actual.?, resolved.? });
+        }
+    }
+    return report;
+}
+
+pub fn printPostMinify(file_path: []const u8, report: PostMinifyReport) void {
+    std.debug.print(
+        "zntc: symbol-identity-post-minify {s}: bindings={d} references={d} external={d} helpers={d} preserved_transform_refs={d} missing_binding_id={d} missing_reference_id={d} dangling_reference_id={d} wrong_reference_target={d} clean={d}\n",
+        .{
+            file_path,
+            report.bindings_checked,
+            report.references_checked,
+            report.external_references,
+            report.helper_references,
+            report.preserved_transform_references,
+            report.missing_binding_id,
+            report.missing_reference_id,
+            report.dangling_reference_id,
+            report.wrong_reference_target,
+            @intFromBool(report.isClean()),
+        },
+    );
 }
 
 pub fn printExact(file_path: []const u8, report: ExactReport) void {
@@ -4464,5 +4716,90 @@ test "exact identity audit requires node provenance for external references and 
     try std.testing.expectEqual(@as(usize, 3), report.external_references);
     try std.testing.expectEqual(@as(usize, 2), report.unclassified_reference);
     try std.testing.expectEqual(@as(usize, 1), report.missing_binding);
+    try std.testing.expect(!report.isClean());
+}
+
+test "post-minify audit accepts an alias read rebound to a surviving binding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+
+    const name = try ast.addString("parameter");
+    const binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const reference = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const list = try ast.addNodeList(&.{ binding, reference });
+    const root = try ast.addNode(.{ .tag = .block_statement, .span = name, .data = .{ .list = list } });
+    var actual = [_]?u32{ 7, 7, null };
+    var resolved = [_]?u32{ 2, 2, null };
+    actual[@intFromEnum(binding)] = 7;
+    actual[@intFromEnum(reference)] = 7;
+    resolved[@intFromEnum(binding)] = 2;
+    resolved[@intFromEnum(reference)] = 2;
+
+    const empty_helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+    const empty_markers: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const empty_class_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const report = try checkPostMinify(allocator, &ast, root, &actual, &resolved, &.{}, &.{}, &.{}, &.{}, &empty_helper_scope_map, &empty_markers, &empty_class_symbols, &empty_class_symbols);
+    try std.testing.expect(report.isClean());
+    try std.testing.expectEqual(@as(usize, 1), report.bindings_checked);
+    try std.testing.expectEqual(@as(usize, 1), report.references_checked);
+}
+
+test "post-minify audit rejects a reference to an erased alias symbol" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+
+    const name = try ast.addString("parameter");
+    const binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const reference = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const list = try ast.addNodeList(&.{ binding, reference });
+    const root = try ast.addNode(.{ .tag = .block_statement, .span = name, .data = .{ .list = list } });
+    var actual = [_]?u32{ 7, 9, null };
+    var resolved = [_]?u32{ 2, 2, null };
+    actual[@intFromEnum(binding)] = 7;
+    actual[@intFromEnum(reference)] = 9;
+    resolved[@intFromEnum(binding)] = 2;
+    resolved[@intFromEnum(reference)] = 2;
+
+    const empty_helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+    const empty_markers: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const empty_class_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const report = try checkPostMinify(allocator, &ast, root, &actual, &resolved, &.{}, &.{}, &.{}, &.{}, &empty_helper_scope_map, &empty_markers, &empty_class_symbols, &empty_class_symbols);
+    try std.testing.expectEqual(@as(usize, 1), report.dangling_reference_id);
+    try std.testing.expect(!report.isClean());
+}
+
+test "post-minify audit rejects a reference mapped to the wrong shadowed binding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+
+    const name = try ast.addString("x");
+    const outer = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const inner = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const reference = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const list = try ast.addNodeList(&.{ outer, inner, reference });
+    const root = try ast.addNode(.{ .tag = .block_statement, .span = name, .data = .{ .list = list } });
+    var actual = [_]?u32{ 3, 4, 3, null };
+    var resolved = [_]?u32{ 10, 11, 11, null };
+    actual[@intFromEnum(outer)] = 3;
+    actual[@intFromEnum(inner)] = 4;
+    actual[@intFromEnum(reference)] = 3;
+    resolved[@intFromEnum(outer)] = 10;
+    resolved[@intFromEnum(inner)] = 11;
+    resolved[@intFromEnum(reference)] = 11;
+
+    const empty_helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+    const empty_markers: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const empty_class_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const report = try checkPostMinify(allocator, &ast, root, &actual, &resolved, &.{}, &.{}, &.{}, &.{}, &empty_helper_scope_map, &empty_markers, &empty_class_symbols, &empty_class_symbols);
+    try std.testing.expectEqual(@as(usize, 1), report.wrong_reference_target);
     try std.testing.expect(!report.isClean());
 }

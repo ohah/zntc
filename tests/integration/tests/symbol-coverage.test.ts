@@ -7,7 +7,7 @@
 //
 // 다운레벨 오라클의 JS·TypeScript·Flow fixture 전체 × 타깃에서 단일 파일 변환을 돌려 누락 검사기
 // (`ZNTC_DEBUG_SYMBOL_COVERAGE`) 와 합성 변수까지 포함한 exact identity 감사가 깨끗한지 본다.
-// 현재 보고서는 transform 직후이며, minify·최종 이름 결정 단계의 검증은 별도 후속 게이트다.
+// transform 직후 exact 검사와 minify 후 최종 AST 재분석 identity 검사를 함께 확인한다.
 import { describe, test, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -955,4 +955,95 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test('minify 뒤에도 살아 있는 심볼 참조가 최종 바인딩을 가리킨다', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-post-minify-symbol-'));
+    try {
+      const input = join(dir, 'input.mjs');
+      const output = join(dir, 'out.mjs');
+      writeFileSync(
+        input,
+        [
+          'function alias(parameterName) {',
+          '  const firstAlias = parameterName;',
+          '  const secondAlias = firstAlias;',
+          '  return secondAlias;',
+          '}',
+          'function shadow(outerValue) {',
+          '  const first = outerValue;',
+          '  { const second = first; return second; }',
+          '}',
+          'export { alias, shadow };',
+        ].join('\n'),
+      );
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [input, '--minify-syntax', '--minify-identifiers', '-o', output],
+        {
+          env: {
+            ...process.env,
+            ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+            PATH: process.env.PATH ?? '/usr/bin:/bin',
+          },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      expect(proc.stderr).toMatch(
+        /symbol-identity-post-minify .* missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+      );
+      expect(readFileSync(output, 'utf8')).toContain('function');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5와 ESNext minify 출력에서 전체 oracle의 살아 있는 심볼 연결이 정확하다', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-post-minify-matrix-'));
+    try {
+      const minifyTargets = [TARGETS[0], TARGETS[4]];
+      const minifyModes = [
+        ['--minify-syntax'],
+        ['--minify-identifiers'],
+        ['--minify-syntax', '--minify-identifiers'],
+      ];
+      const problems: string[] = [];
+      let runs = 0;
+      for (const file of fixtures) {
+        const isFlow = file.endsWith('.flow.mjs') || file.endsWith('.flow');
+        for (const target of minifyTargets) {
+          for (const mode of minifyModes) {
+            const output = join(dir, `${runs}.js`);
+            const proc = spawnSync(
+              ZNTC_BIN,
+              [file, target.arg, ...(isFlow ? ['--flow'] : []), ...mode, '-o', output],
+              {
+                env: {
+                  ...process.env,
+                  ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+                  PATH: process.env.PATH ?? '/usr/bin:/bin',
+                },
+                encoding: 'utf8',
+              },
+            );
+            const stderr = proc.stderr ?? '';
+            const audit = stderr
+              .split('\n')
+              .find((line) => line.includes('zntc: symbol-identity-post-minify '));
+            if (proc.status !== 0 || !audit || !audit.includes('clean=1')) {
+              problems.push(
+                `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: ${stderr}`,
+              );
+            }
+            runs += 1;
+          }
+        }
+      }
+      expect(fixtures.length).toBeGreaterThan(0);
+      expect(runs).toBe(fixtures.length * minifyTargets.length * minifyModes.length);
+      expect(problems).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 600_000);
 });
