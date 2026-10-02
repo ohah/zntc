@@ -188,7 +188,12 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
                 facts.has_flow_runtime_syntax_without_complete_graph = true;
             },
 
-            .ts_import_equals_declaration,
+            // Import-equals is rewritten to a const declaration by the
+            // transformer. Its binding and value references are retained in
+            // the edited semantic graph, so it does not need post-transform
+            // symbol reconstruction.
+            .ts_import_equals_declaration => facts.has_runtime_sensitive_syntax = true,
+
             .ts_export_assignment,
             .ts_namespace_export_declaration,
             => {
@@ -2042,6 +2047,22 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     _ = try namespace_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), namespace_parser.errors.items.len);
     try std.testing.expect(canMangleWithTransformSemantic(minify, &namespace_parser));
+
+    var import_equals_scanner = try Scanner.init(
+        allocator,
+        "namespace Source { export let value = 40; } import Alias = Source; console.log(Alias.value + 2);",
+    );
+    var import_equals_parser = Parser.init(allocator, &import_equals_scanner);
+    import_equals_parser.configureFromExtension(".ts");
+    _ = try import_equals_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), import_equals_parser.errors.items.len);
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &import_equals_parser));
+
+    var export_equals_scanner = try Scanner.init(allocator, "const value = 1; export = value;");
+    var export_equals_parser = Parser.init(allocator, &export_equals_scanner);
+    export_equals_parser.configureFromExtension(".ts");
+    _ = try export_equals_parser.parse();
+    try std.testing.expect(!canMangleWithTransformSemantic(minify, &export_equals_parser));
 
     var enum_scanner = try Scanner.init(allocator, "enum Color { Red }");
     var enum_parser = Parser.init(allocator, &enum_scanner);

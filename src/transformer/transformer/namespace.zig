@@ -14,7 +14,8 @@ const Error = Transformer.Error;
 pub fn visitImportEqualsDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
     const name_idx = node.data.binary.left;
     const value_idx = node.data.binary.right;
-    const new_name = try self.visitNode(name_idx);
+    const name_node = self.ast.getNode(name_idx);
+    const new_name = try self.makeUserBinding(name_node.span, name_idx);
     const new_value = try self.visitNode(value_idx);
 
     const decl_extra = try self.ast.addExtras(&.{
