@@ -2033,6 +2033,110 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stdout.trim()).toBe('4 outer');
   });
 
+  test('bundler retains top-level local export aliases and resyncs source re-exports', async () => {
+    const fixture = await createFixture({
+      'provider.ts': [
+        'type Value = number;',
+        'const _shared = 7;',
+        'enum _Mode { Ready = 3, Next = Ready + 1 }',
+        'function _read(_shared: Value): Value { return _shared + _Mode.Next; }',
+        'namespace _Region { export const value = 2; }',
+        'class _Box { static value = 11; }',
+        'export { _shared as publicValue, _shared as secondPublicValue, _read as read, _Region as region, _Box as Box };',
+        'export { _Mode };',
+        'export { _read as default };',
+      ].join('\n'),
+      'barrel.ts': [
+        "export { publicValue as throughBarrel } from './provider.ts';",
+        'enum _BarrelMode { Value = 2, Next = Value + 1 }',
+        "console.log('BARREL_SIDE_EFFECT');",
+      ].join('\n'),
+      'entry.ts': [
+        "import _default, { publicValue as _publicValue, secondPublicValue as _second, read as _read, region as _region, Box as _Box, _Mode as _mode } from './provider.ts';",
+        "import { throughBarrel as _through } from './barrel.ts';",
+        'console.log(_publicValue, _second, _read(5), _default(10), _through, _region.value, _Box.value, _mode.Next);',
+      ].join('\n'),
+      'type-only-export.ts': [
+        'interface _Shape { value: number }',
+        'export { _Shape as PublicShape };',
+        'enum LongStatus { Ready = 3, Next = Ready + 1 }',
+        'console.log(LongStatus.Next);',
+      ].join('\n'),
+      'explicit-type-only-export.ts': [
+        'interface _Shape { value: number }',
+        'export { type _Shape as PublicShape };',
+        'enum LongStatus { Ready = 3, Next = Ready + 1 }',
+        'console.log(LongStatus.Next);',
+      ].join('\n'),
+      'string-export.ts': [
+        'const _value = 7;',
+        'export { _value as "public-value" };',
+        'enum LongStatus { Ready = 3, Next = Ready + 1 }',
+        'console.log(LongStatus.Next);',
+      ].join('\n'),
+    });
+    cleanup = fixture.cleanup;
+
+    async function bundle(entry: string, suffix: string) {
+      const output = join(fixture.dir, `${suffix}.mjs`);
+      const result = await runZntc(
+        [
+          '--bundle',
+          join(fixture.dir, entry),
+          '-o',
+          output,
+          '--platform=node',
+          '--format=esm',
+          '--target=esnext',
+          '--minify-identifiers',
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, `${entry}: ${result.stderr}`).toBe(0);
+      return { output, stderr: result.stderr };
+    }
+
+    const result = await bundle('entry.ts', 'local-export-aliases');
+    const output = result.output;
+
+    const identities = result.stderr
+      .split(/\r?\n/)
+      .filter((line) => line.includes('zntc: symbol-identity-prepass '));
+    const providerIdentity = identities.find((line) => line.includes('provider.ts:'));
+    expect(providerIdentity).toBeDefined();
+    expect(providerIdentity).toMatch(/clean=1(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(providerIdentity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    expect(identities.some((line) => line.includes('barrel.ts:'))).toBe(false);
+    expect(identities.some((line) => line.includes('entry.ts:'))).toBe(false);
+
+    const transformed = await runNode(output);
+    expect(transformed.stderr).toBe('');
+    expect(transformed.stdout.trim()).toBe('BARREL_SIDE_EFFECT\n7 7 9 14 7 2 11 4');
+
+    const explicitTypeOnly = await bundle(
+      'explicit-type-only-export.ts',
+      'explicit-type-only-export',
+    );
+    const explicitIdentity = explicitTypeOnly.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('explicit-type-only-export.ts:'));
+    expect(explicitIdentity).toBeDefined();
+    expect(explicitIdentity).toMatch(/clean=1(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(explicitIdentity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const explicitResult = await runNode(explicitTypeOnly.output);
+    expect(explicitResult.stderr).toBe('');
+    expect(explicitResult.stdout.trim()).toBe('4');
+
+    for (const entry of ['type-only-export.ts', 'string-export.ts']) {
+      const rejected = await bundle(entry, entry.replace('.ts', '-fallback'));
+      expect(rejected.stderr).not.toContain(`${entry}:`);
+    }
+  });
+
   test('Flow enum bindings and codegen globals keep distinct symbols when mangled', async () => {
     const fixture = await createFixture({
       'input.js': `

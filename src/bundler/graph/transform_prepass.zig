@@ -217,6 +217,88 @@ fn isSupportedRuntimeTsEnum(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     return ast.extra_data.items[extra + 3] == 0;
 }
 
+/// Source-less export lists at the program root retain local references and
+/// rebuild export bindings from the transformed AST. Re-exports, namespace
+/// exports, and string export names require the full graph resync path.
+fn hasOnlyTopLevelLocalExportSpecifiers(module: *const Module) bool {
+    const ast = &(module.ast orelse return false);
+    const semantic = &(module.semantic orelse return false);
+    var specifier_count: usize = 0;
+    for (ast.nodes.items) |node| {
+        if (node.tag == .export_specifier) specifier_count += 1;
+    }
+    if (specifier_count == 0) return true;
+    if (ast.nodes.items.len == 0) return false;
+
+    const root_idx = ast.transformed_root orelse @as(
+        ast_mod.NodeIndex,
+        @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))),
+    );
+    if (root_idx.isNone() or @intFromEnum(root_idx) >= ast.nodes.items.len) return false;
+    const root = ast.getNode(root_idx);
+    if (root.tag != .program) return false;
+
+    const extras = ast.extra_data.items;
+    const statements = root.data.list;
+    if (statements.start > extras.len or statements.len > extras.len - statements.start) return false;
+
+    var safe_specifier_count: usize = 0;
+    for (extras[statements.start .. statements.start + statements.len]) |raw_stmt_idx| {
+        if (raw_stmt_idx >= ast.nodes.items.len) return false;
+        const statement = ast.getNode(@enumFromInt(raw_stmt_idx));
+        if (statement.tag != .export_named_declaration) continue;
+
+        const extra_start = statement.data.extra;
+        if (extra_start > extras.len or extras.len - extra_start < 6) return false;
+        const export_decl = module_parser.readExportNamedExtras(ast, extra_start);
+        if (export_decl.specs_len == 0) continue;
+        if (!export_decl.decl.isNone()) return false;
+        if (!export_decl.source.isNone()) return false;
+        if (export_decl.specs_start > extras.len or
+            export_decl.specs_len > extras.len - export_decl.specs_start) return false;
+
+        for (extras[export_decl.specs_start .. export_decl.specs_start + export_decl.specs_len]) |raw_spec_idx| {
+            if (raw_spec_idx >= ast.nodes.items.len) return false;
+            const specifier = ast.getNode(@enumFromInt(raw_spec_idx));
+            if (specifier.tag != .export_specifier) return false;
+            if ((specifier.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0) {
+                safe_specifier_count += 1;
+                continue;
+            }
+
+            const local_idx = specifier.data.binary.left;
+            if (local_idx.isNone() or @intFromEnum(local_idx) >= ast.nodes.items.len) return false;
+            if (ast.getNode(local_idx).tag != .identifier_reference) return false;
+
+            const local_raw = @intFromEnum(local_idx);
+            if (local_raw >= semantic.symbol_ids.len) return false;
+            const symbol_id = semantic.symbol_ids[local_raw] orelse return false;
+            if (symbol_id >= semantic.symbols.items.len) return false;
+            switch (semantic.symbols.items[symbol_id].kind) {
+                .variable_var,
+                .variable_let,
+                .variable_const,
+                .function_decl,
+                .generator_decl,
+                .async_function_decl,
+                .async_generator_decl,
+                .class_decl,
+                => {},
+                else => return false,
+            }
+
+            const exported_idx = specifier.data.binary.right;
+            if (!exported_idx.isNone()) {
+                if (@intFromEnum(exported_idx) >= ast.nodes.items.len) return false;
+                if (ast.getNode(exported_idx).tag != .identifier_reference) return false;
+            }
+            safe_specifier_count += 1;
+        }
+    }
+
+    return safe_specifier_count == specifier_count;
+}
+
 fn canKeepPrepassSemanticGraph(
     self: anytype,
     module: *const Module,
@@ -236,6 +318,7 @@ fn canKeepPrepassSemanticGraph(
         !options.use_define_for_class_fields or options.experimental_decorators or
         options.emit_decorator_metadata or options.tla_chunk_wrapped or options.tla_export_decl_deferrable) return false;
     if (module.uses_top_level_await or module.self_uses_top_level_await) return false;
+    if (!hasOnlyTopLevelLocalExportSpecifiers(module)) return false;
 
     var found_transform = false;
     for (ast.nodes.items) |node| {
@@ -248,7 +331,6 @@ fn canKeepPrepassSemanticGraph(
             .flow_match_expression => found_transform = true,
             // These constructs can alter the import/export graph or create
             // dynamic-name environments independently of Flow match lowering.
-            .export_specifier,
             .export_all_declaration,
             .ts_import_equals_declaration,
             .ts_export_assignment,
