@@ -1655,7 +1655,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(escapedFallback.stdout.trim()).toBe('6 6');
   });
 
-  test('bundler retains local and exported runtime enum identities and resyncs erased enums and namespaces', async () => {
+  test('bundler retains runtime enum and namespace identities and resyncs erased declarations', async () => {
     const fixture = await createFixture({
       'runtime-enum.ts': [
         "function _LongStatus() { return 'outer'; }",
@@ -1689,11 +1689,12 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       'namespace-provider.ts': [
         "function _LongNamespace() { return 'outer'; }",
         'export namespace LongNamespace { export const value = 3; export namespace Inner { export const next = LongNamespace.value + 1; } }',
+        'export namespace LongNamespace { export const finalValue = Inner.next + 1; }',
         'export function getLongNamespaceLabel() { return _LongNamespace(); }',
       ].join('\n'),
       'namespace-entry.ts': [
         "import { LongNamespace as NS, getLongNamespaceLabel } from './namespace-provider.ts';",
-        'console.log(NS.value, NS.Inner.next, getLongNamespaceLabel());',
+        'console.log(NS.value, NS.Inner.next, NS.finalValue, getLongNamespaceLabel());',
       ].join('\n'),
       'namespace-local-shadow.ts': [
         "const N = { value: 'outer' };",
@@ -1712,10 +1713,29 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         'namespace Mergeable { export const extra = 3; }',
         'console.log(Mergeable.Value, Mergeable.extra, _Mergeable());',
       ].join('\n'),
+      'namespace-class-merge.ts': [
+        "function _Mergeable() { return 'outer'; }",
+        'class Mergeable { static base = 2; }',
+        'namespace Mergeable { export const value = 3; }',
+        'console.log(Mergeable.base, Mergeable.value, _Mergeable());',
+      ].join('\n'),
+      'namespace-destructuring-merge.ts': [
+        "namespace LongNamespace { export const { value, nested: { label } } = { value: 3, nested: { label: 'ok' } }; }",
+        'namespace LongNamespace { export const finalValue = value + 2; }',
+        'console.log(LongNamespace.value, LongNamespace.label, LongNamespace.finalValue);',
+      ].join('\n'),
       'namespace-merged.ts': [
-        'namespace LongNamespace { export const value = 3; }',
-        'namespace LongNamespace { export const finalValue = 5; }',
-        'console.log(LongNamespace.value, LongNamespace.finalValue);',
+        "function _LongNamespace() { return 'outer'; }",
+        'namespace LongNamespace {',
+        '  export const value = 3;',
+        '  export function first() { return value; }',
+        '  export namespace Inner { export const next = LongNamespace.value + 1; }',
+        '}',
+        'namespace LongNamespace {',
+        '  export const finalValue = Inner.next + 1;',
+        '  export function readWithLocalShadow() { const value = 9; return value + finalValue; }',
+        '}',
+        'console.log(LongNamespace.value, LongNamespace.first(), LongNamespace.Inner.next, LongNamespace.finalValue, LongNamespace.readWithLocalShadow(), _LongNamespace());',
       ].join('\n'),
       'namespace-nested-merged.ts': [
         'namespace Root {',
@@ -1724,9 +1744,24 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         '}',
         'console.log(Root.Inner.first, Root.Inner.second);',
       ].join('\n'),
+      'namespace-dotted-merged.ts': [
+        'namespace Root.Middle.Leaf { export const first = 1; }',
+        'namespace Root.Middle.Leaf { export const second = first + 1; }',
+        'console.log(Root.Middle.Leaf.first, Root.Middle.Leaf.second);',
+      ].join('\n'),
       'ambient-namespace.ts': [
         'declare namespace Ambient { const value: number; }',
         "console.log('ok');",
+      ].join('\n'),
+      'namespace-merged-erased-second.ts': [
+        'namespace N { export const first = 1; }',
+        'namespace N { export interface Shape { x: number } }',
+        'console.log(N.first);',
+      ].join('\n'),
+      'namespace-merged-erased-first.ts': [
+        'namespace N { export interface Shape { x: number } }',
+        'namespace N { export const value = 3; }',
+        'console.log(N.value);',
       ].join('\n'),
     });
     cleanup = fixture.cleanup;
@@ -1818,8 +1853,8 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     await expectRetainedNamespace(
       'namespace-entry.ts',
       'namespace-export-retained',
-      2,
-      '3 4 outer',
+      3,
+      '3 4 5 outer',
     );
     await expectRetainedNamespace(
       'namespace-local-shadow.ts',
@@ -1839,12 +1874,50 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       1,
       '2 3 outer',
     );
+    await expectRetainedNamespace(
+      'namespace-class-merge.ts',
+      'namespace-class-merge-retained',
+      1,
+      '2 3 outer',
+    );
+    await expectRetainedNamespace(
+      'namespace-destructuring-merge.ts',
+      'namespace-destructuring-merge-retained',
+      2,
+      '3 ok 5',
+    );
+    await expectRetainedNamespace(
+      'namespace-merged.ts',
+      'namespace-merged-retained',
+      3,
+      '3 3 4 5 14 outer',
+    );
+    await expectRetainedNamespace(
+      'namespace-nested-merged.ts',
+      'namespace-nested-merged-retained',
+      3,
+      '1 2',
+    );
+    await expectRetainedNamespace(
+      'namespace-dotted-merged.ts',
+      'namespace-dotted-merged-retained',
+      6,
+      '1 2',
+    );
+    await expectRetainedNamespace(
+      'namespace-merged-erased-second.ts',
+      'namespace-merged-erased-second-retained',
+      1,
+      '1',
+    );
+    await expectRetainedNamespace(
+      'namespace-merged-erased-first.ts',
+      'namespace-merged-erased-first-retained',
+      1,
+      '3',
+    );
 
-    for (const [entry, expected] of [
-      ['namespace-merged.ts', '3 5'],
-      ['namespace-nested-merged.ts', '1 2'],
-      ['ambient-namespace.ts', 'ok'],
-    ] as const) {
+    for (const [entry, expected] of [['ambient-namespace.ts', 'ok']] as const) {
       const fallback = await bundle(entry, entry.replace('.ts', '-fallback'));
       expect(fallback.stderr).not.toContain('symbol-identity-prepass');
       const result = await runNode(fallback.output);
