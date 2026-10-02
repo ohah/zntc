@@ -10,6 +10,7 @@ const SyntheticKind = @import("../semantic/symbol.zig").SyntheticKind;
 const rt = @import("../bundler/runtime_helpers.zig");
 const bindings = @import("bindings.zig");
 const NamespaceFrame = @import("codegen.zig").NamespaceFrame;
+const NamespacePrefix = @import("codegen.zig").NamespacePrefix;
 
 /// enum Color { Red, Green = 5, Blue } →
 /// var Color;((Color) => {Color[Color["Red"]=0]="Red";Color[Color["Green"]=5]="Green";Color[Color["Blue"]=6]="Blue";})(Color || (Color = {}));
@@ -19,11 +20,11 @@ pub fn emitEnumIIFE(self: anytype, node: Node, enum_idx: NodeIndex) !void {
 
 /// The exported enum declaration itself supplies the namespace member target.
 /// Its local binding is initialized from that shared object before members run.
-fn emitNamespaceEnumIIFE(self: anytype, node: Node, enum_idx: NodeIndex, namespace_param: []const u8) !void {
+fn emitNamespaceEnumIIFE(self: anytype, node: Node, enum_idx: NodeIndex, namespace_param: NamespacePrefix) !void {
     return emitEnumIIFEInner(self, node, enum_idx, namespace_param);
 }
 
-fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_param: ?[]const u8) !void {
+fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_param: ?NamespacePrefix) !void {
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
@@ -219,12 +220,13 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
     try self.write(";})(");
     try self.emitNode(name_idx);
     if (namespace_param) |ns| {
+        const ns_name = self.namespacePrefixName(ns);
         try self.writeByte('=');
-        try self.write(ns);
+        try self.write(ns_name);
         try self.writeByte('.');
         try self.write(name_text);
         try self.write(" || (");
-        try self.write(ns);
+        try self.write(ns_name);
         try self.writeByte('.');
         try self.write(name_text);
         try self.write(" = {}));");
@@ -368,7 +370,7 @@ pub fn emitNamespaceIIFE(self: anytype, node: Node, namespace_idx: NodeIndex) !v
 const NamespacePlacement = union(enum) {
     root,
     local,
-    property: []const u8,
+    property: NamespacePrefix,
 };
 
 /// Placement distinguishes a top-level namespace, a private nested binding,
@@ -450,6 +452,10 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
         const name_text = self.ast.getText(name_node.span);
         const local_name = namespaceLocalName(self, name_idx, name_text);
         const iife_param_name = namespaceIifeParamName(self, namespace_idx) orelse name_text;
+        const namespace_prefix: NamespacePrefix = .{
+            .symbol_id = namespaceIifeParamSymbolId(self, namespace_idx),
+            .fallback_name = iife_param_name,
+        };
 
         // A nested namespace is block-scoped whether it is private or exported.
         if (namespacePlacementIsNested(placement)) {
@@ -469,7 +475,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
             self.declared_names = outer_declared_names;
         }
         // 내부 namespace를 재귀 출력 (부모 이름 전달)
-        try emitNamespaceIIFEInner(self, body_node, body_idx, .{ .property = iife_param_name });
+        try emitNamespaceIIFEInner(self, body_node, body_idx, .{ .property = namespace_prefix });
         try emitNamespaceIIFEClosing(self, placement, local_name, name_text);
         return;
     }
@@ -544,6 +550,10 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
             std.heap.page_allocator.free(candidate);
         }
     }
+    const namespace_prefix: NamespacePrefix = .{
+        .symbol_id = namespaceIifeParamSymbolId(self, namespace_idx),
+        .fallback_name = param_name,
+    };
 
     // ((Foo) => { ... })(Foo || (Foo = {}));
     try self.write("((");
@@ -554,10 +564,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
     // properties. Track precisely those source symbols, including a parent
     // namespace frame for references from a nested namespace body.
     var frame: NamespaceFrame = .{
-        .prefix = .{
-            .symbol_id = namespaceIifeParamSymbolId(self, namespace_idx),
-            .fallback_name = param_name,
-        },
+        .prefix = namespace_prefix,
         .owner_symbol = if (self.sourceSymbolId(name_idx)) |sid| blk: {
             if (self.options.namespace_declaration_owners) |owners| {
                 break :blk owners.get(sid) orelse sid;
@@ -599,35 +606,35 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
                         // export edge, not an ECMAScript module export. Preserve
                         // the edge here and emit the local through its SymbolId so
                         // later renames stay attached to the binding.
-                        try emitNamespaceExportSpecifiers(self, param_name, extras[1], extras[2]);
+                        try emitNamespaceExportSpecifiers(self, namespace_prefix, extras[1], extras[2]);
                         continue;
                     }
                     if (!decl_idx.isNone()) {
                         const decl_node = self.ast.getNode(decl_idx);
                         // export namespace bar {} → 중첩 namespace (부모 이름 전달)
                         if (decl_node.tag == .ts_module_declaration) {
-                            try emitNamespaceIIFEInner(self, decl_node, decl_idx, .{ .property = param_name });
+                            try emitNamespaceIIFEInner(self, decl_node, decl_idx, .{ .property = namespace_prefix });
                         } else if (decl_node.tag == .variable_declaration) {
                             // 단순 바인딩(identifier)은 직접 프로퍼티 할당: ns.a=1;
                             // destructuring(array_pattern/object_pattern)이 섞이면 선언자마다 따로 낸다.
                             if (isSimpleVarDeclaration(self, decl_idx)) {
-                                try emitNamespaceVarDirectAssign(self, param_name, decl_idx);
+                                try emitNamespaceVarDirectAssign(self, namespace_prefix, decl_idx);
                             } else {
-                                try emitNamespaceVarMixed(self, param_name, decl_idx);
+                                try emitNamespaceVarMixed(self, namespace_prefix, decl_idx);
                             }
                         } else if (decl_node.tag == .ts_enum_declaration) {
                             // The exported declaration names the exact member of this
                             // namespace object. Reuse its existing object across
                             // merged namespace IIFEs before evaluating enum members.
-                            try emitNamespaceEnumIIFE(self, decl_node, decl_idx, param_name);
+                            try emitNamespaceEnumIIFE(self, decl_node, decl_idx, namespace_prefix);
                         } else {
                             try self.emitNode(decl_idx);
-                            try emitNamespaceExport(self, param_name, decl_idx);
+                            try emitNamespaceExport(self, namespace_prefix, decl_idx);
                         }
                     }
                 },
                 .export_default_declaration => {
-                    try self.write(param_name);
+                    try self.write(self.namespacePrefixName(namespace_prefix));
                     try self.write(".default=");
                     try self.emitNode(stmt_node.data.unary.operand);
                     try self.writeByte(';');
@@ -658,7 +665,8 @@ fn emitNamespaceIIFEClosing(
 ) !void {
     switch (placement) {
         .root, .local => try emitIIFEClosing(self, local_name),
-        .property => |parent_name| {
+        .property => |parent_prefix| {
+            const parent_name = self.namespacePrefixName(parent_prefix);
             try self.write("})(");
             try self.write(local_name);
             try self.write(" = ");
@@ -683,7 +691,8 @@ fn emitIIFEClosing(self: anytype, name_text: []const u8) !void {
     try self.write(" = {}));");
 }
 
-fn emitNamespaceExportSpecifiers(self: anytype, ns_name: []const u8, specs_start: u32, specs_len: u32) !void {
+fn emitNamespaceExportSpecifiers(self: anytype, ns_prefix: NamespacePrefix, specs_start: u32, specs_len: u32) !void {
+    const ns_name = self.namespacePrefixName(ns_prefix);
     const spec_indices = self.ast.extra_data.items[specs_start .. specs_start + specs_len];
     for (spec_indices) |raw_idx| {
         const spec = self.ast.getNode(@enumFromInt(raw_idx));
@@ -716,7 +725,8 @@ fn emitNamespaceExportSpecifiers(self: anytype, ns_name: []const u8, specs_start
 }
 
 /// namespace 내부의 export 선언에서 이름을 추출하여 Foo.name = name; 형태로 출력.
-fn emitNamespaceExport(self: anytype, ns_name: []const u8, decl_idx: NodeIndex) !void {
+fn emitNamespaceExport(self: anytype, ns_prefix: NamespacePrefix, decl_idx: NodeIndex) !void {
+    const ns_name = self.namespacePrefixName(ns_prefix);
     const decl = self.ast.getNode(decl_idx);
     switch (decl.tag) {
         .variable_declaration => {
@@ -732,7 +742,7 @@ fn emitNamespaceExport(self: anytype, ns_name: []const u8, decl_idx: NodeIndex) 
                 const de = declarator.data.extra;
                 const d_extras = self.ast.extra_data.items[de .. de + 3];
                 const name_idx: NodeIndex = @enumFromInt(d_extras[0]);
-                try emitNamespaceBindingExport(self, ns_name, name_idx);
+                try emitNamespaceBindingExport(self, ns_prefix, name_idx);
             }
         },
         .function_declaration, .class_declaration, .ts_enum_declaration => {
@@ -760,8 +770,9 @@ fn emitNamespaceExport(self: anytype, ns_name: []const u8, decl_idx: NodeIndex) 
 /// binding_identifier → ns.x = x;
 /// array_pattern → 각 요소 재귀
 /// object_pattern → 각 프로퍼티의 value 재귀
-fn emitNamespaceBindingExport(self: anytype, ns_name: []const u8, name_idx: NodeIndex) !void {
+fn emitNamespaceBindingExport(self: anytype, ns_prefix: NamespacePrefix, name_idx: NodeIndex) !void {
     if (name_idx.isNone()) return;
+    const ns_name = self.namespacePrefixName(ns_prefix);
     const node = self.ast.getNode(name_idx);
     switch (node.tag) {
         .binding_identifier => {
@@ -778,10 +789,10 @@ fn emitNamespaceBindingExport(self: anytype, ns_name: []const u8, name_idx: Node
         .array_pattern => {
             const split = self.ast.nodeListSplitRest(node.data.list);
             for (split.elements) |raw_idx| {
-                try emitNamespaceBindingExport(self, ns_name, @enumFromInt(raw_idx));
+                try emitNamespaceBindingExport(self, ns_prefix, @enumFromInt(raw_idx));
             }
             if (split.rest_operand) |op| {
-                try emitNamespaceBindingExport(self, ns_name, op);
+                try emitNamespaceBindingExport(self, ns_prefix, op);
             }
         },
         .object_pattern => {
@@ -789,16 +800,16 @@ fn emitNamespaceBindingExport(self: anytype, ns_name: []const u8, name_idx: Node
             for (split.elements) |raw_idx| {
                 const prop = self.ast.getNode(@enumFromInt(raw_idx));
                 // property_property: binary.right = value (binding pattern)
-                try emitNamespaceBindingExport(self, ns_name, prop.data.binary.right);
+                try emitNamespaceBindingExport(self, ns_prefix, prop.data.binary.right);
             }
             if (split.rest_operand) |op| {
-                try emitNamespaceBindingExport(self, ns_name, op);
+                try emitNamespaceBindingExport(self, ns_prefix, op);
             }
         },
         // `[b = 7]`·`{ x = 1 }` — 바인딩 패턴의 기본값은 `assignment_pattern` 이다. 빠뜨리면
         // 그 이름이 namespace 에 안 실린다.
         .assignment_target_with_default, .assignment_pattern => {
-            try emitNamespaceBindingExport(self, ns_name, node.data.binary.left);
+            try emitNamespaceBindingExport(self, ns_prefix, node.data.binary.left);
         },
         else => {},
     }
@@ -826,7 +837,8 @@ fn isSimpleVarDeclaration(self: anytype, decl_idx: NodeIndex) bool {
 /// namespace 내부의 export variable_declaration을 직접 ns.prop = init 형태로 출력.
 /// local 변수를 만들지 않으므로 reserved word 문제(let await)와 stale local 문제를 모두 해결.
 /// 예: export let a = 1, b = a → ns.a=1;ns.b=ns.a;
-fn emitNamespaceVarDirectAssign(self: anytype, ns_name: []const u8, decl_idx: NodeIndex) !void {
+fn emitNamespaceVarDirectAssign(self: anytype, ns_prefix: NamespacePrefix, decl_idx: NodeIndex) !void {
+    const ns_name = self.namespacePrefixName(ns_prefix);
     const decl = self.ast.getNode(decl_idx);
     const keyword = bindings.declarationKeyword(self, self.ast.variableDeclarationKind(decl));
     const e = decl.data.extra;
@@ -869,7 +881,8 @@ fn emitNamespaceVarDirectAssign(self: anytype, ns_name: []const u8, decl_idx: No
 /// 같은 선언 안의 참조가 `ns.x` 로 치환되는데, 그 값은 선언이 끝난 뒤에야 복사되므로 아직
 /// 비어 있다 — `export const x = 1, [y] = [x]` 에서 y 가 undefined. 구조 분해를 낮추며 생긴
 /// 임시 변수(`_a = o, a = _a.a`)가 minify 의 선언 병합으로 패턴 선언자와 한 선언이 될 때도 같다.
-fn emitNamespaceVarMixed(self: anytype, ns_name: []const u8, decl_idx: NodeIndex) !void {
+fn emitNamespaceVarMixed(self: anytype, ns_prefix: NamespacePrefix, decl_idx: NodeIndex) !void {
+    const ns_name = self.namespacePrefixName(ns_prefix);
     const decl = self.ast.getNode(decl_idx);
     const keyword = bindings.declarationKeyword(self, self.ast.variableDeclarationKind(decl));
     const e = decl.data.extra;
@@ -906,7 +919,7 @@ fn emitNamespaceVarMixed(self: anytype, ns_name: []const u8, decl_idx: NodeIndex
             try self.write(keyword);
             try self.emitNode(@enumFromInt(raw_idx));
             try self.writeByte(';');
-            try emitNamespaceBindingExport(self, ns_name, name_idx);
+            try emitNamespaceBindingExport(self, ns_prefix, name_idx);
         }
     }
 }
