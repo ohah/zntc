@@ -460,7 +460,9 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 // jsx_identifier → identifier_reference (symbol_id 전파로 번들러 rename 반영)
                 const text = self.ast.getText(left_node.span);
                 const id_span = try self.ast.addString(text);
-                break :blk try self.makeIdentifierRefWithSymbolAt(id_span, left_node.span, left_idx);
+                const ref = try self.makeIdentifierRefWithSymbolAt(id_span, left_node.span, left_idx);
+                try self.replaceUserReference(left_idx, ref);
+                break :blk ref;
             };
 
             // right: always jsx_identifier → identifier_reference
