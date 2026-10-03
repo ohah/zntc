@@ -2254,6 +2254,115 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('ES5 object shorthand expansion retains the value reference symbol', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-object-shorthand-retained-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    writeFileSync(
+      input,
+      [
+        'type Numeric = number;',
+        'var value: Numeric = 42;',
+        'var object = { value };',
+        "console.log(Object.keys(object).join(','), object.value, JSON.stringify(object));",
+      ].join('\n'),
+    );
+
+    try {
+      const downlevel = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(downlevel.status, downlevel.stderr).toBe(0);
+      const mode = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(mode, downlevel.stderr).toContain('semantic_graph=retained');
+      const report = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(report, downlevel.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('value 42 {"value":42}\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 computed object keys keep generated temporaries on semantic reanalysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-computed-object-reanalyzed-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    writeFileSync(
+      input,
+      [
+        'type Numeric = number;',
+        'var value: Numeric = 42;',
+        "var key = 'dynamic';",
+        'var object = { value, [key]: 9 };',
+        "console.log(Object.keys(object).join(','), object.value, object.dynamic);",
+      ].join('\n'),
+    );
+
+    try {
+      const downlevel = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(downlevel.status, downlevel.stderr).toBe(0);
+      const mode = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(mode, downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('value,dynamic 42 9\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('runtime TypeScript enums keep mixed ES5 arrow modules on semantic resync', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-enum-arrow-resync-'));
     const output = join(dir, 'out.cjs');

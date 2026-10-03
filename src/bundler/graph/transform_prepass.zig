@@ -474,6 +474,7 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
     var found_native_class = false;
     var found_native_destructuring = false;
     var found_safe_template_literal = false;
+    var found_object_shorthand = false;
     for (reachable_nodes) |raw_idx| {
         const node = ast.nodes.items[raw_idx];
         // Type erasure already edits the semantic graph through the same
@@ -557,6 +558,11 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
                 // preserving their source references. Tagged templates have
                 // their own gate because downleveling creates helper/cache state.
                 found_safe_template_literal = true;
+            },
+            .object_property => {
+                // Shorthand lowering duplicates the key as property text and
+                // preserves the original value reference's symbol identity.
+                if (node.data.binary.right.isNone()) found_object_shorthand = true;
             },
             .assignment_expression => {
                 const operator: token_mod.Kind = @enumFromInt(node.data.binary.flags);
@@ -681,7 +687,6 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
             // keep their separate, intentionally unlisted pattern tags.
             .assignment_target_identifier,
             .binding_identifier,
-            .object_property,
             .binding_property,
             .assignment_target_property_identifier,
             .assignment_target_property_property,
@@ -724,7 +729,7 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
     }
     return found_arrow or found_native_await or found_native_generator or found_native_tagged_template or
         found_native_for_of or found_native_for_await or found_native_class or found_native_destructuring or
-        found_safe_template_literal;
+        found_safe_template_literal or found_object_shorthand;
 }
 
 fn canKeepPrepassSemanticGraph(
