@@ -965,6 +965,47 @@ test "SemanticAnalyzer: catch binding shadowed by var is valid" {
     try std.testing.expect(ana.errors.items.len == 0);
 }
 
+test "SemanticAnalyzer: catch clause and body block retain distinct scope owners" {
+    var scanner = try Scanner.init(std.testing.allocator, "try { throw 1; } catch (errorName) { let bodyName = errorName; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+
+    var catch_idx: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .catch_clause) continue;
+        catch_idx = @enumFromInt(@as(u32, @intCast(raw)));
+        break;
+    }
+    try std.testing.expect(!catch_idx.isNone());
+    const catch_node = parser.ast.getNode(catch_idx);
+    const body_idx = catch_node.data.binary.right;
+    const catch_scope_raw = ana.scope_owner_map.get(@intFromEnum(catch_idx)) orelse return error.MissingCatchScope;
+    const body_scope_raw = ana.scope_owner_map.get(@intFromEnum(body_idx)) orelse return error.MissingCatchBodyScope;
+    const ScopeKind = @import("scope.zig").ScopeKind;
+    try std.testing.expectEqual(ScopeKind.catch_clause, ana.scopes.items[catch_scope_raw].kind);
+    try std.testing.expectEqual(ScopeKind.block, ana.scopes.items[body_scope_raw].kind);
+    try std.testing.expectEqual(catch_scope_raw, @intFromEnum(ana.scopes.items[body_scope_raw].parent));
+
+    const catch_param = catch_node.data.binary.left;
+    const catch_symbol = ana.symbol_ids.items[@intFromEnum(catch_param)] orelse return error.MissingCatchBindingSymbol;
+    try std.testing.expectEqual(catch_scope_raw, @intFromEnum(ana.symbols.items[catch_symbol].scope_id));
+
+    var body_symbol: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or !std.mem.eql(u8, parser.ast.getText(node.span), "bodyName")) continue;
+        body_symbol = ana.symbol_ids.items[raw] orelse return error.MissingBodyBindingSymbol;
+        break;
+    }
+    const body_binding = body_symbol orelse return error.MissingBodyBindingSymbol;
+    try std.testing.expectEqual(body_scope_raw, @intFromEnum(ana.symbols.items[body_binding].scope_id));
+}
+
 // ============================================================
 // Switch case 테스트
 // ============================================================
