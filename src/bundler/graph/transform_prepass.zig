@@ -544,8 +544,10 @@ fn canKeepPrepassSemanticGraph(
         const tag_name = @tagName(node.tag);
         const is_flow_match_tag = std.mem.startsWith(u8, tag_name, "flow_match_");
         const is_flow_enum_tag = node.tag == .flow_enum_declaration or node.tag == .flow_enum_member;
+        const is_flow_component_wrapper = node.tag == .flow_component_wrapper;
         if (std.mem.startsWith(u8, tag_name, "flow_") and !is_flow_match_tag and
-            !is_flow_enum_tag and !isTypeErasureTag(node.tag)) return false;
+            !is_flow_enum_tag and !is_flow_component_wrapper and
+            !isTypeErasureTag(node.tag)) return false;
         if (isTypeErasureTag(node.tag)) found_transform = true;
         switch (node.tag) {
             .flow_match_expression => found_transform = true,
@@ -553,6 +555,9 @@ fn canKeepPrepassSemanticGraph(
             // have exact parser identities; lowering preserves those edges.
             .flow_enum_declaration => found_transform = true,
             .flow_enum_member => {},
+            // The forwardRef helper binding and its call reference are added
+            // to the edited graph by the Flow component visitor.
+            .flow_component_wrapper => found_transform = true,
             // These constructs can alter the import/export graph or create
             // dynamic-name environments independently of Flow match lowering.
             .export_all_declaration,
