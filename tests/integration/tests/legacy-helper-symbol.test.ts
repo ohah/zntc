@@ -177,6 +177,93 @@ console.log(events.join('|'));
     );
   });
 
+  for (const minify of [false, true]) {
+    test(`type-only metadata ignores same-named globals and retains lexical classes: ${minify ? 'minify' : 'plain'}`, async () => {
+      const metadataSource = `
+import type DefaultType from './types';
+import type * as Types from './types';
+import type { Phantom, Object, Number, Symbol, BigInt } from './types';
+import { type Phantom as Alias } from './types';
+(globalThis as any).Phantom = class GlobalPhantom {};
+(globalThis as any).Alias = class GlobalAlias {};
+(globalThis as any).DefaultType = class GlobalDefault {};
+(globalThis as any).Types = { Member: class GlobalMember {} };
+const events: string[] = [];
+const localTypes: any[] = [];
+function decorate(): any { return () => {}; }
+(Reflect as any).metadata = (key: string, value: any) => (_target: any, property?: string) => {
+  if (key !== 'design:paramtypes') return;
+  const names = value.map((item: any) =>
+    item === globalThis.Object ? 'object' :
+    item === globalThis.Number ? 'number' :
+    item === globalThis.Symbol ? 'symbol' :
+    item === globalThis.BigInt ? 'bigint' :
+    localTypes.includes(item) ? 'local-class' : 'unexpected');
+  events.push(property + ':' + names.join(','));
+};
+class Imported {
+  @decorate() imported(named: Phantom, inline: Alias, defaultType: DefaultType,
+    qualified: Types.Member, count: number, object: Object, symbol: symbol, bigint: bigint) {}
+}
+function buildLocal() {
+  class Phantom {}
+  localTypes.push(Phantom);
+  class Local { @decorate() local(value: Phantom) {} }
+  return Local;
+}
+buildLocal();
+console.log(events.join('|'));
+`;
+      const reference = ts.transpileModule(metadataSource, {
+        compilerOptions: {
+          experimentalDecorators: true,
+          emitDecoratorMetadata: true,
+          target: ts.ScriptTarget.ES2020,
+          module: ts.ModuleKind.CommonJS,
+        },
+      }).outputText;
+      const fixture = await createFixture({
+        'input.ts': metadataSource,
+        'reference.js': reference,
+        'tsconfig.json': JSON.stringify({
+          compilerOptions: { experimentalDecorators: true, emitDecoratorMetadata: true },
+        }),
+      });
+      cleanup = fixture.cleanup;
+      const native = spawnSync('node', [join(fixture.dir, 'reference.js')], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout.trim()).toBe(
+        'imported:object,object,object,object,number,object,symbol,bigint|local:local-class',
+      );
+
+      const output = join(fixture.dir, 'out.js');
+      const proc = spawnSync(
+        ZNTC_BIN,
+        ['input.ts', ...(minify ? ['--minify-identifiers', '--minify-syntax'] : []), '-o', output],
+        {
+          cwd: fixture.dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe(native.stdout);
+      const exact = proc.stderr
+        .split('\n')
+        .find((line) => line.includes('zntc: symbol-identity input.ts:'));
+      expect(exact).toContain('unclassified_reference=0');
+      expect(exact).toContain('shadowed_external_reference=0');
+      expect(exact).toContain('clean=1');
+      if (minify) {
+        expect(proc.stderr).toMatch(
+          /symbol-identity-post-minify .* missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+        );
+      }
+    });
+  }
+
   const qualifiedMetadataSource = `
 const events: string[] = [];
 function decorate(): any { return () => {}; }
