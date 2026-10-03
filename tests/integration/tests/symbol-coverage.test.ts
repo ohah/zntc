@@ -485,7 +485,92 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('ES5 downlevel and structured forms keep arrow modules on semantic resync', () => {
+  test('ES5 arrows retain untagged template literals with exact identity', () => {
+    const cases = [
+      {
+        name: 'no substitution',
+        source: [
+          'function label() { return (() => `answer`)(); }',
+          'console.log(label(), typeof label());',
+        ].join('\n'),
+        output: 'answer string\n',
+      },
+      {
+        name: 'empty head interpolation',
+        source: [
+          'function label(value) { return (() => `${value}`)(); }',
+          'console.log(label(42), typeof label(42));',
+        ].join('\n'),
+        output: '42 string\n',
+      },
+      {
+        name: 'ordered multiple substitutions',
+        source: [
+          'var count = 0;',
+          'function label() { return (() => `${++count}-${++count}`)(); }',
+          'console.log(label(), count);',
+        ].join('\n'),
+        output: '1-2 2\n',
+      },
+    ];
+    for (const fixture of cases) {
+      const dir = mkdtempSync(
+        join(tmpdir(), `zntc-bundle-arrow-template-${fixture.name}-retained-`),
+      );
+      const output = join(dir, 'out.cjs');
+      writeFileSync(join(dir, 'entry.mjs'), fixture.source);
+      try {
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            'entry.mjs',
+            '--target=es5',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+          );
+        expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.name}: ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report, fixture.name).toMatch(/clean=1(?:\s|$)/);
+
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+          );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=retained');
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe(fixture.output);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test('ES5 downlevel, structured, and tagged forms keep arrow modules on semantic resync', () => {
     const cases = [
       {
         name: 'exponentiation',
@@ -578,6 +663,15 @@ describe('symbol identity coverage gate (#4819)', () => {
           'console.log(read({ answer: 42 }));',
         ].join('\n'),
         output: '42\n',
+      },
+      {
+        name: 'tagged template',
+        source: [
+          'function tag(parts, value) { return parts[0] + value; }',
+          'function render(value) { return (() => tag`answer:${value}`)(); }',
+          'console.log(render(42));',
+        ].join('\n'),
+        output: 'answer:42\n',
       },
     ];
     for (const fixture of cases) {
