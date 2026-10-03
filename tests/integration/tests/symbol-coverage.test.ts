@@ -2290,6 +2290,121 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('arrow lowering retains only native object method scopes', () => {
+    const cases = [
+      {
+        name: 'native object method and getter on node5',
+        target: 'node5',
+        graph: 'retained',
+        source: [
+          'var methods = {',
+          '  combine(_this) { return (() => this.prefix + _this)(); },',
+          '  get captured() { return (() => this.prefix)(); },',
+          '};',
+          'methods.prefix = "answer";',
+          'console.log(methods.combine("!"), methods.captured);',
+        ].join('\n'),
+        output: 'answer! answer\n',
+      },
+      {
+        name: 'object method lowering on es5',
+        target: 'es5',
+        graph: 'reanalyzed',
+        source: [
+          'var methods = {',
+          '  combine(_this) { return (() => this.prefix + _this)(); },',
+          '  get captured() { return (() => this.prefix)(); },',
+          '};',
+          'methods.prefix = "answer";',
+          'console.log(methods.combine("!"), methods.captured);',
+        ].join('\n'),
+        output: 'answer! answer\n',
+      },
+      {
+        name: 'async object method without await lowers on node5',
+        target: 'node5',
+        graph: 'reanalyzed',
+        source: [
+          'var methods = { async value() { return (() => this.amount)(); } };',
+          'methods.amount = 42;',
+          'methods.value().then(function(result) { console.log(result); });',
+        ].join('\n'),
+        output: '42\n',
+      },
+      {
+        name: 'generator object method without yield lowers on node5',
+        target: 'node5',
+        graph: 'reanalyzed',
+        source: [
+          'var methods = {',
+          '  *values() { return 41; },',
+          '  value() { return (() => this.amount)(); },',
+          '};',
+          'methods.amount = 42;',
+          'console.log(methods.values().next().value, methods.value());',
+        ].join('\n'),
+        output: '41 42\n',
+      },
+    ];
+
+    for (const fixture of cases) {
+      const dir = mkdtempSync(join(tmpdir(), `zntc-bundle-arrow-object-method-${fixture.target}-`));
+      const output = join(dir, 'out.cjs');
+      writeFileSync(join(dir, 'entry.mjs'), fixture.source);
+      try {
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            'entry.mjs',
+            `--target=${fixture.target}`,
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+          );
+        expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.name}: ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report, fixture.name).toMatch(/clean=1(?:\s|$)/);
+
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+          );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
+          `semantic_graph=${fixture.graph}`,
+        );
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe(fixture.output);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
   test('legacy TypeScript decorators retain exact transform graph references', () => {
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-legacy-decorator-'));
     try {
