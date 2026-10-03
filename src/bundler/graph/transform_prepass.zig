@@ -133,12 +133,13 @@ pub fn shouldRun(
     }
 }
 
-/// Type erasure and Flow match lowering are local to the parsed module body.
-/// For the restricted no-plugin/no-helper case, the transform editor already
-/// carries the exact binding/reference/scope graph. Keep this predicate
-/// deliberately narrow: runtime Flow extensions, import rewriting, JSX,
-/// runtime helpers, and semantic-changing transforms continue through the
-/// full resync path.
+/// Type erasure, Flow match lowering, and Flow enums are local to the parsed
+/// module body. For the restricted no-plugin/no-helper case, the transform
+/// editor already carries the exact binding/reference/scope graph; Flow enum
+/// runtime imports are materialized before this pre-pass. Keep the predicate
+/// deliberately narrow: other runtime Flow extensions, import rewriting,
+/// JSX, runtime helpers, and semantic-changing transforms continue through
+/// the full resync path.
 const FlowMatchGeneratedGlobals = struct {
     has_match: bool = false,
     array: bool = false,
@@ -528,7 +529,7 @@ fn canKeepPrepassSemanticGraph(
     const arrow_only_downlevel = options.unsupported.hasAny() and
         canRetainGraphForArrowOnlyLowering(ast, options);
     if ((ast.has_jsx and !graph_editable_jsx) or ast.has_decorator or ast.has_ts_import_equals or
-        ast.has_ts_export_equals or ast.has_flow_enum_declaration) return false;
+        ast.has_ts_export_equals) return false;
     if ((options.unsupported.hasAny() and !arrow_only_downlevel) or options.minify_syntax or
         options.minify_whitespace or options.drop_console or options.drop_debugger or
         options.drop_labels.len != 0 or options.define.len != 0 or options.module_specifier_map.len != 0 or
@@ -542,11 +543,16 @@ fn canKeepPrepassSemanticGraph(
     for (ast.nodes.items) |node| {
         const tag_name = @tagName(node.tag);
         const is_flow_match_tag = std.mem.startsWith(u8, tag_name, "flow_match_");
+        const is_flow_enum_tag = node.tag == .flow_enum_declaration or node.tag == .flow_enum_member;
         if (std.mem.startsWith(u8, tag_name, "flow_") and !is_flow_match_tag and
-            !isTypeErasureTag(node.tag)) return false;
+            !is_flow_enum_tag and !isTypeErasureTag(node.tag)) return false;
         if (isTypeErasureTag(node.tag)) found_transform = true;
         switch (node.tag) {
             .flow_match_expression => found_transform = true,
+            // Flow enum bindings and member initializer references already
+            // have exact parser identities; lowering preserves those edges.
+            .flow_enum_declaration => found_transform = true,
+            .flow_enum_member => {},
             // These constructs can alter the import/export graph or create
             // dynamic-name environments independently of Flow match lowering.
             .export_all_declaration,
