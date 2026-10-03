@@ -447,10 +447,10 @@ fn hasDirectSpreadElement(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
 }
 
 /// Arrow lowering edits the existing graph and creates only output function
-/// scopes plus explicitly tracked captures. Native `await` and `yield` add no
-/// binding or scope edges. Keep these paths only for the
-/// audited syntax subset; downlevel async/generator bodies stay on reanalysis.
-fn canRetainGraphForArrowNativeAwaitAndGenerator(ast: *const ast_mod.Ast, options: TransformOptions) bool {
+/// scopes plus explicitly tracked captures. Native `await`, `yield`, and tagged
+/// templates add no binding or scope edges. Keep these paths only for the
+/// audited syntax subset; downlevel async/generator/template bodies stay on reanalysis.
+fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: TransformOptions) bool {
     if (ast.has_jsx) return false;
 
     // Cover-grammar parsing may leave speculative nodes in the arena that are
@@ -468,6 +468,7 @@ fn canRetainGraphForArrowNativeAwaitAndGenerator(ast: *const ast_mod.Ast, option
     var found_arrow = false;
     var found_native_await = false;
     var found_native_generator = false;
+    var found_native_tagged_template = false;
     for (reachable_nodes) |raw_idx| {
         const node = ast.nodes.items[raw_idx];
         // Type erasure already edits the semantic graph through the same
@@ -541,6 +542,10 @@ fn canRetainGraphForArrowNativeAwaitAndGenerator(ast: *const ast_mod.Ast, option
             .yield_expression => {
                 if (options.unsupported.generator) return false;
                 found_native_generator = true;
+            },
+            .tagged_template_expression => {
+                if (options.unsupported.template_literal) return false;
+                found_native_tagged_template = true;
             },
             .meta_property => {
                 // `new.target` is safe here only when the target preserves it
@@ -621,7 +626,7 @@ fn canRetainGraphForArrowNativeAwaitAndGenerator(ast: *const ast_mod.Ast, option
         }
         if (node.tag == .catch_clause and node.data.binary.left.isNone()) return false;
     }
-    return found_arrow or found_native_await or found_native_generator;
+    return found_arrow or found_native_await or found_native_generator or found_native_tagged_template;
 }
 
 fn canKeepPrepassSemanticGraph(
@@ -640,7 +645,7 @@ fn canKeepPrepassSemanticGraph(
     const automatic_dev_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .automatic_dev;
     const graph_editable_jsx = classic_jsx or automatic_jsx or automatic_dev_jsx;
     const safe_graph_subset = options.unsupported.hasAny() and
-        canRetainGraphForArrowNativeAwaitAndGenerator(ast, options);
+        canRetainGraphForAuditedSyntaxSubset(ast, options);
     if ((ast.has_jsx and !graph_editable_jsx) or ast.has_decorator) return false;
     if ((options.unsupported.hasAny() and !safe_graph_subset) or options.minify_syntax or
         options.minify_whitespace or options.drop_console or options.drop_debugger or
