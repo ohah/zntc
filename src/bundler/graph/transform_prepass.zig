@@ -137,7 +137,7 @@ pub fn shouldRun(
 /// aliases preserve the module graph. For the restricted no-plugin/no-helper
 /// case, the transform editor already carries exact binding/reference/scope
 /// edges; Flow enum runtime imports are materialized before this pre-pass.
-/// Keep the predicate deliberately narrow: external-module import-equals,
+/// Keep the predicate deliberately narrow: non-static external import-equals,
 /// other runtime Flow extensions, import rewriting, JSX, runtime helpers, and
 /// semantic-changing transforms continue through the full resync path.
 const FlowMatchGeneratedGlobals = struct {
@@ -223,8 +223,7 @@ fn isSupportedRuntimeTsEnum(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
 }
 
 /// Local TypeScript import-equals aliases preserve module graph shape when
-/// lowered to const bindings. External-module references (require calls) stay
-/// on the resync path because their loader records must be revalidated.
+/// lowered to const bindings.
 fn isSupportedLocalImportEquals(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     if (node.tag != .ts_import_equals_declaration) return false;
     var value_idx = node.data.binary.right;
@@ -241,6 +240,32 @@ fn isSupportedLocalImportEquals(ast: *const ast_mod.Ast, node: ast_mod.Node) boo
         }
     }
     return false;
+}
+
+/// A static external import-equals keeps the same `require("specifier")` call
+/// through lowering. Parser scan and transformed-AST scan therefore retain the
+/// same loader record and CJS signal.
+fn isSupportedExternalRequireImportEquals(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
+    if (node.tag != .ts_import_equals_declaration) return false;
+    const value_idx = node.data.binary.right;
+    if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
+    const value = ast.getNode(value_idx);
+    if (value.tag != .call_expression) return false;
+    if (!ast.hasExtra(value.data.extra, 2)) return false;
+
+    const callee_idx = ast.readExtraNode(value.data.extra, 0);
+    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
+    const callee = ast.getNode(callee_idx);
+    const callee_name = ast.getText(callee.span);
+    const arg_count = ast.readExtra(value.data.extra, 2);
+    if (callee.tag != .identifier_reference or !std.mem.eql(u8, callee_name, "require")) return false;
+    if (arg_count != 1) return false;
+
+    const args_start = ast.readExtra(value.data.extra, 1);
+    if (args_start >= ast.extra_data.items.len) return false;
+    const arg_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
+    return !arg_idx.isNone() and @intFromEnum(arg_idx) < ast.nodes.items.len and
+        ast.getNode(arg_idx).tag == .string_literal;
 }
 
 /// Keeping the semantic graph is safe only when the transform leaves each
@@ -582,7 +607,9 @@ fn canKeepPrepassSemanticGraph(
             // both preserve that CommonJS graph signal before and after lowering.
             .ts_export_assignment => found_transform = true,
             .ts_import_equals_declaration => {
-                if (!isSupportedLocalImportEquals(ast, node)) return false;
+                const local_supported = isSupportedLocalImportEquals(ast, node);
+                const external_supported = isSupportedExternalRequireImportEquals(ast, node);
+                if (!local_supported and !external_supported) return false;
                 found_transform = true;
             },
             // These constructs can alter the import/export graph or create
