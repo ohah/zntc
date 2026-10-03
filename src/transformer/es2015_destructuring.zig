@@ -186,6 +186,12 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         }
 
         fn makeTrackedBindingWriteRefAt(self: *Transformer, binding: NodeIndex, name_span: Span, node_span: Span) Transformer.Error!NodeIndex {
+            // Assignment patterns bypass the ordinary identifier visitor.
+            // Preserve the class-name setter used to reject writes to the
+            // immutable inner binding, including nested/default/rest targets.
+            if (self.options.unsupported.class) {
+                if (try es2015_class.ES2015Class(Transformer).classSelfAccess(self, binding)) |access| return access;
+            }
             const target = try self.makeIdentifierRefWithSymbolAt(name_span, node_span, binding);
             if (self.getSymbolIdAt(binding)) |raw_id| {
                 if (!try self.replaceUserReferenceWithCopy(binding, target)) {
@@ -544,8 +550,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         try self.ast.addString(renamed)
                     else
                         key_node.data.string_ref;
-                    const target_node = try self.makeIdentifierRefWithSymbolAt(target_name, key_node.span, key_idx);
-                    try self.replaceUserReference(key_idx, target_node);
+                    const target_node = try makeTrackedBindingWriteRefAt(self, key_idx, target_name, key_node.span);
 
                     // shorthand_with_default: {a = 1} → a = _ref.a === void 0 ? 1 : _ref.a
                     // flags bit 0 = shorthand_with_default, right = default value
