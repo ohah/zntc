@@ -2054,6 +2054,139 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('TypeScript export-equals bundling retains its semantic graph and CommonJS wrapper', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-export-equals-retained-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'dep.ts'),
+      'const api = { add(delta: number) { return 40 + delta; } };\nexport = api;',
+    );
+    writeFileSync(
+      join(dir, 'entry.js'),
+      "const api = require('./dep.ts');\nconsole.log(api.add(2));",
+    );
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.js',
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const graphMode = proc.stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('dep.ts'),
+        );
+      expect(graphMode, proc.stderr).toBeDefined();
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
+
+      const identity = proc.stderr
+        .split(/\r?\n/)
+        .find((line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('dep.ts'));
+      expect(identity, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), identity).toBe(
+          0,
+        );
+      }
+      expect(Number(identity?.match(/generated_references=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+      expect(identity, proc.stderr).toMatch(/clean=1(?:\s|$)/);
+
+      const bundle = readFileSync(output, 'utf8');
+      expect(bundle).toContain('__commonJS');
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('TypeScript export-equals bundling keeps generated module global distinct from local names', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-export-equals-shadow-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'dep.ts'),
+      [
+        "const module = 'local-module';",
+        "const exports = 'local-exports';",
+        'const api = { module, exports, add(delta: number) { return 40 + delta; } };',
+        'export = api;',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'entry.js'),
+      [
+        "const api = require('./dep.ts');",
+        'console.log(`${api.module}|${api.exports}|${api.add(2)}`);',
+      ].join('\n'),
+    );
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.js',
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const graphMode = proc.stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('dep.ts'),
+        );
+      expect(graphMode, proc.stderr).toBeDefined();
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
+
+      const identity = proc.stderr
+        .split(/\r?\n/)
+        .find((line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('dep.ts'));
+      expect(identity, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        const expected = counter === 'shadowed_external_reference' ? 1 : 0;
+        expect(Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), identity).toBe(
+          expected,
+        );
+      }
+      expect(Number(identity?.match(/generated_references=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+      expect(identity, proc.stderr).toMatch(/clean=0(?:\s|$)/);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('local-module|local-exports|42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('가상 enum IIFE 매개변수와 initializer 참조가 정확한 SymbolId와 ScopeId를 가진다', () => {
     const file = join(FIXTURE_DIR, '4819-enum-iife-params.ts');
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-enum-param-'));
