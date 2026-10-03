@@ -1884,6 +1884,238 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('native destructuring defaults and array rest retain identities while ES5 reanalyzes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-destructuring-defaults-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    writeFileSync(
+      input,
+      [
+        'type Values = [number | undefined, number, number];',
+        'var values: Values = [undefined, 20, 30];',
+        'var [head = 11, ...tail]: Values = values;',
+        'var assigned = 0;',
+        'var assignedTail: number[] = [];',
+        '[assigned = 17, ...assignedTail] = [undefined, 40, 50];',
+        "console.log(head, tail.join(','), assigned, assignedTail.join(','));",
+      ].join('\n'),
+    );
+
+    const run = (target: string) =>
+      spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          target,
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+
+    const mode = (stderr: string) =>
+      stderr
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+
+    try {
+      const native = run('--target=es2015');
+      expect(native.status, native.stderr).toBe(0);
+      expect(mode(native.stderr ?? ''), native.stderr).toContain('semantic_graph=retained');
+      const nativeReport = (native.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(nativeReport, native.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(nativeReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${nativeReport}`,
+        ).toBe(0);
+      }
+      expect(nativeReport).toMatch(/clean=1(?:\s|$)/);
+      const nativeOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(nativeOutput.status, nativeOutput.stderr).toBe(0);
+      expect(nativeOutput.stdout).toBe('11 20,30 17 40,50\n');
+
+      const downlevel = run('--target=es5');
+      expect(downlevel.status, downlevel.stderr).toBe(0);
+      expect(mode(downlevel.stderr ?? ''), downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      const downlevelOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(downlevelOutput.status, downlevelOutput.stderr).toBe(0);
+      expect(downlevelOutput.stdout).toBe('11 20,30 17 40,50\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('native default and rest parameters retain identities while ES5 reanalyzes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-parameter-defaults-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    writeFileSync(
+      input,
+      [
+        'var fallback = 5;',
+        'function choose(value = fallback, ...rest: number[]) {',
+        '  return value + rest.length;',
+        '}',
+        'console.log(choose(undefined, 1, 2));',
+      ].join('\n'),
+    );
+
+    const run = (target: string) =>
+      spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          target,
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+
+    const mode = (stderr: string) =>
+      stderr
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+
+    try {
+      const native = run('--target=es2015');
+      expect(native.status, native.stderr).toBe(0);
+      expect(mode(native.stderr ?? ''), native.stderr).toContain('semantic_graph=retained');
+      const nativeReport = (native.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(nativeReport, native.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(nativeReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${nativeReport}`,
+        ).toBe(0);
+      }
+      expect(nativeReport).toMatch(/clean=1(?:\s|$)/);
+      const nativeOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(nativeOutput.status, nativeOutput.stderr).toBe(0);
+      expect(nativeOutput.stdout).toBe('7\n');
+
+      const downlevel = run('--target=es5');
+      expect(downlevel.status, downlevel.stderr).toBe(0);
+      expect(mode(downlevel.stderr ?? ''), downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      const downlevelOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(downlevelOutput.status, downlevelOutput.stderr).toBe(0);
+      expect(downlevelOutput.stdout).toBe('7\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('native object rest retains identities while ES2017 reanalyzes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-object-rest-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    writeFileSync(
+      input,
+      [
+        'type Values = { first: number; second: number; third: number };',
+        'const source: Values = { first: 1, second: 2, third: 3 };',
+        'const { first, ...rest }: Values = source;',
+        'let assignedFirst = 0;',
+        'let assignedRest: Partial<Values> = {};',
+        '({ first: assignedFirst, ...assignedRest } = source);',
+        'function count({ first: parameterFirst, ...parameterRest }: Values) {',
+        '  return parameterFirst + Object.keys(parameterRest).length;',
+        '}',
+        'console.log(first, rest.second, rest.third, assignedFirst, assignedRest.second, count(source));',
+      ].join('\n'),
+    );
+
+    const run = (target: string) =>
+      spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          target,
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+
+    const mode = (stderr: string) =>
+      stderr
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+
+    try {
+      const native = run('--target=es2018');
+      expect(native.status, native.stderr).toBe(0);
+      expect(mode(native.stderr ?? ''), native.stderr).toContain('semantic_graph=retained');
+      const nativeReport = (native.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(nativeReport, native.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(nativeReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${nativeReport}`,
+        ).toBe(0);
+      }
+      expect(nativeReport).toMatch(/clean=1(?:\s|$)/);
+      const nativeOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(nativeOutput.status, nativeOutput.stderr).toBe(0);
+      expect(nativeOutput.stdout).toBe('1 2 3 1 2 3\n');
+
+      const downlevel = run('--target=es2017');
+      expect(downlevel.status, downlevel.stderr).toBe(0);
+      expect(mode(downlevel.stderr ?? ''), downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      const downlevelOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(downlevelOutput.status, downlevelOutput.stderr).toBe(0);
+      expect(downlevelOutput.stdout).toBe('1 2 3 1 2 3\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('native tagged templates keep TypeScript erasure on the edited semantic graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-tagged-template-retained-'));
     const output = join(dir, 'out.cjs');
