@@ -1206,7 +1206,10 @@ describe('symbol identity coverage gate (#4819)', () => {
             (line) =>
               line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
           );
-        const expectedGraph = fixture.name === 'object method' ? 'retained' : 'reanalyzed';
+        const expectedGraph =
+          fixture.name === 'object method' || fixture.name === 'computed object property'
+            ? 'retained'
+            : 'reanalyzed';
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
           `semantic_graph=${expectedGraph}`,
         );
@@ -2335,18 +2338,27 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('ES5 computed object keys keep generated temporaries on semantic reanalysis', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-computed-object-reanalyzed-'));
+  test('ES5 computed object data keys retain exact generated temp identities', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-computed-object-retained-'));
     const output = join(dir, 'out.cjs');
     const input = join(dir, 'entry.ts');
     writeFileSync(
       input,
       [
         'type Numeric = number;',
-        'var value: Numeric = 42;',
-        "var key = 'dynamic';",
-        'var object = { value, [key]: 9 };',
-        "console.log(Object.keys(object).join(','), object.value, object.dynamic);",
+        'var events = [];',
+        'var keyCalls = 0;',
+        "var _a = 'outer';",
+        'function getKey() { events.push("key"); keyCalls++; return "dynamic"; }',
+        'function getInitial(): Numeric { events.push("initial"); return 1; }',
+        'function getComputed(): Numeric { events.push("computed"); return 9; }',
+        'function make(): { first: number; dynamic: number; dynamic2: number; last: string } {',
+        "  var _a = 'inner';",
+        '  function getAfter(): string { events.push("after"); return _a; }',
+        '  return { first: getInitial(), [getKey()]: getComputed(), [getKey() + "2"]: getComputed(), last: getAfter() };',
+        '}',
+        'var object = make();',
+        "console.log(Object.keys(object).join(','), object.first, object.dynamic, object.dynamic2, object.last, keyCalls, events.join(','), _a);",
       ].join('\n'),
     );
 
@@ -2376,10 +2388,22 @@ describe('symbol identity coverage gate (#4819)', () => {
           (line) =>
             line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(mode, downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      expect(mode, downlevel.stderr).toContain('semantic_graph=retained');
+      const report = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(report, downlevel.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
-      expect(actual.stdout).toBe('value,dynamic 42 9\n');
+      expect(actual.stdout).toBe(
+        'first,dynamic,dynamic2,last 1 9 9 inner 2 initial,key,computed,key,computed,after outer\n',
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -4617,7 +4641,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('arrow lowering retains computed object keys only when target-native', () => {
+  test('ES5 arrow lowering retains computed object data key temp identities', () => {
     const cases = [
       {
         name: 'native computed object key on node5',
@@ -4636,7 +4660,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       {
         name: 'computed object key downlevel on es5',
         target: 'es5',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'var events = [];',
           'function key() { events.push("key"); return "answer"; }',

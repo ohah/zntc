@@ -469,6 +469,32 @@ fn canRetainGraphForAuditedSyntaxSubset(
     const reachable_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, root_idx) catch return false;
     defer ast.allocator.free(reachable_nodes);
 
+    // Plain computed data properties lower into assignments on a generated
+    // object temporary. The transformer records each use and binds the hoisted
+    // declaration in its existing output scope, so these keys can keep the
+    // edited semantic graph. Computed methods/accessors and class keys still
+    // need their separate function/home-object handling and remain gated out.
+    var computed_object_data_keys: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer computed_object_data_keys.deinit(ast.allocator);
+    if (options.unsupported.object_extensions) {
+        for (reachable_nodes) |raw_idx| {
+            const object = ast.nodes.items[raw_idx];
+            if (object.tag != .object_expression) continue;
+            const members = object.data.list;
+            if (members.start > ast.extra_data.items.len or
+                members.len > ast.extra_data.items.len - members.start) return false;
+            for (ast.extra_data.items[members.start .. members.start + members.len]) |raw_member| {
+                if (raw_member >= ast.nodes.items.len) return false;
+                const member = ast.nodes.items[raw_member];
+                if (member.tag != .object_property) continue;
+                const key = member.data.binary.left;
+                if (key.isNone() or @intFromEnum(key) >= ast.nodes.items.len) return false;
+                if (ast.nodes.items[@intFromEnum(key)].tag != .computed_property_key) continue;
+                computed_object_data_keys.put(ast.allocator, @intFromEnum(key), {}) catch return false;
+            }
+        }
+    }
+
     // Object-super lowering emits a reference to the global `Object`. If a
     // source binding shadows it, the retained graph reports a shadowed external
     // reference and must stay on the conservative reanalysis path.
@@ -489,6 +515,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_native_class = false;
     var found_native_destructuring = false;
     var found_safe_template_literal = false;
+    var found_computed_object_data_key = false;
     var found_object_shorthand = false;
     var found_lowered_object_method = false;
     for (reachable_nodes) |raw_idx| {
@@ -614,10 +641,14 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     hasDirectSpreadElement(ast, node)) return false;
             },
             .computed_property_key => {
-                // Native computed object keys only wrap their expression in the
-                // AST. Downleveling them can hoist key evaluation into generated
-                // temporaries, which still requires semantic reanalysis.
-                if (options.unsupported.object_extensions) return false;
+                // A computed data property is lowered with a tracked temporary
+                // whose binding is attached to the emitted var scope during
+                // semantic graph finalization. Other computed-key owners
+                // (methods/accessors/class elements/patterns) remain on resync.
+                if (options.unsupported.object_extensions) {
+                    if (!computed_object_data_keys.contains(raw_idx)) return false;
+                    found_computed_object_data_key = true;
+                }
             },
             .await_expression => {
                 if (options.unsupported.async_await) return false;
@@ -753,7 +784,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
     }
     return found_arrow or found_native_await or found_native_generator or found_native_tagged_template or
         found_native_for_of or found_native_for_await or found_native_class or found_native_destructuring or
-        found_safe_template_literal or found_object_shorthand or found_lowered_object_method;
+        found_safe_template_literal or found_object_shorthand or found_lowered_object_method or
+        found_computed_object_data_key;
 }
 
 fn canKeepPrepassSemanticGraph(
