@@ -74,6 +74,11 @@ const _E1 = 11;
 enum E { E = _E1 }
 console.log(JSON.stringify([_E, E.E]));
 `,
+  'computed enum initializer reads the previous member instead of a global': `
+const A = 99;
+enum Computed { A = 'foo'.length, B = A + 1 }
+console.log(JSON.stringify([A, Computed.A, Computed.B]));
+`,
   'dotted namespace and generated-name collisions': `
 namespace A.B {
   export let A = 1;

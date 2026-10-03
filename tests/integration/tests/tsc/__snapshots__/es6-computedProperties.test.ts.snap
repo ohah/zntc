@@ -409,12 +409,12 @@ exports[`TSC: es6/computedProperties computedPropertyNames18_ES6 1`] = `
 `;
 
 exports[`TSC: es6/computedProperties computedPropertyNames19_ES5 1`] = `
-"var M;((M) => {var obj = { [this.bar]: 0 };})(M || (M = {}));
+"var M;((_M) => {var obj = { [this.bar]: 0 };})(M || (M = {}));
 "
 `;
 
 exports[`TSC: es6/computedProperties computedPropertyNames19_ES6 1`] = `
-"var M;((M) => {var obj = { [this.bar]: 0 };})(M || (M = {}));
+"var M;((_M) => {var obj = { [this.bar]: 0 };})(M || (M = {}));
 "
 `;
 

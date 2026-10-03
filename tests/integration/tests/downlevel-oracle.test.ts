@@ -8,6 +8,8 @@
 // iterator close·super·using …)을 잡는 게 목적이다.
 //
 // - fixture 는 `*.mjs` 한 파일, 또는 `main.mjs` 가 있는 디렉토리(여러 모듈)다.
+// - Flow처럼 node가 직접 실행할 수 없는 문법은 같은 이름의 `.reference.mjs`에
+//   독립적인 JavaScript 오라클을 둔다. reference 파일 자체는 변환 대상에서 제외한다.
 // - 칸 이름은 번들이 `<target>/<mode>`, 변환이 `transpile/<target>/<mode>` 다.
 // - fixture 의 변수 이름은 2글자 이상으로 쓴다 — mangler 는 1글자 이름을 바꾸지 않아서,
 //   1글자면 minify 칸이 리네임 결함(심볼 누락 #4760)을 보지 못한다.
@@ -18,7 +20,7 @@
 
 import { describe, test, expect } from 'bun:test';
 import { spawn } from 'bun';
-import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ZNTC_BIN } from './helpers';
@@ -106,15 +108,28 @@ async function run(cmd: string[], cwd?: string): Promise<Run & { stderr: string 
 function listFixtures(): {
   name: string;
   entry: string;
+  reference: string;
   singleFile: boolean;
 }[] {
   return readdirSync(FIXTURE_DIR)
     .sort()
     .flatMap((f) => {
       const p = join(FIXTURE_DIR, f);
-      if (statSync(p).isDirectory())
-        return [{ name: f, entry: join(p, 'main.mjs'), singleFile: false }];
-      if (f.endsWith('.mjs')) return [{ name: f.slice(0, -4), entry: p, singleFile: true }];
+      if (statSync(p).isDirectory()) {
+        const entry = join(p, 'main.mjs');
+        return [{ name: f, entry, reference: entry, singleFile: false }];
+      }
+      if (f.endsWith('.mjs') && !f.endsWith('.reference.mjs')) {
+        const reference = p.replace(/\.mjs$/, '.reference.mjs');
+        return [
+          {
+            name: f.slice(0, -4),
+            entry: p,
+            reference: existsSync(reference) ? reference : p,
+            singleFile: true,
+          },
+        ];
+      }
       return [];
     });
 }
@@ -156,9 +171,12 @@ const NODE_MAJOR = Number(
 describe.skipIf(!(NODE_MAJOR >= 24))(
   '다운레벨 런타임 오라클: 네이티브 node 결과 = 번들 결과 (#4746)',
   () => {
-    for (const { name, entry, singleFile } of listFixtures()) {
+    for (const { name, entry, reference, singleFile } of listFixtures()) {
       test(name, async () => {
-        const expected = await run(['node', entry]);
+        const expected = await run(['node', reference]);
+        expect(expected.exitCode, `native reference failed for ${name}: ${expected.stderr}`).toBe(
+          0,
+        );
         const outDir = mkdtempSync(join(tmpdir(), 'zntc-oracle-'));
         try {
           const failing = await failingCells(entry, singleFile, expected, outDir);

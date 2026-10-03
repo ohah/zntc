@@ -119,15 +119,14 @@ console.log(JSON.stringify(collect([1, 2, 3])));`,
       expect(summary, transformed.stderr).toMatch(new RegExp(` ${status}=0 `));
     }
 
-    // The sole unclassified generated reference is the external runtime helper;
-    // it has no lexical binding in this file. Every generated local identifier
-    // must still have exact semantic evidence.
-    expect(summary).toMatch(/ unclassified=1 /);
+    // Runtime helper references now carry their own semantic provenance, so
+    // iterator/catch bindings and the helper reference must all be classified.
+    expect(summary).toMatch(/ unclassified=0 /);
+    expect(summary).toMatch(/ symbol_identity_complete=1(?:\s|$)/);
     const unclassified = transformed.stderr
       .split(/\r?\n/)
       .filter((line) => /^\s+synthetic-coverage unclassified /.test(line));
-    expect(unclassified).toHaveLength(1);
-    expect(unclassified[0]).toMatch(/__values\(identifier_reference\) marked=false sid=null/);
+    expect(unclassified).toHaveLength(0);
 
     const actual = spawnSync('node', [join(fixture.dir, 'out.mjs')], { encoding: 'utf8' });
     expect(actual.status, actual.stderr).toBe(0);
