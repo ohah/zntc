@@ -208,54 +208,145 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('ES5 for-of reanalysis retains exact catch scope ownership and iterator closing', () => {
+  test('native for-of retains its graph while ES5 lowering reanalyzes exact scopes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-for-of-catch-scope-'));
-    const output = join(dir, 'out.cjs');
     const file = join(FIXTURE_DIR, '4819-for-of-iterator-close.mjs');
     try {
-      const proc = spawnSync(
-        ZNTC_BIN,
-        [
-          '--bundle',
-          file,
-          '--target=es5',
-          '--platform=node',
-          '--format=cjs',
-          '--minify-identifiers',
-          '-o',
-          output,
-        ],
-        {
-          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
-          encoding: 'utf8',
-        },
-      );
-      expect(proc.status, proc.stderr).toBe(0);
-
-      const report = (proc.stderr ?? '')
-        .split(/\r?\n/)
-        .find(
-          (line) =>
-            line.includes('zntc: symbol-identity-prepass ') &&
-            line.includes('4819-for-of-iterator-close.mjs'),
+      for (const target of [
+        { name: 'es2015', arg: '--target=es2015', graph: 'retained' },
+        { name: 'es5', arg: '--target=es5', graph: 'reanalyzed' },
+      ]) {
+        const output = join(dir, `${target.name}.cjs`);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            file,
+            target.arg,
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
         );
-      expect(report, proc.stderr).toBeDefined();
-      for (const counter of EXACT_ZERO_COUNTERS) {
-        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+        expect(proc.status, `${target.name}: ${proc.stderr}`).toBe(0);
+
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.includes('zntc: symbol-identity-prepass ') &&
+              line.includes('4819-for-of-iterator-close.mjs'),
+          );
+        expect(report, `${target.name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${target.name}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report, `${target.name}: ${report}`).toMatch(/clean=1(?:\s|$)/);
+
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.includes('zntc: symbol-identity-prepass-mode ') &&
+              line.includes('4819-for-of-iterator-close.mjs'),
+          );
+        expect(graphMode, `${target.name}: ${proc.stderr}`).toContain(
+          `semantic_graph=${target.graph}`,
+        );
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, target.name).toBe('1,2 return:2 3,4,5\n');
       }
-      expect(report).toMatch(/clean=1(?:\s|$)/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
-      const graphMode = (proc.stderr ?? '')
-        .split(/\r?\n/)
-        .find(
-          (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') &&
-            line.includes('4819-for-of-iterator-close.mjs'),
+  test('native for-of does not retain graphs when companion syntax needs lowering', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-for-of-resync-boundaries-'));
+    const cases = [
+      {
+        name: 'optional-chain',
+        source: [
+          'const values: Array<number | undefined> = [1, undefined];',
+          'for (const value of values) console.log(value?.toFixed(0));',
+        ].join('\n'),
+        stdout: '1\nundefined\n',
+      },
+      {
+        name: 'for-await',
+        source: [
+          'async function collect(values: AsyncIterable<number>) {',
+          '  const output: number[] = [];',
+          '  for await (const value of values) output.push(value);',
+          '  return output;',
+          '}',
+          "collect([1, 2]).then(values => console.log(values.join(',')));",
+        ].join('\n'),
+        stdout: '1,2\n',
+      },
+    ];
+    try {
+      for (const fixture of cases) {
+        const entry = join(dir, `${fixture.name}.ts`);
+        const output = join(dir, `${fixture.name}.cjs`);
+        writeFileSync(entry, fixture.source);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            entry,
+            '--target=es2015',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
         );
-      expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
-      const actual = spawnSync('node', [output], { encoding: 'utf8' });
-      expect(actual.status, actual.stderr).toBe(0);
-      expect(actual.stdout).toBe('1,2 return:2\n');
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.includes('zntc: symbol-identity-prepass ') &&
+              line.includes(`${fixture.name}.ts`),
+          );
+        expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.name}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report, `${fixture.name}: ${report}`).toMatch(/clean=1(?:\s|$)/);
+
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.includes('zntc: symbol-identity-prepass-mode ') &&
+              line.includes(`${fixture.name}.ts`),
+          );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe(fixture.stdout);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
