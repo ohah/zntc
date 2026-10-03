@@ -413,7 +413,79 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('ES5 downlevel and structured assignments keep arrow modules on semantic resync', () => {
+  test('ES5 arrows retain ordinary object literal properties with exact identity', () => {
+    const cases = [
+      {
+        name: 'explicit property',
+        source: [
+          'function make(value) { return (() => ({ answer: value }))(); }',
+          'console.log(make(42).answer);',
+        ].join('\n'),
+      },
+      {
+        name: 'shorthand property',
+        source: [
+          'function make(value) { return (() => ({ value }))(); }',
+          'console.log(make(42).value);',
+        ].join('\n'),
+      },
+    ];
+    for (const fixture of cases) {
+      const dir = mkdtempSync(join(tmpdir(), `zntc-bundle-arrow-object-${fixture.name}-retained-`));
+      const output = join(dir, 'out.cjs');
+      writeFileSync(join(dir, 'entry.mjs'), fixture.source);
+      try {
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            'entry.mjs',
+            '--target=es5',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+          );
+        expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.name}: ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report, fixture.name).toMatch(/clean=1(?:\s|$)/);
+
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+          );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=retained');
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe('42\n');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test('ES5 downlevel and structured forms keep arrow modules on semantic resync', () => {
     const cases = [
       {
         name: 'exponentiation',
@@ -463,6 +535,47 @@ describe('symbol identity coverage gate (#4819)', () => {
         source: [
           'function assign(value) { var result = 0; (() => ([result] = value))(); return result; }',
           'console.log(assign([42]));',
+        ].join('\n'),
+        output: '42\n',
+      },
+      {
+        name: 'computed object property',
+        source: [
+          'function make(key, value) { return (() => ({ [key]: value }))(); }',
+          'console.log(make("answer", 42).answer);',
+        ].join('\n'),
+        output: '42\n',
+      },
+      {
+        name: 'object spread',
+        source: [
+          'var source = { answer: 42 };',
+          'function make() { return (() => ({ ...source }))(); }',
+          'console.log(make().answer);',
+        ].join('\n'),
+        output: '42\n',
+      },
+      {
+        name: 'object method',
+        source: [
+          'function make(value) { return (() => ({ answer() { return value; } }))(); }',
+          'console.log(make(42).answer());',
+        ].join('\n'),
+        output: '42\n',
+      },
+      {
+        name: 'destructured arrow parameter',
+        source: [
+          'function make(value) { return (({ answer }) => (() => answer)())({ answer: value }); }',
+          'console.log(make(42));',
+        ].join('\n'),
+        output: '42\n',
+      },
+      {
+        name: 'destructured catch binding',
+        source: [
+          'function read(value) { try { throw value; } catch ({ answer }) { return (() => answer)(); } }',
+          'console.log(read({ answer: 42 }));',
         ].join('\n'),
         output: '42\n',
       },

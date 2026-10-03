@@ -11,6 +11,7 @@ const stmt_info_mod = @import("../stmt_info.zig");
 const purity = @import("../purity.zig");
 const profile = @import("../../profile.zig");
 const ast_mod = @import("../../parser/ast.zig");
+const ast_walk = @import("../../parser/ast_walk.zig");
 const module_parser = @import("../../parser/module.zig");
 const token_mod = @import("../../lexer/token.zig");
 const NodeTag = ast_mod.Node.Tag;
@@ -341,8 +342,21 @@ fn hasOnlyTopLevelLocalExportSpecifiers(module: *const Module) bool {
 fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: TransformOptions) bool {
     if (!options.unsupported.arrow or ast.has_jsx) return false;
 
+    // Cover-grammar parsing may leave speculative nodes in the arena that are
+    // not part of the program. Only reachable syntax can affect this lowering.
+    if (ast.nodes.items.len == 0) return false;
+    const root_idx = ast.transformed_root orelse @as(
+        ast_mod.NodeIndex,
+        @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))),
+    );
+    if (root_idx.isNone() or @intFromEnum(root_idx) >= ast.nodes.items.len or
+        ast.getNode(root_idx).tag != .program) return false;
+    const reachable_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, root_idx) catch return false;
+    defer ast.allocator.free(reachable_nodes);
+
     var found_arrow = false;
-    for (ast.nodes.items) |node| {
+    for (reachable_nodes) |raw_idx| {
+        const node = ast.nodes.items[raw_idx];
         // Type erasure already edits the semantic graph through the same
         // transform-aware path; its nodes add no runtime scopes or bindings.
         if (isTypeErasureTag(node.tag)) continue;
@@ -405,6 +419,8 @@ fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: Transfor
             .assignment_target_identifier,
             .binding_identifier,
             .array_expression,
+            .object_expression,
+            .object_property,
             .conditional_expression,
             .unary_expression,
             .update_expression,
