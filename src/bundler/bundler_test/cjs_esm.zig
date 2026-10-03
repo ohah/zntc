@@ -97,6 +97,89 @@ test "CJS: ESM imports named from CJS" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, ".value") != null);
 }
 
+test "#4819 hostile: whitespace-only CJS wrapper parameter can collide with source binding" {
+    const cases = [_]struct {
+        source: []const u8,
+        wrapper: []const u8,
+        body: []const u8,
+    }{
+        .{
+            .source = "const $m = 1; module.exports = $m;",
+            .wrapper = "($e,$m2)=>{",
+            .body = "const $m=1;$m2.exports=$m",
+        },
+        .{
+            .source = "function f($m) { return module.exports; } module.exports = f;",
+            .wrapper = "($e,$m2)=>{",
+            .body = "return $m2.exports",
+        },
+        .{
+            .source = "function f($e) { return exports.value; } module.exports = f;",
+            .wrapper = "($e2,$m)=>{",
+            .body = "$e2.value",
+        },
+        .{
+            .source = "module.exports = $m;",
+            .wrapper = "($e,$m2)=>{",
+            .body = "$m2.exports=$m",
+        },
+        .{
+            .source = "const $e=1,$e2=2,$m=3,$m2=4; module.exports=$e+$e2+$m+$m2;",
+            .wrapper = "($e3,$m3)=>{",
+            .body = "$m3.exports=$e+$e2+$m+$m2",
+        },
+    };
+
+    for (cases) |case| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.cjs", case.source);
+
+        const entry = try absPath(&tmp, "entry.cjs");
+        defer std.testing.allocator.free(entry);
+
+        var b = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .format = .cjs,
+            .platform = .node,
+            .minify_whitespace = true,
+            .minify_identifiers = false,
+        });
+        defer b.deinit();
+        const result = try b.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+
+        try std.testing.expect(!result.hasErrors());
+        try std.testing.expect(std.mem.indexOf(u8, result.output, case.wrapper) != null);
+        try std.testing.expect(std.mem.indexOf(u8, result.output, case.body) != null);
+    }
+}
+
+test "#4819 hostile: CJS wrapper parameter mangling stays disabled for direct eval" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.cjs", "eval('module.exports');");
+
+    const entry = try absPath(&tmp, "entry.cjs");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .cjs,
+        .platform = .node,
+        .minify_whitespace = true,
+        .minify_identifiers = false,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "(exports,module)=>{") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "eval(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports") != null);
+}
+
 test "CJS: import * as ns of ESM-that-export*-from-CJS → __toESM(require()) after wrapper (#3975)" {
     // mid 가 `export * from <CJS>` 인 pure-CJS-star 인 경우, `import * as ns from mid`
     // 의 namespace 는 정적 열거 불가(CJS 동적 exports)라 직접 `import * as ns from cjs`

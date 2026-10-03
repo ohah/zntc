@@ -46,18 +46,103 @@ const SourceMap = @import("../codegen/sourcemap.zig");
 /// mangle 비활성화 → codegen 옵션·wrapper 모두 default 로 복귀.
 const cjs_wrap_mangle_disabled = @import("../env_flag.zig").Once("ZNTC_NO_CJS_WRAP_MANGLE");
 
-/// CJS wrapper mangle 시 사용할 모듈-로컬 2글자 이름. arrow 파라미터라
-/// 모듈 스코프에 격리(타 모듈/top-level 빈도풀 무관) — codegen 합성·free
-/// 참조와 wrapper 파라미터가 이 이름을 공유한다. `$` prefix 는 mangler
-/// base54 알파벳(`$` 비포함) 및 runtime helper 와 비충돌: 144-lib smoke
-/// 런타임 MATCH 전수 통과로 실증.
-// CJS 래퍼의 고정 파라미터 이름. mangler 예약과 **같은 소스**를 봐야 한다 —
-// 여기서만 바꾸면 mangler 가 그 이름을 사용자 심볼에 배정해 섀도잉이 난다 (#4491).
+/// CJS wrapper 의 짧은 선호 이름. 실제 이름은 모듈 semantic 이름 집합에서
+/// 충돌 여부를 확인한 뒤 선택한다. codegen 의 free-ref 치환과 wrapper 파라미터가
+/// 같은 이름을 사용한다.
 const rt_names = @import("../runtime_helper_names.zig");
 
 const CJS_MANGLE_EXPORTS = rt_names.NAMES.CJS_WRAPPER_EXPORTS_MIN;
 const CJS_MANGLE_MODULE = rt_names.NAMES.CJS_WRAPPER_MODULE_MIN;
 const error_codes = @import("../error_codes.zig");
+
+const CjsWrapperParamNames = struct {
+    exports: []const u8,
+    module: []const u8,
+};
+
+/// A wrapper parameter is referenced textually by codegen throughout the
+/// module body, so its printed name must not match a binding in any nested
+/// scope or an unresolved source reference. Include linker-assigned names too:
+/// a source symbol can have a different spelling by the time codegen runs.
+fn cjsWrapperParamNameIsUsed(
+    module: *const Module,
+    ast: *const Ast,
+    rename_table: ?*const RenameTable,
+    candidate: []const u8,
+) bool {
+    const sem = module.semantic orelse return true;
+    for (sem.symbols.items, 0..) |symbol, index| {
+        if (std.mem.eql(u8, symbol.nameText(module.source), candidate)) return true;
+        if (rename_table) |renames| {
+            if (renames.get(SymbolID.make(module.index, index))) |renamed| {
+                if (std.mem.eql(u8, renamed, candidate)) return true;
+            }
+        }
+    }
+
+    var unresolved = sem.unresolved_references.keyIterator();
+    while (unresolved.next()) |name| {
+        if (std.mem.eql(u8, name.*, candidate)) return true;
+    }
+
+    // Keep the guard effective for transformed bindings that still lack a
+    // semantic SymbolId. The AST is append-only, so checking orphan nodes can
+    // only choose a longer safe alias; it cannot miss a live generated name.
+    for (ast.nodes.items) |node| {
+        const name = switch (node.tag) {
+            .binding_identifier, .identifier_reference, .assignment_target_identifier => ast.getText(node.data.string_ref),
+            else => continue,
+        };
+        if (std.mem.eql(u8, name, candidate)) return true;
+    }
+
+    // Keep fallback spellings away from runtime helpers. The two preferred
+    // names are intentionally shared with helper names where the existing
+    // wrapper structure keeps them in separate scopes.
+    for (rt_names.ALL_SHORT_NAMES) |name| {
+        if (std.mem.eql(u8, name, candidate) and
+            !std.mem.eql(u8, candidate, CJS_MANGLE_EXPORTS) and
+            !std.mem.eql(u8, candidate, CJS_MANGLE_MODULE)) return true;
+    }
+    return false;
+}
+
+fn allocCjsWrapperParamName(
+    allocator: std.mem.Allocator,
+    module: *const Module,
+    ast: *const Ast,
+    rename_table: ?*const RenameTable,
+    preferred: []const u8,
+    other_param: ?[]const u8,
+) ![]const u8 {
+    if (!cjsWrapperParamNameIsUsed(module, ast, rename_table, preferred) and
+        (other_param == null or !std.mem.eql(u8, preferred, other_param.?)))
+    {
+        return preferred;
+    }
+
+    var suffix: usize = 2;
+    while (true) : (suffix += 1) {
+        const candidate = try std.fmt.allocPrint(allocator, "{s}{d}", .{ preferred, suffix });
+        if (!cjsWrapperParamNameIsUsed(module, ast, rename_table, candidate) and
+            (other_param == null or !std.mem.eql(u8, candidate, other_param.?)))
+        {
+            return candidate;
+        }
+    }
+}
+
+fn allocCjsWrapperParamNames(
+    allocator: std.mem.Allocator,
+    module: *const Module,
+    ast: *const Ast,
+    linker: ?*const Linker,
+) !CjsWrapperParamNames {
+    const rename_table = if (linker) |l| &l.rename_table else null;
+    const exports = try allocCjsWrapperParamName(allocator, module, ast, rename_table, CJS_MANGLE_EXPORTS, null);
+    const module_name = try allocCjsWrapperParamName(allocator, module, ast, rename_table, CJS_MANGLE_MODULE, exports);
+    return .{ .exports = exports, .module = module_name };
+}
 
 /// ZNTC0002 TLA+non-ESM 경고 주석. comptime 고정 — 코드/메시지가 error_codes와 항상 일치.
 const tla_warning_comment = "/* [" ++ error_codes.Code.tla_requires_esm_format.format() ++ "] " ++ error_codes.Code.tla_requires_esm_format.message() ++ ". */\n";
@@ -2052,8 +2137,12 @@ pub fn emitModule(
     const cjs_mangle = !cjs_wrap_mangle_disabled.enabled() and
         module.wrap_kind == .cjs and options.minify_whitespace and
         options.platform != .react_native and !mangle_blocked;
-    const cjs_ex_name = if (cjs_mangle) CJS_MANGLE_EXPORTS else cg_options.default_cjs_exports_name;
-    const cjs_mod_name = if (cjs_mangle) CJS_MANGLE_MODULE else cg_options.default_cjs_module_name;
+    const cjs_wrapper_params: CjsWrapperParamNames = if (cjs_mangle)
+        try allocCjsWrapperParamNames(arena_alloc, module, transformer.ast, linker)
+    else
+        .{ .exports = cg_options.default_cjs_exports_name, .module = cg_options.default_cjs_module_name };
+    const cjs_ex_name = cjs_wrapper_params.exports;
+    const cjs_mod_name = cjs_wrapper_params.module;
 
     // require.context: emit 직전에 매치 모듈의 init-call 참조를 linker 로 계산.
     // dev 단일번들은 기존 `__zntc_modules` HMR 경로 유지(refs 비움 → codegen fallback).
