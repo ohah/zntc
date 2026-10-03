@@ -422,6 +422,8 @@ fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: Transfor
             .object_expression,
             .object_property,
             .conditional_expression,
+            .template_literal,
+            .template_element,
             .unary_expression,
             .update_expression,
             .computed_member_expression,
