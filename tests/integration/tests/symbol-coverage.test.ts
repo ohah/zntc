@@ -2185,6 +2185,81 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('Flow component bundling retains generated forwardRef symbols and name collisions', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-flow-component-retained-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'entry.js'),
+      [
+        '// @flow',
+        "const LongCard_withRef = 'user-binding';",
+        "const LongCard_withRef2 = 'user-binding-2';",
+        'const React = { forwardRef: (fn) => fn };',
+        'component LongCard(ref?: mixed, ...props: { label?: string }) {',
+        '  return props.label;',
+        '}',
+        'function renderLocal() {',
+        "  const LocalCard_withRef = 'nested-binding';",
+        "  const LocalCard_withRef2 = 'nested-binding-2';",
+        '  component LocalCard(ref?: mixed, ...props: { label?: string }) {',
+        '    return props.label;',
+        '  }',
+        "  return [LocalCard({ label: 'nested' }), LocalCard_withRef, LocalCard_withRef2].join(' ');",
+        '}',
+        "console.log(LongCard({ label: 'ok' }), LongCard_withRef, LongCard_withRef2, renderLocal());",
+      ].join('\n'),
+    );
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          join(dir, 'entry.js'),
+          '--flow',
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+
+      const graphMode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+        );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(
+        'ok user-binding user-binding-2 nested nested-binding nested-binding-2\n',
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 regex literal lowering retains only helper-free arrow graphs', () => {
     const cases = [
       {
