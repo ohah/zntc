@@ -446,12 +446,12 @@ fn hasDirectSpreadElement(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     return false;
 }
 
-/// The arrow lowering path edits the existing graph and creates only output
-/// function scopes plus its explicitly tracked lexical captures. Keep the
-/// retained-graph path for this narrowly audited JavaScript subset; an
-/// unrecognized node or parameter form stays on the full semantic resync path.
-fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: TransformOptions) bool {
-    if (!options.unsupported.arrow or ast.has_jsx) return false;
+/// Arrow lowering edits the existing graph and creates only output function
+/// scopes plus explicitly tracked captures. Native `await` adds no binding or
+/// scope edges. Keep either path only for the audited syntax subset; an
+/// unrecognized node or downlevel async body stays on semantic reanalysis.
+fn canRetainGraphForArrowAndNativeAwait(ast: *const ast_mod.Ast, options: TransformOptions) bool {
+    if (ast.has_jsx) return false;
 
     // Cover-grammar parsing may leave speculative nodes in the arena that are
     // not part of the program. Only reachable syntax can affect this lowering.
@@ -466,6 +466,7 @@ fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: Transfor
     defer ast.allocator.free(reachable_nodes);
 
     var found_arrow = false;
+    var found_native_await = false;
     for (reachable_nodes) |raw_idx| {
         const node = ast.nodes.items[raw_idx];
         // Type erasure already edits the semantic graph through the same
@@ -476,17 +477,18 @@ fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: Transfor
                 const flags_at = node.data.extra + ast_mod.ArrowExtra.flags;
                 if (flags_at >= ast.extra_data.items.len) return false;
                 if ((ast.extra_data.items[flags_at] & ast_mod.ArrowFlags.is_async) != 0) return false;
-                found_arrow = true;
+                if (options.unsupported.arrow) found_arrow = true;
             },
             .function_declaration, .function_expression, .function => {
                 const flags_at = node.data.extra + ast_mod.FunctionExtra.flags;
                 if (flags_at >= ast.extra_data.items.len) return false;
                 const flags = ast.extra_data.items[flags_at];
-                if ((flags & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator)) != 0)
-                    return false;
+                const is_async = (flags & ast_mod.FunctionFlags.is_async) != 0;
+                const is_generator = (flags & ast_mod.FunctionFlags.is_generator) != 0;
+                if (is_generator or (is_async and options.unsupported.async_await)) return false;
             },
             .variable_declaration => {
-                if (ast.variableDeclarationKind(node) != .@"var") return false;
+                if (options.unsupported.block_scoping and ast.variableDeclarationKind(node) != .@"var") return false;
             },
             .variable_declarator => {
                 if (node.data.extra >= ast.extra_data.items.len) return false;
@@ -529,6 +531,10 @@ fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: Transfor
                 // AST. Downleveling them can hoist key evaluation into generated
                 // temporaries, which still requires semantic reanalysis.
                 if (options.unsupported.object_extensions) return false;
+            },
+            .await_expression => {
+                if (options.unsupported.async_await) return false;
+                found_native_await = true;
             },
             .meta_property => {
                 // `new.target` is safe here only when the target preserves it
@@ -609,7 +615,7 @@ fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: Transfor
         }
         if (node.tag == .catch_clause and node.data.binary.left.isNone()) return false;
     }
-    return found_arrow;
+    return found_arrow or found_native_await;
 }
 
 fn canKeepPrepassSemanticGraph(
@@ -627,10 +633,10 @@ fn canKeepPrepassSemanticGraph(
     const automatic_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .automatic;
     const automatic_dev_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .automatic_dev;
     const graph_editable_jsx = classic_jsx or automatic_jsx or automatic_dev_jsx;
-    const arrow_only_downlevel = options.unsupported.hasAny() and
-        canRetainGraphForArrowOnlyLowering(ast, options);
+    const safe_graph_subset = options.unsupported.hasAny() and
+        canRetainGraphForArrowAndNativeAwait(ast, options);
     if ((ast.has_jsx and !graph_editable_jsx) or ast.has_decorator) return false;
-    if ((options.unsupported.hasAny() and !arrow_only_downlevel) or options.minify_syntax or
+    if ((options.unsupported.hasAny() and !safe_graph_subset) or options.minify_syntax or
         options.minify_whitespace or options.drop_console or options.drop_debugger or
         options.drop_labels.len != 0 or options.define.len != 0 or options.module_specifier_map.len != 0 or
         !options.use_define_for_class_fields or options.experimental_decorators or
@@ -639,7 +645,7 @@ fn canKeepPrepassSemanticGraph(
     if (!hasSupportedTopLevelExportDeclarations(module)) return false;
     if (!hasStableRuntimeImports(ast, options)) return false;
 
-    var found_transform = graph_editable_jsx or arrow_only_downlevel;
+    var found_transform = graph_editable_jsx or safe_graph_subset;
     for (ast.nodes.items, 0..) |node, raw_node_idx| {
         const tag_name = @tagName(node.tag);
         const is_flow_match_tag = std.mem.startsWith(u8, tag_name, "flow_match_");
@@ -675,10 +681,16 @@ fn canKeepPrepassSemanticGraph(
             // These constructs can alter the import/export graph or create
             // dynamic-name environments independently of Flow match lowering.
             .ts_namespace_export_declaration,
-            .await_expression,
             .yield_expression,
             .with_statement,
             => return false,
+            .await_expression => {
+                // Top-level await is vetoed above. Await inside a native async
+                // function adds no bindings or scopes; when the target needs
+                // async lowering, the reachable-node allowlist keeps the
+                // module on semantic reanalysis. This scan also sees
+                // parser-arena nodes that are not reachable from the program.
+            },
             // Runtime import module-graph stability was proven by the preflight
             // above; declaration-level type imports have no runtime record.
             .import_declaration => {},

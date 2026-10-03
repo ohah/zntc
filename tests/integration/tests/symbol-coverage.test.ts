@@ -1057,6 +1057,108 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('native function await keeps TypeScript erasure on the edited semantic graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-await-retained-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    writeFileSync(
+      input,
+      [
+        'type Resolver = { resolve(value: number): number };',
+        'async function compute(Promise: Resolver, value: number) {',
+        '  const result: number = await Promise.resolve(value);',
+        '  return result;',
+        '}',
+        'compute({ resolve: (value) => value + 1 }, 41).then(value => console.log(value));',
+      ].join('\n'),
+    );
+
+    const run = (target: string, format = 'cjs') =>
+      spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          target,
+          '--platform=node',
+          `--format=${format}`,
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+
+    try {
+      const native = run('--target=es2022');
+      expect(native.status, native.stderr).toBe(0);
+      const nativeMode = (native.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(nativeMode, native.stderr).toContain('semantic_graph=retained');
+      const nativeReport = (native.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(nativeReport, native.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(nativeReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${nativeReport}`,
+        ).toBe(0);
+      }
+      expect(nativeReport).toMatch(/clean=1(?:\s|$)/);
+      const nativeOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(nativeOutput.status, nativeOutput.stderr).toBe(0);
+      expect(nativeOutput.stdout).toBe('42\n');
+
+      // Downlevel async transforms replace the source function body and must
+      // remain on the established semantic reanalysis path.
+      const downlevel = run('--target=es2015');
+      expect(downlevel.status, downlevel.stderr).toBe(0);
+      const downlevelMode = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(downlevelMode, downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      const downlevelOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(downlevelOutput.status, downlevelOutput.stderr).toBe(0);
+      expect(downlevelOutput.stdout).toBe('42\n');
+
+      // Top-level await remains an explicit reanalysis boundary even when it
+      // is native for the target and type erasure is the only transformation.
+      writeFileSync(
+        input,
+        [
+          'type Numeric = number;',
+          'const result: Numeric = await Promise.resolve(42);',
+          'console.log(result);',
+        ].join('\n'),
+      );
+      const topLevelAwait = run('--target=es2022', 'esm');
+      expect(topLevelAwait.status, topLevelAwait.stderr).toBe(0);
+      const topLevelAwaitMode = (topLevelAwait.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(topLevelAwaitMode, topLevelAwait.stderr).toContain('semantic_graph=reanalyzed');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('runtime TypeScript enums keep mixed ES5 arrow modules on semantic resync', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-enum-arrow-resync-'));
     const output = join(dir, 'out.cjs');
