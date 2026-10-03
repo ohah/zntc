@@ -271,6 +271,179 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('native classes retain exact scopes only when all class features stay native', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-native-class-scopes-'));
+    const entry = join(dir, 'entry.ts');
+    writeFileSync(
+      entry,
+      [
+        'class Base { label: string = "base"; }',
+        'class Derived extends Base {',
+        '  static #count: number = 0;',
+        '  #value: number;',
+        '  static { this.#count += 1; }',
+        '  constructor(value: number) { super(); this.#value = value; }',
+        '  #format(separator: string): string { return `${this.label}${separator}${this.#value}:${Derived.#count}`; }',
+        '  read(): string { return this.#format(":"); }',
+        '  static count(): number { return this.#count; }',
+        '}',
+        'const value = new Derived(7);',
+        'console.log(value.read(), Derived.count());',
+      ].join('\n'),
+    );
+    const cases = [
+      { name: 'es2022', arg: '--target=es2022', graph: 'retained' },
+      // ES2015 still supports class syntax, but must lower fields, private
+      // members, and static blocks. ES5 also lowers the class boundary.
+      { name: 'es2015', arg: '--target=es2015', graph: 'reanalyzed' },
+      { name: 'es5', arg: '--target=es5', graph: 'reanalyzed' },
+    ];
+    try {
+      for (const target of cases) {
+        const output = join(dir, `${target.name}.cjs`);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            entry,
+            target.arg,
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${target.name}: ${proc.stderr}`).toBe(0);
+
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          );
+        expect(report, `${target.name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${target.name}: ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report, `${target.name}: ${report}`).toMatch(/clean=1(?:\s|$)/);
+
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+          );
+        expect(graphMode, `${target.name}: ${proc.stderr}`).toContain(
+          `semantic_graph=${target.graph}`,
+        );
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, target.name).toBe('base:7:1 1\n');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('native class retention rejects each class feature that the target must lower', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-class-resync-boundaries-'));
+    const cases = [
+      {
+        name: 'class',
+        target: '--target=es5',
+        source: 'class C { read() { return 7; } } console.log(new C().read());',
+        stdout: '7\n',
+      },
+      {
+        name: 'public-field',
+        target: '--target=es2015',
+        source:
+          'class C { value: number = 7; read() { return this.value; } } console.log(new C().read());',
+        stdout: '7\n',
+      },
+      {
+        name: 'private-field',
+        target: '--target=es2015',
+        source: 'class C { #value: number = 7; read() { return 7; } } console.log(new C().read());',
+        stdout: '7\n',
+      },
+      {
+        name: 'private-method',
+        target: '--target=es2015',
+        source:
+          'class C { #hidden() { return 7; } read() { return 7; } } console.log(new C().read());',
+        stdout: '7\n',
+      },
+      {
+        name: 'static-block',
+        target: '--target=es2015',
+        source:
+          'class C { static { globalThis.classStaticValue = 7; } } console.log(globalThis.classStaticValue);',
+        stdout: '7\n',
+      },
+    ];
+    try {
+      for (const fixture of cases) {
+        const entry = join(dir, `${fixture.name}.ts`);
+        const output = join(dir, `${fixture.name}.cjs`);
+        writeFileSync(entry, fixture.source);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            entry,
+            fixture.target,
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.includes('zntc: symbol-identity-prepass ') &&
+              line.includes(`${fixture.name}.ts`),
+          );
+        expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.name}: ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report, `${fixture.name}: ${report}`).toMatch(/clean=1(?:\s|$)/);
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.includes('zntc: symbol-identity-prepass-mode ') &&
+              line.includes(`${fixture.name}.ts`),
+          );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe(fixture.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('native for-of does not retain graphs when companion syntax needs lowering', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-for-of-resync-boundaries-'));
     const cases = [
