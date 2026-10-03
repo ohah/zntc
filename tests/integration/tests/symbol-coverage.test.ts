@@ -1888,6 +1888,101 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('local TypeScript import-equals retains its graph while external require reanalyzes', () => {
+    const cases = [
+      {
+        name: 'local namespace aliases',
+        source: [
+          'namespace Source {',
+          '  export let value = 40;',
+          '  export namespace Inner { export let value = 42; }',
+          '}',
+          'namespace Container {',
+          '  export namespace Nested { export let value = 43; }',
+          '  import NestedAlias = Nested;',
+          '  export function read() { return NestedAlias.value; }',
+          '}',
+          'import Alias = Source;',
+          'import DeepAlias = Source.Inner;',
+          'console.log(Alias.value, DeepAlias.value, Container.read());',
+        ].join('\n'),
+        graph: 'retained',
+        output: '40 42 43\n',
+      },
+      {
+        name: 'external require import-equals',
+        source: [
+          "import Assert = require('node:assert/strict');",
+          'Assert.equal(42, 42);',
+          "console.log('external-ok');",
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: 'external-ok\n',
+      },
+    ];
+
+    for (const fixture of cases) {
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-import-equals-bundle-graph-'));
+      const input = join(dir, 'entry.ts');
+      const output = join(dir, 'out.cjs');
+      writeFileSync(input, fixture.source);
+      try {
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            input,
+            '--target=esnext',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+          );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
+          `semantic_graph=${fixture.graph}`,
+        );
+
+        if (fixture.graph === 'retained') {
+          const report = (proc.stderr ?? '')
+            .split(/\r?\n/)
+            .find(
+              (line) =>
+                line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+            );
+          expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture.name}: ${counter}: ${report}`,
+            ).toBe(0);
+          }
+          expect(report).toMatch(/clean=1(?:\s|$)/);
+          expect(Number(report?.match(/generated_bindings=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+        }
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout).toBe(fixture.output);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
   test('TypeScript export-equals mangling reuses the edited semantic graph', () => {
     const file = join(FIXTURE_DIR, '4819-export-equals-transform-graph.ts');
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-export-equals-graph-'));
