@@ -158,14 +158,17 @@ const cases: Case[] = [
     label: "jsx=automatic + importSource=preact",
     entry: "/jsx-app.tsx",
     opts: { format: "esm", jsx: "automatic", jsxImportSource: "preact" },
-    expectIncludes: [{ name: "preact 참조", rx: /preact/ }],
+    expectIncludes: [{ name: "preact JSX runtime import", rx: /from\s+["']preact\/jsx-runtime["']/ }],
   },
   {
     group: "JSX",
     label: "jsx=automatic-dev + importSource=react",
     entry: "/jsx-app.tsx",
     opts: { format: "esm", jsx: "automatic-dev" },
-    expectIncludes: [{ name: "jsxDEV 참조", rx: /jsxDEV/ }],
+    expectIncludes: [
+      { name: "React JSX development runtime import", rx: /from\s+["']react\/jsx-dev-runtime["']/ },
+      { name: "jsxDEV 참조", rx: /jsxDEV/ },
+    ],
   },
 
   // ─── Flow ───
