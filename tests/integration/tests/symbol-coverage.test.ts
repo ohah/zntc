@@ -1374,9 +1374,10 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('native function await keeps TypeScript erasure on the edited semantic graph', () => {
+  test('native function and top-level await keep TypeScript erasure on the edited semantic graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-await-retained-'));
     const output = join(dir, 'out.cjs');
+    const esmOutput = join(dir, 'tla-out.mjs');
     const input = join(dir, 'entry.ts');
     writeFileSync(
       input,
@@ -1390,7 +1391,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       ].join('\n'),
     );
 
-    const run = (target: string, format = 'cjs') =>
+    const run = (target: string, format = 'cjs', outputPath = output) =>
       spawnSync(
         ZNTC_BIN,
         [
@@ -1401,7 +1402,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           `--format=${format}`,
           '--minify-identifiers',
           '-o',
-          output,
+          outputPath,
         ],
         {
           cwd: dir,
@@ -1452,17 +1453,17 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(downlevelOutput.status, downlevelOutput.stderr).toBe(0);
       expect(downlevelOutput.stdout).toBe('42\n');
 
-      // Top-level await remains an explicit reanalysis boundary even when it
-      // is native for the target and type erasure is the only transformation.
+      // Native TLA keeps the parser's exact async-module fact and graph.
       writeFileSync(
         input,
         [
           'type Numeric = number;',
-          'const result: Numeric = await Promise.resolve(42);',
+          'const Promise = { resolve(value: Numeric): Numeric { return value + 1; } };',
+          'const result: Numeric = await Promise.resolve(41);',
           'console.log(result);',
         ].join('\n'),
       );
-      const topLevelAwait = run('--target=es2022', 'esm');
+      const topLevelAwait = run('--target=es2022', 'esm', esmOutput);
       expect(topLevelAwait.status, topLevelAwait.stderr).toBe(0);
       const topLevelAwaitMode = (topLevelAwait.stderr ?? '')
         .split(/\r?\n/)
@@ -1470,7 +1471,53 @@ describe('symbol identity coverage gate (#4819)', () => {
           (line) =>
             line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(topLevelAwaitMode, topLevelAwait.stderr).toContain('semantic_graph=reanalyzed');
+      expect(topLevelAwaitMode, topLevelAwait.stderr).toContain('semantic_graph=retained');
+      const topLevelAwaitReport = (topLevelAwait.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(topLevelAwaitReport, topLevelAwait.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(topLevelAwaitReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${topLevelAwaitReport}`,
+        ).toBe(0);
+      }
+      expect(topLevelAwaitReport).toMatch(/clean=1(?:\s|$)/);
+      const topLevelAwaitOutput = spawnSync('node', [esmOutput], { encoding: 'utf8' });
+      expect(topLevelAwaitOutput.status, topLevelAwaitOutput.stderr).toBe(0);
+      expect(topLevelAwaitOutput.stdout).toBe('42\n');
+
+      // TLA downleveling moves await into a generated async IIFE and still
+      // requires the established post-transform semantic analysis.
+      const loweredTopLevelAwait = run('--target=es2019', 'esm', esmOutput);
+      expect(loweredTopLevelAwait.status, loweredTopLevelAwait.stderr).toBe(0);
+      const loweredMode = (loweredTopLevelAwait.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(loweredMode, loweredTopLevelAwait.stderr).toContain('semantic_graph=reanalyzed');
+      const loweredOutput = spawnSync('node', [esmOutput], { encoding: 'utf8' });
+      expect(loweredOutput.status, loweredOutput.stderr).toBe(0);
+      expect(loweredOutput.stdout).toBe('42\n');
+
+      // The same downlevel veto must hold when neither the ESM export deferral
+      // nor the IIFE async-factory path applies.
+      const loweredCjsTopLevelAwait = run('--target=es2019', 'cjs');
+      expect(loweredCjsTopLevelAwait.status, loweredCjsTopLevelAwait.stderr).toBe(0);
+      const loweredCjsMode = (loweredCjsTopLevelAwait.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(loweredCjsMode, loweredCjsTopLevelAwait.stderr).toContain('semantic_graph=reanalyzed');
+      const loweredCjsOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(loweredCjsOutput.status, loweredCjsOutput.stderr).toBe(0);
+      expect(loweredCjsOutput.stdout).toBe('42\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
