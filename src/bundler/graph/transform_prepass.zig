@@ -469,6 +469,7 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
     var found_native_await = false;
     var found_native_generator = false;
     var found_native_tagged_template = false;
+    var found_native_for_of = false;
     for (reachable_nodes) |raw_idx| {
         const node = ast.nodes.items[raw_idx];
         // Type erasure already edits the semantic graph through the same
@@ -491,7 +492,9 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
                     (is_async and options.unsupported.async_await)) return false;
             },
             .variable_declaration => {
-                if (options.unsupported.block_scoping and ast.variableDeclarationKind(node) != .@"var") return false;
+                const kind = ast.variableDeclarationKind(node);
+                if (options.unsupported.using and kind.isUsing()) return false;
+                if (options.unsupported.block_scoping and kind != .@"var") return false;
             },
             .variable_declarator => {
                 if (node.data.extra >= ast.extra_data.items.len) return false;
@@ -521,7 +524,13 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
                     operator == .question2) return false;
             },
             .array_expression, .call_expression, .new_expression => {
+                if (options.unsupported.optional_chaining and
+                    ast_mod.spineHasOptionalChain(ast, @enumFromInt(raw_idx))) return false;
                 if (options.unsupported.spread and hasDirectSpreadElement(ast, node)) return false;
+            },
+            .static_member_expression, .computed_member_expression => {
+                if (options.unsupported.optional_chaining and
+                    ast_mod.spineHasOptionalChain(ast, @enumFromInt(raw_idx))) return false;
             },
             .object_expression => {
                 // Object spread has its own target feature. Include ordinary
@@ -546,6 +555,10 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
             .tagged_template_expression => {
                 if (options.unsupported.template_literal) return false;
                 found_native_tagged_template = true;
+            },
+            .for_of_statement => {
+                if (options.unsupported.for_of) return false;
+                found_native_for_of = true;
             },
             .meta_property => {
                 // `new.target` is safe here only when the target preserves it
@@ -592,8 +605,6 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
             .template_element,
             .unary_expression,
             .update_expression,
-            .computed_member_expression,
-            .static_member_expression,
             // Parent-specific checks above keep transformed spread forms on
             // semantic reanalysis; native spread elements preserve the graph.
             .spread_element,
@@ -626,7 +637,7 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
         }
         if (node.tag == .catch_clause and node.data.binary.left.isNone()) return false;
     }
-    return found_arrow or found_native_await or found_native_generator or found_native_tagged_template;
+    return found_arrow or found_native_await or found_native_generator or found_native_tagged_template or found_native_for_of;
 }
 
 fn canKeepPrepassSemanticGraph(
@@ -716,6 +727,12 @@ fn canKeepPrepassSemanticGraph(
             },
             .ts_module_declaration => {
                 if (node.data.binary.flags != 0) return false;
+                found_transform = true;
+            },
+            .for_of_statement => {
+                if (options.unsupported.for_of) return false;
+                // Native for-of visitation only copies the loop and its children;
+                // preserve the existing lexical scope owner instead of reanalyzing.
                 found_transform = true;
             },
             .identifier_reference => {

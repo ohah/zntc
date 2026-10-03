@@ -16,8 +16,14 @@ const iterable = {
 };
 
 const values = [];
-for (const loopValue of iterable) {
+outerLoop: for (const loopValue of iterable) {
   values.push(loopValue);
-  if (loopValue === 2) break;
+  if (loopValue === 1) continue outerLoop;
+  if (loopValue === 2) break outerLoop;
 }
-console.log(values.join(','), events.join(','));
+
+const capturedValues = [];
+for (let lexicalValue of [3, 4, 5]) {
+  capturedValues.push(() => lexicalValue);
+}
+console.log(values.join(','), events.join(','), capturedValues.map((read) => read()).join(','));
