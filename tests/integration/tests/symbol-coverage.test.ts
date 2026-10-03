@@ -1068,7 +1068,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('ES5 downlevel, structured, and tagged forms keep arrow modules on semantic resync', () => {
+  test('ES5 downlevel forms with generated state keep arrow modules on semantic resync', () => {
     const cases = [
       {
         name: 'exponentiation',
@@ -1140,6 +1140,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       },
       {
         name: 'object method',
+        graph: 'retained',
         source: [
           'function make(value) { return (() => ({ answer() { return value; } }))(); }',
           'console.log(make(42).answer());',
@@ -1203,7 +1204,26 @@ describe('symbol identity coverage gate (#4819)', () => {
             (line) =>
               line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
           );
-        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+        const expectedGraph = fixture.name === 'object method' ? 'retained' : 'reanalyzed';
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
+          `semantic_graph=${expectedGraph}`,
+        );
+        if (expectedGraph === 'retained') {
+          const report = (proc.stderr ?? '')
+            .split(/\r?\n/)
+            .find(
+              (line) =>
+                line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+            );
+          expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture.name}: ${counter}: ${report}`,
+            ).toBe(0);
+          }
+          expect(report, fixture.name).toMatch(/clean=1(?:\s|$)/);
+        }
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
         expect(actual.stdout).toBe(fixture.output);
@@ -2358,6 +2378,166 @@ describe('symbol identity coverage gate (#4819)', () => {
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
       expect(actual.stdout).toBe('value,dynamic 42 9\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 simple object method lowering retains the original function scope', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-object-method-retained-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    writeFileSync(
+      input,
+      [
+        'type Numeric = number;',
+        'var methods = { combine(addend: Numeric) { return this.base + addend; } };',
+        'methods.base = 10;',
+        'console.log(methods.combine(32), methods.combine.name);',
+      ].join('\n'),
+    );
+
+    try {
+      const downlevel = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(downlevel.status, downlevel.stderr).toBe(0);
+      const mode = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(mode, downlevel.stderr).toContain('semantic_graph=retained');
+      const report = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(report, downlevel.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42 combine\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 computed object methods keep generated key temporaries on semantic reanalysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-computed-object-method-reanalyzed-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    writeFileSync(
+      input,
+      [
+        'type Numeric = number;',
+        'var keyCalls = 0;',
+        'function getKey() { keyCalls++; return "combine"; }',
+        'var methods = { [getKey()](addend: Numeric) { return this.base + addend; } };',
+        'methods.base = 10;',
+        "console.log(Object.keys(methods).join(','), methods.combine(32), keyCalls);",
+      ].join('\n'),
+    );
+
+    try {
+      const downlevel = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(downlevel.status, downlevel.stderr).toBe(0);
+      const mode = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(mode, downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('combine,base 42 1\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 object methods with super keep home-object temporaries on semantic reanalysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-object-method-super-reanalyzed-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    writeFileSync(
+      input,
+      [
+        'type Numeric = number;',
+        'var base = { read() { return 41; } };',
+        'var methods = { read(): Numeric { return super.read() + 1; } };',
+        'Object.setPrototypeOf(methods, base);',
+        'console.log(methods.read());',
+      ].join('\n'),
+    );
+
+    try {
+      const downlevel = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(downlevel.status, downlevel.stderr).toBe(0);
+      const mode = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(mode, downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -4456,7 +4636,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('arrow lowering retains only native object method scopes', () => {
+  test('arrow lowering retains object method scopes across ES5 method lowering', () => {
     const cases = [
       {
         name: 'native object method and getter on node5',
@@ -4475,7 +4655,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       {
         name: 'object method lowering on es5',
         target: 'es5',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'var methods = {',
           '  combine(_this) { return (() => this.prefix + _this)(); },',

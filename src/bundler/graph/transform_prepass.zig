@@ -475,6 +475,7 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
     var found_native_destructuring = false;
     var found_safe_template_literal = false;
     var found_object_shorthand = false;
+    var found_lowered_object_method = false;
     for (reachable_nodes) |raw_idx| {
         const node = ast.nodes.items[raw_idx];
         // Type erasure already edits the semantic graph through the same
@@ -558,6 +559,11 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
                 // preserving their source references. Tagged templates have
                 // their own gate because downleveling creates helper/cache state.
                 found_safe_template_literal = true;
+            },
+            .super_expression => {
+                // Lowering object-method `super` introduces a home-object
+                // reference and temporary state; keep that graph on reanalysis.
+                if (options.unsupported.object_extensions) return false;
             },
             .object_property => {
                 // Shorthand lowering duplicates the key as property text and
@@ -648,10 +654,6 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
                 if (node.data.none == 1 and options.unsupported.new_target) return false;
             },
             .method_definition => {
-                // Native object methods retain their function scopes and graph.
-                // Object-method, async, generator, or async-generator lowering
-                // can replace those scopes, so keep those cases on reanalysis.
-                if (options.unsupported.object_extensions) return false;
                 const key_at = node.data.extra + ast_mod.MethodExtra.key;
                 if (key_at >= ast.extra_data.items.len) return false;
                 const key: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[key_at]);
@@ -666,6 +668,14 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
                 if ((is_async and is_generator and options.unsupported.async_generator) or
                     (is_async and options.unsupported.async_await) or
                     (is_generator and options.unsupported.generator)) return false;
+                const is_accessor = (flags & (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter)) != 0;
+                if (options.unsupported.object_extensions and !is_accessor) {
+                    // The object-method lowering reuses this method's function
+                    // scope for the generated function expression. Computed
+                    // keys are gated above, while `super` requires new home
+                    // object state and is rejected separately.
+                    found_lowered_object_method = true;
+                }
             },
             // This allowlist deliberately leaves module graph edits and all
             // other downlevel families on the existing resync path.
@@ -680,7 +690,6 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
             // named-capture cases still fall back after transform below.
             .regexp_literal,
             .this_expression,
-            .super_expression,
             .identifier_reference,
             // Plain identifier writes use this reference tag and are already
             // tracked as writes in the semantic graph. Destructuring targets
@@ -729,7 +738,7 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
     }
     return found_arrow or found_native_await or found_native_generator or found_native_tagged_template or
         found_native_for_of or found_native_for_await or found_native_class or found_native_destructuring or
-        found_safe_template_literal or found_object_shorthand;
+        found_safe_template_literal or found_object_shorthand or found_lowered_object_method;
 }
 
 fn canKeepPrepassSemanticGraph(
