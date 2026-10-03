@@ -470,6 +470,7 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
     var found_native_generator = false;
     var found_native_tagged_template = false;
     var found_native_for_of = false;
+    var found_native_class = false;
     for (reachable_nodes) |raw_idx| {
         const node = ast.nodes.items[raw_idx];
         // Type erasure already edits the semantic graph through the same
@@ -560,6 +561,29 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
                 if (options.unsupported.for_of) return false;
                 found_native_for_of = true;
             },
+            .class_declaration, .class_expression => {
+                if (options.unsupported.class) return false;
+                found_native_class = true;
+            },
+            .property_definition => {
+                const key_at = node.data.extra + ast_mod.PropertyExtra.key;
+                if (key_at >= ast.extra_data.items.len) return false;
+                const key: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[key_at]);
+                if (key.isNone() or @intFromEnum(key) >= ast.nodes.items.len) return false;
+                if (ast.nodes.items[@intFromEnum(key)].tag == .private_identifier) {
+                    if (options.unsupported.class_private_field) return false;
+                } else if (options.unsupported.class_field) return false;
+            },
+            .private_field_expression, .private_identifier => {
+                // The access node alone does not distinguish a private field
+                // from a private method value. Keep it only when both native
+                // forms are supported; declaration nodes receive the more
+                // precise feature check above.
+                if (options.unsupported.class_private_field or options.unsupported.class_private_method) return false;
+            },
+            .static_block => {
+                if (options.unsupported.class_static_block) return false;
+            },
             .meta_property => {
                 // `new.target` is safe here only when the target preserves it
                 // natively. Lowering it can synthesize a different reference
@@ -571,6 +595,12 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
                 // Object-method, async, generator, or async-generator lowering
                 // can replace those scopes, so keep those cases on reanalysis.
                 if (options.unsupported.object_extensions) return false;
+                const key_at = node.data.extra + ast_mod.MethodExtra.key;
+                if (key_at >= ast.extra_data.items.len) return false;
+                const key: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[key_at]);
+                if (key.isNone() or @intFromEnum(key) >= ast.nodes.items.len) return false;
+                if (ast.nodes.items[@intFromEnum(key)].tag == .private_identifier and
+                    options.unsupported.class_private_method) return false;
                 const flags_at = node.data.extra + ast_mod.MethodExtra.flags;
                 if (flags_at >= ast.extra_data.items.len) return false;
                 const flags = ast.extra_data.items[flags_at];
@@ -593,6 +623,7 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
             // named-capture cases still fall back after transform below.
             .regexp_literal,
             .this_expression,
+            .super_expression,
             .identifier_reference,
             // Plain identifier writes use this reference tag and are already
             // tracked as writes in the semantic graph. Destructuring targets
@@ -600,6 +631,7 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
             .assignment_target_identifier,
             .binding_identifier,
             .object_property,
+            .class_body,
             .conditional_expression,
             .template_literal,
             .template_element,
@@ -637,7 +669,7 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
         }
         if (node.tag == .catch_clause and node.data.binary.left.isNone()) return false;
     }
-    return found_arrow or found_native_await or found_native_generator or found_native_tagged_template or found_native_for_of;
+    return found_arrow or found_native_await or found_native_generator or found_native_tagged_template or found_native_for_of or found_native_class;
 }
 
 fn canKeepPrepassSemanticGraph(
@@ -733,6 +765,13 @@ fn canKeepPrepassSemanticGraph(
                 if (options.unsupported.for_of) return false;
                 // Native for-of visitation only copies the loop and its children;
                 // preserve the existing lexical scope owner instead of reanalyzing.
+                found_transform = true;
+            },
+            .class_declaration, .class_expression => {
+                if (options.unsupported.class) return false;
+                // Native class syntax adds no output scopes or bindings. The
+                // reachable-node gate above rejects class elements needing
+                // downlevel transforms before allowing this graph reuse.
                 found_transform = true;
             },
             .identifier_reference => {
