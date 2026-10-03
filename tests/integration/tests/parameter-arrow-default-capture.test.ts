@@ -32,6 +32,29 @@ const cases = [
     `,
   },
   {
+    name: 'parameter new.target with body this and arguments captures',
+    source: `
+      function Run(value = (() => new.target === Run)()) {
+        return [value, (() => this.base)(), (() => arguments.length)()];
+      }
+      Run.prototype.base = 9;
+      console.log(JSON.stringify([new Run(), new Run(4)]));
+    `,
+  },
+  {
+    name: 'derived parameter new.target with body arguments capture',
+    source: `
+      class Base {}
+      class Child extends Base {
+        constructor(value = (() => new.target === Child)()) {
+          super();
+          this.result = [value, (() => arguments.length)()];
+        }
+      }
+      console.log(JSON.stringify([new Child().result, new Child(4).result]));
+    `,
+  },
+  {
     name: 'nested function in default retains its own captures',
     source: `
       const host = { base: 9 };

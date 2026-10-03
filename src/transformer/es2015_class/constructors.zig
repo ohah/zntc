@@ -277,19 +277,12 @@ pub fn Constructors(comptime Transformer: type) type {
 
                 if (derived_constructor_this_alias) {
                     // A derived constructor never synthesizes `_this = this`
-                    // before super(). Its only movable parameter capture is
-                    // `_arguments = arguments`; `_this` remains uninitialized
+                    // before super(). Only arguments/new.target captures can
+                    // move before defaults; `_this` remains uninitialized
                     // until the super-call assignment.
-                    var parameter_capture_index: usize = 0;
-                    if (param_needs_arguments) {
-                        std.debug.assert(parameter_capture_index < capture_count);
-                        try self.parameter_capture_statements.put(self.allocator, @intFromEnum(capture_stmts[parameter_capture_index]), {});
-                        parameter_capture_index += 1;
-                    }
-                    if (param_needs_new_target) {
-                        std.debug.assert(parameter_capture_index < capture_count);
-                        try self.parameter_capture_statements.put(self.allocator, @intFromEnum(capture_stmts[parameter_capture_index]), {});
-                    }
+                    try es_helpers.recordParameterCapturesWithPresence(self, capture_stmts[0..capture_count], .{
+                        false, self.needs_arguments_var, needs_new_target_capture,
+                    }, .{ false, param_needs_arguments, param_needs_new_target });
                 } else {
                     try es_helpers.recordParameterCaptures(self, capture_stmts[0..capture_count], param_needs_this, param_needs_arguments, param_needs_new_target);
                 }
