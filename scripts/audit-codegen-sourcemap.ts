@@ -45,6 +45,8 @@ const SKIP_FUNCS = new Map<string, string>([
 	["emitTry", "container — block / catch / finally children carry mappings"],
 	["emitClassBody", "container — delegates to emitBracedList"],
 	["emitStaticBlock", "container — body carries mappings"],
+	["emitEnumIIFE", "delegates to emitEnumIIFEInner, which maps node.span before emitting"],
+	["emitEnumIifeMemberReference", "guarded helper — addSourceMappingWithName(node.span, ...) before output; returns false without emitting"],
 	["emitNamespaceIIFE", "delegates to emitNamespaceIIFEInner"],
 	["emitExportSpecifier", "leaf-token mapping at local_node.span (not outer node.span)"],
 	["emitParen", "transparent (#4042) — operand 이 자기 매핑 발행, paren 노드는 토큰 미출력"],
