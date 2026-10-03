@@ -422,6 +422,12 @@ fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: Transfor
                 if ((options.unsupported.spread or options.unsupported.object_spread) and
                     hasDirectSpreadElement(ast, node)) return false;
             },
+            .computed_property_key => {
+                // Native computed object keys only wrap their expression in the
+                // AST. Downleveling them can hoist key evaluation into generated
+                // temporaries, which still requires semantic reanalysis.
+                if (options.unsupported.object_extensions) return false;
+            },
             // This allowlist deliberately leaves module graph edits and all
             // other downlevel families on the existing resync path.
             .program,
