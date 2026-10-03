@@ -208,6 +208,59 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('ES5 for-of reanalysis retains exact catch scope ownership and iterator closing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-for-of-catch-scope-'));
+    const output = join(dir, 'out.cjs');
+    const file = join(FIXTURE_DIR, '4819-for-of-iterator-close.mjs');
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          file,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass ') &&
+            line.includes('4819-for-of-iterator-close.mjs'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+
+      const graphMode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') &&
+            line.includes('4819-for-of-iterator-close.mjs'),
+        );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('1,2 return:2\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 arrow-only bundler lowering retains exact output scopes and lexical captures', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-arrow-retained-'));
     const output = join(dir, 'out.cjs');

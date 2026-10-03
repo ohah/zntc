@@ -4186,8 +4186,13 @@ pub const SemanticAnalyzer = struct {
         if (!body_idx.isNone()) {
             const body_node = self.ast.getNode(body_idx);
             if (body_node.tag == .block_statement and catch_names.items.len > 0) {
-                // Enter block scope for the body
-                const block_saved = try self.enterScope(.block, self.is_strict_mode);
+                // Keep the body block's scope owner separate from the catch clause owner.
+                const block_saved = blk: {
+                    const saved_visit_node = self.current_visit_node;
+                    self.current_visit_node = body_idx;
+                    defer self.current_visit_node = saved_visit_node;
+                    break :blk try self.enterScope(.block, self.is_strict_mode);
+                };
                 // Visit block body statements
                 try self.visitNodeList(body_node.data.list);
                 // Check for catch param conflicts with lexically-declared names in the block
