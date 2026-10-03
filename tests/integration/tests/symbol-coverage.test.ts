@@ -2165,6 +2165,122 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('static TypeScript named re-exports retain only stable loader records', () => {
+    const cases = [
+      {
+        name: 'plain named re-export',
+        source:
+          "export { value as publicValue } from './dep.ts';\ninterface Marker { value: number }",
+        readExpression: 'api.publicValue',
+        graph: 'retained',
+        expected: '42\n',
+      },
+      {
+        name: 'empty named re-export side effect',
+        source: "export {} from './dep.ts';\ninterface Marker { value: number }",
+        readExpression: 'globalThis.__zntcReExportLoaded ?? 0',
+        graph: 'retained',
+        expected: '42\n',
+      },
+      {
+        name: 'inline type-only re-export retains source side effects',
+        source: "export { type value } from './dep.ts';\ninterface Marker { value: number }",
+        readExpression: 'globalThis.__zntcReExportLoaded ?? 0',
+        graph: 'retained',
+        expected: '42\n',
+      },
+      {
+        name: 'string export-name control',
+        source:
+          "export { value as 'public-value' } from './dep.ts';\ninterface Marker { value: number }",
+        readExpression: "api['public-value']",
+        graph: 'reanalyzed',
+        expected: '42\n',
+        format: 'esm',
+      },
+      {
+        name: 'import-attribute control',
+        source:
+          "export { value as publicValue } from './dep.ts' with { mode: 'custom' };\ninterface Marker { value: number }",
+        readExpression: 'api.publicValue',
+        graph: 'reanalyzed',
+        expected: '42\n',
+        execute: false,
+      },
+    ];
+
+    for (const fixture of cases) {
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-named-re-export-graph-'));
+      const entry = join(dir, 'entry.ts');
+      const output = join(dir, fixture.format === 'esm' ? 'out.mjs' : 'out.cjs');
+      writeFileSync(
+        join(dir, 'dep.ts'),
+        'globalThis.__zntcReExportLoaded = 42; export const value = 42;',
+      );
+      writeFileSync(entry, fixture.source);
+
+      try {
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            entry,
+            '--target=esnext',
+            '--platform=node',
+            `--format=${fixture.format ?? 'cjs'}`,
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+        const graphMode = proc.stderr
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+          );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
+          `semantic_graph=${fixture.graph}`,
+        );
+
+        if (fixture.graph === 'retained') {
+          const identity = proc.stderr
+            .split(/\r?\n/)
+            .find(
+              (line) =>
+                line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+            );
+          expect(identity, proc.stderr).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              identity,
+            ).toBe(0);
+          }
+          expect(identity, proc.stderr).toMatch(/clean=1(?:\s|$)/);
+        }
+
+        if (fixture.execute !== false) {
+          const runExpression =
+            fixture.format === 'esm'
+              ? `import(require('node:url').pathToFileURL(process.argv[1])).then((api) => console.log(${fixture.readExpression}));`
+              : `const api = require(process.argv[1]); console.log(${fixture.readExpression});`;
+          const actual = spawnSync('node', ['-e', runExpression, output], { encoding: 'utf8' });
+          expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, fixture.name).toBe(fixture.expected);
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
   test('TypeScript export-equals mangling reuses the edited semantic graph', () => {
     const file = join(FIXTURE_DIR, '4819-export-equals-transform-graph.ts');
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-export-equals-graph-'));
