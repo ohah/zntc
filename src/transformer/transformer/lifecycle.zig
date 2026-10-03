@@ -172,6 +172,9 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.generator_temp_var_spans.deinit(self.allocator);
     self.generator_state_temp_symbols.deinit(self.allocator);
     self.generator_state_refs.deinit(self.allocator);
+    for (self.deferred_generated_state_symbols.items) |deferred|
+        self.allocator.free(deferred.references);
+    self.deferred_generated_state_symbols.deinit(self.allocator);
     self.generator_state_semantic_refs.deinit(self.allocator);
     self.deferred_generator_loop_owners.deinit(self.allocator);
     var loop_migrations = self.deferred_generator_loop_migrations.valueIterator();

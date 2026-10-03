@@ -63,6 +63,13 @@ pub const DeferredGeneratorLoopMigration = struct {
     body_migrated: bool = false,
 };
 
+pub const DeferredGeneratedStateSymbols = struct {
+    callback: NodeIndex,
+    parameter: NodeIndex,
+    references: []const NodeIndex,
+    span: Span,
+};
+
 /// 단일 AST append-only 변환기.
 ///
 /// 사용법:
@@ -424,6 +431,9 @@ pub const Transformer = struct {
     /// Each state machine records its starting offset, so nested lowering cannot
     /// consume an enclosing machine's references.
     generator_state_refs: std.ArrayList(NodeIndex) = .empty,
+    /// Exact callback, parameter, and reference nodes whose output owner scope
+    /// was not available when the state machine was built.
+    deferred_generated_state_symbols: std.ArrayListUnmanaged(DeferredGeneratedStateSymbols) = .empty,
     /// Exact for-await generated references whose scopes move into an ES5
     /// generator callback. Capture identity and read/write intent at creation.
     generator_state_semantic_refs: std.ArrayListUnmanaged(struct {
