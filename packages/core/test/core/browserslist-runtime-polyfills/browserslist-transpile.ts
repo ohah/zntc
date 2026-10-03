@@ -19,6 +19,46 @@ describe('@zntc/core browserslist > transpile', () => {
     const src = 'const x = a?.b;';
     const r = transpile(src, { browserslist: 'chrome 100, safari 12' });
     expect(r.code).not.toContain('?.');
+    const read = new Function('a', `${r.code}; return x;`);
+    expect(read({ b: 42 })).toBe(42);
+    expect(read(null)).toBeUndefined();
+    // Optional chaining still throws for an undeclared root identifier.
+    expect(() => new Function(r.code)()).toThrow(ReferenceError);
+  });
+
+  test('optional chain: 외부 함수와 중첩 접근의 nullish 동작을 보존', () => {
+    const options = { browserslist: 'chrome 100, safari 12' };
+    const call = transpile('const result = external?.();', options);
+    const invoke = new Function('external', `${call.code}; return result;`);
+    expect(invoke(() => 7)).toBe(7);
+    expect(invoke(undefined)).toBeUndefined();
+
+    const nested = transpile('const result = external?.field?.value;', options);
+    const read = new Function('external', `${nested.code}; return result;`);
+    expect(read({ field: { value: 9 } })).toBe(9);
+    expect(read({ field: null })).toBeUndefined();
+    expect(read(null)).toBeUndefined();
+  });
+
+  test('optional chain: 외부 객체 delete는 실제 속성을 제거', () => {
+    const r = transpile('const result = delete external?.field;', {
+      browserslist: 'chrome 100, safari 12',
+    });
+    const remove = new Function('external', `${r.code}; return result;`);
+    const object = { field: 1 };
+    expect(remove(object)).toBe(true);
+    expect(object).not.toHaveProperty('field');
+    expect(remove(null)).toBe(true);
+  });
+
+  test('optional chain: ES5 블록 이름 변경 뒤에도 로컬 참조를 보존', () => {
+    const r = transpile(
+      'function read(value) { const result = [value?.field]; { let value = { field: 2 }; result.push(value?.field); } return result; }',
+      { target: 'es5' },
+    );
+    const read = new Function(`${r.code}; return read;`)();
+    expect(read({ field: 1 })).toEqual([1, 2]);
+    expect(read(null)).toEqual([undefined, 2]);
   });
 
   test('browserslist: 쿼리 배열 입력', () => {
