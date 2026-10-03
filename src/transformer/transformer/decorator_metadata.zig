@@ -46,11 +46,11 @@ pub fn serializeTypeAnnotation(self: anytype, type_ann_idx: NodeIndex) Error!Nod
             }
             const src_text = self.ast.getText(type_node.span);
             const name_end = std.mem.indexOfScalar(u8, src_text, '<') orelse src_text.len;
-            break :blk makeTypeofGuard(self, src_text[0..name_end]);
+            break :blk makeTypeReferenceGuard(self, src_text[0..name_end]);
         },
         .identifier_reference, .binding_identifier => blk: {
             const name = self.ast.getText(type_node.data.string_ref);
-            break :blk makeTypeofGuard(self, name);
+            break :blk makeTypeReferenceGuard(self, name);
         },
 
         // 배열/튜플 → Array
@@ -109,7 +109,7 @@ fn extractTypeFromSourceAtNode(self: anytype, param: Node, param_idx: NodeIndex)
         return makeQualifiedMetadataTypeRef(self, type_name);
     }
     // 클래스/인터페이스 참조 → typeof 런타임 체크 (SWC 호환)
-    return makeTypeofGuard(self, type_name);
+    return makeTypeReferenceGuard(self, type_name);
 }
 
 /// Simple parameter ASTs store the binding identifier in the parameter list,
@@ -152,7 +152,8 @@ fn findTypeAnnotationForParam(self: anytype, param_idx: NodeIndex, type_start: u
 fn makeQualifiedMetadataTypeRef(self: anytype, name: []const u8) Error!NodeIndex {
     var parts = std.mem.splitScalar(u8, name, '.');
     const base_name = parts.next() orelse return makeMetadataNameRef(self, name);
-    var expression = try makeMetadataNameRef(self, base_name);
+    var expression = try makeMetadataTypeNameRef(self, base_name) orelse
+        return makeMetadataNameRef(self, "Object");
     const zero_span = Span{ .start = 0, .end = 0 };
     while (parts.next()) |property_name| {
         const property = try es_helpers.makePropertyName(self, property_name);
@@ -164,10 +165,19 @@ fn makeQualifiedMetadataTypeRef(self: anytype, name: []const u8) Error!NodeIndex
 /// typeof X === "undefined" ? Object : X 조건 표현식 생성 (SWC 호환).
 /// 런타임에 타입이 없을 수 있는 참조(class/interface, Symbol, BigInt)에 사용.
 fn makeTypeofGuard(self: anytype, name: []const u8) Error!NodeIndex {
+    return makeTypeofGuardWithRef(self, name, try makeMetadataNameRef(self, name));
+}
+
+fn makeTypeReferenceGuard(self: anytype, name: []const u8) Error!NodeIndex {
+    const ref = try makeMetadataTypeNameRef(self, name) orelse
+        return makeMetadataNameRef(self, "Object");
+    return makeTypeofGuardWithRef(self, name, ref);
+}
+
+fn makeTypeofGuardWithRef(self: anytype, name: []const u8, name_ref: NodeIndex) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
     // typeof X
-    const name_ref = try makeMetadataNameRef(self, name);
     const typeof_expr = try self.addExtraNode(.unary_expression, zero_span, &.{
         @intFromEnum(name_ref), @intFromEnum(Kind.kw_typeof),
     });
@@ -203,8 +213,24 @@ fn makeTypeofGuard(self: anytype, name: []const u8) Error!NodeIndex {
 fn makeMetadataNameRef(self: anytype, name: []const u8) Error!NodeIndex {
     const ref = try self.makeLexicalScopeRef(name);
     const symbol_id = self.getSymbolIdAt(ref) orelse return ref;
-    if (isTypeOnlyImportBinding(self, name, symbol_id)) try self.removeSemanticReference(ref);
+    if (isTypeOnlyImportBinding(self, name, symbol_id)) {
+        // A type-only import named Object/Number/etc. does not create a
+        // runtime binding for the constructor used by generated metadata.
+        try self.removeSemanticReference(ref);
+        try self.markExplicitGlobalReference(ref);
+    }
     return ref;
+}
+
+/// An explicitly type-only import cannot supply a runtime metadata value.
+/// Erase the whole type reference (including any qualified suffix), rather
+/// than reading an unrelated global with the same spelling through typeof.
+fn makeMetadataTypeNameRef(self: anytype, name: []const u8) Error!?NodeIndex {
+    const ref = try self.makeLexicalScopeRef(name);
+    const symbol_id = self.getSymbolIdAt(ref) orelse return ref;
+    if (!isTypeOnlyImportBinding(self, name, symbol_id)) return ref;
+    try self.removeSemanticReference(ref);
+    return null;
 }
 
 fn isTypeOnlyImportBinding(self: anytype, name: []const u8, symbol_id: u32) bool {
