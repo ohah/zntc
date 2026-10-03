@@ -907,6 +907,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
     // lower (rolldown/oxc/esbuild/swc 동일). data.unary.operand = rhs expression.
     if (try self.eat(.eq)) {
         self.ast.has_ts_export_equals = true;
+        self.scan_result.has_module_exports = true;
         const expr = try self.parseAssignmentExpression();
         _ = try self.eat(.semicolon);
         return try self.ast.addNode(.{

@@ -549,7 +549,7 @@ fn canKeepPrepassSemanticGraph(
     const graph_editable_jsx = classic_jsx or automatic_jsx or automatic_dev_jsx;
     const arrow_only_downlevel = options.unsupported.hasAny() and
         canRetainGraphForArrowOnlyLowering(ast, options);
-    if ((ast.has_jsx and !graph_editable_jsx) or ast.has_decorator or ast.has_ts_export_equals) return false;
+    if ((ast.has_jsx and !graph_editable_jsx) or ast.has_decorator) return false;
     if ((options.unsupported.hasAny() and !arrow_only_downlevel) or options.minify_syntax or
         options.minify_whitespace or options.drop_console or options.drop_debugger or
         options.drop_labels.len != 0 or options.define.len != 0 or options.module_specifier_map.len != 0 or
@@ -578,6 +578,9 @@ fn canKeepPrepassSemanticGraph(
             // The forwardRef helper binding and its call reference are added
             // to the edited graph by the Flow component visitor.
             .flow_component_wrapper => found_transform = true,
+            // `export =` lowers to `module.exports = ...`; parser and AST scans
+            // both preserve that CommonJS graph signal before and after lowering.
+            .ts_export_assignment => found_transform = true,
             .ts_import_equals_declaration => {
                 if (!isSupportedLocalImportEquals(ast, node)) return false;
                 found_transform = true;
@@ -585,7 +588,6 @@ fn canKeepPrepassSemanticGraph(
             // These constructs can alter the import/export graph or create
             // dynamic-name environments independently of Flow match lowering.
             .export_all_declaration,
-            .ts_export_assignment,
             .ts_namespace_export_declaration,
             .await_expression,
             .yield_expression,

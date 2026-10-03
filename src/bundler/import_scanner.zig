@@ -13,6 +13,7 @@
 //!   - import("./foo")                    → dynamic_import
 //!   - require("./foo")                   → require (CJS)
 //!   - module.exports = ...              → CJS 신호 (has_module_exports)
+//!   - export = expr (TypeScript)         → CJS 신호 (has_module_exports)
 //!   - exports.x = ...                   → CJS 신호 (has_exports_dot)
 //!   - Object.defineProperty(exports, ...) → CJS 신호 (has_exports_dot)
 //!   - Object.defineProperty(module, "exports", ...) → CJS 신호 (has_module_exports)
@@ -118,6 +119,9 @@ pub fn extractImportsWithCjsDetectionAndDefines(
             .export_default_declaration => {
                 if (!top_level.isSet(ni)) continue;
                 has_esm_syntax = true;
+            },
+            .ts_export_assignment => {
+                if (top_level.isSet(ni)) has_module_exports = true;
             },
             .import_expression => {
                 if (tryExtractDynamicImport(ast, node)) |record| {

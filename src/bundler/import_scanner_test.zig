@@ -833,6 +833,28 @@ test "CJS: module.exports detected" {
     try std.testing.expect(!result.has_esm_syntax);
 }
 
+test "CJS: TypeScript export equals retains its module exports signal" {
+    const alloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var scanner = try Scanner.init(arena_alloc, "const value = 42; export = value;");
+    var parser = Parser.init(arena_alloc, &scanner);
+    parser.is_module = true;
+    scanner.is_module = true;
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+
+    try std.testing.expect(parser.scan_result.has_module_exports);
+    try std.testing.expect(!parser.scan_result.has_esm_syntax);
+
+    const result = try extractImportsWithCjsDetection(alloc, &parser.ast);
+    defer alloc.free(result.records);
+    try std.testing.expect(result.has_module_exports);
+    try std.testing.expect(!result.has_esm_syntax);
+}
+
 test "CJS: exports.x detected" {
     const alloc = std.testing.allocator;
     const result = try parseAndExtractFull(alloc, "exports.x = 1;");
