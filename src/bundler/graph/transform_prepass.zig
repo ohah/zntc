@@ -342,6 +342,9 @@ fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: Transfor
 
     var found_arrow = false;
     for (ast.nodes.items) |node| {
+        // Type erasure already edits the semantic graph through the same
+        // transform-aware path; its nodes add no runtime scopes or bindings.
+        if (isTypeErasureTag(node.tag)) continue;
         switch (node.tag) {
             .arrow_function_expression => {
                 const flags_at = node.data.extra + ast_mod.ArrowExtra.flags;
