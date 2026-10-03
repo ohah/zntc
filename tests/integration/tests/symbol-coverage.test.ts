@@ -1255,6 +1255,83 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('native tagged templates keep TypeScript erasure on the edited semantic graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-tagged-template-retained-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    writeFileSync(
+      input,
+      [
+        'let previous: TemplateStringsArray | undefined;',
+        'function tag(strings: TemplateStringsArray, value: number) {',
+        '  const same = previous === strings;',
+        '  previous = strings;',
+        '  return `${strings[0]}${value}${strings[1]}:${same}`;',
+        '}',
+        'function emit(value: number) { return tag`n=${value}!`; }',
+        'console.log(emit(41), emit(42));',
+      ].join('\n'),
+    );
+
+    const run = (target: string) =>
+      spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          target,
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+
+    const graphMode = (stderr: string | null) =>
+      stderr
+        ?.split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+
+    try {
+      const native = run('--target=es2015');
+      expect(native.status, native.stderr).toBe(0);
+      expect(graphMode(native.stderr), native.stderr).toContain('semantic_graph=retained');
+      const report = (native.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(report, native.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+      const nativeOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(nativeOutput.status, nativeOutput.stderr).toBe(0);
+      expect(nativeOutput.stdout).toBe('n=41!:false n=42!:true\n');
+
+      // ES5 lowering must retain the per-site template object identity while
+      // using the existing semantic reanalysis path for generated helpers.
+      const downlevel = run('--target=es5');
+      expect(downlevel.status, downlevel.stderr).toBe(0);
+      expect(graphMode(downlevel.stderr), downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      const downlevelOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(downlevelOutput.status, downlevelOutput.stderr).toBe(0);
+      expect(downlevelOutput.stdout).toBe('n=41!:false n=42!:true\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('runtime TypeScript enums keep mixed ES5 arrow modules on semantic resync', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-enum-arrow-resync-'));
     const output = join(dir, 'out.cjs');
