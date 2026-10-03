@@ -1,6 +1,8 @@
 import { describe, test, expect, beforeAll } from 'bun:test';
-import { readFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
+import { pathToFileURL } from 'url';
 import {
   initSync,
   transpile,
@@ -558,6 +560,84 @@ describe('Bundler (minimal)', () => {
     expect(chunks).not.toBeNull();
     expect(chunks!.length).toBe(2);
     expect(chunks!.some((c) => c.code.includes('const lazy = 7;'))).toBe(true);
+  });
+
+  for (const api of ['build', 'buildChunks'] as const) {
+    for (const runtime of [
+      { jsx: 'automatic', source: 'preact', subpath: 'jsx-runtime', helper: 'jsx' },
+      { jsx: 'automatic-dev', source: 'react', subpath: 'jsx-dev-runtime', helper: 'jsxDEV' },
+    ] as const) {
+      test(api + ': ' + runtime.jsx + ' keeps and calls its unresolved JSX runtime', async () => {
+        const entry = '/jsx-runtime/' + api + '-' + runtime.jsx + '.tsx';
+        bundlerFixtureVfs.set(
+          entry,
+          'export function render() { return <button data-mode="test">ready</button>; }',
+        );
+        const options = {
+          format: 'esm' as const,
+          jsx: runtime.jsx,
+          jsxImportSource: runtime.source,
+        };
+        const code =
+          api === 'build'
+            ? build(entry, options)?.code
+            : buildChunks(entry, options)
+                ?.map((chunk) => chunk.code)
+                .join('\n');
+        const specifier = runtime.source + '/' + runtime.subpath;
+        expect(code).toBeDefined();
+        expect(code).toContain('from "' + specifier + '"');
+        expect(bundlerLastErrorMessage()).toContain('ZNTC0100');
+        expect(bundlerLastErrorMessage()).toContain(specifier);
+
+        // The runtime is absent from the VFS but supplied by the consumer.
+        // A missing import must remain external, never become an empty CJS stub.
+        const directory = mkdtempSync(join(tmpdir(), 'zntc-wasm-jsx-'));
+        try {
+          const runtimeDirectory = join(directory, 'node_modules', runtime.source);
+          mkdirSync(runtimeDirectory, { recursive: true });
+          writeFileSync(
+            join(runtimeDirectory, 'package.json'),
+            JSON.stringify({
+              name: runtime.source,
+              type: 'module',
+              exports: { ['./' + runtime.subpath]: './runtime.js' },
+            }),
+          );
+          writeFileSync(
+            join(runtimeDirectory, 'runtime.js'),
+            'export function ' +
+              runtime.helper +
+              '(type, props) { return { runtime: ' +
+              JSON.stringify(specifier) +
+              ', type, props }; }',
+          );
+          const output = join(directory, 'bundle.mjs');
+          writeFileSync(output, code!);
+          const bundled = await import(pathToFileURL(output).href);
+          expect(bundled.render()).toEqual({
+            runtime: specifier,
+            type: 'button',
+            props: { 'data-mode': 'test', children: 'ready' },
+          });
+        } finally {
+          rmSync(directory, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+
+  test('build: unresolved type-only imports do not become runtime externals', () => {
+    bundlerFixtureVfs.set(
+      '/type-only/entry.ts',
+      'import { MissingType } from "missing-types"; export const value: MissingType = 42;',
+    );
+    const result = build('/type-only/entry.ts');
+    expect(result).not.toBeNull();
+    expect(result!.code).not.toMatch(/from ["']missing-types["']/);
+    expect(result!.code).not.toContain('MissingType');
+    expect(result!.code).toContain('42');
+    expect(bundlerLastErrorMessage()).toBe('');
   });
 
   test('build: jsxFactory 커스텀 옵션 적용', () => {

@@ -53,9 +53,10 @@ pub fn isImportAllBindingsUnused(self: anytype, module: *const Module, record: t
             // default / namespace 는 보수적으로 keep — JSX pragma 등 implicit value use.
             if (spec_node.tag != .import_specifier) return false;
             const left_idx = spec_node.data.binary.left;
-            const local_idx = spec_node.data.binary.right;
-            const local_node = if (!local_idx.isNone()) ast_ptr.getNode(local_idx) else spec_node;
-            binding_names.append(self.allocator, ast_ptr.getText(local_node.span)) catch return false;
+            const local_idx = if (!spec_node.data.binary.right.isNone()) spec_node.data.binary.right else left_idx;
+            if (local_idx.isNone()) return false;
+            const local_node = ast_ptr.getNode(local_idx);
+            binding_names.append(self.allocator, ast_ptr.identifierNameText(local_node)) catch return false;
 
             // `import { A as B }` 면 left/right 둘 다 다른 NodeIndex — 모두 self.
             if (!left_idx.isNone()) {
@@ -80,7 +81,9 @@ pub fn isImportAllBindingsUnused(self: anytype, module: *const Module, record: t
             }
         }
         if (is_spec_self) continue;
-        const text = ast_ptr.getText(n.span);
+        // Generated JSX/runtime helpers preserve their original source span for
+        // sourcemaps; their identifier spelling lives in data.string_ref.
+        const text = ast_ptr.identifierNameText(n);
         for (binding_names.items) |name| {
             if (std.mem.eql(u8, text, name)) return false;
         }
