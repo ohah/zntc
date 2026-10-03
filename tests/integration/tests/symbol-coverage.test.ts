@@ -1926,6 +1926,91 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('ES5 regex literal lowering retains only helper-free arrow graphs', () => {
+    const cases = [
+      {
+        name: 'dotAll rewrite stays a literal leaf',
+        source: [
+          'function matches(input) { return (() => /a.b/s.test(input))(); }',
+          "console.log(matches('a\\nb'));",
+        ].join('\n'),
+        graph: 'retained',
+        output: 'true\n',
+      },
+      {
+        name: 'named capture helper keeps semantic resync',
+        source: [
+          'function word(input) {',
+          '  return (() => {',
+          '    var match = /(?<word>[a-z]+)-\\d+/.exec(input);',
+          '    return match && match.groups.word;',
+          '  })();',
+          '}',
+          "console.log(word('abc-42'));",
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: 'abc\n',
+      },
+    ];
+
+    for (const fixture of cases) {
+      const dir = mkdtempSync(join(tmpdir(), `zntc-bundle-arrow-regex-${fixture.graph}-`));
+      const output = join(dir, 'out.cjs');
+      writeFileSync(join(dir, 'entry.mjs'), fixture.source);
+      try {
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            'entry.mjs',
+            '--target=es5',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+          );
+        expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.name}: ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report, fixture.name).toMatch(/clean=1(?:\s|$)/);
+
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+          );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
+          `semantic_graph=${fixture.graph}`,
+        );
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe(fixture.output);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
   test('legacy TypeScript decorators retain exact transform graph references', () => {
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-legacy-decorator-'));
     try {
