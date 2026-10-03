@@ -2435,7 +2435,22 @@ fn removeReference(self: *Transformer, editor: *SemanticEditor, node: NodeIndex)
 }
 
 fn captureKey(frame: u32, kind: LexicalCaptureKind) u64 {
-    return (@as(u64, frame) << 1) | @intFromEnum(kind);
+    return (@as(u64, frame) << 2) | @intFromEnum(kind);
+}
+
+pub fn hasLexicalCapture(self: *const Transformer, frame: u32, kind: LexicalCaptureKind) bool {
+    for (self.lexical_capture_uses.items) |use| {
+        if (use.frame == frame and use.kind == kind) return true;
+    }
+    return false;
+}
+
+pub fn hasLexicalCaptureSince(self: *const Transformer, start: usize, frame: u32, kind: LexicalCaptureKind) bool {
+    if (start > self.lexical_capture_uses.items.len) std.debug.panic("lexical capture use marker is out of bounds", .{});
+    for (self.lexical_capture_uses.items[start..]) |use| {
+        if (use.frame == frame and use.kind == kind) return true;
+    }
+    return false;
 }
 
 /// An `arguments` binding declared inside the lowered arrow already resolves
@@ -2482,12 +2497,20 @@ pub fn makeCapturedArgumentsInit(self: *Transformer) Transformer.Error!NodeIndex
 /// frame at construction. The source identifier is retained only so a replaced
 /// original `arguments` Reference can be removed after final reachability.
 pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeIndex, kind: LexicalCaptureKind) Transformer.Error!void {
-    if (!self.semantic_edit_enabled) return;
+    const source_span = if (!source.isNone()) self.ast.getNode(source).span else self.ast.getNode(node).span;
     if (self.capture_frame == 0) {
-        const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
-        if (!self.current_scope.isNone() and scopes[self.current_scope.toIndex()].kind == .function)
-            std.debug.panic("lexical capture in a function without a capture frame", .{});
+        if (self.semantic_edit_enabled) {
+            const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+            if (!self.current_scope.isNone() and scopes[self.current_scope.toIndex()].kind == .function)
+                std.debug.panic("lexical capture in a function without a capture frame", .{});
+        }
         // Program-level arrow capture placement is a separate lowering path.
+        return;
+    }
+    if (!self.semantic_edit_enabled) {
+        if (kind == .new_target_value) {
+            try self.lexical_capture_uses.append(self.allocator, .{ .frame = self.capture_frame, .kind = kind, .span = source_span });
+        }
         return;
     }
     if (self.capture_scope.isNone() or self.current_scope.isNone())
@@ -2502,6 +2525,7 @@ pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeI
     });
     const raw = @intFromEnum(node);
     if (self.capture_ref_by_origin.contains(raw)) std.debug.panic("lexical capture node tracked twice", .{});
+    try self.lexical_capture_uses.append(self.allocator, .{ .frame = self.capture_frame, .kind = kind, .span = source_span });
     try self.capture_ref_by_origin.put(self.allocator, raw, index);
     // A later copy can precede declaration binding; preserve exact origin even
     // while this generated reference has no SymbolId yet.
@@ -2547,9 +2571,9 @@ fn bindReachableLexicalCaptures(self: *Transformer) Transformer.Error!void {
         const trace = traces.get(raw) orelse std.debug.panic("live lexical capture has no output scope trace: node={d}", .{raw});
         if (trace.ambiguous_scope) std.debug.panic("live lexical capture has ambiguous output scope: node={d}", .{raw});
         const output_scope = trace.scope;
-        if (outputReferenceName(self.ast, ref_node)) |name| {
+        if (pending.kind != .new_target_value) if (outputReferenceName(self.ast, ref_node)) |name| {
             if (nearestOutputSymbolAtScope(editor, name, output_scope)) |lexical_id| id = lexical_id;
-        }
+        };
         if (self.getSymbolIdAt(ref_node)) |existing| {
             if (existing != id) {
                 const maybe_reference = editor.referenceForNode(ref_node) catch |err| return editError(err);

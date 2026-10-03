@@ -109,10 +109,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const new_name = try self.visitNode(name_idx);
 
             const parameter_temp_start = self.temp_var_counter;
-            const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
+            const param_capture_use_start = self.lexical_capture_uses.items.len;
+            const new_params = try self.visitParameterList(.{ .start = params_start, .len = params_len });
             const parameter_temp_end = self.temp_var_counter;
             const param_needs_this = if (extracted_loop) false else self.needs_this_var;
             const param_needs_arguments = if (extracted_loop) false else self.needs_arguments_var;
+            const param_needs_new_target = if (extracted_loop) false else self.hasLexicalCaptureSince(param_capture_use_start, self.capture_frame, .new_target_value);
 
             const saved_temp_counter = self.temp_var_counter;
 
@@ -164,9 +166,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
             if (!extracted_loop) {
-                var capture_stmts: [2]NodeIndex = undefined;
+                var capture_stmts: [3]NodeIndex = undefined;
                 const count = try es_helpers.fillThisArgumentsCaptures(self, &capture_stmts, span);
-                try es_helpers.recordParameterCaptures(self, capture_stmts[0..count], param_needs_this, param_needs_arguments);
+                try es_helpers.recordParameterCaptures(self, capture_stmts[0..count], param_needs_this, param_needs_arguments, param_needs_new_target);
                 try self.scratch.appendSlice(self.allocator, capture_stmts[0..count]);
             }
             if (!sm_result.var_decl.isNone()) {

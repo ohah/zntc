@@ -1857,21 +1857,28 @@ pub const ArrowEnvSnapshot = struct {
 };
 
 pub const CaptureFrameSnapshot = struct {
+    /// Frame that was active before this boundary, restored by popCaptureFrame.
     frame: u32,
+    /// New frame owned by the function being visited.
+    active_frame: u32,
     scope: @import("../semantic/scope.zig").ScopeId,
     outermost_arrow_scope: @import("../semantic/scope.zig").ScopeId,
+    native_parameter_arrow_depth: u32,
 };
 
 pub fn pushCaptureFrame(self: anytype) CaptureFrameSnapshot {
     const snap = CaptureFrameSnapshot{
         .frame = self.capture_frame,
+        .active_frame = self.next_capture_frame,
         .scope = self.capture_scope,
         .outermost_arrow_scope = self.outermost_lowered_arrow_scope,
+        .native_parameter_arrow_depth = self.native_parameter_arrow_depth,
     };
     self.capture_frame = self.next_capture_frame;
     self.next_capture_frame += 1;
     self.capture_scope = self.current_scope;
     self.outermost_lowered_arrow_scope = .none;
+    self.native_parameter_arrow_depth = 0;
     return snap;
 }
 
@@ -1879,6 +1886,7 @@ pub fn popCaptureFrame(self: anytype, snap: CaptureFrameSnapshot) void {
     self.capture_frame = snap.frame;
     self.capture_scope = snap.scope;
     self.outermost_lowered_arrow_scope = snap.outermost_arrow_scope;
+    self.native_parameter_arrow_depth = snap.native_parameter_arrow_depth;
 }
 
 pub fn pushArrowEnv(self: anytype) ArrowEnvSnapshot {
@@ -1904,9 +1912,9 @@ pub fn popArrowEnv(self: anytype, snap: ArrowEnvSnapshot) void {
     self.super_call_this_alias = snap.super_call_this_alias;
 }
 
-/// `_this = this`, `_arguments = arguments` capture var-decl 을 buf 에 채운다.
-/// 호출자는 `self.needs_this_var` / `self.needs_arguments_var` 가 lowering 결과를 반영한 뒤 호출.
-pub fn fillThisArgumentsCaptures(self: anytype, buf: *[2]NodeIndex, span: Span) !usize {
+/// Lexical `this`, `arguments`, and `new.target` aliases for the current
+/// function frame. Capture declarations are registered when they are emitted.
+pub fn fillThisArgumentsCaptures(self: anytype, buf: *[3]NodeIndex, span: Span) !usize {
     var count: usize = 0;
     if (self.needs_this_var) {
         const this_init = try self.ast.addNode(.{
@@ -1924,7 +1932,33 @@ pub fn fillThisArgumentsCaptures(self: anytype, buf: *[2]NodeIndex, span: Span) 
         try self.bindLexicalCapture(buf[count], .arguments_value);
         count += 1;
     }
+    if (self.hasLexicalCapture(self.capture_frame, .new_target_value)) {
+        buf[count] = try buildNewTargetCapture(self, span);
+        count += 1;
+    }
     return count;
+}
+
+pub fn buildNewTargetCapture(self: anytype, span: Span) !NodeIndex {
+    var initializer_span = span;
+    for (self.lexical_capture_uses.items) |use| {
+        if (use.frame == self.capture_frame and use.kind == .new_target_value) {
+            initializer_span = use.span;
+            break;
+        }
+    }
+    const new_target = if (self.options.unsupported.new_target)
+        try self.lowerNewTarget(initializer_span)
+    else
+        try self.ast.addNode(.{
+            .tag = .meta_property,
+            .span = initializer_span,
+            .data = .{ .none = 1 },
+        });
+    const name = try resolveSyntheticName(self, "_newTarget");
+    const declaration = try self.buildVarDecl(name, new_target, span);
+    try self.bindLexicalCapture(declaration, .new_target_value);
+    return declaration;
 }
 
 /// Bind the generated capture declarations and their uses after an async or
@@ -1950,14 +1984,26 @@ pub fn trackThisArgumentsCaptureSymbols(self: anytype, root: NodeIndex, root_sco
 /// Record the capture declarations that a default-parameter initializer can
 /// read. The ordinary body may need additional captures, but only these must
 /// execute before Pass 2's lowered default checks.
-pub fn recordParameterCaptures(self: anytype, captures: []const NodeIndex, needs_this: bool, needs_arguments: bool) !void {
-    if (!needs_this and !needs_arguments) return;
+pub fn recordParameterCaptures(self: anytype, captures: []const NodeIndex, needs_this: bool, needs_arguments: bool, needs_new_target: bool) !void {
+    if (!needs_this and !needs_arguments and !needs_new_target) return;
     std.debug.assert(!needs_this or self.needs_this_var);
     std.debug.assert(!needs_arguments or self.needs_arguments_var);
-    const last: usize = if (needs_arguments and self.needs_this_var) 1 else 0;
-    std.debug.assert(last < captures.len);
-    for (captures[0 .. last + 1]) |capture|
-        try self.parameter_capture_statements.put(self.allocator, @intFromEnum(capture), {});
+    std.debug.assert(!needs_new_target or self.hasLexicalCapture(self.capture_frame, .new_target_value));
+    var index: usize = 0;
+    if (needs_this) {
+        std.debug.assert(index < captures.len);
+        try self.parameter_capture_statements.put(self.allocator, @intFromEnum(captures[index]), {});
+        index += 1;
+    }
+    if (needs_arguments) {
+        std.debug.assert(index < captures.len);
+        try self.parameter_capture_statements.put(self.allocator, @intFromEnum(captures[index]), {});
+        index += 1;
+    }
+    if (needs_new_target) {
+        std.debug.assert(index < captures.len);
+        try self.parameter_capture_statements.put(self.allocator, @intFromEnum(captures[index]), {});
+    }
 }
 
 /// method_definition → standalone function declaration으로 추출.
@@ -2041,17 +2087,20 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
         return lowered;
     }
 
-    const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
+    const param_capture_use_start = self.lexical_capture_uses.items.len;
+    const new_params = try self.visitParameterList(.{ .start = params_start, .len = params_len });
     const param_needs_this = self.needs_this_var;
     const param_needs_arguments = self.needs_arguments_var;
+    const param_needs_new_target = self.hasLexicalCaptureSince(param_capture_use_start, arrow_env.capture.active_frame, .new_target_value);
 
     var new_body = try self.visitNode(body_idx);
-    if (self.options.unsupported.arrow and !new_body.isNone() and
-        (self.needs_this_var or self.needs_arguments_var))
+    const needs_new_target_capture = self.hasLexicalCapture(arrow_env.capture.active_frame, .new_target_value);
+    if (!new_body.isNone() and
+        ((self.options.unsupported.arrow and (self.needs_this_var or self.needs_arguments_var)) or needs_new_target_capture))
     {
-        var capture_stmts: [2]NodeIndex = undefined;
+        var capture_stmts: [3]NodeIndex = undefined;
         const capture_count = try fillThisArgumentsCaptures(self, &capture_stmts, span);
-        try recordParameterCaptures(self, capture_stmts[0..capture_count], param_needs_this, param_needs_arguments);
+        try recordParameterCaptures(self, capture_stmts[0..capture_count], param_needs_this, param_needs_arguments, param_needs_new_target);
         new_body = try self.prependStatementsToBody(new_body, capture_stmts[0..capture_count]);
     }
     if (self.temp_var_counter > saved_temp_counter and !new_body.isNone()) {

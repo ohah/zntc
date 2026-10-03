@@ -53,10 +53,11 @@ fn visitMethodBodyInSourceScope(self: *Transformer, method_idx: NodeIndex, body_
     if (self.temp_var_counter > saved_temp_counter and !visited.isNone()) {
         visited = try self.hoistTempVarsInOriginalFunction(visited, saved_temp_counter, self.ast.getNode(method_idx).span);
     }
-    if (self.options.unsupported.arrow and !visited.isNone() and
-        (self.needs_this_var or self.needs_arguments_var))
+    if (!visited.isNone() and
+        ((self.options.unsupported.arrow and (self.needs_this_var or self.needs_arguments_var)) or
+            self.hasLexicalCapture(self.capture_frame, .new_target_value)))
     {
-        var captures: [2]NodeIndex = undefined;
+        var captures: [3]NodeIndex = undefined;
         const count = try es_helpers.fillThisArgumentsCaptures(self, &captures, self.ast.getNode(method_idx).span);
         visited = try self.prependStatementsToBody(visited, captures[0..count]);
     }

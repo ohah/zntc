@@ -186,6 +186,15 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
     // class/module scope.
     const saved_temp_counter = self.temp_var_counter;
 
+    const is_ctor = (flags & ast_mod.MethodFlags.is_static) == 0 and
+        es_helpers.isConstructorKey(self, self.readNodeIdx(e, ast_mod.MethodExtra.key));
+    // Parameter initializers use this function's new.target context too.
+    const saved_new_target_ctx = self.new_target_ctx;
+    if (self.options.unsupported.new_target) {
+        self.new_target_ctx = if (is_ctor) .constructor else .method;
+    }
+    defer self.new_target_ctx = saved_new_target_ctx;
+
     // arrow this/arguments 캡처: method도 자체 this 바인딩을 가짐 (visitFunction과 동일)
     const capture_frame = es_helpers.pushCaptureFrame(self);
     const saved_arrow_depth = self.arrow_this_depth;
@@ -196,10 +205,12 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
     self.needs_this_var = false;
     self.needs_arguments_var = false;
     self.super_call_this_alias = false;
+    const param_capture_use_start = self.lexical_capture_uses.items.len;
     var pp = try self.visitParamsCollectProperties(params_list_old);
     defer pp.prop_names.deinit(self.allocator);
     const param_needs_this = self.needs_this_var;
     const param_needs_arguments = self.needs_arguments_var;
+    const param_needs_new_target = self.hasLexicalCaptureSince(param_capture_use_start, capture_frame.active_frame, .new_target_value);
     // V7 fix: object literal method 의 super 는 home object [[Prototype]]=Object.prototype
     // 기준이라 outer class super 와 무관. 이 method 가 object literal 의 일부이면
     // (in_object_literal_depth>0) super context 5종을 reset 한다. class method 면 no-op.
@@ -221,16 +232,6 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
     defer self.current_super_static_receiver = saved_super_static_receiver_v7;
     defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn_v7;
 
-    const is_ctor = (flags & ast_mod.MethodFlags.is_static) == 0 and
-        es_helpers.isConstructorKey(self, self.readNodeIdx(e, ast_mod.MethodExtra.key));
-
-    // ES2015 new.target: method → constructor 또는 void 0
-    const saved_new_target_ctx = self.new_target_ctx;
-    if (self.options.unsupported.new_target) {
-        self.new_target_ctx = if (is_ctor) .constructor else .method;
-    }
-    defer self.new_target_ctx = saved_new_target_ctx;
-
     var new_body = try self.visitBodyWorkletAware(self.readNodeIdx(e, 2));
 
     // parameter property: derived class constructor 는 super() 후에, 그 외에는 body 앞에 prepend.
@@ -244,10 +245,11 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
     }
 
     // arrow가 this/arguments를 사용했으면 var _this = this; 등 삽입
+    const needs_new_target_capture = self.hasLexicalCapture(capture_frame.active_frame, .new_target_value);
     if (self.options.unsupported.arrow and !new_body.isNone() and
-        (self.needs_this_var or self.needs_arguments_var))
+        (self.needs_this_var or self.needs_arguments_var or needs_new_target_capture))
     {
-        var capture_stmts: [2]NodeIndex = undefined;
+        var capture_stmts: [3]NodeIndex = undefined;
         var capture_count: usize = 0;
 
         if (self.needs_this_var) {
@@ -266,8 +268,12 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
             try self.bindLexicalCapture(capture_stmts[capture_count], .arguments_value);
             capture_count += 1;
         }
+        if (needs_new_target_capture) {
+            capture_stmts[capture_count] = try es_helpers.buildNewTargetCapture(self, node.span);
+            capture_count += 1;
+        }
 
-        try es_helpers.recordParameterCaptures(self, capture_stmts[0..capture_count], param_needs_this, param_needs_arguments);
+        try es_helpers.recordParameterCaptures(self, capture_stmts[0..capture_count], param_needs_this, param_needs_arguments, param_needs_new_target);
 
         new_body = try self.prependStatementsToBody(new_body, capture_stmts[0..capture_count]);
     }
@@ -434,12 +440,71 @@ pub fn visitFormalParameter(self: *Transformer, node: Node) Error!NodeIndex {
     if (flags != 0) {
         return self.visitNode(self.readNodeIdx(e, 0));
     }
-    const new_pattern = try self.visitNode(self.readNodeIdx(e, 0));
-    const new_default = try self.visitNode(self.readNodeIdx(e, 2));
+    const pattern_idx = self.readNodeIdx(e, 0);
+    const default_idx = self.readNodeIdx(e, 2);
+    const saved_initializer_frame = self.native_parameter_initializer_frame;
+    const saved_default_root = self.native_parameter_default_root;
+    const saved_name_hint = self.native_parameter_name_hint;
+    self.native_parameter_initializer_frame = self.capture_frame;
+    self.native_parameter_default_root = default_idx;
+    self.native_parameter_name_hint = if (!pattern_idx.isNone() and self.ast.getNode(pattern_idx).tag == .binding_identifier)
+        self.ast.getText(self.ast.getNode(pattern_idx).data.string_ref)
+    else
+        null;
+    defer {
+        self.native_parameter_initializer_frame = saved_initializer_frame;
+        self.native_parameter_default_root = saved_default_root;
+        self.native_parameter_name_hint = saved_name_hint;
+    }
+    // Patterns can contain their own default initializers (destructuring),
+    // and both those and the formal parameter's default run before the body.
+    const new_pattern = try self.visitNode(pattern_idx);
+    const new_default = try self.visitNode(default_idx);
     const new_decos = try self.visitExtraList(.{ .start = self.readU32(e, 4), .len = self.readU32(e, 5) });
     const none = @intFromEnum(NodeIndex.none);
     return self.addExtraNode(.formal_parameter, node.span, &.{
         @intFromEnum(new_pattern), none,            @intFromEnum(new_default), // type_ann 제거
         0,                         new_decos.start, new_decos.len,
     });
+}
+
+/// Visit a parameter-list item while marking assignment-pattern initializers
+/// as running in the parameter environment. The parser represents common
+/// `name = default` parameters directly as `.assignment_pattern` items, so
+/// they do not pass through `visitFormalParameter`.
+pub fn visitParameterNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
+    if (idx.isNone()) return .none;
+    const node = self.ast.getNode(idx);
+    if (node.tag != .assignment_pattern) return self.visitNode(idx);
+
+    const saved_initializer_frame = self.native_parameter_initializer_frame;
+    const saved_default_root = self.native_parameter_default_root;
+    const saved_name_hint = self.native_parameter_name_hint;
+    const left = node.data.binary.left;
+    self.native_parameter_initializer_frame = self.capture_frame;
+    self.native_parameter_default_root = node.data.binary.right;
+    self.native_parameter_name_hint = if (!left.isNone() and self.ast.getNode(left).tag == .binding_identifier)
+        self.ast.getText(self.ast.getNode(left).data.string_ref)
+    else
+        null;
+    defer {
+        self.native_parameter_initializer_frame = saved_initializer_frame;
+        self.native_parameter_default_root = saved_default_root;
+        self.native_parameter_name_hint = saved_name_hint;
+    }
+    return self.visitNode(idx);
+}
+
+/// Visit a complete parameter list while preserving the parameter environment
+/// marker for parser-native assignment-pattern entries.
+pub fn visitParameterList(self: *Transformer, params: NodeList) Error!NodeList {
+    const scratch_top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(scratch_top);
+    var i: u32 = 0;
+    while (i < params.len) : (i += 1) {
+        const raw = self.ast.extra_data.items[params.start + i];
+        const visited = try self.visitParameterNode(@enumFromInt(raw));
+        if (!visited.isNone()) try self.scratch.append(self.allocator, visited);
+    }
+    return self.ast.addNodeList(self.scratch.items[scratch_top..]);
 }
