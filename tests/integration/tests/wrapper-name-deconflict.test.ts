@@ -25,6 +25,164 @@ import { createFixture, runNode, runZntc } from './helpers';
 const LEGACY = 'module.exports = { foo(){ return "FOO"; } };';
 
 describe('#4530: 래퍼 심볼 ↔ 사용자 top-level 심볼 deconflict', () => {
+  test('CJS runtime preamble 이름을 ESM 사용자 binding이 재선언하지 않는다', async () => {
+    const { dir, cleanup } = await createFixture({
+      'legacy.cjs': 'module.exports = 7;',
+      'entry.mjs':
+        'import value from "./legacy.cjs";\n' +
+        'export const __commonJS = value;\n' +
+        'console.log(__commonJS);',
+    });
+    try {
+      const out = join(dir, 'b.mjs');
+      const res = await runZntc(['--bundle', join(dir, 'entry.mjs'), '-o', out, '--format=esm']);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      const { stdout, stderr } = await runNode(out);
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout.trim()).toBe('7');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('축약 CJS runtime preamble 이름도 --minify-whitespace 사용자 binding과 충돌하지 않는다', async () => {
+    const { dir, cleanup } = await createFixture({
+      'legacy.cjs': 'module.exports = 7;',
+      'entry.mjs':
+        'import value from "./legacy.cjs";\n' + 'export const $c = value;\n' + 'console.log($c);',
+    });
+    try {
+      const out = join(dir, 'b.mjs');
+      const res = await runZntc([
+        '--bundle',
+        join(dir, 'entry.mjs'),
+        '-o',
+        out,
+        '--format=esm',
+        '--minify-whitespace',
+      ]);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      const { stdout, stderr } = await runNode(out);
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout.trim()).toBe('7');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('code-splitting 청크도 CJS runtime 이름을 사용자 binding과 분리한다', async () => {
+    const { dir, cleanup } = await createFixture({
+      'legacy.cjs': 'module.exports = 7;',
+      'entry.mjs':
+        'import value from "./legacy.cjs";\n' +
+        'export const __commonJS = value;\n' +
+        'console.log(__commonJS);',
+    });
+    try {
+      const outDir = join(dir, 'dist');
+      const res = await runZntc([
+        '--bundle',
+        join(dir, 'entry.mjs'),
+        '--outdir',
+        outDir,
+        '--splitting',
+        '--format=esm',
+      ]);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout.trim()).toBe('7');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('CJS runtime 별칭이 연속된 unresolved source global을 모두 피한다', async () => {
+    const { dir, cleanup } = await createFixture({
+      'legacy.cjs': 'module.exports = 7;',
+      'entry.mjs':
+        'import value from "./legacy.cjs";\n' +
+        'console.log(typeof __commonJS, typeof __commonJS$1, value);',
+    });
+    try {
+      const out = join(dir, 'b.mjs');
+      const res = await runZntc(['--bundle', join(dir, 'entry.mjs'), '-o', out, '--format=esm']);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      const { stdout, stderr } = await runNode(out);
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout.trim()).toBe('undefined undefined 7');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('축약 CJS runtime 별칭도 unresolved source global을 가리지 않는다', async () => {
+    const { dir, cleanup } = await createFixture({
+      'legacy.cjs': 'module.exports = 7;',
+      'entry.mjs': 'import value from "./legacy.cjs";\n' + 'console.log(typeof $c, value);',
+    });
+    try {
+      const out = join(dir, 'b.mjs');
+      const res = await runZntc([
+        '--bundle',
+        join(dir, 'entry.mjs'),
+        '-o',
+        out,
+        '--format=esm',
+        '--minify-whitespace',
+      ]);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      const { stdout, stderr } = await runNode(out);
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout.trim()).toBe('undefined 7');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('code-splitting CJS runtime 별칭도 unresolved source global을 가리지 않는다', async () => {
+    const { dir, cleanup } = await createFixture({
+      'legacy.cjs': 'module.exports = 7;',
+      'entry.mjs':
+        'import value from "./legacy.cjs";\n' +
+        'console.log(typeof __commonJS, typeof __commonJS$1, value);',
+    });
+    try {
+      const outDir = join(dir, 'dist');
+      const res = await runZntc([
+        '--bundle',
+        join(dir, 'entry.mjs'),
+        '--outdir',
+        outDir,
+        '--splitting',
+        '--format=esm',
+      ]);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout.trim()).toBe('undefined undefined 7');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('CJS runtime을 출력하지 않는 번들에서는 사용자 이름을 과잉 변경하지 않는다', async () => {
+    const { dir, cleanup } = await createFixture({
+      'entry.mjs': 'export const __commonJS = 7;\nconsole.log(__commonJS);',
+    });
+    try {
+      const out = join(dir, 'b.mjs');
+      const res = await runZntc(['--bundle', join(dir, 'entry.mjs'), '-o', out, '--format=esm']);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      expect(readFileSync(out, 'utf8')).toMatch(/\bconst __commonJS\b/);
+      const { stdout, stderr } = await runNode(out);
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout.trim()).toBe('7');
+    } finally {
+      await cleanup();
+    }
+  });
+
   test('단일 번들: CJS 래퍼(require_X)가 동명 사용자 심볼과 충돌하지 않는다', async () => {
     const { dir, cleanup } = await createFixture({
       'legacy.cjs': LEGACY,
