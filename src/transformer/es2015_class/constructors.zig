@@ -68,26 +68,29 @@ pub fn Constructors(comptime Transformer: type) type {
             self.super_call_this_alias = is_derived;
             defer self.super_call_this_alias = saved_super_alias;
 
-            // TS parameter property(`constructor(public x)`)는 modifier 만 strip 되어 일반 형태로 visit 되지만,
-            // 이 경로는 visitMethodDefinition 을 거치지 않으므로 `this.x = x` 삽입을 직접 수행해야 함 (#1471).
-            const parameter_temp_start = self.temp_var_counter;
-            var pp = try self.visitParamsCollectProperties(params_list_old);
-            defer pp.prop_names.deinit(self.allocator);
-            const parameter_temp_end = self.temp_var_counter;
-            const param_needs_this = self.needs_this_var;
-            const param_needs_arguments = self.needs_arguments_var;
-            var param_lowering: ?es2015_params.ES2015Params(Transformer).LowerResult = null;
-            if (es2015_params.ES2015Params(Transformer).hasDefaultOrRest(self, pp.new_params)) {
-                param_lowering = try es2015_params.ES2015Params(Transformer).lowerParamsPass2(self, pp.new_params, span);
-            }
-            defer if (param_lowering) |*lr| lr.body_stmts.deinit(self.allocator);
-
-            // new.target: class constructor → function_named (ES5 class 변환 후 일반 함수)
+            // Parameter initializers also observe the constructor's new.target.
+            // Establish the lowered function context before visiting them.
             const saved_new_target_ctx = self.new_target_ctx;
             if (self.options.unsupported.new_target) {
                 self.new_target_ctx = .{ .function_named = .{ .span = self.ast.getNode(name).data.string_ref, .node = name } };
             }
             defer self.new_target_ctx = saved_new_target_ctx;
+
+            // TS parameter property(`constructor(public x)`)는 modifier 만 strip 되어 일반 형태로 visit 되지만,
+            // 이 경로는 visitMethodDefinition 을 거치지 않으므로 `this.x = x` 삽입을 직접 수행해야 함 (#1471).
+            const parameter_temp_start = self.temp_var_counter;
+            const param_capture_use_start = self.lexical_capture_uses.items.len;
+            var pp = try self.visitParamsCollectProperties(params_list_old);
+            defer pp.prop_names.deinit(self.allocator);
+            const parameter_temp_end = self.temp_var_counter;
+            const param_needs_this = self.needs_this_var;
+            const param_needs_arguments = self.needs_arguments_var;
+            const param_needs_new_target = self.hasLexicalCaptureSince(param_capture_use_start, self.capture_frame, .new_target_value);
+            var param_lowering: ?es2015_params.ES2015Params(Transformer).LowerResult = null;
+            if (es2015_params.ES2015Params(Transformer).hasDefaultOrRest(self, pp.new_params)) {
+                param_lowering = try es2015_params.ES2015Params(Transformer).lowerParamsPass2(self, pp.new_params, span);
+            }
+            defer if (param_lowering) |*lr| lr.body_stmts.deinit(self.allocator);
 
             const lowered_params = if (param_lowering) |lr| lr.new_params else pp.new_params;
             const param_stmts = if (param_lowering) |lr| lr.body_stmts.items else &[_]NodeIndex{};
@@ -106,7 +109,7 @@ pub fn Constructors(comptime Transformer: type) type {
                     while (pp_iter.next()) |stmt| try base_prefix.append(self.allocator, stmt);
                 }
             }
-            var new_body = try visitMethodBodyWithCtxImpl(self, body_idx, span, null, is_derived, param_needs_this, param_needs_arguments, field_needs_this, base_prefix.items);
+            var new_body = try visitMethodBodyWithCtxImpl(self, body_idx, span, null, is_derived, param_needs_this, param_needs_arguments, param_needs_new_target, field_needs_this, base_prefix.items);
 
             if (is_derived) {
                 // derived class 의 parameter property `this.x = x` 는 super() 이후에 와야 한다.
@@ -196,11 +199,11 @@ pub fn Constructors(comptime Transformer: type) type {
 
         /// visitMethodBody + new.target 컨텍스트 지정
         pub fn visitMethodBodyWithCtx(self: *Transformer, body_idx: NodeIndex, span: Span, nt_ctx: ?Transformer.NewTargetCtx) Transformer.Error!NodeIndex {
-            return visitMethodBodyWithCtxImpl(self, body_idx, span, nt_ctx, false, false, false, false, &.{});
+            return visitMethodBodyWithCtxImpl(self, body_idx, span, nt_ctx, false, false, false, false, false, &.{});
         }
 
-        pub fn visitMethodBodyWithParams(self: *Transformer, body_idx: NodeIndex, span: Span, nt_ctx: ?Transformer.NewTargetCtx, param_needs_this: bool, param_needs_arguments: bool) Transformer.Error!NodeIndex {
-            return visitMethodBodyWithCtxImpl(self, body_idx, span, nt_ctx, false, param_needs_this, param_needs_arguments, false, &.{});
+        pub fn visitMethodBodyWithParams(self: *Transformer, body_idx: NodeIndex, span: Span, nt_ctx: ?Transformer.NewTargetCtx, param_needs_this: bool, param_needs_arguments: bool, param_needs_new_target: bool) Transformer.Error!NodeIndex {
+            return visitMethodBodyWithCtxImpl(self, body_idx, span, nt_ctx, false, param_needs_this, param_needs_arguments, param_needs_new_target, false, &.{});
         }
 
         /// visitMethodBodyWithCtx의 내부 구현.
@@ -215,6 +218,7 @@ pub fn Constructors(comptime Transformer: type) type {
             derived_constructor_this_alias: bool,
             param_needs_this: bool,
             param_needs_arguments: bool,
+            param_needs_new_target: bool,
             field_needs_this: bool,
             instance_fields: []const NodeIndex,
         ) Transformer.Error!NodeIndex {
@@ -240,11 +244,14 @@ pub fn Constructors(comptime Transformer: type) type {
             if (instance_fields.len > 0 and !new_body.isNone())
                 new_body = try self.prependStatementsToBody(new_body, instance_fields);
 
-            // arrow가 this/arguments를 사용했으면 var _this = this; 등 삽입
-            if (self.options.unsupported.arrow and !new_body.isNone() and
-                (self.needs_this_var or self.needs_arguments_var))
+            const needs_new_target_capture = self.hasLexicalCapture(self.capture_frame, .new_target_value);
+            // Lowered arrows or extracted bodies need aliases in the original
+            // constructor scope. `new.target` is independent of the delayed
+            // derived-constructor `this` alias and is safe before `super()`.
+            if (!new_body.isNone() and
+                ((self.options.unsupported.arrow and (self.needs_this_var or self.needs_arguments_var)) or needs_new_target_capture))
             {
-                var capture_stmts: [2]NodeIndex = undefined;
+                var capture_stmts: [3]NodeIndex = undefined;
                 var capture_count: usize = 0;
 
                 if (self.needs_this_var and !derived_constructor_this_alias) {
@@ -263,18 +270,28 @@ pub fn Constructors(comptime Transformer: type) type {
                     try self.bindLexicalCapture(capture_stmts[capture_count], .arguments_value);
                     capture_count += 1;
                 }
+                if (needs_new_target_capture) {
+                    capture_stmts[capture_count] = try es_helpers.buildNewTargetCapture(self, span);
+                    capture_count += 1;
+                }
 
                 if (derived_constructor_this_alias) {
                     // A derived constructor never synthesizes `_this = this`
                     // before super(). Its only movable parameter capture is
                     // `_arguments = arguments`; `_this` remains uninitialized
                     // until the super-call assignment.
+                    var parameter_capture_index: usize = 0;
                     if (param_needs_arguments) {
-                        std.debug.assert(capture_count > 0);
-                        try self.parameter_capture_statements.put(self.allocator, @intFromEnum(capture_stmts[0]), {});
+                        std.debug.assert(parameter_capture_index < capture_count);
+                        try self.parameter_capture_statements.put(self.allocator, @intFromEnum(capture_stmts[parameter_capture_index]), {});
+                        parameter_capture_index += 1;
+                    }
+                    if (param_needs_new_target) {
+                        std.debug.assert(parameter_capture_index < capture_count);
+                        try self.parameter_capture_statements.put(self.allocator, @intFromEnum(capture_stmts[parameter_capture_index]), {});
                     }
                 } else {
-                    try es_helpers.recordParameterCaptures(self, capture_stmts[0..capture_count], param_needs_this, param_needs_arguments);
+                    try es_helpers.recordParameterCaptures(self, capture_stmts[0..capture_count], param_needs_this, param_needs_arguments, param_needs_new_target);
                 }
 
                 new_body = try self.prependStatementsToBody(new_body, capture_stmts[0..capture_count]);

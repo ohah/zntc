@@ -25,10 +25,12 @@
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
+const ast_walk = @import("../parser/ast_walk.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const Tag = Node.Tag;
+const es_helpers = @import("es_helpers.zig");
 const FunctionInfo = @import("ast_plugin.zig").FunctionInfo;
 
 pub fn ES2015Arrow(comptime Transformer: type) type {
@@ -39,6 +41,13 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
         pub fn lowerArrowFunction(self: *Transformer, source_owner: NodeIndex, node: Node) Transformer.Error!NodeIndex {
             const e = node.data.extra;
             if (e + 2 >= self.ast.extra_data.items.len) return NodeIndex.none;
+
+            const native_parameter_capture = self.options.unsupported.arrow and
+                !self.options.unsupported.default_params and self.capture_frame != 0 and
+                self.native_parameter_initializer_frame == self.capture_frame;
+            const native_parameter_arrow_depth = self.native_parameter_arrow_depth;
+            if (native_parameter_capture) self.native_parameter_arrow_depth += 1;
+            defer self.native_parameter_arrow_depth = native_parameter_arrow_depth;
 
             const params_idx: NodeIndex = self.readNodeIdx(e, 0);
             const body_idx: NodeIndex = self.readNodeIdx(e, 1);
@@ -97,7 +106,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 none, // return_type
             });
 
-            const result = try self.ast.addNode(.{
+            var result = try self.ast.addNode(.{
                 .tag = .function_expression,
                 .span = node.span,
                 .data = .{ .extra = new_extra },
@@ -121,7 +130,20 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 .source_path = self.options.jsx_filename,
                 .is_auto_worklet = is_auto_worklet,
             })) |replacement| {
-                return replacement;
+                result = replacement;
+            }
+
+            if (native_parameter_capture) {
+                if (try findLexicalNewTargetSpan(self, source_owner)) |new_target_span| {
+                    return wrapNativeParameterArrow(
+                        self,
+                        source_owner,
+                        result,
+                        node.span,
+                        new_target_span,
+                        native_parameter_arrow_depth == 0,
+                    );
+                }
             }
 
             return result;
@@ -134,24 +156,163 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             if (params_idx.isNone()) return self.ast.addNodeList(&.{});
             const params_node = self.ast.getNode(params_idx);
             return switch (params_node.tag) {
-                .formal_parameters => self.visitExtraList(params_node.data.list),
+                .formal_parameters => self.visitParameterList(params_node.data.list),
                 .parenthesized_expression => blk: {
                     const inner_idx = params_node.data.unary.operand;
                     if (inner_idx.isNone()) break :blk try self.ast.addNodeList(&.{});
                     const inner = self.ast.getNode(inner_idx);
                     if (inner.tag == .sequence_expression) {
-                        break :blk try self.visitExtraList(inner.data.list);
+                        break :blk try self.visitParameterList(inner.data.list);
                     }
-                    const new_param = try self.visitNode(inner_idx);
+                    const new_param = try self.visitParameterNode(inner_idx);
                     break :blk try self.ast.addNodeList(if (!new_param.isNone()) &.{new_param} else &.{});
                 },
                 else => blk: {
-                    const new_param = try self.visitNode(params_idx);
+                    const new_param = try self.visitParameterNode(params_idx);
                     break :blk try self.ast.addNodeList(if (!new_param.isNone()) &.{new_param} else &.{});
                 },
             };
         }
     };
+}
+
+fn isFunctionBoundary(tag: Tag) bool {
+    return switch (tag) {
+        .function_declaration,
+        .function_expression,
+        .function,
+        .method_definition,
+        .class_declaration,
+        .class_expression,
+        => true,
+        else => false,
+    };
+}
+
+fn findLexicalNewTargetSpan(
+    self: anytype,
+    root: NodeIndex,
+) std.mem.Allocator.Error!?@import("../lexer/token.zig").Span {
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(self.allocator);
+    try stack.append(self.allocator, root);
+    while (stack.pop()) |idx| {
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+        const raw = @intFromEnum(idx);
+        if (seen.contains(raw)) continue;
+        try seen.put(self.allocator, raw, {});
+        const node = self.ast.getNode(idx);
+        if (node.tag == .meta_property and node.data.none == 1) return node.span;
+        if (idx != root and isFunctionBoundary(node.tag)) continue;
+        var children = ast_walk.children(self.ast, node);
+        while (children.next()) |child| try stack.append(self.allocator, child);
+    }
+    return null;
+}
+
+fn isDirectDefaultArrow(self: anytype, source_owner: NodeIndex) bool {
+    if (self.native_parameter_default_root.isNone()) return false;
+    var root = self.native_parameter_default_root;
+    while (!root.isNone() and self.ast.getNode(root).tag == .parenthesized_expression) {
+        root = self.ast.getNode(root).data.unary.operand;
+    }
+    return root == source_owner;
+}
+
+fn wrapNativeParameterArrow(
+    self: anytype,
+    source_owner: NodeIndex,
+    lowered_arrow: NodeIndex,
+    span: @import("../lexer/token.zig").Span,
+    new_target_span: @import("../lexer/token.zig").Span,
+    is_outermost_native_parameter_arrow: bool,
+) !NodeIndex {
+    const name = try es_helpers.resolveSyntheticName(self, "_newTarget");
+    const binding = try es_helpers.makeExactSyntheticBinding(self, name);
+    const params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{binding}), span);
+
+    var return_value = lowered_arrow;
+    if (is_outermost_native_parameter_arrow and isDirectDefaultArrow(self, source_owner)) {
+        if (self.native_parameter_name_hint) |inferred_name| {
+            // A direct anonymous function default gets its name from the
+            // parameter binding. Keep that NamedEvaluation after adding the
+            // lexical capture factory.
+            const key = try es_helpers.makePropertyName(self, inferred_name);
+            const property = try self.ast.addNode(.{
+                .tag = .object_property,
+                .span = span,
+                .data = .{ .binary = .{ .left = key, .right = lowered_arrow, .flags = 0 } },
+            });
+            const object = try self.ast.addNode(.{
+                .tag = .object_expression,
+                .span = span,
+                .data = .{ .list = try self.ast.addNodeList(&.{property}) },
+            });
+            const access_key = try es_helpers.makePropertyName(self, inferred_name);
+            return_value = try es_helpers.makeStaticMember(self, object, access_key, span);
+        }
+    }
+
+    const return_stmt = try self.ast.addNode(.{
+        .tag = .return_statement,
+        .span = span,
+        .data = .{ .unary = .{ .operand = return_value, .flags = 0 } },
+    });
+    const wrapper_body = try self.ast.addNode(.{
+        .tag = .block_statement,
+        .span = span,
+        .data = .{ .list = try self.ast.addNodeList(&.{return_stmt}) },
+    });
+    const wrapper_extra = try self.ast.addExtras(&.{
+        @intFromEnum(NodeIndex.none),
+        @intFromEnum(params),
+        @intFromEnum(wrapper_body),
+        0,
+        @intFromEnum(NodeIndex.none),
+    });
+    const wrapper = try self.ast.addNode(.{
+        .tag = .function_expression,
+        .span = span,
+        .data = .{ .extra = wrapper_extra },
+    });
+
+    const arrow_scope = self.outputOwnedScope(source_owner) orelse self.current_scope;
+    const parent_scope = self.outputScopeParent(arrow_scope);
+    const wrapper_scope = try self.addGeneratedFunctionScope(parent_scope, wrapper);
+    try self.reparentGeneratedScope(arrow_scope, wrapper_scope);
+    _ = try self.declareSyntheticInScope(binding, span, .parameter, wrapper_scope);
+    try self.remapCopiedScopeOwner(source_owner, lowered_arrow);
+
+    const capture_value = if (is_outermost_native_parameter_arrow) blk: {
+        if (self.options.unsupported.new_target) {
+            // Retained class constructors can be derived, where `this` is not
+            // initialized yet while parameters run. Preserve the native
+            // meta-property at this boundary instead of lowering it to
+            // `this.constructor`.
+            if (!self.options.unsupported.class and self.new_target_ctx == .constructor) {
+                break :blk try self.ast.addNode(.{
+                    .tag = .meta_property,
+                    .span = new_target_span,
+                    .data = .{ .none = 1 },
+                });
+            }
+            break :blk try self.lowerNewTarget(span);
+        }
+        break :blk try self.ast.addNode(.{
+            .tag = .meta_property,
+            .span = new_target_span,
+            .data = .{ .none = 1 },
+        });
+    } else try es_helpers.makeSyntheticRef(self, "_newTarget");
+    const call = try es_helpers.makeCallExpr(self, wrapper, &.{capture_value}, span);
+    const specs = [_]@import("transformer/semantic_edit.zig").GeneratedLocalSpec{.{
+        .name = name,
+        .kind = @import("../semantic/symbol.zig").SymbolKind.parameter,
+    }};
+    try self.trackGeneratedLocalSymbols(call, parent_scope, &specs);
+    return call;
 }
 
 test "ES2015 arrow module compiles" {

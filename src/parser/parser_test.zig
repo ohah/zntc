@@ -2080,6 +2080,19 @@ test "Parser: new.target outside function is error" {
     try std.testing.expect(parser.errors.items.len > 0);
 }
 
+test "Parser: new.target is allowed in class method parameter initializers" {
+    var scanner = try Scanner.init(
+        std.testing.allocator,
+        "class C { constructor(value = () => new.target) {} method(value = () => () => new.target) {} static read(value = new.target) {} }",
+    );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+}
+
 test "Parser: object shorthand reserved word is error" {
     var scanner = try Scanner.init(std.testing.allocator, "({true});");
     defer scanner.deinit();

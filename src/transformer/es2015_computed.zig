@@ -236,7 +236,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             const params_list = self.ast.functionParamsList(member);
             const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 2]);
 
-            const new_params = try self.visitExtraList(params_list);
+            const new_params = try self.visitParameterList(params_list);
             const new_body = try self.visitNode(body_idx);
             const new_params_node = try self.ast.addFormalParameters(new_params, span);
 

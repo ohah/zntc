@@ -737,6 +737,38 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
 
         // meta_property: new.target / import.meta
         .meta_property => {
+            // A retained native class constructor may evaluate parameters
+            // before `this` is initialized (including base constructors).
+            // Keep `new.target` native there; `this.constructor` is invalid or
+            // semantically different in that parameter environment.
+            if (node.data.none == 1 and self.options.unsupported.new_target and
+                !self.options.unsupported.class and self.new_target_ctx == .constructor and self.arrow_this_depth == 0 and
+                self.native_parameter_initializer_frame != 0 and
+                self.native_parameter_initializer_frame == self.capture_frame)
+            {
+                return self.copyNodeDirect(idx);
+            }
+            // Native default-parameter initializers execute before the body,
+            // so a body `_newTarget` declaration is outside their environment.
+            // The enclosing lowered arrow is wrapped with a generated capture
+            // parameter when defaults remain native.
+            if (node.data.none == 1 and self.options.unsupported.arrow and
+                !self.options.unsupported.default_params and self.arrow_this_depth > 0 and
+                self.native_parameter_initializer_frame != 0 and
+                self.native_parameter_initializer_frame == self.capture_frame)
+            {
+                return es_helpers.makeSyntheticRef(self, "_newTarget");
+            }
+            // An arrow has no own new.target. When lowering it to an ordinary
+            // function, capture the enclosing function's value in its lexical
+            // frame so the generated function cannot observe its own new.target.
+            if (node.data.none == 1 and
+                ((self.options.unsupported.arrow and self.arrow_this_depth > 0) or self.in_extracted_fn_body))
+            {
+                const ref = try es_helpers.makeSyntheticRef(self, "_newTarget");
+                try self.trackLexicalCaptureRef(ref, idx, .new_target_value);
+                return ref;
+            }
             // new.target (data.none == 1) 다운레벨링
             if (node.data.none == 1 and self.options.unsupported.new_target) {
                 return self.lowerNewTarget(node.span);

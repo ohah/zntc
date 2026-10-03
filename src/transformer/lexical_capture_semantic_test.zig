@@ -2,6 +2,7 @@ const std = @import("std");
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const ast_walk = @import("../parser/ast_walk.zig");
 const Transformer = @import("transformer.zig").Transformer;
 const TransformOptions = @import("transformer.zig").TransformOptions;
@@ -103,6 +104,121 @@ fn checkCaptureSymbols(source: []const u8, frame_tag: @import("../parser/ast.zig
     }
     try std.testing.expectEqual(@as(usize, 1), this_count);
     try std.testing.expectEqual(@as(usize, 1), arguments_count);
+}
+
+fn checkNativeParameterNewTargetSymbols(source: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    const original_symbols = analyzer.symbols.items.len;
+    const unsupported = TransformOptions.compat.fromReactNativeVersion(0, 80);
+    // Match the RN 0.80 matrix: native default parameters/classes, but arrows
+    // and new.target are lowered. This audits generated symbols before bundler
+    // reanalysis can repair them.
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = unsupported,
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var live: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    for (reachable) |raw| try live.put(allocator, raw, {});
+
+    var capture_ids: [2]u32 = undefined;
+    var capture_scopes: [2]ScopeId = undefined;
+    var captures: usize = 0;
+    for (edited.symbols.items[original_symbols..], original_symbols..) |symbol, symbol_index| {
+        if (!std.mem.startsWith(u8, symbol.synthetic_name, "_newTarget")) continue;
+        try std.testing.expect(captures < capture_ids.len);
+        capture_ids[captures] = @intCast(symbol_index);
+        capture_scopes[captures] = symbol.scope_id;
+        try std.testing.expect(!symbol.scope_id.isNone());
+        try std.testing.expectEqual(
+            @as(?usize, symbol_index),
+            edited.scope_maps[symbol.scope_id.toIndex()].get(symbol.synthetic_name),
+        );
+
+        var returned_arrow_scope_is_child = false;
+        var owners = edited.scope_owner_map.iterator();
+        while (owners.next()) |owner| {
+            const owner_node = transformer.ast.nodes.items[owner.key_ptr.*];
+            if (owner_node.tag != .function_expression) continue;
+            const owner_scope: ScopeId = @enumFromInt(owner.value_ptr.*);
+            if (owner_scope == symbol.scope_id or owner_scope.isNone()) continue;
+            if (edited.scopes[owner_scope.toIndex()].parent == symbol.scope_id) {
+                returned_arrow_scope_is_child = true;
+                break;
+            }
+        }
+        try std.testing.expect(returned_arrow_scope_is_child);
+
+        var bindings: usize = 0;
+        for (reachable) |raw| {
+            if (transformer.ast.nodes.items[raw].tag == .binding_identifier and
+                raw < edited.symbol_ids.len and edited.symbol_ids[raw] == @as(u32, @intCast(symbol_index)))
+            {
+                bindings += 1;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), bindings);
+
+        var references: usize = 0;
+        for (edited.references) |reference| {
+            if (@intFromEnum(reference.symbol_id) != symbol_index or reference.node_index.isNone()) continue;
+            if (!reference.flags.read and !reference.flags.write) continue;
+            try std.testing.expect(live.contains(@intFromEnum(reference.node_index)));
+            try std.testing.expectEqual(@as(?u32, @intCast(symbol_index)), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+            var scope = reference.scope_id;
+            var resolves = false;
+            while (!scope.isNone()) {
+                if (scope == symbol.scope_id) {
+                    resolves = true;
+                    break;
+                }
+                scope = edited.scopes[scope.toIndex()].parent;
+            }
+            try std.testing.expect(resolves);
+            references += 1;
+        }
+        try std.testing.expect(references > 0);
+        try std.testing.expectEqual(@as(u32, @intCast(references)), symbol.reference_count);
+        captures += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), captures);
+    try std.testing.expect(capture_ids[0] != capture_ids[1]);
+    try std.testing.expect(capture_scopes[0] != capture_scopes[1]);
+}
+
+test "#4819 native parameter new.target factories retain exact pre-reanalysis symbols" {
+    try checkNativeParameterNewTargetSymbols(
+        "function outer(_newTarget = 11, value = () => () => new.target) { return value()(); } outer();",
+    );
+}
+
+test "#4819 retained class parameter new.target factories keep exact pre-reanalysis symbols" {
+    try checkNativeParameterNewTargetSymbols(
+        "class Base { constructor(value = () => () => new.target) { this.target = value()(); } }",
+    );
 }
 
 test "#4819 lowered arrow lexical captures have distinct exact function symbols" {

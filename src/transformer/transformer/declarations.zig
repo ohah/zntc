@@ -246,10 +246,12 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
+    const param_capture_use_start = self.lexical_capture_uses.items.len;
     var pp = try self.visitParamsCollectProperties(params_list_old);
     defer pp.prop_names.deinit(self.allocator);
     const param_needs_this = self.needs_this_var;
     const param_needs_arguments = self.needs_arguments_var;
+    const param_needs_new_target = self.hasLexicalCaptureSince(param_capture_use_start, capture_frame.active_frame, .new_target_value);
 
     // 바디 방문
     const old_body_idx = self.readNodeIdx(e, 2);
@@ -262,10 +264,11 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
 
     // ES2015 arrow this/arguments 캡처: 이 함수 안의 arrow가 this/arguments를 사용했으면
     // var _this = this; / var _arguments = arguments; 를 바디 앞에 삽입.
+    const needs_new_target_capture = self.hasLexicalCapture(capture_frame.active_frame, .new_target_value);
     if (self.options.unsupported.arrow and !new_body.isNone() and
-        (self.needs_this_var or self.needs_arguments_var))
+        (self.needs_this_var or self.needs_arguments_var or needs_new_target_capture))
     {
-        var capture_stmts: [2]NodeIndex = undefined;
+        var capture_stmts: [3]NodeIndex = undefined;
         var capture_count: usize = 0;
 
         if (self.needs_this_var) {
@@ -284,8 +287,12 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
             try self.bindLexicalCapture(capture_stmts[capture_count], .arguments_value);
             capture_count += 1;
         }
+        if (needs_new_target_capture) {
+            capture_stmts[capture_count] = try es_helpers.buildNewTargetCapture(self, node.span);
+            capture_count += 1;
+        }
 
-        try es_helpers.recordParameterCaptures(self, capture_stmts[0..capture_count], param_needs_this, param_needs_arguments);
+        try es_helpers.recordParameterCaptures(self, capture_stmts[0..capture_count], param_needs_this, param_needs_arguments, param_needs_new_target);
 
         new_body = try self.prependStatementsToBody(new_body, capture_stmts[0..capture_count]);
     }
@@ -395,7 +402,7 @@ pub fn visitParamsCollectProperties(self: *Transformer, vp: NodeList) Error!Para
                 try result.prop_names.append(self.allocator, binding);
             }
         } else {
-            const new_param = try self.visitNode(@enumFromInt(raw_idx));
+            const new_param = try self.visitParameterNode(@enumFromInt(raw_idx));
             if (!new_param.isNone()) {
                 try self.scratch.append(self.allocator, new_param);
             }

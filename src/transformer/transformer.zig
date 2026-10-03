@@ -50,7 +50,7 @@ pub const ModuleSpecifierMapEntry = options_mod.ModuleSpecifierMapEntry;
 pub const Plugin = options_mod.Plugin;
 pub const RuntimeHelpers = runtime_helper_bits.RuntimeHelpers;
 pub const TransformOptions = options_mod.TransformOptions;
-pub const LexicalCaptureKind = enum { this_value, arguments_value };
+pub const LexicalCaptureKind = enum { this_value, arguments_value, new_target_value };
 pub const DeferredGeneratorLoopMigration = struct {
     body: NodeIndex,
     enclosing_function_scope: ScopeId,
@@ -237,6 +237,11 @@ pub const Transformer = struct {
     pending_temp_ref_chains: std.AutoHashMapUnmanaged(u32, struct { first: usize, last: usize }) = .empty,
     /// Exact generated lexical-capture uses, paired with the function frame
     /// that will emit their `_this` or `_arguments` declaration.
+    lexical_capture_uses: std.ArrayListUnmanaged(struct {
+        frame: u32,
+        kind: LexicalCaptureKind,
+        span: Span,
+    }) = .empty,
     capture_refs: std.ArrayListUnmanaged(struct {
         node: NodeIndex,
         source: NodeIndex,
@@ -248,6 +253,13 @@ pub const Transformer = struct {
     capture_binding_ids: std.AutoHashMapUnmanaged(u64, u32) = .empty,
     capture_frame: u32 = 0,
     next_capture_frame: u32 = 1,
+    /// Formal-parameter initializers evaluate in a separate environment from
+    /// the function body. Downleveled arrows there must capture lexical values
+    /// at creation time instead of reading body aliases.
+    native_parameter_initializer_frame: u32 = 0,
+    native_parameter_default_root: NodeIndex = .none,
+    native_parameter_name_hint: ?[]const u8 = null,
+    native_parameter_arrow_depth: u32 = 0,
     capture_scope: ScopeId = .none,
     outermost_lowered_arrow_scope: ScopeId = .none,
     /// Exact name Span to the first SymbolId allocated for that transform temp.
@@ -714,6 +726,8 @@ pub const Transformer = struct {
     pub const deferGeneratedWrapperTemp = @import("transformer/semantic_edit.zig").deferGeneratedWrapperTemp;
     pub const trackLexicalCaptureRef = @import("transformer/semantic_edit.zig").trackLexicalCaptureRef;
     pub const bindLexicalCapture = @import("transformer/semantic_edit.zig").bindLexicalCapture;
+    pub const hasLexicalCapture = @import("transformer/semantic_edit.zig").hasLexicalCapture;
+    pub const hasLexicalCaptureSince = @import("transformer/semantic_edit.zig").hasLexicalCaptureSince;
     pub const shouldCaptureArguments = @import("transformer/semantic_edit.zig").shouldCaptureArguments;
     pub const makeCapturedArgumentsInit = @import("transformer/semantic_edit.zig").makeCapturedArgumentsInit;
     pub const addSyntheticRefInScope = @import("transformer/semantic_edit.zig").addSyntheticRefInScope;
@@ -949,6 +963,8 @@ pub const Transformer = struct {
     pub const visitAccessorProperty = members_mod.visitAccessorProperty;
     pub const visitObjectProperty = members_mod.visitObjectProperty;
     pub const visitFormalParameter = members_mod.visitFormalParameter;
+    pub const visitParameterNode = members_mod.visitParameterNode;
+    pub const visitParameterList = members_mod.visitParameterList;
 
     // ================================================================
     // Import/export 변환 — transformer/import_export.zig로 위임

@@ -270,6 +270,187 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('node5 arrow lowering preserves nested new.target and exact symbol identity', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-arrow-new-target-retained-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'entry.mjs'),
+      [
+        'function Outer(_newTarget) {',
+        '  this.read = () => () => [new.target, _newTarget];',
+        '  this.normal = () => function() { return new.target; };',
+        '}',
+        'function Derived() {}',
+        'var constructed = Reflect.construct(Outer, [7], Derived);',
+        'var called = {}; Outer.call(called, 8);',
+        'console.log(constructed.read()()[0] === Derived, constructed.read()()[1], called.read()()[0], called.normal()());',
+      ].join('\n'),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.mjs',
+          '--target=node5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+
+      const graphMode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+        );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('true 7 undefined undefined\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('es5 new.target lowering keeps the semantic reanalysis boundary', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-arrow-new-target-reanalyzed-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'entry.mjs'),
+      ['function Foo() { return () => new.target; }', 'console.log(new Foo()() === Foo);'].join(
+        '\n',
+      ),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.mjs',
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const graphMode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+        );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('true\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('native RN parameter new.target factory bindings retain exact output scopes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-rn-param-new-target-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'entry.mjs'),
+      [
+        'function Foo(_newTarget = 11, value = () => () => new.target) {',
+        '  this.name = value.name;',
+        '  this.target = value()();',
+        '  this.parameter = _newTarget;',
+        '}',
+        'class Derived extends Foo {}',
+        'class NativeBase { constructor(_newTarget = 13, value = () => () => new.target) { this.target = value()(); this.parameter = _newTarget; } }',
+        'class NativeDerived extends NativeBase {}',
+        'class ExplicitNativeDerived extends NativeBase { constructor(value = () => new.target) { super(); this.explicitTarget = value(); } }',
+        'var plain = new Foo();',
+        'var derived = Reflect.construct(Foo, [undefined, undefined], Derived);',
+        'var nativeDerived = new NativeDerived();',
+        'var explicitNativeDerived = new ExplicitNativeDerived();',
+        'console.log(plain.target === Foo, derived.target === Derived, plain.parameter, plain.name, nativeDerived.target === NativeDerived, explicitNativeDerived.explicitTarget === ExplicitNativeDerived);',
+      ].join('\n'),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.mjs',
+          '--platform=react-native',
+          '--rn-version=0.80',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('true true 11 value true true\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 arrow lowering retains ordinary binary expressions with exact identity', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-arrow-binary-retained-'));
     const output = join(dir, 'out.cjs');

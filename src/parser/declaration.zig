@@ -729,10 +729,15 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         const saved_in_class_field_for_params = self.in_class_field;
         const saved_in_async_for_params = self.ctx.in_async;
         const saved_in_generator_for_params = self.ctx.in_generator;
+        const saved_new_target_for_params = self.allow_new_target;
         const saved_super_prop_for_params = self.allow_super_property;
         const saved_super_call_for_params = self.allow_super_call;
         self.in_static_initializer = false;
         self.in_class_field = false;
+        // Method parameters are parsed before enterFunctionContext(), but their
+        // initializers still belong to the method's function environment.
+        // In particular, arrows in a default initializer inherit new.target.
+        self.allow_new_target = true;
         // 메서드의 파라미터에서 async/generator 컨텍스트 설정
         // 非async/非generator 메서드에서는 await/yield를 식별자로 사용 가능
         self.ctx.in_async = (flags & ast_mod.MethodFlags.is_async) != 0;
@@ -830,6 +835,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         self.in_class_field = saved_in_class_field_for_params;
         self.ctx.in_async = saved_in_async_for_params;
         self.ctx.in_generator = saved_in_generator_for_params;
+        self.allow_new_target = saved_new_target_for_params;
         self.allow_super_property = saved_super_prop_for_params;
         self.allow_super_call = saved_super_call_for_params;
         const param_list = try self.ast.addNodeList(self.scratch.items[param_top..]);

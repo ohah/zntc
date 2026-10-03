@@ -1,4 +1,5 @@
 import { describe, test, expect, afterEach } from 'bun:test';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { bundleAndRun, createFixture, runZntc, transpileAndRun } from './helpers';
@@ -1204,6 +1205,233 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       cleanup = result.cleanup;
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe('true');
+    });
+
+    test('new.target remains lexical in nested lowered arrows and across Reflect.construct', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            function Foo(_newTarget: unknown) {
+              this.read = () => () => [new.target, _newTarget];
+            }
+            class Derived extends Foo {}
+            const instance = Reflect.construct(Foo, [7], Derived);
+            console.log(instance.read()()[0] === Derived, instance.read()()[1]);
+          `,
+        },
+        'index.ts',
+        ['--target=node5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('true 7');
+    });
+
+    test('new.target arrow capture runs before a lowered default parameter', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            function Foo(value = (() => new.target)()) { this.value = value; }
+            const instance = new Foo();
+            console.log(instance.value === Foo);
+          `,
+        },
+        'index.ts',
+        ['--target=node5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('true');
+    });
+
+    test('new.target stays lexical in ES5 lowered class parameter defaults', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            class Base {
+              constructor(direct = new.target, read = () => new.target) {
+                this.direct = direct;
+                this.captured = read();
+              }
+            }
+            class Derived extends Base {}
+            const base = new Base();
+            const derived = new Derived();
+            console.log(
+              base.direct === Base,
+              base.captured === Base,
+              derived.direct === Derived,
+              derived.captured === Derived,
+            );
+          `,
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('true true true true');
+    });
+
+    test('new.target arrow captures stay in native RN parameter environments', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            var calls = 0;
+            function Foo(_newTarget = 11, direct = new.target, value = (() => () => { calls++; return new.target; })()()) {
+              this.value = value;
+              this.direct = direct;
+              this.parameter = _newTarget;
+            }
+            class Derived extends Foo {}
+            var plain = new Foo();
+            var derived = Reflect.construct(Foo, [undefined, undefined], Derived);
+            var explicit = new Foo(5, 6, 9);
+            var called = {};
+            Foo.call(called);
+            console.log(
+              plain.value === Foo,
+              derived.value === Derived,
+              plain.direct === Foo,
+              derived.direct === Derived,
+              explicit.value,
+              plain.parameter,
+              called.direct === undefined,
+              called.value === undefined,
+              calls,
+              Foo.length,
+            );
+          `,
+        },
+        'index.ts',
+        ['--platform=react-native', '--rn-version=0.80', '--format=cjs', '--minify-identifiers'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('true true true true 9 11 true true 3 0');
+    });
+
+    test('native parameter capture preserves inferred arrow names', async () => {
+      const { dir, cleanup: cl } = await createFixture({
+        'index.ts': `
+            function Foo(value = () => new.target) {
+              this.name = value.name;
+              this.target = value();
+            }
+            var instance = new Foo();
+            console.log(instance.name, instance.target === Foo);
+          `,
+      });
+      cleanup = cl;
+      const output = join(dir, 'out.cjs');
+      const bundle = await runZntc([
+        '--bundle',
+        join(dir, 'index.ts'),
+        '--platform=react-native',
+        '--rn-version=0.80',
+        '--format=cjs',
+        '-o',
+        output,
+      ]);
+      expect(bundle.exitCode, bundle.stderr).toBe(0);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('value true\n');
+    });
+
+    test('native parameter new.target stays lexical across class and extracted function boundaries', async () => {
+      const { dir, cleanup: cl } = await createFixture({
+        'index.ts': `
+          class Base {
+            constructor(value = () => new.target) { this.target = value(); }
+            method(value = () => new.target) { return value(); }
+          }
+          class Derived extends Base {}
+          class ExplicitDerived extends Base {
+            constructor(value = () => new.target) {
+              super();
+              this.explicitTarget = value();
+            }
+          }
+          class DirectBase {
+            constructor(value = new.target) { this.target = value; }
+          }
+          class DirectDerived extends DirectBase {}
+          class DirectExplicitDerived extends DirectBase {
+            constructor(value = new.target) {
+              super();
+              this.explicitTarget = value;
+            }
+          }
+          function* Generator(value = () => new.target) { yield value(); }
+          async function Async(value = () => new.target) { return value(); }
+          async function* AsyncGenerator(value = () => new.target) { yield value(); }
+          async function run() {
+            const instance = new Derived();
+            const explicitInstance = new ExplicitDerived();
+            const directInstance = new DirectDerived();
+            const directExplicitInstance = new DirectExplicitDerived();
+            const method = instance.method();
+            const generator = Generator().next().value;
+            const asyncValue = await Async();
+            const asyncGenerator = await AsyncGenerator().next();
+            console.log(
+              instance.target === Derived,
+              explicitInstance.explicitTarget === ExplicitDerived,
+              directInstance.target === DirectDerived,
+              directExplicitInstance.explicitTarget === DirectExplicitDerived,
+              method,
+              generator,
+              asyncValue,
+              asyncGenerator.value,
+            );
+          }
+          run();
+        `,
+      });
+      cleanup = cl;
+      const output = join(dir, 'out.cjs');
+      const bundle = await runZntc([
+        '--bundle',
+        join(dir, 'index.ts'),
+        '--platform=react-native',
+        '--rn-version=0.80',
+        '--format=cjs',
+        '-o',
+        output,
+      ]);
+      expect(bundle.exitCode, bundle.stderr).toBe(0);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('true true true true undefined undefined undefined undefined\n');
+    });
+
+    test('new.target captures survive class, generator, async, and async-generator extraction', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            class Base { constructor() { this.read = () => new.target; } }
+            class Child extends Base {}
+            function* Gen() { yield new.target; yield (() => new.target)(); }
+            async function AsyncFn() { return (() => new.target)(); }
+            async function* AsyncGen() { yield (() => new.target)(); }
+            const instance = new Child();
+            const iterator = Gen();
+            console.log(
+              instance.read() === Child,
+              iterator.next().value,
+              iterator.next().value,
+            );
+            AsyncFn().then((value) => console.log(value));
+            AsyncGen().next().then((value) => console.log(value.value));
+          `,
+        },
+        'index.ts',
+        ['--target=node5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('true undefined undefined\nundefined\nundefined');
     });
 
     // --- SWC 대비 추가 테스트: Arrow Functions ---

@@ -308,10 +308,12 @@ pub fn ES2017(comptime Transformer: type) type {
 
             const new_name = try self.visitNode(name_idx);
             const parameter_temp_start = self.temp_var_counter;
-            const new_params = try self.visitExtraList(.{ .start = params_list.start, .len = params_list.len });
+            const param_capture_use_start = self.lexical_capture_uses.items.len;
+            const new_params = try self.visitParameterList(.{ .start = params_list.start, .len = params_list.len });
             const parameter_temp_end = self.temp_var_counter;
             const param_needs_this = self.needs_this_var;
             const param_needs_arguments = self.needs_arguments_var;
+            const param_needs_new_target = self.hasLexicalCaptureSince(param_capture_use_start, arrow_env.capture.active_frame, .new_target_value);
             // for-await is lowered in place before the inner generator is
             // visited. Its state temps are registered from the rewritten
             // declarations below; they must not also escape to the program
@@ -408,9 +410,9 @@ pub fn ES2017(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .unary = .{ .operand = helper_call, .flags = 0 } },
             });
-            var capture_stmts: [2]NodeIndex = undefined;
+            var capture_stmts: [3]NodeIndex = undefined;
             const capture_count = try es_helpers.fillThisArgumentsCaptures(self, &capture_stmts, span);
-            try es_helpers.recordParameterCaptures(self, capture_stmts[0..capture_count], param_needs_this, param_needs_arguments);
+            try es_helpers.recordParameterCaptures(self, capture_stmts[0..capture_count], param_needs_this, param_needs_arguments, param_needs_new_target);
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
             try self.scratch.appendSlice(self.allocator, capture_stmts[0..capture_count]);
@@ -482,8 +484,12 @@ pub fn ES2017(comptime Transformer: type) type {
             try self.moveGeneratedFunctionBodyBindings(source_scope, gen_scope, gen_body);
 
             const parameter_temp_start = self.temp_var_counter;
-            const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
+            const param_capture_use_start = self.lexical_capture_uses.items.len;
+            const new_params = try self.visitParameterList(.{ .start = params_start, .len = params_len });
             const parameter_temp_end = self.temp_var_counter;
+            const param_needs_this = self.hasLexicalCaptureSince(param_capture_use_start, arrow_env.capture.active_frame, .this_value);
+            const param_needs_arguments = self.hasLexicalCaptureSince(param_capture_use_start, arrow_env.capture.active_frame, .arguments_value);
+            const param_needs_new_target = self.hasLexicalCaptureSince(param_capture_use_start, arrow_env.capture.active_frame, .new_target_value);
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_func, node.span);
 
             const return_stmt = try self.ast.addNode(.{
@@ -495,8 +501,9 @@ pub fn ES2017(comptime Transformer: type) type {
             const body_list = blk_cap: {
                 const scratch_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
-                var capture_stmts: [2]NodeIndex = undefined;
+                var capture_stmts: [3]NodeIndex = undefined;
                 const count = try es_helpers.fillThisArgumentsCaptures(self, &capture_stmts, node.span);
+                try es_helpers.recordParameterCaptures(self, capture_stmts[0..count], param_needs_this, param_needs_arguments, param_needs_new_target);
                 try self.scratch.appendSlice(self.allocator, capture_stmts[0..count]);
                 try self.scratch.append(self.allocator, return_stmt);
                 break :blk_cap try self.ast.addNodeList(self.scratch.items[scratch_top..]);
@@ -606,10 +613,12 @@ pub fn ES2017(comptime Transformer: type) type {
             const new_name = try self.visitNode(name_idx);
 
             const parameter_temp_start = self.temp_var_counter;
-            const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
+            const param_capture_use_start = self.lexical_capture_uses.items.len;
+            const new_params = try self.visitParameterList(.{ .start = params_start, .len = params_len });
             const parameter_temp_end = self.temp_var_counter;
             const param_needs_this = self.needs_this_var;
             const param_needs_arguments = self.needs_arguments_var;
+            const param_needs_new_target = self.hasLexicalCaptureSince(param_capture_use_start, arrow_env.capture.active_frame, .new_target_value);
 
             // visitFunctionLike 를 거치지 않으므로 임시 변수 카운터를 직접 관리한다 (#1960).
             // state machine 안에서 optional chaining/nullish/destructuring lowering 이 만든
@@ -649,9 +658,9 @@ pub fn ES2017(comptime Transformer: type) type {
                 const scratch_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
                 // arrow 다운레벨 여부와 무관 — body 가 안쪽 함수로 옮겨지면 캡처가 필요하다.
-                var capture_stmts: [2]NodeIndex = undefined;
+                var capture_stmts: [3]NodeIndex = undefined;
                 const count = try es_helpers.fillThisArgumentsCaptures(self, &capture_stmts, span);
-                try es_helpers.recordParameterCaptures(self, capture_stmts[0..count], param_needs_this, param_needs_arguments);
+                try es_helpers.recordParameterCaptures(self, capture_stmts[0..count], param_needs_this, param_needs_arguments, param_needs_new_target);
                 try self.scratch.appendSlice(self.allocator, capture_stmts[0..count]);
                 if (!sm_result.var_decl.isNone()) try self.scratch.append(self.allocator, sm_result.var_decl);
                 try self.scratch.append(self.allocator, return_stmt);

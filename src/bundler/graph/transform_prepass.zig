@@ -428,6 +428,12 @@ fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: Transfor
                 // temporaries, which still requires semantic reanalysis.
                 if (options.unsupported.object_extensions) return false;
             },
+            .meta_property => {
+                // `new.target` is safe here only when the target preserves it
+                // natively. Lowering it can synthesize a different reference
+                // expression and must use the semantic resync path.
+                if (node.data.none == 1 and options.unsupported.new_target) return false;
+            },
             .method_definition => {
                 // Native object methods retain their function scopes and graph.
                 // Object-method, async, generator, or async-generator lowering

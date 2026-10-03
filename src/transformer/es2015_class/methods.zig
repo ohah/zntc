@@ -68,13 +68,15 @@ pub fn Methods(comptime Transformer: type) type {
             const arrow_env = es_helpers.pushArrowEnv(self);
             defer es_helpers.popArrowEnv(self, arrow_env);
             const parameter_temp_start = self.temp_var_counter;
-            const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
+            const param_capture_use_start = self.lexical_capture_uses.items.len;
+            const new_params = try self.visitParameterList(.{ .start = params_start, .len = params_len });
             const parameter_temp_end = self.temp_var_counter;
             const param_needs_this = self.needs_this_var;
             const param_needs_arguments = self.needs_arguments_var;
+            const param_needs_new_target = self.hasLexicalCaptureSince(param_capture_use_start, arrow_env.capture.active_frame, .new_target_value);
 
             const nt_ctx: ?Transformer.NewTargetCtx = if (self.options.unsupported.new_target) .method else null;
-            const visited_body = try visitMethodBodyWithParams(self, body_idx, span, nt_ctx, param_needs_this, param_needs_arguments);
+            const visited_body = try visitMethodBodyWithParams(self, body_idx, span, nt_ctx, param_needs_this, param_needs_arguments, param_needs_new_target);
             const new_body = try self.hoistParameterTempsAndRestore(visited_body, parameter_temp_start, parameter_temp_end, span);
 
             const none = @intFromEnum(NodeIndex.none);
@@ -179,13 +181,15 @@ pub fn Methods(comptime Transformer: type) type {
             const arrow_env = es_helpers.pushArrowEnv(self);
             defer es_helpers.popArrowEnv(self, arrow_env);
             const parameter_temp_start = self.temp_var_counter;
+            const param_capture_use_start = self.lexical_capture_uses.items.len;
             // The synthetic async/generator function was already visited by
             // lowerAsyncOrGeneratorMethod. A second visit rewrites its freshly
             // generated captures and loses their source parameter boundary.
-            const new_params = if (already_lowered) params_list_unwrap else try self.visitExtraList(params_list_unwrap);
+            const new_params = if (already_lowered) params_list_unwrap else try self.visitParameterList(params_list_unwrap);
             const parameter_temp_end = self.temp_var_counter;
             const param_needs_this = self.needs_this_var;
             const param_needs_arguments = self.needs_arguments_var;
+            const param_needs_new_target = self.hasLexicalCaptureSince(param_capture_use_start, arrow_env.capture.active_frame, .new_target_value);
 
             const is_async = flags & ast_mod.MethodFlags.is_async != 0;
             const is_generator = flags & ast_mod.MethodFlags.is_generator != 0;
@@ -248,7 +252,7 @@ pub fn Methods(comptime Transformer: type) type {
             }
 
             const method_nt: ?Transformer.NewTargetCtx = if (self.options.unsupported.new_target) .method else null;
-            const visited_body = if (already_lowered) body_idx else try visitMethodBodyWithParams(self, body_idx, span, method_nt, param_needs_this, param_needs_arguments);
+            const visited_body = if (already_lowered) body_idx else try visitMethodBodyWithParams(self, body_idx, span, method_nt, param_needs_this, param_needs_arguments, param_needs_new_target);
             const new_body = if (already_lowered) visited_body else try self.hoistParameterTempsAndRestore(visited_body, parameter_temp_start, parameter_temp_end, span);
 
             const func_flags: u32 = blk: {
@@ -301,7 +305,7 @@ pub fn Methods(comptime Transformer: type) type {
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
             if (self.options.unsupported.arrow) {
-                var capture_stmts: [2]NodeIndex = undefined;
+                var capture_stmts: [3]NodeIndex = undefined;
                 const count = try es_helpers.fillThisArgumentsCaptures(self, &capture_stmts, span);
                 try self.scratch.appendSlice(self.allocator, capture_stmts[0..count]);
             }
