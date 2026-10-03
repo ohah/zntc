@@ -54,7 +54,7 @@ jobs:
           submodules: recursive
 
       - name: Setup Zig
-        uses: mlugg/setup-zig@v2
+        uses: ./.github/actions/setup-zig
         with:
           version: 0.16.0
           cache-key: napi
@@ -77,7 +77,7 @@ jobs:
       - name: Build NAPI (Debug — leak detector 활성)
         # `-Dnapi-optimize=Debug` 는 build.zig:233 의 napi_optimize option.
         # default ReleaseFast 라 명시적 Debug 필수.
-        run: zig build napi --cache-dir .zig-cache-napi -Dnapi-optimize=Debug
+        run: zig build napi -Dnapi-optimize=Debug
 
       - name: Verify Debug NAPI build artifact (fail-fast)
         # `|| true` 로 cp 실패를 마스킹하면 stale binary 로 진행 → 진단 불가.
