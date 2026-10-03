@@ -134,19 +134,6 @@ pub const TranspileResult = struct {
     }
 };
 
-/// `prefix` 가 null/빈 문자열이면 `body` 그대로, 아니면 `prefix + body` 의 새 buffer 반환.
-/// OOM 시 fallback 으로 body 그대로 반환 (transpile output 보존). JSX/cssProp 의 module-level
-/// import auto-inject 둘 다 같은 모양이라 공유.
-fn prependImportLine(allocator: std.mem.Allocator, prefix: ?[]const u8, body: []const u8) []const u8 {
-    const p = prefix orelse return body;
-    if (p.len == 0) return body;
-    var combined: std.ArrayList(u8) = .empty;
-    combined.ensureTotalCapacity(allocator, p.len + body.len) catch return body;
-    combined.appendSliceAssumeCapacity(p);
-    combined.appendSliceAssumeCapacity(body);
-    return combined.items;
-}
-
 // env-presence flag — 공용 제너릭 (RFC #3399 PR-3: 중복 boilerplate 통합).
 const fast_path_disabled_env = @import("env_flag.zig").Once("ZNTC_DISABLE_TRANSPILE_FAST_PATH");
 
@@ -1677,33 +1664,24 @@ fn transpileWithCallbackInternal(
 
     // JSX runtime import 는 위 transformer finalize 단계에서 semantic ID 가 붙은 AST 노드로 생성.
 
-    // 6.6. styled-components cssProp auto-inject — 사용자 코드에 styled import 가 없는데
-    // cssProp transform 이 일어난 경우 program 시작에 styled import 추가. binding 이름은
-    // collision detection 후 결정된 `css_prop_inject_name` 사용.
-    const css_prop_import: ?[]const u8 = if (transformer.plugins.styled_components.css_prop_needs_import) blk: {
-        const name = transformer.plugins.styled_components.css_prop_inject_name;
-        break :blk std.fmt.allocPrint(arena_alloc, "import {s} from \"styled-components\";\n", .{name}) catch null;
-    } else null;
-    const css_prop_output = prependImportLine(arena_alloc, css_prop_import, raw_output);
-
     // 7. 런타임 헬퍼 prepend
     const rh = transformer.runtime_helpers;
     const has_helpers = rh.hasAny();
     const output = if (has_helpers) blk: {
         var buf: std.ArrayList(u8) = .empty;
         rt.appendRuntimeHelpers(&buf, arena_alloc, rh, options.minify_whitespace, transformer.runtime_es5_compat) catch
-            break :blk css_prop_output;
+            break :blk raw_output;
         const helper_preamble = rewriteRuntimeHelperPreamble(
             arena_alloc,
             &transformer,
             buf.items,
             options.minify_whitespace,
-        ) catch break :blk css_prop_output;
+        ) catch break :blk raw_output;
         var combined: std.ArrayList(u8) = .empty;
-        combined.appendSlice(arena_alloc, helper_preamble) catch break :blk css_prop_output;
-        combined.appendSlice(arena_alloc, css_prop_output) catch break :blk css_prop_output;
+        combined.appendSlice(arena_alloc, helper_preamble) catch break :blk raw_output;
+        combined.appendSlice(arena_alloc, raw_output) catch break :blk raw_output;
         break :blk combined.items;
-    } else css_prop_output;
+    } else raw_output;
 
     // 8. Sentry Debug ID (UUID v4) — sourcemap_debug_ids 활성화 시 생성
     var debug_id_buf: [36]u8 = undefined;

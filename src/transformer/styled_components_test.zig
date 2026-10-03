@@ -1698,6 +1698,86 @@ test "#4819 styled cssProp generated component keeps its exact symbol" {
     try std.testing.expectEqual(@as(usize, 1), read_count);
 }
 
+test "#4819 auto-injected styled import and generated reference share one name" {
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const ast_walk = @import("../parser/ast_walk.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\const styled = 0;
+        \\function App() { const _styled = 1; return <div css={`color: red;`}>x</div>; }
+        \\function Other() { const _styled2 = 2; return <span css={`color: blue;`}>y</span>; }
+    ;
+
+    var scanner = try helpers.Scanner.init(allocator, source);
+    var parser = helpers.Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".tsx");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    const options: TransformOptions = .{
+        .styled_components = true,
+        .styled_components_css_prop = true,
+        .jsx_transform = true,
+        .jsx_runtime = .automatic,
+        .jsx_filename = "/src/App.tsx",
+        .emit_jsx_runtime_imports = true,
+    };
+    var transformer = try helpers.Transformer.init(allocator, &parser.ast, options);
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    const root = try transformer.transform();
+    const injected_name = transformer.plugins.styled_components.css_prop_inject_name;
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var generated_ref: ?@import("../parser/ast.zig").NodeIndex = null;
+    var generated_ref_count: usize = 0;
+    for (reachable) |raw| {
+        if (raw < transformer.parser_node_count) continue;
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .identifier_reference or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_styled3")) continue;
+        generated_ref = @enumFromInt(raw);
+        generated_ref_count += 1;
+    }
+    try std.testing.expectEqualStrings("_styled3", injected_name);
+    const ref = generated_ref orelse return error.TestExpectedEqual;
+    const symbol_id = transformer.getSymbolIdAt(ref) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 2), generated_ref_count);
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .identifier_reference or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), injected_name)) continue;
+        try std.testing.expectEqual(symbol_id, transformer.getSymbolIdAt(@enumFromInt(raw)).?);
+    }
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const symbol = edited.symbols.items[symbol_id];
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, symbol.kind);
+    try std.testing.expectEqual(transformer.programScope(), symbol.scope_id);
+    try std.testing.expectEqualStrings(injected_name, transformer.ast.getText(symbol.name));
+
+    var import_specifier_found = false;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .import_default_specifier or
+            !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), injected_name)) continue;
+        try std.testing.expectEqual(symbol_id, transformer.getSymbolIdAt(@enumFromInt(raw)).?);
+        import_specifier_found = true;
+        break;
+    }
+    try std.testing.expect(import_specifier_found);
+    try std.testing.expect(!root.isNone());
+}
+
 test "styled (cssProp) #4339: top-level-await wrap 시에도 추출된 module-level decl 보존" {
     // TLA 다운레벨(async IIFE wrap)과 cssProp 추출이 동시에 일어나는 파일. 과거엔 program 의
     // TLA wrap 이 early-return 해 css_prop_pending_decls 가 hoist 되지 않고 소실(undefined ref).
@@ -1761,9 +1841,8 @@ test "styled (cssProp Step 5): styled import 없으면 자동 import 추가" {
     );
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0") != null);
-    // 본 PR scope: transform 자체는 동작 + needs_import flag set. 실제 prepend 는
-    // transpile.zig 의 6.6 hook 이 담당하므로 e2eFull 의 raw codegen 출력엔 import 가
-    // 안 들어감 — 통합 테스트에서 검증.
+    // Driver 가 AST import 를 prepend 하므로 raw transform/codegen 결과에도 import 가 있어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "from \"styled-components\"") != null);
     // hoisting 검증 — `const _styled_0` 이 별도 statement 로 program body 에 있어야 (이전
     // 버그: declarator list 안에 들어가서 `const el = ...,const _styled_0=...,;` 형태 invalid).
     try std.testing.expect(std.mem.indexOf(u8, r.output, "const _styled_0") != null);

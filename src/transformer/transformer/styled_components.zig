@@ -1682,8 +1682,24 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
     // 사용자 styled import 가 있으면 그 모듈 최상위 바인딩을, 없으면 자동 주입할 합성 import 이름.
     const styled_ref = if (self.plugins.styled_components.default_binding != null)
         try self.makeRootScopeRef(default_binding)
-    else
-        try es_helpers.makeSyntheticRef(self, default_binding);
+    else blk: {
+        // Resolve once for the entire module. Re-resolving the already-selected
+        // suffix for each JSX scope would keep adding digits (`_styled3`, `_styled32`, ...).
+        const resolved = if (state.css_prop_inject_name_resolved)
+            state.css_prop_inject_name
+        else
+            try es_helpers.resolveGeneratedName(self, default_binding);
+        if (!std.mem.eql(u8, resolved, state.css_prop_inject_name)) {
+            if (state.css_prop_inject_name_owned) self.allocator.free(state.css_prop_inject_name);
+            state.css_prop_inject_name = try self.allocator.dupe(u8, resolved);
+            state.css_prop_inject_name_owned = true;
+        }
+        state.css_prop_inject_name_resolved = true;
+        const ref = try es_helpers.makeExactSyntheticRef(self, resolved);
+        try self.markRuntimeHelperRef(ref);
+        try self.trackRuntimeHelperRef(ref, resolved);
+        break :blk ref;
+    };
     // intrinsic: `styled.<tag>` (static_member), custom: `styled(<expr>)` (call_expression)
     const styled_tag = if (is_intrinsic) blk: {
         const tag_prop = try es_helpers.makePropertyName(self, self.ast.getText(tag_name_node.span));

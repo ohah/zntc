@@ -156,6 +156,24 @@ pub fn transform(self: anytype) Error!NodeIndex {
         }
     }
 
+    // styled-components css prop auto-imports are real module imports too.
+    // Bind the import and generated css-prop references to one helper SymbolId.
+    if (!root.isNone() and self.plugins.styled_components.css_prop_needs_import) {
+        const styled_imports = @import("../styled_components_imports.zig");
+        const root_span = self.ast.getNode(root).span;
+        var imports: std.ArrayList(NodeIndex) = .empty;
+        defer imports.deinit(self.allocator);
+        try styled_imports.appendStyledComponentsImport(
+            self,
+            self.plugins.styled_components.css_prop_inject_name,
+            root_span,
+            &imports,
+        );
+        if (imports.items.len > 0) {
+            root = try self.prependStatementsToBody(root, imports.items);
+        }
+    }
+
     // React Fast Refresh: 컴포넌트 등록 코드를 프로그램 끝에 추가 ($RefreshReg$만, $RefreshSig$ 제거).
     // refreshEnabled() 가 path filter (Vite plugin-react 호환 — `.[jt]sx?$`/`.mjs$` + node_modules 제외) 까지 검증.
     if (self.refreshEnabled() and self.plugins.refresh.registrations.items.len > 0) {
