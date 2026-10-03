@@ -1619,6 +1619,176 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('native for-await keeps its iteration scope while downlevel for-await reanalyzes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-for-await-retained-'));
+    const output = join(dir, 'out.cjs');
+    const esmOutput = join(dir, 'tla-out.mjs');
+    const input = join(dir, 'entry.ts');
+    writeFileSync(
+      input,
+      [
+        'type Numeric = number;',
+        'type Values = AsyncIterable<Numeric>;',
+        'const source: Values = {',
+        '  [Symbol.asyncIterator]() {',
+        '    let value = 0;',
+        '    return {',
+        '      async next() {',
+        '        value += 1;',
+        '        return { value, done: false };',
+        '      },',
+        '      async return() {',
+        "        console.log('closed');",
+        '        return { value: undefined, done: true };',
+        '      },',
+        '    };',
+        '  },',
+        '};',
+        'async function consume(iterable: Values) {',
+        '  let total: Numeric = 0;',
+        '  for await (const value of iterable) {',
+        '    total += value;',
+        '    if (total >= 3) break;',
+        '  }',
+        '  console.log(total);',
+        '}',
+        'consume(source);',
+      ].join('\n'),
+    );
+
+    const run = (target: string, format = 'cjs', outputPath = output) =>
+      spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          target,
+          '--platform=node',
+          `--format=${format}`,
+          '--minify-identifiers',
+          '-o',
+          outputPath,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+
+    try {
+      const native = run('--target=es2018');
+      expect(native.status, native.stderr).toBe(0);
+      const nativeMode = (native.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(nativeMode, native.stderr).toContain('semantic_graph=retained');
+      const nativeReport = (native.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(nativeReport, native.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(nativeReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${nativeReport}`,
+        ).toBe(0);
+      }
+      expect(nativeReport).toMatch(/clean=1(?:\s|$)/);
+      const nativeOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(nativeOutput.status, nativeOutput.stderr).toBe(0);
+      expect(nativeOutput.stdout).toBe('closed\n3\n');
+
+      const downlevel = run('--target=es2017');
+      expect(downlevel.status, downlevel.stderr).toBe(0);
+      const downlevelMode = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(downlevelMode, downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      const downlevelOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(downlevelOutput.status, downlevelOutput.stderr).toBe(0);
+      expect(downlevelOutput.stdout).toBe('closed\n3\n');
+
+      // A module-level for-await is also TLA; native targets keep both the
+      // async-module fact and the source iteration scope.
+      writeFileSync(
+        input,
+        [
+          'type Numeric = number;',
+          'type Values = AsyncIterable<Numeric>;',
+          'const source: Values = {',
+          '  [Symbol.asyncIterator]() {',
+          '    let value = 0;',
+          '    return {',
+          '      async next() {',
+          '        value += 1;',
+          '        return { value, done: false };',
+          '      },',
+          '      async return() {',
+          "        console.log('closed');",
+          '        return { value: undefined, done: true };',
+          '      },',
+          '    };',
+          '  },',
+          '};',
+          'let total: Numeric = 0;',
+          'for await (const value of source) {',
+          '  total += value;',
+          '  if (total >= 3) break;',
+          '}',
+          'console.log(total);',
+        ].join('\n'),
+      );
+      const nativeTopLevel = run('--target=es2022', 'esm', esmOutput);
+      expect(nativeTopLevel.status, nativeTopLevel.stderr).toBe(0);
+      const nativeTopLevelMode = (nativeTopLevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(nativeTopLevelMode, nativeTopLevel.stderr).toContain('semantic_graph=retained');
+      const nativeTopLevelReport = (nativeTopLevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(nativeTopLevelReport, nativeTopLevel.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(nativeTopLevelReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${nativeTopLevelReport}`,
+        ).toBe(0);
+      }
+      expect(nativeTopLevelReport).toMatch(/clean=1(?:\s|$)/);
+      const nativeTopLevelOutput = spawnSync('node', [esmOutput], { encoding: 'utf8' });
+      expect(nativeTopLevelOutput.status, nativeTopLevelOutput.stderr).toBe(0);
+      expect(nativeTopLevelOutput.stdout).toBe('closed\n3\n');
+
+      const loweredTopLevel = run('--target=es2017', 'esm', esmOutput);
+      expect(loweredTopLevel.status, loweredTopLevel.stderr).toBe(0);
+      const loweredTopLevelMode = (loweredTopLevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(loweredTopLevelMode, loweredTopLevel.stderr).toContain('semantic_graph=reanalyzed');
+      const loweredTopLevelOutput = spawnSync('node', [esmOutput], { encoding: 'utf8' });
+      expect(loweredTopLevelOutput.status, loweredTopLevelOutput.stderr).toBe(0);
+      expect(loweredTopLevelOutput.stdout).toBe('closed\n3\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('native tagged templates keep TypeScript erasure on the edited semantic graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-tagged-template-retained-'));
     const output = join(dir, 'out.cjs');

@@ -470,6 +470,7 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
     var found_native_generator = false;
     var found_native_tagged_template = false;
     var found_native_for_of = false;
+    var found_native_for_await = false;
     var found_native_class = false;
     for (reachable_nodes) |raw_idx| {
         const node = ast.nodes.items[raw_idx];
@@ -560,6 +561,10 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
             .for_of_statement => {
                 if (options.unsupported.for_of) return false;
                 found_native_for_of = true;
+            },
+            .for_await_of_statement => {
+                if (options.unsupported.needsForAwaitOfDownlevel()) return false;
+                found_native_for_await = true;
             },
             .class_declaration, .class_expression => {
                 if (options.unsupported.class) return false;
@@ -669,7 +674,8 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
         }
         if (node.tag == .catch_clause and node.data.binary.left.isNone()) return false;
     }
-    return found_arrow or found_native_await or found_native_generator or found_native_tagged_template or found_native_for_of or found_native_class;
+    return found_arrow or found_native_await or found_native_generator or found_native_tagged_template or
+        found_native_for_of or found_native_for_await or found_native_class;
 }
 
 fn canKeepPrepassSemanticGraph(
