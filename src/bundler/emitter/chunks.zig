@@ -423,6 +423,7 @@ pub fn emitChunks(
     if (linker) |l| {
         @constCast(l).use_shared_ns_preamble = true;
         @constCast(l).ns_preamble_chunked = true;
+        try @constCast(l).prepareCjsRuntimeName();
     }
 
     var outputs: std.ArrayList(OutputFile) = .empty;

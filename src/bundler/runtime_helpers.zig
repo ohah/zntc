@@ -1768,12 +1768,26 @@ pub fn appendWrapperMemberHeader(
 /// 않으므로 문법 축만 본다 — 예전엔 `configurable` 하나로 둘을 같이 골라, RN 이 아닌
 /// `--target=es5` 사용자에게 arrow 가 그대로 나갔다 (#4630).
 pub fn appendCommonJsFactoryRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, es5_syntax: bool, configurable: bool) !void {
+    const factory_name = if (minify) NAMES.CJS_FACTORY_MIN else "__commonJS";
+    try appendCommonJsFactoryRuntimeNamed(buf, allocator, minify, es5_syntax, configurable, factory_name);
+}
+
+/// Emit the CJS runtime with the exact factory name selected by the linker.
+pub fn appendCommonJsFactoryRuntimeNamed(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, es5_syntax: bool, configurable: bool, factory_name: []const u8) !void {
     const fn_syntax = es5_syntax or configurable;
-    if (minify) {
-        try buf.appendSlice(allocator, if (fn_syntax) CJS_RUNTIME_ES5_MIN else CJS_RUNTIME_MIN);
-    } else {
-        try buf.appendSlice(allocator, if (fn_syntax) CJS_RUNTIME_ES5 else CJS_RUNTIME);
+    const default_name = if (minify) NAMES.CJS_FACTORY_MIN else "__commonJS";
+    const source = if (minify)
+        (if (fn_syntax) CJS_RUNTIME_ES5_MIN else CJS_RUNTIME_MIN)
+    else
+        (if (fn_syntax) CJS_RUNTIME_ES5 else CJS_RUNTIME);
+    if (std.mem.eql(u8, factory_name, default_name)) {
+        try buf.appendSlice(allocator, source);
+        return;
     }
+    const name_at = std.mem.indexOf(u8, source, default_name) orelse unreachable;
+    try buf.appendSlice(allocator, source[0..name_at]);
+    try buf.appendSlice(allocator, factory_name);
+    try buf.appendSlice(allocator, source[name_at + default_name.len ..]);
 }
 
 /// ESM namespace interop 헬퍼 (__toESM 와 __copyProps/__defProp 등 Object.* 별칭).

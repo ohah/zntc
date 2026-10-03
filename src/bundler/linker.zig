@@ -221,6 +221,11 @@ pub const Linker = struct {
     /// scope hoisting 시 모듈 top-level 변수가 이 이름을 shadowing하면 리네임.
     reserved_globals: std.StringHashMapUnmanaged(void) = .empty,
 
+    /// CJS factory is currently emitted from raw runtime text. Its selected
+    /// output name must also avoid unresolved source globals or it captures
+    /// those references after bundling.
+    cjs_factory_runtime_name: ?[]const u8 = null,
+
     /// 외부에서 전달된 예약 전역 식별자 (--global-identifier).
     /// RN의 polyfillGlobal()로 등록되는 이름(Performance, EventCounts 등)을
     /// 모듈 변수로 사용하지 않도록 리네이밍.
@@ -508,6 +513,7 @@ pub const Linker = struct {
         self.canonical_names_used.deinit(self.allocator);
         self.rename_table.deinit(self.allocator);
         self.reserved_globals.deinit(self.allocator);
+        if (self.cjs_factory_runtime_name) |name| self.allocator.free(name);
         // nested-binding 캐시: inner set 해제(computeRenames 에러 경로 안전망; 정상 경로는 defer 가 이미 clear).
         self.clearNestedBindingCache();
         self.nested_binding_cache.deinit(self.allocator);
@@ -922,6 +928,17 @@ pub const Linker = struct {
             try self.reserved_globals.put(self.allocator, name, {});
         }
 
+        // The CJS factory is emitted as raw preamble text, outside every
+        // module's semantic scope map. Reserve its exact output spelling so a
+        // scope-hoisted source binding cannot redeclare the runtime helper.
+        var runtime_it = self.graph.modulesIterator();
+        while (runtime_it.next()) |m| {
+            if (self.tree_shaker_active and !m.is_included) continue;
+            if (m.wrap_kind != .cjs) continue;
+            try self.reserveCjsRuntimeName();
+            break;
+        }
+
         // (#4530) **생성된 래퍼 심볼 이름도 예약**한다 — CJS `require_X`, ESM-wrap
         // `init_X`/`exports_X`. 이들은 emitter 가 직접 찍는 top-level 선언인데
         // `extendSymbol` 이 `scope_id = .none` 으로 만들어 **scope_maps 에 안 들어간다**
@@ -948,6 +965,76 @@ pub const Linker = struct {
         if (m.getExportsName(null)) |n| try self.reserved_globals.put(self.allocator, n, {});
         if (m.getRequireName(null)) |n| try self.reserved_globals.put(self.allocator, n, {});
         if (m.wrapper_name_synthetic) |n| try self.reserved_globals.put(self.allocator, n, {});
+    }
+
+    /// Code-split chunks emit runtime helpers before their per-chunk rename pass.
+    /// Select one graph-wide name up front so each chunk's preamble and wrappers
+    /// use the same spelling, and so it cannot capture a source global in any
+    /// chunk. The selected name stays stable for this Linker's lifetime.
+    pub fn prepareCjsRuntimeName(self: *Linker) !void {
+        if (self.cjs_factory_runtime_name != null) return;
+        var runtime_it = self.graph.modulesIterator();
+        while (runtime_it.next()) |m| {
+            if (self.tree_shaker_active and !m.is_included) continue;
+            if (m.wrap_kind != .cjs) continue;
+            self.cjs_factory_runtime_name = try self.allocCjsRuntimeName();
+            return;
+        }
+    }
+
+    /// Reserve the already selected spelling so a scope-hoisted user binding
+    /// cannot redeclare the raw-text runtime helper.
+    fn reserveCjsRuntimeName(self: *Linker) !void {
+        try self.prepareCjsRuntimeName();
+        if (self.cjs_factory_runtime_name) |name| {
+            try self.reserved_globals.put(self.allocator, name, {});
+        }
+    }
+
+    pub fn cjsFactoryRuntimeName(self: *const Linker) []const u8 {
+        return self.cjs_factory_runtime_name orelse if (self.minify_whitespace) rt_names.NAMES.CJS_FACTORY_MIN else "__commonJS";
+    }
+
+    fn allocCjsRuntimeName(self: *Linker) ![]const u8 {
+        const base = if (self.minify_whitespace) rt_names.NAMES.CJS_FACTORY_MIN else "__commonJS";
+        var suffix: u32 = 0;
+        while (true) : (suffix += 1) {
+            const candidate = if (suffix == 0)
+                try self.allocator.dupe(u8, base)
+            else
+                try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ base, suffix });
+            if (!self.cjsRuntimeNameIsSourceVisible(candidate)) return candidate;
+            self.allocator.free(candidate);
+        }
+    }
+
+    fn cjsRuntimeNameIsSourceVisible(self: *const Linker, candidate: []const u8) bool {
+        for (self.global_identifiers) |name| {
+            if (std.mem.eql(u8, name, candidate)) return true;
+        }
+
+        var modules = self.graph.modulesIterator();
+        while (modules.next()) |m| {
+            if (m.semantic) |sem| {
+                var unresolved = sem.unresolved_references.keyIterator();
+                while (unresolved.next()) |name| {
+                    if (std.mem.eql(u8, name.*, candidate)) return true;
+                }
+            }
+            // Raw wrapper spellings are stable across per-chunk rename passes;
+            // using the transient rename table here could choose a different
+            // factory alias after a chunk preamble has already been emitted.
+            const wrapper_names = [_]?[]const u8{
+                m.getInitName(null),
+                m.getExportsName(null),
+                m.getRequireName(null),
+                m.wrapper_name_synthetic,
+            };
+            for (wrapper_names) |name| {
+                if (name) |value| if (std.mem.eql(u8, value, candidate)) return true;
+            }
+        }
+        return false;
     }
 
     /// 소비자 `m` 이 참조하는 **wrapped 대상 모듈**(일반 import + require.context 매치)을 하나씩
@@ -4001,8 +4088,11 @@ pub const Linker = struct {
 
         // 미해결 참조 수집 (해당 청크의 모듈만)
         self.reserved_globals.clearRetainingCapacity();
+        var needs_cjs_runtime = false;
         for (module_indices) |mod_idx| {
             const m = self.graph.getModule(mod_idx) orelse continue;
+            if ((!self.tree_shaker_active or m.is_included) and m.wrap_kind == .cjs)
+                needs_cjs_runtime = true;
             const sem = m.semantic orelse continue;
             var urit = sem.unresolved_references.iterator();
             while (urit.next()) |entry| {
@@ -4032,6 +4122,7 @@ pub const Linker = struct {
             };
             try self.forEachWrapperImportTarget(cm, self, C.cb);
         }
+        if (needs_cjs_runtime) try self.reserveCjsRuntimeName();
 
         // 1. 지정된 모듈의 top-level 심볼 이름 수집
         var name_to_owners: NameToOwnersMap = .empty;

@@ -1693,7 +1693,13 @@ pub fn emitModule(
     // Disabled 모듈 (platform=browser에서 Node 빌트인): 빈 __commonJS wrapper 출력.
     // esbuild 호환: var require_X = __commonJS({ "(disabled)"(exports, module) {} });
     if (module.is_disabled) {
-        return emitDisabledModule(allocator, module, options.minify_whitespace, cjs_wrap.WrapperSyntax.from(options));
+        const factory_name = if (linker) |l|
+            l.cjsFactoryRuntimeName()
+        else if (options.minify_whitespace)
+            rt.NAMES.CJS_FACTORY_MIN
+        else
+            "__commonJS";
+        return cjs_wrap.emitDisabledModuleWithFactoryName(allocator, module, options.minify_whitespace, cjs_wrap.WrapperSyntax.from(options), factory_name);
     }
 
     // Asset 모듈: JSON 모듈과 동일한 패턴으로 출력.
@@ -1702,7 +1708,13 @@ pub fn emitModule(
         if (module.loader == .binary) {
             if (helpers_out) |h| h.to_binary = true;
         }
-        return emitAssetModule(allocator, module, options);
+        const factory_name = if (linker) |l|
+            l.cjsFactoryRuntimeName()
+        else if (options.minify_whitespace)
+            rt.NAMES.CJS_FACTORY_MIN
+        else
+            "__commonJS";
+        return cjs_wrap.emitAssetModuleWithFactoryName(allocator, module, options, factory_name);
     }
 
     const ast = &(module.ast orelse return null);
@@ -2335,6 +2347,12 @@ pub fn emitModule(
     // CJS 래핑: __commonJS 팩토리 함수로 감싸기
     if (module.wrap_kind == .cjs) {
         const preamble_code = if (metadata) |md| md.cjs_import_preamble else null;
+        const cjs_factory_name = if (linker) |l|
+            l.cjsFactoryRuntimeName()
+        else if (options.minify_whitespace)
+            rt.NAMES.CJS_FACTORY_MIN
+        else
+            "__commonJS";
 
         const var_name = try module.allocRequireName(allocator, if (linker) |l| &l.rename_table else null);
         defer allocator.free(var_name);
@@ -2349,7 +2367,8 @@ pub fn emitModule(
             // kill-switch OFF 면 default `exports`/`module` (Node/Metro 호환 유지).
             try wrapped.appendSlice(allocator, "var ");
             try wrapped.appendSlice(allocator, var_name);
-            try wrapped.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN);
+            try wrapped.append(allocator, '=');
+            try wrapped.appendSlice(allocator, cjs_factory_name);
             // arrow 를 모르는 타겟(`--target=es5`)에선 function expression 으로 (#4630).
             try wrapped.appendSlice(allocator, if (options.unsupported.arrow) "(function(" else "((");
             try wrapped.appendSlice(allocator, cjs_ex_name);
@@ -2366,7 +2385,9 @@ pub fn emitModule(
             const basename = module.wrapperId();
             try wrapped.appendSlice(allocator, "var ");
             try wrapped.appendSlice(allocator, var_name);
-            try wrapped.appendSlice(allocator, " = __commonJS({\n\t");
+            try wrapped.appendSlice(allocator, " = ");
+            try wrapped.appendSlice(allocator, cjs_factory_name);
+            try wrapped.appendSlice(allocator, "({\n\t");
             try rt.appendWrapperMemberHeader(&wrapped, allocator, basename, "exports, module", false, !options.unsupported.object_extensions, false);
             try wrapped.appendSlice(allocator, "\n");
             // preamble_lines: 래퍼 헤더 2줄 + preamble 내 줄바꿈 수
