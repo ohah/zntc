@@ -165,17 +165,20 @@ pub const StyledComponentsState = struct {
     css_prop_counter: u32 = 0,
 
     /// cssProp transform 시 사용자 코드에 `import styled from "styled-components"` 가
-    /// 없어 transpile.zig 가 자동 prepend 해야 함. JSX import auto-inject 패턴과 동일.
+    /// 없어서 transformer driver 가 AST import 를 자동 prepend 해야 함.
     css_prop_needs_import: bool = false,
 
-    /// auto-inject 된 styled binding 의 실제 이름. collision 시 `_styled`, `_styled2`,
-    /// ... 로 mangled. transpile.zig 의 prepend 도 같은 이름 사용. default `"styled"`.
+    /// auto-inject 된 styled binding 의 실제 이름. 모든 cssProp 생성 참조와 import 가 공유한다.
+    /// default `"styled"`.
     css_prop_inject_name: []const u8 = "styled",
 
     /// `css_prop_inject_name` 이 heap-owned 인지 (mangling 발생 시 true). deinit 시
     /// pointer 비교 대신 이 flag 보고 free 결정 — Zig 의 string-literal pooling 은
     /// 컴파일러 implementation-defined 이라 ptr 비교 fragile.
     css_prop_inject_name_owned: bool = false,
+
+    /// 생성 이름 resolver 를 거쳐 import/ref 공통 이름을 확정했는지 여부.
+    css_prop_inject_name_resolved: bool = false,
 
     /// cssProp transform 으로 만들어진 module-level decl 들 — program body 끝에 hoist.
     /// `trailing_nodes` 는 nearest list 가 program 이 아니면 declarator list 같은

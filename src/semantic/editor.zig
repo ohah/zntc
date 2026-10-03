@@ -348,6 +348,15 @@ pub const SemanticEditor = struct {
         return i;
     }
 
+    fn ensureHelperImportSlot(self: *SemanticEditor, idx: NodeIndex) Error!usize {
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return error.InvalidNode;
+        const i: usize = @intCast(@intFromEnum(idx));
+        if (self.symbol_ids.items.len <= i) {
+            try self.symbol_ids.appendNTimes(self.allocator, null, i + 1 - self.symbol_ids.items.len);
+        }
+        return i;
+    }
+
     fn appendReference(self: *SemanticEditor, ref: Reference) Error!void {
         if (self.reference_index_built and !ref.node_index.isNone()) {
             const key = @intFromEnum(ref.node_index);
@@ -683,13 +692,16 @@ pub const SemanticEditor = struct {
         return id;
     }
 
-    /// 헬퍼 import의 local 노드는 파서 관례상 identifier_reference일 수 있다.
+    /// 헬퍼 import의 local은 parser reference 노드거나 default specifier 노드다.
     /// 사용자 동명 선언과 충돌해도 별도 helper_scope_map에 보관한다.
     pub fn declareHelperImport(self: *SemanticEditor, local: NodeIndex, name_span: Span, declaration_span: Span, scope: ScopeId) Error!SymbolId {
-        const slot = try self.ensureNodeSlot(local);
         if (!self.validScope(scope)) return error.InvalidScope;
+        const slot = try self.ensureHelperImportSlot(local);
+        switch (self.ast.getNode(local).tag) {
+            .identifier_reference, .import_default_specifier => {},
+            else => return error.InvalidNode,
+        }
         if (self.symbol_ids.items[slot] != null) return error.AlreadyBound;
-        if (self.ast.getNode(local).tag != .identifier_reference) return error.InvalidNode;
         if (name_span.start & Ast.STRING_TABLE_BIT == 0) return error.InvalidNode;
         const name = try self.ast.getTextStable(self.allocator, name_span);
         if (self.helper_scope_map.contains(name)) return error.DuplicateBinding;
