@@ -2071,6 +2071,135 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('arrow lowering retains only target-native spread elements', () => {
+    const cases = [
+      {
+        name: 'native array call and constructor spread on node5',
+        target: 'node5',
+        graph: 'retained',
+        source: [
+          'function list(values) { return (() => [...values, 3])(); }',
+          'function max(values) { return (() => Math.max(...values))(); }',
+          'function Pair(left, right) { this.left = left; this.right = right; }',
+          'function pair(values) { return (() => new Pair(...values))(); }',
+          'var result = pair([4, 7]);',
+          "console.log(list([1, 2]).join(','), max([4, 7]), result.left, result.right);",
+        ].join('\n'),
+        output: '1,2,3 7 4 7\n',
+      },
+      {
+        name: 'array spread literal lowering on node4',
+        target: 'node4',
+        graph: 'reanalyzed',
+        source: [
+          'function list() { return (() => [...[1, 2], 3])(); }',
+          "console.log(list().join(','));",
+        ].join('\n'),
+        output: '1,2,3\n',
+      },
+      {
+        name: 'call spread literal lowering on node4',
+        target: 'node4',
+        graph: 'reanalyzed',
+        source: [
+          'function max() { return (() => Math.max(...[4, 7]))(); }',
+          'console.log(max());',
+        ].join('\n'),
+        output: '7\n',
+      },
+      {
+        name: 'constructor spread literal lowering on node4',
+        target: 'node4',
+        graph: 'reanalyzed',
+        source: [
+          'function Pair(left, right) { this.left = left; this.right = right; }',
+          'function pair() { return (() => new Pair(...[4, 7]))(); }',
+          'var result = pair();',
+          'console.log(result.left, result.right);',
+        ].join('\n'),
+        output: '4 7\n',
+      },
+      {
+        name: 'iterable array spread helper on node4',
+        target: 'node4',
+        graph: 'reanalyzed',
+        source: [
+          'function list(values) { return (() => [...values, 3])(); }',
+          "console.log(list([1, 2]).join(','));",
+        ].join('\n'),
+        output: '1,2,3\n',
+      },
+      {
+        name: 'object spread lowering on node5',
+        target: 'node5',
+        graph: 'reanalyzed',
+        source: [
+          'function merge(value) { return (() => ({ ...value, b: 2 }))(); }',
+          'var result = merge({ a: 1 });',
+          'console.log(result.a, result.b);',
+        ].join('\n'),
+        output: '1 2\n',
+      },
+    ];
+
+    for (const fixture of cases) {
+      const dir = mkdtempSync(join(tmpdir(), `zntc-bundle-arrow-spread-${fixture.target}-`));
+      const output = join(dir, 'out.cjs');
+      writeFileSync(join(dir, 'entry.mjs'), fixture.source);
+      try {
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            'entry.mjs',
+            `--target=${fixture.target}`,
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+          );
+        expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.name}: ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report, fixture.name).toMatch(/clean=1(?:\s|$)/);
+
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+          );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
+          `semantic_graph=${fixture.graph}`,
+        );
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe(fixture.output);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
   test('legacy TypeScript decorators retain exact transform graph references', () => {
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-legacy-decorator-'));
     try {

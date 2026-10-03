@@ -335,6 +335,15 @@ fn hasOnlyTopLevelLocalExportSpecifiers(module: *const Module) bool {
     return safe_specifier_count == specifier_count;
 }
 
+fn hasDirectSpreadElement(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
+    var children = ast_walk.children(ast, node);
+    while (children.next()) |child_idx| {
+        if (child_idx.isNone() or @intFromEnum(child_idx) >= ast.nodes.items.len) continue;
+        if (ast.nodes.items[@intFromEnum(child_idx)].tag == .spread_element) return true;
+    }
+    return false;
+}
+
 /// The arrow lowering path edits the existing graph and creates only output
 /// function scopes plus its explicitly tracked lexical captures. Keep the
 /// retained-graph path for this narrowly audited JavaScript subset; an
@@ -404,6 +413,15 @@ fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: Transfor
                 if (node.tag == .logical_expression and options.unsupported.nullish_coalescing and
                     operator == .question2) return false;
             },
+            .array_expression, .call_expression, .new_expression => {
+                if (options.unsupported.spread and hasDirectSpreadElement(ast, node)) return false;
+            },
+            .object_expression => {
+                // Object spread has its own target feature. Include ordinary
+                // spread conservatively for explicit/custom feature masks.
+                if ((options.unsupported.spread or options.unsupported.object_spread) and
+                    hasDirectSpreadElement(ast, node)) return false;
+            },
             // This allowlist deliberately leaves module graph edits and all
             // other downlevel families on the existing resync path.
             .program,
@@ -423,8 +441,6 @@ fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: Transfor
             // keep their separate, intentionally unlisted pattern tags.
             .assignment_target_identifier,
             .binding_identifier,
-            .array_expression,
-            .object_expression,
             .object_property,
             .conditional_expression,
             .template_literal,
@@ -433,8 +449,9 @@ fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: Transfor
             .update_expression,
             .computed_member_expression,
             .static_member_expression,
-            .call_expression,
-            .new_expression,
+            // Parent-specific checks above keep transformed spread forms on
+            // semantic reanalysis; native spread elements preserve the graph.
+            .spread_element,
             .parenthesized_expression,
             .block_statement,
             .empty_statement,
