@@ -76,7 +76,13 @@ describe('NAPI lazy dev split HMR runtime (RFC_LAZY_DEV_MODULE_HMR PR-2)', () =>
     // 2개 entry(a,b)가 같은 shared 를 import → shared 는 *별도* 청크로 분리되어
     // cross-chunk static dep 가 된다 (#4038 의 정확한 형상).
     const fixture = await createFixture({
-      'shared.ts': "export const s = 'SHARED_V1';\nexport function helper(){ return s + '!'; }",
+      'legacy.cjs': "module.exports = 'LEGACY';",
+      'shared.ts':
+        "import legacy from './legacy.cjs';\n" +
+        'globalThis.__FACTORY_ALIAS_TYPES = [typeof __commonJS, typeof __esm];\n' +
+        'globalThis.__FACTORY_ALIAS_CJS = legacy;\n' +
+        "export const s = 'SHARED_V1';\n" +
+        "export function helper(){ return s + '!'; }",
       'a.ts':
         "import { s, helper } from './shared';\nglobalThis.__A_RESULT = 'A ' + s + ' ' + helper();",
       'b.ts': "import { helper } from './shared';\nglobalThis.__B_RESULT = 'B ' + helper();",
@@ -136,13 +142,16 @@ g.__zntc_apply_update([{
   code: 'globalThis.__esm({"virt.ts": function(){ globalThis.__virt_exports.v = "HOT_OK"; }}, void 0, (globalThis.__virt_exports = {}))'
 }]);
 
-const m = g.__zntc_modules || {};
-process.stdout.write(JSON.stringify({
+  const m = g.__zntc_modules || {};
+  process.stdout.write(JSON.stringify({
   a: g.__A_RESULT,
   b: g.__B_RESULT,
   hasApply: typeof g.__zntc_apply_update === 'function',
   hasMakeHot: typeof g.__zntc_make_hot === 'function',
   sharedRegistered: !!(m['shared.ts'] && typeof m['shared.ts'].fn === 'function'),
+  legacyRegistered: Object.keys(m).some((k) => k.endsWith('legacy.cjs') && m[k]?.type === 'cjs'),
+  factoryTypes: g.__FACTORY_ALIAS_TYPES,
+  factoryLegacy: g.__FACTORY_ALIAS_CJS,
   aRegistered: !!m['a.ts'],
   bRegistered: !!m['b.ts'],
   globalBacked: g.__zntc_modules === (typeof global !== 'undefined' ? global.__zntc_modules : undefined),
@@ -161,6 +170,9 @@ process.stdout.write(JSON.stringify({
     expect(res.b).toBe('B SHARED_V1!');
     // (2) 글로벌 per-module 레지스트리 — 모든 청크 모듈이 *하나의* globalThis 에 등록.
     expect(res.sharedRegistered).toBe(true);
+    expect(res.legacyRegistered).toBe(true);
+    expect(res.factoryTypes).toEqual(['undefined', 'function']);
+    expect(res.factoryLegacy).toBe('LEGACY');
     expect(res.aRegistered).toBe(true);
     expect(res.bRegistered).toBe(true);
     expect(res.globalBacked).toBe(true);

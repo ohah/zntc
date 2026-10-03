@@ -71,7 +71,13 @@ pub fn emitBundleRuntimeHelpers(
         }
     }
     if (needs_esm_wrap_runtime) {
-        try rt.appendEsmWrapRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports);
+        const factory_name = if (linker) |l|
+            l.esmFactoryRuntimeName()
+        else if (options.minify_whitespace)
+            rt.NAMES.ESM_FACTORY_MIN
+        else
+            "__esm";
+        try rt.appendEsmWrapRuntimeNamed(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name);
     }
     // Legacy decorators use the transformer's named virtual-module import.
     // An option-wide preamble would define __decorateClass a second time.
@@ -80,7 +86,19 @@ pub fn emitBundleRuntimeHelpers(
     // dev mode: HMR 런타임 주입 (__zntc_modules, __zntc_require, __zntc_apply_update 등).
     // HMR 런타임이 $RefreshReg$/$RefreshSig$도 정의하므로 별도 스텁 불필요.
     if (options.dev_mode) {
-        try output.appendSlice(allocator, if (options.minify_whitespace) rt.HMR_RUNTIME_MIN else rt.HMR_RUNTIME);
+        const cjs_factory_name = if (linker) |l|
+            l.cjsFactoryRuntimeName()
+        else if (options.minify_whitespace)
+            rt.NAMES.CJS_FACTORY_MIN
+        else
+            "__commonJS";
+        const esm_factory_name = if (linker) |l|
+            l.esmFactoryRuntimeName()
+        else if (options.minify_whitespace)
+            rt.NAMES.ESM_FACTORY_MIN
+        else
+            "__esm";
+        try rt.appendHmrRuntimeNamed(output, allocator, options.minify_whitespace, cjs_factory_name, esm_factory_name);
         // RN: react-refresh/runtime 의 dev_id 를 전역(__zntc_g.__zntc_refresh_id)으로 주입.
         // __zntc_resolveRefresh()가 전역 require 대신 __zntc_modules[id] 로 runtime 을 꺼내
         // setUpReactRefresh 와 동일 인스턴스를 공유한다(Metro 호환). 브라우저는 null → 미주입.
@@ -412,7 +430,13 @@ pub fn emitChunkRuntimeHelpers(
         try rt.appendToEsmRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports);
     }
     if (needs_esm_wrap_runtime) {
-        try rt.appendEsmWrapRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports);
+        const factory_name = if (linker) |l|
+            l.esmFactoryRuntimeName()
+        else if (options.minify_whitespace)
+            rt.NAMES.ESM_FACTORY_MIN
+        else
+            "__esm";
+        try rt.appendEsmWrapRuntimeNamed(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name);
     }
     // The virtual decorator module is distributed with its importing chunk.
     // #1961: RuntimeHelpers 비트맵 기반 helper (es_decorator / async_helper / generator
