@@ -1888,7 +1888,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('local TypeScript import-equals retains its graph while external require reanalyzes', () => {
+  test('local and static external TypeScript import-equals retain their graph', () => {
     const cases = [
       {
         name: 'local namespace aliases',
@@ -1916,7 +1916,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           'Assert.equal(42, 42);',
           "console.log('external-ok');",
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'external-ok\n',
       },
     ];
@@ -1980,6 +1980,101 @@ describe('symbol identity coverage gate (#4819)', () => {
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
+    }
+  });
+
+  test('external TypeScript import-equals retains the bundled loader record', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-import-equals-loader-record-'));
+    const entry = join(dir, 'entry.ts');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(join(dir, 'dep.ts'), 'const api = { answer: 42 };\nexport = api;');
+    writeFileSync(entry, "import Api = require('./dep.ts');\nconsole.log(Api.answer);");
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          entry,
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const graphModes = proc.stderr
+        .split(/\r?\n/)
+        .filter((line) => line.includes('zntc: symbol-identity-prepass-mode '));
+      for (const path of ['entry.ts', 'dep.ts']) {
+        const graphMode = graphModes.find((line) => line.includes(path));
+        expect(graphMode, proc.stderr).toBeDefined();
+        expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
+      }
+
+      const entryIdentity = proc.stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(entryIdentity, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(entryIdentity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          entryIdentity,
+        ).toBe(0);
+      }
+      expect(entryIdentity, proc.stderr).toMatch(/clean=1(?:\s|$)/);
+      expect(Number(entryIdentity?.match(/generated_bindings=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('non-static TypeScript import-equals stays on semantic reanalysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-import-equals-dynamic-require-'));
+    const entry = join(dir, 'entry.ts');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      entry,
+      [
+        'declare function resolveModule(): string;',
+        'import Dynamic = require(resolveModule());',
+        'console.log(typeof Dynamic);',
+      ].join('\n'),
+    );
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', entry, '--target=esnext', '--platform=node', '--format=cjs', '-o', output],
+        {
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const graphMode = proc.stderr
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(graphMode, proc.stderr).toBeDefined();
+      expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 
