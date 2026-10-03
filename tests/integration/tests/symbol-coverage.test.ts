@@ -30,6 +30,7 @@ const EXACT_ZERO_COUNTERS = [
   'invalid_reference_node',
   'unreachable_reference',
   'ambiguous_ast_parent',
+  'cyclic_ast_edges',
   'shadowed_external_reference',
   'duplicate_reference',
   'identity_mismatch',
