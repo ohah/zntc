@@ -56,7 +56,7 @@ test "#4819 temp hoist keeps allocation identity across counter reuse" {
     try std.testing.expectEqual(root, skipped);
 }
 
-fn checkNullishIdentifierReferences(source: []const u8, options: TransformOptions, source_replaced: bool) !void {
+fn checkDuplicatedIdentifierReferences(source: []const u8, options: TransformOptions, source_replaced: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -110,12 +110,102 @@ fn checkNullishIdentifierReferences(source: []const u8, options: TransformOption
 }
 
 test "#4819 nullish identifier duplication records two exact read references" {
-    try checkNullishIdentifierReferences("function read(value) { return value ?? 2; }", .{
+    try checkDuplicatedIdentifierReferences("function read(value) { return value ?? 2; }", .{
         .unsupported = TransformOptions.compat.fromESTarget(.es2019),
     }, false);
-    try checkNullishIdentifierReferences("function read(value) { use(value); { let value = 1; return value ?? 2; } }", .{
+    try checkDuplicatedIdentifierReferences("function read(value) { use(value); { let value = 1; return value ?? 2; } }", .{
         .unsupported = TransformOptions.compat.fromESTarget(.es5),
     }, true);
+}
+
+test "optional chain duplicates exact local reads after block renaming" {
+    try checkDuplicatedIdentifierReferences("function read(value) { return value?.field; }", .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es2019),
+    }, false);
+    try checkDuplicatedIdentifierReferences("function read(value) { return value?.(); }", .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es2019),
+    }, false);
+    try checkDuplicatedIdentifierReferences("function read(value) { use(value); { let value = {field: 1}; return value?.field; } }", .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    }, true);
+}
+
+test "optional chain keeps unresolved globals external with exact clone provenance" {
+    for ([_][]const u8{ "external?.field;", "external?.();", "delete external?.field;" }) |source| {
+        // Production does not collect per-node audit evidence; both modes
+        // must distinguish external reads from missing local References.
+        for ([_]bool{ false, true }) |audit| {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            const allocator = arena.allocator();
+            var scanner = try Scanner.init(allocator, source);
+            var parser = Parser.init(allocator, &scanner);
+            _ = try parser.parse();
+            var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+            analyzer.collect_unresolved_reference_nodes = audit;
+            try analyzer.analyze();
+            try std.testing.expect(analyzer.unresolved_references.contains("external"));
+            try std.testing.expectEqual(@as(usize, 0), analyzer.references.items.len);
+
+            var original: ?u32 = null;
+            for (parser.ast.nodes.items, 0..) |node, raw| {
+                if (node.tag == .identifier_reference and std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "external"))
+                    original = @intCast(raw);
+            }
+            try std.testing.expect(original != null);
+
+            var transformer = try Transformer.init(allocator, &parser.ast, .{
+                .unsupported = TransformOptions.compat.fromESTarget(.es2019),
+            });
+            try transformer.initSymbolIds(analyzer.symbol_ids.items);
+            transformer.symbols = analyzer.symbols.items;
+            transformer.references = analyzer.references.items;
+            transformer.scopes = analyzer.scopes.items;
+            transformer.scope_maps = analyzer.scope_maps.items;
+            transformer.scope_owner_map = analyzer.scope_owner_map;
+            transformer.unresolved_references = &analyzer.unresolved_references;
+            transformer.semantic_edit_enabled = true;
+            if (audit) {
+                transformer.synthetic_idents = .empty;
+                transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+            }
+            const root = try transformer.transform();
+            const edited = (try transformer.finishSemanticEdit()).?;
+            try std.testing.expectEqual(@as(usize, 0), edited.references.len);
+
+            const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndices(allocator, transformer.ast);
+            var external_reads: usize = 0;
+            for (reachable) |raw| {
+                const node = transformer.ast.nodes.items[raw];
+                if (node.tag != .identifier_reference or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "external")) continue;
+                try std.testing.expectEqual(@as(?u32, null), edited.symbol_ids[raw]);
+                if (audit and raw != original.?)
+                    try std.testing.expectEqual(original, transformer.reference_origin_map.get(raw));
+                external_reads += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 2), external_reads);
+            if (audit) {
+                const exact = try coverage.checkExact(
+                    allocator,
+                    transformer.ast,
+                    root,
+                    transformer.parser_node_count,
+                    edited.symbol_ids,
+                    edited.symbols.items,
+                    edited.scopes,
+                    edited.scope_maps,
+                    &edited.scope_owner_map,
+                    edited.references,
+                    transformer.helper_ref_nodes.items,
+                    &edited.helper_scope_map,
+                    &analyzer.unresolved_reference_nodes,
+                    &transformer.explicit_global_reference_nodes,
+                    &transformer.reference_origin_map,
+                );
+                try std.testing.expect(exact.isClean());
+            }
+        }
+    }
 }
 
 test "#4819 function and top-level nullish temps keep separate SymbolIds through deferred hoist" {

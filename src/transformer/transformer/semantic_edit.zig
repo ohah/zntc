@@ -2837,6 +2837,11 @@ pub fn replaceUserReferenceWithCopy(self: *Transformer, source: NodeIndex, clone
 /// optional chain. Both AST nodes keep the source reference's exact scope.
 pub fn duplicateUserReference(self: *Transformer, source: NodeIndex, clone: NodeIndex) Transformer.Error!void {
     if (!self.semantic_edit_enabled or source == clone) return;
+    // Unresolved/global identifiers have no local Reference to duplicate.
+    // cloneNode already carries their external origin through copySymbolId.
+    // A resolved SymbolId still requires its exact Reference: do not swallow
+    // ReferenceNotFound for a broken local binding.
+    if (self.getSymbolIdAt(source) == null) return;
     const editor = try editorFor(self);
     editor.cloneReferenceAtSameLocation(source, clone) catch |err| return editError(err);
 }
