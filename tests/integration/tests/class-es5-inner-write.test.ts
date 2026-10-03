@@ -15,10 +15,17 @@ const cases = [
      static and(){return Inner&&=(trace.push('and-rhs'),9)}
      static nullish(){return Inner??=(trace.push('null-rhs'),9)}
      static destruct(){[Inner]=[7]} static loop(){for(Inner of [7]){}}
+     static destructDefault(){[Inner=(trace.push('default-rhs'),7)]=[]}
+     static destructRest(){[...Inner]=[7,8]}
+     static objectDefault(){({value:Inner=(trace.push('object-default-rhs'),7)}={})}
+     static shorthand(){({Inner}={Inner:7})}
+     static shorthandDefault(){({Inner=(trace.push('shorthand-default-rhs'),7)}={})}
+     static objectRest(){({...Inner}={value:7})}
+     static nested(){({value:[Inner]}={value:[7]})}
      method(){Inner=8}
    };
    const saved=Outer;
-   for(const k of ['assign','plus','post','preDec','rhs','rhsThrow','or','and','nullish','destruct','loop']) result(k,()=>Outer[k]());
+   for(const k of ['assign','plus','post','preDec','rhs','rhsThrow','or','and','nullish','destruct','loop','destructDefault','destructRest','objectDefault','shorthand','shorthandDefault','objectRest','nested']) result(k,()=>Outer[k]());
    result('instance',()=>new Outer().method()); Outer=7;
    trace.push(['outer',Outer,saved.self()===saved,saved.name]); console.log(JSON.stringify(trace));`,
   `class Inner { static self(){return Inner} static write(){Inner=2} method(){Inner++} }
@@ -38,6 +45,8 @@ const cases = [
   `const X=class Inner {constructor(Inner){Inner=7;this.value=Inner} static write(){Inner=8}};
    let result;try{X.write()}catch(e){result=e.name}
    console.log(JSON.stringify([new X(3).value,result]));`,
+  `const X=class Inner {static shadow(Inner){[Inner]=[8];return Inner} static self(){return Inner}};
+   console.log(JSON.stringify([X.shadow(3),X.self()===X]));`,
   `const out=[]; class Inner {static run(){try{({v:Inner}={v:4})}catch(e){out.push(e.name)}
    try{for(Inner in {a:1}){}}catch(e){out.push(e.name)}}}
    Inner.run();console.log(JSON.stringify(out));`,
