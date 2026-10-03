@@ -208,6 +208,162 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('ES5 arrow-only bundler lowering retains exact output scopes and lexical captures', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-arrow-retained-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'entry.mjs'),
+      [
+        'function captured(_this, _arguments) {',
+        '  return (() => (() => this.Math.PI)())();',
+        '}',
+        'function argument(_this, _arguments) {',
+        '  return (() => (() => arguments[0])())();',
+        '}',
+        'console.log(captured.call(globalThis, 7, 8), argument(42, 8));',
+      ].join('\n'),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.mjs',
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+
+      const graphMode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+        );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('3.141592653589793 42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('direct eval keeps ES5 arrow lowering on the semantic resync path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-arrow-eval-resync-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'entry.mjs'),
+      ['function dynamic(_this) { return (() => eval("1"))(); }', 'console.log(dynamic(8));'].join(
+        '\n',
+      ),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.mjs',
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const graphMode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+        );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('1\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 lexical declarations keep arrow lowering on the semantic resync path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-arrow-lexical-resync-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'entry.mjs'),
+      [
+        'function read() {',
+        '  let value = 41;',
+        '  return () => value + 1;',
+        '}',
+        'console.log(read()());',
+      ].join('\n'),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.mjs',
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const graphMode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+        );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('classic JSX with a local factory preserves its semantic graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-classic-jsx-retained-'));
     const output = join(dir, 'out.cjs');

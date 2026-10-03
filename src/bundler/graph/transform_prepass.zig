@@ -333,6 +333,94 @@ fn hasOnlyTopLevelLocalExportSpecifiers(module: *const Module) bool {
     return safe_specifier_count == specifier_count;
 }
 
+/// The arrow lowering path edits the existing graph and creates only output
+/// function scopes plus its explicitly tracked lexical captures. Keep the
+/// retained-graph path for this narrowly audited JavaScript subset; an
+/// unrecognized node or parameter form stays on the full semantic resync path.
+fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: TransformOptions) bool {
+    if (!options.unsupported.arrow or ast.has_jsx) return false;
+
+    var found_arrow = false;
+    for (ast.nodes.items) |node| {
+        switch (node.tag) {
+            .arrow_function_expression => {
+                const flags_at = node.data.extra + ast_mod.ArrowExtra.flags;
+                if (flags_at >= ast.extra_data.items.len) return false;
+                if ((ast.extra_data.items[flags_at] & ast_mod.ArrowFlags.is_async) != 0) return false;
+                found_arrow = true;
+            },
+            .function_declaration, .function_expression, .function => {
+                const flags_at = node.data.extra + ast_mod.FunctionExtra.flags;
+                if (flags_at >= ast.extra_data.items.len) return false;
+                const flags = ast.extra_data.items[flags_at];
+                if ((flags & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator)) != 0)
+                    return false;
+            },
+            .variable_declaration => {
+                if (ast.variableDeclarationKind(node) != .@"var") return false;
+            },
+            .variable_declarator => {
+                if (node.data.extra >= ast.extra_data.items.len) return false;
+                const binding: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
+                if (binding.isNone() or @intFromEnum(binding) >= ast.nodes.items.len or
+                    ast.nodes.items[@intFromEnum(binding)].tag != .binding_identifier) return false;
+            },
+            .formal_parameter => {
+                const extra = node.data.extra;
+                if (extra + 2 >= ast.extra_data.items.len) return false;
+                const pattern: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+                const default_value: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + 2]);
+                if (pattern.isNone() or @intFromEnum(pattern) >= ast.nodes.items.len or
+                    ast.nodes.items[@intFromEnum(pattern)].tag != .binding_identifier or !default_value.isNone()) return false;
+            },
+            // This allowlist deliberately leaves module graph edits and all
+            // other downlevel families on the existing resync path.
+            .program,
+            .boolean_literal,
+            .null_literal,
+            .numeric_literal,
+            .string_literal,
+            .this_expression,
+            .identifier_reference,
+            .binding_identifier,
+            .array_expression,
+            .unary_expression,
+            .update_expression,
+            .computed_member_expression,
+            .static_member_expression,
+            .call_expression,
+            .new_expression,
+            .parenthesized_expression,
+            .block_statement,
+            .empty_statement,
+            .expression_statement,
+            .if_statement,
+            .switch_statement,
+            .switch_case,
+            .while_statement,
+            .do_while_statement,
+            .for_statement,
+            .for_in_statement,
+            .break_statement,
+            .continue_statement,
+            .return_statement,
+            .throw_statement,
+            .try_statement,
+            .catch_clause,
+            .labeled_statement,
+            .debugger_statement,
+            .directive,
+            .hashbang,
+            .formal_parameters,
+            .function_body,
+            => {},
+            else => return false,
+        }
+        if (node.tag == .catch_clause and node.data.binary.left.isNone()) return false;
+    }
+    return found_arrow;
+}
+
 fn canKeepPrepassSemanticGraph(
     self: anytype,
     module: *const Module,
@@ -348,9 +436,11 @@ fn canKeepPrepassSemanticGraph(
     const automatic_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .automatic;
     const automatic_dev_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .automatic_dev;
     const graph_editable_jsx = classic_jsx or automatic_jsx or automatic_dev_jsx;
+    const arrow_only_downlevel = options.unsupported.hasAny() and
+        canRetainGraphForArrowOnlyLowering(ast, options);
     if ((ast.has_jsx and !graph_editable_jsx) or ast.has_decorator or ast.has_ts_import_equals or
         ast.has_ts_export_equals or ast.has_flow_enum_declaration) return false;
-    if (options.unsupported.hasAny() or options.minify_syntax or
+    if ((options.unsupported.hasAny() and !arrow_only_downlevel) or options.minify_syntax or
         options.minify_whitespace or options.drop_console or options.drop_debugger or
         options.drop_labels.len != 0 or options.define.len != 0 or options.module_specifier_map.len != 0 or
         !options.use_define_for_class_fields or options.experimental_decorators or
@@ -359,7 +449,7 @@ fn canKeepPrepassSemanticGraph(
     if (!hasOnlyTopLevelLocalExportSpecifiers(module)) return false;
     if (!hasStableRuntimeImports(ast, options)) return false;
 
-    var found_transform = graph_editable_jsx;
+    var found_transform = graph_editable_jsx or arrow_only_downlevel;
     for (ast.nodes.items) |node| {
         const tag_name = @tagName(node.tag);
         const is_flow_match_tag = std.mem.startsWith(u8, tag_name, "flow_match_");
