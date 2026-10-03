@@ -17,8 +17,9 @@ const std = @import("std");
 pub const NAMES = struct {
     // bundler interop
     pub const CJS_FACTORY_MIN = "$c"; // __commonJS — 호출 빈도 가장 높음 (모듈 wrapper 마다)
-    // CJS 래퍼의 고정 파라미터 이름 (`$c(($e, $m) => {...})`). helper 가 아니라 파라미터라
-    // PAIRS 에는 없지만 mangler 예약 대상이다 — [[CJS_WRAPPER_PARAM_NAMES]] (#4491).
+    // CJS 래퍼의 선호 파라미터 이름 (`$c(($e, $m) => {...})`). 모듈 안 이름과 충돌하면
+    // emitter 가 suffix 를 붙인다. helper 가 아니라 파라미터라 PAIRS 에는 없지만
+    // linker mangler 의 예약 대상이다 — [[CJS_WRAPPER_PARAM_NAMES]] (#4491, #4819).
     pub const CJS_WRAPPER_EXPORTS_MIN = "$e"; // exports (ESM_FACTORY_MIN 과 철자가 같다)
     pub const CJS_WRAPPER_MODULE_MIN = "$m"; // module
     pub const REQUIRE_MIN = "$r"; // __commonJS body 내부 function __require
@@ -157,9 +158,10 @@ pub const ALL_SHORT_NAMES: [PAIRS.len][]const u8 = blk: {
     break :blk names;
 };
 
-/// minify 시 CJS 래퍼가 쓰는 **고정 파라미터 이름** (`$c(($e, $m) => { ... })`).
-/// helper 이름이 아니라 *래퍼 파라미터*라 `PAIRS` 에 없지만, mangler 이름 풀과 같은
-/// `$` 영역에서 나오므로 **반드시 예약해야 한다** (#4491).
+/// minify 시 CJS 래퍼가 우선 시도하는 파라미터 이름 (`$c(($e, $m) => { ... })`).
+/// 모듈의 binding/reference 와 충돌하면 emitter 가 사용 가능한 suffix 를 고른다 (#4819).
+/// helper 이름이 아니라 *래퍼 파라미터*라 `PAIRS` 에 없지만, linker 가 다른 모듈의
+/// 래퍼 안에서 참조되는 이름을 배정하지 않도록 기본 이름은 여전히 예약한다 (#4491).
 ///
 /// 예약하지 않으면 모듈이 많아질 때 mangler 가 모듈 게터에 `$m` 을 배정하고, 다른 CJS
 /// 래퍼 안에서 그 게터를 참조하면 래퍼의 `$m` 파라미터(= module 객체)가 게터를 **섀도잉**
