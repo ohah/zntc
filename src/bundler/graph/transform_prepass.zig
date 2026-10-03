@@ -411,6 +411,9 @@ fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: Transfor
             .null_literal,
             .numeric_literal,
             .string_literal,
+            // Regex lowering rewrites only the literal payload. Helper-producing
+            // named-capture cases still fall back after transform below.
+            .regexp_literal,
             .this_expression,
             .identifier_reference,
             // Plain identifier writes use this reference tag and are already
