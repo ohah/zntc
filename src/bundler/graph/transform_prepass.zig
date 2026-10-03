@@ -447,10 +447,10 @@ fn hasDirectSpreadElement(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
 }
 
 /// Arrow lowering edits the existing graph and creates only output function
-/// scopes plus explicitly tracked captures. Native `await` adds no binding or
-/// scope edges. Keep either path only for the audited syntax subset; an
-/// unrecognized node or downlevel async body stays on semantic reanalysis.
-fn canRetainGraphForArrowAndNativeAwait(ast: *const ast_mod.Ast, options: TransformOptions) bool {
+/// scopes plus explicitly tracked captures. Native `await` and `yield` add no
+/// binding or scope edges. Keep these paths only for the
+/// audited syntax subset; downlevel async/generator bodies stay on reanalysis.
+fn canRetainGraphForArrowNativeAwaitAndGenerator(ast: *const ast_mod.Ast, options: TransformOptions) bool {
     if (ast.has_jsx) return false;
 
     // Cover-grammar parsing may leave speculative nodes in the arena that are
@@ -467,6 +467,7 @@ fn canRetainGraphForArrowAndNativeAwait(ast: *const ast_mod.Ast, options: Transf
 
     var found_arrow = false;
     var found_native_await = false;
+    var found_native_generator = false;
     for (reachable_nodes) |raw_idx| {
         const node = ast.nodes.items[raw_idx];
         // Type erasure already edits the semantic graph through the same
@@ -485,7 +486,8 @@ fn canRetainGraphForArrowAndNativeAwait(ast: *const ast_mod.Ast, options: Transf
                 const flags = ast.extra_data.items[flags_at];
                 const is_async = (flags & ast_mod.FunctionFlags.is_async) != 0;
                 const is_generator = (flags & ast_mod.FunctionFlags.is_generator) != 0;
-                if (is_generator or (is_async and options.unsupported.async_await)) return false;
+                if ((is_generator and (is_async or options.unsupported.generator)) or
+                    (is_async and options.unsupported.async_await)) return false;
             },
             .variable_declaration => {
                 if (options.unsupported.block_scoping and ast.variableDeclarationKind(node) != .@"var") return false;
@@ -535,6 +537,10 @@ fn canRetainGraphForArrowAndNativeAwait(ast: *const ast_mod.Ast, options: Transf
             .await_expression => {
                 if (options.unsupported.async_await) return false;
                 found_native_await = true;
+            },
+            .yield_expression => {
+                if (options.unsupported.generator) return false;
+                found_native_generator = true;
             },
             .meta_property => {
                 // `new.target` is safe here only when the target preserves it
@@ -615,7 +621,7 @@ fn canRetainGraphForArrowAndNativeAwait(ast: *const ast_mod.Ast, options: Transf
         }
         if (node.tag == .catch_clause and node.data.binary.left.isNone()) return false;
     }
-    return found_arrow or found_native_await;
+    return found_arrow or found_native_await or found_native_generator;
 }
 
 fn canKeepPrepassSemanticGraph(
@@ -634,7 +640,7 @@ fn canKeepPrepassSemanticGraph(
     const automatic_dev_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .automatic_dev;
     const graph_editable_jsx = classic_jsx or automatic_jsx or automatic_dev_jsx;
     const safe_graph_subset = options.unsupported.hasAny() and
-        canRetainGraphForArrowAndNativeAwait(ast, options);
+        canRetainGraphForArrowNativeAwaitAndGenerator(ast, options);
     if ((ast.has_jsx and !graph_editable_jsx) or ast.has_decorator) return false;
     if ((options.unsupported.hasAny() and !safe_graph_subset) or options.minify_syntax or
         options.minify_whitespace or options.drop_console or options.drop_debugger or
@@ -681,9 +687,14 @@ fn canKeepPrepassSemanticGraph(
             // These constructs can alter the import/export graph or create
             // dynamic-name environments independently of Flow match lowering.
             .ts_namespace_export_declaration,
-            .yield_expression,
             .with_statement,
             => return false,
+            .yield_expression => {
+                // Native sync generators preserve the source function scope.
+                // The reachable-node subset check rejects async and downlevel
+                // generators before this module can retain its semantic graph.
+                if (options.unsupported.generator) return false;
+            },
             .await_expression => {
                 // Top-level await is vetoed above. Await inside a native async
                 // function adds no bindings or scopes; when the target needs
