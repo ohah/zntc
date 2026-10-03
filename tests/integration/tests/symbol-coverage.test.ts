@@ -2123,9 +2123,9 @@ describe('symbol identity coverage gate (#4819)', () => {
     writeFileSync(
       input,
       [
-        'let previous: TemplateStringsArray | undefined;',
+        'var previous: TemplateStringsArray | undefined;',
         'function tag(strings: TemplateStringsArray, value: number) {',
-        '  const same = previous === strings;',
+        '  var same = previous === strings;',
         '  previous = strings;',
         '  return `${strings[0]}${value}${strings[1]}:${same}`;',
         '}',
@@ -2188,6 +2188,67 @@ describe('symbol identity coverage gate (#4819)', () => {
       const downlevelOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(downlevelOutput.status, downlevelOutput.stderr).toBe(0);
       expect(downlevelOutput.stdout).toBe('n=41!:false n=42!:true\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 untagged template lowering retains exact source symbol identities', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-template-literal-retained-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    writeFileSync(
+      input,
+      [
+        'type Numeric = number;',
+        'var left: Numeric = 20;',
+        'var right: Numeric = 22;',
+        'var count = 0;',
+        'var message = `${++count}:${left + right}:${++count}`;',
+        'console.log(message, count, typeof message);',
+      ].join('\n'),
+    );
+
+    try {
+      const downlevel = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(downlevel.status, downlevel.stderr).toBe(0);
+      const mode = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(mode, downlevel.stderr).toContain('semantic_graph=retained');
+      const report = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(report, downlevel.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('1:42:2 2 string\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
