@@ -12,6 +12,7 @@ const purity = @import("../purity.zig");
 const profile = @import("../../profile.zig");
 const ast_mod = @import("../../parser/ast.zig");
 const module_parser = @import("../../parser/module.zig");
+const token_mod = @import("../../lexer/token.zig");
 const NodeTag = ast_mod.Node.Tag;
 const SemanticSymbol = @import("../../semantic/symbol.zig").Symbol;
 const SemanticSymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
@@ -375,6 +376,13 @@ fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: Transfor
                 const default_value: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + 2]);
                 if (pattern.isNone() or @intFromEnum(pattern) >= ast.nodes.items.len or
                     ast.nodes.items[@intFromEnum(pattern)].tag != .binding_identifier or !default_value.isNone()) return false;
+            },
+            .binary_expression, .logical_expression => {
+                const operator: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+                if (node.tag == .binary_expression and options.unsupported.exponentiation and
+                    operator == .star2) return false;
+                if (node.tag == .logical_expression and options.unsupported.nullish_coalescing and
+                    operator == .question2) return false;
             },
             // This allowlist deliberately leaves module graph edits and all
             // other downlevel families on the existing resync path.
