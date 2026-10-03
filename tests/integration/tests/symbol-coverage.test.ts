@@ -2085,6 +2085,84 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('Flow enum bundling retains exact symbols and resolves its runtime once', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-flow-enum-retained-'));
+    const output = join(dir, 'out.cjs');
+    mkdirSync(join(dir, 'node_modules', 'flow-enums-runtime'), { recursive: true });
+    writeFileSync(
+      join(dir, 'entry.js'),
+      [
+        '// @flow',
+        "import flowEnums from 'flow-enums-runtime';",
+        "const require = () => 'user-require';",
+        "const Symbol = () => 'user-Symbol';",
+        'enum LongColor { Red, Blue }',
+        'enum LongShape of string { Circle, Square }',
+        'function read() { return [LongColor.Red, LongShape.Circle]; }',
+        'console.log(typeof flowEnums, typeof read()[0], read()[0].description, read()[1], require(), Symbol(), globalThis.flowEnumRuntimeLoads);',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'node_modules', 'flow-enums-runtime', 'index.js'),
+      [
+        'globalThis.flowEnumRuntimeLoads = (globalThis.flowEnumRuntimeLoads || 0) + 1;',
+        'function make(values) { return values; }',
+        'make.Mirrored = (names) => make(Object.fromEntries(names.map((name) => [name, name])));',
+        'module.exports = make;',
+      ].join('\n'),
+    );
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          join(dir, 'entry.js'),
+          '--flow',
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '--verbatim-module-syntax',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+
+      const graphMode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+        );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('function symbol Red Circle user-require user-Symbol 1\n');
+      const emitted = readFileSync(output, 'utf8');
+      expect(emitted.match(/flowEnumRuntimeLoads\s*=\s*\(/g)).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('Flow component helper and component binding have exact identity across targets', () => {
     const file = join(FIXTURE_DIR, '4819-flow-component.flow');
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-flow-component-'));
