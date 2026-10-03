@@ -2256,6 +2256,51 @@ fn checkExactImpl(
     return report;
 }
 
+/// Count reachable back edges without invoking a tree-only walker. The
+/// synthetic coverage audit uses this preflight before its identifier walkers
+/// so debug diagnostics also fail closed on malformed cyclic ASTs.
+fn countCyclicAstEdges(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+) std.mem.Allocator.Error!usize {
+    const VisitState = enum { visiting, visited };
+    const VisitFrame = struct {
+        node_index: NodeIndex,
+        exit: bool = false,
+    };
+
+    var states: std.AutoHashMapUnmanaged(u32, VisitState) = .empty;
+    defer states.deinit(allocator);
+    var stack: std.ArrayList(VisitFrame) = .empty;
+    defer stack.deinit(allocator);
+    try stack.append(allocator, .{ .node_index = root });
+
+    var cyclic_edges: usize = 0;
+    while (stack.pop()) |frame| {
+        const node_index = frame.node_index;
+        if (node_index.isNone() or @intFromEnum(node_index) >= ast.nodes.items.len) continue;
+        const raw = @intFromEnum(node_index);
+        if (frame.exit) {
+            try states.put(allocator, raw, .visited);
+            continue;
+        }
+        if (states.get(raw)) |state| {
+            if (state == .visiting) cyclic_edges += 1;
+            continue;
+        }
+
+        try states.put(allocator, raw, .visiting);
+        try stack.append(allocator, .{ .node_index = node_index, .exit = true });
+        var children = ast_walk.children(ast, ast.getNode(node_index));
+        while (children.next()) |child| {
+            if (!child.isNone() and @intFromEnum(child) < ast.nodes.items.len)
+                try stack.append(allocator, .{ .node_index = child });
+        }
+    }
+    return cyclic_edges;
+}
+
 /// Some lowerings retain the source lexical ScopeId for a user binding even
 /// after its source owner node is removed (for example an extracted generator
 /// loop argument). Accept that reference scope only when it remains visible
@@ -2729,6 +2774,7 @@ pub const StrictReport = struct {
     counts: [std.meta.fields(StrictStatus).len]usize = @splat(0),
     marked_synthetic: usize = 0,
     orphan_symbols: usize = 0,
+    cyclic_ast_edges: usize = 0,
     findings: std.ArrayList(StrictFinding) = .empty,
     orphan_symbol_findings: std.ArrayList(OrphanSyntheticSymbol) = .empty,
 
@@ -2750,7 +2796,8 @@ pub const StrictReport = struct {
         for (observed_counts, self.counts) |observed, reported| {
             if (observed != reported) return false;
         }
-        return observed_marked_synthetic == self.marked_synthetic and
+        return self.cyclic_ast_edges == 0 and
+            observed_marked_synthetic == self.marked_synthetic and
             self.orphan_symbols == self.orphan_symbol_findings.items.len;
     }
 
@@ -3187,6 +3234,7 @@ fn checkStrictImpl(
 ) std.mem.Allocator.Error!StrictReport {
     var report: StrictReport = .{};
     errdefer report.deinit(allocator);
+    report.cyclic_ast_edges = try countCyclicAstEdges(allocator, ast, root);
     var node_scopes = try collectScopeTraces(allocator, ast, root, scopes, scope_owner_map);
     defer node_scopes.deinit(allocator);
     var parent_traces = try collectParentTraces(allocator, ast, root);
@@ -3211,10 +3259,12 @@ fn checkStrictImpl(
         .report = &report,
     };
     defer ctx.seen.deinit(allocator);
-    try ast_walk.walkPreorderIterative(allocator, ast, root, &ctx, strictBindingVisit);
-    const refs = try reference_walk.collectIdentifierReferences(allocator, ast, root);
-    defer allocator.free(refs);
-    for (refs) |idx| ctx.add(idx, ast.getNode(idx));
+    if (report.cyclic_ast_edges == 0) {
+        try ast_walk.walkPreorderIterative(allocator, ast, root, &ctx, strictBindingVisit);
+        const refs = try reference_walk.collectIdentifierReferences(allocator, ast, root);
+        defer allocator.free(refs);
+        for (refs) |idx| ctx.add(idx, ast.getNode(idx));
+    }
     if (ctx.oom) return error.OutOfMemory;
 
     // Identifier coverage alone misses generated Symbol rows whose owner
@@ -3245,8 +3295,8 @@ fn checkStrictImpl(
 
 pub fn printStrict(file_path: []const u8, report: *const StrictReport) void {
     std.debug.print(
-        "zntc: synthetic-coverage {s}: bound={d} external={d} missing_binding={d} unclassified={d} invalid_id={d} name_mismatch={d} missing_reference={d} identity_mismatch={d} invalid_scope={d} scope_unknown={d} scope_ambiguous={d} scope_mismatch={d} invisible_reference={d} duplicate_reference={d} orphan_symbols={d} marked_synthetic={d} consistent={d} symbol_identity_complete={d}\n",
-        .{ file_path, report.counts[@intFromEnum(StrictStatus.bound)], report.counts[@intFromEnum(StrictStatus.external)], report.counts[@intFromEnum(StrictStatus.missing_binding)], report.counts[@intFromEnum(StrictStatus.unclassified)], report.counts[@intFromEnum(StrictStatus.invalid_id)], report.counts[@intFromEnum(StrictStatus.name_mismatch)], report.counts[@intFromEnum(StrictStatus.missing_reference)], report.counts[@intFromEnum(StrictStatus.identity_mismatch)], report.counts[@intFromEnum(StrictStatus.invalid_scope)], report.counts[@intFromEnum(StrictStatus.scope_unknown)], report.counts[@intFromEnum(StrictStatus.scope_ambiguous)], report.counts[@intFromEnum(StrictStatus.scope_mismatch)], report.counts[@intFromEnum(StrictStatus.invisible_reference)], report.counts[@intFromEnum(StrictStatus.duplicate_reference)], report.orphan_symbols, report.marked_synthetic, @intFromBool(report.isConsistent()), @intFromBool(report.hasCompleteSymbolIdentity()) },
+        "zntc: synthetic-coverage {s}: bound={d} external={d} missing_binding={d} unclassified={d} invalid_id={d} name_mismatch={d} missing_reference={d} identity_mismatch={d} invalid_scope={d} scope_unknown={d} scope_ambiguous={d} scope_mismatch={d} invisible_reference={d} duplicate_reference={d} orphan_symbols={d} cyclic_ast_edges={d} marked_synthetic={d} consistent={d} symbol_identity_complete={d}\n",
+        .{ file_path, report.counts[@intFromEnum(StrictStatus.bound)], report.counts[@intFromEnum(StrictStatus.external)], report.counts[@intFromEnum(StrictStatus.missing_binding)], report.counts[@intFromEnum(StrictStatus.unclassified)], report.counts[@intFromEnum(StrictStatus.invalid_id)], report.counts[@intFromEnum(StrictStatus.name_mismatch)], report.counts[@intFromEnum(StrictStatus.missing_reference)], report.counts[@intFromEnum(StrictStatus.identity_mismatch)], report.counts[@intFromEnum(StrictStatus.invalid_scope)], report.counts[@intFromEnum(StrictStatus.scope_unknown)], report.counts[@intFromEnum(StrictStatus.scope_ambiguous)], report.counts[@intFromEnum(StrictStatus.scope_mismatch)], report.counts[@intFromEnum(StrictStatus.invisible_reference)], report.counts[@intFromEnum(StrictStatus.duplicate_reference)], report.orphan_symbols, report.cyclic_ast_edges, report.marked_synthetic, @intFromBool(report.isConsistent()), @intFromBool(report.hasCompleteSymbolIdentity()) },
     );
     for (report.orphan_symbol_findings.items[0..@min(report.orphan_symbol_findings.items.len, 8)]) |finding| {
         std.debug.print("  synthetic-coverage orphan_symbol id={d} name={s} kind={s} scope={d}\n", .{

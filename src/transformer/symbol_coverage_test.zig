@@ -2353,6 +2353,7 @@ test "exact coverage detects AST cycles without treating shared children as cycl
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const unresolved_names: std.StringHashMapUnmanaged(void) = .empty;
 
     const shared_child_report = try coverage.checkExact(
         allocator,
@@ -2373,6 +2374,23 @@ test "exact coverage detects AST cycles without treating shared children as cycl
     );
     try std.testing.expectEqual(@as(usize, 0), shared_child_report.cyclic_ast_edges);
     try std.testing.expect(shared_child_report.isClean());
+    var shared_child_strict_report = try coverage.checkStrict(
+        allocator,
+        &ast,
+        root,
+        0,
+        &.{},
+        &.{},
+        &scopes,
+        &owners,
+        &.{},
+        null,
+        &unresolved_names,
+    );
+    defer shared_child_strict_report.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), shared_child_strict_report.cyclic_ast_edges);
+    try std.testing.expect(shared_child_strict_report.hasCompleteExactCoverage());
+    try std.testing.expect(shared_child_strict_report.hasCompleteSymbolIdentity());
 
     // Mutate a reachable child edge into a root self-cycle. The exact audit
     // must fail closed before its generic tree walker can loop forever.
@@ -2419,4 +2437,22 @@ test "exact coverage detects AST cycles without treating shared children as cycl
     );
     try std.testing.expectEqual(@as(usize, 1), back_edge_report.cyclic_ast_edges);
     try std.testing.expect(!back_edge_report.isClean());
+    var back_edge_strict_report = try coverage.checkStrict(
+        allocator,
+        &ast,
+        root,
+        0,
+        &.{},
+        &.{},
+        &scopes,
+        &owners,
+        &.{},
+        null,
+        &unresolved_names,
+    );
+    defer back_edge_strict_report.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), back_edge_strict_report.cyclic_ast_edges);
+    try std.testing.expect(!back_edge_strict_report.isConsistent());
+    try std.testing.expect(!back_edge_strict_report.hasCompleteExactCoverage());
+    try std.testing.expect(!back_edge_strict_report.hasCompleteSymbolIdentity());
 }
