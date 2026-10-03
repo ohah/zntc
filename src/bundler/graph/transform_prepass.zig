@@ -377,6 +377,12 @@ fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: Transfor
                 if (pattern.isNone() or @intFromEnum(pattern) >= ast.nodes.items.len or
                     ast.nodes.items[@intFromEnum(pattern)].tag != .binding_identifier or !default_value.isNone()) return false;
             },
+            .assignment_expression => {
+                const operator: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+                if (options.unsupported.exponentiation and operator == .star2_eq) return false;
+                if (options.unsupported.logical_assignment and
+                    (operator == .question2_eq or operator == .pipe2_eq or operator == .amp2_eq)) return false;
+            },
             .binary_expression, .logical_expression => {
                 const operator: token_mod.Kind = @enumFromInt(node.data.binary.flags);
                 if (node.tag == .binary_expression and options.unsupported.exponentiation and
@@ -393,8 +399,13 @@ fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: Transfor
             .string_literal,
             .this_expression,
             .identifier_reference,
+            // Plain identifier writes use this reference tag and are already
+            // tracked as writes in the semantic graph. Destructuring targets
+            // keep their separate, intentionally unlisted pattern tags.
+            .assignment_target_identifier,
             .binding_identifier,
             .array_expression,
+            .conditional_expression,
             .unary_expression,
             .update_expression,
             .computed_member_expression,
@@ -424,6 +435,7 @@ fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: Transfor
             .hashbang,
             .formal_parameters,
             .function_body,
+            .sequence_expression,
             => {},
             else => return false,
         }
