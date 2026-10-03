@@ -17,8 +17,8 @@ exports[`TSC: es6/yieldExpressions generatorInAmbientContext5 1`] = `
 `;
 
 exports[`TSC: es6/yieldExpressions generatorInAmbientContext6 1`] = `
-"var M;((M) => {function* generator() {
-}M.generator=generator;})(M || (M = {}));
+"var M;((_M) => {function* generator() {
+}_M.generator=generator;})(M || (M = {}));
 "
 `;
 
@@ -33,7 +33,7 @@ exports[`TSC: es6/yieldExpressions generatorNoImplicitReturns 1`] = `
 `;
 
 exports[`TSC: es6/yieldExpressions generatorOverloads1 1`] = `
-"var M;((M) => {function* f(s) {
+"var M;((_M) => {function* f(s) {
 }})(M || (M = {}));
 "
 `;
@@ -57,7 +57,7 @@ exports[`TSC: es6/yieldExpressions generatorOverloads4 1`] = `
 `;
 
 exports[`TSC: es6/yieldExpressions generatorOverloads5 1`] = `
-"var M;((M) => {function* f(s) {
+"var M;((_M) => {function* f(s) {
 }})(M || (M = {}));
 "
 `;

@@ -30,7 +30,7 @@ exports[`TSC: es6/Symbols symbolDeclarationEmit11 1`] = `
 `;
 
 exports[`TSC: es6/Symbols symbolDeclarationEmit12 1`] = `
-"var M;((M) => {class C {
+"var M;((_M) => {class C {
 	[Symbol.iterator];
 	[Symbol.toPrimitive](x) {
 	}
@@ -42,7 +42,7 @@ exports[`TSC: es6/Symbols symbolDeclarationEmit12 1`] = `
 	}
 	set [Symbol.toPrimitive](x) {
 	}
-}M.C=C;})(M || (M = {}));
+}_M.C=C;})(M || (M = {}));
 "
 `;
 
@@ -505,7 +505,7 @@ new C()[Symbol.hasInstance] = "";
 `;
 
 exports[`TSC: es6/Symbols symbolProperty48 1`] = `
-"var M;((M) => {var Symbol;class C {
+"var M;((_M) => {var Symbol;class C {
 	[Symbol.iterator]() {
 	}
 }})(M || (M = {}));
@@ -513,8 +513,8 @@ exports[`TSC: es6/Symbols symbolProperty48 1`] = `
 `;
 
 exports[`TSC: es6/Symbols symbolProperty49 1`] = `
-"var M;((M) => {class C {
-	[M.Symbol.iterator]() {
+"var M;((_M) => {class C {
+	[_M.Symbol.iterator]() {
 	}
 }})(M || (M = {}));
 "
@@ -529,7 +529,7 @@ exports[`TSC: es6/Symbols symbolProperty5 1`] = `
 `;
 
 exports[`TSC: es6/Symbols symbolProperty50 1`] = `
-"var M;((M) => {class C {
+"var M;((_M) => {class C {
 	[Symbol.iterator]() {
 	}
 }})(M || (M = {}));
@@ -537,7 +537,7 @@ exports[`TSC: es6/Symbols symbolProperty50 1`] = `
 `;
 
 exports[`TSC: es6/Symbols symbolProperty51 1`] = `
-"var M;((M) => {class C {
+"var M;((_M) => {class C {
 	[Symbol.iterator]() {
 	}
 }})(M || (M = {}));
@@ -564,7 +564,7 @@ exports[`TSC: es6/Symbols symbolProperty54 1`] = `
 
 exports[`TSC: es6/Symbols symbolProperty55 1`] = `
 "var obj = { [Symbol.iterator]: 0 };
-var M;((M) => {var Symbol;// The following should be of type 'any'. This is because even though obj has a property keyed by Symbol.iterator,
+var M;((_M) => {var Symbol;// The following should be of type 'any'. This is because even though obj has a property keyed by Symbol.iterator,
 // the key passed in here is the *wrong* Symbol.iterator. It is not the iterator property of the global Symbol.
 obj[Symbol.iterator];})(M || (M = {}));
 "
@@ -572,7 +572,7 @@ obj[Symbol.iterator];})(M || (M = {}));
 
 exports[`TSC: es6/Symbols symbolProperty56 1`] = `
 "var obj = { [Symbol.iterator]: 0 };
-var M;((M) => {var Symbol;// The following should be of type 'any'. This is because even though obj has a property keyed by Symbol.iterator,
+var M;((_M) => {var Symbol;// The following should be of type 'any'. This is because even though obj has a property keyed by Symbol.iterator,
 // the key passed in here is the *wrong* Symbol.iterator. It is not the iterator property of the global Symbol.
 obj[Symbol["iterator"]];})(M || (M = {}));
 "

@@ -27,6 +27,19 @@ const EXACT_ZERO_COUNTERS = [
   'unclassified_reference',
 ];
 
+function expectPrepassGraph(stderr: string, entry: string, mode: 'retained' | 'reanalyzed') {
+  const lines = stderr.split(/\r?\n/);
+  const modeLine = lines.find(
+    (line) => line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(`/${entry}:`),
+  );
+  expect(modeLine, entry).toContain(`semantic_graph=${mode}`);
+  const identity = lines.find(
+    (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(`/${entry}:`),
+  );
+  expect(identity, entry).toBeDefined();
+  return identity!;
+}
+
 describe('#4819 transform semantic graph for JavaScript mangling', () => {
   let cleanup: (() => Promise<void>) | undefined;
 
@@ -1542,11 +1555,12 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       ],
     ] as const) {
       const result = await bundle(entry, suffix, [...extraArgs]);
+      const identity = expectPrepassGraph(
+        result.stderr,
+        entry,
+        keepsGraph ? 'retained' : 'reanalyzed',
+      );
       if (keepsGraph) {
-        const identity = result.stderr
-          .split(/\r?\n/)
-          .find((line) => line.includes('zntc: symbol-identity-prepass '));
-        expect(identity, suffix).toBeDefined();
         const hasExternalShadow = suffix.includes('-shadow-kept');
         expect(identity, suffix).toMatch(
           new RegExp(`shadowed_external_reference=${hasExternalShadow ? 1 : 0}(?:\\s|$)`),
@@ -1557,8 +1571,6 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         )) {
           expect(identity, `${suffix}: ${counter}`).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
         }
-      } else {
-        expect(result.stderr, suffix).not.toContain('symbol-identity-prepass');
       }
       const transformed = await runNode(result.output);
       expect(transformed.stderr, suffix).toBe('');
@@ -1682,7 +1694,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     const mixedImport = await bundle('typed-mixed-import.ts', 'typed-mixed-import-fallback', [
       '--verbatim-module-syntax',
     ]);
-    expect(mixedImport.stderr).not.toContain('typed-mixed-import.ts:');
+    expectPrepassGraph(mixedImport.stderr, 'typed-mixed-import.ts', 'reanalyzed');
     const mixedImportResult = await runNode(mixedImport.output);
     expect(mixedImportResult.stderr).toBe('');
     expect(mixedImportResult.stdout.trim()).toBe('9 4');
@@ -1690,7 +1702,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     const inlineImport = await bundle('typed-inline-import.ts', 'typed-inline-import-fallback', [
       '--verbatim-module-syntax',
     ]);
-    expect(inlineImport.stderr).not.toContain('typed-inline-import.ts:');
+    expectPrepassGraph(inlineImport.stderr, 'typed-inline-import.ts', 'reanalyzed');
     const inlineImportResult = await runNode(inlineImport.output);
     expect(inlineImportResult.stderr).toBe('');
     expect(inlineImportResult.stdout.trim()).toBe('INLINE_TYPE_IMPORT_SIDE_EFFECT\n4');
@@ -1699,19 +1711,19 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       'typed-side-effect-import.ts',
       'type-side-effect-fallback',
     );
-    expect(sideEffectImport.stderr).not.toContain('typed-side-effect-import.ts:');
+    expectPrepassGraph(sideEffectImport.stderr, 'typed-side-effect-import.ts', 'retained');
     const sideEffectImportResult = await runNode(sideEffectImport.output);
     expect(sideEffectImportResult.stderr).toBe('');
     expect(sideEffectImportResult.stdout.trim()).toBe('SIDE_EFFECT_IMPORT\n4');
 
     const dynamic = await bundle('typed-eval.ts', 'typed-eval-fallback');
-    expect(dynamic.stderr).not.toContain('symbol-identity-prepass');
+    expectPrepassGraph(dynamic.stderr, 'typed-eval.ts', 'reanalyzed');
     const dynamicFallback = await runNode(dynamic.output);
     expect(dynamicFallback.stderr).toBe('');
     expect(dynamicFallback.stdout.trim()).toBe('5');
 
     const escaped = await bundle('typed-escaped-eval.ts', 'typed-escaped-eval-fallback');
-    expect(escaped.stderr).not.toContain('symbol-identity-prepass');
+    expectPrepassGraph(escaped.stderr, 'typed-escaped-eval.ts', 'reanalyzed');
     const escapedFallback = await runNode(escaped.output);
     expect(escapedFallback.stderr).toBe('');
     expect(escapedFallback.stdout.trim()).toBe('6 6');
@@ -1852,11 +1864,10 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       suffix: string,
       params: number,
       stdout: string,
+      identityEntry = entry,
     ) {
       const bundled = await bundle(entry, suffix);
-      const identity = bundled.stderr
-        .split(/\r?\n/)
-        .find((line) => line.includes('zntc: symbol-identity-prepass '));
+      const identity = expectPrepassGraph(bundled.stderr, identityEntry, 'retained');
       expect(identity, entry).toBeDefined();
       expect(identity).toMatch(/clean=1(?:\s|$)/);
       expect(identity).toMatch(new RegExp(`namespace_iife_params=${params}(?:\\s|$)`));
@@ -1885,9 +1896,11 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(runtimeEnumResult.stdout.trim()).toBe('4 5 3 outer');
 
     const exportedEnum = await bundle('entry.ts', 'exported-enum-retained');
-    const exportedIdentity = exportedEnum.stderr
-      .split(/\r?\n/)
-      .find((line) => line.includes('zntc: symbol-identity-prepass '));
+    const exportedIdentity = expectPrepassGraph(
+      exportedEnum.stderr,
+      'exported-enum.ts',
+      'retained',
+    );
     expect(exportedIdentity).toBeDefined();
     expect(exportedIdentity).toMatch(/clean=1(?:\s|$)/);
     expect(exportedIdentity).toMatch(/enum_iife_params=2(?:\s|$)/);
@@ -1900,13 +1913,13 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(exportedEnumResult.stdout.trim()).toBe('4 5 3 outer');
 
     const constEnum = await bundle('const-enum.ts', 'const-enum-fallback');
-    expect(constEnum.stderr).not.toContain('symbol-identity-prepass');
+    expectPrepassGraph(constEnum.stderr, 'const-enum.ts', 'reanalyzed');
     const constEnumResult = await runNode(constEnum.output);
     expect(constEnumResult.stderr).toBe('');
     expect(constEnumResult.stdout.trim()).toBe('8');
 
     const ambientEnum = await bundle('ambient-enum.ts', 'ambient-enum-fallback');
-    expect(ambientEnum.stderr).not.toContain('symbol-identity-prepass');
+    expectPrepassGraph(ambientEnum.stderr, 'ambient-enum.ts', 'reanalyzed');
     const ambientEnumResult = await runNode(ambientEnum.output);
     expect(ambientEnumResult.stderr).toBe('');
     expect(ambientEnumResult.stdout.trim()).toBe('undefined');
@@ -1917,6 +1930,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       'namespace-export-retained',
       3,
       '3 4 5 outer',
+      'namespace-provider.ts',
     );
     await expectRetainedNamespace(
       'namespace-local-shadow.ts',
@@ -1981,7 +1995,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
 
     for (const [entry, expected] of [['ambient-namespace.ts', 'ok']] as const) {
       const fallback = await bundle(entry, entry.replace('.ts', '-fallback'));
-      expect(fallback.stderr).not.toContain('symbol-identity-prepass');
+      expectPrepassGraph(fallback.stderr, entry, 'reanalyzed');
       const result = await runNode(fallback.output);
       expect(result.stderr).toBe('');
       expect(result.stdout.trim()).toBe(expected);
@@ -2033,7 +2047,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stdout.trim()).toBe('4 outer');
   });
 
-  test('bundler retains top-level local export aliases and resyncs source re-exports', async () => {
+  test('bundler retains top-level local and source re-export aliases', async () => {
     const fixture = await createFixture({
       'provider.ts': [
         'type Value = number;',
@@ -2136,8 +2150,8 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     for (const counter of EXACT_ZERO_COUNTERS) {
       expect(providerIdentity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
     }
-    expect(identities.some((line) => line.includes('barrel.ts:'))).toBe(false);
-    expect(identities.some((line) => line.includes('entry.ts:'))).toBe(false);
+    expectPrepassGraph(result.stderr, 'barrel.ts', 'retained');
+    expectPrepassGraph(result.stderr, 'entry.ts', 'reanalyzed');
 
     const transformed = await runNode(output);
     expect(transformed.stderr).toBe('');
@@ -2147,9 +2161,11 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       'explicit-type-only-export.ts',
       'explicit-type-only-export',
     );
-    const explicitIdentity = explicitTypeOnly.stderr
-      .split(/\r?\n/)
-      .find((line) => line.includes('explicit-type-only-export.ts:'));
+    const explicitIdentity = expectPrepassGraph(
+      explicitTypeOnly.stderr,
+      'explicit-type-only-export.ts',
+      'retained',
+    );
     expect(explicitIdentity).toBeDefined();
     expect(explicitIdentity).toMatch(/clean=1(?:\s|$)/);
     for (const counter of EXACT_ZERO_COUNTERS) {
@@ -2160,9 +2176,11 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(explicitResult.stdout.trim()).toBe('4');
 
     const inferredTypeOnly = await bundle('type-only-export.ts', 'inferred-type-only-export');
-    const inferredIdentity = inferredTypeOnly.stderr
-      .split(/\r?\n/)
-      .find((line) => line.includes('type-only-export.ts:'));
+    const inferredIdentity = expectPrepassGraph(
+      inferredTypeOnly.stderr,
+      'type-only-export.ts',
+      'retained',
+    );
     expect(inferredIdentity).toBeDefined();
     expect(inferredIdentity).toMatch(/clean=1(?:\s|$)/);
     for (const counter of EXACT_ZERO_COUNTERS) {
@@ -2209,7 +2227,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
 
     for (const entry of ['string-export.ts']) {
       const rejected = await bundle(entry, entry.replace('.ts', '-fallback'));
-      expect(rejected.stderr).not.toContain(`${entry}:`);
+      expectPrepassGraph(rejected.stderr, entry, 'reanalyzed');
     }
   });
 

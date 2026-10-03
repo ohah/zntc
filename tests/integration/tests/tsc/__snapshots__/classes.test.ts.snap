@@ -134,9 +134,9 @@ class G extends A {
 `;
 
 exports[`TSC: classes classAbstractInAModule 1`] = `
-"var M;((M) => {class A {
-}M.A=A;class B extends A {
-}M.B=B;})(M || (M = {}));
+"var M;((_M) => {class A {
+}_M.A=A;class B extends A {
+}_M.B=B;})(M || (M = {}));
 new M.A();
 new M.B();
 "
@@ -448,7 +448,7 @@ exports[`TSC: classes classAndInterfaceWithSameName 1`] = `
 "class C {
 	foo;
 }
-var M;((M) => {class D {
+var M;((_M) => {class D {
 	bar;
 }})(M || (M = {}));
 "
@@ -461,7 +461,7 @@ exports[`TSC: classes classAndVariableWithSameName 1`] = `
 // error
 var C = "";
 // error
-var M;((M) => {class D {
+var M;((_M) => {class D {
 	// error
 	bar;
 }var D = 1;})(M || (M = {}));
@@ -686,20 +686,20 @@ exports[`TSC: classes classExtendsItselfIndirectly2 1`] = `
 	foo;
 }
 // error
-var M;((M) => {class D extends C {
+var M;((_M) => {class D extends C {
 	bar;
-}M.D=D;})(M || (M = {}));
-var N;((N) => {class E extends M.D {
+}_M.D=D;})(M || (M = {}));
+var N;((_N) => {class E extends M.D {
 	baz;
-}N.E=E;})(N || (N = {}));
-var O;((O) => {class C2 extends Q.E2 {
+}_N.E=E;})(N || (N = {}));
+var O;((_O) => {class C2 extends Q.E2 {
 	foo;
-}let P;((P) => {// error
+}let P;((_P) => {// error
 class D2 extends C2 {
 	bar;
-}P.D2=D2;})(P = O.P || (O.P = {}));let Q;((Q) => {class E2 extends P.D2 {
+}_P.D2=D2;})(P || (P = {}));let Q;((_Q) => {class E2 extends P.D2 {
 	baz;
-}Q.E2=E2;})(Q = O.Q || (O.Q = {}));})(O || (O = {}));
+}_Q.E2=E2;})(Q || (Q = {}));})(O || (O = {}));
 "
 `;
 
@@ -731,7 +731,7 @@ exports[`TSC: classes classExtendsShadowedConstructorFunction 1`] = `
 "class C {
 	foo;
 }
-var M;((M) => {var C = 1;class D extends C {
+var M;((_M) => {var C = 1;class D extends C {
 	// error, C must evaluate to constructor function
 	bar;
 }})(M || (M = {}));
@@ -953,7 +953,7 @@ exports[`TSC: classes classExpression 1`] = `
 };
 var y = { foo: class C2 {
 } };
-var M;((M) => {var z = class C4 {
+var M;((_M) => {var z = class C4 {
 };})(M || (M = {}));
 "
 `;
@@ -1769,7 +1769,7 @@ var d = new D(1);
 // error
 var e = new E(1);
 // error
-var Generic;((Generic) => {class C {
+var Generic;((_Generic) => {class C {
 	constructor(x) {
 		this.x = x;
 	}
@@ -4129,7 +4129,7 @@ C.bar;})(C || (C = {}));
 `;
 
 exports[`TSC: classes genericSetterInClassType 1`] = `
-"var Generic;((Generic) => {class C {
+"var Generic;((_Generic) => {class C {
 	get y() {
 		return 1;
 	}
@@ -4185,7 +4185,7 @@ var r3 = r.a;
 `;
 
 exports[`TSC: classes instancePropertiesInheritedIntoClassType 1`] = `
-"var NonGeneric;((NonGeneric) => {class C {
+"var NonGeneric;((_NonGeneric) => {class C {
 	x;
 	get y() {
 		return 1;
@@ -4203,7 +4203,7 @@ exports[`TSC: classes instancePropertiesInheritedIntoClassType 1`] = `
 	e;
 }var d = new D(1, 2);var r = d.fn();var r2 = r.x;var r3 = r.y;r.y = 4;var r6 = d.y();})(NonGeneric || (NonGeneric = {}));
 // error
-var Generic;((Generic) => {class C {
+var Generic;((_Generic) => {class C {
 	x;
 	get y() {
 		return null;
@@ -4225,7 +4225,7 @@ var Generic;((Generic) => {class C {
 `;
 
 exports[`TSC: classes instancePropertyInClassType 1`] = `
-"var NonGeneric;((NonGeneric) => {class C {
+"var NonGeneric;((_NonGeneric) => {class C {
 	x;
 	get y() {
 		return 1;
@@ -4241,7 +4241,7 @@ exports[`TSC: classes instancePropertyInClassType 1`] = `
 	}
 }var c = new C(1, 2);var r = c.fn();var r2 = r.x;var r3 = r.y;r.y = 4;var r6 = c.y();})(NonGeneric || (NonGeneric = {}));
 // error
-var Generic;((Generic) => {class C {
+var Generic;((_Generic) => {class C {
 	x;
 	get y() {
 		return null;
@@ -4261,7 +4261,7 @@ var Generic;((Generic) => {class C {
 `;
 
 exports[`TSC: classes staticPropertyNotInClassType 1`] = `
-"var NonGeneric;((NonGeneric) => {class C {
+"var NonGeneric;((_NonGeneric) => {class C {
 	fn() {
 		return this;
 	}
@@ -4276,12 +4276,12 @@ exports[`TSC: classes staticPropertyNotInClassType 1`] = `
 	}
 	static foo;
 	// not reflected in class type
-}let C;((_C) => {_C.bar="";})(C = NonGeneric.C || (NonGeneric.C = {}));// not reflected in class type
+}let C;((_C) => {_C.bar="";})(C || (C = {}));// not reflected in class type
 var c = new C(1, 2);var r = c.fn();var r4 = c.foo;// error
 var r5 = c.bar;// error
 var r6 = c.x;})(NonGeneric || (NonGeneric = {}));
 // error
-var Generic;((Generic) => {class C {
+var Generic;((_Generic) => {class C {
 	fn() {
 		return this;
 	}
@@ -4296,7 +4296,7 @@ var Generic;((Generic) => {class C {
 	}
 	static foo;
 	// not reflected in class type
-}let C;((_C) => {_C.bar="";})(C = Generic.C || (Generic.C = {}));// not reflected in class type
+}let C;((_C) => {_C.bar="";})(C || (C = {}));// not reflected in class type
 var c = new C(1, "");var r = c.fn();var r4 = c.foo;// error
 var r5 = c.bar;// error
 var r6 = c.x;})(Generic || (Generic = {}));
@@ -4350,7 +4350,7 @@ var d6 = new D(1);
 `;
 
 exports[`TSC: classes classWithConstructors 1`] = `
-"var NonGeneric;((NonGeneric) => {class C {
+"var NonGeneric;((_NonGeneric) => {class C {
 	constructor(x) {
 	}
 }var c = new C();// error
@@ -4366,7 +4366,7 @@ class D extends C2 {
 var d2 = new D(1);// ok
 var d3 = new D("");})(NonGeneric || (NonGeneric = {}));
 // ok
-var Generics;((Generics) => {class C {
+var Generics;((_Generics) => {class C {
 	constructor(x) {
 	}
 }var c = new C();// error
@@ -4430,12 +4430,12 @@ var r3 = r.foo;
 `;
 
 exports[`TSC: classes constructorHasPrototypeProperty 1`] = `
-"var NonGeneric;((NonGeneric) => {class C {
+"var NonGeneric;((_NonGeneric) => {class C {
 	foo;
 }class D extends C {
 	bar;
 }var r = C.prototype;r.foo;var r2 = D.prototype;r2.bar;})(NonGeneric || (NonGeneric = {}));
-var Generic;((Generic) => {class C {
+var Generic;((_Generic) => {class C {
 	foo;
 	bar;
 }class D extends C {
