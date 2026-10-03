@@ -513,23 +513,44 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
                 if (extra + 2 >= ast.extra_data.items.len) return false;
                 const pattern: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
                 const default_value: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + 2]);
-                if (pattern.isNone() or @intFromEnum(pattern) >= ast.nodes.items.len or !default_value.isNone()) return false;
+                if (pattern.isNone() or @intFromEnum(pattern) >= ast.nodes.items.len or
+                    (!default_value.isNone() and options.unsupported.default_params)) return false;
                 const pattern_tag = ast.nodes.items[@intFromEnum(pattern)].tag;
-                if (pattern_tag == .binding_identifier) continue;
-                if (options.unsupported.destructuring or
-                    (pattern_tag != .array_pattern and pattern_tag != .object_pattern)) return false;
+                if (pattern_tag != .binding_identifier) {
+                    if (options.unsupported.destructuring or
+                        (pattern_tag != .array_pattern and pattern_tag != .object_pattern)) return false;
+                    found_native_destructuring = true;
+                }
+                if (!default_value.isNone()) found_native_destructuring = true;
             },
-            .array_pattern, .object_pattern, .array_assignment_target, .object_assignment_target => {
+            .array_pattern, .array_assignment_target => {
                 if (options.unsupported.destructuring) return false;
                 found_native_destructuring = true;
             },
-            // Defaults and rest are deliberately outside this native-only
-            // slice; their downlevel paths can synthesize assignments/helpers.
-            .assignment_pattern,
-            .assignment_target_with_default,
-            .binding_rest_element,
-            .assignment_target_rest,
-            => return false,
+            .object_pattern, .object_assignment_target => {
+                if (options.unsupported.destructuring or
+                    (options.unsupported.object_spread and
+                        ast.nodeListSplitRest(node.data.list).rest_operand != null)) return false;
+                found_native_destructuring = true;
+            },
+            .assignment_pattern => {
+                // Parameter defaults lower independently from destructuring;
+                // nested binding defaults also need destructuring preserved.
+                if (options.unsupported.default_params or options.unsupported.destructuring) return false;
+                found_native_destructuring = true;
+            },
+            .assignment_target_with_default => {
+                if (options.unsupported.destructuring) return false;
+                found_native_destructuring = true;
+            },
+            .binding_rest_element, .assignment_target_rest => {
+                if (options.unsupported.destructuring) return false;
+                found_native_destructuring = true;
+            },
+            .rest_element => {
+                if (options.unsupported.default_params) return false;
+                found_native_destructuring = true;
+            },
             .assignment_expression => {
                 const operator: token_mod.Kind = @enumFromInt(node.data.binary.flags);
                 if (options.unsupported.exponentiation and operator == .star2_eq) return false;
