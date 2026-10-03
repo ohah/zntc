@@ -249,20 +249,40 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                         } },
                     });
                 },
-                // `const result = super(...)` / `let r = super(...)` 같은 declarator-init super 케이스.
-                // 선언문 자체를 살린 뒤 같은 control-flow 위치에 instance field init 을 잇도록 block 으로 감싼다.
+                // Keep the declaration in its original lexical scope. A new
+                // block would hide `const result` from following statements
+                // when the output is analyzed again for identifier minifying.
+                // The fields also run before the rest of the initializer,
+                // e.g. `const result = (super(), readInitializedFields())`.
                 .variable_declaration => {
+                    const e = stmt.data.extra;
+                    const kind = self.ast.readExtra(e, 0);
+                    const declarations = ast_mod.NodeList{
+                        .start = self.ast.readExtra(e, 1),
+                        .len = self.ast.readExtra(e, 2),
+                    };
                     const scratch_top = self.scratch.items.len;
                     defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-                    try self.scratch.append(self.allocator, stmt_idx);
-                    try appendInstanceFields(self, instance_fields, span);
-
-                    const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                    var iter = self.ast.iterateExtraList(declarations);
+                    while (iter.next()) |declaration| {
+                        var declarator = self.ast.getNode(declaration);
+                        const de = declarator.data.extra;
+                        const binding = self.ast.readExtra(de, 0);
+                        const annotation = self.ast.readExtra(de, 1);
+                        const init = self.ast.readExtraNode(de, 2);
+                        const new_init = try injectInstanceFieldsAfterSuperExpr(self, init, instance_fields, span);
+                        if (new_init == init) {
+                            try self.scratch.append(self.allocator, declaration);
+                        } else {
+                            declarator.data.extra = try self.ast.addExtras(&.{ binding, annotation, @intFromEnum(new_init) });
+                            try self.scratch.append(self.allocator, try self.ast.addNode(declarator));
+                        }
+                    }
+                    const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
                     return self.ast.addNode(.{
-                        .tag = .block_statement,
+                        .tag = .variable_declaration,
                         .span = stmt.span,
-                        .data = .{ .list = new_list },
+                        .data = .{ .extra = try self.ast.addExtras(&.{ kind, list.start, list.len }) },
                     });
                 },
                 .return_statement => {
@@ -671,7 +691,11 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             return stmt_idx;
         }
 
-        /// 식 안의 this_expression을 _this로 교체. call_expression(fn, [this, ...]) 패턴도 처리.
+        /// Each super path needs its own lexical-capture uses. Initializers
+        /// have already been visited, so `this` inside their values can be an
+        /// `_this` capture rather than a this_expression. Copy those exact
+        /// references and their containing expressions without entering a
+        /// nested function/class, which owns a separate lexical boundary.
         fn replaceThisInExpr(self: *Transformer, idx: NodeIndex) Transformer.Error!NodeIndex {
             if (idx.isNone()) return idx;
             const node = self.ast.getNode(idx);
@@ -680,19 +704,63 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                 return makeThisAliasRef(self);
             }
 
-            // static_member_expression: extra = [object, property, flags]
-            if (node.tag == .static_member_expression) {
+            if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
+                const raw = @intFromEnum(idx);
+                const origin = self.reference_origin_map.get(raw) orelse raw;
+                if (self.capture_ref_by_origin.contains(origin)) return es_helpers.cloneNode(self, idx);
+            }
+
+            var copy = node;
+            switch (node.tag.dataKind()) {
+                .unary => {
+                    copy.data.unary.operand = try replaceThisInExpr(self, node.data.unary.operand);
+                    if (copy.data.unary.operand != node.data.unary.operand) return self.ast.addNode(copy);
+                },
+                .binary => {
+                    copy.data.binary.left = try replaceThisInExpr(self, node.data.binary.left);
+                    copy.data.binary.right = try replaceThisInExpr(self, node.data.binary.right);
+                    if (copy.data.binary.left != node.data.binary.left or copy.data.binary.right != node.data.binary.right)
+                        return self.ast.addNode(copy);
+                },
+                .ternary => {
+                    copy.data.ternary.a = try replaceThisInExpr(self, node.data.ternary.a);
+                    copy.data.ternary.b = try replaceThisInExpr(self, node.data.ternary.b);
+                    copy.data.ternary.c = try replaceThisInExpr(self, node.data.ternary.c);
+                    if (copy.data.ternary.a != node.data.ternary.a or copy.data.ternary.b != node.data.ternary.b or copy.data.ternary.c != node.data.ternary.c)
+                        return self.ast.addNode(copy);
+                },
+                .list => {
+                    const scratch_top = self.scratch.items.len;
+                    defer self.scratch.shrinkRetainingCapacity(scratch_top);
+                    var changed = false;
+                    var iter = self.ast.iterateExtraList(node.data.list);
+                    while (iter.next()) |child| {
+                        const new_child = try replaceThisInExpr(self, child);
+                        changed = changed or new_child != child;
+                        try self.scratch.append(self.allocator, new_child);
+                    }
+                    if (changed) {
+                        copy.data.list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                        return self.ast.addNode(copy);
+                    }
+                },
+                .leaf, .extra => {},
+            }
+
+            // member expression: extra = [object, property, flags]
+            if (node.tag == .static_member_expression or node.tag == .computed_member_expression) {
                 const e = node.data.extra;
                 const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
                 const new_obj = try replaceThisInExpr(self, obj_idx);
-                if (@intFromEnum(new_obj) == @intFromEnum(obj_idx)) return idx;
-                const prop = self.ast.extra_data.items[e + 1];
+                const prop: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
+                const new_prop = if (node.tag == .computed_member_expression) try replaceThisInExpr(self, prop) else prop;
+                if (new_obj == obj_idx and new_prop == prop) return idx;
                 const flags = self.ast.extra_data.items[e + 2];
                 const new_extra = try self.ast.addExtras(&.{
-                    @intFromEnum(new_obj), prop, flags,
+                    @intFromEnum(new_obj), @intFromEnum(new_prop), flags,
                 });
                 return self.ast.addNode(.{
-                    .tag = .static_member_expression,
+                    .tag = node.tag,
                     .span = node.span,
                     .data = .{ .extra = new_extra },
                 });
@@ -700,7 +768,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
 
             // call_expression: extra = [callee, args_start, args_len, flags]
             // __classPrivateMethodInit(this, _bark) → __classPrivateMethodInit(_this, _bark)
-            if (node.tag == .call_expression) {
+            if (node.tag == .call_expression or node.tag == .new_expression) {
                 const e = node.data.extra;
                 const callee: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
                 const args_start = self.ast.extra_data.items[e + 1];
@@ -725,10 +793,30 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                     @intFromEnum(new_callee), new_args.start, new_args.len, flags,
                 });
                 return self.ast.addNode(.{
-                    .tag = .call_expression,
+                    .tag = node.tag,
                     .span = node.span,
                     .data = .{ .extra = new_extra },
                 });
+            }
+
+            if (node.tag == .unary_expression or node.tag == .update_expression) {
+                const operand = self.ast.readExtraNode(node.data.extra, 0);
+                const replacement = try replaceThisInExpr(self, operand);
+                if (replacement == operand) return idx;
+                const flags = self.ast.readExtra(node.data.extra, 1);
+                copy.data.extra = try self.ast.addExtras(&.{ @intFromEnum(replacement), flags });
+                return self.ast.addNode(copy);
+            }
+
+            if (node.tag == .tagged_template_expression) {
+                const tag = self.ast.readExtraNode(node.data.extra, 0);
+                const template = self.ast.readExtraNode(node.data.extra, 1);
+                const new_tag = try replaceThisInExpr(self, tag);
+                const new_template = try replaceThisInExpr(self, template);
+                if (new_tag == tag and new_template == template) return idx;
+                const flags = self.ast.readExtra(node.data.extra, 2);
+                copy.data.extra = try self.ast.addExtras(&.{ @intFromEnum(new_tag), @intFromEnum(new_template), flags });
+                return self.ast.addNode(copy);
             }
 
             return idx;
