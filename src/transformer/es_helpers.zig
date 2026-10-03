@@ -1984,26 +1984,43 @@ pub fn trackThisArgumentsCaptureSymbols(self: anytype, root: NodeIndex, root_sco
 /// Record the capture declarations that a default-parameter initializer can
 /// read. The ordinary body may need additional captures, but only these must
 /// execute before Pass 2's lowered default checks.
-pub fn recordParameterCaptures(self: anytype, captures: []const NodeIndex, needs_this: bool, needs_arguments: bool, needs_new_target: bool) !void {
-    if (!needs_this and !needs_arguments and !needs_new_target) return;
-    std.debug.assert(!needs_this or self.needs_this_var);
-    std.debug.assert(!needs_arguments or self.needs_arguments_var);
-    std.debug.assert(!needs_new_target or self.hasLexicalCapture(self.capture_frame, .new_target_value));
+pub fn recordParameterCaptures(self: anytype, captures: []NodeIndex, needs_this: bool, needs_arguments: bool, needs_new_target: bool) !void {
+    try recordParameterCapturesWithPresence(self, captures, .{
+        self.needs_this_var,
+        self.needs_arguments_var,
+        self.hasLexicalCapture(self.capture_frame, .new_target_value),
+    }, .{ needs_this, needs_arguments, needs_new_target });
+}
+
+/// Captures are emitted in this/arguments/new.target order, including captures
+/// used only by the body. Partition the actual declarations so parameter reads
+/// precede the lowered defaults and body-only captures remain after them.
+/// Derived constructors omit the this declaration until after super().
+pub fn recordParameterCapturesWithPresence(self: anytype, captures: []NodeIndex, present: [3]bool, required: [3]bool) !void {
+    if (!required[0] and !required[1] and !required[2]) return;
+    var parameter: [3]NodeIndex = undefined;
+    var body: [3]NodeIndex = undefined;
+    var parameter_len: usize = 0;
+    var body_len: usize = 0;
     var index: usize = 0;
-    if (needs_this) {
+    for (present, required) |exists, needed| {
+        std.debug.assert(!needed or exists);
+        if (!exists) continue;
         std.debug.assert(index < captures.len);
-        try self.parameter_capture_statements.put(self.allocator, @intFromEnum(captures[index]), {});
+        const capture = captures[index];
         index += 1;
+        if (needed) {
+            try self.parameter_capture_statements.put(self.allocator, @intFromEnum(capture), {});
+            parameter[parameter_len] = capture;
+            parameter_len += 1;
+        } else {
+            body[body_len] = capture;
+            body_len += 1;
+        }
     }
-    if (needs_arguments) {
-        std.debug.assert(index < captures.len);
-        try self.parameter_capture_statements.put(self.allocator, @intFromEnum(captures[index]), {});
-        index += 1;
-    }
-    if (needs_new_target) {
-        std.debug.assert(index < captures.len);
-        try self.parameter_capture_statements.put(self.allocator, @intFromEnum(captures[index]), {});
-    }
+    std.debug.assert(index == captures.len);
+    @memcpy(captures[0..parameter_len], parameter[0..parameter_len]);
+    @memcpy(captures[parameter_len..], body[0..body_len]);
 }
 
 /// method_definition → standalone function declaration으로 추출.
