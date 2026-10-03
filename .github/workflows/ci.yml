@@ -35,7 +35,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'workflow_dispatch' && format('manual-{0}', inputs.suite) || 'automatic' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'workflow_dispatch' && format('-manual-{0}', inputs.suite) || '' }}
   cancel-in-progress: true
 
 jobs:
