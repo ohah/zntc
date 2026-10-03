@@ -133,13 +133,13 @@ pub fn shouldRun(
     }
 }
 
-/// Type erasure, Flow match lowering, and Flow enums are local to the parsed
-/// module body. For the restricted no-plugin/no-helper case, the transform
-/// editor already carries the exact binding/reference/scope graph; Flow enum
-/// runtime imports are materialized before this pre-pass. Keep the predicate
-/// deliberately narrow: other runtime Flow extensions, import rewriting,
-/// JSX, runtime helpers, and semantic-changing transforms continue through
-/// the full resync path.
+/// Type erasure, Flow match/enum/component lowering, and local TS import-equals
+/// aliases preserve the module graph. For the restricted no-plugin/no-helper
+/// case, the transform editor already carries exact binding/reference/scope
+/// edges; Flow enum runtime imports are materialized before this pre-pass.
+/// Keep the predicate deliberately narrow: external-module import-equals,
+/// other runtime Flow extensions, import rewriting, JSX, runtime helpers, and
+/// semantic-changing transforms continue through the full resync path.
 const FlowMatchGeneratedGlobals = struct {
     has_match: bool = false,
     array: bool = false,
@@ -220,6 +220,27 @@ fn isSupportedRuntimeTsEnum(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     // Only ordinary runtime enums retain the same AST and semantic edges.
     // Const and ambient enums are erased or inlined by the transformer.
     return ast.extra_data.items[extra + 3] == 0;
+}
+
+/// Local TypeScript import-equals aliases preserve module graph shape when
+/// lowered to const bindings. External-module references (require calls) stay
+/// on the resync path because their loader records must be revalidated.
+fn isSupportedLocalImportEquals(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
+    if (node.tag != .ts_import_equals_declaration) return false;
+    var value_idx = node.data.binary.right;
+    while (!value_idx.isNone()) {
+        if (@intFromEnum(value_idx) >= ast.nodes.items.len) return false;
+        const value = ast.getNode(value_idx);
+        switch (value.tag) {
+            .identifier_reference => return true,
+            .static_member_expression => {
+                if (value.data.extra >= ast.extra_data.items.len) return false;
+                value_idx = @enumFromInt(ast.extra_data.items[value.data.extra]);
+            },
+            else => return false,
+        }
+    }
+    return false;
 }
 
 /// Keeping the semantic graph is safe only when the transform leaves each
@@ -528,8 +549,7 @@ fn canKeepPrepassSemanticGraph(
     const graph_editable_jsx = classic_jsx or automatic_jsx or automatic_dev_jsx;
     const arrow_only_downlevel = options.unsupported.hasAny() and
         canRetainGraphForArrowOnlyLowering(ast, options);
-    if ((ast.has_jsx and !graph_editable_jsx) or ast.has_decorator or ast.has_ts_import_equals or
-        ast.has_ts_export_equals) return false;
+    if ((ast.has_jsx and !graph_editable_jsx) or ast.has_decorator or ast.has_ts_export_equals) return false;
     if ((options.unsupported.hasAny() and !arrow_only_downlevel) or options.minify_syntax or
         options.minify_whitespace or options.drop_console or options.drop_debugger or
         options.drop_labels.len != 0 or options.define.len != 0 or options.module_specifier_map.len != 0 or
@@ -558,10 +578,13 @@ fn canKeepPrepassSemanticGraph(
             // The forwardRef helper binding and its call reference are added
             // to the edited graph by the Flow component visitor.
             .flow_component_wrapper => found_transform = true,
+            .ts_import_equals_declaration => {
+                if (!isSupportedLocalImportEquals(ast, node)) return false;
+                found_transform = true;
+            },
             // These constructs can alter the import/export graph or create
             // dynamic-name environments independently of Flow match lowering.
             .export_all_declaration,
-            .ts_import_equals_declaration,
             .ts_export_assignment,
             .ts_namespace_export_declaration,
             .await_expression,
