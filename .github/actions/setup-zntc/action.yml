@@ -10,6 +10,10 @@ inputs:
     description: Install workspace dependencies after building ZNTC.
     required: false
     default: "true"
+  install-profile:
+    description: Dependency profile used when install is enabled.
+    required: false
+    default: "integration"
   cpu:
     description: Optional Zig CPU feature set for portable CI artifacts.
     required: false
@@ -91,10 +95,8 @@ runs:
         EOF
       shell: bash
 
-    - if: ${{ inputs.install == 'true' }}
-      uses: ./.github/actions/bun-cache
-
     - name: Install dependencies
       if: ${{ inputs.install == 'true' }}
-      run: bun install --frozen-lockfile
-      shell: bash
+      uses: ./.github/actions/install-deps
+      with:
+        profile: ${{ inputs.install-profile }}

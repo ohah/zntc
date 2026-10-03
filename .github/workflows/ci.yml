@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
-    # 순수 문서 변경은 build/test 에 영향 없음 — 24-job 매트릭스 skip. documents/
+    # 순수 문서 변경은 build/test 에 영향 없음 — 매트릭스 skip. documents/
     # 사이트는 docs.yml 이 별도 배포. tests/**/*.md fixture 영향을 피하려 docs 위치/
     # 루트 *.md 로 한정(전역 **.md 미사용).
     paths-ignore:
@@ -26,15 +26,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # PR 에선 무거운 매트릭스(release-build, napi-package-smoke)를 축소하고 push(main)
-  # 에선 풀로 돌리기 위해 event 별 matrix JSON 을 방출한다. job-level if 는 matrix
-  # 컨텍스트를 못 쓰므로(GHA 제약) 동적 매트릭스 + fromJSON 으로 구현(표준 패턴).
-  # 풀 매트릭스는 머지마다 push(main)에서 전수 검증되므로 release 안전(release.yml 불변).
+  # 배포 모드 3 OS + Linux ReleaseSafe 는 매번 검증한다. 나머지 최적화 모드는
+  # build-canary.yml 에서 주기 검증. 패키지 설치 검증은 PR 5 / main 8 플랫폼 유지.
   setup-matrix:
-    name: Compute matrices (PR=축소 / push=풀)
+    name: Compute package smoke matrix
     runs-on: ubuntu-latest
     outputs:
-      release: ${{ steps.gen.outputs.release }}
       smoke: ${{ steps.gen.outputs.smoke }}
     steps:
       - id: gen
@@ -42,26 +39,12 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
         run: |
-          # 풀 매트릭스(pr 플래그 포함). pull_request 면 pr==true 만, 그 외(push/dispatch)는 전체.
-          # release-build: ReleaseFast 는 배포 모드 + "ReleaseFast-only 회귀" 이력이라 PR 3-OS 유지.
-          #   ReleaseSafe(ubuntu 만 PR) / ReleaseSmall 은 미배포 카나리아 → PR 손실 0.
-          release_full='[
-            {"os":"ubuntu-latest","optimize":"ReleaseFast","pr":true},
-            {"os":"macos-latest","optimize":"ReleaseFast","pr":true},
-            {"os":"windows-latest","optimize":"ReleaseFast","pr":true},
-            {"os":"ubuntu-latest","optimize":"ReleaseSafe","pr":true},
-            {"os":"macos-latest","optimize":"ReleaseSafe","pr":false},
-            {"os":"windows-latest","optimize":"ReleaseSafe","pr":false},
-            {"os":"ubuntu-latest","optimize":"ReleaseSmall","pr":false},
-            {"os":"macos-latest","optimize":"ReleaseSmall","pr":false},
-            {"os":"windows-latest","optimize":"ReleaseSmall","pr":false}
-          ]'
           # napi-package-smoke: PR 대표 5개 = 각 ABI 1개 + 32-bit ia32 카나리아(#3632 이력).
           #   arm64-gnu/musl·darwin-x64 3개는 push 에서. install/resolve 는 platform 무관이라
           #   PR 대표로 충분, arch 고유 dlopen/ABI 회귀는 push(main) 백스톱.
           # win32-arm64-msvc 는 smoke 에서 의도적 제외(arm64-windows zig 0.16.0 바이너리가
           #   네이티브 러너 segfault; cross-build 는 release.yml 검증). ia32 는 Node v24 가
-          #   win-x86 폐지 → v22 + host 32-bit binary(host_zig_target) 강제.
+          #   win-x86 폐지 → v22 + x86 Node 로 실제 32-bit dlopen 을 검증.
           smoke_full='[
             {"platform":"linux-x64-gnu","os":"ubuntu-latest","zig_target":"native","pr":true},
             {"platform":"linux-arm64-gnu","os":"ubuntu-24.04-arm","zig_target":"native","pr":false},
@@ -70,16 +53,13 @@ jobs:
             {"platform":"darwin-arm64","os":"macos-latest","zig_target":"native","pr":true},
             {"platform":"darwin-x64","os":"macos-15-intel","zig_target":"native","pr":false},
             {"platform":"win32-x64-msvc","os":"windows-latest","zig_target":"native","pr":true},
-            {"platform":"win32-ia32-msvc","os":"windows-latest","zig_target":"x86-windows-msvc","host_zig_target":"x86-windows-msvc","node_version":"22","node_arch":"x86","pr":true}
+            {"platform":"win32-ia32-msvc","os":"windows-latest","zig_target":"x86-windows-msvc","node_version":"22","node_arch":"x86","pr":true}
           ]'
           if [ "$EVENT" = "pull_request" ]; then
-            release=$(jq -c '[.[] | select(.pr) | del(.pr)]' <<< "$release_full")
             smoke=$(jq -c '[.[] | select(.pr) | del(.pr)]' <<< "$smoke_full")
           else
-            release=$(jq -c '[.[] | del(.pr)]' <<< "$release_full")
             smoke=$(jq -c '[.[] | del(.pr)]' <<< "$smoke_full")
           fi
-          echo "release={\"include\":$release}" >> "$GITHUB_OUTPUT"
           echo "smoke={\"include\":$smoke}" >> "$GITHUB_OUTPUT"
 
   debug-test:
@@ -114,19 +94,19 @@ jobs:
           ./zig-out/bin/lib-unit-test
           ./zig-out/bin/exe-unit-test
         # (Test262 runner unit test 는 lib_mod 에 포함되어 위 lib-unit-test 가 이미 커버 —
-        #  별도 `zig build test262` step 은 IPC 오보고를 다시 들이므로 제거. test262.yml 의
-        #  Test262 Conformance workflow 가 독립적으로 동일 직접-binary 실행을 수행한다.)
+        #  test262.yml 은 실제 language corpus 검증만 수행한다.)
 
   release-build:
     name: Release Build (${{ matrix.os }}, ${{ matrix.optimize }})
-    needs: setup-matrix
     runs-on: ${{ matrix.os }}
-    # 매트릭스는 setup-matrix 가 event 별로 방출(PR=ReleaseFast 3-OS + ReleaseSafe
-    # ubuntu = 4, push(main)=풀 3×3 = 9). job-level if 는 matrix 컨텍스트 미지원이라
-    # 동적 매트릭스로 구현. 선정 근거는 setup-matrix 의 release_full 주석 참조.
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.setup-matrix.outputs.release) }}
+      matrix:
+        include:
+          - { os: ubuntu-latest, optimize: ReleaseFast }
+          - { os: macos-latest, optimize: ReleaseFast }
+          - { os: windows-latest, optimize: ReleaseFast }
+          - { os: ubuntu-latest, optimize: ReleaseSafe }
 
     steps:
       - name: Checkout
@@ -215,8 +195,44 @@ jobs:
       - name: Audit release version lockstep
         run: bun run test:version-lockstep
 
+  prepare-packages:
+    name: Prepare native package (Ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+          cache-key: ci-packages-baseline
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: ./.github/actions/install-deps
+        with:
+          profile: core-build
+      - name: Build portable Linux NAPI
+        run: |
+          zig build napi --cache-dir .zig-cache-napi -Dcpu=baseline
+          cp zig-out/lib/zntc.node packages/core/zntc.node
+      - name: Build core JS wrapper and declarations
+        run: bun run --cwd packages/core build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-package-build
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            zig-out/lib/zntc.node
+            packages/core/dist/**
+
   napi:
     name: NAPI Build & Test
+    needs: prepare-packages
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -230,6 +246,7 @@ jobs:
           submodules: recursive
 
       - name: Setup Zig
+        if: runner.os == 'macOS'
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
@@ -240,32 +257,27 @@ jobs:
         with:
           bun-version: "1.3.11"
 
-      - uses: ./.github/actions/bun-cache
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 24
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+      - uses: ./.github/actions/install-deps
+        with:
+          profile: core-test
 
-      - name: Build NAPI module (Windows, MinGW ABI)
-        if: runner.os == 'Windows'
-        run: zig build napi --cache-dir .zig-cache-napi -Dtarget=x86_64-windows-gnu
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-package-build
+          path: .
 
-      - name: Build NAPI module
-        if: runner.os != 'Windows'
+      # Linux 는 Ubuntu 의 portable binary 를 재사용하고 macOS 는 네이티브 ABI 를 빌드.
+      - name: Build macOS NAPI
+        if: runner.os == 'macOS'
         run: zig build napi --cache-dir .zig-cache-napi
 
-      # JS + dts 둘 다 emit. dts 는 web/server 의 `tsc --emitDeclarationOnly`
-      # 가 `import { prepareAppDevSync } from "@zntc/core"` 의 declaration 을
-      # resolve 할 때 필요 (#2539 PR #6d 후 web 이 core 를 typed import).
-      - name: Build JS wrapper + dts
-        run: cd packages/core && bun run build:js && bun run build:dts
-
-      - name: Copy .node to package
-        run: cp zig-out/lib/zntc.node packages/core/zntc.node 2>/dev/null || true
+      - name: Use fresh native NAPI
+        run: cp zig-out/lib/zntc.node packages/core/zntc.node
 
       - name: Run NAPI tests (Bun)
         run: cd packages/core && bun test index.test.ts
@@ -289,7 +301,7 @@ jobs:
 
   napi-package-smoke:
     name: NAPI Package Smoke (${{ matrix.platform }})
-    needs: setup-matrix
+    needs: [setup-matrix, prepare-packages]
     runs-on: ${{ matrix.os }}
     # 매트릭스는 setup-matrix 가 event 별로 방출(PR=대표 5 / push=풀 8). 플랫폼 선정
     # 근거(win32-arm64 제외, ia32 node22 등)는 setup-matrix 의 smoke_full 주석 참조.
@@ -304,15 +316,11 @@ jobs:
           submodules: recursive
 
       - name: Setup Zig
+        if: matrix.platform != 'linux-x64-gnu'
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
           cache-key: napi-smoke-${{ matrix.platform }}
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.3.11"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -320,43 +328,23 @@ jobs:
           node-version: ${{ matrix.node_version || '24' }}
           architecture: ${{ matrix.node_arch || '' }}
 
-      - uses: ./.github/actions/bun-cache
+      # JS/dts 는 플랫폼과 무관하므로 Ubuntu 산출물을 공유한다. 각 OS 에서는
+      # 대상 NAPI 빌드와 실제 npm tarball install/dlopen 을 검증한다.
+      - uses: actions/download-artifact@v4
         with:
-          platform: ${{ matrix.platform }}
+          name: ci-package-build
+          path: .
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      # build:js:cjs 가 ZNTC self-host (`node bin/zntc.mjs --bundle`) — host
-      # node 가 packages/core/zntc.node 를 dlopen 함. host 와 ABI 가 다른 cross
-      # binary (musl 등) 는 못 읽으므로 host native 를 먼저 빌드해 두고, cross
-      # 매트릭스만 그 후 target binary 로 zig-out 을 덮어 sub-package 에 복사.
-      # host_zig_target 명시 entry (ia32 등) 는 host node arch 에 맞춘 cross
-      # build 로 dogfood 가능하게 — windows-latest(64-bit) 에서 32-bit Node 가
-      # 64-bit binary dlopen 못 함.
-      - name: Build host NAPI (dogfood)
+      - name: Build platform NAPI
+        if: matrix.platform != 'linux-x64-gnu'
         shell: bash
-        run: |
-          if [ -n "${{ matrix.host_zig_target }}" ]; then
-            zig build napi --cache-dir .zig-cache-napi -Dtarget=${{ matrix.host_zig_target }}
-          else
-            zig build napi --cache-dir .zig-cache-napi
-          fi
-          cp zig-out/lib/zntc.node packages/core/zntc.node
-
-      - name: Build JS wrapper + dts
-        run: cd packages/core && bun run build:js && bun run build:dts
-
-      # host_zig_target == zig_target 인 경우 (ia32) host build 가 이미 sub-package
-      # 용 binary 라 cross step 중복. zig cache 가 hit 해도 step 자체 overhead 회피.
-      - name: Build platform NAPI (cross)
-        if: matrix.zig_target != 'native' && matrix.zig_target != matrix.host_zig_target
-        shell: bash
-        run: zig build napi --cache-dir .zig-cache-napi -Dtarget=${{ matrix.zig_target }}
+        run: zig build napi --cache-dir .zig-cache-napi -Dtarget=${{ matrix.zig_target }} -Dcpu=baseline
 
       - name: Copy .node into platform sub-package
         shell: bash
-        run: cp zig-out/lib/zntc.node packages/core-${{ matrix.platform }}/zntc.node
+        run: |
+          cp zig-out/lib/zntc.node packages/core-${{ matrix.platform }}/zntc.node
+          cp NOTICE packages/core-${{ matrix.platform }}/NOTICE
 
       # 사용자 시나리오: npm install @zntc/core → main + 환경 매칭 sub-package 1개 install.
       # 두 tarball 같이 install 해서 loader 가 sub-package require.resolve 로 binary 찾는 흐름 검증.
@@ -405,6 +393,9 @@ jobs:
 
   publish-smoke:
     name: Publish Smoke Test
+    needs: [prepare-packages, wasm]
+    # WASM 실행 테스트가 실패해도 빌드된 패키지의 배포 검증은 독립적으로 수행한다.
+    if: ${{ !cancelled() && needs.prepare-packages.result == 'success' && needs.wasm.outputs.artifact_id != '' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -413,27 +404,27 @@ jobs:
         with:
           submodules: recursive
 
-      # setup-zntc 가 zig + bun + ZNTC core build + NAPI module + core JS wrapper
-      # 까지 처리. publish-smoke 는 추가로 wasm binary + JS wrapper, 그리고
-      # 나머지 publishable workspace package 빌드만 하면 된다.
-      - name: Setup ZNTC (core + NAPI)
-        uses: ./.github/actions/setup-zntc
+      - uses: oven-sh/setup-bun@v2
         with:
-          cache-key: publish-smoke
-
-      - name: Build wasm binaries
-        run: zig build wasm && zig build wasm-bundler
-
-      - name: Copy wasm + build wasm JS wrapper
-        run: |
-          cp zig-out/bin/zntc.wasm packages/wasm/
-          cp zig-out/bin/zntc-bundler.wasm packages/wasm/
-          bun run --cwd packages/wasm build:js
-          bun run --cwd packages/wasm build:dts
-          bun run --cwd packages/core build:dts
-
+          bun-version: "1.3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: ./.github/actions/install-deps
+        with:
+          profile: publish
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-package-build
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-wasm-build
+          path: .
+      - name: Use fresh native NAPI
+        run: cp zig-out/lib/zntc.node packages/core/zntc.node
       - name: Build remaining publishable packages
-        run: bun run build:publishable
+        run: bun run build:publishable:adapters
 
       - name: Run publish smoke test
         run: bun run test:publish-smoke
@@ -453,6 +444,8 @@ jobs:
   wasm:
     name: WASM Build & Test
     runs-on: ubuntu-latest
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
 
     steps:
       - name: Checkout
@@ -460,27 +453,30 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
-          cache-key: wasm
-
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.11"
 
-      - uses: ./.github/actions/bun-cache
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Build WASM (transpile)
-        run: zig build wasm
-
-      - name: Build WASM (bundler — #1885 Phase 2)
-        run: zig build wasm-bundler
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+          cache-key: wasm
+      - uses: ./.github/actions/install-deps
+        with:
+          profile: wasm
+      - name: Build WASM packages
+        run: bun run --cwd packages/wasm build
+      - uses: actions/upload-artifact@v4
+        id: upload
+        with:
+          name: ci-wasm-build
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            zig-out/bin/*.wasm
+            packages/wasm/dist/**
+            packages/wasm/*.wasm
 
       - name: Run WASM tests
         run: cd packages/wasm && bun test

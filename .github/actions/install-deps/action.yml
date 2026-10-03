@@ -1,0 +1,25 @@
+name: Install CI dependencies
+description: Install the workspace dependencies used by this CI job, with a profile-specific Bun cache.
+
+inputs:
+  profile:
+    description: Dependency profile (lint, core-build, core-test, integration, e2e, benchmark, wasm, publish, docs).
+    required: true
+  platform:
+    description: Optional platform segment for the Bun package cache.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/bun-cache
+      with:
+        profile: ${{ inputs.profile }}
+        platform: ${{ inputs.platform }}
+
+    - name: Install dependencies
+      shell: bash
+      env:
+        CI_DEPS_PROFILE: ${{ inputs.profile }}
+      run: bash scripts/ci-install-deps.sh "$CI_DEPS_PROFILE"

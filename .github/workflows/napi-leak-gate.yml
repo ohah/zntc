@@ -1,15 +1,14 @@
-name: NAPI Leak Gate (disabled until Zig 0.16)
+name: NAPI Leak Gate (manual)
 
 # dev/watch RSS 누수 회귀 가드 (PR #3691~#3713 epic 후속).
 # Debug GPA leak detector (`packages/core/src/napi/common.zig` 의 debug_gpa) 가
 # 1분 dev probe 후 process 종료 시 stack trace 포함 leak 리포트 dump. 회귀
 # 발생 시 leak entries > 0 또는 panic 으로 즉시 차단.
 #
-# **현재 비활성화** — 과거 Zig 0.15.2 + Linux x86_64 + libc shared library 의
+# **자동 실행 비활성화** — 과거 Zig 0.15.2 + Linux x86_64 + libc shared library 의
 # DebugAllocator `captureStackTrace` 가 frame pointer chain unwinding 시 SEGV
 # (Zig issue #25025) 때문에 보류했다. ZTS 는 #1514 로 0.16.0 으로 올라가
-# (issue #25025 는 0.16 milestone 에서 fix) 재활성화 가능 — 별도 PR 에서 아래
-# `on:` 트리거 (`push.branches`, `schedule.cron`) 의 주석을 제거하고 검증.
+# (issue #25025 는 0.16 milestone 에서 fix). 현재는 수동 진단 도구로 유지한다.
 #
 # **macOS local 측정은 정상 동작** — `docs/DEBUG.md` / Starlight guide 의
 # 1분 dev probe 스크립트로 직접 사용 가능. 회귀 의심 시 macOS 에서 수동 측정.
@@ -18,7 +17,7 @@ name: NAPI Leak Gate (disabled until Zig 0.16)
 # 기대값: leak entries=0, panics=0, rebuilt≥5 (touch-probe 정상 작동 검증).
 
 on:
-  # push / schedule 비활성. workflow_dispatch 만 유지 — Zig 0.16 후 수동 검증.
+  # push / schedule 비활성. workflow_dispatch 로 누수 의심 시 진단.
   # push:
   #   branches: [main]
   #   paths:
@@ -65,15 +64,15 @@ jobs:
         with:
           bun-version: "1.3.11"
 
-      - uses: ./.github/actions/bun-cache
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 24
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        uses: ./.github/actions/install-deps
+        with:
+          profile: e2e
 
       - name: Build NAPI (Debug — leak detector 활성)
         # `-Dnapi-optimize=Debug` 는 build.zig:233 의 napi_optimize option.

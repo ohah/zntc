@@ -5,10 +5,26 @@ on:
     branches: [main]
     paths:
       - 'src/**'
+      - 'tests/test262'
+      - 'tests/test262/**'
+      - 'build/**'
+      - 'build.zig'
+      - 'build.zig.zon'
+      - 'vendor/**'
+      - '.gitmodules'
+      - '.github/workflows/test262.yml'
   pull_request:
     branches: [main]
     paths:
       - 'src/**'
+      - 'tests/test262'
+      - 'tests/test262/**'
+      - 'build/**'
+      - 'build.zig'
+      - 'build.zig.zon'
+      - 'vendor/**'
+      - '.gitmodules'
+      - '.github/workflows/test262.yml'
   workflow_dispatch:
 
 concurrency:
@@ -16,34 +32,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test262-unit:
-    name: Test262 Runner Unit Tests
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
-          cache-key: test262-unit
-
-      - name: Run Test262 runner unit tests
-        # zig build test262 = run_lib_unit_tests (--listen=- IPC). Debug Test 와 동일하게 async
-        # runner 가 인접 test 의 pass-path stderr 를 오보고하므로, 직접 binary 실행으로 회피한다
-        # (build.zig 의 test-bin step — test262 runner unit 은 lib_mod 에 포함되어 lib-unit-test 가 커버).
-        run: |
-          zig build test-bin
-          ./zig-out/bin/lib-unit-test
-
+  # Runner unit tests는 CI Debug Test의 lib-unit-test에 포함된다.
   test262-parser:
     name: Test262 Language Conformance
     runs-on: ubuntu-latest
-    needs: test262-unit
 
     steps:
       - name: Checkout
@@ -57,12 +49,10 @@ jobs:
           version: 0.16.0
           cache-key: test262-run
 
-      - name: Build (ReleaseFast)
-        run: zig build -Doptimize=ReleaseFast
-
       # 전체 language/ 한 번에 — literals/comments/asi 등 (이전 별도 lexer job 의 모든
       # 카테고리) 이 이 디렉토리의 부분집합이라 단일 run 으로 동일 커버리지. 실패 시
       # 위반 파일 경로가 출력되므로 카테고리별 step 분리 없이도 회귀 위치 식별 가능.
+      # 기존 corpus 실행과 동일한 Debug 모드로 한 번만 빌드한다.
       - name: Test262 — full language/
         run: zig build run -- --test262 tests/test262/test/language/
 

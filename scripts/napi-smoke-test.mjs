@@ -7,6 +7,7 @@
 // 은 cwd 기준 resolution 이라 `tmp-napi-smoke/node_modules` 에 install 된
 // tarball 을 정확히 import.
 import { init, tokenize, transpile } from '@zntc/core';
+import { createRequire } from 'node:module';
 
 init();
 
@@ -18,6 +19,16 @@ if (!result.code.includes('const value = 1')) {
 const tokens = tokenize('const x = 1;', { filename: 'input.ts' });
 if (!Array.isArray(tokens) || tokens.length === 0) {
   throw new Error('tokenize returned no tokens');
+}
+
+// Ubuntu 에서 생성한 CJS wrapper 도 실제 설치한 플랫폼 binary 를 로드해야 한다.
+// stdin 실행의 import.meta.url 은 smoke cwd 이므로 workspace 패키지를 우회한다.
+const require = createRequire(import.meta.url);
+const cjs = require('@zntc/core');
+cjs.init();
+const cjsResult = cjs.transpile('const value: number = 1;', { filename: 'input.ts' });
+if (!cjsResult.code.includes('const value = 1')) {
+  throw new Error(`unexpected CJS transpile output: ${cjsResult.code}`);
 }
 
 console.log('napi smoke: OK');

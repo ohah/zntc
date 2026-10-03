@@ -11,6 +11,11 @@ zig build test262-run -- --verbose       # 상세 출력
 - 러너 위치: `src/test262/`, 입력 서브모듈: `tests/test262/`
 - excludelist: 엔진 의존 / 스펙 외 항목만 (현재 0건)
 
+CI의 `Test262 Conformance`는 Ubuntu에서 `language/` 전체를 Debug 모드로
+빌드·실행한다. 러너 자체 유닛 테스트는 `CI`의 `lib-unit-test`가 함께 실행하므로
+별도 Test262 유닛 job을 두지 않는다. 소스뿐 아니라 빌드 설정, workflow,
+Test262 서브모듈 pin 변경도 정합성 검증을 실행한다.
+
 ## 유닛 테스트 (Zig)
 ```bash
 zig build test                           # 모든 모듈 유닛 + 통합 Zig 테스트
@@ -60,6 +65,23 @@ API 를 오염시키지 말 것).
 cd tests/integration && bun test         # CLI/NAPI 통합 테스트
 cd tests/e2e && bun test                 # Playwright E2E (dev server, 브라우저)
 ```
+
+`Integration & E2E`의 전체 통합 스위트는 Ubuntu에서 실행한다.
+`determinism.test.ts`의 N=10 반복, `compat-table.test.ts`, `swc-compare.test.ts`,
+`hermes-runtime.test.ts`도 이 실행에 포함되며 별도 job으로 중복 실행하지 않는다.
+compat-table 데이터는 실행 전에 추출하고 보고서는 artifact로 보관한다.
+Hermes runtime과 RN fixture를 미리 설치하고 작은 입력으로 Linux Hermes 실행과
+bytecode 컴파일을 확인한다. 실제 RN 번들 검증은 통합 스위트에서 실행하므로,
+테스트 탐색 순서나 누락된 의존성 때문에 검증이 생략되지 않는다.
+
+macOS는 네이티브 파일 감시(kqueue), HTTP/TLS, NAPI lifecycle 및 watch/HMR 경로를
+아래 14개 파일로 검증한다. 그 밖의 전체 통합 스위트는 Ubuntu가 담당하며,
+플랫폼별 NAPI/패키지 ABI 검증은 `CI` workflow에 유지한다.
+
+- 파일 감시와 HMR: `watch-json.test.ts`, `watch-stress.test.ts`, `hmr.test.ts`
+- dev server: `devserver.test.ts`, `devserver-sse.test.ts`, `dev-server-tls.test.ts`, `js-dev-server-lazy.test.ts`
+- NAPI: `napi-dev-jsx-binding.test.ts`, `napi-dev-server.test.ts`, `napi-dev-server-quiet-regression.test.ts`, `napi-lazy-dev-hmr.test.ts`, `napi-lazy-primitives.test.ts`, `napi-tls-self-check.test.ts`
+- 파일 경로·캐시: `tsconfig-cache.test.ts`
 
 ### 실 라이브러리 fixture
 - 루트 `bun install` 로 `clsx`/`nanoid`/`zod`/`react`/`react-dom`/`preact`/`immer`/`date-fns`/`rxjs`/`lodash-es` 등 자동 설치 → `manual-chunks-smoke` / `inline-dynamic-imports-smoke` 의 `test.skipIf(!hasPackage(...))` 통과.
@@ -149,7 +171,7 @@ bun run tests/benchmark/bundle-perf.ts --output ./bundle-perf.json
 - 워밍업 5회 + 측정 20회 → CLI wall time median 비교
 - 체크인된 bundle-perf baseline 없음. 같은 CI runner 에서 ZNTC / Rolldown / Rspack 을 나란히 돌린 실측값만 보고한다
 - ZNTC `--profile=all` total 은 내부 phase 진단용으로만 별도 기록한다
-- CI: `benchmark.yml` 가 PR 마다 `--no-fail --output` 으로 실행 → JSON artifact 업로드 (트렌드 추적)
+- CI: `benchmark.yml`은 `performance` 라벨 PR, 매일 17:35 UTC, 수동 실행에서 Ubuntu로 측정한다. 회귀 보고서와 표는 실행 요약, JSON은 artifact로 남긴다.
 
 ## 기타 벤치 / 분석
 - `bench.ts` / `pipeline.ts` — 합성 벤치 (200 모듈, 단계별 시간)
@@ -163,5 +185,12 @@ bun run tests/benchmark/bundle-perf.ts --output ./bundle-perf.json
 - e2e 도 `tests/e2e/` cwd 에서. Playwright 가 자체 server fixture 를 띄움.
 
 ## CI
-- `.github/workflows/` — `ci.yml` (zig + integration), `benchmark.yml` (perf 트렌드)
+- 일반 코드 변경의 최대 job 수는 PR 26개, main push 29개다. 성능 라벨, 문서 배포, 릴리스 및 주기 검사는 별도다.
+- `ci.yml`: Debug 유닛 테스트, 배포 모드 3 OS와 Linux ReleaseSafe, NAPI/WASM 및 패키지 설치 검증. 플랫폼과 무관한 JS/dts는 Ubuntu에서 한 번 만들고, 각 플랫폼은 자신의 NAPI 바이너리로 ESM/CJS 로딩을 검사한다.
+- `integration.yml`: Ubuntu 전체 통합·Hermes·compat·determinism, 브라우저 E2E와 실제 프로젝트 smoke. macOS는 위의 watch/HMR/native 목록을 실행한다. Smoke 결과는 실행 요약에 남긴다.
+- `test262.yml`: language corpus만 검사한다. 러너 유닛 테스트는 CI의 Debug Test에 포함된다.
+- `build-canary.yml`: 추가 ReleaseSafe/ReleaseSmall 5개 조합은 매주 월요일 04:17 UTC와 수동 실행으로 검증한다. 해당 workflow 변경 PR에서도 실행한다.
+- `release.yml`: 9개 플랫폼별로 NAPI와 CLI를 함께 빌드한다. 실제 npm/GitHub 배포는 버전 태그에서만 실행한다.
+- `scripts/ci-install-deps.sh`: job별 Bun workspace 필터를 관리한다. root fixture 의존성은 유지하며, integration은 조용한 test skip을 막기 위해 benchmark workspace도 설치한다. 테스트 의존성을 추가할 때 프로필과 실제 실행/skip 수를 함께 확인한다.
+- `docs.yml`은 문서 배포, `napi-leak-gate.yml`은 수동 누수 진단에 사용한다.
 - ReleaseFast 빌드에서만 깨지는 회귀가 존재 → debug 통과해도 CI 실패 시 `-Doptimize=ReleaseFast` 로 로컬 재현 필수

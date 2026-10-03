@@ -6,6 +6,10 @@ inputs:
     description: Optional 키 segment (예 — matrix.platform). 빈 값이면 OS-only 키.
     required: false
     default: ""
+  profile:
+    description: Optional dependency profile. Keep cache restores within this profile to avoid restoring unrelated packages.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -14,7 +18,7 @@ runs:
       uses: actions/cache@v4
       with:
         path: ~/.bun/install/cache
-        key: ${{ runner.os }}${{ inputs.platform != '' && format('-{0}', inputs.platform) || '' }}-bun-${{ hashFiles('bun.lock', 'tests/benchmark/bun.lock', 'tests/integration/fixtures/emotion-v10/bun.lock', 'documents/bun.lock', 'package.json', 'tests/integration/package.json', 'tests/benchmark/package.json', 'documents/package.json') }}
+        key: ${{ runner.os }}${{ inputs.platform != '' && format('-{0}', inputs.platform) || '' }}-bun-${{ inputs.profile != '' && format('{0}-', inputs.profile) || '' }}${{ hashFiles('bun.lock', 'tests/benchmark/bun.lock', 'tests/integration/fixtures/emotion-v10/bun.lock', 'documents/bun.lock', 'package.json', 'tests/integration/package.json', 'tests/benchmark/package.json', 'documents/package.json', 'scripts/ci-install-deps.sh') }}
         restore-keys: |
-          ${{ runner.os }}${{ inputs.platform != '' && format('-{0}', inputs.platform) || '' }}-bun-
-          ${{ runner.os }}-bun-
+          ${{ runner.os }}${{ inputs.platform != '' && format('-{0}', inputs.platform) || '' }}-bun-${{ inputs.profile != '' && format('{0}-', inputs.profile) || '' }}
+          ${{ runner.os }}-bun-${{ inputs.profile != '' && format('{0}-', inputs.profile) || '' }}
