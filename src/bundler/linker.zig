@@ -225,6 +225,8 @@ pub const Linker = struct {
     /// output name must also avoid unresolved source globals or it captures
     /// those references after bundling.
     cjs_factory_runtime_name: ?[]const u8 = null,
+    /// ESM factory has the same raw-preamble boundary as the CJS factory.
+    esm_factory_runtime_name: ?[]const u8 = null,
 
     /// 외부에서 전달된 예약 전역 식별자 (--global-identifier).
     /// RN의 polyfillGlobal()로 등록되는 이름(Performance, EventCounts 등)을
@@ -514,6 +516,7 @@ pub const Linker = struct {
         self.rename_table.deinit(self.allocator);
         self.reserved_globals.deinit(self.allocator);
         if (self.cjs_factory_runtime_name) |name| self.allocator.free(name);
+        if (self.esm_factory_runtime_name) |name| self.allocator.free(name);
         // nested-binding 캐시: inner set 해제(computeRenames 에러 경로 안전망; 정상 경로는 defer 가 이미 clear).
         self.clearNestedBindingCache();
         self.nested_binding_cache.deinit(self.allocator);
@@ -938,6 +941,13 @@ pub const Linker = struct {
             try self.reserveCjsRuntimeName();
             break;
         }
+        var esm_runtime_it = self.graph.modulesIterator();
+        while (esm_runtime_it.next()) |m| {
+            if (self.tree_shaker_active and !m.is_included) continue;
+            if (m.wrap_kind != .esm) continue;
+            try self.reserveEsmRuntimeName();
+            break;
+        }
 
         // (#4530) **생성된 래퍼 심볼 이름도 예약**한다 — CJS `require_X`, ESM-wrap
         // `init_X`/`exports_X`. 이들은 emitter 가 직접 찍는 top-level 선언인데
@@ -995,20 +1005,48 @@ pub const Linker = struct {
         return self.cjs_factory_runtime_name orelse if (self.minify_whitespace) rt_names.NAMES.CJS_FACTORY_MIN else "__commonJS";
     }
 
+    /// Select a graph-wide ESM factory name before chunk helper preambles emit.
+    pub fn prepareEsmRuntimeName(self: *Linker) !void {
+        if (self.esm_factory_runtime_name != null) return;
+        var runtime_it = self.graph.modulesIterator();
+        while (runtime_it.next()) |m| {
+            if (self.tree_shaker_active and !m.is_included) continue;
+            if (m.wrap_kind != .esm) continue;
+            const base = if (self.minify_whitespace) rt_names.NAMES.ESM_FACTORY_MIN else "__esm";
+            self.esm_factory_runtime_name = try self.allocRuntimeFactoryName(base);
+            return;
+        }
+    }
+
+    fn reserveEsmRuntimeName(self: *Linker) !void {
+        try self.prepareEsmRuntimeName();
+        if (self.esm_factory_runtime_name) |name| {
+            try self.reserved_globals.put(self.allocator, name, {});
+        }
+    }
+
+    pub fn esmFactoryRuntimeName(self: *const Linker) []const u8 {
+        return self.esm_factory_runtime_name orelse if (self.minify_whitespace) rt_names.NAMES.ESM_FACTORY_MIN else "__esm";
+    }
+
     fn allocCjsRuntimeName(self: *Linker) ![]const u8 {
         const base = if (self.minify_whitespace) rt_names.NAMES.CJS_FACTORY_MIN else "__commonJS";
+        return self.allocRuntimeFactoryName(base);
+    }
+
+    fn allocRuntimeFactoryName(self: *Linker, base: []const u8) ![]const u8 {
         var suffix: u32 = 0;
         while (true) : (suffix += 1) {
             const candidate = if (suffix == 0)
                 try self.allocator.dupe(u8, base)
             else
                 try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ base, suffix });
-            if (!self.cjsRuntimeNameIsSourceVisible(candidate)) return candidate;
+            if (!self.runtimeFactoryNameIsSourceVisible(candidate)) return candidate;
             self.allocator.free(candidate);
         }
     }
 
-    fn cjsRuntimeNameIsSourceVisible(self: *const Linker, candidate: []const u8) bool {
+    fn runtimeFactoryNameIsSourceVisible(self: *const Linker, candidate: []const u8) bool {
         for (self.global_identifiers) |name| {
             if (std.mem.eql(u8, name, candidate)) return true;
         }
@@ -4089,10 +4127,13 @@ pub const Linker = struct {
         // 미해결 참조 수집 (해당 청크의 모듈만)
         self.reserved_globals.clearRetainingCapacity();
         var needs_cjs_runtime = false;
+        var needs_esm_runtime = false;
         for (module_indices) |mod_idx| {
             const m = self.graph.getModule(mod_idx) orelse continue;
             if ((!self.tree_shaker_active or m.is_included) and m.wrap_kind == .cjs)
                 needs_cjs_runtime = true;
+            if ((!self.tree_shaker_active or m.is_included) and m.wrap_kind == .esm)
+                needs_esm_runtime = true;
             const sem = m.semantic orelse continue;
             var urit = sem.unresolved_references.iterator();
             while (urit.next()) |entry| {
@@ -4123,6 +4164,7 @@ pub const Linker = struct {
             try self.forEachWrapperImportTarget(cm, self, C.cb);
         }
         if (needs_cjs_runtime) try self.reserveCjsRuntimeName();
+        if (needs_esm_runtime) try self.reserveEsmRuntimeName();
 
         // 1. 지정된 모듈의 top-level 심볼 이름 수집
         var name_to_owners: NameToOwnersMap = .empty;

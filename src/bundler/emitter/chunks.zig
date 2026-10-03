@@ -424,6 +424,7 @@ pub fn emitChunks(
         @constCast(l).use_shared_ns_preamble = true;
         @constCast(l).ns_preamble_chunked = true;
         try @constCast(l).prepareCjsRuntimeName();
+        try @constCast(l).prepareEsmRuntimeName();
     }
 
     var outputs: std.ArrayList(OutputFile) = .empty;
@@ -680,11 +681,23 @@ pub fn emitChunks(
         // 글로벌(__zntc_g.__zntc_modules ||)이라 청크 평가 순서 무관 → cross-chunk hot-replace.
         // reg_split(IIFE/UMD/AMD) 만: ESM 출력은 청크가 native import 라 등록 모델 비대상.
         if (dev_split_chunk) {
-            const hmr_src = if (chunk_is_user_entry)
-                (if (options.minify_whitespace) rt.HMR_RUNTIME_MIN else rt.HMR_RUNTIME)
+            const cjs_factory_name = if (linker) |l|
+                l.cjsFactoryRuntimeName()
+            else if (options.minify_whitespace)
+                rt.NAMES.CJS_FACTORY_MIN
             else
-                rt.HMR_CHUNK_REGISTER;
-            try chunk_output.appendSlice(allocator, hmr_src);
+                "__commonJS";
+            const esm_factory_name = if (linker) |l|
+                l.esmFactoryRuntimeName()
+            else if (options.minify_whitespace)
+                rt.NAMES.ESM_FACTORY_MIN
+            else
+                "__esm";
+            if (chunk_is_user_entry) {
+                try rt.appendHmrRuntimeNamed(&chunk_output, allocator, options.minify_whitespace, cjs_factory_name, esm_factory_name);
+            } else {
+                try rt.appendHmrChunkRegisterNamed(&chunk_output, allocator, cjs_factory_name, esm_factory_name);
+            }
         }
 
         // ESM external imports (#1962): chunk 모듈들의 external import 를 dedup

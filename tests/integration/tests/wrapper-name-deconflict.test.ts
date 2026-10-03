@@ -166,6 +166,106 @@ describe('#4530: 래퍼 심볼 ↔ 사용자 top-level 심볼 deconflict', () =>
     }
   });
 
+  test('ESM runtime 별칭은 같은 이름의 unresolved source global을 가리지 않는다', async () => {
+    const { dir, cleanup } = await createFixture({
+      'dep.mjs': 'export const value = 7;',
+      'entry.cjs': 'const dep = require("./dep.mjs");\n' + 'console.log(typeof __esm, dep.value);',
+    });
+    try {
+      const out = join(dir, 'b.cjs');
+      const res = await runZntc(['--bundle', join(dir, 'entry.cjs'), '-o', out, '--format=cjs']);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      const { stdout, stderr } = await runNode(out);
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout.trim()).toBe('undefined 7');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('ESM runtime 축약 별칭도 unresolved source global을 가리지 않는다', async () => {
+    const { dir, cleanup } = await createFixture({
+      'dep.mjs': 'export const value = 7;',
+      'entry.cjs': 'const dep = require("./dep.mjs");\n' + 'console.log(typeof $e, dep.value);',
+    });
+    try {
+      const out = join(dir, 'b.cjs');
+      const res = await runZntc([
+        '--bundle',
+        join(dir, 'entry.cjs'),
+        '-o',
+        out,
+        '--format=cjs',
+        '--minify',
+      ]);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      const { stdout, stderr } = await runNode(out);
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout.trim()).toBe('undefined 7');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('code-splitting ESM runtime 별칭도 다른 청크의 unresolved global을 가리지 않는다', async () => {
+    const { dir, cleanup } = await createFixture({
+      'dep.mjs': 'export const value = 7;',
+      'lazy.cjs': 'const dep = require("./dep.mjs");\n' + 'console.log(typeof __esm, dep.value);',
+      'entry.mjs': 'import("./lazy.cjs");',
+    });
+    try {
+      const outDir = join(dir, 'dist');
+      const res = await runZntc([
+        '--bundle',
+        join(dir, 'entry.mjs'),
+        '--outdir',
+        outDir,
+        '--splitting',
+        '--format=esm',
+      ]);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout.trim()).toBe('undefined 7');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('CJS와 ESM factory 별칭이 dev HMR preamble의 래핑에도 전달된다', async () => {
+    const { dir, cleanup } = await createFixture({
+      'legacy.cjs': 'module.exports = 7;',
+      'dep.mjs': 'export const value = 9;',
+      'entry.cjs':
+        'const legacy = require("./legacy.cjs");\n' +
+        'const dep = require("./dep.mjs");\n' +
+        'const records = Object.values(globalThis.__zntc_modules);\n' +
+        'const cjsRecords = records.filter((record) => record.type === "cjs").length;\n' +
+        'const esmRecords = records.filter((record) => record.type === "esm").length;\n' +
+        'console.log(typeof __commonJS, typeof __esm, legacy, dep.value, cjsRecords, esmRecords);',
+    });
+    try {
+      const out = join(dir, 'b.cjs');
+      const res = await runZntc([
+        '--bundle',
+        join(dir, 'entry.cjs'),
+        '-o',
+        out,
+        '--format=cjs',
+        '--dev',
+      ]);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      const { stdout, stderr } = await runNode(out);
+      expect(stderr).not.toContain('TypeError');
+      // Dev HMR intentionally publishes factory functions on globalThis under their
+      // compatibility names; unresolved-global preservation is covered without HMR above.
+      // The important HMR assertion is that aliases still register every wrapped module.
+      expect(stdout.trim()).toBe('function function 7 9 2 1');
+    } finally {
+      await cleanup();
+    }
+  });
+
   test('CJS runtime을 출력하지 않는 번들에서는 사용자 이름을 과잉 변경하지 않는다', async () => {
     const { dir, cleanup } = await createFixture({
       'entry.mjs': 'export const __commonJS = 7;\nconsole.log(__commonJS);',

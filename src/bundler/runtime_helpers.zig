@@ -1228,9 +1228,9 @@ pub const HMR_RUNTIME =
     \\}
     \\// __commonJS/__esm HMR 래핑: 모듈을 __zntc_modules에 자동 등록.
     \\// 기존 __commonJS/__esm을 래핑하여 reset 기능 추가.
-    \\var __zntc_orig_commonJS = typeof __commonJS !== "undefined" ? __commonJS : null;
-    \\var __zntc_orig_esm = typeof __esm !== "undefined" ? __esm : null;
-    \\if (__zntc_orig_commonJS) __commonJS = function(cb, mod) {
+    \\var __zntc_orig_commonJS = typeof __zntc_hmr_commonjs_factory__ !== "undefined" ? __zntc_hmr_commonjs_factory__ : null;
+    \\var __zntc_orig_esm = typeof __zntc_hmr_esm_factory__ !== "undefined" ? __zntc_hmr_esm_factory__ : null;
+    \\if (__zntc_orig_commonJS) __zntc_hmr_commonjs_factory__ = function(cb, mod) {
     \\  var id = Object.keys(cb)[0];
     \\  var fn = __zntc_orig_commonJS(cb, mod);
     \\  __zntc_modules[id] = { type: "cjs", fn: fn, reset: function() {
@@ -1239,7 +1239,7 @@ pub const HMR_RUNTIME =
     \\  }};
     \\  return fn;
     \\};
-    \\if (__zntc_orig_esm) __esm = function(fn, res, exportsObj) {
+    \\if (__zntc_orig_esm) __zntc_hmr_esm_factory__ = function(fn, res, exportsObj) {
     \\  var id = Object.keys(fn)[0];
     \\  var init = __zntc_orig_esm(fn, res);
     \\  __zntc_modules[id] = { type: "esm", fn: init, exports: exportsObj, reset: function() {
@@ -1292,9 +1292,9 @@ pub const HMR_RUNTIME =
     \\  g.__zntc_resolveRefresh = __zntc_resolveRefresh;
     \\  g.__zntc_isReactRefreshBoundary = __zntc_isReactRefreshBoundary;
     \\  g.__zntc_enqueueUpdate = __zntc_enqueueUpdate;
-    \\  if (typeof __esm !== "undefined") g.__esm = __esm;
+    \\  if (typeof __zntc_hmr_esm_factory__ !== "undefined") g.__esm = __zntc_hmr_esm_factory__;
     \\  if (typeof __export !== "undefined") g.__export = __export;
-    \\  if (typeof __commonJS !== "undefined") g.__commonJS = __commonJS;
+    \\  if (typeof __zntc_hmr_commonjs_factory__ !== "undefined") g.__commonJS = __zntc_hmr_commonjs_factory__;
     \\  if (typeof __defProp !== "undefined") g.__defProp = __defProp;
     \\  if (typeof __toESM !== "undefined") g.__toESM = __toESM;
     \\  if (typeof __toCommonJS !== "undefined") g.__toCommonJS = __toCommonJS;
@@ -1311,8 +1311,9 @@ pub const HMR_RUNTIME =
 /// 바꾸면 셋 다 동반 수정(특히 글로벌-백킹 `||` 패턴이 한 곳이라도 빠지면 minify
 /// 경로에서 entry/비-entry 레지스트리가 갈려 cross-chunk lookup 이 깨진다).
 /// 후속 cleanup = 공통 wrap 상수(HMR_REGISTRY_CORE) 추출 후 세 곳이 compose.
-/// ⚠️ minify(`$c`/`$e`) 경로: 세 상수 모두 wrap 이 `__commonJS`/`__esm`(non-min) 이름을
-/// 참조하므로 minify 빌드에선 모듈 등록이 inert(=dev 는 minify 안 함 전제, 사전 한계).
+/// ⚠️ minify + dev 는 아직 지원 경로가 아니다: 압축 CJS/ESM wrapper 는 모듈 ID keyed object
+/// 대신 익명 callback 을 쓰므로 HMR registry 가 ID 를 얻지 못한다. 템플릿 별칭 정합은
+/// 유지하지만, 이것만으로 dev minification 의 등록 모델까지 지원되는 것은 아니다.
 /// 청크 factory 안에서 `var __esm`(emitChunkRuntimeHelpers 가 정의) **뒤**에 주입돼야
 /// orig 를 캡처해 재래핑. 글로벌이라 청크 평가 순서 무관.
 pub const HMR_CHUNK_REGISTER =
@@ -1326,9 +1327,9 @@ pub const HMR_CHUNK_REGISTER =
     \\      return undefined;
     \\    } })
     \\  : {});
-    \\var __zntc_orig_commonJS = typeof __commonJS !== "undefined" ? __commonJS : null;
-    \\var __zntc_orig_esm = typeof __esm !== "undefined" ? __esm : null;
-    \\if (__zntc_orig_commonJS) __commonJS = function(cb, mod) {
+    \\var __zntc_orig_commonJS = typeof __zntc_hmr_commonjs_factory__ !== "undefined" ? __zntc_hmr_commonjs_factory__ : null;
+    \\var __zntc_orig_esm = typeof __zntc_hmr_esm_factory__ !== "undefined" ? __zntc_hmr_esm_factory__ : null;
+    \\if (__zntc_orig_commonJS) __zntc_hmr_commonjs_factory__ = function(cb, mod) {
     \\  var id = Object.keys(cb)[0];
     \\  var fn = __zntc_orig_commonJS(cb, mod);
     \\  __zntc_modules[id] = { type: "cjs", fn: fn, reset: function() {
@@ -1337,7 +1338,7 @@ pub const HMR_CHUNK_REGISTER =
     \\  }};
     \\  return fn;
     \\};
-    \\if (__zntc_orig_esm) __esm = function(fn, res, exportsObj) {
+    \\if (__zntc_orig_esm) __zntc_hmr_esm_factory__ = function(fn, res, exportsObj) {
     \\  var id = Object.keys(fn)[0];
     \\  var init = __zntc_orig_esm(fn, res);
     \\  __zntc_modules[id] = { type: "esm", fn: init, exports: exportsObj, reset: function() {
@@ -1350,7 +1351,7 @@ pub const HMR_CHUNK_REGISTER =
 ;
 
 pub const HMR_RUNTIME_MIN =
-    \\var __zntc_g=typeof globalThis!=="undefined"?globalThis:typeof global!=="undefined"?global:typeof window!=="undefined"?window:this,__zntc_modules=__zntc_g.__zntc_modules||(__zntc_g.__zntc_modules=typeof Proxy!=="undefined"?new Proxy({},{get:function(t,k){if(Object.prototype.hasOwnProperty.call(t,k))return t[k];if(typeof k==="string"&&k.length>=4&&k.slice(-4)===".css")return{fn:function(){},exports:{}};return undefined}}):{}),__zntc_hot_cbs={},__zntc_hot_data={};function __zntc_schedule(f){typeof setTimeout=="function"?setTimeout(f,0):f()}var __zntc_reload=function(reason){__zntc_schedule(function(){var why=reason||"ZNTC HMR fallback";if(typeof require=="function")try{var rn=require("react-native");if(rn&&rn.DevSettings&&typeof rn.DevSettings.reload=="function"){rn.DevSettings.reload(why);return}}catch(_e){}if(typeof location!="undefined"&&location&&typeof location.reload=="function"){location.reload();return}if(__zntc_g.nativeModuleProxy&&__zntc_g.nativeModuleProxy.DevSettings){var ds=__zntc_g.nativeModuleProxy.DevSettings;if(typeof ds.reloadWithReason=="function")ds.reloadWithReason(why);else if(typeof ds.reload=="function")ds.reload()}})};function __zntc_resolveRefresh(){if(__zntc_g.__ReactRefresh)return __zntc_g.__ReactRefresh;var __rid=__zntc_g.__zntc_refresh_id;if(__rid&&__zntc_g.__zntc_modules){try{var __e=__zntc_g.__zntc_modules[__rid];if(__e){var __fr=__e.fn?__e.fn():null;var __re=__e.exports||__fr;if(__re&&__re.injectIntoGlobalHook){__zntc_g.__ReactRefresh=__re;__zntc_g.__REACT_REFRESH_RUNTIME__=__re;__re.injectIntoGlobalHook(__zntc_g);return __re}}}catch(_e){}}try{var r=require("react-refresh/runtime");__zntc_g.__ReactRefresh=r;__zntc_g.__REACT_REFRESH_RUNTIME__=r;return r}catch(e){}return null}function __zntc_isReactRefreshBoundary(m){var rt=__zntc_g.__ReactRefresh||__zntc_resolveRefresh();if(!rt)return false;if(rt.isLikelyComponentType(m))return true;if(m==null||typeof m!="object")return false;var h=false;for(var k in m){if(k==="__esModule")continue;h=true;if(!rt.isLikelyComponentType(m[k]))return false}return h}var __zntc_refreshTimer;function __zntc_enqueueUpdate(){if(__zntc_refreshTimer!=null)return;__zntc_refreshTimer=setTimeout(function(){__zntc_refreshTimer=null;var rt=__zntc_g.__ReactRefresh||__zntc_resolveRefresh();if(rt)rt.performReactRefresh()},50)}function __zntc_make_hot(id){if(!__zntc_hot_cbs[id])__zntc_hot_cbs[id]={};return{get data(){return __zntc_hot_data[id]},accept:function(d,c){if(typeof d==="function"){c=d;d=void 0}__zntc_hot_cbs[id].accept=c||true;if(Array.isArray(d))__zntc_hot_cbs[id].acceptDeps=d},dispose:function(c){__zntc_hot_cbs[id].dispose=c},prune:function(c){__zntc_hot_cbs[id].prune=c},invalidate:function(){__zntc_reload()},get refresh(){return __zntc_g.__ReactRefresh||__zntc_resolveRefresh()},refreshUtils:{isReactRefreshBoundary:__zntc_isReactRefreshBoundary,enqueueUpdate:__zntc_enqueueUpdate}}}var __zntc_oc=typeof __commonJS!="undefined"?__commonJS:null,__zntc_oe=typeof __esm!="undefined"?__esm:null;if(__zntc_oc)__commonJS=function(cb,mod){var id=Object.keys(cb)[0];var fn=__zntc_oc(cb,mod);__zntc_modules[id]={type:"cjs",fn:fn,reset:function(){fn=__zntc_oc(cb);__zntc_modules[id].fn=fn}};return fn};if(__zntc_oe)__esm=function(fn,res,eo){var id=Object.keys(fn)[0];var init=__zntc_oe(fn,res);__zntc_modules[id]={type:"esm",fn:init,exports:eo,reset:function(){init=__zntc_oe(fn);__zntc_modules[id].fn=init}};return init};function __zntc_apply_update(u){for(var i=0;i<u.length;i++){var id=u[i].id;var c=__zntc_hot_cbs[id];if(!c||!c.accept){__zntc_reload();return}try{if(c.dispose){__zntc_hot_data[id]={};c.dispose(__zntc_hot_data[id])}var ev=__zntc_g.globalEvalWithSourceUrl;if(ev){ev(u[i].code,"hmr-update:"+id)}else{(0,eval)(u[i].code)}var ent=__zntc_modules[id];if(ent&&ent.fn)ent.fn();if(typeof c.accept==="function"){c.accept(ent&&ent.exports?ent.exports:{})}}catch(e){console.error("[zntc] HMR update failed:",e);__zntc_reload()}}}(function(g){"use strict";g.$RefreshReg$=function(){};g.$RefreshSig$=function(){return function(t){return t}};g.__zntc_apply_update=__zntc_apply_update;g.__zntc_reload=__zntc_reload;g.__zntc_make_hot=__zntc_make_hot;g.__zntc_modules=__zntc_modules;g.__zntc_resolveRefresh=__zntc_resolveRefresh;g.__zntc_isReactRefreshBoundary=__zntc_isReactRefreshBoundary;g.__zntc_enqueueUpdate=__zntc_enqueueUpdate;if(typeof __esm!="undefined")g.__esm=__esm;if(typeof __export!="undefined")g.__export=__export;if(typeof __commonJS!="undefined")g.__commonJS=__commonJS;if(typeof __defProp!="undefined")g.__defProp=__defProp;if(typeof __toESM!="undefined")g.__toESM=__toESM;if(typeof __toCommonJS!="undefined")g.__toCommonJS=__toCommonJS})(__zntc_g)
+    \\var __zntc_g=typeof globalThis!=="undefined"?globalThis:typeof global!=="undefined"?global:typeof window!=="undefined"?window:this,__zntc_modules=__zntc_g.__zntc_modules||(__zntc_g.__zntc_modules=typeof Proxy!=="undefined"?new Proxy({},{get:function(t,k){if(Object.prototype.hasOwnProperty.call(t,k))return t[k];if(typeof k==="string"&&k.length>=4&&k.slice(-4)===".css")return{fn:function(){},exports:{}};return undefined}}):{}),__zntc_hot_cbs={},__zntc_hot_data={};function __zntc_schedule(f){typeof setTimeout=="function"?setTimeout(f,0):f()}var __zntc_reload=function(reason){__zntc_schedule(function(){var why=reason||"ZNTC HMR fallback";if(typeof require=="function")try{var rn=require("react-native");if(rn&&rn.DevSettings&&typeof rn.DevSettings.reload=="function"){rn.DevSettings.reload(why);return}}catch(_e){}if(typeof location!="undefined"&&location&&typeof location.reload=="function"){location.reload();return}if(__zntc_g.nativeModuleProxy&&__zntc_g.nativeModuleProxy.DevSettings){var ds=__zntc_g.nativeModuleProxy.DevSettings;if(typeof ds.reloadWithReason=="function")ds.reloadWithReason(why);else if(typeof ds.reload=="function")ds.reload()}})};function __zntc_resolveRefresh(){if(__zntc_g.__ReactRefresh)return __zntc_g.__ReactRefresh;var __rid=__zntc_g.__zntc_refresh_id;if(__rid&&__zntc_g.__zntc_modules){try{var __e=__zntc_g.__zntc_modules[__rid];if(__e){var __fr=__e.fn?__e.fn():null;var __re=__e.exports||__fr;if(__re&&__re.injectIntoGlobalHook){__zntc_g.__ReactRefresh=__re;__zntc_g.__REACT_REFRESH_RUNTIME__=__re;__re.injectIntoGlobalHook(__zntc_g);return __re}}}catch(_e){}}try{var r=require("react-refresh/runtime");__zntc_g.__ReactRefresh=r;__zntc_g.__REACT_REFRESH_RUNTIME__=r;return r}catch(e){}return null}function __zntc_isReactRefreshBoundary(m){var rt=__zntc_g.__ReactRefresh||__zntc_resolveRefresh();if(!rt)return false;if(rt.isLikelyComponentType(m))return true;if(m==null||typeof m!="object")return false;var h=false;for(var k in m){if(k==="__esModule")continue;h=true;if(!rt.isLikelyComponentType(m[k]))return false}return h}var __zntc_refreshTimer;function __zntc_enqueueUpdate(){if(__zntc_refreshTimer!=null)return;__zntc_refreshTimer=setTimeout(function(){__zntc_refreshTimer=null;var rt=__zntc_g.__ReactRefresh||__zntc_resolveRefresh();if(rt)rt.performReactRefresh()},50)}function __zntc_make_hot(id){if(!__zntc_hot_cbs[id])__zntc_hot_cbs[id]={};return{get data(){return __zntc_hot_data[id]},accept:function(d,c){if(typeof d==="function"){c=d;d=void 0}__zntc_hot_cbs[id].accept=c||true;if(Array.isArray(d))__zntc_hot_cbs[id].acceptDeps=d},dispose:function(c){__zntc_hot_cbs[id].dispose=c},prune:function(c){__zntc_hot_cbs[id].prune=c},invalidate:function(){__zntc_reload()},get refresh(){return __zntc_g.__ReactRefresh||__zntc_resolveRefresh()},refreshUtils:{isReactRefreshBoundary:__zntc_isReactRefreshBoundary,enqueueUpdate:__zntc_enqueueUpdate}}}var __zntc_oc=typeof __zntc_hmr_commonjs_factory__!="undefined"?__zntc_hmr_commonjs_factory__:null,__zntc_oe=typeof __zntc_hmr_esm_factory__!="undefined"?__zntc_hmr_esm_factory__:null;if(__zntc_oc)__zntc_hmr_commonjs_factory__=function(cb,mod){var id=Object.keys(cb)[0];var fn=__zntc_oc(cb,mod);__zntc_modules[id]={type:"cjs",fn:fn,reset:function(){fn=__zntc_oc(cb);__zntc_modules[id].fn=fn}};return fn};if(__zntc_oe)__zntc_hmr_esm_factory__=function(fn,res,eo){var id=Object.keys(fn)[0];var init=__zntc_oe(fn,res);__zntc_modules[id]={type:"esm",fn:init,exports:eo,reset:function(){init=__zntc_oe(fn);__zntc_modules[id].fn=init}};return init};function __zntc_apply_update(u){for(var i=0;i<u.length;i++){var id=u[i].id;var c=__zntc_hot_cbs[id];if(!c||!c.accept){__zntc_reload();return}try{if(c.dispose){__zntc_hot_data[id]={};c.dispose(__zntc_hot_data[id])}var ev=__zntc_g.globalEvalWithSourceUrl;if(ev){ev(u[i].code,"hmr-update:"+id)}else{(0,eval)(u[i].code)}var ent=__zntc_modules[id];if(ent&&ent.fn)ent.fn();if(typeof c.accept==="function"){c.accept(ent&&ent.exports?ent.exports:{})}}catch(e){console.error("[zntc] HMR update failed:",e);__zntc_reload()}}}(function(g){"use strict";g.$RefreshReg$=function(){};g.$RefreshSig$=function(){return function(t){return t}};g.__zntc_apply_update=__zntc_apply_update;g.__zntc_reload=__zntc_reload;g.__zntc_make_hot=__zntc_make_hot;g.__zntc_modules=__zntc_modules;g.__zntc_resolveRefresh=__zntc_resolveRefresh;g.__zntc_isReactRefreshBoundary=__zntc_isReactRefreshBoundary;g.__zntc_enqueueUpdate=__zntc_enqueueUpdate;if(typeof __zntc_hmr_esm_factory__!="undefined")g.__esm=__zntc_hmr_esm_factory__;if(typeof __export!="undefined")g.__export=__export;if(typeof __zntc_hmr_commonjs_factory__!="undefined")g.__commonJS=__zntc_hmr_commonjs_factory__;if(typeof __defProp!="undefined")g.__defProp=__defProp;if(typeof __toESM!="undefined")g.__toESM=__toESM;if(typeof __toCommonJS!="undefined")g.__toCommonJS=__toCommonJS})(__zntc_g)
 ;
 
 /// HMR 런타임의 줄 수 (소스맵 오프셋 계산용, comptime)
@@ -1780,13 +1781,23 @@ pub fn appendCommonJsFactoryRuntimeNamed(buf: *std.ArrayList(u8), allocator: std
         (if (fn_syntax) CJS_RUNTIME_ES5_MIN else CJS_RUNTIME_MIN)
     else
         (if (fn_syntax) CJS_RUNTIME_ES5 else CJS_RUNTIME);
-    if (std.mem.eql(u8, factory_name, default_name)) {
+    try appendRuntimeWithNamedIdentifier(buf, allocator, source, default_name, factory_name);
+}
+
+fn appendRuntimeWithNamedIdentifier(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    default_name: []const u8,
+    selected_name: []const u8,
+) !void {
+    if (std.mem.eql(u8, selected_name, default_name)) {
         try buf.appendSlice(allocator, source);
         return;
     }
     const name_at = std.mem.indexOf(u8, source, default_name) orelse unreachable;
     try buf.appendSlice(allocator, source[0..name_at]);
-    try buf.appendSlice(allocator, factory_name);
+    try buf.appendSlice(allocator, selected_name);
     try buf.appendSlice(allocator, source[name_at + default_name.len ..]);
 }
 
@@ -1808,12 +1819,27 @@ pub fn appendToEsmRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator,
 /// __toCommonJS는 __copyProps/__defProp에 의존하므로 __toESM 런타임 후에 주입해야 함.
 /// `es5_syntax`(문법) 와 `configurable`(의미) 은 별개 축이다 — #4630 참고.
 pub fn appendEsmWrapRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, es5_syntax: bool, configurable: bool) !void {
+    const factory_name = if (minify) NAMES.ESM_FACTORY_MIN else "__esm";
+    try appendEsmWrapRuntimeNamed(buf, allocator, minify, es5_syntax, configurable, factory_name);
+}
+
+/// Emit the ESM wrapper runtime with the exact factory name chosen by the linker.
+pub fn appendEsmWrapRuntimeNamed(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    minify: bool,
+    es5_syntax: bool,
+    configurable: bool,
+    factory_name: []const u8,
+) !void {
     // __esm 은 서술자를 만들지 않으므로 문법 축만 본다.
     const fn_syntax = es5_syntax or configurable;
-    try buf.appendSlice(allocator, if (minify)
+    const runtime = if (minify)
         (if (fn_syntax) ESM_RUNTIME_ES5_MIN else ESM_RUNTIME_MIN)
     else
-        (if (fn_syntax) ESM_RUNTIME_ES5 else ESM_RUNTIME));
+        (if (fn_syntax) ESM_RUNTIME_ES5 else ESM_RUNTIME);
+    const default_name = if (minify) NAMES.ESM_FACTORY_MIN else "__esm";
+    try appendRuntimeWithNamedIdentifier(buf, allocator, runtime, default_name, factory_name);
 
     if (configurable) {
         try buf.appendSlice(allocator, if (minify) EXPORT_RUNTIME_CONFIGURABLE_MIN else EXPORT_RUNTIME_CONFIGURABLE);
@@ -1847,9 +1873,59 @@ pub fn appendAsyncRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator,
 
 /// HMR 런타임을 주입한다.
 pub fn appendHmrRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool) !void {
-    if (minify) {
-        try buf.appendSlice(allocator, HMR_RUNTIME_MIN);
-    } else {
-        try buf.appendSlice(allocator, HMR_RUNTIME);
+    const cjs_name = if (minify) NAMES.CJS_FACTORY_MIN else "__commonJS";
+    const esm_name = if (minify) NAMES.ESM_FACTORY_MIN else "__esm";
+    try appendHmrRuntimeNamed(buf, allocator, minify, cjs_name, esm_name);
+}
+
+/// HMR must wrap the same runtime factory identifiers emitted for this bundle.
+pub fn appendHmrRuntimeNamed(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    minify: bool,
+    cjs_factory_name: []const u8,
+    esm_factory_name: []const u8,
+) !void {
+    const source = if (minify) HMR_RUNTIME_MIN else HMR_RUNTIME;
+    try appendHmrTemplateNamed(buf, allocator, source, cjs_factory_name, esm_factory_name);
+}
+
+/// Dev-split non-entry chunks only register their local factories with HMR.
+pub fn appendHmrChunkRegisterNamed(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    cjs_factory_name: []const u8,
+    esm_factory_name: []const u8,
+) !void {
+    try appendHmrTemplateNamed(buf, allocator, HMR_CHUNK_REGISTER, cjs_factory_name, esm_factory_name);
+}
+
+fn appendHmrTemplateNamed(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    cjs_factory_name: []const u8,
+    esm_factory_name: []const u8,
+) !void {
+    const cjs_marker = "__zntc_hmr_commonjs_factory__";
+    const esm_marker = "__zntc_hmr_esm_factory__";
+    var cursor: usize = 0;
+    while (cursor < source.len) {
+        const cjs_rel = std.mem.indexOf(u8, source[cursor..], cjs_marker);
+        const esm_rel = std.mem.indexOf(u8, source[cursor..], esm_marker);
+        if (cjs_rel == null and esm_rel == null) break;
+
+        const use_cjs = if (cjs_rel) |c| if (esm_rel) |e| c <= e else true else false;
+        const rel = if (use_cjs) cjs_rel.? else esm_rel.?;
+        const marker = if (use_cjs) cjs_marker else esm_marker;
+        const name = if (use_cjs) cjs_factory_name else esm_factory_name;
+        const marker_start = cursor + rel;
+        try buf.appendSlice(allocator, source[cursor..marker_start]);
+        try buf.appendSlice(allocator, name);
+        cursor = marker_start + marker.len;
     }
+    try buf.appendSlice(allocator, source[cursor..]);
+    // HMR_RUNTIME_MIN is an expression without a terminal semicolon. Keep the
+    // helper safe to concatenate with the next minified preamble/module token.
+    try buf.append(allocator, ';');
 }

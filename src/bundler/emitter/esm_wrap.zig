@@ -181,6 +181,12 @@ pub fn emitEsmWrappedModule(
     const basename = module.wrapperId();
     // RFC #3940 L.4c-2a-ii: wrapper-name 을 build-scope rename_table 경유로. parity 로 byte-identical.
     const rename_tbl: ?*const RenameTable = if (linker) |l| &l.rename_table else null;
+    const esm_factory_name = if (linker) |l|
+        l.esmFactoryRuntimeName()
+    else if (options.minify_whitespace)
+        rt.NAMES.ESM_FACTORY_MIN
+    else
+        "__esm";
 
     const init_name = try module.allocInitName(allocator, rename_tbl);
     defer allocator.free(init_name);
@@ -1094,8 +1100,10 @@ pub fn emitEsmWrappedModule(
     if (options.minify_whitespace) {
         try wrapped.appendSlice(allocator, "var ");
         try wrapped.appendSlice(allocator, init_name);
-        // #1621: minify 시 __esm → $e 축약.
-        try wrapped.appendSlice(allocator, "=" ++ rt.NAMES.ESM_FACTORY_MIN ++ "({");
+        // #1621: minify 시 기본 __esm → $e 축약. Linker alias가 있으면 그 이름을 사용.
+        try wrapped.append(allocator, '=');
+        try wrapped.appendSlice(allocator, esm_factory_name);
+        try wrapped.appendSlice(allocator, "({");
         try rt.appendWrapperMemberHeader(&wrapped, allocator, basename, "", is_async, !options.unsupported.object_extensions, true);
         if (has_refresh) {
             try wrapped.appendSlice(allocator, "var __prevRefreshReg=__zntc_g.$RefreshReg$,__prevRefreshSig=__zntc_g.$RefreshSig$;");
@@ -1130,7 +1138,9 @@ pub fn emitEsmWrappedModule(
     } else {
         try wrapped.appendSlice(allocator, "var ");
         try wrapped.appendSlice(allocator, init_name);
-        try wrapped.appendSlice(allocator, " = __esm({\n\t");
+        try wrapped.appendSlice(allocator, " = ");
+        try wrapped.appendSlice(allocator, esm_factory_name);
+        try wrapped.appendSlice(allocator, "({\n\t");
         try rt.appendWrapperMemberHeader(&wrapped, allocator, basename, "", is_async, !options.unsupported.object_extensions, false);
         try wrapped.appendSlice(allocator, "\n");
         if (has_refresh) {
