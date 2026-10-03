@@ -881,6 +881,32 @@ test "TS import-equals keeps the same static require loader record in both scans
     try std.testing.expectEqual(ImportKind.require, result.records[0].kind);
 }
 
+test "export-star keeps the same re-export loader record in both scans" {
+    const alloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var scanner = try Scanner.init(arena_alloc, "export * from './dep';");
+    var parser = Parser.init(arena_alloc, &scanner);
+    parser.is_module = true;
+    parser.enable_scan = true;
+    scanner.is_module = true;
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+
+    try std.testing.expect(parser.scan_result.has_esm_syntax);
+    try std.testing.expectEqual(@as(usize, 1), parser.scan_import_records.items.len);
+    try std.testing.expectEqualStrings("./dep", parser.scan_import_records.items[0].specifier);
+
+    const result = try extractImportsWithCjsDetection(alloc, &parser.ast);
+    defer alloc.free(result.records);
+    try std.testing.expect(result.has_esm_syntax);
+    try std.testing.expectEqual(@as(usize, 1), result.records.len);
+    try std.testing.expectEqualStrings("./dep", result.records[0].specifier);
+    try std.testing.expectEqual(ImportKind.re_export, result.records[0].kind);
+}
+
 test "CJS: exports.x detected" {
     const alloc = std.testing.allocator;
     const result = try parseAndExtractFull(alloc, "exports.x = 1;");
