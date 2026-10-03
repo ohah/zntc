@@ -2321,3 +2321,102 @@ test "strict inventory checks emitted storage scopes and accepts relocated sourc
     defer wrong_function_report.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), wrong_function_report.counts[@intFromEnum(coverage.StrictStatus.scope_mismatch)]);
 }
+
+test "exact coverage detects AST cycles without treating shared children as cycles" {
+    const allocator = std.testing.allocator;
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const span = try ast.addString("x");
+    const leaf = try ast.addNode(.{ .tag = .empty_statement, .span = span, .data = .{ .none = 0 } });
+    const shared_parent_a = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = span,
+        .data = .{ .list = try ast.addNodeList(&.{leaf}) },
+    });
+    const shared_parent_b = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = span,
+        .data = .{ .list = try ast.addNodeList(&.{leaf}) },
+    });
+    const root = try ast.addNode(.{
+        .tag = .program,
+        .span = span,
+        .data = .{ .list = try ast.addNodeList(&.{ shared_parent_a, shared_parent_b }) },
+    });
+    const global_scope: ScopeId = @enumFromInt(0);
+    const scopes = [_]Scope{.{ .parent = .none, .kind = .global, .is_strict = false }};
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){.empty};
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer owners.deinit(allocator);
+    try owners.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
+    const helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const shared_child_report = try coverage.checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &.{},
+        &.{},
+        &scopes,
+        &scope_maps,
+        &owners,
+        &.{},
+        &.{},
+        &helper_scope_map,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 0), shared_child_report.cyclic_ast_edges);
+    try std.testing.expect(shared_child_report.isClean());
+
+    // Mutate a reachable child edge into a root self-cycle. The exact audit
+    // must fail closed before its generic tree walker can loop forever.
+    ast.nodes.items[@intFromEnum(root)].data.list = try ast.addNodeList(&.{root});
+    const cyclic_report = try coverage.checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &.{},
+        &.{},
+        &scopes,
+        &scope_maps,
+        &owners,
+        &.{},
+        &.{},
+        &helper_scope_map,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), cyclic_report.cyclic_ast_edges);
+    try std.testing.expect(!cyclic_report.isClean());
+
+    ast.nodes.items[@intFromEnum(root)].data.list = try ast.addNodeList(&.{shared_parent_a});
+    ast.nodes.items[@intFromEnum(shared_parent_a)].data.list = try ast.addNodeList(&.{shared_parent_b});
+    ast.nodes.items[@intFromEnum(shared_parent_b)].data.list = try ast.addNodeList(&.{shared_parent_a});
+    const back_edge_report = try coverage.checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &.{},
+        &.{},
+        &scopes,
+        &scope_maps,
+        &owners,
+        &.{},
+        &.{},
+        &helper_scope_map,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), back_edge_report.cyclic_ast_edges);
+    try std.testing.expect(!back_edge_report.isClean());
+}

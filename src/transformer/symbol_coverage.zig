@@ -212,6 +212,7 @@ pub const ExactReport = struct {
     invalid_reference_node: usize = 0,
     unreachable_reference: usize = 0,
     ambiguous_ast_parent: usize = 0,
+    cyclic_ast_edges: usize = 0,
     shadowed_external_reference: usize = 0,
     invalid_id: usize = 0,
     missing_reference: usize = 0,
@@ -1581,19 +1582,37 @@ fn checkExactImpl(
     namespace_declaration_owners: ?*const std.AutoHashMapUnmanaged(u32, u32),
     pre_transform_scope_count: ?usize,
 ) std.mem.Allocator.Error!ExactReport {
+    const VisitState = enum { visiting, visited };
+    const VisitFrame = struct {
+        node_index: NodeIndex,
+        exit: bool = false,
+    };
+
     var report: ExactReport = .{};
     var reachable_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer reachable_nodes.deinit(allocator);
     var parent_by_node: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer parent_by_node.deinit(allocator);
-    var reachable_stack: std.ArrayList(NodeIndex) = .empty;
+    var visit_states: std.AutoHashMapUnmanaged(u32, VisitState) = .empty;
+    defer visit_states.deinit(allocator);
+    var reachable_stack: std.ArrayList(VisitFrame) = .empty;
     defer reachable_stack.deinit(allocator);
-    try reachable_stack.append(allocator, root);
-    while (reachable_stack.pop()) |node_idx| {
+    try reachable_stack.append(allocator, .{ .node_index = root });
+    while (reachable_stack.pop()) |frame| {
+        const node_idx = frame.node_index;
         if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) continue;
         const raw = @intFromEnum(node_idx);
-        const gop = try reachable_nodes.getOrPut(allocator, raw);
-        if (gop.found_existing) continue;
+        if (frame.exit) {
+            try visit_states.put(allocator, raw, .visited);
+            continue;
+        }
+        if (visit_states.get(raw)) |state| {
+            if (state == .visiting) report.cyclic_ast_edges += 1;
+            continue;
+        }
+        try visit_states.put(allocator, raw, .visiting);
+        try reachable_nodes.put(allocator, raw, {});
+        try reachable_stack.append(allocator, .{ .node_index = node_idx, .exit = true });
         var children = ast_walk.children(ast, ast.getNode(node_idx));
         while (children.next()) |child| {
             if (!child.isNone() and @intFromEnum(child) < ast.nodes.items.len) {
@@ -1643,7 +1662,7 @@ fn checkExactImpl(
                     } else parent_gop.value_ptr.* = raw;
                 }
             }
-            try reachable_stack.append(allocator, child);
+            try reachable_stack.append(allocator, .{ .node_index = child });
         }
     }
     // Rebuild namespace IIFE-scope ownership from the transformed reachable
@@ -2228,7 +2247,11 @@ fn checkExactImpl(
     };
     defer ctx.name_positions.deinit(allocator);
     defer ctx.jsx_variable_roots.deinit(allocator);
-    try ast_walk.walkPreorderIterative(allocator, ast, root, &ctx, exactVisit);
+    // The generic walker assumes an AST tree and has no visited set. A cyclic
+    // graph has already failed the exact report, so stop before that walk can
+    // loop forever or grow its stack without bound.
+    if (report.cyclic_ast_edges == 0)
+        try ast_walk.walkPreorderIterative(allocator, ast, root, &ctx, exactVisit);
     if (ctx.oom) return error.OutOfMemory;
     return report;
 }
@@ -2546,8 +2569,14 @@ pub fn printExactPrepass(file_path: []const u8, report: ExactReport, retained_gr
 }
 
 fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport) void {
+    var ast_structure_buffer: [96]u8 = undefined;
+    const ast_structure_counts = std.fmt.bufPrint(
+        &ast_structure_buffer,
+        "ambiguous_ast_parent={d} cyclic_ast_edges={d}",
+        .{ report.ambiguous_ast_parent, report.cyclic_ast_edges },
+    ) catch unreachable;
     std.debug.print(
-        "zntc: {s} {s}: generated_bindings={d} generated_references={d} external={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} ambiguous_ast_parent={d} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} namespace_iife_params={d} namespace_iife_param_mismatch={d} enum_iife_params={d} enum_iife_param_mismatch={d} helper_symbol_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} reference_count_mismatch={d} write_count_mismatch={d} clean={d} legacy_debt_fingerprint={x}\n",
+        "zntc: {s} {s}: generated_bindings={d} generated_references={d} external={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} {s} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} namespace_iife_params={d} namespace_iife_param_mismatch={d} enum_iife_params={d} enum_iife_param_mismatch={d} helper_symbol_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} reference_count_mismatch={d} write_count_mismatch={d} clean={d} legacy_debt_fingerprint={x}\n",
         .{
             name,
             file_path,
@@ -2557,7 +2586,7 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
             report.missing_binding,
             report.invalid_reference_node,
             report.unreachable_reference,
-            report.ambiguous_ast_parent,
+            ast_structure_counts,
             report.shadowed_external_reference,
             report.invalid_id,
             report.missing_reference,
