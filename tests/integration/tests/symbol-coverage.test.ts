@@ -2493,18 +2493,87 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('ES5 object methods with super keep home-object temporaries on semantic reanalysis', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-object-method-super-reanalyzed-'));
+  test('ES5 object methods with super retain generated home-object symbols', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-object-method-super-retained-'));
     const output = join(dir, 'out.cjs');
     const input = join(dir, 'entry.ts');
     writeFileSync(
       input,
       [
         'type Numeric = number;',
-        'var base = { read() { return 41; } };',
+        'var _obj = 1;',
+        'var _obj2 = 2;',
+        'var base = { read() { return this.input; } };',
+        'var alternate = { read() { return this.input * 2; } };',
         'var methods = { read(): Numeric { return super.read() + 1; } };',
         'Object.setPrototypeOf(methods, base);',
-        'console.log(methods.read());',
+        'var method = methods.read;',
+        'var first = method.call({ input: 41 });',
+        'Object.setPrototypeOf(methods, alternate);',
+        'var second = method.call({ input: 20 });',
+        'console.log(first, second, _obj, _obj2, method.name);',
+      ].join('\n'),
+    );
+
+    try {
+      const downlevel = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(downlevel.status, downlevel.stderr).toBe(0);
+      const mode = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(mode, downlevel.stderr).toContain('semantic_graph=retained');
+      const report = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(report, downlevel.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42 41 1 2 read\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 object methods with shadowed Object keep reanalysis for global references', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-object-method-shadowed-global-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    writeFileSync(
+      input,
+      [
+        'type Numeric = number;',
+        'var poisonedPrototype = { read() { return 900; } };',
+        'var Object = { marker: "shadow", getPrototypeOf() { return poisonedPrototype; }, setPrototypeOf(target, prototype) { target.__proto__ = prototype; } };',
+        'var base = { read() { return this.input; } };',
+        'var methods = { read(): Numeric { return super.read() + 1; } };',
+        'Object.setPrototypeOf(methods, base);',
+        'console.log(methods.read.call({ input: 41 }), Object.marker);',
       ].join('\n'),
     );
 
@@ -2537,7 +2606,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(mode, downlevel.stderr).toContain('semantic_graph=reanalyzed');
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
-      expect(actual.stdout).toBe('42\n');
+      expect(actual.stdout).toBe('42 shadow\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

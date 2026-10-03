@@ -450,7 +450,11 @@ fn hasDirectSpreadElement(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
 /// scopes plus explicitly tracked captures. Native `await`, `yield`, and tagged
 /// templates add no binding or scope edges. Keep these paths only for the
 /// audited syntax subset; downlevel async/generator/template bodies stay on reanalysis.
-fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: TransformOptions) bool {
+fn canRetainGraphForAuditedSyntaxSubset(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    options: TransformOptions,
+) bool {
     if (ast.has_jsx) return false;
 
     // Cover-grammar parsing may leave speculative nodes in the arena that are
@@ -464,6 +468,17 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
         ast.getNode(root_idx).tag != .program) return false;
     const reachable_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, root_idx) catch return false;
     defer ast.allocator.free(reachable_nodes);
+
+    // Object-super lowering emits a reference to the global `Object`. If a
+    // source binding shadows it, the retained graph reports a shadowed external
+    // reference and must stay on the conservative reanalysis path.
+    var source_binds_object = false;
+    for (semantic.symbols.items) |symbol| {
+        if (std.mem.eql(u8, ast.getText(symbol.name), "Object")) {
+            source_binds_object = true;
+            break;
+        }
+    }
 
     var found_arrow = false;
     var found_native_await = false;
@@ -561,9 +576,9 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
                 found_safe_template_literal = true;
             },
             .super_expression => {
-                // Lowering object-method `super` introduces a home-object
-                // reference and temporary state; keep that graph on reanalysis.
-                if (options.unsupported.object_extensions) return false;
+                // Object-method lowering records the generated home-object
+                // binding and reads in the edited semantic graph.
+                if (options.unsupported.object_extensions and source_binds_object) return false;
             },
             .object_property => {
                 // Shorthand lowering duplicates the key as property text and
@@ -749,6 +764,7 @@ fn canKeepPrepassSemanticGraph(
 ) bool {
     if (module.ast == null or module.semantic == null) return false;
     const ast = &module.ast.?;
+    const semantic = &module.semantic.?;
     if (self.worklet_transform or self.react_refresh or self.styled_components or self.emotion or
         self.plugins.len != 0 or plugins.len != 0 or options.plugins.len != 0) return false;
     if (!options.strip_types) return false;
@@ -757,7 +773,7 @@ fn canKeepPrepassSemanticGraph(
     const automatic_dev_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .automatic_dev;
     const graph_editable_jsx = classic_jsx or automatic_jsx or automatic_dev_jsx;
     const safe_graph_subset = options.unsupported.hasAny() and
-        canRetainGraphForAuditedSyntaxSubset(ast, options);
+        canRetainGraphForAuditedSyntaxSubset(ast, semantic, options);
     if ((ast.has_jsx and !graph_editable_jsx) or ast.has_decorator) return false;
     if ((options.unsupported.hasAny() and !safe_graph_subset) or options.minify_syntax or
         options.minify_whitespace or options.drop_console or options.drop_debugger or
