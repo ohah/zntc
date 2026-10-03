@@ -428,6 +428,20 @@ fn canRetainGraphForArrowOnlyLowering(ast: *const ast_mod.Ast, options: Transfor
                 // temporaries, which still requires semantic reanalysis.
                 if (options.unsupported.object_extensions) return false;
             },
+            .method_definition => {
+                // Native object methods retain their function scopes and graph.
+                // Object-method, async, generator, or async-generator lowering
+                // can replace those scopes, so keep those cases on reanalysis.
+                if (options.unsupported.object_extensions) return false;
+                const flags_at = node.data.extra + ast_mod.MethodExtra.flags;
+                if (flags_at >= ast.extra_data.items.len) return false;
+                const flags = ast.extra_data.items[flags_at];
+                const is_async = (flags & ast_mod.MethodFlags.is_async) != 0;
+                const is_generator = (flags & ast_mod.MethodFlags.is_generator) != 0;
+                if ((is_async and is_generator and options.unsupported.async_generator) or
+                    (is_async and options.unsupported.async_await) or
+                    (is_generator and options.unsupported.generator)) return false;
+            },
             // This allowlist deliberately leaves module graph edits and all
             // other downlevel families on the existing resync path.
             .program,
