@@ -14,6 +14,7 @@ on:
       - '.github/pull_request_template.md'
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore:
       - 'documents/**'
       - 'docs/**'
@@ -21,128 +22,72 @@ on:
       - '.github/ISSUE_TEMPLATE/**'
       - '.github/pull_request_template.md'
 
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Checks to run
+        type: choice
+        options: [all, integration, test262]
+        default: all
+
+permissions:
+  contents: read
+  pull-requests: read
+
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'workflow_dispatch' && format('manual-{0}', inputs.suite) || 'automatic' }}
   cancel-in-progress: true
 
 jobs:
-  # 배포 모드 3 OS + Linux ReleaseSafe 는 매번 검증한다. 나머지 최적화 모드는
-  # build-canary.yml 에서 주기 검증. 패키지 설치 검증은 PR 5 / main 8 플랫폼 유지.
-  setup-matrix:
-    name: Compute package smoke matrix
+  checks:
+    name: Lint, audits & CI plan
     runs-on: ubuntu-latest
+
     outputs:
-      smoke: ${{ steps.gen.outputs.smoke }}
+      core: ${{ steps.plan.outputs.core }}
+      integration: ${{ steps.plan.outputs.integration }}
+      e2e: ${{ steps.plan.outputs.e2e }}
+      test262: ${{ steps.plan.outputs.test262 }}
+      debug_matrix: ${{ steps.plan.outputs.debug_matrix }}
+      smoke_matrix: ${{ steps.plan.outputs.smoke_matrix }}
     steps:
-      - id: gen
-        shell: bash
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dorny/paths-filter@v3
+        id: changes
+        if: github.event_name != 'workflow_dispatch'
+        with:
+          list-files: json
+          filters: |
+            changed:
+              - '**'
+      - name: Plan affected checks and platform matrices
+        id: plan
         env:
-          EVENT: ${{ github.event_name }}
-        run: |
-          # napi-package-smoke: PR 대표 5개 = 각 ABI 1개 + 32-bit ia32 카나리아(#3632 이력).
-          #   arm64-gnu/musl·darwin-x64 3개는 push 에서. install/resolve 는 platform 무관이라
-          #   PR 대표로 충분, arch 고유 dlopen/ABI 회귀는 push(main) 백스톱.
-          # win32-arm64-msvc 는 smoke 에서 의도적 제외(arm64-windows zig 0.16.0 바이너리가
-          #   네이티브 러너 segfault; cross-build 는 release.yml 검증). ia32 는 Node v24 가
-          #   win-x86 폐지 → v22 + x86 Node 로 실제 32-bit dlopen 을 검증.
-          smoke_full='[
-            {"platform":"linux-x64-gnu","os":"ubuntu-latest","zig_target":"native","pr":true},
-            {"platform":"linux-arm64-gnu","os":"ubuntu-24.04-arm","zig_target":"native","pr":false},
-            {"platform":"linux-x64-musl","os":"ubuntu-latest","zig_target":"x86_64-linux-musl","smoke_container":"node:24-alpine","pr":true},
-            {"platform":"linux-arm64-musl","os":"ubuntu-24.04-arm","zig_target":"aarch64-linux-musl","smoke_container":"node:24-alpine","pr":false},
-            {"platform":"darwin-arm64","os":"macos-latest","zig_target":"native","pr":true},
-            {"platform":"darwin-x64","os":"macos-15-intel","zig_target":"native","pr":false},
-            {"platform":"win32-x64-msvc","os":"windows-latest","zig_target":"native","pr":true},
-            {"platform":"win32-ia32-msvc","os":"windows-latest","zig_target":"x86-windows-msvc","node_version":"22","node_arch":"x86","pr":true}
-          ]'
-          if [ "$EVENT" = "pull_request" ]; then
-            smoke=$(jq -c '[.[] | select(.pr) | del(.pr)]' <<< "$smoke_full")
-          else
-            smoke=$(jq -c '[.[] | del(.pr)]' <<< "$smoke_full")
-          fi
-          echo "smoke={\"include\":$smoke}" >> "$GITHUB_OUTPUT"
-
-  debug-test:
-    name: Debug Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
+          CI_CHANGED_FILES: ${{ steps.changes.outputs.changed_files || '[]' }}
+          CI_EVENT: ${{ github.event_name }}
+          CI_EVENT_ACTION: ${{ github.event.action }}
+          CI_DRAFT: ${{ github.event.pull_request.draft || false }}
+          CI_SUITE: ${{ inputs.suite || 'all' }}
+        run: node scripts/ci-plan.mjs
+      - name: Verify CI selection policy
+        run: node --test scripts/ci-plan.test.mjs
 
       - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
-          cache-key: debug
-
-      - name: Build (Debug)
-        run: zig build
-
-      - name: Run Tests
-        # `zig build test`(--listen=- IPC)는 async runner 가 한 test 의 pass-path stderr 를
-        # 인접 test 실패로 오보고한다(zig 0.16). test binary 를 직접 실행하면 sequential
-        # 사람모드라 오보고가 없다. lib → exe 순차(pipefail 로 lib 실패 시 즉시 중단).
-        run: |
-          zig build test-bin
-          ./zig-out/bin/lib-unit-test
-          ./zig-out/bin/exe-unit-test
-        # (Test262 runner unit test 는 lib_mod 에 포함되어 위 lib-unit-test 가 이미 커버 —
-        #  test262.yml 은 실제 language corpus 검증만 수행한다.)
-
-  release-build:
-    name: Release Build (${{ matrix.os }}, ${{ matrix.optimize }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: ubuntu-latest, optimize: ReleaseFast }
-          - { os: macos-latest, optimize: ReleaseFast }
-          - { os: windows-latest, optimize: ReleaseFast }
-          - { os: ubuntu-latest, optimize: ReleaseSafe }
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
-          cache-key: release-${{ matrix.optimize }}
-
-      # Windows GitHub runner (7GB RAM) 는 Debug LLVM 메모리 상한에 걸림
-      # ("LLVM ERROR: out of memory"). Debug 빌드·테스트 커버리지는 Linux/macOS
-      # 에서 유지하고, Windows 에서는 Release 빌드만 검증한다.
-      - name: Build (${{ matrix.optimize }})
-        run: zig build -Doptimize=${{ matrix.optimize }}
-
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
+        if: ${{ !cancelled() && steps.plan.outputs.core == 'true' }}
+        uses: ./.github/actions/setup-zig
         with:
           version: 0.16.0
           # zig fmt --check 만 실행 — 빌드 캐시 미생성. 캐싱은 순수 오버헤드이고,
-          # 키 미지정 시 전역 기본 키를 build job 들과 공유해 thrash 유발하므로 off.
+          # 이 job에서는 캐시 복원/저장 자체를 생략한다.
           use-cache: false
 
       - name: Check formatting
+        if: ${{ !cancelled() && steps.plan.outputs.core == 'true' }}
         run: zig fmt --check src/
 
       # #1797 follow-up — AST Tag↔variant mismatch static audit.
@@ -151,33 +96,39 @@ jobs:
       # 활성 — 의도된 exemption (COSMETIC_EXEMPT_TAGS) 외 모든 layout
       # mismatch 를 CI fail 로 승격.
       - name: Setup Bun
+        if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.suite != 'test262') }}
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.11"
 
       - name: Audit AST addNode variants (#1797, #1802)
+        if: ${{ !cancelled() && steps.plan.outputs.core == 'true' }}
         run: bun scripts/audit_addnode_variants.ts --strict-cosmetic
 
       # codegen 모든 emitter 가 첫 줄에 `addSourceMapping(node.span)` 발행하는지
       # 정적 검사. 새 emitter 추가 시 매핑 누락 회귀 (#2982 패턴) 차단 (#2983).
       - name: Audit codegen sourcemap mapping (#2983)
+        if: ${{ !cancelled() && steps.plan.outputs.core == 'true' }}
         run: bun scripts/audit-codegen-sourcemap.ts
 
       # 신규 재귀 AST walker 가 깊은 좌결합 체인(#4123)에서 스택 오버플로우를 재유입하지
       # 않도록, 모든 ast_walk.children() 호출처가 분류(iterative/one_level/tracked)됐는지 검사.
       # 미분류 신규 walker → fail. (장기 root-cause: 새 순회는 walkPreorderIterative 강제.)
       - name: Audit recursive AST walkers (#4123)
+        if: ${{ !cancelled() && steps.plan.outputs.core == 'true' }}
         run: bun scripts/audit-recursive-ast-walkers.mjs
 
       # 트랜스포머가 식별자를 만들 때 "어느 변수인지"(사용자/합성/전역/속성)를 고르는 생성 함수만
       # 쓰게 한다 — 노드 직접 생성은 심볼 누락을 조용히 재유입시킨다 (#4760).
       - name: Audit transformer identifier constructors (#4760)
+        if: ${{ !cancelled() && steps.plan.outputs.core == 'true' }}
         run: bun scripts/audit-identifier-constructors.mjs
 
       # error_codes.zig 에 코드를 추가하고 generate-error-docs.mjs 를 재실행하지 않으면
       # docsUrl() 이 존재하지 않는 페이지로 404 링크를 만든다 (#4421). 생성기를 돌려
       # 산출물이 커밋과 일치하는지 검사 — 불일치(신규/수정 페이지)면 fail.
       - name: Audit error docs sync (#4421)
+        if: ${{ !cancelled() && steps.plan.outputs.core == 'true' }}
         run: |
           bun scripts/generate-error-docs.mjs
           changed="$(git status --porcelain documents/src/content/docs/reference/errors documents/src/content/docs/en/reference/errors)"
@@ -193,51 +144,29 @@ jobs:
       # 바이너리를 받는** 치명적 불일치가 난다. `changeset:version` 이 자동 동기화하지만,
       # 누군가 손으로 버전을 건드려 어긋난 채 머지되는 것도 여기서 막는다.
       - name: Audit release version lockstep
+        if: ${{ !cancelled() && steps.plan.outputs.core == 'true' }}
         run: bun run test:version-lockstep
 
-  prepare-packages:
-    name: Prepare native package (Ubuntu)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
-          cache-key: ci-packages-baseline
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.3.11"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
       - uses: ./.github/actions/install-deps
+        if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.suite != 'test262') }}
+        id: lint-deps
         with:
-          profile: core-build
-      - name: Build portable Linux NAPI
-        run: |
-          zig build napi --cache-dir .zig-cache-napi -Dcpu=baseline
-          cp zig-out/lib/zntc.node packages/core/zntc.node
-      - name: Build core JS wrapper and declarations
-        run: bun run --cwd packages/core build
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ci-package-build
-          if-no-files-found: error
-          retention-days: 1
-          path: |
-            zig-out/lib/zntc.node
-            packages/core/dist/**
+          profile: lint
+      - name: Lint (oxlint)
+        if: ${{ !cancelled() && steps.lint-deps.outcome == 'success' }}
+        run: bun run lint
+      - name: Format check (oxfmt)
+        if: ${{ !cancelled() && steps.lint-deps.outcome == 'success' }}
+        run: bun run fmt:check
 
-  napi:
-    name: NAPI Build & Test
-    needs: prepare-packages
+  debug-test:
+    name: Debug Test (${{ matrix.os }})
+    needs: checks
+    if: ${{ !cancelled() && (needs.checks.outputs.core == 'true' || needs.checks.outputs.test262 == 'true') }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+      matrix: ${{ fromJSON(needs.checks.outputs.debug_matrix) }}
 
     steps:
       - name: Checkout
@@ -246,11 +175,175 @@ jobs:
           submodules: recursive
 
       - name: Setup Zig
-        if: runner.os == 'macOS'
-        uses: mlugg/setup-zig@v2
+        uses: ./.github/actions/setup-zig
         with:
           version: 0.16.0
-          cache-key: napi
+          cache-key: debug
+
+      - name: Build (Debug)
+        id: debug-cli
+        run: zig build
+
+      - name: Run Tests
+        if: ${{ !cancelled() && needs.checks.outputs.core == 'true' && steps.debug-cli.outcome == 'success' }}
+        # `zig build test`(--listen=- IPC)는 async runner 가 한 test 의 pass-path stderr 를
+        # 인접 test 실패로 오보고한다(zig 0.16). test binary 를 직접 실행하면 sequential
+        # 사람모드라 오보고가 없다. lib → exe 순차(pipefail 로 lib 실패 시 즉시 중단).
+        run: |
+          zig build test-bin
+          ./zig-out/bin/lib-unit-test
+          ./zig-out/bin/exe-unit-test
+      # Test262 consumes the exact Debug CLI already built above. A unit test
+      # failure must not hide the independent language corpus result.
+      - name: Test262 — full language/
+        if: ${{ !cancelled() && matrix.os == 'ubuntu-latest' && needs.checks.outputs.test262 == 'true' && steps.debug-cli.outcome == 'success' }}
+        run: ./zig-out/bin/zntc --test262 tests/test262/test/language/
+
+  release-build:
+    # macOS native ReleaseFast is built once in macos-native below.
+    name: Release Build (${{ matrix.os }}, ${{ matrix.optimize }})
+    needs: checks
+    if: ${{ !cancelled() && needs.checks.outputs.core == 'true' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, optimize: ReleaseFast }
+          - { os: windows-latest, optimize: ReleaseFast }
+          - { os: ubuntu-latest, optimize: ReleaseSafe }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
+        with:
+          version: 0.16.0
+          cache-key: release-${{ matrix.optimize }}
+
+      # Windows GitHub runner (7GB RAM) 는 Debug LLVM 메모리 상한에 걸림
+      # ("LLVM ERROR: out of memory"). Debug 빌드·테스트 커버리지는 Linux/macOS
+      # 에서 유지하고, Windows 에서는 Release 빌드만 검증한다.
+      - name: Build (${{ matrix.optimize }})
+        run: zig build -Doptimize=${{ matrix.optimize }}
+
+  prepare-packages:
+    name: Prepare Ubuntu CLI, native and JS packages
+    needs: checks
+    if: ${{ !cancelled() && (needs.checks.outputs.core == 'true' || needs.checks.outputs.integration == 'true') }}
+    runs-on: ubuntu-latest
+    outputs:
+      core_artifact: ${{ steps.core-upload.outputs.artifact-id }}
+      apps_artifact: ${{ steps.apps-upload.outputs.artifact-id }}
+      web_ready: ${{ steps.web.outcome }}
+      rn_ready: ${{ steps.rn.outcome }}
+      adapters_ready: ${{ steps.adapters.outcome }}
+      cli_artifact: ${{ steps.cli-upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/setup-zig
+        id: zig
+        with:
+          cache-key: native-ubuntu-baseline
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: ./.github/actions/install-deps
+        id: deps
+        with:
+          profile: core-test
+      - name: Build portable Linux NAPI
+        id: napi
+        if: ${{ !cancelled() && steps.zig.outcome == 'success' }}
+        run: |
+          zig build napi -Dcpu=baseline
+          cp zig-out/lib/zntc.node packages/core/zntc.node
+      - name: Build core wrapper and declarations
+        id: core
+        if: ${{ !cancelled() && steps.napi.outcome == 'success' && steps.deps.outcome == 'success' }}
+        run: |
+          bun run --cwd packages/core build
+          bun scripts/ci-verify-native.mjs
+      - uses: actions/upload-artifact@v4
+        id: core-upload
+        if: ${{ !cancelled() && steps.core.outcome == 'success' }}
+        with:
+          name: ci-package-build
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            zig-out/lib/zntc.node
+            packages/core/dist/**
+      - name: Build shared web app packages
+        id: web
+        if: ${{ !cancelled() && steps.core.outcome == 'success' }}
+        run: |
+          bun run --cwd packages/server build
+          bun run --cwd packages/web build
+      - name: Build shared React Native package
+        id: rn
+        if: ${{ !cancelled() && needs.checks.outputs.core == 'true' && steps.core.outcome == 'success' }}
+        run: bun run --cwd packages/react-native build
+      - name: Build remaining publishable adapters
+        id: adapters
+        if: ${{ !cancelled() && needs.checks.outputs.core == 'true' && steps.core.outcome == 'success' }}
+        run: |
+          bun run --cwd packages/vite-plugin build
+          bun run --cwd packages/rspack-loader build
+          bun run --cwd packages/init build
+      - name: Stage shared app packages
+        id: apps-stage
+        if: ${{ !cancelled() && (steps.web.outcome == 'success' || steps.rn.outcome == 'success' || steps.adapters.outcome == 'success') }}
+        run: |
+          mkdir -p ci-app-artifact
+          for pkg in server web react-native vite-plugin rspack-loader init; do
+            if [ -d "packages/$pkg/dist" ]; then
+              mkdir -p "ci-app-artifact/$pkg"
+              cp -R "packages/$pkg/dist" "ci-app-artifact/$pkg/dist"
+            fi
+          done
+      - uses: actions/upload-artifact@v4
+        id: apps-upload
+        if: ${{ !cancelled() && steps.apps-stage.outcome == 'success' }}
+        with:
+          name: ci-app-build
+          if-no-files-found: error
+          retention-days: 1
+          # Staging fixes the archive root even if an unrelated adapter failed.
+          path: ci-app-artifact/
+      # The CLI and NAPI are independent products. Preserve a usable artifact
+      # from either build even if the other product or its JS packages fail.
+      - name: Build portable Linux CLI
+        id: cli
+        if: ${{ !cancelled() && needs.checks.outputs.integration == 'true' && steps.zig.outcome == 'success' }}
+        run: zig build -Doptimize=ReleaseFast -Dcpu=baseline
+      - uses: actions/upload-artifact@v4
+        id: cli-upload
+        if: ${{ !cancelled() && steps.cli.outcome == 'success' }}
+        with:
+          name: ci-cli-build
+          if-no-files-found: error
+          retention-days: 1
+          path: zig-out/bin/zntc
+
+  napi-linux:
+    name: NAPI & CLI Tests (Ubuntu)
+    needs: [checks, prepare-packages]
+    if: ${{ !cancelled() && needs.checks.outputs.core == 'true' && needs.prepare-packages.outputs.core_artifact != '' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -271,53 +364,142 @@ jobs:
           name: ci-package-build
           path: .
 
-      # Linux 는 Ubuntu 의 portable binary 를 재사용하고 macOS 는 네이티브 ABI 를 빌드.
-      - name: Build macOS NAPI
-        if: runner.os == 'macOS'
-        run: zig build napi --cache-dir .zig-cache-napi
-
       - name: Use fresh native NAPI
+        id: fresh-native
         run: cp zig-out/lib/zntc.node packages/core/zntc.node
 
       - name: Run NAPI tests (Bun)
         run: cd packages/core && bun test index.test.ts
 
       - name: Run NAPI tests (Node.js)
+        if: ${{ !cancelled() && steps.fresh-native.outcome == 'success' }}
         run: node --test packages/core/napi.test.mjs
 
-      # CLI 테스트의 dev/preview/build app 시나리오는 spawn 한 zntc.mjs 가
-      # `import("@zntc/web")` 을 호출 → packages/web/dist/index.js 필요.
-      # `bun run test` 가 packages/core/package.json 의 pretest hook 을 트리거 →
-      # @zntc/server + @zntc/web 빌드 → bin/zntc.test.ts 실행 (arg passthrough).
-      # zntc 자체 self-build (dogfooding) 도 같이 검증 (#2539).
-      - name: Run CLI tests (Bun, with @zntc/server + @zntc/web self-build via pretest)
-        run: cd packages/core && bun run test bin/zntc.test.ts
+      - uses: actions/download-artifact@v4
+        if: ${{ !cancelled() && needs.prepare-packages.outputs.apps_artifact != '' }}
+        id: apps
+        with:
+          name: ci-app-build
+          path: packages
+      - name: Run CLI tests with shared self-hosted app packages
+        if: ${{ !cancelled() && steps.fresh-native.outcome == 'success' && steps.apps.outcome == 'success' && needs.prepare-packages.outputs.web_ready == 'success' && needs.prepare-packages.outputs.rn_ready == 'success' }}
+        working-directory: packages/core
+        run: bun test --timeout 10000 bin/zntc.test.ts
 
       # ZNTC 코어의 ES5 다운레벨링 / chunk split runtime helper / external 처리
       # 회귀 검증 (wasm 발견 버그가 NAPI 에서도 동일 발생 확인됨). #1960~#1962
       # 는 모두 fix·CLOSED — strict 전환 완료. 스크립트가 totalFails>0 시 exit 1.
       - name: Bundler 코어 회귀 검증 (#1960~#1962 회귀 가드)
+        if: ${{ !cancelled() && steps.fresh-native.outcome == 'success' }}
         run: bun scripts/napi-bundler-bug-check.ts
+
+  macos-native:
+    name: macOS Native, API & Watch Tests
+    needs: checks
+    if: ${{ !cancelled() && (needs.checks.outputs.core == 'true' || needs.checks.outputs.integration == 'true') }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/setup-zig
+        id: zig
+        with:
+          cache-key: native-macos
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: ./.github/actions/install-deps
+        id: deps
+        with:
+          profile: ${{ needs.checks.outputs.integration == 'true' && 'integration' || 'core-test' }}
+      - name: Build native macOS CLI (ReleaseFast)
+        if: ${{ !cancelled() && steps.zig.outcome == 'success' }}
+        id: cli
+        run: zig build -Doptimize=ReleaseFast
+      - name: Build native macOS NAPI
+        if: ${{ !cancelled() && steps.zig.outcome == 'success' }}
+        id: napi
+        run: |
+          zig build napi
+          cp zig-out/lib/zntc.node packages/core/zntc.node
+      - name: Build and verify native core wrapper
+        if: ${{ !cancelled() && steps.napi.outcome == 'success' && steps.deps.outcome == 'success' }}
+        id: core
+        run: |
+          bun run --cwd packages/core build
+          bun scripts/ci-verify-native.mjs
+      # Keep self-hosting on macOS; its app outputs are shared by CLI and watch
+      # tests in this job instead of rebuilding the same packages twice.
+      - name: Build macOS web app packages
+        if: ${{ !cancelled() && steps.core.outcome == 'success' }}
+        id: web
+        run: |
+          bun run --cwd packages/server build
+          bun run --cwd packages/web build
+      - name: Build macOS React Native package
+        if: ${{ !cancelled() && needs.checks.outputs.core == 'true' && steps.core.outcome == 'success' }}
+        id: rn
+        run: bun run --cwd packages/react-native build
+      - name: Run NAPI tests (Bun)
+        if: ${{ !cancelled() && needs.checks.outputs.core == 'true' && steps.core.outcome == 'success' }}
+        working-directory: packages/core
+        run: bun test index.test.ts
+      - name: Run NAPI tests (Node.js)
+        if: ${{ !cancelled() && needs.checks.outputs.core == 'true' && steps.core.outcome == 'success' }}
+        run: node --test packages/core/napi.test.mjs
+      - name: Run CLI tests (Bun)
+        if: ${{ !cancelled() && needs.checks.outputs.core == 'true' && steps.web.outcome == 'success' && steps.rn.outcome == 'success' }}
+        working-directory: packages/core
+        run: bun test --timeout 10000 bin/zntc.test.ts
+      - name: Bundler core regression checks
+        if: ${{ !cancelled() && needs.checks.outputs.core == 'true' && steps.core.outcome == 'success' }}
+        run: bun scripts/napi-bundler-bug-check.ts
+
+      # macOS는 kqueue, native NAPI lifecycle, HTTP/TLS와 실제 watch/HMR 경로를 유지.
+      # 전체 transpile/bundle/compat/determinism/RN 스위트는 Ubuntu가 담당한다.
+      - name: Run macOS platform integration tests
+        if: ${{ !cancelled() && needs.checks.outputs.integration == 'true' && steps.cli.outcome == 'success' && steps.web.outcome == 'success' }}
+        working-directory: tests/integration
+        run: |
+          bun test --timeout 10000 \
+            ./tests/watch-json.test.ts \
+            ./tests/watch-stress.test.ts \
+            ./tests/hmr.test.ts \
+            ./tests/devserver.test.ts \
+            ./tests/devserver-sse.test.ts \
+            ./tests/dev-server-tls.test.ts \
+            ./tests/js-dev-server-lazy.test.ts \
+            ./tests/napi-dev-jsx-binding.test.ts \
+            ./tests/napi-dev-server.test.ts \
+            ./tests/napi-dev-server-quiet-regression.test.ts \
+            ./tests/napi-lazy-dev-hmr.test.ts \
+            ./tests/napi-lazy-primitives.test.ts \
+            ./tests/napi-tls-self-check.test.ts \
+            ./tests/tsconfig-cache.test.ts
 
   napi-package-smoke:
     name: NAPI Package Smoke (${{ matrix.platform }})
-    needs: [setup-matrix, prepare-packages]
+    needs: [checks, prepare-packages]
+    if: ${{ !cancelled() && needs.checks.outputs.core == 'true' && needs.prepare-packages.outputs.core_artifact != '' }}
     runs-on: ${{ matrix.os }}
-    # 매트릭스는 setup-matrix 가 event 별로 방출(PR=대표 5 / push=풀 8). 플랫폼 선정
-    # 근거(win32-arm64 제외, ia32 node22 등)는 setup-matrix 의 smoke_full 주석 참조.
+    # PR 5 / main 8 ABI 조합은 scripts/ci-plan.mjs에서 선택한다.
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.setup-matrix.outputs.smoke) }}
+      matrix: ${{ fromJSON(needs.checks.outputs.smoke_matrix) }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: ${{ matrix.platform != 'linux-x64-gnu' && 'recursive' || 'false' }}
 
       - name: Setup Zig
         if: matrix.platform != 'linux-x64-gnu'
-        uses: mlugg/setup-zig@v2
+        uses: ./.github/actions/setup-zig
         with:
           version: 0.16.0
           cache-key: napi-smoke-${{ matrix.platform }}
@@ -338,7 +520,7 @@ jobs:
       - name: Build platform NAPI
         if: matrix.platform != 'linux-x64-gnu'
         shell: bash
-        run: zig build napi --cache-dir .zig-cache-napi -Dtarget=${{ matrix.zig_target }} -Dcpu=baseline
+        run: zig build napi -Dtarget=${{ matrix.zig_target }} -Dcpu=baseline
 
       - name: Copy .node into platform sub-package
         shell: bash
@@ -393,16 +575,14 @@ jobs:
 
   publish-smoke:
     name: Publish Smoke Test
-    needs: [prepare-packages, wasm]
+    needs: [checks, prepare-packages, wasm]
     # WASM 실행 테스트가 실패해도 빌드된 패키지의 배포 검증은 독립적으로 수행한다.
-    if: ${{ !cancelled() && needs.prepare-packages.result == 'success' && needs.wasm.outputs.artifact_id != '' }}
+    if: ${{ !cancelled() && needs.checks.outputs.core == 'true' && needs.prepare-packages.outputs.core_artifact != '' && needs.prepare-packages.outputs.apps_artifact != '' && needs.prepare-packages.outputs.web_ready == 'success' && needs.prepare-packages.outputs.rn_ready == 'success' && needs.prepare-packages.outputs.adapters_ready == 'success' && needs.wasm.outputs.artifact_id != '' }}
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -423,8 +603,10 @@ jobs:
           path: .
       - name: Use fresh native NAPI
         run: cp zig-out/lib/zntc.node packages/core/zntc.node
-      - name: Build remaining publishable packages
-        run: bun run build:publishable:adapters
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-app-build
+          path: packages
 
       - name: Run publish smoke test
         run: bun run test:publish-smoke
@@ -443,6 +625,8 @@ jobs:
 
   wasm:
     name: WASM Build & Test
+    needs: checks
+    if: ${{ !cancelled() && needs.checks.outputs.core == 'true' }}
     runs-on: ubuntu-latest
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
@@ -458,7 +642,7 @@ jobs:
         with:
           bun-version: "1.3.11"
 
-      - uses: mlugg/setup-zig@v2
+      - uses: ./.github/actions/setup-zig
         with:
           version: 0.16.0
           cache-key: wasm
@@ -466,7 +650,11 @@ jobs:
         with:
           profile: wasm
       - name: Build WASM packages
-        run: bun run --cwd packages/wasm build
+        run: |
+          zig build wasm wasm-bundler
+          cp zig-out/bin/zntc.wasm zig-out/bin/zntc-bundler.wasm packages/wasm/
+          bun run --cwd packages/wasm build:js
+          bun run --cwd packages/wasm build:dts
       - uses: actions/upload-artifact@v4
         id: upload
         with:
@@ -479,6 +667,7 @@ jobs:
             packages/wasm/*.wasm
 
       - name: Run WASM tests
+        id: wasm-tests
         run: cd packages/wasm && bun test
 
       # bundler 옵션 매트릭스 회귀 검증 — 의도된 제약 (CodeSplittingRequiresESM
@@ -488,4 +677,147 @@ jobs:
       # (UNEXPECTED-FAIL/MISSING 등) 시 exit 1; 의도 제약 완화
       # (EXPECTED-FAIL-BUT-OK) 는 ::notice:: 로만 노출 (CI 미차단, 검토 대상).
       - name: Bundler 매트릭스 회귀 검증 (#1885 회귀 가드)
+        if: ${{ !cancelled() && steps.upload.outcome == 'success' }}
         run: bun scripts/wasm-bundler-full-matrix.ts
+  integration-ubuntu:
+    name: Integration Tests (ubuntu-latest)
+    runs-on: ubuntu-latest
+    needs: [checks, prepare-packages]
+    if: ${{ !cancelled() && needs.checks.outputs.integration == 'true' && needs.prepare-packages.outputs.cli_artifact != '' && needs.prepare-packages.outputs.core_artifact != '' && needs.prepare-packages.outputs.apps_artifact != '' && needs.prepare-packages.outputs.web_ready == 'success' }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/use-zntc-artifact
+        with:
+          artifact-name: ci-cli-build
+          core-artifact: ci-package-build
+          apps-artifact: ci-app-build
+
+      # using/SuppressedError fixture의 네이티브 런타임 오라클도 Node 24를 사용한다.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-deps
+        with:
+          profile: integration
+
+      # emotion-v10 fixture 는 root workspace 미포함 — 격리 install 필요.
+      - name: Install emotion v10 fixture deps
+        run: cd tests/integration/fixtures/emotion-v10 && bun install --frozen-lockfile
+
+      # 일반 discovery가 hermes-runtime.test.ts보다 es5-rn.test.ts를 먼저 실행한다는
+      # 보장은 없다. RN fixture와 두 Hermes 바이너리를 미리 준비해 silent skip을 막는다.
+      - name: Install RN example app dependencies
+        run: cd tests/integration/tests/fixtures/rn-example-app && bun install --frozen-lockfile
+
+      - name: Verify Linux Hermes runtime and bytecode compiler
+        shell: bash
+        run: |
+          hermes="$PWD/node_modules/hermes-engine-cli/linux64-bin/hermes"
+          hermesc="$PWD/tests/integration/tests/fixtures/rn-example-app/node_modules/hermes-compiler/hermesc/linux64-bin/hermesc"
+          test -x "$hermes"
+          test -x "$hermesc"
+          probe_dir=$(mktemp -d)
+          trap 'rm -rf "$probe_dir"' EXIT
+          printf 'print("HERMES_READY");\n' > "$probe_dir/probe.js"
+          test "$("$hermes" "$probe_dir/probe.js")" = 'HERMES_READY'
+          "$hermesc" -emit-binary -out "$probe_dir/probe.hbc" "$probe_dir/probe.js"
+
+      - name: Extract compat-table tests
+        run: cd tests/integration && node tests/compat-table-extract.cjs > tests/fixtures/compat-table-tests.json
+
+      - name: Run integration tests
+        run: bun run test:integration
+
+      - name: Upload compat-table report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-table-report
+          path: tests/integration/compat-table-report.json
+
+  e2e:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: [checks, prepare-packages]
+    if: ${{ !cancelled() && needs.checks.outputs.e2e == 'true' && needs.prepare-packages.outputs.cli_artifact != '' && needs.prepare-packages.outputs.core_artifact != '' && needs.prepare-packages.outputs.apps_artifact != '' && needs.prepare-packages.outputs.web_ready == 'success' }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/use-zntc-artifact
+        with:
+          artifact-name: ci-cli-build
+          core-artifact: ci-package-build
+          apps-artifact: ci-app-build
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-deps
+        with:
+          profile: e2e
+
+      - name: Install Playwright browsers
+        run: bun run playwright:install
+
+      - name: Run E2E tests
+        run: bun run test:e2e
+
+  smoke:
+    name: Smoke Tests (Real Projects)
+    runs-on: ubuntu-latest
+    needs: [checks, prepare-packages]
+    if: ${{ !cancelled() && needs.checks.outputs.integration == 'true' && needs.prepare-packages.outputs.cli_artifact != '' }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/use-zntc-artifact
+        with:
+          artifact-name: ci-cli-build
+          napi: "false"
+
+      - name: Install smoke dependencies
+        uses: ./.github/actions/install-deps
+        with:
+          profile: benchmark
+
+      - name: Run smoke tests
+        shell: bash
+        run: bun run tests/benchmark/smoke.ts 2>&1 | tee smoke-output.txt
+
+      - name: Run smoke tests (--deep --minify-all)
+        shell: bash
+        # 30개 deepEntry fixture 를 minify 강제로 빌드+실행. minify codegen / mangler 회귀
+        # (chalk 공백, mangler shadow, dead else, arrow obj body, new callee paren,
+        # destructuring shorthand 등) 의 보호 — 이번 라운드에서 12개 PR 머지.
+        run: |
+          bun run tests/benchmark/smoke.ts --deep --minify-all \
+            --filter=react,react-dom,vue,svelte,solid-js,preact,toolkit,mobx,zustand,jotai,immer,valtio,rxjs,tanstack-query,effect,lodash-es,date-fns,zod,dayjs,yaml,axios,express,hono,graphql,supabase,chalk,commander,yargs,three,d3 \
+            2>&1 | tee smoke-deep-min-output.txt
+
+      - name: Write smoke summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Smoke Test Results'
+            for output in smoke-output.txt smoke-deep-min-output.txt; do
+              echo ''
+              if [ "$output" = smoke-output.txt ]; then
+                echo '### Surface entry'
+              else
+                echo '### Deep entry + --minify-all'
+              fi
+              if [ -f "$output" ]; then
+                grep -E '^(\||###|$)' "$output" || true
+                echo ''
+                tail -1 "$output"
+              else
+                echo 'No results: this test step did not complete.'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

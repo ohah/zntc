@@ -11,9 +11,9 @@ zig build test262-run -- --verbose       # 상세 출력
 - 러너 위치: `src/test262/`, 입력 서브모듈: `tests/test262/`
 - excludelist: 엔진 의존 / 스펙 외 항목만 (현재 0건)
 
-CI의 `Test262 Conformance`는 Ubuntu에서 `language/` 전체를 Debug 모드로
-빌드·실행한다. 러너 자체 유닛 테스트는 `CI`의 `lib-unit-test`가 함께 실행하므로
-별도 Test262 유닛 job을 두지 않는다. 소스뿐 아니라 빌드 설정, workflow,
+`CI`의 Ubuntu Debug job은 유닛 테스트용으로 만든 CLI를 재사용해
+`language/` 전체를 실행한다. 러너 자체 유닛 테스트도 `lib-unit-test`에
+포함되므로 별도 Test262 빌드나 job을 두지 않는다. 소스뿐 아니라 빌드 설정, workflow,
 Test262 서브모듈 pin 변경도 정합성 검증을 실행한다.
 
 ## 유닛 테스트 (Zig)
@@ -66,7 +66,7 @@ cd tests/integration && bun test         # CLI/NAPI 통합 테스트
 cd tests/e2e && bun test                 # Playwright E2E (dev server, 브라우저)
 ```
 
-`Integration & E2E`의 전체 통합 스위트는 Ubuntu에서 실행한다.
+`CI`의 전체 통합 스위트는 Ubuntu에서 실행한다.
 `determinism.test.ts`의 N=10 반복, `compat-table.test.ts`, `swc-compare.test.ts`,
 `hermes-runtime.test.ts`도 이 실행에 포함되며 별도 job으로 중복 실행하지 않는다.
 compat-table 데이터는 실행 전에 추출하고 보고서는 artifact로 보관한다.
@@ -185,11 +185,18 @@ bun run tests/benchmark/bundle-perf.ts --output ./bundle-perf.json
 - e2e 도 `tests/e2e/` cwd 에서. Playwright 가 자체 server fixture 를 띄움.
 
 ## CI
-- 일반 코드 변경의 최대 job 수는 PR 26개, main push 29개다. 성능 라벨, 문서 배포, 릴리스 및 주기 검사는 별도다.
-- `ci.yml`: Debug 유닛 테스트, 배포 모드 3 OS와 Linux ReleaseSafe, NAPI/WASM 및 패키지 설치 검증. 플랫폼과 무관한 JS/dts는 Ubuntu에서 한 번 만들고, 각 플랫폼은 자신의 NAPI 바이너리로 ESM/CJS 로딩을 검사한다.
-- `integration.yml`: Ubuntu 전체 통합·Hermes·compat·determinism, 브라우저 E2E와 실제 프로젝트 smoke. macOS는 위의 watch/HMR/native 목록을 실행한다. Smoke 결과는 실행 요약에 남긴다.
-- `test262.yml`: language corpus만 검사한다. 러너 유닛 테스트는 CI의 Debug Test에 포함된다.
-- `build-canary.yml`: 추가 ReleaseSafe/ReleaseSmall 5개 조합은 매주 월요일 04:17 UTC와 수동 실행으로 검증한다. 해당 workflow 변경 PR에서도 실행한다.
+- 일반 코드 변경의 최대 job 수는 PR 19개, main push 22개다. 성능 라벨, 문서 배포, 릴리스 및 주기 검사는 별도다.
+- `ci.yml` 한 실행에서 유닛·Test262·통합·E2E·패키지 검사를 관리한다. 별도 `integration.yml`과 `test262.yml`은 제거했다.
+- Ubuntu 준비 job은 baseline CPU의 NAPI·CLI와 JS/dts·웹/RN/배포 어댑터를 한 번씩 만든다. API·통합·E2E·설치·배포 검사는 필요한 산출물을 공유한다. CLI/core/web/RN/어댑터 결과를 분리해 한 제품의 빌드 실패가 무관한 검사를 생략시키지 않도록 한다.
+- macOS native CLI·NAPI·self-host 빌드는 한 job에서 공유하며 Bun/Node API, CLI, 위 watch/HMR 14개 파일을 각각 실행한다. macOS package smoke의 baseline CPU와 native CPU 검증은 구별해 유지한다.
+- Linux native ReleaseFast, Windows ReleaseFast, Linux ReleaseSafe는 각각 유지한다. Test262는 Ubuntu의 기존 Debug CLI를 사용하므로 추가 컴파일이 없다. 유닛 테스트 실패 뒤에도 corpus 검사는 독립적으로 실행한다.
+- WASM은 두 바이너리를 한 Zig 명령으로 만들고 wrapper/dts와 함께 업로드한다. 실행 테스트가 실패해도 준비된 산출물의 배포 검사는 계속 수행한다.
+- `scripts/ci-plan.mjs`가 matrix와 실행 대상을 계산한다. 계산과 Zig/JS lint는 하나의 job에서 수행하며, 감사 실패가 나머지 빌드·검사를 막지 않는다. `node --test scripts/ci-plan.test.mjs`로 변경 경로·draft·ready·수동 실행 조건을 검증한다.
+- 패키지 최상단 README/CHANGELOG/LICENSE 및 changeset 문서만 수정하면 가벼운 검사 1개만 실행한다. 테스트 Markdown fixture는 이 예외에 포함하지 않는다. 기존 docs/문서 사이트/루트 Markdown 전용 변경은 CI trigger에서 제외한다.
+- draft PR은 기존처럼 core/Test262를 검증하고 통합/E2E는 준비 완료 후 실행한다. ready 전환은 이전 run을 취소할 수 있으므로 core/Test262도 다시 선택한다.
+- 수동 `CI` 실행의 suite는 `all`, `integration`, `test262`를 지원한다. 수동 subset 실행의 concurrency group은 자동 CI와 분리해 main 전체 검사를 취소하지 않는다.
+- `.github/actions/setup-zig`는 CI의 순차 CLI/NAPI 빌드가 모두 action 관리 캐시를 쓰게 하고 상한을 4 GiB로 둔다. 크기 초과로 캐시가 비워지는지 로그를 확인한다. 개발자의 병렬 빌드용 `package.json`의 별도 NAPI 캐시 경로는 유지한다.
+- `build-canary.yml`: 추가 ReleaseSafe/ReleaseSmall 5개 조합은 매주 월요일 04:17 UTC와 수동 실행으로 검증한다. 해당 workflow/공통 Zig action 변경 PR에서도 실행한다.
 - `release.yml`: 9개 플랫폼별로 NAPI와 CLI를 함께 빌드한다. 실제 npm/GitHub 배포는 버전 태그에서만 실행한다.
 - `scripts/ci-install-deps.sh`: job별 Bun workspace 필터를 관리한다. root fixture 의존성은 유지하며, integration은 조용한 test skip을 막기 위해 benchmark workspace도 설치한다. 테스트 의존성을 추가할 때 프로필과 실제 실행/skip 수를 함께 확인한다.
 - `docs.yml`은 문서 배포, `napi-leak-gate.yml`은 수동 누수 진단에 사용한다.

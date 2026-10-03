@@ -33,7 +33,7 @@ jobs:
           submodules: recursive
 
       - name: Setup Zig
-        uses: mlugg/setup-zig@v2
+        uses: ./.github/actions/setup-zig
         with:
           version: 0.16.0
           cache-key: benchmark
@@ -52,7 +52,7 @@ jobs:
         run: zig build -Doptimize=ReleaseFast
 
       - name: Build NAPI module
-        run: zig build napi --cache-dir .zig-cache-napi
+        run: zig build napi
 
       - name: Build WASM module
         run: zig build wasm

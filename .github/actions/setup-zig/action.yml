@@ -1,0 +1,37 @@
+name: Setup Zig with shared build cache
+description: Install Zig and persist the cache used by sequential CLI, NAPI, and test builds.
+
+inputs:
+  version:
+    description: Zig compiler version.
+    required: false
+    default: "0.16.0"
+  cache-key:
+    description: Build profile segment. Upstream also includes the job ID, Zig version, OS, and architecture.
+    required: false
+    default: ""
+  use-cache:
+    description: Persist the combined local and global Zig cache.
+    required: false
+    default: "true"
+  cache-size-limit:
+    description: Maximum uncompressed cache size in MiB before upstream clears it.
+    required: false
+    # The existing CI cache reached about 1.7 GiB without NAPI's local outputs.
+    # Persisting those too needs headroom over upstream's 2 GiB limit. Bound
+    # growth at 4 GiB; this trades a larger archive for fewer full rebuilds.
+    default: "4096"
+
+runs:
+  using: composite
+  steps:
+    # setup-zig maps both ZIG_LOCAL_CACHE_DIR and ZIG_GLOBAL_CACHE_DIR to the
+    # workspace's .zig-cache and persists that directory. Do not override it
+    # with --cache-dir .zig-cache-napi: that directory would not be saved.
+    # Build steps sharing this directory must remain sequential (#54).
+    - uses: mlugg/setup-zig@v2
+      with:
+        version: ${{ inputs.version }}
+        cache-key: ${{ inputs.cache-key }}
+        use-cache: ${{ inputs.use-cache }}
+        cache-size-limit: ${{ inputs.cache-size-limit }}

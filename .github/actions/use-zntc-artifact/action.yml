@@ -3,8 +3,16 @@ description: Install Bun and restore prebuilt ZNTC artifacts for CI jobs.
 
 inputs:
   artifact-name:
-    description: Name of the uploaded ZNTC build artifact.
+    description: Name of the uploaded CLI artifact.
     required: true
+  core-artifact:
+    description: Optional NAPI and core wrapper artifact restored at the repository root.
+    required: false
+    default: ""
+  apps-artifact:
+    description: Optional app package artifact whose archive root is packages/.
+    required: false
+    default: ""
   bun-version:
     description: Bun version to install.
     required: false
@@ -27,6 +35,20 @@ runs:
       with:
         name: ${{ inputs.artifact-name }}
         path: .
+
+    - name: Download native core package
+      if: ${{ inputs.core-artifact != '' }}
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.core-artifact }}
+        path: .
+
+    - name: Download app packages
+      if: ${{ inputs.apps-artifact != '' }}
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.apps-artifact }}
+        path: packages
 
     - name: Normalize CLI artifact layout
       run: |

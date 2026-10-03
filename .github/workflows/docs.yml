@@ -10,6 +10,7 @@ on:
       - ".github/workflows/docs.yml"
       - ".github/actions/bun-cache/**"
       - ".github/actions/install-deps/**"
+      - ".github/actions/setup-zig/**"
       - "scripts/ci-install-deps.sh"
   workflow_dispatch:
 
@@ -33,10 +34,10 @@ jobs:
         with:
           submodules: recursive
 
-      - uses: mlugg/setup-zig@v2
+      - uses: ./.github/actions/setup-zig
         with:
           version: 0.16.0
-          # ci.yml 의 wasm job 과 동일 빌드 프로파일 — 키 공유로 cross-workflow 재사용.
+          # WASM 빌드 프로파일. upstream 키에 job ID도 포함되어 CI의 wasm job과는 분리된다.
           cache-key: wasm
 
       - uses: actions/setup-node@v4

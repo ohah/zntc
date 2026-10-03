@@ -461,7 +461,7 @@ ZNTC의 일반 번들러로 이 경계 분리 불가. Remix compiler 클론 필�
 | -------------------------- | ------ | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | ~~**CSS 번들링**~~         | ✅     | Phase 1 완료 (@import 인라이닝 + Lightning CSS minify + 청크별 CSS 분리) | core `--bundle` 의 CSS Modules 후순위 (앱 모드는 빌트인)                                                                                                                                                                    |
 | ~~**npm 배포**~~           | ✅     | 완료                                                   | 9 platform prebuilt sub-package (`@zntc/core-{darwin,linux,win32}-{arm64,x64,ia32}*`) + main `@zntc/core` optionalDependencies 매칭. Linux musl/glibc, Windows ia32 포함                            |
-| ~~**CI 크로스 플랫폼**~~   | ✅     | 완료                                                   | `.github/workflows/ci.yml` (debug-test / release-build / napi / napi-package-smoke / publish-smoke / wasm) + `integration.yml` (ubuntu / macos / hermes / compat-table / smoke) GitHub Actions 매트릭스 |
+| ~~**CI 크로스 플랫폼**~~   | ✅     | 완료                                                   | `.github/workflows/ci.yml`의 공유 빌드 + Debug/Test262, NAPI/WASM, 플랫폼 설치, Ubuntu 통합/Hermes/compat/E2E/smoke, macOS native/watch 검증 |
 | ~~**릴리즈 자동화**~~      | ✅     | 완료                                                   | `release.yml` — `v*` 태그 push → 9 platform NAPI + CLI 매트릭스 빌드 (ReleaseFast) → sub-package 배포 → `release.ts` 로 npm publish (NPM_TOKEN / OIDC trusted publishing 준비, `--provenance`) → GitHub Release tarball |
 
 ### 3단계: 생태계
