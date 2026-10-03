@@ -268,6 +268,23 @@ fn isSupportedExternalRequireImportEquals(ast: *const ast_mod.Ast, node: ast_mod
         ast.getNode(arg_idx).tag == .string_literal;
 }
 
+/// Plain top-level `export * from "specifier"` keeps the same re-export
+/// loader record through lowering. Namespace re-exports and import attributes
+/// stay on the full graph-resync path.
+fn isSupportedPlainExportAll(ast: *const ast_mod.Ast, node_idx: ast_mod.NodeIndex) bool {
+    if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) return false;
+    const node = ast.getNode(node_idx);
+    if (node.tag != .export_all_declaration) return false;
+    var top_level = ast_walk.topLevelStatementMask(ast) catch return false;
+    defer top_level.deinit();
+    if (!top_level.isSet(@intFromEnum(node_idx))) return false;
+
+    const export_all = module_parser.readExportAllExtras(ast, node.data.extra);
+    if (!export_all.exported_name.isNone() or export_all.attrs_len != 0) return false;
+    if (export_all.source.isNone() or @intFromEnum(export_all.source) >= ast.nodes.items.len) return false;
+    return ast.getNode(export_all.source).tag == .string_literal;
+}
+
 /// Keeping the semantic graph is safe only when the transform leaves each
 /// runtime import's module-graph shape unchanged. Ordinary unused named
 /// imports can be elided, and inline type-only specifiers can be removed, so
@@ -585,7 +602,7 @@ fn canKeepPrepassSemanticGraph(
     if (!hasStableRuntimeImports(ast, options)) return false;
 
     var found_transform = graph_editable_jsx or arrow_only_downlevel;
-    for (ast.nodes.items) |node| {
+    for (ast.nodes.items, 0..) |node, raw_node_idx| {
         const tag_name = @tagName(node.tag);
         const is_flow_match_tag = std.mem.startsWith(u8, tag_name, "flow_match_");
         const is_flow_enum_tag = node.tag == .flow_enum_declaration or node.tag == .flow_enum_member;
@@ -612,9 +629,13 @@ fn canKeepPrepassSemanticGraph(
                 if (!local_supported and !external_supported) return false;
                 found_transform = true;
             },
+            .export_all_declaration => {
+                const node_idx: ast_mod.NodeIndex = @enumFromInt(@as(u32, @intCast(raw_node_idx)));
+                if (!isSupportedPlainExportAll(ast, node_idx)) return false;
+                found_transform = true;
+            },
             // These constructs can alter the import/export graph or create
             // dynamic-name environments independently of Flow match lowering.
-            .export_all_declaration,
             .ts_namespace_export_declaration,
             .await_expression,
             .yield_expression,
