@@ -327,7 +327,93 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('ES5 downlevel operators keep arrow modules on semantic resync', () => {
+  test('ES5 arrows retain target-native conditional, sequence, and assignment expressions', () => {
+    const cases = [
+      {
+        name: 'conditional',
+        source: [
+          'function select(value) { return (() => value ? 42 : 0)(); }',
+          'console.log(select(true));',
+        ].join('\n'),
+      },
+      {
+        name: 'sequence',
+        source: [
+          'function sequence(value) { return (() => (value, 42))(); }',
+          'console.log(sequence(0));',
+        ].join('\n'),
+      },
+      {
+        name: 'simple assignment',
+        source: [
+          'function assign(value) { return (() => (value = 42))(); }',
+          'console.log(assign(0));',
+        ].join('\n'),
+      },
+      {
+        name: 'native compound assignment',
+        source: [
+          'function assign(value) { return (() => (value += 41))(); }',
+          'console.log(assign(1));',
+        ].join('\n'),
+      },
+    ];
+    for (const fixture of cases) {
+      const dir = mkdtempSync(join(tmpdir(), `zntc-bundle-arrow-${fixture.name}-retained-`));
+      const output = join(dir, 'out.cjs');
+      writeFileSync(join(dir, 'entry.mjs'), fixture.source);
+      try {
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            'entry.mjs',
+            '--target=es5',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+          );
+        expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.name}: ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report, fixture.name).toMatch(/clean=1(?:\s|$)/);
+
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+          );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=retained');
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe('42\n');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test('ES5 downlevel and structured assignments keep arrow modules on semantic resync', () => {
     const cases = [
       {
         name: 'exponentiation',
@@ -355,6 +441,30 @@ describe('symbol identity coverage gate (#4819)', () => {
           'console.log(choose(null));',
         ].join('\n'),
         output: '7\n',
+      },
+      {
+        name: 'logical AND assignment',
+        source: [
+          'function choose(value) { var result = value; return (() => (result &&= 7))(); }',
+          'console.log(choose(0));',
+        ].join('\n'),
+        output: '0\n',
+      },
+      {
+        name: 'logical OR assignment',
+        source: [
+          'function choose(value) { var result = value; return (() => (result ||= 7))(); }',
+          'console.log(choose(0));',
+        ].join('\n'),
+        output: '7\n',
+      },
+      {
+        name: 'destructuring assignment',
+        source: [
+          'function assign(value) { var result = 0; (() => ([result] = value))(); return result; }',
+          'console.log(assign([42]));',
+        ].join('\n'),
+        output: '42\n',
       },
     ];
     for (const fixture of cases) {
