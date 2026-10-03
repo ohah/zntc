@@ -472,6 +472,7 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
     var found_native_for_of = false;
     var found_native_for_await = false;
     var found_native_class = false;
+    var found_native_destructuring = false;
     for (reachable_nodes) |raw_idx| {
         const node = ast.nodes.items[raw_idx];
         // Type erasure already edits the semantic graph through the same
@@ -501,17 +502,34 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
             .variable_declarator => {
                 if (node.data.extra >= ast.extra_data.items.len) return false;
                 const binding: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
-                if (binding.isNone() or @intFromEnum(binding) >= ast.nodes.items.len or
-                    ast.nodes.items[@intFromEnum(binding)].tag != .binding_identifier) return false;
+                if (binding.isNone() or @intFromEnum(binding) >= ast.nodes.items.len) return false;
+                const binding_tag = ast.nodes.items[@intFromEnum(binding)].tag;
+                if (binding_tag == .binding_identifier) continue;
+                if (options.unsupported.destructuring or
+                    (binding_tag != .array_pattern and binding_tag != .object_pattern)) return false;
             },
             .formal_parameter => {
                 const extra = node.data.extra;
                 if (extra + 2 >= ast.extra_data.items.len) return false;
                 const pattern: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
                 const default_value: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + 2]);
-                if (pattern.isNone() or @intFromEnum(pattern) >= ast.nodes.items.len or
-                    ast.nodes.items[@intFromEnum(pattern)].tag != .binding_identifier or !default_value.isNone()) return false;
+                if (pattern.isNone() or @intFromEnum(pattern) >= ast.nodes.items.len or !default_value.isNone()) return false;
+                const pattern_tag = ast.nodes.items[@intFromEnum(pattern)].tag;
+                if (pattern_tag == .binding_identifier) continue;
+                if (options.unsupported.destructuring or
+                    (pattern_tag != .array_pattern and pattern_tag != .object_pattern)) return false;
             },
+            .array_pattern, .object_pattern, .array_assignment_target, .object_assignment_target => {
+                if (options.unsupported.destructuring) return false;
+                found_native_destructuring = true;
+            },
+            // Defaults and rest are deliberately outside this native-only
+            // slice; their downlevel paths can synthesize assignments/helpers.
+            .assignment_pattern,
+            .assignment_target_with_default,
+            .binding_rest_element,
+            .assignment_target_rest,
+            => return false,
             .assignment_expression => {
                 const operator: token_mod.Kind = @enumFromInt(node.data.binary.flags);
                 if (options.unsupported.exponentiation and operator == .star2_eq) return false;
@@ -636,6 +654,9 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
             .assignment_target_identifier,
             .binding_identifier,
             .object_property,
+            .binding_property,
+            .assignment_target_property_identifier,
+            .assignment_target_property_property,
             .class_body,
             .conditional_expression,
             .template_literal,
@@ -675,7 +696,7 @@ fn canRetainGraphForAuditedSyntaxSubset(ast: *const ast_mod.Ast, options: Transf
         if (node.tag == .catch_clause and node.data.binary.left.isNone()) return false;
     }
     return found_arrow or found_native_await or found_native_generator or found_native_tagged_template or
-        found_native_for_of or found_native_for_await or found_native_class;
+        found_native_for_of or found_native_for_await or found_native_class or found_native_destructuring;
 }
 
 fn canKeepPrepassSemanticGraph(

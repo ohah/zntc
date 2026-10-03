@@ -1789,6 +1789,101 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('native destructuring retains binding and assignment identities while ES5 reanalyzes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-destructuring-retained-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    writeFileSync(
+      input,
+      [
+        'type Pair = [number, number];',
+        'type Values = { left: number; right: number };',
+        'const pair: Pair = [20, 22];',
+        'const [first, second]: Pair = pair;',
+        'const source: Values = { left: first, right: second };',
+        'const { left, right: renamedRight }: Values = source;',
+        "const selectedKey: 'left' = 'left';",
+        'const { [selectedKey]: computedLeft }: Values = source;',
+        'type Nested = { coords: Pair };',
+        'const nestedSource: Nested = { coords: pair };',
+        'const { coords: [nestedLeft, nestedRight] }: Nested = nestedSource;',
+        'function add({ left: a, right: b }: Values) {',
+        '  const [x, y]: Pair = [a, b];',
+        '  return x + y;',
+        '}',
+        'let assignedLeft = 0;',
+        'let assignedRight = 0;',
+        '({ left: assignedLeft, right: assignedRight } = source);',
+        'let total = 0;',
+        'for (const { left: current } of [{ left: first }, { left: second }]) total += current;',
+        'console.log(add({ left: assignedLeft, right: assignedRight }), nestedLeft + nestedRight, computedLeft, left, renamedRight, total);',
+      ].join('\n'),
+    );
+
+    const run = (target: string) =>
+      spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          target,
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+
+    try {
+      const native = run('--target=es2015');
+      expect(native.status, native.stderr).toBe(0);
+      const nativeMode = (native.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(nativeMode, native.stderr).toContain('semantic_graph=retained');
+      const nativeReport = (native.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(nativeReport, native.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(nativeReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${nativeReport}`,
+        ).toBe(0);
+      }
+      expect(nativeReport).toMatch(/clean=1(?:\s|$)/);
+      const nativeOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(nativeOutput.status, nativeOutput.stderr).toBe(0);
+      expect(nativeOutput.stdout).toBe('42 42 20 20 22 42\n');
+
+      const downlevel = run('--target=es5');
+      expect(downlevel.status, downlevel.stderr).toBe(0);
+      const downlevelMode = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(downlevelMode, downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      const downlevelOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(downlevelOutput.status, downlevelOutput.stderr).toBe(0);
+      expect(downlevelOutput.stdout).toBe('42 42 20 20 22 42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('native tagged templates keep TypeScript erasure on the edited semantic graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-tagged-template-retained-'));
     const output = join(dir, 'out.cjs');
