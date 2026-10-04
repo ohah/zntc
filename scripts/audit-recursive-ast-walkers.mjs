@@ -56,6 +56,7 @@ const ALLOWLIST = {
   "src/transformer/object_super.zig::bindWrappedHomeParameter": { class: "iterative_safe", note: "cursor-driven scoped worklist + seen set; wrapper scope/reference updates do not recurse through the AST" },
   "src/transformer/output_scope_test_utils.zig::buildParentMap": { class: "iterative_safe", note: "NodeIndex stack + reachable set; direct parent edges are recorded before children are pushed" },
   "src/transformer/symbol_coverage.zig::checkExactImpl": { class: "iterative_safe", note: "reachable_stack + reachable_nodes set; ambiguous-parent scope checks use a bounded parent-chain loop" },
+  "src/transformer/symbol_coverage.zig::countCyclicAstEdges": { class: "iterative_safe", note: "VisitFrame entry/exit stack + visiting/visited state map; children are pushed onto the stack and seen nodes are not expanded, so back-edge detection does not recurse" },
   "src/transformer/transformer/control_flow.zig::findBindingWithSymbol": { class: "iterative_safe", note: "NodeIndex stack + seen set searches captured-loop bindings by SymbolId" },
   "src/transformer/transformer/control_flow.zig::rebindLoopStorageReferences": { class: "iterative_safe", note: "NodeIndex stack + seen set; rebindOutputReference updates semantic records without descending into children" },
   "src/transformer/transformer/semantic_edit.zig::bindGeneratedState": { class: "iterative_safe", note: "explicit node stack for generated state references" },
