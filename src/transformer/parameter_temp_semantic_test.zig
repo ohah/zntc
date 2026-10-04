@@ -6,6 +6,9 @@ const ast_walk = @import("../parser/ast_walk.zig");
 const Transformer = @import("transformer.zig").Transformer;
 const TransformOptions = @import("transformer.zig").TransformOptions;
 const ESTarget = @import("compat.zig").ESTarget;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
+const ScopeKind = @import("../semantic/scope.zig").ScopeKind;
+const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
 
 fn checkParameterTempScope(source: []const u8, target: ESTarget, native_defaults: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -203,6 +206,212 @@ fn checkDestructuringParameterTempSymbols(source: []const u8) !void {
     try std.testing.expectEqual(@as(usize, 1), parameter_temps);
     try std.testing.expect(function_var_temps > 0);
     try std.testing.expectEqual(parameter_temps + function_var_temps, mapped_temp_count);
+}
+
+fn expectRegisteredParameterTemp(
+    transformer: *Transformer,
+    binding: @import("../parser/ast.zig").NodeIndex,
+    expected_scope: ScopeId,
+    expected_kind: SymbolKind,
+) !u32 {
+    const raw_id = transformer.getSymbolIdAt(binding) orelse return error.MissingCreationSymbolId;
+    const name_span = transformer.ast.getNode(binding).data.string_ref;
+    try std.testing.expectEqual(raw_id, transformer.destructuring_temp_symbol_ids.get(name_span.start).?);
+
+    const editor = transformer.semantic_editor orelse return error.MissingSemanticEditor;
+    try std.testing.expect(raw_id < editor.symbols.items.len);
+    const symbol = editor.symbols.items[raw_id];
+    try std.testing.expectEqual(expected_kind, symbol.kind);
+    try std.testing.expectEqual(expected_scope, symbol.scope_id);
+    const emitted_name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else transformer.ast.getText(symbol.name);
+    try std.testing.expectEqual(@as(?usize, raw_id), editor.scope_maps.items[expected_scope.toIndex()].get(emitted_name));
+
+    var live_uses: u32 = 0;
+    for (editor.references.items) |reference| {
+        if (@intFromEnum(reference.symbol_id) != raw_id or reference.flags.declare) continue;
+        try std.testing.expect(!reference.node_index.isNone());
+        try std.testing.expectEqual(expected_scope, reference.scope_id);
+        try std.testing.expectEqual(@as(?u32, raw_id), transformer.getSymbolIdAt(reference.node_index));
+        try std.testing.expect(reference.flags.read or reference.flags.write);
+        live_uses += 1;
+    }
+    try std.testing.expect(live_uses > 0);
+    try std.testing.expectEqual(symbol.reference_count, live_uses);
+    return raw_id;
+}
+
+fn lowerParameterPatternAndCheckCreation(
+    source: []const u8,
+    expect_array_read_binding: bool,
+    reserve_ownerless_function_scope: bool,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var function_node: ?@import("../parser/ast.zig").NodeIndex = null;
+    var function_scope: ?ScopeId = null;
+    var owners = analyzer.scope_owner_map.iterator();
+    while (owners.next()) |owner| {
+        const node = parser.ast.nodes.items[owner.key_ptr.*];
+        if (parser.ast.functionParamsList(node).len == 0) continue;
+        function_node = @enumFromInt(owner.key_ptr.*);
+        function_scope = @enumFromInt(owner.value_ptr.*);
+        break;
+    }
+    const target_node = function_node orelse return error.MissingFunctionOwner;
+    const source_scope = function_scope orelse return error.MissingFunctionScope;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    const output_scope = if (reserve_ownerless_function_scope) blk: {
+        const parent = transformer.scopes[source_scope.toIndex()].parent;
+        const reserved = try transformer.reserveGeneratedFunctionScope(parent);
+        try std.testing.expect(reserved.toIndex() >= transformer.scopes.len);
+        const editor = transformer.semantic_editor orelse return error.MissingSemanticEditor;
+        try std.testing.expectEqual(ScopeKind.function, editor.scopes.items[reserved.toIndex()].kind);
+        var output_has_owner = false;
+        var scope_owners = editor.scope_owner_map.iterator();
+        while (scope_owners.next()) |owner| {
+            if (owner.value_ptr.* == @intFromEnum(reserved)) output_has_owner = true;
+        }
+        try std.testing.expect(!output_has_owner);
+        break :blk reserved;
+    } else source_scope;
+
+    transformer.current_scope = output_scope;
+    const function = transformer.ast.getNode(target_node);
+    var lowered = try @import("es2015_params.zig").ES2015Params(Transformer).lowerParamsPass2(
+        &transformer,
+        transformer.ast.functionParamsList(function),
+        function.span,
+    );
+    defer lowered.body_stmts.deinit(allocator);
+
+    try std.testing.expectEqual(@as(u32, 1), lowered.new_params.len);
+    const parameter_binding: @import("../parser/ast.zig").NodeIndex = @enumFromInt(transformer.ast.extra_data.items[lowered.new_params.start]);
+    const parameter_id = try expectRegisteredParameterTemp(&transformer, parameter_binding, output_scope, .parameter);
+
+    var read_binding: ?@import("../parser/ast.zig").NodeIndex = null;
+    if (expect_array_read_binding) {
+        for (lowered.body_stmts.items) |statement_idx| {
+            const statement = transformer.ast.getNode(statement_idx);
+            if (statement.tag != .variable_declaration) continue;
+            const list_start = transformer.ast.extra_data.items[statement.data.extra + 1];
+            const list_len = transformer.ast.extra_data.items[statement.data.extra + 2];
+            if (list_len == 0) continue;
+            const first_declarator: @import("../parser/ast.zig").NodeIndex = @enumFromInt(transformer.ast.extra_data.items[list_start]);
+            read_binding = transformer.ast.readExtraNode(transformer.ast.getNode(first_declarator).data.extra, 0);
+            break;
+        }
+        const array_read = read_binding orelse return error.MissingArrayReadBinding;
+        const read_id = try expectRegisteredParameterTemp(&transformer, array_read, output_scope, .variable_var);
+        try std.testing.expect(read_id != parameter_id);
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
+}
+
+test "#4819 default object-pattern temp is registered before lowerParamsPass2 references" {
+    try lowerParameterPatternAndCheckCreation(
+        "function run({ first: { seed } } = {}) { return seed; }",
+        false,
+        false,
+    );
+}
+
+test "#4819 default array-pattern parameter and read temps are registered at creation" {
+    try lowerParameterPatternAndCheckCreation(
+        "function run([{ first: { seed } } = {}] = []) { return seed; }",
+        true,
+        false,
+    );
+}
+
+test "#4819 plain object-pattern parameter temp is registered at creation" {
+    try lowerParameterPatternAndCheckCreation(
+        "function run({ first: { seed } }) { return seed; }",
+        false,
+        false,
+    );
+}
+
+test "#4819 plain array-pattern parameter and read temps are registered at creation" {
+    try lowerParameterPatternAndCheckCreation(
+        "function run([{ first: { seed } }]) { return seed; }",
+        true,
+        false,
+    );
+}
+
+test "#4819 reserved generated constructor scope owns parameter temps before its AST owner" {
+    try lowerParameterPatternAndCheckCreation(
+        "class Host { constructor({ first: { seed } } = {}) { return seed; } }",
+        false,
+        true,
+    );
+}
+
+fn lowerDestructuringParametersWithoutSemanticEditing(source: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+
+    var target_node: ?@import("../parser/ast.zig").NodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (parser.ast.functionParamsList(node).len == 0) continue;
+        target_node = @enumFromInt(raw);
+        break;
+    }
+    const function_node = target_node orelse return error.MissingFunctionOwner;
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = true,
+    });
+    try std.testing.expect(!transformer.semantic_edit_enabled);
+    try std.testing.expect(transformer.current_scope.isNone());
+    const function = transformer.ast.getNode(function_node);
+    var lowered = try @import("es2015_params.zig").ES2015Params(Transformer).lowerParamsPass2(
+        &transformer,
+        transformer.ast.functionParamsList(function),
+        function.span,
+    );
+    defer lowered.body_stmts.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), transformer.destructuring_temp_symbol_ids.count());
+}
+
+test "#4819 semantic-disabled low-level parameter lowering remains a no-op for temp ownership" {
+    try lowerDestructuringParametersWithoutSemanticEditing(
+        "function run({ first: { seed } } = {}) { return seed; }",
+    );
+    try lowerDestructuringParametersWithoutSemanticEditing(
+        "function run([{ first: { seed } }]) { return seed; }",
+    );
 }
 
 test "#4819 destructuring parameter temps stay in their emitted function scope" {
