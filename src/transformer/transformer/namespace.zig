@@ -1,5 +1,6 @@
 //! TypeScript namespace and module-assignment helpers for Transformer.
 
+const std = @import("std");
 const ast_mod = @import("../../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
@@ -67,6 +68,22 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
     const saved_binding_len = self.namespace_temp_bindings.items.len;
     self.namespace_iife_scope = self.current_scope;
     defer self.namespace_iife_scope = saved_namespace_scope;
+
+    var pushed_export_frame = false;
+    if (self.semantic_edit_enabled) {
+        if (namespaceIifeParameterSymbolId(self, self.current_scope)) |parameter_sid| {
+            var frame = transformer_mod.NamespaceExportFrame{ .parameter_symbol_id = parameter_sid };
+            errdefer if (!pushed_export_frame) frame.exported_symbol_ids.deinit(self.allocator);
+            try collectDirectNamespaceExportSymbols(self, node.data.binary.right, &frame.exported_symbol_ids);
+            try self.namespace_export_frames.append(self.allocator, frame);
+            pushed_export_frame = true;
+        }
+    }
+    defer if (pushed_export_frame) {
+        var frame = self.namespace_export_frames.pop() orelse unreachable;
+        frame.exported_symbol_ids.deinit(self.allocator);
+    };
+
     var new_body = try self.visitNode(node.data.binary.right);
     if (!new_body.isNone()) {
         for (self.namespace_temp_bindings.items[saved_binding_len..]) |entry| {
@@ -98,4 +115,105 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
         .span = node.span,
         .data = .{ .binary = .{ .left = new_name, .right = new_body, .flags = 0 } },
     });
+}
+
+/// Rewrite a direct exported-variable use to a normal member expression whose
+/// object reference is bound to the exact virtual namespace IIFE parameter.
+/// The code generator retains its proxy handling for merged declarations; this
+/// covers declarations owned by the active namespace body.
+pub fn namespaceExportAccess(self: *Transformer, idx: NodeIndex) Error!?NodeIndex {
+    // Keep legacy analysis-only transforms on the codegen fallback until they
+    // provide the editor needed to move the exact Reference to the parameter.
+    if (!self.semantic_edit_enabled) return null;
+    const node = self.ast.getNode(idx);
+    if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) return null;
+    const source_sid = self.getSymbolIdAt(idx) orelse return null;
+
+    var parameter_sid: ?u32 = null;
+    var frame_index = self.namespace_export_frames.items.len;
+    while (frame_index > 0) {
+        frame_index -= 1;
+        const frame = self.namespace_export_frames.items[frame_index];
+        if (frame.exported_symbol_ids.contains(source_sid)) {
+            parameter_sid = frame.parameter_symbol_id;
+            break;
+        }
+    }
+    const sid = parameter_sid orelse return null;
+    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+    if (sid >= symbols.len) return null;
+    const parameter = symbols[sid];
+    if (parameter.synthetic_kind != .namespace_iife_parameter) return null;
+
+    const parameter_name = if (parameter.synthetic_name.len > 0)
+        parameter.synthetic_name
+    else
+        self.ast.getText(parameter.name);
+    const parameter_name_span = try self.ast.addString(parameter_name);
+    const parameter_ref = try es_helpers.identifierRefNode(self, parameter_name_span, node.span);
+    try self.addSyntheticRefInScope(
+        parameter_ref,
+        @enumFromInt(sid),
+        self.current_scope,
+        .{ .read = true },
+    );
+
+    const property_name_span = try self.ast.addString(self.ast.getText(node.data.string_ref));
+    const property = try es_helpers.makePropertyNameAt(self, property_name_span, node.span);
+    const access = try es_helpers.makeStaticMember(self, parameter_ref, property, node.span);
+    try self.removeSemanticReference(idx);
+    return access;
+}
+
+fn namespaceIifeParameterSymbolId(self: *Transformer, namespace_scope: @import("../../semantic/scope.zig").ScopeId) ?u32 {
+    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+    for (symbols, 0..) |symbol, sid| {
+        if (symbol.synthetic_kind == .namespace_iife_parameter and symbol.scope_id == namespace_scope) {
+            return @intCast(sid);
+        }
+    }
+    return null;
+}
+
+fn collectDirectNamespaceExportSymbols(
+    self: *Transformer,
+    body_idx: NodeIndex,
+    exported_symbols: *std.AutoHashMapUnmanaged(u32, void),
+) Error!void {
+    if (body_idx.isNone() or @intFromEnum(body_idx) >= self.ast.nodes.items.len) return;
+    const body = self.ast.getNode(body_idx);
+    if (body.tag != .block_statement and body.tag != .ts_module_block) return;
+    const list = body.data.list;
+    if (list.start > self.ast.extra_data.items.len or list.len > self.ast.extra_data.items.len - list.start) return;
+
+    for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw_stmt| {
+        const stmt_idx: NodeIndex = @enumFromInt(raw_stmt);
+        if (stmt_idx.isNone() or @intFromEnum(stmt_idx) >= self.ast.nodes.items.len) continue;
+        const stmt = self.ast.getNode(stmt_idx);
+        if (stmt.tag != .export_named_declaration) continue;
+        const extra = stmt.data.extra;
+        if (extra >= self.ast.extra_data.items.len) continue;
+        const decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[extra]);
+        if (decl_idx.isNone() or @intFromEnum(decl_idx) >= self.ast.nodes.items.len) continue;
+        const declaration = self.ast.getNode(decl_idx);
+        if (declaration.tag != .variable_declaration) continue;
+        const decl_extra: usize = declaration.data.extra;
+        if (decl_extra > self.ast.extra_data.items.len or self.ast.extra_data.items.len - decl_extra <= 2) continue;
+        const start = self.ast.extra_data.items[decl_extra + 1];
+        const len = self.ast.extra_data.items[decl_extra + 2];
+        if (start > self.ast.extra_data.items.len or len > self.ast.extra_data.items.len - start) continue;
+        for (self.ast.extra_data.items[start .. start + len]) |raw_declarator| {
+            const declarator_idx: NodeIndex = @enumFromInt(raw_declarator);
+            if (declarator_idx.isNone() or @intFromEnum(declarator_idx) >= self.ast.nodes.items.len) continue;
+            const declarator = self.ast.getNode(declarator_idx);
+            if (declarator.tag != .variable_declarator) continue;
+            const declarator_extra = declarator.data.extra;
+            if (declarator_extra >= self.ast.extra_data.items.len) continue;
+            const binding_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[declarator_extra]);
+            if (binding_idx.isNone() or @intFromEnum(binding_idx) >= self.ast.nodes.items.len or
+                self.ast.getNode(binding_idx).tag != .binding_identifier) continue;
+            const sid = self.getSymbolIdAt(binding_idx) orelse continue;
+            try exported_symbols.put(self.allocator, sid, {});
+        }
+    }
 }
