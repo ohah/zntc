@@ -5,6 +5,7 @@ const e2eCJS = helpers.e2eCJS;
 const e2eJSX = helpers.e2eJSX;
 const e2eFull = helpers.e2eFull;
 const e2eWithOptions = helpers.e2eWithOptions;
+const e2eWithComments = helpers.e2eWithComments;
 const e2eSourceMap = helpers.e2eSourceMap;
 const TransformOptions = helpers.TransformOptions;
 const CodegenOptions = helpers.CodegenOptions;
@@ -24,6 +25,34 @@ test "Codegen: empty program" {
     var r = try e2e(std.testing.allocator, "");
     defer r.deinit();
     try std.testing.expectEqualStrings("", r.output);
+}
+
+test "Codegen: program helper preamble stays before leading source comments" {
+    var r = try e2eWithComments(
+        std.testing.allocator,
+        "// source comment\nconst value = 1;",
+        .{ .program_preamble = "var __helper = true;\n" },
+        ".js",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings(
+        "var __helper = true;\n// source comment\nconst value = 1;\n",
+        r.output,
+    );
+}
+
+test "Codegen: program helper preamble follows directives and preserves following comments" {
+    var r = try e2eWithComments(
+        std.testing.allocator,
+        "\"use strict\";\n// body comment\nconst value = 1;",
+        .{ .program_preamble = "var __helper = true;\n" },
+        ".js",
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings(
+        "\"use strict\";\nvar __helper = true;\n// body comment\nconst value = 1;\n",
+        r.output,
+    );
 }
 
 test "Codegen: variable declaration" {

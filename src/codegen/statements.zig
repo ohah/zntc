@@ -130,6 +130,13 @@ pub fn emitProgram(self: anytype, node: Node) !void {
             try self.write(preamble);
             preamble = "";
             emitted = false;
+            const first_statement = self.ast.getNode(node_idx);
+            // The first lowered statement can be a zero-width generated node.
+            // Flush comments at its source position before nested emitters can
+            // attach a leading Program comment inside the generated expression.
+            if (first_statement.span.start & ast_mod.Ast.STRING_TABLE_BIT == 0) {
+                try emitComments(self, first_statement.span.start);
+            }
         }
         // minify 시 standalone block_statement (`if(true){...}` fold 잔여 등) 가
         // declaration 을 가지지 않으면 unwrap — `{f()}` → `f();` (probe11).
