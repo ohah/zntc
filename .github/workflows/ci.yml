@@ -245,8 +245,7 @@ jobs:
       cli_artifact: ${{ steps.cli-upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - uses: ./.github/actions/checkout-build-deps
       - uses: ./.github/actions/setup-zig
         id: zig
         with:
@@ -403,8 +402,7 @@ jobs:
       napi_artifact: ${{ steps.native-upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - uses: ./.github/actions/checkout-build-deps
       - uses: ./.github/actions/setup-zig
         id: zig
         with:
@@ -633,8 +631,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - uses: ./.github/actions/checkout-build-deps
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
