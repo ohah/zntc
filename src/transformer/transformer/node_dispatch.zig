@@ -999,7 +999,11 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                     return ref;
                 }
             }
-            if (try self.tryRenameIdentifierLike(idx, .identifier_reference)) |i| return i;
+            if (try self.tryRenameIdentifierLike(idx, .identifier_reference)) |i| {
+                if (try self.namespaceExportAccess(i)) |access| return access;
+                return i;
+            }
+            if (try self.namespaceExportAccess(idx)) |access| return access;
             return self.copyNodeDirect(idx);
         },
         .binding_identifier => {
@@ -1010,7 +1014,11 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             if (self.options.unsupported.class) {
                 if (try es2015_class.ES2015Class(Transformer).classSelfAccess(self, idx)) |access| return access;
             }
-            if (try self.tryRenameIdentifierLike(idx, .assignment_target_identifier)) |i| return i;
+            if (try self.tryRenameIdentifierLike(idx, .assignment_target_identifier)) |i| {
+                if (try self.namespaceExportAccess(i)) |access| return access;
+                return i;
+            }
+            if (try self.namespaceExportAccess(idx)) |access| return access;
             return self.copyNodeDirect(idx);
         },
         .template_element => blk: {

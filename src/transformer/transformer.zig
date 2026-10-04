@@ -70,6 +70,11 @@ pub const DeferredGeneratedStateSymbols = struct {
     span: Span,
 };
 
+pub const NamespaceExportFrame = struct {
+    parameter_symbol_id: u32,
+    exported_symbol_ids: std.AutoHashMapUnmanaged(u32, void) = .empty,
+};
+
 /// 단일 AST append-only 변환기.
 ///
 /// 사용법:
@@ -177,6 +182,9 @@ pub const Transformer = struct {
     /// Output declaration kind while lowering one destructuring declaration.
     destructuring_temp_kind: ?@import("../semantic/symbol.zig").SymbolKind = null,
     namespace_iife_scope: ScopeId = .none,
+    /// Directly emitted namespace variable references are materialized as
+    /// symbol-bound member expressions while their namespace body is visited.
+    namespace_export_frames: std.ArrayListUnmanaged(NamespaceExportFrame) = .empty,
     namespace_temp_bindings: std.ArrayListUnmanaged(struct { binding: NodeIndex, span: token_mod.Span, scope: ScopeId }) = .empty,
     pending_runtime_helper_chains: std.StringHashMapUnmanaged(struct { first: usize, last: usize }) = .empty,
 
@@ -841,6 +849,7 @@ pub const Transformer = struct {
     pub const visitImportEqualsDeclaration = namespace_mod.visitImportEqualsDeclaration;
     pub const visitExportAssignment = namespace_mod.visitExportAssignment;
     pub const visitNamespaceDeclaration = namespace_mod.visitNamespaceDeclaration;
+    pub const namespaceExportAccess = namespace_mod.namespaceExportAccess;
 
     // ================================================================
     // JSX 노드 변환
