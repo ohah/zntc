@@ -250,6 +250,13 @@ test "#4819 lowered arrow lexical captures have distinct exact function symbols"
     );
 }
 
+test "#4819 downleveled class accessors keep exact this and arguments capture symbols" {
+    try checkCaptureSymbols(
+        "class C{get value(){return ()=>this.x+arguments[0]}} new C().value;",
+        .method_definition,
+    );
+}
+
 test "#4819 class field arrows share their exact constructor capture binding" {
     const cases = .{
         .{ "class C{field=()=>this.x;constructor(){this.x=2;this.body=()=>this.x}} new C().field();", @as(u32, 2) },
