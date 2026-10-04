@@ -200,7 +200,8 @@ jobs:
         run: ./zig-out/bin/zntc --test262 tests/test262/test/language/
 
   release-build:
-    # macOS native ReleaseFast is built once in macos-native below.
+    # Ubuntu baseline ReleaseFast is built in prepare-packages; macOS native
+    # ReleaseFast is built in macos-native. Keep the other release profiles here.
     name: Release Build (${{ matrix.os }}, ${{ matrix.optimize }})
     needs: checks
     if: ${{ !cancelled() && needs.checks.outputs.core == 'true' }}
@@ -209,15 +210,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, optimize: ReleaseFast }
           - { os: windows-latest, optimize: ReleaseFast }
           - { os: ubuntu-latest, optimize: ReleaseSafe }
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - uses: ./.github/actions/checkout-build-deps
 
       - name: Setup Zig
         uses: ./.github/actions/setup-zig
@@ -322,9 +322,10 @@ jobs:
           path: ci-app-artifact/
       # The CLI and NAPI are independent products. Preserve a usable artifact
       # from either build even if the other product or its JS packages fail.
+      # This also owns Ubuntu ReleaseFast coverage for draft/core-only changes.
       - name: Build portable Linux CLI
         id: cli
-        if: ${{ !cancelled() && needs.checks.outputs.integration == 'true' && steps.zig.outcome == 'success' }}
+        if: ${{ !cancelled() && (needs.checks.outputs.core == 'true' || needs.checks.outputs.integration == 'true') && steps.zig.outcome == 'success' }}
         run: zig build -Doptimize=ReleaseFast -Dcpu=baseline
       - uses: actions/upload-artifact@v4
         id: cli-upload
@@ -507,8 +508,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: ${{ matrix.platform != 'linux-x64-gnu' && 'recursive' || 'false' }}
+
+      # Linux x64 glibc already has its native addon in the shared artifact.
+      - uses: ./.github/actions/checkout-build-deps
+        if: matrix.platform != 'linux-x64-gnu'
 
       - name: Setup Zig
         if: matrix.platform != 'linux-x64-gnu'

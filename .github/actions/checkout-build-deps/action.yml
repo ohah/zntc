@@ -1,0 +1,11 @@
+name: Checkout native build dependencies
+description: Initialize the pinned native vendor submodules without downloading the Test262 corpus.
+
+runs:
+  using: composite
+  steps:
+    - name: Initialize native vendor submodules
+      shell: bash
+      run: |
+        git submodule sync --recursive -- vendor/mimalloc vendor/boringssl
+        git submodule update --init --recursive --depth=1 -- vendor/mimalloc vendor/boringssl
