@@ -203,7 +203,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (self.semantic_edit_enabled and source_scope.isNone()) {
                 try self.deferred_generator_helper_refs.put(self.allocator, @intFromEnum(result), gen.helper_ref);
             }
-            try es_helpers.trackThisArgumentsCaptureSymbols(self, result, source_scope);
+            // Ordinary wrappers bind captures at declaration creation. Extracted
+            // loop generators inherit the source generator's exact capture frame.
             return result;
         }
 

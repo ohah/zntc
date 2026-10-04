@@ -1485,6 +1485,45 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       expect(result.runOutput).toBe('10,7,2,3');
     });
 
+    test('extracted generator loop closures preserve this, arguments, and iteration bindings', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            function* read(value: number) {
+              for (let index = 0; index < 2; index++) {
+                yield () => [this.x, arguments[0], index].join(',');
+              }
+            }
+            const values = read.call({ x: 10 }, 7);
+            console.log(values.next().value(), values.next().value());
+          `,
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('10,7,0 10,7,1');
+    });
+
+    test('transpile-only extracted generator loop closures preserve lexical captures', async () => {
+      const result = await transpileAndRun(
+        `
+          function* read(value) {
+            for (let index = 0; index < 2; index++) {
+              yield () => [this.x, arguments[0], index].join(',');
+            }
+          }
+          const values = read.call({ x: 10 }, 7);
+          console.log(values.next().value(), values.next().value());
+        `,
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.transpileExitCode).toBe(0);
+      expect(result.runOutput).toBe('10,7,0 10,7,1');
+    });
+
     test('downleveled async functions preserve lexical this and arguments captures', async () => {
       const result = await bundleAndRun(
         {

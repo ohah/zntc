@@ -515,9 +515,6 @@ pub const Transformer = struct {
     /// Runtime helper references emitted inside those generator loops. Their
     /// lexical owner is only known after the generated function is attached.
     deferred_generator_helper_refs: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty,
-    /// Generated functions whose `_this`/`_arguments` capture scope is unknown
-    /// until their final output owner is attached.
-    deferred_capture_function_owners: std.AutoHashMapUnmanaged(u32, void) = .empty,
     /// `generator_temp_var_spans` 중 사용자 바인딩에서 온 이름의 원래 바인딩 노드(span 키).
     /// 호이스트한 `var` 선언에 심볼을 물려주는 데 쓴다 (#4760).
     generator_var_origins: std.AutoHashMapUnmanaged(u64, NodeIndex) = .empty,
