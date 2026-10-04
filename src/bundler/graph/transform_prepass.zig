@@ -446,6 +446,16 @@ fn hasDirectSpreadElement(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     return false;
 }
 
+fn hasReachableObjectLiteralSpread(ast: *const ast_mod.Ast) ?bool {
+    const reachable_nodes = ast_walk.collectReachableNodeIndices(ast.allocator, ast) catch return null;
+    defer ast.allocator.free(reachable_nodes);
+    for (reachable_nodes) |raw_idx| {
+        const node = ast.nodes.items[raw_idx];
+        if (node.tag == .object_expression and hasDirectSpreadElement(ast, node)) return true;
+    }
+    return false;
+}
+
 // Accessor `super` can add a runtime helper module during lowering. Keep those
 // owners on graph resync until helper imports can be edited with the graph.
 // Scan nested nodes conservatively.
@@ -593,6 +603,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_native_class = false;
     var found_native_destructuring = false;
     var found_lowered_object_rest = false;
+    var found_lowered_object_spread = false;
     var found_safe_template_literal = false;
     var found_computed_object_data_key = false;
     var found_computed_object_method_key = false;
@@ -732,10 +743,16 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     ast_mod.spineHasOptionalChain(ast, @enumFromInt(raw_idx))) return false;
             },
             .object_expression => {
-                // Object spread has its own target feature. Include ordinary
-                // spread conservatively for explicit/custom feature masks.
-                if ((options.unsupported.spread or options.unsupported.object_spread) and
-                    hasDirectSpreadElement(ast, node)) return false;
+                if (hasDirectSpreadElement(ast, node)) {
+                    if (options.unsupported.object_spread) {
+                        // Lowering emits Object.assign. A source Object binding
+                        // changes which function that generated reference calls.
+                        if (source_binds_object) return false;
+                        found_lowered_object_spread = true;
+                    } else if (options.unsupported.spread) {
+                        return false;
+                    }
+                }
             },
             .computed_property_key => {
                 // Computed data properties and synchronous methods have exact
@@ -910,7 +927,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_native_for_await or found_lowered_for_await or found_native_class or found_native_destructuring or
         found_safe_template_literal or found_object_shorthand or found_lowered_object_method or
         found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key or
-        found_lowered_object_rest;
+        found_lowered_object_rest or found_lowered_object_spread;
 }
 
 /// A retained prepass graph may absorb only the `__values`/`__asyncValues`
@@ -1184,13 +1201,21 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     // 안전. dev mode 모듈도 동일.
     opts.emit_runtime_helper_imports = true;
 
-    const can_keep_semantic_graph = canKeepPrepassSemanticGraph(self, module, opts, merged_plugins);
+    const object_spread_scan =
+        if (opts.unsupported.object_spread) hasReachableObjectLiteralSpread(ast_ptr) else @as(?bool, false);
+    const can_keep_semantic_graph = object_spread_scan != null and
+        canKeepPrepassSemanticGraph(self, module, opts, merged_plugins);
     const flow_match_generated_globals = flowMatchGeneratedGlobals(ast_ptr);
+    // If reachability allocation fails, reanalysis is already forced above.
+    // Still record any generated Object reference conservatively in that path.
+    const has_lowered_object_spread = object_spread_scan orelse opts.unsupported.object_spread;
+    const lowered_object_spread_global = can_keep_semantic_graph and has_lowered_object_spread;
     const debug_symbol_coverage = symbol_coverage_env.enabled();
     const pre_transform_scope_count = if (module.semantic) |*sem| sem.scopes.len else 0;
 
     var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
-    transformer.record_explicit_global_references = flow_match_generated_globals.has_match;
+    transformer.record_explicit_global_references =
+        flow_match_generated_globals.has_match or has_lowered_object_spread;
 
     if (module.semantic) |*sem| {
         transformer.initSymbolIds(sem.symbol_ids) catch return;
@@ -1328,18 +1353,21 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     };
 
     // Type erasure, Flow match lowering, TypeScript enums, supported JSX, and
-    // audited ES5 for-of / ES2017 for-await / ES2015-2017 object-rest subsets
-    // preserve the edited semantic graph. JSX and syntax lowering may add
-    // synthetic helper imports, so refresh module import/export metadata
-    // without replacing that graph.
+    // audited ES5 for-of / ES2017 for-await / ES2015-2017 object-rest and
+    // object-spread subsets preserve the edited semantic graph. JSX and syntax
+    // lowering may add synthetic helper imports, so refresh module
+    // import/export metadata without replacing that graph.
     if (can_keep_semantic_graph and runtimeHelpersSafeForRetainedGraph(transformer.runtime_helpers)) {
         // Generated built-ins are not source references, so the transform
         // editor cannot add them to unresolved_references. If recording them
         // runs out of memory, use the normal analyzer refresh below.
         addFlowMatchGeneratedGlobals(arena_alloc, &module.semantic.?, flow_match_generated_globals) catch {};
+        if (lowered_object_spread_global)
+            addGeneratedGlobal(arena_alloc, &module.semantic.?, "Object") catch {};
         const generated_globals_recorded =
             (!flow_match_generated_globals.array or module.semantic.?.unresolved_references.contains("Array")) and
-            (!flow_match_generated_globals.object or module.semantic.?.unresolved_references.contains("Object"));
+            (!flow_match_generated_globals.object or module.semantic.?.unresolved_references.contains("Object")) and
+            (!lowered_object_spread_global or module.semantic.?.unresolved_references.contains("Object"));
         if (!generated_globals_recorded) {
             resyncAfterAstMutation(self, module, arena_alloc, null) catch {
                 self.addDiag(

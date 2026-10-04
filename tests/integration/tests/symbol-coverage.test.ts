@@ -1405,7 +1405,9 @@ describe('symbol identity coverage gate (#4819)', () => {
               line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
           );
         const expectedGraph =
-          fixture.name === 'object method' || fixture.name === 'computed object property'
+          fixture.name === 'object method' ||
+          fixture.name === 'computed object property' ||
+          fixture.name === 'object spread'
             ? 'retained'
             : 'reanalyzed';
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
@@ -2349,7 +2351,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('ES2015-2017 object-rest lowering retains exact identities but leaves object spread on reanalysis', () => {
+  test('object-rest and object-spread lowering retain exact semantic identities', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-object-rest-'));
     const output = join(dir, 'out.cjs');
     const input = join(dir, 'entry.ts');
@@ -2370,8 +2372,11 @@ describe('symbol identity coverage gate (#4819)', () => {
       ].join('\n'),
     );
 
-    const run = (target: string) =>
-      spawnSync(
+    const run = (target: string, debugCoverage = true) => {
+      const env = { ...process.env };
+      if (debugCoverage) env.ZNTC_DEBUG_SYMBOL_COVERAGE = '1';
+      else delete env.ZNTC_DEBUG_SYMBOL_COVERAGE;
+      return spawnSync(
         ZNTC_BIN,
         [
           '--bundle',
@@ -2385,10 +2390,11 @@ describe('symbol identity coverage gate (#4819)', () => {
         ],
         {
           cwd: dir,
-          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          env,
           encoding: 'utf8',
         },
       );
+    };
 
     const mode = (stderr: string) =>
       stderr
@@ -2397,6 +2403,23 @@ describe('symbol identity coverage gate (#4819)', () => {
           (line) =>
             line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
+    const expectShadowedObjectReport = (stderr: string, label: string) => {
+      const report = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(report, label + ': ' + stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        const expected = counter === 'shadowed_external_reference' ? 1 : 0;
+        expect(
+          Number(report?.match(new RegExp(counter + '=(\\d+)'))?.[1] ?? -1),
+          label + ' ' + counter + ': ' + report,
+        ).toBe(expected);
+      }
+      expect(report).toMatch(/clean=0(?:\s|$)/);
+      expect(report).toMatch(/shadowed_external_reference=1(?:\s|$)/);
+    };
     const expectRetainedGraph = (stderr: string, label: string) => {
       expect(mode(stderr), `${label}: ${stderr}`).toContain('semantic_graph=retained');
       const report = stderr
@@ -2449,8 +2472,40 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(es2015Output.status, es2015Output.stderr).toBe(0);
       expect(es2015Output.stdout).toBe('1 2 3 1 2 3 user-binding\n');
 
-      // Object-literal spread is a separate transform with Object.assign
-      // semantics. Keep the containing module on semantic reanalysis.
+      const spreadSource = [
+        'var source = { first: 1, second: 2 };',
+        'function copy() { var result = { ...source }; return result; }',
+        'console.log(copy().first, copy().second);',
+      ].join('\n');
+      for (const target of [
+        '--target=es5',
+        '--target=es2015',
+        '--target=es2016',
+        '--target=es2017',
+      ]) {
+        writeFileSync(input, spreadSource);
+        const spreadResult = run(target);
+        expect(spreadResult.status, target + ': ' + spreadResult.stderr).toBe(0);
+        expectRetainedGraph(spreadResult.stderr ?? '', 'object spread ' + target);
+        const spreadReport = spreadResult.stderr
+          ?.split(/\r?\n/)
+          .find(
+            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          );
+        expect(spreadReport, target + ': missing exact report').toMatch(
+          /generated_references=1(?:\s|$)/,
+        );
+        expect(spreadReport, target + ': missing external-name registration').toMatch(
+          /external=2(?:\s|$)/,
+        );
+        const spreadOutput = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(spreadOutput.status, target + ': ' + spreadOutput.stderr).toBe(0);
+        expect(spreadOutput.stdout).toBe('1 2\n');
+      }
+
+      // A source Object binding conflicts with the generated external
+      // Object.assign reference. Keep reanalysis and require that exact,
+      // intentional conflict to be the only non-zero invariant.
       writeFileSync(
         input,
         [
@@ -2462,10 +2517,35 @@ describe('symbol identity coverage gate (#4819)', () => {
       );
       const mixed = run('--target=es2017');
       expect(mixed.status, mixed.stderr).toBe(0);
-      expect(mode(mixed.stderr ?? ''), mixed.stderr).toContain('semantic_graph=reanalyzed');
+      expectRetainedGraph(mixed.stderr ?? '', 'object rest and spread in one module');
       const mixedOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(mixedOutput.status, mixedOutput.stderr).toBe(0);
       expect(mixedOutput.stdout).toBe('1 2 2\n');
+
+      writeFileSync(
+        input,
+        [
+          'function copy(source: any) {',
+          '  const Object = { assign() { throw new Error("shadowed Object was called"); } };',
+          '  return { ...source };',
+          '}',
+          'console.log(copy({ value: 42 }).value);',
+        ].join('\n'),
+      );
+      const shadowedObject = run('--target=es2017');
+      expect(shadowedObject.status, shadowedObject.stderr).toBe(0);
+      expect(mode(shadowedObject.stderr ?? ''), shadowedObject.stderr).toContain(
+        'semantic_graph=reanalyzed',
+      );
+      expectShadowedObjectReport(shadowedObject.stderr ?? '', 'shadowed Object');
+      const shadowedObjectOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(shadowedObjectOutput.status, shadowedObjectOutput.stderr).toBe(0);
+      expect(shadowedObjectOutput.stdout).toBe('42\n');
+      const shadowedObjectWithoutCoverage = run('--target=es2017', false);
+      expect(shadowedObjectWithoutCoverage.status, shadowedObjectWithoutCoverage.stderr).toBe(0);
+      const productionShadowedObjectOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(productionShadowedObjectOutput.status, productionShadowedObjectOutput.stderr).toBe(0);
+      expect(productionShadowedObjectOutput.stdout).toBe('42\n');
 
       const loopFixtures = [
         {
@@ -5225,7 +5305,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       {
         name: 'object spread lowering on node5',
         target: 'node5',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'function merge(value) { return (() => ({ ...value, b: 2 }))(); }',
           'var result = merge({ a: 1 });',
