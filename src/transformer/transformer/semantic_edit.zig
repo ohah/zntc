@@ -600,15 +600,26 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
             }
         }
         if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier or node.tag == .jsx_identifier) {
-            var raw_id = outputSymbolIdAt(self, editor, work.node);
-            if (raw_id == null) {
-                if (editor.referenceForNode(work.node) catch |err| return editError(err)) |reference| {
-                    raw_id = @intFromEnum(reference.symbol_id);
+            if (self.pending_runtime_helper_ref_index.get(raw)) |pending_index| {
+                // Runtime helper calls are created before their import exists,
+                // so their Reference is deferred. Their original producer
+                // scope may no longer match the final AST after lowering wraps
+                // the call in generated blocks/functions. Rebind the deferred
+                // record to the exact output scope found by this walk.
+                if (scope.isNone() or pending_index >= self.pending_runtime_helper_refs.items.len)
+                    std.debug.panic("pending runtime helper reference has no exact output scope", .{});
+                self.pending_runtime_helper_refs.items[pending_index].scope = scope;
+            } else {
+                var raw_id = outputSymbolIdAt(self, editor, work.node);
+                if (raw_id == null) {
+                    if (editor.referenceForNode(work.node) catch |err| return editError(err)) |reference| {
+                        raw_id = @intFromEnum(reference.symbol_id);
+                    }
                 }
-            }
-            if (raw_id) |id| {
-                if (id < editor.symbols.items.len and !self.pending_runtime_helper_ref_index.contains(raw)) {
-                    try output_refs.append(self.allocator, .{ .node = work.node, .scope = scope, .raw_id = id });
+                if (raw_id) |id| {
+                    if (id < editor.symbols.items.len) {
+                        try output_refs.append(self.allocator, .{ .node = work.node, .scope = scope, .raw_id = id });
+                    }
                 }
             }
         }

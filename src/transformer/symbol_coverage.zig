@@ -1512,43 +1512,43 @@ const ExactCtx = struct {
         } else if (!exactVisibleFrom(ctx.scopes, ctx.symbols, id, indexed.scope_id)) {
             ctx.report.invisible_reference += 1;
         }
-        if (!ctx.helper_reference_nodes.contains(raw)) {
-            if (expectedReferenceScope(ctx.ast, ctx.root, ctx.parent_by_node, ctx.scope_owner_map, raw)) |expected_scope| {
-                if (@intFromEnum(indexed.scope_id) != expected_scope.scope) {
-                    if (!isRetainedSourceScopeReference(ctx, raw, id, indexed.scope_id)) {
-                        ctx.report.reference_scope_mismatch += 1;
-                        const actual_owner = scopeOwnerNode(ctx.scope_owner_map, @intFromEnum(indexed.scope_id));
-                        const actual_owner_tag = if (actual_owner) |owner|
-                            if (owner < ctx.ast.nodes.items.len) @tagName(ctx.ast.nodes.items[owner].tag) else "out-of-range"
-                        else
-                            "none";
-                        const indexed_id = indexed.symbol_id;
-                        const indexed_symbol_scope = if (indexed_id < ctx.symbols.len)
-                            @intFromEnum(ctx.symbols[indexed_id].scope_id)
-                        else
-                            std.math.maxInt(u32);
-                        const indexed_symbol_kind = if (indexed_id < ctx.symbols.len)
-                            @tagName(ctx.symbols[indexed_id].kind)
-                        else
-                            "out-of-range";
-                        std.debug.print(
-                            "zntc: symbol-reference-scope node={d}:{s} name={s} symbol={d}@{d}:{s} actual={d} owner={s}@{d} expected={d} owner={s}@{d}\n",
-                            .{
-                                raw,
-                                @tagName(node.tag),
-                                name,
-                                indexed_id,
-                                indexed_symbol_scope,
-                                indexed_symbol_kind,
-                                @intFromEnum(indexed.scope_id),
-                                actual_owner_tag,
-                                actual_owner orelse std.math.maxInt(u32),
-                                expected_scope.scope,
-                                @tagName(ctx.ast.nodes.items[expected_scope.node].tag),
-                                expected_scope.node,
-                            },
-                        );
-                    }
+        if (expectedReferenceScope(ctx.ast, ctx.root, ctx.parent_by_node, ctx.scope_owner_map, raw)) |expected_scope| {
+            if (@intFromEnum(indexed.scope_id) != expected_scope.scope) {
+                const retained_source_scope = !ctx.helper_reference_nodes.contains(raw) and
+                    isRetainedSourceScopeReference(ctx, raw, id, indexed.scope_id);
+                if (!retained_source_scope) {
+                    ctx.report.reference_scope_mismatch += 1;
+                    const actual_owner = scopeOwnerNode(ctx.scope_owner_map, @intFromEnum(indexed.scope_id));
+                    const actual_owner_tag = if (actual_owner) |owner|
+                        if (owner < ctx.ast.nodes.items.len) @tagName(ctx.ast.nodes.items[owner].tag) else "out-of-range"
+                    else
+                        "none";
+                    const indexed_id = indexed.symbol_id;
+                    const indexed_symbol_scope = if (indexed_id < ctx.symbols.len)
+                        @intFromEnum(ctx.symbols[indexed_id].scope_id)
+                    else
+                        std.math.maxInt(u32);
+                    const indexed_symbol_kind = if (indexed_id < ctx.symbols.len)
+                        @tagName(ctx.symbols[indexed_id].kind)
+                    else
+                        "out-of-range";
+                    std.debug.print(
+                        "zntc: symbol-reference-scope node={d}:{s} name={s} symbol={d}@{d}:{s} actual={d} owner={s}@{d} expected={d} owner={s}@{d}\n",
+                        .{
+                            raw,
+                            @tagName(node.tag),
+                            name,
+                            indexed_id,
+                            indexed_symbol_scope,
+                            indexed_symbol_kind,
+                            @intFromEnum(indexed.scope_id),
+                            actual_owner_tag,
+                            actual_owner orelse std.math.maxInt(u32),
+                            expected_scope.scope,
+                            @tagName(ctx.ast.nodes.items[expected_scope.node].tag),
+                            expected_scope.node,
+                        },
+                    );
                 }
             }
         }
@@ -3813,6 +3813,108 @@ test "exact helper coverage rejects an unbound generated helper reference" {
         &origins,
     );
     try std.testing.expectEqual(@as(usize, 1), report.helper_symbol_mismatch);
+    try std.testing.expect(!report.isClean());
+}
+
+test "exact helper coverage rejects an ancestor scope on a nested helper reference" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("__helper");
+    const helper_ref = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const block = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = name,
+        .data = .{ .list = try ast.addNodeList(&.{helper_ref}) },
+    });
+    const root = try ast.addNode(.{
+        .tag = .program,
+        .span = name,
+        .data = .{ .list = try ast.addNodeList(&.{block}) },
+    });
+
+    const global_scope: ScopeId = @enumFromInt(0);
+    const block_scope: ScopeId = @enumFromInt(1);
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = global_scope, .kind = .block, .is_strict = false },
+    };
+    var global_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+    defer global_scope_map.deinit(allocator);
+    try global_scope_map.put(allocator, "__helper", 0);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ global_scope_map, .empty };
+    const symbols = [_]Symbol{.{
+        .name = name,
+        .scope_id = global_scope,
+        .kind = .import_binding,
+        .declaration_span = name,
+        .reference_count = 1,
+    }};
+    const symbol_ids = [_]?u32{0};
+    // The helper is visible from the block, so storing its use at the
+    // ancestor scope passes visibility and helper identity checks. Its exact
+    // use scope must still be the block that owns the reference node.
+    var references = [_]Reference{.{
+        .node_index = helper_ref,
+        .scope_id = block_scope,
+        .symbol_id = @enumFromInt(0),
+        .flags = .{ .read = true },
+    }};
+    const helper_refs = [_]u32{@intFromEnum(helper_ref)};
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
+    try scope_owner_map.put(allocator, @intFromEnum(block), @intFromEnum(block_scope));
+    var helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+    defer helper_scope_map.deinit(allocator);
+    try helper_scope_map.put(allocator, "__helper", 0);
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const valid = try checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &helper_refs,
+        &helper_scope_map,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expect(valid.isClean());
+
+    references[0].scope_id = global_scope;
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &helper_refs,
+        &helper_scope_map,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.reference_scope_mismatch);
+    try std.testing.expectEqual(@as(usize, 0), report.invisible_reference);
+    try std.testing.expectEqual(@as(usize, 0), report.helper_symbol_mismatch);
     try std.testing.expect(!report.isClean());
 }
 
