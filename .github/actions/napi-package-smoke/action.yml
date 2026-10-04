@@ -1,0 +1,65 @@
+name: Verify native package installation
+description: Pack the supplied native addon with the shared JS wrapper and test the installed ESM and CJS entry points.
+
+inputs:
+  platform:
+    description: Platform sub-package suffix.
+    required: true
+  native-binary:
+    description: Path to the native addon that this platform must install.
+    required: false
+    default: zig-out/lib/zntc.node
+  smoke-container:
+    description: Optional Alpine image for musl runtime validation.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Stage and pack native package
+      id: pack
+      shell: bash
+      env:
+        NAPI_SMOKE_PLATFORM: ${{ inputs.platform }}
+        NAPI_SMOKE_BINARY: ${{ inputs.native-binary }}
+      run: |
+        cp "$NAPI_SMOKE_BINARY" "packages/core-${NAPI_SMOKE_PLATFORM}/zntc.node"
+        cp NOTICE "packages/core-${NAPI_SMOKE_PLATFORM}/NOTICE"
+        rm -rf tmp-napi-pack tmp-napi-smoke
+        mkdir -p tmp-napi-pack tmp-napi-smoke
+        main_tarball="$(npm pack ./packages/core --pack-destination tmp-napi-pack --silent | tail -n 1)"
+        plat_tarball="$(npm pack "./packages/core-${NAPI_SMOKE_PLATFORM}" --pack-destination tmp-napi-pack --silent | tail -n 1)"
+        echo "main_tarball=${main_tarball}" >> "$GITHUB_OUTPUT"
+        echo "plat_tarball=${plat_tarball}" >> "$GITHUB_OUTPUT"
+
+    # stdin keeps ESM/CJS resolution inside the isolated installation directory,
+    # rather than resolving the repository's workspace package or zig-out addon.
+    - name: Run smoke (host)
+      if: inputs.smoke-container == ''
+      shell: bash
+      env:
+        MAIN_TARBALL: ${{ steps.pack.outputs.main_tarball }}
+        PLAT_TARBALL: ${{ steps.pack.outputs.plat_tarball }}
+      run: |
+        cd tmp-napi-smoke
+        npm init -y >/dev/null
+        npm install "../tmp-napi-pack/${MAIN_TARBALL}" "../tmp-napi-pack/${PLAT_TARBALL}" --ignore-scripts
+        node --input-type=module < ../scripts/napi-smoke-test.mjs
+
+    # docker-run-action does not forward GitHub step environment automatically.
+    - name: Run smoke (Alpine container, musl)
+      if: inputs.smoke-container != ''
+      uses: addnab/docker-run-action@v3
+      with:
+        image: ${{ inputs.smoke-container }}
+        options: -v ${{ github.workspace }}:/work -w /work -e MAIN_TARBALL -e PLAT_TARBALL
+        run: |
+          set -e
+          cd tmp-napi-smoke
+          npm init -y >/dev/null
+          npm install "../tmp-napi-pack/${MAIN_TARBALL}" "../tmp-napi-pack/${PLAT_TARBALL}" --ignore-scripts
+          node --input-type=module < ../scripts/napi-smoke-test.mjs
+      env:
+        MAIN_TARBALL: ${{ steps.pack.outputs.main_tarball }}
+        PLAT_TARBALL: ${{ steps.pack.outputs.plat_tarball }}

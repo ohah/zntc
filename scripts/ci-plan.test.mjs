@@ -198,7 +198,7 @@ for (const [suite, expected, systems] of [
     const plan = createPlan({ changedFiles: [], event: 'workflow_dispatch', suite });
     assert.deepEqual(flags(plan), expected);
     assert.deepEqual(plan.debug_matrix, { include: systems.map((os) => ({ os })) });
-    assert.equal(plan.smoke_matrix.include.length, 8);
+    assert.equal(plan.smoke_matrix.include.length, 7);
   });
 }
 
@@ -209,7 +209,7 @@ test('suite input cannot narrow an ordinary push or PR', () => {
   }
 });
 
-test('PR smoke matrix preserves five actual ABI targets and runtime overrides', () => {
+test('PR smoke matrix preserves four ABI targets alongside the shared macOS arm64 job', () => {
   const plan = createPlan({ changedFiles: ['src/lib.zig'], event: 'pull_request' });
   assert.deepEqual(plan.smoke_matrix, {
     include: [
@@ -220,7 +220,6 @@ test('PR smoke matrix preserves five actual ABI targets and runtime overrides', 
         zig_target: 'x86_64-linux-musl',
         smoke_container: 'node:24-alpine',
       },
-      { platform: 'darwin-arm64', os: 'macos-latest', zig_target: 'native' },
       { platform: 'win32-x64-msvc', os: 'windows-latest', zig_target: 'native' },
       {
         platform: 'win32-ia32-msvc',
@@ -235,7 +234,7 @@ test('PR smoke matrix preserves five actual ABI targets and runtime overrides', 
 
 test('main smoke matrix adds both arm64 Linux ABIs and Intel macOS', () => {
   const plan = createPlan({ changedFiles: ['src/lib.zig'], event: 'push' });
-  assert.equal(plan.smoke_matrix.include.length, 8);
+  assert.equal(plan.smoke_matrix.include.length, 7);
   assert.deepEqual(
     plan.smoke_matrix.include.filter((entry) =>
       ['linux-arm64-gnu', 'linux-arm64-musl', 'darwin-x64'].includes(entry.platform),

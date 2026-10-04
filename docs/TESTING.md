@@ -188,7 +188,7 @@ bun run tests/benchmark/bundle-perf.ts --output ./bundle-perf.json
 - 일반 코드 변경의 최대 job 수는 PR 19개, main push 22개다. 성능 라벨, 문서 배포, 릴리스 및 주기 검사는 별도다.
 - `ci.yml` 한 실행에서 유닛·Test262·통합·E2E·패키지 검사를 관리한다. 별도 `integration.yml`과 `test262.yml`은 제거했다.
 - Ubuntu 준비 job은 baseline CPU의 NAPI·CLI와 JS/dts·웹/RN/배포 어댑터를 한 번씩 만든다. API·통합·E2E·설치·배포 검사는 필요한 산출물을 공유한다. CLI/core/web/RN/어댑터 결과를 분리해 한 제품의 빌드 실패가 무관한 검사를 생략시키지 않도록 한다.
-- macOS native CLI·NAPI·self-host 빌드는 한 job에서 공유하며 Bun/Node API, CLI, 위 watch/HMR 14개 파일을 각각 실행한다. macOS package smoke의 baseline CPU와 native CPU 검증은 구별해 유지한다.
+- macOS CLI·NAPI·self-host 빌드는 한 job에서 공유하며 Bun/Node API, CLI, 위 watch/HMR 14개 파일을 각각 실행한다. NAPI는 배포용 baseline CPU 빌드로 API·watch 검증을 통일하고, 같은 바이너리를 별도 darwin-arm64 package smoke에서 Ubuntu산 JS/dts와 함께 설치·실행한다. 이 소비자만 macOS 산출물을 기다리며 다른 ABI의 package smoke는 독립 실행한다. native CPU 검증은 macOS CLI ReleaseFast와 Debug job에서 유지한다.
 - Linux native ReleaseFast, Windows ReleaseFast, Linux ReleaseSafe는 각각 유지한다. Test262는 Ubuntu의 기존 Debug CLI를 사용하므로 추가 컴파일이 없다. 유닛 테스트 실패 뒤에도 corpus 검사는 독립적으로 실행한다.
 - WASM은 두 바이너리를 한 Zig 명령으로 만들고 wrapper/dts와 함께 업로드한다. 실행 테스트가 실패해도 준비된 산출물의 배포 검사는 계속 수행한다.
 - `scripts/ci-plan.mjs`가 matrix와 실행 대상을 계산한다. 계산과 Zig/JS lint는 하나의 job에서 수행하며, 감사 실패가 나머지 빌드·검사를 막지 않는다. `node --test scripts/ci-plan.test.mjs`로 변경 경로·draft·ready·수동 실행 조건을 검증한다.
