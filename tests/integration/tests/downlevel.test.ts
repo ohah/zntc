@@ -1524,6 +1524,45 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       expect(result.runOutput).toBe('10,7,2,3');
     });
 
+    test('generator-preserving async function wrappers bind lexical captures at the wrapper scope', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            async function read(value: number) {
+              const _this = 2;
+              const _arguments = 3;
+              await Promise.resolve();
+              return () => [this.x, arguments[0], _this, _arguments].join(',');
+            }
+            read.call({ x: 10 }, 7).then((readValue) => console.log(readValue()));
+          `,
+        },
+        'index.ts',
+        ['--target=es2015'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('10,7,2,3');
+    });
+
+    test('transpile-only generator-preserving async wrappers preserve lexical captures', async () => {
+      const result = await transpileAndRun(
+        `
+          async function read(value) {
+            const _this = 2;
+            const _arguments = 3;
+            await Promise.resolve();
+            return () => [this.x, arguments[0], _this, _arguments].join(',');
+          }
+          read.call({ x: 10 }, 7).then((readValue) => console.log(readValue()));
+        `,
+        ['--target=es2015'],
+      );
+      cleanup = result.cleanup;
+      expect(result.transpileExitCode).toBe(0);
+      expect(result.runOutput).toBe('10,7,2,3');
+    });
+
     test('prelowered async-generator class methods keep this and arguments captures', async () => {
       const result = await bundleAndRun(
         {

@@ -273,10 +273,23 @@ test "#4819 class method capture producers bind exact symbols without a name res
     );
 }
 
-test "#4819 async function capture producers bind exact symbols without a name rescan" {
+test "#4819 async-to-state-machine fallback captures bind exact symbols without a name rescan" {
     try checkCaptureSymbols(
         "async function outer(value){await 0;return ()=>this.x+arguments[0]} outer.call({x:2},3);",
         .function_declaration,
+    );
+}
+
+test "#4819 lowerAsyncFunction binds captures in a generator-preserving mixed target" {
+    var unsupported = TransformOptions.compat.fromESTarget(.es5);
+    unsupported.generator = false;
+    try std.testing.expect(unsupported.async_await);
+    try std.testing.expect(!unsupported.generator);
+    try std.testing.expect(unsupported.arrow);
+    try checkCaptureSymbolsWithUnsupported(
+        "async function outer(value){await 0;return ()=>this.x+arguments[0]} outer.call({x:2},3);",
+        .function_declaration,
+        unsupported,
     );
 }
 
