@@ -275,7 +275,7 @@ test "#4819 class method capture producers bind exact symbols without a name res
 
 test "#4819 async-to-state-machine fallback captures bind exact symbols without a name rescan" {
     try checkCaptureSymbols(
-        "async function outer(value){await 0;return ()=>this.x+arguments[0]} outer.call({x:2},3);",
+        "async function outer(value){const _this=2;const _arguments=3;await 0;return ()=>this.x+arguments[0]+_this+_arguments} outer.call({x:2},3);",
         .function_declaration,
     );
 }
