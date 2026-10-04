@@ -6,6 +6,7 @@ const es2015_params = @import("../es2015_params.zig");
 const NodeIndex = ast_mod.NodeIndex;
 const Error = std.mem.Allocator.Error;
 const Span = @import("../../lexer/token.zig").Span;
+const es_helpers = @import("../es_helpers.zig");
 
 /// (#4596) **program 앞에 prepend 되는 합성 top-level 문장의 span 불변식**:
 /// 대응하는 원본 소스 텍스트가 없으므로 span 은 *위치 anchor* 로만 쓰고 길이는 0 이어야 한다.
@@ -280,6 +281,42 @@ fn hasScopedOutputReplacement(self: anytype, idx: NodeIndex) bool {
     return false;
 }
 
+fn appendParameterBodyVarCopies(self: anytype, function_scope: @import("../../semantic/scope.zig").ScopeId, statements: *std.ArrayList(NodeIndex)) Error!void {
+    if (function_scope.isNone() or self.parameter_body_var_copies.items.len == 0) return;
+    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+    const rename_map = self.block_rename_map orelse return;
+    for (self.parameter_body_var_copies.items) |copy| {
+        if (copy.function_scope != function_scope) continue;
+        if (copy.body_var_symbol_id >= symbols.len or copy.parameter_symbol_id >= symbols.len)
+            std.debug.panic("parameter/body-var copy references an invalid SymbolId", .{});
+        const parameter_name = rename_map.get(copy.parameter_symbol_id) orelse
+            std.debug.panic("split parameter has no emitted name", .{});
+        const body_symbol = symbols[copy.body_var_symbol_id];
+        const body_name = if (body_symbol.synthetic_name.len > 0) body_symbol.synthetic_name else self.ast.getText(body_symbol.name);
+        const body_name_span = try self.ast.addString(body_name);
+        const parameter_name_span = try self.ast.addString(parameter_name);
+        const target = try self.ast.addNode(.{
+            .tag = .assignment_target_identifier,
+            .span = copy.source_span,
+            .data = .{ .string_ref = body_name_span },
+        });
+        const value = try es_helpers.makeIdentifierRefFromSpan(self, parameter_name_span);
+        try self.addSyntheticRefInScope(
+            target,
+            @enumFromInt(copy.body_var_symbol_id),
+            function_scope,
+            .{ .write = true },
+        );
+        try self.addSyntheticRefInScope(
+            value,
+            @enumFromInt(copy.parameter_symbol_id),
+            function_scope,
+            .{ .read = true },
+        );
+        try statements.append(self.allocator, try es_helpers.makeAssignStmt(self, target, value, copy.source_span, 0));
+    }
+}
+
 fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
     const Self = @TypeOf(self.*);
     const node_count = self.ast.nodes.items.len;
@@ -318,6 +355,7 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 if (!needs_lowering) continue;
                 var lr = try es2015_params.ES2015Params(Self).lowerParamsPass2(self, params_list, node.span);
                 defer lr.body_stmts.deinit(self.allocator);
+                try appendParameterBodyVarCopies(self, self.current_scope, &lr.body_stmts);
 
                 // formal_parameters 노드를 새로 만들어 extras[e+1]에 연결.
                 // (여러 function 노드가 동일 params_idx를 공유할 수 있으므로 in-place mutation 금지:

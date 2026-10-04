@@ -41,13 +41,13 @@
 ## 합의한 작업 순서
 
 1. **source scope-parent 검사 연결 완료:** [PR #5057](https://github.com/ohah/zntc/pull/5057)에서 source AST의 owner/parent 검사와 CLI 호출을 연결했다. source parent 오류와 namespace/Flow의 기존 owner 표현 차이를 구분한다. 변환 후 출력 scope 검사를 대체하지 않으며, 전체 심볼 전환 완료를 뜻하지 않는다.
-2. **서로 다른 SID의 매개변수·본문 binding 정적 분리 구현:** [parameter_environment](../src/transformer/parameter_environment.zig)가 기본값·계산된 구조분해 key의 외부 참조와 충돌하는 본문 `var`·함수·`let`·`const`·클래스 선언을 기존 rename table에 연결한다. 같은 이름의 parameter 초기화가 본문 함수 선언을 덮어쓰는 경우도 분리한다. closure, parameter TDZ, 원본 함수 이름, Unicode 별칭 충돌과 standalone helper의 hashbang/directive·소스맵을 함께 검사한다. 최근 retained 허용 PR이 새로 만든 회귀를 고친 작업은 아니다. 아래의 완전한 parameter/body 환경 분리는 남아 있다.
+2. **매개변수·본문 binding 정적 분리:** [parameter_environment](../src/transformer/parameter_environment.zig)가 기본값·계산된 구조분해 key의 외부 참조와 충돌하는 본문 `var`·함수·`let`·`const`·클래스 선언을 기존 rename table에 연결한다. analyzer가 같은 SID로 합친 비단순 매개변수와 본문 `var`도, 매개변수 초기화 식에서 그 binding을 참조할 때 별도 SID로 나눈다. parameter reference를 새 SID로 옮기고, 매개변수 초기화가 끝난 뒤 본문 `var`에 초기값을 복사한다. closure가 가진 매개변수 값과 본문 변수를 분리하며, 계산된 key·구조분해 shorthand, parameter TDZ, 원본 함수 이름, 별칭 충돌을 실행과 exact graph로 검사한다. 이는 ES5 정적 변환 경로의 제한된 분리이며, 전체 parameter/body scope model을 구현한 것은 아니다.
 3. **구조분해 매개변수 temp 생성 시 SID/scope 소유 강제:** [PR #5059](https://github.com/ohah/zntc/pull/5059)에서 ES5 parameter lowering이 활성 함수 scope에 temp를 생성하고 즉시 SID와 exact span map을 기록하도록 한다. semantic editing을 사용하지 않는 저수준 Transformer 경로는 no-op으로 유지하고, owner node가 아직 붙지 않은 예약 생성 함수 scope도 허용한다. 네 곳의 사후 재등록 fallback을 제거하고 직접 identity 검사와 standalone/bundle 실행 비교를 추가한다.
 4. 이후 위 표의 한 생성자 계열씩 생성부터 최종 출력까지 이관한다. 각 PR에는 바뀐 지원 범위, 삭제한 보정 코드, 남은 호출 지점, 음성 대조 및 실제 실행 결과를 기록한다. 이 문서의 항목도 같은 PR에서 갱신한다.
 
 ### 매개변수 수정 후 남은 경계
 
-- 현재 analyzer가 하나의 SID로 합치는 parameter/body `var`의 별도 값 복사는 구현하지 않았다. `function f(x = 3, get = () => x) { var x = 4; return [get(), x]; }`의 `f()`는 원본에서 `[3, 4]`지만 ES5 출력은 여전히 `[4, 4]`다. 별도 저장 공간과 완전한 parameter/body scope 모델이 필요한 기존 결함이다.
+- 위 정적 변환이 다루지 않는 동적 스코프와 본문 TDZ는 별도 경계다. direct `eval`/`with`가 있는 동적 스코프는 이름 변경 대상에서 제외한다. 본문 lexical 선언 자체의 ES5 TDZ 보존도 남아 있다. 예를 들어 `let x = 4`보다 앞에서 본문의 `x`를 읽으면 원본은 `ReferenceError`지만 현재 출력은 `undefined`를 읽을 수 있다. 매개변수가 외부 `x`를 읽도록 고친 것과 본문 TDZ 구현 완료를 구분한다.
 - 본문 lexical 선언 자체의 ES5 TDZ 보존도 별도 기존 결함이다. 예를 들어 `let x = 4`보다 앞에서 본문의 `x`를 읽으면 원본은 `ReferenceError`지만 현재 출력은 `undefined`를 읽을 수 있다. 매개변수가 외부 `x`를 읽도록 고친 것과 본문 TDZ 구현 완료를 구분한다.
 - direct `eval`/`with`가 있는 동적 스코프는 정적 rename 대상에서 제외한다. source의 중복 함수 선언·TypeScript overload가 남기는 과거 심볼 행과 일부 재분석 진단도 별도 정리 대상이다. 실제 AST binding이 없는 행을 이번 rename으로 새 synthetic binding으로 만들지는 않는다.
 - 이름 복원은 기존 `__name` helper를 사용한다. helper는 모듈 본문 실행 전에 내장 property-definition 함수를 보관하며, 모듈 시작 시 표준 intrinsic을 가정한다. standalone 출력은 hashbang·directive 뒤에서 helper를 writer로 출력해 실행 모드와 소스맵 위치를 유지한다.

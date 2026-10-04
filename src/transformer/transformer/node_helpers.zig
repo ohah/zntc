@@ -71,6 +71,16 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
     if (!self.options.unsupported.block_scoping) return;
     if (self.scopes.len == 0) return;
     const unresolved = self.unresolved_references orelse return;
+    var parameter_renames = try @import("../parameter_environment.zig").splitMergedParameterBodyVars(self);
+    defer parameter_renames.deinit(self.allocator);
+    var existing_parameter_renames = try @import("../parameter_environment.zig").collectRenames(self);
+    defer existing_parameter_renames.deinit(self.allocator);
+    var existing_renames = existing_parameter_renames.keyIterator();
+    while (existing_renames.next()) |id| try parameter_renames.put(self.allocator, id.*, {});
+    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    const scope_maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;
+    const references = if (self.semantic_editor) |*editor| editor.references.items else self.references;
     const Ctx = struct {
         fn nameOf(ctx: *const anyopaque, s: @import("../../semantic/symbol.zig").Symbol) []const u8 {
             const ast: *const @import("../../parser/ast.zig").Ast = @ptrCast(@alignCast(ctx));
@@ -78,28 +88,26 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
         }
     };
     var table = try @import("../block_rename_table.zig").build(self.allocator, .{
-        .scopes = self.scopes,
-        .symbols = self.symbols,
-        .scope_maps = self.scope_maps,
-        .references = self.references,
+        .scopes = scopes,
+        .symbols = symbols,
+        .scope_maps = scope_maps,
+        .references = references,
         .unresolved = unresolved,
         .ctx = self.ast,
         .nameOf = Ctx.nameOf,
     });
     defer table.deinit(self.allocator);
-    var parameter_renames = try @import("../parameter_environment.zig").collectRenames(self);
-    defer parameter_renames.deinit(self.allocator);
     var map: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
     errdefer map.deinit(self.allocator);
     if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
     const arena = self.name_arena.?.allocator();
     var reserved: std.StringHashMapUnmanaged(void) = .empty;
     defer reserved.deinit(self.allocator);
-    for (self.symbols) |sym| try reserved.put(self.allocator, try canonicalIdentifier(arena, self.ast.getText(sym.name)), {});
+    for (symbols) |sym| try reserved.put(self.allocator, try canonicalIdentifier(arena, self.ast.getText(sym.name)), {});
     var globals = unresolved.keyIterator();
     while (globals.next()) |name| try reserved.put(self.allocator, try canonicalIdentifier(arena, name.*), {});
     // 심볼 번호 순서로 이름을 매겨 결정적으로 만든다.
-    for (self.symbols, 0..) |sym, i| {
+    for (symbols, 0..) |sym, i| {
         const parameter_rename = parameter_renames.contains(@intCast(i));
         if (!table.contains(@intCast(i)) and !parameter_rename) continue;
         const base_name = try canonicalIdentifier(arena, self.ast.getText(sym.name));

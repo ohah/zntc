@@ -512,8 +512,9 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 // this exact binding for the existing TDZ lowering, including
                 // when a body function forced a parameter alias.
                 if (self.getSymbolIdAt(leaf_idx)) |id| {
-                    if (id < self.symbols.len and self.symbols[id].kind == .parameter) {
-                        const source_name = self.symbols[id].name;
+                    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+                    if (id < symbols.len and symbols[id].kind == .parameter) {
+                        const source_name = symbols[id].name;
                         if (!std.mem.eql(u8, self.ast.getText(source_name), self.ast.getText(emitted_name)))
                             try out.append(self.allocator, source_name);
                     }

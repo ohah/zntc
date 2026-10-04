@@ -2979,6 +2979,83 @@ pub fn relocateOutputSymbolAs(self: *Transformer, raw_id: u32, scope: ScopeId, b
     editor.relocateSymbolAs(@enumFromInt(raw_id), scope, binding) catch |err| return editError(err);
 }
 
+/// Split the parameter identity from a same-named body `var` that the source
+/// analyzer represented with one SymbolId. The parameter binding gets a fresh
+/// emitted name; the original identity stays with the body environment.
+pub fn splitParameterBodyVarBinding(
+    self: *Transformer,
+    binding: NodeIndex,
+    body_var_id: u32,
+    alias_span: Span,
+    body_var_span: Span,
+) Transformer.Error!?SymbolId {
+    if (!self.semantic_edit_enabled) return null;
+    const editor = try editorFor(self);
+    if (binding.isNone() or @intFromEnum(binding) >= self.ast.nodes.items.len or
+        @intFromEnum(binding) >= editor.symbol_ids.items.len or
+        @intFromEnum(binding) >= self.symbol_ids.items.len)
+        std.debug.panic("invalid parameter binding for body-var identity split", .{});
+    const binding_node = self.ast.getNode(binding);
+    if (binding_node.tag != .binding_identifier or alias_span.start & ast_mod.Ast.STRING_TABLE_BIT == 0)
+        std.debug.panic("invalid parameter binding shape for body-var identity split", .{});
+    if (editor.symbol_ids.items[@intFromEnum(binding)] != body_var_id or
+        self.symbol_ids.items[@intFromEnum(binding)] != body_var_id)
+        std.debug.panic("parameter/body-var split no longer points at the shared SymbolId", .{});
+    if (body_var_id >= editor.symbols.items.len) std.debug.panic("parameter/body-var SymbolId is out of range", .{});
+    const original = editor.symbols.items[body_var_id];
+    if (original.kind != .parameter and original.kind != .variable_var)
+        std.debug.panic("parameter/body-var split found an unexpected source SymbolKind", .{});
+    if (original.scope_id.isNone() or original.scope_id.toIndex() >= editor.scopes.items.len or
+        editor.scopes.items[original.scope_id.toIndex()].kind != .function)
+        std.debug.panic("parameter/body-var split found a non-function var scope", .{});
+    const source_name = if (original.synthetic_name.len > 0) original.synthetic_name else self.ast.getText(original.name);
+    if (editor.scope_maps.items[original.scope_id.toIndex()].get(source_name) != body_var_id)
+        std.debug.panic("parameter/body-var source scope map lost the shared SymbolId", .{});
+
+    const alias_name = self.ast.getText(alias_span);
+    if (alias_name.len == 0 or editor.scope_maps.items[original.scope_id.toIndex()].contains(alias_name))
+        std.debug.panic("parameter/body-var alias is empty or already bound", .{});
+
+    const slot = @intFromEnum(binding);
+    editor.symbol_ids.items[slot] = null;
+    self.symbol_ids.items[slot] = null;
+    const alias_binding = es_helpers.makeBindingIdentifier(self, alias_span) catch return error.OutOfMemory;
+    const parameter_id = editor.declare(
+        alias_binding,
+        alias_span,
+        binding_node.span,
+        original.scope_id,
+        .parameter,
+        Reference.NO_STMT,
+        Reference.NO_STMT,
+    ) catch |err| {
+        editor.symbol_ids.items[slot] = body_var_id;
+        self.symbol_ids.items[slot] = body_var_id;
+        return editError(err);
+    };
+    editor.symbols.items[@intFromEnum(parameter_id)].name = original.name;
+    editor.attachExistingBinding(binding, parameter_id) catch |err| return editError(err);
+    if (original.kind == .parameter) {
+        editor.symbols.items[body_var_id].kind = .variable_var;
+        editor.symbols.items[body_var_id].decl_flags = SymbolKind.variable_var.declFlags();
+        editor.symbols.items[body_var_id].declaration_span = body_var_span;
+    }
+    self.symbol_ids.items[slot] = @intFromEnum(parameter_id);
+    return parameter_id;
+}
+
+/// Move a parameter-initializer reference from a shared parameter/body-var
+/// identity to the newly split parameter identity.
+pub fn rebindParameterBodyVarReference(self: *Transformer, reference: NodeIndex, parameter_id: SymbolId) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const editor = try editorFor(self);
+    editor.rebindReference(reference, parameter_id) catch |err| return editError(err);
+    const slot = @intFromEnum(reference);
+    if (self.symbol_ids.items.len <= slot)
+        try self.symbol_ids.appendNTimes(self.allocator, null, slot + 1 - self.symbol_ids.items.len);
+    self.symbol_ids.items[slot] = @intFromEnum(parameter_id);
+}
+
 pub fn renameParameterEnvironmentBinding(self: *Transformer, raw_id: u32, name: []const u8) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     const editor = try editorFor(self);
