@@ -9,6 +9,7 @@
 - 심볼 기반 변환 경로에서 binding을 만들 때 `SymbolId`와 소유 `ScopeId`를 함께 정한다. 같은 변수의 reference는 그 handle을 받아 연결한다. 속성 이름, label, 미해결 외부 이름은 binding과 구분한다.
 - 생성 함수의 소유 스코프를 나중에 만들 수밖에 없는 경우, 정확한 binding/reference 노드와 예정된 owner를 가진 보류 handle을 전달한다. 소유권이 결정된 뒤 이름을 다시 검색해 변수를 고르는 경로는 제거 대상으로 기록한다.
 - AST 이동·복사는 identity를 유지하고 reference scope, 선언, 읽기/쓰기 및 문장별 사용 정보를 함께 갱신한다. 이동 전후 parent가 달라질 수 있으므로 source scope와 출력 scope를 구분해 검증한다.
+- `flags.declare` 행의 `scope_id`는 그 심볼의 선언 대상 scope를 기록한다. 값 참조 행의 사용 위치 scope와 구분하며, 선언 심볼이 그 scope의 자식에서도 보인다는 사실만으로 잘못된 선언 소유권을 허용하지 않는다.
 - 최종 이름 결정은 비-minify 출력도 포함한다. 미해결 전역, direct `eval`/`with`, export/property 이름, 외부 runtime 계약을 먼저 보존·예약하고 모든 내부 이름 소비자가 같은 결과를 사용한다.
 - 출력 별칭과 원본 함수·클래스의 `.name`은 별도 계약이다. alias 예약은 Unicode escape를 해석한 identifier StringValue로 비교하고, 이름 복원은 정확한 초기화 식 노드와 선언 SID에 연결한다. 같은 선언의 이름을 변환기와 codegen이 중복 복원하지 않는다.
 - 의도적인 분석 생략 또는 저수준 Transformer의 `semantic_edit_enabled=false` 경로는 적용 범위를 별도로 기록한다. 해당 경로의 `null`을 심볼 기반 경로에서 누락을 허용하는 근거로 사용하지 않는다.
