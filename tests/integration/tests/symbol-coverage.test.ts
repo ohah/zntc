@@ -66,6 +66,22 @@ const STRICT_ZERO_COUNTERS = [
   'orphan_symbols',
   'cyclic_ast_edges',
 ];
+const EXACT_OBSERVATION_FIELD_COUNT = 6;
+const EXACT_DIAGNOSTIC_FIELD_COUNT = 7;
+
+function exactSchemaProblems(identity: string): string[] {
+  const expectations = [
+    ['invariant_counter_count', EXACT_ZERO_COUNTERS.length],
+    ['observation_field_count', EXACT_OBSERVATION_FIELD_COUNT],
+    ['diagnostic_field_count', EXACT_DIAGNOSTIC_FIELD_COUNT],
+  ] as const;
+  return expectations.flatMap(([field, expected]) => {
+    const value = identity.match(new RegExp(`(?:^| )${field}=(\\d+)(?: |$)`))?.[1];
+    return value === undefined || Number(value) !== expected
+      ? [`${field}=${value ?? 'missing'}, expected ${expected}`]
+      : [];
+  });
+}
 
 // The exact audit above owns transform-aware binding-scope validation. The
 // synthetic diagnostic intentionally uses a simpler emitted-scope trace, so
@@ -134,6 +150,49 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(() => collectFixtures(dir)).toThrow(/unsupported downlevel-oracle fixture extension/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('exact report schema detects omitted or reclassified invariant fields', () => {
+    const complete = [
+      `invariant_counter_count=${EXACT_ZERO_COUNTERS.length}`,
+      `observation_field_count=${EXACT_OBSERVATION_FIELD_COUNT}`,
+      `diagnostic_field_count=${EXACT_DIAGNOSTIC_FIELD_COUNT}`,
+    ].join(' ');
+    expect(exactSchemaProblems(complete)).toEqual([]);
+    expect(
+      exactSchemaProblems(
+        complete.replace(/invariant_counter_count=\d+/, 'invariant_counter_count=23'),
+      ),
+    ).toContain(`invariant_counter_count=23, expected ${EXACT_ZERO_COUNTERS.length}`);
+    expect(
+      exactSchemaProblems(
+        complete.replace(/observation_field_count=\d+/, 'observation_field_count=7'),
+      ),
+    ).toContain(`observation_field_count=7, expected ${EXACT_OBSERVATION_FIELD_COUNT}`);
+    expect(
+      exactSchemaProblems(
+        complete.replace(/diagnostic_field_count=\d+/, 'diagnostic_field_count=8'),
+      ),
+    ).toContain(`diagnostic_field_count=8, expected ${EXACT_DIAGNOSTIC_FIELD_COUNT}`);
+  });
+
+  test('the emitted exact report matches the locked schema', () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-exact-report-schema-'));
+    try {
+      const { stderr, exitCode } = runCoverage(
+        join(FIXTURE_DIR, '4760-block-eval.mjs'),
+        TARGETS[0],
+        outDir,
+      );
+      expect(exitCode, stderr).toBe(0);
+      const reports = stderr
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('zntc: symbol-identity '));
+      expect(reports, stderr).toHaveLength(1);
+      expect(exactSchemaProblems(reports[0])).toEqual([]);
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
     }
   });
 
@@ -5494,6 +5553,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           if (clean !== '1') {
             problems.push(
               `${name} ${target.name}: exact aggregate clean=${clean ?? 'missing'}: ${identity}`,
+            );
+          }
+          for (const schemaProblem of exactSchemaProblems(identity)) {
+            problems.push(
+              `${name} ${target.name}: exact report schema ${schemaProblem}: ${identity}`,
             );
           }
           const generatedBindingsMatch = identity.match(/generated_bindings=(\d+)/);
