@@ -228,6 +228,122 @@ for (const event of ['pull_request', 'push']) {
   }
 }
 
+const portableBundlerFiles = [
+  'src/bundler/tree_shaker/cjs_patterns.zig',
+  'src/bundler/tree_shaker/module_effects.zig',
+  'src/bundler/tree_shaker/import_records.zig',
+  'src/bundler/tree_shaker/const_materialize.zig',
+  'src/bundler/tree_shaker/re_export_namespace.zig',
+  'src/bundler/graph/cycles.zig',
+  'src/bundler/graph/import_usage.zig',
+];
+const extendedBundlerFiles = [
+  'src/bundler/graph',
+  'src/bundler/tree_shaker',
+  'src/bundler/graph.zig',
+  'src/bundler/tree_shaker.zig',
+  'src/bundler/graph/diagnostics.zig',
+  'src/bundler/graph/requested_exports.zig',
+  'src/bundler/graph/transform_prepass.zig',
+  'src/bundler/graph/loaders.zig',
+  'src/bundler/graph/resolve_imports.zig',
+  'src/bundler/graph/project_root.zig',
+  'src/bundler/resolver.zig',
+  'src/bundler/fs.zig',
+  'src/bundler/mpsc_channel.zig',
+  'src/bundler/graph/new_analysis.zig',
+  'src/bundler/tree_shaker/new_analysis.zig',
+  // Names alone do not confer portability; the owning directory matters.
+  'src/bundler/graph/module_effects.zig',
+  'src/bundler/tree_shaker/cycles.zig',
+];
+
+for (const event of ['pull_request', 'push']) {
+  for (const file of portableBundlerFiles) {
+    test(`${event}: reviewed bundler helper ${file} retains every suite on representative targets`, () => {
+      const plan = createPlan({ changedFiles: [file], event });
+      assert.deepEqual(flags(plan), all);
+      assert.equal(plan.extended_platforms, false);
+      assert.deepEqual(plan.debug_matrix.include, [{ os: 'ubuntu-latest' }]);
+      assert.deepEqual(
+        plan.smoke_matrix.include.map((row) => row.platform),
+        ['linux-x64-gnu', 'linux-x64-musl', 'win32-x64-msvc'],
+      );
+      for (const nearMiss of [
+        `${file}.extra.zig`,
+        `${file}/native.zig`,
+        file.replace('.zig', '.ZIG'),
+        file.replace('/bundler/', '/bundler/new-area/'),
+      ]) {
+        assert.equal(
+          createPlan({ changedFiles: [nearMiss], event }).extended_platforms,
+          true,
+          nearMiss,
+        );
+      }
+    });
+  }
+  for (const file of extendedBundlerFiles) {
+    test(`${event}: unreviewed or host-dependent bundler path ${file} remains extended`, () => {
+      const plan = createPlan({ changedFiles: [file], event });
+      assert.deepEqual(flags(plan), all);
+      assert.equal(plan.extended_platforms, true);
+      assert.equal(plan.smoke_matrix.include.length, 7);
+      assert.deepEqual(plan.debug_matrix.include, [
+        { os: 'ubuntu-latest' },
+        { os: 'macos-latest' },
+      ]);
+    });
+  }
+  test(`${event}: a sensitive change extends a mixed portable bundler change in either order`, () => {
+    for (const sensitive of [...extendedBundlerFiles, 'build.zig', 'packages/core/index.ts']) {
+      for (const changedFiles of [
+        [...portableBundlerFiles, sensitive],
+        [sensitive, ...portableBundlerFiles],
+      ]) {
+        const plan = createPlan({ changedFiles, event });
+        assert.deepEqual(flags(plan), all);
+        assert.equal(plan.extended_platforms, true, sensitive);
+      }
+    }
+    const portableOnly = createPlan({
+      changedFiles: [...portableBundlerFiles, 'README.md'],
+      event,
+    });
+    assert.deepEqual(flags(portableOnly), all);
+    assert.equal(portableOnly.extended_platforms, false);
+  });
+}
+
+test('reviewed bundler paths preserve draft/ready, manual subset, and scheduled coverage', () => {
+  for (const file of portableBundlerFiles) {
+    const draft = createPlan({ changedFiles: [file], event: 'pull_request', draft: true });
+    assert.deepEqual(flags(draft), [true, false, false, true]);
+    assert.equal(draft.extended_platforms, false);
+    const ready = createPlan({
+      changedFiles: [file],
+      event: 'pull_request',
+      eventAction: 'ready_for_review',
+    });
+    assert.deepEqual(flags(ready), all);
+    assert.equal(ready.extended_platforms, false);
+    for (const suite of ['all', 'integration', 'test262']) {
+      assert.deepEqual(
+        createPlan({ changedFiles: [file], event: 'workflow_dispatch', suite }),
+        createPlan({ changedFiles: [], event: 'workflow_dispatch', suite }),
+      );
+    }
+    const scheduled = createPlan({ changedFiles: [file], event: 'schedule' });
+    assert.deepEqual(flags(scheduled), all);
+    assert.equal(scheduled.extended_platforms, true);
+    assert.equal(scheduled.smoke_matrix.include.length, 7);
+    assert.deepEqual(scheduled.debug_matrix.include, [
+      { os: 'ubuntu-latest' },
+      { os: 'macos-latest' },
+    ]);
+  }
+});
+
 test('sensitive paths extend mixed changes while documentation does not', () => {
   const base = { event: 'pull_request', changedFiles: ['src/parser/expr.zig', 'README.md'] };
   assert.equal(createPlan(base).extended_platforms, false);

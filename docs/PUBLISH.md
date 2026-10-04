@@ -66,10 +66,9 @@ platform sub-package (`@zntc/core-*`) 의 prepublishOnly 는 다름 — `node ..
 
 ```
 build-platform (9 platforms, NAPI + CLI를 같은 job에서 빌드)
+  Linux x64 glibc 행에서 공용 ESM/CJS/dts와 검증 manifest도 생성
   │
-  ├─ prepare-release-core (Ubuntu에서 ESM/CJS/dts를 한 번 생성)
-  │      │
-  └──────┴─ release-smoke (9 platforms)
+  └──────── release-smoke (9 platforms)
                npm tarball 설치 + ESM/CJS API 실행
                CLI --help + TypeScript 변환 실행
                │
@@ -86,6 +85,8 @@ build-platform (9 platforms, NAPI + CLI를 같은 job에서 빌드)
 ```
 
 일반 CI는 대표 OS/ABI 4종을 검사하고, 이 릴리스 gate는 9종 모두를 실제 실행한다.
+빌드와 설치 검증은 총 18개 job이며, wrapper는 Linux x64 glibc 빌드 안에서 준비한다.
+wrapper 준비·업로드가 실패하면 Linux 빌드가 실패하므로 게시도 차단된다.
 musl은 Alpine에서, Windows ia32는 Node 22/x86에서 검사한다. Windows arm64는
 Zig native 빌드의 제약 때문에 x64에서 cross-build하고 ARM runner의 Node arm64로 실행한다.
 `workflow_dispatch`와 관련 빌드 설정 변경 PR은 같은 빌드·검증만 실행하며 게시하지 않는다.
@@ -142,7 +143,7 @@ gh pr merge <num> --rebase --auto --delete-branch
 git checkout main && git pull
 git tag vX.Y.Z
 git push origin vX.Y.Z
-#   → release.yml: build-platform(9) + prepare-release-core + release-smoke(9)
+#   → release.yml: build-platform(9, Linux 행에서 공용 wrapper도 준비) + release-smoke(9)
 #                  + publish-npm + github-release
 #   → npm 에 7개 main + 9개 platform sub-package 출시, GitHub Release 생성
 

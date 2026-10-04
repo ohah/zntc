@@ -60,6 +60,17 @@ const portableCompilerDirectories = [
   'src/codegen',
   'src/regexp',
 ];
+// Only these reviewed bundler helpers analyze in-memory AST/module data.
+// Adjacent graph/IO/thread helpers and new files still require every platform.
+const portableCompilerFiles = new Set([
+  'src/bundler/tree_shaker/cjs_patterns.zig',
+  'src/bundler/tree_shaker/module_effects.zig',
+  'src/bundler/tree_shaker/import_records.zig',
+  'src/bundler/tree_shaker/const_materialize.zig',
+  'src/bundler/tree_shaker/re_export_namespace.zig',
+  'src/bundler/graph/cycles.zig',
+  'src/bundler/graph/import_usage.zig',
+]);
 const representativeDirectories = [
   ...portableCompilerDirectories,
   'src/fixtures',
@@ -152,7 +163,9 @@ function isRootTsconfig(file) {
 }
 
 function needsExtendedPlatforms(file) {
-  if (file.endsWith('.zig')) return !inDirectories(file, portableCompilerDirectories);
+  if (file.endsWith('.zig')) {
+    return !(inDirectories(file, portableCompilerDirectories) || portableCompilerFiles.has(file));
+  }
   // Manifest/dependency changes can affect installed native packages even in
   // otherwise portable JS packages or examples. Do not exempt them by directory.
   if (

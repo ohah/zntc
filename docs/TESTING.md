@@ -194,6 +194,7 @@ bun run tests/benchmark/bundle-perf.ts --output ./bundle-perf.json
 - 일반 실행에서 macOS는 native CLI/NAPI 빌드, NAPI watch 중단·재시작, Node `fs.watch`의 config/env/app 변경 감지, kqueue·HTTP/TLS·watch/HMR 통합 12개 파일을 검사한다. API/CLI의 전체 묶음과 Zig Debug 유닛 검사는 Ubuntu가 매번 담당하고, macOS에서는 `extended_platforms`일 때 실행한다. watcher를 시작하지 않는 HMR 코드 생성 2개 파일(`napi-dev-jsx-binding`, `napi-lazy-dev-hmr`)도 같은 확장 실행으로 옮긴다. macOS 앱 빌드는 해당 OS 테스트의 준비 단계이며 React Native 패키지 빌드는 확장 실행에만 필요하다.
 - macOS NAPI는 baseline CPU로 한 번 빌드하고 watch 검사와 별도 darwin-arm64 package smoke가 공유한다. 설치 검사는 Ubuntu산 JS/dts와 실제 macOS 바이너리를 함께 설치·실행한다. 이 소비자만 macOS 산출물을 기다리며 다른 ABI의 package smoke는 독립 실행한다. macOS native CPU 검증은 CLI ReleaseFast에서 매번, Debug에서 확장 실행 때 유지한다.
 - 일반 PR/main의 실제 패키지 설치 검사는 Linux x64 glibc·musl, Windows x64, macOS arm64의 대표 4종이다. 확장 실행은 Linux arm64 glibc·musl, Intel macOS, Windows ia32를 더해 8종을 검사한다. `ci-plan.mjs`가 알려진 portable 경로만 축소하며 새/미분류 경로는 보수적으로 확장한다. 드물게 실행되는 ABI에서만 생기는 회귀는 관련 경로 검사·주간 검사·릴리스 검사에서 발견할 수 있다.
+- 번들러에서는 직접 OS 기능을 호출하지 않는 7개 분석 파일만 대표 검사로 분류한다: `tree_shaker/{cjs_patterns,module_effects,import_records,const_materialize,re_export_namespace}.zig`, `graph/{cycles,import_usage}.zig`(`src/bundler/` 기준). 디렉터리 전체를 예외로 두지 않으며 파일 IO·resolver·mutex·공용 graph helper와 새 파일은 확장 검사를 유지한다. 두 종류가 함께 바뀌어도 확장 검사이며, 주간/수동 전체 검사와 릴리스 검사 범위는 유지한다.
 - Linux CLI ReleaseFast의 CPU 프로필은 Ubuntu 준비 job의 baseline 빌드로 통일하며 draft·core-only 변경에서도 실행한다. Linux native CPU 검증은 Debug·ReleaseSafe에서 유지하고 Windows ReleaseFast도 유지한다. CLI 빌드와 산출물 업로드는 NAPI·JS 빌드 실패와 독립적으로 실행한다.
 - `ci.yml`의 `prepare-packages`, `macos-native`, `wasm`, `release-build`, `napi-package-smoke`는 컴파일에 필요한 `vendor/mimalloc`·`vendor/boringssl`만 checkout한다. 기존 바이너리를 소비하는 linux-x64-gnu·darwin-arm64 패키지 검증은 일반 소스만 checkout한다. Test262 corpus는 Debug job에서 유지하며 Ubuntu의 기존 Debug CLI로 검사하므로 추가 컴파일이 없다. 유닛 테스트 실패 뒤에도 corpus 검사는 독립적으로 실행한다.
 - WASM은 두 바이너리를 한 Zig 명령으로 만들고 wrapper/dts와 함께 업로드한다. 실행 테스트가 실패해도 준비된 산출물의 배포 검사는 계속 수행한다.
@@ -202,8 +203,8 @@ bun run tests/benchmark/bundle-perf.ts --output ./bundle-perf.json
 - draft PR은 기존처럼 core/Test262를 검증하고 통합/E2E는 준비 완료 후 실행한다. ready 전환은 이전 run을 취소할 수 있으므로 core/Test262도 다시 선택한다.
 - 수동 `CI` 실행의 suite는 `all`, `integration`, `test262`를 지원한다. 매주 월요일 04:37 UTC에는 전체 suite와 확장 플랫폼을 검사한다. 수동/주간 실행의 concurrency group은 자동 CI와 분리해 main 검사 또는 주간 검사를 서로 취소하지 않는다.
 - `.github/actions/setup-zig`는 CI의 순차 CLI/NAPI 빌드가 모두 action 관리 캐시를 쓰게 하고 상한을 4 GiB로 둔다. 크기 초과로 캐시가 비워지는지 로그를 확인한다. 개발자의 병렬 빌드용 `package.json`의 별도 NAPI 캐시 경로는 유지한다.
-- `build-canary.yml`: 추가 ReleaseSafe/ReleaseSmall 5개 조합은 매주 월요일 04:17 UTC와 수동 실행으로 검증한다. 해당 workflow/공통 Zig action 변경 PR에서도 실행한다.
-- `release.yml`: 9개 플랫폼별 NAPI/CLI 빌드 산출물로 실제 npm tarball 설치·ESM/CJS API 및 CLI 실행을 검사한다. Windows arm64도 x64에서 cross-build한 산출물을 ARM runner에서 실행한다. 전 플랫폼 검사가 통과해야 npm/GitHub 배포가 가능하며, 실제 배포는 버전 태그에서만 실행한다.
+- `build-canary.yml`: 추가 ReleaseSafe/ReleaseSmall 5개 조합은 매주 월요일 04:17 UTC와 수동 실행으로 검증한다. 해당 workflow/공통 Zig·vendor checkout action 변경 PR에서도 실행한다. CLI 빌드에는 `vendor/mimalloc`·`vendor/boringssl`만 checkout하고 사용하지 않는 Test262 corpus는 받지 않는다.
+- `release.yml`: 9개 플랫폼별 NAPI/CLI 빌드 산출물로 실제 npm tarball 설치·ESM/CJS API 및 CLI 실행을 검사한다. 공용 JS/dts와 검증 manifest는 Linux x64 glibc 빌드 job에서 함께 준비해 별도 wrapper job 없이 18개 job으로 검증한다. Windows arm64도 x64에서 cross-build한 산출물을 ARM runner에서 실행한다. 전 플랫폼 검사가 통과해야 npm/GitHub 배포가 가능하며, 실제 배포는 버전 태그에서만 실행한다.
 - `scripts/ci-install-deps.sh`: job별 Bun workspace 필터를 관리한다. root fixture 의존성은 유지하며, integration은 조용한 test skip을 막기 위해 benchmark workspace도 설치한다. 테스트 의존성을 추가할 때 프로필과 실제 실행/skip 수를 함께 확인한다.
 - `docs.yml`은 문서 배포, `napi-leak-gate.yml`은 수동 누수 진단에 사용한다.
 - ReleaseFast 빌드에서만 깨지는 회귀가 존재 → debug 통과해도 CI 실패 시 `-Doptimize=ReleaseFast` 로 로컬 재현 필수
