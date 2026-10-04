@@ -276,7 +276,9 @@ pub fn Methods(comptime Transformer: type) type {
                 .data = .{ .extra = func_extra },
             });
 
-            try es_helpers.trackThisArgumentsCaptureSymbols(self, func_expr, self.current_scope);
+            // Ordinary methods bind captures in visitMethodBodyWithParams. Methods
+            // pre-lowered for async/generator syntax bind them while the synthesized
+            // function is visited by lowerAsyncOrGeneratorMethod.
             try self.remapCopiedScopeOwner(info.source_member_idx, func_expr);
             self.current_scope = saved_scope;
             return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span, reference_scope);
