@@ -592,6 +592,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_lowered_for_await = false;
     var found_native_class = false;
     var found_native_destructuring = false;
+    var found_lowered_object_rest = false;
     var found_safe_template_literal = false;
     var found_computed_object_data_key = false;
     var found_computed_object_method_key = false;
@@ -646,7 +647,13 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (pattern_tag != .binding_identifier) {
                     if (options.unsupported.destructuring or
                         (pattern_tag != .array_pattern and pattern_tag != .object_pattern)) return false;
-                    found_native_destructuring = true;
+                    if (pattern_tag == .object_pattern and options.unsupported.object_spread and
+                        ast.nodeListSplitRest(ast.nodes.items[@intFromEnum(pattern)].data.list).rest_operand != null)
+                    {
+                        found_lowered_object_rest = true;
+                    } else {
+                        found_native_destructuring = true;
+                    }
                 }
                 if (!default_value.isNone()) found_native_destructuring = true;
             },
@@ -655,10 +662,14 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 found_native_destructuring = true;
             },
             .object_pattern, .object_assignment_target => {
-                if (options.unsupported.destructuring or
-                    (options.unsupported.object_spread and
-                        ast.nodeListSplitRest(node.data.list).rest_operand != null)) return false;
-                found_native_destructuring = true;
+                if (options.unsupported.destructuring) return false;
+                if (options.unsupported.object_spread and
+                    ast.nodeListSplitRest(node.data.list).rest_operand != null)
+                {
+                    found_lowered_object_rest = true;
+                } else {
+                    found_native_destructuring = true;
+                }
             },
             .assignment_pattern => {
                 // Parameter defaults lower independently from destructuring;
@@ -672,11 +683,15 @@ fn canRetainGraphForAuditedSyntaxSubset(
             },
             .binding_rest_element, .assignment_target_rest => {
                 if (options.unsupported.destructuring) return false;
-                found_native_destructuring = true;
+                if (!options.unsupported.object_spread) found_native_destructuring = true;
             },
             .rest_element => {
                 if (options.unsupported.default_params) return false;
-                found_native_destructuring = true;
+                // This node is also used for object-pattern rest. When the
+                // target lowers object rest, its owning pattern records the
+                // exact graph transform; don't admit the module as native
+                // destructuring solely because of the rest leaf.
+                if (!options.unsupported.object_spread) found_native_destructuring = true;
             },
             .template_literal => {
                 // Untagged templates lower to string concatenation while
@@ -894,11 +909,13 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_native_for_in or found_lowered_for_in or found_native_for_of or found_lowered_for_of or
         found_native_for_await or found_lowered_for_await or found_native_class or found_native_destructuring or
         found_safe_template_literal or found_object_shorthand or found_lowered_object_method or
-        found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key;
+        found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key or
+        found_lowered_object_rest;
 }
 
 /// A retained prepass graph may absorb only the `__values`/`__asyncValues`
-/// virtual imports introduced by audited for-of and ES2017 for-await lowering.
+/// virtual imports introduced by audited iterator lowering and `__read`/`__rest`
+/// imports introduced by audited destructuring/object-rest lowering.
 /// Any other runtime helper can indicate an independently lowered construct,
 /// so keep that module on semantic resync.
 fn runtimeHelpersSafeForRetainedGraph(
@@ -907,6 +924,8 @@ fn runtimeHelpersSafeForRetainedGraph(
     var other_helpers = helpers;
     other_helpers.values = false;
     other_helpers.async_values = false;
+    other_helpers.read = false;
+    other_helpers.rest = false;
     return !other_helpers.hasAny();
 }
 
@@ -1309,9 +1328,10 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     };
 
     // Type erasure, Flow match lowering, TypeScript enums, supported JSX, and
-    // audited ES5 for-of / ES2017 for-await subsets preserve the edited semantic
-    // graph. JSX and iterator lowering may add synthetic helper imports, so
-    // refresh module import/export metadata without replacing that graph.
+    // audited ES5 for-of / ES2017 for-await / ES2015-2017 object-rest subsets
+    // preserve the edited semantic graph. JSX and syntax lowering may add
+    // synthetic helper imports, so refresh module import/export metadata
+    // without replacing that graph.
     if (can_keep_semantic_graph and runtimeHelpersSafeForRetainedGraph(transformer.runtime_helpers)) {
         // Generated built-ins are not source references, so the transform
         // editor cannot add them to unresolved_references. If recording them
