@@ -42,7 +42,7 @@
 
 1. **source scope-parent 검사 연결 완료:** [PR #5057](https://github.com/ohah/zntc/pull/5057)에서 source AST의 owner/parent 검사와 CLI 호출을 연결했다. source parent 오류와 namespace/Flow의 기존 owner 표현 차이를 구분한다. 변환 후 출력 scope 검사를 대체하지 않으며, 전체 심볼 전환 완료를 뜻하지 않는다.
 2. **서로 다른 SID의 매개변수·본문 binding 정적 분리 구현:** [parameter_environment](../src/transformer/parameter_environment.zig)가 기본값·계산된 구조분해 key의 외부 참조와 충돌하는 본문 `var`·함수·`let`·`const`·클래스 선언을 기존 rename table에 연결한다. 같은 이름의 parameter 초기화가 본문 함수 선언을 덮어쓰는 경우도 분리한다. closure, parameter TDZ, 원본 함수 이름, Unicode 별칭 충돌과 standalone helper의 hashbang/directive·소스맵을 함께 검사한다. 최근 retained 허용 PR이 새로 만든 회귀를 고친 작업은 아니다. 아래의 완전한 parameter/body 환경 분리는 남아 있다.
-3. **구조분해 매개변수 temp 생성 시 SID/scope 소유를 강제한다.** ES5 parameter lowering은 활성 함수 scope에 temp를 생성하고 즉시 SID와 exact span map을 기록한다. semantic editing을 사용하지 않는 저수준 Transformer 경로는 no-op으로 유지한다. owner node가 아직 붙지 않은 예약 생성 함수 scope도 허용한다. 이 계약은 네 곳의 사후 재등록 fallback을 제거한 후속 PR에서 검증한다.
+3. **구조분해 매개변수 temp 생성 시 SID/scope 소유 강제:** [PR #5059](https://github.com/ohah/zntc/pull/5059)에서 ES5 parameter lowering이 활성 함수 scope에 temp를 생성하고 즉시 SID와 exact span map을 기록하도록 한다. semantic editing을 사용하지 않는 저수준 Transformer 경로는 no-op으로 유지하고, owner node가 아직 붙지 않은 예약 생성 함수 scope도 허용한다. 네 곳의 사후 재등록 fallback을 제거하고 직접 identity 검사와 standalone/bundle 실행 비교를 추가한다.
 4. 이후 위 표의 한 생성자 계열씩 생성부터 최종 출력까지 이관한다. 각 PR에는 바뀐 지원 범위, 삭제한 보정 코드, 남은 호출 지점, 음성 대조 및 실제 실행 결과를 기록한다. 이 문서의 항목도 같은 PR에서 갱신한다.
 
 ### 매개변수 수정 후 남은 경계
