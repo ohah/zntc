@@ -78,12 +78,22 @@ function exactSchemaProblems(identity: string): string[] {
     ['observation_field_count', EXACT_OBSERVATION_FIELD_COUNT],
     ['diagnostic_field_count', EXACT_DIAGNOSTIC_FIELD_COUNT],
   ] as const;
-  return expectations.flatMap(([field, expected]) => {
+  const problems = expectations.flatMap(([field, expected]) => {
     const value = identity.match(new RegExp(`(?:^| )${field}=(\\d+)(?: |$)`))?.[1];
     return value === undefined || Number(value) !== expected
       ? [`${field}=${value ?? 'missing'}, expected ${expected}`]
       : [];
   });
+  for (const counter of EXACT_ZERO_COUNTERS) {
+    const matches = identity.match(new RegExp('(?:^| )' + counter + '=(\\d+)(?=\\s|$)', 'g')) ?? [];
+    if (matches.length !== 1) {
+      problems.push(counter + ' occurrences=' + matches.length + ', expected 1');
+      continue;
+    }
+    const value = matches[0].match(/=(\d+)/)?.[1] ?? 'missing';
+    if (value !== '0') problems.push(counter + '=' + value + ', expected 0');
+  }
+  return problems;
 }
 
 // The exact audit above owns transform-aware binding-scope validation. The
@@ -161,8 +171,24 @@ describe('symbol identity coverage gate (#4819)', () => {
       `invariant_counter_count=${EXACT_ZERO_COUNTERS.length}`,
       `observation_field_count=${EXACT_OBSERVATION_FIELD_COUNT}`,
       `diagnostic_field_count=${EXACT_DIAGNOSTIC_FIELD_COUNT}`,
-    ].join(' ');
+    ]
+      .concat(EXACT_ZERO_COUNTERS.map((counter) => counter + '=0'))
+      .join(' ');
     expect(exactSchemaProblems(complete)).toEqual([]);
+    expect(exactSchemaProblems(complete.replace(' write_count_mismatch=0', ''))).toContain(
+      'write_count_mismatch occurrences=0, expected 1',
+    );
+    expect(
+      exactSchemaProblems(
+        complete.replace(
+          ' write_count_mismatch=0',
+          ' write_count_mismatch=0 write_count_mismatch=0',
+        ),
+      ),
+    ).toContain('write_count_mismatch occurrences=2, expected 1');
+    expect(
+      exactSchemaProblems(complete.replace(' write_count_mismatch=0', ' write_count_mismatch=1')),
+    ).toContain('write_count_mismatch=1, expected 0');
     expect(
       exactSchemaProblems(
         complete.replace(/invariant_counter_count=\d+/, 'invariant_counter_count=23'),
