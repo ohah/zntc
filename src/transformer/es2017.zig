@@ -530,7 +530,7 @@ pub fn ES2017(comptime Transformer: type) type {
                 .span = node.span,
                 .data = .{ .extra = new_extra },
             });
-            try es_helpers.trackThisArgumentsCaptureSymbols(self, result, source_scope);
+            // fillThisArgumentsCaptures bound these aliases at declaration creation.
             return result;
         }
 
