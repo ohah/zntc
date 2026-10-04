@@ -1409,6 +1409,55 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       expect(actual.stdout).toBe('value true\n');
     });
 
+    test('downleveled accessor captures bind this and arguments without local-name rescans', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            class C {
+              x = 10;
+              get read() {
+                const _this = 2;
+                const _arguments = 3;
+                return () => [this.x, arguments.length, _this, _arguments].join(',');
+              }
+              set save(value) {
+                this.readSaved = () => [this.x + value, arguments.length].join(',');
+              }
+            }
+            const instance = new C();
+            const getterRead = instance.read;
+            instance.save = 5;
+            console.log(getterRead(), instance.readSaved());
+          `,
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('10,0,2,3 15,1');
+    });
+
+    test('transpile-only downleveled accessors preserve lexical this and arguments captures', async () => {
+      const result = await transpileAndRun(
+        `
+          class C {
+            x = 10;
+            get read() { return () => [this.x, arguments.length].join(','); }
+            set save(value) { this.readSaved = () => [this.x + value, arguments.length].join(','); }
+          }
+          const instance = new C();
+          const getterRead = instance.read;
+          instance.save = 5;
+          console.log(getterRead(), instance.readSaved());
+        `,
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.transpileExitCode).toBe(0);
+      expect(result.runOutput).toBe('10,0 15,1');
+    });
+
     test('native parameter new.target stays lexical across class and extracted function boundaries', async () => {
       const { dir, cleanup: cl } = await createFixture({
         'index.ts': `

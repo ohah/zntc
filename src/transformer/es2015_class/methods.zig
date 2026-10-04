@@ -91,7 +91,6 @@ pub fn Methods(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .extra = func_extra },
             });
-            try es_helpers.trackThisArgumentsCaptureSymbols(self, func_expr, self.current_scope);
             try self.remapCopiedScopeOwner(source_member_idx, func_expr);
             if (!generated_scope.isNone()) {
                 try self.bindReservedFunctionOwner(generated_scope, func_expr);
