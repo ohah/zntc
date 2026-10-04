@@ -7,13 +7,13 @@ on:
   pull_request_target:
     branches: [main]
     types: [closed]
-  # Reconcile late cache saves, missed events, and older merged PRs.
+  # Reconcile PR caches and retain recent generations of main Zig build caches.
   schedule:
     - cron: '53 5 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
-        description: Report candidates without cancelling runs or deleting caches
+        description: Preview PR cleanup and main Zig cache retention without mutations
         type: boolean
         default: true
 

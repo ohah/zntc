@@ -80,7 +80,7 @@ jobs:
           CI_SUITE: ${{ inputs.suite || 'all' }}
         run: node scripts/ci-plan.mjs
       - name: Verify CI selection, maintenance and release artifact gates
-        run: node --test scripts/ci-plan.test.mjs scripts/ci-maintenance.test.mjs scripts/verify-release-core.test.mjs
+        run: node --test scripts/ci-plan.test.mjs scripts/ci-maintenance.test.mjs scripts/main-cache-retention.test.mjs scripts/verify-release-core.test.mjs
 
       - name: Setup Zig
         if: ${{ !cancelled() && steps.plan.outputs.core == 'true' }}

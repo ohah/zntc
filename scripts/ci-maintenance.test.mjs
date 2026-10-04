@@ -235,6 +235,33 @@ function fixture(options = {}) {
   };
 }
 
+for (const eventName of ['pull_request_target', 'schedule', 'workflow_dispatch']) {
+  test(`main cache retention runs only for sweeps: ${eventName}`, async () => {
+    const caches = [1, 2, 3].map((attempt) =>
+      cache(300 + attempt, {
+        ref: 'refs/heads/main',
+        key: `setup-zig-cache-v2-prepare_cli-zig-x86_64-linux-0.16.0-baseline-202-${attempt}`,
+        version: 'main-version',
+        created_at: `2026-01-0${attempt}T00:00:00Z`,
+        last_accessed_at: `2026-01-0${attempt}T00:00:00Z`,
+      }),
+    );
+    const f = fixture({
+      runs: [mainRun({ status: 'completed', conclusion: 'success', run_attempt: 3 })],
+      caches,
+    });
+    const result = await f.execute({ eventName });
+    if (eventName === 'pull_request_target') {
+      assert.deepEqual(f.mutations(), []);
+      assert.equal(result.mainCaches, undefined);
+    } else {
+      assert.deepEqual(f.deleted(), [301]);
+      assert.deepEqual(result.mainCaches.deletedCaches, [301]);
+      assert.deepEqual(result.mainCaches.protectedCaches, [302, 303]);
+    }
+  });
+}
+
 test('cancels only the matching PR CI after the exact merged commit starts on main', async () => {
   const f = fixture();
   const result = await f.execute();

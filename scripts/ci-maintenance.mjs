@@ -1,5 +1,7 @@
 // This module only consumes GitHub API metadata. The privileged workflow loads
 // it from its own trusted commit, never from a PR checkout or an artifact.
+import { pruneMainCaches } from './main-cache-retention.mjs';
+
 const CI_PATH = '.github/workflows/ci.yml';
 const ACTIVE = ['requested', 'queued', 'pending', 'waiting', 'in_progress'];
 const PR_REF = /^refs\/pull\/([1-9][0-9]*)\/merge$/;
@@ -367,5 +369,10 @@ export async function runMaintenance({ github, context, dryRun = true, log = () 
     }
   }
   result.deferredPulls = [...new Set(result.deferredPulls)];
+  // Main caches have readers in other branches. Apply their separate retention
+  // policy only during the daily/manual sweep, never a PR lifecycle event.
+  if (sweep) {
+    result.mainCaches = await pruneMainCaches({ api, list, run, repository, dryRun, log });
+  }
   return result;
 }
