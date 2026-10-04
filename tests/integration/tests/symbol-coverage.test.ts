@@ -1315,6 +1315,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       },
       {
         name: 'destructuring assignment',
+        graph: 'retained',
         source: [
           'function assign(value) { var result = 0; (() => ([result] = value))(); return result; }',
           'console.log(assign([42]));',
@@ -1405,11 +1406,12 @@ describe('symbol identity coverage gate (#4819)', () => {
               line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
           );
         const expectedGraph =
-          fixture.name === 'object method' ||
+          fixture.graph ??
+          (fixture.name === 'object method' ||
           fixture.name === 'computed object property' ||
           fixture.name === 'object spread'
             ? 'retained'
-            : 'reanalyzed';
+            : 'reanalyzed');
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
           `semantic_graph=${expectedGraph}`,
         );
@@ -2200,7 +2202,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('native destructuring defaults and array rest retain identities while ES5 reanalyzes', () => {
+  test('native and ES5 destructuring defaults and array rest retain supported identities', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-destructuring-defaults-'));
     const output = join(dir, 'out.cjs');
     const input = join(dir, 'entry.ts');
@@ -2267,7 +2269,20 @@ describe('symbol identity coverage gate (#4819)', () => {
 
       const downlevel = run('--target=es5');
       expect(downlevel.status, downlevel.stderr).toBe(0);
-      expect(mode(downlevel.stderr ?? ''), downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      expect(mode(downlevel.stderr ?? ''), downlevel.stderr).toContain('semantic_graph=retained');
+      const downlevelReport = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(downlevelReport, downlevel.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(downlevelReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${downlevelReport}`,
+        ).toBe(0);
+      }
+      expect(downlevelReport).toMatch(/clean=1(?:\s|$)/);
       const downlevelOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(downlevelOutput.status, downlevelOutput.stderr).toBe(0);
       expect(downlevelOutput.stdout).toBe('11 20,30 17 40,50\n');
@@ -2403,6 +2418,122 @@ describe('symbol identity coverage gate (#4819)', () => {
         );
         assertOutput(fixture.expected);
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 destructuring assignments retain exact semantic identities', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-destructuring-assignment-retained-'));
+    const input = join(dir, 'entry.ts');
+    const output = join(dir, 'out.cjs');
+    const run = (source: string) => {
+      writeFileSync(input, source);
+      return spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+    };
+    const mode = (stderr: string) =>
+      stderr
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+    const assertOutput = (expected: string) => {
+      const result = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe(expected);
+    };
+
+    try {
+      const retainedCases = [
+        {
+          name: 'nested object assignment writes existing symbols',
+          source: [
+            'var left = 0; var deep = 0;',
+            '({ left, nested: { value: deep } } = { left: 3, nested: { value: 4 } });',
+            'console.log(left, deep);',
+          ].join('\n'),
+          expected: '3 4\n',
+        },
+        {
+          name: 'nested function assignment uses function-scoped temps',
+          source: [
+            'function assign(input) {',
+            '  var _a = 99; var left = 0; var deep = 0;',
+            '  { ({ left, nested: { value: deep } } = input); }',
+            "  return [left, deep, _a].join(',');",
+            '}',
+            'console.log(assign({ left: 3, nested: { value: 4 } }));',
+          ].join('\n'),
+          expected: '3,4,99\n',
+        },
+        {
+          name: 'array default and rest assignment',
+          source: [
+            'var first = 0; var rest: number[] = [];',
+            '[first = 5, ...rest] = [undefined, 8, 9];',
+            "console.log(first, rest.join(','));",
+          ].join('\n'),
+          expected: '5 8,9\n',
+        },
+        {
+          name: 'computed object key with default and object rest',
+          source: [
+            "var key = 'answer'; var answer = 0; var rest: Record<string, number> = {};",
+            '({ [key]: answer = 5, ...rest } = { answer: 42, extra: 9 });',
+            'console.log(answer, rest.extra);',
+          ].join('\n'),
+          expected: '42 9\n',
+        },
+      ];
+
+      for (const fixture of retainedCases) {
+        const proc = run(fixture.source);
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+        expect(mode(proc.stderr ?? ''), `${fixture.name}: ${proc.stderr}`).toContain(
+          'semantic_graph=retained',
+        );
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          );
+        expect(report, fixture.name).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.name} ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report).toMatch(/generated_bindings=[1-9]\d*/);
+        expect(report).toMatch(/generated_references=[1-9]\d*/);
+        expect(report).toMatch(/clean=1(?:\s|$)/);
+        assertOutput(fixture.expected);
+      }
+
+      const loopHead = run(
+        'var total = 0; var value = 0; for ([value] of [[7], [8]]) total += value; console.log(total);',
+      );
+      expect(loopHead.status, loopHead.stderr).toBe(0);
+      expect(mode(loopHead.stderr ?? ''), loopHead.stderr).toContain('semantic_graph=reanalyzed');
+      assertOutput('15\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
