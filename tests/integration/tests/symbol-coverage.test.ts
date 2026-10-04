@@ -1816,7 +1816,70 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('native for-await keeps its iteration scope while downlevel for-await reanalyzes', () => {
+  test('ES2017 for-await loop lowering retains its exact semantic graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es2017-for-await-retained-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.js');
+    writeFileSync(
+      input,
+      [
+        'async function consume(values) {',
+        '  let total = 0;',
+        '  for await (const value of values) total += value;',
+        '  console.log(total);',
+        '}',
+        'consume([20, 22]);',
+      ].join('\n'),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es2017',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const mode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+        );
+      expect(mode, proc.stderr).toContain('semantic_graph=retained');
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${report}`,
+        ).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+      const execution = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(execution.status, execution.stderr).toBe(0);
+      expect(execution.stdout).toBe('42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('for-await lowering retains only the supported async-function semantic graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-for-await-retained-'));
     const output = join(dir, 'out.cjs');
     const esmOutput = join(dir, 'tla-out.mjs');
@@ -1908,10 +1971,38 @@ describe('symbol identity coverage gate (#4819)', () => {
           (line) =>
             line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(downlevelMode, downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      expect(downlevelMode, downlevel.stderr).toContain('semantic_graph=retained');
+      const downlevelReport = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(downlevelReport, downlevel.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(downlevelReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${downlevelReport}`,
+        ).toBe(0);
+      }
+      expect(downlevelReport).toMatch(/clean=1(?:\s|$)/);
       const downlevelOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(downlevelOutput.status, downlevelOutput.stderr).toBe(0);
       expect(downlevelOutput.stdout).toBe('closed\n3\n');
+
+      // ES2015 also lowers async/await itself, which changes the enclosing
+      // function scope and must continue through semantic reanalysis.
+      const loweredAsync = run('--target=es2015');
+      expect(loweredAsync.status, loweredAsync.stderr).toBe(0);
+      const loweredAsyncMode = (loweredAsync.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(loweredAsyncMode, loweredAsync.stderr).toContain('semantic_graph=reanalyzed');
+      const loweredAsyncOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(loweredAsyncOutput.status, loweredAsyncOutput.stderr).toBe(0);
+      expect(loweredAsyncOutput.stdout).toBe('closed\n3\n');
 
       // A module-level for-await is also TLA; native targets keep both the
       // async-module fact and the source iteration scope.
