@@ -9,6 +9,7 @@ on:
       - "documents/**"
       - ".github/workflows/docs.yml"
       - ".github/actions/bun-cache/**"
+      - ".github/actions/checkout-build-deps/**"
       - ".github/actions/install-deps/**"
       - ".github/actions/setup-zig/**"
       - "scripts/ci-install-deps.sh"
@@ -31,8 +32,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - uses: ./.github/actions/checkout-build-deps
 
       - uses: ./.github/actions/setup-zig
         with:

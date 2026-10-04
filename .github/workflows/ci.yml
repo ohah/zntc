@@ -177,7 +177,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          # Only Ubuntu's selected corpus check consumes Test262.
+          submodules: ${{ matrix.os == 'ubuntu-latest' && needs.checks.outputs.test262 == 'true' && 'recursive' || 'false' }}
+
+      - uses: ./.github/actions/checkout-build-deps
+        if: matrix.os != 'ubuntu-latest' || needs.checks.outputs.test262 != 'true'
 
       - name: Setup Zig
         uses: ./.github/actions/setup-zig
@@ -259,7 +263,8 @@ jobs:
         run: zig build -Doptimize=ReleaseFast -Dcpu=baseline
       - uses: actions/upload-artifact@v4
         id: cli-upload
-        if: ${{ !cancelled() && steps.cli.outcome == 'success' }}
+        # Draft/core-only runs still build the CLI, but have no artifact consumers.
+        if: ${{ !cancelled() && needs.checks.outputs.integration == 'true' && steps.cli.outcome == 'success' }}
         with:
           name: ci-cli-build
           if-no-files-found: error
