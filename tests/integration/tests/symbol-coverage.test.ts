@@ -5244,7 +5244,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('arrow lowering retains only target-native spread elements', () => {
+  test('array and call spread lowering retain only helper-free literal graphs', () => {
     const cases = [
       {
         name: 'native array call and constructor spread on node5',
@@ -5263,12 +5263,23 @@ describe('symbol identity coverage gate (#4819)', () => {
       {
         name: 'array spread literal lowering on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'function list() { return (() => [...[1, 2], 3])(); }',
           "console.log(list().join(','));",
         ].join('\n'),
         output: '1,2,3\n',
+      },
+      {
+        name: 'direct identifier call spread literal lowering on node4',
+        target: 'node4',
+        graph: 'retained',
+        source: [
+          'function add(left, right) { return left + right; }',
+          'function total() { return (() => add(...[4, 7]))(); }',
+          'console.log(total());',
+        ].join('\n'),
+        output: '11\n',
       },
       {
         name: 'call spread literal lowering on node4',
@@ -5301,6 +5312,25 @@ describe('symbol identity coverage gate (#4819)', () => {
           "console.log(list([1, 2]).join(','));",
         ].join('\n'),
         output: '1,2,3\n',
+      },
+      {
+        name: 'array spread with a hole on node4',
+        target: 'node4',
+        graph: 'reanalyzed',
+        source: ['function list() { return [...[, 2]]; }', 'console.log(list().length);'].join(
+          '\n',
+        ),
+        output: '2\n',
+      },
+      {
+        name: 'direct eval array spread on node4',
+        target: 'node4',
+        graph: 'reanalyzed',
+        source: [
+          "function run() { return (() => eval(...['1 + 2']))(); }",
+          'console.log(run());',
+        ].join('\n'),
+        output: '3\n',
       },
       {
         name: 'object spread lowering on node5',
