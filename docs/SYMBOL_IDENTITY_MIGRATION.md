@@ -2,7 +2,7 @@
 
 [에픽 #4819](https://github.com/ohah/zntc/issues/4819)의 목표는 사용자 변수와 생성 변수가 변환 중 같은 identity를 유지하고, 출력 직전에 이름을 확정하는 것이다. 이 문서는 현재 보정 경로를 제거할 조건과 다음 작업 단위를 기록한다. 새로운 AST나 별도 심볼 시스템을 도입하는 계획은 아니다.
 
-기준은 2026-10-04의 `6ca87b46`이다. 아래 표는 확인한 주요 이름 생성자 계열이며, 모든 호출 지점과 문법·옵션 조합의 전수 목록은 아니다. private-field/decorator/class-self, Flow 및 plugin/worklet/refresh/emotion/styled-components의 생성 경로 전수조사는 남아 있다. 원본 AST를 보존해야 하는 bundler/cache/HMR의 메모리 소유권은 [기존 ownership RFC](./RFC_TRANSFORMER_OWN_AST.md)와 구분한다. AST 복사 제거와 의미 분석 재실행 제거는 다른 작업이다.
+생성자 표의 조사 기준은 2026-10-04의 `6ca87b46`이며, 이후 구현 상태는 아래 작업 순서에 기록한다. 아래 표는 확인한 주요 이름 생성자 계열이며, 모든 호출 지점과 문법·옵션 조합의 전수 목록은 아니다. private-field/decorator/class-self, Flow 및 plugin/worklet/refresh/emotion/styled-components의 생성 경로 전수조사는 남아 있다. 원본 AST를 보존해야 하는 bundler/cache/HMR의 메모리 소유권은 [기존 ownership RFC](./RFC_TRANSFORMER_OWN_AST.md)와 구분한다. AST 복사 제거와 의미 분석 재실행 제거는 다른 작업이다.
 
 ## 생성과 출력의 계약
 
@@ -10,7 +10,8 @@
 - 생성 함수의 소유 스코프를 나중에 만들 수밖에 없는 경우, 정확한 binding/reference 노드와 예정된 owner를 가진 보류 handle을 전달한다. 소유권이 결정된 뒤 이름을 다시 검색해 변수를 고르는 경로는 제거 대상으로 기록한다.
 - AST 이동·복사는 identity를 유지하고 reference scope, 선언, 읽기/쓰기 및 문장별 사용 정보를 함께 갱신한다. 이동 전후 parent가 달라질 수 있으므로 source scope와 출력 scope를 구분해 검증한다.
 - 최종 이름 결정은 비-minify 출력도 포함한다. 미해결 전역, direct `eval`/`with`, export/property 이름, 외부 runtime 계약을 먼저 보존·예약하고 모든 내부 이름 소비자가 같은 결과를 사용한다.
-- `semantic=none`과 같은 의도적인 분석 생략 경로는 적용 범위를 별도로 기록한다. 해당 경로의 `null`을 심볼 기반 경로에서 누락을 허용하는 근거로 사용하지 않는다.
+- 출력 별칭과 원본 함수·클래스의 `.name`은 별도 계약이다. alias 예약은 Unicode escape를 해석한 identifier StringValue로 비교하고, 이름 복원은 정확한 초기화 식 노드와 선언 SID에 연결한다. 같은 선언의 이름을 변환기와 codegen이 중복 복원하지 않는다.
+- 의도적인 분석 생략 또는 저수준 Transformer의 `semantic_edit_enabled=false` 경로는 적용 범위를 별도로 기록한다. 해당 경로의 `null`을 심볼 기반 경로에서 누락을 허용하는 근거로 사용하지 않는다.
 
 ## 이름 생성자와 남은 경계
 
@@ -39,10 +40,18 @@
 
 ## 합의한 작업 순서
 
-1. **source scope-parent 검사 연결을 마무리한다.** 검사 구현이 존재하는 것과 실제 CLI가 호출하는 것을 별도로 확인한다. source parent 오류와 namespace/Flow의 기존 owner 표현 차이를 구분하고, 적용되는 standalone/bundle 범위를 PR에 기록한다.
-2. **매개변수 평가환경의 기존 오컴파일을 수정한다.** 우선 계산된 구조분해 key의 바깥 변수 참조가 본문 변수에 가려지는 사례와 같은 이름의 parameter/함수 선언 초기화 사례를 구분해 수정한다. closure를 포함해 원본 실행과 비교한다. 현재 analyzer가 같은 SID로 합치는 parameter/body `var`의 별도 값 복사 및 direct `eval` 환경까지 완전히 해결했다고 주장하지 않는다. 환경 분리가 필요한 잔여 입력은 재현과 함께 별도 범위로 기록한다. 최근 retained 허용 PR이 새로 만든 회귀로 취급하지 않으며, prepass fallback 추가로 실행 오답을 감추지 않는다.
+1. **source scope-parent 검사 연결 완료:** [PR #5057](https://github.com/ohah/zntc/pull/5057)에서 source AST의 owner/parent 검사와 CLI 호출을 연결했다. source parent 오류와 namespace/Flow의 기존 owner 표현 차이를 구분한다. 변환 후 출력 scope 검사를 대체하지 않으며, 전체 심볼 전환 완료를 뜻하지 않는다.
+2. **서로 다른 SID의 매개변수·본문 binding 정적 분리 구현:** [parameter_environment](../src/transformer/parameter_environment.zig)가 기본값·계산된 구조분해 key의 외부 참조와 충돌하는 본문 `var`·함수·`let`·`const`·클래스 선언을 기존 rename table에 연결한다. 같은 이름의 parameter 초기화가 본문 함수 선언을 덮어쓰는 경우도 분리한다. closure, parameter TDZ, 원본 함수 이름, Unicode 별칭 충돌과 standalone helper의 hashbang/directive·소스맵을 함께 검사한다. 최근 retained 허용 PR이 새로 만든 회귀를 고친 작업은 아니다. 아래의 완전한 parameter/body 환경 분리는 남아 있다.
 3. **후속 PR에서 구조분해 매개변수 temp의 생성 계약을 강제한다.** 생성 시 SID/owner를 확보하는 경로를 고정하고, 같은 binding을 뒤에서 다시 등록하는 네 곳의 fallback을 제거한다. default/rest와 generated owner가 나중에 생기는 경우는 호출 지점별로 확인한다. parameter 의미 보존 수정과 별도 PR로 진행하며, 각 재등록 지점의 실제 호출 경로와 fixture별 출력·실행 증거를 기록한다. 이 문서에서는 아직 구현 완료로 처리하지 않는다.
 4. 이후 위 표의 한 생성자 계열씩 생성부터 최종 출력까지 이관한다. 각 PR에는 바뀐 지원 범위, 삭제한 보정 코드, 남은 호출 지점, 음성 대조 및 실제 실행 결과를 기록한다. 이 문서의 항목도 같은 PR에서 갱신한다.
+
+### 매개변수 수정 후 남은 경계
+
+- 현재 analyzer가 하나의 SID로 합치는 parameter/body `var`의 별도 값 복사는 구현하지 않았다. `function f(x = 3, get = () => x) { var x = 4; return [get(), x]; }`의 `f()`는 원본에서 `[3, 4]`지만 ES5 출력은 여전히 `[4, 4]`다. 별도 저장 공간과 완전한 parameter/body scope 모델이 필요한 기존 결함이다.
+- 본문 lexical 선언 자체의 ES5 TDZ 보존도 별도 기존 결함이다. 예를 들어 `let x = 4`보다 앞에서 본문의 `x`를 읽으면 원본은 `ReferenceError`지만 현재 출력은 `undefined`를 읽을 수 있다. 매개변수가 외부 `x`를 읽도록 고친 것과 본문 TDZ 구현 완료를 구분한다.
+- direct `eval`/`with`가 있는 동적 스코프는 정적 rename 대상에서 제외한다. source의 중복 함수 선언·TypeScript overload가 남기는 과거 심볼 행과 일부 재분석 진단도 별도 정리 대상이다. 실제 AST binding이 없는 행을 이번 rename으로 새 synthetic binding으로 만들지는 않는다.
+- 이름 복원은 기존 `__name` helper를 사용한다. helper는 모듈 본문 실행 전에 내장 property-definition 함수를 보관하며, 모듈 시작 시 표준 intrinsic을 가정한다. standalone 출력은 hashbang·directive 뒤에서 helper를 writer로 출력해 실행 모드와 소스맵 위치를 유지한다.
+- 구조분해 매개변수의 네 지연 재등록 fallback, 생성자 전수 이관, 통합된 최종 이름 결정과 재분석 제거는 아직 완료하지 않았다.
 
 ## 검증과 완료 보고
 
