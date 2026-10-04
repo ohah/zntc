@@ -213,6 +213,9 @@ pub const ExactReport = struct {
     unreachable_reference: usize = 0,
     ambiguous_ast_parent: usize = 0,
     cyclic_ast_edges: usize = 0,
+    invalid_ast_root: usize = 0,
+    invalid_ast_edge: usize = 0,
+    invalid_ast_layout: usize = 0,
     shadowed_external_reference: usize = 0,
     invalid_id: usize = 0,
     missing_reference: usize = 0,
@@ -241,6 +244,9 @@ pub const ExactReport = struct {
     first_scope_owner_mismatch: ?ScopeOwnerFinding = null,
     first_scope_map_mismatch: ?ScopeMapFinding = null,
     first_ambiguous_ast_parent: ?AstParentFinding = null,
+    first_invalid_ast_root: ?u32 = null,
+    first_invalid_ast_edge: ?AstEdgeFinding = null,
+    first_invalid_ast_layout: ?AstLayoutFinding = null,
     first_shadowed_external_reference: ?ExactFinding = null,
 
     fn isObservationField(comptime name: []const u8) bool {
@@ -253,12 +259,16 @@ pub const ExactReport = struct {
     }
 
     fn isDiagnosticField(comptime name: []const u8) bool {
+        @setEvalBranchQuota(4000);
         return std.mem.eql(u8, name, "first_missing_binding") or
             std.mem.eql(u8, name, "first_missing_reference") or
             std.mem.eql(u8, name, "first_unclassified_reference") or
             std.mem.eql(u8, name, "first_scope_owner_mismatch") or
             std.mem.eql(u8, name, "first_scope_map_mismatch") or
             std.mem.eql(u8, name, "first_ambiguous_ast_parent") or
+            std.mem.eql(u8, name, "first_invalid_ast_root") or
+            std.mem.eql(u8, name, "first_invalid_ast_edge") or
+            std.mem.eql(u8, name, "first_invalid_ast_layout") or
             std.mem.eql(u8, name, "first_shadowed_external_reference");
     }
 
@@ -332,6 +342,77 @@ pub const AstParentFinding = struct {
     first_parent: ?u32,
     additional_parent: u32,
 };
+
+pub const AstEdgeFinding = struct {
+    parent_node_index: u32,
+    parent_tag: Node.Tag,
+    child_node_index: u32,
+};
+
+pub const AstLayoutIssue = enum {
+    list_range,
+    extra_child_slot,
+    extra_list_descriptor,
+    extra_list_range,
+};
+
+pub const AstLayoutFinding = struct {
+    node_index: u32,
+    tag: Node.Tag,
+    issue: AstLayoutIssue,
+    data_index: ?usize = null,
+};
+
+fn invalidExactAstLayout(ast: *const Ast, node_index: u32) ?AstLayoutFinding {
+    const node = ast.nodes.items[node_index];
+    const extras = ast.extra_data.items;
+    switch (Node.Tag.dataKind(node.tag)) {
+        .leaf, .unary, .binary, .ternary => return null,
+        .list => {
+            const start: usize = node.data.list.start;
+            const len: usize = node.data.list.len;
+            if (start > extras.len or len > extras.len - start) return .{
+                .node_index = node_index,
+                .tag = node.tag,
+                .issue = .list_range,
+                .data_index = start,
+            };
+        },
+        .extra => {
+            const base: usize = node.data.extra;
+            for (Node.Tag.extraChildOffsets(node.tag)) |offset| {
+                const relative_index: usize = offset;
+                if (base > extras.len or relative_index >= extras.len - base) return .{
+                    .node_index = node_index,
+                    .tag = node.tag,
+                    .issue = .extra_child_slot,
+                    .data_index = base,
+                };
+            }
+            for (Node.Tag.extraListOffsets(node.tag)) |offsets| {
+                const start_offset: usize = offsets[0];
+                const len_offset: usize = offsets[1];
+                if (base > extras.len or start_offset >= extras.len - base or len_offset >= extras.len - base) return .{
+                    .node_index = node_index,
+                    .tag = node.tag,
+                    .issue = .extra_list_descriptor,
+                    .data_index = base,
+                };
+                const start_index = base + start_offset;
+                const len_index = base + len_offset;
+                const start: usize = extras[start_index];
+                const len: usize = extras[len_index];
+                if (start > extras.len or len > extras.len - start) return .{
+                    .node_index = node_index,
+                    .tag = node.tag,
+                    .issue = .extra_list_range,
+                    .data_index = start,
+                };
+            }
+        },
+    }
+    return null;
+}
 
 fn recordScopeOwnerMismatch(
     report: *ExactReport,
@@ -1622,6 +1703,11 @@ fn checkExactImpl(
     defer visit_states.deinit(allocator);
     var reachable_stack: std.ArrayList(VisitFrame) = .empty;
     defer reachable_stack.deinit(allocator);
+    if (root.isNone() or @intFromEnum(root) >= ast.nodes.items.len) {
+        report.invalid_ast_root += 1;
+        report.first_invalid_ast_root = @intFromEnum(root);
+        return report;
+    }
     try reachable_stack.append(allocator, .{ .node_index = root });
     while (reachable_stack.pop()) |frame| {
         const node_idx = frame.node_index;
@@ -1638,54 +1724,67 @@ fn checkExactImpl(
         try visit_states.put(allocator, raw, .visiting);
         try reachable_nodes.put(allocator, raw, {});
         try reachable_stack.append(allocator, .{ .node_index = node_idx, .exit = true });
+        if (invalidExactAstLayout(ast, raw)) |finding| {
+            report.invalid_ast_layout += 1;
+            if (report.first_invalid_ast_layout == null) report.first_invalid_ast_layout = finding;
+            continue;
+        }
         var children = ast_walk.children(ast, ast.getNode(node_idx));
         while (children.next()) |child| {
-            if (!child.isNone() and @intFromEnum(child) < ast.nodes.items.len) {
-                const child_raw = @intFromEnum(child);
-                if (child_raw == @intFromEnum(root)) {
-                    report.ambiguous_ast_parent += 1;
-                    if (report.first_ambiguous_ast_parent == null) report.first_ambiguous_ast_parent = .{
-                        .node_index = child_raw,
-                        .first_parent = null,
-                        .additional_parent = raw,
-                    };
-                } else {
-                    const parent_gop = try parent_by_node.getOrPut(allocator, child_raw);
-                    if (parent_gop.found_existing) {
-                        if (parent_gop.value_ptr.* != raw) {
-                            const first_scope = expectedReferenceScopeFromParent(
-                                ast,
-                                root,
-                                &parent_by_node,
-                                scope_owner_map,
-                                child_raw,
-                                parent_gop.value_ptr.*,
-                            );
-                            const additional_scope = expectedReferenceScopeFromParent(
-                                ast,
-                                root,
-                                &parent_by_node,
-                                scope_owner_map,
-                                child_raw,
-                                raw,
-                            );
-                            // AST nodes can legitimately be aliased by more
-                            // than one structural parent inside one lexical
-                            // scope. Only a conflicting or unprovable scope
-                            // path is ambiguous for identifier identity.
-                            if (first_scope == null or additional_scope == null or
-                                first_scope.?.scope != additional_scope.?.scope)
-                            {
-                                report.ambiguous_ast_parent += 1;
-                                if (report.first_ambiguous_ast_parent == null) report.first_ambiguous_ast_parent = .{
-                                    .node_index = child_raw,
-                                    .first_parent = parent_gop.value_ptr.*,
-                                    .additional_parent = raw,
-                                };
-                            }
+            if (child.isNone()) continue;
+            const child_raw = @intFromEnum(child);
+            if (child_raw >= ast.nodes.items.len) {
+                report.invalid_ast_edge += 1;
+                if (report.first_invalid_ast_edge == null) report.first_invalid_ast_edge = .{
+                    .parent_node_index = raw,
+                    .parent_tag = ast.nodes.items[raw].tag,
+                    .child_node_index = child_raw,
+                };
+                continue;
+            }
+            if (child_raw == @intFromEnum(root)) {
+                report.ambiguous_ast_parent += 1;
+                if (report.first_ambiguous_ast_parent == null) report.first_ambiguous_ast_parent = .{
+                    .node_index = child_raw,
+                    .first_parent = null,
+                    .additional_parent = raw,
+                };
+            } else {
+                const parent_gop = try parent_by_node.getOrPut(allocator, child_raw);
+                if (parent_gop.found_existing) {
+                    if (parent_gop.value_ptr.* != raw) {
+                        const first_scope = expectedReferenceScopeFromParent(
+                            ast,
+                            root,
+                            &parent_by_node,
+                            scope_owner_map,
+                            child_raw,
+                            parent_gop.value_ptr.*,
+                        );
+                        const additional_scope = expectedReferenceScopeFromParent(
+                            ast,
+                            root,
+                            &parent_by_node,
+                            scope_owner_map,
+                            child_raw,
+                            raw,
+                        );
+                        // AST nodes can legitimately be aliased by more
+                        // than one structural parent inside one lexical
+                        // scope. Only a conflicting or unprovable scope
+                        // path is ambiguous for identifier identity.
+                        if (first_scope == null or additional_scope == null or
+                            first_scope.?.scope != additional_scope.?.scope)
+                        {
+                            report.ambiguous_ast_parent += 1;
+                            if (report.first_ambiguous_ast_parent == null) report.first_ambiguous_ast_parent = .{
+                                .node_index = child_raw,
+                                .first_parent = parent_gop.value_ptr.*,
+                                .additional_parent = raw,
+                            };
                         }
-                    } else parent_gop.value_ptr.* = raw;
-                }
+                    }
+                } else parent_gop.value_ptr.* = raw;
             }
             try reachable_stack.append(allocator, .{ .node_index = child });
         }
@@ -2275,7 +2374,8 @@ fn checkExactImpl(
     // The generic walker assumes an AST tree and has no visited set. A cyclic
     // graph has already failed the exact report, so stop before that walk can
     // loop forever or grow its stack without bound.
-    if (report.cyclic_ast_edges == 0)
+    if (report.cyclic_ast_edges == 0 and report.invalid_ast_root == 0 and
+        report.invalid_ast_edge == 0 and report.invalid_ast_layout == 0)
         try ast_walk.walkPreorderIterative(allocator, ast, root, &ctx, exactVisit);
     if (ctx.oom) return error.OutOfMemory;
     return report;
@@ -2640,13 +2740,16 @@ pub fn printExactPrepass(file_path: []const u8, report: ExactReport, retained_gr
 
 fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport) void {
     const schema = ExactReport.schemaCounts();
-    var ast_structure_buffer: [192]u8 = undefined;
+    var ast_structure_buffer: [256]u8 = undefined;
     const ast_structure_counts = std.fmt.bufPrint(
         &ast_structure_buffer,
-        "ambiguous_ast_parent={d} cyclic_ast_edges={d} invariant_counter_count={d} observation_field_count={d} diagnostic_field_count={d}",
+        "ambiguous_ast_parent={d} cyclic_ast_edges={d} invalid_ast_root={d} invalid_ast_edge={d} invalid_ast_layout={d} invariant_counter_count={d} observation_field_count={d} diagnostic_field_count={d}",
         .{
             report.ambiguous_ast_parent,
             report.cyclic_ast_edges,
+            report.invalid_ast_root,
+            report.invalid_ast_edge,
+            report.invalid_ast_layout,
             schema.invariant_counters,
             schema.observation_fields,
             schema.diagnostic_fields,
@@ -2721,6 +2824,28 @@ fn printExactDiagnostics(file_path: []const u8, report: ExactReport) void {
                 finding.node_index,
                 optionalIndexText(&first_parent_buffer, finding.first_parent),
                 finding.additional_parent,
+            },
+        );
+    }
+    if (report.first_invalid_ast_edge) |finding| {
+        std.debug.print(
+            "zntc: symbol-identity-detail {s}: invalid_ast_edge parent={d}:{s} child={d}\n",
+            .{ file_path, finding.parent_node_index, @tagName(finding.parent_tag), finding.child_node_index },
+        );
+    }
+    if (report.first_invalid_ast_root) |finding| {
+        std.debug.print("zntc: symbol-identity-detail {s}: invalid_ast_root root={d}\n", .{ file_path, finding });
+    }
+    if (report.first_invalid_ast_layout) |finding| {
+        var data_index_buffer: [24]u8 = undefined;
+        std.debug.print(
+            "zntc: symbol-identity-detail {s}: invalid_ast_layout node={d}:{s} issue={s} data_index={s}\n",
+            .{
+                file_path,
+                finding.node_index,
+                @tagName(finding.tag),
+                @tagName(finding.issue),
+                optionalIndexText(&data_index_buffer, if (finding.data_index) |index| @intCast(index) else null),
             },
         );
     }
@@ -3400,6 +3525,9 @@ test "exact coverage diagnostic findings cannot disagree with a clean report" {
         .{ .first_scope_owner_mismatch = .{ .node_index = 1, .tag = .block_statement, .issue = "test" } },
         .{ .first_scope_map_mismatch = .{ .issue = "test" } },
         .{ .first_ambiguous_ast_parent = .{ .node_index = 1, .first_parent = 2, .additional_parent = 3 } },
+        .{ .first_invalid_ast_root = 9 },
+        .{ .first_invalid_ast_edge = .{ .parent_node_index = 1, .parent_tag = .program, .child_node_index = 9 } },
+        .{ .first_invalid_ast_layout = .{ .node_index = 1, .tag = .program, .issue = .list_range, .data_index = 9 } },
         .{ .first_shadowed_external_reference = finding },
     };
     for (reports) |report| try std.testing.expect(!report.isClean());
