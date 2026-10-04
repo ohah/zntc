@@ -29,8 +29,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      # Benchmarks generate their inputs; only the native build vendors are needed.
+      - uses: ./.github/actions/checkout-build-deps
 
       - name: Setup Zig
         uses: ./.github/actions/setup-zig
