@@ -205,7 +205,7 @@ jobs:
         run: ./zig-out/bin/zntc --test262 tests/test262/test/language/
 
   release-build:
-    # Ubuntu baseline ReleaseFast is built in prepare-packages; macOS native
+    # Ubuntu baseline ReleaseFast is built in prepare-cli; macOS native
     # ReleaseFast is built in macos-native. Keep the other release profiles here.
     name: Release Build (${{ matrix.os }}, ${{ matrix.optimize }})
     needs: checks
@@ -236,8 +236,38 @@ jobs:
       - name: Build (${{ matrix.optimize }})
         run: zig build -Doptimize=${{ matrix.optimize }}
 
+  # Build the CLI alongside NAPI so package consumers do not wait for it.
+  # Separate jobs also preserve artifacts when the other product fails.
+  prepare-cli:
+    name: Prepare Ubuntu CLI (baseline ReleaseFast)
+    needs: checks
+    if: ${{ !cancelled() && (needs.checks.outputs.core == 'true' || needs.checks.outputs.integration == 'true') }}
+    runs-on: ubuntu-latest
+    outputs:
+      cli_artifact: ${{ steps.cli-upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/checkout-build-deps
+      - uses: ./.github/actions/setup-zig
+        id: zig
+        with:
+          cache-key: cli-ubuntu-baseline-releasefast
+      # This also owns Ubuntu ReleaseFast coverage for draft/core-only changes.
+      - name: Build portable Linux CLI
+        id: cli
+        if: ${{ !cancelled() && (needs.checks.outputs.core == 'true' || needs.checks.outputs.integration == 'true') && steps.zig.outcome == 'success' }}
+        run: zig build -Doptimize=ReleaseFast -Dcpu=baseline
+      - uses: actions/upload-artifact@v4
+        id: cli-upload
+        if: ${{ !cancelled() && steps.cli.outcome == 'success' }}
+        with:
+          name: ci-cli-build
+          if-no-files-found: error
+          retention-days: 1
+          path: zig-out/bin/zntc
+
   prepare-packages:
-    name: Prepare Ubuntu CLI, native and JS packages
+    name: Prepare Ubuntu native and JS packages
     needs: checks
     if: ${{ !cancelled() && (needs.checks.outputs.core == 'true' || needs.checks.outputs.integration == 'true') }}
     runs-on: ubuntu-latest
@@ -247,7 +277,6 @@ jobs:
       web_ready: ${{ steps.web.outcome }}
       rn_ready: ${{ steps.rn.outcome }}
       adapters_ready: ${{ steps.adapters.outcome }}
-      cli_artifact: ${{ steps.cli-upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/checkout-build-deps
@@ -324,21 +353,6 @@ jobs:
           retention-days: 1
           # Staging fixes the archive root even if an unrelated adapter failed.
           path: ci-app-artifact/
-      # The CLI and NAPI are independent products. Preserve a usable artifact
-      # from either build even if the other product or its JS packages fail.
-      # This also owns Ubuntu ReleaseFast coverage for draft/core-only changes.
-      - name: Build portable Linux CLI
-        id: cli
-        if: ${{ !cancelled() && (needs.checks.outputs.core == 'true' || needs.checks.outputs.integration == 'true') && steps.zig.outcome == 'success' }}
-        run: zig build -Doptimize=ReleaseFast -Dcpu=baseline
-      - uses: actions/upload-artifact@v4
-        id: cli-upload
-        if: ${{ !cancelled() && steps.cli.outcome == 'success' }}
-        with:
-          name: ci-cli-build
-          if-no-files-found: error
-          retention-days: 1
-          path: zig-out/bin/zntc
 
   napi-linux:
     name: NAPI & CLI Tests (Ubuntu)
@@ -715,8 +729,8 @@ jobs:
   integration-ubuntu:
     name: Integration Tests (ubuntu-latest)
     runs-on: ubuntu-latest
-    needs: [checks, prepare-packages]
-    if: ${{ !cancelled() && needs.checks.outputs.integration == 'true' && needs.prepare-packages.outputs.cli_artifact != '' && needs.prepare-packages.outputs.core_artifact != '' && needs.prepare-packages.outputs.apps_artifact != '' && needs.prepare-packages.outputs.web_ready == 'success' }}
+    needs: [checks, prepare-cli, prepare-packages]
+    if: ${{ !cancelled() && needs.checks.outputs.integration == 'true' && needs.prepare-cli.outputs.cli_artifact != '' && needs.prepare-packages.outputs.core_artifact != '' && needs.prepare-packages.outputs.apps_artifact != '' && needs.prepare-packages.outputs.web_ready == 'success' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -774,8 +788,8 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    needs: [checks, prepare-packages]
-    if: ${{ !cancelled() && needs.checks.outputs.e2e == 'true' && needs.prepare-packages.outputs.cli_artifact != '' && needs.prepare-packages.outputs.core_artifact != '' && needs.prepare-packages.outputs.apps_artifact != '' && needs.prepare-packages.outputs.web_ready == 'success' }}
+    needs: [checks, prepare-cli, prepare-packages]
+    if: ${{ !cancelled() && needs.checks.outputs.e2e == 'true' && needs.prepare-cli.outputs.cli_artifact != '' && needs.prepare-packages.outputs.core_artifact != '' && needs.prepare-packages.outputs.apps_artifact != '' && needs.prepare-packages.outputs.web_ready == 'success' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -803,8 +817,8 @@ jobs:
   smoke:
     name: Smoke Tests (Real Projects)
     runs-on: ubuntu-latest
-    needs: [checks, prepare-packages]
-    if: ${{ !cancelled() && needs.checks.outputs.integration == 'true' && needs.prepare-packages.outputs.cli_artifact != '' }}
+    needs: [checks, prepare-cli]
+    if: ${{ !cancelled() && needs.checks.outputs.integration == 'true' && needs.prepare-cli.outputs.cli_artifact != '' }}
 
     steps:
       - uses: actions/checkout@v4

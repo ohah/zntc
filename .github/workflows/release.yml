@@ -268,11 +268,17 @@ jobs:
         run: node scripts/verify-release-core.mjs smoke ${{ matrix.platform }}
       - name: Check installed payload, CJS tokenize and CLI (musl)
         if: matrix.container != ''
-        uses: addnab/docker-run-action@v3
-        with:
-          image: ${{ matrix.container }}
-          options: -v ${{ github.workspace }}:/work -w /work
-          run: node scripts/verify-release-core.mjs smoke ${{ matrix.platform }}
+        shell: bash
+        env:
+          RELEASE_SMOKE_IMAGE: ${{ matrix.container }}
+          RELEASE_SMOKE_PLATFORM: ${{ matrix.platform }}
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --workdir /work \
+            --env RELEASE_SMOKE_PLATFORM \
+            --entrypoint sh "$RELEASE_SMOKE_IMAGE" -eu -c \
+            'node scripts/verify-release-core.mjs smoke "$RELEASE_SMOKE_PLATFORM"'
       # No proof is uploaded unless both tarball entry points and CLI passed.
       - uses: actions/upload-artifact@v4
         with:

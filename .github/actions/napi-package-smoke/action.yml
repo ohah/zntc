@@ -12,7 +12,7 @@ inputs:
   smoke-container:
     description: Optional Alpine image for musl runtime validation.
     required: false
-    default: ""
+    default: ''
 
 runs:
   using: composite
@@ -47,19 +47,21 @@ runs:
         npm install "../tmp-napi-pack/${MAIN_TARBALL}" "../tmp-napi-pack/${PLAT_TARBALL}" --ignore-scripts
         node --input-type=module < ../scripts/napi-smoke-test.mjs
 
-    # docker-run-action does not forward GitHub step environment automatically.
     - name: Run smoke (Alpine container, musl)
       if: inputs.smoke-container != ''
-      uses: addnab/docker-run-action@v3
-      with:
-        image: ${{ inputs.smoke-container }}
-        options: -v ${{ github.workspace }}:/work -w /work -e MAIN_TARBALL -e PLAT_TARBALL
-        run: |
-          set -e
-          cd tmp-napi-smoke
-          npm init -y >/dev/null
-          npm install "../tmp-napi-pack/${MAIN_TARBALL}" "../tmp-napi-pack/${PLAT_TARBALL}" --ignore-scripts
-          node --input-type=module < ../scripts/napi-smoke-test.mjs
+      shell: bash
       env:
+        NAPI_SMOKE_IMAGE: ${{ inputs.smoke-container }}
         MAIN_TARBALL: ${{ steps.pack.outputs.main_tarball }}
         PLAT_TARBALL: ${{ steps.pack.outputs.plat_tarball }}
+      run: |
+        docker run --rm \
+          --volume "$GITHUB_WORKSPACE:/work" \
+          --workdir /work \
+          --env MAIN_TARBALL --env PLAT_TARBALL \
+          --entrypoint sh "$NAPI_SMOKE_IMAGE" -eu -c '
+            cd tmp-napi-smoke
+            npm init -y >/dev/null
+            npm install "../tmp-napi-pack/${MAIN_TARBALL}" "../tmp-napi-pack/${PLAT_TARBALL}" --ignore-scripts
+            node --input-type=module < ../scripts/napi-smoke-test.mjs
+          '

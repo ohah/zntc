@@ -174,7 +174,7 @@ bun run tests/benchmark/bundle-perf.ts --output ./bundle-perf.json
 - 워밍업 5회 + 측정 20회 → CLI wall time median 비교
 - 체크인된 bundle-perf baseline 없음. 같은 CI runner 에서 ZNTC / Rolldown / Rspack 을 나란히 돌린 실측값만 보고한다
 - ZNTC `--profile=all` total 은 내부 phase 진단용으로만 별도 기록한다
-- CI: `benchmark.yml`은 `performance` 라벨 PR, 매일 17:35 UTC, 수동 실행에서 Ubuntu로 측정한다. 회귀 보고서와 표는 실행 요약, JSON은 artifact로 남긴다.
+- CI: `benchmark.yml`은 `performance` 라벨 PR, 매일 17:35 UTC, 수동 실행에서 Ubuntu로 측정한다. 입력은 벤치마크가 직접 생성하므로 `vendor/mimalloc`·`vendor/boringssl`만 checkout하고 Test262 corpus는 받지 않는다. 회귀 보고서와 표는 실행 요약, JSON은 artifact로 남긴다.
 
 ## 기타 벤치 / 분석
 - `bench.ts` / `pipeline.ts` — 합성 벤치 (200 모듈, 단계별 시간)
@@ -188,23 +188,24 @@ bun run tests/benchmark/bundle-perf.ts --output ./bundle-perf.json
 - e2e 도 `tests/e2e/` cwd 에서. Playwright 가 자체 server fixture 를 띄움.
 
 ## CI
-- 파서·변환기 등 일반 컴파일러 변경의 최대 job 수는 PR/main 모두 16개다(기존 PR 18개/main 21개). 네이티브·빌드·플랫폼 관련 변경, 미분류 경로, 주간/수동 전체 검사는 최대 21개다. 성능 라벨, 문서 배포, 릴리스 및 최적화 모드 canary는 별도다.
+- 파서·변환기 등 일반 컴파일러 변경의 최대 job 수는 PR/main 모두 17개다. 네이티브·빌드·플랫폼 관련 변경, 미분류 경로, 주간/수동 전체 검사는 최대 22개다. CLI와 NAPI를 병렬 빌드하기 위해 기존 16/21개에서 Ubuntu job 하나를 추가했다. 성능 라벨, 문서 배포, 릴리스 및 최적화 모드 canary는 별도다.
 - `ci.yml` 한 실행에서 유닛·Test262·통합·E2E·패키지 검사를 관리한다. 별도 `integration.yml`과 `test262.yml`은 제거했다.
-- Ubuntu 준비 job은 baseline CPU의 NAPI·CLI와 JS/dts·웹/RN/배포 어댑터를 한 번씩 만든다. API·통합·E2E·설치·배포 검사는 필요한 산출물을 공유한다. CLI/core/web/RN/어댑터 결과를 분리해 한 제품의 빌드 실패가 무관한 검사를 생략시키지 않도록 한다.
+- Ubuntu의 `prepare-cli`와 `prepare-packages`는 baseline CPU의 CLI와 NAPI를 각각 한 번씩 병렬 빌드한다. NAPI가 끝나면 같은 job에서 JS/dts·웹/RN/배포 어댑터를 만든다. API·패키지 설치·배포 검사는 NAPI 쪽만, 실제 프로젝트 smoke는 CLI 쪽만 기다린다. 통합·E2E는 양쪽 산출물을 기다린다. CLI/core/web/RN/어댑터 결과를 분리해 한 제품의 빌드 실패가 무관한 검사를 생략시키지 않도록 한다.
 - 일반 실행에서 macOS는 native CLI/NAPI 빌드, NAPI watch 중단·재시작, Node `fs.watch`의 config/env/app 변경 감지, kqueue·HTTP/TLS·watch/HMR 통합 12개 파일을 검사한다. API/CLI의 전체 묶음과 Zig Debug 유닛 검사는 Ubuntu가 매번 담당하고, macOS에서는 `extended_platforms`일 때 실행한다. watcher를 시작하지 않는 HMR 코드 생성 2개 파일(`napi-dev-jsx-binding`, `napi-lazy-dev-hmr`)도 같은 확장 실행으로 옮긴다. macOS 앱 빌드는 해당 OS 테스트의 준비 단계이며 React Native 패키지 빌드는 확장 실행에만 필요하다.
 - macOS NAPI는 baseline CPU로 한 번 빌드하고 watch 검사와 별도 darwin-arm64 package smoke가 공유한다. 설치 검사는 Ubuntu산 JS/dts와 실제 macOS 바이너리를 함께 설치·실행한다. 이 소비자만 macOS 산출물을 기다리며 다른 ABI의 package smoke는 독립 실행한다. macOS native CPU 검증은 CLI ReleaseFast에서 매번, Debug에서 확장 실행 때 유지한다.
 - 일반 PR/main의 실제 패키지 설치 검사는 Linux x64 glibc·musl, Windows x64, macOS arm64의 대표 4종이다. 확장 실행은 Linux arm64 glibc·musl, Intel macOS, Windows ia32를 더해 8종을 검사한다. `ci-plan.mjs`가 알려진 portable 경로만 축소하며 새/미분류 경로는 보수적으로 확장한다. 드물게 실행되는 ABI에서만 생기는 회귀는 관련 경로 검사·주간 검사·릴리스 검사에서 발견할 수 있다.
 - 번들러에서는 직접 OS 기능을 호출하지 않는 7개 분석 파일만 대표 검사로 분류한다: `tree_shaker/{cjs_patterns,module_effects,import_records,const_materialize,re_export_namespace}.zig`, `graph/{cycles,import_usage}.zig`(`src/bundler/` 기준). 디렉터리 전체를 예외로 두지 않으며 파일 IO·resolver·mutex·공용 graph helper와 새 파일은 확장 검사를 유지한다. 두 종류가 함께 바뀌어도 확장 검사이며, 주간/수동 전체 검사와 릴리스 검사 범위는 유지한다.
-- Linux CLI ReleaseFast의 CPU 프로필은 Ubuntu 준비 job의 baseline 빌드로 통일하며 draft·core-only 변경에서도 실행한다. Linux native CPU 검증은 Debug·ReleaseSafe에서 유지하고 Windows ReleaseFast도 유지한다. CLI 빌드와 산출물 업로드는 NAPI·JS 빌드 실패와 독립적으로 실행한다.
-- `ci.yml`의 `prepare-packages`, `macos-native`, `wasm`, `release-build`, `napi-package-smoke`는 컴파일에 필요한 `vendor/mimalloc`·`vendor/boringssl`만 checkout한다. 기존 바이너리를 소비하는 linux-x64-gnu·darwin-arm64 패키지 검증은 일반 소스만 checkout한다. Test262 corpus는 Debug job에서 유지하며 Ubuntu의 기존 Debug CLI로 검사하므로 추가 컴파일이 없다. 유닛 테스트 실패 뒤에도 corpus 검사는 독립적으로 실행한다.
+- Linux CLI ReleaseFast의 CPU 프로필은 `prepare-cli`의 baseline 빌드로 통일하며 draft·core-only 변경에서도 실행한다. Linux native CPU 검증은 Debug·ReleaseSafe에서 유지하고 Windows ReleaseFast도 유지한다. CLI 빌드와 산출물 업로드는 NAPI·JS 빌드 실패와 독립적으로 실행한다.
+- `ci.yml`의 `prepare-cli`, `prepare-packages`, `macos-native`, `wasm`, `release-build`, `napi-package-smoke`는 컴파일에 필요한 `vendor/mimalloc`·`vendor/boringssl`만 checkout한다. 기존 바이너리를 소비하는 linux-x64-gnu·darwin-arm64 패키지 검증은 일반 소스만 checkout한다. Test262 corpus는 Debug job에서 유지하며 Ubuntu의 기존 Debug CLI로 검사하므로 추가 컴파일이 없다. 유닛 테스트 실패 뒤에도 corpus 검사는 독립적으로 실행한다.
 - WASM은 두 바이너리를 한 Zig 명령으로 만들고 wrapper/dts와 함께 업로드한다. 실행 테스트가 실패해도 준비된 산출물의 배포 검사는 계속 수행한다.
 - `scripts/ci-plan.mjs`가 matrix와 실행 대상을 계산한다. 계산과 Zig/JS lint는 하나의 job에서 수행하며, 감사 실패가 나머지 빌드·검사를 막지 않는다. `node --test scripts/ci-plan.test.mjs`로 변경 경로·draft·ready·수동 실행 조건을 검증한다.
 - 패키지 최상단 README/CHANGELOG/LICENSE 및 changeset 문서만 수정하면 가벼운 검사 1개만 실행한다. 테스트 Markdown fixture는 이 예외에 포함하지 않는다. 기존 docs/문서 사이트/루트 Markdown 전용 변경은 CI trigger에서 제외한다.
 - draft PR은 기존처럼 core/Test262를 검증하고 통합/E2E는 준비 완료 후 실행한다. ready 전환은 이전 run을 취소할 수 있으므로 core/Test262도 다시 선택한다.
 - 수동 `CI` 실행의 suite는 `all`, `integration`, `test262`를 지원한다. 매주 월요일 04:37 UTC에는 전체 suite와 확장 플랫폼을 검사한다. 수동/주간 실행의 concurrency group은 자동 CI와 분리해 main 검사 또는 주간 검사를 서로 취소하지 않는다.
-- `.github/actions/setup-zig`는 CI의 순차 CLI/NAPI 빌드가 모두 action 관리 캐시를 쓰게 하고 상한을 4 GiB로 둔다. 크기 초과로 캐시가 비워지는지 로그를 확인한다. 개발자의 병렬 빌드용 `package.json`의 별도 NAPI 캐시 경로는 유지한다.
+- `.github/actions/setup-zig`는 빌드가 모두 action 관리 캐시를 쓰게 하고 상한을 4 GiB로 둔다. 병렬 Ubuntu CLI/NAPI는 서로 다른 job과 캐시를 쓰며, 같은 job의 여러 Zig 빌드는 순차 실행한다. 크기 초과로 캐시가 비워지는지 로그를 확인한다. 개발자의 병렬 빌드용 `package.json`의 별도 NAPI 캐시 경로는 유지한다.
 - `build-canary.yml`: 추가 ReleaseSafe/ReleaseSmall 5개 조합은 매주 월요일 04:17 UTC와 수동 실행으로 검증한다. 해당 workflow/공통 Zig·vendor checkout action 변경 PR에서도 실행한다. CLI 빌드에는 `vendor/mimalloc`·`vendor/boringssl`만 checkout하고 사용하지 않는 Test262 corpus는 받지 않는다.
 - `release.yml`: 9개 플랫폼별 NAPI/CLI 빌드 산출물로 실제 npm tarball 설치·ESM/CJS API 및 CLI 실행을 검사한다. 공용 JS/dts와 검증 manifest는 Linux x64 glibc 빌드 job에서 함께 준비해 별도 wrapper job 없이 18개 job으로 검증한다. Windows arm64도 x64에서 cross-build한 산출물을 ARM runner에서 실행한다. 전 플랫폼 검사가 통과해야 npm/GitHub 배포가 가능하며, 실제 배포는 버전 태그에서만 실행한다.
+- CI와 릴리스의 musl 설치 검사는 `docker run`으로 같은 Alpine 이미지에서 실행한다. 별도 Docker 보조 action 이미지를 준비하지 않으며 설치/API/CLI 검사의 실패 코드는 그대로 job 실패로 전달한다.
 - `scripts/ci-install-deps.sh`: job별 Bun workspace 필터를 관리한다. root fixture 의존성은 유지하며, integration은 조용한 test skip을 막기 위해 benchmark workspace도 설치한다. 테스트 의존성을 추가할 때 프로필과 실제 실행/skip 수를 함께 확인한다.
 - `docs.yml`은 문서 배포, `napi-leak-gate.yml`은 수동 누수 진단에 사용한다.
 - ReleaseFast 빌드에서만 깨지는 회귀가 존재 → debug 통과해도 CI 실패 시 `-Doptimize=ReleaseFast` 로 로컬 재현 필수
