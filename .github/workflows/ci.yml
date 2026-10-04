@@ -22,6 +22,10 @@ on:
       - '.github/ISSUE_TEMPLATE/**'
       - '.github/pull_request_template.md'
 
+  # 매 머지에서는 대표 OS/ABI만 검사하고, 주간 실행은 전체 플랫폼을 검사한다.
+  schedule:
+    - cron: '37 4 * * 1'
+
   workflow_dispatch:
     inputs:
       suite:
@@ -35,7 +39,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'workflow_dispatch' && format('-manual-{0}', inputs.suite) || '' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'workflow_dispatch' && format('-manual-{0}', inputs.suite) || '' }}${{ github.event_name == 'schedule' && '-weekly' || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -48,6 +52,7 @@ jobs:
       integration: ${{ steps.plan.outputs.integration }}
       e2e: ${{ steps.plan.outputs.e2e }}
       test262: ${{ steps.plan.outputs.test262 }}
+      extended_platforms: ${{ steps.plan.outputs.extended_platforms }}
       debug_matrix: ${{ steps.plan.outputs.debug_matrix }}
       smoke_matrix: ${{ steps.plan.outputs.smoke_matrix }}
     steps:
@@ -59,7 +64,7 @@ jobs:
           node-version: 24
       - uses: dorny/paths-filter@v3
         id: changes
-        if: github.event_name != 'workflow_dispatch'
+        if: github.event_name != 'workflow_dispatch' && github.event_name != 'schedule'
         with:
           list-files: json
           filters: |
@@ -74,8 +79,8 @@ jobs:
           CI_DRAFT: ${{ github.event.pull_request.draft || false }}
           CI_SUITE: ${{ inputs.suite || 'all' }}
         run: node scripts/ci-plan.mjs
-      - name: Verify CI selection policy
-        run: node --test scripts/ci-plan.test.mjs
+      - name: Verify CI selection and release artifact gates
+        run: node --test scripts/ci-plan.test.mjs scripts/verify-release-core.test.mjs
 
       - name: Setup Zig
         if: ${{ !cancelled() && steps.plan.outputs.core == 'true' }}
@@ -394,7 +399,7 @@ jobs:
         run: bun scripts/napi-bundler-bug-check.ts
 
   macos-native:
-    name: macOS Native, API & Watch Tests
+    name: macOS Native & Watch Tests
     needs: checks
     if: ${{ !cancelled() && (needs.checks.outputs.core == 'true' || needs.checks.outputs.integration == 'true') }}
     runs-on: macos-latest
@@ -444,8 +449,8 @@ jobs:
         run: |
           bun run --cwd packages/core build
           bun scripts/ci-verify-native.mjs
-      # Keep self-hosting on macOS; its app outputs are shared by CLI and watch
-      # tests in this job instead of rebuilding the same packages twice.
+      # These self-hosted packages are needed by the native watch/dev-server
+      # tests. The full portable API/CLI suites normally run only on Ubuntu.
       - name: Build macOS web app packages
         if: ${{ !cancelled() && steps.core.outcome == 'success' }}
         id: web
@@ -453,23 +458,45 @@ jobs:
           bun run --cwd packages/server build
           bun run --cwd packages/web build
       - name: Build macOS React Native package
-        if: ${{ !cancelled() && needs.checks.outputs.core == 'true' && steps.core.outcome == 'success' }}
+        if: ${{ !cancelled() && needs.checks.outputs.extended_platforms == 'true' && needs.checks.outputs.core == 'true' && steps.core.outcome == 'success' }}
         id: rn
         run: bun run --cwd packages/react-native build
       - name: Run NAPI tests (Bun)
-        if: ${{ !cancelled() && needs.checks.outputs.core == 'true' && steps.core.outcome == 'success' }}
+        if: ${{ !cancelled() && needs.checks.outputs.extended_platforms == 'true' && needs.checks.outputs.core == 'true' && steps.core.outcome == 'success' }}
         working-directory: packages/core
         run: bun test index.test.ts
       - name: Run NAPI tests (Node.js)
-        if: ${{ !cancelled() && needs.checks.outputs.core == 'true' && steps.core.outcome == 'success' }}
+        if: ${{ !cancelled() && needs.checks.outputs.extended_platforms == 'true' && needs.checks.outputs.core == 'true' && steps.core.outcome == 'success' }}
         run: node --test packages/core/napi.test.mjs
       - name: Run CLI tests (Bun)
-        if: ${{ !cancelled() && needs.checks.outputs.core == 'true' && steps.web.outcome == 'success' && steps.rn.outcome == 'success' }}
+        if: ${{ !cancelled() && needs.checks.outputs.extended_platforms == 'true' && needs.checks.outputs.core == 'true' && steps.web.outcome == 'success' && steps.rn.outcome == 'success' }}
         working-directory: packages/core
         run: bun test --timeout 10000 bin/zntc.test.ts
       - name: Bundler core regression checks
-        if: ${{ !cancelled() && needs.checks.outputs.core == 'true' && steps.core.outcome == 'success' }}
+        if: ${{ !cancelled() && needs.checks.outputs.extended_platforms == 'true' && needs.checks.outputs.core == 'true' && steps.core.outcome == 'success' }}
         run: bun scripts/napi-bundler-bug-check.ts
+
+      # These files exercise NAPI watch lifecycle and Node fs.watch paths that
+      # the native-CLI integration suite does not cover (config/env/app restart).
+      # Extended runs already include them in the full API/CLI aggregators above.
+      - name: Run macOS API watch tests
+        if: ${{ !cancelled() && needs.checks.outputs.extended_platforms != 'true' && needs.checks.outputs.core == 'true' && steps.core.outcome == 'success' }}
+        working-directory: packages/core
+        run: |
+          bun test --timeout 10000 \
+            ./test/core/watch.ts \
+            ./test/core/hmr-perf.ts
+      - name: Run macOS JS CLI watch tests
+        if: ${{ !cancelled() && needs.checks.outputs.extended_platforms != 'true' && needs.checks.outputs.core == 'true' && steps.web.outcome == 'success' }}
+        working-directory: packages/core
+        run: |
+          bun test --timeout 10000 \
+            ./test/cli/watch.ts \
+            ./test/cli/app-builder/dev-server.ts \
+            ./test/cli/app-builder/preview-basic.ts \
+            ./test/cli/app-builder/preview-fallback.ts \
+            ./test/cli/app-builder/styles/dev.ts \
+            ./test/cli/app-builder/dev-hmr.ts
 
       # macOS는 kqueue, native NAPI lifecycle, HTTP/TLS와 실제 watch/HMR 경로를 유지.
       # 전체 transpile/bundle/compat/determinism/RN 스위트는 Ubuntu가 담당한다.
@@ -485,20 +512,29 @@ jobs:
             ./tests/devserver-sse.test.ts \
             ./tests/dev-server-tls.test.ts \
             ./tests/js-dev-server-lazy.test.ts \
-            ./tests/napi-dev-jsx-binding.test.ts \
             ./tests/napi-dev-server.test.ts \
             ./tests/napi-dev-server-quiet-regression.test.ts \
-            ./tests/napi-lazy-dev-hmr.test.ts \
             ./tests/napi-lazy-primitives.test.ts \
             ./tests/napi-tls-self-check.test.ts \
             ./tests/tsconfig-cache.test.ts
+
+      # These two files exercise code generation/build output without starting
+      # an OS watcher. Ubuntu covers them on every affected integration run.
+      - name: Run extended macOS HMR codegen tests
+        if: ${{ !cancelled() && needs.checks.outputs.extended_platforms == 'true' && needs.checks.outputs.integration == 'true' && steps.cli.outcome == 'success' && steps.web.outcome == 'success' }}
+        working-directory: tests/integration
+        run: |
+          bun test --timeout 10000 \
+            ./tests/napi-dev-jsx-binding.test.ts \
+            ./tests/napi-lazy-dev-hmr.test.ts
 
   napi-package-smoke:
     name: NAPI Package Smoke (${{ matrix.platform }})
     needs: [checks, prepare-packages]
     if: ${{ !cancelled() && needs.checks.outputs.core == 'true' && needs.prepare-packages.outputs.core_artifact != '' }}
     runs-on: ${{ matrix.os }}
-    # PR 4 / main 7 ABI 조합 + 아래 재사용 darwin-arm64 job = 기존 5 / 8 조합.
+    # 일반 PR/main 3 + 아래 darwin-arm64 = 대표 4종. 네이티브/빌드 변경,
+    # 주간/수동 all 실행은 7 + darwin-arm64 = 8종. release.yml은 배포 전 9종.
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.checks.outputs.smoke_matrix) }}

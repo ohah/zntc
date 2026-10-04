@@ -46,29 +46,66 @@ const test262Files = new Set([
   '.github/workflows/test262.yml',
 ]);
 
+// These compiler stages operate on source/AST data rather than host services.
+// Keep ordinary compiler and JS fixture changes on the representative targets.
+// Everything outside these known areas uses the full platform set: in particular
+// build/vendor/toolchain files, NAPI and its loader/platform registry, native
+// filesystem/thread/watch/TLS code, package metadata, and CI/release/smoke tools.
+// A new source directory or package must be classified before it can opt out.
+const portableCompilerDirectories = [
+  'src/lexer',
+  'src/parser',
+  'src/semantic',
+  'src/transformer',
+  'src/codegen',
+  'src/regexp',
+];
+const representativeDirectories = [
+  ...portableCompilerDirectories,
+  'src/fixtures',
+  'tests',
+  'examples',
+  'packages/core/test',
+  'packages/init',
+  'packages/react-native',
+  'packages/rspack-loader',
+  'packages/server',
+  'packages/shared',
+  'packages/vite-plugin',
+  'packages/wasm',
+  'packages/web',
+];
+const representativeFiles = new Set(['packages/core/index.test.ts', 'packages/core/types.test.ts']);
+
 // This matrix plus the separate artifact-consuming macOS arm64 smoke job
-// retain one representative per ABI plus the Windows ia32 canary on PRs.
-// Main/manual runs add Linux arm64 and Intel macOS. Windows arm64 is cross-built
-// by release.yml: its native Zig runner currently crashes before the smoke test.
+// retain one representative per OS/libc on ordinary PRs and main. Sensitive
+// changes, weekly checks, and manual all runs also cover Linux arm64, Intel
+// macOS, and Windows ia32. Release also cross-builds Windows arm64 on x64 and
+// runs its installed addon/CLI smoke on a native ARM runner, covering all nine.
 const smokePlatforms = [
-  { platform: 'linux-x64-gnu', os: 'ubuntu-latest', zig_target: 'native', pr: true },
-  { platform: 'linux-arm64-gnu', os: 'ubuntu-24.04-arm', zig_target: 'native', pr: false },
+  { platform: 'linux-x64-gnu', os: 'ubuntu-latest', zig_target: 'native', representative: true },
+  {
+    platform: 'linux-arm64-gnu',
+    os: 'ubuntu-24.04-arm',
+    zig_target: 'native',
+    representative: false,
+  },
   {
     platform: 'linux-x64-musl',
     os: 'ubuntu-latest',
     zig_target: 'x86_64-linux-musl',
     smoke_container: 'node:24-alpine',
-    pr: true,
+    representative: true,
   },
   {
     platform: 'linux-arm64-musl',
     os: 'ubuntu-24.04-arm',
     zig_target: 'aarch64-linux-musl',
     smoke_container: 'node:24-alpine',
-    pr: false,
+    representative: false,
   },
-  { platform: 'darwin-x64', os: 'macos-15-intel', zig_target: 'native', pr: false },
-  { platform: 'win32-x64-msvc', os: 'windows-latest', zig_target: 'native', pr: true },
+  { platform: 'darwin-x64', os: 'macos-15-intel', zig_target: 'native', representative: false },
+  { platform: 'win32-x64-msvc', os: 'windows-latest', zig_target: 'native', representative: true },
   // Node 24 dropped win-x86. Keep Node 22/x86 for an actual 32-bit dlopen.
   {
     platform: 'win32-ia32-msvc',
@@ -76,7 +113,7 @@ const smokePlatforms = [
     zig_target: 'x86-windows-msvc',
     node_version: '22',
     node_arch: 'x86',
-    pr: true,
+    representative: false,
   },
 ];
 
@@ -114,6 +151,18 @@ function isRootTsconfig(file) {
   return /^tsconfig[^/]*\.json$/.test(file);
 }
 
+function needsExtendedPlatforms(file) {
+  if (file.endsWith('.zig')) return !inDirectories(file, portableCompilerDirectories);
+  // Manifest/dependency changes can affect installed native packages even in
+  // otherwise portable JS packages or examples. Do not exempt them by directory.
+  if (
+    /(?:^|\/)(?:package\.json|bun\.lock|package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$/.test(file)
+  ) {
+    return true;
+  }
+  return !(inDirectories(file, representativeDirectories) || representativeFiles.has(file));
+}
+
 function validateFiles(files) {
   if (!Array.isArray(files)) {
     throw new TypeError('CI_CHANGED_FILES must be a JSON array of repository-relative paths');
@@ -139,8 +188,8 @@ export function createPlan({
   eventAction = '',
 }) {
   validateFiles(changedFiles);
-  if (!['push', 'pull_request', 'workflow_dispatch'].includes(event)) {
-    throw new TypeError('CI_EVENT must be push, pull_request, or workflow_dispatch');
+  if (!['push', 'pull_request', 'workflow_dispatch', 'schedule'].includes(event)) {
+    throw new TypeError('CI_EVENT must be push, pull_request, workflow_dispatch, or schedule');
   }
   if (typeof draft !== 'boolean') {
     throw new TypeError('CI_DRAFT must be true or false');
@@ -153,18 +202,21 @@ export function createPlan({
   }
 
   const manual = event === 'workflow_dispatch';
+  const scheduled = event === 'schedule';
   const files = changedFiles.filter((file) => !isDocumentation(file));
+  const extendedPlatforms =
+    scheduled || (manual ? suite === 'all' : files.some(needsExtendedPlatforms));
   const runIntegration = !(event === 'pull_request' && draft);
   let core;
   let integration;
   let e2e;
   let test262;
 
-  if (manual) {
-    core = suite === 'all';
-    integration = suite === 'all' || suite === 'integration';
+  if (manual || scheduled) {
+    core = scheduled || suite === 'all';
+    integration = scheduled || suite === 'all' || suite === 'integration';
     e2e = integration;
-    test262 = suite === 'all' || suite === 'test262';
+    test262 = scheduled || suite === 'all' || suite === 'test262';
   } else {
     // Keep the broad core fallback for new/unknown code, including ready_for_review:
     // the shared PR concurrency group can cancel the still-running draft checks.
@@ -196,7 +248,9 @@ export function createPlan({
   // Manual Test262 still needs a Debug executable without scheduling macOS or
   // the rest of core CI. Consumers gate jobs on flags before using the matrices.
   const debugOS = core
-    ? ['ubuntu-latest', 'macos-latest']
+    ? extendedPlatforms
+      ? ['ubuntu-latest', 'macos-latest']
+      : ['ubuntu-latest']
     : manual && test262
       ? ['ubuntu-latest']
       : [];
@@ -205,11 +259,12 @@ export function createPlan({
     integration,
     e2e,
     test262,
+    extended_platforms: extendedPlatforms,
     debug_matrix: { include: debugOS.map((os) => ({ os })) },
     smoke_matrix: {
       include: smokePlatforms
-        .filter((entry) => event !== 'pull_request' || entry.pr)
-        .map(({ pr, ...entry }) => entry),
+        .filter((entry) => extendedPlatforms || entry.representative)
+        .map(({ representative: _representative, ...entry }) => entry),
     },
   };
 }
@@ -217,7 +272,10 @@ export function createPlan({
 export function planFromEnvironment(env) {
   const rawFiles = env.CI_CHANGED_FILES;
   let changedFiles;
-  if ((rawFiles === undefined || rawFiles === '') && env.CI_EVENT === 'workflow_dispatch') {
+  if (
+    (rawFiles === undefined || rawFiles === '') &&
+    ['workflow_dispatch', 'schedule'].includes(env.CI_EVENT)
+  ) {
     changedFiles = [];
   } else {
     try {

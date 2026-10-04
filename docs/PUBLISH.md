@@ -19,7 +19,7 @@ git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-`v*` 태그가 push 되면 `release.yml` 이 9개 platform NAPI/CLI 빌드 + `release.ts --publish` + GitHub Release 까지 자동. 사람이 직접 `npm publish` 칠 일은 hotfix fallback (§7) 뿐.
+`v*` 태그가 push 되면 `release.yml`이 9개 플랫폼 NAPI/CLI 빌드 → 실제 설치·실행 검증 → `release.ts --publish` → GitHub Release까지 자동 실행한다. 어느 플랫폼이든 검증이 실패하거나 생략되면 게시하지 않는다. 사람이 직접 `npm publish` 칠 일은 hotfix fallback (§7) 뿐.
 
 > **첫 `0.1.0` publish** 는 changeset 없이 진행 — version 이 이미 `0.1.0` 이므로 §1 (`changeset:version`) 을 건너뛰고 바로 `git tag v0.1.0 && git push origin v0.1.0`. CHANGELOG.md 는 다음 patch 부터 changesets 가 자동 생성.
 
@@ -65,28 +65,34 @@ platform sub-package (`@zntc/core-*`) 의 prepublishOnly 는 다름 — `node ..
 ### Job 흐름
 
 ```
-build-napi (9 platform 매트릭스)          build-cli (9 target 매트릭스)
-  zig build napi -Dtarget=...               zig build -Dtarget=...
-  → zntc.node artifact 업로드                → zig-out/bin/ artifact 업로드
-        │                                          │
-        ▼                                          │
-  publish-npm  ← needs: build-napi                 │
-    1. NAPI artifact 9개 다운로드                    │
-    2. packages/core-<platform>/zntc.node 에 분배   │
-    3. packages/core/zntc.node 에도 배치             │
-       (main 의 prepublishOnly self-host 빌드용 —   │
-        publish 산출물엔 안 들어감)                  │
-    4. tag 에서 dist-tag 자동 감지                   │
-       v0.1.0 → latest / v0.2.0-rc.1 → rc          │
-    5. bun scripts/release.ts --publish --yes \     │
-         --tag <dist-tag>                           │
-        │                                          │
-        └──────────────┬───────────────────────────┘
-                       ▼
-              github-release  ← needs: [build-cli, publish-npm]
-                CLI binary 9종을 .tar.gz 로 묶어 GitHub Release 에 첨부
-                + auto-generated release notes
+build-platform (9 platforms, NAPI + CLI를 같은 job에서 빌드)
+  │
+  ├─ prepare-release-core (Ubuntu에서 ESM/CJS/dts를 한 번 생성)
+  │      │
+  └──────┴─ release-smoke (9 platforms)
+               npm tarball 설치 + ESM/CJS API 실행
+               CLI --help + TypeScript 변환 실행
+               │
+               ▼
+          publish-npm (전체 smoke 성공 + 버전 태그에서만)
+            NAPI / 공유 wrapper / 검증 결과 artifact 다운로드
+            pre-release-check 후 검증한 배포 payload와 hash 비교
+            release.ts --publish --yes --tag <dist-tag>
+               │
+               ▼
+          github-release (전체 smoke + npm publish 성공 필요)
+            검증한 CLI 9종 + NOTICE를 tar.gz로 첨부
+            + auto-generated release notes
 ```
+
+일반 CI는 대표 OS/ABI 4종을 검사하고, 이 릴리스 gate는 9종 모두를 실제 실행한다.
+musl은 Alpine에서, Windows ia32는 Node 22/x86에서 검사한다. Windows arm64는
+Zig native 빌드의 제약 때문에 x64에서 cross-build하고 ARM runner의 Node arm64로 실행한다.
+`workflow_dispatch`와 관련 빌드 설정 변경 PR은 같은 빌드·검증만 실행하며 게시하지 않는다.
+
+CI의 `release.ts`는 smoke 증거와 배포 payload의 일치를 첫 publish 전에 검증한다.
+core는 이미 검증된 결과를 `--ignore-scripts`로 게시해 prepublish 단계에서 다시 바뀌지
+않게 한다. 기존 `pre-release-check`와 publint, 다른 패키지의 publish hook은 유지한다.
 
 ### dist-tag 자동 감지
 
@@ -108,7 +114,7 @@ build-napi (9 platform 매트릭스)          build-cli (9 target 매트릭스)
 
 ### 부분 실패
 
-`fail-fast: false` — 9개 platform 중 하나 (예: `windows-11-arm` preview runner flaky) 가 실패해도 나머지 8개는 완주. 단 `publish-npm` 은 `needs: build-napi` 전체 성공을 요구하므로, 한 platform 이 깨지면 publish 자체는 안 됨 → 그 platform 만 재실행 (`Re-run failed jobs`).
+`fail-fast: false` — 한 플랫폼이 실패해도 나머지 빌드·실행 결과를 수집한다. `publish-npm`은 전체 `build-platform`과 `release-smoke`의 성공을 요구하므로, 한 플랫폼이 깨지면 게시하지 않는다. 실패한 job만 `Re-run failed jobs`로 재실행할 수 있다.
 
 ---
 
@@ -136,7 +142,8 @@ gh pr merge <num> --rebase --auto --delete-branch
 git checkout main && git pull
 git tag vX.Y.Z
 git push origin vX.Y.Z
-#   → release.yml: build-napi(9) + build-cli(9) + publish-npm + github-release
+#   → release.yml: build-platform(9) + prepare-release-core + release-smoke(9)
+#                  + publish-npm + github-release
 #   → npm 에 7개 main + 9개 platform sub-package 출시, GitHub Release 생성
 
 # ── ④ 확인 ──
@@ -256,7 +263,7 @@ bun run changeset:status   # 누적 changeset — 어느 패키지가 어떤 bum
 
 - **publish 직후 `bun.lock` 자동 동기화** — `@zntc/core` 의 `optionalDependencies` 가 가리키는 platform 바이너리 9개는 `workspaces` 밖이라 bun 이 **npm 에서 해석**한다. 릴리스 시점엔 그 버전이 아직 npm 에 없어 lockfile 에 안 들어가고, **publish 된 뒤에야** 해석 가능해진다. 그 순간부터 lockfile 이 stale 이 되어 **이후 모든 PR 의 `bun install --frozen-lockfile` 이 실패**한다.
 
-  `release.yml` 의 `sync-lockfile` 잡이 publish 후 npm 색인을 기다렸다가 `bun install` → `bun.lock` 커밋을 main 에 자동 push 한다. 손댈 것 없다.
+  `release.yml`의 `sync-lockfile` job이 publish 후 npm 색인을 기다렸다가 `bun install`로 lockfile을 갱신하고 main 대상 PR을 만든다.
 
   > v0.1.2 때 이 문제로 수습 커밋 3개가 필요했다. platform 패키지를 `workspaces` 에 넣으면 로컬 링크가 되어 근본 해결되지만, `publint` / `publish-smoke` 가 workspaces 를 훑어 publishable 패키지를 세는데 이들은 `dist/` 없는 바이너리 전용이라 그 검증이 통째로 깨진다 — 그래서 workspaces 밖에 둔 채 lockfile 동기화를 자동화했다.
 
@@ -266,7 +273,7 @@ bun run changeset:status   # 누적 changeset — 어느 패키지가 어떤 bum
 
 ### release.yml 중간 실패
 
-- **build-napi 한 platform 실패** → 그 platform job 만 `Re-run failed jobs`. 다른 8개 artifact 는 보존 (retention 1일).
+- **build-platform/release-smoke 한 플랫폼 실패** → 실패 job만 `Re-run failed jobs`. 다른 플랫폼 artifact는 보존한다(retention 1일).
 - **publish-npm 중간 실패** (예: 3번째 패키지에서 네트워크 끊김) → 앞 패키지는 이미 npm 에 올라간 상태. workflow 재실행 시 `release.ts` 가 registry 가용성 확인 → 이미 올라간 건 자동 skip, 안 올라간 것만 publish. **idempotent.**
 - **태그는 그대로** — 같은 태그 push 는 안 되므로, 재실행은 GitHub UI 의 `Re-run jobs` 로.
 
@@ -295,7 +302,7 @@ cd packages/web
 bun publish --access public
 ```
 
-> 수동 전체 publish 는 9개 platform binary 를 로컬에서 cross-compile 해 `packages/core-*/zntc.node` 에 채워야 한다 (`release.yml` 의 build-napi 매트릭스가 하는 일). 단일 머신에서 전 platform cross-compile 은 번거로우니, 전체 release 는 항상 태그 push → release.yml 경로를 쓴다. 수동은 platform binary 가 필요 없는 단일 JS 패키지 hotfix 정도에만.
+> 수동 전체 publish는 9개 플랫폼 바이너리를 로컬에서 cross-compile해 `packages/core-*/zntc.node`에 채워야 한다(`release.yml`의 `build-platform`이 하는 일). 전체 release는 9개 대상의 실제 설치·실행을 gate하는 태그 push → release.yml 경로를 쓴다. 수동은 플랫폼 바이너리가 필요 없는 단일 JS 패키지 hotfix 정도에만 사용한다.
 
 lockstep 정책상 단일 패키지만 올리는 건 예외 상황 — 올렸으면 곧바로 나머지 6개도 같은 version 으로 맞춰야 한다.
 
