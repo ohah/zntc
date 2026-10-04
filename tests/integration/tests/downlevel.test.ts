@@ -1485,6 +1485,33 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       expect(result.runOutput).toBe('10,7,2,3');
     });
 
+    test('prelowered async-generator class methods keep this and arguments captures', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            class C {
+              x = 10;
+              async *read(value: number) {
+                const _this = 2;
+                const _arguments = 3;
+                yield () => [this.x, arguments[0], _this, _arguments].join(',');
+              }
+            }
+            async function run() {
+              const result = await new C().read(7).next();
+              console.log(result.value());
+            }
+            run();
+          `,
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('10,7,2,3');
+    });
+
     test('prelowered generator class methods keep this and arguments captures', async () => {
       const result = await bundleAndRun(
         {

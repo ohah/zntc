@@ -7,7 +7,11 @@ const ast_walk = @import("../parser/ast_walk.zig");
 const Transformer = @import("transformer.zig").Transformer;
 const TransformOptions = @import("transformer.zig").TransformOptions;
 
-fn checkCaptureSymbols(source: []const u8, frame_tag: @import("../parser/ast.zig").Node.Tag) !void {
+fn checkCaptureSymbolsWithUnsupported(
+    source: []const u8,
+    frame_tag: @import("../parser/ast.zig").Node.Tag,
+    unsupported: @TypeOf(TransformOptions.compat.fromESTarget(.es5)),
+) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -48,7 +52,7 @@ fn checkCaptureSymbols(source: []const u8, frame_tag: @import("../parser/ast.zig
     const old_symbols = analyzer.symbols.items.len;
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{
-        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .unsupported = unsupported,
         .emit_runtime_helper_imports = true,
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
@@ -104,6 +108,14 @@ fn checkCaptureSymbols(source: []const u8, frame_tag: @import("../parser/ast.zig
     }
     try std.testing.expectEqual(@as(usize, 1), this_count);
     try std.testing.expectEqual(@as(usize, 1), arguments_count);
+}
+
+fn checkCaptureSymbols(source: []const u8, frame_tag: @import("../parser/ast.zig").Node.Tag) !void {
+    try checkCaptureSymbolsWithUnsupported(
+        source,
+        frame_tag,
+        TransformOptions.compat.fromESTarget(.es5),
+    );
 }
 
 fn checkNativeParameterNewTargetSymbols(source: []const u8) !void {
@@ -258,6 +270,16 @@ test "#4819 class method capture producers bind exact symbols without a name res
     try checkCaptureSymbols(
         "class C{*method(){yield ()=>this.x+arguments[0]}} new C().method();",
         .method_definition,
+    );
+}
+
+test "#4819 mixed async-generator wrapper captures bind at declaration without a name rescan" {
+    var unsupported = TransformOptions.compat.fromESTarget(.es5);
+    unsupported.async_generator = false;
+    try checkCaptureSymbolsWithUnsupported(
+        "class C{async *method(value){yield ()=>this.x+arguments[0]}} new C().method(5);",
+        .method_definition,
+        unsupported,
     );
 }
 

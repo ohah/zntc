@@ -334,7 +334,7 @@ pub fn Methods(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .extra = func_extra },
             });
-            try es_helpers.trackThisArgumentsCaptureSymbols(self, func_expr, self.current_scope);
+            // fillThisArgumentsCaptures bound these aliases when it emitted them.
             return func_expr;
         }
 
