@@ -28,6 +28,7 @@ const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
 const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
+const ScopeKind = @import("../semantic/scope.zig").ScopeKind;
 
 pub fn ES2015Params(comptime Transformer: type) type {
     return struct {
@@ -40,13 +41,28 @@ pub fn ES2015Params(comptime Transformer: type) type {
             declaration_span: Span,
             kind: SymbolKind,
         ) Transformer.Error!void {
-            if (!self.semantic_edit_enabled or self.current_scope.isNone()) return;
+            if (!self.semantic_edit_enabled) return;
+            const scope = self.current_scope;
+            const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+            if (scope.isNone() or scope.toIndex() >= scopes.len or scopes[scope.toIndex()].kind != ScopeKind.function)
+                std.debug.panic("destructuring parameter temp requires an active function scope", .{});
             const id = if (kind == .variable_var)
-                try self.declareSyntheticTempInScope(binding, declaration_span, self.current_scope)
+                try self.declareSyntheticTempInScope(binding, declaration_span, scope)
             else
-                try self.declareSyntheticInScope(binding, declaration_span, kind, self.current_scope);
-            if (id) |symbol_id|
-                try self.destructuring_temp_symbol_ids.put(self.allocator, name_span.start, @intFromEnum(symbol_id));
+                try self.declareSyntheticInScope(binding, declaration_span, kind, scope);
+            const symbol_id = id orelse std.debug.panic("destructuring parameter temp has no creation SymbolId", .{});
+            const raw_id = @intFromEnum(symbol_id);
+            const binding_id = self.getSymbolIdAt(binding) orelse
+                std.debug.panic("destructuring parameter temp binding missed its creation SymbolId", .{});
+            if (binding_id != raw_id)
+                std.debug.panic("destructuring parameter temp binding missed its creation SymbolId", .{});
+            const editor = if (self.semantic_editor) |*editor| editor else std.debug.panic("destructuring parameter temp was not registered in the semantic editor", .{});
+            if (raw_id >= editor.symbols.items.len)
+                std.debug.panic("destructuring parameter temp SymbolId is outside the semantic editor", .{});
+            const symbol = editor.symbols.items[raw_id];
+            if (symbol.scope_id != scope or symbol.kind != kind)
+                std.debug.panic("destructuring parameter temp SymbolId has the wrong owner", .{});
+            try self.destructuring_temp_symbol_ids.put(self.allocator, name_span.start, raw_id);
         }
 
         fn emitParameterPatternDeclarators(
@@ -312,10 +328,6 @@ pub fn ES2015Params(comptime Transformer: type) type {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
             try emitParameterPatternDeclarators(self, pattern_node, read_span, span);
-            if (self.getSymbolIdAt(temp_binding) == null)
-                try self.bindSyntheticTempInScope(temp_binding, temp_span, span, .parameter, self.current_scope);
-            if (!read_binding.isNone() and self.getSymbolIdAt(read_binding) == null)
-                try self.bindSyntheticTempInScope(read_binding, read_span, span, .variable_var, self.current_scope);
             const declarators = self.scratch.items[scratch_top..];
             if (declarators.len > 0) {
                 const destruct_decl = try es_helpers.makeVarDeclaration(self, declarators, .@"var", span);
@@ -356,10 +368,6 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 break :blk read_span;
             } else temp_span;
             try emitParameterPatternDeclarators(self, pattern, read_span, span);
-            if (self.getSymbolIdAt(temp_binding) == null)
-                try self.bindSyntheticTempInScope(temp_binding, temp_span, span, .parameter, self.current_scope);
-            if (!read_binding.isNone() and self.getSymbolIdAt(read_binding) == null)
-                try self.bindSyntheticTempInScope(read_binding, read_span, span, .variable_var, self.current_scope);
 
             const declarators = self.scratch.items[scratch_top..];
             if (declarators.len > 0) {
