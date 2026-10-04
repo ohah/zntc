@@ -46,6 +46,10 @@
 3. **구조분해 매개변수 temp 생성 시 SID/scope 소유 강제:** [PR #5059](https://github.com/ohah/zntc/pull/5059)에서 ES5 parameter lowering이 활성 함수 scope에 temp를 생성하고 즉시 SID와 exact span map을 기록하도록 한다. semantic editing을 사용하지 않는 저수준 Transformer 경로는 no-op으로 유지하고, owner node가 아직 붙지 않은 예약 생성 함수 scope도 허용한다. 네 곳의 사후 재등록 fallback을 제거하고 직접 identity 검사와 standalone/bundle 실행 비교를 추가한다.
 4. 이후 위 표의 한 생성자 계열씩 생성부터 최종 출력까지 이관한다. 각 PR에는 바뀐 지원 범위, 삭제한 보정 코드, 남은 호출 지점, 음성 대조 및 실제 실행 결과를 기록한다. 이 문서의 항목도 같은 PR에서 갱신한다.
 
+### 개별 생성자 이관 기록
+
+- ES5 기본 파생 생성자의 `_newTarget`은 호출자가 예약한 생성자 함수 scope에 생성 시점부터 SymbolId를 등록하고, `__callSuper` 읽기 참조에 같은 ID를 직접 연결한다. 이 경로는 이름을 다시 찾아 등록하던 `trackDerivedConstructorLocalSymbols` 사후 추적을 사용하지 않는다. 명시적 constructor 경로와 다른 lexical capture 생성자는 아직 이 변경 범위에 포함되지 않는다.
+
 ### 매개변수 수정 후 남은 경계
 
 - 본문 lexical 선언 자체의 ES5 TDZ 보존은 남아 있다. 예를 들어 `let x = 4`보다 앞에서 본문의 `x`를 읽으면 원본은 `ReferenceError`지만 현재 출력은 `undefined`를 읽을 수 있다. 매개변수가 외부 `x`를 읽도록 고친 것과 본문 TDZ 구현 완료를 구분한다.

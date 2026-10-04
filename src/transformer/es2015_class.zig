@@ -381,7 +381,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 func_node = if (cm.constructor_idx) |ctor_idx|
                     try buildFunctionFromConstructor(self, ctor_idx, fresh_name, cm.instance_fields.items, has_super and super_span != null, cm.fields_need_this_alias, span)
                 else if (has_super and super_span != null)
-                    try buildDefaultSuperConstructor(self, fresh_name, super_span.?, cm.instance_fields.items, span)
+                    try buildDefaultSuperConstructor(self, fresh_name, super_span.?, ctor_scope, cm.instance_fields.items, span)
                 else
                     try buildEmptyFunction(self, fresh_name, span);
 
@@ -422,7 +422,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             if (source_ctor) |original| try self.remapCopiedScopeOwner(original, func_node);
             if (has_self_alias) try self.addSyntheticRefInScope(alias_check_ref, alias_id, ctor_scope, .{ .read = true });
-            if (has_super and super_span != null) try trackDerivedConstructorLocalSymbols(self, func_node, ctor_scope);
+            if (cm.constructor_idx != null and has_super and super_span != null)
+                try trackDerivedConstructorLocalSymbols(self, func_node, ctor_scope);
 
             try self.scratch.append(self.allocator, func_node);
             if (write_binding) |binding|
@@ -737,7 +738,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 func_node = if (cm.constructor_idx) |ctor_idx|
                     try buildFunctionFromConstructor(self, ctor_idx, func_name, cm.instance_fields.items, has_super and super_span != null, cm.fields_need_this_alias, span)
                 else if (has_super and super_span != null)
-                    try buildDefaultSuperConstructor(self, func_name, super_span.?, cm.instance_fields.items, span)
+                    try buildDefaultSuperConstructor(self, func_name, super_span.?, ctor_scope, cm.instance_fields.items, span)
                 else
                     try buildEmptyFunction(self, func_name, span);
 
@@ -775,7 +776,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             if (source_ctor == null and has_extra) try self.bindReservedFunctionOwner(ctor_scope, func_node);
 
-            if (has_super and super_span != null) try trackDerivedConstructorLocalSymbols(self, func_node, ctor_scope);
+            if (cm.constructor_idx != null and has_super and super_span != null)
+                try trackDerivedConstructorLocalSymbols(self, func_node, ctor_scope);
 
             if (!has_extra) {
                 const func = self.ast.getNode(func_node);

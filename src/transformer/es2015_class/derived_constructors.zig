@@ -6,6 +6,7 @@ const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const token_mod = @import("../../lexer/token.zig");
 const Span = token_mod.Span;
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 const es_helpers = @import("../es_helpers.zig");
 const helper_names = @import("../../runtime_helper_names.zig");
 
@@ -573,11 +574,31 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
         /// extends가 있고 constructor가 없을 때 기본 constructor 생성:
         /// instance_fields가 없으면: function Child() { var _newTarget = this.constructor; return __callSuper(_super, arguments, _newTarget); }
         /// instance_fields가 있으면: function Child() { var _newTarget = this.constructor; var _this = __callSuper(_super, arguments, _newTarget); <fields on _this>; return _this; }
-        pub fn buildDefaultSuperConstructor(self: *Transformer, name: NodeIndex, super_class_span: Span, instance_fields: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        pub fn buildDefaultSuperConstructor(
+            self: *Transformer,
+            name: NodeIndex,
+            super_class_span: Span,
+            function_scope: ScopeId,
+            instance_fields: []const NodeIndex,
+            span: Span,
+        ) Transformer.Error!NodeIndex {
+            // The constructor scope is already reserved by the class lowering
+            // caller. Give the generated NewTarget binding its exact identity
+            // here, then carry that handle to its only use below.
+            const new_target_name = try es_helpers.resolveSyntheticName(self, "_newTarget");
+            const new_target_binding = try es_helpers.makeExactSyntheticBinding(self, new_target_name);
+            const new_target_name_span = self.ast.getNode(new_target_binding).data.string_ref;
+            const new_target_symbol = try self.declareSyntheticInScope(
+                new_target_binding,
+                span,
+                .variable_var,
+                function_scope,
+            );
             const call_super_ref = try es_helpers.makeRuntimeHelperRef(self, "__callSuper");
             const parent_ref = try self.makeIdentifierRefWithSymbol(super_class_span, self.current_super_class_old_idx);
             const args_ref = try es_helpers.makeGlobalRef(self, "arguments");
-            const new_target_ref = try es_helpers.makeSyntheticRef(self, "_newTarget");
+            const new_target_ref = try es_helpers.makeExactSyntheticRefFromSpan(self, new_target_name_span);
+            try self.addSyntheticRefInScope(new_target_ref, new_target_symbol, function_scope, .{ .read = true });
             const call_super = try es_helpers.makeCallExpr(self, call_super_ref, &.{ parent_ref, args_ref, new_target_ref }, span);
 
             self.runtime_helpers.call_super = true;
@@ -587,10 +608,14 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
 
             // var _newTarget = this.constructor;
             // multi-level chain 에서도 항상 top NewTarget 으로 평가 → prototype propagation 정확.
-            try self.scratch.append(
-                self.allocator,
-                try self.buildVarDecl("_newTarget", try es_helpers.makeThisDotConstructor(self, span), span),
+            const new_target_init = try es_helpers.makeThisDotConstructor(self, span);
+            const new_target_decl = try es_helpers.makeVarDeclaration(
+                self,
+                &.{try es_helpers.makeDeclarator(self, new_target_binding, new_target_init, span)},
+                .@"var",
+                span,
             );
+            try self.scratch.append(self.allocator, new_target_decl);
 
             if (instance_fields.len > 0) {
                 // var _this = __callSuper(_super, arguments, _newTarget);
