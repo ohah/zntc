@@ -492,6 +492,28 @@ fn canRetainGraphForAuditedSyntaxSubset(
     const reachable_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, root_idx) catch return false;
     defer ast.allocator.free(reachable_nodes);
 
+    // ES5 for-of lowering already edits the original loop-head SymbolIds and
+    // registers its generated temps/catch binding in their output scopes. A
+    // lexical declaration is admitted only when it is the direct head of a
+    // for-of that this pass is going to lower; unrelated let/const still needs
+    // the full block-scoping resync path.
+    var lowered_for_of_heads: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer lowered_for_of_heads.deinit(ast.allocator);
+    if (options.unsupported.for_of and options.unsupported.block_scoping) {
+        for (reachable_nodes) |raw_idx| {
+            const node = ast.nodes.items[raw_idx];
+            if (node.tag != .for_of_statement) continue;
+            const head = node.data.ternary.a;
+            if (head.isNone() or @intFromEnum(head) >= ast.nodes.items.len) return false;
+            const head_node = ast.nodes.items[@intFromEnum(head)];
+            if (head_node.tag == .variable_declaration and
+                ast.variableDeclarationKind(head_node) != .@"var")
+            {
+                lowered_for_of_heads.put(ast.allocator, @intFromEnum(head), {}) catch return false;
+            }
+        }
+    }
+
     // Plain computed data properties, synchronous object methods, and computed
     // accessors without `super` lower through tracked temps and output scopes.
     // Accessor `super` may add a runtime helper module, so it stays on reanalysis.
@@ -555,6 +577,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_native_generator = false;
     var found_native_tagged_template = false;
     var found_native_for_of = false;
+    var found_lowered_for_of = false;
     var found_native_for_await = false;
     var found_native_class = false;
     var found_native_destructuring = false;
@@ -588,7 +611,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .variable_declaration => {
                 const kind = ast.variableDeclarationKind(node);
                 if (options.unsupported.using and kind.isUsing()) return false;
-                if (options.unsupported.block_scoping and kind != .@"var") return false;
+                if (options.unsupported.block_scoping and kind != .@"var" and
+                    !lowered_for_of_heads.contains(raw_idx)) return false;
             },
             .variable_declarator => {
                 if (node.data.extra >= ast.extra_data.items.len) return false;
@@ -716,8 +740,11 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 found_native_tagged_template = true;
             },
             .for_of_statement => {
-                if (options.unsupported.for_of) return false;
-                found_native_for_of = true;
+                if (options.unsupported.for_of) {
+                    found_lowered_for_of = true;
+                } else {
+                    found_native_for_of = true;
+                }
             },
             .for_await_of_statement => {
                 if (options.unsupported.needsForAwaitOfDownlevel()) return false;
@@ -836,9 +863,20 @@ fn canRetainGraphForAuditedSyntaxSubset(
         if (node.tag == .catch_clause and node.data.binary.left.isNone()) return false;
     }
     return found_arrow or found_native_await or found_native_generator or found_native_tagged_template or
-        found_native_for_of or found_native_for_await or found_native_class or found_native_destructuring or
+        found_native_for_of or found_lowered_for_of or found_native_for_await or found_native_class or found_native_destructuring or
         found_safe_template_literal or found_object_shorthand or found_lowered_object_method or
         found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key;
+}
+
+/// A retained prepass graph may absorb only the `__values` virtual import
+/// introduced by ES5 for-of. Any other runtime helper can indicate an
+/// independently lowered construct, so keep that module on semantic resync.
+fn runtimeHelpersSafeForRetainedGraph(
+    helpers: @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers,
+) bool {
+    var other_helpers = helpers;
+    other_helpers.values = false;
+    return !other_helpers.hasAny();
 }
 
 fn canKeepPrepassSemanticGraph(
@@ -935,9 +973,10 @@ fn canKeepPrepassSemanticGraph(
                 found_transform = true;
             },
             .for_of_statement => {
-                if (options.unsupported.for_of) return false;
-                // Native for-of visitation only copies the loop and its children;
-                // preserve the existing lexical scope owner instead of reanalyzing.
+                if (options.unsupported.for_of and !safe_graph_subset) return false;
+                // Native visitation copies the loop; the audited ES5 lowering
+                // edits its loop-head SymbolIds and records generated output
+                // bindings in their scopes. Preserve that exact graph.
                 found_transform = true;
             },
             .class_declaration, .class_expression => {
@@ -1238,11 +1277,11 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         .ref_deltas = prepass_ref_deltas,
     };
 
-    // Type erasure, Flow match lowering, TypeScript enums, and supported JSX
-    // lowerings preserve the edited semantic graph. JSX automatic and
-    // automatic-dev add helper imports to the AST, so refresh module import/export
-    // metadata from syntax without running the semantic analyzer again.
-    if (can_keep_semantic_graph and !transformer.runtime_helpers.hasAny()) {
+    // Type erasure, Flow match lowering, TypeScript enums, supported JSX, and
+    // the audited ES5 for-of subset preserve the edited semantic graph. JSX
+    // and ES5 for-of may add synthetic helper imports, so refresh module
+    // import/export metadata from syntax without replacing the edited graph.
+    if (can_keep_semantic_graph and runtimeHelpersSafeForRetainedGraph(transformer.runtime_helpers)) {
         // Generated built-ins are not source references, so the transform
         // editor cannot add them to unresolved_references. If recording them
         // runs out of memory, use the normal analyzer refresh below.
