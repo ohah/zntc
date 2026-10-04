@@ -112,6 +112,105 @@ test "exact coverage rejects invalid root, child indices, and truncated child la
     try std.testing.expect(!invalid_extra_slot.isClean());
 }
 
+test "exact identity audit rejects declaration rows assigned to a visible descendant scope" {
+    const allocator = std.testing.allocator;
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+
+    const name = try ast.addString("x");
+    const binding = try ast.addNode(.{
+        .tag = .binding_identifier,
+        .span = name,
+        .data = .{ .string_ref = name },
+    });
+    const block = try ast.addListNode(.block_statement, name, try ast.addNodeList(&.{binding}));
+    const root = try ast.addListNode(.program, name, try ast.addNodeList(&.{block}));
+
+    const global_scope: ScopeId = @enumFromInt(0);
+    const binding_scope: ScopeId = @enumFromInt(1);
+    const descendant_scope: ScopeId = @enumFromInt(2);
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = global_scope, .kind = .block, .is_strict = false },
+        .{ .parent = binding_scope, .kind = .block, .is_strict = false },
+    };
+    var binding_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer binding_names.deinit(allocator);
+    try binding_names.put(allocator, "x", 0);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, binding_names, .empty };
+    const symbols = [_]Symbol{
+        .{
+            .name = name,
+            .scope_id = binding_scope,
+            .origin_scope = binding_scope,
+            .kind = .variable_let,
+            .declaration_span = name,
+        },
+    };
+    const symbol_ids = [_]?u32{ 0, null, null };
+    var references = [_]Reference{
+        .{
+            .node_index = .none,
+            .scope_id = binding_scope,
+            .symbol_id = @enumFromInt(0),
+            .flags = .{ .declare = true },
+        },
+    };
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer owners.deinit(allocator);
+    try owners.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
+    try owners.put(allocator, @intFromEnum(block), @intFromEnum(binding_scope));
+    const helpers: std.StringHashMapUnmanaged(usize) = .empty;
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const valid = try coverage.checkExact(
+        allocator,
+        &ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &owners,
+        &references,
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 0), valid.declaration_scope_mismatch);
+    try std.testing.expect(valid.isClean());
+
+    // The wrong declaration scope is still a valid descendant and can see
+    // this binding. Visibility checks alone would accept the corrupted row.
+    references[0].scope_id = descendant_scope;
+    const corrupted = try coverage.checkExact(
+        allocator,
+        &ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &owners,
+        &references,
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), corrupted.declaration_scope_mismatch);
+    try std.testing.expectEqual(@as(usize, 0), corrupted.invalid_scope);
+    try std.testing.expectEqual(@as(usize, 0), corrupted.invisible_reference);
+    try std.testing.expect(!corrupted.isClean());
+}
+
 test "exact scope audit rejects owner scopes detached from their AST parent scopes" {
     const allocator = std.testing.allocator;
     var ast = Ast.init(allocator, "");

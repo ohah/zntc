@@ -41,6 +41,7 @@ const EXACT_ZERO_COUNTERS = [
   'binding_scope_unknown',
   'invalid_scope',
   'reference_scope_mismatch',
+  'declaration_scope_mismatch',
   'scope_map_mismatch',
   'scope_owner_mismatch',
   'scope_owner_parent_mismatch',
@@ -203,6 +204,14 @@ describe('symbol identity coverage gate (#4819)', () => {
     expect(
       exactSchemaProblems(complete.replace(' write_count_mismatch=0', ' write_count_mismatch=1')),
     ).toContain('write_count_mismatch=1, expected 0');
+    expect(exactSchemaProblems(complete.replace(' declaration_scope_mismatch=0', ''))).toContain(
+      'declaration_scope_mismatch occurrences=0, expected 1',
+    );
+    expect(
+      exactSchemaProblems(
+        complete.replace(' declaration_scope_mismatch=0', ' declaration_scope_mismatch=1'),
+      ),
+    ).toContain('declaration_scope_mismatch=1, expected 0');
     expect(
       exactSchemaProblems(
         complete.replace(/invariant_counter_count=\d+/, 'invariant_counter_count=23'),

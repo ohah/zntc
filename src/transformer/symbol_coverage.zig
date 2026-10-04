@@ -225,6 +225,7 @@ pub const ExactReport = struct {
     binding_scope_unknown: usize = 0,
     invalid_scope: usize = 0,
     reference_scope_mismatch: usize = 0,
+    declaration_scope_mismatch: usize = 0,
     scope_map_mismatch: usize = 0,
     scope_owner_mismatch: usize = 0,
     scope_owner_parent_mismatch: usize = 0,
@@ -2468,6 +2469,11 @@ fn checkExactImpl(
         }
         if (reference.flags.declare) {
             declaration_counts[sid] += 1;
+            // A declaration row records the target storage scope, unlike a
+            // value reference which records the scope where the read/write
+            // occurs. Visibility from a descendant scope is not enough to
+            // prove that declaration ownership is correct.
+            if (reference.scope_id != symbols[sid].scope_id) report.declaration_scope_mismatch += 1;
         } else if (!reference.flags.type_context and !reference.flags.value_as_type and
             (reference.flags.read or reference.flags.write))
         {
@@ -2940,7 +2946,7 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
     var secondary_counts_buffer: [512]u8 = undefined;
     const secondary_counts = std.fmt.bufPrint(
         &secondary_counts_buffer,
-        "namespace_iife_params={d} namespace_iife_param_mismatch={d} enum_iife_params={d} enum_iife_param_mismatch={d} helper_symbol_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} reference_count_mismatch={d} write_count_mismatch={d}",
+        "namespace_iife_params={d} namespace_iife_param_mismatch={d} enum_iife_params={d} enum_iife_param_mismatch={d} helper_symbol_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} declaration_scope_mismatch={d} reference_count_mismatch={d} write_count_mismatch={d}",
         .{
             report.namespace_iife_params,
             report.namespace_iife_param_mismatch,
@@ -2950,6 +2956,7 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
             report.scope_resolution_mismatch,
             report.invisible_reference,
             report.unclassified_reference,
+            report.declaration_scope_mismatch,
             report.reference_count_mismatch,
             report.write_count_mismatch,
         },
