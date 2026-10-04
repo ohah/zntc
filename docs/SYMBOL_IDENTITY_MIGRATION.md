@@ -50,6 +50,7 @@
 
 - ES5 기본 파생 생성자의 `_newTarget`은 호출자가 예약한 생성자 함수 scope에 생성 시점부터 SymbolId를 등록하고, `__callSuper` 읽기 참조에 같은 ID를 직접 연결한다. 이 경로는 이름을 다시 찾아 등록하던 `trackDerivedConstructorLocalSymbols` 사후 추적을 사용하지 않는다.
 - ES5 explicit derived constructor는 body 방문 전에 `_newTarget` handle을 선언하고, `super()` 변환이 그 SymbolId를 직접 사용한다. body 후처리는 동일 binding 노드를 선언부에 넣는다. constructor body의 lexical `new.target` capture도 같은 handle을 쓰므로 중복 `_newTarget` 선언을 만들지 않는다. 직접·arrow `super()` scope와 parameter-default `new.target` 실행을 확인한다. parameter wrapper의 자체 binding은 별도 producer다.
+- 보류 중인 runtime-helper reference는 생성 당시 `current_scope`가 아니라 최종 출력 AST에서 확인한 owner `ScopeId`를 사용한다. `bindOutputScopesAndReferences`가 노드를 방문할 때 정확한 출력 scope로 보류 기록을 갱신하고, import/preamble SID를 연결하기 전에 적용한다. exact audit는 helper marker가 있는 참조도 알려진 출력 owner에서 `reference_scope_mismatch` 검사를 건너뛰지 않는다. ES5 `using`의 생성 try/catch/finally 블록에서 helper scope가 바깥 function scope에 남던 결함을 전체 Zig 테스트와 oracle fixture × target gate로 검사한다.
 
 ### 매개변수 수정 후 남은 경계
 
