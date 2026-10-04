@@ -3019,10 +3019,11 @@ pub fn splitParameterBodyVarBinding(
     const slot = @intFromEnum(binding);
     editor.symbol_ids.items[slot] = null;
     self.symbol_ids.items[slot] = null;
-    const alias_binding = es_helpers.makeBindingIdentifier(self, alias_span) catch return error.OutOfMemory;
+    const alias_binding = es_helpers.makeExactSyntheticBinding(self, alias_name) catch return error.OutOfMemory;
+    const alias_binding_name = self.ast.getNode(alias_binding).data.string_ref;
     const parameter_id = editor.declare(
         alias_binding,
-        alias_span,
+        alias_binding_name,
         binding_node.span,
         original.scope_id,
         .parameter,
