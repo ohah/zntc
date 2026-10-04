@@ -1041,6 +1041,27 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       expect(result.runOutput).toBe('woof animal');
     });
 
+    test('default ES5 derived constructors keep colliding newTarget locals separate', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            const _newTarget = 'user';
+            class Base { constructor() { (this as any).target = new.target; } }
+            class First extends Base { value = 5; }
+            class Second extends Base {}
+            const first = new First() as any;
+            const second = new Second() as any;
+            console.log(first.target === First, first.value, second.target === Second, _newTarget);
+          `,
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('true 5 true user');
+    });
+
     test('generator with multiple yields', async () => {
       const result = await bundleAndRun(
         {

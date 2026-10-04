@@ -379,6 +379,71 @@ test "#4819 using class copies preserve exact source scope owners" {
     }
 }
 
+test "#4819 default derived constructors own exact newTarget symbols per function scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\class Base {}
+        \\const _newTarget = 1;
+        \\class First extends Base {}
+        \\class Second extends Base {}
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+
+    var generated_symbols: std.ArrayList(struct { id: u32, scope: u32 }) = .empty;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_newTarget2")) continue;
+        if (raw >= edited.symbol_ids.len) return error.TestUnexpectedResult;
+        const raw_id = edited.symbol_ids[raw] orelse return error.TestUnexpectedResult;
+        const scope_id = @intFromEnum(edited.symbols.items[raw_id].scope_id);
+        try generated_symbols.append(allocator, .{ .id = raw_id, .scope = scope_id });
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), generated_symbols.items.len);
+    try std.testing.expect(generated_symbols.items[0].id != generated_symbols.items[1].id);
+    try std.testing.expect(generated_symbols.items[0].scope != generated_symbols.items[1].scope);
+    for (generated_symbols.items) |generated| {
+        const scope: @import("../semantic/scope.zig").ScopeId = @enumFromInt(generated.scope);
+        try std.testing.expectEqual(@as(?usize, @intCast(generated.id)), edited.scope_maps[generated.scope].get("_newTarget2"));
+
+        var declarations: usize = 0;
+        var reads: usize = 0;
+        for (edited.references) |reference| {
+            if (@intFromEnum(reference.symbol_id) != generated.id) continue;
+            if (reference.flags.declare) {
+                declarations += 1;
+                try std.testing.expectEqual(scope, reference.scope_id);
+            }
+            if (reference.flags.read) {
+                reads += 1;
+                try std.testing.expectEqual(scope, reference.scope_id);
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), declarations);
+        try std.testing.expectEqual(@as(usize, 1), reads);
+    }
+}
+
 test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
