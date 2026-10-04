@@ -59,7 +59,11 @@ pub fn SuperProps(comptime Transformer: type) type {
             const callee = try es_helpers.makeRuntimeHelperRef(self, "__callSuper");
 
             const parent_ref = try self.makeIdentifierRefWithSymbol(super_class_span, self.current_super_class_old_idx);
-            const new_target_ref = try es_helpers.makeSyntheticRef(self, "_newTarget");
+            const new_target_ref = if (self.active_derived_constructor_new_target) |new_target| blk: {
+                const ref = try es_helpers.makeExactSyntheticRefFromSpan(self, new_target.name_span);
+                try self.addSyntheticRefInScope(ref, new_target.symbol_id, self.current_scope, .{ .read = true });
+                break :blk ref;
+            } else try es_helpers.makeSyntheticRef(self, "_newTarget");
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 

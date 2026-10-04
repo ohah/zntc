@@ -28,6 +28,7 @@ const plugin_state = @import("plugin_state.zig");
 const PluginState = plugin_state.PluginState;
 const jsx_lowering_mod = @import("jsx_lowering.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
+const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const SemanticEditor = @import("../semantic/editor.zig").SemanticEditor;
 const ReferenceFlags = @import("../semantic/symbol.zig").ReferenceFlags;
@@ -103,6 +104,13 @@ pub const ParameterBodyVarCopy = struct {
 };
 
 pub const Transformer = struct {
+    pub const DerivedConstructorNewTarget = struct {
+        binding: NodeIndex,
+        name_span: Span,
+        symbol_id: ?SymbolId,
+        capture_frame: u32,
+    };
+
     pub const ClassSelfWriteTarget = struct {
         inner_id: u32,
         target_name: []const u8,
@@ -367,6 +375,9 @@ pub const Transformer = struct {
     /// constructor: this.constructor, method: void 0,
     /// function_named: this instanceof Fn ? this.constructor : void 0
     new_target_ctx: NewTargetCtx = .none,
+    /// Exact `_newTarget` handle shared by an explicit derived constructor's
+    /// generated declaration and every lowered `super()` reference.
+    active_derived_constructor_new_target: ?DerivedConstructorNewTarget = null,
 
     /// ES2015 class extends: 현재 클래스의 super class 이름 Span.
     /// class body 방문 중 설정되어, super() → Parent.call(this),
@@ -756,6 +767,7 @@ pub const Transformer = struct {
     pub const deferGeneratedWrapperTemp = @import("transformer/semantic_edit.zig").deferGeneratedWrapperTemp;
     pub const trackLexicalCaptureRef = @import("transformer/semantic_edit.zig").trackLexicalCaptureRef;
     pub const bindLexicalCapture = @import("transformer/semantic_edit.zig").bindLexicalCapture;
+    pub const bindLexicalCaptureToExistingSymbol = @import("transformer/semantic_edit.zig").bindLexicalCaptureToExistingSymbol;
     pub const hasLexicalCapture = @import("transformer/semantic_edit.zig").hasLexicalCapture;
     pub const hasLexicalCaptureSince = @import("transformer/semantic_edit.zig").hasLexicalCaptureSince;
     pub const shouldCaptureArguments = @import("transformer/semantic_edit.zig").shouldCaptureArguments;

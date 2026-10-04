@@ -48,7 +48,8 @@
 
 ### 개별 생성자 이관 기록
 
-- ES5 기본 파생 생성자의 `_newTarget`은 호출자가 예약한 생성자 함수 scope에 생성 시점부터 SymbolId를 등록하고, `__callSuper` 읽기 참조에 같은 ID를 직접 연결한다. 이 경로는 이름을 다시 찾아 등록하던 `trackDerivedConstructorLocalSymbols` 사후 추적을 사용하지 않는다. 명시적 constructor 경로와 다른 lexical capture 생성자는 아직 이 변경 범위에 포함되지 않는다.
+- ES5 기본 파생 생성자의 `_newTarget`은 호출자가 예약한 생성자 함수 scope에 생성 시점부터 SymbolId를 등록하고, `__callSuper` 읽기 참조에 같은 ID를 직접 연결한다. 이 경로는 이름을 다시 찾아 등록하던 `trackDerivedConstructorLocalSymbols` 사후 추적을 사용하지 않는다.
+- ES5 explicit derived constructor는 body 방문 전에 `_newTarget` handle을 선언하고, `super()` 변환이 그 SymbolId를 직접 사용한다. body 후처리는 동일 binding 노드를 선언부에 넣는다. constructor body의 lexical `new.target` capture도 같은 handle을 쓰므로 중복 `_newTarget` 선언을 만들지 않는다. 직접·arrow `super()` scope와 parameter-default `new.target` 실행을 확인한다. parameter wrapper의 자체 binding은 별도 producer다.
 
 ### 매개변수 수정 후 남은 경계
 

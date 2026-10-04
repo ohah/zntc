@@ -2549,6 +2549,19 @@ pub fn bindLexicalCapture(self: *Transformer, declaration: NodeIndex, kind: Lexi
     try self.capture_binding_ids.put(self.allocator, key, @intFromEnum(id));
 }
 
+/// Bind a lexical-capture frame to a SymbolId that its owning producer has
+/// already declared. This avoids inventing a second local when two lowering
+/// paths share the same derived-constructor `_newTarget` value.
+pub fn bindLexicalCaptureToExistingSymbol(self: *Transformer, kind: LexicalCaptureKind, id: SymbolId) Transformer.Error!void {
+    if (!self.semantic_edit_enabled or self.capture_frame == 0) return;
+    const key = captureKey(self.capture_frame, kind);
+    if (self.capture_binding_ids.get(key)) |existing| {
+        if (existing != @intFromEnum(id)) std.debug.panic("lexical capture frame was assigned conflicting SymbolIds", .{});
+        return;
+    }
+    try self.capture_binding_ids.put(self.allocator, key, @intFromEnum(id));
+}
+
 fn bindReachableLexicalCaptures(self: *Transformer) Transformer.Error!void {
     if (self.capture_refs.items.len == 0) return;
     const reachable = @import("../../parser/ast_walk.zig").collectReachableNodeIndices(self.allocator, self.ast) catch return error.OutOfMemory;

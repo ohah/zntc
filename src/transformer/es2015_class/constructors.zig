@@ -53,6 +53,24 @@ pub fn Constructors(comptime Transformer: type) type {
                 }
             }
             defer self.current_scope = saved_scope;
+            const saved_derived_new_target = self.active_derived_constructor_new_target;
+            if (is_derived) {
+                const new_target_name = try es_helpers.resolveSyntheticName(self, "_newTarget");
+                const new_target_binding = try es_helpers.makeExactSyntheticBinding(self, new_target_name);
+                const new_target_symbol = try self.declareSyntheticInScope(
+                    new_target_binding,
+                    span,
+                    .variable_var,
+                    self.current_scope,
+                );
+                self.active_derived_constructor_new_target = .{
+                    .binding = new_target_binding,
+                    .name_span = self.ast.getNode(new_target_binding).data.string_ref,
+                    .symbol_id = new_target_symbol,
+                    .capture_frame = self.capture_frame,
+                };
+            }
+            defer self.active_derived_constructor_new_target = saved_derived_new_target;
             const ctor = self.ast.getNode(ctor_idx);
             const me = ctor.data.extra;
 
@@ -270,9 +288,14 @@ pub fn Constructors(comptime Transformer: type) type {
                     try self.bindLexicalCapture(capture_stmts[capture_count], .arguments_value);
                     capture_count += 1;
                 }
+                var has_new_target_capture_statement = false;
                 if (needs_new_target_capture) {
-                    capture_stmts[capture_count] = try es_helpers.buildNewTargetCapture(self, span);
-                    capture_count += 1;
+                    const capture = try es_helpers.buildNewTargetCapture(self, span);
+                    if (!capture.isNone()) {
+                        capture_stmts[capture_count] = capture;
+                        capture_count += 1;
+                        has_new_target_capture_statement = true;
+                    }
                 }
 
                 if (derived_constructor_this_alias) {
@@ -281,8 +304,8 @@ pub fn Constructors(comptime Transformer: type) type {
                     // move before defaults; `_this` remains uninitialized
                     // until the super-call assignment.
                     try es_helpers.recordParameterCapturesWithPresence(self, capture_stmts[0..capture_count], .{
-                        false, self.needs_arguments_var, needs_new_target_capture,
-                    }, .{ false, param_needs_arguments, param_needs_new_target });
+                        false, self.needs_arguments_var, has_new_target_capture_statement,
+                    }, .{ false, param_needs_arguments, param_needs_new_target and has_new_target_capture_statement });
                 } else {
                     try es_helpers.recordParameterCaptures(self, capture_stmts[0..capture_count], param_needs_this, param_needs_arguments, param_needs_new_target);
                 }
