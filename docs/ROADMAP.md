@@ -113,6 +113,7 @@
 
 ## ⏳ 미완료
 
+- **심볼 identity 유지와 최종 이름 결정 통합** (#4819) — 부분 구현. [생성자별 남은 경계와 보정 코드 제거 조건](./SYMBOL_IDENTITY_MIGRATION.md)을 기준으로 진행하며, retained 테스트 수를 에픽 완료율로 사용하지 않는다.
 - **.d.ts 생성** (isolatedDeclarations) — 후순위, 당분간 tsc에 위임
 - **SIMD 확장** — 렉서에 `@Vector(16, u8)` 부분 적용 완료 (공백/식별자 스캔). 추가 lookup table / 키워드 조회 항목은 BACKLOG 실측 상 ROI 0 확정(scan 은 메모리 바운드, A/B 가 noise floor 아래)
 - **WASM 공개 AST API** — AST 안정화 후
