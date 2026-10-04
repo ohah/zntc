@@ -2216,7 +2216,6 @@ describe('symbol identity coverage gate (#4819)', () => {
           (line) =>
             line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-
     try {
       const native = run('--target=es2015');
       expect(native.status, native.stderr).toBe(0);
@@ -2324,7 +2323,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('native object rest retains identities while ES2017 reanalyzes', () => {
+  test('ES2015-2017 object-rest lowering retains exact identities but leaves object spread on reanalysis', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-object-rest-'));
     const output = join(dir, 'out.cjs');
     const input = join(dir, 'entry.ts');
@@ -2332,6 +2331,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       input,
       [
         'type Values = { first: number; second: number; third: number };',
+        'const _a = "user-binding";',
         'const source: Values = { first: 1, second: 2, third: 3 };',
         'const { first, ...rest }: Values = source;',
         'let assignedFirst = 0;',
@@ -2340,7 +2340,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         'function count({ first: parameterFirst, ...parameterRest }: Values) {',
         '  return parameterFirst + Object.keys(parameterRest).length;',
         '}',
-        'console.log(first, rest.second, rest.third, assignedFirst, assignedRest.second, count(source));',
+        'console.log(first, rest.second, rest.third, assignedFirst, assignedRest.second, count(source), _a);',
       ].join('\n'),
     );
 
@@ -2371,6 +2371,22 @@ describe('symbol identity coverage gate (#4819)', () => {
           (line) =>
             line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
+    const expectRetainedGraph = (stderr: string, label: string) => {
+      expect(mode(stderr), `${label}: ${stderr}`).toContain('semantic_graph=retained');
+      const report = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(report, `${label}: ${stderr}`).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${label} ${counter}: ${report}`,
+        ).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+    };
 
     try {
       const native = run('--target=es2018');
@@ -2391,14 +2407,79 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(nativeReport).toMatch(/clean=1(?:\s|$)/);
       const nativeOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(nativeOutput.status, nativeOutput.stderr).toBe(0);
-      expect(nativeOutput.stdout).toBe('1 2 3 1 2 3\n');
+      expect(nativeOutput.stdout).toBe('1 2 3 1 2 3 user-binding\n');
 
       const downlevel = run('--target=es2017');
       expect(downlevel.status, downlevel.stderr).toBe(0);
-      expect(mode(downlevel.stderr ?? ''), downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      expectRetainedGraph(downlevel.stderr ?? '', 'declaration, assignment, parameter');
       const downlevelOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(downlevelOutput.status, downlevelOutput.stderr).toBe(0);
-      expect(downlevelOutput.stdout).toBe('1 2 3 1 2 3\n');
+      expect(downlevelOutput.stdout).toBe('1 2 3 1 2 3 user-binding\n');
+
+      const es2015 = run('--target=es2015');
+      expect(es2015.status, es2015.stderr).toBe(0);
+      expectRetainedGraph(es2015.stderr ?? '', 'ES2015 object-rest lowering');
+      const es2015Output = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(es2015Output.status, es2015Output.stderr).toBe(0);
+      expect(es2015Output.stdout).toBe('1 2 3 1 2 3 user-binding\n');
+
+      // Object-literal spread is a separate transform with Object.assign
+      // semantics. Keep the containing module on semantic reanalysis.
+      writeFileSync(
+        input,
+        [
+          'const source = { first: 1, second: 2 };',
+          'const { first, ...rest } = source;',
+          'const copy = { ...source };',
+          'console.log(first, rest.second, copy.second);',
+        ].join('\n'),
+      );
+      const mixed = run('--target=es2017');
+      expect(mixed.status, mixed.stderr).toBe(0);
+      expect(mode(mixed.stderr ?? ''), mixed.stderr).toContain('semantic_graph=reanalyzed');
+      const mixedOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(mixedOutput.status, mixedOutput.stderr).toBe(0);
+      expect(mixedOutput.stdout).toBe('1 2 2\n');
+
+      const loopFixtures = [
+        {
+          label: 'binding rest with per-iteration closures',
+          source: [
+            'const _b = "user-binding";',
+            'const fns: any[] = [];',
+            'for (const { a, ...r } of [{ a: 1, b: 2 }, { a: 3, c: 4 }] as any) fns.push(() => a + ":" + Object.keys(r).join(""));',
+            'console.log(fns.map((f: any) => f()).join("|") + "|" + _b);',
+          ],
+          output: '1:b|3:c|user-binding\n',
+        },
+        {
+          label: 'assignment-target rest in for-of',
+          source: [
+            'let a: any, r: any; const out: any[] = [];',
+            'for ({ a, ...r } of [{ a: 1, b: 2 }, { a: 3, c: 4 }] as any) out.push(a + ":" + Object.keys(r).join(""));',
+            'console.log(out.join("|"));',
+          ],
+          output: '1:b|3:c\n',
+        },
+        {
+          label: 'nested array-target rest in for-of',
+          source: [
+            'let b: any, a: any, r: any; const out: any[] = [];',
+            'for ([b, { a, ...r }] of [[1, { a: 2, c: 3 }], [4, { a: 5, d: 6 }]] as any) out.push(b + ":" + a + ":" + Object.keys(r).join(""));',
+            'console.log(out.join("|"));',
+          ],
+          output: '1:2:c|4:5:d\n',
+        },
+      ];
+      for (const fixture of loopFixtures) {
+        writeFileSync(input, fixture.source.join('\n'));
+        const loop = run('--target=es2017');
+        expect(loop.status, `${fixture.label}: ${loop.stderr}`).toBe(0);
+        expectRetainedGraph(loop.stderr ?? '', fixture.label);
+        const loopOutput = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(loopOutput.status, `${fixture.label}: ${loopOutput.stderr}`).toBe(0);
+        expect(loopOutput.stdout, fixture.label).toBe(fixture.output);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
