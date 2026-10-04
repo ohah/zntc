@@ -262,6 +262,31 @@ pub const ExactReport = struct {
             std.mem.eql(u8, name, "first_shadowed_external_reference");
     }
 
+    pub const SchemaCounts = struct {
+        invariant_counters: usize = 0,
+        observation_fields: usize = 0,
+        diagnostic_fields: usize = 0,
+    };
+
+    /// Expose the complete report classification so the integration gate can
+    /// prove its explicit zero-counter list still covers the emitted schema.
+    /// A new field changes one of these counts and requires an intentional
+    /// update to the independent fixture-gate expectations.
+    pub fn schemaCounts() SchemaCounts {
+        var counts: SchemaCounts = .{};
+        inline for (std.meta.fields(ExactReport)) |field| {
+            if (comptime isObservationField(field.name)) {
+                counts.observation_fields += 1;
+            } else if (comptime isDiagnosticField(field.name)) {
+                counts.diagnostic_fields += 1;
+            } else {
+                if (comptime field.type != usize) @compileError("unclassified ExactReport field");
+                counts.invariant_counters += 1;
+            }
+        }
+        return counts;
+    }
+
     /// Observations are allowed to be nonzero. Every other numeric field is
     /// an invariant counter and fails closed by default, so adding a new
     /// counter cannot silently leave the aggregate exact-coverage gate green.
@@ -2614,11 +2639,18 @@ pub fn printExactPrepass(file_path: []const u8, report: ExactReport, retained_gr
 }
 
 fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport) void {
-    var ast_structure_buffer: [96]u8 = undefined;
+    const schema = ExactReport.schemaCounts();
+    var ast_structure_buffer: [192]u8 = undefined;
     const ast_structure_counts = std.fmt.bufPrint(
         &ast_structure_buffer,
-        "ambiguous_ast_parent={d} cyclic_ast_edges={d}",
-        .{ report.ambiguous_ast_parent, report.cyclic_ast_edges },
+        "ambiguous_ast_parent={d} cyclic_ast_edges={d} invariant_counter_count={d} observation_field_count={d} diagnostic_field_count={d}",
+        .{
+            report.ambiguous_ast_parent,
+            report.cyclic_ast_edges,
+            schema.invariant_counters,
+            schema.observation_fields,
+            schema.diagnostic_fields,
+        },
     ) catch unreachable;
     std.debug.print(
         "zntc: {s} {s}: generated_bindings={d} generated_references={d} external={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} {s} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} namespace_iife_params={d} namespace_iife_param_mismatch={d} enum_iife_params={d} enum_iife_param_mismatch={d} helper_symbol_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} reference_count_mismatch={d} write_count_mismatch={d} clean={d} legacy_debt_fingerprint={x}\n",
