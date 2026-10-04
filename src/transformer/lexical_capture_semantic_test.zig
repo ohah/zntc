@@ -221,6 +221,12 @@ test "#4819 retained class parameter new.target factories keep exact pre-reanaly
     );
 }
 
+test "#4819 native parameter new.target factories reset exact owners at nested function boundaries" {
+    try checkNativeParameterNewTargetSymbols(
+        "function outer(value = () => function inner(read = () => () => new.target) { return read()(); }) { return value; }",
+    );
+}
+
 test "#4819 lowered arrow lexical captures have distinct exact function symbols" {
     try checkCaptureSymbols(
         "function outer(){return ()=>this.x+arguments[0]} outer.call({x:2},3);",

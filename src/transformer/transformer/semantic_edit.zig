@@ -284,7 +284,7 @@ const OutputScopeWork = struct {
     parent: NodeIndex = .none,
     grandparent: NodeIndex = .none,
 };
-const OutputReferenceScope = struct { node: NodeIndex, scope: ScopeId, raw_id: u32 };
+const OutputReferenceScope = struct { node: NodeIndex, scope: ScopeId, raw_id: u32, exact: bool = false };
 const OutputBindingCandidate = struct {
     node: NodeIndex,
     raw_id: u32,
@@ -609,6 +609,10 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
                 if (scope.isNone() or pending_index >= self.pending_runtime_helper_refs.items.len)
                     std.debug.panic("pending runtime helper reference has no exact output scope", .{});
                 self.pending_runtime_helper_refs.items[pending_index].scope = scope;
+            } else if (self.native_parameter_output_ref_symbol_ids.get(raw)) |exact_id| {
+                if (scope.isNone() or exact_id >= editor.symbols.items.len)
+                    std.debug.panic("native parameter capture reference has no exact output owner", .{});
+                try output_refs.append(self.allocator, .{ .node = work.node, .scope = scope, .raw_id = exact_id, .exact = true });
             } else {
                 var raw_id = outputSymbolIdAt(self, editor, work.node);
                 if (raw_id == null) {
@@ -758,6 +762,13 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
 
     for (output_refs.items) |reference| {
         if (reference.raw_id >= editor.symbols.items.len) continue;
+        if (reference.exact) {
+            if (!scopeVisibleFrom(editor.scopes.items, editor.symbols.items[reference.raw_id].scope_id, reference.scope))
+                std.debug.panic("native parameter capture SymbolId is not visible from its exact output scope", .{});
+            try addSyntheticRefInScope(self, reference.node, @enumFromInt(reference.raw_id), reference.scope, .{ .read = true });
+            _ = self.native_parameter_output_ref_symbol_ids.remove(@intFromEnum(reference.node));
+            continue;
+        }
         var only_group: ?OutputBindingGroup = null;
         var group_count: usize = 0;
         for (binding_groups.items) |group| {
@@ -820,6 +831,37 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
         self.symbol_ids.items[raw] = resolved_id;
     }
     try self.trackGeneratedLocalSymbols(root, root_scope, generated_catch_specs.items);
+}
+
+/// Remember a generated `_newTarget` use with its lexical arrow owner. This
+/// allows an inner wrapper call's capture argument to bind to the outer
+/// wrapper even though that outer binding is created after visiting its body.
+pub fn trackNativeParameterArrowRef(self: *Transformer, owner: NodeIndex, node: NodeIndex) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    if (owner.isNone() or node.isNone()) std.debug.panic("native parameter arrow reference has no exact owner", .{});
+    try self.native_parameter_arrow_refs.append(self.allocator, .{ .owner = owner, .node = node });
+}
+
+/// Bind only refs recorded under this source arrow to its generated wrapper
+/// parameter SID. The final output walk supplies each use's actual ScopeId.
+pub fn bindNativeParameterArrowRefs(self: *Transformer, owner: NodeIndex, symbol: ?SymbolId) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const id = symbol orelse return;
+    var index: usize = 0;
+    while (index < self.native_parameter_arrow_refs.items.len) {
+        const pending = self.native_parameter_arrow_refs.items[index];
+        if (pending.owner != owner) {
+            index += 1;
+            continue;
+        }
+        const raw = @intFromEnum(pending.node);
+        if (self.native_parameter_output_ref_symbol_ids.get(raw)) |existing| {
+            if (existing != @intFromEnum(id)) std.debug.panic("native parameter reference was assigned to two wrapper symbols", .{});
+        } else {
+            try self.native_parameter_output_ref_symbol_ids.put(self.allocator, raw, @intFromEnum(id));
+        }
+        _ = self.native_parameter_arrow_refs.swapRemove(index);
+    }
 }
 
 fn scopeVisibleFrom(scopes: []const @import("../../semantic/scope.zig").Scope, declared: ScopeId, use: ScopeId) bool {

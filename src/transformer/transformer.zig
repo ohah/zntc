@@ -293,6 +293,17 @@ pub const Transformer = struct {
     native_parameter_default_root: NodeIndex = .none,
     native_parameter_name_hint: ?[]const u8 = null,
     native_parameter_arrow_depth: u32 = 0,
+    /// Exact source arrow whose native-parameter `new.target` uses are being
+    /// lowered. Nested factory capture arguments are attributed to their
+    /// lexical parent arrow until that parent's wrapper binding is created.
+    native_parameter_arrow_owner: NodeIndex = .none,
+    native_parameter_arrow_refs: std.ArrayListUnmanaged(struct {
+        owner: NodeIndex,
+        node: NodeIndex,
+    }) = .empty,
+    /// Generated wrapper refs are bound by node handle after the final output
+    /// scope walk; names such as `_newTarget` are never used to select an SID.
+    native_parameter_output_ref_symbol_ids: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     capture_scope: ScopeId = .none,
     outermost_lowered_arrow_scope: ScopeId = .none,
     /// Exact name Span to the first SymbolId allocated for that transform temp.
@@ -755,6 +766,8 @@ pub const Transformer = struct {
     pub const appendGeneratedTempSpecs = @import("transformer/semantic_edit.zig").appendGeneratedTempSpecs;
     pub const registerGeneratedFunctionScopes = @import("transformer/semantic_edit.zig").registerGeneratedFunctionScopes;
     pub const bindOutputScopesAndReferences = @import("transformer/semantic_edit.zig").bindOutputScopesAndReferences;
+    pub const trackNativeParameterArrowRef = @import("transformer/semantic_edit.zig").trackNativeParameterArrowRef;
+    pub const bindNativeParameterArrowRefs = @import("transformer/semantic_edit.zig").bindNativeParameterArrowRefs;
     pub const completeGeneratedStateSymbols = @import("transformer/semantic_edit.zig").completeGeneratedStateSymbols;
     pub const bindGeneratedFunctionTemps = @import("transformer/semantic_edit.zig").bindGeneratedFunctionTemps;
     pub const moveGeneratedFunctionBodyBindings = @import("transformer/semantic_edit.zig").moveGeneratedFunctionBodyBindings;
