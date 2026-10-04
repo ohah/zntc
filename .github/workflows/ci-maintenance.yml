@@ -1,0 +1,60 @@
+name: CI Maintenance
+
+on:
+  workflow_run:
+    workflows: [CI, Release, Build Canary, Benchmark]
+    types: [in_progress, completed]
+  pull_request_target:
+    branches: [main]
+    types: [closed]
+  # Reconcile late cache saves, missed events, and older merged PRs.
+  schedule:
+    - cron: '53 5 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report candidates without cancelling runs or deleting caches
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  maintain:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'pull_request_target' && github.event.pull_request.merged == true) ||
+      (github.event_name == 'workflow_run' &&
+       ((github.event.workflow_run.name == 'CI' && github.event.workflow_run.event == 'push' &&
+         github.event.workflow_run.head_branch == 'main') ||
+        (github.event.workflow_run.name == 'CI' && github.event.workflow_run.event == 'pull_request' &&
+         github.event.action == 'in_progress' && github.event.workflow_run.run_attempt == 1) ||
+        (github.event.action == 'completed' && github.event.workflow_run.event == 'pull_request' &&
+         github.event.workflow_run.conclusion != 'skipped')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: write
+    # Distinct lifecycle events may overlap. API mutations are idempotent; do
+    # not replace a different PR's pending cleanup with a repository-wide group.
+    concurrency:
+      group: ci-maintenance-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.workflow_run.id || github.run_id }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # workflow_run/target execute trusted default-branch code only.
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const { runMaintenance } = await import(`${process.env.GITHUB_WORKSPACE}/scripts/ci-maintenance.mjs`);
+            const dryRun = context.eventName === 'workflow_dispatch' && ![false, 'false'].includes(context.payload.inputs?.dry_run);
+            const result = await runMaintenance({ github, context, dryRun, log: core.info });
+            core.info(JSON.stringify(result));
+            await core.summary.addHeading('CI 유지 관리').addCodeBlock(JSON.stringify(result, null, 2), 'json').write();

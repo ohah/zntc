@@ -79,8 +79,8 @@ jobs:
           CI_DRAFT: ${{ github.event.pull_request.draft || false }}
           CI_SUITE: ${{ inputs.suite || 'all' }}
         run: node scripts/ci-plan.mjs
-      - name: Verify CI selection and release artifact gates
-        run: node --test scripts/ci-plan.test.mjs scripts/verify-release-core.test.mjs
+      - name: Verify CI selection, maintenance and release artifact gates
+        run: node --test scripts/ci-plan.test.mjs scripts/ci-maintenance.test.mjs scripts/verify-release-core.test.mjs
 
       - name: Setup Zig
         if: ${{ !cancelled() && steps.plan.outputs.core == 'true' }}
