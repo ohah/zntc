@@ -757,7 +757,9 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 self.native_parameter_initializer_frame != 0 and
                 self.native_parameter_initializer_frame == self.capture_frame)
             {
-                return es_helpers.makeSyntheticRef(self, "_newTarget");
+                const ref = try es_helpers.makeSyntheticRef(self, "_newTarget");
+                try self.trackNativeParameterArrowRef(self.native_parameter_arrow_owner, ref);
+                return ref;
             }
             // An arrow has no own new.target. When lowering it to an ordinary
             // function, capture the enclosing function's value in its lexical

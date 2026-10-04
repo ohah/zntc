@@ -1361,6 +1361,26 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       expect(result.runOutput).toBe('true true true true 9 11 true true 3 0');
     });
 
+    test('nested function parameter factories keep their own native new.target owner', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            function outer(value = () => function inner(read = () => () => new.target) {
+              return read()();
+            }) { return value; }
+            const makeInner = outer();
+            const Inner = makeInner();
+            console.log(new Inner() === Inner);
+          `,
+        },
+        'index.ts',
+        ['--platform=react-native', '--rn-version=0.80', '--format=cjs'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('true');
+    });
+
     test('native parameter capture preserves inferred arrow names', async () => {
       const { dir, cleanup: cl } = await createFixture({
         'index.ts': `

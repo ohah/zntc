@@ -46,8 +46,13 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 !self.options.unsupported.default_params and self.capture_frame != 0 and
                 self.native_parameter_initializer_frame == self.capture_frame;
             const native_parameter_arrow_depth = self.native_parameter_arrow_depth;
-            if (native_parameter_capture) self.native_parameter_arrow_depth += 1;
+            const parent_native_parameter_arrow_owner = self.native_parameter_arrow_owner;
+            if (native_parameter_capture) {
+                self.native_parameter_arrow_depth += 1;
+                self.native_parameter_arrow_owner = source_owner;
+            }
             defer self.native_parameter_arrow_depth = native_parameter_arrow_depth;
+            defer self.native_parameter_arrow_owner = parent_native_parameter_arrow_owner;
 
             const params_idx: NodeIndex = self.readNodeIdx(e, 0);
             const body_idx: NodeIndex = self.readNodeIdx(e, 1);
@@ -142,6 +147,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                         node.span,
                         new_target_span,
                         native_parameter_arrow_depth == 0,
+                        parent_native_parameter_arrow_owner,
                     );
                 }
             }
@@ -228,6 +234,7 @@ fn wrapNativeParameterArrow(
     span: @import("../lexer/token.zig").Span,
     new_target_span: @import("../lexer/token.zig").Span,
     is_outermost_native_parameter_arrow: bool,
+    parent_native_parameter_arrow_owner: NodeIndex,
 ) !NodeIndex {
     const name = try es_helpers.resolveSyntheticName(self, "_newTarget");
     const binding = try es_helpers.makeExactSyntheticBinding(self, name);
@@ -282,7 +289,8 @@ fn wrapNativeParameterArrow(
     const parent_scope = self.outputScopeParent(arrow_scope);
     const wrapper_scope = try self.addGeneratedFunctionScope(parent_scope, wrapper);
     try self.reparentGeneratedScope(arrow_scope, wrapper_scope);
-    _ = try self.declareSyntheticInScope(binding, span, .parameter, wrapper_scope);
+    const wrapper_symbol = try self.declareSyntheticInScope(binding, span, .parameter, wrapper_scope);
+    try self.bindNativeParameterArrowRefs(source_owner, wrapper_symbol);
     try self.remapCopiedScopeOwner(source_owner, lowered_arrow);
 
     const capture_value = if (is_outermost_native_parameter_arrow) blk: {
@@ -305,13 +313,12 @@ fn wrapNativeParameterArrow(
             .span = new_target_span,
             .data = .{ .none = 1 },
         });
-    } else try es_helpers.makeSyntheticRef(self, "_newTarget");
+    } else blk: {
+        const ref = try es_helpers.makeSyntheticRef(self, "_newTarget");
+        try self.trackNativeParameterArrowRef(parent_native_parameter_arrow_owner, ref);
+        break :blk ref;
+    };
     const call = try es_helpers.makeCallExpr(self, wrapper, &.{capture_value}, span);
-    const specs = [_]@import("transformer/semantic_edit.zig").GeneratedLocalSpec{.{
-        .name = name,
-        .kind = @import("../semantic/symbol.zig").SymbolKind.parameter,
-    }};
-    try self.trackGeneratedLocalSymbols(call, parent_scope, &specs);
     return call;
 }
 
