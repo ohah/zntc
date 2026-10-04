@@ -1,7 +1,7 @@
-const events = [];
-const iterable = {
+var events = [];
+var iterable = {
   [Symbol.iterator]() {
-    let current = 0;
+    var current = 0;
     return {
       next() {
         current += 1;
@@ -15,14 +15,14 @@ const iterable = {
   },
 };
 
-const values = [];
+var values = [];
 outerLoop: for (const loopValue of iterable) {
   values.push(loopValue);
   if (loopValue === 1) continue outerLoop;
   if (loopValue === 2) break outerLoop;
 }
 
-const capturedValues = [];
+var capturedValues = [];
 for (let lexicalValue of [3, 4, 5]) {
   capturedValues.push(() => lexicalValue);
 }

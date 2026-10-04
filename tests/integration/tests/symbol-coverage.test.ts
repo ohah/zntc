@@ -272,13 +272,13 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('native for-of retains its graph while ES5 lowering reanalyzes exact scopes', () => {
+  test('native and ES5 for-of lowering retain exact loop and helper scopes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-for-of-catch-scope-'));
     const file = join(FIXTURE_DIR, '4819-for-of-iterator-close.mjs');
     try {
       for (const target of [
         { name: 'es2015', arg: '--target=es2015', graph: 'retained' },
-        { name: 'es5', arg: '--target=es5', graph: 'reanalyzed' },
+        { name: 'es5', arg: '--target=es5', graph: 'retained' },
       ]) {
         const output = join(dir, `${target.name}.cjs`);
         const proc = spawnSync(
@@ -513,6 +513,8 @@ describe('symbol identity coverage gate (#4819)', () => {
     const cases = [
       {
         name: 'optional-chain',
+        target: '--target=es2015',
+        graph: 'reanalyzed',
         source: [
           'const values: Array<number | undefined> = [1, undefined];',
           'for (const value of values) console.log(value?.toFixed(0));',
@@ -521,6 +523,8 @@ describe('symbol identity coverage gate (#4819)', () => {
       },
       {
         name: 'for-await',
+        target: '--target=es2015',
+        graph: 'reanalyzed',
         source: [
           'async function collect(values: AsyncIterable<number>) {',
           '  const output: number[] = [];',
@@ -530,6 +534,26 @@ describe('symbol identity coverage gate (#4819)', () => {
           "collect([1, 2]).then(values => console.log(values.join(',')));",
         ].join('\n'),
         stdout: '1,2\n',
+      },
+      {
+        name: 'unrelated-lexical-lowering',
+        target: '--target=es5',
+        source: [
+          'var values = [1];',
+          'for (var value of values) console.log(value);',
+          'const outside = 2;',
+          'console.log(outside);',
+        ].join('\n'),
+        stdout: '1\n2\n',
+      },
+      {
+        name: 'additional-runtime-helper',
+        target: '--target=es5',
+        source: [
+          'var match = /(?<word>\\w+)/.exec("hello");',
+          'for (var value of [match.groups.word]) console.log(value);',
+        ].join('\n'),
+        stdout: 'hello\n',
       },
     ];
     try {
@@ -542,7 +566,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           [
             '--bundle',
             entry,
-            '--target=es2015',
+            fixture.target ?? '--target=es2015',
             '--platform=node',
             '--format=cjs',
             '--minify-identifiers',
@@ -579,7 +603,9 @@ describe('symbol identity coverage gate (#4819)', () => {
               line.includes('zntc: symbol-identity-prepass-mode ') &&
               line.includes(`${fixture.name}.ts`),
           );
-        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
+          `semantic_graph=${fixture.graph ?? 'reanalyzed'}`,
+        );
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
         expect(actual.stdout, fixture.name).toBe(fixture.stdout);
