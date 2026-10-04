@@ -87,18 +87,50 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
         .nameOf = Ctx.nameOf,
     });
     defer table.deinit(self.allocator);
+    var parameter_renames = try @import("../parameter_environment.zig").collectRenames(self);
+    defer parameter_renames.deinit(self.allocator);
     var map: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
     errdefer map.deinit(self.allocator);
     if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
     const arena = self.name_arena.?.allocator();
+    var reserved: std.StringHashMapUnmanaged(void) = .empty;
+    defer reserved.deinit(self.allocator);
+    for (self.symbols) |sym| try reserved.put(self.allocator, try canonicalIdentifier(arena, self.ast.getText(sym.name)), {});
+    var globals = unresolved.keyIterator();
+    while (globals.next()) |name| try reserved.put(self.allocator, try canonicalIdentifier(arena, name.*), {});
     // 심볼 번호 순서로 이름을 매겨 결정적으로 만든다.
     for (self.symbols, 0..) |sym, i| {
-        if (!table.contains(@intCast(i))) continue;
-        self.block_rename_counter += 1;
-        const name = try std.fmt.allocPrint(arena, "{s}${d}", .{ self.ast.getText(sym.name), self.block_rename_counter });
+        const parameter_rename = parameter_renames.contains(@intCast(i));
+        if (!table.contains(@intCast(i)) and !parameter_rename) continue;
+        const base_name = try canonicalIdentifier(arena, self.ast.getText(sym.name));
+        const name = while (true) {
+            self.block_rename_counter += 1;
+            const candidate = try std.fmt.allocPrint(arena, "{s}${d}", .{ base_name, self.block_rename_counter });
+            if (!reserved.contains(candidate)) break candidate;
+        };
+        try reserved.put(self.allocator, name, {});
         try map.put(self.allocator, @intCast(i), name);
+        if (parameter_rename)
+            try @import("semantic_edit.zig").renameParameterEnvironmentBinding(self, @intCast(i), name);
     }
     self.block_rename_map = map;
+    try @import("../parameter_environment.zig").collectInferredNames(self, &parameter_renames);
+}
+
+/// Source spellings such as x, \\u0078 and \\u{78} reserve the same JS name.
+/// The parser already validated identifiers; reuse the cooked-name decoder
+/// instead of introducing another Unicode escape parser for fresh aliases.
+fn canonicalIdentifier(allocator: std.mem.Allocator, name: []const u8) Error![]const u8 {
+    if (std.mem.indexOfScalar(u8, name, '\\') == null) return name;
+    var decoded: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (i < name.len) {
+        const cp = @import("../cooked_name.zig").nextCookedCp(name, &i) orelse return name;
+        var bytes: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(cp, &bytes) catch return name;
+        try decoded.appendSlice(allocator, bytes[0..len]);
+    }
+    return decoded.toOwnedSlice(allocator);
 }
 
 /// 클래스 이름 노드에서 Span 추출. 익명 클래스(none)면 null 반환.

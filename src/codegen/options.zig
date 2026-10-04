@@ -74,6 +74,9 @@ pub const default_cjs_module_name = "module";
 
 pub const CodegenOptions = struct {
     module_format: ModuleFormat = .esm,
+    /// Standalone runtime helpers, emitted after the program's hashbang and
+    /// directive prologue. Writing them through codegen also advances mappings.
+    program_preamble: []const u8 = "",
     /// 문자열 따옴표 스타일 (기본: 쌍따옴표, esbuild/oxc 호환)
     quote_style: QuoteStyle = .double,
     /// 들여쓰기 문자 (D044: Tab 기본)

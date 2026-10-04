@@ -1870,6 +1870,9 @@ pub const FunctionFlags = struct {
     pub const is_async: u32 = 0x01;
     pub const is_generator: u32 = 0x02;
     pub const no_side_effects: u32 = 0x04; // @__NO_SIDE_EFFECTS__
+    /// A transform emitted a scoped NamedEvaluation helper for this declaration.
+    /// Codegen must not append another helper using the later emitted alias.
+    pub const name_preserved: u32 = 0x08;
 };
 
 /// function_declaration / function_expression extras 레이아웃: [name, params, body, flags, return_type].

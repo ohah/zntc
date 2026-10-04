@@ -212,16 +212,20 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // 클래스 이름 추출. `export default class {}` 는 class_declaration 이지만
             // 이름이 없으므로, ES5 lowering 의 outer `var` 선언에도 실제 binding 이 필요하다.
             var new_name = try self.visitNode(name_idx);
-            const name_span = if (!new_name.isNone())
+            const outer_name_span = if (!new_name.isNone())
                 self.ast.getNode(new_name).data.string_ref
             else blk: {
                 const synthetic = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_Class"));
                 new_name = try es_helpers.makeSyntheticBinding(self, synthetic);
                 break :blk synthetic;
             };
+            // The outer declaration may need an alias, but class-self uses
+            // retain their exact inner SymbolId and original source spelling.
+            const name_span = if (!name_idx.isNone()) self.ast.getNode(name_idx).data.string_ref else outer_name_span;
+            const renamed_outer = !std.mem.eql(u8, self.ast.getText(name_span), self.ast.getText(outer_name_span));
             const saved_class_name_node = self.current_class_name_node;
             const saved_class_self_symbol_id = self.current_class_self_symbol_id;
-            self.current_class_name_node = new_name;
+            self.current_class_name_node = if (!name_idx.isNone()) name_idx else new_name;
             self.current_class_self_symbol_id = self.class_self_symbol_map.get(@intFromEnum(source_idx));
             defer self.current_class_name_node = saved_class_name_node;
             defer self.current_class_self_symbol_id = saved_class_self_symbol_id;
@@ -246,7 +250,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     // 원래 이름을 직접 사용하면 번들러에서 동일 이름의 다른 변수를 참조할 수 있으므로
                     // (예: EventEmitter가 eventemitter3과 react-native 양쪽에 존재),
                     // 항상 _super 매개변수를 통해 스코프를 격리한다.
-                    super_expr_node = try self.makeIdentifierRefWithSymbol(super_node.data.string_ref, super_idx);
+                    const super_name = if (self.renamedNameOf(super_idx)) |renamed|
+                        try self.ast.addString(renamed)
+                    else
+                        super_node.data.string_ref;
+                    super_expr_node = try self.makeIdentifierRefWithSymbol(super_name, super_idx);
                     try self.trackUserReadFromBinding(super_expr_node, super_idx, iife_parent);
                     super_span = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_super"));
                 } else {
@@ -328,7 +336,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const fresh_name = try self.makeUserBinding(fresh_name_span, .none);
             if (name_idx.isNone() or !(try self.bindClassSelfStorage(source_idx, fresh_name, iife_scope)))
                 try self.propagateSymbolId(new_name, fresh_name);
-            if (inner != null and (write_binding != null or has_self_alias))
+            if (inner != null and (write_binding != null or has_self_alias or renamed_outer))
                 try self.preserved_simple_class_names.append(self.allocator, @intFromEnum(fresh_name));
 
             const scratch_top = self.scratch.items.len;
@@ -526,7 +534,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // experimentalDecorators
             if (self.options.experimental_decorators) {
-                try emitDecoratorsForLoweredClass(self, node, body_idx, name_span, name_idx);
+                try emitDecoratorsForLoweredClass(self, node, body_idx, outer_name_span, name_idx);
             }
 
             return .none;
@@ -587,7 +595,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const super_node = self.ast.getNode(super_idx);
                 if (super_node.tag == .identifier_reference or super_node.tag == .binding_identifier) {
                     // 단순 식별자도 IIFE 매개변수 _super로 전달 (스코프 격리)
-                    expr_super_node = try self.makeIdentifierRefWithSymbol(super_node.data.string_ref, super_idx);
+                    const super_name = if (self.renamedNameOf(super_idx)) |renamed|
+                        try self.ast.addString(renamed)
+                    else
+                        super_node.data.string_ref;
+                    expr_super_node = try self.makeIdentifierRefWithSymbol(super_name, super_idx);
                     try self.trackUserReadFromBinding(expr_super_node, super_idx, iife_parent);
                     super_span = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_super"));
                 } else {
@@ -813,6 +825,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
+            if (try @import("parameter_environment.zig").takeClassNameStatement(self, source_idx, func_name, func_node, iife_scope)) |name_statement|
+                try self.scratch.append(self.allocator, name_statement);
             for (cm.accessor_key_memos.items) |memo| {
                 try self.scratch.append(self.allocator, memo);
             }

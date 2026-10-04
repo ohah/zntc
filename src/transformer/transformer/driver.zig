@@ -79,6 +79,8 @@ pub fn transform(self: anytype) Error!NodeIndex {
     if (self.semantic_edit_enabled)
         try self.registerGeneratedFunctionScopes(root, self.programScope());
 
+    try @import("../parameter_environment.zig").prependBodyFunctionNames(self, root);
+
     // Pass 2: ES2015 params lowering 일괄 적용
     // #4251: object rest 가 든 param (`{a, ...r}`, ES2018) 은 default_params 지원
     // 타겟(es2017)에서도 lowering 필요 → object_spread 도 게이트. per-function 은
