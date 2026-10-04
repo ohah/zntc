@@ -446,6 +446,44 @@ fn hasDirectSpreadElement(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     return false;
 }
 
+fn hasOnlyArrayLiteralSpreadOperands(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
+    const extras = ast.extra_data.items;
+    const start: u32, const len: u32 = switch (node.tag) {
+        .array_expression => .{ node.data.list.start, node.data.list.len },
+        .call_expression => blk: {
+            const extra = node.data.extra;
+            if (extra > extras.len or extras.len - extra <= 3) return false;
+            const callee: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+            if (callee.isNone() or @intFromEnum(callee) >= ast.nodes.items.len or
+                ast.nodes.items[@intFromEnum(callee)].tag != .identifier_reference) return false;
+            break :blk .{ extras[extra + 1], extras[extra + 2] };
+        },
+        else => return false,
+    };
+    if (start > extras.len or len > extras.len - start) return false;
+
+    for (extras[start .. start + len]) |raw_idx| {
+        if (raw_idx >= ast.nodes.items.len) return false;
+        const element = ast.nodes.items[raw_idx];
+        if (element.tag != .spread_element) continue;
+        const operand = element.data.unary.operand;
+        if (operand.isNone() or @intFromEnum(operand) >= ast.nodes.items.len) return false;
+        const operand_node = ast.nodes.items[@intFromEnum(operand)];
+        if (operand_node.tag != .array_expression) return false;
+        const members = operand_node.data.list;
+        if (members.start > extras.len or members.len > extras.len - members.start) return false;
+        for (extras[members.start .. members.start + members.len]) |member_idx| {
+            if (member_idx >= ast.nodes.items.len) return false;
+            const member_tag = ast.nodes.items[member_idx].tag;
+            // A literal hole is not an array value. `concat` keeps holes while
+            // iterator spread materializes them as undefined, so leave this
+            // shape outside the audited helper-free lowering subset.
+            if (member_tag == .spread_element or member_tag == .elision) return false;
+        }
+    }
+    return true;
+}
+
 fn hasReachableObjectLiteralSpread(ast: *const ast_mod.Ast) ?bool {
     const reachable_nodes = ast_walk.collectReachableNodeIndices(ast.allocator, ast) catch return null;
     defer ast.allocator.free(reachable_nodes);
@@ -602,6 +640,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_lowered_for_await = false;
     var found_native_class = false;
     var found_native_destructuring = false;
+    var found_lowered_array_spread = false;
     var found_lowered_object_rest = false;
     var found_lowered_object_spread = false;
     var found_safe_template_literal = false;
@@ -736,7 +775,10 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .array_expression, .call_expression, .new_expression => {
                 if (options.unsupported.optional_chaining and
                     ast_mod.spineHasOptionalChain(ast, @enumFromInt(raw_idx))) return false;
-                if (options.unsupported.spread and hasDirectSpreadElement(ast, node)) return false;
+                if (options.unsupported.spread and hasDirectSpreadElement(ast, node)) {
+                    if (!hasOnlyArrayLiteralSpreadOperands(ast, node)) return false;
+                    found_lowered_array_spread = true;
+                }
             },
             .static_member_expression, .computed_member_expression => {
                 if (options.unsupported.optional_chaining and
@@ -891,8 +933,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .template_element,
             .unary_expression,
             .update_expression,
-            // Parent-specific checks above keep transformed spread forms on
-            // semantic reanalysis; native spread elements preserve the graph.
+            // Parent-specific checks above admit only audited, helper-free
+            // array-literal spread lowering; other downlevel spread stays on
+            // semantic reanalysis.
             .spread_element,
             .parenthesized_expression,
             .block_statement,
@@ -927,7 +970,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_native_for_await or found_lowered_for_await or found_native_class or found_native_destructuring or
         found_safe_template_literal or found_object_shorthand or found_lowered_object_method or
         found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key or
-        found_lowered_object_rest or found_lowered_object_spread;
+        found_lowered_array_spread or found_lowered_object_rest or found_lowered_object_spread;
 }
 
 /// A retained prepass graph may absorb only the `__values`/`__asyncValues`
@@ -1353,10 +1396,10 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     };
 
     // Type erasure, Flow match lowering, TypeScript enums, supported JSX, and
-    // audited ES5 for-of / ES2017 for-await / ES2015-2017 object-rest and
-    // object-spread subsets preserve the edited semantic graph. JSX and syntax
-    // lowering may add synthetic helper imports, so refresh module
-    // import/export metadata without replacing that graph.
+    // audited ES5 for-of / ES2017 for-await / ES2015-2017 object-rest,
+    // object-spread, and helper-free array-spread subsets preserve the edited
+    // semantic graph. JSX and syntax lowering may add synthetic helper imports,
+    // so refresh module import/export metadata without replacing that graph.
     if (can_keep_semantic_graph and runtimeHelpersSafeForRetainedGraph(transformer.runtime_helpers)) {
         // Generated built-ins are not source references, so the transform
         // editor cannot add them to unresolved_references. If recording them
