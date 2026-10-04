@@ -827,6 +827,17 @@ pub fn buildGetterMethod(self: anytype, key: NodeIndex, return_expr: NodeIndex, 
 /// param name 은 Babel/SWC 관례대로 "value" 고정. assign_target 은 caller 가 pre-build
 /// (예: this.#storage 노드). buildGetterMethod 와 대칭.
 pub fn buildSetterMethod(self: anytype, key: NodeIndex, assign_target: NodeIndex, is_static: bool, span: Span) Error!NodeIndex {
+    return (try buildSetterMethodWithHandles(self, key, assign_target, is_static, span)).method;
+}
+
+/// Exact nodes carried until the generated setter's output scope is known.
+pub const GeneratedSetterHandles = struct {
+    method: NodeIndex,
+    parameter: NodeIndex,
+    value_reference: NodeIndex,
+};
+
+pub fn buildSetterMethodWithHandles(self: anytype, key: NodeIndex, assign_target: NodeIndex, is_static: bool, span: Span) Error!GeneratedSetterHandles {
     const val_span = try self.ast.addString("value");
     const val_param = try es_helpers.makeSyntheticBinding(self, val_span);
     const params_list = try self.ast.addNodeList(&.{val_param});
@@ -851,14 +862,18 @@ pub fn buildSetterMethod(self: anytype, key: NodeIndex, assign_target: NodeIndex
     });
     const empty_decos = try self.ast.addNodeList(&.{});
     const setter_flags: u32 = 0x04 | (if (is_static) @as(u32, 0x01) else 0);
-    return self.addExtraNode(.method_definition, span, &.{
-        @intFromEnum(key),
-        @intFromEnum(params_node),
-        @intFromEnum(body),
-        setter_flags,
-        empty_decos.start,
-        empty_decos.len,
-    });
+    return .{
+        .method = try self.addExtraNode(.method_definition, span, &.{
+            @intFromEnum(key),
+            @intFromEnum(params_node),
+            @intFromEnum(body),
+            setter_flags,
+            empty_decos.start,
+            empty_decos.len,
+        }),
+        .parameter = val_param,
+        .value_reference = val_ref,
+    };
 }
 
 /// 문자열 리터럴 노드에서 JS 변수명으로 사용 가능한 이름 추출.

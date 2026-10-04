@@ -606,6 +606,7 @@ pub const buildFieldInitNames = stage3_helpers.buildFieldInitNames;
 pub const buildMetadataDefineProperty = stage3_helpers.buildMetadataDefineProperty;
 pub const buildGetterMethod = stage3_helpers.buildGetterMethod;
 pub const buildSetterMethod = stage3_helpers.buildSetterMethod;
+pub const buildSetterMethodWithHandles = stage3_helpers.buildSetterMethodWithHandles;
 pub const extractCleanVarName = stage3_helpers.extractCleanVarName;
 pub const appendEsDecorateStmt = stage3_helpers.appendEsDecorateStmt;
 
