@@ -1933,13 +1933,26 @@ pub fn fillThisArgumentsCaptures(self: anytype, buf: *[3]NodeIndex, span: Span) 
         count += 1;
     }
     if (self.hasLexicalCapture(self.capture_frame, .new_target_value)) {
-        buf[count] = try buildNewTargetCapture(self, span);
-        count += 1;
+        const capture = try buildNewTargetCapture(self, span);
+        if (!capture.isNone()) {
+            buf[count] = capture;
+            count += 1;
+        }
     }
     return count;
 }
 
 pub fn buildNewTargetCapture(self: anytype, span: Span) !NodeIndex {
+    if (self.capture_frame != 0) if (self.active_derived_constructor_new_target) |new_target| {
+        if (new_target.capture_frame == self.capture_frame) {
+            if (self.semantic_edit_enabled) {
+                const symbol = new_target.symbol_id orelse std.debug.panic("derived constructor _newTarget has no SymbolId", .{});
+                try self.bindLexicalCaptureToExistingSymbol(.new_target_value, symbol);
+            }
+            return .none;
+        }
+    };
+
     var initializer_span = span;
     for (self.lexical_capture_uses.items) |use| {
         if (use.frame == self.capture_frame and use.kind == .new_target_value) {

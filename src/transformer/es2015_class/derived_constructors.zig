@@ -120,13 +120,23 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            // var _newTarget = this.constructor; — derived constructor body 시작에서 NewTarget 캡쳐.
-            // arrow 안의 super() 도 closure 로 동일 값을 보존하고, multi-level chain 에서
-            // this.constructor 가 항상 top-level NewTarget 으로 평가돼 prototype propagation 이 정확.
-            try self.scratch.append(
-                self.allocator,
-                try self.buildVarDecl("_newTarget", try es_helpers.makeThisDotConstructor(self, span), span),
+            // The exact handle was reserved before visiting the explicit
+            // constructor body so every lowered super() can carry its SID.
+            // Emit that same binding here, before body statements.
+            const new_target = self.active_derived_constructor_new_target orelse
+                std.debug.panic("derived constructor body has no _newTarget handle", .{});
+            const new_target_decl = try es_helpers.makeVarDeclaration(
+                self,
+                &.{try es_helpers.makeDeclarator(
+                    self,
+                    new_target.binding,
+                    try es_helpers.makeThisDotConstructor(self, span),
+                    span,
+                )},
+                .@"var",
+                span,
             );
+            try self.scratch.append(self.allocator, new_target_decl);
 
             // var _this; (초기화 없는 선언) — extra_data grow 가능
             const this_capture = try self.buildVarDecl("_this", .none, span);

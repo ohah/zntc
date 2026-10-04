@@ -80,16 +80,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return self.class_self_written_symbols.contains(id);
         }
 
-        fn trackDerivedConstructorLocalSymbols(self: *Transformer, function: NodeIndex, function_scope: @import("../semantic/scope.zig").ScopeId) Transformer.Error!void {
-            if (!self.semantic_edit_enabled) return;
-            const specs = [_]Transformer.GeneratedLocalSpec{.{
-                .name = try es_helpers.resolveSyntheticName(self, "_newTarget"),
-                .kind = .variable_var,
-                .binding_scope = function_scope,
-            }};
-            try self.trackGeneratedLocalSymbols(function, function_scope, &specs);
-        }
-
         fn beginClassSelfWrite(self: *Transformer, inner: ?u32, scope: @import("../semantic/scope.zig").ScopeId, context: *Transformer.ClassSelfWriteTarget, span: Span) Transformer.Error!?NodeIndex {
             if (!(try hasClassSelfWrite(self, inner))) return null;
             const name = try es_helpers.resolveSyntheticName(self, "_classSelfWrite");
@@ -422,9 +412,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             if (source_ctor) |original| try self.remapCopiedScopeOwner(original, func_node);
             if (has_self_alias) try self.addSyntheticRefInScope(alias_check_ref, alias_id, ctor_scope, .{ .read = true });
-            if (cm.constructor_idx != null and has_super and super_span != null)
-                try trackDerivedConstructorLocalSymbols(self, func_node, ctor_scope);
-
             try self.scratch.append(self.allocator, func_node);
             if (write_binding) |binding|
                 try self.scratch.append(self.allocator, try emitClassSelfWriteTarget(self, binding, fresh_name, iife_scope, span));
@@ -775,9 +762,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
 
             if (source_ctor == null and has_extra) try self.bindReservedFunctionOwner(ctor_scope, func_node);
-
-            if (cm.constructor_idx != null and has_super and super_span != null)
-                try trackDerivedConstructorLocalSymbols(self, func_node, ctor_scope);
 
             if (!has_extra) {
                 const func = self.ast.getNode(func_node);

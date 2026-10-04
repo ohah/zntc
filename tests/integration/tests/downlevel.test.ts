@@ -1041,6 +1041,35 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       expect(result.runOutput).toBe('woof animal');
     });
 
+    test('explicit ES5 derived constructors keep super references bound to their constructor scope', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            const _newTarget = 'user';
+            class Base { constructor() { (this as any).target = new.target; } }
+            class ArrowSuper extends Base {
+              constructor(readParameter = () => new.target) {
+                const readBody = () => new.target;
+                const call = () => super();
+                call();
+                (this as any).lexicalParameterTarget = readParameter();
+                (this as any).lexicalBodyTarget = readBody();
+              }
+            }
+            class DirectSuper extends Base { constructor() { super(); } }
+            const arrow = new ArrowSuper() as any;
+            const direct = new DirectSuper() as any;
+            console.log(arrow.target === ArrowSuper, arrow.lexicalParameterTarget === ArrowSuper, arrow.lexicalBodyTarget === ArrowSuper, direct.target === DirectSuper, _newTarget);
+          `,
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('true true true true user');
+    });
+
     test('default ES5 derived constructors keep colliding newTarget locals separate', async () => {
       const result = await bundleAndRun(
         {
