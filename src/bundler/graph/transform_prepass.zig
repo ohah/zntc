@@ -589,6 +589,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_native_for_of = false;
     var found_lowered_for_of = false;
     var found_native_for_await = false;
+    var found_lowered_for_await = false;
     var found_native_class = false;
     var found_native_destructuring = false;
     var found_safe_template_literal = false;
@@ -766,8 +767,17 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 }
             },
             .for_await_of_statement => {
-                if (options.unsupported.needsForAwaitOfDownlevel()) return false;
-                found_native_for_await = true;
+                if (options.unsupported.needsForAwaitOfDownlevel()) {
+                    // The ES2017 path lowers only the loop. Keep async/await
+                    // native so rewriteForAwait's generated temps, catch
+                    // binding, and moved iteration scope stay in one edited
+                    // semantic graph. Older targets also lower the enclosing
+                    // async function and must use the full reanalysis path.
+                    if (options.unsupported.async_await or options.unsupported.generator) return false;
+                    found_lowered_for_await = true;
+                } else {
+                    found_native_for_await = true;
+                }
             },
             .class_declaration, .class_expression => {
                 if (options.unsupported.class) return false;
@@ -882,19 +892,21 @@ fn canRetainGraphForAuditedSyntaxSubset(
     }
     return found_arrow or found_native_await or found_native_generator or found_native_tagged_template or
         found_native_for_in or found_lowered_for_in or found_native_for_of or found_lowered_for_of or
-        found_native_for_await or found_native_class or found_native_destructuring or
+        found_native_for_await or found_lowered_for_await or found_native_class or found_native_destructuring or
         found_safe_template_literal or found_object_shorthand or found_lowered_object_method or
         found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key;
 }
 
-/// A retained prepass graph may absorb only the `__values` virtual import
-/// introduced by ES5 for-of. Any other runtime helper can indicate an
-/// independently lowered construct, so keep that module on semantic resync.
+/// A retained prepass graph may absorb only the `__values`/`__asyncValues`
+/// virtual imports introduced by audited for-of and ES2017 for-await lowering.
+/// Any other runtime helper can indicate an independently lowered construct,
+/// so keep that module on semantic resync.
 fn runtimeHelpersSafeForRetainedGraph(
     helpers: @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers,
 ) bool {
     var other_helpers = helpers;
     other_helpers.values = false;
+    other_helpers.async_values = false;
     return !other_helpers.hasAny();
 }
 
@@ -1297,9 +1309,9 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     };
 
     // Type erasure, Flow match lowering, TypeScript enums, supported JSX, and
-    // the audited ES5 for-of subset preserve the edited semantic graph. JSX
-    // and ES5 for-of may add synthetic helper imports, so refresh module
-    // import/export metadata from syntax without replacing the edited graph.
+    // audited ES5 for-of / ES2017 for-await subsets preserve the edited semantic
+    // graph. JSX and iterator lowering may add synthetic helper imports, so
+    // refresh module import/export metadata without replacing that graph.
     if (can_keep_semantic_graph and runtimeHelpersSafeForRetainedGraph(transformer.runtime_helpers)) {
         // Generated built-ins are not source references, so the transform
         // editor cannot add them to unresolved_references. If recording them
