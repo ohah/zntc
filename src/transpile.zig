@@ -1387,6 +1387,8 @@ fn transpileWithCallbackInternal(
         transformer.scope_owner_map = analyzer.scope_owner_map;
         transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
         transformer.helper_scope_map = analyzer.helper_scope_map;
+        transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+        transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
         transformer.semantic_edit_enabled = true;
         transformer.unresolved_references = &analyzer.unresolved_references;
     } else if (binding_lite_storage) |*binding_lite| {
