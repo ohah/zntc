@@ -593,6 +593,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
     defer lowered_var_destructuring_nodes.deinit(ast.allocator);
     var lowered_destructuring_assignment_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer lowered_destructuring_assignment_nodes.deinit(ast.allocator);
+    var lowered_parameter_destructuring_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer lowered_parameter_destructuring_nodes.deinit(ast.allocator);
     if (options.unsupported.destructuring) {
         const extras = ast.extra_data.items;
         for (reachable_nodes) |raw_idx| {
@@ -641,6 +643,80 @@ fn canRetainGraphForAuditedSyntaxSubset(
             defer ast.allocator.free(target_nodes);
             for (target_nodes) |target_raw| {
                 lowered_destructuring_assignment_nodes.put(ast.allocator, target_raw, {}) catch return false;
+            }
+        }
+
+        // Destructuring parameters without defaults/rest are lowered by the
+        // parameter pass, which registers the replacement parameter and all
+        // emitted reads/writes in the same edited graph. Keep default and rest
+        // patterns on reanalysis: they also change parameter initialization
+        // order and have separate target gates.
+        for (reachable_nodes) |raw_idx| {
+            const parameter = ast.nodes.items[raw_idx];
+            if (parameter.tag != .formal_parameter) continue;
+            const extra = parameter.data.extra;
+            if (extra > extras.len or extras.len - extra <= ast_mod.FormalParameterExtra.default) return false;
+            const pattern_raw = extras[extra + ast_mod.FormalParameterExtra.pattern];
+            const default_raw = extras[extra + ast_mod.FormalParameterExtra.default];
+            if (pattern_raw >= ast.nodes.items.len) return false;
+            const default_idx: ast_mod.NodeIndex = @enumFromInt(default_raw);
+            if (!default_idx.isNone() and @intFromEnum(default_idx) >= ast.nodes.items.len) return false;
+            const pattern_tag = ast.nodes.items[pattern_raw].tag;
+            if ((pattern_tag != .array_pattern and pattern_tag != .object_pattern) or
+                !default_idx.isNone()) continue;
+            const pattern_nodes = ast_walk.collectReachableNodeIndicesFrom(
+                ast.allocator,
+                ast,
+                @enumFromInt(pattern_raw),
+            ) catch return false;
+            defer ast.allocator.free(pattern_nodes);
+            var simple_pattern = true;
+            for (pattern_nodes) |pattern_raw_idx| {
+                const child_tag = ast.nodes.items[pattern_raw_idx].tag;
+                if (child_tag == .assignment_pattern or child_tag == .binding_rest_element or
+                    child_tag == .rest_element)
+                {
+                    simple_pattern = false;
+                    break;
+                }
+            }
+            if (!simple_pattern) continue;
+            for (pattern_nodes) |pattern_raw_idx| {
+                lowered_parameter_destructuring_nodes.put(ast.allocator, pattern_raw_idx, {}) catch return false;
+            }
+        }
+
+        // Untyped destructuring parameters are direct children of the
+        // formal_parameters list rather than formal_parameter wrappers.
+        for (reachable_nodes) |raw_idx| {
+            const params = ast.nodes.items[raw_idx];
+            if (params.tag != .formal_parameters) continue;
+            const list = params.data.list;
+            if (list.start > extras.len or list.len > extras.len - list.start) return false;
+            for (extras[list.start .. list.start + list.len]) |parameter_raw| {
+                if (parameter_raw >= ast.nodes.items.len) return false;
+                const parameter_tag = ast.nodes.items[parameter_raw].tag;
+                if (parameter_tag != .array_pattern and parameter_tag != .object_pattern) continue;
+                const pattern_nodes = ast_walk.collectReachableNodeIndicesFrom(
+                    ast.allocator,
+                    ast,
+                    @enumFromInt(parameter_raw),
+                ) catch return false;
+                defer ast.allocator.free(pattern_nodes);
+                var simple_pattern = true;
+                for (pattern_nodes) |pattern_raw_idx| {
+                    const child_tag = ast.nodes.items[pattern_raw_idx].tag;
+                    if (child_tag == .assignment_pattern or child_tag == .binding_rest_element or
+                        child_tag == .rest_element)
+                    {
+                        simple_pattern = false;
+                        break;
+                    }
+                }
+                if (!simple_pattern) continue;
+                for (pattern_nodes) |pattern_raw_idx| {
+                    lowered_parameter_destructuring_nodes.put(ast.allocator, pattern_raw_idx, {}) catch return false;
+                }
             }
         }
     }
@@ -717,6 +793,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_native_destructuring = false;
     var found_lowered_var_destructuring = false;
     var found_lowered_destructuring_assignment = false;
+    var found_lowered_parameter_destructuring = false;
     var found_lowered_array_spread = false;
     var found_lowered_object_rest = false;
     var found_lowered_object_spread = false;
@@ -762,9 +839,13 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (binding_tag == .binding_identifier) continue;
                 if (binding_tag != .array_pattern and binding_tag != .object_pattern) return false;
                 if (options.unsupported.destructuring) {
-                    if (!lowered_var_destructuring_declarators.contains(raw_idx) or
-                        !lowered_var_destructuring_nodes.contains(@intFromEnum(binding))) return false;
-                    found_lowered_var_destructuring = true;
+                    if (lowered_var_destructuring_declarators.contains(raw_idx) and
+                        lowered_var_destructuring_nodes.contains(@intFromEnum(binding)))
+                    {
+                        found_lowered_var_destructuring = true;
+                    } else if (lowered_parameter_destructuring_nodes.contains(@intFromEnum(binding))) {
+                        found_lowered_parameter_destructuring = true;
+                    } else return false;
                 }
             },
             .formal_parameter => {
@@ -778,8 +859,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (pattern_tag != .binding_identifier) {
                     if (pattern_tag != .array_pattern and pattern_tag != .object_pattern) return false;
                     if (options.unsupported.destructuring) {
-                        if (!lowered_var_destructuring_nodes.contains(@intFromEnum(pattern))) return false;
-                        found_lowered_var_destructuring = true;
+                        if (lowered_parameter_destructuring_nodes.contains(@intFromEnum(pattern))) {
+                            found_lowered_parameter_destructuring = true;
+                        } else return false;
                     }
                     if (pattern_tag == .object_pattern and options.unsupported.object_spread and
                         ast.nodeListSplitRest(ast.nodes.items[@intFromEnum(pattern)].data.list).rest_operand != null)
@@ -795,6 +877,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (options.unsupported.destructuring) {
                     if (node.tag == .array_pattern and lowered_var_destructuring_nodes.contains(raw_idx)) {
                         found_lowered_var_destructuring = true;
+                    } else if (node.tag == .array_pattern and lowered_parameter_destructuring_nodes.contains(raw_idx)) {
+                        found_lowered_parameter_destructuring = true;
                     } else if (node.tag == .array_assignment_target and lowered_destructuring_assignment_nodes.contains(raw_idx)) {
                         found_lowered_destructuring_assignment = true;
                     } else return false;
@@ -806,6 +890,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (options.unsupported.destructuring) {
                     if (node.tag == .object_pattern and lowered_var_destructuring_nodes.contains(raw_idx)) {
                         found_lowered_var_destructuring = true;
+                    } else if (node.tag == .object_pattern and lowered_parameter_destructuring_nodes.contains(raw_idx)) {
+                        found_lowered_parameter_destructuring = true;
                     } else if (node.tag == .object_assignment_target and lowered_destructuring_assignment_nodes.contains(raw_idx)) {
                         found_lowered_destructuring_assignment = true;
                     } else return false;
@@ -856,6 +942,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 // destructuring solely because of the rest leaf.
                 if (lowered_var_destructuring_nodes.contains(raw_idx)) {
                     found_lowered_var_destructuring = true;
+                } else if (lowered_parameter_destructuring_nodes.contains(raw_idx)) {
+                    found_lowered_parameter_destructuring = true;
                 } else if (lowered_destructuring_assignment_nodes.contains(raw_idx)) {
                     found_lowered_destructuring_assignment = true;
                 } else if (!options.unsupported.object_spread) {
@@ -865,6 +953,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .elision => {
                 if (lowered_var_destructuring_nodes.contains(raw_idx)) {
                     found_lowered_var_destructuring = true;
+                } else if (lowered_parameter_destructuring_nodes.contains(raw_idx)) {
+                    found_lowered_parameter_destructuring = true;
                 } else if (lowered_destructuring_assignment_nodes.contains(raw_idx)) {
                     found_lowered_destructuring_assignment = true;
                 } else return false;
@@ -929,6 +1019,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (options.unsupported.object_extensions) {
                     if (lowered_var_destructuring_nodes.contains(raw_idx)) {
                         found_lowered_var_destructuring = true;
+                    } else if (lowered_parameter_destructuring_nodes.contains(raw_idx)) {
+                        found_lowered_parameter_destructuring = true;
                     } else if (lowered_destructuring_assignment_nodes.contains(raw_idx)) {
                         found_lowered_destructuring_assignment = true;
                     } else switch (computed_object_keys.get(raw_idx) orelse return false) {
@@ -1098,7 +1190,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     return found_arrow or found_native_await or found_native_generator or found_native_tagged_template or
         found_native_for_in or found_lowered_for_in or found_native_for_of or found_lowered_for_of or
         found_native_for_await or found_lowered_for_await or found_native_class or found_native_destructuring or
-        found_lowered_var_destructuring or found_lowered_destructuring_assignment or
+        found_lowered_var_destructuring or found_lowered_destructuring_assignment or found_lowered_parameter_destructuring or
         found_safe_template_literal or found_object_shorthand or found_lowered_object_method or
         found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key or
         found_lowered_array_spread or found_lowered_object_rest or found_lowered_object_spread;

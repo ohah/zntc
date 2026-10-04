@@ -1350,6 +1350,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       },
       {
         name: 'destructured arrow parameter',
+        graph: 'retained',
         source: [
           'function make(value) { return (({ answer }) => (() => answer)())({ answer: value }); }',
           'console.log(make(42));',
@@ -2399,8 +2400,8 @@ describe('symbol identity coverage gate (#4819)', () => {
           expected: '7\n',
         },
         {
-          name: 'parameter binding pattern',
-          source: 'function get([value]: number[]) { return value; } console.log(get([7]));',
+          name: 'parameter pattern with nested default',
+          source: 'function get([value = 7]: number[]) { return value; } console.log(get([]));',
           expected: '7\n',
         },
         {
@@ -2534,6 +2535,130 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(loopHead.status, loopHead.stderr).toBe(0);
       expect(mode(loopHead.stderr ?? ''), loopHead.stderr).toContain('semantic_graph=reanalyzed');
       assertOutput('15\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 destructuring parameters without defaults or rest retain exact identities', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-destructuring-parameter-retained-'));
+    const input = join(dir, 'entry.ts');
+    const output = join(dir, 'out.cjs');
+    const run = (source: string) => {
+      writeFileSync(input, source);
+      return spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+    };
+    const mode = (stderr: string) =>
+      stderr
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+    const assertOutput = (expected: string) => {
+      const result = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe(expected);
+    };
+
+    try {
+      const retainedCases = [
+        {
+          name: 'direct array parameter pattern',
+          source:
+            'function sum([left, right]) { return left + right; } console.log(sum([20, 22]));',
+          expected: '42\n',
+        },
+        {
+          name: 'typed object parameter pattern',
+          source: [
+            'type Values = { left: number; right: number };',
+            'function sum({ left, right }: Values) { return left + right; }',
+            'console.log(sum({ left: 20, right: 22 }));',
+          ].join('\n'),
+          expected: '42\n',
+        },
+        {
+          name: 'nested function parameter temp scope',
+          source: [
+            'function read({ nested: { value } }) {',
+            '  var _a = 99;',
+            '  { return value + _a; }',
+            '}',
+            'console.log(read({ nested: { value: 3 } }));',
+          ].join('\n'),
+          expected: '102\n',
+        },
+      ];
+
+      for (const fixture of retainedCases) {
+        const proc = run(fixture.source);
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+        expect(mode(proc.stderr ?? ''), `${fixture.name}: ${proc.stderr}`).toContain(
+          'semantic_graph=retained',
+        );
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          );
+        expect(report, fixture.name).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.name} ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report).toMatch(/generated_bindings=[1-9]\d*/);
+        expect(report).toMatch(/generated_references=[1-9]\d*/);
+        expect(report).toMatch(/clean=1(?:\s|$)/);
+        assertOutput(fixture.expected);
+      }
+
+      const reanalyzedCases = [
+        {
+          name: 'nested binding default',
+          source: 'function get({ value = 2 }) { return value; } console.log(get({}));',
+          expected: '2\n',
+        },
+        {
+          name: 'defaulted parameter pattern',
+          source: 'function get({ value } = {}) { return value; } console.log(get());',
+          expected: 'undefined\n',
+        },
+        {
+          name: 'rest parameter beside destructuring',
+          source:
+            'function get({ value }, ...rest) { return value + rest.length; } console.log(get({ value: 3 }, 1));',
+          expected: '4\n',
+        },
+      ];
+
+      for (const fixture of reanalyzedCases) {
+        const proc = run(fixture.source);
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+        expect(mode(proc.stderr ?? ''), `${fixture.name}: ${proc.stderr}`).toContain(
+          'semantic_graph=reanalyzed',
+        );
+        assertOutput(fixture.expected);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
