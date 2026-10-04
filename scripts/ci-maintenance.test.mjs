@@ -99,6 +99,7 @@ function fixture(options = {}) {
   const runs = structuredClone(options.runs ?? [run(), mainRun()]);
   const caches = structuredClone(options.caches ?? []);
   const calls = [];
+  const logs = [];
   const unexpected = [];
   const cachePages = new Set();
   const jobs = (
@@ -206,6 +207,7 @@ function fixture(options = {}) {
   return {
     github,
     calls,
+    logs,
     runs,
     caches,
     cachePages,
@@ -224,6 +226,7 @@ function fixture(options = {}) {
             payload: payload ?? { action: 'closed', pull_request: target },
           },
           dryRun,
+          log: (message) => logs.push(message),
         });
       } finally {
         assert.deepEqual(unexpected, [], 'all requests must use the documented REST boundary');
@@ -645,7 +648,7 @@ for (const [label, route, paramsMatch] of [
   });
 }
 
-test('incomplete cache pagination does not turn a missing page into permission to delete', async () => {
+test('incomplete PR cache pagination defers that PR without permitting deletion', async () => {
   const f = fixture({
     runs: [mainRun()],
     caches: [cache()],
@@ -655,7 +658,11 @@ test('incomplete cache pagination does not turn a missing page into permission t
       }
     },
   });
-  await assert.rejects(f.execute(), /pagination/i);
+  const result = await f.execute();
+  assert.deepEqual(result.deferredPulls, [123]);
+  assert.deepEqual(result.deletedCaches, []);
+  assert.equal(result.deletedBytes, 0);
+  assert.ok(f.logs.some((message) => /Deferring PR #123/.test(message)));
   assert.deepEqual(f.mutations(), []);
 });
 
@@ -1007,7 +1014,7 @@ test('a changing run inventory retries from page one and uses only the recovered
   assert.equal(result.deletedBytes, 301);
 });
 
-test('a persistently incomplete run inventory stops after three snapshots without mutations', async () => {
+test('a persistently incomplete run inventory defers the PR after three snapshots without mutations', async () => {
   const pages = [];
   const f = fixture({
     runs: [mainRun()],
@@ -1019,11 +1026,112 @@ test('a persistently incomplete run inventory stops after three snapshots withou
       }
     },
   });
-  await assert.rejects(f.execute(), /Incomplete pagination/);
+  const result = await f.execute();
+  assert.deepEqual(pages, [1, 1, 1]);
+  assert.deepEqual(result.deferredPulls, [123]);
+  assert.deepEqual(result.deletedCaches, []);
+  assert.equal(result.deletedBytes, 0);
+  assert.ok(f.logs.some((message) => /Deferring PR #123/.test(message)));
+  assert.deepEqual(f.mutations(), []);
+  assert.deepEqual(
+    f.caches.map((item) => item.id),
+    [301],
+  );
+});
+
+test('a sweep defers one PR after three incomplete snapshots and cleans an independent PR', async () => {
+  const secondBranch = 'fix/independent-pr';
+  const second = pull({
+    number: 124,
+    merge_commit_sha: 'd'.repeat(40),
+    head: { ...pull().head, ref: secondBranch, label: `ohah:${secondBranch}`, sha: unrelatedSha },
+  });
+  const pages = [];
+  const f = fixture({
+    pulls: [pull(), second],
+    runs: [mainRun()],
+    caches: [cache(), cache(401, { ref: 'refs/pull/124/merge' })],
+    request({ route, params }) {
+      if (route === `GET ${repoRoute}/actions/runs` && params.branch === branch && !params.status) {
+        pages.push(params.page);
+        return { data: { total_count: 1, workflow_runs: [] } };
+      }
+      if (route.startsWith('DELETE ')) {
+        assert.deepEqual(
+          pages,
+          [1, 1, 1],
+          'finish deferring the first PR before cleaning the second',
+        );
+      }
+    },
+  });
+  const result = await f.execute({ eventName: 'schedule', payload: {} });
+  assert.deepEqual(result.deferredPulls, [123]);
+  assert.deepEqual(f.cancelled(), []);
+  assert.deepEqual(f.deleted(), [401]);
+  assert.deepEqual(result.plannedCaches, [401]);
+  assert.deepEqual(result.deletedCaches, [401]);
+  assert.equal(result.deletedBytes, 401);
+  assert.deepEqual(
+    f.caches.map((item) => item.id),
+    [301],
+  );
+  assert.ok(f.logs.some((message) => /Deferring PR #123/.test(message)));
+});
+
+test('deferring mid-PR preserves remaining caches and records the deletion already completed', async () => {
+  let deletedFirst = false;
+  const incompletePages = [];
+  const f = fixture({
+    runs: [mainRun()],
+    caches: [cache(301), cache(302), cache(303)],
+    request({ route, params }) {
+      if (route.startsWith('DELETE ') && params.cache_id === 301) deletedFirst = true;
+      if (
+        deletedFirst &&
+        route === `GET ${repoRoute}/actions/runs` &&
+        params.status === 'in_progress'
+      ) {
+        incompletePages.push(params.page);
+        return { data: { total_count: 1, workflow_runs: [] } };
+      }
+    },
+  });
+  const result = await f.execute();
+  assert.deepEqual(incompletePages, [1, 1, 1]);
+  assert.deepEqual(result.deferredPulls, [123]);
+  assert.deepEqual(f.cancelled(), []);
+  assert.deepEqual(f.deleted(), [301]);
+  assert.deepEqual(result.plannedCaches, [301]);
+  assert.deepEqual(result.deletedCaches, [301]);
+  assert.equal(result.deletedBytes, 301);
+  assert.deepEqual(
+    f.caches.map((item) => item.id),
+    [302, 303],
+  );
+  assert.ok(f.logs.some((message) => /Deferring PR #123/.test(message)));
+});
+
+test('incomplete initial sweep inventory still rejects without processing its partial PR list', async () => {
+  const pages = [];
+  const f = fixture({
+    runs: [mainRun()],
+    caches: [cache()],
+    request({ route, params }) {
+      if (route === `GET ${repoRoute}/actions/caches` && !params.ref) {
+        pages.push(params.page);
+        return { data: { total_count: 2, actions_caches: [cache()] } };
+      }
+    },
+  });
+  await assert.rejects(f.execute({ eventName: 'schedule', payload: {} }), {
+    code: 'INCOMPLETE_PAGINATION',
+  });
   assert.deepEqual(pages, [1, 1, 1]);
   assert.deepEqual(f.mutations(), []);
   assert.deepEqual(
     f.caches.map((item) => item.id),
     [301],
   );
+  assert.ok(!f.calls.some(({ route }) => route === `GET ${repoRoute}/pulls/{pull_number}`));
 });

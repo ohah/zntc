@@ -249,9 +249,9 @@ export async function runMaintenance({ github, context, dryRun = true, log = () 
     return busy([...active, ...branchRuns.filter((r) => r.status !== 'completed')], pr);
   }
 
-  for (const number of candidates) {
+  async function maintainPull(number) {
     const pr = await pull(number);
-    if (!mergedHere(pr)) continue;
+    if (!mergedHere(pr)) return;
     if (pr.base.ref === repository.default_branch) {
       const replacements = await list(
         'GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs',
@@ -313,11 +313,11 @@ export async function runMaintenance({ github, context, dryRun = true, log = () 
       ref,
     });
     if (caches.some((c) => c.ref !== ref)) throw new Error('Cache query returned a different ref');
-    if (!caches.length) continue;
+    if (!caches.length) return;
     if (await busyNow(pr)) {
       result.deferredPulls.push(number);
       log(`Preserving PR #${number} caches while a related workflow is active`);
-      continue;
+      return;
     }
     if (!mergedHere(await pull(number))) throw new Error('PR merge state changed');
     for (const cache of caches) {
@@ -352,6 +352,18 @@ export async function runMaintenance({ github, context, dryRun = true, log = () 
           if (error.status !== 404) throw error;
         }
       }
+    }
+  }
+  for (const number of candidates) {
+    try {
+      await maintainPull(number);
+    } catch (error) {
+      if (error.code !== 'INCOMPLETE_PAGINATION') throw error;
+      // A persistently changing inventory cannot authorize another mutation
+      // for this PR. Keep its remaining caches and retry on the next event,
+      // while allowing independently verified PRs in a sweep to make progress.
+      result.deferredPulls.push(number);
+      log(`Deferring PR #${number} until the next maintenance event: ${error.message}`);
     }
   }
   result.deferredPulls = [...new Set(result.deferredPulls)];
