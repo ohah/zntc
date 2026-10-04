@@ -5,27 +5,212 @@
 //! intercept an outer read/write, and a body function must not be overwritten by
 //! the initialization of a same-named destructuring/default/rest parameter.
 //!
-//! This does not split a parameter and body var that the analyzer represents by
-//! one SymbolId, or model dynamic eval/with environments. Those require an
-//! explicit parameter/body scope model rather than a spelling-based repair.
+//! Shared parameter/body-var identities are split before block renaming when a
+//! parameter initializer actually references the parameter. Dynamic eval/with
+//! still require an explicit parameter/body scope model.
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const ast_walk = @import("../parser/ast_walk.zig");
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
+const Scope = @import("../semantic/scope.zig").Scope;
+const Symbol = @import("../semantic/symbol.zig").Symbol;
 const Table = @import("block_rename_table.zig").Table;
 const es_helpers = @import("es_helpers.zig");
+
+fn symbolsOf(self: anytype) []const Symbol {
+    if (self.semantic_editor) |*editor| return editor.symbols.items;
+    return self.symbols;
+}
+
+fn scopesOf(self: anytype) []const Scope {
+    if (self.semantic_editor) |*editor| return editor.scopes.items;
+    return self.scopes;
+}
+
+fn scopeMapsOf(self: anytype) []const std.StringHashMapUnmanaged(usize) {
+    if (self.semantic_editor) |*editor| return editor.scope_maps.items;
+    return self.scope_maps;
+}
+
+/// The analyzer intentionally unifies a simple parameter with a body `var`.
+/// For a non-simple parameter list that is lowered to ES5, however, parameter
+/// initializers and the body have separate environments. Split only identities
+/// that are actually referenced from the parameter list, then keep the body
+/// `var` on the source identity and give the parameter side a fresh SID.
+pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table {
+    var split_parameters: Table = .empty;
+    errdefer split_parameters.deinit(self.allocator);
+    if (!self.options.unsupported.default_params or !self.semantic_edit_enabled or self.scopes.len == 0) return split_parameters;
+
+    const Self = @TypeOf(self.*);
+    const Params = @import("es2015_params.zig").ES2015Params(Self);
+    const source_symbols = symbolsOf(self);
+    const scopes = scopesOf(self);
+    var reserved: std.StringHashMapUnmanaged(void) = .empty;
+    defer reserved.deinit(self.allocator);
+    for (source_symbols) |symbol| try reserveIdentifier(self, &reserved, self.ast.getText(symbol.name));
+    if (self.unresolved_references) |unresolved| {
+        var names = unresolved.keyIterator();
+        while (names.next()) |name| try reserveIdentifier(self, &reserved, name.*);
+    }
+    for (self.ast.nodes.items) |node| switch (node.tag) {
+        .binding_identifier, .identifier_reference, .assignment_target_identifier, .jsx_identifier => try reserveIdentifier(self, &reserved, self.ast.identifierNameText(node)),
+        else => {},
+    };
+
+    const semantic_edit = @import("transformer/semantic_edit.zig");
+    // Splitting appends synthetic binding nodes to the AST. Iterate stable
+    // indices and reload each node so a nodes.items reallocation cannot leave
+    // this traversal holding a stale slice pointer.
+    const original_node_count = self.ast.nodes.items.len;
+    for (0..original_node_count) |function_raw| {
+        const function = self.ast.nodes.items[function_raw];
+        const params = self.ast.functionParamsList(function);
+        if (params.len == 0 or !Params.hasDefaultOrRest(self, params)) continue;
+        const scope_raw = self.scope_owner_map.get(@intCast(function_raw)) orelse continue;
+        if (scope_raw >= scopes.len) continue;
+        const function_scope: ScopeId = @enumFromInt(scope_raw);
+        const scope = scopes[scope_raw];
+        if (scope.kind != .function or scope.blocksMangling()) continue;
+        const body = self.ast.functionBodyBlock(function) orelse continue;
+
+        var body_vars: std.AutoHashMapUnmanaged(u32, @import("../lexer/token.zig").Span) = .empty;
+        defer body_vars.deinit(self.allocator);
+        const body_nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(self.allocator, self.ast, body);
+        defer self.allocator.free(body_nodes);
+        for (body_nodes) |raw| {
+            if (raw >= self.ast.nodes.items.len) continue;
+            const declaration = self.ast.nodes.items[raw];
+            if (declaration.tag != .variable_declaration or self.ast.variableDeclarationKind(declaration) != .@"var") continue;
+            const extra = declaration.data.extra;
+            if (extra + 2 >= self.ast.extra_data.items.len) continue;
+            const start = self.ast.extra_data.items[extra + 1];
+            const len = self.ast.extra_data.items[extra + 2];
+            if (start > self.ast.extra_data.items.len or len > self.ast.extra_data.items.len - start) continue;
+            for (self.ast.extra_data.items[start .. start + len]) |raw_declarator| {
+                const declarator: @import("../parser/ast.zig").NodeIndex = @enumFromInt(raw_declarator);
+                if (declarator.isNone() or @intFromEnum(declarator) >= self.ast.nodes.items.len) continue;
+                const declarator_node = self.ast.getNode(declarator);
+                if (declarator_node.tag != .variable_declarator or declarator_node.data.extra >= self.ast.extra_data.items.len) continue;
+                const pattern: @import("../parser/ast.zig").NodeIndex = @enumFromInt(self.ast.extra_data.items[declarator_node.data.extra]);
+                if (pattern.isNone()) continue;
+                var bindings = try @import("../parser/ast_walk.zig").bindingIdentifiers(self.allocator, self.ast, pattern, .{});
+                defer bindings.deinit();
+                while (try bindings.next()) |binding| {
+                    const id = self.getSymbolIdAt(binding) orelse continue;
+                    const symbols = symbolsOf(self);
+                    if (id >= symbols.len or symbols[id].scope_id != function_scope) continue;
+                    if (symbols[id].kind != .parameter and symbols[id].kind != .variable_var) continue;
+                    const entry = try body_vars.getOrPut(self.allocator, id);
+                    if (!entry.found_existing) entry.value_ptr.* = self.ast.getNode(binding).span;
+                }
+            }
+        }
+        if (body_vars.count() == 0) continue;
+
+        var parameter_refs: std.ArrayList(@import("../parser/ast.zig").NodeIndex) = .empty;
+        defer parameter_refs.deinit(self.allocator);
+        var referenced_shared_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        defer referenced_shared_ids.deinit(self.allocator);
+        for (self.ast.extra_data.items[params.start .. params.start + params.len]) |raw_param| {
+            const param: @import("../parser/ast.zig").NodeIndex = @enumFromInt(raw_param);
+            const refs = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(self.allocator, self.ast, param);
+            defer self.allocator.free(refs);
+            for (refs) |reference| {
+                try parameter_refs.append(self.allocator, reference);
+                const id = self.getSymbolIdAt(reference) orelse continue;
+                if (body_vars.contains(id)) try referenced_shared_ids.put(self.allocator, id, {});
+            }
+        }
+
+        var split_by_source: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+        defer split_by_source.deinit(self.allocator);
+        for (self.ast.extra_data.items[params.start .. params.start + params.len]) |raw_param| {
+            const param: @import("../parser/ast.zig").NodeIndex = @enumFromInt(raw_param);
+            var bindings = try @import("../parser/ast_walk.zig").bindingIdentifiers(self.allocator, self.ast, param, .{});
+            defer bindings.deinit();
+            while (try bindings.next()) |binding| {
+                const source_id = self.getSymbolIdAt(binding) orelse continue;
+                if (!referenced_shared_ids.contains(source_id) or split_by_source.contains(source_id)) continue;
+                const body_var_span = body_vars.get(source_id) orelse continue;
+                const alias_name = try freshParameterAlias(self, &reserved);
+                const alias_span = try self.ast.addString(alias_name);
+                const maybe_parameter_id = try semantic_edit.splitParameterBodyVarBinding(
+                    self,
+                    binding,
+                    source_id,
+                    alias_span,
+                    body_var_span,
+                );
+                const parameter_id = maybe_parameter_id orelse continue;
+                try split_by_source.put(self.allocator, source_id, @intFromEnum(parameter_id));
+                try split_parameters.put(self.allocator, @intFromEnum(parameter_id), {});
+                try self.parameter_body_var_copies.append(self.allocator, .{
+                    .function_scope = function_scope,
+                    .body_var_symbol_id = source_id,
+                    .parameter_symbol_id = @intFromEnum(parameter_id),
+                    .source_span = body_var_span,
+                });
+            }
+        }
+
+        var split_iter = split_by_source.iterator();
+        while (split_iter.next()) |entry| {
+            const source_id = entry.key_ptr.*;
+            const parameter_id: @import("../semantic/symbol.zig").SymbolId = @enumFromInt(entry.value_ptr.*);
+            for (parameter_refs.items) |reference| {
+                if (self.getSymbolIdAt(reference) != source_id) continue;
+                try semantic_edit.rebindParameterBodyVarReference(self, reference, parameter_id);
+            }
+        }
+    }
+    return split_parameters;
+}
+
+fn reserveIdentifier(self: anytype, reserved: *std.StringHashMapUnmanaged(void), name: []const u8) std.mem.Allocator.Error!void {
+    const canonical = try canonicalIdentifier(self.allocator, name);
+    try reserved.put(self.allocator, canonical, {});
+}
+
+fn freshParameterAlias(self: anytype, reserved: *std.StringHashMapUnmanaged(void)) std.mem.Allocator.Error![]const u8 {
+    var suffix: usize = 0;
+    while (true) : (suffix += 1) {
+        const candidate = try std.fmt.allocPrint(self.allocator, "__zntc_param_env_{d}", .{suffix});
+        const canonical = try canonicalIdentifier(self.allocator, candidate);
+        if (reserved.contains(canonical)) continue;
+        try reserved.put(self.allocator, canonical, {});
+        return candidate;
+    }
+}
+
+fn canonicalIdentifier(allocator: std.mem.Allocator, name: []const u8) std.mem.Allocator.Error![]const u8 {
+    if (std.mem.indexOfScalar(u8, name, '\\') == null) return name;
+    var decoded: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (i < name.len) {
+        const cp = @import("cooked_name.zig").nextCookedCp(name, &i) orelse return name;
+        var bytes: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(cp, &bytes) catch return name;
+        try decoded.appendSlice(allocator, bytes[0..len]);
+    }
+    return decoded.toOwnedSlice(allocator);
+}
 
 pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
     var result: Table = .empty;
     errdefer result.deinit(self.allocator);
     if (!self.options.unsupported.default_params) return result;
     const params_mod = @import("es2015_params.zig").ES2015Params(@TypeOf(self.*));
+    const symbols = symbolsOf(self);
+    const scopes = scopesOf(self);
+    const scope_maps = scopeMapsOf(self);
     for (self.ast.nodes.items, 0..) |node, raw| {
         const params = self.ast.functionParamsList(node);
         if (params.len == 0 or !params_mod.hasDefaultOrRest(self, params)) continue;
         const scope_raw = self.scope_owner_map.get(@intCast(raw)) orelse continue;
-        const scope = self.scopes[scope_raw];
+        if (scope_raw >= scopes.len or scope_raw >= scope_maps.len) continue;
+        const scope = scopes[scope_raw];
         if (scope.kind != .function or scope.blocksMangling()) continue;
         const scope_id: ScopeId = @enumFromInt(scope_raw);
         for (self.ast.extra_data.items[params.start .. params.start + params.len]) |param| {
@@ -33,11 +218,12 @@ pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
             defer bindings.deinit();
             while (try bindings.next()) |binding| {
                 const parameter_id = self.getSymbolIdAt(binding) orelse continue;
-                const parameter = self.symbols[parameter_id];
+                if (parameter_id >= symbols.len) continue;
+                const parameter = symbols[parameter_id];
                 if (parameter.kind != .parameter or parameter.scope_id != scope_id) continue;
                 const name = self.ast.getText(parameter.name);
-                if (self.scope_maps[scope_raw].get(name)) |body_id| {
-                    if (body_id != parameter_id and self.symbols[body_id].kind.isFunctionLike())
+                if (scope_maps[scope_raw].get(name)) |body_id| {
+                    if (body_id < symbols.len and body_id != parameter_id and symbols[body_id].kind.isFunctionLike())
                         try result.put(self.allocator, parameter_id, {});
                 }
             }
@@ -51,17 +237,18 @@ pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
                 const sid = self.getSymbolIdAt(ref);
                 const name = self.ast.getText(self.ast.getNode(ref).data.string_ref);
                 const is_outer = if (sid) |id|
-                    isAncestor(self.scopes, self.symbols[id].scope_id, scope.parent)
+                    id < symbols.len and isAncestor(scopes, symbols[id].scope_id, scope.parent)
                 else if (self.unresolved_references) |unresolved|
                     unresolved.contains(name)
                 else
                     false;
                 if (!is_outer) continue;
-                if (self.scope_maps[scope_raw].get(name)) |body_id| {
-                    const kind = self.symbols[body_id].kind;
+                if (scope_maps[scope_raw].get(name)) |body_id| {
+                    if (body_id >= symbols.len) continue;
+                    const kind = symbols[body_id].kind;
                     if (kind == .variable_var or kind == .variable_let or kind == .variable_const or kind == .class_decl) {
                         try result.put(self.allocator, @intCast(body_id), {});
-                    } else if (self.symbols[body_id].kind.isFunctionLike()) {
+                    } else if (symbols[body_id].kind.isFunctionLike()) {
                         // Repeated declarations can leave historical symbols
                         // with no AST binding. Rename only identities attached
                         // to actual function names, never those orphan records.
@@ -69,7 +256,8 @@ pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
                             if (declaration.tag != .function_declaration) continue;
                             const binding = self.ast.readExtraNode(declaration.data.extra, 0);
                             const id = self.getSymbolIdAt(binding) orelse continue;
-                            const symbol = self.symbols[id];
+                            if (id >= symbols.len) continue;
+                            const symbol = symbols[id];
                             if (symbol.scope_id == scope_id and symbol.kind.isFunctionLike() and
                                 std.mem.eql(u8, self.ast.getText(symbol.name), name))
                                 try result.put(self.allocator, @intCast(id), {});
@@ -87,6 +275,7 @@ pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
 /// defaults and logical assignments whose visitors lower the parent directly.
 pub fn collectInferredNames(self: anytype, renames: *const Table) std.mem.Allocator.Error!void {
     if (renames.count() == 0) return;
+    const symbols = symbolsOf(self);
     for (self.ast.nodes.items) |node| {
         const pair: [2]ast_mod.NodeIndex = switch (node.tag) {
             .variable_declarator, .formal_parameter => .{
@@ -122,7 +311,7 @@ pub fn collectInferredNames(self: anytype, renames: *const Table) std.mem.Alloca
             // Class static initialization must see NamedEvaluation first.
             // Its lowering consumes this exact class node inside the IIFE.
             const root = if (value.tag == .class_expression and self.options.unsupported.class) value_root else pair[1];
-            try self.parameter_inferred_names.put(self.allocator, @intFromEnum(root), self.symbols[id].name);
+            if (id < symbols.len) try self.parameter_inferred_names.put(self.allocator, @intFromEnum(root), symbols[id].name);
         }
     }
 }
@@ -168,6 +357,7 @@ pub fn takeClassNameStatement(self: anytype, source: ast_mod.NodeIndex, binding:
 pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.Allocator.Error!void {
     const renames = if (self.block_rename_map) |*map| map else return;
     if (renames.count() == 0) return;
+    const symbols = symbolsOf(self);
     const reachable = try ast_walk.collectReachableNodeIndicesFrom(self.allocator, self.ast, root);
     defer self.allocator.free(reachable);
     var by_scope: std.AutoHashMapUnmanaged(u32, std.ArrayList(ast_mod.NodeIndex)) = .empty;
@@ -184,18 +374,17 @@ pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.
         const binding = self.ast.readExtraNode(declaration.data.extra, 0);
         const id = self.getSymbolIdAt(binding) orelse continue;
         const alias = renames.get(id) orelse continue;
-        if (id >= self.symbols.len or !self.symbols[id].kind.isFunctionLike()) continue;
+        if (id >= symbols.len or !symbols[id].kind.isFunctionLike()) continue;
         self.ast.extra_data.items[declaration.data.extra + ast_mod.FunctionExtra.flags] |= ast_mod.FunctionFlags.name_preserved;
         if (named.contains(id)) continue;
         try named.put(self.allocator, id, {});
-        const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
         const scope = symbols[id].scope_id;
         const saved_scope = self.current_scope;
         self.current_scope = scope;
         defer self.current_scope = saved_scope;
         const ref = try self.makeUserRefNamed(alias, binding);
         const span: @import("../lexer/token.zig").Span = .{ .start = declaration.span.start, .end = declaration.span.start };
-        const call = try nameValue(self, ref, self.symbols[id].name, span);
+        const call = try nameValue(self, ref, symbols[id].name, span);
         const entry = try by_scope.getOrPut(self.allocator, @intFromEnum(scope));
         if (!entry.found_existing) entry.value_ptr.* = .empty;
         try entry.value_ptr.append(self.allocator, try es_helpers.makeExprStmt(self, call, span));

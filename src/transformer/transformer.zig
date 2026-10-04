@@ -95,6 +95,13 @@ pub const GeneratedTempBinding = struct {
     callback_local: bool = false,
 };
 
+pub const ParameterBodyVarCopy = struct {
+    function_scope: ScopeId,
+    body_var_symbol_id: u32,
+    parameter_symbol_id: u32,
+    source_span: Span,
+};
+
 pub const Transformer = struct {
     pub const ClassSelfWriteTarget = struct {
         inner_id: u32,
@@ -172,6 +179,10 @@ pub const Transformer = struct {
     /// Generated this/arguments capture declarations needed by parameter
     /// defaults. Pass 2 inserts default initializers after these statements.
     parameter_capture_statements: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// Non-simple parameter lists use a separate environment from body vars.
+    /// ES5 lowering copies each shared parameter's final value into its body var
+    /// binding after parameter initializers run.
+    parameter_body_var_copies: std.ArrayListUnmanaged(ParameterBodyVarCopy) = .empty,
     /// Exact binding nodes created while lowering destructuring declarations.
     /// Namespace export printing keeps these temporary stores local to its IIFE.
     destructuring_temp_bindings: std.AutoHashMapUnmanaged(u32, void) = .empty,

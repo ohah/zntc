@@ -98,6 +98,33 @@ const cases = [
     expected: '[[3,4],[7,4]]\n',
   },
   {
+    name: 'parameter closure keeps its value apart from a same-named body var',
+    source: `function f(x = 3, get = () => x) { var x = 4; return [get(), x]; }
+      console.log(JSON.stringify(f()));`,
+    expected: '[3,4]\n',
+  },
+  {
+    name: 'parameter closure writes stay apart from body var initialization',
+    source: `function f(x = 3, update = () => { x = 5; }, get = () => x) {
+        var x = x || 4; update(); return [get(), x];
+      }
+      console.log(JSON.stringify(f()));`,
+    expected: '[5,3]\n',
+  },
+  {
+    name: 'destructured parameter closure keeps shorthand key and body var separate',
+    source: `function f({ x }, get = () => x) { var x = 4; return [get(), x]; }
+      console.log(JSON.stringify(f({ x: 3 })));`,
+    expected: '[3,4]\n',
+  },
+  {
+    name: 'fresh parameter environment name avoids source aliases',
+    source: `var __zntc_param_env_0 = 9, __zntc_param_env_1 = 10;
+      function f(x = 3, get = () => x) { var x = 4; return [get(), x, __zntc_param_env_0, __zntc_param_env_1]; }
+      console.log(JSON.stringify(f()));`,
+    expected: '[3,4,9,10]\n',
+  },
+  {
     name: 'object parameter initialization does not overwrite body function',
     keepNames: true,
     source: `function f({ x }) { function x() { return 8; } return [x(), x.name]; }
@@ -509,6 +536,10 @@ describe('parameter evaluation environment', () => {
 
   const graphFixtures = new Set([
     'computed key reads outer binding before body var exists',
+    'parameter closure keeps its value apart from a same-named body var',
+    'parameter closure writes stay apart from body var initialization',
+    'destructured parameter closure keeps shorthand key and body var separate',
+    'fresh parameter environment name avoids source aliases',
     'object parameter initialization does not overwrite body function',
     'renamed body var retains inferred function name and outer recursive reference',
     'default reads outer binding before body function initialization',
