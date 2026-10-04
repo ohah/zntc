@@ -506,9 +506,11 @@ fn ownerParentMatchesAst(
     symbols: []const Symbol,
     scopes: []const Scope,
     scope_maps: []const std.StringHashMapUnmanaged(usize),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
     owner_node: u32,
     owner_scope: u32,
     expected_parent_scope: u32,
+    pre_transform_scope_count: ?usize,
 ) bool {
     var parent = scopes[owner_scope].parent;
     var hops: usize = 0;
@@ -517,9 +519,15 @@ fn ownerParentMatchesAst(
         const parent_id = parent.toIndex();
         if (parent_id == expected_parent_scope) return true;
 
-        // Named function expressions add an ownerless self-name scope between
-        // their surrounding scope and the function scope.
-        if (!isFunctionExpressionNameScope(
+        // Lowering can retain analyzer-owned lexical scopes after their AST
+        // owners move or disappear. Those source scopes can remain between a
+        // generated owner and its nearest emitted AST parent. Permit only
+        // source scopes with an owner in the final owner map, and keep walking
+        // until the exact emitted parent is reached. Appended transform scopes
+        // never act as bridges, so a sibling generated scope remains invalid.
+        // Named function expressions are handled separately because their
+        // self-name scope is intentionally ownerless.
+        if (isFunctionExpressionNameScope(
             ast,
             owner_node,
             parent,
@@ -528,8 +536,17 @@ fn ownerParentMatchesAst(
             symbols,
             scopes,
             scope_maps,
-        )) return false;
-        parent = scopes[parent_id].parent;
+        )) {
+            parent = scopes[parent_id].parent;
+            continue;
+        }
+        if (pre_transform_scope_count) |source_scope_count| {
+            if (parent_id < source_scope_count and scopeOwnerNode(scope_owner_map, parent_id) != null) {
+                parent = scopes[parent_id].parent;
+                continue;
+            }
+        }
+        return false;
     }
     return false;
 }
@@ -2238,7 +2255,13 @@ fn checkExactImpl(
     while (reachable_scope_nodes.next()) |entry| {
         const raw = entry.key_ptr.*;
         const scope_raw = scope_owner_map.get(raw) orelse continue;
-        if (pre_transform_scope_count != null) continue;
+        // Source scopes are checked against the original AST before lowering;
+        // their emitted owners may have moved under generated wrappers. A
+        // transform-created scope has no such source owner, so validate its
+        // parent against the final emitted AST here as well.
+        if (pre_transform_scope_count) |source_scope_count| {
+            if (scope_raw < source_scope_count) continue;
+        }
         if (scope_raw >= scopes.len) continue;
         const owner_scope = scopes[scope_raw];
         if (raw == @intFromEnum(root)) {
@@ -2272,9 +2295,11 @@ fn checkExactImpl(
             symbols,
             scopes,
             scope_maps,
+            scope_owner_map,
             raw,
             scope_raw,
             expected_parent.scope,
+            pre_transform_scope_count,
         )) continue;
         recordScopeOwnerParentMismatch(
             &report,

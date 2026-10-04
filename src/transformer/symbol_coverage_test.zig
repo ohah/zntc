@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const Ast = @import("../parser/ast.zig").Ast;
+const AstNodeIndex = @import("../parser/ast.zig").NodeIndex;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
@@ -183,6 +184,151 @@ test "exact scope audit rejects owner scopes detached from their AST parent scop
     try std.testing.expectEqual(@as(?u32, @intFromEnum(global_scope)), corrupted.first_scope_owner_mismatch.?.expected_parent_scope_id);
     try std.testing.expectEqual(@as(?u32, @intFromEnum(detached_scope)), corrupted.first_scope_owner_mismatch.?.actual_parent_scope_id);
     try std.testing.expect(!corrupted.isClean());
+}
+
+test "exact scope audit allows only source-owned scope bridges to generated owners" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+
+    const name = try ast.addString("_generated");
+    const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const generated_block = try ast.addListNode(.block_statement, name, try ast.addNodeList(&.{binding}));
+    const sibling_generated_block = try ast.addListNode(.block_statement, name, try ast.addNodeList(&.{}));
+    const parent_block = try ast.addListNode(.block_statement, name, try ast.addNodeList(&.{ sibling_generated_block, generated_block }));
+    const root = try ast.addListNode(.program, name, try ast.addNodeList(&.{parent_block}));
+    const detached_source_block = try ast.addListNode(.block_statement, name, try ast.addNodeList(&.{}));
+    const source_class_body = try ast.addListNode(.class_body, name, try ast.addNodeList(&.{}));
+    const class_none = @intFromEnum(AstNodeIndex.none);
+    const source_class_extra = try ast.addExtras(&.{
+        class_none,
+        class_none,
+        @intFromEnum(source_class_body),
+        class_none,
+        0,
+        0,
+        0,
+        0,
+    });
+    const source_class = try ast.addNode(.{ .tag = .class_expression, .span = name, .data = .{ .extra = source_class_extra } });
+
+    const global_scope: ScopeId = @enumFromInt(0);
+    const emitted_parent_scope: ScopeId = @enumFromInt(1);
+    const retained_source_class_scope: ScopeId = @enumFromInt(2);
+    const detached_source_scope: ScopeId = @enumFromInt(3);
+    const sibling_generated_scope: ScopeId = @enumFromInt(4);
+    const generated_scope: ScopeId = @enumFromInt(5);
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = global_scope, .kind = .block, .is_strict = false },
+        .{ .parent = emitted_parent_scope, .kind = .class_body, .is_strict = false },
+        .{ .parent = global_scope, .kind = .block, .is_strict = false },
+        .{ .parent = emitted_parent_scope, .kind = .block, .is_strict = false },
+        .{ .parent = retained_source_class_scope, .kind = .block, .is_strict = false },
+    };
+    var generated_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer generated_names.deinit(allocator);
+    try generated_names.put(allocator, "_generated", 0);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, .empty, .empty, .empty, .empty, generated_names };
+    const symbols = [_]Symbol{.{
+        .name = name,
+        .scope_id = generated_scope,
+        .origin_scope = generated_scope,
+        .kind = .variable_let,
+        .declaration_span = name,
+        .synthetic_name = "_generated",
+    }};
+    const symbol_ids = [_]?u32{0};
+    const references = [_]Reference{.{
+        .node_index = .none,
+        .scope_id = generated_scope,
+        .symbol_id = @enumFromInt(0),
+        .flags = .{ .declare = true },
+    }};
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
+    try scope_owner_map.put(allocator, @intFromEnum(parent_block), @intFromEnum(emitted_parent_scope));
+    try scope_owner_map.put(allocator, @intFromEnum(sibling_generated_block), @intFromEnum(sibling_generated_scope));
+    try scope_owner_map.put(allocator, @intFromEnum(generated_block), @intFromEnum(generated_scope));
+    try scope_owner_map.put(allocator, @intFromEnum(detached_source_block), @intFromEnum(detached_source_scope));
+    try scope_owner_map.put(allocator, @intFromEnum(source_class), @intFromEnum(retained_source_class_scope));
+    const helpers: std.StringHashMapUnmanaged(usize) = .empty;
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try coverage.checkExactWithScopeBoundary(
+        allocator,
+        &ast,
+        root,
+        0,
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+        4,
+    );
+    try std.testing.expect(report.isClean());
+
+    // Source-owned scopes may bridge the generated owner to its emitted AST
+    // parent, but the full chain must reach that exact parent.
+    var corrupted_scopes = scopes;
+    corrupted_scopes[@intFromEnum(retained_source_class_scope)].parent = detached_source_scope;
+    const detached_class_scope = try coverage.checkExactWithScopeBoundary(
+        allocator,
+        &ast,
+        root,
+        0,
+        &symbol_ids,
+        &symbols,
+        &corrupted_scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+        4,
+    );
+    try std.testing.expectEqual(@as(usize, 1), detached_class_scope.scope_owner_parent_mismatch);
+    try std.testing.expect(!detached_class_scope.isClean());
+
+    // A generated sibling scope cannot bridge even when it eventually reaches
+    // the emitted AST parent.
+    corrupted_scopes = scopes;
+    corrupted_scopes[@intFromEnum(generated_scope)].parent = sibling_generated_scope;
+    const generated_scope_bridge = try coverage.checkExactWithScopeBoundary(
+        allocator,
+        &ast,
+        root,
+        0,
+        &symbol_ids,
+        &symbols,
+        &corrupted_scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+        4,
+    );
+    try std.testing.expectEqual(@as(usize, 1), generated_scope_bridge.scope_owner_parent_mismatch);
+    try std.testing.expect(!generated_scope_bridge.isClean());
 }
 
 fn firstHoistedTempSpan(ast: *const @import("../parser/ast.zig").Ast, program_idx: @import("../parser/ast.zig").NodeIndex) @import("../lexer/token.zig").Span {

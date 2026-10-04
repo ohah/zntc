@@ -154,8 +154,21 @@ function runCoverage(
   };
 }
 
+function isCoverageReportLine(line: string): boolean {
+  return line.startsWith('zntc: symbol-coverage ');
+}
+
 describe('symbol identity coverage gate (#4819)', () => {
   const fixtures = collectFixtures(FIXTURE_DIR);
+
+  test('coverage report selection ignores marker text in diagnostic paths', () => {
+    const lines = [
+      'zntc: symbol-source-scope-owner /tmp/symbol-coverage-worktree/input.mjs: scope_owner_parent_mismatch=0',
+      'zntc: symbol-coverage /tmp/symbol-coverage-worktree/input.mjs: new_user_idents=0 missing=0 wrong=0',
+      'zntc: symbol-identity /tmp/symbol-coverage-worktree/input.mjs: clean=1',
+    ];
+    expect(lines.filter(isCoverageReportLine)).toEqual([lines[1]]);
+  });
 
   test('지원하지 않는 오라클 fixture 확장자는 조용히 건너뛰지 않는다', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-symcov-unknown-extension-'));
@@ -6319,7 +6332,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
             problems.push(`${name} ${target.name}: exit=${exitCode} ${stderr.trim()}`);
             continue;
           }
-          const lines = stderr.split('\n').filter((l) => l.includes('symbol-coverage'));
+          const lines = stderr.split('\n').filter(isCoverageReportLine);
           if (lines.length !== 1) {
             problems.push(
               `${name} ${target.name}: expected one coverage report, got ${lines.length}`,
