@@ -2276,6 +2276,138 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('ES5 var destructuring declarations retain exact semantic identities', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-var-destructuring-retained-'));
+    const input = join(dir, 'entry.ts');
+    const output = join(dir, 'out.cjs');
+    const run = (source: string) => {
+      writeFileSync(input, source);
+      return spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+    };
+    const mode = (stderr: string) =>
+      stderr
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+    const assertOutput = (expected: string) => {
+      const result = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe(expected);
+    };
+
+    try {
+      const retainedCases = [
+        {
+          name: 'program-scope array binding',
+          source: 'var [left, right] = [20, 22]; console.log(left + right);',
+          expected: '42\n',
+        },
+        {
+          name: 'function var hoisted from nested block',
+          source: [
+            'function read(input: number[]) {',
+            '  { var [head, ...tail] = input; }',
+            '  return head + tail.length;',
+            '}',
+            'console.log(read([10, 20, 30]));',
+          ].join('\n'),
+          expected: '12\n',
+        },
+        {
+          name: 'array default and rest helpers',
+          source: [
+            'var source: (number | undefined)[] = [undefined, 20, 30];',
+            'var [head = 11, ...tail] = source;',
+            "console.log(head, tail.join(','));",
+          ].join('\n'),
+          expected: '11 20,30\n',
+        },
+        {
+          name: 'computed nested object default and rest helper',
+          source: [
+            "var key = 'selected';",
+            'var source = { selected: { value: 4 }, extra: 7 };',
+            'var { [key]: { value = 3 } = {}, ...rest } = source;',
+            'console.log(value, rest.extra);',
+          ].join('\n'),
+          expected: '4 7\n',
+        },
+      ];
+
+      for (const fixture of retainedCases) {
+        const proc = run(fixture.source);
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+        expect(mode(proc.stderr ?? ''), `${fixture.name}: ${proc.stderr}`).toContain(
+          'semantic_graph=retained',
+        );
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          );
+        expect(report, fixture.name).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.name} ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report).toMatch(/generated_bindings=[1-9]\d*/);
+        expect(report).toMatch(/generated_references=[1-9]\d*/);
+        expect(report).toMatch(/clean=1(?:\s|$)/);
+        assertOutput(fixture.expected);
+      }
+
+      const reanalyzedCases = [
+        {
+          name: 'lexical let binding',
+          source: 'let [value] = [7]; console.log(value);',
+          expected: '7\n',
+        },
+        {
+          name: 'parameter binding pattern',
+          source: 'function get([value]: number[]) { return value; } console.log(get([7]));',
+          expected: '7\n',
+        },
+        {
+          name: 'for-of declaration head',
+          source: 'var sum = 0; for (var [value] of [[7], [8]]) sum += value; console.log(sum);',
+          expected: '15\n',
+        },
+      ];
+
+      for (const fixture of reanalyzedCases) {
+        const proc = run(fixture.source);
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+        expect(mode(proc.stderr ?? ''), `${fixture.name}: ${proc.stderr}`).toContain(
+          'semantic_graph=reanalyzed',
+        );
+        assertOutput(fixture.expected);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('native default and rest parameters retain identities while ES5 reanalyzes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-parameter-defaults-'));
     const output = join(dir, 'out.cjs');

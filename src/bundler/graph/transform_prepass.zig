@@ -570,6 +570,64 @@ fn canRetainGraphForAuditedSyntaxSubset(
         }
     }
 
+    // ES5 destructuring declarations are lowered inside their existing `var`
+    // scope. The destructuring visitor registers every generated temp and
+    // helper reference in the edited graph. Keep loop heads out of this set:
+    // their per-iteration ownership has a separate loop-lowering contract.
+    var destructuring_loop_heads: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer destructuring_loop_heads.deinit(ast.allocator);
+    for (reachable_nodes) |raw_idx| {
+        const node = ast.nodes.items[raw_idx];
+        if (node.tag != .for_in_statement and node.tag != .for_of_statement and
+            node.tag != .for_await_of_statement) continue;
+        const head = node.data.ternary.a;
+        if (head.isNone() or @intFromEnum(head) >= ast.nodes.items.len) return false;
+        if (ast.nodes.items[@intFromEnum(head)].tag == .variable_declaration) {
+            destructuring_loop_heads.put(ast.allocator, @intFromEnum(head), {}) catch return false;
+        }
+    }
+
+    var lowered_var_destructuring_declarators: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer lowered_var_destructuring_declarators.deinit(ast.allocator);
+    var lowered_var_destructuring_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer lowered_var_destructuring_nodes.deinit(ast.allocator);
+    if (options.unsupported.destructuring) {
+        const extras = ast.extra_data.items;
+        for (reachable_nodes) |raw_idx| {
+            const declaration = ast.nodes.items[raw_idx];
+            if (declaration.tag != .variable_declaration or
+                ast.variableDeclarationKind(declaration) != .@"var" or
+                destructuring_loop_heads.contains(raw_idx)) continue;
+            const extra = declaration.data.extra;
+            if (extra > extras.len or extras.len - extra <= 2) return false;
+            const start = extras[extra + 1];
+            const len = extras[extra + 2];
+            if (start > extras.len or len > extras.len - start) return false;
+            for (extras[start .. start + len]) |raw_declarator| {
+                if (raw_declarator >= ast.nodes.items.len) return false;
+                const declarator = ast.nodes.items[raw_declarator];
+                if (declarator.tag != .variable_declarator) continue;
+                const binding_extra = declarator.data.extra;
+                if (binding_extra >= extras.len) return false;
+                const binding_raw = extras[binding_extra];
+                if (binding_raw >= ast.nodes.items.len) return false;
+                const binding_tag = ast.nodes.items[binding_raw].tag;
+                if (binding_tag != .array_pattern and binding_tag != .object_pattern) continue;
+
+                lowered_var_destructuring_declarators.put(ast.allocator, raw_declarator, {}) catch return false;
+                const pattern_nodes = ast_walk.collectReachableNodeIndicesFrom(
+                    ast.allocator,
+                    ast,
+                    @enumFromInt(binding_raw),
+                ) catch return false;
+                defer ast.allocator.free(pattern_nodes);
+                for (pattern_nodes) |pattern_raw| {
+                    lowered_var_destructuring_nodes.put(ast.allocator, pattern_raw, {}) catch return false;
+                }
+            }
+        }
+    }
+
     // Plain computed data properties, synchronous object methods, and computed
     // accessors without `super` lower through tracked temps and output scopes.
     // Accessor `super` may add a runtime helper module, so it stays on reanalysis.
@@ -640,6 +698,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_lowered_for_await = false;
     var found_native_class = false;
     var found_native_destructuring = false;
+    var found_lowered_var_destructuring = false;
     var found_lowered_array_spread = false;
     var found_lowered_object_rest = false;
     var found_lowered_object_spread = false;
@@ -683,8 +742,12 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (binding.isNone() or @intFromEnum(binding) >= ast.nodes.items.len) return false;
                 const binding_tag = ast.nodes.items[@intFromEnum(binding)].tag;
                 if (binding_tag == .binding_identifier) continue;
-                if (options.unsupported.destructuring or
-                    (binding_tag != .array_pattern and binding_tag != .object_pattern)) return false;
+                if (binding_tag != .array_pattern and binding_tag != .object_pattern) return false;
+                if (options.unsupported.destructuring) {
+                    if (!lowered_var_destructuring_declarators.contains(raw_idx) or
+                        !lowered_var_destructuring_nodes.contains(@intFromEnum(binding))) return false;
+                    found_lowered_var_destructuring = true;
+                }
             },
             .formal_parameter => {
                 const extra = node.data.extra;
@@ -695,8 +758,11 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     (!default_value.isNone() and options.unsupported.default_params)) return false;
                 const pattern_tag = ast.nodes.items[@intFromEnum(pattern)].tag;
                 if (pattern_tag != .binding_identifier) {
-                    if (options.unsupported.destructuring or
-                        (pattern_tag != .array_pattern and pattern_tag != .object_pattern)) return false;
+                    if (pattern_tag != .array_pattern and pattern_tag != .object_pattern) return false;
+                    if (options.unsupported.destructuring) {
+                        if (!lowered_var_destructuring_nodes.contains(@intFromEnum(pattern))) return false;
+                        found_lowered_var_destructuring = true;
+                    }
                     if (pattern_tag == .object_pattern and options.unsupported.object_spread and
                         ast.nodeListSplitRest(ast.nodes.items[@intFromEnum(pattern)].data.list).rest_operand != null)
                     {
@@ -708,12 +774,18 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (!default_value.isNone()) found_native_destructuring = true;
             },
             .array_pattern, .array_assignment_target => {
-                if (options.unsupported.destructuring) return false;
-                found_native_destructuring = true;
+                if (options.unsupported.destructuring) {
+                    if (node.tag != .array_pattern or !lowered_var_destructuring_nodes.contains(raw_idx)) return false;
+                    found_lowered_var_destructuring = true;
+                } else {
+                    found_native_destructuring = true;
+                }
             },
             .object_pattern, .object_assignment_target => {
-                if (options.unsupported.destructuring) return false;
-                if (options.unsupported.object_spread and
+                if (options.unsupported.destructuring) {
+                    if (node.tag != .object_pattern or !lowered_var_destructuring_nodes.contains(raw_idx)) return false;
+                    found_lowered_var_destructuring = true;
+                } else if (options.unsupported.object_spread and
                     ast.nodeListSplitRest(node.data.list).rest_operand != null)
                 {
                     found_lowered_object_rest = true;
@@ -724,24 +796,40 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .assignment_pattern => {
                 // Parameter defaults lower independently from destructuring;
                 // nested binding defaults also need destructuring preserved.
-                if (options.unsupported.default_params or options.unsupported.destructuring) return false;
-                found_native_destructuring = true;
+                if (options.unsupported.default_params or options.unsupported.destructuring) {
+                    if (!lowered_var_destructuring_nodes.contains(raw_idx)) return false;
+                    found_lowered_var_destructuring = true;
+                } else {
+                    found_native_destructuring = true;
+                }
             },
             .assignment_target_with_default => {
                 if (options.unsupported.destructuring) return false;
                 found_native_destructuring = true;
             },
             .binding_rest_element, .assignment_target_rest => {
-                if (options.unsupported.destructuring) return false;
-                if (!options.unsupported.object_spread) found_native_destructuring = true;
+                if (options.unsupported.destructuring) {
+                    if (node.tag != .binding_rest_element or !lowered_var_destructuring_nodes.contains(raw_idx)) return false;
+                    found_lowered_var_destructuring = true;
+                } else if (!options.unsupported.object_spread) {
+                    found_native_destructuring = true;
+                }
             },
             .rest_element => {
-                if (options.unsupported.default_params) return false;
+                if ((options.unsupported.default_params or options.unsupported.destructuring) and
+                    !lowered_var_destructuring_nodes.contains(raw_idx)) return false;
                 // This node is also used for object-pattern rest. When the
                 // target lowers object rest, its owning pattern records the
                 // exact graph transform; don't admit the module as native
                 // destructuring solely because of the rest leaf.
-                if (!options.unsupported.object_spread) found_native_destructuring = true;
+                if (lowered_var_destructuring_nodes.contains(raw_idx)) {
+                    found_lowered_var_destructuring = true;
+                } else if (!options.unsupported.object_spread) {
+                    found_native_destructuring = true;
+                }
+            },
+            .elision => {
+                if (!lowered_var_destructuring_nodes.contains(raw_idx)) return false;
             },
             .template_literal => {
                 // Untagged templates lower to string concatenation while
@@ -801,7 +889,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 // generated-temp and output-function-scope tracking. Other
                 // computed-key owners remain on semantic reanalysis.
                 if (options.unsupported.object_extensions) {
-                    switch (computed_object_keys.get(raw_idx) orelse return false) {
+                    if (lowered_var_destructuring_nodes.contains(raw_idx)) {
+                        found_lowered_var_destructuring = true;
+                    } else switch (computed_object_keys.get(raw_idx) orelse return false) {
                         .data_property => found_computed_object_data_key = true,
                         .method => found_computed_object_method_key = true,
                         .accessor => {
@@ -968,6 +1058,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     return found_arrow or found_native_await or found_native_generator or found_native_tagged_template or
         found_native_for_in or found_lowered_for_in or found_native_for_of or found_lowered_for_of or
         found_native_for_await or found_lowered_for_await or found_native_class or found_native_destructuring or
+        found_lowered_var_destructuring or
         found_safe_template_literal or found_object_shorthand or found_lowered_object_method or
         found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key or
         found_lowered_array_spread or found_lowered_object_rest or found_lowered_object_spread;
