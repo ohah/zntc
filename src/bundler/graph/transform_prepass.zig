@@ -492,24 +492,32 @@ fn canRetainGraphForAuditedSyntaxSubset(
     const reachable_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, root_idx) catch return false;
     defer ast.allocator.free(reachable_nodes);
 
-    // ES5 for-of lowering already edits the original loop-head SymbolIds and
-    // registers its generated temps/catch binding in their output scopes. A
-    // lexical declaration is admitted only when it is the direct head of a
-    // for-of that this pass is going to lower; unrelated let/const still needs
-    // the full block-scoping resync path.
+    // ES5 for-in/of block-scoping lowering edits the original loop-head
+    // SymbolIds and records generated loop/catch bindings in their output
+    // scopes. Admit only lexical declarations that are direct iteration heads;
+    // unrelated let/const still needs the full semantic resync path.
+    var lowered_for_in_heads: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer lowered_for_in_heads.deinit(ast.allocator);
     var lowered_for_of_heads: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer lowered_for_of_heads.deinit(ast.allocator);
-    if (options.unsupported.for_of and options.unsupported.block_scoping) {
+    if (options.unsupported.block_scoping) {
         for (reachable_nodes) |raw_idx| {
             const node = ast.nodes.items[raw_idx];
-            if (node.tag != .for_of_statement) continue;
+            if (node.tag != .for_in_statement and
+                !(node.tag == .for_of_statement and options.unsupported.for_of)) continue;
             const head = node.data.ternary.a;
             if (head.isNone() or @intFromEnum(head) >= ast.nodes.items.len) return false;
             const head_node = ast.nodes.items[@intFromEnum(head)];
             if (head_node.tag == .variable_declaration and
                 ast.variableDeclarationKind(head_node) != .@"var")
             {
-                lowered_for_of_heads.put(ast.allocator, @intFromEnum(head), {}) catch return false;
+                const head_raw = @intFromEnum(head);
+                const lowered_heads = if (node.tag == .for_in_statement)
+                    &lowered_for_in_heads
+                else
+                    &lowered_for_of_heads;
+                if (lowered_heads.contains(head_raw)) return false;
+                lowered_heads.put(ast.allocator, head_raw, {}) catch return false;
             }
         }
     }
@@ -576,6 +584,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_native_await = false;
     var found_native_generator = false;
     var found_native_tagged_template = false;
+    var found_native_for_in = false;
+    var found_lowered_for_in = false;
     var found_native_for_of = false;
     var found_lowered_for_of = false;
     var found_native_for_await = false;
@@ -612,6 +622,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 const kind = ast.variableDeclarationKind(node);
                 if (options.unsupported.using and kind.isUsing()) return false;
                 if (options.unsupported.block_scoping and kind != .@"var" and
+                    !lowered_for_in_heads.contains(raw_idx) and
                     !lowered_for_of_heads.contains(raw_idx)) return false;
             },
             .variable_declarator => {
@@ -746,6 +757,14 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     found_native_for_of = true;
                 }
             },
+            .for_in_statement => {
+                const head = node.data.ternary.a;
+                if (!head.isNone() and lowered_for_in_heads.contains(@intFromEnum(head))) {
+                    found_lowered_for_in = true;
+                } else {
+                    found_native_for_in = true;
+                }
+            },
             .for_await_of_statement => {
                 if (options.unsupported.needsForAwaitOfDownlevel()) return false;
                 found_native_for_await = true;
@@ -843,7 +862,6 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .while_statement,
             .do_while_statement,
             .for_statement,
-            .for_in_statement,
             .break_statement,
             .continue_statement,
             .return_statement,
@@ -863,7 +881,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
         if (node.tag == .catch_clause and node.data.binary.left.isNone()) return false;
     }
     return found_arrow or found_native_await or found_native_generator or found_native_tagged_template or
-        found_native_for_of or found_lowered_for_of or found_native_for_await or found_native_class or found_native_destructuring or
+        found_native_for_in or found_lowered_for_in or found_native_for_of or found_lowered_for_of or
+        found_native_for_await or found_native_class or found_native_destructuring or
         found_safe_template_literal or found_object_shorthand or found_lowered_object_method or
         found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key;
 }

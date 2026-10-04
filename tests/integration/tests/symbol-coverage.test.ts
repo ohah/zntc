@@ -335,6 +335,69 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('native and ES5 for-in lowering retain exact loop-head and closure scopes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-for-in-capture-scope-'));
+    const file = join(FIXTURE_DIR, '4819-for-in-loop-capture.mjs');
+    try {
+      for (const target of [
+        { name: 'es2015', arg: '--target=es2015', graph: 'retained' },
+        { name: 'es5', arg: '--target=es5', graph: 'retained' },
+      ]) {
+        const output = join(dir, target.name + '.cjs');
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            file,
+            target.arg,
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, target.name + ': ' + proc.stderr).toBe(0);
+
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.includes('zntc: symbol-identity-prepass ') &&
+              line.includes('4819-for-in-loop-capture.mjs'),
+          );
+        expect(report, target.name + ': ' + proc.stderr).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(counter + '=(\\d+)'))?.[1] ?? -1),
+            target.name + ': ' + report,
+          ).toBe(0);
+        }
+        expect(report, target.name + ': ' + report).toMatch(/clean=1(?:\s|$)/);
+
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.includes('zntc: symbol-identity-prepass-mode ') &&
+              line.includes('4819-for-in-loop-capture.mjs'),
+          );
+        expect(graphMode, target.name + ': ' + proc.stderr).toContain(
+          'semantic_graph=' + target.graph,
+        );
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, target.name + ': ' + actual.stderr).toBe(0);
+        expect(actual.stdout, target.name).toBe('first,second,inherited\n');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('native classes retain exact scopes only when all class features stay native', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-native-class-scopes-'));
     const entry = join(dir, 'entry.ts');
@@ -508,7 +571,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('native for-of does not retain graphs when companion syntax needs lowering', () => {
+  test('native for-of and for-in do not retain graphs when companion syntax needs lowering', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-for-of-resync-boundaries-'));
     const cases = [
       {
@@ -536,6 +599,17 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '1,2\n',
       },
       {
+        name: 'unrelated-lexical-for-in',
+        target: '--target=es5',
+        source: [
+          'var source = { first: 1 };',
+          'for (let key in source) console.log(key);',
+          'const outside = 2;',
+          'console.log(outside);',
+        ].join('\n'),
+        stdout: 'first\n2\n',
+      },
+      {
         name: 'unrelated-lexical-lowering',
         target: '--target=es5',
         source: [
@@ -545,6 +619,16 @@ describe('symbol identity coverage gate (#4819)', () => {
           'console.log(outside);',
         ].join('\n'),
         stdout: '1\n2\n',
+      },
+      {
+        name: 'additional-runtime-helper-for-in',
+        target: '--target=es5',
+        source: [
+          'var match = /(?<word>\\w+)/.exec("hello");',
+          'var source = { first: 1 };',
+          'for (const key in source) console.log(match.groups.word, key);',
+        ].join('\n'),
+        stdout: 'hello first\n',
       },
       {
         name: 'additional-runtime-helper',
