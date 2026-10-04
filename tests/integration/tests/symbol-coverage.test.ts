@@ -2598,8 +2598,8 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('ES5 computed object accessors keep their semantic reanalysis boundary', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-computed-object-accessor-reanalyzed-'));
+  test('ES5 computed object accessors retain exact generated temp and accessor scopes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-computed-object-accessor-retained-'));
     const output = join(dir, 'out.cjs');
     const input = join(dir, 'entry.ts');
     writeFileSync(
@@ -2608,9 +2608,84 @@ describe('symbol identity coverage gate (#4819)', () => {
         'type Numeric = number;',
         'var events = [];',
         'var keyCalls = 0;',
+        "var _a = 'outer';",
+        'var stored = 40;',
         'function getKey() { events.push("key"); keyCalls++; return "value"; }',
-        'var object = { get [getKey()](): Numeric { events.push("get"); return 42; } };',
-        "console.log(object.value, Object.keys(object).join(','), keyCalls, events.join(','));",
+        'var object = { get [getKey()](): Numeric { events.push("get"); return stored; }, set [getKey()](input: Numeric) { events.push("set"); stored = input; } };',
+        'object.value = 42;',
+        "console.log(object.value, Object.keys(object).join(','), keyCalls, events.join(','), _a);",
+      ].join('\n'),
+    );
+
+    try {
+      const downlevel = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(downlevel.status, downlevel.stderr).toBe(0);
+      const mode = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(mode, downlevel.stderr).toContain('semantic_graph=retained');
+      const report = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(report, downlevel.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42 value 2 key,key,set,get outer\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 computed object getter/setter super keeps the home-object reanalysis path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-computed-object-accessor-super-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    writeFileSync(
+      input,
+      [
+        'var keyCalls = 0;',
+        'var _obj = 1;',
+        'var _obj2 = 2;',
+        'var _a = 3;',
+        'function getKey() { keyCalls++; return "value"; }',
+        'var base = { get value() { return this.input; }, set value(value) { this.input = value; } };',
+        'var alternate = { get value() { return this.input * 2; }, set value(value) { this.input = value - 50; } };',
+        'var object = { get [getKey()]() { return super.value + 1; }, set [getKey()](value) { super.value = value - 1; } };',
+        'Object.setPrototypeOf(object, base);',
+        'var receiver = { input: 41 };',
+        'var descriptor = Object.getOwnPropertyDescriptor(object, "value");',
+        'var first = descriptor.get.call(receiver);',
+        'descriptor.set.call(receiver, 50);',
+        'Object.setPrototypeOf(object, alternate);',
+        'var second = descriptor.get.call(receiver);',
+        'descriptor.set.call(receiver, 100);',
+        'console.log(first, receiver.input, second, keyCalls, _obj, _obj2, _a);',
       ].join('\n'),
     );
 
@@ -2653,7 +2728,72 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(report).toMatch(/clean=1(?:\s|$)/);
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
-      expect(actual.stdout).toBe('42 value 1 key,get\n');
+      expect(actual.stdout).toBe('42 49 99 2 1 2 3\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 computed object accessors with shadowed Object keep reanalysis', () => {
+    const dir = mkdtempSync(
+      join(tmpdir(), 'zntc-bundle-computed-object-accessor-shadowed-object-'),
+    );
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    writeFileSync(
+      input,
+      [
+        'var Object = globalThis.Object;',
+        'var keyCalls = 0;',
+        'function getKey() { keyCalls++; return "value"; }',
+        'var object = { get [getKey()]() { return 42; } };',
+        'console.log(object.value, keyCalls, Object === globalThis.Object);',
+      ].join('\n'),
+    );
+
+    try {
+      const downlevel = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(downlevel.status, downlevel.stderr).toBe(0);
+      const mode = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(mode, downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      const report = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(report, downlevel.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        const expected = counter === 'shadowed_external_reference' ? 1 : 0;
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(
+          expected,
+        );
+      }
+      expect(report).toMatch(/clean=0(?:\s|$)/);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42 1 true\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

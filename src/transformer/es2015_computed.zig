@@ -27,6 +27,7 @@ const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
+const object_super = @import("object_super.zig");
 
 const METHOD_FLAG_GETTER = ast_mod.MethodFlags.is_getter;
 const METHOD_FLAG_SETTER = ast_mod.MethodFlags.is_setter;
@@ -132,7 +133,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                     // 일반/async/generator 메서드는 es2015_object_methods가 먼저 object_property로 변환한다.
                     // getter/setter 외의 메서드가 여기 도달하면 pass 순서가 깨진 것.
                     std.debug.assert(is_getter or is_setter);
-                    const define_call = try emitDefineAccessor(self, member, is_getter, temp_span, span);
+                    const define_call = try emitDefineAccessor(self, @enumFromInt(raw_idx), is_getter, temp_span, span);
                     try self.scratch.append(self.allocator, define_call);
                     continue;
                 }
@@ -196,15 +197,16 @@ pub fn ES2015Computed(comptime Transformer: type) type {
         /// 후속 호출이 이전 descriptor의 get/set 필드를 보존하므로 동작은 정확하다 (ECMAScript ValidateAndApplyPropertyDescriptor).
         fn emitDefineAccessor(
             self: *Transformer,
-            member: Node,
+            member_idx: NodeIndex,
             is_getter: bool,
             temp_span: Span,
             span: Span,
         ) Transformer.Error!NodeIndex {
+            const member = self.ast.getNode(member_idx);
             const me = member.data.extra;
-            const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me]);
+            const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + ast_mod.MethodExtra.key]);
 
-            const func_expr = try buildAccessorFunction(self, member, span);
+            const func_expr = try buildAccessorFunction(self, member_idx, span);
 
             const accessor_kind_span = try self.ast.addString(if (is_getter) "get" else "set");
             const accessor_kind = try es_helpers.makePropertyNameFromSpan(self, accessor_kind_span);
@@ -230,27 +232,41 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             return es_helpers.buildObjectDefinePropertyCall(self, object_span, define_property_span, temp_ref, key_arg, desc_obj, span);
         }
 
-        /// method_definition의 params/body를 방문해 function_expression을 만든다.
-        fn buildAccessorFunction(self: *Transformer, member: Node, span: Span) Transformer.Error!NodeIndex {
+        /// Keep the accessor's original function scope and object home while lowering it
+        /// into the descriptor's getter/setter function expression.
+        fn buildAccessorFunction(self: *Transformer, member_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const member = self.ast.getNode(member_idx);
             const me = member.data.extra;
-            const params_list = self.ast.functionParamsList(member);
-            const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 2]);
-
-            const new_params = try self.visitParameterList(params_list);
-            const new_body = try self.visitNode(body_idx);
-            const new_params_node = try self.ast.addFormalParameters(new_params, span);
-
             const none = @intFromEnum(NodeIndex.none);
-            const func_extra = try self.ast.addExtras(&.{
-                none,                   @intFromEnum(new_params_node),
-                @intFromEnum(new_body), 0,
-                none,
-            });
-            return self.ast.addNode(.{
+            const fn_expr = try self.ast.addNode(.{
                 .tag = .function_expression,
                 .span = span,
-                .data = .{ .extra = func_extra },
+                .data = .{ .extra = try self.ast.addExtras(&.{
+                    none,
+                    self.ast.extra_data.items[me + ast_mod.MethodExtra.params],
+                    self.ast.extra_data.items[me + ast_mod.MethodExtra.body],
+                    0,
+                    none,
+                }) },
             });
+
+            const home_saved = object_super.enterMethod(self, object_super.lookup(self, me));
+            defer object_super.leaveMethod(self, home_saved);
+            const saved_owner = self.synthetic_function_source_owner;
+            const saved_node = self.synthetic_function_node;
+            const saved_scope = self.current_scope;
+            defer {
+                self.synthetic_function_source_owner = saved_owner;
+                self.synthetic_function_node = saved_node;
+                self.current_scope = saved_scope;
+            }
+            self.synthetic_function_source_owner = member_idx;
+            self.synthetic_function_node = fn_expr;
+            if (self.semantic_edit_enabled) self.current_scope = self.originalFunctionScope(member_idx);
+
+            const visited = try self.visitNode(fn_expr);
+            try self.remapCopiedScopeOwner(member_idx, visited);
+            return visited;
         }
 
         /// `{ name: true }` object_property 생성. name/true 는 intern map 으로 dedup.

@@ -446,6 +446,29 @@ fn hasDirectSpreadElement(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     return false;
 }
 
+// Accessor `super` can add a runtime helper module during lowering. Keep those
+// owners on graph resync until helper imports can be edited with the graph.
+// Scan nested nodes conservatively.
+fn methodHasSuperExpression(ast: *const ast_mod.Ast, method: ast_mod.Node) bool {
+    if (method.tag != .method_definition) return true;
+    const extra = method.data.extra;
+    if (extra > ast.extra_data.items.len or
+        ast.extra_data.items.len - extra <= ast_mod.MethodExtra.body) return true;
+    const roots = [_]ast_mod.NodeIndex{
+        @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.params]),
+        @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.body]),
+    };
+    for (roots) |root| {
+        if (root.isNone() or @intFromEnum(root) >= ast.nodes.items.len) return true;
+        const descendants = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, root) catch return true;
+        defer ast.allocator.free(descendants);
+        for (descendants) |raw_idx| {
+            if (ast.nodes.items[raw_idx].tag == .super_expression) return true;
+        }
+    }
+    return false;
+}
+
 /// Arrow lowering edits the existing graph and creates only output function
 /// scopes plus explicitly tracked captures. Native `await`, `yield`, and tagged
 /// templates add no binding or scope edges. Keep these paths only for the
@@ -469,11 +492,11 @@ fn canRetainGraphForAuditedSyntaxSubset(
     const reachable_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, root_idx) catch return false;
     defer ast.allocator.free(reachable_nodes);
 
-    // Plain computed data properties and synchronous object methods lower
-    // through tracked generated temps and existing output scopes. Computed
-    // accessors, async/generator methods, and class keys still need separate
-    // descriptor/state handling and remain gated out.
-    const ComputedObjectKeyOwner = enum { data_property, method };
+    // Plain computed data properties, synchronous object methods, and computed
+    // accessors without `super` lower through tracked temps and output scopes.
+    // Accessor `super` may add a runtime helper module, so it stays on reanalysis.
+    // Async/generator methods and class keys also remain gated out.
+    const ComputedObjectKeyOwner = enum { data_property, method, accessor };
     const ComputedObjectKey = struct { node: ast_mod.NodeIndex, owner: ComputedObjectKeyOwner };
     var computed_object_keys: std.AutoHashMapUnmanaged(u32, ComputedObjectKeyOwner) = .empty;
     defer computed_object_keys.deinit(ast.allocator);
@@ -497,14 +520,12 @@ fn canRetainGraphForAuditedSyntaxSubset(
                         if (method_extra > ast.extra_data.items.len or
                             ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.flags) return false;
                         const flags = ast.extra_data.items[method_extra + ast_mod.MethodExtra.flags];
-                        const unsupported_method_flags = ast_mod.MethodFlags.is_getter |
-                            ast_mod.MethodFlags.is_setter |
-                            ast_mod.MethodFlags.is_async |
-                            ast_mod.MethodFlags.is_generator;
+                        const unsupported_method_flags = ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_generator;
                         if ((flags & unsupported_method_flags) != 0) break :blk null;
+                        const is_accessor = (flags & (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter)) != 0;
                         break :blk .{
                             .node = @enumFromInt(ast.extra_data.items[method_extra + ast_mod.MethodExtra.key]),
-                            .owner = .method,
+                            .owner = if (is_accessor) .accessor else .method,
                         };
                     },
                     else => null,
@@ -512,6 +533,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 const computed = candidate orelse continue;
                 if (computed.node.isNone() or @intFromEnum(computed.node) >= ast.nodes.items.len) return false;
                 if (ast.nodes.items[@intFromEnum(computed.node)].tag != .computed_property_key) continue;
+                if (computed.owner == .accessor and methodHasSuperExpression(ast, member)) continue;
                 computed_object_keys.put(ast.allocator, @intFromEnum(computed.node), computed.owner) catch return false;
             }
         }
@@ -539,6 +561,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_safe_template_literal = false;
     var found_computed_object_data_key = false;
     var found_computed_object_method_key = false;
+    var found_computed_object_accessor_key = false;
     var found_object_shorthand = false;
     var found_lowered_object_method = false;
     for (reachable_nodes) |raw_idx| {
@@ -671,6 +694,12 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     switch (computed_object_keys.get(raw_idx) orelse return false) {
                         .data_property => found_computed_object_data_key = true,
                         .method => found_computed_object_method_key = true,
+                        .accessor => {
+                            // Accessor lowering emits an explicit global Object.defineProperty call.
+                            // A source binding named Object would shadow that generated global.
+                            if (source_binds_object) return false;
+                            found_computed_object_accessor_key = true;
+                        },
                     }
                 }
             },
@@ -809,7 +838,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     return found_arrow or found_native_await or found_native_generator or found_native_tagged_template or
         found_native_for_of or found_native_for_await or found_native_class or found_native_destructuring or
         found_safe_template_literal or found_object_shorthand or found_lowered_object_method or
-        found_computed_object_data_key or found_computed_object_method_key;
+        found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key;
 }
 
 fn canKeepPrepassSemanticGraph(
