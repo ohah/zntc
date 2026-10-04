@@ -48,7 +48,10 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
     // 이 노드 이전에 위치한 주석들을 출력.
     // STRING_TABLE_BIT가 설정된 span은 합성 노드(string_table 참조)이므로
     // 원본 소스 위치가 아님 → 주석 위치 비교를 건너뛴다.
-    if (node.span.start != node.span.end and node.span.start & Ast.STRING_TABLE_BIT == 0) {
+    // With a runtime helper preamble, leading Program comments belong between
+    // the preamble and the first source statement. emitProgram flushes them there.
+    const defer_program_comments = node.tag == .program and self.options.program_preamble.len > 0;
+    if (!defer_program_comments and node.span.start != node.span.end and node.span.start & Ast.STRING_TABLE_BIT == 0) {
         // 주석이 buf 위치를 밀면 statement-start 마크(stmt_start/arrow_expr_start 등)와
         // 어긋나 `(/*c*/{a:1}).b` 같은 object/class/destructuring 의 wrap 이 유실된다
         // (legal 주석은 minify 에서도 살아남아 프로덕션 깨짐). save/restore 로 마크를 주석
