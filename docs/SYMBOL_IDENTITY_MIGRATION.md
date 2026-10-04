@@ -47,8 +47,7 @@
 
 ### 매개변수 수정 후 남은 경계
 
-- 위 정적 변환이 다루지 않는 동적 스코프와 본문 TDZ는 별도 경계다. direct `eval`/`with`가 있는 동적 스코프는 이름 변경 대상에서 제외한다. 본문 lexical 선언 자체의 ES5 TDZ 보존도 남아 있다. 예를 들어 `let x = 4`보다 앞에서 본문의 `x`를 읽으면 원본은 `ReferenceError`지만 현재 출력은 `undefined`를 읽을 수 있다. 매개변수가 외부 `x`를 읽도록 고친 것과 본문 TDZ 구현 완료를 구분한다.
-- 본문 lexical 선언 자체의 ES5 TDZ 보존도 별도 기존 결함이다. 예를 들어 `let x = 4`보다 앞에서 본문의 `x`를 읽으면 원본은 `ReferenceError`지만 현재 출력은 `undefined`를 읽을 수 있다. 매개변수가 외부 `x`를 읽도록 고친 것과 본문 TDZ 구현 완료를 구분한다.
+- 본문 lexical 선언 자체의 ES5 TDZ 보존은 남아 있다. 예를 들어 `let x = 4`보다 앞에서 본문의 `x`를 읽으면 원본은 `ReferenceError`지만 현재 출력은 `undefined`를 읽을 수 있다. 매개변수가 외부 `x`를 읽도록 고친 것과 본문 TDZ 구현 완료를 구분한다.
 - direct `eval`/`with`가 있는 동적 스코프는 정적 rename 대상에서 제외한다. source의 중복 함수 선언·TypeScript overload가 남기는 과거 심볼 행과 일부 재분석 진단도 별도 정리 대상이다. 실제 AST binding이 없는 행을 이번 rename으로 새 synthetic binding으로 만들지는 않는다.
 - 이름 복원은 기존 `__name` helper를 사용한다. helper는 모듈 본문 실행 전에 내장 property-definition 함수를 보관하며, 모듈 시작 시 표준 intrinsic을 가정한다. standalone 출력은 hashbang·directive 뒤에서 helper를 writer로 출력해 실행 모드와 소스맵 위치를 유지한다.
 - 생성자 전수 이관, 통합된 최종 이름 결정과 재분석 제거는 아직 완료하지 않았다. 구조분해 매개변수 생성 계약은 이 문서의 세 번째 작업 범위이며, 나머지 생성자 계열의 소유권 완성을 뜻하지 않는다.
