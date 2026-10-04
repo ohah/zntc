@@ -1438,6 +1438,96 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       expect(result.runOutput).toBe('10,0,2,3 15,1');
     });
 
+    test('downleveled class method captures bind this and arguments without local-name rescans', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            class C {
+              x = 10;
+              read(value: number) {
+                const _this = 2;
+                const _arguments = 3;
+                return () => [this.x, arguments[0], _this, _arguments].join(',');
+              }
+            }
+            console.log(new C().read(7)());
+          `,
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('10,7,2,3');
+    });
+
+    test('prelowered async class methods keep this and arguments captures', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            class C {
+              x = 10;
+              async read(value: number) {
+                const _this = 2;
+                const _arguments = 3;
+                await Promise.resolve();
+                return [this.x, arguments[0], _this, _arguments].join(',');
+              }
+            }
+            console.log(await new C().read(7));
+          `,
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('10,7,2,3');
+    });
+
+    test('prelowered generator class methods keep this and arguments captures', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            class C {
+              x = 10;
+              *read(value: number) {
+                const _this = 2;
+                const _arguments = 3;
+                yield () => [this.x, arguments[0], _this, _arguments].join(',');
+              }
+            }
+            console.log(new C().read(7).next().value());
+          `,
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('10,7,2,3');
+    });
+
+    test('transpile-only downleveled class methods preserve lexical captures', async () => {
+      const result = await transpileAndRun(
+        `
+          class C {
+            x = 10;
+            read(value) {
+              const _this = 2;
+              const _arguments = 3;
+              return () => [this.x, arguments[0], _this, _arguments].join(',');
+            }
+          }
+          console.log(new C().read(7)());
+        `,
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.transpileExitCode).toBe(0);
+      expect(result.runOutput).toBe('10,7,2,3');
+    });
+
     test('transpile-only downleveled accessors preserve lexical this and arguments captures', async () => {
       const result = await transpileAndRun(
         `

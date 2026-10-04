@@ -232,6 +232,9 @@ test "#4819 lowered arrow lexical captures have distinct exact function symbols"
         "function outer(){return ()=>this.x+arguments[0]} outer.call({x:2},3);",
         .function_declaration,
     );
+}
+
+test "#4819 class method capture producers bind exact symbols without a name rescan" {
     try checkCaptureSymbols(
         "class C{method(){return ()=>this.x+arguments[0]}} new C().method();",
         .method_definition,
@@ -246,6 +249,14 @@ test "#4819 lowered arrow lexical captures have distinct exact function symbols"
     );
     try checkCaptureSymbols(
         "function logged(value){return value} class Base{} class C extends Base{@logged field=1;constructor(){super();this.read=()=>this.field+arguments.length}} new C().read();",
+        .method_definition,
+    );
+    try checkCaptureSymbols(
+        "class C{async method(){await 0;return ()=>this.x+arguments[0]}} new C().method();",
+        .method_definition,
+    );
+    try checkCaptureSymbols(
+        "class C{*method(){yield ()=>this.x+arguments[0]}} new C().method();",
         .method_definition,
     );
 }
