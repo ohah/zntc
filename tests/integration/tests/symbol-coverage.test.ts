@@ -43,6 +43,7 @@ const EXACT_ZERO_COUNTERS = [
   'reference_scope_mismatch',
   'scope_map_mismatch',
   'scope_owner_mismatch',
+  'scope_owner_parent_mismatch',
   'namespace_iife_param_mismatch',
   'enum_iife_param_mismatch',
   'helper_symbol_mismatch',
@@ -70,7 +71,7 @@ const STRICT_ZERO_COUNTERS = [
   'cyclic_ast_edges',
 ];
 const EXACT_OBSERVATION_FIELD_COUNT = 6;
-const EXACT_DIAGNOSTIC_FIELD_COUNT = 10;
+const EXACT_DIAGNOSTIC_FIELD_COUNT = 11;
 
 function exactSchemaProblems(identity: string): string[] {
   const expectations = [
@@ -201,9 +202,9 @@ describe('symbol identity coverage gate (#4819)', () => {
     ).toContain(`observation_field_count=7, expected ${EXACT_OBSERVATION_FIELD_COUNT}`);
     expect(
       exactSchemaProblems(
-        complete.replace(/diagnostic_field_count=\d+/, 'diagnostic_field_count=11'),
+        complete.replace(/diagnostic_field_count=\d+/, 'diagnostic_field_count=12'),
       ),
-    ).toContain(`diagnostic_field_count=11, expected ${EXACT_DIAGNOSTIC_FIELD_COUNT}`);
+    ).toContain(`diagnostic_field_count=12, expected ${EXACT_DIAGNOSTIC_FIELD_COUNT}`);
   });
 
   test('the emitted exact report matches the locked schema', () => {
@@ -261,6 +262,14 @@ describe('symbol identity coverage gate (#4819)', () => {
         },
       );
       expect(proc.status, proc.stderr).toBe(0);
+
+      const sourceScopeOwnerAudits = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .filter((line) => line.includes('zntc: symbol-source-scope-owner '));
+      expect(sourceScopeOwnerAudits, proc.stderr).toHaveLength(2);
+      for (const audit of sourceScopeOwnerAudits) {
+        expect(audit).toMatch(/scope_owner_parent_mismatch=0(?:\s|$)/);
+      }
 
       const reports = (proc.stderr ?? '')
         .split(/\r?\n/)
@@ -6325,6 +6334,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
               `${name} ${target.name}: expected one identity report, got ${identityLines.length}`,
             );
             continue;
+          }
+          const sourceScopeOwnerLines = stderr
+            .split('\n')
+            .filter((line) => line.includes('zntc: symbol-source-scope-owner '));
+          if (sourceScopeOwnerLines.length !== 1) {
+            problems.push(
+              `${name} ${target.name}: expected one source scope-owner audit, got ${sourceScopeOwnerLines.length}`,
+            );
+          } else if (
+            !/(?:^| )scope_owner_parent_mismatch=0(?: |$)/.test(sourceScopeOwnerLines[0])
+          ) {
+            problems.push(
+              `${name} ${target.name}: source scope-owner audit failed: ${sourceScopeOwnerLines[0]}`,
+            );
           }
           const strictLines = stderr
             .split('\n')

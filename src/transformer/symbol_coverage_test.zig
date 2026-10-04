@@ -111,6 +111,80 @@ test "exact coverage rejects invalid root, child indices, and truncated child la
     try std.testing.expect(!invalid_extra_slot.isClean());
 }
 
+test "exact scope audit rejects owner scopes detached from their AST parent scopes" {
+    const allocator = std.testing.allocator;
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const span = try ast.addString("scope");
+    const block = try ast.addListNode(.block_statement, span, try ast.addNodeList(&.{}));
+    const root = try ast.addListNode(.program, span, try ast.addNodeList(&.{block}));
+
+    const global_scope: ScopeId = @enumFromInt(0);
+    const block_scope: ScopeId = @enumFromInt(1);
+    const detached_scope: ScopeId = @enumFromInt(2);
+    var scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = global_scope, .kind = .block, .is_strict = false },
+        .{ .parent = global_scope, .kind = .block, .is_strict = false },
+    };
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, .empty, .empty };
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer owners.deinit(allocator);
+    try owners.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
+    try owners.put(allocator, @intFromEnum(block), @intFromEnum(block_scope));
+    const helpers: std.StringHashMapUnmanaged(usize) = .empty;
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const correct = try coverage.checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &.{},
+        &.{},
+        &scopes,
+        &scope_maps,
+        &owners,
+        &.{},
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expect(correct.isClean());
+
+    // Every ScopeId remains individually valid and acyclic, but this block's
+    // owner now points through a detached sibling scope. No identifier
+    // reference exists to expose the broken lexical ancestry indirectly.
+    scopes[@intFromEnum(block_scope)].parent = detached_scope;
+    const corrupted = try coverage.checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &.{},
+        &.{},
+        &scopes,
+        &scope_maps,
+        &owners,
+        &.{},
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), corrupted.scope_owner_mismatch);
+    try std.testing.expectEqual(@as(usize, 1), corrupted.scope_owner_parent_mismatch);
+    try std.testing.expectEqualStrings("owner-parent-scope", corrupted.first_scope_owner_mismatch.?.issue);
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(global_scope)), corrupted.first_scope_owner_mismatch.?.expected_parent_scope_id);
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(detached_scope)), corrupted.first_scope_owner_mismatch.?.actual_parent_scope_id);
+    try std.testing.expect(!corrupted.isClean());
+}
+
 fn firstHoistedTempSpan(ast: *const @import("../parser/ast.zig").Ast, program_idx: @import("../parser/ast.zig").NodeIndex) @import("../lexer/token.zig").Span {
     const program = ast.getNode(program_idx);
     const declaration = ast.getNode(@enumFromInt(ast.extra_data.items[program.data.list.start]));
