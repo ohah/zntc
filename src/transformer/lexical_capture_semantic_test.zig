@@ -303,6 +303,19 @@ test "#4819 mixed async-generator wrapper captures bind at declaration without a
     );
 }
 
+test "#4819 async-generator function wrapper binds parameter captures to exact symbols" {
+    var unsupported = TransformOptions.compat.fromESTarget(.es5);
+    unsupported.generator = false;
+    try std.testing.expect(unsupported.async_generator);
+    try std.testing.expect(!unsupported.generator);
+    try std.testing.expect(unsupported.arrow);
+    try checkCaptureSymbolsWithUnsupported(
+        "async function* outer(value=()=>this.x+arguments.length){yield value()} outer.call({x:2});",
+        .function_declaration,
+        unsupported,
+    );
+}
+
 test "#4819 downleveled class accessors keep exact this and arguments capture symbols" {
     try checkCaptureSymbols(
         "class C{get value(){return ()=>this.x+arguments[0]}} new C().value;",

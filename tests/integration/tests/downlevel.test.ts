@@ -1563,6 +1563,45 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       expect(result.runOutput).toBe('10,7,2,3');
     });
 
+    test('downleveled async-generator functions preserve this and arguments captures', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            async function* read(value: number) {
+              const _this = 2;
+              const _arguments = 3;
+              await Promise.resolve();
+              yield () => [this.x, arguments[0], _this, _arguments].join(',');
+            }
+            read.call({ x: 10 }, 7).next().then((item) => console.log(item.value()));
+          `,
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('10,7,2,3');
+    });
+
+    test('transpile-only downleveled async-generator functions preserve lexical captures', async () => {
+      const result = await transpileAndRun(
+        `
+          async function* read(value) {
+            const _this = 2;
+            const _arguments = 3;
+            await Promise.resolve();
+            yield () => [this.x, arguments[0], _this, _arguments].join(',');
+          }
+          read.call({ x: 10 }, 7).next().then((item) => console.log(item.value()));
+        `,
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.transpileExitCode).toBe(0);
+      expect(result.runOutput).toBe('10,7,2,3');
+    });
+
     test('prelowered async-generator class methods keep this and arguments captures', async () => {
       const result = await bundleAndRun(
         {
