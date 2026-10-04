@@ -294,6 +294,8 @@ pub const Transformer = struct {
     /// 변환 시작에 `block_rename_table` 로 만든다 (#4760). 없으면(스코프 정보 없는 경로)
     /// 예전 이름 스택 판정을 쓴다.
     block_rename_map: ?std.AutoHashMapUnmanaged(u32, []const u8) = null,
+    /// Source initializer NodeIndex -> original inferred function/class name.
+    parameter_inferred_names: std.AutoHashMapUnmanaged(u32, Span) = .empty,
     /// 합성 이름 → 이 모듈에서 실제로 쓰는 이름 (`resolveSyntheticName`). 사용자 코드에 같은 이름이
     /// 있으면 `_this2` 처럼 비껴 간다. 같은 기본 이름은 모듈 안에서 늘 같은 결과라 바인딩과 참조가 맞는다.
     synthetic_names: std.StringHashMapUnmanaged([]const u8) = .empty,
@@ -667,7 +669,10 @@ pub const Transformer = struct {
             try self.parameter_capture_statements.put(self.allocator, @intFromEnum(new_idx), {});
         // symbol_id 전파: 원본 node_idx → 새 node_idx
         try self.propagateSymbolId(idx, new_idx);
-        return new_idx;
+        // The naming call evaluates in the enclosing scope, not in the
+        // function/class whose value has just been lowered.
+        self.current_scope = saved_scope;
+        return @import("parameter_environment.zig").preserveInferredName(self, idx, new_idx);
     }
 
     const node_dispatch_mod = @import("transformer/node_dispatch.zig");

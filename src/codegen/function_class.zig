@@ -156,7 +156,9 @@ pub fn emitFunction(self: anytype, node: Node) !void {
     if (convert_fn_to_assign) try self.writeByte(';');
 
     // keepNames: function_declaration에서 이름이 rename된 경우 entry 수집
-    if (self.options.keep_names and node.tag == .function_declaration and !name.isNone()) {
+    if (self.options.keep_names and node.tag == .function_declaration and !name.isNone() and
+        flags & ast_mod.FunctionFlags.name_preserved == 0)
+    {
         collectKeepNameEntry(self, name);
     }
 }

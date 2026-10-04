@@ -328,6 +328,13 @@ pub const TransformOptions = struct {
                 .binding_rest_element,
                 .assignment_target_rest,
                 => if (u.destructuring) return true,
+                // Parameter-environment aliases preserve anonymous defaults'
+                // inferred names with __name. Discover that helper before
+                // linking even when this is a plain default-only function.
+                .assignment_pattern => if (u.default_params) return true,
+                .formal_parameter => {
+                    if (u.default_params and !ast.readExtraNode(node.data.extra, ast_mod.FormalParameterExtra.default).isNone()) return true;
+                },
                 .private_identifier,
                 .private_field_expression,
                 => if (u.requiresPrivateDownlevel()) return true,
@@ -440,4 +447,27 @@ pub const TransformOptions = struct {
 /// `factory[0..첫 '.']` 를 root-scope binding 으로 attach 하므로 둘이 일치해야 한다.
 fn jsxHeadIdent(spec: []const u8) []const u8 {
     return std.mem.sliceTo(spec, '.');
+}
+
+test "lowered default parameters discover helpers before linking" {
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    const Parser = @import("../parser/parser.zig").Parser;
+    const fixtures = [_]struct { source: []const u8, es5_prepass: bool }{
+        .{ .source = "function f(x = function(){}) { function x(){} }", .es5_prepass = true },
+        .{ .source = "function f(x: number = 1) { return x; }", .es5_prepass = true },
+        .{ .source = "function f(x: number) { return x; }", .es5_prepass = false },
+        .{ .source = "var {x = 3} = input;", .es5_prepass = true },
+    };
+    for (fixtures) |fixture| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var scanner = try Scanner.init(arena.allocator(), fixture.source);
+        var parser = Parser.init(arena.allocator(), &scanner);
+        parser.configureFromExtension(".ts");
+        _ = try parser.parse();
+        const es5: TransformOptions = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) };
+        const native: TransformOptions = .{ .unsupported = TransformOptions.compat.fromESTarget(.es2020) };
+        try std.testing.expectEqual(fixture.es5_prepass, es5.requiresGraphPrePass(&parser.ast));
+        try std.testing.expect(!native.requiresGraphPrePass(&parser.ast));
+    }
 }

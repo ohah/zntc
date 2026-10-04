@@ -117,12 +117,20 @@ pub fn emitProgram(self: anytype, node: Node) !void {
     const list = node.data.list;
     const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
     var emitted = false;
+    var preamble = self.options.program_preamble;
     for (indices) |raw_idx| {
         const node_idx: NodeIndex = @enumFromInt(raw_idx);
         if (node_idx.isNone()) continue;
         // skip_nodes된 statement는 emitNode가 early-return하지만 newline은 이미 찍혀
         // 빈 줄이 남는다 (#1602). 사전 체크로 해당 slot 전체를 건너뛴다.
         if (isElidedStmt(self, node_idx)) continue;
+        const tag = self.ast.getNode(node_idx).tag;
+        if (preamble.len > 0 and tag != .hashbang and tag != .directive) {
+            if (emitted) try writeNewline(self);
+            try self.write(preamble);
+            preamble = "";
+            emitted = false;
+        }
         // minify 시 standalone block_statement (`if(true){...}` fold 잔여 등) 가
         // declaration 을 가지지 않으면 unwrap — `{f()}` → `f();` (probe11).
         if (self.options.minify_whitespace) {
@@ -140,7 +148,14 @@ pub fn emitProgram(self: anytype, node: Node) !void {
         }
         if (emitted) try writeNewline(self);
         try self.emitNode(node_idx);
+        // A hashbang always ends at a physical newline, even in minified code.
+        if (tag == .hashbang and self.options.minify_whitespace)
+            try self.write(self.options.newline);
         emitted = true;
+    }
+    if (preamble.len > 0) {
+        if (emitted) try writeNewline(self);
+        try self.write(preamble);
     }
     if (emitted) try writeNewline(self);
     // 파일 끝에 남은 주석들 출력

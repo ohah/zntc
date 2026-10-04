@@ -1657,8 +1657,16 @@ fn transpileWithCallbackInternal(
         if (analyzer_storage) |*analyzer| break :blk analyzer.symbol_ids.items;
         break :blk transformer.symbol_ids.items;
     } else transformer.symbol_ids.items;
+    const has_helpers = transformer.runtime_helpers.hasAny();
+    const helper_preamble = if (has_helpers) blk: {
+        var buf: std.ArrayList(u8) = .empty;
+        rt.appendRuntimeHelpers(&buf, arena_alloc, transformer.runtime_helpers, options.minify_whitespace, transformer.runtime_es5_compat) catch
+            return error.OutOfMemory;
+        break :blk try rewriteRuntimeHelperPreamble(arena_alloc, &transformer, buf.items, options.minify_whitespace);
+    } else "";
     var cg = Codegen.initWithOptions(arena_alloc, transformer.ast, .{
         .module_format = options.module_format,
+        .program_preamble = helper_preamble,
         .minify_whitespace = options.minify_whitespace,
         .minify_syntax = options.minify_syntax,
         .sourcemap = options.sourcemap,
@@ -1684,29 +1692,13 @@ fn transpileWithCallbackInternal(
         cg.addSourceFile(file_path) catch {};
         cg.line_offsets = scanner.line_offsets.items;
     }
-    const raw_output = cg.generate(root) catch return error.CodegenError;
+    const output = cg.generate(root) catch return error.CodegenError;
     mem_profile.snap(&arena, "generate");
 
     // JSX runtime import 는 위 transformer finalize 단계에서 semantic ID 가 붙은 AST 노드로 생성.
 
-    // 7. 런타임 헬퍼 prepend
-    const rh = transformer.runtime_helpers;
-    const has_helpers = rh.hasAny();
-    const output = if (has_helpers) blk: {
-        var buf: std.ArrayList(u8) = .empty;
-        rt.appendRuntimeHelpers(&buf, arena_alloc, rh, options.minify_whitespace, transformer.runtime_es5_compat) catch
-            break :blk raw_output;
-        const helper_preamble = rewriteRuntimeHelperPreamble(
-            arena_alloc,
-            &transformer,
-            buf.items,
-            options.minify_whitespace,
-        ) catch break :blk raw_output;
-        var combined: std.ArrayList(u8) = .empty;
-        combined.appendSlice(arena_alloc, helper_preamble) catch break :blk raw_output;
-        combined.appendSlice(arena_alloc, raw_output) catch break :blk raw_output;
-        break :blk combined.items;
-    } else raw_output;
+    // Runtime helpers are emitted through codegen after directives/hashbang,
+    // before user statements, so strict mode and generated source positions agree.
 
     // 8. Sentry Debug ID (UUID v4) — sourcemap_debug_ids 활성화 시 생성
     var debug_id_buf: [36]u8 = undefined;

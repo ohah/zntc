@@ -1000,8 +1000,13 @@ pub const TO_BINARY_RUNTIME_MIN = "var " ++ NAMES.TO_BINARY_MIN ++ "=function(b6
 
 /// __name: 함수/클래스의 .name 프로퍼티를 보존 (esbuild --keep-names 호환).
 /// minify로 식별자가 축약되어도 원래 이름을 .name에 설정.
-pub const KEEP_NAMES_RUNTIME = "var __name = (target, value) => Object.defineProperty(target, \"name\", { value, configurable: true });\n";
-pub const KEEP_NAMES_RUNTIME_MIN = "var " ++ NAMES.NAME_MIN ++ "=(target,value)=>Object.defineProperty(target,\"name\",{value,configurable:true});";
+// The standalone preamble shares a scope with user declarations. Obtain the
+// intrinsic through an object literal so a source binding named Object cannot
+// intercept it, and capture it before the module body executes. As with other
+// runtime helpers, this assumes the builtin prototype has not been replaced
+// before this module starts. The factory itself uses ES5 syntax.
+pub const KEEP_NAMES_RUNTIME = "var __name = (function(defineProperty) { return function(target, value) { return defineProperty(target, \"name\", { value: value, configurable: true }); }; })(({}).constructor.defineProperty);\n";
+pub const KEEP_NAMES_RUNTIME_MIN = "var " ++ NAMES.NAME_MIN ++ "=(function(d){return function(t,v){return d(t,\"name\",{value:v,configurable:true})}})(({}).constructor.defineProperty);";
 
 // ============================================================
 // Private Method (ES2022 downlevel)

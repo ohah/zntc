@@ -245,6 +245,40 @@ pub const SemanticEditor = struct {
         self.scope_reparented = true;
     }
 
+    /// Reserve the emitted spelling before lowering parameter initializers.
+    /// The source graph can contain both a parameter and a later same-named
+    /// body function (or repeated functions), with the scope map pointing only
+    /// at the final body function. Rekey each exact SID without removing that
+    /// distinct winner until its own emitted spelling is reserved.
+    /// This is not a general escape hatch for inconsistent scope maps.
+    pub fn renameParameterEnvironmentBinding(self: *SemanticEditor, id: SymbolId, output_name: []const u8) Error!void {
+        if (!self.validSymbol(id)) return error.InvalidSymbol;
+        const symbol = &self.symbols.items[@intFromEnum(id)];
+        if (!self.validScope(symbol.scope_id)) return error.InvalidScope;
+        const scope = self.scopes.items[symbol.scope_id.toIndex()];
+        if (scope.kind != .function or scope.blocksMangling()) return error.InvalidScope;
+        if (symbol.kind != .parameter and symbol.kind != .variable_var and
+            symbol.kind != .variable_let and symbol.kind != .variable_const and
+            symbol.kind != .class_decl and !symbol.kind.isFunctionLike()) return error.InvalidSymbol;
+        if (output_name.len == 0) return error.InvalidNode;
+        const map = &self.scope_maps.items[symbol.scope_id.toIndex()];
+        const old_name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else self.ast.getText(symbol.name);
+        const old_id = map.get(old_name) orelse return error.InvalidSymbol;
+        if (old_id != @intFromEnum(id)) {
+            if ((symbol.kind != .parameter and !symbol.kind.isFunctionLike()) or old_id >= self.symbols.items.len) return error.InvalidSymbol;
+            const body_symbol = self.symbols.items[old_id];
+            if (!body_symbol.kind.isFunctionLike() or body_symbol.scope_id != symbol.scope_id) return error.InvalidSymbol;
+            const body_name = if (body_symbol.synthetic_name.len > 0) body_symbol.synthetic_name else self.ast.getText(body_symbol.name);
+            if (!std.mem.eql(u8, body_name, old_name)) return error.InvalidSymbol;
+        }
+        if (map.contains(output_name)) return error.DuplicateBinding;
+        const stable_name = try self.allocator.dupe(u8, output_name);
+        try map.put(self.allocator, stable_name, @intFromEnum(id));
+        if (old_id == @intFromEnum(id)) _ = map.remove(old_name);
+        symbol.synthetic_name = stable_name;
+        try self.ensureDeclaration(id, symbol.scope_id);
+    }
+
     pub fn attachExistingBinding(self: *SemanticEditor, node: NodeIndex, id: SymbolId) Error!void {
         if (!self.validSymbol(id)) return error.InvalidSymbol;
         const slot = try self.ensureNodeSlot(node);
@@ -897,6 +931,58 @@ pub const SemanticEditor = struct {
         if (key < self.symbol_ids.items.len) self.symbol_ids.items[key] = null;
     }
 };
+
+test "parameter rename preserves the body function binding and rejects inconsistent maps" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "function f({x}, read = () => x) { function x() { return 8; } return [read(), x()]; }";
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(allocator, source);
+    var parser = @import("../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = @import("analyzer.zig").SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    try analyzer.analyze();
+    var editor = try SemanticEditor.init(allocator, &parser.ast, analyzer.symbols.items, analyzer.scopes.items, analyzer.scope_maps.items, analyzer.scope_owner_map, analyzer.references.items, analyzer.symbol_ids.items, analyzer.helper_scope_map);
+    var parameter_id: SymbolId = .none;
+    var function_id: SymbolId = .none;
+    for (editor.symbols.items, 0..) |symbol, i| {
+        if (!std.mem.eql(u8, parser.ast.getText(symbol.name), "x")) continue;
+        if (symbol.kind == .parameter) parameter_id = @enumFromInt(i);
+        if (symbol.kind == .function_decl) function_id = @enumFromInt(i);
+    }
+    try std.testing.expect(!parameter_id.isNone() and !function_id.isNone());
+    const scope = editor.symbols.items[@intFromEnum(parameter_id)].scope_id;
+    const count = editor.scopes.items[scope.toIndex()].symbol_count;
+    const references = try allocator.dupe(Reference, editor.references.items);
+    const node_ids = try allocator.dupe(?u32, editor.symbol_ids.items);
+    try std.testing.expectError(error.DuplicateBinding, editor.renameParameterEnvironmentBinding(parameter_id, "read"));
+    const invalid_id: SymbolId = @enumFromInt(@as(u32, @intCast(editor.symbols.items.len)));
+    try std.testing.expectError(error.InvalidSymbol, editor.renameParameterEnvironmentBinding(invalid_id, "x$1"));
+    // A same-spelled non-function is not evidence of the parameter/body
+    // redeclaration represented by this operation.
+    editor.symbols.items[@intFromEnum(function_id)].kind = .variable_var;
+    try std.testing.expectError(error.InvalidSymbol, editor.renameParameterEnvironmentBinding(parameter_id, "x$1"));
+    editor.symbols.items[@intFromEnum(function_id)].kind = .function_decl;
+    editor.scopes.items[scope.toIndex()].subtree_has_direct_eval = true;
+    try std.testing.expectError(error.InvalidScope, editor.renameParameterEnvironmentBinding(parameter_id, "x$1"));
+    editor.scopes.items[scope.toIndex()].subtree_has_direct_eval = false;
+    try editor.renameParameterEnvironmentBinding(parameter_id, "x$1");
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(function_id)), editor.scope_maps.items[scope.toIndex()].get("x"));
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(parameter_id)), editor.scope_maps.items[scope.toIndex()].get("x$1"));
+    try std.testing.expectEqualStrings("x$1", editor.symbols.items[@intFromEnum(parameter_id)].synthetic_name);
+    try std.testing.expectEqual(count, editor.scopes.items[scope.toIndex()].symbol_count);
+    try std.testing.expectEqualDeep(references, editor.references.items[0..references.len]);
+    var declaration_count: usize = 0;
+    for (editor.references.items) |reference| {
+        if (reference.symbol_id == parameter_id and reference.flags.declare) declaration_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), declaration_count);
+    try std.testing.expectEqualSlices(?u32, node_ids, editor.symbol_ids.items);
+    _ = try editor.finish();
+}
 
 test "synthetic declaration, explicit references, move and removal keep stable IDs" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

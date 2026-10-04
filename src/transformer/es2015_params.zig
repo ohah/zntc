@@ -496,7 +496,20 @@ pub fn ES2015Params(comptime Transformer: type) type {
             var it = try ast_walk.bindingIdentifiers(self.allocator, self.ast, idx, .{});
             defer it.deinit();
             while (try it.next()) |leaf_idx| {
-                try out.append(self.allocator, self.ast.getNode(leaf_idx).data.string_ref);
+                const emitted_name = self.ast.getNode(leaf_idx).data.string_ref;
+                try out.append(self.allocator, emitted_name);
+                // Forward reads can still have the source spelling: the
+                // analyzer registers parameters in order and does not yet
+                // model their separate environment. Keep both spellings of
+                // this exact binding for the existing TDZ lowering, including
+                // when a body function forced a parameter alias.
+                if (self.getSymbolIdAt(leaf_idx)) |id| {
+                    if (id < self.symbols.len and self.symbols[id].kind == .parameter) {
+                        const source_name = self.symbols[id].name;
+                        if (!std.mem.eql(u8, self.ast.getText(source_name), self.ast.getText(emitted_name)))
+                            try out.append(self.allocator, source_name);
+                    }
+                }
             }
         }
     };
