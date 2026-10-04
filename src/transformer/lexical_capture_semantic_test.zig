@@ -316,6 +316,13 @@ test "#4819 async-generator function wrapper binds parameter captures to exact s
     );
 }
 
+test "#4819 extracted per-iteration generator captures bind to exact source symbols" {
+    try checkCaptureSymbols(
+        "function* outer(value){for(let i=0;i<2;i++){yield ()=>this.x+arguments[0]+i}} outer.call({x:2},3);",
+        .function_declaration,
+    );
+}
+
 test "#4819 downleveled class accessors keep exact this and arguments capture symbols" {
     try checkCaptureSymbols(
         "class C{get value(){return ()=>this.x+arguments[0]}} new C().value;",

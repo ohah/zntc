@@ -188,7 +188,6 @@ pub fn deinitExceptAst(self: *Transformer) void {
     }
     self.deferred_generator_loop_migrations.deinit(self.allocator);
     self.deferred_generator_helper_refs.deinit(self.allocator);
-    self.deferred_capture_function_owners.deinit(self.allocator);
     self.generator_var_origins.deinit(self.allocator);
     self.tagged_template_fns.deinit(self.allocator);
     if (self.name_arena) |*a| a.deinit();

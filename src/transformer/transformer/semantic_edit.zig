@@ -1530,15 +1530,6 @@ pub fn completeGeneratedStateSymbols(self: *Transformer, root: NodeIndex, root_s
         }
     }
     try bindDeferredGeneratedStateSymbols(self, &seen);
-    var deferred_captures = self.deferred_capture_function_owners.iterator();
-    while (deferred_captures.next()) |entry| {
-        const raw = entry.key_ptr.*;
-        if (!seen.contains(raw)) continue;
-        const owner: NodeIndex = @enumFromInt(raw);
-        const scope = self.outputOwnedScope(owner) orelse std.debug.panic("deferred capture function has no output scope", .{});
-        try es_helpers.trackThisArgumentsCaptureSymbols(self, owner, scope);
-    }
-    self.deferred_capture_function_owners.clearRetainingCapacity();
     self.deferred_generator_helper_refs.clearRetainingCapacity();
     try self.trackGeneratedLocalSymbols(root, root_scope, function_name_specs.items);
     try self.trackGeneratedLocalSymbols(root, root_scope, temp_specs.items);

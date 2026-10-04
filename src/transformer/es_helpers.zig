@@ -1978,26 +1978,6 @@ pub fn buildNewTargetCapture(self: anytype, span: Span) !NodeIndex {
     return declaration;
 }
 
-/// Bind the generated capture declarations and their uses after an async or
-/// generator lowering has assembled the final wrapper tree. These paths can
-/// move the references into a nested state-machine callback before the
-/// capture declaration exists.
-pub fn trackThisArgumentsCaptureSymbols(self: anytype, root: NodeIndex, root_scope: ScopeId) !void {
-    if (!self.semantic_edit_enabled) return;
-    // A per-iteration generator function can be lowered while its parent
-    // callback is still being assembled. The final-root pass assigns its
-    // output function scope and resolves these capture locals afterward.
-    if (root_scope.isNone()) {
-        try self.deferred_capture_function_owners.put(self.allocator, @intFromEnum(root), {});
-        return;
-    }
-    const specs = [_]GeneratedLocalSpec{
-        .{ .name = try resolveSyntheticName(self, "_this"), .kind = .variable_var },
-        .{ .name = try resolveSyntheticName(self, "_arguments"), .kind = .variable_var },
-    };
-    try self.trackGeneratedLocalSymbols(root, root_scope, &specs);
-}
-
 /// Record the capture declarations that a default-parameter initializer can
 /// read. The ordinary body may need additional captures, but only these must
 /// execute before Pass 2's lowered default checks.
