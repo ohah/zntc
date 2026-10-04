@@ -72,6 +72,8 @@ pub const DeferredGeneratedStateSymbols = struct {
 
 pub const NamespaceExportFrame = struct {
     parameter_symbol_id: u32,
+    /// Canonical SymbolId for the namespace object shared by merged declarations.
+    owner_symbol_id: ?u32 = null,
     exported_symbol_ids: std.AutoHashMapUnmanaged(u32, void) = .empty,
 };
 
@@ -185,6 +187,10 @@ pub const Transformer = struct {
     /// Directly emitted namespace variable references are materialized as
     /// symbol-bound member expressions while their namespace body is visited.
     namespace_export_frames: std.ArrayListUnmanaged(NamespaceExportFrame) = .empty,
+    /// Semantic analyzer maps used to resolve merged namespace member proxies
+    /// while lowering references into ordinary member expressions.
+    namespace_member_owners: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
+    namespace_declaration_owners: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
     namespace_temp_bindings: std.ArrayListUnmanaged(struct { binding: NodeIndex, span: token_mod.Span, scope: ScopeId }) = .empty,
     pending_runtime_helper_chains: std.StringHashMapUnmanaged(struct { first: usize, last: usize }) = .empty,
 

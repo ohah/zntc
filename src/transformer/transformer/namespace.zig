@@ -62,6 +62,10 @@ pub fn visitExportAssignment(self: *Transformer, node: Node) Error!NodeIndex {
 pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
     if (node.data.binary.flags == 1) return .none;
 
+    const namespace_owner_symbol_id: ?u32 = if (self.getSymbolIdAt(node.data.binary.left)) |symbol_id| blk: {
+        if (self.namespace_declaration_owners) |owners| break :blk owners.get(symbol_id) orelse symbol_id;
+        break :blk symbol_id;
+    } else null;
     const new_name = try self.visitNode(node.data.binary.left);
     const saved_namespace_scope = self.namespace_iife_scope;
     const saved_temp_counter = self.temp_var_counter;
@@ -72,7 +76,10 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
     var pushed_export_frame = false;
     if (self.semantic_edit_enabled) {
         if (namespaceIifeParameterSymbolId(self, self.current_scope)) |parameter_sid| {
-            var frame = transformer_mod.NamespaceExportFrame{ .parameter_symbol_id = parameter_sid };
+            var frame = transformer_mod.NamespaceExportFrame{
+                .parameter_symbol_id = parameter_sid,
+                .owner_symbol_id = namespace_owner_symbol_id,
+            };
             errdefer if (!pushed_export_frame) frame.exported_symbol_ids.deinit(self.allocator);
             try collectDirectNamespaceExportSymbols(self, node.data.binary.right, &frame.exported_symbol_ids);
             try self.namespace_export_frames.append(self.allocator, frame);
@@ -117,10 +124,9 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
     });
 }
 
-/// Rewrite a direct exported-variable use to a normal member expression whose
-/// object reference is bound to the exact virtual namespace IIFE parameter.
-/// The code generator retains its proxy handling for merged declarations; this
-/// covers declarations owned by the active namespace body.
+/// Rewrite an exported-variable use to a normal member expression whose object
+/// reference is bound to the exact virtual namespace IIFE parameter. This covers
+/// declarations owned by the active namespace body and merged namespace proxies.
 pub fn namespaceExportAccess(self: *Transformer, idx: NodeIndex) Error!?NodeIndex {
     // Keep legacy analysis-only transforms on the codegen fallback until they
     // provide the editor needed to move the exact Reference to the parameter.
@@ -128,13 +134,18 @@ pub fn namespaceExportAccess(self: *Transformer, idx: NodeIndex) Error!?NodeInde
     const node = self.ast.getNode(idx);
     if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) return null;
     const source_sid = self.getSymbolIdAt(idx) orelse return null;
+    const proxy_owner_symbol_id = if (self.namespace_member_owners) |owners| owners.get(source_sid) else null;
 
     var parameter_sid: ?u32 = null;
     var frame_index = self.namespace_export_frames.items.len;
     while (frame_index > 0) {
         frame_index -= 1;
         const frame = self.namespace_export_frames.items[frame_index];
-        if (frame.exported_symbol_ids.contains(source_sid)) {
+        const proxy_belongs_to_frame = if (proxy_owner_symbol_id) |owner_symbol_id|
+            frame.owner_symbol_id == owner_symbol_id
+        else
+            false;
+        if (frame.exported_symbol_ids.contains(source_sid) or proxy_belongs_to_frame) {
             parameter_sid = frame.parameter_symbol_id;
             break;
         }

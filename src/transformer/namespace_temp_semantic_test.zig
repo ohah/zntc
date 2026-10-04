@@ -140,6 +140,214 @@ test "#4819 namespace variable uses become member AST nodes with the exact IIFE 
     try std.testing.expect(std.mem.indexOf(u8, output, expected_access) != null);
 }
 
+test "#4819 merged namespace proxy references become member AST nodes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const source = "namespace N { export let value = 1; export function first() { return value; } } namespace N { export let next = value + 2; export function read() { const value = 9; return [value, next, first()]; } export function bump() { return ++value; } }";
+    var scanner = try Scanner.init(alloc, source);
+    var parser = Parser.init(alloc, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(alloc, &parser.ast);
+    analyzer.is_ts = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var proxy_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    var owner_symbol: ?u32 = null;
+    var member_owners = analyzer.namespace_member_owners.iterator();
+    while (member_owners.next()) |entry| {
+        const symbol_id = entry.key_ptr.*;
+        const symbol_name = analyzer.symbols.items[symbol_id].nameText(source);
+        if (std.mem.eql(u8, symbol_name, "value") or std.mem.eql(u8, symbol_name, "first")) {
+            try proxy_symbols.put(alloc, symbol_id, {});
+            if (owner_symbol == null) owner_symbol = entry.value_ptr.*;
+            try std.testing.expectEqual(owner_symbol.?, entry.value_ptr.*);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), proxy_symbols.count());
+    const shadow_decl_offset = std.mem.indexOf(u8, source, "const value = 9") orelse return error.MissingShadowDeclaration;
+    var shadow_symbol_id: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or node.span.start < shadow_decl_offset or
+            !std.mem.eql(u8, parser.ast.getText(node.span), "value")) continue;
+        shadow_symbol_id = analyzer.symbol_ids.items[raw];
+        break;
+    }
+    const expected_shadow_symbol = shadow_symbol_id orelse return error.MissingShadowSymbol;
+
+    var transformer = try Transformer.init(alloc, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(alloc, transformer.ast);
+
+    var namespace_declaration_count: usize = 0;
+    var second_namespace_scope: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .ts_module_declaration or node.data.binary.flags == 1) continue;
+        const name = node.data.binary.left;
+        if (name.isNone() or !std.mem.eql(u8, parser.ast.getText(parser.ast.getNode(name).span), "N")) continue;
+        if (namespace_declaration_count == 1) second_namespace_scope = analyzer.scope_owner_map.get(@intCast(raw));
+        namespace_declaration_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), namespace_declaration_count);
+    const expected_namespace_scope = second_namespace_scope orelse return error.MissingSecondNamespaceScope;
+    var expected_parameter_symbol_id: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (symbol.synthetic_kind == .namespace_iife_parameter and @intFromEnum(symbol.scope_id) == expected_namespace_scope) {
+            expected_parameter_symbol_id = @intCast(raw);
+            break;
+        }
+    }
+    const expected_parameter = expected_parameter_symbol_id orelse return error.MissingSecondNamespaceParameter;
+
+    var remaining_proxy_refs: usize = 0;
+    var proxy_member_accesses: usize = 0;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
+            if (raw < edited.symbol_ids.len and edited.symbol_ids[raw] != null and
+                proxy_symbols.contains(edited.symbol_ids[raw].?)) remaining_proxy_refs += 1;
+        }
+        if (node.tag != .static_member_expression or node.data.extra + 1 >= transformer.ast.extra_data.items.len) continue;
+        const object_raw = transformer.ast.extra_data.items[node.data.extra];
+        const property_raw = transformer.ast.extra_data.items[node.data.extra + 1];
+        if (object_raw >= edited.symbol_ids.len or edited.symbol_ids[object_raw] != expected_parameter or
+            property_raw >= transformer.ast.nodes.items.len) continue;
+        const property = transformer.ast.nodes.items[property_raw];
+        const property_name = transformer.ast.getText(property.span);
+        if (std.mem.eql(u8, property_name, "value") or std.mem.eql(u8, property_name, "first")) {
+            proxy_member_accesses += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), remaining_proxy_refs);
+    try std.testing.expectEqual(@as(usize, 3), proxy_member_accesses);
+
+    var shadow_reads: usize = 0;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag == .identifier_reference and raw < edited.symbol_ids.len and
+            edited.symbol_ids[raw] == expected_shadow_symbol) shadow_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), shadow_reads);
+
+    var parameter_reads: usize = 0;
+    for (edited.references) |reference| {
+        if (reference.flags.declare or @intFromEnum(reference.symbol_id) != expected_parameter) continue;
+        if (std.mem.indexOfScalar(u32, reachable, @intFromEnum(reference.node_index)) == null) continue;
+        try std.testing.expect(reference.flags.read and !reference.flags.write);
+        try std.testing.expectEqual(@as(?u32, expected_parameter), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+        parameter_reads += 1;
+    }
+    try std.testing.expectEqual(proxy_member_accesses + 1, parameter_reads);
+}
+
+test "#4819 nested merged namespace proxy uses the canonical namespace owner" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const source = "namespace Outer.Inner { export let value = 1; } namespace Outer.Inner { export let next = value + 2; export function bump() { return ++value; } }";
+    var scanner = try Scanner.init(alloc, source);
+    var parser = Parser.init(alloc, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(alloc, &parser.ast);
+    analyzer.is_ts = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var proxy_symbol: ?u32 = null;
+    var member_owners = analyzer.namespace_member_owners.iterator();
+    while (member_owners.next()) |entry| {
+        const symbol_id = entry.key_ptr.*;
+        if (std.mem.eql(u8, analyzer.symbols.items[symbol_id].nameText(source), "value")) {
+            proxy_symbol = symbol_id;
+            break;
+        }
+    }
+    const expected_proxy = proxy_symbol orelse return error.MissingNestedMemberProxy;
+    var original_proxy_references: usize = 0;
+    for (analyzer.references.items) |reference| {
+        if (!reference.flags.declare and @intFromEnum(reference.symbol_id) == expected_proxy) original_proxy_references += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), original_proxy_references);
+
+    var second_inner_scope: ?u32 = null;
+    var second_inner_name_symbol: ?u32 = null;
+    var inner_count: usize = 0;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .ts_module_declaration or node.data.binary.flags == 1) continue;
+        const name = node.data.binary.left;
+        if (name.isNone() or !std.mem.eql(u8, parser.ast.getText(parser.ast.getNode(name).span), "Inner")) continue;
+        if (inner_count == 1) {
+            second_inner_scope = analyzer.scope_owner_map.get(@intCast(raw));
+            second_inner_name_symbol = analyzer.symbol_ids.items[@intFromEnum(name)];
+        }
+        inner_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), inner_count);
+    const expected_inner_scope = second_inner_scope orelse return error.MissingSecondInnerScope;
+    const inner_name_symbol = second_inner_name_symbol orelse return error.MissingSecondInnerNameSymbol;
+    const canonical_inner_owner = analyzer.namespace_declaration_owners.get(inner_name_symbol) orelse inner_name_symbol;
+    try std.testing.expectEqual(analyzer.namespace_member_owners.get(expected_proxy).?, canonical_inner_owner);
+    try std.testing.expect(inner_name_symbol != canonical_inner_owner);
+    var expected_parameter_symbol_id: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (symbol.synthetic_kind == .namespace_iife_parameter and @intFromEnum(symbol.scope_id) == expected_inner_scope) {
+            expected_parameter_symbol_id = @intCast(raw);
+            break;
+        }
+    }
+    const expected_parameter = expected_parameter_symbol_id orelse return error.MissingSecondInnerParameter;
+
+    var transformer = try Transformer.init(alloc, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(alloc, transformer.ast);
+
+    var remaining_proxy_refs: usize = 0;
+    var nested_member_accesses: usize = 0;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if ((node.tag == .identifier_reference or node.tag == .assignment_target_identifier) and
+            raw < edited.symbol_ids.len and edited.symbol_ids[raw] == expected_proxy)
+        {
+            remaining_proxy_refs += 1;
+        }
+        if (node.tag != .static_member_expression or node.data.extra + 1 >= transformer.ast.extra_data.items.len) continue;
+        const object_raw = transformer.ast.extra_data.items[node.data.extra];
+        const property_raw = transformer.ast.extra_data.items[node.data.extra + 1];
+        if (object_raw >= edited.symbol_ids.len or edited.symbol_ids[object_raw] != expected_parameter or
+            property_raw >= transformer.ast.nodes.items.len) continue;
+        if (std.mem.eql(u8, transformer.ast.getText(transformer.ast.nodes.items[property_raw].span), "value")) {
+            nested_member_accesses += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), remaining_proxy_refs);
+    try std.testing.expectEqual(@as(usize, 2), nested_member_accesses);
+}
+
 test "#4819 namespace destructuring temp has one IIFE binding and exact read reference" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
