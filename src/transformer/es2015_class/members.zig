@@ -9,6 +9,7 @@ const token_mod = @import("../../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("../es_helpers.zig");
 const methods_mod = @import("methods.zig");
+const GeneratedSetterHandles = @import("../transformer/stage3_decorator_helpers.zig").GeneratedSetterHandles;
 
 const MethodExtra = ast_mod.MethodExtra;
 const PropertyExtra = ast_mod.PropertyExtra;
@@ -478,9 +479,11 @@ pub fn Members(comptime Transformer: type) type {
                 .member_span = member.span,
             });
 
-            const setter_idx = try buildAccessorSetter(self, key_node.span, storage_span, is_static, span);
+            const setter = try buildAccessorSetter(self, key_node.span, storage_span, is_static, span);
             try cm.accessors.append(self.allocator, .{
-                .member_idx = setter_idx,
+                .member_idx = setter.method,
+                .generated_setter_parameter = setter.parameter,
+                .generated_setter_value_reference = setter.value_reference,
                 .is_static = is_static,
                 .is_getter = false,
                 .member_span = member.span,
@@ -624,9 +627,11 @@ pub fn Members(comptime Transformer: type) type {
 
             const setter_key = try es_helpers.makeComputedKeyRef(self, mem_var_span, span);
             const setter_target = try makePrivateFieldAccess(self, storage_span, span);
-            const setter_idx = try buildComputedAccessorSetter(self, setter_key, setter_target, is_static, span);
+            const setter = try buildComputedAccessorSetter(self, setter_key, setter_target, is_static, span);
             try cm.accessors.append(self.allocator, .{
-                .member_idx = setter_idx,
+                .member_idx = setter.method,
+                .generated_setter_parameter = setter.parameter,
+                .generated_setter_value_reference = setter.value_reference,
                 .is_static = is_static,
                 .is_getter = false,
                 .member_span = member_span,
@@ -645,8 +650,8 @@ pub fn Members(comptime Transformer: type) type {
         }
 
         /// computed accessor setter method_definition 생성. `set [_acc_key_N](value) { assign_target = value; }`.
-        fn buildComputedAccessorSetter(self: *Transformer, computed_key: NodeIndex, assign_target: NodeIndex, is_static: bool, span: Span) Transformer.Error!NodeIndex {
-            return self.buildSetterMethod(computed_key, assign_target, is_static, span);
+        fn buildComputedAccessorSetter(self: *Transformer, computed_key: NodeIndex, assign_target: NodeIndex, is_static: bool, span: Span) Transformer.Error!GeneratedSetterHandles {
+            return self.buildSetterMethodWithHandles(computed_key, assign_target, is_static, span);
         }
 
         /// `"foo"` / `'foo'` → `foo` (따옴표 제거). 따옴표 없으면 원본 반환.
@@ -698,10 +703,10 @@ pub fn Members(comptime Transformer: type) type {
             storage_span: Span,
             is_static: bool,
             span: Span,
-        ) Transformer.Error!NodeIndex {
+        ) Transformer.Error!GeneratedSetterHandles {
             const setter_key = try es_helpers.makePropertyNameFromSpan(self, key_span);
             const assign_target = try makePrivateFieldAccess(self, storage_span, span);
-            return self.buildSetterMethod(setter_key, assign_target, is_static, span);
+            return self.buildSetterMethodWithHandles(setter_key, assign_target, is_static, span);
         }
 
         /// _x.set(this, init) expression_statement 생성.

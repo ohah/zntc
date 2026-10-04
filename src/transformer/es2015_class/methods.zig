@@ -29,6 +29,8 @@ pub fn Methods(comptime Transformer: type) type {
         pub const AccessorInfo = struct {
             member_idx: NodeIndex,
             source_member_idx: NodeIndex = .none,
+            generated_setter_parameter: NodeIndex = .none,
+            generated_setter_value_reference: NodeIndex = .none,
             is_static: bool,
             is_getter: bool,
             // `Object.defineProperty(...)` statement 및 get/set prop 의 span 으로 사용 —
@@ -38,7 +40,15 @@ pub fn Methods(comptime Transformer: type) type {
 
         /// accessor method_definition에서 function expression 생성.
         /// ES2015 params lowering 포함 (setter destructuring/default 등).
-        fn buildAccessorFunc(self: *Transformer, member_idx: NodeIndex, source_member_idx: NodeIndex, span: Span, reference_scope: ScopeId) Transformer.Error!NodeIndex {
+        fn buildAccessorFunc(
+            self: *Transformer,
+            member_idx: NodeIndex,
+            source_member_idx: NodeIndex,
+            generated_setter_parameter: NodeIndex,
+            generated_setter_value_reference: NodeIndex,
+            span: Span,
+            reference_scope: ScopeId,
+        ) Transformer.Error!NodeIndex {
             const saved_extracted_body = self.in_extracted_fn_body;
             self.in_extracted_fn_body = false;
             defer self.in_extracted_fn_body = saved_extracted_body;
@@ -64,6 +74,30 @@ pub fn Methods(comptime Transformer: type) type {
             const params_start = params_list_old.start;
             const params_len = params_list_old.len;
             const body_idx: NodeIndex = self.readNodeIdx(me, MethodExtra.body);
+
+            // The auto-accessor producer carries the exact nodes. Its output
+            // function scope is only known here, after the containing class has
+            // been lowered; bind those handles directly instead of scanning the
+            // finished function for a matching spelling/span.
+            if (!generated_scope.isNone()) {
+                if (generated_setter_parameter.isNone() or generated_setter_value_reference.isNone())
+                    std.debug.panic("generated accessor setter lost its exact value handles", .{});
+                if (params_len != 1 or @as(NodeIndex, @enumFromInt(self.ast.extra_data.items[params_start])) != generated_setter_parameter)
+                    std.debug.panic("generated accessor setter parameter handle does not match its method", .{});
+                const parameter_node = self.ast.getNode(generated_setter_parameter);
+                const value_reference_node = self.ast.getNode(generated_setter_value_reference);
+                if (parameter_node.tag != .binding_identifier or value_reference_node.tag != .identifier_reference or
+                    parameter_node.data.string_ref.start != value_reference_node.data.string_ref.start or
+                    parameter_node.data.string_ref.end != value_reference_node.data.string_ref.end)
+                    std.debug.panic("generated accessor setter value handles are inconsistent", .{});
+                const value_symbol = (try self.declareSyntheticInScope(
+                    generated_setter_parameter,
+                    parameter_node.span,
+                    .parameter,
+                    generated_scope,
+                )) orelse std.debug.panic("generated accessor setter parameter did not receive a SymbolId", .{});
+                try self.addSyntheticRefInScope(generated_setter_value_reference, value_symbol, generated_scope, .{ .read = true });
+            }
 
             const arrow_env = es_helpers.pushArrowEnv(self);
             defer es_helpers.popArrowEnv(self, arrow_env);
@@ -94,17 +128,6 @@ pub fn Methods(comptime Transformer: type) type {
             try self.remapCopiedScopeOwner(source_member_idx, func_expr);
             if (!generated_scope.isNone()) {
                 try self.bindReservedFunctionOwner(generated_scope, func_expr);
-                if (new_params.len != 1) std.debug.panic("generated accessor setter must have exactly one parameter", .{});
-                const parameter: NodeIndex = @enumFromInt(self.ast.extra_data.items[new_params.start]);
-                const parameter_node = self.ast.getNode(parameter);
-                if (parameter_node.tag != .binding_identifier) std.debug.panic("generated accessor setter parameter is not a binding", .{});
-                const name_span = parameter_node.data.string_ref;
-                const specs = [_]Transformer.GeneratedLocalSpec{.{
-                    .name = self.ast.getText(name_span),
-                    .kind = .parameter,
-                    .exact_binding_span = name_span,
-                }};
-                try self.trackGeneratedLocalSymbols(func_expr, generated_scope, &specs);
             }
             return func_expr;
         }
@@ -411,7 +434,15 @@ pub fn Methods(comptime Transformer: type) type {
                 // mutation 이전 읽기 — 캐시 불필요, readNodeIdx 사용.
                 const key_idx = self.readNodeIdx(me, MethodExtra.key);
 
-                const func_expr = try buildAccessorFunc(self, info.member_idx, info.source_member_idx, span, reference_scope);
+                const func_expr = try buildAccessorFunc(
+                    self,
+                    info.member_idx,
+                    info.source_member_idx,
+                    info.generated_setter_parameter,
+                    info.generated_setter_value_reference,
+                    span,
+                    reference_scope,
+                );
                 const accessor_key = try es_helpers.makePropertyName(self, if (info.is_getter) "get" else "set");
                 const prop1 = try self.ast.addNode(.{
                     .tag = .object_property,
@@ -431,7 +462,15 @@ pub fn Methods(comptime Transformer: type) type {
                         keysMatch(self, key_idx, next_key))
                     {
                         used[j] = true;
-                        const pair_func = try buildAccessorFunc(self, next.member_idx, next.source_member_idx, span, reference_scope);
+                        const pair_func = try buildAccessorFunc(
+                            self,
+                            next.member_idx,
+                            next.source_member_idx,
+                            next.generated_setter_parameter,
+                            next.generated_setter_value_reference,
+                            span,
+                            reference_scope,
+                        );
                         const pair_key = try es_helpers.makePropertyName(self, if (next.is_getter) "get" else "set");
                         paired_prop = try self.ast.addNode(.{
                             .tag = .object_property,
