@@ -637,6 +637,11 @@ for (const [label, route, paramsMatch] of [
     });
     await assert.rejects(f.execute(), /1,000|limit/i);
     assert.deepEqual(f.mutations(), []);
+    assert.equal(
+      f.calls.filter((request) => request.route === route && paramsMatch(request.params)).length,
+      1,
+      'the GitHub search cap must fail immediately rather than retry',
+    );
   });
 }
 
@@ -692,6 +697,14 @@ test('an API error while looking for active writers fails closed', async () => {
   });
   await assert.rejects(f.execute(), { status: 403 });
   assert.deepEqual(f.mutations(), []);
+  assert.equal(
+    f.calls.filter(
+      ({ route, params }) =>
+        route === `GET ${repoRoute}/actions/runs` && params.status === 'pending',
+    ).length,
+    1,
+    'permission and rate-limit errors must not be retried as pagination changes',
+  );
 });
 
 test('404 while deleting an already removed cache is a harmless terminal race', async () => {
@@ -954,4 +967,63 @@ test('an unknown status found only by the unfiltered branch query preserves cach
   });
   await assert.rejects(f.execute(), /Unknown branch workflow status/);
   assert.deepEqual(f.mutations(), []);
+});
+
+test('a changing run inventory retries from page one and uses only the recovered snapshot', async () => {
+  const staleRuns = Array.from({ length: 100 }, (_, index) =>
+    run({ id: 5000 + index, event: 'workflow_dispatch', pull_requests: [] }),
+  );
+  const pages = [];
+  let snapshots = 0;
+  const f = fixture({
+    runs: [mainRun()],
+    caches: [cache()],
+    request({ route, params }) {
+      if (route === `GET ${repoRoute}/actions/runs` && params.status === 'in_progress') {
+        pages.push(params.page);
+        if (params.page === 1) snapshots += 1;
+        if (snapshots === 1) {
+          // The first snapshot says 101 writers, but they finish before page 2.
+          // Retrying must discard both its old count and its old active records.
+          return {
+            data: {
+              total_count: params.page === 1 ? 101 : 0,
+              workflow_runs: params.page === 1 ? staleRuns : [],
+            },
+          };
+        }
+      }
+    },
+  });
+  const result = await f.execute();
+  assert.deepEqual(
+    pages.slice(0, 3),
+    [1, 2, 1],
+    'restart the complete query after a changing page',
+  );
+  assert.deepEqual(f.cancelled(), []);
+  assert.deepEqual(f.deleted(), [301]);
+  assert.deepEqual(result.deletedCaches, [301]);
+  assert.equal(result.deletedBytes, 301);
+});
+
+test('a persistently incomplete run inventory stops after three snapshots without mutations', async () => {
+  const pages = [];
+  const f = fixture({
+    runs: [mainRun()],
+    caches: [cache()],
+    request({ route, params }) {
+      if (route === `GET ${repoRoute}/actions/runs` && params.status === 'in_progress') {
+        pages.push(params.page);
+        return { data: { total_count: 1, workflow_runs: [] } };
+      }
+    },
+  });
+  await assert.rejects(f.execute(), /Incomplete pagination/);
+  assert.deepEqual(pages, [1, 1, 1]);
+  assert.deepEqual(f.mutations(), []);
+  assert.deepEqual(
+    f.caches.map((item) => item.id),
+    [301],
+  );
 });

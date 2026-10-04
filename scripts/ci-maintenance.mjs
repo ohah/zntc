@@ -39,6 +39,20 @@ export async function runMaintenance({ github, context, dryRun = true, log = () 
   // Collect every page before mutating. A filtered runs query is capped at
   // 1,000 by GitHub; reaching that cap is uncertainty, never an empty result.
   async function list(route, field, params = {}) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        return await listSnapshot(route, field, params);
+      } catch (error) {
+        if (error.code !== 'INCOMPLETE_PAGINATION' || attempt === 3) throw error;
+        // Status counts and rows can briefly disagree while workflows start or
+        // finish. Restart at page one; never accept the partial snapshot.
+        log(`Retrying changing GitHub inventory (${attempt}/3): ${route}`);
+        await new Promise((resolve) => setTimeout(resolve, attempt * 500));
+      }
+    }
+  }
+
+  async function listSnapshot(route, field, params) {
     const items = [];
     let total = 0;
     for (let page = 1; page <= 100; page++) {
@@ -52,7 +66,12 @@ export async function runMaintenance({ github, context, dryRun = true, log = () 
       items.push(...rows);
       if (rows.length < 100) {
         const unique = [...new Map(items.map((item) => [positiveId(item.id), item])).values()];
-        if (unique.length < total) throw new Error(`Incomplete pagination: ${route}`);
+        if (unique.length < total) {
+          throw Object.assign(
+            new Error(`Incomplete pagination: ${route} (${unique.length}/${total})`),
+            { code: 'INCOMPLETE_PAGINATION' },
+          );
+        }
         return unique;
       }
     }
