@@ -8,6 +8,7 @@ on:
     paths:
       - '.github/workflows/build-canary.yml'
       - '.github/actions/setup-zig/**'
+      - '.github/actions/checkout-build-deps/**'
 
 permissions:
   contents: read
@@ -33,8 +34,8 @@ jobs:
           - { os: windows-latest, optimize: ReleaseSmall }
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      # These jobs compile the CLI; only unit/conformance jobs need Test262.
+      - uses: ./.github/actions/checkout-build-deps
       - uses: ./.github/actions/setup-zig
         with:
           version: 0.16.0
