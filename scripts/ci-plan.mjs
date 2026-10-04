@@ -46,8 +46,9 @@ const test262Files = new Set([
   '.github/workflows/test262.yml',
 ]);
 
-// PRs retain one representative per ABI plus the Windows ia32 canary. Main
-// and manual runs add Linux arm64 and Intel macOS. Windows arm64 is cross-built
+// This matrix plus the separate artifact-consuming macOS arm64 smoke job
+// retain one representative per ABI plus the Windows ia32 canary on PRs.
+// Main/manual runs add Linux arm64 and Intel macOS. Windows arm64 is cross-built
 // by release.yml: its native Zig runner currently crashes before the smoke test.
 const smokePlatforms = [
   { platform: 'linux-x64-gnu', os: 'ubuntu-latest', zig_target: 'native', pr: true },
@@ -66,7 +67,6 @@ const smokePlatforms = [
     smoke_container: 'node:24-alpine',
     pr: false,
   },
-  { platform: 'darwin-arm64', os: 'macos-latest', zig_target: 'native', pr: true },
   { platform: 'darwin-x64', os: 'macos-15-intel', zig_target: 'native', pr: false },
   { platform: 'win32-x64-msvc', os: 'windows-latest', zig_target: 'native', pr: true },
   // Node 24 dropped win-x86. Keep Node 22/x86 for an actual 32-bit dlopen.

@@ -398,6 +398,8 @@ jobs:
     needs: checks
     if: ${{ !cancelled() && (needs.checks.outputs.core == 'true' || needs.checks.outputs.integration == 'true') }}
     runs-on: macos-latest
+    outputs:
+      napi_artifact: ${{ steps.native-upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -420,12 +422,23 @@ jobs:
         if: ${{ !cancelled() && steps.zig.outcome == 'success' }}
         id: cli
         run: zig build -Doptimize=ReleaseFast
-      - name: Build native macOS NAPI
+      - name: Build portable macOS NAPI
         if: ${{ !cancelled() && steps.zig.outcome == 'success' }}
         id: napi
         run: |
-          zig build napi
+          zig build napi -Dcpu=baseline
           cp zig-out/lib/zntc.node packages/core/zntc.node
+      # API/watch and package installation exercise the same portable addon.
+      # Publish it before wrapper/tests so their failures do not hide the ABI check.
+      - name: Upload macOS NAPI for package smoke
+        id: native-upload
+        if: ${{ !cancelled() && needs.checks.outputs.core == 'true' && steps.napi.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-native-darwin-arm64
+          path: zig-out/lib/zntc.node
+          if-no-files-found: error
+          retention-days: 1
       - name: Build and verify native core wrapper
         if: ${{ !cancelled() && steps.napi.outcome == 'success' && steps.deps.outcome == 'success' }}
         id: core
@@ -486,7 +499,7 @@ jobs:
     needs: [checks, prepare-packages]
     if: ${{ !cancelled() && needs.checks.outputs.core == 'true' && needs.prepare-packages.outputs.core_artifact != '' }}
     runs-on: ${{ matrix.os }}
-    # PR 5 / main 8 ABI 조합은 scripts/ci-plan.mjs에서 선택한다.
+    # PR 4 / main 7 ABI 조합 + 아래 재사용 darwin-arm64 job = 기존 5 / 8 조합.
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.checks.outputs.smoke_matrix) }}
@@ -522,56 +535,39 @@ jobs:
         shell: bash
         run: zig build napi -Dtarget=${{ matrix.zig_target }} -Dcpu=baseline
 
-      - name: Copy .node into platform sub-package
-        shell: bash
-        run: |
-          cp zig-out/lib/zntc.node packages/core-${{ matrix.platform }}/zntc.node
-          cp NOTICE packages/core-${{ matrix.platform }}/NOTICE
-
-      # 사용자 시나리오: npm install @zntc/core → main + 환경 매칭 sub-package 1개 install.
-      # 두 tarball 같이 install 해서 loader 가 sub-package require.resolve 로 binary 찾는 흐름 검증.
-      # musl 은 host(ubuntu)에서 npm pack 까지 수행 후 실행만 alpine container 로 위임.
-      - name: Pack tarballs
-        shell: bash
-        run: |
-          rm -rf tmp-napi-pack tmp-napi-smoke
-          mkdir -p tmp-napi-pack tmp-napi-smoke
-          main_tarball="$(npm pack ./packages/core --pack-destination tmp-napi-pack --silent | tail -n 1)"
-          plat_tarball="$(npm pack ./packages/core-${{ matrix.platform }} --pack-destination tmp-napi-pack --silent | tail -n 1)"
-          echo "MAIN_TARBALL=${main_tarball}" >> "$GITHUB_ENV"
-          echo "PLAT_TARBALL=${plat_tarball}" >> "$GITHUB_ENV"
-
-      # ESM resolver 는 .mjs 파일이 위치한 디렉토리 기준으로 node_modules 탐색 —
-      # `node ../scripts/napi-smoke-test.mjs` 로 실행하면 repo_root/node_modules
-      # (workspace symlink) 가 잡혀 dev `packages/core` 가 import 됨 → tarball
-      # 검증이 무력화. `--input-type=module < <file>` 은 stdin 입력이라 cwd
-      # (tmp-napi-smoke/node_modules) 기준 resolution 이 작동.
-      - name: Run smoke (host)
-        if: matrix.smoke_container == ''
-        shell: bash
-        run: |
-          cd tmp-napi-smoke
-          npm init -y >/dev/null
-          npm install "../tmp-napi-pack/${MAIN_TARBALL}" "../tmp-napi-pack/${PLAT_TARBALL}" --ignore-scripts
-          node --input-type=module < ../scripts/napi-smoke-test.mjs
-
-      # addnab/docker-run-action@v3 은 host 의 $GITHUB_ENV 자동 forward 안 함 —
-      # MAIN/PLAT_TARBALL 명시 전달 필요.
-      - name: Run smoke (Alpine container, musl)
-        if: matrix.smoke_container != ''
-        uses: addnab/docker-run-action@v3
+      - uses: ./.github/actions/napi-package-smoke
         with:
-          image: ${{ matrix.smoke_container }}
-          options: -v ${{ github.workspace }}:/work -w /work -e MAIN_TARBALL -e PLAT_TARBALL
-          run: |
-            set -e
-            cd tmp-napi-smoke
-            npm init -y >/dev/null
-            npm install "../tmp-napi-pack/${MAIN_TARBALL}" "../tmp-napi-pack/${PLAT_TARBALL}" --ignore-scripts
-            node --input-type=module < ../scripts/napi-smoke-test.mjs
-        env:
-          MAIN_TARBALL: ${{ env.MAIN_TARBALL }}
-          PLAT_TARBALL: ${{ env.PLAT_TARBALL }}
+          platform: ${{ matrix.platform }}
+          smoke-container: ${{ matrix.smoke_container || '' }}
+
+  # Only this consumer waits for macOS. Other platform builds remain independent
+  # of macOS runner queues, native tests, and artifact availability.
+  napi-macos-arm64-smoke:
+    name: NAPI Package Smoke (darwin-arm64)
+    needs: [checks, prepare-packages, macos-native]
+    if: ${{ !cancelled() && needs.checks.outputs.core == 'true' && needs.prepare-packages.outputs.core_artifact != '' && needs.macos-native.outputs.napi_artifact != '' }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Download shared Ubuntu JS wrapper
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-package-build
+          path: .
+      - name: Download macOS native addon
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-native-darwin-arm64
+          path: ci-native-darwin-arm64
+      - uses: ./.github/actions/napi-package-smoke
+        with:
+          platform: darwin-arm64
+          # The shared wrapper artifact also contains a Linux addon. Select
+          # the macOS file explicitly rather than depending on overwrite order.
+          native-binary: ci-native-darwin-arm64/zntc.node
 
   publish-smoke:
     name: Publish Smoke Test
