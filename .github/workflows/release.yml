@@ -4,12 +4,18 @@ on:
   push:
     tags:
       - 'v*'
-  # 빌드 설정(release.yml/build.zig)을 바꾸는 PR 은 9-플랫폼 NAPI/CLI 빌드만 돌려
-  # cross-build 회귀를 tag push 전에 잡는다. publish/release 는 push 이벤트 전용이라 skip.
+  # 릴리스 설정 PR은 9-플랫폼 NAPI/CLI 빌드와 실제 설치/실행까지 검증한다.
+  # publish/release는 태그 push 전용이며 PR/수동 검증은 게시하지 않는다.
   pull_request:
     paths:
       - '.github/workflows/release.yml'
       - '.github/actions/setup-zig/**'
+      - '.github/actions/checkout-build-deps/**'
+      - '.github/actions/napi-package-smoke/**'
+      - 'scripts/napi-smoke-test.mjs'
+      - 'scripts/verify-release-core*.mjs'
+      - 'scripts/release.ts'
+      - 'packages/core/src/platforms.ts'
       - 'build.zig'
       - 'build.zig.zon'
   # default branch 에 이 트리거가 있어야 수동 실행 가능 (머지 후 임의 검증용).
@@ -81,8 +87,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - uses: ./.github/actions/checkout-build-deps
 
       - uses: ./.github/actions/setup-zig
         with:
@@ -96,7 +101,7 @@ jobs:
 
       - name: Build NAPI (ReleaseFast)
         shell: bash
-        run: zig build napi -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
+        run: zig build napi -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }} -Dcpu=baseline
 
       - name: Locate zntc.node
         id: locate
@@ -120,7 +125,7 @@ jobs:
           path: ${{ steps.locate.outputs.path }}
 
       - name: Build CLI (ReleaseFast)
-        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
+        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }} -Dcpu=baseline
 
       # NOTICE = BoringSSL Apache-2.0 §4(d) attribution. 별도 디렉터리에 실행파일과
       # NOTICE 만 모아 zig-out/bin 에 배치될 수 있는 NAPI 바이너리 혼입을 막는다.
@@ -143,31 +148,167 @@ jobs:
           retention-days: 1
           path: cli-artifact/
 
-  # ─── npm publish (5 sub-package + main + 나머지) ───
+  # Build the JS/declaration payload once for all native installation checks.
+  # CJS self-hosting uses this run's fresh Linux addon, never a registry binary.
+  prepare-release-core:
+    name: Prepare release core wrapper
+    needs: build-platform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: ./.github/actions/install-deps
+        with:
+          profile: core-build
+      - uses: actions/download-artifact@v4
+        with:
+          name: zntc-node-linux-x64-gnu
+          path: release-native/
+      - name: Build and fingerprint core payload
+        run: |
+          cp release-native/zntc.node packages/core/zntc.node
+          bun run --cwd packages/core build
+          node --test scripts/verify-release-core.test.mjs
+          node scripts/verify-release-core.mjs capture
+          node --input-type=module <<'NODE'
+          import { copyFileSync, mkdirSync, readFileSync } from 'node:fs';
+          import { dirname, join } from 'node:path';
+          const manifest = JSON.parse(readFileSync('release-core-manifest.json', 'utf8'));
+          for (const name of Object.keys(manifest.files)) {
+            const relative = join('packages/core', name);
+            const target = join('release-core-artifact', relative);
+            mkdirSync(dirname(target), { recursive: true });
+            copyFileSync(relative, target);
+          }
+          copyFileSync('release-core-manifest.json', 'release-core-artifact/release-core-manifest.json');
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-core-wrapper
+          path: release-core-artifact/
+          if-no-files-found: error
+          retention-days: 1
+
+  release-smoke:
+    name: Release install and CLI (${{ matrix.platform }})
+    needs: [build-platform, prepare-release-core]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux-x64-gnu, runner: ubuntu-latest, cli_artifact: zntc-x86_64-linux-gnu }
+          - {
+              platform: linux-arm64-gnu,
+              runner: ubuntu-24.04-arm,
+              cli_artifact: zntc-aarch64-linux-gnu,
+            }
+          - {
+              platform: linux-x64-musl,
+              runner: ubuntu-latest,
+              cli_artifact: zntc-x86_64-linux-musl,
+              container: 'node:24-alpine',
+            }
+          - {
+              platform: linux-arm64-musl,
+              runner: ubuntu-24.04-arm,
+              cli_artifact: zntc-aarch64-linux-musl,
+              container: 'node:24-alpine',
+            }
+          - { platform: darwin-x64, runner: macos-15-intel, cli_artifact: zntc-x86_64-macos }
+          - { platform: darwin-arm64, runner: macos-latest, cli_artifact: zntc-aarch64-macos }
+          - { platform: win32-x64-msvc, runner: windows-latest, cli_artifact: zntc-x86_64-windows }
+          # Cross-build on x64 above; execute the artifacts on native ARM here.
+          - {
+              platform: win32-arm64-msvc,
+              runner: windows-11-arm,
+              cli_artifact: zntc-aarch64-windows,
+              node_arch: arm64,
+            }
+          - {
+              platform: win32-ia32-msvc,
+              runner: windows-latest,
+              cli_artifact: zntc-x86-windows,
+              node_version: '22',
+              node_arch: x86,
+            }
+    steps:
+      # Keep platform package metadata/NOTICE byte-identical to Linux publish.
+      - name: Preserve repository line endings
+        shell: bash
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node_version || '24' }}
+          architecture: ${{ matrix.node_arch || '' }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-core-wrapper
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: zntc-node-${{ matrix.platform }}
+          path: release-native/
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.cli_artifact }}
+          path: release-cli/
+      - name: Verify shared core payload
+        run: node scripts/verify-release-core.mjs verify
+      - uses: ./.github/actions/napi-package-smoke
+        with:
+          platform: ${{ matrix.platform }}
+          native-binary: release-native/zntc.node
+          smoke-container: ${{ matrix.container || '' }}
+      - name: Check installed payload, CJS tokenize and CLI (host)
+        if: matrix.container == ''
+        run: node scripts/verify-release-core.mjs smoke ${{ matrix.platform }}
+      - name: Check installed payload, CJS tokenize and CLI (musl)
+        if: matrix.container != ''
+        uses: addnab/docker-run-action@v3
+        with:
+          image: ${{ matrix.container }}
+          options: -v ${{ github.workspace }}:/work -w /work
+          run: node scripts/verify-release-core.mjs smoke ${{ matrix.platform }}
+      # No proof is uploaded unless both tarball entry points and CLI passed.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-smoke-${{ matrix.platform }}
+          path: release-smoke-results/${{ matrix.platform }}.json
+          if-no-files-found: error
+          retention-days: 1
+
+  # ─── npm publish (9 sub-package + main + 나머지) ───
   publish-npm:
     name: Publish to npm
-    needs: build-platform
+    needs: [build-platform, prepare-release-core, release-smoke]
     # tag push 일 때만 실제 publish. workflow_dispatch(수동) 는 빌드 검증 전용.
-    if: github.event_name == 'push'
+    if: ${{ !cancelled() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.build-platform.result == 'success' && needs.prepare-release-core.result == 'success' && needs.release-smoke.result == 'success' }}
     runs-on: ubuntu-latest
     env:
       # `runs-on` 과 매칭 — 변경 시 함께 갱신. 사용처: "Place zntc.node in main package".
       MAIN_BUILD_NAPI_PLATFORM: linux-x64-gnu
+      ZNTC_RELEASE_PROOF_DIR: release-smoke-results
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - uses: ./.github/actions/checkout-build-deps
 
       - uses: ./.github/actions/setup-zig
         with:
           version: 0.16.0
-          # NAPI 는 artifact 를 사용하고, WASM 은 prepublishOnly hook 에서 빌드한다.
+          # NAPI는 artifact를 사용하고 WASM은 기존 release 검사/hook에서 빌드한다.
           cache-key: release-publish
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.3.11"
+          bun-version: '1.3.11'
 
       # registry-url 을 지정하면 setup-node 가 NPM_CONFIG_USERCONFIG 를 $RUNNER_TEMP/.npmrc
       # 로 설정해, 아래 Publish step 이 $HOME/.npmrc 에 쓴 토큰을 npm 이 무시한다.
@@ -186,6 +327,16 @@ jobs:
         with:
           path: napi-artifacts/
           pattern: zntc-node-*
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-core-wrapper
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-smoke-*
+          merge-multiple: true
+          path: release-smoke-results/
 
       # build-platform 매트릭스의 artifact 디렉토리 자체를 glob — platform 이름 hardcoded
       # 제거 (PLATFORMS 가 늘면 release.yml 매트릭스만 추가하면 자동 픽업).
@@ -215,7 +366,7 @@ jobs:
             echo "✓ ${dst} (${size} bytes) + NOTICE"
           done
 
-      # main `@zntc/core` publish 의 prepublishOnly 가 build:js:cjs 단계에서
+      # main `@zntc/core`의 pre-release-check가 build:js:cjs 단계에서
       # ZNTC self-host (`node bin/zntc.mjs --bundle ...`) 호출 — packages/core/zntc.node
       # 가 runner 환경에 있어야 동작. publish 산출물 자체에는 안 들어감 (main
       # 패키지의 `files` 필드에 zntc.node 미포함, sub-package 만 ship).
@@ -230,7 +381,10 @@ jobs:
           fi
           cp "$src" packages/core/zntc.node
           size=$(stat -c%s packages/core/zntc.node 2>/dev/null || stat -f%z packages/core/zntc.node)
-          echo "✓ packages/core/zntc.node (${size} bytes) — prepublishOnly build"
+          echo "✓ packages/core/zntc.node (${size} bytes) — release checks and self-host build"
+
+      - name: Require every platform's tested payload before release checks
+        run: node scripts/verify-release-core.mjs verify-release
 
       # dist-tag 자동 감지: v0.1.0 → latest, v0.1.0-rc.1 → rc, v0.1.0-beta.1 → beta
       - name: Determine npm dist-tag
@@ -264,9 +418,9 @@ jobs:
   # ─── GitHub Release (CLI binary tarball) ───
   github-release:
     name: Create GitHub Release
-    needs: [build-platform, publish-npm]
+    needs: [build-platform, release-smoke, publish-npm]
     # tag push 전용 — workflow_dispatch 검증 실행에서는 publish-npm 이 skip 되므로 함께 skip.
-    if: github.event_name == 'push'
+    if: ${{ !cancelled() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.build-platform.result == 'success' && needs.release-smoke.result == 'success' && needs.publish-npm.result == 'success' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -281,6 +435,8 @@ jobs:
           cd artifacts
           for dir in zntc-*/; do
             name="${dir%/}"
+            test -f "${dir}NOTICE"
+            if [ -f "${dir}zntc" ]; then chmod +x "${dir}zntc"; fi
             tar -czf "${name}.tar.gz" -C "$dir" .
           done
 
@@ -322,7 +478,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.3.11"
+          bun-version: '1.3.11'
 
       # npm 이 방금 publish 된 버전을 색인하는 데 시간이 걸린다 — 아직 안 보이면
       # lockfile 이 그대로라 no-op 이 되고 다음 PR 에서 다시 터진다.

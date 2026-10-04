@@ -19,13 +19,14 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { stdin, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { PLATFORMS, subPackageDir } from '../packages/core/src/platforms.ts';
+import { verifyReleaseArtifacts } from './verify-release-core.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
@@ -115,6 +116,7 @@ async function main() {
   const isYes = args.includes('--yes');
   const tagIdx = args.indexOf('--tag');
   const tag = tagIdx >= 0 ? args[tagIdx + 1] : undefined;
+  const releaseProofDirectory = process.env.ZNTC_RELEASE_PROOF_DIR;
 
   console.log('=== ZNTC release ===');
   console.log(`mode: ${isPublish ? 'PUBLISH (실제 publish)' : 'dry-run (변경 없음)'}`);
@@ -133,6 +135,11 @@ async function main() {
   }
   console.log('\n✓ pre-release-check 통과\n');
 
+  // CI rebuilds during pre-release-check. Before publishing any platform,
+  // require the rebuilt payload to match the wrapper tested on every ABI.
+  // Local releases without this environment variable keep the existing hooks.
+  if (releaseProofDirectory) verifyReleaseArtifacts(repoRoot, releaseProofDirectory);
+
   // 2. 대상 목록
   const targets = await loadTargets();
   console.log('--- 대상 publishable 패키지 ---');
@@ -144,11 +151,12 @@ async function main() {
   const skipPackages = new Set<string>();
   for (const t of targets) {
     const status = checkRegistry(t.name, t.version);
-    const label = status === 'available'
-      ? '🟢 available (publish 가능)'
-      : status === 'taken'
-        ? '🟡 taken (이미 publish 됨 — skip)'
-        : '⚪ unknown (network/registry 응답 이상 — 진행 시도)';
+    const label =
+      status === 'available'
+        ? '🟢 available (publish 가능)'
+        : status === 'taken'
+          ? '🟡 taken (이미 publish 됨 — skip)'
+          : '⚪ unknown (network/registry 응답 이상 — 진행 시도)';
     console.log(`  - ${t.name}@${t.version}: ${label}`);
     if (status === 'taken') skipPackages.add(t.name);
   }
@@ -176,7 +184,7 @@ async function main() {
     if (t.isPlatformSubPackage) verifySubPackageBinary(t.dir, t.name);
   }
 
-  const ok = isYes || await confirm("확인하시려면 'yes' 입력 (그 외 입력 시 중단): ");
+  const ok = isYes || (await confirm("확인하시려면 'yes' 입력 (그 외 입력 시 중단): "));
   if (!ok) {
     console.log('취소됨.');
     return;
@@ -187,6 +195,13 @@ async function main() {
     console.log(`\n--- publishing ${t.name}@${t.version} ---`);
     const publishArgs = ['publish', '--access', 'public'];
     if (tag) publishArgs.push('--tag', tag);
+    if (releaseProofDirectory && t.name === '@zntc/core') {
+      // Platform hooks ran first: check again before packing core. Its normal
+      // prepublishOnly would rebuild after verification; publint and the other
+      // release checks already passed above for this exact payload.
+      verifyReleaseArtifacts(repoRoot, releaseProofDirectory);
+      publishArgs.push('--ignore-scripts');
+    }
     // bun publish — `workspace:*` 를 실제 버전으로 자동 변환한다(npm 은 미지원). 인증은
     // release.yml 이 $HOME/.npmrc 에 리터럴 토큰을 쓰고 setup-node registry-url 을 빼서
     // (NPM_CONFIG_USERCONFIG 미설정) bun 이 기본 .npmrc 를 읽도록 해 해결.

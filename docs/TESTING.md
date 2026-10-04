@@ -75,13 +75,16 @@ bytecode 컴파일을 확인한다. 실제 RN 번들 검증은 통합 스위트�
 테스트 탐색 순서나 누락된 의존성 때문에 검증이 생략되지 않는다.
 
 macOS는 네이티브 파일 감시(kqueue), HTTP/TLS, NAPI lifecycle 및 watch/HMR 경로를
-아래 14개 파일로 검증한다. 그 밖의 전체 통합 스위트는 Ubuntu가 담당하며,
+아래 12개 파일로 검증한다. 그 밖의 전체 통합 스위트는 Ubuntu가 담당하며,
 플랫폼별 NAPI/패키지 ABI 검증은 `CI` workflow에 유지한다.
 
 - 파일 감시와 HMR: `watch-json.test.ts`, `watch-stress.test.ts`, `hmr.test.ts`
 - dev server: `devserver.test.ts`, `devserver-sse.test.ts`, `dev-server-tls.test.ts`, `js-dev-server-lazy.test.ts`
-- NAPI: `napi-dev-jsx-binding.test.ts`, `napi-dev-server.test.ts`, `napi-dev-server-quiet-regression.test.ts`, `napi-lazy-dev-hmr.test.ts`, `napi-lazy-primitives.test.ts`, `napi-tls-self-check.test.ts`
+- NAPI: `napi-dev-server.test.ts`, `napi-dev-server-quiet-regression.test.ts`, `napi-lazy-primitives.test.ts`, `napi-tls-self-check.test.ts`
 - 파일 경로·캐시: `tsconfig-cache.test.ts`
+
+watcher를 시작하지 않는 `napi-dev-jsx-binding.test.ts`, `napi-lazy-dev-hmr.test.ts`는
+일반 실행에서는 Ubuntu가 검사하고, macOS에서는 확장 실행 때 추가한다.
 
 ### 실 라이브러리 fixture
 - 루트 `bun install` 로 `clsx`/`nanoid`/`zod`/`react`/`react-dom`/`preact`/`immer`/`date-fns`/`rxjs`/`lodash-es` 등 자동 설치 → `manual-chunks-smoke` / `inline-dynamic-imports-smoke` 의 `test.skipIf(!hasPackage(...))` 통과.
@@ -185,20 +188,22 @@ bun run tests/benchmark/bundle-perf.ts --output ./bundle-perf.json
 - e2e 도 `tests/e2e/` cwd 에서. Playwright 가 자체 server fixture 를 띄움.
 
 ## CI
-- 일반 코드 변경의 최대 job 수는 PR 18개, main push 21개다. 성능 라벨, 문서 배포, 릴리스 및 주기 검사는 별도다.
+- 파서·변환기 등 일반 컴파일러 변경의 최대 job 수는 PR/main 모두 16개다(기존 PR 18개/main 21개). 네이티브·빌드·플랫폼 관련 변경, 미분류 경로, 주간/수동 전체 검사는 최대 21개다. 성능 라벨, 문서 배포, 릴리스 및 최적화 모드 canary는 별도다.
 - `ci.yml` 한 실행에서 유닛·Test262·통합·E2E·패키지 검사를 관리한다. 별도 `integration.yml`과 `test262.yml`은 제거했다.
 - Ubuntu 준비 job은 baseline CPU의 NAPI·CLI와 JS/dts·웹/RN/배포 어댑터를 한 번씩 만든다. API·통합·E2E·설치·배포 검사는 필요한 산출물을 공유한다. CLI/core/web/RN/어댑터 결과를 분리해 한 제품의 빌드 실패가 무관한 검사를 생략시키지 않도록 한다.
-- macOS CLI·NAPI·self-host 빌드는 한 job에서 공유하며 Bun/Node API, CLI, 위 watch/HMR 14개 파일을 각각 실행한다. NAPI는 배포용 baseline CPU 빌드로 API·watch 검증을 통일하고, 같은 바이너리를 별도 darwin-arm64 package smoke에서 Ubuntu산 JS/dts와 함께 설치·실행한다. 이 소비자만 macOS 산출물을 기다리며 다른 ABI의 package smoke는 독립 실행한다. native CPU 검증은 macOS CLI ReleaseFast와 Debug job에서 유지한다.
+- 일반 실행에서 macOS는 native CLI/NAPI 빌드, NAPI watch 중단·재시작, Node `fs.watch`의 config/env/app 변경 감지, kqueue·HTTP/TLS·watch/HMR 통합 12개 파일을 검사한다. API/CLI의 전체 묶음과 Zig Debug 유닛 검사는 Ubuntu가 매번 담당하고, macOS에서는 `extended_platforms`일 때 실행한다. watcher를 시작하지 않는 HMR 코드 생성 2개 파일(`napi-dev-jsx-binding`, `napi-lazy-dev-hmr`)도 같은 확장 실행으로 옮긴다. macOS 앱 빌드는 해당 OS 테스트의 준비 단계이며 React Native 패키지 빌드는 확장 실행에만 필요하다.
+- macOS NAPI는 baseline CPU로 한 번 빌드하고 watch 검사와 별도 darwin-arm64 package smoke가 공유한다. 설치 검사는 Ubuntu산 JS/dts와 실제 macOS 바이너리를 함께 설치·실행한다. 이 소비자만 macOS 산출물을 기다리며 다른 ABI의 package smoke는 독립 실행한다. macOS native CPU 검증은 CLI ReleaseFast에서 매번, Debug에서 확장 실행 때 유지한다.
+- 일반 PR/main의 실제 패키지 설치 검사는 Linux x64 glibc·musl, Windows x64, macOS arm64의 대표 4종이다. 확장 실행은 Linux arm64 glibc·musl, Intel macOS, Windows ia32를 더해 8종을 검사한다. `ci-plan.mjs`가 알려진 portable 경로만 축소하며 새/미분류 경로는 보수적으로 확장한다. 드물게 실행되는 ABI에서만 생기는 회귀는 관련 경로 검사·주간 검사·릴리스 검사에서 발견할 수 있다.
 - Linux CLI ReleaseFast의 CPU 프로필은 Ubuntu 준비 job의 baseline 빌드로 통일하며 draft·core-only 변경에서도 실행한다. Linux native CPU 검증은 Debug·ReleaseSafe에서 유지하고 Windows ReleaseFast도 유지한다. CLI 빌드와 산출물 업로드는 NAPI·JS 빌드 실패와 독립적으로 실행한다.
 - `ci.yml`의 `prepare-packages`, `macos-native`, `wasm`, `release-build`, `napi-package-smoke`는 컴파일에 필요한 `vendor/mimalloc`·`vendor/boringssl`만 checkout한다. 기존 바이너리를 소비하는 linux-x64-gnu·darwin-arm64 패키지 검증은 일반 소스만 checkout한다. Test262 corpus는 Debug job에서 유지하며 Ubuntu의 기존 Debug CLI로 검사하므로 추가 컴파일이 없다. 유닛 테스트 실패 뒤에도 corpus 검사는 독립적으로 실행한다.
 - WASM은 두 바이너리를 한 Zig 명령으로 만들고 wrapper/dts와 함께 업로드한다. 실행 테스트가 실패해도 준비된 산출물의 배포 검사는 계속 수행한다.
 - `scripts/ci-plan.mjs`가 matrix와 실행 대상을 계산한다. 계산과 Zig/JS lint는 하나의 job에서 수행하며, 감사 실패가 나머지 빌드·검사를 막지 않는다. `node --test scripts/ci-plan.test.mjs`로 변경 경로·draft·ready·수동 실행 조건을 검증한다.
 - 패키지 최상단 README/CHANGELOG/LICENSE 및 changeset 문서만 수정하면 가벼운 검사 1개만 실행한다. 테스트 Markdown fixture는 이 예외에 포함하지 않는다. 기존 docs/문서 사이트/루트 Markdown 전용 변경은 CI trigger에서 제외한다.
 - draft PR은 기존처럼 core/Test262를 검증하고 통합/E2E는 준비 완료 후 실행한다. ready 전환은 이전 run을 취소할 수 있으므로 core/Test262도 다시 선택한다.
-- 수동 `CI` 실행의 suite는 `all`, `integration`, `test262`를 지원한다. 수동 subset 실행의 concurrency group은 자동 CI와 분리해 main 전체 검사를 취소하지 않는다.
+- 수동 `CI` 실행의 suite는 `all`, `integration`, `test262`를 지원한다. 매주 월요일 04:37 UTC에는 전체 suite와 확장 플랫폼을 검사한다. 수동/주간 실행의 concurrency group은 자동 CI와 분리해 main 검사 또는 주간 검사를 서로 취소하지 않는다.
 - `.github/actions/setup-zig`는 CI의 순차 CLI/NAPI 빌드가 모두 action 관리 캐시를 쓰게 하고 상한을 4 GiB로 둔다. 크기 초과로 캐시가 비워지는지 로그를 확인한다. 개발자의 병렬 빌드용 `package.json`의 별도 NAPI 캐시 경로는 유지한다.
 - `build-canary.yml`: 추가 ReleaseSafe/ReleaseSmall 5개 조합은 매주 월요일 04:17 UTC와 수동 실행으로 검증한다. 해당 workflow/공통 Zig action 변경 PR에서도 실행한다.
-- `release.yml`: 9개 플랫폼별로 NAPI와 CLI를 함께 빌드한다. 실제 npm/GitHub 배포는 버전 태그에서만 실행한다.
+- `release.yml`: 9개 플랫폼별 NAPI/CLI 빌드 산출물로 실제 npm tarball 설치·ESM/CJS API 및 CLI 실행을 검사한다. Windows arm64도 x64에서 cross-build한 산출물을 ARM runner에서 실행한다. 전 플랫폼 검사가 통과해야 npm/GitHub 배포가 가능하며, 실제 배포는 버전 태그에서만 실행한다.
 - `scripts/ci-install-deps.sh`: job별 Bun workspace 필터를 관리한다. root fixture 의존성은 유지하며, integration은 조용한 test skip을 막기 위해 benchmark workspace도 설치한다. 테스트 의존성을 추가할 때 프로필과 실제 실행/skip 수를 함께 확인한다.
 - `docs.yml`은 문서 배포, `napi-leak-gate.yml`은 수동 누수 진단에 사용한다.
 - ReleaseFast 빌드에서만 깨지는 회귀가 존재 → debug 통과해도 CI 실패 시 `-Doptimize=ReleaseFast` 로 로컬 재현 필수

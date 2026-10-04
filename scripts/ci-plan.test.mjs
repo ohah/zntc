@@ -125,6 +125,128 @@ for (const event of ['pull_request', 'push']) {
   }
 }
 
+// These cases describe the host/packaging boundary, not just current file names.
+// Missing/deleted paths must make the same decision without reading the checkout.
+const platformCases = [
+  ['lexer source', 'src/lexer/scanner.zig', false],
+  ['parser source', 'src/parser/expr.zig', false],
+  ['parser AST layout', 'src/parser/ast.zig', false],
+  ['semantic source', 'src/semantic/analyzer.zig', false],
+  ['transformer source', 'src/transformer/es2020.zig', false],
+  ['code generator', 'src/codegen/unified_mangler.zig', false],
+  ['regexp source', 'src/regexp/parser.zig', false],
+  ['compiler directory itself', 'src/parser', false],
+  ['deleted portable source', 'src/parser/deleted.zig', false],
+  ['compiler fixture', 'src/fixtures/es2020.js', false],
+  ['integration regression', 'tests/integration/tests/namespace-shadow-provenance.test.ts', false],
+  ['Test262 pin', 'tests/test262', false],
+  ['Test262 case', 'tests/test262/test/language/comments/hashbang.js', false],
+  ['core API test', 'packages/core/index.test.ts', false],
+  ['core typing test', 'packages/core/types.test.ts', false],
+  ['core regression fixture', 'packages/core/test/core/browserslist-transpile.ts', false],
+  ['web application', 'packages/web/index.ts', false],
+  ['server application', 'packages/server/index.ts', false],
+  ['shared JS utilities', 'packages/shared/index.ts', false],
+  ['React Native JS adapter', 'packages/react-native/index.ts', false],
+  ['Vite adapter', 'packages/vite-plugin/index.ts', false],
+  ['Rspack adapter', 'packages/rspack-loader/index.ts', false],
+  ['project initializer', 'packages/init/index.ts', false],
+  ['WASM JS wrapper', 'packages/wasm/index.ts', false],
+  ['example app', 'examples/web/src/App.tsx', false],
+  ['root README', 'README.md', false],
+  ['package README', 'packages/core/README.md', false],
+  ['native package README', 'packages/core-darwin-x64/README.md', false],
+  ['native package license', 'packages/core-darwin-x64/LICENSE', false],
+  ['documentation', 'docs/TESTING.md', false],
+  ['native addon entry', 'packages/core/src/napi_entry.zig', true],
+  ['native addon implementation', 'packages/core/src/napi/build_sync_entry.zig', true],
+  ['native addon test', 'packages/core/napi.test.mjs', true],
+  ['native loader', 'packages/core/index.ts', true],
+  ['platform registry', 'packages/core/src/platforms.ts', true],
+  ['JS CLI host entry', 'packages/core/bin/zntc.mjs', true],
+  ['native package metadata', 'packages/core-darwin-x64/package.json', true],
+  ['native package directory', 'packages/core-linux-arm64-musl', true],
+  ['native allocator', 'src/mimalloc.zig', true],
+  ['host entry point', 'src/main.zig', true],
+  ['native filesystem', 'src/bundler/fs.zig', true],
+  ['native channel', 'src/bundler/mpsc_channel.zig', true],
+  ['file watcher', 'src/server/file_watcher.zig', true],
+  ['TLS', 'src/server/tls.zig', true],
+  ['native CLI', 'src/cli/standalone.zig', true],
+  ['native app builder', 'src/app/build.zig', true],
+  ['native utility', 'src/util/spin_lock.zig', true],
+  ['host transpile options', 'src/transpile/options.zig', true],
+  ['Zig build', 'build.zig', true],
+  ['Zig dependency lock', 'build.zig.zon', true],
+  ['build helper', 'build/boringssl.zig', true],
+  ['vendor pin', 'vendor/mimalloc', true],
+  ['vendor headers', 'vendor/node-api-headers/include/node_api.h', true],
+  ['submodule configuration', '.gitmodules', true],
+  ['toolchain versions', '.mise.toml', true],
+  ['root manifest', 'package.json', true],
+  ['root dependency lock', 'bun.lock', true],
+  ['Bun configuration', 'bunfig.toml', true],
+  ['core TypeScript configuration', 'packages/core/tsconfig.json', true],
+  ['portable package manifest', 'packages/web/package.json', true],
+  ['example dependency lock', 'examples/web/package-lock.json', true],
+  ['fixture dependency lock', 'tests/integration/fixtures/new-app/pnpm-lock.yaml', true],
+  ['fixture Bun dependency lock', 'tests/integration/fixtures/new-app/bun.lock', true],
+  ['fixture Yarn dependency lock', 'tests/integration/fixtures/new-app/yarn.lock', true],
+  ['Zig outside known compiler stages', 'packages/wasm/src/main.zig', true],
+  ['CI workflow', '.github/workflows/ci.yml', true],
+  ['release workflow', '.github/workflows/release.yml', true],
+  ['build dependency action', '.github/actions/checkout-build-deps/action.yml', true],
+  ['package smoke action', '.github/actions/napi-package-smoke/action.yml', true],
+  ['planner', 'scripts/ci-plan.mjs', true],
+  ['dependency installer', 'scripts/ci-install-deps.sh', true],
+  ['native verification', 'scripts/ci-verify-native.mjs', true],
+  ['package installation smoke', 'scripts/publish-install-test.ts', true],
+  ['release tool', 'scripts/release.ts', true],
+  ['new source area', 'src/new-area/file.zig', true],
+  ['new native source beside parser', 'src/parser-native/binding.zig', true],
+  ['unknown package', 'packages/new-package/index.ts', true],
+  ['unknown build tool', 'scripts/new-native-builder.py', true],
+  ['unknown configuration', 'new-toolchain.toml', true],
+  ['unknown directory', 'future-component/entry.rs', true],
+];
+
+for (const event of ['pull_request', 'push']) {
+  for (const [name, file, expected] of platformCases) {
+    test(`${event} platform selection: ${name}`, () => {
+      const plan = createPlan({ changedFiles: [file], event });
+      assert.equal(plan.extended_platforms, expected);
+      assert.equal(plan.smoke_matrix.include.length, expected ? 7 : 3);
+      assert.deepEqual(
+        plan.debug_matrix.include,
+        plan.core
+          ? expected
+            ? [{ os: 'ubuntu-latest' }, { os: 'macos-latest' }]
+            : [{ os: 'ubuntu-latest' }]
+          : [],
+      );
+    });
+  }
+}
+
+test('sensitive paths extend mixed changes while documentation does not', () => {
+  const base = { event: 'pull_request', changedFiles: ['src/parser/expr.zig', 'README.md'] };
+  assert.equal(createPlan(base).extended_platforms, false);
+  const mixed = createPlan({ ...base, changedFiles: [...base.changedFiles, 'build.zig'] });
+  assert.equal(mixed.extended_platforms, true);
+  assert.deepEqual(flags(mixed), all);
+});
+
+test('empty and documentation-only changes do not enable extended platform work', () => {
+  for (const event of ['pull_request', 'push']) {
+    for (const changedFiles of [[], ['docs/TESTING.md', 'packages/core/README.md']]) {
+      const plan = createPlan({ changedFiles, event });
+      assert.deepEqual(flags(plan), none);
+      assert.equal(plan.extended_platforms, false);
+      assert.deepEqual(plan.debug_matrix, { include: [] });
+    }
+  }
+});
+
 test('draft PR retains core and Test262, suppressing all integration consumers', () => {
   const plan = createPlan({
     changedFiles: ['src/parser/expr.zig'],
@@ -133,8 +255,17 @@ test('draft PR retains core and Test262, suppressing all integration consumers',
   });
   assert.deepEqual(flags(plan), [true, false, false, true]);
   assert.deepEqual(plan.debug_matrix, {
-    include: [{ os: 'ubuntu-latest' }, { os: 'macos-latest' }],
+    include: [{ os: 'ubuntu-latest' }],
   });
+  assert.equal(plan.extended_platforms, false);
+});
+
+test('native-sensitive draft PR retains extended core checks without integration consumers', () => {
+  const plan = createPlan({ changedFiles: ['build.zig'], event: 'pull_request', draft: true });
+  assert.deepEqual(flags(plan), [true, false, false, true]);
+  assert.equal(plan.extended_platforms, true);
+  assert.deepEqual(plan.debug_matrix.include, [{ os: 'ubuntu-latest' }, { os: 'macos-latest' }]);
+  assert.equal(plan.smoke_matrix.include.length, 7);
 });
 
 test('push is not suppressed by a draft flag', () => {
@@ -198,9 +329,42 @@ for (const [suite, expected, systems] of [
     const plan = createPlan({ changedFiles: [], event: 'workflow_dispatch', suite });
     assert.deepEqual(flags(plan), expected);
     assert.deepEqual(plan.debug_matrix, { include: systems.map((os) => ({ os })) });
-    assert.equal(plan.smoke_matrix.include.length, 7);
+    assert.equal(plan.extended_platforms, suite === 'all');
+    assert.equal(plan.smoke_matrix.include.length, suite === 'all' ? 7 : 3);
   });
 }
+
+test('manual subsets do not expand from supplied sensitive paths', () => {
+  for (const suite of ['integration', 'test262']) {
+    assert.deepEqual(
+      createPlan({ changedFiles: ['build.zig'], event: 'workflow_dispatch', suite }),
+      createPlan({ changedFiles: [], event: 'workflow_dispatch', suite }),
+    );
+  }
+});
+
+test('scheduled runs always cover every suite and extended platforms', () => {
+  for (const suite of ['all', 'integration', 'test262']) {
+    for (const changedFiles of [[], ['README.md'], ['src/parser/expr.zig'], ['build.zig']]) {
+      const plan = createPlan({ changedFiles, event: 'schedule', draft: true, suite });
+      assert.deepEqual(flags(plan), all);
+      assert.equal(plan.extended_platforms, true);
+      assert.equal(plan.smoke_matrix.include.length, 7);
+      assert.deepEqual(plan.debug_matrix.include, [
+        { os: 'ubuntu-latest' },
+        { os: 'macos-latest' },
+      ]);
+    }
+  }
+});
+
+test('scheduled environment accepts missing or empty change data without suppressing coverage', () => {
+  for (const rawFiles of [undefined, '', '[]']) {
+    const plan = planFromEnvironment({ CI_EVENT: 'schedule', CI_CHANGED_FILES: rawFiles });
+    assert.deepEqual(flags(plan), all);
+    assert.equal(plan.extended_platforms, true);
+  }
+});
 
 test('suite input cannot narrow an ordinary push or PR', () => {
   for (const event of ['push', 'pull_request']) {
@@ -209,8 +373,8 @@ test('suite input cannot narrow an ordinary push or PR', () => {
   }
 });
 
-test('PR smoke matrix preserves four ABI targets alongside the shared macOS arm64 job', () => {
-  const plan = createPlan({ changedFiles: ['src/lib.zig'], event: 'pull_request' });
+test('ordinary PR/main share three ABI targets alongside the shared macOS arm64 job', () => {
+  const plan = createPlan({ changedFiles: ['src/parser/expr.zig'], event: 'pull_request' });
   assert.deepEqual(plan.smoke_matrix, {
     include: [
       { platform: 'linux-x64-gnu', os: 'ubuntu-latest', zig_target: 'native' },
@@ -221,23 +385,19 @@ test('PR smoke matrix preserves four ABI targets alongside the shared macOS arm6
         smoke_container: 'node:24-alpine',
       },
       { platform: 'win32-x64-msvc', os: 'windows-latest', zig_target: 'native' },
-      {
-        platform: 'win32-ia32-msvc',
-        os: 'windows-latest',
-        zig_target: 'x86-windows-msvc',
-        node_version: '22',
-        node_arch: 'x86',
-      },
     ],
   });
+  assert.deepEqual(createPlan({ changedFiles: ['src/parser/expr.zig'], event: 'push' }), plan);
 });
 
-test('main smoke matrix adds both arm64 Linux ABIs and Intel macOS', () => {
-  const plan = createPlan({ changedFiles: ['src/lib.zig'], event: 'push' });
+test('extended smoke matrix adds arm64 Linux ABIs, Intel macOS, and Windows ia32', () => {
+  const plan = createPlan({ changedFiles: ['build.zig'], event: 'push' });
   assert.equal(plan.smoke_matrix.include.length, 7);
   assert.deepEqual(
     plan.smoke_matrix.include.filter((entry) =>
-      ['linux-arm64-gnu', 'linux-arm64-musl', 'darwin-x64'].includes(entry.platform),
+      ['linux-arm64-gnu', 'linux-arm64-musl', 'darwin-x64', 'win32-ia32-msvc'].includes(
+        entry.platform,
+      ),
     ),
     [
       { platform: 'linux-arm64-gnu', os: 'ubuntu-24.04-arm', zig_target: 'native' },
@@ -248,9 +408,17 @@ test('main smoke matrix adds both arm64 Linux ABIs and Intel macOS', () => {
         smoke_container: 'node:24-alpine',
       },
       { platform: 'darwin-x64', os: 'macos-15-intel', zig_target: 'native' },
+      {
+        platform: 'win32-ia32-msvc',
+        os: 'windows-latest',
+        zig_target: 'x86-windows-msvc',
+        node_version: '22',
+        node_arch: 'x86',
+      },
     ],
   );
-  assert.ok(plan.smoke_matrix.include.every((entry) => !('pr' in entry)));
+  assert.ok(plan.smoke_matrix.include.every((entry) => !('representative' in entry)));
+  assert.deepEqual(createPlan({ changedFiles: ['build.zig'], event: 'pull_request' }), plan);
 });
 
 test('plans do not share mutable matrix entries', () => {
@@ -275,6 +443,7 @@ test('environment defaults match push and manual workflow inputs', () => {
     all,
   );
   assert.deepEqual(flags(planFromEnvironment({ CI_EVENT: 'workflow_dispatch' })), all);
+  assert.deepEqual(flags(planFromEnvironment({ CI_EVENT: 'schedule' })), all);
   assert.deepEqual(
     flags(
       planFromEnvironment({
@@ -320,15 +489,17 @@ for (const [name, rawFiles] of [
   });
 }
 
-test('manual runs still reject malformed supplied change data', () => {
-  assert.throws(
-    () => planFromEnvironment({ CI_EVENT: 'workflow_dispatch', CI_CHANGED_FILES: 'not-json' }),
-    /CI_CHANGED_FILES/,
-  );
-});
+for (const event of ['workflow_dispatch', 'schedule']) {
+  test(`${event} still rejects malformed supplied change data`, () => {
+    assert.throws(
+      () => planFromEnvironment({ CI_EVENT: event, CI_CHANGED_FILES: 'not-json' }),
+      /CI_CHANGED_FILES/,
+    );
+  });
+}
 
 for (const [key, value] of [
-  ['CI_EVENT', 'schedule'],
+  ['CI_EVENT', 'release'],
   ['CI_DRAFT', 'yes'],
   ['CI_SUITE', 'unit'],
 ]) {
@@ -354,7 +525,7 @@ test('GitHub output serialization has all flags and one-line JSON matrices', () 
       }),
   );
   assert.deepEqual(entries, plan);
-  assert.equal(output.trimEnd().split('\n').length, 6);
+  assert.equal(output.trimEnd().split('\n').length, 7);
 });
 
 test('CLI appends valid outputs and leaves output untouched on invalid input', () => {
@@ -379,7 +550,7 @@ test('CLI appends valid outputs and leaves output untouched on invalid input', (
     for (const overrides of [
       { CI_CHANGED_FILES: '{' },
       { CI_CHANGED_FILES: '{}' },
-      { CI_EVENT: 'schedule' },
+      { CI_EVENT: 'release' },
       { CI_DRAFT: 'no' },
       { CI_SUITE: 'unknown' },
     ]) {
