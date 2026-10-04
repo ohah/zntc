@@ -227,6 +227,7 @@ pub const ExactReport = struct {
     reference_scope_mismatch: usize = 0,
     scope_map_mismatch: usize = 0,
     scope_owner_mismatch: usize = 0,
+    scope_owner_parent_mismatch: usize = 0,
     namespace_iife_params: usize = 0,
     namespace_iife_param_mismatch: usize = 0,
     enum_iife_params: usize = 0,
@@ -242,6 +243,7 @@ pub const ExactReport = struct {
     first_missing_reference: ?ExactFinding = null,
     first_unclassified_reference: ?ExactFinding = null,
     first_scope_owner_mismatch: ?ScopeOwnerFinding = null,
+    first_scope_owner_parent_mismatch: ?ScopeOwnerFinding = null,
     first_scope_map_mismatch: ?ScopeMapFinding = null,
     first_ambiguous_ast_parent: ?AstParentFinding = null,
     first_invalid_ast_root: ?u32 = null,
@@ -264,6 +266,7 @@ pub const ExactReport = struct {
             std.mem.eql(u8, name, "first_missing_reference") or
             std.mem.eql(u8, name, "first_unclassified_reference") or
             std.mem.eql(u8, name, "first_scope_owner_mismatch") or
+            std.mem.eql(u8, name, "first_scope_owner_parent_mismatch") or
             std.mem.eql(u8, name, "first_scope_map_mismatch") or
             std.mem.eql(u8, name, "first_ambiguous_ast_parent") or
             std.mem.eql(u8, name, "first_invalid_ast_root") or
@@ -328,6 +331,8 @@ pub const ScopeOwnerFinding = struct {
     scope_id: ?u32 = null,
     expected_kind: ?ScopeKind = null,
     actual_kind: ?ScopeKind = null,
+    expected_parent_scope_id: ?u32 = null,
+    actual_parent_scope_id: ?u32 = null,
 };
 
 pub const ScopeMapFinding = struct {
@@ -432,6 +437,101 @@ fn recordScopeOwnerMismatch(
         .expected_kind = expected_kind,
         .actual_kind = actual_kind,
     };
+}
+
+fn recordScopeOwnerParentMismatch(
+    report: *ExactReport,
+    node_index: u32,
+    tag: Node.Tag,
+    scope_id: u32,
+    expected_parent_scope_id: ?u32,
+    actual_parent_scope_id: ?u32,
+) void {
+    report.scope_owner_mismatch += 1;
+    report.scope_owner_parent_mismatch += 1;
+    if (report.first_scope_owner_parent_mismatch == null) report.first_scope_owner_parent_mismatch = .{
+        .node_index = node_index,
+        .tag = tag,
+        .issue = "owner-parent-scope",
+        .scope_id = scope_id,
+        .expected_parent_scope_id = expected_parent_scope_id,
+        .actual_parent_scope_id = actual_parent_scope_id,
+    };
+    if (report.first_scope_owner_mismatch == null) report.first_scope_owner_mismatch = .{
+        .node_index = node_index,
+        .tag = tag,
+        .issue = "owner-parent-scope",
+        .scope_id = scope_id,
+        .expected_parent_scope_id = expected_parent_scope_id,
+        .actual_parent_scope_id = actual_parent_scope_id,
+    };
+}
+
+/// A named function expression has an intentional, ownerless block scope for
+/// its self-binding between the surrounding scope and the function scope.
+/// The analyzer enters both scopes while the function-expression node is the
+/// current owner, so the owner map retains only the inner function scope.
+fn isFunctionExpressionNameScope(
+    ast: *const Ast,
+    owner_node: u32,
+    actual_parent: ScopeId,
+    expected_parent: ScopeId,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+) bool {
+    if (owner_node >= ast.nodes.items.len or ast.nodes.items[owner_node].tag != .function_expression or
+        !exactValidScope(scopes, actual_parent) or !exactValidScope(scopes, expected_parent) or
+        actual_parent.toIndex() >= scope_maps.len) return false;
+    const extra = ast.nodes.items[owner_node].data.extra;
+    if (extra >= ast.extra_data.items.len) return false;
+    const name_node: NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+    if (name_node.isNone() or @intFromEnum(name_node) >= ast.nodes.items.len or
+        @intFromEnum(name_node) >= symbol_ids.len) return false;
+    const name = ast.getNode(name_node);
+    if (name.tag != .binding_identifier) return false;
+    const symbol_id = symbol_ids[@intFromEnum(name_node)] orelse return false;
+    if (symbol_id >= symbols.len) return false;
+    const symbol = symbols[symbol_id];
+    if (symbol.scope_id != actual_parent or !symbol.kind.isFunctionLike() or
+        scopes[actual_parent.toIndex()].kind != .block or
+        scopes[actual_parent.toIndex()].parent != expected_parent) return false;
+    return scope_maps[actual_parent.toIndex()].get(exactSymbolName(ast, &symbol)) == @as(?usize, symbol_id);
+}
+
+fn ownerParentMatchesAst(
+    ast: *const Ast,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    owner_node: u32,
+    owner_scope: u32,
+    expected_parent_scope: u32,
+) bool {
+    var parent = scopes[owner_scope].parent;
+    var hops: usize = 0;
+    while (!parent.isNone() and hops < scopes.len) : (hops += 1) {
+        if (!exactValidScope(scopes, parent)) return false;
+        const parent_id = parent.toIndex();
+        if (parent_id == expected_parent_scope) return true;
+
+        // Named function expressions add an ownerless self-name scope between
+        // their surrounding scope and the function scope.
+        if (!isFunctionExpressionNameScope(
+            ast,
+            owner_node,
+            parent,
+            @enumFromInt(expected_parent_scope),
+            symbol_ids,
+            symbols,
+            scopes,
+            scope_maps,
+        )) return false;
+        parent = scopes[parent_id].parent;
+    }
+    return false;
 }
 
 fn recordScopeMapMismatch(
@@ -2129,6 +2229,63 @@ fn checkExactImpl(
             else => unreachable,
         }
     }
+    // The owner kind and each scope's internal parent chain can both be valid
+    // while a source owner is attached to an unrelated scope subtree. Check
+    // this only against the original analyzed AST: lowering can move source
+    // owners into wrappers while preserving their lexical ScopeIds, so the
+    // emitted AST ancestry is not a reliable parent oracle after transformation.
+    var reachable_scope_nodes = reachable_nodes.iterator();
+    while (reachable_scope_nodes.next()) |entry| {
+        const raw = entry.key_ptr.*;
+        const scope_raw = scope_owner_map.get(raw) orelse continue;
+        if (pre_transform_scope_count != null) continue;
+        if (scope_raw >= scopes.len) continue;
+        const owner_scope = scopes[scope_raw];
+        if (raw == @intFromEnum(root)) {
+            // A non-Program root can be a fragment nested inside an implicit
+            // outer scope, so only a Program owner is required to be parentless.
+            if (ast.nodes.items[raw].tag == .program and !owner_scope.parent.isNone())
+                recordScopeOwnerParentMismatch(
+                    &report,
+                    raw,
+                    ast.nodes.items[raw].tag,
+                    scope_raw,
+                    null,
+                    if (exactValidScope(scopes, owner_scope.parent)) @intFromEnum(owner_scope.parent) else null,
+                );
+            continue;
+        }
+        const expected_parent = expectedReferenceScope(ast, root, &parent_by_node, scope_owner_map, raw) orelse {
+            recordScopeOwnerParentMismatch(
+                &report,
+                raw,
+                ast.nodes.items[raw].tag,
+                scope_raw,
+                null,
+                if (exactValidScope(scopes, owner_scope.parent)) @intFromEnum(owner_scope.parent) else null,
+            );
+            continue;
+        };
+        if (ownerParentMatchesAst(
+            ast,
+            symbol_ids,
+            symbols,
+            scopes,
+            scope_maps,
+            raw,
+            scope_raw,
+            expected_parent.scope,
+        )) continue;
+        recordScopeOwnerParentMismatch(
+            &report,
+            raw,
+            ast.nodes.items[raw].tag,
+            scope_raw,
+            expected_parent.scope,
+            if (exactValidScope(scopes, owner_scope.parent)) @intFromEnum(owner_scope.parent) else null,
+        );
+    }
+
     var owners = scope_owner_map.iterator();
     while (owners.next()) |entry| {
         if (entry.key_ptr.* >= ast.nodes.items.len or entry.value_ptr.* >= scopes.len) {
@@ -2755,8 +2912,25 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
             schema.diagnostic_fields,
         },
     ) catch unreachable;
+    var secondary_counts_buffer: [512]u8 = undefined;
+    const secondary_counts = std.fmt.bufPrint(
+        &secondary_counts_buffer,
+        "namespace_iife_params={d} namespace_iife_param_mismatch={d} enum_iife_params={d} enum_iife_param_mismatch={d} helper_symbol_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} reference_count_mismatch={d} write_count_mismatch={d}",
+        .{
+            report.namespace_iife_params,
+            report.namespace_iife_param_mismatch,
+            report.enum_iife_params,
+            report.enum_iife_param_mismatch,
+            report.helper_symbol_mismatch,
+            report.scope_resolution_mismatch,
+            report.invisible_reference,
+            report.unclassified_reference,
+            report.reference_count_mismatch,
+            report.write_count_mismatch,
+        },
+    ) catch unreachable;
     std.debug.print(
-        "zntc: {s} {s}: generated_bindings={d} generated_references={d} external={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} {s} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} namespace_iife_params={d} namespace_iife_param_mismatch={d} enum_iife_params={d} enum_iife_param_mismatch={d} helper_symbol_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} reference_count_mismatch={d} write_count_mismatch={d} clean={d} legacy_debt_fingerprint={x}\n",
+        "zntc: {s} {s}: generated_bindings={d} generated_references={d} external={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} {s} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} scope_owner_parent_mismatch={d} {s} clean={d} legacy_debt_fingerprint={x}\n",
         .{
             name,
             file_path,
@@ -2778,16 +2952,8 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
             report.reference_scope_mismatch,
             report.scope_map_mismatch,
             report.scope_owner_mismatch,
-            report.namespace_iife_params,
-            report.namespace_iife_param_mismatch,
-            report.enum_iife_params,
-            report.enum_iife_param_mismatch,
-            report.helper_symbol_mismatch,
-            report.scope_resolution_mismatch,
-            report.invisible_reference,
-            report.unclassified_reference,
-            report.reference_count_mismatch,
-            report.write_count_mismatch,
+            report.scope_owner_parent_mismatch,
+            secondary_counts,
             @intFromBool(report.isClean()),
             report.legacy_debt_fingerprint,
         },
@@ -2797,6 +2963,16 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
     if (report.first_unclassified_reference) |finding| printExactFinding(file_path, "unclassified_reference", finding);
     if (report.first_shadowed_external_reference) |finding| printExactFinding(file_path, "shadowed_external_reference", finding);
     printExactDiagnostics(file_path, report);
+}
+
+/// Report scope ownership against the original analyzed AST, before lowering
+/// can move lexical owners into wrappers that preserve their source ScopeIds.
+pub fn printSourceScopeOwnerAudit(file_path: []const u8, report: ExactReport) void {
+    std.debug.print(
+        "zntc: symbol-source-scope-owner {s}: scope_owner_parent_mismatch={d}\n",
+        .{ file_path, report.scope_owner_parent_mismatch },
+    );
+    if (report.first_scope_owner_parent_mismatch) |finding| printScopeOwnerMismatch(file_path, finding);
 }
 
 fn printExactFinding(file_path: []const u8, issue: []const u8, finding: ExactFinding) void {
@@ -2850,19 +3026,7 @@ fn printExactDiagnostics(file_path: []const u8, report: ExactReport) void {
         );
     }
     if (report.first_scope_owner_mismatch) |finding| {
-        var scope_buffer: [16]u8 = undefined;
-        std.debug.print(
-            "zntc: symbol-identity-detail {s}: scope_owner issue={s} node={d} tag={s} scope={s} expected={s} actual={s}\n",
-            .{
-                file_path,
-                finding.issue,
-                finding.node_index,
-                @tagName(finding.tag),
-                optionalIndexText(&scope_buffer, finding.scope_id),
-                optionalScopeKindName(finding.expected_kind),
-                optionalScopeKindName(finding.actual_kind),
-            },
-        );
+        printScopeOwnerMismatch(file_path, finding);
     }
     if (report.first_scope_map_mismatch) |finding| {
         var scope_buffer: [16]u8 = undefined;
@@ -2878,6 +3042,26 @@ fn printExactDiagnostics(file_path: []const u8, report: ExactReport) void {
             },
         );
     }
+}
+
+fn printScopeOwnerMismatch(file_path: []const u8, finding: ScopeOwnerFinding) void {
+    var scope_buffer: [16]u8 = undefined;
+    var expected_parent_buffer: [16]u8 = undefined;
+    var actual_parent_buffer: [16]u8 = undefined;
+    std.debug.print(
+        "zntc: symbol-identity-detail {s}: scope_owner issue={s} node={d} tag={s} scope={s} expected={s} actual={s} expected_parent={s} actual_parent={s}\n",
+        .{
+            file_path,
+            finding.issue,
+            finding.node_index,
+            @tagName(finding.tag),
+            optionalIndexText(&scope_buffer, finding.scope_id),
+            optionalScopeKindName(finding.expected_kind),
+            optionalScopeKindName(finding.actual_kind),
+            optionalIndexText(&expected_parent_buffer, finding.expected_parent_scope_id),
+            optionalIndexText(&actual_parent_buffer, finding.actual_parent_scope_id),
+        },
+    );
 }
 
 /// Diagnostic inventory of emitted identifiers. An unbound generated read may

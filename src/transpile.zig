@@ -1274,7 +1274,7 @@ fn transpileWithCallbackInternal(
     if (options.jsx_in_js and parser.source_mode != .ts) {
         parser.is_jsx = true;
     }
-    _ = parser.parse() catch return error.ParseError;
+    const source_root = parser.parse() catch return error.ParseError;
     mem_profile.snap(&arena, "parse");
     // Ast 가 arena 안에 살아 Ast.deinit() 가 호출되지 않으므로, intern stats dump 를
     // arena 해제 직전(LIFO) 에 명시 호출. ZNTC_STRING_INTERN_STATS=1 일 때만 출력.
@@ -1399,6 +1399,29 @@ fn transpileWithCallbackInternal(
     if (symbol_coverage_env.enabled() or synthetic_coverage_env.enabled()) transformer.synthetic_idents = .empty;
     if (symbol_coverage_env.enabled()) {
         if (analyzer_storage) |*analyzer| transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    }
+    if (symbol_coverage_env.enabled()) {
+        if (analyzer_storage) |*analyzer| {
+            const coverage = @import("transformer/symbol_coverage.zig");
+            const source_scope_owner_audit = coverage.checkExact(
+                arena_alloc,
+                transformer.ast,
+                source_root,
+                transformer.parser_node_count,
+                analyzer.symbol_ids.items,
+                analyzer.symbols.items,
+                analyzer.scopes.items,
+                analyzer.scope_maps.items,
+                &analyzer.scope_owner_map,
+                analyzer.references.items,
+                transformer.helper_ref_nodes.items,
+                &analyzer.helper_scope_map,
+                &analyzer.unresolved_reference_nodes,
+                &transformer.explicit_global_reference_nodes,
+                &transformer.reference_origin_map,
+            ) catch return error.OutOfMemory;
+            coverage.printSourceScopeOwnerAudit(file_path, source_scope_owner_audit);
+        }
     }
     const root = transformer.transform() catch return error.TransformError;
     if (analyzer_storage) |*analyzer| {

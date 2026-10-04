@@ -1516,6 +1516,30 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             transformer.unresolved_reference_nodes = &unresolved_nodes;
         }
     }
+    if (debug_symbol_coverage and ast_ptr.transformed_root == null and parser_node_count > 0) {
+        if (module.semantic) |*sem| {
+            const coverage = @import("../../transformer/symbol_coverage.zig");
+            const source_root: ast_mod.NodeIndex = @enumFromInt(parser_node_count - 1);
+            const source_scope_owner_audit = coverage.checkExact(
+                arena_alloc,
+                ast_ptr,
+                source_root,
+                parser_node_count,
+                sem.symbol_ids,
+                sem.symbols.items,
+                sem.scopes,
+                sem.scope_maps,
+                &sem.scope_owner_map,
+                sem.references,
+                &.{},
+                &sem.helper_scope_map,
+                &unresolved_nodes,
+                &transformer.explicit_global_reference_nodes,
+                &transformer.reference_origin_map,
+            ) catch return;
+            coverage.printSourceScopeOwnerAudit(module.path, source_scope_owner_audit);
+        }
+    }
 
     // #4598: 청크에 위임한 경우, **변환 전** AST 에서 TLA 유무를 확인해 전용 필드에 남긴다.
     // 변환 뒤에 도는 analyzer 로는 알 수 없고(그 변환이 await 를 없앤다), 전역
