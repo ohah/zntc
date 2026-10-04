@@ -65,6 +65,8 @@ const NamespaceMemberGroup = struct {
 /// // analyzer.errors에 에러가 있으면 출력
 /// ```
 pub const SemanticAnalyzer = struct {
+    pub const NamespaceIifeParameterNames = std.AutoHashMapUnmanaged(u32, []const u8);
+
     /// 분석 대상 AST. @__NO_SIDE_EFFECTS__ 자동 전파에서 CallFlags 수정이 필요하므로 mutable.
     ast: *Ast,
 
@@ -167,6 +169,10 @@ pub const SemanticAnalyzer = struct {
     /// Stable copies stored on virtual namespace parameter symbols. The active
     /// name stack only borrows these names until the namespace body is visited.
     namespace_iife_param_stable_names: std.ArrayListUnmanaged([]const u8) = .empty,
+    /// Borrowed declaration NodeIndex -> parameter spelling from the previous
+    /// graph. Lowered namespace member accesses already use these spellings;
+    /// reanalysis must bind them to fresh symbols in the same lexical IIFE.
+    preserved_namespace_iife_parameter_names: ?*const NamespaceIifeParameterNames = null,
     /// Active virtual enum IIFE parameters, used to avoid capturing an enclosing
     /// generated parameter while visiting nested initializer expressions.
     enum_iife_param_names: std.ArrayListUnmanaged([]const u8) = .empty,
@@ -3134,6 +3140,33 @@ pub const SemanticAnalyzer = struct {
         self.exitScope(saved);
     }
 
+    /// Both maps are arena-owned; names borrow the previous semantic graph.
+    /// Use declaration identity, since merged namespaces have separate IIFEs.
+    pub fn collectNamespaceIifeParameterNames(
+        arena_alloc: std.mem.Allocator,
+        ast: *const Ast,
+        symbols: []const Symbol,
+        scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    ) AllocError!NamespaceIifeParameterNames {
+        var names_by_scope: NamespaceIifeParameterNames = .empty;
+        for (symbols) |symbol| {
+            if (symbol.synthetic_kind != .namespace_iife_parameter or symbol.scope_id.isNone()) continue;
+            try names_by_scope.put(arena_alloc, @intFromEnum(symbol.scope_id), symbol.synthetic_name);
+        }
+        var names_by_declaration: NamespaceIifeParameterNames = .empty;
+        if (names_by_scope.count() == 0) return names_by_declaration;
+        var owners = scope_owner_map.iterator();
+        while (owners.next()) |entry| {
+            const raw = entry.key_ptr.*;
+            if (raw >= ast.nodes.items.len) continue;
+            const node = ast.nodes.items[raw];
+            if (node.tag != .ts_module_declaration or node.data.binary.flags == 1) continue;
+            const name = names_by_scope.get(entry.value_ptr.*) orelse continue;
+            try names_by_declaration.put(arena_alloc, raw, name);
+        }
+        return names_by_declaration;
+    }
+
     fn namespaceIifeParamReserved(self: *const SemanticAnalyzer, candidate: []const u8) bool {
         for (self.namespace_iife_param_names.items) |active| {
             if (std.mem.eql(u8, active, candidate)) return true;
@@ -3173,7 +3206,14 @@ pub const SemanticAnalyzer = struct {
 
     fn declareNamespaceIifeParameter(self: *SemanticAnalyzer, name_idx: NodeIndex, declaration: Node) AllocError!?[]const u8 {
         if (name_idx.isNone() or @intFromEnum(name_idx) >= self.ast.nodes.items.len or self.current_scope.isNone()) return null;
-        const candidate = try self.chooseNamespaceIifeParamName(name_idx);
+        const preserved_name = if (self.preserved_namespace_iife_parameter_names) |names|
+            names.get(@intFromEnum(self.current_visit_node))
+        else
+            null;
+        const candidate = if (preserved_name) |name|
+            try self.allocator.dupe(u8, name)
+        else
+            try self.chooseNamespaceIifeParamName(name_idx);
         errdefer self.allocator.free(candidate);
         const name_span = try self.ast.addString(candidate);
         const before = self.symbols.items.len;

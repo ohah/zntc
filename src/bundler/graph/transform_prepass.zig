@@ -1496,6 +1496,16 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
     const previous_semantic = module.semantic;
 
     var analyzer = SemanticAnalyzer.init(arena_alloc, ast);
+    const namespace_parameter_names = if (previous_semantic) |*semantic|
+        try SemanticAnalyzer.collectNamespaceIifeParameterNames(
+            arena_alloc,
+            ast,
+            semantic.symbols.items,
+            &semantic.scope_owner_map,
+        )
+    else
+        SemanticAnalyzer.NamespaceIifeParameterNames.empty;
+    analyzer.preserved_namespace_iife_parameter_names = &namespace_parameter_names;
     {
         var semantic_scope = profile.begin(.graph_resync_semantic);
         defer semantic_scope.end();

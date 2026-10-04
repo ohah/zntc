@@ -24,8 +24,10 @@ console.log(JSON.stringify([N.N, N.read()]));
 `,
   'generated IIFE parameter collision with extracted loop': `
 namespace loop {
+  export let value = 10;
   const callbacks: Array<() => number> = [];
-  for (let i = 0; i < 2; i++) callbacks.push(() => i);
+  for (let i = 0; i < 2; i++) callbacks.push(() => value + i);
+  value += 5;
   export const values = callbacks.map((callback) => callback());
 }
 console.log(JSON.stringify([loop.values]));
