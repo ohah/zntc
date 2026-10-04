@@ -273,6 +273,13 @@ test "#4819 class method capture producers bind exact symbols without a name res
     );
 }
 
+test "#4819 async function capture producers bind exact symbols without a name rescan" {
+    try checkCaptureSymbols(
+        "async function outer(value){await 0;return ()=>this.x+arguments[0]} outer.call({x:2},3);",
+        .function_declaration,
+    );
+}
+
 test "#4819 mixed async-generator wrapper captures bind at declaration without a name rescan" {
     var unsupported = TransformOptions.compat.fromESTarget(.es5);
     unsupported.async_generator = false;
