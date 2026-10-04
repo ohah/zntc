@@ -19,6 +19,98 @@ const TransformOptions = transformer_mod.TransformOptions;
 const coverage = @import("symbol_coverage.zig");
 const SemanticEditor = @import("../semantic/editor.zig").SemanticEditor;
 
+fn checkEmptyExactGraph(allocator: std.mem.Allocator, ast: *const Ast, root: @import("../parser/ast.zig").NodeIndex) !coverage.ExactReport {
+    const scopes = [_]Scope{.{ .parent = .none, .kind = .global, .is_strict = false }};
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){.empty};
+    const owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    return coverage.checkExact(
+        allocator,
+        ast,
+        root,
+        0,
+        &.{},
+        &.{},
+        &scopes,
+        &scope_maps,
+        &owners,
+        &.{},
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+}
+
+test "exact coverage rejects invalid root, child indices, and truncated child layouts" {
+    const allocator = std.testing.allocator;
+    const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+
+    var empty_ast = Ast.init(allocator, "");
+    defer empty_ast.deinit();
+    const invalid_root = try checkEmptyExactGraph(allocator, &empty_ast, .none);
+    try std.testing.expectEqual(@as(usize, 1), invalid_root.invalid_ast_root);
+    try std.testing.expect(!invalid_root.isClean());
+
+    var edge_ast = Ast.init(allocator, "");
+    defer edge_ast.deinit();
+    const span = try edge_ast.addString("x");
+    const invalid_child_index: u32 = 37;
+    const bad_child = try edge_ast.addNodeList(&.{@enumFromInt(invalid_child_index)});
+    const edge_root = try edge_ast.addListNode(.program, span, bad_child);
+    const invalid_edge = try checkEmptyExactGraph(allocator, &edge_ast, edge_root);
+    try std.testing.expectEqual(@as(usize, 1), invalid_edge.invalid_ast_edge);
+    try std.testing.expectEqual(invalid_child_index, invalid_edge.first_invalid_ast_edge.?.child_node_index);
+    try std.testing.expect(!invalid_edge.isClean());
+
+    var list_ast = Ast.init(allocator, "");
+    defer list_ast.deinit();
+    const list_span = try list_ast.addString("x");
+    const invalid_list_root = try list_ast.addNode(.{
+        .tag = .program,
+        .span = list_span,
+        .data = .{ .list = .{ .start = 4, .len = 1 } },
+    });
+    const invalid_list = try checkEmptyExactGraph(allocator, &list_ast, invalid_list_root);
+    try std.testing.expectEqual(@as(usize, 1), invalid_list.invalid_ast_layout);
+    try std.testing.expectEqual(coverage.AstLayoutIssue.list_range, invalid_list.first_invalid_ast_layout.?.issue);
+    try std.testing.expect(!invalid_list.isClean());
+
+    var extra_ast = Ast.init(allocator, "");
+    defer extra_ast.deinit();
+    const extra_span = try extra_ast.addString("x");
+    const extra_base = try extra_ast.addExtras(&.{ @intFromEnum(NodeIndex.none), 99, 1 });
+    const call = try extra_ast.addExtraNode(.call_expression, extra_span, extra_base);
+    const extra_root = try extra_ast.addNode(.{
+        .tag = .program,
+        .span = extra_span,
+        .data = .{ .list = try extra_ast.addNodeList(&.{call}) },
+    });
+    const invalid_extra_list = try checkEmptyExactGraph(allocator, &extra_ast, extra_root);
+    try std.testing.expectEqual(@as(usize, 1), invalid_extra_list.invalid_ast_layout);
+    try std.testing.expectEqual(coverage.AstLayoutIssue.extra_list_range, invalid_extra_list.first_invalid_ast_layout.?.issue);
+    try std.testing.expect(!invalid_extra_list.isClean());
+
+    var missing_slot_ast = Ast.init(allocator, "");
+    defer missing_slot_ast.deinit();
+    const missing_slot_span = try missing_slot_ast.addString("x");
+    const root_children = try missing_slot_ast.addNodeList(&.{NodeIndex.none});
+    const missing_slot_root = try missing_slot_ast.addListNode(.program, missing_slot_span, root_children);
+    const call_without_extra = try missing_slot_ast.addExtraNode(
+        .call_expression,
+        missing_slot_span,
+        @intCast(missing_slot_ast.extra_data.items.len),
+    );
+    missing_slot_ast.extra_data.items[root_children.start] = @intFromEnum(call_without_extra);
+    const invalid_extra_slot = try checkEmptyExactGraph(allocator, &missing_slot_ast, missing_slot_root);
+    try std.testing.expectEqual(@as(usize, 1), invalid_extra_slot.invalid_ast_layout);
+    try std.testing.expectEqual(coverage.AstLayoutIssue.extra_child_slot, invalid_extra_slot.first_invalid_ast_layout.?.issue);
+    try std.testing.expect(!invalid_extra_slot.isClean());
+}
+
 fn firstHoistedTempSpan(ast: *const @import("../parser/ast.zig").Ast, program_idx: @import("../parser/ast.zig").NodeIndex) @import("../lexer/token.zig").Span {
     const program = ast.getNode(program_idx);
     const declaration = ast.getNode(@enumFromInt(ast.extra_data.items[program.data.list.start]));
@@ -2391,6 +2483,32 @@ test "exact coverage detects AST cycles without treating shared children as cycl
     try std.testing.expectEqual(@as(usize, 0), shared_child_strict_report.cyclic_ast_edges);
     try std.testing.expect(shared_child_strict_report.hasCompleteExactCoverage());
     try std.testing.expect(shared_child_strict_report.hasCompleteSymbolIdentity());
+
+    // An out-of-range child index used to be silently skipped by the exact
+    // reachability walk, allowing identifiers below malformed structure to
+    // disappear from the coverage audit.
+    const invalid_child_index: u32 = @intCast(ast.nodes.items.len + 7);
+    ast.nodes.items[@intFromEnum(root)].data.list = try ast.addNodeList(&.{@enumFromInt(invalid_child_index)});
+    const invalid_edge_report = try coverage.checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &.{},
+        &.{},
+        &scopes,
+        &scope_maps,
+        &owners,
+        &.{},
+        &.{},
+        &helper_scope_map,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), invalid_edge_report.invalid_ast_edge);
+    try std.testing.expectEqual(invalid_child_index, invalid_edge_report.first_invalid_ast_edge.?.child_node_index);
+    try std.testing.expect(!invalid_edge_report.isClean());
 
     // Mutate a reachable child edge into a root self-cycle. The exact audit
     // must fail closed before its generic tree walker can loop forever.

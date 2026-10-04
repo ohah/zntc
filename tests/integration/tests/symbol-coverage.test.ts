@@ -31,6 +31,9 @@ const EXACT_ZERO_COUNTERS = [
   'unreachable_reference',
   'ambiguous_ast_parent',
   'cyclic_ast_edges',
+  'invalid_ast_root',
+  'invalid_ast_edge',
+  'invalid_ast_layout',
   'shadowed_external_reference',
   'duplicate_reference',
   'identity_mismatch',
@@ -67,7 +70,7 @@ const STRICT_ZERO_COUNTERS = [
   'cyclic_ast_edges',
 ];
 const EXACT_OBSERVATION_FIELD_COUNT = 6;
-const EXACT_DIAGNOSTIC_FIELD_COUNT = 7;
+const EXACT_DIAGNOSTIC_FIELD_COUNT = 10;
 
 function exactSchemaProblems(identity: string): string[] {
   const expectations = [
@@ -172,9 +175,9 @@ describe('symbol identity coverage gate (#4819)', () => {
     ).toContain(`observation_field_count=7, expected ${EXACT_OBSERVATION_FIELD_COUNT}`);
     expect(
       exactSchemaProblems(
-        complete.replace(/diagnostic_field_count=\d+/, 'diagnostic_field_count=8'),
+        complete.replace(/diagnostic_field_count=\d+/, 'diagnostic_field_count=11'),
       ),
-    ).toContain(`diagnostic_field_count=8, expected ${EXACT_DIAGNOSTIC_FIELD_COUNT}`);
+    ).toContain(`diagnostic_field_count=11, expected ${EXACT_DIAGNOSTIC_FIELD_COUNT}`);
   });
 
   test('the emitted exact report matches the locked schema', () => {
