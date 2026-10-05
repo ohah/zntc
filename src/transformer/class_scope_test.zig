@@ -1387,6 +1387,84 @@ test "#4819 simple named class keeps inner name environment and binds constructo
     try std.testing.expectEqual(@as(usize, 1), ctor_reads);
 }
 
+test "#4819 anonymous ES5 class expression name gets an exact SymbolId before wrapper refs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "const _Class = 17; function consume(value) {} consume(class { method() { return 1; } });";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var class_scope: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .class_expression) class_scope = analyzer.scope_owner_map.get(@intCast(raw));
+    }
+    const source_scope = class_scope orelse return error.TestUnexpectedResult;
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+
+    var generated_name_id: ?u32 = null;
+    var generated_name_bindings: usize = 0;
+    var generated_name: ?[]const u8 = null;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .binding_identifier) continue;
+        if (raw >= edited.symbol_ids.len) return error.TestUnexpectedResult;
+        const id = edited.symbol_ids[raw] orelse continue;
+        if (edited.symbols.items[id].kind != .function_decl) continue;
+        const name = transformer.ast.getText(node.data.string_ref);
+        if (!std.mem.startsWith(u8, name, "_Class")) continue;
+        generated_name_id = id;
+        generated_name = name;
+        generated_name_bindings += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), generated_name_bindings);
+    const exact_id = generated_name_id orelse return error.TestUnexpectedResult;
+    const exact_name = generated_name orelse return error.TestUnexpectedResult;
+    try std.testing.expect(!std.mem.eql(u8, exact_name, "_Class"));
+    const binding_scope = edited.symbols.items[exact_id].scope_id;
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[binding_scope.toIndex()].kind);
+    try std.testing.expectEqual(@as(?usize, exact_id), edited.scope_maps[binding_scope.toIndex()].get(exact_name));
+    try std.testing.expectEqual(binding_scope, edited.scopes[source_scope].parent);
+
+    var reads: usize = 0;
+    for (edited.references) |reference| {
+        if (@intFromEnum(reference.symbol_id) != exact_id or reference.node_index.isNone()) continue;
+        const node = transformer.ast.getNode(reference.node_index);
+        try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, node.tag);
+        try std.testing.expectEqualStrings(exact_name, transformer.ast.getText(node.data.string_ref));
+        try std.testing.expect(reference.flags.read);
+        try std.testing.expect(!reference.flags.write);
+        var visible_scope = reference.scope_id;
+        var visible = false;
+        var hops: usize = 0;
+        while (!visible_scope.isNone() and hops < edited.scopes.len) : (hops += 1) {
+            if (visible_scope == binding_scope) {
+                visible = true;
+                break;
+            }
+            visible_scope = edited.scopes[visible_scope.toIndex()].parent;
+        }
+        try std.testing.expect(visible);
+        reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 3), reads);
+}
+
 test "#4819 inferred anonymous class does not gain a named-class wrapper" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
