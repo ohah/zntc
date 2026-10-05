@@ -86,7 +86,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         ///   캡처 추출(#4743)이 맡는다.
         /// - `__values` 는 `Symbol` 이 없는 엔진에서도 배열·유사 배열을 돈다.
         /// - `register_sm_temps`: 상태 기계는 var 선언을 대입으로 바꾸므로 임시 변수를 wrapper
-        ///   최상단에 선언하도록 등록한다(catch 임시 변수가 리네임되지 않게 하는 표시도 겸한다).
+        ///   최상단에 선언하도록 등록한다. catch 매개변수는 catch 자체의 lexical scope에 묶는다.
         pub fn rewriteForOf(self: *Transformer, source_idx: NodeIndex, node: Node, label_name_idx: NodeIndex, register_sm_temps: bool) Transformer.Error!NodeIndex {
             const span = node.span;
             const left = node.data.ternary.a;
@@ -219,19 +219,22 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 .right = catch_body,
                 .flags = 0,
             } } });
-            if (stable_scope) {
+            if (stable_scope or (register_sm_temps and self.semantic_edit_enabled)) {
                 const catch_scope = try self.addGeneratedCatchScope(outer_scope, catch_clause);
-                const catch_symbol = try self.declareSyntheticInScope(catch_binding, span, .catch_binding, catch_scope);
+                const catch_symbol = (try self.declareSyntheticInScope(catch_binding, span, .catch_binding, catch_scope)) orelse
+                    std.debug.panic("generated for-of catch binding has no SymbolId", .{});
                 try self.addSyntheticRefInScope(catch_param_read, catch_symbol, catch_scope, .{ .read = true });
-                try self.addSyntheticRefInScope(did_catch_write, did_symbol, catch_scope, .{ .write = true });
-                try self.addSyntheticRefInScope(err_catch_write, err_symbol, catch_scope, .{ .write = true });
+                try self.addSyntheticRefInScope(did_catch_write, did_symbol orelse std.debug.panic("for-of error flag has no SymbolId", .{}), catch_scope, .{ .write = true });
+                try self.addSyntheticRefInScope(err_catch_write, err_symbol orelse std.debug.panic("for-of error value has no SymbolId", .{}), catch_scope, .{ .write = true });
 
-                // These names already have explicit bindings in the lowered
-                // loop/catch. The generic function temp hoister would add
-                // duplicate `var` bindings outside the catch scope, where
-                // they have no matching semantic identity.
-                for ([_]Span{ norm, did_err, err_val, iter, catch_param }) |temp_span| {
-                    es_helpers.consumeTempVarSpan(self, temp_span);
+                if (stable_scope) {
+                    // These names already have explicit bindings in the lowered
+                    // loop/catch. The generic function temp hoister would add
+                    // duplicate `var` bindings outside the catch scope, where
+                    // they have no matching semantic identity.
+                    for ([_]Span{ norm, did_err, err_val, iter, catch_param }) |temp_span| {
+                        es_helpers.consumeTempVarSpan(self, temp_span);
+                    }
                 }
             }
 
