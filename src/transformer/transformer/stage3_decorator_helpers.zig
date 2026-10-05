@@ -206,6 +206,7 @@ pub fn buildClassEsDecorateCall(
     metadata_refs: *std.ArrayList(NodeIndex),
     class_decorator_refs: *std.ArrayList(NodeIndex),
     class_descriptor_write_refs: *std.ArrayList(NodeIndex),
+    class_extra_initializers_refs: *std.ArrayList(NodeIndex),
 ) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
@@ -260,6 +261,7 @@ pub fn buildClassEsDecorateCall(
 
     // arg6: _classExtraInitializers
     const arg6 = try es_helpers.makeSyntheticRef(self, "_classExtraInitializers");
+    try class_extra_initializers_refs.append(self.allocator, arg6);
 
     const args = try self.ast.addNodeList(&.{ arg1, arg2, arg3, arg4, arg5, arg6 });
     return self.addExtraNode(.call_expression, zero_span, &.{
@@ -612,11 +614,17 @@ pub fn buildClassReassign(
 
 /// __runInitializers(target_span_ref, name) 호출 생성.
 /// target은 Span(identifier_reference로 변환)
-pub fn buildRunInitializersCall(self: anytype, target_span: Span, init_name: []const u8) Error!NodeIndex {
+pub fn buildRunInitializersCall(
+    self: anytype,
+    target_span: Span,
+    init_name: []const u8,
+    init_refs: *std.ArrayList(NodeIndex),
+) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const callee = try es_helpers.makeRuntimeHelperRef(self, "__runInitializers");
     const target = try es_helpers.makeSyntheticRefFromSpan(self, target_span);
     const init_ref = try es_helpers.makeSyntheticRef(self, init_name);
+    try init_refs.append(self.allocator, init_ref);
     const args = try self.ast.addNodeList(&.{ target, init_ref });
     return self.addExtraNode(.call_expression, zero_span, &.{
         @intFromEnum(callee), args.start, args.len, 0,
@@ -647,6 +655,7 @@ pub fn buildStage3LetDeclarations(
     has_static: bool,
     class_decorators_binding: *NodeIndex,
     class_descriptor_binding: *NodeIndex,
+    class_extra_initializers_binding: *NodeIndex,
 ) Error![]NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const none = @intFromEnum(NodeIndex.none);
@@ -675,7 +684,9 @@ pub fn buildStage3LetDeclarations(
         // let _classExtraInitializers = [];
         const empty_arr_list = try self.ast.addNodeList(&.{});
         const empty_arr = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = empty_arr_list } });
-        try stmts.append(self.allocator, try makeLet(self, zero_span, "_classExtraInitializers", empty_arr));
+        const class_extra_initializers = try makeLetWithBinding(self, zero_span, "_classExtraInitializers", empty_arr);
+        class_extra_initializers_binding.* = class_extra_initializers.binding;
+        try stmts.append(self.allocator, class_extra_initializers.declaration);
     }
 
     // instance/static extra initializers

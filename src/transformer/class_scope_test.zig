@@ -692,6 +692,48 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     }
     try std.testing.expectEqual(@as(usize, 1), class_descriptor_reads);
     try std.testing.expectEqual(@as(usize, 1), class_descriptor_writes);
+
+    var class_extra_initializers_id: ?u32 = null;
+    var class_extra_initializers_bindings: usize = 0;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_classExtraInitializers")) continue;
+        if (raw >= edited.symbol_ids.len) return error.TestUnexpectedResult;
+        const id = edited.symbol_ids[raw] orelse return error.TestUnexpectedResult;
+        if (edited.symbols.items[id].kind != .variable_let) continue;
+        class_extra_initializers_id = id;
+        class_extra_initializers_bindings += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), class_extra_initializers_bindings);
+    const exact_class_extra_initializers_id = class_extra_initializers_id orelse return error.TestUnexpectedResult;
+    const class_extra_initializers_scope = edited.symbols.items[exact_class_extra_initializers_id].scope_id;
+    try std.testing.expectEqual(decorator_iife, class_extra_initializers_scope);
+    try std.testing.expectEqual(
+        @as(?usize, exact_class_extra_initializers_id),
+        edited.scope_maps[class_extra_initializers_scope.toIndex()].get("_classExtraInitializers"),
+    );
+
+    var class_extra_initializers_reads: usize = 0;
+    for (edited.references) |reference| {
+        if (@intFromEnum(reference.symbol_id) != exact_class_extra_initializers_id or !reference.flags.read) continue;
+        if (reference.node_index.isNone()) return error.TestUnexpectedResult;
+        const node = transformer.ast.getNode(reference.node_index);
+        try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, node.tag);
+        try std.testing.expectEqualStrings("_classExtraInitializers", transformer.ast.getText(node.data.string_ref));
+        var visible_scope = reference.scope_id;
+        var class_extra_initializers_are_visible = false;
+        var hops: usize = 0;
+        while (!visible_scope.isNone() and hops < edited.scopes.len) : (hops += 1) {
+            if (visible_scope == class_extra_initializers_scope) {
+                class_extra_initializers_are_visible = true;
+                break;
+            }
+            visible_scope = edited.scopes[visible_scope.toIndex()].parent;
+        }
+        try std.testing.expect(class_extra_initializers_are_visible);
+        class_extra_initializers_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), class_extra_initializers_reads);
 }
 
 test "#4819 ES5 class methods retain original scope on emitted functions and bind body temps" {
