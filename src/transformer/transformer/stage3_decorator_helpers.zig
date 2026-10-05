@@ -204,6 +204,7 @@ pub fn buildClassEsDecorateCall(
     self: anytype,
     classThis_span: Span,
     metadata_refs: *std.ArrayList(NodeIndex),
+    class_decorator_refs: *std.ArrayList(NodeIndex),
 ) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
@@ -228,6 +229,7 @@ pub fn buildClassEsDecorateCall(
 
     // arg3: _classDecorators (이미 static block에서 할당됨)
     const arg3 = try es_helpers.makeSyntheticRef(self, "_classDecorators");
+    try class_decorator_refs.append(self.allocator, arg3);
 
     // arg4: { kind: "class", name: _classThis.name, metadata: _metadata }
     const kind_key = try es_helpers.makePropertyName(self, "kind");
@@ -634,6 +636,7 @@ pub fn buildStage3LetDeclarations(
     member_infos: []const Stage3MemberInfo,
     has_instance: bool,
     has_static: bool,
+    class_decorators_binding: *NodeIndex,
 ) Error![]NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const none = @intFromEnum(NodeIndex.none);
@@ -650,7 +653,9 @@ pub fn buildStage3LetDeclarations(
         defer self.allocator.free(decos);
         const deco_list = try self.ast.addNodeList(decos);
         const deco_arr = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = deco_list } });
-        try stmts.append(self.allocator, try makeLet(self, zero_span, "_classDecorators", deco_arr));
+        const class_decorators = try makeLetWithBinding(self, zero_span, "_classDecorators", deco_arr);
+        class_decorators_binding.* = class_decorators.binding;
+        try stmts.append(self.allocator, class_decorators.declaration);
 
         // let _classDescriptor;
         try stmts.append(self.allocator, try makeLet(self, zero_span, "_classDescriptor", .none));
@@ -710,15 +715,25 @@ pub fn makeObjProp(self: anytype, key: NodeIndex, value: NodeIndex) Error!NodeIn
 
 /// let name = init; 또는 let name; 선언 생성
 pub fn makeLet(self: anytype, span: Span, name: []const u8, init: NodeIndex) Error!NodeIndex {
+    return (try makeLetWithBinding(self, span, name, init)).declaration;
+}
+
+const LetWithBinding = struct {
+    declaration: NodeIndex,
+    binding: NodeIndex,
+};
+
+fn makeLetWithBinding(self: anytype, span: Span, name: []const u8, init: NodeIndex) Error!LetWithBinding {
     const name_span = try self.ast.addString(name);
     const binding = try es_helpers.makeSyntheticBinding(self, name_span);
     const declarator = try self.addExtraNode(.variable_declarator, span, &.{
         @intFromEnum(binding), @intFromEnum(NodeIndex.none), @intFromEnum(init),
     });
     const decl_list = try self.ast.addNodeList(&.{declarator});
-    return self.addExtraNode(.variable_declaration, span, &.{
+    const declaration = try self.addExtraNode(.variable_declaration, span, &.{
         1, decl_list.start, decl_list.len, // 1 = let
     });
+    return .{ .declaration = declaration, .binding = binding };
 }
 
 /// field/accessor decorator용 initializers 변수명 생성 헬퍼.

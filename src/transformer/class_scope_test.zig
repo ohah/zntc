@@ -596,6 +596,48 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
         metadata_reads += 1;
     }
     try std.testing.expectEqual(@as(usize, 4), metadata_reads);
+
+    var class_decorators_id: ?u32 = null;
+    var class_decorators_bindings: usize = 0;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_classDecorators")) continue;
+        if (raw >= edited.symbol_ids.len) return error.TestUnexpectedResult;
+        const id = edited.symbol_ids[raw] orelse return error.TestUnexpectedResult;
+        if (edited.symbols.items[id].kind != .variable_let) continue;
+        class_decorators_id = id;
+        class_decorators_bindings += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), class_decorators_bindings);
+    const exact_class_decorators_id = class_decorators_id orelse return error.TestUnexpectedResult;
+    const class_decorators_scope = edited.symbols.items[exact_class_decorators_id].scope_id;
+    try std.testing.expectEqual(decorator_iife, class_decorators_scope);
+    try std.testing.expectEqual(
+        @as(?usize, exact_class_decorators_id),
+        edited.scope_maps[class_decorators_scope.toIndex()].get("_classDecorators"),
+    );
+
+    var class_decorators_reads: usize = 0;
+    for (edited.references) |reference| {
+        if (@intFromEnum(reference.symbol_id) != exact_class_decorators_id or !reference.flags.read) continue;
+        if (reference.node_index.isNone()) return error.TestUnexpectedResult;
+        const node = transformer.ast.getNode(reference.node_index);
+        try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, node.tag);
+        try std.testing.expectEqualStrings("_classDecorators", transformer.ast.getText(node.data.string_ref));
+        var visible_scope = reference.scope_id;
+        var class_decorators_are_visible = false;
+        var hops: usize = 0;
+        while (!visible_scope.isNone() and hops < edited.scopes.len) : (hops += 1) {
+            if (visible_scope == class_decorators_scope) {
+                class_decorators_are_visible = true;
+                break;
+            }
+            visible_scope = edited.scopes[visible_scope.toIndex()].parent;
+        }
+        try std.testing.expect(class_decorators_are_visible);
+        class_decorators_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), class_decorators_reads);
 }
 
 test "#4819 ES5 class methods retain original scope on emitted functions and bind body temps" {
