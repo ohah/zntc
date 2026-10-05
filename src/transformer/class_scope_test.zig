@@ -522,6 +522,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     const allocator = arena.allocator();
     const source =
         \\function logged(value) { return value; }
+        \\@logged
         \\class Box { @logged method() { return 1; } }
     ;
     var scanner = try Scanner.init(allocator, source);
@@ -553,6 +554,48 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[class_iife.toIndex()].kind);
     try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[decorator_iife.toIndex()].kind);
     try std.testing.expectEqual(source_parent, edited.scopes[decorator_iife.toIndex()].parent);
+
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var metadata_id: ?u32 = null;
+    var metadata_bindings: usize = 0;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_metadata")) continue;
+        if (raw >= edited.symbol_ids.len) return error.TestUnexpectedResult;
+        const id = edited.symbol_ids[raw] orelse return error.TestUnexpectedResult;
+        if (edited.symbols.items[id].kind != .variable_const) continue;
+        metadata_id = id;
+        metadata_bindings += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), metadata_bindings);
+    const exact_metadata_id = metadata_id orelse return error.TestUnexpectedResult;
+    const metadata_scope = edited.symbols.items[exact_metadata_id].scope_id;
+    try std.testing.expectEqual(class_iife, metadata_scope);
+    try std.testing.expectEqual(@as(?usize, exact_metadata_id), edited.scope_maps[metadata_scope.toIndex()].get("_metadata"));
+
+    var metadata_reads: usize = 0;
+    for (edited.references) |reference| {
+        if (@intFromEnum(reference.symbol_id) != exact_metadata_id) continue;
+        if (!reference.flags.read) continue;
+        if (reference.node_index.isNone()) return error.TestUnexpectedResult;
+        const node = transformer.ast.getNode(reference.node_index);
+        try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, node.tag);
+        try std.testing.expectEqualStrings("_metadata", transformer.ast.getText(node.data.string_ref));
+        try std.testing.expect(reference.flags.read);
+        var visible_scope = reference.scope_id;
+        var metadata_is_visible = false;
+        var hops: usize = 0;
+        while (!visible_scope.isNone() and hops < edited.scopes.len) : (hops += 1) {
+            if (visible_scope == metadata_scope) {
+                metadata_is_visible = true;
+                break;
+            }
+            visible_scope = edited.scopes[visible_scope.toIndex()].parent;
+        }
+        try std.testing.expect(metadata_is_visible);
+        metadata_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 4), metadata_reads);
 }
 
 test "#4819 ES5 class methods retain original scope on emitted functions and bind body temps" {
