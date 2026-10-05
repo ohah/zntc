@@ -188,6 +188,39 @@ pub fn makeTempVarSpan(self: anytype) !Span {
     }
 }
 
+/// Record a generated temp reference only when its exact name span is still
+/// owned by the active temp allocator. This lets class lowering attach a
+/// prehoisted computed-key reference after moving it into its final function
+/// scope without treating a same-spelled source identifier as a temp.
+pub fn trackKnownHoistedTempRef(
+    self: anytype,
+    node: NodeIndex,
+    scope: ScopeId,
+    flags: @import("../semantic/mod.zig").ReferenceFlags,
+) !bool {
+    if (!self.semantic_edit_enabled or node.isNone()) return false;
+    const ref = self.ast.getNode(node);
+    if (ref.tag != .identifier_reference and ref.tag != .assignment_target_identifier) return false;
+    const name_span = ref.data.string_ref;
+    var iter = self.temp_span_by_counter.iterator();
+    while (iter.next()) |entry| {
+        const candidate = entry.value_ptr.*;
+        if (candidate.start == name_span.start and candidate.end == name_span.end) {
+            try self.trackHoistedTempRefInScope(candidate, node, scope, flags);
+            return true;
+        }
+    }
+    return false;
+}
+
+/// A computed property key stores its expression below the wrapper node.
+pub fn trackKnownHoistedComputedKeyRef(self: anytype, key: NodeIndex, scope: ScopeId) !void {
+    if (key.isNone()) return;
+    const node = self.ast.getNode(key);
+    const ref = if (node.tag == .computed_property_key) node.data.unary.operand else key;
+    _ = try trackKnownHoistedTempRef(self, ref, scope, .{ .read = true });
+}
+
 fn collidesWithCurrentVarScopeSymbol(self: anytype, name: []const u8) bool {
     const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
     const scope_maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;
@@ -400,15 +433,24 @@ pub fn makeComputedKeyRef(self: anytype, var_span: Span, span: Span) !NodeIndex 
 pub const ComputedKeyMemo = struct {
     decl: NodeIndex,
     computed_key: NodeIndex,
+    temp_span: Span,
+    binding: NodeIndex,
+    computed_ref: NodeIndex,
+    value_ref: NodeIndex,
 };
 pub fn memoizeComputedKey(self: anytype, key_expr: NodeIndex, span: Span) !ComputedKeyMemo {
     const temp_span = try makeTempVarSpan(self);
     const temp_binding = try makeSyntheticBinding(self, temp_span);
     const temp_init = try self.visitNode(key_expr);
     const temp_decl = try makeDeclarator(self, temp_binding, temp_init, span);
+    const computed_key = try makeComputedKeyRef(self, temp_span, span);
     return .{
         .decl = try makeVarDeclaration(self, &.{temp_decl}, .@"var", span),
-        .computed_key = try makeComputedKeyRef(self, temp_span, span),
+        .computed_key = computed_key,
+        .temp_span = temp_span,
+        .binding = temp_binding,
+        .computed_ref = self.ast.getNode(computed_key).data.unary.operand,
+        .value_ref = temp_init,
     };
 }
 

@@ -85,6 +85,10 @@ pub fn Members(comptime Transformer: type) type {
             /// computed accessor key memoization 을 위한 `var _acc_key_N = <expr>;` statement 들.
             /// IIFE body 앞부분 (WeakSet 선언 직전) 에 배치되어 key 식이 한 번만 평가됨 (#1511).
             accessor_key_memos: std.ArrayList(NodeIndex) = .empty,
+            /// `makeTempVarSpan`으로 만든 computed-key memo의 명시적 IIFE 바인딩 정보.
+            computed_key_temp_bindings: std.ArrayList(es_helpers.ComputedKeyMemo) = .empty,
+            /// 클래스 IIFE 안에서 읽는, 바깥 스코프에서 선호이스트된 computed-key temp 참조.
+            computed_key_temp_reads: std.ArrayList(NodeIndex) = .empty,
             /// instance field init에 arrow this 캡처가 필요한 경우 true.
             /// super class 없는 class에서 var _this = this; 삽입에 사용.
             fields_need_this_alias: bool = false,
@@ -110,6 +114,9 @@ pub fn Members(comptime Transformer: type) type {
                 cm.static_private_fields.deinit(allocator);
                 cm.private_methods.deinit(allocator);
                 cm.synthesized_private_names.deinit(allocator);
+                cm.accessor_key_memos.deinit(allocator);
+                cm.computed_key_temp_bindings.deinit(allocator);
+                cm.computed_key_temp_reads.deinit(allocator);
             }
         };
 
@@ -426,6 +433,25 @@ pub fn Members(comptime Transformer: type) type {
             return cm;
         }
 
+        /// Bind memo temps and key reads after the class IIFE scope is known.
+        /// Static computed fields use an explicit `var` inside that IIFE, so
+        /// their temp must be removed from the enclosing function's later
+        /// temp sweep.
+        pub fn bindComputedKeyTemps(self: *Transformer, cm: *ClassifiedMembers, scope: @import("../../semantic/scope.zig").ScopeId, span: Span) Transformer.Error!void {
+            for (cm.computed_key_temp_bindings.items) |memo| es_helpers.consumeTempVarSpan(self, memo.temp_span);
+            if (!self.semantic_edit_enabled) return;
+            if (scope.isNone() and (cm.computed_key_temp_bindings.items.len > 0 or cm.computed_key_temp_reads.items.len > 0))
+                std.debug.panic("computed class key temps have no output IIFE scope", .{});
+
+            for (cm.computed_key_temp_reads.items) |ref|
+                _ = try es_helpers.trackKnownHoistedTempRef(self, ref, scope, .{ .read = true });
+
+            for (cm.computed_key_temp_bindings.items) |memo| {
+                try self.trackHoistedTempRefInScope(memo.temp_span, memo.computed_ref, scope, .{ .read = true });
+                try self.bindSyntheticTempInScope(memo.binding, memo.temp_span, span, .variable_var, scope);
+            }
+        }
+
         /// `accessor x = init;` → private backing + getter/setter. public / private / computed 키 모두 처리 (#1511).
         /// Stage 3 decorator 경로는 class_decorator.zig 가 처리하므로 여기선 decorator 없는 ES5 직접 경로만.
         fn classifyAccessorProperty(
@@ -611,6 +637,7 @@ pub fn Members(comptime Transformer: type) type {
             try cm.synthesized_private_names.append(self.allocator, mem_var_name); // allocator 소유 보관용 재사용
             const mem_var_span = try self.ast.addString(mem_var_name);
             const visited_inner = try self.visitNode(inner_expr);
+            try cm.computed_key_temp_reads.append(self.allocator, visited_inner);
             const var_decl = try self.buildVarDecl(mem_var_name, visited_inner, span);
             try cm.accessor_key_memos.append(self.allocator, var_decl);
 
@@ -641,6 +668,8 @@ pub fn Members(comptime Transformer: type) type {
         fn memoizeStaticComputedFieldKey(self: *Transformer, cm: anytype, key_expr: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const memo = try es_helpers.memoizeComputedKey(self, key_expr, span);
             try cm.accessor_key_memos.append(self.allocator, memo.decl);
+            try cm.computed_key_temp_bindings.append(self.allocator, memo);
+            try cm.computed_key_temp_reads.append(self.allocator, memo.value_ref);
             return memo.computed_key;
         }
 
@@ -732,6 +761,7 @@ pub fn Members(comptime Transformer: type) type {
         /// obj.key = init 또는 obj[computedKey] = init expression_statement 생성.
         /// instance field: obj = this, static field: obj = ClassName identifier.
         fn buildFieldAssign(self: *Transformer, obj: NodeIndex, key_idx: NodeIndex, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            try es_helpers.trackKnownHoistedComputedKeyRef(self, key_idx, self.current_scope);
             // define 의미론이면 own property 를 *정의*해야 한다 — 상위 클래스 setter 를
             // 타지 않고, 초기값 없는 필드도 존재해야 한다 (#4629). static 쪽은 예전부터
             // 같은 이유로 defineProperty 를 쓰고 있었다(buildStaticFieldDefineProperty).
