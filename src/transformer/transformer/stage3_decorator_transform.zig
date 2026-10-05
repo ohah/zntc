@@ -474,6 +474,8 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     var metadata_block_scope: ScopeId = .none;
     var metadata_refs: std.ArrayList(NodeIndex) = .empty;
     defer metadata_refs.deinit(self.allocator);
+    var class_decorator_refs: std.ArrayList(NodeIndex) = .empty;
+    defer class_decorator_refs.deinit(self.allocator);
 
     // IIFE 내부 let 선언 목록
     var iife_stmts: std.ArrayList(NodeIndex) = .empty;
@@ -567,7 +569,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
 
     // class decorator __esDecorate 호출 (식 평가는 이미 IIFE 최상단 let 선언에서 완료)
     if (class_deco_len > 0) {
-        const class_call = try self.buildClassEsDecorateCall(classThis_span, &metadata_refs);
+        const class_call = try self.buildClassEsDecorateCall(classThis_span, &metadata_refs, &class_decorator_refs);
         const class_call_stmt = try self.ast.addNode(.{
             .tag = .expression_statement,
             .span = zero_span,
@@ -796,17 +798,20 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     defer all_iife_stmts.deinit(self.allocator);
 
     // let 선언 생성
+    var class_decorators_binding: NodeIndex = .none;
     const let_decls = try self.buildStage3LetDeclarations(
         class_deco_start,
         class_deco_len,
         member_infos.items,
         has_instance_decorators,
         has_static_decorators,
+        &class_decorators_binding,
     );
     var stage3_let_bindings: std.ArrayList(NodeIndex) = .empty;
     defer stage3_let_bindings.deinit(self.allocator);
     for (let_decls) |declaration| {
-        try stage3_let_bindings.append(self.allocator, generatedLetBinding(self, declaration));
+        const binding = generatedLetBinding(self, declaration);
+        if (binding != class_decorators_binding) try stage3_let_bindings.append(self.allocator, binding);
     }
     try all_iife_stmts.appendSlice(self.allocator, let_decls);
     self.allocator.free(let_decls);
@@ -834,6 +839,21 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     try self.reparentGeneratedScope(source_class_scope, arrow_scope);
     try self.moveBindingToOutputScope(inner_binding, arrow_scope);
     try self.trackUserReadFromBinding(return_name, inner_binding, arrow_scope);
+
+    // `_classDecorators` is bound in the class decorator wrapper IIFE and read
+    // by its generated static-block call. Keep its exact handles.
+    if (self.semantic_edit_enabled and !class_decorators_binding.isNone()) {
+        const class_decorators_symbol = (try self.declareSyntheticInScope(
+            class_decorators_binding,
+            self.ast.getNode(class_decorators_binding).span,
+            .variable_let,
+            arrow_scope,
+        )) orelse std.debug.panic("Stage 3 class decorators binding has no SymbolId", .{});
+        if (metadata_block_scope.isNone()) std.debug.panic("Stage 3 class decorator has no output static block scope", .{});
+        for (class_decorator_refs.items) |reference| {
+            try self.addSyntheticRefInScope(reference, class_decorators_symbol, metadata_block_scope, .{ .read = true });
+        }
+    }
 
     // (() => { ... })()
     const paren_arrow = try self.ast.addNode(.{
