@@ -246,6 +246,74 @@ test "#4819 generated state binding stays separate from user _state parameter" {
     );
 }
 
+test "#4819 generated function name binds its exact output function scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+
+    const name_span = try transformer.ast.addString("_generatedFunction");
+    const name = try es_helpers.makeSyntheticBinding(&transformer, name_span);
+    const empty_list = try transformer.ast.addNodeList(&.{});
+    const params = try transformer.ast.addFormalParameters(empty_list, .EMPTY);
+    const body = try transformer.ast.addNode(.{
+        .tag = .block_statement,
+        .span = .EMPTY,
+        .data = .{ .list = empty_list },
+    });
+    const none = @intFromEnum(ast_mod.NodeIndex.none);
+    const extra = try transformer.ast.addExtras(&.{ @intFromEnum(name), @intFromEnum(params), @intFromEnum(body), 0, none });
+    const generated_function = try transformer.ast.addNode(.{
+        .tag = .function_expression,
+        .span = .EMPTY,
+        .data = .{ .extra = extra },
+    });
+    const declaration_name_span = try transformer.ast.addString("_generatedDeclaration");
+    const declaration_name = try es_helpers.makeSyntheticBinding(&transformer, declaration_name_span);
+    const declaration_empty_list = try transformer.ast.addNodeList(&.{});
+    const declaration_params = try transformer.ast.addFormalParameters(declaration_empty_list, .EMPTY);
+    const declaration_body = try transformer.ast.addNode(.{
+        .tag = .block_statement,
+        .span = .EMPTY,
+        .data = .{ .list = declaration_empty_list },
+    });
+    const declaration_extra = try transformer.ast.addExtras(&.{
+        @intFromEnum(declaration_name), @intFromEnum(declaration_params), @intFromEnum(declaration_body), 0, none,
+    });
+    const generated_declaration = try transformer.ast.addNode(.{
+        .tag = .function_declaration,
+        .span = .EMPTY,
+        .data = .{ .extra = declaration_extra },
+    });
+
+    try transformer.completeGeneratedStateSymbols(generated_function, transformer.programScope());
+    try transformer.completeGeneratedStateSymbols(generated_declaration, transformer.programScope());
+    const id = transformer.getSymbolIdAt(name) orelse return error.TestUnexpectedResult;
+    const owner = transformer.outputOwnedScope(generated_function) orelse return error.TestUnexpectedResult;
+    const declaration_id = transformer.getSymbolIdAt(declaration_name) orelse return error.TestUnexpectedResult;
+    const editor = &transformer.semantic_editor.?;
+    const symbol = editor.symbols.items[id];
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.function_decl, symbol.kind);
+    try std.testing.expectEqual(owner, symbol.scope_id);
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, editor.scopes.items[owner.toIndex()].kind);
+    try std.testing.expectEqual(@as(?usize, id), editor.scope_maps.items[owner.toIndex()].get("_generatedFunction"));
+    try std.testing.expectEqual(transformer.programScope(), editor.symbols.items[declaration_id].scope_id);
+    try std.testing.expectEqual(@as(?usize, declaration_id), editor.scope_maps.items[transformer.programScope().toIndex()].get("_generatedDeclaration"));
+}
+
 test "#4819 async function state callback and helper use real wrapper scope" {
     try checkStateScopes(
         "export async function run(value) { try { await Promise.resolve(value); } catch (err) { return err; } return await Promise.resolve(2); }",

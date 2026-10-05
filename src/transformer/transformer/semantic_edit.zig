@@ -1450,8 +1450,6 @@ pub fn completeGeneratedStateSymbols(self: *Transformer, root: NodeIndex, root_s
     defer stack.deinit(self.allocator);
     var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer seen.deinit(self.allocator);
-    var function_name_specs: std.ArrayListUnmanaged(GeneratedLocalSpec) = .empty;
-    defer function_name_specs.deinit(self.allocator);
     var temp_specs: std.ArrayListUnmanaged(GeneratedLocalSpec) = .empty;
     defer temp_specs.deinit(self.allocator);
     var temp_spans: std.AutoHashMapUnmanaged(u64, void) = .empty;
@@ -1505,12 +1503,9 @@ pub fn completeGeneratedStateSymbols(self: *Transformer, root: NodeIndex, root_s
                         const name_span = self.ast.getNode(name).data.string_ref;
                         if (name_span.start & ast_mod.Ast.STRING_TABLE_BIT != 0) {
                             const flags = self.ast.extra_data.items[extra + 3];
-                            try function_name_specs.append(self.allocator, .{
-                                .name = self.ast.getText(name_span),
-                                .kind = generatedFunctionNameKind(flags),
-                                .binding_scope = if (node.tag == .function_expression) scope else work.scope,
-                                .exact_binding_span = name_span,
-                            });
+                            const binding_scope = if (node.tag == .function_expression) scope else work.scope;
+                            _ = (try self.declareSyntheticInScope(name, name_span, generatedFunctionNameKind(flags), binding_scope)) orelse
+                                std.debug.panic("generated function name has no direct SymbolId", .{});
                         }
                     }
                 }
@@ -1527,7 +1522,6 @@ pub fn completeGeneratedStateSymbols(self: *Transformer, root: NodeIndex, root_s
     }
     try bindDeferredGeneratedStateSymbols(self, &seen);
     self.deferred_generator_helper_refs.clearRetainingCapacity();
-    try self.trackGeneratedLocalSymbols(root, root_scope, function_name_specs.items);
     try self.trackGeneratedLocalSymbols(root, root_scope, temp_specs.items);
 }
 
