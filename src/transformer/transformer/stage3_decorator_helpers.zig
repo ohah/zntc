@@ -130,6 +130,7 @@ pub fn buildEsDecorateCall(
     info: *Stage3MemberInfo,
     metadata_refs: *std.ArrayList(NodeIndex),
     static_extra_initializer_refs: *std.ArrayList(NodeIndex),
+    instance_extra_initializer_refs: *std.ArrayList(NodeIndex),
     deco_apply_ref: *NodeIndex,
 ) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
@@ -204,7 +205,11 @@ pub fn buildEsDecorateCall(
     else blk: {
         const extra_init_name = if (info.is_static) "_staticExtraInitializers" else "_instanceExtraInitializers";
         const reference = try es_helpers.makeSyntheticRef(self, extra_init_name);
-        if (info.is_static) try static_extra_initializer_refs.append(self.allocator, reference);
+        if (info.is_static) {
+            try static_extra_initializer_refs.append(self.allocator, reference);
+        } else {
+            try instance_extra_initializer_refs.append(self.allocator, reference);
+        }
         break :blk reference;
     };
 
@@ -656,10 +661,11 @@ pub fn buildRunInitializersCall(
 
 /// __runInitializers(target_node, name) 호출 생성.
 /// target은 이미 생성된 NodeIndex (예: this)
-pub fn buildRunInitializersCall2(self: anytype, target_node: NodeIndex, init_name: []const u8) Error!NodeIndex {
+pub fn buildRunInitializersCall2(self: anytype, target_node: NodeIndex, init_name: []const u8, init_ref_out: *NodeIndex) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const callee = try es_helpers.makeRuntimeHelperRef(self, "__runInitializers");
     const init_ref = try es_helpers.makeSyntheticRef(self, init_name);
+    init_ref_out.* = init_ref;
     const args = try self.ast.addNodeList(&.{ target_node, init_ref });
     return self.addExtraNode(.call_expression, zero_span, &.{
         @intFromEnum(callee), args.start, args.len, 0,
@@ -681,6 +687,7 @@ pub fn buildStage3LetDeclarations(
     class_extra_initializers_binding: *NodeIndex,
     class_this_binding: *NodeIndex,
     static_extra_initializers_binding: *NodeIndex,
+    instance_extra_initializers_binding: *NodeIndex,
 ) Error![]NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const none = @intFromEnum(NodeIndex.none);
@@ -720,7 +727,9 @@ pub fn buildStage3LetDeclarations(
     if (has_instance) {
         const empty_arr_list = try self.ast.addNodeList(&.{});
         const empty_arr = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = empty_arr_list } });
-        try stmts.append(self.allocator, try makeLet(self, zero_span, "_instanceExtraInitializers", empty_arr));
+        const instance_extra_initializers = try makeLetWithBinding(self, zero_span, "_instanceExtraInitializers", empty_arr);
+        instance_extra_initializers_binding.* = instance_extra_initializers.binding;
+        try stmts.append(self.allocator, instance_extra_initializers.declaration);
     }
     if (has_static) {
         const empty_arr_list = try self.ast.addNodeList(&.{});
@@ -989,10 +998,11 @@ pub fn appendEsDecorateStmt(
     info: *Stage3MemberInfo,
     metadata_refs: *std.ArrayList(NodeIndex),
     static_extra_initializer_refs: *std.ArrayList(NodeIndex),
+    instance_extra_initializer_refs: *std.ArrayList(NodeIndex),
     deco_apply_ref: *NodeIndex,
 ) Error!void {
     const zero_span = Span{ .start = 0, .end = 0 };
-    const call = try buildEsDecorateCall(self, info, metadata_refs, static_extra_initializer_refs, deco_apply_ref);
+    const call = try buildEsDecorateCall(self, info, metadata_refs, static_extra_initializer_refs, instance_extra_initializer_refs, deco_apply_ref);
     try stmts.append(self.allocator, try es_helpers.makeExprStmt(self, call, zero_span));
 }
 

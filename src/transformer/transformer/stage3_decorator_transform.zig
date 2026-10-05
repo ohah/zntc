@@ -162,6 +162,8 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     // 이후 field에 이전 field의 _extraInitializers를 piggyback,
     // constructor에 마지막 field의 _extraInitializers를 삽입
     var last_instance_field_extra: ?[]const u8 = null;
+    var instance_extra_initializer_field_refs: std.ArrayList(NodeIndex) = .empty;
+    defer instance_extra_initializer_field_refs.deinit(self.allocator);
 
     {
         var i: u32 = 0;
@@ -342,7 +344,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     // instance field만 initializer 체이닝 적용 (static은 static block에서 처리)
                     if (!is_static) {
                         const prev_extra = last_instance_field_extra orelse "_instanceExtraInitializers";
-                        const result = try buildPiggybackedInitCall(self, prev_extra, init_call);
+                        const result = try buildPiggybackedInitCall(self, prev_extra, init_call, &instance_extra_initializer_field_refs);
                         const info = member_infos.items[member_infos.items.len - 1];
                         if (info.extra_initializers_name) |extra_name| {
                             last_instance_field_extra = extra_name;
@@ -430,7 +432,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                         if (!is_static) {
                             const prev_extra = last_instance_field_extra orelse "_instanceExtraInitializers";
                             last_instance_field_extra = names.extra_name;
-                            break :blk try buildPiggybackedInitCall(self, prev_extra, init_call);
+                            break :blk try buildPiggybackedInitCall(self, prev_extra, init_call, &instance_extra_initializer_field_refs);
                         } else {
                             break :blk init_call;
                         }
@@ -508,6 +510,10 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     defer metadata_refs.deinit(self.allocator);
     var static_extra_initializer_refs: std.ArrayList(NodeIndex) = .empty;
     defer static_extra_initializer_refs.deinit(self.allocator);
+    var instance_extra_initializer_block_refs: std.ArrayList(NodeIndex) = .empty;
+    defer instance_extra_initializer_block_refs.deinit(self.allocator);
+    var instance_extra_initializer_constructor_ref: NodeIndex = .none;
+    var instance_extra_initializer_constructor_scope: ScopeId = .none;
     var class_decorator_refs: std.ArrayList(NodeIndex) = .empty;
     defer class_decorator_refs.deinit(self.allocator);
     var class_descriptor_write_refs: std.ArrayList(NodeIndex) = .empty;
@@ -613,7 +619,14 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         const want_non_field = pass[1];
         for (member_infos.items) |*info| {
             if (info.is_static == want_static and is_non_field(info.kind) == want_non_field) {
-                try self.appendEsDecorateStmt(&static_block_stmts, info, &metadata_refs, &static_extra_initializer_refs, &info.deco_apply_ref);
+                try self.appendEsDecorateStmt(
+                    &static_block_stmts,
+                    info,
+                    &metadata_refs,
+                    &static_extra_initializer_refs,
+                    &instance_extra_initializer_block_refs,
+                    &info.deco_apply_ref,
+                );
             }
         }
     }
@@ -716,7 +729,8 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .span = zero_span,
             .data = .{ .none = 0 },
         });
-        const run_init = try self.buildRunInitializersCall2(this_node, ctor_init_name);
+        var run_init_reference: NodeIndex = .none;
+        const run_init = try self.buildRunInitializersCall2(this_node, ctor_init_name, &run_init_reference);
         const run_init_stmt = try self.ast.addNode(.{
             .tag = .expression_statement,
             .span = zero_span,
@@ -757,6 +771,11 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                 });
                 try self.remapCopiedScopeOwner(member_node_idx, new_ctor_method);
                 new_members.items[mi] = new_ctor_method;
+                if (self.semantic_edit_enabled and std.mem.eql(u8, ctor_init_name, "_instanceExtraInitializers")) {
+                    instance_extra_initializer_constructor_ref = run_init_reference;
+                    instance_extra_initializer_constructor_scope = self.outputOwnedScope(new_ctor_method) orelse
+                        std.debug.panic("Stage 3 instance extra initializer constructor has no output scope", .{});
+                }
                 break;
             }
         } else {
@@ -795,6 +814,15 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             });
             if (super_shell) |shell|
                 try class_member_helpers.bindSuperSpreadArgs(self, ctor_method, class_parent_scope, shell.args_binding, shell.args_ref);
+            if (self.semantic_edit_enabled) {
+                if (self.outputOwnedScope(ctor_method) == null)
+                    _ = try self.addGeneratedFunctionScope(class_parent_scope, ctor_method);
+                if (std.mem.eql(u8, ctor_init_name, "_instanceExtraInitializers")) {
+                    instance_extra_initializer_constructor_ref = run_init_reference;
+                    instance_extra_initializer_constructor_scope = self.outputOwnedScope(ctor_method) orelse
+                        std.debug.panic("Stage 3 instance extra initializer constructor has no output scope", .{});
+                }
+            }
             try new_members.append(self.allocator, ctor_method);
         }
     }
@@ -873,6 +901,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     var class_extra_initializers_binding: NodeIndex = .none;
     var class_this_binding: NodeIndex = .none;
     var static_extra_initializers_binding: NodeIndex = .none;
+    var instance_extra_initializers_binding: NodeIndex = .none;
     const let_decls = try self.buildStage3LetDeclarations(
         class_deco_start,
         class_deco_len,
@@ -884,6 +913,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         &class_extra_initializers_binding,
         &class_this_binding,
         &static_extra_initializers_binding,
+        &instance_extra_initializers_binding,
     );
     var directly_bound_member_set: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer directly_bound_member_set.deinit(self.allocator);
@@ -891,6 +921,8 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         if (!info.deco_binding.isNone()) try directly_bound_member_set.put(self.allocator, @intFromEnum(info.deco_binding), {});
         if (!info.descriptor_binding.isNone()) try directly_bound_member_set.put(self.allocator, @intFromEnum(info.descriptor_binding), {});
     }
+    if (!instance_extra_initializers_binding.isNone())
+        try directly_bound_member_set.put(self.allocator, @intFromEnum(instance_extra_initializers_binding), {});
     var stage3_let_bindings: std.ArrayList(NodeIndex) = .empty;
     defer stage3_let_bindings.deinit(self.allocator);
     for (let_decls) |declaration| {
@@ -1003,6 +1035,31 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             try self.addSyntheticRefInScope(reference, static_extra_initializers_symbol, metadata_block_scope, .{ .read = true });
         }
     }
+    if (self.semantic_edit_enabled and !instance_extra_initializers_binding.isNone()) {
+        const instance_extra_initializers_symbol = (try self.declareSyntheticInScope(
+            instance_extra_initializers_binding,
+            self.ast.getNode(instance_extra_initializers_binding).span,
+            .variable_let,
+            arrow_scope,
+        )) orelse std.debug.panic("Stage 3 instance extra initializers binding has no SymbolId", .{});
+        if (metadata_block_scope.isNone()) std.debug.panic("Stage 3 instance extra initializers has no output metadata block scope", .{});
+        for (instance_extra_initializer_block_refs.items) |reference| {
+            try self.addSyntheticRefInScope(reference, instance_extra_initializers_symbol, metadata_block_scope, .{ .read = true });
+        }
+        for (instance_extra_initializer_field_refs.items) |reference| {
+            try self.addSyntheticRefInScope(reference, instance_extra_initializers_symbol, class_parent_scope, .{ .read = true });
+        }
+        if (!instance_extra_initializer_constructor_ref.isNone()) {
+            if (instance_extra_initializer_constructor_scope.isNone())
+                std.debug.panic("Stage 3 instance extra initializer constructor has no exact scope", .{});
+            try self.addSyntheticRefInScope(
+                instance_extra_initializer_constructor_ref,
+                instance_extra_initializers_symbol,
+                instance_extra_initializer_constructor_scope,
+                .{ .read = true },
+            );
+        }
+    }
     if (self.semantic_edit_enabled) {
         for (member_infos.items) |info| {
             if (info.deco_binding.isNone()) continue;
@@ -1101,7 +1158,12 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
 /// field/accessor 초기화에 이전 extra initializers를 piggyback하는 sequence expression 생성.
 /// TypeScript 패턴: `(__runInitializers(this, _prevExtra), __runInitializers(this, _x_initializers, val))`
 /// init_call이 .none이면 prevCall만 반환 (초기값 없는 accessor).
-fn buildPiggybackedInitCall(self: *Transformer, prev_extra_name: []const u8, init_call: NodeIndex) Error!NodeIndex {
+fn buildPiggybackedInitCall(
+    self: *Transformer,
+    prev_extra_name: []const u8,
+    init_call: NodeIndex,
+    instance_extra_initializer_refs: *std.ArrayList(NodeIndex),
+) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const prev_this = try self.ast.addNode(.{
         .tag = .this_expression,
@@ -1110,6 +1172,8 @@ fn buildPiggybackedInitCall(self: *Transformer, prev_extra_name: []const u8, ini
     });
     const prev_callee = try es_helpers.makeRuntimeHelperRef(self, "__runInitializers");
     const prev_arr = try es_helpers.makeSyntheticRef(self, prev_extra_name);
+    if (std.mem.eql(u8, prev_extra_name, "_instanceExtraInitializers"))
+        try instance_extra_initializer_refs.append(self.allocator, prev_arr);
     const prev_args = try self.ast.addNodeList(&.{ prev_this, prev_arr });
     const prev_call = try self.addExtraNode(.call_expression, zero_span, &.{
         @intFromEnum(prev_callee), prev_args.start, prev_args.len, 0,

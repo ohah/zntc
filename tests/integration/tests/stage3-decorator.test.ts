@@ -442,6 +442,33 @@ describe('Stage 3 Decorators', () => {
     expect(result.runOutput).toBe('42 ok 11');
   });
 
+  it('ES5 instance member decorators keep the exact initializer symbol when shadowed', async () => {
+    const result = await bundleAndRun(
+      {
+        'index.ts': `
+          const _instanceExtraInitializers = 17;
+          function mark(value: any, context: any) {
+            context.addInitializer(function() {
+              (this as any).ready = ((this as any).ready || 0) + 1;
+            });
+            return value;
+          }
+          class Example {
+            @mark value = 1;
+            @mark method() { return 42; }
+          }
+          const example = new Example();
+          console.log(example.value, example.method(), (example as any).ready, _instanceExtraInitializers);
+        `,
+      },
+      'index.ts',
+      ['--target=es5'],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('1 42 2 17');
+  });
+
   it('ES5 static and instance decorators keep separate arrays for same-named members', async () => {
     const result = await bundleAndRun(
       {
