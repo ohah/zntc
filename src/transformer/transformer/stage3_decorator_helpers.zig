@@ -35,6 +35,10 @@ pub const Stage3MemberInfo = struct {
     method_params: ast_mod.NodeList = .{ .start = 0, .len = 0 },
     /// decorator 변수명 (예: "_greet_decorators") — 식 평가/적용 분리용
     deco_var_name: ?[]const u8 = null,
+    /// Exact handles for a per-member decorator array and its two static-block uses.
+    deco_binding: NodeIndex = .none,
+    deco_assignment_ref: NodeIndex = .none,
+    deco_apply_ref: NodeIndex = .none,
     /// 원본 AST 멤버 인덱스 (class body 내 위치)
     raw_idx: u32 = 0,
 };
@@ -121,6 +125,7 @@ pub fn buildEsDecorateCall(
     info: Stage3MemberInfo,
     metadata_refs: *std.ArrayList(NodeIndex),
     static_extra_initializer_refs: *std.ArrayList(NodeIndex),
+    deco_apply_ref: *NodeIndex,
 ) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
@@ -169,9 +174,11 @@ pub fn buildEsDecorateCall(
     } else try es_helpers.makeNullLiteral(self);
 
     // arg3: decorator 배열 (변수 참조 — 식 평가는 이미 소스 순서로 완료)
-    const arg3 = if (info.deco_var_name) |vname|
-        try es_helpers.makeSyntheticRef(self, vname)
-    else blk: {
+    const arg3 = if (info.deco_var_name) |vname| blk: {
+        const reference = try es_helpers.makeSyntheticRef(self, vname);
+        deco_apply_ref.* = reference;
+        break :blk reference;
+    } else blk: {
         const deco_list = try self.ast.addNodeList(info.decorators);
         break :blk try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = deco_list } });
     };
@@ -660,7 +667,7 @@ pub fn buildStage3LetDeclarations(
     self: anytype,
     class_deco_start: u32,
     class_deco_len: u32,
-    member_infos: []const Stage3MemberInfo,
+    member_infos: []Stage3MemberInfo,
     has_instance: bool,
     has_static: bool,
     class_decorators_binding: *NodeIndex,
@@ -718,9 +725,11 @@ pub fn buildStage3LetDeclarations(
     }
 
     // member decorator 변수 + initializers + descriptor 변수
-    for (member_infos) |info| {
+    for (member_infos) |*info| {
         if (info.deco_var_name) |vname| {
-            try stmts.append(self.allocator, try makeLet(self, zero_span, vname, .none));
+            const decorator_array = try makeLetWithBinding(self, zero_span, vname, .none);
+            info.deco_binding = decorator_array.binding;
+            try stmts.append(self.allocator, decorator_array.declaration);
         }
         if (info.descriptor_name) |dname| {
             // let _private_method_descriptor;
@@ -972,9 +981,10 @@ pub fn appendEsDecorateStmt(
     info: Stage3MemberInfo,
     metadata_refs: *std.ArrayList(NodeIndex),
     static_extra_initializer_refs: *std.ArrayList(NodeIndex),
+    deco_apply_ref: *NodeIndex,
 ) Error!void {
     const zero_span = Span{ .start = 0, .end = 0 };
-    const call = try buildEsDecorateCall(self, info, metadata_refs, static_extra_initializer_refs);
+    const call = try buildEsDecorateCall(self, info, metadata_refs, static_extra_initializer_refs, deco_apply_ref);
     try stmts.append(self.allocator, try es_helpers.makeExprStmt(self, call, zero_span));
 }
 

@@ -33,6 +33,30 @@ fn generatedLetBinding(self: *Transformer, declaration_idx: NodeIndex) NodeIndex
     return @enumFromInt(self.ast.extra_data.items[declarator.data.extra]);
 }
 
+fn uniqueMemberDecoratorName(self: *Transformer, member_infos: []const Stage3MemberInfo, base_name: []const u8) Error![]const u8 {
+    var ordinal: usize = 0;
+    while (true) : (ordinal += 1) {
+        const resolved = if (ordinal == 0)
+            try es_helpers.resolveSyntheticName(self, base_name)
+        else blk: {
+            const candidate = try std.fmt.allocPrint(self.allocator, "{s}_{d}", .{ base_name, ordinal });
+            defer self.allocator.free(candidate);
+            break :blk try es_helpers.resolveSyntheticName(self, candidate);
+        };
+
+        var already_used = false;
+        for (member_infos) |info| {
+            if (info.deco_var_name) |name| {
+                if (std.mem.eql(u8, name, resolved)) {
+                    already_used = true;
+                    break;
+                }
+            }
+        }
+        if (!already_used) return self.allocator.dupe(u8, resolved);
+    }
+}
+
 fn visitMethodBodyInSourceScope(self: *Transformer, method_idx: NodeIndex, body_idx: NodeIndex) Error!NodeIndex {
     const saved_scope = self.current_scope;
     defer self.current_scope = saved_scope;
@@ -190,7 +214,9 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     const var_n = extractCleanVarName(self, name_node_idx);
                     // getter/setter는 같은 이름에 다른 kind → kind prefix로 충돌 방지
                     const kind_prefix = if (is_getter) "get_" else if (is_setter) "set_" else "";
-                    const deco_vname = try std.fmt.allocPrint(self.allocator, "_{s}{s}_decorators", .{ kind_prefix, var_n });
+                    const deco_base_name = try std.fmt.allocPrint(self.allocator, "_{s}{s}_decorators", .{ kind_prefix, var_n });
+                    defer self.allocator.free(deco_base_name);
+                    const deco_vname = try uniqueMemberDecoratorName(self, member_infos.items, deco_base_name);
 
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
 
@@ -263,7 +289,9 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     const name_node_idx = try self.memberKeyToStringLiteral(new_key);
                     const decos = try self.collectStage3Decorators(deco_start, deco_len);
                     const var_n = extractCleanVarName(self, name_node_idx);
-                    const deco_vname = try std.fmt.allocPrint(self.allocator, "_{s}_decorators", .{var_n});
+                    const deco_base_name = try std.fmt.allocPrint(self.allocator, "_{s}_decorators", .{var_n});
+                    defer self.allocator.free(deco_base_name);
+                    const deco_vname = try uniqueMemberDecoratorName(self, member_infos.items, deco_base_name);
 
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
 
@@ -346,7 +374,9 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     const name_node_idx = try self.memberKeyToStringLiteral(new_key);
                     const decos = try self.collectStage3Decorators(deco_start, deco_len);
                     const var_n = extractCleanVarName(self, name_node_idx);
-                    const deco_vname = try std.fmt.allocPrint(self.allocator, "_{s}_decorators", .{var_n});
+                    const deco_base_name = try std.fmt.allocPrint(self.allocator, "_{s}_decorators", .{var_n});
+                    defer self.allocator.free(deco_base_name);
+                    const deco_vname = try uniqueMemberDecoratorName(self, member_infos.items, deco_base_name);
 
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
 
@@ -549,7 +579,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     //   (static non-field → instance non-field → static field → instance field)
 
     // 1단계: 소스 순서로 식 평가 → _name_decorators = [dec1, dec2];
-    for (member_infos.items) |info| {
+    for (member_infos.items) |*info| {
         if (info.deco_var_name) |vname| {
             const deco_list = try self.ast.addNodeList(info.decorators);
             const deco_arr = try self.ast.addNode(.{
@@ -558,6 +588,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                 .data = .{ .list = deco_list },
             });
             const var_ref = try es_helpers.makeSyntheticRef(self, vname);
+            info.deco_assignment_ref = var_ref;
             const assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = zero_span,
@@ -578,9 +609,9 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     for (passes) |pass| {
         const want_static = pass[0];
         const want_non_field = pass[1];
-        for (member_infos.items) |info| {
+        for (member_infos.items) |*info| {
             if (info.is_static == want_static and is_non_field(info.kind) == want_non_field) {
-                try self.appendEsDecorateStmt(&static_block_stmts, info, &metadata_refs, &static_extra_initializer_refs);
+                try self.appendEsDecorateStmt(&static_block_stmts, info.*, &metadata_refs, &static_extra_initializer_refs, &info.deco_apply_ref);
             }
         }
     }
@@ -852,13 +883,18 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         &class_this_binding,
         &static_extra_initializers_binding,
     );
+    var member_decorator_binding_set: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer member_decorator_binding_set.deinit(self.allocator);
+    for (member_infos.items) |info| {
+        if (!info.deco_binding.isNone()) try member_decorator_binding_set.put(self.allocator, @intFromEnum(info.deco_binding), {});
+    }
     var stage3_let_bindings: std.ArrayList(NodeIndex) = .empty;
     defer stage3_let_bindings.deinit(self.allocator);
     for (let_decls) |declaration| {
         const binding = generatedLetBinding(self, declaration);
         if (binding != class_decorators_binding and binding != class_descriptor_binding and
             binding != class_extra_initializers_binding and binding != class_this_binding and
-            binding != static_extra_initializers_binding)
+            binding != static_extra_initializers_binding and !member_decorator_binding_set.contains(@intFromEnum(binding)))
         {
             try stage3_let_bindings.append(self.allocator, binding);
         }
@@ -962,6 +998,22 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         if (metadata_block_scope.isNone()) std.debug.panic("Stage 3 static extra initializers has no output static block scope", .{});
         for (static_extra_initializer_refs.items) |reference| {
             try self.addSyntheticRefInScope(reference, static_extra_initializers_symbol, metadata_block_scope, .{ .read = true });
+        }
+    }
+    if (self.semantic_edit_enabled) {
+        for (member_infos.items) |info| {
+            if (info.deco_binding.isNone()) continue;
+            const decorator_symbol = (try self.declareSyntheticInScope(
+                info.deco_binding,
+                self.ast.getNode(info.deco_binding).span,
+                .variable_let,
+                arrow_scope,
+            )) orelse std.debug.panic("Stage 3 member decorator binding has no SymbolId", .{});
+            if (metadata_block_scope.isNone()) std.debug.panic("Stage 3 member decorator has no output static block scope", .{});
+            if (info.deco_assignment_ref.isNone() or info.deco_apply_ref.isNone())
+                std.debug.panic("Stage 3 member decorator has missing exact reference handle", .{});
+            try self.addSyntheticRefInScope(info.deco_assignment_ref, decorator_symbol, metadata_block_scope, .{ .write = true });
+            try self.addSyntheticRefInScope(info.deco_apply_ref, decorator_symbol, metadata_block_scope, .{ .read = true });
         }
     }
 
