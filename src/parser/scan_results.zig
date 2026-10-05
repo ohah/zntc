@@ -116,6 +116,10 @@ pub const ScanExportBinding = struct {
     declared_via_pattern: bool = false,
     /// (#4587) declarator 초기값이 함수/화살표/클래스 표현식인지 (bundler ExportBinding 로 전파).
     init_is_fn_or_class: bool = false,
+    /// `export default` AST node used to carry its analyzer facade SymbolId.
+    default_export_node_index: ?u32 = null,
+    /// Anonymous defaults need a generated `_default` facade binding.
+    has_default_export_facade: bool = false,
 };
 
 /// CJS/ESM 감지 결과.

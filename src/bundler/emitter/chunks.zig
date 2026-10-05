@@ -348,6 +348,12 @@ fn resolveOwnerLocal(l: *Linker, graph: *const ModuleGraph, mod_idx: ModuleIndex
         // ensureSharedNsVar OOM 은 무시하고 canonical fallback 으로 진행(기존 패턴과 일관).
         if (l.ensureSharedNsVar(ns_t)) |ns_var| return ns_var else |_| {}
     }
+    if (graph.getModule(mod_idx)) |m| {
+        if (m.findExportBinding(name)) |eb| {
+            if (eb.kind == .local or eb.hasSyntheticDefault(m.semanticSymbols()))
+                return l.getCanonicalForExport(eb.*, mi);
+        }
+    }
     if (l.getCanonicalName(mi, name)) |renamed| return renamed;
     if (l.getExportLocalName(mi, name)) |local| {
         if (l.getCanonicalName(mi, local)) |renamed| return renamed;
@@ -3619,14 +3625,9 @@ fn emitLazyEntryExportAll(
             // 여기선 스킵한다. (`export * as ns`=re_export_namespace 는 실제 로컬 ns
             // 심볼이 있으므로 스킵 대상 아님.)
             if (eb.kind == .re_export_star) continue;
-            // 노출 키 = deconflict 된 local 명. export 명이 canonical 이면 그걸(`export const v`),
-            // 아니면(예: `default` 의 합성 local `_default`) export 의 *local* 명의 canonical 로
-            // fallback — 안 하면 default 가 un-deconflict 된 `_default` 로 떨어져 동명 default 둘이
-            // dedup(소비자 본문 `_default$1` 미노출). #4101 전역 override 가 local canonical 을
-            // `_default$1` 로 고정하므로 그 경로로 정확히 노출된다.
-            const export_local = m.exportBindingLocalName(eb);
-            const local = l.getCanonicalName(@intCast(mi), eb.exported_name) orelse
-                (l.getCanonicalName(@intCast(mi), export_local) orelse export_local);
+            // 노출 키 = ExportBinding의 exact local identity. Name lookup은 anonymous
+            // default facade와 같은 이름의 source binding을 혼동할 수 있다.
+            const local = l.getCanonicalForExport(eb, @intCast(mi));
             if (local.len == 0) continue;
             const gop = try seen.getOrPut(allocator, local);
             if (gop.found_existing) continue;

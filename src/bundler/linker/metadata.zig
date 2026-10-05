@@ -1498,7 +1498,7 @@ pub fn buildMetadataForAst(
     var default_export_is_synthetic = false;
     for (m.export_bindings) |eb| {
         if (eb.hasSyntheticDefault(m.semanticSymbols())) {
-            default_export_name = self.getCanonicalName(module_index, "_default") orelse "_default";
+            default_export_name = self.getCanonicalByRef(eb.symbol) orelse "_default";
             default_export_is_synthetic = true;
             break;
         }

@@ -92,6 +92,14 @@ pub const ExportBinding = struct {
     /// invalid = 미해결. 문자열 이름 기반 resolve 경로는 re-export(.re_export) 등을
     /// 위해 영구 병존 — 제거 대상 아님.
     symbol: symbol_mod.SymbolRef = symbol_mod.SymbolRef.invalid,
+    /// `export default` source node. Anonymous expression defaults receive an
+    /// analyzer facade SymbolId on this exact node; name lookup is ambiguous
+    /// when the module also declares a source binding named `_default`.
+    default_export_node: ?NodeIndex = null,
+    /// Whether the source default declaration needs the analyzer's `_default`
+    /// facade. Keep this separate from `local_name`, which can also be a real
+    /// source binding named `_default`.
+    has_default_export_facade: bool = false,
 
     /// (#4587 target a) 이 `.local` export 의 선언이 destructuring pattern
     /// (`export let { A } = obj`) 안에 있는지 — scan 시 declarator 구조에서 기록한다.
@@ -138,12 +146,13 @@ pub const ExportBinding = struct {
 
     /// `export default <named-local>` (예: `var lib={}; export default lib`,
     /// lodash-es lodash.default.js) — default 가 이름 있는 로컬 바인딩.
-    /// 표현식 default 는 binding_scanner 가 합성 `_default` 를 local_name 으로
-    /// 쓰므로 제외. `isDefaultDirectReExport`(re-export 형) 와 상보적.
+    /// 표현식 default 는 synthetic facade 로 구분한다. 실제 `_default` 로컬도
+    /// default export 대상일 수 있으므로 이름 sentinel 을 사용하지 않는다.
+    /// `isDefaultDirectReExport`(re-export 형) 와 상보적.
     pub fn isNamedLocalDefault(self: ExportBinding) bool {
         return self.kind == .local and
             std.mem.eql(u8, self.exported_name, "default") and
-            !std.mem.eql(u8, self.local_name, "_default");
+            !self.has_default_export_facade;
     }
 
     /// 이 export 때문에 현재 모듈에 `_default` 합성 변수가 생기는지 확인.
@@ -456,6 +465,8 @@ pub fn extractExportBindings(
                     .local_span = node.span,
                     .kind = kind,
                     .import_record_index = final_rec_idx,
+                    .default_export_node = @enumFromInt(ni),
+                    .has_default_export_facade = module_parser.defaultExportNeedsFacade(ast, inner_idx),
                 });
             },
             .export_all_declaration => {
@@ -721,21 +732,52 @@ pub fn populateSyntheticSymbols(
     /// scope_maps에서 lookup해 미리 채우는 데 사용. null이면 skip — linker가
     /// 후속 패스에서 fallback 처리.
     module_scope: ?std.StringHashMapUnmanaged(usize),
+    /// Analyzer's exact node-to-SymbolId map. When present, facade exports must
+    /// reuse the SymbolId assigned to their `export default` node.
+    symbol_ids: ?[]const ?u32,
 ) !void {
     for (export_bindings) |*eb| {
-        // codegen이 `_default = <expr>` 할당을 emit하는 export만 synthetic_default 등록.
-        if ((eb.kind == .local or eb.kind == .re_export) and
-            std.mem.eql(u8, eb.exported_name, "default") and
-            (std.mem.eql(u8, eb.local_name, "_default") or std.mem.eql(u8, eb.local_name, "default")))
-        {
-            // #1598: semantic analyzer의 visitExportDefaultDeclaration이 `_default` facade
-            // 심볼을 이미 scope_maps[0]에 등록했다면 그걸 재사용 — extend하면 동일 이름이
-            // 중복 등록되어 collectModuleNames가 `_default$1` 충돌 회피 이름을 생성한다.
+        // Anonymous `export default <expr>` has an analyzer-owned facade node.
+        // Default re-exports also materialize a bundler-local `_default` bridge,
+        // but have no source facade node. Do not infer either from the spelling
+        // alone: `_default` may be a real local binding.
+        const is_default_export = std.mem.eql(u8, eb.exported_name, "default");
+        const has_analyzer_facade = eb.kind == .local and eb.has_default_export_facade;
+        const has_reexport_bridge = eb.kind == .re_export and is_default_export and
+            (std.mem.eql(u8, eb.local_name, "_default") or std.mem.eql(u8, eb.local_name, "default"));
+        if (is_default_export and (has_analyzer_facade or has_reexport_bridge)) {
+            if (has_analyzer_facade) {
+                if (symbol_ids) |ids| {
+                    const node_idx = eb.default_export_node orelse return error.MissingDefaultExportFacadeNode;
+                    const node_id = @intFromEnum(node_idx);
+                    if (node_id >= ids.len) return error.MissingDefaultExportFacadeSymbol;
+                    const raw_symbol_id = ids[node_id] orelse return error.MissingDefaultExportFacadeSymbol;
+                    if (raw_symbol_id >= sem_symbols.items.len) return error.InvalidDefaultExportFacadeSymbol;
+
+                    const facade = &sem_symbols.items[raw_symbol_id];
+                    if (!std.mem.eql(u8, facade.synthetic_name, "_default"))
+                        return error.InvalidDefaultExportFacadeSymbol;
+                    facade.synthetic_kind = .default_export;
+                    facade.synthetic_name = "_default";
+                    eb.symbol = .{
+                        .semantic = .{
+                            .module = module_index,
+                            .symbol = @enumFromInt(raw_symbol_id),
+                        },
+                    };
+                    continue;
+                }
+            }
+
+            // Re-export bridges have no analyzer-owned source node; unanalyzed
+            // low-level callers also have no exact map. Reuse only an already
+            // marked facade, otherwise create a distinct semantic identity.
+            // Production anonymous expression defaults take the exact branch above.
             if (module_scope) |scope| {
                 if (scope.get("_default")) |existing_idx| {
-                    if (existing_idx < sem_symbols.items.len) {
-                        // 기존 심볼에 default_export synthetic_kind 마킹.
-                        // synthetic_name은 mangler(#1585) lookup key로 쓰이므로 함께 설정.
+                    if (existing_idx < sem_symbols.items.len and
+                        std.mem.eql(u8, sem_symbols.items[existing_idx].synthetic_name, "_default"))
+                    {
                         sem_symbols.items[existing_idx].synthetic_kind = .default_export;
                         sem_symbols.items[existing_idx].synthetic_name = "_default";
                         const sym_id: semantic_symbol.SymbolId = @enumFromInt(@as(u32, @intCast(existing_idx)));

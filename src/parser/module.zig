@@ -38,6 +38,25 @@ pub const ImportPhase = enum(u4) {
 /// 모든 read 사이트는 `(flags & SPEC_FLAG_TYPE_ONLY) != 0` 형태로 검사.
 pub const SPEC_FLAG_TYPE_ONLY: u16 = 1;
 
+/// Whether `export default` needs the analyzer's synthetic `_default` facade.
+/// Keep this decision shared by parsing, semantic analysis, and bundler export
+/// metadata so a real source binding named `_default` is never used as a proxy.
+pub fn defaultExportNeedsFacade(ast: *const ast_mod.Ast, inner_idx: NodeIndex) bool {
+    if (inner_idx.isNone() or @intFromEnum(inner_idx) >= ast.nodes.items.len) return true;
+
+    const inner = ast.getNode(inner_idx);
+    if (inner.tag == .function_declaration or inner.tag == .class_declaration) {
+        const e = inner.data.extra;
+        if (e < ast.extra_data.items.len) {
+            const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
+            if (!name_idx.isNone()) return false;
+        }
+    } else if (inner.tag == .identifier_reference) {
+        return false;
+    }
+    return true;
+}
+
 /// `import_declaration` extra schema의 단일 source of truth.
 /// codegen / transformer 등 read 사이트가 이 헬퍼를 통해서만 슬롯 의미를 알도록 강제.
 /// `phase` 슬롯에 `is_type_only` 도 bit-packing (lower 4-bit = phase, bit 5 = type-only).
@@ -655,6 +674,12 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
         // TS type-only default export (interface) → 전체 제거
         if (decl.isNone()) return NodeIndex.none;
 
+        const export_node = try self.ast.addNode(.{
+            .tag = .export_default_declaration,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .unary = .{ .operand = decl, .flags = 0 } },
+        });
+
         // Inline scan: export default
         if (self.enable_scan) {
             self.scan_result.has_esm_syntax = true;
@@ -684,14 +709,12 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                 .local_span = .{ .start = start, .end = self.currentSpan().start },
                 .kind = re.kind,
                 .import_record_index = re.import_record_index,
+                .default_export_node_index = @intFromEnum(export_node),
+                .has_default_export_facade = defaultExportNeedsFacade(&self.ast, decl),
             }) catch {};
         }
 
-        return try self.ast.addNode(.{
-            .tag = .export_default_declaration,
-            .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .unary = .{ .operand = decl, .flags = 0 } },
-        });
+        return export_node;
     }
 
     // TS: export type — type-only export (완전 제거)
