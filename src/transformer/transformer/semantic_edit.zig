@@ -476,8 +476,6 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
     defer output_refs.deinit(self.allocator);
     var output_bindings: std.ArrayList(OutputBindingCandidate) = .empty;
     defer output_bindings.deinit(self.allocator);
-    var generated_catch_specs: std.ArrayListUnmanaged(GeneratedLocalSpec) = .empty;
-    defer generated_catch_specs.deinit(self.allocator);
     try stack.append(self.allocator, .{ .node = root, .scope = root_scope });
     while (stack.pop()) |work| {
         if (work.node.isNone() or @intFromEnum(work.node) >= self.ast.nodes.items.len) continue;
@@ -508,15 +506,14 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
         if (node.tag == .catch_clause) {
             const param = node.data.binary.left;
             if (!param.isNone() and @intFromEnum(param) >= self.parser_node_count and self.ast.getNode(param).tag == .binding_identifier) {
-                const name = self.ast.getText(self.ast.getNode(param).data.string_ref);
-                var already_added = false;
-                for (generated_catch_specs.items) |spec| {
-                    if (std.mem.eql(u8, spec.name, name)) {
-                        already_added = true;
-                        break;
-                    }
+                // Optional catch bindings materialized by lowering are unused,
+                // but still own a real binding in this exact output catch scope.
+                // Other generated catch params must have been registered by
+                // their producer because their references are bound there.
+                if (self.getSymbolIdAt(param) == null) {
+                    _ = (try self.declareSyntheticInScope(param, self.ast.getNode(param).span, .catch_binding, scope)) orelse
+                        std.debug.panic("generated catch binding has no direct SymbolId", .{});
                 }
-                if (!already_added) try generated_catch_specs.append(self.allocator, .{ .name = name, .kind = .catch_binding });
             }
         }
         if ((node.tag == .for_statement or node.tag == .for_in_statement or node.tag == .for_of_statement or node.tag == .for_await_of_statement) and
@@ -830,7 +827,6 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
             try self.symbol_ids.appendNTimes(self.allocator, null, raw + 1 - self.symbol_ids.items.len);
         self.symbol_ids.items[raw] = resolved_id;
     }
-    try self.trackGeneratedLocalSymbols(root, root_scope, generated_catch_specs.items);
 }
 
 /// Remember a generated `_newTarget` use with its lexical arrow owner. This
