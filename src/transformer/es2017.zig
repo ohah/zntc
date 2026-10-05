@@ -370,6 +370,9 @@ pub fn ES2017(comptime Transformer: type) type {
             // es5 에서는 이 visit 안에서 state machine 이 만들어진다. for-await 는 위 전처리에서
             // 이미 풀려 합성 await 까지 `yield __await(…)` 가 됐다 (#4746 — #4707 의 상태 기계
             // 표시 신호를 대체).
+            // The in-place rewrite already binds each generated temp and links its exact references
+            // under the inner function scope. Keep those identities through lowering; do not recover
+            // them by rescanning generated names after the inner function is transformed.
             const lowered_inner = try self.visitNode(inner_func);
             // 위 rewriteAwaitToYieldAwait 는 inner visit **전** 이라, 그 visit 중 for-await
             // 다운레벨이 새로 만든 await 를 놓친다 → 한 번 더 훑는다 (#4488).
@@ -384,16 +387,6 @@ pub fn ES2017(comptime Transformer: type) type {
                     },
                     else => {},
                 }
-            }
-
-            if (self.semantic_edit_enabled and self.generator_temp_var_spans.items.len > 0 and !lowered_inner.isNone()) {
-                var temp_specs: std.ArrayListUnmanaged(Transformer.GeneratedLocalSpec) = .empty;
-                defer temp_specs.deinit(self.allocator);
-                for (self.generator_temp_var_spans.items) |temp_span| {
-                    try temp_specs.append(self.allocator, .{ .name = self.ast.getText(temp_span), .kind = .variable_var });
-                }
-                const inner_output_scope = self.outputOwnedScope(lowered_inner) orelse inner_scope;
-                try self.trackGeneratedLocalSymbols(lowered_inner, inner_output_scope, temp_specs.items);
             }
 
             // __asyncGenerator(this, arguments, function*() {...})
