@@ -523,7 +523,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     const source =
         \\function logged(value) { return value; }
         \\@logged
-        \\class Box { @logged method() { return 1; } }
+        \\class Box { @logged method() { return 1; } @logged static staticMethod() { return 2; } @logged static get staticValue() { return 3; } }
     ;
     var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
@@ -595,7 +595,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
         try std.testing.expect(metadata_is_visible);
         metadata_reads += 1;
     }
-    try std.testing.expectEqual(@as(usize, 4), metadata_reads);
+    try std.testing.expectEqual(@as(usize, 6), metadata_reads);
 
     var class_decorators_id: ?u32 = null;
     var class_decorators_bindings: usize = 0;
@@ -788,6 +788,54 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     }
     try std.testing.expectEqual(@as(usize, 5), class_this_reads);
     try std.testing.expectEqual(@as(usize, 2), class_this_writes);
+
+    var static_extra_initializers_id: ?u32 = null;
+    var static_extra_initializers_bindings: usize = 0;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_staticExtraInitializers")) continue;
+        if (raw >= edited.symbol_ids.len) return error.TestUnexpectedResult;
+        const id = edited.symbol_ids[raw] orelse return error.TestUnexpectedResult;
+        if (edited.symbols.items[id].kind != .variable_let) continue;
+        static_extra_initializers_id = id;
+        static_extra_initializers_bindings += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), static_extra_initializers_bindings);
+    const exact_static_extra_initializers_id = static_extra_initializers_id orelse return error.TestUnexpectedResult;
+    const static_extra_initializers_scope = edited.symbols.items[exact_static_extra_initializers_id].scope_id;
+    try std.testing.expectEqual(decorator_iife, static_extra_initializers_scope);
+    try std.testing.expectEqual(
+        @as(?usize, exact_static_extra_initializers_id),
+        edited.scope_maps[static_extra_initializers_scope.toIndex()].get("_staticExtraInitializers"),
+    );
+
+    var static_extra_initializers_reads: usize = 0;
+    for (edited.references) |reference| {
+        if (@intFromEnum(reference.symbol_id) != exact_static_extra_initializers_id) continue;
+        if (reference.node_index.isNone()) {
+            try std.testing.expect(!reference.flags.read);
+            try std.testing.expect(!reference.flags.write);
+            continue;
+        }
+        const node = transformer.ast.getNode(reference.node_index);
+        try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, node.tag);
+        try std.testing.expectEqualStrings("_staticExtraInitializers", transformer.ast.getText(node.data.string_ref));
+        try std.testing.expect(reference.flags.read);
+        try std.testing.expect(!reference.flags.write);
+        var visible_scope = reference.scope_id;
+        var static_extra_initializers_are_visible = false;
+        var hops: usize = 0;
+        while (!visible_scope.isNone() and hops < edited.scopes.len) : (hops += 1) {
+            if (visible_scope == static_extra_initializers_scope) {
+                static_extra_initializers_are_visible = true;
+                break;
+            }
+            visible_scope = edited.scopes[visible_scope.toIndex()].parent;
+        }
+        try std.testing.expect(static_extra_initializers_are_visible);
+        static_extra_initializers_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), static_extra_initializers_reads);
 }
 
 test "#4819 ES5 class methods retain original scope on emitted functions and bind body temps" {

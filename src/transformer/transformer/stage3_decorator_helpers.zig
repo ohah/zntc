@@ -120,6 +120,7 @@ pub fn buildEsDecorateCall(
     self: anytype,
     info: Stage3MemberInfo,
     metadata_refs: *std.ArrayList(NodeIndex),
+    static_extra_initializer_refs: *std.ArrayList(NodeIndex),
 ) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
@@ -189,7 +190,9 @@ pub fn buildEsDecorateCall(
         try es_helpers.makeSyntheticRef(self, name)
     else blk: {
         const extra_init_name = if (info.is_static) "_staticExtraInitializers" else "_instanceExtraInitializers";
-        break :blk try es_helpers.makeSyntheticRef(self, extra_init_name);
+        const reference = try es_helpers.makeSyntheticRef(self, extra_init_name);
+        if (info.is_static) try static_extra_initializer_refs.append(self.allocator, reference);
+        break :blk reference;
     };
 
     const args = try self.ast.addNodeList(&.{ arg1, arg2, arg3, arg4, arg5, arg6 });
@@ -664,6 +667,7 @@ pub fn buildStage3LetDeclarations(
     class_descriptor_binding: *NodeIndex,
     class_extra_initializers_binding: *NodeIndex,
     class_this_binding: *NodeIndex,
+    static_extra_initializers_binding: *NodeIndex,
 ) Error![]NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const none = @intFromEnum(NodeIndex.none);
@@ -708,7 +712,9 @@ pub fn buildStage3LetDeclarations(
     if (has_static) {
         const empty_arr_list = try self.ast.addNodeList(&.{});
         const empty_arr = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = empty_arr_list } });
-        try stmts.append(self.allocator, try makeLet(self, zero_span, "_staticExtraInitializers", empty_arr));
+        const static_extra_initializers = try makeLetWithBinding(self, zero_span, "_staticExtraInitializers", empty_arr);
+        static_extra_initializers_binding.* = static_extra_initializers.binding;
+        try stmts.append(self.allocator, static_extra_initializers.declaration);
     }
 
     // member decorator 변수 + initializers + descriptor 변수
@@ -965,9 +971,10 @@ pub fn appendEsDecorateStmt(
     stmts: *std.ArrayList(NodeIndex),
     info: Stage3MemberInfo,
     metadata_refs: *std.ArrayList(NodeIndex),
+    static_extra_initializer_refs: *std.ArrayList(NodeIndex),
 ) Error!void {
     const zero_span = Span{ .start = 0, .end = 0 };
-    const call = try buildEsDecorateCall(self, info, metadata_refs);
+    const call = try buildEsDecorateCall(self, info, metadata_refs, static_extra_initializer_refs);
     try stmts.append(self.allocator, try es_helpers.makeExprStmt(self, call, zero_span));
 }
 
