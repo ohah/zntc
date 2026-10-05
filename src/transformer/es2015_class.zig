@@ -672,6 +672,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try self.declareSyntheticInScope(func_name, span, .function_decl, iife_scope)
             else
                 null;
+            if (self.semantic_edit_enabled and name_idx.isNone() and has_extra and !class_self_storage_bound and generated_class_name_id == null)
+                std.debug.panic("anonymous ES5 class name has no direct SymbolId", .{});
             if (generated_class_name_id) |id| self.current_class_self_symbol_id = @intFromEnum(id);
             try visitDeferredStaticBlocks(self, &cm, name_span);
 
@@ -906,16 +908,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             try self.bindReservedFunctionOwner(iife_scope, wrapper_fn);
             if (!expr_super_param_binding.isNone()) try trackGeneratedParameterSymbols(self, wrapper_fn, expr_super_param_binding, iife_scope);
             try trackClassPrivateSymbols(self, wrapper_fn, cm, iife_scope);
-            // Keep spelling-based recovery only for paths that could not
-            // allocate the generated binding identity at its producer.
-            if (name_idx.isNone() and generated_class_name_id == null) {
-                const generated_class_name_specs = [_]GeneratedLocalSpec{.{
-                    .name = self.ast.getText(name_span),
-                    .kind = .function_decl,
-                    .binding_scope = iife_scope,
-                }};
-                try trackGeneratedLocalSymbols(self, wrapper_fn, iife_scope, &generated_class_name_specs);
-            }
             // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
             // IIFE callee paren 은 emitCall 자동 wrap 이 처리 (#4042 PR8)
             return if (has_super and super_span != null) blk: {
@@ -951,9 +943,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
         const emitPrivateMethodArtifacts = private_fields_mod.emitPrivateMethodArtifacts;
         const trackPrivateMethodSymbols = private_fields_mod.trackPrivateMethodSymbols;
         const trackGeneratedParameterSymbols = private_fields_mod.trackGeneratedParameterSymbols;
-        const trackGeneratedLocalSymbols = Transformer.trackGeneratedLocalSymbols;
-        const GeneratedLocalSpec = Transformer.GeneratedLocalSpec;
-
         fn trackClassPrivateSymbols(self: *Transformer, root: NodeIndex, cm: anytype, scope: @import("../semantic/scope.zig").ScopeId) Transformer.Error!void {
             var field_mappings: std.ArrayList(Transformer.PrivateFieldMapping) = .empty;
             defer field_mappings.deinit(self.allocator);
