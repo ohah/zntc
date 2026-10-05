@@ -247,6 +247,14 @@ pub const Transformer = struct {
     scope_owner_origins: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// Producer-marked classes with no source class self anchor.
     generated_class_without_source_anchor: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// While visiting a copied worklet class body, scope-owning source nodes
+    /// are copied onto the factory path so the two emitted class bodies keep
+    /// independent output ScopeIds.
+    generated_class_copy_depth: u32 = 0,
+    /// A copied factory method's class-self read must get its own reference
+    /// node and bind directly to the reconstructed class's inner identity.
+    generated_class_copy_source_self_symbol: ?u32 = null,
+    generated_class_copy_target_self_symbol: ?u32 = null,
     /// Stage 3 class wrappers move a named source class-self SymbolId to the
     /// wrapper local; the anonymous implementation class gets its own name.
     generated_class_self_relocated_to_wrapper: std.AutoHashMapUnmanaged(u32, void) = .empty,
@@ -683,8 +691,33 @@ pub const Transformer = struct {
 
     pub fn visitNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         if (idx.isNone()) return .none;
+        const input_raw = @intFromEnum(idx);
+        if (self.generated_class_copy_depth > 0 and input_raw < self.parser_node_count and
+            !self.scope_owner_removed.contains(input_raw))
+        {
+            if (self.outputOwnedScope(idx)) |source_scope| {
+                const source_scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+                if (source_scope.toIndex() >= source_scopes.len)
+                    std.debug.panic("copied worklet class owner has an invalid source scope", .{});
+                const source_info = source_scopes[source_scope.toIndex()];
+                const copied_owner = try self.ast.addNode(self.ast.getNode(idx));
+                const copied_scope = try self.addGeneratedScope(self.current_scope, copied_owner, source_info.kind);
+                if (self.semantic_editor) |*editor| {
+                    editor.scopes.items[copied_scope.toIndex()].is_strict = source_info.is_strict;
+                    editor.scopes.items[copied_scope.toIndex()].subtree_has_direct_eval = source_info.subtree_has_direct_eval;
+                    editor.scopes.items[copied_scope.toIndex()].subtree_has_with = source_info.subtree_has_with;
+                }
+                return self.visitNode(copied_owner);
+            }
+        }
         const saved_scope = self.current_scope;
-        const raw_idx = @intFromEnum(idx);
+        const raw_idx = input_raw;
+        const enters_generated_class_copy = self.generated_class_without_source_anchor.contains(raw_idx);
+        if (enters_generated_class_copy) self.generated_class_copy_depth += 1;
+        defer if (enters_generated_class_copy) {
+            std.debug.assert(self.generated_class_copy_depth > 0);
+            self.generated_class_copy_depth -= 1;
+        };
         const owner_scope = if (self.scope_owner_removed.contains(raw_idx)) null else self.transformed_scope_owner_map.get(raw_idx) orelse
             self.scope_owner_map.get(raw_idx) orelse
             if (self.semantic_editor) |*editor| editor.scope_owner_map.get(raw_idx) else null;
@@ -744,6 +777,7 @@ pub const Transformer = struct {
     pub const SyntheticBinding = @import("transformer/semantic_edit.zig").SyntheticBinding;
     pub const createSyntheticTempBinding = @import("transformer/semantic_edit.zig").createSyntheticTempBinding;
     pub const bindClassSelfStorage = @import("transformer/semantic_edit.zig").bindClassSelfStorage;
+    pub const cloneGeneratedClassSelfReference = @import("transformer/semantic_edit.zig").cloneGeneratedClassSelfReference;
     pub const programScope = @import("transformer/semantic_edit.zig").programScope;
     pub const nearestVarScope = @import("transformer/semantic_edit.zig").nearestVarScope;
     pub const addGeneratedFunctionScope = @import("transformer/semantic_edit.zig").addGeneratedFunctionScope;

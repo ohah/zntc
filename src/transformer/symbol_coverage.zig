@@ -911,6 +911,23 @@ fn childSkipsScopeOwner(ast: *const Ast, parent_raw: u32, child_raw: u32) bool {
     }
 }
 
+fn functionExpressionNameScope(
+    ast: *const Ast,
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    scopes: []const Scope,
+    parent_raw: u32,
+    child_raw: u32,
+) ?u32 {
+    if (parent_raw >= ast.nodes.items.len or ast.nodes.items[parent_raw].tag != .function_expression) return null;
+    const extra = ast.nodes.items[parent_raw].data.extra;
+    if (extra >= ast.extra_data.items.len or ast.extra_data.items[extra] != child_raw) return null;
+    const function_scope = scope_owner_map.get(parent_raw) orelse return null;
+    if (function_scope >= scopes.len) return null;
+    const name_scope = scopes[function_scope].parent;
+    if (name_scope.isNone() or name_scope.toIndex() >= scopes.len) return null;
+    return name_scope.toIndex();
+}
+
 const ExpectedScopeOwner = struct { node: u32, scope: u32 };
 
 fn expectedReferenceScopeFromParent(
@@ -3486,7 +3503,15 @@ fn collectScopeTraces(
             // selected children: switch discriminants, method keys and
             // decorators, and declaration names all belong to the enclosing
             // scope. Keep strict traces aligned with the analyzer's order.
-            const child_scope = if (childSkipsScopeOwner(ast, raw, @intFromEnum(child)))
+            const child_scope = if (functionExpressionNameScope(
+                ast,
+                scope_owner_map,
+                scopes,
+                raw,
+                @intFromEnum(child),
+            )) |name_scope|
+                ScopePath{ .scope_id = name_scope, .valid = true }
+            else if (childSkipsScopeOwner(ast, raw, @intFromEnum(child)))
                 scope_visit.incoming
             else
                 effective;
