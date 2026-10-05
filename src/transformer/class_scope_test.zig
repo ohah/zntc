@@ -523,7 +523,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     const source =
         \\function logged(value) { return value; }
         \\@logged
-        \\class Box { @logged method() { return 1; } @logged value = 6; @logged static method() { return 2; } @logged static get staticValue() { return 3; } @logged #secret() { return 4; } @logged static #staticSecret() { return 5; } }
+        \\class Box { @logged method() { return 1; } @logged value = 6; @logged other = 7; @logged accessor current = 8; @logged static staticValue = 9; @logged static method() { return 2; } @logged static get currentStatic() { return 3; } @logged #secret() { return 4; } @logged static #staticSecret() { return 5; } }
     ;
     var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
@@ -595,7 +595,52 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
         try std.testing.expect(metadata_is_visible);
         metadata_reads += 1;
     }
-    try std.testing.expectEqual(@as(usize, 9), metadata_reads);
+    try std.testing.expectEqual(@as(usize, 12), metadata_reads);
+
+    for ([_][]const u8{ "_value_initializers", "_other_initializers", "_current_initializers", "_staticValue_initializers" }) |initializer_name| {
+        var initializer_id: ?u32 = null;
+        var initializer_bindings: usize = 0;
+        for (reachable) |raw| {
+            const node = transformer.ast.nodes.items[raw];
+            if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), initializer_name)) continue;
+            if (raw >= edited.symbol_ids.len) return error.TestUnexpectedResult;
+            const id = edited.symbol_ids[raw] orelse return error.TestUnexpectedResult;
+            if (edited.symbols.items[id].kind != .variable_let) continue;
+            initializer_id = id;
+            initializer_bindings += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), initializer_bindings);
+        const exact_initializer_id = initializer_id orelse return error.TestUnexpectedResult;
+        const initializer_scope = edited.symbols.items[exact_initializer_id].scope_id;
+        try std.testing.expectEqual(decorator_iife, initializer_scope);
+        try std.testing.expectEqual(
+            @as(?usize, exact_initializer_id),
+            edited.scope_maps[initializer_scope.toIndex()].get(initializer_name),
+        );
+
+        var initializer_reads: usize = 0;
+        for (edited.references) |reference| {
+            if (@intFromEnum(reference.symbol_id) != exact_initializer_id or reference.node_index.isNone()) continue;
+            const node = transformer.ast.getNode(reference.node_index);
+            try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, node.tag);
+            try std.testing.expectEqualStrings(initializer_name, transformer.ast.getText(node.data.string_ref));
+            try std.testing.expect(reference.flags.read);
+            try std.testing.expect(!reference.flags.write);
+            var visible_scope = reference.scope_id;
+            var initializer_is_visible = false;
+            var hops: usize = 0;
+            while (!visible_scope.isNone() and hops < edited.scopes.len) : (hops += 1) {
+                if (visible_scope == initializer_scope) {
+                    initializer_is_visible = true;
+                    break;
+                }
+                visible_scope = edited.scopes[visible_scope.toIndex()].parent;
+            }
+            try std.testing.expect(initializer_is_visible);
+            initializer_reads += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 2), initializer_reads);
+    }
 
     var class_decorators_id: ?u32 = null;
     var class_decorators_bindings: usize = 0;
@@ -941,7 +986,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
         try std.testing.expectEqual(@as(usize, 1), writes);
         try std.testing.expect(reference_scope != null);
     }
-    try std.testing.expectEqual(@as(usize, 6), member_decorator_bindings);
+    try std.testing.expectEqual(@as(usize, 9), member_decorator_bindings);
 
     for ([_][]const u8{ "_private_secret_descriptor", "_private_staticSecret_descriptor" }) |descriptor_name| {
         var private_descriptor_id: ?u32 = null;

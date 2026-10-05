@@ -289,6 +289,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                 const is_private_field = self.ast.getNode(key_idx_prop).tag == .private_identifier;
 
                 var field_init_name: ?[]const u8 = null;
+                var field_member_info_index: ?usize = null;
                 if (deco_len > 0) {
                     const name_node_idx = try self.memberKeyToStringLiteral(new_key);
                     const decos = try self.collectStage3Decorators(deco_start, deco_len);
@@ -302,6 +303,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     const names = try self.buildFieldInitNames(name_node_idx);
                     field_init_name = names.init_name;
 
+                    field_member_info_index = member_infos.items.len;
                     try member_infos.append(self.allocator, .{
                         .kind = "field",
                         .name = name_node_idx,
@@ -327,6 +329,8 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     });
                     const callee = try es_helpers.makeRuntimeHelperRef(self, "__runInitializers");
                     const init_arr = try es_helpers.makeSyntheticRef(self, init_name);
+                    if (field_member_info_index) |member_info_index|
+                        member_infos.items[member_info_index].initializers_field_ref = init_arr;
                     const init_call = if (!raw_init.isNone()) init_blk: {
                         const args = try self.ast.addNodeList(&.{ this_node, init_arr, raw_init });
                         break :init_blk try self.addExtraNode(.call_expression, zero_span, &.{
@@ -386,6 +390,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
 
                     const names = try self.buildFieldInitNames(name_node_idx);
 
+                    const accessor_member_info_index = member_infos.items.len;
                     try member_infos.append(self.allocator, .{
                         .kind = "accessor",
                         .name = name_node_idx,
@@ -422,6 +427,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                             });
                             const callee = try es_helpers.makeRuntimeHelperRef(self, "__runInitializers");
                             const init_arr_ref = try es_helpers.makeSyntheticRef(self, names.init_name);
+                            member_infos.items[accessor_member_info_index].initializers_field_ref = init_arr_ref;
                             const args = try self.ast.addNodeList(&.{ this_node, init_arr_ref, new_init });
                             break :init_blk try self.addExtraNode(.call_expression, zero_span, &.{
                                 @intFromEnum(callee), args.start, args.len, 0,
@@ -920,6 +926,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     for (member_infos.items) |info| {
         if (!info.deco_binding.isNone()) try directly_bound_member_set.put(self.allocator, @intFromEnum(info.deco_binding), {});
         if (!info.descriptor_binding.isNone()) try directly_bound_member_set.put(self.allocator, @intFromEnum(info.descriptor_binding), {});
+        if (!info.initializers_binding.isNone()) try directly_bound_member_set.put(self.allocator, @intFromEnum(info.initializers_binding), {});
     }
     if (!instance_extra_initializers_binding.isNone())
         try directly_bound_member_set.put(self.allocator, @intFromEnum(instance_extra_initializers_binding), {});
@@ -1058,6 +1065,23 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                 instance_extra_initializer_constructor_scope,
                 .{ .read = true },
             );
+        }
+    }
+    if (self.semantic_edit_enabled) {
+        for (member_infos.items) |info| {
+            if (info.initializers_binding.isNone()) continue;
+            const initializers_symbol = (try self.declareSyntheticInScope(
+                info.initializers_binding,
+                self.ast.getNode(info.initializers_binding).span,
+                .variable_let,
+                arrow_scope,
+            )) orelse std.debug.panic("Stage 3 member initializers binding has no SymbolId", .{});
+            if (info.initializers_decorate_ref.isNone() or metadata_block_scope.isNone())
+                std.debug.panic("Stage 3 member initializers has no exact decorator reference or output block scope", .{});
+            try self.addSyntheticRefInScope(info.initializers_decorate_ref, initializers_symbol, metadata_block_scope, .{ .read = true });
+            if (!info.initializers_field_ref.isNone()) {
+                try self.addSyntheticRefInScope(info.initializers_field_ref, initializers_symbol, class_parent_scope, .{ .read = true });
+            }
         }
     }
     if (self.semantic_edit_enabled) {

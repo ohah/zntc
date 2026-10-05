@@ -25,6 +25,10 @@ pub const Stage3MemberInfo = struct {
     init_value: NodeIndex = .none,
     /// field/accessor용 initializers 변수명 (예: "_x_initializers")
     initializers_name: ?[]const u8 = null,
+    /// Exact binding and references for a per-member field initializer local.
+    initializers_binding: NodeIndex = .none,
+    initializers_decorate_ref: NodeIndex = .none,
+    initializers_field_ref: NodeIndex = .none,
     /// field/accessor용 extraInitializers 변수명 (예: "_x_extraInitializers")
     extra_initializers_name: ?[]const u8 = null,
     /// private method용: descriptor 변수명 (예: "_private_secret_descriptor")
@@ -194,10 +198,11 @@ pub fn buildEsDecorateCall(
     const arg4 = try buildContextObject(self, info.*, metadata_refs);
 
     // arg5: initializers (null for method/getter/setter, per-field var for field/accessor)
-    const arg5 = if (info.initializers_name) |name|
-        try es_helpers.makeSyntheticRef(self, name)
-    else
-        try es_helpers.makeNullLiteral(self);
+    const arg5 = if (info.initializers_name) |name| blk: {
+        const reference = try es_helpers.makeSyntheticRef(self, name);
+        info.initializers_decorate_ref = reference;
+        break :blk reference;
+    } else try es_helpers.makeNullLiteral(self);
 
     // arg6: extraInitializers (per-field var for field/accessor, shared var for method/getter/setter)
     const arg6 = if (info.extra_initializers_name) |name|
@@ -755,7 +760,9 @@ pub fn buildStage3LetDeclarations(
         if (info.initializers_name) |init_name| {
             const empty_arr_list = try self.ast.addNodeList(&.{});
             const empty_arr = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = empty_arr_list } });
-            try stmts.append(self.allocator, try makeLet(self, zero_span, init_name, empty_arr));
+            const initializers = try makeLetWithBinding(self, zero_span, init_name, empty_arr);
+            info.initializers_binding = initializers.binding;
+            try stmts.append(self.allocator, initializers.declaration);
         }
         if (info.extra_initializers_name) |extra_name| {
             const empty_arr_list2 = try self.ast.addNodeList(&.{});
