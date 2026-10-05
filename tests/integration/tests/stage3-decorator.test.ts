@@ -397,6 +397,28 @@ describe('Stage 3 Decorators', () => {
     expect(result.runOutput).toBe('true 17');
   });
 
+  it('ES5 class and member decorators keep the exact class-this symbol when shadowed', async () => {
+    const result = await bundleAndRun(
+      {
+        'index.ts': `
+          const _classThis = 11;
+          function mark(value: any, context: any) {
+            return value;
+          }
+          @mark class Example {
+            @mark method() { return 42; }
+          }
+          console.log(new Example().method(), _classThis);
+        `,
+      },
+      'index.ts',
+      ['--target=es5'],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('42 11');
+  });
+
   // --- Private member decorator ---
 
   it('private method decorator context', async () => {

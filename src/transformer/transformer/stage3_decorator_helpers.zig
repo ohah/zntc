@@ -207,6 +207,7 @@ pub fn buildClassEsDecorateCall(
     class_decorator_refs: *std.ArrayList(NodeIndex),
     class_descriptor_write_refs: *std.ArrayList(NodeIndex),
     class_extra_initializers_refs: *std.ArrayList(NodeIndex),
+    class_this_read_refs: *std.ArrayList(NodeIndex),
 ) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
@@ -217,6 +218,7 @@ pub fn buildClassEsDecorateCall(
 
     // arg2: _classDescriptor = { value: _classThis }
     const classThis_ref = try es_helpers.makeSyntheticRefFromSpan(self, classThis_span);
+    try class_this_read_refs.append(self.allocator, classThis_ref);
     const value_key = try es_helpers.makePropertyName(self, "value");
     const value_prop = try makeObjProp(self, value_key, classThis_ref);
     const obj_list = try self.ast.addNodeList(&.{value_prop});
@@ -243,6 +245,7 @@ pub fn buildClassEsDecorateCall(
     const name_key = try es_helpers.makePropertyName(self, "name");
     // _classThis.name
     const classThis_ref2 = try es_helpers.makeSyntheticRefFromSpan(self, classThis_span);
+    try class_this_read_refs.append(self.allocator, classThis_ref2);
     const name_prop_key = try es_helpers.makePropertyName(self, "name");
     const classThis_name = try self.addExtraNode(.static_member_expression, zero_span, &.{
         @intFromEnum(classThis_ref2), @intFromEnum(name_prop_key), 0,
@@ -578,6 +581,7 @@ pub fn buildClassReassign(
     class_name_node: NodeIndex,
     classThis_span: Span,
     class_descriptor_read_refs: *std.ArrayList(NodeIndex),
+    class_this_write_refs: *std.ArrayList(NodeIndex),
 ) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
@@ -591,6 +595,7 @@ pub fn buildClassReassign(
 
     // _classThis = _classDescriptor.value
     const classThis_ref = try es_helpers.makeSyntheticRefFromSpan(self, classThis_span);
+    try class_this_write_refs.append(self.allocator, classThis_ref);
     const inner_assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = zero_span,
@@ -619,10 +624,12 @@ pub fn buildRunInitializersCall(
     target_span: Span,
     init_name: []const u8,
     init_refs: *std.ArrayList(NodeIndex),
+    class_this_read_refs: *std.ArrayList(NodeIndex),
 ) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const callee = try es_helpers.makeRuntimeHelperRef(self, "__runInitializers");
     const target = try es_helpers.makeSyntheticRefFromSpan(self, target_span);
+    try class_this_read_refs.append(self.allocator, target);
     const init_ref = try es_helpers.makeSyntheticRef(self, init_name);
     try init_refs.append(self.allocator, init_ref);
     const args = try self.ast.addNodeList(&.{ target, init_ref });
@@ -656,6 +663,7 @@ pub fn buildStage3LetDeclarations(
     class_decorators_binding: *NodeIndex,
     class_descriptor_binding: *NodeIndex,
     class_extra_initializers_binding: *NodeIndex,
+    class_this_binding: *NodeIndex,
 ) Error![]NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const none = @intFromEnum(NodeIndex.none);
@@ -663,7 +671,9 @@ pub fn buildStage3LetDeclarations(
     defer stmts.deinit(self.allocator);
 
     // let _classThis; — static { _classThis = this; } 에서 항상 사용
-    try stmts.append(self.allocator, try makeLet(self, zero_span, "_classThis", .none));
+    const class_this = try makeLetWithBinding(self, zero_span, "_classThis", .none);
+    class_this_binding.* = class_this.binding;
+    try stmts.append(self.allocator, class_this.declaration);
 
     // class decorator가 있으면 추가 변수 (식 평가는 소스 순서 — class body보다 먼저)
     if (class_deco_len > 0) {
@@ -787,6 +797,7 @@ pub fn buildMetadataDefineProperty(
     self: anytype,
     classThis_span: Span,
     metadata_refs: *std.ArrayList(NodeIndex),
+    class_this_read_refs: *std.ArrayList(NodeIndex),
 ) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
@@ -800,6 +811,7 @@ pub fn buildMetadataDefineProperty(
 
     // arg1: _classThis
     const ct_ref = try es_helpers.makeSyntheticRefFromSpan(self, classThis_span);
+    try class_this_read_refs.append(self.allocator, ct_ref);
 
     // arg2: Symbol.metadata
     const sym_ref = try es_helpers.makeGlobalRef(self, "Symbol");

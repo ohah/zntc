@@ -482,6 +482,15 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     defer class_descriptor_read_refs.deinit(self.allocator);
     var class_extra_initializers_refs: std.ArrayList(NodeIndex) = .empty;
     defer class_extra_initializers_refs.deinit(self.allocator);
+    var class_this_initialization_refs: std.ArrayList(NodeIndex) = .empty;
+    defer class_this_initialization_refs.deinit(self.allocator);
+    var class_this_static_write_refs: std.ArrayList(NodeIndex) = .empty;
+    defer class_this_static_write_refs.deinit(self.allocator);
+    var class_this_static_read_refs: std.ArrayList(NodeIndex) = .empty;
+    defer class_this_static_read_refs.deinit(self.allocator);
+    var class_this_return_refs: std.ArrayList(NodeIndex) = .empty;
+    defer class_this_return_refs.deinit(self.allocator);
+    var class_this_initialization_scope: ScopeId = .none;
 
     // IIFE 내부 let 선언 목록
     var iife_stmts: std.ArrayList(NodeIndex) = .empty;
@@ -493,6 +502,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     // static { _classThis = this; }
     {
         const classThis_ref = try es_helpers.makeSyntheticRefFromSpan(self, classThis_span);
+        try class_this_initialization_refs.append(self.allocator, classThis_ref);
         const this_node = try self.ast.addNode(.{
             .tag = .this_expression,
             .span = zero_span,
@@ -514,7 +524,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .span = zero_span,
             .data = .{ .list = static_body_list },
         });
-        _ = try self.addGeneratedScope(class_parent_scope, static_body, .block);
+        class_this_initialization_scope = try self.addGeneratedScope(class_parent_scope, static_body, .block);
         const static_block = try self.ast.addNode(.{
             .tag = .static_block,
             .span = zero_span,
@@ -581,6 +591,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             &class_decorator_refs,
             &class_descriptor_write_refs,
             &class_extra_initializers_refs,
+            &class_this_static_read_refs,
         );
         const class_call_stmt = try self.ast.addNode(.{
             .tag = .expression_statement,
@@ -596,13 +607,14 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             if (name_is_anon) .none else name_idx,
             classThis_span,
             &class_descriptor_read_refs,
+            &class_this_static_write_refs,
         );
         try static_block_stmts.append(self.allocator, reassign);
     }
 
     // if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
     {
-        const metadata_define = try self.buildMetadataDefineProperty(classThis_span, &metadata_refs);
+        const metadata_define = try self.buildMetadataDefineProperty(classThis_span, &metadata_refs, &class_this_static_read_refs);
         try static_block_stmts.append(self.allocator, metadata_define);
     }
 
@@ -612,6 +624,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             classThis_span,
             "_classExtraInitializers",
             &class_extra_initializers_refs,
+            &class_this_static_read_refs,
         );
         const run_init_stmt = try self.ast.addNode(.{
             .tag = .expression_statement,
@@ -801,6 +814,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     // return Foo = _classThis;
     const return_name = try self.makeIdentifierRefWithSymbol(inner_name_span, inner_binding);
     const classThis_ref2 = try es_helpers.makeSyntheticRefFromSpan(self, classThis_span);
+    try class_this_return_refs.append(self.allocator, classThis_ref2);
     const return_assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = zero_span,
@@ -822,6 +836,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     var class_decorators_binding: NodeIndex = .none;
     var class_descriptor_binding: NodeIndex = .none;
     var class_extra_initializers_binding: NodeIndex = .none;
+    var class_this_binding: NodeIndex = .none;
     const let_decls = try self.buildStage3LetDeclarations(
         class_deco_start,
         class_deco_len,
@@ -831,13 +846,14 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         &class_decorators_binding,
         &class_descriptor_binding,
         &class_extra_initializers_binding,
+        &class_this_binding,
     );
     var stage3_let_bindings: std.ArrayList(NodeIndex) = .empty;
     defer stage3_let_bindings.deinit(self.allocator);
     for (let_decls) |declaration| {
         const binding = generatedLetBinding(self, declaration);
         if (binding != class_decorators_binding and binding != class_descriptor_binding and
-            binding != class_extra_initializers_binding)
+            binding != class_extra_initializers_binding and binding != class_this_binding)
         {
             try stage3_let_bindings.append(self.allocator, binding);
         }
@@ -908,6 +924,27 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         if (metadata_block_scope.isNone()) std.debug.panic("Stage 3 class extra initializers has no output static block scope", .{});
         for (class_extra_initializers_refs.items) |reference| {
             try self.addSyntheticRefInScope(reference, class_extra_initializers_symbol, metadata_block_scope, .{ .read = true });
+        }
+    }
+    if (self.semantic_edit_enabled and !class_this_binding.isNone()) {
+        const class_this_symbol = (try self.declareSyntheticInScope(
+            class_this_binding,
+            self.ast.getNode(class_this_binding).span,
+            .variable_let,
+            arrow_scope,
+        )) orelse std.debug.panic("Stage 3 class this binding has no SymbolId", .{});
+        if (class_this_initialization_scope.isNone()) std.debug.panic("Stage 3 class this has no initialization block scope", .{});
+        for (class_this_initialization_refs.items) |reference| {
+            try self.addSyntheticRefInScope(reference, class_this_symbol, class_this_initialization_scope, .{ .write = true });
+        }
+        for (class_this_static_write_refs.items) |reference| {
+            try self.addSyntheticRefInScope(reference, class_this_symbol, metadata_block_scope, .{ .write = true });
+        }
+        for (class_this_static_read_refs.items) |reference| {
+            try self.addSyntheticRefInScope(reference, class_this_symbol, metadata_block_scope, .{ .read = true });
+        }
+        for (class_this_return_refs.items) |reference| {
+            try self.addSyntheticRefInScope(reference, class_this_symbol, arrow_scope, .{ .read = true });
         }
     }
 
