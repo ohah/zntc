@@ -2063,6 +2063,68 @@ fn refreshStableBindingRefsFromSemanticGraph(
 /// expressions, but it does not add/remove import or export declarations. Keep the
 /// expensive syntax-level scanners intact for general transforms and use this path
 /// only when the caller owns that invariant.
+fn isMaterializedPrimitiveLiteral(tag: NodeTag) bool {
+    return switch (tag) {
+        .boolean_literal, .null_literal, .numeric_literal => true,
+        else => false,
+    };
+}
+
+/// Numeric post-pass with no syntax folding has only replaced identifier leaves
+/// with primitive literals. Keep all surviving semantic identities and remove
+/// references by their exact NodeIndex through SemanticEditor; a full analyzer
+/// pass here would rebuild SymbolIds and require a rename carry-over.
+pub fn resyncAfterConstMaterializationRetainingGraph(
+    self: anytype,
+    module: *Module,
+    arena_alloc: std.mem.Allocator,
+    materialized_nodes: []const ast_mod.NodeIndex,
+) !void {
+    var resync_scope = profile.begin(.graph_resync);
+    defer resync_scope.end();
+    var const_scope = profile.begin(.graph_resync_const);
+    defer const_scope.end();
+
+    const ast = &(module.ast orelse return error.MissingAst);
+    const semantic = if (module.semantic) |*sem| sem else return error.MissingSemantic;
+    var editor = try semantic.beginEdit(arena_alloc, ast);
+    defer editor.deinit();
+
+    if (materialized_nodes.len == 0) return error.MaterializedReferenceMissing;
+    for (materialized_nodes) |node_index| {
+        if (node_index.isNone() or @intFromEnum(node_index) >= ast.nodes.items.len) {
+            return error.InvalidMaterializedNode;
+        }
+        if (!isMaterializedPrimitiveLiteral(ast.nodes.items[@intFromEnum(node_index)].tag)) {
+            return error.InvalidMaterializedNode;
+        }
+        // The materializer supplies the exact read sites it changed. Missing
+        // identity evidence fails closed into the existing full-analyzer path.
+        try editor.removeReference(node_index);
+    }
+
+    semantic.applyEdit(try editor.finish());
+    if (module.transform_cache) |*cache| cache.symbol_ids = semantic.symbol_ids;
+    try refreshStableBindingRefsFromSemanticGraph(self, module, arena_alloc, .graph_resync_binding_refs);
+
+    var stmt_info_scope = profile.begin(.graph_resync_stmt_info);
+    defer stmt_info_scope.end();
+    module.prebuilt_stmt_info = null;
+    if (ast.nodes.items.len == 0) return;
+    const root = ast.nodes.items[ast.nodes.items.len - 1];
+    if (root.tag != .program or root.data.list.len == 0) return;
+    module.prebuilt_stmt_info = try stmt_info_mod.buildFromSemantic(
+        arena_alloc,
+        ast,
+        semantic.symbols.items,
+        semantic.scopes,
+        semantic.references,
+        &semantic.unresolved_references,
+        false,
+        module.memberAugmentGate(self.transform_options_base.minify_syntax),
+    );
+}
+
 pub fn resyncAfterConstMaterialization(
     self: anytype,
     module: *Module,
@@ -2396,6 +2458,125 @@ test "rename carry-over drops many-to-one node lineage" {
     );
 
     try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+}
+
+test "const materialization keeps surviving SymbolIds and removes exact references" {
+    var test_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer test_arena.deinit();
+    const allocator = test_arena.allocator();
+    const source = "const value=7; function shadow(value) { return value; } console.log(value, value, shadow(1));";
+
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(allocator, source);
+    scanner.is_module = true;
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.is_module = true;
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var value_symbol: ?u32 = null;
+    var shadow_parameter_symbol: ?u32 = null;
+    var value_binding_node: ast_mod.NodeIndex = .none;
+    var shadow_parameter_node: ast_mod.NodeIndex = .none;
+    for (analyzer.symbols.items, 0..) |symbol, symbol_index| {
+        if (!std.mem.eql(u8, parser.ast.getText(symbol.name), "value")) continue;
+        if (symbol.kind == .variable_const) value_symbol = @intCast(symbol_index);
+        if (symbol.kind == .parameter) shadow_parameter_symbol = @intCast(symbol_index);
+    }
+    try std.testing.expect(value_symbol != null);
+    try std.testing.expect(shadow_parameter_symbol != null);
+    for (parser.ast.nodes.items, 0..) |node, node_index| {
+        if (node.tag != .binding_identifier or node_index >= analyzer.symbol_ids.items.len) continue;
+        const symbol_id = analyzer.symbol_ids.items[node_index] orelse continue;
+        if (symbol_id == value_symbol.?) value_binding_node = @enumFromInt(node_index);
+        if (symbol_id == shadow_parameter_symbol.?) shadow_parameter_node = @enumFromInt(node_index);
+    }
+    try std.testing.expect(!value_binding_node.isNone());
+    try std.testing.expect(!shadow_parameter_node.isNone());
+
+    var materialized_nodes: [2]ast_mod.NodeIndex = undefined;
+    var materialized_count: usize = 0;
+    for (analyzer.references.items) |reference| {
+        if (@intFromEnum(reference.symbol_id) != value_symbol.? or reference.node_index.isNone()) continue;
+        const node_index = @intFromEnum(reference.node_index);
+        try std.testing.expectEqual(NodeTag.identifier_reference, parser.ast.nodes.items[node_index].tag);
+        const span = try parser.ast.addString("7");
+        parser.ast.nodes.items[node_index] = .{
+            .tag = .numeric_literal,
+            .span = span,
+            .data = .{ .none = 0 },
+        };
+        try std.testing.expect(materialized_count < materialized_nodes.len);
+        materialized_nodes[materialized_count] = reference.node_index;
+        materialized_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), materialized_count);
+
+    var module = Module.init(@enumFromInt(0), "test.js");
+    module.source = source;
+    module.ast = parser.ast;
+    module.parse_arena = &test_arena;
+    module.semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .class_self_symbol_map = analyzer.class_self_symbol_map,
+        .namespace_member_owners = analyzer.namespace_member_owners,
+        .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+        .numeric_const_texts = analyzer.numeric_const_texts,
+        .helper_scope_map = analyzer.helper_scope_map,
+    };
+    module.transform_cache = .{
+        .runtime_helpers = .{},
+        .symbol_ids = module.semantic.?.symbol_ids,
+    };
+    const test_context = .{
+        .allocator = allocator,
+        .transform_options_base = .{ .minify_syntax = false },
+    };
+    try resyncAfterConstMaterializationRetainingGraph(
+        &test_context,
+        &module,
+        allocator,
+        materialized_nodes[0..materialized_count],
+    );
+
+    const semantic = &module.semantic.?;
+    try std.testing.expectEqual(value_symbol.?, semantic.symbol_ids[@intFromEnum(value_binding_node)].?);
+    try std.testing.expectEqual(
+        shadow_parameter_symbol.?,
+        semantic.symbol_ids[@intFromEnum(shadow_parameter_node)].?,
+    );
+    for (materialized_nodes[0..materialized_count]) |node_index| {
+        const raw = @intFromEnum(node_index);
+        try std.testing.expect(semantic.symbol_ids[raw] == null);
+        try std.testing.expect(module.transform_cache.?.symbol_ids[raw] == null);
+    }
+
+    var value_reference_count: usize = 0;
+    var shadow_parameter_reference_count: usize = 0;
+    for (semantic.references) |reference| {
+        if (@intFromEnum(reference.symbol_id) == value_symbol.?) value_reference_count += 1;
+        if (@intFromEnum(reference.symbol_id) == shadow_parameter_symbol.?) shadow_parameter_reference_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), value_reference_count);
+    try std.testing.expectEqual(@as(usize, 1), shadow_parameter_reference_count);
+    try std.testing.expectEqual(@as(u32, 0), semantic.symbols.items[value_symbol.?].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), semantic.symbols.items[shadow_parameter_symbol.?].reference_count);
+
+    const stmt_infos = module.prebuilt_stmt_info orelse return error.MissingStmtInfo;
+    for (stmt_infos.stmts) |stmt| {
+        for (stmt.referenced_symbols) |symbol_id| {
+            try std.testing.expect(symbol_id != value_symbol.?);
+        }
+    }
 }
 
 fn testRenameSymbol(kind: SemanticSymbolKind, is_default_export: bool) SemanticSymbol {

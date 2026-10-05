@@ -101,6 +101,7 @@ pub const MaterializeProfile = struct {
 pub const MaterializeResult = struct {
     changed: bool = false,
     needs_minify: bool = false,
+    tracked_nodes_complete: bool = false,
 };
 
 /// Linker가 증명한 primitive constants를 AST read-site에 반영한다.
@@ -126,7 +127,7 @@ pub fn materializeWithScratch(
     mod_idx: usize,
     profile_cats: MaterializeProfile,
 ) MaterializeResult {
-    return materializeWithScratchDetailed(allocator, ast, symbol_ids, const_values, scratch, mod_idx, profile_cats, false);
+    return materializeWithScratchDetailed(allocator, ast, symbol_ids, const_values, scratch, mod_idx, profile_cats, false, null, null);
 }
 
 /// `track_minify_need` 활성 시 치환된 read-site 가 minify/DCE 문맥인지 함께 반환한다.
@@ -140,6 +141,8 @@ pub fn materializeWithScratchDetailed(
     mod_idx: usize,
     profile_cats: MaterializeProfile,
     track_minify_need: bool,
+    eligible_reference_nodes: ?*const std.DynamicBitSet,
+    tracked_nodes: ?*std.ArrayList(ast_mod.NodeIndex),
 ) MaterializeResult {
     if (const_values.count() == 0) return .{};
 
@@ -190,6 +193,7 @@ pub fn materializeWithScratchDetailed(
 
     var changed = false;
     var needs_minify = false;
+    var tracked_nodes_complete = tracked_nodes != null;
     {
         var replace_scope = profile.beginMaybe(profile_cats.replace);
         defer replace_scope.end();
@@ -198,6 +202,9 @@ pub fn materializeWithScratchDetailed(
             const i: usize = @intCast(ni);
             const node = ast.nodes.items[i];
             if (node.tag != .identifier_reference) continue;
+            if (eligible_reference_nodes) |eligible| {
+                if (i >= eligible.capacity() or !eligible.isSet(i)) continue;
+            }
             if (i >= symbol_ids.len) continue;
             if (forbidden_ptr.isSet(i)) continue;
             const sym_id = symbol_ids[i] orelse continue;
@@ -211,9 +218,18 @@ pub fn materializeWithScratchDetailed(
             }
             ast.nodes.items[i] = replacement;
             changed = true;
+            if (tracked_nodes_complete) {
+                tracked_nodes.?.append(allocator, @enumFromInt(ni)) catch {
+                    tracked_nodes_complete = false;
+                };
+            }
         }
     }
-    return .{ .changed = changed, .needs_minify = needs_minify };
+    return .{
+        .changed = changed,
+        .needs_minify = needs_minify,
+        .tracked_nodes_complete = tracked_nodes_complete,
+    };
 }
 
 fn isMinifySensitiveParent(tag: Node.Tag) bool {
@@ -355,7 +371,7 @@ fn expectMaterializeMinifyNeed(source: []const u8, expected_needs_minify: bool) 
     defer const_values.deinit(allocator);
     try const_values.put(allocator, 7, .{ .kind = .number, .number_text = "123" });
 
-    const result = materializeWithScratchDetailed(allocator, &parser.ast, symbol_ids, &const_values, null, 0, .{}, true);
+    const result = materializeWithScratchDetailed(allocator, &parser.ast, symbol_ids, &const_values, null, 0, .{}, true, null, null);
     try std.testing.expect(result.changed);
     try std.testing.expectEqual(expected_needs_minify, result.needs_minify);
 }

@@ -149,6 +149,7 @@ test {
     _ = @import("federation_emit.zig"); // #3436/#3437 P3-1/2 inline test (verifyHostContract)
     _ = @import("statement_shaker_test.zig");
     _ = @import("graph_test.zig");
+    _ = @import("graph/transform_prepass.zig"); // const materialization semantic graph retention
     _ = @import("graph/project_root.zig");
     _ = @import("graph/glob.zig");
     _ = @import("resolver_test.zig");
