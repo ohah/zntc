@@ -273,6 +273,13 @@ test "#4819 class method capture producers bind exact symbols without a name res
     );
 }
 
+test "#4819 extracted private method captures bind exact symbols without a name rescan" {
+    try checkCaptureSymbols(
+        "class C{ x=10; #read(value){const _this=2;const _arguments=3;return ()=>this.x+arguments[0]+_this+_arguments} run(value){return this.#read(value)()} } new C().run(7);",
+        .method_definition,
+    );
+}
+
 test "#4819 async-to-state-machine fallback captures bind exact symbols without a name rescan" {
     try checkCaptureSymbols(
         "async function outer(value){const _this=2;const _arguments=3;await 0;return ()=>this.x+arguments[0]+_this+_arguments} outer.call({x:2},3);",
