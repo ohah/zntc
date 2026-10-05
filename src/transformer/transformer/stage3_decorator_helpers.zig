@@ -205,6 +205,7 @@ pub fn buildClassEsDecorateCall(
     classThis_span: Span,
     metadata_refs: *std.ArrayList(NodeIndex),
     class_decorator_refs: *std.ArrayList(NodeIndex),
+    class_descriptor_write_refs: *std.ArrayList(NodeIndex),
 ) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
@@ -221,6 +222,7 @@ pub fn buildClassEsDecorateCall(
     const obj = try self.ast.addNode(.{ .tag = .object_expression, .span = zero_span, .data = .{ .list = obj_list } });
 
     const desc_ref = try es_helpers.makeSyntheticRef(self, "_classDescriptor");
+    try class_descriptor_write_refs.append(self.allocator, desc_ref);
     const arg2 = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = zero_span,
@@ -568,11 +570,18 @@ pub fn buildMetadataDecl(self: anytype) Error!NodeIndex {
 
 /// Foo = _classThis = _classDescriptor.value; 문 생성
 /// `class_name_node` 는 원래 클래스 이름 바인딩(익명·`default` 면 `.none`) — 심볼을 물려준다.
-pub fn buildClassReassign(self: anytype, class_name: []const u8, class_name_node: NodeIndex, classThis_span: Span) Error!NodeIndex {
+pub fn buildClassReassign(
+    self: anytype,
+    class_name: []const u8,
+    class_name_node: NodeIndex,
+    classThis_span: Span,
+    class_descriptor_read_refs: *std.ArrayList(NodeIndex),
+) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
     // _classDescriptor.value
     const desc_ref = try es_helpers.makeSyntheticRef(self, "_classDescriptor");
+    try class_descriptor_read_refs.append(self.allocator, desc_ref);
     const value_key = try es_helpers.makePropertyName(self, "value");
     const desc_value = try self.addExtraNode(.static_member_expression, zero_span, &.{
         @intFromEnum(desc_ref), @intFromEnum(value_key), 0,
@@ -637,6 +646,7 @@ pub fn buildStage3LetDeclarations(
     has_instance: bool,
     has_static: bool,
     class_decorators_binding: *NodeIndex,
+    class_descriptor_binding: *NodeIndex,
 ) Error![]NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const none = @intFromEnum(NodeIndex.none);
@@ -658,7 +668,9 @@ pub fn buildStage3LetDeclarations(
         try stmts.append(self.allocator, class_decorators.declaration);
 
         // let _classDescriptor;
-        try stmts.append(self.allocator, try makeLet(self, zero_span, "_classDescriptor", .none));
+        const class_descriptor = try makeLetWithBinding(self, zero_span, "_classDescriptor", .none);
+        class_descriptor_binding.* = class_descriptor.binding;
+        try stmts.append(self.allocator, class_descriptor.declaration);
 
         // let _classExtraInitializers = [];
         const empty_arr_list = try self.ast.addNodeList(&.{});
