@@ -1450,10 +1450,6 @@ pub fn completeGeneratedStateSymbols(self: *Transformer, root: NodeIndex, root_s
     defer stack.deinit(self.allocator);
     var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer seen.deinit(self.allocator);
-    var temp_specs: std.ArrayListUnmanaged(GeneratedLocalSpec) = .empty;
-    defer temp_specs.deinit(self.allocator);
-    var temp_spans: std.AutoHashMapUnmanaged(u64, void) = .empty;
-    defer temp_spans.deinit(self.allocator);
     try stack.append(self.allocator, .{ .node = root, .scope = root_scope });
     while (stack.pop()) |work| {
         if (work.node.isNone() or @intFromEnum(work.node) >= self.ast.nodes.items.len) continue;
@@ -1462,33 +1458,6 @@ pub fn completeGeneratedStateSymbols(self: *Transformer, root: NodeIndex, root_s
         try seen.put(self.allocator, raw, {});
         const node = self.ast.getNode(work.node);
         var scope = self.outputOwnedScope(work.node) orelse work.scope;
-        if (node.tag == .variable_declaration) {
-            const declaration_kind = self.ast.variableDeclarationKind(node);
-            const symbol_kind: SymbolKind = switch (declaration_kind) {
-                .@"var" => .variable_var,
-                .let => .variable_let,
-                .@"const", .using, .await_using => .variable_const,
-            };
-            const declarations_start = self.readU32(node.data.extra, 1);
-            const declarations_len = self.readU32(node.data.extra, 2);
-            var i: u32 = 0;
-            while (i < declarations_len) : (i += 1) {
-                const declaration_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[declarations_start + i]);
-                const declaration = self.ast.getNode(declaration_idx);
-                if (declaration.tag != .variable_declarator) continue;
-                const binding_idx = self.readNodeIdx(declaration.data.extra, 0);
-                if (binding_idx.isNone() or @intFromEnum(binding_idx) < self.parser_node_count) continue;
-                const binding = self.ast.getNode(binding_idx);
-                if (binding.tag != .binding_identifier or !isGeneratedTempSpan(self, binding.data.string_ref)) continue;
-                const span_key = (@as(u64, binding.data.string_ref.start) << 32) | binding.data.string_ref.end;
-                const gop = try temp_spans.getOrPut(self.allocator, span_key);
-                if (!gop.found_existing) try temp_specs.append(self.allocator, .{
-                    .name = self.ast.getText(binding.data.string_ref),
-                    .kind = symbol_kind,
-                    .exact_binding_span = binding.data.string_ref,
-                });
-            }
-        }
         if (isFunctionBoundary(node.tag)) {
             if (self.outputOwnedScope(work.node) == null and raw >= self.parser_node_count) {
                 scope = try self.addGeneratedFunctionScope(work.scope, work.node);
@@ -1522,7 +1491,6 @@ pub fn completeGeneratedStateSymbols(self: *Transformer, root: NodeIndex, root_s
     }
     try bindDeferredGeneratedStateSymbols(self, &seen);
     self.deferred_generator_helper_refs.clearRetainingCapacity();
-    try self.trackGeneratedLocalSymbols(root, root_scope, temp_specs.items);
 }
 
 /// Complete only the state callbacks recorded by their producer. The final AST
