@@ -523,7 +523,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     const source =
         \\function logged(value) { return value; }
         \\@logged
-        \\class Box { @logged method() { return 1; } @logged value = 6; @logged other = 7; @logged accessor current = 8; @logged static staticValue = 9; @logged static method() { return 2; } @logged static get currentStatic() { return 3; } @logged #secret() { return 4; } @logged static #staticSecret() { return 5; } }
+        \\class Box { @logged method() { return 1; } constructor() { this.ready = true; } @logged value = 6; @logged other = 7; @logged accessor current = 8; @logged static staticValue = 9; @logged static method() { return 2; } @logged static get currentStatic() { return 3; } @logged #secret() { return 4; } @logged static #staticSecret() { return 5; } }
     ;
     var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
@@ -640,6 +640,57 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
             initializer_reads += 1;
         }
         try std.testing.expectEqual(@as(usize, 2), initializer_reads);
+    }
+
+    const extra_initializer_cases = [_]struct { name: []const u8, reads: usize }{
+        .{ .name = "_value_extraInitializers", .reads = 2 },
+        .{ .name = "_other_extraInitializers", .reads = 2 },
+        .{ .name = "_current_extraInitializers", .reads = 2 },
+        .{ .name = "_staticValue_extraInitializers", .reads = 1 },
+    };
+    for (extra_initializer_cases) |case| {
+        var extra_initializer_id: ?u32 = null;
+        var extra_initializer_bindings: usize = 0;
+        for (reachable) |raw| {
+            const node = transformer.ast.nodes.items[raw];
+            if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), case.name)) continue;
+            if (raw >= edited.symbol_ids.len) return error.TestUnexpectedResult;
+            const id = edited.symbol_ids[raw] orelse return error.TestUnexpectedResult;
+            if (edited.symbols.items[id].kind != .variable_let) continue;
+            extra_initializer_id = id;
+            extra_initializer_bindings += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), extra_initializer_bindings);
+        const exact_extra_initializer_id = extra_initializer_id orelse return error.TestUnexpectedResult;
+        const extra_initializer_scope = edited.symbols.items[exact_extra_initializer_id].scope_id;
+        try std.testing.expectEqual(decorator_iife, extra_initializer_scope);
+        try std.testing.expectEqual(
+            @as(?usize, exact_extra_initializer_id),
+            edited.scope_maps[extra_initializer_scope.toIndex()].get(case.name),
+        );
+
+        var extra_initializer_reads: usize = 0;
+        for (edited.references) |reference| {
+            if (@intFromEnum(reference.symbol_id) != exact_extra_initializer_id or reference.node_index.isNone()) continue;
+            const node = transformer.ast.getNode(reference.node_index);
+            try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, node.tag);
+            try std.testing.expectEqualStrings(case.name, transformer.ast.getText(node.data.string_ref));
+            try std.testing.expect(reference.flags.read);
+            try std.testing.expect(!reference.flags.write);
+            var visible_scope = reference.scope_id;
+            var extra_initializer_is_visible = false;
+            var hops: usize = 0;
+            while (!visible_scope.isNone() and hops < edited.scopes.len) : (hops += 1) {
+                if (visible_scope == extra_initializer_scope) {
+                    extra_initializer_is_visible = true;
+                    break;
+                }
+                visible_scope = edited.scopes[visible_scope.toIndex()].parent;
+            }
+            try std.testing.expect(extra_initializer_is_visible);
+            extra_initializer_reads += 1;
+        }
+        try std.testing.expectEqual(case.reads, extra_initializer_reads);
     }
 
     var class_decorators_id: ?u32 = null;
@@ -1044,6 +1095,85 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
         try std.testing.expectEqual(@as(usize, 1), private_descriptor_writes);
         try std.testing.expect(private_descriptor_read_scope.? != private_descriptor_write_scope.?);
     }
+}
+
+test "#4819 Stage 3 member extra initializer binds its synthetic constructor read" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\function logged(value) { return value; }
+        \\class Box { @logged value = 6; }
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var class_scope: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .class_declaration) class_scope = analyzer.scope_owner_map.get(@intCast(raw));
+    }
+    const source_scope = class_scope orelse return error.TestUnexpectedResult;
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+
+    var extra_initializer_id: ?u32 = null;
+    var bindings: usize = 0;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_value_extraInitializers")) continue;
+        if (raw >= edited.symbol_ids.len) return error.TestUnexpectedResult;
+        const id = edited.symbol_ids[raw] orelse return error.TestUnexpectedResult;
+        if (edited.symbols.items[id].kind != .variable_let) continue;
+        extra_initializer_id = id;
+        bindings += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), bindings);
+    const exact_id = extra_initializer_id orelse return error.TestUnexpectedResult;
+    const binding_scope = edited.symbols.items[exact_id].scope_id;
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[binding_scope.toIndex()].kind);
+    try std.testing.expect(binding_scope.toIndex() != source_scope);
+    try std.testing.expectEqual(@as(?usize, exact_id), edited.scope_maps[binding_scope.toIndex()].get("_value_extraInitializers"));
+
+    var reads: usize = 0;
+    var read_scopes: [2]@import("../semantic/scope.zig").ScopeId = undefined;
+    for (edited.references) |reference| {
+        if (@intFromEnum(reference.symbol_id) != exact_id or reference.node_index.isNone()) continue;
+        const node = transformer.ast.getNode(reference.node_index);
+        try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, node.tag);
+        try std.testing.expectEqualStrings("_value_extraInitializers", transformer.ast.getText(node.data.string_ref));
+        try std.testing.expect(reference.flags.read);
+        try std.testing.expect(!reference.flags.write);
+        var visible_scope = reference.scope_id;
+        var visible = false;
+        var hops: usize = 0;
+        while (!visible_scope.isNone() and hops < edited.scopes.len) : (hops += 1) {
+            if (visible_scope == binding_scope) {
+                visible = true;
+                break;
+            }
+            visible_scope = edited.scopes[visible_scope.toIndex()].parent;
+        }
+        try std.testing.expect(visible);
+        if (reads >= read_scopes.len) return error.TestUnexpectedResult;
+        read_scopes[reads] = reference.scope_id;
+        reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), reads);
+    try std.testing.expect(read_scopes[0] != read_scopes[1]);
 }
 
 test "#4819 Stage 3 instance extra initializer keeps exact block and constructor reads" {
