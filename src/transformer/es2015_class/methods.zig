@@ -388,6 +388,7 @@ pub fn Methods(comptime Transformer: type) type {
         /// method → Object.defineProperty(ClassName.prototype, "method", { configurable: true, writable: true, value: function() {} })
         /// static method → Object.defineProperty(ClassName, "method", { configurable: true, writable: true, value: function() {} })
         fn buildMethodAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, key_idx: NodeIndex, func_expr: NodeIndex, span: Span, reference_scope: @import("../../semantic/scope.zig").ScopeId) Transformer.Error!NodeIndex {
+            try es_helpers.trackKnownHoistedComputedKeyRef(self, key_idx, reference_scope);
             // The emitted function replaces the original method boundary.
             const target = if (info.is_static)
                 try self.makeCurrentClassRefAtScope(class_name_span, reference_scope)
@@ -433,6 +434,7 @@ pub fn Methods(comptime Transformer: type) type {
                 const me = member.data.extra;
                 // mutation 이전 읽기 — 캐시 불필요, readNodeIdx 사용.
                 const key_idx = self.readNodeIdx(me, MethodExtra.key);
+                try es_helpers.trackKnownHoistedComputedKeyRef(self, key_idx, reference_scope);
 
                 const func_expr = try buildAccessorFunc(
                     self,

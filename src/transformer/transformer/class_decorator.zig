@@ -679,10 +679,12 @@ fn hoistAllComputedKeys(self: *Transformer, tag: Node.Tag, body_idx: NodeIndex, 
         const key_node = self.ast.getNode(key_idx);
         const value = try self.visitNode(key_node.data.unary.operand);
         const temp_span = try es_helpers.makeTempVarSpan(self);
+        const write_ref = try es_helpers.makeSyntheticRefFromSpan(self, temp_span);
+        if (self.semantic_edit_enabled) try self.trackHoistedTempRefInScope(temp_span, write_ref, self.current_scope, .{ .write = true });
         const assign = try self.ast.addNode(.{
             .tag = .assignment_expression,
             .span = key_node.span,
-            .data = .{ .binary = .{ .left = try es_helpers.makeSyntheticRefFromSpan(self, temp_span), .right = value, .flags = 0 } },
+            .data = .{ .binary = .{ .left = write_ref, .right = value, .flags = 0 } },
         });
         if (tag == .class_expression) {
             try key_assigns.append(self.allocator, assign);

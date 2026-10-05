@@ -281,6 +281,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // 클래스 바디 멤버 분류 (visitNode 호출 없이 metadata 만 수집).
             var cm = try classifyMembers(self, body_idx, span, name_span);
             defer cm.deinit(self.allocator);
+            try bindComputedKeyTemps(self, &cm, iife_scope, span);
             const source_origin = self.scope_owner_origins.get(@intFromEnum(source_idx)) orelse @intFromEnum(source_idx);
             const inner = self.class_self_symbol_map.get(@intFromEnum(source_idx)) orelse
                 self.class_self_symbol_map.get(source_origin);
@@ -462,6 +463,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             for (cm.static_elements.items) |element| {
                 switch (element) {
                     .field => |field| {
+                        try es_helpers.trackKnownHoistedComputedKeyRef(self, field.key, iife_scope);
                         const class_ref = try self.makeCurrentClassRefAtScope(name_span, iife_scope);
                         const static_assign = try buildStaticFieldDefinePropertyWithCtx(self, class_ref, field.key, field.init, fresh_name_span, span);
                         try self.scratch.append(self.allocator, static_assign);
@@ -658,6 +660,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             else
                 @as(@import("../semantic/scope.zig").ScopeId, .none);
             if (has_extra or wrap_self_alias) try self.reparentGeneratedScope(source_class_scope, iife_scope);
+            try bindComputedKeyTemps(self, &cm, iife_scope, span);
             const func_name = if (has_extra)
                 try self.makeUserBinding(name_span, .none)
             else
@@ -874,7 +877,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             for (cm.static_elements.items) |element| {
                 switch (element) {
-                    .field => |field| try self.scratch.append(self.allocator, try buildStaticFieldDefinePropertyWithCtx(self, try self.makeCurrentClassRefAtScope(name_span, iife_scope), field.key, field.init, name_span, span)),
+                    .field => |field| {
+                        try es_helpers.trackKnownHoistedComputedKeyRef(self, field.key, iife_scope);
+                        try self.scratch.append(self.allocator, try buildStaticFieldDefinePropertyWithCtx(self, try self.makeCurrentClassRefAtScope(name_span, iife_scope), field.key, field.init, name_span, span));
+                    },
                     .stmt => |sb_stmt| try self.scratch.append(self.allocator, sb_stmt),
                     .raw_stmt => unreachable, // visitDeferredStaticBlocks 가 호출됐어야 함
                 }
@@ -969,6 +975,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
         // Class body member classification and field emission — es2015_class/members.zig로 위임
         const members_mod = class_members.Members(Transformer);
         const classifyMembers = members_mod.classifyMembers;
+        const bindComputedKeyTemps = members_mod.bindComputedKeyTemps;
         const setupPrivateFieldMappings = members_mod.setupPrivateFieldMappings;
         const visitDeferredStaticBlocks = members_mod.visitDeferredStaticBlocks;
         const emitInstanceInits = members_mod.emitInstanceInits;

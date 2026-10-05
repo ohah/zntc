@@ -8,6 +8,94 @@ const ast_walk = @import("../parser/ast_walk.zig");
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const Transformer = @import("transformer.zig").Transformer;
 const TransformOptions = @import("transformer.zig").TransformOptions;
+const coverage = @import("symbol_coverage.zig");
+
+test "#4819 class field computed-key prehoist binds temp identity exactly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\const key = "value";
+        \\class Box {
+        \\  static [key] = Box;
+        \\  field = Box;
+        \\}
+        \\class InstanceBox {
+        \\  [key] = 1;
+        \\}
+        \\class MethodBox {
+        \\  [key]() { return this; }
+        \\  field = 1;
+        \\}
+        \\class AccessorMethodBox {
+        \\  get [key]() { return 1; }
+        \\  field = 2;
+        \\}
+        \\class StaticMethodBox {
+        \\  static [key]() { return this; }
+        \\  field = 3;
+        \\}
+        \\const ExpressionBox = class {
+        \\  static [key] = 1;
+        \\  [key]() { return this; }
+        \\  field = 2;
+        \\};
+        \\const SimpleExpressionBox = class {
+        \\  [key] = 3;
+        \\};
+        \\function makeNested(_a) {
+        \\  const nestedKey = "nested";
+        \\  class NestedBox {
+        \\    static [nestedKey] = NestedBox;
+        \\    [nestedKey] = 1;
+        \\  }
+        \\  return NestedBox;
+        \\}
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.synthetic_idents = .empty;
+
+    const root = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var report = try coverage.checkStrictWithExactExternalEvidence(
+        allocator,
+        transformer.ast,
+        root,
+        transformer.parser_node_count,
+        edited.symbol_ids,
+        edited.symbols.items,
+        edited.scopes,
+        &edited.scope_owner_map,
+        edited.references,
+        if (transformer.synthetic_idents) |*synthetic| synthetic else null,
+        .{
+            .unresolved_reference_nodes = &analyzer.unresolved_reference_nodes,
+            .explicit_global_reference_nodes = &transformer.explicit_global_reference_nodes,
+            .reference_origin_map = &transformer.reference_origin_map,
+        },
+    );
+    defer report.deinit(allocator);
+    if (!report.hasCompleteExactCoverage()) coverage.printStrict("class-computed-field-prehoist-es5.ts", &report);
+    try std.testing.expect(report.hasCompleteExactCoverage());
+}
 
 test "#4819 ES5 class inner write keeps source IDs and binds accessor uses" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
