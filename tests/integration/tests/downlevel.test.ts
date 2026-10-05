@@ -5151,6 +5151,30 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       expect(result.runOutput).toBe('17');
     });
 
+    test('private method captures bind this and arguments without local-name rescans', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            class Box {
+              x = 10;
+              #read(value: number) {
+                const _this = 2;
+                const _arguments = 3;
+                return () => [this.x, arguments[0], _this, _arguments].join(',');
+              }
+              run(value: number) { return this.#read(value)(); }
+            }
+            console.log(new Box().run(7));
+          `,
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('10,7,2,3');
+    });
+
     test('private method with extends', async () => {
       const result = await bundleAndRun(
         {

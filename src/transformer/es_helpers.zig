@@ -2120,14 +2120,12 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
     if (self.temp_var_counter > saved_temp_counter and !new_body.isNone()) {
         new_body = try self.hoistTempVarsInOriginalFunction(new_body, saved_temp_counter, span);
     }
-    var generated_local_specs: std.ArrayListUnmanaged(GeneratedLocalSpec) = .empty;
-    defer generated_local_specs.deinit(self.allocator);
-    try generated_local_specs.appendSlice(self.allocator, &.{
-        .{ .name = try resolveSyntheticName(self, "_this"), .kind = .variable_var },
-        .{ .name = try resolveSyntheticName(self, "_arguments"), .kind = .variable_var },
-    });
-    try self.appendGeneratedTempSpecs(saved_temp_counter, &generated_local_specs);
-    try self.trackGeneratedLocalSymbols(new_body, self.current_scope, generated_local_specs.items);
+    // fillThisArgumentsCaptures already binds lexical aliases by frame/kind
+    // handles. Only anonymous temps still need completion after body assembly.
+    var generated_temp_specs: std.ArrayListUnmanaged(GeneratedLocalSpec) = .empty;
+    defer generated_temp_specs.deinit(self.allocator);
+    try self.appendGeneratedTempSpecs(saved_temp_counter, &generated_temp_specs);
+    try self.trackGeneratedLocalSymbols(new_body, self.current_scope, generated_temp_specs.items);
     self.temp_var_counter = saved_temp_counter;
 
     const name_span = try self.ast.addString(name);
