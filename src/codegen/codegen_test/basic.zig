@@ -512,6 +512,91 @@ test "#4819 Codegen keeps collision-safe enum fallback without semantic owners" 
     try std.testing.expect(std.mem.indexOf(u8, output, ")(Self || {});") != null);
 }
 
+test "#4819 Codegen rejects enum member symbols without their IIFE owner" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "const A = 41; enum E { A = 1, B = (A + 1) }";
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    analyzer.is_ts = parser.source_mode == .ts;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.references = analyzer.references.items;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const root = try transformer.transform();
+    if (try transformer.finishSemanticEdit()) |edited| {
+        analyzer.applyEdit(edited);
+        transformer.symbols = analyzer.symbols.items;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+    }
+
+    const options: CodegenOptions = .{
+        .minify_whitespace = true,
+        .semantic_symbol_ids = transformer.symbol_ids.items,
+        .semantic_symbols = analyzer.symbols.items,
+        .semantic_scope_maps = analyzer.scope_maps.items,
+        .generated_iife_scope_owner_map = &analyzer.scope_owner_map,
+    };
+    var valid_cg = Codegen.initWithOptions(allocator, transformer.ast, options);
+    defer valid_cg.deinit();
+    const output = try valid_cg.generate(root);
+    try std.testing.expect(std.mem.indexOf(u8, output, "E.A+1") != null);
+
+    const mutated_symbols = try allocator.dupe(Symbol, analyzer.symbols.items);
+    var enum_member_symbol: ?usize = null;
+    for (mutated_symbols, 0..) |symbol, raw| {
+        if (symbol.synthetic_kind == .enum_iife_member) {
+            enum_member_symbol = raw;
+            break;
+        }
+    }
+    const member_sid = enum_member_symbol orelse return error.MissingEnumIifeMemberSymbol;
+    mutated_symbols[member_sid].synthetic_owner_id = null;
+    var mutated_options = options;
+    mutated_options.semantic_symbols = mutated_symbols;
+    var mutated_cg = Codegen.initWithOptions(allocator, transformer.ast, mutated_options);
+    defer mutated_cg.deinit();
+    try std.testing.expectError(error.InvalidEnumIifeMemberSymbol, mutated_cg.generate(root));
+
+    mutated_symbols[member_sid].synthetic_owner_id = @enumFromInt(mutated_symbols.len + 1);
+    var out_of_range_cg = Codegen.initWithOptions(allocator, transformer.ast, mutated_options);
+    defer out_of_range_cg.deinit();
+    try std.testing.expectError(error.InvalidEnumIifeMemberSymbol, out_of_range_cg.generate(root));
+
+    var wrong_owner: ?u32 = null;
+    for (mutated_symbols, 0..) |symbol, raw| {
+        if (raw != member_sid and symbol.synthetic_kind != .enum_iife_parameter) {
+            wrong_owner = @intCast(raw);
+            break;
+        }
+    }
+    mutated_symbols[member_sid].synthetic_owner_id = @enumFromInt(wrong_owner orelse return error.MissingInvalidEnumOwnerFixture);
+    var wrong_kind_cg = Codegen.initWithOptions(allocator, transformer.ast, mutated_options);
+    defer wrong_kind_cg.deinit();
+    try std.testing.expectError(error.InvalidEnumIifeMemberSymbol, wrong_kind_cg.generate(root));
+}
+
 test "Codegen: const enum removed" {
     var r = try e2e(std.testing.allocator, "const enum Dir { Up, Down }");
     defer r.deinit();
