@@ -388,6 +388,50 @@ test "Codegen: namespace IIFE parameter name resolves from its SymbolId" {
     );
 }
 
+test "#4819 Codegen refuses to recover a missing namespace IIFE parameter from text" {
+    const allocator = std.testing.allocator;
+    const source = "namespace N { export let value = 1; }";
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    const root = try transformer.transform();
+
+    // A non-null owner map means semantic ownership was supplied. A missing
+    // namespace row must fail instead of falling back to a guessed spelling.
+    var missing_namespace_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    var cg = Codegen.initWithOptions(allocator, transformer.ast, .{
+        .generated_iife_scope_owner_map = &missing_namespace_owners,
+    });
+    defer cg.deinit();
+    try std.testing.expectError(error.MissingNamespaceIifeParameterSymbol, cg.generate(root));
+}
+
+test "#4819 Codegen keeps namespace text fallback when semantic owners are absent" {
+    const allocator = std.testing.allocator;
+    const source = "namespace N { export let value = 1; }";
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    const root = try transformer.transform();
+
+    var cg = Codegen.init(allocator, transformer.ast);
+    defer cg.deinit();
+    const output = try cg.generate(root);
+    try std.testing.expectEqualStrings("var N;((N) => {N.value=1;})(N || (N = {}));\n", output);
+}
+
 test "Codegen: const enum removed" {
     var r = try e2e(std.testing.allocator, "const enum Dir { Up, Down }");
     defer r.deinit();

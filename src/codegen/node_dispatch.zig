@@ -19,7 +19,7 @@ const ExprFlags = precedence.ExprFlags;
 const Kind = @import("../lexer/token.zig").Kind;
 const ConstValue = @import("../semantic/symbol.zig").ConstValue;
 
-const Error = std.mem.Allocator.Error;
+const Error = type_runtime_emit.Error;
 
 pub fn emitNode(self: anytype, idx: NodeIndex) Error!void {
     return emitExpr(self, idx, .lowest, .{});

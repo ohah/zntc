@@ -400,7 +400,7 @@ pub const Codegen = struct {
     // 노드 출력
     // ================================================================
 
-    pub const Error = std.mem.Allocator.Error;
+    pub const Error = std.mem.Allocator.Error || @import("errors.zig").Error;
     const node_dispatch_emit = @import("node_dispatch.zig");
     pub const emitNode = node_dispatch_emit.emitNode;
     pub const emitExpr = node_dispatch_emit.emitExpr;
