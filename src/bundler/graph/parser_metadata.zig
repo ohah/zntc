@@ -4,6 +4,7 @@ const std = @import("std");
 const types = @import("../types.zig");
 const Module = @import("../module.zig").Module;
 const Parser = @import("../../parser/parser.zig").Parser;
+const Span = @import("../../lexer/token.zig").Span;
 const profile = @import("../../profile.zig");
 const import_scanner = @import("../import_scanner.zig");
 const binding_scanner = @import("../binding_scanner.zig");
@@ -81,6 +82,8 @@ pub fn materialize(
                     .import_record_index = sb.import_record_index,
                     .declared_via_pattern = sb.declared_via_pattern,
                     .init_is_fn_or_class = sb.init_is_fn_or_class,
+                    .default_export_node = if (sb.default_export_node_index) |index| @enumFromInt(index) else null,
+                    .has_default_export_facade = sb.has_default_export_facade,
                 };
             }
             module.export_bindings = ebindings;
@@ -150,7 +153,20 @@ pub fn materialize(
                 &sem.symbols,
                 arena_alloc,
                 scope0,
-            ) catch {};
+                sem.symbol_ids,
+            ) catch {
+                self.addDiag(
+                    .parse_error,
+                    .@"error",
+                    module.path,
+                    Span.EMPTY,
+                    .parse,
+                    "Failed to bind exact default export facade SymbolId",
+                    null,
+                );
+                module.state = .ready;
+                return false;
+            };
         }
     }
 

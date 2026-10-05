@@ -2653,7 +2653,7 @@ pub const Linker = struct {
     pub fn getCanonicalForExport(self: *const Linker, eb: ExportBinding, module_index: u32) []const u8 {
         const m = self.getModule(module_index).?;
         const local = m.exportBindingLocalName(eb);
-        if (eb.kind == .local) {
+        if (eb.kind == .local or eb.hasSyntheticDefault(m.semanticSymbols())) {
             const canonical = self.getCanonicalByRef(eb.symbol) orelse local;
             return self.safeIdentifierName(canonical, module_index);
         }
@@ -3176,9 +3176,14 @@ pub const Linker = struct {
     }
 
     /// SymbolRef를 scope hoisting 후 최종 로컬 이름으로 해결.
-    /// resolveExportChain → getExportLocalName → getCanonicalName 3단계를 캡슐화.
+    /// local export는 이름을 다시 찾지 않고 ExportBinding의 exact SymbolRef를 사용한다.
     pub fn resolveToLocalName(self: *const Linker, ref: SymbolRef) []const u8 {
         const cmod = ref.module_index.toU32();
+        if (self.getModule(cmod)) |m| {
+            if (m.findExportBinding(ref.export_name)) |eb| {
+                return self.getCanonicalForExport(eb.*, cmod);
+            }
+        }
         const local = self.getExportLocalName(cmod, ref.export_name) orelse ref.export_name;
         const canonical = self.getCanonicalName(cmod, local) orelse local;
         return self.safeIdentifierName(canonical, cmod);

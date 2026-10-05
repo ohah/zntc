@@ -106,7 +106,20 @@ pub fn parse(self: *ModuleGraph, io: std.Io, module: *Module) void {
             &sem.symbols,
             arena_alloc,
             scope0,
-        ) catch {};
+            sem.symbol_ids,
+        ) catch {
+            self.addDiag(
+                .parse_error,
+                .@"error",
+                module.path,
+                Span.EMPTY,
+                .parse,
+                "Failed to bind exact JSON default export facade SymbolId",
+                null,
+            );
+            module.state = .ready;
+            return;
+        };
     }
 
     module.state = .parsed;

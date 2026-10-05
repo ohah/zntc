@@ -11,6 +11,7 @@ const ts_auto_export = @import("../parser/ts_auto_export.zig");
 const import_scanner = @import("import_scanner.zig");
 const symbol = @import("symbol.zig");
 const semantic_symbol = @import("../semantic/symbol.zig");
+const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 
 // ============================================================
 // Tests
@@ -411,7 +412,7 @@ test "populateSyntheticSymbols: 리터럴 default만 _default 등록 (로컬 var
     var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
     defer sem_syms.deinit(alloc);
 
-    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc, null);
+    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc, null, null);
     const idx = findDefaultSymbol(sem_syms.items) orelse return error.NotFound;
     try std.testing.expectEqualStrings("_default", sem_syms.items[idx].synthetic_name);
 }
@@ -429,7 +430,7 @@ test "populateSyntheticSymbols: `export default x`(x는 로컬)은 _default 미�
     var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
     defer sem_syms.deinit(alloc);
 
-    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc, null);
+    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc, null, null);
     try std.testing.expectEqual(@as(?usize, null), findDefaultSymbol(sem_syms.items));
 }
 
@@ -446,7 +447,7 @@ test "populateSyntheticSymbols: default 없으면 빈 테이블" {
     var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
     defer sem_syms.deinit(alloc);
 
-    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc, null);
+    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc, null, null);
     try std.testing.expectEqual(@as(u32, 0), table.count());
     try std.testing.expectEqual(@as(usize, 0), sem_syms.items.len);
 }
@@ -465,7 +466,7 @@ test "populateSyntheticSymbols Phase 2: ExportBinding.symbol 연결" {
     defer sem_syms.deinit(alloc);
 
     const m: types.ModuleIndex = @enumFromInt(7);
-    try binding_scanner.populateSyntheticSymbols(&table, m, r.export_bindings, &sem_syms, alloc, null);
+    try binding_scanner.populateSyntheticSymbols(&table, m, r.export_bindings, &sem_syms, alloc, null, null);
 
     try std.testing.expect(r.export_bindings[0].symbol.isValid());
     try std.testing.expectEqual(m, r.export_bindings[0].symbol.moduleIndex());
@@ -493,7 +494,140 @@ test "populateSyntheticSymbols Phase 2: 비-default export는 invalid 유지" {
     var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
     defer sem_syms.deinit(alloc);
 
-    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc, null);
+    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc, null, null);
 
     try std.testing.expect(!r.export_bindings[0].symbol.isValid());
+}
+
+fn expectDefaultExportIdentity(source: []const u8, expects_facade: bool) !void {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var scanner = try Scanner.init(arena_allocator, source);
+    scanner.is_module = true;
+    var parser = Parser.init(arena_allocator, &scanner);
+    parser.is_module = true;
+    parser.enable_scan = true;
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(arena_allocator, &parser.ast);
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    const import_records = try import_scanner.extractImports(allocator, &parser.ast);
+    defer allocator.free(import_records);
+    const import_bindings = try extractImportBindings(allocator, &parser.ast, import_records, null);
+    defer allocator.free(import_bindings);
+    const export_bindings = try extractExportBindings(allocator, &parser.ast, import_records, import_bindings);
+    defer allocator.free(export_bindings);
+    try std.testing.expectEqual(@as(usize, 1), export_bindings.len);
+
+    var export_node_index: ?usize = null;
+    var export_node_id: ?u32 = null;
+    var source_binding_id: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, index| {
+        if (node.tag == .export_default_declaration) {
+            export_node_index = index;
+            export_node_id = analyzer.symbol_ids.items[index];
+        } else if (node.tag == .binding_identifier and
+            std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "_default"))
+        {
+            source_binding_id = analyzer.symbol_ids.items[index];
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), parser.scan_export_bindings.items.len);
+    const scan_export = parser.scan_export_bindings.items[0];
+    try std.testing.expectEqual(
+        @as(?u32, @intCast(export_node_index orelse return error.MissingExpectedFacadeNode)),
+        scan_export.default_export_node_index,
+    );
+    try std.testing.expectEqual(expects_facade, scan_export.has_default_export_facade);
+
+    var alias_table = symbol.AliasTable.init(allocator);
+    defer alias_table.deinit();
+    if (expects_facade) {
+        const node_index = export_node_index orelse return error.MissingExpectedFacadeNode;
+        const saved_id = analyzer.symbol_ids.items[node_index] orelse return error.MissingExpectedFacade;
+
+        var missing_node_bindings = try allocator.dupe(ExportBinding, export_bindings);
+        defer allocator.free(missing_node_bindings);
+        missing_node_bindings[0].default_export_node = null;
+        try std.testing.expectError(
+            error.MissingDefaultExportFacadeNode,
+            binding_scanner.populateSyntheticSymbols(
+                &alias_table,
+                @enumFromInt(0),
+                missing_node_bindings,
+                &analyzer.symbols,
+                arena_allocator,
+                if (analyzer.scope_maps.items.len > 0) analyzer.scope_maps.items[0] else null,
+                analyzer.symbol_ids.items,
+            ),
+        );
+
+        analyzer.symbol_ids.items[node_index] = null;
+        try std.testing.expectError(
+            error.MissingDefaultExportFacadeSymbol,
+            binding_scanner.populateSyntheticSymbols(
+                &alias_table,
+                @enumFromInt(0),
+                export_bindings,
+                &analyzer.symbols,
+                arena_allocator,
+                if (analyzer.scope_maps.items.len > 0) analyzer.scope_maps.items[0] else null,
+                analyzer.symbol_ids.items,
+            ),
+        );
+
+        analyzer.symbol_ids.items[node_index] = source_binding_id orelse return error.MissingSourceBinding;
+        try std.testing.expectError(
+            error.InvalidDefaultExportFacadeSymbol,
+            binding_scanner.populateSyntheticSymbols(
+                &alias_table,
+                @enumFromInt(0),
+                export_bindings,
+                &analyzer.symbols,
+                arena_allocator,
+                if (analyzer.scope_maps.items.len > 0) analyzer.scope_maps.items[0] else null,
+                analyzer.symbol_ids.items,
+            ),
+        );
+        analyzer.symbol_ids.items[node_index] = saved_id;
+    }
+    try binding_scanner.populateSyntheticSymbols(
+        &alias_table,
+        @enumFromInt(0),
+        export_bindings,
+        &analyzer.symbols,
+        arena_allocator,
+        if (analyzer.scope_maps.items.len > 0) analyzer.scope_maps.items[0] else null,
+        analyzer.symbol_ids.items,
+    );
+
+    const actual_id = switch (export_bindings[0].symbol) {
+        .alias => return error.UnexpectedAlias,
+        .semantic => |reference| @intFromEnum(reference.symbol),
+    };
+    if (expects_facade) {
+        const facade_id = export_node_id orelse return error.MissingExpectedFacade;
+        try std.testing.expect(source_binding_id != null);
+        try std.testing.expect(facade_id != source_binding_id.?);
+        try std.testing.expectEqual(facade_id, actual_id);
+        try std.testing.expect(analyzer.symbols.items[source_binding_id.?].synthetic_kind == null);
+    } else {
+        try std.testing.expect(export_node_id == null);
+        const binding_id = source_binding_id orelse return error.MissingSourceBinding;
+        try std.testing.expectEqual(binding_id, actual_id);
+        try std.testing.expect(analyzer.symbols.items[binding_id].synthetic_kind == null);
+    }
+}
+
+test "#4819 default export facade uses its exact analyzer SymbolId despite `_default` collision" {
+    try expectDefaultExportIdentity("const _default = 7; export default 42;", true);
+}
+
+test "#4819 default export of source `_default` stays a regular local binding" {
+    try expectDefaultExportIdentity("const _default = 42; export default _default;", false);
 }

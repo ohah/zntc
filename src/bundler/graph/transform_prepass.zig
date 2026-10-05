@@ -2056,6 +2056,7 @@ fn refreshStableBindingRefsFromSemanticGraph(
         &sem.symbols,
         arena_alloc,
         scope0,
+        sem.symbol_ids,
     );
 }
 

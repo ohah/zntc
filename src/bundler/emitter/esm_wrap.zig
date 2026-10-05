@@ -772,8 +772,7 @@ pub fn emitEsmWrappedModule(
                         }
                         if (linker) |l| {
                             const mi: u32 = module.index.toU32();
-                            if (l.getCanonicalName(mi, local_name)) |renamed|
-                                break :blk renamed;
+                            break :blk l.getCanonicalForExport(eb, mi);
                         }
                         break :blk local_name;
                     }, options);
@@ -943,7 +942,10 @@ pub fn emitEsmWrappedModule(
 
                 switch (source_mod.wrap_kind) {
                     .none => {
-                        const src_name = l.getCanonicalName(@intCast(source_mod_i), "_default") orelse "_default";
+                        const src_name = if (source_mod.findExportBinding("default")) |source_eb|
+                            l.getCanonicalForExport(source_eb.*, @intCast(source_mod_i))
+                        else
+                            l.getCanonicalName(@intCast(source_mod_i), "_default") orelse "_default";
                         try reexport_buf.appendSlice(allocator, src_name);
                     },
                     .esm => {
