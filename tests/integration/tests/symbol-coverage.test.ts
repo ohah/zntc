@@ -155,20 +155,24 @@ function runCoverage(
   };
 }
 
-function isCoverageReportLine(line: string): boolean {
-  return line.startsWith('zntc: symbol-coverage ');
-}
-
 describe('symbol identity coverage gate (#4819)', () => {
   const fixtures = collectFixtures(FIXTURE_DIR);
 
-  test('coverage report selection ignores marker text in diagnostic paths', () => {
+  test('report selection ignores marker text embedded in diagnostic paths', () => {
     const lines = [
       'zntc: symbol-source-scope-owner /tmp/symbol-coverage-worktree/input.mjs: scope_owner_parent_mismatch=0',
       'zntc: symbol-coverage /tmp/symbol-coverage-worktree/input.mjs: new_user_idents=0 missing=0 wrong=0',
       'zntc: symbol-identity /tmp/symbol-coverage-worktree/input.mjs: clean=1',
+      'zntc: symbol-identity-detail /tmp/zntc: symbol-identity /tmp/input.mjs: clean=1',
+      'zntc: synthetic-coverage-detail /tmp/zntc: synthetic-coverage /tmp/input.mjs: symbol_identity_complete=1',
+      'zntc: symbol-source-scope-owner-detail /tmp/zntc: symbol-source-scope-owner /tmp/input.mjs: scope_owner_parent_mismatch=0',
     ];
-    expect(lines.filter(isCoverageReportLine)).toEqual([lines[1]]);
+    expect(lines.filter((line) => line.startsWith('zntc: symbol-coverage '))).toEqual([lines[1]]);
+    expect(lines.filter((line) => line.startsWith('zntc: symbol-identity '))).toEqual([lines[2]]);
+    expect(lines.filter((line) => line.startsWith('zntc: synthetic-coverage '))).toEqual([]);
+    expect(lines.filter((line) => line.startsWith('zntc: symbol-source-scope-owner '))).toEqual([
+      lines[0],
+    ]);
   });
 
   test('지원하지 않는 오라클 fixture 확장자는 조용히 건너뛰지 않는다', () => {
@@ -287,7 +291,7 @@ describe('symbol identity coverage gate (#4819)', () => {
 
       const sourceScopeOwnerAudits = (proc.stderr ?? '')
         .split(/\r?\n/)
-        .filter((line) => line.includes('zntc: symbol-source-scope-owner '));
+        .filter((line) => line.startsWith('zntc: symbol-source-scope-owner '));
       expect(sourceScopeOwnerAudits, proc.stderr).toHaveLength(2);
       for (const audit of sourceScopeOwnerAudits) {
         expect(audit).toMatch(/scope_owner_parent_mismatch=0(?:\s|$)/);
@@ -295,7 +299,7 @@ describe('symbol identity coverage gate (#4819)', () => {
 
       const reports = (proc.stderr ?? '')
         .split(/\r?\n/)
-        .filter((line) => line.includes('zntc: symbol-identity-prepass '));
+        .filter((line) => line.startsWith('zntc: symbol-identity-prepass '));
       expect(reports, proc.stderr).toHaveLength(2);
       for (const report of reports) {
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -310,7 +314,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(reanalyzed, reports.join('\n')).toBeDefined();
       const graphModes = (proc.stderr ?? '')
         .split(/\r?\n/)
-        .filter((line) => line.includes('zntc: symbol-identity-prepass-mode '));
+        .filter((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
       expect(graphModes, proc.stderr).toHaveLength(2);
       expect(graphModes.find((line) => line.includes('dep.ts'))).toContain(
         'semantic_graph=reanalyzed',
@@ -361,7 +365,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass ') &&
+              line.startsWith('zntc: symbol-identity-prepass ') &&
               line.includes('4819-for-of-iterator-close.mjs'),
           );
         expect(report, `${target.name}: ${proc.stderr}`).toBeDefined();
@@ -377,7 +381,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass-mode ') &&
+              line.startsWith('zntc: symbol-identity-prepass-mode ') &&
               line.includes('4819-for-of-iterator-close.mjs'),
           );
         expect(graphMode, `${target.name}: ${proc.stderr}`).toContain(
@@ -424,7 +428,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass ') &&
+              line.startsWith('zntc: symbol-identity-prepass ') &&
               line.includes('4819-for-in-loop-capture.mjs'),
           );
         expect(report, target.name + ': ' + proc.stderr).toBeDefined();
@@ -440,7 +444,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass-mode ') &&
+              line.startsWith('zntc: symbol-identity-prepass-mode ') &&
               line.includes('4819-for-in-loop-capture.mjs'),
           );
         expect(graphMode, target.name + ': ' + proc.stderr).toContain(
@@ -507,7 +511,8 @@ describe('symbol identity coverage gate (#4819)', () => {
         const report = (proc.stderr ?? '')
           .split(/\r?\n/)
           .find(
-            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
           );
         expect(report, `${target.name}: ${proc.stderr}`).toBeDefined();
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -522,7 +527,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
           );
         expect(graphMode, `${target.name}: ${proc.stderr}`).toContain(
           `semantic_graph=${target.graph}`,
@@ -600,7 +605,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass ') &&
+              line.startsWith('zntc: symbol-identity-prepass ') &&
               line.includes(`${fixture.name}.ts`),
           );
         expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
@@ -615,7 +620,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass-mode ') &&
+              line.startsWith('zntc: symbol-identity-prepass-mode ') &&
               line.includes(`${fixture.name}.ts`),
           );
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
@@ -725,7 +730,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass ') &&
+              line.startsWith('zntc: symbol-identity-prepass ') &&
               line.includes(`${fixture.name}.ts`),
           );
         expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
@@ -741,7 +746,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass-mode ') &&
+              line.startsWith('zntc: symbol-identity-prepass-mode ') &&
               line.includes(`${fixture.name}.ts`),
           );
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
@@ -795,7 +800,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const report = (proc.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
         );
       expect(report, proc.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -807,7 +812,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
         );
       expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
@@ -858,7 +863,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const report = (proc.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
         );
       expect(report, proc.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -870,7 +875,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
         );
       expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
@@ -915,13 +920,13 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
         );
       expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
       const report = (proc.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
         );
       expect(report, proc.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -983,7 +988,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const report = (proc.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
         );
       expect(report, proc.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -1033,7 +1038,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const report = (proc.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
         );
       expect(report, proc.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -1045,7 +1050,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
         );
       expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
@@ -1115,7 +1120,8 @@ describe('symbol identity coverage gate (#4819)', () => {
         const report = (proc.stderr ?? '')
           .split(/\r?\n/)
           .find(
-            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
           );
         expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -1130,7 +1136,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
           );
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=retained');
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
@@ -1187,7 +1193,8 @@ describe('symbol identity coverage gate (#4819)', () => {
         const report = (proc.stderr ?? '')
           .split(/\r?\n/)
           .find(
-            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
           );
         expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -1202,7 +1209,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
           );
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=retained');
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
@@ -1272,7 +1279,8 @@ describe('symbol identity coverage gate (#4819)', () => {
         const report = (proc.stderr ?? '')
           .split(/\r?\n/)
           .find(
-            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
           );
         expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -1287,7 +1295,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
           );
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=retained');
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
@@ -1435,7 +1443,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
           );
         const expectedGraph =
           fixture.graph ??
@@ -1452,7 +1460,7 @@ describe('symbol identity coverage gate (#4819)', () => {
             .split(/\r?\n/)
             .find(
               (line) =>
-                line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+                line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
             );
           expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
           for (const counter of EXACT_ZERO_COUNTERS) {
@@ -1506,7 +1514,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
         );
       expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
@@ -1555,7 +1563,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
         );
       expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
@@ -1607,7 +1615,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const report = (proc.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(report, proc.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -1622,7 +1630,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
@@ -1677,13 +1685,13 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(nativeMode, native.stderr).toContain('semantic_graph=retained');
       const nativeReport = (native.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(nativeReport, native.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -1705,7 +1713,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(downlevelMode, downlevel.stderr).toContain('semantic_graph=reanalyzed');
       const downlevelOutput = spawnSync('node', [output], { encoding: 'utf8' });
@@ -1728,13 +1736,13 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(topLevelAwaitMode, topLevelAwait.stderr).toContain('semantic_graph=retained');
       const topLevelAwaitReport = (topLevelAwait.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(topLevelAwaitReport, topLevelAwait.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -1756,7 +1764,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(loweredMode, loweredTopLevelAwait.stderr).toContain('semantic_graph=reanalyzed');
       const loweredOutput = spawnSync('node', [esmOutput], { encoding: 'utf8' });
@@ -1771,7 +1779,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(loweredCjsMode, loweredCjsTopLevelAwait.stderr).toContain('semantic_graph=reanalyzed');
       const loweredCjsOutput = spawnSync('node', [output], { encoding: 'utf8' });
@@ -1826,7 +1834,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         ?.split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
 
     try {
@@ -1836,7 +1844,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const report = (native.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(report, native.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -1917,13 +1925,13 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
         );
       expect(mode, proc.stderr).toContain('semantic_graph=retained');
       const report = (proc.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
         );
       expect(report, proc.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -2005,13 +2013,13 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(nativeMode, native.stderr).toContain('semantic_graph=retained');
       const nativeReport = (native.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(nativeReport, native.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -2031,13 +2039,13 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(downlevelMode, downlevel.stderr).toContain('semantic_graph=retained');
       const downlevelReport = (downlevel.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(downlevelReport, downlevel.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -2059,7 +2067,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(loweredAsyncMode, loweredAsync.stderr).toContain('semantic_graph=reanalyzed');
       const loweredAsyncOutput = spawnSync('node', [output], { encoding: 'utf8' });
@@ -2102,13 +2110,13 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(nativeTopLevelMode, nativeTopLevel.stderr).toContain('semantic_graph=retained');
       const nativeTopLevelReport = (nativeTopLevel.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(nativeTopLevelReport, nativeTopLevel.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -2128,7 +2136,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(loweredTopLevelMode, loweredTopLevel.stderr).toContain('semantic_graph=reanalyzed');
       const loweredTopLevelOutput = spawnSync('node', [esmOutput], { encoding: 'utf8' });
@@ -2197,13 +2205,13 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(nativeMode, native.stderr).toContain('semantic_graph=retained');
       const nativeReport = (native.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(nativeReport, native.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -2223,7 +2231,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(downlevelMode, downlevel.stderr).toContain('semantic_graph=reanalyzed');
       const downlevelOutput = spawnSync('node', [output], { encoding: 'utf8' });
@@ -2276,7 +2284,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
     try {
       const native = run('--target=es2015');
@@ -2285,7 +2293,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const nativeReport = (native.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(nativeReport, native.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -2305,7 +2313,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const downlevelReport = (downlevel.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(downlevelReport, downlevel.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -2353,7 +2361,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
     const assertOutput = (expected: string) => {
       const result = spawnSync('node', [output], { encoding: 'utf8' });
@@ -2409,7 +2417,8 @@ describe('symbol identity coverage gate (#4819)', () => {
         const report = (proc.stderr ?? '')
           .split(/\r?\n/)
           .find(
-            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
           );
         expect(report, fixture.name).toBeDefined();
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -2485,7 +2494,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
     const assertOutput = (expected: string) => {
       const result = spawnSync('node', [output], { encoding: 'utf8' });
@@ -2545,7 +2554,8 @@ describe('symbol identity coverage gate (#4819)', () => {
         const report = (proc.stderr ?? '')
           .split(/\r?\n/)
           .find(
-            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
           );
         expect(report, fixture.name).toBeDefined();
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -2601,7 +2611,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
     const assertOutput = (expected: string) => {
       const result = spawnSync('node', [output], { encoding: 'utf8' });
@@ -2648,7 +2658,8 @@ describe('symbol identity coverage gate (#4819)', () => {
         const report = (proc.stderr ?? '')
           .split(/\r?\n/)
           .find(
-            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
           );
         expect(report, fixture.name).toBeDefined();
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -2735,7 +2746,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
 
     try {
@@ -2745,7 +2756,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const nativeReport = (native.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(nativeReport, native.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -2820,13 +2831,13 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
     const expectShadowedObjectReport = (stderr: string, label: string) => {
       const report = stderr
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(report, label + ': ' + stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -2844,7 +2855,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const report = stderr
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(report, `${label}: ${stderr}`).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -2863,7 +2874,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const nativeReport = (native.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(nativeReport, native.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -2909,7 +2920,8 @@ describe('symbol identity coverage gate (#4819)', () => {
         const spreadReport = spreadResult.stderr
           ?.split(/\r?\n/)
           .find(
-            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
           );
         expect(spreadReport, target + ': missing exact report').toMatch(
           /generated_references=1(?:\s|$)/,
@@ -3053,7 +3065,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         ?.split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
 
     try {
@@ -3063,7 +3075,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const report = (native.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(report, native.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -3127,13 +3139,13 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(mode, downlevel.stderr).toContain('semantic_graph=retained');
       const report = (downlevel.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(report, downlevel.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -3186,13 +3198,13 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(mode, downlevel.stderr).toContain('semantic_graph=retained');
       const report = (downlevel.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(report, downlevel.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -3255,13 +3267,13 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(mode, downlevel.stderr).toContain('semantic_graph=retained');
       const report = (downlevel.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(report, downlevel.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -3316,13 +3328,13 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(mode, downlevel.stderr).toContain('semantic_graph=retained');
       const report = (downlevel.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(report, downlevel.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -3378,13 +3390,13 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(mode, downlevel.stderr).toContain('semantic_graph=retained');
       const report = (downlevel.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(report, downlevel.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -3446,13 +3458,13 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(mode, downlevel.stderr).toContain('semantic_graph=retained');
       const report = (downlevel.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(report, downlevel.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -3510,13 +3522,13 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(mode, downlevel.stderr).toContain('semantic_graph=retained');
       const report = (downlevel.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(report, downlevel.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -3582,13 +3594,13 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(mode, downlevel.stderr).toContain('semantic_graph=reanalyzed');
       const report = (downlevel.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(report, downlevel.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -3644,13 +3656,13 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(mode, downlevel.stderr).toContain('semantic_graph=reanalyzed');
       const report = (downlevel.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(report, downlevel.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -3714,13 +3726,13 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(mode, downlevel.stderr).toContain('semantic_graph=retained');
       const report = (downlevel.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(report, downlevel.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -3778,7 +3790,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(mode, downlevel.stderr).toContain('semantic_graph=reanalyzed');
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
@@ -3825,7 +3837,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
@@ -3877,7 +3889,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const report = (proc.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.tsx'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.tsx'),
         );
       expect(report, proc.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -3890,7 +3902,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.tsx'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.tsx'),
         );
       expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
 
@@ -3970,7 +3982,7 @@ describe('symbol identity coverage gate (#4819)', () => {
 
         const reports = (proc.stderr ?? '')
           .split(/\r?\n/)
-          .filter((line) => line.includes('zntc: symbol-identity-prepass '));
+          .filter((line) => line.startsWith('zntc: symbol-identity-prepass '));
         expect(reports, `${name}: ${proc.stderr}`).toHaveLength(2);
         for (const report of reports) {
           for (const counter of EXACT_ZERO_COUNTERS) {
@@ -3985,7 +3997,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.tsx'),
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.tsx'),
           );
         expect(entryMode, `${name}: ${proc.stderr}`).toContain(`semantic_graph=${expectedMode}`);
 
@@ -4041,7 +4053,7 @@ describe('symbol identity coverage gate (#4819)', () => {
 
       const reports = (proc.stderr ?? '')
         .split(/\r?\n/)
-        .filter((line) => line.includes('zntc: symbol-identity-prepass '));
+        .filter((line) => line.startsWith('zntc: symbol-identity-prepass '));
       expect(reports, proc.stderr).toHaveLength(2);
       for (const report of reports) {
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -4052,7 +4064,7 @@ describe('symbol identity coverage gate (#4819)', () => {
 
       const graphModes = (proc.stderr ?? '')
         .split(/\r?\n/)
-        .filter((line) => line.includes('zntc: symbol-identity-prepass-mode '));
+        .filter((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
       expect(graphModes, proc.stderr).toHaveLength(2);
       expect(graphModes.find((line) => line.includes('side.ts'))).toContain(
         'semantic_graph=retained',
@@ -4122,7 +4134,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const report = (proc.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('view.tsx'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('view.tsx'),
         );
       expect(report, proc.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -4135,7 +4147,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('view.tsx'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('view.tsx'),
         );
       expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
 
@@ -4189,7 +4201,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const report = (proc.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('dep.tsx'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('dep.tsx'),
         );
       expect(report, proc.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -4202,7 +4214,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('dep.tsx'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('dep.tsx'),
         );
       expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
 
@@ -4269,7 +4281,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const report = (proc.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('view.tsx'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('view.tsx'),
         );
       expect(report, proc.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -4282,7 +4294,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('view.tsx'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('view.tsx'),
         );
       expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
 
@@ -4336,7 +4348,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const report = (proc.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('dep.tsx'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('dep.tsx'),
         );
       expect(report, proc.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -4348,7 +4360,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('dep.tsx'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('dep.tsx'),
         );
       expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
 
@@ -4417,7 +4429,8 @@ describe('symbol identity coverage gate (#4819)', () => {
         const report = (proc.stderr ?? '')
           .split(/\r?\n/)
           .find(
-            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('view.tsx'),
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('view.tsx'),
           );
         expect(report, `${mode}: ${proc.stderr}`).toBeDefined();
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -4432,7 +4445,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('view.tsx'),
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('view.tsx'),
           );
         expect(graphMode, `${mode}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
 
@@ -4481,7 +4494,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const report = (proc.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(report, proc.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -4493,7 +4506,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
 
@@ -4512,7 +4525,9 @@ describe('symbol identity coverage gate (#4819)', () => {
       for (const target of TARGETS) {
         const { stderr, exitCode } = runCoverage(file, target, outDir);
         expect(exitCode, `${target.name}: ${stderr}`).toBe(0);
-        const identity = stderr.split('\n').find((line) => line.includes('zntc: symbol-identity '));
+        const identity = stderr
+          .split('\n')
+          .find((line) => line.startsWith('zntc: symbol-identity '));
         expect(identity, `${target.name}: missing exact report`).toBeDefined();
         expect(Number(identity?.match(/namespace_iife_params=(\d+)/)?.[1] ?? 0)).toBe(3);
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -4537,7 +4552,9 @@ describe('symbol identity coverage gate (#4819)', () => {
       for (const target of TARGETS) {
         const { stderr, exitCode } = runCoverage(file, target, outDir);
         expect(exitCode, `${target.name}: ${stderr}`).toBe(0);
-        const identity = stderr.split('\n').find((line) => line.includes('zntc: symbol-identity '));
+        const identity = stderr
+          .split('\n')
+          .find((line) => line.startsWith('zntc: symbol-identity '));
         expect(identity, `${target.name}: missing exact report`).toBeDefined();
         expect(Number(identity?.match(/namespace_iife_params=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -4569,7 +4586,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         expect(proc.stderr).toMatch(/symbol-coverage .* missing=0 wrong=0/);
         const identity = proc.stderr
           .split('\n')
-          .find((line) => line.includes('zntc: symbol-identity '));
+          .find((line) => line.startsWith('zntc: symbol-identity '));
         expect(identity, `${target.name}: missing exact identity report`).toBeDefined();
         for (const counter of EXACT_ZERO_COUNTERS) {
           expect(
@@ -4603,7 +4620,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         expect(proc.status, `${target.name}: ${proc.stderr}`).toBe(0);
         const identity = proc.stderr
           .split('\n')
-          .find((line) => line.includes('zntc: symbol-identity '));
+          .find((line) => line.startsWith('zntc: symbol-identity '));
         expect(identity, `${target.name}: missing exact identity report`).toBeDefined();
         for (const counter of EXACT_ZERO_COUNTERS) {
           expect(
@@ -4682,7 +4699,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
           );
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
           `semantic_graph=${fixture.graph}`,
@@ -4693,7 +4710,7 @@ describe('symbol identity coverage gate (#4819)', () => {
             .split(/\r?\n/)
             .find(
               (line) =>
-                line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+                line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
             );
           expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
           for (const counter of EXACT_ZERO_COUNTERS) {
@@ -4744,7 +4761,7 @@ describe('symbol identity coverage gate (#4819)', () => {
 
       const graphModes = proc.stderr
         .split(/\r?\n/)
-        .filter((line) => line.includes('zntc: symbol-identity-prepass-mode '));
+        .filter((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
       for (const path of ['entry.ts', 'dep.ts']) {
         const graphMode = graphModes.find((line) => line.includes(path));
         expect(graphMode, proc.stderr).toBeDefined();
@@ -4754,7 +4771,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const entryIdentity = proc.stderr
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
         );
       expect(entryIdentity, proc.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -4801,7 +4818,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(graphMode, proc.stderr).toBeDefined();
       expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
@@ -4856,7 +4873,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
           );
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toBeDefined();
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
@@ -4868,7 +4885,7 @@ describe('symbol identity coverage gate (#4819)', () => {
             .split(/\r?\n/)
             .find(
               (line) =>
-                line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+                line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
             );
           expect(identity, proc.stderr).toBeDefined();
           for (const counter of EXACT_ZERO_COUNTERS) {
@@ -4974,7 +4991,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
           );
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toBeDefined();
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
@@ -4986,7 +5003,7 @@ describe('symbol identity coverage gate (#4819)', () => {
             .split(/\r?\n/)
             .find(
               (line) =>
-                line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+                line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
             );
           expect(identity, proc.stderr).toBeDefined();
           for (const counter of EXACT_ZERO_COUNTERS) {
@@ -5044,7 +5061,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         expect(proc.status, `${target.name}: ${proc.stderr}`).toBe(0);
         const identity = proc.stderr
           .split('\n')
-          .find((line) => line.includes('zntc: symbol-identity '));
+          .find((line) => line.startsWith('zntc: symbol-identity '));
         expect(identity, `${target.name}: missing exact identity report`).toBeDefined();
         for (const counter of EXACT_ZERO_COUNTERS) {
           expect(
@@ -5120,14 +5137,17 @@ describe('symbol identity coverage gate (#4819)', () => {
       const graphMode = proc.stderr
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('dep.ts'),
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('dep.ts'),
         );
       expect(graphMode, proc.stderr).toBeDefined();
       expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
 
       const identity = proc.stderr
         .split(/\r?\n/)
-        .find((line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('dep.ts'));
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('dep.ts'),
+        );
       expect(identity, proc.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
         expect(Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), identity).toBe(
@@ -5191,14 +5211,17 @@ describe('symbol identity coverage gate (#4819)', () => {
       const graphMode = proc.stderr
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('dep.ts'),
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('dep.ts'),
         );
       expect(graphMode, proc.stderr).toBeDefined();
       expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
 
       const identity = proc.stderr
         .split(/\r?\n/)
-        .find((line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('dep.ts'));
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('dep.ts'),
+        );
       expect(identity, proc.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
         const expected = counter === 'shadowed_external_reference' ? 1 : 0;
@@ -5224,7 +5247,9 @@ describe('symbol identity coverage gate (#4819)', () => {
       for (const target of TARGETS) {
         const { stderr, exitCode } = runCoverage(file, target, outDir);
         expect(exitCode, `${target.name}: ${stderr}`).toBe(0);
-        const identity = stderr.split('\n').find((line) => line.includes('zntc: symbol-identity '));
+        const identity = stderr
+          .split('\n')
+          .find((line) => line.startsWith('zntc: symbol-identity '));
         expect(identity, `${target.name}: missing exact report`).toBeDefined();
         expect(Number(identity?.match(/enum_iife_params=(\d+)/)?.[1] ?? 0)).toBe(2);
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -5276,7 +5301,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           expect(proc.status, `${label}: ${proc.stderr}`).toBe(0);
           const identity = proc.stderr
             .split('\n')
-            .find((line) => line.includes('zntc: symbol-identity '));
+            .find((line) => line.startsWith('zntc: symbol-identity '));
           expect(identity, `${label}: missing exact identity report`).toBeDefined();
           for (const counter of EXACT_ZERO_COUNTERS) {
             expect(
@@ -5300,8 +5325,10 @@ describe('symbol identity coverage gate (#4819)', () => {
     try {
       const { stderr, exitCode } = runCoverage(file, TARGETS[0], outDir);
       expect(exitCode, stderr).toBe(0);
-      const identity = stderr.split('\n').find((line) => line.includes('zntc: symbol-identity '));
-      const strict = stderr.split('\n').find((line) => line.includes('zntc: synthetic-coverage '));
+      const identity = stderr.split('\n').find((line) => line.startsWith('zntc: symbol-identity '));
+      const strict = stderr
+        .split('\n')
+        .find((line) => line.startsWith('zntc: synthetic-coverage '));
       expect(identity).toBeDefined();
       expect(strict).toBeDefined();
       expect(strict).toMatch(/(?:^| )consistent=1(?: |$)/);
@@ -5328,7 +5355,9 @@ describe('symbol identity coverage gate (#4819)', () => {
       for (const target of TARGETS) {
         const { stderr, exitCode } = runCoverage(file, target, outDir);
         expect(exitCode, `${target.name}: ${stderr}`).toBe(0);
-        const identity = stderr.split('\n').find((line) => line.includes('zntc: symbol-identity '));
+        const identity = stderr
+          .split('\n')
+          .find((line) => line.startsWith('zntc: symbol-identity '));
         expect(identity, `${target.name}: missing exact report`).toBeDefined();
         expect(identity, `${target.name}: ${identity}`).toMatch(/clean=1(?:\s|$)/);
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -5395,7 +5424,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const report = (proc.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
         );
       expect(report, proc.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -5407,7 +5436,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
         );
       expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
 
@@ -5428,7 +5457,9 @@ describe('symbol identity coverage gate (#4819)', () => {
       for (const target of TARGETS) {
         const { stderr, exitCode } = runCoverage(file, target, outDir);
         expect(exitCode, `${target.name}: ${stderr}`).toBe(0);
-        const identity = stderr.split('\n').find((line) => line.includes('zntc: symbol-identity '));
+        const identity = stderr
+          .split('\n')
+          .find((line) => line.startsWith('zntc: symbol-identity '));
         expect(identity, `${target.name}: missing exact report`).toBeDefined();
         expect(identity, `${target.name}: ${identity}`).toMatch(/clean=1(?:\s|$)/);
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -5492,7 +5523,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const report = (proc.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
         );
       expect(report, proc.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -5504,7 +5535,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
         );
       expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
 
@@ -5573,7 +5604,8 @@ describe('symbol identity coverage gate (#4819)', () => {
         const report = (proc.stderr ?? '')
           .split(/\r?\n/)
           .find(
-            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
           );
         expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -5588,7 +5620,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
           );
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
           `semantic_graph=${fixture.graph}`,
@@ -5637,7 +5669,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const report = (proc.stderr ?? '')
         .split(/\r?\n/)
         .find(
-          (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
         );
       expect(report, proc.stderr).toBeDefined();
       for (const counter of EXACT_ZERO_COUNTERS) {
@@ -5649,7 +5681,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .split(/\r?\n/)
         .find(
           (line) =>
-            line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
         );
       expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
 
@@ -5792,7 +5824,8 @@ describe('symbol identity coverage gate (#4819)', () => {
         const report = (proc.stderr ?? '')
           .split(/\r?\n/)
           .find(
-            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
           );
         expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -5807,7 +5840,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
           );
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
           `semantic_graph=${fixture.graph}`,
@@ -5882,7 +5915,8 @@ describe('symbol identity coverage gate (#4819)', () => {
         const report = (proc.stderr ?? '')
           .split(/\r?\n/)
           .find(
-            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
           );
         expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -5897,7 +5931,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
           );
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
           `semantic_graph=${fixture.graph}`,
@@ -5997,7 +6031,8 @@ describe('symbol identity coverage gate (#4819)', () => {
         const report = (proc.stderr ?? '')
           .split(/\r?\n/)
           .find(
-            (line) => line.includes('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
           );
         expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -6012,7 +6047,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find(
             (line) =>
-              line.includes('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
           );
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
           `semantic_graph=${fixture.graph}`,
@@ -6079,7 +6114,7 @@ console.log(new Example().method(undefined, 3), __decorateClass, __decorateParam
         expect(proc.status, `${target.name}: ${proc.stderr}`).toBe(0);
         const identity = proc.stderr
           .split('\n')
-          .find((line) => line.includes('zntc: symbol-identity '));
+          .find((line) => line.startsWith('zntc: symbol-identity '));
         expect(identity, `${target.name}: missing exact report`).toBeDefined();
         expect(identity, `${target.name}: ${identity}`).toMatch(/clean=1(?:\s|$)/);
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -6142,7 +6177,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         expect(proc.status, `${target.name}: ${proc.stderr}`).toBe(0);
         const identity = proc.stderr
           .split('\n')
-          .find((line) => line.includes('zntc: symbol-identity '));
+          .find((line) => line.startsWith('zntc: symbol-identity '));
         expect(identity, `${target.name}: missing exact report`).toBeDefined();
         expect(identity, `${target.name}: ${identity}`).toMatch(/clean=1(?:\s|$)/);
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -6183,7 +6218,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         expect(proc.status, `${target.name}: ${proc.stderr}`).toBe(0);
         const identity = proc.stderr
           .split('\n')
-          .find((line) => line.includes('zntc: symbol-identity '));
+          .find((line) => line.startsWith('zntc: symbol-identity '));
         expect(identity, `${target.name}: missing exact report`).toBeDefined();
         for (const counter of EXACT_ZERO_COUNTERS) {
           expect(
@@ -6221,7 +6256,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         expect(proc.status, `${target.name}: ${proc.stderr}`).toBe(0);
         const identity = proc.stderr
           .split('\n')
-          .find((line) => line.includes('zntc: symbol-identity '));
+          .find((line) => line.startsWith('zntc: symbol-identity '));
         expect(identity, `${target.name}: missing exact report`).toBeDefined();
         for (const counter of EXACT_ZERO_COUNTERS) {
           expect(
@@ -6259,7 +6294,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         expect(proc.status, `${target.name}: ${proc.stderr}`).toBe(0);
         const identity = proc.stderr
           .split('\n')
-          .find((line) => line.includes('zntc: symbol-identity '));
+          .find((line) => line.startsWith('zntc: symbol-identity '));
         expect(identity, `${target.name}: missing exact report`).toBeDefined();
         for (const counter of EXACT_ZERO_COUNTERS) {
           expect(
@@ -6302,7 +6337,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         expect(proc.status, `${target.name}: ${proc.stderr}`).toBe(0);
         const identity = proc.stderr
           .split('\n')
-          .find((line) => line.includes('zntc: symbol-identity '));
+          .find((line) => line.startsWith('zntc: symbol-identity '));
         expect(identity, `${target.name}: missing exact report`).toBeDefined();
         expect(identity, `${target.name}: ${identity}`).toMatch(/clean=1(?:\s|$)/);
         for (const counter of EXACT_ZERO_COUNTERS) {
@@ -6341,7 +6376,9 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
             problems.push(`${name} ${target.name}: exit=${exitCode} ${stderr.trim()}`);
             continue;
           }
-          const lines = stderr.split('\n').filter(isCoverageReportLine);
+          const lines = stderr
+            .split('\n')
+            .filter((line) => line.startsWith('zntc: symbol-coverage '));
           if (lines.length !== 1) {
             problems.push(
               `${name} ${target.name}: expected one coverage report, got ${lines.length}`,
@@ -6350,7 +6387,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           }
           const identityLines = stderr
             .split('\n')
-            .filter((l) => l.includes('zntc: symbol-identity '));
+            .filter((l) => l.startsWith('zntc: symbol-identity '));
           if (identityLines.length !== 1) {
             problems.push(
               `${name} ${target.name}: expected one identity report, got ${identityLines.length}`,
@@ -6359,7 +6396,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           }
           const sourceScopeOwnerLines = stderr
             .split('\n')
-            .filter((line) => line.includes('zntc: symbol-source-scope-owner '));
+            .filter((line) => line.startsWith('zntc: symbol-source-scope-owner '));
           if (sourceScopeOwnerLines.length !== 1) {
             problems.push(
               `${name} ${target.name}: expected one source scope-owner audit, got ${sourceScopeOwnerLines.length}`,
@@ -6373,7 +6410,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           }
           const strictLines = stderr
             .split('\n')
-            .filter((l) => l.includes('zntc: synthetic-coverage '));
+            .filter((l) => l.startsWith('zntc: synthetic-coverage '));
           if (strictLines.length !== 1) {
             problems.push(
               `${name} ${target.name}: expected one strict coverage report, got ${strictLines.length}`,
@@ -6497,7 +6534,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         outDir,
       );
       expect(exitCode, stderr).toBe(0);
-      const identity = stderr.split('\n').find((line) => line.includes('zntc: symbol-identity '));
+      const identity = stderr.split('\n').find((line) => line.startsWith('zntc: symbol-identity '));
       expect(identity).toBeDefined();
       expect(Number(identity?.match(/external=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
       expect(Number(identity?.match(/unclassified_reference=(\d+)/)?.[1] ?? 1)).toBe(0);
@@ -6608,7 +6645,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
             const stderr = proc.stderr ?? '';
             const audit = stderr
               .split('\n')
-              .find((line) => line.includes('zntc: symbol-identity-post-minify '));
+              .find((line) => line.startsWith('zntc: symbol-identity-post-minify '));
             if (proc.status !== 0 || !audit || !audit.includes('clean=1')) {
               problems.push(
                 `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: ${stderr}`,
