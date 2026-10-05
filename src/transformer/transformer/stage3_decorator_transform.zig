@@ -967,19 +967,26 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     }
     if (!instance_extra_initializers_binding.isNone())
         try directly_bound_member_set.put(self.allocator, @intFromEnum(instance_extra_initializers_binding), {});
-    var stage3_let_bindings: std.ArrayList(NodeIndex) = .empty;
-    defer stage3_let_bindings.deinit(self.allocator);
+    var unregistered_stage3_let_bindings: std.ArrayList(NodeIndex) = .empty;
+    defer unregistered_stage3_let_bindings.deinit(self.allocator);
     for (let_decls) |declaration| {
         const binding = generatedLetBinding(self, declaration);
         if (binding != class_decorators_binding and binding != class_descriptor_binding and
             binding != class_extra_initializers_binding and binding != class_this_binding and
             binding != static_extra_initializers_binding and !directly_bound_member_set.contains(@intFromEnum(binding)))
         {
-            try stage3_let_bindings.append(self.allocator, binding);
+            try unregistered_stage3_let_bindings.append(self.allocator, binding);
         }
     }
     try all_iife_stmts.appendSlice(self.allocator, let_decls);
     self.allocator.free(let_decls);
+    if (self.semantic_edit_enabled and unregistered_stage3_let_bindings.items.len != 0) {
+        const binding = unregistered_stage3_let_bindings.items[0];
+        std.debug.panic(
+            "Stage 3 generated local {s} has no direct SymbolId registration",
+            .{self.ast.getText(self.ast.getNode(binding).data.string_ref)},
+        );
+    }
 
     // var Foo = class { ... }; + return ...;
     try all_iife_stmts.appendSlice(self.allocator, iife_stmts.items);
@@ -1190,18 +1197,6 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     const iife_call = try self.addExtraNode(.call_expression, zero_span, &.{
         @intFromEnum(paren_arrow), empty_args.start, empty_args.len, 0,
     });
-
-    var generated_local_specs: std.ArrayList(Transformer.GeneratedLocalSpec) = .empty;
-    defer generated_local_specs.deinit(self.allocator);
-    for (stage3_let_bindings.items) |binding| {
-        const span = self.ast.getNode(binding).data.string_ref;
-        try generated_local_specs.append(self.allocator, .{
-            .name = self.ast.getText(span),
-            .kind = .variable_let,
-            .exact_binding_span = span,
-        });
-    }
-    try self.trackGeneratedLocalSymbols(arrow, arrow_scope, generated_local_specs.items);
 
     // class expression / 익명 class / export default class → IIFE call 직접 반환
     // 이름 있는 class declaration만 `let Foo = (...)` 선언을 사용.
