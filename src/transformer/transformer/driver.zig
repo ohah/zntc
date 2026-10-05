@@ -186,10 +186,6 @@ pub fn transform(self: anytype) Error!NodeIndex {
     if (self.semantic_edit_enabled) {
         try self.completeGeneratedStateSymbols(root, self.programScope());
         try self.bindOutputScopesAndReferences(root, self.programScope());
-        var generated_temp_specs: std.ArrayListUnmanaged(@import("../transformer.zig").Transformer.GeneratedLocalSpec) = .empty;
-        defer generated_temp_specs.deinit(self.allocator);
-        try self.appendGeneratedTempSpecs(saved_temp_counter, &generated_temp_specs);
-        try self.trackGeneratedLocalSymbols(root, self.programScope(), generated_temp_specs.items);
     }
 
     self.ast.transformed_root = root;
