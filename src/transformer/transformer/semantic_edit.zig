@@ -1595,6 +1595,13 @@ fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedS
         break :blk declared;
     };
 
+    // Relocation updates the editor's copy of the node-to-symbol table. Keep
+    // the transform's parallel table in sync as well; later output and
+    // coverage passes read that table directly.
+    if (self.getSymbolIdAt(temp.binding)) |existing| {
+        if (existing != @intFromEnum(id)) std.debug.panic("state callback temp binding changed SymbolId", .{});
+    } else try setSymbolId(self, temp.binding, id);
+
     if (temp.symbol_id) |raw_id| {
         var nodes = live.iterator();
         while (nodes.next()) |entry| {
