@@ -39,6 +39,33 @@ fn constValuesContainNumber(const_values: *const std.AutoHashMapUnmanaged(u32, C
     return false;
 }
 
+/// Constant propagation may replace only exact value-read nodes from the
+/// semantic reference list. `symbol_ids` also marks import declaration nodes,
+/// whose AST tag can be `identifier_reference`; using the ID slice alone would
+/// rewrite an import specifier along with its reads.
+fn materializableReferenceNodes(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    semantic: ModuleSemanticData,
+) !std.DynamicBitSet {
+    var nodes = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len);
+    errdefer nodes.deinit();
+    for (semantic.references) |reference| {
+        if (!reference.flags.read or reference.flags.write or reference.flags.declare or
+            reference.flags.type_context or reference.flags.value_as_type or reference.node_index.isNone())
+        {
+            continue;
+        }
+        const raw = @intFromEnum(reference.node_index);
+        if (raw >= ast.nodes.items.len or raw >= semantic.symbol_ids.len) continue;
+        if (ast.nodes.items[raw].tag != .identifier_reference) continue;
+        const symbol_id = semantic.symbol_ids[raw] orelse continue;
+        if (symbol_id != @intFromEnum(reference.symbol_id)) continue;
+        nodes.set(raw);
+    }
+    return nodes;
+}
+
 const ConstMaterializeFilter = enum {
     all,
     numeric,
@@ -275,12 +302,33 @@ fn markConstMaterializedAndResync(self: *TreeShaker, m: *Module) void {
     self.ast_mutated_after_link = true;
 }
 
+/// Keep the existing semantic graph when numeric materialization skipped the
+/// syntax minifier. Old prepass ref deltas are excluded because emitter minify
+/// consumes them against the base semantic counts.
+fn markConstMaterializedRetainingGraph(
+    self: *TreeShaker,
+    m: *Module,
+    materialized_nodes: []const NodeIndex,
+) bool {
+    std.debug.assert(m.parse_arena != null);
+    self.graph.resyncModuleMetadataAfterConstMaterializationRetainingGraph(
+        m,
+        m.parse_arena.?.allocator(),
+        materialized_nodes,
+    ) catch return false;
+    m.namespace_access_index = null;
+    self.ast_mutated_after_link = true;
+    return true;
+}
+
 fn minifyAndResyncModule(
     self: *TreeShaker,
     m: *Module,
     sem: ModuleSemanticData,
     ast: *Ast,
     const_profile: ConstMaterializeProfile,
+    materialized: constant_facts.MaterializeResult,
+    materialized_nodes: []const NodeIndex,
     skip_minify: bool,
 ) void {
     var scope = profile.beginMaybe(const_profile.minify_resync);
@@ -304,7 +352,14 @@ fn minifyAndResyncModule(
         defer resync_scope.end();
 
         if (const_profile.policy.stableImportExportSyntax()) {
-            markConstMaterializedAndResync(self, m);
+            const has_stale_ref_deltas = if (m.transform_cache) |cache|
+                cache.ref_deltas.len > 0
+            else
+                false;
+            const retained = skip_minify and m.semantic != null and !has_stale_ref_deltas and
+                materialized.tracked_nodes_complete and
+                markConstMaterializedRetainingGraph(self, m, materialized_nodes);
+            if (!retained) markConstMaterializedAndResync(self, m);
         } else {
             self.markAstMutatedAndResync(m);
         }
@@ -366,6 +421,10 @@ fn materializeCrossModuleConstFactsForIndex(
         self.materialize_scratch = Scratch.init(self.allocator, self.graph.moduleCount()) catch null;
     }
     const scratch_ptr: ?*Scratch = if (self.materialize_scratch) |*s| s else null;
+    var eligible_reference_nodes = try materializableReferenceNodes(self.allocator, ast, sem);
+    defer eligible_reference_nodes.deinit();
+    var materialized_nodes: std.ArrayList(NodeIndex) = .empty;
+    defer materialized_nodes.deinit(self.allocator);
     const materialized = blk: {
         var materialize_scope = profile.beginMaybe(const_profile.materialize);
         defer materialize_scope.end();
@@ -378,6 +437,8 @@ fn materializeCrossModuleConstFactsForIndex(
             module_index,
             const_profile.inner,
             const_profile.policy.skipMinifyIfSafe(),
+            &eligible_reference_nodes,
+            if (const_profile.policy.skipMinifyIfSafe()) &materialized_nodes else null,
         );
     };
     const_values.deinit(self.allocator);
@@ -416,7 +477,16 @@ fn materializeCrossModuleConstFactsForIndex(
     }
 
     const skip_minify = const_profile.policy.skipMinifyIfSafe() and !materialized.needs_minify;
-    minifyAndResyncModule(self, m, sem, ast, const_profile, skip_minify);
+    minifyAndResyncModule(
+        self,
+        m,
+        sem,
+        ast,
+        const_profile,
+        materialized,
+        materialized_nodes.items,
+        skip_minify,
+    );
     return true;
 }
 

@@ -1,5 +1,6 @@
 const std = @import("std");
 const Bundler = @import("../bundler.zig").Bundler;
+const BundleOptions = @import("../bundler.zig").BundleOptions;
 const types = @import("../types.zig");
 const emitter = @import("../emitter.zig");
 const ResolveCache = @import("../resolve_cache.zig").ResolveCache;
@@ -938,6 +939,93 @@ test "Minify: constant fact materialization preserves object shorthand keys" {
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "{false") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "DEV") != null);
+}
+
+test "Tree shaking: numeric const post-pass preserves exact shadow and reference state" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\import { answer, enabled, absent } from './values.js';
+        \\function shadow(answer) { return answer; }
+        \\const object = { answer };
+        \\console.log(object.answer, answer, answer, enabled, absent, shadow(1));
+    );
+    try writeFile(tmp.dir, "values.js",
+        \\export const answer = 7;
+        \\export const enabled = true;
+        \\export const absent = null;
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    const options: BundleOptions = .{ .entry_points = &.{entry}, .minify_syntax = false };
+    var resolve_cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+    defer resolve_cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &resolve_cache);
+    defer graph.deinit();
+    var bundler = Bundler.initWithGraph(std.testing.allocator, options, &resolve_cache, &graph);
+    defer bundler.deinit();
+
+    const result = try bundler.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log(object.answer, 7, 7, true, null, shadow(1))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function shadow(answer)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "return answer") != null);
+
+    var entry_module: ?*@import("../module.zig").Module = null;
+    for (0..graph.moduleCount()) |i| {
+        const module = graph.moduleAtMut(types.ModuleIndex.fromUsize(i)) orelse continue;
+        if (std.mem.endsWith(u8, module.path, "entry.js")) entry_module = module;
+    }
+    const module = entry_module orelse return error.MissingEntryModule;
+    const ast = &(module.ast orelse return error.MissingAst);
+    const semantic = &(module.semantic orelse return error.MissingSemantic);
+
+    var answer_import: ?u32 = null;
+    var shadow_parameter: ?u32 = null;
+    for (semantic.symbols.items, 0..) |symbol, symbol_index| {
+        const name = ast.getText(symbol.name);
+        if (symbol.kind == .import_binding and std.mem.eql(u8, name, "answer")) answer_import = @intCast(symbol_index);
+        if (symbol.kind == .parameter and std.mem.eql(u8, name, "answer")) shadow_parameter = @intCast(symbol_index);
+    }
+    try std.testing.expect(answer_import != null);
+    try std.testing.expect(shadow_parameter != null);
+    try std.testing.expectEqual(@as(u32, 1), semantic.symbols.items[answer_import.?].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), semantic.symbols.items[shadow_parameter.?].reference_count);
+
+    for (semantic.references) |reference| {
+        if (reference.node_index.isNone()) continue;
+        const node_index = @intFromEnum(reference.node_index);
+        try std.testing.expect(node_index < ast.nodes.items.len);
+        try std.testing.expectEqual(.identifier_reference, ast.nodes.items[node_index].tag);
+    }
+
+    var numeric_literals: usize = 0;
+    var boolean_literals: usize = 0;
+    var null_literals: usize = 0;
+    for (ast.nodes.items, 0..) |node, node_index| {
+        const is_materialized = switch (node.tag) {
+            .numeric_literal => std.mem.eql(u8, ast.getText(node.span), "7"),
+            .boolean_literal => std.mem.eql(u8, ast.getText(node.span), "true"),
+            .null_literal => std.mem.eql(u8, ast.getText(node.span), "null"),
+            else => false,
+        };
+        if (!is_materialized) continue;
+        try std.testing.expect(semantic.symbol_ids[node_index] == null);
+        if (module.transform_cache) |cache| try std.testing.expect(cache.symbol_ids[node_index] == null);
+        switch (node.tag) {
+            .numeric_literal => numeric_literals += 1,
+            .boolean_literal => boolean_literals += 1,
+            .null_literal => null_literals += 1,
+            else => unreachable,
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), numeric_literals);
+    try std.testing.expectEqual(@as(usize, 1), boolean_literals);
+    try std.testing.expectEqual(@as(usize, 1), null_literals);
+    try std.testing.expect(module.prebuilt_stmt_info != null);
 }
 
 test "Minify: refreshed semantic recomputes mangling after constant fact DCE" {

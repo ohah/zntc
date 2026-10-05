@@ -76,6 +76,7 @@ pub const ModuleGraph = struct {
     pub const shouldRunTransformerPrePass = graph_transform_prepass.shouldRun;
     pub const runTransformerPrePass = graph_transform_prepass.run;
     pub const resyncModuleMetadataAfterConstMaterialization = graph_transform_prepass.resyncAfterConstMaterialization;
+    pub const resyncModuleMetadataAfterConstMaterializationRetainingGraph = graph_transform_prepass.resyncAfterConstMaterializationRetainingGraph;
     pub const resyncModuleMetadataAfterAstMutation = graph_transform_prepass.resyncAfterAstMutation;
     pub const materializeFromCachedAst = graph_transform_prepass.materializeFromCachedAst;
     const graph_package_info = @import("graph/package_info.zig");
