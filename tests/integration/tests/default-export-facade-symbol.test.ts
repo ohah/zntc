@@ -31,14 +31,7 @@ export default 42;
       expect(native.stderr).toBe('');
       expect(native.stdout.trim()).toBe('[42,"source"]');
 
-      const result = await runZntc([
-        '--bundle',
-        entry,
-        '-o',
-        output,
-        '--format=esm',
-        ...flags,
-      ]);
+      const result = await runZntc(['--bundle', entry, '-o', output, '--format=esm', ...flags]);
       expect(result.exitCode, result.stderr).toBe(0);
 
       const bundled = await runNode(output);
@@ -68,14 +61,7 @@ export default _default;
       expect(native.stderr).toBe('');
       expect(native.stdout.trim()).toBe('["source","source"]');
 
-      const result = await runZntc([
-        '--bundle',
-        entry,
-        '-o',
-        output,
-        '--format=esm',
-        ...flags,
-      ]);
+      const result = await runZntc(['--bundle', entry, '-o', output, '--format=esm', ...flags]);
       expect(result.exitCode, result.stderr).toBe(0);
 
       const bundled = await runNode(output);
@@ -106,14 +92,7 @@ export { default } from './dep.mjs';
       expect(native.stderr).toBe('');
       expect(native.stdout.trim()).toBe('[42,"barrel local"]');
 
-      const result = await runZntc([
-        '--bundle',
-        entry,
-        '-o',
-        output,
-        '--format=esm',
-        ...flags,
-      ]);
+      const result = await runZntc(['--bundle', entry, '-o', output, '--format=esm', ...flags]);
       expect(result.exitCode, result.stderr).toBe(0);
 
       const bundled = await runNode(output);
