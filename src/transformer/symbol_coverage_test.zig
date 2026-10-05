@@ -1695,7 +1695,7 @@ test "#4819 optional catch binding gets a symbol in its catch scope" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    var scanner = try Scanner.init(allocator, "const _a = 9; try { throw 1; } catch { console.log(_a); } try { throw 2; } catch { console.log(_a); }");
+    var scanner = try Scanner.init(allocator, "const _a = 9; const _b = 8; try { throw 1; } catch { console.log(_a, _b); } try { throw 2; } catch { console.log(_a, _b); }");
     var parser = Parser.init(allocator, &scanner);
     parser.configureFromExtension(".mjs");
     _ = try parser.parse();
@@ -1703,6 +1703,10 @@ test "#4819 optional catch binding gets a symbol in its catch scope" {
     analyzer.is_module = true;
     try analyzer.analyze();
     const original_symbols = analyzer.symbols.items.len;
+    var outer_b_id: ?usize = null;
+    for (analyzer.symbols.items, 0..) |symbol, id| {
+        if (std.mem.eql(u8, symbol.nameText(parser.ast.source), "_b")) outer_b_id = id;
+    }
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{
         .unsupported = TransformOptions.compat.fromESTarget(.es5),
@@ -1722,9 +1726,14 @@ test "#4819 optional catch binding gets a symbol in its catch scope" {
     for (edited.symbols.items[original_symbols..]) |generated| {
         try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.catch_binding, generated.kind);
         try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.catch_clause, edited.scopes[generated.scope_id.toIndex()].kind);
-        try std.testing.expectEqualStrings("_b", transformer.ast.getText(generated.name));
+        try std.testing.expectEqualStrings("_c", transformer.ast.getText(generated.name));
         try std.testing.expectEqual(@as(u32, 0), generated.reference_count);
     }
+    var outer_b_reads: usize = 0;
+    for (edited.references) |reference| {
+        if (@intFromEnum(reference.symbol_id) == (outer_b_id orelse return error.TestUnexpectedResult) and reference.flags.read) outer_b_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), outer_b_reads);
     var bindings: usize = 0;
     for (edited.symbol_ids, 0..) |maybe_id, i| {
         if (maybe_id != null and maybe_id.? >= original_symbols and transformer.ast.nodes.items[i].tag == .binding_identifier) bindings += 1;
