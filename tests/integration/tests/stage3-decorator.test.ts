@@ -469,6 +469,43 @@ describe('Stage 3 Decorators', () => {
     expect(result.runOutput).toBe('1 42 2 17');
   });
 
+  it('ES5 field and accessor decorators keep per-member initializer symbols when shadowed', async () => {
+    const result = await bundleAndRun(
+      {
+        'index.ts': `
+          const _value_initializers = [function(v: number) { return v + 100; }];
+          const _other_initializers = [function(v: number) { return v + 200; }];
+          const _current_initializers = [function(v: number) { return v + 300; }];
+          const _staticValue_initializers = [function(v: number) { return v + 400; }];
+          function increment(value: any, context: any) {
+            if (context.kind === 'field') return (initialValue: number) => initialValue + 1;
+            return value;
+          }
+          function incrementAccessor(value: any) {
+            return { ...value, init(initialValue: number) { return initialValue + 3; } };
+          }
+          class Example {
+            @increment value = 1;
+            @increment other = 2;
+            @incrementAccessor accessor current = 3;
+            @increment static staticValue = 9;
+          }
+          const example = new Example();
+          console.log(example.value, example.other, example.current, Example.staticValue,
+            _value_initializers[0](0), _value_initializers.length,
+            _other_initializers[0](0), _other_initializers.length,
+            _current_initializers[0](0), _current_initializers.length,
+            _staticValue_initializers[0](0), _staticValue_initializers.length);
+        `,
+      },
+      'index.ts',
+      ['--target=es5', '--minify'],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('2 3 6 10 100 1 200 1 300 1 400 1');
+  });
+
   it('ES5 static and instance decorators keep separate arrays for same-named members', async () => {
     const result = await bundleAndRun(
       {
