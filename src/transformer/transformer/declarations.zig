@@ -304,14 +304,12 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
         else
             try self.hoistTempVars(new_body, saved_temp_counter, node.span);
     }
-    var generated_local_specs: std.ArrayListUnmanaged(Transformer.GeneratedLocalSpec) = .empty;
-    defer generated_local_specs.deinit(self.allocator);
-    try generated_local_specs.appendSlice(self.allocator, &.{
-        .{ .name = try es_helpers.resolveSyntheticName(self, "_this"), .kind = .variable_var },
-        .{ .name = try es_helpers.resolveSyntheticName(self, "_arguments"), .kind = .variable_var },
-    });
-    try self.appendGeneratedTempSpecs(saved_temp_counter, &generated_local_specs);
-    try self.trackGeneratedLocalSymbols(new_body, self.current_scope, generated_local_specs.items);
+    // Capture aliases already carry frame/kind handles from their producer;
+    // only hoisted anonymous temps need output-tree completion here.
+    var generated_temp_specs: std.ArrayListUnmanaged(Transformer.GeneratedLocalSpec) = .empty;
+    defer generated_temp_specs.deinit(self.allocator);
+    try self.appendGeneratedTempSpecs(saved_temp_counter, &generated_temp_specs);
+    try self.trackGeneratedLocalSymbols(new_body, self.current_scope, generated_temp_specs.items);
     // 함수 스코프 종료 — outer scope 의 hoistTempVars 가 같은 _a 를 다시 hoist 하지 않도록
     // 카운터 복원 (#1960). 다음 함수 / outer 에서 동일 이름을 안전하게 재사용 가능.
     self.temp_var_counter = saved_temp_counter;

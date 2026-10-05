@@ -1461,6 +1461,26 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       expect(result.runOutput).toBe('10,7,2,3');
     });
 
+    test('downleveled function captures bind this and arguments without local-name rescans', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            function read(value: number) {
+              const _this = 2;
+              const _arguments = 3;
+              return () => [this.x, arguments[0], _this, _arguments].join(',');
+            }
+            console.log(read.call({ x: 10 }, 7)());
+          `,
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('10,7,2,3');
+    });
+
     test('prelowered async class methods keep this and arguments captures', async () => {
       const result = await bundleAndRun(
         {
