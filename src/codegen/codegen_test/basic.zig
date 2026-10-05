@@ -432,6 +432,86 @@ test "#4819 Codegen keeps namespace text fallback when semantic owners are absen
     try std.testing.expectEqualStrings("var N;((N) => {N.value=1;})(N || (N = {}));\n", output);
 }
 
+test "#4819 Codegen refuses to recover a missing enum IIFE parameter from text" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "enum Self { Self = 1 }";
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    analyzer.is_ts = parser.source_mode == .ts;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.references = analyzer.references.items;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const root = try transformer.transform();
+    if (try transformer.finishSemanticEdit()) |edited| {
+        analyzer.applyEdit(edited);
+        transformer.symbols = analyzer.symbols.items;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+    }
+
+    const semantic_options: CodegenOptions = .{
+        .semantic_symbol_ids = transformer.symbol_ids.items,
+        .semantic_symbols = analyzer.symbols.items,
+        .semantic_scope_maps = analyzer.scope_maps.items,
+        .generated_iife_scope_owner_map = &analyzer.scope_owner_map,
+    };
+    var valid_cg = Codegen.initWithOptions(allocator, transformer.ast, semantic_options);
+    defer valid_cg.deinit();
+    const output = try valid_cg.generate(root);
+    try std.testing.expect(std.mem.indexOf(u8, output, "((_Self) =>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, ")(Self || {});") != null);
+
+    var missing_enum_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    var missing_owner_options = semantic_options;
+    missing_owner_options.generated_iife_scope_owner_map = &missing_enum_owners;
+    var missing_owner_cg = Codegen.initWithOptions(allocator, transformer.ast, missing_owner_options);
+    defer missing_owner_cg.deinit();
+    try std.testing.expectError(error.MissingEnumIifeParameterSymbol, missing_owner_cg.generate(root));
+}
+
+test "#4819 Codegen keeps collision-safe enum fallback without semantic owners" {
+    const allocator = std.testing.allocator;
+    const source = "enum Self { Self = 1 }";
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    const root = try transformer.transform();
+
+    var cg = Codegen.init(allocator, transformer.ast);
+    defer cg.deinit();
+    const output = try cg.generate(root);
+    try std.testing.expect(std.mem.indexOf(u8, output, "((_Self) =>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, ")(Self || {});") != null);
+}
+
 test "Codegen: const enum removed" {
     var r = try e2e(std.testing.allocator, "const enum Dir { Up, Down }");
     defer r.deinit();
