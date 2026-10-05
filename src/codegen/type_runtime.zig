@@ -8,6 +8,7 @@ const Ast = ast_mod.Ast;
 const FlowEnumBaseType = @import("../parser/flow.zig").FlowEnumBaseType;
 const SyntheticKind = @import("../semantic/symbol.zig").SyntheticKind;
 const rt = @import("../bundler/runtime_helpers.zig");
+pub const Error = std.mem.Allocator.Error || @import("errors.zig").Error;
 const bindings = @import("bindings.zig");
 const NamespaceFrame = @import("codegen.zig").NamespaceFrame;
 const NamespacePrefix = @import("codegen.zig").NamespacePrefix;
@@ -259,7 +260,7 @@ const EnumMemberValue = union(enum) {
 ///   - 그 외 (Symbol/number/boolean/string-with-init): \`require('flow-enums-runtime')({A:<v>, B:<v>})\`
 ///   - Symbol body: 각 member 의 init 으로 \`Symbol('name')\` 자동 emit
 ///   - number/boolean body + defaulted: ZNTC 가 default value (auto-increment / false) 채움
-pub fn emitFlowEnum(self: anytype, node: Node) std.mem.Allocator.Error!void {
+pub fn emitFlowEnum(self: anytype, node: Node) Error!void {
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
@@ -375,12 +376,22 @@ const NamespacePlacement = union(enum) {
 
 /// Placement distinguishes a top-level namespace, a private nested binding,
 /// and an exported namespace stored on its parent's object.
-fn namespaceIifeParamName(self: anytype, namespace_idx: NodeIndex) ?[]const u8 {
-    return generatedIifeParamName(self, namespace_idx, .namespace_iife_parameter);
-}
+const NamespaceIifeParameter = struct {
+    symbol_id: u32,
+    name: []const u8,
+};
 
-fn namespaceIifeParamSymbolId(self: anytype, namespace_idx: NodeIndex) ?u32 {
-    return generatedIifeParamSymbolId(self, namespace_idx, .namespace_iife_parameter);
+/// A supplied owner map marks semantic codegen: in that mode a namespace IIFE
+/// must resolve to its exact generated parameter symbol. The null-map path is
+/// retained for low-level callers that intentionally skip semantic analysis.
+fn namespaceIifeParameter(self: anytype, namespace_idx: NodeIndex) !?NamespaceIifeParameter {
+    if (self.options.generated_iife_scope_owner_map == null) return null;
+    const symbol_id = generatedIifeParamSymbolId(self, namespace_idx, .namespace_iife_parameter) orelse
+        return error.MissingNamespaceIifeParameterSymbol;
+    return .{
+        .symbol_id = symbol_id,
+        .name = generatedIifeParamNameFromSymbolId(self, symbol_id),
+    };
 }
 
 fn enumIifeParamName(self: anytype, enum_idx: NodeIndex) ?[]const u8 {
@@ -418,6 +429,10 @@ pub fn emitEnumIifeMemberReference(self: anytype, node: Node, member: anytype) !
 
 fn generatedIifeParamName(self: anytype, owner_idx: NodeIndex, expected_kind: SyntheticKind) ?[]const u8 {
     const raw_id = generatedIifeParamSymbolId(self, owner_idx, expected_kind) orelse return null;
+    return generatedIifeParamNameFromSymbolId(self, raw_id);
+}
+
+fn generatedIifeParamNameFromSymbolId(self: anytype, raw_id: u32) []const u8 {
     const symbol = self.options.semantic_symbols[@intCast(raw_id)];
     if (self.options.linking_metadata) |metadata| {
         if (metadata.renames.get(raw_id)) |renamed| return renamed;
@@ -451,9 +466,10 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
         const name_node = self.ast.getNode(name_idx);
         const name_text = self.ast.getText(name_node.span);
         const local_name = namespaceLocalName(self, name_idx, name_text);
-        const iife_param_name = namespaceIifeParamName(self, namespace_idx) orelse name_text;
+        const namespace_parameter = try namespaceIifeParameter(self, namespace_idx);
+        const iife_param_name = if (namespace_parameter) |parameter| parameter.name else name_text;
         const namespace_prefix: NamespacePrefix = .{
-            .symbol_id = namespaceIifeParamSymbolId(self, namespace_idx),
+            .symbol_id = if (namespace_parameter) |parameter| parameter.symbol_id else null,
             .fallback_name = iife_param_name,
         };
 
@@ -531,9 +547,10 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
     // exported references themselves are resolved by SymbolId below.
     var owned_param: ?[]u8 = null;
     defer if (owned_param) |p| std.heap.page_allocator.free(p);
-    var param_name = namespaceIifeParamName(self, namespace_idx) orelse name_text;
+    const namespace_parameter = try namespaceIifeParameter(self, namespace_idx);
+    var param_name = if (namespace_parameter) |parameter| parameter.name else name_text;
     const namespace_param_context = NamespaceParamContext{ .name_idx = name_idx, .body_idx = body_idx };
-    if (namespaceIifeParamName(self, namespace_idx) == null and
+    if (namespace_parameter == null and
         (ns_export_map.contains(name_text) or generatedIifeParamReserved(self, name_text, namespace_param_context)))
     {
         var suffix: u32 = 0;
@@ -551,7 +568,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
         }
     }
     const namespace_prefix: NamespacePrefix = .{
-        .symbol_id = namespaceIifeParamSymbolId(self, namespace_idx),
+        .symbol_id = if (namespace_parameter) |parameter| parameter.symbol_id else null,
         .fallback_name = param_name,
     };
 
