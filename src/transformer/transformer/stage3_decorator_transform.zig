@@ -472,6 +472,8 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     var static_block_stmts: std.ArrayList(NodeIndex) = .empty;
     defer static_block_stmts.deinit(self.allocator);
     var metadata_block_scope: ScopeId = .none;
+    var metadata_refs: std.ArrayList(NodeIndex) = .empty;
+    defer metadata_refs.deinit(self.allocator);
 
     // IIFE 내부 let 선언 목록
     var iife_stmts: std.ArrayList(NodeIndex) = .empty;
@@ -558,14 +560,14 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         const want_non_field = pass[1];
         for (member_infos.items) |info| {
             if (info.is_static == want_static and is_non_field(info.kind) == want_non_field) {
-                try self.appendEsDecorateStmt(&static_block_stmts, info);
+                try self.appendEsDecorateStmt(&static_block_stmts, info, &metadata_refs);
             }
         }
     }
 
     // class decorator __esDecorate 호출 (식 평가는 이미 IIFE 최상단 let 선언에서 완료)
     if (class_deco_len > 0) {
-        const class_call = try self.buildClassEsDecorateCall(classThis_span);
+        const class_call = try self.buildClassEsDecorateCall(classThis_span, &metadata_refs);
         const class_call_stmt = try self.ast.addNode(.{
             .tag = .expression_statement,
             .span = zero_span,
@@ -581,7 +583,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
 
     // if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
     {
-        const metadata_define = try self.buildMetadataDefineProperty(classThis_span);
+        const metadata_define = try self.buildMetadataDefineProperty(classThis_span, &metadata_refs);
         try static_block_stmts.append(self.allocator, metadata_define);
     }
 
@@ -612,6 +614,21 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         });
         // 첫 static block 뒤에 삽입 (index 1)
         try new_members.insert(self.allocator, 1, sb);
+    }
+
+    // Metadata references are recorded as exact nodes by their builders. Once
+    // the generated static-block scope is known, bind those handles directly.
+    if (self.semantic_edit_enabled) {
+        if (metadata_block_scope.isNone()) std.debug.panic("Stage 3 metadata has no output block scope", .{});
+        const metadata_symbol = (try self.declareSyntheticInScope(
+            metadata_binding,
+            self.ast.getNode(metadata_binding).span,
+            .variable_const,
+            metadata_block_scope,
+        )) orelse std.debug.panic("Stage 3 metadata binding has no SymbolId", .{});
+        for (metadata_refs.items) |reference| {
+            try self.addSyntheticRefInScope(reference, metadata_symbol, metadata_block_scope, .{ .read = true });
+        }
     }
 
     // constructor에 __runInitializers 삽입
@@ -839,13 +856,6 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .exact_binding_span = span,
         });
     }
-    const metadata_span = self.ast.getNode(metadata_binding).data.string_ref;
-    try generated_local_specs.append(self.allocator, .{
-        .name = self.ast.getText(metadata_span),
-        .kind = .variable_const,
-        .binding_scope = metadata_block_scope,
-        .exact_binding_span = metadata_span,
-    });
     try self.trackGeneratedLocalSymbols(arrow, arrow_scope, generated_local_specs.items);
 
     // class expression / 익명 class / export default class → IIFE call 직접 반환

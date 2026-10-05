@@ -305,6 +305,32 @@ describe('Stage 3 Decorators', () => {
     expect(result.runOutput).toContain('true');
   });
 
+  it('ES5 decorator metadata references keep their exact symbol when _metadata is shadowed', async () => {
+    const result = await bundleAndRun(
+      {
+        'index.ts': `
+          if (!("metadata" in Symbol)) {
+            (Symbol as any).metadata = Symbol("Symbol.metadata");
+          }
+          const _metadata = 17;
+          function mark(value: any, context: any) {
+            context.metadata.decorated = true;
+            return value;
+          }
+          @mark class Example {
+            @mark method() { return 42; }
+          }
+          console.log(new Example().method(), (Example as any)[Symbol.metadata].decorated, _metadata);
+        `,
+      },
+      'index.ts',
+      ['--target=es5'],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('42 true 17');
+  });
+
   // --- Private member decorator ---
 
   it('private method decorator context', async () => {

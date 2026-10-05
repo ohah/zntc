@@ -116,7 +116,11 @@ pub fn collectStage3Decorators(self: anytype, deco_start: u32, deco_len: u32) Er
 }
 
 /// __esDecorate(this, null, _decorators, { kind: "method", name: "...", static: bool, private: bool, access: { ... }, metadata: _metadata }, null, _extraInitializers) 호출 생성.
-pub fn buildEsDecorateCall(self: anytype, info: Stage3MemberInfo) Error!NodeIndex {
+pub fn buildEsDecorateCall(
+    self: anytype,
+    info: Stage3MemberInfo,
+    metadata_refs: *std.ArrayList(NodeIndex),
+) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
     const callee = try es_helpers.makeRuntimeHelperRef(self, "__esDecorate");
@@ -172,7 +176,7 @@ pub fn buildEsDecorateCall(self: anytype, info: Stage3MemberInfo) Error!NodeInde
     };
 
     // arg4: context object { kind: "method", name: "greet", static: false, private: false, access: { ... }, metadata: _metadata }
-    const arg4 = try buildContextObject(self, info);
+    const arg4 = try buildContextObject(self, info, metadata_refs);
 
     // arg5: initializers (null for method/getter/setter, per-field var for field/accessor)
     const arg5 = if (info.initializers_name) |name|
@@ -196,7 +200,11 @@ pub fn buildEsDecorateCall(self: anytype, info: Stage3MemberInfo) Error!NodeInde
 
 /// class decorator용 __esDecorate 호출:
 /// __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers)
-pub fn buildClassEsDecorateCall(self: anytype, classThis_span: Span) Error!NodeIndex {
+pub fn buildClassEsDecorateCall(
+    self: anytype,
+    classThis_span: Span,
+    metadata_refs: *std.ArrayList(NodeIndex),
+) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
     const callee = try es_helpers.makeRuntimeHelperRef(self, "__esDecorate");
@@ -237,7 +245,7 @@ pub fn buildClassEsDecorateCall(self: anytype, classThis_span: Span) Error!NodeI
     const name_prop = try makeObjProp(self, name_key, classThis_name);
 
     const metadata_key = try es_helpers.makePropertyName(self, "metadata");
-    const metadata_val = try es_helpers.makeSyntheticRef(self, "_metadata");
+    const metadata_val = try makeMetadataRef(self, metadata_refs);
     const metadata_prop = try makeObjProp(self, metadata_key, metadata_val);
 
     const ctx_list = try self.ast.addNodeList(&.{ kind_prop, name_prop, metadata_prop });
@@ -256,7 +264,11 @@ pub fn buildClassEsDecorateCall(self: anytype, classThis_span: Span) Error!NodeI
 }
 
 /// context object 생성: { kind: "method", name: "greet", static: false, private: false, access: { has: ..., get: ... }, metadata: _metadata }
-pub fn buildContextObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex {
+pub fn buildContextObject(
+    self: anytype,
+    info: Stage3MemberInfo,
+    metadata_refs: *std.ArrayList(NodeIndex),
+) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     var props: std.ArrayList(NodeIndex) = .empty;
     defer props.deinit(self.allocator);
@@ -293,7 +305,7 @@ pub fn buildContextObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex
 
     // metadata
     const metadata_key = try es_helpers.makePropertyName(self, "metadata");
-    const metadata_val = try es_helpers.makeSyntheticRef(self, "_metadata");
+    const metadata_val = try makeMetadataRef(self, metadata_refs);
     try props.append(self.allocator, try makeObjProp(self, metadata_key, metadata_val));
 
     const list = try self.ast.addNodeList(props.items);
@@ -733,11 +745,15 @@ pub fn buildFieldInitNames(self: anytype, name_node_idx: NodeIndex) Error!FieldI
 }
 
 /// if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
-pub fn buildMetadataDefineProperty(self: anytype, classThis_span: Span) Error!NodeIndex {
+pub fn buildMetadataDefineProperty(
+    self: anytype,
+    classThis_span: Span,
+    metadata_refs: *std.ArrayList(NodeIndex),
+) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
     // _metadata (condition)
-    const metadata_cond = try es_helpers.makeSyntheticRef(self, "_metadata");
+    const metadata_cond = try makeMetadataRef(self, metadata_refs);
 
     // Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata })
     const object_ref = try es_helpers.makeGlobalRef(self, "Object");
@@ -760,7 +776,7 @@ pub fn buildMetadataDefineProperty(self: anytype, classThis_span: Span) Error!No
     const writ_k = try es_helpers.makePropertyName(self, "writable");
     const writ_v = try es_helpers.makeBoolLiteral(self, true);
     const val_k = try es_helpers.makePropertyName(self, "value");
-    const val_v = try es_helpers.makeSyntheticRef(self, "_metadata");
+    const val_v = try makeMetadataRef(self, metadata_refs);
 
     const p1 = try makeObjProp(self, enum_k, enum_v);
     const p2 = try makeObjProp(self, conf_k, conf_v);
@@ -894,8 +910,19 @@ pub fn extractCleanVarName(self: anytype, name_node_idx: NodeIndex) []const u8 {
 }
 
 /// __esDecorate 호출문을 static_block_stmts에 추가하는 헬퍼
-pub fn appendEsDecorateStmt(self: anytype, stmts: *std.ArrayList(NodeIndex), info: Stage3MemberInfo) Error!void {
+pub fn appendEsDecorateStmt(
+    self: anytype,
+    stmts: *std.ArrayList(NodeIndex),
+    info: Stage3MemberInfo,
+    metadata_refs: *std.ArrayList(NodeIndex),
+) Error!void {
     const zero_span = Span{ .start = 0, .end = 0 };
-    const call = try buildEsDecorateCall(self, info);
+    const call = try buildEsDecorateCall(self, info, metadata_refs);
     try stmts.append(self.allocator, try es_helpers.makeExprStmt(self, call, zero_span));
+}
+
+fn makeMetadataRef(self: anytype, refs: *std.ArrayList(NodeIndex)) Error!NodeIndex {
+    const reference = try es_helpers.makeSyntheticRef(self, "_metadata");
+    try refs.append(self.allocator, reference);
+    return reference;
 }
