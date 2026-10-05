@@ -523,7 +523,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     const source =
         \\function logged(value) { return value; }
         \\@logged
-        \\class Box { @logged method() { return 1; } @logged static method() { return 2; } @logged static get staticValue() { return 3; } }
+        \\class Box { @logged method() { return 1; } @logged static method() { return 2; } @logged static get staticValue() { return 3; } @logged #secret() { return 4; } @logged static #staticSecret() { return 5; } }
     ;
     var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
@@ -595,7 +595,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
         try std.testing.expect(metadata_is_visible);
         metadata_reads += 1;
     }
-    try std.testing.expectEqual(@as(usize, 6), metadata_reads);
+    try std.testing.expectEqual(@as(usize, 8), metadata_reads);
 
     var class_decorators_id: ?u32 = null;
     var class_decorators_bindings: usize = 0;
@@ -835,7 +835,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
         try std.testing.expect(static_extra_initializers_are_visible);
         static_extra_initializers_reads += 1;
     }
-    try std.testing.expectEqual(@as(usize, 2), static_extra_initializers_reads);
+    try std.testing.expectEqual(@as(usize, 3), static_extra_initializers_reads);
 
     var member_decorator_bindings: usize = 0;
     var member_decorator_names: std.ArrayList([]const u8) = .empty;
@@ -880,7 +880,64 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
         try std.testing.expectEqual(@as(usize, 1), writes);
         try std.testing.expect(reference_scope != null);
     }
-    try std.testing.expectEqual(@as(usize, 3), member_decorator_bindings);
+    try std.testing.expectEqual(@as(usize, 5), member_decorator_bindings);
+
+    for ([_][]const u8{ "_private_secret_descriptor", "_private_staticSecret_descriptor" }) |descriptor_name| {
+        var private_descriptor_id: ?u32 = null;
+        var private_descriptor_bindings: usize = 0;
+        for (reachable) |raw| {
+            const node = transformer.ast.nodes.items[raw];
+            if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), descriptor_name)) continue;
+            if (raw >= edited.symbol_ids.len) return error.TestUnexpectedResult;
+            const id = edited.symbol_ids[raw] orelse return error.TestUnexpectedResult;
+            if (edited.symbols.items[id].kind != .variable_let) continue;
+            private_descriptor_id = id;
+            private_descriptor_bindings += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), private_descriptor_bindings);
+        const exact_private_descriptor_id = private_descriptor_id orelse return error.TestUnexpectedResult;
+        const private_descriptor_scope = edited.symbols.items[exact_private_descriptor_id].scope_id;
+        try std.testing.expectEqual(decorator_iife, private_descriptor_scope);
+        try std.testing.expectEqual(
+            @as(?usize, exact_private_descriptor_id),
+            edited.scope_maps[private_descriptor_scope.toIndex()].get(descriptor_name),
+        );
+
+        var private_descriptor_reads: usize = 0;
+        var private_descriptor_writes: usize = 0;
+        var private_descriptor_read_scope: ?@import("../semantic/scope.zig").ScopeId = null;
+        var private_descriptor_write_scope: ?@import("../semantic/scope.zig").ScopeId = null;
+        for (edited.references) |reference| {
+            if (@intFromEnum(reference.symbol_id) != exact_private_descriptor_id or reference.node_index.isNone()) continue;
+            const node = transformer.ast.getNode(reference.node_index);
+            try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, node.tag);
+            try std.testing.expectEqualStrings(descriptor_name, transformer.ast.getText(node.data.string_ref));
+            var visible_scope = reference.scope_id;
+            var descriptor_is_visible = false;
+            var hops: usize = 0;
+            while (!visible_scope.isNone() and hops < edited.scopes.len) : (hops += 1) {
+                if (visible_scope == private_descriptor_scope) {
+                    descriptor_is_visible = true;
+                    break;
+                }
+                visible_scope = edited.scopes[visible_scope.toIndex()].parent;
+            }
+            try std.testing.expect(descriptor_is_visible);
+            if (reference.flags.write) {
+                try std.testing.expect(!reference.flags.read);
+                private_descriptor_writes += 1;
+                private_descriptor_write_scope = reference.scope_id;
+            } else {
+                try std.testing.expect(reference.flags.read);
+                private_descriptor_reads += 1;
+                try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[reference.scope_id.toIndex()].kind);
+                private_descriptor_read_scope = reference.scope_id;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), private_descriptor_reads);
+        try std.testing.expectEqual(@as(usize, 1), private_descriptor_writes);
+        try std.testing.expect(private_descriptor_read_scope.? != private_descriptor_write_scope.?);
+    }
 }
 
 test "#4819 ES5 class methods retain original scope on emitted functions and bind body temps" {

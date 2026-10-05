@@ -491,6 +491,29 @@ describe('Stage 3 Decorators', () => {
     expect(result.runOutput).toContain('method:#secret:private=true');
   });
 
+  it('private method descriptor references stay bound under same-named outer locals', async () => {
+    const result = await bundleAndRun(
+      {
+        'index.ts': `
+          const _private_secret_descriptor = 99;
+          const _private_staticSecret_descriptor = 88;
+          function keep(value: any, context: any) { return value; }
+          class Example {
+            @keep #secret() { return 42; }
+            @keep static #staticSecret() { return 9; }
+            call() { return this.#secret(); }
+            static callStatic() { return this.#staticSecret(); }
+          }
+          console.log(new Example().call(), Example.callStatic(), _private_secret_descriptor, _private_staticSecret_descriptor);
+        `,
+      },
+      'index.ts',
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('42 9 99 88');
+  });
+
   it('private field decorator context', async () => {
     const result = await bundleAndRun({
       'index.ts': `

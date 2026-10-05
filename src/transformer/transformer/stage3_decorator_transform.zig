@@ -245,11 +245,13 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
 
                 if (is_private_method) {
                     // private decorated method → getter로 교체: get #method() { return _descriptor.value; }
-                    const info = member_infos.items[member_infos.items.len - 1];
-                    const desc_ref = try es_helpers.makeSyntheticRef(self, info.descriptor_name.?);
+                    const info_index = member_infos.items.len - 1;
+                    const desc_ref = try es_helpers.makeSyntheticRef(self, member_infos.items[info_index].descriptor_name.?);
+                    member_infos.items[info_index].descriptor_getter_ref = desc_ref;
                     const val_key = try es_helpers.makePropertyName(self, "value");
                     const return_expr = try es_helpers.makeStaticMember(self, desc_ref, val_key, zero_span);
                     const getter = try self.buildGetterMethod(new_key, return_expr, is_static, member.span);
+                    member_infos.items[info_index].descriptor_getter_scope = try self.addGeneratedFunctionScope(class_parent_scope, getter);
                     try new_members.append(self.allocator, getter);
                 } else {
                     // public method 또는 non-decorated → 그대로 추가
@@ -611,7 +613,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         const want_non_field = pass[1];
         for (member_infos.items) |*info| {
             if (info.is_static == want_static and is_non_field(info.kind) == want_non_field) {
-                try self.appendEsDecorateStmt(&static_block_stmts, info.*, &metadata_refs, &static_extra_initializer_refs, &info.deco_apply_ref);
+                try self.appendEsDecorateStmt(&static_block_stmts, info, &metadata_refs, &static_extra_initializer_refs, &info.deco_apply_ref);
             }
         }
     }
@@ -883,10 +885,11 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         &class_this_binding,
         &static_extra_initializers_binding,
     );
-    var member_decorator_binding_set: std.AutoHashMapUnmanaged(u32, void) = .empty;
-    defer member_decorator_binding_set.deinit(self.allocator);
+    var directly_bound_member_set: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer directly_bound_member_set.deinit(self.allocator);
     for (member_infos.items) |info| {
-        if (!info.deco_binding.isNone()) try member_decorator_binding_set.put(self.allocator, @intFromEnum(info.deco_binding), {});
+        if (!info.deco_binding.isNone()) try directly_bound_member_set.put(self.allocator, @intFromEnum(info.deco_binding), {});
+        if (!info.descriptor_binding.isNone()) try directly_bound_member_set.put(self.allocator, @intFromEnum(info.descriptor_binding), {});
     }
     var stage3_let_bindings: std.ArrayList(NodeIndex) = .empty;
     defer stage3_let_bindings.deinit(self.allocator);
@@ -894,7 +897,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         const binding = generatedLetBinding(self, declaration);
         if (binding != class_decorators_binding and binding != class_descriptor_binding and
             binding != class_extra_initializers_binding and binding != class_this_binding and
-            binding != static_extra_initializers_binding and !member_decorator_binding_set.contains(@intFromEnum(binding)))
+            binding != static_extra_initializers_binding and !directly_bound_member_set.contains(@intFromEnum(binding)))
         {
             try stage3_let_bindings.append(self.allocator, binding);
         }
@@ -1016,7 +1019,22 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             try self.addSyntheticRefInScope(info.deco_apply_ref, decorator_symbol, metadata_block_scope, .{ .read = true });
         }
     }
-
+    if (self.semantic_edit_enabled) {
+        for (member_infos.items) |info| {
+            if (info.descriptor_binding.isNone()) continue;
+            const descriptor_symbol = (try self.declareSyntheticInScope(
+                info.descriptor_binding,
+                self.ast.getNode(info.descriptor_binding).span,
+                .variable_let,
+                arrow_scope,
+            )) orelse std.debug.panic("Stage 3 private descriptor binding has no SymbolId", .{});
+            if (metadata_block_scope.isNone()) std.debug.panic("Stage 3 private descriptor has no output static block scope", .{});
+            if (info.descriptor_assignment_ref.isNone() or info.descriptor_getter_ref.isNone() or info.descriptor_getter_scope.isNone())
+                std.debug.panic("Stage 3 private descriptor has missing exact reference or getter scope handle", .{});
+            try self.addSyntheticRefInScope(info.descriptor_assignment_ref, descriptor_symbol, metadata_block_scope, .{ .write = true });
+            try self.addSyntheticRefInScope(info.descriptor_getter_ref, descriptor_symbol, info.descriptor_getter_scope, .{ .read = true });
+        }
+    }
     // (() => { ... })()
     const paren_arrow = try self.ast.addNode(.{
         .tag = .parenthesized_expression,
