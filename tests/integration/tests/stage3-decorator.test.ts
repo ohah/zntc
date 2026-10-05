@@ -442,6 +442,35 @@ describe('Stage 3 Decorators', () => {
     expect(result.runOutput).toBe('42 ok 11');
   });
 
+  it('ES5 static and instance decorators keep separate arrays for same-named members', async () => {
+    const result = await bundleAndRun(
+      {
+        'index.ts': `
+          const _method_decorators = 99;
+          const calls: string[] = [];
+          function instance(value: any, context: any) {
+            calls.push('instance');
+            return value;
+          }
+          function stat(value: any, context: any) {
+            calls.push('static');
+            return value;
+          }
+          class Example {
+            @instance method() { return 1; }
+            @stat static method() { return 2; }
+          }
+          console.log(calls.join(','), new Example().method(), Example.method(), _method_decorators);
+        `,
+      },
+      'index.ts',
+      ['--target=es5'],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('static,instance 1 2 99');
+  });
+
   // --- Private member decorator ---
 
   it('private method decorator context', async () => {

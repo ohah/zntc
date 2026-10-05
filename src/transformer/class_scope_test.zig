@@ -523,7 +523,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     const source =
         \\function logged(value) { return value; }
         \\@logged
-        \\class Box { @logged method() { return 1; } @logged static staticMethod() { return 2; } @logged static get staticValue() { return 3; } }
+        \\class Box { @logged method() { return 1; } @logged static method() { return 2; } @logged static get staticValue() { return 3; } }
     ;
     var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
@@ -836,6 +836,51 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
         static_extra_initializers_reads += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), static_extra_initializers_reads);
+
+    var member_decorator_bindings: usize = 0;
+    var member_decorator_names: std.ArrayList([]const u8) = .empty;
+    defer member_decorator_names.deinit(allocator);
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .binding_identifier) continue;
+        const name = transformer.ast.getText(node.data.string_ref);
+        if (std.mem.indexOf(u8, name, "_decorators") == null) continue;
+        if (raw >= edited.symbol_ids.len) return error.TestUnexpectedResult;
+        const id = edited.symbol_ids[raw] orelse return error.TestUnexpectedResult;
+        if (edited.symbols.items[id].kind != .variable_let) continue;
+        member_decorator_bindings += 1;
+        const decorator_scope = edited.symbols.items[id].scope_id;
+        try std.testing.expectEqual(decorator_iife, decorator_scope);
+        try std.testing.expectEqual(@as(?usize, id), edited.scope_maps[decorator_scope.toIndex()].get(name));
+        for (member_decorator_names.items) |previous| try std.testing.expect(!std.mem.eql(u8, previous, name));
+        try member_decorator_names.append(allocator, name);
+
+        var reads: usize = 0;
+        var writes: usize = 0;
+        var reference_scope: ?@import("../semantic/scope.zig").ScopeId = null;
+        for (edited.references) |reference| {
+            if (@intFromEnum(reference.symbol_id) != id or reference.node_index.isNone()) continue;
+            const reference_node = transformer.ast.getNode(reference.node_index);
+            try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, reference_node.tag);
+            try std.testing.expectEqualStrings(name, transformer.ast.getText(reference_node.data.string_ref));
+            if (reference_scope) |previous_scope| {
+                try std.testing.expectEqual(previous_scope, reference.scope_id);
+            } else {
+                reference_scope = reference.scope_id;
+            }
+            if (reference.flags.write) {
+                try std.testing.expect(!reference.flags.read);
+                writes += 1;
+            } else {
+                try std.testing.expect(reference.flags.read);
+                reads += 1;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), reads);
+        try std.testing.expectEqual(@as(usize, 1), writes);
+        try std.testing.expect(reference_scope != null);
+    }
+    try std.testing.expectEqual(@as(usize, 3), member_decorator_bindings);
 }
 
 test "#4819 ES5 class methods retain original scope on emitted functions and bind body temps" {
