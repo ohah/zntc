@@ -1399,18 +1399,6 @@ pub const GeneratedLocalSpec = struct {
     exact_binding_span: ?Span = null,
 };
 
-/// Add the exact temporary names allocated during one function transform.
-/// The completed tree then binds emitted declarations and their unresolved
-/// generated uses using the real output-scope ancestry.
-pub fn appendGeneratedTempSpecs(self: *Transformer, start_counter: u32, specs: *std.ArrayListUnmanaged(GeneratedLocalSpec)) Transformer.Error!void {
-    if (!self.semantic_edit_enabled) return;
-    var counter = start_counter;
-    while (counter < self.temp_var_counter) : (counter += 1) {
-        const name_span = self.temp_span_by_counter.get(counter) orelse continue;
-        try specs.append(self.allocator, .{ .name = self.ast.getText(name_span), .kind = .variable_var });
-    }
-}
-
 /// Complete output ownership for generated function boundaries before binding
 /// deferred generator callback parameters. Some per-iteration generators are
 /// only fully placed after their enclosing state machine has been assembled.

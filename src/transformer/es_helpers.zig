@@ -14,7 +14,6 @@ const NodeList = ast_mod.NodeList;
 const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
-const GeneratedLocalSpec = @import("transformer/semantic_edit.zig").GeneratedLocalSpec;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 
 /// static private field descriptor 선언 생성: `var _x = { writable: true, value: initValue };`
@@ -2120,12 +2119,6 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
     if (self.temp_var_counter > saved_temp_counter and !new_body.isNone()) {
         new_body = try self.hoistTempVarsInOriginalFunction(new_body, saved_temp_counter, span);
     }
-    // fillThisArgumentsCaptures already binds lexical aliases by frame/kind
-    // handles. Only anonymous temps still need completion after body assembly.
-    var generated_temp_specs: std.ArrayListUnmanaged(GeneratedLocalSpec) = .empty;
-    defer generated_temp_specs.deinit(self.allocator);
-    try self.appendGeneratedTempSpecs(saved_temp_counter, &generated_temp_specs);
-    try self.trackGeneratedLocalSymbols(new_body, self.current_scope, generated_temp_specs.items);
     self.temp_var_counter = saved_temp_counter;
 
     const name_span = try self.ast.addString(name);
