@@ -29,6 +29,11 @@ pub const Stage3MemberInfo = struct {
     extra_initializers_name: ?[]const u8 = null,
     /// private method용: descriptor 변수명 (예: "_private_secret_descriptor")
     descriptor_name: ?[]const u8 = null,
+    /// Exact binding and references for the private method descriptor local.
+    descriptor_binding: NodeIndex = .none,
+    descriptor_assignment_ref: NodeIndex = .none,
+    descriptor_getter_ref: NodeIndex = .none,
+    descriptor_getter_scope: @import("../../semantic/scope.zig").ScopeId = .none,
     /// private method용: 원본 method body (function expression으로 변환에 사용)
     method_body: NodeIndex = .none,
     /// private method용: 원본 params NodeList
@@ -122,7 +127,7 @@ pub fn collectStage3Decorators(self: anytype, deco_start: u32, deco_len: u32) Er
 /// __esDecorate(this, null, _decorators, { kind: "method", name: "...", static: bool, private: bool, access: { ... }, metadata: _metadata }, null, _extraInitializers) 호출 생성.
 pub fn buildEsDecorateCall(
     self: anytype,
-    info: Stage3MemberInfo,
+    info: *Stage3MemberInfo,
     metadata_refs: *std.ArrayList(NodeIndex),
     static_extra_initializer_refs: *std.ArrayList(NodeIndex),
     deco_apply_ref: *NodeIndex,
@@ -141,6 +146,7 @@ pub fn buildEsDecorateCall(
     const arg2 = if (info.descriptor_name) |dname| blk: {
         // _private_method_descriptor = { value: __setFunctionName(function() { ... }, "#name") }
         const desc_ref = try es_helpers.makeSyntheticRef(self, dname);
+        info.descriptor_assignment_ref = desc_ref;
 
         // __setFunctionName(function() { ... }, "#name")
         const setfn_callee = try es_helpers.makeRuntimeHelperRef(self, "__setFunctionName");
@@ -184,7 +190,7 @@ pub fn buildEsDecorateCall(
     };
 
     // arg4: context object { kind: "method", name: "greet", static: false, private: false, access: { ... }, metadata: _metadata }
-    const arg4 = try buildContextObject(self, info, metadata_refs);
+    const arg4 = try buildContextObject(self, info.*, metadata_refs);
 
     // arg5: initializers (null for method/getter/setter, per-field var for field/accessor)
     const arg5 = if (info.initializers_name) |name|
@@ -733,7 +739,9 @@ pub fn buildStage3LetDeclarations(
         }
         if (info.descriptor_name) |dname| {
             // let _private_method_descriptor;
-            try stmts.append(self.allocator, try makeLet(self, zero_span, dname, .none));
+            const descriptor = try makeLetWithBinding(self, zero_span, dname, .none);
+            info.descriptor_binding = descriptor.binding;
+            try stmts.append(self.allocator, descriptor.declaration);
         }
         if (info.initializers_name) |init_name| {
             const empty_arr_list = try self.ast.addNodeList(&.{});
@@ -978,7 +986,7 @@ pub fn extractCleanVarName(self: anytype, name_node_idx: NodeIndex) []const u8 {
 pub fn appendEsDecorateStmt(
     self: anytype,
     stmts: *std.ArrayList(NodeIndex),
-    info: Stage3MemberInfo,
+    info: *Stage3MemberInfo,
     metadata_refs: *std.ArrayList(NodeIndex),
     static_extra_initializer_refs: *std.ArrayList(NodeIndex),
     deco_apply_ref: *NodeIndex,
