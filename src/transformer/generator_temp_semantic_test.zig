@@ -285,14 +285,18 @@ fn expectForAwaitSyntheticCoverage(source: []const u8, target: TransformOptions.
         if (!finding.marked_synthetic) continue;
         marked_count += 1;
         if (finding.status != .bound) {
-            const symbol = edited.symbols.items[finding.symbol_id.?];
-            std.debug.print("non-bound synthetic finding: name={s} finding={any} kind={s} storage_scope_kind={s} expected_scope_kind={s}\n", .{
-                finding.name,
-                finding,
-                @tagName(symbol.kind),
-                @tagName(edited.scopes[symbol.scope_id.toIndex()].kind),
-                @tagName(edited.scopes[finding.expected_scope_id.?].kind),
-            });
+            if (finding.symbol_id) |symbol_id| {
+                const symbol = edited.symbols.items[symbol_id];
+                std.debug.print("non-bound synthetic finding: name={s} finding={any} kind={s} storage_scope_kind={s} expected_scope_kind={s}\n", .{
+                    finding.name,
+                    finding,
+                    @tagName(symbol.kind),
+                    @tagName(edited.scopes[symbol.scope_id.toIndex()].kind),
+                    if (finding.expected_scope_id) |scope_id| @tagName(edited.scopes[scope_id].kind) else "unknown",
+                });
+            } else {
+                std.debug.print("non-bound synthetic finding has no SymbolId: name={s} finding={any}\n", .{ finding.name, finding });
+            }
         }
         try std.testing.expectEqual(coverage.StrictStatus.bound, finding.status);
     }
@@ -356,6 +360,20 @@ test "#4819 async-generator for-await temps survive ES5 state-machine lowering" 
         \\}
     ;
     try expectForAwaitSyntheticCoverage(source, .es5, false);
+}
+
+test "#4819 nested async-generator temps keep their inner identity" {
+    // Lower the outer for-in first so its state-machine temps are live when the nested async generator is lowered.
+    const source =
+        \\function* outer(source) {
+        \\  for (const key in source) { yield key; }
+        \\  async function* inner() {
+        \\    for await (const value of source) { yield await value; }
+        \\  }
+        \\  yield inner;
+        \\}
+    ;
+    try expectForAwaitSyntheticCoverage(source, .es5, true);
 }
 
 test "#4819 for-await extracted loop temps preserve live scopes" {
