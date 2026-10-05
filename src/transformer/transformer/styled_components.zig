@@ -1298,6 +1298,7 @@ fn forwardObjectInterpolations(
     self: *Transformer,
     obj_idx: NodeIndex,
     forwarded_attrs: *std.ArrayList(NodeIndex),
+    callback_refs: *std.ArrayList(NodeIndex),
     did_forward: *bool,
 ) Error!NodeIndex {
     const obj = self.ast.getNode(obj_idx);
@@ -1351,6 +1352,7 @@ fn forwardObjectInterpolations(
 
         // 새 value: `p._cssN`. p_ref + member 만들기.
         const p_ref = try es_helpers.makeSyntheticRef(self, "p");
+        try callback_refs.append(self.allocator, p_ref);
         const member_prop_ref = try es_helpers.makePropertyName(self, prop_name);
         const member = try self.addExtraNode(.static_member_expression, zero, &.{
             @intFromEnum(p_ref),
@@ -1445,6 +1447,7 @@ fn forwardTemplateInterpolations(
             @intFromEnum(member),
             0,
         });
+        try bindCssPropCallbackSymbols(self, arrow, p_param_binding, &.{p_ref});
         try self.scratch.append(self.allocator, arrow);
     }
 
@@ -1454,6 +1457,30 @@ fn forwardTemplateInterpolations(
         .span = template.span,
         .data = .{ .list = new_list },
     });
+}
+
+/// CSS prop forwarding moves its generated callbacks into the module-level
+/// styled declaration. Give each callback parameter and its reads one exact
+/// identity at construction time so later semantic reanalysis is not needed
+/// to distinguish generated `p` from a source binding with the same name.
+fn bindCssPropCallbackSymbols(
+    self: *Transformer,
+    callback: NodeIndex,
+    parameter: NodeIndex,
+    references: []const NodeIndex,
+) Error!void {
+    if (!self.semantic_edit_enabled) return;
+
+    const scope = try self.addGeneratedFunctionScope(self.programScope(), callback);
+    const symbol = (try self.declareSyntheticInScope(
+        parameter,
+        self.ast.getNode(parameter).span,
+        .parameter,
+        scope,
+    )) orelse std.debug.panic("styled CSS prop callback parameter has no SymbolId", .{});
+    for (references) |reference| {
+        try self.addSyntheticRefInScope(reference, symbol, scope, .{ .read = true });
+    }
 }
 
 /// program body 의 module-level binding 이름을 sink 에 수집 — semantic analyzer 가
@@ -1669,13 +1696,15 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
     // forwarded props) 는 attrs rebuild 단계에서 합침.
     var forwarded_attrs: std.ArrayList(NodeIndex) = .empty;
     defer forwarded_attrs.deinit(self.allocator);
+    var object_callback_refs: std.ArrayList(NodeIndex) = .empty;
+    defer object_callback_refs.deinit(self.allocator);
     var object_did_forward = false;
     const final_template_idx: NodeIndex = if (use_object_form)
         .none
     else
         try forwardTemplateInterpolations(self, css_template_idx, &forwarded_attrs);
     const final_object_idx: NodeIndex = if (use_object_form)
-        try forwardObjectInterpolations(self, css_value_idx, &forwarded_attrs, &object_did_forward)
+        try forwardObjectInterpolations(self, css_value_idx, &forwarded_attrs, &object_callback_refs, &object_did_forward)
     else
         .none;
 
@@ -1742,11 +1771,13 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
                 .span = zero,
                 .data = .{ .unary = .{ .operand = final_object_idx, .flags = 0 } },
             });
-            break :arrow_blk try self.addExtraNode(.arrow_function_expression, zero, &.{
+            const callback = try self.addExtraNode(.arrow_function_expression, zero, &.{
                 @intFromEnum(params),
                 @intFromEnum(paren),
                 0,
             });
+            try bindCssPropCallbackSymbols(self, callback, p_param, object_callback_refs.items);
+            break :arrow_blk callback;
         } else final_object_idx;
         const args_list = try self.ast.addNodeList(&.{obj_arg});
         break :blk try self.addExtraNode(.call_expression, zero, &.{

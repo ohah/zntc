@@ -1698,6 +1698,154 @@ test "#4819 styled cssProp generated component keeps its exact symbol" {
     try std.testing.expectEqual(@as(usize, 1), read_count);
 }
 
+test "#4819 styled cssProp generated callbacks keep exact parameter identity" {
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const ast_walk = @import("../parser/ast_walk.zig");
+    const output_scope = @import("output_scope_test_utils.zig");
+    const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\import styled from "styled-components";
+        \\function App(p) {
+        \\  const template = <div css={`color: ${p.color}; padding: ${p.gap}px;`}/>;
+        \\  return <span css={{ color: p.color }}/>;
+        \\}
+    ;
+
+    var scanner = try helpers.Scanner.init(allocator, source);
+    var parser = helpers.Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".tsx");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    const options: TransformOptions = .{
+        .styled_components = true,
+        .styled_components_css_prop = true,
+        .jsx_transform = true,
+        .jsx_runtime = .automatic,
+        .jsx_filename = "/src/App.tsx",
+        .emit_jsx_runtime_imports = true,
+    };
+    var transformer = try helpers.Transformer.init(allocator, &parser.ast, options);
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    const root = try transformer.transform();
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var output_parents = try output_scope.buildParentMap(allocator, transformer.ast, root);
+    defer output_parents.deinit(allocator);
+
+    var source_p_symbol: ?u32 = null;
+    for (reachable) |raw| {
+        if (raw >= transformer.parser_node_count) continue;
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "p")) continue;
+        source_p_symbol = transformer.getSymbolIdAt(@enumFromInt(raw));
+        break;
+    }
+    const outer_p_symbol = source_p_symbol orelse return error.TestExpectedEqual;
+
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var callback_count: usize = 0;
+    var seen_callback_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen_callback_symbols.deinit(allocator);
+
+    for (reachable) |raw| {
+        if (raw < transformer.parser_node_count) continue;
+        const arrow = transformer.ast.nodes.items[raw];
+        if (arrow.tag != .arrow_function_expression) continue;
+        const extra = arrow.data.extra;
+        if (extra + 2 >= transformer.ast.extra_data.items.len) continue;
+        const params_idx: NodeIndex = @enumFromInt(transformer.ast.extra_data.items[extra]);
+        const params = transformer.ast.getNode(params_idx);
+        if (params.tag != .formal_parameters) continue;
+
+        const param_list = params.data.list;
+        var p_binding: ?NodeIndex = null;
+        for (transformer.ast.extra_data.items[param_list.start .. param_list.start + param_list.len]) |raw_param| {
+            const param_idx: NodeIndex = @enumFromInt(raw_param);
+            const param = transformer.ast.getNode(param_idx);
+            if (param.tag == .binding_identifier and std.mem.eql(u8, transformer.ast.getText(param.data.string_ref), "p")) {
+                p_binding = param_idx;
+                break;
+            }
+        }
+        const binding = p_binding orelse continue;
+        callback_count += 1;
+
+        const symbol_id = transformer.getSymbolIdAt(binding) orelse return error.TestExpectedEqual;
+        try std.testing.expect(symbol_id != outer_p_symbol);
+        const inserted = try seen_callback_symbols.getOrPut(allocator, symbol_id);
+        try std.testing.expect(!inserted.found_existing);
+
+        const callback_scope_raw = edited.scope_owner_map.get(raw) orelse return error.TestExpectedEqual;
+        const callback_scope = @as(@TypeOf(edited.symbols.items[symbol_id].scope_id), @enumFromInt(callback_scope_raw));
+        const symbol = edited.symbols.items[symbol_id];
+        try std.testing.expectEqual(callback_scope, symbol.scope_id);
+        try std.testing.expectEqualStrings("p", transformer.ast.getText(symbol.name));
+        try std.testing.expectEqualStrings("p", symbol.synthetic_name);
+
+        try std.testing.expectEqual(transformer.programScope(), edited.scopes[callback_scope_raw].parent);
+
+        const body: NodeIndex = @enumFromInt(transformer.ast.extra_data.items[extra + 1]);
+        var stack: std.ArrayList(NodeIndex) = .empty;
+        defer stack.deinit(allocator);
+        var seen_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        defer seen_nodes.deinit(allocator);
+        try stack.append(allocator, body);
+        var callback_ref_count: usize = 0;
+        while (stack.pop()) |node_idx| {
+            if (node_idx.isNone() or @intFromEnum(node_idx) >= transformer.ast.nodes.items.len) continue;
+            const node_raw = @intFromEnum(node_idx);
+            const node_seen = try seen_nodes.getOrPut(allocator, node_raw);
+            if (node_seen.found_existing) continue;
+            const node = transformer.ast.nodes.items[node_raw];
+            if (node.tag == .identifier_reference and std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "p")) {
+                try std.testing.expectEqual(symbol_id, transformer.getSymbolIdAt(node_idx) orelse return error.TestExpectedEqual);
+                callback_ref_count += 1;
+            }
+            var children = ast_walk.children(transformer.ast, node);
+            while (children.next()) |child| try stack.append(allocator, child);
+        }
+        try std.testing.expect(callback_ref_count > 0);
+
+        var graph_ref_count: usize = 0;
+        for (edited.references) |reference| {
+            if (@intFromEnum(reference.symbol_id) != symbol_id or reference.node_index.isNone()) continue;
+            const ref_raw = @intFromEnum(reference.node_index);
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, ref_raw) != null);
+            const expected = output_scope.expectedScope(
+                transformer.ast,
+                root,
+                &output_parents,
+                &edited.scope_owner_map,
+                ref_raw,
+            ) orelse return error.TestExpectedEqual;
+            try std.testing.expectEqual(callback_scope, expected);
+            try std.testing.expectEqual(callback_scope, reference.scope_id);
+            try std.testing.expect(reference.flags.read);
+            try std.testing.expect(!reference.flags.write);
+            graph_ref_count += 1;
+        }
+        try std.testing.expectEqual(callback_ref_count, graph_ref_count);
+        try std.testing.expectEqual(@as(u32, @intCast(graph_ref_count)), symbol.reference_count);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), callback_count);
+}
+
 test "#4819 auto-injected styled import and generated reference share one name" {
     const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
     const ast_walk = @import("../parser/ast_walk.zig");
