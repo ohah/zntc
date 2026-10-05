@@ -246,6 +246,13 @@ test "#4819 lowered arrow lexical captures have distinct exact function symbols"
     );
 }
 
+test "#4819 ordinary function captures keep exact symbols with colliding local aliases" {
+    try checkCaptureSymbols(
+        "function outer(value){const _this=2;const _arguments=3;return ()=>this.x+arguments[0]+_this+_arguments} outer.call({x:10},7);",
+        .function_declaration,
+    );
+}
+
 test "#4819 class method capture producers bind exact symbols without a name rescan" {
     try checkCaptureSymbols(
         "class C{method(){return ()=>this.x+arguments[0]}} new C().method();",
