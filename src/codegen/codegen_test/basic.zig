@@ -19,7 +19,6 @@ const NodeIndex = @import("../../parser/ast.zig").NodeIndex;
 const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
 const Symbol = @import("../../semantic/symbol.zig").Symbol;
 const LinkingMetadata = @import("../../bundler/linker.zig").LinkingMetadata;
-const NamespaceFrame = @import("../codegen.zig").NamespaceFrame;
 
 test "Codegen: empty program" {
     var r = try e2e(std.testing.allocator, "");
@@ -94,7 +93,7 @@ test "Codegen: namespace IIFE" {
     defer r.deinit();
     // 내부 const는 export 아니므로 Foo.x = x 없음
     try std.testing.expectEqualStrings(
-        "var Foo;((Foo) => {const x=1;})(Foo || (Foo = {}));",
+        "var Foo;((_Foo) => {const x=1;})(Foo || (Foo = {}));",
         r.output,
     );
 }
@@ -335,7 +334,7 @@ test "Codegen: namespace destructuring export follows renamed local SymbolId" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "N.original=original;") == null);
 }
 
-test "Codegen: namespace export prefix resolves its final parameter SymbolId name" {
+test "Codegen: namespace IIFE parameter name resolves from its SymbolId" {
     const allocator = std.testing.allocator;
     var ast = Ast.init(allocator, "");
     defer ast.deinit();
@@ -373,23 +372,12 @@ test "Codegen: namespace export prefix resolves its final parameter SymbolId nam
         },
     };
 
-    var exported_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty;
-    defer exported_symbols.deinit(allocator);
-    try exported_symbols.put(allocator, 7, {});
-    const frame: NamespaceFrame = .{
-        .prefix = .{ .symbol_id = 0, .fallback_name = "stalePrefix" },
-        .exported_symbols = exported_symbols,
-        .parent = null,
-    };
     var cg = Codegen.initWithOptions(allocator, &ast, .{
         .linking_metadata = &metadata,
         .semantic_symbols = &symbols,
     });
     defer cg.deinit();
-    cg.ns_frame = &frame;
-
-    const prefix = cg.namespaceExportPrefix(@enumFromInt(0)) orelse return error.MissingNamespacePrefix;
-    try std.testing.expectEqualStrings("shortNamespace", cg.namespacePrefixName(prefix));
+    try std.testing.expectEqualStrings("shortNamespace", cg.namespacePrefixName(.{ .symbol_id = 0, .fallback_name = "stalePrefix" }));
     try std.testing.expectEqualStrings(
         "_PlainNamespace",
         cg.namespacePrefixName(.{ .symbol_id = 1, .fallback_name = "stalePrefix" }),

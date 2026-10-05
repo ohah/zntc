@@ -560,33 +560,13 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
     try self.write(param_name);
     try self.write(") => {");
 
-    // The code generator writes simple exported bindings directly to object
-    // properties. Track precisely those source symbols, including a parent
-    // namespace frame for references from a nested namespace body.
     var frame: NamespaceFrame = .{
         .prefix = namespace_prefix,
-        .owner_symbol = if (self.sourceSymbolId(name_idx)) |sid| blk: {
-            if (self.options.namespace_declaration_owners) |owners| {
-                break :blk owners.get(sid) orelse sid;
-            }
-            break :blk sid;
-        } else null,
-        .exported_symbols = .empty,
         .parent = self.ns_frame,
     };
-    defer frame.exported_symbols.deinit(std.heap.page_allocator);
     const saved_frame = self.ns_frame;
     self.ns_frame = &frame;
     defer self.ns_frame = saved_frame;
-    if (body_node.tag == .block_statement) {
-        const list = body_node.data.list;
-        for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw_idx| {
-            const stmt = self.ast.getNode(@enumFromInt(raw_idx));
-            if (stmt.tag != .export_named_declaration) continue;
-            const decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[stmt.data.extra]);
-            if (!decl_idx.isNone()) try collectNamespaceExportSymbols(self, &frame.exported_symbols, decl_idx);
-        }
-    }
 
     // 3단계: body 출력 (export 문은 Foo.name = expr 형태로 변환)
     if (body_node.tag == .block_statement) {
@@ -952,23 +932,6 @@ fn collectExportNames(self: anytype, map: *std.StringHashMapUnmanaged(void), dec
             }
         },
         else => {},
-    }
-}
-
-fn collectNamespaceExportSymbols(self: anytype, symbols: *std.AutoHashMapUnmanaged(u32, void), decl_idx: NodeIndex) !void {
-    const decl = self.ast.getNode(decl_idx);
-    if (decl.tag != .variable_declaration) return;
-    const e = decl.data.extra;
-    const start = self.ast.extra_data.items[e + 1];
-    const len = self.ast.extra_data.items[e + 2];
-    for (self.ast.extra_data.items[start .. start + len]) |raw_idx| {
-        const declarator = self.ast.getNode(@enumFromInt(raw_idx));
-        if (declarator.tag != .variable_declarator) continue;
-        const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[declarator.data.extra]);
-        if (isDestructuringTempBinding(self, name_idx)) continue;
-        if (name_idx.isNone() or self.ast.getNode(name_idx).tag != .binding_identifier) continue;
-        const sid = self.sourceSymbolId(name_idx) orelse continue;
-        try symbols.put(std.heap.page_allocator, sid, {});
     }
 }
 
