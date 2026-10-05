@@ -109,7 +109,8 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
 
     var owned_param: ?[]u8 = null;
     defer if (owned_param) |param| std.heap.page_allocator.free(param);
-    const param_name = enumIifeParamName(self, enum_idx) orelse if (needs_rename) blk: {
+    const semantic_param_name = try enumIifeParamName(self, enum_idx);
+    const param_name = semantic_param_name orelse if (needs_rename) blk: {
         var suffix: u32 = 0;
         while (true) : (suffix += 1) {
             const candidate = if (suffix == 0)
@@ -394,8 +395,11 @@ fn namespaceIifeParameter(self: anytype, namespace_idx: NodeIndex) !?NamespaceIi
     };
 }
 
-fn enumIifeParamName(self: anytype, enum_idx: NodeIndex) ?[]const u8 {
-    return generatedIifeParamName(self, enum_idx, .enum_iife_parameter);
+fn enumIifeParamName(self: anytype, enum_idx: NodeIndex) !?[]const u8 {
+    if (self.options.generated_iife_scope_owner_map == null) return null;
+    const symbol_id = generatedIifeParamSymbolId(self, enum_idx, .enum_iife_parameter) orelse
+        return error.MissingEnumIifeParameterSymbol;
+    return generatedIifeParamNameFromSymbolId(self, symbol_id);
 }
 
 /// Emit a semantic bare enum-member reference as a property read on the
@@ -425,11 +429,6 @@ pub fn emitEnumIifeMemberReference(self: anytype, node: Node, member: anytype) !
         try self.writeIdentifierSpan(member.name);
     }
     return true;
-}
-
-fn generatedIifeParamName(self: anytype, owner_idx: NodeIndex, expected_kind: SyntheticKind) ?[]const u8 {
-    const raw_id = generatedIifeParamSymbolId(self, owner_idx, expected_kind) orelse return null;
-    return generatedIifeParamNameFromSymbolId(self, raw_id);
 }
 
 fn generatedIifeParamNameFromSymbolId(self: anytype, raw_id: u32) []const u8 {
