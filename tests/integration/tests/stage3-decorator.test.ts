@@ -419,6 +419,29 @@ describe('Stage 3 Decorators', () => {
     expect(result.runOutput).toBe('42 11');
   });
 
+  it('ES5 static member decorators keep the exact static initializer symbol when shadowed', async () => {
+    const result = await bundleAndRun(
+      {
+        'index.ts': `
+          const _staticExtraInitializers = 11;
+          function mark(value: any, context: any) {
+            return value;
+          }
+          class Example {
+            @mark static method() { return 42; }
+            @mark static get staticValue() { return 'ok'; }
+          }
+          console.log(Example.method(), Example.staticValue, _staticExtraInitializers);
+        `,
+      },
+      'index.ts',
+      ['--target=es5'],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('42 ok 11');
+  });
+
   // --- Private member decorator ---
 
   it('private method decorator context', async () => {
