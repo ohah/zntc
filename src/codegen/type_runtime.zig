@@ -407,15 +407,13 @@ fn enumIifeParamName(self: anytype, enum_idx: NodeIndex) !?[]const u8 {
 /// IIFE scope, where the matching enum parameter row supplies the output name.
 pub fn emitEnumIifeMemberReference(self: anytype, node: Node, member: anytype) !bool {
     if (member.synthetic_kind != .enum_iife_member) return false;
-    const owner_id = member.synthetic_owner_id orelse return false;
+    const owner_id = member.synthetic_owner_id orelse return error.InvalidEnumIifeMemberSymbol;
     const owner_raw = @intFromEnum(owner_id);
-    if (owner_raw >= self.options.semantic_symbols.len) return false;
+    if (owner_raw >= self.options.semantic_symbols.len) return error.InvalidEnumIifeMemberSymbol;
     const parameter = self.options.semantic_symbols[owner_raw];
-    if (parameter.synthetic_kind != .enum_iife_parameter or parameter.scope_id != member.scope_id) return false;
-    const parameter_name = if (self.options.linking_metadata) |metadata|
-        metadata.renames.get(@intCast(owner_raw)) orelse parameter.synthetic_name
-    else
-        parameter.synthetic_name;
+    if (parameter.synthetic_kind != .enum_iife_parameter or parameter.scope_id != member.scope_id)
+        return error.InvalidEnumIifeMemberSymbol;
+    const parameter_name = generatedIifeParamNameFromSymbolId(self, owner_raw);
 
     try self.addSourceMappingWithName(node.span, self.ast.identifierNameText(node));
     try self.write(parameter_name);
