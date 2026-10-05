@@ -480,6 +480,8 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     defer class_descriptor_write_refs.deinit(self.allocator);
     var class_descriptor_read_refs: std.ArrayList(NodeIndex) = .empty;
     defer class_descriptor_read_refs.deinit(self.allocator);
+    var class_extra_initializers_refs: std.ArrayList(NodeIndex) = .empty;
+    defer class_extra_initializers_refs.deinit(self.allocator);
 
     // IIFE 내부 let 선언 목록
     var iife_stmts: std.ArrayList(NodeIndex) = .empty;
@@ -578,6 +580,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             &metadata_refs,
             &class_decorator_refs,
             &class_descriptor_write_refs,
+            &class_extra_initializers_refs,
         );
         const class_call_stmt = try self.ast.addNode(.{
             .tag = .expression_statement,
@@ -605,7 +608,11 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
 
     // __runInitializers(_classThis, _classExtraInitializers);
     if (class_deco_len > 0) {
-        const run_init = try self.buildRunInitializersCall(classThis_span, "_classExtraInitializers");
+        const run_init = try self.buildRunInitializersCall(
+            classThis_span,
+            "_classExtraInitializers",
+            &class_extra_initializers_refs,
+        );
         const run_init_stmt = try self.ast.addNode(.{
             .tag = .expression_statement,
             .span = zero_span,
@@ -814,6 +821,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     // let 선언 생성
     var class_decorators_binding: NodeIndex = .none;
     var class_descriptor_binding: NodeIndex = .none;
+    var class_extra_initializers_binding: NodeIndex = .none;
     const let_decls = try self.buildStage3LetDeclarations(
         class_deco_start,
         class_deco_len,
@@ -822,12 +830,15 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         has_static_decorators,
         &class_decorators_binding,
         &class_descriptor_binding,
+        &class_extra_initializers_binding,
     );
     var stage3_let_bindings: std.ArrayList(NodeIndex) = .empty;
     defer stage3_let_bindings.deinit(self.allocator);
     for (let_decls) |declaration| {
         const binding = generatedLetBinding(self, declaration);
-        if (binding != class_decorators_binding and binding != class_descriptor_binding) {
+        if (binding != class_decorators_binding and binding != class_descriptor_binding and
+            binding != class_extra_initializers_binding)
+        {
             try stage3_let_bindings.append(self.allocator, binding);
         }
     }
@@ -885,6 +896,18 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         }
         for (class_descriptor_read_refs.items) |reference| {
             try self.addSyntheticRefInScope(reference, class_descriptor_symbol, metadata_block_scope, .{ .read = true });
+        }
+    }
+    if (self.semantic_edit_enabled and !class_extra_initializers_binding.isNone()) {
+        const class_extra_initializers_symbol = (try self.declareSyntheticInScope(
+            class_extra_initializers_binding,
+            self.ast.getNode(class_extra_initializers_binding).span,
+            .variable_let,
+            arrow_scope,
+        )) orelse std.debug.panic("Stage 3 class extra initializers binding has no SymbolId", .{});
+        if (metadata_block_scope.isNone()) std.debug.panic("Stage 3 class extra initializers has no output static block scope", .{});
+        for (class_extra_initializers_refs.items) |reference| {
+            try self.addSyntheticRefInScope(reference, class_extra_initializers_symbol, metadata_block_scope, .{ .read = true });
         }
     }
 

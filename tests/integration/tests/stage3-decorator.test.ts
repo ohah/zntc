@@ -374,6 +374,29 @@ describe('Stage 3 Decorators', () => {
     expect(result.runOutput).toBe('true 17');
   });
 
+  it('ES5 class decorator keeps its exact extra-initializer symbol when shadowed', async () => {
+    const result = await bundleAndRun(
+      {
+        'index.ts': `
+          const _classExtraInitializers = 17;
+          function mark(value: any, context: any) {
+            context.addInitializer(function() {
+              (this as any).initialized = true;
+            });
+            return value;
+          }
+          @mark class Example {}
+          console.log((Example as any).initialized, _classExtraInitializers);
+        `,
+      },
+      'index.ts',
+      ['--target=es5'],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('true 17');
+  });
+
   // --- Private member decorator ---
 
   it('private method decorator context', async () => {
