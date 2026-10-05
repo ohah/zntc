@@ -785,6 +785,7 @@ fn onClassDeclaration(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeInd
 
     // __workletClass property를 strip한 새 body 생성 + default 방문 수행.
     const stripped_body = try stripWorkletClassMarker(t, body_idx);
+    const source_class_self = t.class_self_symbol_map.get(@intFromEnum(node_idx));
     // 원본 class extra를 복사하여 body만 교체한 새 class 노드.
     const none = @intFromEnum(NodeIndex.none);
     const new_name_idx = t.ast.extra_data.items[class_extra];
@@ -798,7 +799,13 @@ fn onClassDeclaration(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeInd
     });
     // visit은 skip (default 경로가 __workletClass 필드 없는 상태로 이미 완료).
     // Trailing: `Foo.Foo__classFactory = <worklet IIFE>`
-    const factory_stmt = try buildClassFactoryAssignment(t, class_name, @enumFromInt(new_name_idx), stripped_body);
+    const factory_stmt = try buildClassFactoryAssignment(
+        t,
+        class_name,
+        @enumFromInt(new_name_idx),
+        stripped_body,
+        source_class_self,
+    );
     // pending_nodes 또는 trailing_nodes에 추가해야 program/block이 반영.
     try t.trailing_nodes.append(t.allocator, factory_stmt);
     return new_class;
@@ -872,18 +879,84 @@ fn stripWorkletClassMarker(t: *Transformer, body_idx: NodeIndex) !NodeIndex {
 
 /// Class factory body — `{ 'worklet'; var <Class> = class { stripped_body }; return <Class>; }`
 /// factory 호출 시 UI 스레드에서 클래스를 재생성해 반환 (runtime 정확성).
-fn buildClassFactoryBody(t: *Transformer, class_name_span: Span, stripped_body: NodeIndex) !NodeIndex {
+const ClassFactoryBody = struct {
+    node: NodeIndex,
+    class_self_symbol: ?@import("../../semantic/symbol.zig").SymbolId,
+};
+
+fn cloneClassFactoryBody(t: *Transformer, source_body_idx: NodeIndex) !NodeIndex {
+    const source_body = t.ast.getNode(source_body_idx);
+    const start = source_body.data.list.start;
+    const len = source_body.data.list.len;
+    const top = t.scratch.items.len;
+    defer t.scratch.shrinkRetainingCapacity(top);
+
+    var i: u32 = 0;
+    while (i < len) : (i += 1) {
+        const member_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[start + i]);
+        const member = t.ast.getNode(member_idx);
+        if (member.tag == .method_definition) {
+            var clone = member;
+            const extra = member.data.extra;
+            clone.data.extra = try t.ast.addExtras(t.ast.extra_data.items[extra .. extra + 6]);
+            try t.scratch.append(t.allocator, try t.ast.addNode(clone));
+        } else {
+            try t.scratch.append(t.allocator, member_idx);
+        }
+    }
+
+    const list = try t.ast.addNodeList(t.scratch.items[top..]);
+    return t.ast.addNode(.{ .tag = .class_body, .span = source_body.span, .data = .{ .list = list } });
+}
+
+fn buildClassFactoryBody(
+    t: *Transformer,
+    class_name_span: Span,
+    stripped_body: NodeIndex,
+    factory_scope: @import("../../semantic/scope.zig").ScopeId,
+) !ClassFactoryBody {
     const zero_span = Span{ .start = 0, .end = 0 };
     const none = @intFromEnum(NodeIndex.none);
 
-    // factory 안에서 새로 만드는 지역 클래스 바인딩 — 바깥 사용자 클래스와 별개 스코프.
+    // `var Foo = class Foo {}` has two bindings: the factory local and the
+    // class expression's immutable inner name. Keep their AST nodes and IDs
+    // separate, then attach the inner binding to this generated class scope.
     const class_binding = try es_helpers.makeSyntheticBinding(t, class_name_span);
+    const class_self_binding = try es_helpers.makeSyntheticBinding(t, class_name_span);
+    const factory_body = try cloneClassFactoryBody(t, stripped_body);
     const class_expr = try t.addExtraNode(.class_expression, zero_span, &.{
-        @intFromEnum(class_binding), none, @intFromEnum(stripped_body),
-        none,                        0,    0,
-        0,                           0,
+        @intFromEnum(class_self_binding), none, @intFromEnum(factory_body),
+        none,                             0,    0,
+        0,                                0,
     });
     try t.generated_class_without_source_anchor.put(t.allocator, @intFromEnum(class_expr), {});
+
+    var class_self_symbol: ?@import("../../semantic/symbol.zig").SymbolId = null;
+    if (t.semantic_edit_enabled) {
+        const class_scope = try t.addGeneratedScope(factory_scope, class_expr, .class_body);
+        class_self_symbol = (try t.declareSyntheticInScope(
+            class_self_binding,
+            class_name_span,
+            .class_decl,
+            class_scope,
+        )).?;
+        try t.class_self_symbol_map.put(t.allocator, @intFromEnum(class_expr), @intFromEnum(class_self_symbol.?));
+        if (t.semantic_editor) |*editor| {
+            editor.symbols.items[@intFromEnum(class_self_symbol.?)].decl_flags.is_const = true;
+            editor.symbols.items[@intFromEnum(class_self_symbol.?)].decl_flags.preserve_class_name = true;
+        } else unreachable;
+
+        const factory_body_node = t.ast.getNode(factory_body);
+        const member_start = factory_body_node.data.list.start;
+        var i: u32 = 0;
+        while (i < factory_body_node.data.list.len) : (i += 1) {
+            const member_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[member_start + i]);
+            if (t.ast.getNode(member_idx).tag == .method_definition)
+                _ = try t.addGeneratedFunctionScope(class_scope, member_idx);
+        }
+    }
+
+    const factory_symbol = try t.declareSyntheticInScope(class_binding, zero_span, .variable_var, factory_scope);
     // var <Class> = class_expr;
     const declarator = try t.addExtraNode(.variable_declarator, zero_span, &.{
         @intFromEnum(class_binding), none, @intFromEnum(class_expr),
@@ -895,13 +968,23 @@ fn buildClassFactoryBody(t: *Transformer, class_name_span: Span, stripped_body: 
         decl_list.len,
     });
     const return_ref = try es_helpers.makeSyntheticRefFromSpan(t, class_name_span);
-    return buildWorkletReturnBlock(t, return_ref, &.{var_decl});
+    try t.addSyntheticRefInScope(return_ref, factory_symbol, factory_scope, .{ .read = true });
+    return .{
+        .node = try buildWorkletReturnBlock(t, return_ref, &.{var_decl}),
+        .class_self_symbol = class_self_symbol,
+    };
 }
 
 /// 생성. plugin의 onFunction이 자동으로 함수를 worklet으로 변환.
 /// stripped_body: `__workletClass` 마커 제거된 class_body (factory가 클래스 재생성에 사용).
 /// class_name_node: 원래 클래스 이름 binding_identifier (`ClassName.…` 참조에 심볼을 물려줌).
-fn buildClassFactoryAssignment(t: *Transformer, class_name: []const u8, class_name_node: NodeIndex, stripped_body: NodeIndex) !NodeIndex {
+fn buildClassFactoryAssignment(
+    t: *Transformer,
+    class_name: []const u8,
+    class_name_node: NodeIndex,
+    stripped_body: NodeIndex,
+    source_class_self: ?u32,
+) !NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
     // factory 이름: `<ClassName>__classFactory`
@@ -911,18 +994,36 @@ fn buildClassFactoryAssignment(t: *Transformer, class_name: []const u8, class_na
     const class_name_span = try t.ast.addString(class_name);
 
     const binding_node = try es_helpers.makeSyntheticBinding(t, factory_name_span);
-    const body = try buildClassFactoryBody(t, class_name_span, stripped_body);
     const empty_params = try t.ast.addNodeList(&.{});
     const empty_params_node = try t.ast.addFormalParameters(empty_params, zero_span);
     const none = @intFromEnum(NodeIndex.none);
     const inner_fn = try t.addExtraNode(.function_declaration, zero_span, &.{
         @intFromEnum(binding_node), @intFromEnum(empty_params_node),
-        @intFromEnum(body),         0,
+        none,                       0,
         none,
     });
 
+    // Register both generated function owners before visiting the class
+    // expression. Its class scope must be nested under the factory function,
+    // which is the final output owner for this synthetic body.
+    const wrapper_fn = try t.addExtraNode(.function_expression, zero_span, &.{
+        none, @intFromEnum(empty_params_node), none, 0, none,
+    });
+    const wrapper_scope = if (t.semantic_edit_enabled)
+        try t.addGeneratedFunctionScope(t.current_scope, wrapper_fn)
+    else
+        @as(@import("../../semantic/scope.zig").ScopeId, .none);
+    const factory_scope = if (t.semantic_edit_enabled)
+        try t.addGeneratedFunctionScope(wrapper_scope, inner_fn)
+    else
+        @as(@import("../../semantic/scope.zig").ScopeId, .none);
+    const factory_symbol = try t.declareSyntheticInScope(binding_node, factory_name_span, .function_decl, wrapper_scope);
+    const factory_body = try buildClassFactoryBody(t, class_name_span, stripped_body, factory_scope);
+    t.ast.extra_data.items[t.ast.getNode(inner_fn).data.extra + ast_mod.FunctionExtra.body] = @intFromEnum(factory_body.node);
+
     // IIFE: (function() { function <fn>(){...} return <fn>; })()
     const fn_ref = try es_helpers.makeSyntheticRefFromSpan(t, factory_name_span);
+    try t.addSyntheticRefInScope(fn_ref, factory_symbol, wrapper_scope, .{ .read = true });
     const ret_stmt = try t.ast.addNode(.{
         .tag = .return_statement,
         .span = zero_span,
@@ -930,19 +1031,28 @@ fn buildClassFactoryAssignment(t: *Transformer, class_name: []const u8, class_na
     });
     const iife_body_list = try t.ast.addNodeList(&.{ inner_fn, ret_stmt });
     const iife_body = try t.ast.addNode(.{ .tag = .block_statement, .span = zero_span, .data = .{ .list = iife_body_list } });
-    const wrapper_fn = try t.addExtraNode(.function_expression, zero_span, &.{
-        none, @intFromEnum(empty_params_node), @intFromEnum(iife_body), 0, none,
-    });
+    t.ast.extra_data.items[t.ast.getNode(wrapper_fn).data.extra + ast_mod.FunctionExtra.body] = @intFromEnum(iife_body);
     const call_args = try t.ast.addNodeList(&.{});
     const call_extra = try t.ast.addExtras(&.{ @intFromEnum(wrapper_fn), call_args.start, call_args.len, 0 });
     const iife = try t.ast.addNode(.{ .tag = .call_expression, .span = zero_span, .data = .{ .extra = call_extra } });
 
     // visit을 돌려 plugin의 onFunction이 IIFE 내부 function_declaration을 worklet화하도록.
     // Fast Refresh 등록은 억제: IIFE 내부 factory는 최상위 바인딩이 아니라 `_cN = <name>`가 ReferenceError.
+    const previous_copy_source_self = t.generated_class_copy_source_self_symbol;
+    const previous_copy_target_self = t.generated_class_copy_target_self_symbol;
+    if (t.semantic_edit_enabled) {
+        t.generated_class_copy_source_self_symbol = source_class_self;
+        t.generated_class_copy_target_self_symbol = if (factory_body.class_self_symbol) |id| @intFromEnum(id) else null;
+    }
+    defer {
+        t.generated_class_copy_source_self_symbol = previous_copy_source_self;
+        t.generated_class_copy_target_self_symbol = previous_copy_target_self;
+    }
     const visited_iife = try t.visitWithRefreshSuppressed(iife);
 
     // LHS: ClassName.ClassName__classFactory — ClassName 은 사용자 클래스라 그 심볼을 물려받는다.
     const obj_ref = try t.makeIdentifierRefWithSymbol(class_name_span, class_name_node);
+    try t.trackUserReadFromBinding(obj_ref, class_name_node, t.current_scope);
     const prop_ref = try es_helpers.makePropertyNameFromSpan(t, factory_name_span);
     const member = try t.addExtraNode(.static_member_expression, zero_span, &.{
         @intFromEnum(obj_ref), @intFromEnum(prop_ref), 0,

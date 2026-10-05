@@ -65,7 +65,7 @@ pub fn Methods(comptime Transformer: type) type {
                 ScopeId.none;
             if (self.semantic_edit_enabled) {
                 if (!source_member_idx.isNone()) {
-                    if (self.scope_owner_map.get(@intFromEnum(source_member_idx))) |scope| self.current_scope = @enumFromInt(scope);
+                    if (self.outputOwnedScope(source_member_idx)) |scope| self.current_scope = scope;
                 } else if (!generated_scope.isNone()) {
                     self.current_scope = generated_scope;
                 }
@@ -158,7 +158,7 @@ pub fn Methods(comptime Transformer: type) type {
             defer self.in_extracted_fn_body = saved_extracted_body;
             const saved_scope = self.current_scope;
             if (self.semantic_edit_enabled) {
-                if (self.scope_owner_map.get(@intFromEnum(info.source_member_idx))) |scope| self.current_scope = @enumFromInt(scope);
+                if (self.outputOwnedScope(info.source_member_idx)) |scope| self.current_scope = scope;
             }
             defer self.current_scope = saved_scope;
             const saved_static = self.current_super_is_static;

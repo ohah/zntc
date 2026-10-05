@@ -11,6 +11,7 @@ const transformer_mod = @import("transformer.zig");
 const TransformOptions = transformer_mod.TransformOptions;
 const Plugin = @import("../bundler/plugin.zig").Plugin;
 const worklet_plugin_mod = @import("plugins/worklet_plugin.zig");
+const compat = @import("compat.zig");
 
 const transformWorklet = tt.transformWorklet;
 const generateCode = tt.generateCode;
@@ -98,6 +99,204 @@ test "Worklet: generated factory locals keep exact semantic coverage" {
     defer report.deinit(allocator);
     if (!report.hasCompleteExactCoverage()) coverage.printStrict("worklet-factory-locals.ts", &report);
     try std.testing.expect(report.hasCompleteExactCoverage());
+}
+
+fn checkWorkletClassFactoryExactCoverage(
+    unsupported: compat.UnsupportedFeatures,
+    target_name: []const u8,
+    class_name: []const u8,
+    source: []const u8,
+) !void {
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    const Parser = @import("../parser/parser.zig").Parser;
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const coverage = @import("symbol_coverage.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var transformer = try transformer_mod.Transformer.init(allocator, &parser.ast, .{
+        .plugins = &plugins,
+        .unsupported = unsupported,
+        .jsx_filename = "test.ts",
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.synthetic_idents = .empty;
+
+    const root = try transformer.transform();
+    var codegen = @import("../codegen/codegen.zig").Codegen.init(allocator, transformer.ast);
+    defer codegen.deinit();
+    const output = try codegen.generate(root);
+    try std.testing.expect(std.mem.indexOf(u8, output, "__closure = { instanceValue:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "__closure = { value:") == null);
+    if (std.mem.indexOf(u8, source, "[computedKey]") != null)
+        try std.testing.expect(std.mem.indexOf(u8, output, "__closure = { computedKey: computedKey }") != null);
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var report = try coverage.checkStrictWithExactExternalEvidence(
+        allocator,
+        transformer.ast,
+        root,
+        transformer.parser_node_count,
+        edited.symbol_ids,
+        edited.symbols.items,
+        edited.scopes,
+        &edited.scope_owner_map,
+        edited.references,
+        if (transformer.synthetic_idents) |*synthetic| synthetic else null,
+        .{
+            .unresolved_reference_nodes = &analyzer.unresolved_reference_nodes,
+            .explicit_global_reference_nodes = &transformer.explicit_global_reference_nodes,
+            .reference_origin_map = &transformer.reference_origin_map,
+        },
+    );
+    defer report.deinit(allocator);
+    if (!report.hasCompleteExactCoverage()) coverage.printStrict(target_name, &report);
+    try std.testing.expect(report.hasCompleteExactCoverage());
+
+    // The source class keeps its original inner-name identity. The class
+    // reconstructed by the worklet factory owns a different immutable name,
+    // while the factory's mutable `var Clazz` remains in the parent function.
+    var source_class_self: ?u32 = null;
+    var source_self_iter = analyzer.class_self_symbol_map.iterator();
+    while (source_self_iter.next()) |entry| {
+        if (entry.key_ptr.* >= transformer.parser_node_count) continue;
+        if (parser.ast.getNode(@enumFromInt(entry.key_ptr.*)).tag != .class_declaration) continue;
+        source_class_self = entry.value_ptr.*;
+        break;
+    }
+    try std.testing.expect(source_class_self != null);
+
+    var generated_class_self: ?u32 = null;
+    var generated_self_iter = transformer.class_self_symbol_map.iterator();
+    while (generated_self_iter.next()) |entry| {
+        if (entry.key_ptr.* < transformer.parser_node_count) continue;
+        if (transformer.ast.getNode(@enumFromInt(entry.key_ptr.*)).tag != .class_expression) continue;
+        try std.testing.expect(generated_class_self == null);
+        generated_class_self = entry.value_ptr.*;
+    }
+    try std.testing.expect(generated_class_self != null);
+    try std.testing.expect(generated_class_self.? != source_class_self.?);
+
+    const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
+    const ScopeKind = @import("../semantic/scope.zig").ScopeKind;
+    const generated_symbol = edited.symbols.items[generated_class_self.?];
+    try std.testing.expectEqual(SymbolKind.class_decl, generated_symbol.kind);
+    try std.testing.expect(generated_symbol.decl_flags.is_const);
+    const generated_class_scope = edited.scopes[generated_symbol.scope_id.toIndex()];
+    if (unsupported.class) {
+        try std.testing.expect(generated_class_scope.kind == .function or generated_class_scope.kind == .class_body);
+    } else {
+        try std.testing.expectEqual(ScopeKind.class_body, generated_class_scope.kind);
+    }
+    var factory_local: ?u32 = null;
+    for (edited.symbols.items, 0..) |symbol, symbol_idx| {
+        if (symbol.kind != .variable_var) continue;
+        if (!std.mem.eql(u8, symbol.synthetic_name, class_name)) continue;
+        try std.testing.expect(factory_local == null);
+        factory_local = @intCast(symbol_idx);
+    }
+    try std.testing.expect(factory_local != null);
+    try std.testing.expect(factory_local.? != generated_class_self.?);
+    const factory_local_scope = edited.symbols.items[factory_local.?].scope_id;
+    var factory_local_encloses_class = false;
+    var scope_cursor = generated_symbol.scope_id;
+    var scope_hops: usize = 0;
+    while (!scope_cursor.isNone() and scope_hops < edited.scopes.len) : (scope_hops += 1) {
+        if (scope_cursor == factory_local_scope) {
+            factory_local_encloses_class = true;
+            break;
+        }
+        scope_cursor = edited.scopes[scope_cursor.toIndex()].parent;
+    }
+    try std.testing.expect(factory_local_encloses_class);
+
+    var outer_class_binding: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, symbol_idx| {
+        if (symbol.kind != SymbolKind.class_decl or !std.mem.eql(u8, symbol.nameText(source), class_name)) continue;
+        const scope_kind = analyzer.scopes.items[symbol.scope_id.toIndex()].kind;
+        if (scope_kind == ScopeKind.module or scope_kind == ScopeKind.global) {
+            outer_class_binding = @intCast(symbol_idx);
+            break;
+        }
+    }
+    try std.testing.expect(outer_class_binding != null);
+
+    var source_self_refs: usize = 0;
+    var generated_self_refs: usize = 0;
+    var outer_class_refs: usize = 0;
+    for (edited.references) |reference| {
+        const reference_symbol = @intFromEnum(reference.symbol_id);
+        if (reference_symbol == source_class_self.?) source_self_refs += 1;
+        if (reference_symbol == generated_class_self.?) generated_self_refs += 1;
+        if (reference_symbol == outer_class_binding.?) outer_class_refs += 1;
+    }
+    var analyzed_source_self_refs: usize = 0;
+    for (analyzer.references.items) |reference|
+        if (@intFromEnum(reference.symbol_id) == source_class_self.?) {
+            analyzed_source_self_refs += 1;
+        };
+    if (analyzed_source_self_refs > 0) {
+        try std.testing.expect(source_self_refs >= analyzed_source_self_refs);
+        try std.testing.expect(generated_self_refs >= analyzed_source_self_refs);
+    }
+    try std.testing.expect(outer_class_refs > 0);
+}
+
+test "#4819 Worklet class factories bind reconstructed class identity exactly" {
+    const hostile_source =
+        \\class Clazz {
+        \\  __workletClass = true;
+        \\  static value = Clazz;
+        \\  instanceValue = () => Clazz;
+        \\  static { globalThis.workletClassSelf = Clazz; }
+        \\  static self() {
+        \\    "worklet";
+        \\    const readSelf = () => Clazz;
+        \\    function shadow(Clazz) { return Clazz; }
+        \\    return readSelf() === shadow(null);
+        \\  }
+        \\}
+        \\let observed = Clazz;
+        \\Clazz = null;
+    ;
+    try checkWorkletClassFactoryExactCoverage(compat.fromESTarget(.es5), "worklet-class-factory-es5.ts", "Clazz", hostile_source);
+    try checkWorkletClassFactoryExactCoverage(compat.fromESTarget(.es2022), "worklet-class-factory-es2022.ts", "Clazz", hostile_source);
+
+    const empty_source =
+        \\class Bare { __workletClass = true; }
+        \\let observed = Bare;
+        \\Bare = null;
+    ;
+    try checkWorkletClassFactoryExactCoverage(compat.fromESTarget(.es5), "worklet-class-factory-empty-es5.ts", "Bare", empty_source);
+    try checkWorkletClassFactoryExactCoverage(compat.fromESTarget(.es2022), "worklet-class-factory-empty-es2022.ts", "Bare", empty_source);
+
+    const computed_key_source =
+        \\const computedKey = "dynamic";
+        \\class Clazz {
+        \\  __workletClass = true;
+        \\  static [computedKey] = Clazz;
+        \\  static read() { return Clazz; }
+        \\}
+        \\let observed = Clazz;
+    ;
+    try checkWorkletClassFactoryExactCoverage(compat.fromESTarget(.es2022), "worklet-class-factory-computed-key-es2022.ts", "Clazz", computed_key_source);
 }
 
 fn checkBlockFunctionWorkletSemanticEdit(is_module: bool) !void {

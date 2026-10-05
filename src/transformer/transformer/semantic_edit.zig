@@ -76,7 +76,7 @@ pub fn bindClassSelfStorage(self: *Transformer, source_class: NodeIndex, binding
     }
     const raw = @intFromEnum(source_class);
     if (self.generated_class_self_relocated_to_wrapper.contains(raw)) return false;
-    if (self.generated_class_without_source_anchor.contains(raw)) {
+    if (self.generated_class_without_source_anchor.contains(raw) and !self.class_self_symbol_map.contains(raw)) {
         if (self.semantic_edit_enabled)
             std.debug.panic("generated worklet class needs a fresh self scope and SymbolId", .{});
         return false;
@@ -2644,6 +2644,37 @@ pub fn duplicateUserReference(self: *Transformer, source: NodeIndex, clone: Node
     if (self.getSymbolIdAt(source) == null) return;
     const editor = try editorFor(self);
     editor.cloneReferenceAtSameLocation(source, clone) catch |err| return editError(err);
+}
+
+/// Isolate a worklet factory copy of a class-self reference from its source
+/// AST node and bind it to the reconstructed class identity in the output
+/// scope. The parser reference remains owned by the original class body.
+pub fn cloneGeneratedClassSelfReference(self: *Transformer, source: NodeIndex) Transformer.Error!NodeIndex {
+    if (!self.semantic_edit_enabled) std.debug.panic("worklet class-self copy needs semantic editing", .{});
+    const source_id = self.generated_class_copy_source_self_symbol orelse
+        std.debug.panic("worklet class-self copy has no source SymbolId", .{});
+    const target_id = self.generated_class_copy_target_self_symbol orelse
+        std.debug.panic("worklet class-self copy has no reconstructed SymbolId", .{});
+    if (self.getSymbolIdAt(source) != source_id)
+        std.debug.panic("worklet class-self copy source identity changed", .{});
+    const source_node = self.ast.getNode(source);
+    if (source_node.tag != .identifier_reference and source_node.tag != .assignment_target_identifier)
+        std.debug.panic("worklet class-self copy is not a reference node", .{});
+
+    const editor = try editorFor(self);
+    const maybe_reference = editor.referenceForNode(source) catch |err| return editError(err);
+    const source_reference = maybe_reference orelse
+        std.debug.panic("worklet class-self source has no Reference", .{});
+    const clone = try self.ast.addNode(source_node);
+    editor.addCopiedReference(
+        clone,
+        @enumFromInt(target_id),
+        self.current_scope,
+        source_reference.flags,
+        source_reference.stmt_idx,
+        source_reference.scope_stmt_idx,
+    ) catch |err| return editError(err);
+    return clone;
 }
 
 /// `_loop(index)`의 새 인자는 원래 헤더 바인딩을 읽는다. 바인딩에는 복제할

@@ -982,6 +982,13 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             break :blk new_regex;
         },
         .identifier_reference => {
+            if (self.generated_class_copy_depth > 0 and
+                self.generated_class_copy_source_self_symbol != null and
+                @intFromEnum(idx) < self.parser_node_count and
+                self.getSymbolIdAt(idx) == self.generated_class_copy_source_self_symbol)
+            {
+                return self.cloneGeneratedClassSelfReference(idx);
+            }
             if (self.options.unsupported.class) {
                 if (try es2015_class.ES2015Class(Transformer).classSelfAccess(self, idx)) |access| return access;
             }
@@ -1013,6 +1020,13 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             return self.copyNodeDirect(idx);
         },
         .assignment_target_identifier => {
+            if (self.generated_class_copy_depth > 0 and
+                self.generated_class_copy_source_self_symbol != null and
+                @intFromEnum(idx) < self.parser_node_count and
+                self.getSymbolIdAt(idx) == self.generated_class_copy_source_self_symbol)
+            {
+                return self.cloneGeneratedClassSelfReference(idx);
+            }
             if (self.options.unsupported.class) {
                 if (try es2015_class.ES2015Class(Transformer).classSelfAccess(self, idx)) |access| return access;
             }

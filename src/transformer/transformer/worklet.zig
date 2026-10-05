@@ -455,6 +455,26 @@ fn walkBodyForClosureAnalysis(
                 continue;
             },
 
+            // Class field keys are property names, not variable references.
+            // Only computed keys execute an expression; initializers and
+            // decorators remain part of the surrounding class evaluation.
+            .property_definition, .accessor_property => {
+                const e = node.data.extra;
+                if (!self.ast.hasExtra(e, 5)) continue;
+                const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + ast_mod.PropertyExtra.key]);
+                if (!key_idx.isNone() and self.ast.getNode(key_idx).tag == .computed_property_key)
+                    try stack.append(self.allocator, key_idx);
+                const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + ast_mod.PropertyExtra.init]);
+                if (!init_idx.isNone()) try stack.append(self.allocator, init_idx);
+                const deco_start = self.ast.extra_data.items[e + ast_mod.PropertyExtra.deco_start];
+                const deco_len = self.ast.extra_data.items[e + ast_mod.PropertyExtra.deco_len];
+                if (deco_start <= self.ast.extra_data.items.len and deco_len <= self.ast.extra_data.items.len - deco_start) {
+                    for (self.ast.extra_data.items[deco_start .. deco_start + deco_len]) |decorator_raw|
+                        try stack.append(self.allocator, @enumFromInt(decorator_raw));
+                }
+                continue;
+            },
+
             // 변수 선언: binding name → locals, init 만 stack 에 push (name 은 binding, type_ann 은 TS).
             .variable_declarator => {
                 const e = node.data.extra;
