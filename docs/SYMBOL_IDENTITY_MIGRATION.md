@@ -81,6 +81,7 @@
 - Stage 3 private method descriptor binding, `__esDecorate` assignment write, generated private getter read를 exact NodeIndex/SymbolId로 연결한다. descriptor 선언은 일반 generated-local scanner에서 제외하고, instance/static scope graph와 바깥 동명 변수 충돌 runtime 실행을 검사한다.
 - 합성 class auto-accessor setter의 `value` parameter/reference는 생성 시점의 두 NodeIndex를 `AccessorInfo`까지 전달한다. 최종 함수 ScopeId가 정해지는 `buildAccessorFunc`에서 그 exact handle을 직접 등록해, 함수 전체를 이름/span으로 훑던 `trackGeneratedLocalSymbols` 경로를 제거한다. Flow auto-accessor fixture의 바깥 `value` 충돌과 exact gate 전체 타깃, ES5 실행이 이 경계를 검사한다.
 - 보류 중인 runtime-helper reference는 생성 당시 `current_scope`가 아니라 최종 출력 AST에서 확인한 owner `ScopeId`를 사용한다. `bindOutputScopesAndReferences`가 노드를 방문할 때 정확한 출력 scope로 보류 기록을 갱신하고, import/preamble SID를 연결하기 전에 적용한다. exact audit는 helper marker가 있는 참조도 알려진 출력 owner에서 `reference_scope_mismatch` 검사를 건너뛰지 않는다. ES5 `using`의 생성 try/catch/finally 블록에서 helper scope가 바깥 function scope에 남던 결함을 전체 Zig 테스트와 oracle fixture × target gate로 검사한다.
+- styled-components CSS prop의 template/object forwarding이 만드는 `p => p._cssN` callback은 생성 시 function `ScopeId`, 매개변수 `SymbolId`, 모든 `p` read를 직접 연결한다. callback이 원본 JSX 위치의 함수 안에서 만들어져도 `_styled_N` 선언과 함께 program scope로 이동하는 사례를 exact graph 회귀로 확인하며, 원본 함수의 동명 `p`는 별도 SymbolId로 유지한다. 이는 이 CSS prop producer의 재분석 의존성을 제거한다. plugin/worklet/refresh/emotion/styled-components 전체 생성자 조사는 계속 남아 있다.
 
 ### 매개변수 수정 후 남은 경계
 
