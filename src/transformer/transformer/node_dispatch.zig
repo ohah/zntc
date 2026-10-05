@@ -1100,9 +1100,9 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .assignment_target_rest,
         => self.visitUnaryNode(idx),
         .assignment_target_with_default,
-        .assignment_target_property_identifier,
         .assignment_target_property_property,
         => self.visitBinaryNode(idx),
+        .assignment_target_property_identifier => self.visitAssignmentTargetPropertyIdentifier(idx, node),
         // assignment_target_identifier: string_ref → 변환 불필요 (identifier와 동일)
 
         // === TS enum/namespace: 런타임 코드 생성 (codegen에서 IIFE 출력) ===

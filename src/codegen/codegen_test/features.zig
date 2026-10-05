@@ -615,7 +615,7 @@ test "Codegen: namespace with export const" {
     var r = try e2e(std.testing.allocator, "namespace Foo { export const x = 1; }");
     defer r.deinit();
     try std.testing.expectEqualStrings(
-        "var Foo;((Foo) => {Foo.x=1;})(Foo || (Foo = {}));",
+        "var Foo;((_Foo) => {_Foo.x=1;})(Foo || (Foo = {}));",
         r.output,
     );
 }
@@ -624,7 +624,7 @@ test "Codegen: namespace with export function" {
     var r = try e2e(std.testing.allocator, "namespace Foo { export function bar() {} }");
     defer r.deinit();
     try std.testing.expectEqualStrings(
-        "var Foo;((Foo) => {function bar(){}Foo.bar=bar;})(Foo || (Foo = {}));",
+        "var Foo;((_Foo) => {function bar(){}_Foo.bar=bar;})(Foo || (Foo = {}));",
         r.output,
     );
 }
@@ -633,15 +633,36 @@ test "Codegen: namespace export reference substitution" {
     var r = try e2e(std.testing.allocator, "namespace ns { export let L1 = 1; console.log(L1); }");
     defer r.deinit();
     // export된 변수의 참조가 ns.L1으로 치환되어야 함
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(ns.L1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(_ns.L1)") != null);
     // 선언부는 치환되면 안 됨 (let L1 = 1, not let ns.L1 = 1)
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "let ns.L1") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _ns.L1") == null);
 }
 
 test "Codegen: namespace export reference — multiple exports" {
     var r = try e2e(std.testing.allocator, "namespace ns { export let a = 1, b = 2; console.log(a + b); }");
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(ns.a+ns.b)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(_ns.a+_ns.b)") != null);
+}
+
+test "Codegen: namespace export references lower through members in shorthand and closures" {
+    var r = try e2e(std.testing.allocator, "namespace N { const _N = 0; export let x = 1; export const copy = { x }; export function read() { x++; return x + _N; } }");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_N1.copy={x:_N1.x}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_N1.x++") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return _N1.x+_N") != null);
+}
+
+test "Codegen: namespace export destructuring targets lower to member assignments" {
+    var r = try e2e(std.testing.allocator, "namespace N { export let x = 0, y = 1; ({ x } = { x: 2 }); ({ x = y } = {}); }");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "{x:_N.x}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "x:_N.x=_N.y") != null);
+}
+
+test "Codegen: merged namespace exported references lower through member proxies" {
+    var r = try e2e(std.testing.allocator, "namespace N { export let value = 1; } namespace N { export const next = value + 2; }");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_N.next=_N.value+2") != null);
 }
 
 test "Codegen: namespace export reference — function" {
@@ -658,7 +679,7 @@ test "Codegen: namespace export var — direct property assignment (no local var
     var r = try e2e(std.testing.allocator, "namespace x { export let foo = 1, bar = foo; }");
     defer r.deinit();
     try std.testing.expectEqualStrings(
-        "var x;((x) => {x.foo=1;x.bar=x.foo;})(x || (x = {}));",
+        "var x;((_x) => {_x.foo=1;_x.bar=_x.foo;})(x || (x = {}));",
         r.output,
     );
 }
@@ -667,7 +688,7 @@ test "Codegen: namespace export declare — reference rewriting" {
     // Bug 2 fix: export declare const L1 → references to L1 should be rewritten to ns.L1.
     var r = try e2e(std.testing.allocator, "namespace ns { export declare const L1; console.log(L1); }");
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(ns.L1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(_ns.L1)") != null);
 }
 
 test "#4819 Codegen: nested ambient namespace body is removed" {
@@ -701,14 +722,14 @@ test "#4819 Codegen: ambient namespace and enum uses follow TypeScript bare name
 test "#4819 Codegen: merged exported enum initializes from shared namespace member" {
     var r = try e2e(std.testing.allocator, "namespace N { export enum E { A = 1 } } namespace N { export enum E { B = 2 } }");
     defer r.deinit();
-    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, r.output, "E=N.E || (N.E = {})"));
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "N.E=E;") == null);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, r.output, "E=_N.E || (_N.E = {})"));
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_N.E=E;") == null);
 }
 
 test "#4819 Codegen: nested merged enum uses inner namespace member" {
     var r = try e2e(std.testing.allocator, "namespace Outer.Inner { export enum E { A = 1 } } namespace Outer.Inner { export enum E { B = 2 } }");
     defer r.deinit();
-    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, r.output, "E=Inner.E || (Inner.E = {})"));
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, r.output, "E=_Inner.E || (_Inner.E = {})"));
 }
 
 test "#4819 Codegen: exported const enum remains erased" {
@@ -723,8 +744,8 @@ test "Codegen: namespace nested export mutation — uses property access" {
     // foo += foo → B.foo += B.foo (not foo += B.foo)
     var r = try e2e(std.testing.allocator, "namespace A { export namespace B { export let foo = 1; foo += foo } }");
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "B.foo+=B.foo") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "B.foo=1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_B.foo+=_B.foo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_B.foo=1") != null);
 }
 
 test "Codegen: namespace export — 패턴이 섞인 선언은 선언자마다 따로 낸다" {
@@ -733,7 +754,7 @@ test "Codegen: namespace export — 패턴이 섞인 선언은 선언자마다 �
     var r = try e2e(std.testing.allocator, "namespace N { export const x = 1, [y] = [x]; }");
     defer r.deinit();
     try std.testing.expectEqualStrings(
-        "var N;((N) => {N.x=1;const [y]=[N.x];N.y=y;})(N || (N = {}));",
+        "var N;((_N) => {_N.x=1;const [y]=[_N.x];_N.y=y;})(N || (N = {}));",
         r.output,
     );
 }

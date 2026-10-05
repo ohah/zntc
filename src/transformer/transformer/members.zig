@@ -397,6 +397,22 @@ pub fn visitObjectProperty(self: *Transformer, node: Node) Error!NodeIndex {
     if (self.options.unsupported.object_extensions and node.data.binary.right.isNone()) {
         return es2015_shorthand.ES2015Shorthand(Transformer).expandShorthand(self, node);
     }
+    // A namespace export shorthand has one parser node for both its static key
+    // and value reference. Replace the value with the semantic member AST while
+    // retaining that node as the original property key (`{ x: _N.x }`).
+    if (node.data.binary.right.isNone()) {
+        if (try self.namespaceExportAccess(node.data.binary.left)) |new_value| {
+            return self.ast.addNode(.{
+                .tag = .object_property,
+                .span = node.span,
+                .data = .{ .binary = .{
+                    .left = node.data.binary.left,
+                    .right = new_value,
+                    .flags = node.data.binary.flags,
+                } },
+            });
+        }
+    }
     if (try expandBlockRenamedShorthand(self, node)) |expanded| return expanded;
     // non-computed key(identifier, string, numeric)는 property 이름이므로
     // block scoping rename 등 변수 치환을 적용하면 안 됨. copyNodeDirect 사용.
@@ -426,6 +442,35 @@ pub fn visitObjectProperty(self: *Transformer, node: Node) Error!NodeIndex {
             .flags = node.data.binary.flags,
         } },
     });
+}
+
+/// Lower an exported namespace variable used as a destructuring assignment
+/// target shorthand while keeping its source property key (`({ x: _N.x } = v)`).
+pub fn visitAssignmentTargetPropertyIdentifier(self: *Transformer, idx: NodeIndex, node: Node) Error!NodeIndex {
+    if (try self.namespaceExportAccess(node.data.binary.left)) |member_target| {
+        const target = if (node.data.binary.right.isNone()) member_target else blk: {
+            const default_value = try self.visitNode(node.data.binary.right);
+            break :blk try self.ast.addNode(.{
+                .tag = .assignment_target_with_default,
+                .span = node.span,
+                .data = .{ .binary = .{
+                    .left = member_target,
+                    .right = default_value,
+                    .flags = 0,
+                } },
+            });
+        };
+        return self.ast.addNode(.{
+            .tag = .assignment_target_property_property,
+            .span = node.span,
+            .data = .{ .binary = .{
+                .left = node.data.binary.left,
+                .right = target,
+                .flags = 0,
+            } },
+        });
+    }
+    return self.visitBinaryNode(idx);
 }
 
 /// formal_parameter:

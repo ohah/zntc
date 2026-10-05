@@ -40,8 +40,6 @@ pub const NamespacePrefix = struct {
 
 pub const NamespaceFrame = struct {
     prefix: NamespacePrefix,
-    owner_symbol: ?u32 = null,
-    exported_symbols: std.AutoHashMapUnmanaged(u32, void),
     parent: ?*const NamespaceFrame,
 };
 
@@ -422,17 +420,6 @@ pub const Codegen = struct {
         if (self.options.linking_metadata) |meta| return self.resolveSymbolId(idx, meta);
         const ni = @intFromEnum(idx);
         if (ni < self.options.semantic_symbol_ids.len) return self.options.semantic_symbol_ids[ni];
-        return null;
-    }
-
-    pub fn namespaceExportPrefix(self: *Codegen, idx: NodeIndex) ?NamespacePrefix {
-        const sid = self.sourceSymbolId(idx) orelse return null;
-        const proxy_owner = if (self.options.namespace_member_owners) |owners| owners.get(sid) else null;
-        var frame = self.ns_frame;
-        while (frame) |active| : (frame = active.parent) {
-            if (active.exported_symbols.contains(sid)) return active.prefix;
-            if (proxy_owner != null and active.owner_symbol == proxy_owner) return active.prefix;
-        }
         return null;
     }
 

@@ -2247,7 +2247,6 @@ pub fn emitModule(
         .semantic_symbols = if (module.semantic) |sem| sem.symbols.items else &.{},
         .semantic_scope_maps = if (module.semantic) |sem| sem.scope_maps else &.{},
         .generated_iife_scope_owner_map = if (module.semantic) |*sem| &sem.scope_owner_map else null,
-        .namespace_member_owners = if (module.semantic) |*sem| &sem.namespace_member_owners else null,
         .namespace_declaration_owners = if (module.semantic) |*sem| &sem.namespace_declaration_owners else null,
         .destructuring_temp_bindings = if (module.transform_cache) |*cache| &cache.destructuring_temp_bindings else &transformer.destructuring_temp_bindings,
         // 번들 모드에서 ESM이 아니면 import.meta → {} 치환 (esbuild 호환)

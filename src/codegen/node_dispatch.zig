@@ -210,23 +210,6 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
                 return;
             }
 
-            // A merged declaration's synthetic member has no lexical storage;
-            // only these proxy references must precede linker substitutions.
-            const is_namespace_proxy = if (self.options.namespace_member_owners) |owners|
-                if (sym_id) |sid| owners.contains(sid) else false
-            else
-                false;
-            if (is_namespace_proxy and (node.tag == .identifier_reference or node.tag == .assignment_target_identifier)) {
-                if (self.namespaceExportPrefix(idx)) |prefix| {
-                    const name = self.ast.getText(node.data.string_ref);
-                    try self.addSourceMappingWithName(node.span, name);
-                    try self.write(self.namespacePrefixName(prefix));
-                    try self.writeByte('.');
-                    try self.write(name);
-                    return;
-                }
-            }
-
             if (self.options.linking_metadata) |meta| {
                 if (sym_id) |sid| {
                     // 상수 인라인: import symbol이 상수이면 리터럴로 대체.
@@ -271,17 +254,6 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
                         try self.write(symbol.synthetic_name);
                         return;
                     }
-                }
-            }
-            // Same-declaration exported values use their original binding ID.
-            if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
-                if (self.namespaceExportPrefix(idx)) |prefix| {
-                    const name = self.ast.getText(node.data.string_ref);
-                    try self.addSourceMappingWithName(node.span, name);
-                    try self.write(self.namespacePrefixName(prefix));
-                    try self.writeByte('.');
-                    try self.write(name);
-                    return;
                 }
             }
             // CJS wrapper free `exports`/`module` 참조 치환 (RFC PR-2). wrapper

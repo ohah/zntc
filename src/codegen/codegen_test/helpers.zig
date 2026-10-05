@@ -173,6 +173,13 @@ pub fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_optio
         std.debug.print("\nparser error in e2eFull: {s}\n  source: {s}\n", .{ parser.errors.items[0].message, source });
         return error.ParserDiagnosticsPresent;
     }
+    var has_ts_namespace = false;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag == .ts_module_declaration) {
+            has_ts_namespace = true;
+            break;
+        }
+    }
 
     // es5 블록 스코핑을 낮추는 테스트는 프로덕션처럼 분석기 스코프를 넘긴다 — 블록 스코핑 이름은
     // 심볼 표로 정해진다 (#4760). 다른 테스트는 예전처럼 분석 없이 돈다.
@@ -200,20 +207,43 @@ pub fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_optio
         t.scopes = analyzer.scopes.items;
         t.scope_maps = analyzer.scope_maps.items;
         t.unresolved_references = &analyzer.unresolved_references;
+        if (has_ts_namespace) {
+            t.namespace_member_owners = &analyzer.namespace_member_owners;
+            t.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+            t.semantic_edit_enabled = true;
+        }
     }
     const root = try t.transform();
+    if (has_ts_namespace) {
+        if (analyzer_storage) |*analyzer| {
+            if (try t.finishSemanticEdit()) |edited| {
+                analyzer.applyEdit(edited);
+                t.symbols = analyzer.symbols.items;
+                t.references = analyzer.references.items;
+                t.scopes = analyzer.scopes.items;
+                t.scope_maps = analyzer.scope_maps.items;
+                t.scope_owner_map = analyzer.scope_owner_map;
+                t.class_self_symbol_map = analyzer.class_self_symbol_map;
+                t.helper_scope_map = analyzer.helper_scope_map;
+            }
+        }
+    }
 
     var options_with_symbols = cg_options;
     options_with_symbols.semantic_symbol_ids = t.symbol_ids.items;
     options_with_symbols.destructuring_temp_bindings = &t.destructuring_temp_bindings;
-    if (analyzer_storage) |*analyzer| {
-        options_with_symbols.namespace_member_owners = &analyzer.namespace_member_owners;
-        options_with_symbols.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    if (has_ts_namespace) {
+        if (analyzer_storage) |*analyzer| {
+            options_with_symbols.semantic_symbol_ids = analyzer.symbol_ids.items;
+            options_with_symbols.semantic_symbols = analyzer.symbols.items;
+            options_with_symbols.semantic_scope_maps = analyzer.scope_maps.items;
+            options_with_symbols.generated_iife_scope_owner_map = &analyzer.scope_owner_map;
+            options_with_symbols.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+        } else return error.MissingNamespaceAnalyzer;
     }
     var cg = Codegen.initWithOptions(allocator, t.ast, options_with_symbols);
     const raw_output = try cg.generate(root);
     const output = raw_output;
-
     // 산출물 재파싱 게이트 (#4472/#4481/#4482 계열). 이 계열의 버그는 전부 "빌드 green +
     // 산출물이 파싱 불가" 였다 — codegen 이 필수 괄호를 빠뜨리거나(`c&&{x:a}=o`) 인접 토큰을
     // 합쳐(`f(---t)`) 놓아도, 문자열 비교 테스트는 그 needle 만 맞으면 통과했다.

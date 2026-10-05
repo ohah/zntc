@@ -611,11 +611,7 @@ pub fn identifierEmitsSubstituted(self: anytype, idx: NodeIndex, slot: Shorthand
         }
     }
 
-    // 5) namespace IIFE 내부 export 참조 → `ns.name`.
-    if ((n.tag == .identifier_reference or n.tag == .assignment_target_identifier) and
-        self.namespaceExportPrefix(idx) != null) return true;
-
-    // 6) CJS 래퍼의 free `exports`/`module` — 파라미터를 짧은 이름으로 바꾼 경우.
+    // 5) CJS 래퍼의 free `exports`/`module` — 파라미터를 짧은 이름으로 바꾼 경우.
     if (self.options.module_format == .cjs and sym_id == null and
         (n.tag == .identifier_reference or n.tag == .assignment_target_identifier))
     {

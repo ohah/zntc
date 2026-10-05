@@ -1047,6 +1047,7 @@ pub const Transformer = struct {
     pub const visitPropertyDefinition = members_mod.visitPropertyDefinition;
     pub const visitAccessorProperty = members_mod.visitAccessorProperty;
     pub const visitObjectProperty = members_mod.visitObjectProperty;
+    pub const visitAssignmentTargetPropertyIdentifier = members_mod.visitAssignmentTargetPropertyIdentifier;
     pub const visitFormalParameter = members_mod.visitFormalParameter;
     pub const visitParameterNode = members_mod.visitParameterNode;
     pub const visitParameterList = members_mod.visitParameterList;
