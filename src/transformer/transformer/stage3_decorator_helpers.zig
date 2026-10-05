@@ -31,6 +31,12 @@ pub const Stage3MemberInfo = struct {
     initializers_field_ref: NodeIndex = .none,
     /// field/accessor용 extraInitializers 변수명 (예: "_x_extraInitializers")
     extra_initializers_name: ?[]const u8 = null,
+    /// Exact binding and references for a per-member extra initializer local.
+    extra_initializers_binding: NodeIndex = .none,
+    extra_initializers_decorate_ref: NodeIndex = .none,
+    extra_initializers_chain_field_ref: NodeIndex = .none,
+    extra_initializers_chain_constructor_ref: NodeIndex = .none,
+    extra_initializers_constructor_scope: @import("../../semantic/scope.zig").ScopeId = .none,
     /// private method용: descriptor 변수명 (예: "_private_secret_descriptor")
     descriptor_name: ?[]const u8 = null,
     /// Exact binding and references for the private method descriptor local.
@@ -205,9 +211,11 @@ pub fn buildEsDecorateCall(
     } else try es_helpers.makeNullLiteral(self);
 
     // arg6: extraInitializers (per-field var for field/accessor, shared var for method/getter/setter)
-    const arg6 = if (info.extra_initializers_name) |name|
-        try es_helpers.makeSyntheticRef(self, name)
-    else blk: {
+    const arg6 = if (info.extra_initializers_name) |name| blk: {
+        const reference = try es_helpers.makeSyntheticRef(self, name);
+        info.extra_initializers_decorate_ref = reference;
+        break :blk reference;
+    } else blk: {
         const extra_init_name = if (info.is_static) "_staticExtraInitializers" else "_instanceExtraInitializers";
         const reference = try es_helpers.makeSyntheticRef(self, extra_init_name);
         if (info.is_static) {
@@ -767,7 +775,9 @@ pub fn buildStage3LetDeclarations(
         if (info.extra_initializers_name) |extra_name| {
             const empty_arr_list2 = try self.ast.addNodeList(&.{});
             const empty_arr2 = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = empty_arr_list2 } });
-            try stmts.append(self.allocator, try makeLet(self, zero_span, extra_name, empty_arr2));
+            const extra_initializers = try makeLetWithBinding(self, zero_span, extra_name, empty_arr2);
+            info.extra_initializers_binding = extra_initializers.binding;
+            try stmts.append(self.allocator, extra_initializers.declaration);
         }
     }
 

@@ -477,25 +477,37 @@ describe('Stage 3 Decorators', () => {
           const _other_initializers = [function(v: number) { return v + 200; }];
           const _current_initializers = [function(v: number) { return v + 300; }];
           const _staticValue_initializers = [function(v: number) { return v + 400; }];
+          const _value_extraInitializers = [function() {}];
+          const _other_extraInitializers = [function() {}];
+          const _current_extraInitializers = [function() {}];
+          const _staticValue_extraInitializers = [function() {}];
           function increment(value: any, context: any) {
+            context.addInitializer(function() { (this as any).events.push(context.name); });
             if (context.kind === 'field') return (initialValue: number) => initialValue + 1;
             return value;
           }
-          function incrementAccessor(value: any) {
+          function incrementAccessor(value: any, context: any) {
+            context.addInitializer(function() { (this as any).events.push(context.name); });
             return { ...value, init(initialValue: number) { return initialValue + 3; } };
           }
+          function incrementStatic(value: any) {
+            return (initialValue: number) => initialValue + 1;
+          }
           class Example {
+            events: string[] = [];
             @increment value = 1;
             @increment other = 2;
             @incrementAccessor accessor current = 3;
-            @increment static staticValue = 9;
+            @incrementStatic static staticValue = 9;
           }
           const example = new Example();
-          console.log(example.value, example.other, example.current, Example.staticValue,
+          console.log(example.value, example.other, example.current, Example.staticValue, example.events.join(','),
             _value_initializers[0](0), _value_initializers.length,
             _other_initializers[0](0), _other_initializers.length,
             _current_initializers[0](0), _current_initializers.length,
-            _staticValue_initializers[0](0), _staticValue_initializers.length);
+            _staticValue_initializers[0](0), _staticValue_initializers.length,
+            _value_extraInitializers.length, _other_extraInitializers.length,
+            _current_extraInitializers.length, _staticValue_extraInitializers.length);
         `,
       },
       'index.ts',
@@ -503,7 +515,7 @@ describe('Stage 3 Decorators', () => {
     );
     cleanup = result.cleanup;
     expect(result.exitCode).toBe(0);
-    expect(result.runOutput).toBe('2 3 6 10 100 1 200 1 300 1 400 1');
+    expect(result.runOutput).toBe('2 3 6 10 value,other,current 100 1 200 1 300 1 400 1 1 1 1 1');
   });
 
   it('ES5 static and instance decorators keep separate arrays for same-named members', async () => {
