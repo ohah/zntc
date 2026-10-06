@@ -1726,7 +1726,7 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
         state.css_prop_inject_name_resolved = true;
         const ref = try es_helpers.makeExactSyntheticRef(self, resolved);
         try self.markRuntimeHelperRef(ref);
-        try self.trackRuntimeHelperRef(ref, resolved);
+        try self.trackRuntimeHelperImportRef(ref, resolved);
         break :blk ref;
     };
     // intrinsic: `styled.<tag>` (static_member), custom: `styled(<expr>)` (call_expression)

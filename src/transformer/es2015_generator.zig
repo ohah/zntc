@@ -2794,7 +2794,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 return;
             }
             const wrapper_scope = try self.addGeneratedFunctionScope(parent, wrapper);
-            try self.relocatePendingRuntimeHelperRef(gen.helper_ref, wrapper_scope);
+            try self.relocateRuntimeHelperRef(gen.helper_ref, wrapper_scope);
             try self.bindGeneratedState(wrapper_scope, parent, gen.callback, gen.state_param, frame.state_ref_start, wrapper_temps, frame.callback_temps.items, span);
         }
 

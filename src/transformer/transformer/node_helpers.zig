@@ -179,9 +179,9 @@ fn recordReferenceOrigin(self: anytype, source: NodeIndex, clone: NodeIndex) Err
     const unresolved = self.unresolved_reference_nodes;
     const has_external_origin = explicit_globals.contains(source_raw) or explicit_globals.contains(origin) or
         (if (unresolved) |nodes| nodes.contains(source_raw) or nodes.contains(origin) else false);
-    const pending_helper = self.pending_runtime_helper_ref_index.get(source_raw);
+    const tracked_helper = self.tracked_runtime_helper_ref_index.get(source_raw);
     const has_capture_origin = self.capture_ref_by_origin.contains(source_raw);
-    if (!has_symbol and !has_external_origin and !has_capture_origin and self.synthetic_idents == null) return;
+    if (!has_symbol and !has_external_origin and tracked_helper == null and !has_capture_origin and self.synthetic_idents == null) return;
     const key = @intFromEnum(clone);
     // A replaced user reference can become a generated capture reference in
     // visitNodeInner. Its exact capture origin was recorded at construction;
@@ -192,10 +192,12 @@ fn recordReferenceOrigin(self: anytype, source: NodeIndex, clone: NodeIndex) Err
         return;
     }
     try self.reference_origin_map.put(self.allocator, key, origin);
-    if (pending_helper) |pending_index| {
-        const local_name = self.pending_runtime_helper_refs.items[pending_index].local_name;
+    if (tracked_helper) |tracked_index| {
+        if (tracked_index >= self.tracked_runtime_helper_refs.items.len)
+            std.debug.panic("runtime helper clone lost its exact source record", .{});
+        const symbol_id = self.tracked_runtime_helper_refs.items[tracked_index].symbol_id;
         try self.markRuntimeHelperRef(clone);
-        try self.trackRuntimeHelperRef(clone, local_name);
+        try self.trackRuntimeHelperRefWithId(clone, @enumFromInt(symbol_id));
     }
 }
 
@@ -214,10 +216,10 @@ pub fn propagateSymbolId(self: anytype, old_idx: NodeIndex, new_idx: NodeIndex) 
     // never inherited from the replaced source identifier.
     if (self.capture_ref_by_origin.contains(new_i)) return;
 
-    // A helper node is an explicit global only until its isolated import is
-    // appended. Cloning it must retain that pending helper identity instead
-    // of copying a same-spelled user binding from a source node.
-    if (self.pending_runtime_helper_ref_index.contains(old_i)) {
+    // A helper node has an exact helper SymbolId already. Cloning it must be
+    // rebound to that identity instead of copying a same-spelled user binding.
+    if (self.tracked_runtime_helper_ref_index.contains(old_i)) {
+        if (old_i == new_i) return;
         try ensureSymbolIds(self, new_i);
         self.symbol_ids.items[new_i] = null;
         try recordReferenceOrigin(self, old_idx, new_idx);

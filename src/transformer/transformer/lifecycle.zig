@@ -148,8 +148,9 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.helper_ref_nodes.deinit(self.allocator);
     self.preserved_simple_class_names.deinit(self.allocator);
     self.class_self_written_symbols.deinit(self.allocator);
-    self.pending_runtime_helper_refs.deinit(self.allocator);
-    self.pending_runtime_helper_ref_index.deinit(self.allocator);
+    self.tracked_runtime_helper_refs.deinit(self.allocator);
+    self.tracked_runtime_helper_ref_index.deinit(self.allocator);
+    self.runtime_helper_import_bindings.deinit(self.allocator);
     self.parameter_capture_statements.deinit(self.allocator);
     self.parameter_body_var_copies.deinit(self.allocator);
     self.destructuring_temp_bindings.deinit(self.allocator);
@@ -158,7 +159,6 @@ pub fn deinitExceptAst(self: *Transformer) void {
     for (self.namespace_export_frames.items) |*frame| frame.exported_symbol_ids.deinit(self.allocator);
     self.namespace_export_frames.deinit(self.allocator);
     self.namespace_temp_bindings.deinit(self.allocator);
-    self.pending_runtime_helper_chains.deinit(self.allocator);
     self.plugins.refresh.registrations.deinit(self.allocator);
     for (self.plugins.refresh.signatures.items) |s| self.allocator.free(s.signature);
     self.plugins.refresh.signatures.deinit(self.allocator);
