@@ -2128,20 +2128,11 @@ pub fn emitModule(
     }
 
     // Codegen: AST → JS 문자열
-    // CJS wrapper exports/module mangle (RFC PR-4, 기본 ON): CJS wrap +
-    // minify 일 때 적용. codegen 합성/free-ref 와 wrapper 파라미터가 같은
-    // 이름을 써야 하므로 단일 소스로 계산. kill-switch 시 default → 무변경.
-    // react_native 제외: Metro serializer/require 시스템이 CJS wrapper
-    // 파라미터 이름(`exports`/`module`)을 가정하므로 RN 빌드는 보존 필수
-    // (semantic-preserving — RN 은 이 레버 포기, 정확성 우선).
-    //
-    // eval/with 가드: direct `eval(...)`/`with` 가 있으면 식별자가 동적
-    // 으로 참조될 수 있어(eval 문자열·with scope 는 AST 치환 비대상),
-    // wrapper 파라미터를 `$e`/`$m` 로 바꾸면 eval 내부 `exports` 참조와
-    // 불일치 → ReferenceError. analyzer 가 `markScopeFieldToRoot` 로
-    // root(scope 0)에 전파하므로 root.blocksMangling() 으로 모듈 전체
-    // 판정 (linker.zig Phase B 와 동일 관용구). semantic 부재 또는
-    // scope 부재(판정 불가) 는 보수적으로 mangle 차단(정확성 우선).
+    // CJS wrapper callback parameters are exact semantic identities. Their
+    // final spelling comes from the same linker rename table as body references
+    // and top-level `var exports`/`var module` redeclarations. Modules without
+    // a safe shared identity (or legacy low-level callers) use the
+    // collision-safe textual fallback.
     const mangle_blocked = if (module.semantic) |sem|
         (sem.scopes.len == 0 or sem.scopes[0].blocksMangling())
     else
@@ -2149,7 +2140,13 @@ pub fn emitModule(
     const cjs_mangle = !cjs_wrap_mangle_disabled.enabled() and
         module.wrap_kind == .cjs and options.minify_whitespace and
         options.platform != .react_native and !mangle_blocked;
-    const cjs_wrapper_params: CjsWrapperParamNames = if (cjs_mangle)
+    const cjs_wrapper_params: CjsWrapperParamNames = if (module.wrap_kind == .cjs and
+        module.cjs_wrapper_exports_parameter_symbol != null and module.cjs_wrapper_module_parameter_symbol != null)
+        .{
+            .exports = module.getCjsWrapperExportsParameterName(if (linker) |l| &l.rename_table else null),
+            .module = module.getCjsWrapperModuleParameterName(if (linker) |l| &l.rename_table else null),
+        }
+    else if (cjs_mangle)
         try allocCjsWrapperParamNames(arena_alloc, module, transformer.ast, linker)
     else
         .{ .exports = cg_options.default_cjs_exports_name, .module = cg_options.default_cjs_module_name };

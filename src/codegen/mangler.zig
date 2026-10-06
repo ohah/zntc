@@ -500,7 +500,7 @@ fn hasFixedOutputName(sym: Symbol) bool {
         => true,
         // These bundler wrapper symbols can receive their final name in Phase A;
         // their original spelling is not necessarily present in emitted output.
-        .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_member => false,
+        .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter => false,
     };
 }
 

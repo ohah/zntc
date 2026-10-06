@@ -406,6 +406,11 @@ pub const Module = struct {
     exports_symbol: ?SemanticSymbolId = null,
     /// wrap_kind == .cjs 모듈의 `require_<path>` 함수 심볼 id.
     require_symbol: ?SemanticSymbolId = null,
+    /// `__commonJS` 콜백의 암묵적 `exports`/`module` 매개변수 identity.
+    /// 최상위 var/function 재선언은 해당 원본 SID를 공유하고, 그 외에는
+    /// graph finalize가 module scope에 합성 매개변수 SID를 등록한다.
+    cjs_wrapper_exports_parameter_symbol: ?SemanticSymbolId = null,
+    cjs_wrapper_module_parameter_symbol: ?SemanticSymbolId = null,
 
     /// RFC #3940 L.5a — post-link tree-shake AST mutation 후 semantic resync 시 carry-over 된
     /// rename (SymbolID→name). tree_shaker(const linker)가 resync 전 `rename_table` 에서 캡처해
@@ -758,6 +763,31 @@ pub const Module = struct {
 
     pub fn getRequireName(self: *const Module, rt: ?*const RenameTable) ?[]const u8 {
         return self.syntheticName(self.require_symbol, rt);
+    }
+
+    fn cjsWrapperParameterName(
+        self: *const Module,
+        maybe_id: ?SemanticSymbolId,
+        fallback: []const u8,
+        rt: ?*const RenameTable,
+    ) []const u8 {
+        const id = maybe_id orelse return fallback;
+        const sem = self.semantic orelse return fallback;
+        const idx: u32 = @intFromEnum(id);
+        if (idx >= sem.symbols.items.len) return fallback;
+        if (rt) |table| {
+            if (table.get(SymbolID.make(self.index, idx))) |name| return name;
+        }
+        const symbol = sem.symbols.items[idx];
+        return if (symbol.synthetic_name.len > 0) symbol.synthetic_name else fallback;
+    }
+
+    pub fn getCjsWrapperExportsParameterName(self: *const Module, rt: ?*const RenameTable) []const u8 {
+        return self.cjsWrapperParameterName(self.cjs_wrapper_exports_parameter_symbol, "exports", rt);
+    }
+
+    pub fn getCjsWrapperModuleParameterName(self: *const Module, rt: ?*const RenameTable) []const u8 {
+        return self.cjsWrapperParameterName(self.cjs_wrapper_module_parameter_symbol, "module", rt);
     }
 
     /// `getInitName()`의 할당 버전 — 등록된 경우 dupe, 아니면 fresh 생성.

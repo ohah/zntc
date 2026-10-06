@@ -20,6 +20,8 @@ const ns_access_skip_disabled = @import("../env_flag.zig").Once("ZNTC_NO_NS_ACCE
 const import_sym_skip_disabled = @import("../env_flag.zig").Once("ZNTC_NO_IMPORT_SYM_SKIP");
 /// kill-switch: 보존-hit lReExp(populateReExportAliases) 변경∪importer 한정 skip 끄고 전량 재계산.
 const reexport_alias_skip_disabled = @import("../env_flag.zig").Once("ZNTC_NO_REEXPORT_ALIAS_SKIP");
+/// RFC PR-4 kill-switch is now enforced by the SymbolId naming pass too.
+const cjs_wrap_mangle_disabled = @import("../env_flag.zig").Once("ZNTC_NO_CJS_WRAP_MANGLE");
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const BundlerDiagnostic = types.BundlerDiagnostic;
@@ -1929,6 +1931,16 @@ pub const Linker = struct {
                         bitsets[mi].set(sym_idx_usize);
 
                         if (blocks) continue;
+                        // The CJS callback parameter and its body references
+                        // share one SymbolId. Keep that identity canonical for
+                        // Metro and for the existing wrapper-mangle kill switch.
+                        if (m.wrap_kind == .cjs and
+                            (self.graph.resolve_cache.platform == .react_native or cjs_wrap_mangle_disabled.enabled()) and
+                            (std.mem.eql(u8, sym_name, "exports") or std.mem.eql(u8, sym_name, "module")))
+                        {
+                            try reserved.put(self.allocator, sym_name, {});
+                            continue;
+                        }
                         if (exported.contains(sym_name)) continue;
                         if (sym_name.len <= 1) {
                             // candidate skip 한 1-char binding 도 reserved 에 등록 (#2965).
@@ -1977,9 +1989,13 @@ pub const Linker = struct {
                     for (sem.symbols.items, 0..) |*sym, si| {
                         const sk = sym.synthetic_kind orelse continue;
                         switch (sk) {
-                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .enum_iife_member => {},
+                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter => {},
                         }
                         if (sk == .enum_iife_member) continue;
+                        // CJS callback parameters are registered in module
+                        // scope, so the ordinary scope-map pass above already
+                        // added each exact SID as a candidate.
+                        if (sk == .cjs_wrapper_exports_parameter or sk == .cjs_wrapper_module_parameter) continue;
                         if (sk == .namespace_iife_parameter or sk == .enum_iife_parameter or sk == .runtime_helper_preamble) {
                             // Keep virtual output-owned binding names reserved
                             // so another linked symbol cannot capture them.
@@ -4082,6 +4098,13 @@ pub const Linker = struct {
             try self.computeRenames();
             if (opts.compute_mangling) try self.computeMangling();
         }
+        // `--minify-whitespace` historically shortened CJS callback parameters
+        // even when identifier mangling was disabled. Preserve that behavior
+        // through their exact SymbolIds so body references and wrapper syntax
+        // receive one shared output name.
+        if (self.minify_whitespace and !self.graph.minify_identifiers) {
+            try self.assignCjsWrapperParameterAliases();
+        }
         self.populateReExportAliases();
         self.populateImportSymbols();
         if (opts.populate_namespace_accesses) self.populateNamespaceAccesses();
@@ -4094,6 +4117,123 @@ pub const Linker = struct {
         // 소비되지 않는다. 전체 모듈 import_bindings O(N) 순회 절약(lnk). 첫빌드/fallback/splitting
         // (skip_ref_counts=false)은 종전대로 populate.
         if (!opts.skip_ref_counts) self.populateSymbolRefCounts();
+    }
+
+    fn assignCjsWrapperParameterAliases(self: *Linker) !void {
+        if (self.graph.resolve_cache.platform == .react_native or cjs_wrap_mangle_disabled.enabled()) return;
+
+        var modules = self.graph.modules.iterator(0);
+        while (modules.next()) |module| {
+            if (module.wrap_kind != .cjs) continue;
+            const exports_id = module.cjs_wrapper_exports_parameter_symbol orelse continue;
+            const module_id = module.cjs_wrapper_module_parameter_symbol orelse continue;
+            const sem = module.semantic orelse continue;
+            if (sem.scopes.len == 0 or sem.scopes[0].blocksMangling()) continue;
+
+            const exports_sid = bundler_symbol.SymbolID.make(module.index, @intFromEnum(exports_id));
+            const module_sid = bundler_symbol.SymbolID.make(module.index, @intFromEnum(module_id));
+            const exports_preferred = rt_names.NAMES.CJS_WRAPPER_EXPORTS_MIN;
+            const module_preferred = rt_names.NAMES.CJS_WRAPPER_MODULE_MIN;
+
+            const exports_name = if (self.rename_table.get(exports_sid)) |existing|
+                (if (isCjsWrapperAlias(existing, exports_preferred)) existing else try self.allocateCjsWrapperParamAlias(module, exports_sid, exports_preferred, null))
+            else
+                try self.allocateCjsWrapperParamAlias(module, exports_sid, exports_preferred, null);
+            if (self.rename_table.get(exports_sid) == null or
+                !std.mem.eql(u8, self.rename_table.get(exports_sid).?, exports_name))
+            {
+                try self.assignCjsWrapperAlias(exports_sid, exports_name);
+            }
+
+            const module_name = if (self.rename_table.get(module_sid)) |existing|
+                (if (isCjsWrapperAlias(existing, module_preferred) and !std.mem.eql(u8, existing, exports_name)) existing else try self.allocateCjsWrapperParamAlias(module, module_sid, module_preferred, exports_name))
+            else
+                try self.allocateCjsWrapperParamAlias(module, module_sid, module_preferred, exports_name);
+            if (self.rename_table.get(module_sid) == null or
+                !std.mem.eql(u8, self.rename_table.get(module_sid).?, module_name))
+            {
+                try self.assignCjsWrapperAlias(module_sid, module_name);
+            }
+        }
+    }
+
+    fn assignCjsWrapperAlias(self: *Linker, id: bundler_symbol.SymbolID, name: []const u8) !void {
+        if (self.rename_table.get(id)) |prior| _ = self.canonical_names_used.fetchRemove(prior);
+        try self.canonical_strings.append(self.allocator, name);
+        try self.rename_table.put(self.allocator, id, name);
+    }
+
+    fn allocateCjsWrapperParamAlias(
+        self: *Linker,
+        module: *const Module,
+        symbol_id: bundler_symbol.SymbolID,
+        preferred: []const u8,
+        other_param: ?[]const u8,
+    ) ![]const u8 {
+        if (!self.cjsWrapperParamAliasIsUsed(module, symbol_id, preferred) and
+            (other_param == null or !std.mem.eql(u8, preferred, other_param.?)))
+        {
+            return try self.allocator.dupe(u8, preferred);
+        }
+
+        var suffix: usize = 2;
+        while (true) : (suffix += 1) {
+            const candidate = try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ preferred, suffix });
+            if (!self.cjsWrapperParamAliasIsUsed(module, symbol_id, candidate) and
+                (other_param == null or !std.mem.eql(u8, candidate, other_param.?)))
+            {
+                return candidate;
+            }
+            self.allocator.free(candidate);
+        }
+    }
+
+    fn cjsWrapperParamAliasIsUsed(
+        self: *const Linker,
+        module: *const Module,
+        ignored_id: bundler_symbol.SymbolID,
+        candidate: []const u8,
+    ) bool {
+        const sem = module.semantic orelse return true;
+        for (sem.symbols.items, 0..) |symbol, index| {
+            if (std.mem.eql(u8, symbol.nameText(module.source), candidate)) return true;
+            const id = bundler_symbol.SymbolID.make(module.index, @as(u32, @intCast(index)));
+            if (id != ignored_id) {
+                if (self.rename_table.get(id)) |renamed| {
+                    if (std.mem.eql(u8, renamed, candidate)) return true;
+                }
+            }
+        }
+
+        var unresolved = sem.unresolved_references.keyIterator();
+        while (unresolved.next()) |name| {
+            if (std.mem.eql(u8, name.*, candidate)) return true;
+        }
+
+        if (module.ast) |ast| {
+            for (ast.nodes.items) |node| {
+                const name = switch (node.tag) {
+                    .binding_identifier, .identifier_reference, .assignment_target_identifier => ast.getText(node.data.string_ref),
+                    else => continue,
+                };
+                if (std.mem.eql(u8, name, candidate)) return true;
+            }
+        }
+
+        for (rt_names.ALL_SHORT_NAMES) |name| {
+            if (std.mem.eql(u8, name, candidate) and
+                !std.mem.eql(u8, candidate, rt_names.NAMES.CJS_WRAPPER_EXPORTS_MIN) and
+                !std.mem.eql(u8, candidate, rt_names.NAMES.CJS_WRAPPER_MODULE_MIN)) return true;
+        }
+        return false;
+    }
+
+    fn isCjsWrapperAlias(name: []const u8, preferred: []const u8) bool {
+        if (!std.mem.startsWith(u8, name, preferred) or name.len <= preferred.len) return std.mem.eql(u8, name, preferred);
+        for (name[preferred.len..]) |c| {
+            if (!std.ascii.isDigit(c)) return false;
+        }
+        return true;
     }
 
     /// pre-shake AST mutation (cross-module const materialize) 직후, 후속 BFS 가

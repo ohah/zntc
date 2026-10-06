@@ -4,6 +4,7 @@ const std = @import("std");
 const types = @import("../types.zig");
 const Module = @import("../module.zig").Module;
 const semantic_symbol = @import("../../semantic/symbol.zig");
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 const Span = @import("../../lexer/token.zig").Span;
 const graph_mod = @import("../graph.zig");
 const ModuleGraph = graph_mod.ModuleGraph;
@@ -224,6 +225,7 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
     var it = self.modules.iterator(0);
     while (it.next()) |m| {
         if (m.wrap_kind == .none) continue;
+        if (m.wrap_kind == .cjs) registerCjsWrapperParameters(m);
         const needs_init = m.init_symbol == null;
         const needs_exports = m.exports_symbol == null;
         const needs_require = m.wrap_kind == .cjs and m.require_symbol == null;
@@ -285,6 +287,280 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
             ) catch null;
         }
     }
+}
+
+/// Register the two implicit bindings supplied to a CommonJS module wrapper.
+/// A source top-level declaration already has the right identity (including
+/// `var`/function redeclarations); otherwise add a generated parameter SymbolId
+/// to the module scope and bind unresolved source references to it.
+fn registerCjsWrapperParameters(m: *Module) void {
+    const sem_ptr = if (m.semantic) |*sem| sem else return;
+    const ast_ptr = if (m.ast) |*ast| ast else return;
+    if (sem_ptr.scopes.len == 0 or sem_ptr.scope_maps.len == 0) return;
+    const arena = if (m.parse_arena) |a| a.allocator() else return;
+    const root_scope_ptr = @constCast(&sem_ptr.scopes[0]);
+    const root_map = @constCast(&sem_ptr.scope_maps[0]);
+
+    // The wrapper parameters share the body binding for `var` and function
+    // declarations. A lexical/import binding with the same spelling is a
+    // distinct binding in an outer module scope; leave those rare mixed cases
+    // on the collision-safe legacy allocator instead of overwriting its map.
+    if (hasIncompatibleCjsRootBinding(sem_ptr, ast_ptr, "exports", .cjs_wrapper_exports_parameter) or
+        hasIncompatibleCjsRootBinding(sem_ptr, ast_ptr, "module", .cjs_wrapper_module_parameter))
+    {
+        m.cjs_wrapper_exports_parameter_symbol = null;
+        m.cjs_wrapper_module_parameter_symbol = null;
+        return;
+    }
+
+    const existing_exports = cjsRootBinding(sem_ptr, ast_ptr, "exports", .cjs_wrapper_exports_parameter);
+    const existing_module = cjsRootBinding(sem_ptr, ast_ptr, "module", .cjs_wrapper_module_parameter);
+    const new_symbol_count: usize = @as(usize, @intFromBool(existing_exports == null)) +
+        @as(usize, @intFromBool(existing_module == null));
+    const new_map_count: usize = @as(usize, @intFromBool(!root_map.contains("exports"))) +
+        @as(usize, @intFromBool(!root_map.contains("module")));
+    if (new_symbol_count > 0 and @as(usize, root_scope_ptr.symbol_count) > std.math.maxInt(u16) - new_symbol_count) return;
+
+    // Reserve both structures before publishing either parameter. This keeps
+    // the pair atomic on allocation failure and avoids cloning all semantic
+    // arrays/maps once per CJS module.
+    sem_ptr.symbols.ensureUnusedCapacity(arena, new_symbol_count) catch return;
+    root_map.ensureUnusedCapacity(arena, @intCast(new_map_count)) catch return;
+
+    const old_symbol_count = sem_ptr.symbols.items.len;
+    const exports_symbol = existing_exports orelse addCjsWrapperParameter(
+        sem_ptr,
+        root_scope_ptr,
+        root_map,
+        arena,
+        "exports",
+        .cjs_wrapper_exports_parameter,
+    );
+    const module_symbol = existing_module orelse addCjsWrapperParameter(
+        sem_ptr,
+        root_scope_ptr,
+        root_map,
+        arena,
+        "module",
+        .cjs_wrapper_module_parameter,
+    );
+
+    const exports_raw: usize = @intFromEnum(exports_symbol);
+    if ((root_map.get("exports") orelse std.math.maxInt(usize)) != exports_raw) {
+        root_map.putAssumeCapacity("exports", exports_raw);
+    }
+    const module_raw: usize = @intFromEnum(module_symbol);
+    if ((root_map.get("module") orelse std.math.maxInt(usize)) != module_raw) {
+        root_map.putAssumeCapacity("module", module_raw);
+    }
+
+    const exports_generated = isCjsWrapperParameter(sem_ptr, exports_symbol, .cjs_wrapper_exports_parameter);
+    const module_generated = isCjsWrapperParameter(sem_ptr, module_symbol, .cjs_wrapper_module_parameter);
+    const explicit_globals = if (m.transform_cache) |cache| cache.explicit_global_ref_nodes else &.{};
+    const cache_symbol_ids: ?[]?u32 = if (m.transform_cache) |cache| @constCast(cache.symbol_ids) else null;
+
+    // Parser semantic analysis predates the CJS wrapper environment. Resolve
+    // only references that remain unresolved in the exact AST/SymbolId table;
+    // nested source bindings and explicit globals therefore keep their IDs.
+    const bound_refs = bindCjsWrapperReferences(
+        ast_ptr,
+        @constCast(sem_ptr.symbol_ids),
+        cache_symbol_ids,
+        &sem_ptr.symbols,
+        explicit_globals,
+        if (exports_generated) exports_symbol else null,
+        if (module_generated) module_symbol else null,
+    );
+    if (exports_generated and !bound_refs.has_unbound_exports) {
+        _ = sem_ptr.unresolved_references.remove("exports");
+    }
+    if (module_generated and !bound_refs.has_unbound_module) {
+        _ = sem_ptr.unresolved_references.remove("module");
+    }
+
+    if (new_symbol_count > 0) extendCachedRefDeltas(arena, m, old_symbol_count, sem_ptr.symbols.items.len);
+
+    m.cjs_wrapper_exports_parameter_symbol = exports_symbol;
+    m.cjs_wrapper_module_parameter_symbol = module_symbol;
+}
+
+fn cjsRootBinding(
+    sem: *const @import("../module.zig").ModuleSemanticData,
+    ast: *const @import("../../parser/ast.zig").Ast,
+    name: []const u8,
+    kind: semantic_symbol.SyntheticKind,
+) ?semantic_symbol.SymbolId {
+    const root_scope: ScopeId = @enumFromInt(0);
+    if (sem.scope_maps[0].get(name)) |raw| {
+        if (raw < sem.symbols.items.len) {
+            const symbol = sem.symbols.items[raw];
+            if (symbol.scope_id == root_scope and std.mem.eql(u8, symbol.nameText(ast.source), name)) {
+                return @enumFromInt(@as(u32, @intCast(raw)));
+            }
+        }
+    }
+    return findCjsWrapperParameter(sem.symbols.items, kind, name);
+}
+
+fn hasIncompatibleCjsRootBinding(
+    sem: *const @import("../module.zig").ModuleSemanticData,
+    ast: *const @import("../../parser/ast.zig").Ast,
+    name: []const u8,
+    kind: semantic_symbol.SyntheticKind,
+) bool {
+    const root_scope: ScopeId = @enumFromInt(0);
+    const raw = sem.scope_maps[0].get(name) orelse return false;
+    if (raw >= sem.symbols.items.len) return false;
+    const symbol = sem.symbols.items[raw];
+    if (symbol.scope_id != root_scope or !std.mem.eql(u8, symbol.nameText(ast.source), name)) return false;
+    if (symbol.synthetic_kind == kind) return false;
+    return symbol.kind != .variable_var and !symbol.kind.isFunctionLike();
+}
+
+fn addCjsWrapperParameter(
+    sem: *@import("../module.zig").ModuleSemanticData,
+    root_scope: *@import("../../semantic/scope.zig").Scope,
+    root_map: *std.StringHashMapUnmanaged(usize),
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    kind: semantic_symbol.SyntheticKind,
+) semantic_symbol.SymbolId {
+    const id = semantic_symbol.extendSymbol(
+        allocator,
+        &sem.symbols,
+        .parameter,
+        kind,
+        name,
+        Span.EMPTY,
+    ) catch unreachable; // Capacity was reserved for both IDs above.
+    const raw: usize = @intFromEnum(id);
+    sem.symbols.items[raw].scope_id = @enumFromInt(0);
+    sem.symbols.items[raw].origin_scope = @enumFromInt(0);
+    root_map.putAssumeCapacity(name, raw);
+    root_scope.symbol_count += 1;
+    return id;
+}
+
+fn isCjsWrapperParameter(
+    sem: *const @import("../module.zig").ModuleSemanticData,
+    id: semantic_symbol.SymbolId,
+    kind: semantic_symbol.SyntheticKind,
+) bool {
+    const raw = @intFromEnum(id);
+    return raw < sem.symbols.items.len and sem.symbols.items[raw].scope_id == @as(ScopeId, @enumFromInt(0)) and
+        sem.symbols.items[raw].synthetic_kind == kind;
+}
+
+fn findCjsWrapperParameter(
+    symbols: []const semantic_symbol.Symbol,
+    kind: semantic_symbol.SyntheticKind,
+    name: []const u8,
+) ?semantic_symbol.SymbolId {
+    for (symbols, 0..) |symbol, raw| {
+        if (symbol.synthetic_kind != kind or symbol.scope_id != @as(ScopeId, @enumFromInt(0)) or
+            !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
+        return @enumFromInt(@as(u32, @intCast(raw)));
+    }
+    return null;
+}
+
+const CjsWrapperBindings = struct {
+    has_unbound_exports: bool = false,
+    has_unbound_module: bool = false,
+};
+
+fn bindCjsWrapperReferences(
+    ast: *const @import("../../parser/ast.zig").Ast,
+    symbol_ids: []?u32,
+    cache_symbol_ids: ?[]?u32,
+    symbols: *std.ArrayList(semantic_symbol.Symbol),
+    explicit_global_ref_nodes: []const u32,
+    exports_symbol: ?semantic_symbol.SymbolId,
+    module_symbol: ?semantic_symbol.SymbolId,
+) CjsWrapperBindings {
+    var result: CjsWrapperBindings = .{};
+    var exports_bound_count: u32 = 0;
+    var module_bound_count: u32 = 0;
+    for (ast.nodes.items, 0..) |node, raw| {
+        var reference_raw = raw;
+        var name: []const u8 = "";
+        switch (node.tag) {
+            .identifier_reference, .assignment_target_identifier => name = ast.getText(node.data.string_ref),
+            .jsx_identifier => {
+                name = ast.getSourceText(node.span);
+                if (name.len == 0 or std.ascii.isLower(name[0])) continue;
+            },
+            .jsx_member_expression => {
+                var root_idx = node.data.binary.left;
+                while (ast.getNode(root_idx).tag == .jsx_member_expression) {
+                    root_idx = ast.getNode(root_idx).data.binary.left;
+                }
+                const root = ast.getNode(root_idx);
+                if (root.tag != .jsx_identifier) continue;
+                reference_raw = @intFromEnum(root_idx);
+                name = ast.getSourceText(root.span);
+            },
+            else => continue,
+        }
+        const is_exports = std.mem.eql(u8, name, "exports");
+        const is_module = std.mem.eql(u8, name, "module");
+        const symbol_id = if (is_exports) exports_symbol else if (is_module) module_symbol else null;
+        const id = symbol_id orelse continue;
+        if (reference_raw >= symbol_ids.len) {
+            if (is_exports) result.has_unbound_exports = true else result.has_unbound_module = true;
+            continue;
+        }
+        if (symbol_ids[reference_raw] != null) continue;
+        if (containsSortedNode(explicit_global_ref_nodes, @intCast(reference_raw))) {
+            if (is_exports) result.has_unbound_exports = true else result.has_unbound_module = true;
+            continue;
+        }
+        const raw_id = @intFromEnum(id);
+        symbol_ids[reference_raw] = raw_id;
+        if (cache_symbol_ids) |cache_ids| {
+            if (reference_raw < cache_ids.len and cache_ids[reference_raw] == null) cache_ids[reference_raw] = raw_id;
+        }
+        if (is_exports) {
+            exports_bound_count +|= 1;
+        } else {
+            module_bound_count +|= 1;
+        }
+    }
+    // The generated parameter's frequency participates in final symbol naming.
+    // Existing source bindings already received analyzer reference counts.
+    // This function is called only for newly generated parameter IDs.
+    if (exports_symbol) |id| {
+        const raw: usize = @intFromEnum(id);
+        if (raw < symbols.items.len) symbols.items[raw].reference_count +|= exports_bound_count;
+    }
+    if (module_symbol) |id| {
+        const raw: usize = @intFromEnum(id);
+        if (raw < symbols.items.len) symbols.items[raw].reference_count +|= module_bound_count;
+    }
+    return result;
+}
+
+fn containsSortedNode(nodes: []const u32, target: u32) bool {
+    var low: usize = 0;
+    var high = nodes.len;
+    while (low < high) {
+        const mid = low + (high - low) / 2;
+        if (nodes[mid] < target) {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    return low < nodes.len and nodes[low] == target;
+}
+
+fn extendCachedRefDeltas(allocator: std.mem.Allocator, m: *Module, old_symbol_count: usize, new_symbol_count: usize) void {
+    const cache = if (m.transform_cache) |*value| value else return;
+    if (cache.ref_deltas.len == 0 or cache.ref_deltas.len != old_symbol_count) return;
+    const deltas = allocator.alloc(u32, new_symbol_count) catch return;
+    @memset(deltas, 0);
+    @memcpy(deltas[0..cache.ref_deltas.len], cache.ref_deltas);
+    cache.ref_deltas = deltas;
 }
 
 /// 같은 base name 이 여러 모듈에서 나오면 `$2`, `$3`... suffix 로 unique 화.
