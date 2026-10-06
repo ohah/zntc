@@ -787,6 +787,29 @@ fn isSafeConstructorExpressionStatement(
         isSafeConstructorExpression(ast, semantic, statement.data.unary.operand);
 }
 
+fn isSafeConstructorSwitchCase(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    case_idx: ast_mod.NodeIndex,
+) bool {
+    if (case_idx.isNone() or @intFromEnum(case_idx) >= ast.nodes.items.len) return false;
+    const switch_case = ast.getNode(case_idx);
+    if (switch_case.tag != .switch_case) return false;
+    const extras = ast.extra_data.items;
+    const extra = switch_case.data.extra;
+    if (extra > extras.len or extras.len - extra < 3) return false;
+    const test_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+    const statements_start = extras[extra + 1];
+    const statements_len = extras[extra + 2];
+    if ((!test_idx.isNone() and !isSafeConstructorValue(ast, semantic, test_idx)) or
+        statements_start > extras.len or statements_len > extras.len - statements_start) return false;
+    for (extras[statements_start .. statements_start + statements_len]) |raw_statement_idx| {
+        if (raw_statement_idx >= ast.nodes.items.len or
+            !isSafeConstructorBodyStatement(ast, semantic, @enumFromInt(raw_statement_idx))) return false;
+    }
+    return true;
+}
+
 fn isSafeConstructorBodyStatement(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -819,6 +842,21 @@ fn isSafeConstructorBodyStatement(
             return isSafeConstructorValue(ast, semantic, branches.a) and
                 isSafeConstructorBodyStatement(ast, semantic, branches.b) and
                 (branches.c.isNone() or isSafeConstructorBodyStatement(ast, semantic, branches.c));
+        },
+        .switch_statement => {
+            const extras = ast.extra_data.items;
+            const extra = statement.data.extra;
+            if (extra > extras.len or extras.len - extra < 3) return false;
+            const discriminant_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+            const cases_start = extras[extra + 1];
+            const cases_len = extras[extra + 2];
+            if (!isSafeConstructorValue(ast, semantic, discriminant_idx) or
+                cases_start > extras.len or cases_len > extras.len - cases_start) return false;
+            for (extras[cases_start .. cases_start + cases_len]) |raw_case_idx| {
+                if (raw_case_idx >= ast.nodes.items.len or
+                    !isSafeConstructorSwitchCase(ast, semantic, @enumFromInt(raw_case_idx))) return false;
+            }
+            return true;
         },
         .for_statement => {
             const extras = ast.extra_data.items;
@@ -884,8 +922,8 @@ fn isSimpleParamsConstructorBodyGraphSafe(
 /// compatible getter/setter pair. One explicit constructor with only simple
 /// identifier parameters may accompany plain methods and a terminal accessor
 /// group when its body contains only simple `var` declarations, safe nested
-/// blocks/`if` branches, simple `for` loops with unlabeled loop control,
-/// supported assignments/updates,
+/// blocks/`if` branches, switches with safe discriminants/case tests, simple
+/// loops with unlabeled loop control, supported assignments/updates,
 /// returns with no value or an exact-safe value, and throws with an exact-safe
 /// value. Conditions and values are recursively limited to literals, exact
 /// source references, and ES5-native operators; loop clauses and bodies must
