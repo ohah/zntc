@@ -538,8 +538,9 @@ fn isEmptyNoArgMethod(ast: *const ast_mod.Ast, method_extra: u32) bool {
 /// An ES5 class without a base preserves its graph when empty, when all members
 /// are plain methods, or when plain methods are followed by one accessor or a
 /// compatible getter/setter pair. One empty, no-arg explicit constructor may
-/// accompany plain methods. Accessors must be terminal and cannot mix with an
-/// explicit constructor; computed keys and `super` stay excluded.
+/// accompany plain methods and a terminal accessor group. Accessors must be
+/// terminal because lowering emits methods before accessors; computed keys and
+/// `super` stay excluded.
 fn isSimpleNamedClassDeclaration(
     ast: *const ast_mod.Ast,
     node: ast_mod.Node,
@@ -612,7 +613,6 @@ fn isSimpleNamedClassDeclaration(
         if (std.mem.eql(u8, key_text, "constructor") or std.mem.eql(u8, key_text, "__proto__") or
             std.mem.indexOfScalar(u8, key_text, '\\') != null or methodHasSuperExpression(ast, member)) return false;
     }
-    if (has_empty_explicit_constructor and accessor_count != 0) return false;
     if (accessor_count > 2) return false;
     if (accessor_pair) |accessor| {
         // A method with the same key would replace or be replaced by the
@@ -1443,9 +1443,9 @@ fn canKeepPrepassSemanticGraph(
                 if (options.unsupported.class and !is_simple_downlevel_class) return false;
                 // Native classes add no output scopes. Admitted downlevel
                 // forms are empty named declarations, plain methods, an empty
-                // explicit constructor with plain methods, or plain methods
-                // followed by an accessor group; their helper, class reference,
-                // and scopes are tracked.
+                // explicit constructor with plain methods, or those same safe
+                // methods/constructors followed by an accessor group; their
+                // helper, class reference, and scopes are tracked.
                 found_transform = true;
             },
             .identifier_reference => {

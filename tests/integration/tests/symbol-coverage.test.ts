@@ -7374,11 +7374,32 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'true true\n',
       },
       {
-        name: 'empty constructor mixed with an accessor stays on reanalysis',
+        name: 'empty constructor may accompany a trailing accessor',
         source:
           'class ConstructorAndAccessor { constructor() {} get value() { return 8; } } console.log(new ConstructorAndAccessor().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '8\n',
+      },
+      {
+        name: 'empty constructor may follow an accessor',
+        source:
+          'class AccessorBeforeConstructor { get value() { return 8; } constructor() {} } console.log(new AccessorBeforeConstructor().value);',
+        graph: 'retained',
+        output: '8\n',
+      },
+      {
+        name: 'empty constructor and ordinary method may precede an accessor pair',
+        source:
+          'class ConstructorAndAccessorPair { constructor() {} value() { return this.stored; } get result() { return this.stored; } set result(n) { this.stored = n; } } var constructorPair = new ConstructorAndAccessorPair(); constructorPair.result = 5; console.log(constructorPair.value(), constructorPair.result);',
+        graph: 'retained',
+        output: '5 5\n',
+      },
+      {
+        name: 'ordinary method after constructor accessor group stays on reanalysis',
+        source:
+          'class AccessorThenMethod { constructor() {} get value() { return 8; } method() { return 9; } } var accessorThenMethod = new AccessorThenMethod(); console.log(accessorThenMethod.value, accessorThenMethod.method());',
+        graph: 'reanalyzed',
+        output: '8 9\n',
       },
       {
         name: 'empty constructor mixed with a field stays on reanalysis',
