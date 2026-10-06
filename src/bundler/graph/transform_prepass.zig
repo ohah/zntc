@@ -551,12 +551,27 @@ fn isBoundSourceIdentifierBinding(
 
 fn isSafeConstructorBinaryOperator(operator: token_mod.Kind) bool {
     return switch (operator) {
+        .l_angle,
+        .r_angle,
+        .lt_eq,
+        .gt_eq,
+        .eq2,
+        .neq,
+        .eq3,
+        .neq2,
         .plus,
         .minus,
         .star,
         .slash,
         .percent,
         => true,
+        else => false,
+    };
+}
+
+fn isSafeConstructorLogicalOperator(operator: token_mod.Kind) bool {
+    return switch (operator) {
+        .amp2, .pipe2 => true,
         else => false,
     };
 }
@@ -589,6 +604,17 @@ fn isSafeConstructorValue(
         const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
         return isSafeConstructorUnaryOperator(operator) and
             isSafeConstructorValue(ast, semantic, operand_idx);
+    }
+    if (value.tag == .logical_expression) {
+        const operator: token_mod.Kind = @enumFromInt(value.data.binary.flags);
+        return isSafeConstructorLogicalOperator(operator) and
+            isSafeConstructorValue(ast, semantic, value.data.binary.left) and
+            isSafeConstructorValue(ast, semantic, value.data.binary.right);
+    }
+    if (value.tag == .conditional_expression) {
+        return isSafeConstructorValue(ast, semantic, value.data.ternary.a) and
+            isSafeConstructorValue(ast, semantic, value.data.ternary.b) and
+            isSafeConstructorValue(ast, semantic, value.data.ternary.c);
     }
     return switch (value.tag) {
         .boolean_literal, .null_literal, .numeric_literal, .string_literal => true,
