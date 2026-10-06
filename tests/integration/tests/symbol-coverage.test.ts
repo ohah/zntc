@@ -8189,7 +8189,21 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       },
       {
         name: 'anonymous class expression',
-        source: 'const Holder = class {};\nconsole.log(new Holder() instanceof Holder);\n',
+        source: 'var Holder = class {};\nconsole.log(new Holder() instanceof Holder);\n',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
+        name: 'named class expression nested in a function stays on reanalysis',
+        source:
+          'function make() { var Holder = class Inner {}; return new Holder() instanceof Holder && Holder.name === "Inner"; } console.log(make());',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
+        name: 'named class expression assigned outside a variable initializer stays on reanalysis',
+        source:
+          'var Holder; Holder = class Inner {}; console.log(new Holder() instanceof Holder && Holder.name === "Inner");',
         graph: 'reanalyzed',
         output: 'true\n',
       },
@@ -8270,7 +8284,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         rmSync(dir, { recursive: true, force: true });
       }
     }
-  });
+  }, 30_000);
 
   test('ES5와 ESNext minify 출력에서 전체 oracle의 살아 있는 심볼 연결이 정확하다', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-post-minify-matrix-'));

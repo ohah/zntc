@@ -1951,7 +1951,9 @@ fn printPrepassExact(
         &transformer.reference_origin_map,
         &sem.namespace_member_owners,
         &sem.namespace_declaration_owners,
-        pre_transform_scope_count,
+        // The source/output index boundary is meaningful only when this graph
+        // retained source ScopeIds. A reanalyzed graph assigns scopes afresh.
+        if (retained_graph) pre_transform_scope_count else null,
     );
     coverage.printExactPrepass(module.path, exact, retained_graph);
 }
