@@ -94,6 +94,10 @@ pub const GeneratedTempBinding = struct {
     /// `true` means this declaration belongs to the generated state-machine
     /// callback; otherwise it belongs to the surrounding wrapper function.
     callback_local: bool = false,
+    /// The producer supplied the exact binding, while its wrapper owner was
+    /// deferred until the enclosing state machine was assembled. Bind it by
+    /// NodeIndex at that point instead of resolving its name in the scope map.
+    deferred_wrapper_owner: bool = false,
 };
 
 pub const ParameterBodyVarCopy = struct {
