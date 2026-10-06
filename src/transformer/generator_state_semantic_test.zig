@@ -377,6 +377,137 @@ test "#4819 generated loop state explicitly waits for generator loop migration" 
     );
 }
 
+test "#4819 extracted generator loop binding and call share exact identity" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\const _loop = 7;
+        \\export function* collect(limit) {
+        \\  for (let index = 0; index < limit; index++) {
+        \\    yield () => index + _loop;
+        \\    for (let inner = 0; inner < 2; inner++) {
+        \\      yield () => index + inner + _loop;
+        \\    }
+        \\  }
+        \\}
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const original_symbol_count = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const root = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var output_parents = try output_scope.buildParentMap(allocator, transformer.ast, root);
+    defer output_parents.deinit(allocator);
+
+    var loop_calls: std.AutoHashMapUnmanaged(u32, ast_mod.NodeIndex) = .empty;
+    defer loop_calls.deinit(allocator);
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .call_expression) continue;
+        const callee: ast_mod.NodeIndex = @enumFromInt(transformer.ast.extra_data.items[node.data.extra]);
+        if (transformer.ast.getNode(callee).tag != .identifier_reference) continue;
+        const maybe_id = if (@intFromEnum(callee) < edited.symbol_ids.len) edited.symbol_ids[@intFromEnum(callee)] else null;
+        const id = maybe_id orelse continue;
+        if (id < original_symbol_count) continue;
+        const name = transformer.ast.getText(transformer.ast.getNode(callee).data.string_ref);
+        if (!std.mem.startsWith(u8, name, "_loop")) continue;
+        const call_entry = try loop_calls.getOrPut(allocator, id);
+        try std.testing.expect(!call_entry.found_existing);
+        call_entry.value_ptr.* = callee;
+    }
+    try std.testing.expectEqual(@as(usize, 2), loop_calls.count());
+    var loop_entries = loop_calls.iterator();
+    while (loop_entries.next()) |entry| {
+        const id_raw = entry.key_ptr.*;
+        const loop_call = entry.value_ptr.*;
+        const scope = edited.symbols.items[id_raw].scope_id;
+        const symbol = edited.symbols.items[id_raw];
+        try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, symbol.kind);
+        const name = transformer.ast.getText(symbol.name);
+        try std.testing.expect(std.mem.startsWith(u8, name, "_loop"));
+        try std.testing.expectEqual(@as(?usize, id_raw), edited.scope_maps[scope.toIndex()].get(name));
+
+        var binding_count: usize = 0;
+        var call_count: usize = 0;
+        var reference_count: u32 = 0;
+        var write_count: u32 = 0;
+        for (reachable) |raw| {
+            if (raw >= edited.symbol_ids.len or edited.symbol_ids[raw] != id_raw) continue;
+            const node = transformer.ast.nodes.items[raw];
+            if (node.tag == .binding_identifier) {
+                binding_count += 1;
+                const binding_scope = output_scope.expectedScope(
+                    transformer.ast,
+                    root,
+                    &output_parents,
+                    &edited.scope_owner_map,
+                    raw,
+                ) orelse return error.TestUnexpectedResult;
+                try std.testing.expectEqual(scope, binding_scope);
+            } else if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
+                if (raw == @intFromEnum(loop_call)) call_count += 1;
+                var has_reference = false;
+                for (edited.references) |reference| {
+                    if (@intFromEnum(reference.node_index) != raw) continue;
+                    try std.testing.expectEqual(id_raw, @intFromEnum(reference.symbol_id));
+                    const expected_scope = output_scope.expectedScope(
+                        transformer.ast,
+                        root,
+                        &output_parents,
+                        &edited.scope_owner_map,
+                        raw,
+                    ) orelse return error.TestUnexpectedResult;
+                    try std.testing.expectEqual(expected_scope, reference.scope_id);
+                    try std.testing.expect(reference.flags.read or reference.flags.write);
+                    try std.testing.expect(!reference.flags.declare);
+                    if (raw == @intFromEnum(loop_call))
+                        try std.testing.expect(reference.flags.read and !reference.flags.write);
+                    if (reference.flags.write) write_count += 1;
+                    var cursor = reference.scope_id;
+                    var visible = false;
+                    for (0..edited.scopes.len) |_| {
+                        if (cursor.isNone() or cursor.toIndex() >= edited.scopes.len) break;
+                        if (cursor == scope) {
+                            visible = true;
+                            break;
+                        }
+                        cursor = edited.scopes[cursor.toIndex()].parent;
+                    }
+                    try std.testing.expect(visible);
+                    has_reference = true;
+                    reference_count += 1;
+                }
+                try std.testing.expect(has_reference);
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), binding_count);
+        try std.testing.expectEqual(@as(usize, 1), call_count);
+        try std.testing.expectEqual(symbol.reference_count, reference_count);
+        try std.testing.expectEqual(symbol.write_count, write_count);
+        try std.testing.expect(write_count >= 1);
+    }
+}
+
 test "#4819 extracted generator loop has exact header and catch symbols" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
