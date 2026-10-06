@@ -518,7 +518,7 @@ fn methodHasSuperExpression(ast: *const ast_mod.Ast, method: ast_mod.Node) bool 
 }
 
 /// An ES5 class without a base preserves its graph only when it is empty or
-/// contains one plain instance method. The original method scope and class
+/// contains plain instance methods. The original method scopes and class
 /// binding stay intact; computed keys and `super` lowering stay out of scope.
 fn isSimpleNamedClassDeclaration(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     if (node.tag != .class_declaration) return false;
@@ -536,22 +536,24 @@ fn isSimpleNamedClassDeclaration(ast: *const ast_mod.Ast, node: ast_mod.Node) bo
     if (body_node.tag != .class_body) return false;
     const members = body_node.data.list;
     if (members.len == 0) return true;
-    if (members.len != 1 or members.start >= extras.len) return false;
+    if (members.start > extras.len or members.len > extras.len - members.start) return false;
 
-    const member_idx: ast_mod.NodeIndex = @enumFromInt(extras[members.start]);
-    if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len) return false;
-    const member = ast.getNode(member_idx);
-    if (member.tag != .method_definition) return false;
-    const method_extra = member.data.extra;
-    if (method_extra > extras.len or extras.len - method_extra <= ast_mod.MethodExtra.flags) return false;
-    const key_idx: ast_mod.NodeIndex = @enumFromInt(extras[method_extra + ast_mod.MethodExtra.key]);
-    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
-    const key = ast.getNode(key_idx);
-    if (key.tag != .identifier_reference or extras[method_extra + ast_mod.MethodExtra.flags] != 0) return false;
-    const key_text = ast.getText(key.span);
-    if (std.mem.eql(u8, key_text, "constructor") or std.mem.eql(u8, key_text, "__proto__") or
-        std.mem.indexOfScalar(u8, key_text, '\\') != null) return false;
-    return !methodHasSuperExpression(ast, member);
+    for (extras[members.start .. members.start + members.len]) |raw_member_idx| {
+        const member_idx: ast_mod.NodeIndex = @enumFromInt(raw_member_idx);
+        if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len) return false;
+        const member = ast.getNode(member_idx);
+        if (member.tag != .method_definition) return false;
+        const method_extra = member.data.extra;
+        if (method_extra > extras.len or extras.len - method_extra <= ast_mod.MethodExtra.flags) return false;
+        const key_idx: ast_mod.NodeIndex = @enumFromInt(extras[method_extra + ast_mod.MethodExtra.key]);
+        if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
+        const key = ast.getNode(key_idx);
+        if (key.tag != .identifier_reference or extras[method_extra + ast_mod.MethodExtra.flags] != 0) return false;
+        const key_text = ast.getText(key.span);
+        if (std.mem.eql(u8, key_text, "constructor") or std.mem.eql(u8, key_text, "__proto__") or
+            std.mem.indexOfScalar(u8, key_text, '\\') != null or methodHasSuperExpression(ast, member)) return false;
+    }
+    return true;
 }
 
 /// Arrow lowering edits the existing graph and creates only output function

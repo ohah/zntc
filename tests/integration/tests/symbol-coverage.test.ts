@@ -1003,10 +1003,10 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     const dir = mkdtempSync(join(tmpdir(), 'zntc-class-resync-boundaries-'));
     const cases = [
       {
-        name: 'multiple-methods',
+        name: 'multiple-methods-with-computed-key',
         target: '--target=es5',
         source:
-          'class C { read() { return 7; } other() { return 8; } } console.log(new C().read());',
+          'var key = "other"; class C { read() { return 7; } [key]() { return 8; } } console.log(new C().read());',
         stdout: '7\n',
       },
       {
@@ -7188,7 +7188,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   });
 
-  test('ES5 empty and single-method named classes retain their graph; other forms resync', () => {
+  test('ES5 empty and plain-method named classes retain their graph; other forms resync', () => {
     const cases = [
       {
         name: 'empty named class',
@@ -7213,13 +7213,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       {
         name: 'multiple instance methods',
         source:
-          'class Pair { first() { return 2; } second() { return 3; } }\nconsole.log(new Pair().first() + new Pair().second());\n',
-        graph: 'reanalyzed',
+          'class Pair { first(n) { return Pair.base + this.second(n); } second(n) { return n + 1; } }\nPair.base = 2; console.log(new Pair().first(2));\n',
+        graph: 'retained',
         output: '5\n',
       },
       {
         name: 'static method',
         source: 'class Static { static value() { return 9; } }\nconsole.log(Static.value());\n',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'static method after an ordinary method',
+        source:
+          'class Mixed { instance() { return 1; } static value() { return 9; } } console.log(Mixed.value());',
         graph: 'reanalyzed',
         output: '9\n',
       },
