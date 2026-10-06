@@ -2012,7 +2012,9 @@ test "#4819 downlevel using lowering preserves exact transform identities" {
     const allocator = arena.allocator();
     const source = "function run(resource: any, _stack: any, _error: any, _hasError: any, _: any, __using: any, __callDispose: any) { " ++
         "using local = resource; return local + _stack; } " ++
-        "async function wait(resource: any) { await using asyncLocal = resource; return asyncLocal; } " ++
+        "async function wait(resource: any, _stack3: any, _error3: any, _hasError3: any) { " ++
+        "await using asyncLocal = resource; { await using nestedLocal = resource; " ++
+        "await Promise.resolve(nestedLocal); } return asyncLocal; } " ++
         "function nested(resource: any) { { using blockLocal = resource; use(blockLocal); } return 1; } " ++
         "function loop(resources: any) { for (using item of resources) use(item); }";
     var scanner = try Scanner.init(allocator, source);
