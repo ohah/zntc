@@ -1615,7 +1615,7 @@ fn transpileWithCallbackInternal(
             transformer.helper_ref_nodes.items,
             &source_analyzer.helper_scope_map,
             &transformer.explicit_global_reference_nodes,
-            &source_analyzer.class_self_symbol_map,
+            &transformer.class_self_symbol_map,
             &post_minify_analyzer.class_self_symbol_map,
         );
         post_minify_coverage.printPostMinify(file_path, post_minify_report);

@@ -74,6 +74,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
     const raw_name_idx = self.readNodeIdx(e, ast_mod.ClassExtra.name);
     var new_name = try self.visitNode(raw_name_idx);
     const new_super = try self.visitNode(super_idx);
+    var prepared_wrapper_scope: ScopeId = .none;
     // 뒤에서 임시 이름으로 바꾸면 span 이 달라져 makeCurrentClassRef 가 심볼을 붙이지 않는다.
     const saved_class_name_node = self.current_class_name_node;
     const saved_class_self_symbol_id = self.current_class_self_symbol_id;
@@ -163,6 +164,15 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
         {
             const tmp_span = try es_helpers.makeTempVarSpan(self);
             new_name = try es_helpers.makeSyntheticBinding(self, tmp_span);
+            es_helpers.consumeTempVarSpan(self, tmp_span);
+            if (self.semantic_edit_enabled) {
+                prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx);
+                const id = try self.declareSyntheticInScope(new_name, node.span, .class_decl, prepared_wrapper_scope) orelse
+                    std.debug.panic("anonymous static-private class name has no direct SymbolId", .{});
+                self.current_class_name_node = new_name;
+                self.current_class_self_symbol_id = @intFromEnum(id);
+                try self.class_self_symbol_map.put(self.allocator, @intFromEnum(source_idx), @intFromEnum(id));
+            }
         }
         var new_body_pl: NodeIndex = .none;
         var ctor_stmts_pl: std.ArrayList(NodeIndex) = .empty;
@@ -261,8 +271,6 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
         .ctor_params = &ctor_params,
     };
 
-    var prepared_wrapper_scope: ScopeId = .none;
-
     // 익명 클래스 식인데 static field / static block 을 **클래스 밖 문장**으로 낮춰야 하면
     // 그 문장들이 클래스를 가리킬 이름이 필요하다. 이름 없이 진행하면 static field 할당이
     // `.none` 이름을 역참조해 **컴파일러가 죽는다**(#4723 — #4629 가 es2015~es2021 에서
@@ -279,6 +287,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                 std.debug.panic("anonymous class wrapper name has no direct SymbolId", .{});
             self.current_class_name_node = new_name;
             self.current_class_self_symbol_id = @intFromEnum(id);
+            try self.class_self_symbol_map.put(self.allocator, @intFromEnum(source_idx), @intFromEnum(id));
         }
     }
 
@@ -490,7 +499,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                 class_result,
                 assign_static_descriptors.items,
                 new_name,
-                .none,
+                prepared_wrapper_scope,
                 pm_mappings.items,
                 pf_mappings.items,
                 node.span,

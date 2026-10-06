@@ -76,6 +76,13 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
         {
             const tmp_span = try es_helpers.makeTempVarSpan(self);
             new_name = try es_helpers.makeSyntheticBinding(self, tmp_span);
+            if (self.semantic_edit_enabled) {
+                prepared_wrapper_scope = try prepareClassExprWrapperScope(self, source_idx);
+                const id = try self.declareSyntheticInScope(new_name, node.span, .class_decl, prepared_wrapper_scope) orelse
+                    std.debug.panic("anonymous static-private class name has no direct SymbolId", .{});
+                generated_class_self_symbol_id = @intFromEnum(id);
+                try self.class_self_symbol_map.put(self.allocator, @intFromEnum(source_idx), @intFromEnum(id));
+            }
         }
         if (self.options.unsupported.class_static_block and node.tag == .class_expression and new_name.isNone() and
             classBodyHasLowerableMember(self, _anon_body_idx, false, false, true))
@@ -88,6 +95,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 const id = try self.declareSyntheticInScope(new_name, node.span, .class_decl, prepared_wrapper_scope) orelse
                     std.debug.panic("anonymous static-block class name has no direct SymbolId", .{});
                 generated_class_self_symbol_id = @intFromEnum(id);
+                try self.class_self_symbol_map.put(self.allocator, @intFromEnum(source_idx), @intFromEnum(id));
             }
         }
         const saved_class_name_node = self.current_class_name_node;
@@ -149,7 +157,10 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 const alias_span = try es_helpers.makeTempVarSpan(self);
                 const alias_binding = try es_helpers.makeSyntheticBinding(self, alias_span);
                 const class_old_idx = if (!raw_name_idx.isNone()) raw_name_idx else NodeIndex.none;
-                const class_ref = try self.makeIdentifierRefWithSymbol(class_name_span_opt.?, class_old_idx);
+                const class_ref = if (self.semantic_edit_enabled and generated_class_self_symbol_id != null)
+                    try self.makeCurrentClassRefAtScope(class_name_span_opt.?, prepared_wrapper_scope)
+                else
+                    try self.makeIdentifierRefWithSymbol(class_name_span_opt.?, class_old_idx);
                 const proto_prop = try es_helpers.makePropertyName(self, "prototype");
                 const class_proto = try es_helpers.makeStaticMember(self, class_ref, proto_prop, node.span);
                 const global_ref = try es_helpers.makeGlobalRef(self, "globalThis");
@@ -364,7 +375,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                     class_result,
                     self.scratch.items[scratch_top_e2..],
                     new_name,
-                    .none,
+                    prepared_wrapper_scope,
                     pm_mappings.items,
                     pf_mappings.items,
                     node.span,
@@ -548,6 +559,11 @@ pub fn wrapClassExprInIIFE(
         decl_name = try es_helpers.makeSyntheticBinding(self, tmp_span);
         break :blk tmp_span;
     } else self.ast.getNode(decl_name).data.string_ref;
+    // The generated class declaration below owns this name inside the wrapper
+    // function. It is not a `var` temp for the surrounding function's hoister.
+    // This also covers a name allocated earlier for an anonymous class with a
+    // static private member.
+    es_helpers.consumeTempVarSpan(self, ret_name_span);
 
     const ce = self.ast.getNode(class_expr_node).data.extra;
     const none = @intFromEnum(NodeIndex.none);
@@ -558,6 +574,13 @@ pub fn wrapClassExprInIIFE(
     });
     if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_decl);
 
+    const class_binding_symbol_id: ?u32 = if (self.semantic_edit_enabled) blk: {
+        if (self.getSymbolIdAt(decl_name)) |id| break :blk id;
+        const id = try self.declareSyntheticInScope(decl_name, span, .class_decl, wrapper_scope) orelse
+            std.debug.panic("generated class wrapper name has no direct SymbolId", .{});
+        break :blk @intFromEnum(id);
+    } else null;
+
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
     try self.scratch.appendSlice(self.allocator, pre_stmts_a);
@@ -567,7 +590,11 @@ pub fn wrapClassExprInIIFE(
 
     // The wrapper's class read follows the class-self identity selected by the
     // class transform, not an outer declaration node that may share its text.
-    const ret_ref = if (self.semantic_edit_enabled)
+    const ret_ref = if (class_binding_symbol_id) |raw_id| blk: {
+        const ref = try es_helpers.makeIdentifierRefFromSpan(self, ret_name_span);
+        try self.addSyntheticRefInScope(ref, @enumFromInt(raw_id), wrapper_scope, .{ .read = true });
+        break :blk ref;
+    } else if (self.semantic_edit_enabled)
         try self.makeCurrentClassRefAtScope(ret_name_span, wrapper_scope)
     else
         try self.makeIdentifierRefWithSymbol(ret_name_span, decl_name);

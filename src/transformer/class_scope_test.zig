@@ -97,6 +97,102 @@ test "#4819 class field computed-key prehoist binds temp identity exactly" {
     try std.testing.expect(report.hasCompleteExactCoverage());
 }
 
+test "#4819 anonymous private class wrapper owns its generated name exactly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\class Base { constructor(public value: number) {} }
+        \\function create(_args: number) {
+        \\  return class extends Base {
+        \\    #hidden = 1;
+        \\    amount: number = _args;
+        \\  };
+        \\}
+        \\function createStatic() {
+        \\  return class extends Base {
+        \\    static #hidden = 1;
+        \\    static read() { return this.#hidden; }
+        \\  };
+        \\}
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es2015),
+        .use_define_for_class_fields = false,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.synthetic_idents = .empty;
+
+    const root = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var report = try coverage.checkStrictWithExactExternalEvidence(
+        allocator,
+        transformer.ast,
+        root,
+        transformer.parser_node_count,
+        edited.symbol_ids,
+        edited.symbols.items,
+        edited.scopes,
+        &edited.scope_owner_map,
+        edited.references,
+        if (transformer.synthetic_idents) |*synthetic| synthetic else null,
+        .{
+            .unresolved_reference_nodes = &analyzer.unresolved_reference_nodes,
+            .explicit_global_reference_nodes = &transformer.explicit_global_reference_nodes,
+            .reference_origin_map = &transformer.reference_origin_map,
+        },
+    );
+    defer report.deinit(allocator);
+    if (!report.hasCompleteExactCoverage()) coverage.printStrict("anonymous-private-class-wrapper-es2015.ts", &report);
+    try std.testing.expect(report.hasCompleteExactCoverage());
+
+    var binding_ids: std.ArrayList(u32) = .empty;
+    defer binding_ids.deinit(allocator);
+    var reference_ids: std.ArrayList(u32) = .empty;
+    defer reference_ids.deinit(allocator);
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier and node.tag != .identifier_reference) continue;
+        if (!std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_a")) continue;
+        const id = edited.symbol_ids[raw] orelse return error.TestUnexpectedResult;
+        if (node.tag == .binding_identifier) {
+            try binding_ids.append(allocator, id);
+        } else {
+            try reference_ids.append(allocator, id);
+        }
+    }
+    // Each class wrapper owns one class-name binding; its name must not also
+    // be hoisted into the surrounding function as an unrelated `var _a`.
+    try std.testing.expectEqual(@as(usize, 2), binding_ids.items.len);
+    try std.testing.expect(binding_ids.items[0] != binding_ids.items[1]);
+    try std.testing.expect(reference_ids.items.len >= 2);
+    for (reference_ids.items) |reference_id| {
+        try std.testing.expect(reference_id == binding_ids.items[0] or reference_id == binding_ids.items[1]);
+    }
+    var generated_class_self_count: usize = 0;
+    var self_iter = transformer.class_self_symbol_map.iterator();
+    while (self_iter.next()) |entry| {
+        const name = transformer.ast.getText(edited.symbols.items[entry.value_ptr.*].name);
+        if (!std.mem.eql(u8, name, "_a")) continue;
+        generated_class_self_count += 1;
+        try std.testing.expect(entry.value_ptr.* == binding_ids.items[0] or entry.value_ptr.* == binding_ids.items[1]);
+    }
+    try std.testing.expectEqual(@as(usize, 1), generated_class_self_count);
+}
+
 test "#4819 ES5 class inner write keeps source IDs and binds accessor uses" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
