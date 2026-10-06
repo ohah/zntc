@@ -670,7 +670,19 @@ fn isSafeConstructorLocalAssignment(
     if (assignment.tag != .assignment_expression) return false;
     const operator: token_mod.Kind = @enumFromInt(assignment.data.binary.flags);
     switch (operator) {
-        .eq, .plus_eq, .minus_eq => {},
+        .eq,
+        .plus_eq,
+        .minus_eq,
+        .star_eq,
+        .slash_eq,
+        .percent_eq,
+        .amp_eq,
+        .pipe_eq,
+        .caret_eq,
+        .shift_left_eq,
+        .shift_right_eq,
+        .shift_right3_eq,
+        => {},
         else => return false,
     }
     const target_idx = assignment.data.binary.left;
