@@ -588,7 +588,7 @@ fn isSafeConstructorVarDeclaration(
         const initializer_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 2]);
         if (!type_annotation_idx.isNone() or
             !isBoundSourceIdentifierBinding(ast, semantic, binding_idx) or
-            !isSafeConstructorValue(ast, semantic, initializer_idx)) return false;
+            (!initializer_idx.isNone() and !isSafeConstructorValue(ast, semantic, initializer_idx))) return false;
     }
     return true;
 }
