@@ -835,6 +835,7 @@ fn isSafeConstructorBodyStatement(
     const statement = ast.getNode(statement_idx);
     switch (statement.tag) {
         .empty_statement => return true,
+        .debugger_statement => return true,
         .break_statement, .continue_statement => return statement.data.unary.operand.isNone(),
         .return_statement => {
             const value_idx = statement.data.unary.operand;

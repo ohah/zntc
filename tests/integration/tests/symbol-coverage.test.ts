@@ -7360,6 +7360,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '7\n',
       },
       {
+        name: 'constructor debugger statement retains its graph',
+        source:
+          'class ConstructorDebugger { constructor() { debugger; this.value = 1; } } console.log(new ConstructorDebugger().value);',
+        graph: 'retained',
+        output: '1\n',
+      },
+      {
         name: 'constructor parameter and reference keep their exact identity',
         source:
           'class Parameterized { constructor(value) { this.value = value; } } console.log(Parameterized.length, new Parameterized(8).value);',
