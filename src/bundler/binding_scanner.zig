@@ -83,6 +83,10 @@ pub const ExportBinding = struct {
     /// 모듈 내부 이름 (e.g. "x", "a")
     local_name: []const u8,
     local_span: Span,
+    /// Exact local binding/reference node used to carry this export's analyzer
+    /// SymbolId. Name-based scope lookup remains only for low-level callers
+    /// without a semantic ID map.
+    local_symbol_node: ?NodeIndex = null,
     kind: Kind,
     /// re-export 시 소스 모듈의 ImportRecord 인덱스
     import_record_index: ?u32 = null,
@@ -355,6 +359,7 @@ pub fn extractExportBindings(
                             .exported_name = name_info.name,
                             .local_name = name_info.name,
                             .local_span = name_info.span,
+                            .local_symbol_node = name_info.node_index,
                             .kind = .local,
                             .declared_via_pattern = name_info.via_pattern,
                             .init_is_fn_or_class = name_info.init_fn_class,
@@ -416,6 +421,7 @@ pub fn extractExportBindings(
                             .exported_name = exported_name,
                             .local_name = final_local_name,
                             .local_span = local_node.span,
+                            .local_symbol_node = if (kind == .local) local_idx else null,
                             .kind = kind,
                             .import_record_index = final_rec_idx,
                         });
@@ -430,6 +436,7 @@ pub fn extractExportBindings(
                 // export default 42 → local_name = "_default"
                 const inner_idx = node.data.unary.operand;
                 var local_name: []const u8 = "_default";
+                var local_symbol_node: ?NodeIndex = null;
                 if (!inner_idx.isNone()) {
                     const inner = ast.getNode(inner_idx);
                     if (inner.tag == .function_declaration or inner.tag == .class_declaration) {
@@ -439,12 +446,16 @@ pub fn extractExportBindings(
                             if (!name_idx.isNone()) {
                                 const name_node = ast.getNode(name_idx);
                                 local_name = ast.getText(name_node.data.string_ref);
+                                local_symbol_node = name_idx;
                             }
                         }
                     } else if (inner.tag == .identifier_reference) {
                         // export default someVar → 해당 변수의 심볼을 default export로 재사용
                         const name = ast.getText(inner.span);
-                        if (name.len > 0) local_name = name;
+                        if (name.len > 0) {
+                            local_name = name;
+                            local_symbol_node = inner_idx;
+                        }
                     }
                 }
                 // export { X }와 동일: local_name이 import binding이면 re_export로 분류
@@ -463,6 +474,7 @@ pub fn extractExportBindings(
                     .exported_name = "default",
                     .local_name = final_local_name,
                     .local_span = node.span,
+                    .local_symbol_node = if (kind == .local) local_symbol_node else null,
                     .kind = kind,
                     .import_record_index = final_rec_idx,
                     .default_export_node = @enumFromInt(ni),
@@ -510,6 +522,7 @@ pub fn extractExportBindings(
 const NameInfo = struct {
     name: []const u8,
     span: Span,
+    node_index: NodeIndex,
     /// (#4587) declarator 이름이 destructuring pattern 안인지.
     via_pattern: bool = false,
     /// (#4587) declarator 초기값이 함수/화살표/클래스 표현식인지.
@@ -580,6 +593,7 @@ fn extractDeclExportNames(allocator: std.mem.Allocator, ast: *const Ast, decl: N
             try names.append(allocator, .{
                 .name = ast.getText(name_node.span),
                 .span = name_node.span,
+                .node_index = name_idx,
             });
         },
         .ts_module_declaration => {
@@ -589,6 +603,7 @@ fn extractDeclExportNames(allocator: std.mem.Allocator, ast: *const Ast, decl: N
                 try names.append(allocator, .{
                     .name = ast.getText(name_node.span),
                     .span = name_node.span,
+                    .node_index = name_idx,
                 });
             }
         },
@@ -616,6 +631,7 @@ fn extractBindingPatternNames(
         try names.append(allocator, .{
             .name = ast.getText(name_node.span),
             .span = name_node.span,
+            .node_index = name_idx,
             .via_pattern = via_pattern,
             .init_fn_class = init_fn_class,
         });
@@ -720,7 +736,7 @@ pub fn collectNamespaceAccessesAndBuildIndex(
 /// 모든 ExportBinding의 `symbol` 필드를 채운다. 세 경로:
 ///   1. `_default = <expr>` 패턴 → semantic 합성 심볼(`default_export`) 등록
 ///   2. `.re_export` → AliasTable에 alias 등록
-///   3. `.local` → `module_scope`에서 동명 심볼 lookup → semantic ref
+///   3. `.local` → semantic ID map이 있으면 exact local AST node의 SID, 없으면 저수준 호환용 scope lookup
 /// Cross-module re-export 체인 resolve는 linker가 `populateReExportAliases`에서 수행.
 pub fn populateSyntheticSymbols(
     table: *AliasTable,
@@ -801,8 +817,32 @@ pub fn populateSyntheticSymbols(
             const id = try table.declare(eb.exported_name);
             eb.symbol = .{ .alias = .{ .module = module_index, .symbol = id } };
         } else if (eb.kind == .local) {
-            // 일반 .local export: scope_maps[0]에서 로컬 심볼 lookup → semantic ref.
-            // synthetic_default 케이스는 위에서 이미 처리됨.
+            // 일반 .local export: 분석된 경로는 scanner가 보유한 정확한
+            // binding/reference node의 SymbolId를 사용한다. scope의 이름 조회는
+            // semantic ID map이 없는 저수준 호출에서만 호환 경로로 남긴다.
+            if (symbol_ids) |ids| {
+                const node_idx = eb.local_symbol_node orelse return error.MissingLocalExportSymbolNode;
+                const raw_node_idx = @intFromEnum(node_idx);
+                if (raw_node_idx >= ids.len) return error.MissingLocalExportSymbol;
+                const raw_symbol_id = ids[raw_node_idx] orelse {
+                    // Unresolved global expressions such as `export default globalThis`
+                    // legitimately have no local SID. A scope entry, however, proves
+                    // this source name was expected to resolve and must not fall back.
+                    if (module_scope) |scope| {
+                        if (scope.get(eb.local_name) != null) return error.MissingLocalExportSymbol;
+                    }
+                    continue;
+                };
+                if (raw_symbol_id >= sem_symbols.items.len) return error.InvalidLocalExportSymbol;
+                eb.symbol = .{
+                    .semantic = .{
+                        .module = module_index,
+                        .symbol = @enumFromInt(raw_symbol_id),
+                    },
+                };
+                continue;
+            }
+
             const scope = module_scope orelse continue;
             const sym_idx = scope.get(eb.local_name) orelse continue;
             eb.symbol = symbol_mod.SymbolRef.makeSemantic(module_index, sym_idx);

@@ -499,6 +499,36 @@ test "populateSyntheticSymbols Phase 2: 비-default export는 invalid 유지" {
     try std.testing.expect(!r.export_bindings[0].symbol.isValid());
 }
 
+test "populateSyntheticSymbols: low-level caller without SymbolId map retains scope lookup" {
+    const allocator = std.testing.allocator;
+    var r = try parseAndExtractBindings(allocator, "const value = 1; export { value };");
+    defer r.arena.deinit();
+    defer allocator.free(r.import_bindings);
+    defer allocator.free(r.export_bindings);
+    defer allocator.free(r.import_records);
+
+    var table = symbol.AliasTable.init(allocator);
+    defer table.deinit();
+    var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
+    defer sem_syms.deinit(allocator);
+    try sem_syms.append(allocator, std.mem.zeroInit(semantic_symbol.Symbol, .{}));
+
+    var scope: std.StringHashMapUnmanaged(usize) = .empty;
+    defer scope.deinit(allocator);
+    try scope.put(allocator, "value", 0);
+
+    try binding_scanner.populateSyntheticSymbols(
+        &table,
+        @enumFromInt(0),
+        r.export_bindings,
+        &sem_syms,
+        allocator,
+        scope,
+        null,
+    );
+    try expectSemanticExportSymbol(r.export_bindings[0], 0);
+}
+
 fn expectDefaultExportIdentity(source: []const u8, expects_facade: bool) !void {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -513,6 +543,7 @@ fn expectDefaultExportIdentity(source: []const u8, expects_facade: bool) !void {
     _ = try parser.parse();
 
     var analyzer = SemanticAnalyzer.init(arena_allocator, &parser.ast);
+    analyzer.is_module = true;
     try analyzer.analyze();
     try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
 
@@ -630,4 +661,160 @@ test "#4819 default export facade uses its exact analyzer SymbolId despite `_def
 
 test "#4819 default export of source `_default` stays a regular local binding" {
     try expectDefaultExportIdentity("const _default = 42; export default _default;", false);
+}
+
+test "#4819 local exports use their exact analyzer SymbolId instead of scope name lookup" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    const source = "const source = 1; const decoy = 2; export const declared = 3; export { source as publicSource }; export default source;";
+    var scanner = try Scanner.init(arena_allocator, source);
+    scanner.is_module = true;
+    var parser = Parser.init(arena_allocator, &scanner);
+    parser.is_module = true;
+    parser.enable_scan = true;
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(arena_allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    const import_records = try import_scanner.extractImports(allocator, &parser.ast);
+    defer allocator.free(import_records);
+    const import_bindings = try extractImportBindings(allocator, &parser.ast, import_records, null);
+    defer allocator.free(import_bindings);
+    const export_bindings = try extractExportBindings(allocator, &parser.ast, import_records, import_bindings);
+    defer allocator.free(export_bindings);
+    try std.testing.expectEqual(@as(usize, 3), export_bindings.len);
+    try std.testing.expectEqual(@as(usize, 3), parser.scan_export_bindings.items.len);
+
+    var source_symbol: ?u32 = null;
+    var decoy_symbol: ?u32 = null;
+    var declared_symbol: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, node_index| {
+        if (node.tag != .binding_identifier) continue;
+        const name = parser.ast.getText(node.span);
+        if (std.mem.eql(u8, name, "source")) {
+            source_symbol = analyzer.symbol_ids.items[node_index];
+        } else if (std.mem.eql(u8, name, "decoy")) {
+            decoy_symbol = analyzer.symbol_ids.items[node_index];
+        } else if (std.mem.eql(u8, name, "declared")) {
+            declared_symbol = analyzer.symbol_ids.items[node_index];
+        }
+    }
+    const expected_source = source_symbol orelse return error.MissingSourceSymbol;
+    const wrong_symbol = decoy_symbol orelse return error.MissingDecoySymbol;
+    const expected_declared = declared_symbol orelse return error.MissingDeclaredSymbol;
+    try std.testing.expect(expected_source != wrong_symbol);
+
+    var alias_export_index: ?usize = null;
+    var default_export_index: ?usize = null;
+    var declaration_export_index: ?usize = null;
+    for (export_bindings, 0..) |eb, i| {
+        if (std.mem.eql(u8, eb.exported_name, "publicSource")) alias_export_index = i;
+        if (std.mem.eql(u8, eb.exported_name, "default")) default_export_index = i;
+        if (std.mem.eql(u8, eb.exported_name, "declared")) declaration_export_index = i;
+    }
+    const alias_index = alias_export_index orelse return error.MissingAliasExport;
+    const default_index = default_export_index orelse return error.MissingDefaultExport;
+    const declaration_index = declaration_export_index orelse return error.MissingDeclarationExport;
+
+    // The parser's lightweight scan retains the same exact local node; AST
+    // rescan supplies that node again after graph transforms.
+    for (parser.scan_export_bindings.items) |scan_export| {
+        const expected = if (std.mem.eql(u8, scan_export.exported_name, "publicSource"))
+            expected_source
+        else if (std.mem.eql(u8, scan_export.exported_name, "default"))
+            expected_source
+        else if (std.mem.eql(u8, scan_export.exported_name, "declared"))
+            expected_declared
+        else
+            return error.UnexpectedExport;
+        const node_index = scan_export.local_symbol_node_index orelse return error.MissingScannedLocalNode;
+        try std.testing.expectEqual(expected, analyzer.symbol_ids.items[node_index] orelse return error.MissingScannedLocalSymbol);
+    }
+    try std.testing.expect(export_bindings[alias_index].local_symbol_node != null);
+    try std.testing.expect(export_bindings[default_index].local_symbol_node != null);
+    try std.testing.expect(export_bindings[declaration_index].local_symbol_node != null);
+
+    // Hostile name-map corruption: old code follows this wrong mapping. Exact
+    // node IDs must still bind the alias, declaration, and default local.
+    try analyzer.scope_maps.items[0].put(allocator, "source", wrong_symbol);
+    try analyzer.scope_maps.items[0].put(allocator, "declared", wrong_symbol);
+    try std.testing.expectEqual(wrong_symbol, analyzer.scope_maps.items[0].get("source").?);
+    try std.testing.expectEqual(wrong_symbol, analyzer.scope_maps.items[0].get("declared").?);
+    var alias_table = symbol.AliasTable.init(allocator);
+    defer alias_table.deinit();
+    try binding_scanner.populateSyntheticSymbols(
+        &alias_table,
+        @enumFromInt(0),
+        export_bindings,
+        &analyzer.symbols,
+        arena_allocator,
+        analyzer.scope_maps.items[0],
+        analyzer.symbol_ids.items,
+    );
+    try expectSemanticExportSymbol(export_bindings[alias_index], expected_source);
+    try expectSemanticExportSymbol(export_bindings[default_index], expected_source);
+    try expectSemanticExportSymbol(export_bindings[declaration_index], expected_declared);
+
+    // Missing exact node or ID must fail closed instead of reverting to the
+    // poisoned scope map; an out-of-range SID is rejected immediately.
+    var missing_node = try allocator.dupe(ExportBinding, export_bindings);
+    defer allocator.free(missing_node);
+    missing_node[alias_index].local_symbol_node = null;
+    try std.testing.expectError(
+        error.MissingLocalExportSymbolNode,
+        binding_scanner.populateSyntheticSymbols(
+            &alias_table,
+            @enumFromInt(0),
+            missing_node,
+            &analyzer.symbols,
+            arena_allocator,
+            analyzer.scope_maps.items[0],
+            analyzer.symbol_ids.items,
+        ),
+    );
+
+    const alias_node = export_bindings[alias_index].local_symbol_node.?;
+    const alias_node_index = @intFromEnum(alias_node);
+    var missing_id_map = try allocator.dupe(?u32, analyzer.symbol_ids.items);
+    defer allocator.free(missing_id_map);
+    missing_id_map[alias_node_index] = null;
+    try std.testing.expectError(
+        error.MissingLocalExportSymbol,
+        binding_scanner.populateSyntheticSymbols(
+            &alias_table,
+            @enumFromInt(0),
+            export_bindings,
+            &analyzer.symbols,
+            arena_allocator,
+            analyzer.scope_maps.items[0],
+            missing_id_map,
+        ),
+    );
+
+    missing_id_map[alias_node_index] = @intCast(analyzer.symbols.items.len);
+    try std.testing.expectError(
+        error.InvalidLocalExportSymbol,
+        binding_scanner.populateSyntheticSymbols(
+            &alias_table,
+            @enumFromInt(0),
+            export_bindings,
+            &analyzer.symbols,
+            arena_allocator,
+            analyzer.scope_maps.items[0],
+            missing_id_map,
+        ),
+    );
+}
+
+fn expectSemanticExportSymbol(export_binding: ExportBinding, expected_symbol: u32) !void {
+    switch (export_binding.symbol) {
+        .alias => return error.UnexpectedAliasSymbol,
+        .semantic => |semantic_ref| try std.testing.expectEqual(expected_symbol, @intFromEnum(semantic_ref.symbol)),
+    }
 }

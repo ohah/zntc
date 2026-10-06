@@ -684,6 +684,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
         if (self.enable_scan) {
             self.scan_result.has_esm_syntax = true;
             var local_name: []const u8 = "_default";
+            var local_symbol_node_index: ?u32 = null;
             if (!decl.isNone()) {
                 const inner = self.ast.getNode(decl);
                 if (inner.tag == .function_declaration or inner.tag == .class_declaration) {
@@ -693,12 +694,18 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                         if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
                             const name_node = self.ast.getNode(name_idx);
                             const n = self.ast.source[name_node.data.string_ref.start..name_node.data.string_ref.end];
-                            if (n.len > 0) local_name = n;
+                            if (n.len > 0) {
+                                local_name = n;
+                                local_symbol_node_index = @intFromEnum(name_idx);
+                            }
                         }
                     }
                 } else if (inner.tag == .identifier_reference) {
                     const n = self.ast.getText(inner.span);
-                    if (n.len > 0) local_name = n;
+                    if (n.len > 0) {
+                        local_name = n;
+                        local_symbol_node_index = @intFromEnum(decl);
+                    }
                 }
             }
             // barrel re-export check
@@ -707,6 +714,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                 .exported_name = "default",
                 .local_name = re.local_name,
                 .local_span = .{ .start = start, .end = self.currentSpan().start },
+                .local_symbol_node_index = if (re.kind == .local) local_symbol_node_index else null,
                 .kind = re.kind,
                 .import_record_index = re.import_record_index,
                 .default_export_node_index = @intFromEnum(export_node),
@@ -882,6 +890,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                         .exported_name = exported_name,
                         .local_name = re.local_name,
                         .local_span = local_node.span,
+                        .local_symbol_node_index = if (re.kind == .local) @intFromEnum(local_idx) else null,
                         .kind = re.kind,
                         .import_record_index = re.import_record_index,
                     }) catch {};
@@ -1376,6 +1385,7 @@ fn collectDeclExportBindings(self: *Parser, decl_idx: NodeIndex) void {
                 .exported_name = name,
                 .local_name = name,
                 .local_span = name_node.span,
+                .local_symbol_node_index = @intFromEnum(name_idx),
                 .kind = .local,
             }) catch {};
         },
@@ -1394,6 +1404,7 @@ fn collectPatternExportBindings(self: *Parser, pattern_idx: NodeIndex, via_patte
             .exported_name = name,
             .local_name = name,
             .local_span = name_node.span,
+            .local_symbol_node_index = @intFromEnum(name_idx),
             .kind = .local,
             .declared_via_pattern = via_pattern,
             .init_is_fn_or_class = init_fn_class,

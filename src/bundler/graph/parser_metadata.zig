@@ -78,6 +78,7 @@ pub fn materialize(
                     .exported_name = sb.exported_name,
                     .local_name = sb.local_name,
                     .local_span = sb.local_span,
+                    .local_symbol_node = if (sb.local_symbol_node_index) |index| @enumFromInt(index) else null,
                     .kind = eb_kind,
                     .import_record_index = sb.import_record_index,
                     .declared_via_pattern = sb.declared_via_pattern,
