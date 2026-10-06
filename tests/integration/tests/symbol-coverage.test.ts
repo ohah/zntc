@@ -7416,6 +7416,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '4 4 0 false\n',
       },
       {
+        name: 'constructor local plus assignment retains exact references',
+        source:
+          'class LocalPlusAssignment { constructor(input) { var value = input; value += 1; this.value = value; } } console.log(new LocalPlusAssignment(3).value);',
+        graph: 'retained',
+        output: '4\n',
+      },
+      {
+        name: 'constructor local postfix update retains its reference',
+        source:
+          'class LocalPostfixUpdate { constructor(input) { var value = input; value++; this.value = value; } } console.log(new LocalPostfixUpdate(3).value);',
+        graph: 'retained',
+        output: '4\n',
+      },
+      {
+        name: 'constructor local prefix update retains its reference',
+        source:
+          'class LocalPrefixUpdate { constructor(input) { var value = input; --value; this.value = value; } } console.log(new LocalPrefixUpdate(3).value);',
+        graph: 'retained',
+        output: '2\n',
+      },
+      {
         name: 'constructor let local stays on reanalysis',
         source:
           'class LexicalLocal { constructor() { let value = 6; this.value = value; } } console.log(new LexicalLocal().value);',
@@ -7498,6 +7519,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class NullishLocal { constructor(input) { var value = input ?? 7; this.value = value; } } console.log(new NullishLocal(undefined).value);',
         graph: 'reanalyzed',
         output: '7\n',
+      },
+      {
+        name: 'unresolved constructor local assignment stays on reanalysis',
+        source:
+          'class UnresolvedMutation { constructor() { unboundMutationTarget = 2; } } console.log(typeof UnresolvedMutation);',
+        graph: 'reanalyzed',
+        output: 'function\n',
       },
       {
         name: 'destructured constructor parameter stays on reanalysis',
