@@ -532,7 +532,7 @@ fn isBoundSourceIdentifierReference(
     return !scope_id.isNone() and @intFromEnum(scope_id) < semantic.scopes.len;
 }
 
-fn isNoArgConstructorBodyGraphSafe(
+fn isSimpleParamsConstructorBodyGraphSafe(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     method_extra: u32,
@@ -543,8 +543,12 @@ fn isNoArgConstructorBodyGraphSafe(
     const params_idx: ast_mod.NodeIndex = @enumFromInt(extras[method_extra + ast_mod.MethodExtra.params]);
     if (params_idx.isNone() or @intFromEnum(params_idx) >= ast.nodes.items.len) return false;
     const params = ast.getNode(params_idx);
-    if (params.tag != .formal_parameters or params.data.list.len != 0 or
-        params.data.list.start > extras.len) return false;
+    if (params.tag != .formal_parameters or params.data.list.start > extras.len or
+        params.data.list.len > extras.len - params.data.list.start) return false;
+    for (extras[params.data.list.start .. params.data.list.start + params.data.list.len]) |raw_parameter_idx| {
+        if (raw_parameter_idx >= ast.nodes.items.len or
+            ast.nodes.items[raw_parameter_idx].tag != .binding_identifier) return false;
+    }
 
     const body_idx: ast_mod.NodeIndex = @enumFromInt(extras[method_extra + ast_mod.MethodExtra.body]);
     if (body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len) return false;
@@ -594,11 +598,11 @@ fn isNoArgConstructorBodyGraphSafe(
 
 /// An ES5 class without a base preserves its graph when empty, when all members
 /// are plain methods, or when plain methods are followed by one accessor or a
-/// compatible getter/setter pair. One no-arg explicit constructor may
-/// accompany plain methods and a terminal accessor group when its body is empty
-/// or made only of direct `this.name = value` statements. Each value must be a
-/// boolean, null, numeric, or string literal, or an exact reference to a source
-/// binding.
+/// compatible getter/setter pair. One explicit constructor with only simple
+/// identifier parameters may accompany plain methods and a terminal accessor
+/// group when its body is empty or made only of direct `this.name = value`
+/// statements. Each value must be a boolean, null, numeric, or string literal,
+/// or an exact reference to a source binding.
 /// Accessors must be terminal because lowering emits methods before accessors;
 /// computed keys and `super` stay excluded.
 fn isSimpleNamedClassDeclaration(
@@ -649,7 +653,7 @@ fn isSimpleNamedClassDeclaration(
         const key_text = ast.getText(key.span);
         if (std.mem.eql(u8, key_text, "constructor")) {
             if (has_empty_explicit_constructor or flags != 0 or
-                !isNoArgConstructorBodyGraphSafe(ast, semantic, method_extra)) return false;
+                !isSimpleParamsConstructorBodyGraphSafe(ast, semantic, method_extra)) return false;
             has_empty_explicit_constructor = true;
             continue;
         }
