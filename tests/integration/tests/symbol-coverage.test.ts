@@ -6791,6 +6791,61 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   });
 
+  test('prehoisted class computed keys bind every generated temp read', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-prehoisted-class-keys-'));
+    const fixtures = ['4801-static-field-this-boundaries.mjs', '4819-generator-state-computed.mjs'];
+    try {
+      for (const fixture of fixtures) {
+        const file = join(FIXTURE_DIR, fixture);
+        const reference = spawnSync('node', [file], { encoding: 'utf8' });
+        expect(reference.status, `${fixture}: ${reference.stderr}`).toBe(0);
+
+        for (const target of TARGETS) {
+          const output = join(dir, `${fixture}-${target.name}.mjs`);
+          const proc = spawnSync(
+            ZNTC_BIN,
+            [file, target.arg, '--minify-identifiers', '-o', output],
+            {
+              env: {
+                ...process.env,
+                ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+                ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+              },
+              encoding: 'utf8',
+            },
+          );
+          expect(proc.status, `${fixture} ${target.name}: ${proc.stderr}`).toBe(0);
+          const lines = (proc.stderr ?? '').split(/\r?\n/);
+          const identity = lines.find((line) => line.startsWith('zntc: symbol-identity '));
+          expect(identity, `${fixture} ${target.name}: ${proc.stderr}`).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture} ${target.name} ${counter}: ${identity}`,
+            ).toBe(0);
+          }
+          const strict = lines.find((line) => line.startsWith('zntc: synthetic-coverage '));
+          expect(strict, `${fixture} ${target.name}: ${proc.stderr}`).toMatch(
+            /missing_binding=0 .*unclassified=0 .*orphan_symbols=0 .*symbol_identity_complete=1/,
+          );
+          if (target.name === 'es5' || target.name === 'esnext') {
+            const postMinify = lines.find((line) =>
+              line.startsWith('zntc: symbol-identity-post-minify '),
+            );
+            expect(postMinify, `${fixture} ${target.name}: ${proc.stderr}`).toMatch(
+              /missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+            );
+          }
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, `${fixture} ${target.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${fixture} ${target.name}`).toBe(reference.stdout);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('Flow auto-accessor lowering reuses exact symbols without capturing same-named locals', () => {
     const file = join(FIXTURE_DIR, '4819-flow-accessor.flow');
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-flow-accessor-'));

@@ -20,7 +20,10 @@ pub fn buildStaticFieldAssignment(self: anytype, class_name: NodeIndex, field: F
         reference_scope,
     );
     // 타겟이 class field 를 모르는데 define 의미론이면 헬퍼로 정의한다 (#4629).
-    if (self.options.use_define_for_class_fields) return buildPublicFieldCall(self, cls_ref, field);
+    if (self.options.use_define_for_class_fields)
+        return buildPublicFieldCall(self, cls_ref, field, reference_scope);
+    if (field.is_computed)
+        try es_helpers.trackKnownHoistedComputedKeyRef(self, field.key, reference_scope);
     const member = if (field.is_computed) blk: {
         // computed: ClassName[key]
         const me_extra = try self.ast.addExtras(&.{
@@ -55,9 +58,10 @@ pub fn buildStaticFieldAssignment(self: anytype, class_name: NodeIndex, field: F
 /// 왜 assign(`obj.k = v`)이 아닌가 — ES2022 public field 는 **own property 를 정의**한다.
 /// 상위 클래스에 같은 이름의 setter 가 있으면 assign 은 그 setter 를 타지만 정의는 타지
 /// 않고, 초기값 없는 `u;` 도 `'u' in obj === true` 여야 한다. 그 차이를 헬퍼가 메운다.
-fn buildPublicFieldCall(self: anytype, obj: NodeIndex, field: FieldAssignment) Error!NodeIndex {
+fn buildPublicFieldCall(self: anytype, obj: NodeIndex, field: FieldAssignment, reference_scope: ScopeId) Error!NodeIndex {
     self.runtime_helpers.public_field = true;
     const key_arg = try es_helpers.buildDefinePropertyKeyArg(self, field.key);
+    try es_helpers.trackKnownHoistedComputedKeyRef(self, key_arg, reference_scope);
     const callee = try es_helpers.makeRuntimeHelperRef(self, "__publicField");
     const call = try es_helpers.makeCallExpr(self, callee, &.{ obj, key_arg, field.value }, field.span);
     return es_helpers.makeExprStmt(self, call, field.span);
@@ -799,7 +803,7 @@ pub fn buildConstructorWithFieldAssignments(
 pub fn buildThisAssignment(self: anytype, field: FieldAssignment) Error!NodeIndex {
     if (self.options.use_define_for_class_fields) {
         const this_for_define = try es_helpers.makeThisExpr(self, field.span);
-        return buildPublicFieldCall(self, this_for_define, field);
+        return buildPublicFieldCall(self, this_for_define, field, self.current_scope);
     }
     const this_node = try self.ast.addNode(.{
         .tag = .this_expression,
