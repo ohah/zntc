@@ -185,6 +185,10 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
     // as `foo() ?? bar` must be declared inside the method body, not at the
     // class/module scope.
     const saved_temp_counter = self.temp_var_counter;
+    const saved_scope = self.current_scope;
+    if (self.semantic_edit_enabled and self.outputOwnedScope(source_owner) != null)
+        self.current_scope = self.originalFunctionScope(source_owner);
+    defer self.current_scope = saved_scope;
 
     const is_ctor = (flags & ast_mod.MethodFlags.is_static) == 0 and
         es_helpers.isConstructorKey(self, self.readNodeIdx(e, ast_mod.MethodExtra.key));
