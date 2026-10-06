@@ -517,7 +517,26 @@ fn methodHasSuperExpression(ast: *const ast_mod.Ast, method: ast_mod.Node) bool 
     return false;
 }
 
-fn isNoArgConstructorBodyGraphSafe(ast: *const ast_mod.Ast, method_extra: u32) bool {
+fn isBoundSourceIdentifierReference(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node_idx: ast_mod.NodeIndex,
+) bool {
+    if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len or
+        ast.getNode(node_idx).tag != .identifier_reference) return false;
+    const raw_idx = @intFromEnum(node_idx);
+    if (raw_idx >= semantic.symbol_ids.len) return false;
+    const symbol_raw = semantic.symbol_ids[raw_idx] orelse return false;
+    if (symbol_raw >= semantic.symbols.items.len) return false;
+    const scope_id = semantic.symbols.items[symbol_raw].scope_id;
+    return !scope_id.isNone() and @intFromEnum(scope_id) < semantic.scopes.len;
+}
+
+fn isNoArgConstructorBodyGraphSafe(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    method_extra: u32,
+) bool {
     const extras = ast.extra_data.items;
     if (method_extra > extras.len or extras.len - method_extra <= ast_mod.MethodExtra.body) return false;
 
@@ -564,6 +583,9 @@ fn isNoArgConstructorBodyGraphSafe(ast: *const ast_mod.Ast, method_extra: u32) b
 
         switch (ast.getNode(value_idx).tag) {
             .boolean_literal, .null_literal, .numeric_literal, .string_literal => {},
+            .identifier_reference => {
+                if (!isBoundSourceIdentifierReference(ast, semantic, value_idx)) return false;
+            },
             else => return false,
         }
     }
@@ -574,12 +596,14 @@ fn isNoArgConstructorBodyGraphSafe(ast: *const ast_mod.Ast, method_extra: u32) b
 /// are plain methods, or when plain methods are followed by one accessor or a
 /// compatible getter/setter pair. One no-arg explicit constructor may
 /// accompany plain methods and a terminal accessor group when its body is empty
-/// or made only of direct `this.name = literal` statements where the value is a
-/// boolean, null, numeric, or string literal.
+/// or made only of direct `this.name = value` statements. Each value must be a
+/// boolean, null, numeric, or string literal, or an exact reference to a source
+/// binding.
 /// Accessors must be terminal because lowering emits methods before accessors;
 /// computed keys and `super` stay excluded.
 fn isSimpleNamedClassDeclaration(
     ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
     node: ast_mod.Node,
     source_binds_object: bool,
 ) bool {
@@ -624,7 +648,8 @@ fn isSimpleNamedClassDeclaration(
         if (key.tag != .identifier_reference or (!is_plain_method and !is_plain_accessor)) return false;
         const key_text = ast.getText(key.span);
         if (std.mem.eql(u8, key_text, "constructor")) {
-            if (has_empty_explicit_constructor or flags != 0 or !isNoArgConstructorBodyGraphSafe(ast, method_extra)) return false;
+            if (has_empty_explicit_constructor or flags != 0 or
+                !isNoArgConstructorBodyGraphSafe(ast, semantic, method_extra)) return false;
             has_empty_explicit_constructor = true;
             continue;
         }
@@ -1232,7 +1257,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .class_declaration, .class_expression => {
                 if (options.unsupported.class) {
                     if (!top_level_statements.isSet(raw_idx) or
-                        !isSimpleNamedClassDeclaration(ast, node, source_binds_object)) return false;
+                        !isSimpleNamedClassDeclaration(ast, semantic, node, source_binds_object)) return false;
                     found_lowered_simple_named_class = true;
                 } else {
                     found_native_class = true;
@@ -1481,7 +1506,7 @@ fn canKeepPrepassSemanticGraph(
                 // Native classes add no output scopes. Admitted downlevel
                 // forms are empty named declarations, plain methods, an empty
                 // explicit constructor with plain methods, or those same safe
-                // methods/constructors followed by an accessor group; their
+                // bounded methods/constructors followed by an accessor group; their
                 // helper, class reference, and scopes are tracked.
                 found_transform = true;
             },

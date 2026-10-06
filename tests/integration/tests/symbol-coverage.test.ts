@@ -7374,11 +7374,32 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '7 7 false\n',
       },
       {
-        name: 'constructor initializer reading a source binding stays on reanalysis',
+        name: 'constructor initializer keeps an exact source binding reference',
         source:
           'var sharedValue = 7; class BindingInitializer { constructor() { this.value = sharedValue; } } console.log(new BindingInitializer().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '7\n',
+      },
+      {
+        name: 'constructor initializer reading its class binding keeps exact identity',
+        source:
+          'class ConstructorSelf { constructor() { this.value = ConstructorSelf; } } console.log(new ConstructorSelf().value === ConstructorSelf);',
+        graph: 'retained',
+        output: 'true\n',
+      },
+      {
+        name: 'constructor initializer with unresolved global stays on reanalysis',
+        source:
+          'class UnresolvedInitializer { constructor() { this.value = missingInitialValue; } } try { new UnresolvedInitializer(); } catch (error) { console.log(error instanceof ReferenceError); }',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
+        name: 'constructor binary initializer stays on reanalysis',
+        source:
+          'var initialValue = 7; class BinaryInitializer { constructor() { this.value = initialValue + 1; } } console.log(new BinaryInitializer().value);',
+        graph: 'reanalyzed',
+        output: '8\n',
       },
       {
         name: 'constructor compound initializer stays on reanalysis',
