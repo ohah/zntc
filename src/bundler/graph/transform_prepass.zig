@@ -518,9 +518,13 @@ fn methodHasSuperExpression(ast: *const ast_mod.Ast, method: ast_mod.Node) bool 
 }
 
 /// An ES5 class without a base preserves its graph only when it is empty or
-/// contains plain instance methods. The original method scopes and class
-/// binding stay intact; computed keys and `super` lowering stay out of scope.
-fn isSimpleNamedClassDeclaration(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
+/// contains plain instance or static methods. The original method scopes and
+/// class binding stay intact; computed keys and `super` lowering stay out of scope.
+fn isSimpleNamedClassDeclaration(
+    ast: *const ast_mod.Ast,
+    node: ast_mod.Node,
+    source_binds_object: bool,
+) bool {
     if (node.tag != .class_declaration) return false;
     const extra = node.data.extra;
     const extras = ast.extra_data.items;
@@ -536,6 +540,7 @@ fn isSimpleNamedClassDeclaration(ast: *const ast_mod.Ast, node: ast_mod.Node) bo
     if (body_node.tag != .class_body) return false;
     const members = body_node.data.list;
     if (members.len == 0) return true;
+    if (source_binds_object) return false;
     if (members.start > extras.len or members.len > extras.len - members.start) return false;
 
     for (extras[members.start .. members.start + members.len]) |raw_member_idx| {
@@ -548,7 +553,9 @@ fn isSimpleNamedClassDeclaration(ast: *const ast_mod.Ast, node: ast_mod.Node) bo
         const key_idx: ast_mod.NodeIndex = @enumFromInt(extras[method_extra + ast_mod.MethodExtra.key]);
         if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
         const key = ast.getNode(key_idx);
-        if (key.tag != .identifier_reference or extras[method_extra + ast_mod.MethodExtra.flags] != 0) return false;
+        const flags = extras[method_extra + ast_mod.MethodExtra.flags];
+        if (key.tag != .identifier_reference or
+            (flags != 0 and flags != ast_mod.MethodFlags.is_static)) return false;
         const key_text = ast.getText(key.span);
         if (std.mem.eql(u8, key_text, "constructor") or std.mem.eql(u8, key_text, "__proto__") or
             std.mem.indexOfScalar(u8, key_text, '\\') != null or methodHasSuperExpression(ast, member)) return false;
@@ -809,9 +816,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
         }
     }
 
-    // Object-super lowering emits a reference to the global `Object`. If a
-    // source binding shadows it, the retained graph reports a shadowed external
-    // reference and must stay on the conservative reanalysis path.
+    // Object-super and class-method lowering emit references to global
+    // `Object`. If a source binding shadows it, keep the module on reanalysis.
     var source_binds_object = false;
     for (semantic.symbols.items) |symbol| {
         if (std.mem.eql(u8, ast.getText(symbol.name), "Object")) {
@@ -1120,7 +1126,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .class_declaration, .class_expression => {
                 if (options.unsupported.class) {
                     if (!top_level_statements.isSet(raw_idx) or
-                        !isSimpleNamedClassDeclaration(ast, node)) return false;
+                        !isSimpleNamedClassDeclaration(ast, node, source_binds_object)) return false;
                     found_lowered_simple_named_class = true;
                 } else {
                     found_native_class = true;
@@ -1364,12 +1370,11 @@ fn canKeepPrepassSemanticGraph(
                 found_transform = true;
             },
             .class_declaration, .class_expression => {
-                const is_simple_downlevel_class = top_level_statements.isSet(raw_node_idx) and
-                    isSimpleNamedClassDeclaration(ast, node);
+                const is_simple_downlevel_class = top_level_statements.isSet(raw_node_idx) and safe_graph_subset;
                 if (options.unsupported.class and !is_simple_downlevel_class) return false;
                 // Native classes add no output scopes. Admitted downlevel
-                // forms are empty named declarations or a single plain method;
-                // their constructor/helper and original method scope are tracked.
+                // forms are empty named declarations or plain methods; their
+                // constructor/helper, class reference, and method scopes are tracked.
                 found_transform = true;
             },
             .identifier_reference => {
