@@ -517,6 +517,25 @@ fn methodHasSuperExpression(ast: *const ast_mod.Ast, method: ast_mod.Node) bool 
     return false;
 }
 
+/// A class with no base and no body members lowers to its constructor function
+/// plus the tracked `__classCallCheck` helper. It adds no method/field scopes
+/// or helper-module edges beyond that one import.
+fn isEmptyNamedClassDeclaration(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
+    if (node.tag != .class_declaration) return false;
+    const extra = node.data.extra;
+    const extras = ast.extra_data.items;
+    if (extra > extras.len or extras.len - extra <= ast_mod.ClassExtra.body) return false;
+
+    const name: ast_mod.NodeIndex = @enumFromInt(extras[extra + ast_mod.ClassExtra.name]);
+    const super: ast_mod.NodeIndex = @enumFromInt(extras[extra + ast_mod.ClassExtra.super]);
+    const body: ast_mod.NodeIndex = @enumFromInt(extras[extra + ast_mod.ClassExtra.body]);
+    if (name.isNone() or @intFromEnum(name) >= ast.nodes.items.len or
+        ast.getNode(name).tag != .binding_identifier or !super.isNone() or
+        body.isNone() or @intFromEnum(body) >= ast.nodes.items.len) return false;
+    const body_node = ast.getNode(body);
+    return body_node.tag == .class_body and body_node.data.list.len == 0;
+}
+
 /// Arrow lowering edits the existing graph and creates only output function
 /// scopes plus explicitly tracked captures. Native `await`, `yield`, and tagged
 /// templates add no binding or scope edges. Keep these paths only for the
@@ -539,6 +558,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
         ast.getNode(root_idx).tag != .program) return false;
     const reachable_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, root_idx) catch return false;
     defer ast.allocator.free(reachable_nodes);
+    var top_level_statements = ast_walk.topLevelStatementMask(ast) catch return false;
+    defer top_level_statements.deinit();
 
     // ES5 for-in/of block-scoping lowering edits the original loop-head
     // SymbolIds and records generated loop/catch bindings in their output
@@ -790,6 +811,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_native_for_await = false;
     var found_lowered_for_await = false;
     var found_native_class = false;
+    var found_lowered_empty_named_class = false;
     var found_native_destructuring = false;
     var found_lowered_var_destructuring = false;
     var found_lowered_destructuring_assignment = false;
@@ -1076,8 +1098,13 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 }
             },
             .class_declaration, .class_expression => {
-                if (options.unsupported.class) return false;
-                found_native_class = true;
+                if (options.unsupported.class) {
+                    if (!top_level_statements.isSet(raw_idx) or
+                        !isEmptyNamedClassDeclaration(ast, node)) return false;
+                    found_lowered_empty_named_class = true;
+                } else {
+                    found_native_class = true;
+                }
             },
             .property_definition => {
                 const key_at = node.data.extra + ast_mod.PropertyExtra.key;
@@ -1189,7 +1216,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
     }
     return found_arrow or found_native_await or found_native_generator or found_native_tagged_template or
         found_native_for_in or found_lowered_for_in or found_native_for_of or found_lowered_for_of or
-        found_native_for_await or found_lowered_for_await or found_native_class or found_native_destructuring or
+        found_native_for_await or found_lowered_for_await or found_native_class or found_lowered_empty_named_class or
+        found_native_destructuring or
         found_lowered_var_destructuring or found_lowered_destructuring_assignment or found_lowered_parameter_destructuring or
         found_safe_template_literal or found_object_shorthand or found_lowered_object_method or
         found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key or
@@ -1209,6 +1237,7 @@ fn runtimeHelpersSafeForRetainedGraph(
     other_helpers.async_values = false;
     other_helpers.read = false;
     other_helpers.rest = false;
+    other_helpers.class_call_check = false;
     return !other_helpers.hasAny();
 }
 
@@ -1221,6 +1250,8 @@ fn canKeepPrepassSemanticGraph(
     if (module.ast == null or module.semantic == null) return false;
     const ast = &module.ast.?;
     const semantic = &module.semantic.?;
+    var top_level_statements = ast_walk.topLevelStatementMask(ast) catch return false;
+    defer top_level_statements.deinit();
     if (self.worklet_transform or self.react_refresh or self.styled_components or self.emotion or
         self.plugins.len != 0 or plugins.len != 0 or options.plugins.len != 0) return false;
     if (!options.strip_types) return false;
@@ -1313,10 +1344,12 @@ fn canKeepPrepassSemanticGraph(
                 found_transform = true;
             },
             .class_declaration, .class_expression => {
-                if (options.unsupported.class) return false;
-                // Native class syntax adds no output scopes or bindings. The
-                // reachable-node gate above rejects class elements needing
-                // downlevel transforms before allowing this graph reuse.
+                const is_empty = top_level_statements.isSet(raw_node_idx) and
+                    isEmptyNamedClassDeclaration(ast, node);
+                if (options.unsupported.class and !is_empty) return false;
+                // Native classes add no output scopes. The sole admitted
+                // downlevel form is an empty named declaration, whose
+                // constructor binding and class-call helper are tracked.
                 found_transform = true;
             },
             .identifier_reference => {
@@ -1642,11 +1675,11 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         .ref_deltas = prepass_ref_deltas,
     };
 
-    // Type erasure, Flow match lowering, TypeScript enums, supported JSX, and
-    // audited ES5 for-of / ES2017 for-await / ES2015-2017 object-rest,
-    // object-spread, and helper-free array-spread subsets preserve the edited
-    // semantic graph. JSX and syntax lowering may add synthetic helper imports,
-    // so refresh module import/export metadata without replacing that graph.
+    // Type erasure, Flow match lowering, TypeScript enums, supported JSX, the
+    // empty named class case, and audited iterator/destructuring/spread subsets
+    // preserve the edited semantic graph. JSX and syntax lowering may add
+    // synthetic helper imports, so refresh module graph metadata without
+    // replacing that graph.
     if (can_keep_semantic_graph and runtimeHelpersSafeForRetainedGraph(transformer.runtime_helpers)) {
         // Generated built-ins are not source references, so the transform
         // editor cannot add them to unresolved_references. If recording them

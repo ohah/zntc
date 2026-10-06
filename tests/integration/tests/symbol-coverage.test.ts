@@ -7187,6 +7187,123 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   });
 
+  test('ES5 empty named class lowering retains its graph; other class forms resync', () => {
+    const cases = [
+      {
+        name: 'empty named class',
+        source: 'class Empty {}\nconsole.log(new Empty() instanceof Empty);\n',
+        graph: 'retained',
+        output: 'true\n',
+      },
+      {
+        name: 'class with a method',
+        source:
+          'class WithMethod { value() { return 9; } }\nconsole.log(new WithMethod().value());\n',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'block scoped empty class',
+        source:
+          'if (false) { class Hidden {} }\ntry { console.log(Hidden); } catch (error) { console.log(error.name); }\n',
+        graph: 'reanalyzed',
+        output: 'ReferenceError\n',
+      },
+      {
+        name: 'function local empty class',
+        source:
+          'function make() { class Local {} return new Local() instanceof Local; }\nconsole.log(make());\n',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
+        name: 'class with a base class',
+        source:
+          'function Base() {}\nclass Derived extends Base {}\nconsole.log(new Derived() instanceof Base);\n',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
+        name: 'anonymous class expression',
+        source: 'const Holder = class {};\nconsole.log(new Holder() instanceof Holder);\n',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+    ];
+
+    for (const fixture of cases) {
+      const dir = mkdtempSync(join(tmpdir(), `zntc-es5-class-${fixture.graph}-`));
+      const entry = join(dir, 'entry.mjs');
+      const output = join(dir, 'out.cjs');
+      writeFileSync(entry, fixture.source);
+      try {
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            entry,
+            '--target=es5',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+
+        const lines = (proc.stderr ?? '').split(/\0|\r?\n/);
+        const report = lines.find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+        );
+        expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.name}: ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report, fixture.name).toMatch(/clean=1(?:\s|$)/);
+
+        if (fixture.name === 'empty named class') {
+          const helperReport = (proc.stderr ?? '')
+            .split(/\r?\n/)
+            .find(
+              (line) =>
+                line.startsWith('zntc: symbol-identity-prepass ') &&
+                line.includes('\0zntc:runtime/class-call-check'),
+            );
+          expect(helperReport, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(helperReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture.name} helper: ${counter}: ${helperReport}`,
+            ).toBe(0);
+          }
+          expect(helperReport, `${fixture.name} helper`).toMatch(/clean=1(?:\s|$)/);
+        }
+
+        const graphMode = lines.find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+        );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
+          `semantic_graph=${fixture.graph}`,
+        );
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe(fixture.output);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
   test('ES5와 ESNext minify 출력에서 전체 oracle의 살아 있는 심볼 연결이 정확하다', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-post-minify-matrix-'));
     try {
