@@ -485,6 +485,55 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('extracted async function for-await temps keep identity and error state', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-for-await-extracted-async-symbols-'));
+    const fixtures = [
+      'forawait-arguments-in-body.mjs',
+      'forawait-in-async-method-this.mjs',
+      'forawait-reenter-after-throw.mjs',
+      'forawait-return-closes.mjs',
+    ];
+    try {
+      for (const fixture of fixtures) {
+        const file = join(FIXTURE_DIR, fixture);
+        const reference = spawnSync('node', [file], { encoding: 'utf8' });
+        expect(reference.status, `${fixture}: ${reference.stderr}`).toBe(0);
+
+        for (const target of ['--target=es5', '--target=es2015', '--target=es2022']) {
+          const output = join(dir, `${fixture}-${target.slice('--target='.length)}.mjs`);
+          const proc = spawnSync(ZNTC_BIN, [file, target, '--minify-identifiers', '-o', output], {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          });
+          expect(proc.status, `${fixture} ${target}: ${proc.stderr}`).toBe(0);
+
+          const lines = (proc.stderr ?? '').split(/\r?\n/);
+          const identity = lines.find((line) => line.startsWith('zntc: symbol-identity '));
+          expect(identity, `${fixture} ${target}: ${proc.stderr}`).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture} ${target} ${counter}: ${identity}`,
+            ).toBe(0);
+          }
+
+          const postMinify = lines.find((line) =>
+            line.startsWith('zntc: symbol-identity-post-minify '),
+          );
+          expect(postMinify, `${fixture} ${target}: ${proc.stderr}`).toMatch(
+            /missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+          );
+
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, `${fixture} ${target}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${fixture} ${target}`).toBe(reference.stdout);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('native and ES5 for-in lowering retain exact loop-head and closure scopes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-for-in-capture-scope-'));
     const file = join(FIXTURE_DIR, '4819-for-in-loop-capture.mjs');
