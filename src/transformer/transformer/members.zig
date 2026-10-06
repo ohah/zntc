@@ -11,6 +11,18 @@ const styled_components_mod = @import("styled_components.zig");
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
+
+fn methodComputedKeyScope(self: *Transformer, source_owner: NodeIndex, fallback: ScopeId) ScopeId {
+    if (!self.semantic_edit_enabled) return .none;
+    if (self.outputOwnedScope(source_owner)) |method_scope| return self.outputScopeParent(method_scope);
+    return fallback;
+}
+
+fn trackKnownMethodComputedKey(self: *Transformer, key: NodeIndex, scope: ScopeId) Error!void {
+    if (self.semantic_edit_enabled)
+        try es_helpers.trackKnownHoistedComputedKeyRef(self, key, scope);
+}
 
 fn expandBlockRenamedShorthand(self: *Transformer, node: Node) Error!?NodeIndex {
     if (!self.options.unsupported.block_scoping) return null;
@@ -74,7 +86,9 @@ pub fn lowerAsyncOrGeneratorMethod(self: *Transformer, source_owner: NodeIndex, 
     const flags = self.readU32(e, ast_mod.MethodExtra.flags);
     const span = node.span;
 
+    const key_scope = methodComputedKeyScope(self, source_owner, self.current_scope);
     const new_key = try self.visitNode(self.readNodeIdx(e, ast_mod.MethodExtra.key));
+    try trackKnownMethodComputedKey(self, new_key, key_scope);
     // 객체 리터럴이 이 메서드에 home 임시 변수를 배정했으면 본문의 `super` 를 그 기준으로
     // 낮춘다 (#4729). 계산된 키는 바깥 문맥이라 키 방문 **뒤에** 켠다.
     const home_saved = object_super.enterMethod(self, object_super.lookup(self, e));
@@ -156,7 +170,9 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
     if (self.options.strip_types and (flags & ast_mod.MethodFlags.is_abstract) != 0) return NodeIndex.none;
     // TS method overload signature: body가 없으면 제거
     if (self.readNodeIdx(e, 2).isNone()) return NodeIndex.none;
+    const key_scope = methodComputedKeyScope(self, source_owner, self.current_scope);
     const new_key = try self.visitNode(self.readNodeIdx(e, 0));
+    try trackKnownMethodComputedKey(self, new_key, key_scope);
     // 메서드(객체 리터럴 메서드·getter 포함)는 자기 `this` 를 가진다 — static 초기값·static 블록
     // 안에서도 클래스 이름으로 치환하면 안 된다. 계산된 키는 바깥 `this` 라 키 방문 **뒤에** 올린다 (#4801).
     const in_static_ctx = self.static_block_class_name != null;
@@ -352,6 +368,8 @@ pub fn visitPropertyDefinition(self: *Transformer, node: Node) Error!NodeIndex {
     // abstract(0x20), declare(0x40), Flow variance(0x80)는 타입 전용이므로 완전히 스트리핑
     if (self.options.strip_types and (flags & 0xE0) != 0) return NodeIndex.none;
     const new_key = try self.visitNode(self.readNodeIdx(e, 0));
+    if (self.semantic_edit_enabled)
+        try es_helpers.trackKnownHoistedComputedKeyRef(self, new_key, self.current_scope);
     var new_value = try self.visitNode(self.readNodeIdx(e, 1));
     // styled-components: `class { static Child = styled.div\`\` }` 의 value 가 styled
     // tagged template 이면 field key 를 displayName 으로 사용해 wrap. 인스턴스 필드도
@@ -380,6 +398,8 @@ pub fn visitAccessorProperty(self: *Transformer, node: Node) Error!NodeIndex {
     // declare accessor는 타입 전용이므로 완전히 스트리핑
     if (self.options.strip_types and (flags & ast_mod.PropertyFlags.is_declare) != 0) return NodeIndex.none;
     const new_key = try self.visitNode(self.readNodeIdx(e, 0));
+    if (self.semantic_edit_enabled)
+        try es_helpers.trackKnownHoistedComputedKeyRef(self, new_key, self.current_scope);
     var new_value = try self.visitNode(self.readNodeIdx(e, 1));
     // styled-components: property_definition 와 동일 — accessor 필드도 init 이 styled
     // tagged template 이면 wrap. 드물지만 symmetry.
