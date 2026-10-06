@@ -7381,6 +7381,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '2 3 4\n',
       },
       {
+        name: 'constructor var locals retain exact bindings and references',
+        source:
+          'class LocalBindings { constructor(input) { var first = input, second = first; this.value = second; } } console.log(new LocalBindings(9).value);',
+        graph: 'retained',
+        output: '9\n',
+      },
+      {
+        name: 'constructor destructuring var local stays on reanalysis',
+        source:
+          'var sourceValue = { value: 6 }; class DestructuredLocal { constructor() { var { value } = sourceValue; this.value = value; } } console.log(new DestructuredLocal().value);',
+        graph: 'reanalyzed',
+        output: '6\n',
+      },
+      {
+        name: 'constructor var call initializer stays on reanalysis',
+        source:
+          'function readValue() { return 6; } class CalledLocal { constructor() { var value = readValue(); this.value = value; } } console.log(new CalledLocal().value);',
+        graph: 'reanalyzed',
+        output: '6\n',
+      },
+      {
         name: 'destructured constructor parameter stays on reanalysis',
         source:
           'class DestructuredParameter { constructor({ value }) { this.value = value; } } console.log(new DestructuredParameter({ value: 4 }).value);',

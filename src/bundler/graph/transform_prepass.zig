@@ -517,19 +517,80 @@ fn methodHasSuperExpression(ast: *const ast_mod.Ast, method: ast_mod.Node) bool 
     return false;
 }
 
-fn isBoundSourceIdentifierReference(
+fn hasValidSourceSymbol(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     node_idx: ast_mod.NodeIndex,
+    expected_tag: NodeTag,
 ) bool {
     if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len or
-        ast.getNode(node_idx).tag != .identifier_reference) return false;
+        ast.getNode(node_idx).tag != expected_tag) return false;
     const raw_idx = @intFromEnum(node_idx);
     if (raw_idx >= semantic.symbol_ids.len) return false;
     const symbol_raw = semantic.symbol_ids[raw_idx] orelse return false;
     if (symbol_raw >= semantic.symbols.items.len) return false;
     const scope_id = semantic.symbols.items[symbol_raw].scope_id;
     return !scope_id.isNone() and @intFromEnum(scope_id) < semantic.scopes.len;
+}
+
+fn isBoundSourceIdentifierReference(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node_idx: ast_mod.NodeIndex,
+) bool {
+    return hasValidSourceSymbol(ast, semantic, node_idx, .identifier_reference);
+}
+
+fn isBoundSourceIdentifierBinding(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node_idx: ast_mod.NodeIndex,
+) bool {
+    return hasValidSourceSymbol(ast, semantic, node_idx, .binding_identifier);
+}
+
+fn isSafeConstructorValue(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    value_idx: ast_mod.NodeIndex,
+) bool {
+    if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
+    return switch (ast.getNode(value_idx).tag) {
+        .boolean_literal, .null_literal, .numeric_literal, .string_literal => true,
+        .identifier_reference => isBoundSourceIdentifierReference(ast, semantic, value_idx),
+        else => false,
+    };
+}
+
+fn isSafeConstructorVarDeclaration(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    declaration: ast_mod.Node,
+) bool {
+    if (declaration.tag != .variable_declaration) return false;
+    const extras = ast.extra_data.items;
+    const extra = declaration.data.extra;
+    if (extra > extras.len or extras.len - extra < 3 or
+        ast.variableDeclarationKind(declaration) != .@"var") return false;
+    const declarators_start = extras[extra + 1];
+    const declarators_len = extras[extra + 2];
+    if (declarators_len == 0 or declarators_start > extras.len or
+        declarators_len > extras.len - declarators_start) return false;
+
+    for (extras[declarators_start .. declarators_start + declarators_len]) |raw_declarator_idx| {
+        if (raw_declarator_idx >= ast.nodes.items.len) return false;
+        const declarator = ast.nodes.items[raw_declarator_idx];
+        if (declarator.tag != .variable_declarator) return false;
+        const declarator_extra = declarator.data.extra;
+        if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
+        const binding_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra]);
+        const type_annotation_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 1]);
+        const initializer_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 2]);
+        if (!type_annotation_idx.isNone() or
+            !isBoundSourceIdentifierBinding(ast, semantic, binding_idx) or
+            !isSafeConstructorValue(ast, semantic, initializer_idx)) return false;
+    }
+    return true;
 }
 
 fn isSimpleParamsConstructorBodyGraphSafe(
@@ -560,6 +621,10 @@ fn isSimpleParamsConstructorBodyGraphSafe(
     for (extras[statements.start .. statements.start + statements.len]) |raw_statement_idx| {
         if (raw_statement_idx >= ast.nodes.items.len) return false;
         const statement = ast.nodes.items[raw_statement_idx];
+        if (statement.tag == .variable_declaration) {
+            if (!isSafeConstructorVarDeclaration(ast, semantic, statement)) return false;
+            continue;
+        }
         if (statement.tag != .expression_statement) return false;
 
         const assignment_idx = statement.data.unary.operand;
@@ -585,13 +650,7 @@ fn isSimpleParamsConstructorBodyGraphSafe(
             ast.getNode(property_idx).tag != .identifier_reference) return false;
         if (std.mem.indexOfScalar(u8, ast.getText(ast.getNode(property_idx).span), '\\') != null) return false;
 
-        switch (ast.getNode(value_idx).tag) {
-            .boolean_literal, .null_literal, .numeric_literal, .string_literal => {},
-            .identifier_reference => {
-                if (!isBoundSourceIdentifierReference(ast, semantic, value_idx)) return false;
-            },
-            else => return false,
-        }
+        if (!isSafeConstructorValue(ast, semantic, value_idx)) return false;
     }
     return true;
 }
@@ -600,9 +659,9 @@ fn isSimpleParamsConstructorBodyGraphSafe(
 /// are plain methods, or when plain methods are followed by one accessor or a
 /// compatible getter/setter pair. One explicit constructor with only simple
 /// identifier parameters may accompany plain methods and a terminal accessor
-/// group when its body is empty or made only of direct `this.name = value`
-/// statements. Each value must be a boolean, null, numeric, or string literal,
-/// or an exact reference to a source binding.
+/// group when its body is empty, contains simple `var` declarations, or has
+/// direct `this.name = value` statements. Each initializer/value must be a
+/// boolean, null, numeric, or string literal, or an exact source reference.
 /// Accessors must be terminal because lowering emits methods before accessors;
 /// computed keys and `super` stay excluded.
 fn isSimpleNamedClassDeclaration(
