@@ -1761,6 +1761,8 @@ pub fn checkExactWithScopeBoundary(
     );
 }
 
+/// `pre_transform_scope_count` is valid only when the caller retained the
+/// source ScopeId space; a full reanalysis builds a new scope index space.
 pub fn checkExactWithNamespaceMetadata(
     allocator: std.mem.Allocator,
     ast: *const Ast,
@@ -1779,7 +1781,7 @@ pub fn checkExactWithNamespaceMetadata(
     origins: *const std.AutoHashMapUnmanaged(u32, u32),
     namespace_member_owners: *const std.AutoHashMapUnmanaged(u32, u32),
     namespace_declaration_owners: *const std.AutoHashMapUnmanaged(u32, u32),
-    pre_transform_scope_count: usize,
+    pre_transform_scope_count: ?usize,
 ) std.mem.Allocator.Error!ExactReport {
     return checkExactImpl(
         allocator,
