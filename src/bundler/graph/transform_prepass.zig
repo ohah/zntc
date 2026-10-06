@@ -750,6 +750,67 @@ fn isSafeConstructorLocalUpdate(
     return isBoundSourceIdentifierAssignmentTarget(ast, semantic, target_idx);
 }
 
+fn isSafeConstructorExpressionStatement(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    statement: ast_mod.Node,
+) bool {
+    if (statement.tag != .expression_statement) return false;
+    const assignment_idx = statement.data.unary.operand;
+    if (assignment_idx.isNone() or @intFromEnum(assignment_idx) >= ast.nodes.items.len) return false;
+    const assignment = ast.getNode(assignment_idx);
+    if (assignment.tag == .update_expression) {
+        return isSafeConstructorLocalUpdate(ast, semantic, assignment) or
+            isSafeConstructorThisPropertyUpdate(ast, assignment);
+    }
+    if (assignment.tag != .assignment_expression) return false;
+    if (assignment.data.binary.flags != @intFromEnum(token_mod.Kind.eq)) {
+        return isSafeConstructorLocalAssignment(ast, semantic, assignment) or
+            isSafeConstructorThisPropertyAssignment(ast, semantic, assignment);
+    }
+
+    const target_idx = assignment.data.binary.left;
+    const value_idx = assignment.data.binary.right;
+    if (target_idx.isNone() or @intFromEnum(target_idx) >= ast.nodes.items.len or
+        value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
+    if (ast.getNode(target_idx).tag == .static_member_expression) {
+        return isSafeConstructorThisPropertyTarget(ast, target_idx) and
+            isSafeConstructorValue(ast, semantic, value_idx);
+    }
+    return isSafeConstructorLocalAssignment(ast, semantic, assignment);
+}
+
+fn isSafeConstructorBodyStatement(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    statement_idx: ast_mod.NodeIndex,
+) bool {
+    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
+    const statement = ast.getNode(statement_idx);
+    switch (statement.tag) {
+        .empty_statement => return true,
+        .variable_declaration => return isSafeConstructorVarDeclaration(ast, semantic, statement),
+        .expression_statement => return isSafeConstructorExpressionStatement(ast, semantic, statement),
+        .block_statement => {
+            const statements = statement.data.list;
+            const extras = ast.extra_data.items;
+            if (statements.start > extras.len or statements.len > extras.len - statements.start) return false;
+            for (extras[statements.start .. statements.start + statements.len]) |raw_statement_idx| {
+                if (raw_statement_idx >= ast.nodes.items.len or
+                    !isSafeConstructorBodyStatement(ast, semantic, @enumFromInt(raw_statement_idx))) return false;
+            }
+            return true;
+        },
+        .if_statement => {
+            const branches = statement.data.ternary;
+            return isSafeConstructorValue(ast, semantic, branches.a) and
+                isSafeConstructorBodyStatement(ast, semantic, branches.b) and
+                (branches.c.isNone() or isSafeConstructorBodyStatement(ast, semantic, branches.c));
+        },
+        else => return false,
+    }
+}
+
 fn isSimpleParamsConstructorBodyGraphSafe(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -774,43 +835,9 @@ fn isSimpleParamsConstructorBodyGraphSafe(
     if (body.tag != .block_statement) return false;
     const statements = body.data.list;
     if (statements.start > extras.len or statements.len > extras.len - statements.start) return false;
-
     for (extras[statements.start .. statements.start + statements.len]) |raw_statement_idx| {
-        if (raw_statement_idx >= ast.nodes.items.len) return false;
-        const statement = ast.nodes.items[raw_statement_idx];
-        if (statement.tag == .variable_declaration) {
-            if (!isSafeConstructorVarDeclaration(ast, semantic, statement)) return false;
-            continue;
-        }
-        if (statement.tag != .expression_statement) return false;
-
-        const assignment_idx = statement.data.unary.operand;
-        if (assignment_idx.isNone() or @intFromEnum(assignment_idx) >= ast.nodes.items.len) return false;
-        const assignment = ast.getNode(assignment_idx);
-        if (assignment.tag == .update_expression) {
-            if (!isSafeConstructorLocalUpdate(ast, semantic, assignment) and
-                !isSafeConstructorThisPropertyUpdate(ast, assignment)) return false;
-            continue;
-        }
-        if (assignment.tag != .assignment_expression) return false;
-        if (assignment.data.binary.flags != @intFromEnum(token_mod.Kind.eq)) {
-            if (!isSafeConstructorLocalAssignment(ast, semantic, assignment) and
-                !isSafeConstructorThisPropertyAssignment(ast, semantic, assignment)) return false;
-            continue;
-        }
-
-        const target_idx = assignment.data.binary.left;
-        const value_idx = assignment.data.binary.right;
-        if (target_idx.isNone() or @intFromEnum(target_idx) >= ast.nodes.items.len or
-            value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
-        const target = ast.getNode(target_idx);
-        if (target.tag != .static_member_expression) {
-            if (!isSafeConstructorLocalAssignment(ast, semantic, assignment)) return false;
-            continue;
-        }
-        if (!isSafeConstructorThisPropertyTarget(ast, target_idx)) return false;
-
-        if (!isSafeConstructorValue(ast, semantic, value_idx)) return false;
+        if (raw_statement_idx >= ast.nodes.items.len or
+            !isSafeConstructorBodyStatement(ast, semantic, @enumFromInt(raw_statement_idx))) return false;
     }
     return true;
 }
@@ -819,9 +846,9 @@ fn isSimpleParamsConstructorBodyGraphSafe(
 /// are plain methods, or when plain methods are followed by one accessor or a
 /// compatible getter/setter pair. One explicit constructor with only simple
 /// identifier parameters may accompany plain methods and a terminal accessor
-/// group when its body is empty, contains simple `var` declarations, or has
-/// direct `this.name` assignments/updates and exact local identifier writes.
-/// Values are recursively limited to literals, exact source references, and
+/// group when its body contains only simple `var` declarations, safe nested
+/// blocks/`if` branches, and supported assignments/updates. Conditions and
+/// values are recursively limited to literals, exact source references, and
 /// ES5-native operators. Accessors must be terminal because lowering emits
 /// methods before accessors; computed/escaped keys and `super` stay excluded.
 fn isSimpleNamedClassDeclaration(
