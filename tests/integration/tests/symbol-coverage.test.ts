@@ -7234,6 +7234,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'true\n',
       },
       {
+        name: 'named class expression in a top-level var initializer retains exact inner identity',
+        source:
+          'var prefix = 2, Holder = class Inner { constructor(Inner) { this.value = Inner; } static self() { return Inner; } }; var instance = new Holder(9); console.log(prefix, Holder.length, instance.value, Holder.self() === Holder);',
+        graph: 'retained',
+        output: '2 1 9 true\n',
+      },
+      {
         name: 'one plain instance method',
         source:
           'class WithMethod { value(n) { return this.base + n; } }\nvar instance = new WithMethod(); instance.base = 2; console.log(instance.value(7));\n',
@@ -8184,6 +8191,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'class with a base class',
         source:
           'function Base() {}\nclass Derived extends Base {}\nconsole.log(new Derived() instanceof Base);\n',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
+        name: 'named class expression with a base class stays on reanalysis',
+        source:
+          'function Base() {} var Derived = class Named extends Base {}; console.log(new Derived() instanceof Base);',
         graph: 'reanalyzed',
         output: 'true\n',
       },
