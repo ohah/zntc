@@ -7423,6 +7423,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '4 3 10\n',
       },
       {
+        name: 'constructor safe returns preserve base new return semantics',
+        source:
+          'class ConstructorReturnsValue { constructor(value, mode) { this.ownValue = 7; if (mode === 1) return value; if (mode === 2) return; return 4; } } var replacement = { name: "replacement" }; var returnedObject = new ConstructorReturnsValue(replacement, 1); var returnedBare = new ConstructorReturnsValue(replacement, 2); var returnedPrimitive = new ConstructorReturnsValue(replacement, 0); console.log(returnedObject === replacement, returnedObject.name, returnedBare instanceof ConstructorReturnsValue, returnedBare.ownValue, returnedPrimitive instanceof ConstructorReturnsValue, returnedPrimitive.ownValue);',
+        graph: 'retained',
+        output: 'true replacement true 7 true 7\n',
+      },
+      {
         name: 'constructor local plus assignment retains exact references',
         source:
           'class LocalPlusAssignment { constructor(input) { var value = input; value += 1; this.value = value; } } console.log(new LocalPlusAssignment(3).value);',
@@ -7559,6 +7566,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'constructor lexical local in if block stays on reanalysis',
         source:
           'class LexicalIfBranch { constructor(input, flag) { if (flag) { let value = input; this.value = value; } } } console.log(new LexicalIfBranch(3, true).value);',
+        graph: 'reanalyzed',
+        output: '3\n',
+      },
+      {
+        name: 'constructor unresolved return value stays on reanalysis',
+        source:
+          'class UnresolvedConstructorReturn { constructor() { return missingConstructorReturn; } } try { new UnresolvedConstructorReturn(); } catch (error) { console.log(error instanceof ReferenceError); }',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
+        name: 'constructor call return value stays on reanalysis',
+        source:
+          'function makeConstructorReturn() { return {}; } class CalledConstructorReturn { constructor() { return makeConstructorReturn(); } } console.log(new CalledConstructorReturn() !== CalledConstructorReturn.prototype);',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
+        name: 'constructor object literal return stays on reanalysis',
+        source:
+          'class LiteralConstructorReturn { constructor(input) { return { value: input }; } } console.log(new LiteralConstructorReturn(3).value);',
         graph: 'reanalyzed',
         output: '3\n',
       },

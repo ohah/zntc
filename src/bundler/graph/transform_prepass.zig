@@ -789,6 +789,10 @@ fn isSafeConstructorBodyStatement(
     const statement = ast.getNode(statement_idx);
     switch (statement.tag) {
         .empty_statement => return true,
+        .return_statement => {
+            const value_idx = statement.data.unary.operand;
+            return value_idx.isNone() or isSafeConstructorValue(ast, semantic, value_idx);
+        },
         .variable_declaration => return isSafeConstructorVarDeclaration(ast, semantic, statement),
         .expression_statement => return isSafeConstructorExpressionStatement(ast, semantic, statement),
         .block_statement => {
@@ -847,10 +851,11 @@ fn isSimpleParamsConstructorBodyGraphSafe(
 /// compatible getter/setter pair. One explicit constructor with only simple
 /// identifier parameters may accompany plain methods and a terminal accessor
 /// group when its body contains only simple `var` declarations, safe nested
-/// blocks/`if` branches, and supported assignments/updates. Conditions and
-/// values are recursively limited to literals, exact source references, and
-/// ES5-native operators. Accessors must be terminal because lowering emits
-/// methods before accessors; computed/escaped keys and `super` stay excluded.
+/// blocks/`if` branches, supported assignments/updates, and returns with no
+/// value or an exact-safe value. Conditions and values are recursively limited
+/// to literals, exact source references, and ES5-native operators. Accessors
+/// must be terminal because lowering emits methods before accessors;
+/// computed/escaped keys and `super` stay excluded.
 fn isSimpleNamedClassDeclaration(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
