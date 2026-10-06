@@ -7188,7 +7188,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   });
 
-  test('ES5 empty and plain instance/static methods retain their graph; other forms resync', () => {
+  test('ES5 empty, plain methods and single accessors retain their graph; other forms resync', () => {
     const cases = [
       {
         name: 'empty named class',
@@ -7218,6 +7218,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '5\n',
       },
       {
+        name: 'single instance getter',
+        source:
+          'class Getter { get value() { return this.offset; } } var getter = new Getter(); getter.offset = 9; console.log(getter.value);',
+        graph: 'retained',
+        output: '9\n',
+      },
+      {
+        name: 'single instance setter',
+        source:
+          'class Setter { set value(n) { this.offset = n; } } var setter = new Setter(); setter.value = 9; console.log(setter.offset);',
+        graph: 'retained',
+        output: '9\n',
+      },
+      {
         name: 'single static method',
         source:
           'class Static { static value(n) { return Static.base + this.offset + n; } }\nStatic.base = 2; console.log(Static.value.call({ offset: 3 }, 4));\n',
@@ -7230,6 +7244,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class Mixed { instance() { return 1; } static value(n) { return Mixed.base + this.offset + n; } } Mixed.base = 2; console.log(new Mixed().instance() + Mixed.value.call({ offset: 3 }, 4));',
         graph: 'retained',
         output: '10\n',
+      },
+      {
+        name: 'single static getter',
+        source:
+          'class StaticGetter { static get value() { return StaticGetter.base + this.offset; } } StaticGetter.base = 2; StaticGetter.offset = 7; console.log(StaticGetter.value);',
+        graph: 'retained',
+        output: '9\n',
+      },
+      {
+        name: 'single static setter',
+        source:
+          'class StaticSetter { static set value(n) { StaticSetter.stored = n; } } StaticSetter.value = 9; console.log(StaticSetter.stored);',
+        graph: 'retained',
+        output: '9\n',
       },
       {
         name: 'static method with a source Object binding',
@@ -7246,6 +7274,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class Accessor { instance() { return 1; } static get value() { return 9; } } console.log(Accessor.value);',
         graph: 'reanalyzed',
         output: '9\n',
+      },
+      {
+        name: 'paired accessors',
+        source:
+          'class Pair { get value() { return 7; } set value(n) {} } console.log(new Pair().value);',
+        graph: 'reanalyzed',
+        output: '7\n',
       },
       {
         name: 'explicit constructor',
