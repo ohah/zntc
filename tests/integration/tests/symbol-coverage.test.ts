@@ -635,6 +635,59 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('Flow match parameter temps stay in their generated function scope', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-flow-match-param-symbols-'));
+    const file = join(FIXTURE_DIR, 'flow-match-symbols.flow.mjs');
+    try {
+      for (const target of TARGETS) {
+        const output = join(dir, `${target.name}.mjs`);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [file, target.arg, '--flow', '--minify-identifiers', '-o', output],
+          {
+            env: {
+              ...process.env,
+              ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+              ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+            },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${target.name}: ${proc.stderr}`).toBe(0);
+        const lines = (proc.stderr ?? '').split(/\r?\n/);
+        const identity = lines.find((line) => line.startsWith('zntc: symbol-identity '));
+        expect(identity, `${target.name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${target.name} ${counter}: ${identity}`,
+          ).toBe(0);
+        }
+        const strict = lines.find((line) => line.startsWith('zntc: synthetic-coverage '));
+        expect(strict, `${target.name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of ['missing_binding', 'unclassified', 'orphan_symbols']) {
+          expect(
+            Number(strict?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${target.name} ${counter}: ${strict}`,
+          ).toBe(0);
+        }
+        expect(strict, `${target.name}: ${strict}`).toMatch(/symbol_identity_complete=1(?:\s|$)/);
+
+        const postMinify = lines.find((line) =>
+          line.startsWith('zntc: symbol-identity-post-minify '),
+        );
+        expect(postMinify, `${target.name}: ${proc.stderr}`).toMatch(
+          /missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+        );
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, target.name).toBe('4,3,5,99\n');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('native and ES5 for-in lowering retain exact loop-head and closure scopes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-for-in-capture-scope-'));
     const file = join(FIXTURE_DIR, '4819-for-in-loop-capture.mjs');

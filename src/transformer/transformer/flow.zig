@@ -336,6 +336,9 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
     // 임시 변수 _m
     const match_var = try es_helpers.makeTempVarSpan(self);
     const match_param = try es_helpers.makeSyntheticBinding(self, match_var);
+    // The generated function parameter already declares this temp. Keep it
+    // out of the enclosing function's generic temp-hoist pass.
+    es_helpers.consumeTempVarSpan(self, match_var);
 
     // The function owner and parameter must exist before any emitted temp
     // reference is created, so lowering can attach the exact SymbolId and
