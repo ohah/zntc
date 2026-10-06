@@ -517,10 +517,29 @@ fn methodHasSuperExpression(ast: *const ast_mod.Ast, method: ast_mod.Node) bool 
     return false;
 }
 
+fn isEmptyNoArgMethod(ast: *const ast_mod.Ast, method_extra: u32) bool {
+    const extras = ast.extra_data.items;
+    if (method_extra > extras.len or extras.len - method_extra <= ast_mod.MethodExtra.body) return false;
+
+    const params_idx: ast_mod.NodeIndex = @enumFromInt(extras[method_extra + ast_mod.MethodExtra.params]);
+    if (params_idx.isNone() or @intFromEnum(params_idx) >= ast.nodes.items.len) return false;
+    const params = ast.getNode(params_idx);
+    if (params.tag != .formal_parameters or params.data.list.len != 0 or
+        params.data.list.start > extras.len) return false;
+
+    const body_idx: ast_mod.NodeIndex = @enumFromInt(extras[method_extra + ast_mod.MethodExtra.body]);
+    if (body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len) return false;
+    const body = ast.getNode(body_idx);
+    if (body.tag != .block_statement) return false;
+    const statements = body.data.list;
+    return statements.len == 0 and statements.start <= extras.len;
+}
+
 /// An ES5 class without a base preserves its graph when empty, when all members
 /// are plain methods, or when plain methods are followed by one accessor or a
-/// compatible getter/setter pair. Accessors must be terminal because lowering
-/// emits methods before accessors; computed keys and `super` stay excluded.
+/// compatible getter/setter pair. A class containing only an empty, no-arg
+/// explicit constructor is also safe. Accessors must be terminal because
+/// lowering emits methods before accessors; computed keys and `super` stay excluded.
 fn isSimpleNamedClassDeclaration(
     ast: *const ast_mod.Ast,
     node: ast_mod.Node,
@@ -565,6 +584,9 @@ fn isSimpleNamedClassDeclaration(
             flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_setter);
         if (key.tag != .identifier_reference or (!is_plain_method and !is_plain_accessor)) return false;
         const key_text = ast.getText(key.span);
+        if (std.mem.eql(u8, key_text, "constructor")) {
+            return members.len == 1 and flags == 0 and isEmptyNoArgMethod(ast, method_extra);
+        }
         if (is_plain_accessor) {
             accessors_started = true;
             if (accessor_pair) |previous| {
