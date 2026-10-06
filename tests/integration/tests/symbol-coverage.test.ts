@@ -7416,6 +7416,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '4 4 0 false\n',
       },
       {
+        name: 'constructor safe if and block branches retain exact local writes',
+        source:
+          'class ConstructorBranches { constructor(input, flag) { if (input > 0) { var result = input + 1; this.value = result; } else if (flag) this.value = -input; else { ; this.value = 10; } } } console.log(new ConstructorBranches(3, false).value, new ConstructorBranches(-3, true).value, new ConstructorBranches(0, false).value);',
+        graph: 'retained',
+        output: '4 3 10\n',
+      },
+      {
         name: 'constructor local plus assignment retains exact references',
         source:
           'class LocalPlusAssignment { constructor(input) { var value = input; value += 1; this.value = value; } } console.log(new LocalPlusAssignment(3).value);',
@@ -7526,6 +7533,34 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'function readCondition() { return 1; } class CalledConditionalLocal { constructor() { var value = readCondition() > 0 ? 1 : 0; this.value = value; } } console.log(new CalledConditionalLocal().value);',
         graph: 'reanalyzed',
         output: '1\n',
+      },
+      {
+        name: 'constructor unresolved if condition stays on reanalysis',
+        source:
+          'class UnresolvedIfCondition { constructor() { if (missingConstructorCondition) this.value = 1; } } try { new UnresolvedIfCondition(); } catch (error) { console.log(error instanceof ReferenceError); }',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
+        name: 'constructor call in if condition stays on reanalysis',
+        source:
+          'function shouldWrite() { return true; } class CalledIfCondition { constructor() { if (shouldWrite()) this.value = 1; } } console.log(new CalledIfCondition().value);',
+        graph: 'reanalyzed',
+        output: '1\n',
+      },
+      {
+        name: 'constructor call in if branch stays on reanalysis',
+        source:
+          'function readIfValue() { return 1; } class CalledIfBranch { constructor(flag) { if (flag) this.value = readIfValue(); } } console.log(new CalledIfBranch(true).value);',
+        graph: 'reanalyzed',
+        output: '1\n',
+      },
+      {
+        name: 'constructor lexical local in if block stays on reanalysis',
+        source:
+          'class LexicalIfBranch { constructor(input, flag) { if (flag) { let value = input; this.value = value; } } } console.log(new LexicalIfBranch(3, true).value);',
+        graph: 'reanalyzed',
+        output: '3\n',
       },
       {
         name: 'constructor nullish initializer stays on reanalysis',
