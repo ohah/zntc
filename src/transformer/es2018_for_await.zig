@@ -63,7 +63,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             // Bind these exact generated nodes while their loop owner is
             // available. The final output-scope walk relocates their IDs into
             // an extracted async wrapper when the target lowers async syntax.
-            const register_semantics = self.semantic_edit_enabled and !self.in_extracted_fn_body;
+            const register_semantics = self.semantic_edit_enabled;
             return self.visitNode(try rewriteForAwait(self, source_idx, node, label_name_idx, register_semantics, false));
         }
 
