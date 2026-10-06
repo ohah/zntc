@@ -117,7 +117,7 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
                 try std.fmt.allocPrint(std.heap.page_allocator, "_{s}", .{name_text})
             else
                 try std.fmt.allocPrint(std.heap.page_allocator, "_{s}{d}", .{ name_text, suffix });
-            if (!generatedIifeParamReserved(self, candidate, null)) {
+            if (!(try generatedIifeParamReserved(self, candidate, null))) {
                 owned_param = candidate;
                 break :blk candidate;
             }
@@ -222,7 +222,7 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
     try self.write(";})(");
     try self.emitNode(name_idx);
     if (namespace_param) |ns| {
-        const ns_name = self.namespacePrefixName(ns);
+        const ns_name = try self.namespacePrefixName(ns);
         try self.writeByte('=');
         try self.write(ns_name);
         try self.writeByte('.');
@@ -548,7 +548,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
     var param_name = if (namespace_parameter) |parameter| parameter.name else name_text;
     const namespace_param_context = NamespaceParamContext{ .name_idx = name_idx, .body_idx = body_idx };
     if (namespace_parameter == null and
-        (ns_export_map.contains(name_text) or generatedIifeParamReserved(self, name_text, namespace_param_context)))
+        (ns_export_map.contains(name_text) or (try generatedIifeParamReserved(self, name_text, namespace_param_context))))
     {
         var suffix: u32 = 0;
         while (true) : (suffix += 1) {
@@ -556,7 +556,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
                 try std.fmt.allocPrint(std.heap.page_allocator, "_{s}", .{name_text})
             else
                 try std.fmt.allocPrint(std.heap.page_allocator, "_{s}{d}", .{ name_text, suffix });
-            if (!generatedIifeParamReserved(self, candidate, null)) {
+            if (!(try generatedIifeParamReserved(self, candidate, null))) {
                 owned_param = candidate;
                 param_name = candidate;
                 break;
@@ -628,7 +628,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
                     }
                 },
                 .export_default_declaration => {
-                    try self.write(self.namespacePrefixName(namespace_prefix));
+                    try self.write(try self.namespacePrefixName(namespace_prefix));
                     try self.write(".default=");
                     try self.emitNode(stmt_node.data.unary.operand);
                     try self.writeByte(';');
@@ -660,7 +660,7 @@ fn emitNamespaceIIFEClosing(
     switch (placement) {
         .root, .local => try emitIIFEClosing(self, local_name),
         .property => |parent_prefix| {
-            const parent_name = self.namespacePrefixName(parent_prefix);
+            const parent_name = try self.namespacePrefixName(parent_prefix);
             try self.write("})(");
             try self.write(local_name);
             try self.write(" = ");
@@ -686,7 +686,7 @@ fn emitIIFEClosing(self: anytype, name_text: []const u8) !void {
 }
 
 fn emitNamespaceExportSpecifiers(self: anytype, ns_prefix: NamespacePrefix, specs_start: u32, specs_len: u32) !void {
-    const ns_name = self.namespacePrefixName(ns_prefix);
+    const ns_name = try self.namespacePrefixName(ns_prefix);
     const spec_indices = self.ast.extra_data.items[specs_start .. specs_start + specs_len];
     for (spec_indices) |raw_idx| {
         const spec = self.ast.getNode(@enumFromInt(raw_idx));
@@ -720,7 +720,7 @@ fn emitNamespaceExportSpecifiers(self: anytype, ns_prefix: NamespacePrefix, spec
 
 /// namespace 내부의 export 선언에서 이름을 추출하여 Foo.name = name; 형태로 출력.
 fn emitNamespaceExport(self: anytype, ns_prefix: NamespacePrefix, decl_idx: NodeIndex) !void {
-    const ns_name = self.namespacePrefixName(ns_prefix);
+    const ns_name = try self.namespacePrefixName(ns_prefix);
     const decl = self.ast.getNode(decl_idx);
     switch (decl.tag) {
         .variable_declaration => {
@@ -766,7 +766,7 @@ fn emitNamespaceExport(self: anytype, ns_prefix: NamespacePrefix, decl_idx: Node
 /// object_pattern → 각 프로퍼티의 value 재귀
 fn emitNamespaceBindingExport(self: anytype, ns_prefix: NamespacePrefix, name_idx: NodeIndex) !void {
     if (name_idx.isNone()) return;
-    const ns_name = self.namespacePrefixName(ns_prefix);
+    const ns_name = try self.namespacePrefixName(ns_prefix);
     const node = self.ast.getNode(name_idx);
     switch (node.tag) {
         .binding_identifier => {
@@ -832,7 +832,7 @@ fn isSimpleVarDeclaration(self: anytype, decl_idx: NodeIndex) bool {
 /// local 변수를 만들지 않으므로 reserved word 문제(let await)와 stale local 문제를 모두 해결.
 /// 예: export let a = 1, b = a → ns.a=1;ns.b=ns.a;
 fn emitNamespaceVarDirectAssign(self: anytype, ns_prefix: NamespacePrefix, decl_idx: NodeIndex) !void {
-    const ns_name = self.namespacePrefixName(ns_prefix);
+    const ns_name = try self.namespacePrefixName(ns_prefix);
     const decl = self.ast.getNode(decl_idx);
     const keyword = bindings.declarationKeyword(self, self.ast.variableDeclarationKind(decl));
     const e = decl.data.extra;
@@ -876,7 +876,7 @@ fn emitNamespaceVarDirectAssign(self: anytype, ns_prefix: NamespacePrefix, decl_
 /// 비어 있다 — `export const x = 1, [y] = [x]` 에서 y 가 undefined. 구조 분해를 낮추며 생긴
 /// 임시 변수(`_a = o, a = _a.a`)가 minify 의 선언 병합으로 패턴 선언자와 한 선언이 될 때도 같다.
 fn emitNamespaceVarMixed(self: anytype, ns_prefix: NamespacePrefix, decl_idx: NodeIndex) !void {
-    const ns_name = self.namespacePrefixName(ns_prefix);
+    const ns_name = try self.namespacePrefixName(ns_prefix);
     const decl = self.ast.getNode(decl_idx);
     const keyword = bindings.declarationKeyword(self, self.ast.variableDeclarationKind(decl));
     const e = decl.data.extra;
@@ -965,10 +965,10 @@ fn generatedIifeParamReserved(
     self: anytype,
     candidate: []const u8,
     namespace_context: ?NamespaceParamContext,
-) bool {
+) Error!bool {
     var frame = self.ns_frame;
     while (frame) |active| : (frame = active.parent) {
-        if (std.mem.eql(u8, self.namespacePrefixName(active.prefix), candidate)) return true;
+        if (std.mem.eql(u8, try self.namespacePrefixName(active.prefix), candidate)) return true;
     }
     if (self.options.linking_metadata) |metadata| {
         var it = metadata.renames.valueIterator();
