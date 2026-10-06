@@ -451,11 +451,20 @@ test "#4819 Codegen rejects a missing namespace declaration SymbolId in linked s
     }
     const name_idx = namespace_name orelse return error.MissingNamespaceDeclarationNode;
     const namespace_sid = transformer.getSymbolIdAt(name_idx) orelse return error.MissingNamespaceDeclarationSymbol;
+    var foreign_sid: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw_sid| {
+        if (symbol.synthetic_kind == null and !std.mem.eql(u8, symbol.nameText(source), "LongSpace")) {
+            foreign_sid = @intCast(raw_sid);
+            break;
+        }
+    }
+    const foreign_symbol_sid = foreign_sid orelse return error.MissingNamespaceDeclarationDecoy;
 
     var linked_symbol_ids = try allocator.dupe(?u32, transformer.symbol_ids.items);
     const skip_nodes = try std.DynamicBitSet.initEmpty(allocator, transformer.ast.nodes.items.len);
     var renames: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
     try renames.put(allocator, namespace_sid, "renamedNamespace");
+    try renames.put(allocator, foreign_symbol_sid, "foreignNamespace");
     var metadata: LinkingMetadata = .{
         .skip_nodes = skip_nodes,
         .renames = renames,
@@ -485,6 +494,10 @@ test "#4819 Codegen rejects a missing namespace declaration SymbolId in linked s
     linked_symbol_ids[name_raw] = std.math.maxInt(u32);
     var invalid_sid_cg = Codegen.initWithOptions(allocator, transformer.ast, options);
     try std.testing.expectError(error.InvalidNamespaceDeclarationSymbol, invalid_sid_cg.generate(root));
+
+    linked_symbol_ids[name_raw] = foreign_symbol_sid;
+    var foreign_sid_cg = Codegen.initWithOptions(allocator, transformer.ast, options);
+    try std.testing.expectError(error.InvalidNamespaceDeclarationSymbol, foreign_sid_cg.generate(root));
 }
 
 test "#4819 Codegen refuses to recover a missing namespace IIFE parameter from text" {
