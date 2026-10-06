@@ -7341,9 +7341,37 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       {
         name: 'explicit constructor',
         source:
-          'class Explicit { constructor() {} }\nconsole.log(new Explicit() instanceof Explicit);\n',
+          'class Explicit { constructor() {} }\nvar explicit = new Explicit(); try { Explicit(); } catch (error) { console.log(explicit instanceof Explicit, explicit.constructor === Explicit, error instanceof TypeError); }\n',
+        graph: 'retained',
+        output: 'true true true\n',
+      },
+      {
+        name: 'constructor with a parameter stays on reanalysis',
+        source:
+          'class Parameterized { constructor(value) {} } console.log(new Parameterized(1) instanceof Parameterized);',
         graph: 'reanalyzed',
         output: 'true\n',
+      },
+      {
+        name: 'constructor with a body stays on reanalysis',
+        source:
+          'class WithConstructorBody { constructor() { this.value = 7; } } console.log(new WithConstructorBody().value);',
+        graph: 'reanalyzed',
+        output: '7\n',
+      },
+      {
+        name: 'constructor mixed with an ordinary method stays on reanalysis',
+        source:
+          'class ConstructorAndMethod { constructor() {} value() { return 7; } } console.log(new ConstructorAndMethod().value());',
+        graph: 'reanalyzed',
+        output: '7\n',
+      },
+      {
+        name: 'static method named constructor stays on reanalysis',
+        source:
+          'class StaticConstructor { static constructor() {} } console.log(typeof StaticConstructor.constructor);',
+        graph: 'reanalyzed',
+        output: 'function\n',
       },
       {
         name: 'computed method key',
