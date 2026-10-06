@@ -7437,6 +7437,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'true\n3\n',
       },
       {
+        name: 'constructor safe while loop retains exact local writes and condition references',
+        source:
+          'class ConstructorWhile { constructor(limit) { var index = 0; while (index < limit) { this.value = index; index++; } } } console.log(new ConstructorWhile(3).value);',
+        graph: 'retained',
+        output: '2\n',
+      },
+      {
+        name: 'constructor safe do-while runs the body before checking its condition',
+        source:
+          'class ConstructorDoWhile { constructor(limit) { var index = 0; do { this.value = index; index++; } while (index < limit); } } console.log(new ConstructorDoWhile(3).value, new ConstructorDoWhile(0).value);',
+        graph: 'retained',
+        output: '2 0\n',
+      },
+      {
         name: 'constructor local plus assignment retains exact references',
         source:
           'class LocalPlusAssignment { constructor(input) { var value = input; value += 1; this.value = value; } } console.log(new LocalPlusAssignment(3).value);',
@@ -7559,6 +7573,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'constructor call in if condition stays on reanalysis',
         source:
           'function shouldWrite() { return true; } class CalledIfCondition { constructor() { if (shouldWrite()) this.value = 1; } } console.log(new CalledIfCondition().value);',
+        graph: 'reanalyzed',
+        output: '1\n',
+      },
+      {
+        name: 'constructor call in while condition stays on reanalysis',
+        source:
+          'function shouldContinue() { return false; } class CalledWhileCondition { constructor() { while (shouldContinue()) this.value = 1; } } console.log(typeof new CalledWhileCondition().value);',
+        graph: 'reanalyzed',
+        output: 'undefined\n',
+      },
+      {
+        name: 'constructor unresolved do-while condition stays on reanalysis',
+        source:
+          'class UnresolvedDoWhileCondition { constructor() { do { this.value = 1; } while (missingDoWhileCondition); } } try { new UnresolvedDoWhileCondition(); } catch (error) { console.log(error instanceof ReferenceError); }',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
+        name: 'constructor loop with break stays on reanalysis',
+        source:
+          'class ConstructorBreak { constructor() { while (true) { this.value = 1; break; } } } console.log(new ConstructorBreak().value);',
         graph: 'reanalyzed',
         output: '1\n',
       },
