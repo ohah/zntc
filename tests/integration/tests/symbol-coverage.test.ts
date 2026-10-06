@@ -7423,6 +7423,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '4\n',
       },
       {
+        name: 'constructor ES5-native compound assignments retain exact references',
+        source:
+          'class LocalNativeCompounds { constructor(input) { var value = input; value *= 2; value /= 2; value %= 5; value <<= 1; value >>= 1; value >>>= 1; value |= 2; value &= 7; value ^= 1; this.value = value; } } console.log(new LocalNativeCompounds(3).value);',
+        graph: 'retained',
+        output: '2\n',
+      },
+      {
         name: 'constructor local postfix update retains its reference',
         source:
           'class LocalPostfixUpdate { constructor(input) { var value = input; value++; this.value = value; } } console.log(new LocalPostfixUpdate(3).value);',
@@ -7526,6 +7533,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnresolvedMutation { constructor() { unboundMutationTarget = 2; } } console.log(typeof UnresolvedMutation);',
         graph: 'reanalyzed',
         output: 'function\n',
+      },
+      {
+        name: 'constructor exponentiation compound assignment stays on reanalysis',
+        source:
+          'class ExponentMutation { constructor(input) { var value = input; value **= 2; this.value = value; } } console.log(new ExponentMutation(3).value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'constructor logical compound assignment stays on reanalysis',
+        source:
+          'class LogicalMutation { constructor(input) { var value = input; value ||= 4; this.value = value; } } console.log(new LogicalMutation(0).value);',
+        graph: 'reanalyzed',
+        output: '4\n',
       },
       {
         name: 'destructured constructor parameter stays on reanalysis',
