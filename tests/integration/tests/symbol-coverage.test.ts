@@ -999,13 +999,14 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('native class retention rejects each class feature that the target must lower', () => {
+  test('native class retention rejects each unsupported class feature that the target must lower', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-class-resync-boundaries-'));
     const cases = [
       {
-        name: 'class',
+        name: 'multiple-methods',
         target: '--target=es5',
-        source: 'class C { read() { return 7; } } console.log(new C().read());',
+        source:
+          'class C { read() { return 7; } other() { return 8; } } console.log(new C().read());',
         stdout: '7\n',
       },
       {
@@ -7187,7 +7188,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   });
 
-  test('ES5 empty named class lowering retains its graph; other class forms resync', () => {
+  test('ES5 empty and single-method named classes retain their graph; other forms resync', () => {
     const cases = [
       {
         name: 'empty named class',
@@ -7196,11 +7197,52 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'true\n',
       },
       {
-        name: 'class with a method',
+        name: 'one plain instance method',
         source:
-          'class WithMethod { value() { return 9; } }\nconsole.log(new WithMethod().value());\n',
+          'class WithMethod { value(n) { return this.base + n; } }\nvar instance = new WithMethod(); instance.base = 2; console.log(instance.value(7));\n',
+        graph: 'retained',
+        output: '9\n',
+      },
+      {
+        name: 'method reads its class binding',
+        source:
+          'class Self { self() { return Self; } }\nconsole.log(new Self().self() === Self);\n',
+        graph: 'retained',
+        output: 'true\n',
+      },
+      {
+        name: 'multiple instance methods',
+        source:
+          'class Pair { first() { return 2; } second() { return 3; } }\nconsole.log(new Pair().first() + new Pair().second());\n',
+        graph: 'reanalyzed',
+        output: '5\n',
+      },
+      {
+        name: 'static method',
+        source: 'class Static { static value() { return 9; } }\nconsole.log(Static.value());\n',
         graph: 'reanalyzed',
         output: '9\n',
+      },
+      {
+        name: 'explicit constructor',
+        source:
+          'class Explicit { constructor() {} }\nconsole.log(new Explicit() instanceof Explicit);\n',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
+        name: 'computed method key',
+        source:
+          "var key = 'value';\nclass Computed { [key]() { return 9; } }\nconsole.log(new Computed().value());\n",
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'method with super and no base class',
+        source:
+          'class WithSuper { value() { return super.toString(); } }\nconsole.log(new WithSuper().value());\n',
+        graph: 'reanalyzed',
+        output: '[object Object]\n',
       },
       {
         name: 'block scoped empty class',
@@ -7269,7 +7311,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         }
         expect(report, fixture.name).toMatch(/clean=1(?:\s|$)/);
 
-        if (fixture.name === 'empty named class') {
+        if (fixture.graph === 'retained') {
           const helperReport = (proc.stderr ?? '')
             .split(/\r?\n/)
             .find(
