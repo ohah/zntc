@@ -7388,6 +7388,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
+        name: 'constructor uninitialized var local retains its undefined binding',
+        source:
+          'class UninitializedLocal { constructor() { var value; this.value = value; } } console.log(new UninitializedLocal().value);',
+        graph: 'retained',
+        output: 'undefined\n',
+      },
+      {
+        name: 'constructor let local stays on reanalysis',
+        source:
+          'class LexicalLocal { constructor() { let value = 6; this.value = value; } } console.log(new LexicalLocal().value);',
+        graph: 'reanalyzed',
+        output: '6\n',
+      },
+      {
+        name: 'constructor const local stays on reanalysis',
+        source:
+          'class ConstantLocal { constructor() { const value = 6; this.value = value; } } console.log(new ConstantLocal().value);',
+        graph: 'reanalyzed',
+        output: '6\n',
+      },
+      {
         name: 'constructor destructuring var local stays on reanalysis',
         source:
           'var sourceValue = { value: 6 }; class DestructuredLocal { constructor() { var { value } = sourceValue; this.value = value; } } console.log(new DestructuredLocal().value);',
