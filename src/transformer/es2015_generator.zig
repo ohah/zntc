@@ -324,11 +324,28 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         }
 
         fn recordGeneratorStateBinding(self: *Transformer, binding: NodeIndex, name_span: Span) Transformer.Error!void {
+            const symbol_id = self.getSymbolIdAt(binding);
             for (self.generator_state_bindings.items) |existing| {
-                if (existing.binding == binding) return;
+                if (existing.binding != binding) continue;
+                if (self.semantic_edit_enabled) {
+                    if (existing.name_span.start != name_span.start or existing.name_span.end != name_span.end)
+                        std.debug.panic("generator state binding was recorded with two temp spans", .{});
+                    if (existing.symbol_id != symbol_id)
+                        std.debug.panic("generator state binding changed its exact SymbolId", .{});
+                    if (existing.callback_local)
+                        std.debug.panic("callback-local binding was also hoisted to the generator wrapper", .{});
+                    if (symbol_id == null and !existing.deferred_wrapper_owner)
+                        std.debug.panic("generator wrapper binding has no exact or deferred owner", .{});
+                }
+                return;
             }
             try self.generated_temp_spans.append(self.allocator, name_span);
-            try self.generator_state_bindings.append(self.allocator, .{ .binding = binding, .name_span = name_span });
+            try self.generator_state_bindings.append(self.allocator, .{
+                .binding = binding,
+                .name_span = name_span,
+                .symbol_id = symbol_id,
+                .deferred_wrapper_owner = self.semantic_edit_enabled and symbol_id == null,
+            });
         }
 
         fn makeGeneratorTempRef(self: *Transformer, name_span: Span, node_span: Span, flags: @import("../semantic/symbol.zig").ReferenceFlags) Transformer.Error!NodeIndex {
@@ -2835,4 +2852,53 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
 test "ES2015 generator module compiles" {
     _ = ES2015Generator;
+}
+
+test "generator state binding records preserve exact and deferred owners" {
+    const Entry = struct {
+        binding: NodeIndex,
+        name_span: Span,
+        symbol_id: ?u32 = null,
+        callback_local: bool = false,
+        deferred_wrapper_owner: bool = false,
+    };
+    const Mock = struct {
+        pub const Error = std.mem.Allocator.Error;
+        allocator: std.mem.Allocator,
+        semantic_edit_enabled: bool,
+        generator_state_bindings: std.ArrayListUnmanaged(Entry) = .empty,
+        generated_temp_spans: std.ArrayListUnmanaged(Span) = .empty,
+        symbol_id: ?u32 = null,
+
+        fn getSymbolIdAt(self: *@This(), _: NodeIndex) ?u32 {
+            return self.symbol_id;
+        }
+    };
+
+    const allocator = std.testing.allocator;
+    var mock = Mock{ .allocator = allocator, .semantic_edit_enabled = true };
+    defer mock.generator_state_bindings.deinit(allocator);
+    defer mock.generated_temp_spans.deinit(allocator);
+
+    const Generator = ES2015Generator(Mock);
+    const source_binding: NodeIndex = @enumFromInt(1);
+    const source_span: Span = .{ .start = 10, .end = 15 };
+    mock.symbol_id = 42;
+    try Generator.recordGeneratorStateBinding(&mock, source_binding, source_span);
+    try std.testing.expectEqual(@as(usize, 1), mock.generator_state_bindings.items.len);
+    try std.testing.expectEqual(@as(?u32, 42), mock.generator_state_bindings.items[0].symbol_id);
+    try std.testing.expect(!mock.generator_state_bindings.items[0].deferred_wrapper_owner);
+
+    // Duplicate visits keep the original exact record and generated span.
+    try Generator.recordGeneratorStateBinding(&mock, source_binding, source_span);
+    try std.testing.expectEqual(@as(usize, 1), mock.generator_state_bindings.items.len);
+    try std.testing.expectEqual(@as(usize, 1), mock.generated_temp_spans.items.len);
+
+    const generated_binding: NodeIndex = @enumFromInt(2);
+    const generated_span: Span = .{ .start = 20, .end = 27 };
+    mock.symbol_id = null;
+    try Generator.recordGeneratorStateBinding(&mock, generated_binding, generated_span);
+    try std.testing.expectEqual(@as(usize, 2), mock.generator_state_bindings.items.len);
+    try std.testing.expect(mock.generator_state_bindings.items[1].symbol_id == null);
+    try std.testing.expect(mock.generator_state_bindings.items[1].deferred_wrapper_owner);
 }
