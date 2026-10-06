@@ -7269,10 +7269,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         shadowedExternal: true,
       },
       {
-        name: 'static accessor after an instance method',
+        name: 'trailing static accessor after an ordinary method',
         source:
           'class Accessor { instance() { return 1; } static get value() { return 9; } } console.log(Accessor.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
@@ -7290,11 +7290,39 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
+        name: 'ordinary methods followed by a compatible accessor pair',
+        source:
+          'class Combined { first(n) { return n + this.second(); } second() { return 1; } get value() { return Combined.stored; } set value(n) { Combined.stored = n; } } var combined = new Combined(); combined.value = 8; console.log(combined.first(2), combined.value);',
+        graph: 'retained',
+        output: '3 8\n',
+      },
+      {
+        name: 'method after an accessor keeps source order on reanalysis',
+        source:
+          'class Reordered { get value() { return 7; } method() { return 9; } } var reordered = new Reordered(); console.log(reordered.value, reordered.method());',
+        graph: 'reanalyzed',
+        output: '7 9\n',
+      },
+      {
+        name: 'method and accessor with the same key keep duplicate order on reanalysis',
+        source:
+          'class DuplicateKey { value() { return 7; } get value() { return 9; } } console.log(new DuplicateKey().value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
         name: 'duplicate getter methods',
         source:
           'class Duplicate { get value() { return 7; } get value() { return 9; } } console.log(new Duplicate().value);',
         graph: 'reanalyzed',
         output: '9\n',
+      },
+      {
+        name: 'more than one accessor pair member of a kind keeps reanalysis',
+        source:
+          'class Triple { get value() { return 1; } set value(n) { this.stored = n; } set value(n) { this.stored = n + 1; } } var triple = new Triple(); triple.value = 4; console.log(triple.value, triple.stored);',
+        graph: 'reanalyzed',
+        output: '1 5\n',
       },
       {
         name: 'getter/setter keys differ',
