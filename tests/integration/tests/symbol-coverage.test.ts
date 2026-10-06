@@ -7346,11 +7346,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'true true true\n',
       },
       {
-        name: 'constructor with a parameter stays on reanalysis',
+        name: 'constructor with a default parameter stays on reanalysis',
         source:
-          'class Parameterized { constructor(value) {} } console.log(new Parameterized(1) instanceof Parameterized);',
+          'class Defaulted { constructor(value = 3) { this.value = value; } } console.log(new Defaulted().value);',
         graph: 'reanalyzed',
-        output: 'true\n',
+        output: '3\n',
       },
       {
         name: 'constructor with a simple literal assignment retains its graph',
@@ -7358,6 +7358,41 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class WithConstructorBody { constructor() { this.value = 7; } } console.log(new WithConstructorBody().value);',
         graph: 'retained',
         output: '7\n',
+      },
+      {
+        name: 'constructor parameter and reference keep their exact identity',
+        source:
+          'class Parameterized { constructor(value) { this.value = value; } } console.log(Parameterized.length, new Parameterized(8).value);',
+        graph: 'retained',
+        output: '1 8\n',
+      },
+      {
+        name: 'empty constructor preserves its simple parameter and function length',
+        source:
+          'class EmptyParameterized { constructor(value) {} } console.log(EmptyParameterized.length, new EmptyParameterized(1) instanceof EmptyParameterized);',
+        graph: 'retained',
+        output: '1 true\n',
+      },
+      {
+        name: 'multiple simple constructor parameters retain their references',
+        source:
+          'class TwoParameters { constructor(first, second) { this.first = first; this.second = second; } } var twoParameters = new TwoParameters(3, 4); console.log(TwoParameters.length, twoParameters.first, twoParameters.second);',
+        graph: 'retained',
+        output: '2 3 4\n',
+      },
+      {
+        name: 'destructured constructor parameter stays on reanalysis',
+        source:
+          'class DestructuredParameter { constructor({ value }) { this.value = value; } } console.log(new DestructuredParameter({ value: 4 }).value);',
+        graph: 'reanalyzed',
+        output: '4\n',
+      },
+      {
+        name: 'rest constructor parameter stays on reanalysis',
+        source:
+          'class RestParameter { constructor(...values) { this.value = values; } } console.log(new RestParameter(4).value[0]);',
+        graph: 'reanalyzed',
+        output: '4\n',
       },
       {
         name: 'constructor primitive property initializers retain their graph',
