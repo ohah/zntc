@@ -69,16 +69,32 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
         const _anon_body_idx = self.readNodeIdx(e, ast_mod.ClassExtra.body);
         const _lower_pm_pre = self.options.unsupported.class_private_method;
         const _lower_pf_pre = self.options.unsupported.class_private_field;
+        var prepared_wrapper_scope: ScopeId = .none;
+        var generated_class_self_symbol_id: ?u32 = null;
         if ((_lower_pm_pre or _lower_pf_pre) and node.tag == .class_expression and new_name.isNone() and
             classBodyHasStaticPrivateMember(self, _anon_body_idx, _lower_pm_pre, _lower_pf_pre))
         {
             const tmp_span = try es_helpers.makeTempVarSpan(self);
             new_name = try es_helpers.makeSyntheticBinding(self, tmp_span);
         }
+        if (self.options.unsupported.class_static_block and node.tag == .class_expression and new_name.isNone() and
+            classBodyHasLowerableMember(self, _anon_body_idx, false, false, true))
+        {
+            const tmp_span = try es_helpers.makeTempVarSpan(self);
+            new_name = try es_helpers.makeSyntheticBinding(self, tmp_span);
+            es_helpers.consumeTempVarSpan(self, tmp_span);
+            if (self.semantic_edit_enabled) {
+                prepared_wrapper_scope = try prepareClassExprWrapperScope(self, source_idx);
+                const id = try self.declareSyntheticInScope(new_name, node.span, .class_decl, prepared_wrapper_scope) orelse
+                    std.debug.panic("anonymous static-block class name has no direct SymbolId", .{});
+                generated_class_self_symbol_id = @intFromEnum(id);
+            }
+        }
         const saved_class_name_node = self.current_class_name_node;
         const saved_class_self_symbol_id = self.current_class_self_symbol_id;
         self.current_class_name_node = new_name;
-        self.current_class_self_symbol_id = self.class_self_symbol_map.get(@intFromEnum(source_idx));
+        self.current_class_self_symbol_id = generated_class_self_symbol_id orelse
+            self.class_self_symbol_map.get(@intFromEnum(source_idx));
         defer self.current_class_name_node = saved_class_name_node;
         defer self.current_class_self_symbol_id = saved_class_self_symbol_id;
 
@@ -294,7 +310,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                         class_result,
                         self.scratch.items[scratch_top_e..],
                         new_name,
-                        .none,
+                        prepared_wrapper_scope,
                         pm_mappings.items,
                         pf_mappings.items,
                         node.span,

@@ -1595,12 +1595,13 @@ test "ES2022: static block this in arrow replaced" {
     try std.testing.expectEqualStrings("class Baz{}(()=>{const f=()=>Baz.x;})();", r.output);
 }
 
-test "ES2022: static block anonymous class - this not replaced" {
-    // 익명 클래스: 클래스 이름이 없으므로 this 그대로
+test "ES2022: static block anonymous class - this uses generated class self" {
+    // 익명 클래스도 static block 을 밖으로 옮길 때 생성한 class binding 으로 this 를 보존한다.
     var r = try e2eTarget(std.testing.allocator, "var x = class { static { this.y = 1; } };", .es2021);
     defer r.deinit();
-    // 익명 클래스는 this 치환 안 함
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.y") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "class _a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a.y") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.y") == null);
 }
 
 test "ES2022: static block this - no transform on esnext" {

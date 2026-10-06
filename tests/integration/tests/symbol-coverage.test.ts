@@ -783,6 +783,77 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('anonymous static-block wrappers bind distinct class-self symbols', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-anonymous-static-block-self-symbols-'));
+    const file = join(FIXTURE_DIR, '4819-anonymous-class-static-block-id.mjs');
+    const runAndReadClasses = (path: string) =>
+      spawnSync(
+        'node',
+        [
+          '--input-type=module',
+          '-e',
+          `await import((await import('node:url')).pathToFileURL(process.argv[1]).href);
+const classes = globalThis.__zntcAnonymousClassSelfs;
+console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes.length === 2 && classes[0] !== classes[1]));`,
+          path,
+        ],
+        { encoding: 'utf8' },
+      );
+    const reference = runAndReadClasses(file);
+    try {
+      expect(reference.status, reference.stderr).toBe(0);
+      expect(reference.stdout).toMatch(/\n10,20:true\n$/);
+      for (const target of TARGETS) {
+        const output = join(dir, `${target.name}.mjs`);
+        const minifyIdentifiers = target.name === 'es5' || target.name === 'esnext';
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [file, target.arg, ...(minifyIdentifiers ? ['--minify-identifiers'] : []), '-o', output],
+          {
+            env: {
+              ...process.env,
+              ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+              ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+            },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${target.name}: ${proc.stderr}`).toBe(0);
+        const lines = (proc.stderr ?? '').split(/\r?\n/);
+        const identity = lines.find((line) => line.startsWith('zntc: symbol-identity '));
+        expect(identity, `${target.name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${target.name} ${counter}: ${identity}`,
+          ).toBe(0);
+        }
+        const strict = lines.find((line) => line.startsWith('zntc: synthetic-coverage '));
+        expect(strict, `${target.name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of ['missing_binding', 'unclassified', 'orphan_symbols']) {
+          expect(
+            Number(strict?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${target.name} ${counter}: ${strict}`,
+          ).toBe(0);
+        }
+        expect(strict, `${target.name}: ${strict}`).toMatch(/symbol_identity_complete=1(?:\s|$)/);
+        if (minifyIdentifiers) {
+          const postMinify = lines.find((line) =>
+            line.startsWith('zntc: symbol-identity-post-minify '),
+          );
+          expect(postMinify, `${target.name}: ${proc.stderr}`).toMatch(
+            /missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+          );
+        }
+        const actual = runAndReadClasses(output);
+        expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, target.name).toBe(reference.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('native and ES5 for-in lowering retain exact loop-head and closure scopes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-for-in-capture-scope-'));
     const file = join(FIXTURE_DIR, '4819-for-in-loop-capture.mjs');
