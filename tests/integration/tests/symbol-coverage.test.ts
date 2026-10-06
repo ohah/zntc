@@ -7188,7 +7188,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   });
 
-  test('ES5 empty, plain methods and single accessors retain their graph; other forms resync', () => {
+  test('ES5 empty, plain methods and compatible accessors retain their graph; other forms resync', () => {
     const cases = [
       {
         name: 'empty named class',
@@ -7276,9 +7276,37 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'paired accessors',
+        name: 'paired instance accessors',
         source:
-          'class Pair { get value() { return 7; } set value(n) {} } console.log(new Pair().value);',
+          'class Pair { get value() { return Pair.stored; } set value(n) { Pair.stored = n; } } var pair = new Pair(); pair.value = 9; console.log(pair.value);',
+        graph: 'retained',
+        output: '9\n',
+      },
+      {
+        name: 'paired static accessors in setter-first order',
+        source:
+          'class StaticPair { static set value(n) { StaticPair.stored = n; } static get value() { return StaticPair.stored; } } StaticPair.value = 9; console.log(StaticPair.value);',
+        graph: 'retained',
+        output: '9\n',
+      },
+      {
+        name: 'duplicate getter methods',
+        source:
+          'class Duplicate { get value() { return 7; } get value() { return 9; } } console.log(new Duplicate().value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'getter/setter keys differ',
+        source:
+          'class Different { get value() { return 7; } set other(n) {} } console.log(new Different().value);',
+        graph: 'reanalyzed',
+        output: '7\n',
+      },
+      {
+        name: 'getter/setter staticness differs',
+        source:
+          'class MixedAccessor { get value() { return 7; } static set value(n) {} } console.log(new MixedAccessor().value);',
         graph: 'reanalyzed',
         output: '7\n',
       },

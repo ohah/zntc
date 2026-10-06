@@ -518,8 +518,8 @@ fn methodHasSuperExpression(ast: *const ast_mod.Ast, method: ast_mod.Node) bool 
 }
 
 /// An ES5 class without a base preserves its graph when empty, when all members
-/// are plain methods, or when it has one plain accessor. Descriptor pairs stay
-/// on reanalysis; computed keys and `super` are excluded.
+/// are plain methods, or when accessors form one compatible getter/setter pair.
+/// Unmatched accessors stay on reanalysis; computed keys and `super` are excluded.
 fn isSimpleNamedClassDeclaration(
     ast: *const ast_mod.Ast,
     node: ast_mod.Node,
@@ -543,6 +543,8 @@ fn isSimpleNamedClassDeclaration(
     if (source_binds_object) return false;
     if (members.start > extras.len or members.len > extras.len - members.start) return false;
 
+    var accessor_pair: ?struct { flags: u32, key_text: []const u8 } = null;
+    var accessor_count: usize = 0;
     for (extras[members.start .. members.start + members.len]) |raw_member_idx| {
         const member_idx: ast_mod.NodeIndex = @enumFromInt(raw_member_idx);
         if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len) return false;
@@ -560,11 +562,26 @@ fn isSimpleNamedClassDeclaration(
             flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_getter) or
             flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_setter);
         if (key.tag != .identifier_reference or (!is_plain_method and !is_plain_accessor)) return false;
-        if (is_plain_accessor and members.len != 1) return false;
         const key_text = ast.getText(key.span);
+        if (is_plain_accessor) {
+            if (members.len > 2) return false;
+            if (accessor_pair) |previous| {
+                const same_staticness =
+                    (previous.flags & ast_mod.MethodFlags.is_static) ==
+                    (flags & ast_mod.MethodFlags.is_static);
+                const previous_is_getter = (previous.flags & ast_mod.MethodFlags.is_getter) != 0;
+                const current_is_getter = (flags & ast_mod.MethodFlags.is_getter) != 0;
+                if (!same_staticness or previous_is_getter == current_is_getter or
+                    !std.mem.eql(u8, previous.key_text, key_text)) return false;
+            } else {
+                accessor_pair = .{ .flags = flags, .key_text = key_text };
+            }
+            accessor_count += 1;
+        }
         if (std.mem.eql(u8, key_text, "constructor") or std.mem.eql(u8, key_text, "__proto__") or
             std.mem.indexOfScalar(u8, key_text, '\\') != null or methodHasSuperExpression(ast, member)) return false;
     }
+    if (accessor_count != 0 and accessor_count != members.len) return false;
     return true;
 }
 
