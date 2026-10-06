@@ -71,6 +71,15 @@ const STRICT_ZERO_COUNTERS = [
   'orphan_symbols',
   'cyclic_ast_edges',
 ];
+const EXACT_SINGLETON_FIELDS = [
+  ['generated_bindings', '\\d+'],
+  ['generated_references', '\\d+'],
+  ['external', '\\d+'],
+  ['namespace_iife_params', '\\d+'],
+  ['enum_iife_params', '\\d+'],
+  ['clean', '\\d+'],
+  ['legacy_debt_fingerprint', '[0-9a-fA-F]+'],
+] as const;
 const EXACT_OBSERVATION_FIELD_COUNT = 6;
 const EXACT_DIAGNOSTIC_FIELD_COUNT = 11;
 
@@ -86,6 +95,13 @@ function exactSchemaProblems(identity: string): string[] {
       ? [`${field}=${value ?? 'missing'}, expected ${expected}`]
       : [];
   });
+  for (const [field, valuePattern] of EXACT_SINGLETON_FIELDS) {
+    const matches =
+      identity.match(new RegExp('(?:^| )' + field + `=(${valuePattern})(?=\\s|$)`, 'g')) ?? [];
+    if (matches.length !== 1) {
+      problems.push(field + ' occurrences=' + matches.length + ', expected 1');
+    }
+  }
   for (const counter of EXACT_ZERO_COUNTERS) {
     const matches = identity.match(new RegExp('(?:^| )' + counter + '=(\\d+)(?=\\s|$)', 'g')) ?? [];
     if (matches.length !== 1) {
@@ -190,6 +206,13 @@ describe('symbol identity coverage gate (#4819)', () => {
       `invariant_counter_count=${EXACT_ZERO_COUNTERS.length}`,
       `observation_field_count=${EXACT_OBSERVATION_FIELD_COUNT}`,
       `diagnostic_field_count=${EXACT_DIAGNOSTIC_FIELD_COUNT}`,
+      'generated_bindings=1',
+      'generated_references=2',
+      'external=3',
+      'namespace_iife_params=4',
+      'enum_iife_params=5',
+      'clean=1',
+      'legacy_debt_fingerprint=cbf29ce484222325',
     ]
       .concat(EXACT_ZERO_COUNTERS.map((counter) => counter + '=0'))
       .join(' ');
@@ -216,6 +239,20 @@ describe('symbol identity coverage gate (#4819)', () => {
         complete.replace(' declaration_scope_mismatch=0', ' declaration_scope_mismatch=1'),
       ),
     ).toContain('declaration_scope_mismatch=1, expected 0');
+    expect(exactSchemaProblems(complete.replace(' namespace_iife_params=4', ''))).toContain(
+      'namespace_iife_params occurrences=0, expected 1',
+    );
+    expect(
+      exactSchemaProblems(
+        complete.replace(' generated_bindings=1', ' generated_bindings=1 generated_bindings=0'),
+      ),
+    ).toContain('generated_bindings occurrences=2, expected 1');
+    expect(exactSchemaProblems(complete.replace(' clean=1', ' clean=1 clean=0'))).toContain(
+      'clean occurrences=2, expected 1',
+    );
+    expect(
+      exactSchemaProblems(complete.replace(' legacy_debt_fingerprint=cbf29ce484222325', '')),
+    ).toContain('legacy_debt_fingerprint occurrences=0, expected 1');
     expect(
       exactSchemaProblems(
         complete.replace(/invariant_counter_count=\d+/, 'invariant_counter_count=23'),
