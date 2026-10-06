@@ -537,9 +537,9 @@ fn isEmptyNoArgMethod(ast: *const ast_mod.Ast, method_extra: u32) bool {
 
 /// An ES5 class without a base preserves its graph when empty, when all members
 /// are plain methods, or when plain methods are followed by one accessor or a
-/// compatible getter/setter pair. A class containing only an empty, no-arg
-/// explicit constructor is also safe. Accessors must be terminal because
-/// lowering emits methods before accessors; computed keys and `super` stay excluded.
+/// compatible getter/setter pair. One empty, no-arg explicit constructor may
+/// accompany plain methods. Accessors must be terminal and cannot mix with an
+/// explicit constructor; computed keys and `super` stay excluded.
 fn isSimpleNamedClassDeclaration(
     ast: *const ast_mod.Ast,
     node: ast_mod.Node,
@@ -566,6 +566,7 @@ fn isSimpleNamedClassDeclaration(
     var accessor_pair: ?struct { flags: u32, key_text: []const u8 } = null;
     var accessor_count: usize = 0;
     var accessors_started = false;
+    var has_empty_explicit_constructor = false;
     for (extras[members.start .. members.start + members.len]) |raw_member_idx| {
         const member_idx: ast_mod.NodeIndex = @enumFromInt(raw_member_idx);
         if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len) return false;
@@ -585,7 +586,9 @@ fn isSimpleNamedClassDeclaration(
         if (key.tag != .identifier_reference or (!is_plain_method and !is_plain_accessor)) return false;
         const key_text = ast.getText(key.span);
         if (std.mem.eql(u8, key_text, "constructor")) {
-            return members.len == 1 and flags == 0 and isEmptyNoArgMethod(ast, method_extra);
+            if (has_empty_explicit_constructor or flags != 0 or !isEmptyNoArgMethod(ast, method_extra)) return false;
+            has_empty_explicit_constructor = true;
+            continue;
         }
         if (is_plain_accessor) {
             accessors_started = true;
@@ -609,6 +612,7 @@ fn isSimpleNamedClassDeclaration(
         if (std.mem.eql(u8, key_text, "constructor") or std.mem.eql(u8, key_text, "__proto__") or
             std.mem.indexOfScalar(u8, key_text, '\\') != null or methodHasSuperExpression(ast, member)) return false;
     }
+    if (has_empty_explicit_constructor and accessor_count != 0) return false;
     if (accessor_count > 2) return false;
     if (accessor_pair) |accessor| {
         // A method with the same key would replace or be replaced by the
@@ -1438,9 +1442,10 @@ fn canKeepPrepassSemanticGraph(
                 const is_simple_downlevel_class = top_level_statements.isSet(raw_node_idx) and safe_graph_subset;
                 if (options.unsupported.class and !is_simple_downlevel_class) return false;
                 // Native classes add no output scopes. Admitted downlevel
-                // forms are empty named declarations, plain methods, or plain
-                // methods followed by an accessor group; their helper, class
-                // reference, and scopes are tracked.
+                // forms are empty named declarations, plain methods, an empty
+                // explicit constructor with plain methods, or plain methods
+                // followed by an accessor group; their helper, class reference,
+                // and scopes are tracked.
                 found_transform = true;
             },
             .identifier_reference => {
