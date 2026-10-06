@@ -7395,6 +7395,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'undefined\n',
       },
       {
+        name: 'constructor var arithmetic locals retain exact bindings and references',
+        source:
+          'class ArithmeticLocals { constructor(input) { var twice = input * 2; var result = twice + 1; this.value = result; } } console.log(new ArithmeticLocals(4).value);',
+        graph: 'retained',
+        output: '9\n',
+      },
+      {
         name: 'constructor let local stays on reanalysis',
         source:
           'class LexicalLocal { constructor() { let value = 6; this.value = value; } } console.log(new LexicalLocal().value);',
@@ -7421,6 +7428,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'function readValue() { return 6; } class CalledLocal { constructor() { var value = readValue(); this.value = value; } } console.log(new CalledLocal().value);',
         graph: 'reanalyzed',
         output: '6\n',
+      },
+      {
+        name: 'constructor var call inside binary initializer stays on reanalysis',
+        source:
+          'function readValue() { return 6; } class CalledBinaryLocal { constructor() { var value = readValue() + 1; this.value = value; } } console.log(new CalledBinaryLocal().value);',
+        graph: 'reanalyzed',
+        output: '7\n',
+      },
+      {
+        name: 'constructor var exponentiation initializer stays on reanalysis',
+        source:
+          'class ExponentLocal { constructor(input) { var value = input ** 2; this.value = value; } } console.log(new ExponentLocal(3).value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'unresolved constructor binary reference stays on reanalysis',
+        source:
+          'class UnresolvedBinaryLocal { constructor() { var value = unboundBinaryValue + 1; this.value = value; } } console.log(typeof UnresolvedBinaryLocal);',
+        graph: 'reanalyzed',
+        output: 'function\n',
       },
       {
         name: 'destructured constructor parameter stays on reanalysis',
@@ -7472,10 +7500,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'true\n',
       },
       {
-        name: 'constructor binary initializer stays on reanalysis',
+        name: 'constructor arithmetic assignment retains its bound reference',
         source:
           'var initialValue = 7; class BinaryInitializer { constructor() { this.value = initialValue + 1; } } console.log(new BinaryInitializer().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '8\n',
       },
       {
