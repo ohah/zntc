@@ -187,13 +187,15 @@ pub const Transformer = struct {
     /// Exact named simple-class constructor bindings that need their source
     /// name-preservation flag after bundler semantic resync.
     preserved_simple_class_names: std.ArrayListUnmanaged(u32) = .empty,
-    pending_runtime_helper_refs: std.ArrayListUnmanaged(struct {
+    tracked_runtime_helper_refs: std.ArrayListUnmanaged(struct {
         node: NodeIndex,
         scope: ScopeId,
-        local_name: []const u8,
-        next: ?usize = null,
+        symbol_id: u32,
     }) = .empty,
-    pending_runtime_helper_ref_index: std.AutoHashMapUnmanaged(u32, usize) = .empty,
+    tracked_runtime_helper_ref_index: std.AutoHashMapUnmanaged(u32, usize) = .empty,
+    /// Import binding nodes attached to helper symbols during finalization.
+    /// Generated call references already own their SymbolId before this point.
+    runtime_helper_import_bindings: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// Generated this/arguments capture declarations needed by parameter
     /// defaults. Pass 2 inserts default initializers after these statements.
     parameter_capture_statements: std.AutoHashMapUnmanaged(u32, void) = .empty,
@@ -221,7 +223,6 @@ pub const Transformer = struct {
     namespace_member_owners: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
     namespace_declaration_owners: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
     namespace_temp_bindings: std.ArrayListUnmanaged(struct { binding: NodeIndex, span: token_mod.Span, scope: ScopeId }) = .empty,
-    pending_runtime_helper_chains: std.StringHashMapUnmanaged(struct { first: usize, last: usize }) = .empty,
 
     /// semantic analyzer의 심볼 테이블 (unused import 판별용).
     /// 비어 있으면 unused import 제거 비활성.
@@ -816,7 +817,8 @@ pub const Transformer = struct {
     pub const moveGeneratedFunctionBodyBindings = @import("transformer/semantic_edit.zig").moveGeneratedFunctionBodyBindings;
     pub const trackGeneratorStateReference = @import("transformer/semantic_edit.zig").trackGeneratorStateReference;
     pub const addGeneratedScope = @import("transformer/semantic_edit.zig").addGeneratedScope;
-    pub const relocatePendingRuntimeHelperRef = @import("transformer/semantic_edit.zig").relocatePendingRuntimeHelperRef;
+    pub const relocateRuntimeHelperRef = @import("transformer/semantic_edit.zig").relocateRuntimeHelperRef;
+    pub const trackRuntimeHelperRefWithId = @import("transformer/semantic_edit.zig").trackRuntimeHelperRefWithId;
     pub const declareSyntheticInScope = @import("transformer/semantic_edit.zig").declareSyntheticInScope;
     pub const declareSyntheticTempInScope = @import("transformer/semantic_edit.zig").declareSyntheticTempInScope;
     pub const recordGeneratorStateTempSymbol = @import("transformer/semantic_edit.zig").recordGeneratorStateTempSymbol;
@@ -831,6 +833,7 @@ pub const Transformer = struct {
     pub const addSyntheticRefInScope = @import("transformer/semantic_edit.zig").addSyntheticRefInScope;
     pub const removeSemanticReference = @import("transformer/semantic_edit.zig").removeSemanticReference;
     pub const trackRuntimeHelperRef = @import("transformer/semantic_edit.zig").trackRuntimeHelperRef;
+    pub const trackRuntimeHelperImportRef = @import("transformer/semantic_edit.zig").trackRuntimeHelperImportRef;
     pub const bindRuntimeHelperImport = @import("transformer/semantic_edit.zig").bindRuntimeHelperImport;
     pub const trackHoistedTempRef = @import("transformer/semantic_edit.zig").trackHoistedTempRef;
     pub const trackHoistedTempRefInScope = @import("transformer/semantic_edit.zig").trackHoistedTempRefInScope;

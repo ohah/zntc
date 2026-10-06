@@ -145,7 +145,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const idx = try helpers.makeSyntheticRefAt(self, local_span, node_span);
             try self.markRuntimeHelperRef(idx);
             // Resolve the call reference before the generated import is resynchronized.
-            try self.trackRuntimeHelperRef(idx, local);
+            try self.trackRuntimeHelperImportRef(idx, local);
             return idx;
         }
 

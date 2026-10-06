@@ -730,15 +730,36 @@ pub const SemanticEditor = struct {
     /// 사용자 동명 선언과 충돌해도 별도 helper_scope_map에 보관한다.
     pub fn declareHelperImport(self: *SemanticEditor, local: NodeIndex, name_span: Span, declaration_span: Span, scope: ScopeId) Error!SymbolId {
         if (!self.validScope(scope)) return error.InvalidScope;
+        if (name_span.start & Ast.STRING_TABLE_BIT == 0) return error.InvalidNode;
         const slot = try self.ensureHelperImportSlot(local);
         switch (self.ast.getNode(local).tag) {
             .identifier_reference, .import_default_specifier => {},
             else => return error.InvalidNode,
         }
         if (self.symbol_ids.items[slot] != null) return error.AlreadyBound;
+        if (self.helper_scope_map.contains(self.ast.getText(name_span))) return error.DuplicateBinding;
+        const id = try self.reserveRuntimeHelperSymbol(name_span, declaration_span, scope, false);
+        try self.attachRuntimeHelperImport(local, id, declaration_span);
+        return id;
+    }
+
+    /// Reserve a helper SymbolId as soon as its first generated reference is
+    /// created. The later import specifier attaches to this same ID; the local
+    /// spelling only interns the helper declaration in helper_scope_map.
+    pub fn reserveRuntimeHelperSymbol(self: *SemanticEditor, name_span: Span, declaration_span: Span, scope: ScopeId, is_preamble: bool) Error!SymbolId {
+        if (!self.validScope(scope)) return error.InvalidScope;
         if (name_span.start & Ast.STRING_TABLE_BIT == 0) return error.InvalidNode;
         const name = try self.ast.getTextStable(self.allocator, name_span);
-        if (self.helper_scope_map.contains(name)) return error.DuplicateBinding;
+        if (self.helper_scope_map.get(name)) |raw_id| {
+            if (raw_id >= self.symbols.items.len) return error.InvalidSymbol;
+            const existing = self.symbols.items[raw_id];
+            if (existing.scope_id != scope or existing.kind != .import_binding or
+                !std.mem.eql(u8, existing.synthetic_name, name) or
+                (existing.synthetic_kind == .runtime_helper_preamble) != is_preamble)
+                return error.DuplicateBinding;
+            return @enumFromInt(raw_id);
+        }
+
         const id: SymbolId = @enumFromInt(@as(u32, @intCast(self.symbols.items.len)));
         try self.symbols.append(self.allocator, .{
             .name = name_span,
@@ -747,13 +768,22 @@ pub const SemanticEditor = struct {
             .kind = .import_binding,
             .decl_flags = SymbolKind.import_binding.declFlags(),
             .declaration_span = declaration_span,
+            .synthetic_kind = if (is_preamble) .runtime_helper_preamble else null,
             .synthetic_name = name,
         });
+        errdefer _ = self.symbols.pop();
         try self.helper_scope_map.put(self.allocator, name, @intFromEnum(id));
+        errdefer _ = self.helper_scope_map.remove(name);
+        var added_scope_binding = false;
         if (!self.scope_maps.items[scope.toIndex()].contains(name)) {
             try self.scope_maps.items[scope.toIndex()].put(self.allocator, name, @intFromEnum(id));
             self.scopes.items[scope.toIndex()].symbol_count +|= 1;
+            added_scope_binding = true;
         }
+        errdefer if (added_scope_binding) {
+            _ = self.scope_maps.items[scope.toIndex()].remove(name);
+            self.scopes.items[scope.toIndex()].symbol_count -= 1;
+        };
         try self.references.append(self.allocator, .{
             .node_index = .none,
             .scope_id = scope,
@@ -762,8 +792,29 @@ pub const SemanticEditor = struct {
             .scope_stmt_idx = Reference.NO_STMT,
             .flags = .{ .declare = true },
         });
-        self.symbol_ids.items[slot] = @intFromEnum(id);
         return id;
+    }
+
+    /// Attach the generated import's local node to a helper ID reserved by an
+    /// earlier call. This does not create a second declaration or SymbolId.
+    pub fn attachRuntimeHelperImport(self: *SemanticEditor, local: NodeIndex, id: SymbolId, declaration_span: Span) Error!void {
+        if (!self.validSymbol(id)) return error.InvalidSymbol;
+        const slot = try self.ensureHelperImportSlot(local);
+        switch (self.ast.getNode(local).tag) {
+            .identifier_reference, .import_default_specifier => {},
+            else => return error.InvalidNode,
+        }
+        if (self.symbol_ids.items[slot] != null) return error.AlreadyBound;
+        const symbol = &self.symbols.items[@intFromEnum(id)];
+        if (symbol.kind != .import_binding or symbol.synthetic_kind == .runtime_helper_preamble)
+            return error.InvalidSymbol;
+        const local_name = try self.ast.getTextStable(self.allocator, self.ast.getNode(local).data.string_ref);
+        if (!std.mem.eql(u8, symbol.synthetic_name, local_name) or
+            self.helper_scope_map.get(local_name) != @as(?usize, @intFromEnum(id)))
+            return error.InvalidSymbol;
+        self.symbol_ids.items[slot] = @intFromEnum(id);
+        symbol.name = self.ast.getNode(local).data.string_ref;
+        symbol.declaration_span = declaration_span;
     }
 
     /// 단일 파일 출력의 AST 밖 런타임 helper 선언을 helper 심볼로 등록한다.
@@ -771,33 +822,9 @@ pub const SemanticEditor = struct {
     pub fn declareRuntimeHelperPreamble(self: *SemanticEditor, name_span: Span, declaration_span: Span, scope: ScopeId) Error!SymbolId {
         if (!self.validScope(scope)) return error.InvalidScope;
         if (name_span.start & Ast.STRING_TABLE_BIT == 0) return error.InvalidNode;
-        const name = try self.ast.getTextStable(self.allocator, name_span);
+        const name = try self.ast.getText(name_span);
         if (self.helper_scope_map.contains(name)) return error.DuplicateBinding;
-        const id: SymbolId = @enumFromInt(@as(u32, @intCast(self.symbols.items.len)));
-        try self.symbols.append(self.allocator, .{
-            .name = name_span,
-            .scope_id = scope,
-            .origin_scope = scope,
-            .kind = .import_binding,
-            .decl_flags = SymbolKind.import_binding.declFlags(),
-            .declaration_span = declaration_span,
-            .synthetic_kind = .runtime_helper_preamble,
-            .synthetic_name = name,
-        });
-        try self.helper_scope_map.put(self.allocator, name, @intFromEnum(id));
-        if (!self.scope_maps.items[scope.toIndex()].contains(name)) {
-            try self.scope_maps.items[scope.toIndex()].put(self.allocator, name, @intFromEnum(id));
-            self.scopes.items[scope.toIndex()].symbol_count +|= 1;
-        }
-        try self.references.append(self.allocator, .{
-            .node_index = .none,
-            .scope_id = scope,
-            .symbol_id = id,
-            .stmt_idx = Reference.NO_STMT,
-            .scope_stmt_idx = Reference.NO_STMT,
-            .flags = .{ .declare = true },
-        });
-        return id;
+        return self.reserveRuntimeHelperSymbol(name_span, declaration_span, scope, true);
     }
 
     fn countsAsValue(flags: ReferenceFlags) bool {

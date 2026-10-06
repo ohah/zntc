@@ -599,15 +599,14 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
             }
         }
         if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier or node.tag == .jsx_identifier) {
-            if (self.pending_runtime_helper_ref_index.get(raw)) |pending_index| {
-                // Runtime helper calls are created before their import exists,
-                // so their Reference is deferred. Their original producer
-                // scope may no longer match the final AST after lowering wraps
-                // the call in generated blocks/functions. Rebind the deferred
-                // record to the exact output scope found by this walk.
-                if (scope.isNone() or pending_index >= self.pending_runtime_helper_refs.items.len)
-                    std.debug.panic("pending runtime helper reference has no exact output scope", .{});
-                self.pending_runtime_helper_refs.items[pending_index].scope = scope;
+            if (self.tracked_runtime_helper_ref_index.get(raw)) |tracked_index| {
+                // The helper call already owns its exact SymbolId. Lowering
+                // may move it under generated blocks/functions, so update the
+                // reference scope from this final AST walk.
+                if (scope.isNone() or tracked_index >= self.tracked_runtime_helper_refs.items.len)
+                    std.debug.panic("runtime helper reference has no exact output scope", .{});
+                editor.moveReference(work.node, scope, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+                self.tracked_runtime_helper_refs.items[tracked_index].scope = scope;
             } else if (self.native_parameter_output_ref_symbol_ids.get(raw)) |exact_id| {
                 if (scope.isNone() or exact_id >= editor.symbols.items.len)
                     std.debug.panic("native parameter capture reference has no exact output owner", .{});
@@ -1459,7 +1458,7 @@ pub fn completeGeneratedStateSymbols(self: *Transformer, root: NodeIndex, root_s
                 }
             }
             if (self.deferred_generator_helper_refs.fetchRemove(raw)) |deferred| {
-                try self.relocatePendingRuntimeHelperRef(deferred.value, scope);
+                try self.relocateRuntimeHelperRef(deferred.value, scope);
             }
         }
         var it = @import("../../parser/ast_walk.zig").children(self.ast, node);
@@ -2474,32 +2473,84 @@ fn bindReachableLexicalCaptures(self: *Transformer) Transformer.Error!void {
     }
 }
 
-/// 헬퍼 호출은 import 선언보다 먼저 생성된다. marker가 있는 노드만 보류한다.
+/// 헬퍼 호출은 import 선언보다 먼저 생성된다. 첫 호출에서 helper SymbolId를
+/// 예약하고 즉시 Reference를 붙여, 뒤늦은 import가 이 ID에 연결되게 한다.
 pub fn trackRuntimeHelperRef(self: *Transformer, node: NodeIndex, local_name: []const u8) Transformer.Error!void {
+    return trackRuntimeHelperRefKind(self, node, local_name, self.options.emit_runtime_helper_imports);
+}
+
+/// JSX and plugin helper imports are AST imports even in standalone mode,
+/// where downlevel runtime helpers are emitted through an inline preamble.
+pub fn trackRuntimeHelperImportRef(self: *Transformer, node: NodeIndex, local_name: []const u8) Transformer.Error!void {
+    return trackRuntimeHelperRefKind(self, node, local_name, true);
+}
+
+fn trackRuntimeHelperRefKind(self: *Transformer, node: NodeIndex, local_name: []const u8, is_import: bool) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     if (self.current_scope.isNone()) std.debug.panic("runtime helper {s} created without scope", .{local_name});
-    const index = self.pending_runtime_helper_refs.items.len;
-    try self.pending_runtime_helper_refs.append(self.allocator, .{ .node = node, .scope = self.current_scope, .local_name = local_name });
-    try self.pending_runtime_helper_ref_index.put(self.allocator, @intFromEnum(node), index);
-    if (self.pending_runtime_helper_chains.getPtr(local_name)) |chain| {
-        self.pending_runtime_helper_refs.items[chain.last].next = index;
-        chain.last = index;
-    } else {
-        try self.pending_runtime_helper_chains.put(self.allocator, local_name, .{ .first = index, .last = index });
+    if (node.isNone() or @intFromEnum(node) >= self.ast.nodes.items.len)
+        std.debug.panic("runtime helper reference has an invalid node", .{});
+    const helper_node = self.ast.getNode(node);
+    if (helper_node.tag != .identifier_reference and helper_node.tag != .assignment_target_identifier and helper_node.tag != .jsx_identifier)
+        std.debug.panic("runtime helper reference has a non-reference node", .{});
+    if (!std.mem.eql(u8, self.ast.getText(helper_node.data.string_ref), local_name))
+        std.debug.panic("runtime helper reference spelling changed before identity registration", .{});
+    const editor = try editorFor(self);
+    const id = editor.reserveRuntimeHelperSymbol(
+        helper_node.data.string_ref,
+        Span.EMPTY,
+        self.programScope(),
+        !is_import,
+    ) catch |err| return editError(err);
+    try trackRuntimeHelperRefWithId(self, node, id);
+}
+
+/// Bind a cloned helper reference using its already established helper SID.
+pub fn trackRuntimeHelperRefWithId(self: *Transformer, node: NodeIndex, id: SymbolId) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    if (self.current_scope.isNone()) std.debug.panic("runtime helper reference created without scope", .{});
+    const editor = try editorFor(self);
+    if (@intFromEnum(id) >= editor.symbols.items.len) std.debug.panic("runtime helper SymbolId is out of range", .{});
+    const symbol = editor.symbols.items[@intFromEnum(id)];
+    if (symbol.kind != .import_binding or symbol.scope_id != self.programScope())
+        std.debug.panic("runtime helper SymbolId has an invalid owner or kind", .{});
+    if (node.isNone() or @intFromEnum(node) >= self.ast.nodes.items.len)
+        std.debug.panic("runtime helper reference has an invalid node", .{});
+    const node_name = self.ast.getText(self.ast.getNode(node).data.string_ref);
+    if (!std.mem.eql(u8, symbol.synthetic_name, node_name) or
+        editor.helper_scope_map.get(node_name) != @as(?usize, @intFromEnum(id)))
+        std.debug.panic("runtime helper reference does not match its exact helper SymbolId", .{});
+    const raw = @intFromEnum(node);
+    if (self.tracked_runtime_helper_ref_index.get(raw)) |existing_index| {
+        if (existing_index >= self.tracked_runtime_helper_refs.items.len or
+            self.tracked_runtime_helper_refs.items[existing_index].symbol_id != @intFromEnum(id))
+            std.debug.panic("runtime helper reference was tracked with a different SymbolId", .{});
+        return;
     }
+    if (self.getSymbolIdAt(node) != null) std.debug.panic("runtime helper reference already has a SymbolId", .{});
+    editor.addReference(node, id, self.current_scope, .{ .read = true }, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+    try setSymbolId(self, node, id);
+    const index = self.tracked_runtime_helper_refs.items.len;
+    try self.tracked_runtime_helper_refs.append(self.allocator, .{
+        .node = node,
+        .scope = self.current_scope,
+        .symbol_id = @intFromEnum(id),
+    });
+    try self.tracked_runtime_helper_ref_index.put(self.allocator, raw, index);
 }
 
 /// `__generator` is created before the async wrapper that contains its call.
-/// Retarget only the exact pending helper node after that wrapper is created.
-pub fn relocatePendingRuntimeHelperRef(self: *Transformer, node: NodeIndex, scope: ScopeId) Transformer.Error!void {
+/// Retarget only that exact helper node after the wrapper is created.
+pub fn relocateRuntimeHelperRef(self: *Transformer, node: NodeIndex, scope: ScopeId) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     if (scope.isNone()) std.debug.panic("runtime helper relocation has no scope", .{});
-    if (self.pending_runtime_helper_ref_index.get(@intFromEnum(node))) |index| {
-        self.pending_runtime_helper_refs.items[index].scope = scope;
+    if (self.tracked_runtime_helper_ref_index.get(@intFromEnum(node))) |index| {
+        const editor = try editorFor(self);
+        editor.moveReference(node, scope, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+        self.tracked_runtime_helper_refs.items[index].scope = scope;
         return;
     }
-    // `transform` emits and binds helper imports before the final output-scope
-    // walk. In that case update the already materialized reference instead.
+    // The final output-scope walk can have removed the tracking record already.
     if (self.semantic_editor) |*editor| {
         editor.moveReference(node, scope, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
     } else {
@@ -2507,37 +2558,32 @@ pub fn relocatePendingRuntimeHelperRef(self: *Transformer, node: NodeIndex, scop
     }
 }
 
-/// import specifier의 local 노드에 격리된 심볼을 만들고 앞서 생성한 호출을 연결한다.
+/// import specifier local을 호출 시점에 만들어 둔 exact helper SymbolId에 붙인다.
 pub fn bindRuntimeHelperImport(self: *Transformer, local: NodeIndex, local_name: []const u8, declaration_span: Span) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     const editor = try editorFor(self);
-    const id = editor.declareHelperImport(local, self.ast.getNode(local).data.string_ref, declaration_span, self.programScope()) catch |err| return editError(err);
-    try setSymbolId(self, local, id);
-    try bindPendingRuntimeHelperRefs(self, editor, local_name, id);
-}
-
-fn bindPendingRuntimeHelperRefs(self: *Transformer, editor: *SemanticEditor, local_name: []const u8, id: SymbolId) Transformer.Error!void {
-    const chain = self.pending_runtime_helper_chains.fetchRemove(local_name) orelse return;
-    var i: ?usize = chain.value.first;
-    while (i) |index| {
-        const ref = self.pending_runtime_helper_refs.items[index];
-        _ = self.pending_runtime_helper_ref_index.remove(@intFromEnum(ref.node));
-        editor.addReference(ref.node, id, ref.scope, .{ .read = true }, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
-        try setSymbolId(self, ref.node, id);
-        i = ref.next;
+    const local_node = self.ast.getNode(local);
+    const local_span = switch (local_node.tag) {
+        .identifier_reference, .import_default_specifier => local_node.data.string_ref,
+        else => return editError(error.InvalidNode),
+    };
+    if (!std.mem.eql(u8, self.ast.getText(local_span), local_name))
+        std.debug.panic("runtime helper import local name disagrees with its binding node", .{});
+    const raw_id: u32 = if (editor.helper_scope_map.get(local_name)) |mapped|
+        @intCast(mapped)
+    else
+        @intFromEnum(editor.declareHelperImport(local, local_span, declaration_span, self.programScope()) catch |err| return editError(err));
+    const id: SymbolId = @enumFromInt(raw_id);
+    if (self.runtime_helper_import_bindings.contains(raw_id)) return editError(error.DuplicateBinding);
+    const local_raw = @intFromEnum(local);
+    const editor_local_id = if (local_raw < editor.symbol_ids.items.len) editor.symbol_ids.items[local_raw] else null;
+    if (editor_local_id == null) {
+        editor.attachRuntimeHelperImport(local, id, declaration_span) catch |err| return editError(err);
+    } else if (editor_local_id != raw_id) {
+        return editError(error.InvalidSymbol);
     }
-    if (self.pending_runtime_helper_chains.count() == 0) {
-        self.pending_runtime_helper_refs.clearRetainingCapacity();
-        self.pending_runtime_helper_ref_index.clearRetainingCapacity();
-    }
-}
-
-/// 단일 파일 출력은 AST 밖 preamble으로 runtime helper를 선언한다. 남은 helper 호출을
-/// preamble alias의 가상 심볼에 연결해 외부 전역 참조로 오분류되지 않게 한다.
-fn bindRuntimeHelperPreamble(self: *Transformer, editor: *SemanticEditor, local_name: []const u8) Transformer.Error!void {
-    const name_span = self.ast.addString(local_name) catch return error.OutOfMemory;
-    const id = editor.declareRuntimeHelperPreamble(name_span, Span.EMPTY, self.programScope()) catch |err| return editError(err);
-    try bindPendingRuntimeHelperRefs(self, editor, local_name, id);
+    if (self.getSymbolIdAt(local) == null) try setSymbolId(self, local, id);
+    try self.runtime_helper_import_bindings.put(self.allocator, raw_id, @intFromEnum(local));
 }
 
 /// nullish lowering의 temp 참조는 hoist 선언보다 먼저 생성된다. 이름 대신
@@ -3009,23 +3055,19 @@ pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.
     try resolveReachableScopeOwners(self);
     // Scope-owner remaps are semantic edits even when no binding/reference was
     // synthesized. Arrow-to-function and copied body scopes need a final map.
-    if (self.semantic_editor == null and (self.scope_owner_remaps.count() > 0 or
-        (!self.options.emit_runtime_helper_imports and self.pending_runtime_helper_chains.count() > 0)))
-    {
+    if (self.semantic_editor == null and self.scope_owner_remaps.count() > 0) {
         _ = try editorFor(self);
     }
-    if (self.options.emit_runtime_helper_imports and self.pending_runtime_helper_chains.count() != 0)
-        std.debug.panic("generated runtime helper reference has no import", .{});
-    if (!self.options.emit_runtime_helper_imports and self.pending_runtime_helper_chains.count() > 0) {
-        const editor = try editorFor(self);
-        // Binding removes entries from the chain map, so snapshot its keys first.
-        var names: std.ArrayList([]const u8) = .empty;
-        defer names.deinit(self.allocator);
-        var pending = self.pending_runtime_helper_chains.iterator();
-        while (pending.next()) |entry| try names.append(self.allocator, entry.key_ptr.*);
-        for (names.items) |name| try bindRuntimeHelperPreamble(self, editor, name);
-    }
     const editor = if (self.semantic_editor) |*e| e else return null;
+    if (self.tracked_runtime_helper_refs.items.len > 0) {
+        for (self.tracked_runtime_helper_refs.items) |reference| {
+            if (reference.symbol_id >= editor.symbols.items.len)
+                std.debug.panic("generated runtime helper reference has an out-of-range SymbolId", .{});
+            if (editor.symbols.items[reference.symbol_id].synthetic_kind == null and
+                !self.runtime_helper_import_bindings.contains(reference.symbol_id))
+                std.debug.panic("generated runtime helper reference has no import binding", .{});
+        }
+    }
     var remaps = self.scope_owner_remaps.iterator();
     while (remaps.next()) |entry| {
         if (self.scope_owner_removed.contains(entry.key_ptr.*)) {
@@ -3068,5 +3110,7 @@ pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.
     const result = editor.finish() catch |err| return editError(err);
     editor.deinit();
     self.semantic_editor = null;
+    self.tracked_runtime_helper_refs.clearRetainingCapacity();
+    self.tracked_runtime_helper_ref_index.clearRetainingCapacity();
     return result;
 }

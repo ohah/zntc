@@ -1249,8 +1249,73 @@ test "#4819 runtime helper calls bind isolated import symbols before resync" {
             bound_refs += 1;
         }
         try std.testing.expect(bound_refs >= 1);
-        try std.testing.expectEqual(@as(usize, 0), transformer.pending_runtime_helper_chains.count());
+        try std.testing.expectEqual(@as(usize, 0), transformer.tracked_runtime_helper_ref_index.count());
     }
+}
+
+test "#4819 runtime helper reference owns its SymbolId before its import exists" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const __extends = 'user';");
+    scanner.is_module = true;
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const user_id = analyzer.scope_maps.items[0].get("__extends").?;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .emit_runtime_helper_imports = true });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = transformer.programScope();
+
+    const helper_name = try transformer.ast.addString("__extends");
+    const helper_ref = try transformer.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = helper_name,
+        .data = .{ .string_ref = helper_name },
+    });
+    try transformer.markRuntimeHelperRef(helper_ref);
+    try transformer.trackRuntimeHelperRef(helper_ref, "__extends");
+
+    const helper_id = transformer.getSymbolIdAt(helper_ref) orelse return error.MissingRuntimeHelperIdAtCreation;
+    try std.testing.expect(@as(usize, helper_id) != user_id);
+    try transformer.propagateSymbolId(helper_ref, helper_ref);
+    try std.testing.expectEqual(@as(?u32, helper_id), transformer.getSymbolIdAt(helper_ref));
+    const editor = &transformer.semantic_editor.?;
+    try std.testing.expectEqual(@as(?usize, @intCast(helper_id)), editor.helper_scope_map.get("__extends"));
+    const helper_reference = (try editor.referenceForNode(helper_ref)) orelse return error.MissingRuntimeHelperReference;
+    try std.testing.expectEqual(helper_id, @intFromEnum(helper_reference.symbol_id));
+
+    // A local node with another spelling cannot steal the reserved helper ID.
+    const wrong_name = try transformer.ast.addString("__rest");
+    const wrong_local = try transformer.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = wrong_name,
+        .data = .{ .string_ref = wrong_name },
+    });
+    try std.testing.expectError(
+        error.InvalidSymbol,
+        editor.attachRuntimeHelperImport(wrong_local, @enumFromInt(helper_id), .{ .start = 0, .end = 0 }),
+    );
+    try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@intFromEnum(wrong_local)]);
+
+    const local = try transformer.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = helper_name,
+        .data = .{ .string_ref = helper_name },
+    });
+    try transformer.bindRuntimeHelperImport(local, "__extends", .{ .start = 0, .end = 0 });
+    try std.testing.expectEqual(@as(?u32, helper_id), transformer.getSymbolIdAt(local));
+    try std.testing.expectEqual(@as(?usize, user_id), editor.scope_maps.items[0].get("__extends"));
+    try std.testing.expectEqual(@as(?u32, @intCast(@intFromEnum(local))), transformer.runtime_helper_import_bindings.get(helper_id));
 }
 
 test "#4819 JSX runtime imports bind exact helper symbols before resync" {
@@ -1322,7 +1387,7 @@ test "#4819 JSX runtime imports bind exact helper symbols before resync" {
         try std.testing.expect(reads >= 1);
         try std.testing.expectEqual(@as(u32, @intCast(reads)), edited.symbols.items[helper_id].reference_count);
     }
-    try std.testing.expectEqual(@as(usize, 0), transformer.pending_runtime_helper_chains.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.tracked_runtime_helper_ref_index.count());
 }
 
 test "#4819 classic JSX factory reference follows its lexical binding" {
@@ -1528,7 +1593,7 @@ test "#4819 JSX dev runtime call binds its isolated import symbol" {
     }
     try std.testing.expectEqual(@as(u32, @intCast(reads)), edited.symbols.items[helper_id].reference_count);
     try std.testing.expect(reads >= 1);
-    try std.testing.expectEqual(@as(usize, 0), transformer.pending_runtime_helper_chains.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.tracked_runtime_helper_ref_index.count());
 }
 
 test "#4819 standalone JSX imports bind exact symbols without bundler helper imports" {
@@ -1587,7 +1652,7 @@ test "#4819 standalone JSX imports bind exact symbols without bundler helper imp
     try std.testing.expectEqual(@as(usize, 1), declarations);
     try std.testing.expectEqual(@as(usize, 1), reads);
     try std.testing.expectEqual(@as(u32, @intCast(reads)), edited.symbols.items[helper_id].reference_count);
-    try std.testing.expectEqual(@as(usize, 0), transformer.pending_runtime_helper_chains.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.tracked_runtime_helper_ref_index.count());
 }
 
 test "#4819 for-in temporaries bind symbols during lowering" {
