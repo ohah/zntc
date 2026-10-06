@@ -716,6 +716,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 self.outputOwnedScope(ctor_idx).?
             else
                 try self.reserveGeneratedFunctionScope(source_class_scope);
+            // A simple anonymous class becomes a named function expression.
+            // Its generated class-self binding lives in that function scope
+            // and must exist before __classCallCheck creates its read.
+            if (self.semantic_edit_enabled and name_idx.isNone() and !has_extra and !class_self_storage_bound) {
+                const id = try self.declareSyntheticInScope(func_name, span, .function_decl, ctor_scope) orelse
+                    std.debug.panic("anonymous ES5 class name has no direct SymbolId", .{});
+                self.current_class_self_symbol_id = @intFromEnum(id);
+            }
             var func_node: NodeIndex = .none;
             var alias_check_ref: NodeIndex = .none;
             {
