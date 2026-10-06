@@ -812,6 +812,11 @@ fn isSafeConstructorBodyStatement(
                 isSafeConstructorBodyStatement(ast, semantic, branches.b) and
                 (branches.c.isNone() or isSafeConstructorBodyStatement(ast, semantic, branches.c));
         },
+        .while_statement, .do_while_statement => {
+            const loop = statement.data.binary;
+            return isSafeConstructorValue(ast, semantic, loop.left) and
+                isSafeConstructorBodyStatement(ast, semantic, loop.right);
+        },
         else => return false,
     }
 }
@@ -855,7 +860,8 @@ fn isSimpleParamsConstructorBodyGraphSafe(
 /// blocks/`if` branches, supported assignments/updates, returns with no value
 /// or an exact-safe value, and throws with an exact-safe value. Conditions and
 /// values are recursively limited to literals, exact source references, and
-/// ES5-native operators. Accessors must be terminal because lowering emits
+/// ES5-native operators; `while`/`do while` loops also require an exact-safe
+/// condition and recursively safe body. Accessors must be terminal because lowering emits
 /// methods before accessors; computed/escaped keys and `super` stay excluded.
 fn isSimpleNamedClassDeclaration(
     ast: *const ast_mod.Ast,
