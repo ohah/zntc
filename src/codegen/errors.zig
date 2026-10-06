@@ -5,4 +5,6 @@ pub const Error = error{
     MissingNamespaceIifeParameterSymbol,
     InvalidNamespacePrefixSymbol,
     InvalidEnumIifeMemberSymbol,
+    MissingNamespaceDeclarationSymbol,
+    InvalidNamespaceDeclarationSymbol,
 };

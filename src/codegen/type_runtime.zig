@@ -462,7 +462,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
     if (body_node.tag == .ts_module_declaration) {
         const name_node = self.ast.getNode(name_idx);
         const name_text = self.ast.getText(name_node.span);
-        const local_name = namespaceLocalName(self, name_idx, name_text);
+        const local_name = try namespaceLocalName(self, name_idx, name_text);
         const namespace_parameter = try namespaceIifeParameter(self, namespace_idx);
         const iife_param_name = if (namespace_parameter) |parameter| parameter.name else name_text;
         const namespace_prefix: NamespacePrefix = .{
@@ -496,7 +496,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
     // body가 block_statement인 경우 (일반 namespace)
     const name_node = self.ast.getNode(name_idx);
     const name_text = self.ast.getText(name_node.span);
-    const local_name = namespaceLocalName(self, name_idx, name_text);
+    const local_name = try namespaceLocalName(self, name_idx, name_text);
 
     // Nested namespaces use lexical bindings; top-level namespaces use var.
     // 같은 이름이 이미 선언되었으면 var/let 생략 (function + namespace 병합 등)
@@ -1037,9 +1037,14 @@ fn isDirectNamespaceNameInBody(self: anytype, body_idx: NodeIndex, name_idx: Nod
     return false;
 }
 
-fn namespaceLocalName(self: anytype, name_idx: NodeIndex, source_name: []const u8) []const u8 {
+fn namespaceLocalName(self: anytype, name_idx: NodeIndex, source_name: []const u8) Error![]const u8 {
     if (self.options.linking_metadata) |metadata| {
-        if (self.sourceSymbolId(name_idx)) |sid| {
+        if (self.options.generated_iife_scope_owner_map != null) {
+            const sid = self.sourceSymbolId(name_idx) orelse return error.MissingNamespaceDeclarationSymbol;
+            if (sid >= self.options.semantic_symbols.len) return error.InvalidNamespaceDeclarationSymbol;
+            if (metadata.renames.get(sid)) |renamed| return renamed;
+            return source_name;
+        } else if (self.sourceSymbolId(name_idx)) |sid| {
             if (metadata.renames.get(sid)) |renamed| return renamed;
         }
     }
