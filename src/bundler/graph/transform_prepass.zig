@@ -518,8 +518,9 @@ fn methodHasSuperExpression(ast: *const ast_mod.Ast, method: ast_mod.Node) bool 
 }
 
 /// An ES5 class without a base preserves its graph when empty, when all members
-/// are plain methods, or when accessors form one compatible getter/setter pair.
-/// Unmatched accessors stay on reanalysis; computed keys and `super` are excluded.
+/// are plain methods, or when plain methods are followed by one accessor or a
+/// compatible getter/setter pair. Accessors must be terminal because lowering
+/// emits methods before accessors; computed keys and `super` stay excluded.
 fn isSimpleNamedClassDeclaration(
     ast: *const ast_mod.Ast,
     node: ast_mod.Node,
@@ -545,6 +546,7 @@ fn isSimpleNamedClassDeclaration(
 
     var accessor_pair: ?struct { flags: u32, key_text: []const u8 } = null;
     var accessor_count: usize = 0;
+    var accessors_started = false;
     for (extras[members.start .. members.start + members.len]) |raw_member_idx| {
         const member_idx: ast_mod.NodeIndex = @enumFromInt(raw_member_idx);
         if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len) return false;
@@ -564,7 +566,7 @@ fn isSimpleNamedClassDeclaration(
         if (key.tag != .identifier_reference or (!is_plain_method and !is_plain_accessor)) return false;
         const key_text = ast.getText(key.span);
         if (is_plain_accessor) {
-            if (members.len > 2) return false;
+            accessors_started = true;
             if (accessor_pair) |previous| {
                 const same_staticness =
                     (previous.flags & ast_mod.MethodFlags.is_static) ==
@@ -577,11 +579,30 @@ fn isSimpleNamedClassDeclaration(
                 accessor_pair = .{ .flags = flags, .key_text = key_text };
             }
             accessor_count += 1;
+        } else if (accessors_started) {
+            // Class lowering emits every ordinary method before its accessor
+            // descriptors. Keep source order observable on the retained path.
+            return false;
         }
         if (std.mem.eql(u8, key_text, "constructor") or std.mem.eql(u8, key_text, "__proto__") or
             std.mem.indexOfScalar(u8, key_text, '\\') != null or methodHasSuperExpression(ast, member)) return false;
     }
-    if (accessor_count != 0 and accessor_count != members.len) return false;
+    if (accessor_count > 2) return false;
+    if (accessor_pair) |accessor| {
+        // A method with the same key would replace or be replaced by the
+        // accessor descriptor. Keep that duplicate-definition order on resync.
+        const accessor_is_static = (accessor.flags & ast_mod.MethodFlags.is_static) != 0;
+        for (extras[members.start .. members.start + members.len]) |raw_member_idx| {
+            const member = ast.getNode(@enumFromInt(raw_member_idx));
+            const method_extra = member.data.extra;
+            const flags = extras[method_extra + ast_mod.MethodExtra.flags];
+            const is_plain_method = flags == 0 or flags == ast_mod.MethodFlags.is_static;
+            if (!is_plain_method or ((flags & ast_mod.MethodFlags.is_static) != 0) != accessor_is_static) continue;
+            const key_idx: ast_mod.NodeIndex = @enumFromInt(extras[method_extra + ast_mod.MethodExtra.key]);
+            const key_text = ast.getText(ast.getNode(key_idx).span);
+            if (std.mem.eql(u8, accessor.key_text, key_text)) return false;
+        }
+    }
     return true;
 }
 
@@ -1395,8 +1416,9 @@ fn canKeepPrepassSemanticGraph(
                 const is_simple_downlevel_class = top_level_statements.isSet(raw_node_idx) and safe_graph_subset;
                 if (options.unsupported.class and !is_simple_downlevel_class) return false;
                 // Native classes add no output scopes. Admitted downlevel
-                // forms are empty named declarations, plain methods, or one
-                // accessor; their helper, class reference, and scopes are tracked.
+                // forms are empty named declarations, plain methods, or plain
+                // methods followed by an accessor group; their helper, class
+                // reference, and scopes are tracked.
                 found_transform = true;
             },
             .identifier_reference => {
