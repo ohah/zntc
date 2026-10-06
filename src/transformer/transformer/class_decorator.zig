@@ -261,6 +261,8 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
         .ctor_params = &ctor_params,
     };
 
+    var prepared_wrapper_scope: ScopeId = .none;
+
     // 익명 클래스 식인데 static field / static block 을 **클래스 밖 문장**으로 낮춰야 하면
     // 그 문장들이 클래스를 가리킬 이름이 필요하다. 이름 없이 진행하면 static field 할당이
     // `.none` 이름을 역참조해 **컴파일러가 죽는다**(#4723 — #4629 가 es2015~es2021 에서
@@ -270,6 +272,14 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
     {
         const tmp_span = try es_helpers.makeTempVarSpan(self);
         new_name = try es_helpers.makeSyntheticBinding(self, tmp_span);
+        es_helpers.consumeTempVarSpan(self, tmp_span);
+        if (node.tag == .class_expression and self.semantic_edit_enabled) {
+            prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx);
+            const id = try self.declareSyntheticInScope(new_name, node.span, .class_decl, prepared_wrapper_scope) orelse
+                std.debug.panic("anonymous class wrapper name has no direct SymbolId", .{});
+            self.current_class_name_node = new_name;
+            self.current_class_self_symbol_id = @intFromEnum(id);
+        }
     }
 
     // static block·클래스 밖으로 옮기는 static field 의 this 치환을 위한 클래스 이름 (#4801).
@@ -409,10 +419,9 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
     const has_static_blocks = static_block_iifes.items.len > 0;
 
     if (has_static_fields or has_static_blocks) {
-        const prepared_wrapper_scope = if (node.tag == .class_expression and has_static_fields)
-            try class_visit_mod.prepareClassExprWrapperScope(self, source_idx)
-        else
-            @as(ScopeId, .none);
+        if (node.tag == .class_expression and has_static_fields and prepared_wrapper_scope.isNone()) {
+            prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx);
+        }
         const static_field_ref_scope = if (!prepared_wrapper_scope.isNone()) prepared_wrapper_scope else if (self.semantic_edit_enabled) blk: {
             const class_scope = self.outputOwnedScope(source_idx) orelse
                 std.debug.panic("static class field has no source class scope", .{});
