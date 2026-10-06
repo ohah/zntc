@@ -993,17 +993,19 @@ fn isSimpleParamsConstructorBodyGraphSafe(
 /// safe `var` or existing-identifier heads, safe values, and safe bodies.
 /// Labeled/unlabeled loop control, safe label statements, supported assignments/updates,
 /// returns with no value or an exact-safe value, and throws with an exact-safe
-/// value. Conditions and values are recursively limited to literals, exact
+/// value. A named class expression is admitted only as a direct initializer of
+/// a top-level `var` declarator; other expression positions stay on reanalysis.
+/// Conditions and values are recursively limited to literals, exact
 /// source references, and ES5-native operators; loop clauses and bodies must
 /// pass their corresponding safe checks. Accessors must be terminal because lowering emits
 /// methods before accessors; computed/escaped keys and `super` stay excluded.
-fn isSimpleNamedClassDeclaration(
+fn isSimpleNamedClass(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     node: ast_mod.Node,
     source_binds_object: bool,
 ) bool {
-    if (node.tag != .class_declaration) return false;
+    if (node.tag != .class_declaration and node.tag != .class_expression) return false;
     const extra = node.data.extra;
     const extras = ast.extra_data.items;
     if (extra > extras.len or extras.len - extra <= ast_mod.ClassExtra.body) return false;
@@ -1088,6 +1090,55 @@ fn isSimpleNamedClassDeclaration(
         }
     }
     return true;
+}
+
+fn isDirectTopLevelVarClassExpression(ast: *const ast_mod.Ast, target_raw: u32) bool {
+    if (ast.nodes.items.len == 0) return false;
+    const root_idx = ast.transformed_root orelse @as(
+        ast_mod.NodeIndex,
+        @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))),
+    );
+    if (root_idx.isNone() or @intFromEnum(root_idx) >= ast.nodes.items.len or
+        ast.getNode(root_idx).tag != .program) return false;
+    const statements = ast.getNode(root_idx).data.list;
+    const extras = ast.extra_data.items;
+    if (statements.start > extras.len or statements.len > extras.len - statements.start) return false;
+    for (extras[statements.start .. statements.start + statements.len]) |raw_statement| {
+        if (raw_statement >= ast.nodes.items.len) return false;
+        const statement = ast.nodes.items[raw_statement];
+        if (statement.tag != .variable_declaration or
+            ast.variableDeclarationKind(statement) != .@"var") continue;
+        const declaration_extra = statement.data.extra;
+        if (declaration_extra > extras.len or extras.len - declaration_extra < 3) return false;
+        const declarators_start = extras[declaration_extra + 1];
+        const declarators_len = extras[declaration_extra + 2];
+        if (declarators_start > extras.len or declarators_len > extras.len - declarators_start) return false;
+        for (extras[declarators_start .. declarators_start + declarators_len]) |raw_declarator| {
+            if (raw_declarator >= ast.nodes.items.len) return false;
+            const declarator = ast.nodes.items[raw_declarator];
+            if (declarator.tag != .variable_declarator) return false;
+            const declarator_extra = declarator.data.extra;
+            if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
+            if (extras[declarator_extra + 2] == target_raw) return true;
+        }
+    }
+    return false;
+}
+
+fn isTopLevelSimpleNamedClass(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node: ast_mod.Node,
+    raw_node: usize,
+    top_level_statements: *const std.DynamicBitSet,
+    source_binds_object: bool,
+) bool {
+    const is_top_level = switch (node.tag) {
+        .class_declaration => top_level_statements.isSet(raw_node),
+        .class_expression => isDirectTopLevelVarClassExpression(ast, @intCast(raw_node)),
+        else => false,
+    };
+    return is_top_level and isSimpleNamedClass(ast, semantic, node, source_binds_object);
 }
 
 /// Arrow lowering edits the existing graph and creates only output function
@@ -1652,8 +1703,14 @@ fn canRetainGraphForAuditedSyntaxSubset(
             },
             .class_declaration, .class_expression => {
                 if (options.unsupported.class) {
-                    if (!top_level_statements.isSet(raw_idx) or
-                        !isSimpleNamedClassDeclaration(ast, semantic, node, source_binds_object)) return false;
+                    if (!isTopLevelSimpleNamedClass(
+                        ast,
+                        semantic,
+                        node,
+                        raw_idx,
+                        &top_level_statements,
+                        source_binds_object,
+                    )) return false;
                     found_lowered_simple_named_class = true;
                 } else {
                     found_native_class = true;
@@ -1897,7 +1954,9 @@ fn canKeepPrepassSemanticGraph(
                 found_transform = true;
             },
             .class_declaration, .class_expression => {
-                const is_simple_downlevel_class = top_level_statements.isSet(raw_node_idx) and safe_graph_subset;
+                // The audited subset validates direct declarations and direct
+                // top-level `var` initializers for named class expressions.
+                const is_simple_downlevel_class = safe_graph_subset;
                 if (options.unsupported.class and !is_simple_downlevel_class) return false;
                 // Native classes add no output scopes. Admitted downlevel
                 // forms are empty named declarations, plain methods, an empty
