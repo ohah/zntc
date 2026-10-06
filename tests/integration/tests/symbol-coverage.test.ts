@@ -7465,6 +7465,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '2\n',
       },
       {
+        name: 'constructor safe while loop preserves unlabeled break',
+        source:
+          'class ConstructorWhileBreak { constructor() { var index = 0; while (index < 5) { this.value = index; if (index === 2) break; index++; } } } console.log(new ConstructorWhileBreak().value);',
+        graph: 'retained',
+        output: '2\n',
+      },
+      {
+        name: 'constructor safe for loop preserves unlabeled continue',
+        source:
+          'class ConstructorForContinue { constructor() { for (var index = 0; index < 4; index++) { if (index === 2) continue; this.value = index; } } } console.log(new ConstructorForContinue().value);',
+        graph: 'retained',
+        output: '3\n',
+      },
+      {
         name: 'constructor local plus assignment retains exact references',
         source:
           'class LocalPlusAssignment { constructor(input) { var value = input; value += 1; this.value = value; } } console.log(new LocalPlusAssignment(3).value);',
@@ -7605,10 +7619,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'true\n',
       },
       {
-        name: 'constructor loop with break stays on reanalysis',
+        name: 'constructor while loop with unlabeled break retains its graph',
         source:
           'class ConstructorBreak { constructor() { while (true) { this.value = 1; break; } } } console.log(new ConstructorBreak().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1\n',
       },
       {
@@ -7633,10 +7647,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '0\n',
       },
       {
-        name: 'constructor for loop with break stays on reanalysis',
+        name: 'constructor for loop with unlabeled break retains its graph',
         source:
           'class ConstructorForBreak { constructor() { for (var index = 0; index < 1; index++) { this.value = index; break; } } } console.log(new ConstructorForBreak().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '0\n',
       },
       {
@@ -7659,6 +7673,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class ConstructorForIn { constructor(values) { for (var key in values) this.value = key; } } console.log(new ConstructorForIn({ safe: 1 }).value);',
         graph: 'reanalyzed',
         output: 'safe\n',
+      },
+      {
+        name: 'constructor labeled loop control stays on reanalysis',
+        source:
+          'class ConstructorLabeledControl { constructor() { target: while (false) { break target; } this.value = 1; } } console.log(new ConstructorLabeledControl().value);',
+        graph: 'reanalyzed',
+        output: '1\n',
       },
       {
         name: 'constructor call in if branch stays on reanalysis',

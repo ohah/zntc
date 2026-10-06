@@ -796,6 +796,7 @@ fn isSafeConstructorBodyStatement(
     const statement = ast.getNode(statement_idx);
     switch (statement.tag) {
         .empty_statement => return true,
+        .break_statement, .continue_statement => return statement.data.unary.operand.isNone(),
         .return_statement => {
             const value_idx = statement.data.unary.operand;
             return value_idx.isNone() or isSafeConstructorValue(ast, semantic, value_idx);
@@ -883,7 +884,8 @@ fn isSimpleParamsConstructorBodyGraphSafe(
 /// compatible getter/setter pair. One explicit constructor with only simple
 /// identifier parameters may accompany plain methods and a terminal accessor
 /// group when its body contains only simple `var` declarations, safe nested
-/// blocks/`if` branches, simple `for` loops, supported assignments/updates,
+/// blocks/`if` branches, simple `for` loops with unlabeled loop control,
+/// supported assignments/updates,
 /// returns with no value or an exact-safe value, and throws with an exact-safe
 /// value. Conditions and values are recursively limited to literals, exact
 /// source references, and ES5-native operators; loop clauses and bodies must
