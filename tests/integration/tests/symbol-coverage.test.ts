@@ -446,6 +446,45 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('lowered for-await temps keep exact identities through async wrapper relocation', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-for-await-wrapper-symbols-'));
+    const file = join(FIXTURE_DIR, 'forawait-basic.mjs');
+    try {
+      for (const target of ['--target=es5', '--target=es2015']) {
+        const output = join(dir, `${target.slice('--target='.length)}.mjs`);
+        const proc = spawnSync(ZNTC_BIN, [file, target, '--minify-identifiers', '-o', output], {
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        });
+        expect(proc.status, `${target}: ${proc.stderr}`).toBe(0);
+
+        const lines = (proc.stderr ?? '').split(/\r?\n/);
+        const identity = lines.find((line) => line.startsWith('zntc: symbol-identity '));
+        expect(identity, `${target}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${target} ${counter}: ${identity}`,
+          ).toBe(0);
+        }
+        expect(Number(identity?.match(/generated_bindings=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+
+        const postMinify = lines.find((line) =>
+          line.startsWith('zntc: symbol-identity-post-minify '),
+        );
+        expect(postMinify, `${target}: ${proc.stderr}`).toMatch(
+          /missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+        );
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${target}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, target).toBe('1,2,3\n');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('native and ES5 for-in lowering retain exact loop-head and closure scopes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-for-in-capture-scope-'));
     const file = join(FIXTURE_DIR, '4819-for-in-loop-capture.mjs');
