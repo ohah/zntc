@@ -188,7 +188,7 @@ pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: Sco
             } else if (temp.deferred_wrapper_owner) {
                 try bindDeferredWrapperTemp(self, temp, span, source_scope, scope, &seen, &live_scopes);
             } else {
-                try bindGeneratedWrapperTemp(self, temp, span, source_scope, scope, &seen, &live_scopes);
+                std.debug.panic("generator wrapper temp has no exact SymbolId or deferred owner", .{});
             }
         }
         for (callback_temps) |temp| {
@@ -1703,70 +1703,6 @@ pub fn reparentGeneratedBodyScopes(self: *Transformer, source_scope: ScopeId, ta
     var scopes = try liveScopeOwners(self, &live);
     defer scopes.deinit(self.allocator);
     try reparentLiveSourceScopes(self, source_scope, target_scope, &scopes);
-}
-
-fn bindGeneratedWrapperTemp(self: *Transformer, temp: @import("lists.zig").HoistedStateTemp, declaration_span: Span, source_scope: ScopeId, callback_scope: ScopeId, live: *const std.AutoHashMapUnmanaged(u32, void), live_scopes: *const std.AutoHashMapUnmanaged(u32, void)) Transformer.Error!void {
-    if (temp.deferred_wrapper_owner)
-        std.debug.panic("deferred wrapper temp reached name-resolution path", .{});
-    const editor = try editorFor(self);
-    var expected_scope = source_scope;
-    var hops: usize = 0;
-    while (hops < editor.scopes.items.len) : (hops += 1) {
-        if (editor.scopes.items[expected_scope.toIndex()].kind.isVarScope()) break;
-        expected_scope = editor.scopes.items[expected_scope.toIndex()].parent;
-        if (expected_scope.isNone()) std.debug.panic("generated wrapper temp has no var scope", .{});
-    }
-    const temp_key = (@as(u64, @intFromEnum(expected_scope)) << 32) | temp.name_span.start;
-    const canonical_id = editor.scope_maps.items[expected_scope.toIndex()].get(self.ast.getText(temp.name_span));
-    const id: SymbolId = if (self.bound_temp_symbols.get(temp_key)) |raw_id| blk: {
-        if (raw_id >= editor.symbols.items.len) std.debug.panic("generated wrapper temp symbol is out of range", .{});
-        const existing = editor.symbols.items[raw_id];
-        if (existing.scope_id != expected_scope or !std.mem.eql(u8, self.ast.getText(existing.name), self.ast.getText(temp.name_span)))
-            std.debug.panic("generated wrapper temp Span was rebound to an unrelated symbol", .{});
-        break :blk @enumFromInt(raw_id);
-    } else if (canonical_id) |raw_id| blk: {
-        if (raw_id >= editor.symbols.items.len) std.debug.panic("canonical wrapper temp symbol id is out of range", .{});
-        const existing = editor.symbols.items[raw_id];
-        const name = self.ast.getText(temp.name_span);
-        const same_generated_name = existing.synthetic_name.len > 0 and std.mem.eql(u8, existing.synthetic_name, name);
-        // Generator hoisting can copy a user `var` binding into a fresh string
-        // span. A same-name var in the same function scope is that original
-        // function-scoped binding, even though its source span differs.
-        const same_source_name = existing.synthetic_name.len == 0 and
-            std.mem.eql(u8, self.ast.getText(existing.name), name);
-        if (existing.scope_id != expected_scope or existing.kind != .variable_var or
-            (!same_generated_name and !same_source_name))
-            std.debug.panic("wrapper temp name resolves to a non-generated lexical binding", .{});
-        try self.bound_temp_symbols.put(self.allocator, temp_key, @intCast(raw_id));
-        break :blk @enumFromInt(raw_id);
-    } else blk: {
-        const created = editor.declare(
-            temp.binding,
-            temp.name_span,
-            declaration_span,
-            source_scope,
-            .variable_var,
-            Reference.NO_STMT,
-            Reference.NO_STMT,
-        ) catch |err| return editError(err);
-        try self.bound_temp_symbols.put(self.allocator, temp_key, @intFromEnum(created));
-        break :blk created;
-    };
-    try setSymbolId(self, temp.binding, id);
-
-    const chain = self.pending_temp_ref_chains.fetchRemove(temp.name_span.start);
-    var i: ?usize = if (chain) |found| found.value.first else null;
-    while (i) |index| {
-        const ref = self.pending_temp_refs.items[index];
-        std.debug.assert(ref.name_start == temp.name_span.start);
-        if (live.contains(@intFromEnum(ref.node))) {
-            const scope = try generatedTempRefScope(self, source_scope, callback_scope, ref.scope, live_scopes);
-            editor.addReference(ref.node, id, scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
-            try setSymbolId(self, ref.node, id);
-        }
-        i = ref.next;
-    }
-    if (self.pending_temp_ref_chains.count() == 0) self.pending_temp_refs.clearRetainingCapacity();
 }
 
 /// Complete a wrapper temp whose producer retained the exact binding node but
