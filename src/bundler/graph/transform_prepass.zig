@@ -584,6 +584,24 @@ fn isSafeConstructorLogicalOperator(operator: token_mod.Kind) bool {
     };
 }
 
+fn isSafeConstructorNativeCompoundAssignmentOperator(operator: token_mod.Kind) bool {
+    return switch (operator) {
+        .plus_eq,
+        .minus_eq,
+        .star_eq,
+        .slash_eq,
+        .percent_eq,
+        .amp_eq,
+        .pipe_eq,
+        .caret_eq,
+        .shift_left_eq,
+        .shift_right_eq,
+        .shift_right3_eq,
+        => true,
+        else => false,
+    };
+}
+
 fn isSafeConstructorUnaryOperator(operator: token_mod.Kind) bool {
     return switch (operator) {
         .plus, .minus, .bang, .tilde => true,
@@ -669,26 +687,52 @@ fn isSafeConstructorLocalAssignment(
 ) bool {
     if (assignment.tag != .assignment_expression) return false;
     const operator: token_mod.Kind = @enumFromInt(assignment.data.binary.flags);
-    switch (operator) {
-        .eq,
-        .plus_eq,
-        .minus_eq,
-        .star_eq,
-        .slash_eq,
-        .percent_eq,
-        .amp_eq,
-        .pipe_eq,
-        .caret_eq,
-        .shift_left_eq,
-        .shift_right_eq,
-        .shift_right3_eq,
-        => {},
-        else => return false,
-    }
+    if (operator != .eq and !isSafeConstructorNativeCompoundAssignmentOperator(operator)) return false;
     const target_idx = assignment.data.binary.left;
     if (target_idx.isNone() or @intFromEnum(target_idx) >= ast.nodes.items.len or
         !isBoundSourceIdentifierAssignmentTarget(ast, semantic, target_idx)) return false;
     return isSafeConstructorValue(ast, semantic, assignment.data.binary.right);
+}
+
+fn isSafeConstructorThisPropertyTarget(ast: *const ast_mod.Ast, target_idx: ast_mod.NodeIndex) bool {
+    if (target_idx.isNone() or @intFromEnum(target_idx) >= ast.nodes.items.len) return false;
+    const target = ast.getNode(target_idx);
+    if (target.tag != .static_member_expression) return false;
+    const extras = ast.extra_data.items;
+    const member_extra = target.data.extra;
+    if (member_extra > extras.len or extras.len - member_extra < 3 or extras[member_extra + 2] != 0)
+        return false;
+
+    const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[member_extra]);
+    const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[member_extra + 1]);
+    if (receiver_idx.isNone() or @intFromEnum(receiver_idx) >= ast.nodes.items.len or
+        ast.getNode(receiver_idx).tag != .this_expression or
+        property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len or
+        ast.getNode(property_idx).tag != .identifier_reference) return false;
+    return std.mem.indexOfScalar(u8, ast.getText(ast.getNode(property_idx).span), '\\') == null;
+}
+
+fn isSafeConstructorThisPropertyAssignment(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    assignment: ast_mod.Node,
+) bool {
+    if (assignment.tag != .assignment_expression) return false;
+    const operator: token_mod.Kind = @enumFromInt(assignment.data.binary.flags);
+    if (!isSafeConstructorNativeCompoundAssignmentOperator(operator) or
+        !isSafeConstructorThisPropertyTarget(ast, assignment.data.binary.left)) return false;
+    return isSafeConstructorValue(ast, semantic, assignment.data.binary.right);
+}
+
+fn isSafeConstructorThisPropertyUpdate(ast: *const ast_mod.Ast, update: ast_mod.Node) bool {
+    if (update.tag != .update_expression) return false;
+    const extras = ast.extra_data.items;
+    const extra = update.data.extra;
+    if (extra > extras.len or extras.len - extra < 2) return false;
+    const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
+    if (operator != .plus2 and operator != .minus2) return false;
+    const target_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+    return isSafeConstructorThisPropertyTarget(ast, target_idx);
 }
 
 fn isSafeConstructorLocalUpdate(
@@ -744,12 +788,14 @@ fn isSimpleParamsConstructorBodyGraphSafe(
         if (assignment_idx.isNone() or @intFromEnum(assignment_idx) >= ast.nodes.items.len) return false;
         const assignment = ast.getNode(assignment_idx);
         if (assignment.tag == .update_expression) {
-            if (!isSafeConstructorLocalUpdate(ast, semantic, assignment)) return false;
+            if (!isSafeConstructorLocalUpdate(ast, semantic, assignment) and
+                !isSafeConstructorThisPropertyUpdate(ast, assignment)) return false;
             continue;
         }
         if (assignment.tag != .assignment_expression) return false;
         if (assignment.data.binary.flags != @intFromEnum(token_mod.Kind.eq)) {
-            if (!isSafeConstructorLocalAssignment(ast, semantic, assignment)) return false;
+            if (!isSafeConstructorLocalAssignment(ast, semantic, assignment) and
+                !isSafeConstructorThisPropertyAssignment(ast, semantic, assignment)) return false;
             continue;
         }
 
@@ -762,16 +808,7 @@ fn isSimpleParamsConstructorBodyGraphSafe(
             if (!isSafeConstructorLocalAssignment(ast, semantic, assignment)) return false;
             continue;
         }
-        const member_extra = target.data.extra;
-        if (member_extra > extras.len or extras.len - member_extra < 3 or extras[member_extra + 2] != 0) return false;
-
-        const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[member_extra]);
-        const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[member_extra + 1]);
-        if (receiver_idx.isNone() or @intFromEnum(receiver_idx) >= ast.nodes.items.len or
-            ast.getNode(receiver_idx).tag != .this_expression or
-            property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len or
-            ast.getNode(property_idx).tag != .identifier_reference) return false;
-        if (std.mem.indexOfScalar(u8, ast.getText(ast.getNode(property_idx).span), '\\') != null) return false;
+        if (!isSafeConstructorThisPropertyTarget(ast, target_idx)) return false;
 
         if (!isSafeConstructorValue(ast, semantic, value_idx)) return false;
     }
@@ -783,10 +820,10 @@ fn isSimpleParamsConstructorBodyGraphSafe(
 /// compatible getter/setter pair. One explicit constructor with only simple
 /// identifier parameters may accompany plain methods and a terminal accessor
 /// group when its body is empty, contains simple `var` declarations, or has
-/// direct `this.name = value` statements. Each initializer/value must be a
-/// boolean, null, numeric, or string literal, or an exact source reference.
-/// Accessors must be terminal because lowering emits methods before accessors;
-/// computed keys and `super` stay excluded.
+/// direct `this.name` assignments/updates and exact local identifier writes.
+/// Values are recursively limited to literals, exact source references, and
+/// ES5-native operators. Accessors must be terminal because lowering emits
+/// methods before accessors; computed/escaped keys and `super` stay excluded.
 fn isSimpleNamedClassDeclaration(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,

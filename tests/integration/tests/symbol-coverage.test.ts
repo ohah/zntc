@@ -7430,6 +7430,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '2\n',
       },
       {
+        name: 'constructor native this-property compounds and updates preserve accessor effects',
+        source:
+          'class NativePropertyWrites { constructor(input) { this.reads = 0; this.writes = 0; this.backing = input; this.value += 1; this.value -= 1; this.value *= 2; this.value /= 2; this.value %= 4; this.value <<= 1; this.value >>= 1; this.value >>>= 1; this.value |= 2; this.value &= 7; this.value ^= 1; this.value++; ++this.value; } get value() { this.reads++; return this.backing; } set value(next) { this.writes++; this.backing = next; } } var nativePropertyWrites = new NativePropertyWrites(3); console.log(nativePropertyWrites.reads, nativePropertyWrites.writes, nativePropertyWrites.backing);',
+        graph: 'retained',
+        output: '13 13 4\n',
+      },
+      {
         name: 'constructor local postfix update retains its reference',
         source:
           'class LocalPostfixUpdate { constructor(input) { var value = input; value++; this.value = value; } } console.log(new LocalPostfixUpdate(3).value);',
@@ -7549,6 +7556,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '4\n',
       },
       {
+        name: 'constructor this-property exponentiation assignment stays on reanalysis',
+        source:
+          'class ExponentPropertyMutation { constructor(input) { this.value = input; this.value **= 2; } } console.log(new ExponentPropertyMutation(3).value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'constructor this-property logical assignment stays on reanalysis',
+        source:
+          'class LogicalPropertyMutation { constructor(input) { this.value = input; this.value ||= 4; } } console.log(new LogicalPropertyMutation(0).value);',
+        graph: 'reanalyzed',
+        output: '4\n',
+      },
+      {
         name: 'destructured constructor parameter stays on reanalysis',
         source:
           'class DestructuredParameter { constructor({ value }) { this.value = value; } } console.log(new DestructuredParameter({ value: 4 }).value);',
@@ -7605,11 +7626,46 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '8\n',
       },
       {
-        name: 'constructor compound initializer stays on reanalysis',
+        name: 'constructor native this-property compound preserves uninitialized read semantics',
         source:
           'class CompoundInitializer { constructor() { this.value += 2; } } console.log(new CompoundInitializer().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'NaN\n',
+      },
+      {
+        name: 'constructor computed compound property stays on reanalysis',
+        source:
+          'class ComputedCompound { constructor(key, input) { this[key] += input; } } console.log(Number.isNaN(new ComputedCompound("value", 2).value));',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
+        name: 'constructor computed string compound property stays on reanalysis',
+        source:
+          'class ComputedStringCompound { constructor(input) { this["value"] += input; } } console.log(Number.isNaN(new ComputedStringCompound(2).value));',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
+        name: 'constructor escaped static compound property stays on reanalysis',
+        source:
+          'class EscapedCompound { constructor() { this.v\\u0061lue = 3; this.v\\u0061lue += 2; } } console.log(new EscapedCompound().value);',
+        graph: 'reanalyzed',
+        output: '5\n',
+      },
+      {
+        name: 'constructor non-this compound property stays on reanalysis',
+        source:
+          'var compoundReceiver = { value: 3 }; class ExternalCompound { constructor(input) { compoundReceiver.value += input; } } new ExternalCompound(2); console.log(compoundReceiver.value);',
+        graph: 'reanalyzed',
+        output: '5\n',
+      },
+      {
+        name: 'constructor this-property compound with unresolved RHS stays on reanalysis',
+        source:
+          'class UnresolvedPropertyCompound { constructor() { this.value += missingCompoundValue; } } try { new UnresolvedPropertyCompound(); } catch (error) { console.log(error instanceof ReferenceError); }',
+        graph: 'reanalyzed',
+        output: 'true\n',
       },
       {
         name: 'constructor computed initializer stays on reanalysis',
