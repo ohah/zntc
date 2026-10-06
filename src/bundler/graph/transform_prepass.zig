@@ -680,6 +680,20 @@ fn isSafeConstructorVarDeclaration(
     return true;
 }
 
+fn isSafeConstructorForEachHead(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    head_idx: ast_mod.NodeIndex,
+) bool {
+    if (head_idx.isNone() or @intFromEnum(head_idx) >= ast.nodes.items.len) return false;
+    const head = ast.getNode(head_idx);
+    return switch (head.tag) {
+        .variable_declaration => isSafeConstructorVarDeclaration(ast, semantic, head),
+        .assignment_target_identifier => isBoundSourceIdentifierAssignmentTarget(ast, semantic, head_idx),
+        else => false,
+    };
+}
+
 fn isSafeConstructorLocalAssignment(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -928,6 +942,12 @@ fn isSafeConstructorBodyStatement(
             return isSafeConstructorValue(ast, semantic, loop.left) and
                 isSafeConstructorBodyStatement(ast, semantic, loop.right);
         },
+        .for_in_statement, .for_of_statement => {
+            const loop = statement.data.ternary;
+            return isSafeConstructorForEachHead(ast, semantic, loop.a) and
+                isSafeConstructorValue(ast, semantic, loop.b) and
+                isSafeConstructorBodyStatement(ast, semantic, loop.c);
+        },
         else => return false,
     }
 }
@@ -969,8 +989,9 @@ fn isSimpleParamsConstructorBodyGraphSafe(
 /// identifier parameters may accompany plain methods and a terminal accessor
 /// group when its body contains only simple `var` declarations, safe nested
 /// blocks/`if` branches, switches with safe discriminants/case tests, simple
-/// try/catch/finally clauses, loops with safe labeled/unlabeled control, safe
-/// label statements, supported assignments/updates,
+/// try/catch/finally clauses, classic loops, and `for-in`/`for-of` loops with
+/// safe `var` or existing-identifier heads, safe values, and safe bodies.
+/// Labeled/unlabeled loop control, safe label statements, supported assignments/updates,
 /// returns with no value or an exact-safe value, and throws with an exact-safe
 /// value. Conditions and values are recursively limited to literals, exact
 /// source references, and ES5-native operators; loop clauses and bodies must

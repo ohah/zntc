@@ -7703,6 +7703,34 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '0\n',
       },
       {
+        name: 'constructor safe for-in var head retains exact loop references',
+        source:
+          'class ConstructorForInVar { constructor(values) { for (var key in values) this.value = key; } } console.log(new ConstructorForInVar({ safe: 1 }).value);',
+        graph: 'retained',
+        output: 'safe\n',
+      },
+      {
+        name: 'constructor safe for-in source assignment head retains its graph',
+        source:
+          'class ConstructorForInAssignment { constructor(values) { var key; for (key in values) this.value = key; } } console.log(new ConstructorForInAssignment({ safe: 1 }).value);',
+        graph: 'retained',
+        output: 'safe\n',
+      },
+      {
+        name: 'constructor safe for-of var head retains helper and loop identities',
+        source:
+          'class ConstructorForOfVar { constructor(values) { for (var value of values) this.value = value; } } console.log(new ConstructorForOfVar([4, 7]).value);',
+        graph: 'retained',
+        output: '7\n',
+      },
+      {
+        name: 'constructor safe labeled for-of continue updates a source parameter',
+        source:
+          'class ConstructorForOfAssignment { constructor(values, value) { outer: for (value of values) { if (value === 2) continue outer; this.value = value; } } } console.log(new ConstructorForOfAssignment([2, 4], 0).value);',
+        graph: 'retained',
+        output: '4\n',
+      },
+      {
         name: 'constructor lexical for head stays on reanalysis',
         source:
           'class LexicalForHead { constructor() { for (let index = 0; index < 1; index++) this.value = index; } } console.log(new LexicalForHead().value);',
@@ -7710,18 +7738,46 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '0\n',
       },
       {
-        name: 'constructor for-of stays on reanalysis',
+        name: 'constructor lexical for-of head stays on reanalysis',
         source:
-          'class ConstructorForOf { constructor(values) { for (var value of values) this.value = value; } } console.log(new ConstructorForOf([4, 7]).value);',
+          'class LexicalConstructorForOf { constructor(values) { for (let value of values) this.value = value; } } console.log(new LexicalConstructorForOf([4, 7]).value);',
         graph: 'reanalyzed',
         output: '7\n',
       },
       {
-        name: 'constructor for-in stays on reanalysis',
+        name: 'constructor lexical for-in head stays on reanalysis',
         source:
-          'class ConstructorForIn { constructor(values) { for (var key in values) this.value = key; } } console.log(new ConstructorForIn({ safe: 1 }).value);',
+          'class LexicalConstructorForIn { constructor(values) { for (const key in values) this.value = key; } } console.log(new LexicalConstructorForIn({ safe: 1 }).value);',
         graph: 'reanalyzed',
         output: 'safe\n',
+      },
+      {
+        name: 'constructor destructuring for-of head stays on reanalysis',
+        source:
+          'class DestructuredConstructorForOf { constructor(values) { for (var { value } of values) this.value = value; } } console.log(new DestructuredConstructorForOf([{ value: 8 }]).value);',
+        graph: 'reanalyzed',
+        output: '8\n',
+      },
+      {
+        name: 'constructor call in for-of iterable stays on reanalysis',
+        source:
+          'function getConstructorValues() { return [8]; } class CalledConstructorForOfIterable { constructor() { for (var value of getConstructorValues()) this.value = value; } } console.log(new CalledConstructorForOfIterable().value);',
+        graph: 'reanalyzed',
+        output: '8\n',
+      },
+      {
+        name: 'constructor call in for-of body stays on reanalysis',
+        source:
+          'function readConstructorLoopValue(value) { return value; } class CalledConstructorForOfBody { constructor(values) { for (var value of values) this.value = readConstructorLoopValue(value); } } console.log(new CalledConstructorForOfBody([8]).value);',
+        graph: 'reanalyzed',
+        output: '8\n',
+      },
+      {
+        name: 'unresolved constructor for-of head stays on reanalysis',
+        source:
+          'class UnresolvedConstructorForOfHead { constructor(values) { for (missingConstructorLoopTarget of values) this.value = 1; } } try { new UnresolvedConstructorForOfHead([8]); } catch (error) { console.log(error instanceof ReferenceError); }',
+        graph: 'reanalyzed',
+        output: 'true\n',
       },
       {
         name: 'constructor unescaped labeled loop control retains its graph',
