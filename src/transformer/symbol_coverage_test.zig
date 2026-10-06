@@ -2010,6 +2010,8 @@ test "#4819 downlevel using lowering preserves exact transform identities" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
+    // The async-using lowering adds wrapper-owned temps while generator hoisting
+    // sees the same binding nodes. Keep that deferred owner attached by NodeIndex.
     const source = "function run(resource: any, _stack: any, _error: any, _hasError: any, _: any, __using: any, __callDispose: any) { " ++
         "using local = resource; return local + _stack; } " ++
         "async function wait(resource: any, _stack3: any, _error3: any, _hasError3: any) { " ++
