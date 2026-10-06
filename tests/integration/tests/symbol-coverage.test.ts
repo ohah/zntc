@@ -7430,6 +7430,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'true replacement true 7 true 7\n',
       },
       {
+        name: 'constructor exact throw preserves the thrown value identity',
+        source:
+          'class ConstructorThrow { constructor(value, shouldThrow) { if (shouldThrow) throw value; this.value = 3; } } var marker = { kind: "marker" }; try { new ConstructorThrow(marker, true); } catch (error) { console.log(error === marker); } console.log(new ConstructorThrow(marker, false).value);',
+        graph: 'retained',
+        output: 'true\n3\n',
+      },
+      {
         name: 'constructor local plus assignment retains exact references',
         source:
           'class LocalPlusAssignment { constructor(input) { var value = input; value += 1; this.value = value; } } console.log(new LocalPlusAssignment(3).value);',
@@ -7589,6 +7596,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class LiteralConstructorReturn { constructor(input) { return { value: input }; } } console.log(new LiteralConstructorReturn(3).value);',
         graph: 'reanalyzed',
         output: '3\n',
+      },
+      {
+        name: 'constructor unresolved throw value stays on reanalysis',
+        source:
+          'class UnresolvedConstructorThrow { constructor() { throw missingConstructorThrow; } } try { new UnresolvedConstructorThrow(); } catch (error) { console.log(error instanceof ReferenceError); }',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
+        name: 'constructor call throw value stays on reanalysis',
+        source:
+          'function makeConstructorThrow() { return {}; } class CalledConstructorThrow { constructor() { throw makeConstructorThrow(); } } try { new CalledConstructorThrow(); } catch (error) { console.log(typeof error); }',
+        graph: 'reanalyzed',
+        output: 'object\n',
       },
       {
         name: 'constructor nullish initializer stays on reanalysis',
