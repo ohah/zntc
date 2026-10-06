@@ -224,6 +224,12 @@ pub const SyntheticKind = enum(u8) {
     /// TypeScript enum member names referenced bare from a later initializer.
     /// These are semantic property references, not lexical bindings.
     enum_iife_member,
+    /// Parameter of the generated `__commonJS` callback for the CJS `exports`
+    /// environment binding. Free source references are rebound to this ID.
+    cjs_wrapper_exports_parameter,
+    /// Parameter of the generated `__commonJS` callback for the CJS `module`
+    /// environment binding. Free source references are rebound to this ID.
+    cjs_wrapper_module_parameter,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)

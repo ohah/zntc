@@ -446,6 +446,197 @@ describe('#4530: 래퍼 심볼 ↔ 사용자 top-level 심볼 deconflict', () =>
   });
 });
 
+describe('#4819: CJS wrapper parameter identity', () => {
+  const redeclarations = [
+    {
+      name: 'exports',
+      source:
+        'exports.answer = 42;\nvar exports;\nmodule.exports = exports;\nconsole.log(module.exports.answer);',
+    },
+    {
+      name: 'module',
+      source: 'module.exports = { answer: 42 };\nvar module;\nconsole.log(module.exports.answer);',
+    },
+  ];
+
+  for (const mode of ['--minify-whitespace', '--minify']) {
+    for (const { name, source } of redeclarations) {
+      test(`top-level var ${name} reuses the callback parameter identity with ${mode}`, async () => {
+        const { dir, cleanup } = await createFixture({ 'entry.cjs': source });
+        try {
+          const out = join(dir, 'bundle.cjs');
+          const result = await runZntc([
+            '--bundle',
+            join(dir, 'entry.cjs'),
+            '-o',
+            out,
+            '--format=cjs',
+            mode,
+          ]);
+          expect(result.exitCode, `빌드 실패:\n${result.stderr}`).toBe(0);
+          const { stdout, stderr } = await runNode(out);
+          expect(stderr).not.toContain('ReferenceError');
+          expect(stdout).toBe('42');
+        } finally {
+          await cleanup();
+        }
+      });
+    }
+  }
+
+  const functionRedeclarations = [
+    {
+      name: 'function',
+      source: 'function exports() { return 42; }\nconsole.log(exports());',
+    },
+    {
+      name: 'generator function',
+      source: 'function* exports() { return 42; }\nconsole.log(exports().next().value);',
+    },
+    {
+      name: 'async function',
+      source: 'async function exports() { return 42; }\nexports().then(console.log);',
+    },
+    {
+      name: 'async generator function',
+      source:
+        'async function* exports() { return 42; }\n' +
+        'exports().next().then((result) => console.log(result.value));',
+    },
+  ];
+
+  for (const mode of ['--minify-whitespace', '--minify']) {
+    for (const { name, source } of functionRedeclarations) {
+      test(`top-level ${name} exports reuses the callback parameter identity with ${mode}`, async () => {
+        const { dir, cleanup } = await createFixture({
+          'entry.cjs': source,
+        });
+        try {
+          const out = join(dir, 'bundle.cjs');
+          const result = await runZntc([
+            '--bundle',
+            join(dir, 'entry.cjs'),
+            '-o',
+            out,
+            '--format=cjs',
+            mode,
+          ]);
+          expect(result.exitCode, `빌드 실패:\n${result.stderr}`).toBe(0);
+          const { stdout, stderr } = await runNode(out);
+          expect(stderr).not.toContain('ReferenceError');
+          expect(stdout).toBe('42');
+        } finally {
+          await cleanup();
+        }
+      });
+    }
+  }
+
+  test('unresolved exports/module references use the generated parameter SymbolIds', async () => {
+    const { dir, cleanup } = await createFixture({
+      'entry.cjs':
+        'exports.answer = 42;\n' +
+        'module.exports = exports;\n' +
+        'console.log(module.exports.answer);',
+    });
+    try {
+      const out = join(dir, 'bundle.cjs');
+      const result = await runZntc([
+        '--bundle',
+        join(dir, 'entry.cjs'),
+        '-o',
+        out,
+        '--format=cjs',
+        '--minify',
+      ]);
+      expect(result.exitCode, `빌드 실패:\n${result.stderr}`).toBe(0);
+      const { stdout, stderr } = await runNode(out);
+      expect(stderr).not.toContain('ReferenceError');
+      expect(stdout).toBe('42');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('whitespace-only callback aliases do not capture nested $e parameters', async () => {
+    const { dir, cleanup } = await createFixture({
+      'entry.cjs':
+        'exports.answer = 42;\n' +
+        'function read($e) { return exports.answer; }\n' +
+        'module.exports = read(undefined);\n' +
+        'console.log(module.exports);',
+    });
+    try {
+      const out = join(dir, 'bundle.cjs');
+      const result = await runZntc([
+        '--bundle',
+        join(dir, 'entry.cjs'),
+        '-o',
+        out,
+        '--format=cjs',
+        '--minify-whitespace',
+      ]);
+      expect(result.exitCode, `빌드 실패:\n${result.stderr}`).toBe(0);
+      const { stdout, stderr } = await runNode(out);
+      expect(stderr).not.toContain('TypeError');
+      expect(stdout).toBe('42');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('whitespace-only callback aliases avoid both source alias spellings', async () => {
+    const { dir, cleanup } = await createFixture({
+      'entry.cjs':
+        'const $e = 1, $e2 = 2, $m = 3, $m2 = 4;\n' +
+        'exports.answer = 42;\n' +
+        'module.exports = exports;\n' +
+        'console.log($e + $e2 + $m + $m2 + module.exports.answer);',
+    });
+    try {
+      const out = join(dir, 'bundle.cjs');
+      const result = await runZntc([
+        '--bundle',
+        join(dir, 'entry.cjs'),
+        '-o',
+        out,
+        '--format=cjs',
+        '--minify-whitespace',
+      ]);
+      expect(result.exitCode, `빌드 실패:\n${result.stderr}`).toBe(0);
+      const { stdout } = await runNode(out);
+      expect(stdout).toBe('52');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('nested var exports remains a separate function binding', async () => {
+    const { dir, cleanup } = await createFixture({
+      'entry.cjs':
+        'function read() { var exports; return exports; }\n' +
+        'module.exports = read();\n' +
+        'console.log(module.exports);',
+    });
+    try {
+      const out = join(dir, 'bundle.cjs');
+      const result = await runZntc([
+        '--bundle',
+        join(dir, 'entry.cjs'),
+        '-o',
+        out,
+        '--format=cjs',
+        '--minify',
+      ]);
+      expect(result.exitCode, `빌드 실패:\n${result.stderr}`).toBe(0);
+      const { stdout } = await runNode(out);
+      expect(stdout).toBe('undefined');
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
 /**
  * #4533 회귀 가드 — 주입된 래퍼 참조가 **소비자의 스코프 바인딩**에 가려지던 결함.
  *
