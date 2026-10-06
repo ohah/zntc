@@ -7360,11 +7360,32 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '7\n',
       },
       {
-        name: 'constructor mixed with an ordinary method stays on reanalysis',
+        name: 'empty constructor may precede an ordinary method',
         source:
           'class ConstructorAndMethod { constructor() {} value() { return 7; } } console.log(new ConstructorAndMethod().value());',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '7\n',
+      },
+      {
+        name: 'empty constructor may follow instance and static methods',
+        source:
+          'class MethodThenConstructor { value() { return this instanceof MethodThenConstructor; } constructor() {} static self() { return MethodThenConstructor; } } console.log(new MethodThenConstructor().value(), MethodThenConstructor.self() === MethodThenConstructor);',
+        graph: 'retained',
+        output: 'true true\n',
+      },
+      {
+        name: 'empty constructor mixed with an accessor stays on reanalysis',
+        source:
+          'class ConstructorAndAccessor { constructor() {} get value() { return 8; } } console.log(new ConstructorAndAccessor().value);',
+        graph: 'reanalyzed',
+        output: '8\n',
+      },
+      {
+        name: 'empty constructor mixed with a field stays on reanalysis',
+        source:
+          'class ConstructorAndField { constructor() {} value = 8; } console.log(new ConstructorAndField().value);',
+        graph: 'reanalyzed',
+        output: '8\n',
       },
       {
         name: 'static method named constructor stays on reanalysis',
