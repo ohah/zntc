@@ -517,7 +517,7 @@ fn methodHasSuperExpression(ast: *const ast_mod.Ast, method: ast_mod.Node) bool 
     return false;
 }
 
-fn isEmptyNoArgMethod(ast: *const ast_mod.Ast, method_extra: u32) bool {
+fn isNoArgConstructorBodyGraphSafe(ast: *const ast_mod.Ast, method_extra: u32) bool {
     const extras = ast.extra_data.items;
     if (method_extra > extras.len or extras.len - method_extra <= ast_mod.MethodExtra.body) return false;
 
@@ -532,15 +532,52 @@ fn isEmptyNoArgMethod(ast: *const ast_mod.Ast, method_extra: u32) bool {
     const body = ast.getNode(body_idx);
     if (body.tag != .block_statement) return false;
     const statements = body.data.list;
-    return statements.len == 0 and statements.start <= extras.len;
+    if (statements.start > extras.len or statements.len > extras.len - statements.start) return false;
+
+    for (extras[statements.start .. statements.start + statements.len]) |raw_statement_idx| {
+        if (raw_statement_idx >= ast.nodes.items.len) return false;
+        const statement = ast.nodes.items[raw_statement_idx];
+        if (statement.tag != .expression_statement) return false;
+
+        const assignment_idx = statement.data.unary.operand;
+        if (assignment_idx.isNone() or @intFromEnum(assignment_idx) >= ast.nodes.items.len) return false;
+        const assignment = ast.getNode(assignment_idx);
+        if (assignment.tag != .assignment_expression or
+            assignment.data.binary.flags != @intFromEnum(token_mod.Kind.eq)) return false;
+
+        const target_idx = assignment.data.binary.left;
+        const value_idx = assignment.data.binary.right;
+        if (target_idx.isNone() or @intFromEnum(target_idx) >= ast.nodes.items.len or
+            value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
+        const target = ast.getNode(target_idx);
+        if (target.tag != .static_member_expression) return false;
+        const member_extra = target.data.extra;
+        if (member_extra > extras.len or extras.len - member_extra < 3 or extras[member_extra + 2] != 0) return false;
+
+        const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[member_extra]);
+        const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[member_extra + 1]);
+        if (receiver_idx.isNone() or @intFromEnum(receiver_idx) >= ast.nodes.items.len or
+            ast.getNode(receiver_idx).tag != .this_expression or
+            property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len or
+            ast.getNode(property_idx).tag != .identifier_reference) return false;
+        if (std.mem.indexOfScalar(u8, ast.getText(ast.getNode(property_idx).span), '\\') != null) return false;
+
+        switch (ast.getNode(value_idx).tag) {
+            .boolean_literal, .null_literal, .numeric_literal, .string_literal => {},
+            else => return false,
+        }
+    }
+    return true;
 }
 
 /// An ES5 class without a base preserves its graph when empty, when all members
 /// are plain methods, or when plain methods are followed by one accessor or a
-/// compatible getter/setter pair. One empty, no-arg explicit constructor may
-/// accompany plain methods and a terminal accessor group. Accessors must be
-/// terminal because lowering emits methods before accessors; computed keys and
-/// `super` stay excluded.
+/// compatible getter/setter pair. One no-arg explicit constructor may
+/// accompany plain methods and a terminal accessor group when its body is empty
+/// or made only of direct `this.name = literal` statements where the value is a
+/// boolean, null, numeric, or string literal.
+/// Accessors must be terminal because lowering emits methods before accessors;
+/// computed keys and `super` stay excluded.
 fn isSimpleNamedClassDeclaration(
     ast: *const ast_mod.Ast,
     node: ast_mod.Node,
@@ -587,7 +624,7 @@ fn isSimpleNamedClassDeclaration(
         if (key.tag != .identifier_reference or (!is_plain_method and !is_plain_accessor)) return false;
         const key_text = ast.getText(key.span);
         if (std.mem.eql(u8, key_text, "constructor")) {
-            if (has_empty_explicit_constructor or flags != 0 or !isEmptyNoArgMethod(ast, method_extra)) return false;
+            if (has_empty_explicit_constructor or flags != 0 or !isNoArgConstructorBodyGraphSafe(ast, method_extra)) return false;
             has_empty_explicit_constructor = true;
             continue;
         }

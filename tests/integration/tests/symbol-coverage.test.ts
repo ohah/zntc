@@ -7353,11 +7353,60 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'true\n',
       },
       {
-        name: 'constructor with a body stays on reanalysis',
+        name: 'constructor with a simple literal assignment retains its graph',
         source:
           'class WithConstructorBody { constructor() { this.value = 7; } } console.log(new WithConstructorBody().value);',
+        graph: 'retained',
+        output: '7\n',
+      },
+      {
+        name: 'constructor primitive property initializers retain their graph',
+        source:
+          'class Initialized { constructor() { this.count = 3; this.label = "ready"; this.active = true; this.empty = null; } } var initialized = new Initialized(); console.log(initialized.count, initialized.label, initialized.active, initialized.empty);',
+        graph: 'retained',
+        output: '3 ready true null\n',
+      },
+      {
+        name: 'constructor assignment still invokes a prototype setter',
+        source:
+          'class SetterTarget { constructor() { this.value = 7; } get value() { return this.stored; } set value(next) { this.stored = next; } } var setterTarget = new SetterTarget(); console.log(setterTarget.stored, setterTarget.value, Object.prototype.hasOwnProperty.call(setterTarget, "value"));',
+        graph: 'retained',
+        output: '7 7 false\n',
+      },
+      {
+        name: 'constructor initializer reading a source binding stays on reanalysis',
+        source:
+          'var sharedValue = 7; class BindingInitializer { constructor() { this.value = sharedValue; } } console.log(new BindingInitializer().value);',
         graph: 'reanalyzed',
         output: '7\n',
+      },
+      {
+        name: 'constructor compound initializer stays on reanalysis',
+        source:
+          'class CompoundInitializer { constructor() { this.value += 2; } } console.log(new CompoundInitializer().value);',
+        graph: 'reanalyzed',
+        output: 'NaN\n',
+      },
+      {
+        name: 'constructor computed initializer stays on reanalysis',
+        source:
+          'var fieldName = "value"; class ComputedInitializer { constructor() { this[fieldName] = 2; } } console.log(new ComputedInitializer().value);',
+        graph: 'reanalyzed',
+        output: '2\n',
+      },
+      {
+        name: 'constructor computed string key stays on reanalysis',
+        source:
+          'class ComputedStringInitializer { constructor() { this["value"] = 2; } } console.log(new ComputedStringInitializer().value);',
+        graph: 'reanalyzed',
+        output: '2\n',
+      },
+      {
+        name: 'constructor initializer call stays on reanalysis',
+        source:
+          'function makeValue() { return 2; } class CalledInitializer { constructor() { this.value = makeValue(); } } console.log(new CalledInitializer().value);',
+        graph: 'reanalyzed',
+        output: '2\n',
       },
       {
         name: 'empty constructor may precede an ordinary method',
