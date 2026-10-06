@@ -549,13 +549,32 @@ fn isBoundSourceIdentifierBinding(
     return hasValidSourceSymbol(ast, semantic, node_idx, .binding_identifier);
 }
 
+fn isSafeConstructorBinaryOperator(operator: token_mod.Kind) bool {
+    return switch (operator) {
+        .plus,
+        .minus,
+        .star,
+        .slash,
+        .percent,
+        => true,
+        else => false,
+    };
+}
+
 fn isSafeConstructorValue(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     value_idx: ast_mod.NodeIndex,
 ) bool {
     if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
-    return switch (ast.getNode(value_idx).tag) {
+    const value = ast.getNode(value_idx);
+    if (value.tag == .binary_expression) {
+        const operator: token_mod.Kind = @enumFromInt(value.data.binary.flags);
+        return isSafeConstructorBinaryOperator(operator) and
+            isSafeConstructorValue(ast, semantic, value.data.binary.left) and
+            isSafeConstructorValue(ast, semantic, value.data.binary.right);
+    }
+    return switch (value.tag) {
         .boolean_literal, .null_literal, .numeric_literal, .string_literal => true,
         .identifier_reference => isBoundSourceIdentifierReference(ast, semantic, value_idx),
         else => false,
