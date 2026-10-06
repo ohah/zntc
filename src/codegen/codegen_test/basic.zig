@@ -370,6 +370,15 @@ test "Codegen: namespace IIFE parameter name resolves from its SymbolId" {
             .synthetic_kind = .namespace_iife_parameter,
             .synthetic_name = "_PlainNamespace",
         },
+        .{
+            .name = .{ .start = 0, .end = 0 },
+            .scope_id = @enumFromInt(0),
+            .origin_scope = @enumFromInt(0),
+            .kind = .parameter,
+            .declaration_span = .{ .start = 0, .end = 0 },
+            .synthetic_kind = .enum_iife_parameter,
+            .synthetic_name = "_EnumParameter",
+        },
     };
 
     var cg = Codegen.initWithOptions(allocator, &ast, .{
@@ -377,14 +386,22 @@ test "Codegen: namespace IIFE parameter name resolves from its SymbolId" {
         .semantic_symbols = &symbols,
     });
     defer cg.deinit();
-    try std.testing.expectEqualStrings("shortNamespace", cg.namespacePrefixName(.{ .symbol_id = 0, .fallback_name = "stalePrefix" }));
+    try std.testing.expectEqualStrings("shortNamespace", try cg.namespacePrefixName(.{ .symbol_id = 0, .fallback_name = "stalePrefix" }));
     try std.testing.expectEqualStrings(
         "_PlainNamespace",
-        cg.namespacePrefixName(.{ .symbol_id = 1, .fallback_name = "stalePrefix" }),
+        try cg.namespacePrefixName(.{ .symbol_id = 1, .fallback_name = "stalePrefix" }),
+    );
+    try std.testing.expectError(
+        error.InvalidNamespacePrefixSymbol,
+        cg.namespacePrefixName(.{ .symbol_id = 2, .fallback_name = "stalePrefix" }),
+    );
+    try std.testing.expectError(
+        error.InvalidNamespacePrefixSymbol,
+        cg.namespacePrefixName(.{ .symbol_id = 3, .fallback_name = "stalePrefix" }),
     );
     try std.testing.expectEqualStrings(
         "legacyPrefix",
-        cg.namespacePrefixName(.{ .symbol_id = null, .fallback_name = "legacyPrefix" }),
+        try cg.namespacePrefixName(.{ .symbol_id = null, .fallback_name = "legacyPrefix" }),
     );
 }
 

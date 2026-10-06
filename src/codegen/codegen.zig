@@ -424,19 +424,17 @@ pub const Codegen = struct {
     }
 
     /// Resolve a namespace IIFE prefix from its parameter SymbolId at the point
-    /// of emission. The fallback is retained only for codegen callers without a
-    /// semantic namespace owner map.
-    pub fn namespacePrefixName(self: *Codegen, prefix: NamespacePrefix) []const u8 {
+    /// of emission. Text fallback is only valid when no semantic handle exists.
+    pub fn namespacePrefixName(self: *Codegen, prefix: NamespacePrefix) Error![]const u8 {
         if (prefix.symbol_id) |sid| {
+            if (sid >= self.options.semantic_symbols.len) return error.InvalidNamespacePrefixSymbol;
+            const symbol = self.options.semantic_symbols[sid];
+            if (symbol.synthetic_kind != .namespace_iife_parameter or symbol.synthetic_name.len == 0)
+                return error.InvalidNamespacePrefixSymbol;
             if (self.options.linking_metadata) |metadata| {
                 if (metadata.renames.get(sid)) |renamed| return renamed;
             }
-            if (sid < self.options.semantic_symbols.len) {
-                const symbol = self.options.semantic_symbols[sid];
-                if (symbol.synthetic_kind == .namespace_iife_parameter and symbol.synthetic_name.len > 0) {
-                    return symbol.synthetic_name;
-                }
-            }
+            return symbol.synthetic_name;
         }
         return prefix.fallback_name;
     }
