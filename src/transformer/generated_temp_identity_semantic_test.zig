@@ -2,9 +2,9 @@ const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const Span = @import("../lexer/token.zig").Span;
 const SemanticEditor = @import("../semantic/editor.zig").SemanticEditor;
-const bindCallbackTempByIdentity = @import("transformer/semantic_edit.zig").bindCallbackTempByIdentity;
+const bindGeneratedTempByIdentity = @import("transformer/semantic_edit.zig").bindGeneratedTempByIdentity;
 
-test "#4819 callback temp binding rejects same-spelled different allocation" {
+test "#4819 generated temp binding rejects same-spelled different allocation" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -39,7 +39,7 @@ test "#4819 callback temp binding rejects same-spelled different allocation" {
     });
     try std.testing.expectError(
         error.DuplicateBinding,
-        bindCallbackTempByIdentity(
+        bindGeneratedTempByIdentity(
             &editor,
             different_binding,
             allocation_span,
@@ -51,7 +51,7 @@ test "#4819 callback temp binding rejects same-spelled different allocation" {
     );
     try std.testing.expectError(
         error.InvalidSymbol,
-        bindCallbackTempByIdentity(
+        bindGeneratedTempByIdentity(
             &editor,
             different_binding,
             allocation_span,
@@ -72,7 +72,7 @@ test "#4819 callback temp binding rejects same-spelled different allocation" {
     });
     try std.testing.expectEqual(
         decoy_id,
-        try bindCallbackTempByIdentity(
+        try bindGeneratedTempByIdentity(
             &editor,
             exact_alias,
             decoy_span,

@@ -62,7 +62,7 @@ test {
     _ = @import("symbol_coverage_test.zig");
     _ = @import("loop_semantic_test.zig");
     _ = @import("generator_state_semantic_test.zig");
-    _ = @import("callback_temp_identity_semantic_test.zig");
+    _ = @import("generated_temp_identity_semantic_test.zig");
     _ = @import("arrow_body_temp_semantic_test.zig");
     _ = @import("lexical_capture_semantic_test.zig");
     _ = @import("generator_temp_semantic_test.zig");

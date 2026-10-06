@@ -1764,14 +1764,14 @@ fn bindDeferredWrapperTemp(self: *Transformer, temp: @import("lists.zig").Hoiste
     if (self.pending_temp_ref_chains.count() == 0) self.pending_temp_refs.clearRetainingCapacity();
 }
 
-/// Bind a deferred callback temp from an exact SymbolId or its exact binding
-/// node and final owner. A same-spelled scope-map entry is never an identity.
-pub fn bindCallbackTempByIdentity(
+/// Bind a deferred generated temp from an exact SymbolId or its binding node
+/// and final owner. A same-spelled scope-map entry is never an identity.
+pub fn bindGeneratedTempByIdentity(
     editor: *SemanticEditor,
     binding: NodeIndex,
     name_span: Span,
     declaration_span: Span,
-    callback_scope: ScopeId,
+    lexical_scope: ScopeId,
     owner_scope: ScopeId,
     symbol_id: ?u32,
 ) EditorError!SymbolId {
@@ -1790,7 +1790,7 @@ pub fn bindCallbackTempByIdentity(
         binding,
         name_span,
         declaration_span,
-        callback_scope,
+        lexical_scope,
         .variable_var,
         Reference.NO_STMT,
         Reference.NO_STMT,
@@ -1813,7 +1813,7 @@ fn bindTrackedCallbackTemp(self: *Transformer, temp: @import("lists.zig").Hoiste
             std.debug.panic("callback temp producer disagrees with its exact SymbolId registry", .{});
     }
     const known_id = temp.symbol_id orelse registered_id orelse bound_id;
-    const id = bindCallbackTempByIdentity(
+    const id = bindGeneratedTempByIdentity(
         editor,
         temp.binding,
         temp.name_span,
@@ -2608,38 +2608,24 @@ pub fn bindHoistedTemp(self: *Transformer, binding: NodeIndex, name_span: Span, 
     const known_temp_id = self.synthetic_temp_symbol_ids.get(temp_key);
     const bound_temp_id = self.bound_temp_symbols.get(temp_key);
     if (chain == null and known_temp_id == null and bound_temp_id == null) return;
-    const canonical_id = editor.scope_maps.items[expected_scope.toIndex()].get(self.ast.getText(name_span));
-    const id: SymbolId = if (known_temp_id != null) blk: {
-        break :blk (try declareSyntheticTempInScope(self, binding, declaration_span, target_scope)).?;
-    } else if (bound_temp_id) |raw_id| blk: {
-        if (raw_id >= editor.symbols.items.len) std.debug.panic("hoisted temp symbol id is out of range", .{});
-        const existing = editor.symbols.items[raw_id];
-        if (existing.scope_id != expected_scope or !std.mem.eql(u8, self.ast.getText(existing.name), self.ast.getText(name_span)))
-            std.debug.panic("exact temp Span was rebound to an unrelated symbol", .{});
-        break :blk @enumFromInt(raw_id);
-    } else if (canonical_id) |raw_id| blk: {
-        if (raw_id >= editor.symbols.items.len) std.debug.panic("canonical temp symbol id is out of range", .{});
-        const existing = editor.symbols.items[raw_id];
-        if (existing.scope_id != expected_scope or existing.kind != .variable_var or existing.synthetic_name.len == 0 or
-            !std.mem.eql(u8, existing.synthetic_name, self.ast.getText(name_span)))
-            std.debug.panic("temp name resolves to a non-generated lexical binding", .{});
-        try self.bound_temp_symbols.put(self.allocator, temp_key, @intCast(raw_id));
-        break :blk @enumFromInt(raw_id);
-    } else blk: {
-        const created = editor.declare(
-            binding,
-            name_span,
-            declaration_span,
-            target_scope,
-            .variable_var,
-            Reference.NO_STMT,
-            Reference.NO_STMT,
-        ) catch |err| return editError(err);
-        try self.bound_temp_symbols.put(self.allocator, temp_key, @intFromEnum(created));
-        break :blk created;
-    };
-    try self.bound_temp_symbols.put(self.allocator, temp_key, @intFromEnum(id));
-    try setSymbolId(self, binding, id);
+    if (known_temp_id != null and bound_temp_id != null and known_temp_id.? != bound_temp_id.?)
+        std.debug.panic("hoisted temp allocation has conflicting exact SymbolIds", .{});
+    const id = bindGeneratedTempByIdentity(
+        editor,
+        binding,
+        name_span,
+        declaration_span,
+        target_scope,
+        expected_scope,
+        known_temp_id orelse bound_temp_id,
+    ) catch |err| return editError(err);
+    const bound = try self.bound_temp_symbols.getOrPut(self.allocator, temp_key);
+    if (bound.found_existing and bound.value_ptr.* != @intFromEnum(id))
+        std.debug.panic("hoisted temp allocation changed its exact SymbolId", .{});
+    bound.value_ptr.* = @intFromEnum(id);
+    if (self.getSymbolIdAt(binding)) |existing| {
+        if (existing != @intFromEnum(id)) std.debug.panic("hoisted temp binding changed its exact SymbolId", .{});
+    } else try setSymbolId(self, binding, id);
     if (chain) |found| {
         var i: ?usize = found.value.first;
         while (i) |index| {
