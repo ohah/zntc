@@ -826,6 +826,13 @@ fn isSafeConstructorCatchClause(
         isSafeConstructorBodyStatement(ast, semantic, body_idx);
 }
 
+fn isSafeConstructorLabelIdentifier(ast: *const ast_mod.Ast, label_idx: ast_mod.NodeIndex) bool {
+    if (label_idx.isNone() or @intFromEnum(label_idx) >= ast.nodes.items.len) return false;
+    const label = ast.getNode(label_idx);
+    return label.tag == .identifier_reference and
+        std.mem.indexOfScalar(u8, ast.getText(label.span), '\\') == null;
+}
+
 fn isSafeConstructorBodyStatement(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -836,7 +843,10 @@ fn isSafeConstructorBodyStatement(
     switch (statement.tag) {
         .empty_statement => return true,
         .debugger_statement => return true,
-        .break_statement, .continue_statement => return statement.data.unary.operand.isNone(),
+        .break_statement, .continue_statement => {
+            const label_idx = statement.data.unary.operand;
+            return label_idx.isNone() or isSafeConstructorLabelIdentifier(ast, label_idx);
+        },
         .return_statement => {
             const value_idx = statement.data.unary.operand;
             return value_idx.isNone() or isSafeConstructorValue(ast, semantic, value_idx);
@@ -859,6 +869,11 @@ fn isSafeConstructorBodyStatement(
             return isSafeConstructorValue(ast, semantic, branches.a) and
                 isSafeConstructorBodyStatement(ast, semantic, branches.b) and
                 (branches.c.isNone() or isSafeConstructorBodyStatement(ast, semantic, branches.c));
+        },
+        .labeled_statement => {
+            const label = statement.data.binary.left;
+            return isSafeConstructorLabelIdentifier(ast, label) and
+                isSafeConstructorBodyStatement(ast, semantic, statement.data.binary.right);
         },
         .switch_statement => {
             const extras = ast.extra_data.items;
@@ -954,7 +969,8 @@ fn isSimpleParamsConstructorBodyGraphSafe(
 /// identifier parameters may accompany plain methods and a terminal accessor
 /// group when its body contains only simple `var` declarations, safe nested
 /// blocks/`if` branches, switches with safe discriminants/case tests, simple
-/// try/catch/finally clauses, loops with unlabeled loop control, supported assignments/updates,
+/// try/catch/finally clauses, loops with safe labeled/unlabeled control, safe
+/// label statements, supported assignments/updates,
 /// returns with no value or an exact-safe value, and throws with an exact-safe
 /// value. Conditions and values are recursively limited to literals, exact
 /// source references, and ES5-native operators; loop clauses and bodies must

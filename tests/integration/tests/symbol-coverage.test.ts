@@ -7486,6 +7486,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '3\n',
       },
       {
+        name: 'constructor safe labeled loop preserves labeled break',
+        source:
+          'class ConstructorLabeledBreak { constructor(target) { target: while (true) { this.value = target; break target; } } } console.log(new ConstructorLabeledBreak(4).value);',
+        graph: 'retained',
+        output: '4\n',
+      },
+      {
+        name: 'constructor safe labeled loop preserves labeled continue',
+        source:
+          'class ConstructorLabeledContinue { constructor() { target: for (var index = 0; index < 4; index++) { if (index === 1) continue target; this.value = index; } } } console.log(new ConstructorLabeledContinue().value);',
+        graph: 'retained',
+        output: '3\n',
+      },
+      {
+        name: 'constructor nested safe labels preserve an outer labeled break',
+        source:
+          'class ConstructorNestedLabels { constructor() { outer: inner: { this.value = 5; break outer; } } } console.log(new ConstructorNestedLabels().value);',
+        graph: 'retained',
+        output: '5\n',
+      },
+      {
         name: 'constructor safe switch preserves exact case references and fallthrough',
         source:
           'class ConstructorSwitch { constructor(input, selector) { switch (input) { case selector: this.value = 1; break; case 2: this.value = 2; case 3: this.extra = 3; break; default: this.value = 4; } } } var switchFirst = new ConstructorSwitch(1, 1); var switchFallthrough = new ConstructorSwitch(2, 9); var switchDefault = new ConstructorSwitch(8, 9); console.log(switchFirst.value, switchFallthrough.value, switchFallthrough.extra, switchDefault.value);',
@@ -7703,9 +7724,30 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'safe\n',
       },
       {
-        name: 'constructor labeled loop control stays on reanalysis',
+        name: 'constructor unescaped labeled loop control retains its graph',
         source:
           'class ConstructorLabeledControl { constructor() { target: while (false) { break target; } this.value = 1; } } console.log(new ConstructorLabeledControl().value);',
+        graph: 'retained',
+        output: '1\n',
+      },
+      {
+        name: 'constructor escaped label spelling stays on reanalysis',
+        source:
+          'class EscapedConstructorLabel { constructor() { \\u0074arget: while (true) { break target; } this.value = 1; } } console.log(new EscapedConstructorLabel().value);',
+        graph: 'reanalyzed',
+        output: '1\n',
+      },
+      {
+        name: 'constructor escaped label control spelling stays on reanalysis',
+        source:
+          'class EscapedConstructorLabelControl { constructor() { target: while (true) { break \\u0074arget; } this.value = 1; } } console.log(new EscapedConstructorLabelControl().value);',
+        graph: 'reanalyzed',
+        output: '1\n',
+      },
+      {
+        name: 'constructor call in labeled body stays on reanalysis',
+        source:
+          'function readLabeledBody() { return 1; } class CalledLabeledBody { constructor() { target: { this.value = readLabeledBody(); } } } console.log(new CalledLabeledBody().value);',
         graph: 'reanalyzed',
         output: '1\n',
       },
