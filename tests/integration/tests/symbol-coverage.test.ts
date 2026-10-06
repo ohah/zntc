@@ -7479,6 +7479,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '3\n',
       },
       {
+        name: 'constructor safe switch preserves exact case references and fallthrough',
+        source:
+          'class ConstructorSwitch { constructor(input, selector) { switch (input) { case selector: this.value = 1; break; case 2: this.value = 2; case 3: this.extra = 3; break; default: this.value = 4; } } } var switchFirst = new ConstructorSwitch(1, 1); var switchFallthrough = new ConstructorSwitch(2, 9); var switchDefault = new ConstructorSwitch(8, 9); console.log(switchFirst.value, switchFallthrough.value, switchFallthrough.extra, switchDefault.value);',
+        graph: 'retained',
+        output: '1 2 3 4\n',
+      },
+      {
         name: 'constructor local plus assignment retains exact references',
         source:
           'class LocalPlusAssignment { constructor(input) { var value = input; value += 1; this.value = value; } } console.log(new LocalPlusAssignment(3).value);',
@@ -7680,6 +7687,34 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class ConstructorLabeledControl { constructor() { target: while (false) { break target; } this.value = 1; } } console.log(new ConstructorLabeledControl().value);',
         graph: 'reanalyzed',
         output: '1\n',
+      },
+      {
+        name: 'constructor call in switch discriminant stays on reanalysis',
+        source:
+          'function readSwitchDiscriminant() { return 1; } class CalledSwitchDiscriminant { constructor() { switch (readSwitchDiscriminant()) { case 1: this.value = 1; break; default: this.value = 2; } } } console.log(new CalledSwitchDiscriminant().value);',
+        graph: 'reanalyzed',
+        output: '1\n',
+      },
+      {
+        name: 'constructor call in switch case test stays on reanalysis',
+        source:
+          'function readSwitchCase() { return 1; } class CalledSwitchCase { constructor(input) { switch (input) { case readSwitchCase(): this.value = 1; break; default: this.value = 2; } } } console.log(new CalledSwitchCase(1).value);',
+        graph: 'reanalyzed',
+        output: '1\n',
+      },
+      {
+        name: 'constructor call in switch case body stays on reanalysis',
+        source:
+          'function readSwitchBody() { return 3; } class CalledSwitchBody { constructor() { switch (1) { case 1: this.value = readSwitchBody(); break; default: this.value = 0; } } } console.log(new CalledSwitchBody().value);',
+        graph: 'reanalyzed',
+        output: '3\n',
+      },
+      {
+        name: 'constructor lexical switch case stays on reanalysis',
+        source:
+          'class LexicalSwitchCase { constructor(input) { switch (input) { case 1: let value = 3; this.value = value; break; default: this.value = 0; } } } console.log(new LexicalSwitchCase(1).value);',
+        graph: 'reanalyzed',
+        output: '3\n',
       },
       {
         name: 'constructor call in if branch stays on reanalysis',
