@@ -587,6 +587,54 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('private for-in/of target temps retain their explicit loop-head binding', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-private-loop-target-symbols-'));
+    const fixtures = ['4819-static-private-write-targets.mjs', 'forof-private-left-target.mjs'];
+    try {
+      for (const fixture of fixtures) {
+        const file = join(FIXTURE_DIR, fixture);
+        const reference = spawnSync('node', [file], { encoding: 'utf8' });
+        expect(reference.status, `${fixture}: ${reference.stderr}`).toBe(0);
+
+        for (const target of TARGETS) {
+          const output = join(dir, `${fixture}-${target.name}.mjs`);
+          const proc = spawnSync(
+            ZNTC_BIN,
+            [file, target.arg, '--minify-identifiers', '-o', output],
+            {
+              env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+              encoding: 'utf8',
+            },
+          );
+          expect(proc.status, `${fixture} ${target.name}: ${proc.stderr}`).toBe(0);
+
+          const lines = (proc.stderr ?? '').split(/\r?\n/);
+          const identity = lines.find((line) => line.startsWith('zntc: symbol-identity '));
+          expect(identity, `${fixture} ${target.name}: ${proc.stderr}`).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture} ${target.name} ${counter}: ${identity}`,
+            ).toBe(0);
+          }
+
+          const postMinify = lines.find((line) =>
+            line.startsWith('zntc: symbol-identity-post-minify '),
+          );
+          expect(postMinify, `${fixture} ${target.name}: ${proc.stderr}`).toMatch(
+            /missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+          );
+
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, `${fixture} ${target.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${fixture} ${target.name}`).toBe(reference.stdout);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('native and ES5 for-in lowering retain exact loop-head and closure scopes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-for-in-capture-scope-'));
     const file = join(FIXTURE_DIR, '4819-for-in-loop-capture.mjs');
