@@ -7188,7 +7188,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   });
 
-  test('ES5 empty and plain-method named classes retain their graph; other forms resync', () => {
+  test('ES5 empty and plain instance/static methods retain their graph; other forms resync', () => {
     const cases = [
       {
         name: 'empty named class',
@@ -7218,15 +7218,32 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '5\n',
       },
       {
-        name: 'static method',
-        source: 'class Static { static value() { return 9; } }\nconsole.log(Static.value());\n',
-        graph: 'reanalyzed',
+        name: 'single static method',
+        source:
+          'class Static { static value(n) { return Static.base + this.offset + n; } }\nStatic.base = 2; console.log(Static.value.call({ offset: 3 }, 4));\n',
+        graph: 'retained',
         output: '9\n',
       },
       {
         name: 'static method after an ordinary method',
         source:
-          'class Mixed { instance() { return 1; } static value() { return 9; } } console.log(Mixed.value());',
+          'class Mixed { instance() { return 1; } static value(n) { return Mixed.base + this.offset + n; } } Mixed.base = 2; console.log(new Mixed().instance() + Mixed.value.call({ offset: 3 }, 4));',
+        graph: 'retained',
+        output: '10\n',
+      },
+      {
+        name: 'static method with a source Object binding',
+        source:
+          'var Object = globalThis.Object; class Shadowed { static value() { return 9; } } console.log(Shadowed.value());',
+        graph: 'reanalyzed',
+        output: '9\n',
+        // The generated Object.defineProperty reference is explicitly global.
+        shadowedExternal: true,
+      },
+      {
+        name: 'static accessor after an instance method',
+        source:
+          'class Accessor { instance() { return 1; } static get value() { return 9; } } console.log(Accessor.value);',
         graph: 'reanalyzed',
         output: '9\n',
       },
@@ -7311,12 +7328,16 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         );
         expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
         for (const counter of EXACT_ZERO_COUNTERS) {
+          const expected =
+            fixture.shadowedExternal && counter === 'shadowed_external_reference' ? 1 : 0;
           expect(
             Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
             `${fixture.name}: ${counter}: ${report}`,
-          ).toBe(0);
+          ).toBe(expected);
         }
-        expect(report, fixture.name).toMatch(/clean=1(?:\s|$)/);
+        expect(report, fixture.name).toMatch(
+          fixture.shadowedExternal ? /clean=0(?:\s|$)/ : /clean=1(?:\s|$)/,
+        );
 
         if (fixture.graph === 'retained') {
           const helperReport = (proc.stderr ?? '')
