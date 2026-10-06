@@ -810,6 +810,22 @@ fn isSafeConstructorSwitchCase(
     return true;
 }
 
+fn isSafeConstructorCatchClause(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    catch_idx: ast_mod.NodeIndex,
+) bool {
+    if (catch_idx.isNone() or @intFromEnum(catch_idx) >= ast.nodes.items.len) return false;
+    const catch_clause = ast.getNode(catch_idx);
+    if (catch_clause.tag != .catch_clause) return false;
+    const parameter_idx = catch_clause.data.binary.left;
+    if (parameter_idx.isNone() or !isBoundSourceIdentifierBinding(ast, semantic, parameter_idx)) return false;
+    const body_idx = catch_clause.data.binary.right;
+    return !body_idx.isNone() and @intFromEnum(body_idx) < ast.nodes.items.len and
+        ast.getNode(body_idx).tag == .block_statement and
+        isSafeConstructorBodyStatement(ast, semantic, body_idx);
+}
+
 fn isSafeConstructorBodyStatement(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -857,6 +873,20 @@ fn isSafeConstructorBodyStatement(
                     !isSafeConstructorSwitchCase(ast, semantic, @enumFromInt(raw_case_idx))) return false;
             }
             return true;
+        },
+        .try_statement => {
+            const clauses = statement.data.ternary;
+            if ((clauses.b.isNone() and clauses.c.isNone()) or clauses.a.isNone() or
+                @intFromEnum(clauses.a) >= ast.nodes.items.len or
+                ast.getNode(clauses.a).tag != .block_statement) return false;
+            if (!clauses.c.isNone() and
+                (@intFromEnum(clauses.c) >= ast.nodes.items.len or ast.getNode(clauses.c).tag != .block_statement))
+            {
+                return false;
+            }
+            return isSafeConstructorBodyStatement(ast, semantic, clauses.a) and
+                (clauses.b.isNone() or isSafeConstructorCatchClause(ast, semantic, clauses.b)) and
+                (clauses.c.isNone() or isSafeConstructorBodyStatement(ast, semantic, clauses.c));
         },
         .for_statement => {
             const extras = ast.extra_data.items;
@@ -923,7 +953,7 @@ fn isSimpleParamsConstructorBodyGraphSafe(
 /// identifier parameters may accompany plain methods and a terminal accessor
 /// group when its body contains only simple `var` declarations, safe nested
 /// blocks/`if` branches, switches with safe discriminants/case tests, simple
-/// loops with unlabeled loop control, supported assignments/updates,
+/// try/catch/finally clauses, loops with unlabeled loop control, supported assignments/updates,
 /// returns with no value or an exact-safe value, and throws with an exact-safe
 /// value. Conditions and values are recursively limited to literals, exact
 /// source references, and ES5-native operators; loop clauses and bodies must
