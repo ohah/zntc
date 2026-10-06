@@ -7409,6 +7409,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '-4 4 true -5\n',
       },
       {
+        name: 'constructor conditional and short-circuit values retain exact references',
+        source:
+          'class BranchingValues { constructor(input, flag) { var selected = input > 0 ? input : 0; var shortValue = flag && selected; this.selected = selected; this.shortValue = shortValue; } } var positiveBranch = new BranchingValues(4, true); var negativeBranch = new BranchingValues(-4, false); console.log(positiveBranch.selected, positiveBranch.shortValue, negativeBranch.selected, negativeBranch.shortValue);',
+        graph: 'retained',
+        output: '4 4 0 false\n',
+      },
+      {
         name: 'constructor let local stays on reanalysis',
         source:
           'class LexicalLocal { constructor() { let value = 6; this.value = value; } } console.log(new LexicalLocal().value);',
@@ -7477,6 +7484,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class DeleteLocal { constructor() { var removed = delete this.value; this.removed = removed; } } console.log(new DeleteLocal().removed);',
         graph: 'reanalyzed',
         output: 'true\n',
+      },
+      {
+        name: 'constructor call inside conditional initializer stays on reanalysis',
+        source:
+          'function readCondition() { return 1; } class CalledConditionalLocal { constructor() { var value = readCondition() > 0 ? 1 : 0; this.value = value; } } console.log(new CalledConditionalLocal().value);',
+        graph: 'reanalyzed',
+        output: '1\n',
+      },
+      {
+        name: 'constructor nullish initializer stays on reanalysis',
+        source:
+          'class NullishLocal { constructor(input) { var value = input ?? 7; this.value = value; } } console.log(new NullishLocal(undefined).value);',
+        graph: 'reanalyzed',
+        output: '7\n',
       },
       {
         name: 'destructured constructor parameter stays on reanalysis',
