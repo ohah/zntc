@@ -1741,3 +1741,80 @@ test "#4819 decorated explicit constructor binds generated nullish temp in origi
     }
     try std.testing.expectEqual(@as(usize, 2), ctor_temp_refs);
 }
+
+test "#4819 generated class super parameter owns colliding alias references" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\class Base { static get value() { return 3; } }
+        \\const _super = 1;
+        \\class Declared extends Base { constructor() { super(); } method() { return super.value; } static read() { return super.value; } }
+        \\const Expression = class extends Base { method() { return super.value; } };
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+
+    var super_parameter_ids: [2]u32 = undefined;
+    var super_parameter_count: usize = 0;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_super2")) continue;
+        if (raw >= edited.symbol_ids.len) return error.TestUnexpectedResult;
+        const id = edited.symbol_ids[raw] orelse continue;
+        if (edited.symbols.items[id].kind != .parameter) continue;
+        if (super_parameter_count >= super_parameter_ids.len) return error.TestUnexpectedResult;
+        super_parameter_ids[super_parameter_count] = id;
+        super_parameter_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), super_parameter_count);
+    try std.testing.expect(super_parameter_ids[0] != super_parameter_ids[1]);
+
+    var aliased_references: usize = 0;
+    var parameter_reads = [_]usize{ 0, 0 };
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .identifier_reference or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_super2")) continue;
+        aliased_references += 1;
+        if (raw >= edited.symbol_ids.len) return error.TestUnexpectedResult;
+        const id = edited.symbol_ids[raw] orelse return error.TestUnexpectedResult;
+        var matched = false;
+        for (super_parameter_ids, 0..) |parameter_id, index| {
+            if (id != parameter_id) continue;
+            parameter_reads[index] += 1;
+            matched = true;
+        }
+        try std.testing.expect(matched);
+        var semantic_reference_count: usize = 0;
+        for (edited.references) |reference| {
+            if (reference.node_index != @as(NodeIndex, @enumFromInt(raw))) continue;
+            try std.testing.expectEqual(id, @intFromEnum(reference.symbol_id));
+            try std.testing.expect(reference.flags.read);
+            semantic_reference_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), semantic_reference_count);
+    }
+    try std.testing.expect(aliased_references > 0);
+    try std.testing.expect(parameter_reads[0] > 0 and parameter_reads[1] > 0);
+}

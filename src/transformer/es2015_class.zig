@@ -255,6 +255,20 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 }
             }
 
+            const saved_class_super_parameter = self.active_class_super_parameter;
+            defer self.active_class_super_parameter = saved_class_super_parameter;
+            self.active_class_super_parameter = null;
+            const super_param_binding = if (super_span) |param_span|
+                try es_helpers.makeSyntheticBinding(self, param_span)
+            else
+                NodeIndex.none;
+            if (!super_param_binding.isNone()) {
+                const exact_name_span = self.ast.getNode(super_param_binding).data.string_ref;
+                super_span = exact_name_span;
+                const symbol_id = try self.declareSyntheticInScope(super_param_binding, span, .parameter, iife_scope);
+                self.active_class_super_parameter = .{ .binding = super_param_binding, .name_span = exact_name_span, .symbol_id = symbol_id };
+            }
+
             // super class context 설정 (constructor/method body 방문 시 사용)
             const saved_super = self.current_super_class;
             const saved_super_old_idx = self.current_super_class_old_idx;
@@ -433,10 +447,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
 
             // __extends(ClassName, _super) — parent는 IIFE 매개변수 _super
-            const super_param_text = "_super";
             if (has_super and super_span != null) {
                 const child_ref = try self.makeCurrentClassRefAtScope(name_span, iife_scope);
-                const parent_ref = try es_helpers.makeSyntheticRef(self, super_param_text);
+                const parent_ref = try self.makeCurrentClassSuperRef(super_span.?, .none, iife_scope);
                 const extends_ref = try es_helpers.makeRuntimeHelperRef(self, "__extends");
                 const extends_call_expr = try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span);
                 try self.scratch.append(self.allocator, try es_helpers.makeExprStmt(self, extends_call_expr, span));
@@ -487,10 +500,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // function(_super) { ... } 또는 function() { ... }
             const none = @intFromEnum(NodeIndex.none);
-            const super_param_binding = if (has_super and super_span != null)
-                try es_helpers.makeSyntheticBinding(self, try self.ast.addString(super_param_text))
-            else
-                NodeIndex.none;
             const wrapper_params = if (!super_param_binding.isNone())
                 try self.ast.addNodeList(&.{super_param_binding})
             else
@@ -504,7 +513,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
             const wrapper_fn = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
             try self.bindReservedFunctionOwner(iife_scope, wrapper_fn);
-            if (!super_param_binding.isNone()) try trackGeneratedParameterSymbols(self, wrapper_fn, super_param_binding, iife_scope);
             try trackClassPrivateSymbols(self, wrapper_fn, cm, iife_scope);
 
             // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
@@ -598,6 +606,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 }
             }
 
+            const saved_class_super_parameter = self.active_class_super_parameter;
+            defer self.active_class_super_parameter = saved_class_super_parameter;
+            self.active_class_super_parameter = null;
+
             const saved_super = self.current_super_class;
             const saved_super_old_idx = self.current_super_class_old_idx;
             const saved_super_static = self.current_super_is_static;
@@ -659,6 +671,15 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try self.reserveGeneratedFunctionScope(iife_parent)
             else
                 @as(@import("../semantic/scope.zig").ScopeId, .none);
+            var expr_super_param_binding: NodeIndex = .none;
+            if (super_span) |param_span| {
+                expr_super_param_binding = try es_helpers.makeSyntheticBinding(self, param_span);
+                const exact_name_span = self.ast.getNode(expr_super_param_binding).data.string_ref;
+                super_span = exact_name_span;
+                self.current_super_class = exact_name_span;
+                const symbol_id = try self.declareSyntheticInScope(expr_super_param_binding, span, .parameter, iife_scope);
+                self.active_class_super_parameter = .{ .binding = expr_super_param_binding, .name_span = exact_name_span, .symbol_id = symbol_id };
+            }
             if (has_extra or wrap_self_alias) try self.reparentGeneratedScope(source_class_scope, iife_scope);
             try bindComputedKeyTemps(self, &cm, iife_scope, span);
             const func_name = if (has_extra)
@@ -819,8 +840,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // 끝난 상태이므로 그대로 사용한다. 이전엔 여기서 재빌드하며 `_this` alias prepend 를
             // 누락해, 화살표-함수 인스턴스 필드(`f = () => this`)가 `_this is not defined` 로
             // 런타임 크래시했다 (#4279). 재빌드 제거로 비대칭을 구조적으로 차단.
-            const expr_super_param = "_super";
-
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -866,7 +885,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // __extends(ClassName, _super) — parent는 IIFE 매개변수
             if (has_super and super_span != null) {
                 const child_ref = try self.makeCurrentClassRefAtScope(name_span, iife_scope);
-                const parent_ref = try es_helpers.makeSyntheticRef(self, expr_super_param);
+                const parent_ref = try self.makeCurrentClassSuperRef(super_span.?, .none, iife_scope);
                 const extends_ref = try es_helpers.makeRuntimeHelperRef(self, "__extends");
                 try self.scratch.append(self.allocator, try es_helpers.makeExprStmt(self, try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span), span));
                 self.runtime_helpers.extends = true;
@@ -908,10 +927,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // function(_super) { ... } 또는 function() { ... }
             const none = @intFromEnum(NodeIndex.none);
-            const expr_super_param_binding = if (has_super and super_span != null)
-                try es_helpers.makeSyntheticBinding(self, try self.ast.addString(expr_super_param))
-            else
-                NodeIndex.none;
             const wrapper_params = if (!expr_super_param_binding.isNone())
                 try self.ast.addNodeList(&.{expr_super_param_binding})
             else
@@ -920,7 +935,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const wrapper_extra = try self.ast.addExtras(&.{ none, @intFromEnum(wrapper_params_node2), @intFromEnum(iife_body), 0, none });
             const wrapper_fn = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
             try self.bindReservedFunctionOwner(iife_scope, wrapper_fn);
-            if (!expr_super_param_binding.isNone()) try trackGeneratedParameterSymbols(self, wrapper_fn, expr_super_param_binding, iife_scope);
             try trackClassPrivateSymbols(self, wrapper_fn, cm, iife_scope);
             // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
             // IIFE callee paren 은 emitCall 자동 wrap 이 처리 (#4042 PR8)
@@ -956,7 +970,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
         pub const lowerPrivateFieldGet = private_fields_mod.lowerPrivateFieldGet;
         const emitPrivateMethodArtifacts = private_fields_mod.emitPrivateMethodArtifacts;
         const trackPrivateMethodSymbols = private_fields_mod.trackPrivateMethodSymbols;
-        const trackGeneratedParameterSymbols = private_fields_mod.trackGeneratedParameterSymbols;
         fn trackClassPrivateSymbols(self: *Transformer, root: NodeIndex, cm: anytype, scope: @import("../semantic/scope.zig").ScopeId) Transformer.Error!void {
             var field_mappings: std.ArrayList(Transformer.PrivateFieldMapping) = .empty;
             defer field_mappings.deinit(self.allocator);

@@ -111,6 +111,12 @@ pub const Transformer = struct {
         capture_frame: u32,
     };
 
+    pub const ClassSuperParameter = struct {
+        binding: NodeIndex,
+        name_span: Span,
+        symbol_id: ?SymbolId,
+    };
+
     pub const ClassSelfWriteTarget = struct {
         inner_id: u32,
         target_name: []const u8,
@@ -397,6 +403,10 @@ pub const Transformer = struct {
     /// Exact `_newTarget` handle shared by an explicit derived constructor's
     /// generated declaration and every lowered `super()` reference.
     active_derived_constructor_new_target: ?DerivedConstructorNewTarget = null,
+    /// Exact `_super` parameter created for the active ES5 class IIFE.
+    /// Generated reads inherit this binding directly instead of being found
+    /// later by walking the completed wrapper and matching its text.
+    active_class_super_parameter: ?ClassSuperParameter = null,
 
     /// ES2015 class extends: 현재 클래스의 super class 이름 Span.
     /// class body 방문 중 설정되어, super() → Parent.call(this),
@@ -751,6 +761,7 @@ pub const Transformer = struct {
     pub const propagateSymbolId = node_helpers.propagateSymbolId;
     pub const copySymbolId = node_helpers.copySymbolId;
     pub const makeIdentifierRefWithSymbol = node_helpers.makeIdentifierRefWithSymbol;
+    pub const makeCurrentClassSuperRef = node_helpers.makeCurrentClassSuperRef;
     pub const makeUserRefNamed = node_helpers.makeUserRefNamed;
     pub const makeUserRefNamedAtScope = node_helpers.makeUserRefNamedAtScope;
     pub const makeUserBinding = node_helpers.makeUserBinding;
