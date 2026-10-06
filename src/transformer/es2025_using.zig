@@ -340,13 +340,16 @@ pub fn ES2025Using(comptime Transformer: type) type {
             if (self.semantic_edit_enabled) try self.generated_temp_spans.append(self.allocator, tmp_span);
             const tmp_binding = try es_helpers.makeSyntheticBinding(self, tmp_span);
             const tmp_ref = try es_helpers.makeSyntheticRefFromSpan(self, tmp_span);
-            // Generator and for-await prepasses can move this head into a new
-            // callback after normalization. The ordinary for-of visitor keeps
-            // the source loop's lexical scope (or remaps it to the ES5 for).
-            if (bind_stable and node.tag == .for_of_statement and self.semantic_edit_enabled and self.pending_loop_extraction_depth == 0) {
+            // All callers bind the generated loop head and its initializer
+            // reference at the source loop owner. Prepasses can move the loop
+            // into a generated callback, so keep a relocation record unless
+            // the ordinary for-of visitor will retain the owner in place.
+            if (self.semantic_edit_enabled) {
                 const loop_scope = self.outputOwnedScope(idx) orelse std.debug.panic("missing using for-of scope", .{});
                 const symbol = try self.declareSyntheticInScope(tmp_binding, ln.span, .variable_const, loop_scope);
                 try self.addSyntheticRefInScope(tmp_ref, symbol, loop_scope, .{ .read = true });
+                const stable_owner = bind_stable and node.tag == .for_of_statement and self.pending_loop_extraction_depth == 0;
+                if (!stable_owner) try self.trackGeneratorStateReference(tmp_ref, symbol, loop_scope, .{ .read = true });
             }
             const new_left = try es_helpers.makeVarDeclaration(self, &.{
                 try es_helpers.makeDeclarator(self, tmp_binding, .none, ln.span),
