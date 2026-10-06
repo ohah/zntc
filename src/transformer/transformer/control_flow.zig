@@ -453,6 +453,9 @@ pub fn tryLowerForInOfPrivateTarget(self: *Transformer, node: Node) Error!?NodeI
     // var _t;
     const binding = try es_helpers.makeSyntheticBinding(self, temp_span);
     const temp_symbol = try self.declareSyntheticVar(binding, span);
+    // The rewritten loop head already declares this temp. Do not let the
+    // generic function-temp pass emit a second binding without its SymbolId.
+    es_helpers.consumeTempVarSpan(self, temp_span);
     const declarator = try es_helpers.makeDeclarator(self, binding, NodeIndex.none, span);
     const var_decl = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", span);
 
