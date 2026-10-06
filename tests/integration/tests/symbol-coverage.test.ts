@@ -7451,6 +7451,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '2 0\n',
       },
       {
+        name: 'constructor safe for loop keeps its exact var head and references',
+        source:
+          'class ConstructorFor { constructor(limit) { for (var index = 0; index < limit; index++) this.value = index; } } console.log(new ConstructorFor(3).value);',
+        graph: 'retained',
+        output: '2\n',
+      },
+      {
+        name: 'constructor safe for loop accepts exact assignment clauses',
+        source:
+          'class ConstructorForAssignments { constructor(limit) { var index; for (index = 0; index < limit; index += 1) this.value = index; } } console.log(new ConstructorForAssignments(3).value);',
+        graph: 'retained',
+        output: '2\n',
+      },
+      {
         name: 'constructor local plus assignment retains exact references',
         source:
           'class LocalPlusAssignment { constructor(input) { var value = input; value += 1; this.value = value; } } console.log(new LocalPlusAssignment(3).value);',
@@ -7596,6 +7610,55 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class ConstructorBreak { constructor() { while (true) { this.value = 1; break; } } } console.log(new ConstructorBreak().value);',
         graph: 'reanalyzed',
         output: '1\n',
+      },
+      {
+        name: 'constructor call in for condition stays on reanalysis',
+        source:
+          'function shouldContinueFor() { return false; } class CalledForCondition { constructor() { for (; shouldContinueFor();) this.value = 1; } } console.log(typeof new CalledForCondition().value);',
+        graph: 'reanalyzed',
+        output: 'undefined\n',
+      },
+      {
+        name: 'constructor call in for initializer stays on reanalysis',
+        source:
+          'function startForIndex() { return 0; } class CalledForInitializer { constructor() { for (var index = startForIndex(); index < 1; index++) this.value = index; } } console.log(new CalledForInitializer().value);',
+        graph: 'reanalyzed',
+        output: '0\n',
+      },
+      {
+        name: 'constructor call in for update stays on reanalysis',
+        source:
+          'var forUpdateCount = 0; function advanceForIndex() { forUpdateCount++; } class CalledForUpdate { constructor() { for (; forUpdateCount < 1; advanceForIndex()) this.value = forUpdateCount; } } console.log(new CalledForUpdate().value);',
+        graph: 'reanalyzed',
+        output: '0\n',
+      },
+      {
+        name: 'constructor for loop with break stays on reanalysis',
+        source:
+          'class ConstructorForBreak { constructor() { for (var index = 0; index < 1; index++) { this.value = index; break; } } } console.log(new ConstructorForBreak().value);',
+        graph: 'reanalyzed',
+        output: '0\n',
+      },
+      {
+        name: 'constructor lexical for head stays on reanalysis',
+        source:
+          'class LexicalForHead { constructor() { for (let index = 0; index < 1; index++) this.value = index; } } console.log(new LexicalForHead().value);',
+        graph: 'reanalyzed',
+        output: '0\n',
+      },
+      {
+        name: 'constructor for-of stays on reanalysis',
+        source:
+          'class ConstructorForOf { constructor(values) { for (var value of values) this.value = value; } } console.log(new ConstructorForOf([4, 7]).value);',
+        graph: 'reanalyzed',
+        output: '7\n',
+      },
+      {
+        name: 'constructor for-in stays on reanalysis',
+        source:
+          'class ConstructorForIn { constructor(values) { for (var key in values) this.value = key; } } console.log(new ConstructorForIn({ safe: 1 }).value);',
+        graph: 'reanalyzed',
+        output: 'safe\n',
       },
       {
         name: 'constructor call in if branch stays on reanalysis',

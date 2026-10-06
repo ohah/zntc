@@ -750,15 +750,13 @@ fn isSafeConstructorLocalUpdate(
     return isBoundSourceIdentifierAssignmentTarget(ast, semantic, target_idx);
 }
 
-fn isSafeConstructorExpressionStatement(
+fn isSafeConstructorExpression(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
-    statement: ast_mod.Node,
+    expression_idx: ast_mod.NodeIndex,
 ) bool {
-    if (statement.tag != .expression_statement) return false;
-    const assignment_idx = statement.data.unary.operand;
-    if (assignment_idx.isNone() or @intFromEnum(assignment_idx) >= ast.nodes.items.len) return false;
-    const assignment = ast.getNode(assignment_idx);
+    if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
+    const assignment = ast.getNode(expression_idx);
     if (assignment.tag == .update_expression) {
         return isSafeConstructorLocalUpdate(ast, semantic, assignment) or
             isSafeConstructorThisPropertyUpdate(ast, assignment);
@@ -778,6 +776,15 @@ fn isSafeConstructorExpressionStatement(
             isSafeConstructorValue(ast, semantic, value_idx);
     }
     return isSafeConstructorLocalAssignment(ast, semantic, assignment);
+}
+
+fn isSafeConstructorExpressionStatement(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    statement: ast_mod.Node,
+) bool {
+    return statement.tag == .expression_statement and
+        isSafeConstructorExpression(ast, semantic, statement.data.unary.operand);
 }
 
 fn isSafeConstructorBodyStatement(
@@ -811,6 +818,25 @@ fn isSafeConstructorBodyStatement(
             return isSafeConstructorValue(ast, semantic, branches.a) and
                 isSafeConstructorBodyStatement(ast, semantic, branches.b) and
                 (branches.c.isNone() or isSafeConstructorBodyStatement(ast, semantic, branches.c));
+        },
+        .for_statement => {
+            const extras = ast.extra_data.items;
+            const extra = statement.data.extra;
+            if (extra > extras.len or extras.len - extra < 4) return false;
+            const initializer_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+            const test_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
+            const update_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 2]);
+            const body_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 3]);
+            const safe_initializer = initializer_idx.isNone() or
+                (if (@intFromEnum(initializer_idx) < ast.nodes.items.len and
+                    ast.getNode(initializer_idx).tag == .variable_declaration)
+                    isSafeConstructorVarDeclaration(ast, semantic, ast.getNode(initializer_idx))
+                else
+                    isSafeConstructorExpression(ast, semantic, initializer_idx));
+            return safe_initializer and
+                (test_idx.isNone() or isSafeConstructorValue(ast, semantic, test_idx)) and
+                (update_idx.isNone() or isSafeConstructorExpression(ast, semantic, update_idx)) and
+                isSafeConstructorBodyStatement(ast, semantic, body_idx);
         },
         .while_statement, .do_while_statement => {
             const loop = statement.data.binary;
@@ -857,11 +883,11 @@ fn isSimpleParamsConstructorBodyGraphSafe(
 /// compatible getter/setter pair. One explicit constructor with only simple
 /// identifier parameters may accompany plain methods and a terminal accessor
 /// group when its body contains only simple `var` declarations, safe nested
-/// blocks/`if` branches, supported assignments/updates, returns with no value
-/// or an exact-safe value, and throws with an exact-safe value. Conditions and
-/// values are recursively limited to literals, exact source references, and
-/// ES5-native operators; `while`/`do while` loops also require an exact-safe
-/// condition and recursively safe body. Accessors must be terminal because lowering emits
+/// blocks/`if` branches, simple `for` loops, supported assignments/updates,
+/// returns with no value or an exact-safe value, and throws with an exact-safe
+/// value. Conditions and values are recursively limited to literals, exact
+/// source references, and ES5-native operators; loop clauses and bodies must
+/// pass their corresponding safe checks. Accessors must be terminal because lowering emits
 /// methods before accessors; computed/escaped keys and `super` stay excluded.
 fn isSimpleNamedClassDeclaration(
     ast: *const ast_mod.Ast,
