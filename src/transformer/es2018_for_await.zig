@@ -60,13 +60,10 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
 
         /// label 이 있으면 안쪽 while 에 붙인다(`continue <label>` 이 루프를 가리키게).
         pub fn lowerForAwaitOfLabeled(self: *Transformer, source_idx: NodeIndex, node: Node, label_name_idx: NodeIndex) Transformer.Error!NodeIndex {
-            // Register while the original async body's lexical owners are live.
-            // Extracted-wrapper and state-machine routes need their own pass
-            // after their output scopes are established.
-            const register_semantics = self.semantic_edit_enabled and
-                !self.in_extracted_fn_body and
-                !self.options.unsupported.async_await and
-                !self.options.unsupported.generator;
+            // Bind these exact generated nodes while their loop owner is
+            // available. The final output-scope walk relocates their IDs into
+            // an extracted async wrapper when the target lowers async syntax.
+            const register_semantics = self.semantic_edit_enabled and !self.in_extracted_fn_body;
             return self.visitNode(try rewriteForAwait(self, source_idx, node, label_name_idx, register_semantics, false));
         }
 
