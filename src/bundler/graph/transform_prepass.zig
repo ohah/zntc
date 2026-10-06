@@ -517,9 +517,9 @@ fn methodHasSuperExpression(ast: *const ast_mod.Ast, method: ast_mod.Node) bool 
     return false;
 }
 
-/// An ES5 class without a base preserves its graph only when it is empty or
-/// contains plain instance or static methods. The original method scopes and
-/// class binding stay intact; computed keys and `super` lowering stay out of scope.
+/// An ES5 class without a base preserves its graph when empty, when all members
+/// are plain methods, or when it has one plain accessor. Descriptor pairs stay
+/// on reanalysis; computed keys and `super` are excluded.
 fn isSimpleNamedClassDeclaration(
     ast: *const ast_mod.Ast,
     node: ast_mod.Node,
@@ -554,8 +554,13 @@ fn isSimpleNamedClassDeclaration(
         if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
         const key = ast.getNode(key_idx);
         const flags = extras[method_extra + ast_mod.MethodExtra.flags];
-        if (key.tag != .identifier_reference or
-            (flags != 0 and flags != ast_mod.MethodFlags.is_static)) return false;
+        const is_plain_method = flags == 0 or flags == ast_mod.MethodFlags.is_static;
+        const is_plain_accessor = flags == ast_mod.MethodFlags.is_getter or
+            flags == ast_mod.MethodFlags.is_setter or
+            flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_getter) or
+            flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_setter);
+        if (key.tag != .identifier_reference or (!is_plain_method and !is_plain_accessor)) return false;
+        if (is_plain_accessor and members.len != 1) return false;
         const key_text = ast.getText(key.span);
         if (std.mem.eql(u8, key_text, "constructor") or std.mem.eql(u8, key_text, "__proto__") or
             std.mem.indexOfScalar(u8, key_text, '\\') != null or methodHasSuperExpression(ast, member)) return false;
@@ -1373,8 +1378,8 @@ fn canKeepPrepassSemanticGraph(
                 const is_simple_downlevel_class = top_level_statements.isSet(raw_node_idx) and safe_graph_subset;
                 if (options.unsupported.class and !is_simple_downlevel_class) return false;
                 // Native classes add no output scopes. Admitted downlevel
-                // forms are empty named declarations or plain methods; their
-                // constructor/helper, class reference, and method scopes are tracked.
+                // forms are empty named declarations, plain methods, or one
+                // accessor; their helper, class reference, and scopes are tracked.
                 found_transform = true;
             },
             .identifier_reference => {
